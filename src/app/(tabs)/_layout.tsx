@@ -8,7 +8,7 @@ import { useColors } from '@/ui/theme';
 const TABS: { name: string; title: string; icon: IconName }[] = [
   { name: 'index', title: 'Hoje', icon: 'white-balance-sunny' },
   { name: 'casa', title: 'Casa', icon: 'home-outline' },
-  { name: 'notas', title: 'Notas', icon: 'receipt-text-outline' },
+  { name: 'financas', title: 'Finanças', icon: 'wallet-outline' },
   { name: 'saude', title: 'Saúde', icon: 'heart-pulse' },
   { name: 'familia', title: 'Família', icon: 'account-group-outline' },
 ];

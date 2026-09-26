@@ -1,5 +1,6 @@
 -- Testes do schema: isolamento entre famílias (RLS), matching, preços,
--- confirmação de nota, recorrência de tarefas, remédios, saúde, aparelhos e documentos.
+-- confirmação de nota, recorrência de tarefas, remédios, saúde, aparelhos,
+-- documentos e financeiro.
 -- Rodado por scripts/db/test.sh depois de stubs.sql + migrations.
 
 \set ON_ERROR_STOP 1
@@ -580,6 +581,125 @@ begin
   assert (select count(*) from public.chores where title = 'Limpar filtros') = 0, 'maintenance goes with the equipment';
   delete from public.people where id = current_setting('test.person_ana')::uuid;
   assert (select count(*) from public.documents) = 1, 'personal documents go with the person; household ones stay';
+end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• financeiro: contas, pagamentos e gastos'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  rent uuid;
+  power uuid;
+  ipva uuid;
+  once uuid;
+  b public.bills;
+  pay uuid;
+begin
+  insert into public.bills (name, category, amount, recurrence, due_day, next_due_on)
+    values ('Aluguel', 'moradia', 2500, 'monthly', 31, '2026-01-31') returning id into rent;
+  b := public.pay_bill(rent, '2026-01-31', null, '2026-01-30');
+  assert b.next_due_on = '2026-02-28', 'day 31 clamps to the end of February';
+  b := public.pay_bill(rent, '2026-02-28', null, '2026-02-27');
+  assert b.next_due_on = '2026-03-31', 'and comes back to 31 in March';
+  assert (select amount from public.bill_payments where bill_id = rent and due_on = '2026-02-28') = 2500,
+    'fixed amount used when none is given';
+
+  -- Outra pessoa já pagou este vencimento: nada acontece.
+  b := public.pay_bill(rent, '2026-02-28', 2500, '2026-03-01');
+  assert b.next_due_on = '2026-03-31' and (select count(*) from public.bill_payments where bill_id = rent) = 2,
+    'stale due date is a no-op';
+
+  insert into public.bills (name, recurrence, due_day, next_due_on) values ('Luz', 'monthly', 10, '2026-09-10')
+    returning id into power;
+  begin
+    perform public.pay_bill(power, '2026-09-10', null, '2026-09-10');
+    raise exception 'FAIL: variable bill paid without amount';
+  exception when invalid_parameter_value then null;
+  end;
+  b := public.pay_bill(power, '2026-09-10', 187.40, '2026-09-09');
+  assert b.next_due_on = '2026-10-10', 'monthly advance';
+
+  insert into public.bills (name, category, amount, recurrence, due_day, next_due_on)
+    values ('IPVA', 'transporte', 1800, 'yearly', 15, '2026-03-15') returning id into ipva;
+  b := public.pay_bill(ipva, '2026-03-15', null, '2026-03-15');
+  assert b.next_due_on = '2027-03-15', 'yearly advance';
+
+  insert into public.bills (name, amount, recurrence, next_due_on) values ('Conserto', 300, 'once', '2026-09-20')
+    returning id into once;
+  b := public.pay_bill(once, '2026-09-20', null, '2026-09-20');
+  assert not b.active, 'one-off bill closes when paid';
+
+  -- Vencimento editado para uma data já paga: não duplica, só anda.
+  update public.bills set next_due_on = '2026-09-10' where id = power;
+  b := public.pay_bill(power, '2026-09-10', 999, '2026-09-26');
+  assert b.next_due_on = '2026-10-10', 'already paid due date advances';
+  assert (select amount from public.bill_payments where bill_id = power and due_on = '2026-09-10') = 187.40,
+    'existing payment is kept';
+
+  -- Desfazer: só o mais recente; o vencimento volta.
+  select id into pay from public.bill_payments where bill_id = rent and due_on = '2026-01-31';
+  begin
+    perform public.undo_bill_payment(pay);
+    raise exception 'FAIL: undid an older payment';
+  exception when invalid_parameter_value then null;
+  end;
+  select id into pay from public.bill_payments where bill_id = rent and due_on = '2026-02-28';
+  b := public.undo_bill_payment(pay);
+  assert b.next_due_on = '2026-02-28', 'undo restores the due date';
+  select id into pay from public.bill_payments where bill_id = once;
+  b := public.undo_bill_payment(pay);
+  assert b.active, 'undo reopens a one-off bill';
+
+  insert into public.expenses (description, amount, category, spent_on) values ('Feira', 86.50, 'mercado', '2026-09-26');
+  begin
+    insert into public.expenses (description, amount) values ('Nada', 0);
+    raise exception 'FAIL: zero expense';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.bills (name, category, next_due_on) values ('X', 'cassino', '2026-09-26');
+    raise exception 'FAIL: invalid finance category';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.bills (name, due_day, next_due_on) values ('X', 32, '2026-09-26');
+    raise exception 'FAIL: due day out of range';
+  exception when check_violation then null;
+  end;
+
+  perform set_config('test.bill_a', rent::text, false);
+end $$;
+
+select set_config('request.jwt.claim.sub', :'user_b', false) \gset
+do $$
+declare
+  b public.bills;
+begin
+  assert (select count(*) from public.bills) = 4, 'B sees household bills';
+  assert (select count(*) from public.expenses) = 1, 'B sees household expenses';
+  b := public.pay_bill(current_setting('test.bill_a')::uuid, '2026-02-28', null, '2026-02-28');
+  assert (select paid_by from public.bill_payments where due_on = '2026-02-28' and bill_id = b.id) = auth.uid(),
+    'payment records who paid';
+end $$;
+
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  assert (select count(*) from public.bills) = 0, 'C sees no foreign bills';
+  assert (select count(*) from public.bill_payments) = 0, 'C sees no foreign payments';
+  assert (select count(*) from public.expenses) = 0, 'C sees no foreign expenses';
+
+  begin
+    perform public.pay_bill(current_setting('test.bill_a')::uuid, '2026-03-31', 1, '2026-03-31');
+    raise exception 'FAIL: paid a foreign bill';
+  exception when no_data_found then null;
+  end;
+
+  begin
+    insert into public.bill_payments (bill_id, due_on, amount) values (current_setting('test.bill_a')::uuid, '2030-01-01', 1);
+    raise exception 'FAIL: payment on a foreign bill';
+  exception when foreign_key_violation then null;
+  end;
 end $$;
 
 \echo 'OK — todos os testes do banco passaram'

@@ -1,6 +1,6 @@
 # Nooky
 
-App da casa para a família toda: listas de compras, notas fiscais com comparativo de preços entre mercados, despensa com validade automática, tarefas domésticas e saúde (remédios, consultas, vacinas, exames, treino e dieta).
+App da casa para a família toda: listas de compras, notas fiscais com comparativo de preços entre mercados, despensa com validade automática, tarefas domésticas, saúde (remédios, consultas, vacinas, exames, treino e dieta) e finanças (gastos do mês e contas a pagar).
 
 iOS e Android com Expo (React Native); a versão web sai do mesmo código depois. Backend no Supabase (login, banco com isolamento por família, fotos e as funções de leitura por IA).
 
@@ -23,9 +23,11 @@ iOS e Android com Expo (React Native); a versão web sai do mesmo código depois
 | **Exames** | Fotos do pedido ou do laudo; a IA transcreve data, laboratório e resultados como impressos (valor, unidade, referência, marcação do laudo). Não interpreta nada. |
 | **Treino** | Foto da ficha do profissional → a IA organiza treinos e exercícios (séries, repetições, carga, descanso) → rascunho para revisar → ativar. Treino do dia por dia da semana ou na sequência A/B/C, marcação de feito e histórico. |
 | **Dieta** | Foto do plano da nutricionista → refeições, opções e orientações → lista de compras da dieta, que vai para a lista de mercado sem repetir o que já está nela. |
-| **Hoje** | Home que só mostra o que pede atenção: doses pendentes, treino do dia, consultas de hoje/amanhã, vacinas atrasadas, tarefas e manutenções, itens vencendo, documentos a renovar, garantias acabando, notas e planos para revisar. |
+| **Gastos do mês** | Aba Finanças → Resumo: total do mês, comparação com o mês anterior (no mês corrente, só até o mesmo dia), últimos 6 meses, gasto por categoria e onde mais gastou. Junta notas confirmadas (cada item vai para a sua categoria: o arroz em Mercado, o detergente em Limpeza), contas pagas e gastos avulsos sem nota. Tocar numa categoria filtra os lançamentos. |
+| **Contas a pagar** | Aluguel, condomínio, luz, internet, escola, assinaturas: valor fixo ou variável, mensal, anual ou única, débito automático. O check registra o pagamento (valor e data) e passa para o próximo vencimento; dia 31 vira o último dia nos meses curtos. Se outra pessoa da casa já pagou, não paga de novo. Histórico com desfazer do último pagamento. Atrasadas e as que vencem em até 3 dias aparecem na tela Hoje. |
+| **Hoje** | Home que só mostra o que pede atenção: doses pendentes, treino do dia, consultas de hoje/amanhã, vacinas atrasadas, tarefas e manutenções, contas vencendo, itens vencendo, documentos a renovar, garantias acabando, notas e planos para revisar. |
 
-Ainda não entrou (ver roadmap): financeiro (gastos por categoria, contas a pagar), scraper de NFC-e, lembretes por notificação para documentos e manutenções.
+Ainda não entrou (ver roadmap): scraper de NFC-e, lembretes por notificação para contas, documentos e manutenções, orçamento por categoria.
 
 ## Rodando pela primeira vez
 
@@ -73,7 +75,8 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
 - **Uma foto por nota:** cupom muito comprido perde nitidez numa foto só. Várias fotos por nota está no roadmap.
 - **Tempo de leitura:** 10–60 s dependendo do tamanho da nota; o app mostra uma tela de espera.
 - **Unidades:** preço é comparado na unidade da nota. Se a lista pede "3 un" de banana e as notas têm preço por kg, o comparativo usa 1 kg e avisa que a quantidade é aproximada.
-- **Lembretes de consulta e vacina:** por enquanto aparecem na tela Hoje e no resumo de Saúde; notificação só existe para remédio.
+- **Lembretes de consulta, vacina e conta:** por enquanto aparecem na tela Hoje; notificação só existe para remédio.
+- **Gastos:** o resumo conta o que foi registrado no app (notas confirmadas, contas pagas, gastos avulsos). Nota em rascunho não entra até ser confirmada.
 - **Lembretes de remédio:** notificações locais. No Expo Go podem ter limitações; num development build (`npx expo run:android` / EAS) funcionam completos. Na web não existem.
 
 ## Testes
@@ -90,10 +93,10 @@ As Edge Functions são Deno: em `supabase/functions/_shared`, `parse-receipt` e 
 ## Estrutura
 
 ```
-src/app/            telas (Expo Router): (tabs)/ Hoje, Casa, Notas, Saúde, Família; lista/, nota/, treino/, dieta/, exame/…
+src/app/            telas (Expo Router): (tabs)/ Hoje, Casa, Finanças, Saúde, Família; lista/, nota/, conta/, gasto/, treino/…
 src/domain/         regras de negócio puras e testadas (sem React, sem Supabase)
 src/data/           consultas e mutações (React Query + Supabase)
-src/features/       blocos de tela maiores (painéis da Casa e da Saúde, leitor de nota, importação de planos)
+src/features/       blocos de tela maiores (painéis da Casa, da Saúde e das Finanças, leitor de nota, importação de planos)
 src/ui/             componentes visuais e tema claro/escuro
 src/lib/            cliente Supabase, sessão/família, lembretes
 supabase/migrations banco de dados e políticas de acesso
