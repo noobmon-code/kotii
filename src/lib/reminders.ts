@@ -1,10 +1,13 @@
-// Lembretes de remédio como notificações locais diárias. Ficam no aparelho:
-// cada pessoa da família escolhe de quais remédios quer ser lembrada.
+// Lembretes de remédio como notificações locais. Ficam no aparelho: cada
+// pessoa da família escolhe de quais remédios quer ser lembrada. Só tocam
+// dentro do período do tratamento (ver planReminders).
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { isRunningInExpoGo } from 'expo';
 import { Platform } from 'react-native';
 
+import { todayISO } from '@/domain/dates';
+import { currentTimeHHMM, planReminders } from '@/domain/medications';
 import type { Medication } from './types';
 
 type NotificationsModule = typeof import('expo-notifications');
@@ -55,40 +58,99 @@ export async function hasReminders(medicationId: string): Promise<boolean> {
   return (await AsyncStorage.getItem(storageKey(medicationId))) !== null;
 }
 
-export async function disableReminders(medicationId: string): Promise<void> {
+interface StoredReminders {
+  ids: string[];
+  /** Plano e texto agendados; se mudarem, os lembretes são refeitos. */
+  signature: string;
+}
+
+async function readStored(medicationId: string): Promise<StoredReminders | null> {
   const raw = await AsyncStorage.getItem(storageKey(medicationId));
-  if (!raw) return;
-  if (remindersSupported) {
-    const ids: string[] = JSON.parse(raw);
-    await Promise.all(ids.map((id) => notifications().cancelScheduledNotificationAsync(id).catch(() => undefined)));
-  }
+  if (raw === null) return null;
+  const parsed: unknown = JSON.parse(raw);
+  // Formato antigo: só a lista de ids.
+  return Array.isArray(parsed) ? { ids: parsed as string[], signature: '' } : (parsed as StoredReminders);
+}
+
+async function cancelAll(ids: string[]): Promise<void> {
+  if (!remindersSupported) return;
+  await Promise.all(ids.map((id) => notifications().cancelScheduledNotificationAsync(id).catch(() => undefined)));
+}
+
+export async function disableReminders(medicationId: string): Promise<void> {
+  const stored = await readStored(medicationId);
+  if (!stored) return;
+  await cancelAll(stored.ids);
   await AsyncStorage.removeItem(storageKey(medicationId));
 }
 
-/** Agenda um lembrete diário por horário. Retorna false sem permissão. */
-export async function enableReminders(medication: Medication): Promise<boolean> {
-  if (!remindersSupported || !(await ensurePermission())) return false;
+function contentOf(medication: Medication) {
+  return {
+    title: `${medication.name} — ${medication.person_name}`,
+    body: medication.dosage ? `Hora de tomar: ${medication.dosage}` : 'Hora de tomar o remédio',
+    data: { medicationId: medication.id },
+  };
+}
+
+/** Agenda conforme o plano (diário ou dose a dose) e guarda o que foi agendado. */
+async function schedule(medication: Medication, today: string): Promise<void> {
   const Notifications = notifications();
-  await disableReminders(medication.id);
+  const plan = planReminders(toPlanInput(medication), today, currentTimeHHMM());
+  const content = contentOf(medication);
+  const signature = JSON.stringify({ plan, content });
+  const previous = await readStored(medication.id);
+  if (previous?.signature === signature) return;
+  if (previous) await cancelAll(previous.ids);
+
   const ids: string[] = [];
-  for (const time of medication.times) {
-    const [hour, minute] = time.split(':').map(Number);
-    ids.push(
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: `${medication.name} — ${medication.person_name}`,
-          body: medication.dosage ? `Hora de tomar: ${medication.dosage}` : 'Hora de tomar o remédio',
-          data: { medicationId: medication.id },
-        },
-        trigger: { type: Notifications.SchedulableTriggerInputTypes.DAILY, hour, minute, channelId: CHANNEL_ID },
-      }),
-    );
+  if (plan.kind === 'daily') {
+    for (const time of plan.times) {
+      const [hour, minute] = time.split(':').map(Number);
+      ids.push(
+        await Notifications.scheduleNotificationAsync({
+          content,
+          trigger: { type: Notifications.SchedulableTriggerInputTypes.DAILY, hour, minute, channelId: CHANNEL_ID },
+        }),
+      );
+    }
+  } else if (plan.kind === 'dates') {
+    for (const slot of plan.slots) {
+      const [y, m, d] = slot.date.split('-').map(Number);
+      const [hour, minute] = slot.time.split(':').map(Number);
+      ids.push(
+        await Notifications.scheduleNotificationAsync({
+          content,
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.DATE,
+            date: new Date(y, m - 1, d, hour, minute),
+            channelId: CHANNEL_ID,
+          },
+        }),
+      );
+    }
   }
-  await AsyncStorage.setItem(storageKey(medication.id), JSON.stringify(ids));
+  await AsyncStorage.setItem(storageKey(medication.id), JSON.stringify({ ids, signature } satisfies StoredReminders));
+}
+
+function toPlanInput(medication: Medication) {
+  return { times: medication.times, startOn: medication.start_on, endOn: medication.end_on, active: medication.active };
+}
+
+/**
+ * Liga os lembretes deste remédio neste aparelho, só dentro do período do
+ * tratamento. Retorna false sem permissão.
+ */
+export async function enableReminders(medication: Medication, today = todayISO()): Promise<boolean> {
+  if (!remindersSupported || !(await ensurePermission())) return false;
+  await schedule(medication, today);
   return true;
 }
 
-/** Cancela lembretes deste aparelho de remédios encerrados ou removidos. */
+/**
+ * Mantém os lembretes deste aparelho em dia: remove os de remédios
+ * encerrados ou removidos e refaz os que mudaram (datas, horários, perto do
+ * início ou do fim do tratamento). Chamado ao abrir o app.
+ */
 export async function syncReminders(medications: Medication[], today: string): Promise<void> {
   if (!remindersSupported) return;
   const keys = (await AsyncStorage.getAllKeys()).filter((k) => k.startsWith('reminders:'));
@@ -98,6 +160,8 @@ export async function syncReminders(medications: Medication[], today: string): P
     const medication = byId.get(id);
     if (!medication || !medication.active || (medication.end_on && medication.end_on < today)) {
       await disableReminders(id);
+    } else {
+      await schedule(medication, today);
     }
   }
 }

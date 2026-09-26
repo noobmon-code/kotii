@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { useMedications } from '@/data/home';
@@ -10,7 +10,6 @@ import { HealthTodaySections } from '@/features/health/HealthTodaySections';
 import { MedicationsToday } from '@/features/health/MedicationSections';
 import { PlansPanel } from '@/features/health/PlansPanel';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
-import { syncReminders } from '@/lib/reminders';
 import { Card, EmptyState, Screen, Segmented, Text, Tile } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
@@ -25,13 +24,6 @@ export default function HealthScreen() {
   const today = todayISO();
   const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
-  const medications = useMedications();
-
-  // Lembretes locais acompanham o que está cadastrado (em qualquer aparelho).
-  useEffect(() => {
-    if (medications.data) syncReminders(medications.data, today).catch(() => undefined);
-  }, [medications.data, today]);
-
   async function refresh() {
     setRefreshing(true);
     await queryClient.refetchQueries({ type: 'active' }).catch(() => undefined);

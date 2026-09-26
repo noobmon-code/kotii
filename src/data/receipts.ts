@@ -1,5 +1,6 @@
 // Notas fiscais: leitura por foto (IA), revisão e confirmação.
 
+import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ConfirmItem } from '@/domain/receiptReview';
@@ -75,6 +76,12 @@ export function useScanReceipt(householdId: string | undefined) {
         { body: { image_path: path } },
       );
       if (error || !data) {
+        // A função respondeu com erro: nenhuma nota foi criada com essa foto,
+        // então ela sai do storage. Em falha de rede o resultado é incerto
+        // (a nota pode ter sido salva) e a foto fica.
+        if (error instanceof FunctionsHttpError) {
+          await supabase.storage.from('receipts').remove([path]).catch(() => undefined);
+        }
         throw new Error(await functionErrorMessage(error, 'Não foi possível ler a nota. Tente novamente.'));
       }
       if (data.duplicate) await supabase.storage.from('receipts').remove([path]);

@@ -48,3 +48,65 @@ describe('reminders', () => {
     }
   });
 });
+
+describe('reminder scheduling', () => {
+  // expo-notifications e AsyncStorage em memória, no iOS.
+  async function withScheduler(scenario: (reminders: Reminders, scheduled: { trigger: { type: string } }[], storage: Map<string, string>) => Promise<void>) {
+    const scheduled: { trigger: { type: string } }[] = [];
+    const storage = new Map<string, string>();
+    await jest.isolateModulesAsync(async () => {
+      jest.doMock('react-native', () => ({ Platform: { OS: 'ios' } }));
+      jest.doMock('expo', () => ({ isRunningInExpoGo: () => false }));
+      jest.doMock('@react-native-async-storage/async-storage', () => ({
+        getItem: async (k: string) => storage.get(k) ?? null,
+        setItem: async (k: string, v: string) => void storage.set(k, v),
+        removeItem: async (k: string) => void storage.delete(k),
+        getAllKeys: async () => [...storage.keys()],
+      }));
+      jest.doMock('expo-notifications', () => ({
+        SchedulableTriggerInputTypes: { DAILY: 'daily', DATE: 'date' },
+        AndroidImportance: { HIGH: 4 },
+        getPermissionsAsync: async () => ({ granted: true }),
+        scheduleNotificationAsync: async (request: { trigger: { type: string } }) => {
+          scheduled.push(request);
+          return `n${scheduled.length}`;
+        },
+        cancelScheduledNotificationAsync: async () => undefined,
+      }));
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      await scenario(require('../reminders'), scheduled, storage);
+    });
+  }
+
+  const medication = (start_on: string, end_on: string | null) => ({
+    id: 'm1',
+    person_id: null,
+    person_name: 'Ana',
+    name: 'Amoxicilina',
+    dosage: '5 ml',
+    times: ['08:00', '20:00'],
+    start_on,
+    end_on,
+    notes: null,
+    active: true,
+  });
+
+  it('does not ring before a future start and keeps doses inside the treatment', async () => {
+    await withScheduler(async (reminders, scheduled) => {
+      expect(await reminders.enableReminders(medication('2026-09-28', '2026-09-29'), '2026-09-26')).toBe(true);
+      expect(scheduled.map((r) => r.trigger.type)).toEqual(['date', 'date', 'date', 'date']);
+      // Mesmo plano: nada é reagendado.
+      await reminders.enableReminders(medication('2026-09-28', '2026-09-29'), '2026-09-26');
+      expect(scheduled).toHaveLength(4);
+    });
+  });
+
+  it('uses daily repeats for ongoing treatments and drops ended ones on sync', async () => {
+    await withScheduler(async (reminders, scheduled, storage) => {
+      await reminders.enableReminders(medication('2026-09-01', null), '2026-09-26');
+      expect(scheduled.map((r) => r.trigger.type)).toEqual(['daily', 'daily']);
+      await reminders.syncReminders([medication('2026-09-01', '2026-09-20')], '2026-09-26');
+      expect(storage.size).toBe(0);
+    });
+  });
+});

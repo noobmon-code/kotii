@@ -2,6 +2,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { Tabs } from 'expo-router/js-tabs';
 
 import type { IconName } from '@/domain/categories';
+import { useReminderSync } from '@/features/useReminderSync';
 import { useColors } from '@/ui/theme';
 
 const TABS: { name: string; title: string; icon: IconName }[] = [
@@ -14,6 +15,7 @@ const TABS: { name: string; title: string; icon: IconName }[] = [
 
 export default function TabsLayout() {
   const c = useColors();
+  useReminderSync();
   return (
     <Tabs
       screenOptions={{
