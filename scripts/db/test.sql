@@ -11,12 +11,18 @@
 insert into auth.users (id) values (:'user_a'), (:'user_b'), (:'user_c');
 
 -- ---------------------------------------------------------------------------
-\echo '• anônimo não cria família'
+\echo '• anônimo não cria família nem chama RPCs internas'
 set role anon;
 do $$
 begin
   perform public.create_household('Casa X', 'X');
   raise exception 'FAIL: anon created household';
+exception when insufficient_privilege then null;
+end $$;
+do $$
+begin
+  perform public.current_household_id();
+  raise exception 'FAIL: anon called current_household_id';
 exception when insufficient_privilege then null;
 end $$;
 

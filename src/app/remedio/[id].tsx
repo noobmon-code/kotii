@@ -1,6 +1,6 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { StyleSheet, Switch, View } from 'react-native';
+import { Platform, StyleSheet, Switch, View } from 'react-native';
 
 import { useArchiveMedication, useMedication, useSaveMedication } from '@/data/home';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
@@ -134,6 +134,10 @@ function MedicationForm({ medication }: { medication?: Medication }) {
             <Switch value={remind} onValueChange={setRemind} trackColor={{ true: c.primary }} />
           </Row>
         </Card>
+      ) : Platform.OS === 'android' ? (
+        <Text variant="small">
+          Lembretes por notificação funcionam no app instalado; no Expo Go do Android eles ficam desligados.
+        </Text>
       ) : null}
 
       <Button title="Salvar" onPress={submit} loading={save.isPending} />
