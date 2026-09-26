@@ -7,7 +7,13 @@ import {
   useWorkoutPlans,
 } from '@/data/health';
 import { addDays } from '@/domain/dates';
-import { dueVaccines, isOverdueAppointment, sessionsForToday, upcomingAppointments } from '@/domain/health';
+import {
+  dueVaccines,
+  isOverdueAppointment,
+  sessionsForToday,
+  upcomingAppointments,
+  WORKOUT_HISTORY_DAYS,
+} from '@/domain/health';
 
 /** O que a saúde da casa pede hoje: consultas, vacinas, treinos e rascunhos. */
 export function useHealthOverview(today: string) {
@@ -15,7 +21,7 @@ export function useHealthOverview(today: string) {
   const appointments = useAppointments();
   const vaccines = useVaccines();
   const plans = useWorkoutPlans();
-  const logs = useWorkoutLogs(addDays(today, -60));
+  const logs = useWorkoutLogs(addDays(today, -WORKOUT_HISTORY_DAYS));
   const diets = useDietPlans();
   const queries = [people, appointments, vaccines, plans, logs, diets];
 

@@ -230,10 +230,14 @@ export interface WorkoutLogLike {
   created_at: string;
 }
 
+/** Dias de histórico de treino que o app carrega (Hoje e ficha usam o mesmo). */
+export const WORKOUT_HISTORY_DAYS = 90;
+
 /**
  * Sessões de hoje. Com dias da semana na ficha, as do dia (nenhuma = descanso);
  * sem dias, a sequência A, B, C...: a que vem depois da última feita (ou a
- * feita hoje, para continuar aparecendo como concluída).
+ * feita hoje, para continuar aparecendo como concluída). Depois de uma pausa
+ * maior que WORKOUT_HISTORY_DAYS, a sequência recomeça do primeiro treino.
  */
 export function sessionsForToday(sessions: WorkoutSession[], logs: WorkoutLogLike[], today: string): WorkoutSession[] {
   if (!sessions.length) return [];
@@ -241,8 +245,9 @@ export function sessionsForToday(sessions: WorkoutSession[], logs: WorkoutLogLik
     const weekday = weekdayOf(today);
     return sessions.filter((s) => s.weekdays.includes(weekday));
   }
+  const since = addDays(today, -WORKOUT_HISTORY_DAYS);
   const known = logs
-    .filter((l) => sessions.some((s) => s.name === l.session_name))
+    .filter((l) => l.done_on >= since && sessions.some((s) => s.name === l.session_name))
     .sort((a, b) => b.done_on.localeCompare(a.done_on) || b.created_at.localeCompare(a.created_at));
   const doneToday = known.filter((l) => l.done_on === today);
   if (doneToday.length) return sessions.filter((s) => doneToday.some((l) => l.session_name === s.name));

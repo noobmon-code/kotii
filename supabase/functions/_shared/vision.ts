@@ -3,7 +3,8 @@
 //
 // Secrets: ANTHROPIC_API_KEY ou OPENROUTER_API_KEY (uma das duas);
 // <PREFIXO>_PROVIDER ("anthropic" | "openrouter") e <PREFIXO>_MODEL opcionais.
-// Com só a chave da OpenRouter, ela é usada automaticamente.
+// Com só a chave da OpenRouter, ela é usada automaticamente; com as duas,
+// vale a Anthropic, a menos que o provedor seja escolhido.
 
 import Anthropic from '@anthropic-ai/sdk';
 import { betaZodOutputFormat } from '@anthropic-ai/sdk/helpers/beta/zod';
@@ -54,15 +55,20 @@ export function visionConfig(
     return null;
   };
   const openRouterKey = env('OPENROUTER_API_KEY');
+  const anthropicKey = env('ANTHROPIC_API_KEY');
   const requested = pick('PROVIDER')?.value;
   const provider =
-    requested === 'anthropic' || requested === 'openrouter' ? requested : openRouterKey ? 'openrouter' : 'anthropic';
+    requested === 'anthropic' || requested === 'openrouter'
+      ? requested
+      : openRouterKey && !anthropicKey
+        ? 'openrouter'
+        : 'anthropic';
   const model = pick('MODEL');
   return {
     provider,
     model: model?.value ?? (provider === 'openrouter' ? OPENROUTER_DEFAULT_MODEL : ANTHROPIC_DEFAULT_MODEL),
     modelEnv: model?.name ?? `${prefixes[0]}_MODEL`,
-    apiKey: provider === 'openrouter' ? openRouterKey : env('ANTHROPIC_API_KEY'),
+    apiKey: provider === 'openrouter' ? openRouterKey : anthropicKey,
   };
 }
 

@@ -28,7 +28,7 @@ function fakeFetch(status: number, body: unknown, seen: { request?: Record<strin
   }) as typeof fetch;
 }
 
-Deno.test('visionConfig: OpenRouter key alone selects OpenRouter; prefixes fall back in order', () => {
+Deno.test('visionConfig: OpenRouter only when it is the only key; prefixes fall back in order', () => {
   const env = (vars: Record<string, string>) => (name: string) => vars[name];
 
   const onlyOpenRouter = visionConfig(['HEALTH', 'RECEIPT'], env({ OPENROUTER_API_KEY: 'or' }));
@@ -45,6 +45,10 @@ Deno.test('visionConfig: OpenRouter key alone selects OpenRouter; prefixes fall 
   assertEquals(inherited.model, 'claude-x');
   assertEquals(inherited.modelEnv, 'RECEIPT_MODEL');
   assertEquals(inherited.apiKey, 'an');
+
+  const both = visionConfig(['HEALTH', 'RECEIPT'], env({ OPENROUTER_API_KEY: 'or', ANTHROPIC_API_KEY: 'an' }));
+  assertEquals(both.provider, 'anthropic', 'with both keys and no provider set, Anthropic wins');
+  assertEquals(both.apiKey, 'an');
 
   const none = visionConfig(['RECEIPT'], env({}));
   assertEquals(none.provider, 'anthropic');

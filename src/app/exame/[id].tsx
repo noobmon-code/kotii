@@ -111,17 +111,20 @@ function ExamForm({ exam, people, initialPersonId }: { exam?: Exam; people: Pers
 
   async function readWithAI(photoPaths = paths) {
     setReading(true);
+    let reading: ExamReading;
     try {
-      const reading = await readHealthDocument<ExamReading>('exam', photoPaths.slice(0, MAX_HEALTH_PHOTOS));
-      apply(reading);
+      reading = await readHealthDocument<ExamReading>('exam', photoPaths.slice(0, MAX_HEALTH_PHOTOS));
     } catch (err) {
       notify('Não deu para ler com IA', errorMessage(err));
+      return;
     } finally {
+      // A tela de espera sai antes de qualquer pergunta sobre o resultado.
       setReading(false);
     }
+    await apply(reading);
   }
 
-  function apply(reading: ExamReading) {
+  async function apply(reading: ExamReading) {
     if (reading.title && !title.trim()) setTitle(reading.title);
     if (reading.exam_date && !date.trim()) setDate(formatBRDate(reading.exam_date));
     if (reading.lab && !lab.trim()) setLab(reading.lab);
@@ -132,13 +135,23 @@ function ExamForm({ exam, people, initialPersonId }: { exam?: Exam; people: Pers
     } else {
       setStatus('realizado');
     }
+    // A leitura cobre todas as fotos: substitui a lista (somar duplicaria
+    // resultados em uma releitura). Com resultados já na tela, pergunta antes.
+    let replaced = false;
     if (reading.results.length) {
-      // Resultados já digitados ficam; os lidos entram no fim da lista.
-      setResults((current) => (current.length ? [...current, ...reading.results] : reading.results));
+      replaced =
+        !results.length ||
+        (await askYesNo(
+          'Substituir resultados?',
+          `A leitura trouxe ${reading.results.length} resultados. Trocar os ${results.length} que já estão aqui por eles?`,
+          'Substituir',
+          'Manter os atuais',
+        ));
+      if (replaced) setResults(reading.results);
     }
     notify(
       'Leitura concluída',
-      reading.results.length
+      replaced
         ? `${reading.results.length} resultados transcritos. Confira com o laudo antes de salvar.`
         : 'Campos preenchidos. Confira antes de salvar.',
     );

@@ -3,6 +3,7 @@ import { useState } from 'react';
 
 import {
   readHealthDocument,
+  removeHealthImages,
   uploadHealthImages,
   useCreateDietPlan,
   useCreateWorkoutPlan,
@@ -97,6 +98,8 @@ export function usePlanImport() {
         );
       }
     } catch (err) {
+      // Sem plano, ninguém mais alcança essas fotos pelo app.
+      await removeHealthImages(paths).catch(() => undefined);
       notify('Erro', errorMessage(err));
     } finally {
       setBusy(false);

@@ -18,6 +18,7 @@ import {
   nextSessionName,
   sessionsForToday,
   WEEKDAYS_SHORT,
+  WORKOUT_HISTORY_DAYS,
   workoutProblem,
   type Exercise,
   type WorkoutSession,
@@ -62,7 +63,7 @@ function WorkoutPlanView({ plan }: { plan: WorkoutPlan }) {
   const today = todayISO();
   const people = usePeople();
   const members = useHousehold().data?.members ?? [];
-  const logs = useWorkoutLogs(addDays(today, -90));
+  const logs = useWorkoutLogs(addDays(today, -WORKOUT_HISTORY_DAYS));
   const update = useUpdateWorkoutPlan(plan.id);
   const remove = useDeleteWorkoutPlan();
   const toggle = useToggleWorkoutLog();

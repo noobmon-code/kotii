@@ -70,9 +70,27 @@ create trigger household_members_ensure_person
   after insert on public.household_members
   for each row execute function public.ensure_member_person();
 
-insert into public.people (household_id, name, member_user_id)
-select household_id, trim(display_name), user_id from public.household_members
-on conflict do nothing;
+-- Moradores que já existiam: mesma regra do trigger (nome repetido ganha sufixo).
+do $$
+declare
+  m record;
+  candidate text;
+  n int;
+begin
+  for m in select household_id, user_id, trim(display_name) as base from public.household_members order by joined_at loop
+    candidate := m.base;
+    n := 1;
+    loop
+      insert into public.people (household_id, name, member_user_id)
+      values (m.household_id, candidate, m.user_id)
+      on conflict do nothing;
+      exit when found or n >= 20;
+      n := n + 1;
+      candidate := m.base || ' ' || n;
+    end loop;
+  end loop;
+end;
+$$;
 
 -- Remédios: pessoa por referência (person_name fica como nome de exibição).
 alter table public.medications add column person_id uuid;

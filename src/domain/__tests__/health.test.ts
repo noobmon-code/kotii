@@ -146,6 +146,8 @@ describe('workouts', () => {
     expect(sessionsForToday(plan, [log('C', '2026-09-25')], '2026-09-26').map((s) => s.name)).toEqual(['A']);
     expect(sessionsForToday(plan, [log('B', '2026-09-26'), log('A', '2026-09-25')], '2026-09-26').map((s) => s.name)).toEqual(['B']);
     expect(sessionsForToday(plan, [log('Antigo', '2026-09-25')], '2026-09-26').map((s) => s.name)).toEqual(['A']);
+    // Pausa maior que o histórico carregado: recomeça do primeiro treino.
+    expect(sessionsForToday(plan, [log('B', '2026-06-01')], '2026-09-26').map((s) => s.name)).toEqual(['A']);
   });
 
   it('names new sessions and validates before activating', () => {
