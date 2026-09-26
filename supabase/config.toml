@@ -1,0 +1,5 @@
+# Supabase CLI: `supabase link`, `supabase db push`, `supabase functions deploy`.
+project_id = "nooky"
+
+[functions.parse-receipt]
+verify_jwt = true
