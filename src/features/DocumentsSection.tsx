@@ -6,7 +6,7 @@ import { useDocuments } from '@/data/house';
 import { todayISO } from '@/domain/dates';
 import { describeDocumentStatus, documentStatus, getDocumentKind } from '@/domain/documents';
 import type { HomeDocument } from '@/lib/types';
-import { Badge, Button, EmptyState, ErrorNotice, IconBadge, ListCard, ListRow, Section, Text } from '@/ui/primitives';
+import { Badge, Button, EmptyState, ErrorNotice, IconBadge, ListCard, ListRow, Loading, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 /** Documentos da família agrupados por dono: cada pessoa e a casa. */
@@ -15,15 +15,21 @@ export function DocumentsSection() {
   const documents = useDocuments();
   const people = usePeople();
 
+  // Só agrupa com as duas listas carregadas: sem as pessoas, os documentos
+  // pessoais sumiriam da tela.
   const groups: { key: string; title: string; items: HomeDocument[] }[] = [];
-  if (documents.data) {
-    for (const person of people.data ?? []) {
+  if (documents.data && people.data) {
+    for (const person of people.data) {
       const items = documents.data.filter((d) => d.person_id === person.id);
       if (items.length) groups.push({ key: person.id, title: person.name, items });
     }
+    const known = new Set(people.data.map((p) => p.id));
+    const others = documents.data.filter((d) => d.person_id && !known.has(d.person_id));
+    if (others.length) groups.push({ key: 'outros', title: 'Outras pessoas', items: others });
     const household = documents.data.filter((d) => !d.person_id);
     if (household.length) groups.push({ key: 'casa', title: 'Da casa', items: household });
   }
+  const failed = documents.isError ? documents : people.isError ? people : null;
 
   return (
     <Section
@@ -37,7 +43,8 @@ export function DocumentsSection() {
           onPress={() => router.push({ pathname: '/documento/[id]', params: { id: 'novo' } })}
         />
       }>
-      {documents.isError ? <ErrorNotice error={documents.error} onRetry={() => documents.refetch()} /> : null}
+      {failed ? <ErrorNotice error={failed.error} onRetry={() => failed.refetch()} /> : null}
+      {!failed && (documents.isPending || people.isPending) ? <Loading /> : null}
       {documents.data && !documents.data.length ? (
         <EmptyState
           icon="folder-account-outline"

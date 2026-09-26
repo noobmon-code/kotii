@@ -16,13 +16,15 @@ export function useDraftPhotos(bucket: string, initial: string[]) {
   const [uploading, setUploading] = useState(false);
   const unsaved = useRef<string[]>([]);
   const removed = useRef<string[]>([]);
+  const mounted = useRef(true);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
       removeImages(bucket, unsaved.current).catch(() => undefined);
-    },
-    [bucket],
-  );
+    };
+  }, [bucket]);
 
   /** Envia e devolve a lista nova de fotos, ou null se falhar. */
   async function add(uris: string[]): Promise<string[] | null> {
@@ -30,15 +32,20 @@ export function useDraftPhotos(bucket: string, initial: string[]) {
     setUploading(true);
     try {
       const added = await uploadImages(bucket, householdId, uris);
+      // Saiu da tela durante o envio: ninguém vai salvar essas fotos.
+      if (!mounted.current) {
+        await removeImages(bucket, added).catch(() => undefined);
+        return null;
+      }
       unsaved.current.push(...added);
       const next = [...paths, ...added];
       setPaths(next);
       return next;
     } catch (err) {
-      notify('Não foi possível enviar as fotos', errorMessage(err));
+      if (mounted.current) notify('Não foi possível enviar as fotos', errorMessage(err));
       return null;
     } finally {
-      setUploading(false);
+      if (mounted.current) setUploading(false);
     }
   }
 
