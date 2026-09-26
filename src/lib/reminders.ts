@@ -2,19 +2,32 @@
 // cada pessoa da família escolhe de quais remédios quer ser lembrada.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Notifications from 'expo-notifications';
+import { isRunningInExpoGo } from 'expo';
 import { Platform } from 'react-native';
 
 import type { Medication } from './types';
 
+type NotificationsModule = typeof import('expo-notifications');
+
 const CHANNEL_ID = 'remedios';
 const storageKey = (medicationId: string) => `reminders:${medicationId}`;
 
-export const remindersSupported = Platform.OS !== 'web';
+// No Android, o Expo Go lança erro só de carregar expo-notifications (desde o
+// SDK 53). Lá os lembretes ficam desligados; no app instalado funcionam.
+export const remindersSupported =
+  Platform.OS === 'ios' || (Platform.OS === 'android' && !isRunningInExpoGo());
+
+// Carregado só quando usado, para o import não derrubar o app onde não há suporte.
+let notificationsModule: NotificationsModule | null = null;
+function notifications(): NotificationsModule {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  notificationsModule ??= require('expo-notifications') as NotificationsModule;
+  return notificationsModule;
+}
 
 export function configureNotifications() {
   if (!remindersSupported) return;
-  Notifications.setNotificationHandler({
+  notifications().setNotificationHandler({
     handleNotification: async () => ({
       shouldShowBanner: true,
       shouldShowList: true,
@@ -25,6 +38,7 @@ export function configureNotifications() {
 }
 
 async function ensurePermission(): Promise<boolean> {
+  const Notifications = notifications();
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync(CHANNEL_ID, {
       name: 'Remédios',
@@ -44,14 +58,17 @@ export async function hasReminders(medicationId: string): Promise<boolean> {
 export async function disableReminders(medicationId: string): Promise<void> {
   const raw = await AsyncStorage.getItem(storageKey(medicationId));
   if (!raw) return;
-  const ids: string[] = JSON.parse(raw);
-  await Promise.all(ids.map((id) => Notifications.cancelScheduledNotificationAsync(id).catch(() => undefined)));
+  if (remindersSupported) {
+    const ids: string[] = JSON.parse(raw);
+    await Promise.all(ids.map((id) => notifications().cancelScheduledNotificationAsync(id).catch(() => undefined)));
+  }
   await AsyncStorage.removeItem(storageKey(medicationId));
 }
 
 /** Agenda um lembrete diário por horário. Retorna false sem permissão. */
 export async function enableReminders(medication: Medication): Promise<boolean> {
   if (!remindersSupported || !(await ensurePermission())) return false;
+  const Notifications = notifications();
   await disableReminders(medication.id);
   const ids: string[] = [];
   for (const time of medication.times) {
