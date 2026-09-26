@@ -61,6 +61,22 @@ export async function uploadImage(bucket: string, householdId: string, uri: stri
   return path;
 }
 
+/** Várias fotos de uma vez; se uma falhar, as já enviadas são apagadas. */
+export async function uploadImages(bucket: string, householdId: string, uris: string[]): Promise<string[]> {
+  const paths: string[] = [];
+  try {
+    for (const uri of uris) paths.push(await uploadImage(bucket, householdId, uri));
+  } catch (err) {
+    await removeImages(bucket, paths).catch(() => undefined);
+    throw err;
+  }
+  return paths;
+}
+
+export async function removeImages(bucket: string, paths: string[]): Promise<void> {
+  if (paths.length) await supabase.storage.from(bucket).remove(paths);
+}
+
 export async function signedImageUrl(bucket: string, path: string): Promise<string | null> {
   const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 600);
   return data?.signedUrl ?? null;

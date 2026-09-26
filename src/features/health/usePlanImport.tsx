@@ -17,7 +17,7 @@ import { ActionSheet } from '@/ui/ActionSheet';
 import { BusyOverlay } from '@/ui/BusyOverlay';
 import { notify } from '@/ui/dialogs';
 import { openNewPerson } from './PersonChips';
-import { usePhotoSheet } from './useHealthPhotos';
+import { usePhotoSheet } from '@/features/usePhotoSheet';
 
 export type PlanKind = 'workout' | 'diet';
 

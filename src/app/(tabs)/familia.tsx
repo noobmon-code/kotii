@@ -1,5 +1,6 @@
 import { Share, StyleSheet } from 'react-native';
 
+import { DocumentsSection } from '@/features/DocumentsSection';
 import { useAuth, useHousehold } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import { confirmAction } from '@/ui/dialogs';
@@ -29,7 +30,7 @@ export default function FamilyScreen() {
           {house.invite_code}
         </Text>
         <Text variant="small" style={styles.center}>
-          Quem entrar com este código vê e edita listas, notas, despensa, tarefas e remédios da casa.
+          Quem entrar com este código vê e edita tudo da casa: listas, notas, despensa, tarefas, saúde e documentos.
         </Text>
         <Button title="Compartilhar convite" icon="share-variant-outline" variant="secondary" onPress={shareInvite} />
       </Card>
@@ -46,6 +47,8 @@ export default function FamilyScreen() {
           ))}
         </ListCard>
       </Section>
+
+      <DocumentsSection />
 
       <Section title="Conta">
         <Text variant="muted">{session?.user.email}</Text>

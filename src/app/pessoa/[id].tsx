@@ -144,7 +144,7 @@ function PersonForm({ person }: { person?: Person }) {
           onPress={() =>
             confirmAction(
               'Remover',
-              `Remover ${person.name}? Consultas, vacinas, exames, treinos e dietas registrados para ${person.kind === 'pet' ? 'esse pet' : 'essa pessoa'} também serão apagados.`,
+              `Remover ${person.name}? Consultas, vacinas, exames, treinos, dietas e documentos registrados para ${person.kind === 'pet' ? 'esse pet' : 'essa pessoa'} também serão apagados.`,
               'Remover',
               () =>
                 remove.mutate(person.id, {

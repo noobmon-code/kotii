@@ -15,15 +15,17 @@ iOS e Android com Expo (React Native); a versão web sai do mesmo código depois
 | **Listas de compras** | Compartilhadas em tempo real (duas pessoas no mercado veem as marcações uma da outra). Catálogo com mais de 200 itens comuns da casa por categoria, para montar a lista sem digitar; ao digitar, sugere primeiro produtos que já têm preço e depois itens do catálogo. |
 | **Despensa** | Alimentada pelas notas confirmadas. Validade estimada sem digitar: aprendida do produto ou padrão da categoria. Corrigiu a validade? O produto aprende para a próxima compra. "Acabou" manda o item para a lista de mercado. |
 | **Tarefas da casa** | Recorrência diária/semanal/mensal, responsável, próxima data calculada a partir de quando foi feita. |
+| **Aparelhos** | Ar-condicionado, geladeira, carro, caixa d'água…: marca, modelo, onde fica, fotos da nota/garantia/manual e garantia com aviso quando está acabando. Manutenções são tarefas recorrentes ligadas ao aparelho, com sugestões prontas (limpar filtro, trocar refil, revisão) e histórico. |
+| **Documentos** | RG, CNH, passaporte, seguro, contrato, IPTU… por pessoa ou da casa, com fotos, número e validade. Avisa na tela Hoje com a antecedência escolhida (passaporte começa 6 meses antes). Fotos ficam num bucket privado da família e não passam por IA. |
 | **Pessoas e pets** | Cada morador ganha sua ficha automaticamente; filhos, dependentes e pets são cadastrados à parte. Ficha com nascimento, tipo sanguíneo, alergias, condições e plano de saúde. Quem entra na família com o mesmo nome de um dependente assume a ficha dele. |
 | **Remédios** | Horários por pessoa, checklist de doses do dia, lembrete por notificação escolhido em cada celular. |
 | **Consultas e vacinas** | Agenda de consultas (pergunta se a consulta passada foi realizada), carteira de vacinas com próxima dose e aviso de dose atrasada ou chegando. |
 | **Exames** | Fotos do pedido ou do laudo; a IA transcreve data, laboratório e resultados como impressos (valor, unidade, referência, marcação do laudo). Não interpreta nada. |
 | **Treino** | Foto da ficha do profissional → a IA organiza treinos e exercícios (séries, repetições, carga, descanso) → rascunho para revisar → ativar. Treino do dia por dia da semana ou na sequência A/B/C, marcação de feito e histórico. |
 | **Dieta** | Foto do plano da nutricionista → refeições, opções e orientações → lista de compras da dieta, que vai para a lista de mercado sem repetir o que já está nela. |
-| **Hoje** | Home que só mostra o que pede atenção: doses pendentes, treino do dia, consultas de hoje/amanhã, vacinas atrasadas, tarefas, itens vencendo, notas e planos para revisar. |
+| **Hoje** | Home que só mostra o que pede atenção: doses pendentes, treino do dia, consultas de hoje/amanhã, vacinas atrasadas, tarefas e manutenções, itens vencendo, documentos a renovar, garantias acabando, notas e planos para revisar. |
 
-Ainda não entrou (ver roadmap): documentos, manutenção de equipamentos, scraper de NFC-e.
+Ainda não entrou (ver roadmap): financeiro (gastos por categoria, contas a pagar), scraper de NFC-e, lembretes por notificação para documentos e manutenções.
 
 ## Rodando pela primeira vez
 

@@ -24,7 +24,7 @@ import {
   type WorkoutSession,
 } from '@/domain/health';
 import { FieldsModal, orNull } from '@/features/health/FieldsModal';
-import { PhotoStrip } from '@/features/health/PhotoStrip';
+import { PhotoStrip } from '@/features/PhotoStrip';
 import { useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import type { WorkoutPlan } from '@/lib/types';
@@ -125,7 +125,7 @@ function WorkoutPlanView({ plan }: { plan: WorkoutPlan }) {
         ) : null}
       </Card>
 
-      {plan.file_paths.length ? <PhotoStrip paths={plan.file_paths} /> : null}
+      {plan.file_paths.length ? <PhotoStrip bucket="health" paths={plan.file_paths} /> : null}
 
       {sessions.map((session, sessionIndex) => {
         const done = doneToday.has(session.name);

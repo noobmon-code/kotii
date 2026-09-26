@@ -1,5 +1,5 @@
 -- Testes do schema: isolamento entre famílias (RLS), matching, preços,
--- confirmação de nota, recorrência de tarefas, remédios e saúde.
+-- confirmação de nota, recorrência de tarefas, remédios, saúde, aparelhos e documentos.
 -- Rodado por scripts/db/test.sh depois de stubs.sql + migrations.
 
 \set ON_ERROR_STOP 1
@@ -483,6 +483,103 @@ begin
   assert (select count(*) from public.exams) = 0, 'exams cascade';
   assert (select count(*) from public.workout_logs) = 0, 'workout logs cascade with plan';
   assert (select count(*) from public.diet_plans) = 0, 'diet plans cascade';
+end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• aparelhos e documentos'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  eq uuid;
+  c uuid;
+  ana uuid;
+begin
+  insert into public.equipment (name, category, purchased_on, warranty_until, price, file_paths)
+    values ('Ar do quarto', 'climatizacao', '2026-01-10', '2027-01-10', 2499.90,
+      array[current_setting('test.hh_a') || '/nota-ar.jpg'])
+    returning id into eq;
+  insert into public.chores (title, recurrence, interval_count, due_on, equipment_id)
+    values ('Limpar filtros', 'monthly', 1, '2026-09-26', eq) returning id into c;
+  perform public.complete_chore(c, '2026-09-26');
+  assert (select due_on from public.chores where id = c) = '2026-10-26', 'maintenance recurs like any chore';
+  perform set_config('test.equipment_a', eq::text, false);
+
+  begin
+    insert into public.equipment (name, category) values ('X', 'nave');
+    raise exception 'FAIL: invalid equipment category';
+  exception when check_violation then null;
+  end;
+
+  begin
+    insert into public.equipment (name, price) values ('X', -1);
+    raise exception 'FAIL: negative price';
+  exception when check_violation then null;
+  end;
+
+  select id into ana from public.people where member_user_id = auth.uid();
+  insert into public.documents (person_id, kind, title, number, expires_on, remind_days)
+    values (ana, 'cnh', 'CNH da Ana', '0123', '2026-10-10', 30);
+  insert into public.documents (kind, title, expires_on) values ('seguro', 'Seguro residencial', '2027-03-01');
+  perform set_config('test.person_ana', ana::text, false);
+  insert into storage.objects (bucket_id, name) values ('documents', current_setting('test.hh_a') || '/cnh.jpg');
+
+  begin
+    insert into public.documents (kind, title) values ('holerite', 'X');
+    raise exception 'FAIL: invalid document kind';
+  exception when check_violation then null;
+  end;
+
+  begin
+    insert into public.documents (title, remind_days) values ('X', 400);
+    raise exception 'FAIL: remind_days out of range';
+  exception when check_violation then null;
+  end;
+end $$;
+
+select set_config('request.jwt.claim.sub', :'user_b', false) \gset
+do $$
+begin
+  assert (select count(*) from public.equipment) = 1, 'B sees household equipment';
+  assert (select count(*) from public.documents) = 2, 'B sees household documents';
+  assert (select count(*) from storage.objects where bucket_id = 'documents') = 1, 'B sees document files';
+end $$;
+
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  assert (select count(*) from public.equipment) = 0, 'C sees no foreign equipment';
+  assert (select count(*) from public.documents) = 0, 'C sees no foreign documents';
+  assert (select count(*) from storage.objects where bucket_id = 'documents') = 0, 'C sees no foreign document files';
+
+  begin
+    insert into public.chores (title, equipment_id) values ('X', current_setting('test.equipment_a')::uuid);
+    raise exception 'FAIL: chore linked to foreign equipment';
+  exception when foreign_key_violation then null;
+  end;
+
+  begin
+    insert into public.documents (person_id, title) values (current_setting('test.person_ana')::uuid, 'X');
+    raise exception 'FAIL: document for foreign person';
+  exception when foreign_key_violation then null;
+  end;
+
+  begin
+    insert into storage.objects (bucket_id, name) values ('documents', current_setting('test.hh_a') || '/x.jpg');
+    raise exception 'FAIL: uploaded document file into foreign folder';
+  exception when insufficient_privilege then null;
+  end;
+
+  update public.equipment set name = 'Hack' where id = current_setting('test.equipment_a')::uuid;
+  assert not found, 'C cannot edit foreign equipment';
+end $$;
+
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  delete from public.equipment where id = current_setting('test.equipment_a')::uuid;
+  assert (select count(*) from public.chores where title = 'Limpar filtros') = 0, 'maintenance goes with the equipment';
+  delete from public.people where id = current_setting('test.person_ana')::uuid;
+  assert (select count(*) from public.documents) = 1, 'personal documents go with the person; household ones stay';
 end $$;
 
 \echo 'OK — todos os testes do banco passaram'

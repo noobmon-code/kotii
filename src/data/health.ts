@@ -4,7 +4,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Appointment, DietPlan, Exam, Person, Vaccine, WorkoutLog, WorkoutPlan } from '@/lib/types';
-import { functionErrorMessage, signedImageUrl, uploadImage } from './images';
+import { removeDocumentImages } from './house';
+import { functionErrorMessage, removeImages, signedImageUrl, uploadImages } from './images';
 
 function useInvalidate(...keys: string[]) {
   const queryClient = useQueryClient();
@@ -48,9 +49,34 @@ export function useSavePerson() {
 }
 
 export function useDeletePerson() {
-  const invalidate = useInvalidate('people', 'appointments', 'vaccines', 'exams', 'workoutPlans', 'dietPlans', 'medications');
+  const invalidate = useInvalidate(
+    'people',
+    'appointments',
+    'vaccines',
+    'exams',
+    'workoutPlans',
+    'dietPlans',
+    'medications',
+    'documents',
+  );
   return useMutation({
-    mutationFn: async (id: string) => unwrap(await supabase.from('people').delete().eq('id', id)),
+    mutationFn: async (id: string) => {
+      // O banco apaga exames, planos e documentos da pessoa em cascata; as
+      // fotos deles ficam no storage, então saem aqui.
+      const pathsOf = async (table: string) =>
+        (unwrap(await supabase.from(table).select('file_paths').eq('person_id', id)) as { file_paths: string[] }[]).flatMap(
+          (row) => row.file_paths,
+        );
+      const healthFiles = [
+        ...(await pathsOf('exams')),
+        ...(await pathsOf('workout_plans')),
+        ...(await pathsOf('diet_plans')),
+      ];
+      const documentFiles = await pathsOf('documents');
+      unwrap(await supabase.from('people').delete().eq('id', id));
+      await removeHealthImages(healthFiles).catch(() => undefined);
+      await removeDocumentImages(documentFiles).catch(() => undefined);
+    },
     onSuccess: invalidate,
   });
 }
@@ -133,19 +159,12 @@ export function useDeleteVaccine() {
 
 export type HealthDocumentKind = 'workout' | 'diet' | 'exam';
 
-export async function uploadHealthImages(householdId: string, uris: string[]): Promise<string[]> {
-  const paths: string[] = [];
-  try {
-    for (const uri of uris) paths.push(await uploadImage('health', householdId, uri));
-  } catch (err) {
-    if (paths.length) await supabase.storage.from('health').remove(paths);
-    throw err;
-  }
-  return paths;
+export function uploadHealthImages(householdId: string, uris: string[]): Promise<string[]> {
+  return uploadImages('health', householdId, uris);
 }
 
-export async function removeHealthImages(paths: string[]): Promise<void> {
-  if (paths.length) await supabase.storage.from('health').remove(paths);
+export function removeHealthImages(paths: string[]): Promise<void> {
+  return removeImages('health', paths);
 }
 
 export function healthImageUrl(path: string): Promise<string | null> {

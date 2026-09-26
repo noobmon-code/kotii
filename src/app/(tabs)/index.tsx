@@ -10,10 +10,13 @@ import {
   usePantry,
   useToggleDose,
 } from '@/data/home';
+import { useDocuments, useEquipmentList } from '@/data/house';
 import { useShoppingLists } from '@/data/market';
 import { useReceipts } from '@/data/receipts';
 import { choreStatus, describeChoreStatus } from '@/domain/chores';
 import { todayISO } from '@/domain/dates';
+import { describeDocumentStatus, documentsNeedingAttention, getDocumentKind } from '@/domain/documents';
+import { describeWarranty, getEquipmentCategory, warrantyStatus } from '@/domain/equipment';
 import { currentTimeHHMM, doseKey, dosesForDay } from '@/domain/medications';
 import { describeExpiry, expiryStatus } from '@/domain/pantry';
 import { hasHealthToday, HealthTodaySections } from '@/features/health/HealthTodaySections';
@@ -62,8 +65,10 @@ export default function TodayScreen() {
   const completeChore = useCompleteChore();
   const scanner = useReceiptScanner();
   const health = useHealthOverview(today);
+  const documents = useDocuments();
+  const equipment = useEquipmentList();
 
-  const queries = [medications, doses, chores, pantry, lists, receipts, ...health.queries];
+  const queries = [medications, doses, chores, pantry, lists, receipts, documents, equipment, ...health.queries];
   const refreshing = queries.some((q) => q.isRefetching);
   const refresh = () => queries.forEach((q) => q.refetch());
 
@@ -78,6 +83,11 @@ export default function TodayScreen() {
     return kind === 'vencido' || kind === 'vence_logo';
   });
   const drafts = (receipts.data ?? []).filter((r) => r.status === 'draft');
+  const documentsDue = documentsNeedingAttention(documents.data ?? [], today);
+  const warrantiesEnding = (equipment.data ?? [])
+    .map((item) => ({ item, status: warrantyStatus(item.warranty_until, today) }))
+    .filter(({ status }) => status.kind === 'acabando');
+  const equipmentName = (id: string | null) => (id ? equipment.data?.find((e) => e.id === id)?.name : undefined);
   const activeLists = (lists.data ?? []).filter((l) => l.pending > 0);
   // Só afirma "tudo em dia" depois que tudo carregou.
   const nothingPending =
@@ -86,6 +96,8 @@ export default function TodayScreen() {
     !dueChores.length &&
     !expiring.length &&
     !drafts.length &&
+    !documentsDue.length &&
+    !warrantiesEnding.length &&
     !hasHealthToday(health, today);
   const dateLabel = capitalizeFirst(now.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }));
   const nowTime = currentTimeHHMM(now);
@@ -121,7 +133,7 @@ export default function TodayScreen() {
           <EmptyState
             icon="check-circle-outline"
             title="Tudo em dia"
-            message="Nenhum remédio, consulta, tarefa ou validade pedindo atenção agora."
+            message="Nenhum remédio, consulta, tarefa, validade ou documento pedindo atenção agora."
           />
         </Card>
       ) : null}
@@ -161,7 +173,7 @@ export default function TodayScreen() {
                   key={chore.id}
                   left={<IconBadge icon="broom" tone={status.kind === 'atrasada' ? 'danger' : 'primary'} />}
                   title={chore.title}
-                  subtitle={[describeChoreStatus(status), assignee].filter(Boolean).join(' · ')}
+                  subtitle={[describeChoreStatus(status), equipmentName(chore.equipment_id), assignee].filter(Boolean).join(' · ')}
                   onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: chore.id } })}
                   right={
                     <CheckCircle
@@ -199,6 +211,39 @@ export default function TodayScreen() {
                 onPress={() => router.push({ pathname: '/casa', params: { aba: 'despensa' } })}
               />
             ) : null}
+          </ListCard>
+        </Section>
+      ) : null}
+
+      {documentsDue.length ? (
+        <Section title="Documentos">
+          <ListCard>
+            {documentsDue.map(({ document, status }) => (
+              <ListRow
+                key={document.id}
+                left={<IconBadge icon={getDocumentKind(document.kind).icon} tone={status.kind === 'vencido' ? 'danger' : 'warning'} />}
+                title={document.title}
+                subtitle={describeDocumentStatus(status, document.expires_on)}
+                right={<Badge label={status.kind === 'vencido' ? 'Vencido' : 'Renovar'} tone={status.kind === 'vencido' ? 'danger' : 'warning'} />}
+                onPress={() => router.push({ pathname: '/documento/[id]', params: { id: document.id } })}
+              />
+            ))}
+          </ListCard>
+        </Section>
+      ) : null}
+
+      {warrantiesEnding.length ? (
+        <Section title="Garantias acabando">
+          <ListCard>
+            {warrantiesEnding.map(({ item, status }) => (
+              <ListRow
+                key={item.id}
+                left={<IconBadge icon={getEquipmentCategory(item.category).icon} tone="warning" />}
+                title={item.name}
+                subtitle={`${describeWarranty(status)} · teste tudo e acione a assistência se precisar`}
+                onPress={() => router.push({ pathname: '/aparelho/[id]', params: { id: item.id } })}
+              />
+            ))}
           </ListCard>
         </Section>
       ) : null}

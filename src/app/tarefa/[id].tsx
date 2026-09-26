@@ -3,13 +3,14 @@ import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { useChore, useDeleteChore, useSaveChore } from '@/data/home';
+import { useEquipment } from '@/data/house';
 import { RECURRENCE_OPTIONS, type Recurrence } from '@/domain/chores';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import type { Chore } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Button, Chip, ErrorNotice, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
+import { Button, Chip, ErrorNotice, Icon, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 const INTERVAL_UNIT: Record<Exclude<Recurrence, 'none'>, string> = {
@@ -19,22 +20,24 @@ const INTERVAL_UNIT: Record<Exclude<Recurrence, 'none'>, string> = {
 };
 
 export default function ChoreScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  // `aparelho`: tarefa nova de manutenção, já ligada ao aparelho.
+  const { id, aparelho } = useLocalSearchParams<{ id: string; aparelho?: string }>();
   const isNew = id === 'nova';
   const chore = useChore(isNew ? undefined : id);
 
   if (!isNew && chore.isPending) return <Loading />;
   if (!isNew && chore.isError) return <ErrorNotice error={chore.error} />;
-  return <ChoreForm chore={isNew ? undefined : chore.data} />;
+  return <ChoreForm chore={isNew ? undefined : chore.data} equipmentId={(isNew ? aparelho : chore.data?.equipment_id) || null} />;
 }
 
-function ChoreForm({ chore }: { chore?: Chore }) {
+function ChoreForm({ chore, equipmentId }: { chore?: Chore; equipmentId: string | null }) {
+  const equipment = useEquipment(equipmentId ?? undefined);
   const members = useHousehold().data?.members ?? [];
   const save = useSaveChore();
   const remove = useDeleteChore();
   const [title, setTitle] = useState(chore?.title ?? '');
   const [notes, setNotes] = useState(chore?.notes ?? '');
-  const [recurrence, setRecurrence] = useState<Recurrence>(chore?.recurrence ?? 'weekly');
+  const [recurrence, setRecurrence] = useState<Recurrence>(chore?.recurrence ?? (equipmentId ? 'monthly' : 'weekly'));
   const [interval, setIntervalCount] = useState(String(chore?.interval_count ?? 1));
   const [due, setDue] = useState(formatBRDate(chore?.due_on ?? todayISO()));
   const [assignedTo, setAssignedTo] = useState<string | null>(chore?.assigned_to ?? null);
@@ -58,6 +61,7 @@ function ChoreForm({ chore }: { chore?: Chore }) {
           interval_count: recurrence === 'none' ? 1 : count,
           due_on: dueISO,
           assigned_to: assignedTo,
+          ...(chore ? {} : { equipment_id: equipmentId }),
         },
       },
       { onSuccess: () => router.back(), onError },
@@ -66,7 +70,13 @@ function ChoreForm({ chore }: { chore?: Chore }) {
 
   return (
     <Screen edges={[]}>
-      <Stack.Screen options={{ title: chore ? 'Editar tarefa' : 'Nova tarefa' }} />
+      <Stack.Screen options={{ title: chore ? 'Editar tarefa' : equipmentId ? 'Nova manutenção' : 'Nova tarefa' }} />
+      {equipment.data ? (
+        <Row>
+          <Icon name="tools" color="textMuted" />
+          <Text variant="muted">Manutenção de {equipment.data.name}</Text>
+        </Row>
+      ) : null}
       <TextField label="Tarefa" value={title} onChangeText={setTitle} placeholder="Ex.: Limpar filtro do ar-condicionado" autoFocus={!chore} />
 
       <View style={styles.group}>
