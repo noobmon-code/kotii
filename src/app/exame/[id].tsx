@@ -1,11 +1,9 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import {
   readHealthDocument,
-  removeHealthImages,
-  uploadHealthImages,
   useDeleteExam,
   useExam,
   usePeople,
@@ -23,9 +21,9 @@ import {
 } from '@/domain/health';
 import { FieldsModal, orNull } from '@/features/health/FieldsModal';
 import { openNewPerson, PersonChips } from '@/features/health/PersonChips';
-import { PhotoStrip } from '@/features/health/PhotoStrip';
-import { usePhotoSheet } from '@/features/health/useHealthPhotos';
-import { useHouseholdId } from '@/lib/auth';
+import { PhotoStrip } from '@/features/PhotoStrip';
+import { useDraftPhotos } from '@/features/useDraftPhotos';
+import { usePhotoSheet } from '@/features/usePhotoSheet';
 import { errorMessage } from '@/lib/supabase';
 import type { Exam, Person } from '@/lib/types';
 import { BusyOverlay } from '@/ui/BusyOverlay';
@@ -61,7 +59,6 @@ export default function ExamScreen() {
 type ResultField = 'name' | 'value' | 'unit' | 'reference';
 
 function ExamForm({ exam, people, initialPersonId }: { exam?: Exam; people: Person[]; initialPersonId: string | null }) {
-  const householdId = useHouseholdId();
   const save = useSaveExam();
   const remove = useDeleteExam();
   const [personId, setPersonId] = useState(exam?.person_id ?? initialPersonId ?? (people.length === 1 ? people[0].id : null));
@@ -72,40 +69,19 @@ function ExamForm({ exam, people, initialPersonId }: { exam?: Exam; people: Pers
   const [lab, setLab] = useState(exam?.lab ?? '');
   const [notes, setNotes] = useState(exam?.notes ?? '');
   const [results, setResults] = useState<ExamResult[]>(exam?.results ?? []);
-  const [paths, setPaths] = useState<string[]>(exam?.file_paths ?? []);
-  const [uploading, setUploading] = useState(false);
+  const files = useDraftPhotos('health', exam?.file_paths ?? []);
+  const paths = files.paths;
   const [reading, setReading] = useState(false);
   const [editing, setEditing] = useState<{ index: number | null; flag: ResultFlag | null } | null>(null);
-
-  // Fotos enviadas nesta edição e ainda não salvas: somem do storage se a
-  // pessoa sair sem salvar; as removidas só somem depois de salvar.
-  const unsaved = useRef<string[]>([]);
-  const removed = useRef<string[]>([]);
-  useEffect(
-    () => () => {
-      removeHealthImages(unsaved.current).catch(() => undefined);
-    },
-    [],
-  );
 
   const photos = usePhotoSheet({
     title: 'Fotos do exame',
     message: 'Pedido médico ou laudo, todas as páginas.',
     onPhotos: async (uris) => {
-      if (!householdId) return;
-      setUploading(true);
-      try {
-        const added = await uploadHealthImages(householdId, uris);
-        unsaved.current.push(...added);
-        const next = [...paths, ...added];
-        setPaths(next);
-        const read = await askYesNo('Fotos adicionadas', 'Ler o documento com IA e preencher os campos?', 'Ler agora', 'Depois');
-        if (read) await readWithAI(next);
-      } catch (err) {
-        notify('Não foi possível enviar as fotos', errorMessage(err));
-      } finally {
-        setUploading(false);
-      }
+      const next = await files.add(uris);
+      if (!next) return;
+      const read = await askYesNo('Fotos adicionadas', 'Ler o documento com IA e preencher os campos?', 'Ler agora', 'Depois');
+      if (read) await readWithAI(next);
     },
   });
 
@@ -184,8 +160,7 @@ function ExamForm({ exam, people, initialPersonId }: { exam?: Exam; people: Pers
       },
       {
         onSuccess: () => {
-          unsaved.current = [];
-          removeHealthImages(removed.current).catch(() => undefined);
+          files.commit();
           router.back();
         },
         onError: (err) => notify('Erro', errorMessage(err)),
@@ -198,7 +173,7 @@ function ExamForm({ exam, people, initialPersonId }: { exam?: Exam; people: Pers
   return (
     <Screen
       edges={[]}
-      footer={<Button title="Salvar exame" onPress={submit} loading={save.isPending} disabled={uploading || reading} />}>
+      footer={<Button title="Salvar exame" onPress={submit} loading={save.isPending} disabled={files.uploading || reading} />}>
       <Stack.Screen options={{ title: exam ? exam.title : 'Novo exame' }} />
       <View style={styles.group}>
         <Text variant="label">Para quem</Text>
@@ -208,18 +183,11 @@ function ExamForm({ exam, people, initialPersonId }: { exam?: Exam; people: Pers
       <View style={styles.group}>
         <Text variant="label">Fotos do pedido ou laudo</Text>
         <PhotoStrip
+          bucket="health"
           paths={paths}
-          busy={uploading}
+          busy={files.uploading}
           onAdd={paths.length < MAX_HEALTH_PHOTOS ? () => photos.open(MAX_HEALTH_PHOTOS - paths.length) : undefined}
-          onRemove={(path) => {
-            setPaths((current) => current.filter((p) => p !== path));
-            if (unsaved.current.includes(path)) {
-              unsaved.current = unsaved.current.filter((p) => p !== path);
-              removeHealthImages([path]).catch(() => undefined);
-            } else {
-              removed.current.push(path);
-            }
-          }}
+          onRemove={files.remove}
         />
         {paths.length ? (
           <Button title="Ler com IA" icon="text-recognition" variant="secondary" compact loading={reading} onPress={() => readWithAI()} />
@@ -276,10 +244,10 @@ function ExamForm({ exam, people, initialPersonId }: { exam?: Exam; people: Pers
           onPress={() =>
             confirmAction('Apagar exame', `Apagar ${exam.title} e as fotos?`, 'Apagar', () =>
               remove.mutate(
-                { id: exam.id, file_paths: [...exam.file_paths, ...unsaved.current] },
+                { id: exam.id, file_paths: [...exam.file_paths, ...files.pending()] },
                 {
                   onSuccess: () => {
-                    unsaved.current = [];
+                    files.commit();
                     router.back();
                   },
                   onError: (err) => notify('Erro', errorMessage(err)),

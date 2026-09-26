@@ -2,6 +2,7 @@ import { router } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
 import { useChores, useCompleteChore } from '@/data/home';
+import { useEquipmentList } from '@/data/house';
 import { choreStatus, describeChoreStatus, describeRecurrence, type ChoreStatus } from '@/domain/chores';
 import { todayISO } from '@/domain/dates';
 import { useHousehold } from '@/lib/auth';
@@ -32,6 +33,7 @@ export function ChoresPanel() {
   const chores = useChores();
   const complete = useCompleteChore();
   const members = useHousehold().data?.members ?? [];
+  const equipment = useEquipmentList();
 
   if (chores.isPending) return <Loading />;
   if (chores.isError) return <ErrorNotice error={chores.error} onRetry={() => chores.refetch()} />;
@@ -66,7 +68,12 @@ export function ChoresPanel() {
                       key={chore.id}
                       left={<IconBadge icon="broom" tone={group.tone} />}
                       title={chore.title}
-                      subtitle={[describeChoreStatus(status), describeRecurrence(chore.recurrence, chore.interval_count), assignee]
+                      subtitle={[
+                        describeChoreStatus(status),
+                        describeRecurrence(chore.recurrence, chore.interval_count),
+                        equipment.data?.find((e) => e.id === chore.equipment_id)?.name,
+                        assignee,
+                      ]
                         .filter(Boolean)
                         .join(' · ')}
                       onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: chore.id } })}

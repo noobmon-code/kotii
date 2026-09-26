@@ -78,7 +78,7 @@ export function useConsumePantryItem() {
 // ---------------------------------------------------------------------------
 // Tarefas
 
-const CHORE_COLUMNS = 'id, title, notes, recurrence, interval_count, due_on, assigned_to, active';
+const CHORE_COLUMNS = 'id, title, notes, recurrence, interval_count, due_on, assigned_to, active, equipment_id';
 
 export function useChores() {
   return useQuery({
@@ -99,7 +99,8 @@ export function useChore(id: string | undefined) {
   });
 }
 
-export type ChoreValues = Pick<Chore, 'title' | 'notes' | 'recurrence' | 'interval_count' | 'due_on' | 'assigned_to'>;
+export type ChoreValues = Pick<Chore, 'title' | 'notes' | 'recurrence' | 'interval_count' | 'due_on' | 'assigned_to'> &
+  Partial<Pick<Chore, 'equipment_id'>>;
 
 export function useSaveChore() {
   const queryClient = useQueryClient();
@@ -117,7 +118,10 @@ export function useCompleteChore() {
   return useMutation({
     mutationFn: async ({ id, today }: { id: string; today: string }) =>
       unwrap(await supabase.rpc('complete_chore', { p_chore_id: id, p_today: today })),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chores'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['chores'] });
+      queryClient.invalidateQueries({ queryKey: ['choreHistory'] });
+    },
   });
 }
 

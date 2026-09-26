@@ -9,7 +9,7 @@ import { dietProblem, dietShoppingSelection, type DietMeal, type DietShoppingIte
 import { parseTimes } from '@/domain/medications';
 import { guessCategory, normalizeSearch } from '@/domain/search';
 import { FieldsModal, orNull } from '@/features/health/FieldsModal';
-import { PhotoStrip } from '@/features/health/PhotoStrip';
+import { PhotoStrip } from '@/features/PhotoStrip';
 import { errorMessage } from '@/lib/supabase';
 import type { DietPlan } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -101,7 +101,7 @@ function DietPlanView({ plan }: { plan: DietPlan }) {
         ) : null}
       </Card>
 
-      {plan.file_paths.length ? <PhotoStrip paths={plan.file_paths} /> : null}
+      {plan.file_paths.length ? <PhotoStrip bucket="health" paths={plan.file_paths} /> : null}
 
       {meals.map((m, mealIndex) => (
         <Section

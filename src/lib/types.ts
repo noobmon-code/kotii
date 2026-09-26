@@ -117,6 +117,8 @@ export interface Chore {
   due_on: string;
   assigned_to: string | null;
   active: boolean;
+  /** Manutenção de um aparelho (ver Equipment). */
+  equipment_id: string | null;
 }
 
 export interface Medication {
@@ -228,5 +230,44 @@ export interface DietPlan {
   shopping_items: DietShoppingItem[];
   file_paths: string[];
   status: PlanStatus;
+  created_at: string;
+}
+
+export interface Equipment {
+  id: string;
+  name: string;
+  category: string;
+  brand: string | null;
+  model: string | null;
+  serial_number: string | null;
+  location: string | null;
+  purchased_on: string | null;
+  price: number | null;
+  store: string | null;
+  warranty_until: string | null;
+  notes: string | null;
+  file_paths: string[];
+  created_at: string;
+}
+
+export interface ChoreCompletion {
+  id: string;
+  chore_id: string;
+  completed_by: string | null;
+  completed_at: string;
+}
+
+/** Documento da família; person_id nulo = documento da casa. */
+export interface HomeDocument {
+  id: string;
+  person_id: string | null;
+  kind: string;
+  title: string;
+  number: string | null;
+  issued_on: string | null;
+  expires_on: string | null;
+  remind_days: number;
+  notes: string | null;
+  file_paths: string[];
   created_at: string;
 }

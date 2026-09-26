@@ -4,29 +4,32 @@ import { useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { healthImageUrl } from '@/data/health';
+import { signedImageUrl } from '@/data/images';
 import { Icon, IconButton, Row, Text } from '@/ui/primitives';
 import { radius, space, useColors } from '@/ui/theme';
 
 const THUMB = 84;
 
-function usePhotoUrl(path: string | null) {
+function usePhotoUrl(bucket: string, path: string | null) {
   return useQuery({
-    queryKey: ['healthImage', path],
+    queryKey: ['photoUrl', bucket, path],
     enabled: Boolean(path),
     // A URL assinada vale 10 minutos.
     staleTime: 8 * 60_000,
-    queryFn: async () => healthImageUrl(path!),
+    queryFn: async () => signedImageUrl(bucket, path!),
   });
 }
 
 /** Miniaturas das fotos de um documento; toque abre em tela cheia. */
 export function PhotoStrip({
+  bucket,
   paths,
   onAdd,
   onRemove,
   busy,
 }: {
+  /** Bucket privado onde as fotos estão ("health", "documents"). */
+  bucket: string;
   paths: string[];
   onAdd?: () => void;
   onRemove?: (path: string) => void;
@@ -38,7 +41,7 @@ export function PhotoStrip({
     <>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.strip}>
         {paths.map((path, index) => (
-          <Thumb key={path} path={path} onPress={() => setOpen(index)} />
+          <Thumb key={path} bucket={bucket} path={path} onPress={() => setOpen(index)} />
         ))}
         {onAdd ? (
           <Pressable
@@ -53,6 +56,7 @@ export function PhotoStrip({
         ) : null}
       </ScrollView>
       <Viewer
+        bucket={bucket}
         path={open === null ? null : paths[open] ?? null}
         title={open === null ? '' : `Foto ${open + 1} de ${paths.length}`}
         onClose={() => setOpen(null)}
@@ -69,9 +73,9 @@ export function PhotoStrip({
   );
 }
 
-function Thumb({ path, onPress }: { path: string; onPress: () => void }) {
+function Thumb({ bucket, path, onPress }: { bucket: string; path: string; onPress: () => void }) {
   const c = useColors();
-  const url = usePhotoUrl(path);
+  const url = usePhotoUrl(bucket, path);
   return (
     <Pressable accessibilityRole="imagebutton" accessibilityLabel="Ver foto" onPress={onPress}>
       <View style={[styles.thumb, { backgroundColor: c.surfaceAlt, borderColor: c.border }]}>
@@ -82,18 +86,20 @@ function Thumb({ path, onPress }: { path: string; onPress: () => void }) {
 }
 
 function Viewer({
+  bucket,
   path,
   title,
   onClose,
   onRemove,
 }: {
+  bucket: string;
   path: string | null;
   title: string;
   onClose: () => void;
   onRemove?: () => void;
 }) {
   const c = useColors();
-  const url = usePhotoUrl(path);
+  const url = usePhotoUrl(bucket, path);
   return (
     <Modal visible={Boolean(path)} animationType="fade" onRequestClose={onClose}>
       <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>

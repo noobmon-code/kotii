@@ -29,6 +29,16 @@ export function addDays(iso: string, days: number): string {
   return fromUTC(toUTC(iso) + days * DAY_MS);
 }
 
+/** Soma meses; dia que não existe no mês final vira o último dia (31/01 + 1 = 28/02). */
+export function addMonths(iso: string, months: number): string {
+  const [y, m, d] = iso.slice(0, 10).split('-').map(Number);
+  const total = y * 12 + (m - 1) + months;
+  const year = Math.floor(total / 12);
+  const month = (total % 12) + 1;
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return `${year}-${pad(month)}-${pad(Math.min(d, lastDay))}`;
+}
+
 /** Dias de `from` até `to` (positivo se `to` é depois). */
 export function diffDays(from: string, to: string): number {
   return Math.round((toUTC(to) - toUTC(from)) / DAY_MS);
