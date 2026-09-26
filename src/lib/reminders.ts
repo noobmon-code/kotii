@@ -58,6 +58,15 @@ export async function hasReminders(medicationId: string): Promise<boolean> {
   return (await AsyncStorage.getItem(storageKey(medicationId))) !== null;
 }
 
+// Uma operação por vez: duas sincronizações ao mesmo tempo leriam o mesmo
+// estado e agendariam os lembretes em dobro.
+let queue: Promise<unknown> = Promise.resolve();
+function serialized<T>(task: () => Promise<T>): Promise<T> {
+  const run = queue.then(task, task);
+  queue = run.catch(() => undefined);
+  return run;
+}
+
 interface StoredReminders {
   ids: string[];
   /** Plano e texto agendados; se mudarem, os lembretes são refeitos. */
@@ -77,11 +86,15 @@ async function cancelAll(ids: string[]): Promise<void> {
   await Promise.all(ids.map((id) => notifications().cancelScheduledNotificationAsync(id).catch(() => undefined)));
 }
 
-export async function disableReminders(medicationId: string): Promise<void> {
+async function disable(medicationId: string): Promise<void> {
   const stored = await readStored(medicationId);
   if (!stored) return;
   await cancelAll(stored.ids);
   await AsyncStorage.removeItem(storageKey(medicationId));
+}
+
+export function disableReminders(medicationId: string): Promise<void> {
+  return serialized(() => disable(medicationId));
 }
 
 function contentOf(medication: Medication) {
@@ -142,7 +155,7 @@ function toPlanInput(medication: Medication) {
  */
 export async function enableReminders(medication: Medication, today = todayISO()): Promise<boolean> {
   if (!remindersSupported || !(await ensurePermission())) return false;
-  await schedule(medication, today);
+  await serialized(() => schedule(medication, today));
   return true;
 }
 
@@ -153,15 +166,17 @@ export async function enableReminders(medication: Medication, today = todayISO()
  */
 export async function syncReminders(medications: Medication[], today: string): Promise<void> {
   if (!remindersSupported) return;
-  const keys = (await AsyncStorage.getAllKeys()).filter((k) => k.startsWith('reminders:'));
-  const byId = new Map(medications.map((m) => [m.id, m]));
-  for (const key of keys) {
-    const id = key.slice('reminders:'.length);
-    const medication = byId.get(id);
-    if (!medication || !medication.active || (medication.end_on && medication.end_on < today)) {
-      await disableReminders(id);
-    } else {
-      await schedule(medication, today);
+  await serialized(async () => {
+    const keys = (await AsyncStorage.getAllKeys()).filter((k) => k.startsWith('reminders:'));
+    const byId = new Map(medications.map((m) => [m.id, m]));
+    for (const key of keys) {
+      const id = key.slice('reminders:'.length);
+      const medication = byId.get(id);
+      if (!medication || !medication.active || (medication.end_on && medication.end_on < today)) {
+        await disable(id);
+      } else {
+        await schedule(medication, today);
+      }
     }
-  }
+  });
 }

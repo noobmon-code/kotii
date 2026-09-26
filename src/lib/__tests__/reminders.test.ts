@@ -101,6 +101,19 @@ describe('reminder scheduling', () => {
     });
   });
 
+  it('does not double-schedule when syncs overlap', async () => {
+    await withScheduler(async (reminders, scheduled) => {
+      await reminders.enableReminders(medication('2026-09-01', null), '2026-09-26');
+      const changed = { ...medication('2026-09-01', null), times: ['09:00'] };
+      await Promise.all([
+        reminders.syncReminders([changed], '2026-09-26'),
+        reminders.syncReminders([changed], '2026-09-26'),
+      ]);
+      // 2 do primeiro agendamento + 1 do novo horário, uma vez só.
+      expect(scheduled).toHaveLength(3);
+    });
+  });
+
   it('uses daily repeats for ongoing treatments and drops ended ones on sync', async () => {
     await withScheduler(async (reminders, scheduled, storage) => {
       await reminders.enableReminders(medication('2026-09-01', null), '2026-09-26');

@@ -8,19 +8,22 @@ import { syncReminders } from '@/lib/reminders';
 /**
  * Refaz os lembretes de remédio deste aparelho ao abrir o app e ao voltar
  * para ele: a janela de doses avulsas anda e tratamentos encerrados saem.
+ * Ao voltar, busca os remédios de novo (podem ter mudado em outro celular).
  */
 export function useReminderSync() {
-  const medications = useMedications();
-  const data = medications.data;
+  const { data, refetch } = useMedications();
+
   useEffect(() => {
-    if (!data) return;
-    const run = () => {
-      syncReminders(data, todayISO()).catch(() => undefined);
-    };
-    run();
+    if (data) syncReminders(data, todayISO()).catch(() => undefined);
+  }, [data]);
+
+  useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') run();
+      if (state !== 'active') return;
+      refetch()
+        .then((result) => (result.data ? syncReminders(result.data, todayISO()) : undefined))
+        .catch(() => undefined);
     });
     return () => subscription.remove();
-  }, [data]);
+  }, [refetch]);
 }
