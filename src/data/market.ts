@@ -139,6 +139,55 @@ export function useAddListItem(listId: string) {
   });
 }
 
+/** Nomes dos itens ainda não comprados de uma lista, para não duplicar. */
+export function usePendingItemNames(listId: string | undefined) {
+  return useQuery({
+    queryKey: ['listItems', listId, 'pending'],
+    enabled: Boolean(listId),
+    queryFn: async () =>
+      (
+        unwrap(
+          await supabase.from('shopping_list_items').select('name').eq('list_id', listId!).is('checked_at', null),
+        ) as { name: string }[]
+      ).map((row) => row.name),
+  });
+}
+
+/** Vários itens de uma vez; sem `listId`, cria uma lista de mercado nova. */
+export function useAddItemsToList() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ listId, newListName, items }: { listId?: string; newListName: string; items: NewListItem[] }) => {
+      const id =
+        listId ??
+        (
+          unwrap(
+            await supabase.from('shopping_lists').insert({ name: newListName, kind: 'mercado' }).select('id').single(),
+          ) as { id: string }
+        ).id;
+      if (items.length) {
+        unwrap(
+          await supabase.from('shopping_list_items').insert(
+            items.map((item) => ({
+              list_id: id,
+              name: item.name,
+              category: item.category,
+              product_id: item.productId,
+              quantity: item.quantity,
+              unit: item.unit,
+            })),
+          ),
+        );
+      }
+      return { id };
+    },
+    onSuccess: ({ id }) => {
+      queryClient.invalidateQueries({ queryKey: ['lists'] });
+      queryClient.invalidateQueries({ queryKey: ['listItems', id] });
+    },
+  });
+}
+
 /**
  * Põe um item na lista de mercado aberta mais recente (ou cria "Mercado").
  * Usado pela despensa: "acabou -> comprar de novo".

@@ -1,5 +1,7 @@
 // Linhas do banco como o app as recebe (ver supabase/migrations).
 
+import type { DietMeal, DietShoppingItem, ExamResult, WorkoutSession } from '@/domain/health';
+
 export type Unit = 'un' | 'kg' | 'g' | 'l' | 'ml';
 export const UNITS: Unit[] = ['un', 'kg', 'g', 'l', 'ml'];
 
@@ -119,6 +121,7 @@ export interface Chore {
 
 export interface Medication {
   id: string;
+  person_id: string | null;
   person_name: string;
   name: string;
   dosage: string | null;
@@ -135,4 +138,95 @@ export interface MedicationDose {
   scheduled_on: string;
   scheduled_time: string;
   taken_at: string;
+}
+
+export interface Person {
+  id: string;
+  name: string;
+  kind: 'pessoa' | 'pet';
+  member_user_id: string | null;
+  birth_date: string | null;
+  blood_type: string | null;
+  allergies: string | null;
+  conditions: string | null;
+  health_plan: string | null;
+  health_plan_number: string | null;
+  species: string | null;
+  notes: string | null;
+}
+
+export interface Appointment {
+  id: string;
+  person_id: string;
+  title: string;
+  professional: string | null;
+  location: string | null;
+  starts_at: string;
+  notes: string | null;
+  status: 'agendada' | 'realizada' | 'cancelada';
+}
+
+export interface Vaccine {
+  id: string;
+  person_id: string;
+  name: string;
+  dose: string | null;
+  applied_on: string | null;
+  next_dose_on: string | null;
+  location: string | null;
+  lot: string | null;
+  notes: string | null;
+}
+
+export interface Exam {
+  id: string;
+  person_id: string;
+  title: string;
+  status: 'pedido' | 'agendado' | 'realizado';
+  exam_date: string | null;
+  requested_by: string | null;
+  lab: string | null;
+  notes: string | null;
+  file_paths: string[];
+  results: ExamResult[];
+  created_at: string;
+}
+
+export type PlanStatus = 'draft' | 'active' | 'archived';
+
+export interface WorkoutPlan {
+  id: string;
+  person_id: string;
+  title: string;
+  professional: string | null;
+  valid_until: string | null;
+  notes: string | null;
+  sessions: WorkoutSession[];
+  file_paths: string[];
+  status: PlanStatus;
+  created_at: string;
+}
+
+export interface WorkoutLog {
+  id: string;
+  plan_id: string;
+  session_name: string;
+  done_on: string;
+  done_by: string | null;
+  created_at: string;
+}
+
+export interface DietPlan {
+  id: string;
+  person_id: string;
+  title: string;
+  professional: string | null;
+  valid_until: string | null;
+  notes: string | null;
+  meals: DietMeal[];
+  guidelines: string[];
+  shopping_items: DietShoppingItem[];
+  file_paths: string[];
+  status: PlanStatus;
+  created_at: string;
 }

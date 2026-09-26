@@ -45,6 +45,6 @@ Docs: https://docs.expo.dev/eas/index.md
 - Product copy and UI text are in Brazilian Portuguese; code identifiers in English.
 - `src/domain/` holds pure business rules (no React, no Supabase) with Jest tests in `src/domain/__tests__/`. Keep logic there and screens thin.
 - Database changes go in a new file under `supabase/migrations/`; every household table uses `household_id = current_household_id()` RLS. Run `npm run test:db` (temporary Postgres + Supabase stubs in `scripts/db/`) after schema changes.
-- `supabase/functions/` is Deno (excluded from tsconfig/ESLint): verify with `deno check`, `deno lint`, `deno test` inside the function folder.
+- `supabase/functions/` is Deno (excluded from tsconfig/ESLint): verify with `deno check`, `deno lint`, `deno test` inside the function folder. AI calls (Anthropic/OpenRouter) live in `_shared/vision.ts`, shared by `parse-receipt` and `parse-health`; `_shared` has its own `deno.json` for its tests.
 - Category keys live in `src/domain/categories.ts` and are mirrored in `supabase/functions/_shared/categories.ts`; a Jest test fails if they diverge.
 - Run `npm test`, `npm run typecheck` and `npm run lint` before declaring work done.
