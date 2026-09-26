@@ -2,13 +2,16 @@
 // extrai os itens com IA e cria um rascunho de nota para o usuário revisar.
 //
 // Roda com o JWT do usuário: todas as leituras e escritas passam pela RLS.
-// Secrets: ANTHROPIC_API_KEY (obrigatório), RECEIPT_MODEL (opcional).
+// Secrets: ANTHROPIC_API_KEY ou OPENROUTER_API_KEY (uma das duas);
+// RECEIPT_MODEL e RECEIPT_PROVIDER ("anthropic" | "openrouter") opcionais.
+// Com só a chave da OpenRouter, ela é usada automaticamente.
 
 import Anthropic from '@anthropic-ai/sdk';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { Buffer } from 'node:buffer';
 
-import { cleanReceipt, extractReceipt, ExtractionError, type ImageMediaType } from './extract.ts';
+import { cleanReceipt, extractWithAnthropic, ExtractionError, type ImageMediaType } from './extract.ts';
+import { extractWithOpenRouter, OPENROUTER_DEFAULT_MODEL } from './openrouter.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -33,8 +36,21 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-const anthropic = new Anthropic({ timeout: 120_000, maxRetries: 1 });
-const model = Deno.env.get('RECEIPT_MODEL') ?? 'claude-opus-5';
+const openRouterKey = Deno.env.get('OPENROUTER_API_KEY');
+const provider = Deno.env.get('RECEIPT_PROVIDER') ?? (openRouterKey ? 'openrouter' : 'anthropic');
+const model = Deno.env.get('RECEIPT_MODEL') ?? (provider === 'openrouter' ? OPENROUTER_DEFAULT_MODEL : 'claude-opus-5');
+
+// Criado só quando usado: sem ANTHROPIC_API_KEY o construtor falharia na
+// inicialização, mesmo quem usa só a OpenRouter.
+let anthropic: Anthropic | null = null;
+function anthropicClient(): Anthropic {
+  anthropic ??= new Anthropic({ timeout: 120_000, maxRetries: 1 });
+  return anthropic;
+}
+
+function readerConfigured(): boolean {
+  return provider === 'openrouter' ? Boolean(openRouterKey) : Boolean(Deno.env.get('ANTHROPIC_API_KEY'));
+}
 
 async function findOrCreateStore(
   db: SupabaseClient,
@@ -74,6 +90,10 @@ Deno.serve(async (req) => {
   const { data: householdId } = await db.rpc('current_household_id');
   if (!householdId) return json({ error: 'Crie ou entre em uma família primeiro.' }, 403);
 
+  if (!readerConfigured()) {
+    return json({ error: 'Leitura de nota não configurada: falta a chave da IA no Supabase.' }, 503);
+  }
+
   let imagePath: unknown;
   try {
     ({ image_path: imagePath } = await req.json());
@@ -100,7 +120,10 @@ Deno.serve(async (req) => {
 
   let extracted;
   try {
-    extracted = await extractReceipt({ client: anthropic, model, imageBase64, mediaType, catalog });
+    extracted =
+      provider === 'openrouter'
+        ? await extractWithOpenRouter({ apiKey: openRouterKey!, model, imageBase64, mediaType, catalog })
+        : await extractWithAnthropic({ client: anthropicClient(), model, imageBase64, mediaType, catalog });
   } catch (err) {
     if (err instanceof ExtractionError) return json({ error: err.message }, err.status);
     if (err instanceof Anthropic.RateLimitError) {

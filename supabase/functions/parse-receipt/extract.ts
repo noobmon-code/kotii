@@ -6,7 +6,7 @@ import { CATEGORY_KEYS } from '../_shared/categories.ts';
 
 export const UNITS = ['un', 'kg', 'g', 'l', 'ml'] as const;
 
-const ExtractedReceiptSchema = z.object({
+export const ExtractedReceiptSchema = z.object({
   is_receipt: z.boolean(),
   store_name: z.string().nullable(),
   cnpj: z.string().nullable(),
@@ -36,9 +36,9 @@ export interface CatalogProduct {
 
 export type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/webp';
 
-const SYSTEM = `Você lê fotos de notas fiscais de compra brasileiras (NFC-e, cupom fiscal, DANFE) e devolve os dados estruturados. Os dados alimentam um comparativo de preços entre mercados, então preço e quantidade de cada item precisam bater com o impresso.`;
+export const SYSTEM = `Você lê fotos de notas fiscais de compra brasileiras (NFC-e, cupom fiscal, DANFE) e devolve os dados estruturados. Os dados alimentam um comparativo de preços entre mercados, então preço e quantidade de cada item precisam bater com o impresso.`;
 
-function instructions(catalog: CatalogProduct[]): string {
+export function instructions(catalog: CatalogProduct[]): string {
   const catalogText = catalog.length
     ? catalog.map((p) => `${p.id} | ${p.name}`).join('\n')
     : '(nenhum ainda)';
@@ -70,7 +70,7 @@ export class ExtractionError extends Error {
 
 // Leitura interativa (o usuário espera na tela): esforço médio equilibra
 // precisão e latência. Modelo configurável por RECEIPT_MODEL.
-export async function extractReceipt(input: {
+export async function extractWithAnthropic(input: {
   client: Anthropic;
   model: string;
   imageBase64: string;

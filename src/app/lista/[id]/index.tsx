@@ -13,8 +13,10 @@ import {
   useToggleListItem,
 } from '@/data/market';
 import { getCategory } from '@/domain/categories';
+import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { formatQuantity, parseDecimal } from '@/domain/money';
 import { guessCategory, normalizeSearch } from '@/domain/search';
+import { CommonItemsPicker } from '@/features/CommonItemsPicker';
 import { useAuth } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { UNITS, type Product, type ShoppingListItem, type Unit } from '@/lib/types';
@@ -53,14 +55,31 @@ export default function ShoppingListScreen() {
   const [name, setName] = useState('');
   const [quantity, setQuantity] = useState('1');
   const [unit, setUnit] = useState<Unit>('un');
+  const [pickerOpen, setPickerOpen] = useState(false);
 
+  const productByName = useMemo(
+    () => new Map((products.data ?? []).map((p) => [normalizeSearch(p.name), p])),
+    [products.data],
+  );
+
+  // Produtos com histórico de preço primeiro; depois itens comuns da casa.
   const suggestions = useMemo(() => {
     const q = normalizeSearch(name);
-    if (q.length < 2) return [];
-    return (products.data ?? []).filter((p) => normalizeSearch(p.name).includes(q)).slice(0, 5);
-  }, [name, products.data]);
+    if (q.length < 2) return { products: [], common: [] };
+    const matched = (products.data ?? []).filter((p) => normalizeSearch(p.name).includes(q)).slice(0, 4);
+    const common = searchCommonItems(q, 6)
+      .filter((i) => !productByName.has(normalizeSearch(i.name)))
+      .slice(0, Math.max(2, 6 - matched.length));
+    return { products: matched, common };
+  }, [name, products.data, productByName]);
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
+
+  function resetForm() {
+    setName('');
+    setQuantity('1');
+    setUnit('un');
+  }
 
   function add(product?: Product) {
     const itemName = product?.name ?? name.trim();
@@ -74,28 +93,35 @@ export default function ShoppingListScreen() {
         quantity: qty > 0 ? qty : 1,
         unit,
       },
+      { onSuccess: resetForm, onError },
+    );
+  }
+
+  /** Item comum: liga ao produto da casa de mesmo nome, se existir. */
+  function addCommon(item: CommonItem, fromForm = false) {
+    const product = productByName.get(normalizeSearch(item.name));
+    const qty = fromForm ? (parseDecimal(quantity) ?? 1) : 1;
+    addItem.mutate(
       {
-        onSuccess: () => {
-          setName('');
-          setQuantity('1');
-          setUnit('un');
-        },
-        onError,
+        name: product?.name ?? item.name,
+        category: product?.category ?? item.category,
+        productId: product?.id ?? null,
+        quantity: qty > 0 ? qty : 1,
+        // A unidade do catálogo vale, a menos que o usuário tenha escolhido outra.
+        unit: fromForm && unit !== 'un' ? unit : item.unit,
       },
+      { onSuccess: fromForm ? resetForm : undefined, onError },
     );
   }
 
   const pending = (items.data ?? []).filter((i) => !i.checked_at);
   const checked = (items.data ?? []).filter((i) => i.checked_at);
-  const byCategory = useMemo(() => {
-    const groups = new Map<string, ShoppingListItem[]>();
-    for (const item of pending) {
-      const list = groups.get(item.category) ?? [];
-      list.push(item);
-      groups.set(item.category, list);
-    }
-    return [...groups.entries()].sort(([a], [b]) => getCategory(a).label.localeCompare(getCategory(b).label));
-  }, [pending]);
+  const pendingNames = new Set(pending.map((i) => normalizeSearch(i.name)));
+  const groups = new Map<string, ShoppingListItem[]>();
+  for (const item of pending) groups.set(item.category, [...(groups.get(item.category) ?? []), item]);
+  const byCategory = [...groups.entries()].sort(([a], [b]) =>
+    getCategory(a).label.localeCompare(getCategory(b).label),
+  );
 
   if (list.isPending || items.isPending) return <Loading />;
   if (list.isError) return <ErrorNotice error={list.error} onRetry={() => list.refetch()} />;
@@ -159,7 +185,7 @@ export default function ShoppingListScreen() {
             <Chip key={u} label={u} selected={unit === u} onPress={() => setUnit(u)} />
           ))}
         </Row>
-        {suggestions.map((p) => (
+        {suggestions.products.map((p) => (
           <ListRow
             key={p.id}
             left={<CategoryIcon category={p.category} size={32} />}
@@ -168,13 +194,28 @@ export default function ShoppingListScreen() {
             onPress={() => add(p)}
           />
         ))}
+        {suggestions.common.map((item) => (
+          <ListRow
+            key={item.name}
+            left={<CategoryIcon category={item.category} size={32} />}
+            title={item.name}
+            subtitle={getCategory(item.category).label}
+            onPress={() => addCommon(item, true)}
+          />
+        ))}
         {name.trim() ? (
           <Button title={`Adicionar "${name.trim()}"`} icon="plus" compact onPress={() => add()} loading={addItem.isPending} />
-        ) : null}
+        ) : (
+          <Button title="Escolher dos itens comuns" icon="playlist-plus" variant="secondary" compact onPress={() => setPickerOpen(true)} />
+        )}
       </Card>
 
       {pending.length === 0 && checked.length === 0 ? (
-        <EmptyState icon="cart-outline" title="Lista vazia" message="Itens escolhidos da sugestão entram no comparativo de preços." />
+        <EmptyState
+          icon="cart-outline"
+          title="Lista vazia"
+          message="Digite um item ou escolha do catálogo de itens comuns da casa."
+        />
       ) : null}
 
       {byCategory.map(([category, categoryItems]) => (
@@ -194,6 +235,13 @@ export default function ShoppingListScreen() {
       <Text variant="small" style={styles.center}>
         Toque e segure um item para removê-lo.
       </Text>
+      <CommonItemsPicker
+        visible={pickerOpen}
+        listKind={list.data.kind}
+        inList={pendingNames}
+        onAdd={(item) => addCommon(item)}
+        onClose={() => setPickerOpen(false)}
+      />
       <Button
         title="Arquivar lista"
         variant="danger"
