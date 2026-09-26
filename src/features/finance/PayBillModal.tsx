@@ -34,9 +34,9 @@ export function PayBillModal({ bill, onClose }: { bill: Bill; onClose: () => voi
     pay.mutate(
       { bill, amount: value, paidOn: paidISO },
       {
-        onSuccess: (updated) => {
-          // O vencimento não andou: outra pessoa da casa já tinha pago.
-          if (updated.active && updated.next_due_on === bill.next_due_on) {
+        onSuccess: ({ paid }) => {
+          // Outra pessoa da casa já tinha pago este vencimento.
+          if (!paid) {
             notify('Já estava paga', `${bill.name} com vencimento em ${formatBRDate(bill.next_due_on)} já tinha sido paga.`);
           }
           onClose();

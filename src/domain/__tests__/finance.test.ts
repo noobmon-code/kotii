@@ -77,27 +77,53 @@ describe('spending', () => {
   );
 
   it('splits receipts by category and keeps the newest first', () => {
+    // Itens somam 43,50 e a nota cobrou 60,00: categorias ajustadas na proporção.
     expect(entries.map((e) => [e.description, e.category, e.amount])).toEqual([
       ['Feira', 'mercado', 86.5],
-      ['Atacadão', 'mercado', 35.5],
-      ['Atacadão', 'casa', 8],
+      ['Atacadão', 'mercado', 48.97],
+      ['Atacadão', 'casa', 11.03],
       ['Aluguel', 'moradia', 2500],
       ['Nota fiscal', 'mercado', 40],
     ]);
   });
 
+  it('makes each receipt add up to the amount charged, discounts included', () => {
+    const discounted = buildEntries(
+      [
+        {
+          id: 'd',
+          purchased_at_date: '2026-09-01',
+          total: 90,
+          store_name: 'Mercado',
+          items: [
+            { total_price: 33.33, category: 'graos' },
+            { total_price: 33.33, category: 'limpeza' },
+            { total_price: 33.34, category: 'pet' },
+          ],
+        },
+        { id: 'z', purchased_at_date: '2026-09-02', total: 12, store_name: null, items: [{ total_price: 0, category: 'graos' }] },
+      ],
+      [],
+      [],
+    );
+    const sumOf = (id: string) => Math.round(discounted.filter((e) => e.refId === id).reduce((s, e) => s + e.amount, 0) * 100) / 100;
+    expect(sumOf('d')).toBe(90);
+    expect(discounted.filter((e) => e.refId === 'd').map((e) => e.amount).sort()).toEqual([30, 30, 30]);
+    expect(sumOf('z')).toBe(12);
+  });
+
   it('summarizes a month by category and place', () => {
     const summary = summarize(entries, monthRange('2026-09'));
-    expect(summary.total).toBe(2630);
+    expect(summary.total).toBe(2646.5);
     expect(summary.byCategory).toEqual([
       { category: 'moradia', amount: 2500 },
-      { category: 'mercado', amount: 122 },
-      { category: 'casa', amount: 8 },
+      { category: 'mercado', amount: 135.47 },
+      { category: 'casa', amount: 11.03 },
     ]);
     expect(summary.byPlace[1]).toEqual({ name: 'Feira', amount: 86.5 });
     expect(monthlyTotals(entries, ['2026-08', '2026-09'])).toEqual([
       { month: '2026-08', total: 40 },
-      { month: '2026-09', total: 2630 },
+      { month: '2026-09', total: 2646.5 },
     ]);
   });
 

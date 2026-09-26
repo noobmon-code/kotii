@@ -184,7 +184,9 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 /**
  * Tudo que saiu do bolso, como lançamentos. Uma nota vira um lançamento por
  * categoria (o arroz vai para Mercado, o detergente para Limpeza); nota sem
- * itens usa o total.
+ * itens usa o total. Quando o total cobrado difere da soma dos itens
+ * (desconto, item que a leitura perdeu), as categorias são ajustadas na
+ * proporção para somar o total.
  */
 export function buildEntries(
   receipts: ReceiptForSpending[],
@@ -203,8 +205,18 @@ export function buildEntries(
       const category = financeCategoryOfProduct(item.category);
       byCategory.set(category, (byCategory.get(category) ?? 0) + item.total_price);
     }
-    for (const [category, amount] of byCategory) {
-      entries.push({ id: `nota-${r.id}-${category}`, source: 'nota', refId: r.id, date: r.purchased_at_date, amount: round2(amount), category, description: store });
+    const itemsSum = [...byCategory.values()].reduce((sum, v) => sum + v, 0);
+    const charged = r.total && r.total > 0 ? r.total : itemsSum;
+    if (itemsSum <= 0) {
+      if (charged > 0) entries.push({ id: `nota-${r.id}`, source: 'nota', refId: r.id, date: r.purchased_at_date, amount: round2(charged), category: 'mercado', description: store });
+      continue;
+    }
+    const parts = [...byCategory].map(([category, amount]) => ({ category, amount: round2((amount * charged) / itemsSum) }));
+    // Sobra do arredondamento vai para a maior parte: a nota soma exatamente o total.
+    const largest = parts.reduce((a, b) => (b.amount > a.amount ? b : a));
+    largest.amount = round2(largest.amount + charged - parts.reduce((sum, p) => sum + p.amount, 0));
+    for (const { category, amount } of parts) {
+      entries.push({ id: `nota-${r.id}-${category}`, source: 'nota', refId: r.id, date: r.purchased_at_date, amount, category, description: store });
     }
   }
   for (const p of payments) {

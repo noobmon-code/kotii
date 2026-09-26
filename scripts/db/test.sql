@@ -593,46 +593,51 @@ declare
   ipva uuid;
   once uuid;
   b public.bills;
+  r record;
   pay uuid;
 begin
   insert into public.bills (name, category, amount, recurrence, due_day, next_due_on)
     values ('Aluguel', 'moradia', 2500, 'monthly', 31, '2026-01-31') returning id into rent;
-  b := public.pay_bill(rent, '2026-01-31', null, '2026-01-30');
+  b := (public.pay_bill(rent, '2026-01-31', null, '2026-01-30')).bill;
   assert b.next_due_on = '2026-02-28', 'day 31 clamps to the end of February';
-  b := public.pay_bill(rent, '2026-02-28', null, '2026-02-27');
+  b := (public.pay_bill(rent, '2026-02-28', null, '2026-02-27')).bill;
   assert b.next_due_on = '2026-03-31', 'and comes back to 31 in March';
   assert (select amount from public.bill_payments where bill_id = rent and due_on = '2026-02-28') = 2500,
     'fixed amount used when none is given';
 
-  -- Outra pessoa já pagou este vencimento: nada acontece.
-  b := public.pay_bill(rent, '2026-02-28', 2500, '2026-03-01');
-  assert b.next_due_on = '2026-03-31' and (select count(*) from public.bill_payments where bill_id = rent) = 2,
+  -- Outra pessoa já pagou este vencimento: nada acontece e o app é avisado.
+  select * into r from public.pay_bill(rent, '2026-02-28', 2500, '2026-03-01');
+  assert not r.paid and (r.bill).next_due_on = '2026-03-31'
+    and (select count(*) from public.bill_payments where bill_id = rent) = 2,
     'stale due date is a no-op';
+  assert (public.pay_bill(rent, '2026-03-31', null, '2026-03-30')).paid, 'a real payment reports paid';
+  b := public.undo_bill_payment((select id from public.bill_payments where bill_id = rent and due_on = '2026-03-31'));
 
   insert into public.bills (name, recurrence, due_day, next_due_on) values ('Luz', 'monthly', 10, '2026-09-10')
     returning id into power;
   begin
-    perform public.pay_bill(power, '2026-09-10', null, '2026-09-10');
+    perform (public.pay_bill(power, '2026-09-10', null, '2026-09-10')).bill;
     raise exception 'FAIL: variable bill paid without amount';
   exception when invalid_parameter_value then null;
   end;
-  b := public.pay_bill(power, '2026-09-10', 187.40, '2026-09-09');
+  b := (public.pay_bill(power, '2026-09-10', 187.40, '2026-09-09')).bill;
   assert b.next_due_on = '2026-10-10', 'monthly advance';
 
   insert into public.bills (name, category, amount, recurrence, due_day, next_due_on)
     values ('IPVA', 'transporte', 1800, 'yearly', 15, '2026-03-15') returning id into ipva;
-  b := public.pay_bill(ipva, '2026-03-15', null, '2026-03-15');
+  b := (public.pay_bill(ipva, '2026-03-15', null, '2026-03-15')).bill;
   assert b.next_due_on = '2027-03-15', 'yearly advance';
 
   insert into public.bills (name, amount, recurrence, next_due_on) values ('Conserto', 300, 'once', '2026-09-20')
     returning id into once;
-  b := public.pay_bill(once, '2026-09-20', null, '2026-09-20');
+  b := (public.pay_bill(once, '2026-09-20', null, '2026-09-20')).bill;
   assert not b.active, 'one-off bill closes when paid';
+  assert not (public.pay_bill(once, '2026-09-20', 300, '2026-09-21')).paid, 'paying a closed one-off bill again reports it';
 
   -- Vencimento editado para uma data já paga: não duplica, só anda.
   update public.bills set next_due_on = '2026-09-10' where id = power;
-  b := public.pay_bill(power, '2026-09-10', 999, '2026-09-26');
-  assert b.next_due_on = '2026-10-10', 'already paid due date advances';
+  select * into r from public.pay_bill(power, '2026-09-10', 999, '2026-09-26');
+  assert (r.bill).next_due_on = '2026-10-10' and not r.paid, 'already paid due date advances and reports it';
   assert (select amount from public.bill_payments where bill_id = power and due_on = '2026-09-10') = 187.40,
     'existing payment is kept';
 
@@ -677,7 +682,7 @@ declare
 begin
   assert (select count(*) from public.bills) = 4, 'B sees household bills';
   assert (select count(*) from public.expenses) = 1, 'B sees household expenses';
-  b := public.pay_bill(current_setting('test.bill_a')::uuid, '2026-02-28', null, '2026-02-28');
+  b := (public.pay_bill(current_setting('test.bill_a')::uuid, '2026-02-28', null, '2026-02-28')).bill;
   assert (select paid_by from public.bill_payments where due_on = '2026-02-28' and bill_id = b.id) = auth.uid(),
     'payment records who paid';
 end $$;
@@ -690,7 +695,7 @@ begin
   assert (select count(*) from public.expenses) = 0, 'C sees no foreign expenses';
 
   begin
-    perform public.pay_bill(current_setting('test.bill_a')::uuid, '2026-03-31', 1, '2026-03-31');
+    perform (public.pay_bill(current_setting('test.bill_a')::uuid, '2026-03-31', 1, '2026-03-31')).bill;
     raise exception 'FAIL: paid a foreign bill';
   exception when no_data_found then null;
   end;

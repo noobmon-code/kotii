@@ -80,7 +80,10 @@ export function useBillPayments(billId: string | undefined) {
   });
 }
 
-/** Paga o vencimento que a pessoa viu; se alguém já pagou, não paga de novo. */
+/**
+ * Paga o vencimento que a pessoa viu; se alguém já pagou, não paga de novo e
+ * devolve `paid: false`.
+ */
 export function usePayBill() {
   const invalidate = useInvalidateFinance();
   return useMutation({
@@ -92,7 +95,7 @@ export function usePayBill() {
           p_amount: input.amount,
           p_paid_on: input.paidOn,
         }),
-      ) as Bill,
+      ) as { bill: Bill; paid: boolean },
     onSuccess: invalidate,
   });
 }
