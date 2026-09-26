@@ -1,137 +1,104 @@
-import { router } from 'expo-router';
-import { useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { router, useLocalSearchParams } from 'expo-router';
+import { useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { toSchedule, useDoses, useMedications, useToggleDose } from '@/data/home';
-import { formatShortDate, todayISO } from '@/domain/dates';
-import { currentTimeHHMM, doseKey, dosesForDay } from '@/domain/medications';
-import { errorMessage } from '@/lib/supabase';
+import { useMedications } from '@/data/home';
+import { todayISO } from '@/domain/dates';
+import { CarePanel } from '@/features/health/CarePanel';
+import { HealthTodaySections } from '@/features/health/HealthTodaySections';
+import { MedicationsToday } from '@/features/health/MedicationSections';
+import { PlansPanel } from '@/features/health/PlansPanel';
+import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { syncReminders } from '@/lib/reminders';
-import { notify } from '@/ui/dialogs';
-import {
-  Button,
-  CheckCircle,
-  EmptyState,
-  ErrorNotice,
-  IconBadge,
-  ListCard,
-  ListRow,
-  Loading,
-  Screen,
-  Section,
-  Text,
-} from '@/ui/primitives';
+import { Card, EmptyState, Screen, Segmented, Text, Tile } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
-export default function HealthScreen() {
-  const today = todayISO();
-  const medications = useMedications();
-  const doses = useDoses(today);
-  const toggle = useToggleDose(today);
+type Tab = 'resumo' | 'cuidados' | 'treino' | 'dieta';
+const TABS: Tab[] = ['resumo', 'cuidados', 'treino', 'dieta'];
 
+export default function HealthScreen() {
+  // Aba e pessoa vivem na URL: atalhos de outras telas abrem direto nelas.
+  const { aba, pessoa } = useLocalSearchParams<{ aba?: string; pessoa?: string }>();
+  const tab: Tab = aba && (TABS as string[]).includes(aba) ? (aba as Tab) : 'resumo';
+  const personId = pessoa || null;
+  const today = todayISO();
+  const queryClient = useQueryClient();
+  const [refreshing, setRefreshing] = useState(false);
+  const medications = useMedications();
+
+  // Lembretes locais acompanham o que está cadastrado (em qualquer aparelho).
   useEffect(() => {
     if (medications.data) syncReminders(medications.data, today).catch(() => undefined);
   }, [medications.data, today]);
 
-  const slots = dosesForDay((medications.data ?? []).map(toSchedule), today);
-  const taken = new Set((doses.data ?? []).map((d) => doseKey(d.medication_id, d.scheduled_on, d.scheduled_time)));
-  const nowTime = currentTimeHHMM();
+  async function refresh() {
+    setRefreshing(true);
+    await queryClient.refetchQueries({ type: 'active' }).catch(() => undefined);
+    setRefreshing(false);
+  }
+
+  const setPerson = (id: string | null) => router.setParams({ pessoa: id ?? '' });
 
   return (
-    <Screen
-      refreshing={medications.isRefetching || doses.isRefetching}
-      onRefresh={() => {
-        medications.refetch();
-        doses.refetch();
-      }}>
+    <Screen refreshing={refreshing} onRefresh={refresh}>
       <Text variant="title">Saúde</Text>
-
-      {medications.isPending ? <Loading /> : null}
-      {medications.isError ? <ErrorNotice error={medications.error} onRetry={() => medications.refetch()} /> : null}
-
-      {medications.data ? (
-        <>
-          <Section title="Remédios de hoje">
-            {slots.length === 0 ? (
-              <Text variant="muted">Nenhuma dose prevista para hoje.</Text>
-            ) : (
-              <ListCard>
-                {slots.map((slot) => {
-                  const key = doseKey(slot.medicationId, slot.date, slot.time);
-                  const isTaken = taken.has(key);
-                  const late = !isTaken && slot.time < nowTime;
-                  return (
-                    <ListRow
-                      key={key}
-                      left={<IconBadge icon="pill" tone={isTaken ? 'primary' : late ? 'warning' : 'info'} />}
-                      title={`${slot.time} · ${slot.name}`}
-                      subtitle={[slot.personName, slot.dosage, late ? 'atrasada' : null].filter(Boolean).join(' · ')}
-                      dimmed={isTaken}
-                      right={
-                        <CheckCircle
-                          checked={isTaken}
-                          label={`${slot.name} das ${slot.time}`}
-                          onPress={() =>
-                            toggle.mutate(
-                              { medicationId: slot.medicationId, time: slot.time, taken: !isTaken },
-                              { onError: (err) => notify('Erro', errorMessage(err)) },
-                            )
-                          }
-                        />
-                      }
-                    />
-                  );
-                })}
-              </ListCard>
-            )}
-          </Section>
-
-          <Section
-            title="Tratamentos"
-            action={
-              <Button
-                title="Remédio"
-                icon="plus"
-                variant="ghost"
-                compact
-                onPress={() => router.push({ pathname: '/remedio/[id]', params: { id: 'novo' } })}
-              />
-            }>
-            {medications.data.length === 0 ? (
-              <EmptyState
-                icon="pill"
-                title="Nenhum remédio cadastrado"
-                message="Cadastre os remédios de cada pessoa da casa com horários. Cada celular escolhe se quer receber o lembrete."
-              />
-            ) : (
-              <ListCard>
-                {medications.data.map((m) => (
-                  <ListRow
-                    key={m.id}
-                    left={<IconBadge icon="pill" />}
-                    title={m.name}
-                    subtitle={[m.person_name, m.times.join(', '), m.end_on ? `até ${formatShortDate(m.end_on)}` : 'uso contínuo']
-                      .filter(Boolean)
-                      .join(' · ')}
-                    onPress={() => router.push({ pathname: '/remedio/[id]', params: { id: m.id } })}
-                  />
-                ))}
-              </ListCard>
-            )}
-          </Section>
-
-          <View style={styles.soon}>
-            <Text variant="small" style={styles.center}>
-              Em breve aqui: treinos e dietas digitalizados por foto, exames e vacinas.
-            </Text>
-          </View>
-        </>
-      ) : null}
+      <Segmented
+        value={tab}
+        onChange={(value) => router.setParams({ aba: value })}
+        options={[
+          { value: 'resumo', label: 'Resumo' },
+          { value: 'cuidados', label: 'Cuidados' },
+          { value: 'treino', label: 'Treino' },
+          { value: 'dieta', label: 'Dieta' },
+        ]}
+      />
+      {tab === 'resumo' ? <SummaryPanel today={today} /> : null}
+      {tab === 'cuidados' ? <CarePanel personId={personId} onPersonChange={setPerson} /> : null}
+      {tab === 'treino' ? <PlansPanel kind="workout" personId={personId} onPersonChange={setPerson} /> : null}
+      {tab === 'dieta' ? <PlansPanel kind="diet" personId={personId} onPersonChange={setPerson} /> : null}
     </Screen>
   );
 }
 
+function SummaryPanel({ today }: { today: string }) {
+  const overview = useHealthOverview(today);
+  const medications = useMedications();
+  const newItem = (pathname: '/consulta/[id]' | '/vacina/[id]' | '/exame/[id]') =>
+    router.push({ pathname, params: { id: 'nova' } });
+  const empty =
+    overview.loaded &&
+    medications.isSuccess &&
+    !medications.data.length &&
+    !overview.workoutsToday.length &&
+    !overview.upcoming.length &&
+    !overview.toConfirm.length &&
+    !overview.vaccinesDue.length &&
+    !overview.drafts.length;
+
+  return (
+    <View style={styles.gap}>
+      <View style={styles.tiles}>
+        <Tile icon="stethoscope" label="Consulta" onPress={() => newItem('/consulta/[id]')} />
+        <Tile icon="needle" label="Vacina" onPress={() => newItem('/vacina/[id]')} />
+        <Tile icon="test-tube" label="Exame" onPress={() => newItem('/exame/[id]')} />
+      </View>
+      <MedicationsToday today={today} />
+      <HealthTodaySections overview={overview} today={today} />
+      {empty ? (
+        <Card>
+          <EmptyState
+            icon="heart-pulse"
+            title="Nada pendente"
+            message="Consultas, vacinas, remédios e o treino do dia aparecem aqui. Cadastre a família e as fichas na aba Cuidados."
+          />
+        </Card>
+      ) : null}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  center: { textAlign: 'center' },
-  soon: { paddingVertical: space.lg },
+  gap: { gap: space.xl },
+  tiles: { flexDirection: 'row', gap: space.md },
 });

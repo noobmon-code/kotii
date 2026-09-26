@@ -1,5 +1,5 @@
 -- Testes do schema: isolamento entre famílias (RLS), matching, preços,
--- confirmação de nota, recorrência de tarefas e remédios.
+-- confirmação de nota, recorrência de tarefas, remédios e saúde.
 -- Rodado por scripts/db/test.sh depois de stubs.sql + migrations.
 
 \set ON_ERROR_STOP 1
@@ -288,6 +288,201 @@ begin
   assert (select count(*) from public.shopping_list_items) = 0, 'C sees no foreign list items';
   delete from public.shopping_lists where id = current_setting('test.list_a')::uuid;
   assert not found, 'C cannot delete foreign list';
+end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• saúde: pessoas da casa, vínculo com moradores e pets'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  dep uuid;
+  pet uuid;
+begin
+  assert (select count(*) from public.people where member_user_id is not null) = 2,
+    'every member has a person';
+  assert (select name from public.people where member_user_id = auth.uid()) = 'Ana', 'person named after member';
+  assert (select person_id from public.medications where name = 'Vitamina D') is null,
+    'medications created without person keep person_id null';
+
+  insert into public.people (name, birth_date, blood_type) values ('Duda', '2015-04-02', 'O+') returning id into dep;
+  insert into public.people (name, kind, species) values ('Rex', 'pet', 'cachorro') returning id into pet;
+  perform set_config('test.person_duda', dep::text, false);
+  perform set_config('test.person_rex', pet::text, false);
+
+  begin
+    insert into public.people (name) values ('duda');
+    raise exception 'FAIL: duplicate person name';
+  exception when unique_violation then null;
+  end;
+
+  begin
+    insert into public.people (name, blood_type) values ('Zé', 'Z+');
+    raise exception 'FAIL: invalid blood type';
+  exception when check_violation then null;
+  end;
+
+  begin
+    insert into public.people (name, member_user_id) values ('Intruso', '00000000-0000-0000-0000-00000000000c');
+    raise exception 'FAIL: person linked to non-member';
+  exception when foreign_key_violation then null;
+  end;
+
+  insert into public.medications (person_name, person_id, name, times) values ('Rex', pet, 'Vermífugo', array['09:00']);
+end $$;
+
+-- D entra na casa A com o nome da dependente e assume a ficha dela.
+\set user_d '00000000-0000-0000-0000-00000000000d'
+\set user_e '00000000-0000-0000-0000-00000000000e'
+reset role;
+insert into auth.users (id) values (:'user_d'), (:'user_e');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_d', false) \gset
+select public.join_household(:'invite_code', ' Duda ') \gset
+select set_config('request.jwt.claim.sub', :'user_e', false) \gset
+select public.join_household(:'invite_code', 'Rex') \gset
+do $$
+begin
+  assert (select member_user_id from public.people where id = current_setting('test.person_duda')::uuid)
+    is distinct from auth.uid(), 'E does not take over Duda';
+  assert (select name from public.people where member_user_id = auth.uid()) = 'Rex 2',
+    'name taken by pet gets a suffix';
+  assert (select count(*) from public.people) = 5, 'no duplicate person for Duda';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_d', false) \gset
+do $$
+begin
+  assert (select id from public.people where member_user_id = auth.uid()) = current_setting('test.person_duda')::uuid,
+    'joining member takes over dependent with same name';
+end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• saúde: consultas, vacinas, exames, treinos e dietas'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  duda uuid := current_setting('test.person_duda')::uuid;
+  plan uuid;
+begin
+  insert into public.appointments (person_id, title, professional, starts_at)
+    values (duda, 'Pediatra', 'Dra. Lia', '2026-10-05 14:30-03');
+  insert into public.vaccines (person_id, name, dose, applied_on, next_dose_on)
+    values (duda, 'Gripe', 'anual', '2026-04-10', '2027-04-10');
+  insert into public.exams (person_id, title, exam_date, results, file_paths)
+    values (duda, 'Hemograma', '2026-09-01',
+      '[{"name": "Hemoglobina", "value": "13,2", "unit": "g/dL", "reference": "12,0 a 16,0"}]',
+      array[current_setting('test.hh_a') || '/exame.jpg']);
+  insert into public.workout_plans (person_id, title, sessions, status)
+    values (duda, 'Treino A/B', '[{"name": "A", "weekdays": [1, 3], "exercises": []}]', 'active')
+    returning id into plan;
+  insert into public.workout_logs (plan_id, session_name, done_on) values (plan, 'A', '2026-09-28');
+  insert into public.diet_plans (person_id, title, meals, shopping_items)
+    values (duda, 'Dieta setembro', '[]', '[{"name": "Aveia", "category": "graos", "quantity": 1, "unit": "un"}]');
+  insert into storage.objects (bucket_id, name) values ('health', current_setting('test.hh_a') || '/exame.jpg');
+  perform set_config('test.plan_a', plan::text, false);
+
+  begin
+    insert into public.workout_logs (plan_id, session_name, done_on) values (plan, 'A', '2026-09-28');
+    raise exception 'FAIL: same session logged twice on a day';
+  exception when unique_violation then null;
+  end;
+
+  begin
+    insert into public.vaccines (person_id, name) values (duda, 'Sem data');
+    raise exception 'FAIL: vaccine without any date';
+  exception when check_violation then null;
+  end;
+
+  begin
+    insert into public.exams (person_id, title, results) values (duda, 'X', '{"a": 1}');
+    raise exception 'FAIL: exam results must be an array';
+  exception when check_violation then null;
+  end;
+
+  begin
+    insert into public.appointments (person_id, title, starts_at, status) values (duda, 'X', now(), 'talvez');
+    raise exception 'FAIL: invalid appointment status';
+  exception when check_violation then null;
+  end;
+
+  assert (select done_by from public.workout_logs where plan_id = plan) = auth.uid(), 'log records who trained';
+end $$;
+
+select set_config('request.jwt.claim.sub', :'user_b', false) \gset
+do $$
+begin
+  assert (select count(*) from public.appointments) = 1, 'B sees household appointments';
+  assert (select count(*) from public.vaccines) = 1, 'B sees household vaccines';
+  assert (select count(*) from public.exams) = 1, 'B sees household exams';
+  assert (select count(*) from public.workout_logs) = 1, 'B sees workout logs';
+  assert (select count(*) from public.diet_plans) = 1, 'B sees diet plans';
+  assert (select count(*) from storage.objects where bucket_id = 'health') = 1, 'B sees health files';
+end $$;
+
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+declare
+  caio uuid;
+begin
+  assert (select count(*) from public.people) = 1, 'C sees only its own person';
+  assert (select count(*) from public.appointments) = 0, 'C sees no foreign appointments';
+  assert (select count(*) from public.vaccines) = 0, 'C sees no foreign vaccines';
+  assert (select count(*) from public.exams) = 0, 'C sees no foreign exams';
+  assert (select count(*) from public.workout_plans) = 0, 'C sees no foreign workout plans';
+  assert (select count(*) from public.workout_logs) = 0, 'C sees no foreign workout logs';
+  assert (select count(*) from public.diet_plans) = 0, 'C sees no foreign diets';
+  assert (select count(*) from storage.objects where bucket_id = 'health') = 0, 'C sees no foreign health files';
+
+  select id into caio from public.people;
+  begin
+    insert into public.appointments (person_id, title, starts_at)
+      values (current_setting('test.person_duda')::uuid, 'X', now());
+    raise exception 'FAIL: appointment for foreign person';
+  exception when foreign_key_violation then null;
+  end;
+
+  begin
+    insert into public.workout_logs (plan_id, session_name) values (current_setting('test.plan_a')::uuid, 'A');
+    raise exception 'FAIL: log on foreign workout plan';
+  exception when foreign_key_violation then null;
+  end;
+
+  begin
+    insert into public.medications (person_name, person_id, name, times)
+      values ('Duda', current_setting('test.person_duda')::uuid, 'X', array['08:00']);
+    raise exception 'FAIL: medication for foreign person';
+  exception when foreign_key_violation then null;
+  end;
+
+  begin
+    insert into storage.objects (bucket_id, name) values ('health', current_setting('test.hh_a') || '/x.jpg');
+    raise exception 'FAIL: uploaded health file into foreign folder';
+  exception when insufficient_privilege then null;
+  end;
+
+  delete from public.people where id = current_setting('test.person_duda')::uuid;
+  assert not found, 'C cannot delete foreign person';
+
+  insert into public.appointments (person_id, title, starts_at) values (caio, 'Dentista', now());
+end $$;
+
+-- Pessoa removida leva consultas, vacinas, exames e planos; remédio fica sem pessoa.
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  rex uuid := current_setting('test.person_rex')::uuid;
+begin
+  insert into public.vaccines (person_id, name, applied_on) values (rex, 'Antirrábica', '2026-03-01');
+  delete from public.people where id = rex;
+  assert (select count(*) from public.vaccines where name = 'Antirrábica') = 0, 'vaccines cascade with person';
+  assert (select person_id from public.medications where name = 'Vermífugo') is null
+    and (select person_name from public.medications where name = 'Vermífugo') = 'Rex',
+    'medication keeps its name when person is removed';
+
+  delete from public.people where id = current_setting('test.person_duda')::uuid;
+  assert (select count(*) from public.appointments) = 0, 'appointments cascade';
+  assert (select count(*) from public.exams) = 0, 'exams cascade';
+  assert (select count(*) from public.workout_logs) = 0, 'workout logs cascade with plan';
+  assert (select count(*) from public.diet_plans) = 0, 'diet plans cascade';
 end $$;
 
 \echo 'OK — todos os testes do banco passaram'

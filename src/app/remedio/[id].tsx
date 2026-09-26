@@ -2,33 +2,50 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Platform, StyleSheet, Switch, View } from 'react-native';
 
+import { usePeople } from '@/data/health';
 import { useArchiveMedication, useMedication, useSaveMedication } from '@/data/home';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { parseTimes } from '@/domain/medications';
-import { useHousehold } from '@/lib/auth';
 import { disableReminders, enableReminders, hasReminders, remindersSupported } from '@/lib/reminders';
 import { errorMessage } from '@/lib/supabase';
-import type { Medication } from '@/lib/types';
+import { openNewPerson, PersonChips } from '@/features/health/PersonChips';
+import type { Medication, Person } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Button, Card, Chip, ErrorNotice, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
+import { Button, Card, ErrorNotice, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
 import { space, useColors } from '@/ui/theme';
 
 export default function MedicationScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, pessoa } = useLocalSearchParams<{ id: string; pessoa?: string }>();
   const isNew = id === 'novo';
   const medication = useMedication(isNew ? undefined : id);
+  const people = usePeople();
 
-  if (!isNew && medication.isPending) return <Loading />;
+  if ((!isNew && medication.isPending) || people.isPending) return <Loading />;
   if (!isNew && medication.isError) return <ErrorNotice error={medication.error} />;
-  return <MedicationForm medication={isNew ? undefined : medication.data} />;
+  if (people.isError) return <ErrorNotice error={people.error} onRetry={() => people.refetch()} />;
+  return <MedicationForm medication={isNew ? undefined : medication.data} people={people.data} initialPersonId={pessoa || null} />;
 }
 
-function MedicationForm({ medication }: { medication?: Medication }) {
+function MedicationForm({
+  medication,
+  people,
+  initialPersonId,
+}: {
+  medication?: Medication;
+  people: Person[];
+  initialPersonId: string | null;
+}) {
   const c = useColors();
-  const members = useHousehold().data?.members ?? [];
   const save = useSaveMedication();
   const archive = useArchiveMedication();
-  const [person, setPerson] = useState(medication?.person_name ?? '');
+  // Remédios antigos só tinham o nome: acha a pessoa pelo nome.
+  const [personId, setPersonId] = useState<string | null>(
+    medication
+      ? (medication.person_id ??
+          people.find((p) => p.name.toLowerCase() === medication.person_name.trim().toLowerCase())?.id ??
+          null)
+      : (initialPersonId ?? (people.length === 1 ? people[0].id : null)),
+  );
   const [name, setName] = useState(medication?.name ?? '');
   const [dosage, setDosage] = useState(medication?.dosage ?? '');
   const [times, setTimes] = useState(medication?.times.join(', ') ?? '08:00');
@@ -47,8 +64,9 @@ function MedicationForm({ medication }: { medication?: Medication }) {
     const parsedTimes = parseTimes(times);
     const startISO = parseBRDate(start);
     const endISO = end.trim() ? parseBRDate(end) : null;
-    if (!person.trim() || !name.trim()) {
-      notify('Confira os dados', 'Informe para quem é e o nome do remédio.');
+    const person = people.find((p) => p.id === personId);
+    if (!person || !name.trim()) {
+      notify('Confira os dados', 'Escolha para quem é e informe o nome do remédio.');
       return;
     }
     if (!parsedTimes) {
@@ -63,7 +81,8 @@ function MedicationForm({ medication }: { medication?: Medication }) {
       {
         id: medication?.id,
         values: {
-          person_name: person.trim(),
+          person_id: person.id,
+          person_name: person.name,
           name: name.trim(),
           dosage: dosage.trim() || null,
           times: parsedTimes,
@@ -95,14 +114,8 @@ function MedicationForm({ medication }: { medication?: Medication }) {
     <Screen edges={[]}>
       <Stack.Screen options={{ title: medication ? 'Editar remédio' : 'Novo remédio' }} />
       <View style={styles.group}>
-        <TextField label="Para quem" value={person} onChangeText={setPerson} placeholder="Nome" autoCapitalize="words" />
-        {members.length ? (
-          <Row style={styles.wrap}>
-            {members.map((m) => (
-              <Chip key={m.user_id} label={m.display_name} selected={person === m.display_name} onPress={() => setPerson(m.display_name)} />
-            ))}
-          </Row>
-        ) : null}
+        <Text variant="label">Para quem</Text>
+        <PersonChips people={people} value={personId} onChange={setPersonId} onAdd={openNewPerson} />
       </View>
       <TextField label="Remédio" value={name} onChangeText={setName} placeholder="Ex.: Amoxicilina 500mg" />
       <TextField label="Dose" value={dosage} onChangeText={setDosage} placeholder="Ex.: 1 comprimido" />
@@ -166,5 +179,4 @@ function MedicationForm({ medication }: { medication?: Medication }) {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   group: { gap: space.sm },
-  wrap: { flexWrap: 'wrap' },
 });

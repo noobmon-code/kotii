@@ -1,5 +1,3 @@
-import Anthropic from '@anthropic-ai/sdk';
-import { betaZodOutputFormat } from '@anthropic-ai/sdk/helpers/beta/zod';
 import { z } from 'zod';
 
 import { CATEGORY_KEYS } from '../_shared/categories.ts';
@@ -34,8 +32,6 @@ export interface CatalogProduct {
   name: string;
 }
 
-export type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/webp';
-
 export const SYSTEM = `Você lê fotos de notas fiscais de compra brasileiras (NFC-e, cupom fiscal, DANFE) e devolve os dados estruturados. Os dados alimentam um comparativo de preços entre mercados, então preço e quantidade de cada item precisam bater com o impresso.`;
 
 export function instructions(catalog: CatalogProduct[]): string {
@@ -57,56 +53,6 @@ export function instructions(catalog: CatalogProduct[]): string {
 
 Produtos já cadastrados (id | nome):
 ${catalogText}`;
-}
-
-export class ExtractionError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
-  }
-}
-
-// Leitura interativa (o usuário espera na tela): esforço médio equilibra
-// precisão e latência. Modelo configurável por RECEIPT_MODEL.
-export async function extractWithAnthropic(input: {
-  client: Anthropic;
-  model: string;
-  imageBase64: string;
-  mediaType: ImageMediaType;
-  catalog: CatalogProduct[];
-}): Promise<ExtractedReceipt> {
-  const useFallbacks = /^claude-(opus-5|fable-5)/.test(input.model);
-  const response = await input.client.beta.messages.parse({
-    model: input.model,
-    max_tokens: 16000,
-    output_config: { effort: 'medium', format: betaZodOutputFormat(ExtractedReceiptSchema) },
-    // Se o modelo recusar por engano (classificador de segurança), a API
-    // reexecuta no modelo de fallback dentro da mesma chamada.
-    ...(useFallbacks ? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as const } : {}),
-    system: SYSTEM,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: input.mediaType, data: input.imageBase64 } },
-          { type: 'text', text: instructions(input.catalog) },
-        ],
-      },
-    ],
-  });
-
-  if (response.stop_reason === 'refusal') {
-    throw new ExtractionError('Não foi possível ler esta imagem.', 422);
-  }
-  if (response.stop_reason === 'max_tokens') {
-    throw new ExtractionError('Nota longa demais para ler de uma vez.', 422);
-  }
-  if (!response.parsed_output) {
-    throw new ExtractionError('A leitura da nota veio incompleta. Tente outra foto.', 502);
-  }
-  return response.parsed_output;
 }
 
 export interface CleanItem {

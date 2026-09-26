@@ -1,15 +1,11 @@
 // Notas fiscais: leitura por foto (IA), revisão e confirmação.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FunctionsHttpError } from '@supabase/supabase-js';
-import { decode } from 'base64-arraybuffer';
-import { SaveFormat, ImageManipulator } from 'expo-image-manipulator';
-import * as ImagePicker from 'expo-image-picker';
 
-import { fitForVision } from '@/domain/image';
 import type { ConfirmItem } from '@/domain/receiptReview';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Receipt, ReceiptItem, Unit } from '@/lib/types';
+import { functionErrorMessage, pickImages, signedImageUrl, uploadImage, type ScanSource } from './images';
 
 const RECEIPT_COLUMNS =
   'id, store_id, purchased_at, total, access_key, image_path, source, status, created_at, store:stores(id, name)';
@@ -56,52 +52,11 @@ function useInvalidateReceipt(id?: string) {
 // ---------------------------------------------------------------------------
 // Leitura por foto
 
-export type ScanSource = 'camera' | 'library';
+export type { ScanSource } from './images';
 
 /** Abre câmera ou galeria; null se o usuário desistir. */
 export async function pickReceiptImage(source: ScanSource): Promise<string | null> {
-  const permission =
-    source === 'camera'
-      ? await ImagePicker.requestCameraPermissionsAsync()
-      : await ImagePicker.requestMediaLibraryPermissionsAsync();
-  if (!permission.granted) {
-    throw new Error(
-      source === 'camera'
-        ? 'Sem acesso à câmera. Libere nas configurações do aparelho.'
-        : 'Sem acesso às fotos. Libere nas configurações do aparelho.',
-    );
-  }
-  const options: ImagePicker.ImagePickerOptions = { mediaTypes: ['images'], quality: 1 };
-  const result =
-    source === 'camera' ? await ImagePicker.launchCameraAsync(options) : await ImagePicker.launchImageLibraryAsync(options);
-  if (result.canceled || !result.assets[0]) return null;
-  return result.assets[0].uri;
-}
-
-async function prepareImage(uri: string): Promise<string> {
-  const context = ImageManipulator.manipulate(uri);
-  const original = await context.renderAsync();
-  const target = fitForVision(original.width, original.height);
-  let image = original;
-  if (target.width < original.width) {
-    context.resize(target);
-    image = await context.renderAsync();
-  }
-  const saved = await image.saveAsync({ format: SaveFormat.JPEG, compress: 0.8, base64: true });
-  if (!saved.base64) throw new Error('Não foi possível processar a imagem.');
-  return saved.base64;
-}
-
-async function functionErrorMessage(error: unknown): Promise<string> {
-  if (error instanceof FunctionsHttpError) {
-    try {
-      const body = await error.context.json();
-      if (typeof body?.error === 'string') return body.error;
-    } catch {
-      // corpo não era JSON
-    }
-  }
-  return 'Não foi possível ler a nota. Tente novamente.';
+  return (await pickImages(source))[0] ?? null;
 }
 
 /**
@@ -113,19 +68,15 @@ export function useScanReceipt(householdId: string | undefined) {
   return useMutation({
     mutationFn: async (uri: string) => {
       if (!householdId) throw new Error('Família não carregada.');
-      const base64 = await prepareImage(uri);
-
-      const path = `${householdId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
-      const { error: uploadError } = await supabase.storage
-        .from('receipts')
-        .upload(path, decode(base64), { contentType: 'image/jpeg' });
-      if (uploadError) throw uploadError;
+      const path = await uploadImage('receipts', householdId, uri);
 
       const { data, error } = await supabase.functions.invoke<{ receipt_id: string; duplicate: boolean }>(
         'parse-receipt',
         { body: { image_path: path } },
       );
-      if (error || !data) throw new Error(await functionErrorMessage(error));
+      if (error || !data) {
+        throw new Error(await functionErrorMessage(error, 'Não foi possível ler a nota. Tente novamente.'));
+      }
       if (data.duplicate) await supabase.storage.from('receipts').remove([path]);
       return data;
     },
@@ -236,7 +187,6 @@ export function useDeleteReceipt(receiptId: string) {
   });
 }
 
-export async function receiptImageUrl(path: string): Promise<string | null> {
-  const { data } = await supabase.storage.from('receipts').createSignedUrl(path, 600);
-  return data?.signedUrl ?? null;
+export function receiptImageUrl(path: string): Promise<string | null> {
+  return signedImageUrl('receipts', path);
 }

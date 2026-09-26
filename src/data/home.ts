@@ -145,7 +145,7 @@ export function toSchedule(m: Medication): MedicationSchedule {
   };
 }
 
-const MEDICATION_COLUMNS = 'id, person_name, name, dosage, times, start_on, end_on, notes, active';
+const MEDICATION_COLUMNS = 'id, person_id, person_name, name, dosage, times, start_on, end_on, notes, active';
 
 export function useMedications() {
   return useQuery({
@@ -166,7 +166,10 @@ export function useMedication(id: string | undefined) {
   });
 }
 
-export type MedicationValues = Pick<Medication, 'person_name' | 'name' | 'dosage' | 'times' | 'start_on' | 'end_on' | 'notes'>;
+export type MedicationValues = Pick<
+  Medication,
+  'person_id' | 'person_name' | 'name' | 'dosage' | 'times' | 'start_on' | 'end_on' | 'notes'
+>;
 
 export function useSaveMedication() {
   const queryClient = useQueryClient();

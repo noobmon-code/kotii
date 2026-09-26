@@ -1,14 +1,12 @@
 import { router } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Modal, StyleSheet, View } from 'react-native';
 
 import { pickReceiptImage, useCreateManualReceipt, useScanReceipt, type ScanSource } from '@/data/receipts';
 import { useHouseholdId } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { ActionSheet } from '@/ui/ActionSheet';
+import { BusyOverlay } from '@/ui/BusyOverlay';
 import { notify } from '@/ui/dialogs';
-import { Loading, Text } from '@/ui/primitives';
-import { space, useColors } from '@/ui/theme';
 
 /**
  * Fluxo "foto da nota -> revisão". `open()` mostra as opções (câmera,
@@ -62,29 +60,13 @@ export function useReceiptScanner() {
           { label: 'Digitar manualmente', icon: 'pencil-outline', onPress: startManual },
         ]}
       />
-      <ScanningOverlay visible={scan.isPending} />
+      <BusyOverlay
+        visible={scan.isPending}
+        title="Lendo a nota…"
+        message="Identificando mercado, itens e preços. Notas longas podem levar até um minuto."
+      />
     </>
   );
 
   return { open: () => setSheetOpen(true), element, busy: scan.isPending || manual.isPending };
 }
-
-function ScanningOverlay({ visible }: { visible: boolean }) {
-  const c = useColors();
-  return (
-    <Modal visible={visible} transparent animationType="fade">
-      <View style={[styles.backdrop, { backgroundColor: c.background }]}>
-        <Loading />
-        <Text variant="heading">Lendo a nota…</Text>
-        <Text variant="muted" style={styles.center}>
-          Identificando mercado, itens e preços. Notas longas podem levar até um minuto.
-        </Text>
-      </View>
-    </Modal>
-  );
-}
-
-const styles = StyleSheet.create({
-  backdrop: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xxl, gap: space.md },
-  center: { textAlign: 'center' },
-});

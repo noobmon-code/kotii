@@ -16,6 +16,8 @@ import { choreStatus, describeChoreStatus } from '@/domain/chores';
 import { todayISO } from '@/domain/dates';
 import { currentTimeHHMM, doseKey, dosesForDay } from '@/domain/medications';
 import { describeExpiry, expiryStatus } from '@/domain/pantry';
+import { hasHealthToday, HealthTodaySections } from '@/features/health/HealthTodaySections';
+import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
@@ -59,8 +61,9 @@ export default function TodayScreen() {
   const toggleDose = useToggleDose(today);
   const completeChore = useCompleteChore();
   const scanner = useReceiptScanner();
+  const health = useHealthOverview(today);
 
-  const queries = [medications, doses, chores, pantry, lists, receipts];
+  const queries = [medications, doses, chores, pantry, lists, receipts, ...health.queries];
   const refreshing = queries.some((q) => q.isRefetching);
   const refresh = () => queries.forEach((q) => q.refetch());
 
@@ -82,7 +85,8 @@ export default function TodayScreen() {
     !pendingDoses.length &&
     !dueChores.length &&
     !expiring.length &&
-    !drafts.length;
+    !drafts.length &&
+    !hasHealthToday(health, today);
   const dateLabel = capitalizeFirst(now.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }));
   const nowTime = currentTimeHHMM(now);
   const members = household.data?.members ?? [];
@@ -114,7 +118,11 @@ export default function TodayScreen() {
 
       {nothingPending ? (
         <Card>
-          <EmptyState icon="check-circle-outline" title="Tudo em dia" message="Nenhum remédio, tarefa ou validade pedindo atenção agora." />
+          <EmptyState
+            icon="check-circle-outline"
+            title="Tudo em dia"
+            message="Nenhum remédio, consulta, tarefa ou validade pedindo atenção agora."
+          />
         </Card>
       ) : null}
 
@@ -139,6 +147,8 @@ export default function TodayScreen() {
           </ListCard>
         </Section>
       ) : null}
+
+      <HealthTodaySections overview={health} today={today} compact />
 
       {dueChores.length ? (
         <Section title="Tarefas">

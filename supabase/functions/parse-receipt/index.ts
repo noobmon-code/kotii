@@ -6,27 +6,15 @@
 // RECEIPT_MODEL e RECEIPT_PROVIDER ("anthropic" | "openrouter") opcionais.
 // Com só a chave da OpenRouter, ela é usada automaticamente.
 
-import Anthropic from '@anthropic-ai/sdk';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { Buffer } from 'node:buffer';
 
-import { cleanReceipt, extractWithAnthropic, ExtractionError, type ImageMediaType } from './extract.ts';
-import { extractWithOpenRouter, OPENROUTER_DEFAULT_MODEL } from './openrouter.ts';
+import { ExtractionError, extractStructured, mediaTypeOf, toVisionImage, visionConfig } from '../_shared/vision.ts';
+import { cleanReceipt, ExtractedReceiptSchema, instructions, SYSTEM } from './extract.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-};
-
-// A API aceita até 5 MB por imagem em base64 (+33%). O app já manda a foto
-// reduzida para ~3,75 MP, que fica bem abaixo disso.
-const MAX_IMAGE_BYTES = 3_700_000;
-const MEDIA_TYPES: Record<string, ImageMediaType> = {
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  png: 'image/png',
-  webp: 'image/webp',
 };
 
 function json(body: unknown, status = 200): Response {
@@ -36,21 +24,7 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-const openRouterKey = Deno.env.get('OPENROUTER_API_KEY');
-const provider = Deno.env.get('RECEIPT_PROVIDER') ?? (openRouterKey ? 'openrouter' : 'anthropic');
-const model = Deno.env.get('RECEIPT_MODEL') ?? (provider === 'openrouter' ? OPENROUTER_DEFAULT_MODEL : 'claude-opus-5');
-
-// Criado só quando usado: sem ANTHROPIC_API_KEY o construtor falharia na
-// inicialização, mesmo quem usa só a OpenRouter.
-let anthropic: Anthropic | null = null;
-function anthropicClient(): Anthropic {
-  anthropic ??= new Anthropic({ timeout: 120_000, maxRetries: 1 });
-  return anthropic;
-}
-
-function readerConfigured(): boolean {
-  return provider === 'openrouter' ? Boolean(openRouterKey) : Boolean(Deno.env.get('ANTHROPIC_API_KEY'));
-}
+const config = visionConfig(['RECEIPT']);
 
 async function findOrCreateStore(
   db: SupabaseClient,
@@ -90,7 +64,7 @@ Deno.serve(async (req) => {
   const { data: householdId } = await db.rpc('current_household_id');
   if (!householdId) return json({ error: 'Crie ou entre em uma família primeiro.' }, 403);
 
-  if (!readerConfigured()) {
+  if (!config.apiKey) {
     return json({ error: 'Leitura de nota não configurada: falta a chave da IA no Supabase.' }, 503);
   }
 
@@ -103,13 +77,11 @@ Deno.serve(async (req) => {
   if (typeof imagePath !== 'string' || !imagePath.startsWith(`${householdId}/`)) {
     return json({ error: 'Imagem inválida.' }, 400);
   }
-  const mediaType = MEDIA_TYPES[imagePath.split('.').pop()?.toLowerCase() ?? ''];
+  const mediaType = mediaTypeOf(imagePath);
   if (!mediaType) return json({ error: 'Formato de imagem não suportado.' }, 400);
 
   const { data: blob, error: downloadError } = await db.storage.from('receipts').download(imagePath);
   if (downloadError || !blob) return json({ error: 'Imagem não encontrada.' }, 404);
-  if (blob.size > MAX_IMAGE_BYTES) return json({ error: 'Imagem grande demais.' }, 413);
-  const imageBase64 = Buffer.from(await blob.arrayBuffer()).toString('base64');
 
   const { data: catalog, error: catalogError } = await db
     .from('products')
@@ -120,19 +92,17 @@ Deno.serve(async (req) => {
 
   let extracted;
   try {
-    extracted =
-      provider === 'openrouter'
-        ? await extractWithOpenRouter({ apiKey: openRouterKey!, model, imageBase64, mediaType, catalog })
-        : await extractWithAnthropic({ client: anthropicClient(), model, imageBase64, mediaType, catalog });
+    extracted = await extractStructured({
+      config,
+      schema: ExtractedReceiptSchema,
+      schemaName: 'receipt',
+      system: SYSTEM,
+      prompt: instructions(catalog),
+      images: [await toVisionImage(blob, mediaType)],
+      subject: 'a nota',
+    });
   } catch (err) {
     if (err instanceof ExtractionError) return json({ error: err.message }, err.status);
-    if (err instanceof Anthropic.RateLimitError) {
-      return json({ error: 'Muitas leituras agora. Tente de novo em instantes.' }, 429);
-    }
-    if (err instanceof Anthropic.APIError) {
-      console.error('anthropic error', err.status, err.message);
-      return json({ error: 'Falha ao ler a nota. Tente novamente.' }, 502);
-    }
     throw err;
   }
   if (!extracted.is_receipt) {
