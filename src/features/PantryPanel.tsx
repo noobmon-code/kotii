@@ -39,17 +39,22 @@ export function PantryPanel() {
   const addToMarketList = useAddToMarketList();
   const [selected, setSelected] = useState<PantryItem | null>(null);
 
+  // Primeiro a lista, depois a baixa: se a baixa falhar, o item continua na
+  // despensa e repetir não duplica (a lista ignora item já pendente).
   async function finishAndRestock(item: PantryItem) {
     try {
-      await consume.mutateAsync(item.id);
       const list = await addToMarketList.mutateAsync({
         name: item.name,
         category: item.category,
         productId: item.product_id,
-        quantity: 1,
-        unit: 'un',
+        quantity: item.quantity,
+        unit: item.unit,
       });
-      notify('Adicionado à lista', `${item.name} foi para "${list.name}".`);
+      await consume.mutateAsync(item.id);
+      notify(
+        list.added ? 'Adicionado à lista' : 'Já estava na lista',
+        list.added ? `${item.name} foi para "${list.name}".` : `${item.name} já estava pendente em "${list.name}".`,
+      );
     } catch (err) {
       notify('Erro', errorMessage(err));
     }

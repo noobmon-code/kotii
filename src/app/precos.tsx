@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 
 import { useLatestPrices, useProducts, useStores } from '@/data/market';
 import { formatBRL } from '@/domain/money';
+import { summarizePrices } from '@/domain/prices';
 import { normalizeSearch } from '@/domain/search';
 import {
   CategoryIcon,
@@ -28,11 +29,8 @@ export default function PricesScreen() {
     return (products.data ?? [])
       .filter((p) => !q || normalizeSearch(p.name).includes(q))
       .map((p) => {
-        const productPrices = (prices.data ?? []).filter((pr) => pr.product_id === p.id);
-        if (!productPrices.length) return null;
-        const cheapest = productPrices.reduce((a, b) => (b.unit_price < a.unit_price ? b : a));
-        const highest = Math.max(...productPrices.map((pr) => pr.unit_price));
-        return { product: p, cheapest, highest, stores: new Set(productPrices.map((pr) => pr.store_id)).size, storeName };
+        const summary = summarizePrices((prices.data ?? []).filter((pr) => pr.product_id === p.id));
+        return summary ? { product: p, summary, storeName } : null;
       })
       .filter((r): r is NonNullable<typeof r> => r !== null);
   }, [products.data, prices.data, stores.data, query]);
@@ -52,20 +50,24 @@ export default function PricesScreen() {
         />
       ) : (
         <ListCard>
-          {rows.map(({ product, cheapest, highest, stores: storeCount, storeName }) => (
+          {rows.map(({ product, summary: { unit, cheapest, highest, storeCount, otherUnits }, storeName }) => (
             <ListRow
               key={product.id}
               left={<CategoryIcon category={product.category} size={36} />}
               title={product.name}
-              subtitle={
+              subtitle={[
                 storeCount > 1
                   ? `Mais barato: ${storeName.get(cheapest.store_id) ?? 'mercado'} · ${storeCount} mercados`
-                  : `Só em ${storeName.get(cheapest.store_id) ?? 'um mercado'}`
-              }
+                  : `Só em ${storeName.get(cheapest.store_id) ?? 'um mercado'}`,
+                otherUnits.length ? `também vendido por ${otherUnits.join(', ')}` : null,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
               right={
                 <Text variant="label">
                   {formatBRL(cheapest.unit_price)}
                   {storeCount > 1 && highest > cheapest.unit_price ? `–${formatBRL(highest).replace('R$ ', '')}` : ''}
+                  {unit === 'un' ? '' : `/${unit}`}
                 </Text>
               }
               onPress={() => router.push({ pathname: '/produto/[id]', params: { id: product.id } })}

@@ -13,7 +13,7 @@ import {
   parseBRDate,
   toISODate,
 } from '../dates';
-import { dosesForDay, parseTimes, type MedicationSchedule } from '../medications';
+import { dosesForDay, parseTimes, planReminders, type MedicationSchedule } from '../medications';
 import { formatBRL, parseDecimal } from '../money';
 import { describeExpiry, estimateExpiry, expiryStatus } from '../pantry';
 import { guessCategory, normalizeSearch } from '../search';
@@ -163,5 +163,39 @@ describe('medications', () => {
     expect(parseTimes('22 8')).toEqual(['08:00', '22:00']);
     expect(parseTimes('25:00')).toBeNull();
     expect(parseTimes('')).toBeNull();
+  });
+});
+
+describe('planReminders', () => {
+  const med = (startOn: string, endOn: string | null, active = true) => ({ times: ['20:00', '08:00'], startOn, endOn, active });
+
+  it('repeats daily only while the whole window is inside the treatment', () => {
+    expect(planReminders(med('2026-09-01', null), '2026-09-26', '10:00')).toEqual({ kind: 'daily', times: ['08:00', '20:00'] });
+    expect(planReminders(med('2026-09-01', '2026-12-31'), '2026-09-26', '10:00').kind).toBe('daily');
+  });
+
+  it('schedules single doses before the start and near the end', () => {
+    const starting = planReminders(med('2026-09-30', null), '2026-09-26', '10:00');
+    expect(starting.kind).toBe('dates');
+    if (starting.kind !== 'dates') return;
+    expect(starting.slots[0]).toEqual({ date: '2026-09-30', time: '08:00' });
+    expect(starting.slots.at(-1)).toEqual({ date: '2026-10-03', time: '20:00' });
+
+    const ending = planReminders(med('2026-09-01', '2026-09-27'), '2026-09-26', '10:00');
+    expect(ending).toEqual({
+      kind: 'dates',
+      slots: [
+        { date: '2026-09-26', time: '20:00' },
+        { date: '2026-09-27', time: '08:00' },
+        { date: '2026-09-27', time: '20:00' },
+      ],
+    });
+  });
+
+  it('schedules nothing for ended, archived or far-future treatments', () => {
+    expect(planReminders(med('2026-09-01', '2026-09-20'), '2026-09-26', '10:00')).toEqual({ kind: 'none' });
+    expect(planReminders(med('2026-09-01', null, false), '2026-09-26', '10:00')).toEqual({ kind: 'none' });
+    expect(planReminders(med('2026-12-01', null), '2026-09-26', '10:00')).toEqual({ kind: 'none' });
+    expect(planReminders(med('2026-09-01', '2026-09-26'), '2026-09-26', '21:00')).toEqual({ kind: 'none' });
   });
 });

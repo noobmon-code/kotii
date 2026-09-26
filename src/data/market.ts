@@ -190,12 +190,13 @@ export function useAddItemsToList() {
 
 /**
  * Põe um item na lista de mercado aberta mais recente (ou cria "Mercado").
- * Usado pela despensa: "acabou -> comprar de novo".
+ * Usado pela despensa: "acabou -> comprar de novo". Se o item já está
+ * pendente na lista, não duplica (`added: false`), então repetir é seguro.
  */
 export function useAddToMarketList() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (item: NewListItem) => {
+    mutationFn: async (item: NewListItem): Promise<{ id: string; name: string; added: boolean }> => {
       const existing = unwrap(
         await supabase
           .from('shopping_lists')
@@ -210,6 +211,16 @@ export function useAddToMarketList() {
         (unwrap(
           await supabase.from('shopping_lists').insert({ name: 'Mercado', kind: 'mercado' }).select('id, name').single(),
         ) as { id: string; name: string });
+      const pending = unwrap(
+        await supabase
+          .from('shopping_list_items')
+          .select('id')
+          .eq('list_id', list.id)
+          .is('checked_at', null)
+          .ilike('name', item.name.replace(/[\\%_]/g, '\\$&'))
+          .limit(1),
+      ) as { id: string }[];
+      if (pending.length) return { ...list, added: false };
       unwrap(
         await supabase.from('shopping_list_items').insert({
           list_id: list.id,
@@ -220,7 +231,7 @@ export function useAddToMarketList() {
           unit: item.unit,
         }),
       );
-      return list;
+      return { ...list, added: true };
     },
     onSuccess: (list) => {
       queryClient.invalidateQueries({ queryKey: ['lists'] });
