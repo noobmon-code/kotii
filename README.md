@@ -12,7 +12,7 @@ iOS e Android com Expo (React Native); a versão web sai do mesmo código depois
 | **Notas fiscais** | Foto do cupom → a IA (Claude) lê mercado, CNPJ, data, chave de acesso e itens → tela de revisão → confirmar. Também dá para digitar à mão. Nota repetida (mesma chave NFC-e) é detectada. |
 | **Produtos e matching** | Cada item da nota é ligado a um produto da família ("Arroz Tio João 5kg"). A IA sugere o produto; a descrição da nota vira um apelido, então a mesma descrição é reconhecida sozinha nas próximas notas. |
 | **Onde comprar** | Para a lista de compras: melhor mercado único, ou dividir entre até 2 ou 3 mercados (você escolhe). Itens sem preço num mercado são estimados pelo nível de preço daquele mercado; itens sem preço nenhum ficam fora do total. |
-| **Listas de compras** | Compartilhadas em tempo real (duas pessoas no mercado veem as marcações uma da outra). Autocompleta com produtos que já têm preço. |
+| **Listas de compras** | Compartilhadas em tempo real (duas pessoas no mercado veem as marcações uma da outra). Catálogo com mais de 200 itens comuns da casa por categoria, para montar a lista sem digitar; ao digitar, sugere primeiro produtos que já têm preço e depois itens do catálogo. |
 | **Despensa** | Alimentada pelas notas confirmadas. Validade estimada sem digitar: aprendida do produto ou padrão da categoria. Corrigiu a validade? O produto aprende para a próxima compra. "Acabou" manda o item para a lista de mercado. |
 | **Tarefas da casa** | Recorrência diária/semanal/mensal, responsável, próxima data calculada a partir de quando foi feita. |
 | **Remédios** | Horários por pessoa (inclusive quem não tem conta, como filhos), checklist de doses do dia, lembrete por notificação escolhido em cada celular. |
@@ -34,12 +34,18 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
    npx supabase db push
    ```
 
-3. **Publique a função de leitura de nota** e cadastre a chave da Anthropic:
+3. **Publique a função de leitura de nota** e cadastre a chave de **um** dos provedores de IA:
 
    ```bash
+   # Anthropic (modelo padrão: claude-opus-5)
    npx supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
+   # ou OpenRouter (modelo padrão: google/gemma-4-31b-it:free)
+   npx supabase secrets set OPENROUTER_API_KEY=sk-or-...
+
    npx supabase functions deploy parse-receipt
    ```
+
+   Com só a chave da OpenRouter, ela é usada automaticamente. Com as duas, vale a Anthropic, a menos que `RECEIPT_PROVIDER=openrouter`. O modelo pode ser trocado com `RECEIPT_MODEL` (na OpenRouter, precisa ser um modelo que aceita imagem).
 
 4. **Login sem confirmação de e-mail (opcional, para testar rápido):** Authentication → Sign In / Providers → Email → desligue "Confirm email".
 
@@ -53,7 +59,8 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
 
 ## Custos e limites que você precisa saber
 
-- **Leitura de nota por IA:** usa `claude-opus-5` por padrão. Estimativa por nota: US$ 0,05 a 0,20 (foto + lista de produtos da família + itens lidos; cresce com o tamanho da nota e do catálogo). Dá para trocar o modelo sem mexer no código: `npx supabase secrets set RECEIPT_MODEL=...`.
+- **Leitura de nota por IA (Anthropic):** `claude-opus-5` por padrão. Estimativa por nota: US$ 0,05 a 0,20 (foto + lista de produtos da família + itens lidos; cresce com o tamanho da nota e do catálogo). Dá para trocar o modelo sem mexer no código: `npx supabase secrets set RECEIPT_MODEL=...`.
+- **Leitura de nota por IA (OpenRouter):** `google/gemma-4-31b-it:free` por padrão. Modelos `:free` não custam, mas têm limite de chamadas por minuto/dia, podem registrar o conteúdo enviado (as fotos das notas) e tendem a errar mais em cupons longos. A tela de revisão existe para corrigir; se a precisão incomodar, troque o `RECEIPT_MODEL`.
 - **Uma foto por nota:** cupom muito comprido perde nitidez numa foto só. Várias fotos por nota está no roadmap.
 - **Tempo de leitura:** 10–60 s dependendo do tamanho da nota; o app mostra uma tela de espera.
 - **Unidades:** preço é comparado na unidade da nota. Se a lista pede "3 un" de banana e as notas têm preço por kg, o comparativo usa 1 kg e avisa que a quantidade é aproximada.
