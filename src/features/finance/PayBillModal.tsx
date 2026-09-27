@@ -3,6 +3,7 @@ import { Modal, ScrollView, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { usePayBill } from '@/data/finance';
+import { parseBoleto } from '@/domain/boleto';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { parseDecimal } from '@/domain/money';
 import { errorMessage } from '@/lib/supabase';
@@ -16,9 +17,10 @@ import { MAX_WIDTH, space, useColors } from '@/ui/theme';
 export function PayBillModal({ bill, onClose }: { bill: Bill; onClose: () => void }) {
   const c = useColors();
   const pay = usePayBill();
-  const [amount, setAmount] = useState(
-    bill.amount != null ? bill.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '',
-  );
+  // O boleto guardado traz o valor deste vencimento.
+  const boletoAmount = bill.boleto ? (parseBoleto(bill.boleto, todayISO())?.amount ?? null) : null;
+  const suggested = boletoAmount ?? bill.amount;
+  const [amount, setAmount] = useState(suggested != null ? suggested.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '');
   const [paidOn, setPaidOn] = useState(formatBRDate(todayISO()));
 
   function confirm() {
@@ -65,8 +67,14 @@ export function PayBillModal({ bill, onClose }: { bill: Bill; onClose: () => voi
             onChangeText={setAmount}
             keyboardType="decimal-pad"
             placeholder="0,00"
-            autoFocus={bill.amount == null}
-            hint={bill.amount == null ? 'Esta conta varia: confira o valor no boleto.' : undefined}
+            autoFocus={suggested == null}
+            hint={
+              boletoAmount != null
+                ? 'Valor do boleto guardado na conta.'
+                : bill.amount == null
+                  ? 'Esta conta varia: confira o valor no boleto.'
+                  : undefined
+            }
           />
           <DateField label="Pago em" value={paidOn} onChangeText={setPaidOn} />
           <Button title="Confirmar pagamento" icon="check" onPress={confirm} loading={pay.isPending} />

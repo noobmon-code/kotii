@@ -1,12 +1,15 @@
+import * as Clipboard from 'expo-clipboard';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
 import { useBill, useBillPayments, useDeleteBill, useSaveBill, useUndoBillPayment } from '@/data/finance';
+import { parseBoleto, type Boleto } from '@/domain/boleto';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { BILL_RECURRENCES, FINANCE_CATEGORIES, type BillRecurrence, type FinanceCategory } from '@/domain/finance';
 import { formatBRL, parseDecimal } from '@/domain/money';
 import { billSubtitle } from '@/features/finance/BillsPanel';
+import { BoletoScanner } from '@/features/finance/BoletoScanner';
 import { PayBillModal } from '@/features/finance/PayBillModal';
 import { useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
@@ -57,10 +60,31 @@ function BillForm({ bill }: { bill?: Bill }) {
   const [due, setDue] = useState(bill ? formatBRDate(bill.next_due_on) : '');
   const [autopay, setAutopay] = useState(bill?.autopay ?? false);
   const [notes, setNotes] = useState(bill?.notes ?? '');
+  const [boleto, setBoleto] = useState(bill?.boleto ?? null);
+  const [scanning, setScanning] = useState(false);
   const [paying, setPaying] = useState(false);
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
   const dueISO = parseBRDate(due);
+  const boletoLine = boleto ? parseBoleto(boleto, todayISO())?.line : undefined;
+
+  function applyBoleto(read: Boleto) {
+    setScanning(false);
+    setBoleto(read.barcode);
+    if (!bill && !name.trim()) {
+      setName(read.suggestedName);
+      setCategory(read.suggestedCategory);
+    }
+    // Conta de valor fixo já cadastrada mantém o valor; o do boleto aparece ao pagar.
+    if (read.amount != null && !variable && !amount.trim()) setAmount(formatAmount(read.amount));
+    if (read.dueDate) setDue(formatBRDate(read.dueDate));
+  }
+
+  async function copyBoleto() {
+    if (!boletoLine) return;
+    await Clipboard.setStringAsync(boletoLine.replace(/\D/g, ''));
+    notify('Código copiado', 'Cole no app do banco, em pagar boleto.');
+  }
 
   function submit() {
     const value = variable ? null : parseDecimal(amount);
@@ -80,6 +104,7 @@ function BillForm({ bill }: { bill?: Bill }) {
           recurrence,
           autopay,
           notes: notes.trim() || null,
+          boleto,
           ...(dueChanged ? { next_due_on: dueISO, due_day: Number(dueISO.slice(8, 10)) } : {}),
         },
       },
@@ -97,6 +122,30 @@ function BillForm({ bill }: { bill?: Bill }) {
           {bill.active ? <Button title="Registrar pagamento" icon="check" onPress={() => setPaying(true)} /> : null}
         </Card>
       ) : null}
+
+      <View style={styles.group}>
+        <Text variant="label">Boleto</Text>
+        {boletoLine ? (
+          <Card style={styles.status}>
+            <Text variant="body" selectable>
+              {boletoLine}
+            </Text>
+            <Row style={styles.wrap}>
+              <Button title="Copiar código" icon="content-copy" compact onPress={copyBoleto} />
+              <Button title="Ler outro" icon="barcode-scan" variant="secondary" compact onPress={() => setScanning(true)} />
+              <Button title="Tirar" icon="close" variant="ghost" compact onPress={() => setBoleto(null)} />
+            </Row>
+          </Card>
+        ) : (
+          <>
+            <Button title="Ler boleto" icon="barcode-scan" variant="secondary" onPress={() => setScanning(true)} />
+            <Text variant="small">
+              Pela câmera ou colando a linha digitável: preenche valor e vencimento, e o código fica aqui para copiar na hora
+              de pagar.
+            </Text>
+          </>
+        )}
+      </View>
 
       <TextField label="Nome" value={name} onChangeText={setName} placeholder="Ex.: Condomínio" autoFocus={!bill} />
 
@@ -150,7 +199,7 @@ function BillForm({ bill }: { bill?: Bill }) {
         <Switch value={autopay} onValueChange={setAutopay} trackColor={{ true: c.primary }} />
       </Row>
 
-      <TextField label="Observações" value={notes} onChangeText={setNotes} multiline placeholder="Ex.: código de barras, titular, contrato" />
+      <TextField label="Observações" value={notes} onChangeText={setNotes} multiline placeholder="Ex.: titular, contrato, senha do portal" />
       <Button title="Salvar" onPress={submit} loading={save.isPending} />
 
       {bill ? <PaymentHistory bill={bill} /> : null}
@@ -193,6 +242,7 @@ function BillForm({ bill }: { bill?: Bill }) {
         </>
       ) : null}
 
+      {scanning ? <BoletoScanner onRead={applyBoleto} onClose={() => setScanning(false)} /> : null}
       {paying && bill ? <PayBillModal bill={bill} onClose={() => setPaying(false)} /> : null}
     </Screen>
   );

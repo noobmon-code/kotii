@@ -25,7 +25,7 @@ function useInvalidateFinance() {
 // ---------------------------------------------------------------------------
 // Contas
 
-const BILL_COLUMNS = 'id, name, category, amount, recurrence, due_day, next_due_on, autopay, notes, active';
+const BILL_COLUMNS = 'id, name, category, amount, recurrence, due_day, next_due_on, autopay, notes, active, boleto';
 
 export function useBills() {
   return useQuery({
