@@ -24,7 +24,7 @@ import { currentTimeHHMM, doseKey, dosesForDay } from '@/domain/medications';
 import { describeExpiry, expiryStatus } from '@/domain/pantry';
 import { BillRow } from '@/features/finance/BillsPanel';
 import { PayBillModal } from '@/features/finance/PayBillModal';
-import { hasHealthToday, HealthTodaySections } from '@/features/health/HealthTodaySections';
+import { hasHealthToday, healthTodayCount, HealthTodaySections } from '@/features/health/HealthTodaySections';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useHousehold } from '@/lib/auth';
@@ -122,7 +122,8 @@ export default function TodayScreen() {
     expiring.length +
     documentsDue.length +
     warrantiesEnding.length +
-    drafts.length;
+    drafts.length +
+    healthTodayCount(health, today);
   const summary = nothingPending
     ? 'Tudo em dia por aqui.'
     : attention > 0

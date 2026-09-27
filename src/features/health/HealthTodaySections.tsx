@@ -131,13 +131,18 @@ export function HealthTodaySections({ overview, today, compact }: { overview: Ov
 }
 
 /** Há algo de saúde para mostrar na tela Hoje? */
-export function hasHealthToday(overview: Overview, today: string): boolean {
+/** Quantos itens de saúde a tela Hoje mostra (a versão `compact` das seções). */
+export function healthTodayCount(overview: Overview, today: string): number {
   const tomorrow = addDays(today, 1);
   return (
-    overview.workoutsToday.some((w) => !w.done) ||
-    overview.upcoming.some((a) => splitTimestamp(a.starts_at).date <= tomorrow) ||
-    overview.toConfirm.length > 0 ||
-    overview.vaccinesDue.some((v) => v.status.kind === 'atrasada') ||
-    overview.drafts.length > 0
+    overview.workoutsToday.filter((w) => !w.done).length +
+    overview.upcoming.filter((a) => splitTimestamp(a.starts_at).date <= tomorrow).length +
+    overview.toConfirm.length +
+    overview.vaccinesDue.filter((v) => v.status.kind === 'atrasada').length +
+    overview.drafts.length
   );
+}
+
+export function hasHealthToday(overview: Overview, today: string): boolean {
+  return healthTodayCount(overview, today) > 0;
 }
