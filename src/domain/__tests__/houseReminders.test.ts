@@ -2,7 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 
 import { HOUSE_REMINDER_LIMIT, planHouseReminders, type HouseReminderInput } from '../houseReminders';
 
-const all = { bills: true, documents: true, chores: true };
+const all = { bills: true, documents: true, chores: true, appointments: true, vaccines: true };
 const base: HouseReminderInput = { kinds: all, bills: [], documents: [], chores: [], today: '2026-09-27', nowTime: '08:00' };
 const bill = { id: 'b1', name: 'Luz', amount: 230, next_due_on: '2026-10-05', active: true, autopay: false };
 const doc = { id: 'd1', title: 'Passaporte — Ana', expires_on: '2026-10-20', remind_days: 15 };
@@ -73,7 +73,7 @@ describe('planHouseReminders', () => {
   });
 
   it('só o que a pessoa escolheu, dentro de 30 dias e com limite', () => {
-    const kinds = { bills: false, documents: false, chores: true };
+    const kinds = { bills: false, documents: false, chores: true, appointments: false, vaccines: false };
     expect(planHouseReminders({ ...base, kinds, bills: [bill], documents: [doc], chores: [chore] })).toHaveLength(1);
     expect(planHouseReminders({ ...base, chores: [{ ...chore, due_on: '2026-11-30' }] })).toEqual([]);
     const many = Array.from({ length: 40 }, (_, i) => ({ ...chore, id: `c${i}` }));
@@ -81,5 +81,30 @@ describe('planHouseReminders', () => {
     // Com os remédios ocupando o teto do iPhone, só o que sobra.
     expect(planHouseReminders({ ...base, chores: many, limit: 3 })).toHaveLength(3);
     expect(planHouseReminders({ ...base, chores: many, limit: -5 })).toEqual([]);
+  });
+
+  it('avisa consulta na véspera às 19h e 2 horas antes', () => {
+    const appointment = { id: 'a1', title: 'Pediatra', person: 'Lia', date: '2026-10-02', time: '14:30', location: 'Clínica Sol', status: 'agendada' };
+    const plan = planHouseReminders({ ...base, appointments: [appointment, { ...appointment, id: 'a2', status: 'cancelada' }] });
+    expect(plan.map((r) => [r.key, r.date, r.time, r.title, r.body])).toEqual([
+      ['appointments:a1:2026-10-01:19:00', '2026-10-01', '19:00', 'Consulta amanhã', 'Pediatra — Lia, às 14:30 (Clínica Sol).'],
+      ['appointments:a1:2026-10-02:12:30', '2026-10-02', '12:30', 'Consulta daqui a 2 horas', 'Pediatra — Lia, às 14:30 (Clínica Sol).'],
+    ]);
+    // Consulta às 7h: só a véspera.
+    expect(planHouseReminders({ ...base, appointments: [{ ...appointment, time: '07:00' }] })).toHaveLength(1);
+  });
+
+  it('avisa vacina uma semana antes e no dia; atrasada, uma vez', () => {
+    const vaccine = { id: 'v1', name: 'Tríplice viral', dose: '2ª dose', person: 'Lia', next_dose_on: '2026-10-10' };
+    expect(planHouseReminders({ ...base, vaccines: [vaccine] }).map((r) => [r.date, r.title, r.body])).toEqual([
+      ['2026-10-03', 'Vacina na semana que vem', 'Lia: Tríplice viral (2ª dose) em 10/10/2026.'],
+      ['2026-10-10', 'Dia de vacina', 'Lia: Tríplice viral (2ª dose).'],
+    ]);
+    const late = planHouseReminders({ ...base, vaccines: [{ ...vaccine, next_dose_on: '2026-09-01' }] });
+    expect(late.map((r) => [r.date, r.title, r.overdue])).toEqual([['2026-09-27', 'Vacina atrasada', 'v1:2026-09-01']]);
+    // Depois que o aviso tocou, não se repete.
+    const warned = { ...base, vaccines: [{ ...vaccine, next_dose_on: '2026-09-01' }], overdueWarned: ['v1:2026-09-01'] };
+    expect(planHouseReminders(warned)).toEqual([]);
+    expect(planHouseReminders({ ...base, vaccines: [{ ...vaccine, next_dose_on: '2026-05-01' }] })).toEqual([]);
   });
 });

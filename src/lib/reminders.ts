@@ -1,7 +1,7 @@
 // Lembretes como notificações locais. Ficam no aparelho: cada pessoa da
 // família escolhe de quais remédios quer ser lembrada (só tocam dentro do
 // período do tratamento, ver planReminders) e quais avisos da casa quer
-// receber: contas, documentos, tarefas (ver planHouseReminders).
+// receber: contas, documentos, tarefas, consultas e vacinas (ver planHouseReminders).
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { isRunningInExpoGo } from 'expo';
@@ -235,9 +235,15 @@ export async function syncReminders(medications: Medication[], today: string): P
 
 const HOUSE_KINDS_KEY = 'house-reminders:kinds';
 const HOUSE_SCHEDULED_KEY = 'house-reminders:scheduled';
-const NO_HOUSE_KINDS: Record<HouseReminderKind, boolean> = { bills: false, documents: false, chores: false };
+const NO_HOUSE_KINDS: Record<HouseReminderKind, boolean> = {
+  bills: false,
+  documents: false,
+  chores: false,
+  appointments: false,
+  vaccines: false,
+};
 
-export type HouseReminderData = Pick<HouseReminderInput, 'bills' | 'documents' | 'chores'>;
+export type HouseReminderData = Pick<HouseReminderInput, 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines'>;
 
 /** Avisos da casa agendados: o tipo de cada id, para desligar um tipo sem refazer os outros. */
 interface StoredHouseReminders extends StoredReminders {
@@ -325,7 +331,10 @@ export async function syncHouseReminders(
     // Aviso de atraso cuja hora já passou tocou: aquela conta não avisa de novo.
     // Guarda só as que continuam atrasadas (paga, o vencimento muda).
     const now = `${today}T${nowTime}`;
-    const stillOverdue = new Set(data.bills.filter((b) => b.next_due_on < today).map(overdueKey));
+    const stillOverdue = new Set([
+      ...data.bills.filter((b) => b.next_due_on < today).map((b) => overdueKey(b.id, b.next_due_on)),
+      ...(data.vaccines ?? []).flatMap((v) => (v.next_dose_on && v.next_dose_on < today ? [overdueKey(v.id, v.next_dose_on)] : [])),
+    ]);
     const warned = [...new Set([...(previous?.warned ?? []), ...(previous?.overdue ?? []).filter((o) => o.at <= now).map((o) => o.key)])].filter(
       (key) => stillOverdue.has(key),
     );

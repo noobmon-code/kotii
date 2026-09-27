@@ -39,7 +39,7 @@ export function HouseRemindersSection() {
             <Row key={kind.key} style={styles.row}>
               <View style={styles.flex}>
                 <Text variant="label">{kind.label}</Text>
-                <Text variant="small">{kind.hint}, às 9h.</Text>
+                <Text variant="small">{kind.hint}.</Text>
               </View>
               <Switch
                 accessibilityLabel={`Avisos de ${kind.label.toLowerCase()}`}
@@ -54,7 +54,7 @@ export function HouseRemindersSection() {
       ) : (
         <Card>
           <Text variant="small">
-            Os avisos por notificação (contas, documentos, tarefas e remédios) funcionam no app instalado no celular. Na versão
+            Os avisos por notificação (contas, documentos, tarefas, consultas, vacinas e remédios) funcionam no app instalado no celular. Na versão
             web e no Expo Go do Android eles ficam desligados.
           </Text>
         </Card>

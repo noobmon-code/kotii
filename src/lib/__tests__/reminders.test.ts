@@ -187,7 +187,13 @@ describe('house reminders', () => {
   it('dois toques seguidos não gravam um por cima do outro', async () => {
     await withHouse(async (reminders) => {
       await Promise.all([reminders.setHouseReminderKind('bills', true), reminders.setHouseReminderKind('documents', true)]);
-      expect(await reminders.getHouseReminderKinds()).toEqual({ bills: true, documents: true, chores: false });
+      expect(await reminders.getHouseReminderKinds()).toEqual({
+        bills: true,
+        documents: true,
+        chores: false,
+        appointments: false,
+        vaccines: false,
+      });
     });
   });
 
