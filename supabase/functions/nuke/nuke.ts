@@ -5,24 +5,6 @@ import { z } from 'zod';
 
 import { CATEGORY_KEYS, FINANCE_CATEGORY_KEYS } from '../_shared/categories.ts';
 import type { ChatTurn } from '../_shared/chat.ts';
-import { type VisionConfig, visionConfig } from '../_shared/vision.ts';
-
-/** Modelo do Nuke na OpenRouter quando NUKE_MODEL não está definido. */
-export const NUKE_OPENROUTER_MODEL = 'deepseek/deepseek-v4.1-flash';
-
-/**
- * O Nuke só conversa, não lê imagem: com a chave da OpenRouter, usa o
- * DeepSeek V4.1 Flash, mesmo que a leitura de notas use outro provedor ou
- * modelo. NUKE_MODEL ou NUKE_PROVIDER=anthropic mudam isso; sem a chave da
- * OpenRouter, vale o de sempre (NUKE_* e depois RECEIPT_*).
- */
-export function nukeConfig(env: (name: string) => string | undefined = (name) => Deno.env.get(name)): VisionConfig {
-  const openRouterKey = env('OPENROUTER_API_KEY');
-  if (env('NUKE_MODEL')?.trim() || env('NUKE_PROVIDER')?.trim() === 'anthropic' || !openRouterKey) {
-    return visionConfig(['NUKE', 'RECEIPT'], env);
-  }
-  return { provider: 'openrouter', model: NUKE_OPENROUTER_MODEL, modelEnv: 'NUKE_MODEL', apiKey: openRouterKey };
-}
 
 export const SCREENS = [
   'hoje',

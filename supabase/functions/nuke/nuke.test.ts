@@ -1,17 +1,7 @@
 import { assertEquals } from '@std/assert';
 import { z } from 'zod';
 
-import {
-  buildSystem,
-  cleanReply,
-  isISODate,
-  MAX_TURNS,
-  NUKE_OPENROUTER_MODEL,
-  nukeConfig,
-  type NukeReplyRaw,
-  NukeReplySchema,
-  parseRequest,
-} from './nuke.ts';
+import { buildSystem, cleanReply, isISODate, MAX_TURNS, type NukeReplyRaw, NukeReplySchema, parseRequest } from './nuke.ts';
 
 const empty = {
   items: null,
@@ -94,17 +84,4 @@ Deno.test('the reply schema converts to a strict JSON schema without unsupported
   const schema = JSON.stringify(z.toJSONSchema(NukeReplySchema));
   assertEquals(schema.includes('oneOf'), false);
   assertEquals(schema.includes('"reply"'), true);
-});
-
-Deno.test('nukeConfig: with the OpenRouter key, the Nuke uses DeepSeek unless NUKE_* says otherwise', () => {
-  const envOf = (vars: Record<string, string>) => (name: string) => vars[name];
-  const both = { OPENROUTER_API_KEY: 'or', ANTHROPIC_API_KEY: 'an', RECEIPT_MODEL: 'google/gemma-4-31b-it:free' };
-
-  const deepseek = nukeConfig(envOf(both));
-  assertEquals([deepseek.provider, deepseek.model, deepseek.apiKey], ['openrouter', NUKE_OPENROUTER_MODEL, 'or']);
-  assertEquals(nukeConfig(envOf({ OPENROUTER_API_KEY: 'or' })).model, 'deepseek/deepseek-v4.1-flash');
-
-  assertEquals(nukeConfig(envOf({ ...both, NUKE_MODEL: 'x/other' })).model, 'x/other');
-  assertEquals(nukeConfig(envOf({ ...both, NUKE_PROVIDER: 'anthropic' })).provider, 'anthropic');
-  assertEquals(nukeConfig(envOf({ ANTHROPIC_API_KEY: 'an' })).provider, 'anthropic');
 });

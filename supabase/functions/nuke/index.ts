@@ -5,15 +5,14 @@
 // só guarda a chave da IA. As ações voltam como sugestão: quem executa é o
 // app, depois do toque da pessoa.
 //
-// Secrets: ANTHROPIC_API_KEY ou OPENROUTER_API_KEY. Com a chave da
-// OpenRouter, o modelo é o DeepSeek V4.1 Flash (ver nukeConfig); NUKE_MODEL
-// e NUKE_PROVIDER trocam.
+// Secrets: ANTHROPIC_API_KEY ou OPENROUTER_API_KEY; NUKE_PROVIDER e
+// NUKE_MODEL opcionais (sem eles, valem RECEIPT_PROVIDER e RECEIPT_MODEL).
 
 import { createClient } from '@supabase/supabase-js';
 
 import { chatStructured } from '../_shared/chat.ts';
-import { ExtractionError } from '../_shared/vision.ts';
-import { buildSystem, cleanReply, nukeConfig, NukeReplySchema, parseRequest } from './nuke.ts';
+import { ExtractionError, visionConfig } from '../_shared/vision.ts';
+import { buildSystem, cleanReply, NukeReplySchema, parseRequest } from './nuke.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -28,7 +27,7 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-const config = nukeConfig();
+const config = visionConfig(['NUKE', 'RECEIPT']);
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });

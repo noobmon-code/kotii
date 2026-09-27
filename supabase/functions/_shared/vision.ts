@@ -3,8 +3,9 @@
 //
 // Secrets: ANTHROPIC_API_KEY ou OPENROUTER_API_KEY (uma das duas);
 // <PREFIXO>_PROVIDER ("anthropic" | "openrouter") e <PREFIXO>_MODEL opcionais.
-// Com só a chave da OpenRouter, ela é usada automaticamente; com as duas,
-// vale a Anthropic, a menos que o provedor seja escolhido.
+// Com a chave da OpenRouter, ela é usada (modelo padrão: DeepSeek V4.1 Flash,
+// que lê texto e imagem); a Anthropic só com a chave dela sozinha ou com
+// <PREFIXO>_PROVIDER=anthropic.
 
 import Anthropic from '@anthropic-ai/sdk';
 import { betaZodOutputFormat } from '@anthropic-ai/sdk/helpers/beta/zod';
@@ -27,7 +28,7 @@ export class ExtractionError extends Error {
   }
 }
 
-export const OPENROUTER_DEFAULT_MODEL = 'google/gemma-4-31b-it:free';
+export const OPENROUTER_DEFAULT_MODEL = 'deepseek/deepseek-v4.1-flash';
 export const ANTHROPIC_DEFAULT_MODEL = 'claude-opus-5';
 const OPENROUTER_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
 
@@ -58,11 +59,7 @@ export function visionConfig(
   const anthropicKey = env('ANTHROPIC_API_KEY');
   const requested = pick('PROVIDER')?.value;
   const provider =
-    requested === 'anthropic' || requested === 'openrouter'
-      ? requested
-      : openRouterKey && !anthropicKey
-        ? 'openrouter'
-        : 'anthropic';
+    requested === 'anthropic' || requested === 'openrouter' ? requested : openRouterKey ? 'openrouter' : 'anthropic';
   const model = pick('MODEL');
   return {
     provider,

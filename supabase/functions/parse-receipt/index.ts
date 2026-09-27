@@ -4,7 +4,7 @@
 // Roda com o JWT do usuário: todas as leituras e escritas passam pela RLS.
 // Secrets: ANTHROPIC_API_KEY ou OPENROUTER_API_KEY (uma das duas);
 // RECEIPT_MODEL e RECEIPT_PROVIDER ("anthropic" | "openrouter") opcionais.
-// Com só a chave da OpenRouter, ela é usada automaticamente.
+// Com a chave da OpenRouter, ela é usada (padrão: DeepSeek V4.1 Flash).
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
