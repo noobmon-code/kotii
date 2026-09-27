@@ -58,10 +58,7 @@ export function useListItems(listId: string) {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'shopping_list_items', filter: `list_id=eq.${listId}` },
-        () => {
-          queryClient.invalidateQueries({ queryKey: ['listItems', listId] });
-          queryClient.invalidateQueries({ queryKey: ['lists'] });
-        },
+        () => onListItemsChange(queryClient, listId),
       )
       .subscribe();
     return () => {
@@ -80,6 +77,17 @@ export function useListItems(listId: string) {
           .order('created_at'),
       ) as ShoppingListItem[],
   });
+}
+
+/**
+ * Mudança na lista vinda do tempo real. Com marcações ainda na fila, buscar
+ * agora desfaria na tela as que faltam enviar: quem busca é a última
+ * marcação, e ela cobre também as mudanças puladas aqui.
+ */
+export function onListItemsChange(queryClient: QueryClient, listId: string) {
+  if (togglesQueued(queryClient)) return;
+  queryClient.invalidateQueries({ queryKey: ['listItems', listId] });
+  queryClient.invalidateQueries({ queryKey: ['lists'] });
 }
 
 function useInvalidateLists(listId?: string) {
@@ -282,6 +290,22 @@ async function toggleListItem({ id, checked, userId, at, token, nextToken }: Tog
   );
 }
 
+/** Ainda há marcação na fila, fora as `settling` que estão terminando agora? */
+function togglesQueued(queryClient: QueryClient, settling = 0) {
+  return queryClient.isMutating({ mutationKey: TOGGLE_ITEM_KEY }) > settling;
+}
+
+/**
+ * Com outras marcações na fila, buscar a lista agora desfaria na tela as que
+ * ainda não foram: só a última busca listas e itens (de todas as listas, já
+ * que o tempo real pulou as mudanças enquanto a fila andava).
+ */
+function refreshAfterToggle(queryClient: QueryClient) {
+  if (togglesQueued(queryClient, 1)) return;
+  queryClient.invalidateQueries({ queryKey: ['lists'] });
+  queryClient.invalidateQueries({ queryKey: ['listItems'] });
+}
+
 /** O que a fila precisa para rodar uma marcação restaurada depois de o app reabrir. */
 export function registerListMutations(queryClient: QueryClient) {
   queryClient.setMutationDefaults(TOGGLE_ITEM_KEY, {
@@ -290,19 +314,13 @@ export function registerListMutations(queryClient: QueryClient) {
     networkMode: 'online',
     scope: { id: 'list-items' },
     retry: 3,
-    // Fila restaurada ao reabrir o app: busca a lista só depois da última
-    // marcação, senão a tela perde as que ainda vão.
-    onSettled: () => {
-      if (queryClient.isMutating({ mutationKey: TOGGLE_ITEM_KEY }) > 1) return;
-      queryClient.invalidateQueries({ queryKey: ['lists'] });
-      queryClient.invalidateQueries({ queryKey: ['listItems'] });
-    },
+    // Fila restaurada ao reabrir o app.
+    onSettled: () => refreshAfterToggle(queryClient),
   });
 }
 
 export function useToggleListItem(listId: string) {
   const queryClient = useQueryClient();
-  const invalidate = useInvalidateLists(listId);
   return useMutation<unknown, Error, ToggleItemInput>({
     mutationKey: TOGGLE_ITEM_KEY,
     // Marca na hora; o servidor confirma depois.
@@ -321,11 +339,7 @@ export function useToggleListItem(listId: string) {
         ),
       );
     },
-    // Com outras marcações na fila, buscar a lista agora desfaria na tela as
-    // que ainda não foram: espera a última.
-    onSettled: () => {
-      if (queryClient.isMutating({ mutationKey: TOGGLE_ITEM_KEY }) <= 1) invalidate();
-    },
+    onSettled: () => refreshAfterToggle(queryClient),
   });
 }
 

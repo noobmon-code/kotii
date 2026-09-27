@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { dehydrate, hydrate, MutationObserver, onlineManager, QueryClient } from '@tanstack/react-query';
 
-import { newToggleToken, registerListMutations, TOGGLE_ITEM_KEY, type ToggleItemInput } from '../market';
+import { newToggleToken, onListItemsChange, registerListMutations, TOGGLE_ITEM_KEY, type ToggleItemInput } from '../market';
 
 const sent: { id: string; token: string; values: unknown }[] = [];
 
@@ -96,6 +96,27 @@ describe('fila de marcações da lista', () => {
     await flush();
     expect(sent.map((s) => s.id)).toEqual(['arroz', 'feijao']);
     expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([['lists'], ['listItems']]);
+  });
+
+  it('mudança em tempo real com marcação na fila espera a fila acabar', async () => {
+    onlineManager.setOnline(false);
+    const queryClient = client();
+    const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+    const keys = () => invalidate.mock.calls.map(([filters]) => filters?.queryKey);
+    tap(queryClient, { id: 'arroz', checked: true, userId: 'u1', at: '2026-09-27T10:00:00Z', token: 'a0', nextToken: 'a1' });
+    await flush();
+
+    onListItemsChange(queryClient, 'mercado');
+    expect(keys()).toEqual([]);
+
+    onlineManager.setOnline(true);
+    await queryClient.resumePausedMutations();
+    await flush();
+    expect(keys()).toEqual([['lists'], ['listItems']]);
+
+    invalidate.mockClear();
+    onListItemsChange(queryClient, 'mercado');
+    expect(keys()).toEqual([['listItems', 'mercado'], ['lists']]);
   });
 
   it('cada marcação ganha um selo novo, no formato uuid', () => {
