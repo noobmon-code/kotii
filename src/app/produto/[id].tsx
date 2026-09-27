@@ -65,7 +65,7 @@ export default function ProductScreen() {
       <Stack.Screen options={{ title: product.name }} />
       <Card style={styles.gap}>
         <Row>
-          <CategoryIcon category={product.category} size={48} />
+          <CategoryIcon category={product.category} name={product.name} size={48} />
           <Chip label={getCategory(product.category).label} icon="tag-outline" onPress={() => setPickingCategory(true)} />
         </Row>
         <TextField label="Nome do produto" value={name ?? product.name} onChangeText={setName} onSubmitEditing={() => save()} />

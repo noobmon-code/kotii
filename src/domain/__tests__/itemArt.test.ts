@@ -1,0 +1,49 @@
+import { describe, expect, it } from '@jest/globals';
+
+import { COMMON_ITEMS } from '../commonItems';
+import { ITEM_ART_KEYS, matchItemArt } from '../itemArt';
+
+describe('matchItemArt', () => {
+  it('reconhece o item pelo nome, com marca, acento e plural', () => {
+    expect(matchItemArt('Leite Italac Integral 1L')).toBe('leite');
+    expect(matchItemArt('Arroz Tio João 5kg')).toBe('arroz');
+    expect(matchItemArt('Maçãs')).toBe('maca');
+    expect(matchItemArt('LEITE UHT ITALAC INT 1L')).toBe('leite');
+    expect(matchItemArt('Ovos (dúzia)')).toBe('ovos');
+    expect(matchItemArt('Batata-doce')).toBe('batata');
+    expect(matchItemArt('Coca-Cola 2L')).toBe('refrigerante');
+  });
+
+  it('usa a palavra inteira e a regra mais específica primeiro', () => {
+    expect(matchItemArt('Macarrão espaguete')).toBe('macarrao');
+    expect(matchItemArt('Salsicha')).toBe('linguica');
+    expect(matchItemArt('Suco de laranja')).toBe('suco');
+    expect(matchItemArt('Molho de tomate')).toBe('molho_tomate');
+    expect(matchItemArt('Peito de frango')).toBe('peito_frango');
+    expect(matchItemArt('Pão de hambúrguer')).toBe('pao_frances');
+    expect(matchItemArt('Água sanitária')).toBe('agua_sanitaria');
+    expect(matchItemArt('Requeijão')).toBe('requeijao');
+    expect(matchItemArt('Couve-flor')).toBe('brocolis');
+    expect(matchItemArt('Farinha de mandioca')).toBe('farinha');
+    expect(matchItemArt('Melão')).toBe('melao');
+    expect(matchItemArt('Chá (sachê)')).toBe('cha');
+  });
+
+  it('deixa a ilustração da categoria quando a palavra engana ou não há desenho', () => {
+    expect(matchItemArt('Caldo de carne')).toBeNull();
+    expect(matchItemArt('Pão de queijo congelado')).toBeNull();
+    expect(matchItemArt('Leite condensado')).toBeNull();
+    expect(matchItemArt('Papel toalha')).toBeNull();
+    expect(matchItemArt('Filtro de café')).toBeNull();
+    expect(matchItemArt('')).toBeNull();
+  });
+
+  it('cobre boa parte do catálogo de itens comuns', () => {
+    const matched = COMMON_ITEMS.filter((item) => matchItemArt(item.name) !== null).length;
+    expect(matched / COMMON_ITEMS.length).toBeGreaterThan(0.5);
+  });
+
+  it('não repete chaves', () => {
+    expect(new Set(ITEM_ART_KEYS).size).toBe(ITEM_ART_KEYS.length);
+  });
+});

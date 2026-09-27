@@ -97,7 +97,7 @@ export default function WhereToBuyScreen() {
                     return (
                       <ListRow
                         key={a.itemKey}
-                        left={<CategoryIcon category={item.category} size={36} />}
+                        left={<CategoryIcon category={item.category} name={item.name} size={36} />}
                         title={item.name}
                         subtitle={
                           a.kind === 'estimated'
@@ -148,7 +148,7 @@ export default function WhereToBuyScreen() {
             {unpriced.map((item: ShoppingListItem) => (
               <ListRow
                 key={item.id}
-                left={<CategoryIcon category={item.category} size={36} />}
+                left={<CategoryIcon category={item.category} name={item.name} size={36} />}
                 title={item.name}
                 subtitle={item.product_id ? 'Ainda não aparece em nenhuma nota' : 'Item digitado livre: não ligado a um produto'}
               />

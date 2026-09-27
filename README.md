@@ -132,6 +132,8 @@ Na linha do Headspace: fundo creme de dia e azul profundo à noite, cartões bem
 
 As categorias de produto (lista de compras, despensa, notas, preços) têm ilustrações próprias em `assets/categories/` (WebP 144px, fundo transparente), ligadas em `src/ui/categoryArt.ts` com a cor do círculo de fundo. Categoria nova precisa de imagem nova: um teste falha se faltar.
 
+Os itens mais comprados (81, de banana a saco de lixo) têm desenho próprio em `assets/items/`, escolhido pelo nome do item com as regras de `src/domain/itemArt.ts` ("Leite Italac 1L" vira o leite, "Suco de laranja" o suco). Sem regra que case, fica o desenho da categoria.
+
 ## Estrutura
 
 ```

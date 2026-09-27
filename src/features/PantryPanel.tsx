@@ -89,7 +89,7 @@ export function PantryPanel() {
                 {rows.map(({ item, status }) => (
                   <ListRow
                     key={item.id}
-                    left={<CategoryIcon category={item.category} />}
+                    left={<CategoryIcon category={item.category} name={item.name} />}
                     title={item.name}
                     subtitle={formatQuantity(item.quantity, item.unit)}
                     right={status.kind === 'sem_validade' ? null : <Badge label={describeExpiry(status)} tone={group.tone} />}

@@ -166,7 +166,7 @@ export default function ShoppingListScreen() {
         {suggestions.products.map((p) => (
           <ListRow
             key={p.id}
-            left={<CategoryIcon category={p.category} size={32} />}
+            left={<CategoryIcon category={p.category} name={p.name} size={32} />}
             title={p.name}
             subtitle="Produto com histórico de preço"
             onPress={() => add(p)}
@@ -175,7 +175,7 @@ export default function ShoppingListScreen() {
         {suggestions.common.map((item) => (
           <ListRow
             key={item.name}
-            left={<CategoryIcon category={item.category} size={32} />}
+            left={<CategoryIcon category={item.category} name={item.name} size={32} />}
             title={item.name}
             subtitle={getCategory(item.category).label}
             onPress={() => addCommon(item, true)}

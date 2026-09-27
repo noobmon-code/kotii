@@ -82,7 +82,7 @@ function PantryForm({ item }: { item?: PantryItem }) {
     <Screen edges={[]}>
       <TextField label="Item" value={name} onChangeText={setName} placeholder="Ex.: Leite integral" autoFocus={!item} />
       <Row>
-        <CategoryIcon category={effectiveCategory} />
+        <CategoryIcon category={effectiveCategory} name={name} />
         <Chip label={getCategory(effectiveCategory).label} icon="tag-outline" onPress={() => setPickingCategory(true)} />
       </Row>
       <Row gap={space.md}>

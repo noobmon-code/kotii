@@ -245,7 +245,7 @@ export default function TodayScreen() {
               return (
                 <ListRow
                   key={item.id}
-                  left={<CategoryIcon category={item.category} />}
+                  left={<CategoryIcon category={item.category} name={item.name} />}
                   title={item.name}
                   right={<Badge label={describeExpiry(status)} tone={status.kind === 'vencido' ? 'danger' : 'warning'} />}
                   onPress={() => router.push({ pathname: '/despensa/[id]', params: { id: item.id } })}
