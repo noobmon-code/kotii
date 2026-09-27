@@ -64,6 +64,7 @@ export function Screen({
   onRefresh,
   edges = ['top'],
   footer,
+  fab,
 }: {
   children: ReactNode;
   scroll?: boolean;
@@ -71,9 +72,11 @@ export function Screen({
   onRefresh?: () => void;
   edges?: Edge[];
   footer?: ReactNode;
+  /** Tela com o botão do Nuke por cima: sobra espaço no fim para ele não cobrir nada. */
+  fab?: boolean;
 }) {
   const c = useColors();
-  const content = <View style={styles.content}>{children}</View>;
+  const content = <View style={[styles.content, fab && styles.contentWithFab]}>{children}</View>;
   return (
     <SafeAreaView edges={edges} style={[styles.screen, { backgroundColor: c.background }]}>
       {scroll ? (
@@ -530,6 +533,7 @@ const styles = StyleSheet.create({
     padding: space.lg,
     gap: space.xl,
   },
+  contentWithFab: { paddingBottom: 96 },
   footer: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: space.lg, paddingVertical: space.md },
   footerInner: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', gap: space.sm },
   card: { borderRadius: radius.lg, borderWidth: StyleSheet.hairlineWidth, padding: space.lg + 2 },

@@ -1,10 +1,15 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { Tabs } from 'expo-router/js-tabs';
+import { View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { IconName } from '@/domain/categories';
+import { NukeButton } from '@/features/nuke/NukeButton';
 import { useReminderSync } from '@/features/useReminderSync';
-import { fonts, useColors } from '@/ui/theme';
+import { fonts, space, useColors } from '@/ui/theme';
+
+// Altura da barra sem a área segura; o botão do Nuke fica logo acima dela.
+const TAB_BAR_HEIGHT = 70;
 
 const TABS: { name: string; title: string; icon: IconName }[] = [
   { name: 'index', title: 'Hoje', icon: 'white-balance-sunny' },
@@ -19,31 +24,34 @@ export default function TabsLayout() {
   const insets = useSafeAreaInsets();
   useReminderSync();
   return (
-    <Tabs
-      screenOptions={{
-        headerShown: false,
-        tabBarActiveTintColor: c.text,
-        tabBarInactiveTintColor: c.textMuted,
-        // Nunito é mais alta que a fonte do sistema: a barra ganha altura para o rótulo não cortar.
-        tabBarLabelStyle: { fontFamily: fonts.bold, fontSize: 11, lineHeight: 15 },
-        tabBarStyle: {
-          backgroundColor: c.surface,
-          borderTopColor: c.border,
-          height: 70 + insets.bottom,
-          paddingTop: 6,
-          paddingBottom: insets.bottom + 8,
-        },
-      }}>
-      {TABS.map((tab) => (
-        <Tabs.Screen
-          key={tab.name}
-          name={tab.name}
-          options={{
-            title: tab.title,
-            tabBarIcon: ({ color, size }) => <MaterialCommunityIcons name={tab.icon} color={color} size={size} />,
-          }}
-        />
-      ))}
-    </Tabs>
+    <View style={{ flex: 1 }}>
+      <Tabs
+        screenOptions={{
+          headerShown: false,
+          tabBarActiveTintColor: c.text,
+          tabBarInactiveTintColor: c.textMuted,
+          // Nunito é mais alta que a fonte do sistema: a barra ganha altura para o rótulo não cortar.
+          tabBarLabelStyle: { fontFamily: fonts.bold, fontSize: 11, lineHeight: 15 },
+          tabBarStyle: {
+            backgroundColor: c.surface,
+            borderTopColor: c.border,
+            height: TAB_BAR_HEIGHT + insets.bottom,
+            paddingTop: 6,
+            paddingBottom: insets.bottom + 8,
+          },
+        }}>
+        {TABS.map((tab) => (
+          <Tabs.Screen
+            key={tab.name}
+            name={tab.name}
+            options={{
+              title: tab.title,
+              tabBarIcon: ({ color, size }) => <MaterialCommunityIcons name={tab.icon} color={color} size={size} />,
+            }}
+          />
+        ))}
+      </Tabs>
+      <NukeButton style={{ position: 'absolute', right: space.lg, bottom: TAB_BAR_HEIGHT + insets.bottom + space.md }} />
+    </View>
   );
 }

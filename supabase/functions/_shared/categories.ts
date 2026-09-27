@@ -30,3 +30,21 @@ export const CATEGORY_KEYS = [
 ] as const;
 
 export type CategoryKey = (typeof CATEGORY_KEYS)[number];
+
+// Categorias do financeiro (espelho de src/domain/finance.ts e do domínio
+// finance_category no banco); o mesmo teste confere.
+export const FINANCE_CATEGORY_KEYS = [
+  'mercado',
+  'casa',
+  'moradia',
+  'contas',
+  'assinaturas',
+  'saude',
+  'educacao',
+  'transporte',
+  'pet',
+  'lazer',
+  'outros',
+] as const;
+
+export type FinanceCategoryKey = (typeof FINANCE_CATEGORY_KEYS)[number];

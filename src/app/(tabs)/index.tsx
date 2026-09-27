@@ -135,7 +135,7 @@ export default function TodayScreen() {
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
   return (
-    <Screen refreshing={refreshing} onRefresh={refresh}>
+    <Screen fab refreshing={refreshing} onRefresh={refresh}>
       <View style={[styles.hero, { backgroundColor: hero.bg }]}>
         <View style={styles.heroText}>
           <Text variant="small">{dateLabel}</Text>

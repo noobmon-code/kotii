@@ -33,7 +33,7 @@ export default function HealthScreen() {
   const setPerson = (id: string | null) => router.setParams({ pessoa: id ?? '' });
 
   return (
-    <Screen refreshing={refreshing} onRefresh={refresh}>
+    <Screen fab refreshing={refreshing} onRefresh={refresh}>
       <PageTitle title="Saúde" subtitle="Cuidados, treino e dieta da família" tint="pink" />
       <Segmented
         value={tab}

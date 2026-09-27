@@ -25,7 +25,7 @@ export default function HouseScreen() {
   const active = { compras: lists, despensa: pantry, tarefas: chores, aparelhos: equipment }[tab];
 
   return (
-    <Screen refreshing={active.isRefetching} onRefresh={() => active.refetch()}>
+    <Screen fab refreshing={active.isRefetching} onRefresh={() => active.refetch()}>
       <PageTitle title="Casa" subtitle="Compras, despensa, tarefas e aparelhos" tint="blue" />
       <Segmented
         value={tab}

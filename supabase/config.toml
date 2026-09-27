@@ -3,3 +3,6 @@ project_id = "nooky"
 
 [functions.parse-receipt]
 verify_jwt = true
+
+[functions.nuke]
+verify_jwt = true

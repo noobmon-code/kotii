@@ -21,7 +21,7 @@ export default function FamilyScreen() {
   }
 
   return (
-    <Screen>
+    <Screen fab>
       <PageTitle title={house.name} subtitle="Família" tint="purple" />
 
       <Card style={styles.invite}>
