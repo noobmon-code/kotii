@@ -2,7 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 import glyphs from '@expo/vector-icons/build/vendor/react-native-vector-icons/glyphmaps/MaterialCommunityIcons.json';
 
 import { CATEGORY_KEYS } from '../../../supabase/functions/_shared/categories';
-import { CATEGORIES, getCategory } from '../categories';
+import { CATEGORIES, compareByAisle, getCategory } from '../categories';
 import { choreStatus, describeChoreStatus, describeRecurrence } from '../chores';
 import {
   addDays,
@@ -30,6 +30,16 @@ describe('categories', () => {
   it('falls back to "outros"', () => {
     expect(getCategory('nao-existe').key).toBe('outros');
     expect(getCategory(null).key).toBe('outros');
+  });
+
+  it('orders the shopping list by aisle, then by name', () => {
+    const items = [
+      { category: 'limpeza', name: 'Detergente' },
+      { category: 'nao-existe', name: 'Abajur' },
+      { category: 'hortifruti', name: 'Maçã' },
+      { category: 'hortifruti', name: 'banana' },
+    ];
+    expect([...items].sort(compareByAisle).map((i) => i.name)).toEqual(['banana', 'Maçã', 'Detergente', 'Abajur']);
   });
 });
 

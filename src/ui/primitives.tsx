@@ -385,15 +385,39 @@ export function IconBadge({ icon, tone = 'neutral', size = 40 }: { icon: IconNam
   );
 }
 
-/** Ilustração da categoria sobre um círculo pastel (categoria desconhecida vira "outros"). */
-export function CategoryIcon({ category, size = 40 }: { category: string; size?: number }) {
+/** Tom pastel da categoria: o mesmo do círculo do CategoryIcon, para fundos de cartão. */
+export function useCategoryTint(category: string) {
+  return useTint(CATEGORY_ART[getCategory(category).key].tint);
+}
+
+/**
+ * Ilustração da categoria sobre um círculo pastel (categoria desconhecida vira
+ * "outros"). `backdrop={false}` tira o círculo, para quem já pinta o fundo com
+ * useCategoryTint; `dimmed` esmaece (item já no carrinho).
+ */
+export function CategoryIcon({
+  category,
+  size = 40,
+  backdrop = true,
+  dimmed = false,
+}: {
+  category: string;
+  size?: number;
+  backdrop?: boolean;
+  dimmed?: boolean;
+}) {
   const art = CATEGORY_ART[getCategory(category).key];
   const tint = useTint(art.tint);
-  return (
-    <View style={[styles.iconBadge, { width: size, height: size, backgroundColor: tint.bg }]}>
-      <Image source={art.image} style={{ width: size, height: size }} contentFit="contain" accessible={false} />
-    </View>
+  const image = (
+    <Image
+      source={art.image}
+      style={{ width: size, height: size, opacity: dimmed ? 0.45 : 1 }}
+      contentFit="contain"
+      accessible={false}
+    />
   );
+  if (!backdrop) return image;
+  return <View style={[styles.iconBadge, { width: size, height: size, backgroundColor: tint.bg }]}>{image}</View>;
 }
 
 export function ListRow({

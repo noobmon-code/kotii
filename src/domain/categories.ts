@@ -52,3 +52,14 @@ const FALLBACK = BY_KEY.get('outros')!;
 export function getCategory(key: string | null | undefined): Category {
   return (key && BY_KEY.get(key)) || FALLBACK;
 }
+
+const AISLE = new Map(CATEGORIES.map((c, i) => [c.key, i]));
+
+/**
+ * Ordem de corredor para a lista de compras: a ordem de CATEGORIES (frescos,
+ * despensa, bebidas, casa, farmácia, outros) e, dentro dela, o nome.
+ */
+export function compareByAisle(a: { category: string; name: string }, b: { category: string; name: string }): number {
+  const byCategory = AISLE.get(getCategory(a.category).key)! - AISLE.get(getCategory(b.category).key)!;
+  return byCategory || a.name.localeCompare(b.name, 'pt-BR');
+}
