@@ -12,19 +12,19 @@ import { Button, Chip, ErrorNotice, Loading, Row, Screen, Segmented, Text, TextF
 import { space } from '@/ui/theme';
 
 export default function PersonScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, tipo } = useLocalSearchParams<{ id: string; tipo?: string }>();
   const people = usePeople();
   if (people.isPending) return <Loading />;
   if (people.isError) return <ErrorNotice error={people.error} onRetry={() => people.refetch()} />;
   const person = id === 'nova' ? undefined : people.data.find((p) => p.id === id);
   if (id !== 'nova' && !person) return <ErrorNotice error={new Error('Pessoa não encontrada.')} />;
-  return <PersonForm person={person} />;
+  return <PersonForm person={person} initialKind={tipo === 'pet' ? 'pet' : 'pessoa'} />;
 }
 
-function PersonForm({ person }: { person?: Person }) {
+function PersonForm({ person, initialKind }: { person?: Person; initialKind: Person['kind'] }) {
   const save = useSavePerson();
   const remove = useDeletePerson();
-  const [kind, setKind] = useState<Person['kind']>(person?.kind ?? 'pessoa');
+  const [kind, setKind] = useState<Person['kind']>(person?.kind ?? initialKind);
   const [name, setName] = useState(person?.name ?? '');
   const [birth, setBirth] = useState(person?.birth_date ? formatBRDate(person.birth_date) : '');
   const [bloodType, setBloodType] = useState<string | null>(person?.blood_type ?? null);
