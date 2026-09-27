@@ -170,9 +170,19 @@ function fitsCategory(key: ItemArtKey, category: string | null | undefined): boo
  * Com `category`, só vale um desenho do mesmo grupo (comida ou casa).
  */
 export function matchItemArt(name: string, category?: string | null): ItemArtKey | null {
+  // A lista redesenha todos os itens a cada toque: o resultado fica guardado.
+  const cacheKey = `${category ?? ''}\u0000${name}`;
+  const cached = CACHE.get(cacheKey);
+  if (cached !== undefined) return cached;
   const key = matchByName(name);
-  return key && fitsCategory(key, category) ? key : null;
+  const result = key && fitsCategory(key, category) ? key : null;
+  if (CACHE.size >= CACHE_LIMIT) CACHE.clear();
+  CACHE.set(cacheKey, result);
+  return result;
 }
+
+const CACHE_LIMIT = 2000;
+const CACHE = new Map<string, ItemArtKey | null>();
 
 function matchByName(name: string): ItemArtKey | null {
   const text = normalizeSearch(name).replace(/-/g, ' ');
