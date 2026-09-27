@@ -1,7 +1,9 @@
 import { useColorScheme } from 'react-native';
 
 // Identidade do Nooky: tons quentes, formas redondas e personagens simples,
-// na linha do Headspace. De dia, creme e laranja; à noite, azul profundo.
+// na linha do Headspace, com um toque de vidro: cartões translúcidos sobre um
+// fundo com manchas pastel (as cores do Nuke). De dia, creme; à noite, azul
+// profundo.
 
 const light = {
   background: '#FBF8F4',
@@ -21,6 +23,11 @@ const light = {
   warningSoft: '#FFF1D6',
   info: '#6A4FD8',
   infoSoft: '#EEE9FF',
+  // Vidro: cartões e botões claros translúcidos, com borda de luz.
+  glass: 'rgba(255, 255, 255, 0.62)',
+  glassStrong: 'rgba(255, 255, 255, 0.84)',
+  glassBorder: 'rgba(255, 255, 255, 0.95)',
+  glassEdge: 'rgba(255, 255, 255, 0.55)',
 };
 
 export type Colors = typeof light;
@@ -43,11 +50,32 @@ const dark: Colors = {
   warningSoft: '#43381F',
   info: '#B9A5FF',
   infoSoft: '#342C63',
+  glass: 'rgba(255, 255, 255, 0.07)',
+  glassStrong: 'rgba(30, 34, 68, 0.86)',
+  glassBorder: 'rgba(255, 255, 255, 0.16)',
+  glassEdge: 'rgba(255, 255, 255, 0.08)',
 };
 
 export function useColors(): Colors {
   return useColorScheme() === 'dark' ? dark : light;
 }
+
+/** Manchas do fundo (Backdrop): azul no alto, verde à direita, quente embaixo. */
+const BACKDROP = {
+  light: { blue: '#BFDDF7', green: '#CDEFD9', warm: '#FDE7B5' },
+  dark: { blue: '#2A3B85', green: '#1B4D4A', warm: '#4A3160' },
+};
+
+export function useBackdrop() {
+  return BACKDROP[useColorScheme() === 'dark' ? 'dark' : 'light'];
+}
+
+/** Sombras suaves do vidro (boxShadow, em todas as plataformas). */
+export const shadows = {
+  glass: '0px 8px 24px rgba(43, 42, 58, 0.07), 0px 1px 2px rgba(43, 42, 58, 0.05)',
+  float: '0px 10px 28px rgba(43, 42, 58, 0.16)',
+  primary: '0px 6px 16px rgba(54, 86, 244, 0.28)',
+} as const;
 
 /** Cores dos cartões e personagens: fundo pastel, personagem saturado, texto em tinta. */
 export type Tint = 'orange' | 'yellow' | 'blue' | 'green' | 'pink' | 'purple';
@@ -72,8 +100,18 @@ const TINTS: Record<'light' | 'dark', Record<Tint, { bg: string; art: string }>>
   },
 };
 
+// Fundos coloridos translúcidos: vidro colorido sobre as manchas do fundo.
+const translucent = (hex: string, alpha: number) =>
+  `rgba(${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)}, ${alpha})`;
+const GLASS_TINTS = Object.fromEntries(
+  Object.entries(TINTS).map(([scheme, tints]) => [
+    scheme,
+    Object.fromEntries(Object.entries(tints).map(([key, t]) => [key, { bg: translucent(t.bg, 0.78), art: t.art }])),
+  ]),
+) as typeof TINTS;
+
 export function useTint(tint: Tint) {
-  return TINTS[useColorScheme() === 'dark' ? 'dark' : 'light'][tint];
+  return GLASS_TINTS[useColorScheme() === 'dark' ? 'dark' : 'light'][tint];
 }
 
 /** Traço dos rostos dos personagens: sempre escuro, sobre cor saturada. */

@@ -33,8 +33,8 @@ export default function TabsLayout() {
           // Nunito é mais alta que a fonte do sistema: a barra ganha altura para o rótulo não cortar.
           tabBarLabelStyle: { fontFamily: fonts.bold, fontSize: 11, lineHeight: 15 },
           tabBarStyle: {
-            backgroundColor: c.surface,
-            borderTopColor: c.border,
+            backgroundColor: c.glassStrong,
+            borderTopColor: c.glassBorder,
             height: TAB_BAR_HEIGHT + insets.bottom,
             paddingTop: 6,
             paddingBottom: insets.bottom + 8,

@@ -5,6 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { getCategory } from '@/domain/categories';
 import { commonItemsByCategory, type CommonItem } from '@/domain/commonItems';
 import { normalizeSearch } from '@/domain/search';
+import { Backdrop } from '@/ui/Backdrop';
 import { Badge, Button, CategoryIcon, Chip, Icon, IconButton, Text, TextField } from '@/ui/primitives';
 import { MAX_WIDTH, space, useColors } from '@/ui/theme';
 
@@ -67,6 +68,7 @@ export function CommonItemsPicker({
         setJustAdded(new Set());
       }}>
       <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
+        <Backdrop />
         <View style={styles.inner}>
           <View style={styles.header}>
             <Text variant="heading" style={styles.flex}>
@@ -92,7 +94,7 @@ export function CommonItemsPicker({
             keyboardShouldPersistTaps="handled"
             stickySectionHeadersEnabled
             renderSectionHeader={({ section }) => (
-              <View style={[styles.sectionHeader, { backgroundColor: c.background }]}>
+              <View style={[styles.sectionHeader, { backgroundColor: c.glassStrong }]}>
                 <CategoryIcon category={section.category} size={28} />
                 <Text variant="label">{section.title}</Text>
               </View>

@@ -20,9 +20,10 @@ import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
 import { getCategory, type IconName } from '@/domain/categories';
 import { matchItemArt } from '@/domain/itemArt';
 import { Mascot, Spot, type Mood } from './art';
+import { Backdrop } from './Backdrop';
 import { CATEGORY_ART } from './categoryArt';
 import { ITEM_ART } from './itemArt';
-import { fonts, MAX_WIDTH, radius, space, useColors, useTint, type Colors, type Tint } from './theme';
+import { fonts, MAX_WIDTH, radius, shadows, space, useColors, useTint, type Colors, type Tint } from './theme';
 
 export type { IconName };
 
@@ -83,6 +84,7 @@ export function Screen({
   const content = <View style={[styles.content, fab && styles.contentWithFab]}>{children}</View>;
   return (
     <SafeAreaView edges={edges} style={[styles.screen, { backgroundColor: c.background }]}>
+      <Backdrop />
       {scroll ? (
         <ScrollView
           keyboardShouldPersistTaps="handled"
@@ -96,7 +98,7 @@ export function Screen({
         content
       )}
       {footer ? (
-        <View style={[styles.footer, { borderTopColor: c.border, backgroundColor: c.background }]}>
+        <View style={[styles.footer, { borderTopColor: c.glassBorder, backgroundColor: c.glassStrong }]}>
           <View style={styles.footerInner}>{footer}</View>
         </View>
       ) : null}
@@ -104,11 +106,25 @@ export function Screen({
   );
 }
 
-export function Card({ children, style }: { children: ReactNode; style?: StyleProp<ViewStyle> }) {
+/**
+ * Vidro: fundo claro translúcido, borda de luz (mais forte em cima e à
+ * esquerda, de onde vem a luz) e sombra suave.
+ */
+export function useGlassStyle(strong = false): ViewStyle {
   const c = useColors();
-  return (
-    <View style={[styles.card, { backgroundColor: c.surface, borderColor: c.border }, style]}>{children}</View>
-  );
+  return {
+    backgroundColor: strong ? c.glassStrong : c.glass,
+    borderWidth: 1,
+    borderColor: c.glassEdge,
+    borderTopColor: c.glassBorder,
+    borderLeftColor: c.glassBorder,
+    boxShadow: shadows.glass,
+  };
+}
+
+export function Card({ children, style }: { children: ReactNode; style?: StyleProp<ViewStyle> }) {
+  const glass = useGlassStyle();
+  return <View style={[styles.card, glass, style]}>{children}</View>;
 }
 
 /** Card de linhas (ListRow) com divisor só entre elas. */
@@ -188,7 +204,7 @@ export function Button({
   const c = useColors();
   const palette: Record<ButtonVariant, { bg: string; fg: keyof Colors; border: string }> = {
     primary: { bg: c.primary, fg: 'onPrimary', border: c.primary },
-    secondary: { bg: c.surface, fg: 'text', border: c.border },
+    secondary: { bg: c.glassStrong, fg: 'text', border: c.glassBorder },
     ghost: { bg: 'transparent', fg: 'primary', border: 'transparent' },
     danger: { bg: c.dangerSoft, fg: 'danger', border: c.dangerSoft },
   };
@@ -205,6 +221,8 @@ export function Button({
         styles.button,
         compact && styles.buttonCompact,
         { backgroundColor: p.bg, borderColor: p.border, opacity: inactive ? 0.55 : 1 },
+        variant === 'primary' && !inactive && { boxShadow: shadows.primary },
+        variant === 'secondary' && { boxShadow: shadows.glass },
         pressed && !inactive && styles.pressed,
         style,
       ]}>
@@ -275,7 +293,7 @@ export function TextField({ label, hint, style, ...props }: TextInputProps & { l
         placeholderTextColor={c.textMuted}
         style={[
           styles.input,
-          { backgroundColor: c.surface, borderColor: c.border, color: c.text },
+          { backgroundColor: c.glassStrong, borderColor: c.border, color: c.text },
           props.multiline && styles.inputMultiline,
           style,
         ]}
@@ -297,7 +315,7 @@ export function Segmented<T extends string>({
 }) {
   const c = useColors();
   return (
-    <View style={[styles.segmented, { backgroundColor: c.surfaceAlt }]}>
+    <View style={[styles.segmented, { backgroundColor: c.glass, borderColor: c.glassBorder }]}>
       {options.map((o) => {
         const selected = o.value === value;
         return (
@@ -336,7 +354,7 @@ export function Chip({
       onPress={onPress}
       style={[
         styles.chip,
-        { backgroundColor: selected ? c.primary : c.surface, borderColor: selected ? c.primary : c.border },
+        { backgroundColor: selected ? c.primary : c.glassStrong, borderColor: selected ? c.primary : c.border },
       ]}>
       {icon ? <Icon name={icon} size={16} color={selected ? 'onPrimary' : 'textMuted'} /> : null}
       <Text variant="label" color={selected ? 'onPrimary' : 'text'} style={styles.chipText}>
@@ -478,13 +496,18 @@ export function Tile({
   onPress: () => void;
   tint?: Tint;
 }) {
+  const c = useColors();
   const t = useTint(tint);
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
       onPress={onPress}
-      style={({ pressed }) => [styles.tile, { backgroundColor: t.bg }, pressed && styles.pressed]}>
+      style={({ pressed }) => [
+        styles.tile,
+        { backgroundColor: t.bg, borderColor: c.glassEdge, borderTopColor: c.glassBorder, boxShadow: shadows.glass },
+        pressed && styles.pressed,
+      ]}>
       <View style={[styles.tileIcon, { backgroundColor: t.art }]}>
         <MaterialCommunityIcons name={icon} size={24} color="#FFFFFF" />
       </View>
@@ -575,7 +598,7 @@ const styles = StyleSheet.create({
   contentWithFab: { paddingBottom: 96 },
   footer: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: space.lg, paddingVertical: space.md },
   footerInner: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', gap: space.sm },
-  card: { borderRadius: radius.lg, borderWidth: StyleSheet.hairlineWidth, padding: space.lg + 2 },
+  card: { borderRadius: radius.lg, padding: space.lg + 2 },
   pageTitle: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   pageTitleArt: { width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center' },
   pressed: { transform: [{ scale: 0.97 }] },
@@ -612,7 +635,7 @@ const styles = StyleSheet.create({
     fontFamily: fonts.regular,
   },
   inputMultiline: { minHeight: 88, paddingTop: space.md, textAlignVertical: 'top' },
-  segmented: { flexDirection: 'row', borderRadius: radius.pill, padding: 4 },
+  segmented: { flexDirection: 'row', borderRadius: radius.pill, padding: 4, borderWidth: 1 },
   segment: {
     flex: 1,
     alignItems: 'center',
@@ -650,6 +673,7 @@ const styles = StyleSheet.create({
     paddingBottom: space.md,
     paddingHorizontal: space.sm,
     borderRadius: radius.lg,
+    borderWidth: 1,
   },
   tileIcon: { width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
   empty: { alignItems: 'center', gap: space.md, paddingVertical: space.xl, paddingHorizontal: space.lg },

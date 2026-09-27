@@ -29,6 +29,7 @@ import {
 import { ReceiptItemEditor } from '@/features/ReceiptItemEditor';
 import { errorMessage } from '@/lib/supabase';
 import type { ReceiptItem } from '@/lib/types';
+import { Backdrop } from '@/ui/Backdrop';
 import { confirmAction, notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
 import {
@@ -475,6 +476,7 @@ function ImageViewer({ url, onClose }: { url: string | null; onClose: () => void
   return (
     <Modal visible={Boolean(url)} animationType="fade" onRequestClose={onClose}>
       <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
+        <Backdrop />
         <Row style={styles.viewerHeader}>
           <Text variant="heading" style={styles.flex}>
             Foto da nota

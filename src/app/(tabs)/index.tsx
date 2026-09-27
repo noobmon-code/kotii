@@ -47,6 +47,7 @@ import {
   Section,
   Text,
   Tile,
+  useGlassStyle,
 } from '@/ui/primitives';
 import { radius, space, useTint, type Tint } from '@/ui/theme';
 
@@ -116,6 +117,7 @@ export default function TodayScreen() {
   const dateLabel = capitalizeFirst(now.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }));
   const period = periodOf(now);
   const hero = useTint(HERO_TINT[period]);
+  const glass = useGlassStyle();
   const attention =
     pendingDoses.length +
     dueChores.length +
@@ -137,7 +139,7 @@ export default function TodayScreen() {
 
   return (
     <Screen fab refreshing={refreshing} onRefresh={refresh}>
-      <View style={[styles.hero, { backgroundColor: hero.bg }]}>
+      <View style={[styles.hero, glass, { backgroundColor: hero.bg }]}>
         <View style={styles.heroText}>
           <Text variant="small">{dateLabel}</Text>
           <Text variant="display">

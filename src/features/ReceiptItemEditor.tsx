@@ -5,6 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import type { ItemValues } from '@/data/receipts';
 import { parseDecimal } from '@/domain/money';
 import { UNITS, type Unit } from '@/lib/types';
+import { Backdrop } from '@/ui/Backdrop';
 import { notify } from '@/ui/dialogs';
 import { Button, Chip, IconButton, Row, Text, TextField } from '@/ui/primitives';
 import { MAX_WIDTH, space, useColors } from '@/ui/theme';
@@ -53,6 +54,7 @@ export function ReceiptItemEditor({
   return (
     <Modal visible animationType="slide" onRequestClose={onClose}>
       <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
+        <Backdrop />
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           <Row>
             <Text variant="heading" style={styles.flex}>

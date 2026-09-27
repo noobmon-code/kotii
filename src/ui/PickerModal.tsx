@@ -3,6 +3,7 @@ import { FlatList, Modal, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { normalizeSearch } from '@/domain/search';
+import { Backdrop } from './Backdrop';
 import { IconButton, ListRow, Text, TextField } from './primitives';
 import { MAX_WIDTH, space, useColors } from './theme';
 
@@ -47,6 +48,7 @@ export function PickerModal({
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} onShow={() => setQuery(initialQuery)}>
       <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
+        <Backdrop />
         <View style={styles.inner}>
           <View style={styles.header}>
             <Text variant="heading" style={styles.flex}>
