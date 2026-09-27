@@ -1,6 +1,6 @@
 -- Testes do schema: isolamento entre famílias (RLS), matching, preços,
 -- confirmação de nota, recorrência de tarefas, remédios, saúde, aparelhos,
--- documentos e financeiro.
+-- documentos, financeiro e saída da casa.
 -- Rodado por scripts/db/test.sh depois de stubs.sql + migrations.
 
 \set ON_ERROR_STOP 1
@@ -705,6 +705,66 @@ begin
     raise exception 'FAIL: payment on a foreign bill';
   exception when foreign_key_violation then null;
   end;
+end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• sair da casa: dono passa adiante, o último apaga a casa'
+\set user_f '00000000-0000-0000-0000-00000000000f'
+\set user_g '00000000-0000-0000-0000-000000000010'
+reset role;
+insert into auth.users (id) values (:'user_f'), (:'user_g');
+set role anon;
+do $$
+begin
+  perform public.leave_household();
+  raise exception 'FAIL: anon called leave_household';
+exception when insufficient_privilege then null;
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_f', false) \gset
+select (public.create_household('Casa F', 'Fê')).invite_code as invite_f \gset
+insert into public.shopping_lists (name) values ('Mercado da F');
+select set_config('request.jwt.claim.sub', :'user_g', false) \gset
+select public.join_household(:'invite_f', 'Gabi') \gset
+do $$
+begin
+  -- Sem a policy de delete, sair direto pela tabela não faz nada.
+  delete from public.household_members where user_id = auth.uid();
+  assert (select count(*) from public.household_members where user_id = auth.uid()) = 1,
+    'direct delete no longer leaves the household';
+end $$;
+
+select set_config('request.jwt.claim.sub', :'user_f', false) \gset
+do $$
+begin
+  assert public.leave_household() = 'left', 'owner leaves a household with other members';
+  assert (select count(*) from public.households) = 0, 'F no longer sees the household';
+  perform public.create_household('Casa nova da F', 'Fê');
+end $$;
+
+select set_config('request.jwt.claim.sub', :'user_g', false) \gset
+do $$
+begin
+  assert (select role from public.household_members where user_id = auth.uid()) = 'owner', 'oldest member becomes owner';
+  assert (select created_by from public.households) = auth.uid(), 'new owner can rename the household';
+  update public.households set name = 'Casa da Gabi';
+  assert (select name from public.households) = 'Casa da Gabi', 'rename works for the new owner';
+  assert (select count(*) from public.shopping_lists) = 1, 'data stays with the household';
+  assert public.leave_household() = 'deleted', 'last member deletes the household';
+  assert (select count(*) from public.household_members where user_id = auth.uid()) = 0, 'G left';
+  begin
+    perform public.leave_household();
+    raise exception 'FAIL: left without a household';
+  exception when no_data_found then null;
+  end;
+end $$;
+
+reset role;
+do $$
+begin
+  assert (select count(*) from public.households where name in ('Casa F', 'Casa da Gabi')) = 0, 'household deleted';
+  assert (select count(*) from public.shopping_lists where name = 'Mercado da F') = 0, 'household data deleted';
+  assert (select count(*) from public.households where name = 'Casa nova da F') = 1, 'F can start over';
 end $$;
 
 \echo 'OK — todos os testes do banco passaram'

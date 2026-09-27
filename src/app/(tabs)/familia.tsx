@@ -1,18 +1,49 @@
 import { Share, StyleSheet } from 'react-native';
 
+import { useLeaveHousehold } from '@/data/household';
 import { DocumentsSection } from '@/features/DocumentsSection';
+import { clearConversation } from '@/features/nuke/conversation';
 import { useAuth, useHousehold } from '@/lib/auth';
-import { supabase } from '@/lib/supabase';
-import { confirmAction } from '@/ui/dialogs';
+import { errorMessage, supabase } from '@/lib/supabase';
+import { confirmAction, notify } from '@/ui/dialogs';
 import { Badge, Button, Card, IconBadge, ListCard, ListRow, Loading, PageTitle, Screen, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 export default function FamilyScreen() {
   const { session } = useAuth();
   const household = useHousehold();
+  const leave = useLeaveHousehold();
 
   if (!household.data) return <Loading />;
   const { household: house, members, me } = household.data;
+  const heir = members.find((m) => m.user_id !== me.user_id);
+
+  function confirmLeave() {
+    const onConfirm = () =>
+      leave.mutate(
+        { householdId: house.id, last: !heir },
+        {
+          onSuccess: () => clearConversation(me.user_id),
+          onError: (err) => notify('Não deu para sair', errorMessage(err)),
+        },
+      );
+    if (!heir) {
+      confirmAction(
+        'Apagar a casa',
+        `Você é a última pessoa em "${house.name}". Ao sair, a casa e tudo o que ela tem (listas, notas, despensa, tarefas, saúde, documentos e fotos) são apagados para sempre.`,
+        'Apagar e sair',
+        onConfirm,
+      );
+      return;
+    }
+    const handOver = me.role === 'owner' ? ` ${heir.display_name} fica responsável pela casa.` : '';
+    confirmAction(
+      'Sair da casa',
+      `Você deixa de ver os dados de "${house.name}". O que você registrou continua com a casa.${handOver} Para voltar, só com o código de convite.`,
+      'Sair da casa',
+      onConfirm,
+    );
+  }
 
   function shareInvite() {
     Share.share({
@@ -42,7 +73,7 @@ export default function FamilyScreen() {
               key={m.user_id}
               left={<IconBadge icon="account-outline" tone={m.user_id === me.user_id ? 'primary' : 'neutral'} />}
               title={m.user_id === me.user_id ? `${m.display_name} (você)` : m.display_name}
-              right={m.role === 'owner' ? <Badge label="Criou a casa" /> : null}
+              right={m.role === 'owner' ? <Badge label="Responsável" /> : null}
             />
           ))}
         </ListCard>
@@ -50,13 +81,28 @@ export default function FamilyScreen() {
 
       <DocumentsSection />
 
+      <Section title="Casa">
+        <Text variant="muted">
+          {heir
+            ? 'Saindo, você pode criar outra casa ou entrar em uma com um código.'
+            : 'Você é a única pessoa aqui. Saindo, a casa é apagada.'}
+        </Text>
+        <Button
+          title="Sair da casa"
+          variant="secondary"
+          icon="home-export-outline"
+          loading={leave.isPending}
+          onPress={confirmLeave}
+        />
+      </Section>
+
       <Section title="Conta">
         <Text variant="muted">{session?.user.email}</Text>
         <Button
-          title="Sair"
+          title="Sair da conta"
           variant="danger"
           icon="logout"
-          onPress={() => confirmAction('Sair', 'Deseja sair desta conta?', 'Sair', () => supabase.auth.signOut())}
+          onPress={() => confirmAction('Sair da conta', 'Deseja sair desta conta neste aparelho?', 'Sair', () => supabase.auth.signOut())}
         />
       </Section>
     </Screen>
