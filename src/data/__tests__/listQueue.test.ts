@@ -3,16 +3,18 @@ import { dehydrate, hydrate, MutationObserver, onlineManager, QueryClient } from
 
 import { registerListMutations, TOGGLE_ITEM_KEY, type ToggleItemInput } from '../market';
 
-const sent: { id: string; values: unknown }[] = [];
+const sent: { id: string; version: number; values: unknown }[] = [];
 
 jest.mock('@/lib/supabase', () => ({
   supabase: {
     from: () => ({
       update: (values: unknown) => ({
-        eq: async (_column: string, id: string) => {
-          sent.push({ id, values });
-          return { data: null, error: null };
-        },
+        eq: (_idColumn: string, id: string) => ({
+          eq: async (_versionColumn: string, version: number) => {
+            sent.push({ id, version, values });
+            return { data: null, error: null };
+          },
+        }),
       }),
     }),
   },
@@ -46,8 +48,8 @@ describe('fila de marcações da lista', () => {
   it('sem internet, guarda as marcações e envia na ordem quando volta', async () => {
     onlineManager.setOnline(false);
     const queryClient = client();
-    tap(queryClient, { id: 'arroz', checked: true, userId: 'u1', at: '2026-09-27T10:00:00Z' });
-    tap(queryClient, { id: 'arroz', checked: false, userId: 'u1', at: '2026-09-27T10:01:00Z' });
+    tap(queryClient, { id: 'arroz', checked: true, userId: 'u1', at: '2026-09-27T10:00:00Z', version: 3 });
+    tap(queryClient, { id: 'arroz', checked: false, userId: 'u1', at: '2026-09-27T10:01:00Z', version: 4 });
     await flush();
     expect(sent).toEqual([]);
     expect(queryClient.getMutationCache().getAll().every((m) => m.state.isPaused)).toBe(true);
@@ -56,15 +58,15 @@ describe('fila de marcações da lista', () => {
     await queryClient.resumePausedMutations();
     await flush();
     expect(sent).toEqual([
-      { id: 'arroz', values: { checked_at: '2026-09-27T10:00:00Z', checked_by: 'u1', toggled_at: '2026-09-27T10:00:00Z' } },
-      { id: 'arroz', values: { checked_at: null, checked_by: null, toggled_at: '2026-09-27T10:01:00Z' } },
+      { id: 'arroz', version: 3, values: { checked_at: '2026-09-27T10:00:00Z', checked_by: 'u1' } },
+      { id: 'arroz', version: 4, values: { checked_at: null, checked_by: null } },
     ]);
   });
 
   it('a fila sobrevive a fechar e abrir o app', async () => {
     onlineManager.setOnline(false);
     const before = client();
-    tap(before, { id: 'leite', checked: true, userId: 'u1', at: '2026-09-27T11:00:00Z' });
+    tap(before, { id: 'leite', checked: true, userId: 'u1', at: '2026-09-27T11:00:00Z', version: 0 });
     await flush();
     const saved = JSON.parse(JSON.stringify(dehydrate(before)));
 
@@ -74,7 +76,7 @@ describe('fila de marcações da lista', () => {
     await after.resumePausedMutations();
     await flush();
     expect(sent).toEqual([
-      { id: 'leite', values: { checked_at: '2026-09-27T11:00:00Z', checked_by: 'u1', toggled_at: '2026-09-27T11:00:00Z' } },
+      { id: 'leite', version: 0, values: { checked_at: '2026-09-27T11:00:00Z', checked_by: 'u1' } },
     ]);
   });
 });

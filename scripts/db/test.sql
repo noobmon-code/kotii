@@ -281,26 +281,21 @@ begin
   update public.shopping_list_items set checked_at = now(), checked_by = auth.uid()
     where list_id = current_setting('test.list_a')::uuid and name = 'Banana';
   assert found, 'B checks item on shared list';
-  update public.shopping_list_items set checked_at = '2026-09-27 10:05', toggled_at = '2026-09-27 10:05'
-    where list_id = current_setting('test.list_a')::uuid and name = 'Banana';
+  assert (select toggle_version from public.shopping_list_items where name = 'Banana') = 1, 'checking bumps the version';
 end $$;
 
--- A estava sem internet: o desmarcar que ela fez às 10:00 chega depois.
+-- A estava sem internet e desmarcou a Banana quando ela ainda estava na
+-- versão 0: a marcação chega depois da de B e não passa por cima.
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$
 begin
-  update public.shopping_list_items set checked_at = null, checked_by = null, toggled_at = '2026-09-27 10:00'
-    where list_id = current_setting('test.list_a')::uuid and name = 'Banana';
-  assert not found, 'an older queued toggle does not overwrite a newer one';
+  update public.shopping_list_items set checked_at = null, checked_by = null
+    where name = 'Banana' and toggle_version = 0;
+  assert not found, 'a queued toggle based on an old version does not overwrite a newer one';
   assert (select checked_at from public.shopping_list_items where name = 'Banana') is not null, 'item stays checked';
-  update public.shopping_list_items set checked_at = null, checked_by = null, toggled_at = '2026-09-27 10:10'
-    where list_id = current_setting('test.list_a')::uuid and name = 'Banana';
-  assert found, 'a newer toggle goes through';
   update public.shopping_list_items set quantity = 2 where name = 'Banana';
-  assert found, 'other edits are not blocked';
-  -- Volta como estava: Banana no carrinho.
-  update public.shopping_list_items set quantity = 1.5, checked_at = now(), checked_by = auth.uid(), toggled_at = '2026-09-27 10:15'
-    where name = 'Banana';
+  assert (select toggle_version from public.shopping_list_items where name = 'Banana') = 1, 'other edits keep the version';
+  update public.shopping_list_items set quantity = 1.5 where name = 'Banana';
 end $$;
 
 select set_config('request.jwt.claim.sub', :'user_c', false) \gset

@@ -124,7 +124,10 @@ export default function ShoppingListScreen() {
   if (items.isError) return <ErrorNotice error={items.error} onRetry={() => items.refetch()} />;
 
   const toggleItem = (item: ShoppingListItem) =>
-    toggle.mutate({ id: item.id, checked: !item.checked_at, userId: session!.user.id, at: new Date().toISOString() }, { onError });
+    toggle.mutate(
+      { id: item.id, checked: !item.checked_at, userId: session!.user.id, at: new Date().toISOString(), version: item.toggle_version },
+      { onError },
+    );
   const removeItem = (item: ShoppingListItem) =>
     confirmAction('Remover item', `Remover "${item.name}" da lista?`, 'Remover', () => remove.mutate(item.id, { onError }));
 

@@ -75,7 +75,7 @@ export function useListItems(listId: string) {
       unwrap(
         await supabase
           .from('shopping_list_items')
-          .select('id, list_id, product_id, name, category, quantity, unit, checked_at, checked_by, created_at')
+          .select('id, list_id, product_id, name, category, quantity, unit, checked_at, checked_by, toggle_version, created_at')
           .eq('list_id', listId)
           .order('created_at'),
       ) as ShoppingListItem[],
@@ -253,16 +253,17 @@ export interface ToggleItemInput {
   userId: string;
   /** Hora do toque: a marcação enviada depois guarda quando foi feita. */
   at: string;
+  /** Versão do item no toque: se alguém marcou depois, esta não passa por cima. */
+  version: number;
 }
 
-// `toggled_at` leva a hora do toque: no banco, uma marcação atrasada (feita
-// antes da última já gravada, por outra pessoa) não passa por cima dela.
-async function toggleListItem({ id, checked, userId, at }: ToggleItemInput) {
+async function toggleListItem({ id, checked, userId, at, version }: ToggleItemInput) {
   return unwrap(
     await supabase
       .from('shopping_list_items')
-      .update(checked ? { checked_at: at, checked_by: userId, toggled_at: at } : { checked_at: null, checked_by: null, toggled_at: at })
-      .eq('id', id),
+      .update(checked ? { checked_at: at, checked_by: userId } : { checked_at: null, checked_by: null })
+      .eq('id', id)
+      .eq('toggle_version', version),
   );
 }
 
@@ -290,8 +291,16 @@ export function useToggleListItem(listId: string) {
     onMutate: async ({ id, checked, at }) => {
       const key = ['listItems', listId];
       await queryClient.cancelQueries({ queryKey: key });
+      // A versão anda junto, como no banco: o próximo toque neste item já parte dela.
       queryClient.setQueryData<ShoppingListItem[]>(key, (items) =>
-        items?.map((i) => (i.id === id ? { ...i, checked_at: checked ? at : null } : i)),
+        items?.map((i) => (i.id === id ? { ...i, checked_at: checked ? at : null, toggle_version: i.toggle_version + 1 } : i)),
+      );
+      // O resumo das listas (itens pendentes) também, para ficar certo sem internet.
+      await queryClient.cancelQueries({ queryKey: ['lists'] });
+      queryClient.setQueryData<{ id: string; pending: number; total: number }[]>(['lists'], (lists) =>
+        lists?.map((l) =>
+          l.id === listId ? { ...l, pending: Math.min(l.total, Math.max(0, l.pending + (checked ? -1 : 1))) } : l,
+        ),
       );
     },
     // Com outras marcações na fila, buscar a lista agora desfaria na tela as
