@@ -17,6 +17,7 @@ import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { parseDecimal } from '@/domain/money';
 import { guessCategory, normalizeSearch } from '@/domain/search';
 import { CommonItemsPicker } from '@/features/CommonItemsPicker';
+import { OfflineNotice } from '@/features/OfflineNotice';
 import { ShoppingGrid } from '@/features/ShoppingGrid';
 import { useAuth } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
@@ -123,7 +124,7 @@ export default function ShoppingListScreen() {
   if (items.isError) return <ErrorNotice error={items.error} onRetry={() => items.refetch()} />;
 
   const toggleItem = (item: ShoppingListItem) =>
-    toggle.mutate({ id: item.id, checked: !item.checked_at, userId: session!.user.id }, { onError });
+    toggle.mutate({ id: item.id, checked: !item.checked_at, userId: session!.user.id, at: new Date().toISOString() }, { onError });
   const removeItem = (item: ShoppingListItem) =>
     confirmAction('Remover item', `Remover "${item.name}" da lista?`, 'Remover', () => remove.mutate(item.id, { onError }));
 
@@ -142,6 +143,7 @@ export default function ShoppingListScreen() {
         ) : undefined
       }>
       <Stack.Screen options={{ title: list.data.name }} />
+      <OfflineNotice />
 
       <Card style={styles.addCard}>
         <Row>

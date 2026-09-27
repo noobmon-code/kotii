@@ -1,6 +1,6 @@
 // Mercado: listas de compras, produtos, lojas e preços.
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
 import { supabase, unwrap } from '@/lib/supabase';
@@ -240,26 +240,63 @@ export function useAddToMarketList() {
   });
 }
 
+/**
+ * Marcar ou desmarcar item. Sem internet (no mercado, é comum) a marcação
+ * aparece na hora e vai para uma fila guardada no aparelho, enviada na ordem
+ * quando a conexão volta, mesmo que o app tenha sido fechado no meio.
+ */
+export const TOGGLE_ITEM_KEY = ['toggleListItem'];
+
+export interface ToggleItemInput {
+  id: string;
+  checked: boolean;
+  userId: string;
+  /** Hora do toque: a marcação enviada depois guarda quando foi feita. */
+  at: string;
+}
+
+async function toggleListItem({ id, checked, userId, at }: ToggleItemInput) {
+  return unwrap(
+    await supabase
+      .from('shopping_list_items')
+      .update(checked ? { checked_at: at, checked_by: userId } : { checked_at: null, checked_by: null })
+      .eq('id', id),
+  );
+}
+
+/** O que a fila precisa para rodar uma marcação restaurada depois de o app reabrir. */
+export function registerListMutations(queryClient: QueryClient) {
+  queryClient.setMutationDefaults(TOGGLE_ITEM_KEY, {
+    mutationFn: (input: ToggleItemInput) => toggleListItem(input),
+    // Pausa sem internet em vez de falhar, e uma de cada vez, na ordem.
+    networkMode: 'online',
+    scope: { id: 'list-items' },
+    retry: 3,
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['lists'] });
+      queryClient.invalidateQueries({ queryKey: ['listItems'] });
+    },
+  });
+}
+
 export function useToggleListItem(listId: string) {
   const queryClient = useQueryClient();
   const invalidate = useInvalidateLists(listId);
-  return useMutation({
-    mutationFn: async ({ id, checked, userId }: { id: string; checked: boolean; userId: string }) =>
-      unwrap(
-        await supabase
-          .from('shopping_list_items')
-          .update(checked ? { checked_at: new Date().toISOString(), checked_by: userId } : { checked_at: null, checked_by: null })
-          .eq('id', id),
-      ),
+  return useMutation<unknown, Error, ToggleItemInput>({
+    mutationKey: TOGGLE_ITEM_KEY,
     // Marca na hora; o servidor confirma depois.
-    onMutate: async ({ id, checked }) => {
+    onMutate: async ({ id, checked, at }) => {
       const key = ['listItems', listId];
       await queryClient.cancelQueries({ queryKey: key });
       queryClient.setQueryData<ShoppingListItem[]>(key, (items) =>
-        items?.map((i) => (i.id === id ? { ...i, checked_at: checked ? new Date().toISOString() : null } : i)),
+        items?.map((i) => (i.id === id ? { ...i, checked_at: checked ? at : null } : i)),
       );
     },
-    onSettled: invalidate,
+    // Com outras marcações na fila, buscar a lista agora desfaria na tela as
+    // que ainda não foram: espera a última.
+    onSettled: () => {
+      if (queryClient.isMutating({ mutationKey: TOGGLE_ITEM_KEY }) <= 1) invalidate();
+    },
   });
 }
 
