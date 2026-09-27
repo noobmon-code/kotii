@@ -2,7 +2,6 @@ import { Share, StyleSheet } from 'react-native';
 
 import { useLeaveHousehold } from '@/data/household';
 import { DocumentsSection } from '@/features/DocumentsSection';
-import { clearConversation } from '@/features/nuke/conversation';
 import { useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -12,7 +11,7 @@ import { space } from '@/ui/theme';
 export default function FamilyScreen() {
   const { session } = useAuth();
   const household = useHousehold();
-  const leave = useLeaveHousehold();
+  const leave = useLeaveHousehold(session?.user.id);
 
   if (!household.data) return <Loading />;
   const { household: house, members, me } = household.data;
@@ -25,10 +24,7 @@ export default function FamilyScreen() {
     if (!fresh) return;
     const next = fresh.members.find((m) => m.user_id !== fresh.me.user_id);
     const onConfirm = () =>
-      leave.mutate(undefined, {
-        onSuccess: () => clearConversation(fresh.me.user_id),
-        onError: (err) => notify('Não deu para sair', errorMessage(err)),
-      });
+      leave.mutate(undefined, { onError: (err) => notify('Não deu para sair', errorMessage(err)) });
     if (!next) {
       confirmAction(
         'Apagar a casa',

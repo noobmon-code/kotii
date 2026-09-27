@@ -5,10 +5,12 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { functionErrorMessage } from '@/data/images';
+import { clearConversation } from '@/features/nuke/conversation';
 import { disableAllReminders } from '@/lib/reminders';
 import { supabase } from '@/lib/supabase';
 
-export function useLeaveHousehold() {
+/** `userId`: de quem é a conversa do Nuke a apagar (fala da casa antiga). */
+export function useLeaveHousehold(userId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async () => {
@@ -16,8 +18,11 @@ export function useLeaveHousehold() {
       if (error || !data) throw new Error(await functionErrorMessage(error, 'Não deu para sair da casa agora. Tente de novo.'));
       return data.status;
     },
+    // No hook, e não na chamada: a tela some quando a casa some, e o que é
+    // passado ao mutate() de uma tela desmontada não roda.
     onSuccess: async () => {
-      // Os lembretes e os dados em cache são da casa que ficou para trás.
+      // Conversa, lembretes e cache são da casa que ficou para trás.
+      if (userId) clearConversation(userId);
       await disableAllReminders().catch(() => undefined);
       queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== 'household' });
       await queryClient.invalidateQueries({ queryKey: ['household'] });

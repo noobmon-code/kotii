@@ -737,7 +737,12 @@ end $$;
 select set_config('request.jwt.claim.sub', :'user_f', false) \gset
 do $$
 begin
-  assert public.leave_household() = 'left', 'owner leaves a household with other members';
+  declare
+    result jsonb := public.leave_household();
+  begin
+    assert result->>'status' = 'left', 'owner leaves a household with other members';
+    assert result->>'household_id' is not null, 'returns the household left';
+  end;
   assert (select count(*) from public.households) = 0, 'F no longer sees the household';
   perform public.create_household('Casa nova da F', 'Fê');
 end $$;
@@ -750,7 +755,7 @@ begin
   update public.households set name = 'Casa da Gabi';
   assert (select name from public.households) = 'Casa da Gabi', 'rename works for the new owner';
   assert (select count(*) from public.shopping_lists) = 1, 'data stays with the household';
-  assert public.leave_household() = 'deleted', 'last member deletes the household';
+  assert (public.leave_household())->>'status' = 'deleted', 'last member deletes the household';
   assert (select count(*) from public.household_members where user_id = auth.uid()) = 0, 'G left';
   begin
     perform public.leave_household();

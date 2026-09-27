@@ -33,25 +33,22 @@ Deno.serve(async (req) => {
   const { data: userData } = await asUser.auth.getUser();
   if (!userData.user) return json({ error: 'Entre na sua conta para sair da casa.' }, 401);
 
-  const { data: membership } = await asUser
-    .from('household_members')
-    .select('household_id')
-    .eq('user_id', userData.user.id)
-    .maybeSingle();
-  if (!membership) return json({ error: 'Você não está em nenhuma casa.' }, 404);
-
-  const { data: status, error } = await asUser.rpc('leave_household');
+  // A casa vem da mesma transação que tirou a pessoa dela: é dessa que as
+  // fotos saem, mesmo com outra saída acontecendo ao mesmo tempo.
+  const { data, error } = await asUser.rpc('leave_household');
   if (error) {
+    if (error.code === 'P0002') return json({ error: 'Você não está em nenhuma casa.' }, 404);
     console.error('leave_household failed', error);
     return json({ error: 'Não deu para sair da casa agora. Tente de novo.' }, 500);
   }
+  const { status, household_id: householdId } = data as { status: 'left' | 'deleted'; household_id: string };
 
   if (status === 'deleted') {
     const admin = createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
     // A casa já não existe: se a limpeza falhar, as fotos ficam órfãs e
     // inacessíveis (as policies exigem ser da casa), mas a saída vale.
-    await removeHouseholdFiles((name) => admin.storage.from(name), membership.household_id).catch((err) =>
-      console.error('file cleanup failed', membership.household_id, err),
+    await removeHouseholdFiles((name) => admin.storage.from(name), householdId).catch((err) =>
+      console.error('file cleanup failed', householdId, err),
     );
   }
   return json({ status });
