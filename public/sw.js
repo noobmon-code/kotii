@@ -23,23 +23,25 @@ async function precache(urls) {
 
 // Na instalação já guarda a página e o JavaScript/CSS que ela carrega: sem
 // isso, na primeira visita o app instalado não abriria sem internet (a
-// página e o bundle carregaram antes de o service worker existir).
+// página e o bundle carregaram antes de o service worker existir). Se algo
+// falhar, a instalação falha junto e o navegador tenta de novo na próxima
+// visita — nunca fica ativo um service worker sem o app guardado.
 self.addEventListener('install', (event) => {
   event.waitUntil(
     (async () => {
       const response = await fetch(SHELL, { cache: 'reload' });
-      if (response.ok) {
-        const html = await response.clone().text();
-        await (await caches.open(VERSION)).put(SHELL, response);
-        const assets = [...html.matchAll(/(?:src|href)="(\/[^"]+)"/g)]
-          .map((match) => new URL(match[1], self.location.origin))
-          .filter(cacheable)
-          .map((url) => url.pathname);
-        await precache(assets);
-      }
-    })()
-      .catch(() => undefined)
-      .then(() => self.skipWaiting()),
+      if (!response.ok) throw new Error(`${SHELL}: ${response.status}`);
+      const html = await response.clone().text();
+      const assets = [...html.matchAll(/(?:src|href)="(\/[^"]+)"/g)]
+        .map((match) => new URL(match[1], self.location.origin))
+        .filter(cacheable)
+        .map((url) => url.pathname);
+      const cache = await caches.open(VERSION);
+      // addAll falha se qualquer arquivo falhar; a página só entra depois do bundle.
+      await cache.addAll(assets);
+      await cache.put(SHELL, response);
+      await self.skipWaiting();
+    })(),
   );
 });
 
