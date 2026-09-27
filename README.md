@@ -58,7 +58,7 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
    npx supabase functions deploy leave-household
    ```
 
-   Com só a chave da OpenRouter, ela é usada automaticamente. Com as duas, vale a Anthropic, a menos que `RECEIPT_PROVIDER=openrouter`. O modelo pode ser trocado com `RECEIPT_MODEL` (na OpenRouter, precisa ser um modelo que aceita imagem). A leitura de saúde (`parse-health`) usa as mesmas configurações, ou `HEALTH_PROVIDER` e `HEALTH_MODEL` se quiser um modelo diferente para ela. O Nuke (`nuke`) também, ou `NUKE_PROVIDER` e `NUKE_MODEL`.
+   Com só a chave da OpenRouter, ela é usada automaticamente. Com as duas, vale a Anthropic, a menos que `RECEIPT_PROVIDER=openrouter`. O modelo pode ser trocado com `RECEIPT_MODEL` (na OpenRouter, precisa ser um modelo que aceita imagem). A leitura de saúde (`parse-health`) usa as mesmas configurações, ou `HEALTH_PROVIDER` e `HEALTH_MODEL` se quiser um modelo diferente para ela. O Nuke (`nuke`) só conversa, então, com a chave da OpenRouter, usa `deepseek/deepseek-v4.1-flash` (rápido e barato), mesmo que as leituras usem outro modelo; `NUKE_MODEL` troca o modelo e `NUKE_PROVIDER=anthropic` o leva para a Anthropic.
 
    **Limpeza das fotos.** Quando a última pessoa sai e apaga a casa, `leave-household` apaga as fotos dela na hora; se o Storage falhar, a casa fica numa fila que o `pg_cron` reprocessa de hora em hora. Para isso, o banco precisa da URL do projeto e da chave anon no Vault. Rode uma vez no SQL Editor:
 
@@ -108,7 +108,7 @@ Identificador do app: `com.noobmon.nooky` (iOS e Android). Dá para trocar até 
 - **Leitura de nota por IA (OpenRouter):** `google/gemma-4-31b-it:free` por padrão. Modelos `:free` não custam, mas têm limite de chamadas por minuto/dia, podem registrar o conteúdo enviado (as fotos das notas) e tendem a errar mais em cupons longos. A tela de revisão existe para corrigir; se a precisão incomodar, troque o `RECEIPT_MODEL`.
 - **Documentos de saúde e modelos gratuitos:** fichas, dietas e exames são dados de saúde. Modelos `:free` da OpenRouter podem guardar o que recebem; para saúde, prefira um modelo pago sem retenção (`HEALTH_MODEL`) ou a Anthropic (`HEALTH_PROVIDER=anthropic`). Até 6 fotos por leitura.
 - **Uma foto por nota:** cupom muito comprido perde nitidez numa foto só. Várias fotos por nota está no roadmap.
-- **Nuke:** cada mensagem manda para a IA um retrato compacto da casa (poucos milhares de tokens) e as últimas falas, com esforço baixo para responder rápido. Com a Anthropic (claude-opus-5), algo como US$ 0,02 a 0,05 por mensagem; dá para trocar o modelo com `NUKE_MODEL`.
+- **Nuke:** cada mensagem manda para a IA um retrato compacto da casa (poucos milhares de tokens) e as últimas falas, com esforço baixo para responder rápido. Com a OpenRouter, o padrão é o `deepseek/deepseek-v4.1-flash`, de custo baixo por mensagem; com a Anthropic (claude-opus-5), algo como US$ 0,02 a 0,05 por mensagem. Dá para trocar o modelo com `NUKE_MODEL`.
 - **Tempo de leitura:** 10–60 s dependendo do tamanho da nota; o app mostra uma tela de espera.
 - **Unidades:** preço é comparado na unidade da nota. Se a lista pede "3 un" de banana e as notas têm preço por kg, o comparativo usa 1 kg e avisa que a quantidade é aproximada.
 - **Lembretes de consulta, vacina e conta:** por enquanto aparecem na tela Hoje; notificação só existe para remédio.
