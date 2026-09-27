@@ -7,6 +7,7 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 
 import { functionErrorMessage } from '@/data/images';
 import { clearConversation } from '@/features/nuke/conversation';
+import { saveNow } from '@/lib/queryClient';
 import { disableAllReminders } from '@/lib/reminders';
 import { supabase } from '@/lib/supabase';
 
@@ -36,6 +37,8 @@ export function useLeaveHousehold(userId: string | undefined) {
     if (userId) clearConversation(userId);
     await disableAllReminders().catch(() => undefined);
     queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== 'household' });
+    // Tira do aparelho já: fechando o app logo depois, as listas da casa antiga não voltam.
+    saveNow();
     await queryClient.invalidateQueries({ queryKey: ['household'] });
   }
 

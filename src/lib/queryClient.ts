@@ -28,14 +28,44 @@ export const queryClient = new QueryClient({
 });
 registerListMutations(queryClient);
 
+// Online, para o cache, é rede no ar e sessão válida. Com o token vencido à
+// espera de renovação, o Supabase manda os pedidos com a chave pública: a
+// lista voltaria vazia (e seria guardada assim) e a marcação da fila não
+// gravaria nada. Até a sessão ser renovada, o app segue como sem internet.
+let networkUp = true;
+let sessionValid = true;
+let pushOnline: ((online: boolean) => void) | undefined;
+const syncOnline = () => pushOnline?.(networkUp && sessionValid);
+
 // Na web o navegador avisa quando cai a conexão; no celular, o expo-network.
-if (Platform.OS !== 'web') {
-  onlineManager.setEventListener((setOnline) => {
+onlineManager.setEventListener((setOnline) => {
+  pushOnline = setOnline;
+  const setNetwork = (up: boolean) => {
+    networkUp = up;
+    syncOnline();
+  };
+  if (Platform.OS !== 'web') {
     const subscription = Network.addNetworkStateListener((state) =>
-      setOnline(state.isConnected !== false && state.isInternetReachable !== false),
+      setNetwork(state.isConnected !== false && state.isInternetReachable !== false),
     );
     return () => subscription.remove();
-  });
+  }
+  // Na geração das páginas estáticas não há window.
+  if (typeof window === 'undefined' || !window.addEventListener) return undefined;
+  const online = () => setNetwork(true);
+  const offline = () => setNetwork(false);
+  window.addEventListener('online', online);
+  window.addEventListener('offline', offline);
+  return () => {
+    window.removeEventListener('online', online);
+    window.removeEventListener('offline', offline);
+  };
+});
+
+/** A sessão ainda vale (false: venceu e o Supabase ainda não renovou). */
+export function setSessionValid(valid: boolean) {
+  sessionValid = valid;
+  syncOnline();
 }
 
 const STORAGE_KEY = 'nooky:query-cache';
@@ -57,7 +87,7 @@ export const persistOptions = {
  * Grava o cache já, sem o intervalo do persister: uma marcação feita sem
  * internet não pode se perder se o app for fechado logo depois do toque.
  */
-function saveNow() {
+export function saveNow() {
   persistQueryClientSave({
     queryClient,
     persister: immediatePersister,
@@ -73,6 +103,29 @@ queryClient.getMutationCache().subscribe((event) => {
 AppState.addEventListener('change', (state) => {
   if (state !== 'active') saveNow();
 });
+
+/**
+ * Saiu da conta (ou o cache é de outra conta): apaga da memória e do
+ * aparelho na hora, sem esperar o intervalo do persister. Senão o app
+ * fechado logo depois abriria para a próxima conta com as listas da casa
+ * anterior.
+ */
+export function forgetCache() {
+  queryClient.clear();
+  Promise.resolve(immediatePersister.removeClient()).catch(() => undefined);
+}
+
+/**
+ * De quem é o cache: a casa fica guardada com o id de quem entrou
+ * (`['household', userId]`). Só conta a que tem dados: antes de a sessão
+ * chegar, a tela já cria `['household', undefined]`, vazia.
+ */
+export function cacheOwners(): unknown[] {
+  return queryClient
+    .getQueryCache()
+    .findAll({ queryKey: ['household'], predicate: (query) => query.state.data !== undefined })
+    .map((query) => query.queryKey[1]);
+}
 
 /** Depois de restaurar o cache, manda o que ficou na fila. */
 export function resumeQueue() {

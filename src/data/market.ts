@@ -276,7 +276,16 @@ export function newToggleToken(): string {
   return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`;
 }
 
+/** Token vencido e ainda não renovado: o pedido iria com a chave pública e não gravaria nada. */
+export class SessionPendingError extends Error {
+  constructor() {
+    super('Esperando a sessão ser renovada.');
+  }
+}
+
 async function toggleListItem({ id, checked, userId, at, token, nextToken }: ToggleItemInput) {
+  const { data } = await supabase.auth.getSession();
+  if (!data.session) throw new SessionPendingError();
   return unwrap(
     await supabase
       .from('shopping_list_items')
@@ -313,7 +322,11 @@ export function registerListMutations(queryClient: QueryClient) {
     // Pausa sem internet em vez de falhar, e uma de cada vez, na ordem.
     networkMode: 'online',
     scope: { id: 'list-items' },
-    retry: 3,
+    // Sessão à espera de renovação (o Supabase tenta de novo a cada minuto):
+    // insiste por uns 5 minutos em vez de desistir da marcação.
+    retry: (failures, error) => failures < (error instanceof SessionPendingError ? 20 : 3),
+    retryDelay: (failures, error) =>
+      error instanceof SessionPendingError ? 15_000 : Math.min(1000 * 2 ** failures, 30_000),
     // Fila restaurada ao reabrir o app.
     onSettled: () => refreshAfterToggle(queryClient),
   });

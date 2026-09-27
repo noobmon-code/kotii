@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { dehydrate, hydrate, MutationObserver, onlineManager, QueryClient } from '@tanstack/react-query';
 
-import { newToggleToken, onListItemsChange, registerListMutations, TOGGLE_ITEM_KEY, type ToggleItemInput } from '../market';
+import { newToggleToken, onListItemsChange, registerListMutations, SessionPendingError, TOGGLE_ITEM_KEY, type ToggleItemInput } from '../market';
 
 const sent: { id: string; token: string; values: unknown }[] = [];
+const auth = { signedIn: true };
 
 jest.mock('@/lib/supabase', () => ({
   supabase: {
+    auth: { getSession: async () => ({ data: { session: auth.signedIn ? { user: { id: 'u1' } } : null }, error: null }) },
     from: () => ({
       update: (values: unknown) => ({
         eq: (_idColumn: string, id: string) => ({
@@ -38,7 +40,9 @@ function tap(queryClient: QueryClient, input: ToggleItemInput) {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 afterEach(() => {
+  jest.useRealTimers();
   sent.length = 0;
+  auth.signedIn = true;
   onlineManager.setOnline(true);
   // Sem isso, os timers de limpeza do cache seguram o Jest aberto.
   for (const queryClient of clients.splice(0)) queryClient.clear();
@@ -117,6 +121,22 @@ describe('fila de marcações da lista', () => {
     invalidate.mockClear();
     onListItemsChange(queryClient, 'mercado');
     expect(keys()).toEqual([['listItems', 'mercado'], ['lists']]);
+  });
+
+  it('sem sessão válida (token vencido), não envia e tenta de novo depois', async () => {
+    jest.useFakeTimers();
+    auth.signedIn = false;
+    const queryClient = client();
+    tap(queryClient, { id: 'arroz', checked: true, userId: 'u1', at: '2026-09-27T10:00:00Z', token: 'a0', nextToken: 'a1' });
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(sent).toEqual([]);
+    const [mutation] = queryClient.getMutationCache().getAll();
+    expect(mutation.state.status).toBe('pending');
+    expect(mutation.state.failureReason).toBeInstanceOf(SessionPendingError);
+
+    auth.signedIn = true;
+    await jest.advanceTimersByTimeAsync(15_000);
+    expect(sent.map((s) => s.id)).toEqual(['arroz']);
   });
 
   it('cada marcação ganha um selo novo, no formato uuid', () => {
