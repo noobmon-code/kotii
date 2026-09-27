@@ -29,6 +29,17 @@ describe('matchItemArt', () => {
     expect(matchItemArt('Chá (sachê)')).toBe('cha');
   });
 
+  it('dá o desenho do produto, não do sabor ou do ingrediente', () => {
+    expect(matchItemArt('Iogurte de morango')).toBe('iogurte');
+    expect(matchItemArt('Bolo de banana')).toBe('bolo');
+    expect(matchItemArt('Chocolate ao leite')).toBe('chocolate');
+    expect(matchItemArt('Biscoito de chocolate')).toBe('biscoito');
+    expect(matchItemArt('Nuggets de frango')).toBe('nuggets');
+    expect(matchItemArt('Linguiça de frango')).toBe('linguica');
+    expect(matchItemArt('Picolé de limão')).toBe('sorvete');
+    expect(matchItemArt('Café com leite')).toBe('cafe');
+  });
+
   it('deixa a ilustração da categoria quando a palavra engana ou não há desenho', () => {
     expect(matchItemArt('Caldo de carne')).toBeNull();
     expect(matchItemArt('Pão de queijo congelado')).toBeNull();

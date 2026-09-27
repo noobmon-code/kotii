@@ -4,9 +4,11 @@
 
 import { normalizeSearch } from './search';
 
-// Ordem importa: a primeira regra que casa vence ("suco de laranja" é suco,
-// "molho de tomate" é molho). Cada termo casa como palavra inteira, com ou
-// sem "s" no fim, no nome sem acento.
+// Vence o termo que aparece primeiro no nome: o produto vem antes do sabor
+// ou do ingrediente ("iogurte de morango" é iogurte, "chocolate ao leite" é
+// chocolate). No empate, vale a regra que vem antes, a mais específica
+// ("pao de forma" antes de "pao", "couve flor" antes de "couve"). Cada termo
+// casa como palavra inteira, com ou sem "s" no fim, no nome sem acento.
 const RULES = [
   ['agua_sanitaria', ['agua sanitaria', 'alvejante', 'cloro']],
   ['suco', ['suco']],
@@ -107,8 +109,12 @@ const EXCEPTION_REGEXES = EXCEPTIONS.map(wordRegex);
 export function matchItemArt(name: string): ItemArtKey | null {
   const text = normalizeSearch(name).replace(/-/g, ' ');
   if (!text || EXCEPTION_REGEXES.some((re) => re.test(text))) return null;
+  let best: { key: ItemArtKey; index: number } | null = null;
   for (const [key, regexes] of COMPILED) {
-    if (regexes.some((re) => re.test(text))) return key;
+    for (const re of regexes) {
+      const index = re.exec(text)?.index;
+      if (index !== undefined && (!best || index < best.index)) best = { key, index };
+    }
   }
-  return null;
+  return best?.key ?? null;
 }
