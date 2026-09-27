@@ -1,8 +1,9 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { Alert, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 
 import { errorMessage, supabase } from '@/lib/supabase';
+import { notify } from '@/ui/dialogs';
 import { Button, Card, IconBadge, Screen, Segmented, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
@@ -18,15 +19,15 @@ export default function WelcomeScreen() {
 
   async function submit() {
     if (!displayName.trim()) {
-      Alert.alert('Como você quer ser chamado?', 'Informe seu nome para a família te reconhecer.');
+      notify('Como você quer ser chamado?', 'Informe seu nome para a família te reconhecer.');
       return;
     }
     if (mode === 'criar' && !householdName.trim()) {
-      Alert.alert('Dê um nome para a casa', 'Ex.: "Casa da Ana e do Beto".');
+      notify('Dê um nome para a casa', 'Ex.: "Casa da Ana e do Beto".');
       return;
     }
     if (mode === 'entrar' && code.trim().length < 6) {
-      Alert.alert('Código inválido', 'O código de convite tem 6 caracteres.');
+      notify('Código inválido', 'O código de convite tem 6 caracteres.');
       return;
     }
     setBusy(true);
@@ -39,7 +40,7 @@ export default function WelcomeScreen() {
       await queryClient.invalidateQueries({ queryKey: ['household'] });
     } catch (err) {
       const message = errorMessage(err);
-      Alert.alert(
+      notify(
         'Não foi possível continuar',
         /invalid invite code/i.test(message) ? 'Código não encontrado. Confira com quem te convidou.' : message,
       );

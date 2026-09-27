@@ -78,8 +78,8 @@ O backend já roda na nuvem (Supabase). O `npx expo start` só serve o código d
 3. No computador:
 
    ```bash
-   npx eas-cli login
-   npx eas-cli build --platform android --profile preview
+   npx eas-cli@latest login
+   npx eas-cli@latest build --platform android --profile preview
    ```
 
    No fim sai um link do APK: abra no celular, instale e mande o link para a família. O perfil `production` gera o pacote da Play Store.
@@ -129,4 +129,4 @@ scripts/db/         teste local do banco
 
 ## Publicação nas lojas
 
-Ainda falta definir: ícone e splash definitivos, e contas de desenvolvedor Apple (US$ 99/ano) e Google (US$ 25, uma vez). O build e o envio são feitos com EAS (`npx eas-cli build`, `npx eas-cli submit`).
+Ainda falta definir: ícone e splash definitivos, e contas de desenvolvedor Apple (US$ 99/ano) e Google (US$ 25, uma vez). O build e o envio são feitos com EAS (`npx eas-cli@latest build`, `npx eas-cli@latest submit`).
