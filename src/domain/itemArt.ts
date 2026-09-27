@@ -117,10 +117,27 @@ function inflect(word: string): string {
   return `${stem(0)}s?`;
 }
 const wordRegex = (term: string) =>
-  new RegExp(`(?:^|[^a-z0-9])${term.split(' ').map(inflect).join('\\s+')}(?=[^a-z0-9]|$)`);
+  new RegExp(`(?:^|[^a-z0-9])${term.split(' ').map(inflect).join('\\s+')}(?=[^a-z0-9]|$)`, 'g');
 
 const COMPILED = RULES.map(([key, terms]) => [key, terms.map(wordRegex)] as const);
 const EXCEPTION_REGEXES = EXCEPTIONS.map(wordRegex);
+
+// Depois de "de", "com", "sabor"…, o termo é o sabor ou o ingrediente de
+// outro produto ("gelatina de morango", "ração sabor frango"): não é o item.
+const FLAVOR_BEFORE = /(?:^|\s)(?:a|ao|com|da|das|de|do|dos|e|sabor)\s*$/;
+// Corte ou embalagem no começo não é o produto: "file de tilapia", "barra de
+// cereal", "lata de atum" continuam peixe, cereal e atum.
+const CUT_OR_PACK = /^(?:asa|bandeja|barra|caixa|fatia|file|kit|lata|pacote|pedaco|posta|pote|sache|saco|sobrecoxa|coxa)s?\s+(?:de|do|da)\s*$/;
+
+/** Posição do primeiro trecho que casa e não é sabor de outro produto. */
+function productIndex(re: RegExp, text: string): number | undefined {
+  for (const match of text.matchAll(re)) {
+    const start = /[a-z0-9]/.test(text[match.index]) ? match.index : match.index + 1;
+    const before = text.slice(0, start);
+    if (!FLAVOR_BEFORE.test(before) || CUT_OR_PACK.test(before)) return match.index;
+  }
+  return undefined;
+}
 
 /** Chave da ilustração do item pelo nome, ou null para usar a da categoria. */
 export function matchItemArt(name: string): ItemArtKey | null {
@@ -129,12 +146,12 @@ export function matchItemArt(name: string): ItemArtKey | null {
   let best: { key: ItemArtKey; index: number } | null = null;
   for (const [key, regexes] of COMPILED) {
     for (const re of regexes) {
-      const index = re.exec(text)?.index;
+      const index = productIndex(re, text);
       if (index !== undefined && (!best || index < best.index)) best = { key, index };
     }
   }
   if (!best) return null;
   // A exceção no mesmo lugar ou antes do produto é o próprio produto.
-  const exception = Math.min(...EXCEPTION_REGEXES.map((re) => re.exec(text)?.index ?? Infinity));
+  const exception = Math.min(...EXCEPTION_REGEXES.map((re) => text.matchAll(re).next().value?.index ?? Infinity));
   return exception <= best.index ? null : best.key;
 }

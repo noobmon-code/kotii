@@ -42,6 +42,17 @@ describe('matchItemArt', () => {
     expect(matchItemArt('Bolo de leite condensado')).toBe('bolo');
   });
 
+  it('produto sem desenho não pega o desenho do sabor', () => {
+    expect(matchItemArt('Gelatina de morango')).toBeNull();
+    expect(matchItemArt('Salgadinho sabor queijo')).toBeNull();
+    expect(matchItemArt('Ração sabor frango')).toBeNull();
+    expect(matchItemArt('Mini pizza')).toBe('pizza');
+    expect(matchItemArt('Nescau achocolatado')).toBe('chocolate');
+    expect(matchItemArt('Filé de tilápia')).toBe('peixe');
+    expect(matchItemArt('Lata de atum')).toBe('atum');
+    expect(matchItemArt('Barra de cereal')).toBe('cereal');
+  });
+
   it('reconhece plurais irregulares', () => {
     expect(matchItemArt('Mamões')).toBe('mamao');
     expect(matchItemArt('Melões')).toBe('melao');
