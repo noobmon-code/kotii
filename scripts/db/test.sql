@@ -298,6 +298,9 @@ begin
   assert found, 'a newer toggle goes through';
   update public.shopping_list_items set quantity = 2 where name = 'Banana';
   assert found, 'other edits are not blocked';
+  -- Volta como estava: Banana no carrinho.
+  update public.shopping_list_items set quantity = 1.5, checked_at = now(), checked_by = auth.uid(), toggled_at = '2026-09-27 10:15'
+    where name = 'Banana';
 end $$;
 
 select set_config('request.jwt.claim.sub', :'user_c', false) \gset
