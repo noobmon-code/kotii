@@ -13,13 +13,13 @@ export type Mood = 'happy' | 'calm' | 'wow' | 'sleep' | 'think';
 export type Shape = 'round' | 'bean' | 'drop';
 
 // Corpos num quadro de 100 x 100.
-const BODIES: Record<Shape, string> = {
+export const BODIES: Record<Shape, string> = {
   round: 'M50 10 C73 10 90 26 90 51 C90 75 73 90 50 90 C27 90 10 75 10 51 C10 26 27 10 50 10 Z',
   bean: 'M52 12 C75 12 91 27 90 50 C89 73 74 90 50 90 C28 90 10 77 10 55 C10 40 18 33 24 26 C31 17 40 12 52 12 Z',
   drop: 'M50 6 C60 20 88 34 88 60 C88 79 71 92 50 92 C29 92 12 79 12 60 C12 34 40 20 50 6 Z',
 };
 
-const CHEEK = '#FF6F91';
+export const CHEEK = '#FF6F91';
 
 /** Rosto num quadro de 100 x 100, centrado em (50, 55). */
 function Face({ mood, cheeks = true }: { mood: Mood; cheeks?: boolean }) {
@@ -79,7 +79,7 @@ export function Mascot({
 }
 
 /** Brilho de quatro pontas. */
-function sparkle(x: number, y: number, r: number) {
+export function sparkle(x: number, y: number, r: number) {
   return `M${x} ${y - r} Q${x + r * 0.18} ${y - r * 0.18} ${x + r} ${y} Q${x + r * 0.18} ${y + r * 0.18} ${x} ${y + r} Q${x - r * 0.18} ${y + r * 0.18} ${x - r} ${y} Q${x - r * 0.18} ${y - r * 0.18} ${x} ${y - r} Z`;
 }
 

@@ -1,7 +1,8 @@
 import { router } from 'expo-router';
 import { Pressable, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
 
-import { Floating, NukeAvatar } from '@/ui/art';
+import { Floating } from '@/ui/art';
+import { NukeLive } from '@/ui/NukeLive';
 import { useColors } from '@/ui/theme';
 
 /** Botão flutuante do Nuke, no canto inferior direito das abas. */
@@ -19,7 +20,7 @@ export function NukeButton({ style }: { style?: StyleProp<ViewStyle> }) {
         style,
       ]}>
       <Floating distance={2} duration={1800}>
-        <NukeAvatar size={42} />
+        <NukeLive size={42} />
       </Floating>
     </Pressable>
   );

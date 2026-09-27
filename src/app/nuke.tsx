@@ -18,6 +18,7 @@ import {
 import { useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { Floating, NukeAvatar } from '@/ui/art';
+import { NukeLive } from '@/ui/NukeLive';
 import { confirmAction, notify } from '@/ui/dialogs';
 import { Button, Chip, IconButton, Row, Text } from '@/ui/primitives';
 import { fonts, MAX_WIDTH, radius, space, useColors } from '@/ui/theme';
@@ -41,7 +42,16 @@ export default function NukeScreen() {
   const runAction = useRunNukeAction();
   const [draft, setDraft] = useState('');
   const [running, setRunning] = useState<string | null>(null);
+  // Reação do Nuke no topo: mexe a boca ao responder, se espanta com erro.
+  const [reaction, setReaction] = useState<'talk' | 'wow' | null>(null);
+  const reactionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scroll = useRef<ScrollView>(null);
+
+  function react(kind: 'talk' | 'wow') {
+    if (reactionTimer.current) clearTimeout(reactionTimer.current);
+    setReaction(kind);
+    reactionTimer.current = setTimeout(() => setReaction(null), kind === 'talk' ? 1800 : 2200);
+  }
 
   const context = snapshot.status === 'ready' ? snapshot.context : null;
   const ready = Boolean(userId && context !== null);
@@ -60,16 +70,18 @@ export default function NukeScreen() {
     const since = conversationEpoch();
     ask
       .mutateAsync({ messages: history, context, today })
-      .then((answer) =>
+      .then((answer) => {
         updateConversation(
           userId,
           (m) => [...m, { id: newMessageId(), role: 'assistant', text: answer.reply, actions: answer.actions }],
           since,
-        ),
-      )
-      .catch((err) =>
-        updateConversation(userId, (m) => [...m, { id: newMessageId(), role: 'assistant', text: errorMessage(err), error: true }], since),
-      )
+        );
+        react('talk');
+      })
+      .catch((err) => {
+        updateConversation(userId, (m) => [...m, { id: newMessageId(), role: 'assistant', text: errorMessage(err), error: true }], since);
+        react('wow');
+      })
       .finally(() => setPending(userId, false, since));
   }
 
@@ -99,7 +111,7 @@ export default function NukeScreen() {
         <View style={[styles.header, { borderBottomColor: c.border }]}>
           <IconButton icon="close" label="Fechar" onPress={() => router.back()} />
           <Row style={styles.headerTitle}>
-            <NukeAvatar size={30} />
+            <NukeLive size={30} state={busy ? 'think' : (reaction ?? 'idle')} />
             <View>
               <Text variant="heading">Nuke</Text>
               <Text variant="small">assistente da casa</Text>
@@ -125,7 +137,7 @@ export default function NukeScreen() {
           {messages.length === 0 ? (
             <View style={styles.welcome}>
               <Floating distance={8}>
-                <NukeAvatar size={112} />
+                <NukeLive size={112} hop />
               </Floating>
               <Text variant="title" style={styles.center}>
                 Oi{name ? `, ${name}` : ''}! Eu sou o Nuke.
@@ -201,9 +213,7 @@ export default function NukeScreen() {
 
           {busy ? (
             <View style={styles.theirsRow}>
-              <Floating distance={3} duration={600}>
-                <NukeAvatar size={28} mood="think" />
-              </Floating>
+              <NukeLive size={28} state="think" />
               <View style={[styles.bubble, styles.theirs, { backgroundColor: c.surface, borderColor: c.border }]}>
                 <Text variant="body" color="textMuted">
                   Pensando…
