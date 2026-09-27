@@ -53,7 +53,7 @@ export default function PricesScreen() {
           {rows.map(({ product, summary: { unit, cheapest, highest, storeCount, otherUnits }, storeName }) => (
             <ListRow
               key={product.id}
-              left={<CategoryIcon category={product.category} size={36} />}
+              left={<CategoryIcon category={product.category} name={product.name} size={36} />}
               title={product.name}
               subtitle={[
                 storeCount > 1

@@ -448,7 +448,7 @@ function ShoppingSection({ plan, onEdit }: { plan: DietPlan; onEdit: (index: num
               return (
                 <ListRow
                   key={`${index}-${item.name}`}
-                  left={<CategoryIcon category={item.category} size={32} />}
+                  left={<CategoryIcon category={item.category} name={item.name} size={32} />}
                   title={item.name}
                   subtitle={item.inList ? 'Já está na lista' : undefined}
                   dimmed={item.inList}

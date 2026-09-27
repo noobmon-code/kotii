@@ -229,7 +229,7 @@ export default function ReceiptScreen() {
           ) : (
             <Card key={item.id}>
               <ListRow
-                left={<CategoryIcon category={resolved.category} size={36} />}
+                left={<CategoryIcon category={resolved.category} name={catalog.get(item.product_id ?? '')?.name ?? item.raw_description} size={36} />}
                 title={item.product_id ? (catalog.get(item.product_id)?.name ?? item.raw_description) : item.raw_description}
                 subtitle={`${formatQuantity(item.quantity, item.unit)} × ${formatBRL(item.unit_price)}`}
                 right={<Text variant="label">{formatBRL(item.total_price)}</Text>}
@@ -288,7 +288,7 @@ export default function ReceiptScreen() {
           id: p.id,
           title: p.name,
           subtitle: getCategory(p.category).label,
-          left: <CategoryIcon category={p.category} size={32} />,
+          left: <CategoryIcon category={p.category} name={p.name} size={32} />,
         }))}
         onClose={() => setPicker(null)}
         onSelect={(productId) => {
@@ -406,11 +406,18 @@ function DraftItemCard({
       : product.kind === 'new'
         ? `Novo: ${product.name}`
         : 'Sem acompanhamento de preço';
+  // O desenho segue o produto escolhido: "LT INT ITALAC" ligado a "Leite integral" vira leite.
+  const artName =
+    product.kind === 'existing'
+      ? resolved.productName ?? item.raw_description
+      : product.kind === 'new'
+        ? product.name
+        : item.raw_description;
 
   return (
     <Card style={styles.gapSm}>
       <Row>
-        <CategoryIcon category={resolved.category} size={36} />
+        <CategoryIcon category={resolved.category} name={artName} size={36} />
         <View style={styles.flex}>
           <Text variant="small">{item.raw_description}</Text>
           <Text variant="muted">

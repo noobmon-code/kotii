@@ -18,8 +18,10 @@ import {
 import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
 
 import { getCategory, type IconName } from '@/domain/categories';
+import { matchItemArt } from '@/domain/itemArt';
 import { Mascot, Spot, type Mood } from './art';
 import { CATEGORY_ART } from './categoryArt';
+import { ITEM_ART } from './itemArt';
 import { fonts, MAX_WIDTH, radius, space, useColors, useTint, type Colors, type Tint } from './theme';
 
 export type { IconName };
@@ -391,26 +393,30 @@ export function useCategoryTint(category: string) {
 }
 
 /**
- * Ilustração da categoria sobre um círculo pastel (categoria desconhecida vira
- * "outros"). `backdrop={false}` tira o círculo, para quem já pinta o fundo com
- * useCategoryTint; `dimmed` esmaece (item já no carrinho).
+ * Ilustração sobre um círculo pastel da categoria (categoria desconhecida vira
+ * "outros"). Com `name`, itens conhecidos (banana, arroz, leite…) ganham o
+ * desenho próprio. `backdrop={false}` tira o círculo, para quem já pinta o
+ * fundo com useCategoryTint; `dimmed` esmaece (item já no carrinho).
  */
 export function CategoryIcon({
   category,
+  name,
   size = 40,
   backdrop = true,
   dimmed = false,
 }: {
   category: string;
+  name?: string;
   size?: number;
   backdrop?: boolean;
   dimmed?: boolean;
 }) {
   const art = CATEGORY_ART[getCategory(category).key];
   const tint = useTint(art.tint);
+  const itemKey = name ? matchItemArt(name, category) : null;
   const image = (
     <Image
-      source={art.image}
+      source={itemKey ? ITEM_ART[itemKey] : art.image}
       style={{ width: size, height: size, opacity: dimmed ? 0.45 : 1 }}
       contentFit="contain"
       accessible={false}

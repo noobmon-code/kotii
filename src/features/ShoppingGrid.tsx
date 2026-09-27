@@ -79,7 +79,7 @@ function Tile({
         { width, backgroundColor: inCart ? c.surfaceAlt : tint.bg },
         pressed && styles.pressed,
       ]}>
-      <CategoryIcon category={item.category} size={artSize} backdrop={false} dimmed={inCart} />
+      <CategoryIcon category={item.category} name={item.name} size={artSize} backdrop={false} dimmed={inCart} />
       <Text
         variant="label"
         numberOfLines={2}
