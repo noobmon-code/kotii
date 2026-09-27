@@ -103,18 +103,19 @@ const EXCEPTIONS = ['caldo', 'filtro de cafe', 'pao de queijo', 'batata palha', 
 
 const escape = (term: string) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // Cada palavra do termo, no singular ou no plural ("paes de forma", "sacos de
-// lixo"): mamao/mamoes/paes, hamburguer/hamburgueres, papel/papeis, ovo/ovos.
+// lixo"): mamao/mamoes/paes, hamburguer/hamburgueres, frances/franceses,
+// papel/papeis, atum/atuns, ovo/ovos.
 const CONNECTORS = new Set(['ao', 'com', 'da', 'de', 'do', 'em', 'para']);
-const inflect = (word: string) =>
-  CONNECTORS.has(word)
-    ? word
-    : word.endsWith('ao')
-      ? `${escape(word.slice(0, -2))}(?:ao|oes|aes|aos)`
-      : /[rz]$/.test(word)
-        ? `${escape(word)}(?:es|s)?`
-        : word.endsWith('l')
-          ? `${escape(word.slice(0, -1))}(?:l|is)`
-          : `${escape(word)}s?`;
+function inflect(word: string): string {
+  if (CONNECTORS.has(word)) return word;
+  const stem = (cut: number) => escape(word.slice(0, word.length - cut));
+  if (word.endsWith('ao')) return `${stem(2)}(?:ao|oes|aes|aos)`;
+  if (/[rz]$/.test(word)) return `${stem(0)}(?:es|s)?`;
+  if (word.endsWith('s')) return `${stem(0)}(?:es)?`;
+  if (word.endsWith('l')) return `${stem(1)}(?:l|is)`;
+  if (word.endsWith('m')) return `${stem(1)}(?:m|ns)`;
+  return `${stem(0)}s?`;
+}
 const wordRegex = (term: string) =>
   new RegExp(`(?:^|[^a-z0-9])${term.split(' ').map(inflect).join('\\s+')}(?=[^a-z0-9]|$)`);
 

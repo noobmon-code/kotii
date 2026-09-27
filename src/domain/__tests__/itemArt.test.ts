@@ -48,6 +48,10 @@ describe('matchItemArt', () => {
     expect(matchItemArt('Pimentões')).toBe('pimentao');
     expect(matchItemArt('Pães franceses')).toBe('pao_frances');
     expect(matchItemArt('Hambúrgueres')).toBe('hamburguer');
+    expect(matchItemArt('Atuns em lata')).toBe('atum');
+    expect(matchItemArt('Bombons sortidos')).toBe('chocolate');
+    expect(matchItemArt('Talharins')).toBe('macarrao');
+    expect(matchItemArt('Nuggets')).toBe('nuggets');
   });
 
   it('reconhece o plural na primeira palavra de nomes compostos', () => {
