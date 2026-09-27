@@ -12,11 +12,12 @@ import {
   useShoppingList,
   useToggleListItem,
 } from '@/data/market';
-import { getCategory } from '@/domain/categories';
+import { compareByAisle, getCategory } from '@/domain/categories';
 import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
-import { formatQuantity, parseDecimal } from '@/domain/money';
+import { parseDecimal } from '@/domain/money';
 import { guessCategory, normalizeSearch } from '@/domain/search';
 import { CommonItemsPicker } from '@/features/CommonItemsPicker';
+import { ShoppingGrid } from '@/features/ShoppingGrid';
 import { useAuth } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { UNITS, type Product, type ShoppingListItem, type Unit } from '@/lib/types';
@@ -25,11 +26,9 @@ import {
   Button,
   Card,
   CategoryIcon,
-  CheckCircle,
   Chip,
   EmptyState,
   ErrorNotice,
-  ListCard,
   ListRow,
   Loading,
   Row,
@@ -114,40 +113,19 @@ export default function ShoppingListScreen() {
     );
   }
 
-  const pending = (items.data ?? []).filter((i) => !i.checked_at);
-  const checked = (items.data ?? []).filter((i) => i.checked_at);
+  // Na ordem dos corredores do mercado: frescos, despensa, bebidas, casa…
+  const pending = (items.data ?? []).filter((i) => !i.checked_at).sort(compareByAisle);
+  const checked = (items.data ?? []).filter((i) => i.checked_at).sort(compareByAisle);
   const pendingNames = new Set(pending.map((i) => normalizeSearch(i.name)));
-  const groups = new Map<string, ShoppingListItem[]>();
-  for (const item of pending) groups.set(item.category, [...(groups.get(item.category) ?? []), item]);
-  const byCategory = [...groups.entries()].sort(([a], [b]) =>
-    getCategory(a).label.localeCompare(getCategory(b).label),
-  );
 
   if (list.isPending || items.isPending) return <Loading />;
   if (list.isError) return <ErrorNotice error={list.error} onRetry={() => list.refetch()} />;
   if (items.isError) return <ErrorNotice error={items.error} onRetry={() => items.refetch()} />;
 
-  const renderItem = (item: ShoppingListItem) => (
-    <ListRow
-      key={item.id}
-      left={<CategoryIcon category={item.category} size={36} />}
-      title={item.name}
-      subtitle={formatQuantity(item.quantity, item.unit)}
-      dimmed={Boolean(item.checked_at)}
-      onLongPress={() =>
-        confirmAction('Remover item', `Remover "${item.name}" da lista?`, 'Remover', () =>
-          remove.mutate(item.id, { onError }),
-        )
-      }
-      right={
-        <CheckCircle
-          checked={Boolean(item.checked_at)}
-          label={`Marcar ${item.name}`}
-          onPress={() => toggle.mutate({ id: item.id, checked: !item.checked_at, userId: session!.user.id }, { onError })}
-        />
-      }
-    />
-  );
+  const toggleItem = (item: ShoppingListItem) =>
+    toggle.mutate({ id: item.id, checked: !item.checked_at, userId: session!.user.id }, { onError });
+  const removeItem = (item: ShoppingListItem) =>
+    confirmAction('Remover item', `Remover "${item.name}" da lista?`, 'Remover', () => remove.mutate(item.id, { onError }));
 
   return (
     <Screen
@@ -218,23 +196,32 @@ export default function ShoppingListScreen() {
         />
       ) : null}
 
-      {byCategory.map(([category, categoryItems]) => (
-        <Section key={category} title={getCategory(category).label}>
-          <ListCard>{categoryItems.map(renderItem)}</ListCard>
+      {pending.length ? (
+        <Section title={`Para comprar (${pending.length})`}>
+          <ShoppingGrid items={pending} onToggle={toggleItem} onRemove={removeItem} />
         </Section>
-      ))}
+      ) : checked.length ? (
+        <EmptyState
+          icon="cart-check"
+          title="Tudo no carrinho!"
+          message="Quando guardar as compras, limpe o carrinho."
+          tint="green"
+        />
+      ) : null}
 
       {checked.length ? (
         <Section
           title={`No carrinho (${checked.length})`}
           action={<Button title="Limpar" variant="ghost" compact onPress={() => clearChecked.mutate(undefined, { onError })} />}>
-          <ListCard>{checked.map(renderItem)}</ListCard>
+          <ShoppingGrid items={checked} inCart onToggle={toggleItem} onRemove={removeItem} />
         </Section>
       ) : null}
 
-      <Text variant="small" style={styles.center}>
-        Toque e segure um item para removê-lo.
-      </Text>
+      {pending.length || checked.length ? (
+        <Text variant="small" style={styles.center}>
+          Toque num item para pôr no carrinho; toque de novo para devolver. Segure para remover.
+        </Text>
+      ) : null}
       <CommonItemsPicker
         visible={pickerOpen}
         listKind={list.data.kind}
