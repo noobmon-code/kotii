@@ -4,7 +4,8 @@ import { StyleSheet, View } from 'react-native';
 
 import { errorMessage, supabase } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
-import { Button, Card, IconBadge, Screen, Segmented, Text, TextField } from '@/ui/primitives';
+import { Spot } from '@/ui/art';
+import { Button, Card, Screen, Segmented, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 type Mode = 'criar' | 'entrar';
@@ -52,7 +53,7 @@ export default function WelcomeScreen() {
   return (
     <Screen edges={['top', 'bottom']}>
       <View style={styles.hero}>
-        <IconBadge icon="account-group-outline" tone="primary" size={64} />
+        <Spot tint="purple" size={140} shape="bean" />
         <Text variant="title">Sua casa</Text>
         <Text variant="muted" style={styles.center}>
           Tudo no Nooky é compartilhado com quem mora com você. Crie a casa ou entre com o código de convite.

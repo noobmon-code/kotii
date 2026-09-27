@@ -1,6 +1,7 @@
 import { Modal, StyleSheet, View } from 'react-native';
 
-import { Loading, Text } from './primitives';
+import { Floating, Mascot } from './art';
+import { Text } from './primitives';
 import { space, useColors } from './theme';
 
 /** Tela de espera por cima de tudo (ex.: leitura com IA). */
@@ -9,7 +10,9 @@ export function BusyOverlay({ visible, title, message }: { visible: boolean; tit
   return (
     <Modal visible={visible} transparent animationType="fade">
       <View style={[styles.backdrop, { backgroundColor: c.background }]}>
-        <Loading />
+        <Floating distance={10}>
+          <Mascot size={104} color={c.brand} mood="think" />
+        </Floating>
         <Text variant="heading" style={styles.center}>
           {title}
         </Text>

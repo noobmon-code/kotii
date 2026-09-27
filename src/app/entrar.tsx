@@ -3,7 +3,8 @@ import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 
 import { errorMessage, supabase } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
-import { Button, IconBadge, Screen, Segmented, Text, TextField } from '@/ui/primitives';
+import { FamilyArt, Logo } from '@/ui/art';
+import { Button, Screen, Segmented, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 type Mode = 'entrar' | 'criar';
@@ -44,10 +45,10 @@ export default function SignInScreen() {
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <Screen edges={['top', 'bottom']}>
         <View style={styles.hero}>
-          <IconBadge icon="home-heart" tone="primary" size={72} />
-          <Text variant="title">Nooky</Text>
-          <Text variant="muted" style={styles.center}>
-            Compras, despensa, tarefas e saúde da casa num lugar só — para a família toda.
+          <FamilyArt width={260} />
+          <Logo size={36} />
+          <Text variant="body" style={styles.center}>
+            A casa em ordem, sem esforço: compras, contas, tarefas e saúde da família num lugar só.
           </Text>
         </View>
         <Segmented
@@ -94,6 +95,6 @@ function translateAuthError(message: string): string {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   center: { textAlign: 'center' },
-  hero: { alignItems: 'center', gap: space.md, paddingTop: space.xxl },
+  hero: { alignItems: 'center', gap: space.md, paddingTop: space.xl },
   form: { gap: space.lg },
 });

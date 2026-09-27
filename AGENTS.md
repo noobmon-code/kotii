@@ -43,6 +43,7 @@ Docs: https://docs.expo.dev/eas/index.md
 ## Nooky — project notes
 
 - Product copy and UI text are in Brazilian Portuguese; code identifiers in English.
+- Visual identity (Headspace-inspired): warm cream/indigo backgrounds, pill buttons, big rounded cards, Nunito font and friendly round characters. Use the tokens in `src/ui/theme.ts` (`useColors`, `useTint`, `fonts`, `radius`) and the SVG art in `src/ui/art.tsx` (`Mascot`, `Spot`, `SkyArt`, `Logo`); never hardcode colors or font weights in screens (Nunito picks the weight by family, not `fontWeight`).
 - `src/domain/` holds pure business rules (no React, no Supabase) with Jest tests in `src/domain/__tests__/`. Keep logic there and screens thin.
 - Database changes go in a new file under `supabase/migrations/`; every household table uses `household_id = current_household_id()` RLS. Run `npm run test:db` (temporary Postgres + Supabase stubs in `scripts/db/`) after schema changes.
 - `supabase/functions/` is Deno (excluded from tsconfig/ESLint): verify with `deno check`, `deno lint`, `deno test` inside the function folder. AI calls (Anthropic/OpenRouter) live in `_shared/vision.ts`, shared by `parse-receipt` and `parse-health`; `_shared` has its own `deno.json` for its tests.

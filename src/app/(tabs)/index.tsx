@@ -30,6 +30,7 @@ import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useHousehold } from '@/lib/auth';
 import type { Bill } from '@/lib/types';
 import { errorMessage } from '@/lib/supabase';
+import { periodOf, SkyArt, type Period } from '@/ui/art';
 import { notify } from '@/ui/dialogs';
 import {
   Badge,
@@ -46,16 +47,18 @@ import {
   Text,
   Tile,
 } from '@/ui/primitives';
-import { space } from '@/ui/theme';
+import { radius, space, useTint, type Tint } from '@/ui/theme';
 
 const capitalizeFirst = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
 function greeting(now: Date): string {
   const h = now.getHours();
-  if (h < 12) return 'Bom dia';
-  if (h < 18) return 'Boa tarde';
+  if (h >= 5 && h < 12) return 'Bom dia';
+  if (h >= 12 && h < 18) return 'Boa tarde';
   return 'Boa noite';
 }
+
+const HERO_TINT: Record<Period, Tint> = { morning: 'yellow', afternoon: 'orange', night: 'purple' };
 
 export default function TodayScreen() {
   const now = new Date();
@@ -110,6 +113,21 @@ export default function TodayScreen() {
     !warrantiesEnding.length &&
     !hasHealthToday(health, today);
   const dateLabel = capitalizeFirst(now.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }));
+  const period = periodOf(now);
+  const hero = useTint(HERO_TINT[period]);
+  const attention =
+    pendingDoses.length +
+    dueChores.length +
+    billsDue.length +
+    expiring.length +
+    documentsDue.length +
+    warrantiesEnding.length +
+    drafts.length;
+  const summary = nothingPending
+    ? 'Tudo em dia por aqui.'
+    : attention > 0
+      ? `${attention} ${attention === 1 ? 'coisa pede' : 'coisas pedem'} sua atenção.`
+      : 'Veja o que tem para hoje.';
   const nowTime = currentTimeHHMM(now);
   const members = household.data?.members ?? [];
 
@@ -117,22 +135,29 @@ export default function TodayScreen() {
 
   return (
     <Screen refreshing={refreshing} onRefresh={refresh}>
-      <View>
-        <Text variant="title">
-          {greeting(now)}, {household.data?.me.display_name ?? ''}
-        </Text>
-        <Text variant="muted">{dateLabel}</Text>
+      <View style={[styles.hero, { backgroundColor: hero.bg }]}>
+        <View style={styles.heroText}>
+          <Text variant="small">{dateLabel}</Text>
+          <Text variant="display">
+            {greeting(now)},{'\n'}
+            {household.data?.me.display_name ?? ''}
+          </Text>
+          <Text variant="body">{summary}</Text>
+        </View>
+        <SkyArt period={period} size={104} />
       </View>
 
       <View style={styles.quickActions}>
-        <Tile icon="camera-outline" label="Escanear nota" onPress={scanner.open} />
+        <Tile icon="camera-outline" tint="orange" label="Escanear nota" onPress={scanner.open} />
         <Tile
           icon="cart-outline"
+          tint="blue"
           label="Listas de compras"
           onPress={() => router.push({ pathname: '/casa', params: { aba: 'compras' } })}
         />
         <Tile
           icon="broom"
+          tint="green"
           label="Nova tarefa"
           onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: 'nova' } })}
         />
@@ -142,6 +167,8 @@ export default function TodayScreen() {
         <Card>
           <EmptyState
             icon="check-circle-outline"
+            tint="green"
+            mood="calm"
             title="Tudo em dia"
             message="Nenhum remédio, consulta, tarefa, conta, validade ou documento pedindo atenção agora."
           />
@@ -308,5 +335,14 @@ export default function TodayScreen() {
 }
 
 const styles = StyleSheet.create({
+  hero: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    borderRadius: radius.xl,
+    padding: space.xl,
+    paddingRight: space.md,
+  },
+  heroText: { flex: 1, gap: space.xs },
   quickActions: { flexDirection: 'row', gap: space.md },
 });

@@ -1,3 +1,10 @@
+import {
+  Nunito_400Regular,
+  Nunito_600SemiBold,
+  Nunito_700Bold,
+  Nunito_800ExtraBold,
+  useFonts,
+} from '@expo-google-fonts/nunito';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { DarkTheme, DefaultTheme, SplashScreen, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -8,7 +15,7 @@ import { AuthProvider, useAuth, useHousehold } from '@/lib/auth';
 import { configureNotifications } from '@/lib/reminders';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import { EmptyState, ErrorNotice, Screen } from '@/ui/primitives';
-import { useColors } from '@/ui/theme';
+import { fonts, useColors } from '@/ui/theme';
 
 SplashScreen.preventAutoHideAsync();
 configureNotifications();
@@ -32,7 +39,9 @@ function AppNavigator() {
   const colors = useColors();
   const { session, loading } = useAuth();
   const household = useHousehold();
-  const resolving = loading || (Boolean(session) && household.isPending);
+  // Sem a fonte carregada o texto pisca em outra fonte; se falhar, segue com a do sistema.
+  const [fontsLoaded, fontError] = useFonts({ Nunito_400Regular, Nunito_600SemiBold, Nunito_700Bold, Nunito_800ExtraBold });
+  const resolving = loading || (Boolean(session) && household.isPending) || (!fontsLoaded && !fontError);
 
   useEffect(() => {
     if (!resolving || !isSupabaseConfigured) SplashScreen.hideAsync();
@@ -68,7 +77,7 @@ function AppNavigator() {
         screenOptions={{
           headerBackButtonDisplayMode: 'minimal',
           headerTintColor: colors.primary,
-          headerTitleStyle: { color: colors.text },
+          headerTitleStyle: { color: colors.text, fontFamily: fonts.heavy, fontSize: 18 },
           headerStyle: { backgroundColor: colors.background },
           headerShadowVisible: false,
           contentStyle: { backgroundColor: colors.background },

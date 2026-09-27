@@ -10,7 +10,7 @@ import { HealthTodaySections } from '@/features/health/HealthTodaySections';
 import { MedicationsToday } from '@/features/health/MedicationSections';
 import { PlansPanel } from '@/features/health/PlansPanel';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
-import { Card, EmptyState, Screen, Segmented, Text, Tile } from '@/ui/primitives';
+import { Card, EmptyState, PageTitle, Screen, Segmented, Tile } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 type Tab = 'resumo' | 'cuidados' | 'treino' | 'dieta';
@@ -34,7 +34,7 @@ export default function HealthScreen() {
 
   return (
     <Screen refreshing={refreshing} onRefresh={refresh}>
-      <Text variant="title">Saúde</Text>
+      <PageTitle title="Saúde" subtitle="Cuidados, treino e dieta da família" tint="pink" />
       <Segmented
         value={tab}
         onChange={(value) => router.setParams({ aba: value })}
@@ -71,9 +71,9 @@ function SummaryPanel({ today }: { today: string }) {
   return (
     <View style={styles.gap}>
       <View style={styles.tiles}>
-        <Tile icon="stethoscope" label="Consulta" onPress={() => newItem('/consulta/[id]')} />
-        <Tile icon="needle" label="Vacina" onPress={() => newItem('/vacina/[id]')} />
-        <Tile icon="test-tube" label="Exame" onPress={() => newItem('/exame/[id]')} />
+        <Tile icon="stethoscope" tint="pink" label="Consulta" onPress={() => newItem('/consulta/[id]')} />
+        <Tile icon="needle" tint="purple" label="Vacina" onPress={() => newItem('/vacina/[id]')} />
+        <Tile icon="test-tube" tint="blue" label="Exame" onPress={() => newItem('/exame/[id]')} />
       </View>
       <MedicationsToday today={today} />
       <HealthTodaySections overview={overview} today={today} />
