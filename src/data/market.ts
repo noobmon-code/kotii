@@ -255,11 +255,13 @@ export interface ToggleItemInput {
   at: string;
 }
 
+// `toggled_at` leva a hora do toque: no banco, uma marcação atrasada (feita
+// antes da última já gravada, por outra pessoa) não passa por cima dela.
 async function toggleListItem({ id, checked, userId, at }: ToggleItemInput) {
   return unwrap(
     await supabase
       .from('shopping_list_items')
-      .update(checked ? { checked_at: at, checked_by: userId } : { checked_at: null, checked_by: null })
+      .update(checked ? { checked_at: at, checked_by: userId, toggled_at: at } : { checked_at: null, checked_by: null, toggled_at: at })
       .eq('id', id),
   );
 }

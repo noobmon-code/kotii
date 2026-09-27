@@ -6,11 +6,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 import { onlineManager, QueryClient } from '@tanstack/react-query';
-import type { PersistQueryClientProviderProps } from '@tanstack/react-query-persist-client';
+import { persistQueryClientSave, type PersistQueryClientProviderProps } from '@tanstack/react-query-persist-client';
 import * as Network from 'expo-network';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 
-import { registerListMutations } from '@/data/market';
+import { registerListMutations, TOGGLE_ITEM_KEY } from '@/data/market';
 
 const WEEK = 1000 * 60 * 60 * 24 * 7;
 
@@ -38,15 +38,41 @@ if (Platform.OS !== 'web') {
   });
 }
 
-export const persistOptions: PersistQueryClientProviderProps['persistOptions'] = {
-  persister: createAsyncStoragePersister({ storage: AsyncStorage, key: 'nooky:query-cache', throttleTime: 1000 }),
+const STORAGE_KEY = 'nooky:query-cache';
+const persister = createAsyncStoragePersister({ storage: AsyncStorage, key: STORAGE_KEY, throttleTime: 1000 });
+// Mesmo lugar, sem o intervalo: para gravar a fila de marcações na hora.
+const immediatePersister = createAsyncStoragePersister({ storage: AsyncStorage, key: STORAGE_KEY, throttleTime: 0 });
+
+export const persistOptions = {
+  persister,
   maxAge: WEEK,
   // Mudou o formato dos dados guardados? Troque para descartar o cache antigo.
   buster: '1',
   dehydrateOptions: {
     shouldDehydrateQuery: (query) => query.state.status === 'success' && PERSISTED.has(String(query.queryKey[0])),
   },
-};
+} satisfies PersistQueryClientProviderProps['persistOptions'];
+
+/**
+ * Grava o cache já, sem o intervalo do persister: uma marcação feita sem
+ * internet não pode se perder se o app for fechado logo depois do toque.
+ */
+function saveNow() {
+  persistQueryClientSave({
+    queryClient,
+    persister: immediatePersister,
+    buster: persistOptions.buster,
+    dehydrateOptions: persistOptions.dehydrateOptions,
+  }).catch(() => undefined);
+}
+
+queryClient.getMutationCache().subscribe((event) => {
+  if (event.type === 'updated' && event.mutation.options.mutationKey?.[0] === TOGGLE_ITEM_KEY[0]) saveNow();
+});
+// Indo para o fundo (ou fechando), grava o que estiver pendente.
+AppState.addEventListener('change', (state) => {
+  if (state !== 'active') saveNow();
+});
 
 /** Depois de restaurar o cache, manda o que ficou na fila. */
 export function resumeQueue() {

@@ -56,8 +56,8 @@ describe('fila de marcações da lista', () => {
     await queryClient.resumePausedMutations();
     await flush();
     expect(sent).toEqual([
-      { id: 'arroz', values: { checked_at: '2026-09-27T10:00:00Z', checked_by: 'u1' } },
-      { id: 'arroz', values: { checked_at: null, checked_by: null } },
+      { id: 'arroz', values: { checked_at: '2026-09-27T10:00:00Z', checked_by: 'u1', toggled_at: '2026-09-27T10:00:00Z' } },
+      { id: 'arroz', values: { checked_at: null, checked_by: null, toggled_at: '2026-09-27T10:01:00Z' } },
     ]);
   });
 
@@ -73,6 +73,8 @@ describe('fila de marcações da lista', () => {
     onlineManager.setOnline(true);
     await after.resumePausedMutations();
     await flush();
-    expect(sent).toEqual([{ id: 'leite', values: { checked_at: '2026-09-27T11:00:00Z', checked_by: 'u1' } }]);
+    expect(sent).toEqual([
+      { id: 'leite', values: { checked_at: '2026-09-27T11:00:00Z', checked_by: 'u1', toggled_at: '2026-09-27T11:00:00Z' } },
+    ]);
   });
 });

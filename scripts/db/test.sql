@@ -281,6 +281,23 @@ begin
   update public.shopping_list_items set checked_at = now(), checked_by = auth.uid()
     where list_id = current_setting('test.list_a')::uuid and name = 'Banana';
   assert found, 'B checks item on shared list';
+  update public.shopping_list_items set checked_at = '2026-09-27 10:05', toggled_at = '2026-09-27 10:05'
+    where list_id = current_setting('test.list_a')::uuid and name = 'Banana';
+end $$;
+
+-- A estava sem internet: o desmarcar que ela fez às 10:00 chega depois.
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  update public.shopping_list_items set checked_at = null, checked_by = null, toggled_at = '2026-09-27 10:00'
+    where list_id = current_setting('test.list_a')::uuid and name = 'Banana';
+  assert not found, 'an older queued toggle does not overwrite a newer one';
+  assert (select checked_at from public.shopping_list_items where name = 'Banana') is not null, 'item stays checked';
+  update public.shopping_list_items set checked_at = null, checked_by = null, toggled_at = '2026-09-27 10:10'
+    where list_id = current_setting('test.list_a')::uuid and name = 'Banana';
+  assert found, 'a newer toggle goes through';
+  update public.shopping_list_items set quantity = 2 where name = 'Banana';
+  assert found, 'other edits are not blocked';
 end $$;
 
 select set_config('request.jwt.claim.sub', :'user_c', false) \gset
