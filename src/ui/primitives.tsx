@@ -413,7 +413,7 @@ export function CategoryIcon({
 }) {
   const art = CATEGORY_ART[getCategory(category).key];
   const tint = useTint(art.tint);
-  const itemKey = name ? matchItemArt(name) : null;
+  const itemKey = name ? matchItemArt(name, category) : null;
   const image = (
     <Image
       source={itemKey ? ITEM_ART[itemKey] : art.image}

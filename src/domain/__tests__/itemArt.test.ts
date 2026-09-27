@@ -51,6 +51,11 @@ describe('matchItemArt', () => {
     expect(matchItemArt('Filé de tilápia')).toBe('peixe');
     expect(matchItemArt('Lata de atum')).toBe('atum');
     expect(matchItemArt('Barra de cereal')).toBe('cereal');
+    expect(matchItemArt('Garrafa de água')).toBe('agua');
+    expect(matchItemArt('Frasco de shampoo')).toBe('shampoo');
+    expect(matchItemArt('Fardo de cerveja')).toBe('cerveja');
+    expect(matchItemArt('Meia dúzia de ovos')).toBe('ovos');
+    expect(matchItemArt('2 garrafas de refrigerante')).toBe('refrigerante');
   });
 
   it('reconhece plurais irregulares', () => {
@@ -81,6 +86,22 @@ describe('matchItemArt', () => {
     expect(matchItemArt('Papel toalha')).toBeNull();
     expect(matchItemArt('Filtro de café')).toBeNull();
     expect(matchItemArt('')).toBeNull();
+  });
+
+  it('com a categoria, só vale o desenho do mesmo grupo (comida ou casa)', () => {
+    expect(matchItemArt('Água oxigenada', 'higiene')).toBeNull();
+    expect(matchItemArt('Leite de magnésia', 'medicamentos')).toBeNull();
+    expect(matchItemArt('Ração sabor frango', 'pet')).toBeNull();
+    expect(matchItemArt('Leite Italac', 'laticinios')).toBe('leite');
+    expect(matchItemArt('Detergente Ypê', 'limpeza')).toBe('detergente');
+    expect(matchItemArt('Sabonete infantil', 'bebe')).toBe('sabonete');
+    expect(matchItemArt('Leite', 'outros')).toBe('leite');
+  });
+
+  it('cada item do catálogo com desenho próprio passa pela própria categoria', () => {
+    for (const item of COMMON_ITEMS) {
+      if (matchItemArt(item.name)) expect([item.name, matchItemArt(item.name, item.category)]).toEqual([item.name, matchItemArt(item.name)]);
+    }
   });
 
   it('cobre boa parte do catálogo de itens comuns', () => {

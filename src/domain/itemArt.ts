@@ -127,7 +127,14 @@ const EXCEPTION_REGEXES = EXCEPTIONS.map(wordRegex);
 const FLAVOR_BEFORE = /(?:^|\s)(?:a|ao|com|da|das|de|do|dos|e|sabor)\s*$/;
 // Corte ou embalagem no começo não é o produto: "file de tilapia", "barra de
 // cereal", "lata de atum" continuam peixe, cereal e atum.
-const CUT_OR_PACK = /^(?:asa|bandeja|barra|caixa|fatia|file|kit|lata|pacote|pedaco|posta|pote|sache|saco|sobrecoxa|coxa)s?\s+(?:de|do|da)\s*$/;
+const CUT_OR_PACK = new RegExp(
+  `^(?:\\d+\\s*x?\\s*)?(?:meia\\s+)?(?:${[
+    'asa', 'bandeja', 'barra', 'bisnaga', 'cacho', 'caixa', 'caixinha', 'copo', 'coxa', 'duzia', 'embalagem', 'fardo',
+    'fatia', 'file', 'frasco', 'galao', 'galoe', 'garrafa', 'garrafinha', 'kit', 'lata', 'latinha', 'maco', 'pacote',
+    'pacotinho', 'pedaco', 'peca', 'porcao', 'posta', 'pote', 'rede', 'refil', 'sache', 'saco', 'saquinho', 'sobrecoxa',
+    'tablete', 'tubo', 'unidade', 'vidro',
+  ].join('|')})s?\\s+(?:de|do|da)\\s*$`,
+);
 
 /** Posição do primeiro trecho que casa e não é sabor de outro produto. */
 function productIndex(re: RegExp, text: string): number | undefined {
@@ -139,8 +146,35 @@ function productIndex(re: RegExp, text: string): number | undefined {
   return undefined;
 }
 
-/** Chave da ilustração do item pelo nome, ou null para usar a da categoria. */
-export function matchItemArt(name: string): ItemArtKey | null {
+// Desenhos de casa (limpeza, higiene, papel); os outros são de comida e
+// bebida. Com a categoria do item, o desenho precisa ser do mesmo grupo:
+// "Água oxigenada" em higiene não vira garrafa d'água, nem "Leite de
+// magnésia" em remédios vira leite.
+const HOUSE_KEYS: ReadonlySet<ItemArtKey> = new Set<ItemArtKey>([
+  'agua_sanitaria', 'amaciante', 'desodorante', 'detergente', 'escova_dente', 'esponja', 'papel_higienico',
+  'pasta_dente', 'sabao_po', 'sabonete', 'saco_lixo', 'shampoo',
+]);
+const HOUSE_CATEGORIES = new Set(['limpeza', 'higiene', 'papel', 'bebe']);
+const FOOD_CATEGORIES = new Set([
+  'hortifruti', 'carnes', 'peixes', 'laticinios', 'ovos', 'padaria', 'graos', 'congelados', 'frios', 'doces', 'snacks',
+  'temperos', 'oleos', 'bebidas', 'alcoolicas', 'cafe_cha',
+]);
+
+function fitsCategory(key: ItemArtKey, category: string | null | undefined): boolean {
+  if (!category || category === 'outros') return true;
+  return HOUSE_KEYS.has(key) ? HOUSE_CATEGORIES.has(category) : FOOD_CATEGORIES.has(category);
+}
+
+/**
+ * Chave da ilustração do item pelo nome, ou null para usar a da categoria.
+ * Com `category`, só vale um desenho do mesmo grupo (comida ou casa).
+ */
+export function matchItemArt(name: string, category?: string | null): ItemArtKey | null {
+  const key = matchByName(name);
+  return key && fitsCategory(key, category) ? key : null;
+}
+
+function matchByName(name: string): ItemArtKey | null {
   const text = normalizeSearch(name).replace(/-/g, ' ');
   if (!text) return null;
   let best: { key: ItemArtKey; index: number } | null = null;
