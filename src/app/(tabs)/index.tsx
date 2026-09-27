@@ -26,6 +26,7 @@ import { BillRow } from '@/features/finance/BillsPanel';
 import { PayBillModal } from '@/features/finance/PayBillModal';
 import { hasHealthToday, healthTodayCount, HealthTodaySections } from '@/features/health/HealthTodaySections';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
+import { InstallAppCard } from '@/features/InstallAppCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useHousehold } from '@/lib/auth';
 import type { Bill } from '@/lib/types';
@@ -147,6 +148,8 @@ export default function TodayScreen() {
         </View>
         <SkyArt period={period} size={104} />
       </View>
+
+      <InstallAppCard />
 
       <View style={styles.quickActions}>
         <Tile icon="camera-outline" tint="orange" label="Escanear nota" onPress={scanner.open} />
