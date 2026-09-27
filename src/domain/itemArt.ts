@@ -102,14 +102,21 @@ export const ITEM_ART_KEYS: readonly ItemArtKey[] = RULES.map(([key]) => key);
 const EXCEPTIONS = ['caldo', 'filtro de cafe', 'pao de queijo', 'batata palha', 'batata chips', 'batata frita', 'doce de leite', 'leite condensado', 'creme de leite', 'leite de coco', 'agua de coco'];
 
 const escape = (term: string) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-// Plural da última palavra: mamao/mamoes/paes, hamburguer/hamburgueres, ovo/ovos.
-const plural = (term: string) =>
-  term.endsWith('ao')
-    ? `${escape(term.slice(0, -2))}(?:ao|oes|aes|aos)`
-    : /[rz]$/.test(term)
-      ? `${escape(term)}(?:es|s)?`
-      : `${escape(term)}s?`;
-const wordRegex = (term: string) => new RegExp(`(?:^|[^a-z0-9])${plural(term)}(?=[^a-z0-9]|$)`);
+// Cada palavra do termo, no singular ou no plural ("paes de forma", "sacos de
+// lixo"): mamao/mamoes/paes, hamburguer/hamburgueres, papel/papeis, ovo/ovos.
+const CONNECTORS = new Set(['ao', 'com', 'da', 'de', 'do', 'em', 'para']);
+const inflect = (word: string) =>
+  CONNECTORS.has(word)
+    ? word
+    : word.endsWith('ao')
+      ? `${escape(word.slice(0, -2))}(?:ao|oes|aes|aos)`
+      : /[rz]$/.test(word)
+        ? `${escape(word)}(?:es|s)?`
+        : word.endsWith('l')
+          ? `${escape(word.slice(0, -1))}(?:l|is)`
+          : `${escape(word)}s?`;
+const wordRegex = (term: string) =>
+  new RegExp(`(?:^|[^a-z0-9])${term.split(' ').map(inflect).join('\\s+')}(?=[^a-z0-9]|$)`);
 
 const COMPILED = RULES.map(([key, terms]) => [key, terms.map(wordRegex)] as const);
 const EXCEPTION_REGEXES = EXCEPTIONS.map(wordRegex);

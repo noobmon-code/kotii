@@ -50,6 +50,15 @@ describe('matchItemArt', () => {
     expect(matchItemArt('Hambúrgueres')).toBe('hamburguer');
   });
 
+  it('reconhece o plural na primeira palavra de nomes compostos', () => {
+    expect(matchItemArt('Pães de forma')).toBe('pao_forma');
+    expect(matchItemArt('Molhos de tomate')).toBe('molho_tomate');
+    expect(matchItemArt('Sacos de lixo')).toBe('saco_lixo');
+    expect(matchItemArt('Papéis higiênicos')).toBe('papel_higienico');
+    expect(matchItemArt('Pastas de dente')).toBe('pasta_dente');
+    expect(matchItemArt('Escovas  de dente')).toBe('escova_dente');
+  });
+
   it('deixa a ilustração da categoria quando a palavra engana ou não há desenho', () => {
     expect(matchItemArt('Caldo de carne')).toBeNull();
     expect(matchItemArt('Pão de queijo congelado')).toBeNull();
