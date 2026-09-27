@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { toISODate } from '@/domain/dates';
+import type { MedicalEntry } from '@/domain/incomeTax';
 import {
   buildEntries,
   monthRange,
@@ -25,7 +26,7 @@ function useInvalidateFinance() {
 // ---------------------------------------------------------------------------
 // Contas
 
-const BILL_COLUMNS = 'id, name, category, amount, recurrence, due_day, next_due_on, autopay, notes, active, boleto';
+const BILL_COLUMNS = 'id, name, category, amount, recurrence, due_day, next_due_on, autopay, notes, active, boleto, deductible, provider_name, provider_doc';
 
 export function useBills() {
   return useQuery({
@@ -131,7 +132,8 @@ export function useUndoBillPayment() {
 // ---------------------------------------------------------------------------
 // Gastos avulsos
 
-const EXPENSE_COLUMNS = 'id, description, amount, spent_on, category, notes, paid_by';
+const EXPENSE_COLUMNS =
+  'id, description, amount, spent_on, category, notes, paid_by, deductible, provider_name, provider_doc, patient_id';
 
 export function useExpense(id: string | undefined) {
   return useQuery({
@@ -141,7 +143,8 @@ export function useExpense(id: string | undefined) {
   });
 }
 
-export type ExpenseValues = Omit<Expense, 'id' | 'paid_by'>;
+type TaxFields = 'deductible' | 'provider_name' | 'provider_doc' | 'patient_id';
+export type ExpenseValues = Omit<Expense, 'id' | 'paid_by' | TaxFields> & Partial<Pick<Expense, TaxFields>>;
 
 export function useSaveExpense() {
   const invalidate = useInvalidateFinance();
@@ -227,6 +230,74 @@ export function useSpending(fromMonth: string, toMonth: string, enabled = true) 
         bill_category: p.bill?.category ?? 'contas',
       }));
       return buildEntries(forSpending, paid, expenseRows);
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Despesas médicas para o IR
+
+/** Gastos e pagamentos de contas marcados como dedutíveis no ano. */
+export function useMedicalExpenses(year: number) {
+  return useQuery({
+    // Começa com 'expenses': salvar gasto ou pagar conta já recarrega.
+    queryKey: ['expenses', 'medical', year],
+    queryFn: async (): Promise<MedicalEntry[]> => {
+      const start = `${year}-01-01`;
+      const end = `${year + 1}-01-01`;
+      const [expenses, payments] = await Promise.all([
+        supabase
+          .from('expenses')
+          .select('id, description, amount, spent_on, provider_name, provider_doc, patient:people(name)')
+          .eq('deductible', true)
+          .gte('spent_on', start)
+          .lt('spent_on', end),
+        supabase
+          .from('bill_payments')
+          .select('id, bill_id, paid_on, amount, bill:bills(name, deductible, provider_name, provider_doc)')
+          .gte('paid_on', start)
+          .lt('paid_on', end),
+      ]);
+      type ExpenseRow = Pick<Expense, 'id' | 'description' | 'amount' | 'spent_on' | 'provider_name' | 'provider_doc'> & {
+        patient: { name: string } | null;
+      };
+      type PaymentRow = {
+        id: string;
+        bill_id: string;
+        paid_on: string;
+        amount: number;
+        bill: Pick<Bill, 'name' | 'deductible' | 'provider_name' | 'provider_doc'> | null;
+      };
+      return [
+        ...(unwrap(expenses) as unknown as ExpenseRow[]).map(
+          (e): MedicalEntry => ({
+            id: e.id,
+            refId: e.id,
+            source: 'gasto',
+            date: e.spent_on,
+            amount: Number(e.amount),
+            description: e.description,
+            providerName: e.provider_name,
+            providerDoc: e.provider_doc,
+            patientName: e.patient?.name ?? null,
+          }),
+        ),
+        ...(unwrap(payments) as unknown as PaymentRow[])
+          .filter((p) => p.bill?.deductible)
+          .map(
+            (p): MedicalEntry => ({
+              id: p.id,
+              refId: p.bill_id,
+              source: 'conta',
+              date: p.paid_on,
+              amount: Number(p.amount),
+              description: p.bill!.name,
+              providerName: p.bill!.provider_name,
+              providerDoc: p.bill!.provider_doc,
+              patientName: null,
+            }),
+          ),
+      ];
     },
   });
 }

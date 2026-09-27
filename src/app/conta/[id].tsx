@@ -7,6 +7,7 @@ import { useBill, useBillPayments, useDeleteBill, useSaveBill, useUndoBillPaymen
 import { parseBoleto, type Boleto } from '@/domain/boleto';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { BILL_RECURRENCES, FINANCE_CATEGORIES, type BillRecurrence, type FinanceCategory } from '@/domain/finance';
+import { formatTaxDoc, parseTaxDoc } from '@/domain/incomeTax';
 import { formatBRL, parseDecimal } from '@/domain/money';
 import { billSubtitle } from '@/features/finance/BillsPanel';
 import { BoletoScanner } from '@/features/finance/BoletoScanner';
@@ -60,6 +61,9 @@ function BillForm({ bill }: { bill?: Bill }) {
   const [due, setDue] = useState(bill ? formatBRDate(bill.next_due_on) : '');
   const [autopay, setAutopay] = useState(bill?.autopay ?? false);
   const [notes, setNotes] = useState(bill?.notes ?? '');
+  const [deductible, setDeductible] = useState(bill?.deductible ?? false);
+  const [providerName, setProviderName] = useState(bill?.provider_name ?? '');
+  const [providerDoc, setProviderDoc] = useState(bill?.provider_doc ? formatTaxDoc(bill.provider_doc) : '');
   // O boleto só vem desta tela quando foi lido ou tirado aqui; senão vale o da
   // conta, que pode mudar em outro celular com esta tela aberta.
   const [editedBoleto, setEditedBoleto] = useState<{ value: string | null } | null>(null);
@@ -115,6 +119,11 @@ function BillForm({ bill }: { bill?: Bill }) {
     if (!name.trim()) return notify('Informe o nome', 'Ex.: Condomínio, Internet, Escola.');
     if (!variable && value == null) return notify('Informe o valor', 'Ou marque que o valor varia a cada mês.');
     if (!dueISO) return notify('Data inválida', 'Informe o vencimento como dd/mm/aaaa.');
+    const forTax = category === 'saude' && deductible;
+    const doc = forTax ? parseTaxDoc(providerDoc) : null;
+    if (doc === undefined) {
+      return notify('CPF ou CNPJ inválido', 'Confira os números no boleto ou no contrato. Dá para deixar em branco e completar depois.');
+    }
     // Só grava o vencimento e o boleto se mudaram aqui: se outra pessoa pagou
     // ou trocou o boleto com esta tela aberta, salvar o resto não pode voltar
     // a conta para trás nem regravar um boleto velho.
@@ -131,6 +140,9 @@ function BillForm({ bill }: { bill?: Bill }) {
           autopay,
           notes: notes.trim() || null,
           ...(boletoChanged ? { boleto } : {}),
+          deductible: forTax,
+          provider_name: forTax ? providerName.trim() || null : null,
+          provider_doc: doc,
           ...(dueChanged ? { next_due_on: dueISO, due_day: Number(dueISO.slice(8, 10)) } : {}),
         },
         // Boleto e data são da parcela que a tela mostra: só gravam se ela ainda for a atual.
@@ -226,6 +238,30 @@ function BillForm({ bill }: { bill?: Bill }) {
         </View>
         <Switch value={autopay} onValueChange={setAutopay} trackColor={{ true: c.primary }} />
       </Row>
+
+      {category === 'saude' ? (
+        <Card style={styles.group}>
+          <Row>
+            <View style={styles.flex}>
+              <Text variant="label">Dedutível no Imposto de Renda</Text>
+              <Text variant="small">Plano de saúde, tratamento, terapia: cada pagamento entra no relatório do IR.</Text>
+            </View>
+            <Switch value={deductible} onValueChange={setDeductible} trackColor={{ true: c.primary }} />
+          </Row>
+          {deductible ? (
+            <>
+              <TextField label="Quem recebe" value={providerName} onChangeText={setProviderName} placeholder="Operadora, clínica ou profissional" />
+              <TextField
+                label="CPF ou CNPJ"
+                value={providerDoc}
+                onChangeText={setProviderDoc}
+                keyboardType="number-pad"
+                placeholder="Está no boleto ou no contrato"
+              />
+            </>
+          ) : null}
+        </Card>
+      ) : null}
 
       <TextField label="Observações" value={notes} onChangeText={setNotes} multiline placeholder="Ex.: titular, contrato, senha do portal" />
       <Button title="Salvar" onPress={submit} loading={save.isPending} />

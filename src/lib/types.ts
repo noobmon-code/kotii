@@ -298,6 +298,11 @@ export interface Bill {
   active: boolean;
   /** Código de barras do boleto do próximo vencimento (44 dígitos); sai ao pagar. */
   boleto: string | null;
+  /** Dedutível no Imposto de Renda (plano de saúde), com quem presta o serviço. */
+  deductible: boolean;
+  provider_name: string | null;
+  /** CPF ou CNPJ, só dígitos. */
+  provider_doc: string | null;
 }
 
 export interface BillPayment {
@@ -323,4 +328,9 @@ export interface Expense {
   category: string;
   notes: string | null;
   paid_by: string | null;
+  /** Despesa médica dedutível no IR: quem atendeu (CPF/CNPJ só dígitos) e o paciente. */
+  deductible: boolean;
+  provider_name: string | null;
+  provider_doc: string | null;
+  patient_id: string | null;
 }
