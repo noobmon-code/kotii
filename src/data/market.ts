@@ -643,6 +643,24 @@ export function usePriceHistory(productId: string) {
   });
 }
 
+/** Preços dos últimos 4 meses de vários produtos (alerta de preço na nota). */
+export function usePriceObservations(productIds: string[]) {
+  return useQuery({
+    queryKey: ['priceHistory', 'many', productIds],
+    enabled: productIds.length > 0,
+    queryFn: async () =>
+      unwrap(
+        await supabase
+          .from('price_observations')
+          .select('product_id, store_id, unit, unit_price, purchased_at, receipt_id')
+          .in('product_id', productIds)
+          .gte('purchased_at', new Date(Date.now() - 120 * 86_400_000).toISOString())
+          .order('purchased_at', { ascending: false })
+          .limit(1000),
+      ) as PriceObservation[],
+  });
+}
+
 export function useRenameProduct() {
   const queryClient = useQueryClient();
   return useMutation({
