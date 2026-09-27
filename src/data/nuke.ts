@@ -39,8 +39,16 @@ function usePendingListItems() {
   });
 }
 
-/** Retrato da casa para o Nuke; `null` enquanto a família ainda carrega. */
-export function useNukeContext(today: string): string | null {
+export type NukeContextState =
+  | { status: 'loading' }
+  | { status: 'error'; retry: () => void }
+  | { status: 'ready'; context: string };
+
+/**
+ * Retrato da casa para o Nuke. Só fica pronto com todos os dados carregados:
+ * com uma consulta faltando, ele diria "nada" onde não sabe.
+ */
+export function useNukeContext(today: string): NukeContextState {
   const household = useHousehold();
   const medications = useMedications();
   const doses = useDoses(today);
@@ -55,9 +63,12 @@ export function useNukeContext(today: string): string | null {
   const documents = useDocuments();
   const equipment = useEquipmentList();
 
-  // Só responde com tudo carregado: "nada pendente" com dado faltando engana.
   const queries = [household, medications, doses, chores, pantry, pending, bills, spending, appointments, people, documents, equipment];
-  if (!household.data || queries.some((q) => q.isPending)) return null;
+  const missing = queries.filter((q) => q.data === undefined);
+  if (missing.some((q) => q.isError)) {
+    return { status: 'error', retry: () => missing.forEach((q) => q.refetch()) };
+  }
+  if (missing.length || !household.data) return { status: 'loading' };
   const { household: house, members, me } = household.data;
   const memberName = (id: string | null) => members.find((m) => m.user_id === id)?.display_name ?? null;
 
@@ -126,7 +137,7 @@ export function useNukeContext(today: string): string | null {
       .filter(({ status }) => status.kind === 'acabando')
       .map(({ item, status }) => ({ name: item.name, status: describeWarranty(status) })),
   };
-  return buildNukeContext(snapshot);
+  return { status: 'ready', context: buildNukeContext(snapshot) };
 }
 
 export interface NukeAnswer {

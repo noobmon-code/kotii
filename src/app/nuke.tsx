@@ -7,7 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAskNuke, useNukeContext, useRunNukeAction } from '@/data/nuke';
 import { todayISO } from '@/domain/dates';
 import { describeAction, historyForApi, NUKE_SUGGESTIONS, type NukeAction, type NukeMessage } from '@/domain/nuke';
-import { clearConversation, newMessageId, updateConversation, useNukeConversation } from '@/features/nuke/conversation';
+import { clearConversation, newMessageId, setPending, updateConversation, useNukeConversation } from '@/features/nuke/conversation';
 import { useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { Floating, NukeAvatar } from '@/ui/art';
@@ -28,16 +28,17 @@ export default function NukeScreen() {
   const userId = session?.user.id;
   const name = useHousehold().data?.me.display_name ?? '';
   const today = todayISO();
-  const context = useNukeContext(today);
-  const messages = useNukeConversation(userId);
+  const snapshot = useNukeContext(today);
+  const { messages, pending } = useNukeConversation(userId);
   const ask = useAskNuke();
   const runAction = useRunNukeAction();
   const [draft, setDraft] = useState('');
   const [running, setRunning] = useState<string | null>(null);
   const scroll = useRef<ScrollView>(null);
 
+  const context = snapshot.status === 'ready' ? snapshot.context : null;
   const ready = Boolean(userId && context !== null);
-  const busy = ask.isPending;
+  const busy = pending;
 
   function send(text: string) {
     const body = text.trim();
@@ -45,6 +46,7 @@ export default function NukeScreen() {
     const question: NukeMessage = { id: newMessageId(), role: 'user', text: body };
     const history = historyForApi([...messages, question]);
     updateConversation(userId, (m) => [...m, question]);
+    setPending(userId, true);
     setDraft('');
     // mutateAsync: a resposta entra na conversa mesmo se a tela fechar antes.
     ask
@@ -52,7 +54,8 @@ export default function NukeScreen() {
       .then((answer) =>
         updateConversation(userId, (m) => [...m, { id: newMessageId(), role: 'assistant', text: answer.reply, actions: answer.actions }]),
       )
-      .catch((err) => updateConversation(userId, (m) => [...m, { id: newMessageId(), role: 'assistant', text: errorMessage(err), error: true }]));
+      .catch((err) => updateConversation(userId, (m) => [...m, { id: newMessageId(), role: 'assistant', text: errorMessage(err), error: true }]))
+      .finally(() => setPending(userId, false));
   }
 
   async function run(message: NukeMessage, index: number, action: NukeAction) {
@@ -115,11 +118,13 @@ export default function NukeScreen() {
               <Text variant="body" style={styles.center} color="textMuted">
                 Sei o que tem na despensa, nas listas, nas contas e na agenda da casa. Pergunte, ou me peça para anotar algo.
               </Text>
-              <View style={styles.suggestions}>
-                {NUKE_SUGGESTIONS.map((s) => (
-                  <Chip key={s} label={s} onPress={() => send(s)} />
-                ))}
-              </View>
+              {ready ? (
+                <View style={styles.suggestions}>
+                  {NUKE_SUGGESTIONS.map((s) => (
+                    <Chip key={s} label={s} onPress={() => send(s)} />
+                  ))}
+                </View>
+              ) : null}
             </View>
           ) : null}
 
@@ -193,12 +198,21 @@ export default function NukeScreen() {
           ) : null}
         </ScrollView>
 
+        {snapshot.status === 'error' ? (
+          <View style={[styles.loadError, { backgroundColor: c.dangerSoft }]}>
+            <Text variant="small" color="danger" style={styles.flex}>
+              Não consegui carregar os dados da casa. Sem eles, o Nuke responderia errado.
+            </Text>
+            <Button title="Tentar de novo" compact variant="secondary" onPress={snapshot.retry} />
+          </View>
+        ) : null}
+
         <View style={[styles.composer, { borderTopColor: c.border, backgroundColor: c.background }]}>
           <View style={[styles.inputBox, { backgroundColor: c.surface, borderColor: c.border }]}>
             <TextInput
               value={draft}
               onChangeText={setDraft}
-              placeholder={ready ? 'Pergunte ao Nuke…' : 'Carregando a casa…'}
+              placeholder={ready ? 'Pergunte ao Nuke…' : snapshot.status === 'error' ? 'Sem os dados da casa agora' : 'Carregando a casa…'}
               placeholderTextColor={c.textMuted}
               multiline
               maxLength={2000}
@@ -249,6 +263,7 @@ const styles = StyleSheet.create({
   theirs: { alignSelf: 'flex-start', borderBottomLeftRadius: 6, borderWidth: StyleSheet.hairlineWidth, maxWidth: '100%' },
   action: { borderRadius: radius.lg, borderWidth: 2, padding: space.md, gap: space.md },
   actionIcon: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  loadError: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingHorizontal: space.lg, paddingVertical: space.sm },
   composer: {
     flexDirection: 'row',
     alignItems: 'flex-end',

@@ -13,9 +13,14 @@ const EMPTY: NukeMessage[] = [];
 
 let owner: string | null = null;
 let messages: NukeMessage[] = EMPTY;
+// Pergunta esperando resposta: fica aqui, e não na tela, para que fechar e
+// reabrir a conversa não libere uma segunda pergunta fora de ordem.
+let pending = false;
+let state = { messages, pending };
 const listeners = new Set<() => void>();
 
 function emit() {
+  state = { messages, pending };
   for (const listener of listeners) listener();
 }
 
@@ -30,6 +35,7 @@ async function load(userId: string) {
   if (owner === userId) return;
   owner = userId;
   messages = EMPTY;
+  pending = false;
   emit();
   const raw = await AsyncStorage.getItem(storageKey(userId)).catch(() => null);
   if (owner !== userId || !raw) return;
@@ -56,12 +62,21 @@ export function clearConversation(userId: string) {
   updateConversation(userId, () => EMPTY);
 }
 
-export function useNukeConversation(userId: string | undefined): NukeMessage[] {
+/** Marca que há uma pergunta de `userId` esperando resposta. */
+export function setPending(userId: string, value: boolean) {
+  if (owner !== userId) return;
+  pending = value;
+  emit();
+}
+
+const IDLE = { messages: EMPTY, pending: false };
+
+export function useNukeConversation(userId: string | undefined): { messages: NukeMessage[]; pending: boolean } {
   useEffect(() => {
     if (userId) load(userId);
   }, [userId]);
-  const current = useSyncExternalStore(subscribe, () => messages);
-  return userId && owner === userId ? current : EMPTY;
+  const current = useSyncExternalStore(subscribe, () => state);
+  return userId && owner === userId ? current : IDLE;
 }
 
 let counter = 0;
