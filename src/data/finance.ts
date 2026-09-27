@@ -11,12 +11,12 @@ import {
   type ReceiptForSpending,
 } from '@/domain/finance';
 import { supabase, unwrap } from '@/lib/supabase';
-import type { Bill, BillPayment, Expense } from '@/lib/types';
+import type { Bill, BillPayment, Budget, Expense } from '@/lib/types';
 
 function useInvalidateFinance() {
   const queryClient = useQueryClient();
   return () => {
-    for (const key of ['bills', 'billPayments', 'expenses', 'spending']) {
+    for (const key of ['bills', 'billPayments', 'expenses', 'spending', 'budgets']) {
       queryClient.invalidateQueries({ queryKey: [key] });
     }
   };
@@ -207,5 +207,37 @@ export function useSpending(fromMonth: string, toMonth: string) {
       }));
       return buildEntries(forSpending, paid, expenseRows);
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Orçamento
+
+export function useBudgets() {
+  return useQuery({
+    queryKey: ['budgets'],
+    queryFn: async () =>
+      (unwrap(await supabase.from('budgets').select('category, monthly_limit')) as Budget[]).map((b) => ({
+        ...b,
+        monthly_limit: Number(b.monthly_limit),
+      })),
+  });
+}
+
+/** Grava os limites: valor positivo cria ou muda; null tira o limite da categoria. */
+export function useSaveBudgets() {
+  const invalidate = useInvalidateFinance();
+  return useMutation({
+    mutationFn: async (limits: Record<string, number | null>) => {
+      const set = Object.entries(limits)
+        .filter(([, limit]) => limit !== null)
+        .map(([category, limit]) => ({ category, monthly_limit: limit!, updated_at: new Date().toISOString() }));
+      const cleared = Object.entries(limits)
+        .filter(([, limit]) => limit === null)
+        .map(([category]) => category);
+      if (set.length) unwrap(await supabase.from('budgets').upsert(set, { onConflict: 'household_id,category' }));
+      if (cleared.length) unwrap(await supabase.from('budgets').delete().in('category', cleared));
+    },
+    onSuccess: invalidate,
   });
 }

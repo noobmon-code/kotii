@@ -4,12 +4,13 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { router } from 'expo-router';
 
-import { useBills, useSaveExpense, useSpending } from '@/data/finance';
+import { useBills, useBudgets, useSaveExpense, useSpending } from '@/data/finance';
 import { toSchedule, useChores, useDoses, useMedications, usePantry, useSaveChore } from '@/data/home';
 import { useDocuments, useEquipmentList } from '@/data/house';
 import { useAppointments, usePeople } from '@/data/health';
 import { useAddToMarketList } from '@/data/market';
 import { functionErrorMessage } from '@/data/images';
+import { budgetProgress } from '@/domain/budget';
 import { addDays } from '@/domain/dates';
 import { describeDocumentStatus, documentsNeedingAttention } from '@/domain/documents';
 import { describeWarranty, warrantyStatus } from '@/domain/equipment';
@@ -58,12 +59,13 @@ export function useNukeContext(today: string): NukeContextState {
   const bills = useBills();
   const month = today.slice(0, 7);
   const spending = useSpending(shiftMonth(month, -1), month);
+  const budgets = useBudgets();
   const appointments = useAppointments();
   const people = usePeople();
   const documents = useDocuments();
   const equipment = useEquipmentList();
 
-  const queries = [household, medications, doses, chores, pantry, pending, bills, spending, appointments, people, documents, equipment];
+  const queries = [household, medications, doses, chores, pantry, pending, bills, spending, budgets, appointments, people, documents, equipment];
   const missing = queries.filter((q) => q.data === undefined);
   if (missing.some((q) => q.isError)) {
     return { status: 'error', retry: () => missing.forEach((q) => q.refetch()) };
@@ -118,6 +120,11 @@ export function useNukeContext(today: string): NukeContextState {
               byCategory: summary.byCategory,
               previousMonth: monthLabel(previous.month).split(' ')[0],
               previousTotal: summarize(entries, monthRange(previous.month)).total,
+              budgets: budgetProgress(budgets.data ?? [], summary.byCategory).map((b) => ({
+                category: b.category,
+                limit: b.limit,
+                spent: b.spent,
+              })),
             };
           })()
         : null,

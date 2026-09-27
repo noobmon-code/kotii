@@ -730,6 +730,39 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+\echo '• orçamento por categoria'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  insert into public.budgets (category, monthly_limit) values ('mercado', 1200), ('lazer', 300);
+  insert into public.budgets (category, monthly_limit) values ('mercado', 1500)
+    on conflict (household_id, category) do update set monthly_limit = excluded.monthly_limit;
+  assert (select monthly_limit from public.budgets where category = 'mercado') = 1500, 'upsert updates the limit';
+  begin
+    insert into public.budgets (category, monthly_limit) values ('pet', 0);
+    raise exception 'FAIL: zero budget';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.budgets (category, monthly_limit) values ('nao-existe', 10);
+    raise exception 'FAIL: unknown category';
+  exception when check_violation then null;
+  end;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  assert (select count(*) from public.budgets) = 0, 'C sees no foreign budgets';
+  update public.budgets set monthly_limit = 1;
+  delete from public.budgets;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_b', false) \gset
+do $$
+begin
+  assert (select count(*) from public.budgets) = 2, 'B sees household budgets, untouched by C';
+end $$;
+
+-- ---------------------------------------------------------------------------
 \echo '• sair da casa: dono passa adiante, o último apaga a casa'
 \set user_f '00000000-0000-0000-0000-00000000000f'
 \set user_g '00000000-0000-0000-0000-000000000010'

@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
-import { useBills, useSpending } from '@/data/finance';
+import { useBills, useBudgets, useSpending } from '@/data/finance';
 import { formatShortDate, todayISO } from '@/domain/dates';
 import {
   describeMonthDelta,
@@ -19,6 +19,7 @@ import {
   type FinanceCategory,
 } from '@/domain/finance';
 import { formatBRL } from '@/domain/money';
+import { BudgetSection } from '@/features/finance/BudgetSection';
 import {
   Button,
   Card,
@@ -65,6 +66,7 @@ export function FinanceSummaryPanel() {
   // Um mês a mais que as colunas, para comparar o primeiro com o anterior.
   const spending = useSpending(shiftMonth(windowEnd, -MONTHS_SHOWN), windowEnd);
   const bills = useBills();
+  const budgets = useBudgets();
 
   function goTo(target: string) {
     if (target > current) return;
@@ -144,6 +146,8 @@ export function FinanceSummaryPanel() {
         />
       ) : (
         <>
+          {budgets.data ? <BudgetSection budgets={budgets.data} byCategory={summary.byCategory} /> : null}
+
           <Section title="Por categoria">
             <Card style={styles.bars}>
               <CategoryBars items={summary.byCategory} total={summary.total} selected={category} onSelect={setCategory} />

@@ -62,6 +62,8 @@ export interface NukeSnapshot {
     byCategory: { category: string; amount: number }[];
     previousMonth: string;
     previousTotal: number;
+    /** Limites do mês por categoria (orçamento), se houver. */
+    budgets?: { category: string; limit: number; spent: number }[];
   } | null;
   appointments: { starts_at: string; title: string; person: string }[];
   documents: { title: string; status: string }[];
@@ -104,6 +106,13 @@ export function buildNukeContext(s: NukeSnapshot): string {
     lines.push(
       `Gastos de ${s.spending.month} até hoje: ${formatBRL(s.spending.total)} (${listOrNone(cats, 8)}). ${s.spending.previousMonth} inteiro: ${formatBRL(s.spending.previousTotal)}.`,
     );
+    if (s.spending.budgets?.length) {
+      const budgets = s.spending.budgets.map(
+        (b) =>
+          `${getFinanceCategory(b.category).label} ${formatBRL(b.spent)} de ${formatBRL(b.limit)}${b.spent > b.limit ? ' (passou)' : ''}`,
+      );
+      lines.push(`Orçamento de ${s.spending.month}: ${budgets.join('; ')}.`);
+    }
   }
   lines.push(
     `Consultas (próximos 14 dias): ${listOrNone(
