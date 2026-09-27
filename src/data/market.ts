@@ -75,7 +75,7 @@ export function useListItems(listId: string) {
       unwrap(
         await supabase
           .from('shopping_list_items')
-          .select('id, list_id, product_id, name, category, quantity, unit, checked_at, checked_by, toggle_version, created_at')
+          .select('id, list_id, product_id, name, category, quantity, unit, checked_at, checked_by, toggle_token, created_at')
           .eq('list_id', listId)
           .order('created_at'),
       ) as ShoppingListItem[],
@@ -253,17 +253,32 @@ export interface ToggleItemInput {
   userId: string;
   /** Hora do toque: a marcação enviada depois guarda quando foi feita. */
   at: string;
-  /** Versão do item no toque: se alguém marcou depois, esta não passa por cima. */
-  version: number;
+  /** Selo do item no toque: se alguém marcou depois, o selo mudou e esta não passa por cima. */
+  token: string;
+  /** Selo novo que esta marcação grava; o próximo toque no item parte dele. */
+  nextToken: string;
 }
 
-async function toggleListItem({ id, checked, userId, at, version }: ToggleItemInput) {
+/** Selo novo (formato uuid). Não precisa ser secreto, só não repetir. */
+export function newToggleToken(): string {
+  const hex = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16));
+  hex[12] = '4';
+  hex[16] = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+  const s = hex.join('');
+  return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`;
+}
+
+async function toggleListItem({ id, checked, userId, at, token, nextToken }: ToggleItemInput) {
   return unwrap(
     await supabase
       .from('shopping_list_items')
-      .update(checked ? { checked_at: at, checked_by: userId } : { checked_at: null, checked_by: null })
+      .update(
+        checked
+          ? { checked_at: at, checked_by: userId, toggle_token: nextToken }
+          : { checked_at: null, checked_by: null, toggle_token: nextToken },
+      )
       .eq('id', id)
-      .eq('toggle_version', version),
+      .eq('toggle_token', token),
   );
 }
 
@@ -275,7 +290,10 @@ export function registerListMutations(queryClient: QueryClient) {
     networkMode: 'online',
     scope: { id: 'list-items' },
     retry: 3,
+    // Fila restaurada ao reabrir o app: busca a lista só depois da última
+    // marcação, senão a tela perde as que ainda vão.
     onSettled: () => {
+      if (queryClient.isMutating({ mutationKey: TOGGLE_ITEM_KEY }) > 1) return;
       queryClient.invalidateQueries({ queryKey: ['lists'] });
       queryClient.invalidateQueries({ queryKey: ['listItems'] });
     },
@@ -288,12 +306,12 @@ export function useToggleListItem(listId: string) {
   return useMutation<unknown, Error, ToggleItemInput>({
     mutationKey: TOGGLE_ITEM_KEY,
     // Marca na hora; o servidor confirma depois.
-    onMutate: async ({ id, checked, at }) => {
+    onMutate: async ({ id, checked, at, nextToken }) => {
       const key = ['listItems', listId];
       await queryClient.cancelQueries({ queryKey: key });
-      // A versão anda junto, como no banco: o próximo toque neste item já parte dela.
+      // O selo novo vai junto: o próximo toque neste item parte dele.
       queryClient.setQueryData<ShoppingListItem[]>(key, (items) =>
-        items?.map((i) => (i.id === id ? { ...i, checked_at: checked ? at : null, toggle_version: i.toggle_version + 1 } : i)),
+        items?.map((i) => (i.id === id ? { ...i, checked_at: checked ? at : null, toggle_token: nextToken } : i)),
       );
       // O resumo das listas (itens pendentes) também, para ficar certo sem internet.
       await queryClient.cancelQueries({ queryKey: ['lists'] });

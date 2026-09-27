@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import {
+  newToggleToken,
   useAddListItem,
   useArchiveList,
   useClearCheckedItems,
@@ -125,7 +126,14 @@ export default function ShoppingListScreen() {
 
   const toggleItem = (item: ShoppingListItem) =>
     toggle.mutate(
-      { id: item.id, checked: !item.checked_at, userId: session!.user.id, at: new Date().toISOString(), version: item.toggle_version },
+      {
+        id: item.id,
+        checked: !item.checked_at,
+        userId: session!.user.id,
+        at: new Date().toISOString(),
+        token: item.toggle_token,
+        nextToken: newToggleToken(),
+      },
       { onError },
     );
   const removeItem = (item: ShoppingListItem) =>
