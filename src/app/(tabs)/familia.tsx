@@ -17,12 +17,16 @@ export default function FamilyScreen() {
   const { household: house, members, me } = household.data;
   const heir = members.find((m) => m.user_id !== me.user_id);
 
-  function confirmDelete(houseName: string) {
+  function confirmDelete(houseId: string, houseName: string) {
     confirmAction(
       'Apagar a casa',
       `Você é a última pessoa em "${houseName}". Ao sair, a casa e tudo o que ela tem (listas, notas, despensa, tarefas, saúde, documentos e fotos) são apagados para sempre.`,
       'Apagar e sair',
-      () => leave.mutate({ deleteIfLast: true }, { onError: (err) => notify('Não deu para sair', errorMessage(err)) }),
+      () =>
+        leave.mutate(
+          { householdId: houseId, deleteIfLast: true },
+          { onError: (err) => notify('Não deu para sair', errorMessage(err)) },
+        ),
     );
   }
 
@@ -34,7 +38,7 @@ export default function FamilyScreen() {
     if (!fresh) return;
     const next = fresh.members.find((m) => m.user_id !== fresh.me.user_id);
     if (!next) {
-      confirmDelete(fresh.household.name);
+      confirmDelete(fresh.household.id, fresh.household.name);
       return;
     }
     const handOver = fresh.me.role === 'owner' ? ` ${next.display_name} fica responsável pela casa.` : '';
@@ -44,11 +48,13 @@ export default function FamilyScreen() {
       'Sair da casa',
       () =>
         leave.mutate(
-          { deleteIfLast: false },
+          { householdId: fresh.household.id, deleteIfLast: false },
           {
             // Os outros saíram enquanto isso: agora sair apaga a casa, e isso precisa de outro sim.
             onError: (err) =>
-              err instanceof LastMemberError ? confirmDelete(fresh.household.name) : notify('Não deu para sair', errorMessage(err)),
+              err instanceof LastMemberError
+                ? confirmDelete(fresh.household.id, fresh.household.name)
+                : notify('Não deu para sair', errorMessage(err)),
           },
         ),
     );

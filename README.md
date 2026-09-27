@@ -133,7 +133,7 @@ src/features/       blocos de tela maiores (painéis da Casa, da Saúde e das Fi
 src/ui/             componentes visuais, tema claro/escuro e ilustrações
 src/lib/            cliente Supabase, sessão/família, lembretes
 supabase/migrations banco de dados e políticas de acesso
-supabase/functions  parse-receipt (nota → itens), parse-health (ficha, dieta, exame → dados), nuke (assistente), leave-household (sair da casa e apagar as fotos da casa apagada); _shared/vision.ts e _shared/chat.ts falam com a IA
+supabase/functions  parse-receipt (nota → itens), parse-health (ficha, dieta, exame → dados), nuke (assistente), leave-household (sair da casa; apaga as fotos de casas apagadas, também de hora em hora pelo pg_cron); _shared/vision.ts e _shared/chat.ts falam com a IA
 scripts/db/         teste local do banco
 ```
 

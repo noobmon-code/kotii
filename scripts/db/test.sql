@@ -716,7 +716,7 @@ insert into auth.users (id) values (:'user_f'), (:'user_g');
 set role anon;
 do $$
 begin
-  perform public.leave_household();
+  perform public.leave_household(gen_random_uuid());
   raise exception 'FAIL: anon called leave_household';
 exception when insufficient_privilege then null;
 end $$;
@@ -737,8 +737,13 @@ end $$;
 select set_config('request.jwt.claim.sub', :'user_f', false) \gset
 do $$
 begin
+  begin
+    perform public.leave_household(gen_random_uuid());
+    raise exception 'FAIL: left a household by the wrong id';
+  exception when no_data_found then null;
+  end;
   declare
-    result jsonb := public.leave_household();
+    result jsonb := public.leave_household(public.current_household_id());
   begin
     assert result->>'status' = 'left', 'owner leaves a household with other members';
     assert result->>'household_id' is not null, 'returns the household left';
@@ -756,12 +761,13 @@ begin
   assert (select name from public.households) = 'Casa da Gabi', 'rename works for the new owner';
   assert (select count(*) from public.shopping_lists) = 1, 'data stays with the household';
   begin
-    perform public.leave_household();
+    perform public.leave_household(public.current_household_id());
     raise exception 'FAIL: last member deleted the household without confirming';
   exception when sqlstate 'NK001' then null;
   end;
   assert (select count(*) from public.household_members where user_id = auth.uid()) = 1, 'unconfirmed leave keeps G';
-  assert (public.leave_household(true))->>'status' = 'deleted', 'last member deletes the household when confirmed';
+  assert (public.leave_household(public.current_household_id(), true))->>'status' = 'deleted',
+    'last member deletes the household when confirmed';
   begin
     perform count(*) from public.household_file_cleanup;
     raise exception 'FAIL: app user read the cleanup queue';
@@ -769,7 +775,7 @@ begin
   end;
   assert (select count(*) from public.household_members where user_id = auth.uid()) = 0, 'G left';
   begin
-    perform public.leave_household();
+    perform public.leave_household(gen_random_uuid());
     raise exception 'FAIL: left without a household';
   exception when no_data_found then null;
   end;
