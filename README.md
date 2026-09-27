@@ -25,6 +25,7 @@ iOS e Android com Expo (React Native); a versão web sai do mesmo código depois
 | **Dieta** | Foto do plano da nutricionista → refeições, opções e orientações → lista de compras da dieta, que vai para a lista de mercado sem repetir o que já está nela. |
 | **Gastos do mês** | Aba Finanças → Resumo: total do mês, comparação com o mês anterior (no mês corrente, só até o mesmo dia), últimos 6 meses, gasto por categoria e onde mais gastou. Junta notas confirmadas (cada item vai para a sua categoria: o arroz em Mercado, o detergente em Limpeza), contas pagas e gastos avulsos sem nota. Tocar numa categoria filtra os lançamentos. |
 | **Contas a pagar** | Aluguel, condomínio, luz, internet, escola, assinaturas: valor fixo ou variável, mensal, anual ou única, débito automático. O check registra o pagamento (valor e data) e passa para o próximo vencimento; dia 31 vira o último dia nos meses curtos. Se outra pessoa da casa já pagou, não paga de novo. Histórico com desfazer do último pagamento. Atrasadas e as que vencem em até 3 dias aparecem na tela Hoje. |
+| **Nuke** | O assistente da casa: o personagem laranja no canto das abas. Responde sobre o que está no app (o que vence, o que falta comprar, quanto foi gasto, o que dá para cozinhar com a despensa) e sugere ações — pôr itens na lista, criar tarefa, registrar gasto, abrir uma tela — que só acontecem quando você toca em "Fazer". A conversa fica no celular. |
 | **Hoje** | Home que só mostra o que pede atenção: doses pendentes, treino do dia, consultas de hoje/amanhã, vacinas atrasadas, tarefas e manutenções, contas vencendo, itens vencendo, documentos a renovar, garantias acabando, notas e planos para revisar. |
 
 Ainda não entrou (ver roadmap): scraper de NFC-e, lembretes por notificação para contas, documentos e manutenções, orçamento por categoria.
@@ -53,9 +54,10 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
 
    npx supabase functions deploy parse-receipt
    npx supabase functions deploy parse-health
+   npx supabase functions deploy nuke
    ```
 
-   Com só a chave da OpenRouter, ela é usada automaticamente. Com as duas, vale a Anthropic, a menos que `RECEIPT_PROVIDER=openrouter`. O modelo pode ser trocado com `RECEIPT_MODEL` (na OpenRouter, precisa ser um modelo que aceita imagem). A leitura de saúde (`parse-health`) usa as mesmas configurações, ou `HEALTH_PROVIDER` e `HEALTH_MODEL` se quiser um modelo diferente para ela.
+   Com só a chave da OpenRouter, ela é usada automaticamente. Com as duas, vale a Anthropic, a menos que `RECEIPT_PROVIDER=openrouter`. O modelo pode ser trocado com `RECEIPT_MODEL` (na OpenRouter, precisa ser um modelo que aceita imagem). A leitura de saúde (`parse-health`) usa as mesmas configurações, ou `HEALTH_PROVIDER` e `HEALTH_MODEL` se quiser um modelo diferente para ela. O Nuke (`nuke`) também, ou `NUKE_PROVIDER` e `NUKE_MODEL`.
 
 4. **Login sem confirmação de e-mail (opcional, para testar rápido):** Authentication → Sign In / Providers → Email → desligue "Confirm email".
 
@@ -96,6 +98,7 @@ Identificador do app: `com.noobmon.nooky` (iOS e Android). Dá para trocar até 
 - **Leitura de nota por IA (OpenRouter):** `google/gemma-4-31b-it:free` por padrão. Modelos `:free` não custam, mas têm limite de chamadas por minuto/dia, podem registrar o conteúdo enviado (as fotos das notas) e tendem a errar mais em cupons longos. A tela de revisão existe para corrigir; se a precisão incomodar, troque o `RECEIPT_MODEL`.
 - **Documentos de saúde e modelos gratuitos:** fichas, dietas e exames são dados de saúde. Modelos `:free` da OpenRouter podem guardar o que recebem; para saúde, prefira um modelo pago sem retenção (`HEALTH_MODEL`) ou a Anthropic (`HEALTH_PROVIDER=anthropic`). Até 6 fotos por leitura.
 - **Uma foto por nota:** cupom muito comprido perde nitidez numa foto só. Várias fotos por nota está no roadmap.
+- **Nuke:** cada mensagem manda para a IA um retrato compacto da casa (poucos milhares de tokens) e as últimas falas, com esforço baixo para responder rápido. Com a Anthropic (claude-opus-5), algo como US$ 0,02 a 0,05 por mensagem; dá para trocar o modelo com `NUKE_MODEL`.
 - **Tempo de leitura:** 10–60 s dependendo do tamanho da nota; o app mostra uma tela de espera.
 - **Unidades:** preço é comparado na unidade da nota. Se a lista pede "3 un" de banana e as notas têm preço por kg, o comparativo usa 1 kg e avisa que a quantidade é aproximada.
 - **Lembretes de consulta, vacina e conta:** por enquanto aparecem na tela Hoje; notificação só existe para remédio.
@@ -127,7 +130,7 @@ src/features/       blocos de tela maiores (painéis da Casa, da Saúde e das Fi
 src/ui/             componentes visuais, tema claro/escuro e ilustrações
 src/lib/            cliente Supabase, sessão/família, lembretes
 supabase/migrations banco de dados e políticas de acesso
-supabase/functions  parse-receipt (nota → itens), parse-health (ficha, dieta, exame → dados); _shared/vision.ts fala com a IA
+supabase/functions  parse-receipt (nota → itens), parse-health (ficha, dieta, exame → dados), nuke (assistente); _shared/vision.ts e _shared/chat.ts falam com a IA
 scripts/db/         teste local do banco
 ```
 

@@ -184,6 +184,21 @@ export function FamilyArt({ width = 240 }: { width?: number }) {
   );
 }
 
+/** O Nuke: o personagem laranja com brilhos de IA ao lado, o assistente da casa. */
+export function NukeAvatar({ size = 64, mood = 'happy' }: { size?: number; mood?: Mood }) {
+  const c = useColors();
+  return (
+    <Svg width={size} height={size} viewBox="0 0 112 112" accessibilityLabel="Nuke">
+      <G transform="translate(0 12)">
+        <Path d={BODIES.round} fill={c.brand} />
+        <Face mood={mood} />
+      </G>
+      <Path d={sparkle(94, 16, 11)} fill="#FFC23D" />
+      <Path d={sparkle(106, 36, 5)} fill="#FFC23D" />
+    </Svg>
+  );
+}
+
 /**
  * Flutua de leve, para cima e para baixo. Com "reduzir movimento" ligado no
  * aparelho, o Reanimated não anima.

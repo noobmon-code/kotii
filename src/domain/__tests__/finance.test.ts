@@ -1,7 +1,9 @@
 import { describe, expect, it } from '@jest/globals';
 
+import { FINANCE_CATEGORY_KEYS } from '../../../supabase/functions/_shared/categories';
 import {
   billsDueSoon,
+  FINANCE_CATEGORIES,
   billStatus,
   buildEntries,
   describeBillStatus,
@@ -17,6 +19,10 @@ import {
 } from '../finance';
 
 describe('finance categories', () => {
+  it('matches the keys the Nuke assistant uses', () => {
+    expect(FINANCE_CATEGORIES.map((c) => c.key)).toEqual([...FINANCE_CATEGORY_KEYS]);
+  });
+
   it('maps receipt product categories', () => {
     expect(financeCategoryOfProduct('hortifruti')).toBe('mercado');
     expect(financeCategoryOfProduct('limpeza')).toBe('casa');

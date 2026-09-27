@@ -32,7 +32,7 @@ export default function FinanceScreen() {
   };
 
   return (
-    <Screen refreshing={refreshing} onRefresh={refresh}>
+    <Screen fab refreshing={refreshing} onRefresh={refresh}>
       <PageTitle title="Finanças" subtitle="Gastos, contas e notas" tint="green" />
       <Segmented
         value={tab}

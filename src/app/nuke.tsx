@@ -1,0 +1,264 @@
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { router } from 'expo-router';
+import { useRef, useState } from 'react';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { useAskNuke, useNukeContext, useRunNukeAction } from '@/data/nuke';
+import { todayISO } from '@/domain/dates';
+import { describeAction, historyForApi, NUKE_SUGGESTIONS, type NukeAction, type NukeMessage } from '@/domain/nuke';
+import { clearConversation, newMessageId, updateConversation, useNukeConversation } from '@/features/nuke/conversation';
+import { useAuth, useHousehold } from '@/lib/auth';
+import { errorMessage } from '@/lib/supabase';
+import { Floating, NukeAvatar } from '@/ui/art';
+import { confirmAction, notify } from '@/ui/dialogs';
+import { Button, Chip, IconButton, Row, Text } from '@/ui/primitives';
+import { fonts, MAX_WIDTH, radius, space, useColors } from '@/ui/theme';
+
+const ACTION_ICONS: Record<NukeAction['type'], keyof typeof MaterialCommunityIcons.glyphMap> = {
+  add_to_list: 'cart-plus',
+  create_chore: 'broom',
+  add_expense: 'cash-plus',
+  open_screen: 'arrow-top-right',
+};
+
+export default function NukeScreen() {
+  const c = useColors();
+  const { session } = useAuth();
+  const userId = session?.user.id;
+  const name = useHousehold().data?.me.display_name ?? '';
+  const today = todayISO();
+  const context = useNukeContext(today);
+  const messages = useNukeConversation(userId);
+  const ask = useAskNuke();
+  const runAction = useRunNukeAction();
+  const [draft, setDraft] = useState('');
+  const [running, setRunning] = useState<string | null>(null);
+  const scroll = useRef<ScrollView>(null);
+
+  const ready = Boolean(userId && context !== null);
+  const busy = ask.isPending;
+
+  function send(text: string) {
+    const body = text.trim();
+    if (!body || !userId || context === null || busy) return;
+    const question: NukeMessage = { id: newMessageId(), role: 'user', text: body };
+    const history = historyForApi([...messages, question]);
+    updateConversation(userId, (m) => [...m, question]);
+    setDraft('');
+    // mutateAsync: a resposta entra na conversa mesmo se a tela fechar antes.
+    ask
+      .mutateAsync({ messages: history, context, today })
+      .then((answer) =>
+        updateConversation(userId, (m) => [...m, { id: newMessageId(), role: 'assistant', text: answer.reply, actions: answer.actions }]),
+      )
+      .catch((err) => updateConversation(userId, (m) => [...m, { id: newMessageId(), role: 'assistant', text: errorMessage(err), error: true }]));
+  }
+
+  async function run(message: NukeMessage, index: number, action: NukeAction) {
+    if (!userId) return;
+    const key = `${message.id}:${index}`;
+    setRunning(key);
+    try {
+      const note = await runAction(action);
+      updateConversation(userId, (m) =>
+        m.map((msg) =>
+          msg.id === message.id
+            ? { ...msg, actions: msg.actions?.map((a, i) => (i === index ? { ...a, done: action.type !== 'open_screen', note } : a)) }
+            : msg,
+        ),
+      );
+    } catch (err) {
+      notify('Não deu certo', errorMessage(err));
+    } finally {
+      setRunning(null);
+    }
+  }
+
+  return (
+    <SafeAreaView edges={['top', 'bottom']} style={[styles.flex, { backgroundColor: c.background }]}>
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <View style={[styles.header, { borderBottomColor: c.border }]}>
+          <IconButton icon="close" label="Fechar" onPress={() => router.back()} />
+          <Row style={styles.headerTitle}>
+            <NukeAvatar size={30} />
+            <View>
+              <Text variant="heading">Nuke</Text>
+              <Text variant="small">assistente da casa</Text>
+            </View>
+          </Row>
+          <IconButton
+            icon="broom"
+            label="Começar outra conversa"
+            onPress={() =>
+              userId &&
+              messages.length > 0 &&
+              confirmAction('Nova conversa', 'Apagar esta conversa com o Nuke?', 'Apagar', () => clearConversation(userId))
+            }
+          />
+        </View>
+
+        <ScrollView
+          ref={scroll}
+          style={styles.flex}
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          onContentSizeChange={() => scroll.current?.scrollToEnd({ animated: true })}>
+          {messages.length === 0 ? (
+            <View style={styles.welcome}>
+              <Floating distance={8}>
+                <NukeAvatar size={112} />
+              </Floating>
+              <Text variant="title" style={styles.center}>
+                Oi{name ? `, ${name}` : ''}! Eu sou o Nuke.
+              </Text>
+              <Text variant="body" style={styles.center} color="textMuted">
+                Sei o que tem na despensa, nas listas, nas contas e na agenda da casa. Pergunte, ou me peça para anotar algo.
+              </Text>
+              <View style={styles.suggestions}>
+                {NUKE_SUGGESTIONS.map((s) => (
+                  <Chip key={s} label={s} onPress={() => send(s)} />
+                ))}
+              </View>
+            </View>
+          ) : null}
+
+          {messages.map((message) =>
+            message.role === 'user' ? (
+              <View key={message.id} style={[styles.bubble, styles.mine, { backgroundColor: c.primary }]}>
+                <Text variant="body" color="onPrimary">
+                  {message.text}
+                </Text>
+              </View>
+            ) : (
+              <View key={message.id} style={styles.theirsRow}>
+                <NukeAvatar size={28} mood={message.error ? 'wow' : 'happy'} />
+                <View style={styles.theirsColumn}>
+                  <View
+                    style={[
+                      styles.bubble,
+                      styles.theirs,
+                      { backgroundColor: message.error ? c.dangerSoft : c.surface, borderColor: c.border },
+                    ]}>
+                    <Text variant="body" color={message.error ? 'danger' : 'text'} selectable>
+                      {message.text}
+                    </Text>
+                  </View>
+                  {message.actions?.map((action, index) => (
+                    <View key={index} style={[styles.action, { backgroundColor: c.surface, borderColor: c.brandSoft }]}>
+                      <Row>
+                        <View style={[styles.actionIcon, { backgroundColor: c.brandSoft }]}>
+                          <MaterialCommunityIcons name={ACTION_ICONS[action.type]} size={18} color={c.brand} />
+                        </View>
+                        <View style={styles.flex}>
+                          <Text variant="label">{action.label}</Text>
+                          {describeAction(action) ? <Text variant="small">{describeAction(action)}</Text> : null}
+                        </View>
+                      </Row>
+                      {action.done ? (
+                        <Row>
+                          <MaterialCommunityIcons name="check-circle" size={18} color={c.primary} />
+                          <Text variant="small" color="primary" style={styles.flex}>
+                            {action.note || 'Feito.'}
+                          </Text>
+                        </Row>
+                      ) : (
+                        <Button
+                          title={action.type === 'open_screen' ? 'Abrir' : 'Fazer'}
+                          compact
+                          icon={action.type === 'open_screen' ? 'arrow-right' : 'check'}
+                          loading={running === `${message.id}:${index}`}
+                          disabled={running !== null}
+                          onPress={() => run(message, index, action)}
+                        />
+                      )}
+                    </View>
+                  ))}
+                </View>
+              </View>
+            ),
+          )}
+
+          {busy ? (
+            <View style={styles.theirsRow}>
+              <Floating distance={3} duration={600}>
+                <NukeAvatar size={28} mood="think" />
+              </Floating>
+              <View style={[styles.bubble, styles.theirs, { backgroundColor: c.surface, borderColor: c.border }]}>
+                <Text variant="body" color="textMuted">
+                  Pensando…
+                </Text>
+              </View>
+            </View>
+          ) : null}
+        </ScrollView>
+
+        <View style={[styles.composer, { borderTopColor: c.border, backgroundColor: c.background }]}>
+          <View style={[styles.inputBox, { backgroundColor: c.surface, borderColor: c.border }]}>
+            <TextInput
+              value={draft}
+              onChangeText={setDraft}
+              placeholder={ready ? 'Pergunte ao Nuke…' : 'Carregando a casa…'}
+              placeholderTextColor={c.textMuted}
+              multiline
+              maxLength={2000}
+              editable={ready}
+              style={[styles.input, { color: c.text }]}
+              accessibilityLabel="Mensagem para o Nuke"
+              onSubmitEditing={() => send(draft)}
+              submitBehavior="submit"
+            />
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Enviar"
+            disabled={!draft.trim() || !ready || busy}
+            onPress={() => send(draft)}
+            style={({ pressed }) => [
+              styles.send,
+              { backgroundColor: c.primary, opacity: !draft.trim() || !ready || busy ? 0.4 : 1 },
+              pressed && styles.pressed,
+            ]}>
+            <MaterialCommunityIcons name="arrow-up" size={24} color={c.onPrimary} />
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  flex: { flex: 1 },
+  center: { textAlign: 'center' },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: space.lg,
+    paddingVertical: space.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  headerTitle: { gap: space.sm },
+  content: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', padding: space.lg, gap: space.md, flexGrow: 1 },
+  welcome: { alignItems: 'center', gap: space.md, paddingTop: space.xl, paddingHorizontal: space.sm },
+  suggestions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: space.sm, marginTop: space.sm },
+  bubble: { paddingHorizontal: space.lg, paddingVertical: space.md, borderRadius: radius.lg, maxWidth: '86%' },
+  mine: { alignSelf: 'flex-end', borderBottomRightRadius: 6 },
+  theirsRow: { flexDirection: 'row', alignItems: 'flex-start', gap: space.sm },
+  theirsColumn: { flex: 1, gap: space.sm },
+  theirs: { alignSelf: 'flex-start', borderBottomLeftRadius: 6, borderWidth: StyleSheet.hairlineWidth, maxWidth: '100%' },
+  action: { borderRadius: radius.lg, borderWidth: 2, padding: space.md, gap: space.md },
+  actionIcon: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  composer: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: space.sm,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  inputBox: { flex: 1, borderRadius: radius.lg, borderWidth: 1.5, paddingHorizontal: space.lg, justifyContent: 'center' },
+  input: { minHeight: 48, maxHeight: 120, paddingVertical: space.md, fontSize: 16, fontFamily: fonts.regular },
+  send: { width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
+  pressed: { transform: [{ scale: 0.94 }] },
+});
