@@ -40,6 +40,8 @@ export interface Receipt {
   total: number | null;
   access_key: string | null;
   image_path: string | null;
+  /** Outras partes de uma nota comprida, em ordem (a primeira é image_path). */
+  extra_image_paths: string[];
   source: 'ai' | 'manual' | 'qrcode';
   status: 'draft' | 'confirmed';
   created_at: string;

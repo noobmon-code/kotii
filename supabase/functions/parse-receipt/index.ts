@@ -1,5 +1,6 @@
-// POST { image_path } -> lê a foto da nota (já enviada ao bucket "receipts"),
-// extrai os itens com IA e cria um rascunho de nota para o usuário revisar.
+// POST { image_paths } (ou { image_path }) -> lê as fotos da nota (já enviadas
+// ao bucket "receipts", em ordem; nota comprida vem em partes), extrai os
+// itens com IA e cria um rascunho de nota para o usuário revisar.
 //
 // Roda com o JWT do usuário: todas as leituras e escritas passam pela RLS.
 // Secrets: ANTHROPIC_API_KEY ou OPENROUTER_API_KEY (uma das duas);
@@ -9,7 +10,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 import { ExtractionError, extractStructured, mediaTypeOf, toVisionImage, visionConfig } from '../_shared/vision.ts';
-import { cleanReceipt, ExtractedReceiptSchema, instructions, SYSTEM } from './extract.ts';
+import { cleanReceipt, ExtractedReceiptSchema, instructions, MAX_PHOTOS, SYSTEM } from './extract.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -68,20 +69,28 @@ Deno.serve(async (req) => {
     return json({ error: 'Leitura de nota não configurada: falta a chave da IA no Supabase.' }, 503);
   }
 
-  let imagePath: unknown;
+  let body: { image_path?: unknown; image_paths?: unknown };
   try {
-    ({ image_path: imagePath } = await req.json());
+    body = await req.json();
   } catch {
     return json({ error: 'Corpo inválido.' }, 400);
   }
-  if (typeof imagePath !== 'string' || !imagePath.startsWith(`${householdId}/`)) {
+  const imagePaths = Array.isArray(body.image_paths) ? body.image_paths : [body.image_path];
+  if (
+    !imagePaths.length ||
+    imagePaths.length > MAX_PHOTOS ||
+    imagePaths.some((p) => typeof p !== 'string' || !p.startsWith(`${householdId}/`))
+  ) {
     return json({ error: 'Imagem inválida.' }, 400);
   }
-  const mediaType = mediaTypeOf(imagePath);
-  if (!mediaType) return json({ error: 'Formato de imagem não suportado.' }, 400);
-
-  const { data: blob, error: downloadError } = await db.storage.from('receipts').download(imagePath);
-  if (downloadError || !blob) return json({ error: 'Imagem não encontrada.' }, 404);
+  const images = [];
+  for (const path of imagePaths as string[]) {
+    const mediaType = mediaTypeOf(path);
+    if (!mediaType) return json({ error: 'Formato de imagem não suportado.' }, 400);
+    const { data: blob, error: downloadError } = await db.storage.from('receipts').download(path);
+    if (downloadError || !blob) return json({ error: 'Imagem não encontrada.' }, 404);
+    images.push(await toVisionImage(blob, mediaType));
+  }
 
   const { data: catalog, error: catalogError } = await db
     .from('products')
@@ -97,8 +106,8 @@ Deno.serve(async (req) => {
       schema: ExtractedReceiptSchema,
       schemaName: 'receipt',
       system: SYSTEM,
-      prompt: instructions(catalog),
-      images: [await toVisionImage(blob, mediaType)],
+      prompt: instructions(catalog, images.length),
+      images,
       subject: 'a nota',
     });
   } catch (err) {
@@ -139,7 +148,8 @@ Deno.serve(async (req) => {
         purchased_at: receipt.purchasedAt ?? new Date().toISOString(),
         total: receipt.total,
         access_key: receipt.accessKey,
-        image_path: imagePath,
+        image_path: imagePaths[0],
+        extra_image_paths: imagePaths.slice(1),
         source: 'ai',
         status: 'draft',
       })

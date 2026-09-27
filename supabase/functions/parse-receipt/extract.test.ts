@@ -1,6 +1,6 @@
 import { assertEquals } from '@std/assert';
 
-import { cleanReceipt, type ExtractedReceipt } from './extract.ts';
+import { cleanReceipt, type ExtractedReceipt, instructions } from './extract.ts';
 
 const base: ExtractedReceipt = {
   is_receipt: true,
@@ -66,4 +66,11 @@ Deno.test('drops invalid identifiers and unknown product ids', () => {
   assertEquals(r.accessKey, null);
   assertEquals(r.purchasedAt, null);
   assertEquals(r.items[0].product_id, null);
+});
+
+Deno.test('instructions explain the overlap when the receipt comes in several photos', () => {
+  assertEquals(instructions([], 1).includes('fotos'), false);
+  const text = instructions([], 3);
+  assertEquals(text.includes('A nota veio em 3 fotos'), true);
+  assertEquals(text.includes('entra uma vez só'), true);
 });

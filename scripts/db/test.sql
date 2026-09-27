@@ -963,6 +963,22 @@ begin
   assert (select count(*) from public.menu_items) = 1, 'B sees the household menu, untouched by C';
 end $$;
 
+\echo '• nota em várias fotos'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  r uuid;
+begin
+  insert into public.receipts (image_path, extra_image_paths) values ('x/1.jpg', array['x/2.jpg', 'x/3.jpg']) returning id into r;
+  assert (select cardinality(extra_image_paths) from public.receipts where id = r) = 2, 'extra photos are kept in order';
+  begin
+    update public.receipts set extra_image_paths = array['a', 'b', 'c', 'd', 'e', 'f'] where id = r;
+    raise exception 'FAIL: too many photos';
+  exception when check_violation then null;
+  end;
+  delete from public.receipts where id = r;
+end $$;
+
 \echo '• tarefas com pontos para as crianças'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$
