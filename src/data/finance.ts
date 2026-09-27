@@ -144,7 +144,7 @@ export function useExpense(id: string | undefined) {
 }
 
 type TaxFields = 'deductible' | 'provider_name' | 'provider_doc' | 'patient_id';
-export type ExpenseValues = Omit<Expense, 'id' | 'paid_by' | TaxFields> & Partial<Pick<Expense, TaxFields>>;
+export type ExpenseValues = Omit<Expense, 'id' | 'paid_by' | TaxFields> & Partial<Pick<Expense, TaxFields | 'paid_by'>>;
 
 export function useSaveExpense() {
   const invalidate = useInvalidateFinance();
@@ -171,12 +171,20 @@ export function useDeleteExpense() {
 type ReceiptRow = {
   id: string;
   purchased_at: string;
+  paid_by: string | null;
   total: number | null;
   store: { name: string } | null;
   receipt_items: { total_price: number; suggested_category: string | null; product: { category: string } | null }[];
 };
 
-type PaymentRow = { id: string; bill_id: string; paid_on: string; amount: number; bill: { name: string; category: string } | null };
+type PaymentRow = {
+  id: string;
+  bill_id: string;
+  paid_on: string;
+  amount: number;
+  paid_by: string | null;
+  bill: { name: string; category: string } | null;
+};
 
 /** Lançamentos de `fromMonth` até `toMonth` (inclusive), no formato "AAAA-MM". */
 export function useSpending(fromMonth: string, toMonth: string, enabled = true) {
@@ -195,16 +203,16 @@ export function useSpending(fromMonth: string, toMonth: string, enabled = true) 
       const [receipts, payments, expenses] = await Promise.all([
         supabase
           .from('receipts')
-          .select('id, purchased_at, total, store:stores(name), receipt_items(total_price, suggested_category, product:products(category))')
+          .select('id, purchased_at, total, paid_by, store:stores(name), receipt_items(total_price, suggested_category, product:products(category))')
           .eq('status', 'confirmed')
           .gte('purchased_at', startAt)
           .lt('purchased_at', endAt),
         supabase
           .from('bill_payments')
-          .select('id, bill_id, paid_on, amount, bill:bills(name, category)')
+          .select('id, bill_id, paid_on, amount, paid_by, bill:bills(name, category)')
           .gte('paid_on', start)
           .lt('paid_on', end),
-        supabase.from('expenses').select('id, spent_on, amount, category, description').gte('spent_on', start).lt('spent_on', end),
+        supabase.from('expenses').select('id, spent_on, amount, category, description, paid_by').gte('spent_on', start).lt('spent_on', end),
       ]);
 
       const receiptRows = unwrap(receipts) as unknown as ReceiptRow[];
@@ -216,6 +224,7 @@ export function useSpending(fromMonth: string, toMonth: string, enabled = true) 
         purchased_at_date: toISODate(new Date(r.purchased_at)),
         total: r.total,
         store_name: r.store?.name ?? null,
+        paid_by: r.paid_by,
         items: r.receipt_items.map((i) => ({
           total_price: i.total_price,
           category: i.product?.category ?? i.suggested_category,
@@ -228,6 +237,7 @@ export function useSpending(fromMonth: string, toMonth: string, enabled = true) 
         amount: p.amount,
         bill_name: p.bill?.name ?? 'Conta',
         bill_category: p.bill?.category ?? 'contas',
+        paid_by: p.paid_by,
       }));
       return buildEntries(forSpending, paid, expenseRows);
     },
@@ -299,6 +309,80 @@ export function useMedicalExpenses(year: number) {
           ),
       ];
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Divisão de gastos entre moradores
+
+export function useSplitWeights() {
+  return useQuery({
+    queryKey: ['split', 'weights'],
+    queryFn: async () =>
+      Object.fromEntries(
+        (unwrap(await supabase.from('split_weights').select('user_id, weight')) as { user_id: string; weight: number }[]).map(
+          (w) => [w.user_id, Number(w.weight)],
+        ),
+      ) as Record<string, number>,
+  });
+}
+
+export function useSaveSplitWeights() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (weights: Record<string, number>) =>
+      unwrap(
+        await supabase
+          .from('split_weights')
+          .upsert(Object.entries(weights).map(([user_id, weight]) => ({ user_id, weight })), { onConflict: 'household_id,user_id' }),
+      ),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['split'] }),
+  });
+}
+
+export interface Settlement {
+  id: string;
+  month: string;
+  from_user: string;
+  to_user: string;
+  amount: number;
+}
+
+export function useSettlements(month: string) {
+  return useQuery({
+    queryKey: ['split', 'settlements', month],
+    queryFn: async () =>
+      (
+        unwrap(
+          await supabase.from('settlements').select('id, month, from_user, to_user, amount').eq('month', month).order('created_at'),
+        ) as Settlement[]
+      ).map((s) => ({ ...s, amount: Number(s.amount) })),
+  });
+}
+
+export function useAddSettlement() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (settlement: Omit<Settlement, 'id'>) => unwrap(await supabase.from('settlements').insert(settlement)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['split'] }),
+  });
+}
+
+export function useDeleteSettlement() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => unwrap(await supabase.from('settlements').delete().eq('id', id)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['split'] }),
+  });
+}
+
+/** Troca quem pagou um vencimento já registrado. */
+export function useSetPaymentPayer() {
+  const invalidate = useInvalidateFinance();
+  return useMutation({
+    mutationFn: async ({ billId, dueOn, paidBy }: { billId: string; dueOn: string; paidBy: string }) =>
+      unwrap(await supabase.from('bill_payments').update({ paid_by: paidBy }).eq('bill_id', billId).eq('due_on', dueOn)),
+    onSuccess: invalidate,
   });
 }
 

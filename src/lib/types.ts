@@ -43,6 +43,8 @@ export interface Receipt {
   source: 'ai' | 'manual' | 'qrcode';
   status: 'draft' | 'confirmed';
   created_at: string;
+  /** Morador que pagou (divisão de gastos). */
+  paid_by: string | null;
   store: Pick<Store, 'id' | 'name'> | null;
 }
 

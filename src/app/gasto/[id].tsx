@@ -4,6 +4,8 @@ import { StyleSheet, Switch, View } from 'react-native';
 
 import { useDeleteExpense, useExpense, useSaveExpense } from '@/data/finance';
 import { usePeople } from '@/data/health';
+import { PayerChips } from '@/features/finance/PayerChips';
+import { useAuth } from '@/lib/auth';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { FINANCE_CATEGORIES, type FinanceCategory } from '@/domain/finance';
 import { formatTaxDoc, parseTaxDoc } from '@/domain/incomeTax';
@@ -38,6 +40,8 @@ function ExpenseForm({ expense }: { expense?: Expense }) {
   const [providerName, setProviderName] = useState(expense?.provider_name ?? '');
   const [providerDoc, setProviderDoc] = useState(expense?.provider_doc ? formatTaxDoc(expense.provider_doc) : '');
   const [patientId, setPatientId] = useState(expense?.patient_id ?? null);
+  const me = useAuth().session?.user.id ?? null;
+  const [paidBy, setPaidBy] = useState(expense ? expense.paid_by : me);
   const c = useColors();
   // Pets não entram no IR.
   const people = (usePeople().data ?? []).filter((p) => p.kind === 'pessoa');
@@ -68,6 +72,7 @@ function ExpenseForm({ expense }: { expense?: Expense }) {
           provider_name: forTax ? providerName.trim() || null : null,
           provider_doc: doc,
           patient_id: forTax ? patientId : null,
+          ...(paidBy ? { paid_by: paidBy } : {}),
         },
       },
       { onSuccess: () => router.back(), onError },
@@ -95,6 +100,7 @@ function ExpenseForm({ expense }: { expense?: Expense }) {
           ))}
         </Row>
       </View>
+      <PayerChips value={paidBy} onChange={setPaidBy} />
       {category === 'saude' ? (
         <Card style={styles.group}>
           <Row>

@@ -954,6 +954,50 @@ begin
   assert (select count(*) from public.menu_items) = 1, 'B sees the household menu, untouched by C';
 end $$;
 
+\echo '• divisão de gastos: pesos e acertos entre moradores'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  a uuid := auth.uid();
+  b uuid := '00000000-0000-0000-0000-00000000000b';
+  c uuid := '00000000-0000-0000-0000-00000000000c';
+begin
+  insert into public.split_weights (user_id, weight) values (a, 2), (b, 1);
+  begin
+    insert into public.split_weights (user_id, weight) values (c, 1);
+    raise exception 'FAIL: weight for someone outside the household';
+  exception when insufficient_privilege then null;
+  end;
+  insert into public.settlements (month, from_user, to_user, amount) values ('2026-09', b, a, 120);
+  begin
+    insert into public.settlements (month, from_user, to_user, amount) values ('2026-09', a, c, 10);
+    raise exception 'FAIL: settlement with someone outside the household';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.settlements (month, from_user, to_user, amount) values ('2026-09', a, a, 10);
+    raise exception 'FAIL: settlement with oneself';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.settlements (month, from_user, to_user, amount) values ('2026-13', b, a, 10);
+    raise exception 'FAIL: invalid month';
+  exception when check_violation then null;
+  end;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  assert (select count(*) from public.settlements) = 0 and (select count(*) from public.split_weights) = 0,
+    'C sees no foreign split';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_b', false) \gset
+do $$
+begin
+  assert (select count(*) from public.settlements) = 1, 'B sees the household settlements';
+  assert (select weight from public.split_weights where user_id = auth.uid()) = 1, 'B sees the household weights';
+end $$;
+
 -- ---------------------------------------------------------------------------
 \echo '• sair da casa: dono passa adiante, o último apaga a casa'
 \set user_f '00000000-0000-0000-0000-00000000000f'
