@@ -954,6 +954,46 @@ begin
   assert (select count(*) from public.menu_items) = 1, 'B sees the household menu, untouched by C';
 end $$;
 
+\echo '• tarefas com pontos para as crianças'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  kid uuid := current_setting('test.person_kid')::uuid;
+  bed uuid;
+  dishes uuid;
+begin
+  insert into public.chores (title, recurrence, kid_id, points) values ('Arrumar a cama', 'daily', kid, 10) returning id into bed;
+  insert into public.chores (title, points) values ('Lavar a louça', 50) returning id into dishes;
+  perform public.complete_chore(bed, '2026-09-27');
+  perform public.complete_chore(bed, '2026-09-28');
+  perform public.complete_chore(dishes, '2026-09-28');
+  assert (select sum(points) from public.chore_completions where person_id = kid) = 20, 'kid earns the chore points';
+  assert (select points from public.chore_completions where chore_id = dishes) = 0, 'chore without a kid earns nothing';
+  insert into public.point_redemptions (person_id, title, points) values (kid, 'Sorvete', 15);
+  assert (select balance from public.kid_points where person_id = kid) = 5, 'balance is earned minus redeemed';
+  begin
+    insert into public.point_redemptions (person_id, title, points) values (kid, 'Nada', 0);
+    raise exception 'FAIL: zero-point redemption';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.chores (title, points) values ('X', 5000);
+    raise exception 'FAIL: too many points';
+  exception when check_violation then null;
+  end;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  assert (select count(*) from public.kid_points where person_id = current_setting('test.person_kid')::uuid) = 0,
+    'C sees no foreign points';
+  begin
+    insert into public.point_redemptions (person_id, title, points) values (current_setting('test.person_kid')::uuid, 'Hack', 1);
+    raise exception 'FAIL: redeemed points of a foreign kid';
+  exception when foreign_key_violation then null;
+  end;
+end $$;
+
 \echo '• divisão de gastos: pesos e acertos entre moradores'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$

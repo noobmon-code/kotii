@@ -78,7 +78,7 @@ export function useConsumePantryItem() {
 // ---------------------------------------------------------------------------
 // Tarefas
 
-const CHORE_COLUMNS = 'id, title, notes, recurrence, interval_count, due_on, assigned_to, active, equipment_id';
+const CHORE_COLUMNS = 'id, title, notes, recurrence, interval_count, due_on, assigned_to, active, equipment_id, kid_id, points';
 
 export function useChores() {
   return useQuery({
@@ -100,7 +100,7 @@ export function useChore(id: string | undefined) {
 }
 
 export type ChoreValues = Pick<Chore, 'title' | 'notes' | 'recurrence' | 'interval_count' | 'due_on' | 'assigned_to'> &
-  Partial<Pick<Chore, 'equipment_id'>>;
+  Partial<Pick<Chore, 'equipment_id' | 'kid_id' | 'points'>>;
 
 export function useSaveChore() {
   const queryClient = useQueryClient();
@@ -121,7 +121,67 @@ export function useCompleteChore() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['chores'] });
       queryClient.invalidateQueries({ queryKey: ['choreHistory'] });
+      queryClient.invalidateQueries({ queryKey: ['kidPoints'] });
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Pontos das crianças
+
+/** Saldo de pontos por ficha (tarefas feitas menos prêmios trocados). */
+export function useKidPoints() {
+  return useQuery({
+    queryKey: ['kidPoints'],
+    queryFn: async () =>
+      Object.fromEntries(
+        (unwrap(await supabase.from('kid_points').select('person_id, balance')) as { person_id: string; balance: number }[]).map(
+          (p) => [p.person_id, Number(p.balance)],
+        ),
+      ) as Record<string, number>,
+  });
+}
+
+/** Tarefas feitas e prêmios de uma criança (os mais recentes). */
+export function useKidHistory(personId: string) {
+  return useQuery({
+    queryKey: ['kidPoints', personId],
+    queryFn: async () => {
+      const [completions, redemptions] = await Promise.all([
+        supabase
+          .from('chore_completions')
+          .select('id, points, completed_at, chore:chores(title)')
+          .eq('person_id', personId)
+          .gt('points', 0)
+          .order('completed_at', { ascending: false })
+          .limit(30),
+        supabase
+          .from('point_redemptions')
+          .select('id, points, created_at, title')
+          .eq('person_id', personId)
+          .order('created_at', { ascending: false })
+          .limit(30),
+      ]);
+      type CompletionRow = { id: string; points: number; completed_at: string; chore: { title: string } | null };
+      return {
+        completions: (unwrap(completions) as unknown as CompletionRow[]).map((c) => ({
+          id: c.id,
+          points: c.points,
+          completed_at: c.completed_at,
+          title: c.chore?.title ?? 'Tarefa',
+        })),
+        redemptions: unwrap(redemptions) as { id: string; points: number; created_at: string; title: string }[],
+      };
+    },
+  });
+}
+
+export function useRedeemPoints() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { person_id: string; title: string; points: number }) =>
+      unwrap(await supabase.from('point_redemptions').insert(input)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['kidPoints'] }),
   });
 }
 

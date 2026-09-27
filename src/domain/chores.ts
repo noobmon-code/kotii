@@ -39,3 +39,16 @@ export function describeChoreStatus(status: ChoreStatus): string {
       return status.days === 1 ? 'Amanhã' : `Em ${status.days} dias`;
   }
 }
+
+/** Quem faz a tarefa: o morador, ou a criança com os pontos ("Lia · 10 pontos"). */
+export function choreAssigneeLabel(
+  chore: { assigned_to: string | null; kid_id: string | null; points: number },
+  members: { user_id: string; display_name: string }[],
+  people: { id: string; name: string }[],
+): string | null {
+  if (chore.kid_id) {
+    const kid = people.find((p) => p.id === chore.kid_id)?.name;
+    if (kid) return chore.points > 0 ? `${kid} · ${chore.points} ${chore.points === 1 ? 'ponto' : 'pontos'}` : kid;
+  }
+  return members.find((m) => m.user_id === chore.assigned_to)?.display_name ?? null;
+}

@@ -3,9 +3,11 @@ import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { useChore, useDeleteChore, useSaveChore } from '@/data/home';
+import { usePeople } from '@/data/health';
 import { useEquipment } from '@/data/house';
 import { RECURRENCE_OPTIONS, type Recurrence } from '@/domain/chores';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
+import { kidsOf } from '@/domain/points';
 import { useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import type { Chore } from '@/lib/types';
@@ -41,6 +43,9 @@ function ChoreForm({ chore, equipmentId }: { chore?: Chore; equipmentId: string 
   const [interval, setIntervalCount] = useState(String(chore?.interval_count ?? 1));
   const [due, setDue] = useState(formatBRDate(chore?.due_on ?? todayISO()));
   const [assignedTo, setAssignedTo] = useState<string | null>(chore?.assigned_to ?? null);
+  const [kidId, setKidId] = useState<string | null>(chore?.kid_id ?? null);
+  const [points, setPoints] = useState(String(chore?.points || 10));
+  const kids = kidsOf(usePeople().data ?? []);
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
@@ -49,6 +54,11 @@ function ChoreForm({ chore, equipmentId }: { chore?: Chore; equipmentId: string 
     const count = Number.parseInt(interval, 10);
     if (!title.trim() || !dueISO || !(count >= 1 && count <= 365)) {
       notify('Confira os dados', 'Título, data (dd/mm/aaaa) e intervalo entre 1 e 365 são obrigatórios.');
+      return;
+    }
+    const pointsValue = kidId ? Number.parseInt(points, 10) : 0;
+    if (kidId && !(pointsValue >= 0 && pointsValue <= 1000)) {
+      notify('Pontos inválidos', 'Use um número de 0 a 1000.');
       return;
     }
     save.mutate(
@@ -60,7 +70,9 @@ function ChoreForm({ chore, equipmentId }: { chore?: Chore; equipmentId: string 
           recurrence,
           interval_count: recurrence === 'none' ? 1 : count,
           due_on: dueISO,
-          assigned_to: assignedTo,
+          assigned_to: kidId ? null : assignedTo,
+          kid_id: kidId,
+          points: pointsValue,
           ...(chore ? {} : { equipment_id: equipmentId }),
         },
       },
@@ -107,17 +119,50 @@ function ChoreForm({ chore, equipmentId }: { chore?: Chore; equipmentId: string 
       <View style={styles.group}>
         <Text variant="label">Responsável</Text>
         <Row style={styles.wrap}>
-          <Chip label="Qualquer um" selected={assignedTo === null} onPress={() => setAssignedTo(null)} />
+          <Chip
+            label="Qualquer um"
+            selected={assignedTo === null && kidId === null}
+            onPress={() => {
+              setAssignedTo(null);
+              setKidId(null);
+            }}
+          />
           {members.map((m) => (
             <Chip
               key={m.user_id}
               label={m.display_name}
               icon="account-outline"
-              selected={assignedTo === m.user_id}
-              onPress={() => setAssignedTo(m.user_id)}
+              selected={!kidId && assignedTo === m.user_id}
+              onPress={() => {
+                setAssignedTo(m.user_id);
+                setKidId(null);
+              }}
+            />
+          ))}
+          {kids.map((k) => (
+            <Chip
+              key={k.id}
+              label={k.name}
+              icon="human-child"
+              selected={kidId === k.id}
+              onPress={() => {
+                setKidId(k.id);
+                setAssignedTo(null);
+              }}
             />
           ))}
         </Row>
+        {kidId ? (
+          <Row>
+            <Text variant="body">Vale</Text>
+            <View style={styles.interval}>
+              <TextField value={points} onChangeText={setPoints} keyboardType="number-pad" accessibilityLabel="Pontos" />
+            </View>
+            <Text variant="body" style={styles.flex}>
+              pontos para {kids.find((k) => k.id === kidId)?.name} quando ficar pronta
+            </Text>
+          </Row>
+        ) : null}
       </View>
 
       <TextField label="Observações" value={notes} onChangeText={setNotes} multiline />
@@ -139,6 +184,7 @@ function ChoreForm({ chore, equipmentId }: { chore?: Chore; equipmentId: string 
 }
 
 const styles = StyleSheet.create({
+  flex: { flex: 1 },
   group: { gap: space.sm },
   wrap: { flexWrap: 'wrap' },
   interval: { width: 72 },

@@ -2,6 +2,7 @@ import { router } from 'expo-router';
 import { Share, StyleSheet } from 'react-native';
 
 import { usePeople } from '@/data/health';
+import { useKidPoints } from '@/data/home';
 import { LastMemberError, useLeaveHousehold } from '@/data/household';
 import { DocumentsSection } from '@/features/DocumentsSection';
 import { HouseRemindersSection } from '@/features/HouseRemindersSection';
@@ -16,12 +17,14 @@ export default function FamilyScreen() {
   const household = useHousehold();
   const leave = useLeaveHousehold(session?.user.id);
   const people = usePeople();
+  const kidPoints = useKidPoints();
 
   if (!household.data) return <Loading />;
   const { household: house, members, me } = household.data;
   const heir = members.find((m) => m.user_id !== me.user_id);
   // Quem não usa o app: crianças, dependentes e pets, com ficha, remédios e vacinas.
   const withoutApp = (people.data ?? []).filter((p) => !p.member_user_id);
+  const points = kidPoints.data ?? {};
   const addPerson = (kind: 'pessoa' | 'pet') => router.push({ pathname: '/pessoa/[id]', params: { id: 'nova', kind } });
 
   function confirmDelete(houseId: string, houseName: string) {
@@ -112,7 +115,13 @@ export default function FamilyScreen() {
                 key={p.id}
                 left={<IconBadge icon={p.kind === 'pet' ? 'paw' : 'account-child-outline'} tone="neutral" />}
                 title={p.name}
-                subtitle={p.kind === 'pet' ? (p.species ?? 'Pet') : 'Sem conta no app'}
+                subtitle={
+                  p.kind === 'pet'
+                    ? (p.species ?? 'Pet')
+                    : points[p.id]
+                      ? `${points[p.id]} ${points[p.id] === 1 ? 'ponto' : 'pontos'} nas tarefas`
+                      : 'Sem conta no app'
+                }
                 onPress={() => router.push({ pathname: '/pessoa/[id]', params: { id: p.id } })}
               />
             ))}

@@ -16,7 +16,7 @@ import { useDocuments, useEquipmentList } from '@/data/house';
 import { useAddItemsToList, usePurchaseRecords, useShoppingLists } from '@/data/market';
 import { useMenu } from '@/data/menu';
 import { useReceipts } from '@/data/receipts';
-import { choreStatus, describeChoreStatus } from '@/domain/chores';
+import { choreAssigneeLabel, choreStatus, describeChoreStatus } from '@/domain/chores';
 import { todayISO } from '@/domain/dates';
 import { describeDocumentStatus, documentsNeedingAttention, getDocumentKind } from '@/domain/documents';
 import { budgetProgress, describeBudget } from '@/domain/budget';
@@ -28,6 +28,7 @@ import { describeExpiry, expiryStatus } from '@/domain/pantry';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { describeRestock, restockSuggestions, type RestockItem } from '@/domain/restock';
 import { normalizeSearch } from '@/domain/search';
+import { cheerKid } from '@/features/ChoresPanel';
 import { BillRow } from '@/features/finance/BillsPanel';
 import { PayBillModal } from '@/features/finance/PayBillModal';
 import { hasHealthToday, healthTodayCount, HealthTodaySections } from '@/features/health/HealthTodaySections';
@@ -318,7 +319,7 @@ export default function TodayScreen() {
           <ListCard>
             {dueChores.map((chore) => {
               const status = choreStatus(chore.due_on, today);
-              const assignee = members.find((m) => m.user_id === chore.assigned_to)?.display_name;
+              const assignee = choreAssigneeLabel(chore, members, health.people);
               return (
                 <ListRow
                   key={chore.id}
@@ -330,7 +331,9 @@ export default function TodayScreen() {
                     <CheckCircle
                       checked={false}
                       label={`Concluir ${chore.title}`}
-                      onPress={() => completeChore.mutate({ id: chore.id, today }, { onError })}
+                      onPress={() =>
+                        completeChore.mutate({ id: chore.id, today }, { onSuccess: () => cheerKid(chore, health.people), onError })
+                      }
                     />
                   }
                 />

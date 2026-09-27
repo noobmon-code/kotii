@@ -2,11 +2,14 @@ import { router } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
 import { useChores, useCompleteChore } from '@/data/home';
+import { usePeople } from '@/data/health';
 import { useEquipmentList } from '@/data/house';
-import { choreStatus, describeChoreStatus, describeRecurrence, type ChoreStatus } from '@/domain/chores';
+import { choreAssigneeLabel, choreStatus, describeChoreStatus, describeRecurrence, type ChoreStatus } from '@/domain/chores';
+import { kidsOf } from '@/domain/points';
 import { todayISO } from '@/domain/dates';
 import { useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
+import type { Chore } from '@/lib/types';
 import { notify } from '@/ui/dialogs';
 import {
   Button,
@@ -22,6 +25,14 @@ import {
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
+/** Tarefa de criança concluída: comemora os pontos ganhos. */
+export function cheerKid(chore: Pick<Chore, 'kid_id' | 'points'>, people: { id: string; name: string }[]) {
+  const kid = chore.kid_id ? people.find((p) => p.id === chore.kid_id)?.name : undefined;
+  if (kid && chore.points > 0) {
+    notify(`+${chore.points} ${chore.points === 1 ? 'ponto' : 'pontos'} para ${kid}!`, 'O saldo fica em Casa → Tarefas → Pontos das crianças.');
+  }
+}
+
 const GROUPS: { kind: ChoreStatus['kind']; title: string; tone: Tone }[] = [
   { kind: 'atrasada', title: 'Atrasadas', tone: 'danger' },
   { kind: 'hoje', title: 'Hoje', tone: 'primary' },
@@ -34,6 +45,8 @@ export function ChoresPanel() {
   const complete = useCompleteChore();
   const members = useHousehold().data?.members ?? [];
   const equipment = useEquipmentList();
+  const people = usePeople().data ?? [];
+  const kids = kidsOf(people);
 
   if (chores.isPending) return <Loading />;
   if (chores.isError) return <ErrorNotice error={chores.error} onRetry={() => chores.refetch()} />;
@@ -48,6 +61,9 @@ export function ChoresPanel() {
         variant="secondary"
         onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: 'nova' } })}
       />
+      {kids.length ? (
+        <Button title="Pontos das crianças" icon="star-circle-outline" variant="secondary" onPress={() => router.push('/pontos')} />
+      ) : null}
       {rows.length === 0 ? (
         <EmptyState
           icon="broom"
@@ -62,7 +78,7 @@ export function ChoresPanel() {
             <Section key={group.kind} title={group.title}>
               <ListCard>
                 {groupRows.map(({ chore, status }) => {
-                  const assignee = members.find((m) => m.user_id === chore.assigned_to)?.display_name;
+                  const assignee = choreAssigneeLabel(chore, members, people);
                   return (
                     <ListRow
                       key={chore.id}
@@ -84,7 +100,7 @@ export function ChoresPanel() {
                           onPress={() =>
                             complete.mutate(
                               { id: chore.id, today },
-                              { onError: (err) => notify('Erro', errorMessage(err)) },
+                              { onSuccess: () => cheerKid(chore, people), onError: (err) => notify('Erro', errorMessage(err)) },
                             )
                           }
                         />

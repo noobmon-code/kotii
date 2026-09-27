@@ -123,6 +123,9 @@ export interface Chore {
   active: boolean;
   /** Manutenção de um aparelho (ver Equipment). */
   equipment_id: string | null;
+  /** Tarefa de uma criança (ficha sem conta no app), que ganha `points` ao concluir. */
+  kid_id: string | null;
+  points: number;
 }
 
 export interface Medication {
