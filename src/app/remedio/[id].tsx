@@ -11,7 +11,7 @@ import { errorMessage } from '@/lib/supabase';
 import { openNewPerson, PersonChips } from '@/features/health/PersonChips';
 import type { Medication, Person } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Button, Card, ErrorNotice, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
+import { Button, Card, DateField, ErrorNotice, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
 import { space, useColors } from '@/ui/theme';
 
 export default function MedicationScreen() {
@@ -129,10 +129,10 @@ function MedicationForm({
       />
       <Row gap={space.md}>
         <View style={styles.flex}>
-          <TextField label="Início" value={start} onChangeText={setStart} keyboardType="numbers-and-punctuation" />
+          <DateField label="Início" value={start} onChangeText={setStart} />
         </View>
         <View style={styles.flex}>
-          <TextField label="Fim" value={end} onChangeText={setEnd} placeholder="Uso contínuo" keyboardType="numbers-and-punctuation" />
+          <DateField label="Fim" value={end} onChangeText={setEnd} placeholder="Uso contínuo" />
         </View>
       </Row>
       <TextField label="Observações" value={notes} onChangeText={setNotes} multiline placeholder="Ex.: tomar após as refeições" />

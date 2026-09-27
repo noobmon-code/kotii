@@ -9,7 +9,7 @@ import { errorMessage } from '@/lib/supabase';
 import type { Bill } from '@/lib/types';
 import { Backdrop } from '@/ui/Backdrop';
 import { notify } from '@/ui/dialogs';
-import { Button, IconButton, Row, Text, TextField } from '@/ui/primitives';
+import { Button, DateField, IconButton, Row, Text, TextField } from '@/ui/primitives';
 import { MAX_WIDTH, space, useColors } from '@/ui/theme';
 
 /** Confirma o pagamento do vencimento atual da conta (valor e data). Renderize só quando aberto. */
@@ -68,7 +68,7 @@ export function PayBillModal({ bill, onClose }: { bill: Bill; onClose: () => voi
             autoFocus={bill.amount == null}
             hint={bill.amount == null ? 'Esta conta varia: confira o valor no boleto.' : undefined}
           />
-          <TextField label="Pago em" value={paidOn} onChangeText={setPaidOn} keyboardType="numbers-and-punctuation" />
+          <DateField label="Pago em" value={paidOn} onChangeText={setPaidOn} />
           <Button title="Confirmar pagamento" icon="check" onPress={confirm} loading={pay.isPending} />
         </ScrollView>
       </SafeAreaView>

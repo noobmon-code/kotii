@@ -64,6 +64,30 @@ export function formatBRDate(iso: string): string {
   return `${d}/${m}/${y}`;
 }
 
+/**
+ * Máscara de data enquanto digita: "20122026" vira "20/12/2026", com a barra
+ * aparecendo sozinha depois do dia e do mês. Uma barra digitada fecha o
+ * campo ("1/" vira "01/"), e colar "1/3/2026" ou "2026-03-01" também vale.
+ * `previous` é o valor anterior: apagando, a barra automática não volta.
+ */
+export function maskBRDate(next: string, previous = ''): string {
+  const pasted = next.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (pasted) return `${pasted[3]}/${pasted[2]}/${pasted[1]}`;
+  const deleting = next.length < previous.length;
+  const pasting = next.length > previous.length + 1;
+  const parts = next.split('/');
+  let digits = '';
+  parts.forEach((part, index) => {
+    const d = part.replace(/\D/g, '');
+    // Só a barra recém-digitada (ou colada) completa o dia ou o mês com zero.
+    const closing = pasting ? index < parts.length - 1 : index === parts.length - 2 && next.endsWith('/');
+    digits += closing && d.length === 1 && (digits.length === 0 || digits.length === 2) ? `0${d}` : d;
+  });
+  digits = digits.slice(0, 8);
+  const text = [digits.slice(0, 2), digits.slice(2, 4), digits.slice(4)].filter(Boolean).join('/');
+  return !deleting && (digits.length === 2 || digits.length === 4) ? `${text}/` : text;
+}
+
 /** "20/12/2026" ou "20/12/26" -> "2026-12-20"; null se inválida. */
 export function parseBRDate(value: string): string | null {
   const match = value.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);

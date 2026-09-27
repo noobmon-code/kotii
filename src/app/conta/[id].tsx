@@ -16,6 +16,7 @@ import {
   Button,
   Card,
   Chip,
+  DateField,
   ErrorNotice,
   IconButton,
   ListCard,
@@ -130,12 +131,10 @@ function BillForm({ bill }: { bill?: Bill }) {
         </Row>
       </View>
 
-      <TextField
+      <DateField
         label={recurrence === 'once' ? 'Vencimento' : 'Próximo vencimento'}
         value={due}
         onChangeText={setDue}
-        placeholder="dd/mm/aaaa"
-        keyboardType="numbers-and-punctuation"
         hint={
           recurrence === 'monthly' && dueISO && Number(dueISO.slice(8, 10)) > 28
             ? 'Nos meses mais curtos, vence no último dia.'

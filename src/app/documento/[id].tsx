@@ -20,7 +20,7 @@ import { usePhotoSheet } from '@/features/usePhotoSheet';
 import { errorMessage } from '@/lib/supabase';
 import type { HomeDocument, Person } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Badge, Button, Chip, ErrorNotice, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
+import { Badge, Button, Chip, DateField, ErrorNotice, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 export default function DocumentScreen() {
@@ -144,10 +144,10 @@ function DocumentForm({
 
       <Row gap={space.md}>
         <View style={styles.flex}>
-          <TextField label="Emissão" value={issued} onChangeText={setIssued} placeholder="dd/mm/aaaa" keyboardType="numbers-and-punctuation" />
+          <DateField label="Emissão" value={issued} onChangeText={setIssued} />
         </View>
         <View style={styles.flex}>
-          <TextField label="Validade" value={expires} onChangeText={setExpires} placeholder="Não vence" keyboardType="numbers-and-punctuation" />
+          <DateField label="Validade" value={expires} onChangeText={setExpires} placeholder="Não vence" />
         </View>
       </Row>
       {status ? (

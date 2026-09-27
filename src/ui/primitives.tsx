@@ -18,6 +18,7 @@ import {
 import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
 
 import { getCategory, type IconName } from '@/domain/categories';
+import { maskBRDate } from '@/domain/dates';
 import { matchItemArt } from '@/domain/itemArt';
 import { Mascot, Spot, type Mood } from './art';
 import { Backdrop } from './Backdrop';
@@ -311,6 +312,34 @@ export function TextField({ label, hint, style, ...props }: TextInputProps & { l
       />
       {hint ? <Text variant="small">{hint}</Text> : null}
     </View>
+  );
+}
+
+/**
+ * Campo de data dd/mm/aaaa: teclado numérico e barras que aparecem sozinhas
+ * enquanto digita (maskBRDate). O valor continua sendo o texto; quem salva
+ * converte com parseBRDate.
+ */
+export function DateField({
+  value = '',
+  onChangeText,
+  ...props
+}: Omit<TextInputProps, 'value' | 'onChangeText'> & {
+  value?: string;
+  onChangeText: (text: string) => void;
+  label?: string;
+  hint?: string;
+}) {
+  return (
+    <TextField
+      placeholder="dd/mm/aaaa"
+      keyboardType="number-pad"
+      maxLength={10}
+      autoCorrect={false}
+      {...props}
+      value={value}
+      onChangeText={(text) => onChangeText(maskBRDate(text, value))}
+    />
   );
 }
 

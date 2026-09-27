@@ -28,6 +28,7 @@ import {
   Button,
   CheckCircle,
   Chip,
+  DateField,
   ErrorNotice,
   IconBadge,
   ListCard,
@@ -177,14 +178,14 @@ function EquipmentForm({ equipment }: { equipment?: Equipment }) {
       <Section title="Compra e garantia">
         <Row gap={space.md}>
           <View style={styles.flex}>
-            <TextField label="Comprado em" value={purchased} onChangeText={setPurchased} placeholder="dd/mm/aaaa" keyboardType="numbers-and-punctuation" />
+            <DateField label="Comprado em" value={purchased} onChangeText={setPurchased} />
           </View>
           <View style={styles.flex}>
             <TextField label="Preço" value={price} onChangeText={setPrice} placeholder="0,00" keyboardType="decimal-pad" />
           </View>
         </Row>
         <TextField label="Loja" value={store} onChangeText={setStore} />
-        <TextField label="Garantia até" value={warranty} onChangeText={setWarranty} placeholder="dd/mm/aaaa" keyboardType="numbers-and-punctuation" />
+        <DateField label="Garantia até" value={warranty} onChangeText={setWarranty} />
         <Row style={styles.wrap}>
           {WARRANTY_PRESETS.map((months) => (
             <Chip key={months} label={months >= 12 ? `${months / 12} ano${months > 12 ? 's' : ''}` : `${months} meses`} onPress={() => applyWarranty(months)} />

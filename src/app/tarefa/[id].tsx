@@ -10,7 +10,7 @@ import { useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import type { Chore } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Button, Chip, ErrorNotice, Icon, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
+import { Button, Chip, DateField, ErrorNotice, Icon, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 const INTERVAL_UNIT: Record<Exclude<Recurrence, 'none'>, string> = {
@@ -97,11 +97,10 @@ function ChoreForm({ chore, equipmentId }: { chore?: Chore; equipmentId: string 
         ) : null}
       </View>
 
-      <TextField
+      <DateField
         label={chore ? 'Próxima data' : 'Primeira data'}
         value={due}
         onChangeText={setDue}
-        keyboardType="numbers-and-punctuation"
         hint="Ao concluir, a próxima é agendada a partir do dia em que foi feita."
       />
 
