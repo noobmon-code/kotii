@@ -8,9 +8,11 @@
     "scheme": "nooky",
     "userInterfaceStyle": "automatic",
     "ios": {
+      "bundleIdentifier": "com.noobmon.nooky",
       "icon": "./assets/expo.icon"
     },
     "android": {
+      "package": "com.noobmon.nooky",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",

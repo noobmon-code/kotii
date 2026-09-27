@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 
 import { errorMessage, supabase } from '@/lib/supabase';
+import { notify } from '@/ui/dialogs';
 import { Button, IconBadge, Screen, Segmented, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
@@ -16,7 +17,7 @@ export default function SignInScreen() {
   async function submit() {
     const trimmed = email.trim().toLowerCase();
     if (!trimmed || password.length < 6) {
-      Alert.alert('Confira os dados', 'Informe o e-mail e uma senha com pelo menos 6 caracteres.');
+      notify('Confira os dados', 'Informe o e-mail e uma senha com pelo menos 6 caracteres.');
       return;
     }
     setBusy(true);
@@ -28,12 +29,12 @@ export default function SignInScreen() {
         const { data, error } = await supabase.auth.signUp({ email: trimmed, password });
         if (error) throw error;
         if (!data.session) {
-          Alert.alert('Confirme seu e-mail', 'Enviamos um link de confirmação. Depois é só entrar.');
+          notify('Confirme seu e-mail', 'Enviamos um link de confirmação. Depois é só entrar.');
           setMode('entrar');
         }
       }
     } catch (err) {
-      Alert.alert('Não foi possível continuar', translateAuthError(errorMessage(err)));
+      notify('Não foi possível continuar', translateAuthError(errorMessage(err)));
     } finally {
       setBusy(false);
     }
