@@ -4,7 +4,7 @@ import { DocumentsSection } from '@/features/DocumentsSection';
 import { useAuth, useHousehold } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import { confirmAction } from '@/ui/dialogs';
-import { Badge, Button, Card, IconBadge, ListCard, ListRow, Loading, Screen, Section, Text } from '@/ui/primitives';
+import { Badge, Button, Card, IconBadge, ListCard, ListRow, Loading, PageTitle, Screen, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 export default function FamilyScreen() {
@@ -22,7 +22,7 @@ export default function FamilyScreen() {
 
   return (
     <Screen>
-      <Text variant="title">{house.name}</Text>
+      <PageTitle title={house.name} subtitle="Família" tint="purple" />
 
       <Card style={styles.invite}>
         <Text variant="muted">Código de convite</Text>

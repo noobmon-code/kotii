@@ -113,6 +113,10 @@ npm run lint
 
 As Edge Functions são Deno: em `supabase/functions/_shared`, `parse-receipt` e `parse-health`, rode `deno test && deno check index.ts` (em `_shared`, `deno check vision.ts`).
 
+## Identidade visual
+
+Na linha do Headspace: fundo creme de dia e azul profundo à noite, cartões bem arredondados, botões em pílula, fonte Nunito e personagens redondos com rosto simples. Cores, tons dos cartões, fontes e raios ficam em `src/ui/theme.ts`; as ilustrações (personagens, sol e lua da tela Hoje, logo) em `src/ui/art.tsx`. Ícone, ícone adaptativo do Android e splash usam o mesmo personagem laranja.
+
 ## Estrutura
 
 ```
@@ -120,7 +124,7 @@ src/app/            telas (Expo Router): (tabs)/ Hoje, Casa, Finanças, Saúde, 
 src/domain/         regras de negócio puras e testadas (sem React, sem Supabase)
 src/data/           consultas e mutações (React Query + Supabase)
 src/features/       blocos de tela maiores (painéis da Casa, da Saúde e das Finanças, leitor de nota, importação de planos)
-src/ui/             componentes visuais e tema claro/escuro
+src/ui/             componentes visuais, tema claro/escuro e ilustrações
 src/lib/            cliente Supabase, sessão/família, lembretes
 supabase/migrations banco de dados e políticas de acesso
 supabase/functions  parse-receipt (nota → itens), parse-health (ficha, dieta, exame → dados); _shared/vision.ts fala com a IA

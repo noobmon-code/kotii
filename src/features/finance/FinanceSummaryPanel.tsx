@@ -35,7 +35,7 @@ import {
   Section,
   Text,
 } from '@/ui/primitives';
-import { space, useColors } from '@/ui/theme';
+import { fonts, space, useColors } from '@/ui/theme';
 
 const MONTHS_SHOWN = 6;
 const COLUMN_HEIGHT = 72;
@@ -286,7 +286,7 @@ function CategoryBars({
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   gap: { gap: space.lg },
-  bold: { fontWeight: '700' },
+  bold: { fontFamily: fonts.heavy },
   monthNav: { justifyContent: 'space-between' },
   monthTitle: { flex: 1, textAlign: 'center' },
   navPlaceholder: { width: 30 },

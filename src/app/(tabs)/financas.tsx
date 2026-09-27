@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { BillsPanel } from '@/features/finance/BillsPanel';
 import { FinanceSummaryPanel } from '@/features/finance/FinanceSummaryPanel';
 import { ReceiptsPanel } from '@/features/finance/ReceiptsPanel';
-import { Screen, Segmented, Text } from '@/ui/primitives';
+import { PageTitle, Screen, Segmented } from '@/ui/primitives';
 
 type Tab = 'resumo' | 'contas' | 'notas';
 const TABS: Tab[] = ['resumo', 'contas', 'notas'];
@@ -33,7 +33,7 @@ export default function FinanceScreen() {
 
   return (
     <Screen refreshing={refreshing} onRefresh={refresh}>
-      <Text variant="title">Finanças</Text>
+      <PageTitle title="Finanças" subtitle="Gastos, contas e notas" tint="green" />
       <Segmented
         value={tab}
         onChange={setTab}

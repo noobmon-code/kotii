@@ -17,14 +17,15 @@ import {
 import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
 
 import { getCategory, type IconName } from '@/domain/categories';
-import { MAX_WIDTH, radius, space, useColors, type Colors } from './theme';
+import { Mascot, Spot, type Mood } from './art';
+import { fonts, MAX_WIDTH, radius, space, useColors, useTint, type Colors, type Tint } from './theme';
 
 export type { IconName };
 
 // ---------------------------------------------------------------------------
 // Texto
 
-type TextVariant = 'title' | 'heading' | 'body' | 'label' | 'muted' | 'small';
+type TextVariant = 'display' | 'title' | 'heading' | 'body' | 'label' | 'muted' | 'small';
 
 export function Text({
   variant = 'body',
@@ -37,13 +38,15 @@ export function Text({
   return <RNText style={[textStyles[variant], { color: color ? c[color] : defaultColor }, style]} {...rest} />;
 }
 
+// Nunito tem um arquivo por peso: o peso vem da família, não de fontWeight.
 const textStyles = StyleSheet.create({
-  title: { fontSize: 28, lineHeight: 34, fontWeight: '700' },
-  heading: { fontSize: 18, lineHeight: 24, fontWeight: '700' },
-  body: { fontSize: 16, lineHeight: 22 },
-  label: { fontSize: 15, lineHeight: 20, fontWeight: '600' },
-  muted: { fontSize: 14, lineHeight: 20 },
-  small: { fontSize: 12, lineHeight: 16 },
+  display: { fontFamily: fonts.heavy, fontSize: 34, lineHeight: 40, letterSpacing: -0.6 },
+  title: { fontFamily: fonts.heavy, fontSize: 28, lineHeight: 34, letterSpacing: -0.4 },
+  heading: { fontFamily: fonts.heavy, fontSize: 20, lineHeight: 26, letterSpacing: -0.2 },
+  body: { fontFamily: fonts.regular, fontSize: 16, lineHeight: 23 },
+  label: { fontFamily: fonts.bold, fontSize: 15, lineHeight: 20 },
+  muted: { fontFamily: fonts.regular, fontSize: 14, lineHeight: 20 },
+  small: { fontFamily: fonts.semibold, fontSize: 12.5, lineHeight: 17 },
 });
 
 export function Icon({ name, size = 22, color }: { name: IconName; size?: number; color?: keyof Colors }) {
@@ -131,6 +134,22 @@ export function Section({ title, action, children }: { title: string; action?: R
   );
 }
 
+/** Título das abas: nome da tela com um personagem da cor da seção. */
+export function PageTitle({ title, subtitle, tint }: { title: string; subtitle?: string; tint: Tint }) {
+  const t = useTint(tint);
+  return (
+    <View style={styles.pageTitle}>
+      <View style={styles.flex}>
+        <Text variant="title">{title}</Text>
+        {subtitle ? <Text variant="muted">{subtitle}</Text> : null}
+      </View>
+      <View style={[styles.pageTitleArt, { backgroundColor: t.bg }]}>
+        <Mascot size={40} color={t.art} shape="bean" />
+      </View>
+    </View>
+  );
+}
+
 export function Row({ children, gap = space.sm, style }: { children: ReactNode; gap?: number; style?: StyleProp<ViewStyle> }) {
   return <View style={[styles.row, { gap }, style]}>{children}</View>;
 }
@@ -166,6 +185,7 @@ export function Button({
     ghost: { bg: 'transparent', fg: 'primary', border: 'transparent' },
     danger: { bg: c.dangerSoft, fg: 'danger', border: c.dangerSoft },
   };
+  // Aperto: o botão encolhe um pouco, como no toque de uma bolinha.
   const p = palette[variant];
   const inactive = disabled || loading;
   return (
@@ -177,7 +197,8 @@ export function Button({
       style={({ pressed }) => [
         styles.button,
         compact && styles.buttonCompact,
-        { backgroundColor: p.bg, borderColor: p.border, opacity: inactive ? 0.55 : pressed ? 0.8 : 1 },
+        { backgroundColor: p.bg, borderColor: p.border, opacity: inactive ? 0.55 : 1 },
+        pressed && !inactive && styles.pressed,
         style,
       ]}>
       {loading ? (
@@ -211,7 +232,7 @@ export function IconButton({
       accessibilityLabel={label}
       hitSlop={8}
       onPress={onPress}
-      style={({ pressed }) => [styles.iconButton, pressed && { opacity: 0.6 }]}>
+      style={({ pressed }) => [styles.iconButton, pressed && { opacity: 0.6 }, pressed && styles.pressed]}>
       <Icon name={icon} size={22} color={color} />
     </Pressable>
   );
@@ -278,7 +299,7 @@ export function Segmented<T extends string>({
             accessibilityRole="tab"
             accessibilityState={{ selected }}
             onPress={() => onChange(o.value)}
-            style={[styles.segment, selected && { backgroundColor: c.surface, borderColor: c.border }]}>
+            style={[styles.segment, selected && { backgroundColor: c.surface }, selected && styles.segmentSelected]}>
             <Text variant="label" color={selected ? 'text' : 'textMuted'} numberOfLines={1}>
               {o.label}
             </Text>
@@ -308,10 +329,10 @@ export function Chip({
       onPress={onPress}
       style={[
         styles.chip,
-        { backgroundColor: selected ? c.primarySoft : c.surface, borderColor: selected ? c.primary : c.border },
+        { backgroundColor: selected ? c.primary : c.surface, borderColor: selected ? c.primary : c.border },
       ]}>
-      {icon ? <Icon name={icon} size={16} color={selected ? 'primary' : 'textMuted'} /> : null}
-      <Text variant="muted" color={selected ? 'primary' : 'text'}>
+      {icon ? <Icon name={icon} size={16} color={selected ? 'onPrimary' : 'textMuted'} /> : null}
+      <Text variant="label" color={selected ? 'onPrimary' : 'text'} style={styles.chipText}>
         {label}
       </Text>
     </Pressable>
@@ -403,21 +424,29 @@ export function ListRow({
   );
 }
 
-/** Atalho quadrado com ícone e rótulo (ações rápidas). */
-export function Tile({ icon, label, onPress }: { icon: IconName; label: string; onPress: () => void }) {
-  const c = useColors();
+/** Atalho colorido com ícone e rótulo (ações rápidas). */
+export function Tile({
+  icon,
+  label,
+  onPress,
+  tint = 'orange',
+}: {
+  icon: IconName;
+  label: string;
+  onPress: () => void;
+  tint?: Tint;
+}) {
+  const t = useTint(tint);
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
       onPress={onPress}
-      style={({ pressed }) => [
-        styles.tile,
-        { backgroundColor: c.surface, borderColor: c.border },
-        pressed && { backgroundColor: c.surfaceAlt },
-      ]}>
-      <IconBadge icon={icon} tone="primary" />
-      <Text variant="small" color="text" style={styles.center} numberOfLines={2}>
+      style={({ pressed }) => [styles.tile, { backgroundColor: t.bg }, pressed && styles.pressed]}>
+      <View style={[styles.tileIcon, { backgroundColor: t.art }]}>
+        <MaterialCommunityIcons name={icon} size={24} color="#FFFFFF" />
+      </View>
+      <Text variant="label" style={styles.center} numberOfLines={2}>
         {label}
       </Text>
     </Pressable>
@@ -429,15 +458,24 @@ export function EmptyState({
   title,
   message,
   action,
+  tint = 'orange',
+  mood = 'happy',
 }: {
   icon: IconName;
   title: string;
   message?: string;
   action?: ReactNode;
+  tint?: Tint;
+  mood?: Mood;
 }) {
   return (
     <View style={styles.empty}>
-      <IconBadge icon={icon} size={56} tone="primary" />
+      <View accessibilityLabel={title}>
+        <Spot tint={tint} mood={mood} size={124} />
+        <View style={styles.emptyBadge}>
+          <IconBadge icon={icon} size={36} tone="primary" />
+        </View>
+      </View>
       <Text variant="heading" style={styles.center}>
         {title}
       </Text>
@@ -494,47 +532,56 @@ const styles = StyleSheet.create({
   },
   footer: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: space.lg, paddingVertical: space.md },
   footerInner: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', gap: space.sm },
-  card: { borderRadius: radius.lg, borderWidth: StyleSheet.hairlineWidth, padding: space.lg },
+  card: { borderRadius: radius.lg, borderWidth: StyleSheet.hairlineWidth, padding: space.lg + 2 },
+  pageTitle: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  pageTitleArt: { width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center' },
+  pressed: { transform: [{ scale: 0.97 }] },
   section: { gap: space.md },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   row: { flexDirection: 'row', alignItems: 'center' },
   button: {
-    minHeight: 48,
-    borderRadius: radius.md,
-    borderWidth: 1,
+    minHeight: 52,
+    borderRadius: radius.pill,
+    borderWidth: 1.5,
     paddingHorizontal: space.lg,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: space.sm,
   },
-  buttonCompact: { minHeight: 38, paddingHorizontal: space.md },
-  iconButton: { padding: space.xs },
+  buttonCompact: { minHeight: 40, paddingHorizontal: space.lg },
+  iconButton: { padding: space.xs, borderRadius: radius.pill },
   check: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     borderWidth: 2,
     alignItems: 'center',
     justifyContent: 'center',
   },
   field: { gap: space.xs },
   input: {
-    minHeight: 48,
+    minHeight: 52,
     borderRadius: radius.md,
-    borderWidth: 1,
-    paddingHorizontal: space.md,
+    borderWidth: 1.5,
+    paddingHorizontal: space.lg,
     fontSize: 16,
+    fontFamily: fonts.regular,
   },
   inputMultiline: { minHeight: 88, paddingTop: space.md, textAlignVertical: 'top' },
-  segmented: { flexDirection: 'row', borderRadius: radius.md, padding: 3 },
+  segmented: { flexDirection: 'row', borderRadius: radius.pill, padding: 4 },
   segment: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: space.sm,
-    borderRadius: radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'transparent',
+    paddingVertical: space.sm + 2,
+    borderRadius: radius.pill,
+  },
+  segmentSelected: {
+    shadowColor: '#2B2A3A',
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
   },
   chip: {
     flexDirection: 'row',
@@ -542,12 +589,13 @@ const styles = StyleSheet.create({
     gap: space.xs,
     borderWidth: 1,
     borderRadius: radius.pill,
-    paddingHorizontal: space.md,
-    paddingVertical: 6,
+    paddingHorizontal: space.md + 2,
+    paddingVertical: 7,
   },
+  chipText: { fontSize: 14 },
   badge: { borderRadius: radius.pill, paddingHorizontal: space.sm, paddingVertical: 2, alignSelf: 'flex-start' },
-  badgeText: { fontWeight: '600' },
-  iconBadge: { borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
+  badgeText: { fontFamily: fonts.bold },
+  iconBadge: { borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
   listRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: space.md },
   listCard: { paddingVertical: space.xs },
   divider: { height: StyleSheet.hairlineWidth },
@@ -555,11 +603,13 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     gap: space.sm,
-    paddingVertical: space.md,
+    paddingTop: space.lg,
+    paddingBottom: space.md,
     paddingHorizontal: space.sm,
     borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
   },
-  empty: { alignItems: 'center', gap: space.md, paddingVertical: space.xxl, paddingHorizontal: space.lg },
+  tileIcon: { width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
+  empty: { alignItems: 'center', gap: space.md, paddingVertical: space.xl, paddingHorizontal: space.lg },
+  emptyBadge: { position: 'absolute', right: -4, bottom: 0 },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.md, padding: space.xxl },
 });

@@ -7,7 +7,7 @@ import { ShoppingListsPanel } from '@/features/ShoppingListsPanel';
 import { useChores, usePantry } from '@/data/home';
 import { useEquipmentList } from '@/data/house';
 import { useShoppingLists } from '@/data/market';
-import { Screen, Segmented, Text } from '@/ui/primitives';
+import { PageTitle, Screen, Segmented } from '@/ui/primitives';
 
 type Tab = 'compras' | 'despensa' | 'tarefas' | 'aparelhos';
 const TABS: Tab[] = ['compras', 'despensa', 'tarefas', 'aparelhos'];
@@ -26,7 +26,7 @@ export default function HouseScreen() {
 
   return (
     <Screen refreshing={active.isRefetching} onRefresh={() => active.refetch()}>
-      <Text variant="title">Casa</Text>
+      <PageTitle title="Casa" subtitle="Compras, despensa, tarefas e aparelhos" tint="blue" />
       <Segmented
         value={tab}
         onChange={setTab}
