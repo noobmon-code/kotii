@@ -1,13 +1,10 @@
-import { Image } from 'expo-image';
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
-import { getCategory } from '@/domain/categories';
 import { formatQuantity } from '@/domain/money';
 import type { ShoppingListItem } from '@/lib/types';
-import { CATEGORY_ART } from '@/ui/categoryArt';
-import { Icon, Text } from '@/ui/primitives';
-import { radius, space, useColors, useTint } from '@/ui/theme';
+import { CategoryIcon, Icon, Text, useCategoryTint } from '@/ui/primitives';
+import { radius, space, useColors } from '@/ui/theme';
 
 const GAP = space.md;
 const MIN_TILE = 100;
@@ -64,8 +61,7 @@ function Tile({
   onLongPress: () => void;
 }) {
   const c = useColors();
-  const art = CATEGORY_ART[getCategory(item.category).key];
-  const tint = useTint(art.tint);
+  const tint = useCategoryTint(item.category);
   const quantity = formatQuantity(item.quantity, item.unit);
   const artSize = Math.min(64, Math.round(width * 0.55));
   return (
@@ -83,12 +79,7 @@ function Tile({
         { width, backgroundColor: inCart ? c.surfaceAlt : tint.bg },
         pressed && styles.pressed,
       ]}>
-      <Image
-        source={art.image}
-        style={{ width: artSize, height: artSize, opacity: inCart ? 0.45 : 1 }}
-        contentFit="contain"
-        accessible={false}
-      />
+      <CategoryIcon category={item.category} size={artSize} backdrop={false} dimmed={inCart} />
       <Text
         variant="label"
         numberOfLines={2}
