@@ -27,8 +27,9 @@ iOS e Android com Expo (React Native); a versão web sai do mesmo código depois
 | **Contas a pagar** | Aluguel, condomínio, luz, internet, escola, assinaturas: valor fixo ou variável, mensal, anual ou única, débito automático. O check registra o pagamento (valor e data) e passa para o próximo vencimento; dia 31 vira o último dia nos meses curtos. Se outra pessoa da casa já pagou, não paga de novo. Histórico com desfazer do último pagamento. Atrasadas e as que vencem em até 3 dias aparecem na tela Hoje. |
 | **Nuke** | O assistente da casa: o personagem laranja no canto das abas. Responde sobre o que está no app (o que vence, o que falta comprar, quanto foi gasto, o que dá para cozinhar com a despensa) e sugere ações — pôr itens na lista, criar tarefa, registrar gasto, abrir uma tela — que só acontecem quando você toca em "Fazer". A conversa fica no celular. |
 | **Hoje** | Home que só mostra o que pede atenção: doses pendentes, treino do dia, consultas de hoje/amanhã, vacinas atrasadas, tarefas e manutenções, contas vencendo, itens vencendo, documentos a renovar, garantias acabando, notas e planos para revisar. |
+| **Avisos da casa** | No app instalado, cada pessoa escolhe na aba Família que avisos quer receber no próprio celular, às 9h: contas (véspera e dia do vencimento; atrasada, uma vez), documentos (quando começa o prazo de renovar e no dia em que vence) e tarefas e manutenções (no dia). Refeitos ao abrir o app, para os próximos 30 dias. |
 
-Ainda não entrou (ver roadmap): scraper de NFC-e, lembretes por notificação para contas, documentos e manutenções, orçamento por categoria.
+Ainda não entrou (ver roadmap): scraper de NFC-e, orçamento por categoria.
 
 ## Rodando pela primeira vez
 
@@ -117,7 +118,7 @@ Identificador do app: `com.noobmon.nooky` (iOS e Android). Dá para trocar até 
 - **Nuke:** cada mensagem manda para a IA um retrato compacto da casa (poucos milhares de tokens) e as últimas falas, com esforço baixo para responder rápido. Com a OpenRouter (`deepseek/deepseek-v4.1-flash`), frações de centavo por mensagem; com a Anthropic (claude-opus-5), algo como US$ 0,02 a 0,05. Dá para trocar o modelo com `NUKE_MODEL`.
 - **Tempo de leitura:** 10–60 s dependendo do tamanho da nota; o app mostra uma tela de espera.
 - **Unidades:** preço é comparado na unidade da nota. Se a lista pede "3 un" de banana e as notas têm preço por kg, o comparativo usa 1 kg e avisa que a quantidade é aproximada.
-- **Lembretes de consulta, vacina e conta:** por enquanto aparecem na tela Hoje; notificação só existe para remédio.
+- **Avisos por notificação:** remédios, contas, documentos, tarefas e manutenções. Consultas e vacinas por enquanto só aparecem na tela Hoje.
 - **Gastos:** o resumo conta o que foi registrado no app (notas confirmadas, contas pagas, gastos avulsos). Nota em rascunho não entra até ser confirmada.
 - **Lembretes de remédio:** notificações locais. No Expo Go podem ter limitações; num development build (`npx expo run:android` / EAS) funcionam completos. Na web não existem.
 

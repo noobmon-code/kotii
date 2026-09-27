@@ -1,18 +1,22 @@
-// Lembretes de remédio como notificações locais. Ficam no aparelho: cada
-// pessoa da família escolhe de quais remédios quer ser lembrada. Só tocam
-// dentro do período do tratamento (ver planReminders).
+// Lembretes como notificações locais. Ficam no aparelho: cada pessoa da
+// família escolhe de quais remédios quer ser lembrada (só tocam dentro do
+// período do tratamento, ver planReminders) e quais avisos da casa quer
+// receber: contas, documentos, tarefas (ver planHouseReminders).
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { isRunningInExpoGo } from 'expo';
 import { Platform } from 'react-native';
 
 import { todayISO } from '@/domain/dates';
+import { planHouseReminders, type HouseReminderInput, type HouseReminderKind } from '@/domain/houseReminders';
 import { currentTimeHHMM, planReminders } from '@/domain/medications';
 import type { Medication } from './types';
 
 type NotificationsModule = typeof import('expo-notifications');
 
 const CHANNEL_ID = 'remedios';
+const MEDS_CHANNEL = { id: CHANNEL_ID, name: 'Remédios' };
+const HOUSE_CHANNEL = { id: 'casa', name: 'Casa' };
 const storageKey = (medicationId: string) => `reminders:${medicationId}`;
 
 // No Android, o Expo Go lança erro só de carregar expo-notifications (desde o
@@ -40,11 +44,11 @@ export function configureNotifications() {
   });
 }
 
-async function ensurePermission(): Promise<boolean> {
+async function ensurePermission(channel = MEDS_CHANNEL): Promise<boolean> {
   const Notifications = notifications();
   if (Platform.OS === 'android') {
-    await Notifications.setNotificationChannelAsync(CHANNEL_ID, {
-      name: 'Remédios',
+    await Notifications.setNotificationChannelAsync(channel.id, {
+      name: channel.name,
       importance: Notifications.AndroidImportance.HIGH,
     });
   }
@@ -97,12 +101,18 @@ export function disableReminders(medicationId: string): Promise<void> {
   return serialized(() => disable(medicationId));
 }
 
-/** Desliga todos os lembretes de remédio deste aparelho (ao sair da casa). */
+/**
+ * Desliga os lembretes agendados neste aparelho, de remédios e da casa (ao
+ * sair da casa). A escolha dos avisos da casa fica: vale para a próxima.
+ */
 export async function disableAllReminders(): Promise<void> {
   if (!remindersSupported) return;
   await serialized(async () => {
     const keys = (await AsyncStorage.getAllKeys()).filter((k) => k.startsWith('reminders:'));
     for (const key of keys) await disable(key.slice('reminders:'.length));
+    const house = await readHouseScheduled();
+    if (house) await cancelAll(house.ids);
+    await AsyncStorage.removeItem(HOUSE_SCHEDULED_KEY);
   });
 }
 
@@ -187,5 +197,69 @@ export async function syncReminders(medications: Medication[], today: string): P
         await schedule(medication, today);
       }
     }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Avisos da casa
+
+const HOUSE_KINDS_KEY = 'house-reminders:kinds';
+const HOUSE_SCHEDULED_KEY = 'house-reminders:scheduled';
+const NO_HOUSE_KINDS: Record<HouseReminderKind, boolean> = { bills: false, documents: false, chores: false };
+
+export type HouseReminderData = Pick<HouseReminderInput, 'bills' | 'documents' | 'chores'>;
+
+async function readHouseScheduled(): Promise<StoredReminders | null> {
+  const raw = await AsyncStorage.getItem(HOUSE_SCHEDULED_KEY).catch(() => null);
+  return raw ? (JSON.parse(raw) as StoredReminders) : null;
+}
+
+/** Quais avisos da casa este aparelho recebe. */
+export async function getHouseReminderKinds(): Promise<Record<HouseReminderKind, boolean>> {
+  const raw = await AsyncStorage.getItem(HOUSE_KINDS_KEY).catch(() => null);
+  try {
+    return { ...NO_HOUSE_KINDS, ...(raw ? (JSON.parse(raw) as Partial<Record<HouseReminderKind, boolean>>) : {}) };
+  } catch {
+    return NO_HOUSE_KINDS;
+  }
+}
+
+/** Liga ou desliga um tipo de aviso neste aparelho. Retorna false sem permissão. */
+export async function setHouseReminderKind(kind: HouseReminderKind, enabled: boolean): Promise<boolean> {
+  if (!remindersSupported) return false;
+  if (enabled && !(await ensurePermission(HOUSE_CHANNEL))) return false;
+  const kinds = { ...(await getHouseReminderKinds()), [kind]: enabled };
+  await AsyncStorage.setItem(HOUSE_KINDS_KEY, JSON.stringify(kinds));
+  return true;
+}
+
+/** Refaz os avisos da casa deste aparelho com os dados de agora (ao abrir e ao mudar a escolha). */
+export async function syncHouseReminders(data: HouseReminderData, today = todayISO()): Promise<void> {
+  if (!remindersSupported) return;
+  await serialized(async () => {
+    const kinds = await getHouseReminderKinds();
+    const plan = planHouseReminders({ ...data, kinds, today, nowTime: currentTimeHHMM() });
+    const signature = JSON.stringify(plan);
+    const previous = await readHouseScheduled();
+    if (previous?.signature === signature) return;
+    if (previous) await cancelAll(previous.ids);
+
+    const Notifications = notifications();
+    const ids: string[] = [];
+    for (const reminder of plan) {
+      const [y, m, d] = reminder.date.split('-').map(Number);
+      const [hour, minute] = reminder.time.split(':').map(Number);
+      ids.push(
+        await Notifications.scheduleNotificationAsync({
+          content: { title: reminder.title, body: reminder.body, data: { reminder: reminder.key } },
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.DATE,
+            date: new Date(y, m - 1, d, hour, minute),
+            channelId: HOUSE_CHANNEL.id,
+          },
+        }),
+      );
+    }
+    await AsyncStorage.setItem(HOUSE_SCHEDULED_KEY, JSON.stringify({ ids, signature } satisfies StoredReminders));
   });
 }
