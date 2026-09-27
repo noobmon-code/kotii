@@ -1,4 +1,5 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { Image } from 'expo-image';
 import { Children, Fragment, type ReactNode } from 'react';
 import {
   ActivityIndicator,
@@ -18,6 +19,7 @@ import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
 
 import { getCategory, type IconName } from '@/domain/categories';
 import { Mascot, Spot, type Mood } from './art';
+import { CATEGORY_ART } from './categoryArt';
 import { fonts, MAX_WIDTH, radius, space, useColors, useTint, type Colors, type Tint } from './theme';
 
 export type { IconName };
@@ -383,8 +385,15 @@ export function IconBadge({ icon, tone = 'neutral', size = 40 }: { icon: IconNam
   );
 }
 
+/** Ilustração da categoria sobre um círculo pastel (categoria desconhecida vira "outros"). */
 export function CategoryIcon({ category, size = 40 }: { category: string; size?: number }) {
-  return <IconBadge icon={getCategory(category).icon} size={size} />;
+  const art = CATEGORY_ART[getCategory(category).key];
+  const tint = useTint(art.tint);
+  return (
+    <View style={[styles.iconBadge, { width: size, height: size, backgroundColor: tint.bg }]}>
+      <Image source={art.image} style={{ width: size, height: size }} contentFit="contain" accessible={false} />
+    </View>
+  );
 }
 
 export function ListRow({

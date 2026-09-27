@@ -120,6 +120,8 @@ As Edge Functions são Deno: em `supabase/functions/_shared`, `parse-receipt` e 
 
 Na linha do Headspace: fundo creme de dia e azul profundo à noite, cartões bem arredondados, botões em pílula, fonte Nunito e personagens redondos com rosto simples. Cores, tons dos cartões, fontes e raios ficam em `src/ui/theme.ts`; as ilustrações (personagens, sol e lua da tela Hoje, logo) em `src/ui/art.tsx`. Ícone, ícone adaptativo do Android e splash usam o mesmo personagem laranja.
 
+As categorias de produto (lista de compras, despensa, notas, preços) têm ilustrações próprias em `assets/categories/` (WebP 144px, fundo transparente), ligadas em `src/ui/categoryArt.ts` com a cor do círculo de fundo. Categoria nova precisa de imagem nova: um teste falha se faltar.
+
 ## Estrutura
 
 ```
