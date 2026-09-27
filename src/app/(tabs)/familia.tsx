@@ -1,21 +1,27 @@
+import { router } from 'expo-router';
 import { Share, StyleSheet } from 'react-native';
 
+import { usePeople } from '@/data/health';
 import { LastMemberError, useLeaveHousehold } from '@/data/household';
 import { DocumentsSection } from '@/features/DocumentsSection';
 import { useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Badge, Button, Card, IconBadge, ListCard, ListRow, Loading, PageTitle, Screen, Section, Text } from '@/ui/primitives';
+import { Badge, Button, Card, IconBadge, ListCard, ListRow, Loading, PageTitle, Row, Screen, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 export default function FamilyScreen() {
   const { session } = useAuth();
   const household = useHousehold();
   const leave = useLeaveHousehold(session?.user.id);
+  const people = usePeople();
 
   if (!household.data) return <Loading />;
   const { household: house, members, me } = household.data;
   const heir = members.find((m) => m.user_id !== me.user_id);
+  // Quem não usa o app: crianças, dependentes e pets, com ficha, remédios e vacinas.
+  const withoutApp = (people.data ?? []).filter((p) => !p.member_user_id);
+  const addPerson = (kind: 'pessoa' | 'pet') => router.push({ pathname: '/pessoa/[id]', params: { id: 'nova', kind } });
 
   function confirmDelete(houseId: string, houseName: string) {
     confirmAction(
@@ -94,6 +100,29 @@ export default function FamilyScreen() {
         </ListCard>
       </Section>
 
+      <Section title="Sem celular">
+        <Text variant="muted">
+          Crianças, idosos e pets que não usam o app: remédios, vacinas, consultas e documentos ficam no nome deles.
+        </Text>
+        {withoutApp.length ? (
+          <ListCard>
+            {withoutApp.map((p) => (
+              <ListRow
+                key={p.id}
+                left={<IconBadge icon={p.kind === 'pet' ? 'paw' : 'account-child-outline'} tone="neutral" />}
+                title={p.name}
+                subtitle={p.kind === 'pet' ? (p.species ?? 'Pet') : 'Sem conta no app'}
+                onPress={() => router.push({ pathname: '/pessoa/[id]', params: { id: p.id } })}
+              />
+            ))}
+          </ListCard>
+        ) : null}
+        <Row style={styles.wrap}>
+          <Button title="Adicionar pessoa" icon="account-plus-outline" variant="secondary" compact onPress={() => addPerson('pessoa')} />
+          <Button title="Adicionar pet" icon="paw" variant="secondary" compact onPress={() => addPerson('pet')} />
+        </Row>
+      </Section>
+
       <DocumentsSection />
 
       <Section title="Casa">
@@ -128,4 +157,5 @@ const styles = StyleSheet.create({
   center: { textAlign: 'center' },
   invite: { alignItems: 'center', gap: space.md },
   code: { letterSpacing: 6 },
+  wrap: { flexWrap: 'wrap' },
 });
