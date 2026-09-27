@@ -1,7 +1,19 @@
 import { assertEquals } from '@std/assert';
 import { z } from 'zod';
 
-import { buildSystem, cleanReply, isISODate, MAX_TURNS, type NukeReplyRaw, NukeReplySchema, parseRequest } from './nuke.ts';
+import {
+  buildMenuSystem,
+  buildSystem,
+  cleanMenu,
+  cleanReply,
+  isISODate,
+  MAX_TURNS,
+  MenuSchema,
+  type NukeReplyRaw,
+  NukeReplySchema,
+  parseMenuRequest,
+  parseRequest,
+} from './nuke.ts';
 
 const empty = {
   items: null,
@@ -84,4 +96,53 @@ Deno.test('the reply schema converts to a strict JSON schema without unsupported
   const schema = JSON.stringify(z.toJSONSchema(NukeReplySchema));
   assertEquals(schema.includes('oneOf'), false);
   assertEquals(schema.includes('"reply"'), true);
+});
+
+Deno.test('parseMenuRequest validates the week and trims the preferences', () => {
+  const ok = parseMenuRequest({ context: 'Casa X', today: '2026-09-27', weekStart: '2026-09-28', preferences: '  sem carne vermelha ' });
+  assertEquals(ok, { context: 'Casa X', today: '2026-09-27', weekStart: '2026-09-28', preferences: 'sem carne vermelha' });
+  assertEquals(parseMenuRequest({ context: '', today: '2026-09-27', weekStart: 'segunda' }), 'Semana inválida.');
+  assertEquals(parseMenuRequest({ context: '', today: '2026-09-27', weekStart: '2026-09-28', preferences: 3 }), 'Preferências inválidas.');
+});
+
+Deno.test('buildMenuSystem lists the 7 dates of the week and carries the snapshot', () => {
+  const system = buildMenuSystem('CARDÁPIO: segunda almoço Lasanha', '2026-09-27', '2026-09-28');
+  assertEquals(system.includes('de 2026-09-28 a 2026-10-04'), true);
+  assertEquals(system.includes('CARDÁPIO: segunda almoço Lasanha'), true);
+});
+
+Deno.test('cleanMenu keeps the week in order, one entry per day, and clean shopping items', () => {
+  const menu = cleanMenu(
+    {
+      days: [
+        { date: '2026-09-29', lunch: ' Frango   grelhado com salada ', dinner: null },
+        { date: '2026-09-28', lunch: 'Lasanha', dinner: 'Sopa de legumes' },
+        { date: '2026-09-28', lunch: 'Outra lasanha', dinner: null },
+        { date: '2026-10-05', lunch: 'Fora da semana', dinner: null },
+        { date: '2026-09-30', lunch: '  ', dinner: null },
+      ],
+      shopping: [
+        { name: 'Frango', quantity: 1.5, unit: 'kg', category: 'carnes' },
+        { name: 'frango', quantity: 1, unit: 'kg', category: 'carnes' },
+        { name: 'Alface', quantity: null, unit: null, category: null },
+        { name: ' ', quantity: 1, unit: 'un', category: 'outros' },
+      ],
+      note: ' Usei o frango que vence logo. ',
+    },
+    '2026-09-28',
+  );
+  assertEquals(menu.days, [
+    { date: '2026-09-28', lunch: 'Lasanha', dinner: 'Sopa de legumes' },
+    { date: '2026-09-29', lunch: 'Frango grelhado com salada', dinner: null },
+  ]);
+  assertEquals(menu.shopping, [
+    { name: 'Frango', quantity: 1.5, unit: 'kg', category: 'carnes' },
+    { name: 'Alface', quantity: 1, unit: 'un', category: 'outros' },
+  ]);
+  assertEquals(menu.note, 'Usei o frango que vence logo.');
+});
+
+Deno.test('the menu schema converts to a strict JSON schema', () => {
+  const schema = z.toJSONSchema(MenuSchema) as { properties: Record<string, unknown> };
+  assertEquals(Object.keys(schema.properties), ['days', 'shopping', 'note']);
 });

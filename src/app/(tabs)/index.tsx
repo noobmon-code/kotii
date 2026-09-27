@@ -14,6 +14,7 @@ import {
 import { useBills, useBudgets, useSpending } from '@/data/finance';
 import { useDocuments, useEquipmentList } from '@/data/house';
 import { useAddItemsToList, usePurchaseRecords, useShoppingLists } from '@/data/market';
+import { useMenu } from '@/data/menu';
 import { useReceipts } from '@/data/receipts';
 import { choreStatus, describeChoreStatus } from '@/domain/chores';
 import { todayISO } from '@/domain/dates';
@@ -22,6 +23,7 @@ import { budgetProgress, describeBudget } from '@/domain/budget';
 import { billsDueSoon, getFinanceCategory, monthRange, summarize } from '@/domain/finance';
 import { describeWarranty, getEquipmentCategory, warrantyStatus } from '@/domain/equipment';
 import { currentTimeHHMM, doseKey, dosesForDay } from '@/domain/medications';
+import { MEALS } from '@/domain/menu';
 import { describeExpiry, expiryStatus } from '@/domain/pantry';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { describeRestock, restockSuggestions, type RestockItem } from '@/domain/restock';
@@ -119,6 +121,7 @@ export default function TodayScreen() {
   const hasBudgets = Boolean(budgets.data?.length);
   const spending = useSpending(month, month, hasBudgets);
   const purchases = usePurchaseRecords();
+  const menu = useMenu(today, today);
   const addToList = useAddItemsToList();
   const [paying, setPaying] = useState<Bill | null>(null);
   // Itens de todas as listas abertas; os postos agora há pouco somem já no toque.
@@ -138,6 +141,7 @@ export default function TodayScreen() {
     budgets,
     ...(hasBudgets ? [spending] : []),
     purchases,
+    menu,
     ...health.queries,
   ];
   const refreshing = queries.some((q) => q.isRefetching);
@@ -434,6 +438,27 @@ export default function TodayScreen() {
                 onPress={() => router.push({ pathname: '/nota/[id]', params: { id: r.id } })}
               />
             ))}
+          </ListCard>
+        </Section>
+      ) : null}
+
+      {menu.data?.length ? (
+        <Section title="Cardápio de hoje">
+          <ListCard>
+            {MEALS.flatMap(({ key, label }) => {
+              const item = menu.data.find((i) => i.meal === key);
+              return item
+                ? [
+                    <ListRow
+                      key={key}
+                      left={<IconBadge icon="silverware-fork-knife" tone="info" />}
+                      title={item.dish}
+                      subtitle={label}
+                      onPress={() => router.push('/cardapio')}
+                    />,
+                  ]
+                : [];
+            })}
           </ListCard>
         </Section>
       ) : null}

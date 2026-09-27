@@ -9,6 +9,7 @@ import { toSchedule, useChores, useDoses, useMedications, usePantry, useSaveChor
 import { useDocuments, useEquipmentList } from '@/data/house';
 import { useAppointments, usePeople } from '@/data/health';
 import { useAddToMarketList } from '@/data/market';
+import { useMenu } from '@/data/menu';
 import { functionErrorMessage } from '@/data/images';
 import { budgetProgress } from '@/domain/budget';
 import { addDays } from '@/domain/dates';
@@ -17,6 +18,7 @@ import { describeWarranty, warrantyStatus } from '@/domain/equipment';
 import { monthLabel, monthRange, previousMonth, shiftMonth, summarize } from '@/domain/finance';
 import { upcomingAppointments } from '@/domain/health';
 import { doseKey, dosesForDay } from '@/domain/medications';
+import { menuLines } from '@/domain/menu';
 import { buildNukeContext, parseActions, type NukeAction, type NukeScreen, type NukeSnapshot } from '@/domain/nuke';
 import { expiryStatus } from '@/domain/pantry';
 import { useHousehold } from '@/lib/auth';
@@ -64,8 +66,24 @@ export function useNukeContext(today: string): NukeContextState {
   const people = usePeople();
   const documents = useDocuments();
   const equipment = useEquipmentList();
+  const menu = useMenu(today, addDays(today, 6));
 
-  const queries = [household, medications, doses, chores, pantry, pending, bills, spending, budgets, appointments, people, documents, equipment];
+  const queries = [
+    household,
+    medications,
+    doses,
+    chores,
+    pantry,
+    pending,
+    bills,
+    spending,
+    budgets,
+    appointments,
+    people,
+    documents,
+    equipment,
+    menu,
+  ];
   const missing = queries.filter((q) => q.data === undefined);
   if (missing.some((q) => q.isError)) {
     return { status: 'error', retry: () => missing.forEach((q) => q.refetch()) };
@@ -107,6 +125,7 @@ export function useNukeContext(today: string): NukeContextState {
       .map((p) => ({ name: p.name, expires_on: p.expires_on! })),
     pantry: (pantry.data ?? []).map((p) => p.name),
     shopping: [...shopping].map(([list, items]) => ({ list, items })),
+    menu: menuLines(menu.data ?? []),
     bills: (bills.data ?? [])
       .filter((b) => b.active && b.next_due_on <= monthAhead)
       .map((b) => ({ name: b.name, amount: b.amount, next_due_on: b.next_due_on, autopay: b.autopay })),
@@ -165,6 +184,7 @@ export function useAskNuke() {
 const SCREEN_ROUTES: Record<NukeScreen, () => void> = {
   hoje: () => router.navigate('/'),
   compras: () => router.navigate({ pathname: '/casa', params: { aba: 'compras' } }),
+  cardapio: () => router.navigate('/cardapio'),
   despensa: () => router.navigate({ pathname: '/casa', params: { aba: 'despensa' } }),
   tarefas: () => router.navigate({ pathname: '/casa', params: { aba: 'tarefas' } }),
   aparelhos: () => router.navigate({ pathname: '/casa', params: { aba: 'aparelhos' } }),

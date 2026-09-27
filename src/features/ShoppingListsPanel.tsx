@@ -96,6 +96,15 @@ export function ShoppingListsPanel() {
           ))}
         </ListCard>
       )}
+
+      <ListCard>
+        <ListRow
+          left={<IconBadge icon="silverware-fork-knife" tone="info" />}
+          title="Cardápio da semana"
+          subtitle="Almoço e jantar; o Nuke monta a semana com o que tem em casa"
+          onPress={() => router.push('/cardapio')}
+        />
+      </ListCard>
     </View>
   );
 }
