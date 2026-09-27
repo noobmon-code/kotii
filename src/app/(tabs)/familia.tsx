@@ -21,7 +21,7 @@ export default function FamilyScreen() {
   const heir = members.find((m) => m.user_id !== me.user_id);
   // Quem não usa o app: crianças, dependentes e pets, com ficha, remédios e vacinas.
   const withoutApp = (people.data ?? []).filter((p) => !p.member_user_id);
-  const addPerson = (tipo: 'pessoa' | 'pet') => router.push({ pathname: '/pessoa/[id]', params: { id: 'nova', tipo } });
+  const addPerson = (kind: 'pessoa' | 'pet') => router.push({ pathname: '/pessoa/[id]', params: { id: 'nova', kind } });
 
   function confirmDelete(houseId: string, houseName: string) {
     confirmAction(
