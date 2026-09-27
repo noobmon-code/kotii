@@ -9,7 +9,7 @@ const answer = { ok: true, items: ['a', 'b'] };
 
 const openRouter: VisionConfig = {
   provider: 'openrouter',
-  model: 'google/gemma-4-31b-it:free',
+  model: 'deepseek/deepseek-v4.1-flash',
   modelEnv: 'RECEIPT_MODEL',
   apiKey: 'k',
 };
@@ -28,12 +28,12 @@ function fakeFetch(status: number, body: unknown, seen: { request?: Record<strin
   }) as typeof fetch;
 }
 
-Deno.test('visionConfig: OpenRouter only when it is the only key; prefixes fall back in order', () => {
+Deno.test('visionConfig: OpenRouter (DeepSeek) whenever its key is set; prefixes fall back in order', () => {
   const env = (vars: Record<string, string>) => (name: string) => vars[name];
 
   const onlyOpenRouter = visionConfig(['HEALTH', 'RECEIPT'], env({ OPENROUTER_API_KEY: 'or' }));
   assertEquals(onlyOpenRouter.provider, 'openrouter');
-  assertEquals(onlyOpenRouter.model, 'google/gemma-4-31b-it:free');
+  assertEquals(onlyOpenRouter.model, 'deepseek/deepseek-v4.1-flash');
   assertEquals(onlyOpenRouter.modelEnv, 'HEALTH_MODEL');
   assertEquals(onlyOpenRouter.apiKey, 'or');
 
@@ -47,8 +47,12 @@ Deno.test('visionConfig: OpenRouter only when it is the only key; prefixes fall 
   assertEquals(inherited.apiKey, 'an');
 
   const both = visionConfig(['HEALTH', 'RECEIPT'], env({ OPENROUTER_API_KEY: 'or', ANTHROPIC_API_KEY: 'an' }));
-  assertEquals(both.provider, 'anthropic', 'with both keys and no provider set, Anthropic wins');
-  assertEquals(both.apiKey, 'an');
+  assertEquals(both.provider, 'openrouter', 'with both keys and no provider set, OpenRouter wins');
+  assertEquals(both.model, 'deepseek/deepseek-v4.1-flash');
+  assertEquals(both.apiKey, 'or');
+
+  const onlyAnthropic = visionConfig(['NUKE', 'RECEIPT'], env({ ANTHROPIC_API_KEY: 'an' }));
+  assertEquals([onlyAnthropic.provider, onlyAnthropic.model], ['anthropic', 'claude-opus-5']);
 
   const none = visionConfig(['RECEIPT'], env({}));
   assertEquals(none.provider, 'anthropic');
@@ -70,7 +74,7 @@ Deno.test('OpenRouter: reads a fenced JSON answer; images and instructions go in
   assertEquals(result, answer);
 
   const messages = seen.request?.messages as { role: string; content: { type: string }[] }[];
-  assertEquals(seen.request?.model, 'google/gemma-4-31b-it:free');
+  assertEquals(seen.request?.model, 'deepseek/deepseek-v4.1-flash');
   assertEquals(messages.map((m) => m.role), ['user'], 'no system role (Gemma rejects it)');
   assertEquals(messages[0].content.map((p) => p.type), ['image_url', 'image_url', 'text']);
   const format = seen.request?.response_format as { json_schema: { name: string; schema: Record<string, unknown> } };

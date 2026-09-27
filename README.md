@@ -47,10 +47,10 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
 3. **Publique as funções de leitura por IA** e cadastre a chave de **um** dos provedores:
 
    ```bash
-   # Anthropic (modelo padrão: claude-opus-5)
-   npx supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
-   # ou OpenRouter (modelo padrão: google/gemma-4-31b-it:free)
+   # OpenRouter (modelo padrão: deepseek/deepseek-v4.1-flash, lê texto e imagem)
    npx supabase secrets set OPENROUTER_API_KEY=sk-or-...
+   # ou Anthropic (modelo padrão: claude-opus-5)
+   npx supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
 
    npx supabase functions deploy parse-receipt
    npx supabase functions deploy parse-health
@@ -58,7 +58,7 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
    npx supabase functions deploy leave-household
    ```
 
-   Com só a chave da OpenRouter, ela é usada automaticamente. Com as duas, vale a Anthropic, a menos que `RECEIPT_PROVIDER=openrouter`. O modelo pode ser trocado com `RECEIPT_MODEL` (na OpenRouter, precisa ser um modelo que aceita imagem). A leitura de saúde (`parse-health`) usa as mesmas configurações, ou `HEALTH_PROVIDER` e `HEALTH_MODEL` se quiser um modelo diferente para ela. O Nuke (`nuke`) também, ou `NUKE_PROVIDER` e `NUKE_MODEL`.
+   Com a chave da OpenRouter, ela é usada em tudo (leitura de notas, de saúde e o Nuke), com o `deepseek/deepseek-v4.1-flash`; a Anthropic só entra com a chave dela sozinha ou com `RECEIPT_PROVIDER=anthropic`. O modelo pode ser trocado com `RECEIPT_MODEL` (na OpenRouter, precisa ser um modelo que aceita imagem). A leitura de saúde (`parse-health`) usa as mesmas configurações, ou `HEALTH_PROVIDER` e `HEALTH_MODEL` se quiser um modelo diferente para ela. O Nuke (`nuke`) também, ou `NUKE_PROVIDER` e `NUKE_MODEL`.
 
    **Limpeza das fotos.** Quando a última pessoa sai e apaga a casa, `leave-household` apaga as fotos dela na hora; se o Storage falhar, a casa fica numa fila que o `pg_cron` reprocessa de hora em hora. Para isso, o banco precisa da URL do projeto e da chave anon no Vault. Rode uma vez no SQL Editor:
 
@@ -105,10 +105,10 @@ Identificador do app: `com.noobmon.nooky` (iOS e Android). Dá para trocar até 
 ## Custos e limites que você precisa saber
 
 - **Leitura de nota por IA (Anthropic):** `claude-opus-5` por padrão. Estimativa por nota: US$ 0,05 a 0,20 (foto + lista de produtos da família + itens lidos; cresce com o tamanho da nota e do catálogo). Dá para trocar o modelo sem mexer no código: `npx supabase secrets set RECEIPT_MODEL=...`.
-- **Leitura de nota por IA (OpenRouter):** `google/gemma-4-31b-it:free` por padrão. Modelos `:free` não custam, mas têm limite de chamadas por minuto/dia, podem registrar o conteúdo enviado (as fotos das notas) e tendem a errar mais em cupons longos. A tela de revisão existe para corrigir; se a precisão incomodar, troque o `RECEIPT_MODEL`.
-- **Documentos de saúde e modelos gratuitos:** fichas, dietas e exames são dados de saúde. Modelos `:free` da OpenRouter podem guardar o que recebem; para saúde, prefira um modelo pago sem retenção (`HEALTH_MODEL`) ou a Anthropic (`HEALTH_PROVIDER=anthropic`). Até 6 fotos por leitura.
+- **Leitura de nota por IA (OpenRouter):** `deepseek/deepseek-v4.1-flash` por padrão (US$ 0,035 por milhão de tokens de entrada e US$ 0,29 de saída): frações de centavo por nota. A tela de revisão existe para corrigir; se a precisão incomodar, troque o `RECEIPT_MODEL`. Evite modelos `:free`: têm limite de chamadas e podem registrar o conteúdo enviado.
+- **Documentos de saúde:** fichas, dietas e exames são dados de saúde. Na OpenRouter, a política de dados depende do provedor que atende o modelo; nas configurações de privacidade da conta dá para bloquear provedores que guardam ou treinam com o conteúdo. Para isolar saúde, use `HEALTH_MODEL` ou a Anthropic (`HEALTH_PROVIDER=anthropic`). Até 6 fotos por leitura.
 - **Uma foto por nota:** cupom muito comprido perde nitidez numa foto só. Várias fotos por nota está no roadmap.
-- **Nuke:** cada mensagem manda para a IA um retrato compacto da casa (poucos milhares de tokens) e as últimas falas, com esforço baixo para responder rápido. Com a Anthropic (claude-opus-5), algo como US$ 0,02 a 0,05 por mensagem; dá para trocar o modelo com `NUKE_MODEL`.
+- **Nuke:** cada mensagem manda para a IA um retrato compacto da casa (poucos milhares de tokens) e as últimas falas, com esforço baixo para responder rápido. Com a OpenRouter (`deepseek/deepseek-v4.1-flash`), frações de centavo por mensagem; com a Anthropic (claude-opus-5), algo como US$ 0,02 a 0,05. Dá para trocar o modelo com `NUKE_MODEL`.
 - **Tempo de leitura:** 10–60 s dependendo do tamanho da nota; o app mostra uma tela de espera.
 - **Unidades:** preço é comparado na unidade da nota. Se a lista pede "3 un" de banana e as notas têm preço por kg, o comparativo usa 1 kg e avisa que a quantidade é aproximada.
 - **Lembretes de consulta, vacina e conta:** por enquanto aparecem na tela Hoje; notificação só existe para remédio.
