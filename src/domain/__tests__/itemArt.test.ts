@@ -38,6 +38,16 @@ describe('matchItemArt', () => {
     expect(matchItemArt('Linguiça de frango')).toBe('linguica');
     expect(matchItemArt('Picolé de limão')).toBe('sorvete');
     expect(matchItemArt('Café com leite')).toBe('cafe');
+    expect(matchItemArt('Sorvete de doce de leite')).toBe('sorvete');
+    expect(matchItemArt('Bolo de leite condensado')).toBe('bolo');
+  });
+
+  it('reconhece plurais irregulares', () => {
+    expect(matchItemArt('Mamões')).toBe('mamao');
+    expect(matchItemArt('Melões')).toBe('melao');
+    expect(matchItemArt('Pimentões')).toBe('pimentao');
+    expect(matchItemArt('Pães franceses')).toBe('pao_frances');
+    expect(matchItemArt('Hambúrgueres')).toBe('hamburguer');
   });
 
   it('deixa a ilustração da categoria quando a palavra engana ou não há desenho', () => {

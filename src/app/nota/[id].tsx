@@ -406,11 +406,18 @@ function DraftItemCard({
       : product.kind === 'new'
         ? `Novo: ${product.name}`
         : 'Sem acompanhamento de preço';
+  // O desenho segue o produto escolhido: "LT INT ITALAC" ligado a "Leite integral" vira leite.
+  const artName =
+    product.kind === 'existing'
+      ? resolved.productName ?? item.raw_description
+      : product.kind === 'new'
+        ? product.name
+        : item.raw_description;
 
   return (
     <Card style={styles.gapSm}>
       <Row>
-        <CategoryIcon category={resolved.category} name={item.raw_description} size={36} />
+        <CategoryIcon category={resolved.category} name={artName} size={36} />
         <View style={styles.flex}>
           <Text variant="small">{item.raw_description}</Text>
           <Text variant="muted">

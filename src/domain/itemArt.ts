@@ -8,7 +8,7 @@ import { normalizeSearch } from './search';
 // ou do ingrediente ("iogurte de morango" é iogurte, "chocolate ao leite" é
 // chocolate). No empate, vale a regra que vem antes, a mais específica
 // ("pao de forma" antes de "pao", "couve flor" antes de "couve"). Cada termo
-// casa como palavra inteira, com ou sem "s" no fim, no nome sem acento.
+// casa como palavra inteira, no singular ou no plural, no nome sem acento.
 const RULES = [
   ['agua_sanitaria', ['agua sanitaria', 'alvejante', 'cloro']],
   ['suco', ['suco']],
@@ -96,11 +96,20 @@ const RULES = [
 export type ItemArtKey = (typeof RULES)[number][0];
 export const ITEM_ART_KEYS: readonly ItemArtKey[] = RULES.map(([key]) => key);
 
-// Nomes em que a palavra engana: a ilustração da categoria fica melhor.
+// Nomes em que a palavra engana: a ilustração da categoria fica melhor. Só
+// valem quando são o próprio produto ("leite condensado"), não o sabor de
+// outro que vem antes ("bolo de leite condensado" é bolo).
 const EXCEPTIONS = ['caldo', 'filtro de cafe', 'pao de queijo', 'batata palha', 'batata chips', 'batata frita', 'doce de leite', 'leite condensado', 'creme de leite', 'leite de coco', 'agua de coco'];
 
 const escape = (term: string) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const wordRegex = (term: string) => new RegExp(`(?:^|[^a-z0-9])${escape(term)}s?(?=[^a-z0-9]|$)`);
+// Plural da última palavra: mamao/mamoes/paes, hamburguer/hamburgueres, ovo/ovos.
+const plural = (term: string) =>
+  term.endsWith('ao')
+    ? `${escape(term.slice(0, -2))}(?:ao|oes|aes|aos)`
+    : /[rz]$/.test(term)
+      ? `${escape(term)}(?:es|s)?`
+      : `${escape(term)}s?`;
+const wordRegex = (term: string) => new RegExp(`(?:^|[^a-z0-9])${plural(term)}(?=[^a-z0-9]|$)`);
 
 const COMPILED = RULES.map(([key, terms]) => [key, terms.map(wordRegex)] as const);
 const EXCEPTION_REGEXES = EXCEPTIONS.map(wordRegex);
@@ -108,7 +117,7 @@ const EXCEPTION_REGEXES = EXCEPTIONS.map(wordRegex);
 /** Chave da ilustração do item pelo nome, ou null para usar a da categoria. */
 export function matchItemArt(name: string): ItemArtKey | null {
   const text = normalizeSearch(name).replace(/-/g, ' ');
-  if (!text || EXCEPTION_REGEXES.some((re) => re.test(text))) return null;
+  if (!text) return null;
   let best: { key: ItemArtKey; index: number } | null = null;
   for (const [key, regexes] of COMPILED) {
     for (const re of regexes) {
@@ -116,5 +125,8 @@ export function matchItemArt(name: string): ItemArtKey | null {
       if (index !== undefined && (!best || index < best.index)) best = { key, index };
     }
   }
-  return best?.key ?? null;
+  if (!best) return null;
+  // A exceção no mesmo lugar ou antes do produto é o próprio produto.
+  const exception = Math.min(...EXCEPTION_REGEXES.map((re) => re.exec(text)?.index ?? Infinity));
+  return exception <= best.index ? null : best.key;
 }
