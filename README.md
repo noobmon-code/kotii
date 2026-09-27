@@ -67,6 +67,29 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
    npx expo start         # escaneie o QR code com o Expo Go
    ```
 
+## Usar sem o computador ligado
+
+O backend já roda na nuvem (Supabase). O `npx expo start` só serve o código do app durante o desenvolvimento; para usar no dia a dia, o app precisa estar instalado com o código dentro dele.
+
+**Android: APK instalável (grátis).** O build é feito na nuvem pelo EAS, da Expo.
+
+1. Crie uma conta em [expo.dev](https://expo.dev) e um projeto com o slug `nooky`. Coloque o *Project ID* em `app.json` (`expo.extra.eas.projectId`).
+2. No projeto da Expo, em *Environment variables*, cadastre `EXPO_PUBLIC_SUPABASE_URL` e `EXPO_PUBLIC_SUPABASE_ANON_KEY` (os mesmos valores do `.env`) para os ambientes *preview* e *production*. O `.env` não vai para o build na nuvem.
+3. No computador:
+
+   ```bash
+   npx eas-cli login
+   npx eas-cli build --platform android --profile preview
+   ```
+
+   No fim sai um link do APK: abra no celular, instale e mande o link para a família. O perfil `production` gera o pacote da Play Store.
+
+**iPhone.** Instalar o app nativo exige conta Apple Developer (US$ 99/ano): com ela, o app vai para os celulares pelo TestFlight e, depois, para a App Store. Sem a conta, use a versão web (abaixo) e, no Safari, *Compartilhar → Adicionar à Tela de Início*. Na web não há lembrete por notificação; o resto funciona.
+
+**Versão web (Vercel).** O `vercel.json` já diz como gerar o site (`expo export`). No projeto da Vercel, em *Settings → Environment Variables*, cadastre as mesmas duas variáveis `EXPO_PUBLIC_*` e publique de novo.
+
+Identificador do app: `com.noobmon.nooky` (iOS e Android). Dá para trocar até o primeiro envio para as lojas; depois fica fixo.
+
 ## Custos e limites que você precisa saber
 
 - **Leitura de nota por IA (Anthropic):** `claude-opus-5` por padrão. Estimativa por nota: US$ 0,05 a 0,20 (foto + lista de produtos da família + itens lidos; cresce com o tamanho da nota e do catálogo). Dá para trocar o modelo sem mexer no código: `npx supabase secrets set RECEIPT_MODEL=...`.
@@ -106,4 +129,4 @@ scripts/db/         teste local do banco
 
 ## Publicação nas lojas
 
-Ainda falta definir: identificador do app (ex.: `com.suaempresa.nooky`) em `app.json`, ícone e splash definitivos, e contas de desenvolvedor Apple/Google. O build e o envio são feitos com EAS (`npx eas-cli build`, `npx eas-cli submit`).
+Ainda falta definir: ícone e splash definitivos, e contas de desenvolvedor Apple (US$ 99/ano) e Google (US$ 25, uma vez). O build e o envio são feitos com EAS (`npx eas-cli build`, `npx eas-cli submit`).
