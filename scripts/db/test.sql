@@ -755,7 +755,18 @@ begin
   update public.households set name = 'Casa da Gabi';
   assert (select name from public.households) = 'Casa da Gabi', 'rename works for the new owner';
   assert (select count(*) from public.shopping_lists) = 1, 'data stays with the household';
-  assert (public.leave_household())->>'status' = 'deleted', 'last member deletes the household';
+  begin
+    perform public.leave_household();
+    raise exception 'FAIL: last member deleted the household without confirming';
+  exception when sqlstate 'NK001' then null;
+  end;
+  assert (select count(*) from public.household_members where user_id = auth.uid()) = 1, 'unconfirmed leave keeps G';
+  assert (public.leave_household(true))->>'status' = 'deleted', 'last member deletes the household when confirmed';
+  begin
+    perform count(*) from public.household_file_cleanup;
+    raise exception 'FAIL: app user read the cleanup queue';
+  exception when insufficient_privilege then null;
+  end;
   assert (select count(*) from public.household_members where user_id = auth.uid()) = 0, 'G left';
   begin
     perform public.leave_household();
@@ -770,6 +781,7 @@ begin
   assert (select count(*) from public.households where name in ('Casa F', 'Casa da Gabi')) = 0, 'household deleted';
   assert (select count(*) from public.shopping_lists where name = 'Mercado da F') = 0, 'household data deleted';
   assert (select count(*) from public.households where name = 'Casa nova da F') = 1, 'F can start over';
+  assert (select count(*) from public.household_file_cleanup) = 1, 'deleted household queued for photo cleanup';
 end $$;
 
 \echo 'OK — todos os testes do banco passaram'

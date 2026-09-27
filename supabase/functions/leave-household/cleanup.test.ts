@@ -1,6 +1,6 @@
 import { assertEquals, assertRejects } from '@std/assert';
 
-import { type BucketApi, removeHouseholdFiles } from './cleanup.ts';
+import { type BucketApi, type CleanupQueue, drainCleanupQueue, removeHouseholdFiles } from './cleanup.ts';
 
 function fakeStorage(files: Record<string, string[]>, { stuck = false } = {}) {
   const calls: string[] = [];
@@ -46,4 +46,26 @@ Deno.test('erro do Storage sobe', async () => {
     remove: () => Promise.resolve({ data: null, error: null }),
   });
   await assertRejects(() => removeHouseholdFiles(bucket, 'casa-1'), Error, 'falhou');
+});
+
+Deno.test('fila: tira da fila o que limpou e conta a falha do resto', async () => {
+  const rows = new Map([['casa-1', 0], ['casa-2', 2]]);
+  const queue: CleanupQueue = {
+    pending: (limit) =>
+      Promise.resolve([...rows].sort((a, b) => a[1] - b[1]).slice(0, limit).map(([householdId, attempts]) => ({ householdId, attempts }))),
+    done: (id) => Promise.resolve(void rows.delete(id)),
+    failed: (id, attempts) => Promise.resolve(void rows.set(id, attempts)),
+  };
+  const storage = fakeStorage({ receipts: ['casa-1/a.jpg', 'casa-2/b.jpg'] });
+  const flaky = (name: string): BucketApi => {
+    const api = storage.bucket(name);
+    return {
+      list: (prefix, options) =>
+        prefix === 'casa-2' ? Promise.resolve({ data: null, error: new Error('fora do ar') }) : api.list(prefix, options),
+      remove: api.remove,
+    };
+  };
+  assertEquals(await drainCleanupQueue(queue, flaky), { done: ['casa-1'], failed: ['casa-2'] });
+  assertEquals([...rows], [['casa-2', 3]]);
+  assertEquals(storage.files.receipts, ['casa-2/b.jpg']);
 });

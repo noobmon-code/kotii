@@ -1,6 +1,6 @@
 import { Share, StyleSheet } from 'react-native';
 
-import { useLeaveHousehold } from '@/data/household';
+import { LastMemberError, useLeaveHousehold } from '@/data/household';
 import { DocumentsSection } from '@/features/DocumentsSection';
 import { useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage, supabase } from '@/lib/supabase';
@@ -17,21 +17,24 @@ export default function FamilyScreen() {
   const { household: house, members, me } = household.data;
   const heir = members.find((m) => m.user_id !== me.user_id);
 
+  function confirmDelete(houseName: string) {
+    confirmAction(
+      'Apagar a casa',
+      `Você é a última pessoa em "${houseName}". Ao sair, a casa e tudo o que ela tem (listas, notas, despensa, tarefas, saúde, documentos e fotos) são apagados para sempre.`,
+      'Apagar e sair',
+      () => leave.mutate({ deleteIfLast: true }, { onError: (err) => notify('Não deu para sair', errorMessage(err)) }),
+    );
+  }
+
   async function confirmLeave() {
     // A lista de moradores pode ter mudado: o aviso precisa dizer se a casa
-    // será apagada. Quem decide de fato é o servidor.
+    // será apagada. Quem decide de fato é o servidor, que só apaga com a
+    // confirmação de apagar.
     const fresh = (await household.refetch()).data;
     if (!fresh) return;
     const next = fresh.members.find((m) => m.user_id !== fresh.me.user_id);
-    const onConfirm = () =>
-      leave.mutate(undefined, { onError: (err) => notify('Não deu para sair', errorMessage(err)) });
     if (!next) {
-      confirmAction(
-        'Apagar a casa',
-        `Você é a última pessoa em "${fresh.household.name}". Ao sair, a casa e tudo o que ela tem (listas, notas, despensa, tarefas, saúde, documentos e fotos) são apagados para sempre.`,
-        'Apagar e sair',
-        onConfirm,
-      );
+      confirmDelete(fresh.household.name);
       return;
     }
     const handOver = fresh.me.role === 'owner' ? ` ${next.display_name} fica responsável pela casa.` : '';
@@ -39,7 +42,15 @@ export default function FamilyScreen() {
       'Sair da casa',
       `Você deixa de ver os dados de "${fresh.household.name}". O que você registrou continua com a casa.${handOver} Para voltar, só com o código de convite.`,
       'Sair da casa',
-      onConfirm,
+      () =>
+        leave.mutate(
+          { deleteIfLast: false },
+          {
+            // Os outros saíram enquanto isso: agora sair apaga a casa, e isso precisa de outro sim.
+            onError: (err) =>
+              err instanceof LastMemberError ? confirmDelete(fresh.household.name) : notify('Não deu para sair', errorMessage(err)),
+          },
+        ),
     );
   }
 

@@ -1,13 +1,16 @@
-// POST {} -> { status: 'left' | 'deleted' }
+// POST { deleteIfLast?: boolean } -> { status: 'left' | 'deleted' }
+//                                  | 409 { code: 'last_member' }
 //
 // Tira quem chamou da casa. A regra fica em public.leave_household (roda
-// como a pessoa, com RLS): o dono passa adiante, o último apaga a casa.
-// Só depois que o banco confirma que a casa foi apagada, esta função apaga
-// as fotos dela com a service role, que o app não tem.
+// como a pessoa, com RLS): o dono passa adiante; o último só apaga a casa
+// se confirmou (deleteIfLast), senão volta 409 para o app perguntar.
+// A casa apagada entra numa fila no banco; esta função apaga as fotos da
+// fila com a service role, que o app não tem, e o que falhar fica lá para
+// a próxima vez.
 
 import { createClient } from '@supabase/supabase-js';
 
-import { removeHouseholdFiles } from './cleanup.ts';
+import { type CleanupQueue, drainCleanupQueue } from './cleanup.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -33,23 +36,39 @@ Deno.serve(async (req) => {
   const { data: userData } = await asUser.auth.getUser();
   if (!userData.user) return json({ error: 'Entre na sua conta para sair da casa.' }, 401);
 
-  // A casa vem da mesma transação que tirou a pessoa dela: é dessa que as
-  // fotos saem, mesmo com outra saída acontecendo ao mesmo tempo.
-  const { data, error } = await asUser.rpc('leave_household');
+  const body = (await req.json().catch(() => null)) as { deleteIfLast?: unknown } | null;
+  const { data, error } = await asUser.rpc('leave_household', { p_delete_if_last: body?.deleteIfLast === true });
   if (error) {
     if (error.code === 'P0002') return json({ error: 'Você não está em nenhuma casa.' }, 404);
+    if (error.code === 'NK001') {
+      return json({ error: 'Você é a última pessoa da casa: sair apaga a casa.', code: 'last_member' }, 409);
+    }
     console.error('leave_household failed', error);
     return json({ error: 'Não deu para sair da casa agora. Tente de novo.' }, 500);
   }
-  const { status, household_id: householdId } = data as { status: 'left' | 'deleted'; household_id: string };
+  const { status } = data as { status: 'left' | 'deleted'; household_id: string };
 
-  if (status === 'deleted') {
-    const admin = createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-    // A casa já não existe: se a limpeza falhar, as fotos ficam órfãs e
-    // inacessíveis (as policies exigem ser da casa), mas a saída vale.
-    await removeHouseholdFiles((name) => admin.storage.from(name), householdId).catch((err) =>
-      console.error('file cleanup failed', householdId, err),
-    );
-  }
+  // Limpa as fotos da fila: a casa que acabou de ser apagada e alguma que
+  // tenha falhado antes. A saída já valeu; a limpeza não muda a resposta.
+  const admin = createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+  const queue: CleanupQueue = {
+    pending: async (limit) => {
+      const { data: rows, error: queueError } = await admin
+        .from('household_file_cleanup')
+        .select('household_id, attempts')
+        .order('attempts')
+        .order('requested_at')
+        .limit(limit);
+      if (queueError) throw queueError;
+      return (rows ?? []).map((row) => ({ householdId: row.household_id as string, attempts: row.attempts as number }));
+    },
+    done: async (householdId) => {
+      await admin.from('household_file_cleanup').delete().eq('household_id', householdId);
+    },
+    failed: async (householdId, attempts) => {
+      await admin.from('household_file_cleanup').update({ attempts }).eq('household_id', householdId);
+    },
+  };
+  await drainCleanupQueue(queue, (name) => admin.storage.from(name)).catch((err) => console.error('cleanup queue failed', err));
   return json({ status });
 });
