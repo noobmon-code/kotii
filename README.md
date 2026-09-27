@@ -55,6 +55,7 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
    npx supabase functions deploy parse-receipt
    npx supabase functions deploy parse-health
    npx supabase functions deploy nuke
+   npx supabase functions deploy leave-household
    ```
 
    Com só a chave da OpenRouter, ela é usada automaticamente. Com as duas, vale a Anthropic, a menos que `RECEIPT_PROVIDER=openrouter`. O modelo pode ser trocado com `RECEIPT_MODEL` (na OpenRouter, precisa ser um modelo que aceita imagem). A leitura de saúde (`parse-health`) usa as mesmas configurações, ou `HEALTH_PROVIDER` e `HEALTH_MODEL` se quiser um modelo diferente para ela. O Nuke (`nuke`) também, ou `NUKE_PROVIDER` e `NUKE_MODEL`.
@@ -132,7 +133,7 @@ src/features/       blocos de tela maiores (painéis da Casa, da Saúde e das Fi
 src/ui/             componentes visuais, tema claro/escuro e ilustrações
 src/lib/            cliente Supabase, sessão/família, lembretes
 supabase/migrations banco de dados e políticas de acesso
-supabase/functions  parse-receipt (nota → itens), parse-health (ficha, dieta, exame → dados), nuke (assistente); _shared/vision.ts e _shared/chat.ts falam com a IA
+supabase/functions  parse-receipt (nota → itens), parse-health (ficha, dieta, exame → dados), nuke (assistente), leave-household (sair da casa e apagar as fotos da casa apagada); _shared/vision.ts e _shared/chat.ts falam com a IA
 scripts/db/         teste local do banco
 ```
 

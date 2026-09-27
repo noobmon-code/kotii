@@ -18,28 +18,30 @@ export default function FamilyScreen() {
   const { household: house, members, me } = household.data;
   const heir = members.find((m) => m.user_id !== me.user_id);
 
-  function confirmLeave() {
+  async function confirmLeave() {
+    // A lista de moradores pode ter mudado: o aviso precisa dizer se a casa
+    // será apagada. Quem decide de fato é o servidor.
+    const fresh = (await household.refetch()).data;
+    if (!fresh) return;
+    const next = fresh.members.find((m) => m.user_id !== fresh.me.user_id);
     const onConfirm = () =>
-      leave.mutate(
-        { householdId: house.id, last: !heir },
-        {
-          onSuccess: () => clearConversation(me.user_id),
-          onError: (err) => notify('Não deu para sair', errorMessage(err)),
-        },
-      );
-    if (!heir) {
+      leave.mutate(undefined, {
+        onSuccess: () => clearConversation(fresh.me.user_id),
+        onError: (err) => notify('Não deu para sair', errorMessage(err)),
+      });
+    if (!next) {
       confirmAction(
         'Apagar a casa',
-        `Você é a última pessoa em "${house.name}". Ao sair, a casa e tudo o que ela tem (listas, notas, despensa, tarefas, saúde, documentos e fotos) são apagados para sempre.`,
+        `Você é a última pessoa em "${fresh.household.name}". Ao sair, a casa e tudo o que ela tem (listas, notas, despensa, tarefas, saúde, documentos e fotos) são apagados para sempre.`,
         'Apagar e sair',
         onConfirm,
       );
       return;
     }
-    const handOver = me.role === 'owner' ? ` ${heir.display_name} fica responsável pela casa.` : '';
+    const handOver = fresh.me.role === 'owner' ? ` ${next.display_name} fica responsável pela casa.` : '';
     confirmAction(
       'Sair da casa',
-      `Você deixa de ver os dados de "${house.name}". O que você registrou continua com a casa.${handOver} Para voltar, só com o código de convite.`,
+      `Você deixa de ver os dados de "${fresh.household.name}". O que você registrou continua com a casa.${handOver} Para voltar, só com o código de convite.`,
       'Sair da casa',
       onConfirm,
     );

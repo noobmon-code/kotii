@@ -6,3 +6,6 @@ verify_jwt = true
 
 [functions.nuke]
 verify_jwt = true
+
+[functions.leave-household]
+verify_jwt = true
