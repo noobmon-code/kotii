@@ -97,6 +97,15 @@ export function disableReminders(medicationId: string): Promise<void> {
   return serialized(() => disable(medicationId));
 }
 
+/** Desliga todos os lembretes de remédio deste aparelho (ao sair da casa). */
+export async function disableAllReminders(): Promise<void> {
+  if (!remindersSupported) return;
+  await serialized(async () => {
+    const keys = (await AsyncStorage.getAllKeys()).filter((k) => k.startsWith('reminders:'));
+    for (const key of keys) await disable(key.slice('reminders:'.length));
+  });
+}
+
 function contentOf(medication: Medication) {
   return {
     title: `${medication.name} — ${medication.person_name}`,

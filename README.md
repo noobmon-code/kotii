@@ -55,9 +55,19 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
    npx supabase functions deploy parse-receipt
    npx supabase functions deploy parse-health
    npx supabase functions deploy nuke
+   npx supabase functions deploy leave-household
    ```
 
    Com só a chave da OpenRouter, ela é usada automaticamente. Com as duas, vale a Anthropic, a menos que `RECEIPT_PROVIDER=openrouter`. O modelo pode ser trocado com `RECEIPT_MODEL` (na OpenRouter, precisa ser um modelo que aceita imagem). A leitura de saúde (`parse-health`) usa as mesmas configurações, ou `HEALTH_PROVIDER` e `HEALTH_MODEL` se quiser um modelo diferente para ela. O Nuke (`nuke`) também, ou `NUKE_PROVIDER` e `NUKE_MODEL`.
+
+   **Limpeza das fotos.** Quando a última pessoa sai e apaga a casa, `leave-household` apaga as fotos dela na hora; se o Storage falhar, a casa fica numa fila que o `pg_cron` reprocessa de hora em hora. Para isso, o banco precisa da URL do projeto e da chave anon no Vault. Rode uma vez no SQL Editor:
+
+   ```sql
+   select vault.create_secret('https://SEU_PROJECT_REF.supabase.co', 'project_url');
+   select vault.create_secret('SUA_ANON_KEY', 'anon_key');
+   ```
+
+   Sem esses segredos, o `db push` avisa e o job registra o erro em `cron.job_run_details`.
 
 4. **Login sem confirmação de e-mail (opcional, para testar rápido):** Authentication → Sign In / Providers → Email → desligue "Confirm email".
 
@@ -132,7 +142,7 @@ src/features/       blocos de tela maiores (painéis da Casa, da Saúde e das Fi
 src/ui/             componentes visuais, tema claro/escuro e ilustrações
 src/lib/            cliente Supabase, sessão/família, lembretes
 supabase/migrations banco de dados e políticas de acesso
-supabase/functions  parse-receipt (nota → itens), parse-health (ficha, dieta, exame → dados), nuke (assistente); _shared/vision.ts e _shared/chat.ts falam com a IA
+supabase/functions  parse-receipt (nota → itens), parse-health (ficha, dieta, exame → dados), nuke (assistente), leave-household (sair da casa; apaga as fotos de casas apagadas, também de hora em hora pelo pg_cron); _shared/vision.ts e _shared/chat.ts falam com a IA
 scripts/db/         teste local do banco
 ```
 

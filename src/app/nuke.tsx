@@ -7,7 +7,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAskNuke, useNukeContext, useRunNukeAction } from '@/data/nuke';
 import { todayISO } from '@/domain/dates';
 import { describeAction, historyForApi, NUKE_SUGGESTIONS, type NukeAction, type NukeMessage } from '@/domain/nuke';
-import { clearConversation, newMessageId, setPending, updateConversation, useNukeConversation } from '@/features/nuke/conversation';
+import {
+  clearConversation,
+  conversationEpoch,
+  newMessageId,
+  setPending,
+  updateConversation,
+  useNukeConversation,
+} from '@/features/nuke/conversation';
 import { useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { Floating, NukeAvatar } from '@/ui/art';
@@ -48,14 +55,22 @@ export default function NukeScreen() {
     updateConversation(userId, (m) => [...m, question]);
     setPending(userId, true);
     setDraft('');
-    // mutateAsync: a resposta entra na conversa mesmo se a tela fechar antes.
+    // mutateAsync: a resposta entra na conversa mesmo se a tela fechar antes,
+    // mas não se a conversa for apagada enquanto isso.
+    const since = conversationEpoch();
     ask
       .mutateAsync({ messages: history, context, today })
       .then((answer) =>
-        updateConversation(userId, (m) => [...m, { id: newMessageId(), role: 'assistant', text: answer.reply, actions: answer.actions }]),
+        updateConversation(
+          userId,
+          (m) => [...m, { id: newMessageId(), role: 'assistant', text: answer.reply, actions: answer.actions }],
+          since,
+        ),
       )
-      .catch((err) => updateConversation(userId, (m) => [...m, { id: newMessageId(), role: 'assistant', text: errorMessage(err), error: true }]))
-      .finally(() => setPending(userId, false));
+      .catch((err) =>
+        updateConversation(userId, (m) => [...m, { id: newMessageId(), role: 'assistant', text: errorMessage(err), error: true }], since),
+      )
+      .finally(() => setPending(userId, false, since));
   }
 
   async function run(message: NukeMessage, index: number, action: NukeAction) {

@@ -17,6 +17,9 @@ let messages: NukeMessage[] = EMPTY;
 // reabrir a conversa não libere uma segunda pergunta fora de ordem.
 let pending = false;
 let state = { messages, pending };
+// Muda a cada conversa apagada: resposta de uma pergunta feita antes não
+// entra na conversa nova (nem na casa nova, depois de sair de uma).
+let epoch = 0;
 const listeners = new Set<() => void>();
 
 function emit() {
@@ -31,14 +34,16 @@ function subscribe(listener: () => void) {
   };
 }
 
-async function load(userId: string) {
+/** Carrega a conversa salva de `userId` (a tela chama pelo hook). */
+export async function loadConversation(userId: string) {
   if (owner === userId) return;
   owner = userId;
   messages = EMPTY;
   pending = false;
   emit();
+  const since = epoch;
   const raw = await AsyncStorage.getItem(storageKey(userId)).catch(() => null);
-  if (owner !== userId || !raw) return;
+  if (owner !== userId || since !== epoch || !raw) return;
   try {
     const parsed: unknown = JSON.parse(raw);
     if (Array.isArray(parsed)) {
@@ -50,21 +55,35 @@ async function load(userId: string) {
   }
 }
 
-/** Atualiza a conversa de `userId` (ignora se outra pessoa entrou no meio). */
-export function updateConversation(userId: string, update: (current: NukeMessage[]) => NukeMessage[]) {
-  if (owner !== userId) return;
+/** Marca de agora; passada a updateConversation, descarta a mudança se a conversa foi apagada depois. */
+export function conversationEpoch(): number {
+  return epoch;
+}
+
+/**
+ * Atualiza a conversa de `userId`. Ignora se outra pessoa entrou no meio ou
+ * se a conversa foi apagada depois de `since`.
+ */
+export function updateConversation(userId: string, update: (current: NukeMessage[]) => NukeMessage[], since = epoch) {
+  if (owner !== userId || since !== epoch) return;
   messages = update(messages).slice(-KEEP);
   emit();
   AsyncStorage.setItem(storageKey(userId), JSON.stringify(messages)).catch(() => undefined);
 }
 
+/** Apaga a conversa de `userId`, no aparelho também, mesmo sem ela ter sido aberta. */
 export function clearConversation(userId: string) {
-  updateConversation(userId, () => EMPTY);
+  epoch += 1;
+  AsyncStorage.removeItem(storageKey(userId)).catch(() => undefined);
+  if (owner !== userId) return;
+  messages = EMPTY;
+  pending = false;
+  emit();
 }
 
 /** Marca que há uma pergunta de `userId` esperando resposta. */
-export function setPending(userId: string, value: boolean) {
-  if (owner !== userId) return;
+export function setPending(userId: string, value: boolean, since = epoch) {
+  if (owner !== userId || since !== epoch) return;
   pending = value;
   emit();
 }
@@ -73,7 +92,7 @@ const IDLE = { messages: EMPTY, pending: false };
 
 export function useNukeConversation(userId: string | undefined): { messages: NukeMessage[]; pending: boolean } {
   useEffect(() => {
-    if (userId) load(userId);
+    if (userId) loadConversation(userId);
   }, [userId]);
   const current = useSyncExternalStore(subscribe, () => state);
   return userId && owner === userId ? current : IDLE;

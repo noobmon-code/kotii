@@ -1,18 +1,64 @@
 import { Share, StyleSheet } from 'react-native';
 
+import { LastMemberError, useLeaveHousehold } from '@/data/household';
 import { DocumentsSection } from '@/features/DocumentsSection';
 import { useAuth, useHousehold } from '@/lib/auth';
-import { supabase } from '@/lib/supabase';
-import { confirmAction } from '@/ui/dialogs';
+import { errorMessage, supabase } from '@/lib/supabase';
+import { confirmAction, notify } from '@/ui/dialogs';
 import { Badge, Button, Card, IconBadge, ListCard, ListRow, Loading, PageTitle, Screen, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 export default function FamilyScreen() {
   const { session } = useAuth();
   const household = useHousehold();
+  const leave = useLeaveHousehold(session?.user.id);
 
   if (!household.data) return <Loading />;
   const { household: house, members, me } = household.data;
+  const heir = members.find((m) => m.user_id !== me.user_id);
+
+  function confirmDelete(houseId: string, houseName: string) {
+    confirmAction(
+      'Apagar a casa',
+      `Você é a última pessoa em "${houseName}". Ao sair, a casa e tudo o que ela tem (listas, notas, despensa, tarefas, saúde, documentos e fotos) são apagados para sempre.`,
+      'Apagar e sair',
+      () =>
+        leave.mutate(
+          { householdId: houseId, deleteIfLast: true },
+          { onError: (err) => notify('Não deu para sair', errorMessage(err)) },
+        ),
+    );
+  }
+
+  async function confirmLeave() {
+    // A lista de moradores pode ter mudado: o aviso precisa dizer se a casa
+    // será apagada. Quem decide de fato é o servidor, que só apaga com a
+    // confirmação de apagar.
+    const fresh = (await household.refetch()).data;
+    if (!fresh) return;
+    const next = fresh.members.find((m) => m.user_id !== fresh.me.user_id);
+    if (!next) {
+      confirmDelete(fresh.household.id, fresh.household.name);
+      return;
+    }
+    const handOver = fresh.me.role === 'owner' ? ` ${next.display_name} fica responsável pela casa.` : '';
+    confirmAction(
+      'Sair da casa',
+      `Você deixa de ver os dados de "${fresh.household.name}". O que você registrou continua com a casa.${handOver} Para voltar, só com o código de convite.`,
+      'Sair da casa',
+      () =>
+        leave.mutate(
+          { householdId: fresh.household.id, deleteIfLast: false },
+          {
+            // Os outros saíram enquanto isso: agora sair apaga a casa, e isso precisa de outro sim.
+            onError: (err) =>
+              err instanceof LastMemberError
+                ? confirmDelete(fresh.household.id, fresh.household.name)
+                : notify('Não deu para sair', errorMessage(err)),
+          },
+        ),
+    );
+  }
 
   function shareInvite() {
     Share.share({
@@ -42,7 +88,7 @@ export default function FamilyScreen() {
               key={m.user_id}
               left={<IconBadge icon="account-outline" tone={m.user_id === me.user_id ? 'primary' : 'neutral'} />}
               title={m.user_id === me.user_id ? `${m.display_name} (você)` : m.display_name}
-              right={m.role === 'owner' ? <Badge label="Criou a casa" /> : null}
+              right={m.role === 'owner' ? <Badge label="Responsável" /> : null}
             />
           ))}
         </ListCard>
@@ -50,13 +96,28 @@ export default function FamilyScreen() {
 
       <DocumentsSection />
 
+      <Section title="Casa">
+        <Text variant="muted">
+          {heir
+            ? 'Saindo, você pode criar outra casa ou entrar em uma com um código.'
+            : 'Você é a única pessoa aqui. Saindo, a casa é apagada.'}
+        </Text>
+        <Button
+          title="Sair da casa"
+          variant="secondary"
+          icon="home-export-outline"
+          loading={leave.isPending}
+          onPress={confirmLeave}
+        />
+      </Section>
+
       <Section title="Conta">
         <Text variant="muted">{session?.user.email}</Text>
         <Button
-          title="Sair"
+          title="Sair da conta"
           variant="danger"
           icon="logout"
-          onPress={() => confirmAction('Sair', 'Deseja sair desta conta?', 'Sair', () => supabase.auth.signOut())}
+          onPress={() => confirmAction('Sair da conta', 'Deseja sair desta conta neste aparelho?', 'Sair', () => supabase.auth.signOut())}
         />
       </Section>
     </Screen>
