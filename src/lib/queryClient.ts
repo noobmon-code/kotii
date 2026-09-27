@@ -4,13 +4,14 @@
 // guardada e sai quando a conexão volta.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 import { onlineManager, QueryClient } from '@tanstack/react-query';
 import { persistQueryClientSave, type PersistQueryClientProviderProps } from '@tanstack/react-query-persist-client';
 import * as Network from 'expo-network';
 import { AppState, Platform } from 'react-native';
 
-import { registerListMutations, TOGGLE_ITEM_KEY } from '@/data/market';
+import { registerListMutations, TOGGLE_ITEM_KEY, type ToggleItemInput } from '@/data/market';
+
+import { createCachePersister } from './cachePersister';
 
 const WEEK = 1000 * 60 * 60 * 24 * 7;
 
@@ -68,10 +69,7 @@ export function setSessionValid(valid: boolean) {
   syncOnline();
 }
 
-const STORAGE_KEY = 'nooky:query-cache';
-const persister = createAsyncStoragePersister({ storage: AsyncStorage, key: STORAGE_KEY, throttleTime: 1000 });
-// Mesmo lugar, sem o intervalo: para gravar a fila de marcações na hora.
-const immediatePersister = createAsyncStoragePersister({ storage: AsyncStorage, key: STORAGE_KEY, throttleTime: 0 });
+const { persister, persistNow } = createCachePersister({ storage: AsyncStorage, key: 'nooky:query-cache', throttleMs: 1000 });
 
 export const persistOptions = {
   persister,
@@ -90,7 +88,7 @@ export const persistOptions = {
 export function saveNow() {
   persistQueryClientSave({
     queryClient,
-    persister: immediatePersister,
+    persister: { ...persister, persistClient: persistNow },
     buster: persistOptions.buster,
     dehydrateOptions: persistOptions.dehydrateOptions,
   }).catch(() => undefined);
@@ -112,22 +110,29 @@ AppState.addEventListener('change', (state) => {
  */
 export function forgetCache() {
   queryClient.clear();
-  Promise.resolve(immediatePersister.removeClient()).catch(() => undefined);
+  // Descarta também a gravação que esperava o intervalo.
+  Promise.resolve(persister.removeClient()).catch(() => undefined);
 }
 
 /**
  * De quem é o cache: a casa fica guardada com o id de quem entrou
- * (`['household', userId]`). Só conta a que tem dados: antes de a sessão
- * chegar, a tela já cria `['household', undefined]`, vazia.
+ * (`['household', userId]`) e cada marcação da fila leva quem tocou. Só
+ * conta a casa que tem dados: antes de a sessão chegar, a tela já cria
+ * `['household', undefined]`, vazia.
  */
 export function cacheOwners(): unknown[] {
-  return queryClient
+  const households = queryClient
     .getQueryCache()
     .findAll({ queryKey: ['household'], predicate: (query) => query.state.data !== undefined })
     .map((query) => query.queryKey[1]);
+  const toggles = queryClient
+    .getMutationCache()
+    .findAll({ mutationKey: TOGGLE_ITEM_KEY })
+    .map((mutation) => (mutation.state.variables as ToggleItemInput | undefined)?.userId);
+  return [...households, ...toggles];
 }
 
-/** Depois de restaurar o cache, manda o que ficou na fila. */
+/** Cache restaurado e conferido (é de quem entrou): manda o que ficou na fila. */
 export function resumeQueue() {
   queryClient.resumePausedMutations().catch(() => undefined);
 }

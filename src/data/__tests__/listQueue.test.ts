@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { dehydrate, hydrate, MutationObserver, onlineManager, QueryClient } from '@tanstack/react-query';
 
-import { newToggleToken, onListItemsChange, registerListMutations, SessionPendingError, TOGGLE_ITEM_KEY, type ToggleItemInput } from '../market';
+import {
+  ForeignToggleError,
+  newToggleToken,
+  onListItemsChange,
+  registerListMutations,
+  SessionPendingError,
+  TOGGLE_ITEM_KEY,
+  type ToggleItemInput,
+} from '../market';
 
 const sent: { id: string; token: string; values: unknown }[] = [];
 const auth = { signedIn: true };
@@ -137,6 +145,17 @@ describe('fila de marcações da lista', () => {
     auth.signedIn = true;
     await jest.advanceTimersByTimeAsync(15_000);
     expect(sent.map((s) => s.id)).toEqual(['arroz']);
+  });
+
+  it('marcação de outra conta não sai com a sessão de quem entrou', async () => {
+    const queryClient = client();
+    tap(queryClient, { id: 'arroz', checked: true, userId: 'outra-conta', at: '2026-09-27T10:00:00Z', token: 'a0', nextToken: 'a1' });
+    await flush();
+    expect(sent).toEqual([]);
+    const [mutation] = queryClient.getMutationCache().getAll();
+    expect(mutation.state.status).toBe('error');
+    expect(mutation.state.failureCount).toBe(1);
+    expect(mutation.state.error).toBeInstanceOf(ForeignToggleError);
   });
 
   it('cada marcação ganha um selo novo, no formato uuid', () => {

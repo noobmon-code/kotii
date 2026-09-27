@@ -2,7 +2,9 @@ import { afterAll, afterEach, describe, expect, it, jest } from '@jest/globals';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { onlineManager } from '@tanstack/react-query';
 
-import { cacheOwners, forgetCache, queryClient, saveNow, setSessionValid } from '../queryClient';
+import { TOGGLE_ITEM_KEY } from '@/data/market';
+
+import { cacheOwners, forgetCache, persistOptions, queryClient, saveNow, setSessionValid } from '../queryClient';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -49,6 +51,25 @@ describe('cache guardado no aparelho', () => {
     await flush();
     expect(await stored()).toBeNull();
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
+  });
+
+  it('as marcações da fila também dizem de quem é o cache', () => {
+    queryClient.setQueryData(['household', 'u1'], { household: { id: 'h1' } });
+    queryClient.getMutationCache().build(queryClient, { mutationKey: TOGGLE_ITEM_KEY }, {
+      variables: { id: 'i1', checked: true, userId: 'u2', at: '', token: 't0', nextToken: 't1' },
+    } as never);
+    expect(cacheOwners()).toEqual(['u1', 'u2']);
+  });
+
+  it('sair da conta descarta também a gravação que esperava o intervalo', async () => {
+    jest.useFakeTimers();
+    queryClient.setQueryData(['lists'], [{ id: 'l1', name: 'Compras da semana' }]);
+    // O que o PersistQueryClientProvider faz a cada mudança: gravar com intervalo.
+    persistOptions.persister.persistClient({ buster: '1', timestamp: Date.now(), clientState: { queries: [], mutations: [] } });
+    forgetCache();
+    await jest.advanceTimersByTimeAsync(5000);
+    jest.useRealTimers();
+    expect(await stored()).toBeNull();
   });
 
   it('com a sessão vencida, fica como sem internet até ela ser renovada', () => {

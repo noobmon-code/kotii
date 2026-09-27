@@ -283,9 +283,17 @@ export class SessionPendingError extends Error {
   }
 }
 
+/** Marcação feita por outra conta neste aparelho: não sai com a sessão de quem entrou agora. */
+export class ForeignToggleError extends Error {
+  constructor() {
+    super('Marcação de outra conta.');
+  }
+}
+
 async function toggleListItem({ id, checked, userId, at, token, nextToken }: ToggleItemInput) {
   const { data } = await supabase.auth.getSession();
   if (!data.session) throw new SessionPendingError();
+  if (data.session.user.id !== userId) throw new ForeignToggleError();
   return unwrap(
     await supabase
       .from('shopping_list_items')
@@ -324,7 +332,8 @@ export function registerListMutations(queryClient: QueryClient) {
     scope: { id: 'list-items' },
     // Sessão à espera de renovação (o Supabase tenta de novo a cada minuto):
     // insiste por uns 5 minutos em vez de desistir da marcação.
-    retry: (failures, error) => failures < (error instanceof SessionPendingError ? 20 : 3),
+    retry: (failures, error) =>
+      !(error instanceof ForeignToggleError) && failures < (error instanceof SessionPendingError ? 20 : 3),
     retryDelay: (failures, error) =>
       error instanceof SessionPendingError ? 15_000 : Math.min(1000 * 2 ** failures, 30_000),
     // Fila restaurada ao reabrir o app.

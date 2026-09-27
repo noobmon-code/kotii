@@ -3,7 +3,7 @@ import { isAuthRetryableFetchError, type Session } from '@supabase/supabase-js';
 import { useIsRestoring, useQuery } from '@tanstack/react-query';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 
-import { cacheOwners, forgetCache, setSessionValid } from './queryClient';
+import { cacheOwners, forgetCache, resumeQueue, setSessionValid } from './queryClient';
 import { supabase, unwrap } from './supabase';
 import type { Household, Member } from './types';
 
@@ -101,12 +101,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(timer);
   }, [session, valid, expiresAt]);
 
-  // O cache guardado no aparelho é de outra conta (o app fechou antes de
-  // apagar, ou a saída aconteceu antes de o cache terminar de ser lido):
-  // apaga antes de a casa da conta nova carregar.
+  // Cache restaurado: se é de outra conta (o app fechou antes de apagar, ou a
+  // saída aconteceu antes de o cache terminar de ser lido), apaga antes de a
+  // casa da conta nova carregar, com a fila junto. Se é de quem entrou, a
+  // fila guardada pode sair.
   useEffect(() => {
     if (isRestoring || !userId) return;
     if (cacheOwners().some((owner) => owner !== userId)) forgetCache();
+    else resumeQueue();
   }, [isRestoring, userId]);
 
   return <AuthContext.Provider value={state}>{children}</AuthContext.Provider>;

@@ -13,7 +13,7 @@ import { useColorScheme } from 'react-native';
 
 import { AuthProvider, useAuth, useHousehold } from '@/lib/auth';
 import { configureNotifications } from '@/lib/reminders';
-import { persistOptions, queryClient, resumeQueue } from '@/lib/queryClient';
+import { persistOptions, queryClient } from '@/lib/queryClient';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import { EmptyState, ErrorNotice, Screen } from '@/ui/primitives';
 import { fonts, useColors } from '@/ui/theme';
@@ -24,7 +24,7 @@ configureNotifications();
 
 export default function RootLayout() {
   return (
-    <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions} onSuccess={resumeQueue}>
+    <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
       <AuthProvider>
         <AppNavigator />
       </AuthProvider>
