@@ -51,6 +51,14 @@
         {
           "color": "#FF7A45"
         }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "O Nooky usa a câmera para fotografar notas fiscais e ler o QR code delas.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
       ]
     ],
     "experiments": {

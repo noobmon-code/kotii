@@ -130,5 +130,11 @@ export function guessCategory(name: string): string {
   for (const [keyword, category] of KEYWORDS) {
     if (text.includes(` ${keyword} `) || (keyword.length >= 5 && text.includes(` ${keyword}`))) return category;
   }
+  // Abreviação de nota fiscal ("DETERG", "CONGEL"): palavra de 5+ letras que
+  // é o começo de uma palavra-chave.
+  const words = text.trim().split(' ').filter((word) => word.length >= 5 && /^[a-z]+$/.test(word));
+  for (const [keyword, category] of KEYWORDS) {
+    if (!keyword.includes(' ') && words.some((word) => keyword.startsWith(word))) return category;
+  }
   return 'outros';
 }

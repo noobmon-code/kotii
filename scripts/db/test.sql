@@ -730,6 +730,18 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+\echo '• nota importada pelo QR code'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  insert into public.receipts (source, access_key) values ('qrcode', repeat('9', 44));
+  begin
+    insert into public.receipts (source) values ('sefaz');
+    raise exception 'FAIL: unknown receipt source';
+  exception when check_violation then null;
+  end;
+end $$;
+
 \echo '• orçamento por categoria'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$

@@ -9,7 +9,7 @@ iOS e Android com Expo (React Native); a versão web sai do mesmo código depois
 | Módulo | O que faz |
 |---|---|
 | **Família** | Conta por e-mail/senha. Quem cria a casa recebe um código de convite de 6 letras; quem entra com o código vê e edita tudo da casa. |
-| **Notas fiscais** | Foto do cupom → a IA (Claude) lê mercado, CNPJ, data, chave de acesso e itens → tela de revisão → confirmar. Também dá para digitar à mão. Nota repetida (mesma chave NFC-e) é detectada. |
+| **Notas fiscais** | Pelo QR code da NFC-e: o app lê o QR (ou o link colado) e busca na consulta pública da Sefaz mercado, data, total e itens exatos, sem IA. Pela foto do cupom: a IA (Claude) lê mercado, CNPJ, data, chave de acesso e itens. Nos dois casos, tela de revisão → confirmar. Também dá para digitar à mão. Nota repetida (mesma chave NFC-e) é detectada. |
 | **Produtos e matching** | Cada item da nota é ligado a um produto da família ("Arroz Tio João 5kg"). A IA sugere o produto; a descrição da nota vira um apelido, então a mesma descrição é reconhecida sozinha nas próximas notas. |
 | **Onde comprar** | Para a lista de compras: melhor mercado único, ou dividir entre até 2 ou 3 mercados (você escolhe). Itens sem preço num mercado são estimados pelo nível de preço daquele mercado; itens sem preço nenhum ficam fora do total. |
 | **Listas de compras** | Grade com o desenho de cada item; um toque põe no carrinho. Compartilhadas em tempo real (duas pessoas no mercado veem as marcações uma da outra) e funcionam sem internet: a lista fica guardada no aparelho e as marcações feitas offline vão quando a conexão volta, mesmo se o app for fechado no meio. Catálogo com mais de 200 itens comuns da casa por categoria, para montar a lista sem digitar; ao digitar, sugere primeiro produtos que já têm preço e depois itens do catálogo. |
@@ -30,8 +30,6 @@ iOS e Android com Expo (React Native); a versão web sai do mesmo código depois
 | **Agenda** | Calendário do mês (aberto pela tela Hoje) com consultas, vacinas, contas, tarefas, manutenções, documentos e garantias; contas e tarefas que se repetem aparecem apagadas nas próximas datas, como previsão. Tocar num compromisso abre o item. |
 | **Hoje** | Home que só mostra o que pede atenção: doses pendentes, treino do dia, consultas de hoje/amanhã, vacinas atrasadas, tarefas e manutenções, contas vencendo, itens vencendo, documentos a renovar, garantias acabando, notas e planos para revisar. |
 | **Avisos da casa** | No app instalado, cada pessoa escolhe na aba Família que avisos quer receber no próprio celular, às 9h: contas (véspera e dia do vencimento; em aberto, um aviso só), documentos (quando começa o prazo de renovar, uma semana antes e no dia em que vence) e tarefas e manutenções (no dia). Ficam com o espaço que os lembretes de remédio deixam no limite de avisos agendados do iPhone. Refeitos ao abrir o app, para os próximos 30 dias. |
-
-Ainda não entrou (ver roadmap): scraper de NFC-e.
 
 ## Rodando pela primeira vez
 
@@ -59,6 +57,7 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
    npx supabase functions deploy parse-health
    npx supabase functions deploy nuke
    npx supabase functions deploy leave-household
+   npx supabase functions deploy nfce   # nota pelo QR code (sem IA)
    ```
 
    Com a chave da OpenRouter, ela é usada em tudo (leitura de notas, de saúde e o Nuke), com o `deepseek/deepseek-v4.1-flash`; a Anthropic só entra com a chave dela sozinha ou com `RECEIPT_PROVIDER=anthropic`. O modelo pode ser trocado com `RECEIPT_MODEL` (na OpenRouter, precisa ser um modelo que aceita imagem). A leitura de saúde (`parse-health`) usa as mesmas configurações, ou `HEALTH_PROVIDER` e `HEALTH_MODEL` se quiser um modelo diferente para ela. O Nuke (`nuke`) também, ou `NUKE_PROVIDER` e `NUKE_MODEL`.
@@ -133,7 +132,7 @@ npm run typecheck
 npm run lint
 ```
 
-As Edge Functions são Deno: em `supabase/functions/_shared`, `parse-receipt` e `parse-health`, rode `deno test && deno check index.ts` (em `_shared`, `deno check vision.ts`).
+As Edge Functions são Deno: em `supabase/functions/_shared`, `parse-receipt`, `parse-health`, `leave-household` e `nfce`, rode `deno test && deno check index.ts` (em `_shared`, `deno check vision.ts`).
 
 ## Identidade visual
 
@@ -153,7 +152,7 @@ src/features/       blocos de tela maiores (painéis da Casa, da Saúde e das Fi
 src/ui/             componentes visuais, tema claro/escuro e ilustrações
 src/lib/            cliente Supabase, sessão/família, lembretes
 supabase/migrations banco de dados e políticas de acesso
-supabase/functions  parse-receipt (nota → itens), parse-health (ficha, dieta, exame → dados), nuke (assistente), leave-household (sair da casa; apaga as fotos de casas apagadas, também de hora em hora pelo pg_cron); _shared/vision.ts e _shared/chat.ts falam com a IA
+supabase/functions  parse-receipt (nota → itens), parse-health (ficha, dieta, exame → dados), nuke (assistente), leave-household (sair da casa; apaga as fotos de casas apagadas, também de hora em hora pelo pg_cron), nfce (nota pelo QR code, lida na Sefaz); _shared/vision.ts e _shared/chat.ts falam com a IA
 scripts/db/         teste local do banco
 ```
 

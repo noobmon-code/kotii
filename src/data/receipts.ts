@@ -3,6 +3,7 @@
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { nfceItemsToDraft, type NfceItem, type NfceQr } from '@/domain/nfce';
 import type { ConfirmItem } from '@/domain/receiptReview';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Receipt, ReceiptItem, Unit } from '@/lib/types';
@@ -86,6 +87,92 @@ export function useScanReceipt(householdId: string | undefined) {
       }
       if (data.duplicate) await supabase.storage.from('receipts').remove([path]);
       return data;
+    },
+    onSuccess: invalidate,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Leitura pelo QR code (consulta pública da Sefaz, sem IA)
+
+interface NfcePageResult {
+  store: { name: string | null; cnpj: string | null; address: string | null };
+  purchasedAt: string | null;
+  total: number | null;
+  items: NfceItem[];
+}
+
+/** Mercado pelo CNPJ (ou nome), criando se ainda não existe, como na leitura por foto. */
+async function findOrCreateStore(store: { name: string | null; cnpj: string | null; address: string | null }) {
+  if (!store.name && !store.cnpj) return null;
+  const lookup = store.cnpj
+    ? supabase.from('stores').select('id').eq('cnpj', store.cnpj)
+    : supabase.from('stores').select('id').is('cnpj', null).ilike('name', store.name!.replace(/[\\%_]/g, '\\$&'));
+  const existing = unwrap(await lookup.limit(1).maybeSingle()) as { id: string } | null;
+  if (existing) return existing.id;
+  const created = unwrap(
+    await supabase
+      .from('stores')
+      .insert({ name: store.name ?? `CNPJ ${store.cnpj}`, cnpj: store.cnpj, address: store.address })
+      .select('id')
+      .single(),
+  ) as { id: string };
+  return created.id;
+}
+
+/**
+ * QR code da nota -> itens da Sefaz (função `nfce`) -> rascunho de nota,
+ * com produtos já conhecidos pelos apelidos e categoria pelas palavras.
+ * Nota já importada (mesma chave) abre a existente.
+ */
+export function useImportNfce() {
+  const invalidate = useInvalidateReceipt();
+  return useMutation({
+    mutationFn: async (qr: NfceQr): Promise<{ receipt_id: string; duplicate: boolean }> => {
+      const dup = unwrap(await supabase.from('receipts').select('id').eq('access_key', qr.accessKey).maybeSingle()) as {
+        id: string;
+      } | null;
+      if (dup) return { receipt_id: dup.id, duplicate: true };
+      if (!qr.url) throw new Error('Só com a chave não dá para ver os itens: leia o QR code da nota ou tire uma foto dela.');
+
+      const { data: page, error } = await supabase.functions.invoke<NfcePageResult>('nfce', { body: { url: qr.url } });
+      if (error || !page) throw new Error(await functionErrorMessage(error, 'Não deu para buscar a nota na Sefaz agora.'));
+
+      const descriptions = page.items.map((item) => item.description.trim().replace(/\s+/g, ' '));
+      const aliasRows = unwrap(await supabase.rpc('match_aliases', { p_descriptions: descriptions })) as
+        | { description: string; product_id: string }[]
+        | null;
+      const productIds = [...new Set((aliasRows ?? []).map((row) => row.product_id))];
+      const products = productIds.length
+        ? (unwrap(await supabase.from('products').select('id, category').in('id', productIds)) as { id: string; category: string }[])
+        : [];
+      const categoryOf = new Map(products.map((p) => [p.id, p.category]));
+      const aliases = new Map(
+        (aliasRows ?? []).map((row) => [row.description, { productId: row.product_id, category: categoryOf.get(row.product_id) ?? 'outros' }]),
+      );
+
+      const storeId = await findOrCreateStore({ ...page.store, cnpj: page.store.cnpj ?? qr.cnpj });
+      const receipt = unwrap(
+        await supabase
+          .from('receipts')
+          .insert({
+            store_id: storeId,
+            purchased_at: page.purchasedAt ?? new Date().toISOString(),
+            total: page.total,
+            access_key: qr.accessKey,
+            source: 'qrcode',
+            status: 'draft',
+          })
+          .select('id')
+          .single(),
+      ) as { id: string };
+      const items = nfceItemsToDraft(page.items, aliases).map((item) => ({ ...item, receipt_id: receipt.id }));
+      const { error: itemsError } = await supabase.from('receipt_items').insert(items);
+      if (itemsError) {
+        await supabase.from('receipts').delete().eq('id', receipt.id);
+        throw itemsError;
+      }
+      return { receipt_id: receipt.id, duplicate: false };
     },
     onSuccess: invalidate,
   });

@@ -83,6 +83,7 @@ describe('search', () => {
     expect(guessCategory('Chantilly')).toBe('outros');
     expect(guessCategory('Ovos brancos')).toBe('ovos');
     expect(guessCategory('Papel higiênico')).toBe('papel');
+    expect(guessCategory('DETERG YPE NEUTRO 500ML')).toBe('limpeza');
   });
 });
 

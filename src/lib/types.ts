@@ -40,7 +40,7 @@ export interface Receipt {
   total: number | null;
   access_key: string | null;
   image_path: string | null;
-  source: 'ai' | 'manual';
+  source: 'ai' | 'manual' | 'qrcode';
   status: 'draft' | 'confirmed';
   created_at: string;
   store: Pick<Store, 'id' | 'name'> | null;
