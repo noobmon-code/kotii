@@ -1,25 +1,14 @@
 import { router } from 'expo-router';
+import { StyleSheet, View } from 'react-native';
 
 import { useReceipts } from '@/data/receipts';
 import { formatShortDate, toISODate } from '@/domain/dates';
 import { formatBRL } from '@/domain/money';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
-import {
-  Badge,
-  Button,
-  EmptyState,
-  ErrorNotice,
-  IconBadge,
-  ListCard,
-  ListRow,
-  Loading,
-  Row,
-  Screen,
-  Section,
-  Text,
-} from '@/ui/primitives';
+import { Badge, Button, EmptyState, ErrorNotice, IconBadge, ListCard, ListRow, Loading, Row, Section, Text } from '@/ui/primitives';
+import { space } from '@/ui/theme';
 
-export default function ReceiptsScreen() {
+export function ReceiptsPanel() {
   const receipts = useReceipts();
   const scanner = useReceiptScanner();
 
@@ -47,11 +36,10 @@ export default function ReceiptsScreen() {
   };
 
   return (
-    <Screen refreshing={receipts.isRefetching} onRefresh={() => receipts.refetch()}>
-      <Text variant="title">Notas fiscais</Text>
+    <View style={styles.gap}>
       <Row>
-        <Button title="Adicionar nota" icon="camera-outline" onPress={scanner.open} loading={scanner.busy} style={{ flex: 1 }} />
-        <Button title="Preços" icon="chart-line" variant="secondary" onPress={() => router.push('/precos')} style={{ flex: 1 }} />
+        <Button title="Adicionar nota" icon="camera-outline" onPress={scanner.open} loading={scanner.busy} style={styles.flex} />
+        <Button title="Preços" icon="chart-line" variant="secondary" onPress={() => router.push('/precos')} style={styles.flex} />
       </Row>
 
       {receipts.isPending ? <Loading /> : null}
@@ -78,6 +66,11 @@ export default function ReceiptsScreen() {
       ) : null}
 
       {scanner.element}
-    </Screen>
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  flex: { flex: 1 },
+  gap: { gap: space.lg },
+});

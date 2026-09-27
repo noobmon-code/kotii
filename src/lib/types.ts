@@ -271,3 +271,36 @@ export interface HomeDocument {
   file_paths: string[];
   created_at: string;
 }
+
+export interface Bill {
+  id: string;
+  name: string;
+  category: string;
+  /** Nulo: valor varia a cada mês. */
+  amount: number | null;
+  recurrence: 'monthly' | 'yearly' | 'once';
+  due_day: number | null;
+  next_due_on: string;
+  autopay: boolean;
+  notes: string | null;
+  active: boolean;
+}
+
+export interface BillPayment {
+  id: string;
+  bill_id: string;
+  due_on: string;
+  paid_on: string;
+  amount: number;
+  paid_by: string | null;
+}
+
+export interface Expense {
+  id: string;
+  description: string;
+  amount: number;
+  spent_on: string;
+  category: string;
+  notes: string | null;
+  paid_by: string | null;
+}

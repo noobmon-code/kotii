@@ -97,6 +97,8 @@ function AppNavigator() {
           <Stack.Screen name="dieta/[id]" options={{ title: 'Plano alimentar' }} />
           <Stack.Screen name="aparelho/[id]" options={{ title: 'Aparelho' }} />
           <Stack.Screen name="documento/[id]" options={{ title: 'Documento' }} />
+          <Stack.Screen name="conta/[id]" options={{ title: 'Conta', presentation: 'modal' }} />
+          <Stack.Screen name="gasto/[id]" options={{ title: 'Gasto', presentation: 'modal' }} />
         </Stack.Protected>
       </Stack>
     </ThemeProvider>

@@ -1,4 +1,5 @@
 import { router } from 'expo-router';
+import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import {
@@ -10,19 +11,24 @@ import {
   usePantry,
   useToggleDose,
 } from '@/data/home';
+import { useBills } from '@/data/finance';
 import { useDocuments, useEquipmentList } from '@/data/house';
 import { useShoppingLists } from '@/data/market';
 import { useReceipts } from '@/data/receipts';
 import { choreStatus, describeChoreStatus } from '@/domain/chores';
 import { todayISO } from '@/domain/dates';
 import { describeDocumentStatus, documentsNeedingAttention, getDocumentKind } from '@/domain/documents';
+import { billsDueSoon } from '@/domain/finance';
 import { describeWarranty, getEquipmentCategory, warrantyStatus } from '@/domain/equipment';
 import { currentTimeHHMM, doseKey, dosesForDay } from '@/domain/medications';
 import { describeExpiry, expiryStatus } from '@/domain/pantry';
+import { BillRow } from '@/features/finance/BillsPanel';
+import { PayBillModal } from '@/features/finance/PayBillModal';
 import { hasHealthToday, HealthTodaySections } from '@/features/health/HealthTodaySections';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useHousehold } from '@/lib/auth';
+import type { Bill } from '@/lib/types';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import {
@@ -67,8 +73,10 @@ export default function TodayScreen() {
   const health = useHealthOverview(today);
   const documents = useDocuments();
   const equipment = useEquipmentList();
+  const bills = useBills();
+  const [paying, setPaying] = useState<Bill | null>(null);
 
-  const queries = [medications, doses, chores, pantry, lists, receipts, documents, equipment, ...health.queries];
+  const queries = [medications, doses, chores, pantry, lists, receipts, documents, equipment, bills, ...health.queries];
   const refreshing = queries.some((q) => q.isRefetching);
   const refresh = () => queries.forEach((q) => q.refetch());
 
@@ -84,6 +92,7 @@ export default function TodayScreen() {
   });
   const drafts = (receipts.data ?? []).filter((r) => r.status === 'draft');
   const documentsDue = documentsNeedingAttention(documents.data ?? [], today);
+  const billsDue = billsDueSoon(bills.data ?? [], today);
   const warrantiesEnding = (equipment.data ?? [])
     .map((item) => ({ item, status: warrantyStatus(item.warranty_until, today) }))
     .filter(({ status }) => status.kind === 'acabando');
@@ -94,6 +103,7 @@ export default function TodayScreen() {
     queries.every((q) => q.isSuccess) &&
     !pendingDoses.length &&
     !dueChores.length &&
+    !billsDue.length &&
     !expiring.length &&
     !drafts.length &&
     !documentsDue.length &&
@@ -133,7 +143,7 @@ export default function TodayScreen() {
           <EmptyState
             icon="check-circle-outline"
             title="Tudo em dia"
-            message="Nenhum remédio, consulta, tarefa, validade ou documento pedindo atenção agora."
+            message="Nenhum remédio, consulta, tarefa, conta, validade ou documento pedindo atenção agora."
           />
         </Card>
       ) : null}
@@ -185,6 +195,16 @@ export default function TodayScreen() {
                 />
               );
             })}
+          </ListCard>
+        </Section>
+      ) : null}
+
+      {billsDue.length ? (
+        <Section title="Contas">
+          <ListCard>
+            {billsDue.map((bill) => (
+              <BillRow key={bill.id} bill={bill} today={today} onPay={setPaying} />
+            ))}
           </ListCard>
         </Section>
       ) : null}
@@ -282,6 +302,7 @@ export default function TodayScreen() {
       ) : null}
 
       {scanner.element}
+      {paying ? <PayBillModal bill={paying} onClose={() => setPaying(null)} /> : null}
     </Screen>
   );
 }
