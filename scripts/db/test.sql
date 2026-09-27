@@ -773,6 +773,11 @@ begin
     raise exception 'FAIL: app user read the cleanup queue';
   exception when insufficient_privilege then null;
   end;
+  begin
+    perform public.request_household_file_cleanup();
+    raise exception 'FAIL: app user triggered the cleanup job';
+  exception when insufficient_privilege then null;
+  end;
   assert (select count(*) from public.household_members where user_id = auth.uid()) = 0, 'G left';
   begin
     perform public.leave_household(gen_random_uuid());
@@ -788,6 +793,21 @@ begin
   assert (select count(*) from public.shopping_lists where name = 'Mercado da F') = 0, 'household data deleted';
   assert (select count(*) from public.households where name = 'Casa nova da F') = 1, 'F can start over';
   assert (select count(*) from public.household_file_cleanup) = 1, 'deleted household queued for photo cleanup';
+end $$;
+
+-- Sem os segredos do Vault, o job da limpeza falha com a instrução em vez de chamar uma URL nula.
+create schema if not exists vault;
+create table if not exists vault.decrypted_secrets (name text, decrypted_secret text);
+do $$
+begin
+  begin
+    perform public.request_household_file_cleanup();
+    raise exception 'FAIL: cleanup job ran without the Vault secrets';
+  exception when raise_exception then
+    assert sqlerrm like 'Faltam os segredos project_url e anon_key%', 'cleanup job names the missing secrets';
+  end;
+  delete from public.household_file_cleanup;
+  assert public.request_household_file_cleanup() is null, 'empty queue: nothing to call';
 end $$;
 
 \echo 'OK — todos os testes do banco passaram'
