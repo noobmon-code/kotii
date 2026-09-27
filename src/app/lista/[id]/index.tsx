@@ -11,7 +11,7 @@ import {
   useDeleteListItem,
   useListItems,
   useProducts,
-  useRecentPurchases,
+  usePurchaseRecords,
   useShoppingList,
   useToggleListItem,
 } from '@/data/market';
@@ -19,10 +19,11 @@ import { compareByAisle, getCategory } from '@/domain/categories';
 import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { parseDecimal } from '@/domain/money';
 import { recentPurchases, type RecentItem } from '@/domain/recentPurchases';
+import { restockSuggestions } from '@/domain/restock';
 import { guessCategory, normalizeSearch } from '@/domain/search';
 import { CommonItemsPicker } from '@/features/CommonItemsPicker';
 import { OfflineNotice } from '@/features/OfflineNotice';
-import { RecentPurchases } from '@/features/RecentPurchases';
+import { RecentPurchases, RestockStrip } from '@/features/RecentPurchases';
 import { ShoppingGrid } from '@/features/ShoppingGrid';
 import { useAuth } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
@@ -51,7 +52,7 @@ export default function ShoppingListScreen() {
   const list = useShoppingList(id);
   const items = useListItems(id);
   const products = useProducts();
-  const recent = useRecentPurchases();
+  const purchases = usePurchaseRecords();
   const addItem = useAddListItem(id);
   const toggle = useToggleListItem(id);
   const remove = useDeleteListItem(id);
@@ -125,7 +126,7 @@ export default function ShoppingListScreen() {
     );
   }
 
-  function addRecent(item: RecentItem) {
+  function addRecent(item: Omit<RecentItem, 'times'>) {
     const key = normalizeSearch(item.name);
     const release = () =>
       setJustAdded((prev) => {
@@ -159,13 +160,16 @@ export default function ShoppingListScreen() {
   if (list.isError) return <ErrorNotice error={list.error} onRetry={() => list.refetch()} />;
   if (items.isError) return <ErrorNotice error={items.error} onRetry={() => items.refetch()} />;
 
-  // Comprados recentemente, menos o que já está na lista (a comprar ou no carrinho).
-  const recentItems = recentPurchases(recent.data ?? [], {
+  // Do histórico, menos o que já está na lista (a comprar ou no carrinho); o
+  // que "acabou" não se repete em "comprados recentemente".
+  const inList = {
+    names: new Set([...(items.data ?? []).map((i) => normalizeSearch(i.name)), ...justAdded]),
+    productIds: new Set((items.data ?? []).flatMap((i) => (i.product_id ? [i.product_id] : []))),
+  };
+  const restockItems = restockSuggestions(purchases.data ?? [], { listKind: list.data.kind, exclude: inList });
+  const recentItems = recentPurchases(purchases.data ?? [], {
     listKind: list.data.kind,
-    exclude: {
-      names: new Set([...(items.data ?? []).map((i) => normalizeSearch(i.name)), ...justAdded]),
-      productIds: new Set((items.data ?? []).flatMap((i) => (i.product_id ? [i.product_id] : []))),
-    },
+    exclude: { ...inList, names: new Set([...inList.names, ...restockItems.map((i) => normalizeSearch(i.name))]) },
   });
 
   const toggleItem = (item: ShoppingListItem) =>
@@ -245,10 +249,11 @@ export default function ShoppingListScreen() {
         )}
       </Card>
 
-      {/* Para montar a lista; durante as compras (carrinho com itens) só atrapalharia. */}
+      {/* "Acabou" vale também no meio das compras; o resto é para montar a lista. */}
+      {name.trim() ? null : <RestockStrip items={restockItems} onAdd={addRecent} />}
       {name.trim() || checked.length ? null : <RecentPurchases items={recentItems} onAdd={addRecent} />}
 
-      {pending.length === 0 && checked.length === 0 && !recentItems.length ? (
+      {pending.length === 0 && checked.length === 0 && !recentItems.length && !restockItems.length ? (
         <EmptyState
           icon="cart-outline"
           title="Lista vazia"

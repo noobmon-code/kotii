@@ -13,7 +13,7 @@ import {
 } from '@/data/home';
 import { useBills, useBudgets, useSpending } from '@/data/finance';
 import { useDocuments, useEquipmentList } from '@/data/house';
-import { useShoppingLists } from '@/data/market';
+import { useAddItemsToList, usePurchaseRecords, useShoppingLists } from '@/data/market';
 import { useReceipts } from '@/data/receipts';
 import { choreStatus, describeChoreStatus } from '@/domain/chores';
 import { todayISO } from '@/domain/dates';
@@ -23,6 +23,8 @@ import { billsDueSoon, getFinanceCategory, monthRange, summarize } from '@/domai
 import { describeWarranty, getEquipmentCategory, warrantyStatus } from '@/domain/equipment';
 import { currentTimeHHMM, doseKey, dosesForDay } from '@/domain/medications';
 import { describeExpiry, expiryStatus } from '@/domain/pantry';
+import { describeRestock, restockSuggestions, type RestockItem } from '@/domain/restock';
+import { normalizeSearch } from '@/domain/search';
 import { BillRow } from '@/features/finance/BillsPanel';
 import { PayBillModal } from '@/features/finance/PayBillModal';
 import { hasHealthToday, healthTodayCount, HealthTodaySections } from '@/features/health/HealthTodaySections';
@@ -86,7 +88,11 @@ export default function TodayScreen() {
   // O gasto do mês só importa aqui para o orçamento: sem limites, nem busca.
   const hasBudgets = Boolean(budgets.data?.length);
   const spending = useSpending(month, month, hasBudgets);
+  const purchases = usePurchaseRecords();
+  const addToList = useAddItemsToList();
   const [paying, setPaying] = useState<Bill | null>(null);
+  // Some na hora do toque, antes de as listas recarregarem.
+  const [restocked, setRestocked] = useState<Set<string>>(new Set());
 
   const queries = [
     medications,
@@ -100,6 +106,7 @@ export default function TodayScreen() {
     bills,
     budgets,
     ...(hasBudgets ? [spending] : []),
+    purchases,
     ...health.queries,
   ];
   const refreshing = queries.some((q) => q.isRefetching);
@@ -123,6 +130,21 @@ export default function TodayScreen() {
     .filter(({ status }) => status.kind === 'acabando');
   const equipmentName = (id: string | null) => (id ? equipment.data?.find((e) => e.id === id)?.name : undefined);
   const activeLists = (lists.data ?? []).filter((l) => l.pending > 0);
+  // "Acho que acabou": do mercado, menos o que já está em alguma lista aberta.
+  const onLists = (lists.data ?? []).flatMap((l) => l.items);
+  const restock = lists.isSuccess
+    ? restockSuggestions(purchases.data ?? [], {
+        now,
+        listKind: 'mercado',
+        exclude: {
+          names: new Set([...onLists.map((i) => normalizeSearch(i.name)), ...restocked]),
+          productIds: new Set(onLists.flatMap((i) => (i.product_id ? [i.product_id] : []))),
+        },
+        limit: 5,
+      })
+    : [];
+  // A lista de mercado aberta mais recente; sem nenhuma, cria "Mercado".
+  const marketList = (lists.data ?? []).find((l) => l.kind === 'mercado');
   // Categorias do mês que passaram ou estão perto do limite.
   const budgetAlerts =
     budgets.data && spending.data
@@ -163,6 +185,27 @@ export default function TodayScreen() {
   const members = household.data?.members ?? [];
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
+
+  function addRestock(items: RestockItem[], open: boolean) {
+    const keys = items.map((i) => normalizeSearch(i.name));
+    setRestocked((prev) => new Set([...prev, ...keys]));
+    addToList.mutate(
+      {
+        listId: marketList?.id,
+        newListName: 'Mercado',
+        items: items.map(({ name, category, productId, quantity, unit }) => ({ name, category, productId, quantity, unit })),
+      },
+      {
+        onSuccess: ({ id }) => {
+          if (open) router.push({ pathname: '/lista/[id]', params: { id } });
+        },
+        onError: (err) => {
+          setRestocked((prev) => new Set([...prev].filter((key) => !keys.includes(key))));
+          onError(err);
+        },
+      },
+    );
+  }
 
   return (
     <Screen fab refreshing={refreshing} onRefresh={refresh}>
@@ -361,6 +404,25 @@ export default function TodayScreen() {
                 subtitle="Confira os itens para entrar no comparativo"
                 right={<Badge label="Revisar" tone="info" />}
                 onPress={() => router.push({ pathname: '/nota/[id]', params: { id: r.id } })}
+              />
+            ))}
+          </ListCard>
+        </Section>
+      ) : null}
+
+      {restock.length ? (
+        <Section
+          title="Acho que acabou"
+          action={<Button title="Pôr tudo na lista" variant="ghost" compact onPress={() => addRestock(restock, true)} />}>
+          <ListCard>
+            {restock.map((item) => (
+              <ListRow
+                key={item.name}
+                left={<CategoryIcon category={item.category} name={item.name} />}
+                title={item.name}
+                subtitle={describeRestock(item)}
+                right={<Icon name="plus-circle-outline" color="primary" />}
+                onPress={() => addRestock([item], false)}
               />
             ))}
           </ListCard>

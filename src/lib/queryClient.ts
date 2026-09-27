@@ -16,7 +16,7 @@ import { createCachePersister } from './cachePersister';
 const WEEK = 1000 * 60 * 60 * 24 * 7;
 
 // O que vai para o aparelho: o mínimo para usar a lista offline.
-const PERSISTED = new Set(['household', 'lists', 'list', 'listItems', 'products', 'recentPurchases']);
+const PERSISTED = new Set(['household', 'lists', 'list', 'listItems', 'products', 'purchaseRecords']);
 
 export const queryClient = new QueryClient({
   defaultOptions: {

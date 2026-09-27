@@ -10,7 +10,8 @@ import {
 } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
-import { RECENT_DAYS, type PurchaseRecord } from '@/domain/recentPurchases';
+import type { PurchaseRecord } from '@/domain/recentPurchases';
+import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
 import { supabase, unwrap } from '@/lib/supabase';
 import type {
   LatestPrice,
@@ -45,6 +46,8 @@ export function unlessListQueueBusy<T>(fetch: () => Promise<T>) {
   };
 }
 
+type ListItemRef = { name: string; product_id: string | null; checked_at: string | null };
+
 export function useShoppingLists() {
   return useQuery({
     queryKey: ['lists'],
@@ -52,14 +55,15 @@ export function useShoppingLists() {
       const rows = unwrap(
         await supabase
           .from('shopping_lists')
-          .select('id, name, kind, archived_at, created_at, shopping_list_items(checked_at)')
+          .select('id, name, kind, archived_at, created_at, shopping_list_items(name, product_id, checked_at)')
           .is('archived_at', null)
           .order('created_at', { ascending: false }),
-      ) as (ShoppingList & { shopping_list_items: { checked_at: string | null }[] })[];
+      ) as (ShoppingList & { shopping_list_items: ListItemRef[] })[];
       return rows.map(({ shopping_list_items, ...list }) => ({
         ...list,
         pending: shopping_list_items.filter((i) => !i.checked_at).length,
         total: shopping_list_items.length,
+        items: shopping_list_items,
       }));
     }),
   });
@@ -457,7 +461,7 @@ export function useClearCheckedItems(listId: string) {
     mutationKey: CLEAR_CHECKED_KEY,
     onSuccess: () => {
       invalidate();
-      queryClient.invalidateQueries({ queryKey: ['recentPurchases'] });
+      queryClient.invalidateQueries({ queryKey: ['purchaseRecords'] });
     },
   });
 }
@@ -465,13 +469,13 @@ export function useClearCheckedItems(listId: string) {
 /**
  * O que a casa comprou nos últimos meses: carrinhos limpos (histórico),
  * itens ainda marcados nas listas e itens de notas confirmadas ligados a um
- * produto. recentPurchases (domínio) junta e ordena.
+ * produto. recentPurchases e restockSuggestions (domínio) juntam e ordenam.
  */
-export function useRecentPurchases() {
+export function usePurchaseRecords() {
   return useQuery({
-    queryKey: ['recentPurchases'],
+    queryKey: ['purchaseRecords'],
     queryFn: async (): Promise<PurchaseRecord[]> => {
-      const since = new Date(Date.now() - RECENT_DAYS * 86_400_000).toISOString();
+      const since = new Date(Date.now() - RESTOCK_HISTORY_DAYS * 86_400_000).toISOString();
       const [history, checked, receipts] = await Promise.all([
         supabase
           .from('purchase_history')
