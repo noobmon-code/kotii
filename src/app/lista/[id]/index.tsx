@@ -11,15 +11,18 @@ import {
   useDeleteListItem,
   useListItems,
   useProducts,
+  useRecentPurchases,
   useShoppingList,
   useToggleListItem,
 } from '@/data/market';
 import { compareByAisle, getCategory } from '@/domain/categories';
 import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { parseDecimal } from '@/domain/money';
+import { recentPurchases, type RecentItem } from '@/domain/recentPurchases';
 import { guessCategory, normalizeSearch } from '@/domain/search';
 import { CommonItemsPicker } from '@/features/CommonItemsPicker';
 import { OfflineNotice } from '@/features/OfflineNotice';
+import { RecentPurchases } from '@/features/RecentPurchases';
 import { ShoppingGrid } from '@/features/ShoppingGrid';
 import { useAuth } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
@@ -48,6 +51,7 @@ export default function ShoppingListScreen() {
   const list = useShoppingList(id);
   const items = useListItems(id);
   const products = useProducts();
+  const recent = useRecentPurchases();
   const addItem = useAddListItem(id);
   const toggle = useToggleListItem(id);
   const remove = useDeleteListItem(id);
@@ -61,6 +65,8 @@ export default function ShoppingListScreen() {
   const [quantity, setQuantity] = useState('1');
   const [unit, setUnit] = useState<Unit>('un');
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Some da faixa na hora do toque, antes de a lista recarregar.
+  const [justAdded, setJustAdded] = useState<Set<string>>(new Set());
 
   const productByName = useMemo(
     () => new Map((products.data ?? []).map((p) => [normalizeSearch(p.name), p])),
@@ -119,6 +125,24 @@ export default function ShoppingListScreen() {
     );
   }
 
+  function addRecent(item: RecentItem) {
+    const key = normalizeSearch(item.name);
+    setJustAdded((prev) => new Set(prev).add(key));
+    addItem.mutate(
+      { name: item.name, category: item.category, productId: item.productId, quantity: item.quantity, unit: item.unit },
+      {
+        onError: (err) => {
+          setJustAdded((prev) => {
+            const next = new Set(prev);
+            next.delete(key);
+            return next;
+          });
+          onError(err);
+        },
+      },
+    );
+  }
+
   // Na ordem dos corredores do mercado: frescos, despensa, bebidas, casa…
   const pending = (items.data ?? []).filter((i) => !i.checked_at).sort(compareByAisle);
   const checked = (items.data ?? []).filter((i) => i.checked_at).sort(compareByAisle);
@@ -127,6 +151,15 @@ export default function ShoppingListScreen() {
   if (list.isPending || items.isPending) return <Loading />;
   if (list.isError) return <ErrorNotice error={list.error} onRetry={() => list.refetch()} />;
   if (items.isError) return <ErrorNotice error={items.error} onRetry={() => items.refetch()} />;
+
+  // Comprados recentemente, menos o que já está na lista (a comprar ou no carrinho).
+  const recentItems = recentPurchases(recent.data ?? [], {
+    listKind: list.data.kind,
+    exclude: {
+      names: new Set([...(items.data ?? []).map((i) => normalizeSearch(i.name)), ...justAdded]),
+      productIds: new Set((items.data ?? []).flatMap((i) => (i.product_id ? [i.product_id] : []))),
+    },
+  });
 
   const toggleItem = (item: ShoppingListItem) =>
     toggle.mutate(
@@ -205,7 +238,10 @@ export default function ShoppingListScreen() {
         )}
       </Card>
 
-      {pending.length === 0 && checked.length === 0 ? (
+      {/* Para montar a lista; durante as compras (carrinho com itens) só atrapalharia. */}
+      {name.trim() || checked.length ? null : <RecentPurchases items={recentItems} onAdd={addRecent} />}
+
+      {pending.length === 0 && checked.length === 0 && !recentItems.length ? (
         <EmptyState
           icon="cart-outline"
           title="Lista vazia"

@@ -10,6 +10,7 @@ import {
 } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
+import { RECENT_DAYS, type PurchaseRecord } from '@/domain/recentPurchases';
 import { supabase, unwrap } from '@/lib/supabase';
 import type {
   LatestPrice,
@@ -383,6 +384,7 @@ export function registerListMutations(queryClient: QueryClient) {
     if (event.mutation.state.status === 'pending' || listQueueBusy(queryClient)) return;
     queryClient.invalidateQueries({ queryKey: ['lists'] });
     queryClient.invalidateQueries({ queryKey: ['listItems'] });
+    queryClient.invalidateQueries({ queryKey: ['recentPurchases'] });
   });
 }
 
@@ -428,26 +430,103 @@ export interface ClearCheckedInput {
   items: { id: string; token: string }[];
 }
 
-async function clearCheckedItems({ userId, items }: ClearCheckedInput) {
+/** Limpa o carrinho: os itens marcados saem da lista e vão para o histórico de compras. */
+async function clearCheckedItems({ listId, userId, items }: ClearCheckedInput) {
   // Sem sessão válida, o pedido iria com a chave pública e não apagaria nada.
   const { data } = await supabase.auth.getSession();
   if (!data.session) throw new SessionPendingError();
   if (data.session.user.id !== userId) throw new ForeignToggleError();
-  if (!items.length) return null;
+  if (!items.length) return 0;
   // O selo é único por marcação: id e selo batendo, o item está como no toque.
   return unwrap(
-    await supabase
-      .from('shopping_list_items')
-      .delete()
-      .in('id', items.map((i) => i.id))
-      .in('toggle_token', items.map((i) => i.token)),
-  );
+    await supabase.rpc('clear_checked_items', {
+      p_list_id: listId,
+      p_ids: items.map((i) => i.id),
+      p_tokens: items.map((i) => i.token),
+    }),
+  ) as number;
 }
 
 /** Limpa o carrinho na vez dele na fila da lista (depois das marcações que vieram antes). */
 export function useClearCheckedItems(listId: string) {
   const invalidate = useInvalidateLists(listId);
-  return useMutation<unknown, Error, ClearCheckedInput>({ mutationKey: CLEAR_CHECKED_KEY, onSuccess: invalidate });
+  const queryClient = useQueryClient();
+  return useMutation<unknown, Error, ClearCheckedInput>({
+    mutationKey: CLEAR_CHECKED_KEY,
+    onSuccess: () => {
+      invalidate();
+      queryClient.invalidateQueries({ queryKey: ['recentPurchases'] });
+    },
+  });
+}
+
+/**
+ * O que a casa comprou nos últimos meses: carrinhos limpos (histórico),
+ * itens ainda marcados nas listas e itens de notas confirmadas ligados a um
+ * produto. recentPurchases (domínio) junta e ordena.
+ */
+export function useRecentPurchases() {
+  return useQuery({
+    queryKey: ['recentPurchases'],
+    queryFn: async (): Promise<PurchaseRecord[]> => {
+      const since = new Date(Date.now() - RECENT_DAYS * 86_400_000).toISOString();
+      const [history, checked, receipts] = await Promise.all([
+        supabase
+          .from('purchase_history')
+          .select('product_id, name, category, quantity, unit, bought_at')
+          .gte('bought_at', since)
+          .order('bought_at', { ascending: false })
+          .limit(1000),
+        supabase
+          .from('shopping_list_items')
+          .select('product_id, name, category, quantity, unit, checked_at')
+          .gte('checked_at', since)
+          .limit(1000),
+        supabase
+          .from('receipts')
+          .select('purchased_at, receipt_items(product_id, quantity, unit, product:products(name, category))')
+          .eq('status', 'confirmed')
+          .gte('purchased_at', since)
+          .order('purchased_at', { ascending: false })
+          .limit(200),
+      ]);
+      type ListRow = { product_id: string | null; name: string; category: string; quantity: number; unit: Unit };
+      type ReceiptRow = {
+        purchased_at: string;
+        receipt_items: { product_id: string | null; quantity: number; unit: Unit; product: { name: string; category: string } | null }[];
+      };
+      const fromList = (row: ListRow, at: string): PurchaseRecord => ({
+        name: row.name,
+        category: row.category,
+        productId: row.product_id,
+        quantity: Number(row.quantity),
+        unit: row.unit,
+        at,
+        source: 'list',
+      });
+      return [
+        ...(unwrap(history) as (ListRow & { bought_at: string })[]).map((row) => fromList(row, row.bought_at)),
+        ...(unwrap(checked) as (ListRow & { checked_at: string })[]).map((row) => fromList(row, row.checked_at)),
+        ...(unwrap(receipts) as unknown as ReceiptRow[]).flatMap((receipt) =>
+          receipt.receipt_items.flatMap((item): PurchaseRecord[] =>
+            item.product
+              ? [
+                  {
+                    name: item.product.name,
+                    category: item.product.category,
+                    productId: item.product_id,
+                    quantity: Number(item.quantity),
+                    unit: item.unit,
+                    at: receipt.purchased_at,
+                    source: 'receipt',
+                  },
+                ]
+              : [],
+          ),
+        ),
+      ];
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
