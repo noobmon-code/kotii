@@ -53,6 +53,9 @@ onlineManager.setEventListener((setOnline) => {
   }
   // Na geração das páginas estáticas não há window.
   if (typeof window === 'undefined' || !window.addEventListener) return undefined;
+  // App aberto já sem internet: não haverá evento de queda, então parte do
+  // que o navegador diz agora (falso é confiável; verdadeiro nem sempre).
+  setNetwork(navigator.onLine !== false);
   const online = () => setNetwork(true);
   const offline = () => setNetwork(false);
   window.addEventListener('online', online);
