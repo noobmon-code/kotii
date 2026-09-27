@@ -9,6 +9,7 @@
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
+import { QuotaError, refundAiQuota, takeAiQuota } from '../_shared/aiQuota.ts';
 import { ExtractionError, extractStructured, mediaTypeOf, toVisionImage, visionConfig } from '../_shared/vision.ts';
 import { cleanReceipt, ExtractedReceiptSchema, instructions, MAX_PHOTOS, SYSTEM } from './extract.ts';
 
@@ -105,6 +106,13 @@ Deno.serve(async (req) => {
     .limit(400);
   if (catalogError) return json({ error: 'Falha ao ler produtos.' }, 500);
 
+  try {
+    await takeAiQuota(db, 'photo');
+  } catch (err) {
+    if (err instanceof QuotaError) return json({ error: err.message }, err.status);
+    throw err;
+  }
+
   let extracted;
   try {
     extracted = await extractStructured({
@@ -117,6 +125,8 @@ Deno.serve(async (req) => {
       subject: 'a nota',
     });
   } catch (err) {
+    // A IA falhou (ou recusou por engano): a leitura não conta no limite do mês.
+    if (!(err instanceof ExtractionError && err.status === 422)) await refundAiQuota(db, 'photo');
     if (err instanceof ExtractionError) return json({ error: err.message }, err.status);
     throw err;
   }

@@ -4,6 +4,7 @@ import { Share, StyleSheet } from 'react-native';
 import { usePeople } from '@/data/health';
 import { useKidPoints } from '@/data/home';
 import { LastMemberError, useLeaveHousehold } from '@/data/household';
+import { AiUsageSection } from '@/features/AiUsageSection';
 import { DocumentsSection } from '@/features/DocumentsSection';
 import { HouseRemindersSection } from '@/features/HouseRemindersSection';
 import { useAuth, useHousehold } from '@/lib/auth';
@@ -136,6 +137,8 @@ export default function FamilyScreen() {
       <DocumentsSection />
 
       <HouseRemindersSection />
+
+      <AiUsageSection />
 
       <Section title="Casa">
         <Text variant="muted">

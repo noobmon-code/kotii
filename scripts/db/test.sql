@@ -963,6 +963,46 @@ begin
   assert (select count(*) from public.menu_items) = 1, 'B sees the household menu, untouched by C';
 end $$;
 
+\echo '• limite de uso da IA'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  r record;
+begin
+  select * into r from public.use_ai('photo');
+  assert r.allowed and r.used = 1 and r.lim = 100, 'first use counts';
+  perform public.use_ai('photo');
+  perform public.refund_ai('photo');
+  assert (select used from public.ai_usage_summary() where kind = 'photo') = 1, 'a failed call is refunded';
+  update public.ai_usage set count = 0;
+  assert not found, 'usage cannot be changed directly';
+  begin
+    perform public.use_ai('video');
+    raise exception 'FAIL: unknown kind';
+  exception when invalid_parameter_value then null;
+  end;
+end $$;
+reset role;
+update public.ai_usage set count = 20 where kind = 'photo';
+insert into public.ai_usage (household_id, month, kind, count)
+  select household_id, month, 'menu', 20 from public.ai_usage where kind = 'photo';
+set role authenticated;
+do $$
+declare
+  r record;
+begin
+  select * into r from public.use_ai('menu');
+  assert not r.allowed and r.used = 20 and r.lim = 20, 'at the limit, the call is refused';
+  assert (select used from public.ai_usage_summary() where kind = 'menu') = 20, 'a refused call does not count';
+  assert (select used from public.ai_usage_summary() where kind = 'chat') = 0, 'unused kinds show zero';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  assert (select count(*) from public.ai_usage) = 0, 'C sees no foreign usage';
+  assert (select used from public.ai_usage_summary() where kind = 'menu') = 0, 'C has its own quota';
+end $$;
+
 \echo '• nota em várias fotos'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$

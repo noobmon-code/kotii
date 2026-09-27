@@ -8,9 +8,11 @@
 //
 // Secrets: ANTHROPIC_API_KEY ou OPENROUTER_API_KEY; NUKE_PROVIDER e
 // NUKE_MODEL opcionais (sem eles, valem RECEIPT_PROVIDER e RECEIPT_MODEL).
+// Cada mensagem e cada cardápio contam no limite mensal de IA da casa (use_ai).
 
 import { createClient } from '@supabase/supabase-js';
 
+import { QuotaError, refundAiQuota, takeAiQuota } from '../_shared/aiQuota.ts';
 import { chatStructured } from '../_shared/chat.ts';
 import { ExtractionError, visionConfig } from '../_shared/vision.ts';
 import {
@@ -57,6 +59,12 @@ Deno.serve(async (req) => {
     const menu = parseMenuRequest(body);
     if (typeof menu === 'string') return json({ error: menu }, 400);
     try {
+      await takeAiQuota(db, 'menu');
+    } catch (err) {
+      if (err instanceof QuotaError) return json({ error: err.message }, err.status);
+      throw err;
+    }
+    try {
       const raw = await chatStructured({
         config,
         schema: MenuSchema,
@@ -66,6 +74,7 @@ Deno.serve(async (req) => {
       });
       return json(cleanMenu(raw, menu.weekStart));
     } catch (err) {
+      if (!(err instanceof ExtractionError && err.status === 422)) await refundAiQuota(db, 'menu');
       if (err instanceof ExtractionError) return json({ error: err.message }, err.status);
       console.error('nuke menu failed', err);
       return json({ error: 'Não consegui montar o cardápio agora. Tente de novo.' }, 500);
@@ -76,6 +85,12 @@ Deno.serve(async (req) => {
   if (typeof parsed === 'string') return json({ error: parsed }, 400);
 
   try {
+    await takeAiQuota(db, 'chat');
+  } catch (err) {
+    if (err instanceof QuotaError) return json({ error: err.message }, err.status);
+    throw err;
+  }
+  try {
     const raw = await chatStructured({
       config,
       schema: NukeReplySchema,
@@ -85,6 +100,7 @@ Deno.serve(async (req) => {
     });
     return json(cleanReply(raw, parsed.today));
   } catch (err) {
+    if (!(err instanceof ExtractionError && err.status === 422)) await refundAiQuota(db, 'chat');
     if (err instanceof ExtractionError) return json({ error: err.message }, err.status);
     console.error('nuke failed', err);
     return json({ error: 'Não consegui responder agora. Tente de novo.' }, 500);
