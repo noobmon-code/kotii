@@ -85,20 +85,26 @@ O backend já roda na nuvem (Supabase). O `npx expo start` só serve o código d
 
 **Android: APK instalável (grátis).** O build é feito na nuvem pelo EAS, da Expo.
 
-1. Crie uma conta em [expo.dev](https://expo.dev) e um projeto com o slug `nooky`. Coloque o *Project ID* em `app.json` (`expo.extra.eas.projectId`).
-2. No projeto da Expo, em *Environment variables*, cadastre `EXPO_PUBLIC_SUPABASE_URL` e `EXPO_PUBLIC_SUPABASE_ANON_KEY` (os mesmos valores do `.env`) para os ambientes *preview* e *production*. O `.env` não vai para o build na nuvem.
-3. No computador:
+1. Crie uma conta em [expo.dev](https://expo.dev). No computador, com o repositório clonado:
 
    ```bash
    npx eas-cli@latest login
+   npx eas-cli@latest init   # cria o projeto "nooky" e grava o Project ID no app.json
+   ```
+
+   Faça commit do `app.json` alterado (ou mande o Project ID para quem cuida do código).
+2. No projeto da Expo, em *Environment variables*, cadastre `EXPO_PUBLIC_SUPABASE_URL` e `EXPO_PUBLIC_SUPABASE_ANON_KEY` (os mesmos valores do `.env`) para os ambientes *preview* e *production*, como texto normal: variável secreta não entra no build, e esses dois valores vão de qualquer jeito dentro do app. O `.env` não vai para o build na nuvem.
+3. Gere o APK:
+
+   ```bash
    npx eas-cli@latest build --platform android --profile preview
    ```
 
    No fim sai um link do APK: abra no celular, instale e mande o link para a família. O perfil `production` gera o pacote da Play Store.
 
-**iPhone.** Instalar o app nativo exige conta Apple Developer (US$ 99/ano): com ela, o app vai para os celulares pelo TestFlight e, depois, para a App Store. Sem a conta, use a versão web (abaixo) e, no Safari, *Compartilhar → Adicionar à Tela de Início*. Na web não há lembrete por notificação; o resto funciona.
+**iPhone.** Instalar o app nativo exige conta Apple Developer (US$ 99/ano): com ela, o app vai para os celulares pelo TestFlight e, depois, para a App Store. Sem a conta, instale a versão web: no Safari, *Compartilhar → Adicionar à Tela de Início* (a tela Hoje mostra esse passo a passo). Ela abre em tela cheia, com o ícone do Nooky, e abre mesmo sem internet. Na web não há lembrete por notificação; o resto funciona.
 
-**Versão web (Vercel).** O `vercel.json` já diz como gerar o site (`expo export`). No projeto da Vercel, em *Settings → Environment Variables*, cadastre as mesmas duas variáveis `EXPO_PUBLIC_*` e publique de novo.
+**Versão web (Vercel).** O `vercel.json` já diz como gerar o site (`expo export`). No projeto da Vercel, em *Settings → Environment Variables*, cadastre as mesmas duas variáveis `EXPO_PUBLIC_*` como texto normal (não secretas) e publique de novo. O site é instalável (PWA): `public/index.html` é o modelo da página, com o manifesto (`public/manifest.webmanifest`), os ícones (`public/icons/`) e o service worker (`public/sw.js`), que guarda o app no aparelho; no Android, o Chrome oferece "Instalar" e a tela Hoje tem o botão.
 
 Identificador do app: `com.noobmon.nooky` (iOS e Android). Dá para trocar até o primeiro envio para as lojas; depois fica fixo.
 
