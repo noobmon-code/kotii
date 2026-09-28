@@ -9,7 +9,7 @@ import { BusyOverlay } from '@/ui/BusyOverlay';
 import { notify } from '@/ui/dialogs';
 
 /**
- * Fluxo "foto da nota -> revisão". `open()` mostra as opções (câmera,
+ * Fluxo "nota -> revisão". `open()` mostra as opções (QR code, câmera,
  * galeria, manual); `element` precisa ser renderizado pela tela.
  */
 export function useReceiptScanner() {
@@ -53,8 +53,9 @@ export function useReceiptScanner() {
         visible={sheetOpen}
         onClose={() => setSheetOpen(false)}
         title="Adicionar nota fiscal"
-        message="A IA lê mercado, itens e preços; você revisa antes de salvar."
+        message="Pelo QR code, os itens vêm direto da Sefaz; pela foto, a IA lê a nota. Você revisa antes de salvar."
         actions={[
+          { label: 'Ler o QR code da nota', icon: 'qrcode-scan', onPress: () => router.push('/nota/qrcode') },
           { label: 'Tirar foto da nota', icon: 'camera-outline', onPress: () => start('camera') },
           { label: 'Escolher da galeria', icon: 'image-outline', onPress: () => start('library') },
           { label: 'Digitar manualmente', icon: 'pencil-outline', onPress: startManual },

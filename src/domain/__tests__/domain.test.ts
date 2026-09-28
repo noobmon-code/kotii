@@ -83,6 +83,9 @@ describe('search', () => {
     expect(guessCategory('Chantilly')).toBe('outros');
     expect(guessCategory('Ovos brancos')).toBe('ovos');
     expect(guessCategory('Papel higiênico')).toBe('papel');
+    // Abreviação só na descrição de nota fiscal: no nome digitado, "guarda" não é guardanapo.
+    expect(guessCategory('DETERG YPE NEUTRO 500ML', { abbreviated: true })).toBe('limpeza');
+    expect(guessCategory('Guarda chuva')).toBe('outros');
   });
 });
 
