@@ -131,12 +131,13 @@ export function useImportNfce() {
   return useMutation({
     mutationFn: async (qr: NfceQr): Promise<{ receipt_id: string; duplicate: boolean }> => {
       const dup = unwrap(
-        await supabase.from('receipts').select('id, status, receipt_items(count)').eq('access_key', qr.accessKey).maybeSingle(),
-      ) as { id: string; status: string; receipt_items: { count: number }[] } | null;
+        await supabase.from('receipts').select('id, source, status, receipt_items(count)').eq('access_key', qr.accessKey).maybeSingle(),
+      ) as { id: string; source: string; status: string; receipt_items: { count: number }[] } | null;
       if (dup) {
-        // Rascunho sem itens é uma importação que parou no meio (o app fechou
-        // entre gravar a nota e os itens): apaga e importa de novo.
-        const unfinished = dup.status === 'draft' && (dup.receipt_items[0]?.count ?? 0) === 0;
+        // Rascunho do QR code sem itens é uma importação que parou no meio (o
+        // app fechou entre gravar a nota e os itens): apaga e importa de novo.
+        // O de foto fica: tem a foto e pode ser completado à mão.
+        const unfinished = dup.source === 'qrcode' && dup.status === 'draft' && (dup.receipt_items[0]?.count ?? 0) === 0;
         if (!unfinished) return { receipt_id: dup.id, duplicate: true };
         unwrap(await supabase.from('receipts').delete().eq('id', dup.id));
       }

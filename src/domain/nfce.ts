@@ -133,7 +133,7 @@ export function nfceItemsToDraft(
         position,
         raw_description: raw,
         suggested_name: prettifyDescription(raw),
-        suggested_category: known?.category ?? guessCategory(raw),
+        suggested_category: known?.category ?? guessCategory(raw, { abbreviated: true }),
         product_id: known?.productId ?? null,
         quantity,
         unit: normalizeNfceUnit(item.unit),

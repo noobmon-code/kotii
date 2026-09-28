@@ -124,14 +124,16 @@ const KEYWORDS: [string, string][] = [
 /**
  * Chute de categoria: palavra inteira, ou prefixo de palavra para palavras-chave
  * com 5+ letras ("congelad" acha "congelados", mas "sal" não acha "salmão").
+ * `abbreviated`: descrição de nota fiscal, que abrevia ("DETERG", "CONGEL");
+ * só para ela, porque num nome digitado "guarda chuva" viraria guardanapo.
  */
-export function guessCategory(name: string): string {
+export function guessCategory(name: string, { abbreviated = false }: { abbreviated?: boolean } = {}): string {
   const text = ` ${normalizeSearch(name).replace(/[^a-z0-9-]+/g, ' ').trim()} `;
   for (const [keyword, category] of KEYWORDS) {
     if (text.includes(` ${keyword} `) || (keyword.length >= 5 && text.includes(` ${keyword}`))) return category;
   }
-  // Abreviação de nota fiscal ("DETERG", "CONGEL"): palavra de 5+ letras que
-  // é o começo de uma palavra-chave.
+  if (!abbreviated) return 'outros';
+  // Palavra de 5+ letras que é o começo de uma palavra-chave.
   const words = text.trim().split(' ').filter((word) => word.length >= 5 && /^[a-z]+$/.test(word));
   for (const [keyword, category] of KEYWORDS) {
     if (!keyword.includes(' ') && words.some((word) => keyword.startsWith(word))) return category;
