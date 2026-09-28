@@ -83,10 +83,25 @@ export default function TodayScreen() {
   const bills = useBills();
   const budgets = useBudgets();
   const month = today.slice(0, 7);
-  const spending = useSpending(month, month);
+  // O gasto do mês só importa aqui para o orçamento: sem limites, nem busca.
+  const hasBudgets = Boolean(budgets.data?.length);
+  const spending = useSpending(month, month, hasBudgets);
   const [paying, setPaying] = useState<Bill | null>(null);
 
-  const queries = [medications, doses, chores, pantry, lists, receipts, documents, equipment, bills, budgets, spending, ...health.queries];
+  const queries = [
+    medications,
+    doses,
+    chores,
+    pantry,
+    lists,
+    receipts,
+    documents,
+    equipment,
+    bills,
+    budgets,
+    ...(hasBudgets ? [spending] : []),
+    ...health.queries,
+  ];
   const refreshing = queries.some((q) => q.isRefetching);
   const refresh = () => queries.forEach((q) => q.refetch());
 

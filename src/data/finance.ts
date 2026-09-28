@@ -156,9 +156,10 @@ type ReceiptRow = {
 type PaymentRow = { id: string; bill_id: string; paid_on: string; amount: number; bill: { name: string; category: string } | null };
 
 /** Lançamentos de `fromMonth` até `toMonth` (inclusive), no formato "AAAA-MM". */
-export function useSpending(fromMonth: string, toMonth: string) {
+export function useSpending(fromMonth: string, toMonth: string, enabled = true) {
   return useQuery({
     queryKey: ['spending', fromMonth, toMonth],
+    enabled,
     queryFn: async () => {
       const start = monthRange(fromMonth).start;
       const end = monthRange(toMonth).end;

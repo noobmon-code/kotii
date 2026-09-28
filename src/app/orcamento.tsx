@@ -72,7 +72,7 @@ export default function BudgetScreen() {
               <View style={styles.input}>
                 <TextField
                   value={valueOf(category.key)}
-                  onChangeText={(text) => setEdits({ ...edits, [category.key]: text })}
+                  onChangeText={(text) => setEdits((current) => ({ ...current, [category.key]: text }))}
                   placeholder="Sem limite"
                   keyboardType="decimal-pad"
                   accessibilityLabel={`Limite de ${category.label}`}
