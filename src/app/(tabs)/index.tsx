@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 
 import {
   toSchedule,
@@ -40,6 +40,7 @@ import {
   CategoryIcon,
   CheckCircle,
   EmptyState,
+  Icon,
   IconBadge,
   ListCard,
   ListRow,
@@ -147,6 +148,12 @@ export default function TodayScreen() {
             {household.data?.me.display_name ?? ''}
           </Text>
           <Text variant="body">{summary}</Text>
+          <Pressable accessibilityRole="button" onPress={() => router.push('/agenda')} style={styles.agendaLink}>
+            <Icon name="calendar-month-outline" size={18} color="primary" />
+            <Text variant="label" color="primary">
+              Ver a agenda
+            </Text>
+          </Pressable>
         </View>
         <SkyArt period={period} size={104} />
       </View>
@@ -351,4 +358,5 @@ const styles = StyleSheet.create({
   },
   heroText: { flex: 1, gap: space.xs },
   quickActions: { flexDirection: 'row', gap: space.md },
+  agendaLink: { flexDirection: 'row', alignItems: 'center', gap: space.xs, alignSelf: 'flex-start', paddingVertical: space.xs },
 });

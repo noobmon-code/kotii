@@ -123,11 +123,11 @@ export interface VaccineLike {
 }
 
 /**
- * Próximas doses que pedem atenção (atrasadas ou nos próximos 30 dias), da
- * mais urgente para a menos. Ignora a próxima dose de um registro quando uma
- * aplicação posterior da mesma vacina, para a mesma pessoa, já foi registrada.
+ * Registros com próxima dose ainda por tomar: ignora a próxima dose de um
+ * registro quando uma aplicação posterior da mesma vacina, para a mesma
+ * pessoa, já foi registrada.
  */
-export function dueVaccines<T extends VaccineLike>(vaccines: T[], today: string): { vaccine: T; status: VaccineStatus }[] {
+export function pendingNextDoses<T extends VaccineLike>(vaccines: T[]): T[] {
   const key = (v: VaccineLike) => `${v.person_id}|${normalizeSearch(v.name)}`;
   const lastApplied = new Map<string, string>();
   for (const v of vaccines) {
@@ -135,13 +135,17 @@ export function dueVaccines<T extends VaccineLike>(vaccines: T[], today: string)
     const current = lastApplied.get(key(v));
     if (!current || v.applied_on > current) lastApplied.set(key(v), v.applied_on);
   }
-  return vaccines
-    .filter((v) => {
-      if (!v.next_dose_on) return false;
-      const last = lastApplied.get(key(v));
-      if (!last) return true;
-      return v.applied_on ? last <= v.applied_on : last < addDays(v.next_dose_on, -30);
-    })
+  return vaccines.filter((v) => {
+    if (!v.next_dose_on) return false;
+    const last = lastApplied.get(key(v));
+    if (!last) return true;
+    return v.applied_on ? last <= v.applied_on : last < addDays(v.next_dose_on, -30);
+  });
+}
+
+/** Próximas doses que pedem atenção (atrasadas ou nos próximos 30 dias), da mais urgente para a menos. */
+export function dueVaccines<T extends VaccineLike>(vaccines: T[], today: string): { vaccine: T; status: VaccineStatus }[] {
+  return pendingNextDoses(vaccines)
     .map((vaccine) => ({ vaccine, status: vaccineStatus(vaccine.next_dose_on, today) }))
     .filter(({ status }) => status.kind === 'atrasada' || status.kind === 'em_breve')
     .sort((a, b) => a.vaccine.next_dose_on!.localeCompare(b.vaccine.next_dose_on!));
