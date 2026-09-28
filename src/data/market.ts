@@ -12,6 +12,7 @@ import { useEffect } from 'react';
 
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
+import { normalizeSearch } from '@/domain/search';
 import { supabase, unwrap } from '@/lib/supabase';
 import type {
   LatestPrice,
@@ -216,8 +217,9 @@ async function latestMarketList(): Promise<{ id: string; name: string } | undefi
 
 /**
  * Vários itens de uma vez; sem `listId`, cria uma lista de mercado nova. Com
- * `reuseMarketList`, antes procura a lista de mercado aberta mais recente: quem
- * chama pode ainda não ter visto uma criada agora há pouco.
+ * `reuseMarketList`, antes procura a lista de mercado aberta mais recente (quem
+ * chama pode ainda não ter visto uma criada agora há pouco) e não repete o que
+ * já está pendente nela.
  */
 export function useAddItemsToList() {
   const queryClient = useQueryClient();
@@ -233,18 +235,28 @@ export function useAddItemsToList() {
       reuseMarketList?: boolean;
       items: NewListItem[];
     }) => {
+      const existing = listId ?? (reuseMarketList ? (await latestMarketList())?.id : undefined);
       const id =
-        listId ??
-        (reuseMarketList ? (await latestMarketList())?.id : undefined) ??
+        existing ??
         (
           unwrap(
             await supabase.from('shopping_lists').insert({ name: newListName, kind: 'mercado' }).select('id').single(),
           ) as { id: string }
         ).id;
-      if (items.length) {
+      // Lista achada no servidor: a tela pode não ter visto o que alguém pôs
+      // nela agora há pouco. O que já está pendente não entra de novo.
+      let toAdd = items;
+      if (reuseMarketList && existing && items.length) {
+        const pending = unwrap(
+          await supabase.from('shopping_list_items').select('name').eq('list_id', existing).is('checked_at', null),
+        ) as { name: string }[];
+        const names = new Set(pending.map((p) => normalizeSearch(p.name)));
+        toAdd = items.filter((item) => !names.has(normalizeSearch(item.name)));
+      }
+      if (toAdd.length) {
         unwrap(
           await supabase.from('shopping_list_items').insert(
-            items.map((item) => ({
+            toAdd.map((item) => ({
               list_id: id,
               name: item.name,
               category: item.category,
