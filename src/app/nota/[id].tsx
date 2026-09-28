@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { Modal, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { useProducts, useStores } from '@/data/market';
+import { usePriceObservations, useProducts, useStores } from '@/data/market';
 import {
   receiptImageUrl,
   useConfirmReceipt,
@@ -19,6 +19,7 @@ import {
 import { CATEGORIES, getCategory } from '@/domain/categories';
 import { formatBRDate, formatShortDate, parseBRDate, toISODate } from '@/domain/dates';
 import { formatBRL, formatQuantity } from '@/domain/money';
+import { describePriceAlert, priceAlerts, totalSaving, type AlertItem, type PriceAlert } from '@/domain/priceAlert';
 import {
   buildConfirmPayload,
   resolveItem,
@@ -81,6 +82,19 @@ export default function ReceiptScreen() {
     [products.data],
   );
 
+  // Produtos ligados aos itens (os escolhidos na revisão valem): o histórico
+  // deles alimenta o alerta de preço.
+  const linkedProducts = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of receiptQuery.data?.items ?? []) {
+      const chosen = overrides[item.id]?.product;
+      const productId = chosen ? (chosen.kind === 'existing' ? chosen.productId : null) : item.product_id;
+      if (productId) ids.add(productId);
+    }
+    return [...ids].sort();
+  }, [receiptQuery.data, overrides]);
+  const priceHistory = usePriceObservations(linkedProducts, receiptQuery.data?.receipt.purchased_at);
+
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
   if (receiptQuery.isPending || products.isPending) return <Loading />;
@@ -91,6 +105,19 @@ export default function ReceiptScreen() {
   const purchasedOn = toISODate(new Date(receipt.purchased_at));
   const itemsTotal = Math.round(items.reduce((s, i) => s + i.total_price, 0) * 100) / 100;
   const totalMismatch = receipt.total != null && Math.abs(receipt.total - itemsTotal) > 0.05;
+
+  const resolvedItems = new Map(items.map((item) => [item.id, resolveItem(item, overrides[item.id], catalog, purchasedOn)]));
+  const alertItems: AlertItem[] = items.flatMap((item) => {
+    const product = resolvedItems.get(item.id)!.product;
+    return product.kind === 'existing'
+      ? [{ id: item.id, productId: product.productId, unit: item.unit, unitPrice: item.unit_price, quantity: item.quantity }]
+      : [];
+  });
+  const alerts = priceAlerts(alertItems, priceHistory.data ?? [], { receiptId: receipt.id, storeId: receipt.store_id, purchasedOn });
+  const saving = totalSaving(alerts);
+  const storeName = (storeId: string) => stores.data?.find((s) => s.id === storeId)?.name;
+  const alertText = (alert: PriceAlert | undefined) =>
+    alert ? describePriceAlert(alert, alert.kind === 'cheaper_elsewhere' ? storeName(alert.storeId) : undefined) : null;
 
   const override = (itemId: string, patch: ItemOverride) =>
     setOverrides((prev) => ({ ...prev, [itemId]: { ...prev[itemId], ...patch } }));
@@ -202,6 +229,21 @@ export default function ReceiptScreen() {
         {receipt.image_path ? <Button title="Ver foto da nota" icon="image-outline" variant="secondary" compact onPress={showImage} /> : null}
       </Card>
 
+      {alerts.size ? (
+        <Card style={styles.gapSm}>
+          <Row>
+            <Icon name="tag-arrow-up-outline" color="warning" />
+            <Text variant="heading" style={styles.flex}>
+              {alerts.size === 1 ? 'Um item saiu mais caro' : `${alerts.size} itens saíram mais caros`}
+            </Text>
+          </Row>
+          <Text variant="muted">
+            Comparando com o que a casa pagou nos últimos meses, dava para economizar cerca de {formatBRL(saving)}. Os avisos
+            estão nos itens.
+          </Text>
+        </Card>
+      ) : null}
+
       {isDraft ? (
         <Text variant="muted">
           Confira cada item. Produtos ligam a mesma coisa entre mercados diferentes — é isso que permite comparar preços.
@@ -212,12 +254,14 @@ export default function ReceiptScreen() {
         title={`Itens (${items.length})`}
         action={isDraft ? <Button title="Item" icon="plus" variant="ghost" compact onPress={() => setEditing({})} /> : null}>
         {items.map((item) => {
-          const resolved = resolveItem(item, overrides[item.id], catalog, purchasedOn);
+          const resolved = resolvedItems.get(item.id)!;
+          const alert = alertText(alerts.get(item.id));
           return isDraft ? (
             <DraftItemCard
               key={item.id}
               item={item}
               resolved={resolved}
+              alert={alert}
               onEdit={() => setEditing({ item })}
               onPickProduct={() =>
                 setPicker({ kind: 'product', itemId: item.id, query: resolved.productName ?? item.suggested_name ?? '' })
@@ -231,7 +275,12 @@ export default function ReceiptScreen() {
               <ListRow
                 left={<CategoryIcon category={resolved.category} name={catalog.get(item.product_id ?? '')?.name ?? item.raw_description} size={36} />}
                 title={item.product_id ? (catalog.get(item.product_id)?.name ?? item.raw_description) : item.raw_description}
-                subtitle={`${formatQuantity(item.quantity, item.unit)} × ${formatBRL(item.unit_price)}`}
+                subtitle={
+                  <View style={styles.gapXs}>
+                    <Text variant="muted">{`${formatQuantity(item.quantity, item.unit)} × ${formatBRL(item.unit_price)}`}</Text>
+                    {alert ? <Badge label={alert} tone="warning" /> : null}
+                  </View>
+                }
                 right={<Text variant="label">{formatBRL(item.total_price)}</Text>}
                 onPress={item.product_id ? () => router.push({ pathname: '/produto/[id]', params: { id: item.product_id! } }) : undefined}
               />
@@ -368,6 +417,7 @@ export default function ReceiptScreen() {
 function DraftItemCard({
   item,
   resolved,
+  alert,
   onEdit,
   onPickProduct,
   onPickCategory,
@@ -376,6 +426,8 @@ function DraftItemCard({
 }: {
   item: ReceiptItem;
   resolved: ResolvedItem;
+  /** Aviso de preço já descrito (describePriceAlert). */
+  alert: string | null;
   onEdit: () => void;
   onPickProduct: () => void;
   onPickCategory: () => void;
@@ -427,6 +479,7 @@ function DraftItemCard({
         <Text variant="label">{formatBRL(item.total_price)}</Text>
         <IconButton icon="pencil-outline" label={`Editar ${item.raw_description}`} onPress={onEdit} />
       </Row>
+      {alert ? <Badge label={alert} tone="warning" /> : null}
       <Row style={styles.wrap}>
         <Chip
           label={productLabel}
@@ -491,6 +544,7 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   gap: { gap: space.md },
   gapSm: { gap: space.sm },
+  gapXs: { gap: space.xs },
   wrap: { flexWrap: 'wrap' },
   between: { justifyContent: 'space-between' },
   storeRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
