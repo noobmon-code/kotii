@@ -355,21 +355,25 @@ function listQueueBusy(queryClient: QueryClient) {
 
 /** O que a fila precisa para rodar uma marcação restaurada depois de o app reabrir. */
 export function registerListMutations(queryClient: QueryClient) {
-  queryClient.setMutationDefaults(TOGGLE_ITEM_KEY, {
-    mutationFn: (input: ToggleItemInput) => toggleListItem(input),
-    // Pausa sem internet em vez de falhar, e uma de cada vez, na ordem.
+  // Tudo na fila da lista pausa sem internet (ou com a sessão à espera de
+  // renovação) em vez de falhar, e anda uma de cada vez, na ordem. Com a
+  // sessão à espera (o Supabase tenta de novo a cada minuto), insiste por uns
+  // 5 minutos em vez de desistir.
+  const queued = {
     networkMode: 'online',
     scope: LIST_QUEUE_SCOPE,
-    // Sessão à espera de renovação (o Supabase tenta de novo a cada minuto):
-    // insiste por uns 5 minutos em vez de desistir da marcação.
-    retry: (failures, error) =>
+    retry: (failures: number, error: Error) =>
       !(error instanceof ForeignToggleError) && failures < (error instanceof SessionPendingError ? 20 : 3),
-    retryDelay: (failures, error) =>
+    retryDelay: (failures: number, error: Error) =>
       error instanceof SessionPendingError ? 15_000 : Math.min(1000 * 2 ** failures, 30_000),
+  } as const;
+  queryClient.setMutationDefaults(TOGGLE_ITEM_KEY, {
+    ...queued,
+    mutationFn: (input: ToggleItemInput) => toggleListItem(input),
   });
   queryClient.setMutationDefaults(CLEAR_CHECKED_KEY, {
+    ...queued,
     mutationFn: ({ listId }: { listId: string }) => clearCheckedItems(listId),
-    scope: LIST_QUEUE_SCOPE,
   });
   // A fila acabou (o último da fila já terminou, não só está terminando):
   // agora sim busca listas e itens de todas as listas, o que cobre também
@@ -414,6 +418,9 @@ export function useDeleteListItem(listId: string) {
 }
 
 async function clearCheckedItems(listId: string) {
+  // Sem sessão válida, o pedido iria com a chave pública e não apagaria nada.
+  const { data } = await supabase.auth.getSession();
+  if (!data.session) throw new SessionPendingError();
   return unwrap(await supabase.from('shopping_list_items').delete().eq('list_id', listId).not('checked_at', 'is', null));
 }
 

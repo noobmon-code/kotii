@@ -48,7 +48,10 @@ jest.mock('@/lib/supabase', () => ({
 const clients: QueryClient[] = [];
 
 function client() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { gcTime: 0 } } });
+  // Como no app (lib/queryClient): fora da fila, as ações não esperam a conexão.
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { gcTime: 0, networkMode: 'always' } },
+  });
   registerListMutations(queryClient);
   clients.push(queryClient);
   return queryClient;
@@ -236,6 +239,34 @@ describe('fila de marcações da lista', () => {
     await after.resumePausedMutations();
     await flush();
     expect(sent.map((s) => s.id)).toEqual(['arroz', 'limpar:mercado']);
+  });
+
+  it('limpar sem internet espera a conexão, mesmo sem marcações antes', async () => {
+    onlineManager.setOnline(false);
+    const queryClient = client();
+    clear(queryClient, 'mercado');
+    await flush();
+    expect(sent).toEqual([]);
+    const [mutation] = queryClient.getMutationCache().getAll();
+    expect(mutation.state.isPaused).toBe(true);
+    expect(dehydrate(queryClient).mutations).toHaveLength(1);
+
+    onlineManager.setOnline(true);
+    await queryClient.resumePausedMutations();
+    await flush();
+    expect(sent.map((s) => s.id)).toEqual(['limpar:mercado']);
+  });
+
+  it('limpar sem sessão válida não sai com a chave pública', async () => {
+    jest.useFakeTimers();
+    auth.signedIn = false;
+    const queryClient = client();
+    clear(queryClient, 'mercado');
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(sent).toEqual([]);
+    auth.signedIn = true;
+    await jest.advanceTimersByTimeAsync(15_000);
+    expect(sent.map((s) => s.id)).toEqual(['limpar:mercado']);
   });
 
   it('marcação tocada com o limpar andando espera ele terminar', async () => {
