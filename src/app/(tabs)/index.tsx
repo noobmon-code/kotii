@@ -201,7 +201,11 @@ export default function TodayScreen() {
         onSuccess: ({ id }) => {
           // As listas recarregadas já trazem os itens (e os tiram daqui); se
           // saírem da lista depois, voltam. A tela Hoje fica montada o tempo todo.
-          lists.refetch({ cancelRefetch: false }).finally(release);
+          // Se a busca falhar, seguem escondidos: já estão na lista, e mostrar
+          // de novo convidaria a pôr em dobro.
+          lists.refetch({ cancelRefetch: false }).then((result) => {
+            if (result.isSuccess) release();
+          });
           if (open) router.push({ pathname: '/lista/[id]', params: { id } });
         },
         onError: (err) => {

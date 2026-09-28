@@ -139,9 +139,12 @@ export default function ShoppingListScreen() {
       { name: item.name, category: item.category, productId: item.productId, quantity: item.quantity, unit: item.unit },
       {
         // A lista recarregada já traz o item (e o tira da faixa); se ele sair
-        // da lista depois, volta para a faixa.
+        // da lista depois, volta para a faixa. Se a busca falhar, segue
+        // escondido: já está na lista, e mostrar de novo convidaria a pôr em dobro.
         onSuccess: () => {
-          items.refetch({ cancelRefetch: false }).finally(release);
+          items.refetch({ cancelRefetch: false }).then((result) => {
+            if (result.isSuccess) release();
+          });
         },
         onError: (err) => {
           release();
