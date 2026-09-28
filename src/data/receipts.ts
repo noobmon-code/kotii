@@ -7,7 +7,7 @@ import { localDateTimeToISO, nfceItemsToDraft, type NfceItem, type NfceQr } from
 import type { ConfirmItem } from '@/domain/receiptReview';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Receipt, ReceiptItem, Unit } from '@/lib/types';
-import { functionErrorMessage, pickImages, signedImageUrl, uploadImage, type ScanSource } from './images';
+import { functionErrorMessage, pickImages, removeImages, signedImageUrl, uploadImages, type ScanSource } from './images';
 
 const RECEIPT_COLUMNS =
   'id, store_id, purchased_at, total, access_key, image_path, extra_image_paths, source, status, created_at, paid_by, store:stores(id, name)';
@@ -75,9 +75,9 @@ export function useScanReceipt(householdId: string | undefined) {
   return useMutation({
     mutationFn: async (uris: string[]) => {
       if (!householdId) throw new Error('Família não carregada.');
-      const paths: string[] = [];
-      for (const uri of uris.slice(0, MAX_RECEIPT_PHOTOS)) paths.push(await uploadImage('receipts', householdId, uri));
-      const removeAll = () => supabase.storage.from('receipts').remove(paths).catch(() => undefined);
+      // Falha no envio de uma parte apaga as que já subiram.
+      const paths = await uploadImages('receipts', householdId, uris.slice(0, MAX_RECEIPT_PHOTOS));
+      const removeAll = () => removeImages('receipts', paths).catch(() => undefined);
 
       const { data, error } = await supabase.functions.invoke<{ receipt_id: string; duplicate: boolean }>(
         'parse-receipt',
