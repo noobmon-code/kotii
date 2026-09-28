@@ -1,5 +1,7 @@
 import { describe, expect, it, jest } from '@jest/globals';
 
+import type { Medication } from '../types';
+
 type Reminders = typeof import('../reminders');
 
 // Roda `scenario` num ambiente simulado: sistema, Expo Go ou não, e um
@@ -64,7 +66,7 @@ describe('reminder scheduling', () => {
         getAllKeys: async () => [...storage.keys()],
       }));
       jest.doMock('expo-notifications', () => ({
-        SchedulableTriggerInputTypes: { DAILY: 'daily', DATE: 'date' },
+        SchedulableTriggerInputTypes: { DAILY: 'daily', WEEKLY: 'weekly', DATE: 'date' },
         AndroidImportance: { HIGH: 4 },
         getPermissionsAsync: async () => ({ granted: true }),
         scheduleNotificationAsync: async (request: { trigger: { type: string } }) => {
@@ -78,7 +80,7 @@ describe('reminder scheduling', () => {
     });
   }
 
-  const medication = (start_on: string, end_on: string | null) => ({
+  const medication = (start_on: string, end_on: string | null): Medication => ({
     id: 'm1',
     person_id: null,
     person_name: 'Ana',
@@ -89,6 +91,21 @@ describe('reminder scheduling', () => {
     end_on,
     notes: null,
     active: true,
+    frequency: 'daily',
+    weekdays: null,
+    interval_days: null,
+    total_doses: null,
+    taken_count: 0,
+  });
+
+  it('repeats weekly on the chosen weekdays (1 = domingo no expo-notifications)', async () => {
+    await withScheduler(async (reminders, scheduled) => {
+      await reminders.enableReminders({ ...medication('2026-09-01', null), frequency: 'weekdays', weekdays: [0, 3], times: ['09:00'] }, '2026-09-26');
+      expect(scheduled.map((r) => r.trigger)).toEqual([
+        { type: 'weekly', weekday: 1, hour: 9, minute: 0, channelId: 'remedios' },
+        { type: 'weekly', weekday: 4, hour: 9, minute: 0, channelId: 'remedios' },
+      ]);
+    });
   });
 
   it('does not ring before a future start and keeps doses inside the treatment', async () => {

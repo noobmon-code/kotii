@@ -146,18 +146,34 @@ export function toSchedule(m: Medication): MedicationSchedule {
     startOn: m.start_on,
     endOn: m.end_on,
     active: m.active,
+    frequency: m.frequency,
+    weekdays: m.weekdays,
+    intervalDays: m.interval_days,
+    totalDoses: m.total_doses,
+    takenCount: m.taken_count,
   };
 }
 
-const MEDICATION_COLUMNS = 'id, person_id, person_name, name, dosage, times, start_on, end_on, notes, active';
+// Com a contagem de doses tomadas, para os tratamentos por número de doses.
+const MEDICATION_COLUMNS =
+  'id, person_id, person_name, name, dosage, times, start_on, end_on, notes, active, frequency, weekdays, interval_days, total_doses, medication_doses(count)';
+
+type MedicationRow = Omit<Medication, 'taken_count'> & { medication_doses?: { count: number }[] };
+
+const fromRow = ({ medication_doses, ...m }: MedicationRow): Medication => ({
+  ...m,
+  taken_count: medication_doses?.[0]?.count ?? 0,
+});
 
 export function useMedications() {
   return useQuery({
     queryKey: ['medications'],
     queryFn: async () =>
-      unwrap(
-        await supabase.from('medications').select(MEDICATION_COLUMNS).eq('active', true).order('person_name').order('name'),
-      ) as Medication[],
+      (
+        unwrap(
+          await supabase.from('medications').select(MEDICATION_COLUMNS).eq('active', true).order('person_name').order('name'),
+        ) as MedicationRow[]
+      ).map(fromRow),
   });
 }
 
@@ -166,22 +182,35 @@ export function useMedication(id: string | undefined) {
     queryKey: ['medications', id],
     enabled: Boolean(id),
     queryFn: async () =>
-      unwrap(await supabase.from('medications').select(MEDICATION_COLUMNS).eq('id', id!).single()) as Medication,
+      fromRow(unwrap(await supabase.from('medications').select(MEDICATION_COLUMNS).eq('id', id!).single()) as MedicationRow),
   });
 }
 
 export type MedicationValues = Pick<
   Medication,
-  'person_id' | 'person_name' | 'name' | 'dosage' | 'times' | 'start_on' | 'end_on' | 'notes'
+  | 'person_id'
+  | 'person_name'
+  | 'name'
+  | 'dosage'
+  | 'times'
+  | 'start_on'
+  | 'end_on'
+  | 'notes'
+  | 'frequency'
+  | 'weekdays'
+  | 'interval_days'
+  | 'total_doses'
 >;
 
 export function useSaveMedication() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ id, values }: { id?: string; values: MedicationValues }) =>
-      id
-        ? (unwrap(await supabase.from('medications').update(values).eq('id', id).select(MEDICATION_COLUMNS).single()) as Medication)
-        : (unwrap(await supabase.from('medications').insert(values).select(MEDICATION_COLUMNS).single()) as Medication),
+      fromRow(
+        (id
+          ? unwrap(await supabase.from('medications').update(values).eq('id', id).select(MEDICATION_COLUMNS).single())
+          : unwrap(await supabase.from('medications').insert(values).select(MEDICATION_COLUMNS).single())) as MedicationRow,
+      ),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['medications'] }),
   });
 }
@@ -232,6 +261,10 @@ export function useToggleDose(date: string) {
         );
       }
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['doses', date] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['doses', date] });
+      // A contagem de tomadas encerra os tratamentos por número de doses.
+      queryClient.invalidateQueries({ queryKey: ['medications'] });
+    },
   });
 }

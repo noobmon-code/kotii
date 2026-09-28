@@ -93,7 +93,7 @@ export function useNukeContext(today: string): NukeContextState {
     household: house.name,
     me: me.display_name,
     members: members.map((m) => m.display_name),
-    doses: dosesForDay((medications.data ?? []).map(toSchedule), today).map((d) => ({
+    doses: dosesForDay((medications.data ?? []).map(toSchedule), today, taken).map((d) => ({
       time: d.time,
       name: d.name,
       person: d.personName,

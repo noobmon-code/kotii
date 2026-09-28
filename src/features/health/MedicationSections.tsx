@@ -1,8 +1,7 @@
 import { router } from 'expo-router';
 
 import { toSchedule, useDoses, useMedications, useToggleDose } from '@/data/home';
-import { formatShortDate } from '@/domain/dates';
-import { currentTimeHHMM, doseKey, dosesForDay } from '@/domain/medications';
+import { currentTimeHHMM, describeCourse, describeFrequency, doseKey, dosesForDay } from '@/domain/medications';
 import { errorMessage } from '@/lib/supabase';
 import type { Medication } from '@/lib/types';
 import { notify } from '@/ui/dialogs';
@@ -14,9 +13,9 @@ export function MedicationsToday({ today }: { today: string }) {
   const toggle = useToggleDose(today);
 
   if (!medications.data) return null;
-  const slots = dosesForDay(medications.data.map(toSchedule), today);
-  if (!slots.length) return null;
   const taken = new Set((doses.data ?? []).map((d) => doseKey(d.medication_id, d.scheduled_on, d.scheduled_time)));
+  const slots = dosesForDay(medications.data.map(toSchedule), today, taken);
+  if (!slots.length) return null;
   const nowTime = currentTimeHHMM();
 
   return (
@@ -86,8 +85,8 @@ export function MedicationList({ medications, personId }: { medications: Medicat
               title={m.name}
               subtitle={[
                 personId ? null : m.person_name,
-                m.times.join(', '),
-                m.end_on ? `até ${formatShortDate(m.end_on)}` : 'uso contínuo',
+                `${describeFrequency(toSchedule(m))}, ${m.times.join(', ')}`,
+                describeCourse(toSchedule(m)),
               ]
                 .filter(Boolean)
                 .join(' · ')}
