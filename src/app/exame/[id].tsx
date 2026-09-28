@@ -32,6 +32,7 @@ import {
   Badge,
   Button,
   Chip,
+  DateField,
   ErrorNotice,
   ListCard,
   ListRow,
@@ -200,7 +201,7 @@ function ExamForm({ exam, people, initialPersonId }: { exam?: Exam; people: Pers
       <Segmented value={status} onChange={setStatus} options={EXAM_STATUS} />
       <Row gap={space.md}>
         <View style={styles.flex}>
-          <TextField label="Data" value={date} onChangeText={setDate} placeholder="dd/mm/aaaa" keyboardType="numbers-and-punctuation" />
+          <DateField label="Data" value={date} onChangeText={setDate} />
         </View>
         <View style={styles.flex}>
           <TextField label="Laboratório" value={lab} onChangeText={setLab} />

@@ -8,7 +8,7 @@ import { openNewPerson, PersonChips } from '@/features/health/PersonChips';
 import { errorMessage } from '@/lib/supabase';
 import type { Person, Vaccine } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Button, ErrorNotice, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
+import { Button, DateField, ErrorNotice, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 export default function VaccineScreen() {
@@ -105,21 +105,18 @@ function VaccineForm({
       <TextField label="Dose" value={dose} onChangeText={setDose} placeholder="Ex.: 1ª dose, reforço, anual" />
       <Row gap={space.md}>
         <View style={styles.flex}>
-          <TextField
+          <DateField
             label="Aplicada em"
             value={applied}
             onChangeText={setApplied}
             placeholder="Ainda não"
-            keyboardType="numbers-and-punctuation"
           />
         </View>
         <View style={styles.flex}>
-          <TextField
+          <DateField
             label="Próxima dose"
             value={nextDose}
             onChangeText={setNextDose}
-            placeholder="dd/mm/aaaa"
-            keyboardType="numbers-and-punctuation"
           />
         </View>
       </Row>

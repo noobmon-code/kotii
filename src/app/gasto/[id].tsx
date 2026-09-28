@@ -9,7 +9,7 @@ import { parseDecimal } from '@/domain/money';
 import { errorMessage } from '@/lib/supabase';
 import type { Expense } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Button, Chip, ErrorNotice, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
+import { Button, Chip, DateField, ErrorNotice, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 export default function ExpenseScreen() {
@@ -60,7 +60,7 @@ function ExpenseForm({ expense }: { expense?: Expense }) {
           <TextField label="Valor" value={amount} onChangeText={setAmount} keyboardType="decimal-pad" placeholder="0,00" />
         </View>
         <View style={styles.flex}>
-          <TextField label="Data" value={date} onChangeText={setDate} keyboardType="numbers-and-punctuation" />
+          <DateField label="Data" value={date} onChangeText={setDate} />
         </View>
       </Row>
       <View style={styles.group}>

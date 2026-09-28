@@ -10,7 +10,7 @@ import { openNewPerson, PersonChips } from '@/features/health/PersonChips';
 import { errorMessage } from '@/lib/supabase';
 import type { Appointment, Person } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Button, ErrorNotice, Loading, Row, Screen, Segmented, Text, TextField } from '@/ui/primitives';
+import { Button, DateField, ErrorNotice, Loading, Row, Screen, Segmented, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 export default function AppointmentScreen() {
@@ -91,7 +91,7 @@ function AppointmentForm({
       />
       <Row gap={space.md}>
         <View style={styles.flex}>
-          <TextField label="Data" value={date} onChangeText={setDate} placeholder="dd/mm/aaaa" keyboardType="numbers-and-punctuation" />
+          <DateField label="Data" value={date} onChangeText={setDate} />
         </View>
         <View style={styles.flex}>
           <TextField label="Hora" value={time} onChangeText={setTime} placeholder="14:30" keyboardType="numbers-and-punctuation" />

@@ -215,7 +215,7 @@ function DietPlanView({ plan }: { plan: DietPlan }) {
           fields={[
             { key: 'title', label: 'Nome', required: true },
             { key: 'professional', label: 'Nutricionista', placeholder: 'Nome e CRN' },
-            { key: 'valid_until', label: 'Retorno', placeholder: 'dd/mm/aaaa', keyboardType: 'numbers-and-punctuation' },
+            { key: 'valid_until', label: 'Retorno', date: true },
             { key: 'notes', label: 'Observações', multiline: true },
           ]}
           onClose={close}

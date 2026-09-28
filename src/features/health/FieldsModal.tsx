@@ -3,7 +3,7 @@ import { Modal, ScrollView, StyleSheet, type KeyboardTypeOptions } from 'react-n
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Backdrop } from '@/ui/Backdrop';
-import { Button, IconButton, Row, Text, TextField } from '@/ui/primitives';
+import { Button, DateField, IconButton, Row, Text, TextField } from '@/ui/primitives';
 import { MAX_WIDTH, space, useColors } from '@/ui/theme';
 
 export interface FieldSpec<K extends string> {
@@ -14,6 +14,8 @@ export interface FieldSpec<K extends string> {
   multiline?: boolean;
   keyboardType?: KeyboardTypeOptions;
   required?: boolean;
+  /** Data dd/mm/aaaa, com máscara enquanto digita. */
+  date?: boolean;
 }
 
 /**
@@ -55,19 +57,32 @@ export function FieldsModal<K extends string>({
             </Text>
             <IconButton icon="close" label="Fechar" onPress={onClose} />
           </Row>
-          {fields.map((field, index) => (
-            <TextField
-              key={field.key}
-              label={field.label}
-              value={values[field.key]}
-              onChangeText={(text) => setValues((prev) => ({ ...prev, [field.key]: text }))}
-              placeholder={field.placeholder}
-              hint={field.hint}
-              multiline={field.multiline}
-              keyboardType={field.keyboardType}
-              autoFocus={index === 0 && !initial[field.key]}
-            />
-          ))}
+          {fields.map((field, index) => {
+            const onChangeText = (text: string) => setValues((prev) => ({ ...prev, [field.key]: text }));
+            return field.date ? (
+              <DateField
+                key={field.key}
+                label={field.label}
+                value={values[field.key]}
+                onChangeText={onChangeText}
+                placeholder={field.placeholder}
+                hint={field.hint}
+                autoFocus={index === 0 && !initial[field.key]}
+              />
+            ) : (
+              <TextField
+                key={field.key}
+                label={field.label}
+                value={values[field.key]}
+                onChangeText={onChangeText}
+                placeholder={field.placeholder}
+                hint={field.hint}
+                multiline={field.multiline}
+                keyboardType={field.keyboardType}
+                autoFocus={index === 0 && !initial[field.key]}
+              />
+            );
+          })}
           {children}
           <Button title="Salvar" disabled={missing} onPress={() => onSave(values)} />
           {onDelete ? <Button title="Remover" variant="danger" icon="trash-can-outline" onPress={onDelete} /> : null}

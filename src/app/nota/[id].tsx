@@ -38,6 +38,7 @@ import {
   Card,
   CategoryIcon,
   Chip,
+  DateField,
   ErrorNotice,
   Icon,
   IconButton,
@@ -47,7 +48,6 @@ import {
   Screen,
   Section,
   Text,
-  TextField,
 } from '@/ui/primitives';
 import { space, useColors } from '@/ui/theme';
 
@@ -176,13 +176,12 @@ export default function ReceiptScreen() {
           {isDraft ? <Icon name="chevron-right" color="textMuted" /> : null}
         </Pressable>
         {isDraft ? (
-          <TextField
+          <DateField
             label="Data da compra"
             value={dateText ?? formatBRDate(purchasedOn)}
             onChangeText={setDateText}
             onBlur={commitDate}
             onSubmitEditing={commitDate}
-            keyboardType="numbers-and-punctuation"
           />
         ) : (
           <Text variant="muted">Compra em {formatShortDate(purchasedOn)}</Text>
@@ -449,13 +448,12 @@ function DraftItemCard({
           />
           {resolved.pantry ? (
             <View style={styles.expiry}>
-              <TextField
+              <DateField
                 value={expiryText ?? (resolved.expiresOn ? formatBRDate(resolved.expiresOn) : '')}
                 placeholder="Validade"
                 onChangeText={setExpiryText}
                 onBlur={commitExpiry}
                 onSubmitEditing={commitExpiry}
-                keyboardType="numbers-and-punctuation"
                 accessibilityLabel={`Validade de ${item.raw_description}`}
               />
             </View>

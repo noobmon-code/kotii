@@ -8,7 +8,18 @@ import { BLOOD_TYPES } from '@/domain/health';
 import { errorMessage } from '@/lib/supabase';
 import type { Person } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Button, Chip, ErrorNotice, Loading, Row, Screen, Segmented, Text, TextField } from '@/ui/primitives';
+import {
+  Button,
+  Chip,
+  DateField,
+  ErrorNotice,
+  Loading,
+  Row,
+  Screen,
+  Segmented,
+  Text,
+  TextField,
+} from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 export default function PersonScreen() {
@@ -98,12 +109,10 @@ function PersonForm({ person, initialKind }: { person?: Person; initialKind: Per
               : 'Filhos e dependentes sem conta. Se a pessoa entrar na família com este mesmo nome, ela assume esta ficha.'
         }
       />
-      <TextField
+      <DateField
         label="Nascimento"
         value={birth}
         onChangeText={setBirth}
-        placeholder="dd/mm/aaaa"
-        keyboardType="numbers-and-punctuation"
       />
       {isPet ? (
         <TextField label="Espécie e raça" value={species} onChangeText={setSpecies} placeholder="Ex.: cachorro, vira-lata" />

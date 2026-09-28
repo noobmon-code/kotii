@@ -242,7 +242,7 @@ function WorkoutPlanView({ plan }: { plan: WorkoutPlan }) {
           fields={[
             { key: 'title', label: 'Nome', required: true },
             { key: 'professional', label: 'Profissional', placeholder: 'Nome e CREF' },
-            { key: 'valid_until', label: 'Trocar a ficha em', placeholder: 'dd/mm/aaaa', keyboardType: 'numbers-and-punctuation' },
+            { key: 'valid_until', label: 'Trocar a ficha em', date: true },
             { key: 'notes', label: 'Orientações gerais', multiline: true },
           ]}
           onClose={() => setEditing(null)}

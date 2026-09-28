@@ -12,7 +12,18 @@ import { errorMessage } from '@/lib/supabase';
 import { UNITS, type PantryItem, type Unit } from '@/lib/types';
 import { notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
-import { Button, CategoryIcon, Chip, ErrorNotice, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
+import {
+  Button,
+  CategoryIcon,
+  Chip,
+  DateField,
+  ErrorNotice,
+  Loading,
+  Row,
+  Screen,
+  Text,
+  TextField,
+} from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 export default function PantryItemScreen() {
@@ -90,7 +101,7 @@ function PantryForm({ item }: { item?: PantryItem }) {
           <TextField label="Quantidade" value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" />
         </View>
         <View style={styles.flex}>
-          <TextField label="Comprado em" value={purchased} onChangeText={setPurchased} keyboardType="numbers-and-punctuation" />
+          <DateField label="Comprado em" value={purchased} onChangeText={setPurchased} />
         </View>
       </Row>
       <Row style={styles.wrap}>
@@ -98,12 +109,10 @@ function PantryForm({ item }: { item?: PantryItem }) {
           <Chip key={u} label={u} selected={unit === u} onPress={() => setUnit(u)} />
         ))}
       </Row>
-      <TextField
+      <DateField
         label="Validade"
         value={expiresText}
         onChangeText={setExpires}
-        placeholder="dd/mm/aaaa"
-        keyboardType="numbers-and-punctuation"
         hint={
           !item && !typed && estimate?.expiresOn
             ? 'Estimada pela categoria. Corrija se precisar.'
