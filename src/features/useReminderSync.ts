@@ -12,21 +12,26 @@ import { anyHouseReminderKind, syncHouseReminders, syncReminders, type HouseRemi
 
 type Rows<T extends () => { data?: unknown }> = NonNullable<ReturnType<T>['data']>;
 
+/**
+ * Consultas e vacinas só entram quando elas e as fichas carregaram; sem elas
+ * (undefined), contas, documentos e tarefas seguem normais e os avisos de
+ * saúde já agendados ficam como estão.
+ */
 function toHouseReminderData(
   bills: Rows<typeof useBills>,
   documents: Rows<typeof useDocuments>,
   chores: Rows<typeof useChores>,
-  appointments: Rows<typeof useAppointments>,
-  vaccines: Rows<typeof useVaccines>,
-  people: Rows<typeof usePeople>,
+  appointments: Rows<typeof useAppointments> | undefined,
+  vaccines: Rows<typeof useVaccines> | undefined,
+  people: Rows<typeof usePeople> | undefined,
 ): HouseReminderData {
-  const personName = (id: string) => people.find((p) => p.id === id)?.name ?? '';
+  const personName = (id: string) => people?.find((p) => p.id === id)?.name ?? '';
   return {
     bills,
     documents,
     chores,
     // Data e hora da consulta no fuso do aparelho.
-    appointments: appointments.map((a) => ({
+    appointments: people && appointments?.map((a) => ({
       id: a.id,
       title: a.title,
       person: personName(a.person_id),
@@ -36,7 +41,7 @@ function toHouseReminderData(
       status: a.status,
     })),
     // Só doses ainda por tomar: aplicação registrada depois encerra a próxima dose do registro anterior.
-    vaccines: pendingNextDoses(vaccines).map((v) => ({
+    vaccines: people && vaccines && pendingNextDoses(vaccines).map((v) => ({
       id: v.id,
       name: v.name,
       dose: v.dose,
@@ -61,7 +66,7 @@ export function useHouseReminderData() {
   // Mesmo objeto enquanto os dados não mudam: não refaz os avisos à toa.
   const data = useMemo<HouseReminderData | null>(
     () =>
-      bills.data && documents.data && chores.data && appointments.data && vaccines.data && people.data
+      bills.data && documents.data && chores.data
         ? toHouseReminderData(bills.data, documents.data, chores.data, appointments.data, vaccines.data, people.data)
         : null,
     [bills.data, documents.data, chores.data, appointments.data, vaccines.data, people.data],
@@ -81,9 +86,7 @@ export function useHouseReminderData() {
       refetchVaccines(),
       refetchPeople(),
     ]);
-    return b.data && d.data && c.data && a.data && v.data && p.data
-      ? toHouseReminderData(b.data, d.data, c.data, a.data, v.data, p.data)
-      : null;
+    return b.data && d.data && c.data ? toHouseReminderData(b.data, d.data, c.data, a.data, v.data, p.data) : null;
   }, [refetchBills, refetchDocuments, refetchChores, refetchAppointments, refetchVaccines, refetchPeople]);
   return { data, refetch };
 }

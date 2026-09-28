@@ -256,6 +256,28 @@ describe('house reminders', () => {
     });
   });
 
+  it('sem os dados de saúde, contas seguem e os avisos de vacina já agendados ficam', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('bills', true);
+      await reminders.setHouseReminderKind('vaccines', true);
+      const vaccines = [{ id: 'v1', name: 'Tríplice viral', dose: null, person: 'Lia', next_dose_on: '2026-10-20' }];
+      await reminders.syncHouseReminders({ ...data, vaccines, appointments: [] }, today);
+      const vaccineIds = [...live.entries()].filter(([, r]) => r.content.data.reminder.startsWith('vaccines:')).map(([id]) => id);
+      expect(vaccineIds).toHaveLength(2);
+      // Vacinas não carregaram; a conta mudou de vencimento.
+      const moved = { ...data, bills: [{ ...data.bills[0], next_due_on: '2026-10-10' }] };
+      await reminders.syncHouseReminders(moved, today);
+      expect(vaccineIds.every((id) => live.has(id))).toBe(true);
+      expect([...live.values()].map((r) => r.content.data.reminder).filter((k) => k.startsWith('bills:')).sort()).toEqual([
+        'bills:b1:2026-10-09',
+        'bills:b1:2026-10-10',
+      ]);
+      // Voltaram: refaz tudo com os dados.
+      await reminders.syncHouseReminders({ ...moved, vaccines: [], appointments: [] }, today);
+      expect(kindsOf(live)).toEqual(['bills']);
+    });
+  });
+
   it('fica com o espaço que os remédios deixam no teto do iPhone', async () => {
     await withHouse(async (reminders, { live }) => {
       for (let i = 0; i < 62; i++) live.set(`remedio${i}`, { content: { data: { reminder: `med:${i}` } } });
