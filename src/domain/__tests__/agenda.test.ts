@@ -6,6 +6,7 @@ import { toTimestamp } from '../health';
 const empty: AgendaInput = {
   from: '2026-10-01',
   to: '2026-12-31',
+  today: '2026-10-01',
   appointments: [],
   vaccines: [],
   bills: [],
@@ -30,7 +31,9 @@ describe('buildAgenda', () => {
         { id: 'a1', title: 'Pediatra', starts_at: toTimestamp('2026-10-05', '14:30'), status: 'agendada', person: 'Lucas' },
         { id: 'a2', title: 'Cancelada', starts_at: toTimestamp('2026-10-06', '10:00'), status: 'cancelada', person: null },
       ],
-      vaccines: [{ id: 'v1', name: 'Gripe', dose: 'Anual', next_dose_on: '2026-10-05', person: 'Ana' }],
+      vaccines: [
+        { id: 'v1', name: 'Gripe', dose: 'Anual', person_id: 'p1', applied_on: '2025-10-05', next_dose_on: '2026-10-05', person: 'Ana' },
+      ],
       documents: [
         { id: 'd1', title: 'CNH — Ana', expires_on: '2026-11-10' },
         { id: 'd2', title: 'Fora', expires_on: '2027-03-01' },
@@ -77,6 +80,51 @@ describe('buildAgenda', () => {
       ['2026-10-07', 'tarefa', 'Lixo reciclável', false],
       ['2026-10-15', 'manutencao', 'Filtro do ar', false],
       ['2026-10-21', 'tarefa', 'Lixo reciclável', true],
+    ]);
+  });
+  it('dose de vacina já tomada (há aplicação depois) sai da agenda', () => {
+    const dose = { name: 'Hepatite B', person_id: 'p1', person: 'Lucas' };
+    const events = buildAgenda({
+      ...empty,
+      vaccines: [
+        { ...dose, id: 'v1', dose: '1ª dose', applied_on: '2026-09-01', next_dose_on: '2026-10-01' },
+        { ...dose, id: 'v2', dose: '2ª dose', applied_on: '2026-10-01', next_dose_on: '2026-12-01' },
+      ],
+    });
+    expect(events.map((e) => [e.id, e.date])).toEqual([['v2', '2026-12-01']]);
+  });
+
+  it('tarefa atrasada: a previsão conta de hoje, quando ela ainda pode ser feita', () => {
+    const events = buildAgenda({
+      ...empty,
+      from: '2026-09-27',
+      to: '2026-10-31',
+      today: '2026-10-08',
+      chores: [{ id: 'c1', title: 'Regar as plantas', due_on: '2026-10-01', recurrence: 'weekly', interval_count: 1, active: true, equipment_id: null }],
+    });
+    expect(events.map((e) => [e.date, e.planned])).toEqual([
+      ['2026-10-01', false],
+      ['2026-10-15', true],
+      ['2026-10-22', true],
+      ['2026-10-29', true],
+    ]);
+  });
+
+  it('mês distante ainda mostra as repetições', () => {
+    const events = buildAgenda({
+      ...empty,
+      from: '2032-03-01',
+      to: '2032-03-31',
+      bills: [{ id: 'b1', name: 'Aluguel', recurrence: 'monthly', due_day: 31, next_due_on: '2026-10-31', active: true }],
+      chores: [{ id: 'c1', title: 'Lixo', due_on: '2026-10-07', recurrence: 'weekly', interval_count: 1, active: true, equipment_id: null }],
+    });
+    expect(events.map((e) => [e.date, e.title])).toEqual([
+      ['2032-03-03', 'Lixo'],
+      ['2032-03-10', 'Lixo'],
+      ['2032-03-17', 'Lixo'],
+      ['2032-03-24', 'Lixo'],
+      ['2032-03-31', 'Aluguel'],
+      ['2032-03-31', 'Lixo'],
     ]);
   });
 });

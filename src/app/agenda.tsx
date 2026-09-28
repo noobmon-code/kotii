@@ -56,6 +56,7 @@ export default function AgendaScreen() {
   const events = buildAgenda({
     from,
     to,
+    today,
     appointments: (appointments.data ?? []).map((a) => ({ ...a, person: personName(a.person_id) })),
     vaccines: (vaccines.data ?? []).map((v) => ({ ...v, person: personName(v.person_id) })),
     bills: bills.data ?? [],
@@ -185,11 +186,13 @@ function DayCell({
 }) {
   const c = useColors();
   const day = Number(date.slice(8, 10));
+  const [y, m] = date.split('-').map(Number);
+  const spoken = new Date(y, m - 1, day).toLocaleDateString('pt-BR', { day: 'numeric', month: 'long' });
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityState={{ selected }}
-      accessibilityLabel={`${day}${kinds.length ? `, ${kinds.length} ${kinds.length === 1 ? 'tipo de compromisso' : 'tipos de compromisso'}` : ''}`}
+      accessibilityLabel={`${spoken}${kinds.length ? `, ${kinds.length} ${kinds.length === 1 ? 'tipo de compromisso' : 'tipos de compromisso'}` : ''}`}
       onPress={onPress}
       style={styles.cell}>
       <View

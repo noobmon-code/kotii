@@ -3,8 +3,8 @@
 // aparecem também nas próximas datas, como previsão: a data certa sai quando
 // a conta é paga ou a tarefa é feita.
 
-import { addDays } from './dates';
-import { splitTimestamp } from './health';
+import { addDays, diffDays } from './dates';
+import { pendingNextDoses, splitTimestamp, type VaccineLike } from './health';
 
 export type AgendaKind = 'consulta' | 'vacina' | 'conta' | 'tarefa' | 'manutencao' | 'documento' | 'garantia';
 
@@ -26,8 +26,9 @@ export interface AgendaInput {
   /** Intervalo mostrado (inclusive). */
   from: string;
   to: string;
+  today: string;
   appointments: { id: string; title: string; starts_at: string; status: string; person: string | null }[];
-  vaccines: { id: string; name: string; dose: string | null; next_dose_on: string | null; person: string | null }[];
+  vaccines: (VaccineLike & { id: string; dose: string | null; person: string | null })[];
   bills: {
     id: string;
     name: string;
@@ -59,11 +60,27 @@ export function addMonthsClamped(date: string, months: number, day = Number(date
   return `${year}-${String(month).padStart(2, '0')}-${String(Math.min(day, last)).padStart(2, '0')}`;
 }
 
-// Tarefas diárias encheriam todos os dias: só a próxima aparece.
-const MAX_REPEATS = 60;
+const monthIndex = (date: string) => Number(date.slice(0, 4)) * 12 + Number(date.slice(5, 7));
+
+/**
+ * Repetições de `base` (a 1ª é base + 1 passo) que caem até `to`, a partir
+ * das que chegam perto de `from`: um mês distante não depende de contar
+ * todas as anteriores.
+ */
+function repeats(base: string, from: string, to: string, step: { days: number } | { months: number; day?: number }): string[] {
+  const at = (i: number) => ('days' in step ? addDays(base, step.days * i) : addMonthsClamped(base, step.months * i, step.day));
+  const behind = 'days' in step ? diffDays(base, from) / step.days : (monthIndex(from) - monthIndex(base)) / step.months;
+  const dates: string[] = [];
+  for (let i = Math.max(1, Math.floor(behind)); dates.length < 62; i++) {
+    const date = at(i);
+    if (date > to) break;
+    if (date >= from) dates.push(date);
+  }
+  return dates;
+}
 
 export function buildAgenda(input: AgendaInput): AgendaEvent[] {
-  const { from, to } = input;
+  const { from, to, today } = input;
   const events: AgendaEvent[] = [];
   const inRange = (date: string) => date >= from && date <= to;
   const push = (event: Omit<AgendaEvent, 'key'>) => {
@@ -76,7 +93,8 @@ export function buildAgenda(input: AgendaInput): AgendaEvent[] {
     push({ kind: 'consulta', id: a.id, date, time, title: a.title, detail: a.person, planned: false });
   }
 
-  for (const v of input.vaccines) {
+  // Dose já tomada (há uma aplicação depois) sai da agenda.
+  for (const v of pendingNextDoses(input.vaccines)) {
     if (!v.next_dose_on) continue;
     const detail = [v.person, v.dose].filter(Boolean).join(' · ') || null;
     push({ kind: 'vacina', id: v.id, date: v.next_dose_on, time: null, title: `Vacina: ${v.name}`, detail, planned: false });
@@ -86,11 +104,9 @@ export function buildAgenda(input: AgendaInput): AgendaEvent[] {
     if (!b.active) continue;
     push({ kind: 'conta', id: b.id, date: b.next_due_on, time: null, title: b.name, detail: 'Vence', planned: false });
     if (b.recurrence === 'once') continue;
-    const step = b.recurrence === 'yearly' ? 12 : 1;
-    const day = b.due_day ?? Number(b.next_due_on.slice(8, 10));
-    for (let i = 1; i <= MAX_REPEATS; i++) {
-      const date = addMonthsClamped(b.next_due_on, step * i, day);
-      if (date > to) break;
+    // Pagar passa para o próximo vencimento: as seguintes seguem a atual, mesmo atrasada.
+    const step = { months: b.recurrence === 'yearly' ? 12 : 1, day: b.due_day ?? Number(b.next_due_on.slice(8, 10)) };
+    for (const date of repeats(b.next_due_on, from, to, step)) {
       push({ kind: 'conta', id: b.id, date, time: null, title: b.name, detail: 'Vence (previsão)', planned: true });
     }
   }
@@ -99,13 +115,12 @@ export function buildAgenda(input: AgendaInput): AgendaEvent[] {
     if (!c.active) continue;
     const kind = c.equipment_id ? 'manutencao' : 'tarefa';
     push({ kind, id: c.id, date: c.due_on, time: null, title: c.title, detail: null, planned: false });
+    // Diárias encheriam todos os dias: só a próxima aparece.
     if (c.recurrence === 'none' || c.recurrence === 'daily') continue;
-    for (let i = 1; i <= MAX_REPEATS; i++) {
-      const date =
-        c.recurrence === 'weekly'
-          ? addDays(c.due_on, 7 * c.interval_count * i)
-          : addMonthsClamped(c.due_on, c.interval_count * i);
-      if (date > to) break;
+    // A próxima data conta de quando a tarefa é feita: atrasada, no mínimo hoje.
+    const base = c.due_on < today ? today : c.due_on;
+    const step = c.recurrence === 'weekly' ? { days: 7 * c.interval_count } : { months: c.interval_count };
+    for (const date of repeats(base, from, to, step)) {
       push({ kind, id: c.id, date, time: null, title: c.title, detail: 'Previsão', planned: true });
     }
   }
