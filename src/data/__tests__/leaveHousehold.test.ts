@@ -4,7 +4,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { forgetLeftHousehold } from '../household';
 
 jest.mock('@/lib/supabase', () => ({ supabase: {} }));
-jest.mock('@/lib/queryClient', () => ({ saveNow: () => undefined }));
+jest.mock('@/lib/queryClient', () => ({ saveNow: async () => undefined }));
 jest.mock('@/lib/reminders', () => ({ disableAllReminders: async () => undefined }));
 jest.mock('@/features/nuke/conversation', () => ({ clearConversation: () => undefined }));
 jest.mock('@/data/images', () => ({ functionErrorMessage: async () => '' }));

@@ -46,9 +46,19 @@ onlineManager.setEventListener((setOnline) => {
     syncOnline();
   };
   if (Platform.OS !== 'web') {
-    const subscription = Network.addNetworkStateListener((state) =>
-      setNetwork(state.isConnected !== false && state.isInternetReachable !== false),
-    );
+    const reachable = (state: Network.NetworkState) => state.isConnected !== false && state.isInternetReachable !== false;
+    let heard = false;
+    const subscription = Network.addNetworkStateListener((state) => {
+      heard = true;
+      setNetwork(reachable(state));
+    });
+    // App aberto já sem rede: não haverá evento de mudança, então parte do
+    // estado atual (a não ser que um evento, mais novo, tenha chegado antes).
+    Network.getNetworkStateAsync()
+      .then((state) => {
+        if (!heard) setNetwork(reachable(state));
+      })
+      .catch(() => undefined);
     return () => subscription.remove();
   }
   // Na geração das páginas estáticas não há window.
@@ -88,8 +98,8 @@ export const persistOptions = {
  * Grava o cache já, sem o intervalo do persister: uma marcação feita sem
  * internet não pode se perder se o app for fechado logo depois do toque.
  */
-export function saveNow() {
-  persistQueryClientSave({
+export function saveNow(): Promise<void> {
+  return persistQueryClientSave({
     queryClient,
     persister: { ...persister, persistClient: persistNow },
     buster: persistOptions.buster,

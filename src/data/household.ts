@@ -50,7 +50,7 @@ export function useLeaveHousehold(userId: string | undefined) {
     // Primeiro o cache, gravado já: fechando o app no meio da limpeza dos
     // lembretes (que pode demorar), a casa antiga não volta.
     forgetLeftHousehold(queryClient, userId, householdId);
-    saveNow();
+    await saveNow();
     if (userId) clearConversation(userId);
     await disableAllReminders().catch(() => undefined);
     await queryClient.invalidateQueries({ queryKey: ['household'] });
