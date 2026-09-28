@@ -971,9 +971,13 @@ declare
 begin
   select * into r from public.use_ai('photo');
   assert r.allowed and r.used = 1 and r.lim = 100, 'first use counts';
+  assert r.household = public.current_household_id() and r.usage_month = public.ai_month(), 'use returns what a refund needs';
   perform public.use_ai('photo');
-  perform public.refund_ai('photo');
-  assert (select used from public.ai_usage_summary() where kind = 'photo') = 1, 'a failed call is refunded';
+  begin
+    perform public.refund_ai(r.household, r.usage_month, 'photo');
+    raise exception 'FAIL: user refunded its own usage';
+  exception when insufficient_privilege then null;
+  end;
   update public.ai_usage set count = 0;
   assert not found, 'usage cannot be changed directly';
   begin
@@ -981,6 +985,13 @@ begin
     raise exception 'FAIL: unknown kind';
   exception when invalid_parameter_value then null;
   end;
+end $$;
+set role service_role;
+select public.refund_ai(:'hh_a', public.ai_month(), 'photo') \gset
+set role authenticated;
+do $$
+begin
+  assert (select used from public.ai_usage_summary() where kind = 'photo') = 1, 'the server refunds a failed call';
 end $$;
 reset role;
 update public.ai_usage set count = 20 where kind = 'photo';

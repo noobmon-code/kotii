@@ -106,8 +106,9 @@ Deno.serve(async (req) => {
     .limit(400);
   if (catalogError) return json({ error: 'Falha ao ler produtos.' }, 500);
 
+  let ticket;
   try {
-    await takeAiQuota(db, 'photo');
+    ticket = await takeAiQuota(db, 'photo');
   } catch (err) {
     if (err instanceof QuotaError) return json({ error: err.message }, err.status);
     throw err;
@@ -126,7 +127,7 @@ Deno.serve(async (req) => {
     });
   } catch (err) {
     // A IA falhou (ou recusou por engano): a leitura não conta no limite do mês.
-    if (!(err instanceof ExtractionError && err.status === 422)) await refundAiQuota(db, 'photo');
+    if (!(err instanceof ExtractionError && err.status === 422)) await refundAiQuota(ticket);
     if (err instanceof ExtractionError) return json({ error: err.message }, err.status);
     throw err;
   }

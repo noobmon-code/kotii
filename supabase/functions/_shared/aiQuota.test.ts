@@ -14,8 +14,8 @@ function fakeDb(result: { data: unknown; error: unknown }) {
 }
 
 Deno.test('takeAiQuota lets the call through while there is quota', async () => {
-  const db = fakeDb({ data: [{ allowed: true, used: 3, lim: 300 }], error: null });
-  await takeAiQuota(db, 'chat');
+  const db = fakeDb({ data: [{ allowed: true, used: 3, lim: 300, household: 'h1', usage_month: '2026-09' }], error: null });
+  assertEquals(await takeAiQuota(db, 'chat'), { kind: 'chat', household: 'h1', month: '2026-09' });
   assertEquals(db.calls, [['use_ai', { p_kind: 'chat' }]]);
 });
 
@@ -32,8 +32,8 @@ Deno.test('takeAiQuota fails closed with 503 when the quota cannot be checked', 
   assertEquals(err.status, 503);
 });
 
-Deno.test('refundAiQuota gives the use back', async () => {
-  const db = fakeDb({ data: null, error: null });
-  await refundAiQuota(db, 'menu');
-  assertEquals(db.calls, [['refund_ai', { p_kind: 'menu' }]]);
+Deno.test('refundAiQuota gives the use back to the month and household it counted in', async () => {
+  const service = fakeDb({ data: null, error: null });
+  await refundAiQuota({ kind: 'menu', household: 'h1', month: '2026-09' }, service);
+  assertEquals(service.calls, [['refund_ai', { p_household: 'h1', p_month: '2026-09', p_kind: 'menu' }]]);
 });

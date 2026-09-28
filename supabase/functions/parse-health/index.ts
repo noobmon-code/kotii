@@ -120,12 +120,12 @@ Deno.serve(async (req) => {
       if (totalBytes > MAX_TOTAL_BYTES) return json({ error: 'Fotos grandes demais. Envie menos páginas.' }, 413);
       images.push(await toVisionImage(blob, mediaType));
     }
-    await takeAiQuota(db, 'photo');
+    const ticket = await takeAiQuota(db, 'photo');
     try {
       return json({ kind, data: await read(kind, images) });
     } catch (err) {
       // "Não é este documento" (422) usou a IA e conta; falha da IA não.
-      if (!(err instanceof ExtractionError && err.status === 422)) await refundAiQuota(db, 'photo');
+      if (!(err instanceof ExtractionError && err.status === 422)) await refundAiQuota(ticket);
       throw err;
     }
   } catch (err) {
