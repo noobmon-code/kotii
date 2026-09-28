@@ -312,6 +312,31 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+\echo '• lista de mercado aberta: acha a da casa ou cria uma só'
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+declare
+  first uuid;
+  again uuid;
+  other uuid;
+begin
+  select id into first from public.open_market_list();
+  assert (select name from public.shopping_lists where id = first) = 'Mercado', 'creates "Mercado" when none is open';
+  select id into again from public.open_market_list('Outra');
+  assert again = first, 'the open market list is reused';
+  update public.shopping_lists set archived_at = now() where id = first;
+  select id into other from public.open_market_list();
+  assert other <> first, 'an archived list is not reused';
+  delete from public.shopping_lists where id in (first, other);
+end $$;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  assert (select id from public.open_market_list()) = current_setting('test.list_a')::uuid,
+    'each household gets its own open market list';
+end $$;
+
+-- ---------------------------------------------------------------------------
 \echo '• limpar o carrinho guarda o histórico de compras'
 select set_config('request.jwt.claim.sub', :'user_c', false) \gset
 do $$

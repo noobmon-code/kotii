@@ -201,25 +201,20 @@ export function usePendingItemNames(listId: string | undefined) {
   });
 }
 
-/** A lista de mercado aberta mais recente, direto do servidor. */
-async function latestMarketList(): Promise<{ id: string; name: string } | undefined> {
-  const rows = unwrap(
-    await supabase
-      .from('shopping_lists')
-      .select('id, name')
-      .eq('kind', 'mercado')
-      .is('archived_at', null)
-      .order('created_at', { ascending: false })
-      .limit(1),
-  ) as { id: string; name: string }[];
-  return rows[0];
+/**
+ * A lista de mercado aberta mais recente da casa; sem nenhuma, cria uma com
+ * `name`. No servidor, numa transação com trava por casa: duas pessoas ao
+ * mesmo tempo não criam duas.
+ */
+async function openMarketList(name = 'Mercado'): Promise<{ id: string; name: string }> {
+  return unwrap(await supabase.rpc('open_market_list', { p_name: name }).single()) as { id: string; name: string };
 }
 
 /**
  * Vários itens de uma vez; sem `listId`, cria uma lista de mercado nova. Com
- * `reuseMarketList`, antes procura a lista de mercado aberta mais recente (quem
- * chama pode ainda não ter visto uma criada agora há pouco) e não repete o que
- * já está pendente nela.
+ * `reuseMarketList`, usa a lista de mercado aberta mais recente (ou cria uma,
+ * openMarketList) e não repete o que já está pendente nela: quem chama pode
+ * ainda não ter visto uma lista ou um item postos agora há pouco.
  */
 export function useAddItemsToList() {
   const queryClient = useQueryClient();
@@ -235,20 +230,21 @@ export function useAddItemsToList() {
       reuseMarketList?: boolean;
       items: NewListItem[];
     }) => {
-      const existing = listId ?? (reuseMarketList ? (await latestMarketList())?.id : undefined);
       const id =
-        existing ??
-        (
-          unwrap(
-            await supabase.from('shopping_lists').insert({ name: newListName, kind: 'mercado' }).select('id').single(),
-          ) as { id: string }
-        ).id;
+        listId ??
+        (reuseMarketList
+          ? (await openMarketList(newListName)).id
+          : (
+              unwrap(
+                await supabase.from('shopping_lists').insert({ name: newListName, kind: 'mercado' }).select('id').single(),
+              ) as { id: string }
+            ).id);
       // Lista achada no servidor: a tela pode não ter visto o que alguém pôs
       // nela agora há pouco. O que já está pendente não entra de novo.
       let toAdd = items;
-      if (reuseMarketList && existing && items.length) {
+      if (reuseMarketList && items.length) {
         const pending = unwrap(
-          await supabase.from('shopping_list_items').select('name').eq('list_id', existing).is('checked_at', null),
+          await supabase.from('shopping_list_items').select('name').eq('list_id', id).is('checked_at', null),
         ) as { name: string }[];
         const names = new Set(pending.map((p) => normalizeSearch(p.name)));
         toAdd = items.filter((item) => !names.has(normalizeSearch(item.name)));
@@ -285,11 +281,7 @@ export function useAddToMarketList() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (item: NewListItem): Promise<{ id: string; name: string; added: boolean }> => {
-      const list =
-        (await latestMarketList()) ??
-        (unwrap(
-          await supabase.from('shopping_lists').insert({ name: 'Mercado', kind: 'mercado' }).select('id, name').single(),
-        ) as { id: string; name: string });
+      const list = await openMarketList();
       const pending = unwrap(
         await supabase
           .from('shopping_list_items')
