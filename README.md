@@ -87,14 +87,12 @@ O backend já roda na nuvem (Supabase). O `npx expo start` só serve o código d
 
 **Android: APK instalável (grátis).** O build é feito na nuvem pelo EAS, da Expo.
 
-1. Crie uma conta em [expo.dev](https://expo.dev). No computador, com o repositório clonado:
+1. O projeto já existe na Expo (conta `Noobmon`; o Project ID está em `extra.eas.projectId` no `app.json`). No computador, com o repositório clonado e atualizado:
 
    ```bash
-   npx eas-cli@latest login
-   npx eas-cli@latest init   # cria o projeto "nooky" e grava o Project ID no app.json
+   npm install
+   npx eas-cli@latest login   # com a conta Noobmon
    ```
-
-   Faça commit do `app.json` alterado (ou mande o Project ID para quem cuida do código).
 2. No projeto da Expo, em *Environment variables*, cadastre `EXPO_PUBLIC_SUPABASE_URL` e `EXPO_PUBLIC_SUPABASE_ANON_KEY` (os mesmos valores do `.env`) para os ambientes *preview* e *production*, como texto normal: variável secreta não entra no build, e esses dois valores vão de qualquer jeito dentro do app. O `.env` não vai para o build na nuvem.
 3. Gere o APK:
 
