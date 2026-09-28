@@ -48,10 +48,10 @@ export function PayBillModal({ bill, onClose }: { bill: Bill; onClose: () => voi
             notify('Já estava paga', `${bill.name} com vencimento em ${formatBRDate(bill.next_due_on)} já tinha sido paga.`);
           } else if (paidBy && paidBy !== me) {
             // O pagamento sai no nome de quem registrou; aqui vai para quem pagou de fato.
-            setPayer.mutate(
-              { billId: bill.id, dueOn: bill.next_due_on, paidBy },
-              { onError: (err) => notify('Não deu para marcar quem pagou', errorMessage(err)) },
-            );
+            // Promessa, e não callback do mutate: o modal fecha logo abaixo e o erro ainda precisa aparecer.
+            setPayer
+              .mutateAsync({ billId: bill.id, dueOn: bill.next_due_on, paidBy })
+              .catch((err) => notify('Não deu para marcar quem pagou', errorMessage(err)));
           }
           onClose();
         },

@@ -41,6 +41,8 @@ as $$
     where m.user_id = p_user and m.household_id = public.current_household_id()
   );
 $$;
+revoke execute on function public.is_household_member(uuid) from public, anon;
+grant execute on function public.is_household_member(uuid) to authenticated;
 
 alter table public.split_weights enable row level security;
 create policy "household members manage split weights" on public.split_weights for all to authenticated
