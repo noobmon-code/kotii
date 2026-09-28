@@ -220,7 +220,8 @@ describe('medications', () => {
     const startOn = '2026-09-05';
     expect(describeFrequency({ startOn })).toBe('todo dia');
     expect(describeFrequency({ startOn, frequency: 'weekdays', weekdays: [5, 1, 3] })).toBe('seg, qua e sex');
-    expect(describeFrequency({ startOn, frequency: 'weekdays', weekdays: [0] })).toBe('toda dom');
+    expect(describeFrequency({ startOn, frequency: 'weekdays', weekdays: [0] })).toBe('todo domingo');
+    expect(describeFrequency({ startOn, frequency: 'weekdays', weekdays: [3] })).toBe('toda quarta');
     expect(describeFrequency({ startOn, frequency: 'interval', intervalDays: 2 })).toBe('dia sim, dia não');
     expect(describeFrequency({ startOn, frequency: 'interval', intervalDays: 3 })).toBe('a cada 3 dias');
     expect(describeFrequency({ startOn, frequency: 'monthly' })).toBe('todo dia 5 do mês');

@@ -246,7 +246,8 @@ function MedicationForm({
             value={totalDoses}
             onChangeText={setTotalDoses}
             keyboardType="number-pad"
-            hint={`Acaba quando a última for tomada.${medication?.total_doses ? ` Tomadas até agora: ${medication.taken_count}.` : ''}`}
+            // Num remédio que já existe, as doses marcadas antes também contam.
+            hint={`Acaba quando a última for tomada.${medication ? ` Tomadas até agora: ${medication.taken_count}.` : ''}`}
           />
         ) : null}
       </View>

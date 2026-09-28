@@ -12,13 +12,13 @@ export const FREQUENCIES: { key: MedicationFrequency; label: string }[] = [
 
 /** Dias da semana como em Date.getDay(): 0 = domingo. */
 export const WEEKDAYS = [
-  { day: 0, short: 'Dom', letter: 'D' },
-  { day: 1, short: 'Seg', letter: 'S' },
-  { day: 2, short: 'Ter', letter: 'T' },
-  { day: 3, short: 'Qua', letter: 'Q' },
-  { day: 4, short: 'Qui', letter: 'Q' },
-  { day: 5, short: 'Sex', letter: 'S' },
-  { day: 6, short: 'Sáb', letter: 'S' },
+  { day: 0, short: 'Dom', every: 'todo domingo' },
+  { day: 1, short: 'Seg', every: 'toda segunda' },
+  { day: 2, short: 'Ter', every: 'toda terça' },
+  { day: 3, short: 'Qua', every: 'toda quarta' },
+  { day: 4, short: 'Qui', every: 'toda quinta' },
+  { day: 5, short: 'Sex', every: 'toda sexta' },
+  { day: 6, short: 'Sáb', every: 'todo sábado' },
 ];
 
 export interface MedicationSchedule {
@@ -159,8 +159,9 @@ export function describeFrequency(m: Pick<MedicationSchedule, 'frequency' | 'wee
     case 'weekdays': {
       const days = [...(m.weekdays ?? [])].sort((a, b) => a - b);
       if (days.length === 7) return 'todo dia';
+      if (days.length === 1) return WEEKDAYS[days[0]].every;
       const names = days.map((d) => WEEKDAYS[d].short.toLowerCase());
-      return names.length > 1 ? `${names.slice(0, -1).join(', ')} e ${names.at(-1)}` : `toda ${names[0] ?? 'semana'}`;
+      return `${names.slice(0, -1).join(', ')} e ${names.at(-1)}`;
     }
     case 'interval':
       return m.intervalDays === 2 ? 'dia sim, dia não' : `a cada ${m.intervalDays} dias`;
