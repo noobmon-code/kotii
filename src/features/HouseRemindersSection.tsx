@@ -11,7 +11,7 @@ import { space, useColors } from '@/ui/theme';
 /** Avisos da casa por notificação: cada pessoa escolhe no próprio celular. */
 export function HouseRemindersSection() {
   const c = useColors();
-  const data = useHouseReminderData();
+  const { data } = useHouseReminderData();
   const [kinds, setKinds] = useState<Record<HouseReminderKind, boolean> | null>(null);
 
   useEffect(() => {
@@ -20,10 +20,11 @@ export function HouseRemindersSection() {
 
   async function toggle(kind: HouseReminderKind, enabled: boolean) {
     if (!kinds) return;
-    setKinds({ ...kinds, [kind]: enabled });
+    setKinds((current) => current && { ...current, [kind]: enabled });
     const ok = await setHouseReminderKind(kind, enabled).catch(() => false);
     if (!ok) {
-      setKinds({ ...kinds, [kind]: !enabled });
+      // Só este tipo volta: outros toques feitos durante o pedido de permissão ficam.
+      setKinds((current) => current && { ...current, [kind]: !enabled });
       notify('Sem permissão', 'Para receber os avisos, permita as notificações do Nooky nos ajustes do celular.');
       return;
     }

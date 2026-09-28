@@ -123,3 +123,75 @@ describe('reminder scheduling', () => {
     });
   });
 });
+
+describe('house reminders', () => {
+  // Agenda em memória que sabe cancelar e listar, como o expo-notifications.
+  async function withHouse(
+    scenario: (reminders: Reminders, agenda: { live: Map<string, { content: { data: { reminder: string } } }>; storage: Map<string, string> }) => Promise<void>,
+  ) {
+    const live = new Map<string, { content: { data: { reminder: string } } }>();
+    const storage = new Map<string, string>();
+    let next = 0;
+    await jest.isolateModulesAsync(async () => {
+      jest.doMock('react-native', () => ({ Platform: { OS: 'ios' } }));
+      jest.doMock('expo', () => ({ isRunningInExpoGo: () => false }));
+      jest.doMock('@react-native-async-storage/async-storage', () => ({
+        getItem: async (k: string) => storage.get(k) ?? null,
+        setItem: async (k: string, v: string) => void storage.set(k, v),
+        removeItem: async (k: string) => void storage.delete(k),
+        getAllKeys: async () => [...storage.keys()],
+      }));
+      jest.doMock('expo-notifications', () => ({
+        SchedulableTriggerInputTypes: { DAILY: 'daily', DATE: 'date' },
+        AndroidImportance: { HIGH: 4 },
+        getPermissionsAsync: async () => ({ granted: true }),
+        scheduleNotificationAsync: async (request: { content: { data: { reminder: string } } }) => {
+          const id = `n${++next}`;
+          live.set(id, request);
+          return id;
+        },
+        cancelScheduledNotificationAsync: async (id: string) => void live.delete(id),
+        getAllScheduledNotificationsAsync: async () => [...live.keys()].map((identifier) => ({ identifier })),
+      }));
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      await scenario(require('../reminders'), { live, storage });
+    });
+  }
+
+  const today = '2026-09-27';
+  const data = {
+    bills: [{ id: 'b1', name: 'Luz', amount: 230, next_due_on: '2026-10-05', active: true, autopay: false }],
+    documents: [{ id: 'd1', title: 'Passaporte', expires_on: '2026-10-20', remind_days: 15 }],
+    chores: [],
+  };
+  const kindsOf = (live: Map<string, { content: { data: { reminder: string } } }>) =>
+    [...new Set([...live.values()].map((r) => r.content.data.reminder.split(':')[0]))].sort();
+
+  it('dois toques seguidos não gravam um por cima do outro', async () => {
+    await withHouse(async (reminders) => {
+      await Promise.all([reminders.setHouseReminderKind('bills', true), reminders.setHouseReminderKind('documents', true)]);
+      expect(await reminders.getHouseReminderKinds()).toEqual({ bills: true, documents: true, chores: false });
+    });
+  });
+
+  it('desligar um tipo cancela só os avisos dele, mesmo sem os dados da casa', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('bills', true);
+      await reminders.setHouseReminderKind('documents', true);
+      await reminders.syncHouseReminders(data, today);
+      expect(kindsOf(live)).toEqual(['bills', 'documents']);
+      await reminders.setHouseReminderKind('bills', false);
+      expect(kindsOf(live)).toEqual(['documents']);
+    });
+  });
+
+  it('fica com o espaço que os remédios deixam no teto do iPhone', async () => {
+    await withHouse(async (reminders, { live }) => {
+      for (let i = 0; i < 62; i++) live.set(`remedio${i}`, { content: { data: { reminder: `med:${i}` } } });
+      await reminders.setHouseReminderKind('bills', true);
+      await reminders.setHouseReminderKind('documents', true);
+      await reminders.syncHouseReminders(data, today);
+      expect(live.size).toBe(64);
+    });
+  });
+});

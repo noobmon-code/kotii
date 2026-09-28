@@ -1,22 +1,33 @@
-import { useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { AppState } from 'react-native';
 
 import { useBills } from '@/data/finance';
 import { useChores, useMedications } from '@/data/home';
 import { useDocuments } from '@/data/house';
 import { todayISO } from '@/domain/dates';
-import { syncHouseReminders, syncReminders, type HouseReminderData } from '@/lib/reminders';
+import { anyHouseReminderKind, syncHouseReminders, syncReminders, type HouseReminderData } from '@/lib/reminders';
 
-/** Contas, documentos e tarefas para os avisos da casa; null enquanto carrega. */
-export function useHouseReminderData(): HouseReminderData | null {
-  const { data: bills } = useBills();
-  const { data: documents } = useDocuments();
-  const { data: chores } = useChores();
+/**
+ * Contas, documentos e tarefas para os avisos da casa (`data`, null enquanto
+ * carrega) e `refetch`, que busca os três de novo e devolve o resultado.
+ */
+export function useHouseReminderData() {
+  const bills = useBills();
+  const documents = useDocuments();
+  const chores = useChores();
   // Mesmo objeto enquanto os dados não mudam: não refaz os avisos à toa.
-  return useMemo(
-    () => (bills && documents && chores ? { bills, documents, chores } : null),
-    [bills, documents, chores],
+  const data = useMemo<HouseReminderData | null>(
+    () => (bills.data && documents.data && chores.data ? { bills: bills.data, documents: documents.data, chores: chores.data } : null),
+    [bills.data, documents.data, chores.data],
   );
+  const { refetch: refetchBills } = bills;
+  const { refetch: refetchDocuments } = documents;
+  const { refetch: refetchChores } = chores;
+  const refetch = useCallback(async (): Promise<HouseReminderData | null> => {
+    const [b, d, c] = await Promise.all([refetchBills(), refetchDocuments(), refetchChores()]);
+    return b.data && d.data && c.data ? { bills: b.data, documents: d.data, chores: c.data } : null;
+  }, [refetchBills, refetchDocuments, refetchChores]);
+  return { data, refetch };
 }
 
 /**
@@ -28,17 +39,15 @@ export function useHouseReminderData(): HouseReminderData | null {
 export function useReminderSync() {
   const { data, refetch } = useMedications();
   const house = useHouseReminderData();
-  const { refetch: refetchBills } = useBills();
-  const { refetch: refetchDocuments } = useDocuments();
-  const { refetch: refetchChores } = useChores();
+  const { refetch: refetchHouse } = house;
 
   useEffect(() => {
     if (data) syncReminders(data, todayISO()).catch(() => undefined);
   }, [data]);
 
   useEffect(() => {
-    if (house) syncHouseReminders(house).catch(() => undefined);
-  }, [house]);
+    if (house.data) syncHouseReminders(house.data).catch(() => undefined);
+  }, [house.data]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
@@ -46,11 +55,14 @@ export function useReminderSync() {
       refetch()
         .then((result) => (result.data ? syncReminders(result.data, todayISO()) : undefined))
         .catch(() => undefined);
-      // Os avisos da casa se refazem pelo efeito acima quando os dados chegam.
-      refetchBills().catch(() => undefined);
-      refetchDocuments().catch(() => undefined);
-      refetchChores().catch(() => undefined);
+      // Refaz com o resultado da busca, e não pelo efeito acima: dados iguais
+      // mantêm o mesmo objeto, mas o dia pode ter mudado e a janela precisa andar.
+      // Sem nenhum aviso da casa ligado, nem busca.
+      anyHouseReminderKind()
+        .then((on) => (on ? refetchHouse() : null))
+        .then((fresh) => (fresh ? syncHouseReminders(fresh) : undefined))
+        .catch(() => undefined);
     });
     return () => subscription.remove();
-  }, [refetch, refetchBills, refetchDocuments, refetchChores]);
+  }, [refetch, refetchHouse]);
 }
