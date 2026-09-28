@@ -960,27 +960,55 @@ do $$
 declare
   kid uuid := current_setting('test.person_kid')::uuid;
   bed uuid;
+  toys uuid;
   dishes uuid;
 begin
-  insert into public.chores (title, recurrence, kid_id, points) values ('Arrumar a cama', 'daily', kid, 10) returning id into bed;
+  insert into public.chores (title, recurrence, due_on, kid_id, points) values ('Arrumar a cama', 'daily', '2026-09-27', kid, 10)
+    returning id into bed;
+  insert into public.chores (title, due_on, kid_id, points) values ('Guardar os brinquedos', '2026-09-28', kid, 5) returning id into toys;
   insert into public.chores (title, points) values ('Lavar a louça', 50) returning id into dishes;
-  perform public.complete_chore(bed, '2026-09-27');
-  perform public.complete_chore(bed, '2026-09-28');
+  perform public.complete_chore(bed, '2026-09-27', '2026-09-27');
+  -- Toque duplo (ou outro celular) na mesma ocorrência: conta uma vez.
+  perform public.complete_chore(bed, '2026-09-27', '2026-09-27');
+  assert (select count(*) from public.chore_completions where chore_id = bed) = 1, 'same occurrence completes once';
+  perform public.complete_chore(bed, '2026-09-28', '2026-09-28');
+  -- Tarefa única, pelo app antigo (sem vencimento): a segunda vez não conta.
+  perform public.complete_chore(toys, '2026-09-28');
+  perform public.complete_chore(toys, '2026-09-28');
   perform public.complete_chore(dishes, '2026-09-28');
-  assert (select sum(points) from public.chore_completions where person_id = kid) = 20, 'kid earns the chore points';
+  assert (select sum(points) from public.chore_completions where person_id = kid) = 25, 'kid earns the chore points once per occurrence';
   assert (select points from public.chore_completions where chore_id = dishes) = 0, 'chore without a kid earns nothing';
-  insert into public.point_redemptions (person_id, title, points) values (kid, 'Sorvete', 15);
-  assert (select balance from public.kid_points where person_id = kid) = 5, 'balance is earned minus redeemed';
+
+  perform public.redeem_points(kid, ' Sorvete ', 15);
+  assert (select balance from public.kid_points where person_id = kid) = 10, 'balance is earned minus redeemed';
+  assert (select title from public.point_redemptions where person_id = kid) = 'Sorvete', 'redemption title is trimmed';
   begin
-    insert into public.point_redemptions (person_id, title, points) values (kid, 'Nada', 0);
+    perform public.redeem_points(kid, 'Bicicleta', 11);
+    raise exception 'FAIL: redeemed more than the balance';
+  exception when raise_exception then null;
+  end;
+  begin
+    perform public.redeem_points(kid, 'Nada', 0);
     raise exception 'FAIL: zero-point redemption';
   exception when check_violation then null;
+  end;
+  begin
+    insert into public.point_redemptions (person_id, title, points) values (kid, 'Direto', 1);
+    raise exception 'FAIL: redemption without the balance check';
+  exception when insufficient_privilege then null;
   end;
   begin
     insert into public.chores (title, points) values ('X', 5000);
     raise exception 'FAIL: too many points';
   exception when check_violation then null;
   end;
+
+  -- Apagar a tarefa não leva os pontos já ganhos.
+  delete from public.chores where id = bed;
+  assert (select balance from public.kid_points where person_id = kid) = 10, 'deleting a chore keeps the points earned';
+  assert (select count(*) from public.chore_completions where person_id = kid and chore_id is null and chore_title = 'Arrumar a cama') = 2,
+    'kept completions remember the chore';
+  perform set_config('test.kid_chore', toys::text, false);
 end $$;
 select set_config('request.jwt.claim.sub', :'user_c', false) \gset
 do $$
@@ -988,11 +1016,36 @@ begin
   assert (select count(*) from public.kid_points where person_id = current_setting('test.person_kid')::uuid) = 0,
     'C sees no foreign points';
   begin
-    insert into public.point_redemptions (person_id, title, points) values (current_setting('test.person_kid')::uuid, 'Hack', 1);
+    perform public.redeem_points(current_setting('test.person_kid')::uuid, 'Hack', 1);
     raise exception 'FAIL: redeemed points of a foreign kid';
-  exception when foreign_key_violation then null;
+  exception when no_data_found then null;
   end;
 end $$;
+-- A criança ganha conta no app (entra na casa com o mesmo nome): as tarefas
+-- dela passam para a conta e param de dar pontos à ficha.
+reset role;
+\set user_lia '00000000-0000-0000-0000-000000000c1d'
+insert into auth.users (id) values (:'user_lia');
+insert into public.household_members (household_id, user_id, display_name) values (:'hh_a', :'user_lia', 'Lia');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  kid uuid := current_setting('test.person_kid')::uuid;
+  toys uuid := current_setting('test.kid_chore')::uuid;
+  c public.chores;
+begin
+  assert (select member_user_id from public.people where id = kid) = '00000000-0000-0000-0000-000000000c1d', 'kid claimed by the new member';
+  select * into c from public.chores where id = toys;
+  assert c.kid_id is null and c.assigned_to = '00000000-0000-0000-0000-000000000c1d', 'kid chores move to the new account';
+  update public.chores set kid_id = kid, active = true, due_on = '2026-09-29' where id = toys;
+  perform public.complete_chore(toys, '2026-09-29', '2026-09-29');
+  assert (select points from public.chore_completions where chore_id = toys order by completed_at desc limit 1) = 0,
+    'a person with an account earns no points';
+end $$;
+reset role;
+delete from public.household_members where user_id = :'user_lia';
+set role authenticated;
 
 \echo '• divisão de gastos: pesos e acertos entre moradores'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset

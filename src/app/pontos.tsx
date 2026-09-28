@@ -4,8 +4,8 @@ import { StyleSheet, View } from 'react-native';
 
 import { useChores, useKidHistory, useKidPoints, useRedeemPoints } from '@/data/home';
 import { usePeople } from '@/data/health';
-import { formatShortDate, todayISO, toISODate } from '@/domain/dates';
-import { earnedThisWeek, kidsOf, pointsHistory } from '@/domain/points';
+import { addDays, formatShortDate, todayISO, toISODate } from '@/domain/dates';
+import { kidsOf, pointsHistory } from '@/domain/points';
 import { FieldsModal } from '@/features/health/FieldsModal';
 import { errorMessage } from '@/lib/supabase';
 import type { Chore, Person } from '@/lib/types';
@@ -64,12 +64,12 @@ export default function PointsScreen() {
 
 function KidCard({ kid, tint, balance, chores }: { kid: Person; tint: Tint; balance: number; chores: Chore[] }) {
   const t = useTint(tint);
-  const history = useKidHistory(kid.id);
+  const today = todayISO();
+  const history = useKidHistory(kid.id, addDays(today, -6));
   const redeem = useRedeemPoints();
   const [redeeming, setRedeeming] = useState(false);
-  const today = todayISO();
   const events = history.data ? pointsHistory(history.data.completions, history.data.redemptions) : [];
-  const week = earnedThisWeek(events, today);
+  const week = history.data?.weekPoints ?? 0;
 
   return (
     <Card style={styles.gap}>

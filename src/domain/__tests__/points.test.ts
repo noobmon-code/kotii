@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { choreAssigneeLabel } from '../chores';
-import { earnedThisWeek, kidsOf, pointsHistory } from '../points';
+import { kidsOf, pointsHistory } from '../points';
 
 describe('pontos das crianças', () => {
   it('só fichas de pessoas sem conta ganham pontos', () => {
@@ -27,9 +27,6 @@ describe('pontos das crianças', () => {
       ['Sorvete', -15],
       ['Arrumar a cama', 10],
     ]);
-    expect(earnedThisWeek(events, '2026-09-27')).toBe(20);
-    expect(earnedThisWeek(events, '2026-10-03')).toBe(20); // 27/9 ainda entra
-    expect(earnedThisWeek(events, '2026-10-04')).toBe(0);
   });
 });
 

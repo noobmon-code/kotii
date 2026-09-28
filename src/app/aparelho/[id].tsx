@@ -286,7 +286,7 @@ function MaintenanceSection({ equipment, today }: { equipment: Equipment; today:
                       <CheckCircle
                         checked={false}
                         label={`Registrar ${chore.title} feita hoje`}
-                        onPress={() => complete.mutate({ id: chore.id, today }, { onError })}
+                        onPress={() => complete.mutate({ id: chore.id, today, dueOn: chore.due_on }, { onError })}
                       />
                     ) : null
                   }

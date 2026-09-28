@@ -1,8 +1,6 @@
 // Pontos das crianças: tarefas feitas (com os pontos combinados) menos o que
 // foi trocado por prêmios. As crianças são as fichas sem conta no app.
 
-import { addDays, toISODate } from './dates';
-
 export interface PointsEvent {
   id: string;
   title: string;
@@ -24,10 +22,4 @@ export function pointsHistory(
     ...completions.filter((c) => c.points > 0).map((c) => ({ id: c.id, title: c.title, points: c.points, at: c.completed_at })),
     ...redemptions.map((r) => ({ id: r.id, title: r.title, points: -r.points, at: r.created_at })),
   ].sort((a, b) => b.at.localeCompare(a.at));
-}
-
-/** Pontos ganhos nos últimos 7 dias (hoje incluído). */
-export function earnedThisWeek(events: PointsEvent[], today: string): number {
-  const since = addDays(today, -6);
-  return events.filter((e) => e.points > 0 && toISODate(new Date(e.at)) >= since).reduce((sum, e) => sum + e.points, 0);
 }

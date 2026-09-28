@@ -99,7 +99,7 @@ export function ChoresPanel() {
                           label={`Concluir ${chore.title}`}
                           onPress={() =>
                             complete.mutate(
-                              { id: chore.id, today },
+                              { id: chore.id, today, dueOn: chore.due_on },
                               { onSuccess: () => cheerKid(chore, people), onError: (err) => notify('Erro', errorMessage(err)) },
                             )
                           }

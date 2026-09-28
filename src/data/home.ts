@@ -116,8 +116,10 @@ export function useSaveChore() {
 export function useCompleteChore() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, today }: { id: string; today: string }) =>
-      unwrap(await supabase.rpc('complete_chore', { p_chore_id: id, p_today: today })),
+    // dueOn: o vencimento na tela. Se a tarefa já andou (toque duplo, outro
+    // celular), o servidor não registra de novo nem credita pontos outra vez.
+    mutationFn: async ({ id, today, dueOn }: { id: string; today: string; dueOn: string }) =>
+      unwrap(await supabase.rpc('complete_chore', { p_chore_id: id, p_today: today, p_due_on: dueOn })),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['chores'] });
       queryClient.invalidateQueries({ queryKey: ['choreHistory'] });
@@ -142,15 +144,19 @@ export function useKidPoints() {
   });
 }
 
-/** Tarefas feitas e prêmios de uma criança (os mais recentes). */
-export function useKidHistory(personId: string) {
+/**
+ * Tarefas feitas e prêmios de uma criança (os mais recentes) e os pontos
+ * ganhos desde `weekStart` (AAAA-MM-DD, local), somados à parte: o histórico
+ * é cortado e a semana não pode ser.
+ */
+export function useKidHistory(personId: string, weekStart: string) {
   return useQuery({
-    queryKey: ['kidPoints', personId],
+    queryKey: ['kidPoints', personId, weekStart],
     queryFn: async () => {
-      const [completions, redemptions] = await Promise.all([
+      const [completions, redemptions, week] = await Promise.all([
         supabase
           .from('chore_completions')
-          .select('id, points, completed_at, chore:chores(title)')
+          .select('id, points, completed_at, chore_title, chore:chores(title)')
           .eq('person_id', personId)
           .gt('points', 0)
           .order('completed_at', { ascending: false })
@@ -161,16 +167,30 @@ export function useKidHistory(personId: string) {
           .eq('person_id', personId)
           .order('created_at', { ascending: false })
           .limit(30),
+        supabase
+          .from('chore_completions')
+          .select('points')
+          .eq('person_id', personId)
+          .gt('points', 0)
+          .gte('completed_at', new Date(`${weekStart}T00:00:00`).toISOString()),
       ]);
-      type CompletionRow = { id: string; points: number; completed_at: string; chore: { title: string } | null };
+      type CompletionRow = {
+        id: string;
+        points: number;
+        completed_at: string;
+        chore_title: string | null;
+        chore: { title: string } | null;
+      };
       return {
         completions: (unwrap(completions) as unknown as CompletionRow[]).map((c) => ({
           id: c.id,
           points: c.points,
           completed_at: c.completed_at,
-          title: c.chore?.title ?? 'Tarefa',
+          // Tarefa apagada: vale o nome guardado na conclusão.
+          title: c.chore?.title ?? c.chore_title ?? 'Tarefa',
         })),
         redemptions: unwrap(redemptions) as { id: string; points: number; created_at: string; title: string }[],
+        weekPoints: (unwrap(week) as { points: number }[]).reduce((sum, c) => sum + c.points, 0),
       };
     },
   });
@@ -179,8 +199,9 @@ export function useKidHistory(personId: string) {
 export function useRedeemPoints() {
   const queryClient = useQueryClient();
   return useMutation({
+    // Pela função: trava a ficha e não deixa dois prêmios ao mesmo tempo passarem do saldo.
     mutationFn: async (input: { person_id: string; title: string; points: number }) =>
-      unwrap(await supabase.from('point_redemptions').insert(input)),
+      unwrap(await supabase.rpc('redeem_points', { p_person_id: input.person_id, p_title: input.title, p_points: input.points })),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['kidPoints'] }),
   });
 }
