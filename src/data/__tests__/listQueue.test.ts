@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
-import { dehydrate, hydrate, MutationObserver, onlineManager, QueryClient } from '@tanstack/react-query';
+import { dehydrate, hydrate, MutationObserver, onlineManager, QueryClient, QueryObserver } from '@tanstack/react-query';
 
 import {
+  clearCheckedItems,
   ForeignToggleError,
   newToggleToken,
   onListItemsChange,
@@ -9,10 +10,14 @@ import {
   SessionPendingError,
   TOGGLE_ITEM_KEY,
   type ToggleItemInput,
+  TogglesPendingError,
+  unlessTogglesQueued,
 } from '../market';
 
 const sent: { id: string; token: string; values: unknown }[] = [];
 const auth = { signedIn: true };
+/** Segura o envio das marcações até `release` (para ver o que acontece no meio). */
+const hold: { gate?: Promise<void>; release?: () => void } = {};
 
 jest.mock('@/lib/supabase', () => ({
   supabase: {
@@ -22,6 +27,7 @@ jest.mock('@/lib/supabase', () => ({
         eq: (_idColumn: string, id: string) => ({
           eq: async (_tokenColumn: string, token: string) => {
             sent.push({ id, token, values });
+            await hold.gate;
             return { data: null, error: null };
           },
         }),
@@ -48,6 +54,8 @@ function tap(queryClient: QueryClient, input: ToggleItemInput) {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 afterEach(() => {
+  hold.release?.();
+  hold.gate = undefined;
   jest.useRealTimers();
   sent.length = 0;
   auth.signedIn = true;
@@ -156,6 +164,56 @@ describe('fila de marcações da lista', () => {
     expect(mutation.state.status).toBe('error');
     expect(mutation.state.failureCount).toBe(1);
     expect(mutation.state.error).toBeInstanceOf(ForeignToggleError);
+  });
+
+  it('com marcação na fila, buscar a lista devolve o cache; a busca de verdade vem no fim', async () => {
+    hold.gate = new Promise((resolve) => (hold.release = resolve));
+    const queryClient = client();
+    const cached = [{ id: 'arroz', checked_at: '2026-09-27T10:00:00Z' }];
+    queryClient.setQueryData(['listItems', 'mercado'], cached);
+    const queuedWhenFetched: number[] = [];
+    const fetchFromServer = jest.fn(async () => {
+      queuedWhenFetched.push(queryClient.isMutating({ mutationKey: TOGGLE_ITEM_KEY }));
+      return [{ id: 'arroz', checked_at: '2026-09-27T10:00:00Z' }];
+    });
+    const observer = new QueryObserver(queryClient, {
+      queryKey: ['listItems', 'mercado'],
+      queryFn: unlessTogglesQueued(fetchFromServer),
+      staleTime: Infinity,
+    });
+    const unsubscribe = observer.subscribe(() => undefined);
+    tap(queryClient, { id: 'arroz', checked: true, userId: 'u1', at: '2026-09-27T10:00:00Z', token: 'a0', nextToken: 'a1' });
+    await flush();
+
+    // Puxar para atualizar com a marcação ainda indo: nada vem do servidor.
+    expect(sent.map((s) => s.id)).toEqual(['arroz']);
+    expect(await observer.refetch().then((r) => r.data)).toBe(cached);
+    expect(fetchFromServer).not.toHaveBeenCalled();
+
+    hold.release?.();
+    await flush();
+    await flush();
+    // A fila acabou: uma busca de verdade, já sem marcação pendente.
+    expect(queuedWhenFetched).toEqual([0]);
+    unsubscribe();
+  });
+
+  it('sem nada no cache, busca do servidor mesmo com a fila', async () => {
+    onlineManager.setOnline(false);
+    const queryClient = client();
+    tap(queryClient, { id: 'arroz', checked: true, userId: 'u1', at: '2026-09-27T10:00:00Z', token: 'a0', nextToken: 'a1' });
+    await flush();
+    const fetchFromServer = jest.fn(async () => ['do servidor']);
+    const data = await unlessTogglesQueued(fetchFromServer)({ client: queryClient, queryKey: ['lists'] } as never);
+    expect(data).toEqual(['do servidor']);
+  });
+
+  it('limpar o carrinho espera a fila chegar ao servidor', async () => {
+    onlineManager.setOnline(false);
+    const queryClient = client();
+    tap(queryClient, { id: 'arroz', checked: true, userId: 'u1', at: '2026-09-27T10:00:00Z', token: 'a0', nextToken: 'a1' });
+    await flush();
+    await expect(clearCheckedItems(queryClient, 'mercado')).rejects.toBeInstanceOf(TogglesPendingError);
   });
 
   it('cada marcação ganha um selo novo, no formato uuid', () => {

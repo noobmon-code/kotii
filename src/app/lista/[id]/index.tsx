@@ -7,6 +7,7 @@ import {
   useAddListItem,
   useArchiveList,
   useClearCheckedItems,
+  useTogglesQueued,
   useDeleteListItem,
   useListItems,
   useProducts,
@@ -51,6 +52,8 @@ export default function ShoppingListScreen() {
   const toggle = useToggleListItem(id);
   const remove = useDeleteListItem(id);
   const clearChecked = useClearCheckedItems(id);
+  // Limpar só depois que as marcações guardadas chegarem ao servidor.
+  const syncing = useTogglesQueued();
   const archive = useArchiveList(id);
 
   const [name, setName] = useState('');
@@ -225,7 +228,15 @@ export default function ShoppingListScreen() {
       {checked.length ? (
         <Section
           title={`No carrinho (${checked.length})`}
-          action={<Button title="Limpar" variant="ghost" compact onPress={() => clearChecked.mutate(undefined, { onError })} />}>
+          action={
+            <Button
+              title="Limpar"
+              variant="ghost"
+              compact
+              disabled={syncing}
+              onPress={() => clearChecked.mutate(undefined, { onError })}
+            />
+          }>
           <ShoppingGrid items={checked} inCart onToggle={toggleItem} onRemove={removeItem} />
         </Section>
       ) : null}

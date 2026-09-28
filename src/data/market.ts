@@ -1,6 +1,13 @@
 // Mercado: listas de compras, produtos, lojas e preços.
 
-import { type QueryClient, useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  type QueryClient,
+  type QueryFunctionContext,
+  useIsMutating,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { useEffect } from 'react';
 
 import { supabase, unwrap } from '@/lib/supabase';
@@ -17,21 +24,30 @@ import type {
 // ---------------------------------------------------------------------------
 // Listas
 
-/**
- * Marcações ainda na fila (inclusive as restauradas ao reabrir o app): buscar
- * a lista agora desfaria na tela as que faltam enviar. A última marcação
- * busca listas e itens; até lá, fica o que está no cache.
- */
-function useTogglesQueued() {
+/** Marcações ainda na fila (inclusive as restauradas ao reabrir o app). */
+export function useTogglesQueued() {
   return useIsMutating({ mutationKey: TOGGLE_ITEM_KEY }) > 0;
 }
 
+/**
+ * Busca de listas e itens que respeita a fila: com marcações ainda por
+ * enviar, a resposta do servidor desfaria na tela as que faltam. Então
+ * qualquer busca (automática, puxar para atualizar, tentar de novo) devolve o
+ * que já está no cache, e a busca de verdade vem quando a fila acaba
+ * (registerListMutations).
+ */
+export function unlessTogglesQueued<T>(fetch: () => Promise<T>) {
+  return async ({ client, queryKey }: QueryFunctionContext) => {
+    const cached = client.getQueryData<T>(queryKey);
+    if (cached !== undefined && togglesQueued(client)) return cached;
+    return fetch();
+  };
+}
+
 export function useShoppingLists() {
-  const queued = useTogglesQueued();
   return useQuery({
     queryKey: ['lists'],
-    enabled: !queued,
-    queryFn: async () => {
+    queryFn: unlessTogglesQueued(async () => {
       const rows = unwrap(
         await supabase
           .from('shopping_lists')
@@ -44,7 +60,7 @@ export function useShoppingLists() {
         pending: shopping_list_items.filter((i) => !i.checked_at).length,
         total: shopping_list_items.length,
       }));
-    },
+    }),
   });
 }
 
@@ -77,18 +93,18 @@ export function useListItems(listId: string) {
     };
   }, [listId, queryClient]);
 
-  const queued = useTogglesQueued();
   return useQuery({
     queryKey: ['listItems', listId],
-    enabled: !queued,
-    queryFn: async () =>
-      unwrap(
-        await supabase
-          .from('shopping_list_items')
-          .select('id, list_id, product_id, name, category, quantity, unit, checked_at, checked_by, toggle_token, created_at')
-          .eq('list_id', listId)
-          .order('created_at'),
-      ) as ShoppingListItem[],
+    queryFn: unlessTogglesQueued(
+      async () =>
+        unwrap(
+          await supabase
+            .from('shopping_list_items')
+            .select('id, list_id, product_id, name, category, quantity, unit, checked_at, checked_by, toggle_token, created_at')
+            .eq('list_id', listId)
+            .order('created_at'),
+        ) as ShoppingListItem[],
+    ),
   });
 }
 
@@ -320,20 +336,9 @@ async function toggleListItem({ id, checked, userId, at, token, nextToken }: Tog
   );
 }
 
-/** Ainda há marcação na fila, fora as `settling` que estão terminando agora? */
-function togglesQueued(queryClient: QueryClient, settling = 0) {
-  return queryClient.isMutating({ mutationKey: TOGGLE_ITEM_KEY }) > settling;
-}
-
-/**
- * Com outras marcações na fila, buscar a lista agora desfaria na tela as que
- * ainda não foram: só a última busca listas e itens (de todas as listas, já
- * que o tempo real pulou as mudanças enquanto a fila andava).
- */
-function refreshAfterToggle(queryClient: QueryClient) {
-  if (togglesQueued(queryClient, 1)) return;
-  queryClient.invalidateQueries({ queryKey: ['lists'] });
-  queryClient.invalidateQueries({ queryKey: ['listItems'] });
+/** Ainda há marcação na fila (enviando, esperando a vez ou sem internet)? */
+function togglesQueued(queryClient: QueryClient) {
+  return queryClient.isMutating({ mutationKey: TOGGLE_ITEM_KEY }) > 0;
 }
 
 /** O que a fila precisa para rodar uma marcação restaurada depois de o app reabrir. */
@@ -349,8 +354,15 @@ export function registerListMutations(queryClient: QueryClient) {
       !(error instanceof ForeignToggleError) && failures < (error instanceof SessionPendingError ? 20 : 3),
     retryDelay: (failures, error) =>
       error instanceof SessionPendingError ? 15_000 : Math.min(1000 * 2 ** failures, 30_000),
-    // Fila restaurada ao reabrir o app.
-    onSettled: () => refreshAfterToggle(queryClient),
+  });
+  // A fila acabou (a última marcação já terminou, não só está terminando):
+  // agora sim busca listas e itens de todas as listas, o que cobre também
+  // as buscas e mudanças do tempo real que esperaram a fila.
+  queryClient.getMutationCache().subscribe((event) => {
+    if (event.type !== 'updated' || event.mutation.options.mutationKey?.[0] !== TOGGLE_ITEM_KEY[0]) return;
+    if (event.mutation.state.status === 'pending' || togglesQueued(queryClient)) return;
+    queryClient.invalidateQueries({ queryKey: ['lists'] });
+    queryClient.invalidateQueries({ queryKey: ['listItems'] });
   });
 }
 
@@ -374,7 +386,6 @@ export function useToggleListItem(listId: string) {
         ),
       );
     },
-    onSettled: () => refreshAfterToggle(queryClient),
   });
 }
 
@@ -386,13 +397,23 @@ export function useDeleteListItem(listId: string) {
   });
 }
 
+/** A fila de marcações ainda não chegou ao servidor: limpar agora deixaria itens para trás. */
+export class TogglesPendingError extends Error {
+  constructor() {
+    super('Espere as marcações guardadas serem enviadas para limpar o carrinho.');
+  }
+}
+
+export async function clearCheckedItems(queryClient: QueryClient, listId: string) {
+  if (togglesQueued(queryClient)) throw new TogglesPendingError();
+  return unwrap(await supabase.from('shopping_list_items').delete().eq('list_id', listId).not('checked_at', 'is', null));
+}
+
 export function useClearCheckedItems(listId: string) {
+  const queryClient = useQueryClient();
   const invalidate = useInvalidateLists(listId);
   return useMutation({
-    mutationFn: async () =>
-      unwrap(
-        await supabase.from('shopping_list_items').delete().eq('list_id', listId).not('checked_at', 'is', null),
-      ),
+    mutationFn: () => clearCheckedItems(queryClient, listId),
     onSuccess: invalidate,
   });
 }
