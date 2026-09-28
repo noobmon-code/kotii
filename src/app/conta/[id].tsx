@@ -72,13 +72,22 @@ function BillForm({ bill }: { bill?: Bill }) {
   const dueISO = parseBRDate(due);
   const boletoLine = boleto ? parseBoleto(boleto, todayISO())?.line : undefined;
 
-  // Pagar vale para o vencimento gravado. Boleto lido e ainda não salvo entra
-  // no pagamento (o valor vem dele); vencimento mudado precisa ser salvo antes.
-  function startPayment() {
+  // Pagar vale para o vencimento gravado; vencimento mudado precisa ser salvo
+  // antes. Boleto lido e ainda não salvo vai para a conta primeiro: o valor
+  // vem dele e o pagamento guarda o código (desfazer o devolve).
+  async function startPayment() {
     if (!bill) return;
     if (dueISO && dueISO !== bill.next_due_on) {
       notify('Salve antes de pagar', 'O vencimento mudou nesta tela. Salve a conta e depois registre o pagamento.');
       return;
+    }
+    if (editedBoleto !== null && editedBoleto.value !== bill.boleto) {
+      try {
+        await save.mutateAsync({ id: bill.id, values: { boleto: editedBoleto.value } });
+      } catch (err) {
+        onError(err);
+        return;
+      }
     }
     setPaying(true);
   }
