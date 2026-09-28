@@ -679,8 +679,14 @@ begin
   assert (public.pay_bill(rent, '2026-03-31', null, '2026-03-30')).paid, 'a real payment reports paid';
   b := public.undo_bill_payment((select id from public.bill_payments where bill_id = rent and due_on = '2026-03-31'));
 
-  insert into public.bills (name, recurrence, due_day, next_due_on) values ('Luz', 'monthly', 10, '2026-09-10')
+  insert into public.bills (name, recurrence, due_day, next_due_on, boleto)
+    values ('Luz', 'monthly', 10, '2026-09-10', '83620000000667800481001809756573100158963608')
     returning id into power;
+  begin
+    update public.bills set boleto = '1234' where id = power;
+    raise exception 'FAIL: malformed boleto';
+  exception when check_violation then null;
+  end;
   begin
     perform (public.pay_bill(power, '2026-09-10', null, '2026-09-10')).bill;
     raise exception 'FAIL: variable bill paid without amount';
@@ -688,6 +694,21 @@ begin
   end;
   b := (public.pay_bill(power, '2026-09-10', 187.40, '2026-09-09')).bill;
   assert b.next_due_on = '2026-10-10', 'monthly advance';
+  assert b.boleto is null, 'paying clears the boleto of the paid due date';
+  -- Desfazer devolve a conta ao vencimento, com o boleto dele.
+  b := public.undo_bill_payment((select id from public.bill_payments where bill_id = power and due_on = '2026-09-10'));
+  assert b.next_due_on = '2026-09-10' and b.boleto = '83620000000667800481001809756573100158963608', 'undo restores the boleto';
+  b := (public.pay_bill(power, '2026-09-10', 187.40, '2026-09-09')).bill;
+  assert b.next_due_on = '2026-10-10' and b.boleto is null, 'paid again';
+  -- Com o boleto do próximo vencimento já lido, desfazer pede para tirá-lo antes.
+  update public.bills set boleto = '83630000001234500481001809756573100158963608' where id = power;
+  begin
+    perform public.undo_bill_payment((select id from public.bill_payments where bill_id = power and due_on = '2026-09-10'));
+    raise exception 'FAIL: undo dropped the next boleto';
+  exception when invalid_parameter_value then null;
+  end;
+  assert (select boleto from public.bills where id = power) = '83630000001234500481001809756573100158963608', 'next boleto kept';
+  update public.bills set boleto = null where id = power;
 
   insert into public.bills (name, category, amount, recurrence, due_day, next_due_on)
     values ('IPVA', 'transporte', 1800, 'yearly', 15, '2026-03-15') returning id into ipva;

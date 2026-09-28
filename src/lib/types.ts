@@ -286,6 +286,8 @@ export interface Bill {
   autopay: boolean;
   notes: string | null;
   active: boolean;
+  /** Código de barras do boleto do próximo vencimento (44 dígitos); sai ao pagar. */
+  boleto: string | null;
 }
 
 export interface BillPayment {

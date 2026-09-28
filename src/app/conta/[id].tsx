@@ -1,12 +1,15 @@
+import * as Clipboard from 'expo-clipboard';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
 import { useBill, useBillPayments, useDeleteBill, useSaveBill, useUndoBillPayment } from '@/data/finance';
+import { parseBoleto, type Boleto } from '@/domain/boleto';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { BILL_RECURRENCES, FINANCE_CATEGORIES, type BillRecurrence, type FinanceCategory } from '@/domain/finance';
 import { formatBRL, parseDecimal } from '@/domain/money';
 import { billSubtitle } from '@/features/finance/BillsPanel';
+import { BoletoScanner } from '@/features/finance/BoletoScanner';
 import { PayBillModal } from '@/features/finance/PayBillModal';
 import { useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
@@ -57,19 +60,66 @@ function BillForm({ bill }: { bill?: Bill }) {
   const [due, setDue] = useState(bill ? formatBRDate(bill.next_due_on) : '');
   const [autopay, setAutopay] = useState(bill?.autopay ?? false);
   const [notes, setNotes] = useState(bill?.notes ?? '');
+  // O boleto só vem desta tela quando foi lido ou tirado aqui; senão vale o da
+  // conta, que pode mudar em outro celular com esta tela aberta.
+  const [editedBoleto, setEditedBoleto] = useState<{ value: string | null } | null>(null);
+  const boleto = editedBoleto ? editedBoleto.value : (bill?.boleto ?? null);
+  const setBoleto = (value: string | null) => setEditedBoleto({ value });
+  const [scanning, setScanning] = useState(false);
   const [paying, setPaying] = useState(false);
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
   const dueISO = parseBRDate(due);
+  const boletoLine = boleto ? parseBoleto(boleto, todayISO())?.line : undefined;
+
+  // Pagar vale para o vencimento gravado; vencimento mudado precisa ser salvo
+  // antes. Boleto lido e ainda não salvo vai para a conta primeiro: o valor
+  // vem dele e o pagamento guarda o código (desfazer o devolve).
+  async function startPayment() {
+    if (!bill) return;
+    if (dueISO && dueISO !== bill.next_due_on) {
+      notify('Salve antes de pagar', 'O vencimento mudou nesta tela. Salve a conta e depois registre o pagamento.');
+      return;
+    }
+    if (editedBoleto !== null && editedBoleto.value !== bill.boleto) {
+      try {
+        await save.mutateAsync({ id: bill.id, values: { boleto: editedBoleto.value }, expectDueOn: bill.next_due_on });
+      } catch (err) {
+        onError(err);
+        return;
+      }
+    }
+    setPaying(true);
+  }
+
+  function applyBoleto(read: Boleto) {
+    setScanning(false);
+    setBoleto(read.barcode);
+    if (!bill && !name.trim()) {
+      setName(read.suggestedName);
+      setCategory(read.suggestedCategory);
+    }
+    // Conta de valor fixo já cadastrada mantém o valor; o do boleto aparece ao pagar.
+    if (read.amount != null && !variable && !amount.trim()) setAmount(formatAmount(read.amount));
+    if (read.dueDate) setDue(formatBRDate(read.dueDate));
+  }
+
+  async function copyBoleto() {
+    if (!boletoLine) return;
+    await Clipboard.setStringAsync(boletoLine.replace(/\D/g, ''));
+    notify('Código copiado', 'Cole no app do banco, em pagar boleto.');
+  }
 
   function submit() {
     const value = variable ? null : parseDecimal(amount);
     if (!name.trim()) return notify('Informe o nome', 'Ex.: Condomínio, Internet, Escola.');
     if (!variable && value == null) return notify('Informe o valor', 'Ou marque que o valor varia a cada mês.');
     if (!dueISO) return notify('Data inválida', 'Informe o vencimento como dd/mm/aaaa.');
-    // Só grava o vencimento se mudou: se outra pessoa pagou enquanto esta tela
-    // estava aberta, salvar o resto não pode voltar a conta para trás.
+    // Só grava o vencimento e o boleto se mudaram aqui: se outra pessoa pagou
+    // ou trocou o boleto com esta tela aberta, salvar o resto não pode voltar
+    // a conta para trás nem regravar um boleto velho.
     const dueChanged = !bill || dueISO !== bill.next_due_on;
+    const boletoChanged = !bill || editedBoleto !== null;
     save.mutate(
       {
         id: bill?.id,
@@ -80,8 +130,11 @@ function BillForm({ bill }: { bill?: Bill }) {
           recurrence,
           autopay,
           notes: notes.trim() || null,
+          ...(boletoChanged ? { boleto } : {}),
           ...(dueChanged ? { next_due_on: dueISO, due_day: Number(dueISO.slice(8, 10)) } : {}),
         },
+        // Boleto e data são da parcela que a tela mostra: só gravam se ela ainda for a atual.
+        expectDueOn: bill && (boletoChanged || dueChanged) ? bill.next_due_on : undefined,
       },
       { onSuccess: () => router.back(), onError },
     );
@@ -94,9 +147,33 @@ function BillForm({ bill }: { bill?: Bill }) {
       {bill ? (
         <Card style={styles.status}>
           <Text variant="muted">{capitalizeFirst(billSubtitle(bill, todayISO()))}</Text>
-          {bill.active ? <Button title="Registrar pagamento" icon="check" onPress={() => setPaying(true)} /> : null}
+          {bill.active ? <Button title="Registrar pagamento" icon="check" onPress={startPayment} /> : null}
         </Card>
       ) : null}
+
+      <View style={styles.group}>
+        <Text variant="label">Boleto</Text>
+        {boletoLine ? (
+          <Card style={styles.status}>
+            <Text variant="body" selectable>
+              {boletoLine}
+            </Text>
+            <Row style={styles.wrap}>
+              <Button title="Copiar código" icon="content-copy" compact onPress={copyBoleto} />
+              <Button title="Ler outro" icon="barcode-scan" variant="secondary" compact onPress={() => setScanning(true)} />
+              <Button title="Tirar" icon="close" variant="ghost" compact onPress={() => setBoleto(null)} />
+            </Row>
+          </Card>
+        ) : (
+          <>
+            <Button title="Ler boleto" icon="barcode-scan" variant="secondary" onPress={() => setScanning(true)} />
+            <Text variant="small">
+              Pela câmera ou colando a linha digitável: preenche valor e vencimento, e o código fica aqui para copiar na hora
+              de pagar.
+            </Text>
+          </>
+        )}
+      </View>
 
       <TextField label="Nome" value={name} onChangeText={setName} placeholder="Ex.: Condomínio" autoFocus={!bill} />
 
@@ -150,7 +227,7 @@ function BillForm({ bill }: { bill?: Bill }) {
         <Switch value={autopay} onValueChange={setAutopay} trackColor={{ true: c.primary }} />
       </Row>
 
-      <TextField label="Observações" value={notes} onChangeText={setNotes} multiline placeholder="Ex.: código de barras, titular, contrato" />
+      <TextField label="Observações" value={notes} onChangeText={setNotes} multiline placeholder="Ex.: titular, contrato, senha do portal" />
       <Button title="Salvar" onPress={submit} loading={save.isPending} />
 
       {bill ? <PaymentHistory bill={bill} /> : null}
@@ -193,7 +270,8 @@ function BillForm({ bill }: { bill?: Bill }) {
         </>
       ) : null}
 
-      {paying && bill ? <PayBillModal bill={bill} onClose={() => setPaying(false)} /> : null}
+      {scanning ? <BoletoScanner onRead={applyBoleto} onClose={() => setScanning(false)} /> : null}
+      {paying && bill ? <PayBillModal bill={{ ...bill, boleto }} onClose={() => setPaying(false)} /> : null}
     </Screen>
   );
 }
