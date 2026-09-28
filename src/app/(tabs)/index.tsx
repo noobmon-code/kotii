@@ -161,6 +161,7 @@ export default function TodayScreen() {
     !documentsDue.length &&
     !warrantiesEnding.length &&
     !budgetAlerts.length &&
+    !restock.length &&
     !hasHealthToday(health, today);
   const dateLabel = capitalizeFirst(now.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }));
   const period = periodOf(now);

@@ -47,10 +47,15 @@ export function unlessListQueueBusy<T>(fetch: () => Promise<T>) {
 }
 
 type ListItemRef = { name: string; product_id: string | null; checked_at: string | null };
+type ListSummary = ShoppingList & { pending: number; total: number; items: ListItemRef[] };
+
+// O cache guardado no aparelho por versões anteriores tem listas sem `items`.
+const withItems = (lists: ListSummary[]) => (lists.every((l) => l.items) ? lists : lists.map((l) => ({ ...l, items: l.items ?? [] })));
 
 export function useShoppingLists() {
   return useQuery({
     queryKey: ['lists'],
+    select: withItems,
     queryFn: unlessListQueueBusy(async () => {
       const rows = unwrap(
         await supabase
@@ -59,7 +64,7 @@ export function useShoppingLists() {
           .is('archived_at', null)
           .order('created_at', { ascending: false }),
       ) as (ShoppingList & { shopping_list_items: ListItemRef[] })[];
-      return rows.map(({ shopping_list_items, ...list }) => ({
+      return rows.map(({ shopping_list_items, ...list }): ListSummary => ({
         ...list,
         pending: shopping_list_items.filter((i) => !i.checked_at).length,
         total: shopping_list_items.length,
