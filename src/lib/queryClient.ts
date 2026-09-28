@@ -9,7 +9,7 @@ import { persistQueryClientSave, type PersistQueryClientProviderProps } from '@t
 import * as Network from 'expo-network';
 import { AppState, Platform } from 'react-native';
 
-import { registerListMutations, TOGGLE_ITEM_KEY, type ToggleItemInput } from '@/data/market';
+import { inListQueue, registerListMutations, TOGGLE_ITEM_KEY, type ToggleItemInput } from '@/data/market';
 
 import { createCachePersister } from './cachePersister';
 
@@ -108,7 +108,7 @@ export function saveNow(): Promise<void> {
 }
 
 queryClient.getMutationCache().subscribe((event) => {
-  if (event.type === 'updated' && event.mutation.options.mutationKey?.[0] === TOGGLE_ITEM_KEY[0]) saveNow();
+  if (event.type === 'updated' && inListQueue(event.mutation)) saveNow();
 });
 // Indo para o fundo (ou fechando), grava o que estiver pendente.
 AppState.addEventListener('change', (state) => {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { dehydrate, hydrate, MutationObserver, onlineManager, QueryClient, QueryObserver } from '@tanstack/react-query';
 
 import {
-  clearCheckedItems,
+  CLEAR_CHECKED_KEY,
   ForeignToggleError,
   newToggleToken,
   onListItemsChange,
@@ -10,8 +10,7 @@ import {
   SessionPendingError,
   TOGGLE_ITEM_KEY,
   type ToggleItemInput,
-  TogglesPendingError,
-  unlessTogglesQueued,
+  unlessListQueueBusy,
 } from '../market';
 
 const sent: { id: string; token: string; values: unknown }[] = [];
@@ -23,6 +22,15 @@ jest.mock('@/lib/supabase', () => ({
   supabase: {
     auth: { getSession: async () => ({ data: { session: auth.signedIn ? { user: { id: 'u1' } } : null }, error: null }) },
     from: () => ({
+      delete: () => ({
+        eq: (_listColumn: string, listId: string) => ({
+          not: async () => {
+            sent.push({ id: `limpar:${listId}`, token: '', values: null });
+            await hold.gate;
+            return { data: null, error: null };
+          },
+        }),
+      }),
       update: (values: unknown) => ({
         eq: (_idColumn: string, id: string) => ({
           eq: async (_tokenColumn: string, token: string) => {
@@ -49,6 +57,11 @@ function client() {
 function tap(queryClient: QueryClient, input: ToggleItemInput) {
   const observer = new MutationObserver<unknown, Error, ToggleItemInput>(queryClient, { mutationKey: TOGGLE_ITEM_KEY });
   observer.mutate(input).catch(() => undefined);
+}
+
+function clear(queryClient: QueryClient, listId: string) {
+  const observer = new MutationObserver<unknown, Error, { listId: string }>(queryClient, { mutationKey: CLEAR_CHECKED_KEY });
+  observer.mutate({ listId }).catch(() => undefined);
 }
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -178,7 +191,7 @@ describe('fila de marcações da lista', () => {
     });
     const observer = new QueryObserver(queryClient, {
       queryKey: ['listItems', 'mercado'],
-      queryFn: unlessTogglesQueued(fetchFromServer),
+      queryFn: unlessListQueueBusy(fetchFromServer),
       staleTime: Infinity,
     });
     const unsubscribe = observer.subscribe(() => undefined);
@@ -204,16 +217,39 @@ describe('fila de marcações da lista', () => {
     tap(queryClient, { id: 'arroz', checked: true, userId: 'u1', at: '2026-09-27T10:00:00Z', token: 'a0', nextToken: 'a1' });
     await flush();
     const fetchFromServer = jest.fn(async () => ['do servidor']);
-    const data = await unlessTogglesQueued(fetchFromServer)({ client: queryClient, queryKey: ['lists'] } as never);
+    const data = await unlessListQueueBusy(fetchFromServer)({ client: queryClient, queryKey: ['lists'] } as never);
     expect(data).toEqual(['do servidor']);
   });
 
-  it('limpar o carrinho espera a fila chegar ao servidor', async () => {
+  it('limpar o carrinho espera as marcações que vieram antes, mesmo depois de reabrir o app', async () => {
     onlineManager.setOnline(false);
-    const queryClient = client();
-    tap(queryClient, { id: 'arroz', checked: true, userId: 'u1', at: '2026-09-27T10:00:00Z', token: 'a0', nextToken: 'a1' });
+    const before = client();
+    tap(before, { id: 'arroz', checked: true, userId: 'u1', at: '2026-09-27T10:00:00Z', token: 'a0', nextToken: 'a1' });
+    clear(before, 'mercado');
     await flush();
-    await expect(clearCheckedItems(queryClient, 'mercado')).rejects.toBeInstanceOf(TogglesPendingError);
+    expect(sent).toEqual([]);
+    const saved = JSON.parse(JSON.stringify(dehydrate(before)));
+
+    const after = client();
+    hydrate(after, saved);
+    onlineManager.setOnline(true);
+    await after.resumePausedMutations();
+    await flush();
+    expect(sent.map((s) => s.id)).toEqual(['arroz', 'limpar:mercado']);
+  });
+
+  it('marcação tocada com o limpar andando espera ele terminar', async () => {
+    hold.gate = new Promise((resolve) => (hold.release = resolve));
+    const queryClient = client();
+    clear(queryClient, 'mercado');
+    await flush();
+    tap(queryClient, { id: 'feijao', checked: true, userId: 'u1', at: '2026-09-27T10:02:00Z', token: 'f0', nextToken: 'f1' });
+    await flush();
+    expect(sent.map((s) => s.id)).toEqual(['limpar:mercado']);
+    hold.release?.();
+    await flush();
+    await flush();
+    expect(sent.map((s) => s.id)).toEqual(['limpar:mercado', 'feijao']);
   });
 
   it('cada marcação ganha um selo novo, no formato uuid', () => {

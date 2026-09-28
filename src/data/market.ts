@@ -24,9 +24,9 @@ import type {
 // ---------------------------------------------------------------------------
 // Listas
 
-/** Marcações ainda na fila (inclusive as restauradas ao reabrir o app). */
-export function useTogglesQueued() {
-  return useIsMutating({ mutationKey: TOGGLE_ITEM_KEY }) > 0;
+/** Fila da lista (marcações e limpar o carrinho) ainda andando, inclusive a restaurada ao reabrir o app. */
+export function useListQueueBusy() {
+  return useIsMutating({ predicate: inListQueue }) > 0;
 }
 
 /**
@@ -36,10 +36,10 @@ export function useTogglesQueued() {
  * que já está no cache, e a busca de verdade vem quando a fila acaba
  * (registerListMutations).
  */
-export function unlessTogglesQueued<T>(fetch: () => Promise<T>) {
+export function unlessListQueueBusy<T>(fetch: () => Promise<T>) {
   return async ({ client, queryKey }: QueryFunctionContext) => {
     const cached = client.getQueryData<T>(queryKey);
-    if (cached !== undefined && togglesQueued(client)) return cached;
+    if (cached !== undefined && listQueueBusy(client)) return cached;
     return fetch();
   };
 }
@@ -47,7 +47,7 @@ export function unlessTogglesQueued<T>(fetch: () => Promise<T>) {
 export function useShoppingLists() {
   return useQuery({
     queryKey: ['lists'],
-    queryFn: unlessTogglesQueued(async () => {
+    queryFn: unlessListQueueBusy(async () => {
       const rows = unwrap(
         await supabase
           .from('shopping_lists')
@@ -95,7 +95,7 @@ export function useListItems(listId: string) {
 
   return useQuery({
     queryKey: ['listItems', listId],
-    queryFn: unlessTogglesQueued(
+    queryFn: unlessListQueueBusy(
       async () =>
         unwrap(
           await supabase
@@ -114,7 +114,7 @@ export function useListItems(listId: string) {
  * marcação, e ela cobre também as mudanças puladas aqui.
  */
 export function onListItemsChange(queryClient: QueryClient, listId: string) {
-  if (togglesQueued(queryClient)) return;
+  if (listQueueBusy(queryClient)) return;
   queryClient.invalidateQueries({ queryKey: ['listItems', listId] });
   queryClient.invalidateQueries({ queryKey: ['lists'] });
 }
@@ -336,9 +336,21 @@ async function toggleListItem({ id, checked, userId, at, token, nextToken }: Tog
   );
 }
 
-/** Ainda há marcação na fila (enviando, esperando a vez ou sem internet)? */
-function togglesQueued(queryClient: QueryClient) {
-  return queryClient.isMutating({ mutationKey: TOGGLE_ITEM_KEY }) > 0;
+/**
+ * Marcar itens e limpar o carrinho andam numa fila só, na ordem dos toques:
+ * um limpar nunca cruza com uma marcação (e as duas sobrevivem a fechar o
+ * app, com o que ficou esperando a vez).
+ */
+export const LIST_QUEUE_SCOPE = { id: 'list-items' };
+export const CLEAR_CHECKED_KEY = ['clearCheckedItems'];
+
+export function inListQueue(mutation: { options: { scope?: { id: string } } }) {
+  return mutation.options.scope?.id === LIST_QUEUE_SCOPE.id;
+}
+
+/** Ainda há algo na fila da lista (enviando, esperando a vez ou sem internet)? */
+function listQueueBusy(queryClient: QueryClient) {
+  return queryClient.isMutating({ predicate: inListQueue }) > 0;
 }
 
 /** O que a fila precisa para rodar uma marcação restaurada depois de o app reabrir. */
@@ -347,7 +359,7 @@ export function registerListMutations(queryClient: QueryClient) {
     mutationFn: (input: ToggleItemInput) => toggleListItem(input),
     // Pausa sem internet em vez de falhar, e uma de cada vez, na ordem.
     networkMode: 'online',
-    scope: { id: 'list-items' },
+    scope: LIST_QUEUE_SCOPE,
     // Sessão à espera de renovação (o Supabase tenta de novo a cada minuto):
     // insiste por uns 5 minutos em vez de desistir da marcação.
     retry: (failures, error) =>
@@ -355,12 +367,16 @@ export function registerListMutations(queryClient: QueryClient) {
     retryDelay: (failures, error) =>
       error instanceof SessionPendingError ? 15_000 : Math.min(1000 * 2 ** failures, 30_000),
   });
-  // A fila acabou (a última marcação já terminou, não só está terminando):
+  queryClient.setMutationDefaults(CLEAR_CHECKED_KEY, {
+    mutationFn: ({ listId }: { listId: string }) => clearCheckedItems(listId),
+    scope: LIST_QUEUE_SCOPE,
+  });
+  // A fila acabou (o último da fila já terminou, não só está terminando):
   // agora sim busca listas e itens de todas as listas, o que cobre também
   // as buscas e mudanças do tempo real que esperaram a fila.
   queryClient.getMutationCache().subscribe((event) => {
-    if (event.type !== 'updated' || event.mutation.options.mutationKey?.[0] !== TOGGLE_ITEM_KEY[0]) return;
-    if (event.mutation.state.status === 'pending' || togglesQueued(queryClient)) return;
+    if (event.type !== 'updated' || !inListQueue(event.mutation)) return;
+    if (event.mutation.state.status === 'pending' || listQueueBusy(queryClient)) return;
     queryClient.invalidateQueries({ queryKey: ['lists'] });
     queryClient.invalidateQueries({ queryKey: ['listItems'] });
   });
@@ -397,25 +413,14 @@ export function useDeleteListItem(listId: string) {
   });
 }
 
-/** A fila de marcações ainda não chegou ao servidor: limpar agora deixaria itens para trás. */
-export class TogglesPendingError extends Error {
-  constructor() {
-    super('Espere as marcações guardadas serem enviadas para limpar o carrinho.');
-  }
-}
-
-export async function clearCheckedItems(queryClient: QueryClient, listId: string) {
-  if (togglesQueued(queryClient)) throw new TogglesPendingError();
+async function clearCheckedItems(listId: string) {
   return unwrap(await supabase.from('shopping_list_items').delete().eq('list_id', listId).not('checked_at', 'is', null));
 }
 
+/** Limpa o carrinho na vez dele na fila da lista (depois das marcações que vieram antes). */
 export function useClearCheckedItems(listId: string) {
-  const queryClient = useQueryClient();
   const invalidate = useInvalidateLists(listId);
-  return useMutation({
-    mutationFn: () => clearCheckedItems(queryClient, listId),
-    onSuccess: invalidate,
-  });
+  return useMutation<unknown, Error, { listId: string }>({ mutationKey: CLEAR_CHECKED_KEY, onSuccess: invalidate });
 }
 
 // ---------------------------------------------------------------------------

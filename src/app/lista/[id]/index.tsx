@@ -7,7 +7,7 @@ import {
   useAddListItem,
   useArchiveList,
   useClearCheckedItems,
-  useTogglesQueued,
+  useListQueueBusy,
   useDeleteListItem,
   useListItems,
   useProducts,
@@ -52,8 +52,9 @@ export default function ShoppingListScreen() {
   const toggle = useToggleListItem(id);
   const remove = useDeleteListItem(id);
   const clearChecked = useClearCheckedItems(id);
-  // Limpar só depois que as marcações guardadas chegarem ao servidor.
-  const syncing = useTogglesQueued();
+  // Limpar só com a fila da lista vazia: as marcações guardadas já chegaram
+  // ao servidor e não há outro limpar andando.
+  const syncing = useListQueueBusy();
   const archive = useArchiveList(id);
 
   const [name, setName] = useState('');
@@ -234,7 +235,7 @@ export default function ShoppingListScreen() {
               variant="ghost"
               compact
               disabled={syncing}
-              onPress={() => clearChecked.mutate(undefined, { onError })}
+              onPress={() => clearChecked.mutate({ listId: id }, { onError })}
             />
           }>
           <ShoppingGrid items={checked} inCart onToggle={toggleItem} onRemove={removeItem} />
