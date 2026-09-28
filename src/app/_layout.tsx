@@ -93,6 +93,7 @@ function AppNavigator() {
           <Stack.Screen name="nota/[id]" options={{ title: 'Nota fiscal' }} />
           <Stack.Screen name="precos" options={{ title: 'Preços' }} />
           <Stack.Screen name="agenda" options={{ title: 'Agenda' }} />
+          <Stack.Screen name="orcamento" options={{ title: 'Orçamento do mês', presentation: 'modal' }} />
           <Stack.Screen name="produto/[id]" options={{ title: 'Produto' }} />
           <Stack.Screen name="despensa/[id]" options={{ title: 'Item da despensa', presentation: 'modal' }} />
           <Stack.Screen name="tarefa/[id]" options={{ title: 'Tarefa', presentation: 'modal' }} />

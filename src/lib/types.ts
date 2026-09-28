@@ -297,6 +297,12 @@ export interface BillPayment {
   paid_by: string | null;
 }
 
+/** Limite do mês para uma categoria de gasto (vale todo mês até ser mudado). */
+export interface Budget {
+  category: string;
+  monthly_limit: number;
+}
+
 export interface Expense {
   id: string;
   description: string;

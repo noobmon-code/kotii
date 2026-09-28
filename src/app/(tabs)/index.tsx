@@ -11,14 +11,15 @@ import {
   usePantry,
   useToggleDose,
 } from '@/data/home';
-import { useBills } from '@/data/finance';
+import { useBills, useBudgets, useSpending } from '@/data/finance';
 import { useDocuments, useEquipmentList } from '@/data/house';
 import { useShoppingLists } from '@/data/market';
 import { useReceipts } from '@/data/receipts';
 import { choreStatus, describeChoreStatus } from '@/domain/chores';
 import { todayISO } from '@/domain/dates';
 import { describeDocumentStatus, documentsNeedingAttention, getDocumentKind } from '@/domain/documents';
-import { billsDueSoon } from '@/domain/finance';
+import { budgetProgress, describeBudget } from '@/domain/budget';
+import { billsDueSoon, getFinanceCategory, monthRange, summarize } from '@/domain/finance';
 import { describeWarranty, getEquipmentCategory, warrantyStatus } from '@/domain/equipment';
 import { currentTimeHHMM, doseKey, dosesForDay } from '@/domain/medications';
 import { describeExpiry, expiryStatus } from '@/domain/pantry';
@@ -80,9 +81,27 @@ export default function TodayScreen() {
   const documents = useDocuments();
   const equipment = useEquipmentList();
   const bills = useBills();
+  const budgets = useBudgets();
+  const month = today.slice(0, 7);
+  // O gasto do mês só importa aqui para o orçamento: sem limites, nem busca.
+  const hasBudgets = Boolean(budgets.data?.length);
+  const spending = useSpending(month, month, hasBudgets);
   const [paying, setPaying] = useState<Bill | null>(null);
 
-  const queries = [medications, doses, chores, pantry, lists, receipts, documents, equipment, bills, ...health.queries];
+  const queries = [
+    medications,
+    doses,
+    chores,
+    pantry,
+    lists,
+    receipts,
+    documents,
+    equipment,
+    bills,
+    budgets,
+    ...(hasBudgets ? [spending] : []),
+    ...health.queries,
+  ];
   const refreshing = queries.some((q) => q.isRefetching);
   const refresh = () => queries.forEach((q) => q.refetch());
 
@@ -104,6 +123,11 @@ export default function TodayScreen() {
     .filter(({ status }) => status.kind === 'acabando');
   const equipmentName = (id: string | null) => (id ? equipment.data?.find((e) => e.id === id)?.name : undefined);
   const activeLists = (lists.data ?? []).filter((l) => l.pending > 0);
+  // Categorias do mês que passaram ou estão perto do limite.
+  const budgetAlerts =
+    budgets.data && spending.data
+      ? budgetProgress(budgets.data, summarize(spending.data, monthRange(month)).byCategory).filter((l) => l.status !== 'ok')
+      : [];
   // Só afirma "tudo em dia" depois que tudo carregou.
   const nothingPending =
     queries.every((q) => q.isSuccess) &&
@@ -114,6 +138,7 @@ export default function TodayScreen() {
     !drafts.length &&
     !documentsDue.length &&
     !warrantiesEnding.length &&
+    !budgetAlerts.length &&
     !hasHealthToday(health, today);
   const dateLabel = capitalizeFirst(now.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }));
   const period = periodOf(now);
@@ -126,6 +151,7 @@ export default function TodayScreen() {
     expiring.length +
     documentsDue.length +
     warrantiesEnding.length +
+    budgetAlerts.length +
     drafts.length +
     healthTodayCount(health, today);
   const summary = nothingPending
@@ -244,6 +270,22 @@ export default function TodayScreen() {
           <ListCard>
             {billsDue.map((bill) => (
               <BillRow key={bill.id} bill={bill} today={today} onPay={setPaying} />
+            ))}
+          </ListCard>
+        </Section>
+      ) : null}
+
+      {budgetAlerts.length ? (
+        <Section title="Orçamento do mês">
+          <ListCard>
+            {budgetAlerts.map((line) => (
+              <ListRow
+                key={line.category}
+                left={<IconBadge icon={getFinanceCategory(line.category).icon} tone={line.status === 'estourou' ? 'danger' : 'warning'} />}
+                title={`${getFinanceCategory(line.category).label}: ${line.status === 'estourou' ? 'passou do limite' : 'perto do limite'}`}
+                subtitle={describeBudget(line)}
+                onPress={() => router.push({ pathname: '/financas', params: { aba: 'resumo' } })}
+              />
             ))}
           </ListCard>
         </Section>

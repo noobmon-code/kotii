@@ -39,6 +39,21 @@ describe('nuke context', () => {
     expect(text).toContain('Gastos de setembro até hoje: R$ 3.646,90 (Moradia R$ 2.500,00). Agosto inteiro: R$ 3.922,40.');
     expect(text).toContain('02/10 14:00 Pediatra (Lucas)');
     expect(text).toContain('Documentos pedindo atenção: nada.');
+    expect(text).not.toContain('Orçamento');
+  });
+
+  it('includes the month budget when there is one', () => {
+    const text = buildNukeContext({
+      ...snapshot,
+      spending: {
+        ...snapshot.spending!,
+        budgets: [
+          { category: 'moradia', limit: 2400, spent: 2500 },
+          { category: 'lazer', limit: 300, spent: 0 },
+        ],
+      },
+    });
+    expect(text).toContain('Orçamento de setembro: Moradia R$ 2.500,00 de R$ 2.400,00 (passou); Lazer R$ 0,00 de R$ 300,00.');
   });
 
   it('caps long lists', () => {
