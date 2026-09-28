@@ -113,7 +113,9 @@ export function useListItems(listId: string) {
         unwrap(
           await supabase
             .from('shopping_list_items')
-            .select('id, list_id, product_id, name, category, quantity, unit, checked_at, checked_by, toggle_token, created_at')
+            .select(
+              'id, list_id, product_id, name, category, quantity, unit, notes, priority, photo_path, checked_at, checked_by, toggle_token, created_at',
+            )
             .eq('list_id', listId)
             .order('created_at'),
         ) as ShoppingListItem[],
@@ -356,9 +358,7 @@ export class ForeignToggleError extends Error {
 }
 
 async function toggleListItem({ id, checked, userId, at, token, nextToken }: ToggleItemInput) {
-  const { data } = await supabase.auth.getSession();
-  if (!data.session) throw new SessionPendingError();
-  if (data.session.user.id !== userId) throw new ForeignToggleError();
+  await requireQueueSession(userId);
   return unwrap(
     await supabase
       .from('shopping_list_items')
@@ -389,23 +389,40 @@ function listQueueBusy(queryClient: QueryClient) {
   return queryClient.isMutating({ predicate: inListQueue }) > 0;
 }
 
-/** O que a fila precisa para rodar uma marcação restaurada depois de o app reabrir. */
-export function registerListMutations(queryClient: QueryClient) {
-  // Tudo na fila da lista pausa sem internet (ou com a sessão à espera de
-  // renovação) em vez de falhar, e anda uma de cada vez, na ordem. Com a
-  // sessão à espera (o Supabase tenta de novo a cada minuto), insiste por uns
-  // 5 minutos em vez de desistir.
-  const queued = {
+/**
+ * Fila guardada no aparelho: pausa sem internet (ou com a sessão à espera de
+ * renovação) em vez de falhar, e anda uma de cada vez, na ordem. Com a
+ * sessão à espera (o Supabase tenta de novo a cada minuto), insiste por uns
+ * 5 minutos em vez de desistir.
+ */
+export function queuedDefaults(scope: { id: string }) {
+  return {
     networkMode: 'online',
-    scope: LIST_QUEUE_SCOPE,
+    scope,
     retry: (failures: number, error: Error) =>
       !(error instanceof ForeignToggleError) && failures < (error instanceof SessionPendingError ? 20 : 3),
     retryDelay: (failures: number, error: Error) =>
       error instanceof SessionPendingError ? 15_000 : Math.min(1000 * 2 ** failures, 30_000),
   } as const;
+}
+
+/** Sessão desta conta, ou o erro que a fila entende (esperar a renovação; ação de outra conta). */
+export async function requireQueueSession(userId: string) {
+  const { data } = await supabase.auth.getSession();
+  if (!data.session) throw new SessionPendingError();
+  if (data.session.user.id !== userId) throw new ForeignToggleError();
+}
+
+/** O que a fila precisa para rodar uma marcação restaurada depois de o app reabrir. */
+export function registerListMutations(queryClient: QueryClient) {
+  const queued = queuedDefaults(LIST_QUEUE_SCOPE);
   queryClient.setMutationDefaults(TOGGLE_ITEM_KEY, {
     ...queued,
     mutationFn: (input: ToggleItemInput) => toggleListItem(input),
+  });
+  queryClient.setMutationDefaults(EDIT_ITEM_KEY, {
+    ...queued,
+    mutationFn: (input: EditItemInput) => editListItem(input),
   });
   queryClient.setMutationDefaults(CLEAR_CHECKED_KEY, {
     ...queued,
@@ -460,6 +477,37 @@ export function useToggleListItem(listId: string) {
   });
 }
 
+/**
+ * Detalhes do item (nome, quantidade, descrição, prioridade): na mesma fila
+ * das marcações, então valem sem internet e aparecem na hora.
+ */
+export const EDIT_ITEM_KEY = ['editListItem'];
+
+export interface EditItemInput {
+  id: string;
+  listId: string;
+  userId: string;
+  /** Só os campos que mudaram; photo_path só para tirar a foto (null). */
+  values: Partial<Pick<ShoppingListItem, 'name' | 'category' | 'quantity' | 'unit' | 'notes' | 'priority'>> & { photo_path?: null };
+}
+
+async function editListItem({ id, userId, values }: EditItemInput) {
+  await requireQueueSession(userId);
+  return unwrap(await supabase.from('shopping_list_items').update(values).eq('id', id));
+}
+
+export function useEditListItem(listId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<unknown, Error, EditItemInput>({
+    mutationKey: EDIT_ITEM_KEY,
+    onMutate: async ({ id, values }) => {
+      const key = ['listItems', listId];
+      await queryClient.cancelQueries({ queryKey: key });
+      queryClient.setQueryData<ShoppingListItem[]>(key, (items) => items?.map((i) => (i.id === id ? { ...i, ...values } : i)));
+    },
+  });
+}
+
 export function useDeleteListItem(listId: string) {
   const invalidate = useInvalidateLists(listId);
   return useMutation({
@@ -484,9 +532,7 @@ export interface ClearCheckedInput {
 /** Limpa o carrinho: os itens marcados saem da lista e vão para o histórico de compras. */
 async function clearCheckedItems({ listId, userId, items, pantry }: ClearCheckedInput) {
   // Sem sessão válida, o pedido iria com a chave pública e não apagaria nada.
-  const { data } = await supabase.auth.getSession();
-  if (!data.session) throw new SessionPendingError();
-  if (data.session.user.id !== userId) throw new ForeignToggleError();
+  await requireQueueSession(userId);
   if (!items.length) return 0;
   // O selo é único por marcação: id e selo batendo, o item está como no toque.
   return unwrap(

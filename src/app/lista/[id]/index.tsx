@@ -1,15 +1,27 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { usePantry } from '@/data/home';
 import {
+  dropPendingPhotos,
+  emptyPhotoTrash,
+  keepPendingPhoto,
+  useListPhotoUrls,
+  usePendingListPhotos,
+  usePendingPhotoUri,
+  useSetListItemPhoto,
+} from '@/data/listPhotos';
+import {
+  type EditItemInput,
   newToggleToken,
   useAddListItem,
   useArchiveList,
   useClearCheckedItems,
   useListQueueBusy,
   useDeleteListItem,
+  useEditListItem,
   useListItems,
   useProducts,
   usePurchaseRecords,
@@ -18,6 +30,7 @@ import {
 } from '@/data/market';
 import { cartPantryRows, type CartPantryEntry, type CartPantryRow } from '@/domain/cartPantry';
 import { compareByAisle, getCategory } from '@/domain/categories';
+import { compareForShopping } from '@/domain/listItem';
 import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { todayISO } from '@/domain/dates';
 import { parseDecimal } from '@/domain/money';
@@ -26,10 +39,11 @@ import { restockSuggestions } from '@/domain/restock';
 import { guessCategory, normalizeSearch } from '@/domain/search';
 import { CartPantryModal } from '@/features/CartPantryModal';
 import { CommonItemsPicker } from '@/features/CommonItemsPicker';
+import { ListItemEditor, type ItemDetails, type PhotoChange } from '@/features/ListItemEditor';
 import { OfflineNotice } from '@/features/OfflineNotice';
 import { RecentPurchases, RestockStrip, useJustListed } from '@/features/RecentPurchases';
 import { ShoppingGrid } from '@/features/ShoppingGrid';
-import { useAuth } from '@/lib/auth';
+import { useAuth, useHouseholdId } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { UNITS, type Product, type ShoppingListItem, type Unit } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -66,6 +80,10 @@ export default function ShoppingListScreen() {
   const syncing = useListQueueBusy();
   const archive = useArchiveList(id);
   const pantry = usePantry();
+  const edit = useEditListItem(id);
+  const setPhoto = useSetListItemPhoto();
+  const householdId = useHouseholdId();
+  const queryClient = useQueryClient();
 
   const [name, setName] = useState('');
   const [quantity, setQuantity] = useState('1');
@@ -79,8 +97,21 @@ export default function ShoppingListScreen() {
     single: boolean;
     pantryUnknown: boolean;
   } | null>(null);
+  const [editing, setEditing] = useState<ShoppingListItem | null>(null);
   // Some da faixa já no toque; volta quando a lista carregada trouxer o item e ele sair dela depois.
   const justAdded = useJustListed(items.data);
+
+  // Fotos dos itens: as enviadas (links guardados para ver sem internet) e as que esperam internet.
+  const photos = {
+    signed: useListPhotoUrls((items.data ?? []).flatMap((i) => (i.photo_path ? [i.photo_path] : []))),
+    pending: usePendingListPhotos(),
+  };
+  const editingPendingUri = usePendingPhotoUri(editing ? photos.pending.get(editing.id) : undefined);
+
+  // Foto trocada ou de item que saiu da lista: apaga do storage o que ficou na lixeira.
+  useEffect(() => {
+    emptyPhotoTrash();
+  }, []);
 
   const shelfLifeDays = useMemo(
     () => new Map((products.data ?? []).map((p) => [p.id, p.shelf_life_days])),
@@ -187,7 +218,8 @@ export default function ShoppingListScreen() {
   }, [purchases.data, items.data, listKind, justAdded.pending, today]);
 
   // Na ordem dos corredores do mercado: frescos, despensa, bebidas, casa…
-  const pending = (items.data ?? []).filter((i) => !i.checked_at).sort(compareByAisle);
+  // Urgentes no topo.
+  const pending = (items.data ?? []).filter((i) => !i.checked_at).sort(compareForShopping);
   const checked = (items.data ?? []).filter((i) => i.checked_at).sort(compareByAisle);
   const pendingNames = new Set(pending.map((i) => normalizeSearch(i.name)));
 
@@ -221,11 +253,44 @@ export default function ShoppingListScreen() {
     setStoring(null);
     clearChecked.mutate(
       { listId: id, userId: session!.user.id, items: cart.map((i) => ({ id: i.id, token: i.toggle_token })), pantry: toPantry },
-      { onError },
+      { onSuccess: () => emptyPhotoTrash(), onError },
     );
   };
   const removeItem = (item: ShoppingListItem) =>
-    confirmAction('Remover item', `Remover "${item.name}" da lista?`, 'Remover', () => remove.mutate(item.id, { onError }));
+    confirmAction('Remover item', `Remover "${item.name}" da lista?`, 'Remover', () => {
+      setEditing(null);
+      dropPendingPhotos(queryClient, item.id);
+      remove.mutate(item.id, { onSuccess: () => emptyPhotoTrash(), onError });
+    });
+
+  /** Detalhes vão pela fila da lista (valem sem internet); a foto, pela fila de fotos. */
+  async function saveDetails(item: ShoppingListItem, details: ItemDetails, photo: PhotoChange) {
+    setEditing(null);
+    const userId = session!.user.id;
+    const values: EditItemInput['values'] = {};
+    if (details.name !== item.name) {
+      values.name = details.name;
+      // Item sem produto: a categoria (e a ilustração) segue o nome novo quando ele diz qual é.
+      const guessed = guessCategory(details.name);
+      if (!item.product_id && guessed !== 'outros' && guessed !== item.category) values.category = guessed;
+    }
+    if (details.quantity !== Number(item.quantity)) values.quantity = details.quantity;
+    if (details.unit !== item.unit) values.unit = details.unit;
+    if (details.notes !== (item.notes ?? null)) values.notes = details.notes;
+    if (details.priority !== (item.priority ?? 'normal')) values.priority = details.priority;
+    if (photo.kind !== 'keep') dropPendingPhotos(queryClient, item.id);
+    if (photo.kind === 'remove' && item.photo_path) values.photo_path = null;
+    if (Object.keys(values).length) edit.mutate({ id: item.id, listId: id, userId, values }, { onError });
+    if (photo.kind === 'new') {
+      try {
+        if (!householdId) throw new Error('Família não carregada.');
+        const photoKey = await keepPendingPhoto(photo.uri);
+        setPhoto.mutate({ itemId: item.id, listId: id, householdId, userId, photoKey }, { onError });
+      } catch (err) {
+        notify('Não foi possível guardar a foto', errorMessage(err));
+      }
+    }
+  }
 
   return (
     <Screen
@@ -303,7 +368,7 @@ export default function ShoppingListScreen() {
 
       {pending.length ? (
         <Section title={`Para comprar (${pending.length})`}>
-          <ShoppingGrid items={pending} onToggle={toggleItem} onRemove={removeItem} />
+          <ShoppingGrid items={pending} photos={photos} onToggle={toggleItem} onOpen={setEditing} />
         </Section>
       ) : checked.length ? (
         <EmptyState
@@ -330,7 +395,8 @@ export default function ShoppingListScreen() {
             items={checked}
             inCart
             onToggle={toggleItem}
-            onRemove={removeItem}
+            photos={photos}
+            onOpen={setEditing}
             onStore={syncing ? undefined : (item) => openStore([item], true)}
           />
         </Section>
@@ -338,9 +404,20 @@ export default function ShoppingListScreen() {
 
       {pending.length || checked.length ? (
         <Text variant="small" style={styles.center}>
-          Toque num item para pôr no carrinho; toque de novo para devolver. Segure para remover.
+          Toque num item para pôr no carrinho; toque de novo para devolver. Segure para ver os detalhes: foto,
+          descrição e prioridade.
           {checked.length ? ' No carrinho, a geladeira guarda o item na despensa.' : ''}
         </Text>
+      ) : null}
+      {editing ? (
+        <ListItemEditor
+          item={editing}
+          photoUri={editingPendingUri ?? (editing.photo_path ? (photos.signed?.[editing.photo_path] ?? null) : null)}
+          photoPending={Boolean(editingPendingUri)}
+          onSave={(details, photo) => saveDetails(editing, details, photo)}
+          onRemove={() => removeItem(editing)}
+          onClose={() => setEditing(null)}
+        />
       ) : null}
       {storing ? (
         <CartPantryModal

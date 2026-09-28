@@ -1,31 +1,42 @@
+import { Image } from 'expo-image';
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
+import { usePendingPhotoUri } from '@/data/listPhotos';
+import { priorityBadge } from '@/domain/listItem';
 import { formatQuantity } from '@/domain/money';
 import type { ShoppingListItem } from '@/lib/types';
-import { CategoryIcon, Icon, Text, useCategoryTint } from '@/ui/primitives';
+import { Badge, CategoryIcon, Icon, Row, Text, useCategoryTint } from '@/ui/primitives';
 import { radius, space, useColors } from '@/ui/theme';
+
+/** Fotos dos itens: links das já enviadas (por caminho) e as que esperam internet (por item). */
+export interface ItemPhotos {
+  signed?: Record<string, string>;
+  pending: Map<string, string>;
+}
 
 const GAP = space.md;
 const MIN_TILE = 100;
 const MAX_COLUMNS = 5;
 
 /**
- * Itens da lista em grade, com a ilustração da categoria: um toque põe no
- * carrinho (ou devolve para a lista), segurar remove. No carrinho, o botão
- * da geladeira guarda o item na despensa.
+ * Itens da lista em grade, com a foto do produto (ou a ilustração da
+ * categoria): um toque põe no carrinho (ou devolve para a lista), segurar
+ * abre os detalhes. No carrinho, o botão da geladeira guarda o item na despensa.
  */
 export function ShoppingGrid({
   items,
   inCart = false,
+  photos,
   onToggle,
-  onRemove,
+  onOpen,
   onStore,
 }: {
   items: ShoppingListItem[];
   inCart?: boolean;
+  photos: ItemPhotos;
   onToggle: (item: ShoppingListItem) => void;
-  onRemove: (item: ShoppingListItem) => void;
+  onOpen: (item: ShoppingListItem) => void;
   /** Sem ele (ex.: carrinho sincronizando), o botão não aparece. */
   onStore?: (item: ShoppingListItem) => void;
 }) {
@@ -42,8 +53,10 @@ export function ShoppingGrid({
               item={item}
               width={tileWidth}
               inCart={inCart}
+              photoUrl={item.photo_path ? photos.signed?.[item.photo_path] : undefined}
+              pendingKey={photos.pending.get(item.id)}
               onPress={() => onToggle(item)}
-              onLongPress={() => onRemove(item)}
+              onLongPress={() => onOpen(item)}
               onStore={onStore ? () => onStore(item) : undefined}
             />
           ))
@@ -56,6 +69,8 @@ function Tile({
   item,
   width,
   inCart,
+  photoUrl,
+  pendingKey,
   onPress,
   onLongPress,
   onStore,
@@ -63,6 +78,8 @@ function Tile({
   item: ShoppingListItem;
   width: number;
   inCart: boolean;
+  photoUrl?: string;
+  pendingKey?: string;
   onPress: () => void;
   onLongPress: () => void;
   onStore?: () => void;
@@ -71,13 +88,23 @@ function Tile({
   const tint = useCategoryTint(item.category);
   const quantity = formatQuantity(item.quantity, item.unit);
   const artSize = Math.min(64, Math.round(width * 0.55));
+  const pendingUri = usePendingPhotoUri(pendingKey);
+  // A foto que espera internet vale mais que a antiga; a enviada usa o
+  // caminho como chave do cache, então aparece sem internet se já foi vista.
+  const photo = pendingUri
+    ? { uri: pendingUri }
+    : photoUrl && item.photo_path
+      ? { uri: photoUrl, cacheKey: item.photo_path }
+      : null;
+  const badge = inCart ? null : priorityBadge(item.priority);
+  const notes = item.notes?.trim();
   return (
     <Pressable
       accessibilityRole="checkbox"
       accessibilityState={{ checked: inCart }}
-      accessibilityLabel={`${item.name}, ${quantity}`}
+      accessibilityLabel={[item.name, quantity, badge?.label, notes].filter(Boolean).join(', ')}
       accessibilityHint={inCart ? 'Toque para devolver à lista' : 'Toque para pôr no carrinho'}
-      accessibilityActions={[{ name: 'longpress', label: 'Remover da lista' }]}
+      accessibilityActions={[{ name: 'longpress', label: 'Detalhes do item' }]}
       onAccessibilityAction={(e) => e.nativeEvent.actionName === 'longpress' && onLongPress()}
       onPress={onPress}
       onLongPress={onLongPress}
@@ -86,7 +113,16 @@ function Tile({
         { width, backgroundColor: inCart ? c.surfaceAlt : tint.bg },
         pressed && styles.pressed,
       ]}>
-      <CategoryIcon category={item.category} name={item.name} size={artSize} backdrop={false} dimmed={inCart} />
+      {photo ? (
+        <Image
+          source={photo}
+          style={[styles.photo, { width: artSize, height: artSize, opacity: inCart ? 0.45 : 1 }]}
+          contentFit="cover"
+          accessible={false}
+        />
+      ) : (
+        <CategoryIcon category={item.category} name={item.name} size={artSize} backdrop={false} dimmed={inCart} />
+      )}
       <Text
         variant="label"
         numberOfLines={2}
@@ -94,9 +130,13 @@ function Tile({
         style={[styles.center, inCart && styles.done]}>
         {item.name}
       </Text>
-      <Text variant="small" style={styles.center}>
-        {quantity}
-      </Text>
+      <Row gap={space.xs} style={styles.meta}>
+        <Text variant="small" style={styles.center}>
+          {quantity}
+        </Text>
+        {notes ? <Icon name="note-text-outline" size={14} color="textMuted" /> : null}
+      </Row>
+      {badge ? <Badge label={badge.label} tone={badge.tone} /> : null}
       {inCart ? (
         <View style={[styles.badge, { backgroundColor: c.primary }]}>
           <Icon name="check" size={14} color="onPrimary" />
@@ -131,6 +171,8 @@ const styles = StyleSheet.create({
     paddingBottom: space.md,
   },
   pressed: { transform: [{ scale: 0.95 }] },
+  photo: { borderRadius: radius.md },
+  meta: { justifyContent: 'center' },
   center: { textAlign: 'center' },
   done: { textDecorationLine: 'line-through' },
   store: {

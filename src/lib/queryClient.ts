@@ -9,6 +9,7 @@ import { persistQueryClientSave, type PersistedClient, type PersistQueryClientPr
 import * as Network from 'expo-network';
 import { AppState, Platform } from 'react-native';
 
+import { forgetPendingPhotos, inPhotoQueue, registerListPhotoMutations } from '@/data/listPhotos';
 import { inListQueue, registerListMutations } from '@/data/market';
 
 import { createCachePersister } from './cachePersister';
@@ -16,8 +17,9 @@ import { createCachePersister } from './cachePersister';
 const WEEK = 1000 * 60 * 60 * 24 * 7;
 
 // O que vai para o aparelho: o mínimo para usar a lista offline (a despensa,
-// para o limpar do carrinho sem internet não repetir o que já está nela).
-const PERSISTED = new Set(['household', 'lists', 'list', 'listItems', 'products', 'purchaseRecords', 'pantry']);
+// para o limpar do carrinho sem internet não repetir o que já está nela; os
+// links das fotos dos itens, para vê-las sem internet).
+const PERSISTED = new Set(['household', 'lists', 'list', 'listItems', 'products', 'purchaseRecords', 'pantry', 'listPhotos']);
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -29,6 +31,10 @@ export const queryClient = new QueryClient({
   },
 });
 registerListMutations(queryClient);
+registerListPhotoMutations(queryClient);
+
+/** Marcações, edições, limpar e fotos da lista: o que espera internet guardado no aparelho. */
+const inSavedQueue = (mutation: Parameters<typeof inListQueue>[0]) => inListQueue(mutation) || inPhotoQueue(mutation);
 
 // Online, para o cache, é rede no ar e sessão válida. Com o token vencido à
 // espera de renovação, o Supabase manda os pedidos com a chave pública: a
@@ -124,7 +130,7 @@ export function saveNow(): Promise<void> {
 }
 
 queryClient.getMutationCache().subscribe((event) => {
-  if (event.type === 'updated' && inListQueue(event.mutation)) saveNow();
+  if (event.type === 'updated' && inSavedQueue(event.mutation)) saveNow();
 });
 // Indo para o fundo (ou fechando), grava o que estiver pendente.
 AppState.addEventListener('change', (state) => {
@@ -141,6 +147,7 @@ export function forgetCache() {
   queryClient.clear();
   // Descarta também a gravação que esperava o intervalo.
   Promise.resolve(persister.removeClient()).catch(() => undefined);
+  forgetPendingPhotos().catch(() => undefined);
 }
 
 /**
@@ -156,7 +163,7 @@ export function cacheOwners(): unknown[] {
     .map((query) => query.queryKey[1]);
   const queued = queryClient
     .getMutationCache()
-    .findAll({ predicate: inListQueue })
+    .findAll({ predicate: inSavedQueue })
     .map((mutation) => (mutation.state.variables as { userId?: string } | undefined)?.userId);
   return [...households, ...queued];
 }

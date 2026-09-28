@@ -1,6 +1,7 @@
 // Linhas do banco como o app as recebe (ver supabase/migrations).
 
 import type { DietMeal, DietShoppingItem, ExamResult, WorkoutSession } from '@/domain/health';
+import type { ListPriority } from '@/domain/listItem';
 
 export type Unit = 'un' | 'kg' | 'g' | 'l' | 'ml';
 export const UNITS: Unit[] = ['un', 'kg', 'g', 'l', 'ml'];
@@ -94,6 +95,11 @@ export interface ShoppingListItem {
   category: string;
   quantity: number;
   unit: Unit;
+  /** Descrição livre (marca, tamanho, qual embalagem). */
+  notes: string | null;
+  priority: ListPriority;
+  /** Foto do produto certo, em documents/<casa>/. */
+  photo_path: string | null;
   checked_at: string | null;
   checked_by: string | null;
   /** Selo trocado a cada marcação: a marcação da fila só grava se o item não mudou. */

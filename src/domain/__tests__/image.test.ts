@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { fitForVision, MAX_LONG_EDGE, MAX_PIXELS } from '../image';
+import { fitForProductPhoto, fitForVision, MAX_LONG_EDGE, MAX_PIXELS } from '../image';
 
 describe('fitForVision', () => {
   it('keeps small images untouched', () => {
@@ -18,5 +18,13 @@ describe('fitForVision', () => {
     expect(width * height).toBeLessThanOrEqual(MAX_PIXELS);
     expect(Math.max(width, height)).toBeLessThanOrEqual(MAX_LONG_EDGE);
     expect(width / height).toBeCloseTo(0.75, 2);
+  });
+});
+
+describe('fitForProductPhoto', () => {
+  it('reduz o lado maior para 900 px, sem ampliar', () => {
+    expect(fitForProductPhoto(3000, 4000)).toEqual({ width: 675, height: 900 });
+    expect(fitForProductPhoto(4000, 3000)).toEqual({ width: 900, height: 675 });
+    expect(fitForProductPhoto(600, 800)).toEqual({ width: 600, height: 800 });
   });
 });
