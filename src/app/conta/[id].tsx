@@ -68,6 +68,17 @@ function BillForm({ bill }: { bill?: Bill }) {
   const dueISO = parseBRDate(due);
   const boletoLine = boleto ? parseBoleto(boleto, todayISO())?.line : undefined;
 
+  // Pagar vale para o vencimento gravado. Boleto lido e ainda não salvo entra
+  // no pagamento (o valor vem dele); vencimento mudado precisa ser salvo antes.
+  function startPayment() {
+    if (!bill) return;
+    if (dueISO && dueISO !== bill.next_due_on) {
+      notify('Salve antes de pagar', 'O vencimento mudou nesta tela. Salve a conta e depois registre o pagamento.');
+      return;
+    }
+    setPaying(true);
+  }
+
   function applyBoleto(read: Boleto) {
     setScanning(false);
     setBoleto(read.barcode);
@@ -121,7 +132,7 @@ function BillForm({ bill }: { bill?: Bill }) {
       {bill ? (
         <Card style={styles.status}>
           <Text variant="muted">{capitalizeFirst(billSubtitle(bill, todayISO()))}</Text>
-          {bill.active ? <Button title="Registrar pagamento" icon="check" onPress={() => setPaying(true)} /> : null}
+          {bill.active ? <Button title="Registrar pagamento" icon="check" onPress={startPayment} /> : null}
         </Card>
       ) : null}
 
@@ -245,7 +256,7 @@ function BillForm({ bill }: { bill?: Bill }) {
       ) : null}
 
       {scanning ? <BoletoScanner onRead={applyBoleto} onClose={() => setScanning(false)} /> : null}
-      {paying && bill ? <PayBillModal bill={bill} onClose={() => setPaying(false)} /> : null}
+      {paying && bill ? <PayBillModal bill={{ ...bill, boleto }} onClose={() => setPaying(false)} /> : null}
     </Screen>
   );
 }
