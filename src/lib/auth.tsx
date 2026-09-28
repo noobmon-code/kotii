@@ -58,6 +58,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // com a última conta, em vez de esperar.
     last.then((session) => {
       if (!confirmed && session?.expires_at && session.expires_at * 1000 < Date.now()) {
+        // Sem internet para o cache antes de mostrar a conta: as consultas que
+        // ela libera já nascem esperando a sessão ser renovada.
+        setSessionValid(false);
         setState({ session, loading: false, valid: false });
       }
     });
@@ -67,7 +70,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setState({ session: data.session, loading: false, valid: true });
         saveLastSession(data.session);
       } else if (error && isAuthRetryableFetchError(error)) {
-        // Não renovou por falta de conexão: a conta continua; segue com a última.
+        // Não renovou por falta de conexão: a conta continua; segue com a última
+        // (e o cache, como sem internet, antes de ela aparecer).
+        setSessionValid(false);
         setState({ session: await last, loading: false, valid: false });
       } else {
         setState({ session: null, loading: false });
