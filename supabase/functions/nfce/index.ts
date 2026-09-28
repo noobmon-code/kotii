@@ -7,7 +7,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-import { isSefazUrl, parseNfceHtml } from './parse.ts';
+import { isSefazUrl, parseNfceHtml, utcOffsetForUrl } from './parse.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -47,9 +47,32 @@ async function fetchSefaz(start: string): Promise<Response> {
   throw new Error('too many redirects');
 }
 
+/** Até MAX_BYTES do corpo, sem guardar o resto na memória. */
+async function readCapped(response: Response): Promise<Uint8Array> {
+  const reader = response.body?.getReader();
+  if (!reader) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (size < MAX_BYTES) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    size += value.length;
+  }
+  await reader.cancel().catch(() => undefined);
+  const bytes = new Uint8Array(Math.min(size, MAX_BYTES));
+  let offset = 0;
+  for (const chunk of chunks) {
+    const part = chunk.subarray(0, bytes.length - offset);
+    bytes.set(part, offset);
+    offset += part.length;
+  }
+  return bytes;
+}
+
 /** Corpo em texto, respeitando o charset (várias Sefaz usam ISO-8859-1). */
 async function readHtml(response: Response): Promise<string> {
-  const bytes = new Uint8Array(await response.arrayBuffer()).slice(0, MAX_BYTES);
+  const bytes = await readCapped(response);
   const header = response.headers.get('content-type') ?? '';
   const sniff = new TextDecoder('latin1').decode(bytes.slice(0, 2048));
   const charset = (header.match(/charset=([\w-]+)/i) ?? sniff.match(/charset=["']?([\w-]+)/i))?.[1] ?? 'utf-8';
@@ -87,7 +110,7 @@ Deno.serve(async (req) => {
     return json({ error: 'A Sefaz não respondeu agora. Tente de novo em alguns minutos ou tire foto da nota.', code: 'sefaz_down' }, 502);
   }
 
-  const page = parseNfceHtml(html);
+  const page = parseNfceHtml(html, utcOffsetForUrl(url));
   if (!page.items.length) {
     // Página de verificação ("não sou robô"), nota ainda não autorizada ou
     // leiaute que o leitor não conhece.

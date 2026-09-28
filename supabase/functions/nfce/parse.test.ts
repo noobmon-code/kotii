@@ -1,6 +1,6 @@
 import { assert, assertEquals } from '@std/assert';
 
-import { isSefazUrl, parseBRNumber, parseNfceHtml } from './parse.ts';
+import { isSefazUrl, parseBRNumber, parseNfceHtml, utcOffsetForUrl } from './parse.ts';
 
 // Leiaute do Portal da NFC-e (consulta pelo QR code), resumido.
 const PAGE = `
@@ -66,4 +66,15 @@ Deno.test('só busca em sites de Sefaz', () => {
   assert(!isSefazUrl('https://gov.br.example.com/'));
   assert(!isSefazUrl('https://sefaz.gov.br:8443/x'));
   assert(!isSefazUrl('file:///etc/passwd'));
+});
+
+Deno.test('hora de emissão no fuso do estado da nota', () => {
+  const sp = 'https://www.nfce.fazenda.sp.gov.br/qrcode?p=35260912345678000199650010000123451000123456|2|1|1|abc';
+  const am = 'https://sistemas.sefaz.am.gov.br/nfceweb/consultarNFCe.jsp?p=13260912345678000199650010000123451000123456|2|1|1|abc';
+  const ac = 'http://www.sefaznet.ac.gov.br/nfce/qrcode?chNFe=12260912345678000199650010000123451000123456';
+  assertEquals(utcOffsetForUrl(sp), '-03:00');
+  assertEquals(utcOffsetForUrl(am), '-04:00');
+  assertEquals(utcOffsetForUrl(ac), '-05:00');
+  assertEquals(utcOffsetForUrl('não é link'), '-03:00');
+  assertEquals(parseNfceHtml(PAGE, utcOffsetForUrl(am)).purchasedAt, '2026-09-20T10:15:32-04:00');
 });
