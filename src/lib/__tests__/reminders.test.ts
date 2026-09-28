@@ -257,7 +257,7 @@ describe('house reminders', () => {
   });
 
   it('sem os dados de saúde, contas seguem e os avisos de vacina já agendados ficam', async () => {
-    await withHouse(async (reminders, { live }) => {
+    await withHouse(async (reminders, { live, storage }) => {
       await reminders.setHouseReminderKind('bills', true);
       await reminders.setHouseReminderKind('vaccines', true);
       const vaccines = [{ id: 'v1', name: 'Tríplice viral', dose: null, person: 'Lia', next_dose_on: '2026-10-20' }];
@@ -272,6 +272,13 @@ describe('house reminders', () => {
         'bills:b1:2026-10-09',
         'bills:b1:2026-10-10',
       ]);
+      // Aviso de vacina que já tocou (saiu da agenda) não ocupa vaga nem volta para a lista.
+      live.delete(vaccineIds[0]);
+      await reminders.syncHouseReminders({ ...moved, bills: [{ ...data.bills[0], next_due_on: '2026-10-12' }] }, today);
+      expect(live.has(vaccineIds[1])).toBe(true);
+      const stored = JSON.parse(storage.get('house-reminders:scheduled')!) as { ids: string[] };
+      expect(stored.ids).not.toContain(vaccineIds[0]);
+      expect(stored.ids).toContain(vaccineIds[1]);
       // Voltaram: refaz tudo com os dados.
       await reminders.syncHouseReminders({ ...moved, vaccines: [], appointments: [] }, today);
       expect(kindsOf(live)).toEqual(['bills']);

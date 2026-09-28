@@ -337,8 +337,6 @@ export async function syncHouseReminders(
       ...(data.appointments === undefined ? (['appointments'] as const) : []),
       ...(data.vaccines === undefined ? (['vaccines'] as const) : []),
     ]);
-    const held = (previous?.kinds ?? []).flatMap((kind, i) => (unknown.has(kind) ? [{ id: previous!.ids[i], kind }] : []));
-    const heldIds = new Set(held.map((r) => r.id));
     // Aviso de atraso cuja hora já passou tocou: aquela conta (ou vacina) não
     // avisa de novo. Guarda só as que continuam atrasadas (paga, o vencimento
     // muda); sem os dados das vacinas, as marcas que não são de conta ficam.
@@ -355,8 +353,15 @@ export async function syncHouseReminders(
     const ours = new Set(previous?.ids ?? []);
     const scheduled = await Promise.resolve()
       .then(() => Notifications.getAllScheduledNotificationsAsync())
-      .catch(() => []);
-    const others = scheduled.filter((n) => !ours.has(n.identifier)).length;
+      .catch(() => null);
+    const live = scheduled ? new Set(scheduled.map((n) => n.identifier)) : null;
+    const others = (scheduled ?? []).filter((n) => !ours.has(n.identifier)).length;
+    // Avisos de consultas/vacinas que ficam (sem os dados delas): só os que
+    // ainda estão agendados; os que já tocaram não ocupam vaga.
+    const held = (previous?.kinds ?? []).flatMap((kind, i) =>
+      unknown.has(kind) && (!live || live.has(previous!.ids[i])) ? [{ id: previous!.ids[i], kind }] : [],
+    );
+    const heldIds = new Set(held.map((r) => r.id));
     const limit = Math.min(HOUSE_REMINDER_LIMIT, SCHEDULED_NOTIFICATIONS_LIMIT - others) - held.length;
     const planKinds = {
       ...kinds,
