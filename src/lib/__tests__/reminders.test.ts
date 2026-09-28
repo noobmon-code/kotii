@@ -185,6 +185,23 @@ describe('house reminders', () => {
     });
   });
 
+  it('conta atrasada: o aviso toca uma vez e não volta nos dias seguintes', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('bills', true);
+      const late = { ...data, bills: [{ ...data.bills[0], next_due_on: '2026-09-20' }] };
+      await reminders.syncHouseReminders(late, '2026-09-27', '10:00');
+      expect([...live.values()].map((r) => r.content.data.reminder)).toEqual(['bills:b1:2026-09-28']);
+      // Dia 28 às 9h o aviso toca (sai da agenda); ao abrir o app de novo, nada de novo.
+      live.clear();
+      await reminders.syncHouseReminders(late, '2026-09-28', '12:00');
+      await reminders.syncHouseReminders(late, '2026-09-29', '12:00');
+      expect(live.size).toBe(0);
+      // Paga e atrasada de novo no mês seguinte: avisa de novo.
+      await reminders.syncHouseReminders({ ...data, bills: [{ ...data.bills[0], next_due_on: '2026-09-25' }] }, '2026-09-29', '12:00');
+      expect([...live.values()].map((r) => r.content.data.reminder)).toEqual(['bills:b1:2026-09-30']);
+    });
+  });
+
   it('fica com o espaço que os remédios deixam no teto do iPhone', async () => {
     await withHouse(async (reminders, { live }) => {
       for (let i = 0; i < 62; i++) live.set(`remedio${i}`, { content: { data: { reminder: `med:${i}` } } });

@@ -9,12 +9,11 @@ const doc = { id: 'd1', title: 'Passaporte — Ana', expires_on: '2026-10-20', r
 const chore = { id: 'c1', title: 'Limpar filtro do ar', due_on: '2026-09-30', active: true, equipment_id: 'e1' };
 
 describe('planHouseReminders', () => {
-  it('avisa conta na véspera, no dia e, se ficar em aberto, no dia seguinte, às 9h', () => {
+  it('avisa conta na véspera e no dia, às 9h (atraso não é marcado de antemão)', () => {
     const plan = planHouseReminders({ ...base, bills: [bill] });
     expect(plan.map((r) => [r.date, r.time, r.title, r.body])).toEqual([
       ['2026-10-04', '09:00', 'Conta vence amanhã', 'Luz — R$ 230,00'],
       ['2026-10-05', '09:00', 'Conta vence hoje', 'Luz — R$ 230,00'],
-      ['2026-10-06', '09:00', 'Conta atrasada', 'Luz — R$ 230,00: venceu ontem.'],
     ]);
   });
 
@@ -26,17 +25,18 @@ describe('planHouseReminders', () => {
     expect(planHouseReminders({ ...base, bills })).toEqual([]);
   });
 
-  it('conta atrasada avisa uma vez só, mesmo refazendo os avisos nos dias seguintes', () => {
-    const late = { ...bill, id: 'late', amount: null, next_due_on: '2026-09-26' };
-    // Na manhã seguinte ao vencimento, antes das 9h: um aviso.
-    expect(planHouseReminders({ ...base, bills: [late] })).toEqual([
-      expect.objectContaining({ key: 'bills:late:2026-09-27', title: 'Conta atrasada', body: 'Luz: venceu ontem.' }),
+  it('conta atrasada avisa no próximo horário, uma vez só', () => {
+    const late = { ...bill, id: 'late', amount: null, next_due_on: '2026-09-20' };
+    expect(planHouseReminders({ ...base, nowTime: '10:00', bills: [late] })).toEqual([
+      expect.objectContaining({
+        key: 'bills:late:2026-09-28',
+        title: 'Conta atrasada',
+        body: 'Luz: venceu em 20/09/2026.',
+        overdue: 'late:2026-09-20',
+      }),
     ]);
-    // Refeito depois do aviso, no mesmo dia ou nos seguintes: nada de novo.
-    expect(planHouseReminders({ ...base, nowTime: '10:00', bills: [late] })).toEqual([]);
-    expect(planHouseReminders({ ...base, today: '2026-09-28', bills: [late] })).toEqual([]);
-    // Atrasada há dias (aparece na tela Hoje): sem aviso novo.
-    expect(planHouseReminders({ ...base, bills: [{ ...late, next_due_on: '2026-09-20' }] })).toEqual([]);
+    // Depois que o aviso tocou, o app marca e ele não se repete.
+    expect(planHouseReminders({ ...base, nowTime: '10:00', bills: [late], overdueWarned: ['late:2026-09-20'] })).toEqual([]);
   });
 
   it('documento: quando abre o prazo de renovar, uma semana antes e no dia em que vence', () => {

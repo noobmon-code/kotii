@@ -10,6 +10,7 @@ import { Platform } from 'react-native';
 import { todayISO } from '@/domain/dates';
 import {
   HOUSE_REMINDER_LIMIT,
+  overdueKey,
   planHouseReminders,
   SCHEDULED_NOTIFICATIONS_LIMIT,
   type HouseReminderInput,
@@ -218,6 +219,10 @@ export type HouseReminderData = Pick<HouseReminderInput, 'bills' | 'documents' |
 /** Avisos da casa agendados: o tipo de cada id, para desligar um tipo sem refazer os outros. */
 interface StoredHouseReminders extends StoredReminders {
   kinds?: HouseReminderKind[];
+  /** Avisos de conta atrasada agendados (chave e quando tocam). */
+  overdue?: { key: string; at: string }[];
+  /** Contas atrasadas que já tocaram neste aparelho: não avisam de novo. */
+  warned?: string[];
 }
 
 async function readHouseScheduled(): Promise<StoredHouseReminders | null> {
@@ -261,7 +266,13 @@ export async function setHouseReminderKind(kind: HouseReminderKind, enabled: boo
     await AsyncStorage.setItem(
       HOUSE_SCHEDULED_KEY,
       // Assinatura vazia: a próxima sincronização refaz com os dados.
-      JSON.stringify({ ids: keep.map((r) => r.id), kinds: keep.map((r) => r.kind), signature: '' } satisfies StoredHouseReminders),
+      JSON.stringify({
+        ...scheduled,
+        ids: keep.map((r) => r.id),
+        kinds: keep.map((r) => r.kind),
+        overdue: kind === 'bills' ? [] : scheduled.overdue,
+        signature: '',
+      } satisfies StoredHouseReminders),
     );
   });
   return true;
@@ -273,12 +284,23 @@ export async function anyHouseReminderKind(): Promise<boolean> {
 }
 
 /** Refaz os avisos da casa deste aparelho com os dados de agora (ao abrir e ao mudar a escolha). */
-export async function syncHouseReminders(data: HouseReminderData, today = todayISO()): Promise<void> {
+export async function syncHouseReminders(
+  data: HouseReminderData,
+  today = todayISO(),
+  nowTime = currentTimeHHMM(),
+): Promise<void> {
   if (!remindersSupported) return;
   await serialized(async () => {
     const Notifications = notifications();
     const kinds = await getHouseReminderKinds();
     const previous = await readHouseScheduled();
+    // Aviso de atraso cuja hora já passou tocou: aquela conta não avisa de novo.
+    // Guarda só as que continuam atrasadas (paga, o vencimento muda).
+    const now = `${today}T${nowTime}`;
+    const stillOverdue = new Set(data.bills.filter((b) => b.next_due_on < today).map(overdueKey));
+    const warned = [...new Set([...(previous?.warned ?? []), ...(previous?.overdue ?? []).filter((o) => o.at <= now).map((o) => o.key)])].filter(
+      (key) => stillOverdue.has(key),
+    );
     // O iPhone guarda até 64 avisos agendados: a casa fica com o que os remédios deixam.
     const ours = new Set(previous?.ids ?? []);
     const scheduled = await Promise.resolve()
@@ -286,9 +308,15 @@ export async function syncHouseReminders(data: HouseReminderData, today = todayI
       .catch(() => []);
     const others = scheduled.filter((n) => !ours.has(n.identifier)).length;
     const limit = Math.min(HOUSE_REMINDER_LIMIT, SCHEDULED_NOTIFICATIONS_LIMIT - others);
-    const plan = planHouseReminders({ ...data, kinds, today, nowTime: currentTimeHHMM(), limit });
+    const plan = planHouseReminders({ ...data, kinds, today, nowTime, limit, overdueWarned: warned });
+    const overdue = plan.flatMap((r) => (r.overdue ? [{ key: r.overdue, at: `${r.date}T${r.time}` }] : []));
     const signature = JSON.stringify(plan);
-    if (previous?.signature === signature) return;
+    if (previous?.signature === signature) {
+      if (JSON.stringify(previous.warned ?? []) !== JSON.stringify(warned)) {
+        await AsyncStorage.setItem(HOUSE_SCHEDULED_KEY, JSON.stringify({ ...previous, warned } satisfies StoredHouseReminders));
+      }
+      return;
+    }
     if (previous) await cancelAll(previous.ids);
 
     const ids: string[] = [];
@@ -308,7 +336,7 @@ export async function syncHouseReminders(data: HouseReminderData, today = todayI
     }
     await AsyncStorage.setItem(
       HOUSE_SCHEDULED_KEY,
-      JSON.stringify({ ids, kinds: plan.map((r) => r.kind), signature } satisfies StoredHouseReminders),
+      JSON.stringify({ ids, kinds: plan.map((r) => r.kind), overdue, warned, signature } satisfies StoredHouseReminders),
     );
   });
 }
