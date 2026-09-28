@@ -127,16 +127,23 @@ export default function ShoppingListScreen() {
 
   function addRecent(item: RecentItem) {
     const key = normalizeSearch(item.name);
+    const release = () =>
+      setJustAdded((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
     setJustAdded((prev) => new Set(prev).add(key));
     addItem.mutate(
       { name: item.name, category: item.category, productId: item.productId, quantity: item.quantity, unit: item.unit },
       {
+        // A lista recarregada já traz o item (e o tira da faixa); se ele sair
+        // da lista depois, volta para a faixa.
+        onSuccess: () => {
+          items.refetch({ cancelRefetch: false }).finally(release);
+        },
         onError: (err) => {
-          setJustAdded((prev) => {
-            const next = new Set(prev);
-            next.delete(key);
-            return next;
-          });
+          release();
           onError(err);
         },
       },
