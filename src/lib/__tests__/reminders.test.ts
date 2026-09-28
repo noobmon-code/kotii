@@ -187,7 +187,13 @@ describe('house reminders', () => {
   it('dois toques seguidos não gravam um por cima do outro', async () => {
     await withHouse(async (reminders) => {
       await Promise.all([reminders.setHouseReminderKind('bills', true), reminders.setHouseReminderKind('documents', true)]);
-      expect(await reminders.getHouseReminderKinds()).toEqual({ bills: true, documents: true, chores: false });
+      expect(await reminders.getHouseReminderKinds()).toEqual({
+        bills: true,
+        documents: true,
+        chores: false,
+        appointments: false,
+        vaccines: false,
+      });
     });
   });
 
@@ -231,6 +237,57 @@ describe('house reminders', () => {
       await reminders.setHouseReminderKind('bills', true);
       await reminders.syncHouseReminders(late, '2020-01-13', '12:00');
       expect(live.size).toBe(0);
+    });
+  });
+
+  it('desligar as vacinas antes do aviso de atraso tocar não o dá como tocado', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('vaccines', true);
+      const late = { ...data, vaccines: [{ id: 'v1', name: 'Tríplice viral', dose: null, person: 'Lia', next_dose_on: '2099-01-01' }] };
+      // Aviso de atraso marcado para as 9h de um dia que ainda não chegou.
+      await reminders.syncHouseReminders(late, '2099-01-12', '08:00');
+      expect([...live.values()].map((r) => r.content.data.reminder)).toEqual(['vaccines:v1:2099-01-12']);
+      await reminders.setHouseReminderKind('vaccines', false);
+      expect(live.size).toBe(0);
+      await reminders.setHouseReminderKind('vaccines', true);
+      // Religado depois das 9h: o aviso cancelado não conta como tocado e volta no próximo horário.
+      await reminders.syncHouseReminders(late, '2099-01-12', '10:00');
+      expect([...live.values()].map((r) => r.content.data.reminder)).toEqual(['vaccines:v1:2099-01-13']);
+    });
+  });
+
+  it('sem os dados de saúde, contas seguem e os avisos de vacina já agendados ficam', async () => {
+    await withHouse(async (reminders, { live, storage }) => {
+      await reminders.setHouseReminderKind('bills', true);
+      await reminders.setHouseReminderKind('vaccines', true);
+      const vaccines = [{ id: 'v1', name: 'Tríplice viral', dose: null, person: 'Lia', next_dose_on: '2026-10-20' }];
+      await reminders.syncHouseReminders({ ...data, vaccines, appointments: [] }, today);
+      const vaccineIds = [...live.entries()].filter(([, r]) => r.content.data.reminder.startsWith('vaccines:')).map(([id]) => id);
+      expect(vaccineIds).toHaveLength(2);
+      // Vacinas não carregaram; a conta mudou de vencimento.
+      const moved = { ...data, bills: [{ ...data.bills[0], next_due_on: '2026-10-10' }] };
+      await reminders.syncHouseReminders(moved, today);
+      expect(vaccineIds.every((id) => live.has(id))).toBe(true);
+      expect([...live.values()].map((r) => r.content.data.reminder).filter((k) => k.startsWith('bills:')).sort()).toEqual([
+        'bills:b1:2026-10-09',
+        'bills:b1:2026-10-10',
+      ]);
+      // Aviso de vacina que já tocou (saiu da agenda) não ocupa vaga nem volta para a lista.
+      live.delete(vaccineIds[0]);
+      await reminders.syncHouseReminders({ ...moved, bills: [{ ...data.bills[0], next_due_on: '2026-10-12' }] }, today);
+      expect(live.has(vaccineIds[1])).toBe(true);
+      const stored = JSON.parse(storage.get('house-reminders:scheduled')!) as { ids: string[] };
+      expect(stored.ids).not.toContain(vaccineIds[0]);
+      expect(stored.ids).toContain(vaccineIds[1]);
+      // O outro também toca e nada mais muda: sai da lista guardada mesmo sem refazer os avisos.
+      live.delete(vaccineIds[1]);
+      await reminders.syncHouseReminders({ ...moved, bills: [{ ...data.bills[0], next_due_on: '2026-10-12' }] }, today);
+      const after = JSON.parse(storage.get('house-reminders:scheduled')!) as { ids: string[]; kinds: string[] };
+      expect(after.ids).not.toContain(vaccineIds[1]);
+      expect(after.kinds).not.toContain('vaccines');
+      // Voltaram: refaz tudo com os dados.
+      await reminders.syncHouseReminders({ ...moved, vaccines: [], appointments: [] }, today);
+      expect(kindsOf(live)).toEqual(['bills']);
     });
   });
 

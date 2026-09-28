@@ -1,7 +1,7 @@
 // Lembretes como notificações locais. Ficam no aparelho: cada pessoa da
 // família escolhe de quais remédios quer ser lembrada (só tocam dentro do
 // período do tratamento, ver planReminders) e quais avisos da casa quer
-// receber: contas, documentos, tarefas (ver planHouseReminders).
+// receber: contas, documentos, tarefas, consultas e vacinas (ver planHouseReminders).
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { isRunningInExpoGo } from 'expo';
@@ -235,16 +235,23 @@ export async function syncReminders(medications: Medication[], today: string): P
 
 const HOUSE_KINDS_KEY = 'house-reminders:kinds';
 const HOUSE_SCHEDULED_KEY = 'house-reminders:scheduled';
-const NO_HOUSE_KINDS: Record<HouseReminderKind, boolean> = { bills: false, documents: false, chores: false };
+const NO_HOUSE_KINDS: Record<HouseReminderKind, boolean> = {
+  bills: false,
+  documents: false,
+  chores: false,
+  appointments: false,
+  vaccines: false,
+};
 
-export type HouseReminderData = Pick<HouseReminderInput, 'bills' | 'documents' | 'chores'>;
+/** Consultas ou vacinas undefined: ainda não carregaram (os avisos delas já agendados ficam como estão). */
+export type HouseReminderData = Pick<HouseReminderInput, 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines'>;
 
 /** Avisos da casa agendados: o tipo de cada id, para desligar um tipo sem refazer os outros. */
 interface StoredHouseReminders extends StoredReminders {
   kinds?: HouseReminderKind[];
-  /** Avisos de conta atrasada agendados (chave e quando tocam). */
-  overdue?: { key: string; at: string }[];
-  /** Contas atrasadas que já tocaram neste aparelho: não avisam de novo. */
+  /** Avisos de atraso agendados (chave, quando tocam e o tipo; sem tipo, de versões antigas, são de conta). */
+  overdue?: { key: string; at: string; kind?: HouseReminderKind }[];
+  /** Atrasos (de conta ou vacina) que já tocaram neste aparelho: não avisam de novo. */
   warned?: string[];
 }
 
@@ -286,10 +293,12 @@ export async function setHouseReminderKind(kind: HouseReminderKind, enabled: boo
     const drop = scheduled.ids.filter((_, i) => scheduled.kinds?.[i] === kind);
     await cancelAll(drop);
     const keep = scheduled.ids.map((id, i) => ({ id, kind: scheduled.kinds![i] })).filter((r) => r.kind !== kind);
-    // Desligando as contas: aviso de atraso que já tocou fica marcado, para não
-    // tocar de novo se as contas forem religadas.
+    // Desligando o tipo: aviso de atraso dele que já tocou fica marcado, para não
+    // tocar de novo se o tipo for religado; o que ainda não tocou sai, para
+    // poder avisar quando religar.
     const now = `${todayISO()}T${currentTimeHHMM()}`;
-    const rang = kind === 'bills' ? (scheduled.overdue ?? []).filter((o) => o.at <= now).map((o) => o.key) : [];
+    const ofKind = (o: { kind?: HouseReminderKind }) => (o.kind ?? 'bills') === kind;
+    const rang = (scheduled.overdue ?? []).filter((o) => ofKind(o) && o.at <= now).map((o) => o.key);
     await AsyncStorage.setItem(
       HOUSE_SCHEDULED_KEY,
       // Assinatura vazia: a próxima sincronização refaz com os dados.
@@ -297,7 +306,7 @@ export async function setHouseReminderKind(kind: HouseReminderKind, enabled: boo
         ...scheduled,
         ids: keep.map((r) => r.id),
         kinds: keep.map((r) => r.kind),
-        overdue: kind === 'bills' ? [] : scheduled.overdue,
+        overdue: (scheduled.overdue ?? []).filter((o) => !ofKind(o)),
         warned: [...new Set([...(scheduled.warned ?? []), ...rang])],
         signature: '',
       } satisfies StoredHouseReminders),
@@ -322,30 +331,69 @@ export async function syncHouseReminders(
     const Notifications = notifications();
     const kinds = await getHouseReminderKinds();
     const previous = await readHouseScheduled();
-    // Aviso de atraso cuja hora já passou tocou: aquela conta não avisa de novo.
-    // Guarda só as que continuam atrasadas (paga, o vencimento muda).
+    // Consultas ou vacinas que não carregaram: os avisos delas já agendados
+    // ficam como estão, e os outros tipos seguem normais.
+    const unknown = new Set<HouseReminderKind>([
+      ...(data.appointments === undefined ? (['appointments'] as const) : []),
+      ...(data.vaccines === undefined ? (['vaccines'] as const) : []),
+    ]);
+    // Aviso de atraso cuja hora já passou tocou: aquela conta (ou vacina) não
+    // avisa de novo. Guarda só as que continuam atrasadas (paga, o vencimento
+    // muda); sem os dados das vacinas, as marcas que não são de conta ficam.
     const now = `${today}T${nowTime}`;
-    const stillOverdue = new Set(data.bills.filter((b) => b.next_due_on < today).map(overdueKey));
+    const stillOverdue = new Set([
+      ...data.bills.filter((b) => b.next_due_on < today).map((b) => overdueKey(b.id, b.next_due_on)),
+      ...(data.vaccines ?? []).flatMap((v) => (v.next_dose_on && v.next_dose_on < today ? [overdueKey(v.id, v.next_dose_on)] : [])),
+    ]);
+    const billIds = new Set(data.bills.map((b) => b.id));
     const warned = [...new Set([...(previous?.warned ?? []), ...(previous?.overdue ?? []).filter((o) => o.at <= now).map((o) => o.key)])].filter(
-      (key) => stillOverdue.has(key),
+      (key) => stillOverdue.has(key) || (unknown.has('vaccines') && !billIds.has(key.split(':')[0])),
     );
     // O iPhone guarda até 64 avisos agendados: a casa fica com o que os remédios deixam.
     const ours = new Set(previous?.ids ?? []);
     const scheduled = await Promise.resolve()
       .then(() => Notifications.getAllScheduledNotificationsAsync())
-      .catch(() => []);
-    const others = scheduled.filter((n) => !ours.has(n.identifier)).length;
-    const limit = Math.min(HOUSE_REMINDER_LIMIT, SCHEDULED_NOTIFICATIONS_LIMIT - others);
-    const plan = planHouseReminders({ ...data, kinds, today, nowTime, limit, overdueWarned: warned });
-    const overdue = plan.flatMap((r) => (r.overdue ? [{ key: r.overdue, at: `${r.date}T${r.time}` }] : []));
-    const signature = JSON.stringify(plan);
+      .catch(() => null);
+    const live = scheduled ? new Set(scheduled.map((n) => n.identifier)) : null;
+    const others = (scheduled ?? []).filter((n) => !ours.has(n.identifier)).length;
+    // Avisos de consultas/vacinas que ficam (sem os dados delas): só os que
+    // ainda estão agendados; os que já tocaram não ocupam vaga.
+    const held = (previous?.kinds ?? []).flatMap((kind, i) =>
+      unknown.has(kind) && (!live || live.has(previous!.ids[i])) ? [{ id: previous!.ids[i], kind }] : [],
+    );
+    const heldIds = new Set(held.map((r) => r.id));
+    const limit = Math.min(HOUSE_REMINDER_LIMIT, SCHEDULED_NOTIFICATIONS_LIMIT - others) - held.length;
+    const planKinds = {
+      ...kinds,
+      appointments: kinds.appointments && !unknown.has('appointments'),
+      vaccines: kinds.vaccines && !unknown.has('vaccines'),
+    };
+    const plan = planHouseReminders({ ...data, kinds: planKinds, today, nowTime, limit, overdueWarned: warned });
+    const overdue = [
+      ...(previous?.overdue ?? []).filter((o) => o.kind && unknown.has(o.kind)),
+      ...plan.flatMap((r) => (r.overdue ? [{ key: r.overdue, at: `${r.date}T${r.time}`, kind: r.kind }] : [])),
+    ];
+    const signature = JSON.stringify(plan) + (unknown.size ? `|sem:${[...unknown].join(',')}` : '');
     if (previous?.signature === signature) {
-      if (JSON.stringify(previous.warned ?? []) !== JSON.stringify(warned)) {
-        await AsyncStorage.setItem(HOUSE_SCHEDULED_KEY, JSON.stringify({ ...previous, warned } satisfies StoredHouseReminders));
+      // Nada a refazer, mas avisos de saúde que já tocaram saem da lista guardada.
+      const keep = previous.ids.flatMap((id, i) => {
+        const kind = previous.kinds?.[i];
+        return kind && unknown.has(kind) && !heldIds.has(id) ? [] : [{ id, kind }];
+      });
+      if (keep.length !== previous.ids.length || JSON.stringify(previous.warned ?? []) !== JSON.stringify(warned)) {
+        await AsyncStorage.setItem(
+          HOUSE_SCHEDULED_KEY,
+          JSON.stringify({
+            ...previous,
+            ids: keep.map((r) => r.id),
+            kinds: previous.kinds ? keep.map((r) => r.kind!) : undefined,
+            warned,
+          } satisfies StoredHouseReminders),
+        );
       }
       return;
     }
-    if (previous) await cancelAll(previous.ids);
+    if (previous) await cancelAll(previous.ids.filter((id) => !heldIds.has(id)));
 
     const ids: string[] = [];
     for (const reminder of plan) {
@@ -364,7 +412,13 @@ export async function syncHouseReminders(
     }
     await AsyncStorage.setItem(
       HOUSE_SCHEDULED_KEY,
-      JSON.stringify({ ids, kinds: plan.map((r) => r.kind), overdue, warned, signature } satisfies StoredHouseReminders),
+      JSON.stringify({
+        ids: [...held.map((r) => r.id), ...ids],
+        kinds: [...held.map((r) => r.kind), ...plan.map((r) => r.kind)],
+        overdue,
+        warned,
+        signature,
+      } satisfies StoredHouseReminders),
     );
   });
 }
