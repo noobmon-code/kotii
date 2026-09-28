@@ -240,6 +240,22 @@ describe('house reminders', () => {
     });
   });
 
+  it('desligar as vacinas antes do aviso de atraso tocar não o dá como tocado', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('vaccines', true);
+      const late = { ...data, vaccines: [{ id: 'v1', name: 'Tríplice viral', dose: null, person: 'Lia', next_dose_on: '2099-01-01' }] };
+      // Aviso de atraso marcado para as 9h de um dia que ainda não chegou.
+      await reminders.syncHouseReminders(late, '2099-01-12', '08:00');
+      expect([...live.values()].map((r) => r.content.data.reminder)).toEqual(['vaccines:v1:2099-01-12']);
+      await reminders.setHouseReminderKind('vaccines', false);
+      expect(live.size).toBe(0);
+      await reminders.setHouseReminderKind('vaccines', true);
+      // Religado depois das 9h: o aviso cancelado não conta como tocado e volta no próximo horário.
+      await reminders.syncHouseReminders(late, '2099-01-12', '10:00');
+      expect([...live.values()].map((r) => r.content.data.reminder)).toEqual(['vaccines:v1:2099-01-13']);
+    });
+  });
+
   it('fica com o espaço que os remédios deixam no teto do iPhone', async () => {
     await withHouse(async (reminders, { live }) => {
       for (let i = 0; i < 62; i++) live.set(`remedio${i}`, { content: { data: { reminder: `med:${i}` } } });
