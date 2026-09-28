@@ -1,12 +1,40 @@
+import { useCallback, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { formatQuantity } from '@/domain/money';
 import type { RecentItem } from '@/domain/recentPurchases';
 import { describeRestock, type RestockItem } from '@/domain/restock';
+import { normalizeSearch } from '@/domain/search';
 import { CategoryIcon, Icon, Section, Text, useCategoryTint } from '@/ui/primitives';
 import { radius, space } from '@/ui/theme';
 
 const TILE = 92;
+
+/**
+ * Itens postos na lista por uma faixa: somem no toque e ficam escondidos até
+ * os dados carregados (`listed`) trazerem o item. A busca pode falhar ou, com
+ * a fila da lista andando, devolver o cache de antes; soltar sem ver o item
+ * faria a sugestão voltar, e um novo toque o poria em dobro. Depois que o
+ * item aparece, quem o esconde é a própria lista; se sair dela, volta.
+ */
+export function useJustListed(listed: { name: string }[] | undefined) {
+  const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
+  // Dados novos: solta o que já aparece neles (ajuste durante a renderização,
+  // como o React recomenda para estado que depende de outro valor).
+  const [seen, setSeen] = useState(listed);
+  if (listed !== seen) {
+    setSeen(listed);
+    const names = new Set((listed ?? []).map((i) => normalizeSearch(i.name)));
+    if ([...pending].some((key) => names.has(key))) setPending(new Set([...pending].filter((key) => !names.has(key))));
+  }
+  const add = useCallback((names: string[]) => setPending((prev) => new Set([...prev, ...names.map(normalizeSearch)])), []);
+  /** A inclusão falhou: a sugestão volta. */
+  const drop = useCallback((names: string[]) => {
+    const keys = new Set(names.map(normalizeSearch));
+    setPending((prev) => new Set([...prev].filter((key) => !keys.has(key))));
+  }, []);
+  return { pending, add, drop };
+}
 
 type StripItem = Omit<RecentItem, 'times'>;
 

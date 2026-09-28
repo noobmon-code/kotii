@@ -23,7 +23,7 @@ import { restockSuggestions } from '@/domain/restock';
 import { guessCategory, normalizeSearch } from '@/domain/search';
 import { CommonItemsPicker } from '@/features/CommonItemsPicker';
 import { OfflineNotice } from '@/features/OfflineNotice';
-import { RecentPurchases, RestockStrip } from '@/features/RecentPurchases';
+import { RecentPurchases, RestockStrip, useJustListed } from '@/features/RecentPurchases';
 import { ShoppingGrid } from '@/features/ShoppingGrid';
 import { useAuth } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
@@ -66,8 +66,8 @@ export default function ShoppingListScreen() {
   const [quantity, setQuantity] = useState('1');
   const [unit, setUnit] = useState<Unit>('un');
   const [pickerOpen, setPickerOpen] = useState(false);
-  // Some da faixa na hora do toque, antes de a lista recarregar.
-  const [justAdded, setJustAdded] = useState<Set<string>>(new Set());
+  // Some da faixa já no toque; volta quando a lista carregada trouxer o item e ele sair dela depois.
+  const justAdded = useJustListed(items.data);
 
   const productByName = useMemo(
     () => new Map((products.data ?? []).map((p) => [normalizeSearch(p.name), p])),
@@ -127,32 +127,18 @@ export default function ShoppingListScreen() {
   }
 
   function addRecent(item: Omit<RecentItem, 'times'>) {
-    const key = normalizeSearch(item.name);
-    const release = () =>
-      setJustAdded((prev) => {
-        const next = new Set(prev);
-        next.delete(key);
-        return next;
-      });
-    setJustAdded((prev) => new Set(prev).add(key));
+    justAdded.add([item.name]);
     addItem.mutate(
       { name: item.name, category: item.category, productId: item.productId, quantity: item.quantity, unit: item.unit },
       {
-        // A lista recarregada já traz o item (e o tira da faixa); se ele sair
-        // da lista depois, volta para a faixa. Se a busca falhar, segue
-        // escondido: já está na lista, e mostrar de novo convidaria a pôr em dobro.
-        onSuccess: () => {
-          items.refetch({ cancelRefetch: false }).then((result) => {
-            if (result.isSuccess) release();
-          });
-        },
         onError: (err) => {
-          release();
+          justAdded.drop([item.name]);
           onError(err);
         },
       },
     );
   }
+
 
   // Na ordem dos corredores do mercado: frescos, despensa, bebidas, casa…
   const pending = (items.data ?? []).filter((i) => !i.checked_at).sort(compareByAisle);
@@ -166,7 +152,7 @@ export default function ShoppingListScreen() {
   // Do histórico, menos o que já está na lista (a comprar ou no carrinho); o
   // que "acabou" não se repete em "comprados recentemente".
   const inList = {
-    names: new Set([...(items.data ?? []).map((i) => normalizeSearch(i.name)), ...justAdded]),
+    names: new Set([...(items.data ?? []).map((i) => normalizeSearch(i.name)), ...justAdded.pending]),
     productIds: new Set((items.data ?? []).flatMap((i) => (i.product_id ? [i.product_id] : []))),
   };
   const restockItems = restockSuggestions(purchases.data ?? [], { listKind: list.data.kind, exclude: inList });

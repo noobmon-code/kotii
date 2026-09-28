@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import {
@@ -31,6 +31,7 @@ import { hasHealthToday, healthTodayCount, HealthTodaySections } from '@/feature
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { InstallAppCard } from '@/features/InstallAppCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
+import { useJustListed } from '@/features/RecentPurchases';
 import { useHousehold } from '@/lib/auth';
 import type { Bill } from '@/lib/types';
 import { errorMessage } from '@/lib/supabase';
@@ -91,8 +92,9 @@ export default function TodayScreen() {
   const purchases = usePurchaseRecords();
   const addToList = useAddItemsToList();
   const [paying, setPaying] = useState<Bill | null>(null);
-  // Some na hora do toque, antes de as listas recarregarem.
-  const [restocked, setRestocked] = useState<Set<string>>(new Set());
+  // Itens de todas as listas abertas; os postos agora há pouco somem já no toque.
+  const onLists = useMemo(() => (lists.data ?? []).flatMap((l) => l.items), [lists.data]);
+  const restocked = useJustListed(lists.data ? onLists : undefined);
 
   const queries = [
     medications,
@@ -131,13 +133,12 @@ export default function TodayScreen() {
   const equipmentName = (id: string | null) => (id ? equipment.data?.find((e) => e.id === id)?.name : undefined);
   const activeLists = (lists.data ?? []).filter((l) => l.pending > 0);
   // "Acho que acabou": do mercado, menos o que já está em alguma lista aberta.
-  const onLists = (lists.data ?? []).flatMap((l) => l.items);
   const restock = lists.isSuccess
     ? restockSuggestions(purchases.data ?? [], {
         now,
         listKind: 'mercado',
         exclude: {
-          names: new Set([...onLists.map((i) => normalizeSearch(i.name)), ...restocked]),
+          names: new Set([...onLists.map((i) => normalizeSearch(i.name)), ...restocked.pending]),
           productIds: new Set(onLists.flatMap((i) => (i.product_id ? [i.product_id] : []))),
         },
         limit: 5,
@@ -188,9 +189,10 @@ export default function TodayScreen() {
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
   function addRestock(items: RestockItem[], open: boolean) {
-    const keys = items.map((i) => normalizeSearch(i.name));
-    const release = () => setRestocked((prev) => new Set([...prev].filter((key) => !keys.includes(key))));
-    setRestocked((prev) => new Set([...prev, ...keys]));
+    const names = items.map((i) => i.name);
+    // Some já no toque; volta quando as listas carregadas trouxerem o item e
+    // ele sair delas depois (useJustListed). A tela Hoje fica montada o tempo todo.
+    restocked.add(names);
     addToList.mutate(
       {
         listId: marketList?.id,
@@ -199,22 +201,16 @@ export default function TodayScreen() {
       },
       {
         onSuccess: ({ id }) => {
-          // As listas recarregadas já trazem os itens (e os tiram daqui); se
-          // saírem da lista depois, voltam. A tela Hoje fica montada o tempo todo.
-          // Se a busca falhar, seguem escondidos: já estão na lista, e mostrar
-          // de novo convidaria a pôr em dobro.
-          lists.refetch({ cancelRefetch: false }).then((result) => {
-            if (result.isSuccess) release();
-          });
           if (open) router.push({ pathname: '/lista/[id]', params: { id } });
         },
         onError: (err) => {
-          release();
+          restocked.drop(names);
           onError(err);
         },
       },
     );
   }
+
 
   return (
     <Screen fab refreshing={refreshing} onRefresh={refresh}>
