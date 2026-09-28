@@ -1,4 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useRef } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { aiUsageRows } from '@/domain/aiUsage';
@@ -13,6 +15,19 @@ export function AiUsageSection() {
     queryKey: ['aiUsage'],
     queryFn: async () => unwrap(await supabase.rpc('ai_usage_summary')) as { kind: string; used: number; lim: number }[],
   });
+  // A aba fica montada enquanto o Nuke, o cardápio e as leituras de foto (de
+  // qualquer pessoa da casa) gastam o limite: confere de novo ao voltar a ela.
+  const firstFocus = useRef(true);
+  const { refetch } = usage;
+  useFocusEffect(
+    useCallback(() => {
+      if (firstFocus.current) {
+        firstFocus.current = false;
+        return;
+      }
+      void refetch();
+    }, [refetch]),
+  );
   if (!usage.data) return null;
   const rows = aiUsageRows(usage.data);
 
