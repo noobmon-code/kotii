@@ -163,8 +163,6 @@ export default function TodayScreen() {
   const activeLists = (lists.data ?? []).filter((l) => l.pending > 0);
   // "Acho que acabou": do mercado, menos o que já está em alguma lista aberta.
   const restock = useRestock(lists.isSuccess ? onLists : undefined, purchases.data, restocked.pending, today);
-  // A lista de mercado aberta mais recente; sem nenhuma, cria "Mercado".
-  const marketList = (lists.data ?? []).find((l) => l.kind === 'mercado');
   // Categorias do mês que passaram ou estão perto do limite.
   const budgetAlerts =
     budgets.data && spending.data
@@ -219,10 +217,10 @@ export default function TodayScreen() {
     restocked.add(names);
     try {
       const { id } = await addToList.mutateAsync({
-        listId: marketList?.id,
+        // A lista de mercado aberta mais recente vem do servidor, não do que a
+        // tela tem guardado: pode ter sido arquivada por outra pessoa, ou
+        // criada pelo toque anterior e ainda não ter chegado.
         newListName: 'Mercado',
-        // Sem lista de mercado aqui, pode haver uma criada pelo toque anterior
-        // que as listas ainda não trouxeram: o servidor diz.
         reuseMarketList: true,
         items: items.map(({ name, category, productId, quantity, unit }) => ({ name, category, productId, quantity, unit })),
       });

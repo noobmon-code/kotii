@@ -406,8 +406,10 @@ export function registerListMutations(queryClient: QueryClient) {
     mutationFn: (input: ClearCheckedInput) => clearCheckedItems(input),
     // Aqui e não no hook: vale também para o limpar que ficou na fila e sai
     // depois de reabrir o app.
-    onSuccess: (_data: unknown, input: ClearCheckedInput) => {
-      recordClearedPurchases(queryClient, input);
+    onSuccess: (moved: unknown, input: ClearCheckedInput) => {
+      // Só quando saiu tudo o que estava no carrinho: se alguém mexeu num item
+      // antes (o selo não bateu), o que saiu de fato vem com a busca do histórico.
+      if (moved === input.items.length) recordClearedPurchases(queryClient, input);
       queryClient.invalidateQueries({ queryKey: ['lists'] });
       queryClient.invalidateQueries({ queryKey: ['listItems', input.listId] });
       queryClient.invalidateQueries({ queryKey: ['list', input.listId] });
