@@ -202,6 +202,21 @@ describe('house reminders', () => {
     });
   });
 
+  it('desligar e religar as contas não repete um aviso de atraso que já tocou', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('bills', true);
+      const late = { ...data, bills: [{ ...data.bills[0], next_due_on: '2020-01-10' }] };
+      // Aviso marcado para as 9h de um dia que já passou: é como se já tivesse tocado.
+      await reminders.syncHouseReminders(late, '2020-01-12', '08:00');
+      expect(live.size).toBe(1);
+      live.clear();
+      await reminders.setHouseReminderKind('bills', false);
+      await reminders.setHouseReminderKind('bills', true);
+      await reminders.syncHouseReminders(late, '2020-01-13', '12:00');
+      expect(live.size).toBe(0);
+    });
+  });
+
   it('fica com o espaço que os remédios deixam no teto do iPhone', async () => {
     await withHouse(async (reminders, { live }) => {
       for (let i = 0; i < 62; i++) live.set(`remedio${i}`, { content: { data: { reminder: `med:${i}` } } });

@@ -263,6 +263,10 @@ export async function setHouseReminderKind(kind: HouseReminderKind, enabled: boo
     const drop = scheduled.ids.filter((_, i) => scheduled.kinds?.[i] === kind);
     await cancelAll(drop);
     const keep = scheduled.ids.map((id, i) => ({ id, kind: scheduled.kinds![i] })).filter((r) => r.kind !== kind);
+    // Desligando as contas: aviso de atraso que já tocou fica marcado, para não
+    // tocar de novo se as contas forem religadas.
+    const now = `${todayISO()}T${currentTimeHHMM()}`;
+    const rang = kind === 'bills' ? (scheduled.overdue ?? []).filter((o) => o.at <= now).map((o) => o.key) : [];
     await AsyncStorage.setItem(
       HOUSE_SCHEDULED_KEY,
       // Assinatura vazia: a próxima sincronização refaz com os dados.
@@ -271,6 +275,7 @@ export async function setHouseReminderKind(kind: HouseReminderKind, enabled: boo
         ids: keep.map((r) => r.id),
         kinds: keep.map((r) => r.kind),
         overdue: kind === 'bills' ? [] : scheduled.overdue,
+        warned: [...new Set([...(scheduled.warned ?? []), ...rang])],
         signature: '',
       } satisfies StoredHouseReminders),
     );
