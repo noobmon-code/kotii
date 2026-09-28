@@ -60,7 +60,11 @@ function BillForm({ bill }: { bill?: Bill }) {
   const [due, setDue] = useState(bill ? formatBRDate(bill.next_due_on) : '');
   const [autopay, setAutopay] = useState(bill?.autopay ?? false);
   const [notes, setNotes] = useState(bill?.notes ?? '');
-  const [boleto, setBoleto] = useState(bill?.boleto ?? null);
+  // O boleto só vem desta tela quando foi lido ou tirado aqui; senão vale o da
+  // conta, que pode mudar em outro celular com esta tela aberta.
+  const [editedBoleto, setEditedBoleto] = useState<{ value: string | null } | null>(null);
+  const boleto = editedBoleto ? editedBoleto.value : (bill?.boleto ?? null);
+  const setBoleto = (value: string | null) => setEditedBoleto({ value });
   const [scanning, setScanning] = useState(false);
   const [paying, setPaying] = useState(false);
 
@@ -102,11 +106,11 @@ function BillForm({ bill }: { bill?: Bill }) {
     if (!name.trim()) return notify('Informe o nome', 'Ex.: Condomínio, Internet, Escola.');
     if (!variable && value == null) return notify('Informe o valor', 'Ou marque que o valor varia a cada mês.');
     if (!dueISO) return notify('Data inválida', 'Informe o vencimento como dd/mm/aaaa.');
-    // Só grava o vencimento e o boleto se mudaram: se outra pessoa pagou
-    // enquanto esta tela estava aberta, salvar o resto não pode voltar a conta
-    // para trás nem pôr o boleto já pago no próximo vencimento.
+    // Só grava o vencimento e o boleto se mudaram aqui: se outra pessoa pagou
+    // ou trocou o boleto com esta tela aberta, salvar o resto não pode voltar
+    // a conta para trás nem regravar um boleto velho.
     const dueChanged = !bill || dueISO !== bill.next_due_on;
-    const boletoChanged = !bill || boleto !== bill.boleto;
+    const boletoChanged = !bill || editedBoleto !== null;
     save.mutate(
       {
         id: bill?.id,

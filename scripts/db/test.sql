@@ -695,6 +695,11 @@ begin
   b := (public.pay_bill(power, '2026-09-10', 187.40, '2026-09-09')).bill;
   assert b.next_due_on = '2026-10-10', 'monthly advance';
   assert b.boleto is null, 'paying clears the boleto of the paid due date';
+  -- Desfazer devolve a conta ao vencimento, com o boleto dele.
+  b := public.undo_bill_payment((select id from public.bill_payments where bill_id = power and due_on = '2026-09-10'));
+  assert b.next_due_on = '2026-09-10' and b.boleto = '83620000000667800481001809756573100158963608', 'undo restores the boleto';
+  b := (public.pay_bill(power, '2026-09-10', 187.40, '2026-09-09')).bill;
+  assert b.next_due_on = '2026-10-10' and b.boleto is null, 'paid again';
 
   insert into public.bills (name, category, amount, recurrence, due_day, next_due_on)
     values ('IPVA', 'transporte', 1800, 'yearly', 15, '2026-03-15') returning id into ipva;
