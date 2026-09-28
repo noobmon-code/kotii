@@ -979,7 +979,7 @@ begin
   insert into public.chores (title, due_on, kid_id, points) values ('Guardar os brinquedos', '2026-09-28', kid, 5) returning id into toys;
   insert into public.chores (title, points) values ('Lavar a louça', 50) returning id into dishes;
   select * into r from public.complete_chore(bed, '2026-09-27', '2026-09-27');
-  assert r.completed and r.points = 10, 'completion reports the points it credited';
+  assert r.completed and r.points = 10 and r.person_id = kid, 'completion reports the points and who got them';
   -- Toque duplo (ou outro celular) na mesma ocorrência: conta uma vez.
   select * into r from public.complete_chore(bed, '2026-09-27', '2026-09-27');
   assert not r.completed and r.points = 0, 'a repeated completion reports that nothing counted';
@@ -990,6 +990,13 @@ begin
   perform public.complete_chore(teeth, '2026-09-28');
   perform public.complete_chore(teeth, '2026-09-28');
   assert (select count(*) from public.chore_completions where chore_id = teeth) = 1, 'old app double tap completes once';
+  -- Adiantada (a de amanhã feita hoje): a próxima conta do vencimento, e o
+  -- mesmo toque de novo não passa.
+  update public.chores set due_on = '2026-09-30', active = true where id = teeth;
+  select * into r from public.complete_chore(teeth, '2026-09-29', '2026-09-30');
+  assert r.completed and r.due_on = '2026-10-01', 'early completion moves on from the due date';
+  select * into r from public.complete_chore(teeth, '2026-09-29', '2026-09-30');
+  assert not r.completed, 'early completion counts once';
   delete from public.chores where id = teeth;
   perform public.complete_chore(bed, '2026-09-28', '2026-09-28');
   -- Tarefa única, pelo app antigo (sem vencimento): a segunda vez não conta.

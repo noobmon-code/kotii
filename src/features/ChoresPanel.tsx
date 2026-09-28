@@ -9,7 +9,6 @@ import { kidsOf } from '@/domain/points';
 import { todayISO } from '@/domain/dates';
 import { useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
-import type { Chore } from '@/lib/types';
 import { notify } from '@/ui/dialogs';
 import {
   Button,
@@ -25,9 +24,13 @@ import {
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
-/** Tarefa de criança concluída: comemora os pontos que o servidor de fato creditou (toque repetido não conta). */
-export function cheerKid(chore: Pick<Chore, 'kid_id'>, result: CompleteChoreResult, people: { id: string; name: string }[]) {
-  const kid = chore.kid_id ? people.find((p) => p.id === chore.kid_id)?.name : undefined;
+/**
+ * Tarefa de criança concluída: comemora os pontos que o servidor de fato
+ * creditou, com o nome de quem recebeu (a tarefa pode ter mudado de criança
+ * em outro celular; toque repetido não conta).
+ */
+export function cheerKid(result: CompleteChoreResult, people: { id: string; name: string }[]) {
+  const kid = result.person_id ? people.find((p) => p.id === result.person_id)?.name : undefined;
   if (kid && result.completed && result.points > 0) {
     notify(`+${result.points} ${result.points === 1 ? 'ponto' : 'pontos'} para ${kid}!`, 'O saldo fica em Casa → Tarefas → Pontos das crianças.');
   }
@@ -100,7 +103,7 @@ export function ChoresPanel() {
                           onPress={() =>
                             complete.mutate(
                               { id: chore.id, today, dueOn: chore.due_on },
-                              { onSuccess: (result) => cheerKid(chore, result, people), onError: (err) => notify('Erro', errorMessage(err)) },
+                              { onSuccess: (result) => cheerKid(result, people), onError: (err) => notify('Erro', errorMessage(err)) },
                             )
                           }
                         />

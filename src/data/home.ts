@@ -113,10 +113,11 @@ export function useSaveChore() {
   });
 }
 
-/** O que a conclusão fez: se registrou (toque repetido não registra) e os pontos que deu. */
+/** O que a conclusão fez: se registrou (toque repetido não registra), os pontos que deu e para quem. */
 export interface CompleteChoreResult {
   completed: boolean;
   points: number;
+  person_id: string | null;
   due_on: string;
   active: boolean;
 }
