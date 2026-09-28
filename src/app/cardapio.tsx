@@ -50,9 +50,11 @@ export default function MenuScreen() {
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
   const dishOf = (day: string, meal: Meal) => menu.data?.find((i) => i.day === day && i.meal === meal)?.dish ?? null;
   const shown = suggestion?.weekStart === weekStart ? suggestion : null;
+  // Semana que já passou: só mostra o que foi feito, sem pedir sugestão ao Nuke.
+  const past = days[6] < today;
 
   function askNuke() {
-    if (nuke.status !== 'ready') return;
+    if (nuke.status !== 'ready' || past) return;
     const current = menuLines(menu.data ?? []);
     const context = `${nuke.context}\nCARDÁPIO já definido nesta semana: ${current.length ? current.join('; ') : 'nada'}.`;
     suggest.mutate(
@@ -111,29 +113,31 @@ export default function MenuScreen() {
         <IconButton icon="chevron-right" label="Próxima semana" onPress={() => setWeekStart(addDays(weekStart, 7))} />
       </Row>
 
-      <Card style={styles.gap}>
-        <Row>
-          {suggest.isPending ? <NukeLive size={48} state="think" /> : <NukeAvatar size={48} mood="joy" />}
-          <View style={styles.flex}>
-            <Text variant="heading">Monto a semana para vocês?</Text>
-            <Text variant="small">Uso primeiro o que tem na despensa e o que vence logo, e digo o que falta comprar.</Text>
-          </View>
-        </Row>
-        <TextField
-          value={preferences}
-          onChangeText={setPreferences}
-          placeholder="Ex.: sem carne vermelha, jantar leve, marmita para o trabalho"
-          accessibilityLabel="Preferências para o cardápio"
-        />
-        <Button
-          title={suggest.isPending ? 'Montando a semana…' : nuke.status === 'ready' ? 'Montar com o Nuke' : 'Carregando a casa…'}
-          icon="silverware-fork-knife"
-          onPress={askNuke}
-          loading={suggest.isPending}
-          disabled={nuke.status !== 'ready'}
-        />
-        {nuke.status === 'error' ? <Button title="Tentar carregar de novo" variant="ghost" compact onPress={nuke.retry} /> : null}
-      </Card>
+      {past ? null : (
+        <Card style={styles.gap}>
+          <Row>
+            {suggest.isPending ? <NukeLive size={48} state="think" /> : <NukeAvatar size={48} mood="joy" />}
+            <View style={styles.flex}>
+              <Text variant="heading">Monto a semana para vocês?</Text>
+              <Text variant="small">Uso primeiro o que tem na despensa e o que vence logo, e digo o que falta comprar.</Text>
+            </View>
+          </Row>
+          <TextField
+            value={preferences}
+            onChangeText={setPreferences}
+            placeholder="Ex.: sem carne vermelha, jantar leve, marmita para o trabalho"
+            accessibilityLabel="Preferências para o cardápio"
+          />
+          <Button
+            title={suggest.isPending ? 'Montando a semana…' : nuke.status === 'ready' ? 'Montar com o Nuke' : 'Carregando a casa…'}
+            icon="silverware-fork-knife"
+            onPress={askNuke}
+            loading={suggest.isPending}
+            disabled={nuke.status !== 'ready'}
+          />
+          {nuke.status === 'error' ? <Button title="Tentar carregar de novo" variant="ghost" compact onPress={nuke.retry} /> : null}
+        </Card>
+      )}
 
       {shown ? (
         <Card style={styles.gap}>
