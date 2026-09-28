@@ -152,6 +152,8 @@ export interface Entry {
   amount: number;
   category: FinanceCategory;
   description: string;
+  /** Morador que pagou (divisão de gastos). */
+  paidBy?: string | null;
 }
 
 export interface ReceiptForSpending {
@@ -160,6 +162,7 @@ export interface ReceiptForSpending {
   total: number | null;
   store_name: string | null;
   items: { total_price: number; category: string | null }[];
+  paid_by?: string | null;
 }
 
 export interface PaymentForSpending {
@@ -169,6 +172,7 @@ export interface PaymentForSpending {
   amount: number;
   bill_name: string;
   bill_category: string;
+  paid_by?: string | null;
 }
 
 export interface ExpenseForSpending {
@@ -177,6 +181,7 @@ export interface ExpenseForSpending {
   amount: number;
   category: string;
   description: string;
+  paid_by?: string | null;
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -197,7 +202,7 @@ export function buildEntries(
   for (const r of receipts) {
     const store = r.store_name ?? 'Nota fiscal';
     if (!r.items.length) {
-      if (r.total) entries.push({ id: `nota-${r.id}`, source: 'nota', refId: r.id, date: r.purchased_at_date, amount: r.total, category: 'mercado', description: store });
+      if (r.total) entries.push({ id: `nota-${r.id}`, source: 'nota', refId: r.id, date: r.purchased_at_date, amount: r.total, category: 'mercado', description: store, paidBy: r.paid_by });
       continue;
     }
     const byCategory = new Map<FinanceCategory, number>();
@@ -208,7 +213,7 @@ export function buildEntries(
     const itemsSum = [...byCategory.values()].reduce((sum, v) => sum + v, 0);
     const charged = r.total && r.total > 0 ? r.total : itemsSum;
     if (itemsSum <= 0) {
-      if (charged > 0) entries.push({ id: `nota-${r.id}`, source: 'nota', refId: r.id, date: r.purchased_at_date, amount: round2(charged), category: 'mercado', description: store });
+      if (charged > 0) entries.push({ id: `nota-${r.id}`, source: 'nota', refId: r.id, date: r.purchased_at_date, amount: round2(charged), category: 'mercado', description: store, paidBy: r.paid_by });
       continue;
     }
     const parts = [...byCategory].map(([category, amount]) => ({ category, amount: round2((amount * charged) / itemsSum) }));
@@ -216,7 +221,7 @@ export function buildEntries(
     const largest = parts.reduce((a, b) => (b.amount > a.amount ? b : a));
     largest.amount = round2(largest.amount + charged - parts.reduce((sum, p) => sum + p.amount, 0));
     for (const { category, amount } of parts) {
-      entries.push({ id: `nota-${r.id}-${category}`, source: 'nota', refId: r.id, date: r.purchased_at_date, amount, category, description: store });
+      entries.push({ id: `nota-${r.id}-${category}`, source: 'nota', refId: r.id, date: r.purchased_at_date, amount, category, description: store, paidBy: r.paid_by });
     }
   }
   for (const p of payments) {
@@ -228,6 +233,7 @@ export function buildEntries(
       amount: p.amount,
       category: getFinanceCategory(p.bill_category).key,
       description: p.bill_name,
+      paidBy: p.paid_by,
     });
   }
   for (const e of expenses) {
@@ -239,6 +245,7 @@ export function buildEntries(
       amount: e.amount,
       category: getFinanceCategory(e.category).key,
       description: e.description,
+      paidBy: e.paid_by,
     });
   }
   return entries.sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount);

@@ -10,7 +10,7 @@ import type { Receipt, ReceiptItem, Unit } from '@/lib/types';
 import { functionErrorMessage, pickImages, signedImageUrl, uploadImage, type ScanSource } from './images';
 
 const RECEIPT_COLUMNS =
-  'id, store_id, purchased_at, total, access_key, image_path, source, status, created_at, store:stores(id, name)';
+  'id, store_id, purchased_at, total, access_key, image_path, source, status, created_at, paid_by, store:stores(id, name)';
 const ITEM_COLUMNS =
   'id, receipt_id, position, raw_description, suggested_name, suggested_category, product_id, quantity, unit, unit_price, total_price';
 
@@ -47,6 +47,8 @@ function useInvalidateReceipt(id?: string) {
   const queryClient = useQueryClient();
   return () => {
     queryClient.invalidateQueries({ queryKey: ['receipts'] });
+    // Mercado, data, total e quem pagou mudam o resumo de gastos.
+    queryClient.invalidateQueries({ queryKey: ['spending'] });
     if (id) queryClient.invalidateQueries({ queryKey: ['receipt', id] });
   };
 }
@@ -201,7 +203,7 @@ export function useCreateManualReceipt() {
 export function useUpdateReceipt(id: string) {
   const invalidate = useInvalidateReceipt(id);
   return useMutation({
-    mutationFn: async (patch: Partial<Pick<Receipt, 'store_id' | 'purchased_at' | 'total'>>) =>
+    mutationFn: async (patch: Partial<Pick<Receipt, 'store_id' | 'purchased_at' | 'total' | 'paid_by'>>) =>
       unwrap(await supabase.from('receipts').update(patch).eq('id', id)),
     onSuccess: invalidate,
   });

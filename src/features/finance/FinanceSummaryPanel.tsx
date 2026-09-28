@@ -20,6 +20,8 @@ import {
 } from '@/domain/finance';
 import { formatBRL } from '@/domain/money';
 import { BudgetSection } from '@/features/finance/BudgetSection';
+import { SplitSection } from '@/features/finance/SplitSection';
+import { useHousehold } from '@/lib/auth';
 import {
   Button,
   Card,
@@ -67,6 +69,9 @@ export function FinanceSummaryPanel() {
   const spending = useSpending(shiftMonth(windowEnd, -MONTHS_SHOWN), windowEnd);
   const bills = useBills();
   const budgets = useBudgets();
+  const members = useHousehold().data?.members ?? [];
+  const payerName = (id: string | null | undefined) =>
+    members.length > 1 && id ? members.find((m) => m.user_id === id)?.display_name : undefined;
 
   function goTo(target: string) {
     if (target > current) return;
@@ -164,6 +169,8 @@ export function FinanceSummaryPanel() {
             </Section>
           ) : null}
 
+          <SplitSection entries={monthEntries} month={month} monthName={monthName} />
+
           <Section
             title="Lançamentos"
             action={
@@ -177,7 +184,14 @@ export function FinanceSummaryPanel() {
                   key={entry.id}
                   left={<IconBadge icon={getFinanceCategory(entry.category).icon} />}
                   title={entry.description}
-                  subtitle={`${formatShortDate(entry.date)} · ${SOURCE_LABEL[entry.source]}${category ? '' : ` · ${getFinanceCategory(entry.category).label}`}`}
+                  subtitle={[
+                    formatShortDate(entry.date),
+                    SOURCE_LABEL[entry.source],
+                    category ? null : getFinanceCategory(entry.category).label,
+                    payerName(entry.paidBy),
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
                   right={<Text variant="label">{formatBRL(entry.amount)}</Text>}
                   onPress={() => openEntry(entry)}
                 />

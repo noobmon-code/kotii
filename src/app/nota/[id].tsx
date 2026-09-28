@@ -27,6 +27,7 @@ import {
   type ItemOverride,
   type ResolvedItem,
 } from '@/domain/receiptReview';
+import { PayerChips } from '@/features/finance/PayerChips';
 import { ReceiptItemEditor } from '@/features/ReceiptItemEditor';
 import { errorMessage } from '@/lib/supabase';
 import type { ReceiptItem } from '@/lib/types';
@@ -226,6 +227,7 @@ export default function ReceiptScreen() {
         {totalMismatch ? (
           <Badge label="A soma não bate com o total: confira itens e descontos" tone="warning" />
         ) : null}
+        <PayerChips value={receipt.paid_by} onChange={(paidBy) => updateReceipt.mutate({ paid_by: paidBy }, { onError })} />
         {receipt.image_path ? <Button title="Ver foto da nota" icon="image-outline" variant="secondary" compact onPress={showImage} /> : null}
       </Card>
 
