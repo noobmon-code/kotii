@@ -1,7 +1,7 @@
 import { router } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
-import { useChores, useCompleteChore } from '@/data/home';
+import { useChores, useCompleteChore, type CompleteChoreResult } from '@/data/home';
 import { usePeople } from '@/data/health';
 import { useEquipmentList } from '@/data/house';
 import { choreAssigneeLabel, choreStatus, describeChoreStatus, describeRecurrence, type ChoreStatus } from '@/domain/chores';
@@ -25,11 +25,11 @@ import {
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
-/** Tarefa de criança concluída: comemora os pontos ganhos. */
-export function cheerKid(chore: Pick<Chore, 'kid_id' | 'points'>, people: { id: string; name: string }[]) {
+/** Tarefa de criança concluída: comemora os pontos que o servidor de fato creditou (toque repetido não conta). */
+export function cheerKid(chore: Pick<Chore, 'kid_id'>, result: CompleteChoreResult, people: { id: string; name: string }[]) {
   const kid = chore.kid_id ? people.find((p) => p.id === chore.kid_id)?.name : undefined;
-  if (kid && chore.points > 0) {
-    notify(`+${chore.points} ${chore.points === 1 ? 'ponto' : 'pontos'} para ${kid}!`, 'O saldo fica em Casa → Tarefas → Pontos das crianças.');
+  if (kid && result.completed && result.points > 0) {
+    notify(`+${result.points} ${result.points === 1 ? 'ponto' : 'pontos'} para ${kid}!`, 'O saldo fica em Casa → Tarefas → Pontos das crianças.');
   }
 }
 
@@ -100,7 +100,7 @@ export function ChoresPanel() {
                           onPress={() =>
                             complete.mutate(
                               { id: chore.id, today, dueOn: chore.due_on },
-                              { onSuccess: () => cheerKid(chore, people), onError: (err) => notify('Erro', errorMessage(err)) },
+                              { onSuccess: (result) => cheerKid(chore, result, people), onError: (err) => notify('Erro', errorMessage(err)) },
                             )
                           }
                         />

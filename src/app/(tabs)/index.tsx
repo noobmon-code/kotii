@@ -332,7 +332,7 @@ export default function TodayScreen() {
                       checked={false}
                       label={`Concluir ${chore.title}`}
                       onPress={() =>
-                        completeChore.mutate({ id: chore.id, today, dueOn: chore.due_on }, { onSuccess: () => cheerKid(chore, health.people), onError })
+                        completeChore.mutate({ id: chore.id, today, dueOn: chore.due_on }, { onSuccess: (result) => cheerKid(chore, result, health.people), onError })
                       }
                     />
                   }

@@ -113,13 +113,21 @@ export function useSaveChore() {
   });
 }
 
+/** O que a conclusão fez: se registrou (toque repetido não registra) e os pontos que deu. */
+export interface CompleteChoreResult {
+  completed: boolean;
+  points: number;
+  due_on: string;
+  active: boolean;
+}
+
 export function useCompleteChore() {
   const queryClient = useQueryClient();
   return useMutation({
     // dueOn: o vencimento na tela. Se a tarefa já andou (toque duplo, outro
     // celular), o servidor não registra de novo nem credita pontos outra vez.
     mutationFn: async ({ id, today, dueOn }: { id: string; today: string; dueOn: string }) =>
-      unwrap(await supabase.rpc('complete_chore', { p_chore_id: id, p_today: today, p_due_on: dueOn })),
+      unwrap(await supabase.rpc('complete_chore', { p_chore_id: id, p_today: today, p_due_on: dueOn })) as CompleteChoreResult,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['chores'] });
       queryClient.invalidateQueries({ queryKey: ['choreHistory'] });

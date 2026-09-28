@@ -215,23 +215,32 @@ select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$
 declare
   c uuid;
-  r public.chores;
+  r record;
 begin
   insert into public.chores (title, recurrence, interval_count, due_on, assigned_to)
     values ('Limpar banheiro', 'weekly', 1, '2026-09-20', auth.uid()) returning id into c;
-  r := public.complete_chore(c, '2026-09-26');
-  assert r.due_on = '2026-10-03' and r.active, 'weekly: next week from completion';
+  select * into r from public.complete_chore(c, '2026-09-26');
+  assert r.completed and r.due_on = '2026-10-03' and r.active, 'weekly: next week from completion';
 
   insert into public.chores (title, recurrence, interval_count, due_on)
     values ('Trocar filtro', 'monthly', 1, '2026-01-31') returning id into c;
-  r := public.complete_chore(c, '2026-01-31');
+  select * into r from public.complete_chore(c, '2026-01-31');
   assert r.due_on = '2026-02-28', 'monthly clamps to end of month';
 
   insert into public.chores (title, due_on) values ('Trocar lâmpada', '2026-09-26') returning id into c;
-  r := public.complete_chore(c, '2026-09-26');
+  select * into r from public.complete_chore(c, '2026-09-26');
   assert not r.active, 'one-off chore deactivates';
 
   assert (select count(*) from public.chore_completions) = 3, 'completions logged';
+  begin
+    insert into public.chore_completions (chore_id) values (c);
+    raise exception 'FAIL: completion written without complete_chore';
+  exception when insufficient_privilege then null;
+  end;
+  update public.chore_completions set completed_at = now();
+  assert not found, 'completions cannot be changed directly';
+  delete from public.chore_completions;
+  assert not found, 'completions cannot be deleted directly';
 
   begin
     insert into public.chores (title, assigned_to) values ('x', '00000000-0000-0000-0000-00000000000c');
@@ -962,15 +971,26 @@ declare
   bed uuid;
   toys uuid;
   dishes uuid;
+  teeth uuid;
+  r record;
 begin
   insert into public.chores (title, recurrence, due_on, kid_id, points) values ('Arrumar a cama', 'daily', '2026-09-27', kid, 10)
     returning id into bed;
   insert into public.chores (title, due_on, kid_id, points) values ('Guardar os brinquedos', '2026-09-28', kid, 5) returning id into toys;
   insert into public.chores (title, points) values ('Lavar a louça', 50) returning id into dishes;
-  perform public.complete_chore(bed, '2026-09-27', '2026-09-27');
+  select * into r from public.complete_chore(bed, '2026-09-27', '2026-09-27');
+  assert r.completed and r.points = 10, 'completion reports the points it credited';
   -- Toque duplo (ou outro celular) na mesma ocorrência: conta uma vez.
-  perform public.complete_chore(bed, '2026-09-27', '2026-09-27');
+  select * into r from public.complete_chore(bed, '2026-09-27', '2026-09-27');
+  assert not r.completed and r.points = 0, 'a repeated completion reports that nothing counted';
   assert (select count(*) from public.chore_completions where chore_id = bed) = 1, 'same occurrence completes once';
+  -- App antigo (sem vencimento), tarefa que se repete: toque duplo conta uma vez.
+  insert into public.chores (title, recurrence, due_on, kid_id, points) values ('Escovar os dentes', 'daily', '2026-09-28', kid, 0)
+    returning id into teeth;
+  perform public.complete_chore(teeth, '2026-09-28');
+  perform public.complete_chore(teeth, '2026-09-28');
+  assert (select count(*) from public.chore_completions where chore_id = teeth) = 1, 'old app double tap completes once';
+  delete from public.chores where id = teeth;
   perform public.complete_chore(bed, '2026-09-28', '2026-09-28');
   -- Tarefa única, pelo app antigo (sem vencimento): a segunda vez não conta.
   perform public.complete_chore(toys, '2026-09-28');
