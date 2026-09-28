@@ -5,7 +5,7 @@ import {
   Nunito_800ExtraBold,
   useFonts,
 } from '@expo-google-fonts/nunito';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import { DarkTheme, DefaultTheme, SplashScreen, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
@@ -13,6 +13,7 @@ import { useColorScheme } from 'react-native';
 
 import { AuthProvider, useAuth, useHousehold } from '@/lib/auth';
 import { configureNotifications } from '@/lib/reminders';
+import { persistOptions, queryClient } from '@/lib/queryClient';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import { EmptyState, ErrorNotice, Screen } from '@/ui/primitives';
 import { fonts, useColors } from '@/ui/theme';
@@ -20,17 +21,14 @@ import { fonts, useColors } from '@/ui/theme';
 SplashScreen.preventAutoHideAsync();
 configureNotifications();
 
-const queryClient = new QueryClient({
-  defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
-});
 
 export default function RootLayout() {
   return (
-    <QueryClientProvider client={queryClient}>
+    <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
       <AuthProvider>
         <AppNavigator />
       </AuthProvider>
-    </QueryClientProvider>
+    </PersistQueryClientProvider>
   );
 }
 

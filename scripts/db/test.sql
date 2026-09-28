@@ -278,9 +278,29 @@ end $$;
 select set_config('request.jwt.claim.sub', :'user_b', false) \gset
 do $$
 begin
+  perform set_config('test.banana_token', (select toggle_token from public.shopping_list_items where name = 'Banana')::text, false);
   update public.shopping_list_items set checked_at = now(), checked_by = auth.uid()
     where list_id = current_setting('test.list_a')::uuid and name = 'Banana';
   assert found, 'B checks item on shared list';
+  assert (select toggle_token <> current_setting('test.banana_token')::uuid from public.shopping_list_items where name = 'Banana'),
+    'a toggle without a new token still renews it';
+end $$;
+
+-- A estava sem internet e desmarcou a Banana com o selo antigo: a marcação
+-- chega depois da de B e não passa por cima.
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  token uuid;
+begin
+  update public.shopping_list_items set checked_at = null, checked_by = null, toggle_token = gen_random_uuid()
+    where name = 'Banana' and toggle_token = current_setting('test.banana_token')::uuid;
+  assert not found, 'a queued toggle based on an old token does not overwrite a newer one';
+  assert (select checked_at from public.shopping_list_items where name = 'Banana') is not null, 'item stays checked';
+  select toggle_token into token from public.shopping_list_items where name = 'Banana';
+  update public.shopping_list_items set quantity = 2 where name = 'Banana';
+  assert (select toggle_token from public.shopping_list_items where name = 'Banana') = token, 'other edits keep the token';
+  update public.shopping_list_items set quantity = 1.5 where name = 'Banana';
 end $$;
 
 select set_config('request.jwt.claim.sub', :'user_c', false) \gset
@@ -442,7 +462,9 @@ begin
   end;
 
   begin
-    insert into public.workout_logs (plan_id, session_name) values (current_setting('test.plan_a')::uuid, 'A');
+    -- Data fixa e diferente da do log da A: sem ela, no dia do log a trava de
+    -- repetição disparava antes da checagem da casa.
+    insert into public.workout_logs (plan_id, session_name, done_on) values (current_setting('test.plan_a')::uuid, 'A', '2000-01-01');
     raise exception 'FAIL: log on foreign workout plan';
   exception when foreign_key_violation then null;
   end;

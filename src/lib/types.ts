@@ -92,6 +92,8 @@ export interface ShoppingListItem {
   unit: Unit;
   checked_at: string | null;
   checked_by: string | null;
+  /** Selo trocado a cada marcação: a marcação da fila só grava se o item não mudou. */
+  toggle_token: string;
   created_at: string;
 }
 

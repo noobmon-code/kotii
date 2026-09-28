@@ -1,6 +1,13 @@
 // Mercado: listas de compras, produtos, lojas e preços.
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  type QueryClient,
+  type QueryFunctionContext,
+  useIsMutating,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { useEffect } from 'react';
 
 import { supabase, unwrap } from '@/lib/supabase';
@@ -17,10 +24,30 @@ import type {
 // ---------------------------------------------------------------------------
 // Listas
 
+/** Fila da lista (marcações e limpar o carrinho) ainda andando, inclusive a restaurada ao reabrir o app. */
+export function useListQueueBusy() {
+  return useIsMutating({ predicate: inListQueue }) > 0;
+}
+
+/**
+ * Busca de listas e itens que respeita a fila: com marcações ainda por
+ * enviar, a resposta do servidor desfaria na tela as que faltam. Então
+ * qualquer busca (automática, puxar para atualizar, tentar de novo) devolve o
+ * que já está no cache, e a busca de verdade vem quando a fila acaba
+ * (registerListMutations).
+ */
+export function unlessListQueueBusy<T>(fetch: () => Promise<T>) {
+  return async ({ client, queryKey }: QueryFunctionContext) => {
+    const cached = client.getQueryData<T>(queryKey);
+    if (cached !== undefined && listQueueBusy(client)) return cached;
+    return fetch();
+  };
+}
+
 export function useShoppingLists() {
   return useQuery({
     queryKey: ['lists'],
-    queryFn: async () => {
+    queryFn: unlessListQueueBusy(async () => {
       const rows = unwrap(
         await supabase
           .from('shopping_lists')
@@ -33,7 +60,7 @@ export function useShoppingLists() {
         pending: shopping_list_items.filter((i) => !i.checked_at).length,
         total: shopping_list_items.length,
       }));
-    },
+    }),
   });
 }
 
@@ -58,10 +85,7 @@ export function useListItems(listId: string) {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'shopping_list_items', filter: `list_id=eq.${listId}` },
-        () => {
-          queryClient.invalidateQueries({ queryKey: ['listItems', listId] });
-          queryClient.invalidateQueries({ queryKey: ['lists'] });
-        },
+        () => onListItemsChange(queryClient, listId),
       )
       .subscribe();
     return () => {
@@ -71,15 +95,28 @@ export function useListItems(listId: string) {
 
   return useQuery({
     queryKey: ['listItems', listId],
-    queryFn: async () =>
-      unwrap(
-        await supabase
-          .from('shopping_list_items')
-          .select('id, list_id, product_id, name, category, quantity, unit, checked_at, checked_by, created_at')
-          .eq('list_id', listId)
-          .order('created_at'),
-      ) as ShoppingListItem[],
+    queryFn: unlessListQueueBusy(
+      async () =>
+        unwrap(
+          await supabase
+            .from('shopping_list_items')
+            .select('id, list_id, product_id, name, category, quantity, unit, checked_at, checked_by, toggle_token, created_at')
+            .eq('list_id', listId)
+            .order('created_at'),
+        ) as ShoppingListItem[],
+    ),
   });
+}
+
+/**
+ * Mudança na lista vinda do tempo real. Com marcações ainda na fila, buscar
+ * agora desfaria na tela as que faltam enviar: quem busca é a última
+ * marcação, e ela cobre também as mudanças puladas aqui.
+ */
+export function onListItemsChange(queryClient: QueryClient, listId: string) {
+  if (listQueueBusy(queryClient)) return;
+  queryClient.invalidateQueries({ queryKey: ['listItems', listId] });
+  queryClient.invalidateQueries({ queryKey: ['lists'] });
 }
 
 function useInvalidateLists(listId?: string) {
@@ -240,26 +277,135 @@ export function useAddToMarketList() {
   });
 }
 
+/**
+ * Marcar ou desmarcar item. Sem internet (no mercado, é comum) a marcação
+ * aparece na hora e vai para uma fila guardada no aparelho, enviada na ordem
+ * quando a conexão volta, mesmo que o app tenha sido fechado no meio.
+ */
+export const TOGGLE_ITEM_KEY = ['toggleListItem'];
+
+export interface ToggleItemInput {
+  id: string;
+  checked: boolean;
+  userId: string;
+  /** Hora do toque: a marcação enviada depois guarda quando foi feita. */
+  at: string;
+  /** Selo do item no toque: se alguém marcou depois, o selo mudou e esta não passa por cima. */
+  token: string;
+  /** Selo novo que esta marcação grava; o próximo toque no item parte dele. */
+  nextToken: string;
+}
+
+/** Selo novo (formato uuid). Não precisa ser secreto, só não repetir. */
+export function newToggleToken(): string {
+  const hex = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16));
+  hex[12] = '4';
+  hex[16] = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+  const s = hex.join('');
+  return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`;
+}
+
+/** Token vencido e ainda não renovado: o pedido iria com a chave pública e não gravaria nada. */
+export class SessionPendingError extends Error {
+  constructor() {
+    super('Esperando a sessão ser renovada.');
+  }
+}
+
+/** Marcação ou limpar feito por outra conta neste aparelho: não sai com a sessão de quem entrou agora. */
+export class ForeignToggleError extends Error {
+  constructor() {
+    super('Ação de outra conta.');
+  }
+}
+
+async function toggleListItem({ id, checked, userId, at, token, nextToken }: ToggleItemInput) {
+  const { data } = await supabase.auth.getSession();
+  if (!data.session) throw new SessionPendingError();
+  if (data.session.user.id !== userId) throw new ForeignToggleError();
+  return unwrap(
+    await supabase
+      .from('shopping_list_items')
+      .update(
+        checked
+          ? { checked_at: at, checked_by: userId, toggle_token: nextToken }
+          : { checked_at: null, checked_by: null, toggle_token: nextToken },
+      )
+      .eq('id', id)
+      .eq('toggle_token', token),
+  );
+}
+
+/**
+ * Marcar itens e limpar o carrinho andam numa fila só, na ordem dos toques:
+ * um limpar nunca cruza com uma marcação (e as duas sobrevivem a fechar o
+ * app, com o que ficou esperando a vez).
+ */
+export const LIST_QUEUE_SCOPE = { id: 'list-items' };
+export const CLEAR_CHECKED_KEY = ['clearCheckedItems'];
+
+export function inListQueue(mutation: { options: { scope?: { id: string } } }) {
+  return mutation.options.scope?.id === LIST_QUEUE_SCOPE.id;
+}
+
+/** Ainda há algo na fila da lista (enviando, esperando a vez ou sem internet)? */
+function listQueueBusy(queryClient: QueryClient) {
+  return queryClient.isMutating({ predicate: inListQueue }) > 0;
+}
+
+/** O que a fila precisa para rodar uma marcação restaurada depois de o app reabrir. */
+export function registerListMutations(queryClient: QueryClient) {
+  // Tudo na fila da lista pausa sem internet (ou com a sessão à espera de
+  // renovação) em vez de falhar, e anda uma de cada vez, na ordem. Com a
+  // sessão à espera (o Supabase tenta de novo a cada minuto), insiste por uns
+  // 5 minutos em vez de desistir.
+  const queued = {
+    networkMode: 'online',
+    scope: LIST_QUEUE_SCOPE,
+    retry: (failures: number, error: Error) =>
+      !(error instanceof ForeignToggleError) && failures < (error instanceof SessionPendingError ? 20 : 3),
+    retryDelay: (failures: number, error: Error) =>
+      error instanceof SessionPendingError ? 15_000 : Math.min(1000 * 2 ** failures, 30_000),
+  } as const;
+  queryClient.setMutationDefaults(TOGGLE_ITEM_KEY, {
+    ...queued,
+    mutationFn: (input: ToggleItemInput) => toggleListItem(input),
+  });
+  queryClient.setMutationDefaults(CLEAR_CHECKED_KEY, {
+    ...queued,
+    mutationFn: (input: ClearCheckedInput) => clearCheckedItems(input),
+  });
+  // A fila acabou (o último da fila já terminou, não só está terminando):
+  // agora sim busca listas e itens de todas as listas, o que cobre também
+  // as buscas e mudanças do tempo real que esperaram a fila.
+  queryClient.getMutationCache().subscribe((event) => {
+    if (event.type !== 'updated' || !inListQueue(event.mutation)) return;
+    if (event.mutation.state.status === 'pending' || listQueueBusy(queryClient)) return;
+    queryClient.invalidateQueries({ queryKey: ['lists'] });
+    queryClient.invalidateQueries({ queryKey: ['listItems'] });
+  });
+}
+
 export function useToggleListItem(listId: string) {
   const queryClient = useQueryClient();
-  const invalidate = useInvalidateLists(listId);
-  return useMutation({
-    mutationFn: async ({ id, checked, userId }: { id: string; checked: boolean; userId: string }) =>
-      unwrap(
-        await supabase
-          .from('shopping_list_items')
-          .update(checked ? { checked_at: new Date().toISOString(), checked_by: userId } : { checked_at: null, checked_by: null })
-          .eq('id', id),
-      ),
+  return useMutation<unknown, Error, ToggleItemInput>({
+    mutationKey: TOGGLE_ITEM_KEY,
     // Marca na hora; o servidor confirma depois.
-    onMutate: async ({ id, checked }) => {
+    onMutate: async ({ id, checked, at, nextToken }) => {
       const key = ['listItems', listId];
       await queryClient.cancelQueries({ queryKey: key });
+      // O selo novo vai junto: o próximo toque neste item parte dele.
       queryClient.setQueryData<ShoppingListItem[]>(key, (items) =>
-        items?.map((i) => (i.id === id ? { ...i, checked_at: checked ? new Date().toISOString() : null } : i)),
+        items?.map((i) => (i.id === id ? { ...i, checked_at: checked ? at : null, toggle_token: nextToken } : i)),
+      );
+      // O resumo das listas (itens pendentes) também, para ficar certo sem internet.
+      await queryClient.cancelQueries({ queryKey: ['lists'] });
+      queryClient.setQueryData<{ id: string; pending: number; total: number }[]>(['lists'], (lists) =>
+        lists?.map((l) =>
+          l.id === listId ? { ...l, pending: Math.min(l.total, Math.max(0, l.pending + (checked ? -1 : 1))) } : l,
+        ),
       );
     },
-    onSettled: invalidate,
   });
 }
 
@@ -271,15 +417,37 @@ export function useDeleteListItem(listId: string) {
   });
 }
 
+export interface ClearCheckedInput {
+  listId: string;
+  /** Quem limpou: a fila não sai com a sessão de outra conta. */
+  userId: string;
+  /**
+   * O que estava no carrinho no toque, com o selo de cada item. Só isso sai:
+   * o que alguém marcar depois, antes de a fila andar, fica na lista.
+   */
+  items: { id: string; token: string }[];
+}
+
+async function clearCheckedItems({ userId, items }: ClearCheckedInput) {
+  // Sem sessão válida, o pedido iria com a chave pública e não apagaria nada.
+  const { data } = await supabase.auth.getSession();
+  if (!data.session) throw new SessionPendingError();
+  if (data.session.user.id !== userId) throw new ForeignToggleError();
+  if (!items.length) return null;
+  // O selo é único por marcação: id e selo batendo, o item está como no toque.
+  return unwrap(
+    await supabase
+      .from('shopping_list_items')
+      .delete()
+      .in('id', items.map((i) => i.id))
+      .in('toggle_token', items.map((i) => i.token)),
+  );
+}
+
+/** Limpa o carrinho na vez dele na fila da lista (depois das marcações que vieram antes). */
 export function useClearCheckedItems(listId: string) {
   const invalidate = useInvalidateLists(listId);
-  return useMutation({
-    mutationFn: async () =>
-      unwrap(
-        await supabase.from('shopping_list_items').delete().eq('list_id', listId).not('checked_at', 'is', null),
-      ),
-    onSuccess: invalidate,
-  });
+  return useMutation<unknown, Error, ClearCheckedInput>({ mutationKey: CLEAR_CHECKED_KEY, onSuccess: invalidate });
 }
 
 // ---------------------------------------------------------------------------

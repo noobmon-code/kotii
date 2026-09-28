@@ -3,9 +3,11 @@ import { useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import {
+  newToggleToken,
   useAddListItem,
   useArchiveList,
   useClearCheckedItems,
+  useListQueueBusy,
   useDeleteListItem,
   useListItems,
   useProducts,
@@ -17,6 +19,7 @@ import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { parseDecimal } from '@/domain/money';
 import { guessCategory, normalizeSearch } from '@/domain/search';
 import { CommonItemsPicker } from '@/features/CommonItemsPicker';
+import { OfflineNotice } from '@/features/OfflineNotice';
 import { ShoppingGrid } from '@/features/ShoppingGrid';
 import { useAuth } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
@@ -49,6 +52,9 @@ export default function ShoppingListScreen() {
   const toggle = useToggleListItem(id);
   const remove = useDeleteListItem(id);
   const clearChecked = useClearCheckedItems(id);
+  // Limpar só com a fila da lista vazia: as marcações guardadas já chegaram
+  // ao servidor e não há outro limpar andando.
+  const syncing = useListQueueBusy();
   const archive = useArchiveList(id);
 
   const [name, setName] = useState('');
@@ -123,7 +129,17 @@ export default function ShoppingListScreen() {
   if (items.isError) return <ErrorNotice error={items.error} onRetry={() => items.refetch()} />;
 
   const toggleItem = (item: ShoppingListItem) =>
-    toggle.mutate({ id: item.id, checked: !item.checked_at, userId: session!.user.id }, { onError });
+    toggle.mutate(
+      {
+        id: item.id,
+        checked: !item.checked_at,
+        userId: session!.user.id,
+        at: new Date().toISOString(),
+        token: item.toggle_token,
+        nextToken: newToggleToken(),
+      },
+      { onError },
+    );
   const removeItem = (item: ShoppingListItem) =>
     confirmAction('Remover item', `Remover "${item.name}" da lista?`, 'Remover', () => remove.mutate(item.id, { onError }));
 
@@ -142,6 +158,7 @@ export default function ShoppingListScreen() {
         ) : undefined
       }>
       <Stack.Screen options={{ title: list.data.name }} />
+      <OfflineNotice />
 
       <Card style={styles.addCard}>
         <Row>
@@ -212,7 +229,20 @@ export default function ShoppingListScreen() {
       {checked.length ? (
         <Section
           title={`No carrinho (${checked.length})`}
-          action={<Button title="Limpar" variant="ghost" compact onPress={() => clearChecked.mutate(undefined, { onError })} />}>
+          action={
+            <Button
+              title="Limpar"
+              variant="ghost"
+              compact
+              disabled={syncing}
+              onPress={() =>
+                clearChecked.mutate(
+                  { listId: id, userId: session!.user.id, items: checked.map((i) => ({ id: i.id, token: i.toggle_token })) },
+                  { onError },
+                )
+              }
+            />
+          }>
           <ShoppingGrid items={checked} inCart onToggle={toggleItem} onRemove={removeItem} />
         </Section>
       ) : null}
