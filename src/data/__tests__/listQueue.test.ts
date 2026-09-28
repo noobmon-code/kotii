@@ -138,7 +138,7 @@ describe('fila de marcações da lista', () => {
     await after.resumePausedMutations();
     await flush();
     expect(sent.map((s) => s.id)).toEqual(['arroz', 'feijao']);
-    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([['lists'], ['listItems'], ['recentPurchases']]);
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([['lists'], ['listItems'], ['purchaseRecords']]);
   });
 
   it('mudança em tempo real com marcação na fila espera a fila acabar', async () => {
@@ -155,7 +155,7 @@ describe('fila de marcações da lista', () => {
     onlineManager.setOnline(true);
     await queryClient.resumePausedMutations();
     await flush();
-    expect(keys()).toEqual([['lists'], ['listItems'], ['recentPurchases']]);
+    expect(keys()).toEqual([['lists'], ['listItems'], ['purchaseRecords']]);
 
     invalidate.mockClear();
     onListItemsChange(queryClient, 'mercado');

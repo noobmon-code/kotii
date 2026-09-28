@@ -390,7 +390,7 @@ export function registerListMutations(queryClient: QueryClient) {
     queryClient.invalidateQueries({ queryKey: ['listItems'] });
     // Só marca como velho: durante as compras a faixa fica escondida, e buscar
     // o histórico (com as notas) a cada marcação seria desperdício.
-    queryClient.invalidateQueries({ queryKey: ['recentPurchases'], refetchType: 'none' });
+    queryClient.invalidateQueries({ queryKey: ['purchaseRecords'], refetchType: 'none' });
   });
 }
 
