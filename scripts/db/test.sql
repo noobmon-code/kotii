@@ -922,6 +922,38 @@ begin
   assert (select count(*) from public.budgets) = 2, 'B sees household budgets, untouched by C';
 end $$;
 
+\echo '• cardápio da semana'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  insert into public.menu_items (day, meal, dish) values ('2026-09-28', 'almoco', 'Frango assado com arroz');
+  insert into public.menu_items (day, meal, dish) values ('2026-09-28', 'almoco', 'Lasanha')
+    on conflict (household_id, day, meal) do update set dish = excluded.dish;
+  assert (select dish from public.menu_items where day = '2026-09-28' and meal = 'almoco') = 'Lasanha',
+    'one dish per meal: upsert replaces it';
+  begin
+    insert into public.menu_items (day, meal, dish) values ('2026-09-28', 'cafe', 'Pão');
+    raise exception 'FAIL: unknown meal';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.menu_items (day, meal, dish) values ('2026-09-29', 'jantar', '   ');
+    raise exception 'FAIL: empty dish';
+  exception when check_violation then null;
+  end;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  assert (select count(*) from public.menu_items) = 0, 'C sees no foreign menu';
+  delete from public.menu_items;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_b', false) \gset
+do $$
+begin
+  assert (select count(*) from public.menu_items) = 1, 'B sees the household menu, untouched by C';
+end $$;
+
 -- ---------------------------------------------------------------------------
 \echo '• sair da casa: dono passa adiante, o último apaga a casa'
 \set user_f '00000000-0000-0000-0000-00000000000f'

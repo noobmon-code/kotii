@@ -1,4 +1,5 @@
 // POST { messages: [{ role, text }], context, today } -> { reply, actions }
+// POST { mode: 'menu', context, today, weekStart, preferences } -> { days, shopping, note }
 //
 // O Nuke conversa sobre a casa. O app manda o retrato da casa (montado com os
 // dados que a própria pessoa já vê, via RLS) e o histórico recente; a função
@@ -12,7 +13,16 @@ import { createClient } from '@supabase/supabase-js';
 
 import { chatStructured } from '../_shared/chat.ts';
 import { ExtractionError, visionConfig } from '../_shared/vision.ts';
-import { buildSystem, cleanReply, NukeReplySchema, parseRequest } from './nuke.ts';
+import {
+  buildMenuSystem,
+  buildSystem,
+  cleanMenu,
+  cleanReply,
+  MenuSchema,
+  NukeReplySchema,
+  parseMenuRequest,
+  parseRequest,
+} from './nuke.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -42,7 +52,27 @@ Deno.serve(async (req) => {
   const { data: userData } = await db.auth.getUser();
   if (!userData.user) return json({ error: 'Entre na sua conta para falar com o Nuke.' }, 401);
 
-  const parsed = parseRequest(await req.json().catch(() => null));
+  const body = await req.json().catch(() => null);
+  if ((body as { mode?: unknown } | null)?.mode === 'menu') {
+    const menu = parseMenuRequest(body);
+    if (typeof menu === 'string') return json({ error: menu }, 400);
+    try {
+      const raw = await chatStructured({
+        config,
+        schema: MenuSchema,
+        schemaName: 'nuke_menu',
+        system: buildMenuSystem(menu.context, menu.today, menu.weekStart),
+        turns: [{ role: 'user', text: menu.preferences || 'Monte o cardápio da semana.' }],
+      });
+      return json(cleanMenu(raw, menu.weekStart));
+    } catch (err) {
+      if (err instanceof ExtractionError) return json({ error: err.message }, err.status);
+      console.error('nuke menu failed', err);
+      return json({ error: 'Não consegui montar o cardápio agora. Tente de novo.' }, 500);
+    }
+  }
+
+  const parsed = parseRequest(body);
   if (typeof parsed === 'string') return json({ error: parsed }, 400);
 
   try {

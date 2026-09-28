@@ -8,6 +8,7 @@ import { formatBRL, formatQuantity } from './money';
 export type NukeScreen =
   | 'hoje'
   | 'compras'
+  | 'cardapio'
   | 'despensa'
   | 'tarefas'
   | 'aparelhos'
@@ -55,6 +56,8 @@ export interface NukeSnapshot {
   expiring: { name: string; expires_on: string }[];
   pantry: string[];
   shopping: { list: string; items: { name: string; quantity: number; unit: string }[] }[];
+  /** Cardápio de hoje em diante (menuLines). */
+  menu?: string[];
   bills: { name: string; amount: number | null; next_due_on: string; autopay: boolean }[];
   spending: {
     month: string;
@@ -94,6 +97,7 @@ export function buildNukeContext(s: NukeSnapshot): string {
     ...(s.shopping.length
       ? s.shopping.map((l) => `Lista "${l.list}" (falta comprar): ${listOrNone(l.items.map((i) => `${i.name} ${formatQuantity(i.quantity, i.unit)}`))}.`)
       : ['Listas de compras: nada pendente.']),
+    `Cardápio (hoje e próximos dias): ${listOrNone(s.menu ?? [], 14)}.`,
     `Contas (atrasadas e próximos 30 dias): ${listOrNone(
       s.bills.map(
         (b) =>
@@ -136,7 +140,7 @@ export function historyForApi(messages: NukeMessage[], limit = HISTORY_LIMIT): {
 
 const UNITS = new Set(['un', 'kg', 'g', 'l', 'ml']);
 const RECURRENCES = new Set(['none', 'daily', 'weekly', 'monthly']);
-const SCREENS = new Set<string>(['hoje', 'compras', 'despensa', 'tarefas', 'aparelhos', 'financas', 'contas', 'notas', 'precos', 'saude', 'familia']);
+const SCREENS = new Set<string>(['hoje', 'compras', 'cardapio', 'despensa', 'tarefas', 'aparelhos', 'financas', 'contas', 'notas', 'precos', 'saude', 'familia']);
 const isDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
 const isText = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 
