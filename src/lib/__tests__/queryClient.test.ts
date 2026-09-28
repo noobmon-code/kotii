@@ -116,6 +116,20 @@ describe('cache guardado no aparelho', () => {
     expect(await stored()).toBeNull();
   });
 
+  it('o cache de versões anteriores volta com os nomes novos das consultas', async () => {
+    const query = (key: string) => ({ queryKey: [key], queryHash: `["${key}"]`, state: { data: [{ name: 'Café' }] } });
+    await AsyncStorage.setItem(
+      'nooky:query-cache',
+      JSON.stringify({ buster: '1', timestamp: 0, clientState: { mutations: [], queries: [query('recentPurchases'), query('lists')] } }),
+    );
+    const restored = await persistOptions.persister.restoreClient();
+    expect(restored?.clientState.queries.map((q) => [q.queryKey, q.queryHash])).toEqual([
+      [['purchaseRecords'], '["purchaseRecords"]'],
+      [['lists'], '["lists"]'],
+    ]);
+    await AsyncStorage.removeItem('nooky:query-cache');
+  });
+
   it('com a sessão vencida, fica como sem internet até ela ser renovada', () => {
     expect(onlineManager.isOnline()).toBe(true);
     setSessionValid(false);

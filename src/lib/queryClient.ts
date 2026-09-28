@@ -4,8 +4,8 @@
 // guardada e sai quando a conexão volta.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { onlineManager, QueryClient } from '@tanstack/react-query';
-import { persistQueryClientSave, type PersistQueryClientProviderProps } from '@tanstack/react-query-persist-client';
+import { hashKey, onlineManager, QueryClient } from '@tanstack/react-query';
+import { persistQueryClientSave, type PersistedClient, type PersistQueryClientProviderProps } from '@tanstack/react-query-persist-client';
 import * as Network from 'expo-network';
 import { AppState, Platform } from 'react-native';
 
@@ -16,7 +16,7 @@ import { createCachePersister } from './cachePersister';
 const WEEK = 1000 * 60 * 60 * 24 * 7;
 
 // O que vai para o aparelho: o mínimo para usar a lista offline.
-const PERSISTED = new Set(['household', 'lists', 'list', 'listItems', 'products', 'recentPurchases']);
+const PERSISTED = new Set(['household', 'lists', 'list', 'listItems', 'products', 'purchaseRecords']);
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -84,8 +84,23 @@ export function setSessionValid(valid: boolean) {
 
 const { persister, persistNow } = createCachePersister({ storage: AsyncStorage, key: 'nooky:query-cache', throttleMs: 1000 });
 
+// Consultas guardadas que mudaram de nome, com os mesmos dados: o cache de
+// versões anteriores volta com o nome novo (sem isso, aberto sem internet,
+// o app ficaria sem elas até reconectar).
+const RENAMED: Record<string, string> = { recentPurchases: 'purchaseRecords' };
+
+function renameStoredQueries(client: PersistedClient | undefined): PersistedClient | undefined {
+  for (const query of client?.clientState.queries ?? []) {
+    const renamed = RENAMED[String(query.queryKey[0])];
+    if (!renamed) continue;
+    query.queryKey = [renamed, ...query.queryKey.slice(1)];
+    query.queryHash = hashKey(query.queryKey);
+  }
+  return client;
+}
+
 export const persistOptions = {
-  persister,
+  persister: { ...persister, restoreClient: async () => renameStoredQueries(await persister.restoreClient()) },
   maxAge: WEEK,
   // Mudou o formato dos dados guardados? Troque para descartar o cache antigo.
   buster: '1',

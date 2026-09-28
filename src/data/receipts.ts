@@ -267,7 +267,7 @@ export function useConfirmReceipt(receiptId: string) {
     mutationFn: async (items: ConfirmItem[]) =>
       unwrap(await supabase.rpc('confirm_receipt', { p_receipt_id: receiptId, p_items: items })),
     onSuccess: () => {
-      for (const key of ['receipts', 'receipt', 'products', 'latestPrices', 'priceHistory', 'pantry', 'spending', 'recentPurchases']) {
+      for (const key of ['receipts', 'receipt', 'products', 'latestPrices', 'priceHistory', 'pantry', 'spending', 'purchaseRecords']) {
         queryClient.invalidateQueries({ queryKey: [key] });
       }
     },
@@ -282,7 +282,7 @@ export function useDeleteReceipt(receiptId: string) {
       if (imagePath) await supabase.storage.from('receipts').remove([imagePath]);
     },
     onSuccess: () => {
-      for (const key of ['receipts', 'latestPrices', 'priceHistory', 'spending', 'recentPurchases']) {
+      for (const key of ['receipts', 'latestPrices', 'priceHistory', 'spending', 'purchaseRecords']) {
         queryClient.invalidateQueries({ queryKey: [key] });
       }
     },

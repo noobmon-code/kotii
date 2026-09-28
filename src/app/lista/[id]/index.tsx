@@ -11,18 +11,20 @@ import {
   useDeleteListItem,
   useListItems,
   useProducts,
-  useRecentPurchases,
+  usePurchaseRecords,
   useShoppingList,
   useToggleListItem,
 } from '@/data/market';
 import { compareByAisle, getCategory } from '@/domain/categories';
 import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
+import { todayISO } from '@/domain/dates';
 import { parseDecimal } from '@/domain/money';
 import { recentPurchases, type RecentItem } from '@/domain/recentPurchases';
+import { restockSuggestions } from '@/domain/restock';
 import { guessCategory, normalizeSearch } from '@/domain/search';
 import { CommonItemsPicker } from '@/features/CommonItemsPicker';
 import { OfflineNotice } from '@/features/OfflineNotice';
-import { RecentPurchases } from '@/features/RecentPurchases';
+import { RecentPurchases, RestockStrip, useJustListed } from '@/features/RecentPurchases';
 import { ShoppingGrid } from '@/features/ShoppingGrid';
 import { useAuth } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
@@ -51,11 +53,11 @@ export default function ShoppingListScreen() {
   const list = useShoppingList(id);
   const items = useListItems(id);
   const products = useProducts();
-  const recent = useRecentPurchases();
+  const purchases = usePurchaseRecords();
   const addItem = useAddListItem(id);
   const toggle = useToggleListItem(id);
   const remove = useDeleteListItem(id);
-  const clearChecked = useClearCheckedItems(id);
+  const clearChecked = useClearCheckedItems();
   // Limpar só com a fila da lista vazia: as marcações guardadas já chegaram
   // ao servidor e não há outro limpar andando.
   const syncing = useListQueueBusy();
@@ -65,8 +67,8 @@ export default function ShoppingListScreen() {
   const [quantity, setQuantity] = useState('1');
   const [unit, setUnit] = useState<Unit>('un');
   const [pickerOpen, setPickerOpen] = useState(false);
-  // Some da faixa na hora do toque, antes de a lista recarregar.
-  const [justAdded, setJustAdded] = useState<Set<string>>(new Set());
+  // Some da faixa já no toque; volta quando a lista carregada trouxer o item e ele sair dela depois.
+  const justAdded = useJustListed(items.data);
 
   const productByName = useMemo(
     () => new Map((products.data ?? []).map((p) => [normalizeSearch(p.name), p])),
@@ -125,30 +127,47 @@ export default function ShoppingListScreen() {
     );
   }
 
-  function addRecent(item: RecentItem) {
-    const key = normalizeSearch(item.name);
-    const release = () =>
-      setJustAdded((prev) => {
-        const next = new Set(prev);
-        next.delete(key);
-        return next;
+  // mutateAsync: com dois toques seguidos, os callbacks de mutate só valem
+  // para o último, e uma falha do primeiro deixaria o item escondido.
+  async function addRecent(item: Omit<RecentItem, 'times'>) {
+    justAdded.add([item.name]);
+    try {
+      await addItem.mutateAsync({
+        name: item.name,
+        category: item.category,
+        productId: item.productId,
+        quantity: item.quantity,
+        unit: item.unit,
       });
-    setJustAdded((prev) => new Set(prev).add(key));
-    addItem.mutate(
-      { name: item.name, category: item.category, productId: item.productId, quantity: item.quantity, unit: item.unit },
-      {
-        // A lista recarregada já traz o item (e o tira da faixa); se ele sair
-        // da lista depois, volta para a faixa.
-        onSuccess: () => {
-          items.refetch({ cancelRefetch: false }).finally(release);
-        },
-        onError: (err) => {
-          release();
-          onError(err);
-        },
-      },
-    );
+    } catch (err) {
+      justAdded.drop([item.name]);
+      onError(err);
+    }
   }
+
+
+  // Do histórico, menos o que já está na lista (a comprar ou no carrinho); o
+  // que "acabou" não se repete em "comprados recentemente". O histórico pode
+  // ter milhares de linhas: só refaz quando ele ou a lista mudam, não a cada
+  // letra digitada no campo.
+  const listKind = list.data?.kind;
+  const today = todayISO();
+  const strips = useMemo(() => {
+    if (!listKind || !items.data) return { restock: [], recent: [] };
+    const inList = {
+      names: new Set([...items.data.map((i) => normalizeSearch(i.name)), ...justAdded.pending]),
+      productIds: new Set(items.data.flatMap((i) => (i.product_id ? [i.product_id] : []))),
+    };
+    // Fim do dia de hoje: entram as compras de qualquer hora, e o dia novo refaz.
+    const now = new Date(`${today}T23:59:59.999`);
+    const restock = restockSuggestions(purchases.data ?? [], { now, listKind, exclude: inList });
+    const recent = recentPurchases(purchases.data ?? [], {
+      now,
+      listKind,
+      exclude: { ...inList, names: new Set([...inList.names, ...restock.map((i) => normalizeSearch(i.name))]) },
+    });
+    return { restock, recent };
+  }, [purchases.data, items.data, listKind, justAdded.pending, today]);
 
   // Na ordem dos corredores do mercado: frescos, despensa, bebidas, casa…
   const pending = (items.data ?? []).filter((i) => !i.checked_at).sort(compareByAisle);
@@ -159,14 +178,7 @@ export default function ShoppingListScreen() {
   if (list.isError) return <ErrorNotice error={list.error} onRetry={() => list.refetch()} />;
   if (items.isError) return <ErrorNotice error={items.error} onRetry={() => items.refetch()} />;
 
-  // Comprados recentemente, menos o que já está na lista (a comprar ou no carrinho).
-  const recentItems = recentPurchases(recent.data ?? [], {
-    listKind: list.data.kind,
-    exclude: {
-      names: new Set([...(items.data ?? []).map((i) => normalizeSearch(i.name)), ...justAdded]),
-      productIds: new Set((items.data ?? []).flatMap((i) => (i.product_id ? [i.product_id] : []))),
-    },
-  });
+  const { restock: restockItems, recent: recentItems } = strips;
 
   const toggleItem = (item: ShoppingListItem) =>
     toggle.mutate(
@@ -245,10 +257,11 @@ export default function ShoppingListScreen() {
         )}
       </Card>
 
-      {/* Para montar a lista; durante as compras (carrinho com itens) só atrapalharia. */}
+      {/* "Acabou" vale também no meio das compras; o resto é para montar a lista. */}
+      {name.trim() ? null : <RestockStrip items={restockItems} onAdd={addRecent} />}
       {name.trim() || checked.length ? null : <RecentPurchases items={recentItems} onAdd={addRecent} />}
 
-      {pending.length === 0 && checked.length === 0 && !recentItems.length ? (
+      {pending.length === 0 && checked.length === 0 && !recentItems.length && !restockItems.length ? (
         <EmptyState
           icon="cart-outline"
           title="Lista vazia"

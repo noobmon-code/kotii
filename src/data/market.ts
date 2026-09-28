@@ -10,7 +10,9 @@ import {
 } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
-import { RECENT_DAYS, type PurchaseRecord } from '@/domain/recentPurchases';
+import type { PurchaseRecord } from '@/domain/recentPurchases';
+import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
+import { normalizeSearch } from '@/domain/search';
 import { supabase, unwrap } from '@/lib/supabase';
 import type {
   LatestPrice,
@@ -45,21 +47,29 @@ export function unlessListQueueBusy<T>(fetch: () => Promise<T>) {
   };
 }
 
+type ListItemRef = { name: string; product_id: string | null; checked_at: string | null };
+type ListSummary = ShoppingList & { pending: number; total: number; items: ListItemRef[] };
+
+// O cache guardado no aparelho por versões anteriores tem listas sem `items`.
+const withItems = (lists: ListSummary[]) => (lists.every((l) => l.items) ? lists : lists.map((l) => ({ ...l, items: l.items ?? [] })));
+
 export function useShoppingLists() {
   return useQuery({
     queryKey: ['lists'],
+    select: withItems,
     queryFn: unlessListQueueBusy(async () => {
       const rows = unwrap(
         await supabase
           .from('shopping_lists')
-          .select('id, name, kind, archived_at, created_at, shopping_list_items(checked_at)')
+          .select('id, name, kind, archived_at, created_at, shopping_list_items(name, product_id, checked_at)')
           .is('archived_at', null)
           .order('created_at', { ascending: false }),
-      ) as (ShoppingList & { shopping_list_items: { checked_at: string | null }[] })[];
-      return rows.map(({ shopping_list_items, ...list }) => ({
+      ) as (ShoppingList & { shopping_list_items: ListItemRef[] })[];
+      return rows.map(({ shopping_list_items, ...list }): ListSummary => ({
         ...list,
         pending: shopping_list_items.filter((i) => !i.checked_at).length,
         total: shopping_list_items.length,
+        items: shopping_list_items,
       }));
     }),
   });
@@ -191,22 +201,58 @@ export function usePendingItemNames(listId: string | undefined) {
   });
 }
 
-/** Vários itens de uma vez; sem `listId`, cria uma lista de mercado nova. */
+/**
+ * A lista de mercado aberta mais recente da casa; sem nenhuma, cria uma com
+ * `name`. No servidor, numa transação com trava por casa: duas pessoas ao
+ * mesmo tempo não criam duas.
+ */
+async function openMarketList(name = 'Mercado'): Promise<{ id: string; name: string }> {
+  return unwrap(await supabase.rpc('open_market_list', { p_name: name }).single()) as { id: string; name: string };
+}
+
+/**
+ * Vários itens de uma vez; sem `listId`, cria uma lista de mercado nova. Com
+ * `reuseMarketList`, usa a lista de mercado aberta mais recente (ou cria uma,
+ * openMarketList) e não repete o que já está pendente nela: quem chama pode
+ * ainda não ter visto uma lista ou um item postos agora há pouco.
+ */
 export function useAddItemsToList() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ listId, newListName, items }: { listId?: string; newListName: string; items: NewListItem[] }) => {
+    mutationFn: async ({
+      listId,
+      newListName,
+      reuseMarketList,
+      items,
+    }: {
+      listId?: string;
+      newListName: string;
+      reuseMarketList?: boolean;
+      items: NewListItem[];
+    }) => {
       const id =
         listId ??
-        (
-          unwrap(
-            await supabase.from('shopping_lists').insert({ name: newListName, kind: 'mercado' }).select('id').single(),
-          ) as { id: string }
-        ).id;
-      if (items.length) {
+        (reuseMarketList
+          ? (await openMarketList(newListName)).id
+          : (
+              unwrap(
+                await supabase.from('shopping_lists').insert({ name: newListName, kind: 'mercado' }).select('id').single(),
+              ) as { id: string }
+            ).id);
+      // Lista achada no servidor: a tela pode não ter visto o que alguém pôs
+      // nela agora há pouco. O que já está pendente não entra de novo.
+      let toAdd = items;
+      if (reuseMarketList && items.length) {
+        const pending = unwrap(
+          await supabase.from('shopping_list_items').select('name').eq('list_id', id).is('checked_at', null),
+        ) as { name: string }[];
+        const names = new Set(pending.map((p) => normalizeSearch(p.name)));
+        toAdd = items.filter((item) => !names.has(normalizeSearch(item.name)));
+      }
+      if (toAdd.length) {
         unwrap(
           await supabase.from('shopping_list_items').insert(
-            items.map((item) => ({
+            toAdd.map((item) => ({
               list_id: id,
               name: item.name,
               category: item.category,
@@ -235,20 +281,7 @@ export function useAddToMarketList() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (item: NewListItem): Promise<{ id: string; name: string; added: boolean }> => {
-      const existing = unwrap(
-        await supabase
-          .from('shopping_lists')
-          .select('id, name')
-          .eq('kind', 'mercado')
-          .is('archived_at', null)
-          .order('created_at', { ascending: false })
-          .limit(1),
-      ) as { id: string; name: string }[];
-      const list =
-        existing[0] ??
-        (unwrap(
-          await supabase.from('shopping_lists').insert({ name: 'Mercado', kind: 'mercado' }).select('id, name').single(),
-        ) as { id: string; name: string });
+      const list = await openMarketList();
       const pending = unwrap(
         await supabase
           .from('shopping_list_items')
@@ -375,6 +408,17 @@ export function registerListMutations(queryClient: QueryClient) {
   queryClient.setMutationDefaults(CLEAR_CHECKED_KEY, {
     ...queued,
     mutationFn: (input: ClearCheckedInput) => clearCheckedItems(input),
+    // Aqui e não no hook: vale também para o limpar que ficou na fila e sai
+    // depois de reabrir o app.
+    onSuccess: (moved: unknown, input: ClearCheckedInput) => {
+      // Só quando saiu tudo o que estava no carrinho: se alguém mexeu num item
+      // antes (o selo não bateu), o que saiu de fato vem com a busca do histórico.
+      if (moved === input.items.length) recordClearedPurchases(queryClient, input);
+      queryClient.invalidateQueries({ queryKey: ['lists'] });
+      queryClient.invalidateQueries({ queryKey: ['listItems', input.listId] });
+      queryClient.invalidateQueries({ queryKey: ['list', input.listId] });
+      queryClient.invalidateQueries({ queryKey: ['purchaseRecords'] });
+    },
   });
   // A fila acabou (o último da fila já terminou, não só está terminando):
   // agora sim busca listas e itens de todas as listas, o que cobre também
@@ -386,7 +430,7 @@ export function registerListMutations(queryClient: QueryClient) {
     queryClient.invalidateQueries({ queryKey: ['listItems'] });
     // Só marca como velho: durante as compras a faixa fica escondida, e buscar
     // o histórico (com as notas) a cada marcação seria desperdício.
-    queryClient.invalidateQueries({ queryKey: ['recentPurchases'], refetchType: 'none' });
+    queryClient.invalidateQueries({ queryKey: ['purchaseRecords'], refetchType: 'none' });
   });
 }
 
@@ -450,28 +494,52 @@ async function clearCheckedItems({ listId, userId, items }: ClearCheckedInput) {
 }
 
 /** Limpa o carrinho na vez dele na fila da lista (depois das marcações que vieram antes). */
-export function useClearCheckedItems(listId: string) {
-  const invalidate = useInvalidateLists(listId);
-  const queryClient = useQueryClient();
-  return useMutation<unknown, Error, ClearCheckedInput>({
-    mutationKey: CLEAR_CHECKED_KEY,
-    onSuccess: () => {
-      invalidate();
-      queryClient.invalidateQueries({ queryKey: ['recentPurchases'] });
-    },
+/**
+ * O que saiu do carrinho entra já no histórico guardado: a lista recarregada
+ * não o mostra mais e, se o histórico ainda não tiver a compra (a busca dele
+ * anda em separado e pode falhar), "Acho que acabou" o sugeriria de novo.
+ */
+function recordClearedPurchases(queryClient: QueryClient, { listId, items }: ClearCheckedInput) {
+  const ids = new Set(items.map((i) => i.id));
+  const cleared = (queryClient.getQueryData<ShoppingListItem[]>(['listItems', listId]) ?? []).filter(
+    (i) => ids.has(i.id) && i.checked_at,
+  );
+  if (!cleared.length) return;
+  queryClient.setQueryData<PurchaseRecord[]>(['purchaseRecords'], (records) => {
+    if (!records) return records;
+    const known = new Set(records.filter((r) => r.source === 'list').map((r) => `${r.name}|${r.at}`));
+    const added = cleared
+      .filter((i) => !known.has(`${i.name}|${i.checked_at}`))
+      .map(
+        (i): PurchaseRecord => ({
+          name: i.name,
+          category: i.category,
+          productId: i.product_id,
+          quantity: Number(i.quantity),
+          unit: i.unit,
+          at: i.checked_at!,
+          source: 'list',
+        }),
+      );
+    return added.length ? [...added, ...records] : records;
   });
+}
+
+export function useClearCheckedItems() {
+  // Atualizar histórico e listas fica nos padrões da fila (registerListMutations).
+  return useMutation<unknown, Error, ClearCheckedInput>({ mutationKey: CLEAR_CHECKED_KEY });
 }
 
 /**
  * O que a casa comprou nos últimos meses: carrinhos limpos (histórico),
  * itens ainda marcados nas listas e itens de notas confirmadas ligados a um
- * produto. recentPurchases (domínio) junta e ordena.
+ * produto. recentPurchases e restockSuggestions (domínio) juntam e ordenam.
  */
-export function useRecentPurchases() {
+export function usePurchaseRecords() {
   return useQuery({
-    queryKey: ['recentPurchases'],
+    queryKey: ['purchaseRecords'],
     queryFn: async (): Promise<PurchaseRecord[]> => {
-      const since = new Date(Date.now() - RECENT_DAYS * 86_400_000).toISOString();
+      const since = new Date(Date.now() - RESTOCK_HISTORY_DAYS * 86_400_000).toISOString();
       const [history, checked, receipts] = await Promise.all([
         supabase
           .from('purchase_history')

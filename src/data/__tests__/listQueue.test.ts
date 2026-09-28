@@ -24,7 +24,7 @@ jest.mock('@/lib/supabase', () => ({
     rpc: async (_name: string, args: { p_ids: string[]; p_tokens: string[] }) => {
       sent.push({ id: `limpar:${args.p_ids.join(',')}`, token: args.p_tokens.join(','), values: null });
       await hold.gate;
-      return { data: 0, error: null };
+      return { data: args.p_ids.length - (rpcShort.by ?? 0), error: null };
     },
     auth: { getSession: async () => ({ data: { session: auth.signedIn ? { user: { id: 'u1' } } : null }, error: null }) },
     from: () => ({
@@ -50,6 +50,9 @@ jest.mock('@/lib/supabase', () => ({
   },
   unwrap: (result: { data: unknown }) => result.data,
 }));
+
+/** Quantos itens o limpar deixa de mover (selo que não bateu). */
+const rpcShort: { by?: number } = {};
 
 const clients: QueryClient[] = [];
 
@@ -81,6 +84,7 @@ afterEach(() => {
   hold.gate = undefined;
   jest.useRealTimers();
   sent.length = 0;
+  rpcShort.by = undefined;
   auth.signedIn = true;
   onlineManager.setOnline(true);
   // Sem isso, os timers de limpeza do cache seguram o Jest aberto.
@@ -138,7 +142,7 @@ describe('fila de marcações da lista', () => {
     await after.resumePausedMutations();
     await flush();
     expect(sent.map((s) => s.id)).toEqual(['arroz', 'feijao']);
-    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([['lists'], ['listItems'], ['recentPurchases']]);
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([['lists'], ['listItems'], ['purchaseRecords']]);
   });
 
   it('mudança em tempo real com marcação na fila espera a fila acabar', async () => {
@@ -155,7 +159,7 @@ describe('fila de marcações da lista', () => {
     onlineManager.setOnline(true);
     await queryClient.resumePausedMutations();
     await flush();
-    expect(keys()).toEqual([['lists'], ['listItems'], ['recentPurchases']]);
+    expect(keys()).toEqual([['lists'], ['listItems'], ['purchaseRecords']]);
 
     invalidate.mockClear();
     onListItemsChange(queryClient, 'mercado');
@@ -286,6 +290,46 @@ describe('fila de marcações da lista', () => {
     ]);
     await flush();
     expect(sent).toEqual([{ id: 'limpar:arroz,leite', token: 'a1,l3', values: null }]);
+  });
+
+  it('limpar põe já no histórico guardado o que saiu do carrinho', async () => {
+    const queryClient = client();
+    // Sem tela aberta, o cache do teste apagaria as consultas na hora.
+    queryClient.setQueryDefaults(['listItems'], { gcTime: Infinity });
+    queryClient.setQueryDefaults(['purchaseRecords'], { gcTime: Infinity });
+    queryClient.setQueryData(['listItems', 'mercado'], [
+      { id: 'arroz', name: 'Arroz', category: 'mercearia', product_id: 'p1', quantity: 2, unit: 'un', checked_at: '2026-09-28T20:00:00Z' },
+      { id: 'leite', name: 'Leite', category: 'laticinios', product_id: null, quantity: 1, unit: 'l', checked_at: null },
+    ]);
+    const old = { name: 'Café', category: 'mercearia', productId: null, quantity: 1, unit: 'un', at: '2026-09-20T12:00:00Z', source: 'list' };
+    queryClient.setQueryData(['purchaseRecords'], [old]);
+    clear(queryClient, [{ id: 'arroz', token: 'a1' }]);
+    await flush();
+    await flush();
+    expect(queryClient.getQueryData(['purchaseRecords'])).toEqual([
+      { name: 'Arroz', category: 'mercearia', productId: 'p1', quantity: 2, unit: 'un', at: '2026-09-28T20:00:00Z', source: 'list' },
+      old,
+    ]);
+  });
+
+  it('limpar que não moveu tudo (alguém mexeu num item) não inventa compras no histórico', async () => {
+    const queryClient = client();
+    queryClient.setQueryDefaults(['listItems'], { gcTime: Infinity });
+    queryClient.setQueryDefaults(['purchaseRecords'], { gcTime: Infinity });
+    queryClient.setQueryData(['listItems', 'mercado'], [
+      { id: 'arroz', name: 'Arroz', category: 'mercearia', product_id: null, quantity: 1, unit: 'un', checked_at: '2026-09-28T20:00:00Z' },
+      { id: 'leite', name: 'Leite', category: 'laticinios', product_id: null, quantity: 1, unit: 'l', checked_at: '2026-09-28T20:01:00Z' },
+    ]);
+    queryClient.setQueryData(['purchaseRecords'], []);
+    rpcShort.by = 1;
+    clear(queryClient, [
+      { id: 'arroz', token: 'a1' },
+      { id: 'leite', token: 'l1' },
+    ]);
+    await flush();
+    await flush();
+    rpcShort.by = undefined;
+    expect(queryClient.getQueryData(['purchaseRecords'])).toEqual([]);
   });
 
   it('limpar de outra conta não sai com a sessão de quem entrou', async () => {
