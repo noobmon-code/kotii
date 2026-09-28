@@ -1,6 +1,6 @@
 // Mercado: listas de compras, produtos, lojas e preços.
 
-import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
 import { supabase, unwrap } from '@/lib/supabase';
@@ -17,9 +17,20 @@ import type {
 // ---------------------------------------------------------------------------
 // Listas
 
+/**
+ * Marcações ainda na fila (inclusive as restauradas ao reabrir o app): buscar
+ * a lista agora desfaria na tela as que faltam enviar. A última marcação
+ * busca listas e itens; até lá, fica o que está no cache.
+ */
+function useTogglesQueued() {
+  return useIsMutating({ mutationKey: TOGGLE_ITEM_KEY }) > 0;
+}
+
 export function useShoppingLists() {
+  const queued = useTogglesQueued();
   return useQuery({
     queryKey: ['lists'],
+    enabled: !queued,
     queryFn: async () => {
       const rows = unwrap(
         await supabase
@@ -66,8 +77,10 @@ export function useListItems(listId: string) {
     };
   }, [listId, queryClient]);
 
+  const queued = useTogglesQueued();
   return useQuery({
     queryKey: ['listItems', listId],
+    enabled: !queued,
     queryFn: async () =>
       unwrap(
         await supabase
