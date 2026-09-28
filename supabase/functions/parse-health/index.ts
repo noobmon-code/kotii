@@ -8,6 +8,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 
+import { QuotaError, refundAiQuota, takeAiQuota } from '../_shared/aiQuota.ts';
 import {
   ExtractionError,
   extractStructured,
@@ -119,9 +120,16 @@ Deno.serve(async (req) => {
       if (totalBytes > MAX_TOTAL_BYTES) return json({ error: 'Fotos grandes demais. Envie menos páginas.' }, 413);
       images.push(await toVisionImage(blob, mediaType));
     }
-    return json({ kind, data: await read(kind, images) });
+    const ticket = await takeAiQuota(db, 'photo');
+    try {
+      return json({ kind, data: await read(kind, images) });
+    } catch (err) {
+      // "Não é este documento" (422) usou a IA e conta; falha da IA não.
+      if (!(err instanceof ExtractionError && err.status === 422)) await refundAiQuota(ticket);
+      throw err;
+    }
   } catch (err) {
-    if (err instanceof ExtractionError) return json({ error: err.message }, err.status);
+    if (err instanceof QuotaError || err instanceof ExtractionError) return json({ error: err.message }, err.status);
     throw err;
   }
 });
