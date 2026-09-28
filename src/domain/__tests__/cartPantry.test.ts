@@ -63,6 +63,12 @@ describe('cartPantryRows', () => {
     ]);
   });
 
+  it('sem saber o que há na despensa, o limpar não marca nada; o botão do item, sim', () => {
+    const cart = [item({ id: 'a' }), item({ id: 'b', name: 'Banana', category: 'hortifruti' })];
+    expect(cartPantryRows(cart, null, { single: false, today }).map((r) => r.include)).toEqual([false, false]);
+    expect(cartPantryRows([item({})], null, { single: true, today })[0].include).toBe(true);
+  });
+
   it('o botão do item manda aquele item, qualquer que seja a categoria', () => {
     const [row] = cartPantryRows([item({ name: 'Detergente', category: 'limpeza' })], [], { single: true, today });
     expect(row.include).toBe(true);

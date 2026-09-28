@@ -17,12 +17,15 @@ import { MAX_WIDTH, space, useColors } from '@/ui/theme';
 export function CartPantryModal({
   rows,
   single,
+  pantryUnknown = false,
   shelfLifeDays,
   onConfirm,
   onClose,
 }: {
   rows: CartPantryRow[];
   single: boolean;
+  /** Despensa não carregada (sem internet e nunca guardada no aparelho): não dá para ver o que já está lá. */
+  pantryUnknown?: boolean;
   shelfLifeDays: Map<string, number | null>;
   onConfirm: (pantry: CartPantryEntry[]) => void;
   onClose: () => void;
@@ -62,6 +65,11 @@ export function CartPantryModal({
               ? 'O item sai do carrinho e vai para a despensa. Confira quanto você comprou.'
               : 'Os itens saem do carrinho. Marque o que vai para a despensa e confira quanto você comprou.'}
           </Text>
+          {pantryUnknown ? (
+            <Text variant="small" color="warning">
+              Não deu para carregar a despensa agora. Marque só o que ainda não foi guardado.
+            </Text>
+          ) : null}
           <ListCard>
             {rows.map((row) => {
               const on = include[row.id];

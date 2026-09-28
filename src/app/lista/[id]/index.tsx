@@ -73,7 +73,12 @@ export default function ShoppingListScreen() {
   const [pickerOpen, setPickerOpen] = useState(false);
   // Guardar na despensa: um item (botão do item) ou o carrinho todo (Limpar),
   // com o carrinho como estava no toque.
-  const [storing, setStoring] = useState<{ items: ShoppingListItem[]; rows: CartPantryRow[]; single: boolean } | null>(null);
+  const [storing, setStoring] = useState<{
+    items: ShoppingListItem[];
+    rows: CartPantryRow[];
+    single: boolean;
+    pantryUnknown: boolean;
+  } | null>(null);
   // Some da faixa já no toque; volta quando a lista carregada trouxer o item e ele sair dela depois.
   const justAdded = useJustListed(items.data);
 
@@ -204,8 +209,14 @@ export default function ShoppingListScreen() {
       },
       { onError },
     );
+  // Despensa não carregada (sem internet e nunca vista neste aparelho) não é despensa vazia.
   const openStore = (cart: ShoppingListItem[], single: boolean) =>
-    setStoring({ items: cart, rows: cartPantryRows(cart, pantry.data ?? [], { single, today }), single });
+    setStoring({
+      items: cart,
+      rows: cartPantryRows(cart, pantry.data ?? null, { single, today }),
+      single,
+      pantryUnknown: pantry.data === undefined,
+    });
   const clearCart = (cart: ShoppingListItem[], toPantry: CartPantryEntry[]) => {
     setStoring(null);
     clearChecked.mutate(
@@ -335,6 +346,7 @@ export default function ShoppingListScreen() {
         <CartPantryModal
           rows={storing.rows}
           single={storing.single}
+          pantryUnknown={storing.pantryUnknown}
           shelfLifeDays={shelfLifeDays}
           onConfirm={(toPantry) => clearCart(storing.items, toPantry)}
           onClose={() => setStoring(null)}

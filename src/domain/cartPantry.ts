@@ -66,16 +66,19 @@ export interface CartPantryRow {
 /**
  * Linhas da confirmação. Um item só (o botão do item) vai por padrão; no
  * limpar o carrinho, vai o que a categoria guarda na despensa e ainda não
- * está lá de uma compra próxima.
+ * está lá de uma compra próxima. Sem saber o que há na despensa (`null`:
+ * sem internet e nunca carregada neste aparelho), o limpar não marca nada:
+ * a pessoa escolhe, em vez de o app repetir o que talvez já esteja lá.
  */
 export function cartPantryRows(
   items: CartItem[],
-  pantry: PantryEntry[],
+  pantry: PantryEntry[] | null,
   { single, today }: { single: boolean; today: string },
 ): CartPantryRow[] {
   return items.map((item) => {
     const purchasedOn = item.checked_at ? toISODate(new Date(item.checked_at)) : today;
-    const same = findSamePurchase({ productId: item.product_id, name: item.name }, purchasedOn, pantry);
+    const same = pantry ? findSamePurchase({ productId: item.product_id, name: item.name }, purchasedOn, pantry) : undefined;
+    const known = pantry !== null;
     return {
       id: item.id,
       name: item.name,
@@ -84,7 +87,7 @@ export function cartPantryRows(
       quantity: Number(item.quantity),
       productId: item.product_id,
       purchasedOn,
-      include: single || (getCategory(item.category).pantry && !same),
+      include: single || (known && getCategory(item.category).pantry && !same),
       alreadySince: same?.purchased_on ?? null,
     };
   });
