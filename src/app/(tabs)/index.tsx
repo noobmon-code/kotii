@@ -82,7 +82,8 @@ function useRestock(
     () =>
       onLists
         ? restockSuggestions(records ?? [], {
-            now: new Date(`${today}T12:00:00`),
+            // Fim do dia: entram as compras de hoje, de qualquer hora.
+            now: new Date(`${today}T23:59:59.999`),
             listKind: 'mercado',
             exclude: {
               names: new Set([...onLists.map((i) => normalizeSearch(i.name)), ...justListed]),
