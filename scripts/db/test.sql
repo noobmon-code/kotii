@@ -717,6 +717,7 @@ declare
   power uuid;
   ipva uuid;
   once uuid;
+  kid uuid;
   b public.bills;
   r record;
   pay uuid;
@@ -802,6 +803,23 @@ begin
   assert b.active, 'undo reopens a one-off bill';
 
   insert into public.expenses (description, amount, category, spent_on) values ('Feira', 86.50, 'mercado', '2026-09-26');
+
+  -- Despesa médica para o IR: quem atendeu (CPF/CNPJ só dígitos) e o paciente da casa.
+  insert into public.people (name) values ('Lia') returning id into kid;
+  insert into public.expenses (description, amount, category, spent_on, deductible, provider_name, provider_doc, patient_id)
+    values ('Pediatra', 350, 'saude', '2026-08-12', true, 'Dra. Paula', '52998224725', kid);
+  begin
+    insert into public.expenses (description, amount, provider_doc) values ('X', 1, '529.982.247-25');
+    raise exception 'FAIL: formatted provider document';
+  exception when check_violation then null;
+  end;
+  update public.bills set deductible = true, provider_name = 'Unimed', provider_doc = '02812468000106' where id = ipva;
+  delete from public.people where id = kid;
+  assert (select patient_id from public.expenses where description = 'Pediatra') is null,
+    'removing the person keeps the expense without the patient';
+  insert into public.people (name) values ('Lia') returning id into kid;
+  perform set_config('test.person_kid', kid::text, false);
+
   begin
     insert into public.expenses (description, amount) values ('Nada', 0);
     raise exception 'FAIL: zero expense';
@@ -827,7 +845,7 @@ declare
   b public.bills;
 begin
   assert (select count(*) from public.bills) = 4, 'B sees household bills';
-  assert (select count(*) from public.expenses) = 1, 'B sees household expenses';
+  assert (select count(*) from public.expenses) = 2, 'B sees household expenses';
   b := (public.pay_bill(current_setting('test.bill_a')::uuid, '2026-02-28', null, '2026-02-28')).bill;
   assert (select paid_by from public.bill_payments where due_on = '2026-02-28' and bill_id = b.id) = auth.uid(),
     'payment records who paid';
@@ -839,6 +857,12 @@ begin
   assert (select count(*) from public.bills) = 0, 'C sees no foreign bills';
   assert (select count(*) from public.bill_payments) = 0, 'C sees no foreign payments';
   assert (select count(*) from public.expenses) = 0, 'C sees no foreign expenses';
+
+  begin
+    insert into public.expenses (description, amount, patient_id) values ('X', 1, current_setting('test.person_kid')::uuid);
+    raise exception 'FAIL: expense for a person of another household';
+  exception when foreign_key_violation then null;
+  end;
 
   begin
     perform (public.pay_bill(current_setting('test.bill_a')::uuid, '2026-03-31', 1, '2026-03-31')).bill;

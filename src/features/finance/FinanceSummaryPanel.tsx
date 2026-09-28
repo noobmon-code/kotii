@@ -191,6 +191,16 @@ export function FinanceSummaryPanel() {
           </Section>
         </>
       )}
+
+      <ListCard>
+        <ListRow
+          left={<IconBadge icon="file-document-outline" tone="info" />}
+          title="Despesas médicas para o IR"
+          subtitle="Consultas, exames e plano de saúde do ano, por quem atendeu"
+          right={<Icon name="chevron-right" color="textMuted" />}
+          onPress={() => router.push('/imposto-de-renda')}
+        />
+      </ListCard>
     </View>
   );
 }
