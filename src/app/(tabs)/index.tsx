@@ -144,7 +144,7 @@ export default function TodayScreen() {
   const refresh = () => queries.forEach((q) => q.refetch());
 
   const taken = new Set((doses.data ?? []).map((d) => doseKey(d.medication_id, d.scheduled_on, d.scheduled_time)));
-  const pendingDoses = dosesForDay((medications.data ?? []).map(toSchedule), today).filter(
+  const pendingDoses = dosesForDay((medications.data ?? []).map(toSchedule), today, taken).filter(
     (d) => !taken.has(doseKey(d.medicationId, d.date, d.time)),
   );
 

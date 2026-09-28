@@ -152,6 +152,19 @@ async function schedule(medication: Medication, today: string): Promise<void> {
         }),
       );
     }
+  } else if (plan.kind === 'weekly') {
+    for (const weekday of plan.weekdays) {
+      for (const time of plan.times) {
+        const [hour, minute] = time.split(':').map(Number);
+        ids.push(
+          await Notifications.scheduleNotificationAsync({
+            content,
+            // No expo-notifications, 1 = domingo.
+            trigger: { type: Notifications.SchedulableTriggerInputTypes.WEEKLY, weekday: weekday + 1, hour, minute, channelId: CHANNEL_ID },
+          }),
+        );
+      }
+    }
   } else if (plan.kind === 'dates') {
     for (const slot of plan.slots) {
       const [y, m, d] = slot.date.split('-').map(Number);
@@ -172,7 +185,17 @@ async function schedule(medication: Medication, today: string): Promise<void> {
 }
 
 function toPlanInput(medication: Medication) {
-  return { times: medication.times, startOn: medication.start_on, endOn: medication.end_on, active: medication.active };
+  return {
+    times: medication.times,
+    startOn: medication.start_on,
+    endOn: medication.end_on,
+    active: medication.active,
+    frequency: medication.frequency,
+    weekdays: medication.weekdays,
+    intervalDays: medication.interval_days,
+    totalDoses: medication.total_doses,
+    takenCount: medication.taken_count,
+  };
 }
 
 /**

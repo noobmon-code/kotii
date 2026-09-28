@@ -134,6 +134,16 @@ export interface Medication {
   end_on: string | null;
   notes: string | null;
   active: boolean;
+  /** Regularidade (ver MedicationFrequency); mensal cai no dia do mês de start_on. */
+  frequency: 'daily' | 'weekdays' | 'interval' | 'monthly';
+  /** Dias da semana (0 = domingo), só em 'weekdays'. */
+  weekdays: number[] | null;
+  /** A cada quantos dias, só em 'interval'. */
+  interval_days: number | null;
+  /** Tratamento por número de doses. */
+  total_doses: number | null;
+  /** Doses já registradas como tomadas (contagem do banco). */
+  taken_count: number;
 }
 
 export interface MedicationDose {

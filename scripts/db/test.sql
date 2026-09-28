@@ -261,6 +261,40 @@ begin
     raise exception 'FAIL: same dose logged twice';
   exception when unique_violation then null;
   end;
+
+  -- Regularidade: antigos seguem todo dia; cada forma com o seu campo.
+  assert (select frequency from public.medications where id = m) = 'daily', 'existing medications stay daily';
+  insert into public.medications (person_name, name, times, frequency, weekdays, total_doses)
+    values ('Ana', 'Vitamina B12', array['09:00'], 'weekdays', array[1, 3, 5]::smallint[], 12);
+  insert into public.medications (person_name, name, times, frequency, interval_days)
+    values ('Ana', 'Antialérgico', array['09:00'], 'interval', 2);
+  insert into public.medications (person_name, name, times, frequency) values ('Ana', 'Injeção', array['09:00'], 'monthly');
+  begin
+    insert into public.medications (person_name, name, times, frequency) values ('Ana', 'X', array['09:00'], 'weekdays');
+    raise exception 'FAIL: weekdays without days';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.medications (person_name, name, times, weekdays) values ('Ana', 'X', array['09:00'], array[1]::smallint[]);
+    raise exception 'FAIL: days on a daily medication';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.medications (person_name, name, times, frequency, weekdays)
+      values ('Ana', 'X', array['09:00'], 'weekdays', array[7]::smallint[]);
+    raise exception 'FAIL: weekday out of range';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.medications (person_name, name, times, frequency, interval_days) values ('Ana', 'X', array['09:00'], 'interval', 1);
+    raise exception 'FAIL: every 1 day as interval';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.medications (person_name, name, times, total_doses) values ('Ana', 'X', array['09:00'], 0);
+    raise exception 'FAIL: zero doses';
+  exception when check_violation then null;
+  end;
 end $$;
 
 -- ---------------------------------------------------------------------------
