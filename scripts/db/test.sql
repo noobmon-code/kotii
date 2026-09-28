@@ -424,6 +424,61 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+\echo '• limpar o carrinho leva à despensa o que a pessoa confirmou'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  l uuid := current_setting('test.list_a')::uuid;
+  ids uuid[];
+  tokens uuid[];
+  pantry_before integer;
+begin
+  insert into public.shopping_list_items (list_id, name, category, quantity, checked_at)
+    values (l, 'Leite', 'laticinios', 2, now()), (l, 'Detergente', 'limpeza', 1, now()), (l, 'Pão', 'padaria', 6, now());
+  select array_agg(id), array_agg(toggle_token) into ids, tokens
+    from public.shopping_list_items where list_id = l and checked_at is not null;
+  -- Alguém devolve o Pão à lista antes de a limpeza chegar: ele não sai, nem vai à despensa.
+  update public.shopping_list_items set checked_at = null, toggle_token = gen_random_uuid() where list_id = l and name = 'Pão';
+  select count(*) into pantry_before from public.pantry_items;
+
+  begin
+    perform public.clear_checked_items(l, ids, tokens, '{"id": "x"}'::jsonb);
+    raise exception 'FAIL: p_pantry that is not a list';
+  exception when invalid_parameter_value then null;
+  end;
+
+  assert public.clear_checked_items(l, ids, tokens, jsonb_build_array(
+    jsonb_build_object('id', (select id from public.shopping_list_items where list_id = l and name = 'Leite'),
+      'quantity', 3, 'purchased_on', '2026-09-20', 'expires_on', '2026-10-10', 'expiry_source', 'categoria'),
+    jsonb_build_object('id', (select id from public.shopping_list_items where list_id = l and name = 'Pão'), 'quantity', 6)
+  )) = 2, 'Leite and Detergente leave the cart';
+  assert (select count(*) from public.pantry_items) = pantry_before + 1, 'only the confirmed item that left the cart goes to the pantry';
+  assert (select quantity from public.pantry_items where name = 'Leite' and receipt_item_id is null) = 3, 'pantry takes the confirmed quantity';
+  assert (select unit from public.pantry_items where name = 'Leite' and receipt_item_id is null) = 'un', 'pantry keeps the list unit';
+  assert (select purchased_on from public.pantry_items where name = 'Leite' and receipt_item_id is null) = '2026-09-20', 'pantry purchase date';
+  assert (select expires_on from public.pantry_items where name = 'Leite' and receipt_item_id is null) = '2026-10-10', 'pantry expiry';
+  assert (select expiry_source from public.pantry_items where name = 'Leite' and receipt_item_id is null) = 'categoria', 'pantry expiry source';
+  assert (select category from public.pantry_items where name = 'Leite' and receipt_item_id is null) = 'laticinios', 'pantry category from the list';
+  assert not exists (select 1 from public.pantry_items where name in ('Detergente', 'Pão')), 'unconfirmed or remaining items stay out of the pantry';
+  assert exists (select 1 from public.purchase_history where name = 'Leite' and quantity = 2), 'history keeps the list quantity';
+  assert exists (select 1 from public.shopping_list_items where list_id = l and name = 'Pão'), 'Pão stays on the list';
+  delete from public.shopping_list_items where list_id = l and name = 'Pão';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  -- Id do carrinho de outra casa: nada sai e nada entra na despensa de ninguém.
+  perform public.clear_checked_items(current_setting('test.list_a')::uuid, array[gen_random_uuid()], array[gen_random_uuid()],
+    '[{"quantity": 1}]'::jsonb);
+  assert (select count(*) from public.pantry_items) = 0, 'C gets nothing in its pantry';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  delete from public.pantry_items where name = 'Leite' and receipt_item_id is null;
+end $$;
+
+-- ---------------------------------------------------------------------------
 \echo '• saúde: pessoas da casa, vínculo com moradores e pets'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$

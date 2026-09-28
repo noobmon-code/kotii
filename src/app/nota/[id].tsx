@@ -1,9 +1,10 @@
 import { Image } from 'expo-image';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { fetchPantryNear } from '@/data/home';
 import { usePriceObservations, useProducts, useStores } from '@/data/market';
 import {
   receiptImageUrl,
@@ -16,6 +17,7 @@ import {
   useUpdateReceipt,
   type ItemValues,
 } from '@/data/receipts';
+import { joinNames, receiptPantryRepeats } from '@/domain/cartPantry';
 import { CATEGORIES, getCategory } from '@/domain/categories';
 import { formatBRDate, formatShortDate, parseBRDate, toISODate } from '@/domain/dates';
 import { formatBRL, formatQuantity } from '@/domain/money';
@@ -24,6 +26,7 @@ import {
   buildConfirmPayload,
   resolveItem,
   type CatalogProduct,
+  type ConfirmItem,
   type ItemOverride,
   type ResolvedItem,
 } from '@/domain/receiptReview';
@@ -32,7 +35,7 @@ import { ReceiptItemEditor } from '@/features/ReceiptItemEditor';
 import { errorMessage } from '@/lib/supabase';
 import type { ReceiptItem } from '@/lib/types';
 import { Backdrop } from '@/ui/Backdrop';
-import { confirmAction, notify } from '@/ui/dialogs';
+import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
 import {
   Badge,
@@ -77,6 +80,9 @@ export default function ReceiptScreen() {
   const [editing, setEditing] = useState<Editing>(null);
   const [dateText, setDateText] = useState<string | null>(null);
   const [imageUrls, setImageUrls] = useState<string[] | null>(null);
+  const [checkingPantry, setCheckingPantry] = useState(false);
+  // Trava já no toque: o estado só muda no próximo render.
+  const confirming = useRef(false);
 
   const catalog = useMemo(
     () => new Map<string, CatalogProduct>((products.data ?? []).map((p) => [p.id, p])),
@@ -135,8 +141,42 @@ export default function ReceiptScreen() {
     setDateText(null);
   }
 
-  function doConfirm() {
-    const payload = buildConfirmPayload(items, overrides, catalog, purchasedOn);
+  /**
+   * O que já foi para a despensa pelo carrinho (ou à mão) numa data próxima:
+   * pergunta antes de repetir. Sem repetir, esses itens salvam só na nota.
+   */
+  async function skipPantryRepeats(payload: ConfirmItem[]): Promise<ConfirmItem[]> {
+    const repeats = receiptPantryRepeats(payload, purchasedOn, await fetchPantryNear(purchasedOn));
+    if (!repeats.length) return payload;
+    const dates = new Set(repeats.map((r) => r.since));
+    const names = joinNames(repeats.map((r) => r.name));
+    const again = await askYesNo(
+      'Já está na despensa',
+      `${names} ${repeats.length === 1 ? 'já está' : 'já estão'} na despensa, ${
+        dates.size === 1 ? `da compra de ${formatShortDate([...dates][0])}` : 'de compras destes dias'
+      }. Colocar de novo?`,
+      'Colocar de novo',
+      'Não colocar',
+    );
+    if (again) return payload;
+    const skip = new Set(repeats.map((r) => r.id));
+    return payload.map((p) => (skip.has(p.id) ? { ...p, pantry: undefined } : p));
+  }
+
+  async function doConfirm() {
+    if (confirming.current || confirm.isPending) return;
+    let payload = buildConfirmPayload(items, overrides, catalog, purchasedOn);
+    confirming.current = true;
+    setCheckingPantry(true);
+    try {
+      payload = await skipPantryRepeats(payload);
+    } catch (err) {
+      onError(err);
+      return;
+    } finally {
+      confirming.current = false;
+      setCheckingPantry(false);
+    }
     const run = () =>
       confirm.mutate(payload, {
         onSuccess: () => {
@@ -188,7 +228,7 @@ export default function ReceiptScreen() {
             title={`Confirmar nota (${items.length} ${items.length === 1 ? 'item' : 'itens'})`}
             icon="check"
             onPress={doConfirm}
-            loading={confirm.isPending}
+            loading={confirm.isPending || checkingPantry}
             disabled={!items.length}
           />
         ) : undefined
