@@ -462,7 +462,9 @@ begin
   end;
 
   begin
-    insert into public.workout_logs (plan_id, session_name) values (current_setting('test.plan_a')::uuid, 'A');
+    -- Data fixa e diferente da do log da A: sem ela, no dia do log a trava de
+    -- repetição disparava antes da checagem da casa.
+    insert into public.workout_logs (plan_id, session_name, done_on) values (current_setting('test.plan_a')::uuid, 'A', '2000-01-01');
     raise exception 'FAIL: log on foreign workout plan';
   exception when foreign_key_violation then null;
   end;
