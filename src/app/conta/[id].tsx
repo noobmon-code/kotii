@@ -83,7 +83,7 @@ function BillForm({ bill }: { bill?: Bill }) {
     }
     if (editedBoleto !== null && editedBoleto.value !== bill.boleto) {
       try {
-        await save.mutateAsync({ id: bill.id, values: { boleto: editedBoleto.value } });
+        await save.mutateAsync({ id: bill.id, values: { boleto: editedBoleto.value }, expectDueOn: bill.next_due_on });
       } catch (err) {
         onError(err);
         return;
@@ -133,6 +133,8 @@ function BillForm({ bill }: { bill?: Bill }) {
           ...(boletoChanged ? { boleto } : {}),
           ...(dueChanged ? { next_due_on: dueISO, due_day: Number(dueISO.slice(8, 10)) } : {}),
         },
+        // Boleto e data são da parcela que a tela mostra: só gravam se ela ainda for a atual.
+        expectDueOn: bill && (boletoChanged || dueChanged) ? bill.next_due_on : undefined,
       },
       { onSuccess: () => router.back(), onError },
     );

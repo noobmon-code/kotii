@@ -45,14 +45,34 @@ export function useBill(id: string | undefined) {
 
 export type BillValues = Omit<Bill, 'id'>;
 
+/** A conta mudou de vencimento (alguém pagou) enquanto a tela estava aberta. */
+export class BillMovedError extends Error {
+  constructor() {
+    super('Esta conta mudou enquanto a tela estava aberta (alguém registrou o pagamento?). Abra a conta de novo e confira.');
+  }
+}
+
+/**
+ * Cria ou muda uma conta. `expectDueOn`: só muda se o vencimento ainda for
+ * esse (o que a tela mostrava); senão, BillMovedError, em vez de gravar o
+ * boleto ou a data da parcela já paga na próxima.
+ */
 export function useSaveBill() {
   const invalidate = useInvalidateFinance();
   return useMutation({
-    mutationFn: async ({ id, values }: { id?: string; values: Partial<BillValues> }) =>
-      id
-        ? unwrap(await supabase.from('bills').update(values).eq('id', id))
-        : unwrap(await supabase.from('bills').insert(values)),
+    mutationFn: async ({ id, values, expectDueOn }: { id?: string; values: Partial<BillValues>; expectDueOn?: string }) => {
+      if (!id) return unwrap(await supabase.from('bills').insert(values));
+      let update = supabase.from('bills').update(values).eq('id', id);
+      if (expectDueOn) update = update.eq('next_due_on', expectDueOn);
+      const rows = unwrap(await update.select('id')) as { id: string }[] | null;
+      if (expectDueOn && !rows?.length) throw new BillMovedError();
+      return rows;
+    },
     onSuccess: invalidate,
+    // Conta que mudou: a tela recarrega com o vencimento novo.
+    onError: (err) => {
+      if (err instanceof BillMovedError) invalidate();
+    },
   });
 }
 
