@@ -188,28 +188,26 @@ export default function TodayScreen() {
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
-  function addRestock(items: RestockItem[], open: boolean) {
+  // mutateAsync: com dois toques seguidos, os callbacks de mutate só valem
+  // para o último, e uma falha do primeiro deixaria o item escondido.
+  async function addRestock(items: RestockItem[], open: boolean) {
     const names = items.map((i) => i.name);
     // Some já no toque; volta quando as listas carregadas trouxerem o item e
     // ele sair delas depois (useJustListed). A tela Hoje fica montada o tempo todo.
     restocked.add(names);
-    addToList.mutate(
-      {
+    try {
+      const { id } = await addToList.mutateAsync({
         listId: marketList?.id,
         newListName: 'Mercado',
         items: items.map(({ name, category, productId, quantity, unit }) => ({ name, category, productId, quantity, unit })),
-      },
-      {
-        onSuccess: ({ id }) => {
-          if (open) router.push({ pathname: '/lista/[id]', params: { id } });
-        },
-        onError: (err) => {
-          restocked.drop(names);
-          onError(err);
-        },
-      },
-    );
+      });
+      if (open) router.push({ pathname: '/lista/[id]', params: { id } });
+    } catch (err) {
+      restocked.drop(names);
+      onError(err);
+    }
   }
+
 
 
   return (

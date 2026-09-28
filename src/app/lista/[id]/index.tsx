@@ -126,19 +126,43 @@ export default function ShoppingListScreen() {
     );
   }
 
-  function addRecent(item: Omit<RecentItem, 'times'>) {
+  // mutateAsync: com dois toques seguidos, os callbacks de mutate só valem
+  // para o último, e uma falha do primeiro deixaria o item escondido.
+  async function addRecent(item: Omit<RecentItem, 'times'>) {
     justAdded.add([item.name]);
-    addItem.mutate(
-      { name: item.name, category: item.category, productId: item.productId, quantity: item.quantity, unit: item.unit },
-      {
-        onError: (err) => {
-          justAdded.drop([item.name]);
-          onError(err);
-        },
-      },
-    );
+    try {
+      await addItem.mutateAsync({
+        name: item.name,
+        category: item.category,
+        productId: item.productId,
+        quantity: item.quantity,
+        unit: item.unit,
+      });
+    } catch (err) {
+      justAdded.drop([item.name]);
+      onError(err);
+    }
   }
 
+
+  // Do histórico, menos o que já está na lista (a comprar ou no carrinho); o
+  // que "acabou" não se repete em "comprados recentemente". O histórico pode
+  // ter milhares de linhas: só refaz quando ele ou a lista mudam, não a cada
+  // letra digitada no campo.
+  const listKind = list.data?.kind;
+  const strips = useMemo(() => {
+    if (!listKind || !items.data) return { restock: [], recent: [] };
+    const inList = {
+      names: new Set([...items.data.map((i) => normalizeSearch(i.name)), ...justAdded.pending]),
+      productIds: new Set(items.data.flatMap((i) => (i.product_id ? [i.product_id] : []))),
+    };
+    const restock = restockSuggestions(purchases.data ?? [], { listKind, exclude: inList });
+    const recent = recentPurchases(purchases.data ?? [], {
+      listKind,
+      exclude: { ...inList, names: new Set([...inList.names, ...restock.map((i) => normalizeSearch(i.name))]) },
+    });
+    return { restock, recent };
+  }, [purchases.data, items.data, listKind, justAdded.pending]);
 
   // Na ordem dos corredores do mercado: frescos, despensa, bebidas, casa…
   const pending = (items.data ?? []).filter((i) => !i.checked_at).sort(compareByAisle);
@@ -149,17 +173,7 @@ export default function ShoppingListScreen() {
   if (list.isError) return <ErrorNotice error={list.error} onRetry={() => list.refetch()} />;
   if (items.isError) return <ErrorNotice error={items.error} onRetry={() => items.refetch()} />;
 
-  // Do histórico, menos o que já está na lista (a comprar ou no carrinho); o
-  // que "acabou" não se repete em "comprados recentemente".
-  const inList = {
-    names: new Set([...(items.data ?? []).map((i) => normalizeSearch(i.name)), ...justAdded.pending]),
-    productIds: new Set((items.data ?? []).flatMap((i) => (i.product_id ? [i.product_id] : []))),
-  };
-  const restockItems = restockSuggestions(purchases.data ?? [], { listKind: list.data.kind, exclude: inList });
-  const recentItems = recentPurchases(purchases.data ?? [], {
-    listKind: list.data.kind,
-    exclude: { ...inList, names: new Set([...inList.names, ...restockItems.map((i) => normalizeSearch(i.name))]) },
-  });
+  const { restock: restockItems, recent: recentItems } = strips;
 
   const toggleItem = (item: ShoppingListItem) =>
     toggle.mutate(
