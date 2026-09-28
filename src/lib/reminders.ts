@@ -375,8 +375,21 @@ export async function syncHouseReminders(
     ];
     const signature = JSON.stringify(plan) + (unknown.size ? `|sem:${[...unknown].join(',')}` : '');
     if (previous?.signature === signature) {
-      if (JSON.stringify(previous.warned ?? []) !== JSON.stringify(warned)) {
-        await AsyncStorage.setItem(HOUSE_SCHEDULED_KEY, JSON.stringify({ ...previous, warned } satisfies StoredHouseReminders));
+      // Nada a refazer, mas avisos de saúde que já tocaram saem da lista guardada.
+      const keep = previous.ids.flatMap((id, i) => {
+        const kind = previous.kinds?.[i];
+        return kind && unknown.has(kind) && !heldIds.has(id) ? [] : [{ id, kind }];
+      });
+      if (keep.length !== previous.ids.length || JSON.stringify(previous.warned ?? []) !== JSON.stringify(warned)) {
+        await AsyncStorage.setItem(
+          HOUSE_SCHEDULED_KEY,
+          JSON.stringify({
+            ...previous,
+            ids: keep.map((r) => r.id),
+            kinds: previous.kinds ? keep.map((r) => r.kind!) : undefined,
+            warned,
+          } satisfies StoredHouseReminders),
+        );
       }
       return;
     }

@@ -279,6 +279,12 @@ describe('house reminders', () => {
       const stored = JSON.parse(storage.get('house-reminders:scheduled')!) as { ids: string[] };
       expect(stored.ids).not.toContain(vaccineIds[0]);
       expect(stored.ids).toContain(vaccineIds[1]);
+      // O outro também toca e nada mais muda: sai da lista guardada mesmo sem refazer os avisos.
+      live.delete(vaccineIds[1]);
+      await reminders.syncHouseReminders({ ...moved, bills: [{ ...data.bills[0], next_due_on: '2026-10-12' }] }, today);
+      const after = JSON.parse(storage.get('house-reminders:scheduled')!) as { ids: string[]; kinds: string[] };
+      expect(after.ids).not.toContain(vaccineIds[1]);
+      expect(after.kinds).not.toContain('vaccines');
       // Voltaram: refaz tudo com os dados.
       await reminders.syncHouseReminders({ ...moved, vaccines: [], appointments: [] }, today);
       expect(kindsOf(live)).toEqual(['bills']);
