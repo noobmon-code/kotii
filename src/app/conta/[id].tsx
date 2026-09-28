@@ -91,9 +91,11 @@ function BillForm({ bill }: { bill?: Bill }) {
     if (!name.trim()) return notify('Informe o nome', 'Ex.: Condomínio, Internet, Escola.');
     if (!variable && value == null) return notify('Informe o valor', 'Ou marque que o valor varia a cada mês.');
     if (!dueISO) return notify('Data inválida', 'Informe o vencimento como dd/mm/aaaa.');
-    // Só grava o vencimento se mudou: se outra pessoa pagou enquanto esta tela
-    // estava aberta, salvar o resto não pode voltar a conta para trás.
+    // Só grava o vencimento e o boleto se mudaram: se outra pessoa pagou
+    // enquanto esta tela estava aberta, salvar o resto não pode voltar a conta
+    // para trás nem pôr o boleto já pago no próximo vencimento.
     const dueChanged = !bill || dueISO !== bill.next_due_on;
+    const boletoChanged = !bill || boleto !== bill.boleto;
     save.mutate(
       {
         id: bill?.id,
@@ -104,7 +106,7 @@ function BillForm({ bill }: { bill?: Bill }) {
           recurrence,
           autopay,
           notes: notes.trim() || null,
-          boleto,
+          ...(boletoChanged ? { boleto } : {}),
           ...(dueChanged ? { next_due_on: dueISO, due_day: Number(dueISO.slice(8, 10)) } : {}),
         },
       },
