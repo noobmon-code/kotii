@@ -94,7 +94,7 @@ export function CommonItemsPicker({
             keyboardShouldPersistTaps="handled"
             stickySectionHeadersEnabled
             renderSectionHeader={({ section }) => (
-              <View style={[styles.sectionHeader, { backgroundColor: c.glassStrong }]}>
+              <View style={[styles.sectionHeader, { backgroundColor: c.background }]}>
                 <CategoryIcon category={section.category} size={28} />
                 <Text variant="label">{section.title}</Text>
               </View>

@@ -3,13 +3,16 @@
 // balançam devagar, ele pisca e olha para os lados. Pensando, as cores dão
 // voltas rápidas e a luz do meio pulsa; falando, mexe a boca; "uau" e alegre dão um
 // pulinho que amassa ao cair; "ops" balança; dormindo, respira devagar. Com
-// "reduzir movimento" ligado no aparelho, o Reanimated não anima.
+// "reduzir movimento" ligado no aparelho, ou fora de vista (`paused`), fica
+// parado na pose de repouso do humor.
 
 import { useEffect, type ReactNode } from 'react';
 import { StyleSheet, useColorScheme, View } from 'react-native';
 import Animated, {
+  cancelAnimation,
   Easing,
   useAnimatedStyle,
+  useReducedMotion,
   useSharedValue,
   withDelay,
   withRepeat,
@@ -22,7 +25,7 @@ import {
   basePart,
   blushPart,
   browsPart,
-  EYE_Y,
+  eyeCenterY,
   eyesPart,
   frameFor,
   glossPart,
@@ -69,18 +72,23 @@ export function NukeLive({
   state = 'idle',
   hop = false,
   shadow = size >= 56,
+  paused = false,
 }: {
   size?: number;
   state?: NukeState;
   hop?: boolean;
   /** Sombra embaixo; nos tamanhos pequenos a bolha ocupa o quadro todo. */
   shadow?: boolean;
+  /** Fora de vista (atrás de outra tela): para as animações. */
+  paused?: boolean;
 }) {
   const dark = useColorScheme() === 'dark';
   const id = useGradientId();
   const frame = frameFor(shadow);
   const k = size / frame.w;
   const openEyes = hasOpenEyes(state);
+  const reduceMotion = useReducedMotion();
+  const still = paused || reduceMotion;
 
   const float = useSharedValue(0);
   const swirl = useSharedValue(0);
@@ -92,6 +100,19 @@ export function NukeLive({
   const shake = useSharedValue(0);
 
   useEffect(() => {
+    if (still) {
+      // Parado: tudo em repouso, na hora (boca inteira, cores no lugar).
+      for (const value of [float, swirl, glow, blink, look, talk, jump, shake]) cancelAnimation(value);
+      float.set(0);
+      swirl.set(Math.round(swirl.get() / 360) * 360);
+      glow.set(0);
+      blink.set(1);
+      look.set(0);
+      talk.set(1);
+      jump.set(0);
+      shake.set(0);
+      return;
+    }
     const [floatMs] = FLOAT[state];
     float.set(withRepeat(withTiming(1, { duration: floatMs, easing: sine }), -1, true));
     if (state === 'think') {
@@ -164,12 +185,12 @@ export function NukeLive({
         ),
       );
     }
-  }, [state, openEyes, float, swirl, glow, blink, look, talk, jump, shake]);
+  }, [still, state, openEyes, float, swirl, glow, blink, look, talk, jump, shake]);
 
   useEffect(() => {
-    if (!hop) return;
+    if (!hop || still) return;
     jump.set(withSequence(withTiming(1, { duration: 220, easing: Easing.out(Easing.quad) }), withSpring(0, { damping: 6, stiffness: 180 })));
-  }, [hop, jump]);
+  }, [hop, still, jump]);
 
   const floatHeight = FLOAT[state][1];
 
@@ -223,7 +244,7 @@ export function NukeLive({
             </>,
           )}
         </View>
-        <Animated.View style={[StyleSheet.absoluteFill, { transformOrigin: originOf(frame, ORB.cx, EYE_Y) }, eyesStyle]}>
+        <Animated.View style={[StyleSheet.absoluteFill, { transformOrigin: originOf(frame, ORB.cx, eyeCenterY(state)) }, eyesStyle]}>
           {layer(eyesPart(state))}
         </Animated.View>
         <Animated.View style={[StyleSheet.absoluteFill, { transformOrigin: originOf(frame, ORB.cx, MOUTH_TOP) }, mouthStyle]}>

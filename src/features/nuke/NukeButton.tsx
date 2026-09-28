@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import { router, useIsFocused } from 'expo-router';
 import { Pressable, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
 
 import { NukeLive } from '@/ui/NukeLive';
@@ -7,6 +7,8 @@ import { shadows, useColors } from '@/ui/theme';
 /** Botão flutuante do Nuke, no canto inferior direito das abas. */
 export function NukeButton({ style }: { style?: StyleProp<ViewStyle> }) {
   const c = useColors();
+  // Com outra tela por cima (inclusive a do Nuke), o botão fica parado.
+  const focused = useIsFocused();
   return (
     <Pressable
       accessibilityRole="button"
@@ -18,7 +20,7 @@ export function NukeButton({ style }: { style?: StyleProp<ViewStyle> }) {
         pressed && styles.pressed,
         style,
       ]}>
-      <NukeLive size={44} />
+      <NukeLive size={44} paused={!focused} />
     </Pressable>
   );
 }

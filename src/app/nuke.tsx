@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router } from 'expo-router';
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -47,17 +47,37 @@ export default function NukeScreen() {
   // Reação do Nuke no topo: mexe a boca ao responder, se espanta com erro.
   const [reaction, setReaction] = useState<'talk' | 'joy' | 'oops' | null>(null);
   const reactionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = useRef(true);
   const scroll = useRef<ScrollView>(null);
 
-  function react(kind: 'talk' | 'joy' | 'oops') {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (reactionTimer.current) clearTimeout(reactionTimer.current);
+    };
+  }, []);
+
+  const react = useCallback((kind: 'talk' | 'joy' | 'oops') => {
+    if (!mounted.current) return;
     if (reactionTimer.current) clearTimeout(reactionTimer.current);
     setReaction(kind);
     reactionTimer.current = setTimeout(() => setReaction(null), kind === 'talk' ? 1800 : 2200);
-  }
+  }, []);
 
   const context = snapshot.status === 'ready' ? snapshot.context : null;
   const ready = Boolean(userId && context !== null);
   const busy = pending;
+
+  // A resposta chegou (a pergunta saiu da espera com uma mensagem do Nuke no
+  // fim): vale também para a pergunta feita antes de reabrir a tela. Conversa
+  // apagada no meio não reage.
+  const wasBusy = useRef(busy);
+  useEffect(() => {
+    const last = messages[messages.length - 1];
+    if (wasBusy.current && !busy && last?.role === 'assistant') react(last.error ? 'oops' : 'talk');
+    wasBusy.current = busy;
+  }, [busy, messages, react]);
 
   function send(text: string) {
     const body = text.trim();
@@ -78,11 +98,9 @@ export default function NukeScreen() {
           (m) => [...m, { id: newMessageId(), role: 'assistant', text: answer.reply, actions: answer.actions }],
           since,
         );
-        react('talk');
       })
       .catch((err) => {
         updateConversation(userId, (m) => [...m, { id: newMessageId(), role: 'assistant', text: errorMessage(err), error: true }], since);
-        react('oops');
       })
       .finally(() => setPending(userId, false, since));
   }

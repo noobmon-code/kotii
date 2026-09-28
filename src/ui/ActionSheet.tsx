@@ -48,7 +48,7 @@ export function ActionSheet({
       }}>
       <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Fechar">
         <SafeAreaView edges={['bottom']} style={styles.anchor}>
-          <Pressable style={[styles.sheet, { backgroundColor: c.glassStrong, borderColor: c.glassBorder }]}>
+          <Pressable style={[styles.sheet, { backgroundColor: c.surface, borderColor: c.glassBorder }]}>
             {title ? <Text variant="heading">{title}</Text> : null}
             {message ? <Text variant="muted">{message}</Text> : null}
             <View style={styles.actions}>

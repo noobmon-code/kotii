@@ -2,10 +2,10 @@
 // cartões de vidro. Some perto do topo e do rodapé para emendar com o
 // cabeçalho e a barra de abas.
 
-import { useId } from 'react';
 import { StyleSheet, View } from 'react-native';
 import Svg, { Defs, LinearGradient, RadialGradient, Rect, Stop } from 'react-native-svg';
 
+import { useSvgId } from './svgId';
 import { useBackdrop, useColors } from './theme';
 
 const BLOBS = [
@@ -17,7 +17,7 @@ const BLOBS = [
 export function Backdrop() {
   const c = useColors();
   const colors = useBackdrop();
-  const id = `bd${useId().replace(/[^a-zA-Z0-9]/g, '')}`;
+  const id = useSvgId('bd');
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="none">
       <Svg width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none">

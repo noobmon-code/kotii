@@ -3,15 +3,17 @@
 // animar cada uma (sombra, vidro, cores girando, brilho, olhos, boca); o
 // NukeAvatar junta tudo num SVG parado, para listas.
 
-import { useId, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { useColorScheme } from 'react-native';
 import Svg, { Circle, Defs, Ellipse, G, LinearGradient, Path, RadialGradient, Stop } from 'react-native-svg';
+
+import { useSvgId } from './svgId';
 
 export type NukeMood = 'idle' | 'joy' | 'think' | 'talk' | 'wow' | 'sleep' | 'oops';
 
 /** Quadro de 120 x 120: bolha com centro em (60, 56) e raio 44, sombra embaixo. */
 export const ORB = { cx: 60, cy: 56, r: 44, bottom: 100 };
-export const EYE_Y = 47;
+const EYE_Y = 47;
 export const MOUTH_TOP = 54.5;
 /** Traço do rosto: marrom bem escuro, como na referência. */
 export const NUKE_INK = '#2A1F1A';
@@ -31,10 +33,8 @@ export const viewBoxOf = (f: Frame) => `${f.x} ${f.y} ${f.w} ${f.h}`;
 /** Ponto do quadro em porcentagem, para o transformOrigin das camadas. */
 export const originOf = (f: Frame, x: number, y: number) => `${((x - f.x) / f.w) * 100}% ${((y - f.y) / f.h) * 100}%`;
 
-/** Prefixo único dos gradientes: no web, ids repetidos na página se confundem. */
-export function useGradientId(): string {
-  return `nk${useId().replace(/[^a-zA-Z0-9]/g, '')}`;
-}
+/** Prefixo único dos gradientes do Nuke. */
+export const useGradientId = () => useSvgId('nk');
 
 type Stops = [offset: number, color: string, opacity?: number][];
 
@@ -146,7 +146,18 @@ export function blushPart(id: string): ReactNode {
 
 const STROKE = { stroke: NUKE_INK, strokeWidth: 1.9, strokeLinecap: 'round' as const, fill: 'none' };
 
-function openEyes(dx = 0, dy = 0, grow = 1, squint = 1) {
+/** Olhos abertos por humor: desvio (x, y), tamanho e quanto apertam. */
+type EyePose = [dx: number, dy: number, grow: number, squint: number];
+const OPEN_EYES: Partial<Record<NukeMood, EyePose>> = {
+  think: [2.2, -2.6, 1, 1],
+  wow: [0, -1, 1.2, 1],
+  oops: [0, 1.5, 1, 0.92],
+};
+
+/** Altura do centro dos olhos no humor: o piscar fecha em volta dela. */
+export const eyeCenterY = (mood: NukeMood) => EYE_Y + (OPEN_EYES[mood]?.[1] ?? 0);
+
+function openEyes([dx, dy, grow, squint]: EyePose = [0, 0, 1, 1]) {
   return [49, 71].map((x) => (
     <G key={x}>
       <Ellipse cx={x + dx} cy={EYE_Y + dy} rx={3.3 * grow} ry={4.3 * grow * squint} fill={NUKE_INK} />
@@ -174,14 +185,8 @@ export function eyesPart(mood: NukeMood): ReactNode {
           <Path d="M67.5 47.5 Q71 50.5 74.5 47.5" {...STROKE} />
         </>
       );
-    case 'think':
-      return openEyes(2.2, -2.6);
-    case 'wow':
-      return openEyes(0, -1, 1.2);
-    case 'oops':
-      return openEyes(0, 1.5, 1, 0.92);
     default:
-      return openEyes();
+      return openEyes(OPEN_EYES[mood]);
   }
 }
 

@@ -110,16 +110,26 @@ export function Screen({
  * Vidro: fundo claro translúcido, borda de luz (mais forte em cima e à
  * esquerda, de onde vem a luz) e sombra suave.
  */
-export function useGlassStyle(strong = false): ViewStyle {
-  const c = useColors();
-  return {
-    backgroundColor: strong ? c.glassStrong : c.glass,
-    borderWidth: 1,
-    borderColor: c.glassEdge,
-    borderTopColor: c.glassBorder,
-    borderLeftColor: c.glassBorder,
-    boxShadow: shadows.glass,
-  };
+export function useGlassStyle(): ViewStyle {
+  return glassStyle(useColors());
+}
+
+const glassStyles = new Map<Colors, ViewStyle>();
+/** Um objeto por tema: as telas passam o mesmo estilo a cada render. */
+function glassStyle(c: Colors): ViewStyle {
+  let style = glassStyles.get(c);
+  if (!style) {
+    style = {
+      backgroundColor: c.glass,
+      borderWidth: 1,
+      borderColor: c.glassEdge,
+      borderTopColor: c.glassBorder,
+      borderLeftColor: c.glassBorder,
+      boxShadow: shadows.glass,
+    };
+    glassStyles.set(c, style);
+  }
+  return style;
 }
 
 export function Card({ children, style }: { children: ReactNode; style?: StyleProp<ViewStyle> }) {
@@ -496,18 +506,14 @@ export function Tile({
   onPress: () => void;
   tint?: Tint;
 }) {
-  const c = useColors();
+  const glass = useGlassStyle();
   const t = useTint(tint);
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
       onPress={onPress}
-      style={({ pressed }) => [
-        styles.tile,
-        { backgroundColor: t.bg, borderColor: c.glassEdge, borderTopColor: c.glassBorder, boxShadow: shadows.glass },
-        pressed && styles.pressed,
-      ]}>
+      style={({ pressed }) => [styles.tile, glass, { backgroundColor: t.bg }, pressed && styles.pressed]}>
       <View style={[styles.tileIcon, { backgroundColor: t.art }]}>
         <MaterialCommunityIcons name={icon} size={24} color="#FFFFFF" />
       </View>
