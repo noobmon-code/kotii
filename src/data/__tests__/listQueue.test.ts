@@ -21,6 +21,11 @@ const hold: { gate?: Promise<void>; release?: () => void } = {};
 
 jest.mock('@/lib/supabase', () => ({
   supabase: {
+    rpc: async (_name: string, args: { p_ids: string[]; p_tokens: string[] }) => {
+      sent.push({ id: `limpar:${args.p_ids.join(',')}`, token: args.p_tokens.join(','), values: null });
+      await hold.gate;
+      return { data: 0, error: null };
+    },
     auth: { getSession: async () => ({ data: { session: auth.signedIn ? { user: { id: 'u1' } } : null }, error: null }) },
     from: () => ({
       delete: () => ({
@@ -133,7 +138,7 @@ describe('fila de marcações da lista', () => {
     await after.resumePausedMutations();
     await flush();
     expect(sent.map((s) => s.id)).toEqual(['arroz', 'feijao']);
-    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([['lists'], ['listItems']]);
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([['lists'], ['listItems'], ['recentPurchases']]);
   });
 
   it('mudança em tempo real com marcação na fila espera a fila acabar', async () => {
@@ -150,7 +155,7 @@ describe('fila de marcações da lista', () => {
     onlineManager.setOnline(true);
     await queryClient.resumePausedMutations();
     await flush();
-    expect(keys()).toEqual([['lists'], ['listItems']]);
+    expect(keys()).toEqual([['lists'], ['listItems'], ['recentPurchases']]);
 
     invalidate.mockClear();
     onListItemsChange(queryClient, 'mercado');

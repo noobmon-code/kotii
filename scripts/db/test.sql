@@ -312,6 +312,50 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+\echo '• limpar o carrinho guarda o histórico de compras'
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  assert public.clear_checked_items(
+    current_setting('test.list_a')::uuid,
+    array(select id from public.shopping_list_items),
+    array(select toggle_token from public.shopping_list_items)
+  ) = 0, 'C cannot clear a foreign cart';
+  assert (select count(*) from public.purchase_history) = 0, 'C sees no foreign history';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  ids uuid[];
+  tokens uuid[];
+begin
+  begin
+    insert into public.purchase_history (name) values ('Arroz');
+    raise exception 'FAIL: history written directly';
+  exception when insufficient_privilege then null;
+  end;
+  -- O carrinho que a pessoa viu ao tocar em Limpar.
+  select array_agg(id), array_agg(toggle_token) into ids, tokens
+    from public.shopping_list_items
+    where list_id = current_setting('test.list_a')::uuid and checked_at is not null;
+  -- Alguém marca outro item antes de a limpeza chegar ao servidor.
+  update public.shopping_list_items set checked_at = now()
+    where list_id = current_setting('test.list_a')::uuid and checked_at is null;
+  assert public.clear_checked_items(current_setting('test.list_a')::uuid, ids, tokens) = 1, 'checked item moves to history';
+  assert (select count(*) from public.shopping_list_items where list_id = current_setting('test.list_a')::uuid) = 1,
+    'item checked after the tap stays on the list';
+  update public.shopping_list_items set checked_at = null where list_id = current_setting('test.list_a')::uuid;
+  assert (select name from public.purchase_history) = 'Banana', 'history keeps the item';
+  assert (select quantity from public.purchase_history) = 1.5, 'history keeps the quantity';
+  assert (select bought_at is not null from public.purchase_history), 'history keeps when it was bought';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_b', false) \gset
+do $$
+begin
+  assert (select count(*) from public.purchase_history) = 1, 'B sees the household history';
+end $$;
+
+-- ---------------------------------------------------------------------------
 \echo '• saúde: pessoas da casa, vínculo com moradores e pets'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$
@@ -791,6 +835,16 @@ set role authenticated;
 select set_config('request.jwt.claim.sub', :'user_f', false) \gset
 select (public.create_household('Casa F', 'Fê')).invite_code as invite_f \gset
 insert into public.shopping_lists (name) values ('Mercado da F');
+insert into public.shopping_list_items (list_id, name, checked_at)
+  select id, 'Café da F', now() from public.shopping_lists where name = 'Mercado da F';
+do $$
+begin
+  assert public.clear_checked_items(
+    (select id from public.shopping_lists where name = 'Mercado da F'),
+    array(select id from public.shopping_list_items where checked_at is not null),
+    array(select toggle_token from public.shopping_list_items where checked_at is not null)
+  ) = 1, 'F has purchase history';
+end $$;
 select set_config('request.jwt.claim.sub', :'user_g', false) \gset
 select public.join_household(:'invite_f', 'Gabi') \gset
 do $$
@@ -858,6 +912,7 @@ do $$
 begin
   assert (select count(*) from public.households where name in ('Casa F', 'Casa da Gabi')) = 0, 'household deleted';
   assert (select count(*) from public.shopping_lists where name = 'Mercado da F') = 0, 'household data deleted';
+  assert (select count(*) from public.purchase_history where name = 'Café da F') = 0, 'purchase history deleted';
   assert (select count(*) from public.households where name = 'Casa nova da F') = 1, 'F can start over';
   assert (select count(*) from public.household_file_cleanup) = 1, 'deleted household queued for photo cleanup';
 end $$;
