@@ -2,6 +2,7 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
+import { usePantry } from '@/data/home';
 import {
   newToggleToken,
   useAddListItem,
@@ -15,6 +16,7 @@ import {
   useShoppingList,
   useToggleListItem,
 } from '@/data/market';
+import { cartPantryRows, type CartPantryEntry, type CartPantryRow } from '@/domain/cartPantry';
 import { compareByAisle, getCategory } from '@/domain/categories';
 import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { todayISO } from '@/domain/dates';
@@ -22,6 +24,7 @@ import { parseDecimal } from '@/domain/money';
 import { recentPurchases, type RecentItem } from '@/domain/recentPurchases';
 import { restockSuggestions } from '@/domain/restock';
 import { guessCategory, normalizeSearch } from '@/domain/search';
+import { CartPantryModal } from '@/features/CartPantryModal';
 import { CommonItemsPicker } from '@/features/CommonItemsPicker';
 import { OfflineNotice } from '@/features/OfflineNotice';
 import { RecentPurchases, RestockStrip, useJustListed } from '@/features/RecentPurchases';
@@ -62,13 +65,22 @@ export default function ShoppingListScreen() {
   // ao servidor e não há outro limpar andando.
   const syncing = useListQueueBusy();
   const archive = useArchiveList(id);
+  const pantry = usePantry();
 
   const [name, setName] = useState('');
   const [quantity, setQuantity] = useState('1');
   const [unit, setUnit] = useState<Unit>('un');
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Guardar na despensa: um item (botão do item) ou o carrinho todo (Limpar),
+  // com o carrinho como estava no toque.
+  const [storing, setStoring] = useState<{ items: ShoppingListItem[]; rows: CartPantryRow[]; single: boolean } | null>(null);
   // Some da faixa já no toque; volta quando a lista carregada trouxer o item e ele sair dela depois.
   const justAdded = useJustListed(items.data);
+
+  const shelfLifeDays = useMemo(
+    () => new Map((products.data ?? []).map((p) => [p.id, p.shelf_life_days])),
+    [products.data],
+  );
 
   const productByName = useMemo(
     () => new Map((products.data ?? []).map((p) => [normalizeSearch(p.name), p])),
@@ -192,6 +204,15 @@ export default function ShoppingListScreen() {
       },
       { onError },
     );
+  const openStore = (cart: ShoppingListItem[], single: boolean) =>
+    setStoring({ items: cart, rows: cartPantryRows(cart, pantry.data ?? [], { single, today }), single });
+  const clearCart = (cart: ShoppingListItem[], toPantry: CartPantryEntry[]) => {
+    setStoring(null);
+    clearChecked.mutate(
+      { listId: id, userId: session!.user.id, items: cart.map((i) => ({ id: i.id, token: i.toggle_token })), pantry: toPantry },
+      { onError },
+    );
+  };
   const removeItem = (item: ShoppingListItem) =>
     confirmAction('Remover item', `Remover "${item.name}" da lista?`, 'Remover', () => remove.mutate(item.id, { onError }));
 
@@ -291,22 +312,33 @@ export default function ShoppingListScreen() {
               variant="ghost"
               compact
               disabled={syncing}
-              onPress={() =>
-                clearChecked.mutate(
-                  { listId: id, userId: session!.user.id, items: checked.map((i) => ({ id: i.id, token: i.toggle_token })) },
-                  { onError },
-                )
-              }
+              onPress={() => openStore(checked, false)}
             />
           }>
-          <ShoppingGrid items={checked} inCart onToggle={toggleItem} onRemove={removeItem} />
+          <ShoppingGrid
+            items={checked}
+            inCart
+            onToggle={toggleItem}
+            onRemove={removeItem}
+            onStore={syncing ? undefined : (item) => openStore([item], true)}
+          />
         </Section>
       ) : null}
 
       {pending.length || checked.length ? (
         <Text variant="small" style={styles.center}>
           Toque num item para pôr no carrinho; toque de novo para devolver. Segure para remover.
+          {checked.length ? ' No carrinho, a geladeira guarda o item na despensa.' : ''}
         </Text>
+      ) : null}
+      {storing ? (
+        <CartPantryModal
+          rows={storing.rows}
+          single={storing.single}
+          shelfLifeDays={shelfLifeDays}
+          onConfirm={(toPantry) => clearCart(storing.items, toPantry)}
+          onClose={() => setStoring(null)}
+        />
       ) : null}
       <CommonItemsPicker
         visible={pickerOpen}

@@ -2,7 +2,8 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { diffDays } from '@/domain/dates';
+import { SAME_PURCHASE_DAYS, type PantryEntry } from '@/domain/cartPantry';
+import { addDays, diffDays } from '@/domain/dates';
 import type { MedicationSchedule } from '@/domain/medications';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Chore, Medication, MedicationDose, PantryItem, Unit } from '@/lib/types';
@@ -26,6 +27,21 @@ export function usePantry() {
           .order('name'),
       ) as PantryItem[],
   });
+}
+
+/**
+ * Entradas da despensa que não vieram de nota (carrinho ou à mão), compradas
+ * perto desta data: a nota que chega depois pergunta antes de repetir.
+ */
+export async function fetchPantryNear(purchasedOn: string): Promise<PantryEntry[]> {
+  return unwrap(
+    await supabase
+      .from('pantry_items')
+      .select('product_id, name, purchased_on')
+      .is('receipt_item_id', null)
+      .gte('purchased_on', addDays(purchasedOn, -SAME_PURCHASE_DAYS))
+      .lte('purchased_on', addDays(purchasedOn, SAME_PURCHASE_DAYS)),
+  ) as PantryEntry[];
 }
 
 export function usePantryItem(id: string | undefined) {

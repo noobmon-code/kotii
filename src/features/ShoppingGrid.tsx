@@ -12,18 +12,22 @@ const MAX_COLUMNS = 5;
 
 /**
  * Itens da lista em grade, com a ilustração da categoria: um toque põe no
- * carrinho (ou devolve para a lista), segurar remove.
+ * carrinho (ou devolve para a lista), segurar remove. No carrinho, o botão
+ * da geladeira guarda o item na despensa.
  */
 export function ShoppingGrid({
   items,
   inCart = false,
   onToggle,
   onRemove,
+  onStore,
 }: {
   items: ShoppingListItem[];
   inCart?: boolean;
   onToggle: (item: ShoppingListItem) => void;
   onRemove: (item: ShoppingListItem) => void;
+  /** Sem ele (ex.: carrinho sincronizando), o botão não aparece. */
+  onStore?: (item: ShoppingListItem) => void;
 }) {
   const [width, setWidth] = useState(0);
   // Colunas pela largura: 3 num celular comum, até 5 em telas largas.
@@ -40,6 +44,7 @@ export function ShoppingGrid({
               inCart={inCart}
               onPress={() => onToggle(item)}
               onLongPress={() => onRemove(item)}
+              onStore={onStore ? () => onStore(item) : undefined}
             />
           ))
         : null}
@@ -53,12 +58,14 @@ function Tile({
   inCart,
   onPress,
   onLongPress,
+  onStore,
 }: {
   item: ShoppingListItem;
   width: number;
   inCart: boolean;
   onPress: () => void;
   onLongPress: () => void;
+  onStore?: () => void;
 }) {
   const c = useColors();
   const tint = useCategoryTint(item.category);
@@ -95,6 +102,20 @@ function Tile({
           <Icon name="check" size={14} color="onPrimary" />
         </View>
       ) : null}
+      {inCart && onStore ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Guardar ${item.name} na despensa`}
+          hitSlop={8}
+          onPress={onStore}
+          style={({ pressed }) => [
+            styles.store,
+            { backgroundColor: c.glassStrong, borderColor: c.glassBorder },
+            pressed && styles.pressed,
+          ]}>
+          <Icon name="fridge-outline" size={16} color="primary" />
+        </Pressable>
+      ) : null}
     </Pressable>
   );
 }
@@ -112,6 +133,17 @@ const styles = StyleSheet.create({
   pressed: { transform: [{ scale: 0.95 }] },
   center: { textAlign: 'center' },
   done: { textDecorationLine: 'line-through' },
+  store: {
+    position: 'absolute',
+    top: space.xs,
+    left: space.xs,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   badge: {
     position: 'absolute',
     top: space.sm,

@@ -10,6 +10,7 @@ import {
 } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
+import type { CartPantryEntry } from '@/domain/cartPantry';
 import { PRICE_ALERT_HISTORY_DAYS } from '@/domain/priceAlert';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
@@ -419,6 +420,7 @@ export function registerListMutations(queryClient: QueryClient) {
       queryClient.invalidateQueries({ queryKey: ['listItems', input.listId] });
       queryClient.invalidateQueries({ queryKey: ['list', input.listId] });
       queryClient.invalidateQueries({ queryKey: ['purchaseRecords'] });
+      if (input.pantry?.length) queryClient.invalidateQueries({ queryKey: ['pantry'] });
     },
   });
   // A fila acabou (o último da fila já terminou, não só está terminando):
@@ -475,10 +477,12 @@ export interface ClearCheckedInput {
    * o que alguém marcar depois, antes de a fila andar, fica na lista.
    */
   items: { id: string; token: string }[];
+  /** O que vai também para a despensa, com a quantidade confirmada (só sai o que saiu do carrinho). */
+  pantry?: CartPantryEntry[];
 }
 
 /** Limpa o carrinho: os itens marcados saem da lista e vão para o histórico de compras. */
-async function clearCheckedItems({ listId, userId, items }: ClearCheckedInput) {
+async function clearCheckedItems({ listId, userId, items, pantry }: ClearCheckedInput) {
   // Sem sessão válida, o pedido iria com a chave pública e não apagaria nada.
   const { data } = await supabase.auth.getSession();
   if (!data.session) throw new SessionPendingError();
@@ -490,6 +494,7 @@ async function clearCheckedItems({ listId, userId, items }: ClearCheckedInput) {
       p_list_id: listId,
       p_ids: items.map((i) => i.id),
       p_tokens: items.map((i) => i.token),
+      p_pantry: pantry ?? [],
     }),
   ) as number;
 }
