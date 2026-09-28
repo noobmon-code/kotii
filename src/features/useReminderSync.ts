@@ -6,6 +6,7 @@ import { useChores, useMedications } from '@/data/home';
 import { useAppointments, usePeople, useVaccines } from '@/data/health';
 import { useDocuments } from '@/data/house';
 import { todayISO, toISODate } from '@/domain/dates';
+import { pendingNextDoses } from '@/domain/health';
 import { currentTimeHHMM } from '@/domain/medications';
 import { anyHouseReminderKind, syncHouseReminders, syncReminders, type HouseReminderData } from '@/lib/reminders';
 
@@ -34,7 +35,8 @@ function toHouseReminderData(
       location: a.location,
       status: a.status,
     })),
-    vaccines: vaccines.map((v) => ({
+    // Só doses ainda por tomar: aplicação registrada depois encerra a próxima dose do registro anterior.
+    vaccines: pendingNextDoses(vaccines).map((v) => ({
       id: v.id,
       name: v.name,
       dose: v.dose,
