@@ -93,7 +93,7 @@ export default function ReceiptScreen() {
     }
     return [...ids].sort();
   }, [receiptQuery.data, overrides]);
-  const priceHistory = usePriceObservations(linkedProducts);
+  const priceHistory = usePriceObservations(linkedProducts, receiptQuery.data?.receipt.purchased_at);
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 

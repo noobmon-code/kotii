@@ -3,11 +3,11 @@
 // - mais barato em outro mercado, numa compra recente de lá;
 // - bem acima do que a casa costuma pagar (mediana dos últimos meses).
 
-import { addDays, formatShortDate } from './dates';
+import { addDays, formatShortDate, toISODate } from './dates';
 import { formatBRL } from './money';
 
 /** Olha preços de até 90 dias antes da compra; de outro mercado, só dos últimos 60. */
-const HISTORY_DAYS = 90;
+export const PRICE_ALERT_HISTORY_DAYS = 90;
 const OTHER_STORE_DAYS = 60;
 /** Outro mercado pelo menos 10% mais barato, ou 15% acima do costume… */
 const CHEAPER_BY = 0.1;
@@ -38,6 +38,9 @@ export type PriceAlert =
 
 const round2 = (value: number) => Math.round(value * 100) / 100;
 
+/** Dia da compra no fuso do aparelho (o banco guarda em UTC). */
+const dayOf = (point: PricePoint) => toISODate(new Date(point.purchased_at));
+
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
@@ -53,14 +56,14 @@ export function priceAlerts(
   history: PricePoint[],
   { receiptId, storeId, purchasedOn }: { receiptId: string; storeId: string | null; purchasedOn: string },
 ): Map<string, PriceAlert> {
-  const since = addDays(purchasedOn, -HISTORY_DAYS);
+  const since = addDays(purchasedOn, -PRICE_ALERT_HISTORY_DAYS);
   const otherSince = addDays(purchasedOn, -OTHER_STORE_DAYS);
   const alerts = new Map<string, PriceAlert>();
 
   for (const item of items) {
     if (!(item.unitPrice > 0)) continue;
     const points = history.filter((p) => {
-      const day = p.purchased_at.slice(0, 10);
+      const day = dayOf(p);
       return p.product_id === item.productId && p.unit === item.unit && p.receipt_id !== receiptId && day >= since && day <= purchasedOn;
     });
     if (!points.length) continue;
@@ -68,7 +71,7 @@ export function priceAlerts(
     // Outro mercado: o preço mais recente de cada um; vale o mais barato.
     const latestByStore = new Map<string, PricePoint>();
     for (const point of points) {
-      if (point.store_id === storeId || point.purchased_at.slice(0, 10) < otherSince) continue;
+      if (point.store_id === storeId || dayOf(point) < otherSince) continue;
       const current = latestByStore.get(point.store_id);
       if (!current || point.purchased_at > current.purchased_at) latestByStore.set(point.store_id, point);
     }
@@ -80,7 +83,7 @@ export function priceAlerts(
           kind: 'cheaper_elsewhere',
           storeId: cheapest.store_id,
           price: cheapest.unit_price,
-          on: cheapest.purchased_at.slice(0, 10),
+          on: dayOf(cheapest),
           saving,
         });
         continue;

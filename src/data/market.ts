@@ -10,6 +10,7 @@ import {
 } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
+import { PRICE_ALERT_HISTORY_DAYS } from '@/domain/priceAlert';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
 import { normalizeSearch } from '@/domain/search';
@@ -643,21 +644,28 @@ export function usePriceHistory(productId: string) {
   });
 }
 
-/** Preços dos últimos 4 meses de vários produtos (alerta de preço na nota). */
-export function usePriceObservations(productIds: string[]) {
+/**
+ * Preços de vários produtos nos meses antes de uma compra (alerta de preço na
+ * nota). A janela sai da data da nota, não de hoje: uma nota antiga aberta
+ * depois mostra os mesmos avisos. Dois dias de folga para o fuso.
+ */
+export function usePriceObservations(productIds: string[], purchasedAt: string | undefined) {
   return useQuery({
-    queryKey: ['priceHistory', 'many', productIds],
-    enabled: productIds.length > 0,
-    queryFn: async () =>
-      unwrap(
+    queryKey: ['priceHistory', 'many', productIds, purchasedAt],
+    enabled: productIds.length > 0 && !!purchasedAt,
+    queryFn: async () => {
+      const at = new Date(purchasedAt!).getTime();
+      return unwrap(
         await supabase
           .from('price_observations')
           .select('product_id, store_id, unit, unit_price, purchased_at, receipt_id')
           .in('product_id', productIds)
-          .gte('purchased_at', new Date(Date.now() - 120 * 86_400_000).toISOString())
+          .gte('purchased_at', new Date(at - (PRICE_ALERT_HISTORY_DAYS + 2) * 86_400_000).toISOString())
+          .lte('purchased_at', new Date(at + 2 * 86_400_000).toISOString())
           .order('purchased_at', { ascending: false })
           .limit(1000),
-      ) as PriceObservation[],
+      ) as PriceObservation[];
+    },
   });
 }
 
