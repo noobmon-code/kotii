@@ -7,7 +7,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-import { isSefazUrl, parseNfceHtml, utcOffsetForUrl } from './parse.ts';
+import { isSefazUrl, parseNfceHtml } from './parse.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -110,7 +110,7 @@ Deno.serve(async (req) => {
     return json({ error: 'A Sefaz não respondeu agora. Tente de novo em alguns minutos ou tire foto da nota.', code: 'sefaz_down' }, 502);
   }
 
-  const page = parseNfceHtml(html, utcOffsetForUrl(url));
+  const page = parseNfceHtml(html);
   if (!page.items.length) {
     // Página de verificação ("não sou robô"), nota ainda não autorizada ou
     // leiaute que o leitor não conhece.

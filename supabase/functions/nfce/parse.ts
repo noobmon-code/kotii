@@ -6,8 +6,13 @@
 
 export interface NfcePage {
   store: { name: string | null; cnpj: string | null; address: string | null };
-  /** ISO com o fuso do estado da nota; null se a página não trouxer. */
-  purchasedAt: string | null;
+  /**
+   * Hora da emissão como a nota mostra, na hora local de onde a compra foi
+   * feita e sem fuso ("AAAA-MM-DDTHH:MM:SS"): o app lê no fuso do celular.
+   * Pelo estado não dá para saber o fuso (o oeste do AM e Noronha diferem do
+   * resto). null se a página não trouxer.
+   */
+  issuedAtLocal: string | null;
   total: number | null;
   items: { description: string; code: string | null; quantity: number; unit: string; unitPrice: number; totalPrice: number }[];
 }
@@ -58,25 +63,7 @@ function afterLabel(text: string | null): string {
   return (text ?? '').replace(/^[^:]*:\s*/, '').trim();
 }
 
-/**
- * Fuso da hora de emissão, que a página mostra na hora local do estado. O
- * estado são os 2 primeiros dígitos da chave de acesso (parâmetro p ou chNFe).
- */
-export function utcOffsetForUrl(value: string): string {
-  let key = '';
-  try {
-    const url = new URL(value);
-    key = (url.searchParams.get('p') ?? url.searchParams.get('chNFe') ?? '').replace(/\D/g, '');
-  } catch {
-    // sem chave: fica o horário de Brasília
-  }
-  const uf = key.slice(0, 2);
-  if (uf === '12') return '-05:00'; // AC
-  if (['11', '13', '14', '50', '51'].includes(uf)) return '-04:00'; // RO, AM, RR, MS, MT
-  return '-03:00';
-}
-
-export function parseNfceHtml(html: string, utcOffset = '-03:00'): NfcePage {
+export function parseNfceHtml(html: string): NfcePage {
   // Cada item começa numa descrição (<span class="txtTit">); o resto do item
   // vem até a próxima.
   const starts = [...html.matchAll(/<span[^>]*class="txtTit\d?"[^>]*>/gi)].map((m) => m.index!);
@@ -104,7 +91,7 @@ export function parseNfceHtml(html: string, utcOffset = '-03:00'): NfcePage {
 
   return {
     store: { name: name ? textOf(name[1]) || null : null, cnpj: cnpj && cnpj.length === 14 ? cnpj : null, address },
-    purchasedAt: when ? `${when[3]}-${when[2]}-${when[1]}T${when[4]}:${when[5]}:${when[6] ?? '00'}${utcOffset}` : null,
+    issuedAtLocal: when ? `${when[3]}-${when[2]}-${when[1]}T${when[4]}:${when[5]}:${when[6] ?? '00'}` : null,
     total: totalMatch ? parseBRNumber(totalMatch[1]) : null,
     items,
   };

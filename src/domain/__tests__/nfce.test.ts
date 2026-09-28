@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { accessKeyCheckDigit, nfceItemsToDraft, normalizeNfceUnit, parseNfceQr } from '../nfce';
+import { accessKeyCheckDigit, localDateTimeToISO, nfceItemsToDraft, normalizeNfceUnit, parseNfceQr } from '../nfce';
 
 // SP (35), set/2026, CNPJ 12.345.678/0001-99, modelo 65, série 1, nota 12345.
 const BODY = '35' + '2609' + '12345678000199' + '65' + '001' + '000012345' + '1' + '12345678';
@@ -56,5 +56,17 @@ describe('nfceItemsToDraft', () => {
       expect.objectContaining({ position: 2, product_id: null, suggested_category: 'limpeza', unit_price: 2.79 }),
     ]);
     expect(normalizeNfceUnit(' lt ')).toBe('l');
+  });
+});
+
+describe('localDateTimeToISO', () => {
+  it('lê a hora da nota no fuso do celular (o dia local não muda)', () => {
+    const iso = localDateTimeToISO('2026-09-20T23:55:10')!;
+    const back = new Date(iso);
+    expect([back.getFullYear(), back.getMonth() + 1, back.getDate(), back.getHours(), back.getMinutes(), back.getSeconds()]).toEqual([
+      2026, 9, 20, 23, 55, 10,
+    ]);
+    expect(localDateTimeToISO('2026-09-20T10:15')).toBe(new Date(2026, 8, 20, 10, 15).toISOString());
+    expect(localDateTimeToISO('20/09/2026 10:15')).toBeNull();
   });
 });

@@ -3,7 +3,7 @@
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { nfceItemsToDraft, type NfceItem, type NfceQr } from '@/domain/nfce';
+import { localDateTimeToISO, nfceItemsToDraft, type NfceItem, type NfceQr } from '@/domain/nfce';
 import type { ConfirmItem } from '@/domain/receiptReview';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Receipt, ReceiptItem, Unit } from '@/lib/types';
@@ -97,7 +97,8 @@ export function useScanReceipt(householdId: string | undefined) {
 
 interface NfcePageResult {
   store: { name: string | null; cnpj: string | null; address: string | null };
-  purchasedAt: string | null;
+  /** Hora local da nota, sem fuso. */
+  issuedAtLocal: string | null;
   total: number | null;
   items: NfceItem[];
 }
@@ -129,10 +130,16 @@ export function useImportNfce() {
   const invalidate = useInvalidateReceipt();
   return useMutation({
     mutationFn: async (qr: NfceQr): Promise<{ receipt_id: string; duplicate: boolean }> => {
-      const dup = unwrap(await supabase.from('receipts').select('id').eq('access_key', qr.accessKey).maybeSingle()) as {
-        id: string;
-      } | null;
-      if (dup) return { receipt_id: dup.id, duplicate: true };
+      const dup = unwrap(
+        await supabase.from('receipts').select('id, status, receipt_items(count)').eq('access_key', qr.accessKey).maybeSingle(),
+      ) as { id: string; status: string; receipt_items: { count: number }[] } | null;
+      if (dup) {
+        // Rascunho sem itens é uma importação que parou no meio (o app fechou
+        // entre gravar a nota e os itens): apaga e importa de novo.
+        const unfinished = dup.status === 'draft' && (dup.receipt_items[0]?.count ?? 0) === 0;
+        if (!unfinished) return { receipt_id: dup.id, duplicate: true };
+        unwrap(await supabase.from('receipts').delete().eq('id', dup.id));
+      }
       if (!qr.url) throw new Error('Só com a chave não dá para ver os itens: leia o QR code da nota ou tire uma foto dela.');
 
       const { data: page, error } = await supabase.functions.invoke<NfcePageResult>('nfce', { body: { url: qr.url } });
@@ -157,7 +164,7 @@ export function useImportNfce() {
           .from('receipts')
           .insert({
             store_id: storeId,
-            purchased_at: page.purchasedAt ?? new Date().toISOString(),
+            purchased_at: (page.issuedAtLocal && localDateTimeToISO(page.issuedAtLocal)) ?? new Date().toISOString(),
             total: page.total,
             access_key: qr.accessKey,
             source: 'qrcode',

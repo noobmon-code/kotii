@@ -67,6 +67,18 @@ export function parseNfceQr(text: string): NfceQr | null {
   };
 }
 
+/**
+ * Hora local da nota ("AAAA-MM-DDTHH:MM:SS", sem fuso) -> ISO, lida no fuso
+ * do celular: quem lê a nota está onde comprou, e o app mostra e soma os
+ * gastos pelo dia local. null se o texto não for uma data.
+ */
+export function localDateTimeToISO(local: string): string | null {
+  const m = local.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  const date = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] ?? 0));
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 /** Item como a Sefaz mostra (valores já em número). */
 export interface NfceItem {
   description: string;
