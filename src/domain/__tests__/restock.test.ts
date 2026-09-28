@@ -35,6 +35,15 @@ describe('restockSuggestions', () => {
     expect(items[0].quantity).toBe(12);
   });
 
+  it('aprende intervalos de até 45 dias: as três compras cabem no histórico quando o item vence', () => {
+    // A cada 45 dias, última há 45 (a primeira há 135): sugere.
+    const every45 = [rec('Sabão', '2026-05-15'), rec('Sabão', '2026-06-29'), rec('Sabão', '2026-08-13')];
+    expect(restockSuggestions(every45, { now: NOW }).map((i) => [i.name, i.everyDays, i.daysSince])).toEqual([['Sabão', 45, 45]]);
+    // A cada 50 dias, também vencido: fica de fora.
+    const every50 = [rec('Filtro', '2026-04-30'), rec('Filtro', '2026-06-19'), rec('Filtro', '2026-08-08')];
+    expect(restockSuggestions(every50, { now: NOW })).toEqual([]);
+  });
+
   it('precisa de três idas ao mercado; lista e nota do mesmo dia (ou do dia seguinte) são uma ida só', () => {
     const items = restockSuggestions(
       [

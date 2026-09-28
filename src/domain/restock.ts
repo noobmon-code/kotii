@@ -6,14 +6,19 @@ import type { ListKind } from '@/lib/types';
 import { diffDays, toISODate, todayISO } from './dates';
 import { groupPurchases, type ListExclusion, type PurchaseRecord, type RecentItem } from './recentPurchases';
 
-/** Quanto do histórico olhar: dá para ver o que se compra a cada mês ou dois. */
+/** Quanto do histórico olhar (o servidor devolve até mil linhas por busca). */
 export const RESTOCK_HISTORY_DAYS = 180;
 /** Compras a até 2 dias uma da outra são a mesma ida (feira e mercado, nota lida no dia seguinte). */
 const SAME_TRIP_DAYS = 2;
 /** Três compras (dois intervalos) antes de arriscar um palpite. */
 const MIN_TRIPS = 3;
 const MIN_EVERY_DAYS = 3;
-const MAX_EVERY_DAYS = 60;
+/**
+ * Até mês e meio: as três compras precisam caber no histórico já quando o
+ * item vence (3 × 45 = 135 < 180). Depois, a mais antiga vai saindo da janela
+ * e o palpite some sozinho antes das 3× de atraso, perto de 2× (180 − 2 × 45).
+ */
+const MAX_EVERY_DAYS = 45;
 /** Muito depois do costume, a casa provavelmente parou de comprar. */
 const GIVE_UP_FACTOR = 3;
 

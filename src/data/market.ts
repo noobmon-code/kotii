@@ -404,6 +404,15 @@ export function registerListMutations(queryClient: QueryClient) {
   queryClient.setMutationDefaults(CLEAR_CHECKED_KEY, {
     ...queued,
     mutationFn: (input: ClearCheckedInput) => clearCheckedItems(input),
+    // Aqui e não no hook: vale também para o limpar que ficou na fila e sai
+    // depois de reabrir o app.
+    onSuccess: (_data: unknown, input: ClearCheckedInput) => {
+      recordClearedPurchases(queryClient, input);
+      queryClient.invalidateQueries({ queryKey: ['lists'] });
+      queryClient.invalidateQueries({ queryKey: ['listItems', input.listId] });
+      queryClient.invalidateQueries({ queryKey: ['list', input.listId] });
+      queryClient.invalidateQueries({ queryKey: ['purchaseRecords'] });
+    },
   });
   // A fila acabou (o último da fila já terminou, não só está terminando):
   // agora sim busca listas e itens de todas as listas, o que cobre também
@@ -479,16 +488,40 @@ async function clearCheckedItems({ listId, userId, items }: ClearCheckedInput) {
 }
 
 /** Limpa o carrinho na vez dele na fila da lista (depois das marcações que vieram antes). */
-export function useClearCheckedItems(listId: string) {
-  const invalidate = useInvalidateLists(listId);
-  const queryClient = useQueryClient();
-  return useMutation<unknown, Error, ClearCheckedInput>({
-    mutationKey: CLEAR_CHECKED_KEY,
-    onSuccess: () => {
-      invalidate();
-      queryClient.invalidateQueries({ queryKey: ['purchaseRecords'] });
-    },
+/**
+ * O que saiu do carrinho entra já no histórico guardado: a lista recarregada
+ * não o mostra mais e, se o histórico ainda não tiver a compra (a busca dele
+ * anda em separado e pode falhar), "Acho que acabou" o sugeriria de novo.
+ */
+function recordClearedPurchases(queryClient: QueryClient, { listId, items }: ClearCheckedInput) {
+  const ids = new Set(items.map((i) => i.id));
+  const cleared = (queryClient.getQueryData<ShoppingListItem[]>(['listItems', listId]) ?? []).filter(
+    (i) => ids.has(i.id) && i.checked_at,
+  );
+  if (!cleared.length) return;
+  queryClient.setQueryData<PurchaseRecord[]>(['purchaseRecords'], (records) => {
+    if (!records) return records;
+    const known = new Set(records.filter((r) => r.source === 'list').map((r) => `${r.name}|${r.at}`));
+    const added = cleared
+      .filter((i) => !known.has(`${i.name}|${i.checked_at}`))
+      .map(
+        (i): PurchaseRecord => ({
+          name: i.name,
+          category: i.category,
+          productId: i.product_id,
+          quantity: Number(i.quantity),
+          unit: i.unit,
+          at: i.checked_at!,
+          source: 'list',
+        }),
+      );
+    return added.length ? [...added, ...records] : records;
   });
+}
+
+export function useClearCheckedItems() {
+  // Atualizar histórico e listas fica nos padrões da fila (registerListMutations).
+  return useMutation<unknown, Error, ClearCheckedInput>({ mutationKey: CLEAR_CHECKED_KEY });
 }
 
 /**

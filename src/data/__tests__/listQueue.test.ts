@@ -288,6 +288,26 @@ describe('fila de marcações da lista', () => {
     expect(sent).toEqual([{ id: 'limpar:arroz,leite', token: 'a1,l3', values: null }]);
   });
 
+  it('limpar põe já no histórico guardado o que saiu do carrinho', async () => {
+    const queryClient = client();
+    // Sem tela aberta, o cache do teste apagaria as consultas na hora.
+    queryClient.setQueryDefaults(['listItems'], { gcTime: Infinity });
+    queryClient.setQueryDefaults(['purchaseRecords'], { gcTime: Infinity });
+    queryClient.setQueryData(['listItems', 'mercado'], [
+      { id: 'arroz', name: 'Arroz', category: 'mercearia', product_id: 'p1', quantity: 2, unit: 'un', checked_at: '2026-09-28T20:00:00Z' },
+      { id: 'leite', name: 'Leite', category: 'laticinios', product_id: null, quantity: 1, unit: 'l', checked_at: null },
+    ]);
+    const old = { name: 'Café', category: 'mercearia', productId: null, quantity: 1, unit: 'un', at: '2026-09-20T12:00:00Z', source: 'list' };
+    queryClient.setQueryData(['purchaseRecords'], [old]);
+    clear(queryClient, [{ id: 'arroz', token: 'a1' }]);
+    await flush();
+    await flush();
+    expect(queryClient.getQueryData(['purchaseRecords'])).toEqual([
+      { name: 'Arroz', category: 'mercearia', productId: 'p1', quantity: 2, unit: 'un', at: '2026-09-28T20:00:00Z', source: 'list' },
+      old,
+    ]);
+  });
+
   it('limpar de outra conta não sai com a sessão de quem entrou', async () => {
     const queryClient = client();
     clear(queryClient, [{ id: 'arroz', token: 'a1' }], 'outra-conta');
