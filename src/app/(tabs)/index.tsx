@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import {
@@ -23,6 +23,7 @@ import { billsDueSoon, getFinanceCategory, monthRange, summarize } from '@/domai
 import { describeWarranty, getEquipmentCategory, warrantyStatus } from '@/domain/equipment';
 import { currentTimeHHMM, doseKey, dosesForDay } from '@/domain/medications';
 import { describeExpiry, expiryStatus } from '@/domain/pantry';
+import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { describeRestock, restockSuggestions, type RestockItem } from '@/domain/restock';
 import { normalizeSearch } from '@/domain/search';
 import { BillRow } from '@/features/finance/BillsPanel';
@@ -66,6 +67,33 @@ function greeting(now: Date): string {
 }
 
 const HERO_TINT: Record<Period, Tint> = { morning: 'yellow', afternoon: 'orange', night: 'purple' };
+
+/**
+ * "Acho que acabou" da tela Hoje. O histórico pode ter milhares de linhas: só
+ * refaz com dados novos ou noutro dia, não a cada renderização.
+ */
+function useRestock(
+  onLists: { name: string; product_id: string | null }[] | undefined,
+  records: PurchaseRecord[] | undefined,
+  justListed: ReadonlySet<string>,
+  today: string,
+) {
+  return useMemo(
+    () =>
+      onLists
+        ? restockSuggestions(records ?? [], {
+            now: new Date(`${today}T12:00:00`),
+            listKind: 'mercado',
+            exclude: {
+              names: new Set([...onLists.map((i) => normalizeSearch(i.name)), ...justListed]),
+              productIds: new Set(onLists.flatMap((i) => (i.product_id ? [i.product_id] : []))),
+            },
+            limit: 5,
+          })
+        : [],
+    [onLists, records, justListed, today],
+  );
+}
 
 export default function TodayScreen() {
   const now = new Date();
@@ -133,17 +161,7 @@ export default function TodayScreen() {
   const equipmentName = (id: string | null) => (id ? equipment.data?.find((e) => e.id === id)?.name : undefined);
   const activeLists = (lists.data ?? []).filter((l) => l.pending > 0);
   // "Acho que acabou": do mercado, menos o que já está em alguma lista aberta.
-  const restock = lists.isSuccess
-    ? restockSuggestions(purchases.data ?? [], {
-        now,
-        listKind: 'mercado',
-        exclude: {
-          names: new Set([...onLists.map((i) => normalizeSearch(i.name)), ...restocked.pending]),
-          productIds: new Set(onLists.flatMap((i) => (i.product_id ? [i.product_id] : []))),
-        },
-        limit: 5,
-      })
-    : [];
+  const restock = useRestock(lists.isSuccess ? onLists : undefined, purchases.data, restocked.pending, today);
   // A lista de mercado aberta mais recente; sem nenhuma, cria "Mercado".
   const marketList = (lists.data ?? []).find((l) => l.kind === 'mercado');
   // Categorias do mês que passaram ou estão perto do limite.
@@ -188,9 +206,12 @@ export default function TodayScreen() {
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
-  // mutateAsync: com dois toques seguidos, os callbacks de mutate só valem
-  // para o último, e uma falha do primeiro deixaria o item escondido.
+  // Uma inclusão por vez (os botões ficam desativados enquanto isso): sem lista
+  // de mercado aberta, dois pedidos ao mesmo tempo criariam duas "Mercado".
+  const addingRestock = useRef(false);
   async function addRestock(items: RestockItem[], open: boolean) {
+    if (addingRestock.current) return;
+    addingRestock.current = true;
     const names = items.map((i) => i.name);
     // Some já no toque; volta quando as listas carregadas trouxerem o item e
     // ele sair delas depois (useJustListed). A tela Hoje fica montada o tempo todo.
@@ -199,12 +220,17 @@ export default function TodayScreen() {
       const { id } = await addToList.mutateAsync({
         listId: marketList?.id,
         newListName: 'Mercado',
+        // Sem lista de mercado aqui, pode haver uma criada pelo toque anterior
+        // que as listas ainda não trouxeram: o servidor diz.
+        reuseMarketList: true,
         items: items.map(({ name, category, productId, quantity, unit }) => ({ name, category, productId, quantity, unit })),
       });
       if (open) router.push({ pathname: '/lista/[id]', params: { id } });
     } catch (err) {
       restocked.drop(names);
       onError(err);
+    } finally {
+      addingRestock.current = false;
     }
   }
 
@@ -416,7 +442,15 @@ export default function TodayScreen() {
       {restock.length ? (
         <Section
           title="Acho que acabou"
-          action={<Button title="Pôr tudo na lista" variant="ghost" compact onPress={() => addRestock(restock, true)} />}>
+          action={
+            <Button
+              title="Pôr tudo na lista"
+              variant="ghost"
+              compact
+              disabled={addToList.isPending}
+              onPress={() => addRestock(restock, true)}
+            />
+          }>
           <ListCard>
             {restock.map((item) => (
               <ListRow
@@ -425,7 +459,7 @@ export default function TodayScreen() {
                 title={item.name}
                 subtitle={describeRestock(item)}
                 right={<Icon name="plus-circle-outline" color="primary" />}
-                onPress={() => addRestock([item], false)}
+                onPress={addToList.isPending ? undefined : () => addRestock([item], false)}
               />
             ))}
           </ListCard>

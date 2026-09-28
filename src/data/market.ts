@@ -200,13 +200,42 @@ export function usePendingItemNames(listId: string | undefined) {
   });
 }
 
-/** Vários itens de uma vez; sem `listId`, cria uma lista de mercado nova. */
+/** A lista de mercado aberta mais recente, direto do servidor. */
+async function latestMarketList(): Promise<{ id: string; name: string } | undefined> {
+  const rows = unwrap(
+    await supabase
+      .from('shopping_lists')
+      .select('id, name')
+      .eq('kind', 'mercado')
+      .is('archived_at', null)
+      .order('created_at', { ascending: false })
+      .limit(1),
+  ) as { id: string; name: string }[];
+  return rows[0];
+}
+
+/**
+ * Vários itens de uma vez; sem `listId`, cria uma lista de mercado nova. Com
+ * `reuseMarketList`, antes procura a lista de mercado aberta mais recente: quem
+ * chama pode ainda não ter visto uma criada agora há pouco.
+ */
 export function useAddItemsToList() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ listId, newListName, items }: { listId?: string; newListName: string; items: NewListItem[] }) => {
+    mutationFn: async ({
+      listId,
+      newListName,
+      reuseMarketList,
+      items,
+    }: {
+      listId?: string;
+      newListName: string;
+      reuseMarketList?: boolean;
+      items: NewListItem[];
+    }) => {
       const id =
         listId ??
+        (reuseMarketList ? (await latestMarketList())?.id : undefined) ??
         (
           unwrap(
             await supabase.from('shopping_lists').insert({ name: newListName, kind: 'mercado' }).select('id').single(),
@@ -244,17 +273,8 @@ export function useAddToMarketList() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (item: NewListItem): Promise<{ id: string; name: string; added: boolean }> => {
-      const existing = unwrap(
-        await supabase
-          .from('shopping_lists')
-          .select('id, name')
-          .eq('kind', 'mercado')
-          .is('archived_at', null)
-          .order('created_at', { ascending: false })
-          .limit(1),
-      ) as { id: string; name: string }[];
       const list =
-        existing[0] ??
+        (await latestMarketList()) ??
         (unwrap(
           await supabase.from('shopping_lists').insert({ name: 'Mercado', kind: 'mercado' }).select('id, name').single(),
         ) as { id: string; name: string });
