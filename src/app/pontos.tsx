@@ -1,5 +1,5 @@
 import { router, Stack } from 'expo-router';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { useChores, useKidHistory, useKidPoints, useRedeemPoints } from '@/data/home';
@@ -68,6 +68,7 @@ function KidCard({ kid, tint, balance, chores }: { kid: Person; tint: Tint; bala
   const history = useKidHistory(kid.id, addDays(today, -6));
   const redeem = useRedeemPoints();
   const [redeeming, setRedeeming] = useState(false);
+  const submitting = useRef(false);
   const events = history.data ? pointsHistory(history.data.completions, history.data.redemptions) : [];
   const week = history.data?.weekPoints ?? 0;
 
@@ -126,21 +127,24 @@ function KidCard({ kid, tint, balance, chores }: { kid: Person; tint: Tint; bala
             { key: 'points', label: `Pontos (tem ${plural(balance)})`, keyboardType: 'number-pad', required: true },
           ]}
           initial={{}}
+          saving={redeem.isPending}
           onClose={() => setRedeeming(false)}
-          onSave={({ title, points }) => {
+          onSave={async ({ title, points }) => {
+            // Segundo toque com o primeiro ainda gravando: o mesmo prêmio sairia duas vezes.
+            if (submitting.current) return;
             const cost = Number.parseInt(points, 10);
             if (!(cost > 0)) return notify('Pontos inválidos', 'Use um número maior que zero.');
             if (cost > balance) return notify('Pontos insuficientes', `${kid.name} tem ${plural(balance)}.`);
-            redeem.mutate(
-              { person_id: kid.id, title: title.trim(), points: cost },
-              {
-                onSuccess: () => {
-                  setRedeeming(false);
-                  notify('Prêmio registrado', `${kid.name} trocou ${plural(cost)} por ${title.trim()}.`);
-                },
-                onError: (err) => notify('Erro', errorMessage(err)),
-              },
-            );
+            submitting.current = true;
+            try {
+              await redeem.mutateAsync({ person_id: kid.id, title: title.trim(), points: cost });
+              setRedeeming(false);
+              notify('Prêmio registrado', `${kid.name} trocou ${plural(cost)} por ${title.trim()}.`);
+            } catch (err) {
+              notify('Erro', errorMessage(err));
+            } finally {
+              submitting.current = false;
+            }
           }}
         />
       ) : null}

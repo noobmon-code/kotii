@@ -30,6 +30,7 @@ export function FieldsModal<K extends string>({
   onDelete,
   onClose,
   children,
+  saving = false,
 }: {
   title: string;
   fields: FieldSpec<K>[];
@@ -39,6 +40,8 @@ export function FieldsModal<K extends string>({
   onClose: () => void;
   /** Conteúdo extra abaixo dos campos (ex.: dias da semana). */
   children?: ReactNode;
+  /** Gravando: o Salvar fica travado para um segundo toque não mandar de novo. */
+  saving?: boolean;
 }) {
   const c = useColors();
   const [values, setValues] = useState(
@@ -84,7 +87,7 @@ export function FieldsModal<K extends string>({
             );
           })}
           {children}
-          <Button title="Salvar" disabled={missing} onPress={() => onSave(values)} />
+          <Button title="Salvar" disabled={missing || saving} loading={saving} onPress={() => onSave(values)} />
           {onDelete ? <Button title="Remover" variant="danger" icon="trash-can-outline" onPress={onDelete} /> : null}
         </ScrollView>
       </SafeAreaView>
