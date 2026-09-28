@@ -1,7 +1,7 @@
 import { Image } from 'expo-image';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { Modal, Pressable, StyleSheet, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { usePriceObservations, useProducts, useStores } from '@/data/market';
@@ -76,7 +76,7 @@ export default function ReceiptScreen() {
   const [picker, setPicker] = useState<Picker | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [dateText, setDateText] = useState<string | null>(null);
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [imageUrls, setImageUrls] = useState<string[] | null>(null);
 
   const catalog = useMemo(
     () => new Map<string, CatalogProduct>((products.data ?? []).map((p) => [p.id, p])),
@@ -162,10 +162,11 @@ export default function ReceiptScreen() {
     }
   }
 
-  async function showImage() {
-    if (!receipt.image_path) return;
-    const url = await receiptImageUrl(receipt.image_path);
-    if (url) setImageUrl(url);
+  const photos = receipt.image_path ? [receipt.image_path, ...(receipt.extra_image_paths ?? [])] : [];
+
+  async function showImages() {
+    const urls = (await Promise.all(photos.map((path) => receiptImageUrl(path)))).filter((url): url is string => Boolean(url));
+    if (urls.length) setImageUrls(urls);
     else notify('Imagem indisponível');
   }
 
@@ -228,7 +229,15 @@ export default function ReceiptScreen() {
           <Badge label="A soma não bate com o total: confira itens e descontos" tone="warning" />
         ) : null}
         <PayerChips value={receipt.paid_by} onChange={(paidBy) => updateReceipt.mutate({ paid_by: paidBy }, { onError })} />
-        {receipt.image_path ? <Button title="Ver foto da nota" icon="image-outline" variant="secondary" compact onPress={showImage} /> : null}
+        {photos.length ? (
+          <Button
+            title={photos.length > 1 ? `Ver fotos da nota (${photos.length})` : 'Ver foto da nota'}
+            icon="image-outline"
+            variant="secondary"
+            compact
+            onPress={showImages}
+          />
+        ) : null}
       </Card>
 
       {alerts.size ? (
@@ -300,7 +309,7 @@ export default function ReceiptScreen() {
             isDraft ? 'Descartar nota' : 'Excluir nota',
             isDraft ? 'Os itens lidos serão apagados.' : 'Os preços desta nota saem do comparativo. Itens já na despensa continuam.',
             isDraft ? 'Descartar' : 'Excluir',
-            () => deleteReceipt.mutate(receipt.image_path, { onSuccess: () => router.back(), onError }),
+            () => deleteReceipt.mutate(photos, { onSuccess: () => router.back(), onError }),
           )
         }
       />
@@ -411,7 +420,7 @@ export default function ReceiptScreen() {
         />
       ) : null}
 
-      <ImageViewer url={imageUrl} onClose={() => setImageUrl(null)} />
+      <ImageViewer urls={imageUrls} onClose={() => setImageUrls(null)} />
     </Screen>
   );
 }
@@ -524,19 +533,34 @@ function DraftItemCard({
   );
 }
 
-function ImageViewer({ url, onClose }: { url: string | null; onClose: () => void }) {
+/** Fotos da nota; nota comprida vem em partes, uma embaixo da outra. */
+function ImageViewer({ urls, onClose }: { urls: string[] | null; onClose: () => void }) {
   const c = useColors();
   return (
-    <Modal visible={Boolean(url)} animationType="fade" onRequestClose={onClose}>
+    <Modal visible={Boolean(urls?.length)} animationType="fade" onRequestClose={onClose}>
       <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
         <Backdrop />
         <Row style={styles.viewerHeader}>
           <Text variant="heading" style={styles.flex}>
-            Foto da nota
+            {urls && urls.length > 1 ? `Fotos da nota (${urls.length})` : 'Foto da nota'}
           </Text>
           <IconButton icon="close" label="Fechar" onPress={onClose} />
         </Row>
-        {url ? <Image source={{ uri: url }} style={styles.flex} contentFit="contain" /> : null}
+        {urls?.length === 1 ? (
+          <Image source={{ uri: urls[0] }} style={styles.flex} contentFit="contain" />
+        ) : (
+          <ScrollView contentContainerStyle={styles.photos}>
+            {urls?.map((url, index) => (
+              <Image
+                key={url}
+                source={{ uri: url }}
+                style={styles.photo}
+                contentFit="contain"
+                accessibilityLabel={`Parte ${index + 1} da nota`}
+              />
+            ))}
+          </ScrollView>
+        )}
       </SafeAreaView>
     </Modal>
   );
@@ -552,4 +576,6 @@ const styles = StyleSheet.create({
   storeRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   expiry: { width: 140 },
   viewerHeader: { padding: space.lg },
+  photos: { gap: space.sm, paddingBottom: space.xl },
+  photo: { width: '100%', aspectRatio: 3 / 4 },
 });

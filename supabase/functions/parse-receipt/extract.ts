@@ -34,12 +34,19 @@ export interface CatalogProduct {
 
 export const SYSTEM = `Você lê fotos de notas fiscais de compra brasileiras (NFC-e, cupom fiscal, DANFE) e devolve os dados estruturados. Os dados alimentam um comparativo de preços entre mercados, então preço e quantidade de cada item precisam bater com o impresso.`;
 
-export function instructions(catalog: CatalogProduct[]): string {
+/** Até 4 fotos por nota (nota comprida, fotografada em partes). */
+export const MAX_PHOTOS = 4;
+
+export function instructions(catalog: CatalogProduct[], photos = 1): string {
   const catalogText = catalog.length
     ? catalog.map((p) => `${p.id} | ${p.name}`).join('\n')
     : '(nenhum ainda)';
+  const parts =
+    photos > 1
+      ? `\nA nota veio em ${photos} fotos, em ordem, de cima para baixo. As partes podem se sobrepor: um item que aparece no fim de uma foto e no começo da seguinte entra uma vez só. Junte tudo numa nota só.\n`
+      : '';
   return `Extraia os dados desta nota.
-
+${parts}
 - items: um por produto, na ordem impressa. Não inclua descontos gerais, troco, formas de pagamento nem tributos. Desconto de um item específico entra no total_price dele (valor líquido).
 - raw_description: a descrição exatamente como impressa.
 - normalized_name: nome legível em português com marca e tamanho quando houver. Ex.: "ARROZ T.JOAO TP1 5KG" -> "Arroz Tio João Tipo 1 5kg".

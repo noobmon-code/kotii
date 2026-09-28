@@ -7,10 +7,10 @@ import { localDateTimeToISO, nfceItemsToDraft, type NfceItem, type NfceQr } from
 import type { ConfirmItem } from '@/domain/receiptReview';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Receipt, ReceiptItem, Unit } from '@/lib/types';
-import { functionErrorMessage, pickImages, signedImageUrl, uploadImage, type ScanSource } from './images';
+import { functionErrorMessage, pickImages, removeImages, signedImageUrl, uploadImages, type ScanSource } from './images';
 
 const RECEIPT_COLUMNS =
-  'id, store_id, purchased_at, total, access_key, image_path, source, status, created_at, paid_by, store:stores(id, name)';
+  'id, store_id, purchased_at, total, access_key, image_path, extra_image_paths, source, status, created_at, paid_by, store:stores(id, name)';
 const ITEM_COLUMNS =
   'id, receipt_id, position, raw_description, suggested_name, suggested_category, product_id, quantity, unit, unit_price, total_price';
 
@@ -58,36 +58,39 @@ function useInvalidateReceipt(id?: string) {
 
 export type { ScanSource } from './images';
 
-/** Abre câmera ou galeria; null se o usuário desistir. */
-export async function pickReceiptImage(source: ScanSource): Promise<string | null> {
-  return (await pickImages(source))[0] ?? null;
+/** Nota comprida vai em partes: até 4 fotos por nota. */
+export const MAX_RECEIPT_PHOTOS = 4;
+
+/** Abre câmera (uma foto) ou galeria (até `limit`, em ordem); vazio se o usuário desistir. */
+export async function pickReceiptImages(source: ScanSource, limit = 1): Promise<string[]> {
+  return pickImages(source, limit);
 }
 
 /**
- * Foto escolhida -> upload -> leitura por IA -> rascunho de nota. Devolve o
- * id da nota para a tela de revisão.
+ * Fotos da nota (em ordem, de cima para baixo) -> upload -> leitura por IA
+ * -> rascunho de nota. Devolve o id da nota para a tela de revisão.
  */
 export function useScanReceipt(householdId: string | undefined) {
   const invalidate = useInvalidateReceipt();
   return useMutation({
-    mutationFn: async (uri: string) => {
+    mutationFn: async (uris: string[]) => {
       if (!householdId) throw new Error('Família não carregada.');
-      const path = await uploadImage('receipts', householdId, uri);
+      // Falha no envio de uma parte apaga as que já subiram.
+      const paths = await uploadImages('receipts', householdId, uris.slice(0, MAX_RECEIPT_PHOTOS));
+      const removeAll = () => removeImages('receipts', paths).catch(() => undefined);
 
       const { data, error } = await supabase.functions.invoke<{ receipt_id: string; duplicate: boolean }>(
         'parse-receipt',
-        { body: { image_path: path } },
+        { body: { image_paths: paths } },
       );
       if (error || !data) {
-        // A função respondeu com erro: nenhuma nota foi criada com essa foto,
-        // então ela sai do storage. Em falha de rede o resultado é incerto
-        // (a nota pode ter sido salva) e a foto fica.
-        if (error instanceof FunctionsHttpError) {
-          await supabase.storage.from('receipts').remove([path]).catch(() => undefined);
-        }
+        // A função respondeu com erro: nenhuma nota foi criada com essas
+        // fotos, então elas saem do storage. Em falha de rede o resultado é
+        // incerto (a nota pode ter sido salva) e as fotos ficam.
+        if (error instanceof FunctionsHttpError) await removeAll();
         throw new Error(await functionErrorMessage(error, 'Não foi possível ler a nota. Tente novamente.'));
       }
-      if (data.duplicate) await supabase.storage.from('receipts').remove([path]);
+      if (data.duplicate) await removeAll();
       return data;
     },
     onSuccess: invalidate,
@@ -279,9 +282,9 @@ export function useConfirmReceipt(receiptId: string) {
 export function useDeleteReceipt(receiptId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (imagePath: string | null) => {
+    mutationFn: async (imagePaths: string[]) => {
       unwrap(await supabase.from('receipts').delete().eq('id', receiptId));
-      if (imagePath) await supabase.storage.from('receipts').remove([imagePath]);
+      if (imagePaths.length) await supabase.storage.from('receipts').remove(imagePaths);
     },
     onSuccess: () => {
       for (const key of ['receipts', 'latestPrices', 'priceHistory', 'spending', 'purchaseRecords']) {
