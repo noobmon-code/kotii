@@ -9,7 +9,7 @@ import { persistQueryClientSave, type PersistQueryClientProviderProps } from '@t
 import * as Network from 'expo-network';
 import { AppState, Platform } from 'react-native';
 
-import { inListQueue, registerListMutations, TOGGLE_ITEM_KEY, type ToggleItemInput } from '@/data/market';
+import { inListQueue, registerListMutations } from '@/data/market';
 
 import { createCachePersister } from './cachePersister';
 
@@ -129,7 +129,7 @@ export function forgetCache() {
 
 /**
  * De quem é o cache: a casa fica guardada com o id de quem entrou
- * (`['household', userId]`) e cada marcação da fila leva quem tocou. Só
+ * (`['household', userId]`) e cada ação da fila da lista leva quem tocou. Só
  * conta a casa que tem dados: antes de a sessão chegar, a tela já cria
  * `['household', undefined]`, vazia.
  */
@@ -138,11 +138,11 @@ export function cacheOwners(): unknown[] {
     .getQueryCache()
     .findAll({ queryKey: ['household'], predicate: (query) => query.state.data !== undefined })
     .map((query) => query.queryKey[1]);
-  const toggles = queryClient
+  const queued = queryClient
     .getMutationCache()
-    .findAll({ mutationKey: TOGGLE_ITEM_KEY })
-    .map((mutation) => (mutation.state.variables as ToggleItemInput | undefined)?.userId);
-  return [...households, ...toggles];
+    .findAll({ predicate: inListQueue })
+    .map((mutation) => (mutation.state.variables as { userId?: string } | undefined)?.userId);
+  return [...households, ...queued];
 }
 
 /** Cache restaurado e conferido (é de quem entrou): manda o que ficou na fila. */

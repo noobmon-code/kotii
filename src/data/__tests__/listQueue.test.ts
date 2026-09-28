@@ -3,6 +3,7 @@ import { dehydrate, hydrate, MutationObserver, onlineManager, QueryClient, Query
 
 import {
   CLEAR_CHECKED_KEY,
+  type ClearCheckedInput,
   ForeignToggleError,
   newToggleToken,
   onListItemsChange,
@@ -23,9 +24,9 @@ jest.mock('@/lib/supabase', () => ({
     auth: { getSession: async () => ({ data: { session: auth.signedIn ? { user: { id: 'u1' } } : null }, error: null }) },
     from: () => ({
       delete: () => ({
-        eq: (_listColumn: string, listId: string) => ({
-          not: async () => {
-            sent.push({ id: `limpar:${listId}`, token: '', values: null });
+        in: (_idColumn: string, ids: string[]) => ({
+          in: async (_tokenColumn: string, tokens: string[]) => {
+            sent.push({ id: `limpar:${ids.join(',')}`, token: tokens.join(','), values: null });
             await hold.gate;
             return { data: null, error: null };
           },
@@ -62,9 +63,10 @@ function tap(queryClient: QueryClient, input: ToggleItemInput) {
   observer.mutate(input).catch(() => undefined);
 }
 
-function clear(queryClient: QueryClient, listId: string) {
-  const observer = new MutationObserver<unknown, Error, { listId: string }>(queryClient, { mutationKey: CLEAR_CHECKED_KEY });
-  observer.mutate({ listId }).catch(() => undefined);
+/** Toque em "Limpar" com o carrinho que a tela mostrava (itens e selos). */
+function clear(queryClient: QueryClient, items: { id: string; token: string }[], userId = 'u1') {
+  const observer = new MutationObserver<unknown, Error, ClearCheckedInput>(queryClient, { mutationKey: CLEAR_CHECKED_KEY });
+  observer.mutate({ listId: 'mercado', userId, items }).catch(() => undefined);
 }
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -228,7 +230,8 @@ describe('fila de marcações da lista', () => {
     onlineManager.setOnline(false);
     const before = client();
     tap(before, { id: 'arroz', checked: true, userId: 'u1', at: '2026-09-27T10:00:00Z', token: 'a0', nextToken: 'a1' });
-    clear(before, 'mercado');
+    // O carrinho na tela já mostra o arroz, com o selo novo da marcação.
+    clear(before, [{ id: 'arroz', token: 'a1' }]);
     await flush();
     expect(sent).toEqual([]);
     const saved = JSON.parse(JSON.stringify(dehydrate(before)));
@@ -238,13 +241,14 @@ describe('fila de marcações da lista', () => {
     onlineManager.setOnline(true);
     await after.resumePausedMutations();
     await flush();
-    expect(sent.map((s) => s.id)).toEqual(['arroz', 'limpar:mercado']);
+    expect(sent.map((s) => s.id)).toEqual(['arroz', 'limpar:arroz']);
+    expect(sent[1].token).toBe('a1');
   });
 
   it('limpar sem internet espera a conexão, mesmo sem marcações antes', async () => {
     onlineManager.setOnline(false);
     const queryClient = client();
-    clear(queryClient, 'mercado');
+    clear(queryClient, [{ id: 'arroz', token: 'a1' }]);
     await flush();
     expect(sent).toEqual([]);
     const [mutation] = queryClient.getMutationCache().getAll();
@@ -254,33 +258,53 @@ describe('fila de marcações da lista', () => {
     onlineManager.setOnline(true);
     await queryClient.resumePausedMutations();
     await flush();
-    expect(sent.map((s) => s.id)).toEqual(['limpar:mercado']);
+    expect(sent.map((s) => s.id)).toEqual(['limpar:arroz']);
   });
 
   it('limpar sem sessão válida não sai com a chave pública', async () => {
     jest.useFakeTimers();
     auth.signedIn = false;
     const queryClient = client();
-    clear(queryClient, 'mercado');
+    clear(queryClient, [{ id: 'arroz', token: 'a1' }]);
     await jest.advanceTimersByTimeAsync(60_000);
     expect(sent).toEqual([]);
     auth.signedIn = true;
     await jest.advanceTimersByTimeAsync(15_000);
-    expect(sent.map((s) => s.id)).toEqual(['limpar:mercado']);
+    expect(sent.map((s) => s.id)).toEqual(['limpar:arroz']);
+  });
+
+  it('limpar leva só o que estava no carrinho no toque, com os selos', async () => {
+    const queryClient = client();
+    clear(queryClient, [
+      { id: 'arroz', token: 'a1' },
+      { id: 'leite', token: 'l3' },
+    ]);
+    await flush();
+    expect(sent).toEqual([{ id: 'limpar:arroz,leite', token: 'a1,l3', values: null }]);
+  });
+
+  it('limpar de outra conta não sai com a sessão de quem entrou', async () => {
+    const queryClient = client();
+    clear(queryClient, [{ id: 'arroz', token: 'a1' }], 'outra-conta');
+    await flush();
+    expect(sent).toEqual([]);
+    const [mutation] = queryClient.getMutationCache().getAll();
+    expect(mutation.state.error).toBeInstanceOf(ForeignToggleError);
+    expect(mutation.state.failureCount).toBe(1);
   });
 
   it('marcação tocada com o limpar andando espera ele terminar', async () => {
     hold.gate = new Promise((resolve) => (hold.release = resolve));
     const queryClient = client();
-    clear(queryClient, 'mercado');
+    clear(queryClient, [{ id: 'arroz', token: 'a1' }]);
     await flush();
     tap(queryClient, { id: 'feijao', checked: true, userId: 'u1', at: '2026-09-27T10:02:00Z', token: 'f0', nextToken: 'f1' });
     await flush();
-    expect(sent.map((s) => s.id)).toEqual(['limpar:mercado']);
+    expect(sent.map((s) => s.id)).toEqual(['limpar:arroz']);
     hold.release?.();
     await flush();
     await flush();
-    expect(sent.map((s) => s.id)).toEqual(['limpar:mercado', 'feijao']);
+    expect(sent.map((s) => s.id)).toEqual(['limpar:arroz', 'feijao']);
   });
 
   it('cada marcação ganha um selo novo, no formato uuid', () => {

@@ -312,10 +312,10 @@ export class SessionPendingError extends Error {
   }
 }
 
-/** Marcação feita por outra conta neste aparelho: não sai com a sessão de quem entrou agora. */
+/** Marcação ou limpar feito por outra conta neste aparelho: não sai com a sessão de quem entrou agora. */
 export class ForeignToggleError extends Error {
   constructor() {
-    super('Marcação de outra conta.');
+    super('Ação de outra conta.');
   }
 }
 
@@ -373,7 +373,7 @@ export function registerListMutations(queryClient: QueryClient) {
   });
   queryClient.setMutationDefaults(CLEAR_CHECKED_KEY, {
     ...queued,
-    mutationFn: ({ listId }: { listId: string }) => clearCheckedItems(listId),
+    mutationFn: (input: ClearCheckedInput) => clearCheckedItems(input),
   });
   // A fila acabou (o último da fila já terminou, não só está terminando):
   // agora sim busca listas e itens de todas as listas, o que cobre também
@@ -417,17 +417,37 @@ export function useDeleteListItem(listId: string) {
   });
 }
 
-async function clearCheckedItems(listId: string) {
+export interface ClearCheckedInput {
+  listId: string;
+  /** Quem limpou: a fila não sai com a sessão de outra conta. */
+  userId: string;
+  /**
+   * O que estava no carrinho no toque, com o selo de cada item. Só isso sai:
+   * o que alguém marcar depois, antes de a fila andar, fica na lista.
+   */
+  items: { id: string; token: string }[];
+}
+
+async function clearCheckedItems({ userId, items }: ClearCheckedInput) {
   // Sem sessão válida, o pedido iria com a chave pública e não apagaria nada.
   const { data } = await supabase.auth.getSession();
   if (!data.session) throw new SessionPendingError();
-  return unwrap(await supabase.from('shopping_list_items').delete().eq('list_id', listId).not('checked_at', 'is', null));
+  if (data.session.user.id !== userId) throw new ForeignToggleError();
+  if (!items.length) return null;
+  // O selo é único por marcação: id e selo batendo, o item está como no toque.
+  return unwrap(
+    await supabase
+      .from('shopping_list_items')
+      .delete()
+      .in('id', items.map((i) => i.id))
+      .in('toggle_token', items.map((i) => i.token)),
+  );
 }
 
 /** Limpa o carrinho na vez dele na fila da lista (depois das marcações que vieram antes). */
 export function useClearCheckedItems(listId: string) {
   const invalidate = useInvalidateLists(listId);
-  return useMutation<unknown, Error, { listId: string }>({ mutationKey: CLEAR_CHECKED_KEY, onSuccess: invalidate });
+  return useMutation<unknown, Error, ClearCheckedInput>({ mutationKey: CLEAR_CHECKED_KEY, onSuccess: invalidate });
 }
 
 // ---------------------------------------------------------------------------

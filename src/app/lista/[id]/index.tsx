@@ -235,7 +235,12 @@ export default function ShoppingListScreen() {
               variant="ghost"
               compact
               disabled={syncing}
-              onPress={() => clearChecked.mutate({ listId: id }, { onError })}
+              onPress={() =>
+                clearChecked.mutate(
+                  { listId: id, userId: session!.user.id, items: checked.map((i) => ({ id: i.id, token: i.toggle_token })) },
+                  { onError },
+                )
+              }
             />
           }>
           <ShoppingGrid items={checked} inCart onToggle={toggleItem} onRemove={removeItem} />

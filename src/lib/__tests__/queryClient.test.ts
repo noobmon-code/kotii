@@ -2,7 +2,7 @@ import { afterAll, afterEach, describe, expect, it, jest } from '@jest/globals';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { onlineManager } from '@tanstack/react-query';
 
-import { TOGGLE_ITEM_KEY } from '@/data/market';
+import { CLEAR_CHECKED_KEY, TOGGLE_ITEM_KEY } from '@/data/market';
 
 import { cacheOwners, forgetCache, persistOptions, queryClient, saveNow, setSessionValid } from '../queryClient';
 
@@ -94,12 +94,15 @@ describe('cache guardado no aparelho', () => {
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
   });
 
-  it('as marcações da fila também dizem de quem é o cache', () => {
+  it('as marcações e os limpar da fila também dizem de quem é o cache', () => {
     queryClient.setQueryData(['household', 'u1'], { household: { id: 'h1' } });
     queryClient.getMutationCache().build(queryClient, { mutationKey: TOGGLE_ITEM_KEY, gcTime: 0 }, {
       variables: { id: 'i1', checked: true, userId: 'u2', at: '', token: 't0', nextToken: 't1' },
     } as never);
-    expect(cacheOwners()).toEqual(['u1', 'u2']);
+    queryClient.getMutationCache().build(queryClient, { mutationKey: CLEAR_CHECKED_KEY, gcTime: 0 }, {
+      variables: { listId: 'l1', userId: 'u3', items: [] },
+    } as never);
+    expect(cacheOwners()).toEqual(['u1', 'u2', 'u3']);
   });
 
   it('sair da conta descarta também a gravação que esperava o intervalo', async () => {

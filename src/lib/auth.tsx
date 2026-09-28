@@ -87,6 +87,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => data.subscription.unsubscribe();
   }, []);
 
+  // Cache restaurado: se é de outra conta (o app fechou antes de apagar, ou a
+  // saída aconteceu antes de o cache terminar de ser lido), apaga antes de a
+  // casa da conta nova carregar, com a fila junto. Se é de quem entrou, a
+  // fila guardada pode sair. Vem antes do efeito da sessão válida: na mesma
+  // renderização, a fila de outra conta some antes de a conexão liberar a fila.
+  useEffect(() => {
+    if (isRestoring || !userId) return;
+    if (cacheOwners().some((owner) => owner !== userId)) forgetCache();
+    else resumeQueue();
+  }, [isRestoring, userId]);
+
   // Sessão vencida à espera de renovação: o cache fica como sem internet
   // (setSessionValid) até o Supabase renovar o token (TOKEN_REFRESHED).
   const { valid, session } = state;
@@ -100,16 +111,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const timer = setTimeout(() => setState((s) => ({ ...s, valid: false })), Math.min(ms, MAX_TIMEOUT));
     return () => clearTimeout(timer);
   }, [session, valid, expiresAt]);
-
-  // Cache restaurado: se é de outra conta (o app fechou antes de apagar, ou a
-  // saída aconteceu antes de o cache terminar de ser lido), apaga antes de a
-  // casa da conta nova carregar, com a fila junto. Se é de quem entrou, a
-  // fila guardada pode sair.
-  useEffect(() => {
-    if (isRestoring || !userId) return;
-    if (cacheOwners().some((owner) => owner !== userId)) forgetCache();
-    else resumeQueue();
-  }, [isRestoring, userId]);
 
   return <AuthContext.Provider value={state}>{children}</AuthContext.Provider>;
 }
