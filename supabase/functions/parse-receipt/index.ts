@@ -89,7 +89,13 @@ Deno.serve(async (req) => {
     if (!mediaType) return json({ error: 'Formato de imagem não suportado.' }, 400);
     const { data: blob, error: downloadError } = await db.storage.from('receipts').download(path);
     if (downloadError || !blob) return json({ error: 'Imagem não encontrada.' }, 404);
-    images.push(await toVisionImage(blob, mediaType));
+    try {
+      images.push(await toVisionImage(blob, mediaType));
+    } catch (err) {
+      // Foto grande demais: responde com o motivo, e o app apaga as fotos enviadas.
+      if (err instanceof ExtractionError) return json({ error: err.message }, err.status);
+      throw err;
+    }
   }
 
   const { data: catalog, error: catalogError } = await db
