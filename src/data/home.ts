@@ -78,7 +78,7 @@ export function useConsumePantryItem() {
 // ---------------------------------------------------------------------------
 // Tarefas
 
-const CHORE_COLUMNS = 'id, title, notes, recurrence, interval_count, due_on, assigned_to, active, equipment_id';
+const CHORE_COLUMNS = 'id, title, notes, recurrence, interval_count, due_on, assigned_to, active, equipment_id, kid_id, points';
 
 export function useChores() {
   return useQuery({
@@ -100,7 +100,7 @@ export function useChore(id: string | undefined) {
 }
 
 export type ChoreValues = Pick<Chore, 'title' | 'notes' | 'recurrence' | 'interval_count' | 'due_on' | 'assigned_to'> &
-  Partial<Pick<Chore, 'equipment_id'>>;
+  Partial<Pick<Chore, 'equipment_id' | 'kid_id' | 'points'>>;
 
 export function useSaveChore() {
   const queryClient = useQueryClient();
@@ -113,15 +113,105 @@ export function useSaveChore() {
   });
 }
 
+/** O que a conclusão fez: se registrou (toque repetido não registra), os pontos que deu e para quem. */
+export interface CompleteChoreResult {
+  completed: boolean;
+  points: number;
+  person_id: string | null;
+  due_on: string;
+  active: boolean;
+}
+
 export function useCompleteChore() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, today }: { id: string; today: string }) =>
-      unwrap(await supabase.rpc('complete_chore', { p_chore_id: id, p_today: today })),
+    // dueOn: o vencimento na tela. Se a tarefa já andou (toque duplo, outro
+    // celular), o servidor não registra de novo nem credita pontos outra vez.
+    mutationFn: async ({ id, today, dueOn }: { id: string; today: string; dueOn: string }) =>
+      unwrap(await supabase.rpc('complete_chore', { p_chore_id: id, p_today: today, p_due_on: dueOn })) as CompleteChoreResult,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['chores'] });
       queryClient.invalidateQueries({ queryKey: ['choreHistory'] });
+      queryClient.invalidateQueries({ queryKey: ['kidPoints'] });
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Pontos das crianças
+
+/** Saldo de pontos por ficha (tarefas feitas menos prêmios trocados). */
+export function useKidPoints() {
+  return useQuery({
+    queryKey: ['kidPoints'],
+    queryFn: async () =>
+      Object.fromEntries(
+        (unwrap(await supabase.from('kid_points').select('person_id, balance')) as { person_id: string; balance: number }[]).map(
+          (p) => [p.person_id, Number(p.balance)],
+        ),
+      ) as Record<string, number>,
+  });
+}
+
+/**
+ * Tarefas feitas e prêmios de uma criança (os mais recentes) e os pontos
+ * ganhos desde `weekStart` (AAAA-MM-DD, local), somados à parte: o histórico
+ * é cortado e a semana não pode ser.
+ */
+export function useKidHistory(personId: string, weekStart: string) {
+  return useQuery({
+    queryKey: ['kidPoints', personId, weekStart],
+    queryFn: async () => {
+      const [completions, redemptions, week] = await Promise.all([
+        supabase
+          .from('chore_completions')
+          .select('id, points, completed_at, chore_title, chore:chores(title)')
+          .eq('person_id', personId)
+          .gt('points', 0)
+          .order('completed_at', { ascending: false })
+          .limit(30),
+        supabase
+          .from('point_redemptions')
+          .select('id, points, created_at, title')
+          .eq('person_id', personId)
+          .order('created_at', { ascending: false })
+          .limit(30),
+        supabase
+          .from('chore_completions')
+          .select('points')
+          .eq('person_id', personId)
+          .gt('points', 0)
+          .gte('completed_at', new Date(`${weekStart}T00:00:00`).toISOString()),
+      ]);
+      type CompletionRow = {
+        id: string;
+        points: number;
+        completed_at: string;
+        chore_title: string | null;
+        chore: { title: string } | null;
+      };
+      return {
+        completions: (unwrap(completions) as unknown as CompletionRow[]).map((c) => ({
+          id: c.id,
+          points: c.points,
+          completed_at: c.completed_at,
+          // Tarefa apagada: vale o nome guardado na conclusão.
+          title: c.chore?.title ?? c.chore_title ?? 'Tarefa',
+        })),
+        redemptions: unwrap(redemptions) as { id: string; points: number; created_at: string; title: string }[],
+        weekPoints: (unwrap(week) as { points: number }[]).reduce((sum, c) => sum + c.points, 0),
+      };
+    },
+  });
+}
+
+export function useRedeemPoints() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    // Pela função: trava a ficha e não deixa dois prêmios ao mesmo tempo passarem do saldo.
+    mutationFn: async (input: { person_id: string; title: string; points: number }) =>
+      unwrap(await supabase.rpc('redeem_points', { p_person_id: input.person_id, p_title: input.title, p_points: input.points })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['kidPoints'] }),
   });
 }
 

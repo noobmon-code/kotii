@@ -215,23 +215,32 @@ select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$
 declare
   c uuid;
-  r public.chores;
+  r record;
 begin
   insert into public.chores (title, recurrence, interval_count, due_on, assigned_to)
     values ('Limpar banheiro', 'weekly', 1, '2026-09-20', auth.uid()) returning id into c;
-  r := public.complete_chore(c, '2026-09-26');
-  assert r.due_on = '2026-10-03' and r.active, 'weekly: next week from completion';
+  select * into r from public.complete_chore(c, '2026-09-26');
+  assert r.completed and r.due_on = '2026-10-03' and r.active, 'weekly: next week from completion';
 
   insert into public.chores (title, recurrence, interval_count, due_on)
     values ('Trocar filtro', 'monthly', 1, '2026-01-31') returning id into c;
-  r := public.complete_chore(c, '2026-01-31');
+  select * into r from public.complete_chore(c, '2026-01-31');
   assert r.due_on = '2026-02-28', 'monthly clamps to end of month';
 
   insert into public.chores (title, due_on) values ('Trocar lâmpada', '2026-09-26') returning id into c;
-  r := public.complete_chore(c, '2026-09-26');
+  select * into r from public.complete_chore(c, '2026-09-26');
   assert not r.active, 'one-off chore deactivates';
 
   assert (select count(*) from public.chore_completions) = 3, 'completions logged';
+  begin
+    insert into public.chore_completions (chore_id) values (c);
+    raise exception 'FAIL: completion written without complete_chore';
+  exception when insufficient_privilege then null;
+  end;
+  update public.chore_completions set completed_at = now();
+  assert not found, 'completions cannot be changed directly';
+  delete from public.chore_completions;
+  assert not found, 'completions cannot be deleted directly';
 
   begin
     insert into public.chores (title, assigned_to) values ('x', '00000000-0000-0000-0000-00000000000c');
@@ -953,6 +962,117 @@ do $$
 begin
   assert (select count(*) from public.menu_items) = 1, 'B sees the household menu, untouched by C';
 end $$;
+
+\echo '• tarefas com pontos para as crianças'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  kid uuid := current_setting('test.person_kid')::uuid;
+  bed uuid;
+  toys uuid;
+  dishes uuid;
+  teeth uuid;
+  r record;
+begin
+  insert into public.chores (title, recurrence, due_on, kid_id, points) values ('Arrumar a cama', 'daily', '2026-09-27', kid, 10)
+    returning id into bed;
+  insert into public.chores (title, due_on, kid_id, points) values ('Guardar os brinquedos', '2026-09-28', kid, 5) returning id into toys;
+  insert into public.chores (title, points) values ('Lavar a louça', 50) returning id into dishes;
+  select * into r from public.complete_chore(bed, '2026-09-27', '2026-09-27');
+  assert r.completed and r.points = 10 and r.person_id = kid, 'completion reports the points and who got them';
+  -- Toque duplo (ou outro celular) na mesma ocorrência: conta uma vez.
+  select * into r from public.complete_chore(bed, '2026-09-27', '2026-09-27');
+  assert not r.completed and r.points = 0, 'a repeated completion reports that nothing counted';
+  assert (select count(*) from public.chore_completions where chore_id = bed) = 1, 'same occurrence completes once';
+  -- App antigo (sem vencimento), tarefa que se repete: toque duplo conta uma vez.
+  insert into public.chores (title, recurrence, due_on, kid_id, points) values ('Escovar os dentes', 'daily', '2026-09-28', kid, 0)
+    returning id into teeth;
+  perform public.complete_chore(teeth, '2026-09-28');
+  perform public.complete_chore(teeth, '2026-09-28');
+  assert (select count(*) from public.chore_completions where chore_id = teeth) = 1, 'old app double tap completes once';
+  -- Adiantada (a de amanhã feita hoje): a próxima conta do vencimento, e o
+  -- mesmo toque de novo não passa.
+  update public.chores set due_on = '2026-09-30', active = true where id = teeth;
+  select * into r from public.complete_chore(teeth, '2026-09-29', '2026-09-30');
+  assert r.completed and r.due_on = '2026-10-01', 'early completion moves on from the due date';
+  select * into r from public.complete_chore(teeth, '2026-09-29', '2026-09-30');
+  assert not r.completed, 'early completion counts once';
+  delete from public.chores where id = teeth;
+  perform public.complete_chore(bed, '2026-09-28', '2026-09-28');
+  -- Tarefa única, pelo app antigo (sem vencimento): a segunda vez não conta.
+  perform public.complete_chore(toys, '2026-09-28');
+  perform public.complete_chore(toys, '2026-09-28');
+  perform public.complete_chore(dishes, '2026-09-28');
+  assert (select sum(points) from public.chore_completions where person_id = kid) = 25, 'kid earns the chore points once per occurrence';
+  assert (select points from public.chore_completions where chore_id = dishes) = 0, 'chore without a kid earns nothing';
+
+  perform public.redeem_points(kid, ' Sorvete ', 15);
+  assert (select balance from public.kid_points where person_id = kid) = 10, 'balance is earned minus redeemed';
+  assert (select title from public.point_redemptions where person_id = kid) = 'Sorvete', 'redemption title is trimmed';
+  begin
+    perform public.redeem_points(kid, 'Bicicleta', 11);
+    raise exception 'FAIL: redeemed more than the balance';
+  exception when raise_exception then null;
+  end;
+  begin
+    perform public.redeem_points(kid, 'Nada', 0);
+    raise exception 'FAIL: zero-point redemption';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.point_redemptions (person_id, title, points) values (kid, 'Direto', 1);
+    raise exception 'FAIL: redemption without the balance check';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.chores (title, points) values ('X', 5000);
+    raise exception 'FAIL: too many points';
+  exception when check_violation then null;
+  end;
+
+  -- Apagar a tarefa não leva os pontos já ganhos.
+  delete from public.chores where id = bed;
+  assert (select balance from public.kid_points where person_id = kid) = 10, 'deleting a chore keeps the points earned';
+  assert (select count(*) from public.chore_completions where person_id = kid and chore_id is null and chore_title = 'Arrumar a cama') = 2,
+    'kept completions remember the chore';
+  perform set_config('test.kid_chore', toys::text, false);
+end $$;
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  assert (select count(*) from public.kid_points where person_id = current_setting('test.person_kid')::uuid) = 0,
+    'C sees no foreign points';
+  begin
+    perform public.redeem_points(current_setting('test.person_kid')::uuid, 'Hack', 1);
+    raise exception 'FAIL: redeemed points of a foreign kid';
+  exception when no_data_found then null;
+  end;
+end $$;
+-- A criança ganha conta no app (entra na casa com o mesmo nome): as tarefas
+-- dela passam para a conta e param de dar pontos à ficha.
+reset role;
+\set user_lia '00000000-0000-0000-0000-000000000c1d'
+insert into auth.users (id) values (:'user_lia');
+insert into public.household_members (household_id, user_id, display_name) values (:'hh_a', :'user_lia', 'Lia');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  kid uuid := current_setting('test.person_kid')::uuid;
+  toys uuid := current_setting('test.kid_chore')::uuid;
+  c public.chores;
+begin
+  assert (select member_user_id from public.people where id = kid) = '00000000-0000-0000-0000-000000000c1d', 'kid claimed by the new member';
+  select * into c from public.chores where id = toys;
+  assert c.kid_id is null and c.assigned_to = '00000000-0000-0000-0000-000000000c1d', 'kid chores move to the new account';
+  update public.chores set kid_id = kid, active = true, due_on = '2026-09-29' where id = toys;
+  perform public.complete_chore(toys, '2026-09-29', '2026-09-29');
+  assert (select points from public.chore_completions where chore_id = toys order by completed_at desc limit 1) = 0,
+    'a person with an account earns no points';
+end $$;
+reset role;
+delete from public.household_members where user_id = :'user_lia';
+set role authenticated;
 
 \echo '• divisão de gastos: pesos e acertos entre moradores'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
