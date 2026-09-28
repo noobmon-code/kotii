@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { Image } from 'expo-image';
-import { Children, Fragment, type ReactNode } from 'react';
+import { Children, Fragment, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -15,11 +15,12 @@ import {
   type TextInputProps,
   type TextProps as RNTextProps,
   type ViewStyle,
+  useColorScheme,
 } from 'react-native';
 import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
 
 import { getCategory, type IconName } from '@/domain/categories';
-import { maskBRDate } from '@/domain/dates';
+import { formatBRDate, maskBRDate, parseBRDate } from '@/domain/dates';
 import { matchItemArt } from '@/domain/itemArt';
 import { Mascot, Spot, type Mood } from './art';
 import { Backdrop } from './Backdrop';
@@ -316,32 +317,121 @@ export function TextField({ label, hint, style, ...props }: TextInputProps & { l
   );
 }
 
-/**
- * Campo de data dd/mm/aaaa: barras que aparecem sozinhas enquanto digita
- * (maskBRDate). No iPhone o teclado tem números e barra; no Android, o
- * numérico não tem barra, mas a máscara completa o zero quando dá. O valor
- * continua sendo o texto; quem salva converte com parseBRDate.
- */
-export function DateField({
-  value = '',
-  onChangeText,
-  ...props
-}: Omit<TextInputProps, 'value' | 'onChangeText'> & {
+interface DateFieldProps {
   value?: string;
   onChangeText: (text: string) => void;
   label?: string;
   hint?: string;
-}) {
+  /** Sem data (ex.: "Não vence"); no navegador aparece embaixo, com o campo vazio. */
+  placeholder?: string;
+  onBlur?: () => void;
+  onSubmitEditing?: () => void;
+  accessibilityLabel?: string;
+  autoFocus?: boolean;
+}
+
+/**
+ * Campo de data dd/mm/aaaa. O valor é sempre o texto dd/mm/aaaa (ou vazio);
+ * quem salva converte com parseBRDate.
+ * - No app: barras que aparecem sozinhas enquanto digita (maskBRDate). No
+ *   iPhone o teclado tem números e barra; no Android, o numérico não tem
+ *   barra, mas a máscara completa o zero quando dá.
+ * - No navegador: o campo de data do próprio navegador, com as barras já no
+ *   lugar (no celular, abre o calendário). Uma máscara que reescreve o texto
+ *   se perde com teclados que compõem o texto antes de entregar.
+ */
+export function DateField({ value = '', onChangeText, onBlur, onSubmitEditing, placeholder, ...props }: DateFieldProps) {
+  if (Platform.OS === 'web') {
+    return (
+      <WebDateField
+        value={value}
+        onChangeText={onChangeText}
+        onBlur={onBlur}
+        onSubmitEditing={onSubmitEditing}
+        placeholder={placeholder}
+        {...props}
+      />
+    );
+  }
   return (
     <TextField
-      placeholder="dd/mm/aaaa"
+      placeholder={placeholder ?? 'dd/mm/aaaa'}
       keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'number-pad'}
       maxLength={10}
       autoCorrect={false}
       {...props}
       value={value}
+      onBlur={onBlur ? () => onBlur() : undefined}
+      onSubmitEditing={onSubmitEditing ? () => onSubmitEditing() : undefined}
       onChangeText={(text) => onChangeText(maskBRDate(text, value))}
     />
+  );
+}
+
+function WebDateField({
+  value = '',
+  onChangeText,
+  label,
+  hint,
+  placeholder,
+  onBlur,
+  onSubmitEditing,
+  accessibilityLabel,
+  autoFocus,
+}: DateFieldProps) {
+  const c = useColors();
+  const dark = useColorScheme() === 'dark';
+  // O navegador fala AAAA-MM-DD. O campo mostra o que o navegador informou,
+  // sem ida e volta pelo texto dd/mm/aaaa: no meio da digitação o ano passa
+  // por 0002, 0020… e reescrever o campo apagaria tudo. Só uma data vinda de
+  // fora (ex.: o boleto preenche o vencimento) substitui o que está nele.
+  const [iso, setIso] = useState(() => parseBRDate(value) ?? '');
+  const [emitted, setEmitted] = useState(value);
+  if (value !== emitted) {
+    setEmitted(value);
+    setIso(parseBRDate(value) ?? '');
+  }
+  const change = (next: string) => {
+    const text = next ? formatBRDate(next) : '';
+    setIso(next);
+    setEmitted(text);
+    onChangeText(text);
+  };
+  return (
+    <View style={styles.field}>
+      {label ? <Text variant="label">{label}</Text> : placeholder ? <Text variant="small">{placeholder}</Text> : null}
+      <input
+        type="date"
+        value={iso}
+        autoFocus={autoFocus}
+        min="1900-01-01"
+        max="2100-12-31"
+        aria-label={accessibilityLabel ?? label ?? placeholder}
+        onChange={(event) => change(event.target.value)}
+        onBlur={() => onBlur?.()}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') onSubmitEditing?.();
+        }}
+        style={{
+          boxSizing: 'border-box',
+          width: '100%',
+          minHeight: 52,
+          borderRadius: radius.md,
+          borderWidth: 1.5,
+          borderStyle: 'solid',
+          borderColor: c.border,
+          backgroundColor: c.glassStrong,
+          color: c.text,
+          paddingLeft: space.lg,
+          paddingRight: space.lg,
+          fontSize: 16,
+          fontFamily: fonts.regular,
+          // Calendário e ícone no tema do app.
+          colorScheme: dark ? 'dark' : 'light',
+        }}
+      />
+      {hint ? <Text variant="small">{hint}</Text> : label && placeholder && !iso ? <Text variant="small">{placeholder}</Text> : null}
+    </View>
   );
 }
 
