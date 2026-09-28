@@ -7,6 +7,7 @@ import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { parseDecimal } from '@/domain/money';
 import { errorMessage } from '@/lib/supabase';
 import type { Bill } from '@/lib/types';
+import { Backdrop } from '@/ui/Backdrop';
 import { notify } from '@/ui/dialogs';
 import { Button, IconButton, Row, Text, TextField } from '@/ui/primitives';
 import { MAX_WIDTH, space, useColors } from '@/ui/theme';
@@ -49,6 +50,7 @@ export function PayBillModal({ bill, onClose }: { bill: Bill; onClose: () => voi
   return (
     <Modal visible animationType="slide" onRequestClose={onClose}>
       <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
+        <Backdrop />
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           <Row>
             <Text variant="heading" style={styles.flex}>

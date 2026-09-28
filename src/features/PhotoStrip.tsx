@@ -5,6 +5,7 @@ import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, View } fro
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { signedImageUrl } from '@/data/images';
+import { Backdrop } from '@/ui/Backdrop';
 import { Icon, IconButton, Row, Text } from '@/ui/primitives';
 import { radius, space, useColors } from '@/ui/theme';
 
@@ -49,7 +50,7 @@ export function PhotoStrip({
             accessibilityLabel="Adicionar fotos"
             onPress={onAdd}
             disabled={busy}
-            style={[styles.thumb, styles.add, { borderColor: c.border, backgroundColor: c.surface }]}>
+            style={[styles.thumb, styles.add, { borderColor: c.border, backgroundColor: c.glassStrong }]}>
             {busy ? <ActivityIndicator color={c.primary} /> : <Icon name="camera-plus-outline" color="primary" />}
             <Text variant="small">{busy ? 'Enviando' : 'Fotos'}</Text>
           </Pressable>
@@ -103,6 +104,7 @@ function Viewer({
   return (
     <Modal visible={Boolean(path)} animationType="fade" onRequestClose={onClose}>
       <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
+        <Backdrop />
         <Row style={styles.header}>
           <Text variant="heading" style={styles.flex}>
             {title}

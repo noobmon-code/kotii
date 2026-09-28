@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router } from 'expo-router';
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -17,9 +17,11 @@ import {
 } from '@/features/nuke/conversation';
 import { useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
-import { Floating, NukeAvatar } from '@/ui/art';
+import { Backdrop } from '@/ui/Backdrop';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Button, Chip, IconButton, Row, Text } from '@/ui/primitives';
+import { NukeAvatar } from '@/ui/NukeArt';
+import { NukeLive } from '@/ui/NukeLive';
+import { Button, Chip, IconButton, Row, Text, useGlassStyle } from '@/ui/primitives';
 import { fonts, MAX_WIDTH, radius, space, useColors } from '@/ui/theme';
 
 const ACTION_ICONS: Record<NukeAction['type'], keyof typeof MaterialCommunityIcons.glyphMap> = {
@@ -31,6 +33,7 @@ const ACTION_ICONS: Record<NukeAction['type'], keyof typeof MaterialCommunityIco
 
 export default function NukeScreen() {
   const c = useColors();
+  const glass = useGlassStyle();
   const { session } = useAuth();
   const userId = session?.user.id;
   const name = useHousehold().data?.me.display_name ?? '';
@@ -41,11 +44,40 @@ export default function NukeScreen() {
   const runAction = useRunNukeAction();
   const [draft, setDraft] = useState('');
   const [running, setRunning] = useState<string | null>(null);
+  // Reação do Nuke no topo: mexe a boca ao responder, se espanta com erro.
+  const [reaction, setReaction] = useState<'talk' | 'joy' | 'oops' | null>(null);
+  const reactionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = useRef(true);
   const scroll = useRef<ScrollView>(null);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (reactionTimer.current) clearTimeout(reactionTimer.current);
+    };
+  }, []);
+
+  const react = useCallback((kind: 'talk' | 'joy' | 'oops') => {
+    if (!mounted.current) return;
+    if (reactionTimer.current) clearTimeout(reactionTimer.current);
+    setReaction(kind);
+    reactionTimer.current = setTimeout(() => setReaction(null), kind === 'talk' ? 1800 : 2200);
+  }, []);
 
   const context = snapshot.status === 'ready' ? snapshot.context : null;
   const ready = Boolean(userId && context !== null);
   const busy = pending;
+
+  // A resposta chegou (a pergunta saiu da espera com uma mensagem do Nuke no
+  // fim): vale também para a pergunta feita antes de reabrir a tela. Conversa
+  // apagada no meio não reage.
+  const wasBusy = useRef(busy);
+  useEffect(() => {
+    const last = messages[messages.length - 1];
+    if (wasBusy.current && !busy && last?.role === 'assistant') react(last.error ? 'oops' : 'talk');
+    wasBusy.current = busy;
+  }, [busy, messages, react]);
 
   function send(text: string) {
     const body = text.trim();
@@ -60,16 +92,16 @@ export default function NukeScreen() {
     const since = conversationEpoch();
     ask
       .mutateAsync({ messages: history, context, today })
-      .then((answer) =>
+      .then((answer) => {
         updateConversation(
           userId,
           (m) => [...m, { id: newMessageId(), role: 'assistant', text: answer.reply, actions: answer.actions }],
           since,
-        ),
-      )
-      .catch((err) =>
-        updateConversation(userId, (m) => [...m, { id: newMessageId(), role: 'assistant', text: errorMessage(err), error: true }], since),
-      )
+        );
+      })
+      .catch((err) => {
+        updateConversation(userId, (m) => [...m, { id: newMessageId(), role: 'assistant', text: errorMessage(err), error: true }], since);
+      })
       .finally(() => setPending(userId, false, since));
   }
 
@@ -86,7 +118,9 @@ export default function NukeScreen() {
             : msg,
         ),
       );
+      if (action.type !== 'open_screen') react('joy');
     } catch (err) {
+      react('oops');
       notify('Não deu certo', errorMessage(err));
     } finally {
       setRunning(null);
@@ -95,11 +129,12 @@ export default function NukeScreen() {
 
   return (
     <SafeAreaView edges={['top', 'bottom']} style={[styles.flex, { backgroundColor: c.background }]}>
+      <Backdrop />
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <View style={[styles.header, { borderBottomColor: c.border }]}>
+        <View style={[styles.header, { borderBottomColor: c.glassBorder }]}>
           <IconButton icon="close" label="Fechar" onPress={() => router.back()} />
           <Row style={styles.headerTitle}>
-            <NukeAvatar size={30} />
+            <NukeLive size={30} state={busy ? 'think' : (reaction ?? 'idle')} />
             <View>
               <Text variant="heading">Nuke</Text>
               <Text variant="small">assistente da casa</Text>
@@ -124,9 +159,7 @@ export default function NukeScreen() {
           onContentSizeChange={() => scroll.current?.scrollToEnd({ animated: true })}>
           {messages.length === 0 ? (
             <View style={styles.welcome}>
-              <Floating distance={8}>
-                <NukeAvatar size={112} />
-              </Floating>
+              <NukeLive size={132} hop />
               <Text variant="title" style={styles.center}>
                 Oi{name ? `, ${name}` : ''}! Eu sou o Nuke.
               </Text>
@@ -152,20 +185,20 @@ export default function NukeScreen() {
               </View>
             ) : (
               <View key={message.id} style={styles.theirsRow}>
-                <NukeAvatar size={28} mood={message.error ? 'wow' : 'happy'} />
+                <NukeAvatar size={28} mood={message.error ? 'oops' : 'idle'} />
                 <View style={styles.theirsColumn}>
                   <View
                     style={[
                       styles.bubble,
                       styles.theirs,
-                      { backgroundColor: message.error ? c.dangerSoft : c.surface, borderColor: c.border },
+                      message.error ? { backgroundColor: c.dangerSoft, borderColor: c.dangerSoft } : glass,
                     ]}>
                     <Text variant="body" color={message.error ? 'danger' : 'text'} selectable>
                       {message.text}
                     </Text>
                   </View>
                   {message.actions?.map((action, index) => (
-                    <View key={index} style={[styles.action, { backgroundColor: c.surface, borderColor: c.brandSoft }]}>
+                    <View key={index} style={[styles.action, glass]}>
                       <Row>
                         <View style={[styles.actionIcon, { backgroundColor: c.brandSoft }]}>
                           <MaterialCommunityIcons name={ACTION_ICONS[action.type]} size={18} color={c.brand} />
@@ -201,10 +234,8 @@ export default function NukeScreen() {
 
           {busy ? (
             <View style={styles.theirsRow}>
-              <Floating distance={3} duration={600}>
-                <NukeAvatar size={28} mood="think" />
-              </Floating>
-              <View style={[styles.bubble, styles.theirs, { backgroundColor: c.surface, borderColor: c.border }]}>
+              <NukeLive size={28} state="think" />
+              <View style={[styles.bubble, styles.theirs, glass]}>
                 <Text variant="body" color="textMuted">
                   Pensando…
                 </Text>
@@ -222,8 +253,8 @@ export default function NukeScreen() {
           </View>
         ) : null}
 
-        <View style={[styles.composer, { borderTopColor: c.border, backgroundColor: c.background }]}>
-          <View style={[styles.inputBox, { backgroundColor: c.surface, borderColor: c.border }]}>
+        <View style={[styles.composer, { borderTopColor: c.glassBorder, backgroundColor: c.glassStrong }]}>
+          <View style={[styles.inputBox, { backgroundColor: c.glassStrong, borderColor: c.border }]}>
             <TextInput
               value={draft}
               onChangeText={setDraft}
@@ -275,8 +306,8 @@ const styles = StyleSheet.create({
   mine: { alignSelf: 'flex-end', borderBottomRightRadius: 6 },
   theirsRow: { flexDirection: 'row', alignItems: 'flex-start', gap: space.sm },
   theirsColumn: { flex: 1, gap: space.sm },
-  theirs: { alignSelf: 'flex-start', borderBottomLeftRadius: 6, borderWidth: StyleSheet.hairlineWidth, maxWidth: '100%' },
-  action: { borderRadius: radius.lg, borderWidth: 2, padding: space.md, gap: space.md },
+  theirs: { alignSelf: 'flex-start', borderBottomLeftRadius: 6, borderWidth: 1, maxWidth: '100%' },
+  action: { borderRadius: radius.lg, padding: space.md, gap: space.md },
   actionIcon: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   loadError: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingHorizontal: space.lg, paddingVertical: space.sm },
   composer: {

@@ -1,12 +1,14 @@
-import { router } from 'expo-router';
+import { router, useIsFocused } from 'expo-router';
 import { Pressable, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
 
-import { Floating, NukeAvatar } from '@/ui/art';
-import { useColors } from '@/ui/theme';
+import { NukeLive } from '@/ui/NukeLive';
+import { shadows, useColors } from '@/ui/theme';
 
 /** Botão flutuante do Nuke, no canto inferior direito das abas. */
 export function NukeButton({ style }: { style?: StyleProp<ViewStyle> }) {
   const c = useColors();
+  // Com outra tela por cima (inclusive a do Nuke), o botão fica parado.
+  const focused = useIsFocused();
   return (
     <Pressable
       accessibilityRole="button"
@@ -14,13 +16,11 @@ export function NukeButton({ style }: { style?: StyleProp<ViewStyle> }) {
       onPress={() => router.push('/nuke')}
       style={({ pressed }) => [
         styles.button,
-        { backgroundColor: c.surface, borderColor: c.brandSoft },
+        { backgroundColor: c.glassStrong, borderColor: c.glassBorder, boxShadow: shadows.float },
         pressed && styles.pressed,
         style,
       ]}>
-      <Floating distance={2} duration={1800}>
-        <NukeAvatar size={42} />
-      </Floating>
+      <NukeLive size={44} paused={!focused} />
     </Pressable>
   );
 }
@@ -30,14 +30,9 @@ const styles = StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 32,
-    borderWidth: 3,
+    borderWidth: 1.5,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#2B2A3A',
-    shadowOpacity: 0.18,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 6,
   },
   pressed: { transform: [{ scale: 0.94 }] },
 });

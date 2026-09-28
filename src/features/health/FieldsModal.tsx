@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { Modal, ScrollView, StyleSheet, type KeyboardTypeOptions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { Backdrop } from '@/ui/Backdrop';
 import { Button, IconButton, Row, Text, TextField } from '@/ui/primitives';
 import { MAX_WIDTH, space, useColors } from '@/ui/theme';
 
@@ -46,6 +47,7 @@ export function FieldsModal<K extends string>({
   return (
     <Modal visible animationType="slide" onRequestClose={onClose}>
       <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
+        <Backdrop />
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           <Row>
             <Text variant="heading" style={styles.flex}>
