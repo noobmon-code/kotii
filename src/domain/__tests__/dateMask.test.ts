@@ -51,6 +51,24 @@ describe('maskBRDate', () => {
     expect(maskBRDate('20.12.2026')).toBe('20/12/2026');
   });
 
+  it('colar por cima de uma data vale como colar', () => {
+    expect(maskBRDate('1/3/2026', '20/12/2026')).toBe('01/03/2026');
+    expect(maskBRDate('01032026', '20/12/2026')).toBe('01/03/2026');
+    // Selecionar tudo e digitar um número começa de novo.
+    expect(maskBRDate('2', '20/12/2026')).toBe('2');
+  });
+
+  it('dia de 4 a 9 e mês de 2 a 9 ganham o zero sem precisar de barra', () => {
+    expect(type('5')).toBe('05/');
+    expect(type('53')).toBe('05/03/');
+    expect(type('532026')).toBe('05/03/2026');
+    expect(type('201')).toBe('20/1');
+    expect(type('2012')).toBe('20/12/');
+    expect(type('3')).toBe('3');
+    // Apagando, não completa nada.
+    expect(erase('05/', 2)).toBe('0');
+  });
+
   it('ignora letras', () => {
     expect(type('2a0')).toBe('20/');
   });

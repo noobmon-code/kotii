@@ -3,6 +3,7 @@ import { Image } from 'expo-image';
 import { Children, Fragment, type ReactNode } from 'react';
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -316,9 +317,10 @@ export function TextField({ label, hint, style, ...props }: TextInputProps & { l
 }
 
 /**
- * Campo de data dd/mm/aaaa: teclado numérico e barras que aparecem sozinhas
- * enquanto digita (maskBRDate). O valor continua sendo o texto; quem salva
- * converte com parseBRDate.
+ * Campo de data dd/mm/aaaa: barras que aparecem sozinhas enquanto digita
+ * (maskBRDate). No iPhone o teclado tem números e barra; no Android, o
+ * numérico não tem barra, mas a máscara completa o zero quando dá. O valor
+ * continua sendo o texto; quem salva converte com parseBRDate.
  */
 export function DateField({
   value = '',
@@ -333,7 +335,7 @@ export function DateField({
   return (
     <TextField
       placeholder="dd/mm/aaaa"
-      keyboardType="number-pad"
+      keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'number-pad'}
       maxLength={10}
       autoCorrect={false}
       {...props}

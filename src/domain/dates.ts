@@ -66,15 +66,20 @@ export function formatBRDate(iso: string): string {
 
 /**
  * Máscara de data enquanto digita: "20122026" vira "20/12/2026", com a barra
- * aparecendo sozinha depois do dia e do mês. Uma barra digitada fecha o
- * campo ("1/" vira "01/"), e colar "1/3/2026" ou "2026-03-01" também vale.
+ * aparecendo sozinha depois do dia e do mês. Dia de 4 a 9 e mês de 2 a 9 já
+ * ganham o zero ("5" vira "05/"), porque não há outra leitura; uma barra
+ * digitada também fecha o campo ("1/" vira "01/"). Colar "1/3/2026" ou
+ * "2026-03-01" vale, inclusive por cima de uma data que já estava lá.
  * `previous` é o valor anterior: apagando, a barra automática não volta.
  */
 export function maskBRDate(next: string, previous = ''): string {
   const pasted = next.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (pasted) return `${pasted[3]}/${pasted[2]}/${pasted[1]}`;
-  const deleting = next.length < previous.length;
-  const pasting = next.length > previous.length + 1;
+  // Digitar e apagar mexem só no fim; o resto (colar, trocar a seleção,
+  // editar no meio) conta como texto novo, com cada parte valendo como está.
+  const deleting = next.length < previous.length && previous.startsWith(next);
+  const typing = next.length === previous.length + 1 && next.startsWith(previous);
+  const pasting = !deleting && !typing;
   const parts = next.split('/');
   let digits = '';
   parts.forEach((part, index) => {
@@ -83,6 +88,10 @@ export function maskBRDate(next: string, previous = ''): string {
     const closing = pasting ? index < parts.length - 1 : index === parts.length - 2 && next.endsWith('/');
     digits += closing && d.length === 1 && (digits.length === 0 || digits.length === 2) ? `0${d}` : d;
   });
+  if (!deleting) {
+    if (digits.length === 1 && Number(digits) > 3) digits = `0${digits}`;
+    else if (digits.length === 3 && Number(digits[2]) > 1) digits = `${digits.slice(0, 2)}0${digits[2]}`;
+  }
   digits = digits.slice(0, 8);
   const text = [digits.slice(0, 2), digits.slice(2, 4), digits.slice(4)].filter(Boolean).join('/');
   return !deleting && (digits.length === 2 || digits.length === 4) ? `${text}/` : text;
