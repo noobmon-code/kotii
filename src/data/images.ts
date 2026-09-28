@@ -37,17 +37,23 @@ export async function pickImages(source: ScanSource, limit = 1): Promise<string[
   return result.assets.slice(0, limit).map((asset) => asset.uri);
 }
 
-/** Reduz para o tamanho que a IA aproveita e devolve o JPEG em base64. */
-export async function prepareImage(uri: string): Promise<string> {
+/**
+ * Reduz a foto e devolve o JPEG em base64. Por padrão, no tamanho que a IA
+ * aproveita; `fit` e `compress` trocam isso (ex.: foto pequena de produto).
+ */
+export async function prepareImage(
+  uri: string,
+  { fit = fitForVision, compress = 0.8 }: { fit?: (width: number, height: number) => { width: number; height: number }; compress?: number } = {},
+): Promise<string> {
   const context = ImageManipulator.manipulate(uri);
   const original = await context.renderAsync();
-  const target = fitForVision(original.width, original.height);
+  const target = fit(original.width, original.height);
   let image = original;
   if (target.width < original.width) {
     context.resize(target);
     image = await context.renderAsync();
   }
-  const saved = await image.saveAsync({ format: SaveFormat.JPEG, compress: 0.8, base64: true });
+  const saved = await image.saveAsync({ format: SaveFormat.JPEG, compress, base64: true });
   if (!saved.base64) throw new Error('Não foi possível processar a imagem.');
   return saved.base64;
 }

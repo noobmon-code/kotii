@@ -479,6 +479,86 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+\echo '• detalhes do item da lista e lixeira de fotos'
+do $$
+declare
+  l uuid := current_setting('test.list_a')::uuid;
+  hid text := public.current_household_id()::text;
+  item uuid;
+  token uuid;
+begin
+  insert into public.shopping_list_items (list_id, name, category, notes, priority, photo_path)
+    values (l, 'Sabão', 'limpeza', 'O de coco, embalagem azul', 'urgente', hid || '/item-sabao.jpg')
+    returning id, toggle_token into item, token;
+  assert (select priority from public.shopping_list_items where id = item) = 'urgente', 'priority saved';
+  assert (select priority from public.shopping_list_items where name = 'Arroz Tio João 5kg') = 'normal', 'priority defaults to normal';
+  begin
+    update public.shopping_list_items set priority = 'talvez' where id = item;
+    raise exception 'FAIL: unknown priority';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.shopping_list_items set notes = repeat('x', 501) where id = item;
+    raise exception 'FAIL: notes too long';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.shopping_list_items set photo_path = '00000000-0000-0000-0000-000000000000/item-x.jpg' where id = item;
+    raise exception 'FAIL: photo from another household folder';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.shopping_list_items set photo_path = hid || '/item-sub/x.jpg' where id = item;
+    raise exception 'FAIL: photo outside the household folder root';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.shopping_list_items set photo_path = hid || '/1727000000-abc123.jpg' where id = item;
+    raise exception 'FAIL: photo that is not an item photo (a receipt or document one)';
+  exception when check_violation then null;
+  end;
+  update public.shopping_list_items set notes = 'O de coco', priority = 'se_der' where id = item;
+  assert (select toggle_token from public.shopping_list_items where id = item) = token, 'editing details keeps the toggle token';
+  assert (select count(*) from public.storage_trash) = 0, 'no photo change, nothing in the trash';
+
+  update public.shopping_list_items set photo_path = hid || '/item-sabao2.jpg' where id = item;
+  assert (select path from public.storage_trash) = hid || '/item-sabao.jpg', 'replaced photo goes to the trash';
+  assert (select bucket from public.storage_trash) = 'documents', 'trash knows the bucket';
+  update public.shopping_list_items set checked_at = now() where id = item;
+  select toggle_token into token from public.shopping_list_items where id = item;
+  assert public.clear_checked_items(l, array[item], array[token]) = 1, 'item with photo leaves the cart';
+  assert exists (select 1 from public.storage_trash where path = hid || '/item-sabao2.jpg'), 'photo of a cleared item goes to the trash';
+
+  insert into public.shopping_list_items (list_id, name, photo_path) values (l, 'Café', hid || '/item-cafe.jpg') returning id into item;
+  delete from public.shopping_list_items where id = item;
+  assert exists (select 1 from public.storage_trash where path = hid || '/item-cafe.jpg'), 'photo of a removed item goes to the trash';
+
+  begin
+    insert into public.storage_trash (household_id, bucket, path) values (hid::uuid, 'documents', hid || '/x.jpg');
+    raise exception 'FAIL: trash written directly';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_b', false) \gset
+do $$
+begin
+  assert (select count(*) from public.storage_trash) = 3, 'the whole household sees the trash';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  assert (select count(*) from public.storage_trash) = 0, 'C sees no foreign trash';
+  delete from public.storage_trash;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  assert (select count(*) from public.storage_trash) = 3, 'C cannot empty a foreign trash';
+  delete from public.storage_trash;
+  assert (select count(*) from public.storage_trash) = 0, 'the household empties its trash';
+end $$;
+
+-- ---------------------------------------------------------------------------
 \echo '• saúde: pessoas da casa, vínculo com moradores e pets'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$
@@ -1267,6 +1347,9 @@ begin
     array(select toggle_token from public.shopping_list_items where checked_at is not null)
   ) = 1, 'F has purchase history';
 end $$;
+-- Item com foto: apagar a casa apaga a lista sem jogar a foto na lixeira (a limpeza da casa leva a pasta).
+insert into public.shopping_list_items (list_id, name, photo_path)
+  select id, 'Pão da F', public.current_household_id()::text || '/item-pao.jpg' from public.shopping_lists where name = 'Mercado da F';
 select set_config('request.jwt.claim.sub', :'user_g', false) \gset
 select public.join_household(:'invite_f', 'Gabi') \gset
 do $$
@@ -1337,6 +1420,7 @@ begin
   assert (select count(*) from public.purchase_history where name = 'Café da F') = 0, 'purchase history deleted';
   assert (select count(*) from public.households where name = 'Casa nova da F') = 1, 'F can start over';
   assert (select count(*) from public.household_file_cleanup) = 1, 'deleted household queued for photo cleanup';
+  assert (select count(*) from public.storage_trash) = 0, 'a deleted household leaves nothing in the photo trash';
 end $$;
 
 -- Sem os segredos do Vault, o job da limpeza falha com a instrução em vez de chamar uma URL nula.

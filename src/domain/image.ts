@@ -9,3 +9,11 @@ export function fitForVision(width: number, height: number): { width: number; he
   const scale = Math.min(1, MAX_LONG_EDGE / Math.max(width, height), Math.sqrt(MAX_PIXELS / (width * height)));
   return { width: Math.floor(width * scale), height: Math.floor(height * scale) };
 }
+
+/** Foto do produto na lista: basta para reconhecer a embalagem, e cabe guardada no aparelho. */
+export const PRODUCT_PHOTO_EDGE = 900;
+
+export function fitForProductPhoto(width: number, height: number): { width: number; height: number } {
+  const scale = Math.min(1, PRODUCT_PHOTO_EDGE / Math.max(width, height));
+  return { width: Math.floor(width * scale), height: Math.floor(height * scale) };
+}
