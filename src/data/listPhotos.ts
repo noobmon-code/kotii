@@ -129,6 +129,8 @@ export function usePendingPhotoUri(key: string | undefined) {
     queryKey: ['pendingPhoto', key],
     enabled: Boolean(key),
     staleTime: Infinity,
+    // A foto em base64 pesa: depois que ela sobe (ninguém mais a pede), sai da memória logo.
+    gcTime: 60_000,
     queryFn: () => pendingPhotoUri(key!),
   }).data;
 }

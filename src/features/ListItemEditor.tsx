@@ -108,7 +108,7 @@ export function ListItemEditor({
               </View>
             </Row>
             {shown ? (
-              <Button title="Tirar a foto do item" variant="ghost" compact onPress={() => setPhoto({ kind: 'remove' })} />
+              <Button title="Remover a foto" variant="ghost" compact onPress={() => setPhoto({ kind: 'remove' })} />
             ) : null}
           </View>
 
