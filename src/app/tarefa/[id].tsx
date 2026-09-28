@@ -44,7 +44,8 @@ function ChoreForm({ chore, equipmentId }: { chore?: Chore; equipmentId: string 
   const [due, setDue] = useState(formatBRDate(chore?.due_on ?? todayISO()));
   const [assignedTo, setAssignedTo] = useState<string | null>(chore?.assigned_to ?? null);
   const [kidId, setKidId] = useState<string | null>(chore?.kid_id ?? null);
-  const [points, setPoints] = useState(String(chore?.points || 10));
+  // Tarefa nova de criança começa valendo 10; a que já é de criança mantém o que tinha, mesmo 0.
+  const [points, setPoints] = useState(String(chore?.kid_id ? chore.points : 10));
   const kids = kidsOf(usePeople().data ?? []);
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
