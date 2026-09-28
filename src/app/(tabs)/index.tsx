@@ -188,6 +188,7 @@ export default function TodayScreen() {
 
   function addRestock(items: RestockItem[], open: boolean) {
     const keys = items.map((i) => normalizeSearch(i.name));
+    const release = () => setRestocked((prev) => new Set([...prev].filter((key) => !keys.includes(key))));
     setRestocked((prev) => new Set([...prev, ...keys]));
     addToList.mutate(
       {
@@ -197,10 +198,13 @@ export default function TodayScreen() {
       },
       {
         onSuccess: ({ id }) => {
+          // As listas recarregadas já trazem os itens (e os tiram daqui); se
+          // saírem da lista depois, voltam. A tela Hoje fica montada o tempo todo.
+          lists.refetch({ cancelRefetch: false }).finally(release);
           if (open) router.push({ pathname: '/lista/[id]', params: { id } });
         },
         onError: (err) => {
-          setRestocked((prev) => new Set([...prev].filter((key) => !keys.includes(key))));
+          release();
           onError(err);
         },
       },
