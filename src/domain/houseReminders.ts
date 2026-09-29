@@ -6,7 +6,7 @@
 import { addDays, diffDays, formatBRDate } from './dates';
 import { describeDocumentStatus } from './documents';
 import { formatBRL } from './money';
-import { WEATHER_REMINDER_TIME, type WeatherMorning } from './weather';
+import type { WeatherMorning } from './weather';
 
 export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'weather';
 
@@ -170,7 +170,7 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
 
   if (kinds.weather) {
     for (const morning of input.weather ?? []) {
-      add('weather', 'dia', morning.date, morning.title, morning.body, { at: WEATHER_REMINDER_TIME });
+      add('weather', 'dia', morning.date, morning.title, morning.body, { at: morning.time });
     }
   }
 

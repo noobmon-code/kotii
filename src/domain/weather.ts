@@ -471,21 +471,39 @@ export function describeSummary(summary: NonNullable<ReturnType<typeof daySummar
 // ---------------------------------------------------------------------------
 // Aviso da manhã
 
-export const WEATHER_REMINDER_TIME = '07:00';
+/** O aviso toca às 7h da casa (pelo fuso dela). */
 const WEATHER_REMINDER_HOUR = 7;
 
 export interface WeatherMorning {
+  /** Dia e hora em que o aviso toca, no relógio do aparelho (7h na casa). */
   date: string;
+  time: string;
   title: string;
   body: string;
 }
 
+const pad = (n: number) => String(n).padStart(2, '0');
+
 /**
- * Um aviso por manhã (hoje, se ainda não deu 7h, e os próximos dias da
- * previsão), com a dica mais importante do dia; sem dica que valha o aviso,
- * a manhã fica em silêncio.
+ * 7h do dia `date` na casa, no relógio do aparelho: quem está viajando
+ * recebe o aviso na manhã da casa. Sem o fuso, 7h do aparelho.
  */
-export function weatherMornings(forecast: Forecast, context: WeatherContext, today: string): WeatherMorning[] {
+function morningTrigger(date: string, offsetSeconds: number | null | undefined): { date: string; time: string } {
+  const [y, m, d] = date.split('-').map(Number);
+  const at =
+    typeof offsetSeconds === 'number'
+      ? new Date(Date.UTC(y, m - 1, d, WEATHER_REMINDER_HOUR) - offsetSeconds * 1000)
+      : new Date(y, m - 1, d, WEATHER_REMINDER_HOUR);
+  return { date: toISODate(at), time: `${pad(at.getHours())}:${pad(at.getMinutes())}` };
+}
+
+/**
+ * Um aviso por manhã (hoje na casa, se ainda não deu 7h lá, e os próximos
+ * dias da previsão), com a dica mais importante do dia; sem dica que valha
+ * o aviso, a manhã fica em silêncio. Os que já passaram, quem agenda descarta.
+ */
+export function weatherMornings(forecast: Forecast, context: WeatherContext, now: Date = new Date()): WeatherMorning[] {
+  const today = houseClock(forecast, now).date;
   const dates = [...new Set(forecast.hours.map((h) => h.time.slice(0, 10)))].filter((d) => d >= today).sort();
   return dates.flatMap((date) => {
     // O dia precisa estar inteiro na previsão, das 7h à noite.
@@ -494,7 +512,7 @@ export function weatherMornings(forecast: Forecast, context: WeatherContext, tod
     const [top] = weatherTips(forecast, { date, fromHour: WEATHER_REMINDER_HOUR, dayWord: 'Hoje', context }).filter(
       (tip) => tip.priority >= NOTIFY_MIN_PRIORITY,
     );
-    return top ? [{ date, title: top.title, body: top.body }] : [];
+    return top ? [{ ...morningTrigger(date, forecast.utcOffsetSeconds), title: top.title, body: top.body }] : [];
   });
 }
 

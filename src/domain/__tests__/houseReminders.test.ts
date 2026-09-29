@@ -108,10 +108,10 @@ describe('planHouseReminders', () => {
     expect(planHouseReminders({ ...base, vaccines: [{ ...vaccine, next_dose_on: '2026-05-01' }] })).toEqual([]);
   });
 
-  it('dica do clima às 7h de cada manhã; a de hoje só se ainda não deu 7h', () => {
+  it('dica do clima na hora marcada de cada manhã; a de hoje só se a hora ainda não passou', () => {
     const weather = [
-      { date: '2026-09-27', title: 'Hoje é dia de lavar roupa', body: 'Sem chuva até o fim da tarde e umidade de 60%.' },
-      { date: '2026-09-28', title: 'Roupa no varal? Recolha antes das 15h', body: 'A chuva deve chegar por volta das 15h.' },
+      { date: '2026-09-27', time: '07:00', title: 'Hoje é dia de lavar roupa', body: 'Sem chuva até o fim da tarde e umidade de 60%.' },
+      { date: '2026-09-28', time: '07:00', title: 'Roupa no varal? Recolha antes das 15h', body: 'A chuva deve chegar por volta das 15h.' },
     ];
     expect(planHouseReminders({ ...base, nowTime: '06:30', weather }).map((r) => [r.key, r.date, r.time, r.title])).toEqual([
       ['weather:dia:2026-09-27:07:00', '2026-09-27', '07:00', 'Hoje é dia de lavar roupa'],

@@ -222,22 +222,40 @@ describe('dicas do clima', () => {
 });
 
 describe('aviso da manhã', () => {
-  it('um por dia, com a dica mais importante; dia sem dica que valha o aviso fica em silêncio', () => {
+  // Instante em que o aviso toca (o dia e a hora vêm no relógio do aparelho).
+  const instant = (m: { date: string; time: string }) => new Date(`${m.date}T${m.time}`).toISOString();
+
+  it('um por dia, às 7h da casa, com a dica mais importante; dia sem dica que valha o aviso fica em silêncio', () => {
     const f = forecast({
       [TODAY]: calm,
       [TOMORROW]: (h) => (h === 12 ? { uv: 9, humidity: 90 } : { humidity: 90 }),
       '2026-10-01': (h) => (h >= 15 && h <= 17 ? { rain: 3, rainChance: 90 } : {}),
     });
-    expect(weatherMornings(f, home, TODAY)).toEqual([
-      { date: TODAY, title: 'Hoje é dia de lavar roupa', body: 'Sem chuva até o fim da tarde e umidade de 60%.' },
-      { date: '2026-10-01', title: 'Roupa no varal? Recolha antes das 15h', body: 'A chuva deve chegar por volta das 15h.' },
+    // 5h da manhã na casa (UTC-3).
+    const mornings = weatherMornings(f, home, new Date('2026-09-29T08:00:00Z'));
+    expect(mornings.map((m) => [instant(m), m.title, m.body])).toEqual([
+      ['2026-09-29T10:00:00.000Z', 'Hoje é dia de lavar roupa', 'Sem chuva até o fim da tarde e umidade de 60%.'],
+      ['2026-10-01T10:00:00.000Z', 'Roupa no varal? Recolha antes das 15h', 'A chuva deve chegar por volta das 15h.'],
     ]);
+  });
+
+  it('quem viaja recebe o aviso na manhã da casa, e os dias contam pelo calendário de lá', () => {
+    const f = forecast({ [TODAY]: calm, [TOMORROW]: calm });
+    // 23h30 na casa, já dia 30 em Lisboa: amanhã, na casa, ainda é dia 30.
+    const mornings = weatherMornings(f, home, new Date('2026-09-30T02:30:00Z'));
+    expect(mornings.map(instant)).toEqual(['2026-09-29T10:00:00.000Z', '2026-09-30T10:00:00.000Z']);
+  });
+
+  it('sem o fuso na previsão, 7h do aparelho', () => {
+    const f = forecast({ [TODAY]: calm });
+    f.utcOffsetSeconds = null;
+    expect(weatherMornings(f, home, new Date(2026, 8, 29, 5, 0))).toMatchObject([{ date: TODAY, time: '07:00' }]);
   });
 
   it('dias que já passaram e dia incompleto na previsão ficam de fora', () => {
     const f = forecast({ [YESTERDAY]: calm, [TODAY]: calm });
     f.hours = f.hours.filter((h) => h.time < `${TODAY}T12:00`);
-    expect(weatherMornings(f, home, TODAY)).toEqual([]);
+    expect(weatherMornings(f, home, new Date('2026-09-29T15:00:00Z'))).toEqual([]);
   });
 });
 
