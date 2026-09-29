@@ -508,6 +508,23 @@ export function useEditListItem(listId: string) {
   });
 }
 
+/**
+ * Tira da lista um item que ainda está para comprar. Se alguém o pôs no
+ * carrinho enquanto isso, não apaga: devolve false.
+ */
+export function useRemovePendingListItem(listId: string) {
+  const invalidate = useInvalidateLists(listId);
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const gone = unwrap(
+        await supabase.from('shopping_list_items').delete().eq('id', id).is('checked_at', null).select('id'),
+      ) as { id: string }[] | null;
+      return Boolean(gone?.length);
+    },
+    onSuccess: invalidate,
+  });
+}
+
 export function useDeleteListItem(listId: string) {
   const invalidate = useInvalidateLists(listId);
   return useMutation({

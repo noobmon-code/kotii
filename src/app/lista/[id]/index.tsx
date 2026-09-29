@@ -25,6 +25,7 @@ import {
   useListItems,
   useProducts,
   usePurchaseRecords,
+  useRemovePendingListItem,
   useShoppingList,
   useToggleListItem,
 } from '@/data/market';
@@ -74,6 +75,7 @@ export default function ShoppingListScreen() {
   const addItem = useAddListItem(id);
   const toggle = useToggleListItem(id);
   const remove = useDeleteListItem(id);
+  const removePending = useRemovePendingListItem(id);
   const clearChecked = useClearCheckedItems();
   // Limpar só com a fila da lista vazia: as marcações guardadas já chegaram
   // ao servidor e não há outro limpar andando.
@@ -212,12 +214,15 @@ export default function ShoppingListScreen() {
         return false;
       }
       // A foto que espera internet só sai depois que o item saiu: se apagar
-      // falhar (sem internet), o item fica com ela.
+      // falhar (sem internet), o item fica com ela. Só apaga o que ainda está
+      // para comprar: o que alguém pôs no carrinho enquanto isso fica.
+      let inCart = 0;
       for (const match of matches) {
-        await remove.mutateAsync(match.id);
-        dropPendingPhotos(queryClient, match.id);
+        if (await removePending.mutateAsync(match.id)) dropPendingPhotos(queryClient, match.id);
+        else inCart += 1;
       }
       emptyPhotoTrash();
+      if (inCart) notify('Já está no carrinho', `${matches[0].name} foi para o carrinho e continua lá.`);
       return true;
     } catch (err) {
       onError(err);
