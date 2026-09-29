@@ -108,6 +108,32 @@ describe('fila de fotos da lista', () => {
     expect(await pendingPhotoUri(key)).toBeNull();
   });
 
+  it('a foto que subiu já aparece no item da lista guardada, antes de a lista ser buscada de novo', async () => {
+    const key = await keepPendingPhoto('file://foto.jpg');
+    const queryClient = client();
+    // Como a lista na tela: fica no cache (o cliente de teste descarta o que ninguém observa).
+    queryClient.setQueryDefaults(['listItems'], { gcTime: Infinity });
+    queryClient.setQueryData(['listItems', 'mercado'], [{ id: 'sabao', photo_path: null }, { id: 'arroz', photo_path: null }]);
+    await send(queryClient, input(key));
+    await flush();
+    expect(queryClient.getQueryData(['listItems', 'mercado'])).toEqual([
+      { id: 'sabao', photo_path: `casa/item-${key}.jpg` },
+      { id: 'arroz', photo_path: null },
+    ]);
+  });
+
+  it('item que já saiu da lista não ganha foto na lista guardada', async () => {
+    const key = await keepPendingPhoto('file://foto.jpg');
+    server.updated = 0;
+    const queryClient = client();
+    // Como a lista na tela: fica no cache (o cliente de teste descarta o que ninguém observa).
+    queryClient.setQueryDefaults(['listItems'], { gcTime: Infinity });
+    queryClient.setQueryData(['listItems', 'mercado'], [{ id: 'sabao', photo_path: null }]);
+    await send(queryClient, input(key));
+    await flush();
+    expect(queryClient.getQueryData(['listItems', 'mercado'])).toEqual([{ id: 'sabao', photo_path: null }]);
+  });
+
   it('o envio repetido depois de a foto já ter subido só grava no item', async () => {
     const key = await keepPendingPhoto('file://foto.jpg');
     server.uploadStatus = 409;

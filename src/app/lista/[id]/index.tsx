@@ -15,6 +15,7 @@ import {
 } from '@/data/listPhotos';
 import {
   type EditItemInput,
+  listQueueBusy,
   newToggleToken,
   useAddListItem,
   useArchiveList,
@@ -25,6 +26,7 @@ import {
   useListItems,
   useProducts,
   usePurchaseRecords,
+  useRemovePendingListItem,
   useShoppingList,
   useToggleListItem,
 } from '@/data/market';
@@ -46,7 +48,7 @@ import { ShoppingGrid } from '@/features/ShoppingGrid';
 import { useAuth, useHouseholdId } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { UNITS, type Product, type ShoppingListItem, type Unit } from '@/lib/types';
-import { confirmAction, notify } from '@/ui/dialogs';
+import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
 import {
   Button,
   Card,
@@ -74,6 +76,7 @@ export default function ShoppingListScreen() {
   const addItem = useAddListItem(id);
   const toggle = useToggleListItem(id);
   const remove = useDeleteListItem(id);
+  const removePending = useRemovePendingListItem(id);
   const clearChecked = useClearCheckedItems();
   // Limpar só com a fila da lista vazia: as marcações guardadas já chegaram
   // ao servidor e não há outro limpar andando.
@@ -175,6 +178,67 @@ export default function ShoppingListScreen() {
     );
   }
 
+  /**
+   * Catálogo de itens comuns: um toque põe na lista, outro tira (o que está
+   * para comprar com esse nome). Item com descrição, foto ou prioridade
+   * pergunta antes de sair. Devolve se deu certo.
+   */
+  async function toggleCommon(item: CommonItem, add: boolean): Promise<boolean> {
+    try {
+      if (add) {
+        const product = productByName.get(normalizeSearch(item.name));
+        await addItem.mutateAsync({
+          name: product?.name ?? item.name,
+          category: product?.category ?? item.category,
+          productId: product?.id ?? null,
+          quantity: 1,
+          unit: item.unit,
+        });
+        return true;
+      }
+      // Como o Limpar: com marcações ainda indo para o servidor, a lista
+      // daqui pode não ser a de lá (um item devolvido do carrinho, por exemplo).
+      if (listQueueBusy(queryClient)) {
+        notify('Espere um instante', 'As marcações da lista ainda estão sendo enviadas. Tente tirar o item de novo depois.');
+        return false;
+      }
+      const key = normalizeSearch(item.name);
+      const matches = (items.data ?? []).filter((i) => !i.checked_at && normalizeSearch(i.name) === key);
+      if (!matches.length) return false;
+      // Foto que ainda espera internet também conta (o item ainda não tem photo_path).
+      const detailed = matches.some(
+        (i) => i.notes || i.photo_path || photos.pending.has(i.id) || (i.priority ?? 'normal') !== 'normal',
+      );
+      const confirmRemoval = (name: string, when: string) =>
+        askYesNo('Tirar da lista?', `${name} ${when} descrição, foto ou prioridade. Tirar da lista mesmo assim?`, 'Tirar', 'Manter');
+      if (detailed && !(await confirmRemoval(matches[0].name, 'tem'))) return false;
+      // A foto que espera internet só sai depois que o item saiu: se apagar
+      // falhar (sem internet), o item fica com ela. Só apaga o que ainda está
+      // para comprar e, sem a confirmação, o que ainda está sem detalhes: o
+      // que outra pessoa mudou enquanto isso não some sem perguntar.
+      let inCart = 0;
+      let kept = 0;
+      for (const match of matches) {
+        let result = await removePending.mutateAsync({ id: match.id, plainOnly: !detailed });
+        if (result === 'has_details') {
+          result = (await confirmRemoval(match.name, 'ganhou'))
+            ? await removePending.mutateAsync({ id: match.id, plainOnly: false })
+            : 'has_details';
+        }
+        if (result === 'removed') dropPendingPhotos(queryClient, match.id);
+        else if (result === 'in_cart') inCart += 1;
+        else if (result === 'has_details') kept += 1;
+      }
+      emptyPhotoTrash();
+      if (inCart) notify('Já está no carrinho', `${matches[0].name} foi para o carrinho e continua lá.`);
+      // Ficou algum na lista: a marca volta ao que a lista mostrar.
+      return kept === 0;
+    } catch (err) {
+      onError(err);
+      return false;
+    }
+  }
+
   // mutateAsync: com dois toques seguidos, os callbacks de mutate só valem
   // para o último, e uma falha do primeiro deixaria o item escondido.
   async function addRecent(item: Omit<RecentItem, 'times'>) {
@@ -259,9 +323,23 @@ export default function ShoppingListScreen() {
   const removeItem = (item: ShoppingListItem) =>
     confirmAction('Remover item', `Remover "${item.name}" da lista?`, 'Remover', () => {
       setEditing(null);
-      dropPendingPhotos(queryClient, item.id);
-      remove.mutate(item.id, { onSuccess: () => emptyPhotoTrash(), onError });
+      void removeWithPhoto(item.id);
     });
+
+  /**
+   * Apaga o item e só então a foto que esperava internet (se apagar falhar, o
+   * item fica com ela). mutateAsync: com duas remoções seguidas, os callbacks
+   * de mutate só valeriam para a última.
+   */
+  async function removeWithPhoto(itemId: string) {
+    try {
+      await remove.mutateAsync(itemId);
+      dropPendingPhotos(queryClient, itemId);
+      emptyPhotoTrash();
+    } catch (err) {
+      onError(err);
+    }
+  }
 
   /** Detalhes vão pela fila da lista (valem sem internet); a foto, pela fila de fotos. */
   async function saveDetails(item: ShoppingListItem, details: ItemDetails, photo: PhotoChange) {
@@ -433,7 +511,7 @@ export default function ShoppingListScreen() {
         visible={pickerOpen}
         listKind={list.data.kind}
         inList={pendingNames}
-        onAdd={(item) => addCommon(item)}
+        onToggle={toggleCommon}
         onClose={() => setPickerOpen(false)}
       />
       <Button

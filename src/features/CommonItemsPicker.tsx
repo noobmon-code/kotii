@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Modal, Pressable, ScrollView, SectionList, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -10,28 +10,40 @@ import { Badge, Button, CategoryIcon, Chip, Icon, IconButton, Text, TextField } 
 import { MAX_WIDTH, space, useColors } from '@/ui/theme';
 
 /**
- * Catálogo de itens comuns da casa, por categoria. Cada toque adiciona o item
- * à lista; o que já está na lista aparece marcado.
+ * Catálogo de itens comuns da casa, por categoria. Um toque põe o item na
+ * lista; outro toque tira. O que já está na lista aparece marcado.
  */
 export function CommonItemsPicker({
   visible,
   listKind,
   inList,
-  onAdd,
+  onToggle,
   onClose,
 }: {
   visible: boolean;
   listKind: string;
   /** Nomes normalizados (normalizeSearch) dos itens pendentes da lista. */
   inList: Set<string>;
-  onAdd: (item: CommonItem) => void;
+  /** Põe (add) ou tira o item da lista; false se não deu (erro ou a pessoa desistiu). */
+  onToggle: (item: CommonItem, add: boolean) => Promise<boolean>;
   onClose: () => void;
 }) {
   const c = useColors();
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<string | null>(null);
-  // Marca na hora, antes de a lista recarregar do servidor.
-  const [justAdded, setJustAdded] = useState<Set<string>>(new Set());
+  // Marca (ou desmarca) na hora, antes de a lista recarregar do servidor:
+  // nome -> se deve estar na lista. Sai quando a lista carregada confirma.
+  const [wanted, setWanted] = useState<Map<string, boolean>>(new Map());
+  // Dois toques no mesmo render não mandam duas vezes.
+  const sending = useRef(new Set<string>());
+
+  // A lista carregada mudou: o que ela já confirma deixa de valer.
+  const [seenList, setSeenList] = useState(inList);
+  if (seenList !== inList) {
+    setSeenList(inList);
+    const open = [...wanted].filter(([key, want]) => inList.has(key) !== want);
+    if (open.length !== wanted.size) setWanted(new Map(open));
+  }
 
   const groups = useMemo(() => commonItemsByCategory(listKind), [listKind]);
   const sections = useMemo(() => {
@@ -48,13 +60,25 @@ export function CommonItemsPicker({
 
   const isInList = (item: CommonItem) => {
     const key = normalizeSearch(item.name);
-    return inList.has(key) || justAdded.has(key);
+    return wanted.get(key) ?? inList.has(key);
   };
 
-  function add(item: CommonItem) {
-    if (isInList(item)) return;
-    setJustAdded((prev) => new Set(prev).add(normalizeSearch(item.name)));
-    onAdd(item);
+  async function toggle(item: CommonItem) {
+    const key = normalizeSearch(item.name);
+    // O toque anterior neste item ainda não chegou à lista: espera.
+    if (wanted.has(key) || sending.current.has(key)) return;
+    const add = !inList.has(key);
+    sending.current.add(key);
+    setWanted((prev) => new Map(prev).set(key, add));
+    const done = await onToggle(item, add).catch(() => false);
+    sending.current.delete(key);
+    if (!done) {
+      setWanted((prev) => {
+        const next = new Map(prev);
+        next.delete(key);
+        return next;
+      });
+    }
   }
 
   return (
@@ -65,7 +89,7 @@ export function CommonItemsPicker({
       onShow={() => {
         setQuery('');
         setCategory(null);
-        setJustAdded(new Set());
+        setWanted(new Map());
       }}>
       <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
         <Backdrop />
@@ -103,13 +127,15 @@ export function CommonItemsPicker({
               const added = isInList(item);
               return (
                 <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={added ? `${item.name} já está na lista` : `Adicionar ${item.name}`}
-                  onPress={() => add(item)}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: added }}
+                  accessibilityLabel={item.name}
+                  accessibilityHint={added ? 'Toque para tirar da lista' : 'Toque para pôr na lista'}
+                  onPress={() => toggle(item)}
                   style={({ pressed }) => [
                     styles.row,
                     { borderBottomColor: c.border },
-                    pressed && !added && { backgroundColor: c.surfaceAlt },
+                    pressed && { backgroundColor: c.surfaceAlt },
                   ]}>
                   <Text variant="body" color={added ? 'textMuted' : 'text'} style={styles.flex}>
                     {item.name}
