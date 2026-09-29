@@ -9,6 +9,7 @@ import { decode } from 'base64-arraybuffer';
 
 import { fitForProductPhoto } from '@/domain/image';
 import { supabase, unwrap } from '@/lib/supabase';
+import type { ShoppingListItem } from '@/lib/types';
 
 import { prepareImage } from './images';
 import { queuedDefaults, requireQueueSession } from './market';
@@ -57,11 +58,12 @@ export async function pendingPhotoUri(key: string): Promise<string | null> {
   return base64 ? `data:image/jpeg;base64,${base64}` : null;
 }
 
-async function uploadListPhoto({ itemId, householdId, userId, photoKey }: ListPhotoInput) {
+/** Sobe a foto e grava no item; devolve o caminho gravado (null se não gravou). */
+async function uploadListPhoto({ itemId, householdId, userId, photoKey }: ListPhotoInput): Promise<string | null> {
   await requireQueueSession(userId);
   const base64 = await AsyncStorage.getItem(PENDING_PREFIX + photoKey);
   // Já subiu numa tentativa anterior, ou o aparelho apagou os dados do app.
-  if (!base64) return;
+  if (!base64) return null;
   const path = `${householdId}/item-${photoKey}.jpg`;
   const { error } = await supabase.storage
     .from(LIST_PHOTO_BUCKET)
@@ -75,6 +77,7 @@ async function uploadListPhoto({ itemId, householdId, userId, photoKey }: ListPh
   // O item saiu da lista enquanto a foto esperava: o arquivo não serve mais.
   if (!updated.length) await supabase.storage.from(LIST_PHOTO_BUCKET).remove([path]);
   await AsyncStorage.removeItem(PENDING_PREFIX + photoKey);
+  return updated.length ? path : null;
 }
 
 /** O que a fila de fotos precisa para rodar um envio restaurado depois de o app reabrir. */
@@ -82,8 +85,17 @@ export function registerListPhotoMutations(queryClient: QueryClient) {
   queryClient.setMutationDefaults(LIST_PHOTO_KEY, {
     ...queuedDefaults(LIST_PHOTO_SCOPE),
     mutationFn: (input: ListPhotoInput) => uploadListPhoto(input),
-    onSuccess: (_: unknown, input: ListPhotoInput) => {
-      queryClient.invalidateQueries({ queryKey: ['listItems', input.listId] });
+    onSuccess: async (path: string | null, input: ListPhotoInput) => {
+      const key = ['listItems', input.listId];
+      // A foto sai da fila agora: a lista já passa a tê-la, sem esperar a
+      // busca (que pode demorar ou falhar), para o item não parecer sem foto.
+      if (path) {
+        await queryClient.cancelQueries({ queryKey: key });
+        queryClient.setQueryData<ShoppingListItem[]>(key, (items) =>
+          items?.map((i) => (i.id === input.itemId ? { ...i, photo_path: path } : i)),
+        );
+      }
+      queryClient.invalidateQueries({ queryKey: key });
       emptyPhotoTrash();
     },
   });
