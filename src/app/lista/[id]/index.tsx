@@ -211,9 +211,11 @@ export default function ShoppingListScreen() {
       ) {
         return false;
       }
+      // A foto que espera internet só sai depois que o item saiu: se apagar
+      // falhar (sem internet), o item fica com ela.
       for (const match of matches) {
-        dropPendingPhotos(queryClient, match.id);
         await remove.mutateAsync(match.id);
+        dropPendingPhotos(queryClient, match.id);
       }
       emptyPhotoTrash();
       return true;
@@ -307,8 +309,13 @@ export default function ShoppingListScreen() {
   const removeItem = (item: ShoppingListItem) =>
     confirmAction('Remover item', `Remover "${item.name}" da lista?`, 'Remover', () => {
       setEditing(null);
-      dropPendingPhotos(queryClient, item.id);
-      remove.mutate(item.id, { onSuccess: () => emptyPhotoTrash(), onError });
+      remove.mutate(item.id, {
+        onSuccess: () => {
+          dropPendingPhotos(queryClient, item.id);
+          emptyPhotoTrash();
+        },
+        onError,
+      });
     });
 
   /** Detalhes vão pela fila da lista (valem sem internet); a foto, pela fila de fotos. */
