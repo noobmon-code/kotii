@@ -105,6 +105,19 @@ export function useForecast(location: Place | null | undefined) {
   return useQuery(forecastQuery(location));
 }
 
+/**
+ * Busca de novo o local e a previsão (puxar para atualizar). Só a previsão
+ * em uso é buscada: sem local, nada a buscar.
+ */
+export function useRefreshWeather() {
+  const queryClient = useQueryClient();
+  return () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: LOCATION_KEY }),
+      queryClient.invalidateQueries({ queryKey: ['weather'] }),
+    ]);
+}
+
 // ---------------------------------------------------------------------------
 // Busca do lugar
 

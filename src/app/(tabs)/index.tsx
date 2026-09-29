@@ -15,6 +15,7 @@ import { useBills, useBudgets, useSpending } from '@/data/finance';
 import { useDocuments, useEquipmentList } from '@/data/house';
 import { useAddItemsToList, usePurchaseRecords, useShoppingLists } from '@/data/market';
 import { useMenu } from '@/data/menu';
+import { useRefreshWeather } from '@/data/weather';
 import { useReceipts } from '@/data/receipts';
 import { choreAssigneeLabel, choreStatus, describeChoreStatus } from '@/domain/chores';
 import { todayISO } from '@/domain/dates';
@@ -147,7 +148,12 @@ export default function TodayScreen() {
     ...health.queries,
   ];
   const refreshing = queries.some((q) => q.isRefetching);
-  const refresh = () => queries.forEach((q) => q.refetch());
+  // O clima fica fora de `queries` (não conta para "tudo em dia"), mas atualiza junto.
+  const refreshWeather = useRefreshWeather();
+  const refresh = () => {
+    queries.forEach((q) => q.refetch());
+    refreshWeather();
+  };
 
   const taken = new Set((doses.data ?? []).map((d) => doseKey(d.medication_id, d.scheduled_on, d.scheduled_time)));
   const pendingDoses = dosesForDay((medications.data ?? []).map(toSchedule), today, taken).filter(

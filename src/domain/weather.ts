@@ -4,7 +4,7 @@
 // as do dia; o aviso das 7h leva a mais importante (ver weatherMornings).
 
 import type { IconName } from './categories';
-import { addDays } from './dates';
+import { addDays, toISODate } from './dates';
 import { normalizeSearch } from './search';
 
 // ---------------------------------------------------------------------------
@@ -39,6 +39,8 @@ export interface WeatherDay {
 export interface Forecast {
   hours: WeatherHour[];
   days: WeatherDay[];
+  /** Fuso da casa (os horários acima são locais dela); null se a resposta não trouxe. */
+  utcOffsetSeconds: number | null;
 }
 
 /** Variáveis pedidas ao Open-Meteo (a resposta vem nestes nomes). */
@@ -71,7 +73,7 @@ function times(block: unknown): string[] {
 
 /** Resposta do Open-Meteo (horários locais, timezone=auto) na forma que as regras usam. */
 export function parseForecast(json: unknown): Forecast {
-  const { hourly, daily } = (json ?? {}) as { hourly?: unknown; daily?: unknown };
+  const { hourly, daily, utc_offset_seconds: offset } = (json ?? {}) as { hourly?: unknown; daily?: unknown; utc_offset_seconds?: unknown };
   const hourTimes = times(hourly);
   const [temp, humidity, rainChance, rain, gusts, uv, code] = FORECAST_HOURLY.map((key) => numbers(hourly, key, hourTimes.length));
   const dayTimes = times(daily);
@@ -88,7 +90,20 @@ export function parseForecast(json: unknown): Forecast {
       code: code[i],
     })),
     days: dayTimes.map((date, i) => ({ date, max: max[i], min: min[i], rain: dayRain[i], rainChance: dayChance[i] })),
+    utcOffsetSeconds: typeof offset === 'number' && Number.isFinite(offset) ? offset : null,
   };
+}
+
+/**
+ * Dia e hora de agora na casa, pelo fuso da previsão: quem está viajando, ou
+ * casa em outro fuso (Manaus, Rio Branco), vê as dicas do dia certo de lá.
+ * Sem o fuso, vale o do aparelho.
+ */
+export function houseClock(forecast: Forecast, now: Date = new Date()): { date: string; hour: number } {
+  // Previsão guardada antes de o fuso ser lido não tem o campo.
+  if (typeof forecast.utcOffsetSeconds !== 'number') return { date: toISODate(now), hour: now.getHours() };
+  const local = new Date(now.getTime() + forecast.utcOffsetSeconds * 1000);
+  return { date: local.toISOString().slice(0, 10), hour: local.getUTCHours() };
 }
 
 // ---------------------------------------------------------------------------

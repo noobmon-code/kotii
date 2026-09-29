@@ -2,6 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 
 import {
   daySummary,
+  houseClock,
   describeSummary,
   isWateringChore,
   maskCep,
@@ -40,7 +41,7 @@ function forecast(days: Record<string, (hour: number) => Partial<WeatherHour>>):
       ...change(hour),
     })),
   );
-  return { hours, days: [] };
+  return { hours, days: [], utcOffsetSeconds: -10800 };
 }
 
 const calm = () => ({});
@@ -75,11 +76,12 @@ describe('previsão do Open-Meteo', () => {
       { time: '2026-09-29T01:00', temp: null, humidity: 82, rainChance: null, rain: 0.4, gusts: 18, uv: 0, code: 61 },
     ]);
     expect(parsed.days).toEqual([{ date: '2026-09-29', max: 30.2, min: 18, rain: 18.4, rainChance: 70 }]);
+    expect(parsed.utcOffsetSeconds).toBe(-10800);
   });
 
   it('resposta sem dados vira previsão vazia', () => {
-    expect(parseForecast(null)).toEqual({ hours: [], days: [] });
-    expect(parseForecast({ error: true, reason: 'x' })).toEqual({ hours: [], days: [] });
+    expect(parseForecast(null)).toEqual({ hours: [], days: [], utcOffsetSeconds: null });
+    expect(parseForecast({ error: true, reason: 'x' })).toEqual({ hours: [], days: [], utcOffsetSeconds: null });
   });
 });
 
@@ -314,5 +316,22 @@ describe('resumo do dia', () => {
     f.days = [{ date: TODAY, max: 31.4, min: 18.6, rain: 0.2, rainChance: 10 }];
     expect(describeSummary(daySummary(f, TODAY)!)).toBe('Máx 31° · mín 19° · sem chuva');
     expect(daySummary(f, TOMORROW)).toBeNull();
+  });
+});
+
+describe('dia e hora na casa', () => {
+  const at = new Date('2026-09-30T02:30:00Z');
+  it('pelo fuso da previsão, e não pelo do celular', () => {
+    expect(houseClock({ hours: [], days: [], utcOffsetSeconds: -10800 }, at)).toEqual({ date: '2026-09-29', hour: 23 });
+    // Manaus, uma hora a menos que Brasília.
+    expect(houseClock({ hours: [], days: [], utcOffsetSeconds: -14400 }, at)).toEqual({ date: '2026-09-29', hour: 22 });
+    expect(houseClock({ hours: [], days: [], utcOffsetSeconds: 3600 }, at)).toEqual({ date: '2026-09-30', hour: 3 });
+  });
+
+  it('sem o fuso, vale o do aparelho', () => {
+    const now = new Date(2026, 8, 29, 14, 10);
+    expect(houseClock({ hours: [], days: [], utcOffsetSeconds: null }, now)).toEqual({ date: '2026-09-29', hour: 14 });
+    // Previsão guardada no aparelho antes de o fuso ser lido.
+    expect(houseClock({ hours: [], days: [] } as unknown as Forecast, now)).toEqual({ date: '2026-09-29', hour: 14 });
   });
 });

@@ -6,11 +6,12 @@ import {
   findPlaceByCep,
   findPlaceByDevice,
   useClearHouseholdLocation,
+  useRefreshWeather,
   useSaveHouseholdLocation,
   type HouseholdLocation,
 } from '@/data/weather';
 import { addDays, todayISO } from '@/domain/dates';
-import { daySummary, describeSummary, maskCep, normalizeCep, type WeatherTip } from '@/domain/weather';
+import { daySummary, describeSummary, houseClock, maskCep, normalizeCep, type WeatherTip } from '@/domain/weather';
 import { useHouseWeather } from '@/features/useHouseWeather';
 import { remindersSupported } from '@/lib/reminders';
 import { errorMessage } from '@/lib/supabase';
@@ -25,6 +26,7 @@ export default function WeatherScreen() {
   const { location, forecast, tipsFor } = useHouseWeather(today);
   const save = useSaveHouseholdLocation();
   const clear = useClearHouseholdLocation();
+  const refreshWeather = useRefreshWeather();
   const [cep, setCep] = useState('');
   const [searching, setSearching] = useState<'cep' | 'gps' | null>(null);
 
@@ -46,13 +48,15 @@ export default function WeatherScreen() {
     }
   }
 
+  // Hoje e amanhã da casa (pelo fuso dela), e não do celular.
+  const clock = forecast.data ? houseClock(forecast.data, now) : { date: today, hour: now.getHours() };
   const days = [
-    { date: today, fromHour: now.getHours(), dayWord: 'Hoje' },
-    { date: addDays(today, 1), fromHour: 7, dayWord: 'Amanhã' },
+    { date: clock.date, fromHour: clock.hour, dayWord: 'Hoje' },
+    { date: addDays(clock.date, 1), fromHour: 7, dayWord: 'Amanhã' },
   ];
 
   return (
-    <Screen refreshing={forecast.isRefetching} onRefresh={() => forecast.refetch()}>
+    <Screen refreshing={location.isRefetching || forecast.isRefetching} onRefresh={refreshWeather}>
       <Section title="Onde fica a casa">
         <Card style={styles.card}>
           {location.isPending ? (

@@ -10,7 +10,7 @@ import { forecastQuery, useForecast, useHouseholdLocation, type HouseholdLocatio
 import { todayISO, toISODate } from '@/domain/dates';
 import { pendingNextDoses } from '@/domain/health';
 import { currentTimeHHMM } from '@/domain/medications';
-import { weatherContext, weatherMornings, type Forecast } from '@/domain/weather';
+import { houseClock, weatherContext, weatherMornings, type Forecast } from '@/domain/weather';
 import { anyHouseReminderKind, syncHouseReminders, syncReminders, type HouseReminderData } from '@/lib/reminders';
 
 type Rows<T extends () => { data?: unknown }> = NonNullable<ReturnType<T>['data']>;
@@ -67,7 +67,8 @@ function toHouseReminderData(
       location === null
         ? []
         : location && forecast && people && equipment
-          ? weatherMornings(forecast, weatherContext(people, chores, equipment, today), today)
+          ? // As manhãs a partir de hoje na casa (pelo fuso dela).
+            weatherMornings(forecast, weatherContext(people, chores, equipment, today), houseClock(forecast).date)
           : undefined,
   };
 }

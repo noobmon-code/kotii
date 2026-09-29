@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { todayISO } from '@/domain/dates';
-import { daySummary, describeSummary, tipsDay } from '@/domain/weather';
+import { daySummary, describeSummary, houseClock, tipsDay } from '@/domain/weather';
 import { Button, Card, Icon, IconBadge, Row, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
@@ -34,7 +34,9 @@ export function WeatherCard({ now }: { now: Date }) {
   }
   if (!location.data || !forecast.data) return null;
 
-  const day = tipsDay(today, now.getHours());
+  // O dia e a hora da casa: quem viaja vê as dicas do dia de lá.
+  const clock = houseClock(forecast.data, now);
+  const day = tipsDay(clock.date, clock.hour);
   const [top, ...more] = tipsFor(day);
   const summary = daySummary(forecast.data, day.date);
 
