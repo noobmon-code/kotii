@@ -18,8 +18,20 @@ const WEEK = 1000 * 60 * 60 * 24 * 7;
 
 // O que vai para o aparelho: o mínimo para usar a lista offline (a despensa,
 // para o limpar do carrinho sem internet não repetir o que já está nela; os
-// links das fotos dos itens, para vê-las sem internet).
-const PERSISTED = new Set(['household', 'lists', 'list', 'listItems', 'products', 'purchaseRecords', 'pantry', 'listPhotos']);
+// links das fotos dos itens, para vê-las sem internet) e o clima da casa
+// (a dica da tela Hoje e o aviso das 7h saem da última previsão).
+const PERSISTED = new Set([
+  'household',
+  'lists',
+  'list',
+  'listItems',
+  'products',
+  'purchaseRecords',
+  'pantry',
+  'listPhotos',
+  'householdLocation',
+  'weather',
+]);
 
 export const queryClient = new QueryClient({
   defaultOptions: {

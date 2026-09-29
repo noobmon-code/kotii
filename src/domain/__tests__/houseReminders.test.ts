@@ -2,7 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 
 import { HOUSE_REMINDER_LIMIT, planHouseReminders, type HouseReminderInput } from '../houseReminders';
 
-const all = { bills: true, documents: true, chores: true, appointments: true, vaccines: true };
+const all = { bills: true, documents: true, chores: true, appointments: true, vaccines: true, weather: true };
 const base: HouseReminderInput = { kinds: all, bills: [], documents: [], chores: [], today: '2026-09-27', nowTime: '08:00' };
 const bill = { id: 'b1', name: 'Luz', amount: 230, next_due_on: '2026-10-05', active: true, autopay: false };
 const doc = { id: 'd1', title: 'Passaporte — Ana', expires_on: '2026-10-20', remind_days: 15 };
@@ -73,7 +73,7 @@ describe('planHouseReminders', () => {
   });
 
   it('só o que a pessoa escolheu, dentro de 30 dias e com limite', () => {
-    const kinds = { bills: false, documents: false, chores: true, appointments: false, vaccines: false };
+    const kinds = { bills: false, documents: false, chores: true, appointments: false, vaccines: false, weather: false };
     expect(planHouseReminders({ ...base, kinds, bills: [bill], documents: [doc], chores: [chore] })).toHaveLength(1);
     expect(planHouseReminders({ ...base, chores: [{ ...chore, due_on: '2026-11-30' }] })).toEqual([]);
     const many = Array.from({ length: 40 }, (_, i) => ({ ...chore, id: `c${i}` }));
@@ -106,5 +106,18 @@ describe('planHouseReminders', () => {
     const warned = { ...base, vaccines: [{ ...vaccine, next_dose_on: '2026-09-01' }], overdueWarned: ['v1:2026-09-01'] };
     expect(planHouseReminders(warned)).toEqual([]);
     expect(planHouseReminders({ ...base, vaccines: [{ ...vaccine, next_dose_on: '2026-05-01' }] })).toEqual([]);
+  });
+
+  it('dica do clima às 7h de cada manhã; a de hoje só se ainda não deu 7h', () => {
+    const weather = [
+      { date: '2026-09-27', title: 'Hoje é dia de lavar roupa', body: 'Sem chuva até o fim da tarde e umidade de 60%.' },
+      { date: '2026-09-28', title: 'Roupa no varal? Recolha antes das 15h', body: 'A chuva deve chegar por volta das 15h.' },
+    ];
+    expect(planHouseReminders({ ...base, nowTime: '06:30', weather }).map((r) => [r.key, r.date, r.time, r.title])).toEqual([
+      ['weather:dia:2026-09-27:07:00', '2026-09-27', '07:00', 'Hoje é dia de lavar roupa'],
+      ['weather:dia:2026-09-28:07:00', '2026-09-28', '07:00', 'Roupa no varal? Recolha antes das 15h'],
+    ]);
+    expect(planHouseReminders({ ...base, weather }).map((r) => r.date)).toEqual(['2026-09-28']);
+    expect(planHouseReminders({ ...base, kinds: { ...all, weather: false }, weather })).toEqual([]);
   });
 });

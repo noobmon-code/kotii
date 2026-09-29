@@ -36,6 +36,7 @@ import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { InstallAppCard } from '@/features/InstallAppCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useJustListed } from '@/features/RecentPurchases';
+import { WeatherCard } from '@/features/WeatherCard';
 import { useHousehold } from '@/lib/auth';
 import type { Bill } from '@/lib/types';
 import { errorMessage } from '@/lib/supabase';
@@ -259,6 +260,8 @@ export default function TodayScreen() {
         </View>
         <SkyArt period={period} size={104} />
       </View>
+
+      <WeatherCard now={now} />
 
       <InstallAppCard />
 

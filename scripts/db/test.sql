@@ -1098,6 +1098,46 @@ begin
   assert (select count(*) from public.menu_items) = 1, 'B sees the household menu, untouched by C';
 end $$;
 
+\echo '• local da casa (dicas do clima)'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  insert into public.household_location (label, latitude, longitude, source)
+    values ('Pinheiros, São Paulo', -23.56728, -46.70194, 'cep');
+  assert (select latitude from public.household_location) = -23.57, 'coordinates kept at about 1 km';
+  begin
+    insert into public.household_location (label, latitude, longitude, source) values ('Outro', -15.8, -47.9, 'gps');
+    raise exception 'FAIL: second location for the household';
+  exception when unique_violation then null;
+  end;
+  begin
+    update public.household_location set source = 'mapa';
+    raise exception 'FAIL: unknown source';
+  exception when check_violation then null;
+  end;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_b', false) \gset
+do $$
+begin
+  insert into public.household_location (label, latitude, longitude, source) values ('Asa Sul, Brasília', -15.83, -47.93, 'gps')
+    on conflict (household_id) do update set label = excluded.label, latitude = excluded.latitude,
+      longitude = excluded.longitude, source = excluded.source;
+  assert (select label from public.household_location) = 'Asa Sul, Brasília', 'any member changes the location';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  assert (select count(*) from public.household_location) = 0, 'C sees no foreign location';
+  update public.household_location set label = 'Invadido';
+  delete from public.household_location;
+  insert into public.household_location (label, latitude, longitude, source) values ('Casa C', -22.9, -43.2, 'cep');
+end $$;
+select set_config('request.jwt.claim.sub', :'user_b', false) \gset
+do $$
+begin
+  assert (select label from public.household_location) = 'Asa Sul, Brasília', 'B keeps the location, untouched by C';
+end $$;
+
 \echo '• limite de uso da IA'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$

@@ -1,7 +1,8 @@
 // Lembretes como notificações locais. Ficam no aparelho: cada pessoa da
 // família escolhe de quais remédios quer ser lembrada (só tocam dentro do
 // período do tratamento, ver planReminders) e quais avisos da casa quer
-// receber: contas, documentos, tarefas, consultas e vacinas (ver planHouseReminders).
+// receber: contas, documentos, tarefas, consultas, vacinas e a dica do clima
+// da manhã (ver planHouseReminders).
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { isRunningInExpoGo } from 'expo';
@@ -241,10 +242,14 @@ const NO_HOUSE_KINDS: Record<HouseReminderKind, boolean> = {
   chores: false,
   appointments: false,
   vaccines: false,
+  weather: false,
 };
 
-/** Consultas ou vacinas undefined: ainda não carregaram (os avisos delas já agendados ficam como estão). */
-export type HouseReminderData = Pick<HouseReminderInput, 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines'>;
+/**
+ * Consultas, vacinas ou clima undefined: ainda não carregaram (os avisos
+ * deles já agendados ficam como estão).
+ */
+export type HouseReminderData = Pick<HouseReminderInput, 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'weather'>;
 
 /** Avisos da casa agendados: o tipo de cada id, para desligar um tipo sem refazer os outros. */
 interface StoredHouseReminders extends StoredReminders {
@@ -331,11 +336,12 @@ export async function syncHouseReminders(
     const Notifications = notifications();
     const kinds = await getHouseReminderKinds();
     const previous = await readHouseScheduled();
-    // Consultas ou vacinas que não carregaram: os avisos delas já agendados
-    // ficam como estão, e os outros tipos seguem normais.
+    // Consultas, vacinas ou previsão que não carregaram: os avisos delas já
+    // agendados ficam como estão, e os outros tipos seguem normais.
     const unknown = new Set<HouseReminderKind>([
       ...(data.appointments === undefined ? (['appointments'] as const) : []),
       ...(data.vaccines === undefined ? (['vaccines'] as const) : []),
+      ...(data.weather === undefined ? (['weather'] as const) : []),
     ]);
     // Aviso de atraso cuja hora já passou tocou: aquela conta (ou vacina) não
     // avisa de novo. Guarda só as que continuam atrasadas (paga, o vencimento
@@ -367,6 +373,7 @@ export async function syncHouseReminders(
       ...kinds,
       appointments: kinds.appointments && !unknown.has('appointments'),
       vaccines: kinds.vaccines && !unknown.has('vaccines'),
+      weather: kinds.weather && !unknown.has('weather'),
     };
     const plan = planHouseReminders({ ...data, kinds: planKinds, today, nowTime, limit, overdueWarned: warned });
     const overdue = [
@@ -375,7 +382,7 @@ export async function syncHouseReminders(
     ];
     const signature = JSON.stringify(plan) + (unknown.size ? `|sem:${[...unknown].join(',')}` : '');
     if (previous?.signature === signature) {
-      // Nada a refazer, mas avisos de saúde que já tocaram saem da lista guardada.
+      // Nada a refazer, mas avisos de saúde ou do clima que já tocaram saem da lista guardada.
       const keep = previous.ids.flatMap((id, i) => {
         const kind = previous.kinds?.[i];
         return kind && unknown.has(kind) && !heldIds.has(id) ? [] : [{ id, kind }];

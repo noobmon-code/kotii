@@ -193,6 +193,7 @@ describe('house reminders', () => {
         chores: false,
         appointments: false,
         vaccines: false,
+        weather: false,
       });
     });
   });
@@ -288,6 +289,21 @@ describe('house reminders', () => {
       // Voltaram: refaz tudo com os dados.
       await reminders.syncHouseReminders({ ...moved, vaccines: [], appointments: [] }, today);
       expect(kindsOf(live)).toEqual(['bills']);
+    });
+  });
+
+  it('dica do clima às 7h; sem a previsão (sem internet), a já agendada fica', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('weather', true);
+      const weather = [{ date: '2026-09-28', title: 'Hoje é dia de lavar roupa', body: 'Sem chuva até o fim da tarde.' }];
+      await reminders.syncHouseReminders({ ...data, weather }, today);
+      const [id] = [...live.entries()].filter(([, r]) => r.content.data.reminder.startsWith('weather:')).map(([key]) => key);
+      expect(live.get(id)?.content.data.reminder).toBe('weather:dia:2026-09-28:07:00');
+      await reminders.syncHouseReminders(data, today);
+      expect(live.has(id)).toBe(true);
+      // Casa sem local definido: nada do clima.
+      await reminders.syncHouseReminders({ ...data, weather: [] }, today);
+      expect(kindsOf(live)).toEqual([]);
     });
   });
 
