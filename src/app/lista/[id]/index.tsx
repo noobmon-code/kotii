@@ -46,7 +46,7 @@ import { ShoppingGrid } from '@/features/ShoppingGrid';
 import { useAuth, useHouseholdId } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { UNITS, type Product, type ShoppingListItem, type Unit } from '@/lib/types';
-import { confirmAction, notify } from '@/ui/dialogs';
+import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
 import {
   Button,
   Card,
@@ -173,6 +173,51 @@ export default function ShoppingListScreen() {
       },
       { onSuccess: fromForm ? resetForm : undefined, onError },
     );
+  }
+
+  /**
+   * Catálogo de itens comuns: um toque põe na lista, outro tira (o que está
+   * para comprar com esse nome). Item com descrição, foto ou prioridade
+   * pergunta antes de sair. Devolve se deu certo.
+   */
+  async function toggleCommon(item: CommonItem, add: boolean): Promise<boolean> {
+    try {
+      if (add) {
+        const product = productByName.get(normalizeSearch(item.name));
+        await addItem.mutateAsync({
+          name: product?.name ?? item.name,
+          category: product?.category ?? item.category,
+          productId: product?.id ?? null,
+          quantity: 1,
+          unit: item.unit,
+        });
+        return true;
+      }
+      const key = normalizeSearch(item.name);
+      const matches = (items.data ?? []).filter((i) => !i.checked_at && normalizeSearch(i.name) === key);
+      if (!matches.length) return false;
+      const detailed = matches.some((i) => i.notes || i.photo_path || (i.priority ?? 'normal') !== 'normal');
+      if (
+        detailed &&
+        !(await askYesNo(
+          'Tirar da lista?',
+          `${matches[0].name} tem descrição, foto ou prioridade. Tirar da lista mesmo assim?`,
+          'Tirar',
+          'Manter',
+        ))
+      ) {
+        return false;
+      }
+      for (const match of matches) {
+        dropPendingPhotos(queryClient, match.id);
+        await remove.mutateAsync(match.id);
+      }
+      emptyPhotoTrash();
+      return true;
+    } catch (err) {
+      onError(err);
+      return false;
+    }
   }
 
   // mutateAsync: com dois toques seguidos, os callbacks de mutate só valem
@@ -433,7 +478,7 @@ export default function ShoppingListScreen() {
         visible={pickerOpen}
         listKind={list.data.kind}
         inList={pendingNames}
-        onAdd={(item) => addCommon(item)}
+        onToggle={toggleCommon}
         onClose={() => setPickerOpen(false)}
       />
       <Button
