@@ -126,9 +126,25 @@ const OSM_URL = 'https://nominatim.openstreetmap.org';
 /** O OpenStreetMap pede que o app se identifique; no navegador, quem identifica é o site. */
 const osmInit: RequestInit = Platform.OS === 'web' ? {} : { headers: { 'User-Agent': 'Nooky/1.0 (app da casa)' } };
 
+/** O Nominatim aceita no máximo uma busca por segundo: as buscas saem em fila, espaçadas. */
+const OSM_GAP_MS = 1100;
+let osmQueue: Promise<unknown> = Promise.resolve();
+let osmLastAt = 0;
+
+function osmFetch(url: string): Promise<Response> {
+  const run = osmQueue.then(async () => {
+    const wait = osmLastAt + OSM_GAP_MS - Date.now();
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    osmLastAt = Date.now();
+    return fetch(url, osmInit);
+  });
+  osmQueue = run.catch(() => undefined);
+  return run;
+}
+
 async function osmSearch(text: string): Promise<OsmPlace[]> {
   const params = query({ q: text, format: 'jsonv2', addressdetails: '1', countrycodes: 'br', limit: '5', 'accept-language': 'pt-BR' });
-  const response = await fetch(`${OSM_URL}/search?${params}`, osmInit);
+  const response = await osmFetch(`${OSM_URL}/search?${params}`);
   if (!response.ok) throw new Error('Não foi possível achar o bairro no mapa agora.');
   return (await response.json()) as OsmPlace[];
 }
@@ -142,7 +158,7 @@ async function osmReverse(latitude: number, longitude: number): Promise<OsmPlace
     format: 'jsonv2',
     'accept-language': 'pt-BR',
   });
-  const response = await fetch(`${OSM_URL}/reverse?${params}`, osmInit);
+  const response = await osmFetch(`${OSM_URL}/reverse?${params}`);
   if (!response.ok) throw new Error('Não foi possível achar o bairro no mapa agora.');
   return ((await response.json()) as OsmPlace).address;
 }

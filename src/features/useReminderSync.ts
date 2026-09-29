@@ -63,6 +63,7 @@ function toHouseReminderData(
       person: personName(v.person_id),
       next_dose_on: v.next_dose_on,
     })),
+    weatherPlace: location ? `${location.latitude},${location.longitude}` : location,
     weather:
       location === null
         ? []

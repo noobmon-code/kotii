@@ -247,9 +247,13 @@ const NO_HOUSE_KINDS: Record<HouseReminderKind, boolean> = {
 
 /**
  * Consultas, vacinas ou clima undefined: ainda não carregaram (os avisos
- * deles já agendados ficam como estão).
+ * deles já agendados ficam como estão). `weatherPlace`: de onde é a previsão
+ * (as coordenadas do local da casa; null sem local; undefined se o local não
+ * carregou).
  */
-export type HouseReminderData = Pick<HouseReminderInput, 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'weather'>;
+export type HouseReminderData = Pick<HouseReminderInput, 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'weather'> & {
+  weatherPlace?: string | null;
+};
 
 /** Avisos da casa agendados: o tipo de cada id, para desligar um tipo sem refazer os outros. */
 interface StoredHouseReminders extends StoredReminders {
@@ -258,6 +262,8 @@ interface StoredHouseReminders extends StoredReminders {
   overdue?: { key: string; at: string; kind?: HouseReminderKind }[];
   /** Atrasos (de conta ou vacina) que já tocaram neste aparelho: não avisam de novo. */
   warned?: string[];
+  /** De onde é a previsão dos avisos do clima agendados. */
+  weatherPlace?: string | null;
 }
 
 async function readHouseScheduled(): Promise<StoredHouseReminders | null> {
@@ -336,12 +342,21 @@ export async function syncHouseReminders(
     const Notifications = notifications();
     const kinds = await getHouseReminderKinds();
     const previous = await readHouseScheduled();
+    // A casa mudou de local e a previsão do novo ainda não veio (sem
+    // internet): os avisos do clima do lugar antigo saem, em vez de ficar.
+    const moved =
+      data.weather === undefined &&
+      data.weatherPlace !== undefined &&
+      previous?.weatherPlace !== undefined &&
+      data.weatherPlace !== previous.weatherPlace;
+    const weather = moved ? [] : data.weather;
+    const weatherPlace = weather !== undefined ? data.weatherPlace : previous?.weatherPlace;
     // Consultas, vacinas ou previsão que não carregaram: os avisos delas já
     // agendados ficam como estão, e os outros tipos seguem normais.
     const unknown = new Set<HouseReminderKind>([
       ...(data.appointments === undefined ? (['appointments'] as const) : []),
       ...(data.vaccines === undefined ? (['vaccines'] as const) : []),
-      ...(data.weather === undefined ? (['weather'] as const) : []),
+      ...(weather === undefined ? (['weather'] as const) : []),
     ]);
     // Aviso de atraso cuja hora já passou tocou: aquela conta (ou vacina) não
     // avisa de novo. Guarda só as que continuam atrasadas (paga, o vencimento
@@ -375,7 +390,7 @@ export async function syncHouseReminders(
       vaccines: kinds.vaccines && !unknown.has('vaccines'),
       weather: kinds.weather && !unknown.has('weather'),
     };
-    const plan = planHouseReminders({ ...data, kinds: planKinds, today, nowTime, limit, overdueWarned: warned });
+    const plan = planHouseReminders({ ...data, weather, kinds: planKinds, today, nowTime, limit, overdueWarned: warned });
     const overdue = [
       ...(previous?.overdue ?? []).filter((o) => o.kind && unknown.has(o.kind)),
       ...plan.flatMap((r) => (r.overdue ? [{ key: r.overdue, at: `${r.date}T${r.time}`, kind: r.kind }] : [])),
@@ -387,7 +402,11 @@ export async function syncHouseReminders(
         const kind = previous.kinds?.[i];
         return kind && unknown.has(kind) && !heldIds.has(id) ? [] : [{ id, kind }];
       });
-      if (keep.length !== previous.ids.length || JSON.stringify(previous.warned ?? []) !== JSON.stringify(warned)) {
+      if (
+        keep.length !== previous.ids.length ||
+        JSON.stringify(previous.warned ?? []) !== JSON.stringify(warned) ||
+        previous.weatherPlace !== weatherPlace
+      ) {
         await AsyncStorage.setItem(
           HOUSE_SCHEDULED_KEY,
           JSON.stringify({
@@ -395,6 +414,7 @@ export async function syncHouseReminders(
             ids: keep.map((r) => r.id),
             kinds: previous.kinds ? keep.map((r) => r.kind!) : undefined,
             warned,
+            weatherPlace,
           } satisfies StoredHouseReminders),
         );
       }
@@ -425,6 +445,7 @@ export async function syncHouseReminders(
         overdue,
         warned,
         signature,
+        weatherPlace,
       } satisfies StoredHouseReminders),
     );
   });

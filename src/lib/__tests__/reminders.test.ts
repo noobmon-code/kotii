@@ -307,6 +307,24 @@ describe('house reminders', () => {
     });
   });
 
+  it('a casa mudou de local e a previsão nova não veio: os avisos do clima do lugar antigo saem', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('weather', true);
+      const weather = [{ date: '2026-09-28', title: 'Hoje é dia de lavar roupa', body: 'Sem chuva até o fim da tarde.' }];
+      await reminders.syncHouseReminders({ ...data, weather, weatherPlace: '-23.56,-46.69' }, today);
+      expect(kindsOf(live)).toEqual(['weather']);
+      // Mesmo lugar, previsão sem carregar: fica.
+      await reminders.syncHouseReminders({ ...data, weatherPlace: '-23.56,-46.69' }, today);
+      expect(kindsOf(live)).toEqual(['weather']);
+      // Outro lugar, previsão sem carregar: sai.
+      await reminders.syncHouseReminders({ ...data, weatherPlace: '-15.82,-47.9' }, today);
+      expect(kindsOf(live)).toEqual([]);
+      // A previsão do lugar novo chega: agenda de novo.
+      await reminders.syncHouseReminders({ ...data, weather, weatherPlace: '-15.82,-47.9' }, today);
+      expect(kindsOf(live)).toEqual(['weather']);
+    });
+  });
+
   it('fica com o espaço que os remédios deixam no teto do iPhone', async () => {
     await withHouse(async (reminders, { live }) => {
       for (let i = 0; i < 62; i++) live.set(`remedio${i}`, { content: { data: { reminder: `med:${i}` } } });
