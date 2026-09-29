@@ -196,7 +196,10 @@ export default function ShoppingListScreen() {
       const key = normalizeSearch(item.name);
       const matches = (items.data ?? []).filter((i) => !i.checked_at && normalizeSearch(i.name) === key);
       if (!matches.length) return false;
-      const detailed = matches.some((i) => i.notes || i.photo_path || (i.priority ?? 'normal') !== 'normal');
+      // Foto que ainda espera internet também conta (o item ainda não tem photo_path).
+      const detailed = matches.some(
+        (i) => i.notes || i.photo_path || photos.pending.has(i.id) || (i.priority ?? 'normal') !== 'normal',
+      );
       if (
         detailed &&
         !(await askYesNo(
