@@ -202,28 +202,30 @@ export default function ShoppingListScreen() {
       const detailed = matches.some(
         (i) => i.notes || i.photo_path || photos.pending.has(i.id) || (i.priority ?? 'normal') !== 'normal',
       );
-      if (
-        detailed &&
-        !(await askYesNo(
-          'Tirar da lista?',
-          `${matches[0].name} tem descrição, foto ou prioridade. Tirar da lista mesmo assim?`,
-          'Tirar',
-          'Manter',
-        ))
-      ) {
-        return false;
-      }
+      const confirmRemoval = (name: string, when: string) =>
+        askYesNo('Tirar da lista?', `${name} ${when} descrição, foto ou prioridade. Tirar da lista mesmo assim?`, 'Tirar', 'Manter');
+      if (detailed && !(await confirmRemoval(matches[0].name, 'tem'))) return false;
       // A foto que espera internet só sai depois que o item saiu: se apagar
       // falhar (sem internet), o item fica com ela. Só apaga o que ainda está
-      // para comprar: o que alguém pôs no carrinho enquanto isso fica.
+      // para comprar e, sem a confirmação, o que ainda está sem detalhes: o
+      // que outra pessoa mudou enquanto isso não some sem perguntar.
       let inCart = 0;
+      let kept = 0;
       for (const match of matches) {
-        if (await removePending.mutateAsync(match.id)) dropPendingPhotos(queryClient, match.id);
-        else inCart += 1;
+        let result = await removePending.mutateAsync({ id: match.id, plainOnly: !detailed });
+        if (result === 'has_details') {
+          result = (await confirmRemoval(match.name, 'ganhou'))
+            ? await removePending.mutateAsync({ id: match.id, plainOnly: false })
+            : 'has_details';
+        }
+        if (result === 'removed') dropPendingPhotos(queryClient, match.id);
+        else if (result === 'in_cart') inCart += 1;
+        else if (result === 'has_details') kept += 1;
       }
       emptyPhotoTrash();
       if (inCart) notify('Já está no carrinho', `${matches[0].name} foi para o carrinho e continua lá.`);
-      return true;
+      // Ficou algum na lista: a marca volta ao que a lista mostrar.
+      return kept === 0;
     } catch (err) {
       onError(err);
       return false;

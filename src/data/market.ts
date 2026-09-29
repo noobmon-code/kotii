@@ -508,18 +508,28 @@ export function useEditListItem(listId: string) {
   });
 }
 
+/** O que aconteceu ao tirar um item pelo catálogo. */
+export type RemovePendingResult = 'removed' | 'in_cart' | 'has_details' | 'gone';
+
 /**
- * Tira da lista um item que ainda está para comprar. Se alguém o pôs no
- * carrinho enquanto isso, não apaga: devolve false.
+ * Tira da lista um item que ainda está para comprar. Sem a confirmação da
+ * pessoa (`plainOnly`), só apaga se ele continua sem descrição, foto e
+ * prioridade. O que mudou enquanto isso (outra pessoa pôs no carrinho ou
+ * detalhou o item) não é apagado: o resultado diz o quê.
  */
 export function useRemovePendingListItem(listId: string) {
   const invalidate = useInvalidateLists(listId);
   return useMutation({
-    mutationFn: async (id: string) => {
-      const gone = unwrap(
-        await supabase.from('shopping_list_items').delete().eq('id', id).is('checked_at', null).select('id'),
-      ) as { id: string }[] | null;
-      return Boolean(gone?.length);
+    mutationFn: async ({ id, plainOnly }: { id: string; plainOnly: boolean }): Promise<RemovePendingResult> => {
+      let request = supabase.from('shopping_list_items').delete().eq('id', id).is('checked_at', null);
+      if (plainOnly) request = request.is('notes', null).is('photo_path', null).eq('priority', 'normal');
+      const gone = unwrap(await request.select('id')) as { id: string }[] | null;
+      if (gone?.length) return 'removed';
+      const row = unwrap(
+        await supabase.from('shopping_list_items').select('checked_at').eq('id', id).maybeSingle(),
+      ) as { checked_at: string | null } | null;
+      if (!row) return 'gone';
+      return row.checked_at ? 'in_cart' : 'has_details';
     },
     onSuccess: invalidate,
   });
