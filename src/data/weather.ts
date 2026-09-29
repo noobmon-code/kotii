@@ -216,7 +216,10 @@ export async function findPlaceByCep(cep: string): Promise<HouseholdLocation> {
     source: 'cep',
   });
   if (neighborhood) {
-    const point = pickNeighborhood(await osmSearch(`${neighborhood}, ${city}, ${state}`), neighborhood, city);
+    // Mapa fora do ar ou no limite: segue para a cidade (as coordenadas da
+    // BrasilAPI, quando vieram, já servem).
+    const results = await osmSearch(`${neighborhood}, ${city}, ${state}`).catch(() => null);
+    const point = results && pickNeighborhood(results, neighborhood, city);
     if (point) return at(point, placeLabel(neighborhood, city)!);
   }
   const cityLabel = placeLabel(null, city)!;

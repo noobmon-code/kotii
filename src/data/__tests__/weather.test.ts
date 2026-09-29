@@ -8,12 +8,16 @@ const calls: { url: string; at: number }[] = [];
 const replies: Record<string, unknown> = {};
 
 const json = (body: unknown) => ({ ok: true, status: 200, json: async () => body }) as Response;
+/** Resposta de erro do serviço (fora do ar, limite). */
+const failure = (status: number) => ({ failure: status });
 
 global.fetch = jest.fn(async (input: string | URL | Request) => {
   const url = String(input);
   calls.push({ url, at: Date.now() });
   const key = Object.keys(replies).find((k) => url.includes(k));
-  return json(key ? replies[key] : []);
+  const reply = key ? replies[key] : [];
+  const status = (reply as { failure?: number }).failure;
+  return status ? ({ ok: false, status, json: async () => ({}) } as Response) : json(reply);
 }) as typeof fetch;
 
 afterEach(() => {
@@ -35,6 +39,18 @@ describe('bairro pelo CEP', () => {
     const osm = calls.filter((c) => c.url.includes('nominatim'));
     expect(osm).toHaveLength(2);
     expect(osm[1].at - osm[0].at).toBeGreaterThanOrEqual(1000);
+  });
+
+  it('ViaCEP e mapa fora do ar: fica a cidade pelas coordenadas da BrasilAPI', async () => {
+    replies['viacep.com.br'] = failure(503);
+    replies['brasilapi.com.br'] = {
+      city: 'São Paulo',
+      neighborhood: 'Pinheiros',
+      state: 'SP',
+      location: { coordinates: { latitude: '-23.5475', longitude: '-46.63611' } },
+    };
+    replies['nominatim'] = failure(429);
+    await expect(findPlaceByCep('05422010')).resolves.toEqual({ label: 'São Paulo', latitude: -23.55, longitude: -46.64, source: 'cep' });
   });
 
   it('CEP que não existe', async () => {
