@@ -193,6 +193,7 @@ describe('house reminders', () => {
         chores: false,
         appointments: false,
         vaccines: false,
+        weather: false,
       });
     });
   });
@@ -288,6 +289,39 @@ describe('house reminders', () => {
       // Voltaram: refaz tudo com os dados.
       await reminders.syncHouseReminders({ ...moved, vaccines: [], appointments: [] }, today);
       expect(kindsOf(live)).toEqual(['bills']);
+    });
+  });
+
+  it('dica do clima às 7h; sem a previsão (sem internet), a já agendada fica', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('weather', true);
+      const weather = [{ date: '2026-09-28', time: '07:00', title: 'Hoje é dia de lavar roupa', body: 'Sem chuva até o fim da tarde.' }];
+      await reminders.syncHouseReminders({ ...data, weather }, today);
+      const [id] = [...live.entries()].filter(([, r]) => r.content.data.reminder.startsWith('weather:')).map(([key]) => key);
+      expect(live.get(id)?.content.data.reminder).toBe('weather:dia:2026-09-28:07:00');
+      await reminders.syncHouseReminders(data, today);
+      expect(live.has(id)).toBe(true);
+      // Casa sem local definido: nada do clima.
+      await reminders.syncHouseReminders({ ...data, weather: [] }, today);
+      expect(kindsOf(live)).toEqual([]);
+    });
+  });
+
+  it('a casa mudou de local e a previsão nova não veio: os avisos do clima do lugar antigo saem', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('weather', true);
+      const weather = [{ date: '2026-09-28', time: '07:00', title: 'Hoje é dia de lavar roupa', body: 'Sem chuva até o fim da tarde.' }];
+      await reminders.syncHouseReminders({ ...data, weather, weatherPlace: '-23.56,-46.69' }, today);
+      expect(kindsOf(live)).toEqual(['weather']);
+      // Mesmo lugar, previsão sem carregar: fica.
+      await reminders.syncHouseReminders({ ...data, weatherPlace: '-23.56,-46.69' }, today);
+      expect(kindsOf(live)).toEqual(['weather']);
+      // Outro lugar, previsão sem carregar: sai.
+      await reminders.syncHouseReminders({ ...data, weatherPlace: '-15.82,-47.9' }, today);
+      expect(kindsOf(live)).toEqual([]);
+      // A previsão do lugar novo chega: agenda de novo.
+      await reminders.syncHouseReminders({ ...data, weather, weatherPlace: '-15.82,-47.9' }, today);
+      expect(kindsOf(live)).toEqual(['weather']);
     });
   });
 

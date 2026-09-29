@@ -54,7 +54,7 @@ export function HouseRemindersSection() {
       ) : (
         <Card>
           <Text variant="small">
-            Os avisos por notificação (contas, documentos, tarefas, consultas, vacinas e remédios) funcionam no app instalado no celular. Na versão
+            Os avisos por notificação (contas, documentos, tarefas, consultas, vacinas, remédios e dicas do clima) funcionam no app instalado no celular. Na versão
             web e no Expo Go do Android eles ficam desligados.
           </Text>
         </Card>

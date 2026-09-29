@@ -1,13 +1,14 @@
 // Avisos da casa por notificação: contas, documentos, tarefas (inclusive
-// manutenções de aparelhos), consultas e vacinas. Cada celular escolhe o que
+// manutenções de aparelhos), consultas, vacinas e a dica do clima da manhã. Cada celular escolhe o que
 // quer receber; o plano sai daqui e o app agenda (src/lib/reminders.ts),
 // refazendo ao abrir, então a janela vai andando.
 
 import { addDays, diffDays, formatBRDate } from './dates';
 import { describeDocumentStatus } from './documents';
 import { formatBRL } from './money';
+import type { WeatherMorning } from './weather';
 
-export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines';
+export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'weather';
 
 export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint: string }[] = [
   { key: 'bills', label: 'Contas a pagar', hint: 'Na véspera, no dia do vencimento e, se ficar em aberto, uma vez depois, às 9h' },
@@ -15,6 +16,11 @@ export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint
   { key: 'chores', label: 'Tarefas e manutenções', hint: 'No dia marcado, às 9h' },
   { key: 'appointments', label: 'Consultas', hint: 'Na véspera, às 19h, e 2 horas antes' },
   { key: 'vaccines', label: 'Vacinas', hint: 'Uma semana antes da próxima dose e no dia, às 9h' },
+  {
+    key: 'weather',
+    label: 'Dicas do clima',
+    hint: 'Às 7h, quando o tempo pede algo: dia de lavar roupa, chuva, calor, frio, temporal. O bairro da casa se define no cartão do clima da tela Hoje',
+  },
 ];
 
 export interface HouseReminder {
@@ -53,6 +59,8 @@ export interface HouseReminderInput {
   /** Consultas agendadas, com data e hora locais já separadas. */
   appointments?: { id: string; title: string; person: string; date: string; time: string; location: string | null; status: string }[];
   vaccines?: { id: string; name: string; dose: string | null; person: string; next_dose_on: string | null }[];
+  /** A dica mais importante de cada manhã (ver weatherMornings). */
+  weather?: WeatherMorning[];
   today: string;
   /** HH:MM de agora: aviso de hoje só se o horário ainda não passou. */
   nowTime: string;
@@ -157,6 +165,12 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
       }
       add('vaccines', v.id, addDays(v.next_dose_on, -VACCINE_LEAD_DAYS), 'Vacina na semana que vem', `${v.person}: ${name} em ${formatBRDate(v.next_dose_on)}.`);
       add('vaccines', v.id, v.next_dose_on, 'Dia de vacina', `${v.person}: ${name}.`);
+    }
+  }
+
+  if (kinds.weather) {
+    for (const morning of input.weather ?? []) {
+      add('weather', 'dia', morning.date, morning.title, morning.body, { at: morning.time });
     }
   }
 

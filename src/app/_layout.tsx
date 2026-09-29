@@ -95,6 +95,7 @@ function AppNavigator() {
           <Stack.Screen name="precos" options={{ title: 'Preços' }} />
           <Stack.Screen name="agenda" options={{ title: 'Agenda' }} />
           <Stack.Screen name="cardapio" options={{ title: 'Cardápio da semana' }} />
+          <Stack.Screen name="clima" options={{ title: 'Clima da casa' }} />
           <Stack.Screen name="pontos" options={{ title: 'Pontos das crianças' }} />
           <Stack.Screen name="orcamento" options={{ title: 'Orçamento do mês', presentation: 'modal' }} />
           <Stack.Screen name="produto/[id]" options={{ title: 'Produto' }} />
