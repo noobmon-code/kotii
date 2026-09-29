@@ -385,7 +385,7 @@ export function inListQueue(mutation: { options: { scope?: { id: string } } }) {
 }
 
 /** Ainda há algo na fila da lista (enviando, esperando a vez ou sem internet)? */
-function listQueueBusy(queryClient: QueryClient) {
+export function listQueueBusy(queryClient: QueryClient) {
   return queryClient.isMutating({ predicate: inListQueue }) > 0;
 }
 

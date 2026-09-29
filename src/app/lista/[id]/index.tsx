@@ -15,6 +15,7 @@ import {
 } from '@/data/listPhotos';
 import {
   type EditItemInput,
+  listQueueBusy,
   newToggleToken,
   useAddListItem,
   useArchiveList,
@@ -194,6 +195,12 @@ export default function ShoppingListScreen() {
           unit: item.unit,
         });
         return true;
+      }
+      // Como o Limpar: com marcações ainda indo para o servidor, a lista
+      // daqui pode não ser a de lá (um item devolvido do carrinho, por exemplo).
+      if (listQueueBusy(queryClient)) {
+        notify('Espere um instante', 'As marcações da lista ainda estão sendo enviadas. Tente tirar o item de novo depois.');
+        return false;
       }
       const key = normalizeSearch(item.name);
       const matches = (items.data ?? []).filter((i) => !i.checked_at && normalizeSearch(i.name) === key);
