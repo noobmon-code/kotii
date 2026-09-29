@@ -309,14 +309,23 @@ export default function ShoppingListScreen() {
   const removeItem = (item: ShoppingListItem) =>
     confirmAction('Remover item', `Remover "${item.name}" da lista?`, 'Remover', () => {
       setEditing(null);
-      remove.mutate(item.id, {
-        onSuccess: () => {
-          dropPendingPhotos(queryClient, item.id);
-          emptyPhotoTrash();
-        },
-        onError,
-      });
+      void removeWithPhoto(item.id);
     });
+
+  /**
+   * Apaga o item e só então a foto que esperava internet (se apagar falhar, o
+   * item fica com ela). mutateAsync: com duas remoções seguidas, os callbacks
+   * de mutate só valeriam para a última.
+   */
+  async function removeWithPhoto(itemId: string) {
+    try {
+      await remove.mutateAsync(itemId);
+      dropPendingPhotos(queryClient, itemId);
+      emptyPhotoTrash();
+    } catch (err) {
+      onError(err);
+    }
+  }
 
   /** Detalhes vão pela fila da lista (valem sem internet); a foto, pela fila de fotos. */
   async function saveDetails(item: ShoppingListItem, details: ItemDetails, photo: PhotoChange) {
