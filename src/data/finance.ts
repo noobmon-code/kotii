@@ -1,6 +1,7 @@
 // Financeiro: contas a pagar, pagamentos, gastos avulsos e os gastos das notas.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { toISODate } from '@/domain/dates';
 import type { MedicalEntry } from '@/domain/incomeTax';
@@ -28,12 +29,12 @@ function useInvalidateFinance() {
 
 const BILL_COLUMNS = 'id, name, category, amount, recurrence, due_day, next_due_on, autopay, notes, active, boleto, deductible, provider_name, provider_doc';
 
+export async function fetchBills(db: SupabaseClient = supabase): Promise<Bill[]> {
+  return unwrap(await db.from('bills').select(BILL_COLUMNS).order('active', { ascending: false }).order('next_due_on')) as Bill[];
+}
+
 export function useBills() {
-  return useQuery({
-    queryKey: ['bills'],
-    queryFn: async () =>
-      unwrap(await supabase.from('bills').select(BILL_COLUMNS).order('active', { ascending: false }).order('next_due_on')) as Bill[],
-  });
+  return useQuery({ queryKey: ['bills'], queryFn: () => fetchBills() });
 }
 
 export function useBill(id: string | undefined) {

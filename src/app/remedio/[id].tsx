@@ -13,6 +13,7 @@ import {
   WEEKDAYS,
   type MedicationFrequency,
 } from '@/domain/medications';
+import { useHouseholdId } from '@/lib/auth';
 import { disableReminders, enableReminders, hasReminders, remindersSupported } from '@/lib/reminders';
 import { errorMessage } from '@/lib/supabase';
 import { openNewPerson, PersonChips } from '@/features/health/PersonChips';
@@ -44,6 +45,7 @@ function MedicationForm({
 }) {
   const c = useColors();
   const save = useSaveMedication();
+  const householdId = useHouseholdId();
   const archive = useArchiveMedication();
   // Remédios antigos só tinham o nome: acha a pessoa pelo nome.
   const [personId, setPersonId] = useState<string | null>(
@@ -148,8 +150,8 @@ function MedicationForm({
       {
         onSuccess: async (saved) => {
           try {
-            if (remind) {
-              const ok = await enableReminders(saved);
+            if (remind && householdId) {
+              const ok = await enableReminders(saved, householdId);
               if (!ok) notify('Lembretes desativados', 'Permita notificações nas configurações do aparelho.');
             } else {
               await disableReminders(saved.id);

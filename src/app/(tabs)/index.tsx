@@ -214,6 +214,8 @@ export default function TodayScreen() {
       : 'Veja o que tem para hoje.';
   const nowTime = currentTimeHHMM(now);
   const members = household.data?.members ?? [];
+  // Com mais de uma casa, o topo diz qual está aberta e troca com um toque.
+  const houses = household.data?.households ?? [];
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
@@ -251,6 +253,19 @@ export default function TodayScreen() {
     <Screen fab refreshing={refreshing} onRefresh={refresh}>
       <View style={[styles.hero, glass, { backgroundColor: hero.bg }]}>
         <View style={styles.heroText}>
+          {houses.length > 1 ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Casa aberta: ${household.data?.household.name}. Trocar de casa`}
+              onPress={() => router.push('/casas')}
+              style={styles.houseSwitch}>
+              <Icon name="home-outline" size={16} color="primary" />
+              <Text variant="label" color="primary" numberOfLines={1} style={styles.houseName}>
+                {household.data?.household.name}
+              </Text>
+              <Icon name="chevron-down" size={16} color="primary" />
+            </Pressable>
+          ) : null}
           <Text variant="small">{dateLabel}</Text>
           <Text variant="display">
             {greeting(now)},{'\n'}
@@ -536,4 +551,6 @@ const styles = StyleSheet.create({
   heroText: { flex: 1, gap: space.xs },
   quickActions: { flexDirection: 'row', gap: space.md },
   agendaLink: { flexDirection: 'row', alignItems: 'center', gap: space.xs, alignSelf: 'flex-start', paddingVertical: space.xs },
+  houseSwitch: { flexDirection: 'row', alignItems: 'center', gap: space.xs, alignSelf: 'flex-start', paddingVertical: space.xs },
+  houseName: { flexShrink: 1 },
 });

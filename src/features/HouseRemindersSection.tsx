@@ -1,8 +1,10 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
 import { HOUSE_REMINDER_KINDS, type HouseReminderKind } from '@/domain/houseReminders';
-import { useHouseReminderData } from '@/features/useReminderSync';
+import { syncOtherHouses, useHouseReminderData, useHouseReminderTarget } from '@/features/useReminderSync';
+import { useHousehold } from '@/lib/auth';
 import { getHouseReminderKinds, remindersSupported, setHouseReminderKind, syncHouseReminders } from '@/lib/reminders';
 import { notify } from '@/ui/dialogs';
 import { Card, ListCard, Row, Section, Text } from '@/ui/primitives';
@@ -12,6 +14,9 @@ import { space, useColors } from '@/ui/theme';
 export function HouseRemindersSection() {
   const c = useColors();
   const { data } = useHouseReminderData();
+  const target = useHouseReminderTarget();
+  const households = useHousehold().data?.households;
+  const queryClient = useQueryClient();
   const [kinds, setKinds] = useState<Record<HouseReminderKind, boolean> | null>(null);
 
   useEffect(() => {
@@ -28,7 +33,9 @@ export function HouseRemindersSection() {
       notify('Sem permissão', 'Para receber os avisos, permita as notificações do Nooky nos ajustes do celular.');
       return;
     }
-    if (data) syncHouseReminders(data).catch(() => undefined);
+    if (data && target) syncHouseReminders(data, target).catch(() => undefined);
+    // As outras casas também, sem esperar o app abrir de novo.
+    if (target && households) syncOtherHouses(queryClient, households, target.householdId).catch(() => undefined);
   }
 
   return (

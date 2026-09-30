@@ -32,13 +32,7 @@ end $$;
 set role authenticated;
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 select (public.create_household('Casa A', 'Ana')).invite_code as invite_code \gset
-
-do $$
-begin
-  perform public.create_household('Outra', 'Ana');
-  raise exception 'FAIL: user created a second household';
-exception when unique_violation then null;
-end $$;
+select set_config('test.invite_a', :'invite_code', false) \gset
 
 select set_config('request.jwt.claim.sub', :'user_b', false) \gset
 do $$
@@ -1361,6 +1355,112 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+\echo '• várias casas por conta: a casa aberta vem no cabeçalho'
+\set user_h '00000000-0000-0000-0000-000000000011'
+reset role;
+insert into auth.users (id) values (:'user_h');
+select id as hh_c from public.households where name = 'Casa C' \gset
+select set_config('test.hh_c', :'hh_c', false) \gset
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_h', false) \gset
+select (public.create_household('Casa H1', 'Heitor')).id as hh_h1 \gset
+select (public.create_household('Casa H2', 'Heitor')).id as hh_h2 \gset
+select set_config('test.hh_h1', :'hh_h1', false) \gset
+select set_config('test.hh_h2', :'hh_h2', false) \gset
+do $$
+declare
+  h1 uuid := current_setting('test.hh_h1')::uuid;
+  h2 uuid := current_setting('test.hh_h2')::uuid;
+begin
+  assert (select array_agg(id) from public.my_households()) = array[h2, h1], 'both houses, the latest opened first';
+  -- Sem cabeçalho (app antigo): a primeira casa em que entrou.
+  assert public.current_household_id() = h1, 'no header: the first household';
+  insert into public.shopping_lists (name) values ('Lista H1');
+  perform set_config('request.headers', json_build_object('x-household-id', h2)::text, true);
+  assert public.current_household_id() = h2, 'header picks the open household';
+  insert into public.shopping_lists (name) values ('Lista H2');
+  assert (select array_agg(name) from public.shopping_lists) = array['Lista H2'], 'only the open household data';
+  assert (select name from public.households) = 'Casa H2', 'the open household';
+  assert (select count(*) from public.people where member_user_id = auth.uid()) = 1, 'a profile in each household';
+  perform set_config('request.headers', json_build_object('x-household-id', h1)::text, true);
+  assert (select array_agg(name) from public.shopping_lists) = array['Lista H1'], 'switching shows the other household';
+
+  -- Casa de que não é membro (ou valor qualquer): nenhuma, em vez de cair em outra.
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_c'))::text, true);
+  assert public.current_household_id() is null, 'foreign household in the header: none';
+  assert (select count(*) from public.shopping_lists) = 0, 'foreign household: nothing visible';
+  begin
+    insert into public.shopping_lists (name) values ('Invasão');
+    raise exception 'FAIL: inserted into a foreign household';
+  exception when not_null_violation or insufficient_privilege then null;
+  end;
+  perform set_config('request.headers', '{"x-household-id": "nada"}', true);
+  assert public.current_household_id() is null, 'garbage header: none';
+  perform set_config('request.headers', '', true);
+
+  perform public.select_household(h1);
+  assert (select id from public.my_households() limit 1) = h1, 'selecting moves the household to the top';
+  begin
+    perform public.select_household(current_setting('test.hh_c')::uuid);
+    raise exception 'FAIL: selected a foreign household';
+  exception when no_data_found then null;
+  end;
+end $$;
+
+-- Entra na casa A pelo código; de novo, não.
+select public.join_household(:'invite_code', 'Heitor') \gset
+do $$
+begin
+  begin
+    perform public.join_household(current_setting('test.invite_a'), 'Heitor');
+    raise exception 'FAIL: joined the same household twice';
+  exception when unique_violation then null;
+  end;
+  perform public.create_household('Casa H4', 'Heitor');
+  perform public.create_household('Casa H5', 'Heitor');
+  assert (select count(*) from public.my_households()) = 5, 'five households';
+  begin
+    perform public.create_household('Casa H6', 'Heitor');
+    raise exception 'FAIL: created more households than the limit';
+  exception when sqlstate 'NK002' then null;
+  end;
+end $$;
+
+-- Arquivos: qualquer casa de que é membro, e só elas.
+do $$
+begin
+  insert into storage.objects (bucket_id, name) values ('documents', current_setting('test.hh_h2') || '/item-a.jpg');
+  begin
+    insert into storage.objects (bucket_id, name) values ('documents', current_setting('test.hh_c') || '/item-b.jpg');
+    raise exception 'FAIL: uploaded into a foreign household folder';
+  exception when insufficient_privilege then null;
+  end;
+  assert (select count(*) from storage.objects where name like current_setting('test.hh_c') || '/%') = 0,
+    'foreign folder is not visible';
+end $$;
+
+-- Sair de uma casa que não é a aberta.
+do $$
+declare
+  h1 uuid := current_setting('test.hh_h1')::uuid;
+  h2 uuid := current_setting('test.hh_h2')::uuid;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', h1)::text, true);
+  assert (public.leave_household(h2, true))->>'status' = 'deleted', 'leaves (and deletes) a household that is not open';
+  assert not exists (select 1 from public.my_households() where id = h2), 'H2 is gone';
+  assert (select array_agg(name) from public.shopping_lists) = array['Lista H1'], 'the open household is untouched';
+  perform set_config('request.headers', '', true);
+end $$;
+reset role;
+delete from storage.objects where name like '%/item-a.jpg';
+do $$
+begin
+  assert exists (select 1 from public.household_file_cleanup where household_id = current_setting('test.hh_h2')::uuid),
+    'the deleted household folder is queued for cleanup';
+  delete from public.household_file_cleanup where household_id = current_setting('test.hh_h2')::uuid;
+end $$;
+set role authenticated;
+
 \echo '• sair da casa: dono passa adiante, o último apaga a casa'
 \set user_f '00000000-0000-0000-0000-00000000000f'
 \set user_g '00000000-0000-0000-0000-000000000010'

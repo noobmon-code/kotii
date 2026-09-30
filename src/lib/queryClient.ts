@@ -180,6 +180,14 @@ export function cacheOwners(): unknown[] {
   return [...households, ...queued];
 }
 
+/** De que casa é o cache: a da consulta da casa guardada, se houver. */
+export function cacheHousehold(): string | undefined {
+  const [query] = queryClient
+    .getQueryCache()
+    .findAll({ queryKey: ['household'], predicate: (q) => q.state.data !== undefined && q.state.data !== null });
+  return (query?.state.data as { household?: { id: string } } | undefined)?.household?.id;
+}
+
 /** Cache restaurado e conferido (é de quem entrou): manda o que ficou na fila. */
 export function resumeQueue() {
   queryClient.resumePausedMutations().catch(() => undefined);

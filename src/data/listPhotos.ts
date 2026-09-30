@@ -36,6 +36,11 @@ export function inPhotoQueue(mutation: { options: { scope?: { id: string } } }) 
   return mutation.options.scope?.id === LIST_PHOTO_SCOPE.id;
 }
 
+/** Há foto da lista esperando para subir (ou subindo). */
+export function photoQueueBusy(queryClient: QueryClient) {
+  return queryClient.isMutating({ predicate: inPhotoQueue }) > 0;
+}
+
 function randomKey(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }

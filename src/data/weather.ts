@@ -4,6 +4,7 @@
 // aparelho para o banco: só o bairro, com as coordenadas arredondadas.
 
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { Platform } from 'react-native';
 
 import {
@@ -31,17 +32,14 @@ export interface HouseholdLocation {
 export const LOCATION_KEY = ['householdLocation'];
 const HOUR = 60 * 60 * 1000;
 
+export async function fetchHouseholdLocation(db: SupabaseClient = supabase): Promise<HouseholdLocation | null> {
+  const row = unwrap(await db.from('household_location').select('label, latitude, longitude, source').maybeSingle()) as HouseholdLocation | null;
+  return row ? { ...row, latitude: Number(row.latitude), longitude: Number(row.longitude) } : null;
+}
+
 /** Onde fica a casa; null se ninguém definiu ainda. */
 export function useHouseholdLocation() {
-  return useQuery({
-    queryKey: LOCATION_KEY,
-    queryFn: async () => {
-      const row = unwrap(
-        await supabase.from('household_location').select('label, latitude, longitude, source').maybeSingle(),
-      ) as HouseholdLocation | null;
-      return row ? { ...row, latitude: Number(row.latitude), longitude: Number(row.longitude) } : null;
-    },
-  });
+  return useQuery({ queryKey: LOCATION_KEY, queryFn: () => fetchHouseholdLocation() });
 }
 
 export function useSaveHouseholdLocation() {

@@ -9,6 +9,9 @@ import type { NukeMessage } from '@/domain/nuke';
 
 const KEEP = 40;
 const storageKey = (userId: string) => `nuke:conversation:${userId}`;
+
+/** A conversa é de uma pessoa numa casa: cada casa tem a sua. */
+export const conversationOwner = (userId: string, householdId: string) => `${userId}:${householdId}`;
 const EMPTY: NukeMessage[] = [];
 
 let owner: string | null = null;
@@ -42,7 +45,17 @@ export async function loadConversation(userId: string) {
   pending = false;
   emit();
   const since = epoch;
-  const raw = await AsyncStorage.getItem(storageKey(userId)).catch(() => null);
+  let raw = await AsyncStorage.getItem(storageKey(userId)).catch(() => null);
+  // Conversa de antes das várias casas (guardada só pela pessoa): passa para
+  // a primeira casa em que o Nuke é aberto.
+  const legacy = userId.includes(':') ? storageKey(userId.split(':')[0]) : null;
+  if (!raw && legacy) {
+    raw = await AsyncStorage.getItem(legacy).catch(() => null);
+    if (raw) {
+      await AsyncStorage.setItem(storageKey(userId), raw).catch(() => undefined);
+      await AsyncStorage.removeItem(legacy).catch(() => undefined);
+    }
+  }
   if (owner !== userId || since !== epoch || !raw) return;
   try {
     const parsed: unknown = JSON.parse(raw);

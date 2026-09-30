@@ -17,6 +17,7 @@ import {
   type VisionImage,
   visionConfig,
 } from '../_shared/vision.ts';
+import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
 import {
   cleanDiet,
   cleanExam,
@@ -31,7 +32,7 @@ import {
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': ALLOWED_HEADERS,
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
@@ -77,7 +78,7 @@ Deno.serve(async (req) => {
   const db = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_ANON_KEY') ?? Deno.env.get('SUPABASE_PUBLISHABLE_KEY')!,
-    { global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } } },
+    { global: { headers: callerHeaders(req) } },
   );
 
   const { data: auth } = await db.auth.getUser();

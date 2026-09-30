@@ -10,7 +10,7 @@ import { HouseRemindersSection } from '@/features/HouseRemindersSection';
 import { useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Badge, Button, Card, IconBadge, ListCard, ListRow, Loading, PageTitle, Row, Screen, Section, Text } from '@/ui/primitives';
+import { Badge, Button, Card, Icon, IconBadge, ListCard, ListRow, Loading, PageTitle, Row, Screen, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 export default function FamilyScreen() {
@@ -21,8 +21,19 @@ export default function FamilyScreen() {
   const kidPoints = useKidPoints();
 
   if (!household.data) return <Loading />;
-  const { household: house, members, me } = household.data;
+  const { household: house, members, me, households } = household.data;
   const heir = members.find((m) => m.user_id !== me.user_id);
+  const otherHouse = households.find((h) => h.id !== house.id);
+  const leaveHint = [
+    heir ? null : 'Você é a única pessoa aqui: sair apaga a casa.',
+    otherHouse
+      ? `Depois de sair, o app abre em "${otherHouse.name}".`
+      : heir
+        ? 'Saindo, você pode criar outra casa ou entrar em uma com um código.'
+        : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
   // Quem não usa o app: crianças, dependentes e pets, com ficha, remédios e vacinas.
   const withoutApp = (people.data ?? []).filter((p) => !p.member_user_id);
   const points = kidPoints.data ?? {};
@@ -80,6 +91,16 @@ export default function FamilyScreen() {
   return (
     <Screen fab>
       <PageTitle title={house.name} subtitle="Família" tint="purple" />
+
+      <ListCard>
+        <ListRow
+          left={<IconBadge icon="home-switch-outline" tone="primary" />}
+          title={households.length > 1 ? `Suas casas (${households.length})` : 'Suas casas'}
+          subtitle={households.length > 1 ? 'Trocar de casa, criar ou entrar em outra' : 'Criar ou entrar em outra casa'}
+          right={<Icon name="chevron-right" color="textMuted" />}
+          onPress={() => router.push('/casas')}
+        />
+      </ListCard>
 
       <Card style={styles.invite}>
         <Text variant="muted">Código de convite</Text>
@@ -142,9 +163,7 @@ export default function FamilyScreen() {
 
       <Section title="Casa">
         <Text variant="muted">
-          {heir
-            ? 'Saindo, você pode criar outra casa ou entrar em uma com um código.'
-            : 'Você é a única pessoa aqui. Saindo, a casa é apagada.'}
+          {leaveHint}
         </Text>
         <Button
           title="Sair da casa"

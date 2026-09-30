@@ -7,11 +7,12 @@
 
 import { createClient } from '@supabase/supabase-js';
 
+import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
 import { isSefazUrl, parseNfceHtml } from './parse.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': ALLOWED_HEADERS,
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
@@ -88,7 +89,7 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error: 'Método não suportado.' }, 405);
 
   const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_ANON_KEY') ?? Deno.env.get('SUPABASE_PUBLISHABLE_KEY')!, {
-    global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } },
+    global: { headers: callerHeaders(req) },
   });
   const { data: auth } = await db.auth.getUser();
   if (!auth.user) return json({ error: 'Entre na sua conta para ler a nota.' }, 401);

@@ -1,8 +1,10 @@
 import 'react-native-url-polyfill/auto';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { AppState, Platform } from 'react-native';
+
+import { fetchWithHousehold, HOUSEHOLD_HEADER } from './activeHousehold';
 
 const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
@@ -16,7 +18,27 @@ export const supabase = createClient(url ?? 'http://localhost:54321', anonKey ??
     persistSession: true,
     detectSessionInUrl: false,
   },
+  // Todo pedido diz qual casa está aberta neste aparelho (ver activeHousehold).
+  global: { fetch: fetchWithHousehold() },
 });
+
+const householdClients = new Map<string, SupabaseClient>();
+
+/**
+ * Cliente preso a uma casa, com a sessão de quem entrou: para buscar, em
+ * segundo plano, os dados de uma casa que não é a aberta (os avisos de todas).
+ */
+export function householdClient(householdId: string): SupabaseClient {
+  let client = householdClients.get(householdId);
+  if (!client) {
+    client = createClient(url ?? 'http://localhost:54321', anonKey ?? 'not-configured', {
+      accessToken: async () => (await supabase.auth.getSession()).data.session?.access_token ?? null,
+      global: { headers: { [HOUSEHOLD_HEADER]: householdId } },
+    });
+    householdClients.set(householdId, client);
+  }
+  return client;
+}
 
 // Renova o token só com o app em primeiro plano.
 if (Platform.OS !== 'web') {

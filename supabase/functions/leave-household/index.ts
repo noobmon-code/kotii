@@ -13,11 +13,12 @@
 
 import { createClient } from '@supabase/supabase-js';
 
+import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
 import { type CleanupQueue, drainCleanupQueue } from './cleanup.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': ALLOWED_HEADERS,
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
@@ -64,7 +65,7 @@ Deno.serve(async (req) => {
   }
 
   const asUser = createClient(url, Deno.env.get('SUPABASE_ANON_KEY') ?? Deno.env.get('SUPABASE_PUBLISHABLE_KEY')!, {
-    global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } },
+    global: { headers: callerHeaders(req) },
   });
   const { data: userData } = await asUser.auth.getUser();
   if (!userData.user) return json({ error: 'Entre na sua conta para sair da casa.' }, 401);

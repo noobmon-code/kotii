@@ -1,16 +1,21 @@
-// Sair da casa: a função leave-household decide no servidor (quem vira
-// dono, se a casa é apagada) e cuida das fotos; aqui fica o que é deste
-// aparelho.
+// As casas da pessoa: trocar a casa aberta neste aparelho, criar ou entrar
+// em outra e sair de uma. Sair: a função leave-household decide no servidor
+// (quem vira dono, se a casa é apagada) e cuida das fotos; aqui fica o que é
+// deste aparelho.
 
-import { type QueryClient, useMutation, useQueryClient } from '@tanstack/react-query';
+import { onlineManager, type QueryClient, useMutation, useQueryClient } from '@tanstack/react-query';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 
 import { functionErrorMessage } from '@/data/images';
-import { clearConversation } from '@/features/nuke/conversation';
+import { photoQueueBusy } from '@/data/listPhotos';
+import { listQueueBusy } from '@/data/market';
+import { clearConversation, conversationOwner } from '@/features/nuke/conversation';
+import { setActiveHousehold } from '@/lib/activeHousehold';
 import type { HouseholdState } from '@/lib/auth';
 import { saveNow } from '@/lib/queryClient';
-import { disableAllReminders } from '@/lib/reminders';
-import { supabase } from '@/lib/supabase';
+import { disableHouseholdReminders } from '@/lib/reminders';
+import { errorMessage, supabase } from '@/lib/supabase';
+import type { Household } from '@/lib/types';
 
 /** A pessoa ficou sozinha na casa desde a confirmação: sair agora apaga a casa. */
 export class LastMemberError extends Error {
@@ -27,6 +32,76 @@ async function errorCode(error: unknown): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/** Mensagem para os erros de criar ou entrar numa casa. */
+export function householdErrorMessage(error: unknown): string {
+  const message = errorMessage(error);
+  if (/invalid invite code/i.test(message)) return 'Código não encontrado. Confira com quem te convidou.';
+  if (/already a member/i.test(message)) return 'Você já está nessa casa.';
+  if (/household limit/i.test(message)) return 'Uma conta pode estar em até 5 casas. Saia de uma para criar ou entrar em outra.';
+  return message;
+}
+
+/**
+ * Trocar de casa busca tudo de novo, da outra casa: precisa de internet, e
+ * as marcações da lista que esperam internet (feitas nesta casa) precisam
+ * subir antes, senão iriam para a outra.
+ */
+function assertCanSwitch(queryClient: QueryClient) {
+  if (!onlineManager.isOnline()) throw new Error('Sem internet agora. Troque de casa quando a conexão voltar.');
+  if (listQueueBusy(queryClient) || photoQueueBusy(queryClient)) {
+    throw new Error('Ainda há marcações ou fotos da lista esperando internet nesta casa. Troque quando elas subirem.');
+  }
+}
+
+/**
+ * Abre outra casa neste aparelho. O que estava na tela era da casa anterior:
+ * sai já e é buscado de novo. A casa em si fica até a nova chegar (sem ela,
+ * o app voltaria para a tela de abertura no meio da troca).
+ */
+export async function openHousehold(queryClient: QueryClient, userId: string, householdId: string) {
+  await queryClient.cancelQueries();
+  await setActiveHousehold(userId, householdId);
+  queryClient.resetQueries({ predicate: (query) => query.queryKey[0] !== 'household' }).catch(() => undefined);
+  await queryClient.invalidateQueries({ queryKey: ['household'] });
+}
+
+export function useSwitchHousehold(userId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (householdId: string) => {
+      if (!userId) throw new Error('Entre na conta de novo.');
+      assertCanSwitch(queryClient);
+      // A mais recente: um aparelho novo abre nela.
+      const { error } = await supabase.rpc('select_household', { p_household_id: householdId });
+      if (error) throw error;
+      await openHousehold(queryClient, userId, householdId);
+    },
+  });
+}
+
+export type AddHousehold =
+  | { mode: 'criar'; name: string; displayName: string }
+  | { mode: 'entrar'; code: string; displayName: string };
+
+/** Cria outra casa, ou entra numa pelo código, e já abre nela. */
+export function useAddHousehold(userId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: AddHousehold) => {
+      if (!userId) throw new Error('Entre na conta de novo.');
+      assertCanSwitch(queryClient);
+      const { data, error } =
+        input.mode === 'criar'
+          ? await supabase.rpc('create_household', { p_name: input.name, p_display_name: input.displayName })
+          : await supabase.rpc('join_household', { p_invite_code: input.code, p_display_name: input.displayName });
+      if (error) throw new Error(householdErrorMessage(error));
+      const house = data as Household;
+      await openHousehold(queryClient, userId, house.id);
+      return house;
+    },
+  });
 }
 
 /**
@@ -47,12 +122,19 @@ export function useLeaveHousehold(userId: string | undefined) {
 
   // Conversa, lembretes e cache são da casa que ficou para trás.
   async function resetAfterLeaving(householdId: string) {
-    // Primeiro o cache, gravado já: fechando o app no meio da limpeza dos
-    // lembretes (que pode demorar), a casa antiga não volta.
-    forgetLeftHousehold(queryClient, userId, householdId);
-    await saveNow();
-    if (userId) clearConversation(userId);
-    await disableAllReminders().catch(() => undefined);
+    const state = queryClient.getQueryData<HouseholdState | null>(['household', userId]);
+    const next = (state?.households ?? []).find((h) => h.id !== householdId);
+    if (userId && next) {
+      // Tem outra casa: abre nela, em vez da tela de criar ou entrar.
+      await openHousehold(queryClient, userId, next.id);
+    } else {
+      // Primeiro o cache, gravado já: fechando o app no meio da limpeza dos
+      // lembretes (que pode demorar), a casa antiga não volta.
+      forgetLeftHousehold(queryClient, userId, householdId);
+      await saveNow();
+    }
+    if (userId) clearConversation(conversationOwner(userId, householdId));
+    await disableHouseholdReminders(householdId).catch(() => undefined);
     await queryClient.invalidateQueries({ queryKey: ['household'] });
   }
 
