@@ -1,6 +1,7 @@
 // Saúde: pessoas e pets da casa, consultas, vacinas, exames, treinos e dietas.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Appointment, DietPlan, Exam, Person, Vaccine, WorkoutLog, WorkoutPlan } from '@/lib/types';
@@ -20,12 +21,12 @@ function useInvalidate(...keys: string[]) {
 const PERSON_COLUMNS =
   'id, name, kind, member_user_id, birth_date, blood_type, allergies, conditions, health_plan, health_plan_number, species, notes';
 
+export async function fetchPeople(db: SupabaseClient = supabase): Promise<Person[]> {
+  return unwrap(await db.from('people').select(PERSON_COLUMNS).order('kind').order('name')) as Person[];
+}
+
 export function usePeople() {
-  return useQuery({
-    queryKey: ['people'],
-    queryFn: async () =>
-      unwrap(await supabase.from('people').select(PERSON_COLUMNS).order('kind').order('name')) as Person[],
-  });
+  return useQuery({ queryKey: ['people'], queryFn: () => fetchPeople() });
 }
 
 export type PersonValues = Omit<Person, 'id' | 'member_user_id'>;
@@ -86,14 +87,12 @@ export function useDeletePerson() {
 
 const APPOINTMENT_COLUMNS = 'id, person_id, title, professional, location, starts_at, notes, status';
 
+export async function fetchAppointments(db: SupabaseClient = supabase): Promise<Appointment[]> {
+  return unwrap(await db.from('appointments').select(APPOINTMENT_COLUMNS).order('starts_at', { ascending: false }).limit(300)) as Appointment[];
+}
+
 export function useAppointments() {
-  return useQuery({
-    queryKey: ['appointments'],
-    queryFn: async () =>
-      unwrap(
-        await supabase.from('appointments').select(APPOINTMENT_COLUMNS).order('starts_at', { ascending: false }).limit(300),
-      ) as Appointment[],
-  });
+  return useQuery({ queryKey: ['appointments'], queryFn: () => fetchAppointments() });
 }
 
 export type AppointmentValues = Omit<Appointment, 'id'>;
@@ -119,18 +118,14 @@ export function useDeleteAppointment() {
 
 const VACCINE_COLUMNS = 'id, person_id, name, dose, applied_on, next_dose_on, location, lot, notes';
 
+export async function fetchVaccines(db: SupabaseClient = supabase): Promise<Vaccine[]> {
+  return unwrap(
+    await db.from('vaccines').select(VACCINE_COLUMNS).order('applied_on', { ascending: false, nullsFirst: true }).limit(500),
+  ) as Vaccine[];
+}
+
 export function useVaccines() {
-  return useQuery({
-    queryKey: ['vaccines'],
-    queryFn: async () =>
-      unwrap(
-        await supabase
-          .from('vaccines')
-          .select(VACCINE_COLUMNS)
-          .order('applied_on', { ascending: false, nullsFirst: true })
-          .limit(500),
-      ) as Vaccine[],
-  });
+  return useQuery({ queryKey: ['vaccines'], queryFn: () => fetchVaccines() });
 }
 
 export type VaccineValues = Omit<Vaccine, 'id'>;

@@ -2,7 +2,9 @@
 // família escolhe de quais remédios quer ser lembrada (só tocam dentro do
 // período do tratamento, ver planReminders) e quais avisos da casa quer
 // receber: contas, documentos, tarefas, consultas, vacinas e a dica do clima
-// da manhã (ver planHouseReminders).
+// da manhã (ver planHouseReminders). Quem tem várias casas recebe os de
+// todas: cada lembrete guardado diz de que casa é, e cada sincronização mexe
+// só nos da casa que ela recebeu.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { isRunningInExpoGo } from 'expo';
@@ -83,6 +85,8 @@ interface StoredReminders {
   ids: string[];
   /** Plano e texto agendados; se mudarem, os lembretes são refeitos. */
   signature: string;
+  /** Casa do remédio (sem ela: de antes das várias casas, da casa que estava aberta). */
+  householdId?: string;
 }
 
 async function readStored(medicationId: string): Promise<StoredReminders | null> {
@@ -109,37 +113,97 @@ export function disableReminders(medicationId: string): Promise<void> {
   return serialized(() => disable(medicationId));
 }
 
+async function medicationKeys(): Promise<string[]> {
+  return (await AsyncStorage.getAllKeys()).filter((k) => k.startsWith('reminders:'));
+}
+
+async function houseScheduledKeys(): Promise<string[]> {
+  return (await AsyncStorage.getAllKeys()).filter((k) => k === HOUSE_SCHEDULED_KEY || k.startsWith(`${HOUSE_SCHEDULED_KEY}:`));
+}
+
+async function dropHouseScheduled(key: string): Promise<void> {
+  const stored = await readHouseScheduled(key);
+  if (stored) await cancelAll(stored.ids);
+  await AsyncStorage.removeItem(key);
+}
+
 /**
- * Desliga os lembretes agendados neste aparelho, de remédios e da casa (ao
- * sair da casa). A escolha dos avisos da casa fica: vale para a próxima.
+ * Desliga os lembretes agendados neste aparelho, de remédios e de todas as
+ * casas (ao sair da conta). A escolha dos avisos da casa fica: vale para a
+ * próxima.
  */
 export async function disableAllReminders(): Promise<void> {
   if (!remindersSupported) return;
   await serialized(async () => {
-    const keys = (await AsyncStorage.getAllKeys()).filter((k) => k.startsWith('reminders:'));
-    for (const key of keys) await disable(key.slice('reminders:'.length));
-    const house = await readHouseScheduled();
-    if (house) await cancelAll(house.ids);
-    await AsyncStorage.removeItem(HOUSE_SCHEDULED_KEY);
+    for (const key of await medicationKeys()) await disable(key.slice('reminders:'.length));
+    for (const key of await houseScheduledKeys()) await dropHouseScheduled(key);
   });
 }
 
-function contentOf(medication: Medication) {
+/**
+ * Desliga os lembretes de uma casa (a pessoa saiu dela): os remédios e os
+ * avisos dela. Os de antes das várias casas (sem casa) eram da casa aberta, a
+ * que ficou para trás.
+ */
+export async function disableHouseholdReminders(householdId: string): Promise<void> {
+  if (!remindersSupported) return;
+  await serialized(async () => {
+    for (const key of await medicationKeys()) {
+      const id = key.slice('reminders:'.length);
+      const stored = await readStored(id);
+      if (stored && (stored.householdId ?? householdId) === householdId) await disable(id);
+    }
+    await dropHouseScheduled(houseScheduledKey(householdId));
+    await dropHouseScheduled(HOUSE_SCHEDULED_KEY);
+  });
+}
+
+/** Tira os lembretes de casas de que a pessoa não é mais (saiu por outro aparelho). */
+export async function pruneHouseholdReminders(householdIds: string[]): Promise<void> {
+  if (!remindersSupported) return;
+  const mine = new Set(householdIds);
+  await serialized(async () => {
+    for (const key of await medicationKeys()) {
+      const id = key.slice('reminders:'.length);
+      const stored = await readStored(id);
+      if (stored?.householdId && !mine.has(stored.householdId)) await disable(id);
+    }
+    for (const key of await houseScheduledKeys()) {
+      const id = key.slice(HOUSE_SCHEDULED_KEY.length + 1);
+      if (id && !mine.has(id)) await dropHouseScheduled(key);
+    }
+  });
+}
+
+/** Casas com lembrete de remédio ligado neste aparelho (undefined: de antes das várias casas). */
+export async function householdsWithMedicationReminders(): Promise<Set<string | undefined>> {
+  const out = new Set<string | undefined>();
+  for (const key of await medicationKeys()) out.add((await readStored(key.slice('reminders:'.length)))?.householdId);
+  return out;
+}
+
+/** De qual casa é o remédio; com mais de uma casa, o nome dela vai no aviso. */
+export interface MedicationTarget {
+  householdId: string;
+  label?: string;
+}
+
+function contentOf(medication: Medication, label?: string) {
   return {
-    title: `${medication.name} — ${medication.person_name}`,
+    title: `${medication.name} — ${medication.person_name}${label ? ` · ${label}` : ''}`,
     body: medication.dosage ? `Hora de tomar: ${medication.dosage}` : 'Hora de tomar o remédio',
     data: { medicationId: medication.id },
   };
 }
 
 /** Agenda conforme o plano (diário ou dose a dose) e guarda o que foi agendado. */
-async function schedule(medication: Medication, today: string): Promise<void> {
+async function schedule(medication: Medication, today: string, { householdId, label }: MedicationTarget): Promise<void> {
   const Notifications = notifications();
   const plan = planReminders(toPlanInput(medication), today, currentTimeHHMM());
-  const content = contentOf(medication);
+  const content = contentOf(medication, label);
   const signature = JSON.stringify({ plan, content });
   const previous = await readStored(medication.id);
-  if (previous?.signature === signature) return;
+  if (previous?.signature === signature && previous.householdId === householdId) return;
   if (previous) await cancelAll(previous.ids);
 
   const ids: string[] = [];
@@ -182,7 +246,7 @@ async function schedule(medication: Medication, today: string): Promise<void> {
       );
     }
   }
-  await AsyncStorage.setItem(storageKey(medication.id), JSON.stringify({ ids, signature } satisfies StoredReminders));
+  await AsyncStorage.setItem(storageKey(medication.id), JSON.stringify({ ids, signature, householdId } satisfies StoredReminders));
 }
 
 function toPlanInput(medication: Medication) {
@@ -200,32 +264,38 @@ function toPlanInput(medication: Medication) {
 }
 
 /**
- * Liga os lembretes deste remédio neste aparelho, só dentro do período do
- * tratamento. Retorna false sem permissão.
+ * Liga os lembretes deste remédio (da casa `target`) neste aparelho, só
+ * dentro do período do tratamento. Retorna false sem permissão.
  */
-export async function enableReminders(medication: Medication, today = todayISO()): Promise<boolean> {
+export async function enableReminders(medication: Medication, target: MedicationTarget, today = todayISO()): Promise<boolean> {
   if (!remindersSupported || !(await ensurePermission())) return false;
-  await serialized(() => schedule(medication, today));
+  await serialized(() => schedule(medication, today, target));
   return true;
 }
 
 /**
- * Mantém os lembretes deste aparelho em dia: remove os de remédios
+ * Mantém em dia os lembretes dos remédios de uma casa: remove os de remédios
  * encerrados ou removidos e refaz os que mudaram (datas, horários, perto do
- * início ou do fim do tratamento). Chamado ao abrir o app.
+ * início ou do fim do tratamento). Chamado ao abrir o app, para cada casa.
+ * `adoptLegacy`: a casa aberta assume os lembretes de antes das várias casas.
  */
-export async function syncReminders(medications: Medication[], today: string): Promise<void> {
+export async function syncReminders(
+  medications: Medication[],
+  today: string,
+  { householdId, label, adoptLegacy = false }: MedicationTarget & { adoptLegacy?: boolean },
+): Promise<void> {
   if (!remindersSupported) return;
   await serialized(async () => {
-    const keys = (await AsyncStorage.getAllKeys()).filter((k) => k.startsWith('reminders:'));
     const byId = new Map(medications.map((m) => [m.id, m]));
-    for (const key of keys) {
+    for (const key of await medicationKeys()) {
       const id = key.slice('reminders:'.length);
+      const stored = await readStored(id);
+      if (!(stored?.householdId ? stored.householdId === householdId : adoptLegacy)) continue;
       const medication = byId.get(id);
       if (!medication || !medication.active || (medication.end_on && medication.end_on < today)) {
         await disable(id);
       } else {
-        await schedule(medication, today);
+        await schedule(medication, today, { householdId, label });
       }
     }
   });
@@ -266,8 +336,11 @@ interface StoredHouseReminders extends StoredReminders {
   weatherPlace?: string | null;
 }
 
-async function readHouseScheduled(): Promise<StoredHouseReminders | null> {
-  const raw = await AsyncStorage.getItem(HOUSE_SCHEDULED_KEY).catch(() => null);
+/** Avisos agendados de uma casa (a chave sem casa é de antes das várias casas). */
+const houseScheduledKey = (householdId: string) => `${HOUSE_SCHEDULED_KEY}:${householdId}`;
+
+async function readHouseScheduled(key: string): Promise<StoredHouseReminders | null> {
+  const raw = await AsyncStorage.getItem(key).catch(() => null);
   return raw ? (JSON.parse(raw) as StoredHouseReminders) : null;
 }
 
@@ -294,36 +367,42 @@ export async function setHouseReminderKind(kind: HouseReminderKind, enabled: boo
     const kinds = { ...(await getHouseReminderKinds()), [kind]: enabled };
     await AsyncStorage.setItem(HOUSE_KINDS_KEY, JSON.stringify(kinds));
     if (enabled) return;
-    const scheduled = await readHouseScheduled();
-    if (!scheduled?.kinds) {
-      // Formato antigo, sem o tipo de cada aviso: cancela tudo; a próxima sincronização refaz.
-      if (scheduled) await cancelAll(scheduled.ids);
-      await AsyncStorage.removeItem(HOUSE_SCHEDULED_KEY);
-      return;
-    }
-    const drop = scheduled.ids.filter((_, i) => scheduled.kinds?.[i] === kind);
-    await cancelAll(drop);
-    const keep = scheduled.ids.map((id, i) => ({ id, kind: scheduled.kinds![i] })).filter((r) => r.kind !== kind);
-    // Desligando o tipo: aviso de atraso dele que já tocou fica marcado, para não
-    // tocar de novo se o tipo for religado; o que ainda não tocou sai, para
-    // poder avisar quando religar.
-    const now = `${todayISO()}T${currentTimeHHMM()}`;
-    const ofKind = (o: { kind?: HouseReminderKind }) => (o.kind ?? 'bills') === kind;
-    const rang = (scheduled.overdue ?? []).filter((o) => ofKind(o) && o.at <= now).map((o) => o.key);
-    await AsyncStorage.setItem(
-      HOUSE_SCHEDULED_KEY,
-      // Assinatura vazia: a próxima sincronização refaz com os dados.
-      JSON.stringify({
-        ...scheduled,
-        ids: keep.map((r) => r.id),
-        kinds: keep.map((r) => r.kind),
-        overdue: (scheduled.overdue ?? []).filter((o) => !ofKind(o)),
-        warned: [...new Set([...(scheduled.warned ?? []), ...rang])],
-        signature: '',
-      } satisfies StoredHouseReminders),
-    );
+    // Em todas as casas.
+    for (const key of await houseScheduledKeys()) await dropKind(key, kind);
   });
   return true;
+}
+
+/** Cancela os avisos agendados de um tipo numa casa (ver setHouseReminderKind). */
+async function dropKind(key: string, kind: HouseReminderKind): Promise<void> {
+  const scheduled = await readHouseScheduled(key);
+  if (!scheduled?.kinds) {
+    // Formato antigo, sem o tipo de cada aviso: cancela tudo; a próxima sincronização refaz.
+    if (scheduled) await cancelAll(scheduled.ids);
+    await AsyncStorage.removeItem(key);
+    return;
+  }
+  const drop = scheduled.ids.filter((_, i) => scheduled.kinds?.[i] === kind);
+  await cancelAll(drop);
+  const keep = scheduled.ids.map((id, i) => ({ id, kind: scheduled.kinds![i] })).filter((r) => r.kind !== kind);
+  // Desligando o tipo: aviso de atraso dele que já tocou fica marcado, para não
+  // tocar de novo se o tipo for religado; o que ainda não tocou sai, para
+  // poder avisar quando religar.
+  const now = `${todayISO()}T${currentTimeHHMM()}`;
+  const ofKind = (o: { kind?: HouseReminderKind }) => (o.kind ?? 'bills') === kind;
+  const rang = (scheduled.overdue ?? []).filter((o) => ofKind(o) && o.at <= now).map((o) => o.key);
+  await AsyncStorage.setItem(
+    key,
+    // Assinatura vazia: a próxima sincronização refaz com os dados.
+    JSON.stringify({
+      ...scheduled,
+      ids: keep.map((r) => r.id),
+      kinds: keep.map((r) => r.kind),
+      overdue: (scheduled.overdue ?? []).filter((o) => !ofKind(o)),
+      warned: [...new Set([...(scheduled.warned ?? []), ...rang])],
+      signature: '',
+    } satisfies StoredHouseReminders),
+  );
 }
 
 /** Algum aviso da casa ligado neste aparelho? */
@@ -331,17 +410,29 @@ export async function anyHouseReminderKind(): Promise<boolean> {
   return Object.values(await getHouseReminderKinds()).some(Boolean);
 }
 
-/** Refaz os avisos da casa deste aparelho com os dados de agora (ao abrir e ao mudar a escolha). */
-export async function syncHouseReminders(
-  data: HouseReminderData,
-  today = todayISO(),
-  nowTime = currentTimeHHMM(),
-): Promise<void> {
+export interface HouseReminderTarget {
+  householdId: string;
+  /** Nome da casa no aviso, para quem tem mais de uma. */
+  label?: string;
+  /** A casa aberta assume os avisos agendados antes das várias casas. */
+  adoptLegacy?: boolean;
+  /** Teto de avisos desta casa (com várias, o teto é dividido). */
+  limit?: number;
+  today?: string;
+  nowTime?: string;
+}
+
+/** Refaz os avisos de uma casa neste aparelho com os dados de agora (ao abrir e ao mudar a escolha). */
+export async function syncHouseReminders(data: HouseReminderData, target: HouseReminderTarget): Promise<void> {
   if (!remindersSupported) return;
+  const { householdId, label, adoptLegacy = false, today = todayISO(), nowTime = currentTimeHHMM() } = target;
   await serialized(async () => {
     const Notifications = notifications();
     const kinds = await getHouseReminderKinds();
-    const previous = await readHouseScheduled();
+    const key = houseScheduledKey(householdId);
+    const own = await readHouseScheduled(key);
+    const legacy = !own && adoptLegacy ? await readHouseScheduled(HOUSE_SCHEDULED_KEY) : null;
+    const previous = own ?? legacy;
     // A casa mudou de local e a previsão do novo ainda não veio (sem
     // internet): os avisos do clima do lugar antigo saem, em vez de ficar.
     const moved =
@@ -383,14 +474,17 @@ export async function syncHouseReminders(
       unknown.has(kind) && (!live || live.has(previous!.ids[i])) ? [{ id: previous!.ids[i], kind }] : [],
     );
     const heldIds = new Set(held.map((r) => r.id));
-    const limit = Math.min(HOUSE_REMINDER_LIMIT, SCHEDULED_NOTIFICATIONS_LIMIT - others) - held.length;
+    const limit = Math.min(target.limit ?? HOUSE_REMINDER_LIMIT, SCHEDULED_NOTIFICATIONS_LIMIT - others) - held.length;
     const planKinds = {
       ...kinds,
       appointments: kinds.appointments && !unknown.has('appointments'),
       vaccines: kinds.vaccines && !unknown.has('vaccines'),
       weather: kinds.weather && !unknown.has('weather'),
     };
-    const plan = planHouseReminders({ ...data, weather, kinds: planKinds, today, nowTime, limit, overdueWarned: warned });
+    // Com mais de uma casa, o aviso diz de qual é.
+    const plan = planHouseReminders({ ...data, weather, kinds: planKinds, today, nowTime, limit, overdueWarned: warned }).map((r) =>
+      label ? { ...r, title: `${r.title} · ${label}` } : r,
+    );
     const overdue = [
       ...(previous?.overdue ?? []).filter((o) => o.kind && unknown.has(o.kind)),
       ...plan.flatMap((r) => (r.overdue ? [{ key: r.overdue, at: `${r.date}T${r.time}`, kind: r.kind }] : [])),
@@ -405,10 +499,11 @@ export async function syncHouseReminders(
       if (
         keep.length !== previous.ids.length ||
         JSON.stringify(previous.warned ?? []) !== JSON.stringify(warned) ||
-        previous.weatherPlace !== weatherPlace
+        previous.weatherPlace !== weatherPlace ||
+        legacy
       ) {
         await AsyncStorage.setItem(
-          HOUSE_SCHEDULED_KEY,
+          key,
           JSON.stringify({
             ...previous,
             ids: keep.map((r) => r.id),
@@ -417,6 +512,7 @@ export async function syncHouseReminders(
             weatherPlace,
           } satisfies StoredHouseReminders),
         );
+        if (legacy) await AsyncStorage.removeItem(HOUSE_SCHEDULED_KEY);
       }
       return;
     }
@@ -438,7 +534,7 @@ export async function syncHouseReminders(
       );
     }
     await AsyncStorage.setItem(
-      HOUSE_SCHEDULED_KEY,
+      key,
       JSON.stringify({
         ids: [...held.map((r) => r.id), ...ids],
         kinds: [...held.map((r) => r.kind), ...plan.map((r) => r.kind)],
@@ -448,5 +544,6 @@ export async function syncHouseReminders(
         weatherPlace,
       } satisfies StoredHouseReminders),
     );
+    if (legacy) await AsyncStorage.removeItem(HOUSE_SCHEDULED_KEY);
   });
 }

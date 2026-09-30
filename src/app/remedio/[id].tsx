@@ -16,6 +16,7 @@ import {
 import { disableReminders, enableReminders, hasReminders, remindersSupported } from '@/lib/reminders';
 import { errorMessage } from '@/lib/supabase';
 import { openNewPerson, PersonChips } from '@/features/health/PersonChips';
+import { useHouseReminderTarget } from '@/features/useReminderSync';
 import type { Medication, Person } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
 import { Button, Card, Chip, DateField, ErrorNotice, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
@@ -44,6 +45,8 @@ function MedicationForm({
 }) {
   const c = useColors();
   const save = useSaveMedication();
+  // A casa do remédio (e o nome dela no aviso, com mais de uma casa).
+  const target = useHouseReminderTarget();
   const archive = useArchiveMedication();
   // Remédios antigos só tinham o nome: acha a pessoa pelo nome.
   const [personId, setPersonId] = useState<string | null>(
@@ -148,8 +151,8 @@ function MedicationForm({
       {
         onSuccess: async (saved) => {
           try {
-            if (remind) {
-              const ok = await enableReminders(saved);
+            if (remind && target) {
+              const ok = await enableReminders(saved, target);
               if (!ok) notify('Lembretes desativados', 'Permita notificações nas configurações do aparelho.');
             } else {
               await disableReminders(saved.id);

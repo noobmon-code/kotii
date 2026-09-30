@@ -1,17 +1,28 @@
-import { useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo } from 'react';
 import { AppState } from 'react-native';
 
-import { useBills } from '@/data/finance';
-import { useChores, useMedications } from '@/data/home';
-import { useAppointments, usePeople, useVaccines } from '@/data/health';
-import { useDocuments, useEquipmentList } from '@/data/house';
-import { forecastQuery, useForecast, useHouseholdLocation, type HouseholdLocation } from '@/data/weather';
+import { fetchBills, useBills } from '@/data/finance';
+import { fetchChores, fetchMedications, useChores, useMedications } from '@/data/home';
+import { fetchAppointments, fetchPeople, fetchVaccines, useAppointments, usePeople, useVaccines } from '@/data/health';
+import { fetchDocuments, fetchEquipmentList, useDocuments, useEquipmentList } from '@/data/house';
+import { fetchHouseholdLocation, forecastQuery, useForecast, useHouseholdLocation, type HouseholdLocation } from '@/data/weather';
 import { todayISO, toISODate } from '@/domain/dates';
 import { pendingNextDoses } from '@/domain/health';
+import { HOUSE_REMINDER_LIMIT } from '@/domain/houseReminders';
 import { currentTimeHHMM } from '@/domain/medications';
 import { weatherContext, weatherMornings, type Forecast } from '@/domain/weather';
-import { anyHouseReminderKind, syncHouseReminders, syncReminders, type HouseReminderData } from '@/lib/reminders';
+import { type HouseholdSummary, useHousehold } from '@/lib/auth';
+import {
+  anyHouseReminderKind,
+  householdsWithMedicationReminders,
+  pruneHouseholdReminders,
+  syncHouseReminders,
+  syncReminders,
+  type HouseReminderData,
+  type HouseReminderTarget,
+} from '@/lib/reminders';
+import { householdClient } from '@/lib/supabase';
 
 type Rows<T extends () => { data?: unknown }> = NonNullable<ReturnType<T>['data']>;
 
@@ -130,39 +141,115 @@ export function useHouseReminderData() {
   return { data, refetch };
 }
 
+/** Com várias casas, o teto de avisos da casa é dividido entre elas (e sobra vaga para os remédios). */
+export const houseReminderLimit = (houses: number) => Math.max(8, Math.floor(HOUSE_REMINDER_LIMIT / Math.max(1, houses)));
+
+/** Para onde vão os avisos da casa aberta: ela, o nome dela (com mais de uma) e o teto. */
+export function useHouseReminderTarget(): HouseReminderTarget | null {
+  const state = useHousehold().data;
+  const id = state?.household.id;
+  const name = state?.household.name;
+  const count = state?.households.length ?? 1;
+  return useMemo(
+    () => (id ? { householdId: id, label: count > 1 ? name : undefined, adoptLegacy: true, limit: houseReminderLimit(count) } : null),
+    [id, name, count],
+  );
+}
+
+/**
+ * Os lembretes das outras casas (a aberta segue pelos dados da tela): busca,
+ * em segundo plano, só o que tem lembrete ligado neste aparelho. Sem
+ * internet, o que já está agendado fica.
+ */
+export async function syncOtherHouses(queryClient: QueryClient, households: Pick<HouseholdSummary, 'id' | 'name'>[], activeId: string) {
+  // Casas de que a pessoa saiu por outro aparelho: os lembretes delas saem.
+  await pruneHouseholdReminders(households.map((h) => h.id));
+  const others = households.filter((h) => h.id !== activeId);
+  if (!others.length) return;
+  const today = todayISO();
+  const withMedications = await householdsWithMedicationReminders();
+  const houseKinds = await anyHouseReminderKind();
+  for (const house of others) {
+    const db = householdClient(house.id);
+    try {
+      if (withMedications.has(house.id)) {
+        await syncReminders(await fetchMedications(db), today, { householdId: house.id, label: house.name });
+      }
+      if (!houseKinds) continue;
+      const optional = <T,>(promise: Promise<T>) => promise.catch(() => undefined);
+      const [bills, documents, chores, appointments, vaccines, people, location, equipment] = await Promise.all([
+        fetchBills(db),
+        fetchDocuments(db),
+        fetchChores(db),
+        optional(fetchAppointments(db)),
+        optional(fetchVaccines(db)),
+        optional(fetchPeople(db)),
+        optional(fetchHouseholdLocation(db)),
+        optional(fetchEquipmentList(db)),
+      ]);
+      const forecast = location ? await queryClient.fetchQuery(forecastQuery(location)).catch(() => undefined) : undefined;
+      await syncHouseReminders(
+        toHouseReminderData(bills, documents, chores, appointments, vaccines, people, { location, forecast, equipment }),
+        { householdId: house.id, label: house.name, limit: houseReminderLimit(households.length) },
+      );
+    } catch {
+      // Sem internet (ou a casa sumiu no meio): tenta de novo na próxima vez.
+    }
+  }
+}
+
 /**
  * Refaz os lembretes deste aparelho ao abrir o app e ao voltar para ele: a
  * janela de doses avulsas anda, tratamentos encerrados saem, contas pagas e
  * tarefas feitas mudam de data. Ao voltar, busca tudo de novo (pode ter
- * mudado em outro celular).
+ * mudado em outro celular). Vale para todas as casas da pessoa: a aberta pelos
+ * dados da tela, as outras em segundo plano.
  */
 export function useReminderSync() {
   const { data, refetch } = useMedications();
   const house = useHouseReminderData();
   const { refetch: refetchHouse } = house;
+  const target = useHouseReminderTarget();
+  const households = useHousehold().data?.households;
+  const queryClient = useQueryClient();
+  // Mesma lista enquanto as casas não mudam.
+  const housesKey = JSON.stringify(households?.map((h) => [h.id, h.name]) ?? []);
 
   useEffect(() => {
-    if (data) syncReminders(data, todayISO()).catch(() => undefined);
-  }, [data]);
+    if (data && target) syncReminders(data, todayISO(), target).catch(() => undefined);
+  }, [data, target]);
 
   useEffect(() => {
-    if (house.data) syncHouseReminders(house.data).catch(() => undefined);
-  }, [house.data]);
+    if (house.data && target) syncHouseReminders(house.data, target).catch(() => undefined);
+  }, [house.data, target]);
+
+  useEffect(() => {
+    const houses = JSON.parse(housesKey) as [string, string][];
+    const activeId = target?.householdId;
+    if (!activeId || !houses.length) return;
+    const list = houses.map(([id, name]) => ({ id, name }));
+    const run = () => syncOtherHouses(queryClient, list, activeId).catch(() => undefined);
+    run();
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') run();
+    });
+    return () => subscription.remove();
+  }, [housesKey, target?.householdId, queryClient]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
-      if (state !== 'active') return;
+      if (state !== 'active' || !target) return;
       refetch()
-        .then((result) => (result.data ? syncReminders(result.data, todayISO()) : undefined))
+        .then((result) => (result.data ? syncReminders(result.data, todayISO(), target) : undefined))
         .catch(() => undefined);
       // Refaz com o resultado da busca, e não pelo efeito acima: dados iguais
       // mantêm o mesmo objeto, mas o dia pode ter mudado e a janela precisa andar.
       // Sem nenhum aviso da casa ligado, nem busca.
       anyHouseReminderKind()
         .then((on) => (on ? refetchHouse() : null))
-        .then((fresh) => (fresh ? syncHouseReminders(fresh) : undefined))
+        .then((fresh) => (fresh ? syncHouseReminders(fresh, target) : undefined))
         .catch(() => undefined);
     });
     return () => subscription.remove();
-  }, [refetch, refetchHouse]);
+  }, [refetch, refetchHouse, target]);
 }

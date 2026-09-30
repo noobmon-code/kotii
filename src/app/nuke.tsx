@@ -10,6 +10,7 @@ import { describeAction, historyForApi, NUKE_SUGGESTIONS, type NukeAction, type 
 import {
   clearConversation,
   conversationEpoch,
+  conversationOwner,
   newMessageId,
   setPending,
   updateConversation,
@@ -35,11 +36,13 @@ export default function NukeScreen() {
   const c = useColors();
   const glass = useGlassStyle();
   const { session } = useAuth();
-  const userId = session?.user.id;
-  const name = useHousehold().data?.me.display_name ?? '';
+  const household = useHousehold().data;
+  const name = household?.me.display_name ?? '';
+  // A conversa é desta pessoa nesta casa (cada casa tem a sua).
+  const owner = session && household ? conversationOwner(session.user.id, household.household.id) : undefined;
   const today = todayISO();
   const snapshot = useNukeContext(today);
-  const { messages, pending } = useNukeConversation(userId);
+  const { messages, pending } = useNukeConversation(owner);
   const ask = useAskNuke();
   const runAction = useRunNukeAction();
   const [draft, setDraft] = useState('');
@@ -66,7 +69,7 @@ export default function NukeScreen() {
   }, []);
 
   const context = snapshot.status === 'ready' ? snapshot.context : null;
-  const ready = Boolean(userId && context !== null);
+  const ready = Boolean(owner && context !== null);
   const busy = pending;
 
   // A resposta chegou (a pergunta saiu da espera com uma mensagem do Nuke no
@@ -81,11 +84,11 @@ export default function NukeScreen() {
 
   function send(text: string) {
     const body = text.trim();
-    if (!body || !userId || context === null || busy) return;
+    if (!body || !owner || context === null || busy) return;
     const question: NukeMessage = { id: newMessageId(), role: 'user', text: body };
     const history = historyForApi([...messages, question]);
-    updateConversation(userId, (m) => [...m, question]);
-    setPending(userId, true);
+    updateConversation(owner, (m) => [...m, question]);
+    setPending(owner, true);
     setDraft('');
     // mutateAsync: a resposta entra na conversa mesmo se a tela fechar antes,
     // mas não se a conversa for apagada enquanto isso.
@@ -94,24 +97,24 @@ export default function NukeScreen() {
       .mutateAsync({ messages: history, context, today })
       .then((answer) => {
         updateConversation(
-          userId,
+          owner,
           (m) => [...m, { id: newMessageId(), role: 'assistant', text: answer.reply, actions: answer.actions }],
           since,
         );
       })
       .catch((err) => {
-        updateConversation(userId, (m) => [...m, { id: newMessageId(), role: 'assistant', text: errorMessage(err), error: true }], since);
+        updateConversation(owner, (m) => [...m, { id: newMessageId(), role: 'assistant', text: errorMessage(err), error: true }], since);
       })
-      .finally(() => setPending(userId, false, since));
+      .finally(() => setPending(owner, false, since));
   }
 
   async function run(message: NukeMessage, index: number, action: NukeAction) {
-    if (!userId) return;
+    if (!owner) return;
     const key = `${message.id}:${index}`;
     setRunning(key);
     try {
       const note = await runAction(action);
-      updateConversation(userId, (m) =>
+      updateConversation(owner, (m) =>
         m.map((msg) =>
           msg.id === message.id
             ? { ...msg, actions: msg.actions?.map((a, i) => (i === index ? { ...a, done: action.type !== 'open_screen', note } : a)) }
@@ -144,9 +147,9 @@ export default function NukeScreen() {
             icon="broom"
             label="Começar outra conversa"
             onPress={() =>
-              userId &&
+              owner &&
               messages.length > 0 &&
-              confirmAction('Nova conversa', 'Apagar esta conversa com o Nuke?', 'Apagar', () => clearConversation(userId))
+              confirmAction('Nova conversa', 'Apagar esta conversa com o Nuke?', 'Apagar', () => clearConversation(owner))
             }
           />
         </View>

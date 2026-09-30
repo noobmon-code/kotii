@@ -3,7 +3,8 @@ import { isAuthRetryableFetchError, type Session } from '@supabase/supabase-js';
 import { useIsRestoring, useQuery } from '@tanstack/react-query';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 
-import { cacheOwners, forgetCache, resumeQueue, setSessionValid } from './queryClient';
+import { forgetActiveHousehold, getActiveHousehold, loadActiveHousehold, setActiveHousehold } from './activeHousehold';
+import { cacheHousehold, cacheOwners, forgetCache, queryClient, resumeQueue, setSessionValid } from './queryClient';
 import { supabase, unwrap } from './supabase';
 import type { Household, Member } from './types';
 
@@ -56,24 +57,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const last = readLastSession();
     // Token vencido: o Supabase precisa da internet para responder. Entra já
     // com a última conta, em vez de esperar.
-    last.then((session) => {
+    last.then(async (session) => {
       if (!confirmed && session?.expires_at && session.expires_at * 1000 < Date.now()) {
         // Sem internet para o cache antes de mostrar a conta: as consultas que
         // ela libera já nascem esperando a sessão ser renovada.
         setSessionValid(false);
-        setState({ session, loading: false, valid: false });
+        // A casa aberta neste aparelho antes de qualquer consulta da conta.
+        await loadActiveHousehold(session.user.id);
+        if (!confirmed) setState({ session, loading: false, valid: false });
       }
     });
     supabase.auth.getSession().then(async ({ data, error }) => {
       confirmed = true;
       if (data.session) {
+        await loadActiveHousehold(data.session.user.id);
         setState({ session: data.session, loading: false, valid: true });
         saveLastSession(data.session);
       } else if (error && isAuthRetryableFetchError(error)) {
         // Não renovou por falta de conexão: a conta continua; segue com a última
         // (e o cache, como sem internet, antes de ela aparecer).
         setSessionValid(false);
-        setState({ session: await last, loading: false, valid: false });
+        const session = await last;
+        if (session) await loadActiveHousehold(session.user.id);
+        setState({ session, loading: false, valid: false });
       } else {
         setState({ session: null, loading: false });
         forgetLastSession();
@@ -86,6 +92,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (session) saveLastSession(session);
       if (event === 'SIGNED_OUT') {
         forgetLastSession();
+        forgetActiveHousehold();
         forgetCache();
       }
     });
@@ -99,8 +106,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // renderização, a fila de outra conta some antes de a conexão liberar a fila.
   useEffect(() => {
     if (isRestoring || !userId) return;
-    if (cacheOwners().some((owner) => owner !== userId)) forgetCache();
-    else resumeQueue();
+    // Cache de outra casa (a troca não chegou a ser gravada): também não serve.
+    const cached = cacheHousehold();
+    const active = getActiveHousehold();
+    if (cacheOwners().some((owner) => owner !== userId) || (cached && active && cached !== active)) forgetCache();
+    else {
+      // Cache de antes das várias casas: era da única casa, que fica aberta.
+      if (cached && !active) setActiveHousehold(userId, cached);
+      resumeQueue();
+    }
   }, [isRestoring, userId]);
 
   // Sessão vencida à espera de renovação: o cache fica como sem internet
@@ -124,23 +138,60 @@ export function useAuth() {
   return useContext(AuthContext);
 }
 
+/** Uma das casas da pessoa. */
+export interface HouseholdSummary {
+  id: string;
+  name: string;
+  role: Member['role'];
+}
+
 export interface HouseholdState {
   household: Household;
   members: Member[];
   me: Member;
+  /** Todas as casas da pessoa, da aberta mais recentemente para a menos. */
+  households: HouseholdSummary[];
 }
 
-/** Família do usuário logado; null enquanto ele não criou/entrou em uma. */
+/** Guardada no aparelho antes das várias casas, a casa vem sem a lista: era a única. */
+function withHouseholds(state: HouseholdState | null): HouseholdState | null {
+  if (!state || state.households) return state;
+  return { ...state, households: [{ id: state.household.id, name: state.household.name, role: state.me.role }] };
+}
+
+/**
+ * A casa aberta neste aparelho (e as outras da pessoa); null enquanto ela não
+ * criou nem entrou em nenhuma. Se o aparelho estava numa casa de que a
+ * pessoa saiu (por outro aparelho) ou nunca abriu uma, abre a mais recente.
+ */
 export function useHousehold() {
   const { session } = useAuth();
   const userId = session?.user.id;
   return useQuery({
     queryKey: ['household', userId],
     enabled: Boolean(userId),
+    select: withHouseholds,
     queryFn: async (): Promise<HouseholdState | null> => {
+      await loadActiveHousehold(userId!);
+      const houses = (unwrap(await supabase.rpc('my_households')) ?? []) as HouseholdSummary[];
+      const current = getActiveHousehold();
+      const pick = houses.find((h) => h.id === current) ?? houses[0];
+      if (pick?.id !== current) {
+        await setActiveHousehold(userId!, pick?.id ?? null);
+        // O que foi buscado até aqui era de outra casa (ou de nenhuma).
+        queryClient.resetQueries({ predicate: (query) => query.queryKey[0] !== 'household' }).catch(() => undefined);
+      }
+      if (!pick) return null;
+      // A casa aberta também fica registrada para esta sessão: a lista ao vivo
+      // (tempo real) não leva o cabeçalho da casa. Falhar aqui não impede abrir.
+      supabase.rpc('select_household', { p_household_id: pick.id }).then(
+        () => undefined,
+        () => undefined,
+      );
       const households = unwrap(await supabase.from('households').select('id, name, invite_code, created_by'));
-      const household = (households as Household[])[0];
-      if (!household) return null;
+      const household = (households as Household[]).find((h) => h.id === pick.id);
+      // Saiu da casa entre as duas buscas: a próxima tentativa abre outra.
+      if (!household) throw new Error('Não foi possível abrir a casa. Tente de novo.');
       const members = unwrap(
         await supabase
           .from('household_members')
@@ -148,7 +199,7 @@ export function useHousehold() {
           .order('joined_at'),
       ) as Member[];
       const me = members.find((m) => m.user_id === userId)!;
-      return { household, members, me };
+      return { household, members, me, households: houses };
     },
   });
 }

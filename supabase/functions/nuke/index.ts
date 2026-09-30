@@ -15,6 +15,7 @@ import { createClient } from '@supabase/supabase-js';
 import { QuotaError, refundAiQuota, takeAiQuota } from '../_shared/aiQuota.ts';
 import { chatStructured } from '../_shared/chat.ts';
 import { ExtractionError, visionConfig } from '../_shared/vision.ts';
+import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
 import {
   buildMenuSystem,
   buildSystem,
@@ -28,7 +29,7 @@ import {
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': ALLOWED_HEADERS,
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
@@ -49,7 +50,7 @@ Deno.serve(async (req) => {
   const db = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_ANON_KEY') ?? Deno.env.get('SUPABASE_PUBLISHABLE_KEY')!,
-    { global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } } },
+    { global: { headers: callerHeaders(req) } },
   );
   const { data: userData } = await db.auth.getUser();
   if (!userData.user) return json({ error: 'Entre na sua conta para falar com o Nuke.' }, 401);

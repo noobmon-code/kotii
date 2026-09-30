@@ -1,6 +1,7 @@
 // Aparelhos da casa (garantia, fotos, manutenção) e documentos da família.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Chore, ChoreCompletion, Equipment, HomeDocument } from '@/lib/types';
@@ -23,12 +24,12 @@ export function removeDocumentImages(paths: string[]): Promise<void> {
 const EQUIPMENT_COLUMNS =
   'id, name, category, brand, model, serial_number, location, purchased_on, price, store, warranty_until, notes, file_paths, created_at';
 
+export async function fetchEquipmentList(db: SupabaseClient = supabase): Promise<Equipment[]> {
+  return unwrap(await db.from('equipment').select(EQUIPMENT_COLUMNS).order('name')) as Equipment[];
+}
+
 export function useEquipmentList() {
-  return useQuery({
-    queryKey: ['equipment'],
-    queryFn: async () =>
-      unwrap(await supabase.from('equipment').select(EQUIPMENT_COLUMNS).order('name')) as Equipment[],
-  });
+  return useQuery({ queryKey: ['equipment'], queryFn: () => fetchEquipmentList() });
 }
 
 export function useEquipment(id: string | undefined) {
@@ -108,18 +109,14 @@ export function useMaintenance(equipmentId: string | undefined) {
 const DOCUMENT_COLUMNS =
   'id, person_id, kind, title, number, issued_on, expires_on, remind_days, notes, file_paths, created_at';
 
+export async function fetchDocuments(db: SupabaseClient = supabase): Promise<HomeDocument[]> {
+  return unwrap(
+    await db.from('documents').select(DOCUMENT_COLUMNS).order('expires_on', { ascending: true, nullsFirst: false }).order('title'),
+  ) as HomeDocument[];
+}
+
 export function useDocuments() {
-  return useQuery({
-    queryKey: ['documents'],
-    queryFn: async () =>
-      unwrap(
-        await supabase
-          .from('documents')
-          .select(DOCUMENT_COLUMNS)
-          .order('expires_on', { ascending: true, nullsFirst: false })
-          .order('title'),
-      ) as HomeDocument[],
-  });
+  return useQuery({ queryKey: ['documents'], queryFn: () => fetchDocuments() });
 }
 
 export function useDocument(id: string | undefined) {

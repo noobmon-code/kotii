@@ -1,6 +1,7 @@
 // Despensa, tarefas da casa e remédios.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { SAME_PURCHASE_DAYS, type PantryEntry } from '@/domain/cartPantry';
 import { addDays, diffDays } from '@/domain/dates';
@@ -96,14 +97,12 @@ export function useConsumePantryItem() {
 
 const CHORE_COLUMNS = 'id, title, notes, recurrence, interval_count, due_on, assigned_to, active, equipment_id, kid_id, points';
 
+export async function fetchChores(db: SupabaseClient = supabase): Promise<Chore[]> {
+  return unwrap(await db.from('chores').select(CHORE_COLUMNS).eq('active', true).order('due_on').order('title')) as Chore[];
+}
+
 export function useChores() {
-  return useQuery({
-    queryKey: ['chores'],
-    queryFn: async () =>
-      unwrap(
-        await supabase.from('chores').select(CHORE_COLUMNS).eq('active', true).order('due_on').order('title'),
-      ) as Chore[],
-  });
+  return useQuery({ queryKey: ['chores'], queryFn: () => fetchChores() });
 }
 
 export function useChore(id: string | undefined) {
@@ -271,16 +270,14 @@ const fromRow = ({ medication_doses, ...m }: MedicationRow): Medication => ({
   taken_count: medication_doses?.[0]?.count ?? 0,
 });
 
+export async function fetchMedications(db: SupabaseClient = supabase): Promise<Medication[]> {
+  return (
+    unwrap(await db.from('medications').select(MEDICATION_COLUMNS).eq('active', true).order('person_name').order('name')) as MedicationRow[]
+  ).map(fromRow);
+}
+
 export function useMedications() {
-  return useQuery({
-    queryKey: ['medications'],
-    queryFn: async () =>
-      (
-        unwrap(
-          await supabase.from('medications').select(MEDICATION_COLUMNS).eq('active', true).order('person_name').order('name'),
-        ) as MedicationRow[]
-      ).map(fromRow),
-  });
+  return useQuery({ queryKey: ['medications'], queryFn: () => fetchMedications() });
 }
 
 export function useMedication(id: string | undefined) {
