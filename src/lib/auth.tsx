@@ -182,6 +182,12 @@ export function useHousehold() {
         queryClient.resetQueries({ predicate: (query) => query.queryKey[0] !== 'household' }).catch(() => undefined);
       }
       if (!pick) return null;
+      // A casa aberta também fica registrada para esta sessão: a lista ao vivo
+      // (tempo real) não leva o cabeçalho da casa. Falhar aqui não impede abrir.
+      supabase.rpc('select_household', { p_household_id: pick.id }).then(
+        () => undefined,
+        () => undefined,
+      );
       const households = unwrap(await supabase.from('households').select('id, name, invite_code, created_by'));
       const household = (households as Household[]).find((h) => h.id === pick.id);
       // Saiu da casa entre as duas buscas: a próxima tentativa abre outra.

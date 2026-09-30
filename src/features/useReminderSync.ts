@@ -173,7 +173,7 @@ export async function syncOtherHouses(queryClient: QueryClient, households: Pick
     const db = householdClient(house.id);
     try {
       if (withMedications.has(house.id)) {
-        await syncReminders(await fetchMedications(db), today, { householdId: house.id });
+        await syncReminders(await fetchMedications(db), today, { householdId: house.id, label: house.name });
       }
       if (!houseKinds) continue;
       const optional = <T,>(promise: Promise<T>) => promise.catch(() => undefined);

@@ -182,19 +182,25 @@ export async function householdsWithMedicationReminders(): Promise<Set<string | 
   return out;
 }
 
-function contentOf(medication: Medication) {
+/** De qual casa é o remédio; com mais de uma casa, o nome dela vai no aviso. */
+export interface MedicationTarget {
+  householdId: string;
+  label?: string;
+}
+
+function contentOf(medication: Medication, label?: string) {
   return {
-    title: `${medication.name} — ${medication.person_name}`,
+    title: `${medication.name} — ${medication.person_name}${label ? ` · ${label}` : ''}`,
     body: medication.dosage ? `Hora de tomar: ${medication.dosage}` : 'Hora de tomar o remédio',
     data: { medicationId: medication.id },
   };
 }
 
 /** Agenda conforme o plano (diário ou dose a dose) e guarda o que foi agendado. */
-async function schedule(medication: Medication, today: string, householdId: string): Promise<void> {
+async function schedule(medication: Medication, today: string, { householdId, label }: MedicationTarget): Promise<void> {
   const Notifications = notifications();
   const plan = planReminders(toPlanInput(medication), today, currentTimeHHMM());
-  const content = contentOf(medication);
+  const content = contentOf(medication, label);
   const signature = JSON.stringify({ plan, content });
   const previous = await readStored(medication.id);
   if (previous?.signature === signature && previous.householdId === householdId) return;
@@ -258,12 +264,12 @@ function toPlanInput(medication: Medication) {
 }
 
 /**
- * Liga os lembretes deste remédio (da casa `householdId`) neste aparelho, só
+ * Liga os lembretes deste remédio (da casa `target`) neste aparelho, só
  * dentro do período do tratamento. Retorna false sem permissão.
  */
-export async function enableReminders(medication: Medication, householdId: string, today = todayISO()): Promise<boolean> {
+export async function enableReminders(medication: Medication, target: MedicationTarget, today = todayISO()): Promise<boolean> {
   if (!remindersSupported || !(await ensurePermission())) return false;
-  await serialized(() => schedule(medication, today, householdId));
+  await serialized(() => schedule(medication, today, target));
   return true;
 }
 
@@ -276,7 +282,7 @@ export async function enableReminders(medication: Medication, householdId: strin
 export async function syncReminders(
   medications: Medication[],
   today: string,
-  { householdId, adoptLegacy = false }: { householdId: string; adoptLegacy?: boolean },
+  { householdId, label, adoptLegacy = false }: MedicationTarget & { adoptLegacy?: boolean },
 ): Promise<void> {
   if (!remindersSupported) return;
   await serialized(async () => {
@@ -289,7 +295,7 @@ export async function syncReminders(
       if (!medication || !medication.active || (medication.end_on && medication.end_on < today)) {
         await disable(id);
       } else {
-        await schedule(medication, today, householdId);
+        await schedule(medication, today, { householdId, label });
       }
     }
   });

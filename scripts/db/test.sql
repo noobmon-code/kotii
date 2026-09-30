@@ -1407,6 +1407,28 @@ begin
   end;
 end $$;
 
+-- Tempo real: sem cabeçalho, só com o token; vale a casa que a sessão abriu.
+do $$
+declare
+  h1 uuid := current_setting('test.hh_h1')::uuid;
+  h2 uuid := current_setting('test.hh_h2')::uuid;
+begin
+  perform set_config('request.jwt.claims', json_build_object('sub', auth.uid(), 'session_id', 'sessao-1')::text, true);
+  perform public.select_household(h2);
+  assert public.current_household_id() = h2, 'no header: the household this session opened';
+  assert (select array_agg(name) from public.shopping_lists) = array['Lista H2'], 'realtime sees the open household';
+  perform set_config('request.headers', json_build_object('x-household-id', h1)::text, true);
+  assert public.current_household_id() = h1, 'the header wins over the session';
+  perform set_config('request.headers', '', true);
+  perform set_config('request.jwt.claims', json_build_object('sub', auth.uid(), 'session_id', 'sessao-2')::text, true);
+  assert public.current_household_id() = h1, 'a session that never chose: the first household';
+  begin
+    perform 1 from public.household_sessions;
+    raise exception 'FAIL: read household_sessions directly';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
 -- Entra na casa A pelo código; de novo, não.
 select public.join_household(:'invite_code', 'Heitor') \gset
 do $$
@@ -1450,6 +1472,8 @@ begin
   assert not exists (select 1 from public.my_households() where id = h2), 'H2 is gone';
   assert (select array_agg(name) from public.shopping_lists) = array['Lista H1'], 'the open household is untouched';
   perform set_config('request.headers', '', true);
+  perform set_config('request.jwt.claims', json_build_object('sub', auth.uid(), 'session_id', 'sessao-1')::text, true);
+  assert public.current_household_id() = h1, 'the session whose household is gone falls back to the first';
 end $$;
 reset role;
 delete from storage.objects where name like '%/item-a.jpg';

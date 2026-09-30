@@ -100,7 +100,7 @@ describe('reminder scheduling', () => {
 
   it('repeats weekly on the chosen weekdays (1 = domingo no expo-notifications)', async () => {
     await withScheduler(async (reminders, scheduled) => {
-      await reminders.enableReminders({ ...medication('2026-09-01', null), frequency: 'weekdays', weekdays: [0, 3], times: ['09:00'] }, 'casa', '2026-09-26');
+      await reminders.enableReminders({ ...medication('2026-09-01', null), frequency: 'weekdays', weekdays: [0, 3], times: ['09:00'] }, { householdId: 'casa' }, '2026-09-26');
       expect(scheduled.map((r) => r.trigger)).toEqual([
         { type: 'weekly', weekday: 1, hour: 9, minute: 0, channelId: 'remedios' },
         { type: 'weekly', weekday: 4, hour: 9, minute: 0, channelId: 'remedios' },
@@ -110,17 +110,17 @@ describe('reminder scheduling', () => {
 
   it('does not ring before a future start and keeps doses inside the treatment', async () => {
     await withScheduler(async (reminders, scheduled) => {
-      expect(await reminders.enableReminders(medication('2026-09-28', '2026-09-29'), 'casa', '2026-09-26')).toBe(true);
+      expect(await reminders.enableReminders(medication('2026-09-28', '2026-09-29'), { householdId: 'casa' }, '2026-09-26')).toBe(true);
       expect(scheduled.map((r) => r.trigger.type)).toEqual(['date', 'date', 'date', 'date']);
       // Mesmo plano: nada é reagendado.
-      await reminders.enableReminders(medication('2026-09-28', '2026-09-29'), 'casa', '2026-09-26');
+      await reminders.enableReminders(medication('2026-09-28', '2026-09-29'), { householdId: 'casa' }, '2026-09-26');
       expect(scheduled).toHaveLength(4);
     });
   });
 
   it('does not double-schedule when syncs overlap', async () => {
     await withScheduler(async (reminders, scheduled) => {
-      await reminders.enableReminders(medication('2026-09-01', null), 'casa', '2026-09-26');
+      await reminders.enableReminders(medication('2026-09-01', null), { householdId: 'casa' }, '2026-09-26');
       const changed = { ...medication('2026-09-01', null), times: ['09:00'] };
       await Promise.all([
         reminders.syncReminders([changed], '2026-09-26', { householdId: 'casa' }),
@@ -133,7 +133,7 @@ describe('reminder scheduling', () => {
 
   it('uses daily repeats for ongoing treatments and drops ended ones on sync', async () => {
     await withScheduler(async (reminders, scheduled, storage) => {
-      await reminders.enableReminders(medication('2026-09-01', null), 'casa', '2026-09-26');
+      await reminders.enableReminders(medication('2026-09-01', null), { householdId: 'casa' }, '2026-09-26');
       expect(scheduled.map((r) => r.trigger.type)).toEqual(['daily', 'daily']);
       await reminders.syncReminders([medication('2026-09-01', '2026-09-20')], '2026-09-26', { householdId: 'casa' });
       expect(storage.size).toBe(0);
@@ -141,14 +141,29 @@ describe('reminder scheduling', () => {
   });
   it('com várias casas, cada sincronização mexe só nos remédios da sua casa', async () => {
     await withScheduler(async (reminders, _scheduled, storage) => {
-      await reminders.enableReminders(medication('2026-09-01', null), 'casa', '2026-09-26');
-      await reminders.enableReminders({ ...medication('2026-09-01', null), id: 'm2' }, 'praia', '2026-09-26');
+      await reminders.enableReminders(medication('2026-09-01', null), { householdId: 'casa' }, '2026-09-26');
+      await reminders.enableReminders({ ...medication('2026-09-01', null), id: 'm2' }, { householdId: 'praia' }, '2026-09-26');
       // A casa aberta não tem o remédio da praia: o dela fica.
       await reminders.syncReminders([medication('2026-09-01', null)], '2026-09-26', { householdId: 'casa' });
       expect([...storage.keys()].sort()).toEqual(['reminders:m1', 'reminders:m2']);
       // Saiu da praia: só os dela saem.
       await reminders.disableHouseholdReminders('praia');
       expect([...storage.keys()]).toEqual(['reminders:m1']);
+    });
+  });
+
+  it('com mais de uma casa, o aviso do remédio diz de qual casa é', async () => {
+    await withScheduler(async (reminders, scheduled) => {
+      await reminders.enableReminders(medication('2026-09-01', null), { householdId: 'praia' }, '2026-09-26');
+      await reminders.syncReminders([medication('2026-09-01', null)], '2026-09-26', { householdId: 'praia', label: 'Casa da praia' });
+      const titles = (scheduled as unknown as { content: { title: string } }[]).map((r) => r.content.title);
+      // Sem o nome e depois refeito com o nome da casa.
+      expect(titles).toEqual([
+        'Amoxicilina — Ana',
+        'Amoxicilina — Ana',
+        'Amoxicilina — Ana · Casa da praia',
+        'Amoxicilina — Ana · Casa da praia',
+      ]);
     });
   });
 
