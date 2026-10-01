@@ -98,11 +98,13 @@ const lastSubscription = {
 /**
  * Inscreve este navegador no servidor e devolve o id da inscrição: uma vez
  * por sessão do app, e de novo se o fuso mudou (o app ficou aberto numa
- * viagem), para os avisos diários tocarem na hora de lá.
+ * viagem), para os avisos diários tocarem na hora de lá. `fresh` confere no
+ * servidor mesmo assim: a inscrição pode ter sido apagada com o app aberto
+ * (o serviço de push a recusou).
  */
-function ensureSubscription(): Promise<string> {
+function ensureSubscription({ fresh = false }: { fresh?: boolean } = {}): Promise<string> {
   const timezone = currentTimezone();
-  if (registered?.timezone === timezone) return registered.id;
+  if (!fresh && registered?.timezone === timezone) return registered.id;
   const id: Promise<string> = (async () => {
     const { endpoint, keys } = (await browserSubscription()).toJSON();
     if (!endpoint || !keys?.p256dh || !keys.auth) throw new Error('O navegador não completou a inscrição para avisos.');
@@ -165,13 +167,13 @@ export const webScheduler = {
 /**
  * Tira da agenda do servidor o que o app não conhece mais (`keep`: os ids
  * guardados neste navegador), sobra de uma sincronização que caiu no meio.
- * Também renova a inscrição (chaves e fuso) e diz se ela mudou: aí a agenda
- * guardada no app não está no servidor e precisa ser refeita. Sem
- * permissão, nada a fazer.
+ * Também confere a inscrição no servidor (chaves e fuso) e diz se ela mudou:
+ * aí a agenda guardada no app não está no servidor e precisa ser refeita.
+ * Sem permissão, nada a fazer.
  */
 export async function pruneWebSchedule(keep: string[]): Promise<{ changed: boolean }> {
   if (!webPushSupported || !granted()) return { changed: false };
-  const subscription = await ensureSubscription();
+  const subscription = await ensureSubscription({ fresh: true });
   // Inscrição nova: nada do que o app guarda está nela; quem chamou refaz a agenda.
   const changed = subscriptionChanged;
   subscriptionChanged = false;

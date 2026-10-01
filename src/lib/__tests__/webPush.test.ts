@@ -5,12 +5,21 @@ type WebPush = typeof import('../webPush');
 // Navegador e Supabase em memória: o PushManager, a permissão, o fuso e as
 // chamadas ao banco.
 async function inBrowser(
-  scenario: (webPush: WebPush, browser: { rpc: [string, Record<string, unknown>][]; inserts: unknown[][]; setTimezone: (tz: string) => void }) => Promise<void>,
+  scenario: (
+    webPush: WebPush,
+    browser: {
+      rpc: [string, Record<string, unknown>][];
+      inserts: unknown[][];
+      setTimezone: (tz: string) => void;
+      setServerSubscription: (id: string) => void;
+    },
+  ) => Promise<void>,
   { lastSubscription }: { lastSubscription?: string } = {},
 ) {
   const rpc: [string, Record<string, unknown>][] = [];
   const inserts: unknown[][] = [];
   let timezone = 'America/Sao_Paulo';
+  let serverSubscription = 'sub-1';
   const storage = new Map<string, string>(lastSubscription ? [['nooky:push-subscription', lastSubscription]] : []);
   let current: unknown = null;
   const g = globalThis as Record<string, unknown>;
@@ -57,7 +66,7 @@ async function inBrowser(
           rpc: async (name: string, args: Record<string, unknown>) => {
             rpc.push([name, args]);
             if (name === 'push_public_key') return { data: 'BAEC', error: null };
-            if (name === 'register_push_subscription') return { data: 'sub-1', error: null };
+            if (name === 'register_push_subscription') return { data: serverSubscription, error: null };
             return { data: null, error: null };
           },
           from: () => ({
@@ -73,7 +82,12 @@ async function inBrowser(
         },
       }));
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      await scenario(require('../webPush'), { rpc, inserts, setTimezone: (tz) => (timezone = tz) });
+      await scenario(require('../webPush'), {
+        rpc,
+        inserts,
+        setTimezone: (tz) => (timezone = tz),
+        setServerSubscription: (id) => (serverSubscription = id),
+      });
     });
   } finally {
     spy.mockRestore();
@@ -113,6 +127,17 @@ describe('avisos no navegador', () => {
       await webPush.pruneWebSchedule([]);
       expect(registrations()).toHaveLength(2);
       expect(registrations()[1]).toEqual(expect.objectContaining({ p_timezone: 'Europe/Lisbon' }));
+    });
+  });
+
+  it('o servidor apagou a inscrição com o app aberto: ao voltar, inscreve de novo e pede a agenda refeita', async () => {
+    await inBrowser(async (webPush, browser) => {
+      await webPush.webScheduler.scheduleManyAsync([daily(8)]);
+      expect(await webPush.pruneWebSchedule(['a'])).toEqual({ changed: false });
+      browser.setServerSubscription('sub-2');
+      expect(await webPush.pruneWebSchedule(['a'])).toEqual({ changed: true });
+      await webPush.webScheduler.scheduleManyAsync([daily(8)]);
+      expect(browser.inserts[1]).toEqual([expect.objectContaining({ subscription_id: 'sub-2' })]);
     });
   });
 
