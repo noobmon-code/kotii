@@ -1702,7 +1702,8 @@ begin
   assert (select count(*) from public.push_schedule) = 3, 'keeps the known ones';
 end $$;
 
--- Envio: os vencidos saem (os de uma vez) ou andam (os que repetem); vencido há mais de uma hora não vai.
+-- Envio: os vencidos ficam reservados e só saem da agenda (ou andam para a
+-- próxima vez) depois de entregues; vencido há mais de uma hora não vai.
 reset role;
 update public.push_schedule set next_at = '2026-10-01 10:58+00' where id = '00000000-0000-0000-0000-0000000000a1';
 update public.push_schedule set next_at = '2026-10-01 10:59+00', fire_at = '2026-10-01 10:59+00' where id = '00000000-0000-0000-0000-0000000000a2';
@@ -1713,12 +1714,19 @@ declare
   sent text[];
 begin
   select array_agg(title order by title) into sent from public.take_due_pushes('2026-10-01 11:00+00');
-  assert sent = array['Amoxicilina — Ana', 'Conta vence hoje'], 'sends the due ones, not the stale one';
-  assert (select next_at from public.push_schedule where id = '00000000-0000-0000-0000-0000000000a1') = '2026-10-02 11:00+00', 'daily moves to tomorrow';
-  assert not exists (select 1 from public.push_schedule where id = '00000000-0000-0000-0000-0000000000a2'), 'one-off leaves the schedule';
+  assert sent = array['Amoxicilina — Ana', 'Conta vence hoje'], 'takes the due ones, not the stale one';
   assert (select next_at from public.push_schedule where id = '00000000-0000-0000-0000-0000000000a4') = '2026-10-05 12:00+00', 'the stale weekly moves on silently';
-  assert not exists (select 1 from public.take_due_pushes('2026-10-01 11:00+00')), 'nothing twice';
-  assert (select endpoint from public.take_due_pushes('2026-10-02 11:00+00')) = 'https://fcm.googleapis.com/fcm/send/i1', 'with the browser address';
+  assert not exists (select 1 from public.take_due_pushes('2026-10-01 11:01+00')), 'reserved: not taken twice';
+  -- O remédio foi entregue; a conta falhou por um instante (serviço de push fora).
+  perform public.finish_pushes(array['00000000-0000-0000-0000-0000000000a1']::uuid[], array['00000000-0000-0000-0000-0000000000a2']::uuid[], '2026-10-01 11:00:30+00');
+  assert (select next_at from public.push_schedule where id = '00000000-0000-0000-0000-0000000000a1') = '2026-10-02 11:00+00', 'delivered daily moves to tomorrow';
+  select array_agg(title) into sent from public.take_due_pushes('2026-10-01 11:01+00');
+  assert sent = array['Conta vence hoje'], 'the failed one goes again';
+  -- A função caiu no meio do envio: a reserva vence em 5 minutos.
+  assert not exists (select 1 from public.take_due_pushes('2026-10-01 11:03+00')), 'still reserved';
+  assert (select endpoint from public.take_due_pushes('2026-10-01 11:07+00')) = 'https://fcm.googleapis.com/fcm/send/i1', 'after 5 minutes it goes again, to the browser address';
+  perform public.finish_pushes(array['00000000-0000-0000-0000-0000000000a2']::uuid[], '{}', '2026-10-01 11:07:10+00');
+  assert not exists (select 1 from public.push_schedule where id = '00000000-0000-0000-0000-0000000000a2'), 'delivered one-off leaves the schedule';
 end $$;
 reset role;
 
@@ -1741,6 +1749,9 @@ begin
   assert (select url from net.requests order by id desc limit 1) = 'https://projeto.supabase.co/functions/v1/send-push', 'calls send-push';
   assert (select headers ->> 'x-push-secret' from net.requests order by id desc limit 1) = 'segredo-cron', 'with the cron secret';
   assert (public.push_config() ->> 'cronSecret') = 'segredo-cron' and (public.push_config() ->> 'subject') = 'mailto:x@y.z', 'config for send-push';
+  update public.push_schedule set claimed_at = now() where id = '00000000-0000-0000-0000-0000000000a1';
+  assert public.request_push_send() is null, 'being sent right now: no second call';
+  update public.push_schedule set claimed_at = null;
 end $$;
 set role authenticated;
 do $$
@@ -1748,9 +1759,28 @@ begin
   assert public.push_public_key() = 'BPublica', 'the app reads the public key';
 end $$;
 
+-- O navegador trocou de inscrição (chave nova ou inscrição vencida): a agenda passa para a nova.
+do $$
+declare
+  old uuid := current_setting('test.sub_i')::uuid;
+  fresh uuid;
+begin
+  fresh := public.register_push_subscription('https://fcm.googleapis.com/fcm/send/i2', 'chave3', 'segredo3', 'America/Sao_Paulo', old);
+  assert fresh <> old, 'a new subscription';
+  assert (select count(*) from public.push_schedule where subscription_id = fresh) = 2, 'the schedule moved to it';
+  assert not exists (select 1 from public.push_subscriptions where id = old), 'the old one is gone';
+  assert public.register_push_subscription('https://fcm.googleapis.com/fcm/send/i2', 'chave3', 'segredo3', 'America/Sao_Paulo', gen_random_uuid()) = fresh,
+    'an unknown previous subscription changes nothing';
+  begin
+    perform public.finish_pushes('{}', '{}');
+    raise exception 'FAIL: the app confirmed deliveries';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
 -- Outra conta neste navegador: a inscrição e a agenda da anterior saem.
 select set_config('request.jwt.claim.sub', :'user_j', false) \gset
-select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/i1', 'chave-j', 'segredo-j', 'UTC') as sub_j \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/i2', 'chave-j', 'segredo-j', 'UTC') as sub_j \gset
 do $$
 begin
   assert (select count(*) from public.push_subscriptions) = 1, 'J owns the browser now';
@@ -1764,7 +1794,7 @@ begin
     raise exception 'FAIL: scheduled past the limit';
   exception when sqlstate 'NK003' then null;
   end;
-  perform public.unregister_push_subscription('https://fcm.googleapis.com/fcm/send/i1');
+  perform public.unregister_push_subscription('https://fcm.googleapis.com/fcm/send/i2');
   assert (select count(*) from public.push_subscriptions) = 0, 'unregistered';
 end $$;
 reset role;

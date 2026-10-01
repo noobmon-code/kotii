@@ -58,19 +58,46 @@ async function browserSubscription(): Promise<PushSubscription> {
 
 let subscriptionId: Promise<string> | null = null;
 
+/**
+ * A última inscrição deste navegador no servidor. Se o navegador trocar de
+ * inscrição (chave nova, inscrição vencida), o servidor passa a agenda dela
+ * para a nova: os lembretes guardados aqui continuam valendo.
+ */
+const LAST_SUBSCRIPTION_KEY = 'nooky:push-subscription';
+const lastSubscription = {
+  get: (): string | null => {
+    try {
+      return window.localStorage.getItem(LAST_SUBSCRIPTION_KEY);
+    } catch {
+      return null;
+    }
+  },
+  set: (id: string | null) => {
+    try {
+      if (id) window.localStorage.setItem(LAST_SUBSCRIPTION_KEY, id);
+      else window.localStorage.removeItem(LAST_SUBSCRIPTION_KEY);
+    } catch {
+      // Sem armazenamento: a próxima sincronização refaz o que faltar.
+    }
+  },
+};
+
 /** Inscreve este navegador no servidor (uma vez por sessão do app) e devolve o id da inscrição. */
 function ensureSubscription(): Promise<string> {
   subscriptionId ??= (async () => {
     const { endpoint, keys } = (await browserSubscription()).toJSON();
     if (!endpoint || !keys?.p256dh || !keys.auth) throw new Error('O navegador não completou a inscrição para avisos.');
-    return unwrap(
+    const id = unwrap(
       await supabase.rpc('register_push_subscription', {
         p_endpoint: endpoint,
         p_p256dh: keys.p256dh,
         p_auth: keys.auth,
         p_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        p_previous: lastSubscription.get(),
       }),
     ) as string;
+    lastSubscription.set(id);
+    return id;
   })().catch((err) => {
     subscriptionId = null;
     throw err;
@@ -121,6 +148,7 @@ export async function pruneWebSchedule(keep: string[]): Promise<void> {
 export async function unregisterWebPush(): Promise<void> {
   if (!webPushSupported) return;
   subscriptionId = null;
+  lastSubscription.set(null);
   const registration = await serviceWorker().catch(() => null);
   const subscription = await registration?.pushManager.getSubscription().catch(() => null);
   if (!subscription) return;

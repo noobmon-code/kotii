@@ -30,12 +30,14 @@ Deno.test('só envia para os serviços de push dos navegadores', () => {
   assert(!isPushEndpoint('http://fcm.googleapis.com/fcm/send/x'));
 });
 
-Deno.test('envia todos; inscrição que sumiu (404/410) sai, e erro de um não para os outros', async () => {
+Deno.test('envia todos; inscrição que sumiu (404/410) sai, falha passageira volta para a fila, e erro de um não para os outros', async () => {
   const sent: string[] = [];
   const sender: PushSender = {
     send: (subscription) => {
       if (subscription.endpoint.endsWith('/sumiu')) return Promise.reject(new PushFailed(410));
       if (subscription.endpoint.endsWith('/fora')) return Promise.reject(new PushFailed(503));
+      if (subscription.endpoint.endsWith('/recusou')) return Promise.reject(new PushFailed(400));
+      if (subscription.endpoint.endsWith('/sem-rede')) return Promise.reject(new TypeError('network error'));
       sent.push(subscription.endpoint);
       return Promise.resolve();
     },
@@ -47,12 +49,22 @@ Deno.test('envia todos; inscrição que sumiu (404/410) sai, e erro de um não p
       due({ push_id: 'p3', subscription_id: 's2', endpoint: 'https://fcm.googleapis.com/fcm/send/sumiu' }),
       due({ push_id: 'p4', subscription_id: 's3', endpoint: 'https://fcm.googleapis.com/fcm/send/fora' }),
       due({ push_id: 'p5', subscription_id: 's4', endpoint: 'https://evil.example/x' }),
+      due({ push_id: 'p6', subscription_id: 's5', endpoint: 'https://fcm.googleapis.com/fcm/send/recusou' }),
+      due({ push_id: 'p7', subscription_id: 's6', endpoint: 'https://fcm.googleapis.com/fcm/send/sem-rede' }),
     ],
     sender,
     { concurrency: 1 },
   );
   assertEquals(sent, ['https://fcm.googleapis.com/fcm/send/abc']);
-  assertEquals(result, { sent: 1, failed: 3, gone: ['s2'] });
+  assertEquals(result, {
+    sent: 1,
+    failed: 5,
+    gone: ['s2'],
+    // Entregue, inscrição que sumiu (os dois avisos), endereço fora dos serviços de push e recusa de vez.
+    done: ['p1', 'p2', 'p3', 'p5', 'p6'],
+    // Serviço fora (503) e sem rede: tentam de novo.
+    retry: ['p4', 'p7'],
+  });
 });
 
 Deno.test('segredo do agendamento: só o igual passa', () => {

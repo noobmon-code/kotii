@@ -1,9 +1,11 @@
 // POST (pg_cron, a cada minuto com aviso vencido; ver request_push_send) ->
-// { sent, failed, gone }
+// { sent, failed, gone, retry }
 //
-// Pega no banco os avisos do navegador que venceram (take_due_pushes) e
+// Reserva no banco os avisos do navegador que venceram (take_due_pushes),
 // envia cada um ao serviço de push do navegador, assinado com as chaves
-// VAPID do Vault. Inscrição que não existe mais (404/410) sai do banco.
+// VAPID do Vault, e confirma (finish_pushes): o entregue sai da agenda ou
+// anda para a próxima vez; o que falhou por um instante volta para a fila.
+// Inscrição que não existe mais (404/410) sai do banco.
 // Só aceita quem traz o segredo do agendamento (x-push-secret).
 
 import { createClient } from '@supabase/supabase-js';
@@ -65,5 +67,8 @@ Deno.serve(async (req) => {
     const { error } = await admin.from('push_subscriptions').delete().in('id', result.gone);
     if (error) console.error('could not drop gone subscriptions', error);
   }
-  return json({ sent: result.sent, failed: result.failed, gone: result.gone.length });
+  // Sem a confirmação, a reserva vence em 5 minutos e os avisos saem de novo.
+  const { error: finishError } = await admin.rpc('finish_pushes', { p_done: result.done, p_retry: result.retry });
+  if (finishError) console.error('finish_pushes failed', finishError);
+  return json({ sent: result.sent, failed: result.failed, gone: result.gone.length, retry: result.retry.length });
 });

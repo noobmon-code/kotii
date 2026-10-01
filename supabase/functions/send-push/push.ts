@@ -39,6 +39,9 @@ export const isPushEndpoint = (endpoint: string) => endpoint.length <= 1000 && P
 /** Inscrição que não existe mais: sai do banco. */
 export const isGone = (status: number) => status === 404 || status === 410;
 
+/** Falha passageira do serviço de push: o aviso volta para a fila (dentro da mesma hora). */
+export const isTransient = (status: number) => status === 429 || status >= 500;
+
 /** O que o service worker recebe e mostra (public/sw.js). */
 export function payloadOf(push: DuePush): string {
   const data = push.data ?? {};
@@ -51,28 +54,37 @@ export interface SendResult {
   failed: number;
   /** Inscrições a apagar. */
   gone: string[];
+  /** Avisos resolvidos (entregues ou recusados de vez): saem da agenda ou andam para a próxima vez. */
+  done: string[];
+  /** Avisos que falharam por um instante: voltam para a fila. */
+  retry: string[];
 }
 
 /** Envia todos, alguns ao mesmo tempo; falha de um não impede os outros. */
 export async function sendAll(pushes: DuePush[], sender: PushSender, { concurrency = 10 } = {}): Promise<SendResult> {
-  const result: SendResult = { sent: 0, failed: 0, gone: [] };
+  const result: SendResult = { sent: 0, failed: 0, gone: [], done: [], retry: [] };
   const gone = new Set<string>();
   let next = 0;
   async function worker() {
     while (next < pushes.length) {
       const push = pushes[next++];
-      if (gone.has(push.subscription_id)) continue;
-      if (!isPushEndpoint(push.endpoint)) {
-        result.failed += 1;
+      if (gone.has(push.subscription_id) || !isPushEndpoint(push.endpoint)) {
+        if (!gone.has(push.subscription_id)) result.failed += 1;
+        result.done.push(push.push_id);
         continue;
       }
       try {
         await sender.send({ endpoint: push.endpoint, keys: { p256dh: push.p256dh, auth: push.auth_secret } }, payloadOf(push));
         result.sent += 1;
+        result.done.push(push.push_id);
       } catch (err) {
         result.failed += 1;
-        if (err instanceof PushFailed && isGone(err.status)) gone.add(push.subscription_id);
+        const status = err instanceof PushFailed ? err.status : null;
+        if (status !== null && isGone(status)) gone.add(push.subscription_id);
         else console.error('push failed', push.subscription_id, err instanceof Error ? err.message : err);
+        // Sem resposta (rede) ou serviço fora: tenta de novo; recusa de vez (4xx): não.
+        if (status === null || isTransient(status)) result.retry.push(push.push_id);
+        else result.done.push(push.push_id);
       }
     }
   }
