@@ -17,6 +17,7 @@ import {
   anyHouseReminderKind,
   householdsWithMedicationReminders,
   pruneHouseholdReminders,
+  reconcileReminders,
   syncHouseReminders,
   syncReminders,
   type HouseReminderData,
@@ -214,6 +215,11 @@ export function useReminderSync() {
   const queryClient = useQueryClient();
   // Mesma lista enquanto as casas não mudam.
   const housesKey = JSON.stringify(households?.map((h) => [h.id, h.name]) ?? []);
+
+  // No navegador: a agenda do servidor fica só com o que este navegador conhece.
+  useEffect(() => {
+    reconcileReminders().catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     if (data && target) syncReminders(data, todayISO(), target).catch(() => undefined);

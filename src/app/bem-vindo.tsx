@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
+import { signOut } from '@/lib/auth';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import { Spot } from '@/ui/art';
@@ -89,7 +90,7 @@ export default function WelcomeScreen() {
         )}
         <Button title={mode === 'criar' ? 'Criar casa' : 'Entrar na casa'} onPress={submit} loading={busy} />
       </Card>
-      <Button title="Sair" variant="ghost" onPress={() => supabase.auth.signOut()} />
+      <Button title="Sair" variant="ghost" onPress={() => signOut()} />
     </Screen>
   );
 }

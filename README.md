@@ -10,6 +10,7 @@ iOS e Android com Expo (React Native); a versão web sai do mesmo código depois
 |---|---|
 | **Família** | Conta por e-mail/senha. Quem cria a casa recebe um código de convite de 6 letras; quem entra com o código vê e edita tudo da casa. |
 | **Várias casas** | Uma conta pode estar em até 5 casas (a sua, a da praia, a dos pais…), cada uma com os próprios moradores, listas, contas e tarefas. O celular mostra uma por vez: com mais de uma, o nome da casa aberta fica no topo da tela Hoje e troca com um toque (Família → Suas casas, onde também dá para criar ou entrar em outra). Cada aparelho lembra a sua; um aparelho novo abre na mais recente. Os avisos (remédios, contas, tarefas, clima) chegam de todas, com o nome da casa no aviso. |
+| **Avisos no navegador** | A versão web também recebe os avisos (remédios, contas, documentos, tarefas, consultas, vacinas e clima), mesmo fechada: Família → "Avisos neste navegador". O navegador guarda a agenda no servidor e a função `send-push` entrega cada aviso na hora (Web Push). No iPhone, com o app na tela de início (iOS 16.4 ou mais novo). Sair da conta tira os avisos daquele aparelho. |
 | **Notas fiscais** | Pelo QR code da NFC-e: o app lê o QR (ou o link colado) e busca na consulta pública da Sefaz mercado, data, total e itens exatos, sem IA. Pela foto do cupom: a IA lê mercado, CNPJ, data, chave de acesso e itens; nota comprida vai em até 4 fotos (pela câmera, uma parte de cada vez, ou várias da galeria), lidas juntas sem repetir o que aparece em duas. Nos dois casos, tela de revisão → confirmar. Também dá para digitar à mão. Nota repetida (mesma chave NFC-e) é detectada. Alerta de preço: na revisão (e depois, na nota salva), cada item ligado a um produto é comparado com o que a casa pagou nos últimos meses — avisa quando outro mercado vendia pelo menos 10% mais barato há até 60 dias, ou quando o preço ficou 15% acima do costume, e soma quanto daria para economizar. |
 | **Produtos e matching** | Cada item da nota é ligado a um produto da família ("Arroz Tio João 5kg"). A IA sugere o produto; a descrição da nota vira um apelido, então a mesma descrição é reconhecida sozinha nas próximas notas. |
 | **Onde comprar** | Para a lista de compras: melhor mercado único, ou dividir entre até 2 ou 3 mercados (você escolhe). Itens sem preço num mercado são estimados pelo nível de preço daquele mercado; itens sem preço nenhum ficam fora do total. |
@@ -64,6 +65,7 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
    npx supabase functions deploy nuke
    npx supabase functions deploy leave-household
    npx supabase functions deploy nfce   # nota pelo QR code (sem IA)
+   npx supabase functions deploy send-push   # avisos no navegador (Web Push)
    ```
 
    Com a chave da OpenRouter, ela é usada em tudo (leitura de notas, de saúde e o Nuke), com o `deepseek/deepseek-v4.1-flash`; a Anthropic só entra com a chave dela sozinha ou com `RECEIPT_PROVIDER=anthropic`. O modelo pode ser trocado com `RECEIPT_MODEL` (na OpenRouter, precisa ser um modelo que aceita imagem). A leitura de saúde (`parse-health`) usa as mesmas configurações, ou `HEALTH_PROVIDER` e `HEALTH_MODEL` se quiser um modelo diferente para ela. O Nuke (`nuke`) também, ou `NUKE_PROVIDER` e `NUKE_MODEL`.
@@ -76,6 +78,14 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
    ```
 
    Sem esses segredos, o `db push` avisa e o job registra o erro em `cron.job_run_details`.
+
+   **Avisos no navegador.** O `pg_cron` olha a agenda dos navegadores a cada minuto e, quando há aviso vencido, chama a `send-push`, que assina o envio com as chaves VAPID. Além dos dois segredos acima, gere as chaves e o segredo do agendamento (precisa do [Deno](https://deno.com)):
+
+   ```bash
+   deno run supabase/functions/send-push/vapid-keys.ts https://SEU_PROJECT_REF.supabase.co
+   ```
+
+   e rode no SQL Editor as duas linhas que ele imprime (`push_vapid` e `push_cron_secret`). Sem elas, a tela de avisos do navegador diz que os avisos não foram configurados.
 
 4. **Login sem confirmação de e-mail (opcional, para testar rápido):** Authentication → Sign In / Providers → Email → desligue "Confirm email".
 
@@ -108,7 +118,7 @@ O backend já roda na nuvem (Supabase). O `npx expo start` só serve o código d
 
    No fim sai um link do APK: abra no celular, instale e mande o link para a família. O perfil `production` gera o pacote da Play Store.
 
-**iPhone.** Instalar o app nativo exige conta Apple Developer (US$ 99/ano): com ela, o app vai para os celulares pelo TestFlight e, depois, para a App Store. Sem a conta, instale a versão web: no Safari, *Compartilhar → Adicionar à Tela de Início* (a tela Hoje mostra esse passo a passo). Ela abre em tela cheia, com o ícone do Nooky, e abre mesmo sem internet. Na web não há lembrete por notificação; o resto funciona.
+**iPhone.** Instalar o app nativo exige conta Apple Developer (US$ 99/ano): com ela, o app vai para os celulares pelo TestFlight e, depois, para a App Store. Sem a conta, instale a versão web: no Safari, *Compartilhar → Adicionar à Tela de Início* (a tela Hoje mostra esse passo a passo). Ela abre em tela cheia, com o ícone do Nooky, e abre mesmo sem internet. Os avisos por notificação funcionam por ela (iOS 16.4 ou mais novo): Família → "Avisos neste navegador". No Safari sem instalar, não.
 
 **Versão web (Vercel).** O `vercel.json` já diz como gerar o site (`expo export`). No projeto da Vercel, em *Settings → Environment Variables*, cadastre as mesmas duas variáveis `EXPO_PUBLIC_*` como texto normal (não secretas) e publique de novo. O site é instalável (PWA): `public/index.html` é o modelo da página, com o manifesto (`public/manifest.webmanifest`), os ícones (`public/icons/`) e o service worker (`public/sw.js`), que guarda o app no aparelho; no Android, o Chrome oferece "Instalar" e a tela Hoje tem o botão.
 
@@ -128,7 +138,8 @@ Identificador do app: `com.noobmon.nooky` (iOS e Android). Dá para trocar até 
 - **Avisos por notificação:** remédios, contas, documentos, tarefas e manutenções, consultas, vacinas e dicas do clima.
 - **Clima:** previsão do [Open-Meteo](https://open-meteo.com) (grátis e sem chave para uso não comercial, até 10 mil consultas por dia; uso comercial pede plano pago), CEP pelo ViaCEP (BrasilAPI de reserva) e bairro pelo OpenStreetMap (Nominatim, no máximo uma busca por segundo). Fica guardado só o bairro, com as coordenadas em duas casas decimais (cerca de 1 km). A grade dos modelos de previsão tem alguns quilômetros: bairros vizinhos costumam ter a mesma previsão, com a temperatura ajustada pela altitude. O aviso das 7h sai da última previsão que o celular viu; ele é refeito sempre que o app abre, e sem abrir por dias fica sem aviso depois do fim da previsão (3 dias). A localização pelo celular exige um build novo do app instalado (`expo-location`).
 - **Gastos:** o resumo conta o que foi registrado no app (notas confirmadas, contas pagas, gastos avulsos). Nota em rascunho não entra até ser confirmada.
-- **Lembretes de remédio:** notificações locais. No Expo Go podem ter limitações; num development build (`npx expo run:android` / EAS) funcionam completos. Na web não existem.
+- **Lembretes de remédio:** notificações locais. No Expo Go podem ter limitações; num development build (`npx expo run:android` / EAS) funcionam completos.
+- **Avisos no navegador (Web Push):** chegam com até 1 minuto de atraso e precisam de internet (no celular, o aviso é local e sai na hora, mesmo offline). Como no celular, a agenda é refeita quando o app abre. Aviso vencido há mais de 1 hora (o envio ficou parado) não sai, e o serviço de push descarta o que não chegou em 1 hora (aparelho desligado). Até 200 avisos agendados por navegador. As chaves VAPID e o segredo do agendamento ficam no Vault (`push_vapid`, `push_cron_secret`); o envio só vai para os serviços de push dos navegadores (Google, Mozilla, Apple, Microsoft).
 
 ## Testes
 

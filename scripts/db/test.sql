@@ -1587,6 +1587,197 @@ begin
   assert (select count(*) from public.storage_trash) = 0, 'a deleted household leaves nothing in the photo trash';
 end $$;
 
+-- ---------------------------------------------------------------------------
+\echo '• avisos no navegador: inscrição, agenda e envio'
+\set user_i '00000000-0000-0000-0000-000000000012'
+\set user_j '00000000-0000-0000-0000-000000000013'
+create schema if not exists vault;
+create table if not exists vault.decrypted_secrets (name text, decrypted_secret text);
+create schema if not exists net;
+create table net.requests (id bigserial primary key, url text, headers jsonb, body jsonb);
+create function net.http_post(
+  url text,
+  body jsonb default '{}'::jsonb,
+  params jsonb default '{}'::jsonb,
+  headers jsonb default '{}'::jsonb,
+  timeout_milliseconds int default 5000
+) returns bigint language sql as $$
+  insert into net.requests (url, headers, body) values ($1, $4, $2) returning id;
+$$;
+insert into auth.users (id) values (:'user_i'), (:'user_j');
+set role anon;
+do $$
+begin
+  perform public.register_push_subscription('https://fcm.googleapis.com/fcm/send/x', 'k', 'a', 'UTC');
+  raise exception 'FAIL: anon registered a browser';
+exception when insufficient_privilege then null;
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_i', false) \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/i1', 'chave', 'segredo', 'America/Sao_Paulo') as sub_i \gset
+select set_config('test.sub_i', :'sub_i', false) \gset
+do $$
+declare
+  sub uuid := current_setting('test.sub_i')::uuid;
+begin
+  begin
+    perform public.register_push_subscription('https://evil.example/fcm/send/x', 'k', 'a', 'UTC');
+    raise exception 'FAIL: registered an endpoint outside the push services';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    insert into public.push_subscriptions (user_id, endpoint, p256dh, auth)
+    values (auth.uid(), 'https://fcm.googleapis.com/fcm/send/direto', 'k', 'a');
+    raise exception 'FAIL: inserted a subscription directly';
+  exception when insufficient_privilege then null;
+  end;
+  -- O mesmo navegador de novo: a mesma inscrição; fuso inválido fica o padrão.
+  assert public.register_push_subscription('https://fcm.googleapis.com/fcm/send/i1', 'chave2', 'segredo', 'Lugar/Nenhum') = sub, 'same browser, same subscription';
+  assert (select timezone from public.push_subscriptions where id = sub) = 'America/Sao_Paulo', 'invalid timezone falls back to the default';
+  assert (select p256dh from public.push_subscriptions where id = sub) = 'chave2', 'keys are updated';
+
+  -- Próxima vez, na hora local (São Paulo, UTC-3; Nova York muda de horário em 1/11).
+  assert public.push_next_at('daily', null, 8, 0, null, 'America/Sao_Paulo', '2026-10-01 10:00+00') = '2026-10-01 11:00+00', 'daily: later today';
+  assert public.push_next_at('daily', null, 8, 0, null, 'America/Sao_Paulo', '2026-10-01 11:00+00') = '2026-10-02 11:00+00', 'daily: the time itself is the next day';
+  assert public.push_next_at('weekly', null, 9, 0, 2, 'America/Sao_Paulo', '2026-10-01 12:00+00') = '2026-10-05 12:00+00', 'weekly: next monday';
+  assert public.push_next_at('weekly', null, 9, 0, 5, 'America/Sao_Paulo', '2026-10-01 13:00+00') = '2026-10-08 12:00+00', 'weekly: same weekday, later time passed';
+  assert public.push_next_at('daily', null, 8, 0, null, 'America/New_York', '2026-10-31 13:00+00') = '2026-11-01 13:00+00', 'daily across the clock change';
+  assert public.push_next_at('once', '2026-10-03 12:00+00', null, null, null, 'UTC', now()) = '2026-10-03 12:00+00', 'once: its own time';
+
+  insert into public.push_schedule (id, subscription_id, title, body, repeat, hour, minute, next_at)
+  values ('00000000-0000-0000-0000-0000000000a1', sub, 'Amoxicilina — Ana', 'Hora de tomar: 5 ml', 'daily', 8, 0, '2000-01-01');
+  assert (select next_at from public.push_schedule where id = '00000000-0000-0000-0000-0000000000a1') > now(), 'next_at comes from the database, not the app';
+  insert into public.push_schedule (id, subscription_id, title, body, repeat, fire_at, data)
+  values ('00000000-0000-0000-0000-0000000000a2', sub, 'Conta vence hoje', 'Luz', 'once', now() + interval '1 day', '{"reminder": "bills:x"}');
+  insert into public.push_schedule (id, subscription_id, title, repeat, fire_at)
+  values ('00000000-0000-0000-0000-0000000000a3', sub, 'Velho', 'once', now() + interval '2 days');
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute, weekday)
+  values ('00000000-0000-0000-0000-0000000000a4', sub, 'Toda segunda', 'weekly', 9, 0, 2);
+  begin
+    insert into public.push_schedule (id, subscription_id, title, repeat)
+    values (gen_random_uuid(), sub, 'Sem hora', 'daily');
+    raise exception 'FAIL: daily without a time';
+  exception when check_violation or not_null_violation then null;
+  end;
+  begin
+    perform public.take_due_pushes();
+    raise exception 'FAIL: the app took the due pushes';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.push_config();
+    raise exception 'FAIL: the app read the push keys';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- Outra conta não vê nem mexe na agenda de outro navegador.
+select set_config('request.jwt.claim.sub', :'user_j', false) \gset
+do $$
+declare
+  sub uuid := current_setting('test.sub_i')::uuid;
+begin
+  assert (select count(*) from public.push_subscriptions) = 0, 'foreign subscriptions are hidden';
+  assert (select count(*) from public.push_schedule) = 0, 'foreign schedule is hidden';
+  begin
+    insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute) values (gen_random_uuid(), sub, 'Invasão', 'daily', 8, 0);
+    raise exception 'FAIL: scheduled on a foreign browser';
+  exception when insufficient_privilege then null;
+  end;
+  delete from public.push_schedule;
+  assert public.prune_push_schedule(sub, '{}') = 0, 'cannot prune a foreign browser';
+  perform public.unregister_push_subscription('https://fcm.googleapis.com/fcm/send/i1');
+end $$;
+
+-- A dona: o que o app não reconhece mais sai da agenda.
+select set_config('request.jwt.claim.sub', :'user_i', false) \gset
+do $$
+declare
+  sub uuid := current_setting('test.sub_i')::uuid;
+begin
+  assert (select count(*) from public.push_schedule) = 4, 'the other account removed nothing';
+  assert public.prune_push_schedule(sub, array[
+    '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000a4'
+  ]::uuid[]) = 1, 'prunes the unknown one';
+  assert (select count(*) from public.push_schedule) = 3, 'keeps the known ones';
+end $$;
+
+-- Envio: os vencidos saem (os de uma vez) ou andam (os que repetem); vencido há mais de uma hora não vai.
+reset role;
+update public.push_schedule set next_at = '2026-10-01 10:58+00' where id = '00000000-0000-0000-0000-0000000000a1';
+update public.push_schedule set next_at = '2026-10-01 10:59+00', fire_at = '2026-10-01 10:59+00' where id = '00000000-0000-0000-0000-0000000000a2';
+update public.push_schedule set next_at = '2026-10-01 08:00+00' where id = '00000000-0000-0000-0000-0000000000a4';
+set role service_role;
+do $$
+declare
+  sent text[];
+begin
+  select array_agg(title order by title) into sent from public.take_due_pushes('2026-10-01 11:00+00');
+  assert sent = array['Amoxicilina — Ana', 'Conta vence hoje'], 'sends the due ones, not the stale one';
+  assert (select next_at from public.push_schedule where id = '00000000-0000-0000-0000-0000000000a1') = '2026-10-02 11:00+00', 'daily moves to tomorrow';
+  assert not exists (select 1 from public.push_schedule where id = '00000000-0000-0000-0000-0000000000a2'), 'one-off leaves the schedule';
+  assert (select next_at from public.push_schedule where id = '00000000-0000-0000-0000-0000000000a4') = '2026-10-05 12:00+00', 'the stale weekly moves on silently';
+  assert not exists (select 1 from public.take_due_pushes('2026-10-01 11:00+00')), 'nothing twice';
+  assert (select endpoint from public.take_due_pushes('2026-10-02 11:00+00')) = 'https://fcm.googleapis.com/fcm/send/i1', 'with the browser address';
+end $$;
+reset role;
+
+-- O agendamento só chama a função quando há aviso vencido, e só com os segredos.
+do $$
+begin
+  update public.push_schedule set next_at = now() + interval '1 hour';
+  assert public.request_push_send() is null, 'nothing due: no call';
+  update public.push_schedule set next_at = now() - interval '1 minute' where id = '00000000-0000-0000-0000-0000000000a1';
+  begin
+    perform public.request_push_send();
+    raise exception 'FAIL: called send-push without the Vault secrets';
+  exception when raise_exception then
+    assert sqlerrm like 'Faltam os segredos project_url, anon_key e push_cron_secret%', 'names the missing secrets';
+  end;
+  insert into vault.decrypted_secrets values
+    ('project_url', 'https://projeto.supabase.co/'), ('anon_key', 'anon'), ('push_cron_secret', 'segredo-cron'),
+    ('push_vapid', '{"applicationServerKey": "BPublica", "publicKey": {"kty": "EC"}, "privateKey": {"kty": "EC"}, "subject": "mailto:x@y.z"}');
+  perform public.request_push_send();
+  assert (select url from net.requests order by id desc limit 1) = 'https://projeto.supabase.co/functions/v1/send-push', 'calls send-push';
+  assert (select headers ->> 'x-push-secret' from net.requests order by id desc limit 1) = 'segredo-cron', 'with the cron secret';
+  assert (public.push_config() ->> 'cronSecret') = 'segredo-cron' and (public.push_config() ->> 'subject') = 'mailto:x@y.z', 'config for send-push';
+end $$;
+set role authenticated;
+do $$
+begin
+  assert public.push_public_key() = 'BPublica', 'the app reads the public key';
+end $$;
+
+-- Outra conta neste navegador: a inscrição e a agenda da anterior saem.
+select set_config('request.jwt.claim.sub', :'user_j', false) \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/i1', 'chave-j', 'segredo-j', 'UTC') as sub_j \gset
+do $$
+begin
+  assert (select count(*) from public.push_subscriptions) = 1, 'J owns the browser now';
+  assert (select count(*) from public.push_schedule) = 0, 'and starts with an empty schedule';
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute)
+  select gen_random_uuid(), (select id from public.push_subscriptions), 'Aviso ' || n, 'daily', 8, 0
+  from generate_series(1, public.max_push_schedule()) n;
+  begin
+    insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute)
+    values (gen_random_uuid(), (select id from public.push_subscriptions), 'Um a mais', 'daily', 8, 0);
+    raise exception 'FAIL: scheduled past the limit';
+  exception when sqlstate 'NK003' then null;
+  end;
+  perform public.unregister_push_subscription('https://fcm.googleapis.com/fcm/send/i1');
+  assert (select count(*) from public.push_subscriptions) = 0, 'unregistered';
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.push_schedule), 'the schedule goes with the subscription';
+  assert not exists (select 1 from public.push_subscriptions where user_id = '00000000-0000-0000-0000-000000000012'), 'I lost the browser to J';
+end $$;
+set client_min_messages = warning;
+drop schema vault cascade;
+drop schema net cascade;
+reset client_min_messages;
+
 -- Sem os segredos do Vault, o job da limpeza falha com a instrução em vez de chamar uma URL nula.
 create schema if not exists vault;
 create table if not exists vault.decrypted_secrets (name text, decrypted_secret text);

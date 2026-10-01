@@ -5,8 +5,18 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 
 import { forgetActiveHousehold, getActiveHousehold, loadActiveHousehold, setActiveHousehold } from './activeHousehold';
 import { cacheHousehold, cacheOwners, forgetCache, queryClient, resumeQueue, setSessionValid } from './queryClient';
+import { disableAllReminders } from './reminders';
 import { supabase, unwrap } from './supabase';
 import type { Household, Member } from './types';
+
+/**
+ * Sai da conta neste aparelho. Antes, os lembretes daqui saem (no navegador,
+ * também a inscrição dos avisos), para não tocar o remédio de quem saiu.
+ */
+export async function signOut(): Promise<void> {
+  await disableAllReminders().catch(() => undefined);
+  await supabase.auth.signOut();
+}
 
 /** O app só usa quem entrou; os tokens ficam com o Supabase. */
 export type AppSession = Pick<Session, 'user' | 'expires_at'>;
