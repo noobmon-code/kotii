@@ -93,6 +93,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } else {
         setState({ session: null, loading: false });
         forgetLastSession();
+        // A sessão acabou (sem ser por falta de internet): os lembretes de quem estava aqui saem.
+        disableAllReminders().catch(() => undefined);
       }
     });
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
@@ -104,6 +106,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         forgetLastSession();
         forgetActiveHousehold();
         forgetCache();
+        // Qualquer saída (o botão, a sessão revogada): os lembretes deste aparelho
+        // saem. No navegador, sem a sessão, o servidor não apaga a agenda, mas o
+        // navegador desfaz a inscrição e o servidor deixa de mandar (410).
+        disableAllReminders().catch(() => undefined);
       }
     });
     return () => data.subscription.unsubscribe();

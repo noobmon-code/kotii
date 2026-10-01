@@ -52,7 +52,14 @@ async function browserSubscription(): Promise<PushSubscription> {
   const key = await applicationServerKey();
   const existing = await registration.pushManager.getSubscription();
   if (existing && sameKey(existing.options.applicationServerKey, key)) return existing;
-  if (existing) await existing.unsubscribe().catch(() => undefined);
+  if (existing) {
+    // A inscrição antiga (e a agenda dela) sai do servidor: o app refaz a agenda na nova.
+    await supabase.rpc('unregister_push_subscription', { p_endpoint: existing.endpoint }).then(
+      () => undefined,
+      () => undefined,
+    );
+    await existing.unsubscribe().catch(() => undefined);
+  }
   return registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
 }
 
@@ -61,10 +68,13 @@ let registered: { timezone: string; id: Promise<string> } | null = null;
 
 const currentTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+/** A inscrição no servidor mudou desde a última vez: a agenda guardada no app não vale mais. */
+let subscriptionChanged = false;
+
 /**
- * A última inscrição deste navegador no servidor. Se o navegador trocar de
- * inscrição (chave nova, inscrição vencida), o servidor passa a agenda dela
- * para a nova: os lembretes guardados aqui continuam valendo.
+ * A última inscrição deste navegador no servidor. Se mudou (chave nova,
+ * inscrição vencida e apagada pelo servidor), a agenda que o app guarda aqui
+ * não está na nova: src/lib/reminders.ts refaz tudo (subscriptionChanged).
  */
 const LAST_SUBSCRIPTION_KEY = 'nooky:push-subscription';
 const lastSubscription = {
@@ -102,9 +112,10 @@ function ensureSubscription(): Promise<string> {
         p_p256dh: keys.p256dh,
         p_auth: keys.auth,
         p_timezone: timezone,
-        p_previous: lastSubscription.get(),
       }),
     ) as string;
+    const previous = lastSubscription.get();
+    if (previous && previous !== subscription) subscriptionChanged = true;
     lastSubscription.set(subscription);
     return subscription;
   })().catch((err) => {
@@ -154,11 +165,18 @@ export const webScheduler = {
 /**
  * Tira da agenda do servidor o que o app não conhece mais (`keep`: os ids
  * guardados neste navegador), sobra de uma sincronização que caiu no meio.
- * Também renova a inscrição (chaves e fuso). Sem permissão, nada a fazer.
+ * Também renova a inscrição (chaves e fuso) e diz se ela mudou: aí a agenda
+ * guardada no app não está no servidor e precisa ser refeita. Sem
+ * permissão, nada a fazer.
  */
-export async function pruneWebSchedule(keep: string[]): Promise<void> {
-  if (!webPushSupported || !granted()) return;
-  unwrap(await supabase.rpc('prune_push_schedule', { p_subscription_id: await ensureSubscription(), p_keep: keep }));
+export async function pruneWebSchedule(keep: string[]): Promise<{ changed: boolean }> {
+  if (!webPushSupported || !granted()) return { changed: false };
+  const subscription = await ensureSubscription();
+  // Inscrição nova: nada do que o app guarda está nela; quem chamou refaz a agenda.
+  const changed = subscriptionChanged;
+  subscriptionChanged = false;
+  if (!changed) unwrap(await supabase.rpc('prune_push_schedule', { p_subscription_id: subscription, p_keep: keep }));
+  return { changed };
 }
 
 /** Este navegador deixa de receber avisos (ao sair da conta). */

@@ -219,15 +219,30 @@ export async function disableAllReminders(): Promise<void> {
 /**
  * No navegador: tira da agenda do servidor o que nenhum lembrete guardado
  * aqui conhece (sobra de uma sincronização que caiu sem internet) e renova a
- * inscrição. Chamado ao abrir o app.
+ * inscrição. Se a inscrição mudou (chave nova, ou a antiga venceu e o
+ * servidor a apagou com a agenda), o que está guardado aqui não está mais lá:
+ * as assinaturas saem e a próxima sincronização refaz tudo. Chamado ao abrir
+ * o app e ao voltar para ele.
  */
 export async function reconcileReminders(): Promise<void> {
   if (!remindersSupported || Platform.OS !== 'web') return;
   await serialized(async () => {
+    const medications = await medicationKeys();
+    const houses = await houseScheduledKeys();
     const keep: string[] = [];
-    for (const key of await medicationKeys()) keep.push(...((await readStored(key.slice('reminders:'.length)))?.ids ?? []));
-    for (const key of await houseScheduledKeys()) keep.push(...((await readHouseScheduled(key))?.ids ?? []));
-    await webPush().pruneWebSchedule(keep);
+    for (const key of medications) keep.push(...((await readStored(key.slice('reminders:'.length)))?.ids ?? []));
+    for (const key of houses) keep.push(...((await readHouseScheduled(key))?.ids ?? []));
+    const { changed } = await webPush().pruneWebSchedule(keep);
+    if (!changed) return;
+    // Os ids ficam: o que ainda existir no servidor sai quando o lembrete for refeito.
+    for (const key of medications) {
+      const stored = await readStored(key.slice('reminders:'.length));
+      if (stored) await AsyncStorage.setItem(key, JSON.stringify({ ...stored, signature: '' } satisfies StoredReminders));
+    }
+    for (const key of houses) {
+      const stored = await readHouseScheduled(key);
+      if (stored) await AsyncStorage.setItem(key, JSON.stringify({ ...stored, signature: '' } satisfies StoredHouseReminders));
+    }
   });
 }
 

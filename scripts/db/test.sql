@@ -1759,18 +1759,9 @@ begin
   assert public.push_public_key() = 'BPublica', 'the app reads the public key';
 end $$;
 
--- O navegador trocou de inscrição (chave nova ou inscrição vencida): a agenda passa para a nova.
+-- O app não confirma entregas.
 do $$
-declare
-  old uuid := current_setting('test.sub_i')::uuid;
-  fresh uuid;
 begin
-  fresh := public.register_push_subscription('https://fcm.googleapis.com/fcm/send/i2', 'chave3', 'segredo3', 'America/Sao_Paulo', old);
-  assert fresh <> old, 'a new subscription';
-  assert (select count(*) from public.push_schedule where subscription_id = fresh) = 2, 'the schedule moved to it';
-  assert not exists (select 1 from public.push_subscriptions where id = old), 'the old one is gone';
-  assert public.register_push_subscription('https://fcm.googleapis.com/fcm/send/i2', 'chave3', 'segredo3', 'America/Sao_Paulo', gen_random_uuid()) = fresh,
-    'an unknown previous subscription changes nothing';
   begin
     perform public.finish_pushes('{}', '{}');
     raise exception 'FAIL: the app confirmed deliveries';
@@ -1780,7 +1771,7 @@ end $$;
 
 -- Outra conta neste navegador: a inscrição e a agenda da anterior saem.
 select set_config('request.jwt.claim.sub', :'user_j', false) \gset
-select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/i2', 'chave-j', 'segredo-j', 'UTC') as sub_j \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/i1', 'chave-j', 'segredo-j', 'UTC') as sub_j \gset
 do $$
 begin
   assert (select count(*) from public.push_subscriptions) = 1, 'J owns the browser now';
@@ -1794,7 +1785,7 @@ begin
     raise exception 'FAIL: scheduled past the limit';
   exception when sqlstate 'NK003' then null;
   end;
-  perform public.unregister_push_subscription('https://fcm.googleapis.com/fcm/send/i2');
+  perform public.unregister_push_subscription('https://fcm.googleapis.com/fcm/send/i1');
   assert (select count(*) from public.push_subscriptions) = 0, 'unregistered';
 end $$;
 reset role;

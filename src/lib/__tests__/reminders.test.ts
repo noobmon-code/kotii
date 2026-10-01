@@ -217,7 +217,7 @@ describe('no navegador (Web Push)', () => {
     supported: boolean,
     scenario: (
       reminders: Reminders,
-      web: { scheduled: Map<string, unknown>; pruned: string[][]; unregistered: () => number },
+      web: { scheduled: Map<string, unknown>; pruned: string[][]; unregistered: () => number; changeSubscription: () => void },
     ) => Promise<void>,
   ) {
     const scheduled = new Map<string, unknown>();
@@ -225,6 +225,7 @@ describe('no navegador (Web Push)', () => {
     const pruned: string[][] = [];
     let unregistered = 0;
     let next = 0;
+    let subscriptionChanged = false;
     await jest.isolateModulesAsync(async () => {
       jest.doMock('react-native', () => ({ Platform: { OS: 'web' } }));
       jest.doMock('expo', () => ({ isRunningInExpoGo: () => false }));
@@ -260,11 +261,22 @@ describe('no navegador (Web Push)', () => {
           cancelScheduledNotificationAsync: async (id: string) => void scheduled.delete(id),
           getAllScheduledNotificationsAsync: async () => [...scheduled.keys()].map((identifier) => ({ identifier })),
         },
-        pruneWebSchedule: async (keep: string[]) => void pruned.push(keep),
+        pruneWebSchedule: async (keep: string[]) => {
+          pruned.push(keep);
+          return { changed: subscriptionChanged };
+        },
         unregisterWebPush: async () => void (unregistered += 1),
       }));
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      await scenario(require('../reminders'), { scheduled, pruned, unregistered: () => unregistered });
+      await scenario(require('../reminders'), {
+        scheduled,
+        pruned,
+        unregistered: () => unregistered,
+        changeSubscription: () => {
+          subscriptionChanged = true;
+          scheduled.clear();
+        },
+      });
     });
   }
 
@@ -291,6 +303,18 @@ describe('no navegador (Web Push)', () => {
       expect(reminders.remindersSupported).toBe(false);
       expect(reminders.remindersUnavailableReason()).toMatch(/tela de início/);
       expect(await reminders.enableReminders(medication, { householdId: 'casa' })).toBe(false);
+    });
+  });
+
+  it('a inscrição mudou (a antiga venceu e o servidor apagou a agenda): o app refaz tudo na nova', async () => {
+    await onWeb(true, async (reminders, web) => {
+      await reminders.enableReminders(medication, { householdId: 'casa' }, '2026-09-26');
+      expect(web.scheduled.size).toBe(2);
+      web.changeSubscription();
+      await reminders.reconcileReminders();
+      // Mesmos dados: sem a troca, a assinatura igual não refaria nada.
+      await reminders.syncReminders([medication], '2026-09-26', { householdId: 'casa' });
+      expect(web.scheduled.size).toBe(2);
     });
   });
 

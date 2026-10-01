@@ -4,11 +4,14 @@ type WebPush = typeof import('../webPush');
 
 // Navegador e Supabase em memória: o PushManager, a permissão, o fuso e as
 // chamadas ao banco.
-async function inBrowser(scenario: (webPush: WebPush, browser: { rpc: [string, Record<string, unknown>][]; inserts: unknown[][]; setTimezone: (tz: string) => void }) => Promise<void>) {
+async function inBrowser(
+  scenario: (webPush: WebPush, browser: { rpc: [string, Record<string, unknown>][]; inserts: unknown[][]; setTimezone: (tz: string) => void }) => Promise<void>,
+  { lastSubscription }: { lastSubscription?: string } = {},
+) {
   const rpc: [string, Record<string, unknown>][] = [];
   const inserts: unknown[][] = [];
   let timezone = 'America/Sao_Paulo';
-  const storage = new Map<string, string>();
+  const storage = new Map<string, string>(lastSubscription ? [['nooky:push-subscription', lastSubscription]] : []);
   let current: unknown = null;
   const g = globalThis as Record<string, unknown>;
   const saved = { window: g.window, navigator: g.navigator, Notification: g.Notification };
@@ -100,16 +103,28 @@ describe('avisos no navegador', () => {
     });
   });
 
-  it('mudou de fuso com o app aberto: inscreve de novo com o fuso novo (e a inscrição anterior)', async () => {
+  it('mudou de fuso com o app aberto: inscreve de novo com o fuso novo', async () => {
     await inBrowser(async (webPush, browser) => {
       await webPush.webScheduler.scheduleManyAsync([daily(8)]);
       await webPush.webScheduler.scheduleManyAsync([daily(9)]);
       const registrations = () => browser.rpc.filter(([name]) => name === 'register_push_subscription').map(([, args]) => args);
-      expect(registrations()).toEqual([expect.objectContaining({ p_timezone: 'America/Sao_Paulo', p_previous: null })]);
+      expect(registrations()).toEqual([expect.objectContaining({ p_timezone: 'America/Sao_Paulo' })]);
       browser.setTimezone('Europe/Lisbon');
       await webPush.pruneWebSchedule([]);
       expect(registrations()).toHaveLength(2);
-      expect(registrations()[1]).toEqual(expect.objectContaining({ p_timezone: 'Europe/Lisbon', p_previous: 'sub-1' }));
+      expect(registrations()[1]).toEqual(expect.objectContaining({ p_timezone: 'Europe/Lisbon' }));
     });
+  });
+
+  it('a inscrição no servidor mudou (a antiga venceu): avisa uma vez, sem limpar a agenda nova', async () => {
+    await inBrowser(
+      async (webPush, browser) => {
+        expect(await webPush.pruneWebSchedule(['a'])).toEqual({ changed: true });
+        expect(browser.rpc.some(([name]) => name === 'prune_push_schedule')).toBe(false);
+        expect(await webPush.pruneWebSchedule(['a'])).toEqual({ changed: false });
+        expect(browser.rpc.filter(([name]) => name === 'prune_push_schedule')).toHaveLength(1);
+      },
+      { lastSubscription: 'sub-0' },
+    );
   });
 });
