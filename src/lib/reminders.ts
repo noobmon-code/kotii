@@ -5,6 +5,8 @@
 // da manhã (ver planHouseReminders). Quem tem várias casas recebe os de
 // todas: cada lembrete guardado diz de que casa é, e cada sincronização mexe
 // só nos da casa que ela recebeu.
+// No navegador, a mesma agenda fica no servidor e chega por Web Push (ver
+// src/lib/webPush.ts): cada navegador inscrito é um "aparelho".
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { isRunningInExpoGo } from 'expo';
@@ -21,6 +23,7 @@ import {
 } from '@/domain/houseReminders';
 import { currentTimeHHMM, planReminders } from '@/domain/medications';
 import type { Medication } from './types';
+import type { ScheduleRequest as WebScheduleRequest } from './webPushSchedule';
 
 type NotificationsModule = typeof import('expo-notifications');
 
@@ -29,14 +32,55 @@ const MEDS_CHANNEL = { id: CHANNEL_ID, name: 'Remédios' };
 const HOUSE_CHANNEL = { id: 'casa', name: 'Casa' };
 const storageKey = (medicationId: string) => `reminders:${medicationId}`;
 
+type WebPushModule = typeof import('./webPush');
+
+// Só no web, e só quando usado.
+let webPushModule: WebPushModule | null = null;
+function webPush(): WebPushModule {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  webPushModule ??= require('./webPush') as WebPushModule;
+  return webPushModule;
+}
+
 // No Android, o Expo Go lança erro só de carregar expo-notifications (desde o
-// SDK 53). Lá os lembretes ficam desligados; no app instalado funcionam.
+// SDK 53). Lá os lembretes ficam desligados; no app instalado funcionam. No
+// navegador, só onde há Web Push.
 export const remindersSupported =
-  Platform.OS === 'ios' || (Platform.OS === 'android' && !isRunningInExpoGo());
+  Platform.OS === 'ios' ||
+  (Platform.OS === 'android' && !isRunningInExpoGo()) ||
+  (Platform.OS === 'web' && webPush().webPushSupported);
+
+/** Onde os avisos tocam, para os textos das telas. */
+export const REMINDER_PLACE = Platform.OS === 'web' ? 'neste navegador' : 'neste celular';
+
+/** O que fazer quando a permissão foi negada. */
+export const PERMISSION_HINT =
+  Platform.OS === 'web'
+    ? 'Permita as notificações do Nooky nas configurações do navegador.'
+    : 'Permita as notificações do Nooky nos ajustes do celular.';
+
+/**
+ * Lembrete ligado de saída num remédio novo? No navegador, só com a permissão
+ * já dada: lá o pedido precisa vir de um toque, e não do salvar.
+ */
+export function remindByDefault(): boolean {
+  return remindersSupported && (Platform.OS !== 'web' || Notification.permission === 'granted');
+}
+
+/** Por que os avisos não funcionam aqui (null: funcionam). */
+export function remindersUnavailableReason(): string | null {
+  if (remindersSupported) return null;
+  if (Platform.OS !== 'web') return 'Os avisos por notificação funcionam no app instalado; no Expo Go do Android eles ficam desligados.';
+  if (webPush().needsHomeScreen()) {
+    return 'No iPhone, os avisos chegam com o Nooky na tela de início: no Safari, toque em Compartilhar → Adicionar à Tela de Início e abra o app por lá.';
+  }
+  return 'Este navegador não recebe notificações. Use o Chrome, o Edge, o Firefox ou o Safari atualizados, ou o app instalado no celular.';
+}
 
 // Carregado só quando usado, para o import não derrubar o app onde não há suporte.
 let notificationsModule: NotificationsModule | null = null;
 function notifications(): NotificationsModule {
+  if (Platform.OS === 'web') return webPush().webScheduler as unknown as NotificationsModule;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   notificationsModule ??= require('expo-notifications') as NotificationsModule;
   return notificationsModule;
@@ -68,15 +112,24 @@ async function ensurePermission(channel = MEDS_CHANNEL): Promise<boolean> {
   return requested.granted;
 }
 
+/** Pede a permissão já no toque (no navegador, o pedido precisa vir de um toque). */
+export async function askReminderPermission(): Promise<boolean> {
+  return remindersSupported && ensurePermission();
+}
+
 export async function hasReminders(medicationId: string): Promise<boolean> {
   return (await AsyncStorage.getItem(storageKey(medicationId))) !== null;
 }
 
 // Uma operação por vez: duas sincronizações ao mesmo tempo leriam o mesmo
-// estado e agendariam os lembretes em dobro.
+// estado e agendariam os lembretes em dobro. No navegador, também entre abas.
 let queue: Promise<unknown> = Promise.resolve();
 function serialized<T>(task: () => Promise<T>): Promise<T> {
-  const run = queue.then(task, task);
+  const locked = () =>
+    Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.locks
+      ? (navigator.locks.request('nooky-lembretes', task) as Promise<T>)
+      : task();
+  const run = queue.then(locked, locked);
   queue = run.catch(() => undefined);
   return run;
 }
@@ -95,6 +148,27 @@ async function readStored(medicationId: string): Promise<StoredReminders | null>
   const parsed: unknown = JSON.parse(raw);
   // Formato antigo: só a lista de ids.
   return Array.isArray(parsed) ? { ids: parsed as string[], signature: '' } : (parsed as StoredReminders);
+}
+
+type ScheduleRequest = Parameters<NotificationsModule['scheduleNotificationAsync']>[0];
+
+/**
+ * Agenda vários de uma vez. No navegador, numa gravação só no servidor
+ * (tudo ou nada); no celular, se um falhar, os já agendados nesta vez saem:
+ * nunca fica um plano pela metade sem estar guardado.
+ */
+async function scheduleAll(requests: ScheduleRequest[]): Promise<string[]> {
+  // Os gatilhos daqui são sempre diário, semanal ou data, os que o agendador do web entende.
+  if (Platform.OS === 'web') return webPush().webScheduler.scheduleManyAsync(requests as unknown as WebScheduleRequest[]);
+  const Notifications = notifications();
+  const ids: string[] = [];
+  try {
+    for (const request of requests) ids.push(await Notifications.scheduleNotificationAsync(request));
+  } catch (err) {
+    await cancelAll(ids);
+    throw err;
+  }
+  return ids;
 }
 
 async function cancelAll(ids: string[]): Promise<void> {
@@ -137,6 +211,38 @@ export async function disableAllReminders(): Promise<void> {
   await serialized(async () => {
     for (const key of await medicationKeys()) await disable(key.slice('reminders:'.length));
     for (const key of await houseScheduledKeys()) await dropHouseScheduled(key);
+    // No navegador, a inscrição sai também: o servidor para de mandar avisos para cá.
+    if (Platform.OS === 'web') await webPush().unregisterWebPush();
+  });
+}
+
+/**
+ * No navegador: tira da agenda do servidor o que nenhum lembrete guardado
+ * aqui conhece (sobra de uma sincronização que caiu sem internet) e renova a
+ * inscrição. Se a inscrição mudou (chave nova, ou a antiga venceu e o
+ * servidor a apagou com a agenda), o que está guardado aqui não está mais lá:
+ * as assinaturas saem e a próxima sincronização refaz tudo. Chamado ao abrir
+ * o app e ao voltar para ele.
+ */
+export async function reconcileReminders(): Promise<void> {
+  if (!remindersSupported || Platform.OS !== 'web') return;
+  await serialized(async () => {
+    const medications = await medicationKeys();
+    const houses = await houseScheduledKeys();
+    const keep: string[] = [];
+    for (const key of medications) keep.push(...((await readStored(key.slice('reminders:'.length)))?.ids ?? []));
+    for (const key of houses) keep.push(...((await readHouseScheduled(key))?.ids ?? []));
+    const { changed } = await webPush().pruneWebSchedule(keep);
+    if (!changed) return;
+    // Os ids ficam: o que ainda existir no servidor sai quando o lembrete for refeito.
+    for (const key of medications) {
+      const stored = await readStored(key.slice('reminders:'.length));
+      if (stored) await AsyncStorage.setItem(key, JSON.stringify({ ...stored, signature: '' } satisfies StoredReminders));
+    }
+    for (const key of houses) {
+      const stored = await readHouseScheduled(key);
+      if (stored) await AsyncStorage.setItem(key, JSON.stringify({ ...stored, signature: '' } satisfies StoredHouseReminders));
+    }
   });
 }
 
@@ -206,46 +312,41 @@ async function schedule(medication: Medication, today: string, { householdId, la
   if (previous?.signature === signature && previous.householdId === householdId) return;
   if (previous) await cancelAll(previous.ids);
 
-  const ids: string[] = [];
+  const requests: ScheduleRequest[] = [];
   if (plan.kind === 'daily') {
     for (const time of plan.times) {
       const [hour, minute] = time.split(':').map(Number);
-      ids.push(
-        await Notifications.scheduleNotificationAsync({
-          content,
-          trigger: { type: Notifications.SchedulableTriggerInputTypes.DAILY, hour, minute, channelId: CHANNEL_ID },
-        }),
-      );
+      requests.push({
+        content,
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.DAILY, hour, minute, channelId: CHANNEL_ID },
+      });
     }
   } else if (plan.kind === 'weekly') {
     for (const weekday of plan.weekdays) {
       for (const time of plan.times) {
         const [hour, minute] = time.split(':').map(Number);
-        ids.push(
-          await Notifications.scheduleNotificationAsync({
-            content,
-            // No expo-notifications, 1 = domingo.
-            trigger: { type: Notifications.SchedulableTriggerInputTypes.WEEKLY, weekday: weekday + 1, hour, minute, channelId: CHANNEL_ID },
-          }),
-        );
+        requests.push({
+          content,
+          // No expo-notifications, 1 = domingo.
+          trigger: { type: Notifications.SchedulableTriggerInputTypes.WEEKLY, weekday: weekday + 1, hour, minute, channelId: CHANNEL_ID },
+        });
       }
     }
   } else if (plan.kind === 'dates') {
     for (const slot of plan.slots) {
       const [y, m, d] = slot.date.split('-').map(Number);
       const [hour, minute] = slot.time.split(':').map(Number);
-      ids.push(
-        await Notifications.scheduleNotificationAsync({
-          content,
-          trigger: {
-            type: Notifications.SchedulableTriggerInputTypes.DATE,
-            date: new Date(y, m - 1, d, hour, minute),
-            channelId: CHANNEL_ID,
-          },
-        }),
-      );
+      requests.push({
+        content,
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.DATE,
+          date: new Date(y, m - 1, d, hour, minute),
+          channelId: CHANNEL_ID,
+        },
+      });
     }
   }
+  const ids = await scheduleAll(requests);
   await AsyncStorage.setItem(storageKey(medication.id), JSON.stringify({ ids, signature, householdId } satisfies StoredReminders));
 }
 
@@ -518,21 +619,20 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
     }
     if (previous) await cancelAll(previous.ids.filter((id) => !heldIds.has(id)));
 
-    const ids: string[] = [];
-    for (const reminder of plan) {
-      const [y, m, d] = reminder.date.split('-').map(Number);
-      const [hour, minute] = reminder.time.split(':').map(Number);
-      ids.push(
-        await Notifications.scheduleNotificationAsync({
+    const ids = await scheduleAll(
+      plan.map((reminder) => {
+        const [y, m, d] = reminder.date.split('-').map(Number);
+        const [hour, minute] = reminder.time.split(':').map(Number);
+        return {
           content: { title: reminder.title, body: reminder.body, data: { reminder: reminder.key } },
           trigger: {
             type: Notifications.SchedulableTriggerInputTypes.DATE,
             date: new Date(y, m - 1, d, hour, minute),
             channelId: HOUSE_CHANNEL.id,
           },
-        }),
-      );
-    }
+        };
+      }),
+    );
     await AsyncStorage.setItem(
       key,
       JSON.stringify({

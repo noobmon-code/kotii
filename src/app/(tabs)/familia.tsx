@@ -7,8 +7,8 @@ import { LastMemberError, useLeaveHousehold } from '@/data/household';
 import { AiUsageSection } from '@/features/AiUsageSection';
 import { DocumentsSection } from '@/features/DocumentsSection';
 import { HouseRemindersSection } from '@/features/HouseRemindersSection';
-import { useAuth, useHousehold } from '@/lib/auth';
-import { errorMessage, supabase } from '@/lib/supabase';
+import { signOut, useAuth, useHousehold } from '@/lib/auth';
+import { errorMessage } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
 import { Badge, Button, Card, Icon, IconBadge, ListCard, ListRow, Loading, PageTitle, Row, Screen, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
@@ -180,7 +180,7 @@ export default function FamilyScreen() {
           title="Sair da conta"
           variant="danger"
           icon="logout"
-          onPress={() => confirmAction('Sair da conta', 'Deseja sair desta conta neste aparelho?', 'Sair', () => supabase.auth.signOut())}
+          onPress={() => confirmAction('Sair da conta', 'Deseja sair desta conta neste aparelho?', 'Sair', () => signOut())}
         />
       </Section>
     </Screen>

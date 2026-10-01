@@ -5,12 +5,21 @@ import { StyleSheet, Switch, View } from 'react-native';
 import { HOUSE_REMINDER_KINDS, type HouseReminderKind } from '@/domain/houseReminders';
 import { syncOtherHouses, useHouseReminderData, useHouseReminderTarget } from '@/features/useReminderSync';
 import { useHousehold } from '@/lib/auth';
-import { getHouseReminderKinds, remindersSupported, setHouseReminderKind, syncHouseReminders } from '@/lib/reminders';
+import {
+  getHouseReminderKinds,
+  PERMISSION_HINT,
+  REMINDER_PLACE,
+  remindersSupported,
+  remindersUnavailableReason,
+  setHouseReminderKind,
+  syncHouseReminders,
+} from '@/lib/reminders';
+import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import { Card, ListCard, Row, Section, Text } from '@/ui/primitives';
 import { space, useColors } from '@/ui/theme';
 
-/** Avisos da casa por notificação: cada pessoa escolhe no próprio celular. */
+/** Avisos da casa por notificação: cada pessoa escolhe no próprio celular (ou navegador). */
 export function HouseRemindersSection() {
   const c = useColors();
   const { data } = useHouseReminderData();
@@ -26,11 +35,13 @@ export function HouseRemindersSection() {
   async function toggle(kind: HouseReminderKind, enabled: boolean) {
     if (!kinds) return;
     setKinds((current) => current && { ...current, [kind]: enabled });
-    const ok = await setHouseReminderKind(kind, enabled).catch(() => false);
-    if (!ok) {
+    // No navegador, ligar também inscreve o navegador no servidor: pode falhar sem internet.
+    const ok = await setHouseReminderKind(kind, enabled).catch((err: unknown) => err);
+    if (ok !== true) {
       // Só este tipo volta: outros toques feitos durante o pedido de permissão ficam.
       setKinds((current) => current && { ...current, [kind]: !enabled });
-      notify('Sem permissão', 'Para receber os avisos, permita as notificações do Nooky nos ajustes do celular.');
+      if (ok === false) notify('Sem permissão', `Para receber os avisos: ${PERMISSION_HINT.charAt(0).toLowerCase()}${PERMISSION_HINT.slice(1)}`);
+      else notify('Não deu para ligar os avisos', errorMessage(ok));
       return;
     }
     if (data && target) syncHouseReminders(data, target).catch(() => undefined);
@@ -39,7 +50,7 @@ export function HouseRemindersSection() {
   }
 
   return (
-    <Section title="Avisos neste celular">
+    <Section title={`Avisos ${REMINDER_PLACE}`}>
       {remindersSupported ? (
         <ListCard>
           {HOUSE_REMINDER_KINDS.map((kind) => (
@@ -60,10 +71,7 @@ export function HouseRemindersSection() {
         </ListCard>
       ) : (
         <Card>
-          <Text variant="small">
-            Os avisos por notificação (contas, documentos, tarefas, consultas, vacinas, remédios e dicas do clima) funcionam no app instalado no celular. Na versão
-            web e no Expo Go do Android eles ficam desligados.
-          </Text>
+          <Text variant="small">{remindersUnavailableReason()}</Text>
         </Card>
       )}
     </Section>

@@ -1,4 +1,6 @@
-// Service worker do Nooky na web: guarda o app para abrir sem internet.
+// Service worker do Nooky na web: guarda o app para abrir sem internet e
+// mostra os avisos que chegam por Web Push (a agenda fica no servidor; ver
+// src/lib/webPush.ts e a função send-push).
 // - Páginas: rede primeiro; sem rede, a última index.html guardada (sempre com os bundles dela).
 // - /_expo/static, /assets e /icons: arquivos com hash no nome, guardados já
 //   na instalação (e na primeira vez que aparecem) e servidos do cache depois.
@@ -120,4 +122,37 @@ self.addEventListener('fetch', (event) => {
       ),
     );
   }
+});
+
+// Aviso que chegou do servidor (send-push): título, texto e para onde ir no toque.
+self.addEventListener('push', (event) => {
+  let message = {};
+  try {
+    message = event.data ? event.data.json() : {};
+  } catch {
+    message = { body: event.data ? event.data.text() : '' };
+  }
+  event.waitUntil(
+    self.registration.showNotification(message.title || 'Nooky', {
+      body: message.body || '',
+      icon: '/icons/icon-192.png',
+      badge: '/icons/icon-192.png',
+      // O mesmo lembrete não empilha: o novo substitui o anterior.
+      tag: message.tag || undefined,
+      data: { url: message.url || '/' },
+    }),
+  );
+});
+
+// Toque no aviso: volta para o app aberto, ou abre um.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = new URL(event.notification.data?.url || '/', self.location.origin).href;
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windows) => {
+      const open = windows.find((client) => new URL(client.url).origin === self.location.origin);
+      if (open) return open.focus();
+      return self.clients.openWindow(url);
+    }),
+  );
 });

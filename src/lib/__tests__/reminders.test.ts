@@ -131,6 +131,39 @@ describe('reminder scheduling', () => {
     });
   });
 
+  it('se um agendamento falha, desfaz os já agendados nesta vez e não guarda nada', async () => {
+    const live = new Set<string>();
+    const storage = new Map<string, string>();
+    let calls = 0;
+    await jest.isolateModulesAsync(async () => {
+      jest.doMock('react-native', () => ({ Platform: { OS: 'ios' } }));
+      jest.doMock('expo', () => ({ isRunningInExpoGo: () => false }));
+      jest.doMock('@react-native-async-storage/async-storage', () => ({
+        getItem: async (k: string) => storage.get(k) ?? null,
+        setItem: async (k: string, v: string) => void storage.set(k, v),
+        removeItem: async (k: string) => void storage.delete(k),
+        getAllKeys: async () => [...storage.keys()],
+      }));
+      jest.doMock('expo-notifications', () => ({
+        SchedulableTriggerInputTypes: { DAILY: 'daily', WEEKLY: 'weekly', DATE: 'date' },
+        AndroidImportance: { HIGH: 4 },
+        getPermissionsAsync: async () => ({ granted: true }),
+        scheduleNotificationAsync: async () => {
+          calls += 1;
+          if (calls === 2) throw new Error('falhou');
+          live.add(`n${calls}`);
+          return `n${calls}`;
+        },
+        cancelScheduledNotificationAsync: async (id: string) => void live.delete(id),
+      }));
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const reminders: Reminders = require('../reminders');
+      await expect(reminders.enableReminders(medication('2026-09-01', null), { householdId: 'casa' }, '2026-09-26')).rejects.toThrow('falhou');
+    });
+    expect(live.size).toBe(0);
+    expect(storage.size).toBe(0);
+  });
+
   it('uses daily repeats for ongoing treatments and drops ended ones on sync', async () => {
     await withScheduler(async (reminders, scheduled, storage) => {
       await reminders.enableReminders(medication('2026-09-01', null), { householdId: 'casa' }, '2026-09-26');
@@ -174,6 +207,131 @@ describe('reminder scheduling', () => {
       expect(storage.has('reminders:m1')).toBe(true);
       await reminders.syncReminders([medication('2026-09-01', null)], '2026-09-26', { householdId: 'casa', adoptLegacy: true });
       expect(JSON.parse(storage.get('reminders:m1')!).householdId).toBe('casa');
+    });
+  });
+});
+
+describe('no navegador (Web Push)', () => {
+  // O agendador do web (src/lib/webPush.ts) em memória: a agenda que iria para o servidor.
+  async function onWeb(
+    supported: boolean,
+    scenario: (
+      reminders: Reminders,
+      web: { scheduled: Map<string, unknown>; pruned: string[][]; unregistered: () => number; changeSubscription: () => void },
+    ) => Promise<void>,
+  ) {
+    const scheduled = new Map<string, unknown>();
+    const storage = new Map<string, string>();
+    const pruned: string[][] = [];
+    let unregistered = 0;
+    let next = 0;
+    let subscriptionChanged = false;
+    await jest.isolateModulesAsync(async () => {
+      jest.doMock('react-native', () => ({ Platform: { OS: 'web' } }));
+      jest.doMock('expo', () => ({ isRunningInExpoGo: () => false }));
+      jest.doMock('@react-native-async-storage/async-storage', () => ({
+        getItem: async (k: string) => storage.get(k) ?? null,
+        setItem: async (k: string, v: string) => void storage.set(k, v),
+        removeItem: async (k: string) => void storage.delete(k),
+        getAllKeys: async () => [...storage.keys()],
+      }));
+      jest.doMock('expo-notifications', () => {
+        throw new Error('expo-notifications não é usado no web');
+      });
+      jest.doMock('../webPush', () => ({
+        webPushSupported: supported,
+        needsHomeScreen: () => true,
+        webScheduler: {
+          SchedulableTriggerInputTypes: { DAILY: 'daily', WEEKLY: 'weekly', DATE: 'date' },
+          AndroidImportance: { HIGH: 4 },
+          setNotificationHandler: () => undefined,
+          getPermissionsAsync: async () => ({ granted: true }),
+          requestPermissionsAsync: async () => ({ granted: true }),
+          scheduleNotificationAsync: async (request: unknown) => {
+            const id = `w${++next}`;
+            scheduled.set(id, request);
+            return id;
+          },
+          scheduleManyAsync: async (requests: unknown[]) =>
+            requests.map((request) => {
+              const id = `w${++next}`;
+              scheduled.set(id, request);
+              return id;
+            }),
+          cancelScheduledNotificationAsync: async (id: string) => void scheduled.delete(id),
+          getAllScheduledNotificationsAsync: async () => [...scheduled.keys()].map((identifier) => ({ identifier })),
+        },
+        pruneWebSchedule: async (keep: string[]) => {
+          pruned.push(keep);
+          return { changed: subscriptionChanged };
+        },
+        unregisterWebPush: async () => void (unregistered += 1),
+      }));
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      await scenario(require('../reminders'), {
+        scheduled,
+        pruned,
+        unregistered: () => unregistered,
+        changeSubscription: () => {
+          subscriptionChanged = true;
+          scheduled.clear();
+        },
+      });
+    });
+  }
+
+  const medication: Medication = {
+    id: 'm1',
+    person_id: null,
+    person_name: 'Ana',
+    name: 'Amoxicilina',
+    dosage: '5 ml',
+    times: ['08:00', '20:00'],
+    start_on: '2026-09-01',
+    end_on: null,
+    notes: null,
+    active: true,
+    frequency: 'daily',
+    weekdays: null,
+    interval_days: null,
+    total_doses: null,
+    taken_count: 0,
+  };
+
+  it('sem Web Push, fica desligado e diz por quê (no iPhone, pela tela de início)', async () => {
+    await onWeb(false, async (reminders) => {
+      expect(reminders.remindersSupported).toBe(false);
+      expect(reminders.remindersUnavailableReason()).toMatch(/tela de início/);
+      expect(await reminders.enableReminders(medication, { householdId: 'casa' })).toBe(false);
+    });
+  });
+
+  it('a inscrição mudou (a antiga venceu e o servidor apagou a agenda): o app refaz tudo na nova', async () => {
+    await onWeb(true, async (reminders, web) => {
+      await reminders.enableReminders(medication, { householdId: 'casa' }, '2026-09-26');
+      expect(web.scheduled.size).toBe(2);
+      web.changeSubscription();
+      await reminders.reconcileReminders();
+      // Mesmos dados: sem a troca, a assinatura igual não refaria nada.
+      await reminders.syncReminders([medication], '2026-09-26', { householdId: 'casa' });
+      expect(web.scheduled.size).toBe(2);
+    });
+  });
+
+  it('agenda no servidor; ao abrir, a agenda fica só com o que o navegador conhece; ao sair, a inscrição sai', async () => {
+    await onWeb(true, async (reminders, web) => {
+      expect(reminders.remindersSupported).toBe(true);
+      expect(reminders.REMINDER_PLACE).toBe('neste navegador');
+      expect(await reminders.enableReminders(medication, { householdId: 'casa' }, '2026-09-26')).toBe(true);
+      expect([...web.scheduled.values()].map((r) => (r as { trigger: unknown }).trigger)).toEqual([
+        { type: 'daily', hour: 8, minute: 0, channelId: 'remedios' },
+        { type: 'daily', hour: 20, minute: 0, channelId: 'remedios' },
+      ]);
+      await reminders.reconcileReminders();
+      expect(web.pruned).toEqual([['w1', 'w2']]);
+      await reminders.disableAllReminders();
+      expect(web.scheduled.size).toBe(0);
+      expect(web.unregistered()).toBe(1);
     });
   });
 });

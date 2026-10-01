@@ -13,7 +13,17 @@ import {
   WEEKDAYS,
   type MedicationFrequency,
 } from '@/domain/medications';
-import { disableReminders, enableReminders, hasReminders, remindersSupported } from '@/lib/reminders';
+import {
+  askReminderPermission,
+  disableReminders,
+  enableReminders,
+  hasReminders,
+  PERMISSION_HINT,
+  REMINDER_PLACE,
+  remindByDefault,
+  remindersSupported,
+  remindersUnavailableReason,
+} from '@/lib/reminders';
 import { errorMessage } from '@/lib/supabase';
 import { openNewPerson, PersonChips } from '@/features/health/PersonChips';
 import { useHouseReminderTarget } from '@/features/useReminderSync';
@@ -71,13 +81,26 @@ function MedicationForm({
   );
   const [totalDoses, setTotalDoses] = useState(String(medication?.total_doses ?? 10));
   const [notes, setNotes] = useState(medication?.notes ?? '');
-  const [remind, setRemind] = useState(!medication && remindersSupported);
+  const [remind, setRemind] = useState(() => !medication && remindByDefault());
 
   useEffect(() => {
     if (medication) hasReminders(medication.id).then(setRemind).catch(() => undefined);
   }, [medication]);
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
+
+  function toggleRemind(value: boolean) {
+    setRemind(value);
+    // No navegador, a permissão sai do toque; no celular, ao salvar.
+    if (!value || Platform.OS !== 'web') return;
+    askReminderPermission()
+      .catch((err: unknown) => err)
+      .then((ok) => {
+        if (ok === true) return;
+        setRemind(false);
+        notify('Lembretes desativados', ok === false ? PERMISSION_HINT : errorMessage(ok));
+      });
+  }
 
   const parsedTimes = parseTimes(times);
   const startISO = parseBRDate(start);
@@ -153,7 +176,7 @@ function MedicationForm({
           try {
             if (remind && target) {
               const ok = await enableReminders(saved, target);
-              if (!ok) notify('Lembretes desativados', 'Permita notificações nas configurações do aparelho.');
+              if (!ok) notify('Lembretes desativados', PERMISSION_HINT);
             } else {
               await disableReminders(saved.id);
             }
@@ -260,17 +283,15 @@ function MedicationForm({
         <Card>
           <Row>
             <View style={styles.flex}>
-              <Text variant="label">Lembrar neste celular</Text>
+              <Text variant="label">Lembrar {REMINDER_PLACE}</Text>
               <Text variant="small">Cada pessoa da casa escolhe no próprio aparelho.</Text>
             </View>
-            <Switch value={remind} onValueChange={setRemind} trackColor={{ true: c.primary }} />
+            <Switch value={remind} onValueChange={toggleRemind} trackColor={{ true: c.primary }} />
           </Row>
         </Card>
-      ) : Platform.OS === 'android' ? (
-        <Text variant="small">
-          Lembretes por notificação funcionam no app instalado; no Expo Go do Android eles ficam desligados.
-        </Text>
-      ) : null}
+      ) : (
+        <Text variant="small">{remindersUnavailableReason()}</Text>
+      )}
 
       <Button title="Salvar" onPress={submit} loading={save.isPending} />
       {medication ? (

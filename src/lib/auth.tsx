@@ -5,8 +5,18 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 
 import { forgetActiveHousehold, getActiveHousehold, loadActiveHousehold, setActiveHousehold } from './activeHousehold';
 import { cacheHousehold, cacheOwners, forgetCache, queryClient, resumeQueue, setSessionValid } from './queryClient';
+import { disableAllReminders } from './reminders';
 import { supabase, unwrap } from './supabase';
 import type { Household, Member } from './types';
+
+/**
+ * Sai da conta neste aparelho. Antes, os lembretes daqui saem (no navegador,
+ * também a inscrição dos avisos), para não tocar o remédio de quem saiu.
+ */
+export async function signOut(): Promise<void> {
+  await disableAllReminders().catch(() => undefined);
+  await supabase.auth.signOut();
+}
 
 /** O app só usa quem entrou; os tokens ficam com o Supabase. */
 export type AppSession = Pick<Session, 'user' | 'expires_at'>;
@@ -83,6 +93,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } else {
         setState({ session: null, loading: false });
         forgetLastSession();
+        // A sessão acabou (sem ser por falta de internet): os lembretes de quem estava aqui saem.
+        disableAllReminders().catch(() => undefined);
       }
     });
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
@@ -94,6 +106,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         forgetLastSession();
         forgetActiveHousehold();
         forgetCache();
+        // Qualquer saída (o botão, a sessão revogada): os lembretes deste aparelho
+        // saem. No navegador, sem a sessão, o servidor não apaga a agenda, mas o
+        // navegador desfaz a inscrição e o servidor deixa de mandar (410).
+        disableAllReminders().catch(() => undefined);
       }
     });
     return () => data.subscription.unsubscribe();

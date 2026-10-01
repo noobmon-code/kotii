@@ -13,7 +13,7 @@ import {
 import { addDays, todayISO } from '@/domain/dates';
 import { daySummary, describeSummary, houseClock, maskCep, normalizeCep, type WeatherTip } from '@/domain/weather';
 import { useHouseWeather } from '@/features/useHouseWeather';
-import { remindersSupported } from '@/lib/reminders';
+import { REMINDER_PLACE, remindersSupported, remindersUnavailableReason } from '@/lib/reminders';
 import { errorMessage } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
 import { Button, Card, ErrorNotice, IconBadge, ListCard, ListRow, Loading, Screen, Section, Text, TextField } from '@/ui/primitives';
@@ -127,12 +127,12 @@ export default function WeatherScreen() {
           {remindersSupported ? (
             <>
               <Text variant="muted">
-                Às 7h, quando o tempo pede algo. Cada pessoa liga no próprio celular, em Família, “Avisos neste celular”.
+                Às 7h, quando o tempo pede algo. Cada pessoa liga no próprio aparelho, em Família, “Avisos {REMINDER_PLACE}”.
               </Text>
               <Button title="Abrir os avisos" icon="bell-outline" variant="secondary" compact onPress={() => router.push('/familia')} />
             </>
           ) : (
-            <Text variant="muted">O aviso das 7h funciona no app instalado no celular. Aqui, as dicas aparecem na tela Hoje.</Text>
+            <Text variant="muted">{remindersUnavailableReason()} As dicas aparecem na tela Hoje.</Text>
           )}
         </Card>
       ) : null}
