@@ -23,6 +23,7 @@ import {
 } from '@/domain/houseReminders';
 import { currentTimeHHMM, planReminders } from '@/domain/medications';
 import type { Medication } from './types';
+import type { ScheduleRequest as WebScheduleRequest } from './webPushSchedule';
 
 type NotificationsModule = typeof import('expo-notifications');
 
@@ -147,6 +148,27 @@ async function readStored(medicationId: string): Promise<StoredReminders | null>
   const parsed: unknown = JSON.parse(raw);
   // Formato antigo: só a lista de ids.
   return Array.isArray(parsed) ? { ids: parsed as string[], signature: '' } : (parsed as StoredReminders);
+}
+
+type ScheduleRequest = Parameters<NotificationsModule['scheduleNotificationAsync']>[0];
+
+/**
+ * Agenda vários de uma vez. No navegador, numa gravação só no servidor
+ * (tudo ou nada); no celular, se um falhar, os já agendados nesta vez saem:
+ * nunca fica um plano pela metade sem estar guardado.
+ */
+async function scheduleAll(requests: ScheduleRequest[]): Promise<string[]> {
+  // Os gatilhos daqui são sempre diário, semanal ou data, os que o agendador do web entende.
+  if (Platform.OS === 'web') return webPush().webScheduler.scheduleManyAsync(requests as unknown as WebScheduleRequest[]);
+  const Notifications = notifications();
+  const ids: string[] = [];
+  try {
+    for (const request of requests) ids.push(await Notifications.scheduleNotificationAsync(request));
+  } catch (err) {
+    await cancelAll(ids);
+    throw err;
+  }
+  return ids;
 }
 
 async function cancelAll(ids: string[]): Promise<void> {
@@ -275,46 +297,41 @@ async function schedule(medication: Medication, today: string, { householdId, la
   if (previous?.signature === signature && previous.householdId === householdId) return;
   if (previous) await cancelAll(previous.ids);
 
-  const ids: string[] = [];
+  const requests: ScheduleRequest[] = [];
   if (plan.kind === 'daily') {
     for (const time of plan.times) {
       const [hour, minute] = time.split(':').map(Number);
-      ids.push(
-        await Notifications.scheduleNotificationAsync({
-          content,
-          trigger: { type: Notifications.SchedulableTriggerInputTypes.DAILY, hour, minute, channelId: CHANNEL_ID },
-        }),
-      );
+      requests.push({
+        content,
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.DAILY, hour, minute, channelId: CHANNEL_ID },
+      });
     }
   } else if (plan.kind === 'weekly') {
     for (const weekday of plan.weekdays) {
       for (const time of plan.times) {
         const [hour, minute] = time.split(':').map(Number);
-        ids.push(
-          await Notifications.scheduleNotificationAsync({
-            content,
-            // No expo-notifications, 1 = domingo.
-            trigger: { type: Notifications.SchedulableTriggerInputTypes.WEEKLY, weekday: weekday + 1, hour, minute, channelId: CHANNEL_ID },
-          }),
-        );
+        requests.push({
+          content,
+          // No expo-notifications, 1 = domingo.
+          trigger: { type: Notifications.SchedulableTriggerInputTypes.WEEKLY, weekday: weekday + 1, hour, minute, channelId: CHANNEL_ID },
+        });
       }
     }
   } else if (plan.kind === 'dates') {
     for (const slot of plan.slots) {
       const [y, m, d] = slot.date.split('-').map(Number);
       const [hour, minute] = slot.time.split(':').map(Number);
-      ids.push(
-        await Notifications.scheduleNotificationAsync({
-          content,
-          trigger: {
-            type: Notifications.SchedulableTriggerInputTypes.DATE,
-            date: new Date(y, m - 1, d, hour, minute),
-            channelId: CHANNEL_ID,
-          },
-        }),
-      );
+      requests.push({
+        content,
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.DATE,
+          date: new Date(y, m - 1, d, hour, minute),
+          channelId: CHANNEL_ID,
+        },
+      });
     }
   }
+  const ids = await scheduleAll(requests);
   await AsyncStorage.setItem(storageKey(medication.id), JSON.stringify({ ids, signature, householdId } satisfies StoredReminders));
 }
 
@@ -587,21 +604,20 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
     }
     if (previous) await cancelAll(previous.ids.filter((id) => !heldIds.has(id)));
 
-    const ids: string[] = [];
-    for (const reminder of plan) {
-      const [y, m, d] = reminder.date.split('-').map(Number);
-      const [hour, minute] = reminder.time.split(':').map(Number);
-      ids.push(
-        await Notifications.scheduleNotificationAsync({
+    const ids = await scheduleAll(
+      plan.map((reminder) => {
+        const [y, m, d] = reminder.date.split('-').map(Number);
+        const [hour, minute] = reminder.time.split(':').map(Number);
+        return {
           content: { title: reminder.title, body: reminder.body, data: { reminder: reminder.key } },
           trigger: {
             type: Notifications.SchedulableTriggerInputTypes.DATE,
             date: new Date(y, m - 1, d, hour, minute),
             channelId: HOUSE_CHANNEL.id,
           },
-        }),
-      );
-    }
+        };
+      }),
+    );
     await AsyncStorage.setItem(
       key,
       JSON.stringify({

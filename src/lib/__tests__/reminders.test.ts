@@ -131,6 +131,39 @@ describe('reminder scheduling', () => {
     });
   });
 
+  it('se um agendamento falha, desfaz os já agendados nesta vez e não guarda nada', async () => {
+    const live = new Set<string>();
+    const storage = new Map<string, string>();
+    let calls = 0;
+    await jest.isolateModulesAsync(async () => {
+      jest.doMock('react-native', () => ({ Platform: { OS: 'ios' } }));
+      jest.doMock('expo', () => ({ isRunningInExpoGo: () => false }));
+      jest.doMock('@react-native-async-storage/async-storage', () => ({
+        getItem: async (k: string) => storage.get(k) ?? null,
+        setItem: async (k: string, v: string) => void storage.set(k, v),
+        removeItem: async (k: string) => void storage.delete(k),
+        getAllKeys: async () => [...storage.keys()],
+      }));
+      jest.doMock('expo-notifications', () => ({
+        SchedulableTriggerInputTypes: { DAILY: 'daily', WEEKLY: 'weekly', DATE: 'date' },
+        AndroidImportance: { HIGH: 4 },
+        getPermissionsAsync: async () => ({ granted: true }),
+        scheduleNotificationAsync: async () => {
+          calls += 1;
+          if (calls === 2) throw new Error('falhou');
+          live.add(`n${calls}`);
+          return `n${calls}`;
+        },
+        cancelScheduledNotificationAsync: async (id: string) => void live.delete(id),
+      }));
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const reminders: Reminders = require('../reminders');
+      await expect(reminders.enableReminders(medication('2026-09-01', null), { householdId: 'casa' }, '2026-09-26')).rejects.toThrow('falhou');
+    });
+    expect(live.size).toBe(0);
+    expect(storage.size).toBe(0);
+  });
+
   it('uses daily repeats for ongoing treatments and drops ended ones on sync', async () => {
     await withScheduler(async (reminders, scheduled, storage) => {
       await reminders.enableReminders(medication('2026-09-01', null), { householdId: 'casa' }, '2026-09-26');
@@ -218,6 +251,12 @@ describe('no navegador (Web Push)', () => {
             scheduled.set(id, request);
             return id;
           },
+          scheduleManyAsync: async (requests: unknown[]) =>
+            requests.map((request) => {
+              const id = `w${++next}`;
+              scheduled.set(id, request);
+              return id;
+            }),
           cancelScheduledNotificationAsync: async (id: string) => void scheduled.delete(id),
           getAllScheduledNotificationsAsync: async () => [...scheduled.keys()].map((identifier) => ({ identifier })),
         },

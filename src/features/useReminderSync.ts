@@ -245,6 +245,8 @@ export function useReminderSync() {
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
       if (state !== 'active' || !target) return;
+      // No navegador: arruma a agenda do servidor e renova a inscrição (o fuso pode ter mudado).
+      reconcileReminders().catch(() => undefined);
       refetch()
         .then((result) => (result.data ? syncReminders(result.data, todayISO(), target) : undefined))
         .catch(() => undefined);

@@ -56,7 +56,10 @@ async function browserSubscription(): Promise<PushSubscription> {
   return registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
 }
 
-let subscriptionId: Promise<string> | null = null;
+/** A inscrição registrada nesta sessão do app, e com qual fuso (mudou de fuso: registra de novo). */
+let registered: { timezone: string; id: Promise<string> } | null = null;
+
+const currentTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 /**
  * A última inscrição deste navegador no servidor. Se o navegador trocar de
@@ -82,27 +85,34 @@ const lastSubscription = {
   },
 };
 
-/** Inscreve este navegador no servidor (uma vez por sessão do app) e devolve o id da inscrição. */
+/**
+ * Inscreve este navegador no servidor e devolve o id da inscrição: uma vez
+ * por sessão do app, e de novo se o fuso mudou (o app ficou aberto numa
+ * viagem), para os avisos diários tocarem na hora de lá.
+ */
 function ensureSubscription(): Promise<string> {
-  subscriptionId ??= (async () => {
+  const timezone = currentTimezone();
+  if (registered?.timezone === timezone) return registered.id;
+  const id: Promise<string> = (async () => {
     const { endpoint, keys } = (await browserSubscription()).toJSON();
     if (!endpoint || !keys?.p256dh || !keys.auth) throw new Error('O navegador não completou a inscrição para avisos.');
-    const id = unwrap(
+    const subscription = unwrap(
       await supabase.rpc('register_push_subscription', {
         p_endpoint: endpoint,
         p_p256dh: keys.p256dh,
         p_auth: keys.auth,
-        p_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        p_timezone: timezone,
         p_previous: lastSubscription.get(),
       }),
     ) as string;
-    lastSubscription.set(id);
-    return id;
+    lastSubscription.set(subscription);
+    return subscription;
   })().catch((err) => {
-    subscriptionId = null;
+    if (registered?.id === id) registered = null;
     throw err;
   });
-  return subscriptionId;
+  registered = { timezone, id };
+  return id;
 }
 
 const granted = () => Notification.permission === 'granted';
@@ -121,9 +131,16 @@ export const webScheduler = {
     return { granted: true };
   },
   scheduleNotificationAsync: async (request: ScheduleRequest): Promise<string> => {
-    const id = crypto.randomUUID();
-    unwrap(await supabase.from('push_schedule').insert(scheduleRow(id, await ensureSubscription(), request)));
+    const [id] = await webScheduler.scheduleManyAsync([request]);
     return id;
+  },
+  /** O plano inteiro numa gravação só: entra tudo ou nada (sem aviso solto no servidor). */
+  scheduleManyAsync: async (requests: ScheduleRequest[]): Promise<string[]> => {
+    if (!requests.length) return [];
+    const subscription = await ensureSubscription();
+    const rows = requests.map((request) => scheduleRow(crypto.randomUUID(), subscription, request));
+    unwrap(await supabase.from('push_schedule').insert(rows));
+    return rows.map((row) => row.id);
   },
   cancelScheduledNotificationAsync: async (id: string): Promise<void> => {
     unwrap(await supabase.from('push_schedule').delete().eq('id', id));
@@ -147,7 +164,7 @@ export async function pruneWebSchedule(keep: string[]): Promise<void> {
 /** Este navegador deixa de receber avisos (ao sair da conta). */
 export async function unregisterWebPush(): Promise<void> {
   if (!webPushSupported) return;
-  subscriptionId = null;
+  registered = null;
   lastSubscription.set(null);
   const registration = await serviceWorker().catch(() => null);
   const subscription = await registration?.pushManager.getSubscription().catch(() => null);
