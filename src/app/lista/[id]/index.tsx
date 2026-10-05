@@ -16,10 +16,12 @@ import {
 import {
   type EditItemInput,
   listQueueBusy,
+  loadListLinks,
   newToggleToken,
   useAddListItem,
   useArchiveList,
   useClearCheckedItems,
+  useListLinks,
   useListQueueBusy,
   useDeleteListItem,
   useEditListItem,
@@ -83,6 +85,7 @@ export default function ShoppingListScreen() {
   const syncing = useListQueueBusy();
   const archive = useArchiveList(id);
   const pantry = usePantry();
+  const links = useListLinks();
   const edit = useEditListItem(id);
   const setPhoto = useSetListItemPhoto();
   const householdId = useHouseholdId();
@@ -305,14 +308,19 @@ export default function ShoppingListScreen() {
       },
       { onError },
     );
-  // Despensa não carregada (sem internet e nunca vista neste aparelho) não é despensa vazia.
-  const openStore = (cart: ShoppingListItem[], single: boolean) =>
+  // Despensa não carregada (sem internet e nunca vista neste aparelho) não é
+  // despensa vazia. Sem as ligações da lista também não dá para saber o que a
+  // nota já guardou ("Filtro de café" é o filtro Melitta): a pessoa escolhe.
+  const openStore = async (cart: ShoppingListItem[], single: boolean) => {
+    const linkIndex = links.data ?? (await loadListLinks(queryClient));
+    const known = pantry.data !== undefined && linkIndex !== null;
     setStoring({
       items: cart,
-      rows: cartPantryRows(cart, pantry.data ?? null, { single, today }),
+      rows: cartPantryRows(cart, known ? pantry.data! : null, { single, today, links: linkIndex ?? undefined }),
       single,
-      pantryUnknown: pantry.data === undefined,
+      pantryUnknown: !known,
     });
+  };
   const clearCart = (cart: ShoppingListItem[], toPantry: CartPantryEntry[]) => {
     setStoring(null);
     clearChecked.mutate(
@@ -466,7 +474,7 @@ export default function ShoppingListScreen() {
               variant="ghost"
               compact
               disabled={syncing}
-              onPress={() => openStore(checked, false)}
+              onPress={() => void openStore(checked, false)}
             />
           }>
           <ShoppingGrid
@@ -475,7 +483,7 @@ export default function ShoppingListScreen() {
             onToggle={toggleItem}
             photos={photos}
             onOpen={setEditing}
-            onStore={syncing ? undefined : (item) => openStore([item], true)}
+            onStore={syncing ? undefined : (item) => void openStore([item], true)}
           />
         </Section>
       ) : null}

@@ -473,6 +473,102 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+\echo '• a nota tira da lista o que a compra cumpriu e aprende o vínculo'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  l uuid := current_setting('test.list_a')::uuid;
+  r uuid;
+  i_cebola uuid;
+  i_coca uuid;
+  i_avulso uuid;
+  l_cebola uuid;
+  l_coca uuid;
+  l_pao uuid;
+  l_fica uuid;
+  p_coca uuid;
+begin
+  insert into public.shopping_list_items (list_id, name, category) values (l, 'Cebola', 'hortifruti') returning id into l_cebola;
+  insert into public.shopping_list_items (list_id, name, category, checked_at) values (l, 'Coca', 'bebidas', now())
+    returning id into l_coca;
+  insert into public.shopping_list_items (list_id, name, category) values (l, 'Pão', 'padaria') returning id into l_pao;
+  insert into public.shopping_list_items (list_id, name, category) values (l, 'Detergente', 'limpeza') returning id into l_fica;
+
+  insert into public.receipts (purchased_at, source) values ('2026-10-03 21:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'CEBOLA GRANEL 600G', 0.6, 'kg', 5, 3) returning id into i_cebola;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'COCA S ACUCAR 1 5L', 1, 'un', 9, 9) returning id into i_coca;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'PAO FRANCES', 0.3, 'kg', 15, 4.5) returning id into i_avulso;
+
+  -- Nome fora do formato do app: nada é confirmado.
+  begin
+    perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object(
+      'id', i_coca, 'new_product', jsonb_build_object('name', 'Coca-Cola Zero 1,5L', 'category', 'bebidas'),
+      'list_items', jsonb_build_array(jsonb_build_object('id', l_coca, 'name', 'Coca', 'name_key', 'Coca!')))));
+    raise exception 'FAIL: link with a name key out of format';
+  exception when check_violation then null;
+  end;
+  assert exists (select 1 from public.shopping_list_items where id = l_coca), 'failed confirm keeps the list';
+
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', i_cebola,
+      'new_product', jsonb_build_object('name', 'Cebola Granel 600g', 'category', 'hortifruti'),
+      'list_items', jsonb_build_array(
+        jsonb_build_object('id', l_cebola, 'name', 'Cebola', 'name_key', 'cebola'),
+        -- Visto como "Detergente Ypê", renomeado depois em outro aparelho: fica, sem ligação.
+        jsonb_build_object('id', l_fica, 'name', 'Detergente Ypê', 'name_key', 'detergente ype'))),
+    jsonb_build_object('id', i_coca,
+      'new_product', jsonb_build_object('name', 'Coca-Cola Zero 1,5L', 'category', 'bebidas'),
+      -- O "Refrigerante" já tinha saído da lista (outra pessoa): sem vínculo.
+      'list_items', jsonb_build_array(
+        jsonb_build_object('id', l_coca, 'name', 'Coca', 'name_key', 'coca'),
+        jsonb_build_object('id', gen_random_uuid(), 'name', 'Refrigerante', 'name_key', 'refrigerante'))),
+    -- Sem produto (não acompanhar preço): sai da lista, sem vínculo.
+    jsonb_build_object('id', i_avulso,
+      'list_items', jsonb_build_array(jsonb_build_object('id', l_pao, 'name', 'Pão', 'name_key', 'pao')))
+  ));
+
+  select id into p_coca from public.products where name = 'Coca-Cola Zero 1,5L';
+  assert not exists (select 1 from public.shopping_list_items where id in (l_cebola, l_coca, l_pao)),
+    'items the purchase fulfilled leave the list, in the cart or not';
+  assert exists (select 1 from public.shopping_list_items where id = l_fica), 'the rest of the list stays';
+  assert exists (select 1 from public.list_item_links where name_key = 'coca' and product_id = p_coca), 'coca -> Coca-Cola Zero';
+  assert exists (select 1 from public.list_item_links k join public.products p on p.id = k.product_id
+    where k.name_key = 'cebola' and p.name = 'Cebola Granel 600g'), 'cebola -> Cebola Granel';
+  assert not exists (select 1 from public.list_item_links where name_key in ('refrigerante', 'pao', 'detergente ype')),
+    'no link for an item already gone, renamed meanwhile or a purchase without product';
+  assert not exists (select 1 from public.purchase_history where name in ('Cebola', 'Coca', 'Pão')),
+    'the receipt is the purchase record (no cart history)';
+
+  -- Outra nota: a pessoa diz que a Coca não cumpre mais o "Coca" (ligação errada).
+  insert into public.receipts (purchased_at, source) values ('2026-10-04 12:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'COCA S ACUCAR 1 5L', 1, 'un', 9, 9) returning id into i_coca;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i_coca, 'product_id', p_coca,
+    'forget_links', jsonb_build_array('coca'))));
+  assert not exists (select 1 from public.list_item_links where name_key = 'coca'), 'forgotten link is gone';
+  assert exists (select 1 from public.list_item_links where name_key = 'cebola'), 'other links stay';
+  insert into public.list_item_links (name_key, product_id) values ('coca', p_coca);
+
+  delete from public.shopping_list_items where id = l_fica;
+  perform set_config('test.coca', p_coca::text, false);
+end $$;
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  assert (select count(*) from public.list_item_links) = 0, 'C does not see A links';
+  begin
+    insert into public.list_item_links (household_id, name_key, product_id)
+      values (current_setting('test.hh_a')::uuid, 'coca', current_setting('test.coca')::uuid);
+    raise exception 'FAIL: C wrote a link into A';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+
+-- ---------------------------------------------------------------------------
 \echo '• detalhes do item da lista e lixeira de fotos'
 do $$
 declare
