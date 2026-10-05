@@ -272,7 +272,19 @@ export function useConfirmReceipt(receiptId: string) {
     mutationFn: async (items: ConfirmItem[]) =>
       unwrap(await supabase.rpc('confirm_receipt', { p_receipt_id: receiptId, p_items: items })),
     onSuccess: () => {
-      for (const key of ['receipts', 'receipt', 'products', 'latestPrices', 'priceHistory', 'pantry', 'spending', 'purchaseRecords']) {
+      for (const key of [
+        'receipts',
+        'receipt',
+        'products',
+        'latestPrices',
+        'priceHistory',
+        'pantry',
+        'spending',
+        'purchaseRecords',
+        'lists',
+        'listItems',
+        'listLinks',
+      ]) {
         queryClient.invalidateQueries({ queryKey: [key] });
       }
     },

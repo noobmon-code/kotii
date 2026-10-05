@@ -5,7 +5,7 @@ import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { fetchPantryNear } from '@/data/home';
-import { usePriceObservations, useProducts, useStores } from '@/data/market';
+import { useListLinks, useOpenListItems, usePriceObservations, useProducts, useStores } from '@/data/market';
 import {
   receiptImageUrl,
   useConfirmReceipt,
@@ -20,6 +20,15 @@ import {
 import { joinNames, receiptPantryRepeats } from '@/domain/cartPantry';
 import { CATEGORIES, getCategory } from '@/domain/categories';
 import { formatBRDate, formatShortDate, parseBRDate, toISODate } from '@/domain/dates';
+import {
+  applyListChoices,
+  forgottenLinks,
+  LinkIndex,
+  listRemovals,
+  matchListItems,
+  type ListChoice,
+  type ReceiptLine,
+} from '@/domain/listLinks';
 import { formatBRL, formatQuantity } from '@/domain/money';
 import { describePriceAlert, priceAlerts, totalSaving, type AlertItem, type PriceAlert } from '@/domain/priceAlert';
 import {
@@ -32,6 +41,7 @@ import {
 } from '@/domain/receiptReview';
 import { PayerChips } from '@/features/finance/PayerChips';
 import { ReceiptItemEditor } from '@/features/ReceiptItemEditor';
+import { ReceiptListSection } from '@/features/ReceiptListSection';
 import { errorMessage } from '@/lib/supabase';
 import type { ReceiptItem } from '@/lib/types';
 import { Backdrop } from '@/ui/Backdrop';
@@ -74,8 +84,11 @@ export default function ReceiptScreen() {
   const deleteItem = useDeleteReceiptItem(id);
   const confirm = useConfirmReceipt(id);
   const deleteReceipt = useDeleteReceipt(id);
+  const openList = useOpenListItems();
+  const links = useListLinks();
 
   const [overrides, setOverrides] = useState<Record<string, ItemOverride>>({});
+  const [listChoices, setListChoices] = useState<Record<string, ListChoice>>({});
   const [picker, setPicker] = useState<Picker | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [dateText, setDateText] = useState<string | null>(null);
@@ -126,6 +139,20 @@ export default function ReceiptScreen() {
   const alertText = (alert: PriceAlert | undefined) =>
     alert ? describePriceAlert(alert, alert.kind === 'cheaper_elsewhere' ? storeName(alert.storeId) : undefined) : null;
 
+  // Itens das listas abertas que esta compra cumpre (ver domain/listLinks).
+  const receiptLines: ReceiptLine[] = items.map((item) => {
+    const resolved = resolvedItems.get(item.id)!;
+    return {
+      id: item.id,
+      productId: resolved.product.kind === 'existing' ? resolved.product.productId : null,
+      names: [resolved.productName, item.suggested_name, item.raw_description].filter((n): n is string => Boolean(n)),
+      category: resolved.category,
+    };
+  });
+  const listItems = isDraft ? (openList.data ?? []) : [];
+  const suggestedMatches = matchListItems(listItems, receiptLines, links.data ?? new LinkIndex());
+  const listMatches = applyListChoices(suggestedMatches, listChoices);
+
   const override = (itemId: string, patch: ItemOverride) =>
     setOverrides((prev) => ({ ...prev, [itemId]: { ...prev[itemId], ...patch } }));
 
@@ -146,7 +173,7 @@ export default function ReceiptScreen() {
    * pergunta antes de repetir. Sem repetir, esses itens salvam só na nota.
    */
   async function skipPantryRepeats(payload: ConfirmItem[]): Promise<ConfirmItem[]> {
-    const repeats = receiptPantryRepeats(payload, purchasedOn, await fetchPantryNear(purchasedOn));
+    const repeats = receiptPantryRepeats(payload, purchasedOn, await fetchPantryNear(purchasedOn), links.data);
     if (!repeats.length) return payload;
     const dates = new Set(repeats.map((r) => r.since));
     const names = joinNames(repeats.map((r) => r.name));
@@ -165,7 +192,14 @@ export default function ReceiptScreen() {
 
   async function doConfirm() {
     if (confirming.current || confirm.isPending) return;
-    let payload = buildConfirmPayload(items, overrides, catalog, purchasedOn);
+    const removals = listRemovals(listMatches, listItems);
+    const forgotten = forgottenLinks(suggestedMatches, listChoices, listItems);
+    let payload = buildConfirmPayload(items, overrides, catalog, purchasedOn).map((entry) => ({
+      ...entry,
+      ...(removals.has(entry.id) ? { list_items: removals.get(entry.id) } : {}),
+      ...(forgotten.has(entry.id) ? { forget_links: forgotten.get(entry.id) } : {}),
+    }));
+    const listCount = [...removals.values()].reduce((n, list) => n + list.length, 0);
     confirming.current = true;
     setCheckingPantry(true);
     try {
@@ -181,10 +215,11 @@ export default function ReceiptScreen() {
       confirm.mutate(payload, {
         onSuccess: () => {
           const pantryCount = payload.filter((p) => p.pantry).length;
-          notify(
-            'Nota salva',
-            pantryCount ? `${pantryCount} ${pantryCount === 1 ? 'item foi' : 'itens foram'} para a despensa.` : undefined,
-          );
+          const done = [
+            pantryCount ? `${pantryCount} ${pantryCount === 1 ? 'item foi' : 'itens foram'} para a despensa.` : null,
+            listCount ? `${listCount} ${listCount === 1 ? 'item saiu' : 'itens saíram'} da lista.` : null,
+          ].filter(Boolean);
+          notify('Nota salva', done.length ? done.join(' ') : undefined);
           router.back();
         },
         onError,
@@ -293,6 +328,22 @@ export default function ReceiptScreen() {
             estão nos itens.
           </Text>
         </Card>
+      ) : null}
+
+      {listItems.length ? (
+        <ReceiptListSection
+          listItems={listItems}
+          matches={listMatches}
+          receipt={items.map((item) => {
+            const resolved = resolvedItems.get(item.id)!;
+            return {
+              id: item.id,
+              name: resolved.productName ?? item.suggested_name ?? item.raw_description,
+              category: resolved.category,
+            };
+          })}
+          onChoose={(listItemId, choice) => setListChoices((prev) => ({ ...prev, [listItemId]: choice }))}
+        />
       ) : null}
 
       {isDraft ? (

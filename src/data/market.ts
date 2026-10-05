@@ -11,6 +11,7 @@ import {
 import { useEffect } from 'react';
 
 import type { CartPantryEntry } from '@/domain/cartPantry';
+import { LinkIndex, type ListLink, type OpenListItem } from '@/domain/listLinks';
 import { PRICE_ALERT_HISTORY_DAYS } from '@/domain/priceAlert';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
@@ -74,6 +75,39 @@ export function useShoppingLists() {
         items: shopping_list_items,
       }));
     }),
+  });
+}
+
+/** Item ainda numa lista aberta, com o nome da lista (a nota tira da lista o que a compra cumpriu). */
+export interface OpenListEntry extends OpenListItem {
+  list_id: string;
+  list_name: string;
+  checked_at: string | null;
+}
+
+/** Itens de todas as listas abertas, marcados no carrinho ou não. */
+export function useOpenListItems() {
+  return useQuery({
+    queryKey: ['listItems', 'open'],
+    queryFn: async (): Promise<OpenListEntry[]> => {
+      const rows = unwrap(
+        await supabase
+          .from('shopping_list_items')
+          .select('id, list_id, name, category, product_id, checked_at, list:shopping_lists!inner(name)')
+          .is('list.archived_at', null)
+          .order('created_at'),
+      ) as unknown as (Omit<OpenListEntry, 'list_name'> & { list: { name: string } })[];
+      return rows.map(({ list, ...item }) => ({ ...item, list_name: list.name }));
+    },
+  });
+}
+
+/** Vínculos nome da lista -> produto que a casa já confirmou. */
+export function useListLinks() {
+  return useQuery({
+    queryKey: ['listLinks'],
+    queryFn: async () => unwrap(await supabase.from('list_item_links').select('name_key, product_id')) as ListLink[],
+    select: (links) => new LinkIndex(links),
   });
 }
 

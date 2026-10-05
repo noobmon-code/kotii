@@ -3,6 +3,7 @@
 
 import { getCategory } from './categories';
 import { diffDays, toISODate } from './dates';
+import { LinkIndex } from './listLinks';
 import { estimateExpiry, type ExpirySource } from './pantry';
 import { normalizeSearch } from './search';
 
@@ -16,9 +17,15 @@ export interface PantryEntry {
   purchased_on: string;
 }
 
-/** Mesmo produto, ou nomes em que um começa pelo outro ("Leite" e "Leite Italac 1L"). */
-function sameItem(a: { productId: string | null; name: string }, b: PantryEntry): boolean {
+/**
+ * Mesmo produto; nome de lista ligado ao produto do outro ("Cebola" do
+ * carrinho e "Cebola Granel 600g" da nota, depois que a pessoa ligou os
+ * dois); ou nomes em que um começa pelo outro ("Leite" e "Leite Italac 1L").
+ */
+function sameItem(a: { productId: string | null; name: string }, b: PantryEntry, links: LinkIndex): boolean {
   if (a.productId && b.product_id) return a.productId === b.product_id;
+  if (a.productId && links.has(b.name, a.productId)) return true;
+  if (b.product_id && links.has(a.name, b.product_id)) return true;
   const x = normalizeSearch(a.name);
   const y = normalizeSearch(b.name);
   if (!x || !y) return false;
@@ -31,9 +38,10 @@ export function findSamePurchase<T extends PantryEntry>(
   item: { productId: string | null; name: string },
   purchasedOn: string,
   entries: T[],
+  links: LinkIndex = new LinkIndex(),
 ): T | undefined {
   return entries.find(
-    (entry) => Math.abs(diffDays(entry.purchased_on, purchasedOn)) <= SAME_PURCHASE_DAYS && sameItem(item, entry),
+    (entry) => Math.abs(diffDays(entry.purchased_on, purchasedOn)) <= SAME_PURCHASE_DAYS && sameItem(item, entry, links),
   );
 }
 
@@ -73,11 +81,13 @@ export interface CartPantryRow {
 export function cartPantryRows(
   items: CartItem[],
   pantry: PantryEntry[] | null,
-  { single, today }: { single: boolean; today: string },
+  { single, today, links }: { single: boolean; today: string; links?: LinkIndex },
 ): CartPantryRow[] {
   return items.map((item) => {
     const purchasedOn = item.checked_at ? toISODate(new Date(item.checked_at)) : today;
-    const same = pantry ? findSamePurchase({ productId: item.product_id, name: item.name }, purchasedOn, pantry) : undefined;
+    const same = pantry
+      ? findSamePurchase({ productId: item.product_id, name: item.name }, purchasedOn, pantry, links)
+      : undefined;
     const known = pantry !== null;
     return {
       id: item.id,
@@ -148,10 +158,11 @@ export function receiptPantryRepeats(
   payload: { id: string; product_id?: string; pantry?: { name: string } }[],
   purchasedOn: string,
   entries: PantryEntry[],
+  links?: LinkIndex,
 ): PantryRepeat[] {
   return payload.flatMap((item) => {
     if (!item.pantry) return [];
-    const same = findSamePurchase({ productId: item.product_id ?? null, name: item.pantry.name }, purchasedOn, entries);
+    const same = findSamePurchase({ productId: item.product_id ?? null, name: item.pantry.name }, purchasedOn, entries, links);
     return same ? [{ id: item.id, name: item.pantry.name, since: same.purchased_on }] : [];
   });
 }

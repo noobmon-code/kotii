@@ -20,6 +20,7 @@ import {
   useAddListItem,
   useArchiveList,
   useClearCheckedItems,
+  useListLinks,
   useListQueueBusy,
   useDeleteListItem,
   useEditListItem,
@@ -83,6 +84,7 @@ export default function ShoppingListScreen() {
   const syncing = useListQueueBusy();
   const archive = useArchiveList(id);
   const pantry = usePantry();
+  const links = useListLinks();
   const edit = useEditListItem(id);
   const setPhoto = useSetListItemPhoto();
   const householdId = useHouseholdId();
@@ -309,7 +311,7 @@ export default function ShoppingListScreen() {
   const openStore = (cart: ShoppingListItem[], single: boolean) =>
     setStoring({
       items: cart,
-      rows: cartPantryRows(cart, pantry.data ?? null, { single, today }),
+      rows: cartPantryRows(cart, pantry.data ?? null, { single, today, links: links.data }),
       single,
       pantryUnknown: pantry.data === undefined,
     });
