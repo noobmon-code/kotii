@@ -124,6 +124,10 @@ export function CartPantryModal({
             disabled={invalid || (single && !count)}
             onPress={() => onConfirm(cartPantryPayload(rows, chosen, shelfLifeDays))}
           />
+          {!single && count ? (
+            // A despensa fica para a nota (ou já está em dia): o carrinho só esvazia.
+            <Button title="Só limpar, sem guardar" icon="cart-remove" variant="secondary" onPress={() => onConfirm([])} />
+          ) : null}
           <Button title="Cancelar" variant="secondary" onPress={onClose} />
         </ScrollView>
       </SafeAreaView>

@@ -20,7 +20,7 @@ import { upcomingAppointments } from '@/domain/health';
 import { doseKey, dosesForDay } from '@/domain/medications';
 import { menuLines } from '@/domain/menu';
 import { buildNukeContext, parseActions, type NukeAction, type NukeScreen, type NukeSnapshot } from '@/domain/nuke';
-import { expiryStatus } from '@/domain/pantry';
+import { expiryStatus, groupPantry } from '@/domain/pantry';
 import { useHousehold } from '@/lib/auth';
 import { supabase, unwrap } from '@/lib/supabase';
 
@@ -123,7 +123,7 @@ export function useNukeContext(today: string): NukeContextState {
     expiring: (pantry.data ?? [])
       .filter((p) => p.expires_on && ['vencido', 'vence_logo'].includes(expiryStatus(p.expires_on, today).kind))
       .map((p) => ({ name: p.name, expires_on: p.expires_on! })),
-    pantry: (pantry.data ?? []).map((p) => p.name),
+    pantry: groupPantry(pantry.data ?? []).map((group) => group.name),
     shopping: [...shopping].map(([list, items]) => ({ list, items })),
     menu: menuLines(menu.data ?? []),
     bills: (bills.data ?? [])

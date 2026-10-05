@@ -6,6 +6,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { SAME_PURCHASE_DAYS, type PantryEntry } from '@/domain/cartPantry';
 import { addDays, diffDays } from '@/domain/dates';
 import type { MedicationSchedule } from '@/domain/medications';
+import type { PantryTake } from '@/domain/pantry';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Chore, Medication, MedicationDose, PantryItem, Unit } from '@/lib/types';
 
@@ -83,11 +84,27 @@ export function useSavePantryItem() {
   });
 }
 
-export function useConsumePantryItem() {
+/** Dá baixa nas compras (um produto inteiro na despensa, ou uma compra só). */
+export function useConsumePantryItems() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) =>
-      unwrap(await supabase.from('pantry_items').update({ consumed_at: new Date().toISOString() }).eq('id', id)),
+    mutationFn: async (ids: string[]) =>
+      unwrap(await supabase.from('pantry_items').update({ consumed_at: new Date().toISOString() }).in('id', ids)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pantry'] }),
+  });
+}
+
+/** "Usei 1" (ver takeOne): desconta da compra mais antiga ou dá baixa nela. */
+export function useTakeOneFromPantry() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, remaining }: PantryTake) =>
+      unwrap(
+        await supabase
+          .from('pantry_items')
+          .update(remaining == null ? { consumed_at: new Date().toISOString() } : { quantity: remaining })
+          .eq('id', id),
+      ),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pantry'] }),
   });
 }
