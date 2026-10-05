@@ -123,9 +123,13 @@ export function groupPantry<T extends PantryLot>(
   );
 }
 
-/** "Usei 1": `remaining` é o que sobra na compra; `null`, a compra acabou. */
+/**
+ * "Usei 1": `remaining` é o que sobra na compra; `null`, a compra acabou.
+ * `from` é a quantidade lida: só grava se ninguém mudou a compra no meio.
+ */
 export interface PantryTake {
   id: string;
+  from: number;
   remaining: number | null;
 }
 
@@ -138,6 +142,6 @@ export function takeOne(lots: PantryLot[]): PantryTake | null {
   const oldest = lots[0];
   if (!oldest) return null;
   const quantity = Number(oldest.quantity);
-  if (oldest.unit === 'un' && quantity > 1) return { id: oldest.id, remaining: round3(quantity - 1) };
-  return lots.length > 1 ? { id: oldest.id, remaining: null } : null;
+  if (oldest.unit === 'un' && quantity > 1) return { id: oldest.id, from: quantity, remaining: round3(quantity - 1) };
+  return lots.length > 1 ? { id: oldest.id, from: quantity, remaining: null } : null;
 }

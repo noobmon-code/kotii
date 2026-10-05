@@ -105,6 +105,7 @@ export function useNukeContext(today: string): NukeContextState {
 
   const entries = spending.data;
   const previous = entries ? previousMonth(entries, month, today) : null;
+  const pantryGroups = groupPantry(pantry.data ?? []);
 
   const snapshot: NukeSnapshot = {
     today,
@@ -120,10 +121,11 @@ export function useNukeContext(today: string): NukeContextState {
     chores: (chores.data ?? [])
       .filter((c) => c.due_on <= weekAhead)
       .map((c) => ({ title: c.title, due_on: c.due_on, assignee: memberName(c.assigned_to) })),
-    expiring: (pantry.data ?? [])
-      .filter((p) => p.expires_on && ['vencido', 'vence_logo'].includes(expiryStatus(p.expires_on, today).kind))
-      .map((p) => ({ name: p.name, expires_on: p.expires_on! })),
-    pantry: groupPantry(pantry.data ?? []).map((group) => group.name),
+    // Um produto por linha, pela validade mais próxima entre as compras.
+    expiring: pantryGroups
+      .filter((g) => g.expiresOn && ['vencido', 'vence_logo'].includes(expiryStatus(g.expiresOn, today).kind))
+      .map((g) => ({ name: g.name, expires_on: g.expiresOn! })),
+    pantry: pantryGroups.map((group) => group.name),
     shopping: [...shopping].map(([list, items]) => ({ list, items })),
     menu: menuLines(menu.data ?? []),
     bills: (bills.data ?? [])

@@ -94,18 +94,28 @@ export function useConsumePantryItems() {
   });
 }
 
-/** "Usei 1" (ver takeOne): desconta da compra mais antiga ou dá baixa nela. */
+/**
+ * "Usei 1" (ver takeOne): desconta da compra mais antiga ou dá baixa nela.
+ * Só grava se a compra ainda tem a quantidade lida: duas pessoas usando ao
+ * mesmo tempo não contam uma vez só.
+ */
 export function useTakeOneFromPantry() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, remaining }: PantryTake) =>
-      unwrap(
+    mutationFn: async ({ id, from, remaining }: PantryTake) => {
+      const changed = unwrap(
         await supabase
           .from('pantry_items')
           .update(remaining == null ? { consumed_at: new Date().toISOString() } : { quantity: remaining })
-          .eq('id', id),
-      ),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pantry'] }),
+          .eq('id', id)
+          .eq('quantity', from)
+          .is('consumed_at', null)
+          .select('id'),
+      ) as { id: string }[];
+      if (!changed.length) throw new Error('A despensa mudou enquanto isso. Confira e tente de novo.');
+    },
+    // Também na falha: a tela mostra o que está na despensa agora.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['pantry'] }),
   });
 }
 
