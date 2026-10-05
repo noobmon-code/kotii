@@ -150,6 +150,9 @@ export default function ReceiptScreen() {
     };
   });
   const listItems = isDraft ? (openList.data ?? []) : [];
+  // A confirmação tira itens da lista e aprende ligações: só com as duas carregadas.
+  const listPending = isDraft && (openList.isPending || links.isPending);
+  const listFailed = isDraft && (openList.isError || links.isError);
   const suggestedMatches = matchListItems(listItems, receiptLines, links.data ?? new LinkIndex());
   const listMatches = applyListChoices(suggestedMatches, listChoices);
 
@@ -191,7 +194,7 @@ export default function ReceiptScreen() {
   }
 
   async function doConfirm() {
-    if (confirming.current || confirm.isPending) return;
+    if (confirming.current || confirm.isPending || listPending || listFailed) return;
     const removals = listRemovals(listMatches, listItems);
     const forgotten = forgottenLinks(suggestedMatches, listChoices, listItems);
     let payload = buildConfirmPayload(items, overrides, catalog, purchasedOn).map((entry) => ({
@@ -263,8 +266,8 @@ export default function ReceiptScreen() {
             title={`Confirmar nota (${items.length} ${items.length === 1 ? 'item' : 'itens'})`}
             icon="check"
             onPress={doConfirm}
-            loading={confirm.isPending || checkingPantry}
-            disabled={!items.length}
+            loading={confirm.isPending || checkingPantry || listPending}
+            disabled={!items.length || listFailed}
           />
         ) : undefined
       }>
@@ -330,7 +333,25 @@ export default function ReceiptScreen() {
         </Card>
       ) : null}
 
-      {listItems.length ? (
+      {listFailed ? (
+        <Card style={styles.gapSm}>
+          <Text variant="muted">
+            Não deu para carregar a lista de compras. A nota é confirmada junto com o que sai da lista: tente de novo.
+          </Text>
+          <Button
+            title="Tentar de novo"
+            icon="refresh"
+            variant="secondary"
+            compact
+            onPress={() => {
+              if (openList.isError) void openList.refetch();
+              if (links.isError) void links.refetch();
+            }}
+          />
+        </Card>
+      ) : null}
+
+      {listItems.length && !listFailed ? (
         <ReceiptListSection
           listItems={listItems}
           matches={listMatches}

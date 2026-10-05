@@ -102,13 +102,21 @@ export function useOpenListItems() {
   });
 }
 
+const fetchListLinks = async () =>
+  unwrap(await supabase.from('list_item_links').select('name_key, product_id')) as ListLink[];
+
 /** Vínculos nome da lista -> produto que a casa já confirmou. */
 export function useListLinks() {
-  return useQuery({
-    queryKey: ['listLinks'],
-    queryFn: async () => unwrap(await supabase.from('list_item_links').select('name_key, product_id')) as ListLink[],
-    select: (links) => new LinkIndex(links),
-  });
+  return useQuery({ queryKey: ['listLinks'], queryFn: fetchListLinks, select: (links) => new LinkIndex(links) });
+}
+
+/** Os vínculos já carregados, ou buscados agora; null se não deu (sem internet e nunca vistos neste aparelho). */
+export async function loadListLinks(queryClient: QueryClient): Promise<LinkIndex | null> {
+  try {
+    return new LinkIndex(await queryClient.ensureQueryData({ queryKey: ['listLinks'], queryFn: fetchListLinks }));
+  } catch {
+    return null;
+  }
 }
 
 export function useShoppingList(id: string) {
