@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { Modal, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Icon, Text, type IconName } from './primitives';
@@ -27,6 +27,7 @@ export function ActionSheet({
   onClose: () => void;
 }) {
   const c = useColors();
+  const { height } = useWindowDimensions();
   // No iOS, abrir câmera/galeria enquanto o modal fecha falha em silêncio:
   // a ação escolhida roda só depois que o modal some (onDismiss).
   const pending = useRef<(() => void) | null>(null);
@@ -48,10 +49,12 @@ export function ActionSheet({
       }}>
       <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Fechar">
         <SafeAreaView edges={['bottom']} style={styles.anchor}>
-          <Pressable style={[styles.sheet, { backgroundColor: c.surface, borderColor: c.glassBorder }]}>
+          <Pressable
+            style={[styles.sheet, { backgroundColor: c.surface, borderColor: c.glassBorder, maxHeight: height * 0.85 }]}>
             {title ? <Text variant="heading">{title}</Text> : null}
             {message ? <Text variant="muted">{message}</Text> : null}
-            <View style={styles.actions}>
+            {/* Muitas ações (uma por compra na despensa): rolam, e o Cancelar fica à vista. */}
+            <ScrollView style={styles.actions} bounces={false}>
               {actions.map((action) => (
                 <Pressable
                   key={action.label}
@@ -68,15 +71,15 @@ export function ActionSheet({
                   </Text>
                 </Pressable>
               ))}
-              <Pressable
-                accessibilityRole="button"
-                onPress={onClose}
-                style={({ pressed }) => [styles.action, { borderTopColor: c.border }, pressed && { backgroundColor: c.surfaceAlt }]}>
-                <Text variant="label" color="textMuted">
-                  Cancelar
-                </Text>
-              </Pressable>
-            </View>
+            </ScrollView>
+            <Pressable
+              accessibilityRole="button"
+              onPress={onClose}
+              style={({ pressed }) => [styles.action, { borderTopColor: c.border }, pressed && { backgroundColor: c.surfaceAlt }]}>
+              <Text variant="label" color="textMuted">
+                Cancelar
+              </Text>
+            </Pressable>
           </Pressable>
         </SafeAreaView>
       </Pressable>
@@ -95,7 +98,7 @@ const styles = StyleSheet.create({
     paddingTop: space.lg,
     gap: space.sm,
   },
-  actions: { marginTop: space.sm },
+  actions: { marginTop: space.sm, flexGrow: 0, flexShrink: 1 },
   action: {
     flexDirection: 'row',
     alignItems: 'center',
