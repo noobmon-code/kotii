@@ -100,15 +100,23 @@ export function PantryPanel() {
       icon: 'check',
       onPress: () => consume.mutate(ids, { onError }),
     });
-    for (const lot of several ? [...group.lots].reverse() : group.lots) {
+    // Uma por compra, da mais nova para a mais antiga; duas no mesmo dia e com a
+    // mesma quantidade ganham um número para não confundir.
+    const lots = several ? [...group.lots].reverse() : group.lots;
+    const labels = lots.map((lot) =>
+      several
+        ? `Editar a compra de ${formatShortDate(lot.purchased_on)} (${formatQuantity(lot.quantity, lot.unit)})`
+        : 'Editar validade e quantidade',
+    );
+    lots.forEach((lot, index) => {
+      const same = labels.filter((label) => label === labels[index]).length;
+      const nth = labels.slice(0, index + 1).filter((label) => label === labels[index]).length;
       actions.push({
-        label: several
-          ? `Editar a compra de ${formatShortDate(lot.purchased_on)}`
-          : 'Editar validade e quantidade',
+        label: same > 1 ? `${labels[index]} · ${nth}ª` : labels[index],
         icon: 'pencil-outline',
         onPress: () => router.push({ pathname: '/despensa/[id]', params: { id: lot.id } }),
       });
-    }
+    });
     return actions;
   }
 
