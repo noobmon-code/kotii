@@ -2,14 +2,14 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { useConsumePantryItem, usePantry } from '@/data/home';
-import { useAddToMarketList } from '@/data/market';
-import { todayISO } from '@/domain/dates';
-import { describeExpiry, expiryStatus, type ExpiryStatus } from '@/domain/pantry';
+import { useConsumePantryItems, usePantry, useTakeOneFromPantry } from '@/data/home';
+import { useAddToMarketList, useProducts } from '@/data/market';
+import { formatShortDate, todayISO } from '@/domain/dates';
+import { describeExpiry, expiryStatus, groupPantry, takeOne, type ExpiryStatus, type PantryGroup } from '@/domain/pantry';
 import { formatQuantity } from '@/domain/money';
 import { errorMessage } from '@/lib/supabase';
 import type { PantryItem } from '@/lib/types';
-import { ActionSheet } from '@/ui/ActionSheet';
+import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
 import { notify } from '@/ui/dialogs';
 import {
   Badge,
@@ -25,45 +25,109 @@ import {
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
-const GROUPS: { kind: ExpiryStatus['kind']; title: string; tone: Tone }[] = [
+const SECTIONS: { kind: ExpiryStatus['kind']; title: string; tone: Tone }[] = [
   { kind: 'vencido', title: 'Vencidos', tone: 'danger' },
   { kind: 'vence_logo', title: 'Vencem em breve', tone: 'warning' },
   { kind: 'ok', title: 'Em dia', tone: 'primary' },
   { kind: 'sem_validade', title: 'Sem validade', tone: 'neutral' },
 ];
 
+type Group = PantryGroup<PantryItem>;
+
+/** "2 un", "0,75 kg e 2 un". */
+const describeTotals = (group: Group) => group.totals.map((t) => formatQuantity(t.quantity, t.unit)).join(' e ');
+
+/** "Compras: 2 set (1 un), 27 set (1 un) e 3 out (1 un)." */
+function describeLots(group: Group): string {
+  const parts = group.lots.map((lot) => `${formatShortDate(lot.purchased_on)} (${formatQuantity(lot.quantity, lot.unit)})`);
+  return `Compras: ${parts.slice(0, -1).join(', ')} e ${parts[parts.length - 1]}.`;
+}
+
 export function PantryPanel() {
   const today = todayISO();
   const pantry = usePantry();
-  const consume = useConsumePantryItem();
+  const products = useProducts();
+  const consume = useConsumePantryItems();
+  const takeOneFrom = useTakeOneFromPantry();
   const addToMarketList = useAddToMarketList();
-  const [selected, setSelected] = useState<PantryItem | null>(null);
+  const [selected, setSelected] = useState<Group | null>(null);
+  const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
   // Primeiro a lista, depois a baixa: se a baixa falhar, o item continua na
   // despensa e repetir não duplica (a lista ignora item já pendente).
-  async function finishAndRestock(item: PantryItem) {
+  async function finishAndRestock(group: Group) {
+    const newest = group.lots[group.lots.length - 1];
     try {
       const list = await addToMarketList.mutateAsync({
-        name: item.name,
-        category: item.category,
-        productId: item.product_id,
-        quantity: item.quantity,
-        unit: item.unit,
+        name: group.name,
+        category: group.category,
+        productId: group.productId,
+        quantity: newest.quantity,
+        unit: newest.unit,
       });
-      await consume.mutateAsync(item.id);
+      await consume.mutateAsync(group.lots.map((lot) => lot.id));
       notify(
         list.added ? 'Adicionado à lista' : 'Já estava na lista',
-        list.added ? `${item.name} foi para "${list.name}".` : `${item.name} já estava pendente em "${list.name}".`,
+        list.added ? `${group.name} foi para "${list.name}".` : `${group.name} já estava pendente em "${list.name}".`,
       );
     } catch (err) {
-      notify('Erro', errorMessage(err));
+      onError(err);
     }
+  }
+
+  function groupActions(group: Group): SheetAction[] {
+    const ids = group.lots.map((lot) => lot.id);
+    const take = takeOne(group.lots);
+    const oldest = group.lots[0];
+    const several = group.lots.length > 1;
+    const actions: SheetAction[] = [
+      { label: 'Acabou — pôr na lista de mercado', icon: 'cart-plus', onPress: () => finishAndRestock(group) },
+    ];
+    if (take) {
+      const units = group.totals.find((t) => t.unit === 'un')?.quantity ?? 0;
+      const left = Math.round((units - 1) * 1000) / 1000;
+      actions.push({
+        label:
+          oldest.unit === 'un'
+            ? `Usei 1 (${left === 1 ? 'fica' : 'ficam'} ${formatQuantity(left, 'un')})`
+            : `Acabou a compra de ${formatShortDate(oldest.purchased_on)}`,
+        icon: 'minus-circle-outline',
+        onPress: () => takeOneFrom.mutate(take, { onError }),
+      });
+    }
+    actions.push({
+      label: several ? 'Consumido / descartado (tudo)' : 'Consumido / descartado',
+      icon: 'check',
+      onPress: () => consume.mutate(ids, { onError }),
+    });
+    // Uma por compra, da mais nova para a mais antiga; duas no mesmo dia e com a
+    // mesma quantidade ganham um número para não confundir.
+    const lots = several ? [...group.lots].reverse() : group.lots;
+    const labels = lots.map((lot) =>
+      several
+        ? `Editar a compra de ${formatShortDate(lot.purchased_on)} (${formatQuantity(lot.quantity, lot.unit)})`
+        : 'Editar validade e quantidade',
+    );
+    lots.forEach((lot, index) => {
+      const same = labels.filter((label) => label === labels[index]).length;
+      const nth = labels.slice(0, index + 1).filter((label) => label === labels[index]).length;
+      actions.push({
+        label: same > 1 ? `${labels[index]} · ${nth}ª` : labels[index],
+        icon: 'pencil-outline',
+        onPress: () => router.push({ pathname: '/despensa/[id]', params: { id: lot.id } }),
+      });
+    });
+    return actions;
   }
 
   if (pantry.isPending) return <Loading />;
   if (pantry.isError) return <ErrorNotice error={pantry.error} onRetry={() => pantry.refetch()} />;
 
-  const withStatus = pantry.data.map((item) => ({ item, status: expiryStatus(item.expires_on, today) }));
+  const productNames = new Map((products.data ?? []).map((p) => [p.id, p.name]));
+  const withStatus = groupPantry(pantry.data, productNames).map((group) => ({
+    group,
+    status: expiryStatus(group.expiresOn, today),
+  }));
 
   return (
     <View style={styles.gap}>
@@ -80,20 +144,22 @@ export function PantryPanel() {
           message="Ao confirmar uma nota fiscal, os alimentos entram aqui com validade estimada automaticamente."
         />
       ) : (
-        GROUPS.map((group) => {
-          const rows = withStatus.filter((r) => r.status.kind === group.kind);
+        SECTIONS.map((section) => {
+          const rows = withStatus.filter((r) => r.status.kind === section.kind);
           if (!rows.length) return null;
           return (
-            <Section key={group.kind} title={`${group.title} (${rows.length})`}>
+            <Section key={section.kind} title={`${section.title} (${rows.length})`}>
               <ListCard>
-                {rows.map(({ item, status }) => (
+                {rows.map(({ group, status }) => (
                   <ListRow
-                    key={item.id}
-                    left={<CategoryIcon category={item.category} name={item.name} />}
-                    title={item.name}
-                    subtitle={formatQuantity(item.quantity, item.unit)}
-                    right={status.kind === 'sem_validade' ? null : <Badge label={describeExpiry(status)} tone={group.tone} />}
-                    onPress={() => setSelected(item)}
+                    key={group.key}
+                    left={<CategoryIcon category={group.category} name={group.name} />}
+                    title={group.name}
+                    subtitle={
+                      group.lots.length > 1 ? `${describeTotals(group)} · ${group.lots.length} compras` : describeTotals(group)
+                    }
+                    right={status.kind === 'sem_validade' ? null : <Badge label={describeExpiry(status)} tone={section.tone} />}
+                    onPress={() => setSelected(group)}
                   />
                 ))}
               </ListCard>
@@ -105,28 +171,8 @@ export function PantryPanel() {
         visible={Boolean(selected)}
         onClose={() => setSelected(null)}
         title={selected?.name}
-        actions={
-          selected
-            ? [
-                {
-                  label: 'Acabou — pôr na lista de mercado',
-                  icon: 'cart-plus',
-                  onPress: () => finishAndRestock(selected),
-                },
-                {
-                  label: 'Consumido / descartado',
-                  icon: 'check',
-                  onPress: () =>
-                    consume.mutate(selected.id, { onError: (err) => notify('Erro', errorMessage(err)) }),
-                },
-                {
-                  label: 'Editar validade e quantidade',
-                  icon: 'pencil-outline',
-                  onPress: () => router.push({ pathname: '/despensa/[id]', params: { id: selected.id } }),
-                },
-              ]
-            : []
-        }
+        message={selected && selected.lots.length > 1 ? describeLots(selected) : undefined}
+        actions={selected ? groupActions(selected) : []}
       />
     </View>
   );
