@@ -27,7 +27,7 @@ create policy "household members manage list_item_links" on public.list_item_lin
 --
 -- p_items: [{ id, product_id?, new_product?: {name, category},
 --             pantry?: {name, category, purchased_on, expires_on, expiry_source},
---             list_items?: [{ id, name_key }], forget_links?: [name_key] }]
+--             list_items?: [{ id, name, name_key }], forget_links?: [name_key] }]
 -- =============================================================================
 
 create or replace function public.confirm_receipt(p_receipt_id uuid, p_items jsonb)
@@ -119,11 +119,13 @@ begin
     end if;
 
     -- Itens de lista que esta compra cumpre: saem da lista, e o nome fica
-    -- ligado ao produto (só se o item ainda estava lá).
+    -- ligado ao produto. Só se o item ainda está lá com o nome visto na
+    -- revisão (renomeado em outro aparelho no meio: fica, sem ligação).
     if jsonb_typeof(it -> 'list_items') = 'array' then
       for li in select value from jsonb_array_elements(it -> 'list_items') loop
         delete from public.shopping_list_items s
-          where s.id = nullif(li ->> 'id', '')::uuid and s.household_id = r.household_id;
+          where s.id = nullif(li ->> 'id', '')::uuid and s.household_id = r.household_id
+            and s.name = li ->> 'name';
         if found and v_product_id is not null and coalesce(li ->> 'name_key', '') <> '' then
           insert into public.list_item_links (household_id, name_key, product_id)
           values (r.household_id, li ->> 'name_key', v_product_id)

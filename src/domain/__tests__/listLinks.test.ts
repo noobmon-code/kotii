@@ -115,13 +115,13 @@ describe('applyListChoices e listRemovals', () => {
       { listItemId: 'l2', receiptItemId: 'r-filtro', reason: 'escolha', checked: true },
     ]);
     expect(Object.fromEntries(listRemovals(chosen, listItems))).toEqual({
-      'r-cebola': [{ id: 'l1', name_key: 'cebola' }],
-      'r-filtro': [{ id: 'l2', name_key: 'filtro de cafe' }],
+      'r-cebola': [{ id: 'l1', name: 'Cebola', name_key: 'cebola' }],
+      'r-filtro': [{ id: 'l2', name: 'Filtro de café', name_key: 'filtro de cafe' }],
     });
   });
 
   it('sugestão desmarcada não sai da lista', () => {
-    expect(listRemovals(matches, listItems)).toEqual(new Map([['r-coca', [{ id: 'l3', name_key: 'coca' }]]]));
+    expect(listRemovals(matches, listItems)).toEqual(new Map([['r-coca', [{ id: 'l3', name: 'Coca', name_key: 'coca' }]]]));
   });
 });
 

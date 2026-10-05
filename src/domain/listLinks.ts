@@ -143,19 +143,29 @@ export function applyListChoices(matches: ListMatch[], choices: Record<string, L
   return [...result.values()];
 }
 
+/**
+ * Um item de lista que sai com a nota. `name` é o nome visto na revisão: o
+ * banco só tira o item (e aprende `name_key`) se ele ainda tem esse nome.
+ */
+export interface ListRemoval {
+  id: string;
+  name: string;
+  name_key: string;
+}
+
 /** Para confirm_receipt: em cada item da nota, os itens de lista que saem (e o nome que vira vínculo). */
 export function listRemovals(
   matches: ListMatch[],
   listItems: OpenListItem[],
-): Map<string, { id: string; name_key: string }[]> {
+): Map<string, ListRemoval[]> {
   const names = new Map(listItems.map((item) => [item.id, item.name]));
-  const removals = new Map<string, { id: string; name_key: string }[]>();
+  const removals = new Map<string, ListRemoval[]>();
   for (const match of matches) {
     const name = names.get(match.listItemId);
     if (!match.checked || name == null) continue;
     removals.set(match.receiptItemId, [
       ...(removals.get(match.receiptItemId) ?? []),
-      { id: match.listItemId, name_key: listNameKey(name) },
+      { id: match.listItemId, name, name_key: listNameKey(name) },
     ]);
   }
   return removals;

@@ -150,8 +150,10 @@ export default function ReceiptScreen() {
     };
   });
   const listItems = isDraft ? (openList.data ?? []) : [];
-  // A confirmação tira itens da lista e aprende ligações: só com as duas carregadas.
-  const listPending = isDraft && (openList.isPending || links.isPending);
+  // A confirmação tira itens da lista e aprende ligações: só com as duas
+  // carregadas e atualizadas (o que estava guardado pode ter mudado em outro
+  // aparelho; o banco ainda confere o nome de cada item antes de tirar).
+  const listPending = isDraft && (openList.isPending || links.isPending || openList.isFetching || links.isFetching);
   const listFailed = isDraft && (openList.isError || links.isError);
   const suggestedMatches = matchListItems(listItems, receiptLines, links.data ?? new LinkIndex());
   const listMatches = applyListChoices(suggestedMatches, listChoices);

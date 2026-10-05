@@ -2,6 +2,7 @@
 // validade). Os padrões vêm da IA e do histórico; o usuário só corrige.
 
 import { getCategory } from './categories';
+import type { ListRemoval } from './listLinks';
 import { estimateExpiry, type ExpirySource } from './pantry';
 import { guessCategory } from './search';
 
@@ -81,7 +82,7 @@ export interface ConfirmItem {
   product_id?: string;
   new_product?: { name: string; category: string };
   /** Itens de lista que esta compra cumpre: saem da lista e o nome vira vínculo com o produto. */
-  list_items?: { id: string; name_key: string }[];
+  list_items?: ListRemoval[];
   /** Ligações nome da lista -> este produto que a pessoa desfez nesta nota. */
   forget_links?: string[];
   pantry?: {

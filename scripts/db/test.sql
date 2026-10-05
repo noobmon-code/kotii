@@ -506,7 +506,7 @@ begin
   begin
     perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object(
       'id', i_coca, 'new_product', jsonb_build_object('name', 'Coca-Cola Zero 1,5L', 'category', 'bebidas'),
-      'list_items', jsonb_build_array(jsonb_build_object('id', l_coca, 'name_key', 'Coca!')))));
+      'list_items', jsonb_build_array(jsonb_build_object('id', l_coca, 'name', 'Coca', 'name_key', 'Coca!')))));
     raise exception 'FAIL: link with a name key out of format';
   exception when check_violation then null;
   end;
@@ -515,16 +515,19 @@ begin
   perform public.confirm_receipt(r, jsonb_build_array(
     jsonb_build_object('id', i_cebola,
       'new_product', jsonb_build_object('name', 'Cebola Granel 600g', 'category', 'hortifruti'),
-      'list_items', jsonb_build_array(jsonb_build_object('id', l_cebola, 'name_key', 'cebola'))),
+      'list_items', jsonb_build_array(
+        jsonb_build_object('id', l_cebola, 'name', 'Cebola', 'name_key', 'cebola'),
+        -- Visto como "Detergente Ypê", renomeado depois em outro aparelho: fica, sem ligação.
+        jsonb_build_object('id', l_fica, 'name', 'Detergente Ypê', 'name_key', 'detergente ype'))),
     jsonb_build_object('id', i_coca,
       'new_product', jsonb_build_object('name', 'Coca-Cola Zero 1,5L', 'category', 'bebidas'),
       -- O "Refrigerante" já tinha saído da lista (outra pessoa): sem vínculo.
       'list_items', jsonb_build_array(
-        jsonb_build_object('id', l_coca, 'name_key', 'coca'),
-        jsonb_build_object('id', gen_random_uuid(), 'name_key', 'refrigerante'))),
+        jsonb_build_object('id', l_coca, 'name', 'Coca', 'name_key', 'coca'),
+        jsonb_build_object('id', gen_random_uuid(), 'name', 'Refrigerante', 'name_key', 'refrigerante'))),
     -- Sem produto (não acompanhar preço): sai da lista, sem vínculo.
     jsonb_build_object('id', i_avulso,
-      'list_items', jsonb_build_array(jsonb_build_object('id', l_pao, 'name_key', 'pao')))
+      'list_items', jsonb_build_array(jsonb_build_object('id', l_pao, 'name', 'Pão', 'name_key', 'pao')))
   ));
 
   select id into p_coca from public.products where name = 'Coca-Cola Zero 1,5L';
@@ -534,8 +537,8 @@ begin
   assert exists (select 1 from public.list_item_links where name_key = 'coca' and product_id = p_coca), 'coca -> Coca-Cola Zero';
   assert exists (select 1 from public.list_item_links k join public.products p on p.id = k.product_id
     where k.name_key = 'cebola' and p.name = 'Cebola Granel 600g'), 'cebola -> Cebola Granel';
-  assert not exists (select 1 from public.list_item_links where name_key in ('refrigerante', 'pao')),
-    'no link for an item already gone or a purchase without product';
+  assert not exists (select 1 from public.list_item_links where name_key in ('refrigerante', 'pao', 'detergente ype')),
+    'no link for an item already gone, renamed meanwhile or a purchase without product';
   assert not exists (select 1 from public.purchase_history where name in ('Cebola', 'Coca', 'Pão')),
     'the receipt is the purchase record (no cart history)';
 
