@@ -79,19 +79,35 @@ begin
   -- Os avisos desta casa agendados nos navegadores dele não tocam mais. Os
   -- de antes de o aviso levar a casa (sem householdId) são atribuídos pelo
   -- remédio ou pela conta, documento, tarefa, consulta ou vacina a que se
-  -- referem; os de outras casas ficam. O aviso do clima de antes da marca
-  -- não aponta para registro nenhum (data.reminder = "weather:dia:<data>"),
-  -- então não dá para saber de que casa é: sai também, e o app o refaz, já
-  -- marcado, na próxima vez que abre nesse navegador.
+  -- referem; os de outras casas ficam. O que não dá para atribuir (o aviso
+  -- do clima, que não aponta para registro nenhum, ou um aviso cujo registro
+  -- já foi apagado) pode ser desta casa: sai também, e o app refaz o que
+  -- ainda vale, já marcado, na próxima vez que abre nesse navegador.
   delete from public.push_schedule p
     using public.push_subscriptions s
     where p.subscription_id = s.id and s.user_id = p_user_id
       and (
         public.reminder_household(p.data) = p_household_id
-        or (p.data ->> 'householdId' is null and p.data ->> 'reminder' like 'weather:%')
+        or (p.data ->> 'householdId' is null and public.reminder_household(p.data) is null)
       );
 end;
 $$;
+
+-- Um navegador só agenda avisos de uma casa em que a pessoa ainda está: a
+-- sincronização que estava no ar no navegador de quem acabou de ser tirado
+-- não recria os avisos da casa depois da limpeza acima.
+drop policy "own push schedule insert" on public.push_schedule;
+create policy "own push schedule insert" on public.push_schedule for insert to authenticated
+  with check (
+    exists (select 1 from public.push_subscriptions s where s.id = subscription_id and s.user_id = (select auth.uid()))
+    and (
+      data ->> 'householdId' is null
+      or exists (
+        select 1 from public.household_members m
+        where m.household_id::text = data ->> 'householdId' and m.user_id = (select auth.uid())
+      )
+    )
+  );
 
 create function public.regenerate_invite_code(p_household_id uuid)
 returns text

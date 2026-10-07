@@ -1900,15 +1900,25 @@ begin
   perform set_config('test.sub_l', public.register_push_subscription('https://fcm.googleapis.com/fcm/send/l1', 'k', 'a', 'UTC')::text, false);
   insert into public.medications (person_name, name, times) values ('Lia', 'Vitamina K', array['08:00']);
   insert into public.chores (title, due_on) values ('Tarefa da K', '2026-10-10');
+end $$;
+-- As linhas de outra casa e as antigas entram direto (a policy só deixa o
+-- navegador agendar avisos de casas em que a pessoa está).
+reset role;
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+begin
   insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute, data) values
     ('00000000-0000-0000-0000-0000000000b1', current_setting('test.sub_l')::uuid, 'Remédio da casa K', 'daily', 8, 0, json_build_object('medicationId', 'm', 'householdId', hk)::jsonb),
     ('00000000-0000-0000-0000-0000000000b2', current_setting('test.sub_l')::uuid, 'Conta de outra casa', 'daily', 8, 0, json_build_object('reminder', 'bills:x:2026-10-10', 'householdId', gen_random_uuid())::jsonb),
     ('00000000-0000-0000-0000-0000000000b3', current_setting('test.sub_l')::uuid, 'Remédio antigo da K', 'daily', 8, 0, json_build_object('medicationId', (select id from public.medications where name = 'Vitamina K'))::jsonb),
     ('00000000-0000-0000-0000-0000000000b4', current_setting('test.sub_l')::uuid, 'Tarefa antiga da K', 'daily', 9, 0, json_build_object('reminder', 'chores:' || (select id from public.chores where title = 'Tarefa da K') || ':2026-10-10')::jsonb),
-    ('00000000-0000-0000-0000-0000000000b5', current_setting('test.sub_l')::uuid, 'Conta antiga de outra casa', 'daily', 9, 0, json_build_object('reminder', 'bills:' || gen_random_uuid() || ':2026-10-10')::jsonb),
+    ('00000000-0000-0000-0000-0000000000b5', current_setting('test.sub_l')::uuid, 'Conta antiga já apagada (casa desconhecida)', 'daily', 9, 0, json_build_object('reminder', 'bills:' || gen_random_uuid() || ':2026-10-10')::jsonb),
     ('00000000-0000-0000-0000-0000000000b6', current_setting('test.sub_l')::uuid, 'Clima de outra casa', 'daily', 7, 0, json_build_object('reminder', 'weather:dia:2026-10-10', 'householdId', gen_random_uuid())::jsonb),
-    ('00000000-0000-0000-0000-0000000000b7', current_setting('test.sub_l')::uuid, 'Clima antigo (sem casa)', 'daily', 7, 0, json_build_object('reminder', 'weather:dia:2026-10-11')::jsonb);
+    ('00000000-0000-0000-0000-0000000000b7', current_setting('test.sub_l')::uuid, 'Clima antigo (sem casa)', 'daily', 7, 0, json_build_object('reminder', 'weather:dia:2026-10-11')::jsonb),
+    ('00000000-0000-0000-0000-0000000000b8', current_setting('test.sub_l')::uuid, 'Remédio antigo já apagado', 'daily', 8, 0, json_build_object('medicationId', gen_random_uuid())::jsonb);
 end $$;
+set role authenticated;
 select set_config('request.jwt.claim.sub', :'user_k', false) \gset
 do $$
 declare
@@ -1946,8 +1956,8 @@ reset role;
 do $$
 begin
   assert (select array_agg(id order by id) from public.push_schedule where subscription_id = current_setting('test.sub_l')::uuid)
-    = array['00000000-0000-0000-0000-0000000000b2', '00000000-0000-0000-0000-0000000000b5', '00000000-0000-0000-0000-0000000000b6']::uuid[],
-    'the removed member browser loses this household reminders (tagged, resolved by medication/chore, or untagged weather), keeps the rest';
+    = array['00000000-0000-0000-0000-0000000000b2', '00000000-0000-0000-0000-0000000000b6']::uuid[],
+    'the removed member browser loses this household reminders (tagged, resolved by medication/chore, or untagged and unresolvable), keeps the other household ones';
   delete from public.push_subscriptions where id = current_setting('test.sub_l')::uuid;
 end $$;
 set role authenticated;
@@ -1963,18 +1973,32 @@ begin
   perform set_config('request.jwt.claims', json_build_object('sub', auth.uid(), 'session_id', 'sessao-l')::text, true);
   assert public.current_household_id() is null, 'nor through the session that had it open';
   perform set_config('request.jwt.claims', '', true);
+  -- A sincronização que ainda rodava no navegador dele não recria os avisos da casa.
+  perform set_config('test.sub_l', public.register_push_subscription('https://fcm.googleapis.com/fcm/send/l2', 'k', 'a', 'UTC')::text, false);
+  begin
+    insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute, data)
+      values (gen_random_uuid(), current_setting('test.sub_l')::uuid, 'Remédio da casa K', 'daily', 8, 0, json_build_object('medicationId', 'm', 'householdId', hk)::jsonb);
+    raise exception 'FAIL: scheduled a reminder of a household the user is no longer in';
+  exception when insufficient_privilege then null;
+  end;
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute)
+    values (gen_random_uuid(), current_setting('test.sub_l')::uuid, 'Aviso sem casa', 'daily', 8, 0);
   -- Código antigo: não acha a casa (a versão final de join_household devolve nulo e conta a tentativa).
   assert (public.join_household(current_setting('test.invite_k_old'), 'Lia')).id is null, 'the old invite code no longer works';
   -- (Se o código antigo tivesse entrado, este falharia com "already a member".)
   perform public.join_household(current_setting('test.invite_k_new'), 'Lia');
   assert (select member_user_id from public.people where household_id = hk and name = 'Lia') = auth.uid(),
     'joining again takes the dependent record back';
+  -- De volta na casa, os avisos dela voltam a poder ser agendados.
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute, data)
+    values (gen_random_uuid(), current_setting('test.sub_l')::uuid, 'Remédio da casa K', 'daily', 8, 0, json_build_object('medicationId', 'm', 'householdId', hk)::jsonb);
 end $$;
 reset role;
 do $$
 begin
   assert not exists (select 1 from public.household_sessions where household_id = current_setting('test.hh_k')::uuid
     and user_id = '00000000-0000-0000-0000-000000000015' and session_id = 'sessao-l'), 'the removed member session forgot the household';
+  delete from public.push_subscriptions where id = current_setting('test.sub_l')::uuid;
 end $$;
 
 -- ---------------------------------------------------------------------------

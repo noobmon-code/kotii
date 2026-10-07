@@ -180,6 +180,9 @@ function withHouseholds(state: HouseholdState | null): HouseholdState | null {
  * criou nem entrou em nenhuma. Se o aparelho estava numa casa de que a
  * pessoa saiu (por outro aparelho) ou nunca abriu uma, abre a mais recente.
  */
+/** De quanto em quanto tempo a lista de casas é conferida com o app aberto. */
+const HOUSEHOLD_REFETCH_MS = 5 * 60 * 1000;
+
 export function useHousehold() {
   const { session } = useAuth();
   const userId = session?.user.id;
@@ -187,6 +190,10 @@ export function useHousehold() {
     queryKey: ['household', userId],
     enabled: Boolean(userId),
     select: withHouseholds,
+    // Com o app aberto direto, a lista de casas é conferida de tempos em
+    // tempos: quem foi tirado de uma casa perde os lembretes dela em minutos,
+    // sem precisar fechar e abrir o app (ao voltar para ele, confere na hora).
+    refetchInterval: HOUSEHOLD_REFETCH_MS,
     queryFn: async (): Promise<HouseholdState | null> => {
       await loadActiveHousehold(userId!);
       const houses = (unwrap(await supabase.rpc('my_households')) ?? []) as HouseholdSummary[];
