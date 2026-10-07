@@ -49,7 +49,9 @@ begin
     raise exception 'too many invite attempts' using errcode = 'NK004';
   end if;
 
-  select * into h from public.households where invite_code = upper(trim(p_invite_code));
+  -- FOR UPDATE: quem chega com o código antigo enquanto o dono o troca
+  -- (regenerate_invite_code) espera a troca e, aí, não acha mais a casa.
+  select * into h from public.households where invite_code = upper(trim(p_invite_code)) for update;
   if not found then
     insert into public.join_attempts as a (user_id, failed, window_started_at)
     values (auth.uid(), 1, now())
