@@ -2065,6 +2065,34 @@ begin
   end;
   perform public.unregister_push_subscription('https://fcm.googleapis.com/fcm/send/i1');
   assert (select count(*) from public.push_subscriptions) = 0, 'unregistered';
+
+  -- Teto de navegadores por conta: o que ficou mais tempo sem abrir sai, com a agenda.
+  for n in 1..public.max_push_subscriptions() loop
+    perform public.register_push_subscription('https://fcm.googleapis.com/fcm/send/j' || n, 'k', 'a', 'UTC');
+  end loop;
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute)
+  values (gen_random_uuid(), (select id from public.push_subscriptions where endpoint like '%/j3'), 'Do antigo', 'daily', 8, 0);
+end $$;
+-- O navegador j3 ficou um mês sem abrir o app (o app não mexe em updated_at: só a função).
+reset role;
+update public.push_subscriptions set updated_at = now() - interval '30 days' where endpoint like '%/j3';
+set role authenticated;
+do $$
+begin
+  perform public.register_push_subscription('https://fcm.googleapis.com/fcm/send/j-novo', 'k', 'a', 'UTC');
+  assert (select count(*) from public.push_subscriptions) = public.max_push_subscriptions(), 'one browser past the cap: the cap holds';
+  assert not exists (select 1 from public.push_subscriptions where endpoint like '%/j3'), 'the stalest browser is out';
+  assert not exists (select 1 from public.push_schedule where title = 'Do antigo'), 'and its schedule with it';
+  assert exists (select 1 from public.push_subscriptions where endpoint like '%/j-novo'), 'the new browser is in';
+  -- Um navegador conhecido de novo não derruba ninguém.
+  perform public.register_push_subscription('https://fcm.googleapis.com/fcm/send/j1', 'k2', 'a', 'UTC');
+  assert (select count(*) from public.push_subscriptions) = public.max_push_subscriptions(), 'a known browser just updates';
+  delete from public.push_schedule;
+  for n in 1..public.max_push_subscriptions() loop
+    perform public.unregister_push_subscription('https://fcm.googleapis.com/fcm/send/j' || n);
+  end loop;
+  perform public.unregister_push_subscription('https://fcm.googleapis.com/fcm/send/j-novo');
+  assert (select count(*) from public.push_subscriptions) = 0, 'all unregistered';
 end $$;
 reset role;
 do $$
