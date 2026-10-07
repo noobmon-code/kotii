@@ -1684,6 +1684,98 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+\echo '• o dono tira moradores e troca o código de convite'
+\set user_k '00000000-0000-0000-0000-000000000014'
+\set user_l '00000000-0000-0000-0000-000000000015'
+reset role;
+insert into auth.users (id) values (:'user_k'), (:'user_l');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_k', false) \gset
+select (public.create_household('Casa K', 'Kim')).id as hh_k \gset
+select set_config('test.hh_k', :'hh_k', false) \gset
+select invite_code as invite_k from public.households where id = :'hh_k' \gset
+select set_config('request.jwt.claim.sub', :'user_l', false) \gset
+select public.join_household(:'invite_k', 'Lia') \gset
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+begin
+  begin
+    perform public.regenerate_invite_code(hk);
+    raise exception 'FAIL: a member changed the invite code';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.remove_member(hk, '00000000-0000-0000-0000-000000000014');
+    raise exception 'FAIL: a member removed the owner';
+  exception when insufficient_privilege then null;
+  end;
+  perform set_config('request.jwt.claims', json_build_object('sub', auth.uid(), 'session_id', 'sessao-l')::text, true);
+  perform public.select_household(hk);
+  perform set_config('request.jwt.claims', '', true);
+end $$;
+select set_config('request.jwt.claim.sub', :'user_k', false) \gset
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+  old_code text := (select invite_code from public.households where id = hk);
+  new_code text;
+begin
+  begin
+    perform public.regenerate_invite_code(current_setting('test.hh_a')::uuid);
+    raise exception 'FAIL: changed the invite code of a foreign household';
+  exception when insufficient_privilege then null;
+  end;
+  new_code := public.regenerate_invite_code(hk);
+  assert new_code <> old_code and new_code ~ '^[A-Z2-9]{6}$', 'a new code in the same format';
+  assert (select invite_code from public.households where id = hk) = new_code, 'the household has the new code';
+  perform set_config('test.invite_k_old', old_code, false);
+  perform set_config('test.invite_k_new', new_code, false);
+
+  begin
+    perform public.remove_member(hk, auth.uid());
+    raise exception 'FAIL: the owner removed itself';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.remove_member(hk, '00000000-0000-0000-0000-00000000000c');
+    raise exception 'FAIL: removed someone who is not a member';
+  exception when no_data_found then null;
+  end;
+  perform public.remove_member(hk, '00000000-0000-0000-0000-000000000015');
+  assert (select count(*) from public.household_members where household_id = hk) = 1, 'the member is out';
+  assert (select member_user_id from public.people where household_id = hk and name = 'Lia') is null,
+    'the person record stays as a dependent';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_l', false) \gset
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+begin
+  assert (select count(*) from public.households where id = hk) = 0, 'the removed member no longer sees the household';
+  perform set_config('request.headers', json_build_object('x-household-id', hk)::text, true);
+  assert public.current_household_id() is null, 'nor with the header';
+  perform set_config('request.headers', '', true);
+  perform set_config('request.jwt.claims', json_build_object('sub', auth.uid(), 'session_id', 'sessao-l')::text, true);
+  assert public.current_household_id() is null, 'nor through the session that had it open';
+  perform set_config('request.jwt.claims', '', true);
+  begin
+    perform public.join_household(current_setting('test.invite_k_old'), 'Lia');
+    raise exception 'FAIL: joined with the old invite code';
+  exception when no_data_found then null;
+  end;
+  perform public.join_household(current_setting('test.invite_k_new'), 'Lia');
+  assert (select member_user_id from public.people where household_id = hk and name = 'Lia') = auth.uid(),
+    'joining again takes the dependent record back';
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.household_sessions where household_id = current_setting('test.hh_k')::uuid
+    and user_id = '00000000-0000-0000-0000-000000000015' and session_id = 'sessao-l'), 'the removed member session forgot the household';
+end $$;
+
+-- ---------------------------------------------------------------------------
 \echo '• avisos no navegador: inscrição, agenda e envio'
 \set user_i '00000000-0000-0000-0000-000000000012'
 \set user_j '00000000-0000-0000-0000-000000000013'
