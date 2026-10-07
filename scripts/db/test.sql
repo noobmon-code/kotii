@@ -1436,6 +1436,45 @@ begin
     raise exception 'FAIL: invalid month';
   exception when check_violation then null;
   end;
+
+  -- Quem pagou: só morador da casa (em gastos, pagamentos e notas).
+  insert into public.expenses (description, amount, paid_by) values ('Padaria', 12, b);
+  begin
+    insert into public.expenses (description, amount, paid_by) values ('X', 1, c);
+    raise exception 'FAIL: expense paid by someone outside the household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    update public.expenses set paid_by = c where description = 'Padaria';
+    raise exception 'FAIL: expense handed to someone outside the household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    insert into public.receipts (source, paid_by) values ('manual', c);
+    raise exception 'FAIL: receipt paid by someone outside the household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    update public.bill_payments set paid_by = c;
+    raise exception 'FAIL: bill payment handed to someone outside the household';
+  exception when foreign_key_violation then null;
+  end;
+  update public.expenses set paid_by = null where description = 'Padaria';
+  delete from public.expenses where description = 'Padaria';
+end $$;
+-- Quem saiu continua como pagador do que pagou: editar o gasto não esbarra no gatilho.
+reset role;
+alter table public.expenses disable trigger expenses_paid_by_member;
+insert into public.expenses (household_id, description, amount, paid_by)
+  values (current_setting('test.hh_a')::uuid, 'Antigo', 5, '00000000-0000-0000-0000-00000000000c');
+alter table public.expenses enable trigger expenses_paid_by_member;
+set role authenticated;
+do $$
+begin
+  -- O app manda o gasto inteiro, com o mesmo pagador.
+  update public.expenses set amount = 6, paid_by = '00000000-0000-0000-0000-00000000000c' where description = 'Antigo';
+  assert (select amount from public.expenses where description = 'Antigo') = 6, 'editing keeps a payer who left';
+  delete from public.expenses where description = 'Antigo';
 end $$;
 select set_config('request.jwt.claim.sub', :'user_c', false) \gset
 do $$
