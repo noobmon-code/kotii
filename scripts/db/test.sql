@@ -2154,14 +2154,16 @@ begin
     perform public.request_push_send();
     raise exception 'FAIL: called send-push without the Vault secrets';
   exception when raise_exception then
-    assert sqlerrm like 'Faltam os segredos project_url, anon_key e push_cron_secret%', 'names the missing secrets';
+    assert sqlerrm like 'Faltam os segredos project_url e push_cron_secret%', 'names the missing secrets';
   end;
+  -- Sem anon_key: a chamada não leva chave do Supabase, só o segredo.
   insert into vault.decrypted_secrets values
-    ('project_url', 'https://projeto.supabase.co/'), ('anon_key', 'anon'), ('push_cron_secret', 'segredo-cron'),
+    ('project_url', 'https://projeto.supabase.co/'), ('push_cron_secret', 'segredo-cron'),
     ('push_vapid', '{"applicationServerKey": "BPublica", "publicKey": {"kty": "EC"}, "privateKey": {"kty": "EC"}, "subject": "mailto:x@y.z"}');
   perform public.request_push_send();
   assert (select url from net.requests order by id desc limit 1) = 'https://projeto.supabase.co/functions/v1/send-push', 'calls send-push';
   assert (select headers ->> 'x-push-secret' from net.requests order by id desc limit 1) = 'segredo-cron', 'with the cron secret';
+  assert (select headers from net.requests order by id desc limit 1) - 'Content-Type' - 'x-push-secret' = '{}', 'and no API key or token';
   assert (public.push_config() ->> 'cronSecret') = 'segredo-cron' and (public.push_config() ->> 'subject') = 'mailto:x@y.z', 'config for send-push';
   update public.push_schedule set claimed_at = now() where id = '00000000-0000-0000-0000-0000000000a1';
   assert public.request_push_send() is null, 'being sent right now: no second call';
@@ -2250,14 +2252,15 @@ begin
     perform public.request_household_file_cleanup();
     raise exception 'FAIL: cleanup job ran without the Vault secrets';
   exception when raise_exception then
-    assert sqlerrm like 'Faltam os segredos project_url, anon_key e cleanup_cron_secret%', 'cleanup job names the missing secrets';
+    assert sqlerrm like 'Faltam os segredos project_url e cleanup_cron_secret%', 'cleanup job names the missing secrets';
   end;
   -- Com os segredos: chama a função com o segredo da limpeza, que só a service role lê.
   insert into vault.decrypted_secrets values
-    ('project_url', 'https://projeto.supabase.co/'), ('anon_key', 'anon'), ('cleanup_cron_secret', 'segredo-limpeza');
+    ('project_url', 'https://projeto.supabase.co/'), ('cleanup_cron_secret', 'segredo-limpeza');
   perform public.request_household_file_cleanup();
   assert (select url from net.requests order by id desc limit 1) = 'https://projeto.supabase.co/functions/v1/leave-household', 'calls leave-household';
   assert (select headers ->> 'x-cleanup-secret' from net.requests order by id desc limit 1) = 'segredo-limpeza', 'with the cleanup secret';
+  assert (select headers from net.requests order by id desc limit 1) - 'Content-Type' - 'x-cleanup-secret' = '{}', 'and no API key or token';
   assert public.cleanup_config() = 'segredo-limpeza', 'config for leave-household';
   delete from public.household_file_cleanup;
   assert public.request_household_file_cleanup() is null, 'empty queue: nothing to call';

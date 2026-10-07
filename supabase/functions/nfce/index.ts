@@ -10,6 +10,7 @@
 import { createClient } from '@supabase/supabase-js';
 
 import { QuotaError, refundAiQuota, takeAiQuota } from '../_shared/aiQuota.ts';
+import { publishableKey } from '../_shared/apiKeys.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
 import { isSefazUrl, parseNfceHtml } from './parse.ts';
 
@@ -91,7 +92,7 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   if (req.method !== 'POST') return json({ error: 'Método não suportado.' }, 405);
 
-  const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_ANON_KEY') ?? Deno.env.get('SUPABASE_PUBLISHABLE_KEY')!, {
+  const db = createClient(Deno.env.get('SUPABASE_URL')!, publishableKey(), {
     global: { headers: callerHeaders(req) },
   });
   const { data: auth } = await db.auth.getUser();

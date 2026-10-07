@@ -13,6 +13,7 @@
 import { createClient } from '@supabase/supabase-js';
 
 import { QuotaError, refundAiQuota, takeAiQuota } from '../_shared/aiQuota.ts';
+import { publishableKey } from '../_shared/apiKeys.ts';
 import { chatStructured } from '../_shared/chat.ts';
 import { ExtractionError, visionConfig } from '../_shared/vision.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
@@ -46,12 +47,9 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   if (req.method !== 'POST') return json({ error: 'Método não suportado.' }, 405);
 
-  // A chave anon também é um JWT válido: só conversa quem está logado.
-  const db = createClient(
-    Deno.env.get('SUPABASE_URL')!,
-    Deno.env.get('SUPABASE_ANON_KEY') ?? Deno.env.get('SUPABASE_PUBLISHABLE_KEY')!,
-    { global: { headers: callerHeaders(req) } },
-  );
+  // A plataforma também deixa passar a chave pública no lugar do token: só
+  // conversa quem está logado.
+  const db = createClient(Deno.env.get('SUPABASE_URL')!, publishableKey(), { global: { headers: callerHeaders(req) } });
   const { data: userData } = await db.auth.getUser();
   if (!userData.user) return json({ error: 'Entre na sua conta para falar com o Nuke.' }, 401);
 

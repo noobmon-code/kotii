@@ -6,6 +6,8 @@
 
 import { createClient } from '@supabase/supabase-js';
 
+import { secretKey } from './apiKeys.ts';
+
 export type AiKind = 'chat' | 'photo' | 'menu' | 'nfce';
 
 interface RpcClient {
@@ -49,7 +51,7 @@ export async function takeAiQuota(db: RpcClient, kind: AiKind): Promise<AiTicket
 }
 
 function serviceClient(): RpcClient {
-  return createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+  return createClient(Deno.env.get('SUPABASE_URL')!, secretKey());
 }
 
 /** A IA falhou: o uso não conta. Erro aqui só fica no log. */
