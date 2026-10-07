@@ -1,11 +1,12 @@
 // Limite mensal de IA por casa (tabela ai_usage, funções use_ai e refund_ai):
 // cada função conta o uso antes de chamar a IA e devolve se a IA falhar. A
 // devolução vai com a chave de serviço: quem usa o app não consegue baixar o
-// próprio contador.
+// próprio contador. A nota pelo QR code (nfce) não usa IA, mas faz o servidor
+// buscar a Sefaz: entra no mesmo limite.
 
 import { createClient } from '@supabase/supabase-js';
 
-export type AiKind = 'chat' | 'photo' | 'menu';
+export type AiKind = 'chat' | 'photo' | 'menu' | 'nfce';
 
 interface RpcClient {
   rpc(fn: string, args: Record<string, unknown>): PromiseLike<{ data: unknown; error: unknown }>;
@@ -23,6 +24,8 @@ const LIMIT_MESSAGE: Record<AiKind, (limit: number) => string> = {
   photo: (limit) =>
     `A casa já usou as ${limit} leituras de foto deste mês. O limite volta no dia 1º; até lá, dá para ler a nota pelo QR code ou digitar.`,
   menu: (limit) => `A casa já montou ${limit} cardápios com o Nuke este mês. O limite volta no dia 1º.`,
+  nfce: (limit) =>
+    `A casa já leu ${limit} notas pelo QR code este mês. O limite volta no dia 1º; até lá, dá para tirar foto da nota ou digitar.`,
 };
 
 export class QuotaError extends Error {

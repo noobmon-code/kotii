@@ -70,7 +70,7 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
 
    Com a chave da OpenRouter, ela é usada em tudo (leitura de notas, de saúde e o Nuke), com o `deepseek/deepseek-v4.1-flash`; a Anthropic só entra com a chave dela sozinha ou com `RECEIPT_PROVIDER=anthropic`. O modelo pode ser trocado com `RECEIPT_MODEL` (na OpenRouter, precisa ser um modelo que aceita imagem). A leitura de saúde (`parse-health`) usa as mesmas configurações, ou `HEALTH_PROVIDER` e `HEALTH_MODEL` se quiser um modelo diferente para ela. O Nuke (`nuke`) também, ou `NUKE_PROVIDER` e `NUKE_MODEL`.
 
-   **Limpeza das fotos.** Quando a última pessoa sai e apaga a casa, `leave-household` apaga as fotos dela na hora; se o Storage falhar, a casa fica numa fila que o `pg_cron` reprocessa de hora em hora. Para isso, o banco precisa da URL do projeto e da chave anon no Vault. Rode uma vez no SQL Editor:
+   **Limpeza das fotos.** Quando a última pessoa sai e apaga a casa, `leave-household` apaga as fotos dela na hora; se o Storage falhar, a casa fica numa fila que o `pg_cron` reprocessa de hora em hora. Para isso, o banco precisa da URL do projeto e da chave anon no Vault (o segredo que autoriza essa chamada, `cleanup_cron_secret`, o `db push` cria sozinho). Rode uma vez no SQL Editor:
 
    ```sql
    select vault.create_secret('https://SEU_PROJECT_REF.supabase.co', 'project_url');
@@ -120,7 +120,7 @@ O backend já roda na nuvem (Supabase). O `npx expo start` só serve o código d
 
 **iPhone.** Instalar o app nativo exige conta Apple Developer (US$ 99/ano): com ela, o app vai para os celulares pelo TestFlight e, depois, para a App Store. Sem a conta, instale a versão web: no Safari, *Compartilhar → Adicionar à Tela de Início* (a tela Hoje mostra esse passo a passo). Ela abre em tela cheia, com o ícone do Nooky, e abre mesmo sem internet. Os avisos por notificação funcionam por ela (iOS 16.4 ou mais novo): Família → "Avisos neste navegador". No Safari sem instalar, não.
 
-**Versão web (Vercel).** O `vercel.json` já diz como gerar o site (`expo export`). No projeto da Vercel, em *Settings → Environment Variables*, cadastre as mesmas duas variáveis `EXPO_PUBLIC_*` como texto normal (não secretas) e publique de novo. O site é instalável (PWA): `public/index.html` é o modelo da página, com o manifesto (`public/manifest.webmanifest`), os ícones (`public/icons/`) e o service worker (`public/sw.js`), que guarda o app no aparelho; no Android, o Chrome oferece "Instalar" e a tela Hoje tem o botão.
+**Versão web (Vercel).** O `vercel.json` já diz como gerar o site (`expo export`). No projeto da Vercel, em *Settings → Environment Variables*, cadastre as mesmas duas variáveis `EXPO_PUBLIC_*` como texto normal (não secretas) e publique de novo. O site é instalável (PWA): `public/index.html` é o modelo da página, com o manifesto (`public/manifest.webmanifest`), os ícones (`public/icons/`) e o service worker (`public/sw.js`, registrado por `public/sw-register.js`), que guarda o app no aparelho; no Android, o Chrome oferece "Instalar" e a tela Hoje tem o botão. O `vercel.json` também manda os cabeçalhos de segurança do site (CSP com a lista dos serviços que o app chama: Supabase, Open-Meteo, Nominatim, ViaCEP, BrasilAPI e as fontes do Google; um serviço novo precisa entrar lá).
 
 Identificador do app: `com.noobmon.nooky` (iOS e Android). Dá para trocar até o primeiro envio para as lojas; depois fica fixo.
 

@@ -38,9 +38,12 @@ select set_config('request.jwt.claim.sub', :'user_b', false) \gset
 do $$
 begin
   assert (select count(*) from public.households) = 0, 'B cannot see households before joining';
-  perform public.join_household('ZZZZZZ', 'Beto');
-  raise exception 'FAIL: joined with invalid code';
-exception when no_data_found then null;
+  assert public.join_household('ZZZZZZ', 'Beto') is null, 'wrong code: nothing, and the attempt counts';
+  begin
+    perform 1 from public.join_attempts;
+    raise exception 'FAIL: app user read the join attempts';
+  exception when insufficient_privilege then null;
+  end;
 end $$;
 select public.join_household(lower(:'invite_code'), 'Beto') \gset
 
@@ -52,6 +55,87 @@ select id as hh_a from public.households where name = 'Casa A' \gset
 select set_config('test.hh_a', :'hh_a', false) \gset
 set role authenticated;
 
+-- ---------------------------------------------------------------------------
+\echo '• código errado demais: a conta espera uma hora'
+\set user_z '00000000-0000-0000-0000-00000000001a'
+reset role;
+insert into auth.users (id) values (:'user_z');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_z', false) \gset
+do $$
+begin
+  for i in 1..public.max_join_attempts() loop
+    assert public.join_household('ZZZZZ' || i, 'Zé') is null, 'wrong code';
+  end loop;
+  begin
+    perform public.join_household('ZZZZZZ', 'Zé');
+    raise exception 'FAIL: tried past the limit';
+  exception when sqlstate 'NK004' then null;
+  end;
+  -- Mesmo o código certo espera: a conta está bloqueada.
+  begin
+    perform public.join_household(current_setting('test.invite_a'), 'Zé');
+    raise exception 'FAIL: the right code bypassed the block';
+  exception when sqlstate 'NK004' then null;
+  end;
+end $$;
+reset role;
+do $$
+begin
+  assert (select failed from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a') = public.max_join_attempts(), 'attempts counted';
+  -- A hora passou (contada do primeiro erro: errar de novo não a estica).
+  update public.join_attempts set window_started_at = now() - interval '61 minutes';
+end $$;
+set role authenticated;
+do $$
+begin
+  assert public.join_household('ZZZZZZ', 'Zé') is null, 'after an hour, tries again';
+end $$;
+reset role;
+do $$
+begin
+  assert (select failed from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a') = 1, 'a new hour starts the count over';
+  assert (select window_started_at from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a') > now() - interval '1 minute', 'and starts now';
+  -- Um erro a cada 59 minutos nunca chega ao limite: a hora é contada do primeiro erro.
+  update public.join_attempts set failed = 9, window_started_at = now() - interval '59 minutes';
+end $$;
+set role authenticated;
+do $$
+begin
+  assert public.join_household('ZZZZZZ', 'Zé') is null, 'tenth error inside the hour';
+  begin
+    perform public.join_household('ZZZZZZ', 'Zé');
+    raise exception 'FAIL: tried past the limit';
+  exception when sqlstate 'NK004' then null;
+  end;
+end $$;
+reset role;
+update public.join_attempts set window_started_at = now() - interval '2 hours';
+set role authenticated;
+do $$
+begin
+  perform public.join_household(current_setting('test.invite_a'), 'Zé');
+  assert (select count(*) from public.household_members where user_id = auth.uid()) = 1, 'the right code joins';
+  perform public.leave_household(current_setting('test.hh_a')::uuid);
+end $$;
+reset role;
+do $$
+begin
+  assert (select failed from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a') = 10, 'joining does not clear the count';
+  -- Zé passou por A só para o teste: a ficha que ficou lá sai.
+  delete from public.people where household_id = current_setting('test.hh_a')::uuid and name = 'Zé';
+  -- A hora dos dez erros ainda corre: entrar e sair não abre brecha.
+  update public.join_attempts set window_started_at = now() - interval '10 minutes';
+end $$;
+set role authenticated;
+do $$
+begin
+  begin
+    perform public.join_household('ZZZZZZ', 'Zé');
+    raise exception 'FAIL: joining a known household reset the limit';
+  exception when sqlstate 'NK004' then null;
+  end;
+end $$;
 -- ---------------------------------------------------------------------------
 \echo '• A importa duas notas; matching e aprendizado de validade'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
@@ -131,6 +215,20 @@ begin
     raise exception 'FAIL: receipt confirmed twice';
   exception when unique_violation then null;
   end;
+
+  begin
+    insert into public.receipts (store_id, image_path) values (s_bom, '00000000-0000-0000-0000-000000000000/nota.jpg');
+    raise exception 'FAIL: receipt photo in another household folder';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.receipts (store_id, extra_image_paths) values (s_bom, array[current_setting('test.hh_a') || '/']);
+    raise exception 'FAIL: receipt photo without a file name';
+  exception when check_violation then null;
+  end;
+  insert into public.receipts (store_id, image_path, extra_image_paths)
+    values (s_bom, current_setting('test.hh_a') || '/nota-1.jpg', array[current_setting('test.hh_a') || '/nota-2.jpg']) returning id into r2;
+  delete from public.receipts where id = r2;
 
   -- Rascunho não entra no comparativo de preços.
   insert into public.receipts (store_id, status) values (s_bom, 'draft') returning id into r2;
@@ -756,6 +854,28 @@ begin
   exception when check_violation then null;
   end;
 
+  -- Arquivos: só na pasta da casa, sem subpasta.
+  begin
+    insert into public.exams (person_id, title, file_paths) values (duda, 'X', array['00000000-0000-0000-0000-000000000000/exame.jpg']);
+    raise exception 'FAIL: exam file in another household folder';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.workout_plans (person_id, title, file_paths) values (duda, 'X', array[current_setting('test.hh_a') || '/sub/ficha.jpg']);
+    raise exception 'FAIL: workout file outside the household folder root';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.diet_plans (person_id, title, file_paths) values (duda, 'X', array['dieta.jpg']);
+    raise exception 'FAIL: diet file without the household folder';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.exams (person_id, title, file_paths) values (duda, 'X', array[null, current_setting('test.hh_a') || '/exame.jpg']);
+    raise exception 'FAIL: null file path accepted';
+  exception when check_violation then null;
+  end;
+
   begin
     insert into public.appointments (person_id, title, starts_at, status) values (duda, 'X', now(), 'talvez');
     raise exception 'FAIL: invalid appointment status';
@@ -894,7 +1014,24 @@ begin
     raise exception 'FAIL: remind_days out of range';
   exception when check_violation then null;
   end;
+  begin
+    insert into public.documents (title, file_paths) values ('X', array['00000000-0000-0000-0000-000000000000/cnh.jpg']);
+    raise exception 'FAIL: document file in another household folder';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.equipment (name, file_paths) values ('X', array[current_setting('test.hh_a') || '/a/b.jpg']);
+    raise exception 'FAIL: equipment file outside the household folder root';
+  exception when check_violation then null;
+  end;
 end $$;
+reset role;
+do $$
+begin
+  assert (select file_size_limit from storage.buckets where id = 'documents') = 5 * 1024 * 1024, 'buckets have a size limit';
+  assert (select allowed_mime_types from storage.buckets where id = 'health') = array['image/jpeg', 'image/png', 'image/webp'], 'buckets only take photos';
+end $$;
+set role authenticated;
 
 select set_config('request.jwt.claim.sub', :'user_b', false) \gset
 do $$
@@ -1250,6 +1387,10 @@ begin
     raise exception 'FAIL: unknown kind';
   exception when invalid_parameter_value then null;
   end;
+  -- A nota pelo QR code não usa IA, mas a busca na Sefaz conta no mesmo limite.
+  select * into r from public.use_ai('nfce');
+  assert r.allowed and r.used = 1 and r.lim = 200, 'the QR code reading has its own limit';
+  assert (select array_agg(kind order by kind) from public.ai_usage_summary()) = array['chat', 'menu', 'nfce', 'photo'], 'the summary lists every kind';
 end $$;
 set role service_role;
 select public.refund_ai(:'hh_a', public.ai_month(), 'photo') \gset
@@ -1284,11 +1425,13 @@ select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$
 declare
   r uuid;
+  hid text := public.current_household_id()::text;
 begin
-  insert into public.receipts (image_path, extra_image_paths) values ('x/1.jpg', array['x/2.jpg', 'x/3.jpg']) returning id into r;
+  insert into public.receipts (image_path, extra_image_paths)
+    values (hid || '/1.jpg', array[hid || '/2.jpg', hid || '/3.jpg']) returning id into r;
   assert (select cardinality(extra_image_paths) from public.receipts where id = r) = 2, 'extra photos are kept in order';
   begin
-    update public.receipts set extra_image_paths = array['a', 'b', 'c', 'd', 'e', 'f'] where id = r;
+    update public.receipts set extra_image_paths = array(select hid || '/' || n || '.jpg' from generate_series(1, 6) n) where id = r;
     raise exception 'FAIL: too many photos';
   exception when check_violation then null;
   end;
@@ -1436,6 +1579,45 @@ begin
     raise exception 'FAIL: invalid month';
   exception when check_violation then null;
   end;
+
+  -- Quem pagou: só morador da casa (em gastos, pagamentos e notas).
+  insert into public.expenses (description, amount, paid_by) values ('Padaria', 12, b);
+  begin
+    insert into public.expenses (description, amount, paid_by) values ('X', 1, c);
+    raise exception 'FAIL: expense paid by someone outside the household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    update public.expenses set paid_by = c where description = 'Padaria';
+    raise exception 'FAIL: expense handed to someone outside the household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    insert into public.receipts (source, paid_by) values ('manual', c);
+    raise exception 'FAIL: receipt paid by someone outside the household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    update public.bill_payments set paid_by = c;
+    raise exception 'FAIL: bill payment handed to someone outside the household';
+  exception when foreign_key_violation then null;
+  end;
+  update public.expenses set paid_by = null where description = 'Padaria';
+  delete from public.expenses where description = 'Padaria';
+end $$;
+-- Quem saiu continua como pagador do que pagou: editar o gasto não esbarra no gatilho.
+reset role;
+alter table public.expenses disable trigger expenses_paid_by_member;
+insert into public.expenses (household_id, description, amount, paid_by)
+  values (current_setting('test.hh_a')::uuid, 'Antigo', 5, '00000000-0000-0000-0000-00000000000c');
+alter table public.expenses enable trigger expenses_paid_by_member;
+set role authenticated;
+do $$
+begin
+  -- O app manda o gasto inteiro, com o mesmo pagador.
+  update public.expenses set amount = 6, paid_by = '00000000-0000-0000-0000-00000000000c' where description = 'Antigo';
+  assert (select amount from public.expenses where description = 'Antigo') = 6, 'editing keeps a payer who left';
+  delete from public.expenses where description = 'Antigo';
 end $$;
 select set_config('request.jwt.claim.sub', :'user_c', false) \gset
 do $$
@@ -2006,7 +2188,7 @@ begin
 end $$;
 set client_min_messages = warning;
 drop schema vault cascade;
-drop schema net cascade;
+delete from net.requests;
 reset client_min_messages;
 
 -- Sem os segredos do Vault, o job da limpeza falha com a instrução em vez de chamar uma URL nula.
@@ -2018,10 +2200,31 @@ begin
     perform public.request_household_file_cleanup();
     raise exception 'FAIL: cleanup job ran without the Vault secrets';
   exception when raise_exception then
-    assert sqlerrm like 'Faltam os segredos project_url e anon_key%', 'cleanup job names the missing secrets';
+    assert sqlerrm like 'Faltam os segredos project_url, anon_key e cleanup_cron_secret%', 'cleanup job names the missing secrets';
   end;
+  -- Com os segredos: chama a função com o segredo da limpeza, que só a service role lê.
+  insert into vault.decrypted_secrets values
+    ('project_url', 'https://projeto.supabase.co/'), ('anon_key', 'anon'), ('cleanup_cron_secret', 'segredo-limpeza');
+  perform public.request_household_file_cleanup();
+  assert (select url from net.requests order by id desc limit 1) = 'https://projeto.supabase.co/functions/v1/leave-household', 'calls leave-household';
+  assert (select headers ->> 'x-cleanup-secret' from net.requests order by id desc limit 1) = 'segredo-limpeza', 'with the cleanup secret';
+  assert public.cleanup_config() = 'segredo-limpeza', 'config for leave-household';
   delete from public.household_file_cleanup;
   assert public.request_household_file_cleanup() is null, 'empty queue: nothing to call';
 end $$;
+set role authenticated;
+do $$
+begin
+  begin
+    perform public.cleanup_config();
+    raise exception 'FAIL: the app read the cleanup secret';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+reset role;
+
+set client_min_messages = warning;
+drop schema net cascade;
+reset client_min_messages;
 
 \echo 'OK — todos os testes do banco passaram'

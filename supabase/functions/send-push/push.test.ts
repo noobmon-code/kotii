@@ -1,7 +1,7 @@
 import { assert, assertEquals } from '@std/assert';
 import { ApplicationServer, exportApplicationServerKey, exportVapidKeys, generateVapidKeys, importVapidKeys, Urgency } from '@negrel/webpush';
 
-import { type DuePush, isPushEndpoint, payloadOf, PushFailed, type PushSender, sameSecret, sendAll } from './push.ts';
+import { type DuePush, isPushEndpoint, payloadOf, PushFailed, type PushSender, sendAll } from './push.ts';
 
 const due = (overrides: Partial<DuePush> = {}): DuePush => ({
   push_id: 'p1',
@@ -65,13 +65,6 @@ Deno.test('envia todos; inscrição que sumiu (404/410) sai, falha passageira vo
     // Serviço fora (503) e sem rede: tentam de novo.
     retry: ['p4', 'p7'],
   });
-});
-
-Deno.test('segredo do agendamento: só o igual passa', () => {
-  assert(sameSecret('abc123', 'abc123'));
-  assert(!sameSecret('abc124', 'abc123'));
-  assert(!sameSecret('abc', 'abc123'));
-  assert(!sameSecret(null, 'abc123'));
 });
 
 // ---------------------------------------------------------------------------
