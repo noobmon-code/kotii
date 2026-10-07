@@ -786,6 +786,11 @@ begin
     raise exception 'FAIL: diet file without the household folder';
   exception when check_violation then null;
   end;
+  begin
+    insert into public.exams (person_id, title, file_paths) values (duda, 'X', array[null, current_setting('test.hh_a') || '/exame.jpg']);
+    raise exception 'FAIL: null file path accepted';
+  exception when check_violation then null;
+  end;
 
   begin
     insert into public.appointments (person_id, title, starts_at, status) values (duda, 'X', now(), 'talvez');

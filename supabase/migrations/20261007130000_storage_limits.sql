@@ -26,7 +26,7 @@ as $$
   select p_path like p_household_id::text || '/%' and p_path not like '%/%/%' and p_path <> p_household_id::text || '/';
 $$;
 
-/** Todos os caminhos estão na pasta da casa (lista vazia vale). */
+/** Todos os caminhos estão na pasta da casa (lista vazia vale; elemento nulo não). */
 create function public.are_household_files(p_paths text[], p_household_id uuid)
 returns boolean
 language sql
@@ -35,7 +35,7 @@ set search_path = ''
 as $$
   select not exists (
     select 1 from unnest(coalesce(p_paths, '{}'::text[])) as f (path)
-    where not public.is_household_file(f.path, p_household_id)
+    where not coalesce(public.is_household_file(f.path, p_household_id), false)
   );
 $$;
 
