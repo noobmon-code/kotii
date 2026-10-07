@@ -1963,11 +1963,9 @@ begin
   perform set_config('request.jwt.claims', json_build_object('sub', auth.uid(), 'session_id', 'sessao-l')::text, true);
   assert public.current_household_id() is null, 'nor through the session that had it open';
   perform set_config('request.jwt.claims', '', true);
-  begin
-    perform public.join_household(current_setting('test.invite_k_old'), 'Lia');
-    raise exception 'FAIL: joined with the old invite code';
-  exception when no_data_found then null;
-  end;
+  -- Código antigo: não acha a casa (a versão final de join_household devolve nulo e conta a tentativa).
+  assert (public.join_household(current_setting('test.invite_k_old'), 'Lia')).id is null, 'the old invite code no longer works';
+  -- (Se o código antigo tivesse entrado, este falharia com "already a member".)
   perform public.join_household(current_setting('test.invite_k_new'), 'Lia');
   assert (select member_user_id from public.people where household_id = hk and name = 'Lia') = auth.uid(),
     'joining again takes the dependent record back';
