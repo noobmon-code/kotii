@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
-import { createEncryptedStorage, type KeyValueStorage, type SecretStore } from '../sessionStorage';
+import { type Cipher, createEncryptedStorage, type KeyValueStorage, type SecretStore } from '../sessionStorage';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -26,8 +26,23 @@ function vault(): SecretStore & { map: Map<string, string> } {
   };
 }
 
-let seed = 1;
-const randomBytes = (count: number) => Uint8Array.from({ length: count }, (_, i) => (i * 7 + seed++) % 256);
+// Cifra de brinquedo com a forma da de verdade: nonce novo a cada fechamento
+// e uma etiqueta que prende chave e conteúdo (alterado, não abre).
+const tag = (key: string, body: string) => String([...`${key}|${body}`].reduce((sum, ch) => (sum * 31 + ch.charCodeAt(0)) % 1_000_003, 7));
+let nonce = 0;
+const fakeCipher: Cipher = {
+  newKey: async () => `chave-${++nonce}`,
+  seal: async (key, plaintext) => {
+    const body = `${++nonce}.${Buffer.from(plaintext, 'utf8').toString('base64')}`;
+    return `${body}.${tag(key, body)}`;
+  },
+  open: async (key, sealed) => {
+    const [n, base64, mac] = sealed.split('.');
+    const body = `${n}.${base64}`;
+    if (!n || !base64 || mac !== tag(key, body)) throw new Error('não abre');
+    return Buffer.from(base64, 'base64').toString('utf8');
+  },
+};
 
 const SESSION = JSON.stringify({ access_token: 'a'.repeat(900), refresh_token: 'r'.repeat(60), user: { id: 'u1', email: 'ana@x.y' } });
 
@@ -39,22 +54,25 @@ describe('sessão cifrada no aparelho', () => {
   beforeEach(() => {
     plain = memory();
     secret = vault();
-    storage = createEncryptedStorage({ plain, secret, randomBytes });
+    storage = createEncryptedStorage({ plain, secret, cipher: fakeCipher });
   });
 
   it('guarda cifrado, com a chave no cofre, e lê de volta', async () => {
     await storage.setItem('sb-auth', SESSION);
     expect(plain.map.get('sb-auth')).not.toContain('access_token');
-    expect(plain.map.get('sb-auth')).toMatch(/^[0-9a-f]+$/);
-    expect(secret.map.get('sb-auth')).toHaveLength(64);
+    expect(secret.map.get('sb-auth.key')).toMatch(/^chave-/);
     expect(await storage.getItem('sb-auth')).toBe(SESSION);
   });
 
-  it('chave nova a cada gravação', async () => {
+  it('a chave é uma só; cada gravação tem nonce novo e vale sozinha', async () => {
     await storage.setItem('sb-auth', SESSION);
-    const first = secret.map.get('sb-auth');
+    const key = secret.map.get('sb-auth.key');
+    const first = plain.map.get('sb-auth');
     await storage.setItem('sb-auth', SESSION);
-    expect(secret.map.get('sb-auth')).not.toBe(first);
+    expect(secret.map.get('sb-auth.key')).toBe(key);
+    expect(plain.map.get('sb-auth')).not.toBe(first);
+    // Gravação interrompida: o conteúdo anterior continua abrindo com a mesma chave.
+    plain.map.set('sb-auth', first!);
     expect(await storage.getItem('sb-auth')).toBe(SESSION);
   });
 
@@ -62,28 +80,31 @@ describe('sessão cifrada no aparelho', () => {
     plain.map.set('sb-auth', SESSION);
     expect(await storage.getItem('sb-auth')).toBe(SESSION);
     expect(plain.map.get('sb-auth')).not.toContain('access_token');
-    expect(secret.map.has('sb-auth')).toBe(true);
+    expect(secret.map.has('sb-auth.key')).toBe(true);
     expect(await storage.getItem('sb-auth')).toBe(SESSION);
+  });
+
+  it('conteúdo alterado não abre: a sessão sai', async () => {
+    await storage.setItem('sb-auth', SESSION);
+    const sealed = plain.map.get('sb-auth')!;
+    plain.map.set('sb-auth', sealed.replace(/^(\d+)\.(.{10})/, (_, n, head) => `${n}.${head.replace(/[A-Za-z]/, (c: string) => (c === 'A' ? 'B' : 'A'))}`));
+    expect(await storage.getItem('sb-auth')).toBeNull();
+    expect(plain.map.has('sb-auth')).toBe(false);
   });
 
   it('sem chave no cofre, o conteúdo cifrado não vale e sai', async () => {
     await storage.setItem('sb-auth', SESSION);
     secret.map.clear();
-    expect(await storage.getItem('sb-auth')).toBeNull();
+    const fresh = createEncryptedStorage({ plain, secret, cipher: fakeCipher });
+    expect(await fresh.getItem('sb-auth')).toBeNull();
     expect(plain.map.has('sb-auth')).toBe(false);
-  });
-
-  it('conteúdo que não é hexadecimal com a chave presente: sem sessão', async () => {
-    await storage.setItem('sb-auth', SESSION);
-    plain.map.set('sb-auth', 'zz-nao-hex');
-    expect(await storage.getItem('sb-auth')).toBeNull();
   });
 
   it('remover apaga o conteúdo e a chave', async () => {
     await storage.setItem('sb-auth', SESSION);
     await storage.removeItem('sb-auth');
     expect(plain.map.has('sb-auth')).toBe(false);
-    expect(secret.map.has('sb-auth')).toBe(false);
+    expect(secret.map.has('sb-auth.key')).toBe(false);
     expect(await storage.getItem('sb-auth')).toBeNull();
   });
 });
