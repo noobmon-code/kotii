@@ -72,3 +72,14 @@ begin
   return sub.id;
 end;
 $$;
+
+-- Quem já passou do teto antes desta migração: ficam os dez mais recentes
+-- de cada conta; os outros saem agora, com a agenda deles (cascade).
+delete from public.push_subscriptions s
+  where s.id in (
+    select r.id from (
+      select o.id, row_number() over (partition by o.user_id order by o.updated_at desc, o.id) as n
+      from public.push_subscriptions o
+    ) r
+    where r.n > public.max_push_subscriptions()
+  );
