@@ -131,7 +131,7 @@ export function extractStructured<S extends z.ZodType>(input: ExtractInput<S>): 
 async function extractWithAnthropic<S extends z.ZodType>(input: ExtractInput<S>): Promise<z.infer<S>> {
   const client = input.anthropic ?? anthropicClient();
   const model = input.config.model;
-  const useFallbacks = /^claude-(opus-5|fable-5)/.test(model);
+  const useFallbacks = /^claude-(opus-5|fable-5|sonnet-5-5)/.test(model);
   let response;
   try {
     response = await client.beta.messages.parse({

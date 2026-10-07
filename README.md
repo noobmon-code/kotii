@@ -32,6 +32,7 @@ iOS e Android com Expo (React Native); a versão web sai do mesmo código depois
 | **Divisão da casa** | Com dois moradores ou mais, gasto, conta paga e nota guardam quem pagou ("Quem pagou" nos formulários; padrão: quem registrou). Finanças → Resumo mostra, no mês, quanto cada um pagou, a parte de cada um (igual ou por peso, em "Como dividir") e quem passa quanto para quem, com o menor número de transferências. "Acertei" registra o Pix entre os moradores (dá para desfazer). |
 | **Despesas médicas (IR)** | Gastos de saúde e contas (como o plano de saúde) podem ser marcados como dedutíveis, com quem atendeu, o CPF ou CNPJ (dígitos conferidos) e, nos gastos, o paciente. Finanças → Resumo → "Despesas médicas para o IR" mostra o ano por prestador, com total, pacientes e lançamentos, avisa quem está sem CPF/CNPJ e copia um resumo para a declaração. |
 | **Contas a pagar** | Aluguel, condomínio, luz, internet, escola, assinaturas: valor fixo ou variável, mensal, anual ou única, débito automático. O check registra o pagamento (valor e data) e passa para o próximo vencimento; dia 31 vira o último dia nos meses curtos. Se outra pessoa da casa já pagou, não paga de novo. Histórico com desfazer do último pagamento. Atrasadas e as que vencem em até 3 dias aparecem na tela Hoje. Boleto pela câmera (código de barras) ou colando a linha digitável: os dígitos verificadores são conferidos (bancário e concessionárias/tributos) e o app preenche valor, vencimento, banco ou tipo de conta; o código fica guardado para copiar no app do banco e sai quando a conta é paga. |
+| **Consultor financeiro (beta)** | Só para quem foi liberado, numa casa: Finanças → Consultor lê os extratos dos seus bancos (pelo MeuPluggy), mostra o mês pela data da compra e conversa sobre orçamento, gastos e dívidas, sem mudar nada no resto das Finanças. Veja [Consultor financeiro (beta)](#consultor-financeiro-beta). |
 | **Nuke** | O assistente da casa: uma bolha de vidro com cores pastel por dentro, no canto das abas. Flutua, pisca, olha em volta; pensando, as cores giram e a luz pulsa; fala mexendo a boca, pula de alegria quando uma ação dá certo e fica preocupado quando algo falha. Responde sobre o que está no app (o que vence, o que falta comprar, quanto foi gasto, o que dá para cozinhar com a despensa) e sugere ações — pôr itens na lista, criar tarefa, registrar gasto, abrir uma tela — que só acontecem quando você toca em "Fazer". A conversa fica no celular. |
 | **Agenda** | Calendário do mês (aberto pela tela Hoje) com consultas, vacinas, contas, tarefas, manutenções, documentos e garantias; contas e tarefas que se repetem aparecem apagadas nas próximas datas, como previsão. Tocar num compromisso abre o item. |
 | **Hoje** | Home que só mostra o que pede atenção: doses pendentes, treino do dia, consultas de hoje/amanhã, vacinas atrasadas, tarefas e manutenções, contas vencendo, itens vencendo, documentos a renovar, garantias acabando, notas e planos para revisar. |
@@ -66,6 +67,8 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
    npx supabase functions deploy leave-household
    npx supabase functions deploy nfce   # nota pelo QR code (sem IA)
    npx supabase functions deploy send-push   # avisos no navegador (Web Push)
+   npx supabase functions deploy finance        # opcional: consultor financeiro (beta), veja a seção dele
+   npx supabase functions deploy nuke-finance   # idem (só Anthropic)
    ```
 
    Com a chave da OpenRouter, ela é usada em tudo (leitura de notas, de saúde e o Nuke), com o `deepseek/deepseek-v4.1-flash`; a Anthropic só entra com a chave dela sozinha ou com `RECEIPT_PROVIDER=anthropic`. O modelo pode ser trocado com `RECEIPT_MODEL` (na OpenRouter, precisa ser um modelo que aceita imagem). A leitura de saúde (`parse-health`) usa as mesmas configurações, ou `HEALTH_PROVIDER` e `HEALTH_MODEL` se quiser um modelo diferente para ela. O Nuke (`nuke`) também, ou `NUKE_PROVIDER` e `NUKE_MODEL`.
@@ -132,7 +135,7 @@ Identificador do app: `com.noobmon.nooky` (iOS e Android). Dá para trocar até 
 - **Nota comprida:** até 4 fotos por nota, lidas juntas numa nota só (pela câmera, uma parte de cada vez; pela galeria, várias de uma vez). Vale deixar um pedaço repetido entre as fotos.
 - **Nuke:** cada mensagem manda para a IA um retrato compacto da casa (poucos milhares de tokens) e as últimas falas, com esforço baixo para responder rápido. Com a OpenRouter (`deepseek/deepseek-v4.1-flash`), frações de centavo por mensagem; com a Anthropic (claude-opus-5), algo como US$ 0,02 a 0,05. Dá para trocar o modelo com `NUKE_MODEL`.
 - **Várias casas:** o app manda a casa aberta no cabeçalho `x-household-id` e o banco (`current_household_id()`) só aceita uma casa de que a pessoa é membro; sem o cabeçalho, vale a casa que a sessão abriu por último (`household_sessions`, pelo `session_id` do token: é o caso da lista ao vivo, cujo tempo real não leva cabeçalhos) e, sem isso (versões antigas do app), a primeira casa em que ela entrou. Trocar de casa pede internet, e as marcações da lista feitas sem internet precisam subir antes. Os avisos das outras casas são refeitos em segundo plano ao abrir o app.
-- **Limite de IA por casa:** por mês (fuso de Brasília), 300 mensagens com o Nuke, 100 leituras de foto (notas e saúde) e 20 cardápios. As funções conferem no banco (`use_ai`) antes de chamar a IA e devolvem o uso se a IA falhar; no limite, a pessoa vê o aviso e o QR code da nota continua funcionando. A aba Família mostra o uso do mês. Para mudar os números, uma migração nova troca `ai_limit`.
+- **Limite de IA por casa:** por mês (fuso de Brasília), 300 mensagens com o Nuke, 100 leituras de foto (notas e saúde) e 20 cardápios (e, só para quem tem o consultor financeiro, 100 mensagens com ele). As funções conferem no banco (`use_ai`) antes de chamar a IA e devolvem o uso se a IA falhar; no limite, a pessoa vê o aviso e o QR code da nota continua funcionando. A aba Família mostra o uso do mês. Para mudar os números, uma migração nova troca `ai_limit`.
 - **Tempo de leitura:** 10–60 s dependendo do tamanho da nota; o app mostra uma tela de espera.
 - **Unidades:** preço é comparado na unidade da nota. Se a lista pede "3 un" de banana e as notas têm preço por kg, o comparativo usa 1 kg e avisa que a quantidade é aproximada.
 - **Avisos por notificação:** remédios, contas, documentos, tarefas e manutenções, consultas, vacinas e dicas do clima.
@@ -140,6 +143,75 @@ Identificador do app: `com.noobmon.nooky` (iOS e Android). Dá para trocar até 
 - **Gastos:** o resumo conta o que foi registrado no app (notas confirmadas, contas pagas, gastos avulsos). Nota em rascunho não entra até ser confirmada.
 - **Lembretes de remédio:** notificações locais. No Expo Go podem ter limitações; num development build (`npx expo run:android` / EAS) funcionam completos.
 - **Avisos no navegador (Web Push):** chegam com até 1 minuto de atraso e precisam de internet (no celular, o aviso é local e sai na hora, mesmo offline). Como no celular, a agenda é refeita quando o app abre. Se o serviço de push falhar por um instante, o aviso tenta de novo no minuto seguinte; vencido há mais de 1 hora (o envio ficou parado) não sai, e o serviço de push descarta o que não chegou em 1 hora (aparelho desligado). Quando o navegador troca de inscrição (chave nova ou inscrição vencida), o app refaz a agenda na nova ao abrir. Sair da conta (ou a sessão acabar) tira os avisos daquele navegador. Até 200 avisos agendados por navegador. As chaves VAPID e o segredo do agendamento ficam no Vault (`push_vapid`, `push_cron_secret`); o envio só vai para os serviços de push dos navegadores (Google, Mozilla, Apple, Microsoft).
+
+## Consultor financeiro (beta)
+
+Um Nuke só de finanças que lê os extratos dos seus bancos (conta e cartão) e conversa sobre orçamento, gastos, fluxo de caixa e dívidas. Não recomenda investimentos nem produtos financeiros.
+
+**Para quem.** Só para quem foi liberado em `beta_access`, e só na casa liberada: nas outras casas da pessoa o consultor não aparece. Os dados do banco são da pessoa, não da casa: os outros moradores (inclusive o cônjuge) não veem nada, nem pelo app nem consultando o banco (a regra de acesso exige `user_id` da pessoa, a casa aberta e a liberação).
+
+**Modo sombra.** Os extratos ficam em tabelas próprias (`fin_connections`, `fin_accounts`, `fin_transactions`), que só a função `finance` grava. O resto das Finanças não muda: Resumo, orçamento, divisão da casa e o Nuke da casa continuam contando só o que foi registrado no app. A conciliação (o que do banco já está no Nooky como nota, conta paga ou gasto, e o que só está no banco, com sugestões de par) é só para ler: no MVP nada é lançado, ligado ou alterado sozinho.
+
+**O que mostra** (Finanças → Resumo → cartão "Consultor financeiro"): saídas, entradas e previsto (lançamento ainda pendente no banco) do mês, pela data da compra; compra parcelada conta inteira no dia da compra e as próximas parcelas aparecem como comprometido. Gasto por categoria contra o orçamento, faturas dos cartões (vencimento e saldo, como o banco informa), parcelas futuras, saldos, a conciliação e avisos de banco parado. Transferência entre as suas contas, dinheiro guardado (cofrinho, caixinha, poupança, aplicação), pagamento de fatura e financiamento não contam como gasto; estorno desconta. Dali se abre a conversa com o Nuke consultor.
+
+**Privacidade.**
+
+- Os bancos chegam pela Pluggy, pelo conector **MeuPluggy**: gratuito para a pessoa ler os próprios dados (uso comercial não é permitido). O consentimento do Open Finance é dado e revogado no MeuPluggy (meu.pluggy.ai).
+- Guardado no Supabase: CPF nunca em claro (só um hash por pessoa, para reconhecer transferência entre as próprias contas) e só os 4 últimos dígitos do número da conta. Nome de quem recebeu ou pagou, CNPJ e linha do boleto ficam na tabela privada, para a conciliação.
+- A conversa vai **só para a API da Anthropic**, nunca para a OpenRouter (mesmo com a chave dela cadastrada): modelo `claude-sonnet-5-5` por padrão, trocável com `FINANCE_MODEL`. Sem `ANTHROPIC_API_KEY`, a função recusa em vez de cair em outro provedor. Pela política da API, a Anthropic não treina modelos com esse conteúdo.
+- O retrato que vai para a IA é montado no celular com os números já calculados (a IA não faz conta: só cita o que está no retrato). Ele nunca leva CPF, número de conta ou agência, linha digitável de boleto nem nome de pessoa (Pix para alguém vira "PIX para pessoa física"); saúde, doações, igreja e afins entram só como total da categoria, sem o nome do lugar.
+- A conversa fica só na memória do celular: fechar o app apaga. Os extratos também não ficam guardados no aparelho para uso sem internet.
+
+**Configurar** (uma vez):
+
+1. **Conecte os bancos no MeuPluggy** ([meu.pluggy.ai](https://meu.pluggy.ai)), cada um pela autorização do Open Finance.
+2. **Crie a aplicação na Pluggy.** Crie uma conta no [Dashboard](https://dashboard.pluggy.ai); ela começa com um teste grátis de cerca de 15 dias. Faça os passos 2 e 3 para todos os bancos dentro do teste: depois dele, a lista de conectores não pode mais ser editada (e há relatos de que não dá para autorizar bancos novos). Em *Customization → Connectors*, inclua o **MeuPluggy** (categoria *Personal*); crie uma aplicação e copie o Client ID e o Client Secret.
+3. **Autorize cada banco e copie o Item ID.** No Dashboard, abra a aplicação → "Ir para Demo" → conectar conta → procure **MeuPluggy** (não o nome do banco) e autorize um banco. Repita uma vez por banco (banco, não conta: um item traz a conta e o cartão daquele banco). Em *Items*, no card de cada banco: ⋮ → "Copiar Item ID".
+4. **Cadastre os segredos e publique:**
+
+   ```bash
+   npx supabase secrets set PLUGGY_CLIENT_ID=... PLUGGY_CLIENT_SECRET=...
+   npx supabase secrets set ANTHROPIC_API_KEY=sk-ant-...   # se ainda não tiver
+   npx supabase secrets set FINANCE_MODEL=...              # opcional (padrão: claude-sonnet-5-5)
+
+   npx supabase db push
+   npx supabase functions deploy finance
+   npx supabase functions deploy nuke-finance
+   ```
+
+   Com as duas chaves de IA cadastradas, as outras funções continuam na OpenRouter: a `ANTHROPIC_API_KEY` só entra nelas com `RECEIPT_PROVIDER`, `HEALTH_PROVIDER` ou `NUKE_PROVIDER=anthropic`. Sem os segredos da Pluggy, a função `finance` responde "Pluggy não configurada".
+5. **Libere a pessoa** no SQL Editor (troque o e-mail e o nome da casa). Ela precisa ser moradora da casa; ninguém se libera pelo app. Confira antes que a busca volta uma linha só:
+
+   ```sql
+   select u.email, h.name, m.user_id, m.household_id
+   from public.household_members m
+   join auth.users u on u.id = m.user_id
+   join public.households h on h.id = m.household_id
+   where u.email = 'voce@exemplo.com' and h.name = 'Nome da casa';
+
+   insert into public.beta_access (user_id, household_id, feature)
+   select m.user_id, m.household_id, 'finance'
+   from public.household_members m
+   join auth.users u on u.id = m.user_id
+   join public.households h on h.id = m.household_id
+   where u.email = 'voce@exemplo.com' and h.name = 'Nome da casa'
+   on conflict do nothing;
+   ```
+
+   Para tirar: `delete from public.beta_access where feature = 'finance' and user_id = (select id from auth.users where email = 'voce@exemplo.com');`. Isso esconde os extratos, mas não apaga: desconecte os bancos no app antes (ou apague as linhas de `fin_connections` pelo SQL Editor; contas e lançamentos vão junto). Sair da casa tira a liberação e apaga os bancos conectados nela.
+6. **Conecte os bancos no app:** Finanças → Resumo → Consultor financeiro → Bancos conectados → Nome (ex.: "Nubank") e o Item ID colado → "Conectar banco". O servidor confere o item na Pluggy ("Não achei esse Item ID na Pluggy." quando não existe; item que já é de outra pessoa ou casa é recusado) e já faz a primeira sincronização. Colar de novo o mesmo Item ID só troca o nome. Desconectar apaga do Nooky as contas e os lançamentos daquele banco; o consentimento continua no MeuPluggy (revogue lá, se quiser). Se o consentimento vencer e você reautorizar, o Item ID pode mudar: desconecte o antigo e cole o novo.
+
+**Atualização.** Sem webhooks. Ao abrir o consultor, sincroniza se a última vez passou de 6 horas; "Atualizar" força (no máximo uma vez a cada 2 minutos por banco). A primeira sincronização de um banco puxa 365 dias; as seguintes, uma janela de 60 dias, que também tira o que sumiu da Pluggy (lançamento desfeito, previsto que virou outro). Isso traz o que a Pluggy já tem: o MeuPluggy atualiza com o banco uma vez por dia e não dá para forçar, então o extrato do dia pode só aparecer no dia seguinte.
+
+**Custos e limite.** Cada mensagem manda para o Sonnet 5.5 o retrato (até uns 8 mil caracteres) e as últimas falas: cerca de US$ 0,02 por mensagem (US$ 2 por milhão de tokens de entrada e US$ 10 de saída). Limite próprio de 100 mensagens por mês (tipo `finance` no `use_ai`), separado das 300 do Nuke da casa e que só funciona com a liberação; no uso do mês da aba Família, a linha dele só aparece para quem tem o consultor. Mudar o número é como nos outros limites: migração nova trocando `ai_limit`. A Pluggy não cobra pelo MeuPluggy.
+
+**Problemas conhecidos do MeuPluggy.**
+
+- **Inter:** a conexão pode parar de atualizar sem erro nenhum (fica "verde", dias sem lançamento novo).
+- **Santander:** os lançamentos do cartão já ficaram parados por mais de 10 dias enquanto a conta corrente seguia atualizando. O aviso olha o banco inteiro, então confira a data do último lançamento do cartão.
+- **Nubank:** há relatos de a data da fatura vir no lugar da data da compra e de parcelas sem número; nesses casos a compra fica na data que o banco mandou e as parcelas aparecem como compras separadas.
+- **Mercado Pago:** os cofrinhos não vêm pela integração; o dinheiro guardado neles fica fora dos saldos. O que entra e sai deles aparece na conta como dinheiro guardado, não como gasto.
+- **Banco parado:** o consultor avisa quando a Pluggy não atualiza um banco há mais de 2 dias ("Inter sem atualizar há 5 dias. Reautorize no MeuPluggy."), quando o item está com erro (login, consentimento vencido, esperando ação no banco) ou quando nunca sincronizou. Reautorize no MeuPluggy; se o Item ID mudar, troque no app.
 
 ## Testes
 
@@ -150,7 +222,7 @@ npm run typecheck
 npm run lint
 ```
 
-As Edge Functions são Deno: em `supabase/functions/_shared`, `parse-receipt`, `parse-health`, `leave-household` e `nfce`, rode `deno test && deno check index.ts` (em `_shared`, `deno check vision.ts`).
+As Edge Functions são Deno: em `supabase/functions/_shared`, `parse-receipt`, `parse-health`, `leave-household`, `nfce`, `finance` e `nuke-finance`, rode `deno test && deno check index.ts` (em `_shared`, `deno check *.ts`).
 
 ## Identidade visual
 
@@ -163,14 +235,14 @@ Os itens mais comprados (81, de banana a saco de lixo) têm desenho próprio em 
 ## Estrutura
 
 ```
-src/app/            telas (Expo Router): (tabs)/ Hoje, Casa, Finanças, Saúde, Família; lista/, nota/, conta/, gasto/, treino/…
+src/app/            telas (Expo Router): (tabs)/ Hoje, Casa, Finanças, Saúde, Família; lista/, nota/, conta/, gasto/, treino/, consultor/…
 src/domain/         regras de negócio puras e testadas (sem React, sem Supabase)
 src/data/           consultas e mutações (React Query + Supabase)
 src/features/       blocos de tela maiores (painéis da Casa, da Saúde e das Finanças, leitor de nota, importação de planos)
 src/ui/             componentes visuais, tema claro/escuro e ilustrações
 src/lib/            cliente Supabase, sessão/família, lembretes
 supabase/migrations banco de dados e políticas de acesso
-supabase/functions  parse-receipt (nota → itens), parse-health (ficha, dieta, exame → dados), nuke (assistente), leave-household (sair da casa; apaga as fotos de casas apagadas, também de hora em hora pelo pg_cron), nfce (nota pelo QR code, lida na Sefaz); _shared/vision.ts e _shared/chat.ts falam com a IA
+supabase/functions  parse-receipt (nota → itens), parse-health (ficha, dieta, exame → dados), nuke (assistente), leave-household (sair da casa; apaga as fotos de casas apagadas, também de hora em hora pelo pg_cron), nfce (nota pelo QR code, lida na Sefaz), finance (extratos dos bancos pela Pluggy, beta) e nuke-finance (consultor financeiro, beta, só Anthropic); _shared/vision.ts e _shared/chat.ts falam com a IA, _shared/pluggy.ts com a Pluggy
 scripts/db/         teste local do banco
 ```
 

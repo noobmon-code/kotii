@@ -115,6 +115,8 @@ function AppNavigator() {
           <Stack.Screen name="gasto/[id]" options={{ title: 'Gasto', presentation: 'modal' }} />
           <Stack.Screen name="imposto-de-renda" options={{ title: 'Despesas médicas (IR)' }} />
           <Stack.Screen name="nuke" options={{ headerShown: false, presentation: 'modal' }} />
+          <Stack.Screen name="consultor/index" options={{ title: 'Consultor (beta)' }} />
+          <Stack.Screen name="consultor/conversa" options={{ headerShown: false, presentation: 'modal' }} />
         </Stack.Protected>
       </Stack>
     </ThemeProvider>

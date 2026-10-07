@@ -1910,4 +1910,322 @@ begin
   assert public.request_household_file_cleanup() is null, 'empty queue: nothing to call';
 end $$;
 
+-- ---------------------------------------------------------------------------
+\echo '• consultor financeiro (beta): liberação, dados do banco privados e limite da IA'
+-- Kátia tem a liberação na Casa da Kátia (e outra casa sem ela); Léo mora com
+-- ela sem liberação; Mara tem a liberação na casa dela.
+\set user_k '00000000-0000-0000-0000-000000000014'
+\set user_l '00000000-0000-0000-0000-000000000015'
+\set user_m '00000000-0000-0000-0000-000000000016'
+reset role;
+insert into auth.users (id) values (:'user_k'), (:'user_l'), (:'user_m');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_k', false) \gset
+select (public.create_household('Casa da Kátia', 'Kátia')).invite_code as invite_k \gset
+select (public.create_household('Casa de praia da Kátia', 'Kátia')).id as hh_k2 \gset
+select set_config('request.jwt.claim.sub', :'user_l', false) \gset
+select public.join_household(:'invite_k', 'Léo') \gset
+select set_config('request.jwt.claim.sub', :'user_m', false) \gset
+select (public.create_household('Casa da Mara', 'Mara')).id as hh_m \gset
+reset role;
+select id as hh_k from public.households where name = 'Casa da Kátia' \gset
+select set_config('test.hh_k', :'hh_k', false) \gset
+select set_config('test.hh_k2', :'hh_k2', false) \gset
+select set_config('test.hh_m', :'hh_m', false) \gset
+
+-- Liberação manual (editor SQL), só para moradora da casa.
+insert into public.beta_access (user_id, household_id, feature) values
+  (:'user_k', :'hh_k', 'finance'),
+  (:'user_m', :'hh_m', 'finance');
+do $$
+begin
+  begin
+    insert into public.beta_access (user_id, household_id, feature)
+    values ('00000000-0000-0000-0000-000000000016', current_setting('test.hh_k')::uuid, 'finance');
+    raise exception 'FAIL: granted the beta outside the household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    insert into public.beta_access (user_id, household_id, feature)
+    values ('00000000-0000-0000-0000-000000000014', current_setting('test.hh_k')::uuid, 'outra');
+    raise exception 'FAIL: granted an unknown feature';
+  exception when check_violation then null;
+  end;
+end $$;
+
+-- A função finance grava com a chave de serviço.
+set role service_role;
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+  hm uuid := current_setting('test.hh_m')::uuid;
+  k uuid := '00000000-0000-0000-0000-000000000014';
+  l uuid := '00000000-0000-0000-0000-000000000015';
+  m uuid := '00000000-0000-0000-0000-000000000016';
+  doc_hash text := encode(sha256(convert_to(k || ':12345678909', 'UTF8')), 'hex');
+begin
+  insert into public.fin_connections (id, user_id, household_id, label, pluggy_item_id, status) values
+    ('00000000-0000-0000-0000-0000000000c1', k, hk, 'Nubank', 'item-k-nubank', 'UPDATED'),
+    ('00000000-0000-0000-0000-0000000000c2', k, hk, 'Inter', 'item-k-inter', 'UPDATED'),
+    ('00000000-0000-0000-0000-0000000000c3', l, hk, 'Banco do Léo', 'item-l', 'UPDATED'),
+    ('00000000-0000-0000-0000-0000000000c4', m, hm, 'Santander', 'item-m', 'UPDATED');
+  insert into public.fin_accounts
+    (id, connection_id, user_id, household_id, pluggy_account_id, type, name, number_last4, owner_doc_hash, balance)
+  values
+    ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000c1', k, hk, 'acc-k-nubank', 'BANK', 'Conta', '1234', doc_hash, 1500),
+    ('00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000c2', k, hk, 'acc-k-inter', 'CREDIT', 'Cartão', '9876', null, 320.50),
+    ('00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-0000000000c3', l, hk, 'acc-l', 'BANK', 'Conta', null, null, 10),
+    ('00000000-0000-0000-0000-0000000000a4', '00000000-0000-0000-0000-0000000000c4', m, hm, 'acc-m', 'BANK', 'Conta', null, null, 10);
+  insert into public.fin_transactions
+    (account_id, user_id, household_id, pluggy_transaction_id, status, direction, amount, occurred_on, description,
+     counterparty_doc_kind, counterparty_doc_hash)
+  values
+    ('00000000-0000-0000-0000-0000000000a1', k, hk, 'tx-k-1', 'POSTED', 'DEBIT', 45.90, '2026-10-01', 'Padaria', null, null),
+    ('00000000-0000-0000-0000-0000000000a1', k, hk, 'tx-k-2', 'PENDING', 'DEBIT', 120, '2026-10-02', 'PIX enviado', 'CPF', doc_hash),
+    ('00000000-0000-0000-0000-0000000000a2', k, hk, 'tx-k-3', 'POSTED', 'DEBIT', 89.90, '2026-10-03', 'Mercado', null, null),
+    ('00000000-0000-0000-0000-0000000000a3', l, hk, 'tx-l-1', 'POSTED', 'DEBIT', 15, '2026-10-03', 'Café', null, null),
+    ('00000000-0000-0000-0000-0000000000a4', m, hm, 'tx-m-1', 'POSTED', 'CREDIT', 3000, '2026-10-05', 'Salário', null, null);
+
+  -- Cada linha é de uma pessoa numa casa em que ela mora, do começo ao fim.
+  begin
+    insert into public.fin_connections (user_id, household_id, label, pluggy_item_id) values (m, hk, 'Intrusa', 'item-x');
+    raise exception 'FAIL: connection for someone outside the household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    insert into public.fin_connections (user_id, household_id, label, pluggy_item_id) values (m, hm, 'Nubank', 'item-k-nubank');
+    raise exception 'FAIL: the same Pluggy item twice';
+  exception when unique_violation then null;
+  end;
+  begin
+    insert into public.fin_accounts (connection_id, user_id, household_id, pluggy_account_id, type)
+    values ('00000000-0000-0000-0000-0000000000c1', m, hm, 'acc-x', 'BANK');
+    raise exception 'FAIL: account under someone else''s connection';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    insert into public.fin_transactions
+      (account_id, user_id, household_id, pluggy_transaction_id, status, direction, amount, occurred_on, description)
+    values ('00000000-0000-0000-0000-0000000000a1', l, hk, 'tx-x', 'POSTED', 'DEBIT', 1, '2026-10-01', 'X');
+    raise exception 'FAIL: transaction under someone else''s account';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    insert into public.fin_connections (user_id, household_id, label, pluggy_item_id) values (k, hk, '   ', 'item-y');
+    raise exception 'FAIL: blank label';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.fin_connections (user_id, household_id, label, pluggy_item_id) values (k, hk, repeat('x', 41), 'item-y');
+    raise exception 'FAIL: label longer than 40';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.fin_transactions
+      (account_id, user_id, household_id, pluggy_transaction_id, status, direction, amount, occurred_on, description)
+    values ('00000000-0000-0000-0000-0000000000a1', k, hk, 'tx-x', 'POSTED', 'DEBIT', -1, '2026-10-01', 'X');
+    raise exception 'FAIL: negative amount (the direction says the sign)';
+  exception when check_violation then null;
+  end;
+  -- Documentos de pessoas nunca ficam crus.
+  begin
+    update public.fin_accounts set number_last4 = '12345678' where id = '00000000-0000-0000-0000-0000000000a1';
+    raise exception 'FAIL: stored the whole account number';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.fin_accounts set owner_doc_hash = '12345678909' where id = '00000000-0000-0000-0000-0000000000a1';
+    raise exception 'FAIL: stored the owner CPF';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.fin_transactions set counterparty_doc_hash = '12345678909' where pluggy_transaction_id = 'tx-k-2';
+    raise exception 'FAIL: stored a raw CPF as the hash';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.fin_transactions set counterparty_cnpj = '12345678909' where pluggy_transaction_id = 'tx-k-2';
+    raise exception 'FAIL: stored a CPF in counterparty_cnpj';
+  exception when check_violation then null;
+  end;
+end $$;
+
+-- Anônimo: nada.
+set role anon;
+do $$
+begin
+  begin
+    perform public.has_beta('finance');
+    raise exception 'FAIL: anon called has_beta';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform count(*) from public.fin_transactions;
+    raise exception 'FAIL: anon read bank transactions';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.fin_remove_connection('00000000-0000-0000-0000-0000000000c1');
+    raise exception 'FAIL: anon removed a connection';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- Kátia, na casa com a liberação: vê só os próprios dados e não grava nada.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_k', false) \gset
+do $$
+declare
+  r record;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_k'))::text, true);
+  assert public.has_beta('finance'), 'K has the beta in this household';
+  assert not public.has_beta('outra'), 'only the granted feature';
+  assert (select count(*) from public.beta_access) = 1, 'K sees her grant';
+  assert (select array_agg(label order by label) from public.fin_connections) = array['Inter', 'Nubank'], 'K sees her banks only';
+  assert (select count(*) from public.fin_accounts) = 2, 'K sees her accounts only';
+  assert (select array_agg(pluggy_transaction_id order by pluggy_transaction_id) from public.fin_transactions)
+    = array['tx-k-1', 'tx-k-2', 'tx-k-3'], 'K sees her transactions only';
+  begin
+    insert into public.fin_connections (user_id, household_id, label, pluggy_item_id)
+    values (auth.uid(), public.current_household_id(), 'Itaú', 'item-k-app');
+    raise exception 'FAIL: the app inserted a connection';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update public.fin_transactions set amount = 0;
+    raise exception 'FAIL: the app changed a transaction';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from public.fin_accounts;
+    raise exception 'FAIL: the app deleted an account';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.beta_access (user_id, household_id, feature)
+    values (auth.uid(), current_setting('test.hh_k2')::uuid, 'finance');
+    raise exception 'FAIL: granted herself the beta';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.fin_remove_connection('00000000-0000-0000-0000-0000000000c3');
+    raise exception 'FAIL: removed the connection of another member';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.fin_remove_connection('00000000-0000-0000-0000-0000000000c4');
+    raise exception 'FAIL: removed a connection of another household';
+  exception when no_data_found then null;
+  end;
+
+  select * into r from public.use_ai('finance');
+  assert r.allowed and r.used = 1 and r.lim = 100, 'the finance chat counts on its own quota';
+  assert public.ai_limit('finance') = 100, 'finance limit';
+  assert (select used from public.ai_usage_summary() where kind = 'finance') = 1, 'K sees the finance usage';
+  assert (select count(*) from public.ai_usage_summary()) = 4, 'K sees the four kinds';
+  assert (select used from public.ai_usage_summary() where kind = 'chat') = 0, 'the household chat quota is untouched';
+
+  -- A outra casa dela, sem liberação: nada do banco nem do consultor.
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_k2'))::text, true);
+  assert not public.has_beta('finance'), 'no beta in the other household';
+  assert (select count(*) from public.fin_connections) = 0, 'no banks in the other household';
+  assert (select count(*) from public.fin_accounts) = 0, 'no accounts in the other household';
+  assert (select count(*) from public.fin_transactions) = 0, 'no transactions in the other household';
+  begin
+    perform public.fin_remove_connection('00000000-0000-0000-0000-0000000000c2');
+    raise exception 'FAIL: removed a connection from a household without the beta';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.use_ai('finance');
+    raise exception 'FAIL: used the finance chat without the beta';
+  exception when insufficient_privilege then null;
+  end;
+  assert not exists (select 1 from public.ai_usage_summary() where kind = 'finance'), 'no finance row without the beta';
+end $$;
+
+-- Léo mora na mesma casa, sem liberação: não vê nada, nem o que seria dele.
+select set_config('request.jwt.claim.sub', :'user_l', false) \gset
+do $$
+begin
+  assert public.current_household_id() = current_setting('test.hh_k')::uuid, 'L lives with K';
+  assert not public.has_beta('finance'), 'L has no beta';
+  assert (select count(*) from public.beta_access) = 0, 'L does not see K''s grant';
+  assert (select count(*) from public.fin_connections) = 0, 'L sees no bank, not even his own';
+  assert (select count(*) from public.fin_accounts) = 0, 'L sees no account';
+  assert (select count(*) from public.fin_transactions) = 0, 'L sees no transaction';
+  begin
+    perform public.fin_remove_connection('00000000-0000-0000-0000-0000000000c3');
+    raise exception 'FAIL: removed a connection without the beta';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.fin_remove_connection('00000000-0000-0000-0000-0000000000c1');
+    raise exception 'FAIL: removed K''s connection';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.use_ai('finance');
+    raise exception 'FAIL: L used the finance chat';
+  exception when insufficient_privilege then null;
+  end;
+  assert (select array_agg(kind order by kind) from public.ai_usage_summary()) = array['chat', 'menu', 'photo'],
+    'L sees only the household kinds';
+  assert not exists (select 1 from public.ai_usage where kind = 'finance'), 'L does not see K''s finance usage';
+  assert (select u.allowed from public.use_ai('chat') u), 'the household chat still works for L';
+end $$;
+
+-- Mara, outra casa com liberação: só o banco dela, cota própria.
+select set_config('request.jwt.claim.sub', :'user_m', false) \gset
+do $$
+begin
+  assert public.has_beta('finance'), 'M has the beta in her household';
+  assert (select array_agg(label) from public.fin_connections) = array['Santander'], 'M sees only her bank';
+  assert (select array_agg(pluggy_transaction_id) from public.fin_transactions) = array['tx-m-1'], 'M sees only her transactions';
+  begin
+    perform public.fin_remove_connection('00000000-0000-0000-0000-0000000000c1');
+    raise exception 'FAIL: M removed K''s connection';
+  exception when no_data_found then null;
+  end;
+  assert (select used from public.ai_usage_summary() where kind = 'finance') = 0, 'M has her own finance quota';
+end $$;
+
+-- Kátia desconecta o Inter: contas e lançamentos vão junto.
+select set_config('request.jwt.claim.sub', :'user_k', false) \gset
+do $$
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_k'))::text, true);
+  perform public.fin_remove_connection('00000000-0000-0000-0000-0000000000c2');
+  assert (select array_agg(label) from public.fin_connections) = array['Nubank'], 'Inter removed';
+  assert (select array_agg(pluggy_account_id) from public.fin_accounts) = array['acc-k-nubank'], 'its account went along';
+  assert (select count(*) from public.fin_transactions) = 2, 'and its transactions';
+  begin
+    perform public.fin_remove_connection('00000000-0000-0000-0000-0000000000c2');
+    raise exception 'FAIL: removed the same connection twice';
+  exception when no_data_found then null;
+  end;
+end $$;
+
+-- Sair da casa leva junto a liberação e os dados do banco daquela casa.
+select set_config('request.jwt.claim.sub', :'user_l', false) \gset
+do $$
+begin
+  assert (public.leave_household(current_setting('test.hh_k')::uuid))->>'status' = 'left', 'L left';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_k', false) \gset
+do $$
+begin
+  assert (public.leave_household(current_setting('test.hh_k')::uuid, true))->>'status' = 'deleted', 'K closed her household';
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.fin_connections where pluggy_item_id in ('item-l', 'item-k-nubank')), 'connections left with the household';
+  assert not exists (select 1 from public.fin_accounts where pluggy_account_id in ('acc-l', 'acc-k-nubank', 'acc-k-inter')), 'accounts too';
+  assert not exists (select 1 from public.fin_transactions where pluggy_transaction_id like 'tx-k-%' or pluggy_transaction_id like 'tx-l-%'), 'transactions too';
+  assert (select array_agg(user_id) from public.beta_access) = array['00000000-0000-0000-0000-000000000016'::uuid], 'only M keeps a grant';
+  assert exists (select 1 from public.fin_transactions where pluggy_transaction_id = 'tx-m-1'), 'M keeps her data';
+end $$;
+
 \echo 'OK — todos os testes do banco passaram'

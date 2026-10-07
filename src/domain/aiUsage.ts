@@ -1,12 +1,14 @@
 // Uso da IA no mês (limite por casa, conferido no servidor): o que mostrar
 // na aba Família.
 
-export type AiKind = 'chat' | 'photo' | 'menu';
+// 'finance' só vem para quem tem o consultor financeiro (beta) na casa aberta.
+export type AiKind = 'chat' | 'photo' | 'menu' | 'finance';
 
 const LABELS: Record<AiKind, string> = {
   chat: 'Mensagens com o Nuke',
   photo: 'Leituras de foto (notas e saúde)',
   menu: 'Cardápios montados pelo Nuke',
+  finance: 'Mensagens com o consultor financeiro',
 };
 
 export interface AiUsageRow {

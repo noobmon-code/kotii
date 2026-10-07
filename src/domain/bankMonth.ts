@@ -1,0 +1,383 @@
+// Consultor financeiro (beta): lançamentos do banco viram compras na visão
+// "data da compra". Compra no cartão conta no dia da compra (não no da
+// fatura); compra parcelada conta inteira nesse dia, e as parcelas que
+// faltam aparecem como comprometidas nos meses seguintes.
+
+import type { FinAccount, FinConnection, FinTransaction } from '@/lib/types';
+
+import { financeCategoryOfBank, isSensitiveBankTx, normalizeBankText } from './bankCategories';
+import { type BankKind, classifyBankTransaction, ownerHashes } from './bankClassify';
+import { addMonths, diffDays } from './dates';
+import { type FinanceCategory, monthRange, shiftMonth } from './finance';
+
+export interface BankPurchase {
+  /** Estável entre sincronizações: "tx-<id>" ou "parc-<id da primeira parcela vista>". */
+  key: string;
+  /** Data da compra (YYYY-MM-DD). */
+  date: string;
+  /** Em R$; na compra parcelada, o valor inteiro. */
+  amount: number;
+  description: string;
+  merchantName: string | null;
+  merchantCnpj: string | null;
+  category: FinanceCategory;
+  kind: BankKind;
+  /** Ainda pendente no banco: aparece como "previsto". */
+  pending: boolean;
+  accountId: string;
+  installments: { seen: number[]; total: number; parcel: number } | null;
+  txIds: string[];
+  /** PIX/transferência de ou para uma pessoa (CPF): o nome não vai para a IA. */
+  personTransfer: boolean;
+  /** Saúde, doações, religião...: só entra somado na categoria. */
+  sensitive: boolean;
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** Dia em que o lançamento conta: a data da compra no cartão, senão a do banco. */
+export function effectiveDate(tx: Pick<FinTransaction, 'purchase_on' | 'occurred_on'>): string {
+  return tx.purchase_on ?? tx.occurred_on;
+}
+
+// Maquininhas e carteiras que vêm antes do "*" na fatura ("MERCADOPAGO*LOJA").
+const ACQUIRERS = new Set([
+  'mercadopago', 'mercado pago', 'mp', 'mpago', 'mercadolivre', 'mercado livre', 'ml', 'meli', 'pag', 'pagseguro',
+  'pagbank', 'ps', 'picpay', 'pp', 'paypal', 'ebanx', 'ebn', 'ifd', 'sumup', 'stone', 'ton', 'cielo', 'getnet',
+  'rede', 'iz', 'izettle', 'dl', 'dlocal', 'pg', 'pagarme', 'pagar me', 'ec', 'stripe', 'adyen', 'zp', 'zoop',
+  'asaas', 'infinitepay', 'ip', 'ame', 'sq', 'smp',
+]);
+
+/** Espaços e pontuação solta nas pontas. */
+function tidy(text: string): string {
+  return text
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s\-–·(|]+|[\s\-–·(|]+$/g, '')
+    .trim();
+}
+
+// "Parcela 2/10", "PARC 02/10", "2/10", "2 de 10".
+const PARCEL_MARKERS = [
+  /[-–(]?\s*\bparc(?:ela)?\.?\s*\d{1,2}\s*(?:\/|de)\s*\d{1,2}\s*\)?/gi,
+  /[-–(]?\s*\b\d{1,2}\s*\/\s*\d{1,2}\b\s*\)?/g,
+  /[-–(]?\s*\b\d{1,2}\s+de\s+\d{1,2}\b\s*\)?/gi,
+];
+
+/** Descrição sem a marca da parcela, igual em todas as parcelas da compra. */
+export function stripParcelMarker(description: string): string {
+  return tidy(PARCEL_MARKERS.reduce((text, re) => text.replace(re, ' '), description));
+}
+
+/** Loja depois do "*" da maquininha ("MERCADOPAGO*LOJA" -> "LOJA"); null se não houver. */
+export function merchantFromDescriptor(description: string): string | null {
+  const match = description.match(/^\s*([^*]{1,20}?)\s*\*\s*(.+)$/);
+  if (!match || !ACQUIRERS.has(normalizeBankText(match[1]))) return null;
+  return tidy(match[2]) || null;
+}
+
+/** Nome da loja: o da Pluggy, a empresa do PIX (CNPJ) ou o que vem depois do "*". */
+function merchantNameOf(tx: FinTransaction, description: string): string | null {
+  const company = tx.counterparty_doc_kind === 'CNPJ' ? tx.counterparty_name : null;
+  return tx.merchant_name ?? company ?? merchantFromDescriptor(description);
+}
+
+const isParcel = (tx: FinTransaction) =>
+  tx.direction === 'DEBIT' &&
+  tx.installment_number != null &&
+  tx.total_installments != null &&
+  tx.total_installments > 1 &&
+  tx.installment_number >= 1 &&
+  tx.installment_number <= tx.total_installments;
+
+/** Lançamentos do banco -> compras. Lançamentos apagados na Pluggy ficam de fora. */
+export function groupPurchases(
+  txs: FinTransaction[],
+  accounts: FinAccount[],
+  ownerDocHashes: Iterable<string> = ownerHashes(accounts),
+): BankPurchase[] {
+  const accountsById = new Map(accounts.map((a) => [a.id, a]));
+  const owners = new Set(ownerDocHashes);
+  const purchases: BankPurchase[] = [];
+  const parcels: Parcel[] = [];
+
+  for (const tx of txs) {
+    if (tx.deleted_at) continue;
+    const kind = classifyBankTransaction(tx, accountsById.get(tx.account_id), owners);
+    if (isParcel(tx)) {
+      parcels.push(toParcel(tx, kind));
+      continue;
+    }
+    const description = tidy(tx.description);
+    purchases.push({
+      key: `tx-${tx.id}`,
+      date: effectiveDate(tx),
+      amount: Number(tx.amount),
+      description,
+      merchantName: merchantNameOf(tx, description),
+      merchantCnpj: tx.merchant_cnpj ?? tx.counterparty_cnpj,
+      category: financeCategoryOfBank(tx),
+      kind,
+      pending: tx.status === 'PENDING',
+      accountId: tx.account_id,
+      installments: null,
+      txIds: [tx.id],
+      personTransfer: tx.counterparty_doc_kind === 'CPF' && (kind === 'spending' || kind === 'income' || kind === 'refund'),
+      sensitive: isSensitiveBankTx(tx),
+    });
+  }
+
+  for (const group of groupParcels(parcels)) purchases.push(purchaseOfGroup(group));
+  return purchases.sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount || a.key.localeCompare(b.key));
+}
+
+// ---------------------------------------------------------------------------
+// Parcelas
+
+interface Parcel {
+  tx: FinTransaction;
+  kind: BankKind;
+  number: number;
+  total: number;
+  amount: number;
+  /** Data da compra: a do banco ou, sem ela, estimada pela parcela. */
+  anchor: string;
+  /** A data veio do banco (não foi estimada). */
+  exact: boolean;
+  /** Conta + total de parcelas + loja (sem a marca da parcela). */
+  key: string;
+}
+
+/**
+ * Sem a data da compra (o Nubank às vezes não manda), a parcela n caiu n-1
+ * meses depois da compra. Dias de fatura variam, então a estimativa aceita
+ * alguns dias de folga ao juntar.
+ */
+const ESTIMATE_SLACK_DAYS = 4;
+
+function toParcel(tx: FinTransaction, kind: BankKind): Parcel {
+  const number = tx.installment_number as number;
+  const total = tx.total_installments as number;
+  const exact = tx.purchase_on != null;
+  return {
+    tx,
+    kind,
+    number,
+    total,
+    amount: Number(tx.amount),
+    anchor: tx.purchase_on ?? addMonths(tx.occurred_on, -(number - 1)),
+    exact,
+    key: `${tx.account_id}|${total}|${normalizeBankText(stripParcelMarker(tx.description))}`,
+  };
+}
+
+interface Group {
+  key: string;
+  anchor: string;
+  exact: boolean;
+  /** Valor de referência da parcela (para comparar com a próxima). */
+  parcel: number;
+  members: Parcel[];
+}
+
+/**
+ * Junta as parcelas de cada compra. Duas compras iguais (mesma loja, dia,
+ * valor e número de parcelas) viram duas: um número de parcela repetido abre
+ * outra compra. O valor pode variar uns centavos (a sobra da divisão costuma
+ * ir na primeira parcela).
+ */
+function groupParcels(parcels: Parcel[]): Group[] {
+  const sorted = [...parcels].sort(
+    (a, b) => a.anchor.localeCompare(b.anchor) || a.number - b.number || a.tx.id.localeCompare(b.tx.id),
+  );
+  const groups: Group[] = [];
+  for (const p of sorted) {
+    const group = groups.find(
+      (g) =>
+        g.key === p.key &&
+        !g.members.some((m) => m.number === p.number) &&
+        Math.abs(g.parcel - p.amount) <= 0.01 * p.total + 1e-9 &&
+        Math.abs(diffDays(g.anchor, p.anchor)) <= (g.exact && p.exact ? 0 : ESTIMATE_SLACK_DAYS),
+    );
+    if (!group) {
+      groups.push({ key: p.key, anchor: p.anchor, exact: p.exact, parcel: p.amount, members: [p] });
+      continue;
+    }
+    group.members.push(p);
+    if (!group.exact && p.exact) {
+      group.anchor = p.anchor;
+      group.exact = true;
+    }
+  }
+  return groups;
+}
+
+function purchaseOfGroup(group: Group): BankPurchase {
+  const members = [...group.members].sort((a, b) => a.number - b.number);
+  const first = members[0];
+  const last = members[members.length - 1];
+  const total = first.total;
+  // A parcela "normal" é a última vista; a primeira às vezes leva a sobra dos centavos.
+  const parcel = last.amount;
+  const seenSum = members.reduce((sum, m) => sum + m.amount, 0);
+  const description = stripParcelMarker(first.tx.description);
+  return {
+    key: `parc-${first.tx.id}`,
+    // Estimada, vale a da parcela mais antiga: é a que caiu mais perto da compra.
+    date: group.exact ? group.anchor : first.anchor,
+    amount: round2(seenSum + (total - members.length) * parcel),
+    description,
+    merchantName: merchantNameOf(first.tx, description),
+    merchantCnpj: first.tx.merchant_cnpj ?? first.tx.counterparty_cnpj,
+    category: financeCategoryOfBank(first.tx),
+    kind: first.kind,
+    pending: members.every((m) => m.tx.status === 'PENDING'),
+    accountId: first.tx.account_id,
+    installments: { seen: members.map((m) => m.number), total, parcel },
+    txIds: members.map((m) => m.tx.id),
+    personTransfer: false,
+    sensitive: members.some((m) => isSensitiveBankTx(m.tx)),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Resumo do mês
+
+export interface BankMonthSummary {
+  /** Saídas do mês já sem os estornos. */
+  spending: number;
+  income: number;
+  refunds: number;
+  /** Parte das saídas ainda pendente no banco ("previsto"). */
+  pending: number;
+  /** Saídas por categoria (sem os estornos), da maior para a menor. */
+  byCategory: { category: FinanceCategory; amount: number }[];
+  /** Quantas compras (saídas) no período. */
+  count: number;
+}
+
+/**
+ * Soma das compras com data em [start, end). Transferência para si mesma,
+ * aplicação, fatura paga e dívida contratada ficam de fora das saídas; o
+ * estorno abate da categoria da compra.
+ */
+export function summarizeRange(purchases: BankPurchase[], range: { start: string; end: string }): BankMonthSummary {
+  const inRange = purchases.filter((p) => p.date >= range.start && p.date < range.end);
+  const byCategory = new Map<FinanceCategory, number>();
+  let gross = 0;
+  let income = 0;
+  let refunds = 0;
+  let pending = 0;
+  let count = 0;
+  for (const p of inRange) {
+    if (p.kind === 'spending') {
+      gross += p.amount;
+      count += 1;
+      if (p.pending) pending += p.amount;
+      byCategory.set(p.category, (byCategory.get(p.category) ?? 0) + p.amount);
+    } else if (p.kind === 'refund') {
+      refunds += p.amount;
+      byCategory.set(p.category, (byCategory.get(p.category) ?? 0) - p.amount);
+    } else if (p.kind === 'income') {
+      income += p.amount;
+    }
+  }
+  return {
+    spending: Math.max(0, round2(gross - refunds)),
+    income: round2(income),
+    refunds: round2(refunds),
+    pending: round2(pending),
+    byCategory: [...byCategory]
+      .map(([category, amount]) => ({ category, amount: round2(amount) }))
+      .filter((c) => c.amount > 0)
+      .sort((a, b) => b.amount - a.amount),
+    count,
+  };
+}
+
+/** Resumo de um mês ("YYYY-MM") pela data da compra. */
+export function monthSummary(purchases: BankPurchase[], month: string): BankMonthSummary {
+  return summarizeRange(purchases, monthRange(month));
+}
+
+export interface InstallmentMonth {
+  month: string;
+  amount: number;
+  parcels: { key: string; description: string; number: number; total: number; amount: number }[];
+}
+
+/**
+ * Parcelas de compras já feitas que caem em cada mês a partir de `fromMonth`
+ * (a parcela n cai n-1 meses depois do mês da compra). Inclui dívida
+ * parcelada no cartão; meses sem parcela vêm com zero.
+ */
+export function futureInstallments(purchases: BankPurchase[], fromMonth: string, months = 6): InstallmentMonth[] {
+  const out: InstallmentMonth[] = Array.from({ length: months }, (_, i) => ({
+    month: shiftMonth(fromMonth, i),
+    amount: 0,
+    parcels: [],
+  }));
+  for (const p of purchases) {
+    if (!p.installments || (p.kind !== 'spending' && p.kind !== 'financing')) continue;
+    const firstMonth = p.date.slice(0, 7);
+    for (let n = 1; n <= p.installments.total; n++) {
+      const slot = out.find((m) => m.month === shiftMonth(firstMonth, n - 1));
+      if (!slot) continue;
+      slot.parcels.push({ key: p.key, description: p.description, number: n, total: p.installments.total, amount: p.installments.parcel });
+      slot.amount = round2(slot.amount + p.installments.parcel);
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Contas e faturas
+
+/**
+ * Nome curto de cada conta: rótulo do banco + "conta", "poupança" ou
+ * "cartão" ("Nubank conta", "Nubank cartão"). Repetidos ganham número.
+ */
+export function accountLabels(
+  accounts: Pick<FinAccount, 'id' | 'connection_id' | 'type' | 'subtype'>[],
+  connections: Pick<FinConnection, 'id' | 'label'>[],
+): Map<string, string> {
+  const labelOf = new Map(connections.map((c) => [c.id, c.label.trim()]));
+  const seen = new Map<string, number>();
+  const out = new Map<string, string>();
+  for (const a of accounts) {
+    const kind = a.type === 'CREDIT' ? 'cartão' : a.subtype === 'SAVINGS_ACCOUNT' ? 'poupança' : 'conta';
+    const base = `${labelOf.get(a.connection_id) ?? 'Banco'} ${kind}`;
+    const n = (seen.get(base) ?? 0) + 1;
+    seen.set(base, n);
+    out.set(a.id, n === 1 ? base : `${base} ${n}`);
+  }
+  return out;
+}
+
+export interface CardBill {
+  accountId: string;
+  label: string;
+  /** Fatura atual, como o banco informa (saldo do cartão). */
+  amount: number | null;
+  dueDate: string | null;
+  closeDate: string | null;
+  minimumPayment: number | null;
+  creditLimit: number | null;
+  availableCredit: number | null;
+}
+
+/** Faturas dos cartões, do jeito que o banco informa (sem estimativa), pela data de vencimento. */
+export function cardBills(accounts: FinAccount[], labels: Map<string, string>): CardBill[] {
+  return accounts
+    .filter((a) => a.type === 'CREDIT')
+    .map((a) => ({
+      accountId: a.id,
+      label: labels.get(a.id) ?? 'Cartão',
+      amount: a.balance,
+      dueDate: a.bill_due_date,
+      closeDate: a.bill_close_date,
+      minimumPayment: a.minimum_payment,
+      creditLimit: a.credit_limit,
+      availableCredit: a.available_credit,
+    }))
+    .sort((a, b) => (a.dueDate ?? '9999').localeCompare(b.dueDate ?? '9999') || a.label.localeCompare(b.label));
+}

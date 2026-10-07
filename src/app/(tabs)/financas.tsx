@@ -2,7 +2,9 @@ import { useQueryClient } from '@tanstack/react-query';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 
+import { useBeta } from '@/data/financeBeta';
 import { BillsPanel } from '@/features/finance/BillsPanel';
+import { ConsultorCard } from '@/features/finance/ConsultorCard';
 import { FinanceSummaryPanel } from '@/features/finance/FinanceSummaryPanel';
 import { ReceiptsPanel } from '@/features/finance/ReceiptsPanel';
 import { PageTitle, Screen, Segmented } from '@/ui/primitives';
@@ -21,6 +23,8 @@ export default function FinanceScreen() {
   const { aba } = useLocalSearchParams<{ aba?: string }>();
   const tab: Tab = aba && (TABS as string[]).includes(aba) ? (aba as Tab) : 'resumo';
   const setTab = (value: Tab) => router.setParams({ aba: value });
+  // Consultor financeiro (beta): só para quem tem a liberação nesta casa.
+  const consultor = useBeta('finance').data === true;
 
   const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
@@ -43,6 +47,7 @@ export default function FinanceScreen() {
           { value: 'notas', label: 'Notas' },
         ]}
       />
+      {tab === 'resumo' && consultor ? <ConsultorCard /> : null}
       {tab === 'resumo' ? <FinanceSummaryPanel /> : null}
       {tab === 'contas' ? <BillsPanel /> : null}
       {tab === 'notas' ? <ReceiptsPanel /> : null}
