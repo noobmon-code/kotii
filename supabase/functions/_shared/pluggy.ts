@@ -46,6 +46,11 @@ export interface PluggyItem {
   error?: { code?: string | null; message?: string | null; providerMessage?: string | null } | null;
   /** Última vez que a Pluggy buscou os dados no banco. */
   lastUpdatedAt?: string | null;
+  /**
+   * Só em PARTIAL_SUCCESS: o que veio de cada produto. Lançamentos que não
+   * vieram nesta vez ficam com isUpdated false e a data da última vez que vieram.
+   */
+  statusDetail?: { transactions?: { isUpdated?: boolean | null; lastUpdatedAt?: string | null } | null } | null;
   connector?: { id?: number; name?: string | null } | null;
 }
 

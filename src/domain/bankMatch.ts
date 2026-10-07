@@ -91,7 +91,9 @@ function candidate(purchase: BankPurchase, record: NookyRecord): Omit<Candidate,
     }
     return { score: 100 - days, confidence: 'media', reason: 'Mesmo valor em data próxima' };
   }
-  if (record.kind === 'nota' && sameCompany && purchase.amount > record.amount && purchase.amount <= record.amount * TIP_RATIO + 1e-9) {
+  // Gorjeta só com o CNPJ da mesma loja: na rede (mesma raiz), a nota de outra filial um pouco mais barata
+  // costuma ser outra compra (de alguém da casa, num cartão que não está conectado).
+  if (record.kind === 'nota' && sameCnpj && purchase.amount > record.amount && purchase.amount <= record.amount * TIP_RATIO + 1e-9) {
     return { score: 50 - days, confidence: 'media', reason: 'Mesma loja e valor um pouco maior: com gorjeta?' };
   }
   return null;

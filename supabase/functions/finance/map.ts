@@ -5,9 +5,9 @@
 // `${pessoa}:${dígitos}` com o segredo FIN_DOC_HASH_KEY, que só a função
 // tem: sem ele, não dá para testar os ~10^9 CPFs possíveis contra o hash), que
 // basta para reconhecer transferência para si mesma (o mesmo hash do titular
-// da conta). CPF escrito na descrição (PIX e TED costumam trazer) sai antes de
-// gravar. Da conta, só os 4 últimos dígitos do número. CNPJ é de empresa e
-// fica cru, para casar com as notas.
+// da conta). CPF escrito na descrição (PIX e TED costumam trazer) ou no nome
+// (razão social de MEI antigo) sai antes de gravar. Da conta, só os 4 últimos
+// dígitos do número. CNPJ é de empresa e fica cru, para casar com as notas.
 
 import type { PluggyAccount, PluggyParticipant, PluggyTransaction } from '../_shared/pluggy.ts';
 
@@ -157,14 +157,18 @@ export async function docHash(secret: string, userId: string, digits: string): P
   return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-// CPF escrito na descrição: "123.456.789-00", "12345678900", "CPF 123..." ou "Cp :12345678-NOME" (Inter).
+// CPF escrito na descrição: "123.456.789-00", "12345678900", "CPF 123 456 789 00", "CPF 123..." ou
+// "Cp :12345678-NOME" (Inter). Os 11 dígitos soltos podem encostar num hífen ou numa barra
+// ("12345678900-JOAO", "PIX-12345678900", "FULANO/12345678900"), mas não continuar em mais
+// números com eles ("12345678901-2", "0001-12345678900"), nem ficar no meio de uma linha de boleto.
 const CPF_PATTERNS = [
+  /\b(?:cpf|cp)\s*[:.]?\s*\d{3}[\s.\-]?\d{3}[\s.\-]?\d{3}[\s.\-]?\d{2}(?!\d)/gi,
   /\b(?:cpf|cp)\s*[:.]?\s*[\d.\-•*]*[\d•*]/gi,
   /(?<![\d.])\d{3}\.\d{3}\.\d{3}-\d{2}(?![\d])/g,
-  /(?<![\d.\-/])\d{9}-?\d{2}(?![\d\-/])/g,
+  /(?<![\d.])(?<!\d[\-/])\d{9}-?\d{2}(?!\d|[\-/]\d)/g,
 ];
 
-/** Descrição sem CPF: o documento de quem recebeu ou pagou não fica cru na tabela. */
+/** Texto sem CPF: o documento de quem recebeu ou pagou não fica cru na tabela (descrição e nomes). */
 export function withoutCpf(text: string | null): string | null {
   if (text === null) return null;
   const clean = CPF_PATTERNS.reduce((out, re) => out.replace(re, (match) => (/^c/i.test(match) ? 'CPF ***' : '***')), text);
@@ -274,9 +278,10 @@ export async function mapTransaction(
     category: text(tx.category),
     operation_type: text(tx.operationType),
     payment_method: text(payment?.paymentMethod),
-    merchant_name: text(tx.merchant?.name) ?? text(tx.merchant?.businessName),
+    // Razão social de MEI antigo traz o CPF do dono junto do nome ("MARIA SOUZA 12345678900").
+    merchant_name: withoutCpf(text(tx.merchant?.name) ?? text(tx.merchant?.businessName)),
     merchant_cnpj: merchantCnpj.length === 14 ? merchantCnpj : null,
-    counterparty_name: text(party?.name),
+    counterparty_name: withoutCpf(text(party?.name)),
     counterparty_doc_kind: doc.kind,
     counterparty_doc_hash: doc.hash,
     counterparty_cnpj: doc.cnpj,

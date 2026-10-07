@@ -4,6 +4,7 @@ import type { FinAccount, FinTransaction } from '@/lib/types';
 
 import {
   fetchAllPages,
+  financeFetchStart,
   financeScreenHref,
   financeWindowStart,
   parseSyncResult,
@@ -28,6 +29,11 @@ describe('janela do consultor', () => {
     expect(financeWindowStart('2026-10-07')).toBe('2026-08-01');
     expect(financeWindowStart('2026-01-31')).toBe('2025-11-01');
     expect(financeWindowStart('2026-02-01')).toBe('2025-12-01');
+  });
+
+  it('os lançamentos vêm desde um ciclo de fatura antes da janela (para juntar parcelas e pares da virada)', () => {
+    expect(financeFetchStart('2026-10-07')).toBe('2026-06-22');
+    expect(financeFetchStart('2026-01-31')).toBe('2025-09-22');
   });
 });
 

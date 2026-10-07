@@ -273,6 +273,41 @@ describe('buildFinanceSnapshot', () => {
     ]);
   });
 
+  it('firma individual (nome de pessoa com CNPJ) e nome de pessoa na fatura não vão; compra de antes da janela não é listada', () => {
+    const people = buildFinanceSnapshot({
+      ...input,
+      transactions: [
+        tx({ amount: 350, description: 'PAGAMENTO DE BOLETO', counterparty_name: 'MARIANA FERREIRA LIMA', counterparty_doc_kind: 'CNPJ', counterparty_cnpj: '33444555000166', occurred_on: '2026-10-03' }),
+        tx({ account_id: card, amount: 120, description: 'MARCOS ANTONIO ROCHA', occurred_on: '2026-10-02' }),
+        tx({ account_id: card, amount: 80, description: 'Compra', merchant_name: 'JULIANA PRADO ALVES', merchant_cnpj: '22333444000155', occurred_on: '2026-10-01' }),
+        // Buscada só para juntar parcelas e pares (um ciclo antes da janela, que começa em 1º/8).
+        tx({ account_id: card, amount: 55, description: 'LOJA ANTIGA', occurred_on: '2026-07-20' }),
+      ],
+    });
+    for (const secret of ['MARIANA', 'FERREIRA', 'MARCOS', 'ROCHA', 'JULIANA', 'PRADO', 'ALVES', 'ANTIGA']) {
+      expect([secret, people.includes(secret)]).toEqual([secret, false]);
+    }
+    const recent = people.slice(people.indexOf('Lançamentos recentes')).split('\n').slice(1);
+    expect(recent.map((line) => line.split(' · ').slice(1, 4).join(' · '))).toEqual([
+      'saída · Outros · Boleto pago',
+      'saída · Outros · Pagamento',
+      'saída · Outros · Pagamento',
+    ]);
+  });
+
+  it('estorno sem a compra nestes meses aparece à parte e não abate as saídas', () => {
+    const refunded = buildFinanceSnapshot({
+      ...input,
+      transactions: [
+        tx({ account_id: card, amount: 600, description: 'SUPERMERCADO BOM', category: 'Groceries', occurred_on: '2026-10-04' }),
+        tx({ account_id: card, amount: 1000, direction: 'CREDIT', description: 'Estorno LOJA DE TV', occurred_on: '2026-10-03' }),
+      ],
+    });
+    expect(refunded).toContain(
+      'saídas R$ 600,00 em 1 compra; entradas R$ 0,00; estornos R$ 0,00 (já abatidos das saídas); mais R$ 1.000,00 em estornos sem a compra correspondente nestes meses (não abatidos).',
+    );
+  });
+
   it('data de atualização do banco no dia do aparelho, não no dia UTC', () => {
     // 22h30 de 7/10 no fuso do aparelho (em São Paulo, 01h30 UTC de 8/10).
     const late = new Date(2026, 9, 7, 22, 30).toISOString();
@@ -340,6 +375,7 @@ describe('purchaseLabel / scrubText / dayLabel', () => {
     personTransfer: false,
     sensitive: false,
     storeName: null,
+    refundOf: null,
     ...over,
   });
 

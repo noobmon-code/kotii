@@ -13,8 +13,9 @@ import { useMemo } from 'react';
 import { useBudgets, useSaveBudgets } from '@/data/finance';
 import { functionErrorMessage } from '@/data/images';
 import { nookyRecordsFrom, type NookyRecord } from '@/domain/bankMatch';
+import { financeFetchStart, financeWindowStart } from '@/domain/bankMonth';
 import { toISODate } from '@/domain/dates';
-import { getFinanceCategory, monthRange, shiftMonth } from '@/domain/finance';
+import { getFinanceCategory } from '@/domain/finance';
 import {
   buildFinanceSnapshot,
   parseFinanceActions,
@@ -197,10 +198,8 @@ export function useFinNookyRecords(fromDate: string) {
   });
 }
 
-/** Primeiro dia da janela: o mês de hoje e os dois anteriores (o retrato compara com eles). */
-export function financeWindowStart(today: string): string {
-  return monthRange(shiftMonth(today.slice(0, 7), -2)).start;
-}
+// Janela do consultor (o mês de hoje e os dois anteriores) e o ciclo de fatura buscado antes dela.
+export { financeFetchStart, financeWindowStart };
 
 export interface FinanceData {
   connections: FinConnection[];
@@ -216,15 +215,17 @@ export type FinanceDataState =
   | { status: 'ready'; data: FinanceData };
 
 /**
- * Tudo o que o consultor usa, na janela de `financeWindowStart(today)`. Só
- * fica pronto com tudo carregado: com uma consulta faltando, a tela e o Nuke
- * diriam "nada" onde não sabem.
+ * Tudo o que o consultor usa, na janela de `financeWindowStart(today)`. Os
+ * lançamentos vêm desde um ciclo de fatura antes (`financeFetchStart`), só
+ * para juntar parcelas e pares que começaram antes da janela; a tela e o
+ * retrato mostram só a janela. Só fica pronto com tudo carregado: com uma
+ * consulta faltando, a tela e o Nuke diriam "nada" onde não sabem.
  */
 export function useFinanceData(today: string): FinanceDataState {
   const fromDate = financeWindowStart(today);
   const connections = useFinConnections();
   const accounts = useFinAccounts();
-  const transactions = useFinTransactions(fromDate);
+  const transactions = useFinTransactions(financeFetchStart(today));
   const budgets = useBudgets();
   const records = useFinNookyRecords(fromDate);
 

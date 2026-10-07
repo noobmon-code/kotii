@@ -88,6 +88,32 @@ Deno.test('CPF escrito na descrição sai antes de gravar; CNPJ, conta e boleto 
   assertEquals([row?.description, row?.description_raw], ['Pix enviado ***', 'PIX ENVIADO CPF *** FULANO']);
 });
 
+Deno.test('CPF encostado num hífen ou numa barra, ou com espaços depois de "CPF", também sai', () => {
+  assertEquals(withoutCpf('12345678900-JOAO DA SILVA'), '***-JOAO DA SILVA');
+  assertEquals(withoutCpf('PIX-12345678900 FULANO'), 'PIX-*** FULANO');
+  assertEquals(withoutCpf('TED 12345678900-FULANO'), 'TED ***-FULANO');
+  assertEquals(withoutCpf('FULANO/12345678900'), 'FULANO/***');
+  assertEquals(withoutCpf('PIX ENVIADO 123456789-00/FULANO'), 'PIX ENVIADO ***/FULANO');
+  assertEquals(withoutCpf('CPF: 123 456 789 00'), 'CPF ***');
+  assertEquals(withoutCpf('CPF 123 456 789-00 FULANO'), 'CPF *** FULANO');
+  // Continuando em mais números com o hífen ou a barra não é CPF solto (conta com dígito, código).
+  assertEquals(withoutCpf('Conta 12345678901-2'), 'Conta 12345678901-2');
+  assertEquals(withoutCpf('Ref 0001-12345678900'), 'Ref 0001-12345678900');
+  assertEquals(withoutCpf('CNPJ 12.345.678/0001-90'), 'CNPJ 12.345.678/0001-90');
+});
+
+Deno.test('nome com CPF (razão social de MEI antigo): o CPF sai também do nome de quem recebeu e da loja', async () => {
+  const pix = await mapTx(
+    tx({
+      paymentData: { receiver: { name: 'MARIA SOUZA 12345678909', documentNumber: { type: 'CNPJ', value: '11.222.333/0001-81' } } },
+    }),
+  );
+  assertEquals([pix?.counterparty_name, pix?.counterparty_doc_kind, pix?.counterparty_cnpj], ['MARIA SOUZA ***', 'CNPJ', CNPJ]);
+  const card = await mapTx(tx({ merchant: { name: null, businessName: 'JOSE LIMA 123.456.789-09', cnpj: '11.222.333/0001-81' } }));
+  assertEquals(card?.merchant_name, 'JOSE LIMA ***');
+  assert(!JSON.stringify([pix, card]).includes(CPF));
+});
+
 Deno.test('lançamento simples: valor absoluto, data, descrição e categoria', async () => {
   assertEquals(await mapTx(tx()), {
     account_id: 'conta-db-1',

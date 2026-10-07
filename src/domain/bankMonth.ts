@@ -7,7 +7,7 @@ import type { FinAccount, FinConnection, FinTransaction } from '@/lib/types';
 
 import { financeCategoryOfBank, isSensitiveBankTx, normalizeBankText } from './bankCategories';
 import { type BankKind, classifyBankTransaction, isTransferLike, ownerHashes } from './bankClassify';
-import { addMonths, diffDays } from './dates';
+import { addDays, addMonths, diffDays } from './dates';
 import { type FinanceCategory, monthRange, shiftMonth } from './finance';
 
 export interface BankPurchase {
@@ -38,6 +38,11 @@ export interface BankPurchase {
    * "dinheiro enviado a...", o vendedor depois do "*" da maquininha).
    */
   storeName: string | null;
+  /**
+   * Estorno: a compra (key) que ele desfaz, na mesma conta e até a data dele.
+   * null quando não achou: aí não abate nada (ver summarizeRange).
+   */
+  refundOf: string | null;
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -88,10 +93,37 @@ function merchantNameOf(tx: FinTransaction, description: string): string | null 
   return tx.merchant_name ?? company ?? merchantFromDescriptor(description);
 }
 
-// Razão social de MEI: o CNPJ (ou a raiz dele) junto do nome da pessoa ("12.345.678 JOAO DA SILVA").
-const MEI_NAME = /\d{2}\.?\d{3}\.?\d{3}/;
+// Razão social de MEI: o CNPJ (ou a raiz dele) ou o CPF (que a sincronização troca por "***") junto do
+// nome da pessoa ("12.345.678 JOAO DA SILVA", "MARIA SOUZA ***").
+const MEI_NAME = /\d{2}\.?\d{3}\.?\d{3}|[*•]{3}/;
 // Compra no débito vista na conta ("COMPRA CARTAO DEB", "Compra no débito").
 const DEBIT_CARD = /\bcompra\b.{0,20}\b(debito|deb|cartao)\b/;
+
+// Palavras que dizem que o nome é de empresa ou loja, não de pessoa.
+const BUSINESS_WORDS = new Set([
+  'ltda', 'sa', 'me', 'epp', 'eireli', 'cia', 'comercio', 'comercial', 'com', 'br', 'brasil', 'servicos',
+  'servico', 'serv', 'industria', 'ind', 'distribuidora', 'importadora', 'atacado', 'varejo', 'mercantil',
+  'loja', 'lojas', 'magazine', 'store', 'shop', 'market', 'marketplace', 'outlet', 'center', 'shopping',
+  'express', 'online', 'digital', 'tecnologia', 'pagamentos', 'grupo', 'holding', 'participacoes',
+  'empreendimentos', 'construtora', 'engenharia', 'consultoria', 'assessoria', 'transportes', 'logistica',
+  'seguros', 'seguradora', 'banco', 'bank', 'financeira', 'clube', 'club', 'associacao', 'instituto',
+  'fundacao', 'cooperativa', 'coop', 'modas', 'moda', 'calcados', 'presentes', 'eletro', 'eletronicos',
+  'informatica', 'cosmeticos', 'perfumaria', 'net', 'www', 'app', 'games',
+]);
+const NAME_LINKS = new Set(['de', 'da', 'do', 'dos', 'das', 'e']);
+
+/**
+ * Tem jeito de nome de pessoa: de 2 a 6 palavras só de letras ("MARCOS
+ * ANTONIO ROCHA"), nenhuma de empresa. Firma individual tem o nome do dono
+ * sem número nenhum; uma palavra só costuma ser marca.
+ */
+function looksLikePersonName(name: string): boolean {
+  const words = normalizeBankText(name)
+    .split(' ')
+    .filter((w) => w && !/\d/.test(w) && !NAME_LINKS.has(w));
+  if (words.length < 2 || words.length > 6) return false;
+  return words.every((w) => /^[a-z]+$/.test(w) && !BUSINESS_WORDS.has(w));
+}
 
 /** Ver BankPurchase.storeName. */
 function storeNameOf(
@@ -100,7 +132,9 @@ function storeNameOf(
   description: string,
   category: FinanceCategory,
 ): string | null {
-  const company = (name: string) => (MEI_NAME.test(name) ? null : name);
+  // Nome de pessoa só passa quando a categoria é de loja (a Pluggy ou a descrição reconheceram o ramo).
+  const shown = (name: string) => (category === 'outros' && looksLikePersonName(name) ? null : name);
+  const company = (name: string) => (MEI_NAME.test(name) ? null : shown(name));
   if (tx.merchant_name) return company(tx.merchant_name);
   if (tx.counterparty_doc_kind === 'CNPJ' && tx.counterparty_name) return company(tx.counterparty_name);
   if (tx.counterparty_doc_kind === 'CPF') return null;
@@ -112,7 +146,7 @@ function storeNameOf(
   // Na maquininha, quem vende pode ser uma pessoa: o nome só vai com uma categoria de loja.
   const seller = merchantFromDescriptor(description);
   if (seller) return category === 'outros' ? null : seller;
-  return description;
+  return shown(description);
 }
 
 const isParcel = (tx: FinTransaction) =>
@@ -161,10 +195,12 @@ export function groupPurchases(
       personTransfer: tx.counterparty_doc_kind === 'CPF' && (kind === 'spending' || kind === 'income' || kind === 'refund'),
       sensitive: isSensitiveBankTx(tx),
       storeName: storeNameOf(tx, accountsById.get(tx.account_id), description, category),
+      refundOf: null,
     });
   }
 
   for (const group of groupParcels(toParcels(parcels))) purchases.push(purchaseOfGroup(group, accountsById));
+  linkRefunds(purchases);
   return purchases.sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount || a.key.localeCompare(b.key));
 }
 
@@ -175,6 +211,8 @@ export function groupPurchases(
 export const OWN_TRANSFER_DAYS = 2;
 /** Dias entre pagar a fatura na conta e o cartão registrar o "Pagamento recebido". */
 export const CARD_PAYMENT_DAYS = 3;
+/** Saída que já diz "fatura": casa com o "Pagamento recebido" até uma semana (uns 5 dias úteis) de distância. */
+export const NAMED_CARD_PAYMENT_DAYS = 7;
 
 /**
  * Casa cada lançamento de `from` com o de `to` de mesmo valor mais perto na
@@ -208,16 +246,104 @@ function pairUp(
   return pairs;
 }
 
+/** Palavras do nome de quem recebeu ou pagou, sem "de", "da"... e sem números. */
+function personWords(name: string | null): string[] {
+  return normalizeBankText(name)
+    .split(' ')
+    .filter((w) => w && !NAME_LINKS.has(w) && !/\d/.test(w));
+}
+
+/**
+ * Mesmo nome, com o corte que cada banco faz: um é o começo do outro ("JOAO
+ * DA SILVA" e "JOAO DA SILVA SAU") ou têm o mesmo primeiro e último nome
+ * ("JOAO SILVA" e "JOAO PEDRO DA SILVA").
+ */
+function sameName(a: string[], b: string[]): boolean {
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  if (!short.length) return false;
+  if (short.every((w, i) => (i === short.length - 1 ? long[i].startsWith(w) : w === long[i]))) return true;
+  return short.length >= 2 && short[0] === long[0] && short[short.length - 1] === long[long.length - 1];
+}
+
+/**
+ * PIX/TED que sai de uma conta + entrada de mesmo valor em outra conta da
+ * pessoa em até 2 dias: é dinheiro dela mudando de lugar. Casa primeiro o
+ * que tem prova de ser da dona (um lado já é dela: o documento dela, o banco
+ * dizendo "mesma titularidade" ou a poupança; ou os dois lados com o mesmo
+ * documento ou nome) e depois, só pelo valor e pela data, o par em que um
+ * dos lados não diz nada sobre o outro lado. Documento ou nome diferentes
+ * nunca casam, nem dois documentos mascarados sem nome (o aluguel pago e o
+ * PIX do cônjuge do mesmo valor não são a mesma transferência). Sabendo o
+ * documento da dona, documento completo de outra pessoa nunca casa
+ * (emprestar e receber de volta não é interno). O lado que não era da dona
+ * fica com o tipo do outro (interno, ou aplicação quando o outro é a
+ * poupança). Devolve os ids que acharam par.
+ */
+function pairTransfers(
+  txs: FinTransaction[],
+  kinds: Map<string, BankKind>,
+  accountsById: Map<string, FinAccount>,
+  owners: ReadonlySet<string>,
+): Set<string> {
+  const accountOf = (tx: FinTransaction) => accountsById.get(tx.account_id);
+  const moves = txs.filter((tx) => accountOf(tx)?.type === 'BANK' && isTransferLike(tx));
+  const anchors = new Set(
+    moves
+      .filter((tx) => {
+        const kind = kinds.get(tx.id);
+        return kind === 'internal' || (kind === 'investment' && accountOf(tx)?.subtype === 'SAVINGS_ACCOUNT');
+      })
+      .map((tx) => tx.id),
+  );
+  const open = (tx: FinTransaction) => kinds.get(tx.id) === (tx.direction === 'DEBIT' ? 'spending' : 'income');
+  const candidates = moves.filter((tx) => anchors.has(tx.id) || open(tx));
+  const words = new Map(candidates.map((tx) => [tx.id, personWords(tx.counterparty_name)]));
+  const named = (tx: FinTransaction) => (words.get(tx.id) as string[]).length > 0;
+
+  const hashOf = (tx: FinTransaction) => tx.counterparty_doc_hash;
+  const stranger = (tx: FinTransaction) => Boolean(hashOf(tx)) && owners.size > 0 && !owners.has(hashOf(tx) as string);
+  const silent = (tx: FinTransaction) => !tx.counterparty_doc_kind && !hashOf(tx) && !named(tx);
+  const clash = (a: FinTransaction, b: FinTransaction) =>
+    a.account_id === b.account_id ||
+    stranger(a) ||
+    stranger(b) ||
+    Boolean(hashOf(a) && hashOf(b) && hashOf(a) !== hashOf(b)) ||
+    (named(a) && named(b) && !sameName(words.get(a.id) as string[], words.get(b.id) as string[]));
+  const proven = (a: FinTransaction, b: FinTransaction) =>
+    !clash(a, b) &&
+    (anchors.has(a.id) || anchors.has(b.id) || Boolean(hashOf(a) && hashOf(a) === hashOf(b)) || (named(a) && named(b)));
+  const byAmount = (a: FinTransaction, b: FinTransaction) => !clash(a, b) && (silent(a) || silent(b));
+
+  const out = candidates.filter((tx) => tx.direction === 'DEBIT');
+  const into = candidates.filter((tx) => tx.direction === 'CREDIT');
+  const pairs = pairUp(out, into, OWN_TRANSFER_DAYS, proven);
+  const used = new Set(pairs.flat().map((tx) => tx.id));
+  const free = (tx: FinTransaction) => !used.has(tx.id);
+  pairs.push(...pairUp(out.filter(free), into.filter(free), OWN_TRANSFER_DAYS, byAmount));
+
+  for (const [a, b] of pairs) {
+    if (anchors.has(a.id) && anchors.has(b.id)) continue;
+    if (anchors.has(a.id)) kinds.set(b.id, kinds.get(a.id) as BankKind);
+    else if (anchors.has(b.id)) kinds.set(a.id, kinds.get(b.id) as BankKind);
+    else {
+      kinds.set(a.id, 'internal');
+      kinds.set(b.id, 'internal');
+    }
+  }
+  return new Set(pairs.flat().map((tx) => tx.id));
+}
+
 /**
  * O que o documento e o texto não dizem, o outro lado diz. O banco quase
  * nunca manda o CPF da dona (sem ele não há hash para comparar), e a fatura
- * paga por boleto ou PIX nem sempre diz "fatura":
- * - "Pagamento recebido" no cartão + saída de mesmo valor na conta em até 3
- *   dias: a saída é a fatura (a compra já contou no cartão);
- * - PIX/TED que sai de uma conta + entrada de mesmo valor em outra conta da
- *   pessoa em até 2 dias: é dinheiro dela mudando de lugar. Com o documento
- *   dos dois lados, ele precisa ser o mesmo; e, sabendo o da dona, documento
- *   de outra pessoa nunca casa (emprestar e receber de volta não é interno).
+ * paga por boleto ou PIX nem sempre diz "fatura". Na ordem:
+ * 1. a saída que diz "fatura" fica com o "Pagamento recebido" do cartão de
+ *    mesmo valor (até uma semana): cada pagamento casa uma vez só;
+ * 2. transferências entre as próprias contas (pairTransfers): o PIX que leva
+ *    o dinheiro para o banco do cartão não é a fatura;
+ * 3. "Pagamento recebido" que sobrou + saída de mesmo valor na conta em até 3
+ *    dias: a saída é a fatura (a compra já contou no cartão). Boleto ou
+ *    empresa antes de PIX/TED.
  */
 function pairOwnMoves(
   txs: FinTransaction[],
@@ -231,29 +357,18 @@ function pairOwnMoves(
   const cardPayments = txs.filter((tx) => typeOf(tx) === 'CREDIT' && tx.direction === 'CREDIT' && kindIs('card_payment')(tx));
   // PIX para uma pessoa não paga fatura.
   const bankDebits = txs.filter((tx) => typeOf(tx) === 'BANK' && tx.direction === 'DEBIT' && tx.counterparty_doc_kind !== 'CPF');
-  // Primeiro as saídas que já dizem "fatura": cada pagamento do cartão casa uma vez só.
-  const named = new Set(pairUp(cardPayments, bankDebits.filter(kindIs('card_payment')), CARD_PAYMENT_DAYS).map(([card]) => card.id));
-  const unnamed = pairUp(
-    cardPayments.filter((tx) => !named.has(tx.id)),
-    bankDebits.filter(kindIs('spending')),
-    CARD_PAYMENT_DAYS,
+  const named = new Set(
+    pairUp(cardPayments, bankDebits.filter(kindIs('card_payment')), NAMED_CARD_PAYMENT_DAYS).map(([card]) => card.id),
   );
-  for (const [, debit] of unnamed) kinds.set(debit.id, 'card_payment');
 
-  const moves = txs.filter((tx) => typeOf(tx) === 'BANK' && isTransferLike(tx));
-  const out = moves.filter((tx) => tx.direction === 'DEBIT' && kindIs('spending')(tx));
-  const into = moves.filter((tx) => tx.direction === 'CREDIT' && kindIs('income')(tx));
-  // O documento da dona já teria marcado interno: sabendo qual é, outro documento é de outra pessoa.
-  const stranger = (tx: FinTransaction) => owners.size > 0 && Boolean(tx.counterparty_doc_hash);
-  const fits = (a: FinTransaction, b: FinTransaction) =>
-    a.account_id !== b.account_id &&
-    !stranger(a) &&
-    !stranger(b) &&
-    (!a.counterparty_doc_hash || !b.counterparty_doc_hash || a.counterparty_doc_hash === b.counterparty_doc_hash);
-  for (const [a, b] of pairUp(out, into, OWN_TRANSFER_DAYS, fits)) {
-    kinds.set(a.id, 'internal');
-    kinds.set(b.id, 'internal');
-  }
+  const moved = pairTransfers(txs, kinds, accountsById, owners);
+
+  const left = cardPayments.filter((tx) => !named.has(tx.id));
+  const open = bankDebits.filter((tx) => kindIs('spending')(tx) && !moved.has(tx.id));
+  const bills = pairUp(left, open.filter((tx) => !isTransferLike(tx)), CARD_PAYMENT_DAYS);
+  const paid = new Set(bills.map(([card]) => card.id));
+  bills.push(...pairUp(left.filter((tx) => !paid.has(tx.id)), open.filter(isTransferLike), CARD_PAYMENT_DAYS));
+  for (const [, debit] of bills) kinds.set(debit.id, 'card_payment');
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +410,10 @@ const similarParcel = (a: { amount: number; total: number }, amount: number) =>
  * compra" parcela por parcela; sem data da compra, a do lançamento costuma
  * ser a da parcela. Cada par de parcelas da mesma loja vota: mesma data com
  * números diferentes é 'compra'; um mês por parcela de distância é
- * 'parcela'. Sem maioria, vale o costume de cada tipo de data.
+ * 'parcela'. Conta sem par nenhum (uma parcela só de cada compra na janela)
+ * vota pela parcela n > 1 com data da compra: igual (até uns dias) à do
+ * lançamento é 'parcela' (a compra de verdade foi meses antes); bem antes é
+ * 'compra'. Sem maioria, vale o costume de cada tipo de data.
  */
 type ParcelDating = 'compra' | 'parcela';
 
@@ -315,6 +433,18 @@ function parcelDating(parcels: Parcel[]): Map<string, ParcelDating> {
         votes.set(datingKey(a), vote);
       }
     }
+  }
+  const single = new Map<string, Record<ParcelDating, number>>();
+  for (const p of parcels) {
+    if (!p.fromPurchase || p.number < 2) continue;
+    const vote = single.get(datingKey(p)) ?? { compra: 0, parcela: 0 };
+    if (Math.abs(diffDays(p.date, p.tx.occurred_on)) <= ESTIMATE_SLACK_DAYS) vote.parcela += 1;
+    else vote.compra += 1;
+    single.set(datingKey(p), vote);
+  }
+  for (const [key, vote] of single) {
+    const pairs = votes.get(key);
+    if (!pairs || pairs.compra + pairs.parcela === 0) votes.set(key, vote);
   }
   const out = new Map<string, ParcelDating>();
   for (const [key, vote] of votes) {
@@ -455,7 +585,69 @@ function purchaseOfGroup(group: Group, accountsById: Map<string, FinAccount>): B
     personTransfer: false,
     sensitive: members.some((m) => isSensitiveBankTx(m.tx)),
     storeName: storeNameOf(first.tx, accountsById.get(first.tx.account_id), description, category),
+    refundOf: null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Estornos
+
+// O que o estorno diz além do nome da loja ("Estorno de compra LOJA X").
+const REFUND_FILLER = new Set([
+  'estorno', 'estornado', 'estornada', 'estornos', 'devolucao', 'devolvido', 'devolvida', 'reembolso',
+  'ressarcimento', 'chargeback', 'cancelamento', 'cancelado', 'cancelada', 'cashback', 'credito', 'compra',
+  'pagamento', 'valor', 'parcial', 'total', 'ref', 'referente', 'pix', 'ted', 'de', 'da', 'do', 'a', 'o', 'em',
+  'no', 'na',
+]);
+
+/** Nome da loja sem as palavras do estorno e sem números, tudo junto ("Estorno LOJA DE TV" -> "lojatv"). */
+function storeKey(text: string | null): string {
+  if (!text) return '';
+  return normalizeBankText(stripParcelMarker(text))
+    .split(' ')
+    .filter((w) => w && !REFUND_FILLER.has(w) && !/\d/.test(w))
+    .join('');
+}
+
+/** A compra e o estorno falam da mesma loja: um nome contém o outro (com pelo menos 4 letras). */
+function sameStore(refund: BankPurchase, purchase: BankPurchase): boolean {
+  const refundKeys = [storeKey(refund.description), storeKey(refund.merchantName)].filter((k) => k.length >= 4);
+  const purchaseKeys = [storeKey(purchase.description), storeKey(purchase.merchantName)].filter((k) => k.length >= 4);
+  return refundKeys.some((r) => purchaseKeys.some((p) => p.includes(r) || r.includes(p)));
+}
+
+/**
+ * Liga cada estorno à compra que ele desfaz: na mesma conta, de data até a
+ * do estorno, com valor que ainda cabe nela e com a mesma loja ou o mesmo
+ * valor (a mesma loja e o mesmo valor primeiro; empate, a compra mais
+ * recente). Estorno sem compra assim (compra de antes da janela, ou que não
+ * deu para reconhecer) fica sem par.
+ */
+function linkRefunds(purchases: BankPurchase[]) {
+  const left = new Map(purchases.filter((p) => p.kind === 'spending').map((p) => [p.key, p.amount]));
+  const refunds = purchases
+    .filter((p) => p.kind === 'refund')
+    .sort((a, b) => a.date.localeCompare(b.date) || a.key.localeCompare(b.key));
+  for (const refund of refunds) {
+    let best: BankPurchase | null = null;
+    let bestScore = 0;
+    for (const p of purchases) {
+      const remaining = left.get(p.key);
+      if (remaining === undefined || p.accountId !== refund.accountId || p.date > refund.date) continue;
+      if (refund.amount > remaining + 0.005) continue;
+      const score = (sameStore(refund, p) ? 2 : 0) + (Math.abs(refund.amount - p.amount) < 0.005 ? 1 : 0);
+      if (score === 0) continue;
+      const better =
+        !best || score > bestScore || (score === bestScore && (p.date > best.date || (p.date === best.date && p.key < best.key)));
+      if (better) {
+        best = p;
+        bestScore = score;
+      }
+    }
+    if (!best) continue;
+    refund.refundOf = best.key;
+    left.set(best.key, (left.get(best.key) as number) - refund.amount);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -465,38 +657,51 @@ export interface BankMonthSummary {
   /** Saídas do mês já sem os estornos: a soma de byCategory. */
   spending: number;
   income: number;
-  /** Estornos que abateram saídas do mês. */
+  /** Estornos que abateram saídas do mês (os das compras do mês, mesmo que tenham caído depois). */
   refunds: number;
-  /** Parte das saídas ainda pendente no banco ("previsto"). */
+  /**
+   * Estornos que caíram no mês sem a compra que desfazem (compra de antes da
+   * janela ou que não deu para reconhecer): aparecem à parte e não abatem nada.
+   */
+  otherRefunds: number;
+  /** Parte das saídas ainda pendente no banco ("previsto"), já sem os estornos: nunca passa das saídas. */
   pending: number;
   /** Saídas por categoria (sem os estornos), da maior para a menor. */
   byCategory: { category: FinanceCategory; amount: number }[];
-  /** Quantas compras (saídas) no período. */
+  /** Quantas compras (saídas) no período, sem as estornadas por inteiro. */
   count: number;
 }
 
 /**
  * Soma das compras com data em [start, end). Transferência para si mesma,
  * aplicação, fatura paga e dívida contratada ficam de fora das saídas. O
- * estorno abate da categoria dele até zerar: o que sobra (estorno de uma
- * compra de outro mês ou de outra categoria) não vira saída negativa, e o
- * total é sempre a soma das categorias.
+ * estorno abate da compra que ele desfaz (linkRefunds), no mês e na
+ * categoria dela: estorno de uma compra de setembro abate setembro, não
+ * outubro. Estorno sem compra ligada não abate nada (vai em otherRefunds).
  */
 export function summarizeRange(purchases: BankPurchase[], range: { start: string; end: string }): BankMonthSummary {
-  const inRange = purchases.filter((p) => p.date >= range.start && p.date < range.end);
+  const inRange = (p: BankPurchase) => p.date >= range.start && p.date < range.end;
+  const refunded = new Map<string, number>();
+  for (const p of purchases) {
+    if (p.kind === 'refund' && p.refundOf) refunded.set(p.refundOf, (refunded.get(p.refundOf) ?? 0) + p.amount);
+  }
   const net = new Map<FinanceCategory, number>();
   let gross = 0;
   let income = 0;
+  let otherRefunds = 0;
   let pending = 0;
   let count = 0;
-  for (const p of inRange) {
+  for (const p of purchases) {
+    if (!inRange(p)) continue;
     if (p.kind === 'spending') {
+      const left = Math.max(0, p.amount - (refunded.get(p.key) ?? 0));
       gross += p.amount;
+      if (left < 0.005) continue;
       count += 1;
-      if (p.pending) pending += p.amount;
-      net.set(p.category, (net.get(p.category) ?? 0) + p.amount);
-    } else if (p.kind === 'refund') {
-      net.set(p.category, (net.get(p.category) ?? 0) - p.amount);
+      if (p.pending) pending += left;
+      net.set(p.category, (net.get(p.category) ?? 0) + left);
+    } else if (p.kind === 'refund' && !p.refundOf) {
+      otherRefunds += p.amount;
     } else if (p.kind === 'income') {
       income += p.amount;
     }
@@ -510,7 +715,8 @@ export function summarizeRange(purchases: BankPurchase[], range: { start: string
     spending,
     income: round2(income),
     refunds: round2(Math.max(0, gross - spending)),
-    pending: round2(pending),
+    otherRefunds: round2(otherRefunds),
+    pending: round2(Math.min(pending, spending)),
     byCategory,
     count,
   };
@@ -519,6 +725,34 @@ export function summarizeRange(purchases: BankPurchase[], range: { start: string
 /** Resumo de um mês ("YYYY-MM") pela data da compra. */
 export function monthSummary(purchases: BankPurchase[], month: string): BankMonthSummary {
   return summarizeRange(purchases, monthRange(month));
+}
+
+// ---------------------------------------------------------------------------
+// Janela do consultor
+
+/** Meses que o consultor mostra: o atual e os dois anteriores (o retrato compara com eles). */
+export const FINANCE_MONTHS_BACK = 2;
+/**
+ * Dias buscados antes da janela só para juntar e parear (um ciclo de fatura
+ * com folga): a 1ª parcela de uma compra do fim do mês anterior, o outro lado
+ * de uma transferência ou da fatura paga, a compra que um estorno desfaz.
+ */
+export const FINANCE_LOOKBACK_DAYS = 40;
+
+/** Primeiro dia da janela: o mês de hoje e os dois anteriores. */
+export function financeWindowStart(today: string): string {
+  return monthRange(shiftMonth(today.slice(0, 7), -FINANCE_MONTHS_BACK)).start;
+}
+
+/** Primeiro dia dos lançamentos buscados: um ciclo de fatura antes da janela. */
+export function financeFetchStart(today: string): string {
+  return addDays(financeWindowStart(today), -FINANCE_LOOKBACK_DAYS);
+}
+
+/** Compras com data na janela: o que a tela e o retrato listam e conferem com o Nooky. */
+export function windowPurchases(purchases: BankPurchase[], today: string): BankPurchase[] {
+  const start = financeWindowStart(today);
+  return purchases.filter((p) => p.date >= start);
 }
 
 export interface InstallmentMonth {

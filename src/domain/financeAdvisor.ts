@@ -21,6 +21,7 @@ import {
   groupPurchases,
   monthSummary,
   summarizeRange,
+  windowPurchases,
 } from './bankMonth';
 import { budgetProgress, describeBudget } from './budget';
 import { addDays, formatBRDate, toISODate } from './dates';
@@ -143,7 +144,8 @@ export function buildFinanceSnapshot(input: FinanceSnapshotInput): string {
   lines.push(
     `No banco em ${monthLabel(month)} (pela data da compra): saídas ${formatBRL(current.spending)} em ${count(current.count, 'compra', 'compras')}` +
       `${current.pending > 0 ? ` (${formatBRL(current.pending)} ainda previsto, pendente no banco)` : ''}; ` +
-      `entradas ${formatBRL(current.income)}; estornos ${formatBRL(current.refunds)} (já abatidos das saídas).`,
+      `entradas ${formatBRL(current.income)}; estornos ${formatBRL(current.refunds)} (já abatidos das saídas)` +
+      `${current.otherRefunds > 0 ? `; mais ${formatBRL(current.otherRefunds)} em estornos sem a compra correspondente nestes meses (não abatidos)` : ''}.`,
   );
 
   // Categorias x orçamento.
@@ -207,15 +209,17 @@ export function buildFinanceSnapshot(input: FinanceSnapshotInput): string {
     }.`,
   );
 
-  // Conferência com o Nooky no mês atual (casada na janela inteira, como na tela).
-  const totals = reconciliationTotals(reconciliationInRange(matchBankToNooky(purchases, input.nookyRecords), monthRange(month)));
+  // Conferência com o Nooky no mês atual (casada na janela inteira, como na tela). As compras de antes da
+  // janela só vieram para juntar parcelas e pares: não tiram registro do Nooky de uma compra da janela.
+  const shown = windowPurchases(purchases, today);
+  const totals = reconciliationTotals(reconciliationInRange(matchBankToNooky(shown, input.nookyRecords), monthRange(month)));
   lines.push(
     `Conferência de ${monthLabel(month)} com o Nooky: ${formatBRL(totals.inNooky)} em ${count(totals.inNookyCount, 'compra', 'compras')} já no Nooky ` +
       `(notas, contas ou gastos); ${formatBRL(totals.bankOnly)} em ${count(totals.bankOnlyCount, 'compra', 'compras')} só no banco.`,
   );
 
   // Lançamentos recentes, com apelido t1..t15. Sensíveis ficam só no total da categoria.
-  const recent = purchases
+  const recent = shown
     .filter((p) => KIND_WORD[p.kind] && !p.sensitive && p.date <= today)
     .slice(0, RECENT_LIMIT)
     .map((p, i) => {

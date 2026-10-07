@@ -25,6 +25,7 @@ import {
   futureInstallments,
   groupPurchases,
   monthSummary,
+  windowPurchases,
   type BankMonthSummary,
   type BankPurchase,
   type CardBill,
@@ -231,7 +232,7 @@ function buildView(data: FinanceData, month: string, today: string) {
     installments: futureInstallments(purchases, shiftMonth(current, 1), 6).filter((m) => m.amount > 0),
     balances: accounts.filter((a) => a.type === 'BANK'),
     // Mesma conta do retrato do Nuke: casada na janela inteira, mostrada só no mês escolhido.
-    reconciliation: reconciliationInRange(matchBankToNooky(purchases, data.nookyRecords), monthRange(month)),
+    reconciliation: reconciliationInRange(matchBankToNooky(windowPurchases(purchases, today), data.nookyRecords), monthRange(month)),
     warnings: connectionWarnings(data.connections, new Date()),
   };
 }
@@ -342,8 +343,11 @@ function MonthSection({
         </Row>
         <Text variant="small">
           {plural(summary.count, 'compra', 'compras')} pela data da compra; parcelada conta inteira no dia.
-          {summary.refunds > 0 ? ` Estornos de ${formatBRL(summary.refunds)} já descontados.` : ''} Previsto é o que
-          ainda está pendente no banco.
+          {summary.refunds > 0 ? ` Estornos de ${formatBRL(summary.refunds)} já descontados.` : ''}
+          {summary.otherRefunds > 0
+            ? ` Outros ${formatBRL(summary.otherRefunds)} em estornos sem a compra nestes meses não foram descontados.`
+            : ''}{' '}
+          Previsto é o que ainda está pendente no banco.
         </Text>
       </Card>
     </Section>

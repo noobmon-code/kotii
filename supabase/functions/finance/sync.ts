@@ -138,8 +138,17 @@ export function syncWindowStart(lastSyncedAt: string | null, itemUpdatedAt: stri
   return start > first ? start : first;
 }
 
+const timestamp = (value: unknown) => (typeof value === 'string' ? Date.parse(value) : NaN);
+
+/**
+ * Situação do item. item_updated_at é até quando a Pluggy tem os lançamentos:
+ * a última atualização do banco, ou, quando os lançamentos não vieram nesta
+ * vez (PARTIAL_SUCCESS), a última vez que vieram (null se nunca vieram).
+ */
 export function itemState(item: PluggyItem): ItemState {
-  const updated = typeof item.lastUpdatedAt === 'string' ? Date.parse(item.lastUpdatedAt) : NaN;
+  let updated = timestamp(item.lastUpdatedAt);
+  const transactions = item.statusDetail?.transactions;
+  if (transactions && transactions.isUpdated === false) updated = Math.min(updated, timestamp(transactions.lastUpdatedAt));
   const message = item.error?.message;
   return {
     status: typeof item.status === 'string' && item.status ? item.status : null,
@@ -158,6 +167,10 @@ function chunks<T>(rows: T[], size: number): T[][] {
  * Busca e grava um banco. Erros sobem (quem chama junta por banco). Só marca
  * last_synced_at quando a Pluggy devolveu alguma conta: item recém-criado,
  * ainda vazio, não conta como sincronizado (a próxima vez busca de novo).
+ * A situação do banco (status, erro) é gravada na hora; item_updated_at, que
+ * diz até quando já buscamos, só junto com last_synced_at, no fim de uma
+ * sincronização inteira: se ela falha no meio, a próxima ainda volta até o
+ * banco parado (sem buraco).
  */
 export async function syncConnection(connection: FinConnectionRef, deps: SyncDeps, knownItem?: PluggyItem): Promise<void> {
   const now = deps.now();
@@ -165,9 +178,10 @@ export async function syncConnection(connection: FinConnectionRef, deps: SyncDep
   const owner = { userId: deps.userId, householdId: deps.householdId, now: at, hashKey: deps.hashKey };
 
   const item = knownItem ?? (await deps.pluggy.getItem(connection.pluggy_item_id));
-  await deps.db.updateConnection(connection.id, itemState(item));
+  const state = itemState(item);
+  await deps.db.updateConnection(connection.id, { status: state.status, error_message: state.error_message });
 
-  // Pela situação de antes desta sincronização (a que acabou de ser gravada é a de agora).
+  // Pela situação de antes desta sincronização (a de agora só fica gravada no fim).
   const dateFrom = syncWindowStart(connection.last_synced_at, connection.item_updated_at, now);
   const accounts = (
     await Promise.all(
@@ -204,7 +218,7 @@ export async function syncConnection(connection: FinConnectionRef, deps: SyncDep
   }
 
   // A mesma hora das contas gravadas: conta com hora mais velha sumiu da Pluggy (currentAccounts, no app).
-  if (accounts.length) await deps.db.updateConnection(connection.id, { last_synced_at: at });
+  if (accounts.length) await deps.db.updateConnection(connection.id, { last_synced_at: at, item_updated_at: state.item_updated_at });
 }
 
 /**

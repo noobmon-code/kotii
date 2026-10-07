@@ -464,6 +464,38 @@ Deno.test('meses sem sincronizar: busca desde uma semana antes da última vez, s
   assertEquals(pluggy.calls.filter((call) => call.startsWith('transactions p-conta')).at(-1), 'transactions p-conta 2026-06-24');
 });
 
+Deno.test('banco parado que volta: se a 1ª sincronização falha no meio, a próxima ainda busca desde o banco parado', async () => {
+  const bank = nubank([]);
+  const { store, clock, deps, connect } = setup({ [ITEM]: bank });
+  const { id } = (await connect()) as { id: string };
+  // Sincronizava todo dia (as contas vinham), mas o banco estava parado na Pluggy desde julho.
+  Object.assign(store.connections.get(id)!, { last_synced_at: '2026-10-06T12:00:00.000Z', item_updated_at: '2026-07-01T09:00:00.000Z' });
+
+  // Reautorizado: a Pluggy atualizou o banco hoje às 9h, mas o extrato falha na primeira tentativa.
+  const failing = fakePluggy({ [ITEM]: bank }, { transactions: { 'p-conta': new PluggyError('fora', 'unavailable', 502) } });
+  const first = await syncAll(deps('user-1', 'casa-1', { pluggy: failing.client }), true);
+  assertEquals(first.synced, 0);
+  assertEquals(failing.calls.filter((call) => call.startsWith('transactions p-conta')), ['transactions p-conta 2026-06-24']);
+  const afterFailure = store.connections.get(id)!;
+  // A situação do banco já é a de agora; a marca de até onde buscamos, não.
+  assertEquals([afterFailure.status, afterFailure.item_updated_at], ['UPDATED', '2026-07-01T09:00:00.000Z']);
+
+  clock.now = new Date('2026-10-07T12:05:00.000Z');
+  const retry = fakePluggy({ [ITEM]: bank });
+  assertEquals((await syncAll(deps('user-1', 'casa-1', { pluggy: retry.client }), true)).synced, 1);
+  assertEquals(retry.calls.filter((call) => call.startsWith('transactions p-conta')), ['transactions p-conta 2026-06-24']);
+  const done = store.connections.get(id)!;
+  assertEquals([done.item_updated_at, done.last_synced_at], ['2026-10-07T09:00:00.000Z', '2026-10-07T12:05:00.000Z']);
+});
+
+Deno.test('situação do item: lançamentos que não vieram nesta vez (PARTIAL_SUCCESS) seguram a data da última vez que vieram', () => {
+  const partial = (transactions: { isUpdated: boolean; lastUpdatedAt: string | null }) => item({ statusDetail: { transactions } });
+  assertEquals(itemState(partial({ isUpdated: false, lastUpdatedAt: '2026-07-01T09:00:00.000Z' })).item_updated_at, '2026-07-01T09:00:00.000Z');
+  // Nunca vieram: como banco ainda sem dados (a próxima busca 365 dias).
+  assertEquals(itemState(partial({ isUpdated: false, lastUpdatedAt: null })).item_updated_at, null);
+  assertEquals(itemState(partial({ isUpdated: true, lastUpdatedAt: '2026-10-07T09:00:00.000Z' })).item_updated_at, '2026-10-07T09:00:00.000Z');
+});
+
 Deno.test('lançamento marcado como apagado há mais de 30 dias sai de vez', async () => {
   const bank = nubank([pluggyTx('fica', '2026-10-05T15:00:00.000Z'), pluggyTx('some', '2026-10-04T15:00:00.000Z')]);
   const { store, clock, deps, connect } = setup({ [ITEM]: bank });

@@ -28,6 +28,7 @@ const purchase = (key: string, over: Partial<BankPurchase>): BankPurchase => ({
   personTransfer: false,
   sensitive: false,
   storeName: null,
+  refundOf: null,
   ...over,
 });
 
@@ -97,13 +98,22 @@ describe('matchBankToNooky', () => {
     const hq = '47508411000156';
     const same = matchBankToNooky([purchase('p1', { merchantCnpj: hq })], [record('n1', { kind: 'nota', cnpj: branch })]);
     expect(summary(same).matched).toEqual([['p1', 'n1', 'alta', 'Mesma empresa (CNPJ), valor e data']]);
-    const tip = matchBankToNooky([purchase('p1', { merchantCnpj: hq, amount: 110 })], [record('n1', { kind: 'nota', cnpj: branch })]);
-    expect(summary(tip).matched).toEqual([['p1', 'n1', 'media', 'Mesma loja e valor um pouco maior: com gorjeta?']]);
     const exactWins = matchBankToNooky(
       [purchase('p1', { merchantCnpj: hq })],
       [record('n1', { kind: 'nota', cnpj: branch }), record('n2', { kind: 'nota', cnpj: hq })],
     );
     expect(summary(exactWins).matched).toEqual([['p1', 'n2', 'alta', 'Mesmo CNPJ, valor e data']]);
+  });
+
+  it('rede de lojas: "com gorjeta?" só com o CNPJ da mesma loja, não com outra filial (outra compra da casa)', () => {
+    const branchA = '47508411000156';
+    const branchB = '47508411123456';
+    // A dona pagou R$ 108 na filial A; a nota é a do cônjuge, R$ 100 na filial B no dia seguinte.
+    const result = matchBankToNooky(
+      [purchase('p1', { merchantCnpj: branchA, amount: 108, date: '2026-10-03' })],
+      [record('n1', { kind: 'nota', cnpj: branchB, amount: 100, date: '2026-10-04' })],
+    );
+    expect(summary(result)).toEqual({ matched: [], bankOnly: [['p1', []]], nookyOnly: ['n1'] });
   });
 
   it('casada na janela inteira: um registro perto da virada do mês não conta em dois meses', () => {
