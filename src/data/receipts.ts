@@ -111,14 +111,26 @@ interface NfcePageResult {
 /** Mesmo nome de loja, sem caixa nem espaços nas pontas (num ILIKE, "%", "_" e "*" seriam curingas). */
 const sameStoreName = (a: string, b: string) => a.trim().toLocaleLowerCase('pt-BR') === b.trim().toLocaleLowerCase('pt-BR');
 
+const STORE_PAGE = 1000;
+
+/** A loja sem CNPJ com este nome, página a página (a API devolve até 1000 linhas por pedido). */
+async function findUnnamedStore(name: string): Promise<{ id: string } | null> {
+  for (let from = 0; ; from += STORE_PAGE) {
+    const page = unwrap(
+      await supabase.from('stores').select('id, name').is('cnpj', null).order('id').range(from, from + STORE_PAGE - 1),
+    ) as { id: string; name: string }[];
+    const found = page.find((s) => sameStoreName(s.name, name));
+    if (found) return found;
+    if (page.length < STORE_PAGE) return null;
+  }
+}
+
 /** Mercado pelo CNPJ (ou nome), criando se ainda não existe, como na leitura por foto. */
 async function findOrCreateStore(store: { name: string | null; cnpj: string | null; address: string | null }) {
   if (!store.name && !store.cnpj) return null;
   const existing = store.cnpj
     ? (unwrap(await supabase.from('stores').select('id').eq('cnpj', store.cnpj).limit(1).maybeSingle()) as { id: string } | null)
-    : ((unwrap(await supabase.from('stores').select('id, name').is('cnpj', null)) as { id: string; name: string }[]).find((s) =>
-        sameStoreName(s.name, store.name!),
-      ) ?? null);
+    : await findUnnamedStore(store.name!);
   if (existing) return existing.id;
   const created = unwrap(
     await supabase

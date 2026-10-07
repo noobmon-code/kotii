@@ -29,6 +29,8 @@ function json(body: unknown, status = 200): Response {
 
 const config = visionConfig(['RECEIPT']);
 
+const STORE_PAGE = 1000;
+
 async function findOrCreateStore(
   db: SupabaseClient,
   store: { name: string | null; cnpj: string | null; address: string | null },
@@ -42,10 +44,14 @@ async function findOrCreateStore(
     if (error) throw error;
     if (existing) return existing.id;
   } else {
-    const { data: unnamed, error } = await db.from('stores').select('id, name').is('cnpj', null);
-    if (error) throw error;
-    const existing = (unnamed ?? []).find((s) => sameStoreName(s.name, store.name!));
-    if (existing) return existing.id;
+    // Página a página: a API devolve até 1000 linhas por pedido.
+    for (let from = 0; ; from += STORE_PAGE) {
+      const { data: unnamed, error } = await db.from('stores').select('id, name').is('cnpj', null).order('id').range(from, from + STORE_PAGE - 1);
+      if (error) throw error;
+      const existing = (unnamed ?? []).find((s) => sameStoreName(s.name, store.name!));
+      if (existing) return existing.id;
+      if ((unnamed ?? []).length < STORE_PAGE) break;
+    }
   }
 
   const { data, error } = await db
