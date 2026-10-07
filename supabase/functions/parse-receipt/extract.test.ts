@@ -1,6 +1,6 @@
 import { assertEquals } from '@std/assert';
 
-import { cleanReceipt, escapeLike, instructions, type ExtractedReceipt } from './extract.ts';
+import { cleanReceipt, instructions, sameStoreName, type ExtractedReceipt } from './extract.ts';
 
 const base: ExtractedReceipt = {
   is_receipt: true,
@@ -75,7 +75,10 @@ Deno.test('instructions explain the overlap when the receipt comes in several ph
   assertEquals(text.includes('entra uma vez só'), true);
 });
 
-Deno.test('escapeLike: curingas do LIKE no nome da loja viram texto', () => {
-  assertEquals(escapeLike('100% Mercado_Bom\\'), '100\\% Mercado\\_Bom\\\\');
-  assertEquals(escapeLike('Mercado Bom'), 'Mercado Bom');
+Deno.test('sameStoreName: mesmo nome sem caixa nem espaços; curingas são texto', () => {
+  assertEquals(sameStoreName(' Mercado Bom ', 'mercado bom'), true);
+  assertEquals(sameStoreName('Mercado Bom', 'Mercado Bom Demais'), false);
+  assertEquals(sameStoreName('*', 'Mercado Bom'), false);
+  assertEquals(sameStoreName('%', 'Mercado Bom'), false);
+  assertEquals(sameStoreName('M_rcado', 'Mercado'), false);
 });

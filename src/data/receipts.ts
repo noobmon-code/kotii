@@ -108,13 +108,17 @@ interface NfcePageResult {
   items: NfceItem[];
 }
 
+/** Mesmo nome de loja, sem caixa nem espaços nas pontas (num ILIKE, "%", "_" e "*" seriam curingas). */
+const sameStoreName = (a: string, b: string) => a.trim().toLocaleLowerCase('pt-BR') === b.trim().toLocaleLowerCase('pt-BR');
+
 /** Mercado pelo CNPJ (ou nome), criando se ainda não existe, como na leitura por foto. */
 async function findOrCreateStore(store: { name: string | null; cnpj: string | null; address: string | null }) {
   if (!store.name && !store.cnpj) return null;
-  const lookup = store.cnpj
-    ? supabase.from('stores').select('id').eq('cnpj', store.cnpj)
-    : supabase.from('stores').select('id').is('cnpj', null).ilike('name', store.name!.replace(/[\\%_]/g, '\\$&'));
-  const existing = unwrap(await lookup.limit(1).maybeSingle()) as { id: string } | null;
+  const existing = store.cnpj
+    ? (unwrap(await supabase.from('stores').select('id').eq('cnpj', store.cnpj).limit(1).maybeSingle()) as { id: string } | null)
+    : ((unwrap(await supabase.from('stores').select('id, name').is('cnpj', null)) as { id: string; name: string }[]).find((s) =>
+        sameStoreName(s.name, store.name!),
+      ) ?? null);
   if (existing) return existing.id;
   const created = unwrap(
     await supabase
