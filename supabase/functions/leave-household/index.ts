@@ -1,7 +1,8 @@
 // POST { householdId, deleteIfLast?: boolean } -> { status: 'left' | 'deleted' }
 //                                               | 409 { code: 'last_member' }
 //                                               | 404 { code: 'not_member' }
-// POST { drain: true } -> { done, failed }   (pg_cron, de hora em hora)
+// POST { drain: true } -> { done, failed }   (pg_cron, de hora em hora,
+//                                               com o segredo x-cleanup-secret)
 //
 // Tira quem chamou da casa que ela confirmou. A regra fica em
 // public.leave_household (roda como a pessoa, com RLS): o dono passa
@@ -9,11 +10,14 @@
 // 409 para o app perguntar; já não é dessa casa, 404.
 // A casa apagada entra numa fila no banco; esta função apaga as fotos da
 // fila com a service role, que o app não tem, a cada saída e no modo drain,
-// chamado pelo agendamento. O drain só limpa casas que já foram apagadas.
+// chamado pelo agendamento. O drain só limpa casas que já foram apagadas, e
+// só roda com o segredo do agendamento (cleanup_cron_secret, no Vault): a
+// chave anon é pública e não basta.
 
 import { createClient } from '@supabase/supabase-js';
 
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
+import { sameSecret } from '../_shared/secret.ts';
 import { type CleanupQueue, drainCleanupQueue } from './cleanup.ts';
 
 const CORS = {
@@ -57,6 +61,12 @@ Deno.serve(async (req) => {
 
   const body = (await req.json().catch(() => null)) as { drain?: unknown; householdId?: unknown; deleteIfLast?: unknown } | null;
   if (body?.drain === true) {
+    const { data: secret, error: secretError } = await admin.rpc('cleanup_config');
+    if (secretError || typeof secret !== 'string' || !secret) {
+      console.error('cleanup secret missing', secretError);
+      return json({ error: 'Limpeza agendada não configurada.' }, 503);
+    }
+    if (!sameSecret(req.headers.get('x-cleanup-secret'), secret)) return json({ error: 'Não autorizado.' }, 401);
     const result = await drain().catch((err) => {
       console.error('cleanup queue failed', err);
       return null;

@@ -1892,7 +1892,7 @@ begin
 end $$;
 set client_min_messages = warning;
 drop schema vault cascade;
-drop schema net cascade;
+delete from net.requests;
 reset client_min_messages;
 
 -- Sem os segredos do Vault, o job da limpeza falha com a instrução em vez de chamar uma URL nula.
@@ -1904,10 +1904,31 @@ begin
     perform public.request_household_file_cleanup();
     raise exception 'FAIL: cleanup job ran without the Vault secrets';
   exception when raise_exception then
-    assert sqlerrm like 'Faltam os segredos project_url e anon_key%', 'cleanup job names the missing secrets';
+    assert sqlerrm like 'Faltam os segredos project_url, anon_key e cleanup_cron_secret%', 'cleanup job names the missing secrets';
   end;
+  -- Com os segredos: chama a função com o segredo da limpeza, que só a service role lê.
+  insert into vault.decrypted_secrets values
+    ('project_url', 'https://projeto.supabase.co/'), ('anon_key', 'anon'), ('cleanup_cron_secret', 'segredo-limpeza');
+  perform public.request_household_file_cleanup();
+  assert (select url from net.requests order by id desc limit 1) = 'https://projeto.supabase.co/functions/v1/leave-household', 'calls leave-household';
+  assert (select headers ->> 'x-cleanup-secret' from net.requests order by id desc limit 1) = 'segredo-limpeza', 'with the cleanup secret';
+  assert public.cleanup_config() = 'segredo-limpeza', 'config for leave-household';
   delete from public.household_file_cleanup;
   assert public.request_household_file_cleanup() is null, 'empty queue: nothing to call';
 end $$;
+set role authenticated;
+do $$
+begin
+  begin
+    perform public.cleanup_config();
+    raise exception 'FAIL: the app read the cleanup secret';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+reset role;
+
+set client_min_messages = warning;
+drop schema net cascade;
+reset client_min_messages;
 
 \echo 'OK — todos os testes do banco passaram'
