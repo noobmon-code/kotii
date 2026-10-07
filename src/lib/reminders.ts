@@ -294,11 +294,13 @@ export interface MedicationTarget {
   label?: string;
 }
 
-function contentOf(medication: Medication, label?: string) {
+// A casa vai no aviso: no navegador, a agenda fica no servidor, e quem é
+// tirado da casa (remove_member) tem os avisos dela apagados lá na hora.
+function contentOf(medication: Medication, { householdId, label }: MedicationTarget) {
   return {
     title: `${medication.name} — ${medication.person_name}${label ? ` · ${label}` : ''}`,
     body: medication.dosage ? `Hora de tomar: ${medication.dosage}` : 'Hora de tomar o remédio',
-    data: { medicationId: medication.id },
+    data: { medicationId: medication.id, householdId },
   };
 }
 
@@ -306,7 +308,7 @@ function contentOf(medication: Medication, label?: string) {
 async function schedule(medication: Medication, today: string, { householdId, label }: MedicationTarget): Promise<void> {
   const Notifications = notifications();
   const plan = planReminders(toPlanInput(medication), today, currentTimeHHMM());
-  const content = contentOf(medication, label);
+  const content = contentOf(medication, { householdId, label });
   const signature = JSON.stringify({ plan, content });
   const previous = await readStored(medication.id);
   if (previous?.signature === signature && previous.householdId === householdId) return;
@@ -624,7 +626,7 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
         const [y, m, d] = reminder.date.split('-').map(Number);
         const [hour, minute] = reminder.time.split(':').map(Number);
         return {
-          content: { title: reminder.title, body: reminder.body, data: { reminder: reminder.key } },
+          content: { title: reminder.title, body: reminder.body, data: { reminder: reminder.key, householdId } },
           trigger: {
             type: Notifications.SchedulableTriggerInputTypes.DATE,
             date: new Date(y, m - 1, d, hour, minute),

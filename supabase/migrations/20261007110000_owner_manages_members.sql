@@ -5,7 +5,10 @@
 --
 -- Quem sai por decisão do dono fica como quem saiu sozinho: o que registrou
 -- continua com a casa e a ficha de pessoa dele vira dependente
--- (member_user_id nulo, pela chave estrangeira).
+-- (member_user_id nulo, pela chave estrangeira). Os avisos dele sobre esta
+-- casa que ficam no servidor (a agenda do navegador, push_schedule, com a
+-- casa em data.householdId) saem na hora; os do celular saem quando o app
+-- dele abre e vê que a casa não é mais dele (pruneHouseholdReminders).
 
 create function public.assert_household_owner(p_household_id uuid)
 returns void
@@ -47,6 +50,10 @@ begin
   end if;
   -- A sessão dele que estava nesta casa cai para a primeira casa que ainda tem.
   delete from public.household_sessions s where s.household_id = p_household_id and s.user_id = p_user_id;
+  -- Os avisos desta casa agendados nos navegadores dele não tocam mais.
+  delete from public.push_schedule p
+    using public.push_subscriptions s
+    where p.subscription_id = s.id and s.user_id = p_user_id and p.data ->> 'householdId' = p_household_id::text;
 end;
 $$;
 

@@ -5,7 +5,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 
 import { forgetActiveHousehold, getActiveHousehold, loadActiveHousehold, setActiveHousehold } from './activeHousehold';
 import { cacheHousehold, cacheOwners, forgetCache, queryClient, resumeQueue, setSessionValid } from './queryClient';
-import { disableAllReminders } from './reminders';
+import { disableAllReminders, pruneHouseholdReminders } from './reminders';
 import { supabase, unwrap } from './supabase';
 import type { Household, Member } from './types';
 
@@ -190,6 +190,9 @@ export function useHousehold() {
     queryFn: async (): Promise<HouseholdState | null> => {
       await loadActiveHousehold(userId!);
       const houses = (unwrap(await supabase.rpc('my_households')) ?? []) as HouseholdSummary[];
+      // Casa de que a pessoa saiu por outro aparelho, ou de que foi tirada:
+      // os lembretes dela saem deste aparelho, mesmo que não sobre casa nenhuma.
+      pruneHouseholdReminders(houses.map((h) => h.id)).catch(() => undefined);
       const current = getActiveHousehold();
       const pick = houses.find((h) => h.id === current) ?? houses[0];
       if (pick?.id !== current) {
