@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
+import { householdErrorMessage, INVITE_NOT_FOUND } from '@/data/household';
 import { signOut } from '@/lib/auth';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
@@ -34,18 +35,16 @@ export default function WelcomeScreen() {
     }
     setBusy(true);
     try {
-      const { error } =
+      const { data, error } =
         mode === 'criar'
           ? await supabase.rpc('create_household', { p_name: householdName, p_display_name: displayName })
           : await supabase.rpc('join_household', { p_invite_code: code, p_display_name: displayName });
-      if (error) throw error;
+      if (error) throw new Error(householdErrorMessage(error));
+      // Código errado: o banco devolve nada (e conta a tentativa) em vez de erro.
+      if (!data) throw new Error(INVITE_NOT_FOUND);
       await queryClient.invalidateQueries({ queryKey: ['household'] });
     } catch (err) {
-      const message = errorMessage(err);
-      notify(
-        'Não foi possível continuar',
-        /invalid invite code/i.test(message) ? 'Código não encontrado. Confira com quem te convidou.' : message,
-      );
+      notify('Não foi possível continuar', errorMessage(err));
     } finally {
       setBusy(false);
     }

@@ -35,9 +35,12 @@ async function errorCode(error: unknown): Promise<string | null> {
 }
 
 /** Mensagem para os erros de criar ou entrar numa casa. */
+export const INVITE_NOT_FOUND = 'Código não encontrado. Confira com quem te convidou.';
+
 export function householdErrorMessage(error: unknown): string {
   const message = errorMessage(error);
-  if (/invalid invite code/i.test(message)) return 'Código não encontrado. Confira com quem te convidou.';
+  if (/invalid invite code/i.test(message)) return INVITE_NOT_FOUND;
+  if (/too many invite attempts/i.test(message)) return 'Muitas tentativas com código errado. Espere uma hora e tente de novo.';
   if (/already a member/i.test(message)) return 'Você já está nessa casa.';
   if (/household limit/i.test(message)) return 'Uma conta pode estar em até 5 casas. Saia de uma para criar ou entrar em outra.';
   return message;
@@ -97,6 +100,8 @@ export function useAddHousehold(userId: string | undefined) {
           ? await supabase.rpc('create_household', { p_name: input.name, p_display_name: input.displayName })
           : await supabase.rpc('join_household', { p_invite_code: input.code, p_display_name: input.displayName });
       if (error) throw new Error(householdErrorMessage(error));
+      // Código errado: o banco devolve nada (e conta a tentativa) em vez de erro.
+      if (!data) throw new Error(INVITE_NOT_FOUND);
       const house = data as Household;
       await openHousehold(queryClient, userId, house.id);
       return house;
