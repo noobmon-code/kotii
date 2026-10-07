@@ -1888,9 +1888,15 @@ begin
   for n in 1..public.max_push_subscriptions() loop
     perform public.register_push_subscription('https://fcm.googleapis.com/fcm/send/j' || n, 'k', 'a', 'UTC');
   end loop;
-  update public.push_subscriptions set updated_at = now() - interval '30 days' where endpoint like '%/j3';
   insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute)
   values (gen_random_uuid(), (select id from public.push_subscriptions where endpoint like '%/j3'), 'Do antigo', 'daily', 8, 0);
+end $$;
+-- O navegador j3 ficou um mês sem abrir o app (o app não mexe em updated_at: só a função).
+reset role;
+update public.push_subscriptions set updated_at = now() - interval '30 days' where endpoint like '%/j3';
+set role authenticated;
+do $$
+begin
   perform public.register_push_subscription('https://fcm.googleapis.com/fcm/send/j-novo', 'k', 'a', 'UTC');
   assert (select count(*) from public.push_subscriptions) = public.max_push_subscriptions(), 'one browser past the cap: the cap holds';
   assert not exists (select 1 from public.push_subscriptions where endpoint like '%/j3'), 'the stalest browser is out';
