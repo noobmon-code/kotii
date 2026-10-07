@@ -145,12 +145,39 @@ describe('sessão cifrada no aparelho', () => {
     expect(plain.map.has('sb-auth')).toBe(false);
   });
 
-  it('remover apaga o conteúdo; a chave e a marca ficam no cofre', async () => {
+  it('o cofre falhando ao marcar não descarta a sessão cifrada', async () => {
     await storage.setItem('sb-auth', SESSION);
+    secret.map.delete('sb-auth.sealed');
+    const flaky: SecretStore = {
+      ...secret,
+      setItemAsync: async () => {
+        throw new Error('cofre indisponível');
+      },
+    };
+    expect(await createEncryptedStorage({ plain, secret: flaky, cipher: fakeCipher }).getItem('sb-auth')).toBe(SESSION);
+    expect(plain.map.has('sb-auth')).toBe(true);
+    expect(secret.map.has('sb-auth.sealed')).toBe(false);
+    expect(await createEncryptedStorage({ plain, secret, cipher: fakeCipher }).getItem('sb-auth')).toBe(SESSION);
+    expect(secret.map.get('sb-auth.sealed')).toBe('1');
+  });
+
+  it('remover apaga o conteúdo e a chave; a marca fica no cofre', async () => {
+    await storage.setItem('sb-auth', SESSION);
+    const sealed = plain.map.get('sb-auth')!;
     await storage.removeItem('sb-auth');
     expect(plain.map.has('sb-auth')).toBe(false);
-    expect(secret.map.has('sb-auth.key')).toBe(true);
+    expect(secret.map.has('sb-auth.key')).toBe(false);
     expect(secret.map.has('sb-auth.sealed')).toBe(true);
+    // Uma cópia do conteúdo cifrado de antes de sair não abre mais.
+    plain.map.set('sb-auth', sealed);
+    expect(await storage.getItem('sb-auth')).toBeNull();
+    expect(plain.map.has('sb-auth')).toBe(false);
+    // Entrar de novo ganha chave nova e segue normal.
+    await storage.setItem('sb-auth', SESSION);
+    expect(secret.map.has('sb-auth.key')).toBe(true);
+    expect(await storage.getItem('sb-auth')).toBe(SESSION);
+    plain.map.set('sb-auth', sealed);
+    expect(await storage.getItem('sb-auth')).toBeNull();
     expect(await storage.getItem('sb-auth')).toBeNull();
   });
 });

@@ -13,9 +13,10 @@
 // A sessão guardada antes desta versão (texto puro no AsyncStorage) é
 // cifrada na primeira leitura, sem pedir para entrar de novo. Terminada a
 // primeira gravação cifrada, o cofre recebe a marca de "já cifrado" do
-// item, e ela fica para sempre (sair da conta apaga só o conteúdo): com a
-// marca, texto puro é recusado, e quem só escreve no AsyncStorage não
-// planta uma sessão. A marca vem depois do conteúdo cifrado, não antes:
+// item, e ela fica para sempre (sair da conta apaga o conteúdo e a chave,
+// para uma cópia antiga do conteúdo não voltar): com a marca, texto puro é
+// recusado, e quem só escreve no AsyncStorage não planta uma sessão. A
+// marca vem depois do conteúdo cifrado, não antes:
 // uma migração interrompida no meio (chave já no cofre, texto puro ainda
 // no AsyncStorage) termina na próxima leitura em vez de perder a sessão.
 
@@ -107,7 +108,8 @@ export function createEncryptedStorage({ plain, secret, cipher }: EncryptedStora
     const encryptionKey = (await keyOf(key, { create: true }))!;
     await plain.setItem(key, await cipher.seal(encryptionKey, value));
     // Só com o conteúdo cifrado já gravado: a partir daqui texto puro não vale.
-    await markSealed(key);
+    // O cofre falhando aqui não desfaz a gravação: a marca entra na próxima leitura.
+    await markSealed(key).catch(() => undefined);
   }
 
   return {
@@ -131,20 +133,27 @@ export function createEncryptedStorage({ plain, secret, cipher }: EncryptedStora
         await plain.removeItem(key);
         return null;
       }
+      let opened: string;
       try {
-        const opened = await cipher.open(encryptionKey, stored);
-        // Gravação cifrada que ficou sem a marca (parou antes dela): marca agora.
-        await markSealed(key);
-        return opened;
+        opened = await cipher.open(encryptionKey, stored);
       } catch {
         await plain.removeItem(key);
         return null;
       }
+      // Gravação cifrada que ficou sem a marca (parou antes dela): marca agora.
+      // Fora do try, e sem derrubar a leitura: o cofre falhando aqui não é
+      // conteúdo alterado, e a sessão que abriu vale.
+      await markSealed(key).catch(() => undefined);
+      return opened;
     },
     setItem,
     async removeItem(key) {
-      // A chave e a marca ficam: texto puro não volta a ser aceito neste aparelho.
+      // O conteúdo e a chave saem: uma cópia do conteúdo cifrado guardada antes
+      // de sair da conta não abre mais (a próxima sessão ganha chave nova). A
+      // marca fica: texto puro não volta a ser aceito neste aparelho.
       await plain.removeItem(key);
+      keys.delete(key);
+      await secret.deleteItemAsync(keyName(key));
     },
   };
 }
