@@ -135,3 +135,10 @@ export function cleanReceipt(
     items,
   };
 }
+
+/**
+ * Mesmo nome de loja, sem diferença de caixa nem espaços nas pontas. A
+ * comparação é feita aqui, e não num ILIKE: o nome lido da nota pode trazer
+ * "%", "_" ou "*" (que o PostgREST trata como curinga) e casar com qualquer loja.
+ */
+export const sameStoreName = (a: string, b: string) => a.trim().toLocaleLowerCase('pt-BR') === b.trim().toLocaleLowerCase('pt-BR');

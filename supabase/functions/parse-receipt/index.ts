@@ -12,7 +12,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { QuotaError, refundAiQuota, takeAiQuota } from '../_shared/aiQuota.ts';
 import { ExtractionError, extractStructured, mediaTypeOf, toVisionImage, visionConfig } from '../_shared/vision.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
-import { cleanReceipt, ExtractedReceiptSchema, instructions, MAX_PHOTOS, SYSTEM } from './extract.ts';
+import { cleanReceipt, ExtractedReceiptSchema, instructions, MAX_PHOTOS, sameStoreName, SYSTEM } from './extract.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -29,18 +29,30 @@ function json(body: unknown, status = 200): Response {
 
 const config = visionConfig(['RECEIPT']);
 
+const STORE_PAGE = 1000;
+
 async function findOrCreateStore(
   db: SupabaseClient,
   store: { name: string | null; cnpj: string | null; address: string | null },
 ): Promise<string | null> {
   if (!store.name && !store.cnpj) return null;
 
-  const lookup = store.cnpj
-    ? db.from('stores').select('id').eq('cnpj', store.cnpj)
-    : db.from('stores').select('id').is('cnpj', null).ilike('name', store.name!);
-  const { data: existing, error: lookupError } = await lookup.limit(1).maybeSingle();
-  if (lookupError) throw lookupError;
-  if (existing) return existing.id;
+  // Sem CNPJ, pelo nome, comparado aqui: num ILIKE, "%", "_" e "*" no nome
+  // que a IA leu seriam curingas e casariam com qualquer loja da casa.
+  if (store.cnpj) {
+    const { data: existing, error } = await db.from('stores').select('id').eq('cnpj', store.cnpj).limit(1).maybeSingle();
+    if (error) throw error;
+    if (existing) return existing.id;
+  } else {
+    // Página a página: a API devolve até 1000 linhas por pedido.
+    for (let from = 0; ; from += STORE_PAGE) {
+      const { data: unnamed, error } = await db.from('stores').select('id, name').is('cnpj', null).order('id').range(from, from + STORE_PAGE - 1);
+      if (error) throw error;
+      const existing = (unnamed ?? []).find((s) => sameStoreName(s.name, store.name!));
+      if (existing) return existing.id;
+      if ((unnamed ?? []).length < STORE_PAGE) break;
+    }
+  }
 
   const { data, error } = await db
     .from('stores')
