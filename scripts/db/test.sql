@@ -1713,12 +1713,17 @@ begin
   perform set_config('request.jwt.claims', json_build_object('sub', auth.uid(), 'session_id', 'sessao-l')::text, true);
   perform public.select_household(hk);
   perform set_config('request.jwt.claims', '', true);
-  -- No navegador de L: um aviso desta casa e um de outra.
+  -- No navegador de L: avisos desta casa e de outra, com e sem a casa marcada
+  -- (os sem marca são de antes de o aviso levar a casa: valem pelo remédio ou pela tarefa).
   perform set_config('test.sub_l', public.register_push_subscription('https://fcm.googleapis.com/fcm/send/l1', 'k', 'a', 'UTC')::text, false);
+  insert into public.medications (person_name, name, times) values ('Lia', 'Vitamina K', array['08:00']);
+  insert into public.chores (title, due_on) values ('Tarefa da K', '2026-10-10');
   insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute, data) values
     ('00000000-0000-0000-0000-0000000000b1', current_setting('test.sub_l')::uuid, 'Remédio da casa K', 'daily', 8, 0, json_build_object('medicationId', 'm', 'householdId', hk)::jsonb),
-    ('00000000-0000-0000-0000-0000000000b2', current_setting('test.sub_l')::uuid, 'Conta de outra casa', 'daily', 8, 0, '{"reminder": "bills:x", "householdId": "outra"}'),
-    ('00000000-0000-0000-0000-0000000000b3', current_setting('test.sub_l')::uuid, 'De antes de levar a casa', 'daily', 8, 0, '{"medicationId": "m2"}');
+    ('00000000-0000-0000-0000-0000000000b2', current_setting('test.sub_l')::uuid, 'Conta de outra casa', 'daily', 8, 0, json_build_object('reminder', 'bills:x:2026-10-10', 'householdId', gen_random_uuid())::jsonb),
+    ('00000000-0000-0000-0000-0000000000b3', current_setting('test.sub_l')::uuid, 'Remédio antigo da K', 'daily', 8, 0, json_build_object('medicationId', (select id from public.medications where name = 'Vitamina K'))::jsonb),
+    ('00000000-0000-0000-0000-0000000000b4', current_setting('test.sub_l')::uuid, 'Tarefa antiga da K', 'daily', 9, 0, json_build_object('reminder', 'chores:' || (select id from public.chores where title = 'Tarefa da K') || ':2026-10-10')::jsonb),
+    ('00000000-0000-0000-0000-0000000000b5', current_setting('test.sub_l')::uuid, 'Conta antiga de outra casa', 'daily', 9, 0, json_build_object('reminder', 'bills:' || gen_random_uuid() || ':2026-10-10')::jsonb);
 end $$;
 select set_config('request.jwt.claim.sub', :'user_k', false) \gset
 do $$
@@ -1756,8 +1761,9 @@ end $$;
 reset role;
 do $$
 begin
-  assert (select array_agg(id) from public.push_schedule where subscription_id = current_setting('test.sub_l')::uuid)
-    = array['00000000-0000-0000-0000-0000000000b2']::uuid[], 'the removed member browser loses this household reminders (and untagged ones), keeps the rest';
+  assert (select array_agg(id order by id) from public.push_schedule where subscription_id = current_setting('test.sub_l')::uuid)
+    = array['00000000-0000-0000-0000-0000000000b2', '00000000-0000-0000-0000-0000000000b5']::uuid[],
+    'the removed member browser loses this household reminders (tagged or resolved by medication/chore), keeps the rest';
   delete from public.push_subscriptions where id = current_setting('test.sub_l')::uuid;
 end $$;
 set role authenticated;
