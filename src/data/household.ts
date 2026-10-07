@@ -170,7 +170,11 @@ export function useRemoveMember() {
       const { error } = await supabase.rpc('remove_member', { p_household_id: householdId, p_user_id: userId });
       if (error) throw new Error(memberErrorMessage(error));
     },
-    onSuccess: () => Promise.all([queryClient.invalidateQueries({ queryKey: ['household'] }), queryClient.invalidateQueries({ queryKey: ['people'] })]),
+    // As tarefas dele ficam sem responsável (chave estrangeira): a tela precisa ver isso.
+    onSuccess: () =>
+      Promise.all(
+        [['household'], ['people'], ['chores']].map((queryKey) => queryClient.invalidateQueries({ queryKey })),
+      ),
   });
 }
 
