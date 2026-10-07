@@ -121,11 +121,21 @@ end $$;
 reset role;
 do $$
 begin
-  assert not exists (select 1 from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a'), 'joining clears the count';
+  assert (select failed from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a') = 10, 'joining does not clear the count';
   -- Zé passou por A só para o teste: a ficha que ficou lá sai.
   delete from public.people where household_id = current_setting('test.hh_a')::uuid and name = 'Zé';
+  -- A hora dos dez erros ainda corre: entrar e sair não abre brecha.
+  update public.join_attempts set window_started_at = now() - interval '10 minutes';
 end $$;
 set role authenticated;
+do $$
+begin
+  begin
+    perform public.join_household('ZZZZZZ', 'Zé');
+    raise exception 'FAIL: joining a known household reset the limit';
+  exception when sqlstate 'NK004' then null;
+  end;
+end $$;
 -- ---------------------------------------------------------------------------
 \echo '• A importa duas notas; matching e aprendizado de validade'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset

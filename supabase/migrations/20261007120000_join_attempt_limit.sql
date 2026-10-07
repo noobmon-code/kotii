@@ -2,8 +2,8 @@
 -- caracteres de um alfabeto de 32 (um bilhão de combinações), e nada
 -- impedia uma conta de tentar sem parar. Agora cada conta tem até
 -- max_join_attempts() erros na mesma hora (contada do primeiro erro);
--- depois disso, join_household recusa (NK004) até essa hora passar. Entrar
--- numa casa zera a contagem.
+-- depois disso, join_household recusa (NK004) até essa hora passar, e só
+-- ela: entrar numa casa não zera a contagem.
 --
 -- Para o erro ficar registrado, join_household deixa de lançar exceção no
 -- código errado (a exceção desfaria a gravação): devolve nulo, e o app
@@ -67,7 +67,8 @@ begin
 
   insert into public.household_members (household_id, user_id, display_name, role, selected_at)
   values (h.id, auth.uid(), trim(p_display_name), 'member', now());
-  delete from public.join_attempts a where a.user_id = auth.uid();
+  -- Entrar não zera os erros: senão bastaria entrar numa casa conhecida (e
+  -- sair) a cada nove erros para tentar sem parar.
 
   return h;
 end;
