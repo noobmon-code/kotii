@@ -1250,6 +1250,10 @@ begin
     raise exception 'FAIL: unknown kind';
   exception when invalid_parameter_value then null;
   end;
+  -- A nota pelo QR code não usa IA, mas a busca na Sefaz conta no mesmo limite.
+  select * into r from public.use_ai('nfce');
+  assert r.allowed and r.used = 1 and r.lim = 200, 'the QR code reading has its own limit';
+  assert (select array_agg(kind order by kind) from public.ai_usage_summary()) = array['chat', 'menu', 'nfce', 'photo'], 'the summary lists every kind';
 end $$;
 set role service_role;
 select public.refund_ai(:'hh_a', public.ai_month(), 'photo') \gset

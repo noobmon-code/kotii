@@ -53,7 +53,8 @@ export function AiUsageSection() {
           );
         })}
         <Text variant="small">
-          Limite da casa para não passar do custo combinado. Volta a zero no dia 1º; ler nota pelo QR code não usa IA.
+          Limite da casa para não passar do custo combinado. Volta a zero no dia 1º. A nota pelo QR code não usa IA, mas a
+          busca na Sefaz também tem limite.
         </Text>
       </Card>
     </Section>
