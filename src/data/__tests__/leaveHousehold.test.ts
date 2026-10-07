@@ -41,5 +41,6 @@ describe('criar ou entrar em outra casa', () => {
     expect(householdErrorMessage(new Error('invalid invite code'))).toBe('Código não encontrado. Confira com quem te convidou.');
     expect(householdErrorMessage(new Error('already a member of this household'))).toBe('Você já está nessa casa.');
     expect(householdErrorMessage(new Error('household limit reached'))).toMatch(/até 5 casas/);
+    expect(householdErrorMessage(new Error('too many invite attempts'))).toMatch(/Espere uma hora/);
   });
 });

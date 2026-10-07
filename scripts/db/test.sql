@@ -38,9 +38,12 @@ select set_config('request.jwt.claim.sub', :'user_b', false) \gset
 do $$
 begin
   assert (select count(*) from public.households) = 0, 'B cannot see households before joining';
-  perform public.join_household('ZZZZZZ', 'Beto');
-  raise exception 'FAIL: joined with invalid code';
-exception when no_data_found then null;
+  assert public.join_household('ZZZZZZ', 'Beto') is null, 'wrong code: nothing, and the attempt counts';
+  begin
+    perform 1 from public.join_attempts;
+    raise exception 'FAIL: app user read the join attempts';
+  exception when insufficient_privilege then null;
+  end;
 end $$;
 select public.join_household(lower(:'invite_code'), 'Beto') \gset
 
@@ -52,6 +55,87 @@ select id as hh_a from public.households where name = 'Casa A' \gset
 select set_config('test.hh_a', :'hh_a', false) \gset
 set role authenticated;
 
+-- ---------------------------------------------------------------------------
+\echo '• código errado demais: a conta espera uma hora'
+\set user_z '00000000-0000-0000-0000-00000000001a'
+reset role;
+insert into auth.users (id) values (:'user_z');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_z', false) \gset
+do $$
+begin
+  for i in 1..public.max_join_attempts() loop
+    assert public.join_household('ZZZZZ' || i, 'Zé') is null, 'wrong code';
+  end loop;
+  begin
+    perform public.join_household('ZZZZZZ', 'Zé');
+    raise exception 'FAIL: tried past the limit';
+  exception when sqlstate 'NK004' then null;
+  end;
+  -- Mesmo o código certo espera: a conta está bloqueada.
+  begin
+    perform public.join_household(current_setting('test.invite_a'), 'Zé');
+    raise exception 'FAIL: the right code bypassed the block';
+  exception when sqlstate 'NK004' then null;
+  end;
+end $$;
+reset role;
+do $$
+begin
+  assert (select failed from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a') = public.max_join_attempts(), 'attempts counted';
+  -- A hora passou (contada do primeiro erro: errar de novo não a estica).
+  update public.join_attempts set window_started_at = now() - interval '61 minutes';
+end $$;
+set role authenticated;
+do $$
+begin
+  assert public.join_household('ZZZZZZ', 'Zé') is null, 'after an hour, tries again';
+end $$;
+reset role;
+do $$
+begin
+  assert (select failed from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a') = 1, 'a new hour starts the count over';
+  assert (select window_started_at from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a') > now() - interval '1 minute', 'and starts now';
+  -- Um erro a cada 59 minutos nunca chega ao limite: a hora é contada do primeiro erro.
+  update public.join_attempts set failed = 9, window_started_at = now() - interval '59 minutes';
+end $$;
+set role authenticated;
+do $$
+begin
+  assert public.join_household('ZZZZZZ', 'Zé') is null, 'tenth error inside the hour';
+  begin
+    perform public.join_household('ZZZZZZ', 'Zé');
+    raise exception 'FAIL: tried past the limit';
+  exception when sqlstate 'NK004' then null;
+  end;
+end $$;
+reset role;
+update public.join_attempts set window_started_at = now() - interval '2 hours';
+set role authenticated;
+do $$
+begin
+  perform public.join_household(current_setting('test.invite_a'), 'Zé');
+  assert (select count(*) from public.household_members where user_id = auth.uid()) = 1, 'the right code joins';
+  perform public.leave_household(current_setting('test.hh_a')::uuid);
+end $$;
+reset role;
+do $$
+begin
+  assert (select failed from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a') = 10, 'joining does not clear the count';
+  -- Zé passou por A só para o teste: a ficha que ficou lá sai.
+  delete from public.people where household_id = current_setting('test.hh_a')::uuid and name = 'Zé';
+  -- A hora dos dez erros ainda corre: entrar e sair não abre brecha.
+  update public.join_attempts set window_started_at = now() - interval '10 minutes';
+end $$;
+set role authenticated;
+do $$
+begin
+  begin
+    perform public.join_household('ZZZZZZ', 'Zé');
+    raise exception 'FAIL: joining a known household reset the limit';
+  exception when sqlstate 'NK004' then null;
+  end;
+end $$;
 -- ---------------------------------------------------------------------------
 \echo '• A importa duas notas; matching e aprendizado de validade'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
