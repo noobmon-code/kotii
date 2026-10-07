@@ -11,7 +11,10 @@
 // No navegador não há cofre: fica o localStorage, como antes.
 //
 // A sessão guardada antes desta versão (texto puro no AsyncStorage) é
-// cifrada na primeira leitura, sem pedir para entrar de novo.
+// cifrada na primeira leitura, sem pedir para entrar de novo. Só nessa
+// primeira vez: a chave do item fica no cofre para sempre (sair da conta
+// apaga só o conteúdo), e com a chave já existindo texto puro é recusado;
+// quem só escreve no AsyncStorage não planta uma sessão.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AESEncryptionKey, AESSealedData, aesDecryptAsync, aesEncryptAsync } from 'expo-crypto';
@@ -49,8 +52,8 @@ export interface EncryptedStorageDeps {
   cipher: Cipher;
 }
 
-/** Era a sessão guardada em texto puro (antes de cifrar): um JSON. */
-const isPlainSession = (value: string) => value.startsWith('{');
+/** Parece a sessão guardada em texto puro (antes de cifrar): um JSON. */
+const looksPlain = (value: string) => value.startsWith('{');
 
 /** Chave do cofre para a chave de cifra de cada item (o cofre aceita letras, números, ".", "-" e "_"). */
 const keyName = (key: string) => `${key}.key`;
@@ -88,30 +91,30 @@ export function createEncryptedStorage({ plain, secret, cipher }: EncryptedStora
     async getItem(key) {
       const stored = await plain.getItem(key);
       if (stored === null) return null;
-      // Sessão de antes de cifrar: passa a cifrada agora.
-      if (isPlainSession(stored)) {
-        await setItem(key, stored);
-        return stored;
-      }
       const encryptionKey = await keyOf(key, { create: false });
-      if (encryptionKey) {
-        try {
-          return await cipher.open(encryptionKey, stored);
-        } catch {
-          // Conteúdo alterado ou que não bate com a chave: sem sessão.
-          await plain.removeItem(key);
-          return null;
+      if (!encryptionKey) {
+        // Nunca cifrou neste aparelho: é a sessão de antes de cifrar, que
+        // passa a cifrada agora. Cifrado sem chave (o cofre a perdeu) não abre.
+        if (looksPlain(stored)) {
+          await setItem(key, stored);
+          return stored;
         }
+        await plain.removeItem(key);
+        return null;
       }
-      // Cifrado sem chave (o cofre perdeu a chave): não dá para ler.
-      await plain.removeItem(key);
-      return null;
+      try {
+        // Texto puro com a chave já existente não é migração: é conteúdo
+        // plantado, e não abre como cifrado.
+        return await cipher.open(encryptionKey, stored);
+      } catch {
+        await plain.removeItem(key);
+        return null;
+      }
     },
     setItem,
     async removeItem(key) {
+      // A chave fica: texto puro não volta a ser aceito neste aparelho.
       await plain.removeItem(key);
-      keys.delete(key);
-      await secret.deleteItemAsync(keyName(key)).catch(() => undefined);
     },
   };
 }

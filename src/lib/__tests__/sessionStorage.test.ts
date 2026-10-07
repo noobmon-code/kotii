@@ -84,6 +84,19 @@ describe('sessão cifrada no aparelho', () => {
     expect(await storage.getItem('sb-auth')).toBe(SESSION);
   });
 
+  it('com a chave já no cofre, texto puro plantado no AsyncStorage não vale', async () => {
+    await storage.setItem('sb-auth', SESSION);
+    const planted = JSON.stringify({ access_token: 'x', refresh_token: 'y', user: { id: 'intruso' } });
+    plain.map.set('sb-auth', planted);
+    expect(await storage.getItem('sb-auth')).toBeNull();
+    expect(plain.map.has('sb-auth')).toBe(false);
+    // Nem depois de sair da conta: a chave fica no cofre.
+    await storage.setItem('sb-auth', SESSION);
+    await storage.removeItem('sb-auth');
+    plain.map.set('sb-auth', planted);
+    expect(await createEncryptedStorage({ plain, secret, cipher: fakeCipher }).getItem('sb-auth')).toBeNull();
+  });
+
   it('conteúdo alterado não abre: a sessão sai', async () => {
     await storage.setItem('sb-auth', SESSION);
     const sealed = plain.map.get('sb-auth')!;
@@ -100,11 +113,11 @@ describe('sessão cifrada no aparelho', () => {
     expect(plain.map.has('sb-auth')).toBe(false);
   });
 
-  it('remover apaga o conteúdo e a chave', async () => {
+  it('remover apaga o conteúdo; a chave fica no cofre', async () => {
     await storage.setItem('sb-auth', SESSION);
     await storage.removeItem('sb-auth');
     expect(plain.map.has('sb-auth')).toBe(false);
-    expect(secret.map.has('sb-auth.key')).toBe(false);
+    expect(secret.map.has('sb-auth.key')).toBe(true);
     expect(await storage.getItem('sb-auth')).toBeNull();
   });
 });
