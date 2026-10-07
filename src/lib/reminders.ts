@@ -592,7 +592,9 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
       ...(previous?.overdue ?? []).filter((o) => o.kind && unknown.has(o.kind)),
       ...plan.flatMap((r) => (r.overdue ? [{ key: r.overdue, at: `${r.date}T${r.time}`, kind: r.kind }] : [])),
     ];
-    const signature = JSON.stringify(plan) + (unknown.size ? `|sem:${[...unknown].join(',')}` : '');
+    // A casa entra na assinatura: os avisos de antes de levarem a casa (ver
+    // data.householdId) são refeitos uma vez, para o servidor saber de qual são.
+    const signature = `${JSON.stringify(plan)}|casa:${householdId}` + (unknown.size ? `|sem:${[...unknown].join(',')}` : '');
     if (previous?.signature === signature) {
       // Nada a refazer, mas avisos de saúde ou do clima que já tocaram saem da lista guardada.
       const keep = previous.ids.flatMap((id, i) => {

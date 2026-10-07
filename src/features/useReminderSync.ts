@@ -237,7 +237,11 @@ export function useReminderSync() {
     const run = () => syncOtherHouses(queryClient, list, activeId).catch(() => undefined);
     run();
     const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') run();
+      if (state !== 'active') return;
+      // A pessoa pode ter sido tirada de uma casa enquanto o app estava fechado:
+      // busca as casas de novo (o que poda os lembretes da que sumiu) e refaz.
+      queryClient.refetchQueries({ queryKey: ['household'] }).catch(() => undefined);
+      run();
     });
     return () => subscription.remove();
   }, [housesKey, target?.householdId, queryClient]);

@@ -1717,7 +1717,8 @@ begin
   perform set_config('test.sub_l', public.register_push_subscription('https://fcm.googleapis.com/fcm/send/l1', 'k', 'a', 'UTC')::text, false);
   insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute, data) values
     ('00000000-0000-0000-0000-0000000000b1', current_setting('test.sub_l')::uuid, 'Remédio da casa K', 'daily', 8, 0, json_build_object('medicationId', 'm', 'householdId', hk)::jsonb),
-    ('00000000-0000-0000-0000-0000000000b2', current_setting('test.sub_l')::uuid, 'Conta de outra casa', 'daily', 8, 0, '{"reminder": "bills:x", "householdId": "outra"}');
+    ('00000000-0000-0000-0000-0000000000b2', current_setting('test.sub_l')::uuid, 'Conta de outra casa', 'daily', 8, 0, '{"reminder": "bills:x", "householdId": "outra"}'),
+    ('00000000-0000-0000-0000-0000000000b3', current_setting('test.sub_l')::uuid, 'De antes de levar a casa', 'daily', 8, 0, '{"medicationId": "m2"}');
 end $$;
 select set_config('request.jwt.claim.sub', :'user_k', false) \gset
 do $$
@@ -1756,7 +1757,7 @@ reset role;
 do $$
 begin
   assert (select array_agg(id) from public.push_schedule where subscription_id = current_setting('test.sub_l')::uuid)
-    = array['00000000-0000-0000-0000-0000000000b2']::uuid[], 'the removed member browser loses this household reminders, keeps the rest';
+    = array['00000000-0000-0000-0000-0000000000b2']::uuid[], 'the removed member browser loses this household reminders (and untagged ones), keeps the rest';
   delete from public.push_subscriptions where id = current_setting('test.sub_l')::uuid;
 end $$;
 set role authenticated;

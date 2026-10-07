@@ -50,10 +50,14 @@ begin
   end if;
   -- A sessão dele que estava nesta casa cai para a primeira casa que ainda tem.
   delete from public.household_sessions s where s.household_id = p_household_id and s.user_id = p_user_id;
-  -- Os avisos desta casa agendados nos navegadores dele não tocam mais.
+  -- Os avisos desta casa agendados nos navegadores dele não tocam mais. Os
+  -- de antes de o aviso levar a casa (sem householdId) também saem: podem
+  -- ser desta casa, e o app refaz os das outras na próxima vez que abrir
+  -- (a assinatura deles mudou com a casa).
   delete from public.push_schedule p
     using public.push_subscriptions s
-    where p.subscription_id = s.id and s.user_id = p_user_id and p.data ->> 'householdId' = p_household_id::text;
+    where p.subscription_id = s.id and s.user_id = p_user_id
+      and coalesce(p.data ->> 'householdId', p_household_id::text) = p_household_id::text;
 end;
 $$;
 

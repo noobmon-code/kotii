@@ -191,8 +191,9 @@ export function useHousehold() {
       await loadActiveHousehold(userId!);
       const houses = (unwrap(await supabase.rpc('my_households')) ?? []) as HouseholdSummary[];
       // Casa de que a pessoa saiu por outro aparelho, ou de que foi tirada:
-      // os lembretes dela saem deste aparelho, mesmo que não sobre casa nenhuma.
-      pruneHouseholdReminders(houses.map((h) => h.id)).catch(() => undefined);
+      // os lembretes dela saem deste aparelho. Sem casa nenhuma, saem todos,
+      // inclusive os de antes das várias casas (sem casa marcada).
+      (houses.length ? pruneHouseholdReminders(houses.map((h) => h.id)) : disableAllReminders()).catch(() => undefined);
       const current = getActiveHousehold();
       const pick = houses.find((h) => h.id === current) ?? houses[0];
       if (pick?.id !== current) {
