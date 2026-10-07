@@ -30,6 +30,8 @@ begin
   if not public.is_push_endpoint(p_endpoint) then
     raise exception 'invalid push endpoint' using errcode = '22023';
   end if;
+  -- Uma inscrição por vez por conta: pedidos em paralelo não passam do teto.
+  perform pg_advisory_xact_lock(hashtextextended('push_subscriptions:' || auth.uid()::text, 0));
   begin
     perform now() at time zone p_timezone;
     tz := p_timezone;
