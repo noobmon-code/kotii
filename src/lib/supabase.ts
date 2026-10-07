@@ -1,10 +1,10 @@
 import 'react-native-url-polyfill/auto';
 
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { AppState, Platform } from 'react-native';
 
 import { fetchWithHousehold, HOUSEHOLD_HEADER } from './activeHousehold';
+import { sessionStorage } from './sessionStorage';
 
 const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
@@ -13,7 +13,8 @@ export const isSupabaseConfigured = Boolean(url && anonKey);
 
 export const supabase = createClient(url ?? 'http://localhost:54321', anonKey ?? 'not-configured', {
   auth: {
-    storage: AsyncStorage,
+    // Cifrada no celular, com a chave no cofre do sistema (ver sessionStorage).
+    storage: sessionStorage,
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,
