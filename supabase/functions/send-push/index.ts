@@ -11,7 +11,8 @@
 import { createClient } from '@supabase/supabase-js';
 import { ApplicationServer, importVapidKeys, PushMessageError, Urgency } from '@negrel/webpush';
 
-import { type DuePush, PushFailed, type PushSender, sameSecret, sendAll } from './push.ts';
+import { sameSecret } from '../_shared/secret.ts';
+import { type DuePush, PushFailed, type PushSender, sendAll } from './push.ts';
 
 interface PushConfig {
   publicKey: JsonWebKey;
