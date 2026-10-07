@@ -167,3 +167,40 @@ export function useLeaveHousehold(userId: string | undefined) {
     },
   });
 }
+
+/** O dono tira um morador da casa. O que ele registrou fica; a ficha dele vira dependente. */
+export function useRemoveMember() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ householdId, userId }: { householdId: string; userId: string }) => {
+      const { error } = await supabase.rpc('remove_member', { p_household_id: householdId, p_user_id: userId });
+      if (error) throw new Error(memberErrorMessage(error));
+    },
+    // As tarefas dele ficam sem responsável (chave estrangeira): a tela precisa ver isso.
+    onSuccess: () =>
+      Promise.all(
+        [['household'], ['people'], ['chores']].map((queryKey) => queryClient.invalidateQueries({ queryKey })),
+      ),
+  });
+}
+
+/** O dono troca o código de convite: o antigo deixa de entrar na hora. */
+export function useRegenerateInviteCode() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (householdId: string) => {
+      const { data, error } = await supabase.rpc('regenerate_invite_code', { p_household_id: householdId });
+      if (error) throw new Error(memberErrorMessage(error));
+      return data as string;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['household'] }),
+  });
+}
+
+/** Mensagem para os erros de tirar morador ou trocar o código. */
+export function memberErrorMessage(error: unknown): string {
+  const message = errorMessage(error);
+  if (/only the household owner/i.test(message)) return 'Só quem é responsável pela casa pode fazer isso.';
+  if (/does not belong/i.test(message)) return 'Essa pessoa já não está na casa.';
+  return message;
+}

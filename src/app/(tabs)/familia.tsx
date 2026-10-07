@@ -3,25 +3,28 @@ import { Share, StyleSheet } from 'react-native';
 
 import { usePeople } from '@/data/health';
 import { useKidPoints } from '@/data/home';
-import { LastMemberError, useLeaveHousehold } from '@/data/household';
+import { LastMemberError, useLeaveHousehold, useRegenerateInviteCode, useRemoveMember } from '@/data/household';
 import { AiUsageSection } from '@/features/AiUsageSection';
 import { DocumentsSection } from '@/features/DocumentsSection';
 import { HouseRemindersSection } from '@/features/HouseRemindersSection';
 import { signOut, useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Badge, Button, Card, Icon, IconBadge, ListCard, ListRow, Loading, PageTitle, Row, Screen, Section, Text } from '@/ui/primitives';
+import { Badge, Button, Card, Icon, IconBadge, IconButton, ListCard, ListRow, Loading, PageTitle, Row, Screen, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 export default function FamilyScreen() {
   const { session } = useAuth();
   const household = useHousehold();
   const leave = useLeaveHousehold(session?.user.id);
+  const removeMember = useRemoveMember();
+  const regenerateCode = useRegenerateInviteCode();
   const people = usePeople();
   const kidPoints = useKidPoints();
 
   if (!household.data) return <Loading />;
   const { household: house, members, me, households } = household.data;
+  const isOwner = me.role === 'owner';
   const heir = members.find((m) => m.user_id !== me.user_id);
   const otherHouse = households.find((h) => h.id !== house.id);
   const leaveHint = [
@@ -88,6 +91,30 @@ export default function FamilyScreen() {
     }).catch(() => undefined);
   }
 
+  // Código que vazou (ou alguém que saiu e não deve voltar): o antigo para de valer na hora.
+  function confirmRegenerateCode() {
+    confirmAction(
+      'Trocar o código de convite',
+      'O código atual deixa de valer na hora; quem já está na casa continua. Quem ainda vai entrar precisa do código novo.',
+      'Trocar código',
+      () => regenerateCode.mutate(house.id, { onError: (err) => notify('Não deu para trocar o código', errorMessage(err)) }),
+      false,
+    );
+  }
+
+  function confirmRemove(member: { user_id: string; display_name: string }) {
+    confirmAction(
+      'Tirar da casa',
+      `${member.display_name} deixa de ver os dados de "${house.name}". O que registrou continua com a casa; a ficha de pessoa fica como dependente. Para voltar, só com o código de convite.`,
+      'Tirar da casa',
+      () =>
+        removeMember.mutate(
+          { householdId: house.id, userId: member.user_id },
+          { onError: (err) => notify('Não deu para tirar da casa', errorMessage(err)) },
+        ),
+    );
+  }
+
   return (
     <Screen fab>
       <PageTitle title={house.name} subtitle="Família" tint="purple" />
@@ -111,6 +138,16 @@ export default function FamilyScreen() {
           Quem entrar com este código vê e edita tudo da casa: listas, notas, despensa, tarefas, saúde e documentos.
         </Text>
         <Button title="Compartilhar convite" icon="share-variant-outline" variant="secondary" onPress={shareInvite} />
+        {isOwner ? (
+          <Button
+            title="Trocar código"
+            icon="refresh"
+            variant="ghost"
+            compact
+            loading={regenerateCode.isPending}
+            onPress={confirmRegenerateCode}
+          />
+        ) : null}
       </Card>
 
       <Section title={`Moradores (${members.length})`}>
@@ -120,7 +157,13 @@ export default function FamilyScreen() {
               key={m.user_id}
               left={<IconBadge icon="account-outline" tone={m.user_id === me.user_id ? 'primary' : 'neutral'} />}
               title={m.user_id === me.user_id ? `${m.display_name} (você)` : m.display_name}
-              right={m.role === 'owner' ? <Badge label="Responsável" /> : null}
+              right={
+                m.role === 'owner' ? (
+                  <Badge label="Responsável" />
+                ) : isOwner ? (
+                  <IconButton icon="account-remove-outline" label={`Tirar ${m.display_name} da casa`} onPress={() => confirmRemove(m)} />
+                ) : null
+              }
             />
           ))}
         </ListCard>

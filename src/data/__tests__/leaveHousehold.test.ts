@@ -1,7 +1,7 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import { QueryClient } from '@tanstack/react-query';
 
-import { forgetLeftHousehold, householdErrorMessage } from '../household';
+import { forgetLeftHousehold, householdErrorMessage, memberErrorMessage } from '../household';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -42,5 +42,13 @@ describe('criar ou entrar em outra casa', () => {
     expect(householdErrorMessage(new Error('already a member of this household'))).toBe('Você já está nessa casa.');
     expect(householdErrorMessage(new Error('household limit reached'))).toMatch(/até 5 casas/);
     expect(householdErrorMessage(new Error('too many invite attempts'))).toMatch(/Espere uma hora/);
+  });
+});
+
+describe('o dono cuida dos moradores', () => {
+  it('mensagens dos erros do banco', () => {
+    expect(memberErrorMessage(new Error('only the household owner can do this'))).toMatch(/responsável/);
+    expect(memberErrorMessage(new Error('user does not belong to this household'))).toMatch(/já não está/);
+    expect(memberErrorMessage(new Error('outro'))).toBe('outro');
   });
 });

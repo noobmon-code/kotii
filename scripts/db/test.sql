@@ -1866,6 +1866,142 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+\echo '• o dono tira moradores e troca o código de convite'
+\set user_k '00000000-0000-0000-0000-000000000014'
+\set user_l '00000000-0000-0000-0000-000000000015'
+reset role;
+insert into auth.users (id) values (:'user_k'), (:'user_l');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_k', false) \gset
+select (public.create_household('Casa K', 'Kim')).id as hh_k \gset
+select set_config('test.hh_k', :'hh_k', false) \gset
+select invite_code as invite_k from public.households where id = :'hh_k' \gset
+select set_config('request.jwt.claim.sub', :'user_l', false) \gset
+select public.join_household(:'invite_k', 'Lia') \gset
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+begin
+  begin
+    perform public.regenerate_invite_code(hk);
+    raise exception 'FAIL: a member changed the invite code';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.remove_member(hk, '00000000-0000-0000-0000-000000000014');
+    raise exception 'FAIL: a member removed the owner';
+  exception when insufficient_privilege then null;
+  end;
+  perform set_config('request.jwt.claims', json_build_object('sub', auth.uid(), 'session_id', 'sessao-l')::text, true);
+  perform public.select_household(hk);
+  perform set_config('request.jwt.claims', '', true);
+  -- No navegador de L: avisos desta casa e de outra, com e sem a casa marcada
+  -- (os sem marca são de antes de o aviso levar a casa: valem pelo remédio ou pela tarefa).
+  perform set_config('test.sub_l', public.register_push_subscription('https://fcm.googleapis.com/fcm/send/l1', 'k', 'a', 'UTC')::text, false);
+  insert into public.medications (person_name, name, times) values ('Lia', 'Vitamina K', array['08:00']);
+  insert into public.chores (title, due_on) values ('Tarefa da K', '2026-10-10');
+end $$;
+-- As linhas de outra casa e as antigas entram direto (a policy só deixa o
+-- navegador agendar avisos de casas em que a pessoa está).
+reset role;
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+begin
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute, data) values
+    ('00000000-0000-0000-0000-0000000000b1', current_setting('test.sub_l')::uuid, 'Remédio da casa K', 'daily', 8, 0, json_build_object('medicationId', 'm', 'householdId', hk)::jsonb),
+    ('00000000-0000-0000-0000-0000000000b2', current_setting('test.sub_l')::uuid, 'Conta de outra casa', 'daily', 8, 0, json_build_object('reminder', 'bills:x:2026-10-10', 'householdId', gen_random_uuid())::jsonb),
+    ('00000000-0000-0000-0000-0000000000b3', current_setting('test.sub_l')::uuid, 'Remédio antigo da K', 'daily', 8, 0, json_build_object('medicationId', (select id from public.medications where name = 'Vitamina K'))::jsonb),
+    ('00000000-0000-0000-0000-0000000000b4', current_setting('test.sub_l')::uuid, 'Tarefa antiga da K', 'daily', 9, 0, json_build_object('reminder', 'chores:' || (select id from public.chores where title = 'Tarefa da K') || ':2026-10-10')::jsonb),
+    ('00000000-0000-0000-0000-0000000000b5', current_setting('test.sub_l')::uuid, 'Conta antiga já apagada (casa desconhecida)', 'daily', 9, 0, json_build_object('reminder', 'bills:' || gen_random_uuid() || ':2026-10-10')::jsonb),
+    ('00000000-0000-0000-0000-0000000000b6', current_setting('test.sub_l')::uuid, 'Clima de outra casa', 'daily', 7, 0, json_build_object('reminder', 'weather:dia:2026-10-10', 'householdId', gen_random_uuid())::jsonb),
+    ('00000000-0000-0000-0000-0000000000b7', current_setting('test.sub_l')::uuid, 'Clima antigo (sem casa)', 'daily', 7, 0, json_build_object('reminder', 'weather:dia:2026-10-11')::jsonb),
+    ('00000000-0000-0000-0000-0000000000b8', current_setting('test.sub_l')::uuid, 'Remédio antigo já apagado', 'daily', 8, 0, json_build_object('medicationId', gen_random_uuid())::jsonb);
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_k', false) \gset
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+  old_code text := (select invite_code from public.households where id = hk);
+  new_code text;
+begin
+  begin
+    perform public.regenerate_invite_code(current_setting('test.hh_a')::uuid);
+    raise exception 'FAIL: changed the invite code of a foreign household';
+  exception when insufficient_privilege then null;
+  end;
+  new_code := public.regenerate_invite_code(hk);
+  assert new_code <> old_code and new_code ~ '^[A-Z2-9]{6}$', 'a new code in the same format';
+  assert (select invite_code from public.households where id = hk) = new_code, 'the household has the new code';
+  perform set_config('test.invite_k_old', old_code, false);
+  perform set_config('test.invite_k_new', new_code, false);
+
+  begin
+    perform public.remove_member(hk, auth.uid());
+    raise exception 'FAIL: the owner removed itself';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.remove_member(hk, '00000000-0000-0000-0000-00000000000c');
+    raise exception 'FAIL: removed someone who is not a member';
+  exception when no_data_found then null;
+  end;
+  perform public.remove_member(hk, '00000000-0000-0000-0000-000000000015');
+  assert (select count(*) from public.household_members where household_id = hk) = 1, 'the member is out';
+  assert (select member_user_id from public.people where household_id = hk and name = 'Lia') is null,
+    'the person record stays as a dependent';
+end $$;
+reset role;
+do $$
+begin
+  assert (select array_agg(id order by id) from public.push_schedule where subscription_id = current_setting('test.sub_l')::uuid)
+    = array['00000000-0000-0000-0000-0000000000b2', '00000000-0000-0000-0000-0000000000b6']::uuid[],
+    'the removed member browser loses this household reminders (tagged, resolved by medication/chore, or untagged and unresolvable), keeps the other household ones';
+  delete from public.push_subscriptions where id = current_setting('test.sub_l')::uuid;
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_l', false) \gset
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+begin
+  assert (select count(*) from public.households where id = hk) = 0, 'the removed member no longer sees the household';
+  perform set_config('request.headers', json_build_object('x-household-id', hk)::text, true);
+  assert public.current_household_id() is null, 'nor with the header';
+  perform set_config('request.headers', '', true);
+  perform set_config('request.jwt.claims', json_build_object('sub', auth.uid(), 'session_id', 'sessao-l')::text, true);
+  assert public.current_household_id() is null, 'nor through the session that had it open';
+  perform set_config('request.jwt.claims', '', true);
+  -- A sincronização que ainda rodava no navegador dele não recria os avisos da casa.
+  perform set_config('test.sub_l', public.register_push_subscription('https://fcm.googleapis.com/fcm/send/l2', 'k', 'a', 'UTC')::text, false);
+  begin
+    insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute, data)
+      values (gen_random_uuid(), current_setting('test.sub_l')::uuid, 'Remédio da casa K', 'daily', 8, 0, json_build_object('medicationId', 'm', 'householdId', hk)::jsonb);
+    raise exception 'FAIL: scheduled a reminder of a household the user is no longer in';
+  exception when insufficient_privilege then null;
+  end;
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute)
+    values (gen_random_uuid(), current_setting('test.sub_l')::uuid, 'Aviso sem casa', 'daily', 8, 0);
+  -- Código antigo: não acha a casa (a versão final de join_household devolve nulo e conta a tentativa).
+  assert (public.join_household(current_setting('test.invite_k_old'), 'Lia')).id is null, 'the old invite code no longer works';
+  -- (Se o código antigo tivesse entrado, este falharia com "already a member".)
+  perform public.join_household(current_setting('test.invite_k_new'), 'Lia');
+  assert (select member_user_id from public.people where household_id = hk and name = 'Lia') = auth.uid(),
+    'joining again takes the dependent record back';
+  -- De volta na casa, os avisos dela voltam a poder ser agendados.
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute, data)
+    values (gen_random_uuid(), current_setting('test.sub_l')::uuid, 'Remédio da casa K', 'daily', 8, 0, json_build_object('medicationId', 'm', 'householdId', hk)::jsonb);
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.household_sessions where household_id = current_setting('test.hh_k')::uuid
+    and user_id = '00000000-0000-0000-0000-000000000015' and session_id = 'sessao-l'), 'the removed member session forgot the household';
+  delete from public.push_subscriptions where id = current_setting('test.sub_l')::uuid;
+end $$;
+
+-- ---------------------------------------------------------------------------
 \echo '• avisos no navegador: inscrição, agenda e envio'
 \set user_i '00000000-0000-0000-0000-000000000012'
 \set user_j '00000000-0000-0000-0000-000000000013'
