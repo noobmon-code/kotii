@@ -35,9 +35,12 @@ async function errorCode(error: unknown): Promise<string | null> {
 }
 
 /** Mensagem para os erros de criar ou entrar numa casa. */
+export const INVITE_NOT_FOUND = 'Código não encontrado. Confira com quem te convidou.';
+
 export function householdErrorMessage(error: unknown): string {
   const message = errorMessage(error);
-  if (/invalid invite code/i.test(message)) return 'Código não encontrado. Confira com quem te convidou.';
+  if (/invalid invite code/i.test(message)) return INVITE_NOT_FOUND;
+  if (/too many invite attempts/i.test(message)) return 'Muitas tentativas com código errado. Espere uma hora e tente de novo.';
   if (/already a member/i.test(message)) return 'Você já está nessa casa.';
   if (/household limit/i.test(message)) return 'Uma conta pode estar em até 5 casas. Saia de uma para criar ou entrar em outra.';
   return message;
@@ -97,7 +100,10 @@ export function useAddHousehold(userId: string | undefined) {
           ? await supabase.rpc('create_household', { p_name: input.name, p_display_name: input.displayName })
           : await supabase.rpc('join_household', { p_invite_code: input.code, p_display_name: input.displayName });
       if (error) throw new Error(householdErrorMessage(error));
-      const house = data as Household;
+      // Código errado: o banco devolve uma casa vazia (e conta a tentativa) em
+      // vez de erro. O PostgREST manda o registro nulo como objeto com campos nulos.
+      const house = data as Household | null;
+      if (!house?.id) throw new Error(INVITE_NOT_FOUND);
       await openHousehold(queryClient, userId, house.id);
       return house;
     },
@@ -160,4 +166,41 @@ export function useLeaveHousehold(userId: string | undefined) {
       if (current !== undefined && current?.household.id !== householdId) await resetAfterLeaving(householdId);
     },
   });
+}
+
+/** O dono tira um morador da casa. O que ele registrou fica; a ficha dele vira dependente. */
+export function useRemoveMember() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ householdId, userId }: { householdId: string; userId: string }) => {
+      const { error } = await supabase.rpc('remove_member', { p_household_id: householdId, p_user_id: userId });
+      if (error) throw new Error(memberErrorMessage(error));
+    },
+    // As tarefas dele ficam sem responsável (chave estrangeira): a tela precisa ver isso.
+    onSuccess: () =>
+      Promise.all(
+        [['household'], ['people'], ['chores']].map((queryKey) => queryClient.invalidateQueries({ queryKey })),
+      ),
+  });
+}
+
+/** O dono troca o código de convite: o antigo deixa de entrar na hora. */
+export function useRegenerateInviteCode() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (householdId: string) => {
+      const { data, error } = await supabase.rpc('regenerate_invite_code', { p_household_id: householdId });
+      if (error) throw new Error(memberErrorMessage(error));
+      return data as string;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['household'] }),
+  });
+}
+
+/** Mensagem para os erros de tirar morador ou trocar o código. */
+export function memberErrorMessage(error: unknown): string {
+  const message = errorMessage(error);
+  if (/only the household owner/i.test(message)) return 'Só quem é responsável pela casa pode fazer isso.';
+  if (/does not belong/i.test(message)) return 'Essa pessoa já não está na casa.';
+  return message;
 }

@@ -92,11 +92,3 @@ export async function sendAll(pushes: DuePush[], sender: PushSender, { concurren
   result.gone = [...gone];
   return result;
 }
-
-/** Compara o segredo do agendamento sem vazar, pelo tempo, quanto dele bateu. */
-export function sameSecret(given: string | null, expected: string): boolean {
-  if (given === null || given.length !== expected.length) return false;
-  let diff = 0;
-  for (let i = 0; i < expected.length; i++) diff |= given.charCodeAt(i) ^ expected.charCodeAt(i);
-  return diff === 0;
-}

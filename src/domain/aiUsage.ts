@@ -2,12 +2,13 @@
 // na aba Família.
 
 // 'finance' só vem para quem tem o consultor financeiro (beta) na casa aberta.
-export type AiKind = 'chat' | 'photo' | 'menu' | 'finance';
+export type AiKind = 'chat' | 'photo' | 'menu' | 'nfce' | 'finance';
 
 const LABELS: Record<AiKind, string> = {
   chat: 'Mensagens com o Nuke',
   photo: 'Leituras de foto (notas e saúde)',
   menu: 'Cardápios montados pelo Nuke',
+  nfce: 'Notas lidas pelo QR code',
   finance: 'Mensagens com o consultor financeiro',
 };
 

@@ -4,9 +4,13 @@
 // itens, sem IA. Existe porque o navegador não deixa o app buscar a página
 // da Sefaz direto. Só busca em domínios .gov.br, inclusive nos
 // redirecionamentos. Quem cria o rascunho de nota é o app.
+// Cada leitura conta no limite mensal da casa (use_ai, tipo nfce); se a
+// Sefaz não respondeu, a leitura é devolvida.
 
 import { createClient } from '@supabase/supabase-js';
 
+import { QuotaError, refundAiQuota, takeAiQuota } from '../_shared/aiQuota.ts';
+import { publishableKey } from '../_shared/apiKeys.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
 import { isSefazUrl, parseNfceHtml } from './parse.ts';
 
@@ -88,7 +92,7 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   if (req.method !== 'POST') return json({ error: 'Método não suportado.' }, 405);
 
-  const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_ANON_KEY') ?? Deno.env.get('SUPABASE_PUBLISHABLE_KEY')!, {
+  const db = createClient(Deno.env.get('SUPABASE_URL')!, publishableKey(), {
     global: { headers: callerHeaders(req) },
   });
   const { data: auth } = await db.auth.getUser();
@@ -98,16 +102,26 @@ Deno.serve(async (req) => {
   const url = typeof body?.url === 'string' ? body.url.trim() : '';
   if (!isSefazUrl(url)) return json({ error: 'Esse QR code não é de uma nota fiscal (NFC-e) da Sefaz.' }, 400);
 
+  let ticket;
+  try {
+    ticket = await takeAiQuota(db, 'nfce');
+  } catch (err) {
+    if (err instanceof QuotaError) return json({ error: err.message }, err.status);
+    throw err;
+  }
+
   let html: string;
   try {
     const response = await fetchSefaz(url);
     if (!response.ok) {
       console.error('sefaz status', response.status, url);
+      await refundAiQuota(ticket);
       return json({ error: 'A Sefaz não respondeu agora. Tente de novo em alguns minutos ou tire foto da nota.', code: 'sefaz_down' }, 502);
     }
     html = await readHtml(response);
   } catch (err) {
     console.error('sefaz fetch failed', url, err);
+    await refundAiQuota(ticket);
     return json({ error: 'A Sefaz não respondeu agora. Tente de novo em alguns minutos ou tire foto da nota.', code: 'sefaz_down' }, 502);
   }
 

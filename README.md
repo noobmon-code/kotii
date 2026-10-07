@@ -73,16 +73,17 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
 
    Com a chave da OpenRouter, ela é usada em tudo (leitura de notas, de saúde e o Nuke), com o `deepseek/deepseek-v4.1-flash`; a Anthropic só entra com a chave dela sozinha ou com `RECEIPT_PROVIDER=anthropic`. O modelo pode ser trocado com `RECEIPT_MODEL` (na OpenRouter, precisa ser um modelo que aceita imagem). A leitura de saúde (`parse-health`) usa as mesmas configurações, ou `HEALTH_PROVIDER` e `HEALTH_MODEL` se quiser um modelo diferente para ela. O Nuke (`nuke`) também, ou `NUKE_PROVIDER` e `NUKE_MODEL`.
 
-   **Limpeza das fotos.** Quando a última pessoa sai e apaga a casa, `leave-household` apaga as fotos dela na hora; se o Storage falhar, a casa fica numa fila que o `pg_cron` reprocessa de hora em hora. Para isso, o banco precisa da URL do projeto e da chave anon no Vault. Rode uma vez no SQL Editor:
+   As funções falam com o banco pelas chaves novas do Supabase (`SUPABASE_PUBLISHABLE_KEYS` e `SUPABASE_SECRET_KEYS`, que o Supabase já entrega a elas; vale a chave `default`, ver `supabase/functions/_shared/apiKeys.ts`). As antigas (`SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`) só entram se o projeto ainda não tiver as novas.
+
+   **Limpeza das fotos.** Quando a última pessoa sai e apaga a casa, `leave-household` apaga as fotos dela na hora; se o Storage falhar, a casa fica numa fila que o `pg_cron` reprocessa de hora em hora. Para isso, o banco precisa da URL do projeto no Vault (o segredo que autoriza essa chamada, `cleanup_cron_secret`, o `db push` cria sozinho; a chamada não leva chave do Supabase). Rode uma vez no SQL Editor:
 
    ```sql
    select vault.create_secret('https://SEU_PROJECT_REF.supabase.co', 'project_url');
-   select vault.create_secret('SUA_ANON_KEY', 'anon_key');
    ```
 
-   Sem esses segredos, o `db push` avisa e o job registra o erro em `cron.job_run_details`.
+   Sem esse segredo, o job registra o erro em `cron.job_run_details`. O `anon_key` que versões antigas pediam no Vault não é mais usado e pode ser apagado.
 
-   **Avisos no navegador.** O `pg_cron` olha a agenda dos navegadores a cada minuto e, quando há aviso vencido, chama a `send-push`, que assina o envio com as chaves VAPID. Além dos dois segredos acima, gere as chaves e o segredo do agendamento (precisa do [Deno](https://deno.com)):
+   **Avisos no navegador.** O `pg_cron` olha a agenda dos navegadores a cada minuto e, quando há aviso vencido, chama a `send-push`, que assina o envio com as chaves VAPID. Além da URL do projeto acima, gere as chaves e o segredo do agendamento (precisa do [Deno](https://deno.com)):
 
    ```bash
    deno run supabase/functions/send-push/vapid-keys.ts https://SEU_PROJECT_REF.supabase.co
@@ -123,7 +124,7 @@ O backend já roda na nuvem (Supabase). O `npx expo start` só serve o código d
 
 **iPhone.** Instalar o app nativo exige conta Apple Developer (US$ 99/ano): com ela, o app vai para os celulares pelo TestFlight e, depois, para a App Store. Sem a conta, instale a versão web: no Safari, *Compartilhar → Adicionar à Tela de Início* (a tela Hoje mostra esse passo a passo). Ela abre em tela cheia, com o ícone do Nooky, e abre mesmo sem internet. Os avisos por notificação funcionam por ela (iOS 16.4 ou mais novo): Família → "Avisos neste navegador". No Safari sem instalar, não.
 
-**Versão web (Vercel).** O `vercel.json` já diz como gerar o site (`expo export`). No projeto da Vercel, em *Settings → Environment Variables*, cadastre as mesmas duas variáveis `EXPO_PUBLIC_*` como texto normal (não secretas) e publique de novo. O site é instalável (PWA): `public/index.html` é o modelo da página, com o manifesto (`public/manifest.webmanifest`), os ícones (`public/icons/`) e o service worker (`public/sw.js`), que guarda o app no aparelho; no Android, o Chrome oferece "Instalar" e a tela Hoje tem o botão.
+**Versão web (Vercel).** O `vercel.json` já diz como gerar o site (`expo export`). No projeto da Vercel, em *Settings → Environment Variables*, cadastre as mesmas duas variáveis `EXPO_PUBLIC_*` como texto normal (não secretas) e publique de novo. O site é instalável (PWA): `public/index.html` é o modelo da página, com o manifesto (`public/manifest.webmanifest`), os ícones (`public/icons/`) e o service worker (`public/sw.js`, registrado por `public/sw-register.js`), que guarda o app no aparelho; no Android, o Chrome oferece "Instalar" e a tela Hoje tem o botão. O `vercel.json` também manda os cabeçalhos de segurança do site (CSP com a lista dos serviços que o app chama: Supabase, Open-Meteo, Nominatim, ViaCEP, BrasilAPI e as fontes do Google; um serviço novo precisa entrar lá).
 
 Identificador do app: `com.noobmon.nooky` (iOS e Android). Dá para trocar até o primeiro envio para as lojas; depois fica fixo.
 
@@ -142,6 +143,7 @@ Identificador do app: `com.noobmon.nooky` (iOS e Android). Dá para trocar até 
 - **Clima:** previsão do [Open-Meteo](https://open-meteo.com) (grátis e sem chave para uso não comercial, até 10 mil consultas por dia; uso comercial pede plano pago), CEP pelo ViaCEP (BrasilAPI de reserva) e bairro pelo OpenStreetMap (Nominatim, no máximo uma busca por segundo). Fica guardado só o bairro, com as coordenadas em duas casas decimais (cerca de 1 km). A grade dos modelos de previsão tem alguns quilômetros: bairros vizinhos costumam ter a mesma previsão, com a temperatura ajustada pela altitude. O aviso das 7h sai da última previsão que o celular viu; ele é refeito sempre que o app abre, e sem abrir por dias fica sem aviso depois do fim da previsão (3 dias). A localização pelo celular exige um build novo do app instalado (`expo-location`).
 - **Gastos:** o resumo conta o que foi registrado no app (notas confirmadas, contas pagas, gastos avulsos). Nota em rascunho não entra até ser confirmada.
 - **Lembretes de remédio:** notificações locais. No Expo Go podem ter limitações; num development build (`npx expo run:android` / EAS) funcionam completos.
+- **Sessão no aparelho:** no celular, os tokens da conta ficam cifrados com AES-256-GCM (`expo-crypto`; chave no Keychain/Keystore via `expo-secure-store`, conteúdo no AsyncStorage; ver `src/lib/sessionStorage.ts`). No navegador ficam no localStorage, como o Supabase faz por padrão.
 - **Avisos no navegador (Web Push):** chegam com até 1 minuto de atraso e precisam de internet (no celular, o aviso é local e sai na hora, mesmo offline). Como no celular, a agenda é refeita quando o app abre. Se o serviço de push falhar por um instante, o aviso tenta de novo no minuto seguinte; vencido há mais de 1 hora (o envio ficou parado) não sai, e o serviço de push descarta o que não chegou em 1 hora (aparelho desligado). Quando o navegador troca de inscrição (chave nova ou inscrição vencida), o app refaz a agenda na nova ao abrir. Sair da conta (ou a sessão acabar) tira os avisos daquele navegador. Até 200 avisos agendados por navegador. As chaves VAPID e o segredo do agendamento ficam no Vault (`push_vapid`, `push_cron_secret`); o envio só vai para os serviços de push dos navegadores (Google, Mozilla, Apple, Microsoft).
 
 ## Consultor financeiro (beta)

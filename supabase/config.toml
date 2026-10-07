@@ -1,6 +1,10 @@
 # Supabase CLI: `supabase link`, `supabase db push`, `supabase functions deploy`.
 project_id = "nooky"
 
+# verify_jwt: a plataforma só deixa passar quem traz um token (o app manda o
+# da pessoa). As chamadas do pg_cron não mandam chave do Supabase, só o
+# segredo do agendamento, que a própria função confere: nelas fica desligado.
+
 [functions.parse-receipt]
 verify_jwt = true
 
@@ -8,14 +12,16 @@ verify_jwt = true
 verify_jwt = true
 
 [functions.leave-household]
-verify_jwt = true
+# O app chama com o token da pessoa (a função confere com auth.getUser); o
+# pg_cron (request_household_file_cleanup), com o segredo x-cleanup-secret.
+verify_jwt = false
 
 [functions.nfce]
 verify_jwt = true
 
 [functions.send-push]
-# Chamada pelo pg_cron (request_push_send) com a chave anon e o segredo x-push-secret.
-verify_jwt = true
+# Só o pg_cron chama (request_push_send), com o segredo x-push-secret.
+verify_jwt = false
 
 [functions.finance]
 # Consultor financeiro (beta): sincroniza os bancos da Pluggy.

@@ -38,9 +38,12 @@ select set_config('request.jwt.claim.sub', :'user_b', false) \gset
 do $$
 begin
   assert (select count(*) from public.households) = 0, 'B cannot see households before joining';
-  perform public.join_household('ZZZZZZ', 'Beto');
-  raise exception 'FAIL: joined with invalid code';
-exception when no_data_found then null;
+  assert public.join_household('ZZZZZZ', 'Beto') is null, 'wrong code: nothing, and the attempt counts';
+  begin
+    perform 1 from public.join_attempts;
+    raise exception 'FAIL: app user read the join attempts';
+  exception when insufficient_privilege then null;
+  end;
 end $$;
 select public.join_household(lower(:'invite_code'), 'Beto') \gset
 
@@ -52,6 +55,87 @@ select id as hh_a from public.households where name = 'Casa A' \gset
 select set_config('test.hh_a', :'hh_a', false) \gset
 set role authenticated;
 
+-- ---------------------------------------------------------------------------
+\echo '• código errado demais: a conta espera uma hora'
+\set user_z '00000000-0000-0000-0000-00000000001a'
+reset role;
+insert into auth.users (id) values (:'user_z');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_z', false) \gset
+do $$
+begin
+  for i in 1..public.max_join_attempts() loop
+    assert public.join_household('ZZZZZ' || i, 'Zé') is null, 'wrong code';
+  end loop;
+  begin
+    perform public.join_household('ZZZZZZ', 'Zé');
+    raise exception 'FAIL: tried past the limit';
+  exception when sqlstate 'NK004' then null;
+  end;
+  -- Mesmo o código certo espera: a conta está bloqueada.
+  begin
+    perform public.join_household(current_setting('test.invite_a'), 'Zé');
+    raise exception 'FAIL: the right code bypassed the block';
+  exception when sqlstate 'NK004' then null;
+  end;
+end $$;
+reset role;
+do $$
+begin
+  assert (select failed from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a') = public.max_join_attempts(), 'attempts counted';
+  -- A hora passou (contada do primeiro erro: errar de novo não a estica).
+  update public.join_attempts set window_started_at = now() - interval '61 minutes';
+end $$;
+set role authenticated;
+do $$
+begin
+  assert public.join_household('ZZZZZZ', 'Zé') is null, 'after an hour, tries again';
+end $$;
+reset role;
+do $$
+begin
+  assert (select failed from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a') = 1, 'a new hour starts the count over';
+  assert (select window_started_at from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a') > now() - interval '1 minute', 'and starts now';
+  -- Um erro a cada 59 minutos nunca chega ao limite: a hora é contada do primeiro erro.
+  update public.join_attempts set failed = 9, window_started_at = now() - interval '59 minutes';
+end $$;
+set role authenticated;
+do $$
+begin
+  assert public.join_household('ZZZZZZ', 'Zé') is null, 'tenth error inside the hour';
+  begin
+    perform public.join_household('ZZZZZZ', 'Zé');
+    raise exception 'FAIL: tried past the limit';
+  exception when sqlstate 'NK004' then null;
+  end;
+end $$;
+reset role;
+update public.join_attempts set window_started_at = now() - interval '2 hours';
+set role authenticated;
+do $$
+begin
+  perform public.join_household(current_setting('test.invite_a'), 'Zé');
+  assert (select count(*) from public.household_members where user_id = auth.uid()) = 1, 'the right code joins';
+  perform public.leave_household(current_setting('test.hh_a')::uuid);
+end $$;
+reset role;
+do $$
+begin
+  assert (select failed from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a') = 10, 'joining does not clear the count';
+  -- Zé passou por A só para o teste: a ficha que ficou lá sai.
+  delete from public.people where household_id = current_setting('test.hh_a')::uuid and name = 'Zé';
+  -- A hora dos dez erros ainda corre: entrar e sair não abre brecha.
+  update public.join_attempts set window_started_at = now() - interval '10 minutes';
+end $$;
+set role authenticated;
+do $$
+begin
+  begin
+    perform public.join_household('ZZZZZZ', 'Zé');
+    raise exception 'FAIL: joining a known household reset the limit';
+  exception when sqlstate 'NK004' then null;
+  end;
+end $$;
 -- ---------------------------------------------------------------------------
 \echo '• A importa duas notas; matching e aprendizado de validade'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
@@ -131,6 +215,20 @@ begin
     raise exception 'FAIL: receipt confirmed twice';
   exception when unique_violation then null;
   end;
+
+  begin
+    insert into public.receipts (store_id, image_path) values (s_bom, '00000000-0000-0000-0000-000000000000/nota.jpg');
+    raise exception 'FAIL: receipt photo in another household folder';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.receipts (store_id, extra_image_paths) values (s_bom, array[current_setting('test.hh_a') || '/']);
+    raise exception 'FAIL: receipt photo without a file name';
+  exception when check_violation then null;
+  end;
+  insert into public.receipts (store_id, image_path, extra_image_paths)
+    values (s_bom, current_setting('test.hh_a') || '/nota-1.jpg', array[current_setting('test.hh_a') || '/nota-2.jpg']) returning id into r2;
+  delete from public.receipts where id = r2;
 
   -- Rascunho não entra no comparativo de preços.
   insert into public.receipts (store_id, status) values (s_bom, 'draft') returning id into r2;
@@ -756,6 +854,28 @@ begin
   exception when check_violation then null;
   end;
 
+  -- Arquivos: só na pasta da casa, sem subpasta.
+  begin
+    insert into public.exams (person_id, title, file_paths) values (duda, 'X', array['00000000-0000-0000-0000-000000000000/exame.jpg']);
+    raise exception 'FAIL: exam file in another household folder';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.workout_plans (person_id, title, file_paths) values (duda, 'X', array[current_setting('test.hh_a') || '/sub/ficha.jpg']);
+    raise exception 'FAIL: workout file outside the household folder root';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.diet_plans (person_id, title, file_paths) values (duda, 'X', array['dieta.jpg']);
+    raise exception 'FAIL: diet file without the household folder';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.exams (person_id, title, file_paths) values (duda, 'X', array[null, current_setting('test.hh_a') || '/exame.jpg']);
+    raise exception 'FAIL: null file path accepted';
+  exception when check_violation then null;
+  end;
+
   begin
     insert into public.appointments (person_id, title, starts_at, status) values (duda, 'X', now(), 'talvez');
     raise exception 'FAIL: invalid appointment status';
@@ -894,7 +1014,24 @@ begin
     raise exception 'FAIL: remind_days out of range';
   exception when check_violation then null;
   end;
+  begin
+    insert into public.documents (title, file_paths) values ('X', array['00000000-0000-0000-0000-000000000000/cnh.jpg']);
+    raise exception 'FAIL: document file in another household folder';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.equipment (name, file_paths) values ('X', array[current_setting('test.hh_a') || '/a/b.jpg']);
+    raise exception 'FAIL: equipment file outside the household folder root';
+  exception when check_violation then null;
+  end;
 end $$;
+reset role;
+do $$
+begin
+  assert (select file_size_limit from storage.buckets where id = 'documents') = 5 * 1024 * 1024, 'buckets have a size limit';
+  assert (select allowed_mime_types from storage.buckets where id = 'health') = array['image/jpeg', 'image/png', 'image/webp'], 'buckets only take photos';
+end $$;
+set role authenticated;
 
 select set_config('request.jwt.claim.sub', :'user_b', false) \gset
 do $$
@@ -1250,6 +1387,10 @@ begin
     raise exception 'FAIL: unknown kind';
   exception when invalid_parameter_value then null;
   end;
+  -- A nota pelo QR code não usa IA, mas a busca na Sefaz conta no mesmo limite.
+  select * into r from public.use_ai('nfce');
+  assert r.allowed and r.used = 1 and r.lim = 200, 'the QR code reading has its own limit';
+  assert (select array_agg(kind order by kind) from public.ai_usage_summary()) = array['chat', 'menu', 'nfce', 'photo'], 'the summary lists every kind';
 end $$;
 set role service_role;
 select public.refund_ai(:'hh_a', public.ai_month(), 'photo') \gset
@@ -1284,11 +1425,13 @@ select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$
 declare
   r uuid;
+  hid text := public.current_household_id()::text;
 begin
-  insert into public.receipts (image_path, extra_image_paths) values ('x/1.jpg', array['x/2.jpg', 'x/3.jpg']) returning id into r;
+  insert into public.receipts (image_path, extra_image_paths)
+    values (hid || '/1.jpg', array[hid || '/2.jpg', hid || '/3.jpg']) returning id into r;
   assert (select cardinality(extra_image_paths) from public.receipts where id = r) = 2, 'extra photos are kept in order';
   begin
-    update public.receipts set extra_image_paths = array['a', 'b', 'c', 'd', 'e', 'f'] where id = r;
+    update public.receipts set extra_image_paths = array(select hid || '/' || n || '.jpg' from generate_series(1, 6) n) where id = r;
     raise exception 'FAIL: too many photos';
   exception when check_violation then null;
   end;
@@ -1436,6 +1579,45 @@ begin
     raise exception 'FAIL: invalid month';
   exception when check_violation then null;
   end;
+
+  -- Quem pagou: só morador da casa (em gastos, pagamentos e notas).
+  insert into public.expenses (description, amount, paid_by) values ('Padaria', 12, b);
+  begin
+    insert into public.expenses (description, amount, paid_by) values ('X', 1, c);
+    raise exception 'FAIL: expense paid by someone outside the household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    update public.expenses set paid_by = c where description = 'Padaria';
+    raise exception 'FAIL: expense handed to someone outside the household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    insert into public.receipts (source, paid_by) values ('manual', c);
+    raise exception 'FAIL: receipt paid by someone outside the household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    update public.bill_payments set paid_by = c;
+    raise exception 'FAIL: bill payment handed to someone outside the household';
+  exception when foreign_key_violation then null;
+  end;
+  update public.expenses set paid_by = null where description = 'Padaria';
+  delete from public.expenses where description = 'Padaria';
+end $$;
+-- Quem saiu continua como pagador do que pagou: editar o gasto não esbarra no gatilho.
+reset role;
+alter table public.expenses disable trigger expenses_paid_by_member;
+insert into public.expenses (household_id, description, amount, paid_by)
+  values (current_setting('test.hh_a')::uuid, 'Antigo', 5, '00000000-0000-0000-0000-00000000000c');
+alter table public.expenses enable trigger expenses_paid_by_member;
+set role authenticated;
+do $$
+begin
+  -- O app manda o gasto inteiro, com o mesmo pagador.
+  update public.expenses set amount = 6, paid_by = '00000000-0000-0000-0000-00000000000c' where description = 'Antigo';
+  assert (select amount from public.expenses where description = 'Antigo') = 6, 'editing keeps a payer who left';
+  delete from public.expenses where description = 'Antigo';
 end $$;
 select set_config('request.jwt.claim.sub', :'user_c', false) \gset
 do $$
@@ -1684,6 +1866,142 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+\echo '• o dono tira moradores e troca o código de convite'
+\set user_k '00000000-0000-0000-0000-000000000014'
+\set user_l '00000000-0000-0000-0000-000000000015'
+reset role;
+insert into auth.users (id) values (:'user_k'), (:'user_l');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_k', false) \gset
+select (public.create_household('Casa K', 'Kim')).id as hh_k \gset
+select set_config('test.hh_k', :'hh_k', false) \gset
+select invite_code as invite_k from public.households where id = :'hh_k' \gset
+select set_config('request.jwt.claim.sub', :'user_l', false) \gset
+select public.join_household(:'invite_k', 'Lia') \gset
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+begin
+  begin
+    perform public.regenerate_invite_code(hk);
+    raise exception 'FAIL: a member changed the invite code';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.remove_member(hk, '00000000-0000-0000-0000-000000000014');
+    raise exception 'FAIL: a member removed the owner';
+  exception when insufficient_privilege then null;
+  end;
+  perform set_config('request.jwt.claims', json_build_object('sub', auth.uid(), 'session_id', 'sessao-l')::text, true);
+  perform public.select_household(hk);
+  perform set_config('request.jwt.claims', '', true);
+  -- No navegador de L: avisos desta casa e de outra, com e sem a casa marcada
+  -- (os sem marca são de antes de o aviso levar a casa: valem pelo remédio ou pela tarefa).
+  perform set_config('test.sub_l', public.register_push_subscription('https://fcm.googleapis.com/fcm/send/l1', 'k', 'a', 'UTC')::text, false);
+  insert into public.medications (person_name, name, times) values ('Lia', 'Vitamina K', array['08:00']);
+  insert into public.chores (title, due_on) values ('Tarefa da K', '2026-10-10');
+end $$;
+-- As linhas de outra casa e as antigas entram direto (a policy só deixa o
+-- navegador agendar avisos de casas em que a pessoa está).
+reset role;
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+begin
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute, data) values
+    ('00000000-0000-0000-0000-0000000000b1', current_setting('test.sub_l')::uuid, 'Remédio da casa K', 'daily', 8, 0, json_build_object('medicationId', 'm', 'householdId', hk)::jsonb),
+    ('00000000-0000-0000-0000-0000000000b2', current_setting('test.sub_l')::uuid, 'Conta de outra casa', 'daily', 8, 0, json_build_object('reminder', 'bills:x:2026-10-10', 'householdId', gen_random_uuid())::jsonb),
+    ('00000000-0000-0000-0000-0000000000b3', current_setting('test.sub_l')::uuid, 'Remédio antigo da K', 'daily', 8, 0, json_build_object('medicationId', (select id from public.medications where name = 'Vitamina K'))::jsonb),
+    ('00000000-0000-0000-0000-0000000000b4', current_setting('test.sub_l')::uuid, 'Tarefa antiga da K', 'daily', 9, 0, json_build_object('reminder', 'chores:' || (select id from public.chores where title = 'Tarefa da K') || ':2026-10-10')::jsonb),
+    ('00000000-0000-0000-0000-0000000000b5', current_setting('test.sub_l')::uuid, 'Conta antiga já apagada (casa desconhecida)', 'daily', 9, 0, json_build_object('reminder', 'bills:' || gen_random_uuid() || ':2026-10-10')::jsonb),
+    ('00000000-0000-0000-0000-0000000000b6', current_setting('test.sub_l')::uuid, 'Clima de outra casa', 'daily', 7, 0, json_build_object('reminder', 'weather:dia:2026-10-10', 'householdId', gen_random_uuid())::jsonb),
+    ('00000000-0000-0000-0000-0000000000b7', current_setting('test.sub_l')::uuid, 'Clima antigo (sem casa)', 'daily', 7, 0, json_build_object('reminder', 'weather:dia:2026-10-11')::jsonb),
+    ('00000000-0000-0000-0000-0000000000b8', current_setting('test.sub_l')::uuid, 'Remédio antigo já apagado', 'daily', 8, 0, json_build_object('medicationId', gen_random_uuid())::jsonb);
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_k', false) \gset
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+  old_code text := (select invite_code from public.households where id = hk);
+  new_code text;
+begin
+  begin
+    perform public.regenerate_invite_code(current_setting('test.hh_a')::uuid);
+    raise exception 'FAIL: changed the invite code of a foreign household';
+  exception when insufficient_privilege then null;
+  end;
+  new_code := public.regenerate_invite_code(hk);
+  assert new_code <> old_code and new_code ~ '^[A-Z2-9]{6}$', 'a new code in the same format';
+  assert (select invite_code from public.households where id = hk) = new_code, 'the household has the new code';
+  perform set_config('test.invite_k_old', old_code, false);
+  perform set_config('test.invite_k_new', new_code, false);
+
+  begin
+    perform public.remove_member(hk, auth.uid());
+    raise exception 'FAIL: the owner removed itself';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.remove_member(hk, '00000000-0000-0000-0000-00000000000c');
+    raise exception 'FAIL: removed someone who is not a member';
+  exception when no_data_found then null;
+  end;
+  perform public.remove_member(hk, '00000000-0000-0000-0000-000000000015');
+  assert (select count(*) from public.household_members where household_id = hk) = 1, 'the member is out';
+  assert (select member_user_id from public.people where household_id = hk and name = 'Lia') is null,
+    'the person record stays as a dependent';
+end $$;
+reset role;
+do $$
+begin
+  assert (select array_agg(id order by id) from public.push_schedule where subscription_id = current_setting('test.sub_l')::uuid)
+    = array['00000000-0000-0000-0000-0000000000b2', '00000000-0000-0000-0000-0000000000b6']::uuid[],
+    'the removed member browser loses this household reminders (tagged, resolved by medication/chore, or untagged and unresolvable), keeps the other household ones';
+  delete from public.push_subscriptions where id = current_setting('test.sub_l')::uuid;
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_l', false) \gset
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+begin
+  assert (select count(*) from public.households where id = hk) = 0, 'the removed member no longer sees the household';
+  perform set_config('request.headers', json_build_object('x-household-id', hk)::text, true);
+  assert public.current_household_id() is null, 'nor with the header';
+  perform set_config('request.headers', '', true);
+  perform set_config('request.jwt.claims', json_build_object('sub', auth.uid(), 'session_id', 'sessao-l')::text, true);
+  assert public.current_household_id() is null, 'nor through the session that had it open';
+  perform set_config('request.jwt.claims', '', true);
+  -- A sincronização que ainda rodava no navegador dele não recria os avisos da casa.
+  perform set_config('test.sub_l', public.register_push_subscription('https://fcm.googleapis.com/fcm/send/l2', 'k', 'a', 'UTC')::text, false);
+  begin
+    insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute, data)
+      values (gen_random_uuid(), current_setting('test.sub_l')::uuid, 'Remédio da casa K', 'daily', 8, 0, json_build_object('medicationId', 'm', 'householdId', hk)::jsonb);
+    raise exception 'FAIL: scheduled a reminder of a household the user is no longer in';
+  exception when insufficient_privilege then null;
+  end;
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute)
+    values (gen_random_uuid(), current_setting('test.sub_l')::uuid, 'Aviso sem casa', 'daily', 8, 0);
+  -- Código antigo: não acha a casa (a versão final de join_household devolve nulo e conta a tentativa).
+  assert (public.join_household(current_setting('test.invite_k_old'), 'Lia')).id is null, 'the old invite code no longer works';
+  -- (Se o código antigo tivesse entrado, este falharia com "already a member".)
+  perform public.join_household(current_setting('test.invite_k_new'), 'Lia');
+  assert (select member_user_id from public.people where household_id = hk and name = 'Lia') = auth.uid(),
+    'joining again takes the dependent record back';
+  -- De volta na casa, os avisos dela voltam a poder ser agendados.
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute, data)
+    values (gen_random_uuid(), current_setting('test.sub_l')::uuid, 'Remédio da casa K', 'daily', 8, 0, json_build_object('medicationId', 'm', 'householdId', hk)::jsonb);
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.household_sessions where household_id = current_setting('test.hh_k')::uuid
+    and user_id = '00000000-0000-0000-0000-000000000015' and session_id = 'sessao-l'), 'the removed member session forgot the household';
+  delete from public.push_subscriptions where id = current_setting('test.sub_l')::uuid;
+end $$;
+
+-- ---------------------------------------------------------------------------
 \echo '• avisos no navegador: inscrição, agenda e envio'
 \set user_i '00000000-0000-0000-0000-000000000012'
 \set user_j '00000000-0000-0000-0000-000000000013'
@@ -1836,14 +2154,16 @@ begin
     perform public.request_push_send();
     raise exception 'FAIL: called send-push without the Vault secrets';
   exception when raise_exception then
-    assert sqlerrm like 'Faltam os segredos project_url, anon_key e push_cron_secret%', 'names the missing secrets';
+    assert sqlerrm like 'Faltam os segredos project_url e push_cron_secret%', 'names the missing secrets';
   end;
+  -- Sem anon_key: a chamada não leva chave do Supabase, só o segredo.
   insert into vault.decrypted_secrets values
-    ('project_url', 'https://projeto.supabase.co/'), ('anon_key', 'anon'), ('push_cron_secret', 'segredo-cron'),
+    ('project_url', 'https://projeto.supabase.co/'), ('push_cron_secret', 'segredo-cron'),
     ('push_vapid', '{"applicationServerKey": "BPublica", "publicKey": {"kty": "EC"}, "privateKey": {"kty": "EC"}, "subject": "mailto:x@y.z"}');
   perform public.request_push_send();
   assert (select url from net.requests order by id desc limit 1) = 'https://projeto.supabase.co/functions/v1/send-push', 'calls send-push';
   assert (select headers ->> 'x-push-secret' from net.requests order by id desc limit 1) = 'segredo-cron', 'with the cron secret';
+  assert (select headers from net.requests order by id desc limit 1) - 'Content-Type' - 'x-push-secret' = '{}', 'and no API key or token';
   assert (public.push_config() ->> 'cronSecret') = 'segredo-cron' and (public.push_config() ->> 'subject') = 'mailto:x@y.z', 'config for send-push';
   update public.push_schedule set claimed_at = now() where id = '00000000-0000-0000-0000-0000000000a1';
   assert public.request_push_send() is null, 'being sent right now: no second call';
@@ -1883,6 +2203,34 @@ begin
   end;
   perform public.unregister_push_subscription('https://fcm.googleapis.com/fcm/send/i1');
   assert (select count(*) from public.push_subscriptions) = 0, 'unregistered';
+
+  -- Teto de navegadores por conta: o que ficou mais tempo sem abrir sai, com a agenda.
+  for n in 1..public.max_push_subscriptions() loop
+    perform public.register_push_subscription('https://fcm.googleapis.com/fcm/send/j' || n, 'k', 'a', 'UTC');
+  end loop;
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute)
+  values (gen_random_uuid(), (select id from public.push_subscriptions where endpoint like '%/j3'), 'Do antigo', 'daily', 8, 0);
+end $$;
+-- O navegador j3 ficou um mês sem abrir o app (o app não mexe em updated_at: só a função).
+reset role;
+update public.push_subscriptions set updated_at = now() - interval '30 days' where endpoint like '%/j3';
+set role authenticated;
+do $$
+begin
+  perform public.register_push_subscription('https://fcm.googleapis.com/fcm/send/j-novo', 'k', 'a', 'UTC');
+  assert (select count(*) from public.push_subscriptions) = public.max_push_subscriptions(), 'one browser past the cap: the cap holds';
+  assert not exists (select 1 from public.push_subscriptions where endpoint like '%/j3'), 'the stalest browser is out';
+  assert not exists (select 1 from public.push_schedule where title = 'Do antigo'), 'and its schedule with it';
+  assert exists (select 1 from public.push_subscriptions where endpoint like '%/j-novo'), 'the new browser is in';
+  -- Um navegador conhecido de novo não derruba ninguém.
+  perform public.register_push_subscription('https://fcm.googleapis.com/fcm/send/j1', 'k2', 'a', 'UTC');
+  assert (select count(*) from public.push_subscriptions) = public.max_push_subscriptions(), 'a known browser just updates';
+  delete from public.push_schedule;
+  for n in 1..public.max_push_subscriptions() loop
+    perform public.unregister_push_subscription('https://fcm.googleapis.com/fcm/send/j' || n);
+  end loop;
+  perform public.unregister_push_subscription('https://fcm.googleapis.com/fcm/send/j-novo');
+  assert (select count(*) from public.push_subscriptions) = 0, 'all unregistered';
 end $$;
 reset role;
 do $$
@@ -1892,7 +2240,7 @@ begin
 end $$;
 set client_min_messages = warning;
 drop schema vault cascade;
-drop schema net cascade;
+delete from net.requests;
 reset client_min_messages;
 
 -- Sem os segredos do Vault, o job da limpeza falha com a instrução em vez de chamar uma URL nula.
@@ -1904,19 +2252,41 @@ begin
     perform public.request_household_file_cleanup();
     raise exception 'FAIL: cleanup job ran without the Vault secrets';
   exception when raise_exception then
-    assert sqlerrm like 'Faltam os segredos project_url e anon_key%', 'cleanup job names the missing secrets';
+    assert sqlerrm like 'Faltam os segredos project_url e cleanup_cron_secret%', 'cleanup job names the missing secrets';
   end;
+  -- Com os segredos: chama a função com o segredo da limpeza, que só a service role lê.
+  insert into vault.decrypted_secrets values
+    ('project_url', 'https://projeto.supabase.co/'), ('cleanup_cron_secret', 'segredo-limpeza');
+  perform public.request_household_file_cleanup();
+  assert (select url from net.requests order by id desc limit 1) = 'https://projeto.supabase.co/functions/v1/leave-household', 'calls leave-household';
+  assert (select headers ->> 'x-cleanup-secret' from net.requests order by id desc limit 1) = 'segredo-limpeza', 'with the cleanup secret';
+  assert (select headers from net.requests order by id desc limit 1) - 'Content-Type' - 'x-cleanup-secret' = '{}', 'and no API key or token';
+  assert public.cleanup_config() = 'segredo-limpeza', 'config for leave-household';
   delete from public.household_file_cleanup;
   assert public.request_household_file_cleanup() is null, 'empty queue: nothing to call';
 end $$;
+set role authenticated;
+do $$
+begin
+  begin
+    perform public.cleanup_config();
+    raise exception 'FAIL: the app read the cleanup secret';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+reset role;
+
+set client_min_messages = warning;
+drop schema net cascade;
+reset client_min_messages;
 
 -- ---------------------------------------------------------------------------
 \echo '• consultor financeiro (beta): liberação, dados do banco privados e limite da IA'
 -- Kátia tem a liberação na Casa da Kátia (e outra casa sem ela); Léo mora com
 -- ela sem liberação; Mara tem a liberação na casa dela.
-\set user_k '00000000-0000-0000-0000-000000000014'
-\set user_l '00000000-0000-0000-0000-000000000015'
-\set user_m '00000000-0000-0000-0000-000000000016'
+\set user_k '00000000-0000-0000-0000-000000000017'
+\set user_l '00000000-0000-0000-0000-000000000018'
+\set user_m '00000000-0000-0000-0000-000000000019'
 reset role;
 insert into auth.users (id) values (:'user_k'), (:'user_l'), (:'user_m');
 set role authenticated;
@@ -1941,13 +2311,13 @@ do $$
 begin
   begin
     insert into public.beta_access (user_id, household_id, feature)
-    values ('00000000-0000-0000-0000-000000000016', current_setting('test.hh_k')::uuid, 'finance');
+    values ('00000000-0000-0000-0000-000000000019', current_setting('test.hh_k')::uuid, 'finance');
     raise exception 'FAIL: granted the beta outside the household';
   exception when foreign_key_violation then null;
   end;
   begin
     insert into public.beta_access (user_id, household_id, feature)
-    values ('00000000-0000-0000-0000-000000000014', current_setting('test.hh_k')::uuid, 'outra');
+    values ('00000000-0000-0000-0000-000000000017', current_setting('test.hh_k')::uuid, 'outra');
     raise exception 'FAIL: granted an unknown feature';
   exception when check_violation then null;
   end;
@@ -1959,9 +2329,9 @@ do $$
 declare
   hk uuid := current_setting('test.hh_k')::uuid;
   hm uuid := current_setting('test.hh_m')::uuid;
-  k uuid := '00000000-0000-0000-0000-000000000014';
-  l uuid := '00000000-0000-0000-0000-000000000015';
-  m uuid := '00000000-0000-0000-0000-000000000016';
+  k uuid := '00000000-0000-0000-0000-000000000017';
+  l uuid := '00000000-0000-0000-0000-000000000018';
+  m uuid := '00000000-0000-0000-0000-000000000019';
   doc_hash text := encode(sha256(convert_to(k || ':12345678909', 'UTF8')), 'hex');
 begin
   insert into public.fin_connections (id, user_id, household_id, label, pluggy_item_id, status) values
@@ -2123,7 +2493,7 @@ begin
   assert r.allowed and r.used = 1 and r.lim = 100, 'the finance chat counts on its own quota';
   assert public.ai_limit('finance') = 100, 'finance limit';
   assert (select used from public.ai_usage_summary() where kind = 'finance') = 1, 'K sees the finance usage';
-  assert (select count(*) from public.ai_usage_summary()) = 4, 'K sees the four kinds';
+  assert (select count(*) from public.ai_usage_summary()) = 5, 'K sees the five kinds';
   assert (select used from public.ai_usage_summary() where kind = 'chat') = 0, 'the household chat quota is untouched';
 
   -- A outra casa dela, sem liberação: nada do banco nem do consultor.
@@ -2170,7 +2540,7 @@ begin
     raise exception 'FAIL: L used the finance chat';
   exception when insufficient_privilege then null;
   end;
-  assert (select array_agg(kind order by kind) from public.ai_usage_summary()) = array['chat', 'menu', 'photo'],
+  assert (select array_agg(kind order by kind) from public.ai_usage_summary()) = array['chat', 'menu', 'nfce', 'photo'],
     'L sees only the household kinds';
   assert not exists (select 1 from public.ai_usage where kind = 'finance'), 'L does not see K''s finance usage';
   assert (select u.allowed from public.use_ai('chat') u), 'the household chat still works for L';
@@ -2224,7 +2594,7 @@ begin
   assert not exists (select 1 from public.fin_connections where pluggy_item_id in ('item-l', 'item-k-nubank')), 'connections left with the household';
   assert not exists (select 1 from public.fin_accounts where pluggy_account_id in ('acc-l', 'acc-k-nubank', 'acc-k-inter')), 'accounts too';
   assert not exists (select 1 from public.fin_transactions where pluggy_transaction_id like 'tx-k-%' or pluggy_transaction_id like 'tx-l-%'), 'transactions too';
-  assert (select array_agg(user_id) from public.beta_access) = array['00000000-0000-0000-0000-000000000016'::uuid], 'only M keeps a grant';
+  assert (select array_agg(user_id) from public.beta_access) = array['00000000-0000-0000-0000-000000000019'::uuid], 'only M keeps a grant';
   assert exists (select 1 from public.fin_transactions where pluggy_transaction_id = 'tx-m-1'), 'M keeps her data';
 end $$;
 
@@ -2232,7 +2602,7 @@ end $$;
 set role service_role;
 do $$
 begin
-  delete from public.beta_access where user_id = '00000000-0000-0000-0000-000000000016' and feature = 'finance';
+  delete from public.beta_access where user_id = '00000000-0000-0000-0000-000000000019' and feature = 'finance';
   assert not exists (select 1 from public.fin_connections where pluggy_item_id = 'item-m'), 'revoking removed M''s bank';
   assert not exists (select 1 from public.fin_accounts where pluggy_account_id = 'acc-m'), 'and its account';
   assert not exists (select 1 from public.fin_transactions where pluggy_transaction_id = 'tx-m-1'), 'and its transactions';

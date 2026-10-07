@@ -13,6 +13,7 @@
 import { createClient } from '@supabase/supabase-js';
 
 import { refundAiQuota } from '../_shared/aiQuota.ts';
+import { publishableKey } from '../_shared/apiKeys.ts';
 import { callerHeaders } from '../_shared/caller.ts';
 import { chatStructured } from '../_shared/chat.ts';
 import { financeConfig } from './config.ts';
@@ -21,11 +22,7 @@ import { financeChatHandler } from './handler.ts';
 Deno.serve(
   financeChatHandler({
     callerClient: (req) =>
-      createClient(
-        Deno.env.get('SUPABASE_URL')!,
-        Deno.env.get('SUPABASE_ANON_KEY') ?? Deno.env.get('SUPABASE_PUBLISHABLE_KEY')!,
-        { global: { headers: callerHeaders(req) } },
-      ),
+      createClient(Deno.env.get('SUPABASE_URL')!, publishableKey(), { global: { headers: callerHeaders(req) } }),
     config: financeConfig(),
     chat: chatStructured,
     refund: (ticket) => refundAiQuota(ticket),

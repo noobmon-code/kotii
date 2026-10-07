@@ -1,7 +1,8 @@
 // POST { householdId, deleteIfLast?: boolean } -> { status: 'left' | 'deleted' }
 //                                               | 409 { code: 'last_member' }
 //                                               | 404 { code: 'not_member' }
-// POST { drain: true } -> { done, failed }   (pg_cron, de hora em hora)
+// POST { drain: true } -> { done, failed }   (pg_cron, de hora em hora,
+//                                               com o segredo x-cleanup-secret)
 //
 // Tira quem chamou da casa que ela confirmou. A regra fica em
 // public.leave_household (roda como a pessoa, com RLS): o dono passa
@@ -9,11 +10,17 @@
 // 409 para o app perguntar; já não é dessa casa, 404.
 // A casa apagada entra numa fila no banco; esta função apaga as fotos da
 // fila com a service role, que o app não tem, a cada saída e no modo drain,
-// chamado pelo agendamento. O drain só limpa casas que já foram apagadas.
+// chamado pelo agendamento. O drain só limpa casas que já foram apagadas, e
+// só roda com o segredo do agendamento (cleanup_cron_secret, no Vault).
+// A plataforma não confere o token (verify_jwt = false: o agendamento não
+// manda chave do Supabase); quem confere é a função, a pessoa pelo token dela
+// (auth.getUser) e o agendamento pelo segredo.
 
 import { createClient } from '@supabase/supabase-js';
 
+import { publishableKey, secretKey } from '../_shared/apiKeys.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
+import { sameSecret } from '../_shared/secret.ts';
 import { type CleanupQueue, drainCleanupQueue } from './cleanup.ts';
 
 const CORS = {
@@ -34,7 +41,7 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error: 'Método não suportado.' }, 405);
 
   const url = Deno.env.get('SUPABASE_URL')!;
-  const admin = createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+  const admin = createClient(url, secretKey());
   const queue: CleanupQueue = {
     pending: async (limit) => {
       const { data: rows, error: queueError } = await admin
@@ -57,6 +64,12 @@ Deno.serve(async (req) => {
 
   const body = (await req.json().catch(() => null)) as { drain?: unknown; householdId?: unknown; deleteIfLast?: unknown } | null;
   if (body?.drain === true) {
+    const { data: secret, error: secretError } = await admin.rpc('cleanup_config');
+    if (secretError || typeof secret !== 'string' || !secret) {
+      console.error('cleanup secret missing', secretError);
+      return json({ error: 'Limpeza agendada não configurada.' }, 503);
+    }
+    if (!sameSecret(req.headers.get('x-cleanup-secret'), secret)) return json({ error: 'Não autorizado.' }, 401);
     const result = await drain().catch((err) => {
       console.error('cleanup queue failed', err);
       return null;
@@ -64,7 +77,7 @@ Deno.serve(async (req) => {
     return result ? json({ done: result.done.length, failed: result.failed.length }) : json({ error: 'Falhou.' }, 500);
   }
 
-  const asUser = createClient(url, Deno.env.get('SUPABASE_ANON_KEY') ?? Deno.env.get('SUPABASE_PUBLISHABLE_KEY')!, {
+  const asUser = createClient(url, publishableKey(), {
     global: { headers: callerHeaders(req) },
   });
   const { data: userData } = await asUser.auth.getUser();

@@ -232,7 +232,7 @@ create trigger beta_access_forget_finance
 -- =============================================================================
 
 alter table public.ai_usage drop constraint ai_usage_kind_check;
-alter table public.ai_usage add constraint ai_usage_kind_check check (kind in ('chat', 'photo', 'menu', 'finance'));
+alter table public.ai_usage add constraint ai_usage_kind_check check (kind in ('chat', 'photo', 'menu', 'nfce', 'finance'));
 
 -- O uso do consultor não aparece para quem não tem a liberação.
 drop policy "household members read ai usage" on public.ai_usage;
@@ -248,7 +248,7 @@ language sql
 immutable
 set search_path = ''
 as $$
-  select case p_kind when 'chat' then 300 when 'photo' then 100 when 'menu' then 20 when 'finance' then 100 end;
+  select case p_kind when 'chat' then 300 when 'photo' then 100 when 'menu' then 20 when 'nfce' then 200 when 'finance' then 100 end;
 $$;
 
 create or replace function public.use_ai(
@@ -294,7 +294,7 @@ security definer
 set search_path = ''
 as $$
   select k.kind, coalesce(u.count, 0), public.ai_limit(k.kind)
-  from (values ('chat'), ('photo'), ('menu'), ('finance')) as k (kind)
+  from (values ('chat'), ('photo'), ('menu'), ('nfce'), ('finance')) as k (kind)
   left join public.ai_usage u
     on u.household_id = public.current_household_id() and u.month = public.ai_month() and u.kind = k.kind
   where k.kind <> 'finance' or public.has_beta('finance');

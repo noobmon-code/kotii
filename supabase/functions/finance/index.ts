@@ -14,6 +14,7 @@
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
+import { publishableKey, secretKey } from '../_shared/apiKeys.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
 import { createPluggyClient } from '../_shared/pluggy.ts';
 import { addItem, errorForLog, type FinanceDb, parseFinanceRequest, type SyncDeps, syncAll } from './sync.ts';
@@ -138,8 +139,8 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error: 'Método não suportado.' }, 405);
 
   const url = Deno.env.get('SUPABASE_URL')!;
-  // A chave anon também é um JWT válido: só segue quem está logado.
-  const db = createClient(url, Deno.env.get('SUPABASE_ANON_KEY') ?? Deno.env.get('SUPABASE_PUBLISHABLE_KEY')!, {
+  // Com a chave pública e o token de quem chamou: só segue quem está logado.
+  const db = createClient(url, publishableKey(), {
     global: { headers: callerHeaders(req) },
   });
   const { data: userData } = await db.auth.getUser();
@@ -174,7 +175,7 @@ Deno.serve(async (req) => {
     return json({ error: 'Não consegui abrir a sua casa agora. Tente de novo.' }, 503);
   }
 
-  const admin = createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+  const admin = createClient(url, secretKey());
   const deps: SyncDeps = {
     db: financeDb(admin, user.id, householdId),
     pluggy: createPluggyClient({ clientId, clientSecret }),
