@@ -132,6 +132,20 @@ begin
   exception when unique_violation then null;
   end;
 
+  begin
+    insert into public.receipts (store_id, image_path) values (s_bom, '00000000-0000-0000-0000-000000000000/nota.jpg');
+    raise exception 'FAIL: receipt photo in another household folder';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.receipts (store_id, extra_image_paths) values (s_bom, array[current_setting('test.hh_a') || '/']);
+    raise exception 'FAIL: receipt photo without a file name';
+  exception when check_violation then null;
+  end;
+  insert into public.receipts (store_id, image_path, extra_image_paths)
+    values (s_bom, current_setting('test.hh_a') || '/nota-1.jpg', array[current_setting('test.hh_a') || '/nota-2.jpg']) returning id into r2;
+  delete from public.receipts where id = r2;
+
   -- Rascunho não entra no comparativo de preços.
   insert into public.receipts (store_id, status) values (s_bom, 'draft') returning id into r2;
   insert into public.receipt_items (receipt_id, raw_description, unit_price, total_price, product_id)
@@ -756,6 +770,28 @@ begin
   exception when check_violation then null;
   end;
 
+  -- Arquivos: só na pasta da casa, sem subpasta.
+  begin
+    insert into public.exams (person_id, title, file_paths) values (duda, 'X', array['00000000-0000-0000-0000-000000000000/exame.jpg']);
+    raise exception 'FAIL: exam file in another household folder';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.workout_plans (person_id, title, file_paths) values (duda, 'X', array[current_setting('test.hh_a') || '/sub/ficha.jpg']);
+    raise exception 'FAIL: workout file outside the household folder root';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.diet_plans (person_id, title, file_paths) values (duda, 'X', array['dieta.jpg']);
+    raise exception 'FAIL: diet file without the household folder';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.exams (person_id, title, file_paths) values (duda, 'X', array[null, current_setting('test.hh_a') || '/exame.jpg']);
+    raise exception 'FAIL: null file path accepted';
+  exception when check_violation then null;
+  end;
+
   begin
     insert into public.appointments (person_id, title, starts_at, status) values (duda, 'X', now(), 'talvez');
     raise exception 'FAIL: invalid appointment status';
@@ -894,7 +930,24 @@ begin
     raise exception 'FAIL: remind_days out of range';
   exception when check_violation then null;
   end;
+  begin
+    insert into public.documents (title, file_paths) values ('X', array['00000000-0000-0000-0000-000000000000/cnh.jpg']);
+    raise exception 'FAIL: document file in another household folder';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.equipment (name, file_paths) values ('X', array[current_setting('test.hh_a') || '/a/b.jpg']);
+    raise exception 'FAIL: equipment file outside the household folder root';
+  exception when check_violation then null;
+  end;
 end $$;
+reset role;
+do $$
+begin
+  assert (select file_size_limit from storage.buckets where id = 'documents') = 5 * 1024 * 1024, 'buckets have a size limit';
+  assert (select allowed_mime_types from storage.buckets where id = 'health') = array['image/jpeg', 'image/png', 'image/webp'], 'buckets only take photos';
+end $$;
+set role authenticated;
 
 select set_config('request.jwt.claim.sub', :'user_b', false) \gset
 do $$
@@ -1288,11 +1341,13 @@ select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$
 declare
   r uuid;
+  hid text := public.current_household_id()::text;
 begin
-  insert into public.receipts (image_path, extra_image_paths) values ('x/1.jpg', array['x/2.jpg', 'x/3.jpg']) returning id into r;
+  insert into public.receipts (image_path, extra_image_paths)
+    values (hid || '/1.jpg', array[hid || '/2.jpg', hid || '/3.jpg']) returning id into r;
   assert (select cardinality(extra_image_paths) from public.receipts where id = r) = 2, 'extra photos are kept in order';
   begin
-    update public.receipts set extra_image_paths = array['a', 'b', 'c', 'd', 'e', 'f'] where id = r;
+    update public.receipts set extra_image_paths = array(select hid || '/' || n || '.jpg' from generate_series(1, 6) n) where id = r;
     raise exception 'FAIL: too many photos';
   exception when check_violation then null;
   end;
