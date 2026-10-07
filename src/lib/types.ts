@@ -376,9 +376,9 @@ export interface FinAccount {
   marketing_name: string | null;
   /** Só o final do número. */
   number_last4: string | null;
-  /** SHA-256 do CPF/CNPJ do titular (transferência para si mesmo). */
+  /** HMAC-SHA256 do CPF/CNPJ do titular (transferência para si mesmo). */
   owner_doc_hash: string | null;
-  /** No cartão: o valor da fatura atual. */
+  /** No cartão: o limite usado (fatura aberta mais as parcelas a vencer), não a próxima fatura. */
   balance: number | null;
   currency_code: string | null;
   credit_limit: number | null;
@@ -416,7 +416,7 @@ export interface FinTransaction {
   /** Quem recebeu (saída) ou quem pagou (entrada). */
   counterparty_name: string | null;
   counterparty_doc_kind: 'CPF' | 'CNPJ' | null;
-  /** SHA-256 do documento; CPF nunca vem cru. */
+  /** HMAC-SHA256 do documento (segredo só da função); CPF nunca vem cru. */
   counterparty_doc_hash: string | null;
   counterparty_cnpj: string | null;
   boleto_barcode: string | null;

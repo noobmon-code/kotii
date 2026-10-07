@@ -1,6 +1,13 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { matchBankToNooky, namesOverlap, type NookyRecord, nookyRecordsFrom, reconciliationTotals } from '../bankMatch';
+import {
+  matchBankToNooky,
+  namesOverlap,
+  type NookyRecord,
+  nookyRecordsFrom,
+  reconciliationInRange,
+  reconciliationTotals,
+} from '../bankMatch';
 import type { BankPurchase } from '../bankMonth';
 
 const CNPJ = '12345678000199';
@@ -20,6 +27,7 @@ const purchase = (key: string, over: Partial<BankPurchase>): BankPurchase => ({
   txIds: [key],
   personTransfer: false,
   sensitive: false,
+  storeName: null,
   ...over,
 });
 
@@ -82,6 +90,32 @@ describe('matchBankToNooky', () => {
     // Gorjeta só vale para nota.
     const expense = matchBankToNooky([purchase('p1', { merchantCnpj: CNPJ, amount: 110 })], [record('g1', { cnpj: CNPJ })]);
     expect(expense.matched).toHaveLength(0);
+  });
+
+  it('rede de lojas: CNPJ da filial na nota e da matriz no banco (mesma raiz) casa, abaixo do CNPJ igual', () => {
+    const branch = '47508411123456';
+    const hq = '47508411000156';
+    const same = matchBankToNooky([purchase('p1', { merchantCnpj: hq })], [record('n1', { kind: 'nota', cnpj: branch })]);
+    expect(summary(same).matched).toEqual([['p1', 'n1', 'alta', 'Mesma empresa (CNPJ), valor e data']]);
+    const tip = matchBankToNooky([purchase('p1', { merchantCnpj: hq, amount: 110 })], [record('n1', { kind: 'nota', cnpj: branch })]);
+    expect(summary(tip).matched).toEqual([['p1', 'n1', 'media', 'Mesma loja e valor um pouco maior: com gorjeta?']]);
+    const exactWins = matchBankToNooky(
+      [purchase('p1', { merchantCnpj: hq })],
+      [record('n1', { kind: 'nota', cnpj: branch }), record('n2', { kind: 'nota', cnpj: hq })],
+    );
+    expect(summary(exactWins).matched).toEqual([['p1', 'n2', 'alta', 'Mesmo CNPJ, valor e data']]);
+  });
+
+  it('casada na janela inteira: um registro perto da virada do mês não conta em dois meses', () => {
+    const result = matchBankToNooky(
+      [purchase('out', { date: '2026-10-01', amount: 50 }), purchase('set', { date: '2026-09-29', amount: 50 })],
+      [record('g1', { date: '2026-09-30', amount: 50 })],
+    );
+    const september = reconciliationTotals(reconciliationInRange(result, { start: '2026-09-01', end: '2026-10-01' }));
+    const october = reconciliationTotals(reconciliationInRange(result, { start: '2026-10-01', end: '2026-11-01' }));
+    expect(september.inNookyCount + october.inNookyCount).toBe(1);
+    expect(september.bankOnlyCount + october.bankOnlyCount).toBe(1);
+    expect(reconciliationInRange(result, { start: '2026-10-01', end: '2026-11-01' }).nookyOnly).toEqual([]);
   });
 
   it('fora da janela de 3 dias ou com valor diferente não casa', () => {

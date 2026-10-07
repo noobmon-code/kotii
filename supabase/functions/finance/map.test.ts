@@ -1,14 +1,18 @@
 import { assert, assertEquals } from '@std/assert';
 
 import type { PluggyAccount, PluggyTransaction } from '../_shared/pluggy.ts';
-import { addDays, calendarDate, docHash, mapAccount, mapTransaction, money, saoPauloDate } from './map.ts';
+import { addDays, calendarDate, docHash, mapAccount, mapTransaction, money, saoPauloDate, withoutCpf } from './map.ts';
 
 const NOW = '2026-10-07T12:00:00.000Z';
-const owner = { userId: 'user-1', householdId: 'casa-1', now: NOW };
+const HASH_KEY = 'segredo-de-teste';
+const owner = { userId: 'user-1', householdId: 'casa-1', now: NOW, hashKey: HASH_KEY };
 const CPF = '12345678909';
-const CPF_HASH = 'aaa6cf8967dcc98cf017d68d220ba29e1c0ea4fd94910c45e692152cf31e0fd5';
+// HMAC-SHA256 com HASH_KEY de "user-1:<dígitos>".
+const CPF_HASH = 'dd95e33497c66c70494aeffcea0b0b76f3abd14c92d697ddae37cedabfe9d0b5';
 const CNPJ = '11222333000181';
-const CNPJ_HASH = 'df5ce4c8a7a5d050d2f79e2ab70f42de87fa0f67a2d16710fb8cae97d34e5e64';
+const CNPJ_HASH = 'febfdaa9ea262fa8d6afb9d758101197e7e9f035f89de33f3bad76932d2b7f29';
+// SHA-256 puro de "user-1:12345678909": quem lê a tabela acharia testando os CPFs possíveis.
+const PLAIN_SHA_CPF = 'aaa6cf8967dcc98cf017d68d220ba29e1c0ea4fd94910c45e692152cf31e0fd5';
 
 const tx = (overrides: Partial<PluggyTransaction> = {}): PluggyTransaction => ({
   id: 'tx-1',
@@ -66,9 +70,22 @@ Deno.test('money arredonda em centavos e recusa o que não cabe na coluna', () =
   assertEquals(money('10'), null);
 });
 
-Deno.test('docHash: SHA-256 hex de pessoa:dígitos', async () => {
-  assertEquals(await docHash('user-1', CPF), CPF_HASH);
-  assertEquals(await docHash('user-2', CPF) === CPF_HASH, false);
+Deno.test('docHash: HMAC-SHA256 hex de pessoa:dígitos com o segredo (sem ele, não dá para achar o CPF)', async () => {
+  assertEquals(await docHash(HASH_KEY, 'user-1', CPF), CPF_HASH);
+  assertEquals(await docHash(HASH_KEY, 'user-2', CPF) === CPF_HASH, false);
+  assertEquals(await docHash('outro-segredo', 'user-1', CPF) === CPF_HASH, false);
+  assertEquals((await docHash(HASH_KEY, 'user-1', CPF)) === PLAIN_SHA_CPF, false);
+});
+
+Deno.test('CPF escrito na descrição sai antes de gravar; CNPJ, conta e boleto ficam', async () => {
+  assertEquals(withoutCpf('PIX ENVIADO - CPF 123.456.789-00 - FULANO'), 'PIX ENVIADO - CPF *** - FULANO');
+  assertEquals(withoutCpf('Cp :12345678-NOME'), 'CPF ***-NOME');
+  assertEquals(withoutCpf('TED 12345678909 FULANO'), 'TED *** FULANO');
+  assertEquals(withoutCpf('CPFL ENERGIA'), 'CPFL ENERGIA');
+  assertEquals(withoutCpf('CNPJ 12345678000199 - Conta 12345678-9'), 'CNPJ 12345678000199 - Conta 12345678-9');
+  assertEquals(withoutCpf('PAGAMENTO 23793.38128 60000.000003'), 'PAGAMENTO 23793.38128 60000.000003');
+  const row = await mapTx(tx({ description: 'Pix enviado 123.456.789-09', descriptionRaw: 'PIX ENVIADO CPF 12345678909 FULANO' }));
+  assertEquals([row?.description, row?.description_raw], ['Pix enviado ***', 'PIX ENVIADO CPF *** FULANO']);
 });
 
 Deno.test('lançamento simples: valor absoluto, data, descrição e categoria', async () => {
@@ -111,6 +128,17 @@ Deno.test('lançamento simples: valor absoluto, data, descrição e categoria', 
 Deno.test('compra em moeda estrangeira: vale o valor em reais e guarda o original', async () => {
   const row = await mapTx(tx({ amount: 25.5, amountInAccountCurrency: 141.236, currencyCode: 'USD' }));
   assertEquals([row?.amount, row?.original_amount, row?.original_currency], [141.24, 25.5, 'USD']);
+});
+
+Deno.test('moeda estrangeira sem o valor em reais fica de fora (não soma dólar como real)', async () => {
+  assertEquals(await mapTx(tx({ amount: -10, amountInAccountCurrency: null, currencyCode: 'USD' })), null);
+  // Na moeda da própria conta a Pluggy não manda o convertido: vale o valor.
+  const usd = await mapTransaction(tx({ amount: -10, amountInAccountCurrency: null, currencyCode: 'USD' }), {
+    ...owner,
+    accountId: 'conta-usd',
+    accountCurrency: 'USD',
+  });
+  assertEquals([usd?.amount, usd?.original_currency], [10, null]);
 });
 
 Deno.test('previsto, entrada e lançamento sem tipo', async () => {

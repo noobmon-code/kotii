@@ -9,19 +9,21 @@
 import type { FinAccount, FinConnection, FinTransaction } from '@/lib/types';
 
 import { normalizeBankText } from './bankCategories';
+import { TRANSFER_WORDS } from './bankClassify';
 import { connectionWarnings } from './bankHealth';
-import { matchBankToNooky, type NookyRecord, reconciliationTotals } from './bankMatch';
+import { matchBankToNooky, type NookyRecord, reconciliationInRange, reconciliationTotals } from './bankMatch';
 import {
   accountLabels,
   type BankPurchase,
   cardBills,
+  currentAccounts,
   futureInstallments,
   groupPurchases,
   monthSummary,
   summarizeRange,
 } from './bankMonth';
 import { budgetProgress, describeBudget } from './budget';
-import { addDays, formatBRDate } from './dates';
+import { addDays, formatBRDate, toISODate } from './dates';
 import { FINANCE_CATEGORIES, type FinanceCategory, getFinanceCategory, monthLabel, monthRange, shiftMonth } from './finance';
 import { formatBRL } from './money';
 
@@ -54,10 +56,10 @@ export function dayLabel(iso: string): string {
 }
 
 const shortDate = (iso: string) => formatBRDate(iso).slice(0, 5);
+/** Dia, no fuso do aparelho, de um instante gravado em UTC (22h30 do dia 7 é 01h30 UTC do dia 8). */
+const localDay = (timestamp: string) => toISODate(new Date(timestamp));
 const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 const categoryLabel = (key: FinanceCategory) => getFinanceCategory(key).label;
-
-const TRANSFER = /\b(pix|ted|doc|transf|transferencia|transferencias)\b/;
 
 /**
  * Tira o que pode identificar alguém ou uma conta: máscaras, sequências de
@@ -77,10 +79,22 @@ export function scrubText(text: string): string {
     .trim();
 }
 
+/** Nome genérico quando o texto do banco pode trazer nome de pessoa. */
+function genericLabel(p: BankPurchase, text: string): string {
+  const outgoing = p.kind === 'spending';
+  if (/\bboleto\b/.test(text)) return outgoing ? 'Boleto pago' : 'Boleto recebido';
+  if (/\bsalario\b/.test(text)) return 'Salário';
+  if (/\bdeposito\b/.test(text)) return 'Depósito';
+  if (/\bsaque\b/.test(text)) return 'Saque';
+  return p.kind === 'income' ? 'Entrada' : p.kind === 'refund' ? 'Estorno' : 'Pagamento';
+}
+
 /**
  * Como a compra aparece para a IA. Transferência nunca leva nome (pode ser
- * de pessoa, e a descrição do banco costuma trazer CPF e conta); compra
- * leva a loja, limpa.
+ * de pessoa, e a descrição do banco costuma trazer CPF e conta). O resto só
+ * leva nome quando ele é de loja (BankPurchase.storeName: loja reconhecida
+ * pela Pluggy, empresa ou compra com cartão); boleto, depósito e outros
+ * textos livres da conta viram um nome genérico.
  */
 export function purchaseLabel(p: BankPurchase): string {
   const text = normalizeBankText(p.description);
@@ -90,11 +104,11 @@ export function purchaseLabel(p: BankPurchase): string {
     const how = pix ? 'PIX' : /\bboleto\b/.test(text) ? 'Boleto' : 'Transferência';
     return `${how} ${outgoing ? 'para' : 'de'} pessoa física`;
   }
-  if (TRANSFER.test(text)) {
+  if (TRANSFER_WORDS.test(text)) {
     const who = p.merchantCnpj ? (outgoing ? ' para empresa' : ' de empresa') : outgoing ? ' enviado' : ' recebido';
     return pix ? `PIX${who}` : `Transferência${who.replace('enviado', 'enviada').replace('recebido', 'recebida')}`;
   }
-  return scrubText(p.merchantName ?? p.description) || 'Compra';
+  return (p.storeName && scrubText(p.storeName)) || genericLabel(p, text);
 }
 
 const KIND_WORD: Partial<Record<BankPurchase['kind'], string>> = {
@@ -117,7 +131,7 @@ export function buildFinanceSnapshot(input: FinanceSnapshotInput): string {
   lines.push(
     connections.length
       ? `Bancos conectados: ${connections
-          .map((c) => `${c.label}${c.item_updated_at ? ` (atualizado em ${shortDate(c.item_updated_at)})` : ''}`)
+          .map((c) => `${c.label}${c.item_updated_at ? ` (atualizado em ${shortDate(localDay(c.item_updated_at))})` : ''}`)
           .join('; ')}.`
       : 'Nenhum banco conectado ainda.',
   );
@@ -167,14 +181,15 @@ export function buildFinanceSnapshot(input: FinanceSnapshotInput): string {
   });
   lines.push(`Meses anteriores inteiros: ${history.join('; ')}.`);
 
-  // Saldos e faturas, como o banco informa.
-  const balances = input.accounts
+  // Saldos e cartões, como o banco informa (sem as contas que sumiram da Pluggy).
+  const accounts = currentAccounts(input.accounts, input.connections);
+  const balances = accounts
     .filter((a) => a.type === 'BANK')
     .map((a) => `${labels.get(a.id)}: ${a.balance != null ? formatBRL(a.balance) : 'saldo indisponível'}`);
   lines.push(`Saldos das contas: ${balances.length ? balances.join('; ') : 'nenhuma conta corrente'}.`);
-  const bills = cardBills(input.accounts, labels).map((b) =>
+  const bills = cardBills(accounts, labels, today).map((b) =>
     [
-      `${b.label}: fatura atual ${b.amount != null ? formatBRL(b.amount) : 'não informada'}`,
+      `${b.label}: limite usado ${b.amount != null ? `${formatBRL(b.amount)} (fatura aberta mais parcelas a vencer)` : 'não informado'}`,
       b.dueDate ? `vence ${dayLabel(b.dueDate)}` : null,
       b.closeDate ? `fecha ${dayLabel(b.closeDate)}` : null,
       b.minimumPayment != null ? `mínimo ${formatBRL(b.minimumPayment)}` : null,
@@ -192,15 +207,8 @@ export function buildFinanceSnapshot(input: FinanceSnapshotInput): string {
     }.`,
   );
 
-  // Conferência com o Nooky no mês atual.
-  const monthStart = monthRange(month).start;
-  const monthEnd = monthRange(month).end;
-  const totals = reconciliationTotals(
-    matchBankToNooky(
-      purchases.filter((p) => p.date >= monthStart && p.date < monthEnd),
-      input.nookyRecords,
-    ),
-  );
+  // Conferência com o Nooky no mês atual (casada na janela inteira, como na tela).
+  const totals = reconciliationTotals(reconciliationInRange(matchBankToNooky(purchases, input.nookyRecords), monthRange(month)));
   lines.push(
     `Conferência de ${monthLabel(month)} com o Nooky: ${formatBRL(totals.inNooky)} em ${count(totals.inNookyCount, 'compra', 'compras')} já no Nooky ` +
       `(notas, contas ou gastos); ${formatBRL(totals.bankOnly)} em ${count(totals.bankOnlyCount, 'compra', 'compras')} só no banco.`,
@@ -307,7 +315,8 @@ export function parseFinanceActions(raw: unknown): FinanceAction[] {
 export function describeFinanceAction(action: FinanceAction): string {
   switch (action.type) {
     case 'set_budget':
-      return `${categoryLabel(action.category)} · ${formatBRL(action.amount)} por mês`;
+      // O orçamento é da casa: o resto da casa também vê o novo limite.
+      return `${categoryLabel(action.category)} · ${formatBRL(action.amount)} por mês · vale para a casa toda`;
     case 'open_screen':
       return '';
   }

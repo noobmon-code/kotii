@@ -204,7 +204,7 @@ Deno.test('cursor: lido do link cru (com ou sem escape) ou da query sozinha', ()
   assertEquals(nextCursor('/v2/transactions?accountId=a&after='), null);
 });
 
-Deno.test('lançamentos: link sem cursor encerra (como o SDK); cursor repetido é erro, não laço', async () => {
+Deno.test('lançamentos: cursor repetido é erro, não laço', async () => {
   const endless = fakePluggy({
     'POST /auth': auth(),
     'GET /v2/transactions': () => ({ status: 200, body: { results: [{ id: 't' }], next: '/v2/transactions?accountId=a&after=sempre' } }),
@@ -215,15 +215,29 @@ Deno.test('lançamentos: link sem cursor encerra (como o SDK); cursor repetido �
   );
   assertEquals(err.code, 'unavailable');
   assertEquals(endless.calls.filter((call) => call.path === '/v2/transactions').length, 2);
+});
 
-  const noCursor = fakePluggy({
-    'POST /auth': auth(),
-    'GET /v2/transactions': () => ({ status: 200, body: { results: [{ id: 't' }], next: '/v2/transactions?accountId=a' } }),
-  });
-  const all = await createPluggyClient({ ...credentials(), fetchImpl: noCursor.fetchImpl }).listTransactions('a', {
-    dateFrom: '2026-01-01',
-  });
-  assertEquals(all.length, 1);
+Deno.test('lançamentos: página sem lista ou link de próxima página sem cursor é erro (extrato pela metade apagaria o resto)', async () => {
+  const shapes: unknown[] = [
+    { results: [{ id: 't' }], next: '/v2/transactions?accountId=a' },
+    { results: [{ id: 't' }], next: { href: '?after=c2' } },
+    {},
+    { results: null, next: null },
+  ];
+  for (const body of shapes) {
+    const pluggy = fakePluggy({ 'POST /auth': auth(), 'GET /v2/transactions': () => ({ status: 200, body }) });
+    const err = await assertRejects(
+      () => createPluggyClient({ ...credentials(), fetchImpl: pluggy.fetchImpl }).listTransactions('a', { dateFrom: '2026-01-01' }),
+      PluggyError,
+    );
+    assertEquals([JSON.stringify(body), err.code], [JSON.stringify(body), 'unavailable']);
+  }
+  // Fim do extrato: next vazio ou ausente.
+  for (const next of [null, '', undefined]) {
+    const pluggy = fakePluggy({ 'POST /auth': auth(), 'GET /v2/transactions': () => ({ status: 200, body: { results: [{ id: 't' }], next } }) });
+    const all = await createPluggyClient({ ...credentials(), fetchImpl: pluggy.fetchImpl }).listTransactions('a', { dateFrom: '2026-01-01' });
+    assertEquals(all.length, 1);
+  }
 });
 
 Deno.test('lançamentos: erro numa página do meio sobe (não devolve o extrato pela metade)', async () => {

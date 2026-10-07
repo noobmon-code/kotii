@@ -8,7 +8,9 @@
 // com a chave de serviço (o app só lê), sempre presa à pessoa e à casa.
 // Desconectar um banco é pelo app, na RPC fin_remove_connection.
 //
-// Secrets: PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET.
+// Secrets: PLUGGY_CLIENT_ID, PLUGGY_CLIENT_SECRET e FIN_DOC_HASH_KEY (segredo
+// dos hashes de CPF/CNPJ; trocar depois desfaz o reconhecimento de
+// transferência entre as próprias contas nos lançamentos antigos).
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
@@ -40,7 +42,7 @@ function financeDb(admin: SupabaseClient, userId: string, householdId: string): 
     async listConnections() {
       const { data, error } = await admin
         .from('fin_connections')
-        .select('id, label, pluggy_item_id, last_synced_at')
+        .select('id, label, pluggy_item_id, last_synced_at, item_updated_at')
         .eq('user_id', userId)
         .eq('household_id', householdId)
         .order('created_at');
@@ -50,7 +52,7 @@ function financeDb(admin: SupabaseClient, userId: string, householdId: string): 
     async findConnectionByItem(itemId) {
       const { data, error } = await admin
         .from('fin_connections')
-        .select('id, label, pluggy_item_id, last_synced_at, user_id, household_id')
+        .select('id, label, pluggy_item_id, last_synced_at, item_updated_at, user_id, household_id')
         .eq('pluggy_item_id', itemId)
         .maybeSingle();
       if (error) throw error;
@@ -118,6 +120,16 @@ function financeDb(admin: SupabaseClient, userId: string, householdId: string): 
         if (error) throw error;
       }
     },
+    async purgeDeleted(accountId, before) {
+      const { error } = await admin
+        .from('fin_transactions')
+        .delete()
+        .eq('account_id', accountId)
+        .eq('user_id', userId)
+        .eq('household_id', householdId)
+        .lt('deleted_at', before);
+      if (error) throw error;
+    },
   };
 }
 
@@ -147,6 +159,11 @@ Deno.serve(async (req) => {
   if (!clientId || !clientSecret) {
     return json({ error: 'Pluggy não configurada: cadastre PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET nos secrets do Supabase.' }, 503);
   }
+  // Sem o segredo, o hash do CPF seria um SHA-256 que se desfaz testando os CPFs possíveis.
+  const hashKey = Deno.env.get('FIN_DOC_HASH_KEY')?.trim();
+  if (!hashKey || hashKey.length < 32) {
+    return json({ error: 'Falta o segredo FIN_DOC_HASH_KEY (32 caracteres ou mais) nos secrets do Supabase.' }, 503);
+  }
 
   const request = parseFinanceRequest(await req.json().catch(() => null));
   if (typeof request === 'string') return json({ error: request }, 400);
@@ -163,6 +180,7 @@ Deno.serve(async (req) => {
     pluggy: createPluggyClient({ clientId, clientSecret }),
     userId: user.id,
     householdId,
+    hashKey,
     now: () => new Date(),
   };
 

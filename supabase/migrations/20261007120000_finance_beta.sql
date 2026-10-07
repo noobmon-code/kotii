@@ -87,8 +87,10 @@ create table public.fin_accounts (
   marketing_name text,
   -- Só o final do número da conta ou do cartão, nunca ele inteiro.
   number_last4 text check (char_length(number_last4) <= 4),
-  -- SHA-256 (hex) do CPF/CNPJ do titular: reconhece transferência para si mesmo sem guardar o documento.
+  -- HMAC-SHA256 (hex, segredo só da função) do CPF/CNPJ do titular: reconhece transferência para si
+  -- mesmo sem guardar o documento.
   owner_doc_hash text check (owner_doc_hash ~ '^[0-9a-fA-F]{64}$'),
+  -- No cartão: limite usado (fatura aberta mais parcelas a vencer).
   balance numeric(14, 2),
   currency_code text,
   credit_limit numeric(14, 2),
@@ -128,7 +130,7 @@ create table public.fin_transactions (
   payment_method text,
   merchant_name text,
   merchant_cnpj text,
-  -- Quem recebeu (saída) ou quem pagou (entrada). CPF nunca fica cru: só o hash.
+  -- Quem recebeu (saída) ou quem pagou (entrada). CPF nunca fica cru: só o hash (nem na descrição).
   counterparty_name text,
   counterparty_doc_kind text check (counterparty_doc_kind in ('CPF', 'CNPJ')),
   counterparty_doc_hash text check (counterparty_doc_hash ~ '^[0-9a-fA-F]{64}$'),
@@ -201,6 +203,29 @@ $$;
 
 revoke execute on function public.fin_remove_connection(uuid) from public, anon;
 grant execute on function public.fin_remove_connection(uuid) to authenticated;
+
+-- Tirar a liberação apaga os bancos da pessoa naquela casa (contas e
+-- lançamentos vão junto): sem ela, a pessoa não vê nem consegue desconectar
+-- pelo app, e o extrato não fica guardado sem uso (LGPD).
+create function public.fin_forget_revoked_beta()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if old.feature = 'finance' then
+    delete from public.fin_connections c where c.user_id = old.user_id and c.household_id = old.household_id;
+  end if;
+  return old;
+end;
+$$;
+
+revoke execute on function public.fin_forget_revoked_beta() from public, anon, authenticated;
+
+create trigger beta_access_forget_finance
+  after delete on public.beta_access
+  for each row execute function public.fin_forget_revoked_beta();
 
 -- =============================================================================
 -- Limite de IA: conversa com o consultor (só com a liberação)

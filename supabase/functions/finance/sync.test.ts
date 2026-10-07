@@ -1,7 +1,7 @@
 import { assert, assertEquals } from '@std/assert';
 
 import { type PluggyAccount, type PluggyClient, PluggyError, type PluggyItem, type PluggyTransaction } from '../_shared/pluggy.ts';
-import type { FinAccountRow, FinTransactionRow } from './map.ts';
+import { docHash, type FinAccountRow, type FinTransactionRow } from './map.ts';
 import {
   addItem,
   errorForLog,
@@ -16,6 +16,7 @@ import {
 } from './sync.ts';
 
 const ITEM = '0b7c6a3e-1d2f-4e5a-9b8c-7d6e5f4a3b2c';
+const HASH_KEY = 'segredo-de-teste-com-32-caracteres!';
 const OTHER_ITEM = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
 
 interface ConnectionRow extends FinConnectionOwnerRef {
@@ -38,17 +39,18 @@ function fakeStore() {
     return {
       listConnections: () =>
         Promise.resolve(
-          [...connections.values()].filter(mine).map(({ id, label, pluggy_item_id, last_synced_at }) => ({
+          [...connections.values()].filter(mine).map(({ id, label, pluggy_item_id, last_synced_at, item_updated_at }) => ({
             id,
             label,
             pluggy_item_id,
             last_synced_at,
+            item_updated_at,
           })),
         ),
       findConnectionByItem: (itemId) => Promise.resolve([...connections.values()].find((row) => row.pluggy_item_id === itemId) ?? null),
       insertConnection: (row) => {
         if (options.raceOnInsert) {
-          connections.set(options.raceOnInsert.id, { status: null, error_message: null, item_updated_at: null, ...options.raceOnInsert });
+          connections.set(options.raceOnInsert.id, { status: null, error_message: null, ...options.raceOnInsert });
         }
         if ([...connections.values()].some((other) => other.pluggy_item_id === row.pluggy_item_id)) return Promise.resolve('conflict');
         const id = `con-${++seq}`;
@@ -89,6 +91,13 @@ function fakeStore() {
           if (row && row.account_id === accountId && mine(row) && row.deleted_at === null) {
             (row as { deleted_at: string | null }).deleted_at = at;
           }
+        }
+        return Promise.resolve();
+      },
+      purgeDeleted: (accountId, before) => {
+        for (const [id, row] of transactions) {
+          const deletedAt = (row as { deleted_at: string | null }).deleted_at;
+          if (row.account_id === accountId && mine(row) && deletedAt !== null && deletedAt < before) transactions.delete(id);
         }
         return Promise.resolve();
       },
@@ -170,6 +179,7 @@ function setup(banks: Record<string, FakeBank | PluggyError>, at = '2026-10-07T1
     pluggy: pluggy.client,
     userId,
     householdId,
+    hashKey: HASH_KEY,
     now: () => clock.now,
     ...extra,
   });
@@ -204,11 +214,24 @@ Deno.test('intervalos: 6 h para a sincronização ao abrir, 2 min no Atualizar',
   assertEquals(shouldSync('2026-10-07T11:58:00.000Z', now, true), true);
 });
 
-Deno.test('janela: 365 dias na primeira vez, 60 depois, contados do dia em São Paulo', () => {
-  assertEquals(syncWindowStart(null, new Date('2026-10-07T12:00:00.000Z')), '2025-10-07');
-  assertEquals(syncWindowStart('2026-10-06T12:00:00.000Z', new Date('2026-10-07T12:00:00.000Z')), '2026-08-08');
+Deno.test('janela: 365 dias sem dados ainda, 60 depois, contados do dia em São Paulo', () => {
+  const now = new Date('2026-10-07T12:00:00.000Z');
+  assertEquals(syncWindowStart(null, null, now), '2025-10-07');
+  assertEquals(syncWindowStart('2026-10-06T12:00:00.000Z', '2026-10-06T09:00:00.000Z', now), '2026-08-08');
   // 01h UTC do dia 8 ainda é dia 7 em São Paulo.
-  assertEquals(syncWindowStart('x', new Date('2026-10-08T01:00:00.000Z')), '2026-08-08');
+  assertEquals(syncWindowStart('2026-10-07T12:00:00.000Z', '2026-10-07T09:00:00.000Z', new Date('2026-10-08T01:00:00.000Z')), '2026-08-08');
+  // Sincronizou, mas a Pluggy ainda não tinha atualizado o banco (MeuPluggy recém-autorizado): o histórico ainda não veio.
+  assertEquals(syncWindowStart('2026-10-06T12:00:00.000Z', null, now), '2025-10-07');
+  assertEquals(syncWindowStart('x', '2026-10-06T09:00:00.000Z', now), '2025-10-07');
+});
+
+Deno.test('janela: meses sem abrir o consultor (ou banco parado que volta) começa uma semana antes do que já veio', () => {
+  const now = new Date('2026-10-07T12:00:00.000Z');
+  assertEquals(syncWindowStart('2026-07-01T12:00:00.000Z', '2026-07-01T09:00:00.000Z', now), '2026-06-24');
+  // O banco parou na Pluggy em julho, mesmo sincronizando todo dia: vale a data do banco.
+  assertEquals(syncWindowStart('2026-10-06T12:00:00.000Z', '2026-07-01T09:00:00.000Z', now), '2026-06-24');
+  // Nunca mais que 365 dias.
+  assertEquals(syncWindowStart('2025-01-01T12:00:00.000Z', '2025-01-01T09:00:00.000Z', now), '2025-10-07');
 });
 
 Deno.test('situação do item: status, erro e data da última atualização (data inválida vira null)', () => {
@@ -353,12 +376,12 @@ Deno.test('lançamento que não dá para gravar fica de fora sem ser marcado com
   assertEquals(store.transactions.get('t1')?.amount, 10);
 });
 
-Deno.test('conectar: Item ID que a Pluggy não conhece -> 404, sem gravar nada', async () => {
+Deno.test('conectar: Item ID que a Pluggy não conhece -> 404 dizendo onde copiar, sem gravar nada', async () => {
   const { store, deps } = setup({});
   assertEquals(await addItem(deps(), { itemId: ITEM, label: 'Nubank' }), {
     ok: false,
     status: 404,
-    error: 'Não achei esse Item ID na Pluggy.',
+    error: 'Não achei esse Item ID na Pluggy. Copie de novo no Dashboard da Pluggy: Items, ⋮ no card do banco, "Copiar Item ID".',
   });
   assertEquals(store.connections.size, 0);
 });
@@ -382,16 +405,85 @@ Deno.test('conectar: grava com a situação do item, sincroniza na hora (sem ped
   assertEquals(pluggy.calls.filter((call) => call.startsWith('item')).length, 1);
 });
 
-Deno.test('conectar de novo o mesmo item: só troca o nome e sincroniza na janela curta', async () => {
+Deno.test('conectar de novo o mesmo item: só troca o nome; sincroniza na janela curta, no intervalo do Atualizar', async () => {
   const { store, pluggy, clock, deps } = setup({ [ITEM]: nubank([]) });
   const first = await addItem(deps(), { itemId: ITEM, label: 'Nubank' });
+  const listings = () => pluggy.calls.filter((call) => !call.startsWith('item')).length;
+  const before = listings();
+
+  // 30 s depois (dois Enter, ou um cliente insistindo): troca o nome, mas não busca o extrato de novo.
   clock.now = new Date('2026-10-07T12:00:30.000Z');
   const again = await addItem(deps(), { itemId: ITEM, label: 'Nubank PF' });
   assert(first.ok && again.ok);
   assertEquals(again.connectionId, first.connectionId);
+  assertEquals(again.sync, { synced: 0, skipped: 1, errors: [] });
+  assertEquals(listings(), before);
   assertEquals(store.connections.size, 1);
   assertEquals(store.connections.get(first.connectionId)?.label, 'Nubank PF');
+
+  clock.now = new Date('2026-10-07T12:03:00.000Z');
+  const later = await addItem(deps(), { itemId: ITEM, label: 'Nubank PF' });
+  assert(later.ok);
+  assertEquals(later.sync, { synced: 1, skipped: 0, errors: [] });
   assertEquals(pluggy.calls.filter((call) => call.startsWith('transactions p-conta')).at(-1), 'transactions p-conta 2026-08-08');
+});
+
+Deno.test('item que a Pluggy ainda não preencheu (MeuPluggy recém-autorizado): não marca a hora e a próxima busca 365 dias', async () => {
+  const bank = nubank([pluggyTx('t1', '2026-10-05T15:00:00.000Z')]);
+  const empty: FakeBank = { item: item({ status: 'UPDATING', lastUpdatedAt: null }), accounts: [], transactions: {} };
+  const banks: Record<string, FakeBank> = { [ITEM]: empty };
+  const { store, pluggy, clock, deps } = setup(banks);
+  const added = await addItem(deps(), { itemId: ITEM, label: 'Nubank' });
+  assert(added.ok);
+  assertEquals(store.connections.get(added.connectionId)?.last_synced_at, null);
+
+  // Contas chegando com o item ainda atualizando: marca a hora, mas o histórico de 365 dias ainda vem na próxima.
+  banks[ITEM] = { ...bank, item: item({ status: 'UPDATING', lastUpdatedAt: null }) };
+  clock.now = new Date('2026-10-07T12:05:00.000Z');
+  assertEquals(await syncAll(deps(), true), { synced: 1, skipped: 0, errors: [] });
+  assertEquals(store.connections.get(added.connectionId)?.last_synced_at, '2026-10-07T12:05:00.000Z');
+
+  banks[ITEM] = bank;
+  clock.now = new Date('2026-10-07T12:10:00.000Z');
+  await syncAll(deps(), true);
+  assertEquals(pluggy.calls.filter((call) => call.startsWith('transactions p-conta')), [
+    'transactions p-conta 2025-10-07',
+    'transactions p-conta 2025-10-07',
+  ]);
+  clock.now = new Date('2026-10-07T12:15:00.000Z');
+  await syncAll(deps(), true);
+  assertEquals(pluggy.calls.filter((call) => call.startsWith('transactions p-conta')).at(-1), 'transactions p-conta 2026-08-08');
+});
+
+Deno.test('meses sem sincronizar: busca desde uma semana antes da última vez, sem buraco', async () => {
+  const { pluggy, clock, deps, connect } = setup({ [ITEM]: nubank([]) }, '2026-07-01T12:00:00.000Z');
+  await connect();
+  await syncAll(deps(), false);
+  clock.now = new Date('2026-10-07T12:00:00.000Z');
+  await syncAll(deps(), false);
+  assertEquals(pluggy.calls.filter((call) => call.startsWith('transactions p-conta')).at(-1), 'transactions p-conta 2026-06-24');
+});
+
+Deno.test('lançamento marcado como apagado há mais de 30 dias sai de vez', async () => {
+  const bank = nubank([pluggyTx('fica', '2026-10-05T15:00:00.000Z'), pluggyTx('some', '2026-10-04T15:00:00.000Z')]);
+  const { store, clock, deps, connect } = setup({ [ITEM]: bank });
+  await connect();
+  await syncAll(deps(), false);
+  bank.transactions['p-conta'] = [pluggyTx('fica', '2026-10-05T15:00:00.000Z')];
+  clock.now = new Date('2026-10-08T12:00:00.000Z');
+  await syncAll(deps(), false);
+  assertEquals(store.transactions.get('some')?.deleted_at, '2026-10-08T12:00:00.000Z');
+  clock.now = new Date('2026-11-08T12:00:00.000Z');
+  await syncAll(deps(), false);
+  assertEquals(store.transactions.has('some'), false);
+  assert(store.transactions.has('fica'));
+});
+
+Deno.test('hash do titular com o segredo da função', async () => {
+  const { store, deps, connect } = setup({ [ITEM]: nubank([]) });
+  await connect();
+  await syncAll(deps(), false);
+  assertEquals(store.accounts.get('p-conta')?.owner_doc_hash, await docHash(HASH_KEY, 'user-1', '12345678909'));
 });
 
 Deno.test('conectar item que já é de outra pessoa, ou da mesma pessoa em outra casa -> 409', async () => {
@@ -405,7 +497,15 @@ Deno.test('conectar item que já é de outra pessoa, ou da mesma pessoa em outra
 
 Deno.test('conectar com dois toques ao mesmo tempo: o insert que perde usa a conexão que ficou', async () => {
   const { store, deps } = setup({ [ITEM]: nubank([]) });
-  const raced = { id: 'con-ganhou', label: 'Nubank', pluggy_item_id: ITEM, last_synced_at: null, user_id: 'user-1', household_id: 'casa-1' };
+  const raced = {
+    id: 'con-ganhou',
+    label: 'Nubank',
+    pluggy_item_id: ITEM,
+    last_synced_at: null,
+    item_updated_at: null,
+    user_id: 'user-1',
+    household_id: 'casa-1',
+  };
   const result = await addItem(deps('user-1', 'casa-1', { db: store.dbFor('user-1', 'casa-1', { raceOnInsert: raced }) }), {
     itemId: ITEM,
     label: 'Nubank',

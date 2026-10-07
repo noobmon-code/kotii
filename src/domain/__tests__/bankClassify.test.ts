@@ -6,6 +6,7 @@ const OWNER = 'a'.repeat(64);
 const STRANGER = 'b'.repeat(64);
 const owners = new Set([OWNER]);
 const checking = { type: 'BANK' as const };
+const savings = { type: 'BANK' as const, subtype: 'SAVINGS_ACCOUNT' };
 const card = { type: 'CREDIT' as const };
 
 const tx = (over: Partial<BankClassifyInput>): BankClassifyInput => ({
@@ -57,6 +58,33 @@ describe('classifyBankTransaction — guardar dinheiro no próprio banco', () =>
   it('"aplicativo" não é aplicação', () => {
     expect(onChecking({ description: 'COMPRA APLICATIVO UBER' })).toBe('spending');
   });
+
+  it('previdência privada é aplicação; GPS/INSS (previdência social) é gasto', () => {
+    expect(onChecking({ description: 'PREVIDENCIA PRIVADA BRASILPREV' })).toBe('investment');
+    expect(onChecking({ description: 'APORTE PGBL' })).toBe('investment');
+    expect(onChecking({ description: 'PAGAMENTO GPS PREVIDENCIA SOCIAL' })).toBe('spending');
+    expect(onChecking({ description: 'PAGAMENTO INSS PREVIDENCIA' })).toBe('spending');
+  });
+});
+
+describe('classifyBankTransaction — poupança', () => {
+  const onSavings = (over: Partial<BankClassifyInput>) => classifyBankTransaction(tx(over), savings, owners);
+
+  it('entra e sai da conta corrente e rende: é dinheiro guardado, não gasto nem renda', () => {
+    expect(onSavings({ description: 'TRANSF VALOR P/ CONTA CORRENTE' })).toBe('investment');
+    expect(onSavings({ description: 'TRANSFERENCIA DE CONTA CORRENTE', direction: 'CREDIT' })).toBe('investment');
+    expect(onSavings({ description: 'REMUNERACAO BASICA', direction: 'CREDIT' })).toBe('investment');
+    expect(onSavings({ description: 'JUROS', direction: 'CREDIT' })).toBe('investment');
+    // Documento mascarado (sem hash) pode ser o da própria dona.
+    expect(onSavings({ description: 'PIX ENVIADO', counterparty_doc_kind: 'CPF' })).toBe('investment');
+  });
+
+  it('pagamento a terceiro (empresa, boleto, outra pessoa) continua gasto', () => {
+    expect(onSavings({ description: 'PAGAMENTO', counterparty_doc_kind: 'CNPJ' })).toBe('spending');
+    expect(onSavings({ description: 'PAGAMENTO DE TITULO', boleto_barcode: '23793381286000000000300000004001843400000100' })).toBe('spending');
+    expect(onSavings({ description: 'PIX ENVIADO', counterparty_doc_kind: 'CPF', counterparty_doc_hash: STRANGER })).toBe('spending');
+    expect(onSavings({ description: 'PIX ENVIADO', counterparty_doc_kind: 'CPF', counterparty_doc_hash: OWNER })).toBe('internal');
+  });
 });
 
 describe('classifyBankTransaction — entre contas da própria pessoa', () => {
@@ -68,6 +96,12 @@ describe('classifyBankTransaction — entre contas da própria pessoa', () => {
   it('a Pluggy pode dizer "Same person transfer"', () => {
     expect(onChecking({ description: 'TED', category: 'Same person transfer - PIX' })).toBe('internal');
     expect(onChecking({ description: 'TED', category_id: '04000000' })).toBe('internal');
+  });
+
+  it('o banco pode dizer no texto que é da mesma pessoa', () => {
+    expect(onChecking({ description: 'TED MESMA TITULARIDADE' })).toBe('internal');
+    expect(onChecking({ description: 'TRANSFERENCIA ENTRE CONTAS', direction: 'CREDIT' })).toBe('internal');
+    expect(onChecking({ description: 'TRANSF P/ CONTA PROPRIA' })).toBe('internal');
   });
 
   it('PIX para outra pessoa é gasto; de outra pessoa, entrada', () => {
@@ -94,6 +128,18 @@ describe('classifyBankTransaction — fatura do cartão', () => {
 
   it('"fatura" de conta de consumo não é cartão', () => {
     expect(onChecking({ description: 'PAG FATURA VIVO' })).toBe('spending');
+  });
+
+  it('com cartão no texto é fatura, mesmo com palavra de conta de consumo ("INTERNET")', () => {
+    expect(onChecking({ description: 'PAGAMENTO FATURA CARTAO INTERNET' })).toBe('card_payment');
+    expect(onChecking({ description: 'PAGTO CARTAO CREDITO INTERNET' })).toBe('card_payment');
+  });
+
+  it('"fatura" de plano de saúde, pedágio, escola ou condomínio é gasto', () => {
+    expect(onChecking({ description: 'PAGAMENTO FATURA UNIMED' })).toBe('spending');
+    expect(onChecking({ description: 'PAG FAT SEM PARAR' })).toBe('spending');
+    expect(onChecking({ description: 'PAGAMENTO DE FATURA COLEGIO ANCHIETA' })).toBe('spending');
+    expect(onChecking({ description: 'PAGAMENTO DE FATURA CONDOMINIO' })).toBe('spending');
   });
 
   it('no cartão, "pagamento recebido" é a fatura paga', () => {

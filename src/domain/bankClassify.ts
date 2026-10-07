@@ -22,12 +22,16 @@ export type BankClassifyInput = Pick<
       | 'merchant_name'
       | 'counterparty_name'
       | 'counterparty_doc_kind'
+      | 'boleto_barcode'
       | 'card_bill_id'
       | 'purchase_on'
       | 'installment_number'
       | 'bill_forecast'
     >
   >;
+
+/** O que a classificação usa da conta: cartão ou conta, e se é poupança. */
+export type BankClassifyAccount = Pick<FinAccount, 'type'> & Partial<Pick<FinAccount, 'subtype'>>;
 
 /** Hashes do CPF/CNPJ de quem tem as contas (o mesmo documento dá o mesmo hash). */
 export function ownerHashes(accounts: Pick<FinAccount, 'owner_doc_hash'>[]): Set<string> {
@@ -44,11 +48,13 @@ const REFUND_TERMS = [
 
 // Guardar e resgatar dinheiro no próprio banco. Mercado Pago: cofrinho, "Dinheiro
 // reservado", "Rendimentos"; Nubank: caixinha, RDB; Inter: porquinho, CDB;
-// Santander: poupança, aplicação, resgate (ContaMax).
+// Santander: poupança, aplicação, resgate (ContaMax). Previdência só a privada:
+// GPS/INSS ("previdência social") é imposto, entra como gasto.
 const INVESTMENT_TERMS = [
   'cofrinho*', 'dinheiro reservado', 'dinheiro retirado', 'rendimento*', 'caixinha*', 'rdb', 'dinheiro guardado',
   'dinheiro resgatado', 'porquinho*', 'cdb', 'lci', 'lca', 'poupanca*', 'aplicacao', 'aplicacoes', 'aplic',
-  'aplicado', 'resgate*', 'resg', 'investimento*', 'invest', 'tesouro direto', 'contamax', 'previdencia',
+  'aplicado', 'resgate*', 'resg', 'investimento*', 'invest', 'tesouro direto', 'contamax', 'previdencia privada',
+  'pgbl', 'vgbl',
 ];
 
 const PLUGGY_INVESTMENT = new Set([
@@ -60,16 +66,26 @@ const PLUGGY_LOANS = new Set(['loans and financing', 'loans', 'financing']);
 
 const LOAN_TERMS = ['emprestimo*', 'credito pessoal', 'consignado', 'financiamento*'];
 
-// Pagamento da fatura visto da conta corrente ("PAGTO CARTAO CREDITO", "Pagamento de fatura").
-const BILL_PAYMENT = [
-  /\b(pagamento|pagto|pgto|pag|pg)( (de|da|do))? (fatura|fat)\b/,
+// Transferência que o próprio banco diz ser entre contas da mesma pessoa.
+const OWN_TRANSFER_TERMS = ['mesma titularidade', 'mesmo titular', 'entre contas', 'conta propria', 'contas proprias'];
+
+// "Pagamento de fatura" visto da conta corrente.
+const BILL_WORDS = /\b(pagamento|pagto|pgto|pag|pg)( (de|da|do))? (fatura|fat)\b/;
+// Com o cartão (ou o banco dele) no texto, é a fatura do cartão.
+const CARD_BILL = [
   /\bfatura( (de|da|do))? (cartao|cartoes|credito|nubank|inter|santander|mercado ?pago|mp)\b/,
   /\b(pagamento|pagto|pgto|pag|pg)( (de|da|do))? (cartao|cartoes)( (de|do))? credito\b/,
 ];
+const CARD_WORDS = /\b(cartao|cartoes|credito)\b/;
 
 // No cartão, entrada com "pagamento" é a fatura paga ("Pagamento recebido").
 // "PAG" sozinho fica de fora: é prefixo de maquininha ("PAG*Loja").
 const CARD_PAYMENT_WORDS = ['pagamento*', 'pagto', 'pgto', 'fatura'];
+
+/** Palavras de transferência (PIX, TED, DOC, TEF) no texto já normalizado. */
+export const TRANSFER_WORDS = /\b(pix|ted|doc|tef|transf|transferencia|transferencias)\b/;
+
+const TRANSFER_OPERATIONS = new Set(['PIX', 'TED', 'DOC', 'TRANSFERENCIA_MESMA_INSTITUICAO', 'PORTABILIDADE_SALARIO']);
 
 const isPluggy = (tx: BankClassifyInput, names: Set<string>, group: string) =>
   (tx.category != null && names.has(normalizeBankText(tx.category))) ||
@@ -87,15 +103,42 @@ function looksLikeCard(tx: BankClassifyInput): boolean {
   return Boolean(tx.card_bill_id || tx.purchase_on || tx.installment_number || tx.bill_forecast);
 }
 
+/** PIX, TED, DOC ou transferência para/de uma pessoa: pode ser entre as próprias contas. */
+export function isTransferLike(tx: BankClassifyInput): boolean {
+  if (tx.counterparty_doc_kind === 'CNPJ') return false;
+  return (
+    tx.counterparty_doc_kind === 'CPF' ||
+    TRANSFER_OPERATIONS.has((tx.operation_type ?? '').toUpperCase()) ||
+    TRANSFER_WORDS.test(normalizeBankText(tx.description, tx.description_raw))
+  );
+}
+
+/**
+ * Pagamento de fatura do cartão na conta corrente. "Pagamento de fatura"
+ * sozinho é cartão, a não ser que o texto diga de quê (plano de saúde,
+ * escola, condomínio, conta de luz: aí a categoria acha e é gasto).
+ */
+function isCardBillPayment(tx: BankClassifyInput, text: string): boolean {
+  if (isCardPaymentCategory(tx) || CARD_BILL.some((re) => re.test(text))) return true;
+  if (!BILL_WORDS.test(text)) return false;
+  return CARD_WORDS.test(text) || financeCategoryOfBank(tx) === 'outros';
+}
+
 /**
  * Tipo do lançamento. No cartão: entrada é fatura paga ou estorno; saída é
  * compra (tarifa, IOF e juros também são gasto) ou dívida contratada. Na conta:
  * fatura do cartão, aplicação, transferência para si mesma (o documento do
- * outro lado é o da dona), e o resto é gasto (saída) ou entrada/estorno.
+ * outro lado é o da dona), e o resto é gasto (saída) ou entrada/estorno. Na
+ * poupança, o que entra e sai é dinheiro guardado, a não ser que o outro lado
+ * seja claramente outra pessoa, uma empresa ou um boleto.
+ *
+ * Transferência entre contas sem documento (o banco não manda o CPF da dona)
+ * e fatura paga sem a palavra "fatura" são achadas depois, pelo par do outro
+ * lado (groupPurchases).
  */
 export function classifyBankTransaction(
   tx: BankClassifyInput,
-  account: Pick<FinAccount, 'type'> | null | undefined,
+  account: BankClassifyAccount | null | undefined,
   ownerDocHashes: Iterable<string>,
 ): BankKind {
   const text = normalizeBankText(tx.description, tx.description_raw);
@@ -112,10 +155,7 @@ export function classifyBankTransaction(
     return 'spending';
   }
 
-  // Conta de luz chamada de "fatura" não é cartão.
-  if (isCardPaymentCategory(tx) || (BILL_PAYMENT.some((re) => re.test(text)) && financeCategoryOfBank(tx) !== 'contas')) {
-    return 'card_payment';
-  }
+  if (isCardBillPayment(tx, text)) return 'card_payment';
   if (
     isPluggy(tx, PLUGGY_INVESTMENT, '03') ||
     hasAnyTerm(text, INVESTMENT_TERMS) ||
@@ -124,7 +164,19 @@ export function classifyBankTransaction(
     return 'investment';
   }
   const owners: ReadonlySet<string> = ownerDocHashes instanceof Set ? ownerDocHashes : new Set(ownerDocHashes);
-  if ((tx.counterparty_doc_hash && owners.has(tx.counterparty_doc_hash)) || isSamePersonCategory(tx)) return 'internal';
+  if (
+    (tx.counterparty_doc_hash && owners.has(tx.counterparty_doc_hash)) ||
+    isSamePersonCategory(tx) ||
+    hasAnyTerm(text, OWN_TRANSFER_TERMS)
+  ) {
+    return 'internal';
+  }
+  if (account?.subtype === 'SAVINGS_ACCOUNT') {
+    // Documento mascarado (sem hash) pode ser o da própria dona: só hash de outra pessoa conta.
+    const thirdParty =
+      tx.counterparty_doc_kind === 'CNPJ' || Boolean(tx.boleto_barcode) || Boolean(tx.counterparty_doc_hash);
+    if (!thirdParty) return 'investment';
+  }
   if (tx.direction === 'DEBIT') return 'spending';
   if (hasAnyTerm(text, REFUND_TERMS)) return 'refund';
   // Empréstimo que caiu na conta é dívida, não renda.

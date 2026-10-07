@@ -3,7 +3,9 @@
 // fetch puro (o pluggy-sdk é Node); caminhos, parâmetros e formatos seguem o
 // pluggy-sdk 0.91: POST /auth devolve a apiKey (cabeçalho X-API-KEY, vale
 // 2 h); GET /items/{id}; GET /accounts?itemId; GET /v2/transactions com
-// cursor (`next` traz o link da próxima página, com `after`).
+// cursor (`next` traz o link da próxima página, com `after`). Extrato que não
+// dá para ler inteiro é erro, nunca metade: quem sincroniza marca como
+// apagado o que não voltou.
 //
 // Secrets: PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET (lidos pela função).
 
@@ -127,7 +129,7 @@ export interface PluggyOptions {
 const keys = new Map<string, { key: Promise<string>; expiresAt: number }>();
 
 const MESSAGES: Record<PluggyErrorCode, string> = {
-  not_found: 'A Pluggy não achou este banco. Confira o Item ID no MeuPluggy.',
+  not_found: 'A Pluggy não achou este banco. Confira o Item ID no Dashboard da Pluggy (Items, ⋮ no card do banco).',
   credentials:
     'A Pluggy recusou o acesso. Confira o Item ID e os secrets PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET no Supabase.',
   rate_limited: 'A Pluggy pediu uma pausa. Tente de novo em alguns minutos.',
@@ -262,11 +264,12 @@ export function createPluggyClient(options: PluggyOptions): PluggyClient {
       let after: string | undefined;
       for (let page = 0; page < MAX_PAGES; page++) {
         const body = await get<{ results?: unknown; next?: unknown }>('v2/transactions', { accountId, dateFrom, after });
-        if (Array.isArray(body.results)) all.push(...(body.results as PluggyTransaction[]));
-        if (typeof body.next !== 'string' || !body.next) return all;
-        // Como o SDK: link sem cursor encerra.
-        const cursor = nextCursor(body.next);
-        if (!cursor) return all;
+        if (!Array.isArray(body.results)) throw new PluggyError(MESSAGES.unavailable, 'unavailable', 200, 'página sem results');
+        all.push(...(body.results as PluggyTransaction[]));
+        if (body.next === null || body.next === undefined || body.next === '') return all;
+        // Link de próxima página sem cursor (o SDK pararia aí): o resto do extrato ficaria de fora.
+        const cursor = typeof body.next === 'string' ? nextCursor(body.next) : null;
+        if (!cursor) throw new PluggyError(MESSAGES.unavailable, 'unavailable', 200, 'próxima página sem cursor');
         // Cursor repetido daria laço; parar no meio deixaria o extrato pela metade.
         if (cursors.has(cursor)) throw new PluggyError(MESSAGES.unavailable, 'unavailable', 200, 'cursor repetido');
         cursors.add(cursor);

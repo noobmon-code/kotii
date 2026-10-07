@@ -6,6 +6,7 @@ import {
   accountLabels,
   type BankPurchase,
   cardBills,
+  currentAccounts,
   effectiveDate,
   futureInstallments,
   groupPurchases,
@@ -41,6 +42,10 @@ const nuChecking = account({ id: 'nu-conta' });
 const nuCard = account({ id: 'nu-cartao', type: 'CREDIT', subtype: 'CREDIT_CARD' });
 const interChecking = account({ id: 'inter-conta', connection_id: 'conn-inter' });
 const accounts = [nuChecking, nuCard, interChecking];
+// Santander: a "data da compra" vem carimbada parcela por parcela.
+const sanChecking = account({ id: 'san-conta', connection_id: 'conn-san' });
+const sanCard = account({ id: 'san-cartao', connection_id: 'conn-san', type: 'CREDIT', subtype: 'CREDIT_CARD' });
+const allAccounts = [...accounts, sanChecking, sanCard];
 
 let seq = 0;
 const tx = (over: Partial<FinTransaction>): FinTransaction => {
@@ -182,6 +187,95 @@ describe('groupPurchases', () => {
     expect(purchases[0]).toMatchObject({ date: '2026-08-07', amount: 240 });
   });
 
+  it('Santander: data da compra carimbada por parcela vira uma compra só, na data da 1ª parcela', () => {
+    const base = { account_id: sanCard.id, amount: 100, description: 'AMAZON BR' };
+    const purchases = groupPurchases(
+      [
+        parcel(1, 10, { ...base, purchase_on: '2026-08-18', occurred_on: '2026-08-18' }),
+        parcel(2, 10, { ...base, purchase_on: '2026-09-18', occurred_on: '2026-09-18' }),
+        parcel(3, 10, { ...base, purchase_on: '2026-10-18', occurred_on: '2026-10-18' }),
+      ],
+      allAccounts,
+    );
+    expect(purchases).toHaveLength(1);
+    expect(purchases[0]).toMatchObject({ date: '2026-08-18', amount: 1000, installments: { seen: [1, 2, 3], total: 10, parcel: 100 } });
+    expect(['2026-08', '2026-09', '2026-10'].map((m) => monthSummary(purchases, m).spending)).toEqual([1000, 0, 0]);
+    expect(futureInstallments(purchases, '2026-11', 2).map((m) => m.amount)).toEqual([100, 100]);
+  });
+
+  it('Santander: anuidade em 12x carimbada por parcela conta uma vez, no mês em que começou', () => {
+    const fee = { account_id: sanCard.id, amount: 55, description: 'ANUIDADE DIFERENCIADA' };
+    const other = { account_id: sanCard.id, amount: 100, description: 'LOJA Y' };
+    const purchases = groupPurchases(
+      [
+        parcel(5, 12, { ...fee, purchase_on: '2026-08-10', occurred_on: '2026-08-10', description: 'ANUIDADE DIFERENCIADA 05/12' }),
+        parcel(6, 12, { ...fee, purchase_on: '2026-09-10', occurred_on: '2026-09-10', description: 'ANUIDADE DIFERENCIADA 06/12' }),
+        parcel(7, 12, { ...fee, purchase_on: '2026-10-10', occurred_on: '2026-10-10', description: 'ANUIDADE DIFERENCIADA 07/12' }),
+        parcel(1, 2, { ...other, purchase_on: '2026-09-02', occurred_on: '2026-09-02' }),
+        parcel(2, 2, { ...other, purchase_on: '2026-10-02', occurred_on: '2026-10-02' }),
+      ],
+      allAccounts,
+    );
+    expect(purchases.map((p) => [p.description, p.date, p.amount])).toEqual([
+      ['LOJA Y', '2026-09-02', 200],
+      ['ANUIDADE DIFERENCIADA', '2026-04-10', 660],
+    ]);
+    expect(['2026-08', '2026-09', '2026-10'].map((m) => monthSummary(purchases, m).spending)).toEqual([0, 200, 0]);
+    expect(futureInstallments(purchases, '2026-11', 1)[0]).toMatchObject({ amount: 55 });
+  });
+
+  it('Nubank (data da compra igual em todas) continua do jeito dele com o Santander ao lado', () => {
+    const purchases = groupPurchases(
+      [
+        parcel(1, 3, { amount: 50, purchase_on: '2026-08-05', occurred_on: '2026-08-05', description: 'LOJA N' }),
+        parcel(2, 3, { amount: 50, purchase_on: '2026-08-05', occurred_on: '2026-09-05', description: 'LOJA N' }),
+        parcel(1, 2, { account_id: sanCard.id, amount: 80, purchase_on: '2026-09-01', occurred_on: '2026-09-01', description: 'LOJA S' }),
+        parcel(2, 2, { account_id: sanCard.id, amount: 80, purchase_on: '2026-10-01', occurred_on: '2026-10-01', description: 'LOJA S' }),
+      ],
+      allAccounts,
+    );
+    expect(purchases.map((p) => [p.description, p.date, p.amount])).toEqual([
+      ['LOJA S', '2026-09-01', 160],
+      ['LOJA N', '2026-08-05', 150],
+    ]);
+  });
+
+  it('sem data da compra: 1ª parcela no dia da compra e as outras no dia da fatura continuam uma compra', () => {
+    const base = { amount: 100, description: 'LOJA X' };
+    const purchases = groupPurchases(
+      [
+        parcel(1, 3, { ...base, occurred_on: '2026-08-28' }),
+        parcel(2, 3, { ...base, occurred_on: '2026-10-04' }),
+        parcel(3, 3, { ...base, occurred_on: '2026-11-04' }),
+      ],
+      accounts,
+    );
+    expect(purchases.map((p) => [p.date, p.amount, p.installments?.seen])).toEqual([['2026-08-28', 300, [1, 2, 3]]]);
+    expect(monthSummary(purchases, '2026-09').spending).toBe(0);
+  });
+
+  it('sem data da compra: todas as parcelas com o dia original da compra (como na fatura impressa) são uma compra', () => {
+    const base = { amount: 100, description: 'LOJA X', occurred_on: '2026-08-28' };
+    const purchases = groupPurchases([parcel(1, 3, base), parcel(2, 3, base), parcel(3, 3, base)], accounts);
+    expect(purchases.map((p) => [p.date, p.amount])).toEqual([['2026-08-28', 300]]);
+  });
+
+  it('sem data da compra: duas compras iguais em meses diferentes continuam duas', () => {
+    const base = { amount: 50, description: 'AMAZON' };
+    const purchases = groupPurchases(
+      [
+        parcel(2, 2, { ...base, occurred_on: '2026-08-20' }),
+        parcel(1, 2, { ...base, occurred_on: '2026-09-10' }),
+        parcel(2, 2, { ...base, occurred_on: '2026-10-10' }),
+      ],
+      accounts,
+    );
+    expect(purchases.map((p) => [p.date, p.amount])).toEqual([
+      ['2026-09-10', 100],
+      ['2026-07-20', 100],
+    ]);
+  });
+
   it('a sobra dos centavos na primeira parcela não separa a compra', () => {
     const base = { purchase_on: '2026-10-01', description: 'LOJA' };
     const purchases = groupPurchases(
@@ -239,6 +333,71 @@ describe('groupPurchases', () => {
   it('marca saúde e afins como sensível', () => {
     const [p] = groupPurchases([tx({ description: 'DROGASIL 123', category: 'Pharmacy' })], accounts);
     expect(p).toMatchObject({ category: 'saude', sensitive: true });
+  });
+});
+
+describe('groupPurchases — dinheiro que só muda de lugar', () => {
+  it('PIX da conta Nubank para a conta Santander sem o CPF da dona: os dois lados são internos', () => {
+    const purchases = groupPurchases(
+      [
+        tx({ amount: 3000, description: 'Transferência enviada pelo Pix', counterparty_doc_kind: 'CPF', category: 'Transfer - PIX' }),
+        tx({ account_id: sanChecking.id, amount: 3000, direction: 'CREDIT', description: 'PIX RECEBIDO', occurred_on: '2026-10-06' }),
+        tx({ amount: 80, description: 'PADARIA', category: 'Groceries' }),
+      ],
+      allAccounts,
+      [],
+    );
+    expect(purchases.filter((p) => p.kind === 'internal')).toHaveLength(2);
+    expect(monthSummary(purchases, '2026-10')).toMatchObject({ spending: 80, income: 0 });
+  });
+
+  it('PIX para uma pessoa e outro de outra pessoa com o mesmo valor (documentos diferentes) não viram internos', () => {
+    const purchases = groupPurchases(
+      [
+        tx({ amount: 100, description: 'Pix enviado', counterparty_doc_kind: 'CPF', counterparty_doc_hash: 'c'.repeat(64) }),
+        tx({ account_id: sanChecking.id, amount: 100, direction: 'CREDIT', description: 'Pix recebido', counterparty_doc_kind: 'CPF', counterparty_doc_hash: 'd'.repeat(64) }),
+        tx({ amount: 200, description: 'Pix enviado', occurred_on: '2026-10-01' }),
+        tx({ account_id: sanChecking.id, amount: 200, direction: 'CREDIT', description: 'Pix recebido', occurred_on: '2026-10-05' }),
+      ],
+      allAccounts,
+      [],
+    );
+    expect(purchases.filter((p) => p.kind === 'internal')).toHaveLength(0);
+  });
+
+  it('sem o CPF da dona, o mesmo documento nos dois lados casa; sabendo o dela, documento de outra pessoa não casa', () => {
+    const lent = [
+      tx({ amount: 150, description: 'Pix enviado', counterparty_doc_kind: 'CPF', counterparty_doc_hash: 'e'.repeat(64) }),
+      tx({ account_id: sanChecking.id, amount: 150, direction: 'CREDIT', description: 'Pix recebido', counterparty_doc_kind: 'CPF', counterparty_doc_hash: 'e'.repeat(64) }),
+    ];
+    expect(groupPurchases(lent, allAccounts, []).filter((p) => p.kind === 'internal')).toHaveLength(2);
+    // Com o documento da dona (OWNER) conhecido, "e..." é outra pessoa: emprestou e recebeu de volta.
+    expect(groupPurchases(lent, allAccounts).filter((p) => p.kind === 'internal')).toHaveLength(0);
+  });
+
+  it('fatura paga por boleto ou PIX sem a palavra "fatura": o "Pagamento recebido" do cartão acha a saída', () => {
+    const purchases = groupPurchases(
+      [
+        tx({ account_id: sanChecking.id, amount: 2500, description: 'PAGAMENTO DE BOLETO', counterparty_name: 'NU PAGAMENTOS S.A.', counterparty_doc_kind: 'CNPJ', counterparty_cnpj: '18236120000158', category: 'Transfer - Bank slip', occurred_on: '2026-10-08' }),
+        tx({ account_id: nuCard.id, amount: 2500, direction: 'CREDIT', description: 'Pagamento recebido', occurred_on: '2026-10-10' }),
+        tx({ account_id: nuCard.id, amount: 2500, description: 'LOJA CARA', occurred_on: '2026-09-20' }),
+      ],
+      allAccounts,
+    );
+    expect(purchases.filter((p) => p.kind === 'card_payment')).toHaveLength(2);
+    expect(monthSummary(purchases, '2026-10').spending).toBe(0);
+  });
+
+  it('a saída que já diz "fatura" casa primeiro: o aluguel do mesmo valor continua gasto', () => {
+    const purchases = groupPurchases(
+      [
+        tx({ amount: 2500, description: 'Pagamento de fatura', occurred_on: '2026-10-05' }),
+        tx({ amount: 2500, description: 'ALUGUEL', counterparty_doc_kind: 'CNPJ', occurred_on: '2026-10-06' }),
+        tx({ account_id: nuCard.id, amount: 2500, direction: 'CREDIT', description: 'Pagamento recebido', occurred_on: '2026-10-06' }),
+      ],
+      allAccounts,
+    );
+    expect(purchases.filter((p) => p.kind === 'spending').map((p) => p.description)).toEqual(['ALUGUEL']);
   });
 });
 
@@ -306,6 +465,34 @@ describe('monthSummary', () => {
   });
 });
 
+describe('monthSummary — estornos', () => {
+  it('estorno sem a categoria da compra não deixa o total diferente da soma das categorias', () => {
+    const purchases = groupPurchases(
+      [
+        tx({ account_id: nuCard.id, amount: 100, description: 'SUPERMERCADO BOM' }),
+        tx({ account_id: nuCard.id, amount: 80, direction: 'CREDIT', description: 'Estorno de compra' }),
+      ],
+      accounts,
+    );
+    const summary = monthSummary(purchases, '2026-10');
+    expect(summary).toMatchObject({ spending: 100, refunds: 0, byCategory: [{ category: 'mercado', amount: 100 }] });
+  });
+
+  it('estorno de compra de outro mês não zera as saídas deste', () => {
+    const purchases = groupPurchases(
+      [
+        tx({ account_id: nuCard.id, amount: 1000, description: 'LOJA DE TV', occurred_on: '2026-09-10' }),
+        tx({ account_id: nuCard.id, amount: 1000, direction: 'CREDIT', description: 'Estorno LOJA DE TV' }),
+        tx({ account_id: nuCard.id, amount: 600, description: 'SUPERMERCADO BOM' }),
+      ],
+      accounts,
+    );
+    const october = monthSummary(purchases, '2026-10');
+    expect(october).toMatchObject({ spending: 600, refunds: 0, byCategory: [{ category: 'mercado', amount: 600 }] });
+    expect(october.spending).toBe(october.byCategory.reduce((sum, c) => sum + c.amount, 0));
+  });
+});
+
 describe('futureInstallments', () => {
   const purchase = (over: Partial<BankPurchase>): BankPurchase => ({
     key: 'k',
@@ -322,6 +509,7 @@ describe('futureInstallments', () => {
     txIds: [],
     personTransfer: false,
     sensitive: false,
+    storeName: null,
     ...over,
   });
 
@@ -367,6 +555,25 @@ describe('accountLabels / cardBills', () => {
       connections,
     );
     expect([...labels.values()]).toEqual(['Nubank conta', 'Nubank cartão', 'Nubank cartão 2', 'Inter poupança']);
+  });
+
+  it('vencimento que já passou é de uma fatura velha: sai com o fechamento e o mínimo', () => {
+    const paid = account({ id: 'c3', type: 'CREDIT', balance: 5508.7, bill_due_date: '2026-09-11', bill_close_date: '2026-09-04', minimum_payment: 486.82 });
+    const [bill] = cardBills([paid], accountLabels([paid], connections), '2026-10-07');
+    expect(bill).toMatchObject({ amount: 5508.7, dueDate: null, closeDate: null, minimumPayment: null });
+    expect(cardBills([paid], accountLabels([paid], connections), '2026-09-11')[0].dueDate).toBe('2026-09-11');
+  });
+
+  it('conta que a última sincronização não trouxe (cartão trocado) sai; sem sincronização, todas ficam', () => {
+    const synced = '2026-10-07T12:00:00.000Z';
+    const fresh = account({ id: 'novo', updated_at: '2026-10-07T12:00:00+00:00' });
+    const gone = account({ id: 'velho', updated_at: '2026-09-01T12:00:00+00:00' });
+    const other = account({ id: 'outro', connection_id: 'conn-inter', updated_at: '2026-09-01T12:00:00+00:00' });
+    const conns = [
+      { id: 'conn-nu', last_synced_at: synced },
+      { id: 'conn-inter', last_synced_at: null },
+    ];
+    expect(currentAccounts([fresh, gone, other], conns).map((a) => a.id)).toEqual(['novo', 'outro']);
   });
 
   it('fatura do jeito que o banco informa, pela data de vencimento', () => {

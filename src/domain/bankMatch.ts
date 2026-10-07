@@ -79,15 +79,19 @@ function candidate(purchase: BankPurchase, record: NookyRecord): Omit<Candidate,
   const days = Math.abs(diffDays(purchase.date, record.date));
   if (days > MATCH_DAYS) return null;
   const cnpj = digits(record.cnpj);
-  const sameCnpj = cnpj.length > 0 && cnpj === digits(purchase.merchantCnpj);
+  const bankCnpj = digits(purchase.merchantCnpj);
+  const sameCnpj = cnpj.length > 0 && cnpj === bankCnpj;
+  // Rede de lojas: a nota traz o CNPJ da filial, e o banco muitas vezes o da matriz (mesma raiz, 8 dígitos).
+  const sameCompany = sameCnpj || (cnpj.length === 14 && bankCnpj.length === 14 && cnpj.slice(0, 8) === bankCnpj.slice(0, 8));
   if (Math.abs(purchase.amount - record.amount) <= 0.01 + 1e-9) {
     if (sameCnpj) return { score: 300 - days, confidence: 'alta', reason: 'Mesmo CNPJ, valor e data' };
+    if (sameCompany) return { score: 250 - days, confidence: 'alta', reason: 'Mesma empresa (CNPJ), valor e data' };
     if (namesOverlap([purchase.merchantName, purchase.description], [record.label])) {
       return { score: 200 - days, confidence: 'alta', reason: 'Mesmo valor e nome parecido' };
     }
     return { score: 100 - days, confidence: 'media', reason: 'Mesmo valor em data próxima' };
   }
-  if (record.kind === 'nota' && sameCnpj && purchase.amount > record.amount && purchase.amount <= record.amount * TIP_RATIO + 1e-9) {
+  if (record.kind === 'nota' && sameCompany && purchase.amount > record.amount && purchase.amount <= record.amount * TIP_RATIO + 1e-9) {
     return { score: 50 - days, confidence: 'media', reason: 'Mesma loja e valor um pouco maior: com gorjeta?' };
   }
   return null;
@@ -138,6 +142,20 @@ export function matchBankToNooky(purchases: BankPurchase[], records: NookyRecord
     bankOnly.push({ purchase, suggestions });
   });
   return { matched, bankOnly, nookyOnly: records.filter((_, r) => !usedRecords.has(r)) };
+}
+
+/**
+ * A conferência de um período, tirada da conferência da janela inteira:
+ * casar mês a mês deixaria um registro perto da virada servir a uma compra
+ * em cada mês (e contar duas vezes em "já no Nooky").
+ */
+export function reconciliationInRange(result: Reconciliation, range: { start: string; end: string }): Reconciliation {
+  const inRange = (date: string) => date >= range.start && date < range.end;
+  return {
+    matched: result.matched.filter((m) => inRange(m.purchase.date)),
+    bankOnly: result.bankOnly.filter((b) => inRange(b.purchase.date)),
+    nookyOnly: result.nookyOnly.filter((r) => inRange(r.date)),
+  };
 }
 
 /** Quanto das saídas do banco já está no Nooky e quanto está só no banco. */

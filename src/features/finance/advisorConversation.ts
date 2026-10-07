@@ -6,6 +6,7 @@
 import { useEffect, useSyncExternalStore } from 'react';
 
 import type { FinanceMessage } from '@/domain/financeAdvisor';
+import { getActiveHousehold, onActiveHouseholdChange } from '@/lib/activeHousehold';
 import { supabase } from '@/lib/supabase';
 
 const KEEP = 40;
@@ -81,6 +82,12 @@ export function clearFinanceConversation(id: string) {
 // Saiu da conta: a conversa sai da memória na hora, sem esperar outra pessoa entrar.
 supabase.auth.onAuthStateChange((event) => {
   if (event === 'SIGNED_OUT' && owner !== null) reset(null);
+});
+
+// Trocou de casa neste aparelho: a conversa da casa anterior sai da memória
+// (a liberação é de uma casa só; voltar para ela começa outra conversa).
+onActiveHouseholdChange(() => {
+  if (owner !== null && !owner.endsWith(`:${getActiveHousehold()}`)) reset(null);
 });
 
 const IDLE = { messages: EMPTY, pending: false };

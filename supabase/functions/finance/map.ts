@@ -1,10 +1,13 @@
 // Conta e lançamento da Pluggy -> linhas de fin_accounts e fin_transactions.
 // Puro (sem rede nem banco), testado em map.test.ts.
 //
-// Privacidade: CPF nunca fica cru, só o hash (SHA-256 de `${pessoa}:${dígitos}`),
-// que basta para reconhecer transferência para si mesma (o mesmo hash do
-// titular da conta). Da conta, só os 4 últimos dígitos do número. CNPJ é de
-// empresa e fica cru, para casar com as notas.
+// Privacidade: CPF nunca fica cru, só o hash (HMAC-SHA256 de
+// `${pessoa}:${dígitos}` com o segredo FIN_DOC_HASH_KEY, que só a função
+// tem: sem ele, não dá para testar os ~10^9 CPFs possíveis contra o hash), que
+// basta para reconhecer transferência para si mesma (o mesmo hash do titular
+// da conta). CPF escrito na descrição (PIX e TED costumam trazer) sai antes de
+// gravar. Da conta, só os 4 últimos dígitos do número. CNPJ é de empresa e
+// fica cru, para casar com as notas.
 
 import type { PluggyAccount, PluggyParticipant, PluggyTransaction } from '../_shared/pluggy.ts';
 
@@ -67,11 +70,12 @@ export interface FinTransactionRow {
   updated_at: string;
 }
 
-/** De quem são as linhas; `now` (ISO) vira updated_at. */
+/** De quem são as linhas; `now` (ISO) vira updated_at; `hashKey` é o segredo dos hashes de documento. */
 export interface RowOwner {
   userId: string;
   householdId: string;
   now: string;
+  hashKey: string;
 }
 
 const SAO_PAULO = new Intl.DateTimeFormat('en-CA', {
@@ -132,10 +136,39 @@ function positiveInt(value: unknown): number | null {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 && value < 1e6 ? value : null;
 }
 
-/** SHA-256 (hex) de `${userId}:${dígitos}`: o mesmo documento dá o mesmo hash para a mesma pessoa. */
-export async function docHash(userId: string, digits: string): Promise<string> {
-  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${userId}:${digits}`));
+const hmacKeys = new Map<string, Promise<CryptoKey>>();
+
+function hmacKey(secret: string): Promise<CryptoKey> {
+  let key = hmacKeys.get(secret);
+  if (!key) {
+    key = crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    hmacKeys.set(secret, key);
+  }
+  return key;
+}
+
+/**
+ * HMAC-SHA256 (hex) de `${userId}:${dígitos}` com o segredo: o mesmo
+ * documento dá o mesmo hash para a mesma pessoa, e sem o segredo não dá para
+ * descobrir o CPF testando todos.
+ */
+export async function docHash(secret: string, userId: string, digits: string): Promise<string> {
+  const bytes = await crypto.subtle.sign('HMAC', await hmacKey(secret), new TextEncoder().encode(`${userId}:${digits}`));
   return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+// CPF escrito na descrição: "123.456.789-00", "12345678900", "CPF 123..." ou "Cp :12345678-NOME" (Inter).
+const CPF_PATTERNS = [
+  /\b(?:cpf|cp)\s*[:.]?\s*[\d.\-•*]*[\d•*]/gi,
+  /(?<![\d.])\d{3}\.\d{3}\.\d{3}-\d{2}(?![\d])/g,
+  /(?<![\d.\-/])\d{9}-?\d{2}(?![\d\-/])/g,
+];
+
+/** Descrição sem CPF: o documento de quem recebeu ou pagou não fica cru na tabela. */
+export function withoutCpf(text: string | null): string | null {
+  if (text === null) return null;
+  const clean = CPF_PATTERNS.reduce((out, re) => out.replace(re, (match) => (/^c/i.test(match) ? 'CPF ***' : '***')), text);
+  return clean.replace(/\s+/g, ' ').trim() || null;
 }
 
 const DOC_LENGTH: Record<DocKind, number> = { CPF: 11, CNPJ: 14 };
@@ -146,7 +179,7 @@ const DOC_LENGTH: Record<DocKind, number> = { CPF: 11, CNPJ: 14 };
  */
 async function participantDoc(
   participant: PluggyParticipant | null | undefined,
-  userId: string,
+  owner: Pick<RowOwner, 'userId' | 'hashKey'>,
 ): Promise<{ kind: DocKind | null; hash: string | null; cnpj: string | null }> {
   const document = participant?.documentNumber;
   const digits = digitsOnly(document?.value);
@@ -156,7 +189,7 @@ async function participantDoc(
   const complete = digits.length === DOC_LENGTH[kind];
   return {
     kind,
-    hash: complete ? await docHash(userId, digits) : null,
+    hash: complete ? await docHash(owner.hashKey, owner.userId, digits) : null,
     cnpj: kind === 'CNPJ' && complete ? digits : null,
   };
 }
@@ -180,7 +213,7 @@ export async function mapAccount(
     name: text(account.name),
     marketing_name: text(account.marketingName),
     number_last4: number ? number.slice(-4) : null,
-    owner_doc_hash: taxNumber.length === 11 || taxNumber.length === 14 ? await docHash(owner.userId, taxNumber) : null,
+    owner_doc_hash: taxNumber.length === 11 || taxNumber.length === 14 ? await docHash(owner.hashKey, owner.userId, taxNumber) : null,
     balance: money(account.balance),
     currency_code: text(account.currencyCode),
     credit_limit: money(credit?.creditLimit),
@@ -192,27 +225,34 @@ export async function mapAccount(
   };
 }
 
-/** null quando o lançamento não tem o mínimo (id, data, valor): fica de fora sem derrubar a conta. */
+/**
+ * null quando o lançamento não tem o mínimo (id, data, valor) ou quando é em
+ * outra moeda sem o valor convertido para a da conta (somar dólar como real
+ * erraria o mês): fica de fora sem derrubar a conta.
+ */
 export async function mapTransaction(
   tx: PluggyTransaction,
-  owner: RowOwner & { accountId: string },
+  owner: RowOwner & { accountId: string; accountCurrency?: string | null },
 ): Promise<FinTransactionRow | null> {
   if (!tx || typeof tx.id !== 'string' || !tx.id) return null;
   const occurredOn = calendarDate(tx.date);
+  const currency = text(tx.currencyCode);
+  // A Pluggy só manda o valor convertido quando a moeda é outra que a da conta (R$).
+  const foreign = currency !== null && currency !== (text(owner.accountCurrency) ?? 'BRL');
+  const converted = typeof tx.amountInAccountCurrency === 'number' && Number.isFinite(tx.amountInAccountCurrency);
+  if (foreign && !converted) return null;
   // Compra em moeda estrangeira: o valor que pesa é o convertido para a conta (R$).
-  const value = typeof tx.amountInAccountCurrency === 'number' ? tx.amountInAccountCurrency : tx.amount;
+  const value = converted ? tx.amountInAccountCurrency : tx.amount;
   const amount = money(typeof value === 'number' ? Math.abs(value) : null);
   if (!occurredOn || amount === null) return null;
 
   // Sem o tipo (não deveria faltar), o sinal decide: na conta, saída vem negativa.
   const direction = tx.type === 'DEBIT' || tx.type === 'CREDIT' ? tx.type : (value as number) < 0 ? 'DEBIT' : 'CREDIT';
-  const currency = text(tx.currencyCode);
-  const foreign = currency !== null && currency !== 'BRL';
   const payment = tx.paymentData ?? null;
   const card = tx.creditCardMetadata ?? null;
   // Na saída interessa quem recebeu; na entrada, quem pagou.
   const party = direction === 'DEBIT' ? payment?.receiver : payment?.payer;
-  const doc = await participantDoc(party, owner.userId);
+  const doc = await participantDoc(party, owner);
   const merchantCnpj = digitsOnly(tx.merchant?.cnpj);
   const boleto = digitsOnly(payment?.boletoMetadata?.barcode) || digitsOnly(payment?.boletoMetadata?.digitableLine);
 
@@ -228,8 +268,8 @@ export async function mapTransaction(
     original_currency: foreign ? currency : null,
     occurred_on: occurredOn,
     purchase_on: calendarDate(card?.purchaseDate),
-    description: text(tx.description) ?? text(tx.descriptionRaw) ?? 'Lançamento sem descrição',
-    description_raw: text(tx.descriptionRaw),
+    description: withoutCpf(text(tx.description) ?? text(tx.descriptionRaw)) ?? 'Lançamento sem descrição',
+    description_raw: withoutCpf(text(tx.descriptionRaw)),
     category_id: text(tx.categoryId),
     category: text(tx.category),
     operation_type: text(tx.operationType),

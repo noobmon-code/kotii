@@ -2228,4 +2228,15 @@ begin
   assert exists (select 1 from public.fin_transactions where pluggy_transaction_id = 'tx-m-1'), 'M keeps her data';
 end $$;
 
+-- Tirar a liberação (editor SQL) apaga os bancos dela naquela casa, com contas e lançamentos.
+set role service_role;
+do $$
+begin
+  delete from public.beta_access where user_id = '00000000-0000-0000-0000-000000000016' and feature = 'finance';
+  assert not exists (select 1 from public.fin_connections where pluggy_item_id = 'item-m'), 'revoking removed M''s bank';
+  assert not exists (select 1 from public.fin_accounts where pluggy_account_id = 'acc-m'), 'and its account';
+  assert not exists (select 1 from public.fin_transactions where pluggy_transaction_id = 'tx-m-1'), 'and its transactions';
+end $$;
+reset role;
+
 \echo 'OK — todos os testes do banco passaram'

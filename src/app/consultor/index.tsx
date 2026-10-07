@@ -11,10 +11,17 @@ import {
   type FinanceData,
 } from '@/data/financeBeta';
 import { connectionWarnings, type ConnectionWarning } from '@/domain/bankHealth';
-import { matchBankToNooky, reconciliationTotals, type NookyRecord, type Reconciliation } from '@/domain/bankMatch';
+import {
+  matchBankToNooky,
+  reconciliationInRange,
+  reconciliationTotals,
+  type NookyRecord,
+  type Reconciliation,
+} from '@/domain/bankMatch';
 import {
   accountLabels,
   cardBills,
+  currentAccounts,
   futureInstallments,
   groupPurchases,
   monthSummary,
@@ -64,12 +71,16 @@ const RECORD_KIND: Record<NookyRecord['kind'], string> = { nota: 'Nota', conta: 
 const STATUS_COLOR: Record<BudgetLine['status'], keyof Colors> = { ok: 'primary', perto: 'warning', estourou: 'danger' };
 
 const capitalizeFirst = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+/** "7 out" no fuso do aparelho de um instante gravado em UTC (22h30 do dia 7 não vira dia 8). */
+const localShortDate = (timestamp: string) => formatShortDate(toISODate(new Date(timestamp)));
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** Consultor financeiro (beta): os bancos do MeuPluggy, só para quem tem a liberação nesta casa. */
 export default function ConsultorScreen() {
   const beta = useBeta('finance');
-  if (beta.isError) {
+  // Já liberado, uma nova consulta que falha (rede voltando) não derruba a tela nem o que foi digitado.
+  if (beta.data === true) return <Consultor />;
+  if (beta.isError && beta.data === undefined) {
     return (
       <Screen edges={[]}>
         <ErrorNotice error={beta.error} onRetry={() => beta.refetch()} />
@@ -83,21 +94,18 @@ export default function ConsultorScreen() {
       </Screen>
     );
   }
-  if (!beta.data) {
-    return (
-      <Screen edges={[]}>
-        <EmptyState
-          icon="lock-outline"
-          tint="purple"
-          mood="calm"
-          title="Consultor ainda não liberado"
-          message="O consultor financeiro está em teste e, por enquanto, só abre para quem foi convidado, em cada casa."
-          action={<Button title="Voltar" variant="secondary" onPress={() => router.back()} />}
-        />
-      </Screen>
-    );
-  }
-  return <Consultor />;
+  return (
+    <Screen edges={[]}>
+      <EmptyState
+        icon="lock-outline"
+        tint="purple"
+        mood="calm"
+        title="Consultor ainda não liberado"
+        message="O consultor financeiro está em teste e, por enquanto, só abre para quem foi convidado, em cada casa."
+        action={<Button title="Voltar" variant="secondary" onPress={() => router.back()} />}
+      />
+    </Screen>
+  );
 }
 
 function Consultor() {
@@ -124,15 +132,22 @@ function Consultor() {
   };
 
   const data = finance.status === 'ready' ? finance.data : null;
-  const view = useMemo(() => (data ? buildView(data, month, current) : null), [data, month, current]);
+  const view = useMemo(() => (data ? buildView(data, month, today) : null), [data, month, today]);
+  // O servidor pula banco atualizado há menos de 2 min: sem aviso, o toque pareceria não ter feito nada.
+  const recentlySynced =
+    !sync.isPending && sync.variables?.force === true && sync.data && sync.data.synced === 0 && sync.data.skipped > 0;
 
   return (
     <Screen edges={[]} refreshing={pulling} onRefresh={() => refresh(true)}>
       <SyncBar
-        connections={data?.connections ?? []}
+        connections={data?.connections}
+        failed={finance.status === 'error'}
         syncing={sync.isPending}
         onRefresh={() => refresh(false)}
       />
+      {recentlySynced ? (
+        <Text variant="small">Os bancos foram atualizados há pouco. Tente de novo em 2 minutos.</Text>
+      ) : null}
 
       {sync.isError ? (
         <ErrorNotice error={sync.error} onRetry={() => refresh(false)} />
@@ -162,7 +177,7 @@ function Consultor() {
               <CategorySection lines={view.categories} />
               <CardsSection bills={view.bills} installments={view.installments} />
               <BalancesSection accounts={view.balances} labels={view.labels} />
-              <ReconciliationSection month={month} reconciliation={view.reconciliation} labels={view.labels} />
+              <ReconciliationSection reconciliation={view.reconciliation} labels={view.labels} />
             </>
           ) : (
             <EmptyState
@@ -175,7 +190,8 @@ function Consultor() {
 
           <ConnectionsSection connections={data.connections} warnings={view.warnings} />
           <Text variant="small" style={styles.center}>
-            Beta: os números saem do banco pela data da compra. Nada aqui muda as finanças da casa.
+            Beta: os números saem do banco pela data da compra e não entram nas finanças da casa. Só um orçamento que você
+            aceitar do Nuke muda, e ele vale para a casa toda.
           </Text>
         </>
       ) : null}
@@ -192,13 +208,15 @@ interface CategoryRow {
   budget: BudgetLine | null;
 }
 
-function buildView(data: FinanceData, month: string, current: string) {
+function buildView(data: FinanceData, month: string, today: string) {
+  const current = today.slice(0, 7);
   const purchases = groupPurchases(data.transactions, data.accounts);
   const labels = accountLabels(data.accounts, data.connections);
+  // Saldos e cartões só das contas que a Pluggy ainda devolve (cartão trocado sai).
+  const accounts = currentAccounts(data.accounts, data.connections);
   const summary = monthSummary(purchases, month);
   const budgets = budgetProgress(data.budgets, summary.byCategory);
   const budgeted = new Set(budgets.map((b) => b.category));
-  const range = monthRange(month);
   return {
     labels,
     summary,
@@ -209,14 +227,11 @@ function buildView(data: FinanceData, month: string, current: string) {
         .filter((c) => !budgeted.has(c.category))
         .map((c): CategoryRow => ({ category: c.category, amount: c.amount, budget: null })),
     ],
-    bills: cardBills(data.accounts, labels),
+    bills: cardBills(accounts, labels, today),
     installments: futureInstallments(purchases, shiftMonth(current, 1), 6).filter((m) => m.amount > 0),
-    balances: data.accounts.filter((a) => a.type === 'BANK'),
-    // Mesma conta do retrato do Nuke: compras do mês contra todos os registros da janela.
-    reconciliation: matchBankToNooky(
-      purchases.filter((p) => p.date >= range.start && p.date < range.end),
-      data.nookyRecords,
-    ),
+    balances: accounts.filter((a) => a.type === 'BANK'),
+    // Mesma conta do retrato do Nuke: casada na janela inteira, mostrada só no mês escolhido.
+    reconciliation: reconciliationInRange(matchBankToNooky(purchases, data.nookyRecords), monthRange(month)),
     warnings: connectionWarnings(data.connections, new Date()),
   };
 }
@@ -224,7 +239,8 @@ function buildView(data: FinanceData, month: string, current: string) {
 // ---------------------------------------------------------------------------
 // Partes da tela
 
-function syncedLabel(connections: FinConnection[]): string {
+function syncedLabel(connections: FinConnection[] | undefined, failed: boolean): string {
+  if (!connections) return failed ? 'Não deu para ler os bancos agora' : 'Carregando…';
   const last = connections
     .map((c) => c.last_synced_at)
     .filter((at): at is string => Boolean(at))
@@ -237,13 +253,24 @@ function syncedLabel(connections: FinConnection[]): string {
   return day === todayISO() ? `Atualizado hoje às ${time}` : `Atualizado em ${formatShortDate(day)} às ${time}`;
 }
 
-function SyncBar({ connections, syncing, onRefresh }: { connections: FinConnection[]; syncing: boolean; onRefresh: () => void }) {
+function SyncBar({
+  connections,
+  failed,
+  syncing,
+  onRefresh,
+}: {
+  /** undefined enquanto os bancos carregam (ou falharam): não é "nenhum banco". */
+  connections: FinConnection[] | undefined;
+  failed: boolean;
+  syncing: boolean;
+  onRefresh: () => void;
+}) {
   const c = useColors();
   return (
     <Row style={styles.syncBar}>
       {syncing ? <ActivityIndicator color={c.primary} /> : <Icon name="bank-outline" size={20} color="textMuted" />}
       <Text variant="muted" style={styles.flex}>
-        {syncing ? 'Atualizando os bancos…' : syncedLabel(connections)}
+        {syncing ? 'Atualizando os bancos…' : syncedLabel(connections, failed)}
       </Text>
       <Button title="Atualizar" icon="refresh" variant="secondary" compact disabled={syncing} onPress={onRefresh} />
     </Row>
@@ -308,7 +335,7 @@ function MonthSection({
         </Row>
       }>
       <Card style={styles.gap}>
-        <Row style={styles.stats}>
+        <Row style={styles.statsWrap}>
           <Stat label="Saídas" value={formatBRL(summary.spending)} />
           <Stat label="Entradas" value={formatBRL(summary.income)} />
           <Stat label="Previsto" value={formatBRL(summary.pending)} color="warning" />
@@ -323,11 +350,12 @@ function MonthSection({
   );
 }
 
+// Sem adjustsFontSizeToFit (o navegador não tem): em tela estreita os números descem de linha.
 function Stat({ label, value, color }: { label: string; value: string; color?: keyof Colors }) {
   return (
     <View style={styles.stat}>
       <Text variant="small">{label}</Text>
-      <Text variant="label" color={color} numberOfLines={1} adjustsFontSizeToFit>
+      <Text variant="label" color={color}>
         {value}
       </Text>
     </View>
@@ -383,6 +411,8 @@ function CategorySection({ lines }: { lines: CategoryRow[] }) {
 
 function billDetails(bill: CardBill): string {
   return [
+    // O saldo do cartão é o limite usado: fatura aberta mais as parcelas a vencer.
+    'Limite usado',
     bill.dueDate ? `vence ${formatShortDate(bill.dueDate)}` : null,
     bill.closeDate ? `fecha ${formatShortDate(bill.closeDate)}` : null,
     bill.minimumPayment != null ? `mínimo ${formatBRL(bill.minimumPayment)}` : null,
@@ -403,7 +433,7 @@ function CardsSection({ bills, installments }: { bills: CardBill[]; installments
               key={bill.accountId}
               left={<IconBadge icon="credit-card-outline" tone="info" />}
               title={bill.label}
-              subtitle={billDetails(bill) || 'Fatura atual'}
+              subtitle={billDetails(bill)}
               right={<Text variant="label">{bill.amount != null ? formatBRL(bill.amount) : '—'}</Text>}
             />
           ))}
@@ -439,7 +469,7 @@ function BalancesSection({ accounts, labels }: { accounts: FinAccount[]; labels:
             key={account.id}
             left={<IconBadge icon="wallet-outline" tone="primary" />}
             title={labels.get(account.id) ?? 'Conta'}
-            subtitle={account.updated_at ? `Atualizado em ${formatShortDate(account.updated_at)}` : undefined}
+            subtitle={account.updated_at ? `Atualizado em ${localShortDate(account.updated_at)}` : undefined}
             right={
               <Text variant="label" color={account.balance != null && account.balance < 0 ? 'danger' : undefined}>
                 {account.balance != null ? formatBRL(account.balance) : '—'}
@@ -471,20 +501,11 @@ const recordText = (r: NookyRecord) => `${RECORD_KIND[r.kind]} ${r.label} · ${f
 
 type ReconciliationTab = 'banco' | 'nooky';
 
-function ReconciliationSection({
-  month,
-  reconciliation,
-  labels,
-}: {
-  month: string;
-  reconciliation: Reconciliation;
-  labels: Map<string, string>;
-}) {
+function ReconciliationSection({ reconciliation, labels }: { reconciliation: Reconciliation; labels: Map<string, string> }) {
   const [tab, setTab] = useState<ReconciliationTab>('banco');
   const [showAll, setShowAll] = useState(false);
   const totals = reconciliationTotals(reconciliation);
-  const range = monthRange(month);
-  const nookyOnly = reconciliation.nookyOnly.filter((r) => r.date >= range.start && r.date < range.end).length;
+  const nookyOnly = reconciliation.nookyOnly.length;
   const rows = tab === 'banco' ? reconciliation.bankOnly.length : reconciliation.matched.length;
   const limit = showAll ? rows : ROWS_SHOWN;
 
@@ -616,7 +637,7 @@ function ConnectionsSection({ connections, warnings }: { connections: FinConnect
                       {warning.message}
                     </Text>
                   ) : connection.item_updated_at ? (
-                    `Banco atualizado em ${formatShortDate(connection.item_updated_at)}`
+                    `Banco atualizado em ${localShortDate(connection.item_updated_at)}`
                   ) : (
                     'Conectado'
                   )
@@ -645,6 +666,8 @@ function AddBankForm({ onClose }: { onClose?: () => void }) {
   const [itemId, setItemId] = useState('');
 
   function submit() {
+    // Enter de novo (ou Enter e o botão) enquanto conecta não manda outro pedido.
+    if (add.isPending) return;
     const name = label.trim().replace(/\s+/g, ' ');
     const id = itemId.trim();
     if (!name) {
@@ -652,7 +675,7 @@ function AddBankForm({ onClose }: { onClose?: () => void }) {
       return;
     }
     if (!ITEM_ID.test(id)) {
-      notify('Item ID inválido', 'Cole o Item ID do MeuPluggy: um código como 1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d.');
+      notify('Item ID inválido', 'Cole o Item ID copiado no Dashboard da Pluggy: um código como 1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d.');
       return;
     }
     add.mutate(
@@ -677,8 +700,9 @@ function AddBankForm({ onClose }: { onClose?: () => void }) {
     <Card style={styles.gap}>
       <Text variant="label">Conectar um banco</Text>
       <Text variant="muted">
-        No MeuPluggy, conecte o banco e copie o Item ID da conexão. Cole aqui com um nome curto. É só leitura: o Nooky não mexe
-        no seu dinheiro.
+        No Dashboard da Pluggy, abra a sua aplicação, vá em &quot;Ir para Demo&quot; e conecte o banco pelo MeuPluggy. Depois, em
+        Items, toque no ⋮ do banco e em &quot;Copiar Item ID&quot;. Cole aqui com um nome curto. É só leitura: o Nooky não mexe no
+        seu dinheiro.
       </Text>
       <TextField
         label="Nome"
@@ -687,6 +711,7 @@ function AddBankForm({ onClose }: { onClose?: () => void }) {
         placeholder="Ex.: Nubank"
         maxLength={LABEL_MAX}
         autoCapitalize="words"
+        editable={!add.isPending}
       />
       <TextField
         label="Item ID"
@@ -697,6 +722,7 @@ function AddBankForm({ onClose }: { onClose?: () => void }) {
         autoCorrect={false}
         spellCheck={false}
         maxLength={60}
+        editable={!add.isPending}
         onSubmitEditing={submit}
       />
       <Button title="Conectar banco" icon="bank-plus" onPress={submit} loading={add.isPending} />
@@ -715,7 +741,9 @@ const styles = StyleSheet.create({
   nukeCard: { gap: space.md },
   nukeRow: { gap: space.md },
   stats: { gap: space.md, alignItems: 'stretch' },
-  stat: { flex: 1, gap: 2 },
+  // 3 lado a lado quando cabem; em celular estreito, 2 + 1 (sem cortar o valor).
+  statsWrap: { gap: space.md, alignItems: 'flex-start', flexWrap: 'wrap' },
+  stat: { flexGrow: 1, flexBasis: 110, gap: 2 },
   totalCard: { flex: 1, gap: 2, padding: space.lg },
   categories: { gap: space.lg },
   categoryLine: { gap: 6 },
