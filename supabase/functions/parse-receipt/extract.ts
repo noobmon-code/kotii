@@ -135,3 +135,6 @@ export function cleanReceipt(
     items,
   };
 }
+
+/** O texto como valor literal num LIKE/ILIKE: escapa "\\", "%" e "_". */
+export const escapeLike = (value: string) => value.replace(/[\\%_]/g, '\\$&');

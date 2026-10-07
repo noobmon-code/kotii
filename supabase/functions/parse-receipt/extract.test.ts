@@ -1,6 +1,6 @@
 import { assertEquals } from '@std/assert';
 
-import { cleanReceipt, type ExtractedReceipt, instructions } from './extract.ts';
+import { cleanReceipt, escapeLike, instructions, type ExtractedReceipt } from './extract.ts';
 
 const base: ExtractedReceipt = {
   is_receipt: true,
@@ -73,4 +73,9 @@ Deno.test('instructions explain the overlap when the receipt comes in several ph
   const text = instructions([], 3);
   assertEquals(text.includes('A nota veio em 3 fotos'), true);
   assertEquals(text.includes('entra uma vez só'), true);
+});
+
+Deno.test('escapeLike: curingas do LIKE no nome da loja viram texto', () => {
+  assertEquals(escapeLike('100% Mercado_Bom\\'), '100\\% Mercado\\_Bom\\\\');
+  assertEquals(escapeLike('Mercado Bom'), 'Mercado Bom');
 });

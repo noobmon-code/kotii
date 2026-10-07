@@ -12,7 +12,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { QuotaError, refundAiQuota, takeAiQuota } from '../_shared/aiQuota.ts';
 import { ExtractionError, extractStructured, mediaTypeOf, toVisionImage, visionConfig } from '../_shared/vision.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
-import { cleanReceipt, ExtractedReceiptSchema, instructions, MAX_PHOTOS, SYSTEM } from './extract.ts';
+import { cleanReceipt, escapeLike, ExtractedReceiptSchema, instructions, MAX_PHOTOS, SYSTEM } from './extract.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -35,9 +35,11 @@ async function findOrCreateStore(
 ): Promise<string | null> {
   if (!store.name && !store.cnpj) return null;
 
+  // Sem CNPJ, pelo nome: os curingas do LIKE no nome que a IA leu não valem
+  // (um "%" casaria com qualquer loja da casa). O app faz o mesmo na nota pelo QR code.
   const lookup = store.cnpj
     ? db.from('stores').select('id').eq('cnpj', store.cnpj)
-    : db.from('stores').select('id').is('cnpj', null).ilike('name', store.name!);
+    : db.from('stores').select('id').is('cnpj', null).ilike('name', escapeLike(store.name!));
   const { data: existing, error: lookupError } = await lookup.limit(1).maybeSingle();
   if (lookupError) throw lookupError;
   if (existing) return existing.id;
