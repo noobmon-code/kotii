@@ -1723,7 +1723,9 @@ begin
     ('00000000-0000-0000-0000-0000000000b2', current_setting('test.sub_l')::uuid, 'Conta de outra casa', 'daily', 8, 0, json_build_object('reminder', 'bills:x:2026-10-10', 'householdId', gen_random_uuid())::jsonb),
     ('00000000-0000-0000-0000-0000000000b3', current_setting('test.sub_l')::uuid, 'Remédio antigo da K', 'daily', 8, 0, json_build_object('medicationId', (select id from public.medications where name = 'Vitamina K'))::jsonb),
     ('00000000-0000-0000-0000-0000000000b4', current_setting('test.sub_l')::uuid, 'Tarefa antiga da K', 'daily', 9, 0, json_build_object('reminder', 'chores:' || (select id from public.chores where title = 'Tarefa da K') || ':2026-10-10')::jsonb),
-    ('00000000-0000-0000-0000-0000000000b5', current_setting('test.sub_l')::uuid, 'Conta antiga de outra casa', 'daily', 9, 0, json_build_object('reminder', 'bills:' || gen_random_uuid() || ':2026-10-10')::jsonb);
+    ('00000000-0000-0000-0000-0000000000b5', current_setting('test.sub_l')::uuid, 'Conta antiga de outra casa', 'daily', 9, 0, json_build_object('reminder', 'bills:' || gen_random_uuid() || ':2026-10-10')::jsonb),
+    ('00000000-0000-0000-0000-0000000000b6', current_setting('test.sub_l')::uuid, 'Clima de outra casa', 'daily', 7, 0, json_build_object('reminder', 'weather:dia:2026-10-10', 'householdId', gen_random_uuid())::jsonb),
+    ('00000000-0000-0000-0000-0000000000b7', current_setting('test.sub_l')::uuid, 'Clima antigo (sem casa)', 'daily', 7, 0, json_build_object('reminder', 'weather:dia:2026-10-11')::jsonb);
 end $$;
 select set_config('request.jwt.claim.sub', :'user_k', false) \gset
 do $$
@@ -1762,8 +1764,8 @@ reset role;
 do $$
 begin
   assert (select array_agg(id order by id) from public.push_schedule where subscription_id = current_setting('test.sub_l')::uuid)
-    = array['00000000-0000-0000-0000-0000000000b2', '00000000-0000-0000-0000-0000000000b5']::uuid[],
-    'the removed member browser loses this household reminders (tagged or resolved by medication/chore), keeps the rest';
+    = array['00000000-0000-0000-0000-0000000000b2', '00000000-0000-0000-0000-0000000000b5', '00000000-0000-0000-0000-0000000000b6']::uuid[],
+    'the removed member browser loses this household reminders (tagged, resolved by medication/chore, or untagged weather), keeps the rest';
   delete from public.push_subscriptions where id = current_setting('test.sub_l')::uuid;
 end $$;
 set role authenticated;

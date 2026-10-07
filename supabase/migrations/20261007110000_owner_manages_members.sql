@@ -79,11 +79,17 @@ begin
   -- Os avisos desta casa agendados nos navegadores dele não tocam mais. Os
   -- de antes de o aviso levar a casa (sem householdId) são atribuídos pelo
   -- remédio ou pela conta, documento, tarefa, consulta ou vacina a que se
-  -- referem; os de outras casas ficam.
+  -- referem; os de outras casas ficam. O aviso do clima de antes da marca
+  -- não aponta para registro nenhum (data.reminder = "weather:dia:<data>"),
+  -- então não dá para saber de que casa é: sai também, e o app o refaz, já
+  -- marcado, na próxima vez que abre nesse navegador.
   delete from public.push_schedule p
     using public.push_subscriptions s
     where p.subscription_id = s.id and s.user_id = p_user_id
-      and public.reminder_household(p.data) = p_household_id;
+      and (
+        public.reminder_household(p.data) = p_household_id
+        or (p.data ->> 'householdId' is null and p.data ->> 'reminder' like 'weather:%')
+      );
 end;
 $$;
 
