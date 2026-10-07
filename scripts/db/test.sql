@@ -83,13 +83,37 @@ reset role;
 do $$
 begin
   assert (select failed from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a') = public.max_join_attempts(), 'attempts counted';
-  -- A hora passou.
-  update public.join_attempts set last_failed_at = now() - interval '61 minutes';
+  -- A hora passou (contada do primeiro erro: errar de novo não a estica).
+  update public.join_attempts set window_started_at = now() - interval '61 minutes';
 end $$;
 set role authenticated;
 do $$
 begin
   assert public.join_household('ZZZZZZ', 'Zé') is null, 'after an hour, tries again';
+end $$;
+reset role;
+do $$
+begin
+  assert (select failed from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a') = 1, 'a new hour starts the count over';
+  assert (select window_started_at from public.join_attempts where user_id = '00000000-0000-0000-0000-00000000001a') > now() - interval '1 minute', 'and starts now';
+  -- Um erro a cada 59 minutos nunca chega ao limite: a hora é contada do primeiro erro.
+  update public.join_attempts set failed = 9, window_started_at = now() - interval '59 minutes';
+end $$;
+set role authenticated;
+do $$
+begin
+  assert public.join_household('ZZZZZZ', 'Zé') is null, 'tenth error inside the hour';
+  begin
+    perform public.join_household('ZZZZZZ', 'Zé');
+    raise exception 'FAIL: tried past the limit';
+  exception when sqlstate 'NK004' then null;
+  end;
+end $$;
+reset role;
+update public.join_attempts set window_started_at = now() - interval '2 hours';
+set role authenticated;
+do $$
+begin
   perform public.join_household(current_setting('test.invite_a'), 'Zé');
   assert (select count(*) from public.household_members where user_id = auth.uid()) = 1, 'the right code joins';
   perform public.leave_household(current_setting('test.hh_a')::uuid);
