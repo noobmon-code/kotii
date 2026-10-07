@@ -40,8 +40,9 @@ export default function WelcomeScreen() {
           ? await supabase.rpc('create_household', { p_name: householdName, p_display_name: displayName })
           : await supabase.rpc('join_household', { p_invite_code: code, p_display_name: displayName });
       if (error) throw new Error(householdErrorMessage(error));
-      // Código errado: o banco devolve nada (e conta a tentativa) em vez de erro.
-      if (!data) throw new Error(INVITE_NOT_FOUND);
+      // Código errado: o banco devolve uma casa vazia (e conta a tentativa) em
+      // vez de erro. O PostgREST manda o registro nulo como objeto com campos nulos.
+      if (!(data as { id?: string | null } | null)?.id) throw new Error(INVITE_NOT_FOUND);
       await queryClient.invalidateQueries({ queryKey: ['household'] });
     } catch (err) {
       notify('Não foi possível continuar', errorMessage(err));

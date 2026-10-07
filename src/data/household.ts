@@ -100,9 +100,10 @@ export function useAddHousehold(userId: string | undefined) {
           ? await supabase.rpc('create_household', { p_name: input.name, p_display_name: input.displayName })
           : await supabase.rpc('join_household', { p_invite_code: input.code, p_display_name: input.displayName });
       if (error) throw new Error(householdErrorMessage(error));
-      // Código errado: o banco devolve nada (e conta a tentativa) em vez de erro.
-      if (!data) throw new Error(INVITE_NOT_FOUND);
-      const house = data as Household;
+      // Código errado: o banco devolve uma casa vazia (e conta a tentativa) em
+      // vez de erro. O PostgREST manda o registro nulo como objeto com campos nulos.
+      const house = data as Household | null;
+      if (!house?.id) throw new Error(INVITE_NOT_FOUND);
       await openHousehold(queryClient, userId, house.id);
       return house;
     },
