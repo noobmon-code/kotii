@@ -131,37 +131,8 @@ revoke execute on function public.regenerate_invite_code(uuid) from public, anon
 grant execute on function public.remove_member(uuid, uuid) to authenticated;
 grant execute on function public.regenerate_invite_code(uuid) to authenticated;
 
--- Entrar com o código trava a linha da casa: quem chega com o código antigo
--- enquanto o dono o troca espera a troca terminar e, aí, não acha mais a
--- casa (o FOR UPDATE reavalia a condição na versão nova da linha).
-create or replace function public.join_household(p_invite_code text, p_display_name text)
-returns public.households
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  h public.households;
-begin
-  if auth.uid() is null then
-    raise exception 'not authenticated' using errcode = '42501';
-  end if;
-  perform pg_advisory_xact_lock(hashtextextended('households:' || auth.uid()::text, 0));
-
-  select * into h from public.households where invite_code = upper(trim(p_invite_code)) for update;
-  if not found then
-    raise exception 'invalid invite code' using errcode = 'P0002';
-  end if;
-  if exists (select 1 from public.household_members m where m.user_id = auth.uid() and m.household_id = h.id) then
-    raise exception 'already a member of this household' using errcode = '23505';
-  end if;
-  if (select count(*) from public.household_members m where m.user_id = auth.uid()) >= public.max_households_per_user() then
-    raise exception 'household limit reached' using errcode = 'NK002';
-  end if;
-
-  insert into public.household_members (household_id, user_id, display_name, role, selected_at)
-  values (h.id, auth.uid(), trim(p_display_name), 'member', now());
-
-  return h;
-end;
-$$;
+-- Entrar com o código já trava a linha da casa (join_household busca com
+-- FOR UPDATE): quem chega com o código antigo enquanto o dono o troca espera
+-- a troca terminar e, aí, não acha mais a casa (a condição é reavaliada na
+-- versão nova da linha). A regeneração trava a mesma linha em
+-- assert_household_owner.
