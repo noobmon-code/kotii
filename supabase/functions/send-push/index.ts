@@ -6,11 +6,13 @@
 // VAPID do Vault, e confirma (finish_pushes): o entregue sai da agenda ou
 // anda para a próxima vez; o que falhou por um instante volta para a fila.
 // Inscrição que não existe mais (404/410) sai do banco.
-// Só aceita quem traz o segredo do agendamento (x-push-secret).
+// Só aceita quem traz o segredo do agendamento (x-push-secret); a plataforma
+// não confere token (verify_jwt = false), o pg_cron não manda chave do Supabase.
 
 import { createClient } from '@supabase/supabase-js';
 import { ApplicationServer, importVapidKeys, PushMessageError, Urgency } from '@negrel/webpush';
 
+import { secretKey } from '../_shared/apiKeys.ts';
 import { sameSecret } from '../_shared/secret.ts';
 import { type DuePush, PushFailed, type PushSender, sendAll } from './push.ts';
 
@@ -32,7 +34,7 @@ function json(body: unknown, status = 200): Response {
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error: 'Método não suportado.' }, 405);
 
-  const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+  const admin = createClient(Deno.env.get('SUPABASE_URL')!, secretKey());
   const { data: config, error: configError } = await admin.rpc('push_config');
   if (configError || !config) {
     console.error('push config missing', configError);

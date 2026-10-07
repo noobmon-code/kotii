@@ -11,11 +11,14 @@
 // A casa apagada entra numa fila no banco; esta função apaga as fotos da
 // fila com a service role, que o app não tem, a cada saída e no modo drain,
 // chamado pelo agendamento. O drain só limpa casas que já foram apagadas, e
-// só roda com o segredo do agendamento (cleanup_cron_secret, no Vault): a
-// chave anon é pública e não basta.
+// só roda com o segredo do agendamento (cleanup_cron_secret, no Vault).
+// A plataforma não confere o token (verify_jwt = false: o agendamento não
+// manda chave do Supabase); quem confere é a função, a pessoa pelo token dela
+// (auth.getUser) e o agendamento pelo segredo.
 
 import { createClient } from '@supabase/supabase-js';
 
+import { publishableKey, secretKey } from '../_shared/apiKeys.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
 import { sameSecret } from '../_shared/secret.ts';
 import { type CleanupQueue, drainCleanupQueue } from './cleanup.ts';
@@ -38,7 +41,7 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error: 'Método não suportado.' }, 405);
 
   const url = Deno.env.get('SUPABASE_URL')!;
-  const admin = createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+  const admin = createClient(url, secretKey());
   const queue: CleanupQueue = {
     pending: async (limit) => {
       const { data: rows, error: queueError } = await admin
@@ -74,7 +77,7 @@ Deno.serve(async (req) => {
     return result ? json({ done: result.done.length, failed: result.failed.length }) : json({ error: 'Falhou.' }, 500);
   }
 
-  const asUser = createClient(url, Deno.env.get('SUPABASE_ANON_KEY') ?? Deno.env.get('SUPABASE_PUBLISHABLE_KEY')!, {
+  const asUser = createClient(url, publishableKey(), {
     global: { headers: callerHeaders(req) },
   });
   const { data: userData } = await asUser.auth.getUser();

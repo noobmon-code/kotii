@@ -70,16 +70,17 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
 
    Com a chave da OpenRouter, ela é usada em tudo (leitura de notas, de saúde e o Nuke), com o `deepseek/deepseek-v4.1-flash`; a Anthropic só entra com a chave dela sozinha ou com `RECEIPT_PROVIDER=anthropic`. O modelo pode ser trocado com `RECEIPT_MODEL` (na OpenRouter, precisa ser um modelo que aceita imagem). A leitura de saúde (`parse-health`) usa as mesmas configurações, ou `HEALTH_PROVIDER` e `HEALTH_MODEL` se quiser um modelo diferente para ela. O Nuke (`nuke`) também, ou `NUKE_PROVIDER` e `NUKE_MODEL`.
 
-   **Limpeza das fotos.** Quando a última pessoa sai e apaga a casa, `leave-household` apaga as fotos dela na hora; se o Storage falhar, a casa fica numa fila que o `pg_cron` reprocessa de hora em hora. Para isso, o banco precisa da URL do projeto e da chave anon no Vault (o segredo que autoriza essa chamada, `cleanup_cron_secret`, o `db push` cria sozinho). Rode uma vez no SQL Editor:
+   As funções falam com o banco pelas chaves novas do Supabase (`SUPABASE_PUBLISHABLE_KEYS` e `SUPABASE_SECRET_KEYS`, que o Supabase já entrega a elas; vale a chave `default`, ver `supabase/functions/_shared/apiKeys.ts`). As antigas (`SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`) só entram se o projeto ainda não tiver as novas.
+
+   **Limpeza das fotos.** Quando a última pessoa sai e apaga a casa, `leave-household` apaga as fotos dela na hora; se o Storage falhar, a casa fica numa fila que o `pg_cron` reprocessa de hora em hora. Para isso, o banco precisa da URL do projeto no Vault (o segredo que autoriza essa chamada, `cleanup_cron_secret`, o `db push` cria sozinho; a chamada não leva chave do Supabase). Rode uma vez no SQL Editor:
 
    ```sql
    select vault.create_secret('https://SEU_PROJECT_REF.supabase.co', 'project_url');
-   select vault.create_secret('SUA_ANON_KEY', 'anon_key');
    ```
 
-   Sem esses segredos, o `db push` avisa e o job registra o erro em `cron.job_run_details`.
+   Sem esse segredo, o job registra o erro em `cron.job_run_details`. O `anon_key` que versões antigas pediam no Vault não é mais usado e pode ser apagado.
 
-   **Avisos no navegador.** O `pg_cron` olha a agenda dos navegadores a cada minuto e, quando há aviso vencido, chama a `send-push`, que assina o envio com as chaves VAPID. Além dos dois segredos acima, gere as chaves e o segredo do agendamento (precisa do [Deno](https://deno.com)):
+   **Avisos no navegador.** O `pg_cron` olha a agenda dos navegadores a cada minuto e, quando há aviso vencido, chama a `send-push`, que assina o envio com as chaves VAPID. Além da URL do projeto acima, gere as chaves e o segredo do agendamento (precisa do [Deno](https://deno.com)):
 
    ```bash
    deno run supabase/functions/send-push/vapid-keys.ts https://SEU_PROJECT_REF.supabase.co
