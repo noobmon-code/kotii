@@ -142,3 +142,35 @@ export function nfceItemsToDraft(
       };
     });
 }
+
+// ---------------------------------------------------------------------------
+// Quando a Sefaz não mostra a nota
+
+/**
+ * Código da função `nfce` quando a Sefaz pede a verificação "não sou robô"
+ * (reCAPTCHA) antes de mostrar a nota. O app não passa por ela: a nota é
+ * lida pela foto, guardando a chave do QR.
+ */
+export const NFCE_CAPTCHA = 'captcha';
+
+/**
+ * Caminho depois de uma busca na Sefaz que falhou: com o "não sou robô", direto
+ * para a foto da nota; nos outros erros (Sefaz fora do ar, nota sem itens), a
+ * pessoa fica na tela do QR, lê o aviso e decide.
+ */
+export function nfceFailureRoute(code: string | null): 'photo' | 'stay' {
+  return code === NFCE_CAPTCHA ? 'photo' : 'stay';
+}
+
+/**
+ * Próximo passo para um QR lido: buscar na Sefaz ou, se esta nota já esbarrou
+ * no "não sou robô" nesta tela, ir direto para a foto (buscar de novo só gastaria
+ * uma leitura do mês). `photoOnly` guarda a mensagem da Sefaz por chave.
+ */
+export function qrReadStep(
+  accessKey: string,
+  photoOnly: ReadonlyMap<string, string>,
+): { kind: 'fetch' } | { kind: 'photo'; message: string } {
+  const message = photoOnly.get(accessKey);
+  return message === undefined ? { kind: 'fetch' } : { kind: 'photo', message };
+}

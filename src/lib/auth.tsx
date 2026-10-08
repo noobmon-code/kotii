@@ -6,17 +6,12 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import { forgetActiveHousehold, getActiveHousehold, loadActiveHousehold, setActiveHousehold } from './activeHousehold';
 import { cacheHousehold, cacheOwners, forgetCache, queryClient, resumeQueue, setSessionValid } from './queryClient';
 import { disableAllReminders, pruneHouseholdReminders } from './reminders';
+import { noteSignedIn, noteSignedOut } from './session';
 import { supabase, unwrap } from './supabase';
 import type { Household, Member } from './types';
 
-/**
- * Sai da conta neste aparelho. Antes, os lembretes daqui saem (no navegador,
- * também a inscrição dos avisos), para não tocar o remédio de quem saiu.
- */
-export async function signOut(): Promise<void> {
-  await disableAllReminders().catch(() => undefined);
-  await supabase.auth.signOut();
-}
+// Sair fica em lib/session (só neste aparelho); as telas seguem importando daqui.
+export { signOut } from './session';
 
 /** O app só usa quem entrou; os tokens ficam com o Supabase. */
 export type AppSession = Pick<Session, 'user' | 'expires_at'>;
@@ -102,7 +97,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (event === 'INITIAL_SESSION') return;
       setState({ session, loading: false, valid: Boolean(session) });
       if (session) saveLastSession(session);
+      if (event === 'SIGNED_IN') noteSignedIn();
       if (event === 'SIGNED_OUT') {
+        // Sem ser pelo botão "Sair" (a sessão acabou no servidor): a tela de entrar avisa.
+        noteSignedOut();
         forgetLastSession();
         forgetActiveHousehold();
         forgetCache();

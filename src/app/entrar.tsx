@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 
+import { SESSION_ENDED } from '@/lib/accessErrors';
+import { useSessionEnded } from '@/lib/session';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import { FamilyArt, Logo } from '@/ui/art';
-import { Button, Screen, Segmented, Text, TextField } from '@/ui/primitives';
+import { Button, Card, Icon, Row, Screen, Segmented, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 type Mode = 'entrar' | 'criar';
@@ -14,6 +16,8 @@ export default function SignInScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
+  // A sessão acabou sem a pessoa tocar em "Sair": diz por que o app voltou para cá.
+  const sessionEnded = useSessionEnded();
 
   async function submit() {
     const trimmed = email.trim().toLowerCase();
@@ -51,6 +55,16 @@ export default function SignInScreen() {
             A casa em ordem, sem esforço: compras, contas, tarefas e saúde da família num lugar só.
           </Text>
         </View>
+        {sessionEnded ? (
+          <Card>
+            <Row>
+              <Icon name="information-outline" color="primary" />
+              <Text variant="body" style={styles.flex}>
+                {SESSION_ENDED}
+              </Text>
+            </Row>
+          </Card>
+        ) : null}
         <Segmented
           value={mode}
           onChange={setMode}

@@ -11,6 +11,7 @@ import {
   type DietPlanValues,
   type WorkoutPlanValues,
 } from '@/data/health';
+import { isSessionEndedError } from '@/lib/accessErrors';
 import { useHouseholdId } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { ActionSheet } from '@/ui/ActionSheet';
@@ -85,9 +86,16 @@ export function usePlanImport() {
     let data: Partial<PlanDraft<PlanKind>> | null = null;
     let readError: unknown = null;
     try {
-      data = await readHealthDocument<PlanDraft<PlanKind>>(kind, paths);
+      // Sem plano ainda: se a sessão acabou, as fotos saem antes da conta.
+      data = await readHealthDocument<PlanDraft<PlanKind>>(kind, paths, { unclaimed: true });
     } catch (err) {
       readError = err;
+    }
+    // A sessão acabou e o app já saiu da conta (as fotos já saíram): o rascunho não seria gravado.
+    if (isSessionEndedError(readError)) {
+      setBusy(false);
+      notify('Não deu para ler com IA', errorMessage(readError));
+      return;
     }
     try {
       await createDraft(kind, personId, paths, data);
