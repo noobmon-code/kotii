@@ -89,7 +89,7 @@ describe('sessão que acabou', () => {
       if (result instanceof Error) throw result;
       return result;
     });
-    const end = jest.fn(async () => undefined);
+    const end = jest.fn(async (beforeSignOut: () => Promise<void>) => beforeSignOut());
     return { check, end, run: createSessionGuard({ check, end }) };
   }
 
@@ -156,6 +156,59 @@ describe('sessão que acabou', () => {
       await run();
       expect(cleanup).not.toHaveBeenCalled();
     }
+  });
+
+  it('um 401 que chega enquanto a saída desliga os lembretes: a limpeza dele roda antes de o token sair', async () => {
+    const order: string[] = [];
+    let late: Promise<boolean> | undefined;
+    const run = createSessionGuard({
+      check: async () => 'ended',
+      end: async (beforeSignOut) => {
+        order.push('lembretes');
+        late = run(async () => {
+          order.push('apaga fotos do segundo');
+        });
+        await beforeSignOut();
+        order.push('token sai');
+      },
+    });
+    await expect(
+      run(async () => {
+        order.push('apaga fotos do primeiro');
+      }),
+    ).resolves.toBe(true);
+    await expect(late).resolves.toBe(true);
+    expect(order).toEqual(['apaga fotos do primeiro', 'lembretes', 'apaga fotos do segundo', 'token sai']);
+  });
+
+  it('a saída falhando antes de chegar ao token: as limpezas que chegaram nela rodam mesmo assim', async () => {
+    const cleanup = jest.fn(async () => undefined);
+    let late: Promise<boolean> | undefined;
+    const run = createSessionGuard({
+      check: async () => 'ended',
+      end: async () => {
+        late = run(cleanup);
+        throw new Error('falhou');
+      },
+    });
+    await expect(run()).resolves.toBe(true);
+    await late;
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it('um 401 que chega com o token já saindo: a limpeza não roda (sem token, não apagaria nada)', async () => {
+    const cleanup = jest.fn(async () => undefined);
+    let late: Promise<boolean> | undefined;
+    const run = createSessionGuard({
+      check: async () => 'ended',
+      end: async (beforeSignOut) => {
+        await beforeSignOut();
+        late = run(cleanup);
+      },
+    });
+    await expect(run()).resolves.toBe(true);
+    await expect(late).resolves.toBe(true);
+    expect(cleanup).not.toHaveBeenCalled();
   });
 
   it('a limpeza falhando não impede a saída', async () => {

@@ -22,9 +22,13 @@ const mockAuth: {
 /** A sessão guardada no aparelho (o storage do Supabase). */
 const mockStored = new Map<string, string>();
 
+/** O que acontece enquanto os lembretes saem (outro 401 que chega no meio da saída). */
+const mockHooks: { onReminders?: () => void } = {};
+
 jest.mock('../reminders', () => ({
   disableAllReminders: async () => {
     mockCalls.push('lembretes');
+    mockHooks.onReminders?.();
   },
 }));
 
@@ -67,6 +71,7 @@ beforeEach(() => {
   mockAuth.onSignedOut = noteSignedOut;
   mockStored.clear();
   mockStored.set('sb-teste-auth-token', 'sessão');
+  mockHooks.onReminders = undefined;
   noteSignedIn();
 });
 
@@ -244,5 +249,25 @@ describe('401 de uma função', () => {
       mockCalls.push(`limpeza (sessão ${mockStored.size ? 'guardada' : 'apagada'})`);
     });
     expect(mockCalls).toEqual(['refresh', 'limpeza (sessão guardada)', 'lembretes', 'signOut local']);
+  });
+
+  it('outro 401 que chega enquanto os lembretes saem: a limpeza dele também roda antes de sair', async () => {
+    mockAuth.refresh = { data: { session: null }, error: new AuthApiError('Session not found', 403, 'session_not_found') };
+    const cleanup = (who: string) => async () => {
+      mockCalls.push(`limpeza ${who} (sessão ${mockStored.size ? 'guardada' : 'apagada'})`);
+    };
+    let late: Promise<boolean> | undefined;
+    mockHooks.onReminders = () => {
+      late = endSessionIfGone(cleanup('tardia'));
+    };
+    await expect(endSessionIfGone(cleanup('primeira'))).resolves.toBe(true);
+    await expect(late).resolves.toBe(true);
+    expect(mockCalls).toEqual([
+      'refresh',
+      'limpeza primeira (sessão guardada)',
+      'lembretes',
+      'limpeza tardia (sessão guardada)',
+      'signOut local',
+    ]);
   });
 });

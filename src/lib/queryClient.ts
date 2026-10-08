@@ -68,16 +68,28 @@ async function confirmHouseholdAccess(error: unknown): Promise<void> {
 
 /** Intervalo mínimo entre duas buscas das casas por mudanças sem linhas (marcações em sequência). */
 const HOUSEHOLD_RECHECK_MS = 5000;
+/** Idade das casas a partir da qual qualquer mudança que deu certo as busca de novo. */
+const HOUSEHOLD_STALE_MS = 30_000;
 let lastHouseholdRecheck = 0;
 
+/** Quando as casas foram buscadas por último (0: nunca). */
+function householdFetchedAt(): number {
+  return Math.max(0, ...queryClient.getQueryCache().findAll({ queryKey: ['household'] }).map((q) => q.state.dataUpdatedAt));
+}
+
 /**
- * Uma mudança não alcançou nenhuma linha (ver wroteNoRows): busca as casas
- * de novo, o que leva para outra casa quem foi tirada desta. Sem esperar e
- * sem aviso; a busca em andamento é aproveitada.
+ * Depois de uma mudança que deu certo, busca as casas de novo, o que leva
+ * para outra casa quem foi tirada desta: a RLS não dá erro em UPDATE e
+ * DELETE de linhas que ela esconde, só não muda nada (e a maioria das
+ * mutações nem pede as linhas de volta). Para qualquer mudança, só com as
+ * casas de mais de 30 s; `noRows` (a mudança pediu as linhas e não
+ * alcançou nenhuma, ver wroteNoRows) busca mesmo com elas recentes. Sem
+ * esperar e sem aviso; a busca em andamento é aproveitada.
  */
-function recheckHousehold() {
+function recheckHousehold(noRows: boolean) {
   const now = Date.now();
   if (!onlineManager.isOnline() || now - lastHouseholdRecheck < HOUSEHOLD_RECHECK_MS) return;
+  if (!noRows && now - Math.max(lastHouseholdRecheck, householdFetchedAt()) < HOUSEHOLD_STALE_MS) return;
   lastHouseholdRecheck = now;
   queryClient.refetchQueries({ queryKey: ['household'] }, { cancelRefetch: false }).catch(() => undefined);
 }
@@ -86,9 +98,9 @@ export const queryClient = new QueryClient({
   mutationCache: new MutationCache({
     // Antes do onError da tela (o do cache vem primeiro e é esperado): o aviso já sai certo.
     onError: (error) => (isHouseholdAccessError(error) ? confirmHouseholdAccess(error) : undefined),
-    // UPDATE/DELETE que a RLS barrou não dá erro, só 0 linhas.
+    // UPDATE/DELETE que a RLS barrou não dá erro, só 0 linhas (ou nada, sem `.select`).
     onSuccess: (data, _variables, _result, mutation) => {
-      if (mutation.meta?.expectsRows && wroteNoRows(data)) recheckHousehold();
+      recheckHousehold(Boolean(mutation.meta?.expectsRows) && wroteNoRows(data));
     },
   }),
   defaultOptions: {
