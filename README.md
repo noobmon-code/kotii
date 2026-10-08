@@ -187,7 +187,7 @@ Um Nuke só de finanças que lê os extratos dos seus bancos (conta e cartão) e
 
 - Os bancos chegam pela Pluggy, pelo conector **MeuPluggy**: gratuito para a pessoa ler os próprios dados (uso comercial não é permitido). O consentimento do Open Finance é dado e revogado no MeuPluggy (meu.pluggy.ai).
 - Guardado no Supabase: CPF nunca em claro. Do documento de quem recebeu ou pagou fica só um hash por pessoa (HMAC com o segredo `FIN_DOC_HASH_KEY`, que só a função tem: sem ele não dá para descobrir o CPF testando todos), para reconhecer transferência entre as próprias contas; CPF escrito na descrição do lançamento ou no nome (razão social de MEI antigo) é apagado antes de gravar. Da conta, só os 4 últimos dígitos do número. Nome de quem recebeu ou pagou, CNPJ e linha do boleto ficam na tabela privada, para a conciliação.
-- A conversa vai **só para a API da Anthropic**, nunca para a OpenRouter (mesmo com a chave dela cadastrada): modelo `claude-sonnet-5-5` por padrão, trocável com `FINANCE_MODEL`. Sem `ANTHROPIC_API_KEY`, a função recusa em vez de cair em outro provedor. Pela política da API, a Anthropic não treina modelos com esse conteúdo.
+- A conversa vai **só para a API da Anthropic**, nunca para a OpenRouter (mesmo com a chave dela cadastrada): modelo `claude-haiku-5-5` por padrão, trocável com `FINANCE_MODEL`. Sem `ANTHROPIC_API_KEY`, a função recusa em vez de cair em outro provedor. Pela política da API, a Anthropic não treina modelos com esse conteúdo.
 - O retrato que vai para a IA é montado no celular com os números já calculados (a IA não faz conta: só cita o que está no retrato). Ele nunca leva CPF, número de conta ou agência, linha digitável de boleto nem nome de pessoa (Pix para alguém vira "PIX para pessoa física"); saúde, doações, igreja e afins entram só como total da categoria, sem o nome do lugar. Nome só vai quando é de loja (reconhecida pela Pluggy, empresa que não é MEI ou compra com cartão) e, se tem jeito de nome de pessoa (firma individual), só com uma categoria de loja; boleto, depósito e outros textos da conta vão com um nome genérico ("Boleto pago", "Entrada").
 - A conversa fica só na memória do celular: fechar o app apaga. Os extratos também não ficam guardados no aparelho para uso sem internet.
 
@@ -202,7 +202,7 @@ Um Nuke só de finanças que lê os extratos dos seus bancos (conta e cartão) e
    npx supabase secrets set PLUGGY_CLIENT_ID=... PLUGGY_CLIENT_SECRET=...
    npx supabase secrets set FIN_DOC_HASH_KEY=$(openssl rand -hex 32)   # segredo dos hashes de CPF; não troque depois
    npx supabase secrets set ANTHROPIC_API_KEY=sk-ant-...   # se ainda não tiver
-   npx supabase secrets set FINANCE_MODEL=...              # opcional (padrão: claude-sonnet-5-5)
+   npx supabase secrets set FINANCE_MODEL=...              # opcional (padrão: claude-haiku-5-5)
 
    npx supabase db push
    npx supabase functions deploy finance
@@ -233,7 +233,7 @@ Um Nuke só de finanças que lê os extratos dos seus bancos (conta e cartão) e
 
 **Atualização.** Sem webhooks. Ao abrir o consultor, sincroniza se a última vez passou de 6 horas; "Atualizar" força (no máximo uma vez a cada 2 minutos por banco). Enquanto a Pluggy ainda não tem os dados do banco (MeuPluggy recém-autorizado), cada sincronização puxa 365 dias; depois, uma janela que começa uma semana antes do que já veio (no mínimo 60 dias, então ficar meses sem abrir o consultor não deixa buraco; a marca do que já veio só anda quando a sincronização termina inteira), que também tira o que sumiu da Pluggy (lançamento desfeito, previsto que virou outro; depois de 30 dias ele sai de vez da tabela). Conta que a Pluggy deixa de devolver (cartão trocado) sai de saldos e cartões; as compras dela continuam. Isso traz o que a Pluggy já tem: o MeuPluggy atualiza com o banco uma vez por dia e não dá para forçar, então o extrato do dia pode só aparecer no dia seguinte.
 
-**Custos e limite.** Cada mensagem manda para o Sonnet 5.5 o retrato (até uns 8 mil caracteres) e as últimas falas: cerca de US$ 0,02 por mensagem (US$ 2 por milhão de tokens de entrada e US$ 10 de saída). Limite próprio de 100 mensagens por mês (tipo `finance` no `use_ai`), separado das 300 do Nuke da casa e que só funciona com a liberação; no uso do mês da aba Família, a linha dele só aparece para quem tem o consultor. Mudar o número é como nos outros limites: migração nova trocando `ai_limit`. A Pluggy não cobra pelo MeuPluggy.
+**Custos e limite.** Cada mensagem manda para o Haiku 5.5 o retrato (até uns 8 mil caracteres) e as últimas falas: cerca de US$ 0,001 por mensagem (US$ 0,10 por milhão de tokens de entrada e US$ 0,50 de saída). Limite próprio de 100 mensagens por mês (tipo `finance` no `use_ai`), separado das 300 do Nuke da casa e que só funciona com a liberação; no uso do mês da aba Família, a linha dele só aparece para quem tem o consultor. Mudar o número é como nos outros limites: migração nova trocando `ai_limit`. A Pluggy não cobra pelo MeuPluggy.
 
 **Problemas conhecidos do MeuPluggy.**
 
