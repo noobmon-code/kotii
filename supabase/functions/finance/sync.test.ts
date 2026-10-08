@@ -299,7 +299,7 @@ Deno.test('primeira sincronização: 365 dias, contas e lançamentos da pessoa n
   await connect();
   assertEquals(await syncAll(deps(), false), { synced: 1, skipped: 0, errors: [] });
 
-  assert(pluggy.calls.includes('transactions p-conta 2025-10-07'));
+  assert(pluggy.calls.includes('transactions p-conta 2025-10-06'));
   const connection = [...store.connections.values()][0];
   assertEquals(
     [connection.status, connection.item_updated_at, connection.last_synced_at],
@@ -316,11 +316,14 @@ Deno.test('primeira sincronização: 365 dias, contas e lançamentos da pessoa n
   assertEquals([...store.transactions.values()].map((row) => row.updated_at), Array(3).fill('2026-10-07T12:00:00.000Z'));
 });
 
-Deno.test('depois, janela de 60 dias: o que sumiu da Pluggy vira apagado; fora da janela e na borda, fica; e volta se reaparecer', async () => {
+Deno.test('depois, janela de 60 dias: o que sumiu da Pluggy vira apagado, também no primeiro dia dela; antes dela, fica; e volta se reaparecer', async () => {
   const live = [
     pluggyTx('fica', '2026-10-05T15:00:00.000Z'),
     pluggyTx('some', '2026-10-04T15:00:00.000Z'),
+    // No próprio dia do dateFrom (só a data, e com hora em São Paulo): amanhã a
+    // janela anda um dia e eles ficariam para trás sem conferência.
     pluggyTx('borda', '2026-08-08T00:00:00.000Z'),
+    pluggyTx('no-dia', '2026-08-08T15:00:00.000Z'),
     pluggyTx('antigo', '2026-03-01T15:00:00.000Z'),
   ];
   const bank = nubank(live);
@@ -328,14 +331,16 @@ Deno.test('depois, janela de 60 dias: o que sumiu da Pluggy vira apagado; fora d
   await connect();
   await syncAll(deps(), false);
 
-  // Sete horas depois, a Pluggy já não traz "some"; "borda" e "antigo" ficam antes do dateFrom.
+  // Sete horas depois, a Pluggy só traz "fica". A busca começa um dia antes do dateFrom e a
+  // conferência no próprio dateFrom: "borda" e "no-dia" saem; "antigo", antes da janela, fica.
   bank.transactions['p-conta'] = [live[0]];
   clock.now = new Date('2026-10-07T19:00:00.000Z');
   assertEquals(await syncAll(deps(), false), { synced: 1, skipped: 0, errors: [] });
-  assert(pluggy.calls.includes('transactions p-conta 2026-08-08'));
+  assert(pluggy.calls.includes('transactions p-conta 2026-08-07'));
   assertEquals(store.transactions.get('some')?.deleted_at, '2026-10-07T19:00:00.000Z');
+  assertEquals(store.transactions.get('no-dia')?.deleted_at, '2026-10-07T19:00:00.000Z');
   assertEquals(store.transactions.get('fica')?.deleted_at, null);
-  assertEquals(store.transactions.get('borda')?.deleted_at, null);
+  assertEquals(store.transactions.get('borda')?.deleted_at, '2026-10-07T19:00:00.000Z');
   assertEquals(store.transactions.get('antigo')?.deleted_at, null);
 
   bank.transactions['p-conta'] = [live[0], live[1]];
@@ -479,7 +484,7 @@ Deno.test('conectar de novo o mesmo item: só troca o nome; sincroniza na janela
   const later = await addItem(deps(), { itemId: ITEM, label: 'Nubank PF' });
   assert(later.ok);
   assertEquals(later.sync, { synced: 1, skipped: 0, errors: [] });
-  assertEquals(pluggy.calls.filter((call) => call.startsWith('transactions p-conta')).at(-1), 'transactions p-conta 2026-08-08');
+  assertEquals(pluggy.calls.filter((call) => call.startsWith('transactions p-conta')).at(-1), 'transactions p-conta 2026-08-07');
 });
 
 Deno.test('item que a Pluggy ainda não preencheu (MeuPluggy recém-autorizado): não marca a hora e a próxima busca 365 dias', async () => {
@@ -503,12 +508,12 @@ Deno.test('item que a Pluggy ainda não preencheu (MeuPluggy recém-autorizado):
   clock.now = new Date('2026-10-07T12:10:00.000Z');
   await syncAll(deps(), true);
   assertEquals(pluggy.calls.filter((call) => call.startsWith('transactions p-conta')), [
-    'transactions p-conta 2025-10-07',
-    'transactions p-conta 2025-10-07',
+    'transactions p-conta 2025-10-06',
+    'transactions p-conta 2025-10-06',
   ]);
   clock.now = new Date('2026-10-07T12:15:00.000Z');
   await syncAll(deps(), true);
-  assertEquals(pluggy.calls.filter((call) => call.startsWith('transactions p-conta')).at(-1), 'transactions p-conta 2026-08-08');
+  assertEquals(pluggy.calls.filter((call) => call.startsWith('transactions p-conta')).at(-1), 'transactions p-conta 2026-08-07');
 });
 
 Deno.test('meses sem sincronizar: busca desde uma semana antes da última vez, sem buraco', async () => {
@@ -517,7 +522,7 @@ Deno.test('meses sem sincronizar: busca desde uma semana antes da última vez, s
   await syncAll(deps(), false);
   clock.now = new Date('2026-10-07T12:00:00.000Z');
   await syncAll(deps(), false);
-  assertEquals(pluggy.calls.filter((call) => call.startsWith('transactions p-conta')).at(-1), 'transactions p-conta 2026-06-24');
+  assertEquals(pluggy.calls.filter((call) => call.startsWith('transactions p-conta')).at(-1), 'transactions p-conta 2026-06-23');
 });
 
 Deno.test('banco parado que volta: se a 1ª sincronização falha no meio, a próxima ainda busca desde o banco parado', async () => {
@@ -531,7 +536,7 @@ Deno.test('banco parado que volta: se a 1ª sincronização falha no meio, a pr�
   const failing = fakePluggy({ [ITEM]: bank }, { transactions: { 'p-conta': new PluggyError('fora', 'unavailable', 502) } });
   const first = await syncAll(deps('user-1', 'casa-1', { pluggy: failing.client }), true);
   assertEquals(first.synced, 0);
-  assertEquals(failing.calls.filter((call) => call.startsWith('transactions p-conta')), ['transactions p-conta 2026-06-24']);
+  assertEquals(failing.calls.filter((call) => call.startsWith('transactions p-conta')), ['transactions p-conta 2026-06-23']);
   const afterFailure = store.connections.get(id)!;
   // A situação do banco já é a de agora; a marca de até onde buscamos, não.
   assertEquals([afterFailure.status, afterFailure.item_updated_at], ['UPDATED', '2026-07-01T09:00:00.000Z']);
@@ -539,7 +544,7 @@ Deno.test('banco parado que volta: se a 1ª sincronização falha no meio, a pr�
   clock.now = new Date('2026-10-07T12:05:00.000Z');
   const retry = fakePluggy({ [ITEM]: bank });
   assertEquals((await syncAll(deps('user-1', 'casa-1', { pluggy: retry.client }), true)).synced, 1);
-  assertEquals(retry.calls.filter((call) => call.startsWith('transactions p-conta')), ['transactions p-conta 2026-06-24']);
+  assertEquals(retry.calls.filter((call) => call.startsWith('transactions p-conta')), ['transactions p-conta 2026-06-23']);
   const done = store.connections.get(id)!;
   assertEquals([done.item_updated_at, done.last_synced_at], ['2026-10-07T09:00:00.000Z', '2026-10-07T12:05:00.000Z']);
 });

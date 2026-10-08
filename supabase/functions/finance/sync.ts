@@ -254,7 +254,11 @@ async function fetchAndStore(
   for (const account of accounts) {
     const accountId = accountIds.get(account.pluggy_account_id);
     if (!accountId) throw new Error(`account ${account.pluggy_account_id} was not saved`);
-    const transactions = await deps.pluggy.listTransactions(account.pluggy_account_id, { dateFrom });
+    // Um dia antes do dateFrom: o dia de São Paulo de um lançamento pode cair
+    // fora do dia que a Pluggy usa no filtro, e a conferência abaixo começa
+    // no próprio dateFrom (a janela anda um dia por vez: o que some na borda
+    // não pode ficar para trás).
+    const transactions = await deps.pluggy.listTransactions(account.pluggy_account_id, { dateFrom: addDays(dateFrom, -1) });
 
     // Por id: o mesmo lançamento duas vezes no lote derruba o upsert. Cada
     // linha leva updated_at = at (owner.now), a marca desta sincronização.
@@ -267,13 +271,12 @@ async function fetchAndStore(
     }
     for (const batch of chunks([...rows.values()], UPSERT_CHUNK)) await deps.db.upsertTransactions(batch);
 
-    // Só depois do extrato inteiro. Um dia de folga na borda: o dia de São
-    // Paulo de um lançamento pode cair antes do dateFrom que a Pluggy usou.
-    // Só o que foi gravado antes desta sincronização (updated_at < at): se uma
+    // Só depois do extrato inteiro, desde o dateFrom (a busca começou um dia
+    // antes, então tudo dali para a frente veio). Só o que foi gravado antes desta sincronização (updated_at < at): se uma
     // sincronização travou mais de 10 min e outra tomou a vez dela, a mais
     // velha não apaga o que a mais nova acabou de gravar; o que só a mais
     // velha viu, a mais nova ainda apaga.
-    const active = await deps.db.activeTransactionIds(accountId, addDays(dateFrom, 1), at);
+    const active = await deps.db.activeTransactionIds(accountId, dateFrom, at);
     const gone = active.filter((id) => !returned.has(id));
     if (gone.length) await deps.db.markDeleted(accountId, gone, at);
     await deps.db.purgeDeleted(accountId, purgeBefore);
