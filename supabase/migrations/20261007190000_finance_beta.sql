@@ -9,6 +9,10 @@
 -- moradora da casa):
 --   insert into public.beta_access (user_id, household_id, feature)
 --   values ('<id da pessoa>', '<id da casa>', 'finance');
+-- Tirar também (os bancos dela naquela casa saem junto, com contas e
+-- lançamentos):
+--   delete from public.beta_access
+--   where user_id = '<id da pessoa>' and household_id = '<id da casa>' and feature = 'finance';
 
 -- =============================================================================
 -- Liberação do beta
@@ -56,11 +60,17 @@ grant execute on function public.has_beta(text) to authenticated, service_role;
 -- =============================================================================
 
 -- Um item do MeuPluggy (um banco). O mesmo item não entra duas vezes, nem
--- por outra pessoa.
+-- por outra pessoa. Preso à liberação (beta_feature + foreign key para
+-- beta_access): tirar a liberação apaga os bancos da pessoa naquela casa, e
+-- as contas e os lançamentos vão junto, na mesma transação; sem ela, a pessoa
+-- não vê nem consegue desconectar pelo app, e o extrato não fica guardado sem
+-- uso (LGPD). Uma sincronização que ainda estava rodando não grava mais nada
+-- (foreign key, 23503).
 create table public.fin_connections (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null,
   household_id uuid not null,
+  beta_feature text not null default 'finance' check (beta_feature = 'finance'),
   label text not null check (length(trim(label)) between 1 and 40),
   pluggy_item_id text not null unique,
   -- Situação do item na Pluggy (UPDATED, LOGIN_ERROR, OUTDATED...).
@@ -69,10 +79,15 @@ create table public.fin_connections (
   -- Quando a Pluggy atualizou o item no banco (o MeuPluggy renova sozinho).
   item_updated_at timestamptz,
   last_synced_at timestamptz,
+  -- Sincronização em andamento (a hora em que começou): uma por banco de cada vez (fin_claim_sync).
+  sync_started_at timestamptz,
   created_at timestamptz not null default now(),
   unique (id, user_id, household_id),
-  foreign key (household_id, user_id) references public.household_members (household_id, user_id) on delete cascade
+  foreign key (household_id, user_id) references public.household_members (household_id, user_id) on delete cascade,
+  foreign key (user_id, household_id, beta_feature)
+    references public.beta_access (user_id, household_id, feature) on delete cascade
 );
+-- Também atende o cascade da liberação (user_id, household_id).
 create index fin_connections_member_idx on public.fin_connections (household_id, user_id);
 
 create table public.fin_accounts (
@@ -204,28 +219,33 @@ $$;
 revoke execute on function public.fin_remove_connection(uuid) from public, anon;
 grant execute on function public.fin_remove_connection(uuid) to authenticated;
 
--- Tirar a liberação apaga os bancos da pessoa naquela casa (contas e
--- lançamentos vão junto): sem ela, a pessoa não vê nem consegue desconectar
--- pelo app, e o extrato não fica guardado sem uso (LGPD).
-create function public.fin_forget_revoked_beta()
-returns trigger
-language plpgsql
-security definer
+-- A vez de sincronizar um banco (função finance, chave de serviço). Duas
+-- sincronizações do mesmo banco ao mesmo tempo (o consultor aberto de novo
+-- enquanto a primeira roda, outro aparelho) gravariam as contas e a hora fora
+-- de ordem e esconderiam os saldos até a próxima. Pega a vez se ninguém está
+-- sincronizando ou se quem pegou começou há mais de 10 min (a função caiu no
+-- meio; uma chamada dura no máximo 400 s). Quem pega devolve no fim
+-- (sync_started_at = null, só se a vez ainda é dela). p_at é a hora da
+-- sincronização, a mesma que ela grava nas linhas.
+create function public.fin_claim_sync(p_connection uuid, p_user uuid, p_household uuid, p_at timestamptz)
+returns boolean
+language sql
 set search_path = ''
 as $$
-begin
-  if old.feature = 'finance' then
-    delete from public.fin_connections c where c.user_id = old.user_id and c.household_id = old.household_id;
-  end if;
-  return old;
-end;
+  with claimed as (
+    update public.fin_connections c
+       set sync_started_at = p_at
+     where c.id = p_connection
+       and c.user_id = p_user
+       and c.household_id = p_household
+       and (c.sync_started_at is null or c.sync_started_at < p_at - interval '10 minutes')
+    returning 1
+  )
+  select exists (select 1 from claimed);
 $$;
 
-revoke execute on function public.fin_forget_revoked_beta() from public, anon, authenticated;
-
-create trigger beta_access_forget_finance
-  after delete on public.beta_access
-  for each row execute function public.fin_forget_revoked_beta();
+revoke execute on function public.fin_claim_sync(uuid, uuid, uuid, timestamptz) from public, anon, authenticated;
+grant execute on function public.fin_claim_sync(uuid, uuid, uuid, timestamptz) to service_role;
 
 -- =============================================================================
 -- Limite de IA: conversa com o consultor (só com a liberação)

@@ -69,7 +69,8 @@ function signOutRequestedRecently(): boolean {
   }
 }
 
-async function signOutHere(sessionEnded: boolean): Promise<void> {
+/** `beforeSignOut`: o que ainda precisa do token, logo antes de ele sair do aparelho. */
+async function signOutHere(sessionEnded: boolean, beforeSignOut?: () => Promise<void>): Promise<void> {
   setEnded(sessionEnded);
   // Pelo botão, as outras abas também não dizem que a sessão terminou; no
   // 401 (sessionEnded) dizem, e com razão.
@@ -77,6 +78,7 @@ async function signOutHere(sessionEnded: boolean): Promise<void> {
   // Antes, os lembretes daqui saem (no navegador, também a inscrição dos
   // avisos), para não tocar o remédio de quem saiu.
   await disableAllReminders().catch(() => undefined);
+  await beforeSignOut?.().catch(() => undefined);
   signingOut += 1;
   try {
     const { error } = await supabase.auth.signOut({ scope: 'local' });
@@ -161,4 +163,7 @@ export async function checkSession(): Promise<SessionCheck> {
  * aparelho (a tela de entrar aparece). `beforeEnd` roda antes de sair, com
  * o token ainda valendo (apagar o que a chamada enviou). Devolve true quando saiu.
  */
-export const endSessionIfGone = createSessionGuard({ check: checkSession, end: () => signOutHere(true) });
+export const endSessionIfGone = createSessionGuard({
+  check: checkSession,
+  end: (beforeSignOut) => signOutHere(true, beforeSignOut),
+});

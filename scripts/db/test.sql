@@ -2283,7 +2283,7 @@ reset client_min_messages;
 -- ---------------------------------------------------------------------------
 \echo '• consultor financeiro (beta): liberação, dados do banco privados e limite da IA'
 -- Kátia tem a liberação na Casa da Kátia (e outra casa sem ela); Léo mora com
--- ela sem liberação; Mara tem a liberação na casa dela.
+-- ela e perde a liberação no meio dos testes; Mara tem a liberação na casa dela.
 \set user_k '00000000-0000-0000-0000-000000000017'
 \set user_l '00000000-0000-0000-0000-000000000018'
 \set user_m '00000000-0000-0000-0000-000000000019'
@@ -2306,6 +2306,7 @@ select set_config('test.hh_m', :'hh_m', false) \gset
 -- Liberação manual (editor SQL), só para moradora da casa.
 insert into public.beta_access (user_id, household_id, feature) values
   (:'user_k', :'hh_k', 'finance'),
+  (:'user_l', :'hh_k', 'finance'),
   (:'user_m', :'hh_m', 'finance');
 do $$
 begin
@@ -2328,6 +2329,7 @@ set role service_role;
 do $$
 declare
   hk uuid := current_setting('test.hh_k')::uuid;
+  hk2 uuid := current_setting('test.hh_k2')::uuid;
   hm uuid := current_setting('test.hh_m')::uuid;
   k uuid := '00000000-0000-0000-0000-000000000017';
   l uuid := '00000000-0000-0000-0000-000000000018';
@@ -2361,6 +2363,18 @@ begin
     insert into public.fin_connections (user_id, household_id, label, pluggy_item_id) values (m, hk, 'Intrusa', 'item-x');
     raise exception 'FAIL: connection for someone outside the household';
   exception when foreign_key_violation then null;
+  end;
+  -- E só com a liberação naquela casa: nem a chave de serviço grava banco sem ela.
+  begin
+    insert into public.fin_connections (user_id, household_id, label, pluggy_item_id) values (k, hk2, 'Sem liberação', 'item-k2');
+    raise exception 'FAIL: connection without the beta grant';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    insert into public.fin_connections (user_id, household_id, beta_feature, label, pluggy_item_id)
+    values (k, hk, 'outra', 'Outra', 'item-k3');
+    raise exception 'FAIL: connection tied to another feature';
+  exception when check_violation then null;
   end;
   begin
     insert into public.fin_connections (user_id, household_id, label, pluggy_item_id) values (m, hm, 'Nubank', 'item-k-nubank');
@@ -2418,6 +2432,23 @@ begin
     raise exception 'FAIL: stored a CPF in counterparty_cnpj';
   exception when check_violation then null;
   end;
+
+  -- Uma sincronização por banco de cada vez (fin_claim_sync, pela função finance).
+  assert public.fin_claim_sync('00000000-0000-0000-0000-0000000000c1', k, hk, '2026-10-07 12:00:00+00'), 'the first sync takes its turn';
+  assert not public.fin_claim_sync('00000000-0000-0000-0000-0000000000c1', k, hk, '2026-10-07 12:09:59+00'), 'a second one while it runs skips the bank';
+  assert public.fin_claim_sync('00000000-0000-0000-0000-0000000000c2', k, hk, '2026-10-07 12:00:30+00'), 'another bank has its own turn';
+  assert not public.fin_claim_sync('00000000-0000-0000-0000-0000000000c1', l, hk, '2026-10-07 13:00:00+00'), 'only for the owner';
+  assert not public.fin_claim_sync('00000000-0000-0000-0000-0000000000c1', k, hk2, '2026-10-07 13:00:00+00'), 'only in the connection''s household';
+  assert public.fin_claim_sync('00000000-0000-0000-0000-0000000000c1', k, hk, '2026-10-07 12:10:01+00'), 'a turn stuck for more than 10 min is taken over';
+  assert (select sync_started_at from public.fin_connections where id = '00000000-0000-0000-0000-0000000000c1') = '2026-10-07 12:10:01+00',
+    'the turn is now the newer sync''s';
+  -- Devolver a vez (releaseSync, na função) só vale para a sincronização que está com ela.
+  update public.fin_connections set sync_started_at = null where id = '00000000-0000-0000-0000-0000000000c1' and sync_started_at = '2026-10-07 12:00:00+00';
+  assert not found, 'the stuck sync cannot release the newer one''s turn';
+  update public.fin_connections set sync_started_at = null where id = '00000000-0000-0000-0000-0000000000c1' and sync_started_at = '2026-10-07 12:10:01+00';
+  assert found, 'the newer sync releases its turn';
+  assert public.fin_claim_sync('00000000-0000-0000-0000-0000000000c1', k, hk, '2026-10-07 12:10:02+00'), 'free again after the release';
+  update public.fin_connections set sync_started_at = null where id in ('00000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-0000000000c2');
 end $$;
 
 -- Anônimo: nada.
@@ -2437,6 +2468,11 @@ begin
   begin
     perform public.fin_remove_connection('00000000-0000-0000-0000-0000000000c1');
     raise exception 'FAIL: anon removed a connection';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.fin_claim_sync('00000000-0000-0000-0000-0000000000c1', gen_random_uuid(), gen_random_uuid(), now());
+    raise exception 'FAIL: anon claimed a sync';
   exception when insufficient_privilege then null;
   end;
 end $$;
@@ -2488,6 +2524,11 @@ begin
     raise exception 'FAIL: removed a connection of another household';
   exception when no_data_found then null;
   end;
+  begin
+    perform public.fin_claim_sync('00000000-0000-0000-0000-0000000000c1', auth.uid(), public.current_household_id(), now());
+    raise exception 'FAIL: the app claimed a sync';
+  exception when insufficient_privilege then null;
+  end;
 
   select * into r from public.use_ai('finance');
   assert r.allowed and r.used = 1 and r.lim = 100, 'the finance chat counts on its own quota';
@@ -2515,14 +2556,38 @@ begin
   assert not exists (select 1 from public.ai_usage_summary() where kind = 'finance'), 'no finance row without the beta';
 end $$;
 
--- Léo mora na mesma casa, sem liberação: não vê nada, nem o que seria dele.
+-- Tirar a liberação do Léo (editor SQL) apaga na hora os bancos dele naquela
+-- casa, com contas e lançamentos; os da Kátia, na mesma casa, ficam. Uma
+-- sincronização dele que ainda rodava não grava mais nada.
+set role service_role;
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+  l uuid := '00000000-0000-0000-0000-000000000018';
+begin
+  delete from public.beta_access where user_id = l and household_id = hk and feature = 'finance';
+  assert not exists (select 1 from public.fin_connections where pluggy_item_id = 'item-l'), 'revoking removed L''s bank';
+  assert not exists (select 1 from public.fin_accounts where pluggy_account_id = 'acc-l'), 'and its account';
+  assert not exists (select 1 from public.fin_transactions where pluggy_transaction_id = 'tx-l-1'), 'and its transactions';
+  assert (select array_agg(pluggy_item_id order by pluggy_item_id) from public.fin_connections where household_id = hk)
+    = array['item-k-inter', 'item-k-nubank'], 'K keeps her banks in the same household';
+  assert (select count(*) from public.fin_transactions where household_id = hk) = 3, 'and her transactions';
+  begin
+    insert into public.fin_connections (user_id, household_id, label, pluggy_item_id) values (l, hk, 'Banco do Léo', 'item-l');
+    raise exception 'FAIL: connection saved after the grant was revoked';
+  exception when foreign_key_violation then null;
+  end;
+end $$;
+set role authenticated;
+
+-- Léo mora na mesma casa, agora sem liberação: não vê nada.
 select set_config('request.jwt.claim.sub', :'user_l', false) \gset
 do $$
 begin
   assert public.current_household_id() = current_setting('test.hh_k')::uuid, 'L lives with K';
   assert not public.has_beta('finance'), 'L has no beta';
   assert (select count(*) from public.beta_access) = 0, 'L does not see K''s grant';
-  assert (select count(*) from public.fin_connections) = 0, 'L sees no bank, not even his own';
+  assert (select count(*) from public.fin_connections) = 0, 'L sees no bank';
   assert (select count(*) from public.fin_accounts) = 0, 'L sees no account';
   assert (select count(*) from public.fin_transactions) = 0, 'L sees no transaction';
   begin
@@ -2577,12 +2642,48 @@ begin
   end;
 end $$;
 
--- Sair da casa leva junto a liberação e os dados do banco daquela casa.
+-- Léo ganha a liberação de novo e conecta outro banco (chave de serviço).
+set role service_role;
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+  l uuid := '00000000-0000-0000-0000-000000000018';
+begin
+  insert into public.beta_access (user_id, household_id, feature) values (l, hk, 'finance');
+  insert into public.fin_connections (id, user_id, household_id, label, pluggy_item_id, status)
+  values ('00000000-0000-0000-0000-0000000000c5', l, hk, 'Banco do Léo', 'item-l2', 'UPDATED');
+  insert into public.fin_accounts (id, connection_id, user_id, household_id, pluggy_account_id, type)
+  values ('00000000-0000-0000-0000-0000000000a5', '00000000-0000-0000-0000-0000000000c5', l, hk, 'acc-l2', 'BANK');
+  insert into public.fin_transactions
+    (account_id, user_id, household_id, pluggy_transaction_id, status, direction, amount, occurred_on, description)
+  values ('00000000-0000-0000-0000-0000000000a5', l, hk, 'tx-l-2', 'POSTED', 'DEBIT', 20, '2026-10-04', 'Padaria');
+end $$;
+set role authenticated;
+
+-- Sair da casa leva junto a liberação e os dados do banco daquela casa; a casa
+-- continua, com os da Kátia.
 select set_config('request.jwt.claim.sub', :'user_l', false) \gset
 do $$
 begin
+  assert public.has_beta('finance'), 'L has the beta again';
+  assert (select array_agg(pluggy_item_id) from public.fin_connections) = array['item-l2'], 'L sees his new bank';
   assert (public.leave_household(current_setting('test.hh_k')::uuid))->>'status' = 'left', 'L left';
 end $$;
+reset role;
+do $$
+declare
+  l uuid := '00000000-0000-0000-0000-000000000018';
+begin
+  assert not exists (select 1 from public.beta_access where user_id = l), 'leaving took L''s grant';
+  assert not exists (select 1 from public.fin_connections where pluggy_item_id = 'item-l2'), 'and his bank';
+  assert not exists (select 1 from public.fin_accounts where pluggy_account_id = 'acc-l2'), 'and its account';
+  assert not exists (select 1 from public.fin_transactions where pluggy_transaction_id = 'tx-l-2'), 'and its transactions';
+  assert exists (select 1 from public.fin_connections where pluggy_item_id = 'item-k-nubank'), 'K keeps her bank';
+  assert exists (select 1 from public.fin_accounts where pluggy_account_id = 'acc-k-nubank'), 'and her account';
+  assert (select count(*) from public.fin_transactions where pluggy_transaction_id like 'tx-k-%') = 2, 'and her transactions';
+  assert exists (select 1 from public.beta_access where user_id = '00000000-0000-0000-0000-000000000017'), 'and her grant';
+end $$;
+set role authenticated;
 select set_config('request.jwt.claim.sub', :'user_k', false) \gset
 do $$
 begin
@@ -2591,9 +2692,9 @@ end $$;
 reset role;
 do $$
 begin
-  assert not exists (select 1 from public.fin_connections where pluggy_item_id in ('item-l', 'item-k-nubank')), 'connections left with the household';
-  assert not exists (select 1 from public.fin_accounts where pluggy_account_id in ('acc-l', 'acc-k-nubank', 'acc-k-inter')), 'accounts too';
-  assert not exists (select 1 from public.fin_transactions where pluggy_transaction_id like 'tx-k-%' or pluggy_transaction_id like 'tx-l-%'), 'transactions too';
+  assert not exists (select 1 from public.fin_connections where pluggy_item_id = 'item-k-nubank'), 'connections left with the household';
+  assert not exists (select 1 from public.fin_accounts where pluggy_account_id in ('acc-k-nubank', 'acc-k-inter')), 'accounts too';
+  assert not exists (select 1 from public.fin_transactions where pluggy_transaction_id like 'tx-k-%'), 'transactions too';
   assert (select array_agg(user_id) from public.beta_access) = array['00000000-0000-0000-0000-000000000019'::uuid], 'only M keeps a grant';
   assert exists (select 1 from public.fin_transactions where pluggy_transaction_id = 'tx-m-1'), 'M keeps her data';
 end $$;
@@ -2602,10 +2703,17 @@ end $$;
 set role service_role;
 do $$
 begin
+  assert exists (select 1 from public.fin_connections where pluggy_item_id = 'item-m'), 'M still has her bank';
   delete from public.beta_access where user_id = '00000000-0000-0000-0000-000000000019' and feature = 'finance';
   assert not exists (select 1 from public.fin_connections where pluggy_item_id = 'item-m'), 'revoking removed M''s bank';
   assert not exists (select 1 from public.fin_accounts where pluggy_account_id = 'acc-m'), 'and its account';
   assert not exists (select 1 from public.fin_transactions where pluggy_transaction_id = 'tx-m-1'), 'and its transactions';
+  begin
+    insert into public.fin_connections (user_id, household_id, label, pluggy_item_id)
+    values ('00000000-0000-0000-0000-000000000019', current_setting('test.hh_m')::uuid, 'Santander', 'item-m');
+    raise exception 'FAIL: M''s connection saved after the grant was revoked';
+  exception when foreign_key_violation then null;
+  end;
 end $$;
 reset role;
 

@@ -134,7 +134,8 @@ function Consultor() {
 
   const data = finance.status === 'ready' ? finance.data : null;
   const view = useMemo(() => (data ? buildView(data, month, today) : null), [data, month, today]);
-  // O servidor pula banco atualizado há menos de 2 min: sem aviso, o toque pareceria não ter feito nada.
+  // O servidor pula banco atualizado há menos de 2 min, ou que outra sincronização (outro aparelho) está
+  // atualizando: sem aviso, o toque pareceria não ter feito nada.
   const recentlySynced =
     !sync.isPending && sync.variables?.force === true && sync.data && sync.data.synced === 0 && sync.data.skipped > 0;
 
@@ -147,7 +148,7 @@ function Consultor() {
         onRefresh={() => refresh(false)}
       />
       {recentlySynced ? (
-        <Text variant="small">Os bancos foram atualizados há pouco. Tente de novo em 2 minutos.</Text>
+        <Text variant="small">Os bancos foram atualizados há pouco ou ainda estão atualizando. Tente de novo em 2 minutos.</Text>
       ) : null}
 
       {sync.isError ? (

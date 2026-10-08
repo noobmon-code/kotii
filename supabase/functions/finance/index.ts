@@ -1,6 +1,7 @@
 // POST { action: 'sync', force?: boolean } -> { synced, skipped, errors: [{ connectionId, label, message }] }
 // POST { action: 'add_item', itemId, label } -> { connectionId, sync: { synced, skipped, errors } }
 //                                            | 404 (item não existe na Pluggy) | 409 (já é de outra pessoa ou casa)
+//                                            | 403 (sem a liberação, também se tirada no meio do pedido)
 //
 // Consultor financeiro (beta): traz os extratos dos bancos (itens do
 // MeuPluggy) para as tabelas privadas fin_*. Só para quem tem a liberação
@@ -17,7 +18,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { publishableKey, secretKey } from '../_shared/apiKeys.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
 import { createPluggyClient } from '../_shared/pluggy.ts';
-import { addItem, errorForLog, type FinanceDb, parseFinanceRequest, type SyncDeps, syncAll } from './sync.ts';
+import { addItem, errorForLog, type FinanceDb, NOT_ALLOWED, parseFinanceRequest, type SyncDeps, syncAll } from './sync.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -66,6 +67,8 @@ function financeDb(admin: SupabaseClient, userId: string, householdId: string): 
         .select('id')
         .single();
       if (error?.code === '23505') return 'conflict';
+      // A linha depende da liberação (foreign key para beta_access): tirada depois do has_beta do começo.
+      if (error?.code === '23503') return 'not_allowed';
       if (error) throw error;
       return data;
     },
@@ -76,6 +79,27 @@ function financeDb(admin: SupabaseClient, userId: string, householdId: string): 
         .eq('id', id)
         .eq('user_id', userId)
         .eq('household_id', householdId);
+      if (error) throw error;
+    },
+    async claimSync(id, at) {
+      const { data, error } = await admin.rpc('fin_claim_sync', {
+        p_connection: id,
+        p_user: userId,
+        p_household: householdId,
+        p_at: at,
+      });
+      if (error) throw error;
+      return data === true;
+    },
+    async releaseSync(id, at, done) {
+      const { error } = await admin
+        .from('fin_connections')
+        .update({ ...done, sync_started_at: null })
+        .eq('id', id)
+        .eq('user_id', userId)
+        .eq('household_id', householdId)
+        // Só se a vez ainda é desta sincronização (outra pode ter tomado a vez de uma que travou).
+        .eq('sync_started_at', at);
       if (error) throw error;
     },
     async upsertAccounts(rows) {
@@ -90,7 +114,7 @@ function financeDb(admin: SupabaseClient, userId: string, householdId: string): 
       const { error } = await admin.from('fin_transactions').upsert(rows, { onConflict: 'pluggy_transaction_id' });
       if (error) throw error;
     },
-    async activeTransactionIds(accountId, fromDate) {
+    async activeTransactionIds(accountId, fromDate, runAt) {
       const ids: string[] = [];
       for (let from = 0; ; from += PAGE) {
         const { data, error } = await admin
@@ -101,6 +125,7 @@ function financeDb(admin: SupabaseClient, userId: string, householdId: string): 
           .eq('household_id', householdId)
           .is('deleted_at', null)
           .gte('occurred_on', fromDate)
+          .lt('updated_at', runAt)
           .order('pluggy_transaction_id')
           .range(from, from + PAGE - 1);
         if (error) throw error;
@@ -117,6 +142,8 @@ function financeDb(admin: SupabaseClient, userId: string, householdId: string): 
           .eq('user_id', userId)
           .eq('household_id', householdId)
           .is('deleted_at', null)
+          // No mesmo UPDATE: o que uma sincronização mais nova regravou depois da leitura fica vivo.
+          .lt('updated_at', at)
           .in('pluggy_transaction_id', pluggyIds.slice(i, i + MARK_CHUNK));
         if (error) throw error;
       }
@@ -147,13 +174,15 @@ Deno.serve(async (req) => {
   const user = userData.user;
   if (!user) return json({ error: 'Entre na sua conta para usar o consultor financeiro.' }, 401);
 
-  // Liberação e casa vêm do banco, na casa aberta no aparelho (x-household-id).
+  // Liberação e casa vêm do banco, na casa aberta no aparelho (x-household-id). Tirada no meio do pedido,
+  // o banco garante o resto: fin_connections depende dela (foreign key com on delete cascade), então os
+  // bancos somem com contas e lançamentos e gravar um banco novo falha (23503 -> 403 em insertConnection).
   const { data: allowed, error: betaError } = await db.rpc('has_beta', { p_feature: 'finance' });
   if (betaError) {
     console.error('has_beta failed', betaError);
     return json({ error: 'Não consegui conferir a liberação agora. Tente de novo.' }, 503);
   }
-  if (allowed !== true) return json({ error: 'O consultor financeiro não está liberado para você nesta casa.' }, 403);
+  if (allowed !== true) return json({ error: NOT_ALLOWED }, 403);
 
   const clientId = Deno.env.get('PLUGGY_CLIENT_ID')?.trim();
   const clientSecret = Deno.env.get('PLUGGY_CLIENT_SECRET')?.trim();

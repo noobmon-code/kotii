@@ -75,8 +75,11 @@ export type SessionCheck = 'valid' | 'ended' | 'unknown';
 export interface SessionGuardDeps {
   /** Renova a sessão com o Supabase. */
   check(): Promise<SessionCheck>;
-  /** Sai da conta só neste aparelho. */
-  end(): Promise<void>;
+  /**
+   * Sai da conta só neste aparelho. `beforeSignOut` roda logo antes de o
+   * token sair do aparelho: as limpezas que chegaram durante a saída.
+   */
+  end(beforeSignOut: () => Promise<void>): Promise<void>;
 }
 
 /**
@@ -88,26 +91,38 @@ export interface SessionGuardDeps {
  * `beforeEnd` é a limpeza de quem chamou (as fotos enviadas para a função):
  * só roda se a sessão acabou, antes de sair, porque depois não há token
  * para apagar nada. As de todas as chamadas que esperavam a mesma
- * conferência rodam.
+ * conferência rodam, também as que chegam enquanto a saída desliga os
+ * lembretes: a saída as roda logo antes de apagar o token. Um 401 que só
+ * chega depois disso já não tem como apagar nada.
  */
 export function createSessionGuard({ check, end }: SessionGuardDeps): (beforeEnd?: () => Promise<unknown>) => Promise<boolean> {
   let running: Promise<boolean> | null = null;
   let cleanups: (() => Promise<unknown>)[] = [];
+  let closed = false;
+  // Inclui as que chegarem enquanto as primeiras rodam. `close`: fecha a
+  // fila no mesmo passo em que ela fica vazia, sem brecha para uma nova.
+  const drain = async (close: boolean) => {
+    while (cleanups.length) {
+      const batch = cleanups.splice(0);
+      await Promise.all(batch.map((cleanup) => cleanup().catch(() => undefined)));
+    }
+    if (close) closed = true;
+  };
   return (beforeEnd) => {
-    if (beforeEnd) cleanups.push(beforeEnd);
+    if (beforeEnd && !closed) cleanups.push(beforeEnd);
     running ??= (async () => {
       try {
         if ((await check().catch((): SessionCheck => 'unknown')) !== 'ended') return false;
-        // Inclui as que chegarem enquanto as primeiras rodam.
-        while (cleanups.length) {
-          const batch = cleanups.splice(0);
-          await Promise.all(batch.map((cleanup) => cleanup().catch(() => undefined)));
-        }
-        await end().catch(() => undefined);
+        await drain(false);
+        // A saída roda as que chegarem nela logo antes de o token sair do aparelho.
+        await end(() => drain(true)).catch(() => undefined);
+        // A saída falhou antes de rodar as que chegaram nela: o token ainda está aqui.
+        if (!closed) await drain(true);
         return true;
       } finally {
         // Sessão válida (ou sem resposta): quem chamou cuida do que enviou.
         cleanups = [];
+        closed = false;
         running = null;
       }
     })();

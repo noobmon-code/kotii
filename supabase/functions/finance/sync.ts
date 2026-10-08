@@ -4,8 +4,9 @@
 // o mesmo Item ID). Enquanto a Pluggy não tem os dados do banco, puxa 365
 // dias; depois, uma janela que começa uma semana antes do que já veio (no
 // mínimo 60 dias), que também marca como apagado o que sumiu da Pluggy
-// (lançamento desfeito, ou previsto que virou outro). Erro em um banco não
-// para os outros. Testado em sync.test.ts com uma Pluggy e um banco falsos.
+// (lançamento desfeito, ou previsto que virou outro). Uma sincronização por
+// banco de cada vez (fin_claim_sync); a outra pula o banco. Erro em um banco
+// não para os outros. Testado em sync.test.ts com uma Pluggy e um banco falsos.
 
 import { type PluggyClient, PluggyError, type PluggyItem } from '../_shared/pluggy.ts';
 import { addDays, type FinAccountRow, type FinTransactionRow, mapAccount, mapTransaction, saoPauloDate } from './map.ts';
@@ -42,7 +43,13 @@ export interface ItemState {
   item_updated_at: string | null;
 }
 
-export type ConnectionPatch = Partial<ItemState> & { label?: string; last_synced_at?: string };
+export type ConnectionPatch = Partial<ItemState> & { label?: string };
+
+/** O que uma sincronização inteira grava no fim: até quando já buscamos. */
+export interface SyncDone {
+  last_synced_at: string;
+  item_updated_at: string | null;
+}
 
 /**
  * O banco visto pela função, com a chave de serviço. Tudo, menos
@@ -52,13 +59,37 @@ export interface FinanceDb {
   listConnections(): Promise<FinConnectionRef[]>;
   /** Procura em todas as casas: o mesmo item não entra duas vezes. */
   findConnectionByItem(itemId: string): Promise<FinConnectionOwnerRef | null>;
-  /** 'conflict' quando outro pedido gravou o mesmo item antes (unique). */
-  insertConnection(row: ItemState & { label: string; pluggy_item_id: string }): Promise<{ id: string } | 'conflict'>;
+  /**
+   * 'conflict' quando outro pedido gravou o mesmo item antes (unique);
+   * 'not_allowed' quando a liberação (beta_access) já não existe (foreign key).
+   */
+  insertConnection(row: ItemState & { label: string; pluggy_item_id: string }): Promise<{ id: string } | 'conflict' | 'not_allowed'>;
   updateConnection(id: string, patch: ConnectionPatch): Promise<void>;
+  /**
+   * Pega a vez de sincronizar o banco (sync_started_at = at), numa instrução
+   * só: false quando outra sincronização dele está rodando (começou há menos
+   * de 10 min).
+   */
+  claimSync(id: string, at: string): Promise<boolean>;
+  /**
+   * Devolve a vez (sync_started_at = null) e grava `done`, só se a vez ainda é
+   * desta sincronização (sync_started_at = at): a que travou e perdeu a vez
+   * não grava hora velha por cima da mais nova.
+   */
+  releaseSync(id: string, at: string, done?: SyncDone): Promise<void>;
   upsertAccounts(rows: FinAccountRow[]): Promise<{ id: string; pluggy_account_id: string }[]>;
+  /** Grava cada linha como veio, com o updated_at dela (a hora da sincronização que a trouxe). */
   upsertTransactions(rows: FinTransactionRow[]): Promise<void>;
-  /** Ids da Pluggy dos lançamentos não apagados da conta com occurred_on >= fromDate. */
-  activeTransactionIds(accountId: string, fromDate: string): Promise<string[]>;
+  /**
+   * Ids da Pluggy dos lançamentos não apagados da conta com occurred_on >=
+   * fromDate gravados antes desta sincronização (updated_at < runAt).
+   */
+  activeTransactionIds(accountId: string, fromDate: string, runAt: string): Promise<string[]>;
+  /**
+   * Marca como apagados (deleted_at e updated_at = at) só os que ainda têm
+   * updated_at < at, na mesma instrução: o que outra sincronização mais nova
+   * regravou entre a leitura e esta marca fica vivo.
+   */
   markDeleted(accountId: string, pluggyIds: string[], at: string): Promise<void>;
   /** Apaga de vez os lançamentos da conta marcados como apagados antes de `before`. */
   purgeDeleted(accountId: string, before: string): Promise<void>;
@@ -164,17 +195,43 @@ function chunks<T>(rows: T[], size: number): T[][] {
 }
 
 /**
- * Busca e grava um banco. Erros sobem (quem chama junta por banco). Só marca
- * last_synced_at quando a Pluggy devolveu alguma conta: item recém-criado,
+ * Busca e grava um banco. 'busy' quando outra sincronização dele está
+ * rodando (nada é buscado nem gravado). Erros sobem (quem chama junta por
+ * banco), depois de devolver a vez.
+ */
+export async function syncConnection(connection: FinConnectionRef, deps: SyncDeps, knownItem?: PluggyItem): Promise<'synced' | 'busy'> {
+  const at = deps.now().toISOString();
+  if (!(await deps.db.claimSync(connection.id, at))) return 'busy';
+  let done: SyncDone | undefined;
+  try {
+    done = await fetchAndStore(connection, deps, at, knownItem);
+  } catch (err) {
+    // A vez volta mesmo com erro: o próximo "Atualizar" não espera os 10 min.
+    await deps.db.releaseSync(connection.id, at).catch((releaseErr) => {
+      console.error('finance release failed', connection.id, errorForLog(releaseErr));
+    });
+    throw err;
+  }
+  await deps.db.releaseSync(connection.id, at, done);
+  return 'synced';
+}
+
+/**
+ * O trabalho de syncConnection, com a vez já pega. Só devolve o que marcar
+ * (last_synced_at) quando a Pluggy devolveu alguma conta: item recém-criado,
  * ainda vazio, não conta como sincronizado (a próxima vez busca de novo).
  * A situação do banco (status, erro) é gravada na hora; item_updated_at, que
  * diz até quando já buscamos, só junto com last_synced_at, no fim de uma
  * sincronização inteira: se ela falha no meio, a próxima ainda volta até o
  * banco parado (sem buraco).
  */
-export async function syncConnection(connection: FinConnectionRef, deps: SyncDeps, knownItem?: PluggyItem): Promise<void> {
-  const now = deps.now();
-  const at = now.toISOString();
+async function fetchAndStore(
+  connection: FinConnectionRef,
+  deps: SyncDeps,
+  at: string,
+  knownItem?: PluggyItem,
+): Promise<SyncDone | undefined> {
+  const now = new Date(at);
   const owner = { userId: deps.userId, householdId: deps.householdId, now: at, hashKey: deps.hashKey };
 
   const item = knownItem ?? (await deps.pluggy.getItem(connection.pluggy_item_id));
@@ -197,28 +254,36 @@ export async function syncConnection(connection: FinConnectionRef, deps: SyncDep
   for (const account of accounts) {
     const accountId = accountIds.get(account.pluggy_account_id);
     if (!accountId) throw new Error(`account ${account.pluggy_account_id} was not saved`);
-    const transactions = await deps.pluggy.listTransactions(account.pluggy_account_id, { dateFrom });
+    // Um dia antes do dateFrom: o dia de São Paulo de um lançamento pode cair
+    // fora do dia que a Pluggy usa no filtro, e a conferência abaixo começa
+    // no próprio dateFrom (a janela anda um dia por vez: o que some na borda
+    // não pode ficar para trás).
+    const transactions = await deps.pluggy.listTransactions(account.pluggy_account_id, { dateFrom: addDays(dateFrom, -1) });
 
-    // Por id: o mesmo lançamento duas vezes no lote derruba o upsert.
+    // Por id: o mesmo lançamento duas vezes no lote derruba o upsert. Cada
+    // linha leva updated_at = at (owner.now), a marca desta sincronização.
     const rows = new Map<string, FinTransactionRow>();
     const returned = new Set<string>();
     for (const tx of transactions) {
       if (typeof tx?.id === 'string') returned.add(tx.id);
       const row = await mapTransaction(tx, { ...owner, accountId, accountCurrency: account.currency_code });
-      if (row) rows.set(row.pluggy_transaction_id, row);
+      if (row) rows.set(row.pluggy_transaction_id, { ...row, updated_at: at });
     }
     for (const batch of chunks([...rows.values()], UPSERT_CHUNK)) await deps.db.upsertTransactions(batch);
 
-    // Só depois do extrato inteiro. Um dia de folga na borda: o dia de São
-    // Paulo de um lançamento pode cair antes do dateFrom que a Pluggy usou.
-    const active = await deps.db.activeTransactionIds(accountId, addDays(dateFrom, 1));
+    // Só depois do extrato inteiro, desde o dateFrom (a busca começou um dia
+    // antes, então tudo dali para a frente veio). Só o que foi gravado antes desta sincronização (updated_at < at): se uma
+    // sincronização travou mais de 10 min e outra tomou a vez dela, a mais
+    // velha não apaga o que a mais nova acabou de gravar; o que só a mais
+    // velha viu, a mais nova ainda apaga.
+    const active = await deps.db.activeTransactionIds(accountId, dateFrom, at);
     const gone = active.filter((id) => !returned.has(id));
     if (gone.length) await deps.db.markDeleted(accountId, gone, at);
     await deps.db.purgeDeleted(accountId, purgeBefore);
   }
 
   // A mesma hora das contas gravadas: conta com hora mais velha sumiu da Pluggy (currentAccounts, no app).
-  if (accounts.length) await deps.db.updateConnection(connection.id, { last_synced_at: at, item_updated_at: state.item_updated_at });
+  return accounts.length ? { last_synced_at: at, item_updated_at: state.item_updated_at } : undefined;
 }
 
 /**
@@ -239,19 +304,27 @@ export function syncErrorMessage(err: unknown): string {
   return 'Não consegui atualizar este banco agora. Tente de novo.';
 }
 
-async function syncEach(connections: FinConnectionRef[], deps: SyncDeps, knownItem?: PluggyItem): Promise<SyncError[]> {
-  const failed = await Promise.all(
+/** Sincroniza cada banco; o que outra sincronização está rodando conta como pulado. */
+async function syncEach(
+  connections: FinConnectionRef[],
+  deps: SyncDeps,
+  knownItem?: PluggyItem,
+): Promise<{ synced: number; busy: number; errors: SyncError[] }> {
+  const results = await Promise.all(
     connections.map(async (connection) => {
       try {
-        await syncConnection(connection, deps, knownItem);
-        return null;
+        return await syncConnection(connection, deps, knownItem);
       } catch (err) {
         console.error('finance sync failed', connection.id, errorForLog(err));
         return { connectionId: connection.id, label: connection.label, message: syncErrorMessage(err) };
       }
     }),
   );
-  return failed.filter((error): error is SyncError => error !== null);
+  return {
+    synced: results.filter((result) => result === 'synced').length,
+    busy: results.filter((result) => result === 'busy').length,
+    errors: results.filter((result): result is SyncError => typeof result === 'object'),
+  };
 }
 
 /** Sincroniza os bancos da pessoa na casa aberta que estão na hora. */
@@ -259,28 +332,34 @@ export async function syncAll(deps: SyncDeps, force: boolean): Promise<SyncSumma
   const connections = await deps.db.listConnections();
   const now = deps.now();
   const due = connections.filter((connection) => shouldSync(connection.last_synced_at, now, force));
-  const errors = await syncEach(due, deps);
-  return { synced: due.length - errors.length, skipped: connections.length - due.length, errors };
+  const { synced, busy, errors } = await syncEach(due, deps);
+  return { synced, skipped: connections.length - due.length + busy, errors };
 }
 
 const ALREADY_CONNECTED = 'Esse banco já está conectado por outra pessoa ou em outra casa.';
+export const NOT_ALLOWED = 'O consultor financeiro não está liberado para você nesta casa.';
 
-/** Grava o item para a pessoa nesta casa; null se ele já é de outra pessoa ou casa. */
+/**
+ * Grava o item para a pessoa nesta casa. 'taken' se ele já é de outra pessoa
+ * ou casa; 'not_allowed' se a liberação foi tirada depois da conferência do
+ * começo do pedido (o banco recusa a linha sem ela).
+ */
 async function claimConnection(
   deps: SyncDeps,
   request: { itemId: string; label: string },
   item: PluggyItem,
-): Promise<FinConnectionRef | null> {
+): Promise<FinConnectionRef | 'taken' | 'not_allowed'> {
   const existing = await deps.db.findConnectionByItem(request.itemId);
   if (!existing) {
     const inserted = await deps.db.insertConnection({ label: request.label, pluggy_item_id: request.itemId, ...itemState(item) });
+    if (inserted === 'not_allowed') return inserted;
     if (inserted !== 'conflict') {
       return { id: inserted.id, label: request.label, pluggy_item_id: request.itemId, last_synced_at: null, item_updated_at: null };
     }
   }
   // Já existia, ou outro pedido gravou antes (dois toques no botão): vale o que ficou.
   const current = existing ?? (await deps.db.findConnectionByItem(request.itemId));
-  if (!current || current.user_id !== deps.userId || current.household_id !== deps.householdId) return null;
+  if (!current || current.user_id !== deps.userId || current.household_id !== deps.householdId) return 'taken';
   if (current.label !== request.label) await deps.db.updateConnection(current.id, { label: request.label });
   return {
     id: current.id,
@@ -309,10 +388,11 @@ export async function addItem(deps: SyncDeps, request: { itemId: string; label: 
   }
 
   const connection = await claimConnection(deps, request, item);
-  if (!connection) return { ok: false, status: 409, error: ALREADY_CONNECTED };
+  if (connection === 'taken') return { ok: false, status: 409, error: ALREADY_CONNECTED };
+  if (connection === 'not_allowed') return { ok: false, status: 403, error: NOT_ALLOWED };
   if (!shouldSync(connection.last_synced_at, deps.now(), true)) {
     return { ok: true, connectionId: connection.id, sync: { synced: 0, skipped: 1, errors: [] } };
   }
-  const errors = await syncEach([connection], deps, item);
-  return { ok: true, connectionId: connection.id, sync: { synced: 1 - errors.length, skipped: 0, errors } };
+  const { synced, busy, errors } = await syncEach([connection], deps, item);
+  return { ok: true, connectionId: connection.id, sync: { synced, skipped: busy, errors } };
 }

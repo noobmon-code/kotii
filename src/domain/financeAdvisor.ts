@@ -3,7 +3,8 @@
 // número que ela pode citar sai pronto daqui.
 //
 // Privacidade: nada de CPF, número de conta ou agência, linha de boleto nem
-// nome de pessoa (PIX para alguém vira "PIX para pessoa física"); saúde,
+// nome de pessoa (PIX para alguém vira "PIX para pessoa física"; o rótulo
+// digitado do banco vira o nome da instituição ou "Banco 1"); saúde,
 // doações e religião entram só no total da categoria, sem loja.
 
 import type { FinAccount, FinConnection, FinTransaction } from '@/lib/types';
@@ -12,6 +13,7 @@ import { normalizeBankText } from './bankCategories';
 import { TRANSFER_WORDS } from './bankClassify';
 import { connectionWarnings } from './bankHealth';
 import { matchBankToKotii, type KotiiRecord, reconciliationInRange, reconciliationTotals } from './bankMatch';
+import { safeBankLabels } from './bankNames';
 import {
   accountLabels,
   type BankPurchase,
@@ -123,8 +125,11 @@ export function buildFinanceSnapshot(input: FinanceSnapshotInput): string {
   const { today } = input;
   const month = today.slice(0, 7);
   const purchases = groupPurchases(input.transactions, input.accounts);
-  // O rótulo do banco é digitado pela pessoa: passa pela mesma limpeza.
-  const connections = input.connections.map((c) => ({ ...c, label: scrubText(c.label) || 'Banco' }));
+  // O rótulo do banco é digitado pela pessoa e pode ter nome de gente ("Conta da Maria"): aqui vai só a
+  // instituição reconhecida ou "Banco 1", "Banco 2"... (a tela continua com o rótulo dela). Os nomes das
+  // contas e cartões ("Nubank conta", "Banco 1 cartão") saem destes.
+  const safeLabels = safeBankLabels(input.connections);
+  const connections = input.connections.map((c) => ({ ...c, label: safeLabels.get(c.id) ?? 'Banco' }));
   const labels = accountLabels(input.accounts, connections);
   const lines: string[] = [];
 
