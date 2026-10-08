@@ -14,8 +14,9 @@ import { useBudgets, useSaveBudgets } from '@/data/finance';
 import { functionErrorMessage } from '@/data/images';
 import { kotiiRecordsFrom, type KotiiRecord } from '@/domain/bankMatch';
 import { financeFetchStart, financeWindowStart } from '@/domain/bankMonth';
+import type { FinCategoryRule } from '@/domain/bankRules';
 import { toISODate } from '@/domain/dates';
-import { getFinanceCategory } from '@/domain/finance';
+import { getFinanceCategory, type FinanceCategory } from '@/domain/finance';
 import {
   buildFinanceSnapshot,
   parseFinanceActions,
@@ -154,6 +155,48 @@ export function useFinTransactions(fromDate: string) {
   });
 }
 
+/** Categorias que a pessoa escolheu para os lançamentos (só dela, nesta casa). */
+export function useFinCategoryRules() {
+  const { key, enabled } = useFinScope();
+  return useQuery({
+    queryKey: ['fin', 'rules', ...key],
+    enabled,
+    queryFn: async () =>
+      fetchAllPages<FinCategoryRule>((from, to) =>
+        supabase.from('fin_category_rules').select('match_key, category').order('match_key').range(from, to),
+      ),
+  });
+}
+
+/** Escolhe a categoria de uma compra ou das parecidas (match_key de bankRules). */
+export function useSetCategoryRule() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ matchKey, category }: { matchKey: string; category: FinanceCategory }) => {
+      unwrap(
+        await supabase
+          .from('fin_category_rules')
+          .upsert(
+            { match_key: matchKey, category, updated_at: new Date().toISOString() },
+            { onConflict: 'user_id,household_id,match_key' },
+          ),
+      );
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['fin', 'rules'] }),
+  });
+}
+
+/** Desfaz escolhas: a compra volta para a categoria das parecidas ou a automática. */
+export function useRemoveCategoryRules() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (matchKeys: string[]) => {
+      if (matchKeys.length) unwrap(await supabase.from('fin_category_rules').delete().in('match_key', matchKeys));
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['fin', 'rules'] }),
+  });
+}
+
 type ReceiptRow = { id: string; purchased_at: string; total: number | null; store: { name: string | null; cnpj: string | null } | null };
 type PaymentRow = { id: string; paid_on: string; amount: number; bill: { name: string } | null };
 type ExpenseRow = { id: string; spent_on: string; amount: number; description: string };
@@ -207,6 +250,7 @@ export interface FinanceData {
   transactions: FinTransaction[];
   budgets: { category: string; monthly_limit: number }[];
   kotiiRecords: KotiiRecord[];
+  categoryRules: FinCategoryRule[];
 }
 
 export type FinanceDataState =
@@ -228,21 +272,23 @@ export function useFinanceData(today: string): FinanceDataState {
   const transactions = useFinTransactions(financeFetchStart(today));
   const budgets = useBudgets();
   const records = useFinKotiiRecords(fromDate);
+  const rules = useFinCategoryRules();
 
-  const queries = [connections, accounts, transactions, budgets, records];
+  const queries = [connections, accounts, transactions, budgets, records, rules];
   const failed = queries.find((q) => q.data === undefined && q.isError);
   const data = useMemo(
     () =>
-      connections.data && accounts.data && transactions.data && budgets.data && records.data
+      connections.data && accounts.data && transactions.data && budgets.data && records.data && rules.data
         ? {
             connections: connections.data,
             accounts: accounts.data,
             transactions: transactions.data,
             budgets: budgets.data,
             kotiiRecords: records.data,
+            categoryRules: rules.data,
           }
         : null,
-    [connections.data, accounts.data, transactions.data, budgets.data, records.data],
+    [connections.data, accounts.data, transactions.data, budgets.data, records.data, rules.data],
   );
   if (failed) {
     return {

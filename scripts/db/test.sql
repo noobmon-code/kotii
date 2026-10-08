@@ -2642,6 +2642,80 @@ begin
   end;
 end $$;
 
+-- Kátia escolhe categorias para os lançamentos: só dela, só na casa com a liberação.
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+  hk2 uuid := current_setting('test.hh_k2')::uuid;
+  bad_key text;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', hk)::text, true);
+  insert into public.fin_category_rules (match_key, category) values
+    ('m:padaria real', 'mercado'),
+    ('doc:' || repeat('c', 64), 'moradia'),
+    ('p:tx-00000000-0000-0000-0000-0000000000f1', 'lazer');
+  assert (select count(*) from public.fin_category_rules where user_id = auth.uid() and household_id = hk) = 3,
+    'K saved her rules (user and household by default)';
+  insert into public.fin_category_rules (match_key, category) values ('m:padaria real', 'lazer')
+    on conflict (user_id, household_id, match_key) do update set category = excluded.category;
+  assert (select category from public.fin_category_rules where match_key = 'm:padaria real') = 'lazer', 'K changed a rule';
+  delete from public.fin_category_rules where match_key = 'p:tx-00000000-0000-0000-0000-0000000000f1';
+  assert (select count(*) from public.fin_category_rules) = 2, 'K removed a rule';
+  foreach bad_key in array array['x:qualquer', 'm:', 'm:Padaria', 'm:loja 123', 'doc:abc', 'p:tx-1', 'm:' || repeat('a', 81)] loop
+    begin
+      insert into public.fin_category_rules (match_key, category) values (bad_key, 'mercado');
+      raise exception 'FAIL: saved the rule key %', bad_key;
+    exception when check_violation then null;
+    end;
+  end loop;
+  begin
+    insert into public.fin_category_rules (match_key, category) values ('m:outra loja', 'roupa');
+    raise exception 'FAIL: saved an unknown category';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.fin_category_rules (user_id, match_key, category)
+    values ('00000000-0000-0000-0000-000000000018', 'm:outra loja', 'mercado');
+    raise exception 'FAIL: saved a rule for another member';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.fin_category_rules (household_id, match_key, category) values (hk2, 'm:outra loja', 'mercado');
+    raise exception 'FAIL: saved a rule for another household';
+  exception when insufficient_privilege then null;
+  end;
+  -- Na outra casa dela, sem liberação: nem vê nem grava.
+  perform set_config('request.headers', json_build_object('x-household-id', hk2)::text, true);
+  assert (select count(*) from public.fin_category_rules) = 0, 'no rules in the household without the beta';
+  begin
+    insert into public.fin_category_rules (match_key, category) values ('m:outra loja', 'mercado');
+    raise exception 'FAIL: saved a rule without the beta';
+  exception when insufficient_privilege or foreign_key_violation then null;
+  end;
+end $$;
+
+-- Léo, na mesma casa e sem liberação, não vê nem mexe nas escolhas da Kátia.
+select set_config('request.jwt.claim.sub', :'user_l', false) \gset
+do $$
+begin
+  assert (select count(*) from public.fin_category_rules) = 0, 'L sees none of K''s rules';
+  update public.fin_category_rules set category = 'outros';
+  delete from public.fin_category_rules;
+  begin
+    insert into public.fin_category_rules (match_key, category) values ('m:outra loja', 'mercado');
+    raise exception 'FAIL: L saved a rule without the beta';
+  exception when insufficient_privilege or foreign_key_violation then null;
+  end;
+end $$;
+reset role;
+do $$
+begin
+  assert (select count(*) from public.fin_category_rules where user_id = '00000000-0000-0000-0000-000000000017') = 2,
+    'K''s rules untouched by L';
+  assert (select category from public.fin_category_rules where match_key = 'm:padaria real') = 'lazer', 'still hers';
+end $$;
+set role authenticated;
+
 -- Léo ganha a liberação de novo e conecta outro banco (chave de serviço).
 set role service_role;
 do $$
@@ -2682,6 +2756,8 @@ begin
   assert exists (select 1 from public.fin_accounts where pluggy_account_id = 'acc-k-nubank'), 'and her account';
   assert (select count(*) from public.fin_transactions where pluggy_transaction_id like 'tx-k-%') = 2, 'and her transactions';
   assert exists (select 1 from public.beta_access where user_id = '00000000-0000-0000-0000-000000000017'), 'and her grant';
+  assert (select count(*) from public.fin_category_rules where user_id = '00000000-0000-0000-0000-000000000017') = 2,
+    'and her category rules';
 end $$;
 set role authenticated;
 select set_config('request.jwt.claim.sub', :'user_k', false) \gset
@@ -2692,6 +2768,7 @@ end $$;
 reset role;
 do $$
 begin
+  assert not exists (select 1 from public.fin_category_rules), 'category rules left with the grant';
   assert not exists (select 1 from public.fin_connections where pluggy_item_id = 'item-k-nubank'), 'connections left with the household';
   assert not exists (select 1 from public.fin_accounts where pluggy_account_id in ('acc-k-nubank', 'acc-k-inter')), 'accounts too';
   assert not exists (select 1 from public.fin_transactions where pluggy_transaction_id like 'tx-k-%'), 'transactions too';

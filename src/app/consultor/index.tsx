@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 
 import {
   useAddFinItem,
@@ -27,14 +27,15 @@ import {
   monthSummary,
   windowPurchases,
   type BankMonthSummary,
-  type BankPurchase,
   type CardBill,
   type InstallmentMonth,
 } from '@/domain/bankMonth';
+import { categoryRulesOf } from '@/domain/bankRules';
 import { budgetProgress, describeBudget, type BudgetLine } from '@/domain/budget';
 import { formatShortDate, todayISO, toISODate } from '@/domain/dates';
 import { getFinanceCategory, monthLabel, monthRange, shiftMonth, type FinanceCategory } from '@/domain/finance';
 import { formatBRL } from '@/domain/money';
+import { purchaseDetails, purchaseTitle } from '@/features/finance/bankPurchaseText';
 import { errorMessage } from '@/lib/supabase';
 import type { FinAccount, FinConnection } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -176,7 +177,7 @@ function Consultor() {
                 summary={view.summary}
                 onMonth={setMonth}
               />
-              <CategorySection lines={view.categories} />
+              <CategorySection lines={view.categories} month={month} />
               <CardsSection bills={view.bills} installments={view.installments} />
               <BalancesSection accounts={view.balances} labels={view.labels} />
               <ReconciliationSection reconciliation={view.reconciliation} labels={view.labels} />
@@ -212,7 +213,7 @@ interface CategoryRow {
 
 function buildView(data: FinanceData, month: string, today: string) {
   const current = today.slice(0, 7);
-  const purchases = groupPurchases(data.transactions, data.accounts);
+  const purchases = groupPurchases(data.transactions, data.accounts, undefined, categoryRulesOf(data.categoryRules));
   const labels = accountLabels(data.accounts, data.connections);
   // Saldos e cartões só das contas que a Pluggy ainda devolve (cartão trocado sai).
   const accounts = currentAccounts(data.accounts, data.connections);
@@ -367,24 +368,43 @@ function Stat({ label, value, color }: { label: string; value: string; color?: k
   );
 }
 
-function CategorySection({ lines }: { lines: CategoryRow[] }) {
+function CategorySection({ lines, month }: { lines: CategoryRow[]; month: string }) {
   const c = useColors();
+  const open = (category?: FinanceCategory) =>
+    router.push({ pathname: '/consultor/lancamentos', params: category ? { mes: month, categoria: category } : { mes: month } });
+  const others = lines.find((l) => l.category === 'outros');
   return (
     <Section
       title="Por categoria"
-      action={<Button title="Orçamento" variant="ghost" compact onPress={() => router.push('/orcamento')} />}>
+      action={
+        <Row gap={0}>
+          <Button title="Lançamentos" variant="ghost" compact onPress={() => open()} />
+          <Button title="Orçamento" variant="ghost" compact onPress={() => router.push('/orcamento')} />
+        </Row>
+      }>
+      {others ? (
+        <Text variant="small">
+          {formatBRL(others.amount)} caíram em Outros. Toque em Outros para ver o que é e escolher a categoria.
+        </Text>
+      ) : null}
       {lines.length ? (
         <Card style={styles.categories}>
           {lines.map(({ category, amount, budget }) => {
             const info = getFinanceCategory(category);
             return (
-              <View key={category} style={styles.categoryLine}>
+              <Pressable
+                key={category}
+                accessibilityRole="button"
+                accessibilityLabel={`Ver lançamentos de ${info.label}`}
+                onPress={() => open(category)}
+                style={styles.categoryLine}>
                 <Row>
                   <Icon name={info.icon} size={18} color="textMuted" />
                   <Text variant="label" style={styles.flex}>
                     {info.label}
                   </Text>
                   <Text variant="label">{formatBRL(amount)}</Text>
+                  <Icon name="chevron-right" size={18} color="textMuted" />
                 </Row>
                 {budget ? (
                   <>
@@ -403,7 +423,7 @@ function CategorySection({ lines }: { lines: CategoryRow[] }) {
                 ) : (
                   <Text variant="small">Sem orçamento</Text>
                 )}
-              </View>
+              </Pressable>
             );
           })}
         </Card>
@@ -485,21 +505,6 @@ function BalancesSection({ accounts, labels }: { accounts: FinAccount[]; labels:
       </ListCard>
     </Section>
   );
-}
-
-function purchaseTitle(p: BankPurchase): string {
-  return p.merchantName ?? p.description;
-}
-
-function purchaseDetails(p: BankPurchase, labels: Map<string, string>): string {
-  return [
-    formatShortDate(p.date),
-    labels.get(p.accountId),
-    p.installments ? `${p.installments.total}x de ${formatBRL(p.installments.parcel)}` : null,
-    p.pending ? 'previsto' : null,
-  ]
-    .filter(Boolean)
-    .join(' · ');
 }
 
 const recordText = (r: KotiiRecord) => `${RECORD_KIND[r.kind]} ${r.label} · ${formatShortDate(r.date)} · ${formatBRL(r.amount)}`;

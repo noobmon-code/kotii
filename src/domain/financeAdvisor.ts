@@ -14,6 +14,7 @@ import { TRANSFER_WORDS } from './bankClassify';
 import { connectionWarnings } from './bankHealth';
 import { matchBankToKotii, type KotiiRecord, reconciliationInRange, reconciliationTotals } from './bankMatch';
 import { safeBankLabels } from './bankNames';
+import { categoryRulesOf, type FinCategoryRule } from './bankRules';
 import {
   accountLabels,
   type BankPurchase,
@@ -47,6 +48,8 @@ export interface FinanceSnapshotInput {
   budgets: { category: string; monthly_limit: number }[];
   /** Notas, contas pagas e gastos do Kotii na mesma janela (kotiiRecordsFrom). */
   kotiiRecords: KotiiRecord[];
+  /** Categorias que a pessoa escolheu (bankRules); sem elas, só as automáticas. */
+  categoryRules?: FinCategoryRule[];
 }
 
 const WEEKDAYS = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
@@ -124,7 +127,7 @@ const KIND_WORD: Partial<Record<BankPurchase['kind'], string>> = {
 export function buildFinanceSnapshot(input: FinanceSnapshotInput): string {
   const { today } = input;
   const month = today.slice(0, 7);
-  const purchases = groupPurchases(input.transactions, input.accounts);
+  const purchases = groupPurchases(input.transactions, input.accounts, undefined, categoryRulesOf(input.categoryRules ?? []));
   // O rótulo do banco é digitado pela pessoa e pode ter nome de gente ("Conta da Maria"): aqui vai só a
   // instituição reconhecida ou "Banco 1", "Banco 2"... (a tela continua com o rótulo dela). Os nomes das
   // contas e cartões ("Nubank conta", "Banco 1 cartão") saem destes.
