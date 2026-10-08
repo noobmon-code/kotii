@@ -8,6 +8,7 @@ import {
   type FinanceDb,
   type FinConnectionOwnerRef,
   itemState,
+  NOT_ALLOWED,
   parseFinanceRequest,
   shouldSync,
   type SyncDeps,
@@ -23,7 +24,11 @@ interface ConnectionRow extends FinConnectionOwnerRef {
   status: string | null;
   error_message: string | null;
   item_updated_at: string | null;
+  sync_started_at: string | null;
 }
+
+/** Quanto vale a vez de sincronizar, como em fin_claim_sync. */
+const LEASE_MS = 10 * 60 * 1000;
 
 // Banco falso com as regras que importam: unique por id da Pluggy e tudo
 // preso à pessoa e à casa, como o adaptador do index.ts.
@@ -34,7 +39,11 @@ function fakeStore() {
   const upsertBatches: number[] = [];
   let seq = 0;
 
-  function dbFor(userId: string, householdId: string, options: { raceOnInsert?: FinConnectionOwnerRef } = {}): FinanceDb {
+  function dbFor(
+    userId: string,
+    householdId: string,
+    options: { raceOnInsert?: FinConnectionOwnerRef; revoked?: boolean } = {},
+  ): FinanceDb {
     const mine = (row: { user_id: string; household_id: string }) => row.user_id === userId && row.household_id === householdId;
     return {
       listConnections: () =>
@@ -49,17 +58,32 @@ function fakeStore() {
         ),
       findConnectionByItem: (itemId) => Promise.resolve([...connections.values()].find((row) => row.pluggy_item_id === itemId) ?? null),
       insertConnection: (row) => {
+        // Liberação tirada: a foreign key para beta_access recusa a linha.
+        if (options.revoked) return Promise.resolve('not_allowed');
         if (options.raceOnInsert) {
-          connections.set(options.raceOnInsert.id, { status: null, error_message: null, ...options.raceOnInsert });
+          connections.set(options.raceOnInsert.id, { status: null, error_message: null, sync_started_at: null, ...options.raceOnInsert });
         }
         if ([...connections.values()].some((other) => other.pluggy_item_id === row.pluggy_item_id)) return Promise.resolve('conflict');
         const id = `con-${++seq}`;
-        connections.set(id, { ...row, id, user_id: userId, household_id: householdId, last_synced_at: null });
+        connections.set(id, { ...row, id, user_id: userId, household_id: householdId, last_synced_at: null, sync_started_at: null });
         return Promise.resolve({ id });
       },
       updateConnection: (id, patch) => {
         const row = connections.get(id);
         if (row && mine(row)) Object.assign(row, patch);
+        return Promise.resolve();
+      },
+      // Como fin_claim_sync: livre, ou presa há mais de 10 min.
+      claimSync: (id, at) => {
+        const row = connections.get(id);
+        if (!row || !mine(row)) return Promise.resolve(false);
+        if (row.sync_started_at !== null && Date.parse(row.sync_started_at) >= Date.parse(at) - LEASE_MS) return Promise.resolve(false);
+        row.sync_started_at = at;
+        return Promise.resolve(true);
+      },
+      releaseSync: (id, at, done) => {
+        const row = connections.get(id);
+        if (row && mine(row) && row.sync_started_at === at) Object.assign(row, done, { sync_started_at: null });
         return Promise.resolve();
       },
       upsertAccounts: (rows) =>
@@ -79,17 +103,20 @@ function fakeStore() {
         }
         return Promise.resolve();
       },
-      activeTransactionIds: (accountId, fromDate) =>
+      activeTransactionIds: (accountId, fromDate, runAt) =>
         Promise.resolve(
           [...transactions.values()]
-            .filter((row) => row.account_id === accountId && mine(row) && row.deleted_at === null && row.occurred_on >= fromDate)
+            .filter((row) =>
+              row.account_id === accountId && mine(row) && row.deleted_at === null && row.occurred_on >= fromDate && row.updated_at < runAt
+            )
             .map((row) => row.pluggy_transaction_id),
         ),
+      // Como o UPDATE do index.ts: a condição de updated_at vale na hora de marcar.
       markDeleted: (accountId, pluggyIds, at) => {
         for (const id of pluggyIds) {
           const row = transactions.get(id);
-          if (row && row.account_id === accountId && mine(row) && row.deleted_at === null) {
-            (row as { deleted_at: string | null }).deleted_at = at;
+          if (row && row.account_id === accountId && mine(row) && row.deleted_at === null && row.updated_at < at) {
+            Object.assign(row, { deleted_at: at, updated_at: at });
           }
         }
         return Promise.resolve();
@@ -188,6 +215,27 @@ function setup(banks: Record<string, FakeBank | PluggyError>, at = '2026-10-07T1
   return { store, pluggy, clock, deps, connect };
 }
 
+/** O banco de uma sincronização que, na primeira chamada de `method`, deixa outra rodar inteira antes. */
+function pauseBefore(db: FinanceDb, method: 'activeTransactionIds' | 'markDeleted', other: () => Promise<unknown>): FinanceDb {
+  let paused = false;
+  const pause = async () => {
+    if (paused) return;
+    paused = true;
+    await other();
+  };
+  return {
+    ...db,
+    activeTransactionIds: async (...args) => {
+      if (method === 'activeTransactionIds') await pause();
+      return db.activeTransactionIds(...args);
+    },
+    markDeleted: async (...args) => {
+      if (method === 'markDeleted') await pause();
+      return db.markDeleted(...args);
+    },
+  };
+}
+
 Deno.test('pedido: sync (force só se true) e add_item com Item ID em formato de uuid e nome de 1 a 40 letras', () => {
   assertEquals(parseFinanceRequest({ action: 'sync' }), { action: 'sync', force: false });
   assertEquals(parseFinanceRequest({ action: 'sync', force: 'sim' }), { action: 'sync', force: false });
@@ -264,6 +312,8 @@ Deno.test('primeira sincronização: 365 dias, contas e lançamentos da pessoa n
   assertEquals([t1.account_id, t1.user_id, t1.household_id, t1.amount, t1.occurred_on], [conta.id, 'user-1', 'casa-1', 10, '2026-10-05']);
   assertEquals(store.transactions.get('c1')?.account_id, store.accounts.get('p-cartao')?.id);
   assertEquals(store.transactions.size, 3);
+  // Cada linha leva a hora desta sincronização em updated_at (a marca que separa uma sincronização da outra).
+  assertEquals([...store.transactions.values()].map((row) => row.updated_at), Array(3).fill('2026-10-07T12:00:00.000Z'));
 });
 
 Deno.test('depois, janela de 60 dias: o que sumiu da Pluggy vira apagado; fora da janela e na borda, fica; e volta se reaparecer', async () => {
@@ -353,6 +403,10 @@ Deno.test('extrato que falha no meio: nada é marcado como apagado, e a mensagem
   assertEquals(result.errors.map((error) => error.message), ['Não consegui atualizar este banco agora. Tente de novo.']);
   assertEquals(store.transactions.get('t1')?.deleted_at, null);
   assertEquals([...store.connections.values()][0].last_synced_at, '2026-10-07T12:00:00.000Z');
+  // A vez volta mesmo com o erro: o próximo "Atualizar" não espera os 10 min.
+  assertEquals([...store.connections.values()][0].sync_started_at, null);
+  clock.now = new Date('2026-10-08T12:03:00.000Z');
+  assertEquals(await syncAll(deps(), true), { synced: 1, skipped: 0, errors: [] });
 });
 
 Deno.test('lançamento repetido entre páginas vai uma vez só; lote grande sai em pedaços', async () => {
@@ -435,7 +489,9 @@ Deno.test('item que a Pluggy ainda não preencheu (MeuPluggy recém-autorizado):
   const { store, pluggy, clock, deps } = setup(banks);
   const added = await addItem(deps(), { itemId: ITEM, label: 'Nubank' });
   assert(added.ok);
+  assertEquals(added.sync, { synced: 1, skipped: 0, errors: [] });
   assertEquals(store.connections.get(added.connectionId)?.last_synced_at, null);
+  assertEquals(store.connections.get(added.connectionId)?.sync_started_at, null);
 
   // Contas chegando com o item ainda atualizando: marca a hora, mas o histórico de 365 dias ainda vem na próxima.
   banks[ITEM] = { ...bank, item: item({ status: 'UPDATING', lastUpdatedAt: null }) };
@@ -555,6 +611,123 @@ Deno.test('conectar com dois toques ao mesmo tempo: o insert que perde usa a con
     { itemId: ITEM, label: 'Nubank' },
   );
   assertEquals(lost.ok ? 0 : lost.status, 409);
+});
+
+Deno.test('sincronização que travou e perdeu a vez: a mais velha não apaga o que a mais nova gravou nem volta a hora', async () => {
+  const fica = pluggyTx('fica', '2026-10-05T15:00:00.000Z');
+  const soVelha = pluggyTx('so-velha', '2026-10-04T15:00:00.000Z');
+  const sumiu = pluggyTx('sumiu', '2026-10-03T15:00:00.000Z');
+  const nova = pluggyTx('nova', '2026-10-06T15:00:00.000Z');
+  const bank = nubank([fica, soVelha, sumiu]);
+  const { store, deps, connect } = setup({ [ITEM]: bank });
+  await connect();
+  await syncAll(deps(), false);
+
+  // A mais velha ainda vê "so-velha"; a mais nova, mais de 10 min depois (a vez da velha venceu), já vê "nova".
+  const view = (transactions: PluggyTransaction[]) => fakePluggy({ [ITEM]: { ...bank, transactions: { ...bank.transactions, 'p-conta': transactions } } });
+  const older = { pluggy: view([fica, soVelha]).client, now: () => new Date('2026-10-07T19:00:00.000Z') };
+  const newer = { pluggy: view([fica, nova]).client, now: () => new Date('2026-10-07T19:10:01.000Z') };
+  // A mais velha gravou o extrato e, antes de procurar o que sumiu, a mais nova toma a vez e roda inteira.
+  let newerResult: unknown;
+  const runNewer = async () => (newerResult = await syncAll(deps('user-1', 'casa-1', newer), false));
+  const olderDb = pauseBefore(store.dbFor('user-1', 'casa-1'), 'activeTransactionIds', runNewer);
+  assertEquals((await syncAll(deps('user-1', 'casa-1', { ...older, db: olderDb }), false)).errors, []);
+  assertEquals(newerResult, { synced: 1, skipped: 0, errors: [] });
+
+  assertEquals(store.transactions.get('nova')?.deleted_at, null);
+  assertEquals(store.transactions.get('fica')?.deleted_at, null);
+  // O que só a mais velha viu (e o que já tinha sumido) a mais nova ainda apaga.
+  assertEquals(store.transactions.get('so-velha')?.deleted_at, '2026-10-07T19:10:01.000Z');
+  assertEquals(store.transactions.get('sumiu')?.deleted_at, '2026-10-07T19:10:01.000Z');
+  // A mais velha já não tem a vez: não grava a hora dela por cima, e as contas continuam com a hora marcada.
+  const connection = [...store.connections.values()][0];
+  assertEquals([connection.last_synced_at, connection.sync_started_at], ['2026-10-07T19:10:01.000Z', null]);
+  assertEquals([...store.accounts.values()].map((row) => row.updated_at), ['2026-10-07T19:10:01.000Z', '2026-10-07T19:10:01.000Z']);
+});
+
+Deno.test('sincronização que travou e perdeu a vez: o que a mais nova regrava entre a leitura e a marca da mais velha fica vivo', async () => {
+  const fica = pluggyTx('fica', '2026-10-05T15:00:00.000Z');
+  const x = pluggyTx('x', '2026-10-04T15:00:00.000Z');
+  const bank = nubank([fica, x]);
+  const { store, deps, connect } = setup({ [ITEM]: bank });
+  await connect();
+  await syncAll(deps(), false);
+
+  // Para a mais velha, "x" sumiu (ela já leu os ativos); a mais nova traz "x" de volta antes da marca.
+  const view = (transactions: PluggyTransaction[]) => fakePluggy({ [ITEM]: { ...bank, transactions: { ...bank.transactions, 'p-conta': transactions } } });
+  const older = { pluggy: view([fica]).client, now: () => new Date('2026-10-07T19:00:00.000Z') };
+  const newer = { pluggy: view([fica, x]).client, now: () => new Date('2026-10-07T19:10:01.000Z') };
+  const runNewer = () => syncAll(deps('user-1', 'casa-1', newer), false);
+  const olderDb = pauseBefore(store.dbFor('user-1', 'casa-1'), 'markDeleted', runNewer);
+  assertEquals((await syncAll(deps('user-1', 'casa-1', { ...older, db: olderDb }), false)).errors, []);
+
+  assertEquals(store.transactions.get('x')?.deleted_at, null);
+  assertEquals(store.transactions.get('x')?.updated_at, '2026-10-07T19:10:01.000Z');
+
+  // Sem outra sincronização no meio, a mesma visão apaga "x" normalmente.
+  const later = { pluggy: view([fica]).client, now: () => new Date('2026-10-08T02:00:00.000Z') };
+  await syncAll(deps('user-1', 'casa-1', later), false);
+  assertEquals(store.transactions.get('x')?.deleted_at, '2026-10-08T02:00:00.000Z');
+});
+
+Deno.test('reabrir o consultor (ou outro aparelho) enquanto o banco sincroniza: a segunda pula o banco e os saldos continuam aparecendo', async () => {
+  const fica = pluggyTx('fica', '2026-10-05T15:00:00.000Z');
+  const sumiu = pluggyTx('sumiu', '2026-10-03T15:00:00.000Z');
+  const bank = nubank([fica, sumiu]);
+  const { store, deps, connect } = setup({ [ITEM]: bank });
+  await connect();
+  await syncAll(deps(), false);
+
+  const view = (transactions: PluggyTransaction[]) => fakePluggy({ [ITEM]: { ...bank, transactions: { ...bank.transactions, 'p-conta': transactions } } });
+  const first = { pluggy: view([fica]).client, now: () => new Date('2026-10-07T19:00:00.000Z') };
+  const second = view([fica, sumiu]);
+  // A primeira gravou contas e extrato; antes de procurar o que sumiu, o consultor abre de novo.
+  let secondResult: unknown;
+  const runSecond = async () => {
+    secondResult = await syncAll(deps('user-1', 'casa-1', { pluggy: second.client, now: () => new Date('2026-10-07T19:00:05.000Z') }), false);
+  };
+  const firstDb = pauseBefore(store.dbFor('user-1', 'casa-1'), 'activeTransactionIds', runSecond);
+  assertEquals(await syncAll(deps('user-1', 'casa-1', { ...first, db: firstDb }), false), { synced: 1, skipped: 0, errors: [] });
+
+  // A segunda nem chamou a Pluggy nem gravou nada.
+  assertEquals(secondResult, { synced: 0, skipped: 1, errors: [] });
+  assertEquals(second.calls, []);
+  assertEquals(store.transactions.get('sumiu')?.deleted_at, '2026-10-07T19:00:00.000Z');
+  // Contas com a mesma hora que o banco marca: os saldos continuam valendo (currentAccounts, no app).
+  const connection = [...store.connections.values()][0];
+  assertEquals([connection.last_synced_at, connection.sync_started_at], ['2026-10-07T19:00:00.000Z', null]);
+  assertEquals([...store.accounts.values()].map((row) => row.updated_at), ['2026-10-07T19:00:00.000Z', '2026-10-07T19:00:00.000Z']);
+});
+
+Deno.test('vez presa (a função caiu no meio): espera 10 min e depois é tomada; conectar de novo nesse meio tempo pula', async () => {
+  const { store, pluggy, clock, deps, connect } = setup({ [ITEM]: nubank([pluggyTx('t1', '2026-10-05T15:00:00.000Z')]) });
+  const { id } = (await connect()) as { id: string };
+  store.connections.get(id)!.sync_started_at = '2026-10-07T11:50:00.000Z';
+
+  clock.now = new Date('2026-10-07T11:59:59.000Z');
+  assertEquals(await syncAll(deps(), true), { synced: 0, skipped: 1, errors: [] });
+  const again = await addItem(deps(), { itemId: ITEM, label: 'Nubank' });
+  assertEquals(again, { ok: true, connectionId: id, sync: { synced: 0, skipped: 1, errors: [] } });
+  // Só o getItem do conectar: nada de contas nem extrato.
+  assertEquals(pluggy.calls, [`item ${ITEM}`]);
+  assertEquals(store.connections.get(id)?.sync_started_at, '2026-10-07T11:50:00.000Z');
+
+  clock.now = new Date('2026-10-07T12:00:01.000Z');
+  assertEquals(await syncAll(deps(), true), { synced: 1, skipped: 0, errors: [] });
+  assertEquals([store.connections.get(id)?.last_synced_at, store.connections.get(id)?.sync_started_at], ['2026-10-07T12:00:01.000Z', null]);
+  assert(store.transactions.has('t1'));
+});
+
+Deno.test('conectar depois que a liberação foi tirada (o banco recusa a linha) -> 403, sem sincronizar', async () => {
+  const { store, pluggy, deps } = setup({ [ITEM]: nubank([pluggyTx('t1', '2026-10-05T15:00:00.000Z')]) });
+  const result = await addItem(deps('user-1', 'casa-1', { db: store.dbFor('user-1', 'casa-1', { revoked: true }) }), {
+    itemId: ITEM,
+    label: 'Nubank',
+  });
+  assertEquals(result, { ok: false, status: 403, error: NOT_ALLOWED });
+  assertEquals(NOT_ALLOWED, 'O consultor financeiro não está liberado para você nesta casa.');
+  assertEquals(store.connections.size, 0);
+  assertEquals(pluggy.calls, [`item ${ITEM}`]);
 });
 
 Deno.test('log sem dados do extrato: do erro do banco fica só código e mensagem', () => {

@@ -227,11 +227,44 @@ describe('buildFinanceSnapshot', () => {
     expect(big.startsWith('Hoje: quarta, 7/10/2026.')).toBe(true);
   });
 
-  it('o rótulo digitado do banco também passa pela limpeza', () => {
+  it('do rótulo digitado do banco vai só o nome da instituição', () => {
     const labelled = buildFinanceSnapshot({ ...input, connections: [connection({ label: 'Nubank 12345-6' })], transactions: [] });
     expect(labelled).toContain('Bancos conectados: Nubank (atualizado em 07/10).');
     expect(labelled).toContain('Saldos das contas: Nubank conta: R$ 1.234,56; Banco conta: R$ 50,00.');
     expect(labelled).not.toContain('12345');
+  });
+
+  it('rótulo com nome de pessoa vira "Banco 1", "Banco 2" no retrato todo (contas, cartões, avisos e lançamentos)', () => {
+    const named = buildFinanceSnapshot({
+      ...input,
+      connections: [
+        connection({ label: 'Conta da Maria', item_updated_at: '2026-10-01T10:00:00Z' }),
+        connection({ id: 'conn-inter', label: 'Cartão do Zé Ruela', pluggy_item_id: 'x2', created_at: '2026-10-02T00:00:00Z' }),
+      ],
+    });
+    expect(named).toContain('Bancos conectados: Banco 1 (atualizado em 01/10); Banco 2 (atualizado em 07/10).');
+    expect(named).toContain('Avisos dos bancos: Banco 1 sem atualizar há 6 dias. Reautorize no MeuPluggy.');
+    expect(named).toContain('Saldos das contas: Banco 1 conta: R$ 1.234,56; Banco 2 conta: R$ 50,00.');
+    expect(named).toContain('Cartões: Banco 1 cartão: limite usado R$ 2.300,00');
+    expect(named).toContain('t1 terça, 6/10 · saída · Transporte · UBER TRIP · R$ 60,00 · Banco 1 cartão · previsto');
+    for (const secret of ['Maria', 'Conta da', 'Zé', 'Ruela']) {
+      expect([secret, named.includes(secret)]).toEqual([secret, false]);
+    }
+  });
+
+  it('rótulo com o banco e mais coisa vira o nome da instituição (sem acento no rótulo também)', () => {
+    const known = buildFinanceSnapshot({
+      ...input,
+      connections: [
+        connection({ label: 'nubank pessoal' }),
+        connection({ id: 'conn-inter', label: 'Itau da Maria', pluggy_item_id: 'x2', item_updated_at: '2026-10-07T06:00:00Z' }),
+      ],
+      transactions: [],
+    });
+    expect(known).toContain('Bancos conectados: Nubank (atualizado em 07/10); Itaú (atualizado em 07/10).');
+    expect(known).toContain('Saldos das contas: Nubank conta: R$ 1.234,56; Itaú conta: R$ 50,00.');
+    expect(known).not.toContain('pessoal');
+    expect(known).not.toContain('Maria');
   });
 
   it('nome de pessoa em texto livre da conta não vai (boleto, depósito, TEF, "dinheiro enviado a"), nem de MEI ou maquininha', () => {
