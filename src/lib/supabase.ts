@@ -3,6 +3,7 @@ import 'react-native-url-polyfill/auto';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { AppState, Platform } from 'react-native';
 
+import { accessErrorMessage } from './accessErrors';
 import { fetchWithHousehold, HOUSEHOLD_HEADER } from './activeHousehold';
 import { sessionStorage } from './sessionStorage';
 
@@ -11,10 +12,20 @@ const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
 export const isSupabaseConfigured = Boolean(url && anonKey);
 
-export const supabase = createClient(url ?? 'http://localhost:54321', anonKey ?? 'not-configured', {
+const projectUrl = url ?? 'http://localhost:54321';
+
+/**
+ * Onde a sessão fica guardada: o mesmo nome que o Supabase usaria sozinho
+ * (sessões já guardadas continuam valendo), fixado aqui porque sair sem
+ * internet precisa apagá-la direto (ver lib/session).
+ */
+export const SESSION_STORAGE_KEY = `sb-${new URL(projectUrl).hostname.split('.')[0]}-auth-token`;
+
+export const supabase = createClient(projectUrl, anonKey ?? 'not-configured', {
   auth: {
     // Cifrada no celular, com a chave no cofre do sistema (ver sessionStorage).
     storage: sessionStorage,
+    storageKey: SESSION_STORAGE_KEY,
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,
@@ -56,6 +67,10 @@ export function unwrap<T>(result: { data: T; error: unknown }): NonNullable<T> {
 }
 
 export function errorMessage(error: unknown): string {
+  // Escrita barrada pela regra de acesso da casa: em vez do texto do Postgres
+  // ("new row violates row-level security policy..."), o que aconteceu.
+  const access = accessErrorMessage(error);
+  if (access) return access;
   if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
     return error.message;
   }

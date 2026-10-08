@@ -1,6 +1,10 @@
 // POST { image_paths } (ou { image_path }) -> lê as fotos da nota (já enviadas
 // ao bucket "receipts", em ordem; nota comprida vem em partes), extrai os
 // itens com IA e cria um rascunho de nota para o usuário revisar.
+// `access_key` (opcional): a chave do QR code, quando a Sefaz pediu o "não
+// sou robô" e a nota veio pela foto. Se a casa já tem uma nota com ela,
+// devolve a existente (duplicate), sem gastar a IA; senão a nota guarda essa
+// chave, a menos que a foto seja de outra nota (regras em accessKey.ts).
 //
 // Roda com o JWT do usuário: todas as leituras e escritas passam pela RLS.
 // Secrets: ANTHROPIC_API_KEY ou OPENROUTER_API_KEY (uma das duas);
@@ -13,6 +17,7 @@ import { QuotaError, refundAiQuota, takeAiQuota } from '../_shared/aiQuota.ts';
 import { publishableKey } from '../_shared/apiKeys.ts';
 import { ExtractionError, extractStructured, mediaTypeOf, toVisionImage, visionConfig } from '../_shared/vision.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
+import { duplicateBeforeRead, existingOnConflict, keyAfterRead, requestedAccessKey } from './accessKey.ts';
 import { cleanReceipt, ExtractedReceiptSchema, instructions, MAX_PHOTOS, sameStoreName, SYSTEM } from './extract.ts';
 
 const CORS = {
@@ -64,6 +69,13 @@ async function findOrCreateStore(
   return data.id;
 }
 
+/** A nota da casa com esta chave de acesso (a RLS só mostra as da casa). */
+async function receiptWithKey(db: SupabaseClient, accessKey: string): Promise<string | null> {
+  const { data, error } = await db.from('receipts').select('id').eq('access_key', accessKey).maybeSingle();
+  if (error) throw error;
+  return data?.id ?? null;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   if (req.method !== 'POST') return json({ error: 'Método não suportado.' }, 405);
@@ -80,7 +92,7 @@ Deno.serve(async (req) => {
     return json({ error: 'Leitura de nota não configurada: falta a chave da IA no Supabase.' }, 503);
   }
 
-  let body: { image_path?: unknown; image_paths?: unknown };
+  let body: { image_path?: unknown; image_paths?: unknown; access_key?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -94,6 +106,19 @@ Deno.serve(async (req) => {
   ) {
     return json({ error: 'Imagem inválida.' }, 400);
   }
+  const givenKey = requestedAccessKey(body.access_key);
+  if (givenKey === 'invalid') return json({ error: 'Chave de acesso inválida.' }, 400);
+  const findByKey = (key: string) => receiptWithKey(db, key);
+  // Nota do QR já na casa (lida por outra pessoa enquanto esta fotografava):
+  // abre a existente, antes de baixar as fotos e gastar a IA.
+  let existingBefore;
+  try {
+    existingBefore = await duplicateBeforeRead(givenKey, findByKey);
+  } catch (err) {
+    console.error('db error', err);
+    return json({ error: 'Falha ao ler as notas.' }, 500);
+  }
+  if (existingBefore) return json({ receipt_id: existingBefore, duplicate: true });
   const images = [];
   for (const path of imagePaths as string[]) {
     const mediaType = mediaTypeOf(path);
@@ -152,16 +177,12 @@ Deno.serve(async (req) => {
   );
   const receipt = cleanReceipt(extracted, new Set(catalog.map((p) => p.id)), aliasMatches);
 
-  if (receipt.accessKey) {
-    const { data: dup } = await db
-      .from('receipts')
-      .select('id')
-      .eq('access_key', receipt.accessKey)
-      .maybeSingle();
-    if (dup) return json({ receipt_id: dup.id, duplicate: true });
-  }
-
   try {
+    // A chave do QR vale mais que a lida na foto, menos quando a foto é de outra nota.
+    const { key: accessKey, existing, mismatch } = await keyAfterRead(givenKey, receipt.accessKey, findByKey);
+    if (mismatch) console.warn('parse-receipt: the photo is not the note whose QR code was read; keeping the key read from the photo');
+    if (existing) return json({ receipt_id: existing, duplicate: true });
+
     const storeId = await findOrCreateStore(db, {
       name: receipt.storeName,
       cnpj: receipt.cnpj,
@@ -174,7 +195,7 @@ Deno.serve(async (req) => {
         store_id: storeId,
         purchased_at: receipt.purchasedAt ?? new Date().toISOString(),
         total: receipt.total,
-        access_key: receipt.accessKey,
+        access_key: accessKey,
         image_path: imagePaths[0],
         extra_image_paths: imagePaths.slice(1),
         source: 'ai',
@@ -182,7 +203,12 @@ Deno.serve(async (req) => {
       })
       .select('id')
       .single();
-    if (receiptError) throw receiptError;
+    if (receiptError) {
+      // Mesma chave gravada ao mesmo tempo por outra leitura: vale a que chegou antes.
+      const first = await existingOnConflict(receiptError, accessKey, findByKey);
+      if (first) return json({ receipt_id: first, duplicate: true });
+      throw receiptError;
+    }
 
     if (receipt.items.length) {
       const { error: itemsError } = await db

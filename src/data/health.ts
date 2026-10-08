@@ -166,13 +166,23 @@ export function healthImageUrl(path: string): Promise<string | null> {
   return signedImageUrl('health', path);
 }
 
-/** Lê as fotos (já no bucket "health") e devolve o documento organizado. */
-export async function readHealthDocument<T>(kind: HealthDocumentKind, paths: string[]): Promise<T> {
+/**
+ * Lê as fotos (já no bucket "health") e devolve o documento organizado.
+ * `unclaimed`: as fotos acabaram de subir e nenhum registro aponta para
+ * elas; se a sessão acabou, saem antes de o app sair da conta (depois, sem
+ * token, ninguém mais as apagaria).
+ */
+export async function readHealthDocument<T>(
+  kind: HealthDocumentKind,
+  paths: string[],
+  { unclaimed = false }: { unclaimed?: boolean } = {},
+): Promise<T> {
   const { data, error } = await supabase.functions.invoke<{ data: T }>('parse-health', {
     body: { kind, image_paths: paths },
   });
   if (error || !data) {
-    throw new Error(await functionErrorMessage(error, 'Não foi possível ler o documento. Tente novamente.'));
+    const cleanup = unclaimed ? () => removeHealthImages(paths) : undefined;
+    throw new Error(await functionErrorMessage(error, 'Não foi possível ler o documento. Tente novamente.', cleanup));
   }
   return data.data;
 }

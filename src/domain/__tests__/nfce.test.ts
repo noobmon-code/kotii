@@ -1,6 +1,15 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { accessKeyCheckDigit, localDateTimeToISO, nfceItemsToDraft, normalizeNfceUnit, parseNfceQr } from '../nfce';
+import {
+  accessKeyCheckDigit,
+  localDateTimeToISO,
+  NFCE_CAPTCHA,
+  nfceFailureRoute,
+  nfceItemsToDraft,
+  normalizeNfceUnit,
+  parseNfceQr,
+  qrReadStep,
+} from '../nfce';
 
 // SP (35), set/2026, CNPJ 12.345.678/0001-99, modelo 65, série 1, nota 12345.
 const BODY = '35' + '2609' + '12345678000199' + '65' + '001' + '000012345' + '1' + '12345678';
@@ -68,5 +77,23 @@ describe('localDateTimeToISO', () => {
     ]);
     expect(localDateTimeToISO('2026-09-20T10:15')).toBe(new Date(2026, 8, 20, 10, 15).toISOString());
     expect(localDateTimeToISO('20/09/2026 10:15')).toBeNull();
+  });
+});
+
+describe('quando a Sefaz não mostra a nota', () => {
+  it('com o "não sou robô", a nota vai direto para a foto; nos outros erros a pessoa fica no QR', () => {
+    expect(nfceFailureRoute(NFCE_CAPTCHA)).toBe('photo');
+    expect(nfceFailureRoute('captcha')).toBe('photo');
+    expect(nfceFailureRoute('no_items')).toBe('stay');
+    expect(nfceFailureRoute('sefaz_down')).toBe('stay');
+    expect(nfceFailureRoute(null)).toBe('stay');
+  });
+
+  it('o mesmo QR lido de novo na tela não volta à Sefaz: vai para a foto com o aviso dela', () => {
+    const photoOnly = new Map([[KEY, 'Leia pela foto.']]);
+    expect(qrReadStep(KEY, photoOnly)).toEqual({ kind: 'photo', message: 'Leia pela foto.' });
+    const other = BODY.slice(0, 34) + '9' + BODY.slice(35);
+    expect(qrReadStep(other + accessKeyCheckDigit(other), photoOnly)).toEqual({ kind: 'fetch' });
+    expect(qrReadStep(KEY, new Map())).toEqual({ kind: 'fetch' });
   });
 });
