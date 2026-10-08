@@ -1,0 +1,177 @@
+import { describe, expect, it } from '@jest/globals';
+
+import type { FinAccount, FinTransaction } from '@/lib/types';
+
+import { groupPurchases, monthSummary } from '../bankMonth';
+import { categoryRulesOf, pickCategory, purchaseRuleKey, similarRuleKey, similarText } from '../bankRules';
+
+const PERSON = 'c'.repeat(64);
+
+describe('similarText', () => {
+  it('tira números, acentos e palavras genéricas da descrição', () => {
+    expect(similarText('PADARIA SÃO JOÃO 0412')).toBe('padaria sao joao');
+    expect(similarText('Compra no débito - LOJA DO ZÉ 12/10')).toBe('compra no debito loja do ze');
+  });
+
+  it('descrição só com palavras genéricas não junta nada', () => {
+    expect(similarText('Pix enviado')).toBeNull();
+    expect(similarText('Transferência enviada 123456')).toBeNull();
+    expect(similarText('Pagamento de boleto')).toBeNull();
+    expect(similarText('COMPRA CARTAO DEB 0410')).toBeNull();
+  });
+
+  it('corta textos longos', () => {
+    expect(similarText(`loja ${'a'.repeat(200)}`)?.length).toBeLessThanOrEqual(80);
+  });
+});
+
+describe('similarRuleKey', () => {
+  it('PIX para pessoa: o hash do CPF, nunca o nome', () => {
+    expect(similarRuleKey({ counterparty_doc_kind: 'CPF', counterparty_doc_hash: PERSON }, 'Maria Silva')).toBe(`doc:${PERSON}`);
+    // Sem o hash (documento mascarado), não dá para saber se é a mesma pessoa.
+    expect(similarRuleKey({ counterparty_doc_kind: 'CPF', counterparty_doc_hash: null }, 'Maria Silva')).toBeNull();
+  });
+
+  it('loja ou empresa: o nome', () => {
+    expect(similarRuleKey({ counterparty_doc_kind: 'CNPJ', counterparty_doc_hash: null }, 'Padaria Real Ltda')).toBe(
+      'm:padaria real ltda',
+    );
+    expect(similarRuleKey({ counterparty_doc_kind: null, counterparty_doc_hash: null }, 'Pix enviado')).toBeNull();
+  });
+});
+
+describe('pickCategory', () => {
+  const rules = categoryRulesOf([
+    { match_key: 'm:padaria real', category: 'mercado' },
+    { match_key: purchaseRuleKey('tx-1'), category: 'lazer' },
+  ]);
+
+  it('a escolha da compra vence a das parecidas, que vence a automática', () => {
+    expect(pickCategory(rules, 'tx-1', 'm:padaria real', 'outros')).toEqual({ category: 'lazer', source: 'manual' });
+    expect(pickCategory(rules, 'tx-2', 'm:padaria real', 'outros')).toEqual({ category: 'mercado', source: 'similar' });
+    expect(pickCategory(rules, 'tx-2', 'm:outra loja', 'outros')).toEqual({ category: 'outros', source: 'auto' });
+    expect(pickCategory(rules, 'tx-2', null, 'transporte')).toEqual({ category: 'transporte', source: 'auto' });
+  });
+});
+
+describe('groupPurchases com as categorias escolhidas', () => {
+  const checking: FinAccount = {
+    id: 'conta',
+    connection_id: 'conn',
+    pluggy_account_id: 'p-conta',
+    type: 'BANK',
+    subtype: 'CHECKING_ACCOUNT',
+    name: null,
+    marketing_name: null,
+    number_last4: null,
+    owner_doc_hash: 'a'.repeat(64),
+    balance: null,
+    currency_code: 'BRL',
+    credit_limit: null,
+    available_credit: null,
+    bill_due_date: null,
+    bill_close_date: null,
+    minimum_payment: null,
+    updated_at: '2026-10-07T12:00:00Z',
+  };
+  let seq = 0;
+  const tx = (over: Partial<FinTransaction>): FinTransaction => {
+    seq += 1;
+    return {
+      id: `t${seq}`,
+      account_id: checking.id,
+      pluggy_transaction_id: `p${seq}`,
+      status: 'POSTED',
+      direction: 'DEBIT',
+      amount: 100,
+      original_amount: null,
+      original_currency: null,
+      occurred_on: '2026-10-05',
+      purchase_on: null,
+      description: 'COMPRA',
+      description_raw: null,
+      category_id: null,
+      category: null,
+      operation_type: null,
+      payment_method: null,
+      merchant_name: null,
+      merchant_cnpj: null,
+      counterparty_name: null,
+      counterparty_doc_kind: null,
+      counterparty_doc_hash: null,
+      counterparty_cnpj: null,
+      boleto_barcode: null,
+      installment_number: null,
+      total_installments: null,
+      card_bill_id: null,
+      bill_forecast: null,
+      other_credits_type: null,
+      fee_type: null,
+      deleted_at: null,
+      first_seen_at: '2026-10-05T12:00:00Z',
+      updated_at: '2026-10-05T12:00:00Z',
+      ...over,
+    };
+  };
+
+  it('PIX para a mesma pessoa passa para a categoria escolhida, e o resumo do mês acompanha', () => {
+    const rent = (day: string) =>
+      tx({
+        occurred_on: day,
+        amount: 2000,
+        description: 'Pix enviado',
+        counterparty_name: 'Maria Silva',
+        counterparty_doc_kind: 'CPF',
+        counterparty_doc_hash: PERSON,
+      });
+    const txs = [rent('2026-09-05'), rent('2026-10-05'), tx({ description: 'LOJA QUALQUER', amount: 50 })];
+    const before = groupPurchases(txs, [checking]);
+    expect(before.filter((p) => p.amount === 2000).map((p) => p.category)).toEqual(['outros', 'outros']);
+
+    const rules = categoryRulesOf([{ match_key: `doc:${PERSON}`, category: 'moradia' }]);
+    const after = groupPurchases(txs, [checking], undefined, rules);
+    const rents = after.filter((p) => p.amount === 2000);
+    expect(rents.map((p) => [p.category, p.autoCategory, p.categorySource])).toEqual([
+      ['moradia', 'outros', 'similar'],
+      ['moradia', 'outros', 'similar'],
+    ]);
+    // O nome da pessoa continua fora do retrato, mesmo com uma categoria escolhida.
+    expect(rents.every((p) => p.personTransfer && p.storeName === null)).toBe(true);
+    expect(monthSummary(after, '2026-10').byCategory).toEqual([
+      { category: 'moradia', amount: 2000 },
+      { category: 'outros', amount: 50 },
+    ]);
+  });
+
+  it('escolha só para uma compra não muda as parecidas', () => {
+    const a = tx({ description: 'PADARIA REAL 01', amount: 10 });
+    const b = tx({ description: 'PADARIA REAL 02', amount: 20 });
+    const rules = categoryRulesOf([
+      { match_key: 'm:padaria real', category: 'mercado' },
+      { match_key: purchaseRuleKey(`tx-${b.id}`), category: 'lazer' },
+    ]);
+    const purchases = groupPurchases([a, b], [checking], undefined, rules);
+    expect(purchases.map((p) => [p.amount, p.category, p.categorySource])).toEqual([
+      [20, 'lazer', 'manual'],
+      [10, 'mercado', 'similar'],
+    ]);
+  });
+
+  it('escolher saúde deixa a compra sensível; tirar de saúde não tira o sigilo', () => {
+    const clinic = tx({ description: 'ESPACO VIVER BEM', amount: 300 });
+    const [chosen] = groupPurchases([clinic], [checking], undefined, categoryRulesOf([{ match_key: 'm:espaco viver bem', category: 'saude' }]));
+    expect(chosen).toMatchObject({ category: 'saude', sensitive: true });
+
+    const pharmacy = tx({ description: 'DROGASIL 123', category: 'Pharmacy' });
+    const [moved] = groupPurchases([pharmacy], [checking], undefined, categoryRulesOf([{ match_key: 'm:drogasil', category: 'mercado' }]));
+    expect(moved).toMatchObject({ category: 'mercado', sensitive: true });
+  });
+
+  it('nome de pessoa na maquininha não vira loja só porque a pessoa escolheu uma categoria', () => {
+    const card: FinAccount = { ...checking, id: 'cartao', type: 'CREDIT', subtype: 'CREDIT_CARD' };
+    const sale = tx({ account_id: card.id, description: 'MERCADOPAGO*JULIANAPRADO' });
+    const rules = categoryRulesOf([{ match_key: 'm:julianaprado', category: 'lazer' }]);
+    const [p] = groupPurchases([sale], [checking, card], undefined, rules);
+    expect(p).toMatchObject({ category: 'lazer', autoCategory: 'outros', storeName: null });
+  });
+});

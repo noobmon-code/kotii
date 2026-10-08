@@ -7,6 +7,7 @@ import type { FinAccount, FinConnection, FinTransaction } from '@/lib/types';
 
 import { financeCategoryOfBank, isSensitiveBankTx, normalizeBankText } from './bankCategories';
 import { type BankKind, classifyBankTransaction, isTransferLike, ownerHashes } from './bankClassify';
+import { type CategoryRules, type CategorySource, NO_RULES, pickCategory, similarRuleKey } from './bankRules';
 import { addDays, addMonths, diffDays } from './dates';
 import { type FinanceCategory, monthRange, shiftMonth } from './finance';
 
@@ -20,7 +21,14 @@ export interface BankPurchase {
   description: string;
   merchantName: string | null;
   merchantCnpj: string | null;
+  /** A escolhida pela pessoa (bankRules) ou, sem escolha, a automática. */
   category: FinanceCategory;
+  /** A que o consultor deduziu sozinho (Pluggy, descrição, loja). */
+  autoCategory: FinanceCategory;
+  /** De onde veio `category`: automática, regra das parecidas ou escolha só para esta compra. */
+  categorySource: CategorySource;
+  /** Chave de "todas as parecidas" (bankRules); null quando a descrição é genérica demais. */
+  similarKey: string | null;
   kind: BankKind;
   /** Ainda pendente no banco: aparece como "previsto". */
   pending: boolean;
@@ -157,11 +165,15 @@ const isParcel = (tx: FinTransaction) =>
   tx.installment_number >= 1 &&
   tx.installment_number <= tx.total_installments;
 
-/** Lançamentos do banco -> compras. Lançamentos apagados na Pluggy ficam de fora. */
+/**
+ * Lançamentos do banco -> compras. Lançamentos apagados na Pluggy ficam de
+ * fora. `rules` são as categorias que a pessoa escolheu (bankRules).
+ */
 export function groupPurchases(
   txs: FinTransaction[],
   accounts: FinAccount[],
   ownerDocHashes: Iterable<string> = ownerHashes(accounts),
+  rules: CategoryRules = NO_RULES,
 ): BankPurchase[] {
   const accountsById = new Map(accounts.map((a) => [a.id, a]));
   const owners = new Set(ownerDocHashes);
@@ -178,28 +190,37 @@ export function groupPurchases(
       continue;
     }
     const description = tidy(tx.description);
-    const category = financeCategoryOfBank(tx);
+    const key = `tx-${tx.id}`;
+    const merchantName = merchantNameOf(tx, description);
+    const autoCategory = financeCategoryOfBank(tx);
+    const similarKey = similarRuleKey(tx, merchantName ?? description);
+    const { category, source } = pickCategory(rules, key, similarKey, autoCategory);
     purchases.push({
-      key: `tx-${tx.id}`,
+      key,
       date: effectiveDate(tx),
       amount: Number(tx.amount),
       description,
-      merchantName: merchantNameOf(tx, description),
+      merchantName,
       merchantCnpj: tx.merchant_cnpj ?? tx.counterparty_cnpj,
       category,
+      autoCategory,
+      categorySource: source,
+      similarKey,
       kind,
       pending: tx.status === 'PENDING',
       accountId: tx.account_id,
       installments: null,
       txIds: [tx.id],
       personTransfer: tx.counterparty_doc_kind === 'CPF' && (kind === 'spending' || kind === 'income' || kind === 'refund'),
-      sensitive: isSensitiveBankTx(tx),
-      storeName: storeNameOf(tx, accountsById.get(tx.account_id), description, category),
+      // Saúde escolhida pela pessoa também só vai somada; tirar de saúde não tira o sigilo.
+      sensitive: isSensitiveBankTx(tx) || category === 'saude',
+      // Nome de pessoa como loja só passa pela categoria automática, nunca pela escolha da pessoa.
+      storeName: storeNameOf(tx, accountsById.get(tx.account_id), description, autoCategory),
       refundOf: null,
     });
   }
 
-  for (const group of groupParcels(toParcels(parcels))) purchases.push(purchaseOfGroup(group, accountsById));
+  for (const group of groupParcels(toParcels(parcels))) purchases.push(purchaseOfGroup(group, accountsById, rules));
   linkRefunds(purchases);
   return purchases.sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount || a.key.localeCompare(b.key));
 }
@@ -558,7 +579,7 @@ function mergeLateParcels(groups: Group[]): Group[] {
   return out;
 }
 
-function purchaseOfGroup(group: Group, accountsById: Map<string, FinAccount>): BankPurchase {
+function purchaseOfGroup(group: Group, accountsById: Map<string, FinAccount>, rules: CategoryRules): BankPurchase {
   const members = [...group.members].sort((a, b) => a.number - b.number);
   const first = members[0];
   const last = members[members.length - 1];
@@ -567,24 +588,31 @@ function purchaseOfGroup(group: Group, accountsById: Map<string, FinAccount>): B
   const parcel = last.amount;
   const seenSum = members.reduce((sum, m) => sum + m.amount, 0);
   const description = stripParcelMarker(first.tx.description);
-  const category = financeCategoryOfBank(first.tx);
+  const key = `parc-${first.tx.id}`;
+  const merchantName = merchantNameOf(first.tx, description);
+  const autoCategory = financeCategoryOfBank(first.tx);
+  const similarKey = similarRuleKey(first.tx, merchantName ?? description);
+  const { category, source } = pickCategory(rules, key, similarKey, autoCategory);
   return {
-    key: `parc-${first.tx.id}`,
+    key,
     // Estimada, vale a da parcela mais antiga: é a que caiu mais perto da compra.
     date: group.exact ? group.anchor : first.anchor,
     amount: round2(seenSum + (total - members.length) * parcel),
     description,
-    merchantName: merchantNameOf(first.tx, description),
+    merchantName,
     merchantCnpj: first.tx.merchant_cnpj ?? first.tx.counterparty_cnpj,
     category,
+    autoCategory,
+    categorySource: source,
+    similarKey,
     kind: first.kind,
     pending: members.every((m) => m.tx.status === 'PENDING'),
     accountId: first.tx.account_id,
     installments: { seen: members.map((m) => m.number), total, parcel },
     txIds: members.map((m) => m.tx.id),
     personTransfer: false,
-    sensitive: members.some((m) => isSensitiveBankTx(m.tx)),
-    storeName: storeNameOf(first.tx, accountsById.get(first.tx.account_id), description, category),
+    sensitive: members.some((m) => isSensitiveBankTx(m.tx)) || category === 'saude',
+    storeName: storeNameOf(first.tx, accountsById.get(first.tx.account_id), description, autoCategory),
     refundOf: null,
   };
 }
