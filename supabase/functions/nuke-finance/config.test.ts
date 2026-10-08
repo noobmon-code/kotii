@@ -13,16 +13,16 @@ Deno.test('financeConfig fails closed without the Anthropic key, even with OpenR
   );
 });
 
-Deno.test('financeConfig always uses Anthropic, Sonnet 5.5 unless FINANCE_MODEL says otherwise', () => {
-  assertEquals(FINANCE_DEFAULT_MODEL, 'claude-sonnet-5-5');
+Deno.test('financeConfig always uses Anthropic, Haiku 5.5 unless FINANCE_MODEL says otherwise', () => {
+  assertEquals(FINANCE_DEFAULT_MODEL, 'claude-haiku-5-5');
   assertEquals(financeConfig(env({ ANTHROPIC_API_KEY: 'an', OPENROUTER_API_KEY: 'or', FINANCE_PROVIDER: 'openrouter' })), {
     provider: 'anthropic',
-    model: 'claude-sonnet-5-5',
+    model: 'claude-haiku-5-5',
     modelEnv: 'FINANCE_MODEL',
     apiKey: 'an',
   });
   const custom = financeConfig(env({ ANTHROPIC_API_KEY: 'an', FINANCE_MODEL: ' claude-opus-5-5 ', NUKE_MODEL: 'x' }));
   assertEquals(typeof custom !== 'string' && custom.model, 'claude-opus-5-5');
   const blank = financeConfig(env({ ANTHROPIC_API_KEY: 'an', FINANCE_MODEL: '  ' }));
-  assertEquals(typeof blank !== 'string' && blank.model, 'claude-sonnet-5-5');
+  assertEquals(typeof blank !== 'string' && blank.model, 'claude-haiku-5-5');
 });

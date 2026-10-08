@@ -9,7 +9,7 @@ import { financeChatHandler, NOT_ALLOWED_MESSAGE } from './handler.ts';
 
 type RpcResult = { data: unknown; error: unknown };
 
-const config: VisionConfig = { provider: 'anthropic', model: 'claude-sonnet-5-5', modelEnv: 'FINANCE_MODEL', apiKey: 'k' };
+const config: VisionConfig = { provider: 'anthropic', model: 'claude-haiku-5-5', modelEnv: 'FINANCE_MODEL', apiKey: 'k' };
 const body = {
   messages: [{ role: 'user', text: 'Quanto gastei com mercado?' }],
   context: 'Mercado no mês: R$ 812,40',

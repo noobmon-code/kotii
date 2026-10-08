@@ -5,7 +5,7 @@
 
 import type { VisionConfig } from '../_shared/vision.ts';
 
-export const FINANCE_DEFAULT_MODEL = 'claude-sonnet-5-5';
+export const FINANCE_DEFAULT_MODEL = 'claude-haiku-5-5';
 
 export const MISSING_KEY_MESSAGE =
   'O consultor financeiro ainda não está configurado: cadastre ANTHROPIC_API_KEY nos secrets do Supabase.';

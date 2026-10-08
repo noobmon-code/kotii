@@ -7,7 +7,7 @@
 // sugestão: quem executa é o app, depois do toque da pessoa.
 //
 // Secrets: ANTHROPIC_API_KEY (obrigatório; nunca usa a OpenRouter) e
-// FINANCE_MODEL opcional (padrão claude-sonnet-5-5). Cada mensagem conta no
+// FINANCE_MODEL opcional (padrão claude-haiku-5-5). Cada mensagem conta no
 // limite mensal 'finance' (use_ai), que só vale com a liberação.
 
 import { createClient } from '@supabase/supabase-js';
