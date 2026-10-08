@@ -56,8 +56,8 @@ export const REMINDER_PLACE = Platform.OS === 'web' ? 'neste navegador' : 'neste
 /** O que fazer quando a permissão foi negada. */
 export const PERMISSION_HINT =
   Platform.OS === 'web'
-    ? 'Permita as notificações do Nooky nas configurações do navegador.'
-    : 'Permita as notificações do Nooky nos ajustes do celular.';
+    ? 'Permita as notificações do Kotii nas configurações do navegador.'
+    : 'Permita as notificações do Kotii nos ajustes do celular.';
 
 /**
  * Lembrete ligado de saída num remédio novo? No navegador, só com a permissão
@@ -72,7 +72,7 @@ export function remindersUnavailableReason(): string | null {
   if (remindersSupported) return null;
   if (Platform.OS !== 'web') return 'Os avisos por notificação funcionam no app instalado; no Expo Go do Android eles ficam desligados.';
   if (webPush().needsHomeScreen()) {
-    return 'No iPhone, os avisos chegam com o Nooky na tela de início: no Safari, toque em Compartilhar → Adicionar à Tela de Início e abra o app por lá.';
+    return 'No iPhone, os avisos chegam com o Kotii na tela de início: no Safari, toque em Compartilhar → Adicionar à Tela de Início e abra o app por lá.';
   }
   return 'Este navegador não recebe notificações. Use o Chrome, o Edge, o Firefox ou o Safari atualizados, ou o app instalado no celular.';
 }
@@ -127,7 +127,7 @@ let queue: Promise<unknown> = Promise.resolve();
 function serialized<T>(task: () => Promise<T>): Promise<T> {
   const locked = () =>
     Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.locks
-      ? (navigator.locks.request('nooky-lembretes', task) as Promise<T>)
+      ? (navigator.locks.request('kotii-lembretes', task) as Promise<T>)
       : task();
   const run = queue.then(locked, locked);
   queue = run.catch(() => undefined);

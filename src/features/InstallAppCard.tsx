@@ -5,7 +5,7 @@ import { Mascot } from '@/ui/art';
 import { Button, Card, Row, Text } from '@/ui/primitives';
 import { space, useTint } from '@/ui/theme';
 
-/** Na web, convida a pôr o Nooky na tela inicial do celular. */
+/** Na web, convida a pôr o Kotii na tela inicial do celular. */
 export function InstallAppCard() {
   const { mode, install, dismiss } = useInstallApp();
   const tint = useTint('orange');
@@ -15,7 +15,7 @@ export function InstallAppCard() {
       <Row style={styles.top}>
         <Mascot size={52} color={tint.art} />
         <View style={styles.flex}>
-          <Text variant="label">Tenha o Nooky na tela inicial</Text>
+          <Text variant="label">Tenha o Kotii na tela inicial</Text>
           <Text variant="small">
             {mode === 'ios'
               ? 'No Safari, toque em Compartilhar (o quadrado com a seta) e depois em "Adicionar à Tela de Início".'

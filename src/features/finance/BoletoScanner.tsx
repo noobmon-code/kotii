@@ -55,7 +55,7 @@ export function BoletoScanner({ onRead, onClose }: { onRead: (boleto: Boleto) =>
             </View>
           ) : (
             <Card style={styles.gap}>
-              <Text variant="body">Para ler o código de barras, o Nooky precisa usar a câmera.</Text>
+              <Text variant="body">Para ler o código de barras, o Kotii precisa usar a câmera.</Text>
               <Button title="Permitir a câmera" icon="camera-outline" onPress={() => requestPermission()} />
             </Card>
           )}

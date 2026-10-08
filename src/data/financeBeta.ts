@@ -12,7 +12,7 @@ import { useMemo } from 'react';
 
 import { useBudgets, useSaveBudgets } from '@/data/finance';
 import { functionErrorMessage } from '@/data/images';
-import { nookyRecordsFrom, type NookyRecord } from '@/domain/bankMatch';
+import { kotiiRecordsFrom, type KotiiRecord } from '@/domain/bankMatch';
 import { financeFetchStart, financeWindowStart } from '@/domain/bankMonth';
 import { toISODate } from '@/domain/dates';
 import { getFinanceCategory } from '@/domain/finance';
@@ -159,13 +159,13 @@ type PaymentRow = { id: string; paid_on: string; amount: number; bill: { name: s
 type ExpenseRow = { id: string; spent_on: string; amount: number; description: string };
 
 /** Notas confirmadas, contas pagas e gastos avulsos desde `fromDate`, para a conferência com o banco. */
-export function useFinNookyRecords(fromDate: string) {
+export function useFinKotiiRecords(fromDate: string) {
   const { enabled } = useFinScope();
   return useQuery({
     // Começa com 'spending': confirmar nota, pagar conta ou salvar gasto já recarrega.
     queryKey: ['spending', 'bankMatch', fromDate],
     enabled,
-    queryFn: async (): Promise<NookyRecord[]> => {
+    queryFn: async (): Promise<KotiiRecord[]> => {
       // Data da compra no fuso do aparelho, como no resumo (useSpending).
       const [y, m, d] = fromDate.split('-').map(Number);
       const startAt = new Date(y, m - 1, d).toISOString();
@@ -178,7 +178,7 @@ export function useFinNookyRecords(fromDate: string) {
         supabase.from('bill_payments').select('id, paid_on, amount, bill:bills(name)').gte('paid_on', fromDate),
         supabase.from('expenses').select('id, spent_on, amount, description').gte('spent_on', fromDate),
       ]);
-      return nookyRecordsFrom({
+      return kotiiRecordsFrom({
         receipts: (unwrap(receipts) as unknown as ReceiptRow[]).map((r) => ({
           id: r.id,
           date: toISODate(new Date(r.purchased_at)),
@@ -206,7 +206,7 @@ export interface FinanceData {
   accounts: FinAccount[];
   transactions: FinTransaction[];
   budgets: { category: string; monthly_limit: number }[];
-  nookyRecords: NookyRecord[];
+  kotiiRecords: KotiiRecord[];
 }
 
 export type FinanceDataState =
@@ -227,7 +227,7 @@ export function useFinanceData(today: string): FinanceDataState {
   const accounts = useFinAccounts();
   const transactions = useFinTransactions(financeFetchStart(today));
   const budgets = useBudgets();
-  const records = useFinNookyRecords(fromDate);
+  const records = useFinKotiiRecords(fromDate);
 
   const queries = [connections, accounts, transactions, budgets, records];
   const failed = queries.find((q) => q.data === undefined && q.isError);
@@ -239,7 +239,7 @@ export function useFinanceData(today: string): FinanceDataState {
             accounts: accounts.data,
             transactions: transactions.data,
             budgets: budgets.data,
-            nookyRecords: records.data,
+            kotiiRecords: records.data,
           }
         : null,
     [connections.data, accounts.data, transactions.data, budgets.data, records.data],

@@ -19,7 +19,7 @@ export const LIST_PHOTO_BUCKET = 'documents';
 export const LIST_PHOTO_KEY = ['listItemPhoto'];
 export const LIST_PHOTO_SCOPE = { id: 'list-photos' };
 
-const PENDING_PREFIX = 'nooky:pending-photo:';
+const PENDING_PREFIX = 'kotii:pending-photo:';
 const WEEK_SECONDS = 7 * 24 * 60 * 60;
 
 export interface ListPhotoInput {

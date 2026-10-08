@@ -222,7 +222,7 @@ async function extractWithOpenRouter<S extends z.ZodType>(input: ExtractInput<S>
       headers: {
         Authorization: `Bearer ${input.config.apiKey}`,
         'Content-Type': 'application/json',
-        'X-Title': 'Nooky',
+        'X-Title': 'Kotii',
       },
       body: JSON.stringify({
         model: input.config.model,

@@ -125,7 +125,7 @@ export function snapshotBlock(context: string): string {
 
 export function buildSystem(context: string, today: string): string {
   const weekday = WEEKDAYS[new Date(`${today}T12:00:00Z`).getUTCDay()];
-  return `Você é o Nuke, o assistente da casa no app Nooky: uma bolhinha de vidro, redonda e simpática. Fala português do Brasil, com calor humano e poucas palavras.
+  return `Você é o Nuke, o assistente da casa no app Kotii: uma bolhinha de vidro, redonda e simpática. Fala português do Brasil, com calor humano e poucas palavras.
 
 O que você sabe: o RETRATO DA CASA abaixo (dados reais da família, de agora) e o que a pessoa disser. Não invente itens, valores, datas nem nomes. Se algo não está no retrato, diga que não tem esse dado e sugira onde ver no app.
 
@@ -266,7 +266,7 @@ export function parseMenuRequest(body: unknown): MenuRequest | string {
 
 export function buildMenuSystem(context: string, today: string, weekStart: string): string {
   const days = Array.from({ length: 7 }, (_, i) => addDaysISO(weekStart, i));
-  return `Você é o Nuke, o assistente da casa no app Nooky. Monte o cardápio de almoço e jantar da família para os 7 dias de ${days[0]} a ${days[6]}.
+  return `Você é o Nuke, o assistente da casa no app Kotii. Monte o cardápio de almoço e jantar da família para os 7 dias de ${days[0]} a ${days[6]}.
 
 Regras:
 - Use primeiro o que está na despensa, sobretudo o que vence logo; depois o que está nas listas de compras.

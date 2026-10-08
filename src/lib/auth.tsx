@@ -33,7 +33,7 @@ const MAX_TIMEOUT = 2 ** 31 - 1;
 // ~30 s e responde sem sessão, embora a conta continue guardada. Com ela, o
 // app abre na hora com o que está no aparelho; o Supabase confirma quando a
 // conexão volta.
-const LAST_SESSION_KEY = 'nooky:last-session';
+const LAST_SESSION_KEY = 'kotii:last-session';
 
 async function readLastSession(): Promise<AppSession | null> {
   try {

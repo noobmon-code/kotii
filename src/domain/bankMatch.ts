@@ -1,12 +1,12 @@
 // Consultor financeiro (beta): conferência só de leitura entre as compras do
-// banco e o que a casa já registrou no Nooky (notas, contas pagas, gastos).
-// Nada é gravado: a tela mostra "já no Nooky" e "só no banco" com sugestões.
+// banco e o que a casa já registrou no Kotii (notas, contas pagas, gastos).
+// Nada é gravado: a tela mostra "já no Kotii" e "só no banco" com sugestões.
 
 import { normalizeBankText } from './bankCategories';
 import type { BankPurchase } from './bankMonth';
 import { diffDays } from './dates';
 
-export interface NookyRecord {
+export interface KotiiRecord {
   kind: 'nota' | 'conta' | 'gasto';
   id: string;
   amount: number;
@@ -19,18 +19,18 @@ export interface NookyRecord {
 
 export interface BankMatch {
   purchase: BankPurchase;
-  record: NookyRecord;
+  record: KotiiRecord;
   confidence: 'alta' | 'media';
   reason: string;
 }
 
 export interface Reconciliation {
   matched: BankMatch[];
-  bankOnly: { purchase: BankPurchase; suggestions: NookyRecord[] }[];
-  nookyOnly: NookyRecord[];
+  bankOnly: { purchase: BankPurchase; suggestions: KotiiRecord[] }[];
+  kotiiOnly: KotiiRecord[];
 }
 
-/** Até tantos dias entre o banco e o registro do Nooky. */
+/** Até tantos dias entre o banco e o registro do Kotii. */
 export const MATCH_DAYS = 3;
 /** Nota com o mesmo CNPJ e o banco até 15% acima: gorjeta ou taxa de serviço. */
 export const TIP_RATIO = 1.15;
@@ -75,7 +75,7 @@ interface Candidate {
   reason: string;
 }
 
-function candidate(purchase: BankPurchase, record: NookyRecord): Omit<Candidate, 'p' | 'r'> | null {
+function candidate(purchase: BankPurchase, record: KotiiRecord): Omit<Candidate, 'p' | 'r'> | null {
   const days = Math.abs(diffDays(purchase.date, record.date));
   if (days > MATCH_DAYS) return null;
   const cnpj = digits(record.cnpj);
@@ -100,11 +100,11 @@ function candidate(purchase: BankPurchase, record: NookyRecord): Omit<Candidate,
 }
 
 /**
- * Casa cada compra (só saídas) com no máximo um registro do Nooky, do par
+ * Casa cada compra (só saídas) com no máximo um registro do Kotii, do par
  * mais forte para o mais fraco. Se uma compra empata entre dois registros,
  * ninguém decide por ela: fica em "só no banco" com os dois como sugestão.
  */
-export function matchBankToNooky(purchases: BankPurchase[], records: NookyRecord[]): Reconciliation {
+export function matchBankToKotii(purchases: BankPurchase[], records: KotiiRecord[]): Reconciliation {
   const spending = purchases.filter((p) => p.kind === 'spending');
   const candidates: Candidate[] = [];
   spending.forEach((purchase, p) =>
@@ -143,54 +143,54 @@ export function matchBankToNooky(purchases: BankPurchase[], records: NookyRecord
       .map((c) => records[c.r]);
     bankOnly.push({ purchase, suggestions });
   });
-  return { matched, bankOnly, nookyOnly: records.filter((_, r) => !usedRecords.has(r)) };
+  return { matched, bankOnly, kotiiOnly: records.filter((_, r) => !usedRecords.has(r)) };
 }
 
 /**
  * A conferência de um período, tirada da conferência da janela inteira:
  * casar mês a mês deixaria um registro perto da virada servir a uma compra
- * em cada mês (e contar duas vezes em "já no Nooky").
+ * em cada mês (e contar duas vezes em "já no Kotii").
  */
 export function reconciliationInRange(result: Reconciliation, range: { start: string; end: string }): Reconciliation {
   const inRange = (date: string) => date >= range.start && date < range.end;
   return {
     matched: result.matched.filter((m) => inRange(m.purchase.date)),
     bankOnly: result.bankOnly.filter((b) => inRange(b.purchase.date)),
-    nookyOnly: result.nookyOnly.filter((r) => inRange(r.date)),
+    kotiiOnly: result.kotiiOnly.filter((r) => inRange(r.date)),
   };
 }
 
-/** Quanto das saídas do banco já está no Nooky e quanto está só no banco. */
+/** Quanto das saídas do banco já está no Kotii e quanto está só no banco. */
 export function reconciliationTotals(result: Reconciliation): {
-  inNooky: number;
-  inNookyCount: number;
+  inKotii: number;
+  inKotiiCount: number;
   bankOnly: number;
   bankOnlyCount: number;
 } {
   const sum = (values: number[]) => Math.round(values.reduce((s, v) => s + v, 0) * 100) / 100;
   return {
-    inNooky: sum(result.matched.map((m) => m.purchase.amount)),
-    inNookyCount: result.matched.length,
+    inKotii: sum(result.matched.map((m) => m.purchase.amount)),
+    inKotiiCount: result.matched.length,
     bankOnly: sum(result.bankOnly.map((b) => b.purchase.amount)),
     bankOnlyCount: result.bankOnly.length,
   };
 }
 
 /** Notas confirmadas, contas pagas e gastos avulsos como registros para a conferência. */
-export function nookyRecordsFrom(input: {
+export function kotiiRecordsFrom(input: {
   receipts?: { id: string; date: string; total: number | null; store: string | null; cnpj: string | null }[];
   payments?: { id: string; paid_on: string; amount: number; bill_name: string }[];
   expenses?: { id: string; spent_on: string; amount: number; description: string }[];
-}): NookyRecord[] {
+}): KotiiRecord[] {
   return [
     ...(input.receipts ?? [])
       .filter((r) => r.total != null && r.total > 0)
-      .map((r): NookyRecord => ({ kind: 'nota', id: r.id, amount: Number(r.total), date: r.date, label: r.store ?? 'Nota fiscal', cnpj: r.cnpj })),
+      .map((r): KotiiRecord => ({ kind: 'nota', id: r.id, amount: Number(r.total), date: r.date, label: r.store ?? 'Nota fiscal', cnpj: r.cnpj })),
     ...(input.payments ?? []).map(
-      (p): NookyRecord => ({ kind: 'conta', id: p.id, amount: Number(p.amount), date: p.paid_on, label: p.bill_name, cnpj: null }),
+      (p): KotiiRecord => ({ kind: 'conta', id: p.id, amount: Number(p.amount), date: p.paid_on, label: p.bill_name, cnpj: null }),
     ),
     ...(input.expenses ?? []).map(
-      (e): NookyRecord => ({ kind: 'gasto', id: e.id, amount: Number(e.amount), date: e.spent_on, label: e.description, cnpj: null }),
+      (e): KotiiRecord => ({ kind: 'gasto', id: e.id, amount: Number(e.amount), date: e.spent_on, label: e.description, cnpj: null }),
     ),
   ];
 }

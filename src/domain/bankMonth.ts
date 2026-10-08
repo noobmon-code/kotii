@@ -749,7 +749,7 @@ export function financeFetchStart(today: string): string {
   return addDays(financeWindowStart(today), -FINANCE_LOOKBACK_DAYS);
 }
 
-/** Compras com data na janela: o que a tela e o retrato listam e conferem com o Nooky. */
+/** Compras com data na janela: o que a tela e o retrato listam e conferem com o Kotii. */
 export function windowPurchases(purchases: BankPurchase[], today: string): BankPurchase[] {
   const start = financeWindowStart(today);
   return purchases.filter((p) => p.date >= start);

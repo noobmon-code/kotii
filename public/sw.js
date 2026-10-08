@@ -1,11 +1,11 @@
-// Service worker do Nooky na web: guarda o app para abrir sem internet e
+// Service worker do Kotii na web: guarda o app para abrir sem internet e
 // mostra os avisos que chegam por Web Push (a agenda fica no servidor; ver
 // src/lib/webPush.ts e a função send-push).
 // - Páginas: rede primeiro; sem rede, a última index.html guardada (sempre com os bundles dela).
 // - /_expo/static, /assets e /icons: arquivos com hash no nome, guardados já
 //   na instalação (e na primeira vez que aparecem) e servidos do cache depois.
 // - O resto (Supabase, outros domínios) passa direto: os dados ficam com o app.
-const VERSION = 'nooky-v1';
+const VERSION = 'kotii-v1';
 const SHELL = '/index.html';
 const STATIC = ['/_expo/static/', '/assets/', '/icons/'];
 
@@ -133,7 +133,7 @@ self.addEventListener('push', (event) => {
     message = { body: event.data ? event.data.text() : '' };
   }
   event.waitUntil(
-    self.registration.showNotification(message.title || 'Nooky', {
+    self.registration.showNotification(message.title || 'Kotii', {
       body: message.body || '',
       icon: '/icons/icon-192.png',
       badge: '/icons/icon-192.png',

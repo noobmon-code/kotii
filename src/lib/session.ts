@@ -31,7 +31,8 @@ let signingOut = 0;
 // No navegador, o Supabase repassa o SIGNED_OUT às outras abas, onde
 // `signingOut` é zero. A hora do toque em "Sair" fica no localStorage (o
 // mesmo de todas as abas): um SIGNED_OUT logo depois dela também foi pedido.
-// Nome sem a marca: o app vai trocar de nome, e a chave dura só 15 s.
+// Nome sem a marca e que não muda: abas com versões diferentes do app (uma
+// ainda com o código antigo) precisam ler a mesma chave.
 const SIGN_OUT_INTENT_KEY = 'app:signout-intent';
 const SIGN_OUT_INTENT_MS = 15_000;
 

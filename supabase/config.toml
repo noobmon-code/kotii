@@ -1,5 +1,5 @@
 # Supabase CLI: `supabase link`, `supabase db push`, `supabase functions deploy`.
-project_id = "nooky"
+project_id = "kotii"
 
 # verify_jwt: a plataforma só deixa passar quem traz um token (o app manda o
 # da pessoa). As chamadas do pg_cron não mandam chave do Supabase, só o

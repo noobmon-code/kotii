@@ -76,7 +76,7 @@ let subscriptionChanged = false;
  * inscrição vencida e apagada pelo servidor), a agenda que o app guarda aqui
  * não está na nova: src/lib/reminders.ts refaz tudo (subscriptionChanged).
  */
-const LAST_SUBSCRIPTION_KEY = 'nooky:push-subscription';
+const LAST_SUBSCRIPTION_KEY = 'kotii:push-subscription';
 const lastSubscription = {
   get: (): string | null => {
     try {

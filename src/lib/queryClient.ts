@@ -170,7 +170,7 @@ export function setSessionValid(valid: boolean) {
   syncOnline();
 }
 
-const { persister, persistNow } = createCachePersister({ storage: AsyncStorage, key: 'nooky:query-cache', throttleMs: 1000 });
+const { persister, persistNow } = createCachePersister({ storage: AsyncStorage, key: 'kotii:query-cache', throttleMs: 1000 });
 
 // Consultas guardadas que mudaram de nome, com os mesmos dados: o cache de
 // versões anteriores volta com o nome novo (sem isso, aberto sem internet,

@@ -1,4 +1,4 @@
-# Nooky
+# Kotii
 
 App da casa para a família toda: listas de compras, notas fiscais com comparativo de preços entre mercados, despensa com validade automática, tarefas domésticas, saúde (remédios, consultas, vacinas, exames, treino e dieta) e finanças (gastos do mês e contas a pagar).
 
@@ -107,7 +107,7 @@ O backend já roda na nuvem (Supabase). O `npx expo start` só serve o código d
 
 **Android: APK instalável (grátis).** O build é feito na nuvem pelo EAS, da Expo.
 
-1. O projeto já existe na Expo (conta `Noobmon`; o Project ID está em `extra.eas.projectId` no `app.json`). No computador, com o repositório clonado e atualizado:
+1. O projeto da Expo fica na conta `Noobmon`, e o Project ID dele fica em `extra.eas.projectId` no `app.json`, gravado pelo `npx eas-cli@latest init`. No computador, com o repositório clonado e atualizado:
 
    ```bash
    npm install
@@ -122,11 +122,38 @@ O backend já roda na nuvem (Supabase). O `npx expo start` só serve o código d
 
    No fim sai um link do APK: abra no celular, instale e mande o link para a família. O perfil `production` gera o pacote da Play Store.
 
-**iPhone.** Instalar o app nativo exige conta Apple Developer (US$ 99/ano): com ela, o app vai para os celulares pelo TestFlight e, depois, para a App Store. Sem a conta, instale a versão web: no Safari, *Compartilhar → Adicionar à Tela de Início* (a tela Hoje mostra esse passo a passo). Ela abre em tela cheia, com o ícone do Nooky, e abre mesmo sem internet. Os avisos por notificação funcionam por ela (iOS 16.4 ou mais novo): Família → "Avisos neste navegador". No Safari sem instalar, não.
+**iPhone.** Instalar o app nativo exige conta Apple Developer (US$ 99/ano): com ela, o app vai para os celulares pelo TestFlight e, depois, para a App Store. Sem a conta, instale a versão web: no Safari, *Compartilhar → Adicionar à Tela de Início* (a tela Hoje mostra esse passo a passo). Ela abre em tela cheia, com o ícone do Kotii, e abre mesmo sem internet. Os avisos por notificação funcionam por ela (iOS 16.4 ou mais novo): Família → "Avisos neste navegador". No Safari sem instalar, não.
 
 **Versão web (Vercel).** O `vercel.json` já diz como gerar o site (`expo export`). No projeto da Vercel, em *Settings → Environment Variables*, cadastre as mesmas duas variáveis `EXPO_PUBLIC_*` como texto normal (não secretas) e publique de novo. O site é instalável (PWA): `public/index.html` é o modelo da página, com o manifesto (`public/manifest.webmanifest`), os ícones (`public/icons/`) e o service worker (`public/sw.js`, registrado por `public/sw-register.js`), que guarda o app no aparelho; no Android, o Chrome oferece "Instalar" e a tela Hoje tem o botão. O `vercel.json` também manda os cabeçalhos de segurança do site (CSP com a lista dos serviços que o app chama: Supabase, Open-Meteo, Nominatim, ViaCEP, BrasilAPI e as fontes do Google; um serviço novo precisa entrar lá).
 
-Identificador do app: `com.noobmon.nooky` (iOS e Android). Dá para trocar até o primeiro envio para as lojas; depois fica fixo.
+Identificador do app: `com.noobmon.kotii` (iOS e Android). Dá para trocar até o primeiro envio para as lojas; depois fica fixo.
+
+**Renomeação para Kotii.** O app trocou de nome e, junto, de slug e esquema (`kotii`), de identificador (`com.noobmon.kotii`) e das chaves que guarda no aparelho (`kotii:*`). Ninguém tinha o APK instalado e a versão web muda de endereço, então nada é migrado.
+
+**Antes do merge**, cada pessoa abre o app uma vez com internet, para que os itens marcados e as fotos tiradas sem internet sejam enviados. Assim que a Vercel publica o merge, o app passa a ler só as chaves `kotii:*`, mesmo no endereço de hoje, e o que ficou na fila antiga não é mais enviado.
+
+**Depois do merge:**
+
+1. **EAS:** o projeto que existia na Expo é ligado ao slug antigo, por isso o `app.json` está sem `extra.eas.projectId`. Rode `npx eas-cli@latest init` (logado com a conta Noobmon) para criar o projeto com o slug `kotii`, faça commit do `projectId` que ele grava no `app.json` e cadastre de novo, no projeto novo, as duas variáveis `EXPO_PUBLIC_*` (passo 2 do APK, acima).
+2. **Funções do Supabase:** o merge não publica as funções, e o nome do app mudou nas instruções do Nuke e no cabeçalho que vai para a OpenRouter. Até publicar de novo, o Nuke ainda se apresenta com o nome antigo e pode usá-lo nas respostas:
+
+   ```bash
+   npx supabase functions deploy nuke
+   npx supabase functions deploy parse-receipt
+   npx supabase functions deploy parse-health
+   npx supabase functions deploy nuke-finance   # se o consultor financeiro estiver em uso
+   ```
+
+   As outras não mudaram (na `finance`, só um comentário).
+3. **Vercel:** renomeie o projeto para `kotii`. Trocar o nome do projeto não basta para trocar o endereço: em *Settings → Domains*, confira que o subdomínio novo está lá (por exemplo `kotii.vercel.app`, se estiver livre; adicione, se não estiver). Não mexa ainda no endereço antigo: ele continua abrindo o app até o passo 5. As variáveis `EXPO_PUBLIC_*` continuam no projeto.
+4. **Supabase Auth:** em *Authentication → URL Configuration*, troque o *Site URL* pelo endereço novo, ponha o endereço novo nas *Redirect URLs* e tire o antigo de lá. Isso é obrigatório: um endereço `*.vercel.app` que sai da Vercel fica livre, e se outra conta o pegar, ela recebe os links de login.
+5. **Endereço antigo:** o app instalado por ele continua abrindo sem internet (o service worker guarda uma cópia), e uma janela que já estava aberta continua rodando, mesmo depois que o endereço deixa de servir o app. Se essa cópia ainda tiver a conta, ela inscreve o navegador de novo e os avisos chegam em dobro.
+   1. Enquanto o endereço antigo ainda abre o app, cada pessoa anota quais remédios estão com "Lembrar neste navegador" ligado (Saúde → cada remédio), abre o app antigo com internet e toca em Família → "Sair da conta". Isso tira os avisos daquele navegador e a conta dele, e a cópia guardada não consegue mais se inscrever.
+   2. Depois que todos saírem, em *Settings → Domains* da Vercel, deixe o endereço antigo só redirecionando para o novo, e não o tire nunca. Se ele sair da Vercel, outra conta pode pegá-lo e ler o login guardado nos navegadores que ainda o abrem. O redirecionamento não custa nada.
+   3. Antes de a família entrar no endereço novo, rode no SQL Editor `delete from public.push_subscriptions;` (a agenda de cada inscrição vai junto) e `delete from auth.sessions;`. O segundo comando encerra os logins que sobraram, inclusive de quem esqueceu de sair. Todo mundo entra de novo no passo 6.
+   4. Se ainda assim os avisos de alguém chegarem em dobro, essa pessoa apaga o atalho antigo (no Android ou no computador, também os dados do endereço antigo no Chrome). Depois, apague só as inscrições dela: `delete from public.push_subscriptions where user_id = (select id from auth.users where email = '...');`. Por fim, ela liga os avisos de novo no endereço novo.
+6. **Família:** cada pessoa abre o endereço novo, instala de novo o app na tela de início, apaga o atalho antigo (e não abre mais o endereço antigo) e entra de novo na conta. Depois, liga de novo os avisos: os da casa em Família → "Avisos neste navegador"; os de remédio, um por um, em Saúde → cada remédio anotado no passo 5 → "Lembrar neste navegador" → Salvar. O que o navegador guardava no endereço antigo não vem junto.
+7. **Opcional, para o nome antigo sumir de vez:** renomeie o repositório no GitHub para `kotii` (o GitHub redireciona o endereço antigo; confira em Vercel → *Settings → Git* que o repositório continua ligado e, nos clones, rode `git remote set-url origin https://github.com/noobmon-code/kotii`); apague o projeto antigo da Expo depois do `eas init`; troque o nome do projeto no Supabase (*Project Settings → General*); e, se os e-mails da conta forem personalizados, confira os modelos e o remetente em *Authentication → Emails*: são eles que chegam para as pessoas.
 
 ## Custos e limites que você precisa saber
 
@@ -152,7 +179,7 @@ Um Nuke só de finanças que lê os extratos dos seus bancos (conta e cartão) e
 
 **Para quem.** Só para quem foi liberado em `beta_access`, e só na casa liberada: nas outras casas da pessoa o consultor não aparece. Os dados do banco são da pessoa, não da casa: os outros moradores (inclusive o cônjuge) não veem nada, nem pelo app nem consultando o banco (a regra de acesso exige `user_id` da pessoa, a casa aberta e a liberação).
 
-**Modo sombra.** Os extratos ficam em tabelas próprias (`fin_connections`, `fin_accounts`, `fin_transactions`), que só a função `finance` grava. O resto das Finanças não muda: Resumo, orçamento, divisão da casa e o Nuke da casa continuam contando só o que foi registrado no app. A conciliação (o que do banco já está no Nooky como nota, conta paga ou gasto, e o que só está no banco, com sugestões de par) é só para ler: no MVP nada é lançado, ligado ou alterado sozinho.
+**Modo sombra.** Os extratos ficam em tabelas próprias (`fin_connections`, `fin_accounts`, `fin_transactions`), que só a função `finance` grava. O resto das Finanças não muda: Resumo, orçamento, divisão da casa e o Nuke da casa continuam contando só o que foi registrado no app. A conciliação (o que do banco já está no Kotii como nota, conta paga ou gasto, e o que só está no banco, com sugestões de par) é só para ler: no MVP nada é lançado, ligado ou alterado sozinho.
 
 **O que mostra** (Finanças → Resumo → cartão "Consultor financeiro"): saídas, entradas e previsto (lançamento ainda pendente no banco) do mês, pela data da compra; compra parcelada conta inteira no dia da compra e as próximas parcelas aparecem como comprometido. Gasto por categoria contra o orçamento, cartões (limite usado, que já inclui as parcelas a vencer, e o vencimento informado pelo banco, se ainda não passou), parcelas futuras, saldos, a conciliação e avisos de banco parado. Transferência entre as suas contas, dinheiro guardado (cofrinho, caixinha, poupança, aplicação), pagamento de fatura e financiamento não contam como gasto; estorno desconta da compra que ele desfaz (mesma conta, mesma loja ou mesmo valor), no mês e na categoria dela, e estorno sem a compra nestes meses aparece à parte, sem descontar nada. Como os bancos quase nunca mandam o seu CPF, transferência entre as suas contas também é reconhecida pelo par (saiu de uma conta e entrou o mesmo valor em outra em até 2 dias, sem nome ou documento diferente dos dois lados; para a poupança conta como dinheiro guardado), e a fatura paga sem a palavra "fatura", pelo "Pagamento recebido" de mesmo valor no cartão. Para juntar parcelas e pares da virada, os lançamentos vêm desde um ciclo de fatura antes dos três meses mostrados. Dali se abre a conversa com o Nuke consultor.
 
@@ -202,7 +229,7 @@ Um Nuke só de finanças que lê os extratos dos seus bancos (conta e cartão) e
    ```
 
    Para tirar: `delete from public.beta_access where feature = 'finance' and user_id = (select id from auth.users where email = 'voce@exemplo.com');`. Isso apaga junto os bancos conectados pela pessoa naquela casa, com contas e lançamentos (liberar de novo pede colar os Item IDs outra vez). Sair da casa também tira a liberação e apaga os bancos conectados nela.
-6. **Conecte os bancos no app:** Finanças → Resumo → Consultor financeiro → Bancos conectados → Nome (ex.: "Nubank") e o Item ID copiado no Dashboard (passo 3) → "Conectar banco". O servidor confere o item na Pluggy ("Não achei esse Item ID na Pluggy." quando não existe; item que já é de outra pessoa ou casa é recusado) e já faz a primeira sincronização. Colar de novo o mesmo Item ID só troca o nome (e atualiza, se a última vez passou de 2 minutos). Desconectar apaga do Nooky as contas e os lançamentos daquele banco; o consentimento continua no MeuPluggy (revogue lá, se quiser). Se o consentimento vencer e você reautorizar, o Item ID pode mudar: desconecte o antigo e cole o novo.
+6. **Conecte os bancos no app:** Finanças → Resumo → Consultor financeiro → Bancos conectados → Nome (ex.: "Nubank") e o Item ID copiado no Dashboard (passo 3) → "Conectar banco". O servidor confere o item na Pluggy ("Não achei esse Item ID na Pluggy." quando não existe; item que já é de outra pessoa ou casa é recusado) e já faz a primeira sincronização. Colar de novo o mesmo Item ID só troca o nome (e atualiza, se a última vez passou de 2 minutos). Desconectar apaga do Kotii as contas e os lançamentos daquele banco; o consentimento continua no MeuPluggy (revogue lá, se quiser). Se o consentimento vencer e você reautorizar, o Item ID pode mudar: desconecte o antigo e cole o novo.
 
 **Atualização.** Sem webhooks. Ao abrir o consultor, sincroniza se a última vez passou de 6 horas; "Atualizar" força (no máximo uma vez a cada 2 minutos por banco). Enquanto a Pluggy ainda não tem os dados do banco (MeuPluggy recém-autorizado), cada sincronização puxa 365 dias; depois, uma janela que começa uma semana antes do que já veio (no mínimo 60 dias, então ficar meses sem abrir o consultor não deixa buraco; a marca do que já veio só anda quando a sincronização termina inteira), que também tira o que sumiu da Pluggy (lançamento desfeito, previsto que virou outro; depois de 30 dias ele sai de vez da tabela). Conta que a Pluggy deixa de devolver (cartão trocado) sai de saldos e cartões; as compras dela continuam. Isso traz o que a Pluggy já tem: o MeuPluggy atualiza com o banco uma vez por dia e não dá para forçar, então o extrato do dia pode só aparecer no dia seguinte.
 

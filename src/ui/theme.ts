@@ -1,6 +1,6 @@
 import { useColorScheme } from 'react-native';
 
-// Identidade do Nooky: tons quentes, formas redondas e personagens simples,
+// Identidade do Kotii: tons quentes, formas redondas e personagens simples,
 // na linha do Headspace, com um toque de vidro: cartões translúcidos sobre um
 // fundo com manchas pastel (as cores do Nuke). De dia, creme; à noite, azul
 // profundo.
