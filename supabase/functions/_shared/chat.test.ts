@@ -82,3 +82,31 @@ Deno.test('chat Anthropic: sends the turns as messages, low effort, fallbacks on
   const err = await assertRejects(() => chatStructured({ ...base, config, anthropic: refusing }), ExtractionError);
   assertEquals((err as ExtractionError).status, 422);
 });
+
+Deno.test('chat Anthropic: refusal fallback only on the models that accept the "default" form', async () => {
+  const cases: [string, boolean][] = [
+    ['claude-opus-5', true],
+    ['claude-fable-5-1', true],
+    ['claude-sonnet-5-5', true],
+    ['claude-sonnet-5', false],
+    ['claude-haiku-4-5', false],
+  ];
+  for (const [model, expected] of cases) {
+    let request: Record<string, unknown> = {};
+    const client = {
+      beta: {
+        messages: {
+          parse: (params: Record<string, unknown>) => {
+            request = params;
+            return Promise.resolve({ stop_reason: 'end_turn', parsed_output: { reply: 'Oi!' } });
+          },
+        },
+      },
+    } as unknown as Anthropic;
+    const config: VisionConfig = { provider: 'anthropic', model, modelEnv: 'NUKE_MODEL', apiKey: 'k' };
+    await chatStructured({ ...base, config, anthropic: client });
+    assertEquals(request.fallbacks === 'default', expected, model);
+    assertEquals(Array.isArray(request.betas) && request.betas.includes('server-side-fallback-2026-07-01'), expected, model);
+    assertEquals('temperature' in request, false, model);
+  }
+});

@@ -135,3 +135,30 @@ Deno.test('Anthropic: sends every image and returns the parsed output', async ()
 Deno.test('parseModelJson tolerates text around the object', () => {
   assertEquals(parseModelJson('Aqui está:\n{"a": 1}\nPronto.'), { a: 1 });
 });
+
+Deno.test('Anthropic: refusal fallback on Opus 5, Fable 5 and Sonnet 5.5 only', async () => {
+  const cases: [string, boolean][] = [
+    ['claude-opus-5', true],
+    ['claude-fable-5', true],
+    ['claude-sonnet-5-5', true],
+    ['claude-sonnet-5', false],
+    ['claude-x', false],
+  ];
+  for (const [model, expected] of cases) {
+    let request: Record<string, unknown> = {};
+    const client = {
+      beta: {
+        messages: {
+          parse: (params: Record<string, unknown>) => {
+            request = params;
+            return Promise.resolve({ stop_reason: 'end_turn', parsed_output: answer });
+          },
+        },
+      },
+    } as unknown as Anthropic;
+    const config: VisionConfig = { provider: 'anthropic', model, modelEnv: 'RECEIPT_MODEL', apiKey: 'k' };
+    await extractStructured({ ...base, config, anthropic: client });
+    assertEquals(request.fallbacks === 'default', expected, model);
+    assertEquals(Array.isArray(request.betas) && request.betas.includes('server-side-fallback-2026-07-01'), expected, model);
+  }
+});

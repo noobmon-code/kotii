@@ -73,6 +73,14 @@ function subscribe(listener: () => void) {
   return () => listeners.delete(listener);
 }
 
+/** Avisa quando a casa aberta muda (troca de casa, saída da conta). Devolve o cancelamento. */
+export function onActiveHouseholdChange(listener: () => void): () => void {
+  const unsubscribe = subscribe(listener);
+  return () => {
+    unsubscribe();
+  };
+}
+
 export function useActiveHouseholdId(): string | null {
   return useSyncExternalStore(subscribe, getActiveHousehold, getActiveHousehold);
 }

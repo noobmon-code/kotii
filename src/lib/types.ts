@@ -347,3 +347,87 @@ export interface Expense {
   provider_doc: string | null;
   patient_id: string | null;
 }
+
+// Consultor financeiro (beta): dados do banco (Pluggy), só leitura no app.
+// Só a dona, na casa com a liberação, vê essas linhas.
+
+/** Um banco conectado (item do MeuPluggy). */
+export interface FinConnection {
+  id: string;
+  label: string;
+  pluggy_item_id: string;
+  /** Situação do item na Pluggy (UPDATED, LOGIN_ERROR, OUTDATED, WAITING_USER_INPUT...). */
+  status: string | null;
+  error_message: string | null;
+  /** Quando a Pluggy atualizou o item no banco. */
+  item_updated_at: string | null;
+  last_synced_at: string | null;
+  created_at: string;
+}
+
+/** Conta corrente (BANK) ou cartão de crédito (CREDIT). */
+export interface FinAccount {
+  id: string;
+  connection_id: string;
+  pluggy_account_id: string;
+  type: 'BANK' | 'CREDIT';
+  subtype: string | null;
+  name: string | null;
+  marketing_name: string | null;
+  /** Só o final do número. */
+  number_last4: string | null;
+  /** HMAC-SHA256 do CPF/CNPJ do titular (transferência para si mesmo). */
+  owner_doc_hash: string | null;
+  /** No cartão: o limite usado (fatura aberta mais as parcelas a vencer), não a próxima fatura. */
+  balance: number | null;
+  currency_code: string | null;
+  credit_limit: number | null;
+  available_credit: number | null;
+  bill_due_date: string | null;
+  bill_close_date: string | null;
+  minimum_payment: number | null;
+  updated_at: string;
+}
+
+/** Lançamento do banco; amount é absoluto e o sentido vem de direction. */
+export interface FinTransaction {
+  id: string;
+  account_id: string;
+  pluggy_transaction_id: string;
+  /** PENDING conta como "previsto". */
+  status: 'PENDING' | 'POSTED';
+  direction: 'DEBIT' | 'CREDIT';
+  /** Na moeda da conta (R$). */
+  amount: number;
+  /** Só em compra em moeda estrangeira. */
+  original_amount: number | null;
+  original_currency: string | null;
+  occurred_on: string;
+  /** Data da compra no cartão (a parcela cai em outra data). */
+  purchase_on: string | null;
+  description: string;
+  description_raw: string | null;
+  category_id: string | null;
+  category: string | null;
+  operation_type: string | null;
+  payment_method: string | null;
+  merchant_name: string | null;
+  merchant_cnpj: string | null;
+  /** Quem recebeu (saída) ou quem pagou (entrada). */
+  counterparty_name: string | null;
+  counterparty_doc_kind: 'CPF' | 'CNPJ' | null;
+  /** HMAC-SHA256 do documento (segredo só da função); CPF nunca vem cru. */
+  counterparty_doc_hash: string | null;
+  counterparty_cnpj: string | null;
+  boleto_barcode: string | null;
+  installment_number: number | null;
+  total_installments: number | null;
+  card_bill_id: string | null;
+  bill_forecast: string | null;
+  other_credits_type: string | null;
+  fee_type: string | null;
+  /** Sumiu da Pluggy: fica fora das contas. */
+  deleted_at: string | null;
+  first_seen_at: string;
+  updated_at: string;
+}

@@ -1,6 +1,7 @@
 // Conversa com IA devolvendo dados estruturados (schema zod), via Anthropic
 // ou OpenRouter, com o mesmo esquema de provedor e modelo da leitura de
-// imagens (ver visionConfig). Usado pelo Nuke, o assistente da casa.
+// imagens (ver visionConfig). Usado pelo Nuke, o assistente da casa, e pelo
+// Nuke consultor financeiro (nuke-finance, que só usa a Anthropic).
 
 import Anthropic from '@anthropic-ai/sdk';
 import { betaZodOutputFormat } from '@anthropic-ai/sdk/helpers/beta/zod';
@@ -47,7 +48,7 @@ export function chatStructured<S extends z.ZodType>(input: ChatInput<S>): Promis
 async function chatWithAnthropic<S extends z.ZodType>(input: ChatInput<S>): Promise<z.infer<S>> {
   const client = input.anthropic ?? anthropicClient();
   const model = input.config.model;
-  const useFallbacks = /^claude-(opus-5|fable-5)/.test(model);
+  const useFallbacks = /^claude-(opus-5|fable-5|sonnet-5-5)/.test(model);
   let response;
   try {
     response = await client.beta.messages.parse({

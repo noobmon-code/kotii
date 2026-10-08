@@ -37,3 +37,20 @@ Deno.test('refundAiQuota gives the use back to the month and household it counte
   await refundAiQuota({ kind: 'menu', household: 'h1', month: '2026-09' }, service);
   assertEquals(service.calls, [['refund_ai', { p_household: 'h1', p_month: '2026-09', p_kind: 'menu' }]]);
 });
+
+Deno.test('takeAiQuota counts the finance chat apart, with its own limit message', async () => {
+  const ok = fakeDb({ data: [{ allowed: true, used: 1, lim: 100, household: 'h1', usage_month: '2026-10' }], error: null });
+  assertEquals(await takeAiQuota(ok, 'finance'), { kind: 'finance', household: 'h1', month: '2026-10' });
+  assertEquals(ok.calls, [['use_ai', { p_kind: 'finance' }]]);
+
+  const full = fakeDb({ data: [{ allowed: false, used: 100, lim: 100 }], error: null });
+  const err = await assertRejects(() => takeAiQuota(full, 'finance'), QuotaError);
+  assertEquals(err.status, 429);
+  assertEquals(err.message.startsWith('Você já usou as 100 mensagens com o consultor financeiro deste mês.'), true);
+});
+
+Deno.test('takeAiQuota answers 403 when use_ai refuses the caller (no beta access)', async () => {
+  const db = fakeDb({ data: null, error: { code: '42501', message: 'finance beta not enabled' } });
+  const err = await assertRejects(() => takeAiQuota(db, 'finance'), QuotaError);
+  assertEquals(err.status, 403);
+});

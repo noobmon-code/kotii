@@ -18,4 +18,15 @@ describe('aiUsageRows', () => {
       ['Notas lidas pelo QR code', 'ok', 0.015],
     ]);
   });
+
+  it('mostra o consultor financeiro quando o servidor manda a linha (beta)', () => {
+    const rows = aiUsageRows([
+      { kind: 'chat', used: 0, lim: 300 },
+      { kind: 'finance', used: 85, lim: 100 },
+    ]);
+    expect(rows.map((r) => [r.kind, r.label, r.used, r.limit, r.level])).toEqual([
+      ['chat', 'Mensagens com o Nuke', 0, 300, 'ok'],
+      ['finance', 'Mensagens com o consultor financeiro', 85, 100, 'perto'],
+    ]);
+  });
 });

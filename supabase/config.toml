@@ -22,3 +22,11 @@ verify_jwt = true
 [functions.send-push]
 # Só o pg_cron chama (request_push_send), com o segredo x-push-secret.
 verify_jwt = false
+
+[functions.finance]
+# Consultor financeiro (beta): sincroniza os bancos da Pluggy.
+verify_jwt = true
+
+[functions.nuke-finance]
+# Conversa com o consultor financeiro (beta), só pela API da Anthropic.
+verify_jwt = true
