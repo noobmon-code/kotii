@@ -57,7 +57,7 @@ export default function WelcomeScreen() {
         <Spot tint="purple" size={140} shape="bean" />
         <Text variant="title">Sua casa</Text>
         <Text variant="muted" style={styles.center}>
-          Tudo no Nooky é compartilhado com quem mora com você. Crie a casa ou entre com o código de convite.
+          Tudo no Kotii é compartilhado com quem mora com você. Crie a casa ou entre com o código de convite.
         </Text>
       </View>
       <Segmented

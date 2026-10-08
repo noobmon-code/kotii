@@ -1,17 +1,17 @@
 {
   "expo": {
-    "name": "Nooky",
-    "slug": "nooky",
+    "name": "Kotii",
+    "slug": "kotii",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "nooky",
+    "scheme": "kotii",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "bundleIdentifier": "com.noobmon.nooky"
+      "bundleIdentifier": "com.noobmon.kotii"
     },
     "android": {
-      "package": "com.noobmon.nooky",
+      "package": "com.noobmon.kotii",
       "adaptiveIcon": {
         "backgroundColor": "#FFF3E6",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -42,8 +42,8 @@
       [
         "expo-image-picker",
         {
-          "cameraPermission": "O Nooky usa a câmera para fotografar notas fiscais e ler os preços das compras.",
-          "photosPermission": "O Nooky acessa suas fotos para importar notas fiscais já fotografadas.",
+          "cameraPermission": "O Kotii usa a câmera para fotografar notas fiscais e ler os preços das compras.",
+          "photosPermission": "O Kotii acessa suas fotos para importar notas fiscais já fotografadas.",
           "microphonePermission": false
         }
       ],
@@ -56,7 +56,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "O Nooky usa a câmera para fotografar notas fiscais e ler o QR code delas.",
+          "cameraPermission": "O Kotii usa a câmera para fotografar notas fiscais e ler o QR code delas.",
           "microphonePermission": false,
           "recordAudioAndroid": false
         }
@@ -64,7 +64,7 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "O Nooky usa a localização só para saber o bairro da casa e dar dicas do clima.",
+          "locationWhenInUsePermission": "O Kotii usa a localização só para saber o bairro da casa e dar dicas do clima.",
           "locationAlwaysAndWhenInUsePermission": false,
           "locationAlwaysPermission": false,
           "isIosBackgroundLocationEnabled": false,
@@ -75,11 +75,6 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    },
-    "extra": {
-      "eas": {
-        "projectId": "a56f27f5-0aa6-4042-a811-1958bcc6dda3"
-      }
     }
   }
 }

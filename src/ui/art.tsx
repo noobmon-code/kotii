@@ -1,4 +1,4 @@
-// Ilustrações do Nooky: personagens redondos com rosto simples e formas
+// Ilustrações do Kotii: personagens redondos com rosto simples e formas
 // soltas (bolinhas, brilhos), no espírito do Headspace. Tudo em SVG, sem
 // imagens: escala em qualquer tela e muda de cor com o tema.
 
@@ -201,9 +201,9 @@ export function Floating({ children, distance = 6, duration = 1400 }: { children
 export function Logo({ size = 32 }: { size?: number }) {
   const c = useColors();
   return (
-    <View style={styles.logo} accessibilityRole="header" accessibilityLabel="Nooky">
+    <View style={styles.logo} accessibilityRole="header" accessibilityLabel="Kotii">
       <View style={{ width: size * 0.9, height: size * 0.9, borderRadius: size, backgroundColor: c.brand }} />
-      <RNText style={[styles.logoText, { fontSize: size, lineHeight: size * 1.15, color: c.text }]}>nooky</RNText>
+      <RNText style={[styles.logoText, { fontSize: size, lineHeight: size * 1.15, color: c.text }]}>kotii</RNText>
     </View>
   );
 }

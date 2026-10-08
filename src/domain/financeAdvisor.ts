@@ -11,7 +11,7 @@ import type { FinAccount, FinConnection, FinTransaction } from '@/lib/types';
 import { normalizeBankText } from './bankCategories';
 import { TRANSFER_WORDS } from './bankClassify';
 import { connectionWarnings } from './bankHealth';
-import { matchBankToNooky, type NookyRecord, reconciliationInRange, reconciliationTotals } from './bankMatch';
+import { matchBankToKotii, type KotiiRecord, reconciliationInRange, reconciliationTotals } from './bankMatch';
 import {
   accountLabels,
   type BankPurchase,
@@ -43,8 +43,8 @@ export interface FinanceSnapshotInput {
   accounts: FinAccount[];
   transactions: FinTransaction[];
   budgets: { category: string; monthly_limit: number }[];
-  /** Notas, contas pagas e gastos do Nooky na mesma janela (nookyRecordsFrom). */
-  nookyRecords: NookyRecord[];
+  /** Notas, contas pagas e gastos do Kotii na mesma janela (kotiiRecordsFrom). */
+  kotiiRecords: KotiiRecord[];
 }
 
 const WEEKDAYS = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
@@ -209,12 +209,12 @@ export function buildFinanceSnapshot(input: FinanceSnapshotInput): string {
     }.`,
   );
 
-  // Conferência com o Nooky no mês atual (casada na janela inteira, como na tela). As compras de antes da
-  // janela só vieram para juntar parcelas e pares: não tiram registro do Nooky de uma compra da janela.
+  // Conferência com o Kotii no mês atual (casada na janela inteira, como na tela). As compras de antes da
+  // janela só vieram para juntar parcelas e pares: não tiram registro do Kotii de uma compra da janela.
   const shown = windowPurchases(purchases, today);
-  const totals = reconciliationTotals(reconciliationInRange(matchBankToNooky(shown, input.nookyRecords), monthRange(month)));
+  const totals = reconciliationTotals(reconciliationInRange(matchBankToKotii(shown, input.kotiiRecords), monthRange(month)));
   lines.push(
-    `Conferência de ${monthLabel(month)} com o Nooky: ${formatBRL(totals.inNooky)} em ${count(totals.inNookyCount, 'compra', 'compras')} já no Nooky ` +
+    `Conferência de ${monthLabel(month)} com o Kotii: ${formatBRL(totals.inKotii)} em ${count(totals.inKotiiCount, 'compra', 'compras')} já no Kotii ` +
       `(notas, contas ou gastos); ${formatBRL(totals.bankOnly)} em ${count(totals.bankOnlyCount, 'compra', 'compras')} só no banco.`,
   );
 

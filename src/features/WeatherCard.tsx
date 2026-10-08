@@ -25,7 +25,7 @@ export function WeatherCard({ now }: { now: Date }) {
           <IconBadge icon="weather-partly-cloudy" tone="info" />
           <View style={styles.flex}>
             <Text variant="label">Dicas do clima para a casa</Text>
-            <Text variant="muted">Diga o bairro e o Nooky avisa quando é dia de lavar roupa, quando vai chover e mais.</Text>
+            <Text variant="muted">Diga o bairro e o Kotii avisa quando é dia de lavar roupa, quando vai chover e mais.</Text>
           </View>
         </Row>
         <Button title="Definir o bairro" icon="map-marker-outline" variant="secondary" compact onPress={open} />

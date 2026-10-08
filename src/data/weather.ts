@@ -122,7 +122,7 @@ export function useRefreshWeather() {
 const OSM_URL = 'https://nominatim.openstreetmap.org';
 
 /** O OpenStreetMap pede que o app se identifique; no navegador, quem identifica é o site. */
-const osmInit: RequestInit = Platform.OS === 'web' ? {} : { headers: { 'User-Agent': 'Nooky/1.0 (app da casa)' } };
+const osmInit: RequestInit = Platform.OS === 'web' ? {} : { headers: { 'User-Agent': 'Kotii/1.0 (app da casa)' } };
 
 /** O Nominatim aceita no máximo uma busca por segundo: as buscas saem em fila, espaçadas. */
 const OSM_GAP_MS = 1100;

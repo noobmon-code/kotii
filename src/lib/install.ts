@@ -1,4 +1,4 @@
-// Instalar o Nooky pelo navegador (PWA). Só existe na web: no Android/Chrome
+// Instalar o Kotii pelo navegador (PWA). Só existe na web: no Android/Chrome
 // o navegador oferece o convite (beforeinstallprompt), guardado aqui para o
 // botão do app; no iPhone é pelo menu Compartilhar do Safari.
 
@@ -7,7 +7,7 @@ import { Platform } from 'react-native';
 
 type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: string }> };
 
-const DISMISSED_KEY = 'nooky:install-dismissed';
+const DISMISSED_KEY = 'kotii:install-dismissed';
 const isWeb = Platform.OS === 'web' && typeof window !== 'undefined';
 
 let deferred: InstallPromptEvent | null = null;

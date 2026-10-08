@@ -2,7 +2,7 @@ import type { ImageProps } from 'expo-image';
 
 import type { Tint } from './theme';
 
-// Ilustrações das categorias de produto: desenhos no estilo do Nooky, com
+// Ilustrações das categorias de produto: desenhos no estilo do Kotii, com
 // fundo transparente (144px, WebP), sobre um círculo pastel da cor `tint`.
 // categoryArt.test.ts garante uma para cada categoria de categories.ts.
 export const CATEGORY_ART: Record<string, { image: ImageProps['source']; tint: Tint }> = {

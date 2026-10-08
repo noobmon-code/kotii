@@ -36,7 +36,7 @@ export class PluggyError extends Error {
   }
 }
 
-// Só os campos que o Nooky lê. Datas chegam como texto ISO (JSON cru).
+// Só os campos que o Kotii lê. Datas chegam como texto ISO (JSON cru).
 
 export interface PluggyItem {
   id: string;

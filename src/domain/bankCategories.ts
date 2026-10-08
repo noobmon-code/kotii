@@ -229,7 +229,7 @@ function keywordCategory(text: string): FinanceCategory | null {
   return null;
 }
 
-/** Categoria de gasto do Nooky para um lançamento do banco; sem pista, 'outros'. */
+/** Categoria de gasto do Kotii para um lançamento do banco; sem pista, 'outros'. */
 export function financeCategoryOfBank(tx: BankCategoryInput): FinanceCategory {
   return pluggyFinanceCategory(tx.category, tx.category_id) ?? keywordCategory(keywordText(tx)) ?? 'outros';
 }

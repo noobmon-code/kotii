@@ -12,10 +12,10 @@ import {
 } from '@/data/financeBeta';
 import { connectionWarnings, type ConnectionWarning } from '@/domain/bankHealth';
 import {
-  matchBankToNooky,
+  matchBankToKotii,
   reconciliationInRange,
   reconciliationTotals,
-  type NookyRecord,
+  type KotiiRecord,
   type Reconciliation,
 } from '@/domain/bankMatch';
 import {
@@ -68,7 +68,7 @@ const ROWS_SHOWN = 12;
 const ITEM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const LABEL_MAX = 40;
 
-const RECORD_KIND: Record<NookyRecord['kind'], string> = { nota: 'Nota', conta: 'Conta', gasto: 'Gasto' };
+const RECORD_KIND: Record<KotiiRecord['kind'], string> = { nota: 'Nota', conta: 'Conta', gasto: 'Gasto' };
 const STATUS_COLOR: Record<BudgetLine['status'], keyof Colors> = { ok: 'primary', perto: 'warning', estourou: 'danger' };
 
 const capitalizeFirst = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
@@ -232,7 +232,7 @@ function buildView(data: FinanceData, month: string, today: string) {
     installments: futureInstallments(purchases, shiftMonth(current, 1), 6).filter((m) => m.amount > 0),
     balances: accounts.filter((a) => a.type === 'BANK'),
     // Mesma conta do retrato do Nuke: casada na janela inteira, mostrada só no mês escolhido.
-    reconciliation: reconciliationInRange(matchBankToNooky(windowPurchases(purchases, today), data.nookyRecords), monthRange(month)),
+    reconciliation: reconciliationInRange(matchBankToKotii(windowPurchases(purchases, today), data.kotiiRecords), monthRange(month)),
     warnings: connectionWarnings(data.connections, new Date()),
   };
 }
@@ -501,30 +501,30 @@ function purchaseDetails(p: BankPurchase, labels: Map<string, string>): string {
     .join(' · ');
 }
 
-const recordText = (r: NookyRecord) => `${RECORD_KIND[r.kind]} ${r.label} · ${formatShortDate(r.date)} · ${formatBRL(r.amount)}`;
+const recordText = (r: KotiiRecord) => `${RECORD_KIND[r.kind]} ${r.label} · ${formatShortDate(r.date)} · ${formatBRL(r.amount)}`;
 
-type ReconciliationTab = 'banco' | 'nooky';
+type ReconciliationTab = 'banco' | 'kotii';
 
 function ReconciliationSection({ reconciliation, labels }: { reconciliation: Reconciliation; labels: Map<string, string> }) {
   const [tab, setTab] = useState<ReconciliationTab>('banco');
   const [showAll, setShowAll] = useState(false);
   const totals = reconciliationTotals(reconciliation);
-  const nookyOnly = reconciliation.nookyOnly.length;
+  const kotiiOnly = reconciliation.kotiiOnly.length;
   const rows = tab === 'banco' ? reconciliation.bankOnly.length : reconciliation.matched.length;
   const limit = showAll ? rows : ROWS_SHOWN;
 
-  if (!totals.inNookyCount && !totals.bankOnlyCount) return null;
+  if (!totals.inKotiiCount && !totals.bankOnlyCount) return null;
 
   return (
-    <Section title="Conferência com o Nooky">
+    <Section title="Conferência com o Kotii">
       <Text variant="muted">
         Compras do banco comparadas com as notas, contas pagas e gastos da casa. Só para conferir: nada é alterado.
       </Text>
       <Row style={styles.stats}>
         <Card style={styles.totalCard}>
-          <Text variant="small">Já no Nooky</Text>
-          <Text variant="label">{formatBRL(totals.inNooky)}</Text>
-          <Text variant="small">{plural(totals.inNookyCount, 'compra', 'compras')}</Text>
+          <Text variant="small">Já no Kotii</Text>
+          <Text variant="label">{formatBRL(totals.inKotii)}</Text>
+          <Text variant="small">{plural(totals.inKotiiCount, 'compra', 'compras')}</Text>
         </Card>
         <Card style={styles.totalCard}>
           <Text variant="small">Só no banco</Text>
@@ -540,7 +540,7 @@ function ReconciliationSection({ reconciliation, labels }: { reconciliation: Rec
         }}
         options={[
           { value: 'banco', label: `Só no banco (${totals.bankOnlyCount})` },
-          { value: 'nooky', label: `Já no Nooky (${totals.inNookyCount})` },
+          { value: 'kotii', label: `Já no Kotii (${totals.inKotiiCount})` },
         ]}
       />
       {rows ? (
@@ -570,7 +570,7 @@ function ReconciliationSection({ reconciliation, labels }: { reconciliation: Rec
                   subtitle={
                     <View style={styles.matchInfo}>
                       <Text variant="muted">{purchaseDetails(purchase, labels)}</Text>
-                      <Text variant="small">No Nooky: {recordText(record)}</Text>
+                      <Text variant="small">No Kotii: {recordText(record)}</Text>
                       <Row>
                         <Badge label={confidence === 'alta' ? 'Bate' : 'Provável'} tone={confidence === 'alta' ? 'primary' : 'warning'} />
                         <Text variant="small" style={styles.flex}>
@@ -584,7 +584,7 @@ function ReconciliationSection({ reconciliation, labels }: { reconciliation: Rec
               ))}
         </ListCard>
       ) : (
-        <Text variant="muted">{tab === 'banco' ? 'Tudo do banco já está no Nooky.' : 'Nenhuma compra do banco achada no Nooky.'}</Text>
+        <Text variant="muted">{tab === 'banco' ? 'Tudo do banco já está no Kotii.' : 'Nenhuma compra do banco achada no Kotii.'}</Text>
       )}
       {rows > ROWS_SHOWN ? (
         <Button
@@ -594,9 +594,9 @@ function ReconciliationSection({ reconciliation, labels }: { reconciliation: Rec
           onPress={() => setShowAll((value) => !value)}
         />
       ) : null}
-      {nookyOnly ? (
+      {kotiiOnly ? (
         <Text variant="small">
-          {plural(nookyOnly, 'registro do Nooky', 'registros do Nooky')} deste mês sem par no banco (dinheiro, outra pessoa ou
+          {plural(kotiiOnly, 'registro do Kotii', 'registros do Kotii')} deste mês sem par no banco (dinheiro, outra pessoa ou
           banco não conectado).
         </Text>
       ) : null}
@@ -612,7 +612,7 @@ function ConnectionsSection({ connections, warnings }: { connections: FinConnect
   function confirmRemove(connection: FinConnection) {
     confirmAction(
       'Desconectar banco',
-      `Tirar ${connection.label} do consultor? Os lançamentos dele saem do Nooky. No MeuPluggy, a conexão continua.`,
+      `Tirar ${connection.label} do consultor? Os lançamentos dele saem do Kotii. No MeuPluggy, a conexão continua.`,
       'Desconectar',
       () => remove.mutate(connection.id, { onError: (err) => notify('Não deu para desconectar', errorMessage(err)) }),
     );
@@ -705,7 +705,7 @@ function AddBankForm({ onClose }: { onClose?: () => void }) {
       <Text variant="label">Conectar um banco</Text>
       <Text variant="muted">
         No Dashboard da Pluggy, abra a sua aplicação, vá em &quot;Ir para Demo&quot; e conecte o banco pelo MeuPluggy. Depois, em
-        Items, toque no ⋮ do banco e em &quot;Copiar Item ID&quot;. Cole aqui com um nome curto. É só leitura: o Nooky não mexe no
+        Items, toque no ⋮ do banco e em &quot;Copiar Item ID&quot;. Cole aqui com um nome curto. É só leitura: o Kotii não mexe no
         seu dinheiro.
       </Text>
       <TextField

@@ -143,7 +143,7 @@ const input: FinanceSnapshotInput = {
     tx({ amount: 999, description: 'APAGADO', deleted_at: '2026-10-06T00:00:00Z' }),
   ],
   budgets: [{ category: 'mercado', monthly_limit: 1200 }],
-  nookyRecords: [{ kind: 'nota', id: 'n1', amount: 250, date: '2026-10-04', label: 'Guanabara', cnpj: CNPJ }],
+  kotiiRecords: [{ kind: 'nota', id: 'n1', amount: 250, date: '2026-10-04', label: 'Guanabara', cnpj: CNPJ }],
 };
 
 describe('buildFinanceSnapshot', () => {
@@ -166,7 +166,7 @@ describe('buildFinanceSnapshot', () => {
     );
   });
 
-  it('traz saldos, faturas, parcelas comprometidas, avisos e a conferência com o Nooky', () => {
+  it('traz saldos, faturas, parcelas comprometidas, avisos e a conferência com o Kotii', () => {
     expect(text).toContain('Bancos conectados: Nubank (atualizado em 07/10); Inter (atualizado em 02/10).');
     expect(text).toContain('Avisos dos bancos: Inter sem atualizar há 5 dias. Reautorize no MeuPluggy.');
     expect(text).toContain('Saldos das contas: Nubank conta: R$ 1.234,56; Inter conta: R$ 50,00.');
@@ -175,7 +175,7 @@ describe('buildFinanceSnapshot', () => {
     );
     expect(text).toContain('Parcelas já comprometidas nos próximos meses: novembro de 2026 R$ 150,00 (1 parcela); dezembro de 2026 R$ 150,00 (1 parcela);');
     expect(text).toContain(
-      'Conferência de outubro de 2026 com o Nooky: R$ 250,00 em 1 compra já no Nooky (notas, contas ou gastos); R$ 624,90 em 6 compras só no banco.',
+      'Conferência de outubro de 2026 com o Kotii: R$ 250,00 em 1 compra já no Kotii (notas, contas ou gastos); R$ 624,90 em 6 compras só no banco.',
     );
   });
 
@@ -351,7 +351,7 @@ describe('buildFinanceSnapshot', () => {
   });
 
   it('sem bancos nem lançamentos ainda monta o retrato', () => {
-    const empty = buildFinanceSnapshot({ ...input, connections: [], accounts: [], transactions: [], budgets: [], nookyRecords: [] });
+    const empty = buildFinanceSnapshot({ ...input, connections: [], accounts: [], transactions: [], budgets: [], kotiiRecords: [] });
     expect(empty).toContain('Nenhum banco conectado ainda.');
     expect(empty).toContain('Saídas por categoria em outubro de 2026: nenhuma.');
     expect(empty).toContain('Lançamentos recentes (o mais novo primeiro): nenhum.');

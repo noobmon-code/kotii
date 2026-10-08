@@ -20,7 +20,7 @@ async function inBrowser(
   const inserts: unknown[][] = [];
   let timezone = 'America/Sao_Paulo';
   let serverSubscription = 'sub-1';
-  const storage = new Map<string, string>(lastSubscription ? [['nooky:push-subscription', lastSubscription]] : []);
+  const storage = new Map<string, string>(lastSubscription ? [['kotii:push-subscription', lastSubscription]] : []);
   let current: unknown = null;
   const g = globalThis as Record<string, unknown>;
   const saved = { window: g.window, navigator: g.navigator, Notification: g.Notification };

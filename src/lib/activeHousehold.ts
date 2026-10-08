@@ -7,7 +7,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSyncExternalStore } from 'react';
 
 export const HOUSEHOLD_HEADER = 'x-household-id';
-const STORAGE_KEY = 'nooky:active-household';
+const STORAGE_KEY = 'kotii:active-household';
 
 let current: string | null = null;
 /** De quem é a casa carregada (a escolha é por conta). */

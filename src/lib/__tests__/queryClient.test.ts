@@ -25,7 +25,7 @@ jest.mock('expo-network', () => ({
 jest.mock('@/lib/supabase', () => ({ supabase: {}, unwrap: (result: { data: unknown }) => result.data }));
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-const stored = () => AsyncStorage.getItem('nooky:query-cache');
+const stored = () => AsyncStorage.getItem('kotii:query-cache');
 
 afterEach(() => {
   queryClient.clear();
@@ -121,7 +121,7 @@ describe('cache guardado no aparelho', () => {
   it('o cache de versões anteriores volta com os nomes novos das consultas', async () => {
     const query = (key: string) => ({ queryKey: [key], queryHash: `["${key}"]`, state: { data: [{ name: 'Café' }] } });
     await AsyncStorage.setItem(
-      'nooky:query-cache',
+      'kotii:query-cache',
       JSON.stringify({ buster: '1', timestamp: 0, clientState: { mutations: [], queries: [query('recentPurchases'), query('lists')] } }),
     );
     const restored = await persistOptions.persister.restoreClient();
@@ -129,7 +129,7 @@ describe('cache guardado no aparelho', () => {
       [['purchaseRecords'], '["purchaseRecords"]'],
       [['lists'], '["lists"]'],
     ]);
-    await AsyncStorage.removeItem('nooky:query-cache');
+    await AsyncStorage.removeItem('kotii:query-cache');
   });
 
   it('com a sessão vencida, fica como sem internet até ela ser renovada', () => {

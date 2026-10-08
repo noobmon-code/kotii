@@ -87,7 +87,7 @@ export default function FamilyScreen() {
 
   function shareInvite() {
     Share.share({
-      message: `Entre na nossa casa "${house.name}" no Nooky com o código ${house.invite_code}.`,
+      message: `Entre na nossa casa "${house.name}" no Kotii com o código ${house.invite_code}.`,
     }).catch(() => undefined);
   }
 

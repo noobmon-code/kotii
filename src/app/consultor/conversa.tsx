@@ -212,7 +212,7 @@ function Conversation() {
               Oi{name ? `, ${name}` : ''}! Vamos olhar suas finanças?
             </Text>
             <Text variant="body" style={styles.center} color="textMuted">
-              Vejo os bancos que você conectou, o orçamento e o que a casa registra no Nooky. Só você vê esta conversa, e ela
+              Vejo os bancos que você conectou, o orçamento e o que a casa registra no Kotii. Só você vê esta conversa, e ela
               some quando o app fecha.
             </Text>
             {ready ? (

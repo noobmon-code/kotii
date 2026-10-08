@@ -30,7 +30,7 @@ export function scheduleRow(id: string, subscriptionId: string, { content, trigg
   const base = {
     id,
     subscription_id: subscriptionId,
-    title: content.title || 'Nooky',
+    title: content.title || 'Kotii',
     body: content.body ?? '',
     data: content.data ?? {},
   };

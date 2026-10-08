@@ -107,7 +107,7 @@ async function chatWithOpenRouter<S extends z.ZodType>(input: ChatInput<S>): Pro
       headers: {
         Authorization: `Bearer ${input.config.apiKey}`,
         'Content-Type': 'application/json',
-        'X-Title': 'Nooky',
+        'X-Title': 'Kotii',
       },
       body: JSON.stringify({
         model: input.config.model,
