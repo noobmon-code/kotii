@@ -218,7 +218,7 @@ describe('escrita barrada pela casa', () => {
   });
 });
 
-describe('mudança que não alcançou nenhuma linha', () => {
+describe('mudança sem erro, talvez barrada pela casa', () => {
   // A RLS esconde as linhas da casa de quem foi tirada dela: UPDATE/DELETE dá 200 com 0 linhas, sem erro.
   let now = Date.now();
 
@@ -265,6 +265,19 @@ describe('mudança que não alcançou nenhuma linha', () => {
     await write([], {});
     await write(null);
     expect(queryFn).not.toHaveBeenCalled();
+  });
+
+  it('qualquer mudança que deu certo, com as casas de mais de 30 s: busca as casas de novo', async () => {
+    const queryFn = serverHouses();
+    now += 31_000;
+    // O UPDATE/DELETE comum: sem o meta e sem as linhas de volta.
+    await write(null, {});
+    expect(queryFn).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryData(['household', 'u1'])).toEqual({ household: { id: 'h2' }, households: [{ id: 'h2' }] });
+    // Casas recém-buscadas: as próximas mudanças não buscam de novo.
+    now += 10_000;
+    await write(null, {});
+    expect(queryFn).toHaveBeenCalledTimes(1);
   });
 
   it('várias marcações sem linha em sequência: uma busca só a cada poucos segundos', async () => {
