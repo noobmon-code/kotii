@@ -7,7 +7,16 @@ import { localDateTimeToISO, nfceItemsToDraft, type NfceItem, type NfceQr } from
 import type { ConfirmItem } from '@/domain/receiptReview';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Receipt, ReceiptItem, Unit } from '@/lib/types';
-import { functionErrorMessage, pickImages, removeImages, signedImageUrl, uploadImages, type ScanSource } from './images';
+import {
+  FunctionError,
+  functionErrorDetails,
+  functionErrorMessage,
+  pickImages,
+  removeImages,
+  signedImageUrl,
+  uploadImages,
+  type ScanSource,
+} from './images';
 
 const RECEIPT_COLUMNS =
   'id, store_id, purchased_at, total, access_key, image_path, extra_image_paths, source, status, created_at, paid_by, store:stores(id, name)';
@@ -66,33 +75,48 @@ export async function pickReceiptImages(source: ScanSource, limit = 1): Promise<
   return pickImages(source, limit);
 }
 
+export interface ReceiptPhotos {
+  /** Fotos em ordem, de cima para baixo. */
+  uris: string[];
+  /**
+   * Chave de acesso já conhecida (do QR code, quando a Sefaz pediu o "não sou
+   * robô"): a nota lida guarda essa chave, e ler o QR de novo abre esta nota.
+   */
+  accessKey?: string | null;
+}
+
 /**
- * Fotos da nota (em ordem, de cima para baixo) -> upload -> leitura por IA
- * -> rascunho de nota. Devolve o id da nota para a tela de revisão.
+ * Fotos da nota -> upload -> leitura por IA -> rascunho de nota. Devolve o
+ * id da nota para a tela de revisão (ou o da nota que já tinha essa chave).
  */
+export async function scanReceiptPhotos(
+  householdId: string | undefined,
+  { uris, accessKey }: ReceiptPhotos,
+): Promise<{ receipt_id: string; duplicate: boolean }> {
+  if (!householdId) throw new Error('Família não carregada.');
+  // Falha no envio de uma parte apaga as que já subiram.
+  const paths = await uploadImages('receipts', householdId, uris.slice(0, MAX_RECEIPT_PHOTOS));
+  const removeAll = () => removeImages('receipts', paths).catch(() => undefined);
+
+  const { data, error } = await supabase.functions.invoke<{ receipt_id: string; duplicate: boolean }>('parse-receipt', {
+    body: accessKey ? { image_paths: paths, access_key: accessKey } : { image_paths: paths },
+  });
+  if (error || !data) {
+    // A função respondeu com erro: nenhuma nota foi criada com essas
+    // fotos, então elas saem do storage. Em falha de rede o resultado é
+    // incerto (a nota pode ter sido salva) e as fotos ficam.
+    if (error instanceof FunctionsHttpError) await removeAll();
+    throw new Error(await functionErrorMessage(error, 'Não foi possível ler a nota. Tente novamente.'));
+  }
+  // Nota que já estava no app (mesma chave): as fotos novas sobram.
+  if (data.duplicate) await removeAll();
+  return data;
+}
+
 export function useScanReceipt(householdId: string | undefined) {
   const invalidate = useInvalidateReceipt();
   return useMutation({
-    mutationFn: async (uris: string[]) => {
-      if (!householdId) throw new Error('Família não carregada.');
-      // Falha no envio de uma parte apaga as que já subiram.
-      const paths = await uploadImages('receipts', householdId, uris.slice(0, MAX_RECEIPT_PHOTOS));
-      const removeAll = () => removeImages('receipts', paths).catch(() => undefined);
-
-      const { data, error } = await supabase.functions.invoke<{ receipt_id: string; duplicate: boolean }>(
-        'parse-receipt',
-        { body: { image_paths: paths } },
-      );
-      if (error || !data) {
-        // A função respondeu com erro: nenhuma nota foi criada com essas
-        // fotos, então elas saem do storage. Em falha de rede o resultado é
-        // incerto (a nota pode ter sido salva) e as fotos ficam.
-        if (error instanceof FunctionsHttpError) await removeAll();
-        throw new Error(await functionErrorMessage(error, 'Não foi possível ler a nota. Tente novamente.'));
-      }
-      if (data.duplicate) await removeAll();
-      return data;
-    },
+    mutationFn: (photos: ReceiptPhotos) => scanReceiptPhotos(householdId, photos),
     onSuccess: invalidate,
   });
 }
@@ -143,9 +167,22 @@ async function findOrCreateStore(store: { name: string | null; cnpj: string | nu
 }
 
 /**
+ * Busca a nota na Sefaz (função `nfce`). Se falhar, o erro (FunctionError)
+ * traz o código da função: com 'captcha', a tela leva para a foto da nota.
+ */
+export async function fetchNfcePage(url: string): Promise<NfcePageResult> {
+  const { data, error } = await supabase.functions.invoke<NfcePageResult>('nfce', { body: { url } });
+  if (error || !data) {
+    const { message, code } = await functionErrorDetails(error, 'Não deu para buscar a nota na Sefaz agora.');
+    throw new FunctionError(message, code);
+  }
+  return data;
+}
+
+/**
  * QR code da nota -> itens da Sefaz (função `nfce`) -> rascunho de nota,
  * com produtos já conhecidos pelos apelidos e categoria pelas palavras.
- * Nota já importada (mesma chave) abre a existente.
+ * Nota já importada (mesma chave, também pela foto) abre a existente.
  */
 export function useImportNfce() {
   const invalidate = useInvalidateReceipt();
@@ -164,8 +201,7 @@ export function useImportNfce() {
       }
       if (!qr.url) throw new Error('Só com a chave não dá para ver os itens: leia o QR code da nota ou tire uma foto dela.');
 
-      const { data: page, error } = await supabase.functions.invoke<NfcePageResult>('nfce', { body: { url: qr.url } });
-      if (error || !page) throw new Error(await functionErrorMessage(error, 'Não deu para buscar a nota na Sefaz agora.'));
+      const page = await fetchNfcePage(qr.url);
 
       const descriptions = page.items.map((item) => item.description.trim().replace(/\s+/g, ' '));
       const aliasRows = unwrap(await supabase.rpc('match_aliases', { p_descriptions: descriptions })) as

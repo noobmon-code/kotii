@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
 import { MAX_RECEIPT_PHOTOS, pickReceiptImages, useCreateManualReceipt, useScanReceipt, type ScanSource } from '@/data/receipts';
 import { useHouseholdId } from '@/lib/auth';
@@ -11,28 +11,37 @@ import { notify } from '@/ui/dialogs';
 /**
  * Fluxo "nota -> revisão". `open()` mostra as opções (QR code, câmera,
  * galeria, manual); `element` precisa ser renderizado pela tela.
+ * `readPhotos(source, chave)` lê pela foto uma nota cuja chave já se conhece
+ * (do QR code). `replace`: a revisão toma o lugar da tela atual (a do QR).
  */
-export function useReceiptScanner() {
+export function useReceiptScanner({ replace = false }: { replace?: boolean } = {}) {
   const householdId = useHouseholdId();
   const scan = useScanReceipt(householdId);
   const manual = useCreateManualReceipt();
   const [sheetOpen, setSheetOpen] = useState(false);
   // Nota comprida pela câmera: partes já fotografadas, esperando a próxima ou a leitura.
   const [parts, setParts] = useState<string[]>([]);
+  // Chave da nota que está sendo fotografada, quando veio do QR code.
+  const accessKey = useRef<string | null>(null);
 
   const read = useCallback(
     (uris: string[]) => {
       setParts([]);
       // Só agora (câmera já fechada) aparece a tela de espera.
-      scan.mutate(uris, {
-        onSuccess: ({ receipt_id, duplicate }) => {
-          router.push({ pathname: '/nota/[id]', params: { id: receipt_id } });
-          if (duplicate) notify('Nota já importada', 'Esta nota já estava no app — abrimos a existente.');
+      scan.mutate(
+        { uris, accessKey: accessKey.current },
+        {
+          onSuccess: ({ receipt_id, duplicate }) => {
+            const review = { pathname: '/nota/[id]', params: { id: receipt_id } } as const;
+            if (replace) router.replace(review);
+            else router.push(review);
+            if (duplicate) notify('Nota já importada', 'Esta nota já estava no app — abrimos a existente.');
+          },
+          onError: (err) => notify('Não foi possível ler a nota', errorMessage(err)),
         },
-        onError: (err) => notify('Não foi possível ler a nota', errorMessage(err)),
-      });
+      );
     },
-    [scan],
+    [scan, replace],
   );
 
   const start = useCallback(
@@ -57,6 +66,14 @@ export function useReceiptScanner() {
     [read],
   );
 
+  const readPhotos = useCallback(
+    (source: ScanSource, key: string | null = null) => {
+      accessKey.current = key;
+      void start(source);
+    },
+    [start],
+  );
+
   const startManual = useCallback(() => {
     manual.mutate(undefined, {
       onSuccess: ({ id }) => router.push({ pathname: '/nota/[id]', params: { id } }),
@@ -73,8 +90,8 @@ export function useReceiptScanner() {
         message="Pelo QR code, os itens vêm direto da Sefaz; pela foto, a IA lê a nota. Você revisa antes de salvar."
         actions={[
           { label: 'Ler o QR code da nota', icon: 'qrcode-scan', onPress: () => router.push('/nota/qrcode') },
-          { label: 'Tirar foto da nota', icon: 'camera-outline', onPress: () => start('camera') },
-          { label: `Escolher da galeria (até ${MAX_RECEIPT_PHOTOS} fotos)`, icon: 'image-outline', onPress: () => start('library') },
+          { label: 'Tirar foto da nota', icon: 'camera-outline', onPress: () => readPhotos('camera') },
+          { label: `Escolher da galeria (até ${MAX_RECEIPT_PHOTOS} fotos)`, icon: 'image-outline', onPress: () => readPhotos('library') },
           { label: 'Digitar manualmente', icon: 'pencil-outline', onPress: startManual },
         ]}
       />
@@ -96,5 +113,5 @@ export function useReceiptScanner() {
     </>
   );
 
-  return { open: () => setSheetOpen(true), element, busy: scan.isPending || manual.isPending };
+  return { open: () => setSheetOpen(true), readPhotos, element, busy: scan.isPending || manual.isPending };
 }

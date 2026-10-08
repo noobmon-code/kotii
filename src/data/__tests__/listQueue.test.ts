@@ -39,11 +39,14 @@ jest.mock('@/lib/supabase', () => ({
       }),
       update: (values: unknown) => ({
         eq: (_idColumn: string, id: string) => ({
-          eq: async (_tokenColumn: string, token: string) => {
-            sent.push({ id, token, values });
-            await hold.gate;
-            return { data: null, error: null };
-          },
+          eq: (_tokenColumn: string, token: string) => ({
+            // A marcação pede de volta as linhas alcançadas.
+            select: async () => {
+              sent.push({ id, token, values });
+              await hold.gate;
+              return { data: [{ id }], error: null };
+            },
+          }),
         }),
       }),
     }),

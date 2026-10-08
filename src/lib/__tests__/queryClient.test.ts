@@ -1,9 +1,11 @@
-import { afterAll, afterEach, describe, expect, it, jest } from '@jest/globals';
+import { afterAll, afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { onlineManager } from '@tanstack/react-query';
 
-import { CLEAR_CHECKED_KEY, TOGGLE_ITEM_KEY } from '@/data/market';
+import { CLEAR_CHECKED_KEY, EDIT_ITEM_KEY, TOGGLE_ITEM_KEY } from '@/data/market';
 
+import { accessErrorMessage, EXPECTS_ROWS_META, NO_HOUSEHOLD_ACCESS, REMOVED_FROM_HOUSEHOLD } from '../accessErrors';
+import { setActiveHousehold } from '../activeHousehold';
 import { cacheOwners, forgetCache, persistOptions, queryClient, saveNow, setSessionValid } from '../queryClient';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
@@ -141,5 +143,145 @@ describe('cache guardado no aparelho', () => {
     expect(onlineManager.isOnline()).toBe(true);
     network.listener?.({ isConnected: false, isInternetReachable: false });
     expect(onlineManager.isOnline()).toBe(false);
+  });
+});
+
+describe('escrita barrada pela casa', () => {
+  const rls = () => ({ code: '42501', message: 'new row violates row-level security policy for table "shopping_lists"' });
+  const house = (ids: string[]) => ({ household: { id: ids[0] }, households: ids.map((id) => ({ id })) });
+
+  /** As casas da pessoa no servidor, como a consulta da casa as busca. */
+  function serverHouses(ids: string[] | null, before: string[] = ['h1']) {
+    const queryFn = jest.fn(async () => (ids ? house(ids) : null));
+    queryClient.setQueryDefaults(['household'], { queryFn });
+    queryClient.setQueryData(['household', 'u1'], house(before));
+    return queryFn;
+  }
+
+  /** Uma escrita que o banco recusa, pelo cache de mutações (como as telas fazem). */
+  async function failedWrite(error: object = rls()) {
+    const mutation = queryClient.getMutationCache().build(queryClient, {
+      mutationFn: async () => {
+        throw error;
+      },
+      // Sem o tempo de coleta padrão (minutos), o Jest não fica esperando.
+      gcTime: 0,
+    });
+    return mutation.execute(undefined).catch((err: unknown) => err);
+  }
+
+  it('confere as casas antes do aviso: tirada da casa, o aviso diz isso', async () => {
+    await setActiveHousehold('u1', 'h1');
+    const queryFn = serverHouses(['h2']);
+    const error = await failedWrite();
+    expect(queryFn).toHaveBeenCalledTimes(1);
+    expect(accessErrorMessage(error)).toBe(REMOVED_FROM_HOUSEHOLD);
+  });
+
+  it('sem casa nenhuma agora, também', async () => {
+    await setActiveHousehold('u1', 'h1');
+    serverHouses(null);
+    expect(accessErrorMessage(await failedWrite())).toBe(REMOVED_FROM_HOUSEHOLD);
+  });
+
+  it('ainda na casa: não diz que saiu', async () => {
+    await setActiveHousehold('u1', 'h1');
+    serverHouses(['h1', 'h2']);
+    expect(accessErrorMessage(await failedWrite())).toBe(NO_HOUSEHOLD_ACCESS);
+  });
+
+  it('a busca das casas falhou: aviso neutro', async () => {
+    await setActiveHousehold('u1', 'h1');
+    queryClient.setQueryDefaults(['household'], {
+      queryFn: async () => {
+        throw new Error('Failed to fetch');
+      },
+      retry: false,
+    });
+    queryClient.setQueryData(['household', 'u1'], house(['h1']));
+    expect(accessErrorMessage(await failedWrite())).toBe(NO_HOUSEHOLD_ACCESS);
+  });
+
+  it('sem internet, nem tenta conferir (a busca ficaria parada)', async () => {
+    await setActiveHousehold('u1', 'h1');
+    const queryFn = serverHouses(['h2']);
+    network.listener?.({ isConnected: false, isInternetReachable: false });
+    expect(accessErrorMessage(await failedWrite())).toBe(NO_HOUSEHOLD_ACCESS);
+    expect(queryFn).not.toHaveBeenCalled();
+  });
+
+  it('outros erros não buscam as casas', async () => {
+    const queryFn = serverHouses(['h2']);
+    const error = await failedWrite(new Error('only the household owner can do this'));
+    expect(queryFn).not.toHaveBeenCalled();
+    expect(accessErrorMessage(error)).toBeNull();
+  });
+});
+
+describe('mudança que não alcançou nenhuma linha', () => {
+  // A RLS esconde as linhas da casa de quem foi tirada dela: UPDATE/DELETE dá 200 com 0 linhas, sem erro.
+  let now = Date.now();
+
+  beforeEach(() => {
+    // Cada teste começa bem depois do anterior (as buscas têm intervalo mínimo).
+    now += 60_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  function serverHouses() {
+    const queryFn = jest.fn(async () => ({ household: { id: 'h2' }, households: [{ id: 'h2' }] }));
+    queryClient.setQueryDefaults(['household'], { queryFn });
+    queryClient.setQueryData(['household', 'u1'], { household: { id: 'h1' }, households: [{ id: 'h1' }] });
+    return queryFn;
+  }
+
+  async function write(rows: unknown, meta: Record<string, unknown> = EXPECTS_ROWS_META) {
+    const mutation = queryClient.getMutationCache().build(queryClient, { mutationFn: async () => rows, meta, gcTime: 0 });
+    const result = await mutation.execute(undefined);
+    await flush();
+    return result;
+  }
+
+  it('marcar e editar item pedem as linhas de volta', () => {
+    expect(queryClient.getMutationDefaults(TOGGLE_ITEM_KEY).meta).toEqual(EXPECTS_ROWS_META);
+    expect(queryClient.getMutationDefaults(EDIT_ITEM_KEY).meta).toEqual(EXPECTS_ROWS_META);
+  });
+
+  it('nenhuma linha: busca as casas de novo (o que leva a pessoa para outra casa), sem erro', async () => {
+    const queryFn = serverHouses();
+    await expect(write([])).resolves.toEqual([]);
+    expect(queryFn).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryData(['household', 'u1'])).toEqual({ household: { id: 'h2' }, households: [{ id: 'h2' }] });
+  });
+
+  it('alcançou a linha, ou a mutação não devolve linhas: não busca', async () => {
+    const queryFn = serverHouses();
+    await write([{ id: 'item' }]);
+    // Mutação sem o meta: o resultado dela não diz nada sobre linhas.
+    await write([], {});
+    await write(null);
+    expect(queryFn).not.toHaveBeenCalled();
+  });
+
+  it('várias marcações sem linha em sequência: uma busca só a cada poucos segundos', async () => {
+    const queryFn = serverHouses();
+    await write([]);
+    now += 1000;
+    await write([]);
+    expect(queryFn).toHaveBeenCalledTimes(1);
+    now += 10_000;
+    await write([]);
+    expect(queryFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('sem internet, não busca', async () => {
+    const queryFn = serverHouses();
+    network.listener?.({ isConnected: false, isInternetReachable: false });
+    await write([]);
+    expect(queryFn).not.toHaveBeenCalled();
   });
 });

@@ -16,6 +16,7 @@ import { PRICE_ALERT_HISTORY_DAYS } from '@/domain/priceAlert';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
 import { normalizeSearch } from '@/domain/search';
+import { EXPECTS_ROWS_META } from '@/lib/accessErrors';
 import { supabase, unwrap } from '@/lib/supabase';
 import type {
   LatestPrice,
@@ -410,7 +411,9 @@ async function toggleListItem({ id, checked, userId, at, token, nextToken }: Tog
           : { checked_at: null, checked_by: null, toggle_token: nextToken },
       )
       .eq('id', id)
-      .eq('toggle_token', token),
+      .eq('toggle_token', token)
+      // As linhas alcançadas: nenhuma pode ser a casa que deixou de ser da pessoa (ver wroteNoRows).
+      .select('id'),
   );
 }
 
@@ -461,10 +464,12 @@ export function registerListMutations(queryClient: QueryClient) {
   queryClient.setMutationDefaults(TOGGLE_ITEM_KEY, {
     ...queued,
     mutationFn: (input: ToggleItemInput) => toggleListItem(input),
+    meta: EXPECTS_ROWS_META,
   });
   queryClient.setMutationDefaults(EDIT_ITEM_KEY, {
     ...queued,
     mutationFn: (input: EditItemInput) => editListItem(input),
+    meta: EXPECTS_ROWS_META,
   });
   queryClient.setMutationDefaults(CLEAR_CHECKED_KEY, {
     ...queued,
@@ -535,7 +540,7 @@ export interface EditItemInput {
 
 async function editListItem({ id, userId, values }: EditItemInput) {
   await requireQueueSession(userId);
-  return unwrap(await supabase.from('shopping_list_items').update(values).eq('id', id));
+  return unwrap(await supabase.from('shopping_list_items').update(values).eq('id', id).select('id'));
 }
 
 export function useEditListItem(listId: string) {
@@ -580,7 +585,8 @@ export function useRemovePendingListItem(listId: string) {
 export function useDeleteListItem(listId: string) {
   const invalidate = useInvalidateLists(listId);
   return useMutation({
-    mutationFn: async (id: string) => unwrap(await supabase.from('shopping_list_items').delete().eq('id', id)),
+    mutationFn: async (id: string) => unwrap(await supabase.from('shopping_list_items').delete().eq('id', id).select('id')),
+    meta: EXPECTS_ROWS_META,
     onSuccess: invalidate,
   });
 }

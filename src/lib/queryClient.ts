@@ -4,7 +4,7 @@
 // guardada e sai quando a conexão volta.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { hashKey, onlineManager, QueryClient } from '@tanstack/react-query';
+import { hashKey, MutationCache, onlineManager, QueryClient } from '@tanstack/react-query';
 import { persistQueryClientSave, type PersistedClient, type PersistQueryClientProviderProps } from '@tanstack/react-query-persist-client';
 import * as Network from 'expo-network';
 import { AppState, Platform } from 'react-native';
@@ -12,6 +12,8 @@ import { AppState, Platform } from 'react-native';
 import { forgetPendingPhotos, inPhotoQueue, registerListPhotoMutations } from '@/data/listPhotos';
 import { inListQueue, registerListMutations } from '@/data/market';
 
+import { isHouseholdAccessError, leftHousehold, markRemovedFromHousehold, wroteNoRows } from './accessErrors';
+import { getActiveHousehold } from './activeHousehold';
 import { createCachePersister } from './cachePersister';
 
 const WEEK = 1000 * 60 * 60 * 24 * 7;
@@ -33,7 +35,62 @@ const PERSISTED = new Set([
   'weather',
 ]);
 
+/** Quanto a conferência da casa pode segurar o aviso de erro. */
+const HOUSEHOLD_CHECK_MS = 8000;
+
+/**
+ * Uma escrita foi barrada pela regra de acesso da casa: talvez a pessoa
+ * tenha sido tirada dela com o app aberto. Busca as casas de novo (o que já
+ * leva o app para outra casa, ou para a tela de abertura) e, se a casa
+ * aberta não está mais entre elas, marca o erro: o aviso diz que ela não faz
+ * mais parte da casa. Sem conseguir conferir, o aviso fica neutro.
+ */
+async function confirmHouseholdAccess(error: unknown): Promise<void> {
+  // Sem internet (ou a sessão esperando renovação) a busca ficaria parada e o aviso não sairia.
+  if (!onlineManager.isOnline()) return;
+  const householdId = getActiveHousehold();
+  const startedAt = Date.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    queryClient.refetchQueries({ queryKey: ['household'] }).catch(() => undefined),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, HOUSEHOLD_CHECK_MS);
+    }),
+  ]);
+  clearTimeout(timer);
+  const [fresh] = queryClient
+    .getQueryCache()
+    .findAll({ queryKey: ['household'], predicate: (q) => q.state.status === 'success' && q.state.dataUpdatedAt >= startedAt });
+  if (!fresh) return;
+  const state = fresh.state.data as Parameters<typeof leftHousehold>[1];
+  if (leftHousehold(householdId, state)) markRemovedFromHousehold(error);
+}
+
+/** Intervalo mínimo entre duas buscas das casas por mudanças sem linhas (marcações em sequência). */
+const HOUSEHOLD_RECHECK_MS = 5000;
+let lastHouseholdRecheck = 0;
+
+/**
+ * Uma mudança não alcançou nenhuma linha (ver wroteNoRows): busca as casas
+ * de novo, o que leva para outra casa quem foi tirada desta. Sem esperar e
+ * sem aviso; a busca em andamento é aproveitada.
+ */
+function recheckHousehold() {
+  const now = Date.now();
+  if (!onlineManager.isOnline() || now - lastHouseholdRecheck < HOUSEHOLD_RECHECK_MS) return;
+  lastHouseholdRecheck = now;
+  queryClient.refetchQueries({ queryKey: ['household'] }, { cancelRefetch: false }).catch(() => undefined);
+}
+
 export const queryClient = new QueryClient({
+  mutationCache: new MutationCache({
+    // Antes do onError da tela (o do cache vem primeiro e é esperado): o aviso já sai certo.
+    onError: (error) => (isHouseholdAccessError(error) ? confirmHouseholdAccess(error) : undefined),
+    // UPDATE/DELETE que a RLS barrou não dá erro, só 0 linhas.
+    onSuccess: (data, _variables, _result, mutation) => {
+      if (mutation.meta?.expectsRows && wroteNoRows(data)) recheckHousehold();
+    },
+  }),
   defaultOptions: {
     // gcTime cobre o tempo guardado: consulta apagada da memória some do aparelho.
     queries: { staleTime: 30_000, retry: 1, gcTime: WEEK },
