@@ -35,24 +35,38 @@ export function hasAnyTerm(text: string, terms: readonly string[]): boolean {
 }
 
 // Nomes da Pluggy (já normalizados) -> categoria. Os genéricos (transferências,
-// "Shopping", "Services", "Other") ficam de fora de propósito: aí a descrição decide.
+// "Shopping", "Services", "Other") ficam de fora de propósito: aí a descrição
+// decide, e "Shopping" só vira Compras se a descrição não disser nada (pluggyFallback).
 const PLUGGY: Record<string, FinanceCategory> = {
   groceries: 'mercado',
-  // Comer fora e delivery entram em Lazer, como no orçamento da casa.
-  'food and drinks': 'lazer',
-  'eating out': 'lazer',
-  restaurants: 'lazer',
-  'food delivery': 'lazer',
+  'food and drinks': 'alimentacao',
+  'eating out': 'alimentacao',
+  restaurants: 'alimentacao',
+  'food delivery': 'alimentacao',
   leisure: 'lazer',
   tickets: 'lazer',
   'stadiums and arenas': 'lazer',
   'landmarks and museums': 'lazer',
   'cinema theater and concerts': 'lazer',
-  travel: 'lazer',
-  'airport and airlines': 'lazer',
-  accommodation: 'lazer',
-  'mileage programs': 'lazer',
-  'bus tickets': 'lazer',
+  travel: 'viagem',
+  'airport and airlines': 'viagem',
+  accommodation: 'viagem',
+  // Assim mesmo, com um "m" só, nos lançamentos da Pluggy.
+  accomodation: 'viagem',
+  'mileage programs': 'viagem',
+  'bus tickets': 'viagem',
+  electronics: 'compras',
+  clothing: 'compras',
+  'kids and toys': 'compras',
+  'sports goods': 'compras',
+  'office supplies': 'compras',
+  'bank fees': 'taxas',
+  'credit card fees': 'taxas',
+  'interests charged': 'taxas',
+  'late payment and overdraft costs': 'taxas',
+  'tax on financial operations': 'taxas',
+  taxes: 'taxas',
+  'income taxes': 'taxas',
   gambling: 'lazer',
   lottery: 'lazer',
   'online bet': 'lazer',
@@ -113,20 +127,41 @@ const PLUGGY: Record<string, FinanceCategory> = {
 const PLUGGY_GROUPS: Record<string, FinanceCategory> = {
   '09': 'assinaturas',
   '10': 'mercado',
-  '11': 'lazer',
-  '12': 'lazer',
+  '11': 'alimentacao',
+  '12': 'viagem',
   '14': 'lazer',
+  '15': 'taxas',
+  '16': 'taxas',
   '17': 'moradia',
   '18': 'saude',
   '19': 'transporte',
   '21': 'lazer',
 };
 
+// "Shopping" e "Online shopping" (grupo 08; a segunda é qualquer compra pela
+// carteira digital) são largas demais para vencer a descrição (um mercado ou
+// uma farmácia pagos pelo Mercado Pago), mas são melhores que Outros quando ela não diz nada.
+const PLUGGY_FALLBACK = new Set(['shopping', 'online shopping']);
+
+function pluggyFallback(category: string | null | undefined, categoryId?: string | null): FinanceCategory | null {
+  if (category && PLUGGY_FALLBACK.has(normalizeBankText(category))) return 'compras';
+  if (categoryId && /^08\d{6}$/.test(categoryId)) return 'compras';
+  return null;
+}
+
 // Palavra -> categoria. A primeira que aparece vence, então o mais
 // específico vem antes ("uber eats" antes de "uber").
 const KEYWORDS: [FinanceCategory, string[]][] = [
   ['pet', ['petshop', 'pet shop', 'petz', 'cobasi', 'petlove', 'veterinari*', 'racao', 'pet']],
-  ['lazer', ['uber eats', 'ifood', 'ifd', 'rappi', 'ze delivery', 'aiqfome']],
+  ['alimentacao', ['uber eats', 'ifood', 'ifd', 'rappi', 'ze delivery', 'aiqfome', 'keeta']],
+  [
+    'cuidados',
+    [
+      'salao', 'saloes', 'cabeleireir*', 'cabelereir*', 'barbearia', 'barbeiro', 'barber*', 'manicure', 'pedicure',
+      'esmalteria', 'estetica', 'depilacao', 'depil*', 'sobrancelha*', 'boticario', 'natura', 'avon', 'eudora',
+      'sephora', 'perfumaria', 'cosmetico*', 'beleza', 'jequiti', 'quem disse berenice',
+    ],
+  ],
   [
     'saude',
     [
@@ -142,6 +177,14 @@ const KEYWORDS: [FinanceCategory, string[]][] = [
     [
       'escola', 'colegio', 'faculdade', 'universidade', 'curso', 'cursos', 'creche', 'livraria', 'papelaria',
       'material escolar', 'udemy', 'alura', 'coursera', 'duolingo', 'kumon',
+    ],
+  ],
+  [
+    'viagem',
+    [
+      'hotel', 'hoteis', 'pousada', 'hostel', 'resort', 'airbnb', 'booking', 'decolar', 'hurb', '123milhas',
+      'maxmilhas', 'latam', 'azul linhas', 'gol linhas', 'voegol', 'voeazul', 'smiles', 'tudoazul', 'viagem',
+      'viagens', 'turismo', 'passagem*', 'clickbus', 'buser', 'rodoviaria',
     ],
   ],
   [
@@ -161,6 +204,13 @@ const KEYWORDS: [FinanceCategory, string[]][] = [
       'pedagio', 'metro', 'bilhete unico', 'cptm', 'sptrans', 'onibus', 'riocard', 'detran', 'ipva',
       'oficina', 'auto pecas', 'autopecas', 'pneus', 'localiza', 'movida', 'unidas', 'lava jato', 'lavajato',
       'borracharia', 'mecanica',
+    ],
+  ],
+  [
+    'taxas',
+    [
+      'tarifa*', 'anuidade', 'iof', 'juros', 'multa', 'multas', 'encargo*', 'cesta de servicos', 'pacote de servicos',
+      'taxa de manutencao', 'rotativo',
     ],
   ],
   [
@@ -191,27 +241,42 @@ const KEYWORDS: [FinanceCategory, string[]][] = [
     ],
   ],
   [
-    'lazer',
+    'alimentacao',
     [
       'restaurante*', 'restaurant', 'lanchonete', 'lanches', 'pizzaria', 'pizza', 'hamburgueria', 'burger',
-      'burguer', 'churrascaria', 'sushi', 'bar', 'boteco', 'choperia', 'cervejaria', 'cafeteria', 'sorveteria',
-      'doceria', 'confeitaria', 'mcdonalds', 'mc donalds', 'burger king', 'subway', 'starbucks', 'outback',
-      'habibs', 'giraffas', 'spoleto', 'madero', 'cinema', 'cinemark', 'cinepolis', 'kinoplex', 'ingresso*',
-      'sympla', 'eventim', 'ticketmaster', 'teatro', 'show', 'hotel', 'hoteis', 'pousada', 'airbnb', 'booking',
-      'decolar', 'latam', 'azul linhas', 'gol linhas', 'smiles', 'viagem', 'turismo', 'steam', 'playstation',
-      'xbox', 'nintendo',
+      'burguer', 'churrascaria', 'sushi', 'bar', 'boteco', 'choperia', 'cervejaria', 'cafeteria', 'cafe', 'coffee',
+      'sorveteria', 'doceria', 'confeitaria', 'pastelaria', 'esfiharia', 'acai', 'mcdonalds', 'mc donalds',
+      'burger king', 'subway', 'starbucks', 'outback', 'habibs', 'giraffas', 'spoleto', 'madero', 'bobs', 'kfc',
+      'popeyes', 'coco bambu', 'china in box',
+    ],
+  ],
+  [
+    'lazer',
+    [
+      'cinema', 'cinemark', 'cinepolis', 'kinoplex', 'ingresso*', 'sympla', 'eventim', 'ticketmaster', 'teatro',
+      'show', 'steam', 'playstation', 'xbox', 'nintendo',
+    ],
+  ],
+  [
+    'compras',
+    [
+      'shopee', 'shein', 'temu', 'aliexpress', 'amazon', 'amzn', 'mercadolivre', 'magazine luiza', 'magalu',
+      'americanas', 'casas bahia', 'ponto frio', 'pontofrio', 'fast shop', 'fastshop', 'kabum', 'renner',
+      'riachuelo', 'cea', 'zara', 'hering', 'marisa', 'pernambucanas', 'centauro', 'netshoes', 'decathlon', 'havan',
+      'dafiti', 'zattini', 'calcados', 'roupas', 'vestuario', 'eletronicos', 'loja', 'lojas', 'magazine',
     ],
   ],
 ];
 
-// Carteiras e marketplaces com "mercado" no nome não são supermercado.
-const NOT_GROCERY = /\b(mercado ?pago|mercado ?livre|mercado ?bitcoin)\b/g;
+// Carteiras e marketplaces com "mercado" no nome não são supermercado: o nome
+// vira uma palavra só ("mercadolivre"), que a palavra "mercado" não acha.
+const NOT_GROCERY = /\bmercado ?(pago|livre|bitcoin)\b/g;
 
 /** Texto em que as palavras-chave são procuradas: nome de pessoa (CPF) fica de fora. */
 function keywordText(tx: BankCategoryInput): string {
   const party = tx.counterparty_doc_kind === 'CPF' ? null : tx.counterparty_name;
   return normalizeBankText(tx.description, tx.description_raw, tx.merchant_name, party, tx.category)
-    .replace(NOT_GROCERY, ' ')
+    .replace(NOT_GROCERY, (_, rest: string) => `mercado${rest}`)
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -231,7 +296,12 @@ function keywordCategory(text: string): FinanceCategory | null {
 
 /** Categoria de gasto do Kotii para um lançamento do banco; sem pista, 'outros'. */
 export function financeCategoryOfBank(tx: BankCategoryInput): FinanceCategory {
-  return pluggyFinanceCategory(tx.category, tx.category_id) ?? keywordCategory(keywordText(tx)) ?? 'outros';
+  return (
+    pluggyFinanceCategory(tx.category, tx.category_id) ??
+    keywordCategory(keywordText(tx)) ??
+    pluggyFallback(tx.category, tx.category_id) ??
+    'outros'
+  );
 }
 
 // Categorias da Pluggy que nunca vão com detalhe para a IA.

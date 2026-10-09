@@ -636,7 +636,7 @@ describe('monthSummary — estornos', () => {
       [
         tx({ account_id: nuCard.id, amount: 1000, description: 'LOJA DE TV', occurred_on: '2026-09-10' }),
         tx({ account_id: nuCard.id, amount: 1000, direction: 'CREDIT', description: 'Estorno LOJA DE TV', occurred_on: '2026-10-03' }),
-        // Mesma categoria (outros) que a TV, em outubro.
+        // Mesma categoria (compras) que a TV, em outubro.
         tx({ account_id: nuCard.id, amount: 700, description: 'AMAZON MARKETPLACE', occurred_on: '2026-10-04' }),
         tx({ account_id: nuCard.id, amount: 600, description: 'SUPERMERCADO BOM', occurred_on: '2026-10-04' }),
       ],
@@ -650,7 +650,7 @@ describe('monthSummary — estornos', () => {
       refunds: 0,
       otherRefunds: 0,
       byCategory: [
-        { category: 'outros', amount: 700 },
+        { category: 'compras', amount: 700 },
         { category: 'mercado', amount: 600 },
       ],
       count: 2,

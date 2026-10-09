@@ -124,7 +124,7 @@ describe('groupPurchases com as categorias escolhidas', () => {
         counterparty_doc_kind: 'CPF',
         counterparty_doc_hash: PERSON,
       });
-    const txs = [rent('2026-09-05'), rent('2026-10-05'), tx({ description: 'LOJA QUALQUER', amount: 50 })];
+    const txs = [rent('2026-09-05'), rent('2026-10-05'), tx({ description: 'XPTO SERVICOS', amount: 50 })];
     const before = groupPurchases(txs, [checking]);
     expect(before.filter((p) => p.amount === 2000).map((p) => p.category)).toEqual(['outros', 'outros']);
 

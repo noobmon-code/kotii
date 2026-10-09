@@ -34,9 +34,19 @@ describe('financeCategoryOfBank', () => {
   it('usa o nome da categoria da Pluggy', () => {
     const cases: [string, string][] = [
       ['Groceries', 'mercado'],
-      ['Restaurants', 'lazer'],
-      ['Eating out', 'lazer'],
-      ['Food delivery', 'lazer'],
+      ['Restaurants', 'alimentacao'],
+      ['Eating out', 'alimentacao'],
+      ['Food delivery', 'alimentacao'],
+      ['Travel', 'viagem'],
+      ['Airport and airlines', 'viagem'],
+      ['Accomodation', 'viagem'],
+      ['Clothing', 'compras'],
+      ['Electronics', 'compras'],
+      ['Bank fees', 'taxas'],
+      ['Credit card fees', 'taxas'],
+      ['Interests charged', 'taxas'],
+      ['Tax on financial operations', 'taxas'],
+      ['Cinema, theater and concerts', 'lazer'],
       ['Pharmacy', 'saude'],
       ['Gas stations', 'transporte'],
       ['Taxi and ride-hailing', 'transporte'],
@@ -57,6 +67,8 @@ describe('financeCategoryOfBank', () => {
   it('sem o nome, usa o grupo do id da Pluggy', () => {
     expect(financeCategoryOfBank(tx({ category_id: '10000000', description: 'COMPRA 123' }))).toBe('mercado');
     expect(financeCategoryOfBank(tx({ category_id: '19050000', description: 'COMPRA 123' }))).toBe('transporte');
+    expect(financeCategoryOfBank(tx({ category_id: '11010000', description: 'COMPRA 123' }))).toBe('alimentacao');
+    expect(financeCategoryOfBank(tx({ category_id: '16030000', description: 'COMPRA 123' }))).toBe('taxas');
     expect(pluggyFinanceCategory(null, 'abc')).toBeNull();
   });
 
@@ -65,17 +77,47 @@ describe('financeCategoryOfBank', () => {
     expect(financeCategoryOfBank(tx({ category: 'Shopping', description: 'PETZ MORUMBI' }))).toBe('pet');
     expect(financeCategoryOfBank(tx({ category: 'Online shopping', description: 'MERCADOPAGO*FARMACIASAOJOAO' }))).toBe('saude');
     expect(financeCategoryOfBank(tx({ description: 'UBER *TRIP HELP.UBER.COM' }))).toBe('transporte');
-    expect(financeCategoryOfBank(tx({ description: 'UBER EATS' }))).toBe('lazer');
-    expect(financeCategoryOfBank(tx({ description: 'IFD*IFOOD' }))).toBe('lazer');
+    expect(financeCategoryOfBank(tx({ description: 'UBER EATS' }))).toBe('alimentacao');
+    expect(financeCategoryOfBank(tx({ description: 'IFD*IFOOD' }))).toBe('alimentacao');
     expect(financeCategoryOfBank(tx({ description: 'Netflix.com' }))).toBe('assinaturas');
     expect(financeCategoryOfBank(tx({ description: 'ENEL DISTRIBUICAO SP' }))).toBe('contas');
     expect(financeCategoryOfBank(tx({ description: 'Pagamento de boleto', merchant_name: 'Condominio Ed. Flores' }))).toBe('moradia');
   });
 
+  it('categorias novas pela descrição', () => {
+    expect(financeCategoryOfBank(tx({ description: 'RESTAURANTE SABOR CASEIRO' }))).toBe('alimentacao');
+    expect(financeCategoryOfBank(tx({ description: 'STARBUCKS PAULISTA' }))).toBe('alimentacao');
+    expect(financeCategoryOfBank(tx({ description: 'PADARIA REAL' }))).toBe('mercado');
+    expect(financeCategoryOfBank(tx({ description: 'BARBEARIA DO ZE' }))).toBe('cuidados');
+    expect(financeCategoryOfBank(tx({ description: 'O BOTICARIO SHOPPING' }))).toBe('cuidados');
+    // Estética vem antes de clínica (que seria Saúde).
+    expect(financeCategoryOfBank(tx({ description: 'CLINICA DE ESTETICA BELLA' }))).toBe('cuidados');
+    expect(financeCategoryOfBank(tx({ description: 'AIRBNB * HMXYZ' }))).toBe('viagem');
+    expect(financeCategoryOfBank(tx({ description: 'HOTEL IBIS' }))).toBe('viagem');
+    expect(financeCategoryOfBank(tx({ description: 'CLICKBUS PASSAGEM ONIBUS' }))).toBe('viagem');
+    expect(financeCategoryOfBank(tx({ description: 'SHOPEE *LOJAX' }))).toBe('compras');
+    expect(financeCategoryOfBank(tx({ description: 'AMAZON MARKETPLACE' }))).toBe('compras');
+    expect(financeCategoryOfBank(tx({ description: 'AMAZON PRIME CANAIS' }))).toBe('assinaturas');
+    expect(financeCategoryOfBank(tx({ description: 'TARIFA PACOTE DE SERVICOS' }))).toBe('taxas');
+    expect(financeCategoryOfBank(tx({ description: 'IOF COMPRA INTERNACIONAL' }))).toBe('taxas');
+    expect(financeCategoryOfBank(tx({ description: 'JUROS DE MORA' }))).toBe('taxas');
+    expect(financeCategoryOfBank(tx({ description: 'ANUIDADE DIFERENCIADA' }))).toBe('taxas');
+    expect(financeCategoryOfBank(tx({ description: 'DETRAN MULTA' }))).toBe('transporte');
+  });
+
+  it('"Shopping" e "Online shopping" da Pluggy só valem quando a descrição não diz nada', () => {
+    expect(financeCategoryOfBank(tx({ category: 'Shopping', description: 'XPTO 123' }))).toBe('compras');
+    expect(financeCategoryOfBank(tx({ category: 'Online shopping', description: 'MERCADOPAGO*JOAOSILVA' }))).toBe('compras');
+    expect(financeCategoryOfBank(tx({ category_id: '08010000', description: 'XPTO 123' }))).toBe('compras');
+    expect(financeCategoryOfBank(tx({ category: 'Shopping', description: 'SUPERMERCADO BOM' }))).toBe('mercado');
+    expect(financeCategoryOfBank(tx({ category: 'Online shopping', description: 'MERCADOPAGO*FARMACIASAOJOAO' }))).toBe('saude');
+  });
+
   it('carteira ou marketplace com "mercado" no nome não é supermercado', () => {
-    expect(financeCategoryOfBank(tx({ description: 'MERCADOPAGO*LOJA' }))).toBe('outros');
+    expect(financeCategoryOfBank(tx({ description: 'MERCADOPAGO*JOAOSILVA' }))).toBe('outros');
     expect(financeCategoryOfBank(tx({ description: 'Mercado Pago' }))).toBe('outros');
-    expect(financeCategoryOfBank(tx({ description: 'MERCADO LIVRE' }))).toBe('outros');
+    expect(financeCategoryOfBank(tx({ description: 'MERCADO LIVRE' }))).toBe('compras');
+    expect(financeCategoryOfBank(tx({ description: 'MERCADOLIVRE*VENDEDOR' }))).toBe('compras');
     expect(financeCategoryOfBank(tx({ description: 'MERCADOPAGO*SUPERMERCADO BOM' }))).toBe('mercado');
   });
 

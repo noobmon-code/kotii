@@ -162,7 +162,7 @@ describe('buildFinanceSnapshot', () => {
   it('compara com o mesmo período e com os dois meses anteriores', () => {
     expect(text).toContain('Até hoje: saídas R$ 874,90; em setembro até o dia 7: R$ 1.900,00 (R$ 1.025,10 a menos agora).');
     expect(text).toContain(
-      'Meses anteriores inteiros: setembro de 2026: saídas R$ 1.900,00, entradas R$ 0,00 (maiores: Outros R$ 1.500,00, Mercado R$ 400,00); agosto de 2026: saídas R$ 300,00, entradas R$ 0,00 (maiores: Mercado R$ 300,00).',
+      'Meses anteriores inteiros: setembro de 2026: saídas R$ 1.900,00, entradas R$ 0,00 (maiores: Compras R$ 1.500,00, Mercado R$ 400,00); agosto de 2026: saídas R$ 300,00, entradas R$ 0,00 (maiores: Mercado R$ 300,00).',
     );
   });
 
@@ -190,7 +190,7 @@ describe('buildFinanceSnapshot', () => {
       // Depois do "*" da maquininha pode vir o nome de quem vende: sem categoria de loja, fica genérico.
       't6 quinta, 1/10 · saída · Outros · Pagamento · R$ 35,00 · Nubank cartão',
       't7 quinta, 3/9 · saída · Mercado · SUPERMERCADO BOM · R$ 400,00 · Nubank cartão',
-      't8 terça, 1/9 · saída · Outros · MAGALU · R$ 1.500,00 · Nubank cartão · parcelada em 10x de R$ 150,00',
+      't8 terça, 1/9 · saída · Compras · MAGALU · R$ 1.500,00 · Nubank cartão · parcelada em 10x de R$ 150,00',
       't9 segunda, 10/8 · saída · Mercado · SUPERMERCADO BOM · R$ 300,00 · Nubank cartão',
     ]);
   });
@@ -454,7 +454,7 @@ describe('ações do consultor', () => {
         { type: 'set_budget', label: '', screen: null, category: 'mercado', amount: 1200.456 },
         { type: 'set_budget', label: 'Lazer', category: 'lazer', amount: 0 },
         { type: 'set_budget', label: 'Lazer', category: 'lazer', amount: 1_000_001 },
-        { type: 'set_budget', label: 'Viagem', category: 'viagem', amount: 100 },
+        { type: 'set_budget', label: 'Roupas', category: 'roupas', amount: 100 },
         { type: 'delete_all', label: 'Apagar' },
         null,
         { type: 'open_screen', label: 'Contas', screen: 'contas' },

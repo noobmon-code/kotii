@@ -57,7 +57,7 @@ Deno.test('buildSystem names the weekday, sets the rules and ends with the snaps
   assertEquals(system.includes('CVM'), true);
   assertEquals(system.includes('sem markdown'), true);
   assertEquals(system.includes('R$ 1.234,56'), true);
-  assertEquals(system.includes('mercado, casa, moradia'), true);
+  assertEquals(system.includes('mercado, alimentacao, casa, moradia'), true);
   assertEquals(buildSystem('', '2026-10-07').endsWith('(sem dados carregados)'), true);
 });
 

@@ -35,15 +35,20 @@ export type CategoryKey = (typeof CATEGORY_KEYS)[number];
 // finance_category no banco); o mesmo teste confere.
 export const FINANCE_CATEGORY_KEYS = [
   'mercado',
+  'alimentacao',
   'casa',
   'moradia',
   'contas',
   'assinaturas',
   'saude',
+  'cuidados',
   'educacao',
   'transporte',
+  'viagem',
   'pet',
   'lazer',
+  'compras',
+  'taxas',
   'outros',
 ] as const;
 
