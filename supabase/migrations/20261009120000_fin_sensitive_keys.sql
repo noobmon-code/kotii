@@ -59,13 +59,21 @@ security definer
 set search_path = ''
 as $$
 declare
+  was_saude boolean := false;
+  old_similar text;
   missing text[];
 begin
-  if new.category <> 'saude' then
+  if tg_op = 'UPDATE' then
+    was_saude := old.category = 'saude';
+    old_similar := old.similar_key;
+  end if;
+  -- Saúde agora, ou até esta troca: uma escolha de antes da similar_key que
+  -- sai de Saúde traz a chave das parecidas na própria troca, e ela também marca.
+  if new.category <> 'saude' and not was_saude then
     return new;
   end if;
   select coalesce(array_agg(distinct mk), '{}') into missing
-  from unnest(array_remove(array[new.match_key, new.similar_key], null)) as mk
+  from unnest(array_remove(array[new.match_key, new.similar_key, old_similar], null)) as mk
   where not exists (
     select 1 from public.fin_sensitive_keys k
     where k.user_id = new.user_id and k.household_id = new.household_id and k.match_key = mk

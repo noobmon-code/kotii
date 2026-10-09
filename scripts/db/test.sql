@@ -2784,6 +2784,18 @@ begin
   update public.fin_category_rules set similar_key = 'm:clinica nova'
   where match_key = 'p:tx-00000000-0000-0000-0000-0000000000f6' and category = 'saude';
   assert exists (select 1 from public.fin_sensitive_keys where match_key = 'm:clinica nova'), 'saving the similar key later marks it';
+  -- Escolha antiga trocada para outra categoria antes do reparo: a troca traz a chave das parecidas, e ela marca.
+  insert into public.fin_category_rules (match_key, category) values ('p:tx-00000000-0000-0000-0000-0000000000f7', 'saude');
+  insert into public.fin_category_rules (match_key, category, similar_key)
+  values ('p:tx-00000000-0000-0000-0000-0000000000f7', 'lazer', 'm:clinica antiga')
+  on conflict (user_id, household_id, match_key) do update set category = excluded.category, similar_key = excluded.similar_key;
+  assert exists (select 1 from public.fin_sensitive_keys where match_key = 'm:clinica antiga'), 'leaving Saúde still marks the similar ones';
+  -- Trocar entre outras categorias continua sem marcar.
+  insert into public.fin_category_rules (match_key, category, similar_key)
+  values ('p:tx-00000000-0000-0000-0000-0000000000f8', 'lazer', 'm:loja comum');
+  update public.fin_category_rules set category = 'mercado' where match_key = 'p:tx-00000000-0000-0000-0000-0000000000f8';
+  assert not exists (select 1 from public.fin_sensitive_keys where match_key in ('p:tx-00000000-0000-0000-0000-0000000000f8', 'm:loja comum')),
+    'moving between other categories marks nothing';
   foreach bad_key in array array['p:tx-00000000-0000-0000-0000-0000000000f5', 'x:qualquer', 'm:Loja', 'doc:abc'] loop
     begin
       insert into public.fin_category_rules (match_key, category, similar_key) values ('m:loja teste', 'mercado', bad_key);
@@ -2792,7 +2804,7 @@ begin
     end;
   end loop;
   delete from public.fin_category_rules where match_key like 'p:tx-%';
-  assert (select count(*) from public.fin_sensitive_keys) = 8, 'undoing keeps all the marks';
+  assert (select count(*) from public.fin_sensitive_keys) = 10, 'undoing keeps all the marks';
 end $$;
 
 -- Léo, na mesma casa e sem liberação, não vê nem mexe nas escolhas da Kátia.
@@ -2820,7 +2832,7 @@ begin
   assert (select count(*) from public.fin_category_rules where user_id = '00000000-0000-0000-0000-000000000017') = 2,
     'K''s rules untouched by L';
   assert (select category from public.fin_category_rules where match_key = 'm:padaria real') = 'lazer', 'still hers';
-  assert (select count(*) from public.fin_sensitive_keys where user_id = '00000000-0000-0000-0000-000000000017') = 8,
+  assert (select count(*) from public.fin_sensitive_keys where user_id = '00000000-0000-0000-0000-000000000017') = 10,
     'and her marks';
 end $$;
 set role authenticated;
