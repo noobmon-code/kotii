@@ -11,6 +11,10 @@ const STATIC = ['/_expo/static/', '/assets/', '/icons/'];
 
 const cacheable = (url) => url.origin === self.location.origin && STATIC.some((prefix) => url.pathname.startsWith(prefix));
 
+// Endereço que não existe recebe a index.html (rewrite da Vercel): isso não vai
+// para o cache no lugar de um arquivo, senão ficaria lá mesmo depois de o arquivo voltar.
+const isFile = (response) => response.ok && !(response.headers.get('content-type') || '').includes('text/html');
+
 /** Guarda cada endereço que ainda não está no cache; um que falhe não derruba os outros. */
 async function precache(urls) {
   const cache = await caches.open(VERSION);
@@ -18,7 +22,7 @@ async function precache(urls) {
     urls.map(async (url) => {
       if (await cache.match(url)) return;
       const response = await fetch(url).catch(() => null);
-      if (response && response.ok) await cache.put(url, response);
+      if (response && isFile(response)) await cache.put(url, response);
     }),
   );
 }
@@ -39,7 +43,7 @@ async function cacheShell(response) {
     assets.map(async (url) => {
       if (await cache.match(url)) return;
       const asset = await fetch(url);
-      if (!asset.ok) throw new Error(`${url}: ${asset.status}`);
+      if (!isFile(asset)) throw new Error(`${url}: ${asset.status}`);
       await cache.put(url, asset);
     }),
   );
@@ -113,7 +117,7 @@ self.addEventListener('fetch', (event) => {
         (cached) =>
           cached ||
           fetch(request).then((response) => {
-            if (response.ok) {
+            if (isFile(response)) {
               const copy = response.clone();
               caches.open(VERSION).then((cache) => cache.put(request, copy));
             }

@@ -1,12 +1,13 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { router } from 'expo-router';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 
 import { FunctionError } from '@/data/images';
 import { MAX_RECEIPT_PHOTOS, useImportNfce } from '@/data/receipts';
 import { nfceFailureRoute, parseNfceQr, qrReadStep } from '@/domain/nfce';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
+import { prepareBarcodeReader } from '@/lib/barcodeReader';
 import { errorMessage } from '@/lib/supabase';
 import { BusyOverlay } from '@/ui/BusyOverlay';
 import { notify } from '@/ui/dialogs';
@@ -31,6 +32,10 @@ export default function NfceQrScreen() {
   // A câmera lê o mesmo QR várias vezes por segundo: um de cada vez.
   const busy = useRef(false);
   const lastRejected = useRef<string | null>(null);
+
+  useEffect(() => {
+    void prepareBarcodeReader();
+  }, []);
 
   function submit(text: string, fromCamera: boolean) {
     if (busy.current) return;
