@@ -5,7 +5,7 @@
 
 import type { FinAccount, FinConnection, FinTransaction } from '@/lib/types';
 
-import { financeCategoryOfBank, isSensitiveBankTx, normalizeBankText } from './bankCategories';
+import { financeCategoryOfBank, isBankFee, isSensitiveBankTx, normalizeBankText } from './bankCategories';
 import { type BankKind, classifyBankTransaction, isTransferLike, ownerHashes } from './bankClassify';
 import {
   type CategoryRules,
@@ -199,7 +199,9 @@ export function groupPurchases(
   const parcels: { tx: FinTransaction; kind: BankKind }[] = [];
   for (const tx of live) {
     const kind = kinds.get(tx.id) as BankKind;
-    if (isParcel(tx)) {
+    // Tarifa em parcelas ("ANUIDADE DIFERENCIADA 01/12") não é compra: cada parcela conta no mês em que cai.
+    const feeParcel = isParcel(tx) && isBankFee(tx);
+    if (isParcel(tx) && !feeParcel) {
       parcels.push({ tx, kind });
       continue;
     }
@@ -215,7 +217,8 @@ export function groupPurchases(
       (kind === 'refund' && refundOfSaudeStore(saude, tx, merchantName ?? description));
     purchases.push({
       key,
-      date: effectiveDate(tx),
+      // A "data da compra" da tarifa em parcelas é a do começo dela; a cobrança é a do lançamento.
+      date: feeParcel ? tx.occurred_on : effectiveDate(tx),
       amount: Number(tx.amount),
       description,
       merchantName,

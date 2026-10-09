@@ -304,6 +304,28 @@ export function financeCategoryOfBank(tx: BankCategoryInput): FinanceCategory {
   );
 }
 
+// Tarifas que o cartão cobra em parcelas sem ser compra ("ANUIDADE DIFERENCIADA 01/12").
+// "Juros" fica de fora: "parcelado sem juros" aparece em compra de verdade.
+const FEE_TERMS = ['anuidade', 'tarifa*', 'encargo*', 'iof'];
+const FEE_PLUGGY = new Set([
+  'bank fees',
+  'credit card fees',
+  'interests charged',
+  'late payment and overdraft costs',
+  'tax on financial operations',
+]);
+
+/**
+ * Tarifa ou encargo do banco ou do cartão, não compra: pelo tipo da tarifa
+ * que o Open Finance manda (fee_type), pela categoria da Pluggy ou pela
+ * descrição. Em parcelas, cada uma conta no mês em que cai.
+ */
+export function isBankFee(tx: BankCategoryInput & Partial<Pick<FinTransaction, 'fee_type'>>): boolean {
+  if (tx.fee_type) return true;
+  if (tx.category && FEE_PLUGGY.has(normalizeBankText(tx.category))) return true;
+  return hasAnyTerm(keywordText(tx), FEE_TERMS);
+}
+
 // Categorias da Pluggy que nunca vão com detalhe para a IA.
 const SENSITIVE_PLUGGY = new Set(['donations', 'alimony']);
 

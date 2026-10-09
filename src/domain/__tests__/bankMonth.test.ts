@@ -205,7 +205,7 @@ describe('groupPurchases', () => {
     expect(futureInstallments(purchases, '2026-11', 2).map((m) => m.amount)).toEqual([100, 100]);
   });
 
-  it('Santander: anuidade em 12x carimbada por parcela conta uma vez, no mês em que começou', () => {
+  it('Santander: anuidade em 12x é tarifa, não compra: cada parcela conta no mês em que cai', () => {
     const fee = { account_id: sanCard.id, amount: 55, description: 'ANUIDADE DIFERENCIADA' };
     const other = { account_id: sanCard.id, amount: 100, description: 'LOJA Y' };
     const purchases = groupPurchases(
@@ -218,12 +218,52 @@ describe('groupPurchases', () => {
       ],
       allAccounts,
     );
-    expect(purchases.map((p) => [p.description, p.date, p.amount])).toEqual([
-      ['LOJA Y', '2026-09-02', 200],
-      ['ANUIDADE DIFERENCIADA', '2026-04-10', 660],
+    expect(purchases.map((p) => [p.description, p.date, p.amount, p.installments === null])).toEqual([
+      ['ANUIDADE DIFERENCIADA 07/12', '2026-10-10', 55, true],
+      ['ANUIDADE DIFERENCIADA 06/12', '2026-09-10', 55, true],
+      ['LOJA Y', '2026-09-02', 200, false],
+      ['ANUIDADE DIFERENCIADA 05/12', '2026-08-10', 55, true],
     ]);
-    expect(['2026-08', '2026-09', '2026-10'].map((m) => monthSummary(purchases, m).spending)).toEqual([0, 200, 0]);
-    expect(futureInstallments(purchases, '2026-11', 1)[0]).toMatchObject({ amount: 55 });
+    expect(purchases.filter((p) => p.description.startsWith('ANUIDADE')).every((p) => p.category === 'taxas')).toBe(true);
+    expect(['2026-08', '2026-09', '2026-10'].map((m) => monthSummary(purchases, m).spending)).toEqual([55, 255, 55]);
+    // A anuidade que falta não aparece como parcela já comprometida.
+    expect(futureInstallments(purchases, '2026-11', 1)[0]).toMatchObject({ amount: 0 });
+  });
+
+  it('anuidade que começou hoje: só a parcela do mês, no dia da cobrança', () => {
+    const [p] = groupPurchases(
+      [parcel(1, 12, { account_id: sanCard.id, amount: 55, description: 'ANUIDADE DIFERENCIADA 01/12', purchase_on: '2026-10-08', occurred_on: '2026-10-08' })],
+      allAccounts,
+    );
+    expect(p).toMatchObject({ date: '2026-10-08', amount: 55, installments: null, category: 'taxas' });
+  });
+
+  it('Nubank: tarifa com a mesma data de compra em todas as parcelas conta pelo dia da cobrança; o tipo do Open Finance basta', () => {
+    const base = { amount: 20, purchase_on: '2026-08-10', description: 'SERVICO CARTAO', fee_type: 'ANUIDADE' };
+    const purchases = groupPurchases(
+      [
+        parcel(1, 12, { ...base, occurred_on: '2026-08-10', description: 'SERVICO CARTAO 01/12' }),
+        parcel(2, 12, { ...base, occurred_on: '2026-09-10', description: 'SERVICO CARTAO 02/12' }),
+      ],
+      accounts,
+    );
+    expect(purchases.map((p) => [p.date, p.amount])).toEqual([
+      ['2026-09-10', 20],
+      ['2026-08-10', 20],
+    ]);
+  });
+
+  it('compra "sem juros" continua compra parcelada', () => {
+    const base = { amount: 100, purchase_on: '2026-08-05', occurred_on: '2026-08-05' };
+    const purchases = groupPurchases(
+      [
+        parcel(1, 3, { ...base, description: 'LOJA X PARCELADO SEM JUROS 1/3' }),
+        parcel(2, 3, { ...base, occurred_on: '2026-09-05', description: 'LOJA X PARCELADO SEM JUROS 2/3' }),
+      ],
+      accounts,
+    );
+    expect(purchases).toHaveLength(1);
+    expect(purchases[0]).toMatchObject({ date: '2026-08-05', amount: 300, installments: { seen: [1, 2], total: 3 } });
   });
 
   it('Santander: só a última parcela na janela (sem outra para comparar) não vira compra nova nem parcelas futuras', () => {

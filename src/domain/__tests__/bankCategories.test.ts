@@ -4,6 +4,7 @@ import {
   type BankCategoryInput,
   financeCategoryOfBank,
   hasTerm,
+  isBankFee,
   isSensitiveBankTx,
   normalizeBankText,
   pluggyFinanceCategory,
@@ -136,6 +137,22 @@ describe('financeCategoryOfBank', () => {
 
   it('sem pista nenhuma, outros', () => {
     expect(financeCategoryOfBank(tx({ category: 'Other', description: 'COMPRA 8812' }))).toBe('outros');
+  });
+});
+
+describe('isBankFee', () => {
+  it('tarifa pelo tipo do Open Finance, pela categoria da Pluggy ou pela descrição', () => {
+    expect(isBankFee({ ...tx({ description: 'SERVICO CARTAO 01/12' }), fee_type: 'ANUIDADE' })).toBe(true);
+    expect(isBankFee(tx({ description: 'PACOTE 03/12', category: 'Credit card fees' }))).toBe(true);
+    expect(isBankFee(tx({ description: 'ANUIDADE DIFERENCIADA 05/12' }))).toBe(true);
+    expect(isBankFee(tx({ description: 'IOF COMPRA INTERNACIONAL' }))).toBe(true);
+    expect(isBankFee(tx({ description: 'TARIFA AVULSA SAQUE' }))).toBe(true);
+  });
+
+  it('compra parcelada não é tarifa, nem a "sem juros"', () => {
+    expect(isBankFee(tx({ description: 'MAGALU 01/10', category: 'Electronics' }))).toBe(false);
+    expect(isBankFee(tx({ description: 'LOJA X PARCELADO SEM JUROS 1/3' }))).toBe(false);
+    expect(isBankFee({ ...tx({ description: 'AMAZON BR 02/10' }), fee_type: null })).toBe(false);
   });
 });
 
