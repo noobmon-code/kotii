@@ -1,10 +1,11 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Modal, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { parseBoleto, type Boleto } from '@/domain/boleto';
 import { todayISO } from '@/domain/dates';
+import { prepareBarcodeReader } from '@/lib/barcodeReader';
 import { Backdrop } from '@/ui/Backdrop';
 import { notify } from '@/ui/dialogs';
 import { Button, Card, IconButton, Row, Text, TextField } from '@/ui/primitives';
@@ -17,6 +18,10 @@ export function BoletoScanner({ onRead, onClose }: { onRead: (boleto: Boleto) =>
   const [pasted, setPasted] = useState('');
   // A câmera lê o mesmo código várias vezes por segundo: vale a primeira leitura boa.
   const done = useRef(false);
+
+  useEffect(() => {
+    void prepareBarcodeReader();
+  }, []);
 
   function read(text: string, fromCamera: boolean) {
     if (done.current) return;
