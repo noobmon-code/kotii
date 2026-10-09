@@ -155,16 +155,27 @@ export function useFinTransactions(fromDate: string) {
   });
 }
 
-/** Categorias que a pessoa escolheu para os lançamentos (só dela, nesta casa). */
+/**
+ * Categorias que a pessoa escolheu para os lançamentos e o que ela já pôs em
+ * Saúde algum dia (só dela, nesta casa). As marcas de Saúde vêm na mesma
+ * consulta: escolher uma categoria recarrega as duas juntas.
+ */
 export function useFinCategoryRules() {
   const { key, enabled } = useFinScope();
   return useQuery({
     queryKey: ['fin', 'rules', ...key],
     enabled,
-    queryFn: async () =>
-      fetchAllPages<FinCategoryRule>((from, to) =>
-        supabase.from('fin_category_rules').select('match_key, category').order('match_key').range(from, to),
-      ),
+    queryFn: async () => {
+      const [rules, sensitive] = await Promise.all([
+        fetchAllPages<FinCategoryRule>((from, to) =>
+          supabase.from('fin_category_rules').select('match_key, category').order('match_key').range(from, to),
+        ),
+        fetchAllPages<{ match_key: string }>((from, to) =>
+          supabase.from('fin_sensitive_keys').select('match_key').order('match_key').range(from, to),
+        ),
+      ]);
+      return { rules, sensitiveKeys: sensitive.map((k) => k.match_key) };
+    },
   });
 }
 
@@ -251,6 +262,8 @@ export interface FinanceData {
   budgets: { category: string; monthly_limit: number }[];
   kotiiRecords: KotiiRecord[];
   categoryRules: FinCategoryRule[];
+  /** match_key que um dia foi Saúde: a compra continua só somada para a IA. */
+  sensitiveKeys: string[];
 }
 
 export type FinanceDataState =
@@ -285,7 +298,8 @@ export function useFinanceData(today: string): FinanceDataState {
             transactions: transactions.data,
             budgets: budgets.data,
             kotiiRecords: records.data,
-            categoryRules: rules.data,
+            categoryRules: rules.data.rules,
+            sensitiveKeys: rules.data.sensitiveKeys,
           }
         : null,
     [connections.data, accounts.data, transactions.data, budgets.data, records.data, rules.data],

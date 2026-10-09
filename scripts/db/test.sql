@@ -2694,6 +2694,72 @@ begin
   end;
 end $$;
 
+-- Saúde escolhida deixa uma marca que nem trocar de categoria nem desfazer
+-- apagam; a pessoa só lê as marcas.
+do $$
+declare
+  hk uuid := current_setting('test.hh_k')::uuid;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', hk)::text, true);
+  insert into public.fin_category_rules (match_key, category) values ('m:clinica sorriso', 'saude');
+  insert into public.fin_category_rules (match_key, category) values ('p:tx-00000000-0000-0000-0000-0000000000f2', 'lazer');
+  assert (select count(*) from public.fin_sensitive_keys) = 1, 'only the Saúde choice left a mark';
+  update public.fin_category_rules set category = 'saude' where match_key = 'p:tx-00000000-0000-0000-0000-0000000000f2';
+  assert (select array_agg(match_key order by match_key) from public.fin_sensitive_keys)
+    = array['m:clinica sorriso', 'p:tx-00000000-0000-0000-0000-0000000000f2'], 'changing a rule to Saúde left a mark too';
+  assert (select array_agg(distinct user_id) from public.fin_sensitive_keys) = array[auth.uid()]
+    and (select array_agg(distinct household_id) from public.fin_sensitive_keys) = array[hk], 'the marks are hers, in this household';
+  update public.fin_category_rules set category = 'lazer' where match_key = 'm:clinica sorriso';
+  delete from public.fin_category_rules where match_key = 'p:tx-00000000-0000-0000-0000-0000000000f2';
+  assert (select count(*) from public.fin_sensitive_keys) = 2, 'changing or undoing keeps the marks';
+  insert into public.fin_category_rules (match_key, category) values ('m:clinica sorriso', 'saude')
+    on conflict (user_id, household_id, match_key) do update set category = excluded.category;
+  assert (select count(*) from public.fin_sensitive_keys) = 2, 'Saúde again keeps a single mark';
+  delete from public.fin_category_rules where match_key = 'm:clinica sorriso';
+  assert (select count(*) from public.fin_sensitive_keys) = 2, 'and so does undoing it';
+  begin
+    insert into public.fin_sensitive_keys (user_id, household_id, match_key) values (auth.uid(), hk, 'm:outra loja');
+    raise exception 'FAIL: K wrote a mark';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update public.fin_sensitive_keys set match_key = 'm:outra loja';
+    raise exception 'FAIL: K changed a mark';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from public.fin_sensitive_keys;
+    raise exception 'FAIL: K removed her marks';
+  exception when insufficient_privilege then null;
+  end;
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_k2'))::text, true);
+  assert (select count(*) from public.fin_sensitive_keys) = 0, 'no marks in the household without the beta';
+end $$;
+
+-- Limite das marcas: um app em loop não enche a tabela. Cheia, a Saúde numa
+-- chave nova é recusada (em vez de ficar sem a marca); onde já há marca, passa.
+reset role;
+insert into public.fin_sensitive_keys (user_id, household_id, match_key)
+select :'user_k'::uuid, current_setting('test.hh_k')::uuid, 'm:enchimento ' || n from generate_series(1, 1998) n;
+set role authenticated;
+do $$
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_k'))::text, true);
+  assert (select count(*) from public.fin_sensitive_keys) = 2000, 'K is at the mark limit';
+  begin
+    insert into public.fin_category_rules (match_key, category) values ('m:clinica nova', 'saude');
+    raise exception 'FAIL: saved Saúde without room for its mark';
+  exception when program_limit_exceeded then null;
+  end;
+  assert not exists (select 1 from public.fin_category_rules where match_key = 'm:clinica nova'), 'the refused rule was not saved';
+  insert into public.fin_category_rules (match_key, category) values ('m:clinica sorriso', 'saude');
+  insert into public.fin_category_rules (match_key, category) values ('m:clinica nova', 'lazer');
+  delete from public.fin_category_rules where match_key in ('m:clinica sorriso', 'm:clinica nova');
+end $$;
+reset role;
+delete from public.fin_sensitive_keys where match_key like 'm:enchimento %';
+set role authenticated;
+
 -- Léo, na mesma casa e sem liberação, não vê nem mexe nas escolhas da Kátia.
 select set_config('request.jwt.claim.sub', :'user_l', false) \gset
 do $$
@@ -2706,6 +2772,12 @@ begin
     raise exception 'FAIL: L saved a rule without the beta';
   exception when insufficient_privilege or foreign_key_violation then null;
   end;
+  assert (select count(*) from public.fin_sensitive_keys) = 0, 'L sees none of K''s marks';
+  begin
+    delete from public.fin_sensitive_keys;
+    raise exception 'FAIL: L removed K''s marks';
+  exception when insufficient_privilege then null;
+  end;
 end $$;
 reset role;
 do $$
@@ -2713,6 +2785,8 @@ begin
   assert (select count(*) from public.fin_category_rules where user_id = '00000000-0000-0000-0000-000000000017') = 2,
     'K''s rules untouched by L';
   assert (select category from public.fin_category_rules where match_key = 'm:padaria real') = 'lazer', 'still hers';
+  assert (select count(*) from public.fin_sensitive_keys where user_id = '00000000-0000-0000-0000-000000000017') = 2,
+    'and her marks';
 end $$;
 set role authenticated;
 
@@ -2769,6 +2843,7 @@ reset role;
 do $$
 begin
   assert not exists (select 1 from public.fin_category_rules), 'category rules left with the grant';
+  assert not exists (select 1 from public.fin_sensitive_keys), 'and so did the Saúde marks';
   assert not exists (select 1 from public.fin_connections where pluggy_item_id = 'item-k-nubank'), 'connections left with the household';
   assert not exists (select 1 from public.fin_accounts where pluggy_account_id in ('acc-k-nubank', 'acc-k-inter')), 'accounts too';
   assert not exists (select 1 from public.fin_transactions where pluggy_transaction_id like 'tx-k-%'), 'transactions too';

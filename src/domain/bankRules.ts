@@ -3,7 +3,8 @@
 // passam na frente da categoria automática (bankCategories), na tela e no
 // retrato do Nuke. Uma regra vale para uma compra só ("p:tx-<id>") ou para
 // todas as parecidas: o mesmo destinatário de PIX ("doc:<hash do CPF>") ou o
-// mesmo nome de loja ou descrição ("m:<texto>").
+// mesmo nome de loja ou descrição ("m:<texto>"). Escolher Saúde deixa uma
+// marca (fin_sensitive_keys) que trocar ou desfazer a escolha não apaga.
 
 import type { FinTransaction } from '@/lib/types';
 
@@ -83,4 +84,25 @@ export function pickCategory(
   const similar = similarKey ? rules.get(similarKey) : undefined;
   if (similar) return { category: similar, source: 'similar' };
   return { category: auto, source: 'auto' };
+}
+
+/** match_key que a pessoa já pôs em Saúde (fin_sensitive_keys). */
+export type SensitiveKeys = ReadonlySet<string>;
+
+export const NO_SENSITIVE_KEYS: SensitiveKeys = new Set();
+
+/**
+ * A pessoa pôs esta compra, ou as parecidas, em Saúde: ela só vai somada
+ * para a IA, mesmo depois de trocar de categoria ou desfazer (a marca fica)
+ * e mesmo com "Só esta" em outra categoria por cima das parecidas em Saúde.
+ */
+export function chosenSensitive(
+  rules: CategoryRules,
+  sensitiveKeys: SensitiveKeys,
+  purchaseKey: string,
+  similarKey: string | null,
+): boolean {
+  return [purchaseRuleKey(purchaseKey), similarKey].some(
+    (key) => key !== null && (rules.get(key) === 'saude' || sensitiveKeys.has(key)),
+  );
 }

@@ -213,7 +213,13 @@ interface CategoryRow {
 
 function buildView(data: FinanceData, month: string, today: string) {
   const current = today.slice(0, 7);
-  const purchases = groupPurchases(data.transactions, data.accounts, undefined, categoryRulesOf(data.categoryRules));
+  const purchases = groupPurchases(
+    data.transactions,
+    data.accounts,
+    undefined,
+    categoryRulesOf(data.categoryRules),
+    new Set(data.sensitiveKeys),
+  );
   const labels = accountLabels(data.accounts, data.connections);
   // Saldos e cartões só das contas que a Pluggy ainda devolve (cartão trocado sai).
   const accounts = currentAccounts(data.accounts, data.connections);

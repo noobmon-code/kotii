@@ -203,7 +203,13 @@ function Lancamentos() {
 }
 
 function buildView(data: FinanceData) {
-  const purchases = groupPurchases(data.transactions, data.accounts, undefined, categoryRulesOf(data.categoryRules));
+  const purchases = groupPurchases(
+    data.transactions,
+    data.accounts,
+    undefined,
+    categoryRulesOf(data.categoryRules),
+    new Set(data.sensitiveKeys),
+  );
   const spending = purchases.filter((p) => p.kind === 'spending');
   // Quantas saídas cada regra de "parecidas" mudaria (em todos os meses buscados).
   const similarCounts = new Map<string, number>();

@@ -3,7 +3,16 @@ import { describe, expect, it } from '@jest/globals';
 import type { FinAccount, FinTransaction } from '@/lib/types';
 
 import { groupPurchases, monthSummary } from '../bankMonth';
-import { categoryRulesOf, pickCategory, purchaseRuleKey, similarRuleKey, similarText } from '../bankRules';
+import {
+  categoryRulesOf,
+  chosenSensitive,
+  NO_RULES,
+  NO_SENSITIVE_KEYS,
+  pickCategory,
+  purchaseRuleKey,
+  similarRuleKey,
+  similarText,
+} from '../bankRules';
 
 const PERSON = 'c'.repeat(64);
 
@@ -51,6 +60,23 @@ describe('pickCategory', () => {
     expect(pickCategory(rules, 'tx-2', 'm:padaria real', 'outros')).toEqual({ category: 'mercado', source: 'similar' });
     expect(pickCategory(rules, 'tx-2', 'm:outra loja', 'outros')).toEqual({ category: 'outros', source: 'auto' });
     expect(pickCategory(rules, 'tx-2', null, 'transporte')).toEqual({ category: 'transporte', source: 'auto' });
+  });
+});
+
+describe('chosenSensitive', () => {
+  const rules = categoryRulesOf([
+    { match_key: 'm:clinica sorriso', category: 'saude' },
+    { match_key: purchaseRuleKey('tx-1'), category: 'lazer' },
+  ]);
+
+  it('Saúde na compra ou nas parecidas, ou uma marca de Saúde antiga, deixam a compra sensível', () => {
+    // "Só esta" em Lazer por cima das parecidas em Saúde não tira o sigilo.
+    expect(chosenSensitive(rules, NO_SENSITIVE_KEYS, 'tx-1', 'm:clinica sorriso')).toBe(true);
+    expect(chosenSensitive(rules, NO_SENSITIVE_KEYS, 'tx-2', 'm:padaria real')).toBe(false);
+    // A regra já foi trocada ou desfeita, mas a marca ficou.
+    expect(chosenSensitive(NO_RULES, new Set([purchaseRuleKey('tx-2')]), 'tx-2', 'm:padaria real')).toBe(true);
+    expect(chosenSensitive(NO_RULES, new Set(['m:padaria real']), 'tx-2', 'm:padaria real')).toBe(true);
+    expect(chosenSensitive(NO_RULES, new Set(['m:padaria real']), 'tx-2', null)).toBe(false);
   });
 });
 
@@ -165,6 +191,46 @@ describe('groupPurchases com as categorias escolhidas', () => {
     const pharmacy = tx({ description: 'DROGASIL 123', category: 'Pharmacy' });
     const [moved] = groupPurchases([pharmacy], [checking], undefined, categoryRulesOf([{ match_key: 'm:drogasil', category: 'mercado' }]));
     expect(moved).toMatchObject({ category: 'mercado', sensitive: true });
+  });
+
+  it('Saúde que a pessoa trocou ou desfez continua sensível pela marca, e "Só esta" não tira o sigilo das parecidas', () => {
+    const clinic = tx({ description: 'ESPACO VIVER BEM', amount: 300 });
+    const [plain] = groupPurchases([clinic], [checking]);
+    expect(plain.sensitive).toBe(false);
+
+    const marks = new Set(['m:espaco viver bem']);
+    const lazer = categoryRulesOf([{ match_key: 'm:espaco viver bem', category: 'lazer' }]);
+    const [changed] = groupPurchases([clinic], [checking], undefined, lazer, marks);
+    expect(changed).toMatchObject({ category: 'lazer', sensitive: true });
+    const [undone] = groupPurchases([clinic], [checking], undefined, NO_RULES, marks);
+    expect(undone).toMatchObject({ categorySource: 'auto', sensitive: true });
+
+    const onlyThis = categoryRulesOf([
+      { match_key: 'm:espaco viver bem', category: 'saude' },
+      { match_key: purchaseRuleKey(`tx-${clinic.id}`), category: 'lazer' },
+    ]);
+    const [p] = groupPurchases([clinic], [checking], undefined, onlyThis);
+    expect(p).toMatchObject({ category: 'lazer', categorySource: 'manual', sensitive: true });
+  });
+
+  it('compra parcelada também guarda o sigilo pela marca', () => {
+    const card: FinAccount = { ...checking, id: 'cartao', type: 'CREDIT', subtype: 'CREDIT_CARD' };
+    const parcel = (n: number, day: string) =>
+      tx({
+        account_id: card.id,
+        description: `ESPACO VIVER BEM 0${n}/03`,
+        amount: 200,
+        installment_number: n,
+        total_installments: 3,
+        purchase_on: '2026-09-05',
+        occurred_on: day,
+      });
+    const first = parcel(1, '2026-09-05');
+    const txs = [first, parcel(2, '2026-10-05')];
+    const [plain] = groupPurchases(txs, [checking, card]);
+    expect(plain).toMatchObject({ key: `parc-${first.id}`, sensitive: false });
+    const [marked] = groupPurchases(txs, [checking, card], undefined, NO_RULES, new Set([purchaseRuleKey(`parc-${first.id}`)]));
+    expect(marked).toMatchObject({ key: `parc-${first.id}`, sensitive: true });
   });
 
   it('nome de pessoa na maquininha não vira loja só porque a pessoa escolheu uma categoria', () => {
