@@ -209,23 +209,66 @@ export function useSetCategoryRule() {
   });
 }
 
-// Uma vez por escolha enquanto o app está aberto; a próxima abertura tenta de novo se falhar.
-const repairing = new Set<string>();
+/**
+ * Grava a chave das parecidas numa escolha de Saúde só para uma compra, se ela
+ * ainda for Saúde: não volta uma troca feita em outro aparelho nem recria uma
+ * escolha desfeita. O gatilho do banco marca as duas chaves.
+ */
+export async function repairSimilarMark(matchKey: string, similarKey: string): Promise<void> {
+  unwrap(
+    await supabase
+      .from('fin_category_rules')
+      .update({ similar_key: similarKey })
+      .eq('match_key', matchKey)
+      .eq('category', 'saude'),
+  );
+}
+
+/** Por escolha: em andamento, feita, ou quantas vezes já falhou. */
+export type RepairState = Map<string, 'running' | 'done' | number>;
+
+export const REPAIR_TRIES = 3;
 
 /**
- * Grava de novo, com a chave das parecidas, as escolhas de Saúde só para uma
- * compra que ainda não as marcaram (missingSimilarMarks, em bankRules): assim
- * o sigilo segue a loja mesmo quando o lançamento ganha outro id.
+ * Começa os reparos que faltam (nem em andamento, nem feitos, nem com falhas
+ * demais). Um que falhe pode ser tentado de novo na próxima chamada, até
+ * REPAIR_TRIES vezes enquanto o app está aberto.
  */
-export function useRepairSimilarMarks(repairs: readonly { matchKey: string; similarKey: string }[] | undefined) {
-  const { mutate } = useSetCategoryRule();
+export function runRepairs(
+  missing: readonly { matchKey: string; similarKey: string }[],
+  state: RepairState,
+  save: (matchKey: string, similarKey: string) => Promise<void>,
+  onSaved: () => void,
+): void {
+  for (const { matchKey, similarKey } of missing) {
+    const tries = state.get(matchKey) ?? 0;
+    if (typeof tries !== 'number' || tries >= REPAIR_TRIES) continue;
+    state.set(matchKey, 'running');
+    save(matchKey, similarKey).then(
+      () => {
+        state.set(matchKey, 'done');
+        onSaved();
+      },
+      () => state.set(matchKey, tries + 1),
+    );
+  }
+}
+
+const repairState: RepairState = new Map();
+
+/**
+ * Marca as parecidas das escolhas de Saúde só para uma compra que ainda não as
+ * marcaram (missingSimilarMarks, em bankRules): assim o sigilo segue a loja
+ * mesmo quando o lançamento ganha outro id. Uma falha é tentada de novo quando
+ * os dados do consultor mudam (a sincronização ao abrir, outro mês).
+ */
+export function useRepairSimilarMarks(missing: readonly { matchKey: string; similarKey: string }[] | undefined) {
+  const queryClient = useQueryClient();
   useEffect(() => {
-    for (const repair of repairs ?? []) {
-      if (repairing.has(repair.matchKey)) continue;
-      repairing.add(repair.matchKey);
-      mutate({ matchKey: repair.matchKey, category: 'saude', similarKey: repair.similarKey });
-    }
-  }, [repairs, mutate]);
+    runRepairs(missing ?? [], repairState, repairSimilarMark, () => {
+      void queryClient.invalidateQueries({ queryKey: ['fin', 'rules'] });
+    });
+  }, [missing, queryClient]);
 }
 
 /** Desfaz escolhas: a compra volta para a categoria das parecidas ou a automática. */

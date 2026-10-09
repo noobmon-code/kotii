@@ -2779,6 +2779,11 @@ begin
     'other categories mark nothing';
   update public.fin_category_rules set category = 'saude' where match_key = 'p:tx-00000000-0000-0000-0000-0000000000f4';
   assert exists (select 1 from public.fin_sensitive_keys where match_key = 'm:outra loja'), 'changing to Saúde marks the similar ones too';
+  -- Escolha antiga, sem similar_key: gravar a chave depois também marca (é assim que o app repara).
+  insert into public.fin_category_rules (match_key, category) values ('p:tx-00000000-0000-0000-0000-0000000000f6', 'saude');
+  update public.fin_category_rules set similar_key = 'm:clinica nova'
+  where match_key = 'p:tx-00000000-0000-0000-0000-0000000000f6' and category = 'saude';
+  assert exists (select 1 from public.fin_sensitive_keys where match_key = 'm:clinica nova'), 'saving the similar key later marks it';
   foreach bad_key in array array['p:tx-00000000-0000-0000-0000-0000000000f5', 'x:qualquer', 'm:Loja', 'doc:abc'] loop
     begin
       insert into public.fin_category_rules (match_key, category, similar_key) values ('m:loja teste', 'mercado', bad_key);
@@ -2787,7 +2792,7 @@ begin
     end;
   end loop;
   delete from public.fin_category_rules where match_key like 'p:tx-%';
-  assert (select count(*) from public.fin_sensitive_keys) = 6, 'undoing keeps all the marks';
+  assert (select count(*) from public.fin_sensitive_keys) = 8, 'undoing keeps all the marks';
 end $$;
 
 -- Léo, na mesma casa e sem liberação, não vê nem mexe nas escolhas da Kátia.
@@ -2815,7 +2820,7 @@ begin
   assert (select count(*) from public.fin_category_rules where user_id = '00000000-0000-0000-0000-000000000017') = 2,
     'K''s rules untouched by L';
   assert (select category from public.fin_category_rules where match_key = 'm:padaria real') = 'lazer', 'still hers';
-  assert (select count(*) from public.fin_sensitive_keys where user_id = '00000000-0000-0000-0000-000000000017') = 6,
+  assert (select count(*) from public.fin_sensitive_keys where user_id = '00000000-0000-0000-0000-000000000017') = 8,
     'and her marks';
 end $$;
 set role authenticated;
