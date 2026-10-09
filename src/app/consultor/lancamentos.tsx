@@ -3,14 +3,16 @@ import { useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 
 import {
+  repairSimilarMark,
   useBeta,
   useFinanceData,
   useRemoveCategoryRules,
+  useRepairSimilarMarks,
   useSetCategoryRule,
   type FinanceData,
 } from '@/data/financeBeta';
 import { accountLabels, groupPurchases, type BankPurchase } from '@/domain/bankMonth';
-import { categoryRulesOf, purchaseRuleKey } from '@/domain/bankRules';
+import { categoryRulesOf, missingSimilarMarks, purchaseRuleKey } from '@/domain/bankRules';
 import { todayISO } from '@/domain/dates';
 import { FINANCE_CATEGORIES, getFinanceCategory, monthLabel, shiftMonth, type FinanceCategory } from '@/domain/finance';
 import { formatBRL } from '@/domain/money';
@@ -91,6 +93,7 @@ function Lancamentos() {
   const finance = useFinanceData(today);
   const data = finance.status === 'ready' ? finance.data : null;
   const view = useMemo(() => (data ? buildView(data) : null), [data]);
+  useRepairSimilarMarks(view?.repairs);
 
   const spending = useMemo(
     () => (view ? view.spending.filter((p) => p.date.slice(0, 7) === month) : []),
@@ -203,18 +206,19 @@ function Lancamentos() {
 }
 
 function buildView(data: FinanceData) {
-  const purchases = groupPurchases(
-    data.transactions,
-    data.accounts,
-    undefined,
-    categoryRulesOf(data.categoryRules),
-    new Set(data.sensitiveKeys),
-  );
+  const rules = categoryRulesOf(data.categoryRules);
+  const marks = new Set(data.sensitiveKeys);
+  const purchases = groupPurchases(data.transactions, data.accounts, undefined, rules, marks);
   const spending = purchases.filter((p) => p.kind === 'spending');
   // Quantas saídas cada regra de "parecidas" mudaria (em todos os meses buscados).
   const similarCounts = new Map<string, number>();
   for (const p of spending) if (p.similarKey) similarCounts.set(p.similarKey, (similarCounts.get(p.similarKey) ?? 0) + 1);
-  return { spending, similarCounts, labels: accountLabels(data.accounts, data.connections) };
+  return {
+    spending,
+    similarCounts,
+    labels: accountLabels(data.accounts, data.connections),
+    repairs: missingSimilarMarks(purchases, rules, marks),
+  };
 }
 
 /** Saídas por categoria, Outros primeiro (é o que pede ajuda), depois da maior para a menor. */
@@ -287,12 +291,19 @@ function CategoryEditor({
   const ownKey = purchaseRuleKey(p.key);
   const similarWho = p.similarKey?.startsWith('doc:') ? 'todo PIX para esta pessoa' : 'tudo com este nome';
 
+  // Apaga a escolha só desta compra. Se ela era Saúde, marca antes as parecidas (escolha de antes da
+  // similar_key): a marca da compra sozinha se perde quando o lançamento muda de id.
+  async function removeOwnRule() {
+    if (p.category === 'saude' && p.similarKey) await repairSimilarMark(ownKey, p.similarKey);
+    await removeRules.mutateAsync([ownKey]);
+  }
+
   async function choose(category: FinanceCategory) {
     try {
       if (scope === 'parecidas' && p.similarKey) {
         await setRule.mutateAsync({ matchKey: p.similarKey, category });
         // A escolha só para esta compra passaria na frente da das parecidas.
-        if (p.categorySource === 'manual') await removeRules.mutateAsync([ownKey]);
+        if (p.categorySource === 'manual') await removeOwnRule();
       } else {
         await setRule.mutateAsync({ matchKey: ownKey, category, similarKey: p.similarKey });
       }
@@ -303,10 +314,10 @@ function CategoryEditor({
   }
 
   async function undo() {
-    const key = p.categorySource === 'manual' ? ownKey : p.similarKey;
-    if (!key) return;
     try {
-      await removeRules.mutateAsync([key]);
+      if (p.categorySource === 'manual') await removeOwnRule();
+      else if (p.similarKey) await removeRules.mutateAsync([p.similarKey]);
+      else return;
       onChosen();
     } catch (err) {
       notify('Não deu para desfazer', errorMessage(err));
