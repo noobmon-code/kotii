@@ -7,7 +7,18 @@ import type { FinAccount, FinConnection, FinTransaction } from '@/lib/types';
 
 import { financeCategoryOfBank, isSensitiveBankTx, normalizeBankText } from './bankCategories';
 import { type BankKind, classifyBankTransaction, isTransferLike, ownerHashes } from './bankClassify';
-import { type CategoryRules, type CategorySource, NO_RULES, pickCategory, similarRuleKey } from './bankRules';
+import {
+  type CategoryRules,
+  type CategorySource,
+  chosenSensitive,
+  NO_RULES,
+  NO_SENSITIVE_KEYS,
+  pickCategory,
+  refundOfSaudeStore,
+  saudeStores,
+  type SensitiveKeys,
+  similarRuleKey,
+} from './bankRules';
 import { addDays, addMonths, diffDays } from './dates';
 import { type FinanceCategory, monthRange, shiftMonth } from './finance';
 
@@ -167,19 +178,22 @@ const isParcel = (tx: FinTransaction) =>
 
 /**
  * Lançamentos do banco -> compras. Lançamentos apagados na Pluggy ficam de
- * fora. `rules` são as categorias que a pessoa escolheu (bankRules).
+ * fora. `rules` são as categorias que a pessoa escolheu (bankRules) e
+ * `sensitiveKeys`, o que ela já pôs em Saúde algum dia.
  */
 export function groupPurchases(
   txs: FinTransaction[],
   accounts: FinAccount[],
   ownerDocHashes: Iterable<string> = ownerHashes(accounts),
   rules: CategoryRules = NO_RULES,
+  sensitiveKeys: SensitiveKeys = NO_SENSITIVE_KEYS,
 ): BankPurchase[] {
   const accountsById = new Map(accounts.map((a) => [a.id, a]));
   const owners = new Set(ownerDocHashes);
   const live = txs.filter((tx) => !tx.deleted_at);
   const kinds = new Map(live.map((tx) => [tx.id, classifyBankTransaction(tx, accountsById.get(tx.account_id), owners)]));
   pairOwnMoves(live, kinds, accountsById, owners);
+  const saude = saudeStores(rules, sensitiveKeys);
 
   const purchases: BankPurchase[] = [];
   const parcels: { tx: FinTransaction; kind: BankKind }[] = [];
@@ -195,6 +209,10 @@ export function groupPurchases(
     const autoCategory = financeCategoryOfBank(tx);
     const similarKey = similarRuleKey(tx, merchantName ?? description);
     const { category, source } = pickCategory(rules, key, similarKey, autoCategory);
+    // O estorno de uma loja posta em Saúde também: com o par, em linkRefunds; sem ele, pelo nome.
+    const chosen =
+      chosenSensitive(rules, sensitiveKeys, key, similarKey) ||
+      (kind === 'refund' && refundOfSaudeStore(saude, tx, merchantName ?? description));
     purchases.push({
       key,
       date: effectiveDate(tx),
@@ -213,14 +231,16 @@ export function groupPurchases(
       txIds: [tx.id],
       personTransfer: tx.counterparty_doc_kind === 'CPF' && (kind === 'spending' || kind === 'income' || kind === 'refund'),
       // Saúde escolhida pela pessoa também só vai somada; tirar de saúde não tira o sigilo.
-      sensitive: isSensitiveBankTx(tx) || category === 'saude',
+      sensitive: isSensitiveBankTx(tx) || category === 'saude' || chosen,
       // Nome de pessoa como loja só passa pela categoria automática, nunca pela escolha da pessoa.
       storeName: storeNameOf(tx, accountsById.get(tx.account_id), description, autoCategory),
       refundOf: null,
     });
   }
 
-  for (const group of groupParcels(toParcels(parcels))) purchases.push(purchaseOfGroup(group, accountsById, rules));
+  for (const group of groupParcels(toParcels(parcels))) {
+    purchases.push(purchaseOfGroup(group, accountsById, rules, sensitiveKeys));
+  }
   linkRefunds(purchases);
   return purchases.sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount || a.key.localeCompare(b.key));
 }
@@ -579,7 +599,12 @@ function mergeLateParcels(groups: Group[]): Group[] {
   return out;
 }
 
-function purchaseOfGroup(group: Group, accountsById: Map<string, FinAccount>, rules: CategoryRules): BankPurchase {
+function purchaseOfGroup(
+  group: Group,
+  accountsById: Map<string, FinAccount>,
+  rules: CategoryRules,
+  sensitiveKeys: SensitiveKeys,
+): BankPurchase {
   const members = [...group.members].sort((a, b) => a.number - b.number);
   const first = members[0];
   const last = members[members.length - 1];
@@ -611,7 +636,10 @@ function purchaseOfGroup(group: Group, accountsById: Map<string, FinAccount>, ru
     installments: { seen: members.map((m) => m.number), total, parcel },
     txIds: members.map((m) => m.tx.id),
     personTransfer: false,
-    sensitive: members.some((m) => isSensitiveBankTx(m.tx)) || category === 'saude',
+    sensitive:
+      members.some((m) => isSensitiveBankTx(m.tx)) ||
+      category === 'saude' ||
+      chosenSensitive(rules, sensitiveKeys, key, similarKey),
     storeName: storeNameOf(first.tx, accountsById.get(first.tx.account_id), description, autoCategory),
     refundOf: null,
   };
@@ -674,6 +702,8 @@ function linkRefunds(purchases: BankPurchase[]) {
     }
     if (!best) continue;
     refund.refundOf = best.key;
+    // O estorno conta a mesma história da compra: se ela só vai somada para a IA, ele também.
+    if (best.sensitive) refund.sensitive = true;
     left.set(best.key, (left.get(best.key) as number) - refund.amount);
   }
 }

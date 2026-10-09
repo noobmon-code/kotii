@@ -50,6 +50,8 @@ export interface FinanceSnapshotInput {
   kotiiRecords: KotiiRecord[];
   /** Categorias que a pessoa escolheu (bankRules); sem elas, só as automáticas. */
   categoryRules?: FinCategoryRule[];
+  /** O que ela já pôs em Saúde algum dia (fin_sensitive_keys): só entra somado. */
+  sensitiveKeys?: string[];
 }
 
 const WEEKDAYS = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
@@ -127,7 +129,13 @@ const KIND_WORD: Partial<Record<BankPurchase['kind'], string>> = {
 export function buildFinanceSnapshot(input: FinanceSnapshotInput): string {
   const { today } = input;
   const month = today.slice(0, 7);
-  const purchases = groupPurchases(input.transactions, input.accounts, undefined, categoryRulesOf(input.categoryRules ?? []));
+  const purchases = groupPurchases(
+    input.transactions,
+    input.accounts,
+    undefined,
+    categoryRulesOf(input.categoryRules ?? []),
+    new Set(input.sensitiveKeys ?? []),
+  );
   // O rótulo do banco é digitado pela pessoa e pode ter nome de gente ("Conta da Maria"): aqui vai só a
   // instituição reconhecida ou "Banco 1", "Banco 2"... (a tela continua com o rótulo dela). Os nomes das
   // contas e cartões ("Nubank conta", "Banco 1 cartão") saem destes.

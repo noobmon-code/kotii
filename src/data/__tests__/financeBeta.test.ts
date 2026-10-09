@@ -2,12 +2,18 @@ import { describe, expect, it, jest } from '@jest/globals';
 
 import type { FinAccount, FinTransaction } from '@/lib/types';
 
+import { supabase } from '@/lib/supabase';
+
 import {
   fetchAllPages,
   financeFetchStart,
   financeScreenHref,
   financeWindowStart,
   parseSyncResult,
+  repairSimilarMark,
+  REPAIR_TRIES,
+  type RepairState,
+  runRepairs,
   toFinAccount,
   toFinTransaction,
 } from '../financeBeta';
@@ -23,6 +29,71 @@ jest.mock('@/lib/auth', () => ({ useAuth: jest.fn(), useHousehold: jest.fn() }))
 jest.mock('@/data/finance', () => ({ useBudgets: jest.fn(), useSaveBudgets: jest.fn() }));
 jest.mock('@/data/images', () => ({ functionErrorMessage: async (_error: unknown, fallback: string) => fallback }));
 jest.mock('expo-router', () => ({ router: { back: jest.fn(), navigate: jest.fn() } }));
+
+describe('marca das parecidas nas escolhas de Saúde antigas', () => {
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const missing = [{ matchKey: 'p:tx-1', similarKey: 'm:clinica sorriso' }];
+
+  it('uma falha é tentada de novo na próxima vez; feita, não repete', async () => {
+    const state: RepairState = new Map();
+    const results = [false, true];
+    const saves: string[] = [];
+    const saved = jest.fn();
+    const save = async (matchKey: string) => {
+      saves.push(matchKey);
+      if (!results.shift()) throw new Error('sem rede');
+    };
+    runRepairs(missing, state, save, saved);
+    // Enquanto a primeira está em andamento, não começa outra igual.
+    runRepairs(missing, state, save, saved);
+    await flush();
+    expect(state.get('p:tx-1')).toBe(1);
+    expect(saved).not.toHaveBeenCalled();
+    runRepairs(missing, state, save, saved);
+    await flush();
+    expect(state.get('p:tx-1')).toBe('done');
+    expect(saved).toHaveBeenCalledTimes(1);
+    runRepairs(missing, state, save, saved);
+    await flush();
+    expect(saves).toEqual(['p:tx-1', 'p:tx-1']);
+  });
+
+  it('desiste depois de algumas falhas enquanto o app está aberto', async () => {
+    const state: RepairState = new Map();
+    const save = jest.fn(async () => {
+      throw new Error('sem rede');
+    });
+    for (let i = 0; i < REPAIR_TRIES + 2; i++) {
+      runRepairs(missing, state, save, () => undefined);
+      await flush();
+    }
+    expect(save).toHaveBeenCalledTimes(REPAIR_TRIES);
+  });
+
+  it('grava só a chave das parecidas, e só se a escolha ainda for Saúde', async () => {
+    const calls: unknown[][] = [];
+    const query: Record<string, unknown> = {
+      then: (resolve: (value: unknown) => void) => resolve({ data: null, error: null }),
+    };
+    for (const method of ['update', 'eq']) {
+      query[method] = (...args: unknown[]) => {
+        calls.push([method, ...args]);
+        return query;
+      };
+    }
+    (supabase as unknown as { from: (table: string) => unknown }).from = (table) => {
+      calls.push(['from', table]);
+      return query;
+    };
+    await repairSimilarMark('p:tx-1', 'm:clinica sorriso');
+    expect(calls).toEqual([
+      ['from', 'fin_category_rules'],
+      ['update', { similar_key: 'm:clinica sorriso' }],
+      ['eq', 'match_key', 'p:tx-1'],
+      ['eq', 'category', 'saude'],
+    ]);
+  });
+});
 
 describe('janela do consultor', () => {
   it('começa no primeiro dia de dois meses atrás (o retrato compara com eles)', () => {

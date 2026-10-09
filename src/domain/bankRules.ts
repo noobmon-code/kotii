@@ -3,7 +3,8 @@
 // passam na frente da categoria automática (bankCategories), na tela e no
 // retrato do Nuke. Uma regra vale para uma compra só ("p:tx-<id>") ou para
 // todas as parecidas: o mesmo destinatário de PIX ("doc:<hash do CPF>") ou o
-// mesmo nome de loja ou descrição ("m:<texto>").
+// mesmo nome de loja ou descrição ("m:<texto>"). Escolher Saúde deixa uma
+// marca (fin_sensitive_keys) que trocar ou desfazer a escolha não apaga.
 
 import type { FinTransaction } from '@/lib/types';
 
@@ -69,6 +70,57 @@ export function similarRuleKey(
   return text ? `m:${text}` : null;
 }
 
+// Palavras do estorno que a compra não tem.
+const REFUND_WORDS = new Set([
+  'estornado', 'estornada', 'estornos', 'devolucao', 'devolvido', 'devolvida', 'reembolso', 'ressarcimento',
+  'chargeback', 'cancelamento', 'cancelado', 'cancelada',
+]);
+
+/**
+ * O miolo do nome, igual na compra e no estorno dela: sem números, palavras
+ * genéricas ou do estorno, tudo junto ("COMPRA CARTAO LOJA X" e "Estorno de
+ * compra LOJA X" -> "lojax").
+ */
+function storeCore(text: string): string {
+  return normalizeBankText(text)
+    .split(' ')
+    .filter((w) => w && !/\d/.test(w) && !GENERIC.has(w) && !REFUND_WORDS.has(w))
+    .join('');
+}
+
+/** Lojas e pessoas que a pessoa já pôs em Saúde (regras de parecidas e marcas), para os estornos sem par. */
+export interface SaudeStores {
+  docs: ReadonlySet<string>;
+  cores: readonly string[];
+}
+
+export function saudeStores(rules: CategoryRules, sensitiveKeys: SensitiveKeys): SaudeStores {
+  const keys = [...sensitiveKeys, ...[...rules].filter(([, category]) => category === 'saude').map(([key]) => key)];
+  return {
+    docs: new Set(keys.filter((key) => key.startsWith('doc:'))),
+    cores: [...new Set(keys.filter((key) => key.startsWith('m:')).map((key) => storeCore(key.slice(2))))].filter(
+      (core) => core.length >= 4,
+    ),
+  };
+}
+
+/**
+ * O estorno que chegou sem a compra (ela ficou fora da janela) é de uma loja
+ * ou pessoa posta em Saúde? Pelo CPF, ou pelo miolo do nome dos dois lados
+ * (um contém o outro, como na ligação do estorno com a compra).
+ */
+export function refundOfSaudeStore(
+  stores: SaudeStores,
+  tx: Pick<FinTransaction, 'counterparty_doc_kind' | 'counterparty_doc_hash'>,
+  name: string,
+): boolean {
+  if (tx.counterparty_doc_kind === 'CPF') {
+    return !!tx.counterparty_doc_hash && stores.docs.has(`doc:${tx.counterparty_doc_hash}`);
+  }
+  const core = storeCore(name);
+  return core.length >= 4 && stores.cores.some((c) => c.includes(core) || core.includes(c));
+}
+
 export type CategorySource = 'auto' | 'similar' | 'manual';
 
 /** Categoria da compra: a escolhida para ela, a das parecidas ou a automática. */
@@ -83,4 +135,45 @@ export function pickCategory(
   const similar = similarKey ? rules.get(similarKey) : undefined;
   if (similar) return { category: similar, source: 'similar' };
   return { category: auto, source: 'auto' };
+}
+
+/** match_key que a pessoa já pôs em Saúde (fin_sensitive_keys). */
+export type SensitiveKeys = ReadonlySet<string>;
+
+export const NO_SENSITIVE_KEYS: SensitiveKeys = new Set();
+
+/**
+ * A pessoa pôs esta compra, ou as parecidas, em Saúde: ela só vai somada
+ * para a IA, mesmo depois de trocar de categoria ou desfazer (a marca fica)
+ * e mesmo com "Só esta" em outra categoria por cima das parecidas em Saúde.
+ */
+export function chosenSensitive(
+  rules: CategoryRules,
+  sensitiveKeys: SensitiveKeys,
+  purchaseKey: string,
+  similarKey: string | null,
+): boolean {
+  return [purchaseRuleKey(purchaseKey), similarKey].some(
+    (key) => key !== null && (rules.get(key) === 'saude' || sensitiveKeys.has(key)),
+  );
+}
+
+/**
+ * Escolhas de Saúde só para uma compra que ainda não marcaram as parecidas
+ * dela (feitas antes de a regra levar similar_key, ou num app antigo). Enquanto
+ * a compra está aqui, dá para gravar a regra de novo com a chave das parecidas.
+ */
+export function missingSimilarMarks(
+  purchases: readonly { key: string; similarKey: string | null }[],
+  rules: CategoryRules,
+  sensitiveKeys: SensitiveKeys,
+): { matchKey: string; similarKey: string }[] {
+  const missing = new Map<string, string>();
+  for (const p of purchases) {
+    const matchKey = purchaseRuleKey(p.key);
+    if (p.similarKey && rules.get(matchKey) === 'saude' && !sensitiveKeys.has(p.similarKey)) {
+      missing.set(matchKey, p.similarKey);
+    }
+  }
+  return [...missing].map(([matchKey, similarKey]) => ({ matchKey, similarKey }));
 }

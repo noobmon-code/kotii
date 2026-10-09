@@ -8,7 +8,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router, type Href } from 'expo-router';
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 
 import { useBudgets, useSaveBudgets } from '@/data/finance';
 import { functionErrorMessage } from '@/data/images';
@@ -155,35 +155,120 @@ export function useFinTransactions(fromDate: string) {
   });
 }
 
-/** Categorias que a pessoa escolheu para os lançamentos (só dela, nesta casa). */
+/**
+ * Categorias que a pessoa escolheu para os lançamentos e o que ela já pôs em
+ * Saúde algum dia (só dela, nesta casa). As marcas de Saúde vêm na mesma
+ * consulta: escolher uma categoria recarrega as duas juntas.
+ */
 export function useFinCategoryRules() {
   const { key, enabled } = useFinScope();
   return useQuery({
     queryKey: ['fin', 'rules', ...key],
     enabled,
-    queryFn: async () =>
-      fetchAllPages<FinCategoryRule>((from, to) =>
-        supabase.from('fin_category_rules').select('match_key, category').order('match_key').range(from, to),
-      ),
+    queryFn: async () => {
+      const [rules, sensitive] = await Promise.all([
+        fetchAllPages<FinCategoryRule>((from, to) =>
+          supabase.from('fin_category_rules').select('match_key, category').order('match_key').range(from, to),
+        ),
+        fetchAllPages<{ match_key: string }>((from, to) =>
+          supabase.from('fin_sensitive_keys').select('match_key').order('match_key').range(from, to),
+        ),
+      ]);
+      return { rules, sensitiveKeys: sensitive.map((k) => k.match_key) };
+    },
   });
 }
 
-/** Escolhe a categoria de uma compra ou das parecidas (match_key de bankRules). */
+/**
+ * Escolhe a categoria de uma compra ou das parecidas (match_key de bankRules).
+ * Na escolha só para uma compra, `similarKey` são as parecidas dela: em Saúde,
+ * o banco marca as duas, e o sigilo segue a loja mesmo se o lançamento mudar de id.
+ */
 export function useSetCategoryRule() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ matchKey, category }: { matchKey: string; category: FinanceCategory }) => {
+    mutationFn: async ({
+      matchKey,
+      category,
+      similarKey = null,
+    }: {
+      matchKey: string;
+      category: FinanceCategory;
+      similarKey?: string | null;
+    }) => {
       unwrap(
         await supabase
           .from('fin_category_rules')
           .upsert(
-            { match_key: matchKey, category, updated_at: new Date().toISOString() },
+            { match_key: matchKey, category, similar_key: similarKey, updated_at: new Date().toISOString() },
             { onConflict: 'user_id,household_id,match_key' },
           ),
       );
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['fin', 'rules'] }),
   });
+}
+
+/**
+ * Grava a chave das parecidas numa escolha de Saúde só para uma compra, se ela
+ * ainda for Saúde: não volta uma troca feita em outro aparelho nem recria uma
+ * escolha desfeita. O gatilho do banco marca as duas chaves.
+ */
+export async function repairSimilarMark(matchKey: string, similarKey: string): Promise<void> {
+  unwrap(
+    await supabase
+      .from('fin_category_rules')
+      .update({ similar_key: similarKey })
+      .eq('match_key', matchKey)
+      .eq('category', 'saude'),
+  );
+}
+
+/** Por escolha: em andamento, feita, ou quantas vezes já falhou. */
+export type RepairState = Map<string, 'running' | 'done' | number>;
+
+export const REPAIR_TRIES = 3;
+
+/**
+ * Começa os reparos que faltam (nem em andamento, nem feitos, nem com falhas
+ * demais). Um que falhe pode ser tentado de novo na próxima chamada, até
+ * REPAIR_TRIES vezes enquanto o app está aberto.
+ */
+export function runRepairs(
+  missing: readonly { matchKey: string; similarKey: string }[],
+  state: RepairState,
+  save: (matchKey: string, similarKey: string) => Promise<void>,
+  onSaved: () => void,
+): void {
+  for (const { matchKey, similarKey } of missing) {
+    const tries = state.get(matchKey) ?? 0;
+    if (typeof tries !== 'number' || tries >= REPAIR_TRIES) continue;
+    state.set(matchKey, 'running');
+    save(matchKey, similarKey).then(
+      () => {
+        state.set(matchKey, 'done');
+        onSaved();
+      },
+      () => state.set(matchKey, tries + 1),
+    );
+  }
+}
+
+const repairState: RepairState = new Map();
+
+/**
+ * Marca as parecidas das escolhas de Saúde só para uma compra que ainda não as
+ * marcaram (missingSimilarMarks, em bankRules): assim o sigilo segue a loja
+ * mesmo quando o lançamento ganha outro id. Uma falha é tentada de novo quando
+ * os dados do consultor mudam (a sincronização ao abrir, outro mês).
+ */
+export function useRepairSimilarMarks(missing: readonly { matchKey: string; similarKey: string }[] | undefined) {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    runRepairs(missing ?? [], repairState, repairSimilarMark, () => {
+      void queryClient.invalidateQueries({ queryKey: ['fin', 'rules'] });
+    });
+  }, [missing, queryClient]);
 }
 
 /** Desfaz escolhas: a compra volta para a categoria das parecidas ou a automática. */
@@ -251,6 +336,8 @@ export interface FinanceData {
   budgets: { category: string; monthly_limit: number }[];
   kotiiRecords: KotiiRecord[];
   categoryRules: FinCategoryRule[];
+  /** match_key que um dia foi Saúde: a compra continua só somada para a IA. */
+  sensitiveKeys: string[];
 }
 
 export type FinanceDataState =
@@ -285,7 +372,8 @@ export function useFinanceData(today: string): FinanceDataState {
             transactions: transactions.data,
             budgets: budgets.data,
             kotiiRecords: records.data,
-            categoryRules: rules.data,
+            categoryRules: rules.data.rules,
+            sensitiveKeys: rules.data.sensitiveKeys,
           }
         : null,
     [connections.data, accounts.data, transactions.data, budgets.data, records.data, rules.data],

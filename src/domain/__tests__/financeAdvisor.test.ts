@@ -204,6 +204,34 @@ describe('buildFinanceSnapshot', () => {
     expect(text.length).toBeLessThanOrEqual(SNAPSHOT_MAX_CHARS);
   });
 
+  it('compra que a pessoa já pôs em Saúde vai só somada, mesmo depois de trocar de categoria', () => {
+    const withClinic = {
+      ...input,
+      transactions: [
+        ...input.transactions,
+        tx({ account_id: card, amount: 120, description: 'ESPACO VIVER BEM LTDA', merchant_name: 'Espaco Viver Bem Ltda', occurred_on: '2026-10-05' }),
+      ],
+      categoryRules: [{ match_key: 'm:espaco viver bem ltda', category: 'lazer' as const }],
+    };
+    // Sem a marca, a compra em Lazer iria com o nome da loja.
+    expect(buildFinanceSnapshot(withClinic)).toMatch(/Lazer · Espaco Viver Bem Ltda · R\$ 120,00/i);
+    const marked = buildFinanceSnapshot({ ...withClinic, sensitiveKeys: ['m:espaco viver bem ltda'] });
+    expect(marked).not.toMatch(/espaco|viver bem/i);
+    // Continua somada na categoria.
+    expect(marked).toContain('Lazer: R$ 120,00');
+  });
+
+  it('o estorno de uma compra posta em Saúde também não leva o nome da loja', () => {
+    const clinic = tx({ account_id: card, amount: 120, description: 'ESPACO VIVER BEM LTDA', merchant_name: 'Espaco Viver Bem Ltda', occurred_on: '2026-10-03' });
+    const refund = tx({ account_id: card, amount: 120, direction: 'CREDIT', description: 'ESTORNO ESPACO VIVER BEM LTDA', occurred_on: '2026-10-05' });
+    // Sem a marca, a compra e o estorno iriam com o nome.
+    expect(buildFinanceSnapshot({ ...input, transactions: [...input.transactions, clinic, refund] })).toMatch(/viver bem/i);
+    const marks = { sensitiveKeys: ['m:espaco viver bem ltda'] };
+    expect(buildFinanceSnapshot({ ...input, ...marks, transactions: [...input.transactions, clinic, refund] })).not.toMatch(/espaco|viver bem/i);
+    // A compra ficou de fora: o estorno sozinho também não leva.
+    expect(buildFinanceSnapshot({ ...input, ...marks, transactions: [...input.transactions, refund] })).not.toMatch(/espaco|viver bem/i);
+  });
+
   it('com muitos lançamentos, mostra só 15 e cabe no limite', () => {
     const many = Array.from({ length: 300 }, (_, i) =>
       tx({ account_id: card, amount: 10 + i, description: `LOJA ${'X'.repeat(80)} ${i}`, occurred_on: '2026-10-05' }),
