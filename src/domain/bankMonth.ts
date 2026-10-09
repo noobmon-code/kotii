@@ -14,7 +14,8 @@ import {
   NO_RULES,
   NO_SENSITIVE_KEYS,
   pickCategory,
-  refundSimilarKey,
+  refundOfSaudeStore,
+  saudeStores,
   type SensitiveKeys,
   similarRuleKey,
 } from './bankRules';
@@ -192,6 +193,7 @@ export function groupPurchases(
   const live = txs.filter((tx) => !tx.deleted_at);
   const kinds = new Map(live.map((tx) => [tx.id, classifyBankTransaction(tx, accountsById.get(tx.account_id), owners)]));
   pairOwnMoves(live, kinds, accountsById, owners);
+  const saude = saudeStores(rules, sensitiveKeys);
 
   const purchases: BankPurchase[] = [];
   const parcels: { tx: FinTransaction; kind: BankKind }[] = [];
@@ -207,10 +209,10 @@ export function groupPurchases(
     const autoCategory = financeCategoryOfBank(tx);
     const similarKey = similarRuleKey(tx, merchantName ?? description);
     const { category, source } = pickCategory(rules, key, similarKey, autoCategory);
-    // O estorno de uma loja posta em Saúde também: sem o par (linkRefunds), pelo nome sem o "estorno".
+    // O estorno de uma loja posta em Saúde também: com o par, em linkRefunds; sem ele, pelo nome.
     const chosen =
       chosenSensitive(rules, sensitiveKeys, key, similarKey) ||
-      (kind === 'refund' && chosenSensitive(rules, sensitiveKeys, key, refundSimilarKey(tx, merchantName ?? description)));
+      (kind === 'refund' && refundOfSaudeStore(saude, tx, merchantName ?? description));
     purchases.push({
       key,
       date: effectiveDate(tx),

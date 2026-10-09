@@ -8,7 +8,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router, type Href } from 'expo-router';
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 
 import { useBudgets, useSaveBudgets } from '@/data/finance';
 import { functionErrorMessage } from '@/data/images';
@@ -207,6 +207,25 @@ export function useSetCategoryRule() {
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['fin', 'rules'] }),
   });
+}
+
+// Uma vez por escolha enquanto o app está aberto; a próxima abertura tenta de novo se falhar.
+const repairing = new Set<string>();
+
+/**
+ * Grava de novo, com a chave das parecidas, as escolhas de Saúde só para uma
+ * compra que ainda não as marcaram (missingSimilarMarks, em bankRules): assim
+ * o sigilo segue a loja mesmo quando o lançamento ganha outro id.
+ */
+export function useRepairSimilarMarks(repairs: readonly { matchKey: string; similarKey: string }[] | undefined) {
+  const { mutate } = useSetCategoryRule();
+  useEffect(() => {
+    for (const repair of repairs ?? []) {
+      if (repairing.has(repair.matchKey)) continue;
+      repairing.add(repair.matchKey);
+      mutate({ matchKey: repair.matchKey, category: 'saude', similarKey: repair.similarKey });
+    }
+  }, [repairs, mutate]);
 }
 
 /** Desfaz escolhas: a compra volta para a categoria das parecidas ou a automática. */

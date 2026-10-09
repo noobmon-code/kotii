@@ -7,6 +7,7 @@ import {
   useBeta,
   useFinanceData,
   useRemoveFinConnection,
+  useRepairSimilarMarks,
   useSyncFinance,
   type FinanceData,
 } from '@/data/financeBeta';
@@ -30,7 +31,7 @@ import {
   type CardBill,
   type InstallmentMonth,
 } from '@/domain/bankMonth';
-import { categoryRulesOf } from '@/domain/bankRules';
+import { categoryRulesOf, missingSimilarMarks } from '@/domain/bankRules';
 import { budgetProgress, describeBudget, type BudgetLine } from '@/domain/budget';
 import { formatShortDate, todayISO, toISODate } from '@/domain/dates';
 import { getFinanceCategory, monthLabel, monthRange, shiftMonth, type FinanceCategory } from '@/domain/finance';
@@ -135,6 +136,7 @@ function Consultor() {
 
   const data = finance.status === 'ready' ? finance.data : null;
   const view = useMemo(() => (data ? buildView(data, month, today) : null), [data, month, today]);
+  useRepairSimilarMarks(view?.repairs);
   // O servidor pula banco atualizado há menos de 2 min, ou que outra sincronização (outro aparelho) está
   // atualizando: sem aviso, o toque pareceria não ter feito nada.
   const recentlySynced =
@@ -213,13 +215,9 @@ interface CategoryRow {
 
 function buildView(data: FinanceData, month: string, today: string) {
   const current = today.slice(0, 7);
-  const purchases = groupPurchases(
-    data.transactions,
-    data.accounts,
-    undefined,
-    categoryRulesOf(data.categoryRules),
-    new Set(data.sensitiveKeys),
-  );
+  const rules = categoryRulesOf(data.categoryRules);
+  const marks = new Set(data.sensitiveKeys);
+  const purchases = groupPurchases(data.transactions, data.accounts, undefined, rules, marks);
   const labels = accountLabels(data.accounts, data.connections);
   // Saldos e cartões só das contas que a Pluggy ainda devolve (cartão trocado sai).
   const accounts = currentAccounts(data.accounts, data.connections);
@@ -242,6 +240,7 @@ function buildView(data: FinanceData, month: string, today: string) {
     // Mesma conta do retrato do Nuke: casada na janela inteira, mostrada só no mês escolhido.
     reconciliation: reconciliationInRange(matchBankToKotii(windowPurchases(purchases, today), data.kotiiRecords), monthRange(month)),
     warnings: connectionWarnings(data.connections, new Date()),
+    repairs: missingSimilarMarks(purchases, rules, marks),
   };
 }
 

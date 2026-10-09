@@ -8,9 +8,11 @@ import {
   chosenSensitive,
   NO_RULES,
   NO_SENSITIVE_KEYS,
+  missingSimilarMarks,
   pickCategory,
   purchaseRuleKey,
-  refundSimilarKey,
+  refundOfSaudeStore,
+  saudeStores,
   similarRuleKey,
   similarText,
 } from '../bankRules';
@@ -50,18 +52,54 @@ describe('similarRuleKey', () => {
   });
 });
 
-describe('refundSimilarKey', () => {
+describe('refundOfSaudeStore', () => {
   const store = { counterparty_doc_kind: null, counterparty_doc_hash: null } as const;
 
-  it('a chave das parecidas da compra, sem as palavras do estorno', () => {
-    expect(refundSimilarKey(store, 'ESTORNO ESPACO VIVER BEM LTDA')).toBe('m:espaco viver bem ltda');
-    expect(refundSimilarKey(store, 'Estorno de compra LOJA DA ESQUINA 0412')).toBe('m:loja da esquina');
-    expect(refundSimilarKey(store, 'Cancelamento pagamento PADARIA REAL')).toBe('m:padaria real');
-    expect(refundSimilarKey(store, 'Estorno de compra')).toBeNull();
+  it('reconhece a loja posta em Saúde pelo miolo do nome, dos dois lados', () => {
+    // A compra sem nome de loja guardou a descrição inteira como chave das parecidas.
+    const stores = saudeStores(NO_RULES, new Set(['m:compra cartao espaco viver bem ltda']));
+    expect(refundOfSaudeStore(stores, store, 'ESTORNO DE COMPRA ESPACO VIVER BEM LTDA')).toBe(true);
+    expect(refundOfSaudeStore(stores, store, 'Estorno ESPACO VIVER BEM 0412')).toBe(true);
+    expect(refundOfSaudeStore(stores, store, 'Estorno PADARIA REAL')).toBe(false);
+    // Só palavras genéricas: não junta com nada.
+    expect(refundOfSaudeStore(stores, store, 'Estorno de compra')).toBe(false);
   });
 
-  it('devolução de PIX de uma pessoa: o mesmo hash do CPF', () => {
-    expect(refundSimilarKey({ counterparty_doc_kind: 'CPF', counterparty_doc_hash: PERSON }, 'Pix devolvido')).toBe(`doc:${PERSON}`);
+  it('regra de parecidas em Saúde também conta, e outras categorias não', () => {
+    const rules = categoryRulesOf([
+      { match_key: 'm:clinica sorriso', category: 'saude' },
+      { match_key: 'm:padaria real', category: 'mercado' },
+    ]);
+    const stores = saudeStores(rules, NO_SENSITIVE_KEYS);
+    expect(refundOfSaudeStore(stores, store, 'Devolução CLINICA SORRISO')).toBe(true);
+    expect(refundOfSaudeStore(stores, store, 'Estorno PADARIA REAL')).toBe(false);
+  });
+
+  it('devolução de PIX de uma pessoa: pelo hash do CPF', () => {
+    const stores = saudeStores(NO_RULES, new Set([`doc:${PERSON}`]));
+    expect(refundOfSaudeStore(stores, { counterparty_doc_kind: 'CPF', counterparty_doc_hash: PERSON }, 'Pix devolvido')).toBe(true);
+    expect(refundOfSaudeStore(stores, { counterparty_doc_kind: 'CPF', counterparty_doc_hash: 'd'.repeat(64) }, 'Pix devolvido')).toBe(false);
+  });
+});
+
+describe('missingSimilarMarks', () => {
+  it('escolha de Saúde só para uma compra sem a marca das parecidas: grava de novo com a chave delas', () => {
+    const rules = categoryRulesOf([
+      { match_key: purchaseRuleKey('tx-1'), category: 'saude' },
+      { match_key: purchaseRuleKey('tx-2'), category: 'saude' },
+      { match_key: purchaseRuleKey('tx-3'), category: 'lazer' },
+      { match_key: purchaseRuleKey('tx-4'), category: 'saude' },
+    ]);
+    const purchases = [
+      { key: 'tx-1', similarKey: 'm:clinica sorriso' },
+      { key: 'tx-2', similarKey: 'm:espaco viver bem' },
+      { key: 'tx-3', similarKey: 'm:padaria real' },
+      { key: 'tx-4', similarKey: null },
+    ];
+    // tx-2 já tem a marca das parecidas; tx-3 não é Saúde; tx-4 não tem parecidas.
+    expect(missingSimilarMarks(purchases, rules, new Set(['m:espaco viver bem']))).toEqual([
+      { matchKey: purchaseRuleKey('tx-1'), similarKey: 'm:clinica sorriso' },
+    ]);
   });
 });
 
@@ -253,6 +291,10 @@ describe('groupPurchases com as categorias escolhidas', () => {
     // A compra ficou fora da janela: o estorno sozinho, pela marca da loja.
     const [alone] = groupPurchases([refund], accounts, undefined, NO_RULES, new Set(['m:espaco viver bem ltda']));
     expect(alone).toMatchObject({ kind: 'refund', refundOf: null, sensitive: true });
+    // A compra tinha um prefixo do banco na descrição ("COMPRA CARTAO ..."), e o estorno outro.
+    const prefixed = tx({ account_id: card.id, direction: 'CREDIT', description: 'ESTORNO DE COMPRA ESPACO VIVER BEM LTDA', amount: 300 });
+    const [other] = groupPurchases([prefixed], accounts, undefined, NO_RULES, new Set(['m:compra cartao espaco viver bem ltda']));
+    expect(other).toMatchObject({ kind: 'refund', sensitive: true });
   });
 
   it('compra parcelada também guarda o sigilo pela marca', () => {

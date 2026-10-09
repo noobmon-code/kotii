@@ -89,7 +89,9 @@ create trigger fin_category_rules_sensitive
   after insert or update of category, similar_key on public.fin_category_rules
   for each row execute function public.fin_mark_sensitive_key();
 
--- O que já está em Saúde hoje (as regras de antes não têm similar_key).
+-- O que já está em Saúde hoje. As regras de antes não têm similar_key: a tela
+-- do consultor grava de novo as de "Só esta" com a chave das parecidas da
+-- compra, que só o app calcula (missingSimilarMarks em src/domain/bankRules.ts).
 insert into public.fin_sensitive_keys (user_id, household_id, match_key)
 select r.user_id, r.household_id, r.match_key
 from public.fin_category_rules r
