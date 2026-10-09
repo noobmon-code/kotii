@@ -7,29 +7,39 @@ import { formatBRL } from './money';
 
 export type FinanceCategory =
   | 'mercado'
+  | 'alimentacao'
   | 'casa'
   | 'moradia'
   | 'contas'
   | 'assinaturas'
   | 'saude'
+  | 'cuidados'
   | 'educacao'
   | 'transporte'
+  | 'viagem'
   | 'pet'
   | 'lazer'
+  | 'compras'
+  | 'taxas'
   | 'outros';
 
 /** Espelho do domínio finance_category no banco. */
 export const FINANCE_CATEGORIES: { key: FinanceCategory; label: string; icon: IconName }[] = [
   { key: 'mercado', label: 'Mercado', icon: 'cart-outline' },
+  { key: 'alimentacao', label: 'Alimentação', icon: 'silverware-fork-knife' },
   { key: 'casa', label: 'Limpeza e higiene', icon: 'spray-bottle' },
   { key: 'moradia', label: 'Moradia', icon: 'home-city-outline' },
   { key: 'contas', label: 'Contas da casa', icon: 'lightning-bolt-outline' },
   { key: 'assinaturas', label: 'Assinaturas', icon: 'play-box-multiple-outline' },
   { key: 'saude', label: 'Saúde', icon: 'medical-bag' },
+  { key: 'cuidados', label: 'Cuidados pessoais', icon: 'content-cut' },
   { key: 'educacao', label: 'Educação', icon: 'school-outline' },
   { key: 'transporte', label: 'Transporte', icon: 'car-outline' },
+  { key: 'viagem', label: 'Viagem', icon: 'airplane' },
   { key: 'pet', label: 'Pet', icon: 'paw' },
   { key: 'lazer', label: 'Lazer', icon: 'party-popper' },
+  { key: 'compras', label: 'Compras', icon: 'shopping-outline' },
+  { key: 'taxas', label: 'Taxas e juros', icon: 'percent-outline' },
   { key: 'outros', label: 'Outros', icon: 'dots-horizontal-circle-outline' },
 ];
 
