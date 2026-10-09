@@ -2760,6 +2760,36 @@ reset role;
 delete from public.fin_sensitive_keys where match_key like 'm:enchimento %';
 set role authenticated;
 
+-- "Só esta" em Saúde marca também as parecidas da compra: o sigilo segue a
+-- loja quando o lançamento ganha outro id (previsto que vira lançado, banco reconectado).
+do $$
+declare
+  bad_key text;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_k'))::text, true);
+  insert into public.fin_category_rules (match_key, category, similar_key)
+  values ('p:tx-00000000-0000-0000-0000-0000000000f3', 'saude', 'm:espaco viver bem');
+  assert (select count(*) from public.fin_sensitive_keys
+          where match_key in ('p:tx-00000000-0000-0000-0000-0000000000f3', 'm:espaco viver bem')) = 2,
+    'Só esta in Saúde marked the purchase and its similar ones';
+  insert into public.fin_category_rules (match_key, category, similar_key)
+  values ('p:tx-00000000-0000-0000-0000-0000000000f4', 'lazer', 'm:outra loja');
+  assert not exists (select 1 from public.fin_sensitive_keys
+                     where match_key in ('p:tx-00000000-0000-0000-0000-0000000000f4', 'm:outra loja')),
+    'other categories mark nothing';
+  update public.fin_category_rules set category = 'saude' where match_key = 'p:tx-00000000-0000-0000-0000-0000000000f4';
+  assert exists (select 1 from public.fin_sensitive_keys where match_key = 'm:outra loja'), 'changing to Saúde marks the similar ones too';
+  foreach bad_key in array array['p:tx-00000000-0000-0000-0000-0000000000f5', 'x:qualquer', 'm:Loja', 'doc:abc'] loop
+    begin
+      insert into public.fin_category_rules (match_key, category, similar_key) values ('m:loja teste', 'mercado', bad_key);
+      raise exception 'FAIL: saved the similar key %', bad_key;
+    exception when check_violation then null;
+    end;
+  end loop;
+  delete from public.fin_category_rules where match_key like 'p:tx-%';
+  assert (select count(*) from public.fin_sensitive_keys) = 6, 'undoing keeps all the marks';
+end $$;
+
 -- Léo, na mesma casa e sem liberação, não vê nem mexe nas escolhas da Kátia.
 select set_config('request.jwt.claim.sub', :'user_l', false) \gset
 do $$
@@ -2785,7 +2815,7 @@ begin
   assert (select count(*) from public.fin_category_rules where user_id = '00000000-0000-0000-0000-000000000017') = 2,
     'K''s rules untouched by L';
   assert (select category from public.fin_category_rules where match_key = 'm:padaria real') = 'lazer', 'still hers';
-  assert (select count(*) from public.fin_sensitive_keys where user_id = '00000000-0000-0000-0000-000000000017') = 2,
+  assert (select count(*) from public.fin_sensitive_keys where user_id = '00000000-0000-0000-0000-000000000017') = 6,
     'and her marks';
 end $$;
 set role authenticated;

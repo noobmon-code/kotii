@@ -10,6 +10,7 @@ import {
   NO_SENSITIVE_KEYS,
   pickCategory,
   purchaseRuleKey,
+  refundSimilarKey,
   similarRuleKey,
   similarText,
 } from '../bankRules';
@@ -46,6 +47,21 @@ describe('similarRuleKey', () => {
       'm:padaria real ltda',
     );
     expect(similarRuleKey({ counterparty_doc_kind: null, counterparty_doc_hash: null }, 'Pix enviado')).toBeNull();
+  });
+});
+
+describe('refundSimilarKey', () => {
+  const store = { counterparty_doc_kind: null, counterparty_doc_hash: null } as const;
+
+  it('a chave das parecidas da compra, sem as palavras do estorno', () => {
+    expect(refundSimilarKey(store, 'ESTORNO ESPACO VIVER BEM LTDA')).toBe('m:espaco viver bem ltda');
+    expect(refundSimilarKey(store, 'Estorno de compra LOJA DA ESQUINA 0412')).toBe('m:loja da esquina');
+    expect(refundSimilarKey(store, 'Cancelamento pagamento PADARIA REAL')).toBe('m:padaria real');
+    expect(refundSimilarKey(store, 'Estorno de compra')).toBeNull();
+  });
+
+  it('devolução de PIX de uma pessoa: o mesmo hash do CPF', () => {
+    expect(refundSimilarKey({ counterparty_doc_kind: 'CPF', counterparty_doc_hash: PERSON }, 'Pix devolvido')).toBe(`doc:${PERSON}`);
   });
 });
 
@@ -211,6 +227,32 @@ describe('groupPurchases com as categorias escolhidas', () => {
     ]);
     const [p] = groupPurchases([clinic], [checking], undefined, onlyThis);
     expect(p).toMatchObject({ category: 'lazer', categorySource: 'manual', sensitive: true });
+  });
+
+  it('estorno de compra posta em Saúde também é sensível, com ou sem o par', () => {
+    const card: FinAccount = { ...checking, id: 'cartao', type: 'CREDIT', subtype: 'CREDIT_CARD' };
+    const purchase = tx({ account_id: card.id, description: 'ESPACO VIVER BEM LTDA', amount: 300, occurred_on: '2026-10-03' });
+    const refund = tx({
+      account_id: card.id,
+      direction: 'CREDIT',
+      description: 'ESTORNO ESPACO VIVER BEM LTDA',
+      amount: 300,
+      occurred_on: '2026-10-06',
+    });
+    const accounts = [checking, card];
+    const onlyThis = categoryRulesOf([{ match_key: purchaseRuleKey(`tx-${purchase.id}`), category: 'saude' }]);
+
+    const plain = groupPurchases([purchase, refund], accounts);
+    const plainRefund = plain.find((p) => p.kind === 'refund');
+    expect(plainRefund).toMatchObject({ refundOf: `tx-${purchase.id}`, sensitive: false });
+
+    // "Só esta" em Saúde: o estorno ligado à compra herda o sigilo.
+    const linked = groupPurchases([purchase, refund], accounts, undefined, onlyThis);
+    expect(linked.find((p) => p.kind === 'refund')).toMatchObject({ refundOf: `tx-${purchase.id}`, sensitive: true });
+
+    // A compra ficou fora da janela: o estorno sozinho, pela marca da loja.
+    const [alone] = groupPurchases([refund], accounts, undefined, NO_RULES, new Set(['m:espaco viver bem ltda']));
+    expect(alone).toMatchObject({ kind: 'refund', refundOf: null, sensitive: true });
   });
 
   it('compra parcelada também guarda o sigilo pela marca', () => {

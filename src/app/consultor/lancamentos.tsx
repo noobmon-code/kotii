@@ -294,7 +294,7 @@ function CategoryEditor({
         // A escolha só para esta compra passaria na frente da das parecidas.
         if (p.categorySource === 'manual') await removeRules.mutateAsync([ownKey]);
       } else {
-        await setRule.mutateAsync({ matchKey: ownKey, category });
+        await setRule.mutateAsync({ matchKey: ownKey, category, similarKey: p.similarKey });
       }
       onChosen();
     } catch (err) {

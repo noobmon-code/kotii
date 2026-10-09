@@ -70,6 +70,30 @@ export function similarRuleKey(
   return text ? `m:${text}` : null;
 }
 
+// Palavras do estorno que a compra não tem; depois delas, o que só liga
+// ("Estorno de compra LOJA X" -> "loja x").
+const REFUND_WORDS = new Set([
+  'estorno', 'estornado', 'estornada', 'estornos', 'devolucao', 'devolvido', 'devolvida', 'reembolso',
+  'ressarcimento', 'chargeback', 'cancelamento', 'cancelado', 'cancelada',
+]);
+const REFUND_LEAD = new Set(['de', 'da', 'do', 'compra', 'pagamento', 'pix', 'credito', 'valor', 'ref', 'referente', 'parcial', 'total']);
+
+/**
+ * Chave das parecidas da compra que um estorno desfaz: a do estorno, sem as
+ * palavras do estorno. Serve para o estorno herdar o sigilo da compra mesmo
+ * sem achar o par dela.
+ */
+export function refundSimilarKey(
+  tx: Pick<FinTransaction, 'counterparty_doc_kind' | 'counterparty_doc_hash'>,
+  name: string,
+): string | null {
+  const words = normalizeBankText(name)
+    .split(' ')
+    .filter((w) => w && !REFUND_WORDS.has(w));
+  while (words.length && REFUND_LEAD.has(words[0])) words.shift();
+  return similarRuleKey(tx, words.join(' '));
+}
+
 export type CategorySource = 'auto' | 'similar' | 'manual';
 
 /** Categoria da compra: a escolhida para ela, a das parecidas ou a automática. */

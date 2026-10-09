@@ -9,6 +9,19 @@
 -- Quem grava é o gatilho de fin_category_rules, não o app: a pessoa só lê as
 -- marcas, e trocar ou apagar a regra não apaga a marca. Presa à liberação
 -- como as regras: tirá-la ou sair da casa apaga as marcas.
+--
+-- "Só esta" grava a regra com a chave do lançamento (p:tx-<id>), que muda
+-- quando o previsto vira lançado ou o banco é reconectado. Por isso a regra
+-- leva também a chave das parecidas da compra (similar_key), e Saúde marca as
+-- duas: o sigilo segue a loja ou a pessoa. Na dúvida, marca (as outras
+-- compras dali também só vão somadas; a categoria delas não muda).
+
+alter table public.fin_category_rules
+  add column similar_key text check (
+    similar_key is null
+    or similar_key ~ '^doc:[0-9a-f]{64}$'
+    or similar_key ~ '^m:[a-z][a-z ]{0,79}$'
+  );
 
 create table public.fin_sensitive_keys (
   user_id uuid not null,
@@ -45,21 +58,27 @@ language plpgsql
 security definer
 set search_path = ''
 as $$
+declare
+  missing text[];
 begin
-  if new.category = 'saude' then
-    if not exists (
-      select 1 from public.fin_sensitive_keys k
-      where k.user_id = new.user_id and k.household_id = new.household_id and k.match_key = new.match_key
-    ) and (
-      select count(*) from public.fin_sensitive_keys k
-      where k.user_id = new.user_id and k.household_id = new.household_id
-    ) >= 2000 then
-      raise exception 'too many finance sensitive keys' using errcode = '54000';
-    end if;
-    insert into public.fin_sensitive_keys (user_id, household_id, match_key)
-    values (new.user_id, new.household_id, new.match_key)
-    on conflict do nothing;
+  if new.category <> 'saude' then
+    return new;
   end if;
+  select coalesce(array_agg(distinct mk), '{}') into missing
+  from unnest(array_remove(array[new.match_key, new.similar_key], null)) as mk
+  where not exists (
+    select 1 from public.fin_sensitive_keys k
+    where k.user_id = new.user_id and k.household_id = new.household_id and k.match_key = mk
+  );
+  if cardinality(missing) > 0 and (
+    select count(*) from public.fin_sensitive_keys k
+    where k.user_id = new.user_id and k.household_id = new.household_id
+  ) + cardinality(missing) > 2000 then
+    raise exception 'too many finance sensitive keys' using errcode = '54000';
+  end if;
+  insert into public.fin_sensitive_keys (user_id, household_id, match_key)
+  select new.user_id, new.household_id, mk from unnest(missing) as mk
+  on conflict do nothing;
   return new;
 end;
 $$;
@@ -67,10 +86,10 @@ $$;
 revoke execute on function public.fin_mark_sensitive_key() from public, anon, authenticated;
 
 create trigger fin_category_rules_sensitive
-  after insert or update of category on public.fin_category_rules
+  after insert or update of category, similar_key on public.fin_category_rules
   for each row execute function public.fin_mark_sensitive_key();
 
--- O que já está em Saúde hoje.
+-- O que já está em Saúde hoje (as regras de antes não têm similar_key).
 insert into public.fin_sensitive_keys (user_id, household_id, match_key)
 select r.user_id, r.household_id, r.match_key
 from public.fin_category_rules r

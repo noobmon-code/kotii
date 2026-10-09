@@ -179,16 +179,28 @@ export function useFinCategoryRules() {
   });
 }
 
-/** Escolhe a categoria de uma compra ou das parecidas (match_key de bankRules). */
+/**
+ * Escolhe a categoria de uma compra ou das parecidas (match_key de bankRules).
+ * Na escolha só para uma compra, `similarKey` são as parecidas dela: em Saúde,
+ * o banco marca as duas, e o sigilo segue a loja mesmo se o lançamento mudar de id.
+ */
 export function useSetCategoryRule() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ matchKey, category }: { matchKey: string; category: FinanceCategory }) => {
+    mutationFn: async ({
+      matchKey,
+      category,
+      similarKey = null,
+    }: {
+      matchKey: string;
+      category: FinanceCategory;
+      similarKey?: string | null;
+    }) => {
       unwrap(
         await supabase
           .from('fin_category_rules')
           .upsert(
-            { match_key: matchKey, category, updated_at: new Date().toISOString() },
+            { match_key: matchKey, category, similar_key: similarKey, updated_at: new Date().toISOString() },
             { onConflict: 'user_id,household_id,match_key' },
           ),
       );

@@ -14,6 +14,7 @@ import {
   NO_RULES,
   NO_SENSITIVE_KEYS,
   pickCategory,
+  refundSimilarKey,
   type SensitiveKeys,
   similarRuleKey,
 } from './bankRules';
@@ -206,6 +207,10 @@ export function groupPurchases(
     const autoCategory = financeCategoryOfBank(tx);
     const similarKey = similarRuleKey(tx, merchantName ?? description);
     const { category, source } = pickCategory(rules, key, similarKey, autoCategory);
+    // O estorno de uma loja posta em Saúde também: sem o par (linkRefunds), pelo nome sem o "estorno".
+    const chosen =
+      chosenSensitive(rules, sensitiveKeys, key, similarKey) ||
+      (kind === 'refund' && chosenSensitive(rules, sensitiveKeys, key, refundSimilarKey(tx, merchantName ?? description)));
     purchases.push({
       key,
       date: effectiveDate(tx),
@@ -224,7 +229,7 @@ export function groupPurchases(
       txIds: [tx.id],
       personTransfer: tx.counterparty_doc_kind === 'CPF' && (kind === 'spending' || kind === 'income' || kind === 'refund'),
       // Saúde escolhida pela pessoa também só vai somada; tirar de saúde não tira o sigilo.
-      sensitive: isSensitiveBankTx(tx) || category === 'saude' || chosenSensitive(rules, sensitiveKeys, key, similarKey),
+      sensitive: isSensitiveBankTx(tx) || category === 'saude' || chosen,
       // Nome de pessoa como loja só passa pela categoria automática, nunca pela escolha da pessoa.
       storeName: storeNameOf(tx, accountsById.get(tx.account_id), description, autoCategory),
       refundOf: null,
@@ -695,6 +700,8 @@ function linkRefunds(purchases: BankPurchase[]) {
     }
     if (!best) continue;
     refund.refundOf = best.key;
+    // O estorno conta a mesma história da compra: se ela só vai somada para a IA, ele também.
+    if (best.sensitive) refund.sensitive = true;
     left.set(best.key, (left.get(best.key) as number) - refund.amount);
   }
 }
