@@ -12,11 +12,12 @@ import type { FinAccount, FinConnection, FinTransaction } from '@/lib/types';
 import { normalizeBankText } from './bankCategories';
 import { TRANSFER_WORDS } from './bankClassify';
 import { connectionWarnings } from './bankHealth';
-import { matchBankToKotii, type KotiiRecord, reconciliationInRange, reconciliationTotals } from './bankMatch';
+import { type KotiiRecord, reconcileWindow, reconciliationInRange, reconciliationTotals } from './bankMatch';
 import { safeBankLabels } from './bankNames';
 import { categoryRulesOf, type FinCategoryRule } from './bankRules';
 import {
   accountLabels,
+  type BankInstallment,
   type BankPurchase,
   cardBills,
   currentAccounts,
@@ -34,8 +35,10 @@ import { formatBRL } from './money';
 /** O servidor recusa acima de 12.000; aqui sobra folga. */
 export const SNAPSHOT_MAX_CHARS = 8000;
 export const RECENT_LIMIT = 15;
-/** Meses de parcelas comprometidas no retrato. */
+/** Meses de parcelas comprometidas listados no retrato. */
 const INSTALLMENT_MONTHS = 6;
+/** Meses somados no total das parcelas comprometidas (todas as que faltam). */
+const INSTALLMENT_TOTAL_MONTHS = 120;
 
 export interface FinanceSnapshotInput {
   /** Hoje no aparelho (YYYY-MM-DD). */
@@ -46,7 +49,11 @@ export interface FinanceSnapshotInput {
   accounts: FinAccount[];
   transactions: FinTransaction[];
   budgets: { category: string; monthly_limit: number }[];
-  /** Notas, contas pagas e gastos do Kotii na mesma janela (kotiiRecordsFrom). */
+  /**
+   * Notas, contas pagas e gastos do Kotii (kotiiRecordsFrom) desde
+   * kotiiRecordsStart: a janela e, antes dela, o mês da compra parcelada mais
+   * antiga que ainda tem parcela na janela.
+   */
   kotiiRecords: KotiiRecord[];
   /** Categorias que a pessoa escolheu (bankRules); sem elas, só as automáticas. */
   categoryRules?: FinCategoryRule[];
@@ -125,6 +132,21 @@ const KIND_WORD: Partial<Record<BankPurchase['kind'], string>> = {
   income: 'entrada',
 };
 
+/**
+ * "parcela 2 de 10 de uma compra de R$ 1.500,00 (a 1ª em terça, 1/9)": o
+ * valor é o da compra inteira, não o que já foi pago. A data estimada pela
+ * parcela vai só com o mês, como aproximada; a de outro ano, com o ano.
+ */
+function parcelText(p: BankPurchase & { installment: BankInstallment }, today: string): string {
+  const { installment } = p;
+  const what = p.autoCategory === 'taxas' ? 'cobrança' : 'compra';
+  const day = installment.purchaseDate;
+  const first = installment.purchaseExact
+    ? `a 1ª em ${day.slice(0, 4) === today.slice(0, 4) ? dayLabel(day) : `${dayLabel(day)}/${day.slice(0, 4)}`}`
+    : `a 1ª por volta de ${monthLabel(day.slice(0, 7))}`;
+  return `parcela ${installment.number} de ${installment.total} de uma ${what} de ${formatBRL(installment.purchaseAmount)} (${first})`;
+}
+
 /** Texto do retrato em linhas curtas (até SNAPSHOT_MAX_CHARS). */
 export function buildFinanceSnapshot(input: FinanceSnapshotInput): string {
   const { today } = input;
@@ -155,10 +177,11 @@ export function buildFinanceSnapshot(input: FinanceSnapshotInput): string {
   const warnings = connectionWarnings(connections, input.now);
   lines.push(`Avisos dos bancos: ${warnings.length ? warnings.map((w) => w.message).join(' ') : 'nenhum.'}`);
 
-  // Mês atual, pela data da compra.
+  // Mês atual: a compra pela data dela, a parcela pelo mês dela.
   const current = monthSummary(purchases, month);
   lines.push(
-    `No banco em ${monthLabel(month)} (pela data da compra): saídas ${formatBRL(current.spending)} em ${count(current.count, 'compra', 'compras')}` +
+    `No banco em ${monthLabel(month)} (pela data da compra; de compra parcelada, só a parcela do mês): ` +
+      `saídas ${formatBRL(current.spending)} em ${count(current.count, 'lançamento', 'lançamentos')}` +
       `${current.pending > 0 ? ` (${formatBRL(current.pending)} ainda previsto, pendente no banco)` : ''}; ` +
       `entradas ${formatBRL(current.income)}; estornos ${formatBRL(current.refunds)} (já abatidos das saídas)` +
       `${current.otherRefunds > 0 ? `; mais ${formatBRL(current.otherRefunds)} em estornos sem a compra correspondente nestes meses (não abatidos)` : ''}.`,
@@ -218,24 +241,36 @@ export function buildFinanceSnapshot(input: FinanceSnapshotInput): string {
   );
   lines.push(`Cartões: ${bills.length ? bills.join('; ') : 'nenhum cartão'}.`);
 
-  const future = futureInstallments(purchases, shiftMonth(month, 1), INSTALLMENT_MONTHS).filter((m) => m.amount > 0);
+  // Parcelas de compras já feitas que ainda vão ser cobradas: do mês atual, só as que o banco não lançou.
+  const future = futureInstallments(purchases, today, INSTALLMENT_TOTAL_MONTHS).filter((m) => m.amount > 0);
+  const listed = future
+    .filter((m) => m.month < shiftMonth(month, INSTALLMENT_MONTHS))
+    .map((m) => {
+      const parcels = m.month === month ? count(m.parcels.length, 'parcela ainda não lançada', 'parcelas ainda não lançadas') : count(m.parcels.length, 'parcela', 'parcelas');
+      return `${monthLabel(m.month)} ${formatBRL(m.amount)} (${parcels})`;
+    });
+  const futureTotal = Math.round(future.reduce((sum, m) => sum + m.amount, 0) * 100) / 100;
+  const futureCount = future.reduce((sum, m) => sum + m.parcels.length, 0);
   lines.push(
-    `Parcelas já comprometidas nos próximos meses: ${
-      future.length ? future.map((m) => `${monthLabel(m.month)} ${formatBRL(m.amount)} (${count(m.parcels.length, 'parcela', 'parcelas')})`).join('; ') : 'nenhuma'
+    `Parcelas já comprometidas: ${
+      future.length
+        ? `${listed.join('; ')}${listed.length ? '; ' : ''}no total, ${formatBRL(futureTotal)} em ${count(futureCount, 'parcela', 'parcelas')} até ${monthLabel(future[future.length - 1].month)}`
+        : 'nenhuma'
     }.`,
   );
 
-  // Conferência com o Kotii no mês atual (casada na janela inteira, como na tela). As compras de antes da
-  // janela só vieram para juntar parcelas e pares: não tiram registro do Kotii de uma compra da janela.
-  const shown = windowPurchases(purchases, today);
-  const totals = reconciliationTotals(reconciliationInRange(matchBankToKotii(shown, input.kotiiRecords), monthRange(month)));
+  // Conferência com o Kotii no mês atual (casada na janela inteira, como na tela): cada parcela conta no mês
+  // dela, e a nota de uma compra parcelada vale para todas as parcelas.
+  const totals = reconciliationTotals(reconciliationInRange(reconcileWindow(purchases, input.kotiiRecords, today), monthRange(month)));
   lines.push(
-    `Conferência de ${monthLabel(month)} com o Kotii: ${formatBRL(totals.inKotii)} em ${count(totals.inKotiiCount, 'compra', 'compras')} já no Kotii ` +
-      `(notas, contas ou gastos); ${formatBRL(totals.bankOnly)} em ${count(totals.bankOnlyCount, 'compra', 'compras')} só no banco.`,
+    `Conferência de ${monthLabel(month)} com o Kotii: ${formatBRL(totals.inKotii)} em ${count(totals.inKotiiCount, 'lançamento', 'lançamentos')} já no Kotii ` +
+      `(notas, contas ou gastos; a nota de uma compra parcelada vale para cada parcela); ` +
+      `${formatBRL(totals.bankOnly)} em ${count(totals.bankOnlyCount, 'lançamento', 'lançamentos')} só no banco.`,
   );
 
-  // Lançamentos recentes, com apelido t1..t15. Sensíveis ficam só no total da categoria.
-  const recent = shown
+  // Lançamentos recentes, com apelido t1..t15. Sensíveis ficam só no total da categoria. A parcela aparece
+  // no mês dela, com a compra inteira ao lado.
+  const recent = windowPurchases(purchases, today)
     .filter((p) => KIND_WORD[p.kind] && !p.sensitive && p.date <= today)
     .slice(0, RECENT_LIMIT)
     .map((p, i) => {
@@ -246,7 +281,7 @@ export function buildFinanceSnapshot(input: FinanceSnapshotInput): string {
         purchaseLabel(p),
         formatBRL(p.amount),
         labels.get(p.accountId) ?? null,
-        p.installments ? `parcelada em ${p.installments.total}x de ${formatBRL(p.installments.parcel)}` : null,
+        p.installment ? parcelText({ ...p, installment: p.installment }, today) : null,
         p.pending ? 'previsto' : null,
       ];
       return parts.filter(Boolean).join(' · ');

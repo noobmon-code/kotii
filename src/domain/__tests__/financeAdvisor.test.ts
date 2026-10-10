@@ -149,20 +149,20 @@ const input: FinanceSnapshotInput = {
 describe('buildFinanceSnapshot', () => {
   const text = buildFinanceSnapshot(input);
 
-  it('resume o mês pela data da compra, sem transferências, aplicação nem fatura paga', () => {
+  it('resume o mês pela data da compra (da parcelada, só a parcela do mês), sem transferências, aplicação nem fatura paga', () => {
     expect(text).toContain('Hoje: quarta, 7/10/2026. Mês atual: outubro de 2026.');
     expect(text).toContain(
-      'No banco em outubro de 2026 (pela data da compra): saídas R$ 874,90 em 7 compras (R$ 60,00 ainda previsto, pendente no banco); entradas R$ 5.000,00; estornos R$ 0,00 (já abatidos das saídas).',
+      'No banco em outubro de 2026 (pela data da compra; de compra parcelada, só a parcela do mês): saídas R$ 1.024,90 em 8 lançamentos (R$ 60,00 ainda previsto, pendente no banco); entradas R$ 5.000,00; estornos R$ 0,00 (já abatidos das saídas).',
     );
     expect(text).toContain(
-      'Saídas por categoria em outubro de 2026: Mercado: R$ 250,00 de R$ 1.200,00 · faltam R$ 950,00; Outros: R$ 475,00 (sem orçamento); Saúde: R$ 89,90 (sem orçamento); Transporte: R$ 60,00 (sem orçamento).',
+      'Saídas por categoria em outubro de 2026: Mercado: R$ 250,00 de R$ 1.200,00 · faltam R$ 950,00; Outros: R$ 475,00 (sem orçamento); Compras: R$ 150,00 (sem orçamento); Saúde: R$ 89,90 (sem orçamento); Transporte: R$ 60,00 (sem orçamento).',
     );
   });
 
   it('compara com o mesmo período e com os dois meses anteriores', () => {
-    expect(text).toContain('Até hoje: saídas R$ 874,90; em setembro até o dia 7: R$ 1.900,00 (R$ 1.025,10 a menos agora).');
+    expect(text).toContain('Até hoje: saídas R$ 1.024,90; em setembro até o dia 7: R$ 550,00 (R$ 474,90 a mais agora).');
     expect(text).toContain(
-      'Meses anteriores inteiros: setembro de 2026: saídas R$ 1.900,00, entradas R$ 0,00 (maiores: Compras R$ 1.500,00, Mercado R$ 400,00); agosto de 2026: saídas R$ 300,00, entradas R$ 0,00 (maiores: Mercado R$ 300,00).',
+      'Meses anteriores inteiros: setembro de 2026: saídas R$ 550,00, entradas R$ 0,00 (maiores: Mercado R$ 400,00, Compras R$ 150,00); agosto de 2026: saídas R$ 300,00, entradas R$ 0,00 (maiores: Mercado R$ 300,00).',
     );
   });
 
@@ -173,13 +173,16 @@ describe('buildFinanceSnapshot', () => {
     expect(text).toContain(
       'Cartões: Nubank cartão: limite usado R$ 2.300,00 (fatura aberta mais parcelas a vencer), vence sábado, 10/10, fecha sábado, 3/10, mínimo R$ 345,00, limite disponível R$ 4.000,00.',
     );
-    expect(text).toContain('Parcelas já comprometidas nos próximos meses: novembro de 2026 R$ 150,00 (1 parcela); dezembro de 2026 R$ 150,00 (1 parcela);');
+    // A Magalu entra uma vez por mês (não uma vez por parcela já vista), com o total pronto.
     expect(text).toContain(
-      'Conferência de outubro de 2026 com o Kotii: R$ 250,00 em 1 compra já no Kotii (notas, contas ou gastos); R$ 624,90 em 6 compras só no banco.',
+      'Parcelas já comprometidas: novembro de 2026 R$ 150,00 (1 parcela); dezembro de 2026 R$ 150,00 (1 parcela); janeiro de 2027 R$ 150,00 (1 parcela); fevereiro de 2027 R$ 150,00 (1 parcela); março de 2027 R$ 150,00 (1 parcela); no total, R$ 1.200,00 em 8 parcelas até junho de 2027.',
+    );
+    expect(text).toContain(
+      'Conferência de outubro de 2026 com o Kotii: R$ 250,00 em 1 lançamento já no Kotii (notas, contas ou gastos; a nota de uma compra parcelada vale para cada parcela); R$ 774,90 em 7 lançamentos só no banco.',
     );
   });
 
-  it('lista os lançamentos recentes com apelidos, sem os sensíveis', () => {
+  it('lista os lançamentos recentes com apelidos, sem os sensíveis; a parcela no mês dela, com a compra ao lado', () => {
     const recent = text.slice(text.indexOf('Lançamentos recentes')).split('\n').slice(1);
     expect(recent).toEqual([
       't1 terça, 6/10 · saída · Transporte · UBER TRIP · R$ 60,00 · Nubank cartão · previsto',
@@ -187,12 +190,93 @@ describe('buildFinanceSnapshot', () => {
       't3 segunda, 5/10 · saída · Outros · PIX para pessoa física · R$ 300,00 · Nubank conta',
       't4 segunda, 5/10 · saída · Outros · PIX enviado · R$ 40,00 · Nubank conta',
       't5 domingo, 4/10 · saída · Mercado · SUPERMERCADO GUANABARA · R$ 250,00 · Nubank cartão',
+      't6 quinta, 1/10 · saída · Compras · MAGALU · R$ 150,00 · Nubank cartão · parcela 2 de 10 de uma compra de R$ 1.500,00 (a 1ª em terça, 1/9)',
       // Depois do "*" da maquininha pode vir o nome de quem vende: sem categoria de loja, fica genérico.
-      't6 quinta, 1/10 · saída · Outros · Pagamento · R$ 35,00 · Nubank cartão',
-      't7 quinta, 3/9 · saída · Mercado · SUPERMERCADO BOM · R$ 400,00 · Nubank cartão',
-      't8 terça, 1/9 · saída · Compras · MAGALU · R$ 1.500,00 · Nubank cartão · parcelada em 10x de R$ 150,00',
-      't9 segunda, 10/8 · saída · Mercado · SUPERMERCADO BOM · R$ 300,00 · Nubank cartão',
+      't7 quinta, 1/10 · saída · Outros · Pagamento · R$ 35,00 · Nubank cartão',
+      't8 quinta, 3/9 · saída · Mercado · SUPERMERCADO BOM · R$ 400,00 · Nubank cartão',
+      't9 terça, 1/9 · saída · Compras · MAGALU · R$ 150,00 · Nubank cartão · parcela 1 de 10 de uma compra de R$ 1.500,00 (a 1ª em terça, 1/9)',
+      't10 segunda, 10/8 · saída · Mercado · SUPERMERCADO BOM · R$ 300,00 · Nubank cartão',
     ]);
+  });
+
+  it('compra parcelada de antes da janela: cada parcela no mês dela, casada com a nota da compra', () => {
+    const store = '11222333000144';
+    const loja = (n: number, day: string) =>
+      tx({
+        account_id: card,
+        amount: 100,
+        description: `LOJA M ${String(n).padStart(2, '0')}/10`,
+        merchant_cnpj: store,
+        installment_number: n,
+        total_installments: 10,
+        purchase_on: '2026-05-02',
+        occurred_on: day,
+      });
+    const snapshot = buildFinanceSnapshot({
+      ...input,
+      transactions: [...input.transactions, loja(4, '2026-08-02'), loja(5, '2026-09-02'), loja(6, '2026-10-02')],
+      kotiiRecords: [...input.kotiiRecords, { kind: 'nota', id: 'n2', amount: 1000, date: '2026-05-02', label: 'Loja M', cnpj: store }],
+    });
+    expect(snapshot).toContain('R$ 350,00 em 2 lançamentos já no Kotii');
+    expect(snapshot).toContain('· LOJA M · R$ 100,00 · Nubank cartão · parcela 6 de 10 de uma compra de R$ 1.000,00 (a 1ª em sábado, 2/5)');
+    expect(snapshot).toContain('novembro de 2026 R$ 250,00 (2 parcelas)');
+  });
+
+  it('parcela com a data da compra estimada sai só com o mês; tarifa em parcelas é cobrança, não compra', () => {
+    const eletro = (n: number, day: string) =>
+      tx({ account_id: card, amount: 200, description: `LOJA ELETRO ${n}/18`, installment_number: n, total_installments: 18, occurred_on: day });
+    const fee = (n: number, day: string) =>
+      tx({ account_id: card, amount: 55, description: `ANUIDADE DIFERENCIADA ${String(n).padStart(2, '0')}/12`, installment_number: n, total_installments: 12, purchase_on: day, occurred_on: day });
+    const snapshot = buildFinanceSnapshot({
+      ...input,
+      transactions: [
+        eletro(14, '2026-08-05'),
+        eletro(15, '2026-09-05'),
+        eletro(16, '2026-10-05'),
+        fee(5, '2026-08-02'),
+        fee(6, '2026-09-02'),
+        fee(7, '2026-10-02'),
+      ],
+    });
+    expect(snapshot).toContain('· R$ 200,00 · Nubank cartão · parcela 16 de 18 de uma compra de R$ 3.600,00 (a 1ª por volta de julho de 2025)');
+    expect(snapshot).toContain('· R$ 55,00 · Nubank cartão · parcela 7 de 12 de uma cobrança de R$ 660,00 (a 1ª por volta de abril de 2026)');
+  });
+
+  it('a parcela deste mês que o banco ainda não lançou aparece no comprometido', () => {
+    const snapshot = buildFinanceSnapshot({
+      ...input,
+      transactions: [
+        tx({ account_id: card, amount: 40, description: 'LOJA B 01/03', installment_number: 1, total_installments: 3, purchase_on: '2026-09-20', occurred_on: '2026-09-20' }),
+      ],
+    });
+    expect(snapshot).toContain(
+      'Parcelas já comprometidas: outubro de 2026 R$ 40,00 (1 parcela ainda não lançada); novembro de 2026 R$ 40,00 (1 parcela); no total, R$ 80,00 em 2 parcelas até novembro de 2026.',
+    );
+  });
+
+  it('compra parcelada posta em Saúde numa parcela some de todas e do estorno dela, e fica só somada', () => {
+    const clinic = (n: number, day: string) =>
+      tx({
+        account_id: card,
+        amount: 300,
+        description: `ESPACO VIVER BEM ${String(n).padStart(2, '0')}/05`,
+        merchant_name: 'Espaco Viver Bem Ltda',
+        installment_number: n,
+        total_installments: 5,
+        purchase_on: '2026-08-20',
+        occurred_on: day,
+      });
+    const first = clinic(1, '2026-08-20');
+    const second = clinic(2, '2026-09-20');
+    const refund = tx({ account_id: card, amount: 1500, direction: 'CREDIT', description: 'ESTORNO ESPACO VIVER BEM', occurred_on: '2026-10-05' });
+    const withClinic = { ...input, transactions: [...input.transactions, first, second, refund] };
+    // Sem a escolha, as parcelas e o estorno iriam com o nome da loja.
+    expect(buildFinanceSnapshot(withClinic)).toMatch(/viver bem/i);
+    const chosen = buildFinanceSnapshot({ ...withClinic, categoryRules: [{ match_key: `p:parc-${second.id}`, category: 'saude' as const }] });
+    expect(chosen).not.toMatch(/espaco|viver bem/i);
+    // Estornada por inteiro: as parcelas não contam em agosto nem em setembro, e nada dela fica comprometido.
+    expect(chosen).toContain('agosto de 2026: saídas R$ 300,00');
+    expect(chosen).toContain('Parcelas já comprometidas: novembro de 2026 R$ 150,00 (1 parcela);');
   });
 
   it('não manda CPF, conta, nome de pessoa nem loja de saúde ou religião', () => {
@@ -365,7 +449,7 @@ describe('buildFinanceSnapshot', () => {
       ],
     });
     expect(refunded).toContain(
-      'saídas R$ 600,00 em 1 compra; entradas R$ 0,00; estornos R$ 0,00 (já abatidos das saídas); mais R$ 1.000,00 em estornos sem a compra correspondente nestes meses (não abatidos).',
+      'saídas R$ 600,00 em 1 lançamento; entradas R$ 0,00; estornos R$ 0,00 (já abatidos das saídas); mais R$ 1.000,00 em estornos sem a compra correspondente nestes meses (não abatidos).',
     );
   });
 
@@ -434,12 +518,15 @@ describe('purchaseLabel / scrubText / dayLabel', () => {
     kind: 'spending',
     pending: false,
     accountId: 'a',
-    installments: null,
+    installment: null,
+    ruleKey: 'k',
+    ruleKeys: ['k'],
     txIds: [],
     personTransfer: false,
     sensitive: false,
     storeName: null,
     refundOf: null,
+    refundParts: [],
     ...over,
   });
 

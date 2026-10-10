@@ -123,18 +123,27 @@ export function refundOfSaudeStore(
 
 export type CategorySource = 'auto' | 'similar' | 'manual';
 
-/** Categoria da compra: a escolhida para ela, a das parecidas ou a automática. */
+const keyList = (purchaseKeys: string | readonly string[]) => (typeof purchaseKeys === 'string' ? [purchaseKeys] : purchaseKeys);
+
+/**
+ * Categoria da compra: a escolhida para ela, a das parecidas ou a automática.
+ * A compra parcelada passa as chaves de todas as parcelas vistas (a escolha
+ * pode estar em qualquer uma); vale a da primeira que tiver escolha, e
+ * `ruleKey` diz qual foi (null sem escolha só para ela).
+ */
 export function pickCategory(
   rules: CategoryRules,
-  purchaseKey: string,
+  purchaseKeys: string | readonly string[],
   similarKey: string | null,
   auto: FinanceCategory,
-): { category: FinanceCategory; source: CategorySource } {
-  const own = rules.get(purchaseRuleKey(purchaseKey));
-  if (own) return { category: own, source: 'manual' };
+): { category: FinanceCategory; source: CategorySource; ruleKey: string | null } {
+  for (const key of keyList(purchaseKeys)) {
+    const own = rules.get(purchaseRuleKey(key));
+    if (own) return { category: own, source: 'manual', ruleKey: key };
+  }
   const similar = similarKey ? rules.get(similarKey) : undefined;
-  if (similar) return { category: similar, source: 'similar' };
-  return { category: auto, source: 'auto' };
+  if (similar) return { category: similar, source: 'similar', ruleKey: null };
+  return { category: auto, source: 'auto', ruleKey: null };
 }
 
 /** match_key que a pessoa já pôs em Saúde (fin_sensitive_keys). */
@@ -146,14 +155,15 @@ export const NO_SENSITIVE_KEYS: SensitiveKeys = new Set();
  * A pessoa pôs esta compra, ou as parecidas, em Saúde: ela só vai somada
  * para a IA, mesmo depois de trocar de categoria ou desfazer (a marca fica)
  * e mesmo com "Só esta" em outra categoria por cima das parecidas em Saúde.
+ * Na compra parcelada, a escolha em qualquer parcela vale para todas.
  */
 export function chosenSensitive(
   rules: CategoryRules,
   sensitiveKeys: SensitiveKeys,
-  purchaseKey: string,
+  purchaseKeys: string | readonly string[],
   similarKey: string | null,
 ): boolean {
-  return [purchaseRuleKey(purchaseKey), similarKey].some(
+  return [...keyList(purchaseKeys).map(purchaseRuleKey), similarKey].some(
     (key) => key !== null && (rules.get(key) === 'saude' || sensitiveKeys.has(key)),
   );
 }
@@ -162,17 +172,19 @@ export function chosenSensitive(
  * Escolhas de Saúde só para uma compra que ainda não marcaram as parecidas
  * dela (feitas antes de a regra levar similar_key, ou num app antigo). Enquanto
  * a compra está aqui, dá para gravar a regra de novo com a chave das parecidas.
+ * Na compra parcelada, a escolha pode estar em qualquer parcela (`ruleKeys`).
  */
 export function missingSimilarMarks(
-  purchases: readonly { key: string; similarKey: string | null }[],
+  purchases: readonly { key: string; ruleKeys?: readonly string[]; similarKey: string | null }[],
   rules: CategoryRules,
   sensitiveKeys: SensitiveKeys,
 ): { matchKey: string; similarKey: string }[] {
   const missing = new Map<string, string>();
   for (const p of purchases) {
-    const matchKey = purchaseRuleKey(p.key);
-    if (p.similarKey && rules.get(matchKey) === 'saude' && !sensitiveKeys.has(p.similarKey)) {
-      missing.set(matchKey, p.similarKey);
+    if (!p.similarKey || sensitiveKeys.has(p.similarKey)) continue;
+    for (const key of p.ruleKeys ?? [p.key]) {
+      const matchKey = purchaseRuleKey(key);
+      if (rules.get(matchKey) === 'saude') missing.set(matchKey, p.similarKey);
     }
   }
   return [...missing].map(([matchKey, similarKey]) => ({ matchKey, similarKey }));

@@ -13,9 +13,10 @@ import {
 } from '@/data/financeBeta';
 import { connectionWarnings, type ConnectionWarning } from '@/domain/bankHealth';
 import {
-  matchBankToKotii,
+  reconcileWindow,
   reconciliationInRange,
   reconciliationTotals,
+  type BankMatch,
   type KotiiRecord,
   type Reconciliation,
 } from '@/domain/bankMatch';
@@ -26,7 +27,6 @@ import {
   futureInstallments,
   groupPurchases,
   monthSummary,
-  windowPurchases,
   type BankMonthSummary,
   type CardBill,
   type InstallmentMonth,
@@ -180,7 +180,7 @@ function Consultor() {
                 onMonth={setMonth}
               />
               <CategorySection lines={view.categories} month={month} />
-              <CardsSection bills={view.bills} installments={view.installments} />
+              <CardsSection bills={view.bills} installments={view.installments} current={current} />
               <BalancesSection accounts={view.balances} labels={view.labels} />
               <ReconciliationSection reconciliation={view.reconciliation} labels={view.labels} />
             </>
@@ -195,8 +195,8 @@ function Consultor() {
 
           <ConnectionsSection connections={data.connections} warnings={view.warnings} />
           <Text variant="small" style={styles.center}>
-            Beta: os números saem do banco pela data da compra e não entram nas finanças da casa. Só um orçamento que você
-            aceitar do Nuke muda, e ele vale para a casa toda.
+            Beta: os números saem do banco pela data da compra (a parcelada, parcela por parcela) e não entram nas finanças
+            da casa. Só um orçamento que você aceitar do Nuke muda, e ele vale para a casa toda.
           </Text>
         </>
       ) : null}
@@ -214,7 +214,6 @@ interface CategoryRow {
 }
 
 function buildView(data: FinanceData, month: string, today: string) {
-  const current = today.slice(0, 7);
   const rules = categoryRulesOf(data.categoryRules);
   const marks = new Set(data.sensitiveKeys);
   const purchases = groupPurchases(data.transactions, data.accounts, undefined, rules, marks);
@@ -235,10 +234,10 @@ function buildView(data: FinanceData, month: string, today: string) {
         .map((c): CategoryRow => ({ category: c.category, amount: c.amount, budget: null })),
     ],
     bills: cardBills(accounts, labels, today),
-    installments: futureInstallments(purchases, shiftMonth(current, 1), 6).filter((m) => m.amount > 0),
+    installments: futureInstallments(purchases, today, 6).filter((m) => m.amount > 0),
     balances: accounts.filter((a) => a.type === 'BANK'),
     // Mesma conta do retrato do Nuke: casada na janela inteira, mostrada só no mês escolhido.
-    reconciliation: reconciliationInRange(matchBankToKotii(windowPurchases(purchases, today), data.kotiiRecords), monthRange(month)),
+    reconciliation: reconciliationInRange(reconcileWindow(purchases, data.kotiiRecords, today), monthRange(month)),
     warnings: connectionWarnings(data.connections, new Date()),
     repairs: missingSimilarMarks(purchases, rules, marks),
   };
@@ -349,7 +348,8 @@ function MonthSection({
           <Stat label="Previsto" value={formatBRL(summary.pending)} color="warning" />
         </Row>
         <Text variant="small">
-          {plural(summary.count, 'compra', 'compras')} pela data da compra; parcelada conta inteira no dia.
+          {plural(summary.count, 'lançamento', 'lançamentos')} pela data da compra; a compra parcelada conta parcela por
+          parcela, cada uma no mês dela.
           {summary.refunds > 0 ? ` Estornos de ${formatBRL(summary.refunds)} já descontados.` : ''}
           {summary.otherRefunds > 0
             ? ` Outros ${formatBRL(summary.otherRefunds)} em estornos sem a compra nestes meses não foram descontados.`
@@ -452,7 +452,7 @@ function billDetails(bill: CardBill): string {
     .join(' · ');
 }
 
-function CardsSection({ bills, installments }: { bills: CardBill[]; installments: InstallmentMonth[] }) {
+function CardsSection({ bills, installments, current }: { bills: CardBill[]; installments: InstallmentMonth[]; current: string }) {
   if (!bills.length && !installments.length) return null;
   return (
     <Section title="Cartões e parcelas">
@@ -471,14 +471,18 @@ function CardsSection({ bills, installments }: { bills: CardBill[]; installments
       ) : null}
       {installments.length ? (
         <>
-          <Text variant="label">Parcelas já comprometidas</Text>
+          <Text variant="label">Parcelas que ainda vão ser cobradas</Text>
           <ListCard>
             {installments.map((m) => (
               <ListRow
                 key={m.month}
                 left={<IconBadge icon="calendar-month-outline" tone="warning" />}
                 title={capitalizeFirst(monthLabel(m.month))}
-                subtitle={plural(m.parcels.length, 'parcela', 'parcelas')}
+                subtitle={
+                  m.month === current
+                    ? plural(m.parcels.length, 'parcela ainda não lançada', 'parcelas ainda não lançadas')
+                    : plural(m.parcels.length, 'parcela', 'parcelas')
+                }
                 right={<Text variant="label">{formatBRL(m.amount)}</Text>}
               />
             ))}
@@ -513,6 +517,8 @@ function BalancesSection({ accounts, labels }: { accounts: FinAccount[]; labels:
 }
 
 const recordText = (r: KotiiRecord) => `${RECORD_KIND[r.kind]} ${r.label} · ${formatShortDate(r.date)} · ${formatBRL(r.amount)}`;
+/** A nota (ou o gasto) da compra parcelada inteira vale para cada parcela: o valor dela é o da compra. */
+const viaText = (m: Pick<BankMatch, 'record' | 'via'>) => `${recordText(m.record)}${m.via === 'parcelada' ? ' (a compra inteira)' : ''}`;
 
 type ReconciliationTab = 'banco' | 'kotii';
 
@@ -529,18 +535,19 @@ function ReconciliationSection({ reconciliation, labels }: { reconciliation: Rec
   return (
     <Section title="Conferência com o Kotii">
       <Text variant="muted">
-        Compras do banco comparadas com as notas, contas pagas e gastos da casa. Só para conferir: nada é alterado.
+        Lançamentos do banco comparados com as notas, contas pagas e gastos da casa. A nota de uma compra parcelada vale
+        para cada parcela. Só para conferir: nada é alterado.
       </Text>
       <Row style={styles.stats}>
         <Card style={styles.totalCard}>
           <Text variant="small">Já no Kotii</Text>
           <Text variant="label">{formatBRL(totals.inKotii)}</Text>
-          <Text variant="small">{plural(totals.inKotiiCount, 'compra', 'compras')}</Text>
+          <Text variant="small">{plural(totals.inKotiiCount, 'lançamento', 'lançamentos')}</Text>
         </Card>
         <Card style={styles.totalCard}>
           <Text variant="small">Só no banco</Text>
           <Text variant="label">{formatBRL(totals.bankOnly)}</Text>
-          <Text variant="small">{plural(totals.bankOnlyCount, 'compra', 'compras')}</Text>
+          <Text variant="small">{plural(totals.bankOnlyCount, 'lançamento', 'lançamentos')}</Text>
         </Card>
       </Row>
       <Segmented
@@ -565,8 +572,8 @@ function ReconciliationSection({ reconciliation, labels }: { reconciliation: Rec
                     <View>
                       <Text variant="muted">{purchaseDetails(purchase, labels)}</Text>
                       {suggestions.map((s) => (
-                        <Text key={`${s.kind}-${s.id}`} variant="small" color="info">
-                          Pode ser: {recordText(s)}
+                        <Text key={`${s.record.kind}-${s.record.id}`} variant="small" color="info">
+                          Pode ser: {viaText(s)}
                         </Text>
                       ))}
                     </View>
@@ -574,28 +581,33 @@ function ReconciliationSection({ reconciliation, labels }: { reconciliation: Rec
                   right={<Text variant="label">{formatBRL(purchase.amount)}</Text>}
                 />
               ))
-            : reconciliation.matched.slice(0, limit).map(({ purchase, record, confidence, reason }) => (
+            : reconciliation.matched.slice(0, limit).map((match) => (
                 <ListRow
-                  key={purchase.key}
-                  title={purchaseTitle(purchase)}
+                  key={match.purchase.key}
+                  title={purchaseTitle(match.purchase)}
                   subtitle={
                     <View style={styles.matchInfo}>
-                      <Text variant="muted">{purchaseDetails(purchase, labels)}</Text>
-                      <Text variant="small">No Kotii: {recordText(record)}</Text>
+                      <Text variant="muted">{purchaseDetails(match.purchase, labels)}</Text>
+                      <Text variant="small">No Kotii: {viaText(match)}</Text>
                       <Row>
-                        <Badge label={confidence === 'alta' ? 'Bate' : 'Provável'} tone={confidence === 'alta' ? 'primary' : 'warning'} />
+                        <Badge
+                          label={match.confidence === 'alta' ? 'Bate' : 'Provável'}
+                          tone={match.confidence === 'alta' ? 'primary' : 'warning'}
+                        />
                         <Text variant="small" style={styles.flex}>
-                          {reason}
+                          {match.reason}
                         </Text>
                       </Row>
                     </View>
                   }
-                  right={<Text variant="label">{formatBRL(purchase.amount)}</Text>}
+                  right={<Text variant="label">{formatBRL(match.purchase.amount)}</Text>}
                 />
               ))}
         </ListCard>
       ) : (
-        <Text variant="muted">{tab === 'banco' ? 'Tudo do banco já está no Kotii.' : 'Nenhuma compra do banco achada no Kotii.'}</Text>
+        <Text variant="muted">
+          {tab === 'banco' ? 'Tudo do banco já está no Kotii.' : 'Nenhum lançamento do banco achado no Kotii.'}
+        </Text>
       )}
       {rows > ROWS_SHOWN ? (
         <Button

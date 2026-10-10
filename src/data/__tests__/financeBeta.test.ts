@@ -7,15 +7,18 @@ import { supabase } from '@/lib/supabase';
 import {
   fetchAllPages,
   financeFetchStart,
+  financeInstallmentFetchStart,
   financeScreenHref,
   financeWindowStart,
   parseSyncResult,
   repairSimilarMark,
   REPAIR_TRIES,
   type RepairState,
+  ruleParcelIds,
   runRepairs,
   toFinAccount,
   toFinTransaction,
+  transactionsFilter,
 } from '../financeBeta';
 
 jest.mock('@/lib/supabase', () => ({
@@ -105,6 +108,27 @@ describe('janela do consultor', () => {
   it('os lançamentos vêm desde um ciclo de fatura antes da janela (para juntar parcelas e pares da virada)', () => {
     expect(financeFetchStart('2026-10-07')).toBe('2026-06-22');
     expect(financeFetchStart('2026-01-31')).toBe('2025-09-22');
+  });
+
+  it('as parcelas vêm desde dois anos antes da janela (a 1ª parcela data a compra e guarda a escolha)', () => {
+    expect(financeInstallmentFetchStart('2026-10-07')).toBe('2024-08-01');
+    expect(financeInstallmentFetchStart('2026-01-31')).toBe('2023-11-01');
+  });
+
+  it('antes da janela, só as parcelas, os créditos dos cartões e a parcela prevista que virou lançada', () => {
+    expect(transactionsFilter('2026-06-22', ['c1', 'c2'])).toBe(
+      'and(deleted_at.is.null,or(occurred_on.gte.2026-06-22,and(installment_number.not.is.null,total_installments.gt.1),' +
+        'and(direction.eq.CREDIT,account_id.in.(c1,c2)))),' +
+        'and(status.eq.PENDING,installment_number.not.is.null,total_installments.gt.1)',
+    );
+    // Sem cartão, nenhum "in" vazio (o PostgREST recusa).
+    expect(transactionsFilter('2026-06-22', [])).not.toContain('account_id');
+  });
+
+  it('a parcela que guarda uma escolha ou marca e saiu da busca (compra mais longa que 24 meses) vem à parte', () => {
+    const keys = ['p:parc-old-1', 'p:tx-avista', 'm:padaria real', 'p:parc-novo', 'doc:abc', 'p:parc-old-1'];
+    expect(ruleParcelIds(keys, [{ id: 'novo' }])).toEqual(['old-1']);
+    expect(ruleParcelIds([], [])).toEqual([]);
   });
 });
 

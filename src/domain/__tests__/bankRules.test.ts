@@ -101,6 +101,18 @@ describe('missingSimilarMarks', () => {
       { matchKey: purchaseRuleKey('tx-1'), similarKey: 'm:clinica sorriso' },
     ]);
   });
+
+  it('na compra parcelada, a escolha pode estar em qualquer parcela', () => {
+    const rules = categoryRulesOf([{ match_key: purchaseRuleKey('parc-2'), category: 'saude' }]);
+    const parcels = ['parc-1', 'parc-2', 'parc-3'].map((key) => ({
+      key,
+      ruleKeys: ['parc-1', 'parc-2', 'parc-3'],
+      similarKey: 'm:clinica sorriso',
+    }));
+    expect(missingSimilarMarks(parcels, rules, NO_SENSITIVE_KEYS)).toEqual([
+      { matchKey: purchaseRuleKey('parc-2'), similarKey: 'm:clinica sorriso' },
+    ]);
+  });
 });
 
 describe('pickCategory', () => {
@@ -110,10 +122,20 @@ describe('pickCategory', () => {
   ]);
 
   it('a escolha da compra vence a das parecidas, que vence a automática', () => {
-    expect(pickCategory(rules, 'tx-1', 'm:padaria real', 'outros')).toEqual({ category: 'lazer', source: 'manual' });
-    expect(pickCategory(rules, 'tx-2', 'm:padaria real', 'outros')).toEqual({ category: 'mercado', source: 'similar' });
-    expect(pickCategory(rules, 'tx-2', 'm:outra loja', 'outros')).toEqual({ category: 'outros', source: 'auto' });
-    expect(pickCategory(rules, 'tx-2', null, 'transporte')).toEqual({ category: 'transporte', source: 'auto' });
+    expect(pickCategory(rules, 'tx-1', 'm:padaria real', 'outros')).toEqual({ category: 'lazer', source: 'manual', ruleKey: 'tx-1' });
+    expect(pickCategory(rules, 'tx-2', 'm:padaria real', 'outros')).toEqual({ category: 'mercado', source: 'similar', ruleKey: null });
+    expect(pickCategory(rules, 'tx-2', 'm:outra loja', 'outros')).toEqual({ category: 'outros', source: 'auto', ruleKey: null });
+    expect(pickCategory(rules, 'tx-2', null, 'transporte')).toEqual({ category: 'transporte', source: 'auto', ruleKey: null });
+  });
+
+  it('compra parcelada: a escolha de qualquer parcela vale, e diz em qual está', () => {
+    const parcels = categoryRulesOf([{ match_key: purchaseRuleKey('parc-3'), category: 'compras' }]);
+    expect(pickCategory(parcels, ['parc-1', 'parc-2', 'parc-3'], null, 'outros')).toEqual({
+      category: 'compras',
+      source: 'manual',
+      ruleKey: 'parc-3',
+    });
+    expect(pickCategory(parcels, ['parc-1', 'parc-2'], null, 'outros')).toEqual({ category: 'outros', source: 'auto', ruleKey: null });
   });
 });
 
@@ -131,6 +153,11 @@ describe('chosenSensitive', () => {
     expect(chosenSensitive(NO_RULES, new Set([purchaseRuleKey('tx-2')]), 'tx-2', 'm:padaria real')).toBe(true);
     expect(chosenSensitive(NO_RULES, new Set(['m:padaria real']), 'tx-2', 'm:padaria real')).toBe(true);
     expect(chosenSensitive(NO_RULES, new Set(['m:padaria real']), 'tx-2', null)).toBe(false);
+  });
+
+  it('compra parcelada: Saúde ou a marca em qualquer parcela vale para todas', () => {
+    expect(chosenSensitive(NO_RULES, new Set([purchaseRuleKey('parc-2')]), ['parc-1', 'parc-2'], null)).toBe(true);
+    expect(chosenSensitive(NO_RULES, new Set([purchaseRuleKey('parc-9')]), ['parc-1', 'parc-2'], null)).toBe(false);
   });
 });
 
@@ -297,7 +324,7 @@ describe('groupPurchases com as categorias escolhidas', () => {
     expect(other).toMatchObject({ kind: 'refund', sensitive: true });
   });
 
-  it('compra parcelada também guarda o sigilo pela marca', () => {
+  it('compra parcelada também guarda o sigilo pela marca, em todas as parcelas', () => {
     const card: FinAccount = { ...checking, id: 'cartao', type: 'CREDIT', subtype: 'CREDIT_CARD' };
     const parcel = (n: number, day: string) =>
       tx({
@@ -310,11 +337,104 @@ describe('groupPurchases com as categorias escolhidas', () => {
         occurred_on: day,
       });
     const first = parcel(1, '2026-09-05');
-    const txs = [first, parcel(2, '2026-10-05')];
-    const [plain] = groupPurchases(txs, [checking, card]);
-    expect(plain).toMatchObject({ key: `parc-${first.id}`, sensitive: false });
-    const [marked] = groupPurchases(txs, [checking, card], undefined, NO_RULES, new Set([purchaseRuleKey(`parc-${first.id}`)]));
-    expect(marked).toMatchObject({ key: `parc-${first.id}`, sensitive: true });
+    const second = parcel(2, '2026-10-05');
+    const txs = [first, second];
+    const plain = groupPurchases(txs, [checking, card]);
+    expect(plain.map((p) => [p.key, p.installment?.seriesKey, p.sensitive])).toEqual([
+      [`parc-${second.id}`, `serie-${first.id}`, false],
+      [`parc-${first.id}`, `serie-${first.id}`, false],
+    ]);
+    // A marca da compra inteira de antes (a chave da 1ª parcela) vale para todas as parcelas.
+    const marked = groupPurchases(txs, [checking, card], undefined, NO_RULES, new Set([purchaseRuleKey(`parc-${first.id}`)]));
+    expect(marked.map((p) => p.sensitive)).toEqual([true, true]);
+  });
+
+  it('escolha de Saúde antiga na parcela prevista continua valendo (e sendo reparada) quando a lançada chega', () => {
+    const card: FinAccount = { ...checking, id: 'cartao', type: 'CREDIT', subtype: 'CREDIT_CARD' };
+    const base = {
+      account_id: card.id,
+      description: 'ESPACO VIVER BEM LTDA 01/03',
+      amount: 100,
+      installment_number: 1,
+      total_installments: 3,
+      purchase_on: '2026-10-03',
+      occurred_on: '2026-10-03',
+    };
+    const pending = tx({ ...base, status: 'PENDING' });
+    const posted = tx(base);
+    const ownKey = purchaseRuleKey(`parc-${pending.id}`);
+    const rules = categoryRulesOf([{ match_key: ownKey, category: 'saude' }]);
+    const marks = new Set([ownKey]);
+    const purchases = groupPurchases([pending, posted], [checking, card], undefined, rules, marks);
+    expect(purchases).toHaveLength(1);
+    expect(purchases[0]).toMatchObject({
+      key: `parc-${posted.id}`,
+      category: 'saude',
+      categorySource: 'manual',
+      sensitive: true,
+      ruleKey: `parc-${pending.id}`,
+    });
+    expect(missingSimilarMarks(purchases, rules, marks)).toEqual([{ matchKey: ownKey, similarKey: 'm:espaco viver bem ltda' }]);
+  });
+
+  it('"Só esta" feita na parcela prevista continua valendo depois que a Pluggy apaga a prevista', () => {
+    const card: FinAccount = { ...checking, id: 'cartao', type: 'CREDIT', subtype: 'CREDIT_CARD' };
+    const base = {
+      account_id: card.id,
+      description: 'LOJA K 01/03',
+      amount: 90,
+      installment_number: 1,
+      total_installments: 3,
+      purchase_on: '2026-10-03',
+      occurred_on: '2026-10-03',
+    };
+    const pending = tx({ ...base, status: 'PENDING', deleted_at: '2026-10-05T10:00:00Z' });
+    const posted = tx(base);
+    const rules = categoryRulesOf([{ match_key: purchaseRuleKey(`parc-${pending.id}`), category: 'lazer' }]);
+    const purchases = groupPurchases([pending, posted], [checking, card], undefined, rules);
+    expect(purchases.map((p) => [p.key, p.category, p.categorySource, p.ruleKey])).toEqual([
+      [`parc-${posted.id}`, 'lazer', 'manual', `parc-${pending.id}`],
+    ]);
+    // A prevista apagada sem a lançada não vira lançamento.
+    expect(groupPurchases([pending], [checking, card], undefined, rules)).toEqual([]);
+    // Prevista apagada de outra parcela sem a lançada dela (previsão cancelada): a chave não vai para a compra.
+    const cancelled = tx({ ...base, installment_number: 2, description: 'LOJA K 02/03', status: 'PENDING', deleted_at: '2026-10-05T10:00:00Z' });
+    const cancelledRule = categoryRulesOf([{ match_key: purchaseRuleKey(`parc-${cancelled.id}`), category: 'lazer' }]);
+    const [alone] = groupPurchases([posted, cancelled], [checking, card], undefined, cancelledRule);
+    expect([alone.key, alone.categorySource, alone.ruleKeys]).toEqual([`parc-${posted.id}`, 'auto', [`parc-${posted.id}`]]);
+  });
+
+  it('"Só esta" numa parcela vale para a compra parcelada inteira', () => {
+    const card: FinAccount = { ...checking, id: 'cartao', type: 'CREDIT', subtype: 'CREDIT_CARD' };
+    const parcel = (n: number, day: string, status: FinTransaction['status'] = 'POSTED') =>
+      tx({
+        account_id: card.id,
+        status,
+        description: `LOJA X 0${n}/03`,
+        amount: 50,
+        installment_number: n,
+        total_installments: 3,
+        purchase_on: '2026-09-05',
+        occurred_on: day,
+      });
+    const first = parcel(1, '2026-09-05');
+    const second = parcel(2, '2026-10-05');
+    const txs = [first, second, parcel(3, '2026-11-05', 'PENDING')];
+    // Sem escolha, "Só esta" grava na lançada de menor número (a prevista muda de id quando é lançada).
+    const plain = groupPurchases(txs, [checking, card]);
+    expect(plain.map((p) => [p.installment?.number, p.ruleKey, p.ruleKeys.length])).toEqual([
+      [3, `parc-${first.id}`, 3],
+      [2, `parc-${first.id}`, 3],
+      [1, `parc-${first.id}`, 3],
+    ]);
+    // A escolha feita na parcela 2 vale para as três e é lá que fica.
+    const rules = categoryRulesOf([{ match_key: purchaseRuleKey(`parc-${second.id}`), category: 'lazer' }]);
+    const chosen = groupPurchases(txs, [checking, card], undefined, rules);
+    expect(chosen.map((p) => [p.category, p.categorySource, p.ruleKey])).toEqual([
+      ['lazer', 'manual', `parc-${second.id}`],
+      ['lazer', 'manual', `parc-${second.id}`],
+      ['lazer', 'manual', `parc-${second.id}`],
+    ]);
   });
 
   it('nome de pessoa na maquininha não vira loja só porque a pessoa escolheu uma categoria', () => {
