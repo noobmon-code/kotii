@@ -4,6 +4,7 @@ import { useIsRestoring, useQuery } from '@tanstack/react-query';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 
 import { forgetActiveHousehold, getActiveHousehold, loadActiveHousehold, setActiveHousehold } from './activeHousehold';
+import { finishRecovery, forgetRecoveryInMemory, readRecovery, startRecovery } from './passwordRecovery';
 import { cacheHousehold, cacheOwners, forgetCache, queryClient, resumeQueue, setSessionValid } from './queryClient';
 import { disableAllReminders, pruneHouseholdReminders } from './reminders';
 import { noteSignedIn, noteSignedOut } from './session';
@@ -95,10 +96,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
       // A sessão inicial vem do getSession acima, que diz se faltou internet.
       if (event === 'INITIAL_SESSION') return;
+      // Entrou pelo código do e-mail de recuperação (aqui ou em outra aba): antes da casa, a senha nova; a
+      // senha salva (USER_UPDATED) tira a marca (lib/passwordRecovery).
+      if (event === 'PASSWORD_RECOVERY' && session) startRecovery(session.user.id);
+      if (event === 'USER_UPDATED') void finishRecovery();
       setState({ session, loading: false, valid: Boolean(session) });
       if (session) saveLastSession(session);
-      if (event === 'SIGNED_IN') noteSignedIn();
+      if (event === 'SIGNED_IN' || event === 'PASSWORD_RECOVERY') noteSignedIn();
       if (event === 'SIGNED_OUT') {
+        // A marca da recuperação fica no aparelho; a memória (desta aba) esquece e a próxima conta a relê.
+        forgetRecoveryInMemory();
         // Sem ser pelo botão "Sair" (a sessão acabou no servidor): a tela de entrar avisa.
         noteSignedOut();
         forgetLastSession();
@@ -112,6 +119,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
     return () => data.subscription.unsubscribe();
   }, []);
+
+  // A conta que apareceu (guardada, de outra aba, reaberta) pode estar no meio da recuperação de senha:
+  // até ler a marca do aparelho, a tela espera (useRecovery).
+  useEffect(() => {
+    if (userId) void readRecovery(userId);
+  }, [userId]);
 
   // Cache restaurado: se é de outra conta (o app fechou antes de apagar, ou a
   // saída aconteceu antes de o cache terminar de ser lido), apaga antes de a

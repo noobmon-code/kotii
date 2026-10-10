@@ -8,7 +8,7 @@ iOS e Android com Expo (React Native); a versão web sai do mesmo código depois
 
 | Módulo | O que faz |
 |---|---|
-| **Família** | Conta por e-mail/senha. Quem cria a casa recebe um código de convite de 6 letras; quem entra com o código vê e edita tudo da casa. |
+| **Família** | Conta por e-mail/senha. Quem cria a casa recebe um código de convite de 6 letras; quem entra com o código vê e edita tudo da casa. Esqueceu a senha: "Esqueci minha senha" na tela de entrar manda um código por e-mail; com ele, a pessoa cria uma senha nova ali mesmo e já entra (até salvar, o app só mostra a tela da senha nova, mesmo recarregado ou em outra aba). |
 | **Várias casas** | Uma conta pode estar em até 5 casas (a sua, a da praia, a dos pais…), cada uma com os próprios moradores, listas, contas e tarefas. O celular mostra uma por vez: com mais de uma, o nome da casa aberta fica no topo da tela Hoje e troca com um toque (Família → Suas casas, onde também dá para criar ou entrar em outra). Cada aparelho lembra a sua; um aparelho novo abre na mais recente. Os avisos (remédios, contas, tarefas, clima) chegam de todas, com o nome da casa no aviso. |
 | **Avisos no navegador** | A versão web também recebe os avisos (remédios, contas, documentos, tarefas, consultas, vacinas e clima), mesmo fechada: Família → "Avisos neste navegador". O navegador guarda a agenda no servidor e a função `send-push` entrega cada aviso na hora (Web Push). No iPhone, com o app na tela de início (iOS 16.4 ou mais novo). Sair da conta tira os avisos daquele aparelho. |
 | **Notas fiscais** | Pelo QR code da NFC-e: o app lê o QR (ou o link colado) e busca na consulta pública da Sefaz mercado, data, total e itens exatos, sem IA. Sefaz que pedem CAPTCHA (como a da Paraíba) não dão para ler pelo QR code: o app manda a pessoa para a leitura pela foto e guarda a chave de acesso para não duplicar a nota. Pela foto do cupom: a IA lê mercado, CNPJ, data, chave de acesso e itens; nota comprida vai em até 4 fotos (pela câmera, uma parte de cada vez, ou várias da galeria), lidas juntas sem repetir o que aparece em duas. Nos dois casos, tela de revisão → confirmar. Também dá para digitar à mão. Nota repetida (mesma chave NFC-e) é detectada. Alerta de preço: na revisão (e depois, na nota salva), cada item ligado a um produto é comparado com o que a casa pagou nos últimos meses — avisa quando outro mercado vendia pelo menos 10% mais barato há até 60 dias, ou quando o preço ficou 15% acima do costume, e soma quanto daria para economizar. |
@@ -91,7 +91,21 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
 
    e rode no SQL Editor as duas linhas que ele imprime (`push_vapid` e `push_cron_secret`). Sem elas, a tela de avisos do navegador diz que os avisos não foram configurados.
 
-4. **Login sem confirmação de e-mail (opcional, para testar rápido):** Authentication → Sign In / Providers → Email → desligue "Confirm email".
+4. **E-mails da conta:**
+   - **Login sem confirmação de e-mail (opcional, para testar rápido):** Authentication → Sign In / Providers → Email → desligue "Confirm email".
+   - **Recuperar a senha (obrigatório para "Esqueci minha senha"), em dois passos:**
+     1. **SMTP próprio:** em *Authentication → Emails → SMTP Settings*, configure um serviço de e-mail (Resend, por exemplo, com um domínio verificado). Sem ele, o Supabase só manda e-mail para quem é da equipe do projeto, e poucos por hora: as outras pessoas veem "O Kotii ainda não consegue mandar e-mail para esse endereço". Há relatos de que, em projeto do plano gratuito criado a partir de junho de 2026, a página dos modelos só deixa editar depois disso.
+     2. **Modelo do e-mail:** o app pede o código do e-mail *Reset password*, e o modelo padrão só tem um link, que o app não usa. Troque o modelo em *Authentication → Emails → Reset password*. Assunto: `Código para trocar a senha do Kotii`. Corpo:
+
+        ```html
+        <h2>Trocar a senha do Kotii</h2>
+        <p>Recebemos um pedido para trocar a senha da conta {{ .Email }}.</p>
+        <p>Digite este código no app, na tela de entrar:</p>
+        <p style="font-size:28px;font-weight:bold;letter-spacing:6px">{{ .Token }}</p>
+        <p>Se não foi você, ignore este e-mail: a senha continua a mesma.</p>
+        ```
+
+        Só o código, sem o link `{{ .ConfirmationURL }}`: alguns e-mails (como os do Outlook/Microsoft 365) abrem os links sozinhos para conferir, e isso gastaria o código antes de a pessoa usar.
 
 5. **Configure e rode o app:**
 
