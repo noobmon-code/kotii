@@ -3,7 +3,7 @@ import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 
 import { SESSION_ENDED } from '@/lib/accessErrors';
 import { resendWaitSeconds, translateAuthError } from '@/lib/authErrors';
-import { finishRecovery } from '@/lib/passwordRecovery';
+import { finishRecovery, startRecovery } from '@/lib/passwordRecovery';
 import { useSessionEnded } from '@/lib/session';
 import { supabase } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
@@ -114,8 +114,11 @@ export default function SignInScreen() {
     }
     setBusy(true);
     try {
-      const { error } = await supabase.auth.verifyOtp({ email: email.trim().toLowerCase(), token, type: 'recovery' });
+      const { data, error } = await supabase.auth.verifyOtp({ email: email.trim().toLowerCase(), token, type: 'recovery' });
       if (error) throw error;
+      // O PASSWORD_RECOVERY (lib/auth) já põe a marca; pôr de novo aqui não depende do evento que o Supabase manda.
+      const userId = data.session?.user.id ?? data.user?.id;
+      if (userId) startRecovery(userId);
     } catch (err) {
       notify('Não deu para usar o código', translateAuthError(err));
       setBusy(false);
