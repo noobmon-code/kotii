@@ -377,6 +377,28 @@ describe('groupPurchases com as categorias escolhidas', () => {
     expect(missingSimilarMarks(purchases, rules, marks)).toEqual([{ matchKey: ownKey, similarKey: 'm:espaco viver bem ltda' }]);
   });
 
+  it('"Só esta" feita na parcela prevista continua valendo depois que a Pluggy apaga a prevista', () => {
+    const card: FinAccount = { ...checking, id: 'cartao', type: 'CREDIT', subtype: 'CREDIT_CARD' };
+    const base = {
+      account_id: card.id,
+      description: 'LOJA K 01/03',
+      amount: 90,
+      installment_number: 1,
+      total_installments: 3,
+      purchase_on: '2026-10-03',
+      occurred_on: '2026-10-03',
+    };
+    const pending = tx({ ...base, status: 'PENDING', deleted_at: '2026-10-05T10:00:00Z' });
+    const posted = tx(base);
+    const rules = categoryRulesOf([{ match_key: purchaseRuleKey(`parc-${pending.id}`), category: 'lazer' }]);
+    const purchases = groupPurchases([pending, posted], [checking, card], undefined, rules);
+    expect(purchases.map((p) => [p.key, p.category, p.categorySource, p.ruleKey])).toEqual([
+      [`parc-${posted.id}`, 'lazer', 'manual', `parc-${pending.id}`],
+    ]);
+    // A prevista apagada sem a lançada não vira lançamento.
+    expect(groupPurchases([pending], [checking, card], undefined, rules)).toEqual([]);
+  });
+
   it('"Só esta" numa parcela vale para a compra parcelada inteira', () => {
     const card: FinAccount = { ...checking, id: 'cartao', type: 'CREDIT', subtype: 'CREDIT_CARD' };
     const parcel = (n: number, day: string, status: FinTransaction['status'] = 'POSTED') =>

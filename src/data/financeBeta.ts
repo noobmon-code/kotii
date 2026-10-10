@@ -141,7 +141,8 @@ export function useFinAccounts() {
 
 /**
  * Lançamentos com data no banco a partir de `fromDate` e, de antes, só as
- * parcelas, desde `installmentsFrom` (os apagados na Pluggy ficam de fora).
+ * parcelas, desde `installmentsFrom`. Os apagados na Pluggy ficam de fora, menos
+ * a parcela prevista que virou lançada (groupPurchases só usa a chave dela).
  */
 export function useFinTransactions(fromDate: string, installmentsFrom: string = fromDate) {
   const { key, enabled } = useFinScope();
@@ -155,9 +156,13 @@ export function useFinTransactions(fromDate: string, installmentsFrom: string = 
             .from('fin_transactions')
             .select(TRANSACTION_COLUMNS)
             .gte('occurred_on', installmentsFrom)
-            // Antes de `fromDate`, só parcela de verdade (n de N, com N > 1), como isParcel em bankMonth.
-            .or(`occurred_on.gte.${fromDate},and(installment_number.not.is.null,total_installments.gt.1)`)
-            .is('deleted_at', null)
+            // Antes de `fromDate`, só parcela de verdade (n de N, com N > 1), como isParcel em bankMonth. Dos
+            // apagados na Pluggy, só a parcela prevista que o banco trocou pela lançada: ela guarda a escolha
+            // "Só esta" feita antes de a parcela ser lançada.
+            .or(
+              `and(deleted_at.is.null,or(occurred_on.gte.${fromDate},and(installment_number.not.is.null,total_installments.gt.1))),` +
+                'and(status.eq.PENDING,installment_number.not.is.null,total_installments.gt.1)',
+            )
             .order('occurred_on', { ascending: false })
             .order('id')
             .range(from, to),

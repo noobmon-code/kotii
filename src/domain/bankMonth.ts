@@ -246,8 +246,10 @@ export const isParcel = (tx: FinTransaction) =>
 
 /**
  * Lançamentos do banco -> compras. Lançamentos apagados na Pluggy ficam de
- * fora. `rules` são as categorias que a pessoa escolheu (bankRules) e
- * `sensitiveKeys`, o que ela já pôs em Saúde algum dia.
+ * fora; a parcela prevista que o banco trocou pela lançada (outro id) só
+ * empresta a chave dela (ver parcelPurchases). `rules` são as categorias que
+ * a pessoa escolheu (bankRules) e `sensitiveKeys`, o que ela já pôs em Saúde
+ * algum dia.
  */
 export function groupPurchases(
   txs: FinTransaction[],
@@ -264,7 +266,9 @@ export function groupPurchases(
   const saude = saudeStores(rules, sensitiveKeys);
 
   const purchases: BankPurchase[] = [];
-  const parcels: { tx: FinTransaction; kind: BankKind }[] = [];
+  const parcels: RawParcel[] = [];
+  // A prevista que sumiu da Pluggy quando a parcela foi lançada: não conta, só guarda a escolha feita nela.
+  for (const tx of txs) if (tx.deleted_at && tx.status === 'PENDING' && isParcel(tx)) parcels.push({ tx, kind: 'spending', replaced: true });
   // Estorno que diz qual parcela desfaz ("ESTORNO LOJA 03/10"): ajuda a ligar à parcela certa.
   const refundMarks = new Map<string, ParcelMark>();
   for (const tx of live) {
@@ -492,9 +496,18 @@ function pairOwnMoves(
 // ---------------------------------------------------------------------------
 // Parcelas
 
+interface RawParcel {
+  tx: FinTransaction;
+  kind: BankKind;
+  /** A prevista que o banco trocou pela lançada (apagada na Pluggy): só empresta a chave. */
+  replaced?: boolean;
+}
+
 interface Parcel {
   tx: FinTransaction;
   kind: BankKind;
+  /** Ver RawParcel.replaced: nunca vira lançamento. */
+  replaced: boolean;
   number: number;
   total: number;
   amount: number;
@@ -580,10 +593,11 @@ function parcelDating(parcels: Parcel[]): Map<string, ParcelDating> {
   return out;
 }
 
-function toParcels(raw: { tx: FinTransaction; kind: BankKind }[]): Parcel[] {
-  const parcels: Parcel[] = raw.map(({ tx, kind }) => ({
+function toParcels(raw: RawParcel[]): Parcel[] {
+  const parcels: Parcel[] = raw.map(({ tx, kind, replaced = false }) => ({
     tx,
     kind,
+    replaced,
     number: tx.installment_number as number,
     total: tx.total_installments as number,
     amount: Number(tx.amount),
@@ -593,7 +607,8 @@ function toParcels(raw: { tx: FinTransaction; kind: BankKind }[]): Parcel[] {
     exact: false,
     key: `${tx.account_id}|${tx.total_installments}|${normalizeBankText(stripParcelMarker(tx.description))}`,
   }));
-  const dating = parcelDating(parcels);
+  // A prevista substituída não vota: ela repetiria a lançada.
+  const dating = parcelDating(parcels.filter((p) => !p.replaced));
   for (const p of parcels) {
     const mode = dating.get(datingKey(p)) ?? (p.fromPurchase ? 'compra' : 'parcela');
     p.anchor = mode === 'compra' ? p.date : addMonths(p.date, -(p.number - 1));
@@ -674,6 +689,8 @@ function mergeLateParcels(groups: Group[]): Group[] {
         if (g.key !== late.key || Math.max(...numbers(g)) >= first || !similarParcel({ amount: g.parcel, total: g.total }, late.parcel)) {
           continue;
         }
+        // Só previstas já apagadas: não é a compra das parcelas de agora.
+        if (g.members.every((m) => m.replaced)) continue;
         const gap = diffDays(g.anchor, late.anchor);
         if (gap >= 0 && gap <= BILL_CYCLE_DAYS && gap < bestGap) {
           target = g;
@@ -700,11 +717,14 @@ function parcelPurchases(
   sensitiveKeys: SensitiveKeys,
 ): BankPurchase[] {
   // A prevista e a lançada da mesma parcela (ids diferentes, enquanto a prevista não some): vale a lançada.
+  // A prevista que já sumiu da Pluggy nunca vira lançamento.
   const byNumber = new Map<number, Parcel>();
   for (const m of group.members) {
+    if (m.replaced) continue;
     const other = byNumber.get(m.number);
     if (!other || (other.tx.status === 'PENDING' && m.tx.status !== 'PENDING')) byNumber.set(m.number, m);
   }
+  if (!byNumber.size) return [];
   const members = [...byNumber.values()].sort((a, b) => a.number - b.number);
   const first = members[0];
   const last = members[members.length - 1];
@@ -714,7 +734,8 @@ function parcelPurchases(
   const seenSum = members.reduce((sum, m) => sum + m.amount, 0);
   const description = stripParcelMarker(first.tx.description);
   const seriesKey = `serie-${first.tx.id}`;
-  // A escolha pode estar na prevista que a lançada substituiu (escolhida antes de a parcela ser lançada).
+  // A escolha pode estar na prevista que a lançada substituiu (escolhida antes de a parcela ser lançada),
+  // ainda na Pluggy ou já apagada lá.
   const replaced = group.members.filter((m) => !members.includes(m));
   const ruleKeys = [...members, ...replaced].map((m) => `parc-${m.tx.id}`);
   const merchantName = merchantNameOf(first.tx, description);
