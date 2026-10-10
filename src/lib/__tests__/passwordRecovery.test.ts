@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { finishRecovery, readRecovery, recoveringUserId, recoveryGate, startRecovery } from '../passwordRecovery';
+import {
+  finishRecovery,
+  forgetRecoveryInMemory,
+  readRecovery,
+  recoveringUserId,
+  recoveryGate,
+  startRecovery,
+} from '../passwordRecovery';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -46,6 +53,17 @@ describe('recuperação de senha', () => {
     await flush();
     expect(recoveringUserId()).toBeNull();
     expect(await AsyncStorage.getItem(MARK_KEY)).toBeNull();
+  });
+
+  it('a sessão que sai (aqui ou em outra aba) esquece a marca na memória, e a próxima entrada relê o aparelho', async () => {
+    startRecovery('ana');
+    await flush();
+    // Outra aba desistiu ("Cancelar e sair") e depois entrou com a senha: o aparelho já não tem a marca.
+    forgetRecoveryInMemory();
+    await AsyncStorage.removeItem(MARK_KEY);
+    expect(recoveryGate({ userId: recoveringUserId(), readFor: null }, 'ana')).toBe('reading');
+    await readRecovery('ana');
+    expect(recoveringUserId()).toBeNull();
   });
 
   it('a marca posta ou tirada no meio de uma leitura vale mais que a leitura', async () => {

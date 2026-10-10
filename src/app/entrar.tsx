@@ -85,11 +85,11 @@ export default function SignInScreen() {
     setBusy(true);
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(trimmed);
-      // Pedido de novo cedo demais: o código do e-mail anterior ainda vale. Seguir como se tivesse mandado
-      // também não conta, por aqui, se o e-mail tem conta (o Supabase só faz essa espera para quem tem).
-      const early = error ? resendWaitSeconds(error) : null;
-      if (error && early === null) throw error;
-      showCodeStep(early ?? RESEND_SECONDS);
+      // Pedido de novo cedo demais: o código do e-mail anterior ainda vale. A tela segue igual nos dois casos
+      // (mesmo passo, mesma contagem), sem acrescentar um jeito de saber se o e-mail tem conta: o Supabase só
+      // faz essa espera para quem tem.
+      if (error && resendWaitSeconds(error) === null) throw error;
+      showCodeStep(RESEND_SECONDS);
     } catch (err) {
       notify('Não deu para mandar o código', translateAuthError(err));
     } finally {

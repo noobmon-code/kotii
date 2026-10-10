@@ -93,17 +93,19 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
 
 4. **E-mails da conta:**
    - **Login sem confirmação de e-mail (opcional, para testar rápido):** Authentication → Sign In / Providers → Email → desligue "Confirm email".
-   - **Recuperar a senha (obrigatório para "Esqueci minha senha"):** o app pede o código do e-mail *Reset password*, e o modelo padrão do Supabase só tem um link, que o app não usa. Troque o modelo em *Authentication → Emails → Reset password*. Assunto: `Código para trocar a senha do Kotii`. Corpo:
+   - **Recuperar a senha (obrigatório para "Esqueci minha senha"), em dois passos:**
+     1. **SMTP próprio:** em *Authentication → Emails → SMTP Settings*, configure um serviço de e-mail (Resend, por exemplo, com um domínio verificado). Sem ele, o Supabase só manda e-mail para quem é da equipe do projeto, e poucos por hora: as outras pessoas veem "O Kotii ainda não consegue mandar e-mail para esse endereço". Há relatos de que, em projeto do plano gratuito criado a partir de junho de 2026, a página dos modelos só deixa editar depois disso.
+     2. **Modelo do e-mail:** o app pede o código do e-mail *Reset password*, e o modelo padrão só tem um link, que o app não usa. Troque o modelo em *Authentication → Emails → Reset password*. Assunto: `Código para trocar a senha do Kotii`. Corpo:
 
-     ```html
-     <h2>Trocar a senha do Kotii</h2>
-     <p>Recebemos um pedido para trocar a senha da conta {{ .Email }}.</p>
-     <p>Digite este código no app, na tela de entrar:</p>
-     <p style="font-size:28px;font-weight:bold;letter-spacing:6px">{{ .Token }}</p>
-     <p>Se não foi você, ignore este e-mail: a senha continua a mesma.</p>
-     ```
+        ```html
+        <h2>Trocar a senha do Kotii</h2>
+        <p>Recebemos um pedido para trocar a senha da conta {{ .Email }}.</p>
+        <p>Digite este código no app, na tela de entrar:</p>
+        <p style="font-size:28px;font-weight:bold;letter-spacing:6px">{{ .Token }}</p>
+        <p>Se não foi você, ignore este e-mail: a senha continua a mesma.</p>
+        ```
 
-     Só o código, sem o link `{{ .ConfirmationURL }}`: alguns e-mails (como os do Outlook/Microsoft 365) abrem os links sozinhos para conferir, e isso gastaria o código antes de a pessoa usar. Sem um SMTP próprio (*Authentication → Emails → SMTP Settings*, com Resend, por exemplo), o Supabase só manda e-mail para quem é da equipe do projeto, e poucos por hora: as outras pessoas veem "O Kotii ainda não consegue mandar e-mail para esse endereço".
+        Só o código, sem o link `{{ .ConfirmationURL }}`: alguns e-mails (como os do Outlook/Microsoft 365) abrem os links sozinhos para conferir, e isso gastaria o código antes de a pessoa usar.
 
 5. **Configure e rode o app:**
 

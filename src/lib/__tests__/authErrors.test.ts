@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { AuthApiError, AuthRetryableFetchError } from '@supabase/supabase-js';
+import { AuthApiError, AuthRetryableFetchError, AuthSessionMissingError } from '@supabase/supabase-js';
 
 import { resendWaitSeconds, translateAuthError } from '../authErrors';
 
@@ -21,7 +21,7 @@ describe('translateAuthError', () => {
 
   it('pedir o código de novo cedo demais, e-mails demais ou tentativas demais', () => {
     const early = api('For security purposes, you can only request this after 47 seconds.', 429, 'over_email_send_rate_limit');
-    expect(translateAuthError(early)).toBe('Espere 47 segundos para pedir outro código.');
+    expect(translateAuthError(early)).toBe('Espere 47 segundos para pedir outro e-mail.');
     expect(resendWaitSeconds(early)).toBe(47);
     expect(translateAuthError(api('Email rate limit exceeded', 429, 'over_email_send_rate_limit'))).toBe(
       'Muitos e-mails pedidos agora. Tente de novo daqui a pouco.',
@@ -55,11 +55,30 @@ describe('translateAuthError', () => {
     );
   });
 
-  it('sem internet', () => {
+  it('sem internet não é o mesmo que o servidor (ou o e-mail) falhar', () => {
     expect(translateAuthError(new AuthRetryableFetchError('Failed to fetch', 0))).toBe(
       'Sem internet agora. Confira a conexão e tente de novo.',
     );
     expect(translateAuthError('Network request failed')).toBe('Sem internet agora. Confira a conexão e tente de novo.');
+    expect(translateAuthError(new AuthRetryableFetchError('Error sending recovery email', 500))).toBe(
+      'Não deu para mandar o e-mail agora. Tente mais tarde ou peça ajuda a quem cuida do app.',
+    );
+    expect(translateAuthError(new AuthRetryableFetchError('Bad Gateway', 502))).toBe(
+      'O servidor não respondeu agora. Tente de novo daqui a pouco.',
+    );
+  });
+
+  it('a sessão de recuperação que acabou', () => {
+    expect(translateAuthError(new AuthSessionMissingError())).toMatch(/sessão de recuperação terminou/);
+    expect(translateAuthError(api('Session from session_id claim in JWT does not exist', 403, 'session_not_found'))).toMatch(
+      /sessão de recuperação terminou/,
+    );
+  });
+
+  it('senha que pede tipos de caractere e e-mail inválido', () => {
+    const rule = 'Password should contain at least one character of each: abcdefghijklmnopqrstuvwxyz, ABCDEFGHIJKLMNOPQRSTUVWXYZ, 0123456789';
+    expect(translateAuthError(api(rule, 422, 'weak_password'))).toBe('A senha precisa ter letras minúsculas, letras maiúsculas e números.');
+    expect(translateAuthError(api('Email address "x@y" is invalid', 400, 'email_address_invalid'))).toBe('Confira o e-mail digitado.');
   });
 
   it('o resto volta como veio', () => {

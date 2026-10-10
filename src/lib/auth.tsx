@@ -4,7 +4,7 @@ import { useIsRestoring, useQuery } from '@tanstack/react-query';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 
 import { forgetActiveHousehold, getActiveHousehold, loadActiveHousehold, setActiveHousehold } from './activeHousehold';
-import { finishRecovery, readRecovery, startRecovery } from './passwordRecovery';
+import { finishRecovery, forgetRecoveryInMemory, readRecovery, startRecovery } from './passwordRecovery';
 import { cacheHousehold, cacheOwners, forgetCache, queryClient, resumeQueue, setSessionValid } from './queryClient';
 import { disableAllReminders, pruneHouseholdReminders } from './reminders';
 import { noteSignedIn, noteSignedOut } from './session';
@@ -104,6 +104,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (session) saveLastSession(session);
       if (event === 'SIGNED_IN' || event === 'PASSWORD_RECOVERY') noteSignedIn();
       if (event === 'SIGNED_OUT') {
+        // A marca da recuperação fica no aparelho; a memória (desta aba) esquece e a próxima conta a relê.
+        forgetRecoveryInMemory();
         // Sem ser pelo botão "Sair" (a sessão acabou no servidor): a tela de entrar avisa.
         noteSignedOut();
         forgetLastSession();

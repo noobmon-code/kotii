@@ -52,6 +52,16 @@ export function finishRecovery() {
 }
 
 /**
+ * A sessão saiu (aqui ou em outra aba): esquece a marca só na memória. O
+ * aparelho continua com ela, e a próxima conta que entrar a lê de novo (a
+ * entrada com a senha tira, o código põe outra).
+ */
+export function forgetRecoveryInMemory() {
+  version += 1;
+  setState({ userId: null, readFor: null });
+}
+
+/**
  * Lê a marca do aparelho para a conta que apareceu (sessão guardada, outra
  * aba, app reaberto). Até terminar, useRecovery diz 'reading' e a tela espera.
  */

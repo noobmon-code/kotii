@@ -1,8 +1,9 @@
+import { AuthSessionMissingError } from '@supabase/supabase-js';
 import { useState } from 'react';
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 
 import { signOut, useAuth } from '@/lib/auth';
-import { translateAuthError } from '@/lib/authErrors';
+import { isSessionGone, translateAuthError } from '@/lib/authErrors';
 import { finishRecovery, recoveringUserId } from '@/lib/passwordRecovery';
 import { supabase } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
@@ -36,8 +37,10 @@ export default function NewPasswordScreen() {
     setBusy(true);
     try {
       // A senha só vai para a conta que entrou pelo código (e não para outra que esteja neste aparelho).
-      const { data } = await supabase.auth.getSession();
-      if (!data.session || data.session.user.id !== recoveringUserId()) {
+      const { data, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) throw sessionError;
+      if (!data.session) throw new AuthSessionMissingError();
+      if (data.session.user.id !== recoveringUserId()) {
         throw new Error('A conta aberta mudou. Peça um código novo em "Esqueci minha senha".');
       }
       const { error } = await supabase.auth.updateUser({ password });
@@ -45,12 +48,20 @@ export default function NewPasswordScreen() {
     } catch (err) {
       notify('Não deu para salvar a senha', translateAuthError(err));
       setBusy(false);
+      // A sessão de recuperação acabou: volta para entrar (lá dá para pedir outro código).
+      if (isSessionGone(err)) void cancel();
     }
   }
 
-  function cancel() {
-    finishRecovery();
-    void signOut();
+  // Sai antes de tirar a marca: com a marca fora e a sessão ainda aqui, a casa abriria.
+  async function cancel() {
+    setBusy(true);
+    try {
+      await signOut();
+      finishRecovery();
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -85,7 +96,7 @@ export default function NewPasswordScreen() {
             onSubmitEditing={save}
           />
           <Button title="Salvar senha nova" onPress={save} loading={busy} />
-          <Button title="Cancelar e sair" variant="ghost" compact disabled={busy} onPress={cancel} />
+          <Button title="Cancelar e sair" variant="ghost" compact disabled={busy} onPress={() => void cancel()} />
         </View>
       </Screen>
     </KeyboardAvoidingView>
