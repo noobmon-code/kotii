@@ -140,15 +140,18 @@ export function useFinAccounts() {
 }
 
 /**
- * Lançamentos com data no banco a partir de `fromDate` e, de antes, só as
- * parcelas, desde `installmentsFrom`. Os apagados na Pluggy ficam de fora, menos
- * a parcela prevista que virou lançada (groupPurchases só usa a chave dela).
+ * Lançamentos com data no banco a partir de `fromDate` e, de antes, desde
+ * `installmentsFrom`, só as parcelas e os créditos dos cartões (`cardIds`:
+ * o estorno de uma compra parcelada antiga ainda abate as parcelas dela). Os
+ * apagados na Pluggy ficam de fora, menos a parcela prevista que virou
+ * lançada (groupPurchases só usa a chave dela). `cardIds` null: as contas
+ * ainda não carregaram.
  */
-export function useFinTransactions(fromDate: string, installmentsFrom: string = fromDate) {
+export function useFinTransactions(fromDate: string, installmentsFrom: string, cardIds: string[] | null) {
   const { key, enabled } = useFinScope();
   return useQuery({
-    queryKey: ['fin', 'transactions', ...key, fromDate, installmentsFrom],
-    enabled,
+    queryKey: ['fin', 'transactions', ...key, fromDate, installmentsFrom, ...(cardIds ?? [])],
+    enabled: enabled && cardIds !== null,
     queryFn: async () =>
       (
         await fetchAllPages<FinTransaction>((from, to) =>
@@ -156,19 +159,26 @@ export function useFinTransactions(fromDate: string, installmentsFrom: string = 
             .from('fin_transactions')
             .select(TRANSACTION_COLUMNS)
             .gte('occurred_on', installmentsFrom)
-            // Antes de `fromDate`, só parcela de verdade (n de N, com N > 1), como isParcel em bankMonth. Dos
-            // apagados na Pluggy, só a parcela prevista que o banco trocou pela lançada: ela guarda a escolha
-            // "Só esta" feita antes de a parcela ser lançada.
-            .or(
-              `and(deleted_at.is.null,or(occurred_on.gte.${fromDate},and(installment_number.not.is.null,total_installments.gt.1))),` +
-                'and(status.eq.PENDING,installment_number.not.is.null,total_installments.gt.1)',
-            )
+            .or(transactionsFilter(fromDate, cardIds ?? []))
             .order('occurred_on', { ascending: false })
             .order('id')
             .range(from, to),
         )
       ).map(toFinTransaction),
   });
+}
+
+/**
+ * O filtro (PostgREST) de useFinTransactions, depois do `installmentsFrom`:
+ * tudo desde `fromDate`; antes, a parcela de verdade (n de N, com N > 1,
+ * como isParcel em bankMonth) e o crédito dos cartões. Dos apagados na
+ * Pluggy, só a parcela prevista que o banco trocou pela lançada: ela guarda
+ * a escolha "Só esta" feita antes de a parcela ser lançada.
+ */
+export function transactionsFilter(fromDate: string, cardIds: readonly string[]): string {
+  const parcel = 'installment_number.not.is.null,total_installments.gt.1';
+  const before = [`and(${parcel})`, ...(cardIds.length ? [`and(direction.eq.CREDIT,account_id.in.(${cardIds.join(',')}))`] : [])];
+  return `and(deleted_at.is.null,or(occurred_on.gte.${fromDate},${before.join(',')})),and(status.eq.PENDING,${parcel})`;
 }
 
 /**
@@ -394,8 +404,9 @@ export type FinanceDataState =
  * Tudo o que o consultor usa, na janela de `financeWindowStart(today)`. Os
  * lançamentos vêm desde um ciclo de fatura antes (`financeFetchStart`), só
  * para juntar parcelas e pares que começaram antes da janela, e as parcelas
- * desde bem antes (`financeInstallmentFetchStart`), para datar cada uma pela
- * compra; a tela e o retrato mostram só a janela. Os registros do Kotii vêm
+ * (com os créditos dos cartões, onde caem os estornos delas) desde bem antes
+ * (`financeInstallmentFetchStart`), para datar cada uma pela compra; a tela
+ * e o retrato mostram só a janela. Os registros do Kotii vêm
  * desde a compra parcelada mais antiga com parcela na janela
  * (`kotiiRecordsStart`): a nota dela é da data da compra. Só fica pronto com
  * tudo carregado: com uma consulta faltando, a tela e o Nuke diriam "nada"
@@ -404,7 +415,11 @@ export type FinanceDataState =
 export function useFinanceData(today: string): FinanceDataState {
   const connections = useFinConnections();
   const accounts = useFinAccounts();
-  const transactions = useFinTransactions(financeFetchStart(today), financeInstallmentFetchStart(today));
+  const cardIds = useMemo(
+    () => accounts.data?.filter((a) => a.type === 'CREDIT').map((a) => a.id).sort() ?? null,
+    [accounts.data],
+  );
+  const transactions = useFinTransactions(financeFetchStart(today), financeInstallmentFetchStart(today), cardIds);
   const budgets = useBudgets();
   // Desde quando buscar os registros depende só das parcelas: agrupar só elas sai bem mais leve que tudo.
   const recordsFrom = useMemo(

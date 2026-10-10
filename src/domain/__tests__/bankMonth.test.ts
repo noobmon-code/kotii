@@ -231,6 +231,8 @@ describe('groupPurchases', () => {
       accounts,
     );
     expect(monthSummary(purchases, '2026-10')).toMatchObject({ spending: 300, count: 2, pending: 0 });
+    // Não dá para saber de qual das duas era a prevista: a chave dela (uma escolha feita antes de lançar) não vai para nenhuma.
+    expect(purchases.some((p) => p.ruleKeys.includes('parc-x-b3-prevista'))).toBe(false);
     expect(futureInstallments(purchases, '2026-10-07', 1)[0].amount).toBe(0);
   });
 
