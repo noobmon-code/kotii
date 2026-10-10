@@ -99,7 +99,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Entrou pelo código do e-mail de recuperação (aqui ou em outra aba): antes da casa, a senha nova; a
       // senha salva (USER_UPDATED) tira a marca (lib/passwordRecovery).
       if (event === 'PASSWORD_RECOVERY' && session) startRecovery(session.user.id);
-      if (event === 'USER_UPDATED') finishRecovery();
+      if (event === 'USER_UPDATED') void finishRecovery();
       setState({ session, loading: false, valid: Boolean(session) });
       if (session) saveLastSession(session);
       if (event === 'SIGNED_IN' || event === 'PASSWORD_RECOVERY') noteSignedIn();

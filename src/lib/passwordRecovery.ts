@@ -46,11 +46,15 @@ export function startRecovery(userId: string) {
   AsyncStorage.setItem(MARK_KEY, userId).catch(() => undefined);
 }
 
-/** Salvou a senha nova, desistiu ou entrou com a senha: tira a marca. */
-export function finishRecovery() {
+/**
+ * Salvou a senha nova, desistiu ou entrou com a senha: tira a marca. Antes
+ * de entrar com a senha, espere terminar: a leitura da conta que entrar não
+ * pode achar a marca velha no aparelho.
+ */
+export async function finishRecovery(): Promise<void> {
   version += 1;
   setState({ userId: null, readFor: state.readFor });
-  AsyncStorage.removeItem(MARK_KEY).catch(() => undefined);
+  await AsyncStorage.removeItem(MARK_KEY).catch(() => undefined);
 }
 
 /**

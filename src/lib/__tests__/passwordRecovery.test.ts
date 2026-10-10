@@ -19,7 +19,7 @@ const MARK_KEY = 'kotii:password-recovery';
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(async () => {
-  finishRecovery();
+  await finishRecovery();
   await AsyncStorage.clear();
 });
 
@@ -50,7 +50,7 @@ describe('recuperação de senha', () => {
 
   it('a senha salva (ou a desistência) tira a marca', async () => {
     startRecovery('ana');
-    finishRecovery();
+    await finishRecovery();
     await flush();
     expect(recoveringUserId()).toBeNull();
     expect(await AsyncStorage.getItem(MARK_KEY)).toBeNull();
@@ -65,6 +65,17 @@ describe('recuperação de senha', () => {
     expect(recoveryGate({ userId: recoveringUserId(), readFor: null }, 'ana')).toBe('reading');
     await readRecovery('ana');
     expect(recoveringUserId()).toBeNull();
+  });
+
+  it('entrar com a senha depois de uma recuperação que ficou pela metade abre a casa, não a senha nova', async () => {
+    startRecovery('ana');
+    await flush();
+    // A sessão de recuperação acabou por fora: a memória esquece, o aparelho guarda a marca.
+    forgetRecoveryInMemory();
+    // A tela de entrar tira a marca (e espera) antes de entrar com a senha; a conta que entra lê o aparelho.
+    await finishRecovery();
+    await readRecovery('ana');
+    expect(recoveryGateNow('ana')).toBe('free');
   });
 
   it('troca de conta: a leitura mais nova vale, e a de antes que termina depois é descartada', async () => {
@@ -86,7 +97,7 @@ describe('recuperação de senha', () => {
   it('a marca posta ou tirada no meio de uma leitura vale mais que a leitura', async () => {
     await AsyncStorage.setItem(MARK_KEY, 'ana');
     const reading = readRecovery('ana');
-    finishRecovery();
+    void finishRecovery();
     await reading;
     expect(recoveringUserId()).toBeNull();
 

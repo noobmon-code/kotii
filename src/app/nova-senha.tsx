@@ -58,7 +58,7 @@ export default function NewPasswordScreen() {
     setBusy(true);
     try {
       await signOut();
-      finishRecovery();
+      await finishRecovery();
     } finally {
       setBusy(false);
     }

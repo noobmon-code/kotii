@@ -49,7 +49,7 @@ export default function SignInScreen() {
     try {
       if (mode === 'entrar') {
         // Entrar com a senha encerra uma recuperação que ficou pela metade neste aparelho.
-        finishRecovery();
+        await finishRecovery();
         const { error } = await supabase.auth.signInWithPassword({ email: trimmed, password });
         if (error) throw error;
       } else {
