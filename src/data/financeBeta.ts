@@ -6,7 +6,7 @@
 // (lib/queryClient). As chaves levam a pessoa e a casa: a liberação é de uma
 // pessoa numa casa, e o cônjuge nunca vê nada disso.
 
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router, type Href } from 'expo-router';
 import { useEffect, useMemo } from 'react';
 
@@ -314,7 +314,9 @@ type ExpenseRow = { id: string; spent_on: string; amount: number; description: s
 
 /**
  * Notas confirmadas, contas pagas e gastos avulsos desde `fromDate`, para a
- * conferência com o banco; null enquanto não se sabe desde quando.
+ * conferência com o banco; null enquanto não se sabe desde quando. Quando a
+ * data muda (chegou uma compra parcelada mais antiga), a tela e o Nuke
+ * esperam a busca nova: a da data anterior deixaria a compra "só no banco".
  */
 export function useFinKotiiRecords(fromDate: string | null) {
   const { enabled } = useFinScope();
@@ -322,8 +324,6 @@ export function useFinKotiiRecords(fromDate: string | null) {
     // Começa com 'spending': confirmar nota, pagar conta ou salvar gasto já recarrega.
     queryKey: ['spending', 'bankMatch', fromDate],
     enabled: enabled && fromDate !== null,
-    // A data muda quando chega uma compra parcelada mais antiga: a conferência anterior fica até a nova chegar.
-    placeholderData: keepPreviousData,
     queryFn: async (): Promise<KotiiRecord[]> => {
       const since = fromDate as string;
       // Data da compra no fuso do aparelho, como no resumo (useSpending).
