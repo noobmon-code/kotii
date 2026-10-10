@@ -26,8 +26,8 @@ import { type FinanceCategory, monthRange, shiftMonth } from './finance';
 /** A compra parcelada de que uma parcela faz parte. */
 export interface BankInstallment {
   /**
-   * A compra inteira: "parc-<id da parcela de menor número vista>" (a chave
-   * que a compra parcelada tinha quando contava inteira).
+   * A compra inteira: "serie-<id da parcela de menor número vista>" (outra
+   * chave que a das parcelas: o estorno da compra inteira não é o da 1ª).
    */
   seriesKey: string;
   /** Esta parcela. */
@@ -94,8 +94,8 @@ export interface BankPurchase {
   storeName: string | null;
   /**
    * Estorno: o que ele desfaz, na mesma conta: uma saída (key) ou a compra
-   * parcelada inteira (seriesKey). null quando não achou: aí não abate nada
-   * (ver summarizeRange).
+   * parcelada inteira (seriesKey, "serie-..."). null quando não achou: aí não
+   * abate nada (ver summarizeRange).
    */
   refundOf: string | null;
   /** Estorno: quanto ele abate de cada saída (na compra parcelada, parcela por parcela). */
@@ -713,7 +713,7 @@ function parcelPurchases(
   const parcel = last.amount;
   const seenSum = members.reduce((sum, m) => sum + m.amount, 0);
   const description = stripParcelMarker(first.tx.description);
-  const seriesKey = `parc-${first.tx.id}`;
+  const seriesKey = `serie-${first.tx.id}`;
   // A escolha pode estar na prevista que a lançada substituiu (escolhida antes de a parcela ser lançada).
   const replaced = group.members.filter((m) => !members.includes(m));
   const ruleKeys = [...members, ...replaced].map((m) => `parc-${m.tx.id}`);
@@ -1072,9 +1072,12 @@ export interface InstallmentMonth {
  * para saber se veio de outro jeito) ou num mês que já passou; as que faltam
  * de uma compra que parou de cobrar (a parcela seguinte à última vista
  * passou mais de um ciclo de fatura sem vir: quitada antes ou cancelada); e
- * nada de uma compra estornada por inteiro ou com as parcelas já cobradas
- * devolvidas. O crédito de estorno que passou das parcelas cobradas abate as
- * que faltam. Meses sem parcela vêm com zero.
+ * nada de uma compra cancelada: estornada por inteiro, ou com as parcelas já
+ * cobradas devolvidas por um estorno da compra inteira ou parcela por
+ * parcela (duas ou mais). Só a 1ª parcela cobrada e devolvida pode ser
+ * estorno só dela: a compra segue até parar de cobrar. O crédito de estorno
+ * que passou das parcelas cobradas abate as que faltam. Meses sem parcela
+ * vêm com zero.
  */
 export function futureInstallments(purchases: BankPurchase[], today: string, months = 6): InstallmentMonth[] {
   const currentMonth = today.slice(0, 7);
@@ -1093,11 +1096,16 @@ export function futureInstallments(purchases: BankPurchase[], today: string, mon
     seriesOfKey.set(p.installment.seriesKey, p.installment.seriesKey);
   }
   const refundTotal = new Map<string, number>();
+  // Estornos da compra inteira (refundOf é a seriesKey) e, à parte, o devolvido a cada parcela.
+  const wholeRefunds = new Map<string, number>();
+  const parcelRefunds = new Map<string, number>();
   const credit = new Map<string, number>();
   for (const p of purchases) {
     const seriesKey = p.kind === 'refund' && p.refundOf ? seriesOfKey.get(p.refundOf) : undefined;
     if (!seriesKey) continue;
     refundTotal.set(seriesKey, (refundTotal.get(seriesKey) ?? 0) + p.amount);
+    if (p.refundOf === seriesKey) wholeRefunds.set(seriesKey, (wholeRefunds.get(seriesKey) ?? 0) + p.amount);
+    else for (const part of p.refundParts) parcelRefunds.set(part.key, (parcelRefunds.get(part.key) ?? 0) + part.amount);
     const allocated = p.refundParts.reduce((sum, part) => sum + part.amount, 0);
     credit.set(seriesKey, (credit.get(seriesKey) ?? 0) + Math.max(0, p.amount - allocated));
   }
@@ -1106,12 +1114,15 @@ export function futureInstallments(purchases: BankPurchase[], today: string, mon
     const info = rows[0].installment as BankInstallment;
     const seenSum = rows.reduce((sum, r) => sum + r.amount, 0);
     // A parcela que o banco já mandou para um mês que vem ainda não foi cobrada.
-    const charged = rows.filter((r) => r.date < monthEnd).reduce((sum, r) => sum + r.amount, 0);
-    // Estornada por inteiro, ou com as parcelas já cobradas devolvidas: a compra foi cancelada.
+    const chargedRows = rows.filter((r) => r.date < monthEnd);
+    const charged = chargedRows.reduce((sum, r) => sum + r.amount, 0);
     const refundSum = refundTotal.get(seriesKey) ?? 0;
+    const byParcel =
+      chargedRows.length >= 2 && chargedRows.every((r) => (parcelRefunds.get(r.key) ?? 0) >= r.amount - 0.005);
     const cancelled =
-      refundSum > 0 &&
-      (sameAmount(refundSum, seenSum) || sameAmount(refundSum, charged) || refundSum >= info.purchaseAmount - 0.005);
+      (refundSum > 0 && refundSum >= info.purchaseAmount - 0.005) ||
+      ((wholeRefunds.get(seriesKey) ?? 0) > 0 && (sameAmount(refundSum, seenSum) || sameAmount(refundSum, charged))) ||
+      byParcel;
     if (cancelled) continue;
     const maxSeen = Math.max(...info.seen);
     const charging = maxSeen < info.total && diffDays(addMonths(info.purchaseDate, maxSeen), today) <= BILL_CYCLE_DAYS;

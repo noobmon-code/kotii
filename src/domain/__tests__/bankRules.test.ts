@@ -341,8 +341,8 @@ describe('groupPurchases com as categorias escolhidas', () => {
     const txs = [first, second];
     const plain = groupPurchases(txs, [checking, card]);
     expect(plain.map((p) => [p.key, p.installment?.seriesKey, p.sensitive])).toEqual([
-      [`parc-${second.id}`, `parc-${first.id}`, false],
-      [`parc-${first.id}`, `parc-${first.id}`, false],
+      [`parc-${second.id}`, `serie-${first.id}`, false],
+      [`parc-${first.id}`, `serie-${first.id}`, false],
     ]);
     // A marca da compra inteira de antes (a chave da 1ª parcela) vale para todas as parcelas.
     const marked = groupPurchases(txs, [checking, card], undefined, NO_RULES, new Set([purchaseRuleKey(`parc-${first.id}`)]));

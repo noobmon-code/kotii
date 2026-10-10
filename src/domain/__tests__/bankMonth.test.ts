@@ -160,14 +160,14 @@ describe('groupPurchases', () => {
       ['MAGALU', '2026-09-05', 150, 2],
       ['MAGALU', '2026-08-05', 150, 1],
     ]);
-    // Cada parcela tem a própria chave; a compra inteira, a da 1ª parcela (a de antes).
+    // Cada parcela tem a própria chave; a compra inteira, uma "serie-" com o id da 1ª parcela.
     expect(new Set(purchases.map((p) => p.key)).size).toBe(3);
     expect(purchases.every((p) => p.txIds.length === 1)).toBe(true);
     expect(purchases[0]).toMatchObject({
       merchantName: 'Magazine Luiza',
       kind: 'spending',
       installment: {
-        seriesKey: `parc-${first.id}`,
+        seriesKey: `serie-${first.id}`,
         number: 3,
         total: 10,
         parcel: 150,
@@ -835,7 +835,7 @@ describe('monthSummary — estornos de compra parcelada', () => {
       accounts,
     );
     const refund = purchases.find((p) => p.kind === 'refund') as BankPurchase;
-    expect(refund.refundOf).toBe(`parc-${first.id}`);
+    expect(refund.refundOf).toBe(`serie-${first.id}`);
     expect(refund.refundParts.map((part) => part.amount)).toEqual([150, 150, 150]);
     expect(['2026-08', '2026-09', '2026-10'].map((m) => monthSummary(purchases, m))).toMatchObject([
       { spending: 0, refunds: 150, otherRefunds: 0, count: 0 },
@@ -882,9 +882,31 @@ describe('monthSummary — estornos de compra parcelada', () => {
       ],
       accounts,
     );
-    expect(purchases.find((p) => p.kind === 'refund')?.refundOf).toBe(`parc-${first.id}`);
+    expect(purchases.find((p) => p.kind === 'refund')?.refundOf).toBe(`serie-${first.id}`);
     expect(['2026-08', '2026-09', '2026-10'].map((m) => monthSummary(purchases, m).spending)).toEqual([0, 0, 0]);
     expect(futureInstallments(purchases, '2026-10-07', 3).every((m) => m.amount === 0)).toBe(true);
+  });
+
+  it('as parcelas já cobradas devolvidas uma a uma: a compra foi cancelada', () => {
+    const refund = (n: number) =>
+      tx({ account_id: nuCard.id, amount: 150, direction: 'CREDIT', description: `ESTORNO MAGALU 0${n}/10`, occurred_on: '2026-10-06' });
+    const purchases = groupPurchases(
+      [magalu(1), magalu(2), magalu(3), magalu(4, { status: 'PENDING' }), refund(1), refund(2), refund(3)],
+      accounts,
+    );
+    expect(['2026-08', '2026-09', '2026-10'].map((m) => monthSummary(purchases, m).spending)).toEqual([0, 0, 0]);
+    expect(futureInstallments(purchases, '2026-10-07', 3).every((m) => m.amount === 0)).toBe(true);
+  });
+
+  it('estorno da única parcela cobrada pode ser só dela: as que faltam continuam comprometidas', () => {
+    const loja = (n: number, day: string) =>
+      parcel(n, 3, { amount: 100, description: `LOJA Z ${n}/3`, purchase_on: '2026-09-10', occurred_on: day });
+    const purchases = groupPurchases(
+      [loja(1, '2026-09-10'), tx({ account_id: nuCard.id, amount: 100, direction: 'CREDIT', description: 'Estorno LOJA Z', occurred_on: '2026-09-20' })],
+      accounts,
+    );
+    expect(monthSummary(purchases, '2026-09').spending).toBe(0);
+    expect(futureInstallments(purchases, '2026-09-25', 3).map((m) => m.amount)).toEqual([0, 100, 100]);
   });
 
   it('estorno sem o nome da loja não casa pelo valor com uma parcela de mais de 6 meses atrás', () => {
