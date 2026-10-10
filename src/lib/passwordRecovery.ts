@@ -22,6 +22,8 @@ interface RecoveryState {
 let state: RecoveryState = { userId: null, readFor: null };
 /** Muda a cada marca posta ou tirada: uma leitura que começou antes vale menos. */
 let version = 0;
+/** A leitura mais nova: uma anterior (de outra conta, na troca de conta) que termine depois não vale. */
+let lastRead = 0;
 const listeners = new Set<() => void>();
 
 function setState(next: RecoveryState) {
@@ -67,12 +69,15 @@ export function forgetRecoveryInMemory() {
  */
 export async function readRecovery(userId: string): Promise<void> {
   const at = version;
+  lastRead += 1;
+  const read = lastRead;
   let saved: string | null = null;
   try {
     saved = await AsyncStorage.getItem(MARK_KEY);
   } catch {
     saved = null;
   }
+  if (read !== lastRead) return;
   // A marca foi posta ou tirada enquanto lia: vale o que acabou de acontecer. A posta aqui mesmo para
   // esta conta vale ainda que o aparelho não tenha terminado de gravar.
   const kept = state.userId === userId ? userId : saved;
@@ -90,6 +95,11 @@ export function recoveryGate(current: RecoveryState, userId: string | undefined)
 
 export function useRecovery(userId: string | undefined): RecoveryGate {
   return recoveryGate(useSyncExternalStore(subscribe, snapshot, snapshot), userId);
+}
+
+/** O mesmo de useRecovery, fora de um componente. */
+export function recoveryGateNow(userId: string | undefined): RecoveryGate {
+  return recoveryGate(state, userId);
 }
 
 /** A conta que precisa da senha nova (a tela confere antes de salvar). */

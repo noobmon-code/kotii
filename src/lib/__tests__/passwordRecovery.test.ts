@@ -7,6 +7,7 @@ import {
   readRecovery,
   recoveringUserId,
   recoveryGate,
+  recoveryGateNow,
   startRecovery,
 } from '../passwordRecovery';
 
@@ -64,6 +65,22 @@ describe('recuperação de senha', () => {
     expect(recoveryGate({ userId: recoveringUserId(), readFor: null }, 'ana')).toBe('reading');
     await readRecovery('ana');
     expect(recoveringUserId()).toBeNull();
+  });
+
+  it('troca de conta: a leitura mais nova vale, e a de antes que termina depois é descartada', async () => {
+    let releaseAna: (value: string | null) => void = () => undefined;
+    const getItem = jest
+      .spyOn(AsyncStorage, 'getItem')
+      .mockImplementationOnce(() => new Promise((resolve) => (releaseAna = resolve)))
+      .mockImplementationOnce(async () => null);
+    const ana = readRecovery('ana');
+    await readRecovery('bia');
+    expect(recoveryGateNow('bia')).toBe('free');
+    // A leitura de Ana (que tinha a marca) termina por último: não muda nada para Bia.
+    releaseAna('ana');
+    await ana;
+    expect(recoveryGateNow('bia')).toBe('free');
+    getItem.mockRestore();
   });
 
   it('a marca posta ou tirada no meio de uma leitura vale mais que a leitura', async () => {
