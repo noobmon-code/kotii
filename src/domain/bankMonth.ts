@@ -320,9 +320,9 @@ export function groupPurchases(
   }
 
   const groups = groupParcels(toParcels(parcels));
-  const unsure = unsureReplacements(groups);
+  const confirmed = confirmedReplacements(groups);
   for (const group of groups) {
-    purchases.push(...parcelPurchases(group, accountsById, rules, sensitiveKeys, unsure));
+    purchases.push(...parcelPurchases(group, accountsById, rules, sensitiveKeys, confirmed));
   }
   linkRefunds(purchases, refundMarks);
   return purchases.sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount || a.key.localeCompare(b.key));
@@ -707,13 +707,14 @@ function mergeLateParcels(groups: Group[]): Group[] {
 }
 
 /**
- * Previstas cuja troca pela lançada não é certa: mais de uma compra igual
- * (mesma conta, loja, total e data) tem a lançada daquele número. Aí não dá
- * para saber de qual compra era a prevista, e a chave dela (a escolha feita
- * antes de lançar) não vai para nenhuma.
+ * Previstas que a lançada certamente substituiu: uma compra só, igual a ela
+ * (mesma conta, loja, total e data), tem a lançada daquele número, e é a
+ * compra em que ela caiu. Só elas emprestam a chave (a escolha feita antes
+ * de lançar). A prevista sem lançada (cancelada) ou com duas compras iguais
+ * não empresta para nenhuma: não dá para saber de qual compra ela era.
  */
-function unsureReplacements(groups: Group[]): Set<Parcel> {
-  const unsure = new Set<Parcel>();
+function confirmedReplacements(groups: Group[]): Set<Parcel> {
+  const confirmed = new Set<Parcel>();
   for (const group of groups) {
     for (const m of group.members) {
       if (m.tx.status !== 'PENDING') continue;
@@ -723,10 +724,10 @@ function unsureReplacements(groups: Group[]): Set<Parcel> {
           Math.abs(diffDays(g.anchor, m.anchor)) <= ESTIMATE_SLACK_DAYS &&
           g.members.some((o) => !o.replaced && o.tx.status !== 'PENDING' && o.number === m.number),
       );
-      if (twins.length > 1) unsure.add(m);
+      if (twins.length === 1 && twins[0] === group) confirmed.add(m);
     }
   }
-  return unsure;
+  return confirmed;
 }
 
 /**
@@ -740,7 +741,7 @@ function parcelPurchases(
   accountsById: Map<string, FinAccount>,
   rules: CategoryRules,
   sensitiveKeys: SensitiveKeys,
-  unsure: ReadonlySet<Parcel>,
+  confirmed: ReadonlySet<Parcel>,
 ): BankPurchase[] {
   // A prevista e a lançada da mesma parcela (ids diferentes, enquanto a prevista não some): vale a lançada.
   // A prevista que já sumiu da Pluggy nunca vira lançamento.
@@ -761,8 +762,8 @@ function parcelPurchases(
   const description = stripParcelMarker(first.tx.description);
   const seriesKey = `serie-${first.tx.id}`;
   // A escolha pode estar na prevista que a lançada substituiu (escolhida antes de a parcela ser lançada),
-  // ainda na Pluggy ou já apagada lá, quando a troca é certa (unsureReplacements).
-  const replaced = group.members.filter((m) => !members.includes(m) && !unsure.has(m));
+  // ainda na Pluggy ou já apagada lá, quando a troca é certa (confirmedReplacements).
+  const replaced = group.members.filter((m) => !members.includes(m) && confirmed.has(m));
   const ruleKeys = [...members, ...replaced].map((m) => `parc-${m.tx.id}`);
   const merchantName = merchantNameOf(first.tx, description);
   const autoCategory = financeCategoryOfBank(first.tx);

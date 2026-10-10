@@ -397,6 +397,11 @@ describe('groupPurchases com as categorias escolhidas', () => {
     ]);
     // A prevista apagada sem a lançada não vira lançamento.
     expect(groupPurchases([pending], [checking, card], undefined, rules)).toEqual([]);
+    // Prevista apagada de outra parcela sem a lançada dela (previsão cancelada): a chave não vai para a compra.
+    const cancelled = tx({ ...base, installment_number: 2, description: 'LOJA K 02/03', status: 'PENDING', deleted_at: '2026-10-05T10:00:00Z' });
+    const cancelledRule = categoryRulesOf([{ match_key: purchaseRuleKey(`parc-${cancelled.id}`), category: 'lazer' }]);
+    const [alone] = groupPurchases([posted, cancelled], [checking, card], undefined, cancelledRule);
+    expect([alone.key, alone.categorySource, alone.ruleKeys]).toEqual([`parc-${posted.id}`, 'auto', [`parc-${posted.id}`]]);
   });
 
   it('"Só esta" numa parcela vale para a compra parcelada inteira', () => {
