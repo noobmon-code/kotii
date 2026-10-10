@@ -12,6 +12,7 @@ import { useEffect } from 'react';
 import { useColorScheme } from 'react-native';
 
 import { AuthProvider, useAuth, useHousehold } from '@/lib/auth';
+import { useRecovery } from '@/lib/passwordRecovery';
 import { configureNotifications } from '@/lib/reminders';
 import { persistOptions, queryClient } from '@/lib/queryClient';
 import { isSupabaseConfigured } from '@/lib/supabase';
@@ -37,9 +38,17 @@ function AppNavigator() {
   const colors = useColors();
   const { session, loading } = useAuth();
   const household = useHousehold();
+  // Entrou pelo código do e-mail de recuperação: até a senha nova, nada da casa.
+  const recovery = useRecovery(session?.user.id);
   // Sem a fonte carregada o texto pisca em outra fonte; se falhar, segue com a do sistema.
   const [fontsLoaded, fontError] = useFonts({ Nunito_400Regular, Nunito_600SemiBold, Nunito_700Bold, Nunito_800ExtraBold });
-  const resolving = loading || (Boolean(session) && household.isPending) || (!fontsLoaded && !fontError);
+  // A senha nova não precisa da casa: não espera por ela.
+  const newPassword = recovery === 'new-password';
+  const resolving =
+    loading ||
+    recovery === 'reading' ||
+    (Boolean(session) && !newPassword && household.isPending) ||
+    (!fontsLoaded && !fontError);
 
   useEffect(() => {
     if (!resolving || !isSupabaseConfigured) SplashScreen.hideAsync();
@@ -57,7 +66,7 @@ function AppNavigator() {
     );
   }
   if (resolving) return null;
-  if (session && household.isError) {
+  if (session && !newPassword && household.isError) {
     return (
       <Screen>
         <ErrorNotice error={household.error} onRetry={() => household.refetch()} />
@@ -66,7 +75,7 @@ function AppNavigator() {
   }
 
   const signedIn = Boolean(session);
-  const inHousehold = signedIn && Boolean(household.data);
+  const inHousehold = signedIn && !newPassword && Boolean(household.data);
 
   return (
     <ThemeProvider value={scheme === 'dark' ? DarkTheme : DefaultTheme}>
@@ -83,7 +92,10 @@ function AppNavigator() {
         <Stack.Protected guard={!signedIn}>
           <Stack.Screen name="entrar" options={{ headerShown: false }} />
         </Stack.Protected>
-        <Stack.Protected guard={signedIn && !inHousehold}>
+        <Stack.Protected guard={newPassword}>
+          <Stack.Screen name="nova-senha" options={{ headerShown: false }} />
+        </Stack.Protected>
+        <Stack.Protected guard={signedIn && !newPassword && !inHousehold}>
           <Stack.Screen name="bem-vindo" options={{ headerShown: false }} />
         </Stack.Protected>
         <Stack.Protected guard={inHousehold}>
