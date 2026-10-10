@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabase';
 import {
   fetchAllPages,
   financeFetchStart,
+  financeInstallmentFetchStart,
   financeScreenHref,
   financeWindowStart,
   parseSyncResult,
@@ -105,6 +106,11 @@ describe('janela do consultor', () => {
   it('os lançamentos vêm desde um ciclo de fatura antes da janela (para juntar parcelas e pares da virada)', () => {
     expect(financeFetchStart('2026-10-07')).toBe('2026-06-22');
     expect(financeFetchStart('2026-01-31')).toBe('2025-09-22');
+  });
+
+  it('as parcelas vêm desde dois anos antes da janela (a 1ª parcela data a compra e guarda a escolha)', () => {
+    expect(financeInstallmentFetchStart('2026-10-07')).toBe('2024-08-01');
+    expect(financeInstallmentFetchStart('2026-01-31')).toBe('2023-11-01');
   });
 });
 

@@ -1,7 +1,8 @@
-// Consultor financeiro (beta): lançamentos do banco viram compras na visão
-// "data da compra". Compra no cartão conta no dia da compra (não no da
-// fatura); compra parcelada conta inteira nesse dia, e as parcelas que
-// faltam aparecem como comprometidas nos meses seguintes.
+// Consultor financeiro (beta): lançamentos do banco viram saídas mês a mês.
+// Compra no cartão conta no dia da compra (não no da fatura). Compra
+// parcelada conta parcela por parcela: a parcela n no mês da compra + (n-1),
+// com o valor dela, como a pessoa paga; as que ainda vão ser cobradas
+// aparecem como comprometidas (futureInstallments).
 
 import type { FinAccount, FinConnection, FinTransaction } from '@/lib/types';
 
@@ -22,12 +23,34 @@ import {
 import { addDays, addMonths, diffDays } from './dates';
 import { type FinanceCategory, monthRange, shiftMonth } from './finance';
 
+/** A compra parcelada de que uma parcela faz parte. */
+export interface BankInstallment {
+  /**
+   * A compra inteira: "parc-<id da parcela de menor número vista>" (a chave
+   * que a compra parcelada tinha quando contava inteira).
+   */
+  seriesKey: string;
+  /** Esta parcela. */
+  number: number;
+  total: number;
+  /** Valor das parcelas que faltam: o da última vista (a 1ª às vezes leva a sobra dos centavos). */
+  parcel: number;
+  /** Data da compra: a que o banco mandou ou a estimada pela parcela. */
+  purchaseDate: string;
+  /** A data da compra veio do banco ou da 1ª parcela (não foi estimada por uma parcela posterior). */
+  purchaseExact: boolean;
+  /** Valor da compra inteira (vistas mais as que faltam pela de referência): só para texto e conferência. */
+  purchaseAmount: number;
+  /** Números das parcelas que vieram do banco. */
+  seen: number[];
+}
+
 export interface BankPurchase {
-  /** Estável entre sincronizações: "tx-<id>" ou "parc-<id da primeira parcela vista>". */
+  /** Única por lançamento e estável entre sincronizações: "tx-<id>", ou "parc-<id>" na parcela. */
   key: string;
-  /** Data da compra (YYYY-MM-DD). */
+  /** Dia em que conta: o da compra; na parcela n, o da compra + (n-1) meses. */
   date: string;
-  /** Em R$; na compra parcelada, o valor inteiro. */
+  /** Em R$; na parcela, o valor dela. */
   amount: number;
   description: string;
   merchantName: string | null;
@@ -44,7 +67,19 @@ export interface BankPurchase {
   /** Ainda pendente no banco: aparece como "previsto". */
   pending: boolean;
   accountId: string;
-  installments: { seen: number[]; total: number; parcel: number } | null;
+  /** A compra parcelada, quando este lançamento é uma parcela. */
+  installment: BankInstallment | null;
+  /**
+   * Onde gravar a escolha "Só esta" (a chave da compra, sem o "p:"). Na
+   * parcela, vale para a compra inteira: a parcela que já tem a escolha, senão
+   * a lançada de menor número (a prevista muda de id quando é lançada).
+   */
+  ruleKey: string;
+  /**
+   * Onde ler e apagar a escolha "Só esta": na parcela, a de cada parcela vista
+   * da compra (e a da prevista que a lançada substituiu).
+   */
+  ruleKeys: string[];
   txIds: string[];
   /** PIX/transferência de ou para uma pessoa (CPF): o nome não vai para a IA. */
   personTransfer: boolean;
@@ -58,17 +93,26 @@ export interface BankPurchase {
    */
   storeName: string | null;
   /**
-   * Estorno: a compra (key) que ele desfaz, na mesma conta e até a data dele.
-   * null quando não achou: aí não abate nada (ver summarizeRange).
+   * Estorno: o que ele desfaz, na mesma conta: uma saída (key) ou a compra
+   * parcelada inteira (seriesKey). null quando não achou: aí não abate nada
+   * (ver summarizeRange).
    */
   refundOf: string | null;
+  /** Estorno: quanto ele abate de cada saída (na compra parcelada, parcela por parcela). */
+  refundParts: { key: string; amount: number }[];
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-/** Dia em que o lançamento conta: a data da compra no cartão, senão a do banco. */
+/**
+ * Dia em que o lançamento conta: a data da compra no cartão, senão a do
+ * banco. Data da compra mais de um ciclo de fatura antes do lançamento não é
+ * desta cobrança (parcela que veio sem número, com a data original; cobrança
+ * atrasada): aí vale a do lançamento, o mês em que foi cobrada.
+ */
 export function effectiveDate(tx: Pick<FinTransaction, 'purchase_on' | 'occurred_on'>): string {
-  return tx.purchase_on ?? tx.occurred_on;
+  if (!tx.purchase_on) return tx.occurred_on;
+  return diffDays(tx.purchase_on, tx.occurred_on) <= BILL_CYCLE_DAYS ? tx.purchase_on : tx.occurred_on;
 }
 
 // Maquininhas e carteiras que vêm antes do "*" na fatura ("MERCADOPAGO*LOJA").
@@ -97,6 +141,29 @@ const PARCEL_MARKERS = [
 /** Descrição sem a marca da parcela, igual em todas as parcelas da compra. */
 export function stripParcelMarker(description: string): string {
   return tidy(PARCEL_MARKERS.reduce((text, re) => text.replace(re, ' '), description));
+}
+
+interface ParcelMark {
+  number: number;
+  total: number;
+  /** Veio dos campos de parcela do banco (na descrição, "03/10" também pode ser uma data). */
+  fromFields: boolean;
+}
+
+/**
+ * n/N de um lançamento: o que o banco mandou nos campos de parcela, senão a
+ * marca na descrição ("ESTORNO LOJA 03/10"). Na descrição, "03/10" também
+ * pode ser uma data, então só serve de pista, nunca de regra.
+ */
+function parcelMark(tx: FinTransaction): ParcelMark | null {
+  if (tx.installment_number && tx.total_installments) {
+    return { number: tx.installment_number, total: tx.total_installments, fromFields: true };
+  }
+  const match = tx.description.match(/\b(\d{1,2})\s*(?:\/|de)\s*(\d{1,2})\b/i);
+  if (!match) return null;
+  const number = Number(match[1]);
+  const total = Number(match[2]);
+  return number >= 1 && total > 1 && number <= total ? { number, total, fromFields: false } : null;
 }
 
 /** Loja depois do "*" da maquininha ("MERCADOPAGO*LOJA" -> "LOJA"); null se não houver. */
@@ -168,7 +235,8 @@ function storeNameOf(
   return shown(description);
 }
 
-const isParcel = (tx: FinTransaction) =>
+/** Parcela de uma compra parcelada (n de N, com N > 1): as outras saídas contam inteiras. */
+export const isParcel = (tx: FinTransaction) =>
   tx.direction === 'DEBIT' &&
   tx.installment_number != null &&
   tx.total_installments != null &&
@@ -197,6 +265,8 @@ export function groupPurchases(
 
   const purchases: BankPurchase[] = [];
   const parcels: { tx: FinTransaction; kind: BankKind }[] = [];
+  // Estorno que diz qual parcela desfaz ("ESTORNO LOJA 03/10"): ajuda a ligar à parcela certa.
+  const refundMarks = new Map<string, ParcelMark>();
   for (const tx of live) {
     const kind = kinds.get(tx.id) as BankKind;
     if (isParcel(tx)) {
@@ -205,6 +275,10 @@ export function groupPurchases(
     }
     const description = tidy(tx.description);
     const key = `tx-${tx.id}`;
+    if (kind === 'refund') {
+      const mark = parcelMark(tx);
+      if (mark) refundMarks.set(key, mark);
+    }
     const merchantName = merchantNameOf(tx, description);
     const autoCategory = financeCategoryOfBank(tx);
     const similarKey = similarRuleKey(tx, merchantName ?? description);
@@ -227,7 +301,9 @@ export function groupPurchases(
       kind,
       pending: tx.status === 'PENDING',
       accountId: tx.account_id,
-      installments: null,
+      installment: null,
+      ruleKey: key,
+      ruleKeys: [key],
       txIds: [tx.id],
       personTransfer: tx.counterparty_doc_kind === 'CPF' && (kind === 'spending' || kind === 'income' || kind === 'refund'),
       // Saúde escolhida pela pessoa também só vai somada; tirar de saúde não tira o sigilo.
@@ -235,13 +311,14 @@ export function groupPurchases(
       // Nome de pessoa como loja só passa pela categoria automática, nunca pela escolha da pessoa.
       storeName: storeNameOf(tx, accountsById.get(tx.account_id), description, autoCategory),
       refundOf: null,
+      refundParts: [],
     });
   }
 
   for (const group of groupParcels(toParcels(parcels))) {
-    purchases.push(purchaseOfGroup(group, accountsById, rules, sensitiveKeys));
+    purchases.push(...parcelPurchases(group, accountsById, rules, sensitiveKeys));
   }
-  linkRefunds(purchases);
+  linkRefunds(purchases, refundMarks);
   return purchases.sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount || a.key.localeCompare(b.key));
 }
 
@@ -437,9 +514,16 @@ interface Parcel {
  * Estimativas da data da compra que caem até tantos dias uma da outra são a
  * mesma compra: dias de fatura variam de um mês para o outro.
  */
-const ESTIMATE_SLACK_DAYS = 4;
+export const ESTIMATE_SLACK_DAYS = 4;
 /** Um ciclo de fatura: a parcela lançada no dia da fatura cai até isso depois da compra. */
 const BILL_CYCLE_DAYS = 35;
+/**
+ * Parcela n > 1 com a "data da compra" até tantos dias do lançamento foi
+ * carimbada no dia dela (Santander), não na compra: a do Nubank, com a data
+ * da compra de verdade, fica pelo menos um mês antes. Errar aqui empurraria
+ * cada parcela n-1 meses para frente.
+ */
+const STAMPED_PARCEL_DAYS = 20;
 
 const similarParcel = (a: { amount: number; total: number }, amount: number) =>
   Math.abs(a.amount - amount) <= 0.01 * a.total + 1e-9;
@@ -452,9 +536,9 @@ const similarParcel = (a: { amount: number; total: number }, amount: number) =>
  * ser a da parcela. Cada par de parcelas da mesma loja vota: mesma data com
  * números diferentes é 'compra'; um mês por parcela de distância é
  * 'parcela'. Conta sem par nenhum (uma parcela só de cada compra na janela)
- * vota pela parcela n > 1 com data da compra: igual (até uns dias) à do
- * lançamento é 'parcela' (a compra de verdade foi meses antes); bem antes é
- * 'compra'. Sem maioria, vale o costume de cada tipo de data.
+ * vota pela parcela n > 1 com data da compra: perto da do lançamento
+ * (STAMPED_PARCEL_DAYS) é 'parcela'; bem antes é 'compra' (a compra de
+ * verdade foi meses antes). Sem maioria, vale o costume de cada tipo de data.
  */
 type ParcelDating = 'compra' | 'parcela';
 
@@ -479,7 +563,7 @@ function parcelDating(parcels: Parcel[]): Map<string, ParcelDating> {
   for (const p of parcels) {
     if (!p.fromPurchase || p.number < 2) continue;
     const vote = single.get(datingKey(p)) ?? { compra: 0, parcela: 0 };
-    if (Math.abs(diffDays(p.date, p.tx.occurred_on)) <= ESTIMATE_SLACK_DAYS) vote.parcela += 1;
+    if (Math.abs(diffDays(p.date, p.tx.occurred_on)) <= STAMPED_PARCEL_DAYS) vote.parcela += 1;
     else vote.compra += 1;
     single.set(datingKey(p), vote);
   }
@@ -545,7 +629,11 @@ function groupParcels(parcels: Parcel[]): Group[] {
     let best: Group | null = null;
     let bestGap = Infinity;
     for (const g of groups) {
-      if (g.key !== p.key || numbers(g).includes(p.number) || !similarParcel({ amount: g.parcel, total: p.total }, p.amount)) {
+      // Número repetido abre outra compra (duas compras iguais), salvo a prevista e a lançada da mesma parcela.
+      const repeated = g.members.some(
+        (m) => m.number === p.number && (m.tx.status === 'PENDING') === (p.tx.status === 'PENDING'),
+      );
+      if (g.key !== p.key || repeated || !similarParcel({ amount: g.parcel, total: p.total }, p.amount)) {
         continue;
       }
       const gap = Math.abs(diffDays(g.anchor, p.anchor));
@@ -599,13 +687,25 @@ function mergeLateParcels(groups: Group[]): Group[] {
   return out;
 }
 
-function purchaseOfGroup(
+/**
+ * Uma saída por parcela vista: a parcela n no mês da compra + (n-1), com o
+ * valor dela. A compra inteira decide o que vale para todas as parcelas: a
+ * descrição, a loja, a categoria (a escolha "Só esta" em qualquer parcela
+ * vale para a compra), o sigilo e o nome que vai para a IA.
+ */
+function parcelPurchases(
   group: Group,
   accountsById: Map<string, FinAccount>,
   rules: CategoryRules,
   sensitiveKeys: SensitiveKeys,
-): BankPurchase {
-  const members = [...group.members].sort((a, b) => a.number - b.number);
+): BankPurchase[] {
+  // A prevista e a lançada da mesma parcela (ids diferentes, enquanto a prevista não some): vale a lançada.
+  const byNumber = new Map<number, Parcel>();
+  for (const m of group.members) {
+    const other = byNumber.get(m.number);
+    if (!other || (other.tx.status === 'PENDING' && m.tx.status !== 'PENDING')) byNumber.set(m.number, m);
+  }
+  const members = [...byNumber.values()].sort((a, b) => a.number - b.number);
   const first = members[0];
   const last = members[members.length - 1];
   const total = first.total;
@@ -613,36 +713,56 @@ function purchaseOfGroup(
   const parcel = last.amount;
   const seenSum = members.reduce((sum, m) => sum + m.amount, 0);
   const description = stripParcelMarker(first.tx.description);
-  const key = `parc-${first.tx.id}`;
+  const seriesKey = `parc-${first.tx.id}`;
+  // A escolha pode estar na prevista que a lançada substituiu (escolhida antes de a parcela ser lançada).
+  const replaced = group.members.filter((m) => !members.includes(m));
+  const ruleKeys = [...members, ...replaced].map((m) => `parc-${m.tx.id}`);
   const merchantName = merchantNameOf(first.tx, description);
   const autoCategory = financeCategoryOfBank(first.tx);
   const similarKey = similarRuleKey(first.tx, merchantName ?? description);
-  const { category, source } = pickCategory(rules, key, similarKey, autoCategory);
-  return {
-    key,
-    // Estimada, vale a da parcela mais antiga: é a que caiu mais perto da compra.
-    date: group.exact ? group.anchor : first.anchor,
-    amount: round2(seenSum + (total - members.length) * parcel),
+  const { category, source, ruleKey: chosenKey } = pickCategory(rules, ruleKeys, similarKey, autoCategory);
+  const posted = members.find((m) => m.tx.status !== 'PENDING') ?? first;
+  const ruleKey = chosenKey ?? `parc-${posted.tx.id}`;
+  // Estimada, vale a da parcela mais antiga: é a que caiu mais perto da compra.
+  const purchaseDate = group.exact ? group.anchor : first.anchor;
+  const series = {
+    seriesKey,
+    total,
+    parcel,
+    purchaseDate,
+    purchaseExact: group.exact || first.number === 1,
+    purchaseAmount: round2(seenSum + (total - members.length) * parcel),
+    seen: members.map((m) => m.number),
+  };
+  const sensitive =
+    group.members.some((m) => isSensitiveBankTx(m.tx)) ||
+    category === 'saude' ||
+    chosenSensitive(rules, sensitiveKeys, ruleKeys, similarKey);
+  const storeName = storeNameOf(first.tx, accountsById.get(first.tx.account_id), description, autoCategory);
+  return members.map((m) => ({
+    key: `parc-${m.tx.id}`,
+    date: addMonths(purchaseDate, m.number - 1),
+    amount: m.amount,
     description,
     merchantName,
-    merchantCnpj: first.tx.merchant_cnpj ?? first.tx.counterparty_cnpj,
+    merchantCnpj: m.tx.merchant_cnpj ?? m.tx.counterparty_cnpj ?? first.tx.merchant_cnpj ?? first.tx.counterparty_cnpj,
     category,
     autoCategory,
     categorySource: source,
     similarKey,
     kind: first.kind,
-    pending: members.every((m) => m.tx.status === 'PENDING'),
-    accountId: first.tx.account_id,
-    installments: { seen: members.map((m) => m.number), total, parcel },
-    txIds: members.map((m) => m.tx.id),
+    pending: m.tx.status === 'PENDING',
+    accountId: m.tx.account_id,
+    installment: { ...series, number: m.number },
+    ruleKey,
+    ruleKeys,
+    txIds: [m.tx.id],
     personTransfer: false,
-    sensitive:
-      members.some((m) => isSensitiveBankTx(m.tx)) ||
-      category === 'saude' ||
-      chosenSensitive(rules, sensitiveKeys, key, similarKey),
-    storeName: storeNameOf(first.tx, accountsById.get(first.tx.account_id), description, autoCategory),
+    sensitive,
+    storeName,
     refundOf: null,
-  };
+    refundParts: [],
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -672,39 +792,127 @@ function sameStore(refund: BankPurchase, purchase: BankPurchase): boolean {
   return refundKeys.some((r) => purchaseKeys.some((p) => p.includes(r) || r.includes(p)));
 }
 
+const sameAmount = (a: number, b: number) => Math.abs(a - b) < 0.005;
+
 /**
- * Liga cada estorno à compra que ele desfaz: na mesma conta, de data até a
- * do estorno, com valor que ainda cabe nela e com a mesma loja ou o mesmo
- * valor (a mesma loja e o mesmo valor primeiro; empate, a compra mais
- * recente). Estorno sem compra assim (compra de antes da janela, ou que não
- * deu para reconhecer) fica sem par.
+ * Estorno só desfaz o que foi cobrado até tantos meses antes dele: as
+ * parcelas vêm buscadas desde bem antes, e um estorno sem o nome da loja
+ * casaria pelo valor com uma parcela de anos atrás.
  */
-function linkRefunds(purchases: BankPurchase[]) {
+const REFUND_MONTHS_BACK = 6;
+
+interface RefundTarget {
+  score: number;
+  /** 0 à vista, 1 compra parcelada inteira, 2 parcela: no empate sem marca, a à vista vence a parcela. */
+  rank: number;
+  /** Mais recente primeiro, mas só até o mês do estorno (parcela já mandada para depois fica por último). */
+  date: string;
+  key: string;
+  row?: BankPurchase;
+  rows?: BankPurchase[];
+}
+
+/**
+ * Liga cada estorno ao que ele desfaz, na mesma conta, de data até a dele e
+ * cobrado nos REFUND_MONTHS_BACK meses antes:
+ * - uma saída (à vista ou parcela), quando o valor cabe no que resta dela. A
+ *   mesma loja, o mesmo valor e, na parcela, a mesma marca n/N pontuam; no
+ *   empate, a mais recente até o mês do estorno, e sem marca a à vista
+ *   antes da parcela;
+ * - a compra parcelada inteira, quando o valor passa do que resta de
+ *   qualquer parcela e cabe no da compra (as vistas mais as que faltam): o
+ *   estorno do valor cheio ou da soma das já cobradas. Ele abate as parcelas
+ *   vistas, das de até o mês do estorno (a mais nova primeiro) às
+ *   posteriores; o resto fica de crédito para as que faltam
+ *   (futureInstallments).
+ * Estorno sem par (compra de antes da janela, ou que não deu para
+ * reconhecer) não abate nada.
+ */
+function linkRefunds(purchases: BankPurchase[], marks: Map<string, ParcelMark>) {
   const left = new Map(purchases.filter((p) => p.kind === 'spending').map((p) => [p.key, p.amount]));
+  const leftOf = (key: string) => left.get(key) ?? 0;
+  const series = new Map<string, BankPurchase[]>();
+  for (const p of purchases) {
+    if (p.kind !== 'spending' || !p.installment) continue;
+    series.set(p.installment.seriesKey, [...(series.get(p.installment.seriesKey) ?? []), p]);
+  }
+  const credit = new Map<string, number>();
   const refunds = purchases
     .filter((p) => p.kind === 'refund')
     .sort((a, b) => a.date.localeCompare(b.date) || a.key.localeCompare(b.key));
   for (const refund of refunds) {
-    let best: BankPurchase | null = null;
-    let bestScore = 0;
+    const mark = marks.get(refund.key) ?? null;
+    const monthEnd = monthRange(refund.date.slice(0, 7)).end;
+    const oldest = addMonths(refund.date, -REFUND_MONTHS_BACK);
+    const recent = (date: string) => (date < monthEnd ? date : '');
+    let best: RefundTarget | null = null;
+    const consider = (t: RefundTarget) => {
+      const wins =
+        !best ||
+        t.score > best.score ||
+        (t.score === best.score &&
+          (t.rank < best.rank ||
+            (t.rank === best.rank &&
+              (recent(t.date) > recent(best.date) || (recent(t.date) === recent(best.date) && t.key < best.key)))));
+      if (wins) best = t;
+    };
     for (const p of purchases) {
-      const remaining = left.get(p.key);
-      if (remaining === undefined || p.accountId !== refund.accountId || p.date > refund.date) continue;
-      if (refund.amount > remaining + 0.005) continue;
-      const score = (sameStore(refund, p) ? 2 : 0) + (Math.abs(refund.amount - p.amount) < 0.005 ? 1 : 0);
-      if (score === 0) continue;
-      const better =
-        !best || score > bestScore || (score === bestScore && (p.date > best.date || (p.date === best.date && p.key < best.key)));
-      if (better) {
-        best = p;
-        bestScore = score;
-      }
+      if (!left.has(p.key) || p.accountId !== refund.accountId || p.date < oldest) continue;
+      if ((p.installment?.purchaseDate ?? p.date) > refund.date || refund.amount > leftOf(p.key) + 0.005) continue;
+      const store = sameStore(refund, p);
+      // A marca da descrição só escolhe a parcela dentro da mesma loja: sozinha, "05/09" pode ser uma data.
+      const markHit =
+        !!mark &&
+        (store || mark.fromFields) &&
+        !!p.installment &&
+        mark.number === p.installment.number &&
+        mark.total === p.installment.total;
+      const score = (store ? 2 : 0) + (sameAmount(refund.amount, p.amount) ? 1 : 0) + (markHit ? 2 : 0);
+      if (score > 0) consider({ score, rank: p.installment ? 2 : 0, date: p.date, key: p.key, row: p });
     }
-    if (!best) continue;
-    refund.refundOf = best.key;
+    for (const [seriesKey, rows] of series) {
+      const info = rows[0].installment as BankInstallment;
+      if (rows[0].accountId !== refund.accountId || info.purchaseDate > refund.date) continue;
+      // Sem parcela nos últimos meses, ou o estorno cabe em cada parcela (aí é de uma delas).
+      if (rows.every((r) => r.date < oldest || refund.amount <= leftOf(r.key) + 0.005)) continue;
+      const missing = Math.max(0, info.total - rows.length) * info.parcel - (credit.get(seriesKey) ?? 0);
+      const capacity = rows.reduce((sum, r) => sum + leftOf(r.key), 0) + Math.max(0, missing);
+      if (refund.amount > capacity + 0.005) continue;
+      // O valor cheio, ou o das parcelas vistas, ou o já cobrado até o mês do estorno (a que o banco já mandou
+      // para depois ainda não foi cobrada).
+      const seenSum = rows.reduce((sum, r) => sum + r.amount, 0);
+      const charged = rows.filter((r) => r.date < monthEnd).reduce((sum, r) => sum + r.amount, 0);
+      const fullValue =
+        sameAmount(refund.amount, seenSum) || sameAmount(refund.amount, charged) || sameAmount(refund.amount, info.purchaseAmount);
+      const score = (sameStore(refund, rows[0]) ? 2 : 0) + (fullValue ? 1 : 0);
+      if (score > 0) consider({ score, rank: 1, date: info.purchaseDate, key: seriesKey, rows });
+    }
+    const target = best as RefundTarget | null;
+    if (!target) continue;
+    const parts: { key: string; amount: number }[] = [];
+    if (target.row) {
+      parts.push({ key: target.row.key, amount: refund.amount });
+      left.set(target.row.key, leftOf(target.row.key) - refund.amount);
+    } else {
+      const rows = target.rows as BankPurchase[];
+      const ordered = [
+        ...rows.filter((r) => r.date < monthEnd).sort((a, b) => b.date.localeCompare(a.date)),
+        ...rows.filter((r) => r.date >= monthEnd).sort((a, b) => a.date.localeCompare(b.date)),
+      ];
+      let rest = refund.amount;
+      for (const r of ordered) {
+        const take = Math.min(leftOf(r.key), rest);
+        if (take < 0.005) continue;
+        parts.push({ key: r.key, amount: round2(take) });
+        left.set(r.key, leftOf(r.key) - take);
+        rest -= take;
+      }
+      if (rest > 0.005) credit.set(target.key, (credit.get(target.key) ?? 0) + rest);
+    }
+    refund.refundOf = target.key;
+    refund.refundParts = parts;
     // O estorno conta a mesma história da compra: se ela só vai somada para a IA, ele também.
-    if (best.sensitive) refund.sensitive = true;
-    left.set(best.key, (left.get(best.key) as number) - refund.amount);
+    if ((target.row ?? (target.rows as BankPurchase[])[0]).sensitive) refund.sensitive = true;
   }
 }
 
@@ -715,7 +923,7 @@ export interface BankMonthSummary {
   /** Saídas do mês já sem os estornos: a soma de byCategory. */
   spending: number;
   income: number;
-  /** Estornos que abateram saídas do mês (os das compras do mês, mesmo que tenham caído depois). */
+  /** Estornos que abateram saídas do mês (os das saídas do mês, mesmo que tenham caído depois). */
   refunds: number;
   /**
    * Estornos que caíram no mês sem a compra que desfazem (compra de antes da
@@ -726,23 +934,32 @@ export interface BankMonthSummary {
   pending: number;
   /** Saídas por categoria (sem os estornos), da maior para a menor. */
   byCategory: { category: FinanceCategory; amount: number }[];
-  /** Quantas compras (saídas) no período, sem as estornadas por inteiro. */
+  /** Quantos lançamentos de saída no período (cada parcela conta um), sem os estornados por inteiro. */
   count: number;
 }
 
+/** Quanto os estornos abatem de cada saída (key), parcela por parcela. */
+function refundedByKey(purchases: BankPurchase[]): Map<string, number> {
+  const refunded = new Map<string, number>();
+  for (const p of purchases) {
+    if (p.kind !== 'refund') continue;
+    for (const part of p.refundParts) refunded.set(part.key, (refunded.get(part.key) ?? 0) + part.amount);
+  }
+  return refunded;
+}
+
 /**
- * Soma das compras com data em [start, end). Transferência para si mesma,
- * aplicação, fatura paga e dívida contratada ficam de fora das saídas. O
- * estorno abate da compra que ele desfaz (linkRefunds), no mês e na
- * categoria dela: estorno de uma compra de setembro abate setembro, não
- * outubro. Estorno sem compra ligada não abate nada (vai em otherRefunds).
+ * Soma das saídas com data em [start, end): a compra pela data dela, a
+ * parcela pelo mês dela. Transferência para si mesma, aplicação, fatura paga
+ * e dívida contratada ficam de fora. O estorno abate a saída que ele desfaz
+ * (linkRefunds), no mês e na categoria dela: estorno de uma compra de
+ * setembro abate setembro, não outubro; o da compra parcelada inteira abate
+ * cada parcela no mês dela. Estorno sem par não abate nada (vai em
+ * otherRefunds).
  */
 export function summarizeRange(purchases: BankPurchase[], range: { start: string; end: string }): BankMonthSummary {
   const inRange = (p: BankPurchase) => p.date >= range.start && p.date < range.end;
-  const refunded = new Map<string, number>();
-  for (const p of purchases) {
-    if (p.kind === 'refund' && p.refundOf) refunded.set(p.refundOf, (refunded.get(p.refundOf) ?? 0) + p.amount);
-  }
+  const refunded = refundedByKey(purchases);
   const net = new Map<FinanceCategory, number>();
   let gross = 0;
   let income = 0;
@@ -780,7 +997,7 @@ export function summarizeRange(purchases: BankPurchase[], range: { start: string
   };
 }
 
-/** Resumo de um mês ("YYYY-MM") pela data da compra. */
+/** Resumo de um mês ("YYYY-MM"): a compra pela data dela, a parcela pelo mês dela. */
 export function monthSummary(purchases: BankPurchase[], month: string): BankMonthSummary {
   return summarizeRange(purchases, monthRange(month));
 }
@@ -807,38 +1024,128 @@ export function financeFetchStart(today: string): string {
   return addDays(financeWindowStart(today), -FINANCE_LOOKBACK_DAYS);
 }
 
-/** Compras com data na janela: o que a tela e o retrato listam e conferem com o Kotii. */
+/**
+ * Meses buscados para trás só das parcelas. A data da compra e a chave da
+ * compra parcelada saem da parcela de menor número: sem ela nos dados, as
+ * parcelas mudariam de mês e a escolha "Só esta" se perderia enquanto a
+ * compra ainda cobra.
+ */
+export const FINANCE_INSTALLMENT_MONTHS_BACK = 24;
+
+/** Primeiro dia buscado das parcelas (lançamentos com o número da parcela). */
+export function financeInstallmentFetchStart(today: string): string {
+  return addMonths(financeWindowStart(today), -FINANCE_INSTALLMENT_MONTHS_BACK);
+}
+
+/**
+ * Lançamentos com data na janela: o que a tela e o retrato listam e conferem
+ * com o Kotii. A parcela que o banco já mandou para um mês que ainda não
+ * chegou fica de fora (ela aparece no comprometido).
+ */
 export function windowPurchases(purchases: BankPurchase[], today: string): BankPurchase[] {
   const start = financeWindowStart(today);
-  return purchases.filter((p) => p.date >= start);
+  const end = monthRange(shiftMonth(today.slice(0, 7), 1)).start;
+  return purchases.filter((p) => p.date >= start && p.date < end);
 }
 
 export interface InstallmentMonth {
   month: string;
   amount: number;
-  parcels: { key: string; description: string; number: number; total: number; amount: number }[];
+  parcels: {
+    /** Única na lista: "<seriesKey>-<número>". */
+    key: string;
+    seriesKey: string;
+    description: string;
+    number: number;
+    total: number;
+    amount: number;
+    /** O banco já mandou esta parcela (com o valor dela); senão, é a que falta, pela de referência. */
+    seen: boolean;
+  }[];
 }
 
 /**
- * Parcelas de compras já feitas que caem em cada mês a partir de `fromMonth`
- * (a parcela n cai n-1 meses depois do mês da compra). Inclui dívida
- * parcelada no cartão; meses sem parcela vêm com zero.
+ * O que as compras parceladas ainda vão cobrar, mês a mês a partir do mês de
+ * `today` (inclui dívida parcelada no cartão). No mês atual, só as parcelas
+ * que o banco ainda não lançou; nos seguintes, também as que ele já mandou.
+ * Cada compra entra uma vez. Não entram: a parcela que faltou no meio (não dá
+ * para saber se veio de outro jeito) ou num mês que já passou; as que faltam
+ * de uma compra que parou de cobrar (a parcela seguinte à última vista
+ * passou mais de um ciclo de fatura sem vir: quitada antes ou cancelada); e
+ * nada de uma compra estornada por inteiro ou com as parcelas já cobradas
+ * devolvidas. O crédito de estorno que passou das parcelas cobradas abate as
+ * que faltam. Meses sem parcela vêm com zero.
  */
-export function futureInstallments(purchases: BankPurchase[], fromMonth: string, months = 6): InstallmentMonth[] {
+export function futureInstallments(purchases: BankPurchase[], today: string, months = 6): InstallmentMonth[] {
+  const currentMonth = today.slice(0, 7);
   const out: InstallmentMonth[] = Array.from({ length: months }, (_, i) => ({
-    month: shiftMonth(fromMonth, i),
+    month: shiftMonth(currentMonth, i),
     amount: 0,
     parcels: [],
   }));
+  const refunded = refundedByKey(purchases);
+  const series = new Map<string, BankPurchase[]>();
+  const seriesOfKey = new Map<string, string>();
   for (const p of purchases) {
-    if (!p.installments || (p.kind !== 'spending' && p.kind !== 'financing')) continue;
-    const firstMonth = p.date.slice(0, 7);
-    for (let n = 1; n <= p.installments.total; n++) {
-      const slot = out.find((m) => m.month === shiftMonth(firstMonth, n - 1));
-      if (!slot) continue;
-      slot.parcels.push({ key: p.key, description: p.description, number: n, total: p.installments.total, amount: p.installments.parcel });
-      slot.amount = round2(slot.amount + p.installments.parcel);
+    if (!p.installment || (p.kind !== 'spending' && p.kind !== 'financing')) continue;
+    series.set(p.installment.seriesKey, [...(series.get(p.installment.seriesKey) ?? []), p]);
+    seriesOfKey.set(p.key, p.installment.seriesKey);
+    seriesOfKey.set(p.installment.seriesKey, p.installment.seriesKey);
+  }
+  const refundTotal = new Map<string, number>();
+  const credit = new Map<string, number>();
+  for (const p of purchases) {
+    const seriesKey = p.kind === 'refund' && p.refundOf ? seriesOfKey.get(p.refundOf) : undefined;
+    if (!seriesKey) continue;
+    refundTotal.set(seriesKey, (refundTotal.get(seriesKey) ?? 0) + p.amount);
+    const allocated = p.refundParts.reduce((sum, part) => sum + part.amount, 0);
+    credit.set(seriesKey, (credit.get(seriesKey) ?? 0) + Math.max(0, p.amount - allocated));
+  }
+  const monthEnd = monthRange(currentMonth).end;
+  for (const [seriesKey, rows] of series) {
+    const info = rows[0].installment as BankInstallment;
+    const seenSum = rows.reduce((sum, r) => sum + r.amount, 0);
+    // A parcela que o banco já mandou para um mês que vem ainda não foi cobrada.
+    const charged = rows.filter((r) => r.date < monthEnd).reduce((sum, r) => sum + r.amount, 0);
+    // Estornada por inteiro, ou com as parcelas já cobradas devolvidas: a compra foi cancelada.
+    const refundSum = refundTotal.get(seriesKey) ?? 0;
+    const cancelled =
+      refundSum > 0 &&
+      (sameAmount(refundSum, seenSum) || sameAmount(refundSum, charged) || refundSum >= info.purchaseAmount - 0.005);
+    if (cancelled) continue;
+    const maxSeen = Math.max(...info.seen);
+    const charging = maxSeen < info.total && diffDays(addMonths(info.purchaseDate, maxSeen), today) <= BILL_CYCLE_DAYS;
+    let rest = credit.get(seriesKey) ?? 0;
+    for (let n = 1; n <= info.total; n++) {
+      const month = addMonths(info.purchaseDate, n - 1).slice(0, 7);
+      const slot = out.find((m) => m.month === month);
+      const row = rows.find((r) => r.installment?.number === n);
+      let amount = 0;
+      if (row) {
+        if (month <= currentMonth) continue;
+        amount = Math.max(0, row.amount - (refunded.get(row.key) ?? 0));
+      } else {
+        if (!charging || n < maxSeen || month < currentMonth) continue;
+        amount = info.parcel;
+        const used = Math.min(rest, amount);
+        rest -= used;
+        amount -= used;
+      }
+      if (!slot || amount < 0.005) continue;
+      slot.parcels.push({
+        key: `${seriesKey}-${n}`,
+        seriesKey,
+        description: rows[0].description,
+        number: n,
+        total: info.total,
+        amount: round2(amount),
+        seen: !!row,
+      });
+      slot.amount = round2(slot.amount + amount);
     }
+  }
+  for (const m of out) {
+    m.parcels.sort((a, b) => b.amount - a.amount || a.description.localeCompare(b.description) || a.key.localeCompare(b.key));
   }
   return out;
 }

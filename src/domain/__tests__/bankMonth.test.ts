@@ -2,13 +2,14 @@ import { describe, expect, it } from '@jest/globals';
 
 import type { FinAccount, FinTransaction } from '@/lib/types';
 
+import { addMonths } from '../dates';
 import {
   accountLabels,
   type BankPurchase,
   cardBills,
   currentAccounts,
   effectiveDate,
-  financeFetchStart,
+  financeInstallmentFetchStart,
   futureInstallments,
   groupPurchases,
   merchantFromDescriptor,
@@ -92,10 +93,18 @@ const tx = (over: Partial<FinTransaction>): FinTransaction => {
 const parcel = (n: number, total: number, over: Partial<FinTransaction>) =>
   tx({ account_id: nuCard.id, installment_number: n, total_installments: total, ...over });
 
+/** [descrição, dia, valor, número da parcela] de cada lançamento. */
+const rows = (purchases: BankPurchase[]) => purchases.map((p) => [p.description, p.date, p.amount, p.installment?.number ?? null]);
+const seriesOf = (purchases: BankPurchase[]) => new Set(purchases.map((p) => p.installment?.seriesKey));
+
 describe('effectiveDate', () => {
   it('compra no cartão conta na data da compra; sem ela, na do banco', () => {
     expect(effectiveDate({ purchase_on: '2026-09-30', occurred_on: '2026-10-02' })).toBe('2026-09-30');
     expect(effectiveDate({ purchase_on: null, occurred_on: '2026-10-02' })).toBe('2026-10-02');
+  });
+
+  it('data da compra mais de um ciclo de fatura antes não é desta cobrança: vale a do lançamento', () => {
+    expect(effectiveDate({ purchase_on: '2026-04-10', occurred_on: '2026-10-02' })).toBe('2026-10-02');
   });
 });
 
@@ -135,28 +144,44 @@ describe('groupPurchases', () => {
     expect(monthSummary(purchases, '2026-10')).toMatchObject({ spending: 50, count: 2 });
   });
 
-  it('junta as parcelas 1/10 a 3/10 numa compra de 10x a parcela, na data da compra', () => {
+  it('compra parcelada conta mês a mês: cada parcela no mês dela, com o valor dela', () => {
     const base = { amount: 150, purchase_on: '2026-08-05', merchant_name: 'Magazine Luiza' };
+    const first = parcel(1, 10, { ...base, occurred_on: '2026-08-05', description: 'MAGALU 01/10' });
     const purchases = groupPurchases(
       [
-        parcel(1, 10, { ...base, occurred_on: '2026-08-05', description: 'MAGALU 01/10' }),
+        first,
         parcel(2, 10, { ...base, occurred_on: '2026-09-05', description: 'MAGALU 02/10' }),
         parcel(3, 10, { ...base, occurred_on: '2026-10-05', description: 'MAGALU 03/10' }),
       ],
       accounts,
     );
-    expect(purchases).toHaveLength(1);
+    expect(rows(purchases)).toEqual([
+      ['MAGALU', '2026-10-05', 150, 3],
+      ['MAGALU', '2026-09-05', 150, 2],
+      ['MAGALU', '2026-08-05', 150, 1],
+    ]);
+    // Cada parcela tem a própria chave; a compra inteira, a da 1ª parcela (a de antes).
+    expect(new Set(purchases.map((p) => p.key)).size).toBe(3);
+    expect(purchases.every((p) => p.txIds.length === 1)).toBe(true);
     expect(purchases[0]).toMatchObject({
-      date: '2026-08-05',
-      amount: 1500,
-      description: 'MAGALU',
       merchantName: 'Magazine Luiza',
       kind: 'spending',
-      installments: { seen: [1, 2, 3], total: 10, parcel: 150 },
+      installment: {
+        seriesKey: `parc-${first.id}`,
+        number: 3,
+        total: 10,
+        parcel: 150,
+        purchaseDate: '2026-08-05',
+        purchaseExact: true,
+        purchaseAmount: 1500,
+        seen: [1, 2, 3],
+      },
     });
-    expect(purchases[0].txIds).toHaveLength(3);
-    expect(monthSummary(purchases, '2026-08').spending).toBe(1500);
-    expect(monthSummary(purchases, '2026-10').spending).toBe(0);
+    expect(['2026-08', '2026-09', '2026-10'].map((m) => monthSummary(purchases, m))).toMatchObject([
+      { spending: 150, count: 1, byCategory: [{ category: 'compras', amount: 150 }] },
+      { spending: 150, count: 1 },
+      { spending: 150, count: 1 },
+    ]);
   });
 
   it('duas compras parceladas iguais viram duas', () => {
@@ -170,11 +195,43 @@ describe('groupPurchases', () => {
       ],
       accounts,
     );
-    expect(purchases).toHaveLength(2);
-    expect(purchases.map((p) => [p.amount, p.installments?.seen])).toEqual([
-      [1500, [1, 2]],
-      [1500, [1, 2]],
+    expect(purchases).toHaveLength(4);
+    expect(seriesOf(purchases).size).toBe(2);
+    expect(purchases.every((p) => p.installment?.purchaseAmount === 1500 && p.installment.seen.join() === '1,2')).toBe(true);
+    expect(['2026-08', '2026-09'].map((m) => monthSummary(purchases, m).spending)).toEqual([300, 300]);
+  });
+
+  it('a prevista e a lançada da mesma parcela contam uma vez (vale a lançada)', () => {
+    const base = { amount: 150, purchase_on: '2026-08-05', description: 'MAGALU' };
+    const posted = parcel(2, 10, { ...base, occurred_on: '2026-09-05' });
+    const purchases = groupPurchases(
+      [parcel(1, 10, { ...base, occurred_on: '2026-08-05' }), parcel(2, 10, { ...base, occurred_on: '2026-09-04', status: 'PENDING' }), posted],
+      accounts,
+    );
+    expect(rows(purchases)).toEqual([
+      ['MAGALU', '2026-09-05', 150, 2],
+      ['MAGALU', '2026-08-05', 150, 1],
     ]);
+    expect(purchases[0]).toMatchObject({ key: `parc-${posted.id}`, pending: false });
+  });
+
+  it('duas compras parceladas iguais com a prevista que sobrou de uma delas: cada parcela lançada conta', () => {
+    const base = { amount: 150, purchase_on: '2026-08-05', description: 'MAGALU' };
+    const purchases = groupPurchases(
+      [
+        parcel(1, 10, { ...base, id: 'a1', occurred_on: '2026-08-05' }),
+        parcel(1, 10, { ...base, id: 'b1', occurred_on: '2026-08-05' }),
+        parcel(2, 10, { ...base, id: 'a2', occurred_on: '2026-09-05' }),
+        parcel(2, 10, { ...base, id: 'b2', occurred_on: '2026-09-05' }),
+        // A prevista da 3ª de B ainda não sumiu quando as duas lançadas chegaram.
+        parcel(3, 10, { ...base, id: 'x-b3-prevista', occurred_on: '2026-10-04', status: 'PENDING' }),
+        parcel(3, 10, { ...base, id: 'y-a3', occurred_on: '2026-10-05' }),
+        parcel(3, 10, { ...base, id: 'z-b3', occurred_on: '2026-10-05' }),
+      ],
+      accounts,
+    );
+    expect(monthSummary(purchases, '2026-10')).toMatchObject({ spending: 300, count: 2, pending: 0 });
+    expect(futureInstallments(purchases, '2026-10-07', 1)[0].amount).toBe(0);
   });
 
   it('sem a data da compra, estima pela parcela e junta mesmo com dias de fatura diferentes', () => {
@@ -185,11 +242,14 @@ describe('groupPurchases', () => {
       ],
       accounts,
     );
-    expect(purchases).toHaveLength(1);
-    expect(purchases[0]).toMatchObject({ date: '2026-08-07', amount: 240 });
+    expect(rows(purchases)).toEqual([
+      ['LOJA Z', '2026-10-07', 80, 3],
+      ['LOJA Z', '2026-09-07', 80, 2],
+    ]);
+    expect(purchases[0].installment).toMatchObject({ purchaseDate: '2026-08-07', purchaseExact: false, purchaseAmount: 240 });
   });
 
-  it('Santander: data da compra carimbada por parcela vira uma compra só, na data da 1ª parcela', () => {
+  it('Santander: data da compra carimbada por parcela vira uma compra só, uma parcela por mês', () => {
     const base = { account_id: sanCard.id, amount: 100, description: 'AMAZON BR' };
     const purchases = groupPurchases(
       [
@@ -199,13 +259,26 @@ describe('groupPurchases', () => {
       ],
       allAccounts,
     );
-    expect(purchases).toHaveLength(1);
-    expect(purchases[0]).toMatchObject({ date: '2026-08-18', amount: 1000, installments: { seen: [1, 2, 3], total: 10, parcel: 100 } });
-    expect(['2026-08', '2026-09', '2026-10'].map((m) => monthSummary(purchases, m).spending)).toEqual([1000, 0, 0]);
-    expect(futureInstallments(purchases, '2026-11', 2).map((m) => m.amount)).toEqual([100, 100]);
+    expect(seriesOf(purchases).size).toBe(1);
+    expect(rows(purchases)).toEqual([
+      ['AMAZON BR', '2026-10-18', 100, 3],
+      ['AMAZON BR', '2026-09-18', 100, 2],
+      ['AMAZON BR', '2026-08-18', 100, 1],
+    ]);
+    expect(purchases[0].installment).toMatchObject({ purchaseDate: '2026-08-18', purchaseExact: true, purchaseAmount: 1000 });
+    expect(['2026-08', '2026-09', '2026-10'].map((m) => monthSummary(purchases, m).spending)).toEqual([100, 100, 100]);
+    expect(futureInstallments(purchases, '2026-11-05', 2).map((m) => m.amount)).toEqual([100, 100]);
   });
 
-  it('Santander: anuidade em 12x carimbada por parcela conta uma vez, no mês em que começou', () => {
+  it('Santander: a "data da compra" carimbada na parcela e lançada dias depois, na fatura, ainda é a da parcela', () => {
+    const [p] = groupPurchases(
+      [parcel(3, 10, { account_id: sanCard.id, amount: 100, description: 'AMAZON BR', purchase_on: '2026-08-18', occurred_on: '2026-09-02' })],
+      allAccounts,
+    );
+    expect(p).toMatchObject({ date: '2026-08-18', amount: 100, installment: { number: 3, purchaseDate: '2026-06-18' } });
+  });
+
+  it('Santander: anuidade em 12x conta R$ 55 em cada mês, não as 12 de uma vez', () => {
     const fee = { account_id: sanCard.id, amount: 55, description: 'ANUIDADE DIFERENCIADA' };
     const other = { account_id: sanCard.id, amount: 100, description: 'LOJA Y' };
     const purchases = groupPurchases(
@@ -218,15 +291,19 @@ describe('groupPurchases', () => {
       ],
       allAccounts,
     );
-    expect(purchases.map((p) => [p.description, p.date, p.amount])).toEqual([
-      ['LOJA Y', '2026-09-02', 200],
-      ['ANUIDADE DIFERENCIADA', '2026-04-10', 660],
+    expect(rows(purchases)).toEqual([
+      ['ANUIDADE DIFERENCIADA', '2026-10-10', 55, 7],
+      ['LOJA Y', '2026-10-02', 100, 2],
+      ['ANUIDADE DIFERENCIADA', '2026-09-10', 55, 6],
+      ['LOJA Y', '2026-09-02', 100, 1],
+      ['ANUIDADE DIFERENCIADA', '2026-08-10', 55, 5],
     ]);
-    expect(['2026-08', '2026-09', '2026-10'].map((m) => monthSummary(purchases, m).spending)).toEqual([0, 200, 0]);
-    expect(futureInstallments(purchases, '2026-11', 1)[0]).toMatchObject({ amount: 55 });
+    expect(purchases[0]).toMatchObject({ category: 'taxas', installment: { purchaseDate: '2026-04-10', purchaseAmount: 660 } });
+    expect(['2026-08', '2026-09', '2026-10'].map((m) => monthSummary(purchases, m).spending)).toEqual([55, 155, 155]);
+    expect(futureInstallments(purchases, '2026-11-01', 1)[0]).toMatchObject({ amount: 55 });
   });
 
-  it('Santander: só a última parcela na janela (sem outra para comparar) não vira compra nova nem parcelas futuras', () => {
+  it('Santander: só a última parcela na janela (sem outra para comparar) fica no mês dela, sem parcelas futuras', () => {
     const purchases = groupPurchases(
       [
         parcel(10, 10, { account_id: sanCard.id, amount: 100, description: 'AMAZON BR 10/10', purchase_on: '2026-08-18', occurred_on: '2026-08-18' }),
@@ -234,17 +311,25 @@ describe('groupPurchases', () => {
       ],
       allAccounts,
     );
-    expect(purchases.find((p) => p.installments)).toMatchObject({ date: '2025-11-18', amount: 1000 });
-    expect(monthSummary(purchases, '2026-08').spending).toBe(0);
-    expect(futureInstallments(purchases, '2026-11', 6).every((m) => m.amount === 0)).toBe(true);
+    expect(purchases.find((p) => p.installment)).toMatchObject({
+      date: '2026-08-18',
+      amount: 100,
+      installment: { number: 10, purchaseDate: '2025-11-18', purchaseAmount: 1000 },
+    });
+    expect(monthSummary(purchases, '2026-08').spending).toBe(100);
+    expect(futureInstallments(purchases, '2026-11-05', 6).every((m) => m.amount === 0)).toBe(true);
   });
 
-  it('Nubank: uma parcela só, com a data da compra meses antes, continua na data da compra', () => {
+  it('Nubank: uma parcela só, com a data da compra meses antes, cai no mês dela contado da compra', () => {
     const [p] = groupPurchases(
       [parcel(4, 6, { amount: 50, description: 'LOJA N 04/06', purchase_on: '2026-07-10', occurred_on: '2026-10-10' })],
       accounts,
     );
-    expect(p).toMatchObject({ date: '2026-07-10', amount: 300 });
+    expect(p).toMatchObject({
+      date: '2026-10-10',
+      amount: 50,
+      installment: { number: 4, purchaseDate: '2026-07-10', purchaseExact: true, purchaseAmount: 300 },
+    });
   });
 
   it('Nubank (data da compra igual em todas) continua do jeito dele com o Santander ao lado', () => {
@@ -257,9 +342,11 @@ describe('groupPurchases', () => {
       ],
       allAccounts,
     );
-    expect(purchases.map((p) => [p.description, p.date, p.amount])).toEqual([
-      ['LOJA S', '2026-09-01', 160],
-      ['LOJA N', '2026-08-05', 150],
+    expect(rows(purchases)).toEqual([
+      ['LOJA S', '2026-10-01', 80, 2],
+      ['LOJA N', '2026-09-05', 50, 2],
+      ['LOJA S', '2026-09-01', 80, 1],
+      ['LOJA N', '2026-08-05', 50, 1],
     ]);
   });
 
@@ -273,27 +360,48 @@ describe('groupPurchases', () => {
       ],
       accounts,
     );
-    expect(purchases.map((p) => [p.date, p.amount, p.installments?.seen])).toEqual([['2026-08-28', 300, [1, 2, 3]]]);
-    expect(monthSummary(purchases, '2026-09').spending).toBe(0);
+    expect(seriesOf(purchases).size).toBe(1);
+    expect(rows(purchases)).toEqual([
+      ['LOJA X', '2026-10-28', 100, 3],
+      ['LOJA X', '2026-09-28', 100, 2],
+      ['LOJA X', '2026-08-28', 100, 1],
+    ]);
+    expect(monthSummary(purchases, '2026-09').spending).toBe(100);
   });
 
-  it('compra do fim do mês antes da janela: com a 1ª parcela buscada (um ciclo antes), fica no mês dela e fora da janela', () => {
+  it('compra do fim do mês: com a 1ª parcela buscada, cada parcela cai no mês certo', () => {
     const base = { amount: 100, description: 'LOJA X' };
-    const window = [parcel(2, 3, { ...base, occurred_on: '2026-09-04' }), parcel(3, 3, { ...base, occurred_on: '2026-10-04' })];
-    // Só a janela (desde 1º/8): as parcelas 2 e 3, lançadas no dia da fatura, estimam a compra em agosto.
-    expect(groupPurchases(window, accounts).map((p) => [p.date, p.amount])).toEqual([['2026-08-04', 300]]);
-    // Desde financeFetchStart, a parcela 1 (28/7) vem junto: a compra é de julho e não entra na janela.
-    expect(financeFetchStart('2026-10-07') <= '2026-07-28').toBe(true);
-    const fetched = groupPurchases([parcel(1, 3, { ...base, occurred_on: '2026-07-28' }), ...window], accounts);
-    expect(fetched.map((p) => [p.date, p.amount])).toEqual([['2026-07-28', 300]]);
-    expect(monthSummary(fetched, '2026-08').spending).toBe(0);
-    expect(windowPurchases(fetched, '2026-10-07')).toEqual([]);
+    const later = [parcel(2, 3, { ...base, occurred_on: '2026-09-04' }), parcel(3, 3, { ...base, occurred_on: '2026-10-04' })];
+    // Sem a 1ª: as parcelas 2 e 3, lançadas no dia da fatura, estimam a compra em 4/8 (um mês a mais em cada uma).
+    const estimated = groupPurchases(later, accounts);
+    expect(rows(estimated)).toEqual([
+      ['LOJA X', '2026-10-04', 100, 3],
+      ['LOJA X', '2026-09-04', 100, 2],
+    ]);
+    expect(estimated[0].installment).toMatchObject({ purchaseDate: '2026-08-04', purchaseExact: false });
+    // As parcelas vêm buscadas desde bem antes da janela: a 1ª (28/7) acerta a data da compra.
+    expect(financeInstallmentFetchStart('2026-10-07') <= '2026-07-28').toBe(true);
+    const fetched = groupPurchases([parcel(1, 3, { ...base, occurred_on: '2026-07-28' }), ...later], accounts);
+    expect(rows(fetched)).toEqual([
+      ['LOJA X', '2026-09-28', 100, 3],
+      ['LOJA X', '2026-08-28', 100, 2],
+      ['LOJA X', '2026-07-28', 100, 1],
+    ]);
+    // A 1ª parcela, de julho, fica fora da janela (agosto a outubro).
+    expect(rows(windowPurchases(fetched, '2026-10-07'))).toEqual([
+      ['LOJA X', '2026-09-28', 100, 3],
+      ['LOJA X', '2026-08-28', 100, 2],
+    ]);
   });
 
   it('sem data da compra: todas as parcelas com o dia original da compra (como na fatura impressa) são uma compra', () => {
     const base = { amount: 100, description: 'LOJA X', occurred_on: '2026-08-28' };
     const purchases = groupPurchases([parcel(1, 3, base), parcel(2, 3, base), parcel(3, 3, base)], accounts);
-    expect(purchases.map((p) => [p.date, p.amount])).toEqual([['2026-08-28', 300]]);
+    expect(rows(purchases)).toEqual([
+      ['LOJA X', '2026-10-28', 100, 3],
+      ['LOJA X', '2026-09-28', 100, 2],
+      ['LOJA X', '2026-08-28', 100, 1],
+    ]);
   });
 
   it('sem data da compra: duas compras iguais em meses diferentes continuam duas', () => {
@@ -306,10 +414,13 @@ describe('groupPurchases', () => {
       ],
       accounts,
     );
-    expect(purchases.map((p) => [p.date, p.amount])).toEqual([
-      ['2026-09-10', 100],
-      ['2026-07-20', 100],
+    expect(rows(purchases)).toEqual([
+      ['AMAZON', '2026-10-10', 50, 2],
+      ['AMAZON', '2026-09-10', 50, 1],
+      ['AMAZON', '2026-08-20', 50, 2],
     ]);
+    expect(seriesOf(purchases).size).toBe(2);
+    expect(purchases.map((p) => p.installment?.purchaseDate)).toEqual(['2026-09-10', '2026-09-10', '2026-07-20']);
   });
 
   it('a sobra dos centavos na primeira parcela não separa a compra', () => {
@@ -322,13 +433,14 @@ describe('groupPurchases', () => {
       ],
       accounts,
     );
-    expect(purchases).toHaveLength(1);
-    expect(purchases[0].amount).toBe(100);
+    expect(seriesOf(purchases).size).toBe(1);
+    expect(purchases.map((p) => p.amount)).toEqual([33.33, 33.33, 33.34]);
+    expect(purchases[0].installment).toMatchObject({ parcel: 33.33, purchaseAmount: 100 });
   });
 
-  it('só uma parcela na janela ainda vale a compra inteira', () => {
+  it('só uma parcela na janela: conta ela, no mês dela; a compra inteira vai junto como referência', () => {
     const [p] = groupPurchases([parcel(3, 10, { amount: 99.9, purchase_on: '2025-08-01', occurred_on: '2025-10-01' })], accounts);
-    expect(p).toMatchObject({ date: '2025-08-01', amount: 999 });
+    expect(p).toMatchObject({ date: '2025-10-01', amount: 99.9, installment: { number: 3, purchaseDate: '2025-08-01', purchaseAmount: 999 } });
   });
 
   it('compra em moeda estrangeira vale o valor em reais', () => {
@@ -690,49 +802,195 @@ describe('monthSummary — estornos', () => {
   });
 });
 
-describe('futureInstallments', () => {
-  const purchase = (over: Partial<BankPurchase>): BankPurchase => ({
-    key: 'k',
-    date: '2026-08-05',
-    amount: 1500,
-    description: 'MAGALU',
-    merchantName: null,
-    merchantCnpj: null,
-    category: 'outros',
-    autoCategory: 'outros',
-    categorySource: 'auto',
-    similarKey: null,
-    kind: 'spending',
-    pending: false,
-    accountId: nuCard.id,
-    installments: { seen: [1, 2, 3], total: 10, parcel: 150 },
-    txIds: [],
-    personTransfer: false,
-    sensitive: false,
-    storeName: null,
-    refundOf: null,
-    ...over,
+describe('monthSummary — estornos de compra parcelada', () => {
+  const magalu = (n: number, over: Partial<FinTransaction> = {}) =>
+    parcel(n, 10, {
+      amount: 150,
+      description: `MAGALU ${String(n).padStart(2, '0')}/10`,
+      purchase_on: '2026-08-05',
+      occurred_on: addMonths('2026-08-05', n - 1),
+      ...over,
+    });
+
+  it('estorno de uma parcela abate a parcela que ele diz (ou, sem dizer, a mais recente)', () => {
+    const marked = groupPurchases(
+      [magalu(1), magalu(2), magalu(3), tx({ account_id: nuCard.id, amount: 150, direction: 'CREDIT', description: 'ESTORNO MAGALU 02/10', occurred_on: '2026-10-06' })],
+      accounts,
+    );
+    const refund = marked.find((p) => p.kind === 'refund');
+    expect(marked.find((p) => p.key === refund?.refundOf)?.installment?.number).toBe(2);
+    expect(['2026-08', '2026-09', '2026-10'].map((m) => monthSummary(marked, m).spending)).toEqual([150, 0, 150]);
+
+    const plain = groupPurchases(
+      [magalu(1), magalu(2), magalu(3), tx({ account_id: nuCard.id, amount: 150, direction: 'CREDIT', description: 'Estorno MAGALU', occurred_on: '2026-10-06' })],
+      accounts,
+    );
+    expect(['2026-08', '2026-09', '2026-10'].map((m) => monthSummary(plain, m).spending)).toEqual([150, 150, 0]);
   });
 
-  it('põe cada parcela que falta no mês em que cai', () => {
-    const months = futureInstallments(
-      [
-        purchase({}),
-        purchase({ key: 'fin', date: '2026-10-10', kind: 'financing', installments: { seen: [1], total: 2, parcel: 400 } }),
-        purchase({ key: 'avista', installments: null }),
-      ],
-      '2026-11',
-      3,
+  it('estorno da compra inteira abate cada parcela no mês dela e não deixa nada comprometido', () => {
+    const first = magalu(1);
+    const purchases = groupPurchases(
+      [first, magalu(2), magalu(3), tx({ account_id: nuCard.id, amount: 1500, direction: 'CREDIT', description: 'Estorno MAGALU', occurred_on: '2026-10-06' })],
+      accounts,
     );
-    expect(months.map((m) => [m.month, m.amount, m.parcels.map((p) => `${p.key} ${p.number}/${p.total}`)])).toEqual([
-      ['2026-11', 550, ['k 4/10', 'fin 2/2']],
-      ['2026-12', 150, ['k 5/10']],
-      ['2027-01', 150, ['k 6/10']],
+    const refund = purchases.find((p) => p.kind === 'refund') as BankPurchase;
+    expect(refund.refundOf).toBe(`parc-${first.id}`);
+    expect(refund.refundParts.map((part) => part.amount)).toEqual([150, 150, 150]);
+    expect(['2026-08', '2026-09', '2026-10'].map((m) => monthSummary(purchases, m))).toMatchObject([
+      { spending: 0, refunds: 150, otherRefunds: 0, count: 0 },
+      { spending: 0, refunds: 150, otherRefunds: 0, count: 0 },
+      { spending: 0, refunds: 150, otherRefunds: 0, count: 0 },
+    ]);
+    expect(futureInstallments(purchases, '2026-10-07', 3).every((m) => m.amount === 0)).toBe(true);
+  });
+
+  it('estorno das parcelas já cobradas (a compra cancelada) também não deixa nada comprometido', () => {
+    const purchases = groupPurchases(
+      [magalu(1), magalu(2), tx({ account_id: nuCard.id, amount: 300, direction: 'CREDIT', description: 'Estorno MAGALU', occurred_on: '2026-09-20' })],
+      accounts,
+    );
+    expect(['2026-08', '2026-09'].map((m) => monthSummary(purchases, m).spending)).toEqual([0, 0]);
+    expect(futureInstallments(purchases, '2026-09-25', 3).every((m) => m.amount === 0)).toBe(true);
+  });
+
+  it('uma data na descrição do estorno ("05/09") não liga sozinha o estorno à parcela 5 de 9 de outra loja', () => {
+    const lojaY = (n: number, day: string) => parcel(n, 9, { amount: 100, description: `LOJA Y ${n}/9`, purchase_on: '2026-05-10', occurred_on: day });
+    const purchases = groupPurchases(
+      [
+        lojaY(4, '2026-08-10'),
+        lojaY(5, '2026-09-10'),
+        lojaY(6, '2026-10-10'),
+        tx({ account_id: nuCard.id, amount: 20, direction: 'CREDIT', description: 'ESTORNO PADARIA REAL 05/09', occurred_on: '2026-10-03' }),
+      ],
+      accounts,
+    );
+    expect(purchases.find((p) => p.kind === 'refund')?.refundOf).toBeNull();
+    expect(monthSummary(purchases, '2026-09').spending).toBe(100);
+    expect(monthSummary(purchases, '2026-10').otherRefunds).toBe(20);
+  });
+
+  it('compra cancelada com a parcela do mês que vem já mandada: devolvidas as já cobradas, nada fica comprometido', () => {
+    const first = magalu(1);
+    const purchases = groupPurchases(
+      [
+        first,
+        magalu(2),
+        magalu(3),
+        magalu(4, { status: 'PENDING' }),
+        tx({ account_id: nuCard.id, amount: 450, direction: 'CREDIT', description: 'Estorno de compra MAGALU', occurred_on: '2026-10-06' }),
+      ],
+      accounts,
+    );
+    expect(purchases.find((p) => p.kind === 'refund')?.refundOf).toBe(`parc-${first.id}`);
+    expect(['2026-08', '2026-09', '2026-10'].map((m) => monthSummary(purchases, m).spending)).toEqual([0, 0, 0]);
+    expect(futureInstallments(purchases, '2026-10-07', 3).every((m) => m.amount === 0)).toBe(true);
+  });
+
+  it('estorno sem o nome da loja não casa pelo valor com uma parcela de mais de 6 meses atrás', () => {
+    const old = { amount: 80, purchase_on: '2025-12-10', description: 'LOJA VELHA' };
+    const purchases = groupPurchases(
+      [
+        parcel(1, 3, { ...old, occurred_on: '2025-12-10' }),
+        parcel(2, 3, { ...old, occurred_on: '2026-01-10' }),
+        parcel(3, 3, { ...old, occurred_on: '2026-02-10' }),
+        tx({ account_id: nuCard.id, amount: 80, direction: 'CREDIT', description: 'Estorno de compra', occurred_on: '2026-10-03' }),
+      ],
+      accounts,
+    );
+    expect(purchases.find((p) => p.kind === 'refund')?.refundOf).toBeNull();
+    expect(monthSummary(purchases, '2026-10').otherRefunds).toBe(80);
+  });
+
+  it('estorno parcial maior que o já cobrado (devolveu parte): o que passou abate as parcelas que faltam', () => {
+    const purchases = groupPurchases(
+      [magalu(1), magalu(2), tx({ account_id: nuCard.id, amount: 400, direction: 'CREDIT', description: 'Estorno MAGALU', occurred_on: '2026-09-20' })],
+      accounts,
+    );
+    expect(['2026-08', '2026-09'].map((m) => monthSummary(purchases, m).spending)).toEqual([0, 0]);
+    // R$ 100 de crédito: a parcela 3 (outubro) fica em R$ 50; as seguintes, cheias.
+    expect(futureInstallments(purchases, '2026-09-25', 3).map((m) => m.amount)).toEqual([0, 50, 150]);
+  });
+});
+
+describe('futureInstallments', () => {
+  it('do mês atual, só as parcelas que o banco ainda não lançou; dos seguintes, todas, uma vez por compra', () => {
+    const magalu = { amount: 150, purchase_on: '2026-08-05', description: 'MAGALU' };
+    const purchases = groupPurchases(
+      [
+        parcel(1, 10, { ...magalu, occurred_on: '2026-08-05' }),
+        parcel(2, 10, { ...magalu, occurred_on: '2026-09-05' }),
+        parcel(3, 10, { ...magalu, occurred_on: '2026-10-05' }),
+        // A 2ª cai em 20/10 e ainda não veio.
+        parcel(1, 3, { amount: 40, purchase_on: '2026-09-20', occurred_on: '2026-09-20', description: 'LOJA B' }),
+        parcel(1, 2, {
+          amount: 400,
+          purchase_on: '2026-10-01',
+          occurred_on: '2026-10-01',
+          description: 'Parcelamento de fatura 1/2',
+          other_credits_type: 'BILL_INSTALLMENT',
+        }),
+        tx({ account_id: nuCard.id, amount: 90, description: 'PADARIA' }),
+      ],
+      accounts,
+    );
+    const months = futureInstallments(purchases, '2026-10-07', 3);
+    expect(months.map((m) => [m.month, m.amount, m.parcels.map((p) => `${p.description} ${p.number}/${p.total}`)])).toEqual([
+      ['2026-10', 40, ['LOJA B 2/3']],
+      ['2026-11', 590, ['Parcelamento de fatura 2/2', 'MAGALU 4/10', 'LOJA B 3/3']],
+      ['2026-12', 150, ['MAGALU 5/10']],
+    ]);
+    expect(new Set(months.flatMap((m) => m.parcels.map((p) => p.key))).size).toBe(5);
+  });
+
+  it('parcela que o banco já mandou para um mês que vem conta com o valor dela', () => {
+    const base = { purchase_on: '2026-09-05', description: 'LOJA C' };
+    const purchases = groupPurchases(
+      [
+        parcel(1, 3, { ...base, amount: 100.02, occurred_on: '2026-09-05' }),
+        parcel(2, 3, { ...base, amount: 99.99, occurred_on: '2026-10-05' }),
+        parcel(3, 3, { ...base, amount: 99.99, occurred_on: '2026-11-05', status: 'PENDING' }),
+      ],
+      accounts,
+    );
+    expect(futureInstallments(purchases, '2026-10-07', 2)).toEqual([
+      { month: '2026-10', amount: 0, parcels: [] },
+      {
+        month: '2026-11',
+        amount: 99.99,
+        parcels: [
+          { key: `${purchases[0].installment?.seriesKey}-3`, seriesKey: purchases[0].installment?.seriesKey, description: 'LOJA C', number: 3, total: 3, amount: 99.99, seen: true },
+        ],
+      },
+    ]);
+    // Fora da janela até o mês dela chegar.
+    expect(windowPurchases(purchases, '2026-10-07').map((p) => p.installment?.number)).toEqual([2, 1]);
+  });
+
+  it('compra que parou de cobrar (quitada antes ou cancelada) não deixa as que faltam como comprometidas', () => {
+    const base = { amount: 150, purchase_on: '2026-03-05', description: 'MAGALU' };
+    const purchases = groupPurchases(
+      [parcel(1, 10, { ...base, occurred_on: '2026-03-05' }), parcel(2, 10, { ...base, occurred_on: '2026-04-05' })],
+      accounts,
+    );
+    expect(futureInstallments(purchases, '2026-10-07', 6).every((m) => m.amount === 0)).toBe(true);
+  });
+
+  it('a parcela que faltou no meio não entra', () => {
+    const base = { amount: 150, purchase_on: '2026-08-05', description: 'MAGALU' };
+    const purchases = groupPurchases(
+      [parcel(1, 4, { ...base, occurred_on: '2026-08-05' }), parcel(3, 4, { ...base, occurred_on: '2026-10-05' })],
+      accounts,
+    );
+    expect(futureInstallments(purchases, '2026-10-07', 3).map((m) => [m.month, m.parcels.map((p) => p.number)])).toEqual([
+      ['2026-10', []],
+      ['2026-11', [4]],
+      ['2026-12', []],
     ]);
   });
 
   it('meses sem parcela vêm com zero', () => {
-    expect(futureInstallments([purchase({ installments: { seen: [1], total: 2, parcel: 10 } })], '2027-01', 2)).toEqual([
+    expect(futureInstallments([], '2027-01-10', 2)).toEqual([
       { month: '2027-01', amount: 0, parcels: [] },
       { month: '2027-02', amount: 0, parcels: [] },
     ]);

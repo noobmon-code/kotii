@@ -6,14 +6,20 @@
 // (lib/queryClient). As chaves levam a pessoa e a casa: a liberação é de uma
 // pessoa numa casa, e o cônjuge nunca vê nada disso.
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router, type Href } from 'expo-router';
 import { useEffect, useMemo } from 'react';
 
 import { useBudgets, useSaveBudgets } from '@/data/finance';
 import { functionErrorMessage } from '@/data/images';
-import { kotiiRecordsFrom, type KotiiRecord } from '@/domain/bankMatch';
-import { financeFetchStart, financeWindowStart } from '@/domain/bankMonth';
+import { kotiiRecordsFrom, kotiiRecordsStart, type KotiiRecord } from '@/domain/bankMatch';
+import {
+  financeFetchStart,
+  financeInstallmentFetchStart,
+  financeWindowStart,
+  groupPurchases,
+  isParcel,
+} from '@/domain/bankMonth';
 import type { FinCategoryRule } from '@/domain/bankRules';
 import { toISODate } from '@/domain/dates';
 import { getFinanceCategory, type FinanceCategory } from '@/domain/finance';
@@ -133,11 +139,14 @@ export function useFinAccounts() {
   });
 }
 
-/** Lançamentos com data no banco a partir de `fromDate` (os apagados na Pluggy ficam de fora). */
-export function useFinTransactions(fromDate: string) {
+/**
+ * Lançamentos com data no banco a partir de `fromDate` e, de antes, só as
+ * parcelas, desde `installmentsFrom` (os apagados na Pluggy ficam de fora).
+ */
+export function useFinTransactions(fromDate: string, installmentsFrom: string = fromDate) {
   const { key, enabled } = useFinScope();
   return useQuery({
-    queryKey: ['fin', 'transactions', ...key, fromDate],
+    queryKey: ['fin', 'transactions', ...key, fromDate, installmentsFrom],
     enabled,
     queryFn: async () =>
       (
@@ -145,7 +154,9 @@ export function useFinTransactions(fromDate: string) {
           supabase
             .from('fin_transactions')
             .select(TRANSACTION_COLUMNS)
-            .gte('occurred_on', fromDate)
+            .gte('occurred_on', installmentsFrom)
+            // Antes de `fromDate`, só parcela de verdade (n de N, com N > 1), como isParcel em bankMonth.
+            .or(`occurred_on.gte.${fromDate},and(installment_number.not.is.null,total_installments.gt.1)`)
             .is('deleted_at', null)
             .order('occurred_on', { ascending: false })
             .order('id')
@@ -286,48 +297,77 @@ type ReceiptRow = { id: string; purchased_at: string; total: number | null; stor
 type PaymentRow = { id: string; paid_on: string; amount: number; bill: { name: string } | null };
 type ExpenseRow = { id: string; spent_on: string; amount: number; description: string };
 
-/** Notas confirmadas, contas pagas e gastos avulsos desde `fromDate`, para a conferência com o banco. */
-export function useFinKotiiRecords(fromDate: string) {
+/**
+ * Notas confirmadas, contas pagas e gastos avulsos desde `fromDate`, para a
+ * conferência com o banco; null enquanto não se sabe desde quando.
+ */
+export function useFinKotiiRecords(fromDate: string | null) {
   const { enabled } = useFinScope();
   return useQuery({
     // Começa com 'spending': confirmar nota, pagar conta ou salvar gasto já recarrega.
     queryKey: ['spending', 'bankMatch', fromDate],
-    enabled,
+    enabled: enabled && fromDate !== null,
+    // A data muda quando chega uma compra parcelada mais antiga: a conferência anterior fica até a nova chegar.
+    placeholderData: keepPreviousData,
     queryFn: async (): Promise<KotiiRecord[]> => {
+      const since = fromDate as string;
       // Data da compra no fuso do aparelho, como no resumo (useSpending).
-      const [y, m, d] = fromDate.split('-').map(Number);
+      const [y, m, d] = since.split('-').map(Number);
       const startAt = new Date(y, m - 1, d).toISOString();
+      // Desde a compra parcelada mais antiga, pode passar das 1000 linhas que o PostgREST devolve de uma vez.
       const [receipts, payments, expenses] = await Promise.all([
-        supabase
-          .from('receipts')
-          .select('id, purchased_at, total, store:stores(name, cnpj)')
-          .eq('status', 'confirmed')
-          .gte('purchased_at', startAt),
-        supabase.from('bill_payments').select('id, paid_on, amount, bill:bills(name)').gte('paid_on', fromDate),
-        supabase.from('expenses').select('id, spent_on, amount, description').gte('spent_on', fromDate),
+        fetchAllPages<ReceiptRow>((from, to) =>
+          supabase
+            .from('receipts')
+            .select('id, purchased_at, total, store:stores(name, cnpj)')
+            .eq('status', 'confirmed')
+            .gte('purchased_at', startAt)
+            .order('purchased_at')
+            .order('id')
+            .range(from, to),
+        ),
+        fetchAllPages<PaymentRow>((from, to) =>
+          supabase
+            .from('bill_payments')
+            .select('id, paid_on, amount, bill:bills(name)')
+            .gte('paid_on', since)
+            .order('paid_on')
+            .order('id')
+            .range(from, to),
+        ),
+        fetchAllPages<ExpenseRow>((from, to) =>
+          supabase
+            .from('expenses')
+            .select('id, spent_on, amount, description')
+            .gte('spent_on', since)
+            .order('spent_on')
+            .order('id')
+            .range(from, to),
+        ),
       ]);
       return kotiiRecordsFrom({
-        receipts: (unwrap(receipts) as unknown as ReceiptRow[]).map((r) => ({
+        receipts: receipts.map((r) => ({
           id: r.id,
           date: toISODate(new Date(r.purchased_at)),
           total: num(r.total),
           store: r.store?.name ?? null,
           cnpj: r.store?.cnpj ?? null,
         })),
-        payments: (unwrap(payments) as unknown as PaymentRow[]).map((p) => ({
+        payments: payments.map((p) => ({
           id: p.id,
           paid_on: p.paid_on,
           amount: Number(p.amount),
           bill_name: p.bill?.name ?? 'Conta',
         })),
-        expenses: (unwrap(expenses) as ExpenseRow[]).map((e) => ({ ...e, amount: Number(e.amount) })),
+        expenses: expenses.map((e) => ({ ...e, amount: Number(e.amount) })),
       });
     },
   });
 }
 
-// Janela do consultor (o mês de hoje e os dois anteriores) e o ciclo de fatura buscado antes dela.
-export { financeFetchStart, financeWindowStart };
+// Janela do consultor (o mês de hoje e os dois anteriores), o ciclo de fatura buscado antes dela e o começo
+// das parcelas buscadas.
+export { financeFetchStart, financeInstallmentFetchStart, financeWindowStart };
 
 export interface FinanceData {
   connections: FinConnection[];
@@ -348,17 +388,28 @@ export type FinanceDataState =
 /**
  * Tudo o que o consultor usa, na janela de `financeWindowStart(today)`. Os
  * lançamentos vêm desde um ciclo de fatura antes (`financeFetchStart`), só
- * para juntar parcelas e pares que começaram antes da janela; a tela e o
- * retrato mostram só a janela. Só fica pronto com tudo carregado: com uma
- * consulta faltando, a tela e o Nuke diriam "nada" onde não sabem.
+ * para juntar parcelas e pares que começaram antes da janela, e as parcelas
+ * desde bem antes (`financeInstallmentFetchStart`), para datar cada uma pela
+ * compra; a tela e o retrato mostram só a janela. Os registros do Kotii vêm
+ * desde a compra parcelada mais antiga com parcela na janela
+ * (`kotiiRecordsStart`): a nota dela é da data da compra. Só fica pronto com
+ * tudo carregado: com uma consulta faltando, a tela e o Nuke diriam "nada"
+ * onde não sabem.
  */
 export function useFinanceData(today: string): FinanceDataState {
-  const fromDate = financeWindowStart(today);
   const connections = useFinConnections();
   const accounts = useFinAccounts();
-  const transactions = useFinTransactions(financeFetchStart(today));
+  const transactions = useFinTransactions(financeFetchStart(today), financeInstallmentFetchStart(today));
   const budgets = useBudgets();
-  const records = useFinKotiiRecords(fromDate);
+  // Desde quando buscar os registros depende só das parcelas: agrupar só elas sai bem mais leve que tudo.
+  const recordsFrom = useMemo(
+    () =>
+      transactions.data && accounts.data
+        ? kotiiRecordsStart(groupPurchases(transactions.data.filter(isParcel), accounts.data), today)
+        : null,
+    [transactions.data, accounts.data, today],
+  );
+  const records = useFinKotiiRecords(recordsFrom);
   const rules = useFinCategoryRules();
 
   const queries = [connections, accounts, transactions, budgets, records, rules];
@@ -382,7 +433,8 @@ export function useFinanceData(today: string): FinanceDataState {
     return {
       status: 'error',
       error: failed.error,
-      retry: () => queries.filter((q) => q.data === undefined).forEach((q) => q.refetch()),
+      // Só as que falharam: a dos registros espera os lançamentos para saber desde quando buscar.
+      retry: () => queries.filter((q) => q.data === undefined && q.isError).forEach((q) => q.refetch()),
     };
   }
   return data ? { status: 'ready', data } : { status: 'loading' };

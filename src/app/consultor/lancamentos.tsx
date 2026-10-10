@@ -11,12 +11,12 @@ import {
   useSetCategoryRule,
   type FinanceData,
 } from '@/data/financeBeta';
-import { accountLabels, groupPurchases, type BankPurchase } from '@/domain/bankMonth';
+import { accountLabels, groupPurchases, windowPurchases, type BankPurchase } from '@/domain/bankMonth';
 import { categoryRulesOf, missingSimilarMarks, purchaseRuleKey } from '@/domain/bankRules';
 import { todayISO } from '@/domain/dates';
 import { FINANCE_CATEGORIES, getFinanceCategory, monthLabel, shiftMonth, type FinanceCategory } from '@/domain/finance';
 import { formatBRL } from '@/domain/money';
-import { purchaseDetails, purchaseTitle } from '@/features/finance/bankPurchaseText';
+import { installmentSummary, purchaseDetails, purchaseTitle } from '@/features/finance/bankPurchaseText';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import {
@@ -92,7 +92,7 @@ function Lancamentos() {
   const [open, setOpen] = useState<string | null>(null);
   const finance = useFinanceData(today);
   const data = finance.status === 'ready' ? finance.data : null;
-  const view = useMemo(() => (data ? buildView(data) : null), [data]);
+  const view = useMemo(() => (data ? buildView(data, today) : null), [data, today]);
   useRepairSimilarMarks(view?.repairs);
 
   const spending = useMemo(
@@ -205,12 +205,13 @@ function Lancamentos() {
   );
 }
 
-function buildView(data: FinanceData) {
+function buildView(data: FinanceData, today: string) {
   const rules = categoryRulesOf(data.categoryRules);
   const marks = new Set(data.sensitiveKeys);
   const purchases = groupPurchases(data.transactions, data.accounts, undefined, rules, marks);
-  const spending = purchases.filter((p) => p.kind === 'spending');
-  // Quantas saídas cada regra de "parecidas" mudaria (em todos os meses buscados).
+  // Os meses que dá para olhar (as parcelas de antes só vieram para datar as compras parceladas).
+  const spending = windowPurchases(purchases, today).filter((p) => p.kind === 'spending');
+  // Quantas saídas desses meses cada regra de "parecidas" mudaria (cada parcela conta uma).
   const similarCounts = new Map<string, number>();
   for (const p of spending) if (p.similarKey) similarCounts.set(p.similarKey, (similarCounts.get(p.similarKey) ?? 0) + 1);
   return {
@@ -288,14 +289,16 @@ function CategoryEditor({
   const removeRules = useRemoveCategoryRules();
   const [scope, setScope] = useState<Scope>(p.similarKey && p.categorySource !== 'manual' ? 'parecidas' : 'esta');
   const busy = setRule.isPending || removeRules.isPending;
-  const ownKey = purchaseRuleKey(p.key);
+  // Na parcela, a escolha "Só esta" é da compra parcelada inteira: grava numa parcela e vale para todas.
+  const ownKey = purchaseRuleKey(p.ruleKey);
   const similarWho = p.similarKey?.startsWith('doc:') ? 'todo PIX para esta pessoa' : 'tudo com este nome';
+  const summary = installmentSummary(p);
 
-  // Apaga a escolha só desta compra. Se ela era Saúde, marca antes as parecidas (escolha de antes da
-  // similar_key): a marca da compra sozinha se perde quando o lançamento muda de id.
+  // Apaga a escolha só desta compra (na parcelada, a de qualquer parcela). Se ela era Saúde, marca antes as
+  // parecidas (escolha de antes da similar_key): a marca da compra sozinha se perde quando o lançamento muda de id.
   async function removeOwnRule() {
     if (p.category === 'saude' && p.similarKey) await repairSimilarMark(ownKey, p.similarKey);
-    await removeRules.mutateAsync([ownKey]);
+    await removeRules.mutateAsync(p.ruleKeys.map(purchaseRuleKey));
   }
 
   async function choose(category: FinanceCategory) {
@@ -327,6 +330,7 @@ function CategoryEditor({
   return (
     <View style={styles.editor}>
       {p.description !== purchaseTitle(p) ? <Text variant="small">No banco: {p.description}</Text> : null}
+      {summary ? <Text variant="small">{summary}</Text> : null}
       {p.categorySource !== 'auto' && p.autoCategory !== p.category ? (
         <Text variant="small">O consultor tinha posto em {getFinanceCategory(p.autoCategory).label}.</Text>
       ) : null}
@@ -343,7 +347,9 @@ function CategoryEditor({
       <Text variant="small">
         {scope === 'parecidas' && p.similarKey
           ? `Vale para ${similarWho}, inclusive o que ainda vai chegar.`
-          : 'Vale só para esta saída.'}
+          : p.installment
+            ? 'Vale para todas as parcelas desta compra.'
+            : 'Vale só para esta saída.'}
       </Text>
       <Row style={styles.wrap}>
         {FINANCE_CATEGORIES.map((cat) => (
@@ -359,7 +365,11 @@ function CategoryEditor({
       {p.categorySource !== 'auto' ? (
         <Button
           title={
-            p.categorySource === 'manual' ? 'Desfazer a escolha desta saída' : 'Desfazer a escolha das parecidas'
+            p.categorySource !== 'manual'
+              ? 'Desfazer a escolha das parecidas'
+              : p.installment
+                ? 'Desfazer a escolha desta compra'
+                : 'Desfazer a escolha desta saída'
           }
           variant="ghost"
           compact

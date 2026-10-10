@@ -58,6 +58,10 @@ Deno.test('buildSystem names the weekday, sets the rules and ends with the snaps
   assertEquals(system.includes('sem markdown'), true);
   assertEquals(system.includes('R$ 1.234,56'), true);
   assertEquals(system.includes('mercado, alimentacao, casa, moradia'), true);
+  // Compra parcelada conta mês a mês, como no retrato, e o valor ao lado da parcela é o da compra inteira.
+  assertEquals(system.includes('compra parcelada conta mês a mês'), true);
+  assertEquals(system.includes('conta o valor inteiro'), false);
+  assertEquals(system.includes('não o que já foi pago'), true);
   assertEquals(buildSystem('', '2026-10-07').endsWith('(sem dados carregados)'), true);
 });
 
