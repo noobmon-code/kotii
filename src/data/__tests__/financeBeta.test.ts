@@ -14,6 +14,7 @@ import {
   repairSimilarMark,
   REPAIR_TRIES,
   type RepairState,
+  ruleParcelIds,
   runRepairs,
   toFinAccount,
   toFinTransaction,
@@ -122,6 +123,12 @@ describe('janela do consultor', () => {
     );
     // Sem cartão, nenhum "in" vazio (o PostgREST recusa).
     expect(transactionsFilter('2026-06-22', [])).not.toContain('account_id');
+  });
+
+  it('a parcela que guarda uma escolha ou marca e saiu da busca (compra mais longa que 24 meses) vem à parte', () => {
+    const keys = ['p:parc-old-1', 'p:tx-avista', 'm:padaria real', 'p:parc-novo', 'doc:abc', 'p:parc-old-1'];
+    expect(ruleParcelIds(keys, [{ id: 'novo' }])).toEqual(['old-1']);
+    expect(ruleParcelIds([], [])).toEqual([]);
   });
 });
 

@@ -182,6 +182,43 @@ export function transactionsFilter(fromDate: string, cardIds: readonly string[])
 }
 
 /**
+ * Ids das parcelas que guardam uma escolha "Só esta" ou uma marca de Saúde
+ * (`p:parc-<id>`) e não vieram em `transactions`: a parcela de uma compra
+ * parcelada mais longa que a busca (36x, 48x) sai dela antes de a compra
+ * acabar, e a escolha se perderia.
+ */
+export function ruleParcelIds(matchKeys: readonly string[], transactions: readonly Pick<FinTransaction, 'id'>[]): string[] {
+  const have = new Set(transactions.map((t) => t.id));
+  const ids = new Set<string>();
+  for (const key of matchKeys) {
+    const id = key.startsWith('p:parc-') ? key.slice('p:parc-'.length) : null;
+    if (id && !have.has(id)) ids.add(id);
+  }
+  return [...ids].sort();
+}
+
+/** O PostgREST aceita uma lista de ids no endereço até um tamanho: busca em partes. */
+const IDS_PER_REQUEST = 100;
+
+/** As parcelas de ruleParcelIds, em qualquer data (null: ainda não se sabe quais). */
+export function useFinRuleParcels(ids: string[] | null) {
+  const { key, enabled } = useFinScope();
+  return useQuery({
+    queryKey: ['fin', 'ruleParcels', ...key, ...(ids ?? [])],
+    enabled: enabled && ids !== null,
+    queryFn: async () => {
+      const out: FinTransaction[] = [];
+      const all = ids ?? [];
+      for (let i = 0; i < all.length; i += IDS_PER_REQUEST) {
+        const chunk = all.slice(i, i + IDS_PER_REQUEST);
+        out.push(...(unwrap(await supabase.from('fin_transactions').select(TRANSACTION_COLUMNS).in('id', chunk)) as FinTransaction[]));
+      }
+      return out.map(toFinTransaction);
+    },
+  });
+}
+
+/**
  * Categorias que a pessoa escolheu para os lançamentos e o que ela já pôs em
  * Saúde algum dia (só dela, nesta casa). As marcas de Saúde vêm na mesma
  * consulta: escolher uma categoria recarrega as duas juntas.
@@ -405,8 +442,9 @@ export type FinanceDataState =
  * lançamentos vêm desde um ciclo de fatura antes (`financeFetchStart`), só
  * para juntar parcelas e pares que começaram antes da janela, e as parcelas
  * (com os créditos dos cartões, onde caem os estornos delas) desde bem antes
- * (`financeInstallmentFetchStart`), para datar cada uma pela compra; a tela
- * e o retrato mostram só a janela. Os registros do Kotii vêm
+ * (`financeInstallmentFetchStart`), para datar cada uma pela compra, e a
+ * parcela que guarda uma escolha vem de qualquer data (ruleParcelIds); a
+ * tela e o retrato mostram só a janela. Os registros do Kotii vêm
  * desde a compra parcelada mais antiga com parcela na janela
  * (`kotiiRecordsStart`): a nota dela é da data da compra. Só fica pronto com
  * tudo carregado: com uma consulta faltando, a tela e o Nuke diriam "nada"
@@ -431,23 +469,31 @@ export function useFinanceData(today: string): FinanceDataState {
   );
   const records = useFinKotiiRecords(recordsFrom);
   const rules = useFinCategoryRules();
+  const oldIds = useMemo(
+    () =>
+      rules.data && transactions.data
+        ? ruleParcelIds([...rules.data.rules.map((r) => r.match_key), ...rules.data.sensitiveKeys], transactions.data)
+        : null,
+    [rules.data, transactions.data],
+  );
+  const ruleParcels = useFinRuleParcels(oldIds);
 
-  const queries = [connections, accounts, transactions, budgets, records, rules];
+  const queries = [connections, accounts, transactions, budgets, records, rules, ruleParcels];
   const failed = queries.find((q) => q.data === undefined && q.isError);
   const data = useMemo(
     () =>
-      connections.data && accounts.data && transactions.data && budgets.data && records.data && rules.data
+      connections.data && accounts.data && transactions.data && budgets.data && records.data && rules.data && ruleParcels.data
         ? {
             connections: connections.data,
             accounts: accounts.data,
-            transactions: transactions.data,
+            transactions: [...transactions.data, ...ruleParcels.data],
             budgets: budgets.data,
             kotiiRecords: records.data,
             categoryRules: rules.data.rules,
             sensitiveKeys: rules.data.sensitiveKeys,
           }
         : null,
-    [connections.data, accounts.data, transactions.data, budgets.data, records.data, rules.data],
+    [connections.data, accounts.data, transactions.data, budgets.data, records.data, rules.data, ruleParcels.data],
   );
   if (failed) {
     return {
