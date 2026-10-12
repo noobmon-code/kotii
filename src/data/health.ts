@@ -59,6 +59,9 @@ export function useDeletePerson() {
     'dietPlans',
     'medications',
     'documents',
+    // A ficha apagada sai das tarefas e dos rodízios (a vez passa adiante).
+    'chores',
+    'choreRotations',
   );
   return useMutation({
     mutationFn: async (id: string) => {

@@ -4,11 +4,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { SAME_PURCHASE_DAYS, type PantryEntry } from '@/domain/cartPantry';
+import { groupRotations, isRotationUnavailable, type ChoreRotations } from '@/domain/choreRotation';
 import { addDays, diffDays } from '@/domain/dates';
 import type { MedicationSchedule } from '@/domain/medications';
 import type { PantryTake } from '@/domain/pantry';
 import { supabase, unwrap } from '@/lib/supabase';
-import type { Chore, Medication, MedicationDose, PantryItem, Unit } from '@/lib/types';
+import type { Chore, ChoreRotationRow, Medication, MedicationDose, PantryItem, Unit } from '@/lib/types';
 
 // ---------------------------------------------------------------------------
 // Despensa
@@ -141,17 +142,66 @@ export function useChore(id: string | undefined) {
   });
 }
 
-export type ChoreValues = Pick<Chore, 'title' | 'notes' | 'recurrence' | 'interval_count' | 'due_on' | 'assigned_to'> &
-  Partial<Pick<Chore, 'equipment_id' | 'kid_id' | 'points'>>;
+/**
+ * As ordens de rodízio da casa, por tarefa (ver domain/choreRotation). No
+ * banco que ainda não tem o rodízio (o app pode chegar antes da migração),
+ * nenhuma, sem erro: as telas seguem como se ninguém revezasse.
+ */
+export async function fetchChoreRotations(db: SupabaseClient = supabase): Promise<ChoreRotations> {
+  const result = await db.from('chore_rotation').select('chore_id, person_id, position').order('position');
+  if (result.error && isRotationUnavailable(result.error)) return {};
+  return groupRotations(unwrap(result) as ChoreRotationRow[]);
+}
+
+export function useChoreRotations() {
+  return useQuery({ queryKey: ['choreRotations'], queryFn: () => fetchChoreRotations() });
+}
+
+// Sem assigned_to e kid_id, a edição não mexe no responsável (num rodízio, a vez fica com o banco).
+export type ChoreValues = Pick<Chore, 'title' | 'notes' | 'recurrence' | 'interval_count' | 'due_on'> &
+  Partial<Pick<Chore, 'assigned_to' | 'equipment_id' | 'kid_id' | 'points'>>;
+
+/** A tarefa salva e, se a ordem do rodízio não pôde ser gravada, por quê (a tarefa em si ficou salva). */
+export interface SaveChoreResult {
+  id: string;
+  rotationError?: unknown;
+}
+
+/**
+ * Grava a tarefa e, logo depois, a ordem do rodízio (`rotation`; vazia:
+ * encerra o que havia). Sem `rotation`, só a tarefa, como sempre: nada do
+ * rodízio é chamado, e o banco pode nem tê-lo.
+ */
+export async function saveChore({
+  id,
+  values,
+  rotation,
+}: {
+  id?: string;
+  values: ChoreValues;
+  rotation?: string[] | null;
+}): Promise<SaveChoreResult> {
+  if (id) unwrap(await supabase.from('chores').update(values).eq('id', id));
+  const saved: SaveChoreResult = {
+    id: id ?? (unwrap(await supabase.from('chores').insert(values).select('id').single()) as { id: string }).id,
+  };
+  if (!rotation) return saved;
+  // A tarefa já está salva: a falha do rodízio volta no resultado, em vez de
+  // erro, para a tela avisar sem salvar a mesma tarefa de novo.
+  const rotationError = await supabase
+    .rpc('save_chore_rotation', { p_chore_id: saved.id, p_people: rotation })
+    .then((result) => result.error, (err: unknown) => err);
+  return rotationError ? { ...saved, rotationError } : saved;
+}
 
 export function useSaveChore() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, values }: { id?: string; values: ChoreValues }) =>
-      id
-        ? unwrap(await supabase.from('chores').update(values).eq('id', id))
-        : unwrap(await supabase.from('chores').insert(values)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chores'] }),
+    mutationFn: saveChore,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['chores'] });
+      queryClient.invalidateQueries({ queryKey: ['choreRotations'] });
+    },
   });
 }
 
@@ -162,6 +212,8 @@ export interface CompleteChoreResult {
   person_id: string | null;
   due_on: string;
   active: boolean;
+  /** Rodízio: a ficha de quem passa a ser a vez. Não vem do banco que ainda não tem o rodízio. */
+  next_person_id?: string | null;
 }
 
 export function useCompleteChore() {
@@ -173,8 +225,31 @@ export function useCompleteChore() {
       unwrap(await supabase.rpc('complete_chore', { p_chore_id: id, p_today: today, p_due_on: dueOn })) as CompleteChoreResult,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['chores'] });
+      queryClient.invalidateQueries({ queryKey: ['choreRotations'] });
       queryClient.invalidateQueries({ queryKey: ['choreHistory'] });
       queryClient.invalidateQueries({ queryKey: ['kidPoints'] });
+    },
+  });
+}
+
+/**
+ * "Pular a vez": passa a vez para o próximo do rodízio sem concluir a tarefa.
+ * from: a ficha de quem a tela mostrava a vez; se ela já passou (outro
+ * celular tocou antes), o servidor não passa de novo e devolve null.
+ */
+export function useSkipChoreTurn() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, from }: { id: string; from: string | null }) => {
+      const result = await supabase.rpc('skip_chore_turn', { p_chore_id: id, p_from: from });
+      if (result.error) throw result.error;
+      // De quem a vez passou a ser; null quando nada mudou.
+      return result.data as string | null;
+    },
+    // Também quando nada mudou ou falhou: a tela mostra de quem é a vez agora.
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['chores'] });
+      queryClient.invalidateQueries({ queryKey: ['choreRotations'] });
     },
   });
 }
@@ -261,7 +336,10 @@ export function useDeleteChore() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => unwrap(await supabase.from('chores').delete().eq('id', id)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chores'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['chores'] });
+      queryClient.invalidateQueries({ queryKey: ['choreRotations'] });
+    },
   });
 }
 

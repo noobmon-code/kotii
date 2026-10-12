@@ -2,8 +2,10 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
+import { usePeople } from '@/data/health';
 import { useCompleteChore, useSaveChore } from '@/data/home';
 import { DOCUMENTS_BUCKET, useDeleteEquipment, useEquipment, useMaintenance, useSaveEquipment } from '@/data/house';
+import { rotationPeople } from '@/domain/choreRotation';
 import { choreStatus, describeChoreStatus, describeRecurrence } from '@/domain/chores';
 import { addMonths, formatBRDate, formatShortDate, parseBRDate, todayISO, toISODate } from '@/domain/dates';
 import {
@@ -16,6 +18,7 @@ import {
   type MaintenanceSuggestion,
 } from '@/domain/equipment';
 import { parseDecimal } from '@/domain/money';
+import { announceCompletion } from '@/features/ChoresPanel';
 import { PhotoStrip } from '@/features/PhotoStrip';
 import { useDraftPhotos } from '@/features/useDraftPhotos';
 import { usePhotoSheet } from '@/features/usePhotoSheet';
@@ -228,6 +231,7 @@ function EquipmentForm({ equipment }: { equipment?: Equipment }) {
 
 function MaintenanceSection({ equipment, today }: { equipment: Equipment; today: string }) {
   const members = useHousehold().data?.members ?? [];
+  const people = usePeople().data ?? [];
   const { chores, history } = useMaintenance(equipment.id);
   const saveChore = useSaveChore();
   const complete = useCompleteChore();
@@ -286,7 +290,13 @@ function MaintenanceSection({ equipment, today }: { equipment: Equipment; today:
                       <CheckCircle
                         checked={false}
                         label={`Registrar ${chore.title} feita hoje`}
-                        onPress={() => complete.mutate({ id: chore.id, today, dueOn: chore.due_on }, { onError })}
+                        onPress={() =>
+                          complete.mutate(
+                            { id: chore.id, today, dueOn: chore.due_on },
+                            // Manutenção em rodízio: diz de quem é a próxima vez.
+                            { onSuccess: (result) => announceCompletion(result, rotationPeople(members, people)), onError },
+                          )
+                        }
                       />
                     ) : null
                   }

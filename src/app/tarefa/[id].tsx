@@ -2,9 +2,26 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { useChore, useDeleteChore, useSaveChore } from '@/data/home';
+import { useChore, useChoreRotations, useDeleteChore, useSaveChore, useSkipChoreTurn } from '@/data/home';
 import { usePeople } from '@/data/health';
 import { useEquipment } from '@/data/house';
+import {
+  currentTurn,
+  nextTurn,
+  numberedOrder,
+  orderHasKid,
+  planRotationSave,
+  plannedTurn,
+  rotationErrorMessage,
+  rotationLabel,
+  rotationOf,
+  rotationPeople,
+  rotationProblem,
+  skipTurnQuestion,
+  toggleInOrder,
+  turnOf,
+  type ChoreTurn,
+} from '@/domain/choreRotation';
 import { RECURRENCE_OPTIONS, type Recurrence } from '@/domain/chores';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { kidsOf } from '@/domain/points';
@@ -26,17 +43,37 @@ export default function ChoreScreen() {
   const { id, aparelho } = useLocalSearchParams<{ id: string; aparelho?: string }>();
   const isNew = id === 'nova';
   const chore = useChore(isNew ? undefined : id);
+  // A ordem do rodízio (e as fichas dela) entram no estado inicial do
+  // formulário: a tarefa que já existe espera por elas. Sem elas, salvar
+  // desfaria um rodízio que a tela nem mostrou.
+  const rotations = useChoreRotations();
+  const people = usePeople();
 
-  if (!isNew && chore.isPending) return <Loading />;
-  if (!isNew && chore.isError) return <ErrorNotice error={chore.error} />;
-  return <ChoreForm chore={isNew ? undefined : chore.data} equipmentId={(isNew ? aparelho : chore.data?.equipment_id) || null} />;
+  if (!isNew) {
+    const queries = [chore, rotations, people];
+    const failed = queries.find((q) => q.isError);
+    if (failed) return <ErrorNotice error={failed.error} onRetry={() => queries.forEach((q) => q.refetch())} />;
+    if (queries.some((q) => q.isPending)) return <Loading />;
+  }
+  return (
+    <ChoreForm
+      chore={isNew ? undefined : chore.data}
+      equipmentId={(isNew ? aparelho : chore.data?.equipment_id) || null}
+      savedOrder={isNew ? [] : rotationOf(rotations.data, id)}
+    />
+  );
 }
 
-function ChoreForm({ chore, equipmentId }: { chore?: Chore; equipmentId: string | null }) {
+/** savedOrder: a ordem do rodízio gravada (vazia: a tarefa não está em rodízio). */
+function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmentId: string | null; savedOrder: string[] }) {
   const equipment = useEquipment(equipmentId ?? undefined);
   const members = useHousehold().data?.members ?? [];
   const save = useSaveChore();
+  const skip = useSkipChoreTurn();
   const remove = useDeleteChore();
+  const people = usePeople().data ?? [];
+  const kids = kidsOf(people);
+  const who = rotationPeople(members, people);
   const [title, setTitle] = useState(chore?.title ?? '');
   const [notes, setNotes] = useState(chore?.notes ?? '');
   const [recurrence, setRecurrence] = useState<Recurrence>(chore?.recurrence ?? (equipmentId ? 'monthly' : 'weekly'));
@@ -44,11 +81,52 @@ function ChoreForm({ chore, equipmentId }: { chore?: Chore; equipmentId: string 
   const [due, setDue] = useState(formatBRDate(chore?.due_on ?? todayISO()));
   const [assignedTo, setAssignedTo] = useState<string | null>(chore?.assigned_to ?? null);
   const [kidId, setKidId] = useState<string | null>(chore?.kid_id ?? null);
-  // Tarefa nova de criança começa valendo 10; a que já é de criança mantém o que tinha, mesmo 0.
-  const [points, setPoints] = useState(String(chore?.kid_id ? chore.points : 10));
-  const kids = kidsOf(usePeople().data ?? []);
+  // Rodízio: as fichas na ordem escolhida. De quem é a vez não fica aqui: vem da tarefa.
+  const [rotating, setRotating] = useState(savedOrder.length > 0);
+  const [order, setOrder] = useState(savedOrder);
+  // Tarefa nova de criança começa valendo 10; a que já é de criança (ou tem criança no rodízio) mantém o que tinha, mesmo 0.
+  const [points, setPoints] = useState(String(chore && (chore.kid_id || orderHasKid(savedOrder, who)) ? chore.points : 10));
+  // Tarefa nova já criada, cujo rodízio não pôde ser gravado: salvar de novo atualiza essa, em vez de criar outra.
+  const [createdId, setCreatedId] = useState<string>();
+
+  const saved = chore ? { turn: chore, order: savedOrder } : undefined;
+  // "Uma vez" não tem rodízio: fica só quem está na vez.
+  const inRotation = rotating && recurrence !== 'none';
+  const planned = plannedTurn(saved, order, who);
+  const single: ChoreTurn = rotating ? turnOf(planned) : { assigned_to: kidId ? null : assignedTo, kid_id: kidId };
+  const problem = inRotation ? rotationProblem(order, who) : null;
+  const earnsPoints = inRotation ? orderHasKid(order, who) : Boolean(single.kid_id);
+  // "Pular a vez" vale para o rodízio que está gravado, não para o que está sendo editado.
+  const skipTo = chore?.active ? nextTurn(chore, savedOrder, who) : null;
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
+
+  function pickSingle(turn: ChoreTurn) {
+    setRotating(false);
+    setAssignedTo(turn.assigned_to);
+    setKidId(turn.kid_id);
+  }
+
+  function toggleRotation() {
+    // Saindo do rodízio, fica quem está na vez; entrando, quem já era o responsável é o primeiro.
+    if (rotating) return pickSingle(single);
+    const first = currentTurn(single, who);
+    if (!order.length && first) setOrder([first.id]);
+    setRotating(true);
+  }
+
+  function askSkip() {
+    if (!chore || !skipTo) return;
+    const from = currentTurn(chore, who);
+    confirmAction(
+      'Pular a vez',
+      skipTurnQuestion(from?.name, skipTo.name),
+      'Passar a vez',
+      // Se a vez já passou em outro celular, nada muda e a tela mostra a de agora.
+      () => skip.mutate({ id: chore.id, from: from?.id ?? null }, { onError: (err) => notify('Erro', rotationErrorMessage(err) ?? errorMessage(err)) }),
+      false,
+    );
+  }
 
   function submit() {
     const dueISO = parseBRDate(due);
@@ -57,27 +135,52 @@ function ChoreForm({ chore, equipmentId }: { chore?: Chore; equipmentId: string 
       notify('Confira os dados', 'Título, data (dd/mm/aaaa) e intervalo entre 1 e 365 são obrigatórios.');
       return;
     }
-    const pointsValue = kidId ? Number.parseInt(points, 10) : 0;
-    if (kidId && !(pointsValue >= 0 && pointsValue <= 1000)) {
+    if (problem) {
+      notify('Rodízio incompleto', problem);
+      return;
+    }
+    const pointsValue = earnsPoints ? Number.parseInt(points, 10) : 0;
+    if (earnsPoints && !(pointsValue >= 0 && pointsValue <= 1000)) {
       notify('Pontos inválidos', 'Use um número de 0 a 1000.');
       return;
     }
+    const plan = planRotationSave({
+      saved,
+      recurrence,
+      choice: rotating ? { mode: 'rotation', order } : { mode: 'single', ...single },
+      people: who,
+    });
+    const id = chore?.id ?? createdId;
     save.mutate(
       {
-        id: chore?.id,
+        id,
         values: {
           title: title.trim(),
           notes: notes.trim() || null,
           recurrence,
           interval_count: recurrence === 'none' ? 1 : count,
           due_on: dueISO,
-          assigned_to: kidId ? null : assignedTo,
-          kid_id: kidId,
+          // Num rodízio que já existia, o responsável nem vai: a vez fica com o banco.
+          ...plan.turn,
           points: pointsValue,
-          ...(chore ? {} : { equipment_id: equipmentId }),
+          ...(id ? {} : { equipment_id: equipmentId }),
         },
+        rotation: plan.people,
       },
-      { onSuccess: () => router.back(), onError },
+      {
+        onSuccess: (result) => {
+          if (!result.rotationError) return router.back();
+          // A tarefa foi salva; só o rodízio ficou de fora.
+          const unavailable = rotationErrorMessage(result.rotationError);
+          if (unavailable) {
+            notify('A tarefa foi salva, sem o rodízio', unavailable);
+            return router.back();
+          }
+          setCreatedId(result.id);
+          notify('A tarefa foi salva, mas o rodízio não', errorMessage(result.rotationError));
+        },
+        onError,
+      },
     );
   }
 
@@ -122,48 +225,76 @@ function ChoreForm({ chore, equipmentId }: { chore?: Chore; equipmentId: string 
         <Row style={styles.wrap}>
           <Chip
             label="Qualquer um"
-            selected={assignedTo === null && kidId === null}
-            onPress={() => {
-              setAssignedTo(null);
-              setKidId(null);
-            }}
+            selected={!inRotation && single.assigned_to === null && single.kid_id === null}
+            onPress={() => pickSingle(turnOf(null))}
           />
-          {members.map((m) => (
-            <Chip
-              key={m.user_id}
-              label={m.display_name}
-              icon="account-outline"
-              selected={!kidId && assignedTo === m.user_id}
-              onPress={() => {
-                setAssignedTo(m.user_id);
-                setKidId(null);
-              }}
-            />
-          ))}
-          {kids.map((k) => (
-            <Chip
-              key={k.id}
-              label={k.name}
-              icon="human-child"
-              selected={kidId === k.id}
-              onPress={() => {
-                setKidId(k.id);
-                setAssignedTo(null);
-              }}
-            />
-          ))}
+          {/* Só tarefa que se repete reveza, e só com duas pessoas ou mais na casa. */}
+          {recurrence !== 'none' && (rotating || who.length >= 2) ? (
+            <Chip label="Rodízio" icon="autorenew" selected={inRotation} onPress={toggleRotation} />
+          ) : null}
+          {inRotation ? (
+            // A ordem é a dos toques: o número vai no nome, e tocar de novo tira a pessoa.
+            who.map((p) => {
+              const position = order.indexOf(p.id) + 1;
+              return (
+                <Chip
+                  key={p.id}
+                  label={position ? `${position} ${p.name}` : p.name}
+                  icon={p.userId ? 'account-outline' : 'human-child'}
+                  selected={position > 0}
+                  onPress={() => setOrder(toggleInOrder(order, p.id))}
+                />
+              );
+            })
+          ) : (
+            <>
+              {members.map((m) => (
+                <Chip
+                  key={m.user_id}
+                  label={m.display_name}
+                  icon="account-outline"
+                  selected={!single.kid_id && single.assigned_to === m.user_id}
+                  onPress={() => pickSingle({ assigned_to: m.user_id, kid_id: null })}
+                />
+              ))}
+              {kids.map((k) => (
+                <Chip
+                  key={k.id}
+                  label={k.name}
+                  icon="human-child"
+                  selected={single.kid_id === k.id}
+                  onPress={() => pickSingle({ assigned_to: null, kid_id: k.id })}
+                />
+              ))}
+            </>
+          )}
         </Row>
-        {kidId ? (
+        {inRotation ? (
+          problem ? (
+            <Text variant="muted">{problem}</Text>
+          ) : (
+            <>
+              <Text variant="body">{rotationLabel({ ...turnOf(planned), points: 0 }, order, who)}</Text>
+              <Text variant="muted">
+                Ordem: {numberedOrder(order, who)}. Ao concluir a tarefa, a vez passa para a pessoa seguinte. Toque em alguém para tirar do rodízio.
+              </Text>
+            </>
+          )
+        ) : null}
+        {earnsPoints ? (
           <Row>
             <Text variant="body">Vale</Text>
             <View style={styles.interval}>
               <TextField value={points} onChangeText={setPoints} keyboardType="number-pad" accessibilityLabel="Pontos" />
             </View>
             <Text variant="body" style={styles.flex}>
-              pontos para {kids.find((k) => k.id === kidId)?.name} quando ficar pronta
+              {inRotation
+                ? 'pontos para a criança da vez quando ficar pronta'
+                : `pontos para ${kids.find((k) => k.id === single.kid_id)?.name} quando ficar pronta`}
             </Text>
           </Row>
         ) : null}
+        {skipTo ? <Button title="Pular a vez" icon="skip-next" variant="secondary" onPress={askSkip} loading={skip.isPending} /> : null}
       </View>
 
       <TextField label="Observações" value={notes} onChangeText={setNotes} multiline />

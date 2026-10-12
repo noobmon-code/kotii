@@ -2916,4 +2916,475 @@ begin
 end $$;
 reset role;
 
+-- ---------------------------------------------------------------------------
+\echo '• rodízio de tarefas: a ordem, a vez ao concluir, pular a vez e quem sai da ordem'
+-- Rita e Beto moram na Casa do Rodízio, com Lia, Nina, Téo e Bidu (crianças,
+-- sem o app) e o pet Rex; Otto mora em outra casa, com o filho Tito.
+\set user_r '00000000-0000-0000-0000-000000000021'
+\set user_s '00000000-0000-0000-0000-000000000022'
+\set user_o '00000000-0000-0000-0000-000000000023'
+\set user_t '00000000-0000-0000-0000-000000000024'
+insert into auth.users (id) values (:'user_r'), (:'user_s'), (:'user_o'), (:'user_t');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_o', false) \gset
+select public.create_household('Casa do Otto', 'Otto') \gset
+insert into public.people (name) values ('Tito');
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+select (public.create_household('Casa do Rodízio', 'Rita')).invite_code as invite_r \gset
+select set_config('request.jwt.claim.sub', :'user_s', false) \gset
+select public.join_household(:'invite_r', 'Beto') \gset
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+insert into public.people (name) values ('Lia'), ('Nina'), ('Teo'), ('Bidu');
+insert into public.people (name, kind, species) values ('Rex', 'pet', 'cachorro');
+reset role;
+select id as hh_r from public.households where name = 'Casa do Rodízio' \gset
+select set_config('test.hh_r', :'hh_r', false) \gset
+-- As fichas, pelo nome: test.r_rita, test.r_beto, test.r_lia…
+select count(set_config('test.r_' || lower(name), id::text, false)) as people_r
+  from public.people where household_id = :'hh_r' or name = 'Tito' \gset
+set role authenticated;
+
+-- A ordem: quem foi escolhido primeiro começa; pet, gente de outra casa, uma
+-- pessoa só, pessoa repetida e tarefa que não se repete ficam de fora.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  nina uuid := current_setting('test.r_nina')::uuid;
+  rex uuid := current_setting('test.r_rex')::uuid;
+  tito uuid := current_setting('test.r_tito')::uuid;
+  dishes uuid;
+  once uuid;
+  c public.chores;
+begin
+  -- O app grava a tarefa e, logo depois, a ordem.
+  insert into public.chores (title, recurrence, due_on, assigned_to, points)
+    values ('Lavar a louça', 'daily', '2026-10-12', auth.uid(), 10) returning id into dishes;
+  perform public.save_chore_rotation(dishes, array[beto, rita, lia]);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[beto, rita, lia],
+    'the order is the order picked';
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000022' and c.kid_id is null,
+    'a new rotation starts with the first of the order, even if the chore had someone else';
+
+  begin
+    perform public.save_chore_rotation(dishes, array[beto, rex]);
+    raise exception 'FAIL: a pet took part in a rotation';
+  exception when check_violation then null;
+  end;
+  begin
+    perform public.save_chore_rotation(dishes, array[beto, tito]);
+    raise exception 'FAIL: a person of another household took part in a rotation';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.save_chore_rotation(dishes, array[beto]);
+    raise exception 'FAIL: rotation with one person';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.save_chore_rotation(dishes, array[beto, rita, beto]);
+    raise exception 'FAIL: rotation with a repeated person';
+  exception when invalid_parameter_value then null;
+  end;
+  insert into public.chores (title, due_on) values ('Trocar a lâmpada', '2026-10-12') returning id into once;
+  begin
+    perform public.save_chore_rotation(once, array[beto, rita]);
+    raise exception 'FAIL: rotation on a one-off chore';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    insert into public.chore_rotation (chore_id, person_id, position) values (dishes, rex, 9);
+    raise exception 'FAIL: a pet written straight into the order';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.chore_rotation (chore_id, person_id, position) values (dishes, nina, 1);
+    raise exception 'FAIL: two people in the same position';
+  exception when unique_violation then null;
+  end;
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[beto, rita, lia],
+    'a refused order changes nothing';
+  delete from public.chores where id = once;
+  perform set_config('test.r_dishes', dishes::text, false);
+end $$;
+
+-- Outra casa não lê nem mexe na ordem, nem chama as funções nesta tarefa.
+select set_config('request.jwt.claim.sub', :'user_o', false) \gset
+do $$
+declare
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  rita uuid := current_setting('test.r_rita')::uuid;
+  tito uuid := current_setting('test.r_tito')::uuid;
+  mine uuid;
+begin
+  assert (select count(*) from public.chore_rotation) = 0, 'O sees no foreign order';
+  update public.chore_rotation set position = position + 10;
+  assert not found, 'O cannot change a foreign order';
+  delete from public.chore_rotation;
+  assert not found, 'O cannot delete a foreign order';
+  begin
+    insert into public.chore_rotation (chore_id, person_id, position) values (dishes, tito, 9);
+    raise exception 'FAIL: O put his kid in a foreign chore';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    insert into public.chore_rotation (chore_id, person_id, position, household_id)
+      values (dishes, beto, 9, current_setting('test.hh_r')::uuid);
+    raise exception 'FAIL: O wrote into a foreign household';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.save_chore_rotation(dishes, array[beto, rita]);
+    raise exception 'FAIL: O saved the order of a foreign chore';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.save_chore_rotation(dishes, '{}');
+    raise exception 'FAIL: O ended a foreign rotation';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.skip_chore_turn(dishes, beto);
+    raise exception 'FAIL: O skipped a foreign turn';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.complete_chore(dishes, '2026-10-12', '2026-10-12');
+    raise exception 'FAIL: O completed a foreign chore';
+  exception when no_data_found then null;
+  end;
+  -- Na casa dele, gente de outra casa não entra.
+  insert into public.chores (title, recurrence) values ('Tarefa do Otto', 'weekly') returning id into mine;
+  begin
+    perform public.save_chore_rotation(mine, array[tito, beto]);
+    raise exception 'FAIL: O put a foreign person in his rotation';
+  exception when no_data_found then null;
+  end;
+  delete from public.chores where id = mine;
+end $$;
+set role anon;
+do $$
+begin
+  begin
+    perform public.save_chore_rotation(gen_random_uuid(), '{}');
+    raise exception 'FAIL: anon called save_chore_rotation';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.skip_chore_turn(gen_random_uuid(), null);
+    raise exception 'FAIL: anon called skip_chore_turn';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set role authenticated;
+do $$
+begin
+  begin
+    perform public.chore_set_turn(current_setting('test.r_dishes')::uuid, current_setting('test.r_tito')::uuid);
+    raise exception 'FAIL: app user called an internal rotation function';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- Concluir passa a vez (depois do último, volta ao primeiro); os pontos são
+-- de quem estava na vez, e só de quem não tem o app.
+select set_config('request.jwt.claim.sub', :'user_s', false) \gset
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  nina uuid := current_setting('test.r_nina')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+  trash uuid;
+  plain uuid;
+  c public.chores;
+  r record;
+begin
+  assert (select count(*) from public.chore_rotation where chore_id = dishes) = 3, 'B reads the household order';
+  select * into r from public.complete_chore(dishes, '2026-10-12', '2026-10-12');
+  assert r.completed and r.points = 0 and r.person_id is null and r.next_person_id = rita and r.due_on = '2026-10-13',
+    'a member turn: no points, and the turn passes to the next';
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null, 'the chore is now of the next member';
+  -- Toque duplo (ou outro celular) na mesma ocorrência: não passa a vez de novo.
+  select * into r from public.complete_chore(dishes, '2026-10-12', '2026-10-12');
+  assert not r.completed and r.next_person_id is null, 'a repeated completion passes no turn';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000021', 'the turn passed once';
+
+  select * into r from public.complete_chore(dishes, '2026-10-13', '2026-10-13');
+  assert r.completed and r.points = 0 and r.next_person_id = lia, 'the turn passes to the kid';
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to is null and c.kid_id = lia, 'a kid turn is kept in kid_id';
+  select * into r from public.complete_chore(dishes, '2026-10-14', '2026-10-14');
+  assert r.completed and r.points = 10 and r.person_id = lia and r.next_person_id = beto,
+    'the kid whose turn it was earns the points, and after the last comes the first';
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to = auth.uid() and c.kid_id is null, 'wrapped around to the first';
+  assert (select balance from public.kid_points where person_id = lia) = 10, 'points went to the kid of the turn';
+  assert (select coalesce(sum(points), 0) from public.chore_completions where chore_id = dishes and person_id is distinct from lia) = 0,
+    'member turns earned nothing';
+  assert (select count(*) from public.chore_completions where chore_id = dishes) = 3, 'three completions';
+
+  -- A vez é de alguém de fora da ordem (tarefa editada por um app antigo): o próximo é o primeiro.
+  update public.chores set assigned_to = null, kid_id = nina where id = dishes;
+  select * into r from public.complete_chore(dishes, '2026-10-15', '2026-10-15');
+  assert r.completed and r.person_id = nina and r.next_person_id = beto, 'turn outside the order: next is the first';
+  update public.chores set assigned_to = null, kid_id = null where id = dishes;
+  select * into r from public.complete_chore(dishes, '2026-10-16', '2026-10-16');
+  assert r.completed and r.next_person_id = beto, 'nobody in the turn: next is the first';
+
+  -- App já instalado: chama sem o vencimento e lê as colunas de sempre.
+  insert into public.chores (title, recurrence, due_on) values ('Levar o lixo', 'weekly', '2026-10-12') returning id into trash;
+  perform public.save_chore_rotation(trash, array[rita, beto]);
+  select * into r from public.complete_chore(trash, '2026-10-12');
+  assert r.completed and r.points = 0 and r.person_id is null and r.due_on = '2026-10-19' and r.active and r.next_person_id = beto,
+    'the old call shape completes and passes the turn';
+  select * into r from public.complete_chore(trash, '2026-10-12');
+  assert not r.completed, 'old app double tap completes once';
+  assert (select assigned_to from public.chores where id = trash) = auth.uid(), 'and passes the turn once';
+
+  -- Tarefa sem rodízio: como sempre, sem próximo.
+  insert into public.chores (title, recurrence, due_on, assigned_to) values ('Arrumar a sala', 'daily', '2026-10-12', auth.uid())
+    returning id into plain;
+  select * into r from public.complete_chore(plain, '2026-10-12', '2026-10-12');
+  assert r.completed and r.next_person_id is null, 'no rotation: no next person';
+  assert (select assigned_to from public.chores where id = plain) = auth.uid(), 'a plain chore keeps its person';
+  delete from public.chores where id = plain;
+  perform set_config('test.r_trash', trash::text, false);
+end $$;
+
+-- Pular a vez: passa sem concluir, e dois toques ao mesmo tempo passam uma vez só.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+  c public.chores;
+  plain uuid;
+begin
+  assert (select assigned_to from public.chores where id = dishes) = auth.uid(), 'B is on turn';
+  assert public.skip_chore_turn(dishes, beto) = rita, 'skipping passes the turn to the next';
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.due_on = '2026-10-17' and c.active, 'the date stays';
+  assert (select count(*) from public.chore_completions where chore_id = dishes) = 5, 'nothing in the history';
+  assert (select balance from public.kid_points where person_id = lia) = 10, 'and no points';
+  -- O outro celular ainda mostrava a vez de Beto.
+  assert public.skip_chore_turn(dishes, beto) is null, 'a second skip from the old turn does nothing';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000021', 'the turn passed once';
+  assert public.skip_chore_turn(dishes, rita) = lia and public.skip_chore_turn(dishes, lia) = beto, 'skipping wraps around too';
+
+  insert into public.chores (title, recurrence, assigned_to) values ('Sem rodízio', 'daily', auth.uid()) returning id into plain;
+  assert public.skip_chore_turn(plain, beto) is null, 'no rotation: nothing to skip';
+  assert (select assigned_to from public.chores where id = plain) = auth.uid(), 'and the chore keeps its person';
+  -- Apagar a tarefa leva a ordem dela.
+  perform public.save_chore_rotation(plain, array[lia, beto]);
+  delete from public.chores where id = plain;
+  assert (select count(*) from public.chore_rotation where chore_id = plain) = 0, 'the order goes with the chore';
+  begin
+    perform public.skip_chore_turn(gen_random_uuid(), beto);
+    raise exception 'FAIL: skipped a chore that does not exist';
+  exception when no_data_found then null;
+  end;
+end $$;
+
+-- Editar a ordem: quem continua nela mantém a vez; se saiu, a vez vai para o
+-- primeiro. Encerrar o rodízio deixa a tarefa com quem estava na vez.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  nina uuid := current_setting('test.r_nina')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+  c public.chores;
+begin
+  perform public.save_chore_rotation(dishes, array[lia, beto, nina]);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[lia, beto, nina],
+    'the order is replaced at once';
+  assert (select assigned_to from public.chores where id = dishes) = auth.uid(), 'who stays in the order keeps the turn';
+  perform public.save_chore_rotation(dishes, array[nina, lia]);
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to is null and c.kid_id = nina, 'who left the order hands the turn to the first';
+  perform public.save_chore_rotation(dishes, array[beto, rita, nina]);
+  assert (select kid_id from public.chores where id = dishes) = nina, 'the first is not forced when the turn is still in the order';
+
+  perform public.save_chore_rotation(dishes, '{}');
+  assert (select count(*) from public.chore_rotation where chore_id = dishes) = 0, 'an empty order ends the rotation';
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to is null and c.kid_id = nina, 'ending the rotation keeps the current person';
+  perform public.save_chore_rotation(dishes, null);
+  assert (select kid_id from public.chores where id = dishes) = nina, 'ending again changes nothing';
+
+  -- O app antigo passa a tarefa para "Uma vez": o rodízio acaba e fica quem estava na vez.
+  perform public.save_chore_rotation(dishes, array[beto, rita, lia]);
+  perform public.skip_chore_turn(dishes, beto);
+  update public.chores set recurrence = 'none' where id = dishes;
+  assert (select count(*) from public.chore_rotation where chore_id = dishes) = 0, 'a one-off chore has no rotation';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000021', 'and keeps the person of the turn';
+  update public.chores set recurrence = 'daily' where id = dishes;
+end $$;
+
+-- Ficha apagada (ou que virou pet) sai da ordem; se era a vez dela, a vez
+-- passa para o seguinte; com uma pessoa só, o rodízio acaba e a tarefa fica com ela.
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  nina uuid := current_setting('test.r_nina')::uuid;
+  teo uuid := current_setting('test.r_teo')::uuid;
+  bidu uuid := current_setting('test.r_bidu')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+  sweep uuid;
+  plain uuid;
+  c public.chores;
+begin
+  insert into public.chores (title, recurrence, points) values ('Varrer a casa', 'weekly', 5) returning id into sweep;
+  perform public.save_chore_rotation(sweep, array[bidu, nina, teo, beto]);
+  perform public.save_chore_rotation(dishes, array[rita, nina, lia]);
+  insert into public.chores (title, kid_id, points) values ('Guardar os brinquedos', nina, 5) returning id into plain;
+
+  -- Bidu vira pet na vez dele: sai da ordem, e a vez passa.
+  update public.people set kind = 'pet', species = 'cachorro' where id = bidu;
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = sweep) = array[nina, teo, beto],
+    'a person turned pet leaves the order';
+  assert (select kid_id from public.chores where id = sweep) = nina, 'and hands the turn to the next';
+
+  -- Nina é apagada: na vez dela (varrer) e fora da vez (louça).
+  delete from public.people where id = nina;
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = sweep) = array[teo, beto],
+    'a deleted record leaves the order';
+  select * into c from public.chores where id = sweep;
+  assert c.kid_id = teo and c.assigned_to is null, 'it was her turn: the turn goes to the next in the order';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[rita, lia],
+    'she leaves every order';
+  assert (select assigned_to from public.chores where id = dishes) = auth.uid(), 'not her turn: the turn stays';
+  select * into c from public.chores where id = plain;
+  assert c.kid_id is null and c.assigned_to is null, 'a plain chore of hers goes back to anyone, as before';
+
+  -- Teo é apagado na vez dele: sobra Beto, o rodízio acaba e a tarefa fica com ele.
+  delete from public.people where id = teo;
+  assert (select count(*) from public.chore_rotation where chore_id = sweep) = 0, 'with one person left the order is dissolved';
+  select * into c from public.chores where id = sweep;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000022' and c.kid_id is null, 'the chore stays with whoever is left';
+  assert (select next_person_id from public.complete_chore(sweep, '2026-10-12')) is null, 'it is a plain chore again';
+  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000022', 'of the same person';
+
+  -- Quem sai não estava na vez: a tarefa continua com quem estava.
+  perform public.save_chore_rotation(sweep, array[lia, beto]);
+  assert public.skip_chore_turn(sweep, lia) = beto, 'B is on turn';
+  delete from public.chore_rotation where chore_id = sweep and person_id = lia;
+  assert (select count(*) from public.chore_rotation where chore_id = sweep) = 0, 'a row removed by hand dissolves the order too';
+  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000022', 'the turn stays where it was';
+  delete from public.chores where id in (sweep, plain);
+end $$;
+
+-- A criança da vez ganha conta no app: continua na ordem, agora como
+-- moradora, e a próxima conclusão não trava nem pula ninguém.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+begin
+  -- Ordem da louça: Rita, Lia; a vez é de Rita.
+  assert public.skip_chore_turn(dishes, rita) = lia, 'the turn goes to the kid';
+  assert (select kid_id from public.chores where id = dishes) = lia, 'kid turn';
+end $$;
+reset role;
+insert into public.household_members (household_id, user_id, display_name) values (:'hh_r', :'user_t', 'Lia');
+set role authenticated;
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+  c public.chores;
+  r record;
+begin
+  assert (select member_user_id from public.people where id = lia) = '00000000-0000-0000-0000-000000000024', 'the kid has an account now';
+  select * into c from public.chores where id = dishes;
+  assert c.kid_id is null and c.assigned_to = '00000000-0000-0000-0000-000000000024', 'her turn moved to the account';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[rita, lia],
+    'and she stays in the order';
+  select * into r from public.complete_chore(dishes, c.due_on, c.due_on);
+  assert r.completed and r.points = 0 and r.person_id is null and r.next_person_id = rita,
+    'with an account she earns no points, and the turn passes to the next (nobody skipped)';
+  assert public.skip_chore_turn(dishes, rita) = lia, 'the turn comes back to her as a member';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000024', 'in assigned_to';
+end $$;
+
+-- O morador sai da casa: a ficha dele fica, sem o app, e ele segue na ordem;
+-- se era a vez dele, continua sendo.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  trash uuid := current_setting('test.r_trash')::uuid;
+  plain uuid;
+  c public.chores;
+  r record;
+begin
+  -- Lixo: Rita, Beto, na vez de Beto, que é tirado da casa.
+  select * into c from public.chores where id = trash;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000022', 'B is on turn';
+  insert into public.chores (title, assigned_to) values ('Tarefa do Beto', '00000000-0000-0000-0000-000000000022') returning id into plain;
+  perform public.remove_member(current_setting('test.hh_r')::uuid, '00000000-0000-0000-0000-000000000022');
+  assert (select member_user_id from public.people where id = beto) is null, 'the record stays, without the app';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = trash) = array[rita, beto],
+    'who left the household stays in the order';
+  select * into c from public.chores where id = trash;
+  assert c.assigned_to is null and c.kid_id = beto, 'it was his turn: it still is, as a person without the app';
+  select * into c from public.chores where id = plain;
+  assert c.assigned_to is null and c.kid_id is null, 'a plain chore of his goes back to anyone, as before';
+  select * into r from public.complete_chore(trash, '2026-10-19', '2026-10-19');
+  assert r.completed and r.next_person_id = rita, 'the next completion passes the turn on (not stuck)';
+  select * into r from public.complete_chore(trash, '2026-10-26', '2026-10-26');
+  assert r.completed and r.next_person_id = beto, 'and comes back to him (nobody skipped)';
+  assert (select kid_id from public.chores where id = trash) = beto, 'in kid_id now';
+  delete from public.chores where id = plain;
+end $$;
+-- Lia sai sozinha, na vez dela na louça (Rita, Lia).
+select set_config('request.jwt.claim.sub', :'user_t', false) \gset
+do $$
+begin
+  assert (select assigned_to from public.chores where id = current_setting('test.r_dishes')::uuid) = auth.uid(), 'L is on turn';
+  assert (public.leave_household(current_setting('test.hh_r')::uuid))->>'status' = 'left', 'L left';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+  c public.chores;
+  r record;
+begin
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to is null and c.kid_id = lia, 'leaving on her turn keeps the turn, as a person without the app';
+  select * into r from public.complete_chore(dishes, c.due_on, c.due_on);
+  assert r.completed and r.points = 10 and r.person_id = lia and r.next_person_id = rita,
+    'without the app she earns the points again, and the turn passes';
+end $$;
+-- Apagar a casa com rodízios dentro não esbarra em nada, nem com uma vez que
+-- acabou de passar para a moradora que sai por último.
+do $$
+begin
+  assert public.skip_chore_turn(current_setting('test.r_trash')::uuid, current_setting('test.r_beto')::uuid)
+    = current_setting('test.r_rita')::uuid, 'R is on turn';
+  assert (public.leave_household(current_setting('test.hh_r')::uuid, true))->>'status' = 'deleted', 'R closed the household';
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.chore_rotation), 'the orders left with the household';
+  delete from public.household_file_cleanup where household_id = current_setting('test.hh_r')::uuid;
+end $$;
+
 \echo 'OK — todos os testes do banco passaram'

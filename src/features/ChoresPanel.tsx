@@ -1,10 +1,11 @@
 import { router } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
-import { useChores, useCompleteChore, type CompleteChoreResult } from '@/data/home';
+import { useChoreRotations, useChores, useCompleteChore, type CompleteChoreResult } from '@/data/home';
 import { usePeople } from '@/data/health';
 import { useEquipmentList } from '@/data/house';
-import { choreAssigneeLabel, choreStatus, describeChoreStatus, describeRecurrence, type ChoreStatus } from '@/domain/chores';
+import { choreTurnLabel, completionMessage, rotationOf, rotationPeople } from '@/domain/choreRotation';
+import { choreStatus, describeChoreStatus, describeRecurrence, type ChoreStatus } from '@/domain/chores';
 import { kidsOf } from '@/domain/points';
 import { todayISO } from '@/domain/dates';
 import { useHousehold } from '@/lib/auth';
@@ -25,15 +26,12 @@ import {
 import { space } from '@/ui/theme';
 
 /**
- * Tarefa de criança concluída: comemora os pontos que o servidor de fato
- * creditou, com o nome de quem recebeu (a tarefa pode ter mudado de criança
- * em outro celular; toque repetido não conta).
+ * Tarefa concluída: comemora os pontos que o servidor de fato creditou à
+ * criança e, no rodízio, diz de quem é a próxima vez (completionMessage).
  */
-export function cheerKid(result: CompleteChoreResult, people: { id: string; name: string }[]) {
-  const kid = result.person_id ? people.find((p) => p.id === result.person_id)?.name : undefined;
-  if (kid && result.completed && result.points > 0) {
-    notify(`+${result.points} ${result.points === 1 ? 'ponto' : 'pontos'} para ${kid}!`, 'O saldo fica em Casa → Tarefas → Pontos das crianças.');
-  }
+export function announceCompletion(result: CompleteChoreResult, people: { id: string; name: string }[]) {
+  const done = completionMessage(result, people);
+  if (done) notify(done.title, done.message);
 }
 
 const GROUPS: { kind: ChoreStatus['kind']; title: string; tone: Tone }[] = [
@@ -50,6 +48,9 @@ export function ChoresPanel() {
   const equipment = useEquipmentList();
   const people = usePeople().data ?? [];
   const kids = kidsOf(people);
+  // Sem as ordens (carregando, ou banco ainda sem o rodízio), cada tarefa mostra o responsável de sempre.
+  const rotations = useChoreRotations().data;
+  const who = rotationPeople(members, people);
 
   if (chores.isPending) return <Loading />;
   if (chores.isError) return <ErrorNotice error={chores.error} onRetry={() => chores.refetch()} />;
@@ -81,7 +82,7 @@ export function ChoresPanel() {
             <Section key={group.kind} title={group.title}>
               <ListCard>
                 {groupRows.map(({ chore, status }) => {
-                  const assignee = choreAssigneeLabel(chore, members, people);
+                  const assignee = choreTurnLabel(chore, rotationOf(rotations, chore.id), members, people);
                   return (
                     <ListRow
                       key={chore.id}
@@ -103,7 +104,7 @@ export function ChoresPanel() {
                           onPress={() =>
                             complete.mutate(
                               { id: chore.id, today, dueOn: chore.due_on },
-                              { onSuccess: (result) => cheerKid(result, people), onError: (err) => notify('Erro', errorMessage(err)) },
+                              { onSuccess: (result) => announceCompletion(result, who), onError: (err) => notify('Erro', errorMessage(err)) },
                             )
                           }
                         />
