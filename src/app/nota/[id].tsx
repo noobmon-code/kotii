@@ -5,7 +5,14 @@ import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { fetchPantryNear } from '@/data/home';
-import { useListLinks, useOpenListItems, usePriceObservations, useProducts, useStores } from '@/data/market';
+import {
+  useListLinks,
+  useOpenListItems,
+  usePriceObservations,
+  useProducts,
+  usePurchaseRecords,
+  useStores,
+} from '@/data/market';
 import {
   receiptImageUrl,
   useConfirmReceipt,
@@ -19,6 +26,7 @@ import {
 } from '@/data/receipts';
 import { joinNames, receiptPantryRepeats } from '@/domain/cartPantry';
 import { CATEGORIES, getCategory } from '@/domain/categories';
+import { COMMON_ITEMS } from '@/domain/commonItems';
 import { formatBRDate, formatShortDate, parseBRDate, toISODate } from '@/domain/dates';
 import {
   applyListChoices,
@@ -39,6 +47,14 @@ import {
   type ItemOverride,
   type ResolvedItem,
 } from '@/domain/receiptReview';
+import {
+  indexNames,
+  nameCandidates,
+  nameSourceLabel,
+  similarNames,
+  type NameCandidate,
+  type SimilarName,
+} from '@/domain/similarNames';
 import { PayerChips } from '@/features/finance/PayerChips';
 import { ReceiptItemEditor } from '@/features/ReceiptItemEditor';
 import { ReceiptListSection } from '@/features/ReceiptListSection';
@@ -73,6 +89,9 @@ type Picker =
 
 type Editing = { item?: ReceiptItem } | null;
 
+/** No seletor de produto: opção que é só um nome da casa (sem produto), pela chave do nome. */
+const NAME_OPTION = 'nome:';
+
 export default function ReceiptScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const receiptQuery = useReceipt(id);
@@ -86,9 +105,12 @@ export default function ReceiptScreen() {
   const deleteReceipt = useDeleteReceipt(id);
   const openList = useOpenListItems();
   const links = useListLinks();
+  const purchases = usePurchaseRecords();
 
   const [overrides, setOverrides] = useState<Record<string, ItemOverride>>({});
   const [listChoices, setListChoices] = useState<Record<string, ListChoice>>({});
+  // Nome que a pessoa digitou para um produto novo, já vendo os parecidos: o item não sugere outro de novo.
+  const [keptNames, setKeptNames] = useState<Record<string, string>>({});
   const [picker, setPicker] = useState<Picker | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [dateText, setDateText] = useState<string | null>(null);
@@ -100,6 +122,22 @@ export default function ReceiptScreen() {
   const catalog = useMemo(
     () => new Map<string, CatalogProduct>((products.data ?? []).map((p) => [p.id, p])),
     [products.data],
+  );
+
+  // Os nomes que a casa já usa (produtos, listas abertas, compras recentes e
+  // itens comuns): o nome de um produto novo é conferido com eles, para a
+  // mesma coisa não virar vários itens (domain/similarNames).
+  const houseNames = useMemo(
+    () =>
+      indexNames(
+        nameCandidates({
+          products: products.data ?? [],
+          listItems: openList.data ?? [],
+          purchases: purchases.data ?? [],
+          common: COMMON_ITEMS,
+        }),
+      ),
+    [products.data, openList.data, purchases.data],
   );
 
   // Produtos ligados aos itens (os escolhidos na revisão valem): o histórico
@@ -160,6 +198,51 @@ export default function ReceiptScreen() {
 
   const override = (itemId: string, patch: ItemOverride) =>
     setOverrides((prev) => ({ ...prev, [itemId]: { ...prev[itemId], ...patch } }));
+
+  /**
+   * O item fica com um nome que a casa já usa: o produto desse nome ou, sem
+   * produto, um produto novo com o nome escrito como a casa escreve. Nome de
+   * item de lista aberta: a compra cumpre esse item, que já sai marcado.
+   */
+  function applyHouseName(itemId: string, chosen: Pick<NameCandidate, 'name' | 'category' | 'productId' | 'listItemIds'>) {
+    if (chosen.productId && catalog.has(chosen.productId)) {
+      override(itemId, { product: { kind: 'existing', productId: chosen.productId } });
+      return;
+    }
+    // Item de lista digitado solto fica em "Outros": vale mais a categoria que a nota já tinha.
+    const category = chosen.category === 'outros' ? (resolvedItems.get(itemId)?.category ?? 'outros') : chosen.category;
+    override(itemId, { product: { kind: 'new', name: chosen.name, category }, pantry: undefined });
+    if (chosen.listItemIds.length) {
+      setListChoices((prev) => ({
+        ...prev,
+        ...Object.fromEntries(chosen.listItemIds.map((listItemId) => [listItemId, { receiptItemId: itemId, checked: true }])),
+      }));
+    }
+  }
+
+  /** Produto novo com o nome digitado; antes, confere se a casa já usa o mesmo nome com outra grafia. */
+  async function createProduct(item: ReceiptItem, name: string) {
+    const [same] = similarNames(name, houseNames, { onlySame: true, limit: 1 });
+    // Digitado igual ao que a casa tem: é ele, sem perguntar.
+    const identical = same?.name.toLowerCase() === name.toLowerCase();
+    const useSame =
+      same &&
+      (identical ||
+        (await askYesNo(
+          'Já existe um nome parecido',
+          `A casa já usa "${same.name}". Usar esse nome no lugar de "${name}"? Assim os dois ficam como um item só.`,
+          `Usar "${same.name}"`,
+          `Criar "${name}"`,
+        )));
+    if (same && useSame) {
+      applyHouseName(item.id, same);
+    } else {
+      const current = resolveItem(item, overrides[item.id], catalog, purchasedOn);
+      override(item.id, { product: { kind: 'new', name, category: current.category } });
+      setKeptNames((prev) => ({ ...prev, [item.id]: name }));
+    }
+    setPicker(null);
+  }
 
   function commitDate() {
     if (dateText == null) return;
@@ -381,6 +464,11 @@ export default function ReceiptScreen() {
         {items.map((item) => {
           const resolved = resolvedItems.get(item.id)!;
           const alert = alertText(alerts.get(item.id));
+          // Produto novo com o nome que veio da leitura: se a casa já usa um nome que serve, a sugestão fica no próprio item.
+          const similar =
+            isDraft && resolved.product.kind === 'new' && keptNames[item.id] !== resolved.product.name
+              ? (similarNames(resolved.product.name, houseNames, { category: resolved.category, limit: 1, onlyConfident: true })[0] ?? null)
+              : null;
           return isDraft ? (
             <DraftItemCard
               key={item.id}
@@ -394,6 +482,8 @@ export default function ReceiptScreen() {
               onPickCategory={() => setPicker({ kind: 'category', itemId: item.id })}
               onTogglePantry={() => override(item.id, { pantry: !resolved.pantry })}
               onChangeExpiry={(iso) => override(item.id, { expiryManual: true, expiresOn: iso })}
+              similar={similar}
+              onUseSimilar={() => similar && applyHouseName(item.id, similar)}
             />
           ) : (
             <Card key={item.id}>
@@ -465,8 +555,29 @@ export default function ReceiptScreen() {
           left: <CategoryIcon category={p.category} name={p.name} size={32} />,
         }))}
         onClose={() => setPicker(null)}
-        onSelect={(productId) => {
-          if (pickerItem) override(pickerItem.id, { product: { kind: 'existing', productId } });
+        suggestionsTitle="Nomes parecidos que a casa já usa"
+        suggestions={(query) => {
+          if (!pickerItem || !query) return [];
+          const current = resolvedItems.get(pickerItem.id);
+          return similarNames(query, houseNames, {
+            category: current?.category,
+            exceptProductId: current?.product.kind === 'existing' ? current.product.productId : null,
+          }).map((name) => ({
+            id: name.productId ?? `${NAME_OPTION}${name.key}`,
+            title: name.name,
+            subtitle: nameSourceLabel(name),
+            left: <CategoryIcon category={name.category} name={name.name} size={32} />,
+          }));
+        }}
+        onSelect={(optionId) => {
+          if (pickerItem) {
+            if (optionId.startsWith(NAME_OPTION)) {
+              const chosen = houseNames.byKey.get(optionId.slice(NAME_OPTION.length));
+              if (chosen) applyHouseName(pickerItem.id, chosen);
+            } else {
+              override(pickerItem.id, { product: { kind: 'existing', productId: optionId } });
+            }
+          }
           setPicker(null);
         }}
         extraActions={(query) =>
@@ -478,11 +589,7 @@ export default function ReceiptScreen() {
                   icon="plus"
                   variant="secondary"
                   compact
-                  onPress={() => {
-                    const current = resolveItem(pickerItem, overrides[pickerItem.id], catalog, purchasedOn);
-                    override(pickerItem.id, { product: { kind: 'new', name: query, category: current.category } });
-                    setPicker(null);
-                  }}
+                  onPress={() => void createProduct(pickerItem, query)}
                 />
               ) : null}
               <Button
@@ -548,6 +655,8 @@ function DraftItemCard({
   onPickCategory,
   onTogglePantry,
   onChangeExpiry,
+  similar,
+  onUseSimilar,
 }: {
   item: ReceiptItem;
   resolved: ResolvedItem;
@@ -558,6 +667,9 @@ function DraftItemCard({
   onPickCategory: () => void;
   onTogglePantry: () => void;
   onChangeExpiry: (iso: string | null) => void;
+  /** Nome que a casa já usa e serve para este produto novo (domain/similarNames). */
+  similar: SimilarName | null;
+  onUseSimilar: () => void;
 }) {
   const [expiryText, setExpiryText] = useState<string | null>(null);
   const { product } = resolved;
@@ -616,6 +728,16 @@ function DraftItemCard({
           <Chip label={getCategory(resolved.category).label} icon="tag-outline" onPress={onPickCategory} />
         ) : null}
       </Row>
+      {similar ? (
+        <View style={styles.gapXs}>
+          <Text variant="small">
+            {similar.closeness === 'igual' ? 'A casa já usa este nome:' : 'A casa já usa um nome parecido:'}
+          </Text>
+          <Row style={styles.wrap}>
+            <Chip label={`Usar "${similar.name}"`} icon="swap-horizontal" onPress={onUseSimilar} />
+          </Row>
+        </View>
+      ) : null}
       {product.kind !== 'none' ? (
         <Row style={styles.wrap}>
           <Chip
