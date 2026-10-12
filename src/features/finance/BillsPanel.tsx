@@ -7,6 +7,7 @@ import { ABOVE_USUAL_LABEL, billsAboveUsual } from '@/domain/billUsual';
 import { todayISO } from '@/domain/dates';
 import { BILL_RECURRENCES, billStatus, describeBillStatus, getFinanceCategory, stillToPay } from '@/domain/finance';
 import { formatBRL } from '@/domain/money';
+import { settledData } from '@/lib/settledData';
 import type { Bill } from '@/lib/types';
 import {
   Badge,
@@ -87,8 +88,8 @@ export function BillsPanel() {
   const active = bills.data.filter((b) => b.active);
   const closed = bills.data.filter((b) => !b.active);
   const due = stillToPay(active, today);
-  // Sem os pagamentos recentes (carregando ou com erro), nenhuma conta ganha o selo.
-  const aboveUsual = billsAboveUsual(active, recentPayments.data ?? [], today);
+  // Sem os pagamentos recentes em dia (carregando, buscando de novo ou com erro), nenhuma conta ganha o selo.
+  const aboveUsual = billsAboveUsual(active, settledData(recentPayments) ?? [], today);
   const daysTo = (b: Bill) => {
     const status = billStatus(b.next_due_on, today);
     return status.kind === 'atrasada' ? -status.days : status.kind === 'hoje' ? 0 : status.days;

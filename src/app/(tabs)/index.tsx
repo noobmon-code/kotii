@@ -40,6 +40,7 @@ import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useJustListed } from '@/features/RecentPurchases';
 import { WeatherCard } from '@/features/WeatherCard';
 import { useHousehold } from '@/lib/auth';
+import { settledData } from '@/lib/settledData';
 import type { Bill } from '@/lib/types';
 import { errorMessage } from '@/lib/supabase';
 import { periodOf, SkyArt, type Period } from '@/ui/art';
@@ -172,8 +173,8 @@ export default function TodayScreen() {
   });
   const drafts = (receipts.data ?? []).filter((r) => r.status === 'draft');
   const documentsDue = documentsNeedingAttention(documents.data ?? [], today);
-  // Sem os pagamentos recentes (carregando ou com erro), nenhuma conta ganha o selo.
-  const billsAbove = billsAboveUsual(billsDue, recentPayments.data ?? [], today);
+  // Sem os pagamentos recentes em dia (carregando, buscando de novo ou com erro), nenhuma conta ganha o selo.
+  const billsAbove = billsAboveUsual(billsDue, settledData(recentPayments) ?? [], today);
   const warrantiesEnding = (equipment.data ?? [])
     .map((item) => ({ item, status: warrantyStatus(item.warranty_until, today) }))
     .filter(({ status }) => status.kind === 'acabando');
