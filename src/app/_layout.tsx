@@ -11,17 +11,21 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { useColorScheme } from 'react-native';
 
-import { AuthProvider, useAuth, useHousehold } from '@/lib/auth';
+import { AuthProvider, openedByRecoveryLink, useAuth, useHousehold } from '@/lib/auth';
+import { clearLinkNotice, useLinkNotice } from '@/lib/linkNotice';
 import { useRecovery } from '@/lib/passwordRecovery';
 import { configureNotifications } from '@/lib/reminders';
 import { persistOptions, queryClient } from '@/lib/queryClient';
 import { isSupabaseConfigured } from '@/lib/supabase';
-import { EmptyState, ErrorNotice, Screen } from '@/ui/primitives';
+import { notify } from '@/ui/dialogs';
+import { EmptyState, ErrorNotice, Loading, Screen } from '@/ui/primitives';
 import { fonts, useColors } from '@/ui/theme';
 
 SplashScreen.preventAutoHideAsync();
 configureNotifications();
 
+/** No navegador o aviso é um alert, que trava a página: espera a tela ser desenhada. */
+const NOTICE_DELAY_MS = 300;
 
 export default function RootLayout() {
   return (
@@ -38,7 +42,7 @@ function AppNavigator() {
   const colors = useColors();
   const { session, loading } = useAuth();
   const household = useHousehold();
-  // Entrou pelo código do e-mail de recuperação: até a senha nova, nada da casa.
+  // Entrou pelo link ou código do e-mail de recuperação: até a senha nova, nada da casa.
   const recovery = useRecovery(session?.user.id);
   // Sem a fonte carregada o texto pisca em outra fonte; se falhar, segue com a do sistema.
   const [fontsLoaded, fontError] = useFonts({ Nunito_400Regular, Nunito_600SemiBold, Nunito_700Bold, Nunito_800ExtraBold });
@@ -54,6 +58,19 @@ function AppNavigator() {
     if (!resolving || !isSupabaseConfigured) SplashScreen.hideAsync();
   }, [resolving]);
 
+  // O link do e-mail não deu certo e há uma conta aberta (a tela de entrar, que mostraria isso, não
+  // aparece): um aviso só, depois que a tela já está desenhada.
+  const linkNotice = useLinkNotice();
+  const signedIn = Boolean(session);
+  useEffect(() => {
+    if (resolving || !signedIn || !linkNotice) return;
+    const timer = setTimeout(() => {
+      clearLinkNotice();
+      notify('Não deu para abrir o link', linkNotice);
+    }, NOTICE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [resolving, signedIn, linkNotice]);
+
   if (!isSupabaseConfigured) {
     return (
       <Screen>
@@ -62,6 +79,15 @@ function AppNavigator() {
           title="Configure o Supabase"
           message="Crie o arquivo .env com EXPO_PUBLIC_SUPABASE_URL e EXPO_PUBLIC_SUPABASE_ANON_KEY (veja o README) e reinicie o app."
         />
+      </Screen>
+    );
+  }
+  // Conferir o link do e-mail depende da internet e pode demorar: página em branco parece travada
+  // (e recarregar nessa hora gasta o link).
+  if (loading && openedByRecoveryLink) {
+    return (
+      <Screen>
+        <Loading label="Abrindo o link do e-mail…" />
       </Screen>
     );
   }
@@ -74,7 +100,6 @@ function AppNavigator() {
     );
   }
 
-  const signedIn = Boolean(session);
   const inHousehold = signedIn && !newPassword && Boolean(household.data);
 
   return (
