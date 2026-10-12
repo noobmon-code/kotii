@@ -1,7 +1,16 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { FAMILY_EVENTS_UNAVAILABLE, familyEventErrorMessage, fetchFamilyEventDays, fetchFamilyEvents, isMissingTable } from '../family';
+import type { FamilyEventValues } from '@/domain/familyEvents';
+
+import {
+  FAMILY_EVENTS_UNAVAILABLE,
+  familyEventErrorMessage,
+  fetchFamilyEventDays,
+  fetchFamilyEvents,
+  isMissingTable,
+  saveFamilyEvent,
+} from '../family';
 
 jest.mock('@/lib/supabase', () => ({
   supabase: {},
@@ -49,6 +58,84 @@ function fakeDb(result: { data: unknown; error: unknown }) {
 const notInCache = { code: 'PGRST205', message: "Could not find the table 'public.family_events' in the schema cache" };
 const noRelation = { code: '42P01', message: 'relation "public.family_event_days" does not exist' };
 const offline = { message: 'TypeError: Network request failed' };
+
+/**
+ * Um banco de mentira para o salvar: guarda cada operação ("tabela.verbo") e responde o que `answer`
+ * disser para ela (sem resposta combinada, dá certo e não devolve nada).
+ */
+function savingDb(answer: (op: string) => { data: unknown; error: unknown } | undefined) {
+  const ops: { op: string; args: unknown[] }[] = [];
+  const db = {
+    from: (table: string) => {
+      let op = table;
+      const query: Record<string, unknown> = {
+        then: (resolve: (value: { data: unknown; error: unknown }) => void) => resolve(answer(op) ?? { data: null, error: null }),
+      };
+      for (const verb of ['insert', 'update', 'select', 'delete', 'upsert']) {
+        query[verb] = (...args: unknown[]) => {
+          op = `${table}.${verb}`;
+          ops.push({ op, args });
+          return query;
+        };
+      }
+      for (const filter of ['eq', 'in']) query[filter] = () => query;
+      return query;
+    },
+  };
+  return { db: db as unknown as SupabaseClient, ops };
+}
+
+describe('salvar o compromisso', () => {
+  const values = {
+    title: 'Natação da Ana',
+    starts_on: '2026-10-13',
+    start_time: '16:00',
+    end_time: null,
+    person_id: 'ana',
+    take_by: 'vo',
+    pick_up_by: 'carla',
+    location: null,
+    bring: null,
+    notes: null,
+    recurrence: 'weekly',
+    weekdays: [2, 4],
+    until_on: null,
+  } as FamilyEventValues;
+  // Na quinta 15 a vó já levava (agora é o de sempre); na terça 20 o Beto busca.
+  const days = [
+    { event_id: 'e1', occurs_on: '2026-10-15', cancelled: false, override_take: true, take_by: 'vo', override_pick_up: false, pick_up_by: null },
+    { event_id: 'e1', occurs_on: '2026-10-20', cancelled: false, override_take: true, take_by: 'vo', override_pick_up: true, pick_up_by: 'beto' },
+  ];
+
+  it('novo: só grava o compromisso', async () => {
+    const { db, ops } = savingDb(() => undefined);
+    await saveFamilyEvent({ values }, db);
+    expect(ops.map((o) => o.op)).toEqual(['family_events.insert']);
+  });
+
+  it('ao mudar, tira as mudanças de dia que ficaram iguais ao de sempre e reescreve as que mudaram em parte', async () => {
+    const { db, ops } = savingDb((op) => (op === 'family_event_days.select' ? { data: days, error: null } : undefined));
+    await saveFamilyEvent({ id: 'e1', values }, db);
+    expect(ops.map((o) => o.op)).toEqual(['family_events.update', 'family_event_days.select', 'family_event_days.delete', 'family_event_days.upsert']);
+    expect(ops[3].args[0]).toEqual([
+      { event_id: 'e1', occurs_on: '2026-10-20', cancelled: false, override_take: false, take_by: null, override_pick_up: true, pick_up_by: 'beto' },
+    ]);
+  });
+
+  it('se a limpeza dos dias falha, o salvar falha junto (tocar em Salvar de novo termina)', async () => {
+    const offlineError = { message: 'TypeError: Network request failed' };
+    const reading = savingDb((op) => (op === 'family_event_days.select' ? { data: null, error: offlineError } : undefined));
+    await expect(saveFamilyEvent({ id: 'e1', values }, reading.db)).rejects.toBe(offlineError);
+    const deleting = savingDb((op) =>
+      op === 'family_event_days.select' ? { data: days, error: null } : op === 'family_event_days.delete' ? { data: null, error: offlineError } : undefined,
+    );
+    await expect(saveFamilyEvent({ id: 'e1', values }, deleting.db)).rejects.toBe(offlineError);
+    // O compromisso em si não gravou: nem tenta a limpeza.
+    const updating = savingDb((op) => (op === 'family_events.update' ? { data: null, error: offlineError } : undefined));
+    await expect(saveFamilyEvent({ id: 'e1', values }, updating.db)).rejects.toBe(offlineError);
+    expect(updating.ops.map((o) => o.op)).toEqual(['family_events.update']);
+  });
+});
 
 describe('compromissos antes da migração', () => {
   it('reconhece a tabela que ainda não existe, e só ela', () => {

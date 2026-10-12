@@ -157,36 +157,42 @@ function useInvalidateFamilyEvents() {
   };
 }
 
-/** Cria ou muda o compromisso: mudar vale para todas as vezes. */
+/**
+ * Cria ou muda o compromisso (mudar vale para todas as vezes). Ao mudar, a
+ * regra ou as pessoas podem ter mudado: saem as mudanças de dias que não são
+ * mais do compromisso (todas, se ele deixou de se repetir) e as que ficaram
+ * iguais ao de sempre (dayChangesAfterSave). Se essa limpeza falhar, o
+ * salvar falha junto: a pessoa toca em Salvar de novo e ela termina. Calada,
+ * uma mudança igual ao de sempre ficaria guardada e voltaria do nada numa
+ * mudança seguinte do compromisso.
+ */
+export async function saveFamilyEvent(
+  { id, values }: { id?: string; values: FamilyEventValues },
+  db: SupabaseClient = supabase,
+): Promise<void> {
+  if (!id) {
+    unwrap(await db.from('family_events').insert(values));
+    return;
+  }
+  unwrap(await db.from('family_events').update(values).eq('id', id));
+  const rows = unwrap(await db.from('family_event_days').select(DAY_COLUMNS).eq('event_id', id)) as FamilyEventDay[];
+  const { remove, rewrite } = dayChangesAfterSave(values, rows);
+  if (remove.length) unwrap(await db.from('family_event_days').delete().eq('event_id', id).in('occurs_on', remove));
+  if (rewrite.length) {
+    unwrap(
+      await db
+        .from('family_event_days')
+        .upsert(rewrite.map((change) => ({ event_id: id, ...change })), { onConflict: 'event_id,occurs_on' }),
+    );
+  }
+}
+
 export function useSaveFamilyEvent() {
   const invalidate = useInvalidateFamilyEvents();
   return useMutation({
-    mutationFn: async ({ id, values }: { id?: string; values: FamilyEventValues }) => {
-      if (!id) {
-        unwrap(await supabase.from('family_events').insert(values));
-        return;
-      }
-      unwrap(await supabase.from('family_events').update(values).eq('id', id));
-      // A regra ou as pessoas podem ter mudado: saem as mudanças de dias que
-      // não são mais do compromisso (todas, se ele deixou de se repetir) e as
-      // que ficaram iguais ao de sempre (dayChangesAfterSave). Se a limpeza
-      // falhar, ficam, e o app as ignora enquanto forem iguais.
-      try {
-        const rows = unwrap(await supabase.from('family_event_days').select(DAY_COLUMNS).eq('event_id', id)) as FamilyEventDay[];
-        const { remove, rewrite } = dayChangesAfterSave(values, rows);
-        if (remove.length) unwrap(await supabase.from('family_event_days').delete().eq('event_id', id).in('occurs_on', remove));
-        if (rewrite.length) {
-          unwrap(
-            await supabase
-              .from('family_event_days')
-              .upsert(rewrite.map((change) => ({ event_id: id, ...change })), { onConflict: 'event_id,occurs_on' }),
-          );
-        }
-      } catch {
-        // Sem prejuízo: ver acima.
-      }
-    },
-    onSuccess: invalidate,
+    mutationFn: (input: { id?: string; values: FamilyEventValues }) => saveFamilyEvent(input),
+    // Também na falha: o compromisso pode ter sido gravado e só a limpeza dos dias ter ficado pela metade.
+    onSettled: invalidate,
   });
 }
 
