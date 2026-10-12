@@ -5,7 +5,14 @@ import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { fetchPantryNear } from '@/data/home';
-import { useListLinks, useOpenListItems, usePriceObservations, useProducts, useStores } from '@/data/market';
+import {
+  useListLinks,
+  useOpenListItems,
+  usePriceObservations,
+  useProducts,
+  usePurchaseRecords,
+  useStores,
+} from '@/data/market';
 import {
   receiptImageUrl,
   useConfirmReceipt,
@@ -19,6 +26,7 @@ import {
 } from '@/data/receipts';
 import { joinNames, receiptPantryRepeats } from '@/domain/cartPantry';
 import { CATEGORIES, getCategory } from '@/domain/categories';
+import { COMMON_ITEMS } from '@/domain/commonItems';
 import { formatBRDate, formatShortDate, parseBRDate, toISODate } from '@/domain/dates';
 import {
   applyListChoices,
@@ -31,6 +39,7 @@ import {
 } from '@/domain/listLinks';
 import { formatBRL, formatQuantity } from '@/domain/money';
 import { describePriceAlert, priceAlerts, totalSaving, type AlertItem, type PriceAlert } from '@/domain/priceAlert';
+import { houseNameOverride, keptName, noteNames, sameProduct, typedNameActions, withEntry } from '@/domain/receiptNames';
 import {
   buildConfirmPayload,
   resolveItem,
@@ -39,6 +48,19 @@ import {
   type ItemOverride,
   type ResolvedItem,
 } from '@/domain/receiptReview';
+import {
+  existingNameLabel,
+  indexNames,
+  nameCandidates,
+  nameSourceLabel,
+  sameListedName,
+  similarNameHint,
+  similarNames,
+  suggestedName,
+  type NameCandidate,
+  type NameIndex,
+  type SimilarName,
+} from '@/domain/similarNames';
 import { PayerChips } from '@/features/finance/PayerChips';
 import { ReceiptItemEditor } from '@/features/ReceiptItemEditor';
 import { ReceiptListSection } from '@/features/ReceiptListSection';
@@ -73,6 +95,14 @@ type Picker =
 
 type Editing = { item?: ReceiptItem } | null;
 
+/** No seletor de produto: opção que é só um nome da casa (sem produto), pela chave do nome. */
+const NAME_OPTION = 'nome:';
+/** Idem, para um nome que a pessoa deu a outro item desta nota. */
+const NOTE_OPTION = 'nota:';
+
+/** Como o item estava antes de "Usar": é o que "Desfazer" põe de volta. */
+type BeforeUse = { override: ItemOverride | undefined; keptName: string | undefined };
+
 export default function ReceiptScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const receiptQuery = useReceipt(id);
@@ -86,9 +116,15 @@ export default function ReceiptScreen() {
   const deleteReceipt = useDeleteReceipt(id);
   const openList = useOpenListItems();
   const links = useListLinks();
+  // As compras recentes só servem aos nomes parecidos, que só aparecem na nota em revisão.
+  const purchases = usePurchaseRecords({ enabled: receiptQuery.data?.receipt.status === 'draft' });
 
   const [overrides, setOverrides] = useState<Record<string, ItemOverride>>({});
   const [listChoices, setListChoices] = useState<Record<string, ListChoice>>({});
+  // Nome que a pessoa digitou para um produto novo, já vendo os parecidos: o item não sugere outro de novo.
+  const [keptNames, setKeptNames] = useState<Record<string, string>>({});
+  // Itens em que a pessoa acabou de usar um nome da casa, com o que havia antes (para "Desfazer").
+  const [beforeUse, setBeforeUse] = useState<Record<string, BeforeUse>>({});
   const [picker, setPicker] = useState<Picker | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [dateText, setDateText] = useState<string | null>(null);
@@ -100,6 +136,22 @@ export default function ReceiptScreen() {
   const catalog = useMemo(
     () => new Map<string, CatalogProduct>((products.data ?? []).map((p) => [p.id, p])),
     [products.data],
+  );
+
+  // Os nomes que a casa já usa (produtos, listas abertas, compras recentes e
+  // itens comuns): o nome de um produto novo é conferido com eles, para a
+  // mesma coisa não virar vários itens (domain/similarNames).
+  const houseNames = useMemo(
+    () =>
+      indexNames(
+        nameCandidates({
+          products: products.data ?? [],
+          listItems: openList.data ?? [],
+          purchases: purchases.data ?? [],
+          common: COMMON_ITEMS,
+        }),
+      ),
+    [products.data, openList.data, purchases.data],
   );
 
   // Produtos ligados aos itens (os escolhidos na revisão valem): o histórico
@@ -145,6 +197,7 @@ export default function ReceiptScreen() {
     return {
       id: item.id,
       productId: resolved.product.kind === 'existing' ? resolved.product.productId : null,
+      name: resolved.productName,
       names: [resolved.productName, item.suggested_name, item.raw_description].filter((n): n is string => Boolean(n)),
       category: resolved.category,
     };
@@ -155,11 +208,58 @@ export default function ReceiptScreen() {
   // aparelho; o banco ainda confere o nome de cada item antes de tirar).
   const listPending = isDraft && (openList.isPending || links.isPending || openList.isFetching || links.isFetching);
   const listFailed = isDraft && (openList.isError || links.isError);
-  const suggestedMatches = matchListItems(listItems, receiptLines, links.data ?? new LinkIndex());
+  // "Mesmo nome" aqui é o dos nomes parecidos: "Limões" da lista sai marcado com o produto "Limão"; "Molho de
+  // tomate" não sai com "Tomate para molho" (as mesmas palavras em outra ordem só sugerem).
+  const suggestedMatches = matchListItems(listItems, receiptLines, links.data ?? new LinkIndex(), sameListedName);
   const listMatches = applyListChoices(suggestedMatches, listChoices);
 
   const override = (itemId: string, patch: ItemOverride) =>
     setOverrides((prev) => ({ ...prev, [itemId]: { ...prev[itemId], ...patch } }));
+
+  /** O produto ou a categoria do item mudou por outro caminho: o "Desfazer" de antes não vale mais. */
+  const forgetUndo = (itemId: string) => setBeforeUse((prev) => (itemId in prev ? withEntry(prev, itemId, undefined) : prev));
+
+  /** Nome de produto novo que a pessoa digitou ou escolheu: o item não sugere outro de novo. */
+  const keepName = (itemId: string, change: ItemOverride) => {
+    const name = keptName(change);
+    if (name != null) setKeptNames((prev) => ({ ...prev, [itemId]: name }));
+  };
+
+  /**
+   * "Usar": o item fica com um nome que a casa já usa (o que muda está em
+   * domain/receiptNames). Como o item estava fica guardado, para "Desfazer".
+   */
+  function applyHouseName(itemId: string, chosen: Pick<NameCandidate, 'name' | 'category' | 'productId'>) {
+    const current = resolvedItems.get(itemId);
+    if (!current) return;
+    const change = houseNameOverride(chosen, current, catalog);
+    keepName(itemId, change);
+    // O item já estava com esse produto: nada muda, nada a desfazer.
+    if (sameProduct(change.product, current.product)) return;
+    setBeforeUse((prev) => ({ ...prev, [itemId]: { override: overrides[itemId], keptName: keptNames[itemId] } }));
+    override(itemId, change);
+  }
+
+  /**
+   * "Desfazer": o item volta exatamente a como estava antes de "Usar". Não
+   * passa por `override`, que mistura com o que há agora e deixaria a
+   * categoria e a despensa novas; sem nada guardado antes, a chave sai.
+   */
+  function undoHouseName(itemId: string) {
+    const before = beforeUse[itemId];
+    if (!before) return;
+    setOverrides((prev) => withEntry(prev, itemId, before.override));
+    // Com o nome de antes de volta, a sugestão volta junto (se a pessoa não a tinha dispensado).
+    setKeptNames((prev) => withEntry(prev, itemId, before.keptName));
+    forgetUndo(itemId);
+  }
+
+  /** O produto do item muda por outro caminho que não "Usar": nome digitado, produto da lista, não acompanhar. */
+  function changeProduct(itemId: string, change: ItemOverride) {
+    override(itemId, change);
+    keepName(itemId, change);
+    forgetUndo(itemId);
+  }
 
   function commitDate() {
     if (dateText == null) return;
@@ -258,6 +358,17 @@ export default function ReceiptScreen() {
   }
 
   const pickerItem = picker && picker.kind !== 'store' ? items.find((i) => i.id === picker.itemId) : undefined;
+  // Os nomes que a pessoa já deu a outros itens desta nota: o seletor confere com eles também ("Pitaya" e
+  // "Pitayas" na mesma nota). Ficam num índice pequeno à parte, para o da casa não ser refeito a cada escolha.
+  const noteIndex = indexNames(
+    pickerItem && picker?.kind === 'product'
+      ? noteNames(
+          items.map((item) => ({ id: item.id, product: resolvedItems.get(item.id)!.product })),
+          keptNames,
+          pickerItem.id,
+        )
+      : [],
+  );
 
   return (
     <Screen
@@ -381,6 +492,7 @@ export default function ReceiptScreen() {
         {items.map((item) => {
           const resolved = resolvedItems.get(item.id)!;
           const alert = alertText(alerts.get(item.id));
+          const before = beforeUse[item.id];
           return isDraft ? (
             <DraftItemCard
               key={item.id}
@@ -394,6 +506,15 @@ export default function ReceiptScreen() {
               onPickCategory={() => setPicker({ kind: 'category', itemId: item.id })}
               onTogglePantry={() => override(item.id, { pantry: !resolved.pantry })}
               onChangeExpiry={(iso) => override(item.id, { expiryManual: true, expiresOn: iso })}
+              houseNames={houseNames}
+              keepsName={keptNames[item.id] === resolved.productName}
+              onUseName={(name) => applyHouseName(item.id, name)}
+              onKeepName={() => {
+                const name = resolved.productName;
+                if (name) setKeptNames((prev) => ({ ...prev, [item.id]: name }));
+              }}
+              previousName={before ? resolveItem(item, before.override, catalog, purchasedOn).productName : undefined}
+              onUndoName={() => undoHouseName(item.id)}
             />
           ) : (
             <Card key={item.id}>
@@ -465,22 +586,63 @@ export default function ReceiptScreen() {
           left: <CategoryIcon category={p.category} name={p.name} size={32} />,
         }))}
         onClose={() => setPicker(null)}
-        onSelect={(productId) => {
-          if (pickerItem) override(pickerItem.id, { product: { kind: 'existing', productId } });
+        suggestionsTitle="Nomes parecidos"
+        suggestions={(query) => {
+          if (!pickerItem || !query) return [];
+          const current = resolvedItems.get(pickerItem.id);
+          return similarNames(query, houseNames, {
+            category: current?.category,
+            exceptProductId: current?.product.kind === 'existing' ? current.product.productId : null,
+            also: noteIndex,
+          }).map((name) => ({
+            id: name.productId ?? `${name.source === 'nota' ? NOTE_OPTION : NAME_OPTION}${name.key}`,
+            title: name.name,
+            subtitle: nameSourceLabel(name),
+            left: <CategoryIcon category={name.category} name={name.name} size={32} />,
+          }));
+        }}
+        onSelect={(optionId) => {
+          if (pickerItem) changeProduct(pickerItem.id, { product: { kind: 'existing', productId: optionId } });
           setPicker(null);
         }}
-        extraActions={(query) =>
-          pickerItem ? (
+        onSelectSuggestion={(optionId) => {
+          // Um nome parecido: produto da casa, nome da casa sem produto ou nome dado a outro item desta nota.
+          const product = catalog.get(optionId);
+          const chosen = product
+            ? { name: product.name, category: product.category, productId: product.id }
+            : optionId.startsWith(NOTE_OPTION)
+              ? noteIndex.byKey.get(optionId.slice(NOTE_OPTION.length))
+              : houseNames.byKey.get(optionId.slice(NAME_OPTION.length));
+          if (pickerItem && chosen) applyHouseName(pickerItem.id, chosen);
+          setPicker(null);
+        }}
+        extraActions={(query) => {
+          const current = pickerItem ? resolvedItems.get(pickerItem.id) : undefined;
+          if (!pickerItem || !current) return null;
+          // O mesmo nome com outra grafia ("Bananas", com "Banana" na casa): usar o que já existe vem antes de criar outro.
+          const { existing, create } = typedNameActions(query, houseNames, noteIndex, current, catalog);
+          return (
             <View style={styles.gapSm}>
-              {query ? (
+              {existing ? (
                 <Button
-                  title={`Novo produto "${query}"`}
-                  icon="plus"
+                  title={existingNameLabel(existing)}
+                  icon="swap-horizontal"
                   variant="secondary"
                   compact
                   onPress={() => {
-                    const current = resolveItem(pickerItem, overrides[pickerItem.id], catalog, purchasedOn);
-                    override(pickerItem.id, { product: { kind: 'new', name: query, category: current.category } });
+                    applyHouseName(pickerItem.id, existing);
+                    setPicker(null);
+                  }}
+                />
+              ) : null}
+              {create ? (
+                <Button
+                  title={create.title}
+                  icon="plus"
+                  variant={existing ? 'ghost' : 'secondary'}
+                  compact
+                  onPress={() => {
+                    changeProduct(pickerItem.id, create.override);
                     setPicker(null);
                   }}
                 />
@@ -491,13 +653,13 @@ export default function ReceiptScreen() {
                 variant="ghost"
                 compact
                 onPress={() => {
-                  override(pickerItem.id, { product: { kind: 'none' }, pantry: false });
+                  changeProduct(pickerItem.id, { product: { kind: 'none' }, pantry: false });
                   setPicker(null);
                 }}
               />
             </View>
-          ) : null
-        }
+          );
+        }}
       />
 
       <PickerModal
@@ -510,6 +672,7 @@ export default function ReceiptScreen() {
             const current = resolveItem(pickerItem, overrides[pickerItem.id], catalog, purchasedOn);
             if (current.product.kind === 'new') {
               override(pickerItem.id, { product: { ...current.product, category }, pantry: undefined });
+              forgetUndo(pickerItem.id);
             }
           }
           setPicker(null);
@@ -548,6 +711,12 @@ function DraftItemCard({
   onPickCategory,
   onTogglePantry,
   onChangeExpiry,
+  houseNames,
+  keepsName,
+  onUseName,
+  onKeepName,
+  previousName,
+  onUndoName,
 }: {
   item: ReceiptItem;
   resolved: ResolvedItem;
@@ -558,9 +727,24 @@ function DraftItemCard({
   onPickCategory: () => void;
   onTogglePantry: () => void;
   onChangeExpiry: (iso: string | null) => void;
+  /** Os nomes que a casa já usa (domain/similarNames). */
+  houseNames: NameIndex;
+  /** A pessoa já decidiu o nome deste produto novo: sem sugestão. */
+  keepsName: boolean;
+  onUseName: (name: SimilarName) => void;
+  onKeepName: () => void;
+  /** Depois de "Usar": o nome que o item tinha antes (null se não tinha produto); undefined sem nada a desfazer. */
+  previousName?: string | null;
+  onUndoName: () => void;
 }) {
   const [expiryText, setExpiryText] = useState<string | null>(null);
   const { product } = resolved;
+  // Produto novo com o nome que veio da leitura: se a casa já usa um nome que serve, a sugestão fica no próprio item.
+  const newName = product.kind === 'new' ? product.name : null;
+  const similar = useMemo(
+    () => (newName && !keepsName ? suggestedName(newName, houseNames, { category: resolved.category }) : null),
+    [newName, keepsName, houseNames, resolved.category],
+  );
 
   function commitExpiry() {
     if (expiryText == null) return;
@@ -616,6 +800,21 @@ function DraftItemCard({
           <Chip label={getCategory(resolved.category).label} icon="tag-outline" onPress={onPickCategory} />
         ) : null}
       </Row>
+      {similar ? (
+        <View style={styles.gapXs}>
+          <Text variant="small">{similarNameHint(similar)}</Text>
+          <Row style={styles.wrap}>
+            <Chip label={`Usar "${similar.name}"`} icon="swap-horizontal" onPress={() => onUseName(similar)} />
+            <Chip label="Manter o nome" onPress={onKeepName} />
+          </Row>
+        </View>
+      ) : null}
+      {previousName !== undefined ? (
+        <Row style={styles.wrap}>
+          {previousName ? <Text variant="small">{`Antes: "${previousName}"`}</Text> : null}
+          <Chip label="Desfazer" icon="undo-variant" onPress={onUndoName} />
+        </Row>
+      ) : null}
       {product.kind !== 'none' ? (
         <Row style={styles.wrap}>
           <Chip
