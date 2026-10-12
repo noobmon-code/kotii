@@ -108,6 +108,8 @@ export interface RecoveryLinkDeps {
   signOut: () => Promise<void>;
   /** Põe a marca da recuperação e devolve como desfazer (lib/passwordRecovery). */
   beginRecovery: (userId: string) => Promise<() => Promise<void>>;
+  /** Garante que a marca do aparelho é a da conta cuja sessão entrou; falha se não der para gravar. */
+  ensureRecovery: (userId: string) => Promise<void>;
   /** Entrega os tokens ao cliente do app. */
   setSession: (tokens: RecoveryTokens) => Promise<{
     data: { session: { user: { id: string } } | null };
@@ -171,15 +173,14 @@ export function createRecoveryLinkHandler(link: CapturedLink | null, deps: Recov
         (value) => Boolean(value.error) && deps.isConnectionError(value.error),
       );
       if (error || !data.session) return deps.isConnectionError(error) ? LINK_OFFLINE : LINK_REJECTED;
-      // Quem diz de quem é a sessão é o servidor: se não for a conta conferida, a marca vai para a que
-      // entrou. Sem conseguir gravá-la, essa sessão não fica (abriria a casa sem a senha nova): sai.
-      if (data.session.user.id !== owner.id) {
-        try {
-          await deps.beginRecovery(data.session.user.id);
-        } catch {
-          await deps.signOut().catch(() => undefined);
-          return LINK_REJECTED;
-        }
+      // A sessão só fica com a marca dela no aparelho. Quem diz de quem é a sessão é o servidor (pode não
+      // ser a conta conferida), e outra aba pode ter trocado a marca enquanto a sessão entrava. Sem
+      // conseguir conferir ou gravar, a sessão sai: abriria a casa sem a senha nova.
+      try {
+        await deps.ensureRecovery(data.session.user.id);
+      } catch {
+        await deps.signOut().catch(() => undefined);
+        return LINK_REJECTED;
       }
       signedIn = true;
       return null;

@@ -149,6 +149,7 @@ function setup(over: Partial<RecoveryLinkDeps> = {}, link: CapturedLink | null =
     ask: jest.fn<RecoveryLinkDeps['ask']>(async () => true),
     signOut: jest.fn<RecoveryLinkDeps['signOut']>(async () => { calls.push('signOut'); }),
     beginRecovery: jest.fn<RecoveryLinkDeps['beginRecovery']>(async (id) => { calls.push(`mark:${id}`); return undo; }),
+    ensureRecovery: jest.fn<RecoveryLinkDeps['ensureRecovery']>(async (id) => { calls.push(`ensure:${id}`); }),
     setSession: jest.fn<RecoveryLinkDeps['setSession']>(async () => { calls.push('setSession'); return signedInAs('ana'); }),
     isConnectionError: (error: unknown) => error === OFFLINE,
     wait: jest.fn<RecoveryLinkDeps['wait']>(async () => undefined),
@@ -182,7 +183,7 @@ describe('link padrão de recuperação: até a sessão', () => {
     const { handler, deps, calls, undo } = setup();
     expect(handler.pending).toBe(true);
     await handler.run();
-    expect(calls).toEqual(['identify', 'mark:ana', 'setSession']);
+    expect(calls).toEqual(['identify', 'mark:ana', 'setSession', 'ensure:ana']);
     expect(deps.identify).toHaveBeenCalledWith('access-secret');
     expect(deps.setSession).toHaveBeenCalledWith(tokens);
     expect(deps.ask).not.toHaveBeenCalled();
@@ -230,7 +231,7 @@ describe('link padrão de recuperação: até a sessão', () => {
     expect(identify).toHaveBeenCalledTimes(3);
     expect(identify.mock.calls.every(([token]) => token === 'access-secret')).toBe(true);
     expect((deps.wait as jest.Mock).mock.calls).toEqual([[1000], [2000]]);
-    expect(calls).toEqual(['mark:ana', 'setSession']);
+    expect(calls).toEqual(['mark:ana', 'setSession', 'ensure:ana']);
     expect(deps.notice).not.toHaveBeenCalled();
   });
 
@@ -266,7 +267,7 @@ describe('link padrão de recuperação: até a sessão', () => {
     const { handler, deps, calls } = setup({ currentAccount: async () => beto });
     await handler.run();
     expect(deps.ask).toHaveBeenCalledTimes(1);
-    expect(calls).toEqual(['identify', 'signOut', 'mark:ana', 'setSession']);
+    expect(calls).toEqual(['identify', 'signOut', 'mark:ana', 'setSession', 'ensure:ana']);
     expect(deps.notice).not.toHaveBeenCalled();
   });
 
@@ -282,7 +283,7 @@ describe('link padrão de recuperação: até a sessão', () => {
     await same.handler.run();
     expect(same.deps.ask).not.toHaveBeenCalled();
     expect(same.deps.signOut).not.toHaveBeenCalled();
-    expect(same.calls).toEqual(['identify', 'mark:ana', 'setSession']);
+    expect(same.calls).toEqual(['identify', 'mark:ana', 'setSession', 'ensure:ana']);
   });
 
   it('o setSession falha depois da marca: a marca é desfeita', async () => {
@@ -314,23 +315,28 @@ describe('link padrão de recuperação: até a sessão', () => {
   it('a sessão que entra é de outra conta que não a conferida: a marca vai para a que entrou', async () => {
     const { handler, deps, undo } = setup({ setSession: async () => signedInAs('bia') });
     await handler.run();
-    expect((deps.beginRecovery as jest.Mock).mock.calls).toEqual([['ana'], ['bia']]);
+    expect((deps.beginRecovery as jest.Mock).mock.calls).toEqual([['ana']]);
+    expect(deps.ensureRecovery).toHaveBeenCalledWith('bia');
     expect(undo).not.toHaveBeenCalled();
   });
 
-  it('sem conseguir gravar a marca da conta que entrou, a sessão dela não fica: sai e desfaz', async () => {
-    const calls: string[] = [];
-    const undoAna = jest.fn(async () => { calls.push('undo'); });
-    const marks = [async () => undoAna, async () => { throw new Error('storage unavailable'); }];
-    const { handler, deps } = setup({
+  it('depois que a sessão entra, a marca é conferida de novo para a conta dela (outra aba pode ter trocado)', async () => {
+    const { handler, deps, calls, undo } = setup();
+    await handler.run();
+    expect(calls).toEqual(['identify', 'mark:ana', 'setSession', 'ensure:ana']);
+    expect(undo).not.toHaveBeenCalled();
+    expect(deps.notice).not.toHaveBeenCalled();
+  });
+
+  it('sem conseguir garantir a marca da conta que entrou, a sessão dela não fica: sai e desfaz', async () => {
+    const { handler, deps, calls } = setup({
       setSession: async () => signedInAs('bia'),
-      beginRecovery: jest.fn<RecoveryLinkDeps['beginRecovery']>(async () => marks.shift()!()),
-      signOut: jest.fn<RecoveryLinkDeps['signOut']>(async () => { calls.push('signOut'); }),
+      ensureRecovery: jest.fn<RecoveryLinkDeps['ensureRecovery']>(async () => { throw new Error('storage unavailable'); }),
     });
     await handler.run();
-    expect((deps.beginRecovery as jest.Mock).mock.calls).toEqual([['ana'], ['bia']]);
+    expect(deps.ensureRecovery).toHaveBeenCalledWith('bia');
     // Primeiro a sessão sai, depois a marca da conta conferida volta ao que era.
-    expect(calls).toEqual(['signOut', 'undo']);
+    expect(calls).toEqual(['identify', 'mark:ana', 'signOut', 'undo']);
     expect(deps.notice).toHaveBeenCalledWith(LINK_REJECTED);
     expect(handler.pending).toBe(false);
   });

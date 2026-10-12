@@ -74,8 +74,9 @@ export function startRecovery(userId: string) {
 
 /**
  * O link do e-mail: a marca entra antes da sessão, e só volta daqui depois de gravada, para as outras
- * abas a acharem quando a conta chegar. Se não der para gravar, falha: sem a marca no aparelho a sessão
- * não pode entrar (recarregada a página, ou em outra aba, a conta abriria a casa sem a senha nova).
+ * abas a acharem quando a conta chegar. Se não der para ler a que estava lá (sem ela não há como desfazer
+ * direito) ou para gravar a nova, falha: sem a marca no aparelho a sessão não pode entrar (recarregada a
+ * página, ou em outra aba, a conta abriria a casa sem a senha nova).
  * Devolve como desfazer, se a sessão não entrar: a memória e o aparelho voltam ao que eram (a marca
  * que já estava lá, inclusive desta conta, fica), a não ser que a marca tenha mudado de mãos nesse
  * meio (outra aba pôs ou tirou): aí vale o que veio depois.
@@ -91,12 +92,7 @@ export async function beginRecovery(userId: string): Promise<() => Promise<void>
   try {
     // O que estava lá e a marca nova, numa operação só: o desfazer devolve exatamente o que esta tentativa tirou.
     await serialized(async () => {
-      try {
-        [[, stored], [, storedBy]] = await AsyncStorage.multiGet([MARK_KEY, MARK_BY_KEY]);
-      } catch {
-        stored = null;
-        storedBy = null;
-      }
+      [[, stored], [, storedBy]] = await AsyncStorage.multiGet([MARK_KEY, MARK_BY_KEY]);
       await AsyncStorage.multiSet([
         [MARK_KEY, userId],
         [MARK_BY_KEY, attempt],
@@ -133,6 +129,24 @@ export async function beginRecovery(userId: string): Promise<() => Promise<void>
       }
     });
   };
+}
+
+/**
+ * A sessão do link entrou: a marca do aparelho precisa ser a desta conta. Entre a marca posta
+ * (beginRecovery) e a sessão, outra aba pode ter posto a marca de outra conta; aí esta volta a valer,
+ * porque a sessão que ficou no aparelho é a desta. Se não der para conferir ou gravar, falha (e quem
+ * chamou tira a sessão: sem a marca, ela abriria a casa sem a senha nova).
+ */
+export async function ensureRecovery(userId: string): Promise<void> {
+  version += 1;
+  setState({ userId, readFor: userId });
+  await serialized(async () => {
+    if ((await AsyncStorage.getItem(MARK_KEY)) === userId) return;
+    await AsyncStorage.multiSet([
+      [MARK_KEY, userId],
+      [MARK_BY_KEY, newAttempt()],
+    ]);
+  });
 }
 
 /**

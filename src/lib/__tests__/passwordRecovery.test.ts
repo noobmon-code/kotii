@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
   beginRecovery,
+  ensureRecovery,
   finishRecovery,
   forgetRecoveryInMemory,
   readRecovery,
@@ -161,6 +162,45 @@ describe('link do e-mail: a marca que não deu para gravar e a marca que mudou d
     expect(recoveringUserId()).toBeNull();
     expect(recoveryGateNow('ana')).toBe('reading');
     expect(await AsyncStorage.getItem(MARK_KEY)).toBeNull();
+  });
+
+  it('sem conseguir ler a marca que estava lá, beginRecovery falha sem gravar a nova', async () => {
+    await AsyncStorage.setItem(MARK_KEY, 'bia');
+    forgetRecoveryInMemory();
+    jest.mocked(AsyncStorage.multiGet).mockRejectedValueOnce(new Error('storage unavailable'));
+    await expect(beginRecovery('ana')).rejects.toThrow('storage unavailable');
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBe('bia');
+    expect(recoveringUserId()).toBeNull();
+  });
+
+  it('a sessão entrou e outra aba tinha trocado a marca: ela volta a ser a desta conta', async () => {
+    forgetRecoveryInMemory();
+    await beginRecovery('ana');
+    await AsyncStorage.multiSet([
+      [MARK_KEY, 'bia'],
+      [MARK_BY_KEY, 'outra-aba'],
+    ]);
+    await ensureRecovery('ana');
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBe('ana');
+    expect(recoveryGateNow('ana')).toBe('new-password');
+  });
+
+  it('a marca já é a desta conta (posta por esta ou por outra tentativa): ensureRecovery não mexe', async () => {
+    await AsyncStorage.multiSet([
+      [MARK_KEY, 'ana'],
+      [MARK_BY_KEY, 'outra-aba'],
+    ]);
+    await ensureRecovery('ana');
+    expect(await AsyncStorage.getItem(MARK_BY_KEY)).toBe('outra-aba');
+    expect(recoveryGateNow('ana')).toBe('new-password');
+  });
+
+  it('sem conseguir conferir ou gravar, ensureRecovery falha (e a sessão não pode ficar)', async () => {
+    jest.mocked(AsyncStorage.getItem).mockRejectedValueOnce(new Error('storage unavailable'));
+    await expect(ensureRecovery('ana')).rejects.toThrow('storage unavailable');
+    await AsyncStorage.setItem(MARK_KEY, 'bia');
+    jest.mocked(AsyncStorage.multiSet).mockRejectedValueOnce(new Error('storage full'));
+    await expect(ensureRecovery('ana')).rejects.toThrow('storage full');
   });
 
   it('outra aba pôs a marca da mesma conta depois (o valor é igual): desfazer não a tira', async () => {

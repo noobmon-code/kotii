@@ -25,6 +25,7 @@ jest.mock('../activeHousehold', () => ({
 }));
 jest.mock('../passwordRecovery', () => ({
   beginRecovery: jest.fn(),
+  ensureRecovery: jest.fn(),
   finishRecovery: jest.fn(async () => undefined),
   forgetRecoveryInMemory: jest.fn(),
   readRecovery: jest.fn(async () => undefined),

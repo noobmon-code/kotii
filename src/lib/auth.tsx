@@ -7,7 +7,14 @@ import { askYesNo } from '@/ui/dialogs';
 
 import { forgetActiveHousehold, getActiveHousehold, loadActiveHousehold, setActiveHousehold } from './activeHousehold';
 import { setLinkNotice } from './linkNotice';
-import { beginRecovery, finishRecovery, forgetRecoveryInMemory, readRecovery, startRecovery } from './passwordRecovery';
+import {
+  beginRecovery,
+  ensureRecovery,
+  finishRecovery,
+  forgetRecoveryInMemory,
+  readRecovery,
+  startRecovery,
+} from './passwordRecovery';
 import { cacheHousehold, cacheOwners, forgetCache, queryClient, resumeQueue, setSessionValid } from './queryClient';
 import { createRecoveryLinkHandler, linkOwnerLookup } from './recoveryLink';
 import { takeRecoveryLink } from './recoveryLinkBoot';
@@ -72,6 +79,7 @@ const recoveryLink = createRecoveryLinkHandler(takeRecoveryLink(), {
   ask: (title, message) => askYesNo(title, message, 'Trocar de conta', 'Cancelar'),
   signOut,
   beginRecovery,
+  ensureRecovery,
   setSession: (tokens) => supabase.auth.setSession(tokens),
   isConnectionError: isAuthRetryableFetchError,
   wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
