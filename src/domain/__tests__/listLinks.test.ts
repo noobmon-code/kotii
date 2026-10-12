@@ -98,6 +98,34 @@ describe('matchListItems', () => {
     const matches = matchListItems([item('l1', 'Coca', 'p-coca'), item('l2', 'Refrigerante')], receipt, links);
     expect(matches.map((m) => m.receiptItemId)).toEqual(['r-coca', 'r-coca']);
   });
+
+  it('produto da nota com o mesmo nome do item da lista vem marcado, e só enquanto o nome for esse', () => {
+    const line = (name: string | null): ReceiptLine => ({
+      id: 'r-1',
+      productId: null,
+      name,
+      names: ['Coca Zero 2l', 'COCA ZERO 2L'],
+      category: 'bebidas',
+    });
+    const list = [item('l1', 'coca zero'), item('l2', 'Coca')];
+    // A pessoa deu ao produto o nome que está na lista ("Coca zero"): esse item sai marcado; "Coca" só sugere.
+    expect(matchListItems(list, [line('Coca Zero')], new LinkIndex())).toEqual([
+      { listItemId: 'l1', receiptItemId: 'r-1', reason: 'nome', checked: true },
+      { listItemId: 'l2', receiptItemId: 'r-1', reason: 'nome', checked: false },
+    ]);
+    // Trocou o nome do produto: volta a ser só sugestão.
+    expect(matchListItems(list, [line('Coca-Cola Zero 2L')], new LinkIndex()).map((m) => m.checked)).toEqual([false, false]);
+    // Sem produto ("não acompanhar preço"), o nome não marca nada.
+    expect(matchListItems(list, [line(null)], new LinkIndex()).map((m) => m.checked)).toEqual([false, false]);
+  });
+
+  it('o mesmo nome vale também para produto que já existe e item de lista digitado solto', () => {
+    const banana: ReceiptLine = { id: 'r-banana', productId: 'p-banana', name: 'Banana', names: ['Banana', 'BANANA PRATA KG'], category: 'hortifruti' };
+    expect(matchListItems([item('l1', 'bananas'), item('l2', 'banana')], [banana], new LinkIndex())).toEqual([
+      { listItemId: 'l1', receiptItemId: 'r-banana', reason: 'nome', checked: false },
+      { listItemId: 'l2', receiptItemId: 'r-banana', reason: 'nome', checked: true },
+    ]);
+  });
 });
 
 describe('applyListChoices e listRemovals', () => {

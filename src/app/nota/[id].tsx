@@ -51,8 +51,12 @@ import {
   indexNames,
   nameCandidates,
   nameSourceLabel,
+  similarNameHint,
+  similarNameKey,
   similarNames,
+  suggestedName,
   type NameCandidate,
+  type NameIndex,
   type SimilarName,
 } from '@/domain/similarNames';
 import { PayerChips } from '@/features/finance/PayerChips';
@@ -183,6 +187,7 @@ export default function ReceiptScreen() {
     return {
       id: item.id,
       productId: resolved.product.kind === 'existing' ? resolved.product.productId : null,
+      name: resolved.productName,
       names: [resolved.productName, item.suggested_name, item.raw_description].filter((n): n is string => Boolean(n)),
       category: resolved.category,
     };
@@ -201,41 +206,29 @@ export default function ReceiptScreen() {
 
   /**
    * O item fica com um nome que a casa já usa: o produto desse nome ou, sem
-   * produto, um produto novo com o nome escrito como a casa escreve. Nome de
-   * item de lista aberta: a compra cumpre esse item, que já sai marcado.
+   * produto, um produto novo com o nome escrito como a casa escreve. Se é o
+   * nome de um item de lista aberta, esse item passa a vir marcado em "Lista
+   * de compras" enquanto o nome for esse (matchListItems).
    */
-  function applyHouseName(itemId: string, chosen: Pick<NameCandidate, 'name' | 'category' | 'productId' | 'listItemIds'>) {
+  function applyHouseName(itemId: string, chosen: Pick<NameCandidate, 'name' | 'category' | 'productId'>) {
     if (chosen.productId && catalog.has(chosen.productId)) {
       override(itemId, { product: { kind: 'existing', productId: chosen.productId } });
       return;
     }
+    const current = resolvedItems.get(itemId)?.category ?? 'outros';
     // Item de lista digitado solto fica em "Outros": vale mais a categoria que a nota já tinha.
-    const category = chosen.category === 'outros' ? (resolvedItems.get(itemId)?.category ?? 'outros') : chosen.category;
-    override(itemId, { product: { kind: 'new', name: chosen.name, category }, pantry: undefined });
-    if (chosen.listItemIds.length) {
-      setListChoices((prev) => ({
-        ...prev,
-        ...Object.fromEntries(chosen.listItemIds.map((listItemId) => [listItemId, { receiptItemId: itemId, checked: true }])),
-      }));
-    }
+    const category = chosen.category === 'outros' ? current : chosen.category;
+    // A despensa segue a categoria: só volta ao padrão dela se a categoria mudou.
+    override(itemId, { product: { kind: 'new', name: chosen.name, category }, ...(category !== current ? { pantry: undefined } : {}) });
+    // Nome que a pessoa escolheu: o item não sugere outro de novo.
+    setKeptNames((prev) => ({ ...prev, [itemId]: chosen.name }));
   }
 
-  /** Produto novo com o nome digitado; antes, confere se a casa já usa o mesmo nome com outra grafia. */
-  async function createProduct(item: ReceiptItem, name: string) {
-    const [same] = similarNames(name, houseNames, { onlySame: true, limit: 1 });
-    // Digitado igual ao que a casa tem: é ele, sem perguntar.
-    const identical = same?.name.toLowerCase() === name.toLowerCase();
-    const useSame =
-      same &&
-      (identical ||
-        (await askYesNo(
-          'Já existe um nome parecido',
-          `A casa já usa "${same.name}". Usar esse nome no lugar de "${name}"? Assim os dois ficam como um item só.`,
-          `Usar "${same.name}"`,
-          `Criar "${name}"`,
-        )));
-    if (same && useSame) {
-      applyHouseName(item.id, same);
+  /** Produto novo com o nome digitado. Se a casa já tem esse nome e só muda a maiúscula, vale o da casa. */
+  function createProduct(item: ReceiptItem, name: string) {
+    const known = houseNames.byKey.get(similarNameKey(name));
+    if (known && known.name.toLowerCase() === name.toLowerCase()) {
+      applyHouseName(item.id, known);
     } else {
       const current = resolveItem(item, overrides[item.id], catalog, purchasedOn);
       override(item.id, { product: { kind: 'new', name, category: current.category } });
@@ -464,11 +457,6 @@ export default function ReceiptScreen() {
         {items.map((item) => {
           const resolved = resolvedItems.get(item.id)!;
           const alert = alertText(alerts.get(item.id));
-          // Produto novo com o nome que veio da leitura: se a casa já usa um nome que serve, a sugestão fica no próprio item.
-          const similar =
-            isDraft && resolved.product.kind === 'new' && keptNames[item.id] !== resolved.product.name
-              ? (similarNames(resolved.product.name, houseNames, { category: resolved.category, limit: 1, onlyConfident: true })[0] ?? null)
-              : null;
           return isDraft ? (
             <DraftItemCard
               key={item.id}
@@ -482,8 +470,13 @@ export default function ReceiptScreen() {
               onPickCategory={() => setPicker({ kind: 'category', itemId: item.id })}
               onTogglePantry={() => override(item.id, { pantry: !resolved.pantry })}
               onChangeExpiry={(iso) => override(item.id, { expiryManual: true, expiresOn: iso })}
-              similar={similar}
-              onUseSimilar={() => similar && applyHouseName(item.id, similar)}
+              houseNames={houseNames}
+              keepsName={keptNames[item.id] === resolved.productName}
+              onUseName={(name) => applyHouseName(item.id, name)}
+              onKeepName={() => {
+                const name = resolved.productName;
+                if (name) setKeptNames((prev) => ({ ...prev, [item.id]: name }));
+              }}
             />
           ) : (
             <Card key={item.id}>
@@ -555,7 +548,7 @@ export default function ReceiptScreen() {
           left: <CategoryIcon category={p.category} name={p.name} size={32} />,
         }))}
         onClose={() => setPicker(null)}
-        suggestionsTitle="Nomes parecidos que a casa já usa"
+        suggestionsTitle="Nomes parecidos"
         suggestions={(query) => {
           if (!pickerItem || !query) return [];
           const current = resolvedItems.get(pickerItem.id);
@@ -580,16 +573,32 @@ export default function ReceiptScreen() {
           }
           setPicker(null);
         }}
-        extraActions={(query) =>
-          pickerItem ? (
+        extraActions={(query) => {
+          if (!pickerItem) return null;
+          // O mesmo nome com outra grafia ("Bananas", com "Banana" na casa): usar o que já existe vem antes de criar outro.
+          const [same] = query ? similarNames(query, houseNames, { onlySame: true, limit: 1 }) : [];
+          const existing = same && same.name.toLowerCase() !== query.toLowerCase() ? same : null;
+          return (
             <View style={styles.gapSm}>
-              {query ? (
+              {existing ? (
                 <Button
-                  title={`Novo produto "${query}"`}
-                  icon="plus"
+                  title={`Usar "${existing.name}" (já existe)`}
+                  icon="swap-horizontal"
                   variant="secondary"
                   compact
-                  onPress={() => void createProduct(pickerItem, query)}
+                  onPress={() => {
+                    applyHouseName(pickerItem.id, existing);
+                    setPicker(null);
+                  }}
+                />
+              ) : null}
+              {query ? (
+                <Button
+                  title={existing ? `Criar "${query}" mesmo assim` : `Novo produto "${query}"`}
+                  icon="plus"
+                  variant={existing ? 'ghost' : 'secondary'}
+                  compact
+                  onPress={() => createProduct(pickerItem, query)}
                 />
               ) : null}
               <Button
@@ -603,8 +612,8 @@ export default function ReceiptScreen() {
                 }}
               />
             </View>
-          ) : null
-        }
+          );
+        }}
       />
 
       <PickerModal
@@ -655,8 +664,10 @@ function DraftItemCard({
   onPickCategory,
   onTogglePantry,
   onChangeExpiry,
-  similar,
-  onUseSimilar,
+  houseNames,
+  keepsName,
+  onUseName,
+  onKeepName,
 }: {
   item: ReceiptItem;
   resolved: ResolvedItem;
@@ -667,12 +678,21 @@ function DraftItemCard({
   onPickCategory: () => void;
   onTogglePantry: () => void;
   onChangeExpiry: (iso: string | null) => void;
-  /** Nome que a casa já usa e serve para este produto novo (domain/similarNames). */
-  similar: SimilarName | null;
-  onUseSimilar: () => void;
+  /** Os nomes que a casa já usa (domain/similarNames). */
+  houseNames: NameIndex;
+  /** A pessoa já decidiu o nome deste produto novo: sem sugestão. */
+  keepsName: boolean;
+  onUseName: (name: SimilarName) => void;
+  onKeepName: () => void;
 }) {
   const [expiryText, setExpiryText] = useState<string | null>(null);
   const { product } = resolved;
+  // Produto novo com o nome que veio da leitura: se a casa já usa um nome que serve, a sugestão fica no próprio item.
+  const newName = product.kind === 'new' ? product.name : null;
+  const similar = useMemo(
+    () => (newName && !keepsName ? suggestedName(newName, houseNames, { category: resolved.category }) : null),
+    [newName, keepsName, houseNames, resolved.category],
+  );
 
   function commitExpiry() {
     if (expiryText == null) return;
@@ -730,11 +750,10 @@ function DraftItemCard({
       </Row>
       {similar ? (
         <View style={styles.gapXs}>
-          <Text variant="small">
-            {similar.closeness === 'igual' ? 'A casa já usa este nome:' : 'A casa já usa um nome parecido:'}
-          </Text>
+          <Text variant="small">{similarNameHint(similar)}</Text>
           <Row style={styles.wrap}>
-            <Chip label={`Usar "${similar.name}"`} icon="swap-horizontal" onPress={onUseSimilar} />
+            <Chip label={`Usar "${similar.name}"`} icon="swap-horizontal" onPress={() => onUseName(similar)} />
+            <Chip label="Manter o nome" onPress={onKeepName} />
           </Row>
         </View>
       ) : null}

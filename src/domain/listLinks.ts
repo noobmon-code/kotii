@@ -75,6 +75,8 @@ export interface ReceiptLine {
   id: string;
   /** Produto já escolhido (existente); produto novo ainda não tem id. */
   productId: string | null;
+  /** O nome do produto do item como está na revisão (existente ou novo); null sem produto. */
+  name?: string | null;
   /** Nome do produto, sugestão da leitura e texto da nota. */
   names: string[];
   category: string;
@@ -87,15 +89,15 @@ export interface ListMatch {
   listItemId: string;
   receiptItemId: string;
   reason: ListMatchReason;
-  /** Mesmo produto ou vínculo já confirmado vem marcado; nome parecido só sugere. */
+  /** Mesmo produto, vínculo já confirmado ou o mesmo nome vêm marcados; nome parecido só sugere. */
   checked: boolean;
 }
 
 /**
  * Que item da nota cumpre cada item aberto das listas: o mesmo produto, um
- * vínculo que a pessoa já confirmou ou, como sugestão desmarcada, um nome
- * com as mesmas palavras. Um item da nota pode cumprir mais de um item de
- * lista ("Coca" e "Refrigerante").
+ * vínculo que a pessoa já confirmou, um produto com o mesmo nome do item da
+ * lista ou, como sugestão desmarcada, um nome com as mesmas palavras. Um item
+ * da nota pode cumprir mais de um item de lista ("Coca" e "Refrigerante").
  */
 export function matchListItems(listItems: OpenListItem[], receipt: ReceiptLine[], links: LinkIndex): ListMatch[] {
   return listItems.flatMap((item): ListMatch[] => {
@@ -103,6 +105,11 @@ export function matchListItems(listItems: OpenListItem[], receipt: ReceiptLine[]
     if (byProduct) return [{ listItemId: item.id, receiptItemId: byProduct.id, reason: 'produto', checked: true }];
     const byLink = receipt.find((line) => line.productId && links.has(item.name, line.productId));
     if (byLink) return [{ listItemId: item.id, receiptItemId: byLink.id, reason: 'vinculo', checked: true }];
+    // O produto do item da nota se chama como o item da lista: é ele. Vale enquanto o nome for esse
+    // (trocou o produto na revisão, a marca sai junto).
+    const key = listNameKey(item.name);
+    const byName = key ? receipt.find((line) => line.name != null && listNameKey(line.name) === key) : undefined;
+    if (byName) return [{ listItemId: item.id, receiptItemId: byName.id, reason: 'nome', checked: true }];
     // Mais parecido: primeiro a mesma categoria ("Leite" é o integral, não o
     // condensado dos doces), depois o nome mais curto.
     let best: { line: ReceiptLine; score: [number, number] } | null = null;
