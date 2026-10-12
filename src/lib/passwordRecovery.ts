@@ -1,14 +1,16 @@
 // Recuperação de senha. "Esqueci minha senha" (tela de entrar) manda um
-// e-mail com um código; o código (verifyOtp, tipo recovery) abre uma sessão
-// de recuperação, e a conta só vê a tela da senha nova (app/nova-senha) até
-// salvar uma. A marca de qual conta está nisso fica no aparelho: vale depois
-// de recarregar a página, em outra aba e no app reaberto. Ela só sai quando
-// a senha nova é salva (USER_UPDATED), quando a pessoa desiste ("Cancelar e
-// sair") ou quando entra com a senha; uma saída por fora (a sessão que
-// venceu) não tira a marca.
+// e-mail com um link ou um código; o link (lib/recoveryLink) ou o código
+// (verifyOtp, tipo recovery) abre uma sessão de recuperação, e a conta só vê
+// a tela da senha nova (app/nova-senha) até salvar uma. A marca de qual conta
+// está nisso fica no aparelho: vale depois de recarregar a página, em outra
+// aba (que a recebe na hora, pelo evento "storage") e no app reaberto. Ela só
+// sai quando a senha nova é salva (USER_UPDATED), quando a pessoa desiste
+// ("Cancelar e sair") ou quando entra com a senha; uma saída por fora (a
+// sessão que venceu) não tira a marca.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSyncExternalStore } from 'react';
+import { Platform } from 'react-native';
 
 const MARK_KEY = 'kotii:password-recovery';
 
@@ -39,11 +41,34 @@ function subscribe(listener: () => void) {
 
 const snapshot = () => state;
 
-/** A conta entrou pelo código do e-mail: fica na senha nova até salvar. */
+/** A conta entrou pelo código do e-mail (pelo link é beginRecovery): fica na senha nova até salvar. */
 export function startRecovery(userId: string) {
   version += 1;
   setState({ userId, readFor: userId });
   AsyncStorage.setItem(MARK_KEY, userId).catch(() => undefined);
+}
+
+/**
+ * O link do e-mail: a marca entra antes da sessão, e só volta daqui depois de gravada, para as outras
+ * abas a acharem quando a conta chegar. Devolve como desfazer, se a sessão não entrar: a memória e o
+ * aparelho voltam ao que eram (a marca que já estava lá, inclusive desta conta, fica).
+ */
+export async function beginRecovery(userId: string): Promise<() => Promise<void>> {
+  let stored: string | null = null;
+  try {
+    stored = await AsyncStorage.getItem(MARK_KEY);
+  } catch {
+    stored = null;
+  }
+  const memory = state;
+  version += 1;
+  setState({ userId, readFor: userId });
+  await AsyncStorage.setItem(MARK_KEY, userId).catch(() => undefined);
+  return async () => {
+    version += 1;
+    setState(memory);
+    await (stored === null ? AsyncStorage.removeItem(MARK_KEY) : AsyncStorage.setItem(MARK_KEY, stored)).catch(() => undefined);
+  };
 }
 
 /**
@@ -60,7 +85,7 @@ export async function finishRecovery(): Promise<void> {
 /**
  * A sessão saiu (aqui ou em outra aba): esquece a marca só na memória. O
  * aparelho continua com ela, e a próxima conta que entrar a lê de novo (a
- * entrada com a senha tira, o código põe outra).
+ * entrada com a senha tira, o link ou código põe outra).
  */
 export function forgetRecoveryInMemory() {
   version += 1;
@@ -86,6 +111,33 @@ export async function readRecovery(userId: string): Promise<void> {
   // esta conta vale ainda que o aparelho não tenha terminado de gravar.
   const kept = state.userId === userId ? userId : saved;
   setState({ userId: version === at ? kept : state.userId, readFor: userId });
+}
+
+/**
+ * A marca posta ou tirada por outra aba (evento "storage" do navegador) vale nesta também: a aba que
+ * já estava na mesma conta vai para a senha nova sem recarregar, e sai dela quando a marca sai. Outra
+ * chave não muda nada; `key` null é o localStorage.clear(), que leva a marca junto.
+ */
+export function recoveryAfterStorage(current: RecoveryState, key: string | null, newValue: string | null): RecoveryState {
+  if (key !== null && key !== MARK_KEY) return current;
+  return { userId: key === null ? null : newValue || null, readFor: current.readFor };
+}
+
+// No navegador o AsyncStorage é o localStorage, com a mesma chave. No celular há `window`, mas sem
+// addEventListener (e sem outras abas).
+if (Platform.OS === 'web' && typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('storage', (event) => {
+    try {
+      if (event.storageArea !== window.localStorage) return;
+    } catch {
+      return;
+    }
+    const next = recoveryAfterStorage(state, event.key, event.newValue);
+    if (next === state) return;
+    // Uma leitura em andamento não passa por cima do que a outra aba acabou de fazer.
+    version += 1;
+    setState(next);
+  });
 }
 
 export type RecoveryGate = 'reading' | 'new-password' | 'free';

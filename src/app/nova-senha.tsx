@@ -15,7 +15,7 @@ import { space } from '@/ui/theme';
 const MIN_PASSWORD = 6;
 
 /**
- * Depois do código do e-mail de recuperação: a senha nova, antes de abrir a
+ * Depois do link ou código do e-mail de recuperação: a senha nova, antes de abrir a
  * casa. Salvar volta ao app (o USER_UPDATED, em lib/auth, tira a marca).
  */
 export default function NewPasswordScreen() {
@@ -36,19 +36,19 @@ export default function NewPasswordScreen() {
     }
     setBusy(true);
     try {
-      // A senha só vai para a conta que entrou pelo código (e não para outra que esteja neste aparelho).
+      // A senha só vai para a conta que entrou pelo link ou código (e não para outra que esteja neste aparelho).
       const { data, error: sessionError } = await supabase.auth.getSession();
       if (sessionError) throw sessionError;
       if (!data.session) throw new AuthSessionMissingError();
       if (data.session.user.id !== recoveringUserId()) {
-        throw new Error('A conta aberta mudou. Peça um código novo em "Esqueci minha senha".');
+        throw new Error('A conta aberta mudou. Peça um novo e-mail em "Esqueci minha senha".');
       }
       const { error } = await supabase.auth.updateUser({ password });
       if (error) throw error;
     } catch (err) {
       notify('Não deu para salvar a senha', translateAuthError(err));
       setBusy(false);
-      // A sessão de recuperação acabou: volta para entrar (lá dá para pedir outro código).
+      // A sessão de recuperação acabou: volta para entrar (lá dá para pedir outro e-mail).
       if (isSessionGone(err)) void cancel();
     }
   }
