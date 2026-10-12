@@ -11,6 +11,7 @@ import {
   type OpenListItem,
   type ReceiptLine,
 } from '../listLinks';
+import { similarNameKey } from '../similarNames';
 
 const COCA: ReceiptLine = {
   id: 'r-coca',
@@ -125,6 +126,35 @@ describe('matchListItems', () => {
       { listItemId: 'l1', receiptItemId: 'r-banana', reason: 'nome', checked: false },
       { listItemId: 'l2', receiptItemId: 'r-banana', reason: 'nome', checked: true },
     ]);
+  });
+});
+
+describe('matchListItems com outra noção de mesmo nome', () => {
+  const limao: ReceiptLine = { id: 'r-limao', productId: 'p-limao', name: 'Limão', names: ['Limão', 'LIMAO TAITI KG'], category: 'hortifruti' };
+  const banana: ReceiptLine = { id: 'r-banana', productId: null, name: 'Banana', names: ['Banana', 'BANANA PRATA KG'], category: 'hortifruti' };
+  const list = [item('l1', 'Limões'), item('l2', 'bananas'), item('l3', 'Banana kg'), item('l4', 'Banana prata')];
+
+  it('na revisão da nota, plural e unidade solta não tiram a marca do item da lista', () => {
+    expect(matchListItems(list, [limao, banana], new LinkIndex(), similarNameKey)).toEqual([
+      { listItemId: 'l1', receiptItemId: 'r-limao', reason: 'nome', checked: true },
+      { listItemId: 'l2', receiptItemId: 'r-banana', reason: 'nome', checked: true },
+      { listItemId: 'l3', receiptItemId: 'r-banana', reason: 'nome', checked: true },
+      // Outro nome ("Banana prata" não é "Banana") continua só como sugestão.
+      { listItemId: 'l4', receiptItemId: 'r-banana', reason: 'nome', checked: false },
+    ]);
+  });
+
+  it('sem pedir, a marca continua só para o nome escrito igual', () => {
+    expect(matchListItems(list, [limao, banana], new LinkIndex()).map((m) => [m.listItemId, m.checked])).toEqual([
+      ['l2', false],
+      ['l3', false],
+      ['l4', false],
+    ]);
+  });
+
+  it('o que sai da lista leva o nome e a chave do próprio item, que o banco confere', () => {
+    const matches = matchListItems([item('l1', 'Limões')], [limao], new LinkIndex(), similarNameKey);
+    expect(listRemovals(matches, [item('l1', 'Limões')])).toEqual(new Map([['r-limao', [{ id: 'l1', name: 'Limões', name_key: 'limoes' }]]]));
   });
 });
 

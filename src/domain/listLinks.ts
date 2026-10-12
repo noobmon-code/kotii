@@ -98,8 +98,17 @@ export interface ListMatch {
  * vínculo que a pessoa já confirmou, um produto com o mesmo nome do item da
  * lista ou, como sugestão desmarcada, um nome com as mesmas palavras. Um item
  * da nota pode cumprir mais de um item de lista ("Coca" e "Refrigerante").
+ * `nameKey` diz quando o produto do item da nota "tem o mesmo nome" do item
+ * da lista: por padrão a chave da lista; a revisão da nota passa a dos nomes
+ * parecidos (`similarNameKey`), que também iguala plural e unidade solta
+ * ("Limões" da lista com o produto "Limão").
  */
-export function matchListItems(listItems: OpenListItem[], receipt: ReceiptLine[], links: LinkIndex): ListMatch[] {
+export function matchListItems(
+  listItems: OpenListItem[],
+  receipt: ReceiptLine[],
+  links: LinkIndex,
+  nameKey: (name: string) => string = listNameKey,
+): ListMatch[] {
   return listItems.flatMap((item): ListMatch[] => {
     const byProduct = item.product_id ? receipt.find((line) => line.productId === item.product_id) : undefined;
     if (byProduct) return [{ listItemId: item.id, receiptItemId: byProduct.id, reason: 'produto', checked: true }];
@@ -107,8 +116,8 @@ export function matchListItems(listItems: OpenListItem[], receipt: ReceiptLine[]
     if (byLink) return [{ listItemId: item.id, receiptItemId: byLink.id, reason: 'vinculo', checked: true }];
     // O produto do item da nota se chama como o item da lista: é ele. Vale enquanto o nome for esse
     // (trocou o produto na revisão, a marca sai junto).
-    const key = listNameKey(item.name);
-    const byName = key ? receipt.find((line) => line.name != null && listNameKey(line.name) === key) : undefined;
+    const key = nameKey(item.name);
+    const byName = key ? receipt.find((line) => line.name != null && nameKey(line.name) === key) : undefined;
     if (byName) return [{ listItemId: item.id, receiptItemId: byName.id, reason: 'nome', checked: true }];
     // Mais parecido: primeiro a mesma categoria ("Leite" é o integral, não o
     // condensado dos doces), depois o nome mais curto.

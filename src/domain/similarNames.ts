@@ -6,8 +6,8 @@
 import { listNameKey } from './listLinks';
 import { normalizeSearch } from './search';
 
-/** De onde vem o nome que a casa já usa. */
-export type NameSource = 'produto' | 'lista' | 'comprado' | 'comum';
+/** De onde vem o nome: da casa (produto, lista, compra), de outro item desta nota ou do catálogo de itens comuns. */
+export type NameSource = 'produto' | 'lista' | 'comprado' | 'nota' | 'comum';
 
 export interface NameCandidate {
   name: string;
@@ -23,8 +23,9 @@ export interface SimilarName extends NameCandidate {
   /** O nome sem acento, plural nem ordem das palavras: o mesmo para grafias diferentes. */
   key: string;
   /**
-   * `igual`: o mesmo nome escrito de outro jeito (acento, plural, ordem das
-   * palavras). `parecido`: um nome contém o outro ("Arroz" e "Arroz Tio João 5kg").
+   * `igual`: o mesmo nome escrito de outro jeito (acento, plural e, sem "de"
+   * ou "para" no nome, a ordem das palavras). `parecido`: um nome contém o
+   * outro ("Arroz" e "Arroz Tio João 5kg").
    */
   closeness: 'igual' | 'parecido';
   /**
@@ -41,16 +42,39 @@ export interface SimilarName extends NameCandidate {
 const LINKS = new Set(['de', 'da', 'do', 'das', 'dos', 'em', 'no', 'na', 'nos', 'nas', 'ao', 'com', 'para', 'por', 'e', 'a', 'o']);
 // Depois do nome da casa, uma destas mais outra palavra faz outra coisa ("Leite de coco", "Sabão em pó").
 const COMPOUND = new Set(['de', 'da', 'do', 'das', 'dos', 'em']);
+// Dão um papel a cada palavra: com uma destas, a ordem faz parte do nome ("Suco de laranja" não é "Laranja para suco"). "E" não entra.
+const ROLE_LINKS = new Set(['de', 'da', 'do', 'das', 'dos', 'em', 'no', 'na', 'para', 'com', 'ao', 'por']);
 // Embalagem: não muda o produto.
 const PACKAGING = new Set([
   'lata', 'latinha', 'garrafa', 'pet', 'vidro', 'frasco', 'pote', 'caixa', 'caixinha', 'pacote', 'pack', 'fardo', 'sache',
-  'refil', 'bandeja', 'barra', 'tablete', 'rolo', 'unidade', 'embalagem', 'granel', 'long', 'neck', 'tetra', 'pak',
+  'refil', 'bandeja', 'barra', 'tablete', 'rolo', 'embalagem', 'granel', 'long', 'neck', 'tetra', 'pak',
 ]);
-// Unidade solta ("Banana Prata Kg") não diz o que é o item nem o tamanho.
-const LOOSE_UNITS = new Set(['kg', 'gr', 'mg', 'ml', 'lt', 'un', 'und', 'unid', 'pct', 'pc', 'cx', 'fd', 'dz', 'cm', 'mm']);
+// Logo depois do nome da casa, fazem outra coisa mesmo sem "de" ou "em", que a nota fiscal corta ("Leite coco",
+// "Batata palha", "Água tônica", "Óleo motor"). No singular e sem acento. É uma lista fechada, só para a sugestão
+// que aparece sem a pessoa pedir: não é para crescer junto com o catálogo de itens comuns.
+const OTHER_THING = new Set([
+  'coco', 'soja', 'queijo', 'palha', 'tonica', 'oxigenada', 'sanitaria', 'poro', 'cacau', 'fruta', 'lactea', 'fermentado',
+  'condensado', 'evaporado', 'toalha', 'higienico', 'po', 'doce', 'instantaneo', 'vegetal', 'ingles', 'chips', 'alho',
+  'motor', 'passa', 'empanado',
+]);
+// Depois de uma destas, o número é a versão do item ("Arroz Tipo 1"), não um pedaço do tamanho.
+const VERSION_WORDS = new Set(['tipo', 'tp', 'tam', 'tamanho', 'numero', 'num', 'nr']);
+// Unidade solta ("Banana Prata Kg", "Alface Unidade") não diz o que é o item nem o tamanho.
+const LOOSE_UNITS = new Set([
+  'kg', 'gr', 'mg', 'ml', 'lt', 'un', 'und', 'unid', 'pct', 'pc', 'cx', 'fd', 'cm', 'mm',
+  'litro', 'litros', 'quilo', 'quilos', 'kilo', 'kilos', 'grama', 'gramas', 'unidade', 'unidades',
+]);
 // A mesma unidade escrita de outro jeito.
-const UNIT_ALIASES: Record<string, string> = { gr: 'g', grs: 'g', gs: 'g', kgs: 'kg', lt: 'l', lts: 'l', ls: 'l', mls: 'ml', und: 'un', unid: 'un', uns: 'un', unds: 'un' };
+const UNIT_ALIASES: Record<string, string> = {
+  gr: 'g', grs: 'g', gs: 'g', grama: 'g', gramas: 'g',
+  kgs: 'kg', quilo: 'kg', quilos: 'kg', kilo: 'kg', kilos: 'kg',
+  lt: 'l', lts: 'l', ls: 'l', litro: 'l', litros: 'l',
+  mls: 'ml',
+  und: 'un', unid: 'un', uns: 'un', unds: 'un', unidade: 'un', unidades: 'un',
+};
 const UNITS = new Set(['kg', 'g', 'mg', 'ml', 'l', 'un', 'cm', 'mm', 'm', 'w', 'v', ...Object.keys(UNIT_ALIASES)]);
+// Doze unidades.
+const DOZEN = new Set(['duzia', 'duzias', 'dz']);
 
 /** A palavra no singular ("limoes" -> "limao", "papeis" -> "papel", "bananas" -> "banana"). */
 function singular(word: string): string {
@@ -67,9 +91,27 @@ function singular(word: string): string {
   return word;
 }
 
+// Número, com a vírgula guardada como "p" ("1,5" chega aqui como "1p5": a pontuação sai antes).
+const NUMBER = /^\d+(?:p\d+)?$/;
+// Número e unidade juntos ("350ml", "1p5l").
+const SIZED = /^(\d+(?:p\d+)?)([a-z]+)$/;
+
+/** O número de um jeito só: "1p50" é "1p5", "1p0" é "1". */
+function plainNumber(number: string): string {
+  const [whole, fraction = ''] = number.split('p');
+  const kept = fraction.replace(/0+$/, '');
+  return kept ? `${whole}p${kept}` : whole;
+}
+
 /** "350ml", "2l", "12un": número e unidade juntos, com a unidade num jeito só. */
 function sizeToken(number: string, unit: string): string {
-  return `${number}${UNIT_ALIASES[unit] ?? unit}`;
+  return `${plainNumber(number)}${UNIT_ALIASES[unit] ?? unit}`;
+}
+
+/** Número e unidade num token só ("350ml", "2000ui"); a unidade tem até 4 letras ou é uma conhecida ("2litros"). */
+function sizedToken(token: string): [number: string, unit: string] | null {
+  const match = SIZED.exec(token);
+  return match && (match[2].length <= 4 || UNITS.has(match[2])) ? [match[1], match[2]] : null;
 }
 
 interface Part {
@@ -83,40 +125,68 @@ interface Parsed {
   key: string;
   /** As palavras que dizem o que é o item, na ordem, como escritas (sem acento). */
   words: string[];
+  /** As palavras no singular, na ordem do nome. */
+  order: string;
+  /** Tem "de", "para", "com"...: a ordem das palavras faz parte do nome. */
+  roles: boolean;
   /** O que distingue versões do mesmo item: tamanho, quantidade, letra ("350ml", "12un", "c" de vitamina C). */
   variants: string[];
+  /** Só os tamanhos de verdade, número com unidade ("350ml", "12un" de "c/12" ou "dúzia"). */
+  sizes: string[];
+  /** Tamanhos que vieram logo depois de um algarismo solto ("1 5l" pode ser 1,5 L): não contam como certos. */
+  doubtful: string[];
   /** Palavras e ligações na ordem do nome. */
   parts: Part[];
 }
 
 function parseName(name: string): Parsed {
-  // "s/" é sem, "c/" é com: antes de a pontuação sair.
   const text = normalizeSearch(name)
+    // "s/" é sem, "c/" é com: antes de a pontuação sair.
     .replace(/\bs\/\s*/g, 'sem ')
     .replace(/\bc\/\s*/g, 'com ')
-    .replace(/\bp\/\s*/g, 'para ');
+    .replace(/\bp\/\s*/g, 'para ')
+    // "1,5" é um número só: a vírgula (ou o ponto) vira uma letra, que a chave não tira.
+    .replace(/(\d)[.,](\d)/g, '$1p$2');
   const raw = listNameKey(text).split(' ').filter(Boolean);
   const parts: Part[] = [];
   const variants: string[] = [];
-  const isNumber = (token: string | undefined) => token != null && /^\d+$/.test(token);
-  const isSized = (token: string) => /^\d+[a-z]{1,4}$/.test(token);
+  const sizes: string[] = [];
+  const doubtful: string[] = [];
+  const isNumber = (token: string | undefined) => token != null && NUMBER.test(token);
   // O que vem depois ainda tem palavra? Uma letra no fim ("Vitamina A") é versão, não ligação.
   const wordAfter = (index: number) =>
-    raw.slice(index + 1).some((token) => !isNumber(token) && !isSized(token) && !LOOSE_UNITS.has(token) && token.length > 1);
+    raw.slice(index + 1).some((token) => !isNumber(token) && !sizedToken(token) && !LOOSE_UNITS.has(token) && !DOZEN.has(token) && token.length > 1);
+  // O token anterior foi um algarismo solto: o tamanho que vier agora ("1 5L") pode ser a parte depois da vírgula.
+  let loneDigit = false;
 
   for (let i = 0; i < raw.length; i++) {
     const token = raw[i];
     const next = raw[i + 1];
+    const afterDigit = loneDigit;
+    loneDigit = false;
+    const size = (number: string, unit: string) => {
+      const sized = sizeToken(number, unit);
+      variants.push(sized);
+      sizes.push(sized);
+      if (afterDigit) doubtful.push(sized);
+    };
+    const sized = sizedToken(token);
     if (isNumber(token)) {
-      if (next && UNITS.has(next)) {
-        variants.push(sizeToken(token, next));
+      // "Tipo 1 Kg", "Tipo 1 5kg": o número é a versão.
+      const version = i > 0 && VERSION_WORDS.has(raw[i - 1]);
+      if (!version && next && DOZEN.has(next) && /^\d+$/.test(token)) {
+        // "2 dúzias".
+        size(String(Number(token) * 12), 'un');
+        i += 1;
+      } else if (!version && next && UNITS.has(next)) {
+        size(token, next);
         i += 1;
       } else {
-        variants.push(token);
+        variants.push(plainNumber(token));
+        loneDigit = !version && /^\d$/.test(token);
       }
-    } else if (isSized(token)) {
-      const [, number, unit] = /^(\d+)([a-z]+)$/.exec(token)!;
-      variants.push(sizeToken(number, unit));
+    } else if (sized) {
+      size(sized[0], sized[1]);
     } else if (/^[a-z]\d+$/.test(token)) {
       // "B12": versão do item.
       variants.push(token);
@@ -128,10 +198,10 @@ function parseName(name: string): Parsed {
       }
     } else if (token === 'com' && isNumber(next)) {
       // "c/12": doze unidades.
-      variants.push(sizeToken(next!, 'un'));
+      size(next!, 'un');
       i += 1;
-    } else if (token === 'duzia') {
-      variants.push('12un');
+    } else if (DOZEN.has(token)) {
+      size('12', 'un');
     } else if (LOOSE_UNITS.has(token)) {
       // Unidade solta: nada a dizer.
     } else if (token.length === 1) {
@@ -145,10 +215,20 @@ function parseName(name: string): Parsed {
   }
 
   const words = parts.filter((part) => part.kind === 'word').map((part) => part.text);
+  const singulars = words.map(singular);
   const uniqueVariants = [...new Set(variants)].sort();
-  const wordKey = [...new Set(words.map(singular))].sort().join(' ');
+  const wordKey = [...new Set(singulars)].sort().join(' ');
   const key = [wordKey, uniqueVariants.join(' ')].filter(Boolean).join(' | ');
-  return { key, words, variants: uniqueVariants, parts };
+  return {
+    key,
+    words,
+    order: singulars.join(' '),
+    roles: parts.some((part) => part.kind === 'link' && ROLE_LINKS.has(part.text)),
+    variants: uniqueVariants,
+    sizes: [...new Set(sizes)],
+    doubtful,
+    parts,
+  };
 }
 
 /** A mesma chave para "Feijão Preto", "feijao preto" e "Preto, feijões"; tamanho e "sem" contam. */
@@ -156,7 +236,17 @@ export function similarNameKey(name: string): string {
   return parseName(name).key;
 }
 
+/**
+ * Com a mesma chave, é o mesmo nome se as palavras vêm na mesma ordem ou se
+ * nenhum dos dois tem "de", "para", "com"...: "Preto, feijões" é "Feijão
+ * preto", mas "Laranja para suco" não é "Suco de laranja".
+ */
+function sameName(a: Parsed, b: Parsed): boolean {
+  return a.key === b.key && (a.order === b.order || !(a.roles || b.roles));
+}
+
 interface Indexed extends NameCandidate {
+  /** A chave do nome; com as palavras na ordem junto quando outro nome da casa tem as mesmas em outra ordem. */
   key: string;
   parsed: Parsed;
 }
@@ -165,41 +255,106 @@ interface Indexed extends NameCandidate {
 export interface NameIndex {
   entries: Indexed[];
   byKey: Map<string, Indexed>;
-  /** Todas as palavras dos nomes, no singular: palavra que está aqui não é abreviação. */
+  /**
+   * As palavras de verdade, no singular: palavra que está aqui não é
+   * abreviação. São as do catálogo e as dos itens de lista e compras sem
+   * produto; palavra que só aparece em nome de produto entra se não for o
+   * começo de outra maior ("deterg", de um produto com o texto da nota
+   * fiscal, não tira a leitura de "Detergente").
+   */
   vocabulary: Set<string>;
   /** Palavras do vocabulário que começam por um trecho (guardado para não refazer). */
   expansions: Map<string, string[]>;
+  /** "X de Y" e "X em Y" que algum nome conhece: X -> os Y ("pao" -> "queijo", "forma"). */
+  compounds: Map<string, Set<string>>;
 }
 
-const SOURCE_RANK: Record<NameSource, number> = { produto: 0, lista: 1, comprado: 2, comum: 3 };
+const SOURCE_RANK: Record<NameSource, number> = { produto: 0, lista: 1, comprado: 2, nota: 3, comum: 4 };
+
+/** A chave com as palavras na ordem: separa nomes com as mesmas palavras que não são o mesmo nome. */
+const orderedKey = (parsed: Parsed) => `${parsed.key} > ${parsed.order}`;
+
+/** A entrada do índice que é este mesmo nome, se houver. */
+function sameEntry(parsed: Parsed, index: Pick<NameIndex, 'byKey'>): Indexed | undefined {
+  const plain = index.byKey.get(parsed.key);
+  return plain && sameName(plain.parsed, parsed) ? plain : index.byKey.get(orderedKey(parsed));
+}
+
+/** Entre grafias com as mesmas letras, a mais bem escrita: com acento, e sem ser tudo minúsculo ou tudo maiúsculo. */
+function spelling(name: string): number {
+  const accents = normalizeSearch(name) !== name.toLowerCase();
+  const plainCase = name === name.toLowerCase() || name === name.toUpperCase();
+  return (accents ? 2 : 0) + (plainCase ? 0 : 1);
+}
 
 /**
  * Junta os nomes de todas as fontes; a mesma grafia em mais de uma fica uma
- * vez só, com o nome da fonte mais forte (produto, lista, compra, item comum),
- * o produto de quem tiver e todos os itens de lista.
+ * vez só, com a fonte mais forte (produto, lista, compra, item comum), o
+ * produto de quem tiver e todos os itens de lista. O nome mostrado é o do
+ * produto, como ele é; sem produto, entre nomes com as mesmas letras fica o
+ * mais bem escrito ("Açúcar" do catálogo, não o "acucar" da lista), e entre
+ * letras diferentes ("Bananas", "Banana"), o da fonte mais forte.
  */
 export function indexNames(candidates: readonly NameCandidate[]): NameIndex {
   const byKey = new Map<string, Indexed>();
+  // O vocabulário vem dos nomes antes de juntar: depois, cada entrada só guarda a fonte mais forte.
+  const real = new Set<string>();
+  const fromProducts = new Set<string>();
+  const compounds = new Map<string, Set<string>>();
   for (const candidate of candidates) {
     const name = candidate.name.trim();
     const parsed = parseName(name);
     if (!name || !parsed.key) continue;
-    const current = byKey.get(parsed.key);
+
+    // Item de lista ou compra ligado a um produto chega com o nome do produto.
+    const ofProduct = candidate.source === 'produto' || candidate.productId != null;
+    for (const word of parsed.words) (ofProduct ? fromProducts : real).add(singular(word));
+    parsed.parts.forEach((part, at) => {
+      const link: Part | undefined = parsed.parts[at + 1];
+      const other: Part | undefined = parsed.parts[at + 2];
+      if (part.kind !== 'word' || link?.kind !== 'link' || !COMPOUND.has(link.text) || other?.kind !== 'word') return;
+      const head = singular(part.text);
+      compounds.set(head, (compounds.get(head) ?? new Set<string>()).add(singular(other.text)));
+    });
+
+    const plain = byKey.get(parsed.key);
+    const key = plain && !sameName(plain.parsed, parsed) ? orderedKey(parsed) : parsed.key;
+    const current = byKey.get(key);
     if (!current) {
-      byKey.set(parsed.key, { ...candidate, name, key: parsed.key, parsed, listItemIds: [...candidate.listItemIds] });
+      byKey.set(key, { ...candidate, name, key, parsed, listItemIds: [...candidate.listItemIds] });
       continue;
     }
     const stronger = SOURCE_RANK[candidate.source] < SOURCE_RANK[current.source];
-    byKey.set(parsed.key, {
+    const productId = (stronger ? candidate.productId : current.productId) ?? current.productId ?? candidate.productId;
+    const sameLetters = normalizeSearch(name) === normalizeSearch(current.name);
+    const shows = productId
+      ? candidate.productId === productId && current.productId !== productId
+      : sameLetters && spelling(name) !== spelling(current.name)
+        ? spelling(name) > spelling(current.name)
+        : stronger;
+    byKey.set(key, {
       ...current,
-      ...(stronger ? { name, category: candidate.category, source: candidate.source, parsed } : {}),
-      productId: (stronger ? candidate.productId : current.productId) ?? current.productId ?? candidate.productId,
+      ...(shows ? { name, parsed } : {}),
+      // Com produto, a categoria é a dele; sem, a da fonte mais forte.
+      ...((productId ? shows : stronger) ? { category: candidate.category } : {}),
+      source: stronger ? candidate.source : current.source,
+      productId,
       listItemIds: [...new Set([...current.listItemIds, ...candidate.listItemIds])],
     });
   }
-  const entries = [...byKey.values()];
-  const vocabulary = new Set(entries.flatMap((entry) => entry.parsed.words.map(singular)));
-  return { entries, byKey, vocabulary, expansions: new Map() };
+
+  const vocabulary = new Set(real);
+  const realWords = [...real];
+  for (const word of fromProducts) {
+    if (!realWords.some((longer) => longer.length > word.length && longer.startsWith(word))) vocabulary.add(word);
+  }
+  return { entries: [...byKey.values()], byKey, vocabulary, expansions: new Map(), compounds };
+}
+
+/** O nome que a casa já usa e é este mesmo nome (acento, plural e maiúsculas à parte), se houver. */
+export function knownName(name: string, index: NameIndex): (NameCandidate & { key: string }) | null {
+  const parsed = parseName(name.trim());
+  return (parsed.key && sameEntry(parsed, index)) || null;
 }
 
 /** As palavras do vocabulário que começam por este trecho. */
@@ -217,16 +372,18 @@ type WordMatch = 'no' | 'same' | 'abbreviation' | 'loose-abbreviation';
 /**
  * A palavra da nota é a palavra do nome da casa? A nota abrevia cortando a
  * palavra ("DETERG", "FEIJ", "ACUC"): vale quando o trecho não é ele mesmo
- * uma palavra da casa ("papel" não abrevia "papelão"). Para sugerir sem a
- * pessoa pedir, o trecho precisa ser pelo menos metade da palavra e ter uma
- * leitura só ("azeit" pode ser azeite ou azeitona).
+ * uma palavra de verdade ("papel" não abrevia "papelão"). Para sugerir sem a
+ * pessoa pedir, o trecho precisa ser pelo menos metade da palavra, ter uma
+ * leitura só ("azeit" pode ser azeite ou azeitona) e não terminar em vogal:
+ * o corte da nota para no meio da palavra, e "Goiaba" não é "Goiabada".
  */
 function matchWord(noteWord: string, houseWord: string, index: NameIndex): WordMatch {
   if (singular(noteWord) === singular(houseWord)) return 'same';
   if (noteWord.length < 3 || noteWord.startsWith('sem-') || !houseWord.startsWith(noteWord)) return 'no';
   if (index.vocabulary.has(singular(noteWord))) return 'no';
   const readings = new Set(expansionsOf(noteWord, index));
-  return readings.size === 1 && noteWord.length * 2 >= houseWord.length ? 'abbreviation' : 'loose-abbreviation';
+  const cut = readings.size === 1 && noteWord.length * 2 >= houseWord.length && !/[aeiou]$/.test(noteWord);
+  return cut ? 'abbreviation' : 'loose-abbreviation';
 }
 
 /** Cada palavra do nome da casa aparece no nome da nota (ou o contrário, com `note` e `house` trocados de papel). */
@@ -245,31 +402,51 @@ function runAt(note: string[], house: string[], start: number, index: NameIndex)
   });
 }
 
-/** Depois das `count` primeiras palavras vem "de", "em"... e mais uma palavra: é outra coisa ("Leite de coco"). */
-function compoundAfter(note: Parsed, count: number): boolean {
-  let seen = 0;
-  for (let i = 0; i < note.parts.length; i++) {
-    if (note.parts[i].kind === 'word') seen += 1;
-    if (seen < count) continue;
-    const link = note.parts[i + 1];
-    return Boolean(link && link.kind === 'link' && COMPOUND.has(link.text) && note.parts.slice(i + 2).some((part) => part.kind === 'word'));
+/**
+ * Depois das `count` primeiras palavras, o nome vira outra coisa:
+ * - vem "de" ou "em" e uma palavra que não é embalagem ("Leite de coco"; "Skol em lata" continua sendo a Skol);
+ * - a palavra seguinte faz outra coisa mesmo sem ligação ("Batata palha", "Leite coco": OTHER_THING);
+ * - algum nome conhecido liga `last` (a última palavra do nome da casa) a essa palavra com "de" ou "em"
+ *   ("Pão queijo", com "Pão de queijo congelado" no catálogo).
+ */
+function otherThingAfter(name: Parsed, count: number, last: string, index: NameIndex): boolean {
+  let at = 0;
+  for (let seen = 0; at < name.parts.length && seen < count; at++) {
+    if (name.parts[at].kind === 'word') seen += 1;
   }
-  return false;
+  const rest = name.parts.slice(at);
+  const next = rest.find((part) => part.kind === 'word');
+  if (!next) return false;
+  const word = singular(next.text);
+  const linked = rest[0].kind === 'link' && COMPOUND.has(rest[0].text) && rest[1] === next;
+  if (linked && !PACKAGING.has(word)) return true;
+  if (OTHER_THING.has(word) || OTHER_THING.has(next.text)) return true;
+  return index.compounds.get(singular(last))?.has(word) ?? false;
 }
 
 function isConfident(note: Parsed, candidate: Indexed, index: NameIndex): boolean {
   const house = candidate.parsed;
-  // O tamanho (ou a letra) do nome da casa precisa estar no nome novo: "Coca-Cola 2L" não serve para a lata.
-  if (!house.variants.every((variant) => note.variants.includes(variant))) return false;
-  // Produto da casa com tamanho é um produto certo: o que sobra depois dele no nome novo só pode ser
-  // embalagem ("Coca-Cola Lata 350ml" é a Coca-Cola 350ml; "Coca-Cola Zero 2L" não é a Coca-Cola 2L).
-  const exactProduct = candidate.source === 'produto' && house.variants.length > 0;
-  const fits = (start: number) =>
-    runAt(note.words, house.words, start, index) &&
-    (!exactProduct || note.words.slice(start + house.words.length).every((word) => PACKAGING.has(singular(word))));
-  if (runAt(note.words, house.words, 0, index)) return fits(0) && !compoundAfter(note, house.words.length);
-  // Produto da casa escrito com a marca na frente ("Coca-Cola 2L" em "Refrigerante Coca-Cola 2l").
-  if (candidate.source !== 'produto' || house.words.length < 2) return false;
+  // O tamanho (ou a letra) do nome da casa precisa estar no nome novo, e sem dúvida: "Coca-Cola 2L" não serve
+  // para a lata, nem "Água 5L" para "Agua 1 5l".
+  if (!house.variants.every((variant) => note.variants.includes(variant) && !note.doubtful.includes(variant))) return false;
+  // Produto da casa com tamanho é um produto certo: o nome novo tem os mesmos tamanhos, nem um a mais ("c/12" é o
+  // fardo, não a unidade), e o que sobra depois dele só pode ser embalagem ("Coca-Cola Lata 350ml" é a Coca-Cola
+  // 350ml; "Coca-Cola Zero 2L" não é a Coca-Cola 2L). Letra ou número de versão ("Vitamina C") não faz produto certo.
+  const exactProduct = candidate.source === 'produto' && house.sizes.length > 0;
+  if (exactProduct && note.sizes.length !== house.sizes.length) return false;
+  const last = house.words[house.words.length - 1];
+  const fits = (start: number) => {
+    const end = start + house.words.length;
+    return (
+      runAt(note.words, house.words, start, index) &&
+      (!exactProduct || note.words.slice(end).every((word) => PACKAGING.has(singular(word)))) &&
+      !otherThingAfter(note, end, last, index)
+    );
+  };
+  if (runAt(note.words, house.words, 0, index)) return fits(0);
+  // No meio do nome, só o produto certo escrito com o tipo na frente ("Coca-Cola 2L" em "Refrigerante Coca-Cola
+  // 2l"): um produto sem tamanho no meio do nome é sabor ou ingrediente ("Sardinha Molho de Tomate").
+  if (!exactProduct || house.words.length < 2) return false;
   for (let start = 1; start + house.words.length <= note.words.length; start++) {
     if (fits(start)) return true;
   }
@@ -286,7 +463,80 @@ export interface SimilarOptions {
   onlySame?: boolean;
   /** Só o que dá para sugerir sem a pessoa pedir (ver `confident`). */
   onlyConfident?: boolean;
+  /** Outros nomes para conferir junto (os que a pessoa deu nesta nota); nome que `index` já tem não se repete. */
+  also?: NameIndex;
 }
+
+interface Found {
+  candidate: Indexed;
+  closeness: SimilarName['closeness'];
+  confident: boolean;
+  sizeFit: number;
+  extra: number;
+}
+
+/** Nome que a casa usa de verdade: os de outros itens da nota e os do catálogo não são. */
+const isHousehold = (source: NameSource) => source === 'produto' || source === 'lista' || source === 'comprado';
+
+/** Os nomes parecidos com `typed`, do mais parecido para o menos. */
+function findSimilar(typed: string, note: Parsed, index: NameIndex, options: SimilarOptions): Found[] {
+  const { category, exceptProductId, onlySame = false, onlyConfident = false, also } = options;
+  // Nome que já é da casa (catálogo não conta) não ganha sugestão de outro mais genérico.
+  const settled = onlyConfident && isHousehold(sameEntry(note, index)?.source ?? 'comum');
+  const entries = also ? [...index.entries, ...also.entries.filter((entry) => !sameEntry(entry.parsed, index))] : index.entries;
+
+  const found: Found[] = [];
+  for (const candidate of entries) {
+    if (exceptProductId && candidate.productId === exceptProductId) continue;
+    const house = candidate.parsed;
+    if (sameName(note, house)) {
+      // Sem produto, só vale oferecer o que muda mais que a maiúscula e não é só o nome digitado sem os acentos
+      // ("acucar" da lista para "Açúcar": a lista já trata os dois como o mesmo).
+      const spelled = candidate.name.toLowerCase();
+      const adds = candidate.productId || (spelled !== typed.toLowerCase() && spelled !== normalizeSearch(typed));
+      if (adds) found.push({ candidate, closeness: 'igual', confident: true, sizeFit: 2, extra: 0 });
+      continue;
+    }
+    if (onlySame || settled || !note.words.length || !house.words.length) continue;
+    // As mesmas palavras em outra ordem ("Laranja para suco" e "Suco de laranja"): parecido, nunca para sugerir sozinho.
+    const reordered = house.key === note.key;
+    // O nome da casa cabe no nome novo (mais genérico), ou o contrário.
+    if (!reordered && !covers(note.words, house.words, index, true) && !covers(note.words, house.words, index, false)) continue;
+    const confident = !reordered && isConfident(note, candidate, index);
+    if (onlyConfident && !confident) continue;
+    // Mesmo tamanho primeiro; depois nome da casa sem tamanho; por último, tamanho diferente. Nome digitado sem
+    // tamanho não põe o nome da casa com tamanho atrás do sem.
+    const sameSize = house.variants.some((variant) => note.variants.includes(variant) && !note.doubtful.includes(variant));
+    const sizeFit = !note.variants.length ? 1 : sameSize ? 2 : house.variants.length ? 0 : 1;
+    found.push({ candidate, closeness: 'parecido', confident, sizeFit, extra: Math.abs(note.words.length - house.words.length) });
+  }
+
+  const bySource = (a: Found, b: Found) => SOURCE_RANK[a.candidate.source] - SOURCE_RANK[b.candidate.source];
+  // O nome mais completo primeiro: "Leite condensado" antes de "Leite" para o leite condensado.
+  const byExtra = (a: Found, b: Found) => a.extra - b.extra;
+  return found.sort(
+    (a, b) =>
+      Number(b.closeness === 'igual') - Number(a.closeness === 'igual') ||
+      Number(b.confident) - Number(a.confident) ||
+      b.sizeFit - a.sizeFit ||
+      // Entre os que só parecem (o seletor), os nomes da casa vêm antes dos do catálogo.
+      (a.confident ? byExtra(a, b) || bySource(a, b) : bySource(a, b) || byExtra(a, b)) ||
+      Number(b.candidate.category === category) - Number(a.candidate.category === category) ||
+      a.candidate.name.length - b.candidate.name.length ||
+      a.candidate.name.localeCompare(b.candidate.name, 'pt-BR'),
+  );
+}
+
+const toSimilar = ({ candidate, closeness, confident }: Found): SimilarName => ({
+  name: candidate.name,
+  category: candidate.category,
+  productId: candidate.productId,
+  source: candidate.source,
+  listItemIds: candidate.listItemIds,
+  key: candidate.key,
+  closeness,
+  confident,
+});
 
 /**
  * Os nomes que a casa já usa e se parecem com `name`, do mais parecido para o
@@ -295,67 +545,49 @@ export interface SimilarOptions {
  * ganha sugestão de outro mais genérico ("Batata-doce" não vira "Batata").
  */
 export function similarNames(name: string, index: NameIndex, options: SimilarOptions = {}): SimilarName[] {
-  const { category, limit = 5, exceptProductId, onlySame = false, onlyConfident = false } = options;
   const typed = name.trim();
   const note = parseName(typed);
   if (!note.key) return [];
-  const settled = onlyConfident && index.byKey.has(note.key);
-
-  const found: { candidate: Indexed; closeness: SimilarName['closeness']; confident: boolean; sizeFit: number; extra: number }[] = [];
-  for (const candidate of index.entries) {
-    if (exceptProductId && candidate.productId === exceptProductId) continue;
-    if (candidate.key === note.key) {
-      const adds = candidate.productId || candidate.name.toLowerCase() !== typed.toLowerCase();
-      if (adds) found.push({ candidate, closeness: 'igual', confident: true, sizeFit: 2, extra: 0 });
-      continue;
-    }
-    const house = candidate.parsed;
-    if (onlySame || settled || !note.words.length || !house.words.length) continue;
-    // O nome da casa cabe no nome novo (mais genérico), ou o contrário.
-    if (!covers(note.words, house.words, index, true) && !covers(note.words, house.words, index, false)) continue;
-    const confident = isConfident(note, candidate, index);
-    if (onlyConfident && !confident) continue;
-    // Mesmo tamanho primeiro; depois nome da casa sem tamanho; por último, tamanho diferente.
-    const sizeFit = house.variants.some((variant) => note.variants.includes(variant)) ? 2 : house.variants.length ? 0 : 1;
-    found.push({ candidate, closeness: 'parecido', confident, sizeFit, extra: Math.abs(note.words.length - house.words.length) });
-  }
-
-  return found
-    .sort(
-      (a, b) =>
-        Number(b.closeness === 'igual') - Number(a.closeness === 'igual') ||
-        Number(b.confident) - Number(a.confident) ||
-        b.sizeFit - a.sizeFit ||
-        // O nome mais completo primeiro: "Leite condensado" antes de "Leite" para o leite condensado.
-        a.extra - b.extra ||
-        SOURCE_RANK[a.candidate.source] - SOURCE_RANK[b.candidate.source] ||
-        Number(b.candidate.category === category) - Number(a.candidate.category === category) ||
-        a.candidate.name.length - b.candidate.name.length ||
-        a.candidate.name.localeCompare(b.candidate.name, 'pt-BR'),
-    )
-    .slice(0, limit)
-    .map(({ candidate, closeness, confident }) => ({
-      name: candidate.name,
-      category: candidate.category,
-      productId: candidate.productId,
-      source: candidate.source,
-      listItemIds: candidate.listItemIds,
-      key: candidate.key,
-      closeness,
-      confident,
-    }));
+  return findSimilar(typed, note, index, options)
+    .slice(0, options.limit ?? 5)
+    .map(toSimilar);
 }
 
 /**
- * A sugestão que aparece no item da nota sem a pessoa pedir: o nome que
- * melhor serve, se for um nome que a casa usa de verdade (produto, lista ou
- * compra). Quando o que melhor serve é um item comum do catálogo ("Leite
- * condensado" para o leite condensado, com "Leite" na lista), não sugere
- * nada: o catálogo aparece só no seletor, para quem está mudando o nome.
+ * Algum outro nome conhecido (da casa ou do catálogo) é mais comprido que o
+ * escolhido, começa por ele, também cabe no começo do nome novo (nem que seja
+ * por uma abreviação duvidosa) e é outra coisa: "Leite condensado" para
+ * "Leite cond moca", com "Leite" na lista. Na dúvida, o item não sugere nada.
+ */
+function vetoed(note: Parsed, chosen: Indexed, index: NameIndex): boolean {
+  const base = chosen.parsed.words;
+  const last = base[base.length - 1];
+  return index.entries.some((entry) => {
+    const words = entry.parsed.words;
+    if (entry === chosen || words.length <= base.length || words.length > note.words.length) return false;
+    if (!base.every((word, at) => singular(word) === singular(words[at]))) return false;
+    if (!words.every((word, at) => matchWord(note.words[at], word, index) !== 'no')) return false;
+    return otherThingAfter(entry.parsed, base.length, last, index);
+  });
+}
+
+/**
+ * A sugestão que aparece no item da nota sem a pessoa pedir: o melhor nome
+ * que a casa usa de verdade (produto, lista ou compra) e dá para sugerir.
+ * O catálogo de itens comuns nunca é sugerido aqui e não cala o nome da
+ * casa ("Leite" continua valendo para "Leite Integral Italac 1L", com "Leite
+ * integral" no catálogo); só segura a sugestão quando um nome mais comprido,
+ * dele ou da casa, mostra que o item é outra coisa (ver `vetoed`).
  */
 export function suggestedName(name: string, index: NameIndex, options: Pick<SimilarOptions, 'category'> = {}): SimilarName | null {
-  const [best] = similarNames(name, index, { ...options, limit: 1, onlyConfident: true });
-  return best && best.source !== 'comum' ? best : null;
+  const typed = name.trim();
+  const note = parseName(typed);
+  if (!note.key) return null;
+  const best = findSimilar(typed, note, index, { category: options.category, onlyConfident: true }).find((found) =>
+    isHousehold(found.candidate.source),
+  );
+  if (!best || (best.closeness !== 'igual' && vetoed(note, best.candidate, index))) return null;
+  return toSimilar(best);
 }
 
 /** O que a nota precisa de cada fonte para montar os nomes da casa. */
@@ -392,7 +624,8 @@ const SOURCE_LABELS: Record<NameSource, string> = {
   produto: 'Produto da casa',
   lista: 'Está na lista de compras',
   comprado: 'Comprado antes',
-  comum: 'Item comum da lista',
+  nota: 'Nesta nota',
+  comum: 'Item comum (catálogo)',
 };
 
 /** De onde o nome vem, para mostrar ao lado dele. */
@@ -401,10 +634,19 @@ export function nameSourceLabel(candidate: Pick<NameCandidate, 'source' | 'listI
   return candidate.source === 'produto' && candidate.listItemIds.length ? 'Produto da casa, na lista de compras' : SOURCE_LABELS[candidate.source];
 }
 
+/** O botão que usa o nome que já existe no lugar do digitado. Nome que só o catálogo tem não "já existe" na casa. */
+export function existingNameLabel(existing: Pick<NameCandidate, 'name' | 'source'>): string {
+  if (existing.source === 'comum') return `Usar "${existing.name}"`;
+  return `Usar "${existing.name}" (${existing.source === 'nota' ? 'já está nesta nota' : 'já existe'})`;
+}
+
 /** A frase que apresenta a sugestão no item da nota. */
 export function similarNameHint(similar: Pick<SimilarName, 'closeness' | 'productId' | 'listItemIds'>): string {
   const same = similar.closeness === 'igual';
   if (similar.productId) return same ? 'A casa já tem este produto:' : 'A casa já tem um produto parecido:';
-  if (similar.listItemIds.length) return same ? 'Está na lista de compras como:' : 'Parece com um item da lista de compras:';
+  // Usar o nome do item da lista marca o item para sair dela.
+  if (similar.listItemIds.length) {
+    return same ? 'Está na lista de compras como (sai dela ao confirmar):' : 'Parece com um item da lista de compras (sai dela ao confirmar):';
+  }
   return same ? 'A casa já usa este nome:' : 'A casa já usa um nome parecido:';
 }

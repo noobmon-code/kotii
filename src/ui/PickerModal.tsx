@@ -18,7 +18,8 @@ export interface PickerOption {
  * Lista pesquisável em tela cheia. `extraActions` aparecem no topo (ex.:
  * "Criar produto 'X'"), recebendo o texto digitado. `suggestions` são opções
  * para o texto digitado que a busca por trecho não acha (ex.: nomes
- * parecidos); vêm antes da lista, sob `suggestionsTitle`.
+ * parecidos); vêm antes da lista, sob `suggestionsTitle`, e o toque numa delas
+ * vai para `onSelectSuggestion` quando a tela precisa saber de onde veio.
  */
 export function PickerModal({
   visible,
@@ -31,6 +32,7 @@ export function PickerModal({
   initialQuery = '',
   suggestions,
   suggestionsTitle,
+  onSelectSuggestion = onSelect,
 }: {
   visible: boolean;
   title: string;
@@ -42,6 +44,7 @@ export function PickerModal({
   initialQuery?: string;
   suggestions?: (query: string) => PickerOption[];
   suggestionsTitle?: string;
+  onSelectSuggestion?: (id: string) => void;
 }) {
   const c = useColors();
   const [query, setQuery] = useState(initialQuery);
@@ -81,7 +84,7 @@ export function PickerModal({
                         left={item.left}
                         title={item.title}
                         subtitle={item.subtitle}
-                        onPress={() => onSelect(item.id)}
+                        onPress={() => onSelectSuggestion(item.id)}
                       />
                     ))}
                   </ListCard>

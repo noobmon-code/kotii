@@ -2,7 +2,9 @@ import { describe, expect, it } from '@jest/globals';
 
 import { COMMON_ITEMS } from '../commonItems';
 import {
+  existingNameLabel,
   indexNames,
+  knownName,
   nameCandidates,
   nameSourceLabel,
   similarNameHint,
@@ -20,6 +22,7 @@ const candidate = (
 
 const product = (name: string, id: string, category = 'outros') => candidate(name, 'produto', { productId: id, category });
 const listed = (name: string, id: string) => candidate(name, 'lista', { listItemIds: [id] });
+const bought = (name: string) => candidate(name, 'comprado');
 
 const names = (list: { name: string }[]) => list.map((item) => item.name);
 
@@ -52,6 +55,34 @@ describe('similarNameKey', () => {
     expect(similarNameKey('Arroz 5 Kg')).toBe(similarNameKey('Arroz 5kg'));
     // Unidade solta não é tamanho.
     expect(similarNameKey('Banana Prata Kg')).toBe(similarNameKey('Banana prata'));
+  });
+
+  it('tamanho com vírgula ou ponto é um tamanho só', () => {
+    expect(similarNameKey('Água 1,5L')).not.toBe(similarNameKey('Água 5L'));
+    expect(similarNameKey('Água 1.5 l')).toBe(similarNameKey('Água 1,5L'));
+    expect(similarNameKey('Ração 2,5kg')).not.toBe(similarNameKey('Ração 5kg'));
+    // Zero no fim não muda o tamanho.
+    expect(similarNameKey('Coca 1,50L')).toBe(similarNameKey('Coca 1,5L'));
+    expect(similarNameKey('Coca 1,0L')).toBe(similarNameKey('Coca 1L'));
+    // Com espaço não dá para saber ("Tipo 1 5kg" não é 1,5 kg): não junta.
+    expect(similarNameKey('Agua 1 5l')).not.toBe(similarNameKey('Água 1,5L'));
+    // Depois de "tipo", o número é a versão: não vira tamanho com a unidade solta.
+    expect(similarNameKey('Feijão Tipo 1 Kg')).toBe(similarNameKey('Feijão Tipo 1'));
+  });
+
+  it('unidade por extenso é a mesma unidade; solta, não diz nada', () => {
+    expect(similarNameKey('Coca-Cola 2 Litros')).toBe(similarNameKey('Coca-Cola 2L'));
+    expect(similarNameKey('Leite 1 litro')).toBe(similarNameKey('Leite 1L'));
+    expect(similarNameKey('Arroz 5 quilos')).toBe(similarNameKey('Arroz 5kg'));
+    expect(similarNameKey('Arroz 5 Kilos')).toBe(similarNameKey('Arroz 5kg'));
+    expect(similarNameKey('Queijo 500 gramas')).toBe(similarNameKey('Queijo 500g'));
+    expect(similarNameKey('Ovos 12 unidades')).toBe(similarNameKey('Ovos 12un'));
+    expect(similarNameKey('Banana Quilo')).toBe(similarNameKey('Banana'));
+    expect(similarNameKey('Alface Unidade')).toBe(similarNameKey('Alface'));
+    // "Dz" é dúzia.
+    expect(similarNameKey('Ovos Dz')).toBe(similarNameKey('Ovos (dúzia)'));
+    expect(similarNameKey('Ovos 1 Dz')).toBe(similarNameKey('Ovos c/12'));
+    expect(similarNameKey('Ovos 2 dúzias')).toBe(similarNameKey('Ovos 24un'));
   });
 
   it('"sem" muda o item: com sal e sem sal são nomes diferentes', () => {
@@ -131,7 +162,7 @@ describe('similarNames', () => {
     expect(similarNames('Manteiga sem Sal Aviação 200g', index).map((s) => s.productId)).toEqual(['p-sem']);
     expect(similarNames('Manteiga sem sal', index, { onlySame: true })[0]).toMatchObject({ productId: 'p-sem' });
     expect(names(similarNames('Água Mineral sem Gás Crystal 500ml', index))).toEqual(['Água mineral']);
-    expect(names(similarNames('Agua min s/gas crystal 500ml', index, { onlyConfident: true }))).toEqual([]);
+    expect(names(similarNames('Agua min s/gas crystal 500ml', index))).not.toContain('Água com gás');
     expect(similarNames('Água sem gás', index)).toEqual([]);
   });
 
@@ -282,6 +313,201 @@ describe('similarNames', () => {
     expect(similarNames('Banana da terra', index, { onlySame: true })).toEqual([]);
   });
 
+  it('tamanho decimal não se confunde com o inteiro', () => {
+    const index = indexNames([product('Água Crystal 5L', 'p-5l'), product('Ração Golden 5kg', 'p-racao'), listed('Água 5L', 'li-agua')]);
+    expect(similarNames('Água Crystal 1,5L', index, { onlyConfident: true })).toEqual([]);
+    expect(similarNames('Água Mineral Crystal 1,5L', index, { onlyConfident: true })).toEqual([]);
+    expect(similarNames('Ração Golden 2,5kg', index, { onlyConfident: true })).toEqual([]);
+    expect(similarNames('Água Crystal 5 L', index)[0]).toMatchObject({ productId: 'p-5l', closeness: 'igual' });
+    // No seletor o de 5 litros continua aparecendo.
+    expect(similarNames('Água Crystal 1,5L', index).map((s) => s.productId)).toContain('p-5l');
+  });
+
+  it('algarismo solto antes do tamanho deixa o tamanho em dúvida: nem "5L" nem "1,5L" sem a pessoa pedir', () => {
+    const index = indexNames([product('Água Crystal 5L', 'p-5l'), product('Água Crystal 1,5L', 'p-15l'), listed('Arroz 5kg', 'li-arroz')]);
+    expect(similarNames('Agua crystal 1 5l', index, { onlyConfident: true })).toEqual([]);
+    expect(similarNames('Agua crystal 1 5l', index).map((s) => s.productId).sort()).toEqual(['p-15l', 'p-5l']);
+    // Depois de "tipo", o número é a versão do arroz: o tamanho é 5kg mesmo.
+    expect(names(similarNames('Arroz Tipo 1 5kg', index, { onlyConfident: true }))).toEqual(['Arroz 5kg']);
+    expect(names(similarNames('Arroz Tio João Tp 1 5kg', index, { onlyConfident: true }))).toEqual(['Arroz 5kg']);
+  });
+
+  it('letra ou número de versão não faz do produto um produto certo: a marca depois dele não atrapalha', () => {
+    const index = indexNames([
+      product('Vitamina C', 'p-c'),
+      product('Ômega 3', 'p-omega'),
+      product('Álcool 70%', 'p-alcool'),
+      product('Fralda Pampers M', 'p-m'),
+    ]);
+    const best = (name: string) => similarNames(name, index, { onlyConfident: true, limit: 1 })[0]?.productId;
+    expect(best('Vitamina C Sundown 60 cápsulas')).toBe('p-c');
+    expect(best('Vitamina C Cebion 1g')).toBe('p-c');
+    expect(best('Ômega 3 Sundown 60 Cáps')).toBe('p-omega');
+    expect(best('Álcool 70% Zulu 1L')).toBe('p-alcool');
+    expect(best('Fralda Pampers M Confort Sec 80un')).toBe('p-m');
+    expect(best('Fralda Pampers M 80un')).toBe('p-m');
+    // A letra ou o número ainda precisam bater.
+    expect(best('Vitamina D 2000ui')).toBeUndefined();
+    expect(best('Fralda Pampers G 60un')).toBeUndefined();
+    expect(best('Álcool 46 Zulu 1L')).toBeUndefined();
+  });
+
+  it('fardo ou caixa com várias unidades não é o produto da unidade', () => {
+    const index = indexNames([product('Skol 350ml', 'p-skol'), product('Coca-Cola 2L', 'p-coca'), product('Iogurte Nestlé 170g', 'p-iogurte')]);
+    for (const name of ['Skol 350ml c/12', 'Skol Lata 350ml Pack 12un', 'Coca-Cola 2L c/6', 'Coca-Cola Fardo 6un 2L', 'Iogurte Nestlé 170g c/6']) {
+      expect(similarNames(name, index, { onlyConfident: true })).toEqual([]);
+    }
+    expect(similarNames('Skol Lata 350ml', index, { onlyConfident: true })[0]).toMatchObject({ productId: 'p-skol' });
+    // No seletor, o produto da unidade continua aparecendo.
+    expect(similarNames('Skol 350ml c/12', index)[0]).toMatchObject({ productId: 'p-skol', confident: false });
+  });
+
+  it('no meio do nome só serve o produto certo (com tamanho): sabor ou ingrediente não é o produto', () => {
+    const index = indexNames([
+      product('Molho de tomate', 'p-molho'),
+      product('Leite condensado', 'p-condensado'),
+      product('Carne moída', 'p-carne'),
+      product('Pão de queijo', 'p-pao'),
+      product('Coca-Cola 2L', 'p-coca'),
+      product('Omo Lavagem Perfeita 1,6kg', 'p-omo'),
+    ]);
+    for (const name of [
+      'Sardinha Molho de Tomate Coqueiro 125g',
+      'Bolo Leite Condensado Pullman 250g',
+      'Lasanha Carne Moída Sadia 600g',
+      'Sorvete de Leite Condensado Kibon 1,5L',
+      'Mistura para Pão de Queijo Yoki 250g',
+    ]) {
+      expect(similarNames(name, index, { onlyConfident: true })).toEqual([]);
+    }
+    expect(similarNames('Refrigerante Coca-Cola 2l', index, { onlyConfident: true })[0]).toMatchObject({ productId: 'p-coca' });
+    expect(similarNames('Sabão em Pó Omo Lavagem Perfeita 1,6kg', index, { onlyConfident: true })[0]).toMatchObject({ productId: 'p-omo' });
+    // No começo do nome, o produto sem tamanho continua servindo.
+    expect(similarNames('Molho de Tomate Fugini 300g', index, { onlyConfident: true })[0]).toMatchObject({ productId: 'p-molho' });
+  });
+
+  it('"em" ou "de" seguido de embalagem não muda o produto', () => {
+    const index = indexNames([product('Skol 350ml', 'p-skol'), product('Sabonete Dove', 'p-dove'), product('Cerveja Brahma', 'p-brahma')]);
+    const best = (name: string) => similarNames(name, index, { onlyConfident: true, limit: 1 })[0]?.productId;
+    expect(best('Skol em Lata 350ml')).toBe('p-skol');
+    expect(best('Sabonete Dove em Barra 90g')).toBe('p-dove');
+    expect(best('Cerveja Brahma em Lata 350ml')).toBe('p-brahma');
+    // Outra palavra depois de "de" continua sendo outra coisa.
+    expect(best('Sabonete Dove de Aveia 90g')).toBeUndefined();
+  });
+
+  it('outra coisa mesmo sem "de": a nota fiscal corta a ligação', () => {
+    const index = indexNames([
+      listed('Leite', 'li-leite'),
+      listed('Molho', 'li-molho'),
+      listed('Farinha', 'li-farinha'),
+      product('Batata', 'p-batata'),
+      candidate('Molho de tomate'),
+      candidate('Farinha de trigo'),
+    ]);
+    const best = (name: string) => similarNames(name, index, { onlyConfident: true }).find((s) => s.source !== 'comum')?.name;
+    // Palavras que fazem outra coisa depois de qualquer nome.
+    expect(best('Leite coco sococo 200ml')).toBeUndefined();
+    expect(best('Leite Fermentado Yakult 480g')).toBeUndefined();
+    expect(best('Batata Palha Yoki 140g')).toBeUndefined();
+    expect(best('Batatas Doces Kg')).toBeUndefined();
+    // "X de Y" que a casa ou o catálogo conhecem, escrito sem o "de".
+    expect(best('Molho Tomate Fugini 300g')).toBeUndefined();
+    expect(best('Farinha Trigo Dona Benta 1kg')).toBeUndefined();
+    // Marca, tipo ou sabor continuam servindo.
+    expect(best('Leite Integral Italac 1L')).toBe('Leite');
+    expect(best('Molho Shoyu Sakura 150ml')).toBe('Molho');
+    expect(best('Batata Inglesa Kg')).toBe('Batata');
+  });
+
+  it('abreviação que só existe em nome de produto não vira palavra da casa', () => {
+    const index = indexNames(
+      nameCandidates({
+        products: [
+          { id: 'p-deterg', name: 'Deterg liq ype clear 500ml', category: 'limpeza' },
+          { id: 'p-refrig', name: 'Refrig coca cola 350ml lt', category: 'bebidas' },
+          { id: 'p-cerv', name: 'Cerv brahma duplo malte lt 350ml', category: 'alcoolicas' },
+        ],
+        listItems: [
+          { id: 'li-1', name: 'Detergente', category: 'limpeza', product_id: null },
+          { id: 'li-2', name: 'Refrigerante', category: 'bebidas', product_id: null },
+        ],
+        // A compra pela nota chega com o nome do produto: também não conta como palavra.
+        purchases: [
+          { name: 'Cerveja', category: 'alcoolicas', productId: null },
+          { name: 'Deterg liq ype clear 500ml', category: 'limpeza', productId: 'p-deterg' },
+        ],
+        common: COMMON_ITEMS,
+      }),
+    );
+    expect(suggestedName('Deterg liq limpol neutro 500ml', index)).toMatchObject({ name: 'Detergente', source: 'lista' });
+    expect(suggestedName('Refrig fanta laranja 2l', index)).toMatchObject({ name: 'Refrigerante', source: 'lista' });
+    expect(suggestedName('Cerv skol lt 350ml', index)).toMatchObject({ name: 'Cerveja', source: 'comprado' });
+    expect(index.vocabulary.has('deterg')).toBe(false);
+    // Palavra de produto que não é começo de outra continua sendo palavra.
+    expect(index.vocabulary.has('brahma')).toBe(true);
+  });
+
+  it('trecho que termina em vogal parece palavra inteira: não é abreviação para sugerir sozinho', () => {
+    const index = indexNames([product('Goiabada', 'p-goiabada'), product('Cocada', 'p-cocada'), listed('limão', 'li-limao')]);
+    expect(similarNames('Goiaba Kg', index, { onlyConfident: true })).toEqual([]);
+    expect(similarNames('Coca Cola 2L', index, { onlyConfident: true })).toEqual([]);
+    expect(similarNames('Lima Kg', index, { onlyConfident: true })).toEqual([]);
+    // No seletor ainda aparece.
+    expect(names(similarNames('Goiaba Kg', index))).toEqual(['Goiabada']);
+  });
+
+  it('as mesmas palavras em outra ordem só são o mesmo nome sem "de", "para", "com"', () => {
+    const index = indexNames([product('Suco de laranja', 'p-suco'), product('Molho de tomate', 'p-molho'), product('Feijão Preto', 'p-feijao')]);
+    expect(similarNames('Laranja para suco', index)[0]).toMatchObject({ productId: 'p-suco', closeness: 'parecido', confident: false });
+    expect(similarNames('Laranja para suco', index, { onlySame: true })).toEqual([]);
+    expect(similarNames('Tomate p/ Molho Kg', index, { onlyConfident: true })).toEqual([]);
+    // Na mesma ordem, com ou sem a ligação, é o mesmo nome.
+    expect(similarNames('Suco laranja', index)[0]).toMatchObject({ productId: 'p-suco', closeness: 'igual' });
+    // Sem ligação nenhuma, a ordem não importa.
+    expect(similarNames('Preto, feijões', index)[0]).toMatchObject({ productId: 'p-feijao', closeness: 'igual' });
+    expect(similarNames('FEIJÃO DE PRETO', index)[0]).toMatchObject({ productId: 'p-feijao', closeness: 'igual' });
+  });
+
+  it('grafia da casa sem acento não é sugestão para o nome bem escrito', () => {
+    const index = indexNames([listed('acucar', 'li-acucar'), listed('feijao', 'li-feijao')]);
+    expect(similarNames('Açúcar', index)).toEqual([]);
+    expect(similarNames('Feijão', index)).toEqual([]);
+    expect(similarNames('Açúcar', index, { onlySame: true })).toEqual([]);
+    expect(suggestedName('Açúcar', index)).toBeNull();
+    // O contrário vale mostrar: a casa escreve com acento e a pessoa digitou sem.
+    expect(similarNames('acucar', indexNames([listed('Açúcar', 'li-acucar')]))[0]).toMatchObject({ name: 'Açúcar', closeness: 'igual' });
+    // Com produto, sempre vale: escolher liga o item a ele.
+    expect(similarNames('Açúcar', indexNames([product('acucar', 'p-acucar')]))[0]).toMatchObject({ productId: 'p-acucar' });
+  });
+
+  it('no seletor, os nomes da casa vêm antes do catálogo, tenham tamanho ou não', () => {
+    const index = indexNames(
+      nameCandidates({
+        products: [
+          { id: 'p-italac', name: 'Leite Integral Italac 1L', category: 'laticinios' },
+          { id: 'p-pira', name: 'Leite Piracanjuba Desnatado 1L', category: 'laticinios' },
+        ],
+        listItems: [],
+        purchases: [],
+        common: COMMON_ITEMS,
+      }),
+    );
+    const found = similarNames('Leite', index);
+    expect(found).toHaveLength(5);
+    expect(found.slice(0, 2).map((s) => s.productId)).toEqual(['p-italac', 'p-pira']);
+    expect(found.slice(2).every((s) => s.source === 'comum')).toBe(true);
+  });
+
+  it('nomes desta nota entram junto quando pedidos, e o da casa vale no lugar do repetido', () => {
+    const house = indexNames([listed('Arroz', 'li-arroz'), candidate('Banana')]);
+    const note = indexNames([candidate('Pitaya', 'nota', { category: 'hortifruti' }), candidate('arroz', 'nota')]);
+    expect(similarNames('Pitayas', house)).toEqual([]);
+    expect(similarNames('Pitayas', house, { also: note })[0]).toMatchObject({ name: 'Pitaya', source: 'nota', closeness: 'igual' });
+    expect(similarNames('Pitaya Vermelha Kg', house, { also: note })[0]).toMatchObject({ name: 'Pitaya', source: 'nota', closeness: 'parecido' });
+    expect(similarNames('Arroz Tio João 5kg', house, { also: note }).map((s) => [s.name, s.source])).toEqual([['Arroz', 'lista']]);
+  });
+
   it('nome vazio ou só com pontuação não tem parecidos', () => {
     const index = indexNames([candidate('Arroz')]);
     expect(similarNames('', index)).toEqual([]);
@@ -306,10 +532,161 @@ describe('suggestedName', () => {
     expect(suggestedName('Leite Integral Italac 1L', index)).toMatchObject({ name: 'Leite' });
   });
 
+  it('o catálogo não cala o nome genérico da casa; só quando o nome mais comprido é outra coisa', () => {
+    const index = indexNames(
+      nameCandidates({
+        products: [],
+        listItems: ['Leite', 'Ovos', 'Pão', 'Queijo', 'Macarrão'].map((name) => ({ id: 'li-' + name, name, category: 'outros', product_id: null })),
+        purchases: [],
+        common: COMMON_ITEMS,
+      }),
+    );
+    const chip = (name: string) => suggestedName(name, index)?.name ?? null;
+    expect(chip('Leite Integral Italac 1L')).toBe('Leite');
+    expect(chip('Leite uht int italac 1l')).toBe('Leite');
+    expect(chip('Ovos Vermelhos 12 un')).toBe('Ovos');
+    expect(chip('Pão Francês Kg')).toBe('Pão');
+    expect(chip('Queijo Muçarela Fatiado 150g')).toBe('Queijo');
+    // Outra coisa, escrita por inteiro, abreviada ou com "em".
+    expect(chip('Leite Condensado Moça 395g')).toBeNull();
+    expect(chip('Leite cond moca 395g')).toBeNull();
+    expect(chip('Leite em Pó Ninho 400g')).toBeNull();
+    expect(chip('Macarrão Instantâneo Nissin 85g')).toBeNull();
+  });
+
+  it('um nome da casa mais comprido que é outra coisa também segura a sugestão do genérico', () => {
+    const index = indexNames([listed('Leite', 'li-leite'), product('Leite condensado', 'p-condensado'), candidate('Condicionador')]);
+    // "cond" tem duas leituras: não dá para sugerir o leite condensado, e também não o leite.
+    expect(suggestedName('Leite cond moca 395g', index)).toBeNull();
+    expect(suggestedName('Leite Condensado Moça 395g', index)).toMatchObject({ productId: 'p-condensado' });
+    expect(suggestedName('Leite Italac 1L', index)).toMatchObject({ name: 'Leite' });
+  });
+
+  it('sugere o melhor nome da casa mesmo com um nome de catálogo na frente', () => {
+    const index = indexNames([product('Ovos', 'p-ovos'), candidate('Ovos (dúzia)'), candidate('Ovos (30 un)'), bought('Feijão'), candidate('Feijão preto')]);
+    expect(similarNames('Ovos Vermelhos 12 un', index, { onlyConfident: true })[0]).toMatchObject({ name: 'Ovos (dúzia)', source: 'comum' });
+    expect(suggestedName('Ovos Vermelhos 12 un', index)).toMatchObject({ productId: 'p-ovos' });
+    expect(suggestedName('Ovos Brancos 30 un', index)).toMatchObject({ productId: 'p-ovos' });
+    expect(suggestedName('Feijão Preto Kicaldo 1kg', index)).toMatchObject({ name: 'Feijão', source: 'comprado' });
+  });
+
+  it('nome que já é da casa não ganha o genérico; nome que só o catálogo tem, ganha', () => {
+    const index = indexNames([listed('Carne', 'li-carne'), bought('Carne moída'), listed('Pão', 'li-pao'), candidate('Pão francês')]);
+    // O nome da casa com outra grafia é o que aparece, nunca o genérico "Carne".
+    expect(suggestedName('Carne Moída Kg', index)).toMatchObject({ name: 'Carne moída', closeness: 'igual' });
+    expect(suggestedName('Carne moída', index)).toBeNull();
+    expect(suggestedName('Pão Francês Kg', index)).toMatchObject({ name: 'Pão' });
+  });
+
   it('casa sem histórico: nenhuma sugestão no item', () => {
     const index = indexNames(nameCandidates({ products: [], listItems: [], purchases: [], common: COMMON_ITEMS }));
     for (const name of ['Arroz Tio João Tipo 1 5kg', 'Sal de Frutas Eno 100g', 'Batata Palha Elma Chips 120g', 'Couve-flor', 'Bananas']) {
       expect(suggestedName(name, index)).toBeNull();
+    }
+  });
+});
+
+describe('uma casa de verdade, com o catálogo junto', () => {
+  // Como a tela monta: produtos, listas abertas, compras recentes e os itens comuns num índice só.
+  const index = indexNames(
+    nameCandidates({
+      products: [
+        { id: 'p-batata', name: 'Batata', category: 'hortifruti' },
+        { id: 'p-alho', name: 'Alho', category: 'hortifruti' },
+        { id: 'p-frango', name: 'Frango', category: 'carnes' },
+        { id: 'p-banana', name: 'Banana', category: 'hortifruti' },
+        { id: 'p-coca', name: 'Coca-Cola 2L', category: 'bebidas' },
+        { id: 'p-skol', name: 'Skol 350ml', category: 'alcoolicas' },
+        { id: 'p-agua5', name: 'Água Crystal 5L', category: 'bebidas' },
+        { id: 'p-vitc', name: 'Vitamina C', category: 'suplementos' },
+        { id: 'p-molho', name: 'Molho de tomate', category: 'temperos' },
+        { id: 'p-suco', name: 'Suco de laranja', category: 'bebidas' },
+        { id: 'p-goiabada', name: 'Goiabada', category: 'doces' },
+        // Nomes que uma nota lida pelo QR code deixou.
+        { id: 'p-deterg', name: 'Deterg liq ype clear 500ml', category: 'limpeza' },
+        { id: 'p-refrig', name: 'Refrig coca cola 350ml lt', category: 'bebidas' },
+        { id: 'p-cerv', name: 'Cerv brahma duplo malte lt 350ml', category: 'alcoolicas' },
+      ],
+      listItems: [
+        ...['Leite', 'Água', 'Pão', 'Iogurte', 'Queijo', 'Macarrão', 'Ovos', 'Detergente', 'Refrigerante', 'acucar'].map((name) => ({
+          id: 'li-' + name,
+          name,
+          category: 'outros',
+          product_id: null,
+        })),
+        { id: 'li-banana', name: 'Bananas', category: 'hortifruti', product_id: 'p-banana' },
+      ],
+      purchases: [
+        { name: 'Sal', category: 'temperos', productId: null },
+        { name: 'Óleo', category: 'oleos', productId: null },
+        { name: 'Cerveja', category: 'alcoolicas', productId: null },
+        { name: 'Deterg liq ype clear 500ml', category: 'limpeza', productId: 'p-deterg' },
+      ],
+      common: COMMON_ITEMS,
+    }),
+  );
+  const chip = (name: string) => suggestedName(name, index)?.name ?? null;
+
+  it('nota lida pela foto (nomes da IA): o nome da casa aparece para a mesma coisa', () => {
+    expect(chip('Leite Integral Italac 1L')).toBe('Leite');
+    expect(chip('Pão Francês Kg')).toBe('Pão');
+    expect(chip('Banana Prata Kg')).toBe('Banana');
+    expect(chip('Iogurte Morango')).toBe('Iogurte');
+    expect(chip('Ovos Vermelhos 12 un')).toBe('Ovos');
+    expect(chip('Queijo Muçarela Fatiado 150g')).toBe('Queijo');
+    expect(chip('Refrigerante Coca-Cola 2l')).toBe('Coca-Cola 2L');
+    expect(chip('Coca-Cola 2 Litros')).toBe('Coca-Cola 2L');
+    expect(chip('Skol em Lata 350ml')).toBe('Skol 350ml');
+    expect(chip('Vitamina C Sundown 60 cápsulas')).toBe('Vitamina C');
+    expect(chip('Molho de Tomate Fugini 300g')).toBe('Molho de tomate');
+    // O item da lista escrito sem acento aparece com a grafia do catálogo.
+    expect(suggestedName('Açúcar Refinado União 1kg', index)).toMatchObject({ name: 'Açúcar', source: 'lista', listItemIds: ['li-acucar'] });
+    // O produto da casa leva junto o item da lista ligado a ele.
+    expect(suggestedName('Banana Prata Kg', index)).toMatchObject({ productId: 'p-banana', listItemIds: ['li-banana'] });
+  });
+
+  it('nota lida pela foto: outra coisa, outro tamanho ou só o catálogo não ganham sugestão', () => {
+    for (const name of [
+      'Leite Condensado Moça 395g',
+      'Leite em Pó Ninho 400g',
+      'Leite Fermentado Yakult 480g',
+      'Água Oxigenada 10 volumes 100ml',
+      'Água Tônica Schweppes 350ml',
+      'Batata Palha Yoki 140g',
+      'Alho Poró Un',
+      'Frango Empanado Sadia 300g',
+      'Macarrão Instantâneo Nissin 85g',
+      'Sardinha Molho de Tomate Coqueiro 125g',
+      'Sorvete de Leite Condensado Kibon 1,5L',
+      'Laranja para Suco Kg',
+      'Goiaba Kg',
+      'Skol 350ml c/12',
+      'Coca-Cola Lata 350ml',
+      'Açúcar',
+      'Feijão Carioca Camil 1kg',
+      'Carregador Usb',
+    ]) {
+      expect([name, chip(name)]).toEqual([name, null]);
+    }
+    // Garrafa de 1,5 L não é o galão de 5 L da casa: fica o nome genérico da lista.
+    expect(chip('Água Crystal 1,5L')).toBe('Água');
+  });
+
+  it('nota lida pelo QR code (texto da nota fiscal): abreviada e sem "de"', () => {
+    expect(chip('Leite uht int italac 1l')).toBe('Leite');
+    expect(chip('Deterg liq limpol neutro 500ml')).toBe('Detergente');
+    expect(chip('Refrig fanta laranja 2l')).toBe('Refrigerante');
+    expect(chip('Cerv skol lt 350ml')).toBe('Cerveja');
+    expect(chip('Agua crystal 1 5l')).toBe('Água');
+    for (const name of [
+      'Leite coco sococo 200ml',
+      'Leite cond moca 395g',
+      'Pao queijo forno minas 400g',
+      'Pao alho santa massa 300g',
+      'Sal frutas eno 100g',
+      'Oleo motor lubrax 1l',
+    ]) {
+      expect([name, chip(name)]).toEqual([name, null]);
     }
   });
 });
@@ -338,6 +715,52 @@ describe('indexNames', () => {
       candidate('Leite integral', 'comprado', { productId: 'p-leite' }),
     ]);
     expect(index.entries[0]).toMatchObject({ source: 'lista', productId: 'p-leite', listItemIds: ['li-1'] });
+  });
+
+  it('entre nomes sem produto com as mesmas letras, mostra o mais bem escrito, de qualquer fonte', () => {
+    const index = indexNames([
+      candidate('papel higienico', 'lista', { listItemIds: ['li-1'], category: 'outros' }),
+      candidate('Papel higiênico', 'comum', { category: 'papel' }),
+      candidate('BANANA', 'comprado'),
+      candidate('Banana', 'comum'),
+      candidate('Feijão', 'comum'),
+      candidate('feijao', 'lista', { listItemIds: ['li-2'] }),
+    ]);
+    expect(index.entries.map((entry) => [entry.name, entry.source, entry.listItemIds])).toEqual([
+      ['Papel higiênico', 'lista', ['li-1']],
+      ['Banana', 'comprado', []],
+      ['Feijão', 'lista', ['li-2']],
+    ]);
+    // Outras letras (plural): continua valendo o nome da fonte mais forte.
+    expect(indexNames([candidate('bananas', 'lista', { listItemIds: ['li-1'] }), candidate('Banana', 'comum')]).entries[0].name).toBe('bananas');
+  });
+
+  it('o nome de um produto aparece como ele é', () => {
+    const index = indexNames([
+      candidate('Açúcar', 'comum', { category: 'doces' }),
+      candidate('acucar', 'produto', { productId: 'p-acucar', category: 'outros' }),
+      candidate('leite integral', 'lista', { listItemIds: ['li-1'], category: 'outros' }),
+      candidate('Leite Integral', 'comprado', { productId: 'p-leite', category: 'laticinios' }),
+    ]);
+    expect(index.entries).toHaveLength(2);
+    expect(index.entries[0]).toMatchObject({ name: 'acucar', productId: 'p-acucar', category: 'outros', source: 'produto' });
+    expect(index.entries[1]).toMatchObject({ name: 'Leite Integral', productId: 'p-leite', category: 'laticinios', source: 'lista', listItemIds: ['li-1'] });
+  });
+
+  it('dois produtos com as mesmas palavras em outra ordem ficam os dois', () => {
+    const index = indexNames([product('Suco de laranja', 'p-suco'), product('Laranja para suco', 'p-laranja')]);
+    expect(index.entries).toHaveLength(2);
+    expect(similarNames('Laranja para Suco Kg', index)[0]).toMatchObject({ productId: 'p-laranja', closeness: 'igual' });
+    expect(similarNames('Suco de laranja', index)[0]).toMatchObject({ productId: 'p-suco', closeness: 'igual' });
+    expect(knownName('laranja p/ suco', index)).toMatchObject({ productId: 'p-laranja' });
+  });
+
+  it('acha o nome da casa que é o mesmo nome', () => {
+    const index = indexNames([product('Banana', 'p-banana'), listed('Feijão Preto', 'li-1')]);
+    expect(knownName('bananas', index)).toMatchObject({ name: 'Banana', productId: 'p-banana' });
+    expect(knownName('FEIJAO PRETO', index)).toMatchObject({ name: 'Feijão Preto' });
+    expect(knownName('Banana prata', index)).toBeNull();
+    expect(knownName('  ', index)).toBeNull();
   });
 
   it('ignora nome vazio', () => {
@@ -404,14 +827,27 @@ describe('textos', () => {
     expect(nameSourceLabel({ source: 'produto', listItemIds: ['li-1'] })).toBe('Produto da casa, na lista de compras');
     expect(nameSourceLabel({ source: 'lista', listItemIds: ['li-1'] })).toBe('Está na lista de compras');
     expect(nameSourceLabel({ source: 'comprado', listItemIds: [] })).toBe('Comprado antes');
-    expect(nameSourceLabel({ source: 'comum', listItemIds: [] })).toBe('Item comum da lista');
+    expect(nameSourceLabel({ source: 'comum', listItemIds: [] })).toBe('Item comum (catálogo)');
+    expect(nameSourceLabel({ source: 'nota', listItemIds: [] })).toBe('Nesta nota');
+  });
+
+  it('o botão de usar o que já existe só diz "já existe" para um nome que a casa usa', () => {
+    expect(existingNameLabel({ name: 'Banana', source: 'produto' })).toBe('Usar "Banana" (já existe)');
+    expect(existingNameLabel({ name: 'Arroz', source: 'lista' })).toBe('Usar "Arroz" (já existe)');
+    expect(existingNameLabel({ name: 'Sal', source: 'comprado' })).toBe('Usar "Sal" (já existe)');
+    expect(existingNameLabel({ name: 'Açúcar', source: 'comum' })).toBe('Usar "Açúcar"');
+    expect(existingNameLabel({ name: 'Pitaya', source: 'nota' })).toBe('Usar "Pitaya" (já está nesta nota)');
   });
 
   it('apresenta a sugestão conforme o que o toque faz', () => {
     expect(similarNameHint({ closeness: 'igual', productId: 'p-1', listItemIds: [] })).toBe('A casa já tem este produto:');
     expect(similarNameHint({ closeness: 'parecido', productId: 'p-1', listItemIds: ['li-1'] })).toBe('A casa já tem um produto parecido:');
-    expect(similarNameHint({ closeness: 'igual', productId: null, listItemIds: ['li-1'] })).toBe('Está na lista de compras como:');
-    expect(similarNameHint({ closeness: 'parecido', productId: null, listItemIds: ['li-1'] })).toBe('Parece com um item da lista de compras:');
+    expect(similarNameHint({ closeness: 'igual', productId: null, listItemIds: ['li-1'] })).toBe(
+      'Está na lista de compras como (sai dela ao confirmar):',
+    );
+    expect(similarNameHint({ closeness: 'parecido', productId: null, listItemIds: ['li-1'] })).toBe(
+      'Parece com um item da lista de compras (sai dela ao confirmar):',
+    );
     expect(similarNameHint({ closeness: 'igual', productId: null, listItemIds: [] })).toBe('A casa já usa este nome:');
     expect(similarNameHint({ closeness: 'parecido', productId: null, listItemIds: [] })).toBe('A casa já usa um nome parecido:');
   });
