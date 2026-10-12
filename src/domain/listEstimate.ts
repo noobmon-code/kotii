@@ -2,9 +2,9 @@
 // item e o que já está na despensa. Os preços são o último de cada produto em
 // cada mercado (notas confirmadas). Item digitado solto ("Coca") usa as
 // ligações nome -> produto aprendidas nas notas, ou o produto de mesmo nome.
-// "Onde comprar" (recommendation) faz a conta com as mesmas peças: o produto
-// de cada item (resolveListProducts), o nível de preço dos mercados
-// (priceLevel) e a conversão de unidades (units).
+// "Onde comprar" (recommendation) faz a mesma conta: pergunta aqui o preço de
+// cada item em cada mercado (listStorePrices), com o mesmo nível de preço dos
+// mercados (priceLevel) e a mesma conversão de unidades (units).
 
 import { joinNames } from './cartPantry';
 import { formatShortDate, toISODate, todayISO } from './dates';
@@ -46,7 +46,7 @@ export interface ItemEstimate {
   kind: 'known' | 'estimated';
   /** A unidade da lista não converte para a do preço (un x kg): o custo é o de 1 unidade do preço. */
   approximateQuantity: boolean;
-  /** O produto de onde saem os preços do item (resolveListProducts). */
+  /** O produto de onde saem o último preço, o "preço bom" e a estimativa do item (itemResolver). */
   productId: string;
   /**
    * O preço de nota que entrou na conta; null quando é estimado. No mercado
@@ -102,6 +102,13 @@ interface ResolvedItem {
   all: EstimatePrice[];
 }
 
+/**
+ * De qual produto saem os preços de cada item da lista (o último, o "preço
+ * bom" e a estimativa pelo nível de preço): um só. O produto do próprio item;
+ * se ele não tem produto, ou o produto não tem preço, os que já cumpriram esse
+ * nome nas notas e o de mesmo nome, valendo o comprado mais recentemente. Item
+ * sem preço nenhum não tem produto.
+ */
 function itemResolver(prices: readonly EstimatePrice[], { links, products = [] }: PriceSources) {
   const byProduct = new Map<string, EstimatePrice[]>();
   for (const price of prices) {
@@ -126,24 +133,110 @@ function itemResolver(prices: readonly EstimatePrice[], { links, products = [] }
   };
 }
 
+/** De onde vem o preço de um item da lista num mercado. */
+export type StorePriceSource =
+  /** Do produto do item, na unidade de sempre. */
+  | 'product'
+  /** Do produto do item, em outra unidade (a quantidade pode sair aproximada). */
+  | 'otherUnit'
+  /** De outro produto ligado ao mesmo nome: o custo é aproximado. */
+  | 'otherProduct'
+  /** O mercado não tem o item nas notas: sai do nível de preço dele. */
+  | 'estimated';
+
+/** O preço de um item da lista num mercado, e de onde ele vem (listStorePrices). */
+export interface StorePrice extends Pick<ItemEstimate, 'cost' | 'unitPrice' | 'unit' | 'kind' | 'approximateQuantity' | 'productId' | 'used'> {
+  source: StorePriceSource;
+}
+
+/** Um item com preço: o último, o "preço bom" e o preço dele em cada mercado. */
+interface PricedItem {
+  last: EstimatePrice;
+  lowest: EstimatePrice;
+  /** Os mercados com preço de nota para o item. */
+  stores: Set<string>;
+  /** Sem mercado escolhido: o último preço que a casa pagou. */
+  lastPaid: () => StorePrice;
+  at: (storeId: string) => StorePrice;
+}
+
 /**
- * De qual produto saem os preços de cada item da lista: um só, o mesmo aqui e
- * em "Onde comprar". O produto do próprio item; se ele não tem produto, ou o
- * produto não tem preço, os que já cumpriram esse nome nas notas e o de mesmo
- * nome, valendo o comprado mais recentemente. Item sem preço nenhum não entra.
+ * A regra de preço da lista, uma só para a estimativa e para "Onde comprar":
+ * o produto de cada item (itemResolver) e, em cada mercado, o preço que vale
+ * lá. null para item sem preço nenhum.
  */
-export function resolveListProducts(
-  items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId' | 'unit'>[],
+function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources) {
+  const resolve = itemResolver(prices, sources);
+  const index = storePriceIndex(prices);
+
+  return (item: Pick<EstimateItem, 'name' | 'productId' | 'quantity' | 'unit'>): PricedItem | null => {
+    const resolved = resolve(item);
+    if (!resolved) return null;
+    const { productId, own, all } = resolved;
+    // Na unidade da lista quando há preço nela; senão, numa que converte para ela; senão, na do preço mais recente.
+    const { unit } = bestForUnit(item.unit, own);
+    const quotes = own.filter((quote) => quote.unit === unit);
+    const last = newest(quotes);
+    // O "preço bom" é do mesmo produto (outro produto do mesmo nome pode ser outra embalagem); no empate, o próprio último.
+    const lowest = quotes.reduce((a, b) => (b.unitPrice < a.unitPrice ? b : a), last);
+
+    const priced = (source: StorePriceSource, used: EstimatePrice | null, unitPrice: number): StorePrice => {
+      const priceUnit = used?.unit ?? unit;
+      const { quantity, approximate } = priceQuantity(item.quantity, item.unit, priceUnit);
+      return {
+        source,
+        cost: round2(unitPrice * quantity),
+        unitPrice: round2(unitPrice),
+        unit: priceUnit,
+        kind: used ? 'known' : 'estimated',
+        approximateQuantity: approximate,
+        productId,
+        used,
+      };
+    };
+    // O preço de lá: do produto, na unidade de sempre; do produto, em outra unidade; ou de outro produto ligado ao mesmo nome.
+    const tiers: [StorePriceSource, EstimatePrice[]][] = [
+      ['product', quotes],
+      ['otherUnit', own],
+      ['otherProduct', all],
+    ];
+    return {
+      last,
+      lowest,
+      stores: new Set(all.map((quote) => quote.storeId)),
+      lastPaid: () => priced('product', last, last.unitPrice),
+      at: (storeId) => {
+        for (const [source, list] of tiers) {
+          const here = list.filter((quote) => quote.storeId === storeId);
+          if (!here.length) continue;
+          const used = bestForUnit(item.unit, here);
+          return priced(source, used, used.unitPrice);
+        }
+        // O mercado não tem esse item nas notas: a média do produto nos outros, no nível de preço deste. Os preços
+        // conhecidos entram como estão, sem dividir pelo nível do mercado de cada um: um nível ainda incerto pesaria
+        // duas vezes na conta.
+        return priced('estimated', null, average(quotes.map((quote) => quote.unitPrice)) * (index.get(storeId) ?? 1));
+      },
+    };
+  };
+}
+
+/**
+ * O preço de cada item da lista em cada mercado, e de onde ele vem: do
+ * produto do item, na unidade de sempre; dele, em outra unidade; de outro
+ * produto ligado ao mesmo nome; ou estimado pelo nível de preço do mercado.
+ * null para item sem preço nenhum (fica fora da conta). É a resposta que a
+ * estimativa usa com o mercado escolhido e a que "Onde comprar" recebe
+ * (recommendStores, `priceAt`): por isso as duas telas dão o mesmo total.
+ */
+export function listStorePrices(
+  items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId' | 'quantity' | 'unit'>[],
   prices: readonly EstimatePrice[],
   sources: PriceSources = {},
-): Map<string, string> {
-  const resolve = itemResolver(prices, sources);
-  const resolved = new Map<string, string>();
-  for (const item of items) {
-    const productId = resolve(item)?.productId;
-    if (productId) resolved.set(item.id, productId);
-  }
-  return resolved;
+): (itemId: string, storeId: string) => StorePrice | null {
+  const price = itemPricer(prices, sources);
+  const byItem = new Map(items.map((item) => [item.id, price(item)]));
+  return (itemId, storeId) => byItem.get(itemId)?.at(storeId) ?? null;
 }
 
 /**
@@ -157,48 +250,16 @@ export function estimateList(
   prices: readonly EstimatePrice[],
   { links, products, storeId = null }: PriceSources & { storeId?: string | null } = {},
 ): ListEstimate {
-  const resolve = itemResolver(prices, { links, products });
-  const index = storePriceIndex(prices);
+  const price = itemPricer(prices, { links, products });
 
   const byItem = new Map<string, ItemEstimate>();
   const known = new Map<string, number>();
   for (const item of items) {
-    const resolved = resolve(item);
-    if (!resolved) continue;
-    const { productId, own, all } = resolved;
-    // Na unidade da lista quando há preço nela; senão, numa que converte para ela; senão, na do preço mais recente.
-    const { unit } = bestForUnit(item.unit, own);
-    const quotes = own.filter((quote) => quote.unit === unit);
-    const last = newest(quotes);
-    // O "preço bom" é do mesmo produto (outro produto do mesmo nome pode ser outra embalagem); no empate, o próprio último.
-    const lowest = quotes.reduce((a, b) => (b.unitPrice < a.unitPrice ? b : a), last);
-
-    for (const store of new Set(all.map((quote) => quote.storeId))) known.set(store, (known.get(store) ?? 0) + 1);
-
-    let used: EstimatePrice | null = last;
-    let unitPrice = last.unitPrice;
-    if (storeId) {
-      // O preço de lá: do produto, na unidade de sempre; do produto, em outra unidade; ou de outro produto ligado ao mesmo nome.
-      const here = [quotes, own, all].map((list) => list.filter((quote) => quote.storeId === storeId)).find((list) => list.length);
-      used = here ? bestForUnit(item.unit, here) : null;
-      // O mercado não tem esse item nas notas: a média do produto nos outros, no nível de preço deste. Os preços
-      // conhecidos entram como estão, sem dividir pelo nível do mercado de cada um: um nível ainda incerto pesaria
-      // duas vezes na conta.
-      unitPrice = used ? used.unitPrice : average(quotes.map((quote) => quote.unitPrice)) * (index.get(storeId) ?? 1);
-    }
-    const priceUnit = used?.unit ?? unit;
-    const { quantity, approximate } = priceQuantity(item.quantity, item.unit, priceUnit);
-    byItem.set(item.id, {
-      cost: round2(unitPrice * quantity),
-      unitPrice: round2(unitPrice),
-      unit: priceUnit,
-      kind: used ? 'known' : 'estimated',
-      approximateQuantity: approximate,
-      productId,
-      used,
-      last,
-      lowest,
-    });
+    const priced = price(item);
+    if (!priced) continue;
+    for (const store of priced.stores) known.set(store, (known.get(store) ?? 0) + 1);
+    const { cost, unitPrice, unit, kind, approximateQuantity, productId, used } = storeId ? priced.at(storeId) : priced.lastPaid();
+    byItem.set(item.id, { cost, unitPrice, unit, kind, approximateQuantity, productId, used, last: priced.last, lowest: priced.lowest });
   }
 
   const sum = (inCart: boolean) => round2(items.reduce((s, item) => s + (item.inCart === inCart ? (byItem.get(item.id)?.cost ?? 0) : 0), 0));
@@ -261,28 +322,48 @@ export interface PantryHit {
  * um produto que as notas já ligaram a esse nome, ou o mesmo nome. Nome só
  * parecido não conta ("Leite" não é "Leite condensado"). A despensa só perde
  * uma entrada quando alguém dá baixa, então o que o próprio app acha que
- * acabou (`ranOut`, de restockSuggestions sem tirar o que já está na lista)
- * fica de fora: está na lista justamente porque acabou.
+ * acabou (`ranOut`, de ranOutItems: sem tirar o que já está na lista e por
+ * mais que tenha passado do costume) fica de fora: está na lista justamente
+ * porque acabou. Só a entrada mais nova que a última compra que esse palpite
+ * conhece (`lastAt`) continua valendo: é compra que ele não viu, estoque novo.
  */
 export function pantryHits(
   items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId'>[],
   pantry: readonly PantryStock[],
-  { links, today, ranOut = [] }: { links?: LinkIndex; today: string; ranOut?: readonly { name: string; productId: string | null }[] },
+  {
+    links,
+    today,
+    ranOut = [],
+  }: { links?: LinkIndex; today: string; ranOut?: readonly { name: string; productId: string | null; lastAt: string }[] },
 ): Map<string, PantryHit> {
-  const goneNames = new Set(ranOut.map((gone) => normalizeSearch(gone.name)));
-  const goneProducts = new Set(ranOut.flatMap((gone) => (gone.productId ? [gone.productId] : [])));
-  const ranOutAlready = (key: string, productId: string | null) => goneNames.has(key) || (productId != null && goneProducts.has(productId));
+  // O dia da última compra conhecida do que acabou, pelo nome e pelo produto.
+  const goneNames = new Map<string, string>();
+  const goneProducts = new Map<string, string>();
+  for (const gone of ranOut) {
+    const day = toISODate(new Date(gone.lastAt));
+    const name = normalizeSearch(gone.name);
+    if (day > (goneNames.get(name) ?? '')) goneNames.set(name, day);
+    if (gone.productId && day > (goneProducts.get(gone.productId) ?? '')) goneProducts.set(gone.productId, day);
+  }
+  /** Até que dia o que entrou na despensa com esse nome ou produto já acabou; '' quando o app não acha que acabou. */
+  const goneUntil = (key: string, productId: string | null) => {
+    const byName = goneNames.get(key) ?? '';
+    const byProduct = (productId != null ? goneProducts.get(productId) : undefined) ?? '';
+    return byName > byProduct ? byName : byProduct;
+  };
   // O nome de cada entrada normalizado uma vez, fora do laço dos itens.
   const fresh = pantry
     .filter((entry) => !entry.expires_on || entry.expires_on >= today)
     .map((entry) => ({ entry, key: normalizeSearch(entry.name) }))
-    .filter(({ entry, key }) => !ranOutAlready(key, entry.product_id));
+    .filter(({ entry, key }) => entry.purchased_on > goneUntil(key, entry.product_id));
 
   const hits = new Map<string, PantryHit>();
   for (const item of items) {
     const name = normalizeSearch(item.name);
-    if (ranOutAlready(name, item.productId)) continue;
+    // O item da lista acabou: só conta a entrada comprada depois disso.
+    const itemGoneUntil = goneUntil(name, item.productId);
     const same = fresh.filter(({ entry, key }) => {
+      if (entry.purchased_on <= itemGoneUntil) return false;
       if (item.productId && entry.product_id === item.productId) return true;
       // Outro produto só conta quando a pessoa já confirmou, numa nota, que ele cumpre este nome.
       if (entry.product_id && links?.has(item.name, entry.product_id)) return true;
@@ -318,6 +399,34 @@ const sameQuote = (a: EstimatePrice, b: EstimatePrice) =>
 export function formatItemCost(estimate: Pick<ItemEstimate, 'cost' | 'kind' | 'approximateQuantity' | 'productId' | 'used'>): string {
   const otherProduct = estimate.used != null && estimate.used.productId !== estimate.productId;
   return `${estimate.kind === 'estimated' || estimate.approximateQuantity || otherProduct ? '~' : ''}${formatBRL(estimate.cost)}`;
+}
+
+/**
+ * A nota da linha de um item em "Onde comprar", da mesma resposta que dá o
+ * custo (listStorePrices): estimado, de outro produto ligado ao nome (qual,
+ * quando `productName` sabe) ou com a quantidade em outra unidade. null para o
+ * preço de nota do próprio produto, na quantidade da lista: nada a avisar.
+ */
+export function storePriceNote(
+  price: Pick<StorePrice, 'source' | 'approximateQuantity' | 'used'>,
+  productName?: (productId: string) => string | undefined,
+): string | null {
+  if (price.source === 'estimated') return 'Estimado pelo nível de preço do mercado';
+  if (price.source === 'otherProduct') {
+    return `Preço de ${(price.used && productName?.(price.used.productId)) || 'outro produto com esse nome'}`;
+  }
+  return price.approximateQuantity ? 'Preço por unidade da nota (quantidade em outra unidade)' : null;
+}
+
+/**
+ * Por que um item ficou sem preço em "Onde comprar". Com `sourcesLoaded`
+ * falso, as ligações ou os produtos não chegaram (a busca falhou, ou sem
+ * internet e nunca vistos neste aparelho): o item pode ter preço nas notas, e
+ * dizer "ainda não ligado" seria palpite.
+ */
+export function unpricedNote(item: Pick<EstimateItem, 'productId'>, sourcesLoaded: boolean): string {
+  if (!sourcesLoaded) return 'Não deu para conferir se este item já tem preço';
+  return item.productId ? 'Ainda não aparece em nenhuma nota' : 'Item digitado livre: ainda não ligado a um produto com preço';
 }
 
 /** O título do total: "A lista deve dar" só quando todos os itens têm preço; senão, diz que a conta é de parte deles. */

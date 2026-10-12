@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { recommendStores, type ListItemInput, type PriceInput } from '../recommendation';
+import { recommendStores, type ListItemInput, type PriceInput, type StorePriceAnswer } from '../recommendation';
 
 const item = (key: string, productId: string | null, quantity = 1, unit = 'un'): ListItemInput => ({
   key,
@@ -55,6 +55,45 @@ describe('recommendStores', () => {
     const cafeAtCaro = rec.plans[1].assignments.find((a) => a.itemKey === 'c')!;
     expect(cafeAtCaro).toMatchObject({ kind: 'estimated', cost: 18 });
     expect(rec.storeIndex.get('caro')).toBe(1.2);
+  });
+
+  it('with priceAt, takes the price the caller resolved for each item in each store', () => {
+    const answer = (cost: number, kind: StorePriceAnswer['kind'], approximateQuantity = false): StorePriceAnswer => ({ cost, kind, approximateQuantity });
+    const answers: Record<string, Record<string, StorePriceAnswer>> = {
+      a: { x: answer(20, 'known'), y: answer(22, 'estimated'), z: answer(25, 'estimated') },
+      b: { x: answer(9, 'estimated', true), y: answer(6, 'known', true), z: answer(7, 'estimated', true) },
+    };
+    const rec = recommendStores(
+      [item('a', null), item('b', 'outro'), item('c', 'arroz')],
+      [price('arroz', 'x', 1), price('arroz', 'y', 1), price('arroz', 'z', 1)],
+      2,
+      { priceAt: (itemKey, storeId) => answers[itemKey]?.[storeId] ?? null },
+    );
+    // "c" has no answer: out of the totals, whatever its productId says. "z" has no receipt price for any item: not ranked.
+    expect(rec.unpricedKeys).toEqual(['c']);
+    expect(rec.plans.map((p) => [p.storeIds, p.total, p.knownCount, p.estimatedCount])).toEqual([
+      [['x', 'y'], 26, 2, 0],
+      [['y'], 28, 1, 1],
+      [['x'], 29, 1, 1],
+    ]);
+    expect(rec.plans[1].assignments).toEqual([
+      { itemKey: 'a', storeId: 'y', cost: 22, kind: 'estimated', approximateQuantity: false },
+      { itemKey: 'b', storeId: 'y', cost: 6, kind: 'known', approximateQuantity: true },
+    ]);
+    expect([...rec.storeIndex.keys()]).toEqual(['x', 'y']);
+  });
+
+  it('with priceAt, an item the caller cannot price in every store stays out of the totals', () => {
+    const known: StorePriceAnswer = { cost: 10, kind: 'known', approximateQuantity: false };
+    const rec = recommendStores([item('a', null), item('b', null)], [price('arroz', 'x', 1), price('arroz', 'y', 1)], 2, {
+      priceAt: (itemKey, storeId) => (itemKey === 'b' && storeId === 'y' ? null : known),
+    });
+    // "b" has no answer at "y": a total with it at "x" only would not compare with the total at "y".
+    expect(rec.unpricedKeys).toEqual(['b']);
+    expect(rec.plans.map((p) => [p.storeIds, p.total])).toEqual([
+      [['x'], 10],
+      [['y'], 10],
+    ]);
   });
 
   it('splits between stores only when allowed and it actually saves money', () => {

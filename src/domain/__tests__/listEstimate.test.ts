@@ -9,18 +9,20 @@ import {
   estimateList,
   formatItemCost,
   itemFacts,
+  listStorePrices,
   pantryHits,
-  resolveListProducts,
+  storePriceNote,
+  unpricedNote,
   type EstimateItem,
   type EstimatePrice,
   type ItemEstimate,
   type PantryStock,
 } from '../listEstimate';
-import { LinkIndex } from '../listLinks';
+import { LinkIndex, listNameKey } from '../listLinks';
 import { storePriceIndex } from '../priceLevel';
 import type { PurchaseRecord } from '../recentPurchases';
 import { recommendStores } from '../recommendation';
-import { restockSuggestions } from '../restock';
+import { ranOutItems, restockSuggestions } from '../restock';
 
 const item = (id: string, name: string, productId: string | null, quantity = 1, unit = 'un', inCart = false): EstimateItem => ({
   id,
@@ -229,13 +231,13 @@ describe('estimateList', () => {
   });
 });
 
-describe('resolveListProducts', () => {
+describe('o produto de cada item', () => {
   it('um produto por item: o do item, o das ligações ou o de mesmo nome; sem preço, nenhum', () => {
     const links = new LinkIndex([
       { name_key: 'refrigerante', product_id: 'coca' },
       { name_key: 'leite', product_id: 'italac' },
     ]);
-    const resolved = resolveListProducts(
+    const estimate = estimateList(
       [
         item('a', 'Arroz', 'arroz'),
         item('r', 'Refrigerante', null),
@@ -247,7 +249,7 @@ describe('resolveListProducts', () => {
       [price('arroz', 'bom', 20), price('coca', 'bom', 9), price('italac', 'bom', 5), price('pao', 'bom', 12, undefined, 'kg')],
       { links, products: [{ id: 'pao', name: 'Pão francês' }] },
     );
-    expect([...resolved]).toEqual([
+    expect([...estimate.byItem].map(([id, cost]) => [id, cost.productId])).toEqual([
       ['a', 'arroz'],
       ['r', 'coca'],
       ['l', 'italac'],
@@ -256,7 +258,127 @@ describe('resolveListProducts', () => {
   });
 });
 
+describe('listStorePrices', () => {
+  const links = new LinkIndex([
+    { name_key: 'leite', product_id: 'italac' },
+    { name_key: 'leite', product_id: 'piracanjuba' },
+  ]);
+  const list = [item('l', 'Leite', null, 12), item('b', 'Banana', 'banana', 6), item('c', 'Café', 'cafe'), item('x', 'Carregador', null)];
+  const quotes = [
+    price('italac', 'assai', 4.59, '2026-10-05T12:00:00Z'),
+    price('piracanjuba', 'dia', 5.29, '2026-09-20T12:00:00Z'),
+    price('banana', 'assai', 0.9, '2026-10-01T12:00:00Z'),
+    price('banana', 'dia', 6, '2026-10-02T12:00:00Z', 'kg'),
+    price('cafe', 'assai', 18),
+  ];
+  const priceAt = listStorePrices(list, quotes, { links });
+
+  it('diz o preço do item em cada mercado e de onde ele vem', () => {
+    // O produto do item, na unidade de sempre.
+    expect(priceAt('l', 'assai')).toMatchObject({ source: 'product', kind: 'known', cost: 55.08, unitPrice: 4.59, productId: 'italac' });
+    expect(priceAt('l', 'assai')?.used).toEqual(quotes[0]);
+    // Outro produto ligado ao mesmo nome: o Dia só tem o Piracanjuba.
+    expect(priceAt('l', 'dia')).toMatchObject({ source: 'otherProduct', kind: 'known', cost: 63.48, productId: 'italac' });
+    expect(priceAt('l', 'dia')?.used).toEqual(quotes[1]);
+    // O produto do item em outra unidade: 6 un com preço por kg conta 1 kg.
+    expect(priceAt('b', 'dia')).toMatchObject({ source: 'otherUnit', kind: 'known', cost: 6, unit: 'kg', approximateQuantity: true });
+    expect(priceAt('b', 'assai')).toMatchObject({ source: 'product', cost: 5.4, unit: 'un', approximateQuantity: false });
+    // O mercado não tem o item: a média do produto, no nível de preço de lá.
+    expect(priceAt('c', 'dia')).toMatchObject({ source: 'estimated', kind: 'estimated', used: null, unit: 'un' });
+    expect(priceAt('c', 'novo')).toMatchObject({ source: 'estimated', cost: 18 });
+  });
+
+  it('a nota de cada preço, para a linha do item em "Onde comprar": sai da mesma resposta que o custo', () => {
+    const productName = (id: string) => (id === 'piracanjuba' ? 'Leite Piracanjuba 1L' : undefined);
+    // Preço de nota do próprio produto, na quantidade da lista: sem nota (a linha mostra a quantidade) e sem "~".
+    expect(storePriceNote(priceAt('l', 'assai')!, productName)).toBeNull();
+    expect(formatItemCost(priceAt('l', 'assai')!)).toBe('R$ 55,08');
+    // De outro produto ligado ao nome: diz qual, quando sabe o nome dele.
+    expect(storePriceNote(priceAt('l', 'dia')!, productName)).toBe('Preço de Leite Piracanjuba 1L');
+    expect(storePriceNote(priceAt('l', 'dia')!)).toBe('Preço de outro produto com esse nome');
+    expect(formatItemCost(priceAt('l', 'dia')!)).toBe('~R$ 63,48');
+    // A unidade da lista não converte para a do preço.
+    expect(storePriceNote(priceAt('b', 'dia')!, productName)).toBe('Preço por unidade da nota (quantidade em outra unidade)');
+    expect(formatItemCost(priceAt('b', 'dia')!)).toBe('~R$ 6,00');
+    // O mercado não tem o item.
+    expect(storePriceNote(priceAt('c', 'dia')!, productName)).toBe('Estimado pelo nível de preço do mercado');
+    expect(formatItemCost(priceAt('c', 'novo')!)).toBe('~R$ 18,00');
+  });
+
+  it('item sem preço nenhum (ou que não é da lista) não tem resposta', () => {
+    expect(priceAt('x', 'assai')).toBeNull();
+    expect(priceAt('nao-existe', 'assai')).toBeNull();
+  });
+
+  it('o item sem preço diz por quê; sem as ligações ou os produtos carregados, que não deu para conferir', () => {
+    expect(unpricedNote({ productId: 'sabao' }, true)).toBe('Ainda não aparece em nenhuma nota');
+    expect(unpricedNote({ productId: null }, true)).toBe('Item digitado livre: ainda não ligado a um produto com preço');
+    // Sem as ligações, "ainda não ligado" seria um palpite: o item pode ter produto e preço nas notas.
+    const semLigacoes = listStorePrices(list, quotes);
+    expect(semLigacoes('l', 'assai')).toBeNull();
+    expect(unpricedNote({ productId: null }, false)).toBe('Não deu para conferir se este item já tem preço');
+    expect(unpricedNote({ productId: 'leite-generico' }, false)).toBe('Não deu para conferir se este item já tem preço');
+  });
+
+  it('é a resposta que a estimativa usa com o mercado escolhido', () => {
+    for (const storeId of ['assai', 'dia', 'novo']) {
+      const estimate = estimateList(list, quotes, { links, storeId });
+      for (const { id } of list) {
+        const answer = priceAt(id, storeId);
+        const cost = estimate.byItem.get(id);
+        expect(Boolean(answer)).toBe(Boolean(cost));
+        if (answer && cost) expect({ ...answer, last: cost.last, lowest: cost.lowest }).toEqual({ ...cost, source: answer.source });
+      }
+    }
+  });
+});
+
 describe('a lista e "Onde comprar" dão o mesmo total', () => {
+  type Sources = { links?: LinkIndex; products?: { id: string; name: string }[] };
+
+  /** A conta como a tela "Onde comprar" a chama (onde-comprar.tsx): só o que falta comprar, com a resposta de listStorePrices. */
+  const whereToBuy = (list: EstimateItem[], quotes: EstimatePrice[], sources: Sources, maxStores = 1) => {
+    const pending = list.filter((i) => !i.inCart);
+    return recommendStores(
+      pending.map((i) => ({ key: i.id, productId: i.productId, quantity: i.quantity, unit: i.unit })),
+      quotes,
+      maxStores,
+      { storeIndex: storePriceIndex(quotes), priceAt: listStorePrices(pending, quotes, sources) },
+    );
+  };
+
+  /** Em cada mercado, o plano de um mercado só bate com a estimativa da lista com ele escolhido: total, itens e avisos. */
+  function expectSameAccount(list: EstimateItem[], quotes: EstimatePrice[], sources: Sources, storeIds: string[]) {
+    const pending = list.filter((i) => !i.inCart);
+    const recommendation = whereToBuy(list, quotes, sources);
+    const ranked = new Set(estimateList(pending, quotes, sources).stores.map((s) => s.storeId));
+    const estimates = new Map(storeIds.map((storeId) => [storeId, estimateList(list, quotes, { ...sources, storeId })]));
+    for (const [storeId, estimate] of estimates) {
+      const plan = recommendation.plans.find((p) => p.storeIds[0] === storeId);
+      // Entram no ranking os mercados com preço de nota para algum item: os mesmos que a lista oferece para escolher.
+      expect(Boolean(plan)).toBe(ranked.has(storeId));
+      if (!plan) continue;
+      expect(plan.total).toBe(estimate.pendingTotal);
+      expect(plan.assignments.map((a) => [a.itemKey, a.cost, a.kind, a.approximateQuantity])).toEqual(
+        pending.flatMap((i) => {
+          const cost = estimate.byItem.get(i.id);
+          return cost ? [[i.id, cost.cost, cost.kind, cost.approximateQuantity]] : [];
+        }),
+      );
+    }
+    expect(recommendation.unpricedKeys).toEqual(pending.filter((i) => !estimates.get(storeIds[0])!.byItem.has(i.id)).map((i) => i.id));
+
+    // Dividindo entre dois mercados, cada item sai pelo preço da estimativa no mercado em que ficou: o menor dos dois.
+    for (const plan of whereToBuy(list, quotes, sources, 2).plans) {
+      for (const a of plan.assignments) {
+        const costs = plan.storeIds.map((storeId) => estimates.get(storeId)!.byItem.get(a.itemKey)!.cost);
+        expect(a.cost).toBe(Math.min(...costs));
+        expect(a.cost).toBe(estimates.get(a.storeId)!.byItem.get(a.itemKey)!.cost);
+      }
+    }
+    return { recommendation, estimates };
+  }
+
   it('para a mesma lista e o mesmo mercado', () => {
     const links = new LinkIndex([{ name_key: 'refrigerante', product_id: 'coca' }]);
     const products = [{ id: 'pao', name: 'Pão francês' }];
@@ -284,22 +406,150 @@ describe('a lista e "Onde comprar" dão o mesmo total', () => {
       price('sabao', 'dia', 20),
     ];
     const pending = list.filter((i) => !i.inCart);
-    const resolved = resolveListProducts(pending, quotes, { links, products });
-    const recommendation = recommendStores(
-      pending.map((i) => ({ key: i.id, productId: resolved.get(i.id) ?? i.productId, quantity: i.quantity, unit: i.unit })),
-      quotes,
-      1,
-      { storeIndex: storePriceIndex(quotes) },
-    );
+    const { recommendation, estimates } = expectSameAccount(list, quotes, { links, products }, ['assai', 'dia']);
     expect(recommendation.unpricedKeys).toEqual(['x']);
-    for (const storeId of ['assai', 'dia']) {
-      const estimate = estimateList(list, quotes, { links, products, storeId });
+    for (const [storeId, estimate] of estimates) {
       const plan = recommendation.plans.find((p) => p.storeIds[0] === storeId)!;
-      expect(plan.total).toBe(estimate.pendingTotal);
       expect(plan.estimatedCount).toBe(pending.filter((i) => estimate.byItem.get(i.id)?.kind === 'estimated').length);
     }
     // E não é um total trivial: há item de nota, item estimado e item convertido.
-    expect(estimateList(list, quotes, { links, products, storeId: 'assai' })).toMatchObject({ pricedCount: 6, estimatedCount: 2 });
+    expect(estimates.get('assai')).toMatchObject({ pricedCount: 6, estimatedCount: 2 });
+  });
+
+  it('duas marcas ligadas ao mesmo nome: cada mercado com a que a casa compra lá', () => {
+    const links = new LinkIndex([
+      { name_key: 'leite', product_id: 'italac' },
+      { name_key: 'leite', product_id: 'piracanjuba' },
+    ]);
+    const list = [item('l', 'Leite', null, 12), item('a', 'Arroz', 'arroz')];
+    const quotes = [
+      price('italac', 'assai', 4.59, '2026-10-05T12:00:00Z'),
+      price('piracanjuba', 'dia', 5.29, '2026-09-20T12:00:00Z'),
+      price('arroz', 'assai', 20),
+      price('arroz', 'dia', 22),
+    ];
+    const { recommendation, estimates } = expectSameAccount(list, quotes, { links }, ['assai', 'dia']);
+    // No Dia vale o Piracanjuba de lá (12 x 5,29), não o Italac estimado pelo nível de preço.
+    expect(estimates.get('dia')!.pendingTotal).toBe(85.48);
+    expect(estimates.get('assai')!.pendingTotal).toBe(75.08);
+    expect(recommendation.plans.map((p) => [p.storeIds[0], p.total, p.knownCount, p.estimatedCount])).toEqual([
+      ['assai', 75.08, 2, 0],
+      ['dia', 85.48, 2, 0],
+    ]);
+  });
+
+  it('refrigerante de 2 L num mercado e lata no outro', () => {
+    const links = new LinkIndex([
+      { name_key: 'refrigerante', product_id: 'coca2l' },
+      { name_key: 'refrigerante', product_id: 'lata' },
+    ]);
+    const list = [item('r', 'Refrigerante', null, 2), item('a', 'Arroz', 'arroz')];
+    const quotes = [
+      price('coca2l', 'assai', 9.99, '2026-10-05T12:00:00Z'),
+      price('lata', 'dia', 2.99, '2026-09-01T12:00:00Z'),
+      price('arroz', 'assai', 20),
+      price('arroz', 'dia', 22),
+    ];
+    const { recommendation } = expectSameAccount(list, quotes, { links }, ['assai', 'dia']);
+    expect(recommendation.plans.map((p) => [p.storeIds[0], p.total])).toEqual([
+      ['dia', 27.98],
+      ['assai', 39.98],
+    ]);
+  });
+
+  it('o mesmo produto por unidade num mercado e por kg em outro', () => {
+    const list = [item('b', 'Banana', 'banana', 6), item('p', 'Presunto', 'presunto', 200, 'g')];
+    const quotes = [
+      price('banana', 'a', 0.9, '2026-10-01T12:00:00Z'),
+      price('banana', 'b', 6, '2026-10-02T12:00:00Z', 'kg'),
+      price('banana', 'c', 6.5, '2026-10-03T12:00:00Z', 'kg'),
+      price('presunto', 'a', 59.9, '2026-10-01T12:00:00Z', 'kg'),
+      price('presunto', 'b', 4.99, '2026-10-02T12:00:00Z'),
+      price('presunto', 'c', 5.49, '2026-10-03T12:00:00Z'),
+    ];
+    const { recommendation } = expectSameAccount(list, quotes, {}, ['a', 'b', 'c']);
+    // Os três mercados entram no ranking, cada um com o preço dele: 6 un a 0,90 e 200 g a 59,90/kg no A; 1 kg e 1 un nos outros.
+    expect(recommendation.plans.map((p) => [p.storeIds[0], p.total])).toEqual([
+      ['b', 10.99],
+      ['c', 11.99],
+      ['a', 17.38],
+    ]);
+    expect(recommendation.plans[0].assignments.map((a) => a.approximateQuantity)).toEqual([true, true]);
+    expect(recommendation.plans[2].assignments.map((a) => a.approximateQuantity)).toEqual([false, false]);
+  });
+
+  it('em centenas de listas sorteadas, em todos os mercados', () => {
+    // Sorteio com semente (mulberry32): as mesmas listas a cada rodada.
+    let state = 20261012;
+    const random = () => {
+      state = (state + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(state ^ (state >>> 15), state | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const int = (min: number, max: number) => min + Math.floor(random() * (max - min + 1));
+    const pick = <T,>(values: readonly T[]) => values[int(0, values.length - 1)];
+    const chance = (p: number) => random() < p;
+
+    const NAMES = ['Leite', 'Refrigerante', 'Café', 'Sabão em pó', 'Queijo'];
+    const UNITS = ['un', 'un', 'un', 'kg', 'g', 'l', 'ml'];
+    const seen = { plans: 0, estimated: 0, otherProduct: 0, otherUnit: 0, approximate: 0, unpriced: 0, split: 0 };
+    for (let round = 0; round < 400; round++) {
+      const stores = ['a', 'b', 'c', 'd'].slice(0, int(2, 4));
+      // Dez produtos, cada um com a unidade em que costuma ser vendido; os dois últimos nunca têm preço.
+      const catalog = Array.from({ length: 10 }, (_, n) => ({ id: `p${n}`, name: `Produto ${n}`, unit: pick(['un', 'un', 'kg', 'l']) }));
+      const quotes: EstimatePrice[] = [];
+      for (const product of catalog.slice(0, 8)) {
+        for (const storeId of stores) {
+          // Alguns mercados não têm o produto; alguns o vendem em outra unidade; brinde sai a zero.
+          if (chance(0.4)) continue;
+          const unit = chance(0.2) ? pick(['un', 'kg', 'g', 'l']) : product.unit;
+          const unitPrice = chance(0.04) ? 0 : int(100, 6000) / 100;
+          const day = `2026-${pick(['08', '09', '10'])}-${String(int(1, 28)).padStart(2, '0')}`;
+          quotes.push(price(product.id, storeId, unitPrice, `${day}T12:00:00Z`, unit));
+        }
+      }
+      // Nomes digitados soltos, ligados a um ou dois produtos pelas notas.
+      const links = new LinkIndex(
+        NAMES.flatMap((name) =>
+          [...new Set([int(0, 9), ...(chance(0.6) ? [int(0, 9)] : [])])].map((n) => ({ name_key: listNameKey(name), product_id: `p${n}` })),
+        ),
+      );
+      const list = Array.from({ length: int(2, 8) }, (_, n) => {
+        const product = pick(catalog);
+        const kind = random();
+        // Produto próprio; nome solto com ligações (às vezes com um produto sem preço); nome igual ao de um produto; nome que ninguém conhece.
+        const [name, productId] =
+          kind < 0.45
+            ? [product.name, product.id]
+            : kind < 0.8
+              ? [pick(NAMES), chance(0.2) ? 'p9' : null]
+              : kind < 0.92
+                ? [product.name.toUpperCase(), null]
+                : ['Carregador', null];
+        const unit = chance(0.6) ? product.unit : pick(UNITS);
+        const quantity = unit === 'g' || unit === 'ml' ? int(1, 18) * 50 : unit === 'un' ? int(1, 12) : int(1, 6) / 2;
+        return item(`i${n}`, name, productId, quantity, unit, chance(0.15));
+      });
+      const sources = { links, products: catalog.map(({ id, name }) => ({ id, name })) };
+
+      const { recommendation, estimates } = expectSameAccount(list, quotes, sources, stores);
+      seen.plans += recommendation.plans.length;
+      seen.unpriced += recommendation.unpricedKeys.length;
+      seen.split += whereToBuy(list, quotes, sources, 2).plans.filter((p) => p.storeIds.length === 2).length;
+      for (const plan of recommendation.plans) {
+        for (const a of plan.assignments) {
+          const cost = estimates.get(plan.storeIds[0])!.byItem.get(a.itemKey)!;
+          if (a.kind === 'estimated') seen.estimated += 1;
+          if (a.approximateQuantity) seen.approximate += 1;
+          if (cost.used && cost.used.productId !== cost.productId) seen.otherProduct += 1;
+          if (cost.used && cost.used.productId === cost.productId && cost.used.unit !== cost.last.unit) seen.otherUnit += 1;
+        }
+      }
+    }
+    // O sorteio passou por todos os caminhos da conta, muitas vezes.
+    expect(seen.plans).toBeGreaterThan(800);
+    for (const count of Object.values(seen)) expect(count).toBeGreaterThan(40);
   });
 });
 
@@ -399,8 +649,8 @@ describe('pantryHits', () => {
     expect([...pantryHits(list, pantry, { links, today }).keys()]).toEqual(['c', 'a', 'o']);
     // Pelo produto da entrada (café), pelo nome (arroz); o óleo não passou do costume e fica.
     const ranOut = [
-      { name: 'Café Pilão 500g', productId: 'pilao' },
-      { name: 'Arroz', productId: null },
+      { name: 'Café Pilão 500g', productId: 'pilao', lastAt: '2026-10-01T12:00:00' },
+      { name: 'Arroz', productId: null, lastAt: '2026-10-01T12:00:00' },
     ];
     expect([...pantryHits(list, pantry, { links, today, ranOut }).keys()]).toEqual(['o']);
   });
@@ -415,15 +665,92 @@ describe('pantryHits', () => {
       at: `${day}T12:00:00`,
       source: 'receipt',
     });
-    const ranOut = restockSuggestions(['2026-09-08', '2026-09-18', '2026-09-28'].map(bought), {
+    const ranOut = ranOutItems(['2026-09-08', '2026-09-18', '2026-09-28'].map(bought), {
       now: new Date(`${today}T23:59:59.999`),
       listKind: 'mercado',
-      limit: Number.POSITIVE_INFINITY,
     });
     expect(ranOut.map((r) => r.name)).toEqual(['Café Pilão 500g']);
     const pantry = [stock('Café Pilão 500g', 'pilao', { purchased_on: '2026-09-28', expires_on: '2027-03-27' })];
     expect(pantryHits([item('c', 'Café Pilão 500g', 'pilao')], pantry, { today }).size).toBe(1);
     expect(pantryHits([item('c', 'Café Pilão 500g', 'pilao')], pantry, { today, ranOut }).size).toBe(0);
+  });
+
+  const purchase = (name: string, productId: string | null, day: string, source: PurchaseRecord['source']): PurchaseRecord => ({
+    name,
+    category: 'mercearia',
+    productId,
+    quantity: 1,
+    unit: 'un',
+    at: `${day}T12:00:00`,
+    source,
+  });
+  const endOf = (day: string) => new Date(`${day}T23:59:59.999`);
+
+  it('entrada mais nova que a última compra conhecida é estoque novo: café posto na despensa à mão', () => {
+    // Café nas notas de 8, 18 e 28 set: a cada 10 dias, última há 14. Acabou.
+    const ranOut = ranOutItems(['2026-09-08', '2026-09-18', '2026-09-28'].map((day) => purchase('Café Pilão 500g', 'pilao', day, 'receipt')), {
+      now: endOf(today),
+      listKind: 'mercado',
+    });
+    expect(ranOut.map((r) => [r.name, r.everyDays, r.daysSince])).toEqual([['Café Pilão 500g', 10, 14]]);
+    const list = [item('c', 'Café Pilão 500g', 'pilao')];
+    const old = stock('Café Pilão 500g', 'pilao', { purchased_on: '2026-09-28' });
+    expect(pantryHits(list, [old], { today, ranOut }).size).toBe(0);
+    // Em 11 out alguém pôs café na despensa: só essa entrada conta (a de 28 set é a compra que acabou).
+    const fresh = stock('Café Pilão 500g', 'pilao', { purchased_on: '2026-10-11', quantity: 2 });
+    expect(pantryHits(list, [old, fresh], { today, ranOut }).get('c')).toEqual({
+      name: 'Café Pilão 500g',
+      quantity: 2,
+      unit: 'un',
+      since: '2026-10-11',
+      expiresOn: null,
+    });
+  });
+
+  it('entrada mais nova que a última compra conhecida é estoque novo: nota lida sem marcar a lista', () => {
+    // "Leite" marcado na lista em 12 set, 22 set e 2 out: a cada 10 dias, última há 10. Acabou, pelo nome.
+    const ranOut = ranOutItems(['2026-09-12', '2026-09-22', '2026-10-02'].map((day) => purchase('Leite', null, day, 'list')), {
+      now: endOf(today),
+      listKind: 'mercado',
+    });
+    expect(ranOut.map((r) => [r.name, r.everyDays, r.daysSince])).toEqual([['Leite', 10, 10]]);
+    const links = new LinkIndex([{ name_key: 'leite', product_id: 'italac' }]);
+    const list = [item('l', 'Leite', null)];
+    // A nota de 10 out pôs 12 caixas de Italac na despensa.
+    const fromReceipt = stock('Leite Integral Italac 1L', 'italac', { quantity: 12, purchased_on: '2026-10-10' });
+    expect(pantryHits(list, [fromReceipt], { links, today, ranOut }).get('l')).toMatchObject({
+      name: 'Leite Integral Italac 1L',
+      quantity: 12,
+      since: '2026-10-10',
+    });
+    // A entrada do dia da última compra conhecida (ou de antes) é a que acabou.
+    const sameDay = stock('Leite Integral Italac 1L', 'italac', { quantity: 12, purchased_on: '2026-10-02' });
+    expect(pantryHits(list, [sameDay], { links, today, ranOut }).size).toBe(0);
+    expect(pantryHits(list, [sameDay, stock('Leite', null, { purchased_on: '2026-09-22' })], { links, today, ranOut }).size).toBe(0);
+  });
+
+  it('o que passou muito do costume continua fora: o selo não volta depois de 3 vezes o intervalo', () => {
+    const records = ['2026-09-08', '2026-09-18', '2026-09-28'].map((day) => purchase('Café Pilão 500g', 'pilao', day, 'receipt'));
+    const pantry = [stock('Café Pilão 500g', 'pilao', { purchased_on: '2026-09-28', expires_on: '2027-03-27' })];
+    const list = [item('c', 'Café Pilão 500g', 'pilao')];
+    // 14, 30, 31, 48 e 114 dias depois da última compra (o costume é a cada 10).
+    for (const day of ['2026-10-12', '2026-10-28', '2026-10-29', '2026-11-15', '2027-01-20']) {
+      const ranOut = ranOutItems(records, { now: endOf(day), listKind: 'mercado' });
+      expect(pantryHits(list, pantry, { today: day, ranOut }).size).toBe(0);
+    }
+    // A faixa "Acho que acabou" é sugestão e continua desistindo depois de 3 vezes o intervalo.
+    expect(restockSuggestions(records, { now: endOf('2026-10-28'), listKind: 'mercado' }).map((r) => r.name)).toEqual(['Café Pilão 500g']);
+    expect(restockSuggestions(records, { now: endOf('2026-10-29'), listKind: 'mercado' })).toEqual([]);
+  });
+
+  it('o limite é o histórico: quando a mais antiga das três compras sai dos 180 dias, o app não tem mais o costume', () => {
+    const records = ['2026-09-08', '2026-09-18', '2026-09-28'].map((day) => purchase('Café Pilão 500g', 'pilao', day, 'receipt'));
+    const pantry = [stock('Café Pilão 500g', 'pilao', { purchased_on: '2026-09-28', expires_on: '2027-03-27' })];
+    const list = [item('c', 'Café Pilão 500g', 'pilao')];
+    const hits = (day: string) => pantryHits(list, pantry, { today: day, ranOut: ranOutItems(records, { now: endOf(day), listKind: 'mercado' }) });
+    // 1 mar 2027: a compra de 8 set ainda está no histórico (174 dias). 20 mar: só restam duas, e duas compras não dizem o costume.
+    expect(hits('2027-03-01').size).toBe(0);
+    expect(hits('2027-03-20').size).toBe(1);
   });
 });
 

@@ -3,13 +3,14 @@ import { useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { useLatestPrices, useListItems, useListLinks, useProducts, useStores } from '@/data/market';
-import { resolveListProducts } from '@/domain/listEstimate';
+import { formatItemCost, listStorePrices, storePriceNote, unpricedNote } from '@/domain/listEstimate';
 import { formatBRL, formatQuantity } from '@/domain/money';
 import { storePriceIndex } from '@/domain/priceLevel';
 import { recommendStores, type StorePlan } from '@/domain/recommendation';
 import type { ShoppingListItem } from '@/lib/types';
 import {
   Badge,
+  Button,
   Card,
   CategoryIcon,
   EmptyState,
@@ -38,9 +39,9 @@ export default function WhereToBuyScreen() {
   const [mode, setMode] = useState<Mode>('1');
 
   const pending = useMemo(() => (items.data ?? []).filter((i) => !i.checked_at), [items.data]);
-  // A mesma conta da estimativa na tela da lista (domain/listEstimate): o mesmo produto por item (item digitado
-  // solto ganha preço pelas ligações das notas) e o mesmo nível de preço, com todos os preços da casa.
-  const recommendation = useMemo(() => {
+  // A mesma conta da estimativa na tela da lista: o preço de cada item em cada mercado vem de lá
+  // (domain/listEstimate, listStorePrices), com todos os preços da casa. Dele saem os totais e cada linha.
+  const account = useMemo(() => {
     const quotes = (prices.data ?? []).map((p) => ({
       productId: p.product_id,
       storeId: p.store_id,
@@ -49,20 +50,32 @@ export default function WhereToBuyScreen() {
       purchasedAt: p.purchased_at,
     }));
     const wanted = pending.map((i) => ({ id: i.id, name: i.name, productId: i.product_id, quantity: Number(i.quantity), unit: i.unit }));
-    const resolved = resolveListProducts(wanted, quotes, { links: links.data, products: products.data ?? [] });
-    return recommendStores(
-      wanted.map((i) => ({ key: i.id, productId: resolved.get(i.id) ?? i.productId, quantity: i.quantity, unit: i.unit })),
+    return {
       quotes,
-      Number(mode),
-      { storeIndex: storePriceIndex(quotes) },
-    );
-  }, [pending, prices.data, links.data, products.data, mode]);
+      wanted: wanted.map((i) => ({ key: i.id, productId: i.productId, quantity: i.quantity, unit: i.unit })),
+      priceAt: listStorePrices(wanted, quotes, { links: links.data, products: products.data ?? [] }),
+      storeIndex: storePriceIndex(quotes),
+    };
+  }, [pending, prices.data, links.data, products.data]);
+  const recommendation = useMemo(
+    () => recommendStores(account.wanted, account.quotes, Number(mode), { storeIndex: account.storeIndex, priceAt: account.priceAt }),
+    [account, mode],
+  );
 
-  if (items.isPending || prices.isPending || stores.isPending) return <Loading label="Comparando preços…" />;
+  // As ligações e os produtos dão preço ao item digitado solto: sem esperar por eles, o total sairia sem esses
+  // itens e mudaria logo depois. Busca parada (sem internet) não segura a tela: cai no aviso de que não carregou.
+  const onTheWay = (query: { isPending: boolean; fetchStatus: string }) => query.isPending && query.fetchStatus !== 'paused';
+  if (items.isPending || prices.isPending || stores.isPending || onTheWay(links) || onTheWay(products)) {
+    return <Loading label="Comparando preços…" />;
+  }
   const error = items.error ?? prices.error ?? stores.error;
   if (error) return <ErrorNotice error={error} onRetry={() => [items, prices, stores].forEach((q) => q.refetch())} />;
+  // Se não chegaram (a busca falhou, ou sem internet e nunca vistos neste aparelho), item sem preço pode ser só
+  // item que não deu para conferir: a tela diz isso e oferece tentar de novo.
+  const sourcesLoaded = links.data !== undefined && products.data !== undefined;
 
   const storeName = (storeId: string) => stores.data?.find((s) => s.id === storeId)?.name ?? 'Mercado';
+  const productName = (productId: string) => products.data?.find((p) => p.id === productId)?.name;
   const itemByKey = new Map(pending.map((i) => [i.id, i]));
   const best = recommendation.plans[0];
   const singlePlans = recommendation.plans.filter((p) => p.storeIds.length === 1);
@@ -103,22 +116,17 @@ export default function WhereToBuyScreen() {
                 <ListCard>
                   {assignments.map((a) => {
                     const item = itemByKey.get(a.itemKey)!;
+                    // O custo e a nota da linha saem da mesma resposta que entrou no total.
+                    const price = account.priceAt(a.itemKey, a.storeId)!;
                     return (
                       <ListRow
                         key={a.itemKey}
                         left={<CategoryIcon category={item.category} name={item.name} size={36} />}
                         title={item.name}
-                        subtitle={
-                          a.kind === 'estimated'
-                            ? 'Estimado pelo nível de preço do mercado'
-                            : a.approximateQuantity
-                              ? 'Preço por unidade da nota (quantidade em outra unidade)'
-                              : formatQuantity(item.quantity, item.unit)
-                        }
+                        subtitle={storePriceNote(price, productName) ?? formatQuantity(item.quantity, item.unit)}
                         right={
-                          <Text variant="label" color={a.kind === 'estimated' ? 'textMuted' : 'text'}>
-                            {a.kind === 'estimated' ? '~' : ''}
-                            {formatBRL(a.cost)}
+                          <Text variant="label" color={price.kind === 'estimated' ? 'textMuted' : 'text'}>
+                            {formatItemCost(price)}
                           </Text>
                         }
                       />
@@ -159,11 +167,24 @@ export default function WhereToBuyScreen() {
                 key={item.id}
                 left={<CategoryIcon category={item.category} name={item.name} size={36} />}
                 title={item.name}
-                subtitle={item.product_id ? 'Ainda não aparece em nenhuma nota' : 'Item digitado livre: ainda não ligado a um produto com preço'}
+                subtitle={unpricedNote({ productId: item.product_id }, sourcesLoaded)}
               />
             ))}
           </ListCard>
           <Text variant="small">Esses itens ficam fora dos totais.</Text>
+          {!sourcesLoaded ? (
+            <>
+              <Text variant="small">
+                Não deu para carregar os produtos que as notas já ligaram aos itens da lista. Com eles, estes itens podem ter preço.
+              </Text>
+              <Button
+                title="Tentar de novo"
+                variant="secondary"
+                compact
+                onPress={() => [links, products].forEach((q) => void q.refetch())}
+              />
+            </>
+          ) : null}
         </Section>
       ) : null}
     </Screen>

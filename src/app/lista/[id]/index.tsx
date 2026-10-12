@@ -42,7 +42,7 @@ import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { todayISO } from '@/domain/dates';
 import { parseDecimal } from '@/domain/money';
 import { recentPurchases, type RecentItem } from '@/domain/recentPurchases';
-import { restockSuggestions } from '@/domain/restock';
+import { ranOutItems, restockFrom } from '@/domain/restock';
 import { guessCategory, normalizeSearch } from '@/domain/search';
 import { CartPantryModal } from '@/features/CartPantryModal';
 import { CommonItemsPicker } from '@/features/CommonItemsPicker';
@@ -274,28 +274,35 @@ export default function ShoppingListScreen() {
   }
 
 
+  const listKind = list.data?.kind;
+  const today = todayISO();
+  // O que já passou do intervalo de costume: a leitura do histórico inteiro, que não depende da lista. Só refaz
+  // quando o histórico ou o dia mudam; a faixa "Acho que acabou" e o selo "Na despensa" partem do resultado,
+  // sem ler tudo de novo a cada item posto no carrinho.
+  const ranOut = useMemo(
+    // Fim do dia de hoje: entram as compras de qualquer hora, e o dia novo refaz.
+    () => (listKind ? ranOutItems(purchases.data ?? [], { now: new Date(`${today}T23:59:59.999`), listKind }) : []),
+    [purchases.data, listKind, today],
+  );
+
   // Do histórico, menos o que já está na lista (a comprar ou no carrinho); o
   // que "acabou" não se repete em "comprados recentemente". O histórico pode
   // ter milhares de linhas: só refaz quando ele ou a lista mudam, não a cada
   // letra digitada no campo.
-  const listKind = list.data?.kind;
-  const today = todayISO();
   const strips = useMemo(() => {
     if (!listKind || !items.data) return { restock: [], recent: [] };
     const inList = {
       names: new Set([...items.data.map((i) => normalizeSearch(i.name)), ...justAdded.pending]),
       productIds: new Set(items.data.flatMap((i) => (i.product_id ? [i.product_id] : []))),
     };
-    // Fim do dia de hoje: entram as compras de qualquer hora, e o dia novo refaz.
-    const now = new Date(`${today}T23:59:59.999`);
-    const restock = restockSuggestions(purchases.data ?? [], { now, listKind, exclude: inList });
+    const restock = restockFrom(ranOut, { exclude: inList });
     const recent = recentPurchases(purchases.data ?? [], {
-      now,
+      now: new Date(`${today}T23:59:59.999`),
       listKind,
       exclude: { ...inList, names: new Set([...inList.names, ...restock.map((i) => normalizeSearch(i.name))]) },
     });
     return { restock, recent };
-  }, [purchases.data, items.data, listKind, justAdded.pending, today]);
+  }, [ranOut, purchases.data, items.data, listKind, justAdded.pending, today]);
 
   // O mercado escolhido só entra na conta com o nome dele carregado: enquanto os mercados não chegam (ou se
   // ele não está entre eles), a escolha fica guardada e a conta sai pelo último preço pago.
@@ -328,15 +335,8 @@ export default function ShoppingListScreen() {
       })),
       { links: links.data, products: products.data ?? [], storeId },
     );
-    // O que o app acha que acabou não é "na despensa": aqui sem tirar o que já está na lista (é dela que se
-    // trata) e sem o limite da faixa "Acho que acabou".
-    const ranOut = listKind
-      ? restockSuggestions(purchases.data ?? [], {
-          now: new Date(`${today}T23:59:59.999`),
-          listKind,
-          limit: Number.POSITIVE_INFINITY,
-        })
-      : [];
+    // O que o app acha que acabou não é "na despensa": tudo o que passou do costume (ranOut), sem tirar o que
+    // já está na lista (é dela que se trata) e sem os cortes da faixa "Acho que acabou".
     const inPantry = pantryHits(
       all.filter((i) => !i.checked_at).map((i) => ({ id: i.id, name: i.name, productId: i.product_id })),
       pantry.data ?? [],
@@ -348,7 +348,7 @@ export default function ShoppingListScreen() {
       if (cost || inPantry.has(i.id)) hints.set(i.id, { cost: cost ? formatItemCost(cost) : undefined, inPantry: inPantry.has(i.id) });
     }
     return { estimate, inPantry, hints };
-  }, [items.data, prices.data, links.data, products.data, pantry.data, purchases.data, listKind, storeId, today]);
+  }, [items.data, prices.data, links.data, products.data, pantry.data, ranOut, storeId, today]);
 
   // Na ordem dos corredores do mercado: frescos, despensa, bebidas, casa…
   // Urgentes no topo.
