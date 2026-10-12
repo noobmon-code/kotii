@@ -681,6 +681,26 @@ describe('examTrends', () => {
       exam('2026-09-05', [result('Leucócitos', '8.200', '/mm³')]),
     ]);
     expect(filled.series.map((s) => s.points.map((p) => valueLabel(p)))).toEqual([['7.500 /mm³', '8.200 /mm³']]);
+    // A contagem com a unidade junto do valor num laudo e no campo no outro é a mesma série.
+    const counts = examTrends([
+      exam('2026-03-12', [result('Linfócitos #', '2.250 /mm³')]),
+      exam('2026-09-05', [result('Linfócitos #', '2.100', '/mm³')]),
+    ]);
+    expect(counts.series.map((s) => [s.points.map((p) => valueLabel(p)), s.change])).toEqual([
+      [['2.250 /mm³', '2.100 /mm³'], 'desceu 150 (7%) desde 12/03/2026'],
+    ]);
+    // "#" sem unidade ao lado do mesmo item com unidade: à parte, e a linha avisa.
+    const loose = examTrends([exam('2026-03-12', [result('LYM#', '2,1')]), exam('2026-09-05', [result('LYM#', '1,9', '10³/µL')])]);
+    expect(loose.single.map((i) => [valueLabel(i.last), apartNote(i)])).toEqual([
+      ['1,9 10³/µL', null],
+      ['2,1', 'Há um resultado mais recente com unidade: 1,9 10³/µL em 05/09/2026. Não foi comparado.'],
+    ]);
+    // "Neutrófilos" e "Neutrófilos #", os dois sem unidade: os nomes já dizem, sem aviso.
+    expect([...apart.series, ...apart.single].map((i) => [i.name, apartNote(i)])).toEqual([
+      ['Neutrófilos #', null],
+      ['Neutrófilos %', null],
+      ['Neutrófilos', 'Há um resultado mais recente com unidade: 60% em 05/09/2026. Não foi comparado.'],
+    ]);
     // Texto não ganha "%" do nome.
     expect(examTrends([exam('2026-03-12', [result('LYM%', 'aumentado')])]).text.map((i) => valueLabel(i.last))).toEqual(['aumentado']);
   });
@@ -787,7 +807,76 @@ describe('examTrends', () => {
     ]);
   });
 
-  it('o aviso de outra unidade não cruza materiais, exames de nome genérico nem resultados em texto', () => {
+  it('título que junta exames não vale como material: a série do sangue continua', () => {
+    for (const title of ['Hemograma + EAS', 'Sangue e urina', 'Exames de rotina (sangue e urina)', 'Hemograma, EAS e parasitológico de fezes']) {
+      const trends = examTrends([
+        exam('2026-01-10', [result('Hemoglobina', '13,1', 'g/dL'), result('Glicose', '92', 'mg/dL')], { title: 'Exames de rotina' }),
+        exam(
+          '2026-09-05',
+          [result('Hemoglobina', '12,2', 'g/dL', 'baixo'), result('Glicose', '99', 'mg/dL'), result('Densidade urinária', '1,020')],
+          { title },
+        ),
+      ]);
+      expect([title, trends.series.map((s) => [s.name, s.change, apartNote(s)])]).toEqual([
+        title,
+        [
+          ['Hemoglobina', 'desceu 0,9 (7%) desde 10/01/2026', null],
+          ['Glicose', 'subiu 7 (8%) desde 10/01/2026', null],
+        ],
+      ]);
+      // O que o próprio nome diz que é de urina continua à parte.
+      expect(trends.single.map((i) => [i.name, i.material])).toEqual([['Densidade urinária', 'urina']]);
+    }
+  });
+
+  it('o mesmo nome em outro material fica à parte, e a linha avisa', () => {
+    const trends = examTrends([
+      exam('2026-01-10', [result('Densidade', '1,015'), result('pH', '6,0')], { title: 'Exames de rotina' }),
+      exam('2026-09-05', [result('Densidade', '1,020'), result('pH', '5,5')], { title: 'EAS' }),
+      exam('2026-09-06', [result('Densidade', '1,010')], { title: 'Urina de 24h' }),
+    ]);
+    expect(trends.series).toEqual([]);
+    expect(trends.single.map((i) => [i.name, i.last.value, i.last.examTitle, apartNote(i)])).toEqual([
+      ['Densidade', '1,010', 'Urina de 24h', 'Exame de urina de 24 horas: não foi comparado com os resultados de mesmo nome de outros exames.'],
+      ['Densidade', '1,020', 'EAS', 'Exame de urina: não foi comparado com os resultados de mesmo nome de outros exames.'],
+      ['pH', '5,5', 'EAS', 'Exame de urina: não foi comparado com os resultados de mesmo nome de outros exames.'],
+      ['Densidade', '1,015', 'Exames de rotina', 'Não foi comparado com os resultados de mesmo nome dos exames de urina e urina de 24 horas.'],
+      ['pH', '6,0', 'Exames de rotina', 'Não foi comparado com os resultados de mesmo nome dos exames de urina.'],
+    ]);
+    // Nome diferente já diz que é outra coisa: sem aviso.
+    const named = examTrends([
+      exam('2026-01-10', [result('Creatinina', '0,9', 'mg/dL'), result('Creatinina urinária', '120', 'mg/dL')], { title: 'Rotina' }),
+    ]);
+    expect(named.single.map((i) => [i.name, apartNote(i)])).toEqual([
+      ['Creatinina', null],
+      ['Creatinina urinária', null],
+    ]);
+    // A urina de 24 horas junta pelo nome do resultado ou pelo título, com ou sem "urina" escrito.
+    const day = examTrends([
+      exam('2026-01-10', [result('Proteinúria 24h', '120', 'mg/24h')], { title: 'Rotina' }),
+      exam('2026-09-05', [result('Proteinúria 24h', '150', 'mg/24h')], { title: 'Urina 24h' }),
+    ]);
+    expect(day.series.map((s) => [s.points.map((p) => p.value), apartNote(s)])).toEqual([[['120', '150'], null]]);
+  });
+
+  it('percentual e contagem do diferencial não são o mesmo item em outra unidade', () => {
+    const differential = examTrends([
+      exam('2026-03-12', [result('Neutrófilos', '55', '%'), result('Neutrófilos', '4.125', '/mm³', 'alto')]),
+      exam('2026-09-05', [result('Neutrófilos', '60', '%')]),
+    ]);
+    expect(differential.series.map((s) => [valueLabel(s.last), apartNote(s)])).toEqual([['60%', null]]);
+    expect(differential.single.map((i) => [valueLabel(i.last), i.newerElsewhere, i.otherUnits, apartNote(i)])).toEqual([
+      ['4.125 /mm³', null, [], null],
+    ]);
+    // Sem unidade ao lado do percentual continua avisando.
+    const bare = examTrends([exam('2026-03-12', [result('Hematócrito', '42')]), exam('2026-09-05', [result('Hematócrito', '41', '%')])]);
+    expect(bare.single.map((i) => [valueLabel(i.last), apartNote(i)])).toEqual([
+      ['41%', null],
+      ['42', 'Há um resultado mais recente com unidade: 41% em 05/09/2026. Não foi comparado.'],
+    ]);
+  });
+
+  it('o aviso de outra unidade não cruza materiais (aí o aviso é o do material), exames de nome genérico nem resultados em texto', () => {
     const trends = examTrends([
       exam('2026-01-10', [result('Creatinina', '0,9', 'mg/dL'), result('Resultado', '5', 'mg/dL'), result('HIV', 'Não reagente')], { title: 'Sangue' }),
       exam('2026-09-05', [result('Creatinina', '120'), result('Resultado', '7')], { title: 'Urina tipo 1' }),
@@ -795,9 +884,9 @@ describe('examTrends', () => {
     ]);
     expect([...trends.series, ...trends.single, ...trends.text].map((i) => [i.name, valueLabel(i.last), i.newerElsewhere, apartNote(i)])).toEqual([
       ['HIV', '0,1', null, null],
-      ['Creatinina', '120', null, null],
+      ['Creatinina', '120', null, 'Exame de urina: não foi comparado com os resultados de mesmo nome de outros exames.'],
       ['Urina tipo 1: Resultado', '7', null, null],
-      ['Creatinina', '0,9 mg/dL', null, null],
+      ['Creatinina', '0,9 mg/dL', null, 'Não foi comparado com os resultados de mesmo nome dos exames de urina.'],
       ['Sangue: Resultado', '5 mg/dL', null, null],
       ['HIV', 'Não reagente', null, null],
     ]);
@@ -1007,12 +1096,40 @@ describe('visitSummary', () => {
     expect(body(text)).toBe(
       [
         'Últimos resultados:',
-        '- Densidade: 1.020 em 08/10/2026',
         '- Nitrito: Negativo em 08/10/2026',
+        '- Densidade: 1.020 em 08/10/2026',
         '- Ferritina: 85,4 ng/mL em 05/10/2026',
         '- TSH: 2,1 µUI/mL em 05/10/2026',
         '- Sódio: 140 mEq/L em 08/09/2026',
         '- Vitamina B12: 180 pg/mL em 12/03/2019 (marcado no laudo: abaixo)',
+      ].join('\n'),
+    );
+  });
+
+  it('"Últimos resultados" segue a ordem do laudo na mesma data, com itens novos e em texto no lugar deles', () => {
+    const text = visitSummary(
+      person(),
+      [
+        exam('2026-03-12', [result('Hemácias', '4,5', 'milhões/mm³'), result('Hemoglobina', '13,5', 'g/dL'), result('Hematócrito', '41', '%')]),
+        exam('2026-09-05', [
+          result('Hemácias', '4,6', 'milhões/mm³'),
+          result('Eritroblastos', '0', '%'),
+          result('Hemoglobina', '13,8', 'g/dL'),
+          result('Bastonetes', 'Ausentes'),
+          result('Hematócrito', '42', '%'),
+        ]),
+      ],
+      [],
+      today,
+    );
+    expect(body(text).split('\n\n')[0]).toBe(
+      [
+        'Últimos resultados:',
+        '- Hemácias: 4,6 milhões/mm³ em 05/09/2026',
+        '- Eritroblastos: 0% em 05/09/2026',
+        '- Hemoglobina: 13,8 g/dL em 05/09/2026',
+        '- Bastonetes: Ausentes em 05/09/2026',
+        '- Hematócrito: 42% em 05/09/2026',
       ].join('\n'),
     );
   });

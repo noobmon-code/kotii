@@ -244,6 +244,12 @@ export interface TrendItem {
   newerElsewhere: TrendPoint | null;
   /** Unidades, como escritas, dos outros grupos do mesmo item (ver apartNote). */
   otherUnits: string[];
+  /** De que material é, quando o nome ou o título do exame diz ("urina", "24h", "fezes", "liquor"); "" sem isso. */
+  material: string;
+  /** Só nos numéricos: os materiais dos outros itens de mesmo nome ("" é quem não diz o material). */
+  otherMaterials: string[];
+  /** Onde o último resultado está: a ordem do exame e a do resultado dentro do laudo. */
+  order: [number, number];
 }
 
 /** Posição de um ponto no gráfico, de 0 a 1 (y = 1 é o maior valor). */
@@ -388,28 +394,65 @@ const GENERIC_NAMES = new Set(['conclusao', 'resultado', 'laudo', 'impressao dia
 
 // Material que não é sangue, quando o nome do resultado ou o título do exame
 // diz. Só separa: a "Creatinina" de um exame de urina não entra na série da do
-// sangue, e nada some por causa disso.
+// sangue, e nada some por causa disso (a linha avisa: ver apartNote).
 const MATERIALS: [string, RegExp][] = [
   ['urina', /\b(urina|urinari[a-z]*|eas)\b/],
   ['24h', /\b24 ?h(s|oras?)?\b/],
   ['fezes', /\bfezes\b/],
   ['liquor', /\bliquor\b/],
 ];
+const MATERIAL_LABEL: Record<string, string> = { urina: 'urina', '24h': 'urina de 24 horas', fezes: 'fezes', liquor: 'líquor' };
 
-function materialKey(text: string): string {
+// Título que junta exames ("Hemograma + EAS", "Sangue e urina", "EAS, fezes")
+// não diz de que material é cada resultado: aí só vale o nome do resultado.
+const MIXED_TITLE = /\b(sangue|sanguineo|hemograma|bioquimica|soro|plasma)\b|[+,;&]|\be\b/;
+
+function materialsIn(text: string): string[] {
   const plain = normalizeSearch(text).replace(/[^a-z0-9]+/g, ' ');
-  return MATERIALS.filter(([, pattern]) => pattern.test(plain))
-    .map(([material]) => material)
+  return MATERIALS.filter(([, pattern]) => pattern.test(plain)).map(([material]) => material);
+}
+
+/**
+ * O material do resultado: pelo nome dele e, quando o exame é de um material
+ * só, pelo título. A urina de 24 horas é um material à parte da urina comum.
+ */
+function materialKey(name: string, title: string): string {
+  const found = new Set([...materialsIn(name), ...(MIXED_TITLE.test(normalizeSearch(title)) ? [] : materialsIn(title))]);
+  if (found.has('24h')) found.delete('urina');
+  return MATERIALS.map(([material]) => material)
+    .filter((material) => found.has(material))
     .join('+');
 }
 
+/** Na ordem da lista de materiais (quem não diz o material vem antes). */
+const materialRank = (material: string) => MATERIALS.findIndex(([name]) => name === material.split('+')[0]);
+
+/** "urina", "urina de 24 horas", "urina e fezes". */
+const materialLabel = (material: string) => listWords(material.split('+').map((part) => MATERIAL_LABEL[part] ?? part));
+
 // "LYM%", "LYM#", "Hematócrito (%)": o símbolo no fim do nome.
 const NAME_SYMBOL = /([%#])\s*[)\]]?\s*$/;
+
+/**
+ * Dois grupos do mesmo item em unidades diferentes são "o mesmo em outra
+ * unidade"? Percentual e contagem do diferencial do hemograma (60% e 4.125
+ * /mm³) não são: são duas medidas, e uma não é o resultado mais novo da outra.
+ * "Neutrófilos" e "Neutrófilos #", os dois sem unidade, também não: os nomes
+ * já dizem que são duas linhas.
+ */
+function sameInOtherUnit(a: string, b: string): boolean {
+  if (a === b) return false;
+  if (!a || !b) return a !== '#' && b !== '#';
+  return (a === '%') === (b === '%');
+}
 
 interface Group {
   key: string;
   /** O item sem a unidade: nome, material e, no nome genérico, o exame. */
   family: string;
+  /** O item sem a unidade nem o material: para avisar que há outro de mesmo nome em outro material. */
+  base: string;
+  material: string;
   unitKey: string;
   name: string;
   points: TrendPoint[];
@@ -443,11 +486,15 @@ function listWords(words: string[]): string {
 
 /**
  * O que a linha de um item numérico avisa quando o mesmo item também está em
- * outro grupo por causa da unidade (os grupos não são comparados, e isso não
- * pode passar em silêncio): que há um resultado mais novo lá, ou, no grupo sem
- * unidade, por que ele ficou à parte. null quando não há o que avisar.
+ * outro grupo, por causa da unidade ou do material (os grupos não são
+ * comparados, e isso não pode passar em silêncio): que há um resultado mais
+ * novo em outra unidade; no grupo sem unidade, por que ele ficou à parte; e,
+ * entre materiais, que os de mesmo nome não foram comparados. null quando não
+ * há o que avisar.
  */
-export function apartNote(item: Pick<TrendItem, 'last' | 'newerElsewhere' | 'otherUnits'>): string | null {
+export function apartNote(
+  item: Pick<TrendItem, 'last' | 'newerElsewhere' | 'otherUnits' | 'material' | 'otherMaterials'>,
+): string | null {
   const newer = item.newerElsewhere;
   if (newer) {
     const how = !newer.unit ? 'sem unidade' : item.last.unit ? 'em outra unidade' : 'com unidade';
@@ -456,7 +503,11 @@ export function apartNote(item: Pick<TrendItem, 'last' | 'newerElsewhere' | 'oth
   if (!item.last.unit && item.otherUnits.length) {
     return `Sem unidade: não foi comparado com os resultados em ${listWords(item.otherUnits)}.`;
   }
-  return null;
+  if (!item.otherMaterials.length) return null;
+  if (item.material) {
+    return `Exame de ${materialLabel(item.material)}: não foi comparado com os resultados de mesmo nome de outros exames.`;
+  }
+  return `Não foi comparado com os resultados de mesmo nome dos exames de ${listWords(item.otherMaterials.map(materialLabel))}.`;
 }
 
 /**
@@ -466,7 +517,8 @@ export function apartNote(item: Pick<TrendItem, 'last' | 'newerElsewhere' | 'oth
  * unidade (ou todos sem unidade): unidades diferentes ficam em itens
  * separados, sem conversão. Na dúvida, separa em vez de comparar:
  * - nome genérico ("Conclusão", "Resultado") é um item por exame;
- * - urina, fezes e líquor não se juntam com quem não diz o material;
+ * - urina, fezes e líquor não se juntam com quem não diz o material (vale o
+ *   nome do resultado e, se o exame é de um material só, o título dele);
  * - o mesmo item duas vezes no mesmo laudo são dois itens (a primeira
  *   ocorrência segue a primeira dos outros laudos, a segunda segue a segunda).
  * Dois exames no mesmo dia mantêm os dois pontos, na ordem em que foram
@@ -494,12 +546,14 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
       const name = asText(result.name);
       const fieldUnit = asText(result.unit) || null;
       // Sem unidade no campo, o símbolo no fim do nome é o que separa "LYM%" de
-      // "LYM#": "%" vale como a unidade e "#" entra na chave. O resto do nome
+      // "LYM#": "%" vale como a unidade; "#" (a contagem), sem unidade nenhuma,
+      // fica num grupo à parte do percentual e de quem não diz. O resto do nome
       // continua achando o sinônimo ("HbA1c %" é hemoglobina glicada).
       const symbol = fieldUnit ? null : (name.match(NAME_SYMBOL)?.[1] ?? null);
       const itemKey = examItemKey(name);
       const generic = GENERIC_NAMES.has(itemKey);
-      const item = [symbol === '#' ? `${itemKey} #` : itemKey, materialKey(`${name} ${title}`), generic ? exam.id : ''].join('|');
+      const material = materialKey(name, title);
+      const item = [itemKey, material, generic ? exam.id : ''].join('|');
       const knownUnit = fieldUnit ?? (symbol === '%' ? '%' : null);
       let parsed = parseResultValue(written);
       // Unidade no valor diferente da do campo: na dúvida, não é um número comparável.
@@ -520,8 +574,11 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
         flag: result.flag ?? null,
         reference: asText(result.reference) || null,
       };
-      const unitKey = normalizeUnit(unit);
-      const family = `${parsed ? 'n' : 't'}:${item}`;
+      const counted = symbol === '#' && !unit;
+      const unitKey = normalizeUnit(unit) || (parsed && counted ? '#' : '');
+      // Em texto não há unidade para separar: o "#" segue na chave do item.
+      const family = parsed ? `n:${item}` : `t:${counted ? `${itemKey} #` : itemKey}|${material}|${generic ? exam.id : ''}`;
+      const base = `${itemKey}|${generic ? exam.id : ''}`;
       let key = family;
       if (parsed) {
         const base = `${family}|${unitKey}`;
@@ -530,7 +587,7 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
         key = nth > 1 ? `${base}|${nth}` : base;
       }
       const groups = parsed ? numeric : textual;
-      const group = groups.get(key) ?? { key, family, unitKey, name: '', points: [], examIndex, resultIndex };
+      const group = groups.get(key) ?? { key, family, base, material, unitKey, name: '', points: [], examIndex, resultIndex };
       group.points.push(point);
       // Do mais antigo para o mais novo: ficam o nome e a posição do último ponto.
       group.name = generic && title ? `${title}: ${name}` : name || 'Sem nome';
@@ -540,13 +597,19 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
     });
   });
 
-  // O mesmo item em outra unidade (ou sem unidade): só entre grupos numéricos.
+  // O mesmo item em outra unidade (ou sem unidade) e o de mesmo nome em outro
+  // material: só entre grupos numéricos.
   const families = new Map<string, Group[]>();
-  for (const group of numeric.values()) families.set(group.family, [...(families.get(group.family) ?? []), group]);
-  const toItem = (group: Group): TrendItem => {
+  const bases = new Map<string, Group[]>();
+  for (const group of numeric.values()) {
+    families.set(group.family, [...(families.get(group.family) ?? []), group]);
+    bases.set(group.base, [...(bases.get(group.base) ?? []), group]);
+  }
+  const toItem = (group: Group, isNumber: boolean): TrendItem => {
     const last = lastOf(group);
-    const others = (families.get(group.family) ?? []).filter((other) => other.unitKey !== group.unitKey);
+    const others = isNumber ? families.get(group.family)!.filter((other) => sameInOtherUnit(other.unitKey, group.unitKey)) : [];
     const newest = others.reduce<Group | null>((max, other) => (!max || later(other, max) > 0 ? other : max), null);
+    const sameName = isNumber ? bases.get(group.base)!.filter((other) => other.material !== group.material) : [];
     return {
       key: group.key,
       name: group.name,
@@ -554,9 +617,12 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
       last,
       newerElsewhere: newest && lastOf(newest).date > last.date ? lastOf(newest) : null,
       otherUnits: [...new Set(others.map((other) => lastOf(other).unit).filter((unit): unit is string => Boolean(unit)))],
+      material: group.material,
+      otherMaterials: [...new Set(sameName.map((other) => other.material))].sort((a, b) => materialRank(a) - materialRank(b)),
+      order: [group.examIndex, group.resultIndex],
     };
   };
-  const numbers = [...numeric.values()].sort(byAttention).map(toItem);
+  const numbers = [...numeric.values()].sort(byAttention).map((group) => toItem(group, true));
   const outside = (kept: (e: TrendExam) => boolean) => done.filter((e) => kept(e) && e.results.length > 0);
   return {
     series: numbers
@@ -567,7 +633,7 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
         chart: mixedReadings(item.points) ? [] : chartPoints(item.points),
       })),
     single: numbers.filter((item) => item.points.length === 1),
-    text: [...textual.values()].sort(byAttention).map(toItem),
+    text: [...textual.values()].sort(byAttention).map((group) => toItem(group, false)),
     undated: outside((e) => !hasDate(e)).map((e) => ({ id: e.id, title: e.title })),
     future: outside(isFuture).map((e) => ({ id: e.id, title: e.title, date: e.exam_date!.slice(0, 10) })),
   };
@@ -661,9 +727,10 @@ export function visitSummary(person: SummaryPerson, exams: TrendExam[], medicati
   const items = [...trends.series, ...trends.single, ...trends.text];
   const latest = items.reduce((max, item) => (item.last.date > max ? item.last.date : max), '');
   const since = latest ? addDays(latest, -RECENT_DAYS) : '';
+  // Do mais novo para o mais antigo; na mesma data, a ordem do laudo.
   const recent = items
     .filter((item) => item.last.date >= since || item.last.flag)
-    .sort((a, b) => b.last.date.localeCompare(a.last.date));
+    .sort((a, b) => b.last.date.localeCompare(a.last.date) || a.order[0] - b.order[0] || a.order[1] - b.order[1]);
   // Há resultado mais novo do mesmo item em outro grupo: a linha diz, em vez de passar por último.
   const noted = (line: string, item: TrendItem) => (item.newerElsewhere ? `${line}. ${apartNote(item)}` : line);
   list(
