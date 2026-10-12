@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
 
 import {
+  apartNote,
   changeSentence,
   chartDescription,
   chartPoints,
@@ -53,6 +54,7 @@ const point = (value: string, date: string, partial: Partial<TrendPoint> = {}): 
     number: parsed?.number ?? null,
     decimals: parsed?.decimals ?? 0,
     mark: parsed?.mark ?? null,
+    ambiguous: parsed?.ambiguous ?? false,
     unit: null,
     flag: null,
     reference: null,
@@ -113,7 +115,7 @@ describe('examItemKey', () => {
       ['Ácido úrico', 'Acido Urico'],
       ['TGO', 'AST', 'TGO (AST)', 'Aspartato aminotransferase'],
       ['TGP', 'ALT', 'TGP (ALT)', 'Alanina aminotransferase'],
-      ['Gama GT', 'GGT', 'Gama-GT', 'Gama glutamil transferase'],
+      ['Gama GT', 'GGT', 'Gama-GT', 'Gama glutamil transferase', 'γ-GT', 'Γ-GT'],
       ['Hemoglobina', 'HEMOGLOBINA'],
       ['Hematócrito', 'Hematocrito'],
       ['Leucócitos', 'Leucocitos'],
@@ -138,6 +140,14 @@ describe('examItemKey', () => {
     expect(examItemKey('Relação A/G')).toBe(examItemKey('relacao a g'));
   });
 
+  it('letra grega vale como a palavra', () => {
+    expect(examItemKey('α1-globulina')).toBe(examItemKey('Alfa 1 globulina'));
+    expect(examItemKey('β2-microglobulina')).toBe('beta 2 microglobulina');
+    expect(examItemKey('β-HCG')).toBe(examItemKey('Beta HCG'));
+    expect(examItemKey('γ-globulina')).toBe('gama globulina');
+    expect(examItemKey('δ-ALA')).toBe('delta ala');
+  });
+
   it('nunca junta coisas diferentes', () => {
     const apart: [string, string][] = [
       ['Colesterol total', 'Colesterol HDL'],
@@ -159,6 +169,12 @@ describe('examItemKey', () => {
       ['TGO', 'TGP'],
       ['Creatinina', 'Creatinina urinária'],
       ['Insulina', 'Glicose'],
+      ['α1-globulina', 'β1-globulina'],
+      ['α1-globulina', 'α2-globulina'],
+      ['β1-globulina', 'β2-globulina'],
+      ['γ-globulina', 'α1-globulina'],
+      ['β-HCG', 'HCG'],
+      ['γ-GT', 'GT'],
     ];
     for (const [a, b] of apart) expect([a, b, examItemKey(a) === examItemKey(b)]).toEqual([a, b, false]);
   });
@@ -174,30 +190,54 @@ describe('parseResultValue', () => {
   const number = (value: string) => parseResultValue(value)?.number ?? null;
 
   it('lê números do jeito brasileiro', () => {
-    expect(parseResultValue('98')).toEqual({ number: 98, decimals: 0, mark: null, unit: null });
-    expect(parseResultValue('5,6')).toEqual({ number: 5.6, decimals: 1, mark: null, unit: null });
-    expect(parseResultValue('1.234,5')).toEqual({ number: 1234.5, decimals: 1, mark: null, unit: null });
-    expect(parseResultValue('1234.5')).toEqual({ number: 1234.5, decimals: 1, mark: null, unit: null });
-    expect(parseResultValue(' 13,20 ')).toEqual({ number: 13.2, decimals: 2, mark: null, unit: null });
+    expect(parseResultValue('98')).toEqual({ number: 98, decimals: 0, mark: null, unit: null, ambiguous: false });
+    expect(parseResultValue('5,6')).toEqual({ number: 5.6, decimals: 1, mark: null, unit: null, ambiguous: false });
+    expect(parseResultValue('1.234,5')).toEqual({ number: 1234.5, decimals: 1, mark: null, unit: null, ambiguous: false });
+    expect(parseResultValue('1234.5')).toEqual({ number: 1234.5, decimals: 1, mark: null, unit: null, ambiguous: false });
+    expect(parseResultValue(' 13,20 ')).toEqual({ number: 13.2, decimals: 2, mark: null, unit: null, ambiguous: false });
     expect(number('12.345,67')).toBe(12345.67);
   });
 
   it('ponto com três dígitos depois é milhar; fora disso é decimal', () => {
-    expect(parseResultValue('1.234')).toEqual({ number: 1234, decimals: 0, mark: null, unit: null });
+    expect(parseResultValue('1.234')).toEqual({ number: 1234, decimals: 0, mark: null, unit: null, ambiguous: true });
     expect(number('7.500')).toBe(7500);
     expect(number('150.000')).toBe(150000);
     expect(number('1.234.567')).toBe(1234567);
-    expect(parseResultValue('1.2')).toEqual({ number: 1.2, decimals: 1, mark: null, unit: null });
+    expect(parseResultValue('1.2')).toEqual({ number: 1.2, decimals: 1, mark: null, unit: null, ambiguous: false });
     expect(number('12.50')).toBe(12.5);
     expect(number('1.2345')).toBe(1.2345);
     // Zero na frente não é milhar.
-    expect(parseResultValue('0.500')).toEqual({ number: 0.5, decimals: 3, mark: null, unit: null });
+    expect(parseResultValue('0.500')).toEqual({ number: 0.5, decimals: 3, mark: null, unit: null, ambiguous: false });
+  });
+
+  it('marca como ambíguo o milhar escrito com um ponto só e sem vírgula', () => {
+    // "1.020" é lido como 1020 (regra acima), mas pode ser 1,020 escrito com ponto.
+    const ambiguous = (value: string) => parseResultValue(value)?.ambiguous ?? null;
+    for (const value of ['1.020', '2.450', '7.500', '150.000', '< 1.000']) expect([value, ambiguous(value)]).toEqual([value, true]);
+    for (const value of ['1.234,5', '1.234.567', '1,020', '1020', '0.500', '12.50', '1.2', '98']) {
+      expect([value, ambiguous(value)]).toEqual([value, false]);
+    }
+  });
+
+  it('lê o limite escrito por extenso como "<" ou ">"', () => {
+    expect(parseResultValue('inferior a 0,5')).toEqual({ number: 0.5, decimals: 1, mark: '<', unit: null, ambiguous: false });
+    expect(parseResultValue('Inferior a 0,3')?.mark).toBe('<');
+    expect(parseResultValue('INFERIOR À 0,5')?.mark).toBe('<');
+    expect(parseResultValue('menor que 5')).toEqual({ number: 5, decimals: 0, mark: '<', unit: null, ambiguous: false });
+    expect(parseResultValue('Abaixo de 10 mg/dL')).toEqual({ number: 10, decimals: 0, mark: '<', unit: 'mg/dL', ambiguous: false });
+    expect(parseResultValue('superior a 90')).toEqual({ number: 90, decimals: 0, mark: '>', unit: null, ambiguous: false });
+    expect(parseResultValue('Maior  que 90')?.mark).toBe('>');
+    expect(parseResultValue('acima de 1.000')).toEqual({ number: 1000, decimals: 0, mark: '>', unit: null, ambiguous: true });
+    // Outras palavras antes do número continuam sendo texto.
+    for (const value of ['inferior a', 'inferior ao limite', 'cerca de 5', 'menor 5', 'até 0,5', 'inferior a < 5', 'não inferior a 5']) {
+      expect([value, parseResultValue(value)]).toEqual([value, null]);
+    }
   });
 
   it('guarda "<" e ">" como marca', () => {
-    expect(parseResultValue('< 0,5')).toEqual({ number: 0.5, decimals: 1, mark: '<', unit: null });
+    expect(parseResultValue('< 0,5')).toEqual({ number: 0.5, decimals: 1, mark: '<', unit: null, ambiguous: false });
     expect(parseResultValue('<0,5')?.mark).toBe('<');
-    expect(parseResultValue('> 1.000')).toEqual({ number: 1000, decimals: 0, mark: '>', unit: null });
+    expect(parseResultValue('> 1.000')).toEqual({ number: 1000, decimals: 0, mark: '>', unit: null, ambiguous: true });
     expect(parseResultValue('≤ 5')?.mark).toBe('≤');
     expect(parseResultValue('>= 5')?.mark).toBe('≥');
   });
@@ -210,10 +250,10 @@ describe('parseResultValue', () => {
   });
 
   it('aceita a unidade digitada junto do valor', () => {
-    expect(parseResultValue('12 mg/dL')).toEqual({ number: 12, decimals: 0, mark: null, unit: 'mg/dL' });
-    expect(parseResultValue('5,6%')).toEqual({ number: 5.6, decimals: 1, mark: null, unit: '%' });
-    expect(parseResultValue('150.000 /mm³')).toEqual({ number: 150000, decimals: 0, mark: null, unit: '/mm³' });
-    expect(parseResultValue('< 0,5 mg/L')).toEqual({ number: 0.5, decimals: 1, mark: '<', unit: 'mg/L' });
+    expect(parseResultValue('12 mg/dL')).toEqual({ number: 12, decimals: 0, mark: null, unit: 'mg/dL', ambiguous: false });
+    expect(parseResultValue('5,6%')).toEqual({ number: 5.6, decimals: 1, mark: null, unit: '%', ambiguous: false });
+    expect(parseResultValue('150.000 /mm³')).toEqual({ number: 150000, decimals: 0, mark: null, unit: '/mm³', ambiguous: true });
+    expect(parseResultValue('< 0,5 mg/L')).toEqual({ number: 0.5, decimals: 1, mark: '<', unit: 'mg/L', ambiguous: false });
   });
 
   it('o que não é número fica como texto', () => {
@@ -319,7 +359,53 @@ describe('changeSentence', () => {
     expect(changeSentence(point('102', '2026-09-05'), point('100', '2026-03-12'))).toBe('subiu 2 (2%) desde 12/03/2026');
     expect(changeSentence(point('149', '2026-09-05'), point('100', '2026-03-12'))).toBe('subiu 49 (49%) desde 12/03/2026');
     expect(changeSentence(point('1.001', '2026-09-05'), point('1.000', '2026-03-12'))).toBe('subiu 1 (menos de 1%) desde 12/03/2026');
-    expect(changeSentence(point('3.000', '2026-09-05'), point('2', '2026-03-12'))).toBe('subiu 2.998 (149.900%) desde 12/03/2026');
+    expect(changeSentence(point('950', '2026-09-05'), point('100', '2026-03-12'))).toBe('subiu 850 (850%) desde 12/03/2026');
+  });
+
+  it('dez vezes maior ou menor que o anterior: sem conta, só o valor anterior', () => {
+    expect(changeSentence(point('120', '2026-09-05'), point('0,9', '2026-03-12'))).toBe('era 0,9 em 12/03/2026');
+    expect(changeSentence(point('0,9', '2026-09-05'), point('120', '2026-03-12'))).toBe('era 120 em 12/03/2026');
+    expect(changeSentence(point('3.000', '2026-09-05'), point('2', '2026-03-12'))).toBe('era 2 em 12/03/2026');
+    // Dez vezes já conta, nos dois sentidos.
+    expect(changeSentence(point('10', '2026-09-05'), point('1', '2026-03-12'))).toBe('era 1 em 12/03/2026');
+    expect(changeSentence(point('11', '2026-09-05'), point('1,1', '2026-03-12'))).toBe('era 1,1 em 12/03/2026');
+    expect(changeSentence(point('1', '2026-09-05'), point('10', '2026-03-12'))).toBe('era 10 em 12/03/2026');
+    expect(changeSentence(point('-20', '2026-09-05'), point('-1', '2026-03-12'))).toBe('era -1 em 12/03/2026');
+    expect(changeSentence(point('100', '2026-09-05'), point('5', '2026-09-05'))).toBe('era 5 no resultado anterior do mesmo dia');
+    // Um pouco menos que dez vezes ainda tem conta.
+    expect(changeSentence(point('9,9', '2026-09-05'), point('1', '2026-03-12'))).toBe('subiu 8,9 (890%) desde 12/03/2026');
+    expect(changeSentence(point('1,1', '2026-09-05'), point('10', '2026-03-12'))).toBe('desceu 8,9 (89%) desde 12/03/2026');
+    // Zero não tem "vezes": valem as frases de sempre.
+    expect(changeSentence(point('50', '2026-09-05'), point('0', '2026-03-12'))).toBe('subiu 50 desde 12/03/2026');
+    expect(changeSentence(point('0', '2026-09-05'), point('50', '2026-03-12'))).toBe('desceu 50 (100%) desde 12/03/2026');
+  });
+
+  it('"1.020" ao lado de "1,015": leituras que não se comparam ficam sem conta', () => {
+    expect(changeSentence(point('1.025', '2026-09-05'), point('1,015', '2026-06-10'))).toBe('era 1,015 em 10/06/2026');
+    expect(changeSentence(point('1,015', '2026-09-05'), point('1.020', '2026-06-10'))).toBe('era 1.020 em 10/06/2026');
+    expect(changeSentence(point('2.450', '2026-09-05'), point('2,45', '2026-03-12'))).toBe('era 2,45 em 12/03/2026');
+    // Escritos do mesmo jeito, a conta continua.
+    expect(changeSentence(point('1.025', '2026-09-05'), point('1.020', '2026-06-10'))).toBe('subiu 5 (menos de 1%) desde 10/06/2026');
+    expect(changeSentence(point('1,025', '2026-09-05'), point('1,020', '2026-06-10'))).toBe('subiu 0,005 (menos de 1%) desde 10/06/2026');
+  });
+
+  it('em %, a mudança é em pontos percentuais, sem a porcentagem da mudança', () => {
+    const pct = (value: string, date: string) => point(value, date, { unit: '%' });
+    expect(changeSentence(pct('6,0', '2026-09-05'), pct('5,6', '2026-03-12'))).toBe('subiu 0,4 ponto percentual desde 12/03/2026');
+    expect(changeSentence(pct('38', '2026-09-05'), pct('41', '2026-03-12'))).toBe('desceu 3 pontos percentuais desde 12/03/2026');
+    expect(changeSentence(pct('2', '2026-09-05'), pct('1', '2026-03-12'))).toBe('subiu 1 ponto percentual desde 12/03/2026');
+    // Abaixo de 2 fica no singular (1,5 ponto), de 2 em diante no plural.
+    expect(changeSentence(pct('6,5', '2026-09-05'), pct('5,0', '2026-03-12'))).toBe('subiu 1,5 ponto percentual desde 12/03/2026');
+    expect(changeSentence(pct('5,9', '2026-09-05'), pct('4,0', '2026-03-12'))).toBe('subiu 1,9 ponto percentual desde 12/03/2026');
+    expect(changeSentence(pct('7,0', '2026-09-05'), pct('5,0', '2026-03-12'))).toBe('subiu 2,0 pontos percentuais desde 12/03/2026');
+    expect(changeSentence(pct('4', '2026-09-05'), pct('6', '2026-03-12'))).toBe('desceu 2 pontos percentuais desde 12/03/2026');
+    expect(changeSentence(pct('1', '2026-09-05'), pct('0', '2026-03-12'))).toBe('subiu 1 ponto percentual desde 12/03/2026');
+    expect(changeSentence(pct('5,6', '2026-09-05'), pct('5,6', '2026-03-12'))).toBe('igual ao de 12/03/2026');
+    expect(changeSentence(point('31', '2026-09-05', { unit: ' % ' }), pct('30', '2026-09-05'))).toBe(
+      'subiu 1 ponto percentual desde o resultado anterior do mesmo dia',
+    );
+    // Dez vezes maior: sem conta, como nas outras unidades.
+    expect(changeSentence(pct('6', '2026-09-05'), pct('0,5', '2026-03-12'))).toBe('era 0,5 em 12/03/2026');
   });
 
   it('igual, e a partir de zero (sem %)', () => {
@@ -448,9 +534,273 @@ describe('examTrends', () => {
     expect(trends.series[0].change).toBe('subiu 6 (6%) desde o resultado anterior do mesmo dia');
   });
 
-  it('o mesmo item duas vezes no mesmo laudo mantém os dois, na ordem do laudo', () => {
+  it('o mesmo item duas vezes no mesmo laudo não vira série: são dois itens, na ordem do laudo', () => {
     const trends = examTrends([exam('2026-03-12', [result('Glicose', '95', 'mg/dL'), result('Glicose', '140', 'mg/dL')])]);
-    expect(trends.series[0].points.map((p) => p.value)).toEqual(['95', '140']);
+    expect(trends.series).toEqual([]);
+    expect(trends.single.map((i) => [i.name, i.last.value])).toEqual([
+      ['Glicose', '95'],
+      ['Glicose', '140'],
+    ]);
+    expect(new Set(trends.single.map((i) => i.key)).size).toBe(2);
+  });
+
+  it('entre laudos, a primeira ocorrência segue a primeira e a segunda segue a segunda', () => {
+    // Hemograma sem unidade: o percentual e o absoluto com o mesmo nome.
+    const trends = examTrends([
+      exam('2026-03-12', [result('Linfócitos', '30'), result('Linfócitos', '2.250')]),
+      exam('2026-09-05', [result('Linfócitos', '28'), result('LINFÓCITOS', '2.100')]),
+      exam('2026-10-01', [result('Linfócitos', '27')]),
+    ]);
+    // O nome é o do último ponto do próprio grupo.
+    expect(trends.series.map((s) => [s.name, s.points.map((p) => p.value), s.change])).toEqual([
+      ['Linfócitos', ['30', '28', '27'], 'desceu 1 (4%) desde 05/09/2026'],
+      ['LINFÓCITOS', ['2.250', '2.100'], 'desceu 150 (7%) desde 12/03/2026'],
+    ]);
+    expect(trends.single).toEqual([]);
+  });
+
+  it('urina, fezes e líquor nunca entram na série de quem não diz o material', () => {
+    const blood = (title: string) =>
+      examTrends([
+        exam('2026-01-10', [result('Creatinina', '0,9', 'mg/dL')], { title: 'Sangue de janeiro' }),
+        exam('2026-03-12', [result('Creatinina', '120', 'mg/dL')], { title }),
+        exam('2026-09-05', [result('Creatinina', '1,0', 'mg/dL')], { title: 'Check-up' }),
+      ]);
+    for (const title of [
+      'Microalbuminúria (urina)',
+      'URINA TIPO 1',
+      'EAS',
+      'Sumário urinário',
+      'Creatinina urinária',
+      'Proteinúria de 24h',
+      'Clearance 24 horas',
+      'Parasitológico de fezes',
+      'Líquor',
+    ]) {
+      const trends = blood(title);
+      expect([title, trends.series.map((s) => [s.points.map((p) => p.value), s.change])]).toEqual([
+        title,
+        [[['0,9', '1,0'], 'subiu 0,1 (11%) desde 10/01/2026']],
+      ]);
+      // Nada some: o resultado do outro material fica como um item à parte.
+      expect(trends.single.map((i) => [i.name, valueLabel(i.last), i.last.examTitle])).toEqual([['Creatinina', '120 mg/dL', title]]);
+    }
+    // Sem a palavra no título nem no nome, o app não tem como saber: junta pelo nome.
+    expect(blood('Albumina/creatinina').series[0].points).toHaveLength(3);
+  });
+
+  it('o material vale pelo nome do resultado ou pelo título do exame, e junta com o mesmo material', () => {
+    const trends = examTrends([
+      exam('2026-01-10', [result('Densidade urinária', '1,015'), result('Creatinina', '100', 'mg/dL')], { title: 'Check-up' }),
+      exam('2026-03-12', [result('Densidade urinária', '1,020'), result('Creatinina', '110', 'mg/dL')], { title: 'Urina tipo 1' }),
+      exam('2026-06-10', [result('Creatinina', '95', 'mg/dL')], { title: 'EAS' }),
+      exam('2026-09-05', [result('Creatinina', '900', 'mg/dL')], { title: 'Urina de 24h' }),
+      exam('2026-09-06', [result('Creatinina', '3', 'mg/dL')], { title: 'Fezes' }),
+    ]);
+    expect(trends.series.map((s) => [s.name, s.points.map((p) => [p.value, p.examTitle])])).toEqual([
+      [
+        'Creatinina',
+        [
+          ['110', 'Urina tipo 1'],
+          ['95', 'EAS'],
+        ],
+      ],
+      [
+        'Densidade urinária',
+        [
+          ['1,015', 'Check-up'],
+          ['1,020', 'Urina tipo 1'],
+        ],
+      ],
+    ]);
+    // Sangue (sem material), urina de 24h e fezes: cada um no seu item.
+    expect(trends.single.map((i) => [i.last.value, i.last.examTitle])).toEqual([
+      ['3', 'Fezes'],
+      ['900', 'Urina de 24h'],
+      ['100', 'Check-up'],
+    ]);
+  });
+
+  it('nome genérico ("Conclusão", "Resultado") é um item por exame, com o título do exame no nome', () => {
+    const trends = examTrends([
+      exam('2026-02-01', [result('Conclusão', 'Nódulo em lobo direito da tireoide (TI-RADS 4)', null, 'alterado')], { title: 'Ultrassom de tireoide' }),
+      exam('2026-06-01', [result('CONCLUSÃO:', 'Sem alterações significativas')], { title: 'Raio-X de tórax' }),
+      exam('2026-03-12', [result('Resultado', '92', 'mg/dL')], { title: 'Glicose' }),
+      exam('2026-09-05', [result('Resultado', '212', 'mg/dL')], { title: 'Colesterol total' }),
+    ]);
+    expect(trends.series).toEqual([]);
+    expect(trends.text.map((i) => [i.name, i.points.length, i.last.flag])).toEqual([
+      ['Ultrassom de tireoide: Conclusão', 1, 'alterado'],
+      ['Raio-X de tórax: CONCLUSÃO:', 1, null],
+    ]);
+    expect(trends.single.map((i) => [i.name, valueLabel(i.last)])).toEqual([
+      ['Colesterol total: Resultado', '212 mg/dL'],
+      ['Glicose: Resultado', '92 mg/dL'],
+    ]);
+    for (const name of ['Conclusão', 'Resultado', 'Laudo', 'Impressão diagnóstica', 'Observação', 'Valor']) {
+      const each = examTrends([
+        exam('2026-01-10', [result(name, '10'), result(name, 'sem achados')], { title: 'Um' }),
+        exam('2026-03-12', [result(name, '12'), result(name, 'sem achados')], { title: 'Outro' }),
+      ]);
+      expect([name, each.series.length, each.single.map((i) => i.name), each.text.map((i) => i.name)]).toEqual([
+        name,
+        0,
+        [`Outro: ${name}`, `Um: ${name}`],
+        [`Outro: ${name}`, `Um: ${name}`],
+      ]);
+    }
+    // Um nome que só contém a palavra não é genérico.
+    expect(examTrends([exam('2026-01-10', [result('Valor de TSH', '2')]), exam('2026-03-12', [result('Valor de TSH', '3')])]).series).toHaveLength(1);
+  });
+
+  it('"%" ou "#" no fim do nome, com a unidade vazia, separa o percentual do absoluto', () => {
+    const trends = examTrends([
+      exam('2026-03-12', [result('LYM%', '30,5'), result('LYM#', '2,1'), result('HbA1c %', '5,6'), result('Hematócrito (%)', '41')]),
+      exam('2026-09-05', [result('LYM%', '28,0'), result('LYM#', '1,9'), result('Hemoglobina glicada', '6,0', '%'), result('Hematócrito', '38', '%')]),
+    ]);
+    expect(trends.series.map((s) => [s.name, s.points.map((p) => valueLabel(p)), s.change])).toEqual([
+      ['LYM%', ['30,5%', '28,0%'], 'desceu 2,5 pontos percentuais desde 12/03/2026'],
+      ['LYM#', ['2,1', '1,9'], 'desceu 0,2 (10%) desde 12/03/2026'],
+      ['Hemoglobina glicada', ['5,6%', '6,0%'], 'subiu 0,4 ponto percentual desde 12/03/2026'],
+      ['Hematócrito', ['41%', '38%'], 'desceu 3 pontos percentuais desde 12/03/2026'],
+    ]);
+    expect(trends.single).toEqual([]);
+    // "#" não junta com o nome sem símbolo, nem com o percentual.
+    const apart = examTrends([
+      exam('2026-03-12', [result('Neutrófilos', '55'), result('Neutrófilos #', '3.300')]),
+      exam('2026-09-05', [result('Neutrófilos %', '60'), result('Neutrófilos #', '3.900')]),
+    ]);
+    expect(apart.series.map((s) => [s.name, s.points.map((p) => valueLabel(p))])).toEqual([['Neutrófilos #', ['3.300', '3.900']]]);
+    expect(apart.single.map((i) => [i.name, valueLabel(i.last)])).toEqual([
+      ['Neutrófilos %', '60%'],
+      ['Neutrófilos', '55'],
+    ]);
+    // Com a unidade preenchida, o símbolo do nome não muda nada.
+    const filled = examTrends([
+      exam('2026-03-12', [result('Leucócitos #', '7.500', '/mm³')]),
+      exam('2026-09-05', [result('Leucócitos', '8.200', '/mm³')]),
+    ]);
+    expect(filled.series.map((s) => s.points.map((p) => valueLabel(p)))).toEqual([['7.500 /mm³', '8.200 /mm³']]);
+    // Texto não ganha "%" do nome.
+    expect(examTrends([exam('2026-03-12', [result('LYM%', 'aumentado')])]).text.map((i) => valueLabel(i.last))).toEqual(['aumentado']);
+  });
+
+  it('limite por extenso entra na série, sem conta', () => {
+    const trends = examTrends([
+      exam('2026-01-10', [result('PCR', '0,8', 'mg/dL')]),
+      exam('2026-06-10', [result('PCR', 'Inferior a 0,5', 'mg/dL')]),
+      exam('2026-09-05', [result('PCR', '0,9', 'mg/dL')]),
+    ]);
+    expect(trends.text).toEqual([]);
+    expect(trends.series.map((s) => [s.points.map((p) => p.value), s.change])).toEqual([[['0,8', '< 0,5', '0,9'], 'era < 0,5 em 10/06/2026']]);
+  });
+
+  it('série com "1.020" e "1,015" fica sem conta e sem gráfico', () => {
+    const density = examTrends([
+      exam('2026-01-10', [result('Densidade', '1.020')]),
+      exam('2026-06-10', [result('Densidade', '1,015')]),
+      exam('2026-09-05', [result('Densidade', '1.025')]),
+    ]).series[0];
+    expect([density.points.map((p) => p.value), density.change, density.chart]).toEqual([['1.020', '1,015', '1.025'], 'era 1,015 em 10/06/2026', []]);
+    const tsh = examTrends([
+      exam('2026-03-12', [result('TSH', '2,45', 'µUI/mL')]),
+      exam('2026-09-05', [result('TSH', '2.450', 'µUI/mL')]),
+    ]).series[0];
+    expect([tsh.points.map((p) => p.value), tsh.change, tsh.chart]).toEqual([['2,45', '2.450'], 'era 2,45 em 12/03/2026', []]);
+    // O gráfico sai mesmo quando os dois últimos pontos foram escritos do mesmo jeito.
+    const later = examTrends([
+      exam('2026-01-10', [result('Densidade', '1,015')]),
+      exam('2026-06-10', [result('Densidade', '1.020')]),
+      exam('2026-09-05', [result('Densidade', '1.025')]),
+    ]).series[0];
+    expect([later.change, later.chart]).toEqual(['subiu 5 (menos de 1%) desde 10/06/2026', []]);
+    // Tudo escrito do mesmo jeito: conta e gráfico de sempre.
+    const same = examTrends([
+      exam('2026-01-10', [result('Leucócitos', '7.500', '/mm³')]),
+      exam('2026-06-10', [result('Leucócitos', '8.200', '/mm³')]),
+    ]).series[0];
+    expect([same.change, same.chart.length]).toEqual(['subiu 700 (9%) desde 10/01/2026', 2]);
+    // Dez vezes maior, sem milhar ambíguo: sem conta, mas o gráfico fica.
+    const jump = examTrends([exam('2026-01-10', [result('PCR', '0,4', 'mg/dL')]), exam('2026-06-10', [result('PCR', '12,0', 'mg/dL')])]).series[0];
+    expect([jump.change, jump.chart.length]).toEqual(['era 0,4 em 10/01/2026', 2]);
+  });
+
+  it('exame realizado com data no futuro sai da evolução e vai para a lista dele', () => {
+    const exams = [
+      exam('2026-03-12', [result('TSH', '2,1', 'µUI/mL')]),
+      exam('2027-03-12', [result('TSH', '4,9', 'µUI/mL', 'alto')], { id: 'futuro', title: 'Tireoide' }),
+      exam('2026-10-12', [result('TSH', '2,3', 'µUI/mL')]),
+      exam('2026-10-13', [], { id: 'vazio', title: 'Sem resultados' }),
+      exam('2026-11-01', [result('TSH', '9', 'µUI/mL')], { status: 'agendado' }),
+    ];
+    const trends = examTrends(exams, '2026-10-12');
+    // O de hoje entra; o de amanhã em diante, não.
+    expect(trends.series.map((s) => s.points.map((p) => p.value))).toEqual([['2,1', '2,3']]);
+    expect(trends.future).toEqual([{ id: 'futuro', title: 'Tireoide', date: '2027-03-12' }]);
+    // Sem "hoje", não há como saber: entra tudo o que tem data.
+    expect(examTrends(exams).future).toEqual([]);
+    expect(examTrends(exams).series[0].points.map((p) => p.value)).toEqual(['2,1', '2,3', '4,9']);
+  });
+
+  it('o mesmo item em outra unidade (ou sem unidade) fica à parte, e a linha avisa', () => {
+    const trends = examTrends([
+      exam('2026-01-10', [result('Glicose', '92', 'mg/dL')]),
+      exam('2026-03-12', [result('Glicose', '99', 'mg/dL')]),
+      exam('2026-09-05', [result('glicemia', '104', null, 'alto')]),
+    ]);
+    const [series] = trends.series;
+    const [loose] = trends.single;
+    expect([series.name, valueLabel(series.last), series.change]).toEqual(['Glicose', '99 mg/dL', 'subiu 7 (8%) desde 10/01/2026']);
+    expect(series.newerElsewhere).toBe(loose.last);
+    expect(apartNote(series)).toBe('Há um resultado mais recente sem unidade: 104 em 05/09/2026. Não foi comparado.');
+    expect([loose.name, loose.newerElsewhere]).toEqual(['glicemia', null]);
+    expect(apartNote(loose)).toBe('Sem unidade: não foi comparado com os resultados em mg/dL.');
+
+    // Outra unidade: o mais antigo avisa; o mais novo não precisa.
+    const units = examTrends([
+      exam('2024-05-02', [result('Vitamina D', '18', 'ng/mL', 'baixo')]),
+      exam('2025-05-02', [result('Vitamina D', '60', 'nmol/L')]),
+    ]);
+    expect(units.single.map((i) => [valueLabel(i.last), apartNote(i)])).toEqual([
+      ['18 ng/mL', 'Há um resultado mais recente em outra unidade: 60 nmol/L em 02/05/2025. Não foi comparado.'],
+      ['60 nmol/L', null],
+    ]);
+
+    // O sem unidade é o mais antigo.
+    const older = examTrends([exam('2025-01-10', [result('Glicose', '110')]), exam('2026-09-05', [result('Glicose', '92', 'mg/dL')])]);
+    expect(older.single.map((i) => [valueLabel(i.last), apartNote(i)])).toEqual([
+      ['92 mg/dL', null],
+      ['110', 'Há um resultado mais recente com unidade: 92 mg/dL em 05/09/2026. Não foi comparado.'],
+    ]);
+
+    // No mesmo dia nenhum é mais novo: só o sem unidade explica por que ficou à parte.
+    const sameDay = examTrends([
+      exam('2026-09-05', [result('Glicose', '92', 'mg/dL'), result('Hemoglobina', '13,5', 'g/dL')], { created_at: '2026-09-05T08:00:00Z' }),
+      exam('2026-09-05', [result('Glicose', '5,1', 'mmol/L')], { created_at: '2026-09-05T09:00:00Z' }),
+      exam('2026-09-05', [result('Glicose', '95')], { created_at: '2026-09-05T10:00:00Z' }),
+    ]);
+    expect(sameDay.single.map((i) => [valueLabel(i.last), apartNote(i)])).toEqual([
+      ['92 mg/dL', null],
+      ['13,5 g/dL', null],
+      ['5,1 mmol/L', null],
+      ['95', 'Sem unidade: não foi comparado com os resultados em mg/dL e mmol/L.'],
+    ]);
+  });
+
+  it('o aviso de outra unidade não cruza materiais, exames de nome genérico nem resultados em texto', () => {
+    const trends = examTrends([
+      exam('2026-01-10', [result('Creatinina', '0,9', 'mg/dL'), result('Resultado', '5', 'mg/dL'), result('HIV', 'Não reagente')], { title: 'Sangue' }),
+      exam('2026-09-05', [result('Creatinina', '120'), result('Resultado', '7')], { title: 'Urina tipo 1' }),
+      exam('2026-09-06', [result('HIV', '0,1')], { title: 'Sorologia' }),
+    ]);
+    expect([...trends.series, ...trends.single, ...trends.text].map((i) => [i.name, valueLabel(i.last), i.newerElsewhere, apartNote(i)])).toEqual([
+      ['HIV', '0,1', null, null],
+      ['Creatinina', '120', null, null],
+      ['Urina tipo 1: Resultado', '7', null, null],
+      ['Creatinina', '0,9 mg/dL', null, null],
+      ['Sangue: Resultado', '5 mg/dL', null, null],
+      ['HIV', 'Não reagente', null, null],
+    ]);
   });
 
   it('exame sem data ou não realizado fica de fora', () => {
@@ -478,8 +828,8 @@ describe('examTrends', () => {
       exam('2026-09-05', [result('PCR', '0,8', 'mg/dL')]),
     ]);
     expect(trends.text.map((i) => [i.name, i.points.map((p) => p.value)])).toEqual([
-      ['Glicose', ['hemolisado']],
       ['HIV', ['Não reagente', 'não reagente']],
+      ['Glicose', ['hemolisado']],
       ['Proteínas na urina', ['+++']],
     ]);
     expect(trends.series.map((s) => [s.name, s.points.map((p) => p.value), s.change])).toEqual([
@@ -499,7 +849,7 @@ describe('examTrends', () => {
     ]);
   });
 
-  it('ordena: marcados no último resultado primeiro, depois o mais recente, depois o nome', () => {
+  it('ordena: marcados no último resultado primeiro, depois o mais recente, depois a ordem do laudo', () => {
     const trends = examTrends([
       exam('2026-01-10', [
         result('Ureia', '30', 'mg/dL'),
@@ -518,8 +868,28 @@ describe('examTrends', () => {
       exam('2026-09-05', [result('Creatinina', '1,1', 'mg/dL'), result('HDL', '38', 'mg/dL', 'baixo')]),
       exam('2026-06-01', [result('HDL', '40', 'mg/dL')]),
     ]);
-    // TSH já não está marcado no último; Ácido úrico e Ureia empatam na data.
-    expect(trends.series.map((s) => s.name)).toEqual(['HDL', 'LDL', 'Creatinina', 'Ácido úrico', 'TSH', 'Ureia']);
+    // TSH já não está marcado no último; Ureia, TSH e Ácido úrico empatam na data e seguem o laudo.
+    expect(trends.series.map((s) => s.name)).toEqual(['HDL', 'LDL', 'Creatinina', 'Ureia', 'TSH', 'Ácido úrico']);
+  });
+
+  it('itens da mesma data seguem a ordem do laudo (e a dos exames), não a do alfabeto', () => {
+    const hemograma = ['Hemácias', 'Hemoglobina', 'Hematócrito', 'VCM', 'HCM', 'CHCM', 'RDW', 'Leucócitos', 'Neutrófilos', 'Linfócitos', 'Monócitos', 'Plaquetas'];
+    const trends = examTrends([
+      exam('2026-09-05', [result('Colesterol total', '180', 'mg/dL'), result('Albumina', '4,1', 'g/dL')], { created_at: '2026-09-06T10:00:00Z' }),
+      exam(
+        '2026-09-05',
+        hemograma.map((name, index) => result(name, String(10 + index), null, name === 'RDW' ? 'alto' : null)),
+        { created_at: '2026-09-05T10:00:00Z' },
+      ),
+      exam('2026-09-06', [result('Ferritina', '85', 'ng/mL')]),
+    ]);
+    expect(trends.single.map((i) => i.name)).toEqual([
+      'RDW',
+      'Ferritina',
+      ...hemograma.filter((name) => name !== 'RDW'),
+      'Colesterol total',
+      'Albumina',
+    ]);
   });
 
   it('diz se há algo para a evolução', () => {
@@ -597,9 +967,7 @@ describe('visitSummary', () => {
         '- Vitamina D: 22 ng/mL em 01/06/2025 (marcado no laudo: abaixo)',
         '',
         'O que mudou:',
-        '- Glicemia de jejum: 108 mg/dL em 05/09/2026; subiu 9 (9%) desde 12/03/2026',
-        '- Hemoglobina glicada: 5,6% em 05/09/2026; igual ao de 12/03/2026',
-        '- TSH: 2,10 µUI/mL em 05/09/2026; igual ao de 12/03/2026',
+        '- Glicemia de jejum: subiu 9 (9%) desde 12/03/2026',
         '',
         'Exames pedidos ou agendados:',
         '- Ultrassom de abdome (agendado, 20/10/2026)',
@@ -618,6 +986,181 @@ describe('visitSummary', () => {
     // Ferritina: último resultado em 01/09/2025, há mais de 12 meses.
     expect(text).not.toContain('Ferritina');
     expect(visitSummary(person(), exams, [], '2026-09-01')).toContain('- Ferritina: 90 ng/mL em 01/09/2025; subiu 10 (13%) desde 01/06/2025');
+  });
+
+  const body = (text: string) => text.split('\n\n').slice(1, -1).join('\n\n');
+
+  it('"Últimos resultados" traz os 30 dias antes do exame mais recente, e o que está marcado', () => {
+    const text = visitSummary(
+      person(),
+      [
+        exam('2019-03-12', [result('Vitamina B12', '180', 'pg/mL', 'baixo')]),
+        // 31 dias antes do mais recente: fora. 30 dias antes: entra.
+        exam('2026-09-07', [result('Potássio', '4,1', 'mEq/L')]),
+        exam('2026-09-08', [result('Sódio', '140', 'mEq/L')]),
+        exam('2026-10-05', [result('Ferritina', '85,4', 'ng/mL'), result('TSH', '2,1', 'µUI/mL')], { title: 'Sangue' }),
+        exam('2026-10-08', [result('Nitrito', 'Negativo'), result('Densidade', '1.020')], { title: 'Urina' }),
+      ],
+      [],
+      today,
+    );
+    expect(body(text)).toBe(
+      [
+        'Últimos resultados:',
+        '- Densidade: 1.020 em 08/10/2026',
+        '- Nitrito: Negativo em 08/10/2026',
+        '- Ferritina: 85,4 ng/mL em 05/10/2026',
+        '- TSH: 2,1 µUI/mL em 05/10/2026',
+        '- Sódio: 140 mEq/L em 08/09/2026',
+        '- Vitamina B12: 180 pg/mL em 12/03/2019 (marcado no laudo: abaixo)',
+      ].join('\n'),
+    );
+  });
+
+  it('"O que mudou" não repete o que já está em "Últimos resultados" e deixa de fora o que ficou igual', () => {
+    const text = visitSummary(
+      person(),
+      [
+        exam('2026-01-10', [result('Glicose', '92', 'mg/dL'), result('Ferritina', '80', 'ng/mL'), result('TSH', '2,10', 'µUI/mL')]),
+        exam('2026-03-12', [result('Ferritina', '90', 'ng/mL')]),
+        exam('2026-09-05', [result('Glicose', '99', 'mg/dL'), result('TSH', '2,1', 'µUI/mL')]),
+      ],
+      [],
+      today,
+    );
+    expect(body(text)).toBe(
+      [
+        'Últimos resultados:',
+        '- Glicose: 99 mg/dL em 05/09/2026',
+        '- TSH: 2,1 µUI/mL em 05/09/2026',
+        '',
+        'O que mudou:',
+        // Já está acima: só a mudança. A Ferritina não está: leva valor e data. O TSH ficou igual.
+        '- Glicose: subiu 7 (8%) desde 10/01/2026',
+        '- Ferritina: 90 ng/mL em 12/03/2026; subiu 10 (13%) desde 10/01/2026',
+      ].join('\n'),
+    );
+    // Tudo igual: o bloco nem aparece.
+    const equal = visitSummary(
+      person(),
+      [exam('2026-03-12', [result('TSH', '2,1', 'µUI/mL')]), exam('2026-09-05', [result('TSH', '2,10', 'µUI/mL')])],
+      [],
+      today,
+    );
+    expect(body(equal)).toBe('Últimos resultados:\n- TSH: 2,10 µUI/mL em 05/09/2026');
+  });
+
+  it('laudos de imagem: cada "Conclusão" aparece com o título do exame, e a marcada não some', () => {
+    const text = visitSummary(
+      person(),
+      [
+        exam('2026-02-01', [result('Conclusão', 'Nódulo em lobo direito da tireoide (TI-RADS 4)', null, 'alterado')], { title: 'Ultrassom de tireoide' }),
+        exam('2026-06-01', [result('Conclusão', 'Sem alterações significativas')], { title: 'Raio-X de tórax' }),
+      ],
+      [],
+      today,
+    );
+    expect(body(text)).toBe(
+      [
+        'Últimos resultados:',
+        '- Raio-X de tórax: Conclusão: Sem alterações significativas em 01/06/2026',
+        '- Ultrassom de tireoide: Conclusão: Nódulo em lobo direito da tireoide (TI-RADS 4) em 01/02/2026 (marcado no laudo: alterado)',
+      ].join('\n'),
+    );
+  });
+
+  it('avisa quando há resultado mais novo do mesmo item sem unidade (ou em outra), sem esconder o marcado', () => {
+    const old = visitSummary(
+      person(),
+      [
+        exam('2025-01-10', [result('Glicose', '110', 'mg/dL', 'alto')]),
+        exam('2026-09-05', [result('Glicose', '92'), result('Vitamina D', '32', 'ng/mL')]),
+      ],
+      [],
+      today,
+    );
+    expect(body(old)).toBe(
+      [
+        'Últimos resultados:',
+        '- Glicose: 92 em 05/09/2026',
+        '- Vitamina D: 32 ng/mL em 05/09/2026',
+        '- Glicose: 110 mg/dL em 10/01/2025 (marcado no laudo: acima). Há um resultado mais recente sem unidade: 92 em 05/09/2026. Não foi comparado.',
+      ].join('\n'),
+    );
+    const series = visitSummary(
+      person(),
+      [
+        exam('2026-01-10', [result('Glicose', '92', 'mg/dL')]),
+        exam('2026-03-12', [result('Glicose', '99', 'mg/dL')]),
+        exam('2026-09-05', [result('Glicose', '130', null, 'alto')]),
+      ],
+      [],
+      today,
+    );
+    expect(body(series)).toBe(
+      [
+        'Últimos resultados:',
+        '- Glicose: 130 em 05/09/2026 (marcado no laudo: acima)',
+        '',
+        'O que mudou:',
+        '- Glicose: 99 mg/dL em 12/03/2026; subiu 7 (8%) desde 10/01/2026. Há um resultado mais recente sem unidade: 130 em 05/09/2026. Não foi comparado.',
+      ].join('\n'),
+    );
+  });
+
+  it('exame realizado com data no futuro fica fora dos resultados e é listado para conferir', () => {
+    const text = visitSummary(
+      person(),
+      [
+        exam('2026-03-12', [result('TSH', '2,1', 'µUI/mL')]),
+        exam('2027-03-12', [result('TSH', '4,9', 'µUI/mL', 'alto')], { title: 'Tireoide' }),
+        exam('2026-09-05', [result('Glicose', '92', 'mg/dL')]),
+      ],
+      [],
+      today,
+    );
+    expect(body(text)).toBe(
+      [
+        'Últimos resultados:',
+        '- Glicose: 92 mg/dL em 05/09/2026',
+        '',
+        'Exames com data no futuro: confira a data. Os resultados ficaram fora deste resumo.',
+        '- Tireoide (12/03/2027)',
+      ].join('\n'),
+    );
+  });
+
+  it('exames por fazer: agendados de hoje em diante primeiro, depois os outros do mais novo para o mais antigo', () => {
+    const pending = (title: string, status: 'pedido' | 'agendado', date: string | null, created_at = '2026-01-01T10:00:00Z') =>
+      exam(date, [], { title, status, created_at });
+    const text = visitSummary(
+      person(),
+      [
+        pending('Hemograma', 'pedido', '2023-03-02'),
+        pending('Ultrassom', 'agendado', '2026-10-20'),
+        pending('Raio-X', 'pedido', null, '2026-10-01T10:00:00Z'),
+        pending('Ecocardiograma', 'agendado', '2026-10-12'),
+        pending('Mamografia', 'agendado', '2026-08-01'),
+        pending('Tomografia', 'pedido', '2026-09-30'),
+        pending('Endoscopia', 'agendado', null, '2026-09-01T10:00:00Z'),
+        pending('Ressonância', 'pedido', '2026-11-05'),
+      ],
+      [],
+      today,
+    );
+    expect(body(text)).toBe(
+      [
+        'Exames pedidos ou agendados:',
+        '- Ecocardiograma (agendado, 12/10/2026)',
+        '- Ultrassom (agendado, 20/10/2026)',
+        '- Ressonância (pedido em 05/11/2026)',
+        '- Tomografia (pedido em 30/09/2026)',
+        '- Mamografia (agendado, 01/08/2026)',
+        '- Hemograma (pedido em 02/03/2023)',
+        '- Raio-X (pedido)',
+        '- Endoscopia (agendado)',
+      ].join('\n'),
+    );
   });
 
   it('sem nada anotado ainda é um texto curto e válido', () => {
@@ -659,7 +1202,7 @@ describe('visitSummary', () => {
         '- Creatinina: 1,6 mg/dL em 01/08/2026 (marcado no laudo: acima)',
         '',
         'O que mudou:',
-        '- Creatinina: 1,6 mg/dL em 01/08/2026; subiu 0,4 (33%) desde 01/02/2026',
+        '- Creatinina: subiu 0,4 (33%) desde 01/02/2026',
         '',
         'Gerado pelo Kotii em 12/10/2026. Confira com os laudos.',
       ].join('\n'),
@@ -668,6 +1211,12 @@ describe('visitSummary', () => {
 
   it('nunca avalia: nenhuma palavra de julgamento sai do app', () => {
     const all = examTrends(exams.filter((e) => e.person_id === 'ana'));
+    const apartExams = [
+      exam('2025-01-10', [result('Glicose', '110', 'mg/dL', 'alto')]),
+      exam('2026-03-12', [result('Glicose', '5,1', 'mmol/L')]),
+      exam('2026-09-05', [result('Glicose', '92')]),
+    ];
+    const apart = examTrends(apartExams);
     const outputs = [
       visitSummary(person({ birth_date: '1984-05-02', allergies: 'dipirona', conditions: 'hipertensão' }), exams, medications, today),
       visitSummary(person(), [], [], today),
@@ -677,6 +1226,12 @@ describe('visitSummary', () => {
       changeSentence(point('50', '2026-09-05'), point('99', '2026-03-12')),
       changeSentence(point('< 5', '2026-09-05'), point('9', '2026-03-12')),
       changeSentence(point('5', '2026-09-05'), point('0', '2026-09-05')),
+      changeSentence(point('120', '2026-09-05'), point('0,9', '2026-03-12')),
+      changeSentence(point('6,0', '2026-09-05', { unit: '%' }), point('5,6', '2026-03-12', { unit: '%' })),
+      changeSentence(point('7', '2026-09-05', { unit: '%' }), point('5', '2026-03-12', { unit: '%' })),
+      ...apart.single.map((i) => apartNote(i) ?? ''),
+      visitSummary(person(), apartExams, [], today),
+      visitSummary(person(), [exam('2027-03-12', [result('TSH', '4,9')], { title: 'Tireoide' })], [], today),
       countLabel(1),
       countLabel(3),
     ];

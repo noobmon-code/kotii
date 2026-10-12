@@ -5,7 +5,7 @@
 // alterado) é a que veio do laudo ou de quem digitou.
 
 import type { Exam, Medication, Person } from '@/lib/types';
-import { addMonths, diffDays, formatBRDate, isValidISODate } from './dates';
+import { addDays, addMonths, diffDays, formatBRDate, isValidISODate } from './dates';
 import { ageLabel, EXAM_STATUS, flagLabel, type ResultFlag } from './health';
 import { describeCourse, describeFrequency, dosesLeft } from './medications';
 import { normalizeSearch } from './search';
@@ -70,6 +70,10 @@ const SYNONYMS: string[][] = [
 
 const SYNONYM_KEY = new Map<string, string>(SYNONYMS.flatMap(([key, ...others]) => [key, ...others].map((name) => [name, key] as const)));
 
+// Letra grega vira palavra antes de a pontuação sair: sem isso, α1-globulina e
+// β1-globulina dariam a mesma chave, e "γ-GT" não acharia "gama gt".
+const GREEK: Record<string, string> = { α: 'alfa', β: 'beta', γ: 'gama', δ: 'delta' };
+
 /**
  * Chave que junta o mesmo item entre laudos: sem acento, maiúsculas,
  * pontuação e espaços a mais ("GLICOSE (jejum)" e "Glicemia de jejum" dão
@@ -77,6 +81,7 @@ const SYNONYM_KEY = new Map<string, string>(SYNONYMS.flatMap(([key, ...others]) 
  */
 export function examItemKey(name: string): string {
   const plain = normalizeSearch(name)
+    .replace(/[αβγδ]/g, (letter) => ` ${GREEK[letter]} `)
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
   // Nome só de símbolos: vale como foi escrito, para não juntar com outro.
@@ -97,9 +102,24 @@ export interface ParsedValue {
   mark: ValueMark | null;
   /** Unidade digitada junto do valor ("12 mg/dL"). */
   unit: string | null;
+  /**
+   * Lido como milhar, mas com um ponto só e sem vírgula ("1.020", "2.450"):
+   * pode ser um decimal escrito com ponto. A leitura fica; a série que mistura
+   * as duas escritas perde o gráfico (ver mixedReadings).
+   */
+  ambiguous: boolean;
 }
 
 const MARKS: Record<string, ValueMark> = { '<': '<', '>': '>', '≤': '≤', '≥': '≥', '<=': '≤', '>=': '≥' };
+// O limite escrito por extenso, já sem acento e maiúsculas, vale como o símbolo.
+const WORDED_MARKS = new Map<string, ValueMark>([
+  ['inferior a', '<'],
+  ['menor que', '<'],
+  ['abaixo de', '<'],
+  ['superior a', '>'],
+  ['maior que', '>'],
+  ['acima de', '>'],
+]);
 const VALUE = /^(<=|>=|[<>≤≥])?\s*([-−])?\s*(\d[\d.,]*)\s*(.*)$/;
 const THOUSANDS = /^[1-9]\d{0,2}(\.\d{3})+$/;
 // Uma palavra só, com letra (ou "%"): "mg/dL", "/mm³", "%". "120/80", "1:80",
@@ -110,11 +130,16 @@ const INLINE_UNIT = /^(%|\/?[a-zà-ÿµμ][^\s+:]{0,14})$/i;
  * Lê um resultado como número, do jeito brasileiro: vírgula é decimal e ponto
  * seguido de três dígitos é milhar ("1.234" é mil duzentos e trinta e quatro,
  * "7.500" leucócitos é sete mil e quinhentos); ponto fora disso é decimal
- * ("1.2", "1234.5", "0.500"). Aceita "<" e ">" na frente e a unidade junto.
- * "negativo", "reagente", "+++", "1:80" devolvem null (ficam como texto).
+ * ("1.2", "1234.5", "0.500"). Aceita "<" e ">" na frente (ou "inferior a",
+ * "maior que"…, que valem como o símbolo) e a unidade junto. "negativo",
+ * "reagente", "+++", "1:80" devolvem null (ficam como texto).
  */
 export function parseResultValue(value: string): ParsedValue | null {
-  const match = value.replace(/ /g, ' ').trim().match(VALUE);
+  let text = value.replace(/ /g, ' ').trim();
+  const words = text.match(/^[^\d<>≤≥−-]+/)?.[0] ?? '';
+  const worded = WORDED_MARKS.get(normalizeSearch(words).replace(/\s+/g, ' '));
+  if (worded) text = `${worded} ${text.slice(words.length)}`;
+  const match = text.match(VALUE);
   if (!match) return null;
   const [, mark, minus, body, rest] = match;
   let integer = body;
@@ -125,7 +150,9 @@ export function parseResultValue(value: string): ParsedValue | null {
     fraction = body.slice(comma + 1);
     if (!/^\d+$/.test(fraction)) return null;
   }
-  if (THOUSANDS.test(integer)) integer = integer.replace(/\./g, '');
+  const thousands = THOUSANDS.test(integer);
+  const ambiguous = thousands && comma < 0 && integer.split('.').length === 2;
+  if (thousands) integer = integer.replace(/\./g, '');
   else if (comma < 0 && /^\d+\.\d+$/.test(integer)) [integer, fraction] = integer.split('.');
   if (!/^\d+$/.test(integer)) return null;
   // Mais dígitos do que um número guarda sem perder: fica como texto.
@@ -137,6 +164,7 @@ export function parseResultValue(value: string): ParsedValue | null {
     decimals: fraction.length,
     mark: mark ? MARKS[mark] : null,
     unit: rest || null,
+    ambiguous,
   };
 }
 
@@ -193,7 +221,9 @@ export interface TrendPoint {
   number: number | null;
   decimals: number;
   mark: ValueMark | null;
-  /** Como foi escrita no laudo. */
+  /** Ver ParsedValue: "1.020" lido como milhar, que pode ser um decimal. */
+  ambiguous: boolean;
+  /** Como foi escrita no laudo ("%" quando só o nome do item diz: "LYM%"). */
   unit: string | null;
   flag: ResultFlag | null;
   reference: string | null;
@@ -202,11 +232,18 @@ export interface TrendPoint {
 export interface TrendItem {
   /** Única entre as três listas. */
   key: string;
-  /** A grafia mais recente que a pessoa tem. */
+  /** Como está escrito no último resultado do item; com nome genérico, "título do exame: nome". */
   name: string;
   /** Do mais antigo para o mais novo. */
   points: TrendPoint[];
   last: TrendPoint;
+  /**
+   * Só nos numéricos: o resultado mais novo do mesmo item que ficou em outro
+   * grupo, por estar sem unidade ou em outra. Os dois não foram comparados.
+   */
+  newerElsewhere: TrendPoint | null;
+  /** Unidades, como escritas, dos outros grupos do mesmo item (ver apartNote). */
+  otherUnits: string[];
 }
 
 /** Posição de um ponto no gráfico, de 0 a 1 (y = 1 é o maior valor). */
@@ -218,6 +255,7 @@ export interface ChartPoint {
 export interface TrendSeries extends TrendItem {
   /** "subiu 9 (9%) desde 12/03/2026" */
   change: string;
+  /** Vazio quando a série mistura leituras que não se comparam ("1.020" e "1,015"). */
   chart: ChartPoint[];
 }
 
@@ -230,6 +268,8 @@ export interface ExamTrends {
   text: TrendItem[];
   /** Exames realizados com resultados, mas sem data: ficam de fora até a data ser anotada. */
   undated: { id: string; title: string }[];
+  /** Exames realizados com resultados e data depois de hoje: ficam de fora até a data ser conferida. */
+  future: { id: string; title: string; date: string }[];
 }
 
 // Os resultados são JSON no banco: um campo que não veio como texto não derruba a tela.
@@ -254,28 +294,61 @@ export function countLabel(count: number): string {
   return count === 1 ? '1 resultado' : `${count} resultados`;
 }
 
+// A partir de quantas vezes maior (ou menor) dois resultados seguidos deixam de
+// ser comparados: na prática são leituras diferentes (outro material, "2.450"
+// lido como milhar ao lado de "2,45"), e não uma mudança de verdade.
+const FAR_APART = 10;
+// Idem para tirar o gráfico de uma série com milhar ambíguo (ver mixedReadings).
+const MIXED_APART = 100;
+
+/** Um número é `times` vezes o outro, ou mais (zero não tem "vezes"). */
+function farApart(a: number, b: number, times: number): boolean {
+  const [small, big] = [Math.abs(a), Math.abs(b)].sort((x, y) => x - y);
+  // A folga cobre a conta de ponto flutuante (11 / 1,1 dá 9,999…).
+  return small > 0 && big / small >= times - 1e-9;
+}
+
+/** "igual ao de 12/03/2026": a frase de quando o valor não mudou. */
+const isUnchanged = (change: string) => change.startsWith('igual');
+
 /**
  * O que mudou do resultado anterior para o último, sem dizer se isso é bom ou
  * ruim: "subiu 9 (9%) desde 12/03/2026", "desceu 0,4 (7%) desde…", "igual ao
  * de…". A diferença sai com as casas do laudo; a porcentagem é sobre o valor
- * anterior, arredondada (sem ela quando o anterior é zero). Com "<" ou ">" não
- * há conta: só o valor anterior.
+ * anterior, arredondada (sem ela quando o anterior é zero). Em "%", a mudança
+ * é em pontos percentuais e não leva porcentagem ("subiu 0,4 ponto
+ * percentual…"; plural de 2 em diante). Sem conta, só o valor anterior ("era
+ * 0,8 em…"): com "<" ou ">", e quando um valor é dez vezes o outro ou mais.
  */
 export function changeSentence(last: TrendPoint, previous: TrendPoint): string {
   const sameDay = previous.date === last.date;
   const since = sameDay ? 'o resultado anterior do mesmo dia' : formatBRDate(previous.date);
   const equal = sameDay ? 'igual ao resultado anterior do mesmo dia' : `igual ao de ${since}`;
+  const was = sameDay ? `era ${previous.value} no resultado anterior do mesmo dia` : `era ${previous.value} em ${since}`;
   if (last.number === null || previous.number === null || last.mark || previous.mark) {
-    if (last.value === previous.value) return equal;
-    return sameDay ? `era ${previous.value} no resultado anterior do mesmo dia` : `era ${previous.value} em ${since}`;
+    return last.value === previous.value ? equal : was;
   }
   const decimals = Math.max(last.decimals, previous.decimals);
   const diff = Number((last.number - previous.number).toFixed(decimals));
   if (diff === 0) return equal;
+  if (farApart(last.number, previous.number, FAR_APART)) return was;
   const amount = formatResultNumber(Math.abs(diff), decimals);
+  const moved = `${diff > 0 ? 'subiu' : 'desceu'} ${amount}`;
+  if (normalizeUnit(last.unit) === '%') {
+    return `${moved} ${Math.abs(diff) < 2 ? 'ponto percentual' : 'pontos percentuais'} desde ${since}`;
+  }
   const percent = previous.number === 0 ? null : Math.round((Math.abs(diff) / Math.abs(previous.number)) * 100);
   const share = percent === null ? '' : percent < 1 ? ' (menos de 1%)' : ` (${formatResultNumber(percent, 0)}%)`;
-  return `${diff > 0 ? 'subiu' : 'desceu'} ${amount}${share} desde ${since}`;
+  return `${moved}${share} desde ${since}`;
+}
+
+/**
+ * A série mistura leituras que não se comparam: um valor de milhar ambíguo
+ * ("1.020") cem vezes maior ou menor que outro ponto ("1,015"). O gráfico
+ * dela não é desenhado: a linha seria um salto que não existiu.
+ */
+function mixedReadings(points: TrendPoint[]): boolean {
+  return points.some((a) => a.ambiguous && points.some((b) => farApart(a.number ?? 0, b.number ?? 0, MIXED_APART)));
 }
 
 /**
@@ -308,47 +381,130 @@ export function chartDescription(item: TrendItem): string {
     : `${item.name}, ${count}: ${values}.`;
 }
 
-// Marcados no último resultado primeiro, depois o mais recente; o nome desempata.
-function byAttention(a: TrendItem, b: TrendItem): number {
+// Nomes que não dizem o que foi medido: só valem dentro do próprio exame. A IA
+// chama de "Conclusão" o texto de todo laudo descritivo (ultrassom, raio-X…);
+// juntos pelo nome, laudos sem relação virariam um item só.
+const GENERIC_NAMES = new Set(['conclusao', 'resultado', 'laudo', 'impressao diagnostica', 'observacao', 'valor']);
+
+// Material que não é sangue, quando o nome do resultado ou o título do exame
+// diz. Só separa: a "Creatinina" de um exame de urina não entra na série da do
+// sangue, e nada some por causa disso.
+const MATERIALS: [string, RegExp][] = [
+  ['urina', /\b(urina|urinari[a-z]*|eas)\b/],
+  ['24h', /\b24 ?h(s|oras?)?\b/],
+  ['fezes', /\bfezes\b/],
+  ['liquor', /\bliquor\b/],
+];
+
+function materialKey(text: string): string {
+  const plain = normalizeSearch(text).replace(/[^a-z0-9]+/g, ' ');
+  return MATERIALS.filter(([, pattern]) => pattern.test(plain))
+    .map(([material]) => material)
+    .join('+');
+}
+
+// "LYM%", "LYM#", "Hematócrito (%)": o símbolo no fim do nome.
+const NAME_SYMBOL = /([%#])\s*[)\]]?\s*$/;
+
+interface Group {
+  key: string;
+  /** O item sem a unidade: nome, material e, no nome genérico, o exame. */
+  family: string;
+  unitKey: string;
+  name: string;
+  points: TrendPoint[];
+  /** Onde o último ponto está: a ordem do exame e a do resultado dentro dele. */
+  examIndex: number;
+  resultIndex: number;
+}
+
+const lastOf = (group: Group) => group.points[group.points.length - 1];
+
+/** Positivo quando o último ponto de `a` vem depois do de `b`. */
+function later(a: Group, b: Group): number {
+  return lastOf(a).date.localeCompare(lastOf(b).date) || a.examIndex - b.examIndex || a.resultIndex - b.resultIndex;
+}
+
+// Marcados no último resultado primeiro, depois o mais recente; na mesma data,
+// a ordem do laudo (o exame, depois a posição do resultado nele), que é única.
+function byAttention(a: Group, b: Group): number {
   return (
-    Number(Boolean(b.last.flag)) - Number(Boolean(a.last.flag)) ||
-    b.last.date.localeCompare(a.last.date) ||
-    a.name.localeCompare(b.name, 'pt-BR') ||
-    a.key.localeCompare(b.key)
+    Number(Boolean(lastOf(b).flag)) - Number(Boolean(lastOf(a).flag)) ||
+    lastOf(b).date.localeCompare(lastOf(a).date) ||
+    a.examIndex - b.examIndex ||
+    a.resultIndex - b.resultIndex
   );
+}
+
+/** "mg/dL", "mg/dL e mmol/L", "mg/dL, mmol/L e g/L". */
+function listWords(words: string[]): string {
+  return words.length > 1 ? `${words.slice(0, -1).join(', ')} e ${words[words.length - 1]}` : words.join('');
+}
+
+/**
+ * O que a linha de um item numérico avisa quando o mesmo item também está em
+ * outro grupo por causa da unidade (os grupos não são comparados, e isso não
+ * pode passar em silêncio): que há um resultado mais novo lá, ou, no grupo sem
+ * unidade, por que ele ficou à parte. null quando não há o que avisar.
+ */
+export function apartNote(item: Pick<TrendItem, 'last' | 'newerElsewhere' | 'otherUnits'>): string | null {
+  const newer = item.newerElsewhere;
+  if (newer) {
+    const how = !newer.unit ? 'sem unidade' : item.last.unit ? 'em outra unidade' : 'com unidade';
+    return `Há um resultado mais recente ${how}: ${valueLabel(newer)} em ${formatBRDate(newer.date)}. Não foi comparado.`;
+  }
+  if (!item.last.unit && item.otherUnits.length) {
+    return `Sem unidade: não foi comparado com os resultados em ${listWords(item.otherUnits)}.`;
+  }
+  return null;
 }
 
 /**
  * Junta os resultados dos exames de UMA pessoa por item. Só entram exames
- * realizados e com data. Um item numérico vira série quando tem dois ou mais
- * resultados na mesma unidade (ou todos sem unidade): unidades diferentes
- * ficam em itens separados, sem conversão. Dois exames no mesmo dia mantêm os
- * dois pontos, na ordem em que foram criados.
+ * realizados e com data; com `today`, os de data no futuro saem (`future`).
+ * Um item numérico vira série quando tem dois ou mais resultados na mesma
+ * unidade (ou todos sem unidade): unidades diferentes ficam em itens
+ * separados, sem conversão. Na dúvida, separa em vez de comparar:
+ * - nome genérico ("Conclusão", "Resultado") é um item por exame;
+ * - urina, fezes e líquor não se juntam com quem não diz o material;
+ * - o mesmo item duas vezes no mesmo laudo são dois itens (a primeira
+ *   ocorrência segue a primeira dos outros laudos, a segunda segue a segunda).
+ * Dois exames no mesmo dia mantêm os dois pontos, na ordem em que foram
+ * criados.
  */
-export function examTrends(exams: TrendExam[]): ExamTrends {
-  const dated = exams
-    .filter((e) => isDone(e) && hasDate(e))
+export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
+  const done = exams.filter(isDone);
+  const isFuture = (e: TrendExam) => today !== undefined && hasDate(e) && e.exam_date.slice(0, 10) > today;
+  const dated = done
+    .filter((e) => hasDate(e) && !isFuture(e))
     .sort(
       (a, b) =>
         a.exam_date!.localeCompare(b.exam_date!) || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id),
     );
-  const names = new Map<string, string>();
-  const numeric = new Map<string, { nameKey: string; points: TrendPoint[] }>();
-  const textual = new Map<string, { nameKey: string; points: TrendPoint[] }>();
+  const numeric = new Map<string, Group>();
+  const textual = new Map<string, Group>();
 
-  for (const exam of dated) {
-    for (const result of exam.results) {
+  dated.forEach((exam, examIndex) => {
+    const title = asText(exam.title);
+    // Quantas vezes cada grupo numérico já apareceu neste exame.
+    const seen = new Map<string, number>();
+    exam.results.forEach((result, resultIndex) => {
       const written = asText(result.value);
-      if (!written) continue;
+      if (!written) return;
       const name = asText(result.name);
-      const nameKey = examItemKey(name);
-      // Do mais antigo para o mais novo: fica a grafia mais recente.
-      names.set(nameKey, name || 'Sem nome');
       const fieldUnit = asText(result.unit) || null;
+      // Sem unidade no campo, o símbolo no fim do nome é o que separa "LYM%" de
+      // "LYM#": "%" vale como a unidade e "#" entra na chave. O resto do nome
+      // continua achando o sinônimo ("HbA1c %" é hemoglobina glicada).
+      const symbol = fieldUnit ? null : (name.match(NAME_SYMBOL)?.[1] ?? null);
+      const itemKey = examItemKey(name);
+      const generic = GENERIC_NAMES.has(itemKey);
+      const item = [symbol === '#' ? `${itemKey} #` : itemKey, materialKey(`${name} ${title}`), generic ? exam.id : ''].join('|');
+      const knownUnit = fieldUnit ?? (symbol === '%' ? '%' : null);
       let parsed = parseResultValue(written);
       // Unidade no valor diferente da do campo: na dúvida, não é um número comparável.
-      if (parsed?.unit && fieldUnit && normalizeUnit(parsed.unit) !== normalizeUnit(fieldUnit)) parsed = null;
-      const unit = fieldUnit ?? parsed?.unit ?? null;
+      if (parsed?.unit && knownUnit && normalizeUnit(parsed.unit) !== normalizeUnit(knownUnit)) parsed = null;
+      const unit = parsed ? (knownUnit ?? parsed.unit) : fieldUnit;
       const point: TrendPoint = {
         examId: exam.id,
         examTitle: exam.title,
@@ -359,37 +515,61 @@ export function examTrends(exams: TrendExam[]): ExamTrends {
         number: parsed ? parsed.number : null,
         decimals: parsed ? parsed.decimals : 0,
         mark: parsed ? parsed.mark : null,
+        ambiguous: parsed ? parsed.ambiguous : false,
         unit,
         flag: result.flag ?? null,
         reference: asText(result.reference) || null,
       };
+      const unitKey = normalizeUnit(unit);
+      const family = `${parsed ? 'n' : 't'}:${item}`;
+      let key = family;
+      if (parsed) {
+        const base = `${family}|${unitKey}`;
+        const nth = (seen.get(base) ?? 0) + 1;
+        seen.set(base, nth);
+        key = nth > 1 ? `${base}|${nth}` : base;
+      }
       const groups = parsed ? numeric : textual;
-      const key = parsed ? `n:${nameKey}|${normalizeUnit(unit)}` : `t:${nameKey}`;
-      const group = groups.get(key) ?? { nameKey, points: [] };
+      const group = groups.get(key) ?? { key, family, unitKey, name: '', points: [], examIndex, resultIndex };
       group.points.push(point);
+      // Do mais antigo para o mais novo: ficam o nome e a posição do último ponto.
+      group.name = generic && title ? `${title}: ${name}` : name || 'Sem nome';
+      group.examIndex = examIndex;
+      group.resultIndex = resultIndex;
       groups.set(key, group);
-    }
-  }
-
-  const toItem = ([key, group]: [string, { nameKey: string; points: TrendPoint[] }]): TrendItem => ({
-    key,
-    name: names.get(group.nameKey)!,
-    points: group.points,
-    last: group.points[group.points.length - 1],
+    });
   });
-  const numbers = [...numeric].map(toItem);
+
+  // O mesmo item em outra unidade (ou sem unidade): só entre grupos numéricos.
+  const families = new Map<string, Group[]>();
+  for (const group of numeric.values()) families.set(group.family, [...(families.get(group.family) ?? []), group]);
+  const toItem = (group: Group): TrendItem => {
+    const last = lastOf(group);
+    const others = (families.get(group.family) ?? []).filter((other) => other.unitKey !== group.unitKey);
+    const newest = others.reduce<Group | null>((max, other) => (!max || later(other, max) > 0 ? other : max), null);
+    return {
+      key: group.key,
+      name: group.name,
+      points: group.points,
+      last,
+      newerElsewhere: newest && lastOf(newest).date > last.date ? lastOf(newest) : null,
+      otherUnits: [...new Set(others.map((other) => lastOf(other).unit).filter((unit): unit is string => Boolean(unit)))],
+    };
+  };
+  const numbers = [...numeric.values()].sort(byAttention).map(toItem);
+  const outside = (kept: (e: TrendExam) => boolean) => done.filter((e) => kept(e) && e.results.length > 0);
   return {
     series: numbers
       .filter((item) => item.points.length > 1)
       .map((item) => ({
         ...item,
         change: changeSentence(item.last, item.points[item.points.length - 2]),
-        chart: chartPoints(item.points),
-      }))
-      .sort(byAttention),
-    single: numbers.filter((item) => item.points.length === 1).sort(byAttention),
-    text: [...textual].map(toItem).sort(byAttention),
-    undated: exams.filter((e) => isDone(e) && !hasDate(e) && e.results.length > 0).map((e) => ({ id: e.id, title: e.title })),
+        chart: mixedReadings(item.points) ? [] : chartPoints(item.points),
+      })),
+    single: numbers.filter((item) => item.points.length === 1),
+    text: [...textual.values()].sort(byAttention).map(toItem),
+    undated: outside((e) => !hasDate(e)).map((e) => ({ id: e.id, title: e.title })),
+    future: outside(isFuture).map((e) => ({ id: e.id, title: e.title, date: e.exam_date!.slice(0, 10) })),
   };
 }
 
@@ -437,6 +617,9 @@ function resultLine(item: TrendItem): string {
   return `${item.name}: ${valueLabel(item.last)} em ${formatBRDate(item.last.date)}${flag ? ` (marcado no laudo: ${flag.toLowerCase()})` : ''}`;
 }
 
+/** Quantos dias antes do exame mais recente ainda contam como "últimos resultados". */
+const RECENT_DAYS = 30;
+
 /**
  * Texto simples para levar à consulta, só com o que está anotado no Kotii:
  * ficha, remédios em uso, últimos resultados, o que mudou nos últimos 12 meses
@@ -446,7 +629,7 @@ function resultLine(item: TrendItem): string {
  */
 export function visitSummary(person: SummaryPerson, exams: TrendExam[], medications: SummaryMedication[], today: string): string {
   const mine = exams.filter((e) => e.person_id === person.id);
-  const trends = examTrends(mine);
+  const trends = examTrends(mine, today);
   const age = person.birth_date ? ageLabel(person.birth_date, today) : null;
   const species = person.kind === 'pet' ? oneLine(person.species) : '';
   const blocks: string[][] = [];
@@ -473,40 +656,62 @@ export function visitSummary(person: SummaryPerson, exams: TrendExam[], medicati
       .map((m) => medicationLine(m, today)),
   );
 
-  // Tudo do exame mais recente, mais o que está marcado no último resultado.
+  // O último resultado de cada item nos 30 dias até o exame mais recente (os
+  // laudos de um mesmo pedido saem com datas próximas), mais o que está marcado.
   const items = [...trends.series, ...trends.single, ...trends.text];
   const latest = items.reduce((max, item) => (item.last.date > max ? item.last.date : max), '');
+  const since = latest ? addDays(latest, -RECENT_DAYS) : '';
+  const recent = items
+    .filter((item) => item.last.date >= since || item.last.flag)
+    .sort((a, b) => b.last.date.localeCompare(a.last.date));
+  // Há resultado mais novo do mesmo item em outro grupo: a linha diz, em vez de passar por último.
+  const noted = (line: string, item: TrendItem) => (item.newerElsewhere ? `${line}. ${apartNote(item)}` : line);
   list(
     'Últimos resultados',
-    items
-      .filter((item) => item.last.date === latest || item.last.flag)
-      .sort((a, b) => b.last.date.localeCompare(a.last.date))
-      .map(resultLine),
+    recent.map((item) => noted(resultLine(item), item)),
   );
 
+  // Série que já está no bloco de cima leva só a mudança; a que não está leva
+  // também valor e data. O que ficou igual não entra em "O que mudou".
+  const listed = new Set(recent.map((item) => item.key));
   const yearAgo = addMonths(today, -12);
   list(
     'O que mudou',
     trends.series
-      .filter((s) => s.last.date >= yearAgo)
-      .map((s) => `${s.name}: ${valueLabel(s.last)} em ${formatBRDate(s.last.date)}; ${s.change}`),
+      .filter((s) => s.last.date >= yearAgo && !isUnchanged(s.change))
+      .map((s) => noted(listed.has(s.key) ? `${s.name}: ${s.change}` : `${resultLine(s)}; ${s.change}`, s)),
   );
 
+  // Por fazer: primeiro os agendados de hoje em diante, o mais próximo antes;
+  // depois o resto, do mais novo para o mais antigo (sem data no fim).
+  const dateOf = (e: TrendExam) => (hasDate(e) ? e.exam_date.slice(0, 10) : '');
+  const ahead = (e: TrendExam) => e.status === 'agendado' && dateOf(e) >= today;
+  const pending = mine.filter((e) => !isDone(e));
   list(
     'Exames pedidos ou agendados',
-    mine
-      .filter((e) => !isDone(e))
-      .sort((a, b) => (a.exam_date ?? '9999').localeCompare(b.exam_date ?? '9999') || a.created_at.localeCompare(b.created_at))
-      .map((e) => {
-        const status = EXAM_STATUS.find((s) => s.value === e.status)!.label.toLowerCase();
-        return `${e.title} (${status}${hasDate(e) ? `, ${formatBRDate(e.exam_date)}` : ''})`;
-      }),
+    [
+      ...pending.filter(ahead).sort((a, b) => dateOf(a).localeCompare(dateOf(b)) || a.created_at.localeCompare(b.created_at)),
+      ...pending.filter((e) => !ahead(e)).sort((a, b) => dateOf(b).localeCompare(dateOf(a)) || b.created_at.localeCompare(a.created_at)),
+    ].map((e) => {
+      const status = EXAM_STATUS.find((s) => s.value === e.status)!.label.toLowerCase();
+      // No pedido, a data guardada é a do pedido, não a do exame.
+      const when = !dateOf(e) ? '' : e.status === 'pedido' ? ` em ${formatBRDate(dateOf(e))}` : `, ${formatBRDate(dateOf(e))}`;
+      return `${e.title} (${status}${when})`;
+    }),
   );
 
   list(
     'Exames realizados sem data anotada (os resultados ficaram fora deste resumo)',
     trends.undated.map((e) => e.title),
   );
+
+  // Realizado com data depois de hoje: o mais provável é o ano digitado errado.
+  if (trends.future.length) {
+    blocks.push([
+      'Exames com data no futuro: confira a data. Os resultados ficaram fora deste resumo.',
+      ...trends.future.map((e) => `- ${e.title} (${formatBRDate(e.date)})`),
+    ]);
+  }
 
   if (!blocks.length) blocks.push(['Ainda não há alergias, condições, remédios nem exames anotados no Kotii.']);
 

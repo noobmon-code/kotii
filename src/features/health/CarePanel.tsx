@@ -55,6 +55,12 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
   const visiblePast = showAllPast ? past : past.slice(0, PAST_LIMIT);
   const personVaccines = mine(vaccines.data);
   const personExams = mine(exams.data);
+  // Evolução e resumo são de uma pessoa só. Com ela escolhida, a entrada existe
+  // sempre (sem resultados, a tela ainda monta o resumo). Em "Todos", vai
+  // direto quando só uma pessoa tem resultados; com mais de uma, pede a escolha.
+  const hasResults = (p: Person) => hasExamResults(exams.data.filter((e) => e.person_id === p.id));
+  const withResults = person ? [] : people.data.filter(hasResults);
+  const trendsPerson = person ?? (withResults.length === 1 ? withResults[0] : null);
   const personMedications = person
     ? medications.data.filter((m) => m.person_id === person.id)
     : medications.data;
@@ -133,15 +139,16 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
       </Section>
 
       <Section title="Exames" action={<Button title="Exame" icon="plus" variant="ghost" compact onPress={() => add('/exame/[id]')} />}>
-        {/* Só com uma pessoa escolhida: a evolução compara os laudos dela. */}
-        {person && hasExamResults(personExams) ? (
+        {trendsPerson ? (
           <Button
-            title="Evolução e resumo para a consulta"
-            icon="chart-line"
+            title={hasResults(trendsPerson) ? 'Evolução e resumo para a consulta' : 'Resumo para a consulta'}
+            icon={hasResults(trendsPerson) ? 'chart-line' : 'text-box-outline'}
             variant="secondary"
             compact
-            onPress={() => router.push({ pathname: '/exames/[pessoa]', params: { pessoa: person.id } })}
+            onPress={() => router.push({ pathname: '/exames/[pessoa]', params: { pessoa: trendsPerson.id } })}
           />
+        ) : withResults.length > 1 ? (
+          <Text variant="muted">Escolha acima de quem são os exames para ver a evolução e o resumo para a consulta.</Text>
         ) : null}
         {personExams.length === 0 ? (
           <Text variant="muted">Nenhum exame. Fotografe o pedido ou o laudo e a IA transcreve os resultados.</Text>
