@@ -48,6 +48,7 @@ import { CartPantryModal } from '@/features/CartPantryModal';
 import { CommonItemsPicker } from '@/features/CommonItemsPicker';
 import { ListEstimateCard } from '@/features/ListEstimateCard';
 import { ListItemEditor, type ItemDetails, type PhotoChange } from '@/features/ListItemEditor';
+import { ListShareSheet } from '@/features/ListShareSheet';
 import { OfflineNotice } from '@/features/OfflineNotice';
 import { RecentPurchases, RestockStrip, useJustListed } from '@/features/RecentPurchases';
 import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
@@ -116,6 +117,7 @@ export default function ShoppingListScreen() {
     pantryUnknown: boolean;
   } | null>(null);
   const [editing, setEditing] = useState<ShoppingListItem | null>(null);
+  const [sharing, setSharing] = useState(false);
   const [storeChoice, setStoreChoice] = useState<StoreChoice | null>(() => chosenStores.get(id) ?? null);
   // Some da faixa já no toque; volta quando a lista carregada trouxer o item e ele sair dela depois.
   const justAdded = useJustListed(items.data);
@@ -537,7 +539,10 @@ export default function ShoppingListScreen() {
       ) : null}
 
       {pending.length ? (
-        <Section title={`Para comprar (${pending.length})`}>
+        <Section
+          title={`Para comprar (${pending.length})`}
+          // Para quem vai às compras e não tem o app; sem nada para comprar não há o que mandar.
+          action={<Button title="Mandar a lista" variant="ghost" compact onPress={() => setSharing(true)} />}>
           <ShoppingGrid items={pending} photos={photos} hints={market.hints} onToggle={toggleItem} onOpen={setEditing} />
         </Section>
       ) : checked.length ? (
@@ -609,6 +614,7 @@ export default function ShoppingListScreen() {
           onClose={() => setStoring(null)}
         />
       ) : null}
+      <ListShareSheet visible={sharing} list={list.data} items={items.data} onClose={() => setSharing(false)} />
       <CommonItemsPicker
         visible={pickerOpen}
         listKind={list.data.kind}

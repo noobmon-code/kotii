@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, type ReactNode } from 'react';
 import { Modal, Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -12,19 +12,25 @@ export interface SheetAction {
   onPress: () => void;
 }
 
-/** Menu de ações de baixo para cima, igual em iOS, Android e web. */
+/**
+ * Menu de ações de baixo para cima, igual em iOS, Android e web. `children` é
+ * o que a tela mostra junto (ex.: a prévia do texto que vai ser mandado):
+ * fica entre o título e as ações, fora da rolagem delas.
+ */
 export function ActionSheet({
   visible,
   title,
   message,
   actions,
   onClose,
+  children,
 }: {
   visible: boolean;
   title?: string;
   message?: string;
   actions: SheetAction[];
   onClose: () => void;
+  children?: ReactNode;
 }) {
   const c = useColors();
   const { height } = useWindowDimensions();
@@ -52,6 +58,7 @@ export function ActionSheet({
           <Pressable
             style={[styles.sheet, { backgroundColor: c.surface, borderColor: c.glassBorder, maxHeight: height * 0.85 }]}>
             {title ? <Text variant="heading">{title}</Text> : null}
+            {children}
             {/* Mensagem longa e muitas ações (uma por compra na despensa) rolam; o Cancelar fica à vista. */}
             <ScrollView style={styles.scroll} contentContainerStyle={styles.gap} bounces={false}>
               {message ? <Text variant="muted">{message}</Text> : null}
