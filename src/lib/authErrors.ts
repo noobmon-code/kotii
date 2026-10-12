@@ -4,7 +4,7 @@
 
 const NOT_AUTHORIZED = 'O Kotii ainda não consegue mandar e-mail para esse endereço. Peça ajuda a quem cuida do app.';
 const OFFLINE = 'Sem internet agora. Confira a conexão e tente de novo.';
-const SESSION_GONE = 'A sessão de recuperação terminou. Peça um código novo em "Esqueci minha senha".';
+const SESSION_GONE = 'A sessão de recuperação terminou. Peça um novo e-mail em "Esqueci minha senha".';
 
 function fieldOf(error: unknown, field: string): unknown {
   return error && typeof error === 'object' && field in error ? (error as Record<string, unknown>)[field] : undefined;

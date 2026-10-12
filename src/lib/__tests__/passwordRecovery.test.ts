@@ -2,10 +2,13 @@ import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
+  beginRecovery,
+  ensureRecovery,
   finishRecovery,
   forgetRecoveryInMemory,
   readRecovery,
   recoveringUserId,
+  recoveryAfterStorage,
   recoveryGate,
   recoveryGateNow,
   startRecovery,
@@ -16,6 +19,7 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 );
 
 const MARK_KEY = 'kotii:password-recovery';
+const MARK_BY_KEY = 'kotii:password-recovery-by';
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(async () => {
@@ -80,7 +84,9 @@ describe('recuperação de senha', () => {
 
   it('troca de conta: a leitura mais nova vale, e a de antes que termina depois é descartada', async () => {
     let releaseAna: (value: string | null) => void = () => undefined;
-    const getItem = jest
+    // Só as duas próximas leituras são simuladas; depois o mock volta sozinho ao normal (um mockRestore
+    // aqui apagaria o getItem do mock para os testes seguintes).
+    jest
       .spyOn(AsyncStorage, 'getItem')
       .mockImplementationOnce(() => new Promise((resolve) => (releaseAna = resolve)))
       .mockImplementationOnce(async () => null);
@@ -91,7 +97,6 @@ describe('recuperação de senha', () => {
     releaseAna('ana');
     await ana;
     expect(recoveryGateNow('bia')).toBe('free');
-    getItem.mockRestore();
   });
 
   it('a marca posta ou tirada no meio de uma leitura vale mais que a leitura', async () => {
@@ -105,6 +110,226 @@ describe('recuperação de senha', () => {
     startRecovery('ana');
     await again;
     expect(recoveringUserId()).toBe('ana');
+  });
+});
+
+describe('link do e-mail: a marca vem antes da sessão', () => {
+  it('quando beginRecovery volta, a marca já está na memória e gravada no aparelho', async () => {
+    await beginRecovery('ana');
+    expect(recoveryGateNow('ana')).toBe('new-password');
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBe('ana');
+  });
+
+  it('a sessão não entrou: desfazer tira a marca que foi posta', async () => {
+    forgetRecoveryInMemory();
+    const undo = await beginRecovery('ana');
+    await undo();
+    expect(recoveringUserId()).toBeNull();
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBeNull();
+    // A memória volta a "ainda não li": a conta que aparecer lê o aparelho.
+    expect(recoveryGateNow('ana')).toBe('reading');
+    await readRecovery('ana');
+    expect(recoveryGateNow('ana')).toBe('free');
+  });
+
+  it('desfazer não tira a marca que já estava lá para a mesma conta', async () => {
+    startRecovery('ana');
+    await flush();
+    const undo = await beginRecovery('ana');
+    await undo();
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBe('ana');
+    expect(recoveryGateNow('ana')).toBe('new-password');
+  });
+
+  it('desfazer devolve a marca de outra conta que estava no aparelho', async () => {
+    forgetRecoveryInMemory();
+    await AsyncStorage.setItem(MARK_KEY, 'bia');
+    const undo = await beginRecovery('ana');
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBe('ana');
+    await undo();
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBe('bia');
+    await readRecovery('bia');
+    expect(recoveryGateNow('bia')).toBe('new-password');
+  });
+});
+
+describe('link do e-mail: a marca que não deu para gravar e a marca que mudou de mãos', () => {
+  it('sem conseguir gravar a marca, beginRecovery falha e a memória volta ao que era', async () => {
+    forgetRecoveryInMemory();
+    // Só a próxima gravação falha (mockRestore apagaria o AsyncStorage de mentira para os testes seguintes).
+    jest.mocked(AsyncStorage.multiSet).mockRejectedValueOnce(new Error('storage unavailable'));
+    await expect(beginRecovery('ana')).rejects.toThrow('storage unavailable');
+    expect(recoveringUserId()).toBeNull();
+    expect(recoveryGateNow('ana')).toBe('reading');
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBeNull();
+  });
+
+  it('sem conseguir ler a marca que estava lá, beginRecovery falha sem gravar a nova', async () => {
+    await AsyncStorage.setItem(MARK_KEY, 'bia');
+    forgetRecoveryInMemory();
+    jest.mocked(AsyncStorage.multiGet).mockRejectedValueOnce(new Error('storage unavailable'));
+    await expect(beginRecovery('ana')).rejects.toThrow('storage unavailable');
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBe('bia');
+    expect(recoveringUserId()).toBeNull();
+  });
+
+  it('a sessão entrou e outra aba tinha trocado a marca: ela volta a ser a desta conta', async () => {
+    forgetRecoveryInMemory();
+    await beginRecovery('ana');
+    await AsyncStorage.multiSet([
+      [MARK_KEY, 'bia'],
+      [MARK_BY_KEY, 'outra-aba'],
+    ]);
+    await ensureRecovery('ana');
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBe('ana');
+    expect(recoveryGateNow('ana')).toBe('new-password');
+  });
+
+  it('a marca já é a desta conta (posta por esta ou por outra tentativa): ensureRecovery não mexe', async () => {
+    await AsyncStorage.multiSet([
+      [MARK_KEY, 'ana'],
+      [MARK_BY_KEY, 'outra-aba'],
+    ]);
+    await ensureRecovery('ana');
+    expect(await AsyncStorage.getItem(MARK_BY_KEY)).toBe('outra-aba');
+    expect(recoveryGateNow('ana')).toBe('new-password');
+  });
+
+  it('sem conseguir conferir ou gravar, ensureRecovery falha (e a sessão não pode ficar)', async () => {
+    jest.mocked(AsyncStorage.getItem).mockRejectedValueOnce(new Error('storage unavailable'));
+    await expect(ensureRecovery('ana')).rejects.toThrow('storage unavailable');
+    await AsyncStorage.setItem(MARK_KEY, 'bia');
+    jest.mocked(AsyncStorage.multiSet).mockRejectedValueOnce(new Error('storage full'));
+    await expect(ensureRecovery('ana')).rejects.toThrow('storage full');
+  });
+
+  it('outra aba pôs a marca da mesma conta depois (o valor é igual): desfazer não a tira', async () => {
+    forgetRecoveryInMemory();
+    const undo = await beginRecovery('ana');
+    // O que a outra aba grava ao entrar pelo código: a mesma marca, de outra tentativa.
+    await AsyncStorage.multiSet([
+      [MARK_KEY, 'ana'],
+      [MARK_BY_KEY, 'outra-aba'],
+    ]);
+    await undo();
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBe('ana');
+    expect(await AsyncStorage.getItem(MARK_BY_KEY)).toBe('outra-aba');
+  });
+
+  it('a marca foi trocada ou tirada nesse meio: desfazer não mexe no aparelho nem na memória', async () => {
+    forgetRecoveryInMemory();
+    const undo = await beginRecovery('ana');
+    // Código de outra conta digitado nesta aba enquanto o link esperava.
+    startRecovery('bia');
+    await flush();
+    await undo();
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBe('bia');
+    expect(recoveringUserId()).toBe('bia');
+
+    const again = await beginRecovery('ana');
+    await finishRecovery();
+    await again();
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBeNull();
+    expect(recoveringUserId()).toBeNull();
+  });
+
+  it('conferir de quem é a marca e desfazer são uma operação só: a marca posta no meio fica', async () => {
+    forgetRecoveryInMemory();
+    const undo = await beginRecovery('ana');
+    // Desfazer começou (já leu que a marca é desta tentativa) e, antes de ele apagar, o código do e-mail
+    // entra para a mesma conta.
+    const undoing = undo();
+    startRecovery('ana');
+    await undoing;
+    await flush();
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBe('ana');
+    expect(recoveringUserId()).toBe('ana');
+  });
+
+  it('desfazer devolve também de quem era a marca que estava lá', async () => {
+    await AsyncStorage.multiSet([
+      [MARK_KEY, 'bia'],
+      [MARK_BY_KEY, 'tentativa-da-bia'],
+    ]);
+    const undo = await beginRecovery('ana');
+    expect(await AsyncStorage.getItem(MARK_BY_KEY)).not.toBe('tentativa-da-bia');
+    await undo();
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBe('bia');
+    expect(await AsyncStorage.getItem(MARK_BY_KEY)).toBe('tentativa-da-bia');
+  });
+});
+
+describe('marca posta ou tirada por outra aba', () => {
+  it('a aba que já estava na mesma conta recebe a marca e vai para a senha nova', () => {
+    const open = { userId: null, readFor: 'ana' };
+    expect(recoveryGate(open, 'ana')).toBe('free');
+    const marked = recoveryAfterStorage(open, MARK_KEY, 'ana');
+    expect(marked).toEqual({ userId: 'ana', readFor: 'ana' });
+    expect(recoveryGate(marked, 'ana')).toBe('new-password');
+  });
+
+  it('a marca tirada (senha salva ou desistência em outra aba) solta a aba; o clear() do armazenamento também', () => {
+    const marked = { userId: 'ana', readFor: 'ana' };
+    expect(recoveryGate(recoveryAfterStorage(marked, MARK_KEY, null), 'ana')).toBe('free');
+    expect(recoveryGate(recoveryAfterStorage(marked, null, null), 'ana')).toBe('free');
+  });
+
+  it('a marca de outra conta não prende a conta desta aba; outra chave não muda nada', () => {
+    const open = { userId: null, readFor: 'bia' };
+    expect(recoveryGate(recoveryAfterStorage(open, MARK_KEY, 'ana'), 'bia')).toBe('free');
+    expect(recoveryAfterStorage(open, 'kotii:query-cache', '{}')).toBe(open);
+  });
+
+  it('aba sem conta: a marca fica na memória, e a conta que chegar depois já cai na senha nova', () => {
+    const marked = recoveryAfterStorage({ userId: null, readFor: null }, MARK_KEY, 'ana');
+    expect(recoveryGate(marked, 'ana')).toBe('reading');
+    expect(recoveryGate({ ...marked, readFor: 'ana' }, 'ana')).toBe('new-password');
+  });
+
+  it('no celular não há o que ouvir, mesmo que exista um addEventListener', () => {
+    const page = globalThis as { addEventListener?: unknown };
+    const listen = jest.fn();
+    page.addEventListener = listen;
+    jest.isolateModules(() => {
+      jest.requireActual('../passwordRecovery');
+    });
+    delete page.addEventListener;
+    expect(listen).not.toHaveBeenCalled();
+  });
+
+  it('no navegador, o evento "storage" do localStorage chega ao estado', async () => {
+    const page = globalThis as { addEventListener?: unknown; localStorage?: unknown };
+    const area = {};
+    let onStorage: (event: { key: string | null; newValue: string | null; storageArea: unknown }) => void = () => undefined;
+    page.localStorage = area;
+    page.addEventListener = (type: string, listener: typeof onStorage) => {
+      if (type === 'storage') onStorage = listener;
+    };
+    let web: typeof import('../passwordRecovery') | undefined;
+    jest.isolateModules(() => {
+      jest.doMock('react-native', () => ({ Platform: { OS: 'web' } }));
+      web = jest.requireActual<typeof import('../passwordRecovery')>('../passwordRecovery');
+    });
+    jest.dontMock('react-native');
+    delete page.addEventListener;
+    const tab = web as typeof import('../passwordRecovery');
+
+    await tab.readRecovery('ana');
+    expect(tab.recoveryGateNow('ana')).toBe('free');
+    // Outro armazenamento (sessionStorage) com a mesma chave não conta.
+    onStorage({ key: MARK_KEY, newValue: 'ana', storageArea: {} });
+    expect(tab.recoveryGateNow('ana')).toBe('free');
+    onStorage({ key: MARK_KEY, newValue: 'ana', storageArea: area });
+    expect(tab.recoveryGateNow('ana')).toBe('new-password');
+    onStorage({ key: MARK_KEY, newValue: null, storageArea: area });
+    expect(tab.recoveryGateNow('ana')).toBe('free');
+    // Uma leitura do aparelho que começou antes (e ainda achou a marca) não desfaz o que a outra aba acabou de dizer.
+    await AsyncStorage.setItem(MARK_KEY, 'ana');
+    const reading = tab.readRecovery('ana');
+    onStorage({ key: MARK_KEY, newValue: null, storageArea: area });
+    await reading;
+    expect(tab.recoveryGateNow('ana')).toBe('free');
+    delete page.localStorage;
   });
 });
 
