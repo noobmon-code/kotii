@@ -125,7 +125,8 @@ export function useSaveFamilyEvent() {
       }
       unwrap(await supabase.from('family_events').update(values).eq('id', id));
       // A regra pode ter mudado: mudanças de dias que não são mais do
-      // compromisso saem. Se a limpeza falhar, ficam, e o app as ignora.
+      // compromisso saem (todas, se ele deixou de se repetir). Se a limpeza
+      // falhar, ficam, e o app as ignora.
       try {
         const rows = unwrap(await supabase.from('family_event_days').select('occurs_on').eq('event_id', id)) as { occurs_on: string }[];
         const stale = staleDayDates(values, rows);

@@ -20,7 +20,7 @@ export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint
   {
     key: 'events',
     label: 'Compromissos e aniversários',
-    hint: 'Na véspera, às 19h; no dia, 1 hora antes do horário (sem horário, às 8h)',
+    hint: 'Na véspera, às 19h, e no dia, 1 hora antes do horário (sem horário, às 8h). Os de toda semana avisam só no dia',
   },
   { key: 'vaccines', label: 'Vacinas', hint: 'Uma semana antes da próxima dose e no dia, às 9h' },
   {
@@ -85,6 +85,14 @@ export interface HouseReminderInput {
 
 /** Identifica um atraso: pagar a conta (ou registrar a dose) muda a data, e o atraso novo avisa de novo. */
 export const overdueKey = (id: string, since: string) => `${id}:${since}`;
+
+/** A hora do aviso no dia do compromisso: uma hora antes (sem horário, às 8h); antes da 1h da manhã não há (fica só a véspera). */
+function eventDayTime(time: string | null): string | null {
+  if (!time) return EVENT_ALL_DAY_TIME;
+  const [h, m] = time.split(':').map(Number);
+  const lead = h * 60 + m - EVENT_LEAD_MINUTES;
+  return lead >= 0 ? `${String(Math.floor(lead / 60)).padStart(2, '0')}:${String(lead % 60).padStart(2, '0')}` : null;
+}
 
 export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
   const { kinds, today, nowTime } = input;
@@ -173,18 +181,11 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
       const texts = eventReminderTexts(entry);
       // Compromisso e dia: a véspera de uma vez não se confunde com o aviso da vez anterior.
       const id = `${entry.id}@${entry.date}`;
-      if (texts.eve) add('events', id, addDays(entry.date, -1), texts.eve, texts.body, { at: EVENT_EVE_TIME });
-      if (!entry.time) {
-        add('events', id, entry.date, texts.today, texts.body, { at: EVENT_ALL_DAY_TIME });
-        continue;
-      }
-      // Uma hora antes; compromisso antes da 1h da manhã fica só com a véspera.
-      const [h, m] = entry.time.split(':').map(Number);
-      const lead = h * 60 + m - EVENT_LEAD_MINUTES;
-      if (lead >= 0) {
-        const at = `${String(Math.floor(lead / 60)).padStart(2, '0')}:${String(lead % 60).padStart(2, '0')}`;
-        add('events', id, entry.date, texts.today, texts.body, { at });
-      }
+      const at = eventDayTime(entry.time);
+      // A rotina (toda semana, com quem leva e quem busca de sempre) avisa só
+      // no dia: véspera toda noite vira barulho. Sem aviso no dia, a véspera fica.
+      if (texts.eve && !(entry.routine && at)) add('events', id, addDays(entry.date, -1), texts.eve, texts.body, { at: EVENT_EVE_TIME });
+      if (at) add('events', id, entry.date, texts.today, texts.body, { at });
     }
   }
 
@@ -209,7 +210,15 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
     }
   }
 
-  return out
-    .sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time) || a.key.localeCompare(b.key))
-    .slice(0, Math.max(0, input.limit ?? HOUSE_REMINDER_LIMIT));
+  const limit = Math.max(0, input.limit ?? HOUSE_REMINDER_LIMIT);
+  const soonest = (a: HouseReminder, b: HouseReminder) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time) || a.key.localeCompare(b.key);
+  // Os compromissos têm a sua parte do teto: uma rotina dá aviso quase todo
+  // dia e, sozinha, tomaria as vagas das contas e dos documentos. Ficam com
+  // metade, ou com as vagas que os outros tipos não usam, se forem mais.
+  const others = out.filter((r) => r.kind !== 'events');
+  const events = out
+    .filter((r) => r.kind === 'events')
+    .sort(soonest)
+    .slice(0, Math.max(Math.ceil(limit / 2), limit - others.length));
+  return [...others, ...events].sort(soonest).slice(0, limit);
 }

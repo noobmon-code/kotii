@@ -5,13 +5,14 @@ import type { Person } from '@/lib/types';
 import { Chip } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
-/** Escolha de pessoa/pet em linha rolável. `onAdd` mostra "+ Pessoa". */
+/** Escolha de pessoa/pet em linha rolável. `onAdd` mostra "+ Pessoa ou pet" (ou `addLabel`). */
 export function PersonChips({
   people,
   value,
   onChange,
   allLabel,
   onAdd,
+  addLabel = 'Pessoa ou pet',
 }: {
   people: Person[];
   value: string | null;
@@ -19,6 +20,8 @@ export function PersonChips({
   /** Com rótulo, mostra a opção "todos" (valor null). */
   allLabel?: string;
   onAdd?: () => void;
+  /** Numa linha que só lista pessoas, "Pessoa": um pet criado ali não apareceria. */
+  addLabel?: string;
 }) {
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.row} contentContainerStyle={styles.content}>
@@ -32,7 +35,7 @@ export function PersonChips({
           onPress={() => onChange(p.id)}
         />
       ))}
-      {onAdd ? <Chip label="Pessoa ou pet" icon="plus" onPress={onAdd} /> : null}
+      {onAdd ? <Chip label={addLabel} icon="plus" onPress={onAdd} /> : null}
     </ScrollView>
   );
 }

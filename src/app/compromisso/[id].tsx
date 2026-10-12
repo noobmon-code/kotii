@@ -53,6 +53,9 @@ import { space } from '@/ui/theme';
 
 const onError = (err: unknown) => notify('Erro', familyEventErrorMessage(err));
 
+/** Quantos dos outros dias com mudança aparecem antes do "Ver todos". */
+const OTHER_DAYS_SHOWN = 6;
+
 /** "Quinta-feira, 15 de outubro". */
 function longDate(date: string): string {
   const [y, m, d] = date.split('-').map(Number);
@@ -94,21 +97,35 @@ function EventForm({ event, people, day }: { event?: FamilyEvent; people: Person
   const [notes, setNotes] = useState(event?.notes ?? '');
   const [recurrence, setRecurrence] = useState<EventRecurrence>(event?.recurrence ?? 'none');
   const [weekdays, setWeekdays] = useState<number[]>(event?.weekdays ?? []);
+  // O dia da semana veio sozinho da data (ao escolher "Toda semana") e ninguém
+  // mexeu nele: acompanha a data. Os de um compromisso já gravado e os
+  // escolhidos à mão nunca andam.
+  const [autoWeekday, setAutoWeekday] = useState(false);
   const [until, setUntil] = useState(event?.until_on ? formatBRDate(event.until_on) : '');
 
   const dateISO = parseBRDate(date);
   const repeats = recurrence !== 'none';
-  const hint = recurrenceHint(recurrence, dateISO);
+  const hint = recurrenceHint(recurrence, dateISO, weekdays);
   // O compromisso gravado já se repete: salvar e excluir valem para todas as vezes.
   const series = Boolean(event && event.recurrence !== 'none');
+
+  function changeDate(next: string) {
+    setDate(next);
+    const nextISO = parseBRDate(next);
+    if (autoWeekday && nextISO) setWeekdays([weekdayOf(nextISO)]);
+  }
 
   function pickRecurrence(next: EventRecurrence) {
     setRecurrence(next);
     // Toda semana começa no dia da semana da data.
-    if (next === 'weekly' && !weekdays.length) setWeekdays([weekdayOf(dateISO ?? todayISO())]);
+    if (next === 'weekly' && !weekdays.length) {
+      setWeekdays([weekdayOf(dateISO ?? todayISO())]);
+      setAutoWeekday(true);
+    }
   }
 
   function toggleWeekday(weekday: number) {
+    setAutoWeekday(false);
     setWeekdays((prev) => (prev.includes(weekday) ? prev.filter((d) => d !== weekday) : [...prev, weekday].sort((a, b) => a - b)));
   }
 
@@ -154,7 +171,7 @@ function EventForm({ event, people, day }: { event?: FamilyEvent; people: Person
         maxLength={EVENT_LIMITS.title}
         autoFocus={!event}
       />
-      <DateField label={repeats ? 'A partir de' : 'Data'} value={date} onChangeText={setDate} />
+      <DateField label={repeats ? 'A partir de' : 'Data'} value={date} onChangeText={changeDate} />
       <Row gap={space.md}>
         <View style={styles.flex}>
           <TextField label="Começa às" value={startTime} onChangeText={setStartTime} placeholder="16:00" keyboardType="numbers-and-punctuation" />
@@ -171,11 +188,11 @@ function EventForm({ event, people, day }: { event?: FamilyEvent; people: Person
       </View>
       <View style={styles.group}>
         <Text variant="label">Quem leva</Text>
-        <PersonChips people={drivers} value={takeBy} onChange={setTakeBy} allLabel="Ninguém" />
+        <PersonChips people={drivers} value={takeBy} onChange={setTakeBy} allLabel="Ninguém" onAdd={openNewPerson} addLabel="Pessoa" />
       </View>
       <View style={styles.group}>
         <Text variant="label">Quem busca</Text>
-        <PersonChips people={drivers} value={pickUpBy} onChange={setPickUpBy} allLabel="Ninguém" />
+        <PersonChips people={drivers} value={pickUpBy} onChange={setPickUpBy} allLabel="Ninguém" onAdd={openNewPerson} addLabel="Pessoa" />
       </View>
 
       <TextField label="Local" value={location} onChangeText={setLocation} placeholder="Ex.: Clube, escola, casa da vó" maxLength={EVENT_LIMITS.location} />
@@ -228,6 +245,7 @@ function DayChanges({ event, people, initialDay }: { event: FamilyEvent; people:
   const today = todayISO();
   // Só um dia que é mesmo do compromisso (a regra pode ter mudado desde o toque).
   const [day, setDay] = useState(initialDay && isEventDate(event, initialDay) ? initialDay : null);
+  const [showAll, setShowAll] = useState(false);
 
   if (!days.data) {
     return days.isError ? (
@@ -238,16 +256,26 @@ function DayChanges({ event, people, initialDay }: { event: FamilyEvent; people:
   }
 
   const rows = days.data.filter((d) => d.event_id === event.id);
-  const values: EventDayValues = (day ? dayChangeOf(event.id, rows, day) : null) ?? NO_DAY_CHANGE;
+  // Mudança guardada que ficou igual ao de sempre (o compromisso mudou depois)
+  // não é mudança: o dia aparece "como sempre" e não entra na lista.
+  const stored = day ? dayChangeOf(event.id, rows, day) : null;
+  const values: EventDayValues = (stored && normalizeDayChange(event, stored)) ?? NO_DAY_CHANGE;
   const nameOf = (id: string | null) => people.find((p) => p.id === id)?.name ?? null;
   const drivers = driversOf(people);
   const others = rows
     .filter((d) => d.occurs_on !== day && d.occurs_on >= today && isEventDate(event, d.occurs_on))
-    .sort((a, b) => a.occurs_on.localeCompare(b.occurs_on))
-    .slice(0, 6);
+    .flatMap((d) => {
+      const change = normalizeDayChange(event, d);
+      return change ? [{ date: d.occurs_on, change }] : [];
+    })
+    .sort((a, b) => a.date.localeCompare(b.date));
+  // A lista fica acima do formulário: só os primeiros, e o resto num toque
+  // (é por ela que se chega a um dia marcado como "não vai ter").
+  const shown = showAll ? others : others.slice(0, OTHER_DAYS_SHOWN);
+  const saving = save.isPending;
 
   function change(patch: Partial<EventDayValues>) {
-    if (!day || save.isPending) return;
+    if (!day || saving) return;
     save.mutate({ eventId: event.id, date: day, change: normalizeDayChange(event, { ...values, ...patch }) }, { onError });
   }
 
@@ -265,33 +293,36 @@ function DayChanges({ event, people, initialDay }: { event: FamilyEvent; people:
                   Não vai ter neste dia.
                 </Text>
               </Row>
-              <Button title="Desfazer: vai ter neste dia" variant="secondary" icon="undo" loading={save.isPending} onPress={() => change({ cancelled: false })} />
+              <Button title="Desfazer: vai ter neste dia" variant="secondary" icon="undo" loading={saving} onPress={() => change({ cancelled: false })} />
             </>
           ) : (
             <>
-              <DayDriver
-                label="Quem leva"
-                usual={event.take_by}
-                changed={values.override_take}
-                value={values.take_by}
-                drivers={drivers}
-                nameOf={nameOf}
-                onChange={(changed, id) => change({ override_take: changed, take_by: id })}
-              />
-              <DayDriver
-                label="Quem busca"
-                usual={event.pick_up_by}
-                changed={values.override_pick_up}
-                value={values.pick_up_by}
-                drivers={drivers}
-                nameOf={nameOf}
-                onChange={(changed, id) => change({ override_pick_up: changed, pick_up_by: id })}
-              />
+              {/* Enquanto grava, as escolhas ficam apagadas e não aceitam toque: um segundo toque que parecesse aceito se perderia. */}
+              <View style={[styles.group, saving && styles.busy]} accessibilityState={{ busy: saving }}>
+                <DayDriver
+                  label="Quem leva"
+                  usual={event.take_by}
+                  changed={values.override_take}
+                  value={values.take_by}
+                  drivers={drivers}
+                  nameOf={nameOf}
+                  onChange={(changed, id) => change({ override_take: changed, take_by: id })}
+                />
+                <DayDriver
+                  label="Quem busca"
+                  usual={event.pick_up_by}
+                  changed={values.override_pick_up}
+                  value={values.pick_up_by}
+                  drivers={drivers}
+                  nameOf={nameOf}
+                  onChange={(changed, id) => change({ override_pick_up: changed, pick_up_by: id })}
+                />
+              </View>
               <Button
                 title="Não vai ter neste dia"
                 variant="secondary"
                 icon="calendar-remove-outline"
-                loading={save.isPending}
+                loading={saving}
                 onPress={() => change({ cancelled: true })}
               />
             </>
@@ -301,15 +332,16 @@ function DayChanges({ event, people, initialDay }: { event: FamilyEvent; people:
       {others.length ? (
         <Section title={day ? 'Outros dias com mudança' : 'Dias com mudança'}>
           <ListCard>
-            {others.map((d) => (
+            {shown.map((other) => (
               <ListRow
-                key={d.occurs_on}
-                left={<IconBadge icon={d.cancelled ? 'calendar-remove-outline' : 'car-outline'} tone={d.cancelled ? 'warning' : 'info'} />}
-                title={weekdayDate(d.occurs_on)}
-                subtitle={describeDayChange(d, nameOf)}
-                onPress={() => setDay(d.occurs_on)}
+                key={other.date}
+                left={<IconBadge icon={other.change.cancelled ? 'calendar-remove-outline' : 'car-outline'} tone={other.change.cancelled ? 'warning' : 'info'} />}
+                title={weekdayDate(other.date)}
+                subtitle={describeDayChange(other.change, nameOf)}
+                onPress={() => setDay(other.date)}
               />
             ))}
+            {others.length > shown.length ? <Button title={`Ver todos (${others.length})`} variant="ghost" onPress={() => setShowAll(true)} /> : null}
           </ListCard>
         </Section>
       ) : null}
@@ -355,5 +387,6 @@ function DayDriver({
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   group: { gap: space.sm },
+  busy: { opacity: 0.5, pointerEvents: 'none' },
   wrap: { flexWrap: 'wrap' },
 });

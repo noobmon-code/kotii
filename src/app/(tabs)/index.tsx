@@ -178,8 +178,9 @@ export default function TodayScreen() {
     .filter(({ status }) => status.kind === 'acabando');
   const equipmentName = (id: string | null) => (id ? equipment.data?.find((e) => e.id === id)?.name : undefined);
   const activeLists = (lists.data ?? []).filter((l) => l.pending > 0);
-  // Compromissos da família e aniversários de hoje e de amanhã: com algum, a
-  // tela não diz "tudo em dia" (mas eles não contam como pendência).
+  // Compromissos da família e aniversários de hoje e de amanhã: têm a seção
+  // deles e não são pendência (com uma rotina, haveria um quase todo dia), por
+  // isso não entram no "tudo em dia" nem na frase do topo.
   const familyToday = todayEntries(family.calendar, today);
   // "Acho que acabou": do mercado, menos o que já está em alguma lista aberta.
   const restock = useRestock(lists.isSuccess ? onLists : undefined, purchases.data, restocked.pending, today);
@@ -200,7 +201,6 @@ export default function TodayScreen() {
     !warrantiesEnding.length &&
     !budgetAlerts.length &&
     !restock.length &&
-    !familyToday.length &&
     !hasHealthToday(health, today);
   const dateLabel = capitalizeFirst(now.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }));
   const period = periodOf(now);

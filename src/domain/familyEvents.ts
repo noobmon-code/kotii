@@ -148,10 +148,12 @@ export interface EventOccurrence<E extends FamilyEventLike = FamilyEventLike> {
  * As vezes do compromisso entre `from` e `to`, com as mudanças de cada dia:
  * dia marcado como "não vai ter" sai, e quem leva ou busca naquele dia entra
  * no lugar do de sempre. Mudança de um dia que não é mais do compromisso (a
- * regra mudou) não conta.
+ * regra mudou) não conta, nem a que sobrou num compromisso que deixou de se
+ * repetir: a tela não teria onde desfazê-la.
  */
 export function occurrencesOf<E extends FamilyEventLike>(event: E, days: EventDayLike[], from: string, to: string): EventOccurrence<E>[] {
-  const changes = new Map(days.filter((d) => d.event_id === event.id).map((d) => [d.occurs_on, d]));
+  const rows = event.recurrence === 'none' ? [] : days.filter((d) => d.event_id === event.id);
+  const changes = new Map(rows.map((d) => [d.occurs_on, d]));
   return eventDatesIn(event, from, to).flatMap((date) => {
     const change = changes.get(date);
     if (change?.cancelled) return [];
@@ -189,9 +191,13 @@ export function normalizeDayChange(event: Pick<FamilyEventLike, 'take_by' | 'pic
   };
 }
 
-/** Dias com mudança que não são mais do compromisso (a regra mudou): podem ser apagados. */
+/**
+ * Dias com mudança que não são mais do compromisso (a regra mudou): podem ser
+ * apagados. Se ele não se repete mais, todos: "só neste dia" é de quem se repete.
+ */
 export function staleDayDates(event: EventSeries, days: Pick<EventDayLike, 'occurs_on'>[]): string[] {
-  return days.map((d) => d.occurs_on).filter((date) => !isEventDate(event, date));
+  const dates = days.map((d) => d.occurs_on);
+  return event.recurrence === 'none' ? dates : dates.filter((date) => !isEventDate(event, date));
 }
 
 /** Aniversário de uma ficha num ano: quantos anos faz. */
@@ -223,6 +229,9 @@ export function birthdaysIn(people: PersonLike[], from: string, to: string): Bir
 // ---------------------------------------------------------------------------
 // Textos
 
+/** Texto livre comprido, cortado com reticências para caber onde vai (aviso, retrato do Nuke). */
+const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
+
 /** "16:00–17:00", "16:00" ou null (o dia todo). */
 export function formatTimeRange(start: string | null, end: string | null): string | null {
   if (!start) return null;
@@ -251,9 +260,16 @@ export function birthdayTitle(name: string): string {
   return `Aniversário de ${name}`;
 }
 
-/** "Todo dia 31; nos meses mais curtos, no último dia" (null: não repete, ou a semana, que mostra os dias). */
-export function recurrenceHint(recurrence: EventRecurrence, date: string | null): string | null {
-  if (!date || recurrence === 'none' || recurrence === 'weekly') return null;
+/** Quem leva e quem busca valem para todos os dias da semana do compromisso: a saída é um para cada dia. */
+const EACH_DAY_HINT = 'Cada dia uma pessoa leva? Crie um compromisso para cada dia.';
+
+/**
+ * "Todo dia 31; nos meses mais curtos, no último dia" (null: não repete). Na
+ * semana, que já mostra os dias, só a dica de quando há mais de um escolhido.
+ */
+export function recurrenceHint(recurrence: EventRecurrence, date: string | null, weekdays: number[] = []): string | null {
+  if (recurrence === 'weekly') return weekdays.length > 1 ? EACH_DAY_HINT : null;
+  if (!date || recurrence === 'none') return null;
   const day = Number(date.slice(8, 10));
   if (recurrence === 'monthly') return day > 28 ? `Todo dia ${day}; nos meses mais curtos, no último dia.` : `Todo dia ${day}.`;
   const dayMonth = formatBRDate(date).slice(0, 5);
@@ -278,6 +294,8 @@ export interface CalendarEntry {
   bring: string | null;
   /** Aniversário: quantos anos faz. */
   age: number | null;
+  /** Vez de um compromisso de toda semana em que quem leva e quem busca são os de sempre: o aviso é só no dia. */
+  routine: boolean;
 }
 
 /** Dia inteiro antes das horas marcadas; dentro disso, pelo título (como o resto da agenda). */
@@ -305,6 +323,7 @@ export function calendarEntries({ events, days, people }: FamilyCalendar, from: 
         location: event.location?.trim() || null,
         bring: event.bring?.trim() || null,
         age: null,
+        routine: event.recurrence === 'weekly' && o.take_by === event.take_by && o.pick_up_by === event.pick_up_by,
       });
     }
   }
@@ -321,6 +340,7 @@ export function calendarEntries({ events, days, people }: FamilyCalendar, from: 
       location: null,
       bring: null,
       age: b.age,
+      routine: false,
     });
   }
   return entries.sort(byDayAndTime);
@@ -375,6 +395,10 @@ export function todayEntries(calendar: FamilyCalendar, today: string): TodayEntr
 // ---------------------------------------------------------------------------
 // Nuke
 
+/** Local e "o que levar" no retrato do Nuke: o texto se repete a cada vez do compromisso, e o servidor corta o retrato inteiro num tamanho fixo. */
+const NUKE_LOCATION_MAX = 60;
+const NUKE_BRING_MAX = 120;
+
 /**
  * Linhas para o retrato da casa do Nuke: os próximos dias (hoje + `days`),
  * com "hoje", "amanhã" ou o dia da semana já escritos, para ele não fazer
@@ -388,7 +412,12 @@ export function calendarLines(calendar: FamilyCalendar, today: string, days = 7)
     const details =
       entry.kind === 'aniversario'
         ? [entry.age ? ageText(entry.age) : null]
-        : [entry.who, entry.ride, entry.location ? `local: ${entry.location}` : null, entry.bring ? `levar: ${entry.bring}` : null];
+        : [
+            entry.who,
+            entry.ride,
+            entry.location ? `local: ${clip(entry.location, NUKE_LOCATION_MAX)}` : null,
+            entry.bring ? `levar: ${clip(entry.bring, NUKE_BRING_MAX)}` : null,
+          ];
     const extra = details.filter(Boolean).join(', ');
     return [day, formatTimeRange(entry.time, entry.endTime), entry.title].filter(Boolean).join(' ') + (extra ? ` (${extra})` : '');
   });
@@ -396,9 +425,6 @@ export function calendarLines(calendar: FamilyCalendar, today: string, days = 7)
 
 // ---------------------------------------------------------------------------
 // Avisos
-
-/** O texto do aviso não passa do que a agenda do navegador aceita (push_schedule). */
-const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
 
 export interface EventReminderTexts {
   /** Na véspera ("Amanhã: Natação da Ana às 16:00"); null no aniversário, que só avisa no dia. */
@@ -409,6 +435,7 @@ export interface EventReminderTexts {
   body: string;
 }
 
+/** Os textos do aviso, cortados para não passar do que a agenda do navegador aceita (push_schedule). */
 export function eventReminderTexts(entry: CalendarEntry): EventReminderTexts {
   if (entry.kind === 'aniversario') {
     const age = entry.age ? ageText(entry.age) : '';
@@ -483,6 +510,11 @@ export function validateEventForm(form: EventForm): EventFormResult {
   const until = repeats && form.until.trim() ? parseBRDate(form.until) : null;
   if (repeats && form.until.trim() && !until) return invalid('Data inválida', 'Informe até quando repete como dd/mm/aaaa, ou deixe em branco.');
   if (until && until < date) return invalid('Data inválida', 'O "até" não pode ser antes da data do compromisso.');
+  // Toda semana com fim: sem nenhum dos dias até lá, o compromisso nunca
+  // apareceria (nem para ser apagado). A data digitada fica como está.
+  if (form.recurrence === 'weekly' && until && !eventDatesIn({ starts_on: date, recurrence: 'weekly', weekdays, until_on: until }, date, until).length) {
+    return invalid('Confira os dados', 'Nenhum dos dias escolhidos cai até essa data.');
+  }
 
   const location = form.location.trim();
   const bring = form.bring.trim();

@@ -480,9 +480,11 @@ describe('house reminders', () => {
       // Os compromissos não carregaram (sem internet): os avisos deles ficam.
       await reminders.syncHouseReminders(data, target);
       expect([...live.keys()]).toEqual(ids);
-      // "Não vai ter neste dia": os avisos daquele dia saem; o aniversário fica.
+      // "Não vai ter neste dia" (só vale no que se repete; aqui, todo mês): os
+      // avisos daquele dia saem; o aniversário fica.
+      const monthly = [{ ...family.events[0], recurrence: 'monthly' as const }];
       const day = { event_id: 'natacao', occurs_on: '2026-09-29', cancelled: true, override_take: false, take_by: null, override_pick_up: false, pick_up_by: null };
-      await reminders.syncHouseReminders({ ...data, family: { ...family, days: [day] } }, target);
+      await reminders.syncHouseReminders({ ...data, family: { ...family, events: monthly, days: [day] } }, target);
       expect(keys()).toEqual(['events:ana@2026-09-30:2026-09-30:08:00']);
       // Sem as tabelas dos compromissos (antes da migração): só as fichas, e o aniversário continua.
       await reminders.syncHouseReminders({ ...data, family: { ...family, events: [], days: [] } }, target);

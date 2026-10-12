@@ -176,6 +176,20 @@ describe('occurrencesOf (mudanças de um dia)', () => {
     expect(dayChangeOf('natacao', days, '2026-10-15')).toBeNull();
   });
 
+  it('compromisso que passou a "Não repete": as mudanças de dias saem todas, e a que sobrar não vale', () => {
+    // A natação virou uma aula só, na terça 13. Havia mudança nesse dia e na quinta.
+    const once: FamilyEventLike = { ...swim, recurrence: 'none', weekdays: null };
+    const cancelled = [day({ occurs_on: '2026-10-13', cancelled: true }), day({ cancelled: true })];
+    expect(staleDayDates(once, cancelled)).toEqual(['2026-10-13', '2026-10-15']);
+    // A limpeza pode falhar: mesmo com a linha guardada, a aula aparece (não
+    // há mais "Só neste dia" na tela para desfazer), com quem leva sempre.
+    const seen = (days: EventDayLike[]) => occurrencesOf(once, days, ...week).map((o) => [o.date, o.take_by, o.pick_up_by]);
+    expect(seen(cancelled)).toEqual([['2026-10-13', 'beto', 'carla']]);
+    expect(seen([day({ occurs_on: '2026-10-13', override_take: true, take_by: 'vo', override_pick_up: true })])).toEqual([['2026-10-13', 'beto', 'carla']]);
+    const shown = calendarEntries({ events: [once], days: cancelled, people }, ...week).filter((e) => e.kind === 'compromisso');
+    expect(shown.map((e) => [e.date, e.ride])).toEqual([['2026-10-13', 'Beto leva, Carla busca']]);
+  });
+
   it('o que guardar para o dia: igual ao de sempre não é mudança', () => {
     expect(normalizeDayChange(swim, NO_DAY_CHANGE)).toBeNull();
     // Escolher o Beto (o de sempre) para o dia: nada a guardar.
@@ -254,6 +268,16 @@ describe('textos', () => {
     expect(recurrenceHint('monthly', null)).toBeNull();
   });
 
+  it('toda semana em mais de um dia: a saída para "cada dia uma pessoa leva"', () => {
+    expect(recurrenceHint('weekly', '2026-10-13', [2, 4])).toBe('Cada dia uma pessoa leva? Crie um compromisso para cada dia.');
+    // Não depende da data (pode estar pela metade no formulário).
+    expect(recurrenceHint('weekly', null, [1, 2, 3, 4, 5])).toBe('Cada dia uma pessoa leva? Crie um compromisso para cada dia.');
+    expect(recurrenceHint('weekly', '2026-10-13', [2])).toBeNull();
+    // Os dias que ficaram de quando era "toda semana" não mudam as outras dicas.
+    expect(recurrenceHint('monthly', '2026-10-12', [2, 4])).toBe('Todo dia 12.');
+    expect(recurrenceHint('none', '2026-10-12', [2, 4])).toBeNull();
+  });
+
   it('o que mudou num dia', () => {
     const nameOf = (id: string | null) => people.find((p) => p.id === id)?.name ?? null;
     expect(describeDayChange({ ...NO_DAY_CHANGE, cancelled: true, override_take: true, take_by: 'vo' }, nameOf)).toBe('Não vai ter');
@@ -298,6 +322,27 @@ describe('calendarEntries', () => {
     const entries = calendarEntries({ ...calendar, people: people.filter((p) => p.id !== 'carla') }, '2026-10-22', '2026-10-22');
     expect(entries.map(entryDetail)).toEqual(['Ana · Beto leva · Levar: touca e toalha']);
   });
+
+  it('rotina: a vez de toda semana em que quem leva e quem busca são os de sempre', () => {
+    const routine = (cal: FamilyCalendar) => calendarEntries(cal, '2026-10-13', '2026-10-22').map((e) => [e.date, e.title, e.routine]);
+    expect(routine(calendar)).toEqual([
+      ['2026-10-13', 'Aniversário de Rex', false],
+      ['2026-10-13', 'Reunião da escola', false],
+      ['2026-10-13', 'Festa do João', false],
+      ['2026-10-13', 'Natação da Ana', true],
+      ['2026-10-14', 'Aniversário de Ana', false],
+      // No dia 20 a vó leva: não é a rotina.
+      ['2026-10-20', 'Natação da Ana', false],
+      ['2026-10-22', 'Natação da Ana', true],
+    ]);
+    // Guardado para o dia o mesmo de sempre: segue sendo a rotina. Todo mês não é rotina.
+    const same = [day({ occurs_on: '2026-10-13', override_take: true, take_by: 'beto' })];
+    const monthly: FamilyEventLike = { ...swim, id: 'pediatra', title: 'Pediatra', recurrence: 'monthly', weekdays: null };
+    expect(routine({ events: [swim, monthly], days: same, people: [] }).slice(0, 2)).toEqual([
+      ['2026-10-13', 'Natação da Ana', true],
+      ['2026-10-13', 'Pediatra', false],
+    ]);
+  });
 });
 
 describe('todayEntries (tela Hoje)', () => {
@@ -328,6 +373,30 @@ describe('calendarLines (retrato do Nuke)', () => {
     expect(calendarLines(calendar, '2026-10-13').at(-1)).toBe(
       'ter 20/10 16:00–17:00 Natação da Ana (Ana, Vó Maria leva, Carla busca, local: Clube, levar: touca e toalha)',
     );
+  });
+
+  it('local e "o que levar" compridos são cortados: 25 linhas cheias ficam longe do corte do servidor', () => {
+    // Quatro compromissos de todo dia, com os textos no tamanho máximo do banco.
+    const long: FamilyEventLike[] = ['a', 'b', 'c', 'd'].map((id) => ({
+      ...swim,
+      id,
+      title: `${id} ${'t'.repeat(118)}`,
+      location: 'l'.repeat(200),
+      bring: 'b'.repeat(300),
+      weekdays: [0, 1, 2, 3, 4, 5, 6],
+    }));
+    // (Sem as datas de nascimento, para só haver compromissos.)
+    const noBirthdays = people.map((p) => ({ ...p, birth_date: null }));
+    const lines = calendarLines({ events: long, days: [], people: noBirthdays }, '2026-10-13');
+    expect(lines).toHaveLength(32);
+    expect(lines[0]).toBe(
+      `hoje 16:00–17:00 a ${'t'.repeat(118)} (Ana, Beto leva, Carla busca, local: ${'l'.repeat(59)}…, levar: ${'b'.repeat(119)}…)`,
+    );
+    // O retrato do Nuke leva até 25 linhas destas; o servidor corta tudo em 16000 letras.
+    expect(lines.slice(0, 25).join('; ').length).toBeLessThan(10000);
+    // Texto que cabe passa inteiro.
+    const exact = calendarLines({ events: [{ ...swim, location: 'l'.repeat(60), bring: 'b'.repeat(120) }], days: [], people: noBirthdays }, '2026-10-13');
+    expect(exact[0]).toContain(`local: ${'l'.repeat(60)}, levar: ${'b'.repeat(120)})`);
   });
 });
 
@@ -442,5 +511,19 @@ describe('validateEventForm', () => {
     expect(message({ location: 'x'.repeat(201) })).toBe('O local pode ter até 200 letras.');
     expect(message({ notes: 'x'.repeat(2001) })).toBe('As observações podem ter até 2000 letras.');
     expect(message({})).toBeNull();
+  });
+
+  it('toda semana com "até": algum dos dias escolhidos precisa cair até lá', () => {
+    // 14/10/2026 é uma quarta. Só às terças, até a segunda 19/10: não haveria vez nenhuma.
+    expect(message({ date: '14/10/2026', weekdays: [2], until: '19/10/2026' })).toBe('Nenhum dos dias escolhidos cai até essa data.');
+    expect(message({ date: '14/10/2026', weekdays: [1, 2], until: '18/10/2026' })).toBe('Nenhum dos dias escolhidos cai até essa data.');
+    // Até a terça 20/10 já cabe uma vez; a data que a pessoa digitou não muda.
+    expect(validateEventForm({ ...form, date: '14/10/2026', weekdays: [2], until: '20/10/2026' })).toMatchObject({
+      ok: true,
+      values: { starts_on: '2026-10-14', weekdays: [2], until_on: '2026-10-20' },
+    });
+    // No próprio dia da data, e sem "até" (sempre há uma próxima vez).
+    expect(message({ date: '14/10/2026', weekdays: [3], until: '14/10/2026' })).toBeNull();
+    expect(message({ date: '14/10/2026', weekdays: [2] })).toBeNull();
   });
 });

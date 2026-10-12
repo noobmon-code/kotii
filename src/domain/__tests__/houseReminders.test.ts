@@ -176,21 +176,51 @@ describe('planHouseReminders: compromissos da família e aniversários', () => {
     expect(HOUSE_REMINDER_KINDS.find((k) => k.key === 'events')).toEqual({
       key: 'events',
       label: 'Compromissos e aniversários',
-      hint: 'Na véspera, às 19h; no dia, 1 hora antes do horário (sem horário, às 8h)',
+      hint: 'Na véspera, às 19h, e no dia, 1 hora antes do horário (sem horário, às 8h). Os de toda semana avisam só no dia',
     });
   });
 
   it('véspera às 19h e 1 hora antes; sem horário, às 8h; aniversário só no dia', () => {
-    const body = 'Ana · Beto leva, Carla busca · Clube · Levar: touca e toalha';
-    expect(rows({ family: withBirthday([swim, once({})]) })).toEqual([
-      ['events:natacao@2026-09-29:2026-09-28:19:00', '2026-09-28', '19:00', 'Amanhã: Natação da Ana às 16:00', body],
+    const body = 'Ana · Carla leva · Levar: presente';
+    const party = once({ id: 'festa', title: 'Festa do João', start_time: '16:00', person_id: 'ana', take_by: 'carla', bring: 'presente' });
+    expect(rows({ family: withBirthday([party, once({})]) })).toEqual([
+      ['events:festa@2026-09-29:2026-09-28:19:00', '2026-09-28', '19:00', 'Amanhã: Festa do João às 16:00', body],
       ['events:reuniao@2026-09-29:2026-09-28:19:00', '2026-09-28', '19:00', 'Amanhã: Reunião da escola', ''],
       ['events:reuniao@2026-09-29:2026-09-29:08:00', '2026-09-29', '08:00', 'Hoje: Reunião da escola', ''],
-      ['events:natacao@2026-09-29:2026-09-29:15:00', '2026-09-29', '15:00', 'Hoje às 16:00: Natação da Ana', body],
+      ['events:festa@2026-09-29:2026-09-29:15:00', '2026-09-29', '15:00', 'Hoje às 16:00: Festa do João', body],
       ['events:ana@2026-09-30:2026-09-30:08:00', '2026-09-30', '08:00', 'Hoje é aniversário de Ana', 'Faz 8 anos.'],
-      ['events:natacao@2026-10-01:2026-09-30:19:00', '2026-09-30', '19:00', 'Amanhã: Natação da Ana às 16:00', body],
+    ]);
+    // Todo mês e todo ano também avisam na véspera.
+    for (const recurrence of ['monthly', 'yearly'] as const) {
+      expect(rows({ family: family([once({ recurrence })]) }).map(([, date, time]) => [date, time])).toEqual([
+        ['2026-09-28', '19:00'],
+        ['2026-09-29', '08:00'],
+      ]);
+    }
+  });
+
+  it('o de toda semana avisa só no dia; a véspera fica para o dia em que muda quem leva ou quem busca', () => {
+    const body = 'Ana · Beto leva, Carla busca · Clube · Levar: touca e toalha';
+    expect(rows({ family: family([swim]) })).toEqual([
+      ['events:natacao@2026-09-29:2026-09-29:15:00', '2026-09-29', '15:00', 'Hoje às 16:00: Natação da Ana', body],
       ['events:natacao@2026-10-01:2026-10-01:15:00', '2026-10-01', '15:00', 'Hoje às 16:00: Natação da Ana', body],
     ]);
+    // Na quinta é a vó quem busca: aí a véspera importa.
+    const changed = 'Ana · Beto leva, Vó Maria busca · Clube · Levar: touca e toalha';
+    const change = { ...NO_DAY_CHANGE, event_id: 'natacao', occurs_on: '2026-10-01', override_pick_up: true, pick_up_by: 'vo' };
+    expect(rows({ family: family([swim], [change]) }).map(([key, , , title, text]) => [key, title, text])).toEqual([
+      ['events:natacao@2026-09-29:2026-09-29:15:00', 'Hoje às 16:00: Natação da Ana', body],
+      ['events:natacao@2026-10-01:2026-09-30:19:00', 'Amanhã: Natação da Ana às 16:00', changed],
+      ['events:natacao@2026-10-01:2026-10-01:15:00', 'Hoje às 16:00: Natação da Ana', changed],
+    ]);
+    // Guardado para o dia o mesmo de sempre: não é mudança, segue sem véspera.
+    expect(rows({ family: family([swim], [{ ...change, pick_up_by: 'carla' }]) })).toHaveLength(2);
+    // Sem horário, só às 8h do dia.
+    const allDay = once({ id: 'feira', title: 'Feira', recurrence: 'weekly', weekdays: [2], until_on: '2026-09-29' });
+    expect(rows({ family: family([allDay]) }).map(([key]) => key)).toEqual(['events:feira@2026-09-29:2026-09-29:08:00']);
+    // De madrugada não há aviso no dia: a véspera fica, para a vez não passar em branco.
+    const dawn = once({ id: 'plantao', title: 'Plantão', start_time: '00:40', recurrence: 'weekly', weekdays: [2], until_on: '2026-09-29' });
+    expect(rows({ family: family([dawn]) }).map(([key]) => key)).toEqual(['events:plantao@2026-09-29:2026-09-28:19:00']);
   });
 
   it('chaves estáveis: o mesmo plano de novo, e nenhuma repetida', () => {
@@ -198,10 +228,12 @@ describe('planHouseReminders: compromissos da família e aniversários', () => {
     const keys = rows(input).map(([key]) => key);
     expect(rows(input).map(([key]) => key)).toEqual(keys);
     expect(new Set(keys).size).toBe(keys.length);
-    // Dois dias seguidos às 20h: o "1 hora antes" de um dia e a véspera do
-    // seguinte tocam juntos, às 19h, e são dois avisos.
+    // Dois dias seguidos às 20h, e no segundo a vó leva (por isso tem véspera):
+    // o "1 hora antes" de um dia e a véspera do seguinte tocam juntos, às 19h,
+    // e são dois avisos.
     const nightly = once({ id: 'ensaio', title: 'Ensaio', start_time: '20:00', recurrence: 'weekly', weekdays: [2, 3], until_on: '2026-09-30' });
-    const at19 = rows({ family: family([nightly]) }).filter(([, date, time]) => date === '2026-09-29' && time === '19:00');
+    const days = [{ ...NO_DAY_CHANGE, event_id: 'ensaio', occurs_on: '2026-09-30', override_take: true, take_by: 'vo' }];
+    const at19 = rows({ family: family([nightly], days) }).filter(([, date, time]) => date === '2026-09-29' && time === '19:00');
     expect(at19.map(([key, , , title]) => [key, title])).toEqual([
       ['events:ensaio@2026-09-29:2026-09-29:19:00', 'Hoje às 20:00: Ensaio'],
       ['events:ensaio@2026-09-30:2026-09-29:19:00', 'Amanhã: Ensaio às 20:00'],
@@ -257,13 +289,53 @@ describe('planHouseReminders: compromissos da família e aniversários', () => {
     ]);
     const daily = once({ id: 'aula', title: 'Aula', start_time: '10:00', recurrence: 'weekly', weekdays: [0, 1, 2, 3, 4, 5, 6], starts_on: '2026-09-01' });
     expect(rows({ family: family([daily]) })).toHaveLength(HOUSE_REMINDER_LIMIT);
+    // Com teto 3 e os dois avisos da conta, os compromissos ficam com 2 vagas
+    // (metade, para cima); depois, tudo junto, os mais próximos primeiro.
     const limited = rows({ family: family([daily]), bills: [bill], limit: 3 });
-    expect(limited.map(([key]) => key)).toEqual([
-      'events:aula@2026-09-27:2026-09-27',
-      'events:aula@2026-09-28:2026-09-27:19:00',
-      'events:aula@2026-09-28:2026-09-28',
-    ]);
+    expect(limited.map(([key]) => key)).toEqual(['events:aula@2026-09-27:2026-09-27', 'events:aula@2026-09-28:2026-09-28', 'bills:b1:2026-10-04']);
     expect(rows({ family: family([daily]), limit: 0 })).toEqual([]);
+  });
+
+  it('os compromissos têm a sua parte do teto: a rotina não tira o aviso da conta nem do documento', () => {
+    // Natação às terças e quintas, sem data para acabar: 9 avisos na janela.
+    const routine = { ...swim, until_on: null };
+    const house = { bills: [{ ...bill, next_due_on: '2026-10-25' }], documents: [{ ...doc, expires_on: '2026-10-26' }] };
+    const others = ['documents:d1:2026-10-11', 'documents:d1:2026-10-19', 'bills:b1:2026-10-24', 'bills:b1:2026-10-25', 'documents:d1:2026-10-26'];
+    const split = (plan: ReturnType<typeof planHouseReminders>) => ({
+      events: plan.filter((r) => r.kind === 'events').map((r) => r.date),
+      others: plan.filter((r) => r.kind !== 'events').map((r) => r.key),
+    });
+    // Duas casas dividem o teto (12): os 5 da conta e do documento entram
+    // todos, e a natação fica com as 7 vagas que sobram, as mais próximas.
+    const shared = planHouseReminders({ ...base, ...house, family: family([routine]), limit: 12 });
+    expect(shared).toHaveLength(12);
+    expect(split(shared)).toEqual({
+      events: ['2026-09-29', '2026-10-01', '2026-10-06', '2026-10-08', '2026-10-13', '2026-10-15', '2026-10-20'],
+      others,
+    });
+    // Com a escola de segunda a sexta junto, no teto de sempre: idem.
+    const school = once({ id: 'escola', title: 'Escola', starts_on: '2026-09-01', start_time: '07:30', recurrence: 'weekly', weekdays: [1, 2, 3, 4, 5] });
+    const full = planHouseReminders({ ...base, ...house, family: family([routine, school]) });
+    expect(full).toHaveLength(HOUSE_REMINDER_LIMIT);
+    expect(split(full).others).toEqual(others);
+    expect(split(full).events).toHaveLength(HOUSE_REMINDER_LIMIT - others.length);
+  });
+
+  it('com poucos avisos dos outros tipos, os compromissos usam as vagas livres; com muitos, ficam com metade', () => {
+    const daily = once({ id: 'aula', title: 'Aula', start_time: '10:00', recurrence: 'weekly', weekdays: [0, 1, 2, 3, 4, 5, 6], starts_on: '2026-09-01' });
+    const count = (input: Partial<HouseReminderInput>) => {
+      const plan = planHouseReminders({ ...base, family: family([daily]), ...input });
+      return [plan.filter((r) => r.kind === 'events').length, plan.filter((r) => r.kind !== 'events').length];
+    };
+    // Uma conta só (véspera e dia): nenhuma vaga fica vazia.
+    expect(count({ bills: [{ ...bill, next_due_on: '2026-10-25' }] })).toEqual([HOUSE_REMINDER_LIMIT - 2, 2]);
+    // Quarenta tarefas mais para a frente: sem a parte de cada um, as aulas de
+    // todo dia ficariam com quase todas as vagas.
+    const chores = Array.from({ length: 40 }, (_, i) => ({ ...chore, id: `c${i}`, due_on: '2026-10-20' }));
+    expect(count({ chores })).toEqual([HOUSE_REMINDER_LIMIT / 2, HOUSE_REMINDER_LIMIT / 2]);
+    // Teto ímpar: a metade arredonda para cima.
+    expect(count({ chores, limit: 5 })).toEqual([3, 2]);
+    expect(count({ chores, limit: 1 })).toEqual([1, 0]);
   });
 
   it('desligado, ou sem os dados carregados: nada', () => {
