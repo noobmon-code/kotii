@@ -13,6 +13,11 @@ import { useSyncExternalStore } from 'react';
 import { Platform } from 'react-native';
 
 const MARK_KEY = 'kotii:password-recovery';
+// Quem pôs a marca por último. Duas abas podem pôr a marca da mesma conta (o valor fica igual e a outra
+// aba nem é avisada): só a tentativa que pôs por último pode desfazer a sua.
+const MARK_BY_KEY = 'kotii:password-recovery-by';
+
+const newAttempt = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
 interface RecoveryState {
   /** A conta que precisa criar a senha nova (a marca do aparelho). */
@@ -45,29 +50,66 @@ const snapshot = () => state;
 export function startRecovery(userId: string) {
   version += 1;
   setState({ userId, readFor: userId });
-  AsyncStorage.setItem(MARK_KEY, userId).catch(() => undefined);
+  AsyncStorage.multiSet([
+    [MARK_KEY, userId],
+    [MARK_BY_KEY, newAttempt()],
+  ]).catch(() => undefined);
 }
 
 /**
  * O link do e-mail: a marca entra antes da sessão, e só volta daqui depois de gravada, para as outras
- * abas a acharem quando a conta chegar. Devolve como desfazer, se a sessão não entrar: a memória e o
- * aparelho voltam ao que eram (a marca que já estava lá, inclusive desta conta, fica).
+ * abas a acharem quando a conta chegar. Se não der para gravar, falha: sem a marca no aparelho a sessão
+ * não pode entrar (recarregada a página, ou em outra aba, a conta abriria a casa sem a senha nova).
+ * Devolve como desfazer, se a sessão não entrar: a memória e o aparelho voltam ao que eram (a marca
+ * que já estava lá, inclusive desta conta, fica), a não ser que a marca tenha mudado de mãos nesse
+ * meio (outra aba pôs ou tirou): aí vale o que veio depois.
  */
 export async function beginRecovery(userId: string): Promise<() => Promise<void>> {
   let stored: string | null = null;
+  let storedBy: string | null = null;
   try {
-    stored = await AsyncStorage.getItem(MARK_KEY);
+    [[, stored], [, storedBy]] = await AsyncStorage.multiGet([MARK_KEY, MARK_BY_KEY]);
   } catch {
     stored = null;
+    storedBy = null;
   }
   const memory = state;
+  const attempt = newAttempt();
   version += 1;
+  const mine = version;
   setState({ userId, readFor: userId });
-  await AsyncStorage.setItem(MARK_KEY, userId).catch(() => undefined);
+  try {
+    await AsyncStorage.multiSet([
+      [MARK_KEY, userId],
+      [MARK_BY_KEY, attempt],
+    ]);
+  } catch (error) {
+    if (version === mine) {
+      version += 1;
+      setState(memory);
+    }
+    throw error;
+  }
   return async () => {
-    version += 1;
-    setState(memory);
-    await (stored === null ? AsyncStorage.removeItem(MARK_KEY) : AsyncStorage.setItem(MARK_KEY, stored)).catch(() => undefined);
+    // A memória só volta se ninguém mexeu na marca depois (aqui, ou outra aba pelo evento "storage").
+    if (version === mine) {
+      version += 1;
+      setState(memory);
+    }
+    try {
+      const [[, marker], [, by]] = await AsyncStorage.multiGet([MARK_KEY, MARK_BY_KEY]);
+      if (marker !== userId || by !== attempt) return;
+      const back: [string, string][] = [];
+      const gone: string[] = [];
+      if (stored === null) gone.push(MARK_KEY);
+      else back.push([MARK_KEY, stored]);
+      if (storedBy === null) gone.push(MARK_BY_KEY);
+      else back.push([MARK_BY_KEY, storedBy]);
+      if (back.length) await AsyncStorage.multiSet(back);
+      if (gone.length) await AsyncStorage.multiRemove(gone);
+    } catch {
+      // Sem conseguir ler ou gravar, a marca fica: pede a senha nova a mais, nunca a menos.
+    }
   };
 }
 
@@ -79,7 +121,7 @@ export async function beginRecovery(userId: string): Promise<() => Promise<void>
 export async function finishRecovery(): Promise<void> {
   version += 1;
   setState({ userId: null, readFor: state.readFor });
-  await AsyncStorage.removeItem(MARK_KEY).catch(() => undefined);
+  await AsyncStorage.multiRemove([MARK_KEY, MARK_BY_KEY]).catch(() => undefined);
 }
 
 /**

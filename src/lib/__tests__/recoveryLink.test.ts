@@ -342,5 +342,7 @@ describe('link padrão de recuperação: até a sessão', () => {
     expect(scenarios[4].undo).toHaveBeenCalledTimes(1);
     expect(scenarios[5].deps.setSession).not.toHaveBeenCalled();
     expect(scenarios[6].deps.setSession).not.toHaveBeenCalled();
+    // A marca não pôde ser gravada: nenhuma sessão sai do link, e a pessoa fica sabendo.
+    expect(scenarios[6].deps.notice).toHaveBeenCalledWith(LINK_REJECTED);
   });
 });
