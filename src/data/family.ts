@@ -11,7 +11,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { useCallback, useMemo } from 'react';
 
 import { usePeople } from '@/data/health';
-import { staleDayDates, type EventDayValues, type FamilyCalendar, type FamilyEventValues } from '@/domain/familyEvents';
+import { dayChangesAfterSave, type EventDayValues, type FamilyCalendar, type FamilyEventValues } from '@/domain/familyEvents';
 import { errorMessage, supabase, unwrap } from '@/lib/supabase';
 import type { FamilyEvent, FamilyEventDay } from '@/lib/types';
 
@@ -167,13 +167,21 @@ export function useSaveFamilyEvent() {
         return;
       }
       unwrap(await supabase.from('family_events').update(values).eq('id', id));
-      // A regra pode ter mudado: mudanças de dias que não são mais do
-      // compromisso saem (todas, se ele deixou de se repetir). Se a limpeza
-      // falhar, ficam, e o app as ignora.
+      // A regra ou as pessoas podem ter mudado: saem as mudanças de dias que
+      // não são mais do compromisso (todas, se ele deixou de se repetir) e as
+      // que ficaram iguais ao de sempre (dayChangesAfterSave). Se a limpeza
+      // falhar, ficam, e o app as ignora enquanto forem iguais.
       try {
-        const rows = unwrap(await supabase.from('family_event_days').select('occurs_on').eq('event_id', id)) as { occurs_on: string }[];
-        const stale = staleDayDates(values, rows);
-        if (stale.length) unwrap(await supabase.from('family_event_days').delete().eq('event_id', id).in('occurs_on', stale));
+        const rows = unwrap(await supabase.from('family_event_days').select(DAY_COLUMNS).eq('event_id', id)) as FamilyEventDay[];
+        const { remove, rewrite } = dayChangesAfterSave(values, rows);
+        if (remove.length) unwrap(await supabase.from('family_event_days').delete().eq('event_id', id).in('occurs_on', remove));
+        if (rewrite.length) {
+          unwrap(
+            await supabase
+              .from('family_event_days')
+              .upsert(rewrite.map((change) => ({ event_id: id, ...change })), { onConflict: 'event_id,occurs_on' }),
+          );
+        }
       } catch {
         // Sem prejuízo: ver acima.
       }

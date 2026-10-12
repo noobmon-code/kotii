@@ -20,6 +20,7 @@ import {
   parseTime,
   recurrenceHint,
   rideText,
+  dayChangesAfterSave,
   staleDayDates,
   todayEntries,
   validateEventForm,
@@ -174,6 +175,33 @@ describe('occurrencesOf (mudanças de um dia)', () => {
     expect(staleDayDates({ ...swim, weekdays: [2] }, [day({}), day({ occurs_on: '2026-10-20' })])).toEqual(['2026-10-15']);
     expect(dayChangeOf('natacao', days, '2026-10-14')?.cancelled).toBe(true);
     expect(dayChangeOf('natacao', days, '2026-10-15')).toBeNull();
+  });
+
+  it('ao salvar o compromisso, a mudança de dia que ficou igual ao de sempre sai, e a que difere em parte fica só com a parte', () => {
+    // Na quinta 15 a vó levava; na terça 20 a vó levava e o Beto buscava; na quinta 22 não ia ter.
+    const changes = [
+      day({ occurs_on: '2026-10-15', override_take: true, take_by: 'vo' }),
+      day({ occurs_on: '2026-10-20', override_take: true, take_by: 'vo', override_pick_up: true, pick_up_by: 'beto' }),
+      day({ occurs_on: '2026-10-22', cancelled: true, override_take: true, take_by: 'vo' }),
+    ];
+    // Nada mudou no compromisso: nada a fazer.
+    expect(dayChangesAfterSave(swim, changes)).toEqual({ remove: [], rewrite: [] });
+    // Agora quem leva sempre é a vó: a do dia 15 ficou igual e sai; as outras perdem só essa parte.
+    expect(dayChangesAfterSave({ ...swim, take_by: 'vo' }, changes)).toEqual({
+      remove: ['2026-10-15'],
+      rewrite: [
+        { occurs_on: '2026-10-20', cancelled: false, override_take: false, take_by: null, override_pick_up: true, pick_up_by: 'beto' },
+        { occurs_on: '2026-10-22', cancelled: true, override_take: false, take_by: null, override_pick_up: false, pick_up_by: null },
+      ],
+    });
+    // Sem a limpeza, voltar o compromisso para o Beto traria a vó de volta no dia 15 sem ninguém pedir;
+    // com ela, o dia 15 segue o compromisso.
+    const cleaned = changes.slice(1);
+    expect(occurrencesOf(swim, cleaned, '2026-10-15', '2026-10-15').map((o) => o.take_by)).toEqual(['beto']);
+    // O dia que saiu da regra (só às terças) sai junto, mesmo com mudança de verdade.
+    expect(dayChangesAfterSave({ ...swim, weekdays: [2] }, changes).remove).toEqual(['2026-10-15', '2026-10-22']);
+    // "Ninguém leva" continua sendo mudança enquanto o compromisso tiver alguém.
+    expect(dayChangesAfterSave(swim, [day({ override_take: true, take_by: null })])).toEqual({ remove: [], rewrite: [] });
   });
 
   it('compromisso que passou a "Não repete": as mudanças de dias saem todas, e a que sobrar não vale', () => {

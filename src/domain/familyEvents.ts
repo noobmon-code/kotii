@@ -200,6 +200,39 @@ export function staleDayDates(event: EventSeries, days: Pick<EventDayLike, 'occu
   return event.recurrence === 'none' ? dates : dates.filter((date) => !isEventDate(event, date));
 }
 
+/** O que fazer com as mudanças de cada dia depois de salvar o compromisso. */
+export interface DayChangesCleanup {
+  /** Dias cuja mudança sai. */
+  remove: string[];
+  /** Dias cuja mudança fica, só com o que ainda difere do de sempre. */
+  rewrite: (EventDayValues & { occurs_on: string })[];
+}
+
+/**
+ * Depois de salvar o compromisso: saem as mudanças de dias que não são mais
+ * dele (staleDayDates) e as que ficaram iguais ao de sempre (o compromisso
+ * passou a ter a mesma pessoa). Guardada, a que ficou igual voltaria do nada
+ * quando o compromisso mudasse de novo, sem ninguém ter pedido. A que ainda
+ * difere em parte fica só com essa parte.
+ */
+export function dayChangesAfterSave(
+  event: EventSeries & Pick<FamilyEventLike, 'take_by' | 'pick_up_by'>,
+  days: (EventDayValues & Pick<EventDayLike, 'occurs_on'>)[],
+): DayChangesCleanup {
+  const stale = new Set(staleDayDates(event, days));
+  const remove = [...stale];
+  const rewrite: DayChangesCleanup['rewrite'] = [];
+  for (const day of days) {
+    if (stale.has(day.occurs_on)) continue;
+    const kept = normalizeDayChange(event, day);
+    if (!kept) remove.push(day.occurs_on);
+    else if (kept.override_take !== day.override_take || kept.override_pick_up !== day.override_pick_up) {
+      rewrite.push({ occurs_on: day.occurs_on, ...kept });
+    }
+  }
+  return { remove, rewrite };
+}
+
 /** Aniversário de uma ficha num ano: quantos anos faz. */
 export interface Birthday {
   person_id: string;
