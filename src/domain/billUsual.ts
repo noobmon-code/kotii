@@ -143,15 +143,16 @@ export interface BillAbove {
 }
 
 /**
- * O valor fixo que a própria pessoa aumentou só é novidade até o primeiro pagamento nele (ou acima):
+ * O valor fixo que a própria pessoa aumentou só é novidade até o primeiro pagamento exatamente nele:
  * depois disso, avisar "acima do normal" por meses, até a média subir, seria repetir o que ela já sabe.
+ * Vale um pagamento da janela do normal (o que todas as telas têm em mãos); um pagamento excepcional,
+ * de outro valor, não conta.
  */
 function fixedAmountAlreadyPaid(bill: Pick<UsualBill, 'id' | 'next_due_on' | 'amount'>, payments: BillUsualPayment[]): boolean {
   if (bill.amount == null) return false;
-  const last = payments
-    .filter((p) => p.bill_id === bill.id && p.due_on < bill.next_due_on)
-    .sort((a, b) => b.due_on.localeCompare(a.due_on))[0];
-  return last != null && cents(last.amount) >= cents(bill.amount);
+  const fixed = cents(bill.amount);
+  const since = windowStart(bill.next_due_on);
+  return payments.some((p) => p.bill_id === bill.id && p.due_on >= since && p.due_on < bill.next_due_on && cents(p.amount) === fixed);
 }
 
 /** O valor já conhecido do próximo vencimento, quando está acima do normal da conta. */

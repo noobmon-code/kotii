@@ -262,6 +262,11 @@ describe('billsAboveUsual', () => {
     const paidOnce = monthly([100, 100, 100, 100, 100, 130], '2026-09');
     expect(billAboveUsual(raised, paidOnce, TODAY)).toBeNull();
     expect(payUsualNote(raised, paidOnce, 130)).toBeNull();
+    // Continua valendo depois de um mês pago com outro valor.
+    expect(billAboveUsual(raised, monthly([100, 100, 100, 100, 130, 100], '2026-09'), TODAY)).toBeNull();
+    // Um pagamento excepcional acima do valor fixo não é um pagamento nele: o aviso segue.
+    const exceptional = monthly([100, 100, 100, 100, 100, 200], '2026-09');
+    expect(billAboveUsual(bill({ amount: 150, next_due_on: '2026-10-10' }), exceptional, TODAY)?.comparison.kind).toBe('acima');
     // Digitado acima do valor fixo: aí é novidade de novo.
     expect(payUsualNote(raised, paidOnce, 180)?.above).toBe(true);
     // Boleto guardado continua sendo julgado como sempre.
