@@ -3,6 +3,7 @@ import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 
 import { SESSION_ENDED } from '@/lib/accessErrors';
 import { resendWaitSeconds, translateAuthError } from '@/lib/authErrors';
+import { clearLinkNotice, linkNotice, useLinkNotice } from '@/lib/linkNotice';
 import { finishRecovery, startRecovery } from '@/lib/passwordRecovery';
 import { useSessionEnded } from '@/lib/session';
 import { supabase } from '@/lib/supabase';
@@ -12,7 +13,7 @@ import { Button, Card, Icon, Row, Screen, Segmented, Text, TextField } from '@/u
 import { space } from '@/ui/theme';
 
 type Mode = 'entrar' | 'criar';
-/** Esqueci a senha: o e-mail para mandar o código, depois o código. */
+/** Esqueci a senha: o e-mail para mandar o link ou código, depois a espera por ele (e o campo do código). */
 type Recovery = 'email' | 'codigo';
 
 /** O Supabase só manda outro e-mail de recuperação para o mesmo endereço depois disso. */
@@ -23,9 +24,14 @@ export default function SignInScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
-  const [recovery, setRecovery] = useState<Recovery | null>(null);
+  // O link do e-mail não deu certo (lib/linkNotice): a tela já abre em "Esqueci minha senha", com o aviso.
+  const linkFailed = useLinkNotice();
+  const [recovery, setRecovery] = useState<Recovery | null>(() => (linkNotice() ? 'email' : null));
+  // O aviso vale enquanto esta tela está aberta: se a conta entrar (aqui ou por outra aba), ele não
+  // reaparece depois como alerta sobre a casa.
+  useEffect(() => clearLinkNotice, []);
   const [code, setCode] = useState('');
-  /** Quando dá para pedir outro código (ms). */
+  /** Quando dá para pedir outro e-mail (ms). */
   const [resendAt, setResendAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   // A sessão acabou sem a pessoa tocar em "Sair": diz por que o app voltou para cá.
@@ -73,6 +79,7 @@ export default function SignInScreen() {
     setCode('');
     setNow(at);
     if (resendInSeconds !== null) setResendAt(at + resendInSeconds * 1000);
+    clearLinkNotice();
     setRecovery('codigo');
   }
 
@@ -85,13 +92,13 @@ export default function SignInScreen() {
     setBusy(true);
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(trimmed);
-      // Pedido de novo cedo demais: o código do e-mail anterior ainda vale. A tela segue igual nos dois casos
+      // Pedido de novo cedo demais: o link ou código do e-mail anterior ainda vale. A tela segue igual nos dois casos
       // (mesmo passo, mesma contagem), sem acrescentar um jeito de saber se o e-mail tem conta: o Supabase só
       // faz essa espera para quem tem.
       if (error && resendWaitSeconds(error) === null) throw error;
       showCodeStep(RESEND_SECONDS);
     } catch (err) {
-      notify('Não deu para mandar o e-mail', translateAuthError(err));
+      notify('Não deu para enviar o e-mail', translateAuthError(err));
     } finally {
       setBusy(false);
     }
@@ -145,13 +152,23 @@ export default function SignInScreen() {
             </Row>
           </Card>
         ) : null}
+        {linkFailed ? (
+          <Card>
+            <Row>
+              <Icon name="information-outline" color="primary" />
+              <Text variant="body" style={styles.flex}>
+                {linkFailed}
+              </Text>
+            </Row>
+          </Card>
+        ) : null}
         {recovery ? (
           <View style={styles.form}>
             <Text variant="label">Recuperar a senha</Text>
             {recovery === 'email' ? (
               <>
                 <Text variant="muted">
-                  Digite o e-mail da sua conta. Mandamos um e-mail para você criar uma senha nova.
+                  Digite o e-mail da sua conta. Vamos mandar uma mensagem para você criar uma senha nova.
                 </Text>
                 <TextField
                   label="E-mail"
@@ -169,8 +186,9 @@ export default function SignInScreen() {
             ) : (
               <>
                 <Text variant="muted">
-                  Se {email} tiver conta no Kotii, o e-mail chega em instantes (olhe também o spam).
-                  Abra o link do e-mail mais recente no site. Se ele trouxer um código, digite abaixo.
+                  Se {email} tiver conta no Kotii, a mensagem chega em instantes (olhe também o spam). Abra o link
+                  da mensagem mais recente para criar a senha nova. Se o link abrir no navegador, crie a senha lá
+                  e depois volte aqui para entrar com ela. Se em vez do link vier um código, digite aqui embaixo.
                 </Text>
                 <TextField
                   label="Código do e-mail"
