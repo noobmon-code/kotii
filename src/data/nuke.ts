@@ -4,13 +4,14 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { router } from 'expo-router';
 
-import { useBills, useBudgets, useSaveExpense, useSpending } from '@/data/finance';
+import { useBills, useBudgets, useRecentBillPayments, useSaveExpense, useSpending } from '@/data/finance';
 import { toSchedule, useChores, useDoses, useMedications, usePantry, useSaveChore } from '@/data/home';
 import { useDocuments, useEquipmentList } from '@/data/house';
 import { useAppointments, usePeople } from '@/data/health';
 import { useAddToMarketList } from '@/data/market';
 import { useMenu } from '@/data/menu';
 import { functionErrorMessage } from '@/data/images';
+import { billsAboveUsual, describeAboveForNuke } from '@/domain/billUsual';
 import { budgetProgress } from '@/domain/budget';
 import { addDays } from '@/domain/dates';
 import { describeDocumentStatus, documentsNeedingAttention } from '@/domain/documents';
@@ -59,6 +60,7 @@ export function useNukeContext(today: string): NukeContextState {
   const pantry = usePantry();
   const pending = usePendingListItems();
   const bills = useBills();
+  const recentPayments = useRecentBillPayments(today);
   const month = today.slice(0, 7);
   const spending = useSpending(shiftMonth(month, -1), month);
   const budgets = useBudgets();
@@ -76,6 +78,7 @@ export function useNukeContext(today: string): NukeContextState {
     pantry,
     pending,
     bills,
+    recentPayments,
     spending,
     budgets,
     appointments,
@@ -106,6 +109,8 @@ export function useNukeContext(today: string): NukeContextState {
   const entries = spending.data;
   const previous = entries ? previousMonth(entries, month, today) : null;
   const pantryGroups = groupPantry(pantry.data ?? []);
+  // Contas com o valor já conhecido acima do normal: o Nuke sabe dizer por que a luz veio alta.
+  const billsAbove = billsAboveUsual(bills.data ?? [], recentPayments.data ?? [], today);
 
   const snapshot: NukeSnapshot = {
     today,
@@ -130,7 +135,16 @@ export function useNukeContext(today: string): NukeContextState {
     menu: menuLines(menu.data ?? []),
     bills: (bills.data ?? [])
       .filter((b) => b.active && b.next_due_on <= monthAhead)
-      .map((b) => ({ name: b.name, amount: b.amount, next_due_on: b.next_due_on, autopay: b.autopay })),
+      .map((b) => {
+        const above = billsAbove.get(b.id);
+        return {
+          name: b.name,
+          amount: b.amount,
+          next_due_on: b.next_due_on,
+          autopay: b.autopay,
+          aboveUsual: above ? describeAboveForNuke(above) : undefined,
+        };
+      }),
     spending:
       entries && previous
         ? (() => {

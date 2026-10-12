@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+import { usualPaymentsSince, type BillUsualPayment } from '@/domain/billUsual';
 import { toISODate } from '@/domain/dates';
 import type { MedicalEntry } from '@/domain/incomeTax';
 import {
@@ -86,6 +87,9 @@ export function useDeleteBill() {
   });
 }
 
+/** Quantos pagamentos a tela da conta busca: com esse tanto na mão, o histórico pode ter vindo cortado. */
+export const BILL_PAYMENTS_LIMIT = 24;
+
 export function useBillPayments(billId: string | undefined) {
   return useQuery({
     queryKey: ['billPayments', billId],
@@ -97,8 +101,27 @@ export function useBillPayments(billId: string | undefined) {
           .select('id, bill_id, due_on, paid_on, amount, paid_by')
           .eq('bill_id', billId!)
           .order('due_on', { ascending: false })
-          .limit(24),
+          .limit(BILL_PAYMENTS_LIMIT),
       ) as BillPayment[],
+  });
+}
+
+/**
+ * Pagamentos recentes de todas as contas, pelo vencimento: o que o aviso de
+ * "acima do normal" precisa nas listas. A chave começa com 'billPayments':
+ * pagar, desfazer um pagamento ou excluir a conta já recarrega.
+ */
+export function useRecentBillPayments(today: string, enabled = true) {
+  const since = usualPaymentsSince(today);
+  return useQuery({
+    queryKey: ['billPayments', 'recent', since],
+    enabled,
+    queryFn: async () =>
+      (
+        unwrap(
+          await supabase.from('bill_payments').select('bill_id, due_on, amount').gte('due_on', since).order('due_on', { ascending: false }),
+        ) as BillUsualPayment[]
+      ).map((p) => ({ ...p, amount: Number(p.amount) })),
   });
 }
 
