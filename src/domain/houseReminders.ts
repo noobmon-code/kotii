@@ -1,20 +1,27 @@
 // Avisos da casa por notificação: contas, documentos, tarefas (inclusive
-// manutenções de aparelhos), consultas, vacinas e a dica do clima da manhã. Cada celular escolhe o que
+// manutenções de aparelhos), consultas, compromissos da família e aniversários,
+// vacinas e a dica do clima da manhã. Cada celular escolhe o que
 // quer receber; o plano sai daqui e o app agenda (src/lib/reminders.ts),
 // refazendo ao abrir, então a janela vai andando.
 
 import { addDays, diffDays, formatBRDate } from './dates';
 import { describeDocumentStatus } from './documents';
+import { calendarEntries, eventReminderTexts, type FamilyCalendar } from './familyEvents';
 import { formatBRL } from './money';
 import type { WeatherMorning } from './weather';
 
-export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'weather';
+export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments' | 'events' | 'vaccines' | 'weather';
 
 export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint: string }[] = [
   { key: 'bills', label: 'Contas a pagar', hint: 'Na véspera, no dia do vencimento e, se ficar em aberto, uma vez depois, às 9h' },
   { key: 'documents', label: 'Documentos', hint: 'Quando começa o prazo de renovar, uma semana antes e no dia em que vence, às 9h' },
   { key: 'chores', label: 'Tarefas e manutenções', hint: 'No dia marcado, às 9h' },
   { key: 'appointments', label: 'Consultas', hint: 'Na véspera, às 19h, e 2 horas antes' },
+  {
+    key: 'events',
+    label: 'Compromissos e aniversários',
+    hint: 'Na véspera, às 19h; no dia, 1 hora antes do horário (sem horário, às 8h)',
+  },
   { key: 'vaccines', label: 'Vacinas', hint: 'Uma semana antes da próxima dose e no dia, às 9h' },
   {
     key: 'weather',
@@ -40,6 +47,10 @@ export const HOUSE_REMINDER_TIME = '09:00';
 export const APPOINTMENT_EVE_TIME = '19:00';
 const APPOINTMENT_LEAD_MINUTES = 120;
 const EARLIEST_LEAD_MINUTES = 7 * 60;
+/** Compromisso da família: na véspera à noite e uma hora antes; sem horário (e aniversário), de manhã. */
+export const EVENT_EVE_TIME = APPOINTMENT_EVE_TIME;
+const EVENT_LEAD_MINUTES = 60;
+export const EVENT_ALL_DAY_TIME = '08:00';
 const VACCINE_LEAD_DAYS = 7;
 /** Vacina atrasada há mais que isso provavelmente foi tomada sem registrar: sem aviso. */
 const VACCINE_OVERDUE_DAYS = 60;
@@ -59,6 +70,8 @@ export interface HouseReminderInput {
   /** Consultas agendadas, com data e hora locais já separadas. */
   appointments?: { id: string; title: string; person: string; date: string; time: string; location: string | null; status: string }[];
   vaccines?: { id: string; name: string; dose: string | null; person: string; next_dose_on: string | null }[];
+  /** Compromissos da família com as mudanças de cada dia, e as fichas (nomes e aniversários). */
+  family?: FamilyCalendar;
   /** A dica mais importante de cada manhã (ver weatherMornings). */
   weather?: WeatherMorning[];
   today: string;
@@ -149,6 +162,28 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
       if (lead >= EARLIEST_LEAD_MINUTES) {
         const at = `${String(Math.floor(lead / 60)).padStart(2, '0')}:${String(lead % 60).padStart(2, '0')}`;
         add('appointments', a.id, a.date, 'Consulta daqui a 2 horas', body, { at });
+      }
+    }
+  }
+
+  if (kinds.events && input.family) {
+    // Até o dia seguinte ao fim da janela: a véspera dele ainda cabe. Dia
+    // marcado como "não vai ter" não vem, e quem leva ou busca é o daquele dia.
+    for (const entry of calendarEntries(input.family, today, addDays(last, 1))) {
+      const texts = eventReminderTexts(entry);
+      // Compromisso e dia: a véspera de uma vez não se confunde com o aviso da vez anterior.
+      const id = `${entry.id}@${entry.date}`;
+      if (texts.eve) add('events', id, addDays(entry.date, -1), texts.eve, texts.body, { at: EVENT_EVE_TIME });
+      if (!entry.time) {
+        add('events', id, entry.date, texts.today, texts.body, { at: EVENT_ALL_DAY_TIME });
+        continue;
+      }
+      // Uma hora antes; compromisso antes da 1h da manhã fica só com a véspera.
+      const [h, m] = entry.time.split(':').map(Number);
+      const lead = h * 60 + m - EVENT_LEAD_MINUTES;
+      if (lead >= 0) {
+        const at = `${String(Math.floor(lead / 60)).padStart(2, '0')}:${String(lead % 60).padStart(2, '0')}`;
+        add('events', id, entry.date, texts.today, texts.body, { at });
       }
     }
   }

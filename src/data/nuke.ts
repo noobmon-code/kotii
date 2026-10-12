@@ -4,6 +4,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { router } from 'expo-router';
 
+import { useFamilyCalendar } from '@/data/family';
 import { useBills, useBudgets, useSaveExpense, useSpending } from '@/data/finance';
 import { toSchedule, useChores, useDoses, useMedications, usePantry, useSaveChore } from '@/data/home';
 import { useDocuments, useEquipmentList } from '@/data/house';
@@ -15,6 +16,7 @@ import { budgetProgress } from '@/domain/budget';
 import { addDays } from '@/domain/dates';
 import { describeDocumentStatus, documentsNeedingAttention } from '@/domain/documents';
 import { describeWarranty, warrantyStatus } from '@/domain/equipment';
+import { calendarLines } from '@/domain/familyEvents';
 import { monthLabel, monthRange, previousMonth, shiftMonth, summarize } from '@/domain/finance';
 import { upcomingAppointments } from '@/domain/health';
 import { doseKey, dosesForDay } from '@/domain/medications';
@@ -67,6 +69,9 @@ export function useNukeContext(today: string): NukeContextState {
   const documents = useDocuments();
   const equipment = useEquipmentList();
   const menu = useMenu(today, addDays(today, 6));
+  // Fora de `queries`: sem os compromissos (não carregaram, ou as tabelas ainda
+  // não existem), o retrato sai com os aniversários, que vêm das fichas.
+  const family = useFamilyCalendar();
 
   const queries = [
     household,
@@ -88,7 +93,7 @@ export function useNukeContext(today: string): NukeContextState {
   if (missing.some((q) => q.isError)) {
     return { status: 'error', retry: () => missing.forEach((q) => q.refetch()) };
   }
-  if (missing.length || !household.data) return { status: 'loading' };
+  if (missing.length || !household.data || family.loading) return { status: 'loading' };
   const { household: house, members, me } = household.data;
   const memberName = (id: string | null) => members.find((m) => m.user_id === id)?.display_name ?? null;
 
@@ -156,6 +161,7 @@ export function useNukeContext(today: string): NukeContextState {
         title: a.title,
         person: people.data?.find((p) => p.id === a.person_id)?.name ?? '',
       })),
+    events: calendarLines(family.calendar, today),
     documents: documentsNeedingAttention(documents.data ?? [], today).map(({ document, status }) => ({
       title: document.title,
       status: describeDocumentStatus(status, document.expires_on),

@@ -4,6 +4,32 @@ import type { Medication } from '../types';
 
 type Reminders = typeof import('../reminders');
 
+// Uma natação na terça, 29/09/2026, e o aniversário da Ana no dia 30.
+const family = {
+  events: [
+    {
+      id: 'natacao',
+      title: 'Natação da Ana',
+      starts_on: '2026-09-29',
+      start_time: '16:00',
+      end_time: null,
+      person_id: 'ana',
+      take_by: 'beto',
+      pick_up_by: null,
+      location: null,
+      bring: 'touca',
+      recurrence: 'none' as const,
+      weekdays: null,
+      until_on: null,
+    },
+  ],
+  days: [],
+  people: [
+    { id: 'ana', name: 'Ana', kind: 'pessoa' as const, birth_date: '2018-09-30' },
+    { id: 'beto', name: 'Beto', kind: 'pessoa' as const, birth_date: null },
+  ],
+};
+
 // Roda `scenario` num ambiente simulado: sistema, Expo Go ou não, e um
 // expo-notifications que lança erro ao ser carregado no Expo Go do Android
 // (comportamento real desde o SDK 53).
@@ -334,6 +360,30 @@ describe('no navegador (Web Push)', () => {
       expect(web.unregistered()).toBe(1);
     });
   });
+
+  it('avisos de compromissos e aniversários vão para a agenda do servidor pelo mesmo caminho', async () => {
+    await onWeb(true, async (reminders, web) => {
+      await reminders.setHouseReminderKind('events', true);
+      await reminders.syncHouseReminders(
+        { bills: [], documents: [], chores: [], family },
+        { householdId: 'casa', today: '2026-09-27', nowTime: '08:00' },
+      );
+      const sent = [...web.scheduled.values()] as {
+        content: { title: string; body: string; data: { reminder: string; householdId: string } };
+        trigger: { type: string; date: Date };
+      }[];
+      expect(sent.map((r) => [r.content.title, r.content.body, r.trigger.type, r.trigger.date.getHours()])).toEqual([
+        ['Amanhã: Natação da Ana às 16:00', 'Ana · Beto leva · Levar: touca', 'date', 19],
+        ['Hoje às 16:00: Natação da Ana', 'Ana · Beto leva · Levar: touca', 'date', 15],
+        ['Hoje é aniversário de Ana', 'Faz 8 anos.', 'date', 8],
+      ]);
+      expect(sent.map((r) => r.content.data)).toEqual([
+        { reminder: 'events:natacao@2026-09-29:2026-09-28:19:00', householdId: 'casa' },
+        { reminder: 'events:natacao@2026-09-29:2026-09-29:15:00', householdId: 'casa' },
+        { reminder: 'events:ana@2026-09-30:2026-09-30:08:00', householdId: 'casa' },
+      ]);
+    });
+  });
 });
 
 describe('house reminders', () => {
@@ -387,9 +437,58 @@ describe('house reminders', () => {
         documents: true,
         chores: false,
         appointments: false,
+        events: false,
         vaccines: false,
         weather: false,
       });
+    });
+  });
+
+  it('quem escolheu os avisos antes de existirem os de compromissos começa com eles desligados', async () => {
+    await withHouse(async (reminders, { live, storage }) => {
+      // Escolha guardada por uma versão anterior do app: sem o tipo novo.
+      storage.set(
+        'house-reminders:kinds',
+        JSON.stringify({ bills: true, documents: false, chores: false, appointments: false, vaccines: false, weather: false }),
+      );
+      expect((await reminders.getHouseReminderKinds()).events).toBe(false);
+      await reminders.syncHouseReminders({ ...data, family }, { householdId: 'casa', today, nowTime: '08:00' });
+      expect(kindsOf(live)).toEqual(['bills']);
+      // Ligar o tipo novo não mexe nos outros.
+      await reminders.setHouseReminderKind('events', true);
+      expect(await reminders.getHouseReminderKinds()).toMatchObject({ bills: true, documents: false, events: true, weather: false });
+      await reminders.syncHouseReminders({ ...data, family }, { householdId: 'casa', today, nowTime: '08:00' });
+      expect(kindsOf(live)).toEqual(['bills', 'events']);
+    });
+  });
+
+  it('compromissos e aniversários: sem os dados, os já agendados ficam; dia que não vai ter sai; desligar cancela', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('events', true);
+      const target = { householdId: 'casa', today, nowTime: '08:00' };
+      const keys = () => [...live.values()].map((r) => r.content.data.reminder).sort();
+      await reminders.syncHouseReminders({ ...data, family }, target);
+      expect(keys()).toEqual([
+        'events:ana@2026-09-30:2026-09-30:08:00',
+        'events:natacao@2026-09-29:2026-09-28:19:00',
+        'events:natacao@2026-09-29:2026-09-29:15:00',
+      ]);
+      const ids = [...live.keys()];
+      // Os mesmos dados de novo: nada é agendado duas vezes.
+      await reminders.syncHouseReminders({ ...data, family }, target);
+      expect([...live.keys()]).toEqual(ids);
+      // Os compromissos não carregaram (sem internet): os avisos deles ficam.
+      await reminders.syncHouseReminders(data, target);
+      expect([...live.keys()]).toEqual(ids);
+      // "Não vai ter neste dia": os avisos daquele dia saem; o aniversário fica.
+      const day = { event_id: 'natacao', occurs_on: '2026-09-29', cancelled: true, override_take: false, take_by: null, override_pick_up: false, pick_up_by: null };
+      await reminders.syncHouseReminders({ ...data, family: { ...family, days: [day] } }, target);
+      expect(keys()).toEqual(['events:ana@2026-09-30:2026-09-30:08:00']);
+      // Sem as tabelas dos compromissos (antes da migração): só as fichas, e o aniversário continua.
+      await reminders.syncHouseReminders({ ...data, family: { ...family, events: [], days: [] } }, target);
+      expect(keys()).toEqual(['events:ana@2026-09-30:2026-09-30:08:00']);
+      await reminders.setHouseReminderKind('events', false);
+      expect(live.size).toBe(0);
     });
   });
 
