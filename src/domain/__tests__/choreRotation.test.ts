@@ -6,6 +6,7 @@ import {
   currentTurn,
   groupRotations,
   isRotationUnavailable,
+  kidChores,
   nextTurn,
   numberedOrder,
   orderHasKid,
@@ -16,6 +17,7 @@ import {
   rotationLabel,
   rotationOf,
   rotationPeople,
+  rotationPointsLabel,
   rotationProblem,
   skipTurnQuestion,
   toggleInOrder,
@@ -200,6 +202,29 @@ describe('editor: escolher a ordem', () => {
     expect(orderHasKid(['p-beto', 'p-carla'], people)).toBe(false);
     expect(orderHasKid(order, people)).toBe(true);
   });
+
+  it('diz de quem são os pontos: de quem não tem o app, pelo nome', () => {
+    // Marcos é adulto e não tem o app: "a criança da vez" não serviria para ele.
+    const house = rotationPeople(members, [
+      ...records,
+      { id: 'p-marcos', name: 'Marcos', kind: 'pessoa', member_user_id: null },
+      { id: 'p-nina', name: 'Nina', kind: 'pessoa', member_user_id: null },
+    ]);
+    expect(rotationPointsLabel(['p-beto', 'p-lia'], house)).toBe('pontos quando for a vez de Lia');
+    expect(rotationPointsLabel(['p-lia', 'p-beto', 'p-marcos'], house)).toBe('pontos quando for a vez de Lia ou Marcos');
+    expect(rotationPointsLabel(['p-lia', 'p-marcos', 'p-carla', 'p-nina'], house)).toBe('pontos quando for a vez de Lia, Marcos ou Nina');
+    // Na ordem do rodízio, e com nome de duas palavras.
+    expect(rotationPointsLabel(['p-nina', 'p-ana', 'p-lia', 'p-marcos'], house)).toBe(
+      'pontos quando for a vez de Nina, Ana Clara, Lia ou Marcos',
+    );
+  });
+
+  it('todos na ordem têm o app: ninguém ganha pontos, nada a dizer', () => {
+    expect(rotationPointsLabel(['p-beto', 'p-carla'], people)).toBeNull();
+    expect(rotationPointsLabel([], people)).toBeNull();
+    // Quem não é mais ficha da casa (ou virou pet) não conta.
+    expect(rotationPointsLabel(['p-beto', 'p-apagada', 'p-rex'], people)).toBeNull();
+  });
 });
 
 describe('editor: o que salvar', () => {
@@ -256,6 +281,23 @@ describe('editor: o que salvar', () => {
     ).toEqual({ turn: ofNobody, people: [] });
   });
 
+  it('formulário aberto sem rodízio nunca encerra um: a ordem que vale é a que ele mostrou', () => {
+    // Outro celular criou o rodízio depois: `saved.order` segue vazia, e a escolha de uma pessoa só não manda [].
+    const shown = { turn: ofBeto, order: [] };
+    expect(planRotationSave({ saved: shown, recurrence: 'daily', choice: { mode: 'single', ...ofBeto }, people })).toEqual({
+      turn: ofBeto,
+      people: null,
+    });
+    expect(planRotationSave({ saved: shown, recurrence: 'none', choice: rotation(order), people })).toEqual({ turn: ofBeto, people: null });
+    // Já o que abriu mostrando o rodízio encerra (a pessoa viu o que desfez) e, mantendo, não mexe na vez.
+    const shownRotation = { turn: ofBeto, order };
+    expect(planRotationSave({ saved: shownRotation, recurrence: 'daily', choice: { mode: 'single', ...ofBeto }, people })).toEqual({
+      turn: ofBeto,
+      people: [],
+    });
+    expect(planRotationSave({ saved: shownRotation, recurrence: 'daily', choice: rotation(order), people })).toEqual({ people: order });
+  });
+
   it('tarefa sem rodízio continua como sempre: nada do rodízio é chamado', () => {
     expect(planRotationSave({ recurrence: 'weekly', choice: { mode: 'single', ...ofBeto }, people })).toEqual({ turn: ofBeto, people: null });
     expect(
@@ -267,6 +309,67 @@ describe('editor: o que salvar', () => {
     expect(
       planRotationSave({ recurrence: 'daily', choice: rotation(['p-beto', 'p-apagada', 'p-beto', 'p-lia']), people }),
     ).toEqual({ turn: ofBeto, people: ['p-beto', 'p-lia'] });
+  });
+});
+
+describe('pontos das crianças: as tarefas de cada criança', () => {
+  const today = '2026-10-12';
+  const chore = (id: string, turn: { assigned_to: string | null; kid_id: string | null }, over: { points?: number; due_on?: string } = {}) => ({
+    id,
+    points: 10,
+    due_on: today,
+    ...turn,
+    ...over,
+  });
+  const rotations = { lixo: ['p-beto', 'p-lia'], louca: ['p-beto', 'p-carla'], quarto: ['p-ana', 'p-lia', 'p-carla'] };
+  const subtitles = (kidId: string, chores: ReturnType<typeof chore>[], orders: Record<string, string[]> = rotations) =>
+    kidChores(kidId, chores, orders, people, today).map((row) => `${row.chore.id}: ${row.subtitle}`);
+
+  it('tarefa só da criança: os pontos e a data, como sempre', () => {
+    expect(subtitles('p-lia', [chore('cama', ofLia), chore('mochila', ofLia, { points: 1, due_on: '2026-10-20' })])).toEqual([
+      'cama: 10 pontos · para hoje',
+      'mochila: 1 ponto · próxima 20 out',
+    ]);
+    // Atrasada também é para hoje; a de outro ano leva o ano.
+    expect(subtitles('p-lia', [chore('cama', ofLia, { due_on: '2026-10-01' }), chore('férias', ofLia, { due_on: '2027-01-05' })])).toEqual([
+      'cama: 10 pontos · para hoje',
+      'férias: 10 pontos · próxima 5 jan 2027',
+    ]);
+  });
+
+  it('rodízio na vez da criança: diz que ela está na vez', () => {
+    expect(subtitles('p-lia', [chore('lixo', ofLia)])).toEqual(['lixo: 10 pontos · na vez · para hoje']);
+    expect(subtitles('p-lia', [chore('lixo', ofLia, { due_on: '2026-10-15' })])).toEqual(['lixo: 10 pontos · na vez · próxima 15 out']);
+  });
+
+  it('rodízio na vez de outra pessoa: a tarefa continua no cartão, com de quem é a vez', () => {
+    expect(subtitles('p-lia', [chore('lixo', ofBeto)])).toEqual(['lixo: 10 pontos · vez de Beto']);
+    // Vez de outra criança, com nome de duas palavras.
+    expect(subtitles('p-lia', [chore('quarto', { assigned_to: null, kid_id: 'p-ana' })])).toEqual(['quarto: 10 pontos · vez de Ana Clara']);
+    expect(subtitles('p-ana', [chore('quarto', { assigned_to: null, kid_id: 'p-ana' })])).toEqual(['quarto: 10 pontos · na vez · para hoje']);
+    // Ninguém na vez (a tarefa ficou de "Qualquer um"): só que é um rodízio.
+    expect(subtitles('p-lia', [chore('lixo', ofNobody)])).toEqual(['lixo: 10 pontos · em rodízio']);
+  });
+
+  it('só entram as tarefas dela e os rodízios em que ela está, na ordem em que vieram', () => {
+    const chores = [chore('louca', ofBeto), chore('lixo', ofBeto), chore('cama', ofLia), chore('quarto', ofCarla), chore('livro', { assigned_to: null, kid_id: 'p-ana' })];
+    expect(subtitles('p-lia', chores)).toEqual(['lixo: 10 pontos · vez de Beto', 'cama: 10 pontos · para hoje', 'quarto: 10 pontos · vez de Carla']);
+    expect(subtitles('p-ana', chores)).toEqual(['quarto: 10 pontos · vez de Carla', 'livro: 10 pontos · para hoje']);
+    // Criança sem tarefa nem rodízio: nada (aí a tela sugere escolher a criança como responsável).
+    expect(subtitles('p-ana', [chore('louca', ofBeto), chore('lixo', ofLia)])).toEqual([]);
+  });
+
+  it('sem as ordens (não carregaram, ou o banco ainda não tem o rodízio): só as tarefas dela', () => {
+    const chores = [chore('lixo', ofBeto), chore('cama', ofLia), chore('quarto', ofLia)];
+    expect(kidChores('p-lia', chores, undefined, people, today).map((row) => row.subtitle)).toEqual(['10 pontos · para hoje', '10 pontos · para hoje']);
+    expect(subtitles('p-lia', chores, {})).toEqual(['cama: 10 pontos · para hoje', 'quarto: 10 pontos · para hoje']);
+  });
+
+  it('ordem que não é rodízio (sobrou uma pessoa só) não põe a tarefa no cartão', () => {
+    expect(subtitles('p-lia', [chore('lixo', ofBeto)], { lixo: ['p-lia'] })).toEqual([]);
+    expect(subtitles('p-lia', [chore('lixo', ofBeto)], { lixo: ['p-lia', 'p-apagada'] })).toEqual([]);
+    // A tarefa é dela, e a ordem (de um app antigo) nem a inclui: é só dela.
+    expect(subtitles('p-lia', [chore('louca', ofLia)])).toEqual(['louca: 10 pontos · para hoje']);
   });
 });
 

@@ -5,6 +5,7 @@
 // banco (complete_chore); "Pular a vez" passa sem concluir (skip_chore_turn).
 
 import { choreAssigneeLabel, type Recurrence } from './chores';
+import { formatShortDate } from './dates';
 
 /** Quem pode entrar num rodízio: uma ficha de pessoa da casa. */
 export interface RotationPerson {
@@ -183,6 +184,21 @@ export function orderHasKid(order: string[], people: RotationPerson[]): boolean 
   return knownOrder(order, people).some((p) => !p.userId);
 }
 
+/**
+ * De quem são os pontos de um rodízio, para completar "Vale 10 …" no editor:
+ * só de quem não tem o app, cada um na sua vez ("pontos quando for a vez de
+ * Lia ou Marcos"). Pelo nome, sem "criança": pode ser um adulto. Null quando
+ * todos na ordem têm o app (ninguém ganha pontos).
+ */
+export function rotationPointsLabel(order: string[], people: RotationPerson[]): string | null {
+  const names = knownOrder(order, people)
+    .filter((p) => !p.userId)
+    .map((p) => p.name);
+  if (!names.length) return null;
+  const last = names.pop();
+  return `pontos quando for a vez de ${names.length ? `${names.join(', ')} ou ${last}` : last}`;
+}
+
 /** O que falta para salvar o rodízio; null se está tudo certo. */
 export function rotationProblem(order: string[], people: RotationPerson[]): string | null {
   const count = knownOrder(order, people).length;
@@ -194,7 +210,11 @@ export function rotationProblem(order: string[], people: RotationPerson[]): stri
 /** A tarefa como está gravada (sem isso: tarefa nova). */
 export interface SavedRotation {
   turn: ChoreTurn;
-  /** A ordem gravada; vazia se a tarefa não está em rodízio. */
+  /**
+   * A ordem gravada que o formulário mostrou ao abrir; vazia se a tarefa não
+   * estava em rodízio. Não a do cache na hora de salvar: o formulário que não
+   * mostrou um rodízio (criado depois, em outro celular) não pode encerrá-lo.
+   */
   order: string[];
 }
 
@@ -244,6 +264,36 @@ export function planRotationSave(input: {
   }
   const order = line.map((p) => p.id);
   return had ? { people: order } : { turn: turnOf(line[0]), people: order };
+}
+
+// ---------------------------------------------------------------------------
+// Pontos das crianças
+
+/**
+ * As tarefas de uma criança em "Pontos das crianças": as que são só dela e as
+ * dos rodízios em que ela está, também fora da vez dela (a tarefa não some do
+ * cartão quando a vez passa). Embaixo de cada uma, os pontos e a data, como
+ * sempre ("10 pontos · para hoje"); no rodízio, também a vez: "10 pontos · na
+ * vez · para hoje" ou, na vez de outra pessoa, "10 pontos · vez de Beto" (a
+ * data, aí, é de quem está na vez). Sem as ordens, só as tarefas dela.
+ */
+export function kidChores<C extends ChoreTurn & { id: string; points: number; due_on: string }>(
+  kidId: string,
+  chores: C[],
+  rotations: ChoreRotations | undefined,
+  people: RotationPerson[],
+  today: string,
+): { chore: C; subtitle: string }[] {
+  return chores.flatMap((chore) => {
+    const line = knownOrder(rotationOf(rotations, chore.id), people);
+    const rotates = line.length >= ROTATION_MIN_PEOPLE && line.some((p) => p.id === kidId);
+    const mine = chore.kid_id === kidId;
+    if (!mine && !rotates) return [];
+    const due = chore.due_on <= today ? 'para hoje' : `próxima ${formatShortDate(chore.due_on, Number(today.slice(0, 4)))}`;
+    const current = currentTurn(chore, people);
+    const turn = !rotates ? [due] : mine ? ['na vez', due] : [current ? `vez de ${current.name}` : 'em rodízio'];
+    return [{ chore, subtitle: [pointsLabel(chore.points), ...turn].join(' · ') }];
+  });
 }
 
 // ---------------------------------------------------------------------------

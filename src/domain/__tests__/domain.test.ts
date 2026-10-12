@@ -3,7 +3,7 @@ import glyphs from '@expo/vector-icons/build/vendor/react-native-vector-icons/gl
 
 import { CATEGORY_KEYS } from '../../../supabase/functions/_shared/categories';
 import { CATEGORIES, compareByAisle, getCategory } from '../categories';
-import { choreStatus, describeChoreStatus, describeRecurrence } from '../chores';
+import { choreStatus, describeChoreStatus, describeRecurrence, isChoreGone } from '../chores';
 import {
   addDays,
   diffDays,
@@ -156,6 +156,15 @@ describe('chores', () => {
     expect(describeRecurrence('weekly', 1)).toBe('Toda semana');
     expect(describeRecurrence('daily', 2)).toBe('A cada 2 dias');
     expect(describeRecurrence('none', 1)).toBe('Uma vez');
+  });
+
+  it('knows a chore that no longer exists from a fetch that just failed', () => {
+    // O que a API responde ao `.single()` sem linha: a tarefa foi apagada em outro aparelho.
+    expect(isChoreGone({ code: 'PGRST116', details: 'The result contains 0 rows', message: 'Cannot coerce the result to a single JSON object' })).toBe(true);
+    expect(isChoreGone(new TypeError('Network request failed'))).toBe(false);
+    expect(isChoreGone({ code: '57014', message: 'canceling statement due to statement timeout' })).toBe(false);
+    expect(isChoreGone(null)).toBe(false);
+    expect(isChoreGone('PGRST116')).toBe(false);
   });
 });
 

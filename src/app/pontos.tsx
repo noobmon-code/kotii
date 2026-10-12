@@ -2,11 +2,13 @@ import { router, Stack } from 'expo-router';
 import { useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { useChores, useKidHistory, useKidPoints, useRedeemPoints } from '@/data/home';
+import { useChoreRotations, useChores, useKidHistory, useKidPoints, useRedeemPoints } from '@/data/home';
 import { usePeople } from '@/data/health';
+import { kidChores, rotationPeople } from '@/domain/choreRotation';
 import { addDays, formatShortDate, todayISO, toISODate } from '@/domain/dates';
 import { kidsOf, pointsHistory } from '@/domain/points';
 import { FieldsModal } from '@/features/health/FieldsModal';
+import { useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import type { Chore, Person } from '@/lib/types';
 import { Mascot } from '@/ui/art';
@@ -22,12 +24,17 @@ export default function PointsScreen() {
   const people = usePeople();
   const balances = useKidPoints();
   const chores = useChores();
+  // Fora da espera e do erro: sem as ordens (ou no banco ainda sem o rodízio), cada criança vê só as tarefas dela.
+  const rotations = useChoreRotations().data;
+  const members = useHousehold().data?.members ?? [];
 
   if (people.isPending || balances.isPending || chores.isPending) return <Loading />;
   const error = people.error ?? balances.error ?? chores.error;
   if (error) return <ErrorNotice error={error} onRetry={() => [people, balances, chores].forEach((q) => q.refetch())} />;
 
   const kids = kidsOf(people.data ?? []);
+  const who = rotationPeople(members, people.data ?? []);
+  const today = todayISO();
   return (
     <Screen edges={[]}>
       <Stack.Screen options={{ title: 'Pontos das crianças' }} />
@@ -48,7 +55,7 @@ export default function PointsScreen() {
             kid={kid}
             tint={TINTS[index % TINTS.length]}
             balance={balances.data?.[kid.id] ?? 0}
-            chores={(chores.data ?? []).filter((c) => c.kid_id === kid.id)}
+            chores={kidChores(kid.id, chores.data ?? [], rotations, who, today)}
           />
         ))
       )}
@@ -62,7 +69,8 @@ export default function PointsScreen() {
   );
 }
 
-function KidCard({ kid, tint, balance, chores }: { kid: Person; tint: Tint; balance: number; chores: Chore[] }) {
+/** chores: as tarefas da criança e as dos rodízios em que ela está, com o texto de cada uma (kidChores). */
+function KidCard({ kid, tint, balance, chores }: { kid: Person; tint: Tint; balance: number; chores: { chore: Chore; subtitle: string }[] }) {
   const t = useTint(tint);
   const today = todayISO();
   const history = useKidHistory(kid.id, addDays(today, -6));
@@ -87,12 +95,12 @@ function KidCard({ kid, tint, balance, chores }: { kid: Person; tint: Tint; bala
 
       {chores.length ? (
         <View>
-          {chores.map((c) => (
+          {chores.map(({ chore, subtitle }) => (
             <ListRow
-              key={c.id}
-              title={c.title}
-              subtitle={`${plural(c.points)} · ${c.due_on <= today ? 'para hoje' : `próxima ${formatShortDate(c.due_on)}`}`}
-              onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: c.id } })}
+              key={chore.id}
+              title={chore.title}
+              subtitle={subtitle}
+              onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: chore.id } })}
             />
           ))}
         </View>

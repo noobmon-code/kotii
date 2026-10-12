@@ -16,13 +16,14 @@ import {
   rotationLabel,
   rotationOf,
   rotationPeople,
+  rotationPointsLabel,
   rotationProblem,
   skipTurnQuestion,
   toggleInOrder,
   turnOf,
   type ChoreTurn,
 } from '@/domain/choreRotation';
-import { RECURRENCE_OPTIONS, type Recurrence } from '@/domain/chores';
+import { isChoreGone, RECURRENCE_OPTIONS, type Recurrence } from '@/domain/chores';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { kidsOf } from '@/domain/points';
 import { useHousehold } from '@/lib/auth';
@@ -42,18 +43,31 @@ export default function ChoreScreen() {
   // `aparelho`: tarefa nova de manutenção, já ligada ao aparelho.
   const { id, aparelho } = useLocalSearchParams<{ id: string; aparelho?: string }>();
   const isNew = id === 'nova';
-  const chore = useChore(isNew ? undefined : id);
-  // A ordem do rodízio (e as fichas dela) entram no estado inicial do
-  // formulário: a tarefa que já existe espera por elas. Sem elas, salvar
-  // desfaria um rodízio que a tela nem mostrou.
-  const rotations = useChoreRotations();
+  // A tarefa, a ordem do rodízio e as fichas entram no estado inicial do
+  // formulário, e salvar grava por cima do que está no servidor. Por isso a
+  // tarefa que já existe e as ordens são buscadas de novo ao abrir (`fresh`),
+  // e o formulário espera por elas: aberto com o cache de antes, desfaria um
+  // rodízio criado em outro celular sem nunca tê-lo mostrado.
+  const chore = useChore(isNew ? undefined : id, { fresh: true });
+  const rotations = useChoreRotations({ fresh: !isNew });
   const people = usePeople();
+  // A espera vale só até o formulário aparecer: depois, uma busca de fundo
+  // (a de "Pular a vez", por exemplo) não o tira da tela com o que foi digitado.
+  const [opened, setOpened] = useState(false);
 
   if (!isNew) {
     const queries = [chore, rotations, people];
-    const failed = queries.find((q) => q.isError);
+    // Erro só sem nada para mostrar: a busca de fundo que falha não troca o
+    // formulário aberto pelo aviso. A tarefa apagada em outro aparelho é a
+    // exceção: não há mais o que editar.
+    const failed = chore.isError && isChoreGone(chore.error) ? chore : queries.find((q) => q.isError && q.data === undefined);
     if (failed) return <ErrorNotice error={failed.error} onRetry={() => queries.forEach((q) => q.refetch())} />;
     if (queries.some((q) => q.isPending)) return <Loading />;
+    if (!opened) {
+      // Sem internet a busca fica parada (não está "buscando") e a tela abre com o cache.
+      if (queries.some((q) => q.isFetching && !q.isFetchedAfterMount)) return <Loading />;
+      setOpened(true);
+    }
   }
   return (
     <ChoreForm
@@ -64,7 +78,7 @@ export default function ChoreScreen() {
   );
 }
 
-/** savedOrder: a ordem do rodízio gravada (vazia: a tarefa não está em rodízio). */
+/** savedOrder: a ordem do rodízio gravada agora (vazia: a tarefa não está em rodízio). */
 function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmentId: string | null; savedOrder: string[] }) {
   const equipment = useEquipment(equipmentId ?? undefined);
   const members = useHousehold().data?.members ?? [];
@@ -81,15 +95,19 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
   const [due, setDue] = useState(formatBRDate(chore?.due_on ?? todayISO()));
   const [assignedTo, setAssignedTo] = useState<string | null>(chore?.assigned_to ?? null);
   const [kidId, setKidId] = useState<string | null>(chore?.kid_id ?? null);
+  // A ordem gravada que o formulário mostrou ao abrir. É por ela que salvar
+  // decide, não pela do cache naquela hora: a busca de fundo pode trazer um
+  // rodízio que esta tela nunca mostrou, e ela não pode encerrá-lo.
+  const [shownOrder] = useState(savedOrder);
   // Rodízio: as fichas na ordem escolhida. De quem é a vez não fica aqui: vem da tarefa.
-  const [rotating, setRotating] = useState(savedOrder.length > 0);
-  const [order, setOrder] = useState(savedOrder);
+  const [rotating, setRotating] = useState(shownOrder.length > 0);
+  const [order, setOrder] = useState(shownOrder);
   // Tarefa nova de criança começa valendo 10; a que já é de criança (ou tem criança no rodízio) mantém o que tinha, mesmo 0.
-  const [points, setPoints] = useState(String(chore && (chore.kid_id || orderHasKid(savedOrder, who)) ? chore.points : 10));
+  const [points, setPoints] = useState(String(chore && (chore.kid_id || orderHasKid(shownOrder, who)) ? chore.points : 10));
   // Tarefa nova já criada, cujo rodízio não pôde ser gravado: salvar de novo atualiza essa, em vez de criar outra.
   const [createdId, setCreatedId] = useState<string>();
 
-  const saved = chore ? { turn: chore, order: savedOrder } : undefined;
+  const saved = chore ? { turn: chore, order: shownOrder } : undefined;
   // "Uma vez" não tem rodízio: fica só quem está na vez.
   const inRotation = rotating && recurrence !== 'none';
   const planned = plannedTurn(saved, order, who);
@@ -276,7 +294,8 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
             <>
               <Text variant="body">{rotationLabel({ ...turnOf(planned), points: 0 }, order, who)}</Text>
               <Text variant="muted">
-                Ordem: {numberedOrder(order, who)}. Ao concluir a tarefa, a vez passa para a pessoa seguinte. Toque em alguém para tirar do rodízio.
+                Ordem: {numberedOrder(order, who)}. Ao concluir a tarefa, a vez passa para a pessoa seguinte. Toque numa pessoa para pôr ou
+                tirar; a ordem é a dos toques.
               </Text>
             </>
           )
@@ -288,8 +307,9 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
               <TextField value={points} onChangeText={setPoints} keyboardType="number-pad" accessibilityLabel="Pontos" />
             </View>
             <Text variant="body" style={styles.flex}>
+              {/* No rodízio, os pontos são de quem não tem o app, cada um na sua vez: o texto diz de quem. */}
               {inRotation
-                ? 'pontos para a criança da vez quando ficar pronta'
+                ? rotationPointsLabel(order, who)
                 : `pontos para ${kids.find((k) => k.id === single.kid_id)?.name} quando ficar pronta`}
             </Text>
           </Row>

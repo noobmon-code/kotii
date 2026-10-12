@@ -32,7 +32,8 @@ export function usePeople() {
 export type PersonValues = Omit<Person, 'id' | 'member_user_id'>;
 
 export function useSavePerson() {
-  const invalidate = useInvalidate('people', 'medications');
+  // A pessoa que vira pet sai dos rodízios no servidor (a vez passa adiante): as tarefas e as ordens também mudam.
+  const invalidate = useInvalidate('people', 'medications', 'chores', 'choreRotations');
   return useMutation({
     mutationFn: async ({ id, values }: { id?: string; values: PersonValues }) => {
       if (!id) {

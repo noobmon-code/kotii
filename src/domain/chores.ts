@@ -40,6 +40,16 @@ export function describeChoreStatus(status: ChoreStatus): string {
   }
 }
 
+/**
+ * A busca da tarefa não achou a linha (PGRST116, a resposta da API ao
+ * `.single()` sem linhas): ela foi apagada em outro aparelho. Diferente da
+ * busca que só falhou (sem internet), aqui não há mais o que mostrar.
+ */
+export function isChoreGone(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  return 'code' in error && error.code === 'PGRST116';
+}
+
 /** Quem faz a tarefa: o morador, ou a criança com os pontos ("Lia · 10 pontos"). */
 export function choreAssigneeLabel(
   chore: { assigned_to: string | null; kid_id: string | null; points: number },

@@ -133,10 +133,20 @@ export function useChores() {
   return useQuery({ queryKey: ['chores'], queryFn: () => fetchChores() });
 }
 
-export function useChore(id: string | undefined) {
+/**
+ * `fresh`: para o editor. Busca de novo ao abrir a tela, mesmo com o cache
+ * recente: o formulário não pode partir de uma tarefa (ou de uma ordem de
+ * rodízio) que outro celular já mudou, porque salvaria por cima.
+ */
+interface FreshOption {
+  fresh?: boolean;
+}
+
+export function useChore(id: string | undefined, { fresh = false }: FreshOption = {}) {
   return useQuery({
     queryKey: ['chores', id],
     enabled: Boolean(id),
+    refetchOnMount: fresh ? 'always' : true,
     queryFn: async () =>
       unwrap(await supabase.from('chores').select(CHORE_COLUMNS).eq('id', id!).single()) as Chore,
   });
@@ -153,8 +163,8 @@ export async function fetchChoreRotations(db: SupabaseClient = supabase): Promis
   return groupRotations(unwrap(result) as ChoreRotationRow[]);
 }
 
-export function useChoreRotations() {
-  return useQuery({ queryKey: ['choreRotations'], queryFn: () => fetchChoreRotations() });
+export function useChoreRotations({ fresh = false }: FreshOption = {}) {
+  return useQuery({ queryKey: ['choreRotations'], refetchOnMount: fresh ? 'always' : true, queryFn: () => fetchChoreRotations() });
 }
 
 // Sem assigned_to e kid_id, a edição não mexe no responsável (num rodízio, a vez fica com o banco).
