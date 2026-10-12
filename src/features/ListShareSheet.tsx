@@ -3,7 +3,7 @@ import * as Clipboard from 'expo-clipboard';
 // continua aberto (o do expo-linking troca a página do app pela do WhatsApp).
 import { Linking, Platform, ScrollView, Share, StyleSheet, useWindowDimensions } from 'react-native';
 
-import { listShareText, whatsappUrl, type ShareItem } from '@/domain/listShare';
+import { listShareHint, listShareText, whatsappUrl, type ShareItem } from '@/domain/listShare';
 import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
 import { notify } from '@/ui/dialogs';
 import { Text } from '@/ui/primitives';
@@ -22,7 +22,7 @@ export function ListShareSheet({
 }: {
   visible: boolean;
   list: { name: string };
-  /** A lista inteira: o texto leva o que falta comprar e só conta o que está no carrinho. */
+  /** A lista inteira: o texto leva o que falta comprar; o que está no carrinho fica de fora (o menu avisa). */
   items: readonly ShareItem[];
   onClose: () => void;
 }) {
@@ -55,7 +55,8 @@ export function ListShareSheet({
     const url = whatsappUrl(text);
     // Texto que não cabe num link: vai copiado, para colar na conversa.
     if (!url) return void copy('A lista é grande: o texto foi copiado, é só colar na conversa.');
-    Linking.openURL(url).catch(() => notify('Não deu para abrir o WhatsApp', 'Use "Copiar" e cole o texto na conversa.'));
+    // Sem WhatsApp para abrir o link: o menu já fechou, então o texto vai copiado.
+    Linking.openURL(url).catch(() => void copy('Não deu para abrir o WhatsApp: o texto foi copiado, é só colar na conversa.'));
   };
 
   const actions: SheetAction[] = [{ label: 'WhatsApp', icon: 'whatsapp', onPress: sendWhatsApp }];
@@ -74,21 +75,26 @@ export function ListShareSheet({
     onPress: () => void copy('Cole na conversa com quem vai fazer as compras.'),
   });
 
+  // Até 30% da tela, mas sem empurrar as ações para fora em telas baixas (navegador do celular com a
+  // barra de endereço): ACTIONS_ROOM é o que o título, o aviso e as três ações ocupam no menu.
+  const previewMax = Math.round(Math.max(PREVIEW_MIN, Math.min(height * 0.3, height * 0.85 - ACTIONS_ROOM)));
+
   return (
     <ActionSheet visible={visible} title="Mandar a lista" actions={actions} onClose={onClose}>
       <ScrollView
-        style={[styles.preview, { backgroundColor: c.surfaceAlt, maxHeight: Math.round(height * 0.3) }]}
+        style={[styles.preview, { backgroundColor: c.surfaceAlt, maxHeight: previewMax }]}
         contentContainerStyle={styles.previewContent}>
         <Text variant="body" selectable>
           {text}
         </Text>
       </ScrollView>
-      <Text variant="small">
-        Vai só o que falta comprar, sem preços. No WhatsApp, o que está entre asteriscos aparece em negrito.
-      </Text>
+      <Text variant="small">{listShareHint(items)}</Text>
     </ActionSheet>
   );
 }
+
+const PREVIEW_MIN = 96;
+const ACTIONS_ROOM = 340;
 
 const styles = StyleSheet.create({
   preview: { flexGrow: 0, borderRadius: radius.md },

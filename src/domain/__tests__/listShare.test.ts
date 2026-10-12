@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { compareForShopping } from '../listItem';
-import { listShareText, SECTIONS_ABOVE, WHATSAPP_MAX_ENCODED, whatsappUrl, type ShareItem } from '../listShare';
+import { listShareHint, listShareText, SECTIONS_ABOVE, WHATSAPP_MAX_ENCODED, whatsappUrl, type ShareItem } from '../listShare';
 
 const item = (name: string, over: Partial<ShareItem> = {}): ShareItem => ({
   name,
@@ -125,8 +125,6 @@ describe('listShareText', () => {
         '',
         '*Papel e descartáveis*',
         '- Papel higiênico',
-        '',
-        'Já no carrinho: 2 itens',
       ].join('\n'),
     );
   });
@@ -146,24 +144,61 @@ describe('listShareText', () => {
 
   it(`as seções só aparecem com mais de ${SECTIONS_ABOVE} itens a comprar (os do carrinho não contam)`, () => {
     expect(SECTIONS_ABOVE).toBe(8);
-    const toBuy = (n: number) => Array.from({ length: n }, (_, i) => item(`Item ${i + 1}`, { category: 'limpeza' }));
+    // O último item é de outra categoria: com uma seção só não haveria título nenhum (ver abaixo).
+    const toBuy = (n: number) =>
+      Array.from({ length: n }, (_, i) => item(`Item ${i + 1}`, { category: i === n - 1 ? 'bebidas' : 'limpeza' }));
     const cart = Array.from({ length: 5 }, (_, i) => item(`Pego ${i + 1}`, inCart));
     expect(listShareText(mercado, [...toBuy(8), ...cart])).not.toContain('*Limpeza*');
     expect(listShareText(mercado, [...toBuy(9), ...cart])).toContain('\n\n*Limpeza*\n- Item 1\n');
   });
 
-  it('categoria desconhecida entra em "Outros", como na tela', () => {
-    const items = [...longList, item('Coisa', { category: 'nao_existe' }), item('Pilha')];
-    expect(listShareText(mercado, items)).toContain('\n\n*Outros*\n- Coisa\n- Pilha\n');
+  it('uma seção só não ganha título: a lista toda de limpeza, ou toda em "Outros", vai corrida', () => {
+    const all = (category: string) => Array.from({ length: 12 }, (_, i) => item(`Item ${i + 1}`, { category }));
+    const lines = listShareText(mercado, all('limpeza'))!.split('\n');
+    // O título e os 12 itens, sem linha em branco nem nome de seção.
+    expect(lines).toHaveLength(13);
+    expect(lines[0]).toBe('*Mercado* · 12 itens');
+    expect(lines.slice(1).every((line) => line.startsWith('- Item '))).toBe(true);
+    expect(listShareText({ name: 'Festa' }, all('outros'))).not.toContain('*Outros*');
+    // Um urgente no meio já faz duas seções (Urgente e Limpeza): aí os títulos voltam.
+    const withUrgent = [...all('limpeza').slice(1), item('Item 1', { category: 'limpeza', priority: 'urgente' })];
+    expect(listShareText(mercado, withUrgent)).toContain('\n\n*Urgente*\n- Item 1\n\n*Limpeza*\n');
   });
 
-  it('o que está no carrinho não é listado: só a contagem, na última linha', () => {
-    const text = listShareText(mercado, [item('Banana'), item('Café', inCart)])!;
-    expect(text).toBe('*Mercado*\n- Banana\n\nJá no carrinho: 1 item');
-    expect(listShareText(mercado, [item('Banana'), item('Café', inCart), item('Pão', inCart)])).toMatch(
-      /\n\nJá no carrinho: 2 itens$/,
-    );
-    expect(listShareText(mercado, [item('Banana')])).not.toContain('carrinho');
+  it('categoria desconhecida entra em "Outros", como na tela', () => {
+    const items = [...longList, item('Coisa', { category: 'nao_existe' }), item('Pilha')];
+    expect(listShareText(mercado, items)).toMatch(/\n\n\*Outros\*\n- Coisa\n- Pilha$/);
+  });
+
+  it('o que está no carrinho não vai no texto: quem recebe não tem carrinho; quem manda é avisado no menu', () => {
+    const one = [item('Banana'), item('Café', inCart)];
+    const two = [...one, item('Pão', inCart)];
+    expect(listShareText(mercado, one)).toBe('*Mercado*\n- Banana');
+    expect(listShareText(mercado, two)).toBe('*Mercado*\n- Banana');
+    const base = 'Vai só o texto do que falta comprar: sem fotos e sem preços.';
+    const bold = 'No WhatsApp, o que está entre asteriscos aparece em negrito.';
+    expect(listShareHint([item('Banana')])).toBe(`${base} ${bold}`);
+    expect(listShareHint(one)).toBe(`${base} O item que já está no carrinho não vai. ${bold}`);
+    expect(listShareHint(two)).toBe(`${base} Os 2 itens que já estão no carrinho não vão. ${bold}`);
+  });
+
+  it('a observação já escrita entre parênteses não ganha outro par', () => {
+    const line = (notes: string) => listShareText(mercado, [item('Leite', { notes })])!.split('\n')[1];
+    expect(line('(sem lactose)')).toBe('- Leite (sem lactose)');
+    expect(line('sem lactose')).toBe('- Leite (sem lactose)');
+    // Só o par que envolve tudo sai; parênteses no meio ficam como estão.
+    expect(line('(a) e (b)')).toBe('- Leite ((a) e (b))');
+    expect(line('marca X (ou Y)')).toBe('- Leite (marca X (ou Y))');
+    expect(line('()')).toBe('- Leite');
+    expect(line('( )')).toBe('- Leite');
+  });
+
+  it('metade solta de um emoji sai do texto, e o link continua possível', () => {
+    const broken = 'Festa \uD83C';
+    const text = listShareText({ name: broken }, [item('Bolo \uD83C\uDF82', { notes: 'de chocolate \uDF82' })])!;
+    expect(text).toBe('*Festa*\n- Bolo \uD83C\uDF82 (de chocolate)');
+    expect(() => whatsappUrl(text)).not.toThrow();
+    expect(whatsappUrl(text)).toContain('https://wa.me/?text=');
   });
 
   it('sem nada para comprar não há texto: lista vazia ou tudo no carrinho', () => {
