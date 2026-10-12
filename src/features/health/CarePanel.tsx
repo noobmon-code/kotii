@@ -5,6 +5,7 @@ import { StyleSheet, View } from 'react-native';
 import { useMedications } from '@/data/home';
 import { useAppointments, useExams, usePeople, useVaccines } from '@/data/health';
 import { formatBRDate, formatShortDate, todayISO } from '@/domain/dates';
+import { hasExamResults } from '@/domain/examTrends';
 import { ageLabel, describeWhen, EXAM_STATUS, isOverdueAppointment, upcomingAppointments } from '@/domain/health';
 import type { Person } from '@/lib/types';
 import {
@@ -132,6 +133,16 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
       </Section>
 
       <Section title="Exames" action={<Button title="Exame" icon="plus" variant="ghost" compact onPress={() => add('/exame/[id]')} />}>
+        {/* Só com uma pessoa escolhida: a evolução compara os laudos dela. */}
+        {person && hasExamResults(personExams) ? (
+          <Button
+            title="Evolução e resumo para a consulta"
+            icon="chart-line"
+            variant="secondary"
+            compact
+            onPress={() => router.push({ pathname: '/exames/[pessoa]', params: { pessoa: person.id } })}
+          />
+        ) : null}
         {personExams.length === 0 ? (
           <Text variant="muted">Nenhum exame. Fotografe o pedido ou o laudo e a IA transcreve os resultados.</Text>
         ) : (
