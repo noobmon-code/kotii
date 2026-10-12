@@ -67,6 +67,11 @@ export interface ListEstimate {
   total: number;
   cartTotal: number;
   pendingTotal: number;
+  /** Quantos itens há de cada lado (com ou sem preço) e quantos deles têm preço. */
+  cartCount: number;
+  pendingCount: number;
+  cartPricedCount: number;
+  pendingPricedCount: number;
   itemCount: number;
   pricedCount: number;
   estimatedCount: number;
@@ -128,8 +133,9 @@ function itemResolver(prices: readonly EstimatePrice[], { links, products = [] }
       all = [...candidates].flatMap((productId) => byProduct.get(productId) ?? []);
     }
     if (!all.length) return null;
-    // Entre vários produtos, vale o comprado mais recentemente.
-    const { productId } = bestForUnit(item.unit, all);
+    // Entre vários produtos, vale o comprado mais recentemente, em qualquer unidade: a unidade é escolhida
+    // depois, só entre os preços desse produto (um produto antigo na unidade da lista não passa na frente).
+    const { productId } = newest(all);
     return { productId, own: all.filter((quote) => quote.productId === productId), all };
   };
 }
@@ -267,11 +273,17 @@ export function estimateList(
   const cartTotal = sum(true);
   const pendingTotal = sum(false);
   const estimates = [...byItem.values()];
+  const count = (inCart: boolean, pricedOnly: boolean) =>
+    items.filter((item) => item.inCart === inCart && (!pricedOnly || byItem.has(item.id))).length;
   return {
     byItem,
     total: round2(cartTotal + pendingTotal),
     cartTotal,
     pendingTotal,
+    cartCount: count(true, false),
+    pendingCount: count(false, false),
+    cartPricedCount: count(true, true),
+    pendingPricedCount: count(false, true),
     itemCount: items.length,
     pricedCount: byItem.size,
     estimatedCount: estimates.filter((estimate) => estimate.kind === 'estimated').length,
@@ -280,6 +292,23 @@ export function estimateList(
       .map(([id, knownCount]) => ({ storeId: id, knownCount }))
       .sort((a, b) => b.knownCount - a.knownCount || a.storeId.localeCompare(b.storeId)),
   };
+}
+
+/**
+ * A linha "No carrinho / Falta comprar", quando a lista tem itens dos dois
+ * lados. O lado em que nenhum item tem preço diz isso, em vez de sumir ou de
+ * mostrar R$ 0,00: o total de cima seria só do outro lado, sem ninguém saber.
+ */
+export function cartSplitLine(
+  estimate: Pick<ListEstimate, 'cartTotal' | 'pendingTotal' | 'cartCount' | 'pendingCount' | 'cartPricedCount' | 'pendingPricedCount'>,
+): string | null {
+  if (!estimate.cartCount || !estimate.pendingCount) return null;
+  const cart = estimate.cartPricedCount ? `No carrinho: ~${formatBRL(estimate.cartTotal)}.` : null;
+  const pending = estimate.pendingPricedCount ? `Falta comprar: ~${formatBRL(estimate.pendingTotal)}.` : null;
+  if (cart && pending) return `${cart} ${pending}`;
+  if (cart) return `${cart} O que falta comprar ainda não tem preço.`;
+  if (pending) return `${pending} O que está no carrinho ainda não tem preço.`;
+  return null;
 }
 
 /** O mercado em que a pessoa disse estar, e quando disse. */

@@ -4,7 +4,7 @@
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { describeEstimate, describePantryHits, estimateHeadline, type ListEstimate } from '@/domain/listEstimate';
+import { cartSplitLine, describeEstimate, describePantryHits, estimateHeadline, type ListEstimate } from '@/domain/listEstimate';
 import { formatBRL } from '@/domain/money';
 import type { ListKind } from '@/lib/types';
 import { PickerModal } from '@/ui/PickerModal';
@@ -33,7 +33,7 @@ export function ListEstimateCard({
   const [choosing, setChoosing] = useState(false);
   const priced = estimate.pricedCount > 0;
   if (!priced && !inPantry.length) return null;
-  const shopping = estimate.cartTotal > 0 && estimate.pendingTotal > 0;
+  const cartSplit = cartSplitLine(estimate);
   const storeName = storeId ? storeNames?.get(storeId) : undefined;
   const place = kind === 'farmacia' ? 'farmácia' : 'mercado';
 
@@ -49,11 +49,7 @@ export function ListEstimateCard({
             </View>
           </Row>
           <Text variant="muted">{describeEstimate(estimate, storeName ?? null)}</Text>
-          {shopping ? (
-            <Text variant="muted">
-              {`No carrinho: ~${formatBRL(estimate.cartTotal)}. Falta comprar: ~${formatBRL(estimate.pendingTotal)}.`}
-            </Text>
-          ) : null}
+          {cartSplit ? <Text variant="muted">{cartSplit}</Text> : null}
           {storeNames ? (
             <Row style={styles.wrap}>
               <Chip

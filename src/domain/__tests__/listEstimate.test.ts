@@ -2,6 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 
 import {
   CHOSEN_STORE_MS,
+  cartSplitLine,
   currentStoreChoice,
   describeEstimate,
   describePantryHits,
@@ -96,6 +97,37 @@ describe('estimateList', () => {
     const links = new LinkIndex([{ name_key: 'leite', product_id: 'italac' }]);
     const estimate = estimateList([item('l', 'Leite', 'leite-generico', 2)], [price('italac', 'bom', 5)], { links });
     expect(estimate.byItem.get('l')).toMatchObject({ cost: 10, productId: 'italac' });
+  });
+
+  it('nome ligado a produtos em unidades diferentes: o produto é o comprado mais recentemente, e só depois vem a unidade', () => {
+    const links = new LinkIndex([
+      { name_key: 'carne', product_id: 'bandeja' },
+      { name_key: 'carne', product_id: 'patinho' },
+    ]);
+    // A lista pede em "un"; a bandeja (un) é compra antiga, o patinho (kg) é o que a casa compra agora.
+    const estimate = estimateList(
+      [item('c', 'Carne', null, 2, 'un')],
+      [price('bandeja', 'bom', 25, '2026-06-01T12:00:00Z', 'un'), price('patinho', 'bom', 42, '2026-10-01T12:00:00Z', 'kg')],
+      { links },
+    );
+    expect(estimate.byItem.get('c')).toMatchObject({ productId: 'patinho', unit: 'kg', unitPrice: 42, approximateQuantity: true });
+    expect(estimate.byItem.get('c')?.last).toMatchObject({ productId: 'patinho' });
+  });
+
+  it('carrinho e o que falta: a linha segue os itens, e o lado sem preço diz que não tem', () => {
+    const prices = [price('arroz', 'bom', 20), price('feijao', 'bom', 8)];
+    const line = (items: EstimateItem[]) => cartSplitLine(estimateList(items, prices));
+    expect(line([item('a', 'Arroz', 'arroz', 1, 'un', true), item('f', 'Feijão', 'feijao')])).toBe('No carrinho: ~R$ 20,00. Falta comprar: ~R$ 8,00.');
+    // O que falta não tem preço: o total de cima é só do carrinho, e a linha diz isso.
+    expect(line([item('a', 'Arroz', 'arroz', 1, 'un', true), item('x', 'Vela', null)])).toBe(
+      'No carrinho: ~R$ 20,00. O que falta comprar ainda não tem preço.',
+    );
+    expect(line([item('x', 'Vela', null, 1, 'un', true), item('f', 'Feijão', 'feijao')])).toBe(
+      'Falta comprar: ~R$ 8,00. O que está no carrinho ainda não tem preço.',
+    );
+    // Tudo de um lado só, ou nada com preço: sem linha.
+    expect(line([item('a', 'Arroz', 'arroz'), item('f', 'Feijão', 'feijao')])).toBeNull();
+    expect(line([item('x', 'Vela', null, 1, 'un', true), item('y', 'Fósforo', null)])).toBeNull();
   });
 
   it('nome ligado a mais de um produto: vale o comprado mais recentemente, e o preço bom é só desse produto', () => {
