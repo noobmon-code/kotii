@@ -9,6 +9,12 @@ import type { ShoppingListItem } from '@/lib/types';
 import { Badge, CategoryIcon, Icon, Row, Text, useCategoryTint } from '@/ui/primitives';
 import { radius, space, useColors } from '@/ui/theme';
 
+/** O que a casa sabe do item no mercado: quanto deve custar e se já está na despensa (domain/listEstimate). */
+export interface ItemHint {
+  cost?: string;
+  inPantry?: boolean;
+}
+
 /** Fotos dos itens: links das já enviadas (por caminho) e as que esperam internet (por item). */
 export interface ItemPhotos {
   signed?: Record<string, string>;
@@ -28,6 +34,7 @@ export function ShoppingGrid({
   items,
   inCart = false,
   photos,
+  hints,
   onToggle,
   onOpen,
   onStore,
@@ -35,6 +42,8 @@ export function ShoppingGrid({
   items: ShoppingListItem[];
   inCart?: boolean;
   photos: ItemPhotos;
+  /** Preço estimado e "tem em casa", por item. */
+  hints?: ReadonlyMap<string, ItemHint>;
   onToggle: (item: ShoppingListItem) => void;
   onOpen: (item: ShoppingListItem) => void;
   /** Sem ele (ex.: carrinho sincronizando), o botão não aparece. */
@@ -55,6 +64,7 @@ export function ShoppingGrid({
               inCart={inCart}
               photoUrl={item.photo_path ? photos.signed?.[item.photo_path] : undefined}
               pendingKey={photos.pending.get(item.id)}
+              hint={hints?.get(item.id)}
               onPress={() => onToggle(item)}
               onLongPress={() => onOpen(item)}
               onStore={onStore ? () => onStore(item) : undefined}
@@ -71,6 +81,7 @@ function Tile({
   inCart,
   photoUrl,
   pendingKey,
+  hint,
   onPress,
   onLongPress,
   onStore,
@@ -80,6 +91,7 @@ function Tile({
   inCart: boolean;
   photoUrl?: string;
   pendingKey?: string;
+  hint?: ItemHint;
   onPress: () => void;
   onLongPress: () => void;
   onStore?: () => void;
@@ -98,11 +110,15 @@ function Tile({
       : null;
   const badge = inCart ? null : priorityBadge(item.priority);
   const notes = item.notes?.trim();
+  // No carrinho o item já foi pego: a despensa não importa mais.
+  const inPantry = !inCart && hint?.inPantry;
   return (
     <Pressable
       accessibilityRole="checkbox"
       accessibilityState={{ checked: inCart }}
-      accessibilityLabel={[item.name, quantity, badge?.label, notes].filter(Boolean).join(', ')}
+      accessibilityLabel={[item.name, quantity, hint?.cost, badge?.label, inPantry ? 'já tem em casa' : null, notes]
+        .filter(Boolean)
+        .join(', ')}
       accessibilityHint={inCart ? 'Toque para devolver à lista' : 'Toque para pôr no carrinho'}
       accessibilityActions={[{ name: 'longpress', label: 'Detalhes do item' }]}
       onAccessibilityAction={(e) => e.nativeEvent.actionName === 'longpress' && onLongPress()}
@@ -136,7 +152,13 @@ function Tile({
         </Text>
         {notes ? <Icon name="note-text-outline" size={14} color="textMuted" /> : null}
       </Row>
+      {hint?.cost ? (
+        <Text variant="small" style={styles.center}>
+          {hint.cost}
+        </Text>
+      ) : null}
       {badge ? <Badge label={badge.label} tone={badge.tone} /> : null}
+      {inPantry ? <Badge label="Tem em casa" tone="info" /> : null}
       {inCart ? (
         <View style={[styles.badge, { backgroundColor: c.primary }]}>
           <Icon name="check" size={14} color="onPrimary" />

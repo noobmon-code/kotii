@@ -23,15 +23,23 @@ export function listNameKey(name: string): string {
 /** Os vínculos para consulta rápida. */
 export class LinkIndex {
   private readonly keys: Set<string>;
+  private readonly byName: Map<string, string[]>;
 
   constructor(links: readonly ListLink[] = []) {
     this.keys = new Set(links.map((link) => `${link.name_key}\u0000${link.product_id}`));
+    this.byName = new Map();
+    for (const link of links) this.byName.set(link.name_key, [...(this.byName.get(link.name_key) ?? []), link.product_id]);
   }
 
   /** O item de lista com este nome é cumprido por este produto? */
   has(listName: string, productId: string): boolean {
     const key = listNameKey(listName);
     return Boolean(key) && this.keys.has(`${key}\u0000${productId}`);
+  }
+
+  /** Os produtos que já cumpriram um item de lista com este nome. */
+  productsFor(listName: string): string[] {
+    return this.byName.get(listNameKey(listName)) ?? [];
   }
 }
 

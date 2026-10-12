@@ -10,7 +10,7 @@ import { errorMessage } from '@/lib/supabase';
 import { UNITS, type ShoppingListItem, type Unit } from '@/lib/types';
 import { Backdrop } from '@/ui/Backdrop';
 import { notify } from '@/ui/dialogs';
-import { Button, CategoryIcon, Chip, IconButton, Row, Text, TextField } from '@/ui/primitives';
+import { Button, Card, CategoryIcon, Chip, Icon, IconButton, Row, Text, TextField } from '@/ui/primitives';
 import { MAX_WIDTH, radius, space, useColors } from '@/ui/theme';
 
 export type PhotoChange = { kind: 'keep' } | { kind: 'new'; uri: string } | { kind: 'remove' };
@@ -32,11 +32,14 @@ export function ListItemEditor({
   item,
   photoUri,
   photoPending,
+  facts,
   onSave,
   onRemove,
   onClose,
 }: {
   item: ShoppingListItem;
+  /** O que a casa sabe do item: preços e despensa (itemFacts), já em frases. */
+  facts?: string[];
   /** A foto atual (já enviada ou esperando internet). */
   photoUri: string | null;
   /** A foto atual ainda não subiu. */
@@ -111,6 +114,22 @@ export function ListItemEditor({
               <Button title="Remover a foto" variant="ghost" compact onPress={() => setPhoto({ kind: 'remove' })} />
             ) : null}
           </View>
+
+          {facts?.length ? (
+            <Card style={styles.gap}>
+              <Row>
+                <Icon name="tag-outline" color="primary" />
+                <Text variant="label" style={styles.flex}>
+                  Preço e despensa
+                </Text>
+              </Row>
+              {facts.map((fact) => (
+                <Text key={fact} variant="muted">
+                  {fact}
+                </Text>
+              ))}
+            </Card>
+          ) : null}
 
           <View style={styles.gap}>
             <Text variant="label">Prioridade</Text>

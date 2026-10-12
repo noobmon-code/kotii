@@ -25,15 +25,18 @@ import {
   useListQueueBusy,
   useDeleteListItem,
   useEditListItem,
+  useLatestPrices,
   useListItems,
   useProducts,
   usePurchaseRecords,
   useRemovePendingListItem,
   useShoppingList,
+  useStores,
   useToggleListItem,
 } from '@/data/market';
 import { cartPantryRows, type CartPantryEntry, type CartPantryRow } from '@/domain/cartPantry';
 import { compareByAisle, getCategory } from '@/domain/categories';
+import { estimateList, formatItemCost, itemFacts, pantryHits } from '@/domain/listEstimate';
 import { compareForShopping } from '@/domain/listItem';
 import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { todayISO } from '@/domain/dates';
@@ -43,10 +46,11 @@ import { restockSuggestions } from '@/domain/restock';
 import { guessCategory, normalizeSearch } from '@/domain/search';
 import { CartPantryModal } from '@/features/CartPantryModal';
 import { CommonItemsPicker } from '@/features/CommonItemsPicker';
+import { ListEstimateCard } from '@/features/ListEstimateCard';
 import { ListItemEditor, type ItemDetails, type PhotoChange } from '@/features/ListItemEditor';
 import { OfflineNotice } from '@/features/OfflineNotice';
 import { RecentPurchases, RestockStrip, useJustListed } from '@/features/RecentPurchases';
-import { ShoppingGrid } from '@/features/ShoppingGrid';
+import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
 import { useAuth, useHouseholdId } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { UNITS, type Product, type ShoppingListItem, type Unit } from '@/lib/types';
@@ -68,6 +72,9 @@ import {
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
+/** O mercado em que a pessoa disse estar, por lista: vale enquanto o app está aberto. */
+const chosenStores = new Map<string, string>();
+
 export default function ShoppingListScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { session } = useAuth();
@@ -86,6 +93,8 @@ export default function ShoppingListScreen() {
   const archive = useArchiveList(id);
   const pantry = usePantry();
   const links = useListLinks();
+  const prices = useLatestPrices();
+  const stores = useStores();
   const edit = useEditListItem(id);
   const setPhoto = useSetListItemPhoto();
   const householdId = useHouseholdId();
@@ -104,6 +113,7 @@ export default function ShoppingListScreen() {
     pantryUnknown: boolean;
   } | null>(null);
   const [editing, setEditing] = useState<ShoppingListItem | null>(null);
+  const [storeId, setStoreId] = useState<string | null>(() => chosenStores.get(id) ?? null);
   // Some da faixa já no toque; volta quando a lista carregada trouxer o item e ele sair dela depois.
   const justAdded = useJustListed(items.data);
 
@@ -284,6 +294,42 @@ export default function ShoppingListScreen() {
     return { restock, recent };
   }, [purchases.data, items.data, listKind, justAdded.pending, today]);
 
+  // Lista no mercado (domain/listEstimate): quanto deve dar e o que já tem em casa. Sem os preços, as
+  // ligações ou a despensa carregados (sem internet e nunca vistos neste aparelho), mostra o que der.
+  const market = useMemo(() => {
+    const all = items.data ?? [];
+    const estimate = estimateList(
+      all.map((i) => ({
+        id: i.id,
+        name: i.name,
+        productId: i.product_id,
+        quantity: Number(i.quantity),
+        unit: i.unit,
+        inCart: Boolean(i.checked_at),
+      })),
+      (prices.data ?? []).map((p) => ({
+        productId: p.product_id,
+        storeId: p.store_id,
+        unit: p.unit,
+        unitPrice: Number(p.unit_price),
+        purchasedAt: p.purchased_at,
+      })),
+      { links: links.data, products: products.data ?? [], storeId },
+    );
+    const inPantry = pantryHits(
+      all.filter((i) => !i.checked_at).map((i) => ({ id: i.id, name: i.name, productId: i.product_id })),
+      pantry.data ?? [],
+      { links: links.data, today },
+    );
+    const hints = new Map<string, ItemHint>();
+    for (const i of all) {
+      const cost = estimate.byItem.get(i.id);
+      if (cost || inPantry.has(i.id)) hints.set(i.id, { cost: cost ? formatItemCost(cost) : undefined, inPantry: inPantry.has(i.id) });
+    }
+    return { estimate, inPantry, hints };
+  }, [items.data, prices.data, links.data, products.data, pantry.data, storeId, today]);
+  const storeName = (store: string) => stores.data?.find((s) => s.id === store)?.name ?? 'mercado';
+
   // Na ordem dos corredores do mercado: frescos, despensa, bebidas, casa…
   // Urgentes no topo.
   const pending = (items.data ?? []).filter((i) => !i.checked_at).sort(compareForShopping);
@@ -452,9 +498,23 @@ export default function ShoppingListScreen() {
         />
       ) : null}
 
+      {list.data.kind !== 'outros' && (pending.length || checked.length) ? (
+        <ListEstimateCard
+          estimate={market.estimate}
+          storeId={storeId}
+          storeName={storeName}
+          onChangeStore={(store) => {
+            if (store) chosenStores.set(id, store);
+            else chosenStores.delete(id);
+            setStoreId(store);
+          }}
+          inPantry={pending.filter((i) => market.inPantry.has(i.id)).map((i) => i.name)}
+        />
+      ) : null}
+
       {pending.length ? (
         <Section title={`Para comprar (${pending.length})`}>
-          <ShoppingGrid items={pending} photos={photos} onToggle={toggleItem} onOpen={setEditing} />
+          <ShoppingGrid items={pending} photos={photos} hints={market.hints} onToggle={toggleItem} onOpen={setEditing} />
         </Section>
       ) : checked.length ? (
         <EmptyState
@@ -482,6 +542,7 @@ export default function ShoppingListScreen() {
             inCart
             onToggle={toggleItem}
             photos={photos}
+            hints={market.hints}
             onOpen={setEditing}
             onStore={syncing ? undefined : (item) => void openStore([item], true)}
           />
@@ -500,6 +561,11 @@ export default function ShoppingListScreen() {
           item={editing}
           photoUri={editingPendingUri ?? (editing.photo_path ? (photos.signed?.[editing.photo_path] ?? null) : null)}
           photoPending={Boolean(editingPendingUri)}
+          facts={itemFacts(market.estimate.byItem.get(editing.id), market.inPantry.get(editing.id), {
+            storeName,
+            chosenStore: storeId,
+            promotionOnly: (editing.priority ?? 'normal') === 'promocao',
+          })}
           onSave={(details, photo) => saveDetails(editing, details, photo)}
           onRemove={() => removeItem(editing)}
           onClose={() => setEditing(null)}
