@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 
 import { LINK_EXPIRED, LINK_REJECTED } from '../recoveryLink';
-import { captureRecoveryLink, takeRecoveryLink } from '../recoveryLinkBoot';
+import { captureRecoveryLink, takeRecoveryLink, watchRecoveryLink } from '../recoveryLinkBoot';
 
 const href = 'https://kotii.example/entrar?keep=yes#access_token=access&refresh_token=refresh&type=recovery&expires_in=3600';
 
@@ -44,6 +44,51 @@ describe('link de recuperação lido antes do router', () => {
   it('não conseguiu limpar o endereço: os tokens não ficam guardados (nenhuma sessão sai do link)', () => {
     const { win } = fakeWindow(href, () => { throw new Error('history unavailable'); });
     expect(captureRecoveryLink(win)).toEqual({ error: LINK_REJECTED });
+  });
+});
+
+describe('link colado numa aba em que o app já está aberto', () => {
+  function openTab(address: string) {
+    const listeners: (() => void)[] = [];
+    const location = { href: address, reload: jest.fn() };
+    const win = { location, addEventListener: jest.fn((_type: 'hashchange', listener: () => void) => void listeners.push(listener)) };
+    return { win, location, fire: () => listeners.forEach((listener) => listener()) };
+  }
+
+  it('só o fragmento mudou e trouxe o link: recarrega, para o link passar pelo caminho de sempre', () => {
+    const { win, location, fire } = openTab('https://kotii.example/entrar');
+    watchRecoveryLink(win);
+    expect(win.addEventListener).toHaveBeenCalledWith('hashchange', expect.any(Function));
+    location.href = href;
+    fire();
+    expect(location.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('link que falhou também recarrega; fragmento comum, não', () => {
+    const { win, location, fire } = openTab('https://kotii.example/lista/1');
+    watchRecoveryLink(win);
+    location.href = 'https://kotii.example/lista/1#secao';
+    fire();
+    expect(location.reload).not.toHaveBeenCalled();
+    location.href = 'https://kotii.example/lista/1#error=access_denied&error_code=otp_expired';
+    fire();
+    expect(location.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('sem como ouvir ou recarregar (celular): não faz nada', () => {
+    expect(() => watchRecoveryLink(undefined)).not.toThrow();
+    expect(() => watchRecoveryLink({ location: { href } })).not.toThrow();
+    const addEventListener = jest.fn();
+    watchRecoveryLink({ location: { href }, addEventListener });
+    expect(addEventListener).not.toHaveBeenCalled();
+  });
+
+  it('endereço que não dá para ler não derruba a página', () => {
+    const { win, location, fire } = openTab('https://kotii.example/');
+    watchRecoveryLink(win);
+    location.href = 'não é um endereço';
+    expect(fire).not.toThrow();
+    expect(location.reload).not.toHaveBeenCalled();
   });
 });
 

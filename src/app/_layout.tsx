@@ -11,14 +11,14 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { useColorScheme } from 'react-native';
 
-import { AuthProvider, useAuth, useHousehold } from '@/lib/auth';
+import { AuthProvider, openedByRecoveryLink, useAuth, useHousehold } from '@/lib/auth';
 import { clearLinkNotice, useLinkNotice } from '@/lib/linkNotice';
 import { useRecovery } from '@/lib/passwordRecovery';
 import { configureNotifications } from '@/lib/reminders';
 import { persistOptions, queryClient } from '@/lib/queryClient';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
-import { EmptyState, ErrorNotice, Screen } from '@/ui/primitives';
+import { EmptyState, ErrorNotice, Loading, Screen } from '@/ui/primitives';
 import { fonts, useColors } from '@/ui/theme';
 
 SplashScreen.preventAutoHideAsync();
@@ -79,6 +79,15 @@ function AppNavigator() {
           title="Configure o Supabase"
           message="Crie o arquivo .env com EXPO_PUBLIC_SUPABASE_URL e EXPO_PUBLIC_SUPABASE_ANON_KEY (veja o README) e reinicie o app."
         />
+      </Screen>
+    );
+  }
+  // Conferir o link do e-mail depende da internet e pode demorar: página em branco parece travada
+  // (e recarregar nessa hora gasta o link).
+  if (loading && openedByRecoveryLink) {
+    return (
+      <Screen>
+        <Loading label="Abrindo o link do e-mail…" />
       </Screen>
     );
   }

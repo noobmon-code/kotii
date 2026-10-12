@@ -8,8 +8,9 @@ import { LINK_REJECTED, parseRecoveryLink, type CapturedLink } from './recoveryL
 
 /** Só o que este módulo usa da janela. */
 interface BootWindow {
-  location?: { href?: string };
+  location?: { href?: string; reload?: () => void };
   history?: { state: unknown; replaceState?: (state: unknown, unused: string, url: string) => void };
+  addEventListener?: (type: 'hashchange', listener: () => void) => void;
 }
 
 /** Lê o link do endereço e o limpa. Sem endereço ou histórico (celular), ou sem link, null. */
@@ -32,7 +33,30 @@ export function captureRecoveryLink(win: BootWindow | undefined): CapturedLink |
   }
 }
 
-let captured = captureRecoveryLink(typeof window !== 'undefined' ? window : undefined);
+/**
+ * O link colado numa aba em que o app já está aberto só troca o fragmento: a página não recarrega, e
+ * o router regravaria os tokens no endereço. Recarrega, e o link passa pelo caminho de sempre (acima).
+ * Não entra em laço: limpar o endereço (replaceState) não dispara este evento.
+ */
+export function watchRecoveryLink(win: BootWindow | undefined): void {
+  try {
+    const location = win?.location;
+    if (typeof win?.addEventListener !== 'function' || typeof location?.reload !== 'function') return;
+    win.addEventListener('hashchange', () => {
+      try {
+        if (location.href && parseRecoveryLink(location.href)) location.reload?.();
+      } catch {
+        // Endereço que não dá para ler não é o link.
+      }
+    });
+  } catch {
+    // Sem como ouvir (celular): nada a fazer.
+  }
+}
+
+const page = typeof window !== 'undefined' ? window : undefined;
+let captured = captureRecoveryLink(page);
+watchRecoveryLink(page);
 
 /** O link que o endereço trazia quando o app abriu. Entrega uma vez: os tokens não ficam guardados aqui. */
 export function takeRecoveryLink(): CapturedLink | null {

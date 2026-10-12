@@ -27,6 +27,9 @@ export default function SignInScreen() {
   // O link do e-mail não deu certo (lib/linkNotice): a tela já abre em "Esqueci minha senha", com o aviso.
   const linkFailed = useLinkNotice();
   const [recovery, setRecovery] = useState<Recovery | null>(() => (linkNotice() ? 'email' : null));
+  // O aviso vale enquanto esta tela está aberta: se a conta entrar (aqui ou por outra aba), ele não
+  // reaparece depois como alerta sobre a casa.
+  useEffect(() => clearLinkNotice, []);
   const [code, setCode] = useState('');
   /** Quando dá para pedir outro e-mail (ms). */
   const [resendAt, setResendAt] = useState<number | null>(null);
@@ -213,7 +216,6 @@ export default function SignInScreen() {
               compact
               disabled={busy}
               onPress={() => {
-                clearLinkNotice();
                 setRecovery(null);
                 setCode('');
               }}

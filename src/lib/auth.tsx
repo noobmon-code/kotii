@@ -78,6 +78,9 @@ const recoveryLink = createRecoveryLinkHandler(takeRecoveryLink(), {
   notice: setLinkNotice,
 });
 
+/** O app abriu pelo link do e-mail: enquanto ele é conferido, a tela diz o que está esperando (app/_layout). */
+export const openedByRecoveryLink = recoveryLink.pending;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ session: null, loading: true });
   const isRestoring = useIsRestoring();
