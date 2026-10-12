@@ -66,13 +66,13 @@ const windowStart = (dueOn: string) => addMonths(dueOn, -USUAL_MONTHS);
  */
 export function usualAmount(payments: UsualPayment[], { before }: { before: string }): Usual | null {
   const since = windowStart(before);
+  // Mês registrado com R$ 0,00 (sem cobrança, isenção) não é pagamento: puxaria o normal para baixo.
   const recent = payments
-    .filter((p) => p.due_on >= since && p.due_on < before)
+    .filter((p) => p.due_on >= since && p.due_on < before && p.amount > 0)
     .sort((a, b) => b.due_on.localeCompare(a.due_on))
     .slice(0, USUAL_PAYMENTS);
   if (recent.length < MIN_PAYMENTS) return null;
   const average = Math.round(recent.reduce((sum, p) => sum + cents(p.amount), 0) / recent.length) / 100;
-  // Média zerada (meses sem cobrança) não serve de comparação.
   return average > 0 ? { average, count: recent.length } : null;
 }
 
@@ -142,21 +142,34 @@ export interface BillAbove {
   comparison: UsualComparison;
 }
 
+/**
+ * O valor fixo que a própria pessoa aumentou só é novidade até o primeiro pagamento nele (ou acima):
+ * depois disso, avisar "acima do normal" por meses, até a média subir, seria repetir o que ela já sabe.
+ */
+function fixedAmountAlreadyPaid(bill: Pick<UsualBill, 'id' | 'next_due_on' | 'amount'>, payments: BillUsualPayment[]): boolean {
+  if (bill.amount == null) return false;
+  const last = payments
+    .filter((p) => p.bill_id === bill.id && p.due_on < bill.next_due_on)
+    .sort((a, b) => b.due_on.localeCompare(a.due_on))[0];
+  return last != null && cents(last.amount) >= cents(bill.amount);
+}
+
 /** O valor já conhecido do próximo vencimento, quando está acima do normal da conta. */
 export function billAboveUsual(bill: UsualBill, payments: BillUsualPayment[], today: string): BillAbove | null {
   if (!bill.active) return null;
   const usual = billUsual(bill, payments);
   const known = knownNextAmount(bill, today);
+  if (known?.source === 'fixo' && fixedAmountAlreadyPaid(bill, payments)) return null;
   const comparison = compareToUsual(known?.amount, usual);
   return known && usual && comparison?.kind === 'acima' ? { known, usual, comparison } : null;
 }
 
 /**
  * Desde quando as listas buscam os pagamentos de todas as contas: os 6 meses
- * da média mais 1, para a conta que está até um mês atrasada.
+ * da média mais 6, para a conta atrasada (até uns seis meses) não perder o selo.
  */
 export function usualPaymentsSince(today: string): string {
-  return addMonths(today, -(USUAL_MONTHS + 1));
+  return addMonths(today, -(USUAL_MONTHS * 2));
 }
 
 /**
@@ -226,7 +239,9 @@ export function payUsualNote(
 ): UsualNote | null {
   const usual = billUsual(bill, payments);
   if (!usual) return null;
-  const comparison = compareToUsual(amount, usual);
+  // O valor fixo da conta, já pago assim antes, não é novidade (ver billAboveUsual).
+  const settled = bill.amount != null && amount != null && cents(amount) === cents(bill.amount) && fixedAmountAlreadyPaid(bill, payments);
+  const comparison = settled ? null : compareToUsual(amount, usual);
   if (comparison?.kind === 'acima') return { text: describeAboveUsual(comparison, usual), above: true };
   return bill.amount == null ? { text: describeUsualAverage(usual), above: false } : null;
 }

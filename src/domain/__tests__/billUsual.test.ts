@@ -233,17 +233,39 @@ describe('billsAboveUsual', () => {
     expect(billsAboveUsual([bill({ boleto: boletoOf(31000) })], [], TODAY).size).toBe(0);
   });
 
-  it('busca os pagamentos de 7 meses e deixa de fora a conta atrasada há mais tempo que isso cobre', () => {
-    expect(usualPaymentsSince(TODAY)).toBe('2026-03-12');
-    // Vencida em 10/09 (um mês e pouco): os 6 meses dela começam em 10/03, antes do que a busca traz.
-    const late = bill({ next_due_on: '2026-09-10', boleto: boletoOf(31000) });
-    const before = monthly([210, 220, 230, 240, 225, 225], '2026-08');
+  it('busca os pagamentos de 12 meses e deixa de fora a conta atrasada há mais tempo que isso cobre', () => {
+    expect(usualPaymentsSince(TODAY)).toBe('2025-10-12');
+    // Vencida em 10/04 (seis meses e pouco): os 6 meses dela começam em 10/10/2025, antes do que a busca traz.
+    const late = bill({ next_due_on: '2026-04-10', boleto: boletoOf(31000) });
+    const before = monthly([210, 220, 230, 240, 225, 225], '2026-03');
     expect(billsAboveUsual([late], before, TODAY).size).toBe(0);
     // Com todos os pagamentos da conta (tela da conta), o aviso existe.
     expect(billAboveUsual(late, before, TODAY)?.comparison).toEqual({ kind: 'acima', diff: 85, percent: 38 });
-    // Vencida em 15/09: os 6 meses começam em 15/03 e a busca cobre.
-    const covered = bill({ next_due_on: '2026-09-15', boleto: boletoOf(31000) });
-    expect(billsAboveUsual([covered], before, TODAY).has('luz')).toBe(true);
+    // Vencida há um mês e pouco (10/09): a busca cobre, e o selo aparece na lista.
+    const covered = bill({ next_due_on: '2026-09-10', boleto: boletoOf(31000) });
+    expect(billsAboveUsual([covered], monthly([210, 220, 230, 240, 225, 225], '2026-08'), TODAY).has('luz')).toBe(true);
+  });
+
+  it('mês registrado com R$ 0,00 não entra na média nem na contagem', () => {
+    const withZeros = monthly([400, 420, 0, 450, 410, 0], '2026-09');
+    expect(usualAmount(withZeros, { before: '2026-10-10' })).toEqual({ average: 420, count: 4 });
+    // Com menos de 3 pagamentos de verdade não há normal.
+    expect(usualAmount(monthly([0, 0, 225, 0, 225, 0], '2026-09'), { before: '2026-10-10' })).toBeNull();
+  });
+
+  it('valor fixo aumentado pela pessoa: avisa até o primeiro pagamento nele, depois não', () => {
+    const raised = bill({ amount: 130, next_due_on: '2026-10-15' });
+    const old = monthly([100, 100, 100, 100, 100, 100], '2026-09');
+    expect(billAboveUsual(raised, old, TODAY)?.comparison).toEqual({ kind: 'acima', diff: 30, percent: 30 });
+    expect(payUsualNote(raised, old, 130)?.above).toBe(true);
+    // Um pagamento já no valor novo: deixou de ser novidade, na lista e ao pagar.
+    const paidOnce = monthly([100, 100, 100, 100, 100, 130], '2026-09');
+    expect(billAboveUsual(raised, paidOnce, TODAY)).toBeNull();
+    expect(payUsualNote(raised, paidOnce, 130)).toBeNull();
+    // Digitado acima do valor fixo: aí é novidade de novo.
+    expect(payUsualNote(raised, paidOnce, 180)?.above).toBe(true);
+    // Boleto guardado continua sendo julgado como sempre.
+    expect(billAboveUsual({ ...raised, boleto: boletoOf(18000) }, paidOnce, TODAY)?.known.source).toBe('boleto');
   });
 });
 

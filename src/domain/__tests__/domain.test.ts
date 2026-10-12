@@ -25,7 +25,7 @@ import {
   takesOn,
   type MedicationSchedule,
 } from '../medications';
-import { formatBRL, parseDecimal } from '../money';
+import { formatBRL, parseDecimal, parseTypingAmount } from '../money';
 import { describeExpiry, estimateExpiry, expiryStatus } from '../pantry';
 import { guessCategory, normalizeSearch } from '../search';
 
@@ -138,6 +138,17 @@ describe('money', () => {
     expect(parseDecimal('1.5')).toBe(1.5);
     expect(parseDecimal('abc')).toBeNull();
     expect(parseDecimal('')).toBeNull();
+  });
+
+  it('reads the amount while it is still being typed', () => {
+    expect(parseTypingAmount('310,')).toBe(310);
+    expect(parseTypingAmount('310.')).toBe(310);
+    expect(parseTypingAmount('310,9')).toBe(310.9);
+    expect(parseTypingAmount('R$ 310, ')).toBe(310);
+    expect(parseTypingAmount(',')).toBeNull();
+    expect(parseTypingAmount('')).toBeNull();
+    // Salvar continua exigindo o valor completo.
+    expect(parseDecimal('310,')).toBeNull();
   });
 
   it('formats BRL', () => {

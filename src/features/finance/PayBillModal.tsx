@@ -6,7 +6,7 @@ import { useBillPayments, usePayBill, useSetPaymentPayer } from '@/data/finance'
 import { payUsualNote } from '@/domain/billUsual';
 import { parseBoleto } from '@/domain/boleto';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
-import { parseDecimal } from '@/domain/money';
+import { parseDecimal, parseTypingAmount } from '@/domain/money';
 import { PayerChips } from '@/features/finance/PayerChips';
 import { useAuth } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
@@ -32,7 +32,7 @@ export function PayBillModal({ bill, onClose }: { bill: Bill; onClose: () => voi
   // ocupa a linha da dica (uma linha só). Sem os pagamentos (carregando ou
   // com erro), ficam as dicas de sempre.
   const payments = useBillPayments(bill.id);
-  const usualNote = payUsualNote(bill, payments.data ?? [], parseDecimal(amount));
+  const usualNote = payUsualNote(bill, payments.data ?? [], parseTypingAmount(amount));
 
   function confirm() {
     const value = parseDecimal(amount);
