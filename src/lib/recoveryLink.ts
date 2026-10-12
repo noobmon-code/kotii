@@ -171,9 +171,17 @@ export function createRecoveryLinkHandler(link: CapturedLink | null, deps: Recov
         (value) => Boolean(value.error) && deps.isConnectionError(value.error),
       );
       if (error || !data.session) return deps.isConnectionError(error) ? LINK_OFFLINE : LINK_REJECTED;
+      // Quem diz de quem é a sessão é o servidor: se não for a conta conferida, a marca vai para a que
+      // entrou. Sem conseguir gravá-la, essa sessão não fica (abriria a casa sem a senha nova): sai.
+      if (data.session.user.id !== owner.id) {
+        try {
+          await deps.beginRecovery(data.session.user.id);
+        } catch {
+          await deps.signOut().catch(() => undefined);
+          return LINK_REJECTED;
+        }
+      }
       signedIn = true;
-      // Quem diz de quem é a sessão é o servidor: se não for a conta conferida, a marca vai para a que entrou.
-      if (data.session.user.id !== owner.id) await deps.beginRecovery(data.session.user.id);
       return null;
     } finally {
       // Não entrou: a marca volta a ser a que estava no aparelho.

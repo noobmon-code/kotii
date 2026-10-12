@@ -193,6 +193,19 @@ describe('link do e-mail: a marca que não deu para gravar e a marca que mudou d
     expect(recoveringUserId()).toBeNull();
   });
 
+  it('conferir de quem é a marca e desfazer são uma operação só: a marca posta no meio fica', async () => {
+    forgetRecoveryInMemory();
+    const undo = await beginRecovery('ana');
+    // Desfazer começou (já leu que a marca é desta tentativa) e, antes de ele apagar, o código do e-mail
+    // entra para a mesma conta.
+    const undoing = undo();
+    startRecovery('ana');
+    await undoing;
+    await flush();
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBe('ana');
+    expect(recoveringUserId()).toBe('ana');
+  });
+
   it('desfazer devolve também de quem era a marca que estava lá', async () => {
     await AsyncStorage.multiSet([
       [MARK_KEY, 'bia'],

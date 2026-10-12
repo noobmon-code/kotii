@@ -46,14 +46,30 @@ function subscribe(listener: () => void) {
 
 const snapshot = () => state;
 
+// Uma mudança da marca no aparelho por vez, também entre abas (como os lembretes, em lib/reminders):
+// conferir de quem é a marca e desfazê-la precisam ser uma coisa só, senão a outra aba grava a dela no
+// meio e a perde.
+let queue: Promise<unknown> = Promise.resolve();
+function serialized<T>(task: () => Promise<T>): Promise<T> {
+  const locked = () =>
+    Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.locks
+      ? (navigator.locks.request('kotii-recuperacao', task) as Promise<T>)
+      : task();
+  const run = queue.then(locked, locked);
+  queue = run.catch(() => undefined);
+  return run;
+}
+
 /** A conta entrou pelo código do e-mail (pelo link é beginRecovery): fica na senha nova até salvar. */
 export function startRecovery(userId: string) {
   version += 1;
   setState({ userId, readFor: userId });
-  AsyncStorage.multiSet([
-    [MARK_KEY, userId],
-    [MARK_BY_KEY, newAttempt()],
-  ]).catch(() => undefined);
+  serialized(() =>
+    AsyncStorage.multiSet([
+      [MARK_KEY, userId],
+      [MARK_BY_KEY, newAttempt()],
+    ]),
+  ).catch(() => undefined);
 }
 
 /**
@@ -67,22 +83,25 @@ export function startRecovery(userId: string) {
 export async function beginRecovery(userId: string): Promise<() => Promise<void>> {
   let stored: string | null = null;
   let storedBy: string | null = null;
-  try {
-    [[, stored], [, storedBy]] = await AsyncStorage.multiGet([MARK_KEY, MARK_BY_KEY]);
-  } catch {
-    stored = null;
-    storedBy = null;
-  }
   const memory = state;
   const attempt = newAttempt();
   version += 1;
   const mine = version;
   setState({ userId, readFor: userId });
   try {
-    await AsyncStorage.multiSet([
-      [MARK_KEY, userId],
-      [MARK_BY_KEY, attempt],
-    ]);
+    // O que estava lá e a marca nova, numa operação só: o desfazer devolve exatamente o que esta tentativa tirou.
+    await serialized(async () => {
+      try {
+        [[, stored], [, storedBy]] = await AsyncStorage.multiGet([MARK_KEY, MARK_BY_KEY]);
+      } catch {
+        stored = null;
+        storedBy = null;
+      }
+      await AsyncStorage.multiSet([
+        [MARK_KEY, userId],
+        [MARK_BY_KEY, attempt],
+      ]);
+    });
   } catch (error) {
     if (version === mine) {
       version += 1;
@@ -90,26 +109,29 @@ export async function beginRecovery(userId: string): Promise<() => Promise<void>
     }
     throw error;
   }
-  return async () => {
+  return () => {
     // A memória só volta se ninguém mexeu na marca depois (aqui, ou outra aba pelo evento "storage").
     if (version === mine) {
       version += 1;
       setState(memory);
     }
-    try {
-      const [[, marker], [, by]] = await AsyncStorage.multiGet([MARK_KEY, MARK_BY_KEY]);
-      if (marker !== userId || by !== attempt) return;
-      const back: [string, string][] = [];
-      const gone: string[] = [];
-      if (stored === null) gone.push(MARK_KEY);
-      else back.push([MARK_KEY, stored]);
-      if (storedBy === null) gone.push(MARK_BY_KEY);
-      else back.push([MARK_BY_KEY, storedBy]);
-      if (back.length) await AsyncStorage.multiSet(back);
-      if (gone.length) await AsyncStorage.multiRemove(gone);
-    } catch {
-      // Sem conseguir ler ou gravar, a marca fica: pede a senha nova a mais, nunca a menos.
-    }
+    // Conferir e desfazer de uma vez só: a marca que outra aba puser entra depois, e fica.
+    return serialized(async () => {
+      try {
+        const [[, marker], [, by]] = await AsyncStorage.multiGet([MARK_KEY, MARK_BY_KEY]);
+        if (marker !== userId || by !== attempt) return;
+        const back: [string, string][] = [];
+        const gone: string[] = [];
+        if (stored === null) gone.push(MARK_KEY);
+        else back.push([MARK_KEY, stored]);
+        if (storedBy === null) gone.push(MARK_BY_KEY);
+        else back.push([MARK_BY_KEY, storedBy]);
+        if (back.length) await AsyncStorage.multiSet(back);
+        if (gone.length) await AsyncStorage.multiRemove(gone);
+      } catch {
+        // Sem conseguir ler ou gravar, a marca fica: pede a senha nova a mais, nunca a menos.
+      }
+    });
   };
 }
 
@@ -121,7 +143,7 @@ export async function beginRecovery(userId: string): Promise<() => Promise<void>
 export async function finishRecovery(): Promise<void> {
   version += 1;
   setState({ userId: null, readFor: state.readFor });
-  await AsyncStorage.multiRemove([MARK_KEY, MARK_BY_KEY]).catch(() => undefined);
+  await serialized(() => AsyncStorage.multiRemove([MARK_KEY, MARK_BY_KEY])).catch(() => undefined);
 }
 
 /**

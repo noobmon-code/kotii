@@ -318,6 +318,23 @@ describe('link padrão de recuperação: até a sessão', () => {
     expect(undo).not.toHaveBeenCalled();
   });
 
+  it('sem conseguir gravar a marca da conta que entrou, a sessão dela não fica: sai e desfaz', async () => {
+    const calls: string[] = [];
+    const undoAna = jest.fn(async () => { calls.push('undo'); });
+    const marks = [async () => undoAna, async () => { throw new Error('storage unavailable'); }];
+    const { handler, deps } = setup({
+      setSession: async () => signedInAs('bia'),
+      beginRecovery: jest.fn<RecoveryLinkDeps['beginRecovery']>(async () => marks.shift()!()),
+      signOut: jest.fn<RecoveryLinkDeps['signOut']>(async () => { calls.push('signOut'); }),
+    });
+    await handler.run();
+    expect((deps.beginRecovery as jest.Mock).mock.calls).toEqual([['ana'], ['bia']]);
+    // Primeiro a sessão sai, depois a marca da conta conferida volta ao que era.
+    expect(calls).toEqual(['signOut', 'undo']);
+    expect(deps.notice).toHaveBeenCalledWith(LINK_REJECTED);
+    expect(handler.pending).toBe(false);
+  });
+
   it('nenhuma mensagem (aviso ou pergunta) leva os tokens, nem quando o erro os traz', async () => {
     const leaky = new Error(`bad ${tokens.access_token} ${tokens.refresh_token}`);
     const scenarios = [
