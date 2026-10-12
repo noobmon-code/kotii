@@ -221,6 +221,15 @@ describe('planHouseReminders: compromissos da família e aniversários', () => {
     // De madrugada não há aviso no dia: a véspera fica, para a vez não passar em branco.
     const dawn = once({ id: 'plantao', title: 'Plantão', start_time: '00:40', recurrence: 'weekly', weekdays: [2], until_on: '2026-09-29' });
     expect(rows({ family: family([dawn]) }).map(([key]) => key)).toEqual(['events:plantao@2026-09-29:2026-09-28:19:00']);
+    // Cedo demais para o aviso do dia ser visto (toca antes das 7h): a véspera também fica.
+    const early = once({ id: 'treino', title: 'Treino', start_time: '06:30', recurrence: 'weekly', weekdays: [2], until_on: '2026-09-29' });
+    expect(rows({ family: family([early]) }).map(([key]) => key)).toEqual([
+      'events:treino@2026-09-29:2026-09-28:19:00',
+      'events:treino@2026-09-29:2026-09-29:05:30',
+    ]);
+    // Às 8h o aviso do dia toca às 7h: só ele.
+    const morning = once({ id: 'aula', title: 'Aula', start_time: '08:00', recurrence: 'weekly', weekdays: [2], until_on: '2026-09-29' });
+    expect(rows({ family: family([morning]) }).map(([key]) => key)).toEqual(['events:aula@2026-09-29:2026-09-29:07:00']);
   });
 
   it('chaves estáveis: o mesmo plano de novo, e nenhuma repetida', () => {

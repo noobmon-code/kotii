@@ -51,6 +51,8 @@ const EARLIEST_LEAD_MINUTES = 7 * 60;
 export const EVENT_EVE_TIME = APPOINTMENT_EVE_TIME;
 const EVENT_LEAD_MINUTES = 60;
 export const EVENT_ALL_DAY_TIME = '08:00';
+/** Aviso do dia que toca antes disto é de madrugada: a rotina mantém o da véspera. */
+const EVENT_EARLY_TIME = '07:00';
 const VACCINE_LEAD_DAYS = 7;
 /** Vacina atrasada há mais que isso provavelmente foi tomada sem registrar: sem aviso. */
 const VACCINE_OVERDUE_DAYS = 60;
@@ -183,8 +185,10 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
       const id = `${entry.id}@${entry.date}`;
       const at = eventDayTime(entry.time);
       // A rotina (toda semana, com quem leva e quem busca de sempre) avisa só
-      // no dia: véspera toda noite vira barulho. Sem aviso no dia, a véspera fica.
-      if (texts.eve && !(entry.routine && at)) add('events', id, addDays(entry.date, -1), texts.eve, texts.body, { at: EVENT_EVE_TIME });
+      // no dia: véspera toda noite vira barulho. Sem aviso no dia, ou com ele de
+      // madrugada (antes das 7h, quando ninguém vê), a véspera fica.
+      const dayOnly = entry.routine && at !== null && at >= EVENT_EARLY_TIME;
+      if (texts.eve && !dayOnly) add('events', id, addDays(entry.date, -1), texts.eve, texts.body, { at: EVENT_EVE_TIME });
       if (at) add('events', id, entry.date, texts.today, texts.body, { at });
     }
   }
