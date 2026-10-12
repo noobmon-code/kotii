@@ -47,18 +47,61 @@ export function familyEventErrorMessage(error: unknown): string {
 const hhmm = (time: string | null) => (time ? time.slice(0, 5) : null);
 const fromRow = (row: FamilyEvent): FamilyEvent => ({ ...row, start_time: hhmm(row.start_time), end_time: hhmm(row.end_time) });
 
-/** Os compromissos da casa (as regras; as datas saem delas). Sem a tabela, nenhum. */
-export async function fetchFamilyEvents(db: SupabaseClient = supabase): Promise<FamilyEvent[]> {
-  const result = await db.from('family_events').select(EVENT_COLUMNS).order('starts_on', { ascending: false }).limit(2000);
-  if (result.error && isMissingTable(result.error)) return [];
-  return (unwrap(result) as FamilyEvent[]).map(fromRow);
+/** O PostgREST corta em 1000 linhas por pedido (max_rows padrão do Supabase). */
+const PAGE = 1000;
+/** Dos compromissos de um dia só e das mudanças de dia, bastam os mais recentes. */
+const SINGLE_EVENT_PAGES = 2;
+const DAY_PAGES = 5;
+
+/** Busca página por página até vir uma incompleta (ou `maxPages`). Sem a tabela, nada. */
+async function fetchPages<T>(
+  page: (from: number, to: number) => PromiseLike<{ data: unknown; error: unknown }>,
+  maxPages = Infinity,
+): Promise<T[]> {
+  const out: T[] = [];
+  for (let n = 0; n < maxPages; n += 1) {
+    const result = await page(n * PAGE, (n + 1) * PAGE - 1);
+    if (result.error && isMissingTable(result.error)) return [];
+    const rows = (unwrap(result as Parameters<typeof unwrap>[0]) ?? []) as T[];
+    out.push(...rows);
+    if (rows.length < PAGE) break;
+  }
+  return out;
 }
 
-/** O que muda em cada dia dos compromissos. Sem a tabela, nada. */
+/**
+ * Os compromissos da casa (as regras; as datas saem delas). Sem a tabela,
+ * nenhum. Os que se repetem vêm todos: uma série criada há anos continua
+ * valendo hoje, por mais compromissos que a casa tenha feito depois. Dos de
+ * um dia só, os mais recentes.
+ */
+export async function fetchFamilyEvents(db: SupabaseClient = supabase): Promise<FamilyEvent[]> {
+  const rules = (repeating: boolean, from: number, to: number) => {
+    const query = db.from('family_events').select(EVENT_COLUMNS);
+    return (repeating ? query.neq('recurrence', 'none') : query.eq('recurrence', 'none'))
+      .order('starts_on', { ascending: false })
+      .order('id')
+      .range(from, to);
+  };
+  const [repeating, single] = await Promise.all([
+    fetchPages<FamilyEvent>((from, to) => rules(true, from, to)),
+    fetchPages<FamilyEvent>((from, to) => rules(false, from, to), SINGLE_EVENT_PAGES),
+  ]);
+  return [...repeating, ...single].map(fromRow).sort((a, b) => b.starts_on.localeCompare(a.starts_on));
+}
+
+/** O que muda em cada dia dos compromissos (as datas mais recentes primeiro). Sem a tabela, nada. */
 export async function fetchFamilyEventDays(db: SupabaseClient = supabase): Promise<FamilyEventDay[]> {
-  const result = await db.from('family_event_days').select(DAY_COLUMNS).order('occurs_on', { ascending: false }).limit(5000);
-  if (result.error && isMissingTable(result.error)) return [];
-  return unwrap(result) as FamilyEventDay[];
+  return fetchPages<FamilyEventDay>(
+    (from, to) =>
+      db
+        .from('family_event_days')
+        .select(DAY_COLUMNS)
+        .order('occurs_on', { ascending: false })
+        .order('event_id')
+        .range(from, to),
+    DAY_PAGES,
+  );
 }
 
 export function useFamilyEvents() {
@@ -86,8 +129,8 @@ export function useFamilyEvent(id: string | undefined) {
  * Hoje e o Nuke. Nunca dá erro: se os compromissos não carregaram, o
  * calendário vem só com as fichas (os aniversários continuam). Sem as
  * mudanças de cada dia não há compromissos: mostrar um dia que "não vai ter"
- * seria pior que não mostrar. `loading`: só enquanto a primeira busca está em
- * andamento (sem internet, não fica esperando).
+ * seria pior que não mostrar. Quem usa não espera por eles: enquanto carregam,
+ * a tela segue com o que já tinha.
  */
 export function useFamilyCalendar() {
   const people = usePeople();
@@ -103,7 +146,7 @@ export function useFamilyCalendar() {
     refetchEvents();
     refetchDays();
   }, [refetchEvents, refetchDays]);
-  return { calendar, loading: events.isLoading || days.isLoading, refetch };
+  return { calendar, refetch };
 }
 
 function useInvalidateFamilyEvents() {

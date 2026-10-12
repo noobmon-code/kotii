@@ -93,7 +93,8 @@ export function useNukeContext(today: string): NukeContextState {
   if (missing.some((q) => q.isError)) {
     return { status: 'error', retry: () => missing.forEach((q) => q.refetch()) };
   }
-  if (missing.length || !household.data || family.loading) return { status: 'loading' };
+  // Os compromissos são um extra: o Nuke não espera por eles (sem eles, o retrato sai só com os aniversários).
+  if (missing.length || !household.data) return { status: 'loading' };
   const { household: house, members, me } = household.data;
   const memberName = (id: string | null) => members.find((m) => m.user_id === id)?.display_name ?? null;
 

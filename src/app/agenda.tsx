@@ -108,7 +108,8 @@ export default function AgendaScreen() {
       />
     );
   }
-  if (queries.some((q) => q.isPending) || family.loading) return <Loading />;
+  // Os compromissos não seguram a agenda: enquanto carregam, ela aparece com o resto (e os aniversários).
+  if (queries.some((q) => q.isPending)) return <Loading />;
 
   function goToMonth(delta: number) {
     const next = shiftMonth(month, delta);
