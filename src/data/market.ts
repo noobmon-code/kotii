@@ -106,9 +106,14 @@ export function useOpenListItems() {
 const fetchListLinks = async () =>
   unwrap(await supabase.from('list_item_links').select('name_key, product_id')) as ListLink[];
 
+// Fora do hook: com a mesma função a cada render, o TanStack Query devolve o
+// mesmo LinkIndex enquanto os vínculos não mudam (e um useMemo que depende
+// dele não refaz a conta a cada letra digitada).
+const toLinkIndex = (links: ListLink[]) => new LinkIndex(links);
+
 /** Vínculos nome da lista -> produto que a casa já confirmou. */
 export function useListLinks() {
-  return useQuery({ queryKey: ['listLinks'], queryFn: fetchListLinks, select: (links) => new LinkIndex(links) });
+  return useQuery({ queryKey: ['listLinks'], queryFn: fetchListLinks, select: toLinkIndex });
 }
 
 /** Os vínculos já carregados, ou buscados agora; null se não deu (sem internet e nunca vistos neste aparelho). */

@@ -2,8 +2,10 @@ import { useLocalSearchParams } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { useLatestPrices, useListItems, useStores } from '@/data/market';
+import { useLatestPrices, useListItems, useListLinks, useProducts, useStores } from '@/data/market';
+import { resolveListProducts } from '@/domain/listEstimate';
 import { formatBRL, formatQuantity } from '@/domain/money';
+import { storePriceIndex } from '@/domain/priceLevel';
 import { recommendStores, type StorePlan } from '@/domain/recommendation';
 import type { ShoppingListItem } from '@/lib/types';
 import {
@@ -31,23 +33,30 @@ export default function WhereToBuyScreen() {
   const items = useListItems(id);
   const prices = useLatestPrices();
   const stores = useStores();
+  const links = useListLinks();
+  const products = useProducts();
   const [mode, setMode] = useState<Mode>('1');
 
   const pending = useMemo(() => (items.data ?? []).filter((i) => !i.checked_at), [items.data]);
-  const recommendation = useMemo(
-    () =>
-      recommendStores(
-        pending.map((i) => ({ key: i.id, productId: i.product_id, quantity: i.quantity, unit: i.unit })),
-        (prices.data ?? []).map((p) => ({
-          productId: p.product_id,
-          storeId: p.store_id,
-          unit: p.unit,
-          unitPrice: p.unit_price,
-        })),
-        Number(mode),
-      ),
-    [pending, prices.data, mode],
-  );
+  // A mesma conta da estimativa na tela da lista (domain/listEstimate): o mesmo produto por item (item digitado
+  // solto ganha preço pelas ligações das notas) e o mesmo nível de preço, com todos os preços da casa.
+  const recommendation = useMemo(() => {
+    const quotes = (prices.data ?? []).map((p) => ({
+      productId: p.product_id,
+      storeId: p.store_id,
+      unit: p.unit,
+      unitPrice: Number(p.unit_price),
+      purchasedAt: p.purchased_at,
+    }));
+    const wanted = pending.map((i) => ({ id: i.id, name: i.name, productId: i.product_id, quantity: Number(i.quantity), unit: i.unit }));
+    const resolved = resolveListProducts(wanted, quotes, { links: links.data, products: products.data ?? [] });
+    return recommendStores(
+      wanted.map((i) => ({ key: i.id, productId: resolved.get(i.id) ?? i.productId, quantity: i.quantity, unit: i.unit })),
+      quotes,
+      Number(mode),
+      { storeIndex: storePriceIndex(quotes) },
+    );
+  }, [pending, prices.data, links.data, products.data, mode]);
 
   if (items.isPending || prices.isPending || stores.isPending) return <Loading label="Comparando preços…" />;
   const error = items.error ?? prices.error ?? stores.error;
@@ -150,7 +159,7 @@ export default function WhereToBuyScreen() {
                 key={item.id}
                 left={<CategoryIcon category={item.category} name={item.name} size={36} />}
                 title={item.name}
-                subtitle={item.product_id ? 'Ainda não aparece em nenhuma nota' : 'Item digitado livre: não ligado a um produto'}
+                subtitle={item.product_id ? 'Ainda não aparece em nenhuma nota' : 'Item digitado livre: ainda não ligado a um produto com preço'}
               />
             ))}
           </ListCard>

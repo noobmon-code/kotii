@@ -38,8 +38,11 @@ export function ListItemEditor({
   onClose,
 }: {
   item: ShoppingListItem;
-  /** O que a casa sabe do item: preços e despensa (itemFacts), já em frases. */
-  facts?: string[];
+  /**
+   * O que a casa sabe do item: preços e despensa (itemFacts), em frases. Pela
+   * prioridade marcada aqui, ainda sem salvar: "só em promoção" mostra o preço bom.
+   */
+  facts?: (priority: ListPriority) => string[];
   /** A foto atual (já enviada ou esperando internet). */
   photoUri: string | null;
   /** A foto atual ainda não subiu. */
@@ -59,6 +62,7 @@ export function ListItemEditor({
   const shown = photo.kind === 'new' ? photo.uri : photo.kind === 'remove' ? null : photoUri;
   const qty = parseDecimal(quantity);
   const invalid = !name.trim() || !qty || qty <= 0;
+  const shownFacts = facts?.(priority) ?? [];
 
   async function choose(source: ScanSource) {
     try {
@@ -115,7 +119,7 @@ export function ListItemEditor({
             ) : null}
           </View>
 
-          {facts?.length ? (
+          {shownFacts.length ? (
             <Card style={styles.gap}>
               <Row>
                 <Icon name="tag-outline" color="primary" />
@@ -123,7 +127,7 @@ export function ListItemEditor({
                   Preço e despensa
                 </Text>
               </Row>
-              {facts.map((fact) => (
+              {shownFacts.map((fact) => (
                 <Text key={fact} variant="muted">
                   {fact}
                 </Text>

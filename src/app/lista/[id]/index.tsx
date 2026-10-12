@@ -36,7 +36,7 @@ import {
 } from '@/data/market';
 import { cartPantryRows, type CartPantryEntry, type CartPantryRow } from '@/domain/cartPantry';
 import { compareByAisle, getCategory } from '@/domain/categories';
-import { estimateList, formatItemCost, itemFacts, pantryHits } from '@/domain/listEstimate';
+import { currentStoreChoice, estimateList, formatItemCost, itemFacts, pantryHits, type StoreChoice } from '@/domain/listEstimate';
 import { compareForShopping } from '@/domain/listItem';
 import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { todayISO } from '@/domain/dates';
@@ -72,8 +72,11 @@ import {
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
-/** O mercado em que a pessoa disse estar, por lista: vale enquanto o app está aberto. */
-const chosenStores = new Map<string, string>();
+/**
+ * O mercado em que a pessoa disse estar, por lista, e quando disse: vale por
+ * uma ida ao mercado (currentStoreChoice), enquanto o app está aberto.
+ */
+const chosenStores = new Map<string, StoreChoice>();
 
 export default function ShoppingListScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -113,7 +116,7 @@ export default function ShoppingListScreen() {
     pantryUnknown: boolean;
   } | null>(null);
   const [editing, setEditing] = useState<ShoppingListItem | null>(null);
-  const [storeId, setStoreId] = useState<string | null>(() => chosenStores.get(id) ?? null);
+  const [storeChoice, setStoreChoice] = useState<StoreChoice | null>(() => chosenStores.get(id) ?? null);
   // Some da faixa já no toque; volta quando a lista carregada trouxer o item e ele sair dela depois.
   const justAdded = useJustListed(items.data);
 
@@ -294,7 +297,16 @@ export default function ShoppingListScreen() {
     return { restock, recent };
   }, [purchases.data, items.data, listKind, justAdded.pending, today]);
 
-  // Lista no mercado (domain/listEstimate): quanto deve dar e o que já tem em casa. Sem os preços, as
+  // O mercado escolhido só entra na conta com o nome dele carregado: enquanto os mercados não chegam (ou se
+  // ele não está entre eles), a escolha fica guardada e a conta sai pelo último preço pago.
+  const storeNames = useMemo(
+    () => (stores.data ? new Map(stores.data.map((store) => [store.id, store.name])) : undefined),
+    [stores.data],
+  );
+  const chosenStore = currentStoreChoice(storeChoice);
+  const storeId = chosenStore && storeNames?.has(chosenStore) ? chosenStore : null;
+
+  // Lista no mercado (domain/listEstimate): quanto deve dar e o que está na despensa. Sem os preços, as
   // ligações ou a despensa carregados (sem internet e nunca vistos neste aparelho), mostra o que der.
   const market = useMemo(() => {
     const all = items.data ?? [];
@@ -316,10 +328,19 @@ export default function ShoppingListScreen() {
       })),
       { links: links.data, products: products.data ?? [], storeId },
     );
+    // O que o app acha que acabou não é "na despensa": aqui sem tirar o que já está na lista (é dela que se
+    // trata) e sem o limite da faixa "Acho que acabou".
+    const ranOut = listKind
+      ? restockSuggestions(purchases.data ?? [], {
+          now: new Date(`${today}T23:59:59.999`),
+          listKind,
+          limit: Number.POSITIVE_INFINITY,
+        })
+      : [];
     const inPantry = pantryHits(
       all.filter((i) => !i.checked_at).map((i) => ({ id: i.id, name: i.name, productId: i.product_id })),
       pantry.data ?? [],
-      { links: links.data, today },
+      { links: links.data, today, ranOut },
     );
     const hints = new Map<string, ItemHint>();
     for (const i of all) {
@@ -327,8 +348,7 @@ export default function ShoppingListScreen() {
       if (cost || inPantry.has(i.id)) hints.set(i.id, { cost: cost ? formatItemCost(cost) : undefined, inPantry: inPantry.has(i.id) });
     }
     return { estimate, inPantry, hints };
-  }, [items.data, prices.data, links.data, products.data, pantry.data, storeId, today]);
-  const storeName = (store: string) => stores.data?.find((s) => s.id === store)?.name ?? 'mercado';
+  }, [items.data, prices.data, links.data, products.data, pantry.data, purchases.data, listKind, storeId, today]);
 
   // Na ordem dos corredores do mercado: frescos, despensa, bebidas, casa…
   // Urgentes no topo.
@@ -427,8 +447,10 @@ export default function ShoppingListScreen() {
   return (
     <Screen
       edges={[]}
+      // Puxar atualiza também os preços, a despensa, as ligações, os mercados e o histórico: só os itens chegam
+      // sozinhos (tempo real). O indicador segue os itens, para as outras buscas não o fazerem piscar.
       refreshing={items.isRefetching}
-      onRefresh={() => items.refetch()}
+      onRefresh={() => [items, prices, pantry, links, stores, purchases].forEach((query) => void query.refetch())}
       footer={
         pending.length && list.data.kind !== 'outros' ? (
           <Button
@@ -501,12 +523,14 @@ export default function ShoppingListScreen() {
       {list.data.kind !== 'outros' && (pending.length || checked.length) ? (
         <ListEstimateCard
           estimate={market.estimate}
+          kind={list.data.kind}
           storeId={storeId}
-          storeName={storeName}
+          storeNames={storeNames}
           onChangeStore={(store) => {
-            if (store) chosenStores.set(id, store);
+            const choice = store ? { storeId: store, at: Date.now() } : null;
+            if (choice) chosenStores.set(id, choice);
             else chosenStores.delete(id);
-            setStoreId(store);
+            setStoreChoice(choice);
           }}
           inPantry={pending.filter((i) => market.inPantry.has(i.id)).map((i) => i.name)}
         />
@@ -561,11 +585,15 @@ export default function ShoppingListScreen() {
           item={editing}
           photoUri={editingPendingUri ?? (editing.photo_path ? (photos.signed?.[editing.photo_path] ?? null) : null)}
           photoPending={Boolean(editingPendingUri)}
-          facts={itemFacts(market.estimate.byItem.get(editing.id), market.inPantry.get(editing.id), {
-            storeName,
-            chosenStore: storeId,
-            promotionOnly: (editing.priority ?? 'normal') === 'promocao',
-          })}
+          facts={(priority) =>
+            itemFacts(market.estimate.byItem.get(editing.id), market.inPantry.get(editing.id), {
+              storeName: (store) => storeNames?.get(store),
+              chosenStore: storeId,
+              promotionOnly: priority === 'promocao',
+              today,
+              productName: (product) => products.data?.find((p) => p.id === product)?.name,
+            })
+          }
           onSave={(details, photo) => saveDetails(editing, details, photo)}
           onRemove={() => removeItem(editing)}
           onClose={() => setEditing(null)}

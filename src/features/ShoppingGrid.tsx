@@ -9,7 +9,7 @@ import type { ShoppingListItem } from '@/lib/types';
 import { Badge, CategoryIcon, Icon, Row, Text, useCategoryTint } from '@/ui/primitives';
 import { radius, space, useColors } from '@/ui/theme';
 
-/** O que a casa sabe do item no mercado: quanto deve custar e se já está na despensa (domain/listEstimate). */
+/** O que a casa sabe do item no mercado: quanto deve custar e se está na despensa (domain/listEstimate). */
 export interface ItemHint {
   cost?: string;
   inPantry?: boolean;
@@ -42,7 +42,7 @@ export function ShoppingGrid({
   items: ShoppingListItem[];
   inCart?: boolean;
   photos: ItemPhotos;
-  /** Preço estimado e "tem em casa", por item. */
+  /** Preço estimado e "na despensa", por item. */
   hints?: ReadonlyMap<string, ItemHint>;
   onToggle: (item: ShoppingListItem) => void;
   onOpen: (item: ShoppingListItem) => void;
@@ -116,7 +116,7 @@ function Tile({
     <Pressable
       accessibilityRole="checkbox"
       accessibilityState={{ checked: inCart }}
-      accessibilityLabel={[item.name, quantity, hint?.cost, badge?.label, inPantry ? 'já tem em casa' : null, notes]
+      accessibilityLabel={[item.name, quantity, hint?.cost, badge?.label, inPantry ? 'na despensa' : null, notes]
         .filter(Boolean)
         .join(', ')}
       accessibilityHint={inCart ? 'Toque para devolver à lista' : 'Toque para pôr no carrinho'}
@@ -158,7 +158,8 @@ function Tile({
         </Text>
       ) : null}
       {badge ? <Badge label={badge.label} tone={badge.tone} /> : null}
-      {inPantry ? <Badge label="Tem em casa" tone="info" /> : null}
+      {/* O que o app sabe, não um fato sobre a casa; neutro para não parecer o selo de promoção. */}
+      {inPantry ? <Badge label="Na despensa" /> : null}
       {inCart ? (
         <View style={[styles.badge, { backgroundColor: c.primary }]}>
           <Icon name="check" size={14} color="onPrimary" />

@@ -2,11 +2,17 @@
 // item e o que já está na despensa. Os preços são o último de cada produto em
 // cada mercado (notas confirmadas). Item digitado solto ("Coca") usa as
 // ligações nome -> produto aprendidas nas notas, ou o produto de mesmo nome.
+// "Onde comprar" (recommendation) faz a conta com as mesmas peças: o produto
+// de cada item (resolveListProducts), o nível de preço dos mercados
+// (priceLevel) e a conversão de unidades (units).
 
-import { formatShortDate, toISODate } from './dates';
+import { joinNames } from './cartPantry';
+import { formatShortDate, toISODate, todayISO } from './dates';
 import type { LinkIndex } from './listLinks';
 import { formatBRL, formatQuantity } from './money';
+import { storePriceIndex } from './priceLevel';
 import { normalizeSearch } from './search';
+import { priceQuantity, sameDimension } from './units';
 
 export interface EstimateItem {
   id: string;
@@ -30,7 +36,7 @@ export interface ItemEstimate {
   /** Quanto o item deve custar, na quantidade da lista. */
   cost: number;
   unitPrice: number;
-  /** A unidade do preço (R$/kg não é R$/un). */
+  /** A unidade do preço que entrou na conta (R$/kg não é R$/un). */
   unit: string;
   /**
    * `known`: preço de nota, do mercado escolhido ou, sem mercado, o último que
@@ -38,12 +44,20 @@ export interface ItemEstimate {
    * sai do nível de preço dele (como em "Onde comprar").
    */
   kind: 'known' | 'estimated';
-  /** A unidade da lista não é a do preço: o custo é o de 1 unidade do preço. */
+  /** A unidade da lista não converte para a do preço (un x kg): o custo é o de 1 unidade do preço. */
   approximateQuantity: boolean;
+  /** O produto de onde saem os preços do item (resolveListProducts). */
+  productId: string;
+  /**
+   * O preço de nota que entrou na conta; null quando é estimado. No mercado
+   * escolhido pode ser de outro produto ligado ao mesmo nome (o do item não
+   * tem preço lá): aí o custo é aproximado.
+   */
+  used: EstimatePrice | null;
   /** O último preço que a casa pagou pelo item, em qualquer mercado. */
-  last: { unitPrice: number; storeId: string; purchasedAt: string };
-  /** O menor entre os últimos preços dos mercados: o "preço bom". */
-  lowest: { unitPrice: number; storeId: string };
+  last: EstimatePrice;
+  /** O menor entre os últimos preços dos mercados, do mesmo produto: o "preço bom". */
+  lowest: EstimatePrice;
 }
 
 export interface ListEstimate {
@@ -55,6 +69,8 @@ export interface ListEstimate {
   itemCount: number;
   pricedCount: number;
   estimatedCount: number;
+  /** Itens com preço em que a quantidade é aproximada (a unidade da lista não converte para a do preço). */
+  approximateCount: number;
   /** Mercados com preço de nota para algum item da lista, do que cobre mais itens para o que cobre menos. */
   stores: { storeId: string; knownCount: number }[];
 }
@@ -62,32 +78,73 @@ export interface ListEstimate {
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const average = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
 
-/**
- * Nível de preço de cada mercado (1 = na média; 0,92 = 8% abaixo): a média de
- * preço no mercado / preço médio, nos produtos que aparecem em dois mercados
- * ou mais. Mercado sem produto em comum com outro fica em 1.
- */
-export function storePriceIndex(prices: readonly EstimatePrice[]): Map<string, number> {
-  const groups = new Map<string, EstimatePrice[]>();
-  for (const price of prices) {
-    const key = `${price.productId}\u0000${price.unit}`;
-    groups.set(key, [...(groups.get(key) ?? []), price]);
-  }
-  const ratios = new Map<string, number[]>();
-  for (const group of groups.values()) {
-    if (new Set(group.map((p) => p.storeId)).size < 2) continue;
-    const mean = average(group.map((p) => p.unitPrice));
-    if (mean <= 0) continue;
-    for (const price of group) ratios.set(price.storeId, [...(ratios.get(price.storeId) ?? []), price.unitPrice / mean]);
-  }
-  const index = new Map<string, number>();
-  for (const price of prices) index.set(price.storeId, 1);
-  for (const [storeId, list] of ratios) index.set(storeId, average(list));
-  return index;
-}
-
 const newest = <T extends { purchasedAt: string }>(quotes: T[]) =>
   quotes.reduce((a, b) => (Date.parse(b.purchasedAt) > Date.parse(a.purchasedAt) ? b : a));
+
+/** O preço que serve à unidade da lista: nela; senão, numa que converte para ela (g e kg); senão, o mais recente. */
+function bestForUnit(listUnit: string, quotes: EstimatePrice[]): EstimatePrice {
+  const exact = quotes.filter((quote) => quote.unit === listUnit);
+  if (exact.length) return newest(exact);
+  const convertible = quotes.filter((quote) => sameDimension(quote.unit, listUnit));
+  return newest(convertible.length ? convertible : quotes);
+}
+
+interface PriceSources {
+  links?: LinkIndex;
+  products?: readonly { id: string; name: string }[];
+}
+
+interface ResolvedItem {
+  productId: string;
+  /** Os preços do produto, em todos os mercados e unidades. */
+  own: EstimatePrice[];
+  /** Os de todos os produtos que servem ao item (os ligados ao mesmo nome). */
+  all: EstimatePrice[];
+}
+
+function itemResolver(prices: readonly EstimatePrice[], { links, products = [] }: PriceSources) {
+  const byProduct = new Map<string, EstimatePrice[]>();
+  for (const price of prices) {
+    // Preço zerado (brinde na nota) não é preço.
+    if (!(price.unitPrice > 0)) continue;
+    byProduct.set(price.productId, [...(byProduct.get(price.productId) ?? []), price]);
+  }
+  const productByName = new Map(products.map((product) => [normalizeSearch(product.name), product.id]));
+
+  return (item: Pick<EstimateItem, 'name' | 'productId' | 'unit'>): ResolvedItem | null => {
+    // O produto do item; sem ele (ou se ele não tem preço), os que já cumpriram esse nome nas notas e o de mesmo nome.
+    let all = item.productId ? (byProduct.get(item.productId) ?? []) : [];
+    if (!all.length) {
+      const sameName = productByName.get(normalizeSearch(item.name));
+      const candidates = new Set([...(links?.productsFor(item.name) ?? []), ...(sameName ? [sameName] : [])]);
+      all = [...candidates].flatMap((productId) => byProduct.get(productId) ?? []);
+    }
+    if (!all.length) return null;
+    // Entre vários produtos, vale o comprado mais recentemente.
+    const { productId } = bestForUnit(item.unit, all);
+    return { productId, own: all.filter((quote) => quote.productId === productId), all };
+  };
+}
+
+/**
+ * De qual produto saem os preços de cada item da lista: um só, o mesmo aqui e
+ * em "Onde comprar". O produto do próprio item; se ele não tem produto, ou o
+ * produto não tem preço, os que já cumpriram esse nome nas notas e o de mesmo
+ * nome, valendo o comprado mais recentemente. Item sem preço nenhum não entra.
+ */
+export function resolveListProducts(
+  items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId' | 'unit'>[],
+  prices: readonly EstimatePrice[],
+  sources: PriceSources = {},
+): Map<string, string> {
+  const resolve = itemResolver(prices, sources);
+  const resolved = new Map<string, string>();
+  for (const item of items) {
+    const productId = resolve(item)?.productId;
+    if (productId) resolved.set(item.id, productId);
+  }
+  return resolved;
+}
 
 /**
  * A estimativa da lista. Com `storeId` ("estou no Assaí"), vale o preço desse
@@ -98,63 +155,56 @@ const newest = <T extends { purchasedAt: string }>(quotes: T[]) =>
 export function estimateList(
   items: readonly EstimateItem[],
   prices: readonly EstimatePrice[],
-  {
-    links,
-    products = [],
-    storeId = null,
-  }: { links?: LinkIndex; products?: readonly { id: string; name: string }[]; storeId?: string | null } = {},
+  { links, products, storeId = null }: PriceSources & { storeId?: string | null } = {},
 ): ListEstimate {
-  const byProduct = new Map<string, EstimatePrice[]>();
-  for (const price of prices) byProduct.set(price.productId, [...(byProduct.get(price.productId) ?? []), price]);
-  const productByName = new Map(products.map((product) => [normalizeSearch(product.name), product.id]));
+  const resolve = itemResolver(prices, { links, products });
   const index = storePriceIndex(prices);
 
   const byItem = new Map<string, ItemEstimate>();
   const known = new Map<string, number>();
   for (const item of items) {
-    // O produto do item; sem ele, os que já cumpriram esse nome nas notas, ou o de mesmo nome.
-    const sameName = productByName.get(normalizeSearch(item.name));
-    const candidates = item.productId
-      ? [item.productId]
-      : [...new Set([...(links?.productsFor(item.name) ?? []), ...(sameName ? [sameName] : [])])];
-    const all = candidates.flatMap((productId) => byProduct.get(productId) ?? []);
-    if (!all.length) continue;
-    // Na unidade da lista quando há preço nela; senão, na do preço mais recente.
-    const unit = all.some((quote) => quote.unit === item.unit) ? item.unit : newest(all).unit;
-    const quotes = all.filter((quote) => quote.unit === unit);
+    const resolved = resolve(item);
+    if (!resolved) continue;
+    const { productId, own, all } = resolved;
+    // Na unidade da lista quando há preço nela; senão, numa que converte para ela; senão, na do preço mais recente.
+    const { unit } = bestForUnit(item.unit, own);
+    const quotes = own.filter((quote) => quote.unit === unit);
     const last = newest(quotes);
-    const lowest = quotes.reduce((a, b) => (b.unitPrice < a.unitPrice ? b : a));
+    // O "preço bom" é do mesmo produto (outro produto do mesmo nome pode ser outra embalagem); no empate, o próprio último.
+    const lowest = quotes.reduce((a, b) => (b.unitPrice < a.unitPrice ? b : a), last);
 
-    for (const store of new Set(quotes.map((quote) => quote.storeId))) known.set(store, (known.get(store) ?? 0) + 1);
+    for (const store of new Set(all.map((quote) => quote.storeId))) known.set(store, (known.get(store) ?? 0) + 1);
 
+    let used: EstimatePrice | null = last;
     let unitPrice = last.unitPrice;
-    let kind: ItemEstimate['kind'] = 'known';
     if (storeId) {
-      const here = quotes.filter((quote) => quote.storeId === storeId);
-      if (here.length) {
-        unitPrice = newest(here).unitPrice;
-      } else {
-        // O mercado não tem esse item nas notas: a média do produto nos outros, no nível de preço deste.
-        const sameProduct = quotes.filter((quote) => quote.productId === last.productId);
-        unitPrice = average(sameProduct.map((quote) => quote.unitPrice)) * (index.get(storeId) ?? 1);
-        kind = 'estimated';
-      }
+      // O preço de lá: do produto, na unidade de sempre; do produto, em outra unidade; ou de outro produto ligado ao mesmo nome.
+      const here = [quotes, own, all].map((list) => list.filter((quote) => quote.storeId === storeId)).find((list) => list.length);
+      used = here ? bestForUnit(item.unit, here) : null;
+      // O mercado não tem esse item nas notas: a média do produto nos outros, no nível de preço deste. Os preços
+      // conhecidos entram como estão, sem dividir pelo nível do mercado de cada um: um nível ainda incerto pesaria
+      // duas vezes na conta.
+      unitPrice = used ? used.unitPrice : average(quotes.map((quote) => quote.unitPrice)) * (index.get(storeId) ?? 1);
     }
-    const sameUnit = item.unit === unit;
+    const priceUnit = used?.unit ?? unit;
+    const { quantity, approximate } = priceQuantity(item.quantity, item.unit, priceUnit);
     byItem.set(item.id, {
-      cost: round2(unitPrice * (sameUnit ? item.quantity : 1)),
+      cost: round2(unitPrice * quantity),
       unitPrice: round2(unitPrice),
-      unit,
-      kind,
-      approximateQuantity: !sameUnit,
-      last: { unitPrice: last.unitPrice, storeId: last.storeId, purchasedAt: last.purchasedAt },
-      lowest: { unitPrice: lowest.unitPrice, storeId: lowest.storeId },
+      unit: priceUnit,
+      kind: used ? 'known' : 'estimated',
+      approximateQuantity: approximate,
+      productId,
+      used,
+      last,
+      lowest,
     });
   }
 
   const sum = (inCart: boolean) => round2(items.reduce((s, item) => s + (item.inCart === inCart ? (byItem.get(item.id)?.cost ?? 0) : 0), 0));
   const cartTotal = sum(true);
   const pendingTotal = sum(false);
+  const estimates = [...byItem.values()];
   return {
     byItem,
     total: round2(cartTotal + pendingTotal),
@@ -162,11 +212,26 @@ export function estimateList(
     pendingTotal,
     itemCount: items.length,
     pricedCount: byItem.size,
-    estimatedCount: [...byItem.values()].filter((estimate) => estimate.kind === 'estimated').length,
+    estimatedCount: estimates.filter((estimate) => estimate.kind === 'estimated').length,
+    approximateCount: estimates.filter((estimate) => estimate.approximateQuantity).length,
     stores: [...known]
       .map(([id, knownCount]) => ({ storeId: id, knownCount }))
       .sort((a, b) => b.knownCount - a.knownCount || a.storeId.localeCompare(b.storeId)),
   };
+}
+
+/** O mercado em que a pessoa disse estar, e quando disse. */
+export interface StoreChoice {
+  storeId: string;
+  at: number;
+}
+
+/** A escolha do mercado vale por uma ida ao mercado: 6 horas. */
+export const CHOSEN_STORE_MS = 6 * 60 * 60 * 1000;
+
+/** O mercado escolhido que ainda vale; null depois de 6 horas (a próxima compra pode ser em outro lugar). */
+export function currentStoreChoice(choice: StoreChoice | null | undefined, now: number = Date.now()): string | null {
+  return choice && now - choice.at < CHOSEN_STORE_MS ? choice.storeId : null;
 }
 
 /** O que está na despensa (sem o que já foi consumido). */
@@ -180,9 +245,9 @@ export interface PantryStock {
 }
 
 export interface PantryHit {
-  /** O nome como está na despensa. */
+  /** O nome como está na despensa; o do item da lista quando as entradas são de produtos diferentes. */
   name: string;
-  /** A soma do que há; null quando as entradas estão em unidades diferentes. */
+  /** A soma do que há; null quando as entradas são de produtos ou unidades diferentes. */
   quantity: number | null;
   unit: string | null;
   /** A compra mais recente. */
@@ -192,33 +257,52 @@ export interface PantryHit {
 }
 
 /**
- * Itens da lista que já estão na despensa, dentro da validade: o mesmo
- * produto, um nome que as notas já ligaram a esse produto, ou o mesmo nome.
- * Nome só parecido não conta ("Leite" não é "Leite condensado").
+ * Itens da lista que estão na despensa, dentro da validade: o mesmo produto,
+ * um produto que as notas já ligaram a esse nome, ou o mesmo nome. Nome só
+ * parecido não conta ("Leite" não é "Leite condensado"). A despensa só perde
+ * uma entrada quando alguém dá baixa, então o que o próprio app acha que
+ * acabou (`ranOut`, de restockSuggestions sem tirar o que já está na lista)
+ * fica de fora: está na lista justamente porque acabou.
  */
 export function pantryHits(
   items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId'>[],
   pantry: readonly PantryStock[],
-  { links, today }: { links?: LinkIndex; today: string },
+  { links, today, ranOut = [] }: { links?: LinkIndex; today: string; ranOut?: readonly { name: string; productId: string | null }[] },
 ): Map<string, PantryHit> {
-  const fresh = pantry.filter((entry) => !entry.expires_on || entry.expires_on >= today);
+  const goneNames = new Set(ranOut.map((gone) => normalizeSearch(gone.name)));
+  const goneProducts = new Set(ranOut.flatMap((gone) => (gone.productId ? [gone.productId] : [])));
+  const ranOutAlready = (key: string, productId: string | null) => goneNames.has(key) || (productId != null && goneProducts.has(productId));
+  // O nome de cada entrada normalizado uma vez, fora do laço dos itens.
+  const fresh = pantry
+    .filter((entry) => !entry.expires_on || entry.expires_on >= today)
+    .map((entry) => ({ entry, key: normalizeSearch(entry.name) }))
+    .filter(({ entry, key }) => !ranOutAlready(key, entry.product_id));
+
   const hits = new Map<string, PantryHit>();
   for (const item of items) {
     const name = normalizeSearch(item.name);
-    const same = fresh.filter((entry) => {
-      if (item.productId && entry.product_id) return item.productId === entry.product_id;
+    if (ranOutAlready(name, item.productId)) continue;
+    const same = fresh.filter(({ entry, key }) => {
+      if (item.productId && entry.product_id === item.productId) return true;
+      // Outro produto só conta quando a pessoa já confirmou, numa nota, que ele cumpre este nome.
       if (entry.product_id && links?.has(item.name, entry.product_id)) return true;
+      if (item.productId && entry.product_id) return false;
       if (item.productId && links?.has(entry.name, item.productId)) return true;
-      return Boolean(name) && normalizeSearch(entry.name) === name;
+      return Boolean(name) && key === name;
     });
     if (!same.length) continue;
-    const oneUnit = same.every((entry) => entry.unit === same[0].unit);
-    const expiries = same.flatMap((entry) => (entry.expires_on ? [entry.expires_on] : [])).sort();
+    const first = same[0];
+    // Italac e Ninho não se somam: só há número quando tudo é o mesmo produto (ou o mesmo nome), na mesma unidade.
+    const oneThing =
+      same.every(({ entry }) => entry.product_id != null && entry.product_id === first.entry.product_id) ||
+      same.every(({ key }) => key === first.key);
+    const countable = oneThing && same.every(({ entry }) => entry.unit === first.entry.unit);
+    const expiries = same.flatMap(({ entry }) => (entry.expires_on ? [entry.expires_on] : [])).sort();
     hits.set(item.id, {
-      name: same[0].name,
-      quantity: oneUnit ? Math.round(same.reduce((s, entry) => s + Number(entry.quantity), 0) * 1000) / 1000 : null,
-      unit: oneUnit ? same[0].unit : null,
-      since: same.map((entry) => entry.purchased_on).sort().at(-1)!,
+      name: oneThing ? first.entry.name : item.name,
+      quantity: countable ? Math.round(same.reduce((s, { entry }) => s + Number(entry.quantity), 0) * 1000) / 1000 : null,
+      unit: countable ? first.entry.unit : null,
+      since: same.map(({ entry }) => entry.purchased_on).sort().at(-1)!,
       expiresOn: expiries[0] ?? null,
     });
   }
@@ -227,49 +311,113 @@ export function pantryHits(
 
 const perUnit = (unitPrice: number, unit: string) => `${formatBRL(unitPrice)}/${unit}`;
 
-/** Como o custo do item aparece na lista: "~" quando é estimado ou a quantidade é aproximada. */
-export function formatItemCost(estimate: Pick<ItemEstimate, 'cost' | 'kind' | 'approximateQuantity'>): string {
-  return `${estimate.kind === 'estimated' || estimate.approximateQuantity ? '~' : ''}${formatBRL(estimate.cost)}`;
+const sameQuote = (a: EstimatePrice, b: EstimatePrice) =>
+  a.productId === b.productId && a.storeId === b.storeId && a.unit === b.unit && a.unitPrice === b.unitPrice && a.purchasedAt === b.purchasedAt;
+
+/** Como o custo do item aparece na lista: "~" quando é estimado, a quantidade é aproximada ou o preço é de outro produto do mesmo nome. */
+export function formatItemCost(estimate: Pick<ItemEstimate, 'cost' | 'kind' | 'approximateQuantity' | 'productId' | 'used'>): string {
+  const otherProduct = estimate.used != null && estimate.used.productId !== estimate.productId;
+  return `${estimate.kind === 'estimated' || estimate.approximateQuantity || otherProduct ? '~' : ''}${formatBRL(estimate.cost)}`;
 }
 
-/** De onde sai a estimativa da lista, numa frase. */
-export function describeEstimate(estimate: Pick<ListEstimate, 'itemCount' | 'pricedCount' | 'estimatedCount'>, storeName: string | null): string {
-  const priced =
-    estimate.pricedCount === estimate.itemCount
-      ? 'todos os itens têm preço'
-      : `${estimate.pricedCount} de ${estimate.itemCount} itens têm preço`;
-  if (!storeName) return `Pelo último preço que a casa pagou em cada item; ${priced}.`;
-  const estimated = estimate.estimatedCount
-    ? `, ${estimate.estimatedCount} ${estimate.estimatedCount === 1 ? 'estimado' : 'estimados'} pelo nível de preço de lá`
-    : '';
-  return `Pelos preços do ${storeName}; ${priced}${estimated}.`;
+/** O título do total: "A lista deve dar" só quando todos os itens têm preço; senão, diz que a conta é de parte deles. */
+export function estimateHeadline(estimate: Pick<ListEstimate, 'itemCount' | 'pricedCount'>): string {
+  if (estimate.pricedCount === estimate.itemCount) return 'A lista deve dar';
+  return estimate.pricedCount === 1 ? 'O item com preço deve dar' : `Os ${estimate.pricedCount} itens com preço devem dar`;
+}
+
+/**
+ * De onde sai a estimativa da lista e o que ficou de fora dela. O nome do
+ * lugar vem sem artigo antes ("do Farmácia São João" não existe).
+ */
+export function describeEstimate(
+  estimate: Pick<ListEstimate, 'itemCount' | 'pricedCount' | 'estimatedCount' | 'approximateCount'>,
+  storeName: string | null,
+): string {
+  const { itemCount, pricedCount, estimatedCount, approximateCount } = estimate;
+  const missing = itemCount - pricedCount;
+  const clauses = [
+    missing === 0 ? 'todos os itens têm preço' : `${pricedCount} de ${itemCount} itens ${pricedCount === 1 ? 'tem' : 'têm'} preço`,
+    ...(storeName && estimatedCount
+      ? [`${estimatedCount} ${estimatedCount === 1 ? 'é estimado' : 'são estimados'} pelo nível de preço de lá`]
+      : []),
+    ...(approximateCount ? [`em ${approximateCount} a quantidade é aproximada (o preço é por kg ou por unidade)`] : []),
+  ].join('; ');
+  const left = missing === 0 ? '' : missing === 1 ? ' O outro fica fora da conta.' : ` Os outros ${missing} ficam fora da conta.`;
+  if (!storeName) return `Pelo último preço que a casa pagou em cada item; ${clauses}.${left}`;
+  return `Lugar escolhido: ${storeName}. ${clauses[0].toUpperCase()}${clauses.slice(1)}.${left}`;
+}
+
+/** Quantos nomes cabem na frase da despensa antes de "e mais N". */
+const PANTRY_NAMES = 3;
+
+/**
+ * A frase do cartão sobre o que está na despensa: o que o app sabe, não um
+ * fato sobre a casa (a entrada pode só não ter tido baixa). Nomes sem repetir
+ * (sem ligar para maiúscula ou acento), os três primeiros e quantos mais.
+ */
+export function describePantryHits(names: readonly string[]): string {
+  const unique = new Map<string, string>();
+  for (const name of names) {
+    const key = normalizeSearch(name);
+    if (key && !unique.has(key)) unique.set(key, name.trim());
+  }
+  const all = [...unique.values()];
+  const shown = all.length > PANTRY_NAMES ? [...all.slice(0, PANTRY_NAMES), `mais ${all.length - PANTRY_NAMES}`] : all;
+  return `Na despensa: ${joinNames(shown)}. Se já acabou, dê baixa lá.`;
 }
 
 /**
  * O que a casa sabe do item, para os detalhes dele na lista: o último preço,
- * o menor entre os mercados (o "preço bom"), o preço no mercado escolhido e o
- * que já está na despensa.
+ * o menor entre os mercados (o "preço bom"), o preço que entrou na conta no
+ * mercado escolhido e o que está na despensa. `today` é a data de hoje (as
+ * datas de outro ano levam o ano); `storeName` devolve undefined para um
+ * mercado sem nome carregado, e aí a frase fica só com a data.
  */
 export function itemFacts(
   estimate: ItemEstimate | undefined,
   hit: PantryHit | undefined,
-  { storeName, chosenStore, promotionOnly = false }: { storeName: (storeId: string) => string; chosenStore?: string | null; promotionOnly?: boolean },
+  {
+    storeName,
+    chosenStore,
+    promotionOnly = false,
+    today = todayISO(),
+    productName,
+  }: {
+    storeName: (storeId: string) => string | undefined;
+    chosenStore?: string | null;
+    promotionOnly?: boolean;
+    today?: string;
+    productName?: (productId: string) => string | undefined;
+  },
 ): string[] {
+  const day = (iso: string) => formatShortDate(iso, Number(today.slice(0, 4)));
+  const where = (quote: EstimatePrice) =>
+    `(${[storeName(quote.storeId), day(toISODate(new Date(quote.purchasedAt)))].filter(Boolean).join(', ')})`;
   const facts: string[] = [];
   if (estimate) {
-    const { last, lowest, unit } = estimate;
-    facts.push(`Último preço: ${perUnit(last.unitPrice, unit)} no ${storeName(last.storeId)}, em ${formatShortDate(toISODate(new Date(last.purchasedAt)))}.`);
-    if (lowest.unitPrice < last.unitPrice) facts.push(`Menor entre os mercados: ${perUnit(lowest.unitPrice, unit)} no ${storeName(lowest.storeId)}.`);
-    if (chosenStore && estimate.kind === 'estimated') {
-      facts.push(`No ${storeName(chosenStore)} a casa ainda não comprou este item: cerca de ${perUnit(estimate.unitPrice, unit)}, pelo nível de preço de lá.`);
+    const { last, lowest, used, unit } = estimate;
+    // Com um mercado só, o menor é o próprio último preço: não é referência de promoção.
+    const cheaper = lowest.unitPrice < last.unitPrice;
+    facts.push(`Último preço: ${perUnit(last.unitPrice, last.unit)} ${where(last)}.`);
+    if (cheaper) facts.push(`Menor preço: ${perUnit(lowest.unitPrice, lowest.unit)} ${where(lowest)}.`);
+    if (!used) {
+      const place = chosenStore ? storeName(chosenStore) : undefined;
+      facts.push(
+        `${place ? `${place}: a` : 'A'} casa ainda não comprou este item lá; cerca de ${perUnit(estimate.unitPrice, unit)}, pelo nível de preço de lá.`,
+      );
+    } else if (!sameQuote(used, last)) {
+      // No mercado escolhido, o preço da conta não é o último pago: diz qual foi, de onde e de quando.
+      const other = used.productId === estimate.productId ? '' : `, de ${productName?.(used.productId) ?? 'outro produto com esse nome'}`;
+      facts.push(`Preço usado na conta: ${perUnit(used.unitPrice, used.unit)}${other} ${where(used)}.`);
     }
-    if (promotionOnly) facts.push(`Só em promoção: o preço bom é ${perUnit(lowest.unitPrice, unit)} ou menos.`);
+    if (promotionOnly && cheaper) facts.push(`Só em promoção: o preço bom é ${perUnit(lowest.unitPrice, lowest.unit)} ou menos.`);
     if (estimate.approximateQuantity) facts.push(`O preço é por ${unit}: a conta da lista usa 1 ${unit}.`);
   }
   if (hit) {
     const amount = hit.quantity != null && hit.unit ? `${formatQuantity(hit.quantity, hit.unit)} de ` : '';
-    const expiry = hit.expiresOn ? `; vence em ${formatShortDate(hit.expiresOn)}` : '';
-    facts.push(`Na despensa: ${amount}${hit.name}, da compra de ${formatShortDate(hit.since)}${expiry}.`);
+    const expiry = hit.expiresOn ? `; vence em ${day(hit.expiresOn)}` : '';
+    facts.push(`Na despensa desde ${day(hit.since)}: ${amount}${hit.name}${expiry}.`);
   }
   return facts;
 }

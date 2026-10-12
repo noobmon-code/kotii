@@ -1,35 +1,41 @@
 // Lista no mercado: quanto a lista deve dar (pelo último preço pago, ou pelos
-// preços do mercado em que a pessoa está) e o que já tem na despensa.
+// preços do mercado em que a pessoa está) e o que está na despensa.
 
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { joinNames } from '@/domain/cartPantry';
-import { describeEstimate, type ListEstimate } from '@/domain/listEstimate';
+import { describeEstimate, describePantryHits, estimateHeadline, type ListEstimate } from '@/domain/listEstimate';
 import { formatBRL } from '@/domain/money';
+import type { ListKind } from '@/lib/types';
 import { PickerModal } from '@/ui/PickerModal';
 import { Button, Card, Chip, Icon, IconBadge, Row, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 export function ListEstimateCard({
   estimate,
+  kind,
   storeId,
-  storeName,
+  storeNames,
   onChangeStore,
   inPantry,
 }: {
   estimate: ListEstimate;
+  /** Lista de farmácia fala em farmácia, não em mercado. */
+  kind: ListKind;
   /** O mercado em que a pessoa está; null: qualquer um (último preço pago). */
   storeId: string | null;
-  storeName: (storeId: string) => string;
+  /** Os nomes dos mercados; sem eles (ainda não carregaram), não há como dizer onde se está. */
+  storeNames?: ReadonlyMap<string, string>;
   onChangeStore: (storeId: string | null) => void;
-  /** Nomes dos itens a comprar que já estão na despensa. */
+  /** Nomes dos itens a comprar que estão na despensa. */
   inPantry: string[];
 }) {
   const [choosing, setChoosing] = useState(false);
   const priced = estimate.pricedCount > 0;
   if (!priced && !inPantry.length) return null;
   const shopping = estimate.cartTotal > 0 && estimate.pendingTotal > 0;
+  const storeName = storeId ? storeNames?.get(storeId) : undefined;
+  const place = kind === 'farmacia' ? 'farmácia' : 'mercado';
 
   return (
     <Card style={styles.card}>
@@ -38,64 +44,75 @@ export function ListEstimateCard({
           <Row gap={space.md}>
             <IconBadge icon="cash-multiple" tone="primary" />
             <View style={styles.flex}>
-              <Text variant="small">A lista deve dar</Text>
+              <Text variant="small">{estimateHeadline(estimate)}</Text>
               <Text variant="heading">{`~${formatBRL(estimate.total)}`}</Text>
             </View>
           </Row>
-          <Text variant="muted">{describeEstimate(estimate, storeId ? storeName(storeId) : null)}</Text>
+          <Text variant="muted">{describeEstimate(estimate, storeName ?? null)}</Text>
           {shopping ? (
             <Text variant="muted">
               {`No carrinho: ~${formatBRL(estimate.cartTotal)}. Falta comprar: ~${formatBRL(estimate.pendingTotal)}.`}
             </Text>
           ) : null}
-          <Row style={styles.wrap}>
-            <Chip
-              label={storeId ? `Estou no ${storeName(storeId)}` : 'Em qual mercado você está?'}
-              icon="store-outline"
-              selected={Boolean(storeId)}
-              onPress={() => setChoosing(true)}
-            />
-          </Row>
+          {storeNames ? (
+            <Row style={styles.wrap}>
+              <Chip
+                label={storeName ? `Onde estou: ${storeName}` : 'Onde você está comprando?'}
+                icon="store-outline"
+                selected={Boolean(storeName)}
+                onPress={() => setChoosing(true)}
+              />
+            </Row>
+          ) : null}
         </>
       ) : null}
       {inPantry.length ? (
         <Row gap={space.sm} style={styles.top}>
           <Icon name="fridge-outline" color="primary" />
           <Text variant="muted" style={styles.flex}>
-            {`Já tem em casa: ${joinNames(inPantry)}. Confira a despensa antes de comprar de novo.`}
+            {describePantryHits(inPantry)}
           </Text>
         </Row>
       ) : null}
 
-      <PickerModal
-        visible={choosing}
-        title="Em qual mercado você está?"
-        placeholder="Buscar mercado"
-        options={estimate.stores.map((store) => ({
-          id: store.storeId,
-          title: storeName(store.storeId),
-          subtitle: `${store.knownCount} ${store.knownCount === 1 ? 'item da lista com preço' : 'itens da lista com preço'}`,
-        }))}
-        onClose={() => setChoosing(false)}
-        onSelect={(id) => {
-          onChangeStore(id);
-          setChoosing(false);
-        }}
-        extraActions={() =>
-          storeId ? (
-            <Button
-              title="Qualquer mercado (último preço pago)"
-              icon="store-off-outline"
-              variant="ghost"
-              compact
-              onPress={() => {
-                onChangeStore(null);
-                setChoosing(false);
-              }}
-            />
-          ) : null
-        }
-      />
+      {storeNames ? (
+        <PickerModal
+          visible={choosing}
+          title="Onde você está comprando?"
+          placeholder={`Buscar ${place}`}
+          options={estimate.stores.flatMap((store) => {
+            const title = storeNames.get(store.storeId);
+            return title
+              ? [
+                  {
+                    id: store.storeId,
+                    title,
+                    subtitle: `${store.knownCount} ${store.knownCount === 1 ? 'item da lista com preço' : 'itens da lista com preço'}`,
+                  },
+                ]
+              : [];
+          })}
+          onClose={() => setChoosing(false)}
+          onSelect={(id) => {
+            onChangeStore(id);
+            setChoosing(false);
+          }}
+          extraActions={() =>
+            storeId ? (
+              <Button
+                title={`Qualquer ${place} (último preço pago)`}
+                icon="store-off-outline"
+                variant="ghost"
+                compact
+                onPress={() => {
+                  onChangeStore(null);
+                  setChoosing(false);
+                }}
+              />
+            ) : null
+          }
+        />
+      ) : null}
     </Card>
   );
 }

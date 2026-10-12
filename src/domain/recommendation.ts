@@ -5,6 +5,13 @@
 // comparar de forma justa, cada loja ganha um índice de preço (quão acima ou
 // abaixo da média ela costuma estar nos produtos em comum com outras lojas) e
 // os itens sem preço naquela loja são estimados com esse índice.
+//
+// É a mesma conta da estimativa na tela da lista (listEstimate): o produto de
+// cada item vem resolvido de lá (resolveListProducts), o índice é o mesmo
+// (priceLevel) e as unidades convertem do mesmo jeito (units).
+
+import { storePriceIndex } from './priceLevel';
+import { priceQuantity, sameDimension } from './units';
 
 export interface ListItemInput {
   key: string;
@@ -25,7 +32,7 @@ export interface Assignment {
   storeId: string;
   cost: number;
   kind: 'known' | 'estimated';
-  /** Unidade da lista difere da unidade do preço: custo = 1 unidade de preço. */
+  /** A unidade da lista não converte para a do preço (un x kg): custo = 1 unidade de preço. */
   approximateQuantity: boolean;
 }
 
@@ -62,7 +69,8 @@ function comparableUnit(item: ListItemInput, prices: PriceInput[]): string {
   let best = item.unit;
   let bestCount = storesPerUnit.get(item.unit) ?? 0;
   for (const [unit, count] of storesPerUnit) {
-    if (count > bestCount) {
+    // No empate, a unidade que converte para a da lista (g e kg) vence a que não converte.
+    if (count > bestCount || (count === bestCount && sameDimension(unit, item.unit) && !sameDimension(best, item.unit))) {
       best = unit;
       bestCount = count;
     }
@@ -84,19 +92,28 @@ function* combinations<T>(values: T[], size: number, start = 0, acc: T[] = []): 
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/**
+ * `storeIndex`: o nível de preço já calculado com todos os preços da casa
+ * (storePriceIndex), o mesmo da estimativa da lista. Sem ele, o nível sai só
+ * dos produtos desta lista.
+ */
 export function recommendStores(
   items: ListItemInput[],
   prices: PriceInput[],
   maxStores: number,
+  { storeIndex: givenIndex }: { storeIndex?: ReadonlyMap<string, number> } = {},
 ): Recommendation {
   const pricesByProduct = new Map<string, PriceInput[]>();
   for (const p of prices) {
+    // Preço zerado (brinde na nota) não é preço.
+    if (!(p.unitPrice > 0)) continue;
     const list = pricesByProduct.get(p.productId) ?? [];
     list.push(p);
     pricesByProduct.set(p.productId, list);
   }
 
   const priced: ItemPrices[] = [];
+  const listPrices = new Map<string, PriceInput[]>();
   const unpricedKeys: string[] = [];
   for (const item of items) {
     const productPrices = item.productId ? pricesByProduct.get(item.productId) : undefined;
@@ -104,37 +121,29 @@ export function recommendStores(
       unpricedKeys.push(item.key);
       continue;
     }
+    listPrices.set(item.productId!, productPrices);
     const unit = comparableUnit(item, productPrices);
     const byStore = new Map<string, number>();
     for (const p of productPrices) if (p.unit === unit) byStore.set(p.storeId, p.unitPrice);
     const values = [...byStore.values()];
-    const sameUnit = item.unit === unit;
+    // 200 g com preço por kg é 0,2 x o preço; un x kg não converte: 1 unidade do preço.
+    const { quantity: multiplier, approximate } = priceQuantity(item.quantity, item.unit, unit);
     priced.push({
       item,
-      multiplier: sameUnit ? item.quantity : 1,
-      approximateQuantity: !sameUnit,
+      multiplier,
+      approximateQuantity: approximate,
       byStore,
       average: values.reduce((a, b) => a + b, 0) / values.length,
     });
   }
 
-  // Índice de preço: média de (preço na loja / preço médio) nos itens que
-  // aparecem em 2+ lojas. Itens de uma loja só não dizem nada sobre a loja.
-  const ratios = new Map<string, number[]>();
-  for (const p of priced) {
-    if (p.byStore.size < 2 || p.average === 0) continue;
-    for (const [storeId, price] of p.byStore) {
-      const list = ratios.get(storeId) ?? [];
-      list.push(price / p.average);
-      ratios.set(storeId, list);
-    }
-  }
+  // Índice de preço (priceLevel): média de (preço na loja / preço médio) nos
+  // produtos que aparecem em 2+ lojas, puxada para 1 quando são poucos. Itens
+  // de uma loja só não dizem nada sobre a loja.
+  const level = givenIndex ?? storePriceIndex([...listPrices.values()].flat());
   const storeIds = [...new Set(priced.flatMap((p) => [...p.byStore.keys()]))].sort();
   const storeIndex = new Map<string, number>();
-  for (const id of storeIds) {
-    const list = ratios.get(id);
-    storeIndex.set(id, list?.length ? list.reduce((a, b) => a + b, 0) / list.length : 1);
-  }
+  for (const id of storeIds) storeIndex.set(id, level.get(id) ?? 1);
 
   const plans: StorePlan[] = [];
   const limit = Math.max(1, Math.min(maxStores, storeIds.length));
