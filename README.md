@@ -8,7 +8,7 @@ iOS e Android com Expo (React Native); a versão web sai do mesmo código depois
 
 | Módulo | O que faz |
 |---|---|
-| **Família** | Conta por e-mail/senha. Quem cria a casa recebe um código de convite de 6 letras; quem entra com o código vê e edita tudo da casa. Esqueceu a senha: "Esqueci minha senha" na tela de entrar manda um e-mail; no site, abrir o link permite criar a senha nova (se o modelo trouxer um código, também dá para digitá-lo no app) (até salvar, o app só mostra a tela da senha nova, mesmo recarregado ou em outra aba). |
+| **Família** | Conta por e-mail/senha. Quem cria a casa recebe um código de convite de 6 letras; quem entra com o código vê e edita tudo da casa. Esqueceu a senha: "Esqueci minha senha" na tela de entrar manda um e-mail. O link do e-mail abre o site na tela de criar a senha nova; se o e-mail trouxer um código em vez do link, ele é digitado no app. Até a senha nova ser salva, o app só mostra essa tela, mesmo recarregado ou em outra aba. |
 | **Várias casas** | Uma conta pode estar em até 5 casas (a sua, a da praia, a dos pais…), cada uma com os próprios moradores, listas, contas e tarefas. O celular mostra uma por vez: com mais de uma, o nome da casa aberta fica no topo da tela Hoje e troca com um toque (Família → Suas casas, onde também dá para criar ou entrar em outra). Cada aparelho lembra a sua; um aparelho novo abre na mais recente. Os avisos (remédios, contas, tarefas, clima) chegam de todas, com o nome da casa no aviso. |
 | **Avisos no navegador** | A versão web também recebe os avisos (remédios, contas, documentos, tarefas, consultas, compromissos e aniversários, vacinas e clima), mesmo fechada: Família → "Avisos neste navegador". O navegador guarda a agenda no servidor e a função `send-push` entrega cada aviso na hora (Web Push). No iPhone, com o app na tela de início (iOS 16.4 ou mais novo). Sair da conta tira os avisos daquele aparelho. |
 | **Notas fiscais** | Pelo QR code da NFC-e: o app lê o QR (ou o link colado) e busca na consulta pública da Sefaz mercado, data, total e itens exatos, sem IA. Sefaz que pedem CAPTCHA (como a da Paraíba) não dão para ler pelo QR code: o app manda a pessoa para a leitura pela foto e guarda a chave de acesso para não duplicar a nota. Pela foto do cupom: a IA lê mercado, CNPJ, data, chave de acesso e itens; nota comprida vai em até 4 fotos (pela câmera, uma parte de cada vez, ou várias da galeria), lidas juntas sem repetir o que aparece em duas. Nos dois casos, tela de revisão → confirmar. Também dá para digitar à mão. Nota repetida (mesma chave NFC-e) é detectada. Alerta de preço: na revisão (e depois, na nota salva), cada item ligado a um produto é comparado com o que a casa pagou nos últimos meses — avisa quando outro mercado vendia pelo menos 10% mais barato há até 60 dias, ou quando o preço ficou 15% acima do costume, e soma quanto daria para economizar. |
@@ -96,9 +96,14 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
    - **Login sem confirmação de e-mail (opcional, para testar rápido):** Authentication → Sign In / Providers → Email → desligue "Confirm email".
    - **Recuperar a senha ("Esqueci minha senha"):**
      1. **SMTP próprio:** em *Authentication → Emails → SMTP Settings*, configure um serviço de e-mail (Resend, por exemplo, com um domínio verificado). Sem ele, o Supabase só manda e-mail para quem é da equipe do projeto, e poucos por hora: as outras pessoas veem "O Kotii ainda não consegue mandar e-mail para esse endereço". Há relatos de que, em projeto do plano gratuito criado a partir de junho de 2026, a página dos modelos só deixa editar depois disso.
-     2. **O modelo padrão funciona no site:** o link do e-mail *Reset password* abre a tela de senha nova. A *Site URL* em *Authentication → URL Configuration* deve apontar para o site publicado (o mesmo endereço para o qual seu e-mail já redireciona). Não é preciso editar o modelo para usar esse link. Se ele venceu ou já foi usado, peça um novo e-mail.
+     2. **O modelo padrão do e-mail funciona no site:** o link do e-mail *Reset password* abre o site na tela de criar a senha nova, sem editar o modelo. Para isso, a *Site URL* em *Authentication → URL Configuration* precisa ser o endereço do site publicado. O que saber sobre esse link:
+        - **Caixas de e-mail que abrem links sozinhas** (Outlook/Microsoft 365 e outras que conferem os links da mensagem) gastam o link antes de a pessoa clicar. Ela cai sempre em "Este link venceu ou já foi usado", e pedir outro e-mail não resolve. O remédio é o modelo com código, logo abaixo.
+        - **O link abre sempre a *Site URL* (produção)**, mesmo quando o e-mail foi pedido de um preview da Vercel, do `localhost` ou do app nativo. Para testar no computador, aponte a *Site URL* para o endereço local (`http://localhost:8081`, o do `npx expo start --web`) e volte ao endereço do site depois.
+        - **No app nativo, o link abre o navegador**, não o app: a senha nova é criada no site, e depois a pessoa volta ao app e entra com ela. Para terminar a recuperação dentro do app nativo, ou quando não há site publicado (só o APK), o modelo com código é necessário.
+        - **O e-mail padrão chega em inglês.** Para chegar em português, edite o modelo.
+        - **O link vale uma vez.** Se venceu ou já foi usado, a tela de entrar avisa e a pessoa pede outro e-mail.
 
-        **Código opcional (também funciona no app nativo):** para receber números em vez do link, troque o modelo em *Authentication → Emails → Reset password*. Assunto: `Código para trocar a senha do Kotii`. Corpo:
+        **Modelo com código:** para receber números em vez do link, troque o modelo em *Authentication → Emails → Reset password*. Assunto: `Código para trocar a senha do Kotii`. Corpo:
 
         ```html
         <h2>Trocar a senha do Kotii</h2>
@@ -108,7 +113,7 @@ Pré-requisitos: Node 20+, conta no [Supabase](https://supabase.com), chave da [
         <p>Se não foi você, ignore este e-mail: a senha continua a mesma.</p>
         ```
 
-        Nesse modelo opcional, use só o código, sem `{{ .ConfirmationURL }}`. Alguns e-mails (como Outlook/Microsoft 365) abrem links sozinhos para conferir e podem gastá-los antes de a pessoa usar; nesse caso, o código evita o problema.
+        Nesse modelo, use só o código, sem `{{ .ConfirmationURL }}`: o link e o código valem pela mesma única vez, e a caixa de e-mail que abre o link sozinha gastaria os dois.
 
 5. **Configure e rode o app:**
 
