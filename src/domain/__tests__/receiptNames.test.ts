@@ -2,7 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 
 import { houseNameOverride, keptName, noteNames, sameProduct, typedNameActions, typedNameOverride, withEntry } from '../receiptNames';
 import type { ItemOverride } from '../receiptReview';
-import { indexNames, type NameCandidate } from '../similarNames';
+import { existingNameLabel, indexNames, type NameCandidate } from '../similarNames';
 
 const candidate = (name: string, source: NameCandidate['source'], extra: Partial<NameCandidate> = {}): NameCandidate => ({
   name,
@@ -121,6 +121,14 @@ describe('typedNameActions', () => {
 
   it('nome que só o catálogo tem não "já existe": criar não é "mesmo assim"', () => {
     expect(actions('acucar')).toMatchObject({ existing: 'Açúcar', create: 'Novo produto "acucar"' });
+  });
+
+  it('nome do catálogo que a pessoa já deu a outro item desta nota: usar o desta nota, com a categoria que ela deu', () => {
+    const sugar = indexNames([candidate('Açúcar', 'nota', { category: 'graos' })]);
+    const { existing, create } = typedNameActions('acucar', house, sugar, doces, products);
+    expect(existing).toMatchObject({ name: 'Açúcar', source: 'nota', category: 'graos' });
+    expect(existingNameLabel(existing!)).toBe('Usar "Açúcar" (já está nesta nota)');
+    expect(create?.title).toBe('Criar "acucar" mesmo assim');
   });
 
   it('as mesmas letras de um produto da casa: só dá para usar o produto', () => {

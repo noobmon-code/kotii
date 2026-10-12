@@ -55,10 +55,10 @@ const PACKAGING = new Set([
 const OTHER_THING = new Set([
   'coco', 'soja', 'queijo', 'palha', 'tonica', 'oxigenada', 'sanitaria', 'poro', 'cacau', 'fruta', 'lactea', 'fermentado',
   'condensado', 'evaporado', 'toalha', 'higienico', 'po', 'doce', 'instantaneo', 'vegetal', 'ingles', 'chips', 'alho',
-  'motor', 'passa', 'empanado',
+  'motor', 'passa', 'empanado', 'frita', 'frito',
 ]);
-// Depois de uma destas, o número é a versão do item ("Arroz Tipo 1"), não um pedaço do tamanho.
-const VERSION_WORDS = new Set(['tipo', 'tp', 'tam', 'tamanho', 'numero', 'num', 'nr']);
+// Depois de uma destas, o número é a versão do item ("Arroz Tipo 1", "T.1", "Nº 5"), não um pedaço do tamanho.
+const VERSION_WORDS = new Set(['tipo', 'tp', 'tam', 'tamanho', 'numero', 'num', 'nr', 't', 'n', 'no']);
 // Unidade solta ("Banana Prata Kg", "Alface Unidade") não diz o que é o item nem o tamanho.
 const LOOSE_UNITS = new Set([
   'kg', 'gr', 'mg', 'ml', 'lt', 'un', 'und', 'unid', 'pct', 'pc', 'cx', 'fd', 'cm', 'mm',
@@ -118,6 +118,8 @@ interface Part {
   text: string;
   /** `word`: diz o que é o item; `link`: só liga palavras ("de", "em"). */
   kind: 'word' | 'link';
+  /** A palavra veio colada na anterior por um hífen ("flor" de "Couve-flor"): as duas juntas são um nome só. */
+  joined?: boolean;
 }
 
 interface Parsed {
@@ -135,6 +137,8 @@ interface Parsed {
   sizes: string[];
   /** Tamanhos que vieram logo depois de um algarismo solto ("1 5l" pode ser 1,5 L): não contam como certos. */
   doubtful: string[];
+  /** Palavras de versão que vieram com o número ("tipo" de "Tipo 1"): dizem a versão, não outro produto. */
+  versionWords: string[];
   /** Palavras e ligações na ordem do nome. */
   parts: Part[];
 }
@@ -148,16 +152,25 @@ function parseName(name: string): Parsed {
     // "1,5" é um número só: a vírgula (ou o ponto) vira uma letra, que a chave não tira.
     .replace(/(\d)[.,](\d)/g, '$1p$2');
   const raw = listNameKey(text).split(' ').filter(Boolean);
+  // Os tokens que no texto vêm colados no anterior por um hífen ("couve-flor"), pela posição em `raw`.
+  const hyphenated = new Set<number>();
+  const run = /[a-z0-9]+/g;
+  for (let at = 0, found = run.exec(text); found; at += 1, found = run.exec(text)) {
+    if (text[found.index - 1] === '-' && /[a-z0-9]/.test(text[found.index - 2] ?? '')) hyphenated.add(at);
+  }
   const parts: Part[] = [];
   const variants: string[] = [];
   const sizes: string[] = [];
   const doubtful: string[] = [];
+  const versionWords: string[] = [];
   const isNumber = (token: string | undefined) => token != null && NUMBER.test(token);
   // O que vem depois ainda tem palavra? Uma letra no fim ("Vitamina A") é versão, não ligação.
   const wordAfter = (index: number) =>
     raw.slice(index + 1).some((token) => !isNumber(token) && !sizedToken(token) && !LOOSE_UNITS.has(token) && !DOZEN.has(token) && token.length > 1);
   // O token anterior foi um algarismo solto: o tamanho que vier agora ("1 5L") pode ser a parte depois da vírgula.
   let loneDigit = false;
+  // A posição do token que virou a última palavra.
+  let lastWord = -1;
 
   for (let i = 0; i < raw.length; i++) {
     const token = raw[i];
@@ -172,7 +185,7 @@ function parseName(name: string): Parsed {
     };
     const sized = sizedToken(token);
     if (isNumber(token)) {
-      // "Tipo 1 Kg", "Tipo 1 5kg": o número é a versão.
+      // "Tipo 1 Kg", "Tipo 1 5kg", "T.1 5kg", "Nº 5 500g": o número é a versão.
       const version = i > 0 && VERSION_WORDS.has(raw[i - 1]);
       if (!version && next && DOZEN.has(next) && /^\d+$/.test(token)) {
         // "2 dúzias".
@@ -210,7 +223,11 @@ function parseName(name: string): Parsed {
     } else if (LINKS.has(token)) {
       parts.push({ text: token, kind: 'link' });
     } else {
-      parts.push({ text: token, kind: 'word' });
+      if (VERSION_WORDS.has(token) && isNumber(next)) versionWords.push(token);
+      // Colada por hífen na palavra de antes ("Couve-flor", "Coca-Cola").
+      const joined = hyphenated.has(i) && lastWord === i - 1;
+      parts.push({ text: token, kind: 'word', ...(joined ? { joined } : {}) });
+      lastWord = i;
     }
   }
 
@@ -227,6 +244,7 @@ function parseName(name: string): Parsed {
     variants: uniqueVariants,
     sizes: [...new Set(sizes)],
     doubtful,
+    versionWords,
     parts,
   };
 }
@@ -243,6 +261,31 @@ export function similarNameKey(name: string): string {
  */
 function sameName(a: Parsed, b: Parsed): boolean {
   return a.key === b.key && (a.order === b.order || !(a.roles || b.roles));
+}
+
+// Os nomes que `sameListedName` já leu: a revisão da nota compara os mesmos a cada toque.
+const listedNames = new Map<string, Parsed>();
+const LISTED_NAMES_LIMIT = 2000;
+
+function parseListed(name: string): Parsed {
+  const known = listedNames.get(name);
+  if (known) return known;
+  if (listedNames.size >= LISTED_NAMES_LIMIT) listedNames.clear();
+  const parsed = parseName(name);
+  listedNames.set(name, parsed);
+  return parsed;
+}
+
+/**
+ * O item da lista de compras e o produto do item da nota têm o mesmo nome? É
+ * o "igual" das sugestões: acento, plural e unidade solta à parte ("Limões" e
+ * "Limão", "Banana kg" e "Banana"), e com a ordem das palavras valendo quando
+ * um dos dois tem "de", "para", "com"... ("Molho de tomate" não é "Tomate
+ * para molho"). A revisão da nota passa esta regra a `matchListItems`.
+ */
+export function sameListedName(listItemName: string, productName: string): boolean {
+  const listed = parseListed(listItemName);
+  return listed.key !== '' && sameName(listed, parseListed(productName));
 }
 
 interface Indexed extends NameCandidate {
@@ -405,6 +448,7 @@ function runAt(note: string[], house: string[], start: number, index: NameIndex)
 /**
  * Depois das `count` primeiras palavras, o nome vira outra coisa:
  * - vem "de" ou "em" e uma palavra que não é embalagem ("Leite de coco"; "Skol em lata" continua sendo a Skol);
+ * - a palavra seguinte vem colada por um hífen ("Couve-flor" não é "Couve", nem "Coca-Cola" é "Coca");
  * - a palavra seguinte faz outra coisa mesmo sem ligação ("Batata palha", "Leite coco": OTHER_THING);
  * - algum nome conhecido liga `last` (a última palavra do nome da casa) a essa palavra com "de" ou "em"
  *   ("Pão queijo", com "Pão de queijo congelado" no catálogo).
@@ -420,6 +464,7 @@ function otherThingAfter(name: Parsed, count: number, last: string, index: NameI
   const word = singular(next.text);
   const linked = rest[0].kind === 'link' && COMPOUND.has(rest[0].text) && rest[1] === next;
   if (linked && !PACKAGING.has(word)) return true;
+  if (next.joined && rest[0] === next) return true;
   if (OTHER_THING.has(word) || OTHER_THING.has(next.text)) return true;
   return index.compounds.get(singular(last))?.has(word) ?? false;
 }
@@ -431,15 +476,17 @@ function isConfident(note: Parsed, candidate: Indexed, index: NameIndex): boolea
   if (!house.variants.every((variant) => note.variants.includes(variant) && !note.doubtful.includes(variant))) return false;
   // Produto da casa com tamanho é um produto certo: o nome novo tem os mesmos tamanhos, nem um a mais ("c/12" é o
   // fardo, não a unidade), e o que sobra depois dele só pode ser embalagem ("Coca-Cola Lata 350ml" é a Coca-Cola
-  // 350ml; "Coca-Cola Zero 2L" não é a Coca-Cola 2L). Letra ou número de versão ("Vitamina C") não faz produto certo.
+  // 350ml; "Coca-Cola Zero 2L" não é a Coca-Cola 2L) ou a palavra de versão com o número ("Arroz Tio João Tipo 1
+  // 5kg" é o Arroz Tio João 5kg). Letra ou número de versão ("Vitamina C") não faz produto certo.
   const exactProduct = candidate.source === 'produto' && house.sizes.length > 0;
   if (exactProduct && note.sizes.length !== house.sizes.length) return false;
   const last = house.words[house.words.length - 1];
+  const tolerated = (word: string) => PACKAGING.has(singular(word)) || note.versionWords.includes(word);
   const fits = (start: number) => {
     const end = start + house.words.length;
     return (
       runAt(note.words, house.words, start, index) &&
-      (!exactProduct || note.words.slice(end).every((word) => PACKAGING.has(singular(word)))) &&
+      (!exactProduct || note.words.slice(end).every(tolerated)) &&
       !otherThingAfter(note, end, last, index)
     );
   };
@@ -463,7 +510,10 @@ export interface SimilarOptions {
   onlySame?: boolean;
   /** Só o que dá para sugerir sem a pessoa pedir (ver `confident`). */
   onlyConfident?: boolean;
-  /** Outros nomes para conferir junto (os que a pessoa deu nesta nota); nome que `index` já tem não se repete. */
+  /**
+   * Outros nomes para conferir junto (os que a pessoa deu nesta nota). Nome que a casa já usa não se repete; nome
+   * que `index` só tem do catálogo dá lugar ao desta nota, com a categoria que a pessoa escolheu.
+   */
   also?: NameIndex;
 }
 
@@ -483,7 +533,17 @@ function findSimilar(typed: string, note: Parsed, index: NameIndex, options: Sim
   const { category, exceptProductId, onlySame = false, onlyConfident = false, also } = options;
   // Nome que já é da casa (catálogo não conta) não ganha sugestão de outro mais genérico.
   const settled = onlyConfident && isHousehold(sameEntry(note, index)?.source ?? 'comum');
-  const entries = also ? [...index.entries, ...also.entries.filter((entry) => !sameEntry(entry.parsed, index))] : index.entries;
+  let entries = index.entries;
+  if (also) {
+    // O mesmo nome nos dois: o da casa vale; o que é só do catálogo sai, e fica o desta nota.
+    const replaced = new Set<Indexed>();
+    const extra = also.entries.filter((entry) => {
+      const same = sameEntry(entry.parsed, index);
+      if (same && !isHousehold(same.source)) replaced.add(same);
+      return !same || !isHousehold(same.source);
+    });
+    entries = [...index.entries.filter((entry) => !replaced.has(entry)), ...extra];
+  }
 
   const found: Found[] = [];
   for (const candidate of entries) {

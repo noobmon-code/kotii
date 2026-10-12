@@ -53,8 +53,8 @@ import {
   indexNames,
   nameCandidates,
   nameSourceLabel,
+  sameListedName,
   similarNameHint,
-  similarNameKey,
   similarNames,
   suggestedName,
   type NameCandidate,
@@ -208,8 +208,9 @@ export default function ReceiptScreen() {
   // aparelho; o banco ainda confere o nome de cada item antes de tirar).
   const listPending = isDraft && (openList.isPending || links.isPending || openList.isFetching || links.isFetching);
   const listFailed = isDraft && (openList.isError || links.isError);
-  // "Mesmo nome" aqui é o dos nomes parecidos: "Limões" da lista sai marcado com o produto "Limão".
-  const suggestedMatches = matchListItems(listItems, receiptLines, links.data ?? new LinkIndex(), similarNameKey);
+  // "Mesmo nome" aqui é o dos nomes parecidos: "Limões" da lista sai marcado com o produto "Limão"; "Molho de
+  // tomate" não sai com "Tomate para molho" (as mesmas palavras em outra ordem só sugerem).
+  const suggestedMatches = matchListItems(listItems, receiptLines, links.data ?? new LinkIndex(), sameListedName);
   const listMatches = applyListChoices(suggestedMatches, listChoices);
 
   const override = (itemId: string, patch: ItemOverride) =>

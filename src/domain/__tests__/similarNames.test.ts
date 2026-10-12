@@ -1,12 +1,14 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { COMMON_ITEMS } from '../commonItems';
+import { LinkIndex, matchListItems, type ReceiptLine } from '../listLinks';
 import {
   existingNameLabel,
   indexNames,
   knownName,
   nameCandidates,
   nameSourceLabel,
+  sameListedName,
   similarNameHint,
   similarNameKey,
   similarNames,
@@ -105,6 +107,55 @@ describe('similarNameKey', () => {
   it('nome sem letra nem número não tem chave', () => {
     expect(similarNameKey('  ')).toBe('');
     expect(similarNameKey('---')).toBe('');
+  });
+});
+
+describe('sameListedName', () => {
+  it('é o mesmo nome com outra grafia: acento, plural, unidade solta', () => {
+    expect(sameListedName('Limões', 'Limão')).toBe(true);
+    expect(sameListedName('bananas', 'Banana')).toBe(true);
+    expect(sameListedName('Banana kg', 'Banana')).toBe(true);
+    expect(sameListedName('Preto, feijões', 'Feijão preto')).toBe(true);
+    expect(sameListedName('Banana prata', 'Banana')).toBe(false);
+    expect(sameListedName('Coca 2L', 'Coca 350ml')).toBe(false);
+    // Nome sem letra nem número não é nome nenhum.
+    expect(sameListedName('!!!', '---')).toBe(false);
+  });
+
+  it('com "de", "para" ou "com", a ordem das palavras conta, como na sugestão', () => {
+    expect(sameListedName('Molho de tomate', 'Tomate para Molho Kg')).toBe(false);
+    expect(sameListedName('Molho de tomate', 'Tomate Molho Kg')).toBe(false);
+    expect(sameListedName('Suco de laranja', 'Laranja p/ Suco Kg')).toBe(false);
+    expect(sameListedName('Café com leite', 'Leite com Café')).toBe(false);
+    // Na mesma ordem, com ou sem a ligação, é o mesmo nome.
+    expect(sameListedName('Molho de tomate', 'Molho Tomate')).toBe(true);
+    expect(sameListedName('Suco de laranja', 'Sucos de Laranja')).toBe(true);
+  });
+
+  it('na revisão da nota, marca o item da lista com o mesmo nome e só sugere o de palavras trocadas', () => {
+    const line = (id: string, name: string, productId: string | null = null): ReceiptLine => ({ id, productId, name, names: [name], category: 'outros' });
+    const receipt = [
+      line('r-limao', 'Limão', 'p-limao'),
+      line('r-banana', 'Banana'),
+      line('r-tomate', 'Tomate para Molho Kg'),
+      line('r-laranja', 'Laranja p/ Suco Kg'),
+      line('r-leite', 'Leite com Café'),
+    ];
+    const list = ['Limões', 'bananas', 'Banana kg', 'Molho de tomate', 'Suco de laranja', 'Café com leite'].map((name, at) => ({
+      id: 'l' + (at + 1),
+      name,
+      category: 'outros',
+      product_id: null,
+    }));
+    expect(matchListItems(list, receipt, new LinkIndex(), sameListedName).map((m) => [m.listItemId, m.receiptItemId, m.checked])).toEqual([
+      ['l1', 'r-limao', true],
+      ['l2', 'r-banana', true],
+      ['l3', 'r-banana', true],
+      // As mesmas palavras em outra ordem: continua aparecendo, desmarcado, para a pessoa decidir.
+      ['l4', 'r-tomate', false],
+      ['l5', 'r-laranja', false],
+      ['l6', 'r-leite', false],
+    ]);
   });
 });
 
@@ -332,6 +383,40 @@ describe('similarNames', () => {
     expect(names(similarNames('Arroz Tio João Tp 1 5kg', index, { onlyConfident: true }))).toEqual(['Arroz 5kg']);
   });
 
+  it('"T.1" e "Nº 5" antes do tamanho são a versão, como "Tipo 1": o tamanho não fica em dúvida', () => {
+    const index = indexNames([
+      product('Arroz Tio João 5kg', 'p-arroz'),
+      product('Feijão Carioca Camil 1kg', 'p-feijao'),
+      product('Macarrão Barilla 500g', 'p-macarrao'),
+      listed('Arroz 5kg', 'li-arroz'),
+    ]);
+    const best = (name: string) => similarNames(name, index, { onlyConfident: true, limit: 1 })[0]?.name;
+    for (const name of ['Arroz tio joao t.1 5kg', 'Arroz Tio João T-1 5kg', 'Arroz Tio João T 1 5kg', 'ARROZ TIO JOAO T1 5KG']) {
+      expect([name, best(name)]).toEqual([name, 'Arroz Tio João 5kg']);
+    }
+    expect(best('Arroz T.1 5kg')).toBe('Arroz 5kg');
+    expect(best('Feijão Carioca Camil T.1 1kg')).toBe('Feijão Carioca Camil 1kg');
+    for (const name of ['Macarrão Barilla Nº 5 500g', 'Macarrão Barilla N 5 500g', 'Macarrão Barilla No 5 500g', 'Macarrao barilla n.5 500g']) {
+      expect([name, best(name)]).toEqual([name, 'Macarrão Barilla 500g']);
+    }
+    // Sem a marca, o algarismo solto continua deixando o tamanho em dúvida.
+    expect(best('Arroz Tio João 1 5kg')).toBeUndefined();
+    // Depois da marca, o número não vira tamanho com a unidade solta.
+    expect(similarNameKey('Feijão T.1 Kg')).toBe(similarNameKey('Feijão T 1'));
+  });
+
+  it('a palavra de versão com o número ("Tipo 1") depois do produto certo não é outra versão dele', () => {
+    const index = indexNames([product('Arroz Tio João 5kg', 'p-arroz'), product('Fralda Pampers 60un', 'p-fralda')]);
+    const best = (name: string) => similarNames(name, index, { onlyConfident: true, limit: 1 })[0]?.productId;
+    expect(best('Arroz Tio João Tipo 1 5kg')).toBe('p-arroz');
+    expect(best('Arroz Tio João Tp 1 5kg')).toBe('p-arroz');
+    expect(best('Arroz Tio João 5kg Tipo 1')).toBe('p-arroz');
+    // Outra palavra junto continua sendo outra versão.
+    expect(best('Arroz Tio João Integral Tipo 1 5kg')).toBeUndefined();
+    // Palavra de versão sem número não é marca: "Tam G" diz o tamanho da fralda.
+    expect(best('Fralda Pampers Tam G 60un')).toBeUndefined();
+  });
+
   it('letra ou número de versão não faz do produto um produto certo: a marca depois dele não atrapalha', () => {
     const index = indexNames([
       product('Vitamina C', 'p-c'),
@@ -420,6 +505,48 @@ describe('similarNames', () => {
     expect(best('Batata Inglesa Kg')).toBe('Batata');
   });
 
+  it('palavra colada por um hífen na última do nome da casa faz outra coisa', () => {
+    const index = indexNames([
+      listed('Couve', 'li-couve'),
+      listed('Papel', 'li-papel'),
+      listed('Coca', 'li-coca'),
+      product('Batata', 'p-batata'),
+      product('Coca-Cola 2L', 'p-coca'),
+    ]);
+    const best = (name: string) => similarNames(name, index, { onlyConfident: true, limit: 1 })[0]?.name;
+    for (const name of ['Couve-flor', 'Couve-flor Kg', 'COUVE-FLOR UN', 'Papel-alumínio Wyda 7,5m', 'Batata-doce Kg', 'Coca-Cola 350ml']) {
+      expect([name, best(name)]).toEqual([name, undefined]);
+    }
+    // No seletor, quem procura ainda vê o nome da casa.
+    expect(similarNames('Couve-flor Kg', index)[0]).toMatchObject({ name: 'Couve', closeness: 'parecido', confident: false });
+    // Hífen com espaço em volta só separa; e o hífen dentro do próprio nome da casa não atrapalha.
+    expect(best('Couve - Maço')).toBe('Couve');
+    expect(best('Couve Manteiga Maço')).toBe('Couve');
+    expect(best('Coca-Cola Pet 2L')).toBe('Coca-Cola 2L');
+    expect(best('Refrigerante Coca-Cola 2l')).toBe('Coca-Cola 2L');
+  });
+
+  it('o nome com hífen do catálogo segura a sugestão também quando a nota escreve sem o hífen', () => {
+    const house = [listed('Couve', 'li-couve'), listed('Papel', 'li-papel')];
+    const alone = indexNames(house);
+    const withCatalog = indexNames([...house, candidate('Couve-flor'), candidate('Papel-alumínio')]);
+    expect(suggestedName('Couve Flor Un', alone)).toMatchObject({ name: 'Couve' });
+    expect(suggestedName('Couve Flor Un', withCatalog)).toBeNull();
+    expect(suggestedName('Papel aluminio wyda 7 5m', withCatalog)).toBeNull();
+    // Outra couve continua ganhando o nome da lista.
+    expect(suggestedName('Couve Manteiga Maço', withCatalog)).toMatchObject({ name: 'Couve' });
+  });
+
+  it('"frita" e "frito" depois do nome da casa fazem outra coisa', () => {
+    const index = indexNames([product('Batata', 'p-batata'), listed('Frango', 'li-frango'), listed('Mandioca', 'li-mandioca')]);
+    const best = (name: string) => similarNames(name, index, { onlyConfident: true, limit: 1 })[0]?.name;
+    for (const name of ['Batata Frita Congelada McCain 1kg', 'Batatas Fritas 400g', 'Frango Frito Kg', 'Mandioca frita congelada 1kg']) {
+      expect([name, best(name)]).toEqual([name, undefined]);
+    }
+    expect(best('Batata Lavada Kg')).toBe('Batata');
+    expect(best('Frango Inteiro Congelado Kg')).toBe('Frango');
+  });
+
   it('abreviação que só existe em nome de produto não vira palavra da casa', () => {
     const index = indexNames(
       nameCandidates({
@@ -506,6 +633,23 @@ describe('similarNames', () => {
     expect(similarNames('Pitayas', house, { also: note })[0]).toMatchObject({ name: 'Pitaya', source: 'nota', closeness: 'igual' });
     expect(similarNames('Pitaya Vermelha Kg', house, { also: note })[0]).toMatchObject({ name: 'Pitaya', source: 'nota', closeness: 'parecido' });
     expect(similarNames('Arroz Tio João 5kg', house, { also: note }).map((s) => [s.name, s.source])).toEqual([['Arroz', 'lista']]);
+  });
+
+  it('nome desta nota que só o catálogo tem aparece como "Nesta nota", com a categoria que a pessoa deu', () => {
+    const house = indexNames([candidate('Banana', 'comum', { category: 'hortifruti' }), bought('Tomate'), product('Uva', 'p-uva', 'hortifruti')]);
+    const note = indexNames([
+      candidate('Banana', 'nota', { category: 'doces' }),
+      candidate('tomate', 'nota', { category: 'doces' }),
+      candidate('Uva', 'nota', { category: 'doces' }),
+    ]);
+    // Só o catálogo tem: vale o desta nota, uma vez só.
+    expect(similarNames('Bananas', house, { also: note }).map((s) => [s.name, s.source, s.category])).toEqual([['Banana', 'nota', 'doces']]);
+    expect(similarNames('Banana Prata Kg', house, { also: note }).map((s) => [s.name, s.source])).toEqual([['Banana', 'nota']]);
+    // A casa já usa (compra, produto): vale o da casa.
+    expect(similarNames('Tomates', house, { also: note }).map((s) => [s.name, s.source])).toEqual([['Tomate', 'comprado']]);
+    expect(similarNames('Uvas', house, { also: note }).map((s) => [s.name, s.source, s.productId])).toEqual([['Uva', 'produto', 'p-uva']]);
+    // Sem os nomes da nota, o catálogo continua aparecendo.
+    expect(similarNames('Bananas', house).map((s) => [s.name, s.source, s.category])).toEqual([['Banana', 'comum', 'hortifruti']]);
   });
 
   it('nome vazio ou só com pontuação não tem parecidos', () => {
@@ -602,13 +746,14 @@ describe('uma casa de verdade, com o catálogo junto', () => {
         { id: 'p-molho', name: 'Molho de tomate', category: 'temperos' },
         { id: 'p-suco', name: 'Suco de laranja', category: 'bebidas' },
         { id: 'p-goiabada', name: 'Goiabada', category: 'doces' },
+        { id: 'p-arroz', name: 'Arroz Tio João 5kg', category: 'graos' },
         // Nomes que uma nota lida pelo QR code deixou.
         { id: 'p-deterg', name: 'Deterg liq ype clear 500ml', category: 'limpeza' },
         { id: 'p-refrig', name: 'Refrig coca cola 350ml lt', category: 'bebidas' },
         { id: 'p-cerv', name: 'Cerv brahma duplo malte lt 350ml', category: 'alcoolicas' },
       ],
       listItems: [
-        ...['Leite', 'Água', 'Pão', 'Iogurte', 'Queijo', 'Macarrão', 'Ovos', 'Detergente', 'Refrigerante', 'acucar'].map((name) => ({
+        ...['Leite', 'Água', 'Pão', 'Iogurte', 'Queijo', 'Macarrão', 'Ovos', 'Detergente', 'Refrigerante', 'acucar', 'Couve', 'Papel'].map((name) => ({
           id: 'li-' + name,
           name,
           category: 'outros',
@@ -639,6 +784,9 @@ describe('uma casa de verdade, com o catálogo junto', () => {
     expect(chip('Skol em Lata 350ml')).toBe('Skol 350ml');
     expect(chip('Vitamina C Sundown 60 cápsulas')).toBe('Vitamina C');
     expect(chip('Molho de Tomate Fugini 300g')).toBe('Molho de tomate');
+    expect(chip('Batata Lavada Kg')).toBe('Batata');
+    expect(chip('Couve Manteiga Maço')).toBe('Couve');
+    expect(chip('Arroz Tio João Tipo 1 5kg')).toBe('Arroz Tio João 5kg');
     // O item da lista escrito sem acento aparece com a grafia do catálogo.
     expect(suggestedName('Açúcar Refinado União 1kg', index)).toMatchObject({ name: 'Açúcar', source: 'lista', listItemIds: ['li-acucar'] });
     // O produto da casa leva junto o item da lista ligado a ele.
@@ -656,6 +804,13 @@ describe('uma casa de verdade, com o catálogo junto', () => {
       'Alho Poró Un',
       'Frango Empanado Sadia 300g',
       'Macarrão Instantâneo Nissin 85g',
+      // Colado por hífen, ou o nome com hífen do catálogo escrito sem ele.
+      'Couve-flor',
+      'Couve-flor Kg',
+      'Couve Flor Un',
+      'Batata-doce Kg',
+      'Papel-alumínio Wyda 7,5m',
+      'Batata Frita Congelada McCain 1kg',
       'Sardinha Molho de Tomate Coqueiro 125g',
       'Sorvete de Leite Condensado Kibon 1,5L',
       'Laranja para Suco Kg',
@@ -678,6 +833,7 @@ describe('uma casa de verdade, com o catálogo junto', () => {
     expect(chip('Refrig fanta laranja 2l')).toBe('Refrigerante');
     expect(chip('Cerv skol lt 350ml')).toBe('Cerveja');
     expect(chip('Agua crystal 1 5l')).toBe('Água');
+    expect(chip('Arroz tio joao t.1 5kg')).toBe('Arroz Tio João 5kg');
     for (const name of [
       'Leite coco sococo 200ml',
       'Leite cond moca 395g',
@@ -685,6 +841,9 @@ describe('uma casa de verdade, com o catálogo junto', () => {
       'Pao alho santa massa 300g',
       'Sal frutas eno 100g',
       'Oleo motor lubrax 1l',
+      'Couve flor un',
+      'Papel aluminio wyda 7 5m',
+      'Batata frita cong mccain 1kg',
     ]) {
       expect([name, chip(name)]).toEqual([name, null]);
     }
