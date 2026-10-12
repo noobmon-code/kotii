@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { normalizeSearch } from '@/domain/search';
 import { Backdrop } from './Backdrop';
-import { IconButton, ListRow, Text, TextField } from './primitives';
+import { IconButton, ListCard, ListRow, Text, TextField } from './primitives';
 import { MAX_WIDTH, space, useColors } from './theme';
 
 export interface PickerOption {
@@ -16,7 +16,10 @@ export interface PickerOption {
 
 /**
  * Lista pesquisável em tela cheia. `extraActions` aparecem no topo (ex.:
- * "Criar produto 'X'"), recebendo o texto digitado.
+ * "Criar produto 'X'"), recebendo o texto digitado. `suggestions` são opções
+ * para o texto digitado que a busca por trecho não acha (ex.: nomes
+ * parecidos); vêm antes da lista, sob `suggestionsTitle`, e o toque numa delas
+ * vai para `onSelectSuggestion` quando a tela precisa saber de onde veio.
  */
 export function PickerModal({
   visible,
@@ -27,6 +30,9 @@ export function PickerModal({
   placeholder = 'Buscar',
   extraActions,
   initialQuery = '',
+  suggestions,
+  suggestionsTitle,
+  onSelectSuggestion = onSelect,
 }: {
   visible: boolean;
   title: string;
@@ -36,14 +42,19 @@ export function PickerModal({
   placeholder?: string;
   extraActions?: (query: string) => ReactNode;
   initialQuery?: string;
+  suggestions?: (query: string) => PickerOption[];
+  suggestionsTitle?: string;
+  onSelectSuggestion?: (id: string) => void;
 }) {
   const c = useColors();
   const [query, setQuery] = useState(initialQuery);
+  const suggested = useMemo(() => (visible && suggestions ? suggestions(query.trim()) : []), [visible, suggestions, query]);
   const filtered = useMemo(() => {
     const q = normalizeSearch(query);
-    if (!q) return options;
-    return options.filter((o) => normalizeSearch(o.title).includes(q));
-  }, [options, query]);
+    // O que já está nas sugestões não se repete na lista.
+    const shown = new Set(suggested.map((o) => o.id));
+    return options.filter((o) => !shown.has(o.id) && (!q || normalizeSearch(o.title).includes(q)));
+  }, [options, query, suggested]);
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} onShow={() => setQuery(initialQuery)}>
@@ -62,10 +73,28 @@ export function PickerModal({
             data={filtered}
             keyExtractor={(o) => o.id}
             keyboardShouldPersistTaps="handled"
+            ListHeaderComponent={
+              suggested.length ? (
+                <View style={styles.suggestions}>
+                  {suggestionsTitle ? <Text variant="small">{suggestionsTitle}</Text> : null}
+                  <ListCard>
+                    {suggested.map((item) => (
+                      <ListRow
+                        key={item.id}
+                        left={item.left}
+                        title={item.title}
+                        subtitle={item.subtitle}
+                        onPress={() => onSelectSuggestion(item.id)}
+                      />
+                    ))}
+                  </ListCard>
+                </View>
+              ) : null
+            }
             renderItem={({ item }) => (
               <ListRow left={item.left} title={item.title} subtitle={item.subtitle} onPress={() => onSelect(item.id)} />
             )}
-            ListEmptyComponent={<Text variant="muted">Nada encontrado.</Text>}
+            ListEmptyComponent={suggested.length ? null : <Text variant="muted">Nada encontrado.</Text>}
           />
         </View>
       </SafeAreaView>
@@ -77,4 +106,5 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   inner: { flex: 1, width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', padding: space.lg, gap: space.md },
   header: { flexDirection: 'row', alignItems: 'center' },
+  suggestions: { gap: space.sm, paddingBottom: space.md },
 });
