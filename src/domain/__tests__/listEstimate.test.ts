@@ -649,8 +649,8 @@ describe('pantryHits', () => {
     expect([...pantryHits(list, pantry, { links, today }).keys()]).toEqual(['c', 'a', 'o']);
     // Pelo produto da entrada (café), pelo nome (arroz); o óleo não passou do costume e fica.
     const ranOut = [
-      { name: 'Café Pilão 500g', productId: 'pilao', lastAt: '2026-10-01T12:00:00' },
-      { name: 'Arroz', productId: null, lastAt: '2026-10-01T12:00:00' },
+      { name: 'Café Pilão 500g', productId: 'pilao', lastAt: '2026-10-01T12:00:00', everyDays: 10 },
+      { name: 'Arroz', productId: null, lastAt: '2026-10-01T12:00:00', everyDays: 10 },
     ];
     expect([...pantryHits(list, pantry, { links, today, ranOut }).keys()]).toEqual(['o']);
   });
@@ -705,6 +705,20 @@ describe('pantryHits', () => {
       since: '2026-10-11',
       expiresOn: null,
     });
+    // A mesma ida ao mercado, anotada dois dias depois (30 set), não é estoque novo.
+    const sameTrip = stock('Café Pilão 500g', 'pilao', { purchased_on: '2026-09-30', quantity: 2 });
+    expect(pantryHits(list, [old, sameTrip], { today, ranOut }).size).toBe(0);
+    // E o estoque novo também acaba: passado o intervalo de costume dele (10 dias desde 11 out), deixa de valer.
+    const later = (day: string) =>
+      pantryHits(list, [old, fresh], {
+        today: day,
+        ranOut: ranOutItems(['2026-09-08', '2026-09-18', '2026-09-28'].map((d) => purchase('Café Pilão 500g', 'pilao', d, 'receipt')), {
+          now: endOf(day),
+          listKind: 'mercado',
+        }),
+      }).size;
+    expect(later('2026-10-20')).toBe(1);
+    expect(later('2026-10-21')).toBe(0);
   });
 
   it('entrada mais nova que a última compra conhecida é estoque novo: nota lida sem marcar a lista', () => {

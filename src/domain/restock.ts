@@ -10,7 +10,7 @@ import { normalizeSearch } from './search';
 /** Quanto do histórico olhar (o servidor devolve até mil linhas por busca). */
 export const RESTOCK_HISTORY_DAYS = 180;
 /** Compras a até 2 dias uma da outra são a mesma ida (feira e mercado, nota lida no dia seguinte). */
-const SAME_TRIP_DAYS = 2;
+export const SAME_TRIP_DAYS = 2;
 /** Três compras (dois intervalos) antes de arriscar um palpite. */
 const MIN_TRIPS = 3;
 const MIN_EVERY_DAYS = 3;

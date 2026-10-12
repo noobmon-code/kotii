@@ -7,10 +7,11 @@
 // mercados (priceLevel) e a mesma conversão de unidades (units).
 
 import { joinNames } from './cartPantry';
-import { formatShortDate, toISODate, todayISO } from './dates';
+import { diffDays, formatShortDate, toISODate, todayISO } from './dates';
 import type { LinkIndex } from './listLinks';
 import { formatBRL, formatQuantity } from './money';
 import { storePriceIndex } from './priceLevel';
+import { SAME_TRIP_DAYS } from './restock';
 import { normalizeSearch } from './search';
 import { priceQuantity, sameDimension } from './units';
 
@@ -326,6 +327,9 @@ export interface PantryHit {
  * mais que tenha passado do costume) fica de fora: está na lista justamente
  * porque acabou. Só a entrada mais nova que a última compra que esse palpite
  * conhece (`lastAt`) continua valendo: é compra que ele não viu, estoque novo.
+ * Mais nova de verdade (não a mesma ida ao mercado, lida um ou dois dias
+ * depois) e só enquanto ela mesma não passar do intervalo de costume
+ * (`everyDays`): depois disso, também acabou.
  */
 export function pantryHits(
   items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId'>[],
@@ -334,36 +338,48 @@ export function pantryHits(
     links,
     today,
     ranOut = [],
-  }: { links?: LinkIndex; today: string; ranOut?: readonly { name: string; productId: string | null; lastAt: string }[] },
+  }: {
+    links?: LinkIndex;
+    today: string;
+    ranOut?: readonly { name: string; productId: string | null; lastAt: string; everyDays: number }[];
+  },
 ): Map<string, PantryHit> {
-  // O dia da última compra conhecida do que acabou, pelo nome e pelo produto.
-  const goneNames = new Map<string, string>();
-  const goneProducts = new Map<string, string>();
-  for (const gone of ranOut) {
-    const day = toISODate(new Date(gone.lastAt));
-    const name = normalizeSearch(gone.name);
-    if (day > (goneNames.get(name) ?? '')) goneNames.set(name, day);
-    if (gone.productId && day > (goneProducts.get(gone.productId) ?? '')) goneProducts.set(gone.productId, day);
+  // O que acabou, pelo nome e pelo produto: o dia da última compra conhecida e o intervalo de costume.
+  interface Gone {
+    day: string;
+    everyDays: number;
   }
-  /** Até que dia o que entrou na despensa com esse nome ou produto já acabou; '' quando o app não acha que acabou. */
-  const goneUntil = (key: string, productId: string | null) => {
-    const byName = goneNames.get(key) ?? '';
-    const byProduct = (productId != null ? goneProducts.get(productId) : undefined) ?? '';
-    return byName > byProduct ? byName : byProduct;
+  const goneNames = new Map<string, Gone>();
+  const goneProducts = new Map<string, Gone>();
+  for (const gone of ranOut) {
+    const latest = { day: toISODate(new Date(gone.lastAt)), everyDays: gone.everyDays };
+    const name = normalizeSearch(gone.name);
+    if (latest.day > (goneNames.get(name)?.day ?? '')) goneNames.set(name, latest);
+    if (gone.productId && latest.day > (goneProducts.get(gone.productId)?.day ?? '')) goneProducts.set(gone.productId, latest);
+  }
+  /** O palpite de que acabou para esse nome ou produto (o da compra mais recente); null quando o app não acha que acabou. */
+  const goneOf = (key: string, productId: string | null): Gone | null => {
+    const byName = goneNames.get(key) ?? null;
+    const byProduct = (productId != null ? goneProducts.get(productId) : undefined) ?? null;
+    if (!byName || !byProduct) return byName ?? byProduct;
+    return byName.day > byProduct.day ? byName : byProduct;
   };
+  /** A entrada é estoque que o palpite não viu: comprada depois (fora a mesma ida ao mercado) e ainda dentro do costume. */
+  const stillThere = (purchasedOn: string, gone: Gone | null) =>
+    !gone || (diffDays(gone.day, purchasedOn) > SAME_TRIP_DAYS && diffDays(purchasedOn, today) < gone.everyDays);
   // O nome de cada entrada normalizado uma vez, fora do laço dos itens.
   const fresh = pantry
     .filter((entry) => !entry.expires_on || entry.expires_on >= today)
     .map((entry) => ({ entry, key: normalizeSearch(entry.name) }))
-    .filter(({ entry, key }) => entry.purchased_on > goneUntil(key, entry.product_id));
+    .filter(({ entry, key }) => stillThere(entry.purchased_on, goneOf(key, entry.product_id)));
 
   const hits = new Map<string, PantryHit>();
   for (const item of items) {
     const name = normalizeSearch(item.name);
-    // O item da lista acabou: só conta a entrada comprada depois disso.
-    const itemGoneUntil = goneUntil(name, item.productId);
+    // O item da lista acabou: só conta a entrada comprada depois disso (e ainda dentro do costume).
+    const itemGone = goneOf(name, item.productId);
     const same = fresh.filter(({ entry, key }) => {
-      if (entry.purchased_on <= itemGoneUntil) return false;
+      if (!stillThere(entry.purchased_on, itemGone)) return false;
       if (item.productId && entry.product_id === item.productId) return true;
       // Outro produto só conta quando a pessoa já confirmou, numa nota, que ele cumpre este nome.
       if (entry.product_id && links?.has(item.name, entry.product_id)) return true;

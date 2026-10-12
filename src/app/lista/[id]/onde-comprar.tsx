@@ -77,6 +77,9 @@ export default function WhereToBuyScreen() {
   const storeName = (storeId: string) => stores.data?.find((s) => s.id === storeId)?.name ?? 'Mercado';
   const productName = (productId: string) => products.data?.find((p) => p.id === productId)?.name;
   const itemByKey = new Map(pending.map((i) => [i.id, i]));
+  // "Preço real" é o do próprio produto naquele mercado; o de outro produto com o mesmo nome conta à parte.
+  const otherProductCount = (plan: StorePlan) =>
+    plan.assignments.filter((a) => account.priceAt(a.itemKey, a.storeId)?.source === 'otherProduct').length;
   const best = recommendation.plans[0];
   const singlePlans = recommendation.plans.filter((p) => p.storeIds.length === 1);
   const bestSingle = singlePlans[0];
@@ -106,6 +109,7 @@ export default function WhereToBuyScreen() {
             plan={best}
             storeName={storeName}
             itemCount={pending.length}
+            otherProduct={otherProductCount(best)}
             savings={best.storeIds.length > 1 && bestSingle ? bestSingle.total - best.total : 0}
           />
 
@@ -148,7 +152,7 @@ export default function WhereToBuyScreen() {
                       key={storeId}
                       left={<IconBadge icon="store-outline" tone={index === 0 ? 'primary' : 'neutral'} />}
                       title={storeName(storeId)}
-                      subtitle={`${describeIndex(idx)} · ${plan.knownCount} com preço real`}
+                      subtitle={`${describeIndex(idx)} · ${plan.knownCount - otherProductCount(plan)} com preço real`}
                       right={<Text variant="label">{formatBRL(plan.total)}</Text>}
                     />
                   );
@@ -201,11 +205,14 @@ function PlanSummary({
   plan,
   storeName,
   itemCount,
+  otherProduct,
   savings,
 }: {
   plan: StorePlan;
   storeName: (id: string) => string;
   itemCount: number;
+  /** Itens cujo preço, nesse plano, é de outro produto com o mesmo nome. */
+  otherProduct: number;
   savings: number;
 }) {
   const names = plan.storeIds.map(storeName).join(' + ');
@@ -220,7 +227,8 @@ function PlanSummary({
       </Row>
       <Text variant="title">{formatBRL(plan.total)}</Text>
       <Row style={styles.wrap}>
-        <Badge label={`${plan.knownCount} preços reais`} tone="primary" />
+        <Badge label={`${plan.knownCount - otherProduct} preços reais`} tone="primary" />
+        {otherProduct ? <Badge label={`${otherProduct} de outro produto`} tone="warning" /> : null}
         {plan.estimatedCount ? <Badge label={`${plan.estimatedCount} estimados`} tone="warning" /> : null}
         {plan.knownCount + plan.estimatedCount < itemCount ? (
           <Badge label={`${itemCount - plan.knownCount - plan.estimatedCount} sem preço`} />
