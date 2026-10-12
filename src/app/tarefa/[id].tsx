@@ -12,6 +12,7 @@ import {
   orderHasKid,
   planRotationSave,
   plannedTurn,
+  ROTATION_CHANGED_ELSEWHERE,
   rotationErrorMessage,
   rotationLabel,
   rotationOf,
@@ -23,7 +24,7 @@ import {
   turnOf,
   type ChoreTurn,
 } from '@/domain/choreRotation';
-import { isChoreGone, RECURRENCE_OPTIONS, type Recurrence } from '@/domain/chores';
+import { CHORE_GONE, isChoreGone, RECURRENCE_OPTIONS, type Recurrence } from '@/domain/chores';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { kidsOf } from '@/domain/points';
 import { useHousehold } from '@/lib/auth';
@@ -60,7 +61,9 @@ export default function ChoreScreen() {
     // Erro só sem nada para mostrar: a busca de fundo que falha não troca o
     // formulário aberto pelo aviso. A tarefa apagada em outro aparelho é a
     // exceção: não há mais o que editar.
-    const failed = chore.isError && isChoreGone(chore.error) ? chore : queries.find((q) => q.isError && q.data === undefined);
+    // Apagada em outro aparelho: tentar de novo não a traz de volta.
+    if (chore.isError && isChoreGone(chore.error)) return <ErrorNotice error={new Error(CHORE_GONE)} />;
+    const failed = queries.find((q) => q.isError && q.data === undefined);
     if (failed) return <ErrorNotice error={failed.error} onRetry={() => queries.forEach((q) => q.refetch())} />;
     if (queries.some((q) => q.isPending)) return <Loading />;
     if (!opened) {
@@ -155,6 +158,12 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
     }
     if (problem) {
       notify('Rodízio incompleto', problem);
+      return;
+    }
+    // O formulário abriu sem rodízio (do que o aparelho tinha guardado) e a tarefa ganhou um em outro
+    // aparelho: salvar daqui trocaria a vez e os pontos por dados velhos.
+    if (chore && !shownOrder.length && savedOrder.length) {
+      notify('Esta tarefa mudou', ROTATION_CHANGED_ELSEWHERE);
       return;
     }
     const pointsValue = earnsPoints ? Number.parseInt(points, 10) : 0;

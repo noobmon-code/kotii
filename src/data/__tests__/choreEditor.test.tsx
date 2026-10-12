@@ -303,9 +303,12 @@ describe('editor aberto: o que chega depois não troca o formulário', () => {
     expect(screen.title()).toBe('Lavar a louça e as panelas');
     expect(screen.chips()).toEqual(OF_BETO);
 
-    // O formulário não mostrou rodízio nenhum: não manda a ordem vazia que o encerraria.
+    // O formulário não mostrou rodízio nenhum: não manda a ordem vazia que o encerraria, nem grava por cima
+    // da vez e dos pontos com o que tinha aberto. Avisa, e nada vai para o servidor.
     await screen.press('Salvar');
-    expect(mockServer.log.filter((line) => line.startsWith('rpc'))).toEqual([]);
+    expect(mockServer.log).toEqual([]);
+    expect(mockNotify).toHaveBeenCalledWith('Esta tarefa mudou', 'Ela ganhou um rodízio em outro aparelho. Feche e abra de novo para editar.');
+    expect(mockServer.chore).toMatchObject({ assigned_to: 'u-carla', points: 10 });
     expect(mockServer.order).toEqual(ORDER);
   });
 

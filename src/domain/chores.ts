@@ -45,6 +45,8 @@ export function describeChoreStatus(status: ChoreStatus): string {
  * `.single()` sem linhas): ela foi apagada em outro aparelho. Diferente da
  * busca que só falhou (sem internet), aqui não há mais o que mostrar.
  */
+export const CHORE_GONE = 'Esta tarefa foi apagada em outro aparelho.';
+
 export function isChoreGone(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   return 'code' in error && error.code === 'PGRST116';

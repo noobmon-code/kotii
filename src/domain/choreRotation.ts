@@ -301,6 +301,9 @@ export function kidChores<C extends ChoreTurn & { id: string; points: number; du
 
 export const ROTATION_UNAVAILABLE = 'O rodízio ainda não está disponível nesta casa. Tente de novo mais tarde.';
 
+/** O formulário abriu sem rodízio e a tarefa ganhou um em outro aparelho: salvar gravaria a vez e os pontos de antes. */
+export const ROTATION_CHANGED_ELSEWHERE = 'Ela ganhou um rodízio em outro aparelho. Feche e abra de novo para editar.';
+
 // Tabela ou função que o banco não tem: como a API responde (PGRST205 e
 // PGRST202) e os códigos do Postgres para o mesmo (42P01 e 42883).
 const MISSING_CODES = new Set(['PGRST205', 'PGRST202', '42P01', '42883']);
