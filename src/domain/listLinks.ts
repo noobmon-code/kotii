@@ -49,14 +49,13 @@ const sameWord = (a: string, b: string) => a === b || `${a}s` === b || `${b}s` =
 /**
  * Todas as palavras do item da lista aparecem num dos nomes do item da nota
  * ("Cebola" em "Cebola Granel 600g"). Devolve o tamanho do nome mais curto
- * que bate (menor = mais parecido), ou null.
+ * que bate (menor = mais parecido), ou null. `receiptNames`: as palavras de
+ * cada nome do item da nota.
  */
-function nameFit(listName: string, receiptNames: string[]): number | null {
-  const wanted = words(listName);
+function nameFit(wanted: string[], receiptNames: string[][]): number | null {
   if (!wanted.length) return null;
   let best: number | null = null;
-  for (const name of receiptNames) {
-    const have = words(name);
+  for (const have of receiptNames) {
     if (wanted.every((w) => have.some((h) => sameWord(w, h)))) best = Math.min(best ?? Infinity, have.length);
   }
   return best;
@@ -75,6 +74,8 @@ export interface ReceiptLine {
   id: string;
   /** Produto já escolhido (existente); produto novo ainda não tem id. */
   productId: string | null;
+  /** O nome do produto do item como está na revisão (existente ou novo); null sem produto. */
+  name?: string | null;
   /** Nome do produto, sugestão da leitura e texto da nota. */
   names: string[];
   category: string;
@@ -87,27 +88,54 @@ export interface ListMatch {
   listItemId: string;
   receiptItemId: string;
   reason: ListMatchReason;
-  /** Mesmo produto ou vínculo já confirmado vem marcado; nome parecido só sugere. */
+  /** Mesmo produto, vínculo já confirmado ou o mesmo nome vêm marcados; nome parecido só sugere. */
   checked: boolean;
 }
 
 /**
  * Que item da nota cumpre cada item aberto das listas: o mesmo produto, um
- * vínculo que a pessoa já confirmou ou, como sugestão desmarcada, um nome
- * com as mesmas palavras. Um item da nota pode cumprir mais de um item de
- * lista ("Coca" e "Refrigerante").
+ * vínculo que a pessoa já confirmou, um produto com o mesmo nome do item da
+ * lista ou, como sugestão desmarcada, um nome com as mesmas palavras. Um item
+ * da nota pode cumprir mais de um item de lista ("Coca" e "Refrigerante").
+ * `sameName` diz quando o produto do item da nota "tem o mesmo nome" do item
+ * da lista: por padrão, a mesma chave da lista; a revisão da nota passa a
+ * regra dos nomes parecidos (`sameListedName`), que também iguala plural e
+ * unidade solta ("Limões" da lista com o produto "Limão") e não iguala as
+ * mesmas palavras em outra ordem ("Molho de tomate" e "Tomate para molho").
  */
-export function matchListItems(listItems: OpenListItem[], receipt: ReceiptLine[], links: LinkIndex): ListMatch[] {
+export function matchListItems(
+  listItems: OpenListItem[],
+  receipt: ReceiptLine[],
+  links: LinkIndex,
+  sameName?: (listItemName: string, productName: string) => boolean,
+): ListMatch[] {
+  // O que só depende do item da nota é feito uma vez por chamada, não a cada item da lista: as palavras dos
+  // nomes dele e, na regra padrão, a chave do nome do produto.
+  const lines = receipt.map((line) => ({ line, words: line.names.map(words) }));
+  const keys = new Map<string, string>();
+  const keyOf = (name: string) => {
+    const known = keys.get(name);
+    if (known != null) return known;
+    const key = listNameKey(name);
+    keys.set(name, key);
+    return key;
+  };
+  const same = sameName ?? ((listItemName: string, productName: string) => keyOf(listItemName) !== '' && keyOf(listItemName) === keyOf(productName));
   return listItems.flatMap((item): ListMatch[] => {
     const byProduct = item.product_id ? receipt.find((line) => line.productId === item.product_id) : undefined;
     if (byProduct) return [{ listItemId: item.id, receiptItemId: byProduct.id, reason: 'produto', checked: true }];
     const byLink = receipt.find((line) => line.productId && links.has(item.name, line.productId));
     if (byLink) return [{ listItemId: item.id, receiptItemId: byLink.id, reason: 'vinculo', checked: true }];
+    // O produto do item da nota se chama como o item da lista: é ele. Vale enquanto o nome for esse
+    // (trocou o produto na revisão, a marca sai junto).
+    const byName = receipt.find((line) => line.name != null && same(item.name, line.name));
+    if (byName) return [{ listItemId: item.id, receiptItemId: byName.id, reason: 'nome', checked: true }];
     // Mais parecido: primeiro a mesma categoria ("Leite" é o integral, não o
     // condensado dos doces), depois o nome mais curto.
+    const wanted = words(item.name);
     let best: { line: ReceiptLine; score: [number, number] } | null = null;
-    for (const line of receipt) {
-      const fit = nameFit(item.name, line.names);
+    for (const { line, words: lineWords } of lines) {
+      const fit = nameFit(wanted, lineWords);
       if (fit == null) continue;
       const score: [number, number] = [line.category === item.category ? 0 : 1, fit];
       if (!best || score[0] < best.score[0] || (score[0] === best.score[0] && score[1] < best.score[1])) best = { line, score };
