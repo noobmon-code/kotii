@@ -91,7 +91,7 @@ export default function SignInScreen() {
       if (error && resendWaitSeconds(error) === null) throw error;
       showCodeStep(RESEND_SECONDS);
     } catch (err) {
-      notify('Não deu para mandar o código', translateAuthError(err));
+      notify('Não deu para mandar o e-mail', translateAuthError(err));
     } finally {
       setBusy(false);
     }
@@ -151,7 +151,7 @@ export default function SignInScreen() {
             {recovery === 'email' ? (
               <>
                 <Text variant="muted">
-                  Digite o e-mail da sua conta. Mandamos um código para você criar uma senha nova aqui mesmo.
+                  Digite o e-mail da sua conta. Mandamos um e-mail para você criar uma senha nova.
                 </Text>
                 <TextField
                   label="E-mail"
@@ -163,14 +163,14 @@ export default function SignInScreen() {
                   textContentType="emailAddress"
                   onSubmitEditing={sendCode}
                 />
-                <Button title="Enviar código" onPress={sendCode} loading={busy} />
+                <Button title="Enviar e-mail" onPress={sendCode} loading={busy} />
                 <Button title="Já tenho um código" variant="ghost" compact disabled={busy} onPress={haveCode} />
               </>
             ) : (
               <>
                 <Text variant="muted">
-                  Se {email} tiver conta no Kotii, o código chega em instantes (olhe também o spam). Vale o do e-mail
-                  mais recente.
+                  Se {email} tiver conta no Kotii, o e-mail chega em instantes (olhe também o spam).
+                  Abra o link do e-mail mais recente no site. Se ele trouxer um código, digite abaixo.
                 </Text>
                 <TextField
                   label="Código do e-mail"
@@ -184,7 +184,7 @@ export default function SignInScreen() {
                 />
                 <Button title="Continuar" onPress={checkCode} loading={busy} />
                 <Button
-                  title={wait > 0 ? `Reenviar o código em ${wait} s` : 'Reenviar o código'}
+                  title={wait > 0 ? `Reenviar o e-mail em ${wait} s` : 'Reenviar o e-mail'}
                   variant="ghost"
                   compact
                   disabled={busy || wait > 0}

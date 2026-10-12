@@ -3,13 +3,24 @@ import { isAuthRetryableFetchError, type Session } from '@supabase/supabase-js';
 import { useIsRestoring, useQuery } from '@tanstack/react-query';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 
+import { notify } from '@/ui/dialogs';
+
 import { forgetActiveHousehold, getActiveHousehold, loadActiveHousehold, setActiveHousehold } from './activeHousehold';
 import { finishRecovery, forgetRecoveryInMemory, readRecovery, startRecovery } from './passwordRecovery';
 import { cacheHousehold, cacheOwners, forgetCache, queryClient, resumeQueue, setSessionValid } from './queryClient';
+import { createRecoveryLinkHandler } from './recoveryLink';
 import { disableAllReminders, pruneHouseholdReminders } from './reminders';
 import { noteSignedIn, noteSignedOut } from './session';
 import { supabase, unwrap } from './supabase';
 import type { Household, Member } from './types';
+
+// Lê o fragmento antes de o router trocar o endereço. No celular e no build web não há location.
+const recoveryLink = createRecoveryLinkHandler(
+  typeof window !== 'undefined' && window.location ? window.location.href : null,
+  (url) => window.history.replaceState(window.history.state, '', url),
+  (tokens) => supabase.auth.setSession(tokens),
+  startRecovery,
+);
 
 // Sair fica em lib/session (só neste aparelho); as telas seguem importando daqui.
 export { signOut } from './session';
@@ -59,21 +70,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const userId = state.session?.user.id;
 
   useEffect(() => {
+    let active = true;
     let confirmed = false;
     const last = readLastSession();
     // Token vencido: o Supabase precisa da internet para responder. Entra já
     // com a última conta, em vez de esperar.
     last.then(async (session) => {
-      if (!confirmed && session?.expires_at && session.expires_at * 1000 < Date.now()) {
+      if (active && !recoveryLink.pending && !confirmed && session?.expires_at && session.expires_at * 1000 < Date.now()) {
         // Sem internet para o cache antes de mostrar a conta: as consultas que
         // ela libera já nascem esperando a sessão ser renovada.
         setSessionValid(false);
         // A casa aberta neste aparelho antes de qualquer consulta da conta.
         await loadActiveHousehold(session.user.id);
-        if (!confirmed) setState({ session, loading: false, valid: false });
+        if (active && !confirmed) setState({ session, loading: false, valid: false });
       }
     });
-    supabase.auth.getSession().then(async ({ data, error }) => {
+    recoveryLink.run().then(async (linkError) => {
+      if (active && linkError) notify('Não deu para abrir o link', linkError);
+      return supabase.auth.getSession();
+    }).then(async ({ data, error }) => {
+      if (!active) return;
       confirmed = true;
       if (data.session) {
         await loadActiveHousehold(data.session.user.id);
@@ -94,6 +110,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     });
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      // setSession emite SIGNED_IN antes de devolver a conta. Espera a marca da recuperação
+      // antes de liberar qualquer sessão para o router (inclusive uma conta que já estava aqui).
+      if (recoveryLink.pending) return;
       // A sessão inicial vem do getSession acima, que diz se faltou internet.
       if (event === 'INITIAL_SESSION') return;
       // Entrou pelo código do e-mail de recuperação (aqui ou em outra aba): antes da casa, a senha nova; a
@@ -117,7 +136,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         disableAllReminders().catch(() => undefined);
       }
     });
-    return () => data.subscription.unsubscribe();
+    return () => {
+      active = false;
+      data.subscription.unsubscribe();
+    };
   }, []);
 
   // A conta que apareceu (guardada, de outra aba, reaberta) pode estar no meio da recuperação de senha:
