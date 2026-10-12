@@ -52,6 +52,8 @@ export interface NukeSnapshot {
   me: string;
   members: string[];
   doses: { time: string; name: string; person: string; taken: boolean }[];
+  /** Remédios com a caixa acabando ou a receita vencendo (refillLines). */
+  refills?: string[];
   chores: { title: string; due_on: string; assignee: string | null }[];
   expiring: { name: string; expires_on: string }[];
   pantry: string[];
@@ -91,6 +93,8 @@ export function buildNukeContext(s: NukeSnapshot): string {
     `Casa: ${s.household}. Moradores: ${s.members.map((m) => (m === s.me ? `${m} (quem está falando)` : m)).join(', ')}.`,
     `Hoje: ${formatBRDate(s.today)}.`,
     `Remédios de hoje: ${listOrNone(s.doses.map((d) => `${d.time} ${d.name} (${d.person}) ${d.taken ? 'tomado' : 'pendente'}`))}.`,
+    // O estoque é uma conta do app pelas doses previstas, não uma contagem: o Nuke repassa como estimativa.
+    `Remédios acabando ou com a receita vencendo (estimativa do app pelas doses previstas): ${listOrNone(s.refills ?? [])}.`,
     `Tarefas (atrasadas e próximos 7 dias): ${listOrNone(
       s.chores.map((c) => `${c.title} — ${c.due_on < s.today ? 'atrasada desde' : 'vence'} ${shortDate(c.due_on)}${c.assignee ? ` (${c.assignee})` : ''}`),
     )}.`,

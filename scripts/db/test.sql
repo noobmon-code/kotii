@@ -1,6 +1,7 @@
 -- Testes do schema: isolamento entre famílias (RLS), matching, preços,
 -- confirmação de nota, recorrência de tarefas, remédios, saúde, aparelhos,
--- documentos, financeiro, saída da casa e compromissos da família.
+-- documentos, financeiro, saída da casa, compromissos da família e estoque
+-- dos remédios.
 -- Rodado por scripts/db/test.sh depois de stubs.sql + migrations.
 
 \set ON_ERROR_STOP 1
@@ -3203,5 +3204,130 @@ begin
   assert (select count(*) from public.family_event_days) = 0, 'and day changes';
   assert (select count(*) from public.family_events) = 1, 'the other household keeps its event';
 end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• estoque e receita dos remédios: limites das colunas e isolamento entre casas'
+-- Paula mora na Casa da Paula e toma Losartana; Quico mora em outra casa.
+\set user_p '00000000-0000-0000-0000-00000000001d'
+\set user_q '00000000-0000-0000-0000-00000000001e'
+reset role;
+insert into auth.users (id) values (:'user_p'), (:'user_q');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+select public.create_household('Casa do Quico', 'Quico') \gset
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+select public.create_household('Casa da Paula', 'Paula') \gset
+
+do $$
+declare
+  m uuid;
+  r public.medications;
+begin
+  -- Remédio sem estoque acompanhado (como todos os de antes): nada contado, 1 por dose, aviso com 7 dias.
+  insert into public.medications (person_name, name, times) values ('Paula', 'Losartana', array['08:00']) returning * into r;
+  m := r.id;
+  perform set_config('test.med_p', m::text, false);
+  assert r.stock_count is null and r.stock_counted_on is null and r.prescription_until is null, 'no stock and no prescription by default';
+  assert r.dose_units = 1 and r.stock_warn_days = 7, 'one unit per dose and a week of warning by default';
+
+  -- A contagem com o dia dela, meio comprimido por dose, e a receita.
+  update public.medications
+    set stock_count = 12.5, stock_counted_on = '2026-10-12', dose_units = 0.5, stock_warn_days = 10, prescription_until = '2026-12-20'
+    where id = m returning * into r;
+  assert r.stock_count = 12.5 and r.stock_counted_on = '2026-10-12' and r.dose_units = 0.5 and r.stock_warn_days = 10
+    and r.prescription_until = '2026-12-20', 'stock, dose units, warning days and prescription are stored';
+  -- Contado zero (acabou) vale; negativo, não.
+  update public.medications set stock_count = 0 where id = m;
+  begin
+    update public.medications set stock_count = -1 where id = m;
+    raise exception 'FAIL: negative stock';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set dose_units = 0 where id = m;
+    raise exception 'FAIL: a dose that uses nothing';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set dose_units = -1 where id = m;
+    raise exception 'FAIL: negative dose units';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set dose_units = null where id = m;
+    raise exception 'FAIL: dose units without a value';
+  exception when not_null_violation then null;
+  end;
+  -- O aviso vai de 1 a 60 dias.
+  update public.medications set stock_warn_days = 1 where id = m;
+  update public.medications set stock_warn_days = 60 where id = m;
+  begin
+    update public.medications set stock_warn_days = 0 where id = m;
+    raise exception 'FAIL: warning with zero days';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set stock_warn_days = 61 where id = m;
+    raise exception 'FAIL: warning with 61 days';
+  exception when check_violation then null;
+  end;
+  -- A contagem e o dia dela andam juntos.
+  begin
+    update public.medications set stock_counted_on = null where id = m;
+    raise exception 'FAIL: a count without its date';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.medications (person_name, name, times, stock_count) values ('Paula', 'X', array['08:00'], 30);
+    raise exception 'FAIL: a new medication counted without a date';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.medications (person_name, name, times, stock_counted_on) values ('Paula', 'X', array['08:00'], '2026-10-12');
+    raise exception 'FAIL: a count date without the count';
+  exception when check_violation then null;
+  end;
+  -- Parar de acompanhar: os dois vazios; a receita não depende do estoque.
+  update public.medications set stock_count = null, stock_counted_on = null where id = m returning * into r;
+  assert r.stock_count is null and r.prescription_until = '2026-12-20', 'the prescription stays without the stock';
+  -- "Comprei mais": 30, contados hoje.
+  update public.medications set stock_count = 30, stock_counted_on = '2026-10-12' where id = m;
+end $$;
+
+-- Quico, de outra casa: não vê nem mexe no estoque nem na receita da Paula.
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+declare
+  m uuid := current_setting('test.med_p')::uuid;
+  changed integer;
+begin
+  assert (select count(*) from public.medications where id = m) = 0, 'Q does not see the foreign medication';
+  assert (select count(*) from public.medications where stock_count is not null or prescription_until is not null) = 0,
+    'nor any stock or prescription';
+  update public.medications
+    set stock_count = 99, stock_counted_on = '2026-10-12', dose_units = 9, stock_warn_days = 60, prescription_until = '2030-01-01'
+    where id = m;
+  get diagnostics changed = row_count;
+  assert changed = 0, 'Q cannot change the foreign stock';
+  update public.medications set stock_count = null, stock_counted_on = null, prescription_until = null;
+  get diagnostics changed = row_count;
+  assert changed = 0, 'not even without naming the medication';
+  -- Na própria casa, funciona.
+  insert into public.medications (person_name, name, times, stock_count, stock_counted_on) values ('Quico', 'Puran', array['07:00'], 60, '2026-10-12');
+  assert (select count(*) from public.medications) = 1, 'Q sees only the own medication';
+end $$;
+
+-- Paula de novo: tudo como ela deixou.
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  r public.medications;
+begin
+  select * into r from public.medications where id = current_setting('test.med_p')::uuid;
+  assert r.stock_count = 30 and r.stock_counted_on = '2026-10-12' and r.dose_units = 0.5 and r.stock_warn_days = 60
+    and r.prescription_until = '2026-12-20', 'the stock and the prescription are untouched by Q';
+  assert (select count(*) from public.medications) = 1, 'and P does not see the medication of Q';
+end $$;
+reset role;
 
 \echo 'OK — todos os testes do banco passaram'

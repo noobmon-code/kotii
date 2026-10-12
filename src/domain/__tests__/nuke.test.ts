@@ -8,6 +8,7 @@ const snapshot: NukeSnapshot = {
   me: 'Ana',
   members: ['Ana', 'Beto'],
   doses: [{ time: '08:00', name: 'Vitamina D', person: 'Ana', taken: true }],
+  refills: ['Puran (Beto) — deve ter acabado', 'Losartana (Ana) — acaba em 3 dias, receita vence em 10 dias'],
   chores: [
     { title: 'Limpar filtro', due_on: '2026-09-25', assignee: 'Beto' },
     { title: 'Regar plantas', due_on: '2026-09-29', assignee: null },
@@ -44,6 +45,15 @@ describe('nuke context', () => {
     );
     expect(text).toContain('Documentos pedindo atenção: nada.');
     expect(text).not.toContain('Orçamento');
+  });
+
+  it('diz que remédio está acabando e que receita está vencendo, como estimativa', () => {
+    expect(buildNukeContext(snapshot)).toContain(
+      'Remédios acabando ou com a receita vencendo (estimativa do app pelas doses previstas): Puran (Beto) — deve ter acabado; Losartana (Ana) — acaba em 3 dias, receita vence em 10 dias.',
+    );
+    // Retrato de antes do estoque (sem o campo), ou nenhum remédio pedindo atenção: "nada".
+    expect(buildNukeContext({ ...snapshot, refills: undefined })).toContain('Remédios acabando ou com a receita vencendo (estimativa do app pelas doses previstas): nada.');
+    expect(buildNukeContext({ ...snapshot, refills: [] })).toContain('vencendo (estimativa do app pelas doses previstas): nada.');
   });
 
   it('includes the month budget when there is one', () => {

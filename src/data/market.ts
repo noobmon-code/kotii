@@ -320,42 +320,77 @@ export function useAddItemsToList() {
 }
 
 /**
- * Põe um item na lista de mercado aberta mais recente (ou cria "Mercado").
- * Usado pela despensa: "acabou -> comprar de novo". Se o item já está
- * pendente na lista, não duplica (`added: false`), então repetir é seguro.
+ * A lista de farmácia aberta mais recente da casa; sem nenhuma, cria uma com
+ * `name`. Feito daqui, sem a trava por casa da lista de mercado: é um toque de
+ * vez em quando (o remédio acabando), não a casa inteira pondo itens.
  */
-export function useAddToMarketList() {
+async function openPharmacyList(name = 'Farmácia'): Promise<{ id: string; name: string }> {
+  const open = unwrap(
+    await supabase
+      .from('shopping_lists')
+      .select('id, name')
+      .eq('kind', 'farmacia')
+      .is('archived_at', null)
+      .order('created_at', { ascending: false })
+      .limit(1),
+  ) as { id: string; name: string }[];
+  if (open.length) return open[0];
+  return unwrap(await supabase.from('shopping_lists').insert({ name, kind: 'farmacia' }).select('id, name').single()) as {
+    id: string;
+    name: string;
+  };
+}
+
+type ListedItem = { id: string; name: string; added: boolean };
+
+/** Põe o item na lista, a não ser que já esteja pendente nela (`added: false`): repetir é seguro. */
+async function addItemOnce(list: { id: string; name: string }, item: NewListItem): Promise<ListedItem> {
+  const pending = unwrap(
+    await supabase
+      .from('shopping_list_items')
+      .select('id')
+      .eq('list_id', list.id)
+      .is('checked_at', null)
+      .ilike('name', item.name.replace(/[\\%_]/g, '\\$&'))
+      .limit(1),
+  ) as { id: string }[];
+  if (pending.length) return { ...list, added: false };
+  unwrap(
+    await supabase.from('shopping_list_items').insert({
+      list_id: list.id,
+      name: item.name,
+      category: item.category,
+      product_id: item.productId,
+      quantity: item.quantity,
+      unit: item.unit,
+    }),
+  );
+  return { ...list, added: true };
+}
+
+function useAddToOpenList(openList: () => Promise<{ id: string; name: string }>) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (item: NewListItem): Promise<{ id: string; name: string; added: boolean }> => {
-      const list = await openMarketList();
-      const pending = unwrap(
-        await supabase
-          .from('shopping_list_items')
-          .select('id')
-          .eq('list_id', list.id)
-          .is('checked_at', null)
-          .ilike('name', item.name.replace(/[\\%_]/g, '\\$&'))
-          .limit(1),
-      ) as { id: string }[];
-      if (pending.length) return { ...list, added: false };
-      unwrap(
-        await supabase.from('shopping_list_items').insert({
-          list_id: list.id,
-          name: item.name,
-          category: item.category,
-          product_id: item.productId,
-          quantity: item.quantity,
-          unit: item.unit,
-        }),
-      );
-      return { ...list, added: true };
-    },
+    mutationFn: async (item: NewListItem) => addItemOnce(await openList(), item),
     onSuccess: (list) => {
       queryClient.invalidateQueries({ queryKey: ['lists'] });
       queryClient.invalidateQueries({ queryKey: ['listItems', list.id] });
     },
   });
+}
+
+/**
+ * Põe um item na lista de mercado aberta mais recente (ou cria "Mercado").
+ * Usado pela despensa: "acabou -> comprar de novo". Se o item já está
+ * pendente na lista, não duplica (`added: false`), então repetir é seguro.
+ */
+export function useAddToMarketList() {
+  return useAddToOpenList(openMarketList);
+}
+
+/** O mesmo, na lista de farmácia (ou cria "Farmácia"): o remédio que está acabando. */
+export function useAddToPharmacyList() {
+  return useAddToOpenList(openPharmacyList);
 }
 
 /**

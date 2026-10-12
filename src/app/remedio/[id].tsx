@@ -3,7 +3,14 @@ import { useEffect, useState } from 'react';
 import { Platform, StyleSheet, Switch, View } from 'react-native';
 
 import { usePeople } from '@/data/health';
-import { useArchiveMedication, useMedication, useSaveMedication } from '@/data/home';
+import {
+  MEDICATION_STOCK_UNAVAILABLE,
+  toSchedule,
+  toStockValues,
+  useArchiveMedication,
+  useMedication,
+  useSaveMedication,
+} from '@/data/home';
 import { diffDays, formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import {
   endAfterDays,
@@ -13,6 +20,8 @@ import {
   WEEKDAYS,
   type MedicationFrequency,
 } from '@/domain/medications';
+import { formatUnits, keepStockOnRuleChange, readStockForm, stockFormOf, type StockForm } from '@/domain/medicationStock';
+import { forgetBoxUnits } from '@/lib/medicationBox';
 import {
   askReminderPermission,
   disableReminders,
@@ -25,6 +34,7 @@ import {
   remindersUnavailableReason,
 } from '@/lib/reminders';
 import { errorMessage } from '@/lib/supabase';
+import { MedicationStockSection } from '@/features/health/MedicationStockSection';
 import { openNewPerson, PersonChips } from '@/features/health/PersonChips';
 import { useHouseReminderTarget } from '@/features/useReminderSync';
 import type { Medication, Person } from '@/lib/types';
@@ -82,6 +92,10 @@ function MedicationForm({
   const [totalDoses, setTotalDoses] = useState(String(medication?.total_doses ?? 10));
   const [notes, setNotes] = useState(medication?.notes ?? '');
   const [remind, setRemind] = useState(() => !medication && remindByDefault());
+  const today = todayISO();
+  // "Estoque e receita" como a tela abriu: só o que a pessoa mudar daqui em diante é gravado (readStockForm).
+  const [savedStock, setSavedStock] = useState<StockForm>(() => stockFormOf(medication && toSchedule(medication), today));
+  const [stock, setStock] = useState(savedStock);
 
   useEffect(() => {
     if (medication) hasReminders(medication.id).then(setRemind).catch(() => undefined);
@@ -153,26 +167,36 @@ function MedicationForm({
       notify('Número de doses inválido', 'Informe quantas doses no total, de 1 a 1000.');
       return;
     }
+    const stockRead = readStockForm(stock, savedStock, today);
+    if (!stockRead.ok) {
+      notify(stockRead.title, stockRead.message);
+      return;
+    }
+    const values = {
+      person_id: person.id,
+      person_name: person.name,
+      name: name.trim(),
+      dosage: dosage.trim() || null,
+      times: parsedTimes,
+      start_on: startISO,
+      end_on: duration === 'days' && daysCount !== null ? endAfterDays(startISO, daysCount) : null,
+      notes: notes.trim() || null,
+      frequency,
+      weekdays: frequency === 'weekdays' ? weekdays : null,
+      interval_days: frequency === 'interval' ? interval : null,
+      total_doses: duration === 'doses' ? doses : null,
+    };
+    // Mudou a regra das doses de um remédio com estoque acompanhado: o que já foi gasto não muda com ela.
+    const stockChanges = keepStockOnRuleChange(
+      stockRead.changes,
+      medication && toSchedule(medication),
+      { times: values.times, startOn: values.start_on, endOn: values.end_on, frequency, weekdays: values.weekdays, intervalDays: values.interval_days },
+      today,
+    );
     save.mutate(
+      { id: medication?.id, values, stock: toStockValues(stockChanges) },
       {
-        id: medication?.id,
-        values: {
-          person_id: person.id,
-          person_name: person.name,
-          name: name.trim(),
-          dosage: dosage.trim() || null,
-          times: parsedTimes,
-          start_on: startISO,
-          end_on: duration === 'days' && daysCount !== null ? endAfterDays(startISO, daysCount) : null,
-          notes: notes.trim() || null,
-          frequency,
-          weekdays: frequency === 'weekdays' ? weekdays : null,
-          interval_days: frequency === 'interval' ? interval : null,
-          total_doses: duration === 'doses' ? doses : null,
-        },
-      },
-      {
-        onSuccess: async (saved) => {
+        onSuccess: async ({ medication: saved, stockUnavailable }) => {
           try {
             if (remind && target) {
               const ok = await enableReminders(saved, target);
@@ -183,6 +207,8 @@ function MedicationForm({
           } catch (err) {
             onError(err);
           }
+          // O banco ainda não tem o estoque: o remédio foi salvo, e a pessoa fica sabendo do que ficou de fora.
+          if (stockUnavailable) notify('Remédio salvo, mas sem o estoque', MEDICATION_STOCK_UNAVAILABLE);
           router.back();
         },
         onError,
@@ -279,6 +305,20 @@ function MedicationForm({
       </View>
       <TextField label="Observações" value={notes} onChangeText={setNotes} multiline placeholder="Ex.: tomar após as refeições" />
 
+      <MedicationStockSection
+        medication={medication}
+        form={stock}
+        initial={savedStock}
+        today={today}
+        onChange={(patch) => setStock((current) => ({ ...current, ...patch }))}
+        onRestocked={(count) => {
+          // A compra já foi gravada: o número novo vira o salvo, e salvar a tela depois não o grava de novo.
+          const counted = { stock: formatUnits(count.stockCount) };
+          setSavedStock((current) => ({ ...current, ...counted }));
+          setStock((current) => ({ ...current, ...counted }));
+        }}
+      />
+
       {remindersSupported ? (
         <Card>
           <Row>
@@ -304,6 +344,7 @@ function MedicationForm({
               archive.mutate(medication.id, {
                 onSuccess: async () => {
                   await disableReminders(medication.id).catch(() => undefined);
+                  await forgetBoxUnits(medication.id);
                   router.back();
                 },
                 onError,

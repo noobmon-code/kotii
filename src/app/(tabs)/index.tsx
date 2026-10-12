@@ -35,6 +35,7 @@ import { cheerKid } from '@/features/ChoresPanel';
 import { BillRow } from '@/features/finance/BillsPanel';
 import { PayBillModal } from '@/features/finance/PayBillModal';
 import { hasHealthToday, healthTodayCount, HealthTodaySections } from '@/features/health/HealthTodaySections';
+import { doseSubtitle, MedicationRefills, useRefills } from '@/features/health/MedicationSections';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { InstallAppCard } from '@/features/InstallAppCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
@@ -165,6 +166,8 @@ export default function TodayScreen() {
     (d) => !taken.has(doseKey(d.medicationId, d.date, d.time)),
   );
 
+  // Remédios com a caixa acabando (pelas contas do app) ou a receita vencendo.
+  const refills = useRefills(today);
   const dueChores = (chores.data ?? []).filter((c) => choreStatus(c.due_on, today).kind !== 'proxima');
   const expiring = (pantry.data ?? []).filter((p) => {
     const kind = expiryStatus(p.expires_on, today).kind;
@@ -193,6 +196,7 @@ export default function TodayScreen() {
   const nothingPending =
     queries.every((q) => q.isSuccess) &&
     !pendingDoses.length &&
+    !refills.rows.length &&
     !dueChores.length &&
     !billsDue.length &&
     !expiring.length &&
@@ -208,6 +212,7 @@ export default function TodayScreen() {
   const glass = useGlassStyle();
   const attention =
     pendingDoses.length +
+    refills.rows.length +
     dueChores.length +
     billsDue.length +
     expiring.length +
@@ -331,7 +336,7 @@ export default function TodayScreen() {
                 key={doseKey(d.medicationId, d.date, d.time)}
                 left={<IconBadge icon="pill" tone={d.time < nowTime ? 'warning' : 'info'} />}
                 title={`${d.time} · ${d.name}`}
-                subtitle={[d.personName, d.dosage].filter(Boolean).join(' · ')}
+                subtitle={doseSubtitle([d.personName, d.dosage].filter(Boolean).join(' · '), refills.badges.get(d.medicationId))}
                 right={
                   <CheckCircle
                     checked={false}
@@ -344,6 +349,8 @@ export default function TodayScreen() {
           </ListCard>
         </Section>
       ) : null}
+
+      <MedicationRefills rows={refills.rows} />
 
       <HealthTodaySections overview={health} today={today} compact />
 

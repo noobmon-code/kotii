@@ -7,7 +7,7 @@ import { useMedications } from '@/data/home';
 import { todayISO } from '@/domain/dates';
 import { CarePanel } from '@/features/health/CarePanel';
 import { HealthTodaySections } from '@/features/health/HealthTodaySections';
-import { MedicationsToday } from '@/features/health/MedicationSections';
+import { MedicationRefills, MedicationsToday, useRefills } from '@/features/health/MedicationSections';
 import { PlansPanel } from '@/features/health/PlansPanel';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { Card, EmptyState, PageTitle, Screen, Segmented, Tile } from '@/ui/primitives';
@@ -56,6 +56,7 @@ export default function HealthScreen() {
 function SummaryPanel({ today }: { today: string }) {
   const overview = useHealthOverview(today);
   const medications = useMedications();
+  const refills = useRefills(today);
   const newItem = (pathname: '/consulta/[id]' | '/vacina/[id]' | '/exame/[id]') =>
     router.push({ pathname, params: { id: 'nova' } });
   const empty =
@@ -76,6 +77,7 @@ function SummaryPanel({ today }: { today: string }) {
         <Tile icon="test-tube" tint="blue" label="Exame" onPress={() => newItem('/exame/[id]')} />
       </View>
       <MedicationsToday today={today} />
+      <MedicationRefills rows={refills.rows} />
       <HealthTodaySections overview={overview} today={today} />
       {empty ? (
         <Card>
