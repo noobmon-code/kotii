@@ -14,6 +14,10 @@ export const isSupabaseConfigured = Boolean(url && anonKey);
 
 const projectUrl = url ?? 'http://localhost:54321';
 
+/** Para o pedido que confere o link de recuperação fora do cliente (lib/recoveryLink). */
+export const SUPABASE_URL = projectUrl;
+export const SUPABASE_ANON_KEY = anonKey ?? 'not-configured';
+
 /**
  * Onde a sessão fica guardada: o mesmo nome que o Supabase usaria sozinho
  * (sessões já guardadas continuam valendo), fixado aqui porque sair sem
@@ -21,7 +25,7 @@ const projectUrl = url ?? 'http://localhost:54321';
  */
 export const SESSION_STORAGE_KEY = `sb-${new URL(projectUrl).hostname.split('.')[0]}-auth-token`;
 
-export const supabase = createClient(projectUrl, anonKey ?? 'not-configured', {
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     // Cifrada no celular, com a chave no cofre do sistema (ver sessionStorage).
     storage: sessionStorage,

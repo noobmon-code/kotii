@@ -3,27 +3,28 @@ import { isAuthRetryableFetchError, type Session } from '@supabase/supabase-js';
 import { useIsRestoring, useQuery } from '@tanstack/react-query';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 
-import { notify } from '@/ui/dialogs';
+import { askYesNo } from '@/ui/dialogs';
 
 import { forgetActiveHousehold, getActiveHousehold, loadActiveHousehold, setActiveHousehold } from './activeHousehold';
-import { finishRecovery, forgetRecoveryInMemory, readRecovery, startRecovery } from './passwordRecovery';
+import { setLinkNotice } from './linkNotice';
+import {
+  beginRecovery,
+  ensureRecovery,
+  finishRecovery,
+  forgetRecoveryInMemory,
+  readRecovery,
+  startRecovery,
+} from './passwordRecovery';
 import { cacheHousehold, cacheOwners, forgetCache, queryClient, resumeQueue, setSessionValid } from './queryClient';
-import { createRecoveryLinkHandler } from './recoveryLink';
+import { createRecoveryLinkHandler, linkOwnerLookup } from './recoveryLink';
+import { takeRecoveryLink } from './recoveryLinkBoot';
 import { disableAllReminders, pruneHouseholdReminders } from './reminders';
-import { noteSignedIn, noteSignedOut } from './session';
-import { supabase, unwrap } from './supabase';
+import { noteSignedIn, noteSignedOut, signOut } from './session';
+import { supabase, SUPABASE_ANON_KEY, SUPABASE_URL, unwrap } from './supabase';
 import type { Household, Member } from './types';
 
-// Lê o fragmento antes de o router trocar o endereço. No celular e no build web não há location.
-const recoveryLink = createRecoveryLinkHandler(
-  typeof window !== 'undefined' && window.location ? window.location.href : null,
-  (url) => window.history.replaceState(window.history.state, '', url),
-  (tokens) => supabase.auth.setSession(tokens),
-  startRecovery,
-);
-
 // Sair fica em lib/session (só neste aparelho); as telas seguem importando daqui.
-export { signOut } from './session';
+export { signOut };
 
 /** O app só usa quem entrou; os tokens ficam com o Supabase. */
 export type AppSession = Pick<Session, 'user' | 'expires_at'>;
@@ -64,6 +65,30 @@ function forgetLastSession() {
   AsyncStorage.removeItem(LAST_SESSION_KEY).catch(() => undefined);
 }
 
+// O link do e-mail de recuperação: lib/recoveryLinkBoot já o leu e tirou do endereço, antes de o router
+// carregar (sem link, como no celular, nada disto roda). Os tokens só chegam ao cliente do app depois
+// de o Supabase dizer de quem são, num pedido à parte, e de a marca da recuperação estar posta.
+const recoveryLink = createRecoveryLinkHandler(takeRecoveryLink(), {
+  identify: linkOwnerLookup((url, init) => fetch(url, init), SUPABASE_URL, SUPABASE_ANON_KEY),
+  currentAccount: async () => {
+    const { data, error } = await supabase.auth.getSession();
+    if (data.session) return data.session.user;
+    // Não renovou por falta de conexão: a conta continua guardada (a última que entrou).
+    return error && isAuthRetryableFetchError(error) ? ((await readLastSession())?.user ?? null) : null;
+  },
+  ask: (title, message) => askYesNo(title, message, 'Trocar de conta', 'Cancelar'),
+  signOut,
+  beginRecovery,
+  ensureRecovery,
+  setSession: (tokens) => supabase.auth.setSession(tokens),
+  isConnectionError: isAuthRetryableFetchError,
+  wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  notice: setLinkNotice,
+});
+
+/** O app abriu pelo link do e-mail: enquanto ele é conferido, a tela diz o que está esperando (app/_layout). */
+export const openedByRecoveryLink = recoveryLink.pending;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ session: null, loading: true });
   const isRestoring = useIsRestoring();
@@ -85,10 +110,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (active && !confirmed) setState({ session, loading: false, valid: false });
       }
     });
-    recoveryLink.run().then(async (linkError) => {
-      if (active && linkError) notify('Não deu para abrir o link', linkError);
-      return supabase.auth.getSession();
-    }).then(async ({ data, error }) => {
+    recoveryLink.run().then(() => supabase.auth.getSession()).then(async ({ data, error }) => {
       if (!active) return;
       confirmed = true;
       if (data.session) {
@@ -110,16 +132,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     });
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
-      // setSession emite SIGNED_IN antes de devolver a conta. Espera a marca da recuperação
-      // antes de liberar qualquer sessão para o router (inclusive uma conta que já estava aqui).
-      if (recoveryLink.pending) return;
+      // Link de recuperação em andamento: nenhuma sessão vai para o router antes de ele terminar
+      // (inclusive a de uma conta que já estava aqui); quem a entrega é o getSession acima. Uma saída
+      // nesse meio (a conta que a pessoa aceitou trocar, a sessão revogada) não se perde: a limpeza de
+      // sempre roda, só o estado espera.
+      const held = recoveryLink.pending;
+      if (held && event !== 'SIGNED_OUT') return;
       // A sessão inicial vem do getSession acima, que diz se faltou internet.
       if (event === 'INITIAL_SESSION') return;
       // Entrou pelo código do e-mail de recuperação (aqui ou em outra aba): antes da casa, a senha nova; a
-      // senha salva (USER_UPDATED) tira a marca (lib/passwordRecovery).
+      // senha salva (USER_UPDATED) tira a marca (lib/passwordRecovery). Pelo link, a marca já veio antes da sessão.
       if (event === 'PASSWORD_RECOVERY' && session) startRecovery(session.user.id);
       if (event === 'USER_UPDATED') void finishRecovery();
-      setState({ session, loading: false, valid: Boolean(session) });
+      if (!held) setState({ session, loading: false, valid: Boolean(session) });
       if (session) saveLastSession(session);
       if (event === 'SIGNED_IN' || event === 'PASSWORD_RECOVERY') noteSignedIn();
       if (event === 'SIGNED_OUT') {
