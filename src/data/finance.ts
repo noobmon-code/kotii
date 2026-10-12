@@ -87,7 +87,10 @@ export function useDeleteBill() {
   });
 }
 
-/** Quantos pagamentos a tela da conta busca: com esse tanto na mão, o histórico pode ter vindo cortado. */
+/**
+ * Quantos pagamentos a tela da conta mostra. A busca traz um a mais: se ele veio, o histórico
+ * continua para trás (a tela não o mostra, mas sabe que os mais antigos estão sem parte da média).
+ */
 export const BILL_PAYMENTS_LIMIT = 24;
 
 export function useBillPayments(billId: string | undefined) {
@@ -101,7 +104,7 @@ export function useBillPayments(billId: string | undefined) {
           .select('id, bill_id, due_on, paid_on, amount, paid_by')
           .eq('bill_id', billId!)
           .order('due_on', { ascending: false })
-          .limit(BILL_PAYMENTS_LIMIT),
+          .limit(BILL_PAYMENTS_LIMIT + 1),
       ) as BillPayment[],
   });
 }

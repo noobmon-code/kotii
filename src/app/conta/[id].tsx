@@ -338,14 +338,16 @@ function PaymentHistory({ bill }: { bill: Bill }) {
   if (payments.isPending) return <Loading />;
   if (payments.isError) return <ErrorNotice error={payments.error} onRetry={() => payments.refetch()} />;
   if (!payments.data.length) return null;
-  // Cada pagamento contra o normal da época dele, não o de hoje. Com o
-  // limite da busca atingido, os mais antigos podem estar sem parte da média.
-  const aboveUsual = paymentsAboveUsual(bill, payments.data, { complete: payments.data.length < BILL_PAYMENTS_LIMIT });
+  // Cada pagamento contra o normal da época dele, não o de hoje. A busca traz um pagamento além dos
+  // que a tela mostra: se ele veio, há mais para trás, e os mais antigos podem estar sem parte da média.
+  const complete = payments.data.length <= BILL_PAYMENTS_LIMIT;
+  const aboveUsual = paymentsAboveUsual(bill, payments.data, { complete });
+  const shown = payments.data.slice(0, BILL_PAYMENTS_LIMIT);
 
   return (
     <Section title="Pagamentos">
       <ListCard>
-        {payments.data.map((p, index) => {
+        {shown.map((p, index) => {
           const who = members.find((m) => m.user_id === p.paid_by)?.display_name;
           return (
             <ListRow
