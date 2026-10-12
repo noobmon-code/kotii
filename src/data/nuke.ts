@@ -23,6 +23,7 @@ import { menuLines } from '@/domain/menu';
 import { buildNukeContext, parseActions, type NukeAction, type NukeScreen, type NukeSnapshot } from '@/domain/nuke';
 import { expiryStatus, groupPantry } from '@/domain/pantry';
 import { useHousehold } from '@/lib/auth';
+import { settledData } from '@/lib/settledData';
 import { supabase, unwrap } from '@/lib/supabase';
 
 type PendingItem = { name: string; quantity: number; unit: string; list: { name: string; archived_at: string | null } | null };
@@ -110,7 +111,8 @@ export function useNukeContext(today: string): NukeContextState {
   const previous = entries ? previousMonth(entries, month, today) : null;
   const pantryGroups = groupPantry(pantry.data ?? []);
   // Contas com o valor já conhecido acima do normal: o Nuke sabe dizer por que a luz veio alta.
-  const billsAbove = billsAboveUsual(bills.data ?? [], recentPayments.data ?? [], today);
+  // Só com os pagamentos em dia: depois de pagar ou desfazer, os de antes diriam o que já não vale.
+  const billsAbove = billsAboveUsual(bills.data ?? [], settledData(recentPayments) ?? [], today);
 
   const snapshot: NukeSnapshot = {
     today,

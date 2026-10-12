@@ -14,6 +14,7 @@ import { billSubtitle } from '@/features/finance/BillsPanel';
 import { BoletoScanner } from '@/features/finance/BoletoScanner';
 import { PayBillModal } from '@/features/finance/PayBillModal';
 import { useHousehold } from '@/lib/auth';
+import { settledData } from '@/lib/settledData';
 import { errorMessage } from '@/lib/supabase';
 import type { Bill } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -79,9 +80,9 @@ function BillForm({ bill }: { bill?: Bill }) {
   const dueISO = parseBRDate(due);
   const boletoLine = boleto ? parseBoleto(boleto, todayISO())?.line : undefined;
   // O boleto que está na tela (lido agora ou guardado) contra o normal da
-  // conta. Sem os pagamentos (carregando ou com erro), não aparece nada.
+  // conta. Sem os pagamentos em dia (carregando, buscando de novo ou com erro), não aparece nada.
   const payments = useBillPayments(bill?.id);
-  const usualNote = bill ? billUsualNote({ ...bill, boleto }, payments.data ?? [], todayISO()) : null;
+  const usualNote = bill ? billUsualNote({ ...bill, boleto }, settledData(payments) ?? [], todayISO()) : null;
 
   // Pagar vale para o vencimento gravado; vencimento mudado precisa ser salvo
   // antes. Boleto lido e ainda não salvo vai para a conta primeiro: o valor
