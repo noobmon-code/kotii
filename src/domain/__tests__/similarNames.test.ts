@@ -405,6 +405,17 @@ describe('similarNames', () => {
     expect(similarNameKey('Feijão T.1 Kg')).toBe(similarNameKey('Feijão T 1'));
   });
 
+  it('depois de uma marca curta ("N", "T"), número de mais de um dígito com a unidade é o tamanho', () => {
+    const index = indexNames([product('Detergente Ypê 500ml', 'p-det'), product('Café Pilão 500g', 'p-cafe'), product('Ovos 12un', 'p-ovos')]);
+    const best = (name: string) => similarNames(name, index, { onlyConfident: true, limit: 1 })[0]?.name;
+    expect(best('DETERGENTE YPE N 500 ML')).toBe('Detergente Ypê 500ml');
+    expect(best('CAFE PILAO T 500 G')).toBe('Café Pilão 500g');
+    expect(best('Ovos N 12 un')).toBe('Ovos 12un');
+    expect(similarNameKey('Detergente N 500 ml')).toBe(similarNameKey('Detergente N 500ml'));
+    // Um dígito só continua sendo a versão.
+    expect(similarNameKey('Feijão T 1 Kg')).toBe(similarNameKey('Feijão T 1'));
+  });
+
   it('a palavra de versão com o número ("Tipo 1") depois do produto certo não é outra versão dele', () => {
     const index = indexNames([product('Arroz Tio João 5kg', 'p-arroz'), product('Fralda Pampers 60un', 'p-fralda')]);
     const best = (name: string) => similarNames(name, index, { onlyConfident: true, limit: 1 })[0]?.productId;
@@ -505,20 +516,28 @@ describe('similarNames', () => {
     expect(best('Batata Inglesa Kg')).toBe('Batata');
   });
 
-  it('palavra colada por um hífen na última do nome da casa faz outra coisa', () => {
+  it('palavra colada por um hífen faz outra coisa quando a casa ou o catálogo conhece o par', () => {
     const index = indexNames([
       listed('Couve', 'li-couve'),
       listed('Papel', 'li-papel'),
       listed('Coca', 'li-coca'),
+      listed('Pão', 'li-pao'),
       product('Batata', 'p-batata'),
+      product('Banana', 'p-banana'),
       product('Coca-Cola 2L', 'p-coca'),
+      candidate('Couve-flor'),
+      candidate('Papel-alumínio'),
     ]);
-    const best = (name: string) => similarNames(name, index, { onlyConfident: true, limit: 1 })[0]?.name;
-    for (const name of ['Couve-flor', 'Couve-flor Kg', 'COUVE-FLOR UN', 'Papel-alumínio Wyda 7,5m', 'Batata-doce Kg', 'Coca-Cola 350ml']) {
+    // Só o que a casa usa de verdade (o catálogo aparece no seletor).
+    const best = (name: string) => suggestedName(name, index)?.name;
+    for (const name of ['Couve-flor', 'Couve-flor Kg', 'COUVE-FLOR UN', 'Couve Flor Un', 'Papel-alumínio Wyda 7,5m', 'Batata-doce Kg', 'Coca-Cola 350ml']) {
       expect([name, best(name)]).toEqual([name, undefined]);
     }
+    // Variedade escrita com hífen, que ninguém conhece como outro nome, continua sendo o item da casa.
+    expect(best('Banana-prata Kg')).toBe('Banana');
+    expect(best('Pão-francês Kg')).toBe('Pão');
     // No seletor, quem procura ainda vê o nome da casa.
-    expect(similarNames('Couve-flor Kg', index)[0]).toMatchObject({ name: 'Couve', closeness: 'parecido', confident: false });
+    expect(similarNames('Couve-flor Kg', index).find((found) => found.name === 'Couve')).toMatchObject({ closeness: 'parecido', confident: false });
     // Hífen com espaço em volta só separa; e o hífen dentro do próprio nome da casa não atrapalha.
     expect(best('Couve - Maço')).toBe('Couve');
     expect(best('Couve Manteiga Maço')).toBe('Couve');
@@ -645,6 +664,11 @@ describe('similarNames', () => {
     // Só o catálogo tem: vale o desta nota, uma vez só.
     expect(similarNames('Bananas', house, { also: note }).map((s) => [s.name, s.source, s.category])).toEqual([['Banana', 'nota', 'doces']]);
     expect(similarNames('Banana Prata Kg', house, { also: note }).map((s) => [s.name, s.source])).toEqual([['Banana', 'nota']]);
+    // O desta nota que é só o digitado sem os acentos não é oferecido: aí a grafia do catálogo continua aparecendo.
+    const plain = indexNames([candidate('acucar', 'nota', { category: 'doces' })]);
+    const catalog = indexNames([candidate('Açúcar', 'comum', { category: 'graos' })]);
+    expect(similarNames('Açucar', catalog, { also: plain }).map((s) => [s.name, s.source])).toEqual([['Açúcar', 'comum']]);
+    expect(similarNames('Açúcares', catalog, { also: plain }).map((s) => [s.name, s.source])).toEqual([['acucar', 'nota']]);
     // A casa já usa (compra, produto): vale o da casa.
     expect(similarNames('Tomates', house, { also: note }).map((s) => [s.name, s.source])).toEqual([['Tomate', 'comprado']]);
     expect(similarNames('Uvas', house, { also: note }).map((s) => [s.name, s.source, s.productId])).toEqual([['Uva', 'produto', 'p-uva']]);

@@ -59,6 +59,9 @@ const OTHER_THING = new Set([
 ]);
 // Depois de uma destas, o número é a versão do item ("Arroz Tipo 1", "T.1", "Nº 5"), não um pedaço do tamanho.
 const VERSION_WORDS = new Set(['tipo', 'tp', 'tam', 'tamanho', 'numero', 'num', 'nr', 't', 'n', 'no']);
+// Marcas curtas demais para ter certeza: depois delas, um número de mais de um dígito com a unidade é o
+// tamanho ("Detergente N 500 ml"), não a versão ("Arroz T 1 5kg").
+const SHORT_MARKS = new Set(['t', 'n', 'no']);
 // Unidade solta ("Banana Prata Kg", "Alface Unidade") não diz o que é o item nem o tamanho.
 const LOOSE_UNITS = new Set([
   'kg', 'gr', 'mg', 'ml', 'lt', 'un', 'und', 'unid', 'pct', 'pc', 'cx', 'fd', 'cm', 'mm',
@@ -186,7 +189,9 @@ function parseName(name: string): Parsed {
     const sized = sizedToken(token);
     if (isNumber(token)) {
       // "Tipo 1 Kg", "Tipo 1 5kg", "T.1 5kg", "Nº 5 500g": o número é a versão.
-      const version = i > 0 && VERSION_WORDS.has(raw[i - 1]);
+      const mark = i > 0 ? raw[i - 1] : '';
+      const sizeAfterMark = SHORT_MARKS.has(mark) && token.length > 1 && next != null && UNITS.has(next);
+      const version = VERSION_WORDS.has(mark) && !sizeAfterMark;
       if (!version && next && DOZEN.has(next) && /^\d+$/.test(token)) {
         // "2 dúzias".
         size(String(Number(token) * 12), 'un');
@@ -355,9 +360,12 @@ export function indexNames(candidates: readonly NameCandidate[]): NameIndex {
     parsed.parts.forEach((part, at) => {
       const link: Part | undefined = parsed.parts[at + 1];
       const other: Part | undefined = parsed.parts[at + 2];
-      if (part.kind !== 'word' || link?.kind !== 'link' || !COMPOUND.has(link.text) || other?.kind !== 'word') return;
+      if (part.kind !== 'word') return;
+      // "Pão de queijo" e, colado por hífen, "Couve-flor": o par é um nome só.
+      const tail = link?.kind === 'word' && link.joined ? link : link?.kind === 'link' && COMPOUND.has(link.text) && other?.kind === 'word' ? other : null;
+      if (!tail) return;
       const head = singular(part.text);
-      compounds.set(head, (compounds.get(head) ?? new Set<string>()).add(singular(other.text)));
+      compounds.set(head, (compounds.get(head) ?? new Set<string>()).add(singular(tail.text)));
     });
 
     const plain = byKey.get(parsed.key);
@@ -448,10 +456,10 @@ function runAt(note: string[], house: string[], start: number, index: NameIndex)
 /**
  * Depois das `count` primeiras palavras, o nome vira outra coisa:
  * - vem "de" ou "em" e uma palavra que não é embalagem ("Leite de coco"; "Skol em lata" continua sendo a Skol);
- * - a palavra seguinte vem colada por um hífen ("Couve-flor" não é "Couve", nem "Coca-Cola" é "Coca");
  * - a palavra seguinte faz outra coisa mesmo sem ligação ("Batata palha", "Leite coco": OTHER_THING);
- * - algum nome conhecido liga `last` (a última palavra do nome da casa) a essa palavra com "de" ou "em"
- *   ("Pão queijo", com "Pão de queijo congelado" no catálogo).
+ * - algum nome conhecido liga `last` (a última palavra do nome da casa) a essa palavra com "de", "em" ou um
+ *   hífen ("Pão queijo", com "Pão de queijo congelado" no catálogo; "Couve flor", com "Couve-flor"). O hífen
+ *   sozinho, num nome que ninguém conhece, não basta: "Banana-prata" continua sendo a banana.
  */
 function otherThingAfter(name: Parsed, count: number, last: string, index: NameIndex): boolean {
   let at = 0;
@@ -464,7 +472,6 @@ function otherThingAfter(name: Parsed, count: number, last: string, index: NameI
   const word = singular(next.text);
   const linked = rest[0].kind === 'link' && COMPOUND.has(rest[0].text) && rest[1] === next;
   if (linked && !PACKAGING.has(word)) return true;
-  if (next.joined && rest[0] === next) return true;
   if (OTHER_THING.has(word) || OTHER_THING.has(next.text)) return true;
   return index.compounds.get(singular(last))?.has(word) ?? false;
 }
@@ -539,7 +546,9 @@ function findSimilar(typed: string, note: Parsed, index: NameIndex, options: Sim
     const replaced = new Set<Indexed>();
     const extra = also.entries.filter((entry) => {
       const same = sameEntry(entry.parsed, index);
-      if (same && !isHousehold(same.source)) replaced.add(same);
+      // O desta nota que é só o digitado com outro acento ou maiúscula não será oferecido: o do catálogo fica.
+      const offered = normalizeSearch(entry.name) !== normalizeSearch(typed);
+      if (same && !isHousehold(same.source) && offered) replaced.add(same);
       return !same || !isHousehold(same.source);
     });
     entries = [...index.entries.filter((entry) => !replaced.has(entry)), ...extra];
