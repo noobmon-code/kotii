@@ -15,7 +15,7 @@ import {
   warrantyStatus,
   type MaintenanceSuggestion,
 } from '@/domain/equipment';
-import { parseDecimal } from '@/domain/money';
+import { parseMoney } from '@/domain/money';
 import { PhotoStrip } from '@/features/PhotoStrip';
 import { useDraftPhotos } from '@/features/useDraftPhotos';
 import { usePhotoSheet } from '@/features/usePhotoSheet';
@@ -88,7 +88,7 @@ function EquipmentForm({ equipment }: { equipment?: Equipment }) {
   function submit() {
     const purchasedISO = purchased.trim() ? parseBRDate(purchased) : null;
     const warrantyISO = warranty.trim() ? parseBRDate(warranty) : null;
-    const priceValue = price.trim() ? parseDecimal(price) : null;
+    const priceValue = price.trim() ? parseMoney(price) : null;
     if (!name.trim()) {
       notify('Confira os dados', 'Dê um nome ao aparelho (ex.: Ar do quarto).');
       return;
