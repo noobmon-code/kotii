@@ -4,6 +4,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { FamilyEventValues } from '@/domain/familyEvents';
 
 import {
+  FAMILY_EVENT_PERSON_GONE,
   FAMILY_EVENTS_UNAVAILABLE,
   familyEventErrorMessage,
   fetchFamilyEventDays,
@@ -199,5 +200,9 @@ describe('compromissos antes da migração', () => {
     expect(familyEventErrorMessage(notInCache)).toBe(FAMILY_EVENTS_UNAVAILABLE);
     expect(familyEventErrorMessage(noRelation)).toBe('Os compromissos ainda estão sendo ativados no Kotii. Tente de novo mais tarde.');
     expect(familyEventErrorMessage(offline)).toBe('TypeError: Network request failed');
+    // A ficha de quem leva foi apagada com o formulário aberto: o banco recusa a chave, e a pessoa lê o que fazer.
+    const gone = { code: '23503', message: 'insert or update on table "family_events" violates foreign key constraint "family_events_take_by_household_id_fkey"' };
+    expect(familyEventErrorMessage(gone)).toBe(FAMILY_EVENT_PERSON_GONE);
+    expect(FAMILY_EVENT_PERSON_GONE).toBe('Uma das pessoas deste compromisso não está mais nas fichas da casa. Escolha de novo de quem é, quem leva e quem busca, e salve.');
   });
 });

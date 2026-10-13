@@ -362,8 +362,10 @@ export function calendarEntries({ events, days, people }: FamilyCalendar, from: 
         endTime: event.start_time ? event.end_time : null,
         title: event.title,
         who: nameOf(event.person_id),
-        // Sem ninguém no dia e com alguém no de sempre: só "Só neste dia: Ninguém" chega aqui (a ficha
-        // apagada limpa as duas, e a que não está na lista continua com o id).
+        // Sem ninguém no dia e com alguém no de sempre. Chegam aqui o "Só neste dia: Ninguém" e o dia de
+        // quem cobria e teve a ficha apagada (ou virou pet): o banco deixa o dia sem ninguém, com a mudança
+        // marcada, e é isso mesmo que a casa precisa saber. Apagar a ficha de quem leva sempre limpa o de
+        // sempre (nada a dizer), e a ficha que só não está na lista continua com o id.
         ride: rideText(nameOf(o.take_by), nameOf(o.pick_up_by), {
           take: o.take_by === null && event.take_by !== null,
           pickUp: o.pick_up_by === null && event.pick_up_by !== null,
@@ -452,9 +454,17 @@ const NUKE_BRING_MAX = 120;
  * com "hoje", "amanhã" ou o dia da semana já escritos, para ele não fazer
  * conta de data. Ex.: "amanhã 16:00–17:00 Natação da Ana (Ana, Beto leva,
  * Carla busca, local: Clube, levar: touca)".
+ *
+ * `max`: quantas linhas o retrato escreve (o resto vira "e mais N"). Quando o
+ * período tem mais que isso, quem fica para o fim é a rotina (a vez de toda
+ * semana com as pessoas de sempre): o compromisso avulso, o dia que mudou e o
+ * aniversário vêm antes, cada grupo na ordem dos dias. Cada linha traz o dia
+ * escrito, então a ordem não muda o que ela diz.
  */
-export function calendarLines(calendar: FamilyCalendar, today: string, days = 7): string[] {
-  return calendarEntries(calendar, today, addDays(today, days)).map((entry) => {
+export function calendarLines(calendar: FamilyCalendar, today: string, days = 7, max = Infinity): string[] {
+  const entries = calendarEntries(calendar, today, addDays(today, days));
+  const ordered = entries.length > max ? [...entries.filter((entry) => !entry.routine), ...entries.filter((entry) => entry.routine)] : entries;
+  return ordered.map((entry) => {
     const ahead = diffDays(today, entry.date);
     const day = ahead === 0 ? 'hoje' : ahead === 1 ? 'amanhã' : weekdayDate(entry.date).toLowerCase().replace(',', '');
     const details =

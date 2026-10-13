@@ -390,7 +390,9 @@ describe('calendarEntries', () => {
     expect(calendarEntries({ ...changed, events: [alone], days: [] }, '2026-10-13', '2026-10-13').map((e) => e.ride)).toEqual(['Carla busca']);
     // Nem a mudança que sobrou de quando havia alguém (o compromisso passou a não ter quem leve).
     expect(calendarEntries({ ...changed, events: [alone] }, '2026-10-13', '2026-10-13').map((e) => [e.ride, e.routine])).toEqual([['Carla busca', true]]);
-    // A ficha que não está na lista (apagada, ou de quem saiu) não é "ninguém": o nome some, como antes.
+    // A ficha que não está na lista (o id segue no compromisso) não é "ninguém": o nome some, como antes.
+    // (Apagar a ficha de quem cobria um dia é outra coisa: o banco deixa aquele dia sem ninguém, e a linha
+    // dele é a de "Ninguém leva", como a do dia 13 lá em cima.)
     const gone = { ...changed, days: [], people: changed.people.filter((p) => p.id !== 'beto') };
     expect(calendarEntries(gone, '2026-10-13', '2026-10-13').map((e) => e.ride)).toEqual(['Carla busca']);
   });
@@ -445,6 +447,32 @@ describe('calendarLines (retrato do Nuke)', () => {
     expect(calendarLines(calendar, '2026-10-13').at(-1)).toBe(
       'ter 20/10 16:00–17:00 Natação da Ana (Ana, Vó Maria leva, Carla busca, local: Clube, levar: touca e toalha)',
     );
+  });
+
+  it('com mais linhas do que o retrato escreve, a rotina vai para o fim: o que cai no "e mais N" não é o compromisso avulso', () => {
+    // Escola de segunda a sexta de dois filhos e a natação: 12 vezes de rotina em 8 dias, mais a reunião do último dia.
+    const school = (id: string, title: string): FamilyEventLike => ({ ...swim, id, title, start_time: '07:30', end_time: null, bring: null, location: null, weekdays: [1, 2, 3, 4, 5] });
+    const meeting: FamilyEventLike = { ...swim, id: 'reuniao', title: 'Reunião de pais', starts_on: '2026-10-20', start_time: '19:00', end_time: null, recurrence: 'none', weekdays: null };
+    const busy: FamilyCalendar = {
+      events: [school('escola-ana', 'Escola da Ana'), school('escola-theo', 'Escola do Theo'), swim, meeting],
+      // Na quinta, 15/10, é a vó quem leva na natação: o dia que mudou também não é rotina.
+      days: [day({ occurs_on: '2026-10-15', override_take: true, take_by: 'vo' })],
+      people: people.map((p) => ({ ...p, birth_date: null })),
+    };
+    const all = calendarLines(busy, '2026-10-13');
+    expect(all).toHaveLength(16);
+    // Sem teto (ou com folga), a ordem é a dos dias, e a reunião é a última linha.
+    expect(all.at(-1)).toBe('ter 20/10 19:00 Reunião de pais (Ana, Beto leva, Carla busca, local: Clube, levar: touca e toalha)');
+    expect(calendarLines(busy, '2026-10-13', 7, 16)).toEqual(all);
+    // Com o teto menor, o que não é rotina vem primeiro (na ordem dos dias), e a rotina completa as vagas.
+    const capped = calendarLines(busy, '2026-10-13', 7, 10);
+    expect(capped).toHaveLength(16);
+    expect(capped.slice(0, 2)).toEqual([
+      'qui 15/10 16:00–17:00 Natação da Ana (Ana, Vó Maria leva, Carla busca, local: Clube, levar: touca e toalha)',
+      'ter 20/10 19:00 Reunião de pais (Ana, Beto leva, Carla busca, local: Clube, levar: touca e toalha)',
+    ]);
+    expect(capped[2]).toBe('hoje 07:30 Escola da Ana (Ana, Beto leva, Carla busca)');
+    expect([...capped].sort()).toEqual([...all].sort());
   });
 
   it('local e "o que levar" compridos são cortados: 25 linhas cheias ficam longe do corte do servidor', () => {

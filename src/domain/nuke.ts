@@ -76,7 +76,9 @@ export interface NukeSnapshot {
   warranties: { name: string; status: string }[];
 }
 
-const LIMIT = 25;
+/** Quantos itens cada lista do retrato escreve; o resto vira "e mais N". */
+export const NUKE_LIST_LIMIT = 25;
+const LIMIT = NUKE_LIST_LIMIT;
 
 function listOrNone(items: string[], limit = LIMIT): string {
   if (!items.length) return 'nada';

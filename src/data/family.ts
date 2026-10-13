@@ -22,6 +22,9 @@ const DAY_COLUMNS = 'event_id, occurs_on, cancelled, override_take, take_by, ove
 /** O que a pessoa lê quando tenta salvar e o banco ainda não tem as tabelas. */
 export const FAMILY_EVENTS_UNAVAILABLE = 'Os compromissos ainda estão sendo ativados no Kotii. Tente de novo mais tarde.';
 
+/** O que a pessoa lê quando alguém do compromisso (de quem é, quem leva ou quem busca) não tem mais ficha. */
+export const FAMILY_EVENT_PERSON_GONE = 'Uma das pessoas deste compromisso não está mais nas fichas da casa. Escolha de novo de quem é, quem leva e quem busca, e salve.';
+
 /**
  * A tabela ainda não existe no banco (o app chegou antes da migração): o
  * PostgREST responde PGRST205 ("Could not find the table ... in the schema
@@ -40,7 +43,10 @@ export function isMissingTable(error: unknown): boolean {
 
 /** O erro de salvar ou abrir um compromisso, em palavras de gente. */
 export function familyEventErrorMessage(error: unknown): string {
-  return isMissingTable(error) ? FAMILY_EVENTS_UNAVAILABLE : errorMessage(error);
+  if (isMissingTable(error)) return FAMILY_EVENTS_UNAVAILABLE;
+  // Uma ficha escolhida no formulário foi apagada enquanto ele estava aberto (o banco recusa a chave: 23503).
+  if (error && typeof error === 'object' && (error as { code?: unknown }).code === '23503') return FAMILY_EVENT_PERSON_GONE;
+  return errorMessage(error);
 }
 
 // O banco devolve a hora como "16:00:00".

@@ -12,7 +12,9 @@
 -- Os aniversários não têm tabela: saem de people.birth_date.
 
 -- Dias da semana de um compromisso semanal: de 1 a 7 dias, 0 = domingo (como
--- Date.getDay() e medications.weekdays), sem repetir.
+-- Date.getDay() e medications.weekdays), sem repetir, numa lista simples (uma
+-- matriz de duas dimensões passaria nas outras condições e o app não acharia
+-- dia nenhum nela: o compromisso ficaria guardado sem aparecer).
 create function public.is_weekday_set(p_days smallint[])
 returns boolean
 language sql
@@ -20,6 +22,7 @@ immutable
 set search_path = ''
 as $$
   select p_days is not null
+    and array_ndims(p_days) = 1
     and cardinality(p_days) between 1 and 7
     and p_days <@ array[0, 1, 2, 3, 4, 5, 6]::smallint[]
     and cardinality(p_days) = (select count(distinct d) from unnest(p_days) as d);

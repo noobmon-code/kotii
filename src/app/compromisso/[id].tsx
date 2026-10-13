@@ -1,5 +1,5 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import {
@@ -72,12 +72,27 @@ export default function FamilyEventScreen() {
   const event = useFamilyEvent(isNew ? undefined : id);
   const day = dia && isValidISODate(dia) ? dia : null;
 
-  if (people.isError) return <ErrorNotice error={people.error} onRetry={() => people.refetch()} />;
-  if (!isNew && event.isError) {
+  // O formulário copia o compromisso para os campos uma vez só. Por isso espera a busca desta visita: o que
+  // está guardado pode ser de antes de uma mudança (daqui ou de outro celular), e salvar gravaria o de antes
+  // por cima. Sem internet a busca fica parada, e o guardado abre. Depois que o formulário apareceu, ele
+  // fica: outra busca (a da ficha criada pelo "+ Pessoa", a de voltar ao app) não o tira da frente, nem um
+  // erro dela, e o que foi digitado não some.
+  const [shownId, setShownId] = useState<string | null>(null);
+  const shown = shownId === id;
+  const failed = !shown && (people.isError || (!isNew && event.isError));
+  const waiting = !people.data || (!isNew && (event.isPending || (!shown && event.isFetching && !event.isFetchedAfterMount)));
+  const found = isNew || Boolean(event.data);
+  const ready = !failed && !waiting && found;
+  useEffect(() => {
+    if (ready) setShownId(id);
+  }, [ready, id]);
+
+  if (!shown && people.isError) return <ErrorNotice error={people.error} onRetry={() => people.refetch()} />;
+  if (!shown && !isNew && event.isError) {
     return <ErrorNotice error={new Error(familyEventErrorMessage(event.error))} onRetry={() => event.refetch()} />;
   }
-  if (!people.data || (!isNew && event.isPending)) return <Loading />;
-  if (!isNew && !event.data) return <ErrorNotice error={new Error('Compromisso não encontrado.')} />;
+  if (!people.data || waiting) return <Loading />;
+  if (!found) return <ErrorNotice error={new Error('Compromisso não encontrado.')} />;
   return <EventForm event={isNew ? undefined : (event.data ?? undefined)} people={people.data} day={day} />;
 }
 
