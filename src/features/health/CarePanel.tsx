@@ -39,10 +39,12 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
   const medications = useMedications();
   const [showAllPast, setShowAllPast] = useState(false);
 
-  const queries = [people, appointments, vaccines, exams, medications];
+  // Quem tem resultados (resultOwners) entra na espera e no erro como as outras buscas: sem ela, a entrada da
+  // evolução em "Todos" sumiria calada, sem ter como tentar de novo.
+  const queries = [people, appointments, vaccines, exams, resultOwners, medications];
   const failed = queries.find((q) => q.isError);
   if (failed) return <ErrorNotice error={failed.error} onRetry={() => queries.forEach((q) => q.refetch())} />;
-  if (!people.data || !appointments.data || !vaccines.data || !exams.data || !medications.data) return <Loading />;
+  if (!people.data || !appointments.data || !vaccines.data || !exams.data || !resultOwners.data || !medications.data) return <Loading />;
 
   const person = people.data.find((p) => p.id === personId) ?? null;
   const mine = <T extends { person_id: string | null }>(rows: T[]) => (person ? rows.filter((r) => r.person_id === person.id) : rows);
@@ -60,11 +62,11 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
   // sempre (sem resultados, a tela ainda monta o resumo). Em "Todos", vai
   // direto quando só uma pessoa tem resultados; com mais de uma, pede a escolha.
   // Quem tem resultados sai da casa toda (useExamResultOwners): a lista de exames
-  // daqui traz só os mais recentes. Enquanto essa busca não chega, a entrada de
-  // "Todos" espera, para não levar à pessoa errada.
-  const owners = resultOwners.data ? new Set(resultOwners.data) : null;
-  const hasResults = (p: Person) => Boolean(owners?.has(p.id)) || hasExamResults(exams.data.filter((e) => e.person_id === p.id));
-  const withResults = person || !owners ? [] : people.data.filter(hasResults);
+  // daqui traz só os mais recentes, e por ela a entrada de "Todos" poderia levar
+  // à pessoa errada.
+  const owners = new Set(resultOwners.data);
+  const hasResults = (p: Person) => owners.has(p.id) || hasExamResults(exams.data.filter((e) => e.person_id === p.id));
+  const withResults = person ? [] : people.data.filter(hasResults);
   const trendsPerson = person ?? (withResults.length === 1 ? withResults[0] : null);
   const personMedications = person
     ? medications.data.filter((m) => m.person_id === person.id)
