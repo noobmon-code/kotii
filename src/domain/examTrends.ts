@@ -242,6 +242,12 @@ export interface TrendItem {
    * grupo, por estar sem unidade ou em outra. Os dois não foram comparados.
    */
   newerElsewhere: TrendPoint | null;
+  /**
+   * Só nos numéricos: o resultado mais novo do mesmo item que ficou guardado
+   * como texto ("Indetectável" depois de um número, ou a unidade do valor
+   * diferente da do campo). Não entra nos pontos, na conta nem no gráfico.
+   */
+  newerText: TrendPoint | null;
   /** Unidades, como escritas, dos outros grupos do mesmo item (ver apartNote). */
   otherUnits: string[];
   /** De que material é, quando o nome ou o título do exame diz ("urina", "24h", "fezes", "liquor"); "" sem isso. */
@@ -389,8 +395,34 @@ export function chartDescription(item: TrendItem): string {
 
 // Nomes que não dizem o que foi medido: só valem dentro do próprio exame. A IA
 // chama de "Conclusão" o texto de todo laudo descritivo (ultrassom, raio-X…);
-// juntos pelo nome, laudos sem relação virariam um item só.
-const GENERIC_NAMES = new Set(['conclusao', 'resultado', 'laudo', 'impressao diagnostica', 'observacao', 'valor']);
+// juntos pelo nome, laudos sem relação virariam um item só. A chave tem de ser
+// exatamente uma destas (o plural entra escrito, sem regra): "Valor de TSH" é
+// um item como outro qualquer, e o nome do que foi medido ("Aspecto", "Cor",
+// "Volume", "Total") não entra aqui.
+const GENERIC_NAMES = new Set([
+  'conclusao',
+  'conclusoes',
+  'resultado',
+  'resultados',
+  'laudo',
+  'laudos',
+  'impressao',
+  'impressao diagnostica',
+  'hipotese diagnostica',
+  'diagnostico',
+  'observacao',
+  'observacoes',
+  'obs',
+  'comentario',
+  'comentarios',
+  'nota',
+  'notas',
+  'achados',
+  'parecer',
+  'interpretacao',
+  'valor',
+  'valores',
+]);
 
 // Material que não é sangue, quando o nome do resultado ou o título do exame
 // diz. Só separa: a "Creatinina" de um exame de urina não entra na série da do
@@ -404,16 +436,25 @@ const MATERIALS: [string, RegExp][] = [
 const MATERIAL_LABEL: Record<string, string> = { urina: 'urina', '24h': 'urina de 24 horas', fezes: 'fezes', liquor: 'líquor' };
 
 // O que diz "sangue" num título, e o que separa os exames dele ("+", ",",
-// ";", "&", "/", " - " e o "e" entre palavras).
-const BLOOD = /\b(sangue|sanguine[oa]s?|seric[oa]s?|plasmatic[oa]s?|hematologic[oa]s?|hemograma|bioquimic[ao]s?|soro|plasma|lipidograma|coagulograma|glicemia)\b/;
-const TITLE_PARTS = /[+,;&/]|\s-\s|\be\b/;
+// ";", "&", "/", "|", o hífen ou o travessão entre espaços, e "e", "com" e
+// "mais" entre palavras). "Sangue oculto" é o nome de um exame de fezes: numa
+// parte só dele ("Fezes com sangue oculto"), não é o sangue ao lado das fezes.
+const BLOOD = /\b(sangue(?! ocult)|sanguine[oa]s?|seric[oa]s?|plasmatic[oa]s?|hematologic[oa]s?|hemograma|bioquimic[ao]s?|soro|plasma|lipidograma|coagulograma|glicemia)\b/;
+const TITLE_PARTS = /[+,;&/|]|\s[-–—]\s|\b(?:e|com|mais)\b/;
 
 const plainWords = (text: string) => normalizeSearch(text).replace(/[^a-z0-9]+/g, ' ');
+
+// Exames de 24 horas que não são de urina ("Holter 24 horas", "MAPA 24h"):
+// com uma destas palavras, e sem falar de urina, "24h" não diz o material.
+const DAY_LONG = /\b(holter|mapa|pressao|phmetria|ecg|eletrocardiograma|monitorizacao)\b/;
+const URINE = MATERIALS[0][1];
+const dayLongNotUrine = (plain: string) => DAY_LONG.test(plain) && !URINE.test(plain);
 
 /** Os materiais ditos num texto. A urina de 24 horas é um material à parte da urina comum. */
 function materialsIn(text: string): string[] {
   const plain = plainWords(text);
-  const found = MATERIALS.filter(([, pattern]) => pattern.test(plain)).map(([material]) => material);
+  const dayLong = dayLongNotUrine(plain);
+  const found = MATERIALS.filter(([material, pattern]) => pattern.test(plain) && !(dayLong && material === '24h')).map(([material]) => material);
   return found.includes('24h') ? found.filter((material) => material !== 'urina') : found;
 }
 
@@ -422,23 +463,44 @@ function materialsIn(text: string): string[] {
  * Título que junta materiais diferentes ("Hemograma + EAS", "Sangue e urina",
  * "Urina e fezes") não diz de qual é cada resultado: aí só vale o nome do
  * resultado. Uma parte que não fala de material ("Urina tipo I e sedimento")
- * não muda nada, e "sangue oculto nas fezes" é um exame de fezes.
+ * não muda nada, e "sangue oculto nas fezes" é um exame de fezes. Sem palavra
+ * de sangue na outra parte ("Rotina + EAS"), o título ainda vale como urina:
+ * não dá para separar de "EAS - rotina", e o erro fica do lado de não comparar.
  */
 function titleMaterials(title: string): string[] {
-  const parts = normalizeSearch(title)
+  // O título inteiro, e não cada parte: em "MAPA - 24 horas" o nome do exame e o "24h" ficam em partes diferentes.
+  const dayLong = dayLongNotUrine(plainWords(title));
+  const found = normalizeSearch(title)
     .split(TITLE_PARTS)
     .map((part) => {
-      const materials = materialsIn(part);
+      const materials = materialsIn(part).filter((material) => !(dayLong && material === '24h'));
       return materials.length ? materials : BLOOD.test(plainWords(part)) ? ['sangue'] : [];
     })
     .filter((materials) => materials.length);
+  // "Urina - 24 horas", "Creatinina urinária - 24h": a urina de uma parte é a
+  // de 24 horas da outra, como já é dentro de uma parte só (ver materialsIn).
+  const wholeDay = found.some((materials) => materials.includes('24h'));
+  const parts = wholeDay
+    ? found.map((materials) => [...new Set(materials.map((material) => (material === 'urina' ? '24h' : material)))])
+    : found;
   const kinds = new Set(parts.map((materials) => materials.join('+')));
   return kinds.size === 1 && !kinds.has('sangue') ? parts[0] : [];
 }
 
-/** O material do resultado: pelo nome dele e, quando o exame é de um material só, pelo título. */
+// O nome do resultado que diz sangue. Só o adjetivo e o "no sangue" por
+// extenso: a palavra "sangue" solta é também um item da urina ("Sangue", na
+// fita) e das fezes ("Sangue oculto").
+const BLOOD_NAME = /\b(seric[oa]s?|plasmatic[oa]s?|sanguine[oa]s?|no sangue|no soro|no plasma)\b/;
+
+/**
+ * O material do resultado: pelo nome dele e, quando o exame é de um material
+ * só, pelo título. O nome que diz sangue e nenhum material ("Creatinina
+ * sérica" no laudo do clearance, que é de urina de 24h) não pega o do título.
+ */
 function materialKey(name: string, title: string): string {
-  const found = new Set([...materialsIn(name), ...titleMaterials(title)]);
+  const named = materialsIn(name);
+  if (!named.length && BLOOD_NAME.test(plainWords(name))) return '';
+  const found = new Set([...named, ...titleMaterials(title)]);
   if (found.has('24h')) found.delete('urina');
   return MATERIALS.map(([material]) => material)
     .filter((material) => found.has(material))
@@ -458,6 +520,8 @@ interface Group {
   key: string;
   /** O item sem a unidade: nome, material e, no nome genérico, o exame. */
   family: string;
+  /** A família dos resultados em texto do mesmo item (num grupo de texto, a dele). */
+  textFamily: string;
   /** O item sem a unidade nem o material: para avisar que há outro de mesmo nome em outro material. */
   base: string;
   material: string;
@@ -512,14 +576,18 @@ function listWords(words: string[]): string {
  * O que a linha de um item numérico avisa quando o mesmo item também está em
  * outro grupo, por causa da unidade ou do material (os grupos não são
  * comparados, e isso não pode passar em silêncio): que há um resultado mais
- * novo em outra unidade; no grupo sem unidade, por que ele ficou à parte; e,
- * entre materiais, que os de mesmo nome não foram comparados. null quando não
- * há o que avisar.
+ * novo em outra unidade ou guardado como texto (dos dois, o mais novo); no
+ * grupo sem unidade, por que ele ficou à parte; e, entre materiais, que os de
+ * mesmo nome não foram comparados. null quando não há o que avisar.
  */
 export function apartNote(
-  item: Pick<TrendItem, 'last' | 'newerElsewhere' | 'otherUnits' | 'material' | 'otherMaterials'>,
+  item: Pick<TrendItem, 'last' | 'newerElsewhere' | 'newerText' | 'otherUnits' | 'material' | 'otherMaterials'>,
 ): string | null {
   const newer = item.newerElsewhere;
+  const text = item.newerText;
+  if (text && (!newer || text.date > newer.date)) {
+    return `Há um resultado mais recente em texto: ${valueLabel(text)} em ${formatBRDate(text.date)}. Não foi comparado.`;
+  }
   if (newer) {
     const how = !newer.unit ? 'sem unidade' : item.last.unit ? 'em outra unidade' : 'com unidade';
     return `Há um resultado mais recente ${how}: ${valueLabel(newer)} em ${formatBRDate(newer.date)}. Não foi comparado.`;
@@ -606,7 +674,8 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
       const counted = symbol === '#' && !unit;
       const unitKey = normalizeUnit(unit) || (parsed && counted ? '#' : '');
       // Em texto não há unidade para separar: o "#" segue na chave do item.
-      const family = parsed ? `n:${item}` : `t:${counted ? `${itemKey} #` : itemKey}|${material}|${generic ? exam.id : ''}`;
+      const textFamily = `t:${counted ? `${itemKey} #` : itemKey}|${material}|${generic ? exam.id : ''}`;
+      const family = parsed ? `n:${item}` : textFamily;
       const base = `${itemKey}|${generic ? exam.id : ''}`;
       // O mesmo item duas vezes no laudo (em número ou em texto): a segunda ocorrência é outro grupo.
       const slot = parsed ? `${family}|${unitKey}` : family;
@@ -614,7 +683,7 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
       seen.set(slot, nth);
       const key = nth > 1 ? `${slot}|${nth}` : slot;
       const groups = parsed ? numeric : textual;
-      const group = groups.get(key) ?? { key, family, base, material, unitKey, name: '', points: [], examIndex, resultIndex };
+      const group = groups.get(key) ?? { key, family, textFamily, base, material, unitKey, name: '', points: [], examIndex, resultIndex };
       group.points.push(point);
       // Do mais antigo para o mais novo: ficam o nome e a posição do último ponto.
       group.name = generic && title ? `${title}: ${name}` : name || 'Sem nome';
@@ -632,10 +701,16 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
     families.set(group.family, [...(families.get(group.family) ?? []), group]);
     bases.set(group.base, [...(bases.get(group.base) ?? []), group]);
   }
+  // O mesmo item (com o mesmo material e, no nome genérico, o mesmo exame)
+  // guardado como texto: só para a linha do número dizer que há um mais novo.
+  const texts = new Map<string, Group[]>();
+  for (const group of textual.values()) texts.set(group.family, [...(texts.get(group.family) ?? []), group]);
+  const newestOf = (groups: Group[]) => groups.reduce<Group | null>((max, other) => (!max || later(other, max) > 0 ? other : max), null);
   const toItem = (group: Group, isNumber: boolean): TrendItem => {
     const last = lastOf(group);
     const others = isNumber ? families.get(group.family)!.filter((other) => sameInOtherUnit(other, group)) : [];
-    const newest = others.reduce<Group | null>((max, other) => (!max || later(other, max) > 0 ? other : max), null);
+    const newest = newestOf(others);
+    const written = isNumber ? newestOf(texts.get(group.textFamily) ?? []) : null;
     const sameName = isNumber ? bases.get(group.base)!.filter((other) => other.material !== group.material) : [];
     return {
       key: group.key,
@@ -643,6 +718,7 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
       points: group.points,
       last,
       newerElsewhere: newest && lastOf(newest).date > last.date ? lastOf(newest) : null,
+      newerText: written && lastOf(written).date > last.date ? lastOf(written) : null,
       otherUnits: [...new Set(others.map((other) => lastOf(other).unit).filter((unit): unit is string => Boolean(unit)))],
       material: group.material,
       otherMaterials: [...new Set(sameName.map((other) => other.material))].sort((a, b) => materialRank(a) - materialRank(b)),
@@ -705,9 +781,10 @@ function medicationLine(m: SummaryMedication, today: string): string {
   return `${[m.name.trim(), oneLine(m.dosage)].filter(Boolean).join(' ')}: ${how} (${describeCourse(schedule)}${starts})`;
 }
 
-function resultLine(item: TrendItem): string {
+/** "Glicose: 108 mg/dL em 05/09/2026 (marcado no laudo: acima)". `name` é o nome como sai no resumo (ver nameOf). */
+function resultLine(item: TrendItem, name: string): string {
   const flag = flagLabel(item.last.flag);
-  return `${item.name}: ${valueLabel(item.last)} em ${formatBRDate(item.last.date)}${flag ? ` (marcado no laudo: ${flag.toLowerCase()})` : ''}`;
+  return `${name}: ${valueLabel(item.last)} em ${formatBRDate(item.last.date)}${flag ? ` (marcado no laudo: ${flag.toLowerCase()})` : ''}`;
 }
 
 /** Quantos dias antes do exame mais recente ainda contam como "últimos resultados". */
@@ -758,11 +835,23 @@ export function visitSummary(person: SummaryPerson, exams: TrendExam[], medicati
   const recent = items
     .filter((item) => item.last.date >= since || item.last.flag)
     .sort((a, b) => b.last.date.localeCompare(a.last.date) || a.order[0] - b.order[0] || a.order[1] - b.order[1]);
-  // Há resultado mais novo do mesmo item em outro grupo: a linha diz, em vez de passar por último.
-  const noted = (line: string, item: TrendItem) => (item.newerElsewhere ? `${line}. ${apartNote(item)}` : line);
+  // Itens de mesmo nome em materiais diferentes (a "Creatinina" do sangue e a
+  // da urina) sairiam com o mesmo rótulo: o que tem material leva ele ao lado
+  // do nome, a não ser que o próprio nome já diga ("Densidade urinária").
+  const materials = new Map<string, Set<string>>();
+  for (const item of items) {
+    const key = examItemKey(item.name);
+    materials.set(key, (materials.get(key) ?? new Set<string>()).add(item.material));
+  }
+  const nameOf = (item: TrendItem) =>
+    item.material && materials.get(examItemKey(item.name))!.size > 1 && !materialsIn(item.name).length
+      ? `${item.name} (${materialLabel(item.material)})`
+      : item.name;
+  // Há resultado mais novo do mesmo item em outro grupo ou em texto: a linha diz, em vez de passar por último.
+  const noted = (line: string, item: TrendItem) => (item.newerElsewhere || item.newerText ? `${line}. ${apartNote(item)}` : line);
   list(
     'Últimos resultados',
-    recent.map((item) => noted(resultLine(item), item)),
+    recent.map((item) => noted(resultLine(item, nameOf(item)), item)),
   );
 
   // Série que já está no bloco de cima leva só a mudança; a que não está leva
@@ -773,7 +862,7 @@ export function visitSummary(person: SummaryPerson, exams: TrendExam[], medicati
     'O que mudou',
     trends.series
       .filter((s) => s.last.date >= yearAgo && !isUnchanged(s.change))
-      .map((s) => noted(listed.has(s.key) ? `${s.name}: ${s.change}` : `${resultLine(s)}; ${s.change}`, s)),
+      .map((s) => noted(listed.has(s.key) ? `${nameOf(s)}: ${s.change}` : `${resultLine(s, nameOf(s))}; ${s.change}`, s)),
   );
 
   // Por fazer: primeiro os agendados de hoje em diante, o mais próximo antes;

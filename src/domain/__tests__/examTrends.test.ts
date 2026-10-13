@@ -600,6 +600,52 @@ describe('examTrends', () => {
       'Relação albumina/creatinina (urina)',
       'EAS - rotina',
       'Urina 24h e clearance',
+      // "Urina" de um lado do separador e "24h" do outro: é a urina de 24 horas, um material só.
+      'Creatinina urinária - 24 horas',
+      'Cálcio urinário - 24h',
+      'Urina - 24 horas',
+      'Urina - 24h',
+      'Urina – 24 horas',
+      'Urina, 24 horas',
+      'Urina / 24h',
+      'Urina 24h + creatinina urinária',
+      'Urina 24h, urina tipo 1',
+      'Urina de 24 horas e urina tipo 1',
+      'Urina de 24 horas',
+      'Proteinúria - 24h',
+      'Creatinina urinária (24 horas)',
+      'Creatinina urinária 24 horas',
+      'Clearance de creatinina - urina de 24 horas',
+      // "com" e o travessão também separam, e a parte que não fala de material não muda nada.
+      'Urina com sedimento',
+      'EAS – rotina',
+      'Urocultura com antibiograma (urina)',
+      'Parasitológico de fezes com Baermann',
+      // "Sangue oculto" é o nome de um exame de fezes, e não o sangue ao lado das fezes.
+      'Parasitológico de fezes com pesquisa de sangue oculto',
+      'Fezes com sangue oculto',
+      'Parasitológico de fezes e sangue oculto',
+      'Fezes - sangue oculto',
+      'Urina rotina',
+      'Urina - exame laboratorial',
+      // A palavra de sangue na mesma parte do material, ou um item conhecido ao lado: o exame é do material.
+      'Bioquímica urinária',
+      'Bioquímica da urina',
+      'Bioquímica do líquor',
+      'Pesquisa de sangue na urina',
+      'Sódio e potássio urinários',
+      'Urina: sódio e potássio',
+      'Cálcio, ácido úrico e creatinina em urina de 24h',
+      'Creatinina e ureia (urina 24h)',
+      // "24h" sem a palavra "urina" continua sendo a urina de 24 horas.
+      'Cálcio 24h',
+      'Cortisol livre - 24 horas',
+      'Sódio 24 horas',
+      'Ácido úrico 24h',
+      'Citrato 24 horas',
+      'Catecolaminas 24h',
+      // O Holter não é de urina, mas a outra parte do título é.
+      'Holter 24h e urina de 24h',
     ]) {
       const trends = blood(title);
       expect([title, trends.series.map((s) => [s.points.map((p) => p.value), s.change])]).toEqual([
@@ -611,6 +657,120 @@ describe('examTrends', () => {
     }
     // Sem a palavra no título nem no nome, o app não tem como saber: junta pelo nome.
     expect(blood('Albumina/creatinina').series[0].points).toHaveLength(3);
+  });
+
+  it('"urina" e "24h" em partes diferentes do título são a urina de 24 horas', () => {
+    const material = (title: string) => examTrends([exam('2026-03-12', [result('Creatinina', '120', 'mg/dL')], { title })]).single[0].material;
+    for (const title of [
+      'Creatinina urinária - 24 horas',
+      'Cálcio urinário - 24h',
+      'Urina - 24 horas',
+      'Urina - 24h',
+      'Urina – 24 horas',
+      'Urina, 24 horas',
+      'Urina / 24h',
+      'Urina 24h + creatinina urinária',
+      // A urina comum ao lado da de 24 horas: o exame todo fica como de 24 horas (à parte do sangue, que é o que importa).
+      'Urina 24h, urina tipo 1',
+      'Urina de 24 horas e urina tipo 1',
+    ]) {
+      expect([title, material(title)]).toEqual([title, '24h']);
+    }
+    // Com outro material ao lado, o título continua sem dizer de qual é cada resultado.
+    for (const title of ['Dosagem plasmática + urina de 24h', 'Hemograma, urina e urina de 24h', 'Urina e fezes', 'Urina 24h e fezes']) {
+      expect([title, material(title)]).toEqual([title, '']);
+    }
+  });
+
+  it('"24h" de um exame que não é de urina (Holter, MAPA…) não vale como material', () => {
+    for (const [first, second] of [
+      ['Holter', 'Holter 24 horas'],
+      ['MAPA', 'MAPA 24h'],
+      ['MAPA', 'MAPA - 24 horas'],
+      ['Eletrocardiograma', 'Holter 24h'],
+      ['ECG', 'ECG com monitorização de 24 horas'],
+      ['pHmetria', 'pHmetria de 24 horas'],
+      ['Pressão arterial', 'Medida da pressão arterial em 24h'],
+    ]) {
+      const trends = examTrends([
+        exam('2025-03-10', [result('Frequência cardíaca média', '72', 'bpm')], { title: first }),
+        exam('2026-03-10', [result('Frequência cardíaca média', '78', 'bpm')], { title: second }),
+      ]);
+      expect([second, trends.series.map((s) => [s.points.map((p) => p.value), s.change, s.material, apartNote(s)]), trends.single]).toEqual([
+        second,
+        [[['72', '78'], 'subiu 6 (8%) desde 10/03/2025', '', null]],
+        [],
+      ]);
+    }
+    // O mesmo vale para o nome do resultado; sem essas palavras, "24h" no nome continua sendo a urina de 24 horas.
+    const named = examTrends([
+      exam('2026-03-10', [result('Pressão sistólica média (24h)', '128', 'mmHg'), result('MAPA 24 horas: média diastólica', '82', 'mmHg'), result('Sódio 24h', '150', 'mEq/24h')], {
+        title: 'Cardiologia',
+      }),
+    ]);
+    expect(named.single.map((i) => [i.name, i.material])).toEqual([
+      ['Pressão sistólica média (24h)', ''],
+      ['MAPA 24 horas: média diastólica', ''],
+      ['Sódio 24h', '24h'],
+    ]);
+    // Com a urina dita junto, o título e o nome continuam valendo.
+    const urine = examTrends([
+      exam('2026-03-10', [result('Sódio', '150', 'mEq/24h'), result('Sódio na urina de 24h (dia do Holter)', '150', 'mEq/24h')], { title: 'Holter 24h e urina de 24h' }),
+    ]);
+    expect(urine.single.map((i) => i.material)).toEqual(['24h', '24h']);
+  });
+
+  it('o nome que diz sangue ("sérica", "no soro") não pega o material do título do exame', () => {
+    // O laudo do clearance (urina de 24h) traz também a creatinina do sangue.
+    const trends = examTrends([
+      exam('2026-03-10', [result('Creatinina sérica', '0,9', 'mg/dL')], { title: 'Bioquímica' }),
+      exam(
+        '2026-09-10',
+        [result('Creatinina sérica', '1,0', 'mg/dL'), result('Creatinina urinária', '120', 'mg/dL'), result('Clearance de creatinina', '95', 'mL/min')],
+        { title: 'Clearance de creatinina (urina de 24h)' },
+      ),
+    ]);
+    expect(trends.series.map((s) => [s.name, s.points.map((p) => p.value), s.change, s.material, apartNote(s)])).toEqual([
+      ['Creatinina sérica', ['0,9', '1,0'], 'subiu 0,1 (11%) desde 10/03/2026', '', null],
+    ]);
+    expect(trends.single.map((i) => [i.name, i.material])).toEqual([
+      ['Creatinina urinária', '24h'],
+      ['Clearance de creatinina', '24h'],
+    ]);
+    const materials = (title: string, names: string[]) =>
+      examTrends([exam('2026-03-10', names.map((name) => result(name, '5', 'mg/dL')), { title })]).single.map((i) => [i.name, i.material]);
+    expect(materials('Urina tipo 1', ['Sódio sérico', 'Proteínas séricas', 'Glicose plasmática', 'Gases sanguíneos', 'Glicose no sangue', 'Cortisol no soro', 'Lactato no plasma'])).toEqual([
+      ['Sódio sérico', ''],
+      ['Proteínas séricas', ''],
+      ['Glicose plasmática', ''],
+      ['Gases sanguíneos', ''],
+      ['Glicose no sangue', ''],
+      ['Cortisol no soro', ''],
+      ['Lactato no plasma', ''],
+    ]);
+    // Só o adjetivo e o "no sangue" escritos: a palavra "sangue" solta também é um item da urina e das fezes.
+    expect(materials('EAS', ['Sangue', 'Glicose (sangue)', 'Hemoglobina'])).toEqual([
+      ['Sangue', 'urina'],
+      ['Glicose (sangue)', 'urina'],
+      ['Hemoglobina', 'urina'],
+    ]);
+    expect(materials('Parasitológico de fezes', ['Sangue oculto', 'Pesquisa de sangue oculto'])).toEqual([
+      ['Sangue oculto', 'fezes'],
+      ['Pesquisa de sangue oculto', 'fezes'],
+    ]);
+    // O nome que diz os dois continua sendo do material.
+    expect(materials('Urina de 24h', ['Relação creatinina urinária/sérica'])).toEqual([['Relação creatinina urinária/sérica', '24h']]);
+    // "Sangue" da fita de urina não junta com o de outro exame, nem o sangue oculto das fezes.
+    const apart = examTrends([
+      exam('2026-03-10', [result('Sangue', 'Ausente'), result('Sangue oculto', '10', 'ng/mL')], { title: 'Rotina' }),
+      exam('2026-09-10', [result('Sangue', 'Presente')], { title: 'EAS' }),
+      exam('2026-09-11', [result('Sangue oculto', '14', 'ng/mL')], { title: 'Parasitológico de fezes' }),
+    ]);
+    expect([apart.series, apart.single.map((i) => valueLabel(i.last)), apart.text.map((i) => i.points.map((p) => p.value))]).toEqual([
+      [],
+      ['14 ng/mL', '10 ng/mL'],
+      [['Presente'], ['Ausente']],
+    ]);
   });
 
   it('o material vale pelo nome do resultado ou pelo título do exame, e junta com o mesmo material', () => {
@@ -661,7 +821,31 @@ describe('examTrends', () => {
       ['Colesterol total: Resultado', '212 mg/dL'],
       ['Glicose: Resultado', '92 mg/dL'],
     ]);
-    for (const name of ['Conclusão', 'Resultado', 'Laudo', 'Impressão diagnóstica', 'Observação', 'Valor']) {
+    for (const name of [
+      'Conclusão',
+      'Resultado',
+      'Laudo',
+      'Impressão diagnóstica',
+      'Observação',
+      'Valor',
+      // O plural e outros nomes que também não dizem o que foi medido.
+      'Conclusões',
+      'Resultados',
+      'Laudos',
+      'Observações',
+      'Obs.',
+      'Impressão',
+      'Comentário',
+      'Comentários',
+      'Nota',
+      'Notas',
+      'Achados',
+      'Diagnóstico',
+      'Parecer',
+      'Interpretação',
+      'Hipótese diagnóstica',
+      'Valores',
+    ]) {
       const each = examTrends([
         exam('2026-01-10', [result(name, '10'), result(name, 'sem achados')], { title: 'Um' }),
         exam('2026-03-12', [result(name, '12'), result(name, 'sem achados')], { title: 'Outro' }),
@@ -675,6 +859,11 @@ describe('examTrends', () => {
     }
     // Um nome que só contém a palavra não é genérico.
     expect(examTrends([exam('2026-01-10', [result('Valor de TSH', '2')]), exam('2026-03-12', [result('Valor de TSH', '3')])]).series).toHaveLength(1);
+    // Nem o nome do que foi medido, por mais curto que seja: continua juntando entre os exames.
+    for (const name of ['Aspecto', 'Cor', 'Volume', 'Total']) {
+      const measured = examTrends([exam('2026-01-10', [result(name, '10')], { title: 'Um' }), exam('2026-03-12', [result(name, '12')], { title: 'Outro' })]);
+      expect([name, measured.series.map((s) => [s.name, s.points.length])]).toEqual([name, [[name, 2]]]);
+    }
   });
 
   it('"%" ou "#" no fim do nome, com a unidade vazia, separa o percentual do absoluto', () => {
@@ -844,6 +1033,15 @@ describe('examTrends', () => {
       'Dosagens séricas e urinárias',
       'Exames sanguíneos e de urina',
       'Dosagem plasmática + urina de 24h',
+      // O travessão, a barra em pé, "com" e "mais" também separam os exames.
+      'Hemograma – EAS',
+      'Hemograma — EAS',
+      'Hemograma com EAS',
+      'Hemograma | EAS',
+      'Hemograma mais urina',
+      // A urina de 24 horas ao lado de outro material.
+      'Hemograma, urina e urina de 24h',
+      'Urina 24h e fezes',
     ]) {
       const trends = examTrends([
         exam('2026-01-10', [result('Hemoglobina', '13,1', 'g/dL'), result('Glicose', '92', 'mg/dL')], { title: 'Exames de rotina' }),
@@ -862,6 +1060,22 @@ describe('examTrends', () => {
       ]);
       // O que o próprio nome diz que é de urina continua à parte.
       expect(trends.single.map((i) => [i.name, i.material])).toEqual([['Densidade urinária', 'urina']]);
+    }
+    // Limite conhecido: sem palavra de sangue na outra parte, não dá para separar "Rotina + EAS" de "EAS - rotina".
+    // O título vale como urina e os resultados ficam à parte (nada some, e nada entra na série errada).
+    for (const title of ['Rotina + EAS', 'Check-up e EAS']) {
+      const trends = examTrends([
+        exam('2026-01-10', [result('Hemoglobina', '13,1', 'g/dL')], { title: 'Exames de rotina' }),
+        exam('2026-09-05', [result('Hemoglobina', '12,2', 'g/dL', 'baixo')], { title }),
+      ]);
+      expect([title, trends.series, trends.single.map((i) => [valueLabel(i.last), i.material])]).toEqual([
+        title,
+        [],
+        [
+          ['12,2 g/dL', 'urina'],
+          ['13,1 g/dL', ''],
+        ],
+      ]);
     }
   });
 
@@ -943,6 +1157,89 @@ describe('examTrends', () => {
       ['Creatinina', '0,9 mg/dL', null, 'Não foi comparado com os resultados de mesmo nome dos exames de urina.'],
       ['Sangue: Resultado', '5 mg/dL', null, null],
       ['HIV', 'Não reagente', null, null],
+    ]);
+  });
+
+  it('resultado mais novo do mesmo item guardado como texto: a linha do número avisa', () => {
+    // A unidade do valor diferente da do campo fica como texto.
+    const conflict = examTrends([
+      exam('2025-03-10', [result('Creatinina', '0,9', 'mg/dL')]),
+      exam('2025-09-10', [result('Creatinina', '1,0', 'mg/dL')]),
+      exam('2026-09-10', [result('Creatinina', '124 µmol/L', 'mg/dL', 'alto')]),
+    ]);
+    const [series] = conflict.series;
+    const [text] = conflict.text;
+    // O texto não entra nos pontos, na conta nem no gráfico: só no aviso.
+    expect([series.points.map((p) => p.value), valueLabel(series.last), series.change, series.chart.length]).toEqual([
+      ['0,9', '1,0'],
+      '1,0 mg/dL',
+      'subiu 0,1 (11%) desde 10/03/2025',
+      2,
+    ]);
+    expect(series.newerText).toBe(text.last);
+    expect(apartNote(series)).toBe('Há um resultado mais recente em texto: 124 µmol/L em 10/09/2026. Não foi comparado.');
+    // A linha do texto não leva aviso.
+    expect([text.newerText, apartNote(text)]).toEqual([null, null]);
+
+    // Com um resultado só, e os outros jeitos de um valor ficar como texto.
+    for (const written of ['Indetectável', '131 (jejum de 8h)', '131*']) {
+      const one = examTrends([
+        exam('2025-03-10', [result('Carga viral', '1.500', 'cópias/mL', 'alto')]),
+        exam('2026-09-10', [result('Carga viral', written)]),
+      ]);
+      expect([written, one.single.map((i) => apartNote(i)), one.text.map((i) => apartNote(i))]).toEqual([
+        written,
+        [`Há um resultado mais recente em texto: ${written} em 10/09/2026. Não foi comparado.`],
+        [null],
+      ]);
+    }
+
+    // Na outra ordem (o texto é o mais antigo) e no mesmo dia, o número já é o último: sem aviso.
+    const older = examTrends([exam('2025-03-10', [result('Beta-hCG', 'Negativo')]), exam('2026-09-10', [result('Beta-hCG', '1.200', 'mUI/mL')])]);
+    expect([...older.single, ...older.text].map((i) => [valueLabel(i.last), i.newerText, apartNote(i)])).toEqual([
+      ['1.200 mUI/mL', null, null],
+      ['Negativo', null, null],
+    ]);
+    const sameDay = examTrends([
+      exam('2026-09-10', [result('Glicose', '92', 'mg/dL')], { created_at: '2026-09-10T08:00:00Z' }),
+      exam('2026-09-10', [result('Glicose', 'hemolisado')], { created_at: '2026-09-10T09:00:00Z' }),
+    ]);
+    expect(sameDay.single.map((i) => [i.newerText, apartNote(i)])).toEqual([[null, null]]);
+
+    // Não cruza materiais nem exames de nome genérico.
+    const apart = examTrends([
+      exam('2026-03-10', [result('Glicose', '92', 'mg/dL'), result('Resultado', '5', 'mg/dL')], { title: 'Sangue' }),
+      exam('2026-09-10', [result('Glicose', 'Ausente'), result('Resultado', 'Negativo')], { title: 'EAS' }),
+    ]);
+    expect(apart.single.map((i) => [i.name, i.newerText, apartNote(i)])).toEqual([
+      ['Glicose', null, null],
+      ['Sangue: Resultado', null, null],
+    ]);
+
+    // Com um mais novo em outra unidade e outro em texto, a linha fala do mais novo dos dois.
+    const both = (textDate: string) =>
+      examTrends([
+        exam('2025-03-10', [result('Glicose', '92', 'mg/dL')]),
+        exam('2026-03-10', [result('Glicose', '5,1', 'mmol/L')]),
+        exam(textDate, [result('Glicose', 'hemolisado')]),
+      ]).single.map((i) => [valueLabel(i.last), apartNote(i)]);
+    expect(both('2026-09-10')).toEqual([
+      ['5,1 mmol/L', 'Há um resultado mais recente em texto: hemolisado em 10/09/2026. Não foi comparado.'],
+      ['92 mg/dL', 'Há um resultado mais recente em texto: hemolisado em 10/09/2026. Não foi comparado.'],
+    ]);
+    expect(both('2025-09-10')).toEqual([
+      ['5,1 mmol/L', null],
+      ['92 mg/dL', 'Há um resultado mais recente em outra unidade: 5,1 mmol/L em 10/03/2026. Não foi comparado.'],
+    ]);
+
+    // A contagem ("#") segue o texto dela, e o percentual o dele.
+    const counts = examTrends([
+      exam('2026-03-10', [result('LYM%', '30,5'), result('LYM#', '2,1')]),
+      exam('2026-09-10', [result('LYM#', 'aumentado')]),
+    ]);
+    expect(counts.single.map((i) => [i.name, apartNote(i)])).toEqual([
+      ['LYM%', null],
+      ['LYM#', 'Há um resultado mais recente em texto: aumentado em 10/09/2026. Não foi comparado.'],
     ]);
   });
 
@@ -1238,6 +1535,23 @@ describe('visitSummary', () => {
         '- Ultrassom de tireoide: Conclusão: Nódulo em lobo direito da tireoide (TI-RADS 4) em 01/02/2026 (marcado no laudo: alterado)',
       ].join('\n'),
     );
+    // O mesmo com o nome no plural: o achado marcado do laudo mais antigo continua no resumo.
+    const plural = visitSummary(
+      person(),
+      [
+        exam('2025-03-10', [result('Observações', 'Esteatose hepática leve.', null, 'alterado')], { title: 'Ultrassom de abdome' }),
+        exam('2026-03-10', [result('Observações', 'Sem alterações.')], { title: 'Raio-X de tórax' }),
+      ],
+      [],
+      today,
+    );
+    expect(body(plural)).toBe(
+      [
+        'Últimos resultados:',
+        '- Raio-X de tórax: Observações: Sem alterações. em 10/03/2026',
+        '- Ultrassom de abdome: Observações: Esteatose hepática leve. em 10/03/2025 (marcado no laudo: alterado)',
+      ].join('\n'),
+    );
   });
 
   it('avisa quando há resultado mais novo do mesmo item sem unidade (ou em outra), sem esconder o marcado', () => {
@@ -1275,6 +1589,103 @@ describe('visitSummary', () => {
         '',
         'O que mudou:',
         '- Glicose: 99 mg/dL em 12/03/2026; subiu 7 (8%) desde 10/01/2026. Há um resultado mais recente sem unidade: 130 em 05/09/2026. Não foi comparado.',
+      ].join('\n'),
+    );
+  });
+
+  it('avisa quando o resultado mais novo do mesmo item ficou guardado como texto', () => {
+    const single = visitSummary(
+      person(),
+      [exam('2025-03-10', [result('Carga viral', '1.500', 'cópias/mL', 'alto')]), exam('2026-09-10', [result('Carga viral', 'Indetectável')])],
+      [],
+      today,
+    );
+    expect(body(single)).toBe(
+      [
+        'Últimos resultados:',
+        '- Carga viral: Indetectável em 10/09/2026',
+        '- Carga viral: 1.500 cópias/mL em 10/03/2025 (marcado no laudo: acima). Há um resultado mais recente em texto: Indetectável em 10/09/2026. Não foi comparado.',
+      ].join('\n'),
+    );
+    const series = visitSummary(
+      person(),
+      [
+        exam('2026-03-10', [result('Creatinina', '0,9', 'mg/dL')]),
+        exam('2026-06-10', [result('Creatinina', '1,0', 'mg/dL')]),
+        exam('2026-09-10', [result('Creatinina', '124 µmol/L', 'mg/dL', 'alto')]),
+      ],
+      [],
+      today,
+    );
+    expect(body(series)).toBe(
+      [
+        'Últimos resultados:',
+        '- Creatinina: 124 µmol/L em 10/09/2026 (marcado no laudo: acima)',
+        '',
+        'O que mudou:',
+        '- Creatinina: 1,0 mg/dL em 10/06/2026; subiu 0,1 (11%) desde 10/03/2026. Há um resultado mais recente em texto: 124 µmol/L em 10/09/2026. Não foi comparado.',
+      ].join('\n'),
+    );
+  });
+
+  it('itens de mesmo nome em materiais diferentes: a linha diz de qual material é', () => {
+    const numbers = visitSummary(
+      person(),
+      [
+        exam('2026-03-10', [result('Creatinina', '0,9', 'mg/dL'), result('Glicose', '92', 'mg/dL')], { title: 'Bioquímica' }),
+        exam('2026-03-10', [result('Creatinina', '120', 'mg/dL'), result('Glicose', '50', 'mg/dL')], { title: 'Urina tipo 1' }),
+        exam('2026-09-10', [result('Creatinina', '1,0', 'mg/dL'), result('Glicemia de jejum', '95', 'mg/dL')], { title: 'Bioquímica' }),
+        exam('2026-09-10', [result('Creatinina', '90', 'mg/dL', 'alto'), result('Glicose', '30', 'mg/dL')], { title: 'Urina tipo 1' }),
+      ],
+      [],
+      today,
+    );
+    expect(body(numbers)).toBe(
+      [
+        'Últimos resultados:',
+        '- Creatinina: 1,0 mg/dL em 10/09/2026',
+        '- Glicemia de jejum: 95 mg/dL em 10/09/2026',
+        '- Creatinina (urina): 90 mg/dL em 10/09/2026 (marcado no laudo: acima)',
+        '- Glicose (urina): 30 mg/dL em 10/09/2026',
+        '',
+        'O que mudou:',
+        '- Creatinina (urina): desceu 30 (25%) desde 10/03/2026',
+        '- Creatinina: subiu 0,1 (11%) desde 10/03/2026',
+        '- Glicemia de jejum: subiu 3 (3%) desde 10/03/2026',
+        '- Glicose (urina): desceu 20 (40%) desde 10/03/2026',
+      ].join('\n'),
+    );
+    // Em texto também, e com o outro de mesmo nome fora dos últimos resultados.
+    const mixed = visitSummary(
+      person(),
+      [
+        exam('2026-03-10', [result('Glicose', '95', 'mg/dL'), result('Hemoglobina', '13,5', 'g/dL'), result('Sódio', '140', 'mEq/L')], { title: 'Sangue' }),
+        exam(
+          '2026-09-10',
+          [
+            result('Glicose', 'Ausente'),
+            result('Hemoglobina', 'Ausente'),
+            // Só existe na urina, ou o nome já diz o material: a linha fica como era.
+            result('Densidade', '1,020'),
+            result('Proteínas na urina', 'Traços'),
+            result('Resultado', 'Sem alterações'),
+          ],
+          { title: 'Urina tipo 1' },
+        ),
+        exam('2026-09-11', [result('Sódio', '150', 'mEq/24h')], { title: 'Urina de 24 horas' }),
+      ],
+      [],
+      today,
+    );
+    expect(body(mixed)).toBe(
+      [
+        'Últimos resultados:',
+        '- Sódio (urina de 24 horas): 150 mEq/24h em 11/09/2026',
+        '- Glicose (urina): Ausente em 10/09/2026',
+        '- Hemoglobina (urina): Ausente em 10/09/2026',
+        '- Densidade: 1,020 em 10/09/2026',
+        '- Proteínas na urina: Traços em 10/09/2026',
+        '- Urina tipo 1: Resultado: Sem alterações em 10/09/2026',
       ].join('\n'),
     );
   });
@@ -1388,7 +1799,16 @@ describe('visitSummary', () => {
       exam('2026-09-05', [result('Glicose', '92')]),
     ];
     const apart = examTrends(apartExams);
+    // Um resultado mais novo em texto e o mesmo nome em outro material.
+    const writtenExams = [
+      exam('2026-03-10', [result('Carga viral', '1.500', 'cópias/mL', 'alto'), result('Creatinina', '0,9', 'mg/dL')], { title: 'Sangue' }),
+      exam('2026-09-10', [result('Carga viral', 'Indetectável'), result('Creatinina', '1,0', 'mg/dL')], { title: 'Sangue' }),
+      exam('2026-09-10', [result('Creatinina', '120', 'mg/dL')], { title: 'Urina de 24 horas' }),
+    ];
+    const written = examTrends(writtenExams);
     const outputs = [
+      ...[...written.series, ...written.single].map((i) => apartNote(i) ?? ''),
+      visitSummary(person(), writtenExams, [], today),
       visitSummary(person({ birth_date: '1984-05-02', allergies: 'dipirona', conditions: 'hipertensão' }), exams, medications, today),
       visitSummary(person(), [], [], today),
       ...all.series.flatMap((s) => [s.change, chartDescription(s)]),
