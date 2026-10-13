@@ -273,6 +273,16 @@ describe('ligações ou produtos que não chegaram', () => {
     expect(await mount()).toContain(unchecked);
   });
 
+  it('nenhum item com preço e as ligações não chegaram: o cartão aparece só para dizer isso', async () => {
+    mockQueries.items = loaded([listItem('c', 'Café', null), listItem('l', 'Leite', null)]);
+    mockQueries.links = failed();
+    expect(await mount()).toContain('Não deu para conferir se os itens da lista já têm preço. Puxe a lista para baixo para tentar de novo.');
+    await act(async () => renderer?.unmount());
+    // Carregadas e sem ligação nenhuma: são só itens sem preço, e não há o que avisar.
+    mockQueries.links = loaded(new LinkIndex([]));
+    expect(await mount()).not.toContain('Não deu para conferir');
+  });
+
   it('a primeira busca ainda anda: nada a avisar', async () => {
     mockQueries.links = onTheWay();
     const page = await mount();

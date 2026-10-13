@@ -22,6 +22,7 @@ import {
   uncheckedPricesNote,
 } from '../listEstimate';
 import { LinkIndex, listNameKey } from '../listLinks';
+import { formatBRL } from '../money';
 import { storePriceIndex } from '../priceLevel';
 import type { PurchaseRecord } from '../recentPurchases';
 import { recommendStores } from '../recommendation';
@@ -277,6 +278,19 @@ describe('estimateList', () => {
     expect(estimate.byItem.get('s')).toMatchObject({ cost: 12, unit: 'l', approximateQuantity: true });
     expect(formatItemCost(estimate.byItem.get('q')!)).toBe('~R$ 59,90');
     expect(estimate).toMatchObject({ total: 71.9, approximateCount: 2 });
+  });
+
+  it('o preço estimado de 1 unidade, escrito em reais, é o custo do item: não um centavo a mais', () => {
+    // R$ 31,49 num mercado e R$ 9,57 no outro: num terceiro, cerca de R$ 20,53 (a média). E outros pares, em que
+    // a média cai perto do meio centavo: arredondada duas vezes (4 casas, depois centavos), passava do custo.
+    for (let a = 1000; a < 1400; a += 7) {
+      for (let b = 2001; b < 2040; b += 2) {
+        const quotes = [price('p', 'a', a / 100), price('p', 'b', b / 100), price('q', 'a', 3.33), price('q', 'b', 3.37), price('q', 'c', 3.41)];
+        const one = estimateList([item('i', 'Produto', 'p')], quotes, { storeId: 'c' }).byItem.get('i')!;
+        expect(one.kind).toBe('estimated');
+        expect(formatBRL(one.unitPrice)).toBe(formatBRL(one.cost));
+      }
+    }
   });
 
   it('o preço estimado guarda as 4 casas da nota, não só os centavos', () => {
@@ -1061,6 +1075,33 @@ describe('pantryHits', () => {
     // Caixas compradas depois (e ainda dentro do costume) são estoque novo.
     expect(pantryHits(backed, carton('2026-10-09'), { links, today, ranOut }).size).toBe(1);
 
+    // O costume do nome não vale para a caixa do produto comprada depois do palpite: quem diz se ela acabou é o
+    // histórico do próprio produto. "Leite" deixou de ser marcado em 2 set (era a cada 10 dias) e o Italac passou a
+    // vir nas notas, de 14 em 14 dias: a caixa de 30 set, de 12 dias atrás, continua na despensa.
+    const stale = ranOutItems(
+      [
+        ...['2026-08-13', '2026-08-23', '2026-09-02'].map((day) => purchase('Leite', null, day, 'list')),
+        ...['2026-09-02', '2026-09-16', '2026-09-30'].map((day) => purchase('Leite Integral Italac 1L', 'italac', day, 'receipt')),
+      ],
+      { now: endOf(today) },
+    );
+    expect(stale.map((r) => [r.name, r.productId])).toEqual([['Leite', null]]);
+    expect(pantryHits(backed, carton('2026-09-30'), { links, today, ranOut: stale }).size).toBe(1);
+    // A caixa da mesma ida ao mercado do último "Leite" marcado acabou com ele, e o item digitado "Leite" segue o costume do nome.
+    expect(pantryHits(backed, carton('2026-09-02'), { links, today, ranOut: stale }).size).toBe(0);
+    expect(pantryHits([item('l', 'Leite', null)], carton('2026-09-30'), { links, today, ranOut: stale }).size).toBe(0);
+    // Quando o próprio Italac passa do costume dele (14 dias), o palpite dele, de compra mais recente, é o que vale.
+    const later = '2026-10-20';
+    const both = ranOutItems(
+      [
+        ...['2026-08-13', '2026-08-23', '2026-09-02'].map((day) => purchase('Leite', null, day, 'list')),
+        ...['2026-09-02', '2026-09-16', '2026-09-30'].map((day) => purchase('Leite Integral Italac 1L', 'italac', day, 'receipt')),
+      ],
+      { now: endOf(later) },
+    );
+    expect(both.map((r) => r.productId).sort()).toEqual(['italac', null]);
+    expect(pantryHits(backed, carton('2026-09-30'), { links, today: later, ranOut: both }).size).toBe(0);
+
     // Nome ligado a dois produtos: o palpite não diz qual deles acabou, e a entrada de cada um responde por ela mesma.
     const two = new LinkIndex([
       { name_key: 'leite', product_id: 'italac' },
@@ -1311,8 +1352,11 @@ describe('textos da estimativa', () => {
     // Carregados, ou com todos os itens com preço, não há o que avisar.
     expect(uncheckedPricesNote({ itemCount: 5, pricedCount: 3 }, true)).toBeNull();
     expect(uncheckedPricesNote({ itemCount: 5, pricedCount: 5 }, false)).toBeNull();
-    // Sem item com preço não há conta (nem "outros"): o cartão não aparece.
-    expect(uncheckedPricesNote({ itemCount: 5, pricedCount: 0 }, false)).toBeNull();
+    // Sem item com preço não há conta (nem "outros"): a linha fala da lista toda, e o cartão aparece só com ela.
+    expect(uncheckedPricesNote({ itemCount: 5, pricedCount: 0 }, false)).toBe('Não deu para conferir se os itens da lista já têm preço.');
+    expect(uncheckedPricesNote({ itemCount: 1, pricedCount: 0 }, false)).toBe('Não deu para conferir se o item da lista já tem preço.');
+    expect(uncheckedPricesNote({ itemCount: 5, pricedCount: 0 }, true)).toBeNull();
+    expect(uncheckedPricesNote({ itemCount: 0, pricedCount: 0 }, false)).toBeNull();
   });
 
   it('o que está na despensa, desde quando', () => {

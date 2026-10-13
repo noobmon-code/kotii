@@ -46,9 +46,10 @@ export function ListEstimateCard({
 }) {
   const [choosing, setChoosing] = useState(false);
   const priced = estimate.pricedCount > 0;
-  if (!priced && !inPantry.length) return null;
-  const cartSplit = cartSplitLine(estimate);
   const unchecked = uncheckedPricesNote(estimate, sourcesLoaded);
+  // Sem conta e sem nada na despensa, o cartão só aparece para dizer que não deu para conferir os preços.
+  if (!priced && !inPantry.length && !unchecked) return null;
+  const cartSplit = cartSplitLine(estimate);
   const storeName = storeId ? storeNames?.get(storeId) : undefined;
   const place = kind === 'farmacia' ? 'farmácia' : 'mercado';
 
@@ -77,6 +78,8 @@ export function ListEstimateCard({
             </Row>
           ) : null}
         </>
+      ) : unchecked ? (
+        <Text variant="muted">{`${unchecked} ${RETRY_HINT}`}</Text>
       ) : null}
       {inPantry.length ? (
         <Row gap={space.sm} style={styles.top}>
