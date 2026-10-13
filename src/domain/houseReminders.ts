@@ -1,14 +1,16 @@
 // Avisos da casa por notificação: contas, documentos, tarefas (inclusive
-// manutenções de aparelhos), consultas, vacinas e a dica do clima da manhã. Cada celular escolhe o que
+// manutenções de aparelhos), consultas, vacinas, a dica do clima da manhã e o
+// que está para acabar (gás, água, ração). Cada celular escolhe o que
 // quer receber; o plano sai daqui e o app agenda (src/lib/reminders.ts),
 // refazendo ao abrir, então a janela vai andando.
 
 import { addDays, diffDays, formatBRDate } from './dates';
 import { describeDocumentStatus } from './documents';
 import { formatBRL } from './money';
+import type { SupplyReminder } from './supplies';
 import type { WeatherMorning } from './weather';
 
-export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'weather';
+export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'weather' | 'supplies';
 
 export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint: string }[] = [
   { key: 'bills', label: 'Contas a pagar', hint: 'Na véspera, no dia do vencimento e, se ficar em aberto, uma vez depois, às 9h' },
@@ -21,6 +23,7 @@ export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint
     label: 'Dicas do clima',
     hint: 'Às 7h, quando o tempo pede algo: dia de lavar roupa, chuva, calor, frio, temporal. O bairro da casa se define no cartão do clima da tela Hoje',
   },
+  { key: 'supplies', label: 'Gás, água e ração', hint: 'Uns dias antes de acabar e no dia previsto, pela conta do Kotii, às 9h' },
 ];
 
 export interface HouseReminder {
@@ -61,6 +64,8 @@ export interface HouseReminderInput {
   vaccines?: { id: string; name: string; dose: string | null; person: string; next_dose_on: string | null }[];
   /** A dica mais importante de cada manhã (ver weatherMornings). */
   weather?: WeatherMorning[];
+  /** O que está para acabar, já com as datas e os textos (ver supplyReminders). */
+  supplies?: SupplyReminder[];
   today: string;
   /** HH:MM de agora: aviso de hoje só se o horário ainda não passou. */
   nowTime: string;
@@ -171,6 +176,14 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
   if (kinds.weather) {
     for (const morning of input.weather ?? []) {
       add('weather', 'dia', morning.date, morning.title, morning.body, { at: morning.time });
+    }
+  }
+
+  if (kinds.supplies) {
+    for (const supply of input.supplies ?? []) {
+      // No começo da janela de aviso e no dia previsto; o que já passou não entra.
+      if (supply.warnOn) add('supplies', supply.id, supply.warnOn, supply.warnTitle, supply.body);
+      add('supplies', supply.id, supply.endsOn, supply.endTitle, supply.body);
     }
   }
 

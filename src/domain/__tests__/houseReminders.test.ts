@@ -1,8 +1,9 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { HOUSE_REMINDER_LIMIT, planHouseReminders, type HouseReminderInput } from '../houseReminders';
+import { HOUSE_REMINDER_KINDS, HOUSE_REMINDER_LIMIT, planHouseReminders, type HouseReminderInput } from '../houseReminders';
+import { supplyReminders } from '../supplies';
 
-const all = { bills: true, documents: true, chores: true, appointments: true, vaccines: true, weather: true };
+const all = { bills: true, documents: true, chores: true, appointments: true, vaccines: true, weather: true, supplies: true };
 const base: HouseReminderInput = { kinds: all, bills: [], documents: [], chores: [], today: '2026-09-27', nowTime: '08:00' };
 const bill = { id: 'b1', name: 'Luz', amount: 230, next_due_on: '2026-10-05', active: true, autopay: false };
 const doc = { id: 'd1', title: 'Passaporte — Ana', expires_on: '2026-10-20', remind_days: 15 };
@@ -73,7 +74,7 @@ describe('planHouseReminders', () => {
   });
 
   it('só o que a pessoa escolheu, dentro de 30 dias e com limite', () => {
-    const kinds = { bills: false, documents: false, chores: true, appointments: false, vaccines: false, weather: false };
+    const kinds = { bills: false, documents: false, chores: true, appointments: false, vaccines: false, weather: false, supplies: false };
     expect(planHouseReminders({ ...base, kinds, bills: [bill], documents: [doc], chores: [chore] })).toHaveLength(1);
     expect(planHouseReminders({ ...base, chores: [{ ...chore, due_on: '2026-11-30' }] })).toEqual([]);
     const many = Array.from({ length: 40 }, (_, i) => ({ ...chore, id: `c${i}` }));
@@ -119,5 +120,82 @@ describe('planHouseReminders', () => {
     ]);
     expect(planHouseReminders({ ...base, weather }).map((r) => r.date)).toEqual(['2026-09-28']);
     expect(planHouseReminders({ ...base, kinds: { ...all, weather: false }, weather })).toEqual([]);
+  });
+});
+
+describe('gás, água e ração', () => {
+  const supply = (id: string, kind: string, days: string[], typical_days: number | null = null) => ({
+    id,
+    name: id,
+    kind,
+    typical_days,
+    refills: days.map((refilled_on) => ({ refilled_on })),
+  });
+  const today = '2026-10-12';
+  const at = { ...base, today };
+  // Gás trocado em 19/08 e 03/10: dura 45 dias, deve acabar em 17/11.
+  const gas = supply('Gás de cozinha', 'gas', ['2026-08-19', '2026-10-03']);
+
+  it('o tipo aparece na lista dos avisos, com o rótulo e a dica', () => {
+    expect(HOUSE_REMINDER_KINDS.find((k) => k.key === 'supplies')).toEqual({
+      key: 'supplies',
+      label: 'Gás, água e ração',
+      hint: 'Uns dias antes de acabar e no dia previsto, pela conta do Kotii, às 9h',
+    });
+  });
+
+  it('avisa no começo da janela e no dia previsto, às 9h', () => {
+    // Só se agenda o que cai nos próximos 30 dias: de 12/10, entra o começo da janela (10/11); o dia previsto (17/11), ainda não.
+    expect(planHouseReminders({ ...at, supplies: supplyReminders([gas], today) }).map((r) => r.key)).toEqual(['supplies:Gás de cozinha:2026-11-10']);
+    const later = '2026-11-01';
+    const plan = planHouseReminders({ ...base, today: later, supplies: supplyReminders([gas], later) });
+    expect(plan.map((r) => [r.key, r.kind, r.date, r.time, r.title, r.body])).toEqual([
+      ['supplies:Gás de cozinha:2026-11-10', 'supplies', '2026-11-10', '09:00', 'Gás de cozinha deve acabar em uns 7 dias', 'Trocado em 03/10 · costuma durar 45 dias.'],
+      ['supplies:Gás de cozinha:2026-11-17', 'supplies', '2026-11-17', '09:00', 'Gás de cozinha deve acabar hoje', 'Trocado em 03/10 · costuma durar 45 dias.'],
+    ]);
+  });
+
+  it('nada no passado: dentro da janela só o dia previsto; no dia, só se ainda não deu 9h', () => {
+    const inside = '2026-11-12';
+    expect(planHouseReminders({ ...base, today: inside, supplies: supplyReminders([gas], inside) }).map((r) => r.date)).toEqual(['2026-11-17']);
+    const day = '2026-11-17';
+    const reminders = supplyReminders([gas], day);
+    expect(planHouseReminders({ ...base, today: day, nowTime: '08:00', supplies: reminders }).map((r) => r.title)).toEqual(['Gás de cozinha deve acabar hoje']);
+    expect(planHouseReminders({ ...base, today: day, nowTime: '09:30', supplies: reminders })).toEqual([]);
+    // Depois da data (passou), nenhum aviso.
+    expect(planHouseReminders({ ...base, today: '2026-11-18', supplies: supplyReminders([gas], '2026-11-18') })).toEqual([]);
+  });
+
+  it('sem troca, sem previsão e parado não avisam', () => {
+    const quiet = [supply('Sem troca', 'gas', []), supply('Sem previsão', 'outros', ['2026-10-03']), supply('Parado', 'gas', ['2026-01-01'])];
+    expect(planHouseReminders({ ...at, supplies: supplyReminders(quiet, today) })).toEqual([]);
+  });
+
+  it('tipo desligado não avisa; sem os dados (undefined), nada também', () => {
+    const water = supply('Galão de água', 'agua', ['2026-10-10']);
+    const supplies = supplyReminders([water], today);
+    expect(planHouseReminders({ ...at, supplies })).toHaveLength(2);
+    expect(planHouseReminders({ ...at, kinds: { ...all, supplies: false }, supplies })).toEqual([]);
+    expect(planHouseReminders(at)).toEqual([]);
+  });
+
+  it('disputa o mesmo teto dos outros avisos, por ordem de data', () => {
+    const water = supply('Galão de água', 'agua', ['2026-10-10']);
+    const chores = [
+      { ...chore, id: 'antes', due_on: '2026-10-15' },
+      { ...chore, id: 'entre', due_on: '2026-10-19' },
+      { ...chore, id: 'depois', due_on: '2026-10-25' },
+    ];
+    const input = { ...at, chores, supplies: supplyReminders([water], today) };
+    expect(planHouseReminders(input).map((r) => r.key)).toEqual([
+      'chores:antes:2026-10-15',
+      'supplies:Galão de água:2026-10-18',
+      'chores:entre:2026-10-19',
+      'supplies:Galão de água:2026-10-20',
+      'chores:depois:2026-10-25',
+    ]);
+    expect(planHouseReminders({ ...input, limit: 2 }).map((r) => r.key)).toEqual(['chores:antes:2026-10-15', 'supplies:Galão de água:2026-10-18']);
+    const many = Array.from({ length: 40 }, (_, i) => supply(`s${i}`, 'agua', ['2026-10-10']));
+    expect(planHouseReminders({ ...at, supplies: supplyReminders(many, today) })).toHaveLength(HOUSE_REMINDER_LIMIT);
   });
 });

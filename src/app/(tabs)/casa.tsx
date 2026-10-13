@@ -7,6 +7,7 @@ import { ShoppingListsPanel } from '@/features/ShoppingListsPanel';
 import { useChores, usePantry } from '@/data/home';
 import { useEquipmentList } from '@/data/house';
 import { useShoppingLists } from '@/data/market';
+import { useSupplies } from '@/data/supplies';
 import { PageTitle, Screen, Segmented } from '@/ui/primitives';
 
 type Tab = 'compras' | 'despensa' | 'tarefas' | 'aparelhos';
@@ -22,10 +23,16 @@ export default function HouseScreen() {
   const pantry = usePantry();
   const chores = useChores();
   const equipment = useEquipmentList();
+  const supplies = useSupplies();
   const active = { compras: lists, despensa: pantry, tarefas: chores, aparelhos: equipment }[tab];
+  // Na Despensa, puxar para atualizar traz também o gás, a água e a ração.
+  const refresh = () => {
+    active.refetch();
+    if (tab === 'despensa') supplies.refetch();
+  };
 
   return (
-    <Screen fab refreshing={active.isRefetching} onRefresh={() => active.refetch()}>
+    <Screen fab refreshing={active.isRefetching} onRefresh={refresh}>
       <PageTitle title="Casa" subtitle="Compras, despensa, tarefas e aparelhos" tint="blue" />
       <Segmented
         value={tab}

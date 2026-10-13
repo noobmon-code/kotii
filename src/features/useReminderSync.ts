@@ -6,11 +6,13 @@ import { fetchBills, useBills } from '@/data/finance';
 import { fetchChores, fetchMedications, useChores, useMedications } from '@/data/home';
 import { fetchAppointments, fetchPeople, fetchVaccines, useAppointments, usePeople, useVaccines } from '@/data/health';
 import { fetchDocuments, fetchEquipmentList, useDocuments, useEquipmentList } from '@/data/house';
+import { fetchSupplies, useSupplies } from '@/data/supplies';
 import { fetchHouseholdLocation, forecastQuery, useForecast, useHouseholdLocation, type HouseholdLocation } from '@/data/weather';
 import { todayISO, toISODate } from '@/domain/dates';
 import { pendingNextDoses } from '@/domain/health';
 import { HOUSE_REMINDER_LIMIT } from '@/domain/houseReminders';
 import { currentTimeHHMM } from '@/domain/medications';
+import { supplyReminders } from '@/domain/supplies';
 import { weatherContext, weatherMornings, type Forecast } from '@/domain/weather';
 import { type HouseholdSummary, useHousehold } from '@/lib/auth';
 import {
@@ -40,7 +42,9 @@ interface WeatherInput {
 /**
  * Consultas, vacinas e o clima só entram quando eles e as fichas carregaram;
  * sem eles (undefined), contas, documentos e tarefas seguem normais e os
- * avisos de saúde e do clima já agendados ficam como estão.
+ * avisos de saúde e do clima já agendados ficam como estão. As reposições
+ * (gás, água, ração) seguem a mesma regra; num banco ainda sem as tabelas
+ * delas a busca devolve uma lista vazia, e não há aviso.
  */
 function toHouseReminderData(
   bills: Rows<typeof useBills>,
@@ -50,6 +54,7 @@ function toHouseReminderData(
   vaccines: Rows<typeof useVaccines> | undefined,
   people: Rows<typeof usePeople> | undefined,
   { location, forecast, equipment }: WeatherInput,
+  supplies: Rows<typeof useSupplies> | undefined,
 ): HouseReminderData {
   const today = todayISO();
   const personName = (id: string) => people?.find((p) => p.id === id)?.name ?? '';
@@ -83,13 +88,14 @@ function toHouseReminderData(
           ? // Às 7h da casa (pelo fuso dela), a partir de hoje lá.
             weatherMornings(forecast, weatherContext(people, chores, equipment, today))
           : undefined,
+    supplies: supplies && supplyReminders(supplies.supplies, today),
   };
 }
 
 /**
- * Contas, documentos, tarefas, consultas, vacinas e o clima para os avisos da
- * casa (`data`, null enquanto carrega) e `refetch`, que busca tudo de novo e
- * devolve o resultado.
+ * Contas, documentos, tarefas, consultas, vacinas, o clima e as reposições
+ * para os avisos da casa (`data`, null enquanto carrega) e `refetch`, que
+ * busca tudo de novo e devolve o resultado.
  */
 export function useHouseReminderData() {
   const bills = useBills();
@@ -101,17 +107,23 @@ export function useHouseReminderData() {
   const location = useHouseholdLocation();
   const forecast = useForecast(location.data);
   const equipment = useEquipmentList();
+  const supplies = useSupplies();
   // Mesmo objeto enquanto os dados não mudam: não refaz os avisos à toa.
   const data = useMemo<HouseReminderData | null>(
     () =>
       bills.data && documents.data && chores.data
-        ? toHouseReminderData(bills.data, documents.data, chores.data, appointments.data, vaccines.data, people.data, {
-            location: location.data,
-            forecast: forecast.data,
-            equipment: equipment.data,
-          })
+        ? toHouseReminderData(
+            bills.data,
+            documents.data,
+            chores.data,
+            appointments.data,
+            vaccines.data,
+            people.data,
+            { location: location.data, forecast: forecast.data, equipment: equipment.data },
+            supplies.data,
+          )
         : null,
-    [bills.data, documents.data, chores.data, appointments.data, vaccines.data, people.data, location.data, forecast.data, equipment.data],
+    [bills.data, documents.data, chores.data, appointments.data, vaccines.data, people.data, location.data, forecast.data, equipment.data, supplies.data],
   );
   const { refetch: refetchBills } = bills;
   const { refetch: refetchDocuments } = documents;
@@ -121,9 +133,10 @@ export function useHouseReminderData() {
   const { refetch: refetchPeople } = people;
   const { refetch: refetchLocation } = location;
   const { refetch: refetchEquipment } = equipment;
+  const { refetch: refetchSupplies } = supplies;
   const queryClient = useQueryClient();
   const refetch = useCallback(async (): Promise<HouseReminderData | null> => {
-    const [b, d, c, a, v, p, l, e] = await Promise.all([
+    const [b, d, c, a, v, p, l, e, s] = await Promise.all([
       refetchBills(),
       refetchDocuments(),
       refetchChores(),
@@ -132,13 +145,25 @@ export function useHouseReminderData() {
       refetchPeople(),
       refetchLocation(),
       refetchEquipment(),
+      refetchSupplies(),
     ]);
     // A previsão do local de agora; a guardada vale enquanto não passa de uma hora.
     const forecast = l.data ? await queryClient.fetchQuery(forecastQuery(l.data)).catch(() => undefined) : undefined;
     return b.data && d.data && c.data
-      ? toHouseReminderData(b.data, d.data, c.data, a.data, v.data, p.data, { location: l.data, forecast, equipment: e.data })
+      ? toHouseReminderData(b.data, d.data, c.data, a.data, v.data, p.data, { location: l.data, forecast, equipment: e.data }, s.data)
       : null;
-  }, [refetchBills, refetchDocuments, refetchChores, refetchAppointments, refetchVaccines, refetchPeople, refetchLocation, refetchEquipment, queryClient]);
+  }, [
+    refetchBills,
+    refetchDocuments,
+    refetchChores,
+    refetchAppointments,
+    refetchVaccines,
+    refetchPeople,
+    refetchLocation,
+    refetchEquipment,
+    refetchSupplies,
+    queryClient,
+  ]);
   return { data, refetch };
 }
 
@@ -178,7 +203,7 @@ export async function syncOtherHouses(queryClient: QueryClient, households: Pick
       }
       if (!houseKinds) continue;
       const optional = <T,>(promise: Promise<T>) => promise.catch(() => undefined);
-      const [bills, documents, chores, appointments, vaccines, people, location, equipment] = await Promise.all([
+      const [bills, documents, chores, appointments, vaccines, people, location, equipment, supplies] = await Promise.all([
         fetchBills(db),
         fetchDocuments(db),
         fetchChores(db),
@@ -187,10 +212,11 @@ export async function syncOtherHouses(queryClient: QueryClient, households: Pick
         optional(fetchPeople(db)),
         optional(fetchHouseholdLocation(db)),
         optional(fetchEquipmentList(db)),
+        optional(fetchSupplies(db)),
       ]);
       const forecast = location ? await queryClient.fetchQuery(forecastQuery(location)).catch(() => undefined) : undefined;
       await syncHouseReminders(
-        toHouseReminderData(bills, documents, chores, appointments, vaccines, people, { location, forecast, equipment }),
+        toHouseReminderData(bills, documents, chores, appointments, vaccines, people, { location, forecast, equipment }, supplies),
         { householdId: house.id, label: house.name, limit: houseReminderLimit(households.length) },
       );
     } catch {

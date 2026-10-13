@@ -1,10 +1,10 @@
 // Lembretes como notificações locais. Ficam no aparelho: cada pessoa da
 // família escolhe de quais remédios quer ser lembrada (só tocam dentro do
 // período do tratamento, ver planReminders) e quais avisos da casa quer
-// receber: contas, documentos, tarefas, consultas, vacinas e a dica do clima
-// da manhã (ver planHouseReminders). Quem tem várias casas recebe os de
-// todas: cada lembrete guardado diz de que casa é, e cada sincronização mexe
-// só nos da casa que ela recebeu.
+// receber: contas, documentos, tarefas, consultas, vacinas, a dica do clima
+// da manhã e o que está para acabar (ver planHouseReminders). Quem tem várias
+// casas recebe os de todas: cada lembrete guardado diz de que casa é, e cada
+// sincronização mexe só nos da casa que ela recebeu.
 // No navegador, a mesma agenda fica no servidor e chega por Web Push (ver
 // src/lib/webPush.ts): cada navegador inscrito é um "aparelho".
 
@@ -416,15 +416,19 @@ const NO_HOUSE_KINDS: Record<HouseReminderKind, boolean> = {
   appointments: false,
   vaccines: false,
   weather: false,
+  supplies: false,
 };
 
 /**
- * Consultas, vacinas ou clima undefined: ainda não carregaram (os avisos
- * deles já agendados ficam como estão). `weatherPlace`: de onde é a previsão
- * (as coordenadas do local da casa; null sem local; undefined se o local não
- * carregou).
+ * Consultas, vacinas, clima ou reposições undefined: ainda não carregaram (os
+ * avisos deles já agendados ficam como estão). `weatherPlace`: de onde é a
+ * previsão (as coordenadas do local da casa; null sem local; undefined se o
+ * local não carregou).
  */
-export type HouseReminderData = Pick<HouseReminderInput, 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'weather'> & {
+export type HouseReminderData = Pick<
+  HouseReminderInput,
+  'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'weather' | 'supplies'
+> & {
   weatherPlace?: string | null;
 };
 
@@ -545,12 +549,13 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
       data.weatherPlace !== previous.weatherPlace;
     const weather = moved ? [] : data.weather;
     const weatherPlace = weather !== undefined ? data.weatherPlace : previous?.weatherPlace;
-    // Consultas, vacinas ou previsão que não carregaram: os avisos delas já
-    // agendados ficam como estão, e os outros tipos seguem normais.
+    // Consultas, vacinas, previsão ou reposições que não carregaram: os avisos
+    // delas já agendados ficam como estão, e os outros tipos seguem normais.
     const unknown = new Set<HouseReminderKind>([
       ...(data.appointments === undefined ? (['appointments'] as const) : []),
       ...(data.vaccines === undefined ? (['vaccines'] as const) : []),
       ...(weather === undefined ? (['weather'] as const) : []),
+      ...(data.supplies === undefined ? (['supplies'] as const) : []),
     ]);
     // Aviso de atraso cuja hora já passou tocou: aquela conta (ou vacina) não
     // avisa de novo. Guarda só as que continuam atrasadas (paga, o vencimento
@@ -583,6 +588,7 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
       appointments: kinds.appointments && !unknown.has('appointments'),
       vaccines: kinds.vaccines && !unknown.has('vaccines'),
       weather: kinds.weather && !unknown.has('weather'),
+      supplies: kinds.supplies && !unknown.has('supplies'),
     };
     // Com mais de uma casa, o aviso diz de qual é.
     const plan = planHouseReminders({ ...data, weather, kinds: planKinds, today, nowTime, limit, overdueWarned: warned }).map((r) =>

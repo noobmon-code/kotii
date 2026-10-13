@@ -334,6 +334,28 @@ describe('no navegador (Web Push)', () => {
       expect(web.unregistered()).toBe(1);
     });
   });
+
+  it('gás, água e ração: pela mesma API, os avisos vão para a agenda do servidor', async () => {
+    await onWeb(true, async (reminders, web) => {
+      expect(await reminders.setHouseReminderKind('supplies', true)).toBe(true);
+      const supplies = [
+        {
+          id: 's1',
+          warnOn: '2026-10-01',
+          warnTitle: 'Gás de cozinha deve acabar em uns 7 dias',
+          endsOn: '2026-10-08',
+          endTitle: 'Gás de cozinha deve acabar hoje',
+          body: 'Trocado em 24/08 · costuma durar 45 dias.',
+        },
+      ];
+      await reminders.syncHouseReminders({ bills: [], documents: [], chores: [], supplies }, { householdId: 'casa', today: '2026-09-27', nowTime: '08:00' });
+      const sent = [...web.scheduled.values()] as { content: { title: string; body: string; data: unknown }; trigger: { type: string; date: Date } }[];
+      expect(sent.map((r) => [r.content.title, r.content.body, r.content.data, r.trigger.type, r.trigger.date.getDate(), r.trigger.date.getHours()])).toEqual([
+        ['Gás de cozinha deve acabar em uns 7 dias', 'Trocado em 24/08 · costuma durar 45 dias.', { reminder: 'supplies:s1:2026-10-01', householdId: 'casa' }, 'date', 1, 9],
+        ['Gás de cozinha deve acabar hoje', 'Trocado em 24/08 · costuma durar 45 dias.', { reminder: 'supplies:s1:2026-10-08', householdId: 'casa' }, 'date', 8, 9],
+      ]);
+    });
+  });
 });
 
 describe('house reminders', () => {
@@ -389,7 +411,26 @@ describe('house reminders', () => {
         appointments: false,
         vaccines: false,
         weather: false,
+        supplies: false,
       });
+    });
+  });
+
+  it('aparelho com escolhas guardadas de antes ganha o tipo novo desligado, sem perder as que tinha', async () => {
+    await withHouse(async (reminders, { storage }) => {
+      // Como uma versão anterior gravou: sem a chave `supplies`.
+      storage.set('house-reminders:kinds', JSON.stringify({ bills: true, documents: false, chores: true, appointments: false, vaccines: false, weather: true }));
+      expect(await reminders.getHouseReminderKinds()).toEqual({
+        bills: true,
+        documents: false,
+        chores: true,
+        appointments: false,
+        vaccines: false,
+        weather: true,
+        supplies: false,
+      });
+      await reminders.setHouseReminderKind('supplies', true);
+      expect(await reminders.getHouseReminderKinds()).toMatchObject({ bills: true, chores: true, weather: true, supplies: true });
     });
   });
 
@@ -517,6 +558,50 @@ describe('house reminders', () => {
       // A previsão do lugar novo chega: agenda de novo.
       await reminders.syncHouseReminders({ ...data, weather, weatherPlace: '-15.82,-47.9' }, { householdId: 'casa', today });
       expect(kindsOf(live)).toEqual(['weather']);
+    });
+  });
+
+  const gas = {
+    id: 's1',
+    warnOn: '2026-10-01',
+    warnTitle: 'Gás de cozinha deve acabar em uns 7 dias',
+    endsOn: '2026-10-08',
+    endTitle: 'Gás de cozinha deve acabar hoje',
+    body: 'Trocado em 24/08 · costuma durar 45 dias.',
+  };
+
+  it('gás, água e ração: dois avisos; sem os dados (a busca falhou), os já agendados ficam; trocou, refaz', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('bills', true);
+      await reminders.setHouseReminderKind('supplies', true);
+      const keys = () => [...live.values()].map((r) => r.content.data.reminder).filter((k) => k.startsWith('supplies:')).sort();
+      await reminders.syncHouseReminders({ ...data, supplies: [gas] }, { householdId: 'casa', today });
+      expect(keys()).toEqual(['supplies:s1:2026-10-01', 'supplies:s1:2026-10-08']);
+      const ids = [...live.entries()].filter(([, r]) => r.content.data.reminder.startsWith('supplies:')).map(([id]) => id);
+      // As reposições não carregaram e a conta mudou: os avisos delas ficam como estão.
+      await reminders.syncHouseReminders({ ...data, bills: [{ ...data.bills[0], next_due_on: '2026-10-10' }] }, { householdId: 'casa', today });
+      expect(ids.every((id) => live.has(id))).toBe(true);
+      expect(kindsOf(live)).toEqual(['bills', 'supplies']);
+      // "Troquei hoje": a previsão anda e os avisos são refeitos nas datas novas.
+      const refilled = { ...gas, warnOn: '2026-11-04', endsOn: '2026-11-11', body: 'Trocado em 27/09 · costuma durar 45 dias.' };
+      await reminders.syncHouseReminders({ ...data, supplies: [refilled] }, { householdId: 'casa', today: '2026-10-10' });
+      expect(keys()).toEqual(['supplies:s1:2026-11-04']);
+      // Banco ainda sem as tabelas (a busca devolve vazio): nenhum aviso.
+      await reminders.syncHouseReminders({ ...data, supplies: [] }, { householdId: 'casa', today });
+      expect(keys()).toEqual([]);
+    });
+  });
+
+  it('gás, água e ração: desligado, nada é agendado; desligar cancela só os dele', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('bills', true);
+      await reminders.syncHouseReminders({ ...data, supplies: [gas] }, { householdId: 'casa', today });
+      expect(kindsOf(live)).toEqual(['bills']);
+      await reminders.setHouseReminderKind('supplies', true);
+      await reminders.syncHouseReminders({ ...data, supplies: [gas] }, { householdId: 'casa', today });
+      expect(kindsOf(live)).toEqual(['bills', 'supplies']);
+      await reminders.setHouseReminderKind('supplies', false);
+      expect(kindsOf(live)).toEqual(['bills']);
     });
   });
 

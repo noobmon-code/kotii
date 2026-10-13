@@ -10,6 +10,7 @@ import { useDocuments, useEquipmentList } from '@/data/house';
 import { useAppointments, usePeople } from '@/data/health';
 import { useAddToMarketList } from '@/data/market';
 import { useMenu } from '@/data/menu';
+import { useSupplies } from '@/data/supplies';
 import { functionErrorMessage } from '@/data/images';
 import { budgetProgress } from '@/domain/budget';
 import { addDays } from '@/domain/dates';
@@ -21,6 +22,7 @@ import { doseKey, dosesForDay } from '@/domain/medications';
 import { menuLines } from '@/domain/menu';
 import { buildNukeContext, parseActions, type NukeAction, type NukeScreen, type NukeSnapshot } from '@/domain/nuke';
 import { expiryStatus, groupPantry } from '@/domain/pantry';
+import { supplyLines } from '@/domain/supplies';
 import { useHousehold } from '@/lib/auth';
 import { supabase, unwrap } from '@/lib/supabase';
 
@@ -67,6 +69,9 @@ export function useNukeContext(today: string): NukeContextState {
   const documents = useDocuments();
   const equipment = useEquipmentList();
   const menu = useMenu(today, addDays(today, 6));
+  // Fora de `queries`: o retrato não espera pelas reposições nem falha com
+  // elas. Se ainda não chegaram (ou o banco não tem as tabelas), a linha fica de fora.
+  const supplies = useSupplies();
 
   const queries = [
     household,
@@ -126,6 +131,7 @@ export function useNukeContext(today: string): NukeContextState {
       .filter((g) => g.expiresOn && ['vencido', 'vence_logo'].includes(expiryStatus(g.expiresOn, today).kind))
       .map((g) => ({ name: g.name, expires_on: g.expiresOn! })),
     pantry: pantryGroups.map((group) => group.name),
+    supplies: supplies.data ? supplyLines(supplies.data.supplies, today) : undefined,
     shopping: [...shopping].map(([list, items]) => ({ list, items })),
     menu: menuLines(menu.data ?? []),
     bills: (bills.data ?? [])
