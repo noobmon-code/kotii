@@ -273,7 +273,7 @@ Um Nuke só de finanças que lê os extratos dos seus bancos (conta e cartão) e
 
 ```bash
 npm test          # regras de negócio: recomendação de mercado, validade, datas, revisão de nota…
-npm run test:db   # sobe um Postgres temporário e testa migrations + isolamento entre famílias (RLS)
+npm run test:db   # sobe um Postgres temporário e testa migrations + isolamento entre famílias (RLS) e permissões das tabelas novas
 npm run typecheck
 npm run lint
 ```
