@@ -8,7 +8,7 @@
 import type { Recurrence } from './chores';
 import { addDays, diffDays, formatBRDate } from './dates';
 import { describeDocumentStatus } from './documents';
-import { calendarEntries, eventReminderTexts, type FamilyCalendar } from './familyEvents';
+import { calendarEntries, entryShortDetail, eventReminderTexts, type CalendarEntry, type FamilyCalendar } from './familyEvents';
 import { weekdayOf } from './health';
 import { formatBRL } from './money';
 import type { WeatherMorning } from './weather';
@@ -34,7 +34,7 @@ export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint
   {
     key: 'eve',
     label: 'Resumo de amanhã',
-    hint: 'Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, contas, tarefas, vacinas e documentos. Só quando há alguma coisa. Com ele ligado, a consulta de amanhã vem nele, no lugar do aviso das 19h',
+    hint: 'Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, compromissos, aniversários, contas, tarefas, vacinas e documentos. Só quando há alguma coisa. Com ele ligado, a consulta e o compromisso de amanhã vêm nele, no lugar do aviso das 19h',
   },
 ];
 
@@ -123,15 +123,19 @@ export interface HouseReminderInput {
   overdueWarned?: string[];
 }
 
-/** A ordem dos itens no resumo de amanhã. Uma fonte nova de itens entra aqui, em EveSummaryInput e em eveItems. */
-const EVE_ORDER = ['appointments', 'bills', 'vaccines', 'chores', 'documents', 'equipment'] as const;
+/**
+ * A ordem dos itens no resumo de amanhã: primeiro o que tem hora, consultas e
+ * compromissos juntos (ver eveItems); depois, fonte por fonte. Uma fonte nova
+ * de itens entra aqui, em EveSummaryInput e em eveItems.
+ */
+const EVE_ORDER = ['appointments', 'events', 'birthdays', 'bills', 'vaccines', 'chores', 'documents', 'equipment'] as const;
 
 export interface EveItem {
   source: (typeof EVE_ORDER)[number];
-  /** O item de origem (a consulta, a conta…). */
+  /** O item de origem (a consulta, a conta…); no compromisso, ele e o dia (occurrenceId). */
   id: string;
   text: string;
-  /** Ordem dentro da fonte (a hora da consulta); igual ou sem ela, pelo texto. */
+  /** A hora (da consulta, do compromisso), para a ordem; sem ela, vazio, e a ordem é pelo texto. */
   sort: string;
   /** O local da consulta cedo: vai depois do texto, e é o primeiro a encolher quando falta espaço. */
   place?: string;
@@ -146,7 +150,7 @@ export interface EveSummary {
   written: number;
 }
 
-type EveSummaryInput = Pick<HouseReminderInput, 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'equipment'>;
+type EveSummaryInput = Pick<HouseReminderInput, 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'family' | 'equipment'>;
 
 const WEEKDAY_NAMES = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
 
@@ -186,9 +190,35 @@ function eveVaccines(vaccines: NonNullable<EveSummaryInput['vaccines']>, day: st
   });
 }
 
+/** O compromisso e o dia: a vez de um dia não se confunde com a de outro, nos avisos e no resumo que a leva. */
+const occurrenceId = (entry: Pick<CalendarEntry, 'id' | 'date'>) => `${entry.id}@${entry.date}`;
+
+/**
+ * Os compromissos e os aniversários do dia: "16h Festa do João (Ana, Carla
+ * leva)", "Aniversário de Ana (faz 8 anos)". A rotina (a vez de toda semana
+ * com quem leva e quem busca de sempre) fica de fora, como a tarefa de todo
+ * dia: faria o resumo tocar toda noite sem dizer nada de novo. Dia marcado
+ * como "não vai ter" não vem, e quem leva ou busca é o daquele dia.
+ */
+function eveFamily(family: FamilyCalendar, day: string): Pick<EveItem, 'source' | 'id' | 'text' | 'sort'>[] {
+  return calendarEntries(family, day, day)
+    .filter((entry) => !entry.routine)
+    .map((entry) => {
+      const birthday = entry.kind === 'aniversario';
+      const detail = entryShortDetail(entry);
+      return {
+        source: birthday ? ('birthdays' as const) : ('events' as const),
+        id: birthday ? entry.id : occurrenceId(entry),
+        text: `${entry.time ? `${shortTime(entry.time)} ` : ''}${entry.title}${detail ? ` (${detail})` : ''}`,
+        sort: entry.time ?? '',
+      };
+    });
+}
+
 /**
  * O que a casa tem em `day`, na ordem do resumo. Só datas que os dados já
- * têm: as repetições que a Agenda mostra como previsão não entram.
+ * têm: as repetições que a Agenda mostra como previsão não entram (as dos
+ * compromissos da família, sim: as datas deles saem da regra).
  */
 function eveItems(input: EveSummaryInput, day: string): EveItem[] {
   const item = (source: EveItem['source'], id: string, text: string, sort = ''): EveItem => ({ source, id, text, sort });
@@ -200,6 +230,7 @@ function eveItems(input: EveSummaryInput, day: string): EveItem[] {
         // A consulta cedo não tem o aviso de 2 horas antes, que diria onde é: o local vai aqui.
         ...(a.location && !appointmentLeadTime(a.time) ? { place: a.location } : {}),
       })),
+    ...(input.family ? eveFamily(input.family, day) : []).map((e) => item(e.source, e.id, e.text, e.sort)),
     // Débito automático não precisa de ninguém, como nos avisos de conta. Sem
     // o valor, só o nome não diria que é uma conta.
     ...input.bills
@@ -213,10 +244,16 @@ function eveItems(input: EveSummaryInput, day: string): EveItem[] {
     ...input.documents.filter((d) => d.expires_on === day).map((d) => item('documents', d.id, `Vence: ${d.title}`)),
     ...(input.equipment ?? []).filter((e) => e.warranty_until === day).map((e) => item('equipment', e.id, `Fim da garantia: ${e.name}`)),
   ];
+  const order = (i: EveItem) => EVE_ORDER.indexOf(i.source);
+  // O que tem hora vem primeiro, consultas e compromissos juntos, pela hora (na
+  // mesma hora, a consulta antes); depois os compromissos sem horário, os
+  // aniversários e o resto, fonte por fonte.
+  const turn = (i: EveItem) => (i.source === 'appointments' || i.sort ? 0 : order(i));
   return items.sort(
     (a, b) =>
-      EVE_ORDER.indexOf(a.source) - EVE_ORDER.indexOf(b.source) ||
+      turn(a) - turn(b) ||
       a.sort.localeCompare(b.sort) ||
+      order(a) - order(b) ||
       a.text.localeCompare(b.text, 'pt-BR') ||
       a.id.localeCompare(b.id),
   );
@@ -286,6 +323,7 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
   const nextSlot = time > nowTime ? today : addDays(today, 1);
   const warned = new Set(input.overdueWarned ?? []);
   const out: HouseReminder[] = [];
+  const keyOf = (kind: HouseReminderKind, id: string, date: string, at = time) => `${kind}:${id}:${date}${at === time ? '' : `:${at}`}`;
   const add = (
     kind: HouseReminderKind,
     id: string,
@@ -295,7 +333,7 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
     { at = time, overdue }: { at?: string; overdue?: string } = {},
   ) => {
     if (!upcoming(date, at)) return null;
-    const key = `${kind}:${id}:${date}${at === time ? '' : `:${at}`}`;
+    const key = keyOf(kind, id, date, at);
     out.push({ key, kind, date, time: at, title, body, ...(overdue ? { overdue } : {}) });
     return key;
   };
@@ -308,10 +346,13 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
 
   // Resumo de amanhã: uma noite para cada um dos próximos dias que têm algo
   // (hoje, só se ainda não deu a hora). A consulta escrita num resumo fica sem
-  // o "Consulta amanhã" dela: uma notificação à noite, e não duas. A que não
-  // está em nenhum (véspera além dessas noites, ou só no "e mais N") mantém o dela.
-  // `carried`: a consulta e o resumo (a chave dele) que a leva escrita.
+  // o "Consulta amanhã" dela, e o compromisso, sem o "Amanhã: …" dele: uma
+  // notificação à noite, e não duas. O que não está em nenhum (véspera além
+  // dessas noites, ou só no "e mais N") mantém o aviso próprio.
+  // `carried`: a consulta ou o compromisso (com a fonte na frente, para um não
+  // se passar pelo outro) e o resumo (a chave dele) que o leva escrito.
   const carried = new Map<string, string>();
+  const carriedKey = (source: 'appointments' | 'events', id: string) => `${source}:${id}`;
   if (kinds.eve) {
     for (let i = 0; i < EVE_SUMMARY_DAYS; i++) {
       const evening = addDays(today, i);
@@ -319,12 +360,14 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
       const key = summary && add('eve', 'amanha', evening, summary.title, summary.body, { at: EVE_SUMMARY_TIME });
       if (!key) continue;
       for (const item of summary.items.slice(0, summary.written)) {
-        if (item.source === 'appointments') carried.set(item.id, key);
+        if (item.source === 'appointments' || item.source === 'events') carried.set(carriedKey(item.source, item.id), key);
       }
     }
   }
-  // Resumos que estão no lugar de um "Consulta amanhã" (ver o teto, no fim).
+  // Resumos que estão no lugar de um aviso de véspera das 19h (ver o teto, no fim): de um "Consulta amanhã"…
   const standIn = new Set<string>();
+  // …e de um "Amanhã: …" de compromisso, com a chave da primeira véspera que substituem (a vez deles na parte dos compromissos).
+  const forEvents = new Map<string, string>();
 
   if (kinds.bills) {
     for (const bill of input.bills) {
@@ -367,7 +410,7 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
       if (a.status !== 'agendada') continue;
       const where = a.location ? ` (${a.location})` : '';
       const body = `${a.title} — ${a.person}, às ${a.time}${where}.`;
-      const summary = carried.get(a.id);
+      const summary = carried.get(carriedKey('appointments', a.id));
       if (summary) standIn.add(summary);
       else add('appointments', a.id, addDays(a.date, -1), 'Consulta amanhã', body, { at: APPOINTMENT_EVE_TIME });
       // Duas horas antes, mas não de madrugada: consulta cedo fica só com a véspera.
@@ -382,13 +425,20 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
     for (const entry of calendarEntries(input.family, today, addDays(last, 1))) {
       const texts = eventReminderTexts(entry);
       // Compromisso e dia: a véspera de uma vez não se confunde com o aviso da vez anterior.
-      const id = `${entry.id}@${entry.date}`;
+      const id = occurrenceId(entry);
       const at = eventDayTime(entry.time);
       // A rotina (toda semana, com quem leva e quem busca de sempre) avisa só
       // no dia: véspera toda noite vira barulho. Sem aviso no dia, ou com ele de
       // madrugada (antes das 7h, quando ninguém vê), a véspera fica.
       const dayOnly = entry.routine && at !== null && at >= EVENT_EARLY_TIME;
-      if (texts.eve && !dayOnly) add('events', id, addDays(entry.date, -1), texts.eve, texts.body, { at: EVENT_EVE_TIME });
+      // Escrito no resumo daquela noite, a véspera é ele (o aniversário não tem véspera, e a rotina não vai no resumo).
+      const summary = entry.kind === 'compromisso' ? carried.get(carriedKey('events', id)) : undefined;
+      const eve = addDays(entry.date, -1);
+      if (summary) {
+        const key = keyOf('events', id, eve, EVENT_EVE_TIME);
+        const first = forEvents.get(summary);
+        if (!first || key.localeCompare(first) < 0) forEvents.set(summary, key);
+      } else if (texts.eve && !dayOnly) add('events', id, eve, texts.eve, texts.body, { at: EVENT_EVE_TIME });
       if (at) add('events', id, entry.date, texts.today, texts.body, { at });
     }
   }
@@ -423,34 +473,42 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
   // e os das noites mais distantes saem primeiro. O custo: com ele ligado, um
   // aviso próprio de dois ou mais dias adiante pode esperar a janela andar (o
   // plano é refeito a cada vez que o app abre). O resumo que está no lugar de
-  // um "Consulta amanhã" vale como o aviso que substitui, na vez dele.
+  // um aviso de véspera (de consulta ou de compromisso) vale como o aviso que
+  // substitui, na vez dele: às 19h daquela noite (o da consulta, antes de
+  // qualquer outro das 19h; o que é só de compromissos, onde estaria a véspera).
   const placed = (r: HouseReminder) => {
     if (r.kind !== 'eve') return r;
     if (standIn.has(r.key)) return { ...r, time: APPOINTMENT_EVE_TIME, key: '' };
+    const eve = forEvents.get(r.key);
+    if (eve) return { ...r, time: EVENT_EVE_TIME, key: eve };
     return { ...r, date: addDays(r.date, 1), time: END_OF_DAY };
   };
-  const plain = (r: HouseReminder) => r.kind === 'eve' && !standIn.has(r.key);
+  const plain = (r: HouseReminder) => r.kind === 'eve' && !standIn.has(r.key) && !forEvents.has(r.key);
   // Os compromissos têm a sua parte do teto: uma rotina dá aviso quase todo
   // dia e, sozinha, tomaria as vagas das contas e dos documentos. Ficam com
   // metade, ou com as vagas que os outros tipos não usam, se forem mais. O
   // resumo comum de uma noite não entra nessa conta (a vez dele é a da fila):
   // senão o de uma noite distante tiraria a vaga de um compromisso de antes.
-  const others = out.filter((r) => r.kind !== 'events');
-  const own = others.filter((r) => !plain(r)).length;
-  const events = out
-    .filter((r) => r.kind === 'events')
-    .sort(soonest)
-    .slice(0, Math.max(Math.ceil(limit / 2), limit - own));
-  const turn = [...others, ...events].sort((a, b) => soonest(placed(a), placed(b)));
-  // A consulta não fica sem a véspera por causa de um resumo comum: os resumos
-  // que levam uma consulta e caberiam sem resumo comum nenhum (é quando o
-  // "Consulta amanhã" dela caberia com o resumo desligado) têm de ficar.
-  // Enquanto um deles estiver de fora, sai o resumo comum da noite mais
-  // distante e o corte é refeito.
+  // O resumo que está só no lugar de vésperas de compromissos conta nela, na
+  // vez da véspera que substitui: a parte é a mesma de quem não usa o resumo.
+  // O que passa dela: o aviso de compromisso sai, como sempre; o resumo fica,
+  // mas como um resumo comum (desligado, a véspera que ele leva também não
+  // caberia: ali não há aviso para ele substituir).
+  const inTurn = (a: HouseReminder, b: HouseReminder) => soonest(placed(a), placed(b));
+  const ofEvents = (r: HouseReminder) => r.kind === 'events' || (forEvents.has(r.key) && !standIn.has(r.key));
+  const own = out.filter((r) => !ofEvents(r) && !plain(r)).length;
+  const beyond = new Set(out.filter(ofEvents).sort(inTurn).slice(Math.max(Math.ceil(limit / 2), limit - own)));
+  for (const r of beyond) forEvents.delete(r.key);
+  const turn = out.filter((r) => r.kind === 'eve' || !beyond.has(r)).sort(inTurn);
+  // Ligar o resumo não tira a véspera de ninguém por causa de um resumo comum:
+  // os resumos que estão no lugar de uma véspera e caberiam sem resumo comum
+  // nenhum (é quando o "Consulta amanhã", ou o "Amanhã: …" do compromisso,
+  // caberia com o resumo desligado) têm de ficar. Enquanto um deles estiver
+  // de fora, sai o resumo comum da noite mais distante e o corte é refeito.
   const owed = turn
     .filter((r) => !plain(r))
     .slice(0, limit)
-    .filter((r) => standIn.has(r.key));
+    .filter((r) => r.kind === 'eve');
   let queue = turn;
   for (;;) {
     const kept = queue.slice(0, limit);

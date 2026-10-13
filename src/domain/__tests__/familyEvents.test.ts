@@ -10,6 +10,7 @@ import {
   describeDayChange,
   driversOf,
   entryDetail,
+  entryShortDetail,
   eventDatesIn,
   eventReminderTexts,
   formatTimeRange,
@@ -344,6 +345,23 @@ describe('calendarEntries', () => {
     ]);
     expect(entries[3]).toMatchObject({ id: 'natacao', endTime: '17:00', location: 'Clube' });
     expect(entries[0]).toMatchObject({ id: 'rex', age: 6 });
+  });
+
+  it('o detalhe curto, para o resumo de amanhã: de quem é e quem leva e busca, ou a idade; sem o local nem o que levar', () => {
+    const entries = calendarEntries(calendar, '2026-10-13', '2026-10-14');
+    expect(entries.map((e) => [e.title, entryShortDetail(e)])).toEqual([
+      ['Aniversário de Rex', 'faz 6 anos'],
+      ['Reunião da escola', null],
+      ['Festa do João', 'Ana, Carla leva e busca'],
+      ['Natação da Ana', 'Ana, Beto leva, Carla busca'],
+      ['Aniversário de Ana', 'faz 8 anos'],
+    ]);
+    // Só de quem é; só quem busca.
+    expect(entryShortDetail({ ...entries[3], ride: null })).toBe('Ana');
+    expect(entryShortDetail({ ...entries[3], who: null, ride: 'Carla busca' })).toBe('Carla busca');
+    // Aniversário sem a idade (não deveria: ela sai da data de nascimento): fica só o título.
+    expect(entryShortDetail({ ...entries[0], age: null })).toBeNull();
+    expect(entryShortDetail({ ...entries[0], age: 0 })).toBeNull();
   });
 
   it('ficha apagada (ou de quem saiu): o nome some, o compromisso fica', () => {

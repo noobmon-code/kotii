@@ -374,7 +374,7 @@ describe('planHouseReminders: compromissos da família e aniversários', () => {
     ]);
     // Uma vaga a menos: sai o resumo, e não um aviso do dia de que ele fala.
     expect(planHouseReminders({ ...input, limit: 5 }).map((r) => r.kind)).toEqual(['events', 'bills', 'events', 'bills', 'events']);
-    // O resumo não fala dos compromissos (eles têm os avisos próprios): sem a conta, a noite de 28/09 não tem resumo.
+    // O resumo não fala da rotina (a aula de todo dia tem o aviso próprio): sem a conta, a noite de 28/09 não tem resumo.
     expect(planHouseReminders({ ...input, bills: [], limit: 6 }).filter((r) => r.date < '2026-10-19').map((r) => r.kind)).toEqual([
       'events',
       'events',
@@ -408,6 +408,34 @@ describe('planHouseReminders: compromissos da família e aniversários', () => {
     expect(rows({ family: withBirthday([]) }).map(([, , , title]) => title)).toEqual(['Hoje é aniversário de Ana']);
   });
 });
+
+// A família dos testes do resumo de amanhã: as fichas e um compromisso de um
+// dia só, em 29/09/2026 (uma terça-feira), às 16h.
+const kin: FamilyCalendar['people'] = [
+  { id: 'ana', name: 'Ana', kind: 'pessoa', birth_date: null },
+  { id: 'beto', name: 'Beto', kind: 'pessoa', birth_date: null },
+  { id: 'carla', name: 'Carla', kind: 'pessoa', birth_date: null },
+  { id: 'vo', name: 'Vó Maria', kind: 'pessoa', birth_date: null },
+];
+const commitment = (patch: Partial<FamilyEventLike> = {}): FamilyEventLike => ({
+  id: 'festa',
+  title: 'Festa do João',
+  starts_on: '2026-09-29',
+  start_time: '16:00',
+  end_time: null,
+  person_id: null,
+  take_by: null,
+  pick_up_by: null,
+  location: null,
+  bring: null,
+  recurrence: 'none',
+  weekdays: null,
+  until_on: null,
+  ...patch,
+});
+const calendar = (events: FamilyEventLike[], days: FamilyCalendar['days'] = [], people = kin): FamilyCalendar => ({ events, days, people });
+/** As mesmas fichas, com a data de nascimento de quem faz aniversário. */
+const born = (dates: Record<string, string>) => kin.map((p) => ({ ...p, birth_date: dates[p.id] ?? null }));
 
 describe('eveSummary (resumo de amanhã)', () => {
   type Sources = Parameters<typeof eveSummary>[0];
@@ -664,6 +692,176 @@ describe('eveSummary (resumo de amanhã)', () => {
     const teeth = { ...consulta, person: '', title: `A${'🦷'.repeat(120)}` };
     expect(summary({ appointments: [teeth] })?.body).toBe(`9h A${'🦷'.repeat(87)}…`);
   });
+
+  it('compromisso: a hora curta, o título e, entre parênteses, de quem é e quem leva e busca; sem o local nem o que levar', () => {
+    const alone: [Partial<FamilyEventLike>, string][] = [
+      [{ person_id: 'ana', take_by: 'carla' }, '16h Festa do João (Ana, Carla leva)'],
+      [{ title: 'Dentista', start_time: '07:30', take_by: 'beto', pick_up_by: 'beto' }, '7h30 Dentista (Beto leva e busca)'],
+      [{ title: 'Reunião da escola' }, '16h Reunião da escola'],
+      [{ title: 'Reunião da escola', start_time: null }, 'Reunião da escola'],
+      [{ title: 'Passeio', start_time: null, person_id: 'ana', pick_up_by: 'vo' }, 'Passeio (Ana, Vó Maria busca)'],
+      [{ person_id: 'ana' }, '16h Festa do João (Ana)'],
+      [{ person_id: 'ana', take_by: 'beto', pick_up_by: 'carla' }, '16h Festa do João (Ana, Beto leva, Carla busca)'],
+      // O local e o que levar são do aviso de uma hora antes; a hora em que termina também não vai.
+      [{ end_time: '18:30', location: 'Buffet Alegria', bring: 'presente' }, '16h Festa do João'],
+      // Ficha apagada: o nome some, o compromisso fica.
+      [{ person_id: 'saiu', take_by: 'carla' }, '16h Festa do João (Carla leva)'],
+      // Todo mês e todo ano entram como o de um dia só.
+      [{ starts_on: '2026-06-29', recurrence: 'monthly' }, '16h Festa do João'],
+      [{ starts_on: '2020-09-29', recurrence: 'yearly' }, '16h Festa do João'],
+    ];
+    for (const [patch, text] of alone) {
+      expect(summary({ family: calendar([commitment(patch)]) })).toMatchObject({ title: 'Amanhã, terça-feira', body: text, written: 1 });
+    }
+    // O item diz de qual compromisso e de qual dia é (é assim que o aviso das 19h dele sai do plano).
+    expect(summary({ family: calendar([commitment()]) })?.items).toEqual([{ source: 'events', id: 'festa@2026-09-29', text: '16h Festa do João', sort: '16:00' }]);
+    // De outro dia, nada.
+    expect(summary({ family: calendar([commitment()]) }, '2026-09-30')).toBeNull();
+  });
+
+  it('aniversário: de quem é e quantos anos faz; o dia que só tem um aniversário tem resumo', () => {
+    const birthday = summary({ family: calendar([], [], born({ ana: '2018-09-29' })) });
+    expect(birthday).toMatchObject({ title: 'Amanhã, terça-feira', body: 'Aniversário de Ana (faz 8 anos)', written: 1 });
+    expect(birthday?.items).toEqual([{ source: 'birthdays', id: 'ana', text: 'Aniversário de Ana (faz 8 anos)', sort: '' }]);
+    expect(summary({ family: calendar([], [], born({ ana: '2025-09-29' })) })?.body).toBe('Aniversário de Ana (faz 1 ano)');
+    // O pet também faz aniversário.
+    const rex = { id: 'rex', name: 'Rex', kind: 'pet' as const, birth_date: '2020-09-29' };
+    expect(summary({ family: calendar([], [], [...kin, rex]) })?.body).toBe('Aniversário de Rex (faz 6 anos)');
+    // O dia do nascimento não é aniversário; o de outro dia não entra.
+    expect(summary({ family: calendar([], [], born({ ana: '2026-09-29' })) })).toBeNull();
+    expect(summary({ family: calendar([], [], born({ ana: '2018-09-30' })) })).toBeNull();
+    // 29/02 é comemorado em 28/02 nos anos sem ele.
+    expect(summary({ family: calendar([], [], born({ ana: '2020-02-29' })) }, '2027-02-28')?.body).toBe('Aniversário de Ana (faz 7 anos)');
+  });
+
+  it('a ordem: o que tem hora primeiro, consultas e compromissos juntos; depois os compromissos sem horário, os aniversários e o resto', () => {
+    const family = calendar(
+      [
+        commitment({ person_id: 'ana', take_by: 'carla' }),
+        commitment({ id: 'reuniao', title: 'Reunião da escola', start_time: '08:00' }),
+        commitment({ id: 'passeio', title: 'Passeio', start_time: null, person_id: 'ana', pick_up_by: 'vo' }),
+        commitment({ id: 'feira', title: 'Feira de ciências', start_time: null }),
+        commitment({ id: 'ensaio', title: 'Ensaio', start_time: '16:00' }),
+      ],
+      [],
+      [...born({ beto: '1985-09-29', ana: '2018-09-29' }), { id: 'rex', name: 'Rex', kind: 'pet', birth_date: '2020-09-29' }],
+    );
+    const everything = summary({
+      equipment: [geladeira],
+      documents: [cnh],
+      chores: [lixo],
+      vaccines: [vacina],
+      bills: [luz],
+      appointments: [
+        { ...consulta, id: 'a2', title: 'Dentista', person: 'Beto', time: '16:30' },
+        { ...consulta, id: 'a3', title: 'Fono', time: '16:00' },
+        consulta,
+      ],
+      family,
+    });
+    expect(everything?.items.map((i) => [i.source, i.text])).toEqual([
+      // O compromisso das 8h vem antes da consulta das 9h.
+      ['events', '8h Reunião da escola'],
+      ['appointments', '9h Pediatra (Bia)'],
+      // Na mesma hora: a consulta primeiro; depois os compromissos, pelo texto.
+      ['appointments', '16h Fono (Bia)'],
+      ['events', '16h Ensaio'],
+      ['events', '16h Festa do João (Ana, Carla leva)'],
+      ['appointments', '16h30 Dentista (Beto)'],
+      ['events', 'Feira de ciências'],
+      ['events', 'Passeio (Ana, Vó Maria busca)'],
+      ['birthdays', 'Aniversário de Ana (faz 8 anos)'],
+      ['birthdays', 'Aniversário de Beto (faz 41 anos)'],
+      ['birthdays', 'Aniversário de Rex (faz 6 anos)'],
+      ['bills', 'Luz (R$ 180,00)'],
+      ['vaccines', 'Vacina de Bia: Tríplice (2ª dose)'],
+      ['chores', 'Pôr o lixo para fora'],
+      ['documents', 'Vence: CNH do Beto'],
+      ['equipment', 'Fim da garantia: Geladeira'],
+    ]);
+    expect(everything).toMatchObject({ body: '8h Reunião da escola · 9h Pediatra (Bia) · 16h Fono (Bia) e mais 13', written: 3 });
+    // Sem nada com hora: os compromissos do dia todo, o aniversário e a conta.
+    expect(summary({ bills: [luz], family: { ...family, events: family.events.filter((e) => !e.start_time), people: born({ ana: '2018-09-29' }) } })?.body).toBe(
+      'Feira de ciências · Passeio (Ana, Vó Maria busca) · Aniversário de Ana (faz 8 anos) · Luz (R$ 180,00)',
+    );
+  });
+
+  it('a rotina de toda semana fica de fora, como a tarefa de todo dia; entra no dia em que muda quem leva ou quem busca', () => {
+    // Natação às terças e quintas: o Beto leva, a Carla busca.
+    const swim = commitment({ id: 'natacao', title: 'Natação da Ana', starts_on: '2026-09-01', person_id: 'ana', take_by: 'beto', pick_up_by: 'carla', recurrence: 'weekly', weekdays: [2, 4] });
+    const school = commitment({ id: 'escola', title: 'Escola', starts_on: '2026-02-02', start_time: '07:30', recurrence: 'weekly', weekdays: [1, 2, 3, 4, 5] });
+    const change = (patch: Partial<FamilyCalendar['days'][number]>) => ({ ...NO_DAY_CHANGE, event_id: 'natacao', occurs_on: day, ...patch });
+    expect(summary({ family: calendar([swim, school]) })).toBeNull();
+    // Com outra coisa no dia, o resumo fala só dela.
+    expect(summary({ bills: [luz], family: calendar([swim, school]) })?.body).toBe('Luz (R$ 180,00)');
+    // Nesta terça é a vó quem busca: aí o resumo diz.
+    expect(summary({ family: calendar([swim, school], [change({ override_pick_up: true, pick_up_by: 'vo' })]) })?.body).toBe(
+      '16h Natação da Ana (Ana, Beto leva, Vó Maria busca)',
+    );
+    // Ninguém leva neste dia: também é mudança.
+    expect(summary({ family: calendar([swim], [change({ override_take: true, take_by: null })]) })?.body).toBe('16h Natação da Ana (Ana, Carla busca)');
+    // Guardado para o dia o mesmo de sempre: segue sendo a rotina.
+    expect(summary({ family: calendar([swim], [change({ override_take: true, take_by: 'beto' })]) })).toBeNull();
+    // A mudança é de outro dia (quinta): na terça, nada.
+    expect(summary({ family: calendar([swim], [change({ occurs_on: '2026-10-01', override_take: true, take_by: 'vo' })]) })).toBeNull();
+    expect(summary({ family: calendar([swim], [change({ occurs_on: '2026-10-01', override_take: true, take_by: 'vo' })]) }, '2026-10-01')?.body).toBe(
+      '16h Natação da Ana (Ana, Vó Maria leva, Carla busca)',
+    );
+  });
+
+  it('dia marcado como "não vai ter" fica de fora', () => {
+    const swim = commitment({ id: 'natacao', title: 'Natação da Ana', starts_on: '2026-09-01', take_by: 'beto', recurrence: 'weekly', weekdays: [2, 4] });
+    const monthly = commitment({ id: 'pediatra', title: 'Pediatra do mês', starts_on: '2026-06-29', start_time: '10:00', recurrence: 'monthly' });
+    const off = (event_id: string) => ({ ...NO_DAY_CHANGE, event_id, occurs_on: day, cancelled: true });
+    expect(summary({ family: calendar([swim, monthly]) })?.body).toBe('10h Pediatra do mês');
+    expect(summary({ family: calendar([swim, monthly], [off('pediatra')]) })).toBeNull();
+    // Não vai ter, mesmo com outra pessoa marcada para levar naquele dia.
+    expect(summary({ family: calendar([swim], [{ ...off('natacao'), override_take: true, take_by: 'vo' }]) })).toBeNull();
+    // O resto do dia continua no resumo.
+    expect(summary({ bills: [luz], family: calendar([monthly, commitment()], [off('pediatra')]) })?.body).toBe('16h Festa do João · Luz (R$ 180,00)');
+  });
+
+  it('"e mais N" e os 180 caracteres valem com compromissos e aniversários no meio', () => {
+    const party = commitment({ person_id: 'ana', take_by: 'carla' });
+    const trip = commitment({ id: 'passeio', title: 'Passeio', start_time: null });
+    const people = born({ ana: '2018-09-29' });
+    // Quatro itens vão escritos.
+    expect(summary({ appointments: [consulta], bills: [luz], family: calendar([party], [], people) })?.body).toBe(
+      '9h Pediatra (Bia) · 16h Festa do João (Ana, Carla leva) · Aniversário de Ana (faz 8 anos) · Luz (R$ 180,00)',
+    );
+    // Com cinco, os três primeiros e "e mais 2": o aniversário e a conta ficam na conta.
+    expect(summary({ appointments: [consulta], bills: [luz], family: calendar([party, trip], [], people) })).toMatchObject({
+      body: '9h Pediatra (Bia) · 16h Festa do João (Ana, Carla leva) · Passeio e mais 2',
+      written: 3,
+    });
+    // Título comprido (o formulário aceita até 120 letras): os dois compridos dividem o espaço, e os curtos ficam inteiros.
+    const long = commitment({ title: 'Apresentação de fim de ano da turma do 3º ano B, no auditório novo da escola, com a exposição dos trabalhos de artes' });
+    const text = `16h ${long.title}`;
+    const cut = summary({ appointments: [consulta], bills: [luz], family: calendar([long, { ...long, id: 'outra', start_time: '17:00' }]) });
+    expect(cut?.body).toBe(`9h Pediatra (Bia) · ${text.slice(0, 68)}… · ${`17h ${long.title}`.slice(0, 68)}… · Luz (R$ 180,00)`);
+    expect(cut?.body).toHaveLength(179);
+    // O local da consulta cedo continua sendo o primeiro a encolher: o compromisso fica inteiro.
+    const early = { ...consulta, time: '08:30', location: 'Clínica Crescer, na Avenida Paulista, 1000' };
+    const tight = summary({ appointments: [early], family: calendar([long]) });
+    expect(tight?.body).toBe(`8h30 Pediatra (Bia), Clínica Crescer, na Avenida Paulist… · ${text}`);
+    expect(tight?.body).toHaveLength(180);
+  });
+
+  it('casa sem compromisso nem aniversário naquele dia: o resumo é o de sempre', () => {
+    const house = { appointments: [consulta], bills: [luz], vaccines: [vacina], chores: [lixo, filtro], documents: [cnh], equipment: [geladeira] };
+    const usual = summary(house);
+    expect(usual?.body).toBe('9h Pediatra (Bia) · Luz (R$ 180,00) · Vacina de Bia: Tríplice (2ª dose) e mais 4');
+    // Sem a agenda, com ela vazia, com tudo em outro dia, ou só com a rotina.
+    const routine = commitment({ id: 'escola', title: 'Escola', starts_on: '2026-02-02', recurrence: 'weekly', weekdays: [1, 2, 3, 4, 5] });
+    for (const family of [
+      undefined,
+      calendar([]),
+      calendar([commitment({ starts_on: '2026-09-30' })], [], born({ ana: '2018-09-28' })),
+      calendar([routine]),
+    ]) {
+      expect(summary({ ...house, family })).toEqual(usual);
+    }
+  });
 });
 
 describe('planHouseReminders: resumo de amanhã', () => {
@@ -739,12 +937,13 @@ describe('planHouseReminders: resumo de amanhã', () => {
     }
   });
 
-  it('a dica do resumo diz que a consulta de amanhã vem nele; a das consultas é a de sempre', () => {
+  it('a dica do resumo diz que a consulta e o compromisso de amanhã vêm nele; as das consultas e dos compromissos são as de sempre', () => {
     const hint = (key: string) => HOUSE_REMINDER_KINDS.find((kind) => kind.key === key)?.hint;
     expect(hint('eve')).toBe(
-      'Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, contas, tarefas, vacinas e documentos. Só quando há alguma coisa. Com ele ligado, a consulta de amanhã vem nele, no lugar do aviso das 19h',
+      'Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, compromissos, aniversários, contas, tarefas, vacinas e documentos. Só quando há alguma coisa. Com ele ligado, a consulta e o compromisso de amanhã vêm nele, no lugar do aviso das 19h',
     );
     expect(hint('appointments')).toBe('Na véspera, às 19h, e 2 horas antes');
+    expect(hint('events')).toBe('Na véspera, às 19h, e no dia, 1 hora antes do horário (sem horário, às 8h). Os de toda semana avisam só no dia');
   });
 
   it('com o resumo ligado, a consulta vai nele e o "Consulta amanhã" das 19h não toca junto', () => {
@@ -1146,4 +1345,500 @@ describe('planHouseReminders: resumo de amanhã', () => {
     expect(plain(1)).toEqual(['bills:luz:2026-09-28']);
     expect(plain(2)).toEqual(['eve:amanha:2026-09-27:20:00', 'bills:luz:2026-09-28']);
   });
+});
+
+describe('planHouseReminders: resumo de amanhã com compromissos e aniversários', () => {
+  const none = { bills: false, documents: false, chores: false, appointments: false, events: false, vaccines: false, weather: false, eve: false };
+  // Compromissos e resumo ligados. Hoje é domingo, 27/09/2026, 8h; a festa é na terça, 29/09, às 16h.
+  const both = { ...none, events: true, eve: true };
+  const party = commitment({ person_id: 'ana', take_by: 'carla', bring: 'presente' });
+  const keys = (list: ReturnType<typeof planHouseReminders>) => list.map((r) => r.key);
+  const plan = (input: Partial<HouseReminderInput>) => planHouseReminders({ ...base, kinds: both, ...input });
+  const summaryOf = (evening: string) => `eve:amanha:${evening}:20:00`;
+
+  it('o compromisso escrito no resumo fica sem o "Amanhã: …" das 19h; o aviso do dia continua', () => {
+    const input = { family: calendar([party]) };
+    expect(plan(input).map((r) => [r.key, r.title, r.body])).toEqual([
+      ['eve:amanha:2026-09-28:20:00', 'Amanhã, terça-feira', '16h Festa do João (Ana, Carla leva)'],
+      ['events:festa@2026-09-29:2026-09-29:15:00', 'Hoje às 16:00: Festa do João', 'Ana · Carla leva · Levar: presente'],
+    ]);
+    // Resumo desligado: os avisos do compromisso são os de sempre.
+    expect(keys(plan({ ...input, kinds: { ...both, eve: false } }))).toEqual([
+      'events:festa@2026-09-29:2026-09-28:19:00',
+      'events:festa@2026-09-29:2026-09-29:15:00',
+    ]);
+    // Só o resumo ligado: o compromisso aparece nele, sem os avisos próprios.
+    expect(keys(plan({ ...input, kinds: { ...none, eve: true } }))).toEqual(['eve:amanha:2026-09-28:20:00']);
+    // Sem horário: o resumo no lugar da véspera, e o aviso das 8h do dia.
+    expect(keys(plan({ family: calendar([commitment({ start_time: null })]) }))).toEqual([
+      'eve:amanha:2026-09-28:20:00',
+      'events:festa@2026-09-29:2026-09-29:08:00',
+    ]);
+    // De madrugada não há aviso no dia: a véspera era o único, e agora é o resumo.
+    expect(plan({ family: calendar([commitment({ title: 'Voo para Recife', start_time: '00:40' })]) }).map((r) => [r.key, r.body])).toEqual([
+      ['eve:amanha:2026-09-28:20:00', '0h40 Voo para Recife'],
+    ]);
+  });
+
+  it('aniversário e rotina: o resumo não tira aviso de ninguém', () => {
+    // Aniversário não tem véspera: o resumo avisa à noite, e o aviso das 8h do dia fica.
+    expect(plan({ family: calendar([], [], born({ ana: '2018-09-29' })) }).map((r) => [r.key, r.body])).toEqual([
+      ['eve:amanha:2026-09-28:20:00', 'Aniversário de Ana (faz 8 anos)'],
+      ['events:ana@2026-09-29:2026-09-29:08:00', 'Faz 8 anos.'],
+    ]);
+    // A rotina não vai no resumo: os avisos dela são os mesmos, com ele ligado ou não. A escola das
+    // 7h30 (o aviso do dia tocaria às 6h30) continua com a véspera das 19h.
+    const swim = commitment({ id: 'natacao', title: 'Natação da Ana', starts_on: '2026-09-01', take_by: 'beto', recurrence: 'weekly', weekdays: [2, 4], until_on: '2026-10-01' });
+    const school = commitment({ id: 'escola', title: 'Escola', starts_on: '2026-02-02', start_time: '07:30', recurrence: 'weekly', weekdays: [1, 2], until_on: '2026-09-29' });
+    const routine = { family: calendar([swim, school]) };
+    expect(keys(plan(routine))).toEqual([
+      'events:escola@2026-09-28:2026-09-27:19:00',
+      'events:escola@2026-09-28:2026-09-28:06:30',
+      'events:escola@2026-09-29:2026-09-28:19:00',
+      'events:escola@2026-09-29:2026-09-29:06:30',
+      'events:natacao@2026-09-29:2026-09-29:15:00',
+      'events:natacao@2026-10-01:2026-10-01:15:00',
+    ]);
+    expect(plan(routine)).toEqual(plan({ ...routine, kinds: { ...both, eve: false } }));
+    // Na quinta é a vó quem leva: essa vez vai no resumo de quarta à noite, no lugar da véspera dela.
+    const days = [{ ...NO_DAY_CHANGE, event_id: 'natacao', occurs_on: '2026-10-01', override_take: true, take_by: 'vo' }];
+    expect(plan({ family: calendar([swim], days) }).map((r) => [r.key, r.body])).toEqual([
+      ['events:natacao@2026-09-29:2026-09-29:15:00', 'Beto leva'],
+      ['eve:amanha:2026-09-30:20:00', '16h Natação da Ana (Vó Maria leva)'],
+      ['events:natacao@2026-10-01:2026-10-01:15:00', 'Vó Maria leva'],
+    ]);
+  });
+
+  it('fica com o "Amanhã: …" das 19h o compromisso cuja véspera não tem resumo, ou que não coube escrito nele', () => {
+    const on = (starts_on: string, nowTime = '08:00') => keys(plan({ nowTime, family: calendar([commitment({ starts_on })]) }));
+    // Véspera daqui a 6 dias: a última noite com resumo. Daí em diante, a véspera própria.
+    expect(on('2026-10-04')).toEqual(['eve:amanha:2026-10-03:20:00', 'events:festa@2026-10-04:2026-10-04:15:00']);
+    expect(on('2026-10-05')).toEqual(['events:festa@2026-10-05:2026-10-04:19:00', 'events:festa@2026-10-05:2026-10-05:15:00']);
+    // Amanhã, com a noite de hoje já passada: sem aviso à noite, com o resumo ou sem ele.
+    expect(on('2026-09-28', '20:30')).toEqual(['events:festa@2026-09-28:2026-09-28:15:00']);
+    // Entre as 19h e as 20h, o resumo ainda toca.
+    expect(on('2026-09-28', '19:30')).toEqual(['eve:amanha:2026-09-27:20:00', 'events:festa@2026-09-28:2026-09-28:15:00']);
+    // Cinco compromissos no mesmo dia: três vão escritos; os do "e mais 2" mantêm a véspera própria.
+    const five = ['08:00', '10:00', '14:00', '16:00', '18:00'].map((start_time, i) => commitment({ id: `c${i}`, title: `Compromisso ${i + 1}`, start_time }));
+    const night = plan({ family: calendar(five) }).filter((r) => r.date === '2026-09-28');
+    expect(night.map((r) => [r.key, r.title])).toEqual([
+      ['events:c3@2026-09-29:2026-09-28:19:00', 'Amanhã: Compromisso 4 às 16:00'],
+      ['events:c4@2026-09-29:2026-09-28:19:00', 'Amanhã: Compromisso 5 às 18:00'],
+      ['eve:amanha:2026-09-28:20:00', 'Amanhã, terça-feira'],
+    ]);
+    expect(night[2].body).toBe('8h Compromisso 1 · 10h Compromisso 2 · 14h Compromisso 3 e mais 2');
+  });
+
+  it('consulta e compromisso na mesma noite: um resumo só, no lugar das duas vésperas', () => {
+    const consulta = { id: 'ped', title: 'Pediatra', person: 'Lia', date: '2026-09-29', time: '14:30', location: null, status: 'agendada' };
+    const input = { kinds: { ...both, appointments: true }, appointments: [consulta], family: calendar([party]) };
+    expect(plan(input).map((r) => [r.key, r.body])).toEqual([
+      ['eve:amanha:2026-09-28:20:00', '14h30 Pediatra (Lia) · 16h Festa do João (Ana, Carla leva)'],
+      ['appointments:ped:2026-09-29:12:30', 'Pediatra — Lia, às 14:30.'],
+      ['events:festa@2026-09-29:2026-09-29:15:00', 'Ana · Carla leva · Levar: presente'],
+    ]);
+    // Desligado: as duas vésperas, às 19h.
+    expect(keys(plan({ ...input, kinds: { ...input.kinds, eve: false } })).filter((key) => key.endsWith(':19:00'))).toEqual([
+      'appointments:ped:2026-09-28:19:00',
+      'events:festa@2026-09-29:2026-09-28:19:00',
+    ]);
+  });
+
+  it('a consulta e o compromisso não se confundem, nem as vezes de um mesmo compromisso', () => {
+    // Uma consulta de mais adiante com o identificador igual ao da vez do compromisso que vai no resumo:
+    // ela não está em resumo nenhum, e fica com o "Consulta amanhã".
+    const far = { id: 'festa@2026-09-29', title: 'Pediatra', person: 'Lia', date: '2026-10-08', time: '14:30', location: null, status: 'agendada' };
+    const input = { kinds: { ...both, appointments: true }, appointments: [far], family: calendar([party]) };
+    expect(keys(plan(input))).toEqual([
+      'eve:amanha:2026-09-28:20:00',
+      'events:festa@2026-09-29:2026-09-29:15:00',
+      'appointments:festa@2026-09-29:2026-10-07:19:00',
+      'appointments:festa@2026-09-29:2026-10-08:12:30',
+    ]);
+    // E o contrário: a consulta que vai no resumo não tira a véspera do compromisso de mais adiante.
+    const near = { ...far, id: 'festa@2026-10-08', date: '2026-09-29' };
+    expect(keys(plan({ ...input, appointments: [near], family: calendar([commitment({ starts_on: '2026-10-08' })]) }))).toEqual([
+      'eve:amanha:2026-09-28:20:00',
+      'appointments:festa@2026-10-08:2026-09-29:12:30',
+      'events:festa@2026-10-08:2026-10-07:19:00',
+      'events:festa@2026-10-08:2026-10-08:15:00',
+    ]);
+    // O mesmo compromisso em duas terças em que a vó leva: a de 29/09 vai no resumo; a de 06/10 (véspera
+    // além das 7 noites) fica com a véspera dela.
+    const swim = commitment({ id: 'natacao', title: 'Natação', starts_on: '2026-09-01', take_by: 'beto', recurrence: 'weekly', weekdays: [2], until_on: '2026-10-06' });
+    const granny = (occurs_on: string) => ({ ...NO_DAY_CHANGE, event_id: 'natacao', occurs_on, override_take: true, take_by: 'vo' });
+    expect(keys(plan({ family: calendar([swim], [granny('2026-09-29'), granny('2026-10-06')]) }))).toEqual([
+      'eve:amanha:2026-09-28:20:00',
+      'events:natacao@2026-09-29:2026-09-29:15:00',
+      'events:natacao@2026-10-06:2026-10-05:19:00',
+      'events:natacao@2026-10-06:2026-10-06:15:00',
+    ]);
+  });
+
+  it('com os avisos de compromissos desligados o resumo lista o compromisso do mesmo jeito, e é um resumo comum na fila do teto', () => {
+    const input = { kinds: { ...none, bills: true, eve: true }, bills: [{ ...bill, next_due_on: '2026-09-29' }], family: calendar([party]) };
+    expect(plan(input).map((r) => [r.key, r.body])).toEqual([
+      ['bills:b1:2026-09-28', 'Luz — R$ 230,00'],
+      ['eve:amanha:2026-09-28:20:00', '16h Festa do João (Ana, Carla leva) · Luz (R$ 230,00)'],
+      ['bills:b1:2026-09-29', 'Luz — R$ 230,00'],
+    ]);
+    // Sem véspera para substituir, ele sai antes dos avisos do dia de que fala...
+    expect(keys(plan({ ...input, limit: 2 }))).toEqual(['bills:b1:2026-09-28', 'bills:b1:2026-09-29']);
+    // ...e, com os avisos de compromissos ligados, fica no lugar da véspera da festa.
+    expect(keys(plan({ ...input, kinds: { ...input.kinds, events: true }, limit: 2 }))).toEqual(['bills:b1:2026-09-28', 'eve:amanha:2026-09-28:20:00']);
+  });
+
+  it('o resumo que leva o compromisso não sai pelo teto antes do "Amanhã: …" que ele substitui', () => {
+    // A conta de luz na terça e a festa na quarta, 30/09. Três vagas: sem o resumo, os dois avisos da luz e a véspera da festa.
+    const input = { kinds: { ...both, bills: true }, bills: [{ ...bill, next_due_on: '2026-09-29' }], family: calendar([commitment({ starts_on: '2026-09-30' })]), limit: 3 };
+    expect(keys(plan({ ...input, kinds: { ...input.kinds, eve: false } }))).toEqual([
+      'bills:b1:2026-09-28',
+      'bills:b1:2026-09-29',
+      'events:festa@2026-09-30:2026-09-29:19:00',
+    ]);
+    // Com ele, o resumo da festa fica no mesmo lugar; o da noite anterior (só a conta de luz), embora toque antes, é o que sai.
+    expect(keys(plan(input))).toEqual(['bills:b1:2026-09-28', 'bills:b1:2026-09-29', 'eve:amanha:2026-09-29:20:00']);
+    // Ele toca às 20h, mas entra na fila às 19h, a hora do aviso que substitui: o "1 hora antes" das
+    // 19h30 daquela noite (de um ensaio das 20h30) não passa na frente.
+    const late = commitment({ id: 'ensaio', title: 'Ensaio', starts_on: '2026-10-01', start_time: '20:30' });
+    const two = { family: calendar([late, commitment({ starts_on: '2026-10-02' })]), limit: 2 };
+    expect(keys(plan({ ...two, kinds: { ...both, eve: false } }))).toEqual(['events:ensaio@2026-10-01:2026-09-30:19:00', 'events:festa@2026-10-02:2026-10-01:19:00']);
+    expect(keys(plan(two))).toEqual(['eve:amanha:2026-09-30:20:00', 'eve:amanha:2026-10-01:20:00']);
+  });
+
+  it('entre as 19h e as 20h, o resumo desta noite com o compromisso de amanhã também não sai pelo teto', () => {
+    // Às 19h30 o "Amanhã: …" já não toca (com o resumo ligado, nem chegou a ser agendado): só o resumo das 20h avisa da festa.
+    const input = {
+      nowTime: '19:30',
+      kinds: { ...both, bills: true },
+      bills: [{ ...bill, next_due_on: '2026-09-28' }],
+      family: calendar([commitment({ starts_on: '2026-09-28' })]),
+    };
+    expect(keys(plan({ ...input, limit: 1 }))).toEqual(['eve:amanha:2026-09-27:20:00']);
+    // Com os avisos de compromissos desligados, é um resumo como os outros: depois do aviso de amanhã, o dia de que fala.
+    expect(keys(plan({ ...input, kinds: { ...input.kinds, events: false }, limit: 1 }))).toEqual(['bills:b1:2026-09-28']);
+  });
+
+  it('a parte dos compromissos no teto é a mesma com o resumo ligado: ele fica na vaga da véspera que substitui', () => {
+    // A festa na terça (29/09); na quinta (01/10), o passeio (o dia todo) e a conta de água.
+    const input = {
+      kinds: { ...both, bills: true },
+      bills: [{ ...bill, id: 'agua', name: 'Água', next_due_on: '2026-10-01' }],
+      family: calendar([party, commitment({ id: 'passeio', title: 'Passeio', starts_on: '2026-10-01', start_time: null })]),
+    };
+    const off = (limit: number) => keys(plan({ ...input, kinds: { ...input.kinds, eve: false }, limit }));
+    const on = (limit: number) => keys(plan({ ...input, limit }));
+    expect(off(6)).toEqual([
+      'events:festa@2026-09-29:2026-09-28:19:00',
+      'events:festa@2026-09-29:2026-09-29:15:00',
+      'bills:agua:2026-09-30',
+      'events:passeio@2026-10-01:2026-09-30:19:00',
+      'events:passeio@2026-10-01:2026-10-01:08:00',
+      'bills:agua:2026-10-01',
+    ]);
+    expect(plan(input).filter((r) => r.kind === 'eve').map((r) => [r.date, r.body])).toEqual([
+      ['2026-09-28', '16h Festa do João (Ana, Carla leva)'],
+      ['2026-09-30', 'Passeio · Água (R$ 230,00)'],
+    ]);
+    // Em qualquer teto, o plano é o de quem não usa o resumo, com cada véspera trocada pelo resumo daquela noite.
+    const swapped = (key: string) => (key.endsWith(':19:00') ? summaryOf(key.split(':')[2]) : key);
+    for (let limit = 0; limit <= 6; limit++) expect(on(limit)).toEqual(off(limit).map(swapped));
+    // Com 4 vagas os compromissos ficam com metade, e a véspera do passeio não cabe nela. O resumo de
+    // quarta à noite, então, não está no lugar de aviso nenhum: é um resumo comum, e não toma a vaga
+    // do aviso da conta do dia de que fala.
+    expect(off(4)).toEqual(['events:festa@2026-09-29:2026-09-28:19:00', 'events:festa@2026-09-29:2026-09-29:15:00', 'bills:agua:2026-09-30', 'bills:agua:2026-10-01']);
+    expect(on(4)).toEqual(['eve:amanha:2026-09-28:20:00', 'events:festa@2026-09-29:2026-09-29:15:00', 'bills:agua:2026-09-30', 'bills:agua:2026-10-01']);
+    // Entre os avisos das 19h de uma noite, o resumo fica onde estaria a véspera que substitui, e não
+    // na frente das outras. Com uma vaga só para os compromissos, quem fica é a véspera da aula das
+    // 6h30 (rotina: não vai no resumo), como com o resumo desligado.
+    const lesson = commitment({ id: 'aula', title: 'Aula', start_time: '06:30', recurrence: 'weekly', weekdays: [2], until_on: '2026-09-29' });
+    const tie = { kinds: { ...both, bills: true }, bills: [{ ...bill, next_due_on: '2026-09-29' }], family: calendar([party, lesson]), limit: 2 };
+    expect(keys(plan({ ...tie, kinds: { ...tie.kinds, eve: false } }))).toEqual(['bills:b1:2026-09-28', 'events:aula@2026-09-29:2026-09-28:19:00']);
+    expect(keys(plan(tie))).toEqual(['bills:b1:2026-09-28', 'events:aula@2026-09-29:2026-09-28:19:00']);
+  });
+
+  // A casa da família (hoje é domingo, 27/09/2026, 8h), com um pouco de tudo e tudo ligado, menos o resumo.
+  const home: HouseReminderInput = {
+    ...base,
+    kinds: all,
+    bills: [
+      { id: 'luz', name: 'Luz', amount: 180, next_due_on: '2026-09-29', active: true, autopay: false },
+      { id: 'agua', name: 'Água', amount: null, next_due_on: '2026-10-01', active: true, autopay: false },
+      { id: 'net', name: 'Internet', amount: 99.9, next_due_on: '2026-10-03', active: true, autopay: true },
+      { id: 'iptu', name: 'IPTU', amount: 320, next_due_on: '2026-09-20', active: true, autopay: false },
+    ],
+    documents: [{ id: 'pass', title: 'Passaporte da Ana', expires_on: '2026-10-20', remind_days: 15 }],
+    chores: [
+      { id: 'louca', title: 'Lavar a louça', due_on: '2026-09-28', active: true, equipment_id: null, recurrence: 'daily', interval_count: 1 },
+      { id: 'lixo', title: 'Pôr o lixo para fora', due_on: '2026-09-30', active: true, equipment_id: null, recurrence: 'weekly', interval_count: 1 },
+      { id: 'filtro', title: 'Limpar o filtro', due_on: '2026-10-02', active: true, equipment_id: 'ar', recurrence: 'monthly', interval_count: 3 },
+    ],
+    appointments: [
+      { id: 'ped', title: 'Pediatra', person: 'Ana', date: '2026-09-29', time: '08:00', location: 'Clínica Sol', status: 'agendada' },
+      { id: 'dent', title: 'Dentista', person: 'Beto', date: '2026-09-30', time: '14:30', location: null, status: 'agendada' },
+    ],
+    vaccines: [{ id: 'vac', name: 'Tríplice viral', dose: '2ª dose', person: 'Ana', next_dose_on: '2026-10-03' }],
+    equipment: [{ id: 'gel', name: 'Geladeira', warranty_until: '2026-09-30' }],
+    weather: [{ date: '2026-09-28', time: '07:00', title: 'Hoje é dia de lavar roupa', body: 'Sem chuva até o fim da tarde.' }],
+    family: calendar(
+      [
+        // Natação às terças e quintas, até 08/10: na quinta, 01/10, é a vó quem busca; na terça, 06/10, não vai ter.
+        commitment({
+          id: 'natacao',
+          title: 'Natação da Ana',
+          starts_on: '2026-09-01',
+          end_time: '17:00',
+          person_id: 'ana',
+          take_by: 'beto',
+          pick_up_by: 'carla',
+          location: 'Clube',
+          bring: 'touca e toalha',
+          recurrence: 'weekly',
+          weekdays: [2, 4],
+          until_on: '2026-10-08',
+        }),
+        // Escola de segunda a sexta, às 7h30, até 02/10: o aviso do dia tocaria às 6h30, então a véspera fica.
+        commitment({ id: 'escola', title: 'Escola', starts_on: '2026-02-02', start_time: '07:30', person_id: 'ana', take_by: 'carla', recurrence: 'weekly', weekdays: [1, 2, 3, 4, 5], until_on: '2026-10-02' }),
+        commitment({ person_id: 'ana', take_by: 'carla', location: 'Buffet Alegria', bring: 'presente' }),
+        commitment({ id: 'reuniao', title: 'Reunião da escola', starts_on: '2026-09-30', start_time: null }),
+        // A véspera do voo (09/10) fica além das 7 noites do resumo.
+        commitment({ id: 'voo', title: 'Voo da vó', starts_on: '2026-10-10', start_time: '11:00', person_id: 'vo', take_by: 'beto' }),
+      ],
+      [
+        { ...NO_DAY_CHANGE, event_id: 'natacao', occurs_on: '2026-10-01', override_pick_up: true, pick_up_by: 'vo' },
+        { ...NO_DAY_CHANGE, event_id: 'natacao', occurs_on: '2026-10-06', cancelled: true },
+      ],
+      [...born({ ana: '2018-09-30' }), { id: 'rex', name: 'Rex', kind: 'pet', birth_date: '2020-10-02' }],
+    ),
+  };
+
+  it('resumo desligado: o plano da casa cheia é, aviso por aviso, o de antes de o resumo falar dos compromissos', () => {
+    const whole = planHouseReminders({ ...home, limit: 100 });
+    expect(whole.map((r) => [r.key, r.date, r.time, r.title, r.body, r.overdue ?? ''].join(' | '))).toEqual([
+      'bills:iptu:2026-09-27 | 2026-09-27 | 09:00 | Conta atrasada | IPTU — R$ 320,00: venceu em 20/09/2026. | iptu:2026-09-20',
+      'events:escola@2026-09-28:2026-09-27:19:00 | 2026-09-27 | 19:00 | Amanhã: Escola às 07:30 | Ana · Carla leva | ',
+      'events:escola@2026-09-28:2026-09-28:06:30 | 2026-09-28 | 06:30 | Hoje às 07:30: Escola | Ana · Carla leva | ',
+      'weather:dia:2026-09-28:07:00 | 2026-09-28 | 07:00 | Hoje é dia de lavar roupa | Sem chuva até o fim da tarde. | ',
+      'bills:luz:2026-09-28 | 2026-09-28 | 09:00 | Conta vence amanhã | Luz — R$ 180,00 | ',
+      'chores:louca:2026-09-28 | 2026-09-28 | 09:00 | Tarefa de hoje | Lavar a louça | ',
+      'appointments:ped:2026-09-28:19:00 | 2026-09-28 | 19:00 | Consulta amanhã | Pediatra — Ana, às 08:00 (Clínica Sol). | ',
+      'events:escola@2026-09-29:2026-09-28:19:00 | 2026-09-28 | 19:00 | Amanhã: Escola às 07:30 | Ana · Carla leva | ',
+      'events:festa@2026-09-29:2026-09-28:19:00 | 2026-09-28 | 19:00 | Amanhã: Festa do João às 16:00 | Ana · Carla leva · Buffet Alegria · Levar: presente | ',
+      'events:escola@2026-09-29:2026-09-29:06:30 | 2026-09-29 | 06:30 | Hoje às 07:30: Escola | Ana · Carla leva | ',
+      'bills:luz:2026-09-29 | 2026-09-29 | 09:00 | Conta vence hoje | Luz — R$ 180,00 | ',
+      'events:festa@2026-09-29:2026-09-29:15:00 | 2026-09-29 | 15:00 | Hoje às 16:00: Festa do João | Ana · Carla leva · Buffet Alegria · Levar: presente | ',
+      'events:natacao@2026-09-29:2026-09-29:15:00 | 2026-09-29 | 15:00 | Hoje às 16:00: Natação da Ana | Ana · Beto leva, Carla busca · Clube · Levar: touca e toalha | ',
+      'appointments:dent:2026-09-29:19:00 | 2026-09-29 | 19:00 | Consulta amanhã | Dentista — Beto, às 14:30. | ',
+      'events:escola@2026-09-30:2026-09-29:19:00 | 2026-09-29 | 19:00 | Amanhã: Escola às 07:30 | Ana · Carla leva | ',
+      'events:reuniao@2026-09-30:2026-09-29:19:00 | 2026-09-29 | 19:00 | Amanhã: Reunião da escola |  | ',
+      'events:escola@2026-09-30:2026-09-30:06:30 | 2026-09-30 | 06:30 | Hoje às 07:30: Escola | Ana · Carla leva | ',
+      'events:ana@2026-09-30:2026-09-30:08:00 | 2026-09-30 | 08:00 | Hoje é aniversário de Ana | Faz 8 anos. | ',
+      'events:reuniao@2026-09-30:2026-09-30:08:00 | 2026-09-30 | 08:00 | Hoje: Reunião da escola |  | ',
+      'bills:agua:2026-09-30 | 2026-09-30 | 09:00 | Conta vence amanhã | Água | ',
+      'chores:lixo:2026-09-30 | 2026-09-30 | 09:00 | Tarefa de hoje | Pôr o lixo para fora | ',
+      'appointments:dent:2026-09-30:12:30 | 2026-09-30 | 12:30 | Consulta daqui a 2 horas | Dentista — Beto, às 14:30. | ',
+      'events:escola@2026-10-01:2026-09-30:19:00 | 2026-09-30 | 19:00 | Amanhã: Escola às 07:30 | Ana · Carla leva | ',
+      'events:natacao@2026-10-01:2026-09-30:19:00 | 2026-09-30 | 19:00 | Amanhã: Natação da Ana às 16:00 | Ana · Beto leva, Vó Maria busca · Clube · Levar: touca e toalha | ',
+      'events:escola@2026-10-01:2026-10-01:06:30 | 2026-10-01 | 06:30 | Hoje às 07:30: Escola | Ana · Carla leva | ',
+      'bills:agua:2026-10-01 | 2026-10-01 | 09:00 | Conta vence hoje | Água | ',
+      'events:natacao@2026-10-01:2026-10-01:15:00 | 2026-10-01 | 15:00 | Hoje às 16:00: Natação da Ana | Ana · Beto leva, Vó Maria busca · Clube · Levar: touca e toalha | ',
+      'events:escola@2026-10-02:2026-10-01:19:00 | 2026-10-01 | 19:00 | Amanhã: Escola às 07:30 | Ana · Carla leva | ',
+      'events:escola@2026-10-02:2026-10-02:06:30 | 2026-10-02 | 06:30 | Hoje às 07:30: Escola | Ana · Carla leva | ',
+      'events:rex@2026-10-02:2026-10-02:08:00 | 2026-10-02 | 08:00 | Hoje é aniversário de Rex | Faz 6 anos. | ',
+      'chores:filtro:2026-10-02 | 2026-10-02 | 09:00 | Manutenção de hoje | Limpar o filtro | ',
+      'vaccines:vac:2026-10-03 | 2026-10-03 | 09:00 | Dia de vacina | Ana: Tríplice viral (2ª dose). | ',
+      'documents:pass:2026-10-05 | 2026-10-05 | 09:00 | Hora de renovar | Passaporte da Ana vence em 15 dias (20/10/2026). | ',
+      'events:natacao@2026-10-08:2026-10-08:15:00 | 2026-10-08 | 15:00 | Hoje às 16:00: Natação da Ana | Ana · Beto leva, Carla busca · Clube · Levar: touca e toalha | ',
+      'events:voo@2026-10-10:2026-10-09:19:00 | 2026-10-09 | 19:00 | Amanhã: Voo da vó às 11:00 | Vó Maria · Beto leva | ',
+      'events:voo@2026-10-10:2026-10-10:10:00 | 2026-10-10 | 10:00 | Hoje às 11:00: Voo da vó | Vó Maria · Beto leva | ',
+      'documents:pass:2026-10-13 | 2026-10-13 | 09:00 | Hora de renovar | Passaporte da Ana vence em 7 dias (20/10/2026). | ',
+      'documents:pass:2026-10-20 | 2026-10-20 | 09:00 | Documento vence hoje | Passaporte da Ana | ',
+    ]);
+    // Cada aviso tem só esses campos, e o tipo é o da chave.
+    expect(whole.every((r) => r.kind === r.key.split(':')[0] && Object.keys(r).length === (r.overdue ? 7 : 6))).toBe(true);
+    // No teto de sempre (24) e num teto curto (8, de quem tem três casas).
+    expect(keys(whole).filter((key) => !keys(planHouseReminders(home)).includes(key))).toEqual([
+      'events:escola@2026-10-01:2026-09-30:19:00',
+      'events:natacao@2026-10-01:2026-09-30:19:00',
+      'events:escola@2026-10-01:2026-10-01:06:30',
+      'events:natacao@2026-10-01:2026-10-01:15:00',
+      'events:escola@2026-10-02:2026-10-01:19:00',
+      'events:escola@2026-10-02:2026-10-02:06:30',
+      'events:rex@2026-10-02:2026-10-02:08:00',
+      'vaccines:vac:2026-10-03',
+      'documents:pass:2026-10-05',
+      'events:natacao@2026-10-08:2026-10-08:15:00',
+      'events:voo@2026-10-10:2026-10-09:19:00',
+      'events:voo@2026-10-10:2026-10-10:10:00',
+      'documents:pass:2026-10-13',
+      'documents:pass:2026-10-20',
+    ]);
+    expect(keys(planHouseReminders({ ...home, limit: 8 }))).toEqual([
+      'bills:iptu:2026-09-27',
+      'events:escola@2026-09-28:2026-09-27:19:00',
+      'events:escola@2026-09-28:2026-09-28:06:30',
+      'weather:dia:2026-09-28:07:00',
+      'bills:luz:2026-09-28',
+      'chores:louca:2026-09-28',
+      'appointments:ped:2026-09-28:19:00',
+      'events:escola@2026-09-29:2026-09-28:19:00',
+    ]);
+  });
+
+  it('ligado, na casa cheia: o resumo de cada noite, e saem só as vésperas do que vai escrito neles', () => {
+    const off = planHouseReminders({ ...home, limit: 100 });
+    const on = planHouseReminders({ ...home, kinds: { ...all, eve: true }, limit: 100 });
+    expect(on.filter((r) => r.kind === 'eve').map((r) => [r.date, r.body])).toEqual([
+      ['2026-09-28', '8h Pediatra (Ana), Clínica Sol · 16h Festa do João (Ana, Carla leva) · Luz (R$ 180,00)'],
+      ['2026-09-29', '14h30 Dentista (Beto) · Reunião da escola · Aniversário de Ana (faz 8 anos) e mais 2'],
+      ['2026-09-30', '16h Natação da Ana (Ana, Beto leva, Vó Maria busca) · Conta: Água'],
+      ['2026-10-01', 'Aniversário de Rex (faz 6 anos) · Manutenção: Limpar o filtro'],
+      ['2026-10-02', 'Vacina de Ana: Tríplice viral (2ª dose)'],
+    ]);
+    // A escola (rotina, com o aviso do dia de madrugada) e o voo (véspera além das 7 noites) seguem com a véspera das 19h.
+    expect(keys(off).filter((key) => !keys(on).includes(key))).toEqual([
+      'appointments:ped:2026-09-28:19:00',
+      'events:festa@2026-09-29:2026-09-28:19:00',
+      'appointments:dent:2026-09-29:19:00',
+      'events:reuniao@2026-09-30:2026-09-29:19:00',
+      'events:natacao@2026-10-01:2026-09-30:19:00',
+    ]);
+    expect(on.filter((r) => r.kind !== 'eve')).toEqual(off.filter((r) => keys(on).includes(r.key)));
+  });
+
+  // Casas ao acaso, sempre as mesmas (a semente decide): contas, tarefas, consultas, vacinas, documentos e
+  // uma agenda da família com rotina, dias em que muda quem leva, dias que não vão ter e aniversários.
+  function randomHouse(seed: number): HouseReminderInput {
+    let state = seed;
+    const next = () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 4294967296;
+    };
+    const int = (max: number) => Math.floor(next() * max);
+    const pick = <T,>(list: readonly T[]) => list[int(list.length)];
+    const day = (from: number, span: number) => addDays(base.today, from + int(span));
+    const on = () => next() < 0.85;
+    const ids = [null, ...kin.map((p) => p.id)];
+    const events = Array.from({ length: 2 + int(7) }, (_, i) => {
+      const recurrence = pick(['none', 'none', 'none', 'weekly', 'monthly'] as const);
+      const weekdays = [0, 1, 2, 3, 4, 5, 6].filter(() => next() < 0.5);
+      return commitment({
+        id: `e${i}`,
+        title: pick(['Festa do João', 'Natação', 'Escola', 'Reunião', 'Inglês']),
+        starts_on: recurrence === 'weekly' ? '2026-09-01' : day(1, 8),
+        start_time: pick([null, '06:30', '08:00', '16:00', '16:00', '20:00', '00:40']),
+        person_id: pick(ids),
+        take_by: pick(ids),
+        pick_up_by: pick(ids),
+        recurrence,
+        weekdays: recurrence === 'weekly' ? (weekdays.length ? weekdays : [2]) : null,
+      });
+    });
+    const days = events
+      .filter((e) => e.recurrence !== 'none')
+      .flatMap((e) =>
+        Array.from({ length: int(3) }, () => ({
+          ...NO_DAY_CHANGE,
+          event_id: e.id,
+          occurs_on: day(0, 9),
+          ...(next() < 0.3 ? { cancelled: true } : { override_take: true, take_by: pick(ids) }),
+        })),
+      );
+    return {
+      kinds: { bills: on(), documents: on(), chores: on(), appointments: on(), events: on(), vaccines: on(), weather: on(), eve: true },
+      today: base.today,
+      nowTime: pick(['08:00', '08:00', '19:30', '20:30']),
+      bills: Array.from({ length: int(7) }, (_, i) => ({
+        id: `b${i}`,
+        name: `Conta ${i}`,
+        amount: next() < 0.5 ? 100 + i : null,
+        next_due_on: day(-3, 14),
+        active: next() < 0.9,
+        autopay: next() < 0.15,
+      })),
+      documents: Array.from({ length: int(3) }, (_, i) => ({ id: `d${i}`, title: `Documento ${i}`, expires_on: day(0, 12), remind_days: pick([0, 7, 15]) })),
+      chores: Array.from({ length: int(6) }, (_, i) => ({
+        id: `c${i}`,
+        title: `Tarefa ${i}`,
+        due_on: day(0, 10),
+        active: true,
+        equipment_id: null,
+        recurrence: pick(['daily', 'weekly'] as const),
+        interval_count: 1,
+      })),
+      appointments: Array.from({ length: 1 + int(5) }, (_, i) => ({
+        id: `a${i}`,
+        title: `Consulta ${i}`,
+        person: 'Lia',
+        date: day(1, 9),
+        time: pick(['07:30', '08:00', '09:00', '14:30', '16:00', '21:30']),
+        location: pick([null, 'Clínica Sol']),
+        status: next() < 0.9 ? 'agendada' : 'cancelada',
+      })),
+      vaccines: Array.from({ length: int(3) }, (_, i) => ({ id: `v${i}`, name: `Vacina ${i}`, dose: null, person: 'Lia', next_dose_on: day(-2, 12) })),
+      equipment: Array.from({ length: int(2) }, (_, i) => ({ id: `q${i}`, name: `Aparelho ${i}`, warranty_until: day(0, 9) })),
+      weather: Array.from({ length: int(3) }, (_, i) => ({ date: addDays(base.today, i), time: '07:00', title: 'Dica', body: 'Texto' })),
+      family: calendar(events, days, born({ ...(next() < 0.5 ? { ana: `2018-${day(0, 9).slice(5)}` } : {}), ...(next() < 0.3 ? { beto: `1985-${day(0, 9).slice(5)}` } : {}) })),
+    };
+  }
+
+  it('casas ao acaso, tetos de 0 a 30: o plano não passa do teto nem deixa vaga vazia, e ligar o resumo não tira a véspera de ninguém', () => {
+    const seen = { eves: 0, standIns: 0, plain: 0 };
+    for (let seed = 1; seed <= 40; seed++) {
+      const house = randomHouse(seed);
+      const offKinds = { ...house.kinds, eve: false };
+      const whole = planHouseReminders({ ...house, limit: 1000 });
+      const wholeOff = planHouseReminders({ ...house, kinds: offKinds, limit: 1000 });
+      // A véspera que cada resumo substitui: a de cada consulta e de cada compromisso que ele leva escrito, com o tipo ligado.
+      const replacedBy = new Map<string, string>();
+      for (const r of whole.filter((x) => x.kind === 'eve')) {
+        const summary = eveSummary(house, addDays(r.date, 1));
+        for (const item of summary?.items.slice(0, summary.written) ?? []) {
+          if ((item.source === 'appointments' || item.source === 'events') && house.kinds[item.source]) {
+            replacedBy.set(`${item.source}:${item.id}:${r.date}:19:00`, r.key);
+          }
+        }
+      }
+      // Fora os resumos, o plano inteiro é o de quem não usa o resumo, menos essas vésperas.
+      expect(whole.filter((r) => r.kind !== 'eve')).toEqual(wholeOff.filter((r) => !replacedBy.has(r.key)));
+      const standIns = new Set(replacedBy.values());
+      const plain = whole.filter((r) => r.kind === 'eve' && !standIns.has(r.key));
+      // Entre as 19h e as 20h o resumo desta noite é um aviso a mais (a véspera que ele substitui já
+      // passou): aí o plano não se compara com o de quem não usa o resumo.
+      const comparable = house.nowTime < '19:00' || house.nowTime >= '20:00';
+      for (let limit = 0; limit <= 30; limit++) {
+        const kept = planHouseReminders({ ...house, limit });
+        const off = planHouseReminders({ ...house, kinds: offKinds, limit });
+        const inPlan = new Set(keys(kept));
+        // Nem acima do teto, nem com vaga vazia havendo aviso; e nada repetido nem inventado.
+        expect(kept).toHaveLength(Math.min(limit, whole.length));
+        expect(inPlan.size).toBe(kept.length);
+        expect(whole).toEqual(expect.arrayContaining(kept));
+        // A véspera que tocaria com o resumo desligado continua avisada: o resumo que a leva está no plano.
+        for (const r of comparable ? off : []) {
+          const summary = replacedBy.get(r.key);
+          if (!summary) continue;
+          seen.eves += 1;
+          expect([seed, limit, r.key, inPlan.has(summary)]).toEqual([seed, limit, r.key, true]);
+        }
+        seen.standIns += kept.filter((r) => standIns.has(r.key)).length;
+        // Resumos comuns: os das noites mais distantes saem primeiro...
+        const plainKept = plain.filter((r) => inPlan.has(r.key));
+        expect(plainKept).toEqual(plain.slice(0, plainKept.length));
+        // ...e, com o de uma noite no plano, nenhum aviso até o dia de que ele fala ficou de fora: nem os dos
+        // outros tipos, nem os de compromisso que cabem na parte deles (os que o plano de quem não usa o resumo tem).
+        for (const summary of plainKept) {
+          seen.plain += 1;
+          const upTo = addDays(summary.date, 1);
+          const due = [...whole.filter((r) => r.kind !== 'eve' && r.kind !== 'events'), ...(comparable ? off.filter((r) => !replacedBy.has(r.key)) : [])];
+          expect(keys(kept)).toEqual(expect.arrayContaining(keys(due.filter((r) => r.date <= upTo))));
+        }
+      }
+    }
+    // As casas têm do que falar: milhares de vésperas, de resumos no lugar delas e de resumos comuns passaram por aqui.
+    expect(seen.eves).toBeGreaterThan(1000);
+    expect(seen.standIns).toBeGreaterThan(1000);
+    expect(seen.plain).toBeGreaterThan(1000);
+    // São uns 2.500 planos: com folga no tempo, para a máquina ocupada.
+  }, 30_000);
 });
