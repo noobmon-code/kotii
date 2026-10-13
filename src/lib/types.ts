@@ -282,6 +282,36 @@ export interface ChoreCompletion {
   completed_at: string;
 }
 
+/** Quem presta serviço para a casa (diarista, eletricista, assistência…): gente de fora dela. */
+export interface ServiceProvider {
+  id: string;
+  name: string;
+  /** O que faz (PROVIDER_TRADES em domain/providers). */
+  trade: string;
+  /** Como a pessoa digitou. */
+  phone: string | null;
+  /** Só dígitos, calculado pelo app (normalizePhone): é dele que saem os links de WhatsApp e de ligar. */
+  phone_digits: string | null;
+  notes: string | null;
+  recommended: boolean;
+  created_at: string;
+}
+
+/** Um serviço feito por um prestador, num aparelho da casa ou não. */
+export interface ServiceJob {
+  id: string;
+  provider_id: string;
+  equipment_id: string | null;
+  done_on: string;
+  /** O que foi feito. */
+  description: string;
+  amount: number | null;
+  /** Garantia do serviço (não a do aparelho). */
+  warranty_until: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
 /** Documento da família; person_id nulo = documento da casa. */
 export interface HomeDocument {
   id: string;

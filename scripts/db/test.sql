@@ -1,6 +1,6 @@
 -- Testes do schema: isolamento entre famílias (RLS), matching, preços,
 -- confirmação de nota, recorrência de tarefas, remédios, saúde, aparelhos,
--- documentos, financeiro e saída da casa.
+-- documentos, prestadores e consertos, financeiro e saída da casa.
 -- Rodado por scripts/db/test.sh depois de stubs.sql + migrations.
 
 \set ON_ERROR_STOP 1
@@ -1078,6 +1078,260 @@ begin
   delete from public.people where id = current_setting('test.person_ana')::uuid;
   assert (select count(*) from public.documents) = 1, 'personal documents go with the person; household ones stay';
 end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• prestadores e consertos'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  eq uuid;
+  ze uuid;
+  bia uuid;
+  j uuid;
+begin
+  insert into public.equipment (name, category) values ('Máquina de lavar', 'eletrodomestico') returning id into eq;
+  insert into public.service_providers (name, trade, phone, phone_digits, notes)
+    values ('Zé da Luz', 'eletricista', '(11) 98765-4321', '5511987654321', 'Só atende de manhã')
+    returning id into ze;
+  insert into public.service_providers (name) values ('Bia') returning id into bia;
+  assert (select trade = 'outros' and recommended and phone is null and phone_digits is null
+      and created_by = auth.uid() and household_id = current_setting('test.hh_a')::uuid
+    from public.service_providers where id = bia), 'provider defaults';
+  insert into public.service_jobs (provider_id, equipment_id, done_on, description, amount, warranty_until, notes)
+    values (ze, eq, '2026-03-12', 'Trocou a placa', 180, '2026-06-12', 'Peça original') returning id into j;
+  assert (select created_by = auth.uid() and household_id = current_setting('test.hh_a')::uuid
+    from public.service_jobs where id = j), 'job defaults';
+  -- Não cobrou, e a garantia pode acabar no próprio dia.
+  insert into public.service_jobs (provider_id, done_on, description, amount, warranty_until)
+    values (ze, '2026-03-20', 'Voltou para apertar', 0, '2026-03-20');
+  insert into public.service_jobs (provider_id, done_on, description) values (bia, '2026-05-02', 'Faxina completa');
+  perform set_config('test.equipment_wash', eq::text, false);
+  perform set_config('test.provider_ze', ze::text, false);
+  perform set_config('test.provider_bia', bia::text, false);
+  perform set_config('test.job_ze', j::text, false);
+
+  begin
+    insert into public.service_providers (name) values ('   ');
+    raise exception 'FAIL: blank provider name';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name) values (repeat('a', 81));
+    raise exception 'FAIL: provider name over 80';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name, trade) values ('X', 'astronauta');
+    raise exception 'FAIL: invalid trade';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name, phone) values ('X', repeat('1', 41));
+    raise exception 'FAIL: phone over 40';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name, phone) values ('X', '  ');
+    raise exception 'FAIL: blank phone';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name, phone, phone_digits) values ('X', '(11) 98765-4321', '(11) 98765-4321');
+    raise exception 'FAIL: phone_digits with punctuation';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name, phone, phone_digits) values ('X', '1234567', '1234567');
+    raise exception 'FAIL: phone_digits too short';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name, phone, phone_digits) values ('X', repeat('1', 16), repeat('1', 16));
+    raise exception 'FAIL: phone_digits too long';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name, phone_digits) values ('X', '5511987654321');
+    raise exception 'FAIL: phone_digits without a phone';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name, notes) values ('X', repeat('a', 501));
+    raise exception 'FAIL: provider notes over 500';
+  exception when check_violation then null;
+  end;
+
+  begin
+    insert into public.service_jobs (done_on, description) values ('2026-03-12', 'Sem prestador');
+    raise exception 'FAIL: job without a provider';
+  exception when not_null_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, description) values (ze, 'Sem data');
+    raise exception 'FAIL: job without a date';
+  exception when not_null_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description) values (ze, '2026-03-12', '  ');
+    raise exception 'FAIL: blank job description';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description) values (ze, '2026-03-12', repeat('a', 201));
+    raise exception 'FAIL: job description over 200';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description, amount) values (ze, '2026-03-12', 'X', -1);
+    raise exception 'FAIL: negative job amount';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description, warranty_until)
+      values (ze, '2026-03-12', 'X', '2026-03-11');
+    raise exception 'FAIL: service warranty before the service';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description, notes) values (ze, '2026-03-12', 'X', repeat('a', 501));
+    raise exception 'FAIL: job notes over 500';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description) values (gen_random_uuid(), '2026-03-12', 'X');
+    raise exception 'FAIL: job for a provider that does not exist';
+  exception when foreign_key_violation then null;
+  end;
+end $$;
+
+-- Quem mora na mesma casa vê e muda tudo.
+select set_config('request.jwt.claim.sub', :'user_b', false) \gset
+do $$
+begin
+  assert (select count(*) from public.service_providers) = 2, 'B sees the household providers';
+  assert (select count(*) from public.service_jobs) = 3, 'B sees the household jobs';
+  update public.service_providers set recommended = false where id = current_setting('test.provider_bia')::uuid;
+  assert found, 'B edits a household provider';
+  insert into public.service_jobs (provider_id, done_on, description)
+    values (current_setting('test.provider_bia')::uuid, '2026-05-09', 'Faxina leve');
+end $$;
+
+-- Outra casa não lê nem escreve, e não liga um serviço a prestador ou aparelho daqui.
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+declare
+  own uuid;
+  own_eq uuid;
+begin
+  assert (select count(*) from public.service_providers) = 0, 'C sees no foreign providers';
+  assert (select count(*) from public.service_jobs) = 0, 'C sees no foreign jobs';
+
+  update public.service_providers set name = 'Hack' where id = current_setting('test.provider_ze')::uuid;
+  assert not found, 'C cannot edit a foreign provider';
+  delete from public.service_providers where id = current_setting('test.provider_ze')::uuid;
+  assert not found, 'C cannot delete a foreign provider';
+  update public.service_jobs set description = 'Hack' where id = current_setting('test.job_ze')::uuid;
+  assert not found, 'C cannot edit a foreign job';
+  delete from public.service_jobs where id = current_setting('test.job_ze')::uuid;
+  assert not found, 'C cannot delete a foreign job';
+
+  begin
+    insert into public.service_providers (household_id, name) values (current_setting('test.hh_a')::uuid, 'Intruso');
+    raise exception 'FAIL: C created a provider in another household';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.service_jobs (household_id, provider_id, done_on, description)
+      values (current_setting('test.hh_a')::uuid, current_setting('test.provider_ze')::uuid, '2026-03-12', 'Intruso');
+    raise exception 'FAIL: C created a job in another household';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description)
+      values (current_setting('test.provider_ze')::uuid, '2026-03-12', 'X');
+    raise exception 'FAIL: job for a foreign provider';
+  exception when foreign_key_violation then null;
+  end;
+
+  insert into public.service_providers (name, trade) values ('Caio Encanador', 'encanador') returning id into own;
+  insert into public.equipment (name) values ('Aquecedor') returning id into own_eq;
+  begin
+    insert into public.service_jobs (provider_id, equipment_id, done_on, description)
+      values (own, current_setting('test.equipment_wash')::uuid, '2026-03-12', 'X');
+    raise exception 'FAIL: job on foreign equipment';
+  exception when foreign_key_violation then null;
+  end;
+  insert into public.service_jobs (provider_id, equipment_id, done_on, description, amount)
+    values (own, own_eq, '2026-04-01', 'Trocou o registro', 90);
+  perform set_config('test.provider_c', own::text, false);
+  perform set_config('test.equipment_c', own_eq::text, false);
+end $$;
+
+set role anon;
+do $$
+begin
+  assert (select count(*) from public.service_providers) = 0, 'anon sees no providers';
+  assert (select count(*) from public.service_jobs) = 0, 'anon sees no jobs';
+  begin
+    insert into public.service_providers (household_id, name) values (current_setting('test.hh_a')::uuid, 'Anon');
+    raise exception 'FAIL: anon created a provider';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set role authenticated;
+
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  assert (select count(*) from public.service_providers) = 2, 'A still sees only its own providers';
+  -- Um serviço não muda para o prestador nem para o aparelho de outra casa.
+  begin
+    update public.service_jobs set provider_id = current_setting('test.provider_c')::uuid
+      where id = current_setting('test.job_ze')::uuid;
+    raise exception 'FAIL: job moved to a foreign provider';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    update public.service_jobs set equipment_id = current_setting('test.equipment_c')::uuid
+      where id = current_setting('test.job_ze')::uuid;
+    raise exception 'FAIL: job moved to foreign equipment';
+  exception when foreign_key_violation then null;
+  end;
+
+  -- Aparelho apagado: o serviço fica no histórico de quem fez, sem o aparelho.
+  delete from public.equipment where id = current_setting('test.equipment_wash')::uuid;
+  assert (select equipment_id is null and household_id = current_setting('test.hh_a')::uuid and provider_id is not null
+    from public.service_jobs where id = current_setting('test.job_ze')::uuid), 'deleting the equipment keeps the job';
+
+  -- Prestador apagado: o histórico dele vai junto; o dos outros fica.
+  delete from public.service_providers where id = current_setting('test.provider_ze')::uuid;
+  assert (select count(*) from public.service_jobs where provider_id = current_setting('test.provider_ze')::uuid) = 0, 'jobs go with the provider';
+  assert (select count(*) from public.service_jobs) = 2, 'the other provider keeps its jobs';
+end $$;
+
+-- Apagar a casa leva prestadores e serviços (aparelho, prestador e casa
+-- apagados na mesma hora, cada um por um caminho). Desfeito no fim: a casa C
+-- continua nos testes seguintes.
+reset role;
+do $$
+begin
+  assert (select count(*) from public.service_jobs where provider_id = current_setting('test.provider_c')::uuid) = 1, 'C has a job';
+  begin
+    delete from public.households where id = (
+      select household_id from public.service_providers where id = current_setting('test.provider_c')::uuid
+    );
+    assert not exists (select 1 from public.service_providers where id = current_setting('test.provider_c')::uuid), 'providers go with the household';
+    assert not exists (select 1 from public.service_jobs where provider_id = current_setting('test.provider_c')::uuid), 'jobs go with the household';
+    assert (select count(*) from public.service_providers) = 1, 'the other household keeps its providers';
+    raise exception 'undo' using errcode = 'KT001';
+  exception when sqlstate 'KT001' then null;
+  end;
+  assert (select count(*) from public.service_providers) = 2, 'household deletion undone';
+  -- Os testes seguintes contam aparelhos e gastos: nada daqui fica para trás.
+  delete from public.service_providers;
+  delete from public.equipment where id = current_setting('test.equipment_c')::uuid;
+end $$;
+set role authenticated;
 
 -- ---------------------------------------------------------------------------
 \echo '• financeiro: contas, pagamentos e gastos'

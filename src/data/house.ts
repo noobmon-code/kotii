@@ -6,6 +6,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Chore, ChoreCompletion, Equipment, HomeDocument } from '@/lib/types';
 import { removeImages, signedImageUrl } from './images';
+import { JOBS_KEY } from './providers';
 
 /** Bucket das fotos de documentos e de aparelhos. */
 export const DOCUMENTS_BUCKET = 'documents';
@@ -65,6 +66,8 @@ export function useDeleteEquipment() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['equipment'] });
       queryClient.invalidateQueries({ queryKey: ['chores'] });
+      // Os serviços feitos nele continuam no histórico de quem fez, agora sem o aparelho.
+      queryClient.invalidateQueries({ queryKey: [JOBS_KEY] });
     },
   });
 }
