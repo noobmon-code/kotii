@@ -294,7 +294,7 @@ function MaintenanceSection({ equipment, today }: { equipment: Equipment; today:
                           complete.mutate(
                             { id: chore.id, today, dueOn: chore.due_on },
                             // Manutenção em rodízio: diz de quem é a próxima vez.
-                            { onSuccess: (result) => announceCompletion(result, rotationPeople(members, people)), onError },
+                            { onSuccess: (result) => announceCompletion(result, rotationPeople(members, people), chore), onError },
                           )
                         }
                       />

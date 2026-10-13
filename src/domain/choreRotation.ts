@@ -109,6 +109,7 @@ const pointsLabel = (points: number) => `${points} ${points === 1 ? 'ponto' : 'p
 export const turnLabel = (name: string) => `Vez de ${name}`;
 export const afterLabel = (name: string) => `depois ${name}`;
 export const nextTurnMessage = (name: string) => `Próxima vez: ${name}.`;
+export const turnMovedMessage = (name: string) => `A vez já tinha passado para ${name}.`;
 
 /** "1 Beto · 2 Carla · 3 Lia". */
 export function numberedOrder(order: string[], people: RotationPerson[]): string {
@@ -153,21 +154,31 @@ export function choreTurnLabel(
  * O aviso depois de concluir: os pontos que o servidor de fato creditou, com o
  * nome de quem recebeu (a tarefa pode ter mudado em outro celular; toque
  * repetido não conta), e de quem é a vez agora. Null: nada a dizer.
+ *
+ * shown: a tarefa como a linha tocada a mostrava. Num rodízio, se a conclusão
+ * foi de outra pessoa (alguém pulou a vez em outro celular e esta lista ainda
+ * não sabia), o aviso diz para quem a vez já tinha passado. Só quando a
+ * resposta traz a pessoa: a vez de um morador não vem nela.
  */
 export function completionMessage(
   result: { completed: boolean; points: number; person_id: string | null; next_person_id?: string | null },
-  people: { id: string; name: string }[],
+  people: RotationPerson[],
+  shown?: ChoreTurn,
 ): { title: string; message?: string } | null {
   if (!result.completed) return null;
   const name = (id: string | null | undefined) => (id ? people.find((p) => p.id === id)?.name : undefined);
   const kid = name(result.person_id);
   const next = name(result.next_person_id);
+  // A mesma pessoa pela ficha: quem saiu da casa segue na ordem, e a linha de antes ainda o mostrava como morador.
+  const sameTurn = !shown || shown.kid_id === result.person_id || currentTurn(shown, people)?.id === result.person_id;
+  const moved = kid && result.next_person_id && !sameTurn ? turnMovedMessage(kid) : null;
   if (kid && result.points > 0) {
     return {
       title: `+${pointsLabel(result.points)} para ${kid}!`,
-      message: [next ? nextTurnMessage(next) : null, 'O saldo fica em Casa → Tarefas → Pontos das crianças.'].filter(Boolean).join(' '),
+      message: [moved, next ? nextTurnMessage(next) : null, 'O saldo fica em Casa → Tarefas → Pontos das crianças.'].filter(Boolean).join(' '),
     };
   }
+  if (moved) return { title: moved, ...(next ? { message: nextTurnMessage(next) } : {}) };
   return next ? { title: nextTurnMessage(next) } : null;
 }
 
@@ -177,6 +188,15 @@ export function completionMessage(
 /** Toque numa pessoa do rodízio: entra no fim da ordem, ou sai (e os outros sobem). */
 export function toggleInOrder(order: string[], personId: string): string[] {
   return order.includes(personId) ? order.filter((id) => id !== personId) : [...order, personId];
+}
+
+/**
+ * A ordem tem alguém que esta lista de pessoas não tem? É a ficha (ou o
+ * morador) que o aparelho ainda não carregou, ou que já saiu da casa: salvar
+ * daqui regravaria a ordem sem essa pessoa (ver knownOrder).
+ */
+export function hasUnknownPerson(order: string[], people: RotationPerson[]): boolean {
+  return order.some((id) => !people.some((p) => p.id === id));
 }
 
 /** Alguém da ordem pode ganhar pontos (não tem o app)? */
@@ -303,6 +323,12 @@ export const ROTATION_UNAVAILABLE = 'O rodízio ainda não está disponível nes
 
 /** O formulário abriu sem rodízio e a tarefa ganhou um em outro aparelho: salvar gravaria a vez e os pontos de antes. */
 export const ROTATION_CHANGED_ELSEWHERE = 'Ela ganhou um rodízio em outro aparelho. Feche e abra de novo para editar.';
+
+/** O rodízio tem alguém que este aparelho não conhece (hasUnknownPerson): salvar tiraria essa pessoa da ordem. */
+export const ROTATION_PERSON_UNKNOWN = 'O rodízio dela tem alguém que este aparelho ainda não carregou. Feche e abra de novo para editar.';
+
+/** Não deu para conferir, antes de salvar, se a tarefa ganhou um rodízio em outro aparelho: nada é gravado. */
+export const ROTATION_CHECK_FAILED = 'Não foi possível conferir se esta tarefa mudou em outro aparelho. Verifique a internet e tente de novo.';
 
 // Tabela ou função que o banco não tem: como a API responde (PGRST205 e
 // PGRST202) e os códigos do Postgres para o mesmo (42P01 e 42883).

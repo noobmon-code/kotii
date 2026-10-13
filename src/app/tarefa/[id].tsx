@@ -1,18 +1,21 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { useChore, useChoreRotations, useDeleteChore, useSaveChore, useSkipChoreTurn } from '@/data/home';
+import { fetchChoreRotations, useChore, useChoreRotations, useDeleteChore, useSaveChore, useSkipChoreTurn } from '@/data/home';
 import { usePeople } from '@/data/health';
 import { useEquipment } from '@/data/house';
 import {
   currentTurn,
+  hasUnknownPerson,
   nextTurn,
   numberedOrder,
   orderHasKid,
   planRotationSave,
   plannedTurn,
   ROTATION_CHANGED_ELSEWHERE,
+  ROTATION_CHECK_FAILED,
+  ROTATION_PERSON_UNKNOWN,
   rotationErrorMessage,
   rotationLabel,
   rotationOf,
@@ -84,11 +87,13 @@ export default function ChoreScreen() {
 /** savedOrder: a ordem do rodízio gravada agora (vazia: a tarefa não está em rodízio). */
 function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmentId: string | null; savedOrder: string[] }) {
   const equipment = useEquipment(equipmentId ?? undefined);
-  const members = useHousehold().data?.members ?? [];
+  const household = useHousehold();
+  const members = household.data?.members ?? [];
   const save = useSaveChore();
   const skip = useSkipChoreTurn();
   const remove = useDeleteChore();
-  const people = usePeople().data ?? [];
+  const peopleQuery = usePeople();
+  const people = peopleQuery.data ?? [];
   const kids = kidsOf(people);
   const who = rotationPeople(members, people);
   const [title, setTitle] = useState(chore?.title ?? '');
@@ -106,9 +111,15 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
   const [rotating, setRotating] = useState(shownOrder.length > 0);
   const [order, setOrder] = useState(shownOrder);
   // Tarefa nova de criança começa valendo 10; a que já é de criança (ou tem criança no rodízio) mantém o que tinha, mesmo 0.
-  const [points, setPoints] = useState(String(chore && (chore.kid_id || orderHasKid(shownOrder, who)) ? chore.points : 10));
+  // Com alguém na ordem que este aparelho ainda não conhece, também: pode ser uma criança, e os pontos gravados são dela.
+  const [points, setPoints] = useState(
+    String(chore && (chore.kid_id || orderHasKid(shownOrder, who) || hasUnknownPerson(shownOrder, who)) ? chore.points : 10),
+  );
   // Tarefa nova já criada, cujo rodízio não pôde ser gravado: salvar de novo atualiza essa, em vez de criar outra.
   const [createdId, setCreatedId] = useState<string>();
+  // Conferindo a ordem no servidor antes de salvar (ver submit). A trava é já no toque: o estado só muda no próximo render.
+  const [checking, setChecking] = useState(false);
+  const submitting = useRef(false);
 
   const saved = chore ? { turn: chore, order: shownOrder } : undefined;
   // "Uma vez" não tem rodízio: fica só quem está na vez.
@@ -149,11 +160,21 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
     );
   }
 
-  function submit() {
+  async function submit() {
+    if (submitting.current) return;
     const dueISO = parseBRDate(due);
     const count = Number.parseInt(interval, 10);
     if (!title.trim() || !dueISO || !(count >= 1 && count <= 365)) {
       notify('Confira os dados', 'Título, data (dd/mm/aaaa) e intervalo entre 1 e 365 são obrigatórios.');
+      return;
+    }
+    // A ordem vai para o banco só com quem este aparelho conhece (planRotationSave). Se ela tem alguém que ele
+    // ainda não carregou (ficha ou morador de há pouco, ou a busca que falhou ao abrir), salvar tiraria essa pessoa
+    // do rodízio e, sendo a única criança, zeraria os pontos. Nada é gravado, e as listas são buscadas de novo.
+    if (inRotation && hasUnknownPerson(order, who)) {
+      notify('Esta tarefa mudou', ROTATION_PERSON_UNKNOWN);
+      peopleQuery.refetch();
+      household.refetch();
       return;
     }
     if (problem) {
@@ -170,6 +191,26 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
     if (earnsPoints && !(pointsValue >= 0 && pointsValue <= 1000)) {
       notify('Pontos inválidos', 'Use um número de 0 a 1000.');
       return;
+    }
+    // O aparelho pode nem saber do rodízio novo: com o editor aberto ninguém busca de novo, e a busca ao abrir pode
+    // ter falhado. Por isso, no formulário que abriu sem rodízio, a ordem é conferida agora, direto no servidor (a
+    // consulta em cache, sem internet, ficaria parada esperando e o botão não faria nada). Se não deu para
+    // conferir, nada é gravado. No banco que ainda não tem o rodízio a resposta é "nenhuma ordem", e a tarefa salva.
+    if (chore && !shownOrder.length) {
+      submitting.current = true;
+      setChecking(true);
+      try {
+        if (rotationOf(await fetchChoreRotations(), chore.id).length) {
+          notify('Esta tarefa mudou', ROTATION_CHANGED_ELSEWHERE);
+          return;
+        }
+      } catch {
+        notify('Nada foi salvo', ROTATION_CHECK_FAILED);
+        return;
+      } finally {
+        submitting.current = false;
+        setChecking(false);
+      }
     }
     const plan = planRotationSave({
       saved,
@@ -327,7 +368,7 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
       </View>
 
       <TextField label="Observações" value={notes} onChangeText={setNotes} multiline />
-      <Button title="Salvar" onPress={submit} loading={save.isPending} />
+      <Button title="Salvar" onPress={submit} loading={checking || save.isPending} />
       {chore ? (
         <Button
           title="Excluir tarefa"

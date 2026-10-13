@@ -370,7 +370,7 @@ export default function TodayScreen() {
                       onPress={() =>
                         completeChore.mutate(
                           { id: chore.id, today, dueOn: chore.due_on },
-                          { onSuccess: (result) => announceCompletion(result, rotationPeople(members, health.people)), onError },
+                          { onSuccess: (result) => announceCompletion(result, rotationPeople(members, health.people), chore), onError },
                         )
                       }
                     />

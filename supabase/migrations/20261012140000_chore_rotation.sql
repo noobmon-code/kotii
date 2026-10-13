@@ -34,15 +34,17 @@ create table public.chore_rotation (
 create index chore_rotation_person_idx on public.chore_rotation (person_id);
 create index chore_rotation_household_idx on public.chore_rotation (household_id);
 
+-- O app só lê a ordem. Quem grava são as funções abaixo (save_chore_rotation, complete_chore, skip_chore_turn) e
+-- os gatilhos, que rodam como dono da tabela: escrita direta pela API aceitaria o que a função recusa (rodízio em
+-- tarefa que não se repete, ordem de uma pessoa só, a vez de alguém de fora da ordem).
 alter table public.chore_rotation enable row level security;
-create policy "household members manage chore_rotation" on public.chore_rotation for all to authenticated
-  using (household_id = (select public.current_household_id()))
-  with check (household_id = (select public.current_household_id()));
+create policy "household members read chore_rotation" on public.chore_rotation for select to authenticated
+  using (household_id = (select public.current_household_id()));
 
 -- Permissões explícitas: a partir de 30/10/2026 a Supabase não dá mais acesso pela API às tabelas novas por
--- padrão, e a migração pode ser aplicada depois disso. Quem entra é a pessoa logada (a regra acima diz o quê).
+-- padrão, e a migração pode ser aplicada depois disso. A pessoa logada só lê (a regra acima diz o quê).
 revoke all on public.chore_rotation from anon, authenticated;
-grant select, insert, update, delete on public.chore_rotation to authenticated;
+grant select on public.chore_rotation to authenticated;
 grant all on public.chore_rotation to service_role;
 
 -- Só pessoas revezam (um check não pode consultar outra tabela, daí o gatilho).

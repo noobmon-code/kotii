@@ -5,6 +5,7 @@ import {
   completionMessage,
   currentTurn,
   groupRotations,
+  hasUnknownPerson,
   isRotationUnavailable,
   kidChores,
   nextTurn,
@@ -12,6 +13,7 @@ import {
   orderHasKid,
   planRotationSave,
   plannedTurn,
+  ROTATION_PERSON_UNKNOWN,
   ROTATION_UNAVAILABLE,
   rotationErrorMessage,
   rotationLabel,
@@ -180,6 +182,56 @@ describe('aviso depois de concluir', () => {
   it('toque repetido (nada foi registrado) não avisa', () => {
     expect(completionMessage({ completed: false, points: 0, person_id: null, next_person_id: 'p-carla' }, people)).toBeNull();
   });
+
+  it('a vez já tinha passado em outro celular: diz para quem', () => {
+    // A linha mostrava a vez de Lia; em outro celular alguém pulou a vez, e os pontos foram para Ana Clara.
+    const credited = { completed: true, points: 10, person_id: 'p-ana', next_person_id: 'p-beto' };
+    const moved = {
+      title: '+10 pontos para Ana Clara!',
+      message: 'A vez já tinha passado para Ana Clara. Próxima vez: Beto. O saldo fica em Casa → Tarefas → Pontos das crianças.',
+    };
+    expect(completionMessage(credited, people, ofLia)).toEqual(moved);
+    // A linha mostrava a vez de um morador, ou de ninguém.
+    expect(completionMessage(credited, people, ofBeto)).toEqual(moved);
+    expect(completionMessage(credited, people, ofNobody)).toEqual(moved);
+    // Tarefa que não vale pontos: o aviso é só esse.
+    expect(completionMessage({ ...credited, points: 0 }, people, ofLia)).toEqual({
+      title: 'A vez já tinha passado para Ana Clara.',
+      message: 'Próxima vez: Beto.',
+    });
+  });
+
+  it('a vez era a que a linha mostrava: o aviso de sempre', () => {
+    const credited = { completed: true, points: 10, person_id: 'p-lia', next_person_id: 'p-beto' };
+    const usual = { title: '+10 pontos para Lia!', message: 'Próxima vez: Beto. O saldo fica em Casa → Tarefas → Pontos das crianças.' };
+    expect(completionMessage(credited, people, ofLia)).toEqual(usual);
+    // Sem a linha (quem chama não mostrou a vez), nada a comparar.
+    expect(completionMessage(credited, people)).toEqual(usual);
+    expect(completionMessage({ ...credited, points: 0 }, people, ofLia)).toEqual({ title: 'Próxima vez: Beto.' });
+    // Beto saiu da casa e segue na ordem, sem o app: a linha (de antes) o mostrava como morador. É a mesma pessoa.
+    expect(completionMessage({ ...credited, person_id: 'p-beto', next_person_id: 'p-carla' }, people, ofBeto)).toEqual({
+      title: '+10 pontos para Beto!',
+      message: 'Próxima vez: Carla. O saldo fica em Casa → Tarefas → Pontos das crianças.',
+    });
+  });
+
+  it('vez de morador não vem na resposta: sem nome, o aviso não diz que ela passou', () => {
+    // A linha mostrava Lia e a vez já era de Carla: o servidor só devolve quem ganhou pontos.
+    expect(completionMessage({ completed: true, points: 0, person_id: null, next_person_id: 'p-lia' }, people, ofLia)).toEqual({
+      title: 'Próxima vez: Lia.',
+    });
+  });
+
+  it('fora de rodízio não há vez: a tarefa que trocou de criança em outro celular só comemora', () => {
+    expect(completionMessage({ completed: true, points: 5, person_id: 'p-ana', next_person_id: null }, people, ofLia)).toEqual({
+      title: '+5 pontos para Ana Clara!',
+      message: 'O saldo fica em Casa → Tarefas → Pontos das crianças.',
+    });
+    // Banco de antes do rodízio: a resposta nem traz next_person_id.
+    expect(completionMessage({ completed: true, points: 5, person_id: 'p-ana' }, people, ofLia)?.message).toBe(
+      'O saldo fica em Casa → Tarefas → Pontos das crianças.',
+    );
+  });
 });
 
 describe('editor: escolher a ordem', () => {
@@ -196,6 +248,16 @@ describe('editor: escolher a ordem', () => {
     expect(rotationProblem(['p-beto', 'p-beto'], people)).toMatch(/duas ou mais pessoas/);
     expect(rotationProblem(['p-beto', 'p-rex'], people)).toMatch(/duas ou mais pessoas/);
     expect(rotationProblem(['p-beto', 'p-lia'], people)).toBeNull();
+  });
+
+  it('sabe se a ordem tem alguém que este aparelho não conhece', () => {
+    expect(hasUnknownPerson(order, people)).toBe(false);
+    expect(hasUnknownPerson([], people)).toBe(false);
+    // Ficha criada em outro celular, que a lista deste ainda não trouxe (ou apagada lá, e a ordem daqui é a de antes).
+    expect(hasUnknownPerson(['p-beto', 'p-nova', 'p-lia'], people)).toBe(true);
+    // O morador cuja ficha chegou, mas que a lista de moradores deste aparelho ainda não tem.
+    expect(hasUnknownPerson(order, rotationPeople([members[0]], records))).toBe(true);
+    expect(ROTATION_PERSON_UNKNOWN).toBe('O rodízio dela tem alguém que este aparelho ainda não carregou. Feche e abra de novo para editar.');
   });
 
   it('sabe se alguém da ordem ganha pontos', () => {

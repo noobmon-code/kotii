@@ -2994,21 +2994,60 @@ begin
     raise exception 'FAIL: rotation on a one-off chore';
   exception when invalid_parameter_value then null;
   end;
+  -- A ordem só se grava pelas funções: direto na tabela, quem mora na casa só lê. Senão entraria o que a
+  -- função recusa (rodízio em tarefa que não se repete) e a vez ficaria com alguém de fora da ordem.
   begin
-    insert into public.chore_rotation (chore_id, person_id, position) values (dishes, rex, 9);
-    raise exception 'FAIL: a pet written straight into the order';
-  exception when check_violation then null;
+    insert into public.chore_rotation (chore_id, person_id, position) values (once, beto, 1), (once, rita, 2);
+    raise exception 'FAIL: a member wrote a rotation straight into a one-off chore';
+  exception when insufficient_privilege then null;
   end;
   begin
-    insert into public.chore_rotation (chore_id, person_id, position) values (dishes, nina, 1);
-    raise exception 'FAIL: two people in the same position';
-  exception when unique_violation then null;
+    insert into public.chore_rotation (chore_id, person_id, position) values (dishes, nina, 4);
+    raise exception 'FAIL: a member wrote straight into the order';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update public.chore_rotation set person_id = nina where chore_id = dishes and person_id = beto;
+    raise exception 'FAIL: a member changed the order straight in the table';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from public.chore_rotation where chore_id = dishes and person_id = lia;
+    raise exception 'FAIL: a member deleted from the order straight in the table';
+  exception when insufficient_privilege then null;
   end;
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[beto, rita, lia],
     'a refused order changes nothing';
   delete from public.chores where id = once;
   perform set_config('test.r_dishes', dishes::text, false);
 end $$;
+-- O que segura a tabela por baixo das funções (elas gravam como dono, e é como dono que se confere): só
+-- pessoas entram, e duas não ficam na mesma posição.
+reset role;
+do $$
+declare
+  hh uuid := current_setting('test.hh_r')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  rita uuid := current_setting('test.r_rita')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  nina uuid := current_setting('test.r_nina')::uuid;
+  rex uuid := current_setting('test.r_rex')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+begin
+  begin
+    insert into public.chore_rotation (chore_id, person_id, position, household_id) values (dishes, rex, 9, hh);
+    raise exception 'FAIL: a pet written straight into the order';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.chore_rotation (chore_id, person_id, position, household_id) values (dishes, nina, 1, hh);
+    raise exception 'FAIL: two people in the same position';
+  exception when unique_violation then null;
+  end;
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[beto, rita, lia],
+    'a refused row changes nothing';
+end $$;
+set role authenticated;
 
 -- Outra casa não lê nem mexe na ordem, nem chama as funções nesta tarefa.
 select set_config('request.jwt.claim.sub', :'user_o', false) \gset
@@ -3021,14 +3060,20 @@ declare
   mine uuid;
 begin
   assert (select count(*) from public.chore_rotation) = 0, 'O sees no foreign order';
-  update public.chore_rotation set position = position + 10;
-  assert not found, 'O cannot change a foreign order';
-  delete from public.chore_rotation;
-  assert not found, 'O cannot delete a foreign order';
+  begin
+    update public.chore_rotation set position = position + 10;
+    raise exception 'FAIL: O changed a foreign order';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from public.chore_rotation;
+    raise exception 'FAIL: O deleted a foreign order';
+  exception when insufficient_privilege then null;
+  end;
   begin
     insert into public.chore_rotation (chore_id, person_id, position) values (dishes, tito, 9);
     raise exception 'FAIL: O put his kid in a foreign chore';
-  exception when foreign_key_violation then null;
+  exception when insufficient_privilege then null;
   end;
   begin
     insert into public.chore_rotation (chore_id, person_id, position, household_id)
@@ -3279,11 +3324,22 @@ begin
   -- Quem sai não estava na vez: a tarefa continua com quem estava.
   perform public.save_chore_rotation(sweep, array[lia, beto]);
   assert public.skip_chore_turn(sweep, lia) = beto, 'B is on turn';
-  delete from public.chore_rotation where chore_id = sweep and person_id = lia;
+  perform set_config('test.r_sweep', sweep::text, false);
+  perform set_config('test.r_plain', plain::text, false);
+end $$;
+-- A linha tirada à mão, como dono (quem mora na casa não apaga da ordem): o gatilho desfaz o rodízio do mesmo jeito.
+reset role;
+do $$
+declare
+  sweep uuid := current_setting('test.r_sweep')::uuid;
+begin
+  delete from public.chore_rotation where chore_id = sweep and person_id = current_setting('test.r_lia')::uuid;
+  assert found, 'the owner removed the row';
   assert (select count(*) from public.chore_rotation where chore_id = sweep) = 0, 'a row removed by hand dissolves the order too';
   assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000022', 'the turn stays where it was';
-  delete from public.chores where id in (sweep, plain);
 end $$;
+set role authenticated;
+delete from public.chores where id in (current_setting('test.r_sweep')::uuid, current_setting('test.r_plain')::uuid);
 
 -- A criança da vez ganha conta no app: continua na ordem, agora como
 -- moradora, e a próxima conclusão não trava nem pula ninguém.
@@ -3384,12 +3440,26 @@ reset role;
 do $$
 begin
   assert not exists (select 1 from public.chore_rotation), 'the orders left with the household';
-  -- As permissões da tabela são explícitas: não dependem do padrão do projeto.
-  assert not has_table_privilege('anon', 'public.chore_rotation', 'select, insert, update, delete, truncate'), 'anon has no access to chore_rotation';
-  assert (select bool_and(has_table_privilege(who, 'public.chore_rotation', verb))
-            from unnest(array['authenticated', 'service_role']) as who, unnest(array['select', 'insert', 'update', 'delete']) as verb),
-    'members and the service role reach chore_rotation through the API';
-  assert not has_table_privilege('authenticated', 'public.chore_rotation', 'truncate, references, trigger'), 'and members get nothing beyond that on chore_rotation';
+  -- As permissões da tabela são explícitas: não dependem do padrão do projeto. Um verbo de cada vez:
+  -- has_table_privilege com uma lista ("insert, update") é verdadeira quando qualquer um deles vale.
+  assert not exists (
+    select 1 from unnest(array['select', 'insert', 'update', 'delete', 'truncate', 'references', 'trigger']) as verb
+    where has_table_privilege('anon', 'public.chore_rotation', verb)
+  ), 'anon has no access to chore_rotation';
+  assert has_table_privilege('authenticated', 'public.chore_rotation', 'select'), 'members read chore_rotation through the API';
+  assert not has_table_privilege('authenticated', 'public.chore_rotation', 'insert'), 'members cannot insert into chore_rotation';
+  assert not has_table_privilege('authenticated', 'public.chore_rotation', 'update'), 'members cannot update chore_rotation';
+  assert not has_table_privilege('authenticated', 'public.chore_rotation', 'delete'), 'members cannot delete from chore_rotation';
+  assert not has_table_privilege('authenticated', 'public.chore_rotation', 'truncate'), 'members cannot truncate chore_rotation';
+  assert not exists (
+    select 1 from unnest(array['references', 'trigger']) as verb
+    where has_table_privilege('authenticated', 'public.chore_rotation', verb)
+  ), 'and members get nothing beyond reading chore_rotation';
+  assert (select bool_and(has_table_privilege('service_role', 'public.chore_rotation', verb))
+            from unnest(array['select', 'insert', 'update', 'delete']) as verb),
+    'the service role keeps full access to chore_rotation';
+  assert (select array_agg(cmd::text) from pg_policies where schemaname = 'public' and tablename = 'chore_rotation') = array['SELECT'],
+    'the only policy on chore_rotation is for reading';
   delete from public.household_file_cleanup where household_id = current_setting('test.hh_r')::uuid;
 end $$;
 

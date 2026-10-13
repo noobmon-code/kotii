@@ -4,7 +4,14 @@ import { StyleSheet, View } from 'react-native';
 import { useChoreRotations, useChores, useCompleteChore, type CompleteChoreResult } from '@/data/home';
 import { usePeople } from '@/data/health';
 import { useEquipmentList } from '@/data/house';
-import { choreTurnLabel, completionMessage, rotationOf, rotationPeople } from '@/domain/choreRotation';
+import {
+  choreTurnLabel,
+  completionMessage,
+  rotationOf,
+  rotationPeople,
+  type ChoreTurn,
+  type RotationPerson,
+} from '@/domain/choreRotation';
 import { choreStatus, describeChoreStatus, describeRecurrence, type ChoreStatus } from '@/domain/chores';
 import { kidsOf } from '@/domain/points';
 import { todayISO } from '@/domain/dates';
@@ -28,9 +35,11 @@ import { space } from '@/ui/theme';
 /**
  * Tarefa concluída: comemora os pontos que o servidor de fato creditou à
  * criança e, no rodízio, diz de quem é a próxima vez (completionMessage).
+ * shown: a tarefa como a linha tocada a mostrava; se a vez já tinha passado
+ * em outro celular, o aviso diz para quem.
  */
-export function announceCompletion(result: CompleteChoreResult, people: { id: string; name: string }[]) {
-  const done = completionMessage(result, people);
+export function announceCompletion(result: CompleteChoreResult, people: RotationPerson[], shown: ChoreTurn) {
+  const done = completionMessage(result, people, shown);
   if (done) notify(done.title, done.message);
 }
 
@@ -104,7 +113,7 @@ export function ChoresPanel() {
                           onPress={() =>
                             complete.mutate(
                               { id: chore.id, today, dueOn: chore.due_on },
-                              { onSuccess: (result) => announceCompletion(result, who), onError: (err) => notify('Erro', errorMessage(err)) },
+                              { onSuccess: (result) => announceCompletion(result, who, chore), onError: (err) => notify('Erro', errorMessage(err)) },
                             )
                           }
                         />
