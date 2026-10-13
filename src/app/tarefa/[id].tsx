@@ -1,5 +1,5 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { fetchChoreRotations, useChore, useChoreRotations, useDeleteChore, useSaveChore, useSkipChoreTurn } from '@/data/home';
@@ -160,7 +160,11 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
     );
   }
 
-  async function submit() {
+  // Salvar com o formulário como ele está agora: depois da conferência no servidor (abaixo), vale o que a pessoa
+  // corrigiu enquanto ela andava, conferido de novo, e não o que estava na tela na hora do toque.
+  const submitLatest = useRef<() => void>(() => undefined);
+
+  async function submit(checked = false) {
     if (submitting.current) return;
     const dueISO = parseBRDate(due);
     const count = Number.parseInt(interval, 10);
@@ -196,7 +200,7 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
     // ter falhado. Por isso, no formulário que abriu sem rodízio, a ordem é conferida agora, direto no servidor (a
     // consulta em cache, sem internet, ficaria parada esperando e o botão não faria nada). Se não deu para
     // conferir, nada é gravado. No banco que ainda não tem o rodízio a resposta é "nenhuma ordem", e a tarefa salva.
-    if (chore && !shownOrder.length) {
+    if (!checked && chore && !shownOrder.length) {
       submitting.current = true;
       setChecking(true);
       try {
@@ -211,6 +215,7 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
         submitting.current = false;
         setChecking(false);
       }
+      return submitLatest.current();
     }
     const plan = planRotationSave({
       saved,
@@ -251,6 +256,9 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
       },
     );
   }
+  useEffect(() => {
+    submitLatest.current = () => submit(true);
+  });
 
   return (
     <Screen edges={[]}>
@@ -368,7 +376,7 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
       </View>
 
       <TextField label="Observações" value={notes} onChangeText={setNotes} multiline />
-      <Button title="Salvar" onPress={submit} loading={checking || save.isPending} />
+      <Button title="Salvar" onPress={() => submit()} loading={checking || save.isPending} />
       {chore ? (
         <Button
           title="Excluir tarefa"

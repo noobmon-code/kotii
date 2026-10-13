@@ -442,6 +442,31 @@ describe('formulário aberto sem rodízio: salvar confere a ordem no servidor an
     expect(mockBack).toHaveBeenCalledTimes(1);
   });
 
+  it('o que a pessoa corrige enquanto a conferência anda também é salvo, e não o que estava na tela no toque', async () => {
+    const screen = await openPlain();
+    const release = holdFetches();
+    await screen.tap('Salvar');
+    expect(screen.busy('Salvar')).toBe(true);
+    await screen.typeTitle('Lavar a louça e o fogão');
+    release();
+    await settle();
+    expect(mockServer.log).toEqual([PLAIN_SAVE.replace('"Lavar a louça"', '"Lavar a louça e o fogão"')]);
+    expect(mockBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('e o que ficou na tela é conferido de novo: com o título apagado durante a conferência, avisa e não grava', async () => {
+    const screen = await openPlain();
+    const release = holdFetches();
+    await screen.tap('Salvar');
+    await screen.typeTitle('');
+    release();
+    await settle();
+    expect(mockServer.log).toEqual([]);
+    expect(mockNotify.mock.calls).toEqual([['Confira os dados', 'Título, data (dd/mm/aaaa) e intervalo entre 1 e 365 são obrigatórios.']]);
+    expect(mockBack).not.toHaveBeenCalled();
+    expect(screen.busy('Salvar')).toBe(false);
+  });
+
   it('banco que ainda não tem o rodízio: a conferência não acha ordem nenhuma e a tarefa salva como sempre', async () => {
     mockServer.old = true;
     const screen = await openPlain();
