@@ -216,6 +216,8 @@ export const TOO_MANY_ROWS = 'Há registros demais para ler de uma vez. Tente de
  * Lê uma busca inteira, página por página, até a página que vem incompleta.
  * Se nem em MAX_PAGES acaba, falha: um histórico cortado nunca é entregue como
  * se fosse inteiro (a evolução mostraria como "último" um resultado antigo).
+ * Com todas as páginas cheias, uma linha a mais é o que separa "exatamente o
+ * teto" (vem tudo) de "registros demais".
  */
 async function readAllPages<T>(pageSize: number, fetchPage: (from: number, to: number) => Promise<T[]>): Promise<T[]> {
   const all: T[] = [];
@@ -224,7 +226,8 @@ async function readAllPages<T>(pageSize: number, fetchPage: (from: number, to: n
     all.push(...rows);
     if (rows.length < pageSize) return all;
   }
-  throw new Error(TOO_MANY_ROWS);
+  if ((await fetchPage(all.length, all.length)).length) throw new Error(TOO_MANY_ROWS);
+  return all;
 }
 
 /** Quantos exames cada busca traz (o servidor devolve até mil linhas por vez). */

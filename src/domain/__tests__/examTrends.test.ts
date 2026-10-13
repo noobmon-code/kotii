@@ -616,7 +616,7 @@ describe('examTrends', () => {
       'Creatinina urinária (24 horas)',
       'Creatinina urinária 24 horas',
       'Clearance de creatinina - urina de 24 horas',
-      // "com" e o travessão também separam, e a parte que não fala de material não muda nada.
+      // "com" e o travessão prendem um detalhe ao exame, e a parte que não fala de material não muda nada.
       'Urina com sedimento',
       'EAS – rotina',
       'Urocultura com antibiograma (urina)',
@@ -659,11 +659,18 @@ describe('examTrends', () => {
       'Urina 24h com creatinina sérica',
       'Urina 24h - creatinina sérica',
       'Clearance de creatinina (urina 24h) com dosagem sérica',
-      // Na outra ordem também: o detalhe vale para o exame da esquerda ou da direita.
-      'Bioquímica - EAS',
-      'Bioquímica – líquor',
-      'Rotina - EAS',
-      'Exame laboratorial | urina',
+      // A palavra genérica ("rotina", "check-up", "laboratorial") sozinha numa parte que vem DEPOIS do material
+      // não diz nada: o título continua sendo do material.
+      'EAS, rotina',
+      'EAS / rotina',
+      'Urina, rotina',
+      'Urina tipo I, rotina',
+      'Urina I (EAS) / rotina',
+      'Líquor, rotina',
+      'EAS e urocultura, rotina',
+      'EAS e urocultura de rotina',
+      'EAS e urocultura (rotina)',
+      'Urina; exame laboratorial',
       // O que sobra de limite: a parte sem material e sem palavra de sangue nem de análise não diz nada.
       'Glicose e EAS',
       'TSH + urina',
@@ -786,8 +793,24 @@ describe('examTrends', () => {
           title,
         }),
       ]).single.map((i) => i.material);
-    for (const title of ['Holter 24h', 'Holter', 'MAPA 24 horas', 'Polissonografia 24h', 'EEG 24 horas', 'pH-metria de 24 horas']) {
+    for (const title of ['Holter 24h', 'Holter', 'MAPA 24 horas', 'MAPA', 'M.A.P.A.', 'Laudo do MAPA', 'Polissonografia 24h', 'EEG 24 horas', 'pH-metria de 24 horas']) {
       expect([title, names(title)]).toEqual([title, ['', '', '24h', '24h']]);
+    }
+    // O laudo guardado como "MAPA" e o seguinte, como "MAPA 24h": as médias de 24 horas são uma série só.
+    for (const [first, second] of [['MAPA', 'MAPA 24h'], ['M.A.P.A.', 'MAPA de 24 horas'], ['MAPA 24h', 'MAPA']]) {
+      for (const name of ['PAS média 24h', 'Média das 24 horas (PAS)', 'Carga pressórica sistólica 24h', 'Média 24h - pressão sistólica']) {
+        const trends = examTrends([
+          exam('2025-09-10', [result(name, '130', 'mmHg')], { title: first }),
+          exam('2026-09-10', [result(name, '128', 'mmHg')], { title: second }),
+        ]);
+        expect([first, second, name, trends.series.map((s) => [s.points.map((p) => p.value), s.material, apartNote(s)]), trends.single]).toEqual([
+          first,
+          second,
+          name,
+          [[['130', '128'], '', null]],
+          [],
+        ]);
+      }
     }
     // Fora dele (e num título que fala de urina), o "24h" do nome continua sendo a urina de 24 horas.
     for (const title of ['Cardiologia', 'Holter e urina de 24 horas', 'Proteinúria 24h - MAPA alterado']) {
@@ -899,8 +922,22 @@ describe('examTrends', () => {
         ],
       ]);
     }
-    // O item "Sangue" da fita, dentro de um EAS, continua sendo da urina.
+    // O item "Sangue" da fita, dentro de um EAS, continua sendo da urina. E o que o laboratório chama de "Sangue
+    // oculto" na fita também: num exame só de urina, o item é dela (com "fezes" no nome, é das fezes).
     expect(materials('EAS', ['Sangue'])).toEqual([['Sangue', 'urina']]);
+    expect(materials('EAS', ['Sangue oculto', 'Pesquisa de sangue oculto'])).toEqual([
+      ['Sangue oculto', 'urina'],
+      ['Pesquisa de sangue oculto', 'urina'],
+    ]);
+    expect(materials('Rotina', ['Sangue oculto nas fezes'])).toEqual([['Sangue oculto nas fezes', 'fezes']]);
+    expect(materials('Urina de 24 horas', ['Sangue oculto'])).toEqual([['Sangue oculto', '24h']]);
+    const dipstick = [
+      exam('2026-09-10', [result('Sangue oculto', 'Positivo (++)', null, 'alterado'), result('Densidade', '1,020')], { title: 'EAS' }),
+      exam('2026-09-12', [result('Sangue oculto', 'Negativo')], { title: 'Sangue oculto nas fezes' }),
+    ];
+    const lines = visitSummary(person(), dipstick, [], '2026-10-12');
+    expect(lines).toContain('- Sangue oculto (fezes): Negativo em 12/09/2026\n');
+    expect(lines).toContain('- Sangue oculto (urina): Positivo (++) em 10/09/2026 (marcado no laudo: alterado)\n');
 
     // O mesmo item em três laudos, com títulos diferentes: uma linha só, em texto.
     const exams = [
@@ -1181,7 +1218,8 @@ describe('examTrends', () => {
       'Dosagens séricas e urinárias',
       'Exames sanguíneos e de urina',
       'Dosagem plasmática + urina de 24h',
-      // O travessão, a barra em pé, "com" e "mais" também separam os exames.
+      // O nome de um exame de sangue ao lado da urina são dois exames, com o separador que for ("mais" separa; o
+      // travessão, a barra em pé e "com" prendem um ao outro, e mesmo assim são dois).
       'Hemograma – EAS',
       'Hemograma — EAS',
       'Hemograma com EAS',
@@ -1201,6 +1239,18 @@ describe('examTrends', () => {
       'Check up & urina',
       'Exames laboratoriais e urina',
       'Exame laboratorial; EAS',
+      // A palavra de análise ou genérica ANTES do material, mesmo presa a ele por um traço, "|" ou "com", é um
+      // exame de sangue ao lado do outro: "Bioquímica com EAS" é como "Hemograma com EAS".
+      'Bioquímica com EAS',
+      'Bioquímica - EAS',
+      'Bioquímica | urina',
+      'Rotina - EAS',
+      'Check-up com urina',
+      'Exame laboratorial | urina',
+      'Pré-natal - rotina e urina',
+      // O que sobra de limite: a análise escrita antes do líquor com um traço também lê como dois exames
+      // ("Bioquímica do líquor" e "Líquor – bioquímica" são as formas que valem como líquor).
+      'Bioquímica – líquor',
       // O sangue oculto é das fezes: ao lado da urina ou do hemograma, são dois exames.
       'Sangue oculto e EAS',
       'Sangue oculto + EAS',

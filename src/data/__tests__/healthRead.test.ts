@@ -93,9 +93,13 @@ describe('todos os exames de uma pessoa', () => {
     // Bem além de qualquer casa de verdade: mais páginas cheias do que a leitura aceita.
     const endless = examsDb(500 * 200 + 1);
     await expect(fetchPersonExams('ana', endless.db)).rejects.toThrow(TOO_MANY_ROWS);
-    // No limite exato, ainda vem tudo: a última página é a que vem incompleta.
+    // Logo abaixo do teto vem tudo: a última página é a que vem incompleta.
     const edge = examsDb(500 * 200 - 1);
     expect(await fetchPersonExams('ana', edge.db)).toHaveLength(500 * 200 - 1);
+    // E exatamente no teto também: todas as páginas cheias, e a linha a mais que a leitura pede não existe.
+    const exact = examsDb(500 * 200);
+    expect(await fetchPersonExams('ana', exact.db)).toHaveLength(500 * 200);
+    expect(exact.calls.at(-1)).toBe('100000-100000');
   });
 });
 
