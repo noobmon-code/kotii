@@ -5,7 +5,7 @@ import { StyleSheet, View } from 'react-native';
 import { useBudgets, useSaveBudgets, useSpending } from '@/data/finance';
 import { todayISO } from '@/domain/dates';
 import { FINANCE_CATEGORIES, monthRange, shiftMonth, summarize } from '@/domain/finance';
-import { formatBRL, parseDecimal } from '@/domain/money';
+import { formatBRL, parseMoney } from '@/domain/money';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import { Button, Card, ErrorNotice, Icon, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
@@ -36,7 +36,7 @@ export default function BudgetScreen() {
         if (saved.has(key)) limits[key] = null;
         continue;
       }
-      const value = parseDecimal(trimmed);
+      const value = parseMoney(trimmed);
       if (value === null || value <= 0) {
         notify('Valor inválido', `Confira o limite de ${FINANCE_CATEGORIES.find((c) => c.key === key)?.label}.`);
         return;
