@@ -343,6 +343,9 @@ export function useConfirmReceipt(receiptId: string) {
   });
 }
 
+/** O que mostra os itens de uma nota já confirmada: comparativo, histórico de preço, gastos e compras recentes. */
+const CONFIRMED_ITEM_KEYS = ['receipts', 'latestPrices', 'priceHistory', 'spending', 'purchaseRecords'];
+
 export function useDeleteReceipt(receiptId: string) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -351,9 +354,38 @@ export function useDeleteReceipt(receiptId: string) {
       if (imagePaths.length) await supabase.storage.from('receipts').remove(imagePaths);
     },
     onSuccess: () => {
-      for (const key of ['receipts', 'latestPrices', 'priceHistory', 'spending', 'purchaseRecords']) {
+      for (const key of CONFIRMED_ITEM_KEYS) {
         queryClient.invalidateQueries({ queryKey: [key] });
       }
+    },
+  });
+}
+
+/**
+ * Nota já confirmada: o único conserto é dar valor ao item que ficou sem
+ * (total zerado). A descrição não vai no pedido, e o filtro do total zerado
+ * deixa quieto o item que já ganhou valor em outro aparelho. Esse item já
+ * conta nos preços e nos gastos: salvar atualiza o mesmo que excluir a nota.
+ */
+export function useFillReceiptItemValue(receiptId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, values }: { id: string; values: Omit<ItemValues, 'raw_description'> }) => {
+      const { quantity, unit, unit_price, total_price } = values;
+      return unwrap(
+        await supabase
+          .from('receipt_items')
+          .update({ quantity, unit, unit_price, total_price })
+          .eq('id', id)
+          .eq('receipt_id', receiptId)
+          .eq('total_price', 0),
+      );
+    },
+    onSuccess: () => {
+      for (const key of CONFIRMED_ITEM_KEYS) {
+        queryClient.invalidateQueries({ queryKey: [key] });
+      }
+      queryClient.invalidateQueries({ queryKey: ['receipt', receiptId] });
     },
   });
 }

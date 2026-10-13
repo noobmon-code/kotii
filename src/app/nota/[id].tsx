@@ -18,6 +18,7 @@ import {
   useConfirmReceipt,
   useDeleteReceipt,
   useDeleteReceiptItem,
+  useFillReceiptItemValue,
   useReceipt,
   useSaveReceiptItem,
   useSetReceiptStore,
@@ -37,8 +38,26 @@ import {
   type ListChoice,
   type ReceiptLine,
 } from '@/domain/listLinks';
-import { formatBRL, formatQuantity } from '@/domain/money';
+import { formatBRL } from '@/domain/money';
 import { describePriceAlert, priceAlerts, totalSaving, type AlertItem, type PriceAlert } from '@/domain/priceAlert';
+import {
+  confirmUnpricedQuestion,
+  gapNotices,
+  pendingUnpriced,
+  quantityText,
+  readReceiptTotal,
+  RECEIPT_TOTAL_HINT,
+  RECEIPT_TOTAL_LABEL,
+  receiptGap,
+  receiptTotalField,
+  receiptTotalText,
+  SAVE_TOTAL_LABEL,
+  unpricedPrompt,
+  UNPRICED_LABEL,
+  type GapSuggestion,
+  type UnpricedPrompt,
+} from '@/domain/receiptGap';
+import { hasNoValue } from '@/domain/receiptItem';
 import { houseNameOverride, keptName, noteNames, sameProduct, typedNameActions, withEntry } from '@/domain/receiptNames';
 import {
   buildConfirmPayload,
@@ -85,6 +104,7 @@ import {
   Screen,
   Section,
   Text,
+  TextField,
 } from '@/ui/primitives';
 import { space, useColors } from '@/ui/theme';
 
@@ -111,6 +131,7 @@ export default function ReceiptScreen() {
   const setStore = useSetReceiptStore(id);
   const updateReceipt = useUpdateReceipt(id);
   const saveItem = useSaveReceiptItem(id);
+  const fillValue = useFillReceiptItemValue(id);
   const deleteItem = useDeleteReceiptItem(id);
   const confirm = useConfirmReceipt(id);
   const deleteReceipt = useDeleteReceipt(id);
@@ -128,6 +149,10 @@ export default function ReceiptScreen() {
   const [picker, setPicker] = useState<Picker | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [dateText, setDateText] = useState<string | null>(null);
+  // O total da nota em edição (null: fechado). Só na revisão.
+  const [totalText, setTotalText] = useState<string | null>(null);
+  // Itens que a pessoa decidiu deixar sem valor nesta revisão. Não é guardado: abrir a nota de novo pergunta de novo.
+  const [leftUnpriced, setLeftUnpriced] = useState<ReadonlySet<string>>(new Set());
   const [imageUrls, setImageUrls] = useState<string[] | null>(null);
   const [checkingPantry, setCheckingPantry] = useState(false);
   // Trava já no toque: o estado só muda no próximo render.
@@ -175,8 +200,9 @@ export default function ReceiptScreen() {
   const { receipt, items } = receiptQuery.data;
   const isDraft = receipt.status === 'draft';
   const purchasedOn = toISODate(new Date(receipt.purchased_at));
-  const itemsTotal = Math.round(items.reduce((s, i) => s + i.total_price, 0) * 100) / 100;
-  const totalMismatch = receipt.total != null && Math.abs(receipt.total - itemsTotal) > 0.05;
+  // A soma, a diferença para o total e os itens sem valor: contas e frases em domain/receiptGap.
+  const gap = receiptGap(receipt.total, items);
+  const notices = gapNotices(gap);
 
   const resolvedItems = new Map(items.map((item) => [item.id, resolveItem(item, overrides[item.id], catalog, purchasedOn)]));
   const alertItems: AlertItem[] = items.flatMap((item) => {
@@ -273,6 +299,22 @@ export default function ReceiptScreen() {
     setDateText(null);
   }
 
+  function commitTotal() {
+    if (totalText == null || updateReceipt.isPending) return;
+    const result = readReceiptTotal(totalText);
+    if (!result.ok) return notify('Confira o total', result.message);
+    updateReceipt.mutate({ total: result.total }, { onSuccess: () => setTotalText(null), onError });
+  }
+
+  const leaveUnpriced = (ids: string[]) => setLeftUnpriced((prev) => new Set([...prev, ...ids]));
+
+  /** "Usar R$ 12,90": grava no item o que falta para o total. Só depois do toque, nunca sozinho. */
+  function applySuggestion(suggestion: GapSuggestion) {
+    if (saveItem.isPending || fillValue.isPending) return;
+    if (isDraft) saveItem.mutate({ id: suggestion.itemId, values: suggestion.values }, { onError });
+    else fillValue.mutate({ id: suggestion.itemId, values: suggestion.values }, { onError });
+  }
+
   /**
    * O que já foi para a despensa pelo carrinho (ou à mão) numa data próxima:
    * pergunta antes de repetir. Sem repetir, esses itens salvam só na nota.
@@ -295,7 +337,32 @@ export default function ReceiptScreen() {
     return payload.map((p) => (skip.has(p.id) ? { ...p, pantry: undefined } : p));
   }
 
-  async function doConfirm() {
+  /**
+   * Antes das outras perguntas: os itens sem valor que a pessoa nem preencheu
+   * nem deixou assim de propósito. Respondido "Confirmar", é decisão dela: se
+   * uma pergunta seguinte for cancelada, o próximo toque não pergunta de novo.
+   */
+  function doConfirm() {
+    if (confirming.current || confirm.isPending || listPending || listFailed) return;
+    const pending = pendingUnpriced(gap, leftUnpriced);
+    if (!pending.length) {
+      void confirmReviewed();
+      return;
+    }
+    const question = confirmUnpricedQuestion(pending.length);
+    confirmAction(
+      question.title,
+      question.message,
+      question.confirmLabel,
+      () => {
+        leaveUnpriced(pending);
+        void confirmReviewed();
+      },
+      false,
+    );
+  }
+
+  async function confirmReviewed() {
     if (confirming.current || confirm.isPending || listPending || listFailed) return;
     const removals = listRemovals(listMatches, listItems);
     const forgotten = forgottenLinks(suggestedMatches, listChoices, listItems);
@@ -351,9 +418,22 @@ export default function ReceiptScreen() {
   }
 
   function saveEditedItem(values: ItemValues) {
+    const itemId = editing?.item?.id;
+    // Nota confirmada: o formulário só abre no item sem valor, e só o valor é gravado.
+    if (!isDraft) {
+      if (itemId) fillValue.mutate({ id: itemId, values }, { onSuccess: () => setEditing(null), onError });
+      return;
+    }
     saveItem.mutate(
-      { id: editing?.item?.id, values, position: items.length },
-      { onSuccess: () => setEditing(null), onError },
+      { id: itemId, values, position: items.length },
+      {
+        onSuccess: () => {
+          // Zero digitado de propósito é a resposta da pessoa: o item não pergunta de novo.
+          if (itemId && hasNoValue(values)) leaveUnpriced([itemId]);
+          setEditing(null);
+        },
+        onError,
+      },
     );
   }
 
@@ -408,16 +488,51 @@ export default function ReceiptScreen() {
         )}
         <Row style={styles.between}>
           <Text variant="muted">Soma dos itens</Text>
-          <Text variant="label">{formatBRL(itemsTotal)}</Text>
+          <Text variant="label">{formatBRL(gap.itemsTotal)}</Text>
         </Row>
-        {receipt.total != null ? (
+        {isDraft && totalText != null ? (
+          <View style={styles.gapSm}>
+            <TextField
+              label={RECEIPT_TOTAL_LABEL}
+              value={totalText}
+              onChangeText={setTotalText}
+              onSubmitEditing={commitTotal}
+              keyboardType="decimal-pad"
+              placeholder="0,00"
+              hint={RECEIPT_TOTAL_HINT}
+              autoFocus
+            />
+            <Row>
+              <Button title={SAVE_TOTAL_LABEL} compact onPress={commitTotal} loading={updateReceipt.isPending} />
+              <Button title="Cancelar" variant="ghost" compact onPress={() => setTotalText(null)} />
+            </Row>
+          </View>
+        ) : isDraft ? (
+          // Na revisão o total dá para corrigir (a leitura também erra o total) ou informar; nunca é obrigatório.
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setTotalText(receiptTotalField(receipt.total))}
+            style={[styles.totalRow, styles.between]}>
+            <Text variant="muted">{RECEIPT_TOTAL_LABEL}</Text>
+            <Row gap={space.xs}>
+              <Text variant="label" color={receipt.total == null ? 'primary' : undefined}>
+                {receiptTotalText(receipt.total)}
+              </Text>
+              <Icon name="pencil-outline" size={16} color="textMuted" />
+            </Row>
+          </Pressable>
+        ) : receipt.total != null ? (
           <Row style={styles.between}>
-            <Text variant="muted">Total da nota</Text>
-            <Text variant="label">{formatBRL(receipt.total)}</Text>
+            <Text variant="muted">{RECEIPT_TOTAL_LABEL}</Text>
+            <Text variant="label">{receiptTotalText(receipt.total)}</Text>
           </Row>
         ) : null}
-        {totalMismatch ? (
-          <Badge label="A soma não bate com o total: confira itens e descontos" tone="warning" />
+        {notices.length ? (
+          <View style={styles.gapXs}>
+            {notices.map((text) => (
+              <Badge key={text} label={text} tone="warning" />
+            ))}
+          </View>
         ) : null}
         <PayerChips value={receipt.paid_by} onChange={(paidBy) => updateReceipt.mutate({ paid_by: paidBy }, { onError })} />
         {photos.length ? (
@@ -493,12 +608,16 @@ export default function ReceiptScreen() {
           const resolved = resolvedItems.get(item.id)!;
           const alert = alertText(alerts.get(item.id));
           const before = beforeUse[item.id];
+          const prompt = unpricedPrompt(gap, item.id, receipt, leftUnpriced);
           return isDraft ? (
             <DraftItemCard
               key={item.id}
               item={item}
               resolved={resolved}
               alert={alert}
+              prompt={prompt}
+              onUseSuggestion={applySuggestion}
+              onLeaveUnpriced={() => leaveUnpriced([item.id])}
               onEdit={() => setEditing({ item })}
               onPickProduct={() =>
                 setPicker({ kind: 'product', itemId: item.id, query: resolved.productName ?? item.suggested_name ?? '' })
@@ -523,13 +642,15 @@ export default function ReceiptScreen() {
                 title={item.product_id ? (catalog.get(item.product_id)?.name ?? item.raw_description) : item.raw_description}
                 subtitle={
                   <View style={styles.gapXs}>
-                    <Text variant="muted">{`${formatQuantity(item.quantity, item.unit)} × ${formatBRL(item.unit_price)}`}</Text>
+                    <Text variant="muted">{quantityText(item)}</Text>
                     {alert ? <Badge label={alert} tone="warning" /> : null}
                   </View>
                 }
-                right={<Text variant="label">{formatBRL(item.total_price)}</Text>}
+                right={<ItemValue item={item} />}
                 onPress={item.product_id ? () => router.push({ pathname: '/produto/[id]', params: { id: item.product_id! } }) : undefined}
               />
+              {/* A nota confirmada não se edita, com uma exceção: dar valor ao item que ficou sem. */}
+              {prompt ? <ValueQuestion prompt={prompt} onUse={applySuggestion} onFill={() => setEditing({ item })} /> : null}
             </Card>
           );
         })}
@@ -682,11 +803,12 @@ export default function ReceiptScreen() {
       {editing ? (
         <ReceiptItemEditor
           initial={editing.item}
-          saving={saveItem.isPending}
+          valueOnly={!isDraft}
+          saving={saveItem.isPending || fillValue.isPending}
           onClose={() => setEditing(null)}
           onSave={saveEditedItem}
           onDelete={
-            editing.item
+            editing.item && isDraft
               ? () => {
                   const target = editing.item!;
                   setEditing(null);
@@ -706,6 +828,9 @@ function DraftItemCard({
   item,
   resolved,
   alert,
+  prompt,
+  onUseSuggestion,
+  onLeaveUnpriced,
   onEdit,
   onPickProduct,
   onPickCategory,
@@ -722,6 +847,10 @@ function DraftItemCard({
   resolved: ResolvedItem;
   /** Aviso de preço já descrito (describePriceAlert). */
   alert: string | null;
+  /** A pergunta do item sem valor (domain/receiptGap); null se ele tem valor ou se a pessoa já respondeu. */
+  prompt: UnpricedPrompt | null;
+  onUseSuggestion: (suggestion: GapSuggestion) => void;
+  onLeaveUnpriced: () => void;
   onEdit: () => void;
   onPickProduct: () => void;
   onPickCategory: () => void;
@@ -781,11 +910,9 @@ function DraftItemCard({
         <CategoryIcon category={resolved.category} name={artName} size={36} />
         <View style={styles.flex}>
           <Text variant="small">{item.raw_description}</Text>
-          <Text variant="muted">
-            {formatQuantity(item.quantity, item.unit)} × {formatBRL(item.unit_price)}
-          </Text>
+          <Text variant="muted">{quantityText(item)}</Text>
         </View>
-        <Text variant="label">{formatBRL(item.total_price)}</Text>
+        <ItemValue item={item} />
         <IconButton icon="pencil-outline" label={`Editar ${item.raw_description}`} onPress={onEdit} />
       </Row>
       {alert ? <Badge label={alert} tone="warning" /> : null}
@@ -800,6 +927,7 @@ function DraftItemCard({
           <Chip label={getCategory(resolved.category).label} icon="tag-outline" onPress={onPickCategory} />
         ) : null}
       </Row>
+      {prompt ? <ValueQuestion prompt={prompt} onUse={onUseSuggestion} onFill={onEdit} onLeave={onLeaveUnpriced} /> : null}
       {similar ? (
         <View style={styles.gapXs}>
           <Text variant="small">{similarNameHint(similar)}</Text>
@@ -846,6 +974,40 @@ function DraftItemCard({
   );
 }
 
+/** O valor do item; o que não tem valor diz "sem valor", baixinho, em vez de "R$ 0,00". */
+function ItemValue({ item }: { item: ReceiptItem }) {
+  return hasNoValue(item) ? <Text variant="muted">{UNPRICED_LABEL}</Text> : <Text variant="label">{formatBRL(item.total_price)}</Text>;
+}
+
+/**
+ * A pergunta do item sem valor, no jeito da sugestão de nome: frase pequena e
+ * botões. O app pergunta e sugere; nada é gravado sem o toque da pessoa.
+ */
+function ValueQuestion({
+  prompt,
+  onUse,
+  onFill,
+  onLeave,
+}: {
+  prompt: UnpricedPrompt;
+  onUse: (suggestion: GapSuggestion) => void;
+  onFill: () => void;
+  onLeave?: () => void;
+}) {
+  const { suggestion } = prompt;
+  return (
+    <View style={styles.gapXs}>
+      {prompt.text ? <Text variant="small">{prompt.text}</Text> : null}
+      <Row style={styles.wrap}>
+        {suggestion && prompt.useLabel ? <Chip label={prompt.useLabel} icon="check" onPress={() => onUse(suggestion)} /> : null}
+        <Chip label={prompt.fillLabel} icon="pencil-outline" onPress={onFill} />
+        {prompt.leaveLabel && onLeave ? <Chip label={prompt.leaveLabel} onPress={onLeave} /> : null}
+      </Row>
+      {prompt.caveat ? <Text variant="small">{prompt.caveat}</Text> : null}
+    </View>
+  );
+}
+
 /** Fotos da nota; nota comprida vem em partes, uma embaixo da outra. */
 function ImageViewer({ urls, onClose }: { urls: string[] | null; onClose: () => void }) {
   const c = useColors();
@@ -887,6 +1049,7 @@ const styles = StyleSheet.create({
   wrap: { flexWrap: 'wrap' },
   between: { justifyContent: 'space-between' },
   storeRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  totalRow: { flexDirection: 'row', alignItems: 'center' },
   expiry: { width: 140 },
   viewerHeader: { padding: space.lg },
   photos: { gap: space.sm, paddingBottom: space.xl },

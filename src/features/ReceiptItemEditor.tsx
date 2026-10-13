@@ -3,36 +3,42 @@ import { Modal, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import type { ItemValues } from '@/data/receipts';
-import { readReceiptItem } from '@/domain/receiptItem';
+import { FILL_VALUE_LABEL, SAVE_VALUE_LABEL } from '@/domain/receiptGap';
+import { readReceiptItem, receiptItemForm } from '@/domain/receiptItem';
 import { UNITS, type Unit } from '@/lib/types';
 import { Backdrop } from '@/ui/Backdrop';
 import { notify } from '@/ui/dialogs';
 import { Button, Chip, IconButton, Row, Text, TextField } from '@/ui/primitives';
 import { MAX_WIDTH, space, useColors } from '@/ui/theme';
 
-const toField = (n: number | undefined, digits: number) =>
-  n == null ? '' : n.toLocaleString('pt-BR', { maximumFractionDigits: digits, useGrouping: false });
-
-/** Formulário de um item de nota (corrigir leitura da IA ou digitar à mão). */
+/**
+ * Formulário de um item de nota (corrigir leitura da IA ou digitar à mão).
+ * `valueOnly` é o da nota já confirmada: só o valor do item que ficou sem
+ * (quantidade, preço, unidade e total); a descrição aparece, mas não muda.
+ */
 export function ReceiptItemEditor({
   initial,
+  valueOnly,
   onSave,
   onDelete,
   onClose,
   saving,
 }: {
   initial?: ItemValues;
+  valueOnly?: boolean;
   onSave: (values: ItemValues) => void;
   onDelete?: () => void;
   onClose: () => void;
   saving?: boolean;
 }) {
   const c = useColors();
-  const [description, setDescription] = useState(initial?.raw_description ?? '');
-  const [quantity, setQuantity] = useState(toField(initial?.quantity ?? 1, 3));
+  // Como o formulário abre (o item sem valor, com os preços em branco) está em domain/receiptItem.
+  const [start] = useState(() => receiptItemForm(initial));
+  const [description, setDescription] = useState(start.description);
+  const [quantity, setQuantity] = useState(start.quantity);
   const [unit, setUnit] = useState<Unit>(initial?.unit ?? 'un');
-  const [unitPrice, setUnitPrice] = useState(toField(initial?.unit_price, 4));
-  const [total, setTotal] = useState(toField(initial?.total_price, 2));
+  const [unitPrice, setUnitPrice] = useState(start.unitPrice);
+  const [total, setTotal] = useState(start.total);
 
   function save() {
     const result = readReceiptItem({ description, quantity, unitPrice, total });
@@ -47,11 +53,15 @@ export function ReceiptItemEditor({
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           <Row>
             <Text variant="heading" style={styles.flex}>
-              {initial ? 'Editar item' : 'Novo item'}
+              {valueOnly ? FILL_VALUE_LABEL : initial ? 'Editar item' : 'Novo item'}
             </Text>
             <IconButton icon="close" label="Fechar" onPress={onClose} />
           </Row>
-          <TextField label="Descrição" value={description} onChangeText={setDescription} autoFocus={!initial} />
+          {valueOnly ? (
+            <Text variant="muted">{description}</Text>
+          ) : (
+            <TextField label="Descrição" value={description} onChangeText={setDescription} autoFocus={!initial} />
+          )}
           <Row gap={space.md}>
             <View style={styles.flex}>
               <TextField label="Quantidade" value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" />
@@ -73,7 +83,7 @@ export function ReceiptItemEditor({
             placeholder="Calculado se vazio"
             hint="Com desconto no item, use o valor pago."
           />
-          <Button title="Salvar item" onPress={save} loading={saving} />
+          <Button title={valueOnly ? SAVE_VALUE_LABEL : 'Salvar item'} onPress={save} loading={saving} />
           {onDelete ? <Button title="Remover item" variant="danger" icon="trash-can-outline" onPress={onDelete} /> : null}
         </ScrollView>
       </SafeAreaView>
