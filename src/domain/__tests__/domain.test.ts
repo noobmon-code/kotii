@@ -25,7 +25,7 @@ import {
   takesOn,
   type MedicationSchedule,
 } from '../medications';
-import { formatBRL, parseDecimal, parseMoney } from '../money';
+import { formatBRL, parseDecimal, parseMoney, parseTypingAmount } from '../money';
 import { describeExpiry, estimateExpiry, expiryStatus } from '../pantry';
 import { guessCategory, normalizeSearch } from '../search';
 
@@ -166,6 +166,21 @@ describe('money', () => {
     expect(parseMoney('-1.500')).toBeNull();
     expect(parseMoney('abc')).toBeNull();
     expect(parseMoney('')).toBeNull();
+  });
+
+  it('reads the amount while it is still being typed', () => {
+    expect(parseTypingAmount('310,')).toBe(310);
+    expect(parseTypingAmount('310.')).toBe(310);
+    expect(parseTypingAmount('310,9')).toBe(310.9);
+    expect(parseTypingAmount('R$ 310, ')).toBe(310);
+    // A vírgula no fim diz que o ponto é de milhar: apagando os centavos de "1.234,00".
+    expect(parseTypingAmount('1.234,')).toBe(1234);
+    expect(parseTypingAmount('1.234,0')).toBe(1234);
+    expect(parseTypingAmount('12.345.678,')).toBe(12345678);
+    expect(parseTypingAmount(',')).toBeNull();
+    expect(parseTypingAmount('')).toBeNull();
+    // Salvar continua exigindo o valor completo.
+    expect(parseDecimal('310,')).toBeNull();
   });
 
   it('formats BRL', () => {
