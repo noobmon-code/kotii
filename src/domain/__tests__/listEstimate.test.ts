@@ -710,7 +710,7 @@ describe('pantryHits', () => {
     expect([...pantryHits(list, pantry, { links, today, ranOut }).keys()]).toEqual(['o']);
   });
 
-  it('item sem produto: o que acabou sob um produto ligado ao nome não volta pela entrada posta à mão', () => {
+  it('o que acabou sob um produto ligado ao nome do item não volta pela entrada posta à mão', () => {
     const links = new LinkIndex([
       { name_key: 'leite', product_id: 'italac' },
       { name_key: 'leite', product_id: 'ninho' },
@@ -727,6 +727,12 @@ describe('pantryHits', () => {
     // A entrada de outro produto ligado ao nome responde por ela mesma: o Ninho não acabou.
     const ninho = [stock('Leite Ninho 1L', 'ninho', { purchased_on: '2026-09-01' })];
     expect(pantryHits(list, ninho, { links, today, ranOut }).has('l')).toBe(true);
+    // O item que já tem produto (o Ninho) aceita a mesma entrada pelo nome: o palpite dos ligados vale para ele também.
+    const withProduct = [item('l', 'Leite', 'ninho')];
+    expect(pantryHits(withProduct, manual('2026-09-01'), { links, today }).has('l')).toBe(true);
+    expect(pantryHits(withProduct, manual('2026-09-01'), { links, today, ranOut }).has('l')).toBe(false);
+    expect(pantryHits(withProduct, manual('2026-10-08'), { links, today, ranOut }).has('l')).toBe(true);
+    expect(pantryHits(withProduct, ninho, { links, today, ranOut }).has('l')).toBe(true);
     // Sem ligação com o nome, o palpite de outro produto não diz nada sobre este item.
     expect(pantryHits(list, manual('2026-09-01'), { links: new LinkIndex([]), today, ranOut }).has('l')).toBe(true);
   });

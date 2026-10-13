@@ -370,9 +370,9 @@ export interface PantryHit {
  * mais que tenha passado do costume) fica de fora: está na lista justamente
  * porque acabou. Só a entrada mais nova que a última compra que esse palpite
  * conhece (`lastAt`) continua valendo: é compra que ele não viu, estoque novo.
- * Para o item sem produto, o palpite vale também pelos produtos que as notas
- * já ligaram ao nome dele: se o Italac acabou, a entrada "Leite" posta à mão
- * antes disso não traz o selo de volta.
+ * O palpite vale também pelos produtos que as notas já ligaram ao nome do
+ * item, tenha ele produto ou não: se o Italac acabou, a entrada "Leite" posta
+ * à mão antes disso não traz o selo de volta.
  * Mais nova de verdade (não a mesma ida ao mercado, lida um ou dois dias
  * depois) e só enquanto ela mesma não passar do intervalo de costume
  * (`everyDays`): depois disso, também acabou.
@@ -424,14 +424,12 @@ export function pantryHits(
     const name = normalizeSearch(item.name);
     // O item da lista acabou: só conta a entrada comprada depois disso (e ainda dentro do costume).
     const itemGone = goneOf(name, item.productId);
-    // Item sem produto: o que acabou pode estar com o nome da nota, sob um produto ligado a este nome. A entrada
-    // sem produto (posta à mão) não diz qual é: vale o palpite mais recente entre os produtos ligados.
-    const linkedGone = item.productId
-      ? null
-      : (links?.productsFor(item.name) ?? []).reduce<Gone | null>((latest, productId) => {
-          const gone = goneProducts.get(productId) ?? null;
-          return gone && (!latest || gone.day > latest.day) ? gone : latest;
-        }, null);
+    // O que acabou pode estar com o nome da nota, sob um produto ligado a este nome (tenha o item produto ou
+    // não). A entrada sem produto (posta à mão) não diz qual é: vale o palpite mais recente entre os ligados.
+    const linkedGone = (links?.productsFor(item.name) ?? []).reduce<Gone | null>((latest, productId) => {
+      const gone = goneProducts.get(productId) ?? null;
+      return gone && (!latest || gone.day > latest.day) ? gone : latest;
+    }, null);
     const same = fresh.filter(({ entry, key }) => {
       if (!stillThere(entry.purchased_on, itemGone)) return false;
       if (!entry.product_id && !stillThere(entry.purchased_on, linkedGone)) return false;
