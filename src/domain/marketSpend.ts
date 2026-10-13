@@ -124,6 +124,9 @@ export interface MarketReceiptRef {
   accessibilityLabel: string;
 }
 
+/** Quantos itens o ranking mostra antes de "Ver todos". */
+export const MARKET_ITEMS_SHOWN = 10;
+
 export interface MarketMonth {
   month: string;
   /** "Mercado de outubro até hoje" */
@@ -142,6 +145,11 @@ export interface MarketMonth {
   categories: MarketCategory[];
   /** Do que levou mais dinheiro para o que levou menos. */
   items: MarketItem[];
+  /**
+   * Com mais itens do que a lista mostra de início: quantos ela mostra e o que os dois botões dizem
+   * ("Ver todos os 25 itens" / "Mostrar só os 10 primeiros"). null quando cabem todos.
+   */
+  itemsCut: { shown: number; more: string; less: string } | null;
   stores: MarketStore[];
   /** "As porcentagens são sobre os itens lidos (R$ 1.200,00)."; null quando o total pago é a soma dos itens. */
   shareBasis: string | null;
@@ -589,6 +597,11 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
     trips,
     categories,
     items,
+    // Nunca um corte calado: os primeiros vêm com o botão de ver todos.
+    itemsCut:
+      items.length > MARKET_ITEMS_SHOWN
+        ? { shown: MARKET_ITEMS_SHOWN, more: `Ver todos os ${items.length} itens`, less: `Mostrar só os ${MARKET_ITEMS_SHOWN} primeiros` }
+        : null,
     stores,
     // Sem nenhum valor lido não há porcentagem para explicar.
     shareBasis: sharesOfItems && current.itemsCents > 0 ? `As porcentagens são sobre os itens lidos (${money(current.itemsCents)}).` : null,

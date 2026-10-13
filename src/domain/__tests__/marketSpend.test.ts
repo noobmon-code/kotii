@@ -3,6 +3,7 @@ import { describe, expect, it } from '@jest/globals';
 import { toISODate } from '../dates';
 import { buildEntries, monthRange, summarize } from '../finance';
 import {
+  MARKET_ITEMS_SHOWN,
   MARKET_VIEWS,
   RECEIPT_CHECK_CENTS,
   marketMonth,
@@ -567,6 +568,18 @@ describe('por categoria', () => {
     const unreadValues = marketMonth([receipt(at(MONTH, 10), [line('Brinde', 'outros', 0)], { total: 50 })], MONTH, AFTER);
     expect(unreadValues.headline).toBe('R$ 50,00 em 1 ida');
     expect(unreadValues.shareBasis).toBeNull();
+  });
+
+  it('com mais itens do que a lista mostra de início, as regras dizem quantos aparecem e o que os botões dizem', () => {
+    const lines = (count: number) => Array.from({ length: count }, (_, i) => line(`Item ${String(i + 1).padStart(2, '0')}`, 'graos', count - i));
+    const cut = (count: number) => marketMonth([receipt(at(MONTH, 8), lines(count))], MONTH, AFTER).itemsCut;
+    // Até o limite cabem todos: não há corte nem botão.
+    expect(MARKET_ITEMS_SHOWN).toBe(10);
+    expect(cut(1)).toBeNull();
+    expect(cut(10)).toBeNull();
+    expect(cut(11)).toEqual({ shown: 10, more: 'Ver todos os 11 itens', less: 'Mostrar só os 10 primeiros' });
+    expect(cut(25)).toEqual({ shown: 10, more: 'Ver todos os 25 itens', less: 'Mostrar só os 10 primeiros' });
+    expect(marketMonth([], MONTH, AFTER).itemsCut).toBeNull();
   });
 
   it('empate no valor: pelo nome, sempre na mesma ordem', () => {

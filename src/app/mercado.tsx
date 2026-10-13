@@ -37,9 +37,6 @@ import {
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
-/** Quantos itens aparecem antes de "Ver todos". */
-const ITEMS_SHOWN = 10;
-
 const capitalizeFirst = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
 const openReceipt = (id: string) => router.push({ pathname: '/nota/[id]', params: { id } });
@@ -291,8 +288,10 @@ function Items({
   onShowAll: (all: boolean) => void;
 }) {
   const items = category ? summary.items.filter((item) => item.category === category) : summary.items;
-  // Nunca um corte calado: os 10 primeiros vêm com o "Ver todos", e a categoria escolhida vem inteira.
-  const shown = category || showAll ? items : items.slice(0, ITEMS_SHOWN);
+  // Nunca um corte calado: os primeiros vêm com o "Ver todos" (quantos e o que os botões dizem saem das
+  // regras, em `itemsCut`), e a categoria escolhida vem inteira.
+  const cut = category ? null : summary.itemsCut;
+  const shown = cut && !showAll ? items.slice(0, cut.shown) : items;
   const label = category ? getCategory(category).label : null;
   if (items.length === 0) return <Text variant="muted">As notas deste mês vieram sem nenhum item lido.</Text>;
   return (
@@ -328,14 +327,7 @@ function Items({
           />
         ))}
       </ListCard>
-      {!category && items.length > ITEMS_SHOWN ? (
-        <Button
-          title={showAll ? `Mostrar só os ${ITEMS_SHOWN} primeiros` : `Ver todos os ${items.length} itens`}
-          variant="ghost"
-          compact
-          onPress={() => onShowAll(!showAll)}
-        />
-      ) : null}
+      {cut ? <Button title={showAll ? cut.less : cut.more} variant="ghost" compact onPress={() => onShowAll(!showAll)} /> : null}
       {summary.shareBasis ? <Text variant="small">{summary.shareBasis}</Text> : null}
     </View>
   );
