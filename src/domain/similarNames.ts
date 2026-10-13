@@ -259,6 +259,26 @@ export function similarNameKey(name: string): string {
   return parseName(name).key;
 }
 
+/** Os tamanhos que um nome traz, para comparar dois produtos antes de juntar. */
+export interface NameSizes {
+  /** Cada tamanho de um jeito só ("5kg", "1p5l", "12un"), em ordem: dois nomes com o mesmo tamanho dão a mesma lista. */
+  sizes: string[];
+  /** Algum tamanho veio depois de um algarismo solto ("Agua 1 5l" pode ser 1,5 L): o número lido pode não ser o do produto. */
+  doubtful: boolean;
+}
+
+/** Os tamanhos de verdade do nome, número com unidade ("Arroz 5 Kg", "Coca 350ml c/12"); unidade solta não conta. */
+export function nameSizes(name: string): NameSizes {
+  const parsed = parseName(name);
+  return { sizes: [...parsed.sizes].sort(), doubtful: parsed.doubtful.length > 0 };
+}
+
+/** O tamanho como a pessoa lê: "5 kg", "1,5 L", "12 un". */
+export function sizeLabel(size: string): string {
+  const [, number = size, unit = ''] = SIZED.exec(size) ?? [];
+  return `${number.replace('p', ',')} ${unit === 'l' ? 'L' : unit}`.trim();
+}
+
 /**
  * Com a mesma chave, é o mesmo nome se as palavras vêm na mesma ordem ou se
  * nenhum dos dois tem "de", "para", "com"...: "Preto, feijões" é "Feijão
@@ -535,12 +555,17 @@ interface Found {
 /** Nome que a casa usa de verdade: os de outros itens da nota e os do catálogo não são. */
 const isHousehold = (source: NameSource) => source === 'produto' || source === 'lista' || source === 'comprado';
 
-/** Os nomes parecidos com `typed`, do mais parecido para o menos. */
-function findSimilar(typed: string, note: Parsed, index: NameIndex, options: SimilarOptions): Found[] {
+/**
+ * Os nomes parecidos com `typed`, do mais parecido para o menos. `among`: só estes nomes do índice são
+ * conferidos, e `typed` é o nome de um produto que já existe, visto como se ainda não existisse (o produto
+ * dele fica de fora por `exceptProductId`): a entrada do índice com este nome é a dele mesmo, não um nome que
+ * a casa já usava.
+ */
+function findSimilar(typed: string, note: Parsed, index: NameIndex, options: SimilarOptions, among?: readonly Indexed[]): Found[] {
   const { category, exceptProductId, onlySame = false, onlyConfident = false, also } = options;
   // Nome que já é da casa (catálogo não conta) não ganha sugestão de outro mais genérico.
-  const settled = onlyConfident && isHousehold(sameEntry(note, index)?.source ?? 'comum');
-  let entries = index.entries;
+  const settled = onlyConfident && !among && isHousehold(sameEntry(note, index)?.source ?? 'comum');
+  let entries: readonly Indexed[] = among ?? index.entries;
   if (also) {
     // O mesmo nome nos dois: o da casa vale; o que é só do catálogo sai, e fica o desta nota.
     const replaced = new Set<Indexed>();
@@ -657,6 +682,81 @@ export function suggestedName(name: string, index: NameIndex, options: Pick<Simi
   );
   if (!best || (best.closeness !== 'igual' && vetoed(note, best.candidate, index))) return null;
   return toSimilar(best);
+}
+
+/** Um produto da casa, para procurar outro que seja o mesmo. */
+export interface ProductName {
+  id: string;
+  name: string;
+  category: string;
+}
+
+/** Dois produtos da casa que, pelos nomes, parecem o mesmo. */
+export interface SameProductPair {
+  /** O produto cujo nome foi conferido e o que a regra achou para ele. */
+  ids: [string, string];
+  /** `igual`: o mesmo nome com outra grafia; `parecido`: o nome de um cabe no do outro (com a marca ou sem). */
+  closeness: SimilarName['closeness'];
+}
+
+/**
+ * Os pares de produtos que já existem e parecem o mesmo produto. Não é uma regra nova: é a da sugestão que
+ * o item da nota mostra sem a pessoa pedir (`suggestedName`), com cada nome conferido como se chegasse agora
+ * numa nota e o produto dele ainda não existisse.
+ * - `igual`: o mesmo nome com outro acento, plural, unidade solta ou ordem das palavras ("Limão" e "Limões",
+ *   "Banana Prata Kg" e "Banana prata"). Vale entre todos os produtos com esse nome.
+ * - `parecido`: o melhor nome que cabe no outro com confiança, em geral o mesmo produto com a marca ou sem
+ *   ("Arroz" e "Arroz Tio João 5kg"). Um produto com tamanho é um produto certo: só o que tem o mesmo tamanho
+ *   e, de resto, embalagem ou versão ("Coca-Cola 2L" e "Refrigerante Coca-Cola 2l Pet"; "Coca-Cola Zero 2L",
+ *   não). Produto que tem outro com o mesmo nome fica só com esse par, como o nome que já é da casa na nota.
+ * `common`: o catálogo de itens comuns, que mostra quando o nome mais comprido é outra coisa ("Pão de queijo",
+ * "Leite condensado").
+ */
+export function sameProductPairs(products: readonly ProductName[], common: NameSources['common'] = []): SameProductPair[] {
+  const index = indexNames(nameCandidates({ products, listItems: [], purchases: [], common }));
+  const named = products
+    .map((product) => ({ product, typed: product.name.trim(), parsed: parseName(product.name.trim()) }))
+    .filter(({ parsed }) => parsed.key);
+  const pairs = new Map<string, SameProductPair>();
+  const add = (a: string, b: string, closeness: SameProductPair['closeness']) => {
+    const key = a < b ? `${a} ${b}` : `${b} ${a}`;
+    if (a !== b && !pairs.has(key)) pairs.set(key, { ids: [a, b], closeness });
+  };
+
+  // O mesmo nome com outra grafia: no índice os dois viram uma entrada só, então a conta é feita aqui.
+  const byKey = new Map<string, typeof named>();
+  for (const entry of named) byKey.set(entry.parsed.key, [...(byKey.get(entry.parsed.key) ?? []), entry]);
+  const twins = new Set<string>();
+  for (const group of byKey.values()) {
+    group.forEach((a, at) => {
+      for (const b of group.slice(at + 1)) {
+        if (!sameName(a.parsed, b.parsed)) continue;
+        add(a.product.id, b.product.id, 'igual');
+        twins.add(a.product.id).add(b.product.id);
+      }
+    });
+  }
+
+  // Um nome só cabe com confiança em outro que tenha a primeira palavra dele (inteira, ou cortada como na
+  // nota): os produtos ficam guardados por ela, para cada nome não ser conferido com a casa inteira.
+  const byFirstWord = new Map<string, Indexed[]>();
+  for (const entry of index.entries) {
+    const [first] = entry.parsed.words;
+    if (entry.source === 'produto' && first) byFirstWord.set(first, [...(byFirstWord.get(first) ?? []), entry]);
+  }
+  const firstWords = [...byFirstWord.keys()].map((word) => ({ word, one: singular(word) }));
+  for (const { product, typed, parsed } of named) {
+    if (twins.has(product.id) || !parsed.words.length) continue;
+    const ones = new Set(parsed.words.map(singular));
+    const among = firstWords.flatMap(({ word, one }) =>
+      ones.has(one) || parsed.words.some((cut) => cut.length >= 3 && word.startsWith(cut)) ? byFirstWord.get(word)! : [],
+    );
+    if (!among.length) continue;
+    const [best] = findSimilar(typed, parsed, index, { category: product.category, onlyConfident: true, exceptProductId: product.id }, among);
+    if (!best?.candidate.productId || (best.closeness !== 'igual' && vetoed(parsed, best.candidate, index))) continue;
+    add(product.id, best.candidate.productId, best.closeness);
+  }
+  return [...pairs.values()];
 }
 
 /** O que a nota precisa de cada fonte para montar os nomes da casa. */

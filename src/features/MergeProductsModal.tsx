@@ -1,0 +1,290 @@
+import { useMemo, useState } from 'react';
+import { FlatList, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { useProducts } from '@/data/market';
+import { mergeErrorNotice, useMergeProducts } from '@/data/productMerge';
+import { getCategory } from '@/domain/categories';
+import {
+  defaultKeep,
+  factsLine,
+  MERGE_DONE_TITLE,
+  mergeResult,
+  mergeSummary,
+  mergeWarnings,
+  similarProducts,
+  type MergeSide,
+} from '@/domain/productMerge';
+import { normalizeSearch } from '@/domain/search';
+import type { ProductName } from '@/domain/similarNames';
+import { Backdrop } from '@/ui/Backdrop';
+import { confirmAction, notify } from '@/ui/dialogs';
+import {
+  Badge,
+  Button,
+  CategoryIcon,
+  ErrorNotice,
+  Icon,
+  IconButton,
+  ListCard,
+  ListRow,
+  Loading,
+  Row,
+  Text,
+  TextField,
+  useGlassStyle,
+} from '@/ui/primitives';
+import { MAX_WIDTH, radius, space, useColors } from '@/ui/theme';
+
+import { useMergeFacts } from './useProductMerge';
+
+/**
+ * Juntar dois produtos: a pessoa escolhe o outro produto (se a tela ainda não
+ * sabe qual é), vê o que o app sabe de cada um, escolhe o nome que fica e
+ * confirma. Um modal só, com os dois passos dentro: abrir um modal enquanto
+ * outro fecha falha no iOS. Renderize só quando aberto.
+ */
+export function MergeProductsModal({
+  opened,
+  other,
+  onClose,
+  onMerged,
+}: {
+  /** O produto de onde a pessoa partiu: no empate de compras, é o nome dele que fica. */
+  opened: ProductName;
+  /** O outro produto, quando já se sabe (a sugestão); sem ele, a pessoa escolhe. */
+  other?: ProductName;
+  onClose: () => void;
+  /** Juntou: `keptId` é o produto que ficou. */
+  onMerged: (keptId: string) => void;
+}) {
+  const c = useColors();
+  const [picked, setPicked] = useState<ProductName | null>(other ?? null);
+  // Enquanto o banco junta, a tela não fecha: o que vem depois (o aviso e ir para o produto que ficou) é dela.
+  const [joining, setJoining] = useState(false);
+  const close = () => (joining ? undefined : onClose());
+  return (
+    <Modal visible animationType="slide" onRequestClose={close}>
+      <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
+        <Backdrop />
+        {picked ? (
+          <ConfirmStep
+            opened={opened}
+            other={picked}
+            // Quem escolheu na lista pode voltar a ela; a sugestão já veio com o par.
+            onPickAnother={other ? undefined : () => setPicked(null)}
+            onJoining={setJoining}
+            onClose={close}
+            onMerged={onMerged}
+          />
+        ) : (
+          <PickStep opened={opened} onPick={setPicked} onClose={onClose} />
+        )}
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
+function Header({ title, onClose }: { title: string; onClose: () => void }) {
+  return (
+    <Row>
+      <Text variant="heading" style={styles.flex}>
+        {title}
+      </Text>
+      <IconButton icon="close" label="Fechar" onPress={onClose} />
+    </Row>
+  );
+}
+
+/** Os outros produtos da casa, com busca: sem nada digitado, os de nome parecido vêm primeiro. */
+function PickStep({ opened, onPick, onClose }: { opened: ProductName; onPick: (product: ProductName) => void; onClose: () => void }) {
+  const products = useProducts();
+  const [query, setQuery] = useState('');
+  const others = useMemo(() => (products.data ?? []).filter((product) => product.id !== opened.id), [products.data, opened.id]);
+  const similar = useMemo(() => similarProducts(opened, others), [opened, others]);
+  const q = normalizeSearch(query);
+  const suggested = q ? [] : similar;
+  // O que já está nos parecidos não se repete na lista.
+  const shown = new Set(suggested.map((product) => product.id));
+  const listed = others.filter((product) => !shown.has(product.id) && (!q || normalizeSearch(product.name).includes(q)));
+  const row = (product: ProductName) => (
+    <ListRow
+      key={product.id}
+      left={<CategoryIcon category={product.category} name={product.name} size={32} />}
+      title={product.name}
+      subtitle={getCategory(product.category).label}
+      onPress={() => onPick(product)}
+    />
+  );
+  return (
+    <View style={styles.pick}>
+      <Header title="Juntar com qual produto?" onClose={onClose} />
+      <Text variant="muted">{`Escolha o produto que é a mesma coisa que "${opened.name}".`}</Text>
+      <TextField value={query} onChangeText={setQuery} placeholder="Buscar produto" autoCorrect={false} />
+      {products.isPending ? (
+        <Loading />
+      ) : products.error && !products.data ? (
+        <ErrorNotice error={products.error} onRetry={() => products.refetch()} />
+      ) : (
+        <FlatList
+          data={listed}
+          keyExtractor={(product) => product.id}
+          keyboardShouldPersistTaps="handled"
+          ListHeaderComponent={
+            suggested.length ? (
+              <View style={styles.suggestions}>
+                <Text variant="small">Nomes parecidos</Text>
+                <ListCard>{suggested.map(row)}</ListCard>
+              </View>
+            ) : null
+          }
+          renderItem={({ item }) => row(item)}
+          ListEmptyComponent={
+            suggested.length ? null : <Text variant="muted">{others.length ? 'Nada encontrado.' : 'A casa ainda não tem outro produto.'}</Text>
+          }
+        />
+      )}
+    </View>
+  );
+}
+
+function ConfirmStep({
+  opened,
+  other,
+  onPickAnother,
+  onJoining,
+  onClose,
+  onMerged,
+}: {
+  opened: ProductName;
+  other: ProductName;
+  onPickAnother?: () => void;
+  onJoining: (joining: boolean) => void;
+  onClose: () => void;
+  onMerged: (keptId: string) => void;
+}) {
+  const c = useColors();
+  const { facts, purchases, error, refetch } = useMergeFacts(opened.id, other.id);
+  const merge = useMergeProducts();
+  // null: a pessoa ainda não escolheu, vale o padrão (o de mais compras).
+  const [chosen, setChosen] = useState<string | null>(null);
+
+  if (!facts) {
+    return (
+      <View style={styles.content}>
+        <Header title="Juntar produtos" onClose={onClose} />
+        {error ? <ErrorNotice error={error} onRetry={refetch} /> : <Loading />}
+      </View>
+    );
+  }
+
+  const keepId = chosen ?? defaultKeep(opened.id, other.id, purchases);
+  const [keep, gone] = keepId === opened.id ? [opened, other] : [other, opened];
+  const side = (product: ProductName): MergeSide => ({ name: product.name, facts: facts[product.id] });
+  const warnings = mergeWarnings(side(opened), side(other));
+  const summary = mergeSummary(side(gone), keep.name);
+
+  const join = () => {
+    onJoining(true);
+    merge.mutate(
+      { keepId: keep.id, mergeId: gone.id },
+      {
+        onSettled: () => onJoining(false),
+        onSuccess: (moved) => {
+          notify(MERGE_DONE_TITLE, mergeResult(gone.name, keep.name, moved));
+          onMerged(keep.id);
+        },
+        onError: (failure) => {
+          const { title, message } = mergeErrorNotice(failure);
+          notify(title, message);
+        },
+      },
+    );
+  };
+
+  return (
+    <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <Header title="Juntar produtos" onClose={onClose} />
+      <Text variant="muted">
+        Os dois viram um produto só, com as compras e os preços dos dois. Escolha o nome que fica: a categoria e a validade aprendida
+        ficam as dele.
+      </Text>
+      <View style={styles.gap} accessibilityRole="radiogroup">
+        {[opened, other].map((product) => (
+          <ProductChoice
+            key={product.id}
+            product={product}
+            line={factsLine(facts[product.id])}
+            selected={product.id === keep.id}
+            disabled={merge.isPending}
+            onPress={() => setChosen(product.id)}
+          />
+        ))}
+      </View>
+      {warnings.map((warning) => (
+        <View key={warning} style={[styles.warning, { backgroundColor: c.warningSoft }]} accessibilityRole="alert">
+          <Icon name="alert-outline" size={20} color="warning" />
+          <Text variant="body" style={styles.flex}>
+            {warning}
+          </Text>
+        </View>
+      ))}
+      <Text variant="body">{summary}</Text>
+      <Button
+        title="Juntar produtos"
+        variant="danger"
+        icon="call-merge"
+        loading={merge.isPending}
+        onPress={() => confirmAction('Juntar produtos', summary, 'Juntar', join)}
+      />
+      {onPickAnother ? <Button title="Escolher outro produto" variant="secondary" disabled={merge.isPending} onPress={onPickAnother} /> : null}
+      <Button title="Cancelar" variant="secondary" disabled={merge.isPending} onPress={onClose} />
+    </ScrollView>
+  );
+}
+
+/** Um dos dois produtos, com o que o app sabe dele; o toque escolhe o nome que fica. */
+function ProductChoice({
+  product,
+  line,
+  selected,
+  disabled,
+  onPress,
+}: {
+  product: ProductName;
+  line: string;
+  selected: boolean;
+  disabled: boolean;
+  onPress: () => void;
+}) {
+  const c = useColors();
+  const glass = useGlassStyle();
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityState={{ selected, disabled }}
+      accessibilityLabel={`Ficar com o nome ${product.name}. ${line}`}
+      disabled={disabled}
+      onPress={onPress}
+      style={[styles.choice, glass, selected && { borderColor: c.primary, borderTopColor: c.primary, borderLeftColor: c.primary }]}>
+      <Icon name={selected ? 'radiobox-marked' : 'radiobox-blank'} color={selected ? 'primary' : 'textMuted'} />
+      <CategoryIcon category={product.category} name={product.name} size={40} />
+      <View style={styles.choiceText}>
+        <Text variant="label">{product.name}</Text>
+        <Text variant="muted">{line}</Text>
+        <Badge label={selected ? 'Este nome fica' : 'Deixa de existir'} tone={selected ? 'primary' : 'neutral'} />
+      </View>
+    </Pressable>
+  );
+}
+
+const styles = StyleSheet.create({
+  flex: { flex: 1 },
+  gap: { gap: space.md },
+  content: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', padding: space.lg, gap: space.lg },
+  pick: { flex: 1, width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', padding: space.lg, gap: space.md },
+  suggestions: { gap: space.sm, paddingBottom: space.md },
+  choice: { flexDirection: 'row', alignItems: 'center', gap: space.md, borderRadius: radius.lg, padding: space.lg },
+  choiceText: { flex: 1, gap: space.xs },
+  warning: { flexDirection: 'row', alignItems: 'center', gap: space.sm, borderRadius: radius.md, padding: space.md },
+});
