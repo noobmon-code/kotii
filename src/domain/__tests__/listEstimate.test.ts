@@ -685,6 +685,16 @@ describe('pantryHits', () => {
       { links, today },
     );
     expect(hits.get('l')).toEqual({ name: 'Leite', quantity: null, unit: null, since: '2026-10-05', expiresOn: '2027-03-01' });
+    // Os dois com o mesmo nome na despensa continuam sendo dois produtos: sem soma.
+    const renamed = pantryHits(
+      [item('l', 'Leite', null)],
+      [stock('Leite', 'italac', { quantity: 6 }), stock('Leite', 'ninho', { quantity: 2 })],
+      { links, today },
+    );
+    expect(renamed.get('l')).toMatchObject({ name: 'Leite', quantity: null, unit: null });
+    // Um deles e uma entrada sem produto com o mesmo nome: é a mesma coisa, soma.
+    const mixed = pantryHits([item('l', 'Leite', null)], [stock('Leite', 'italac', { quantity: 6 }), stock('leite', null)], { links, today });
+    expect(mixed.get('l')).toMatchObject({ quantity: 7, unit: 'un' });
   });
 
   it('o mesmo nome com e sem produto é a mesma coisa: soma', () => {

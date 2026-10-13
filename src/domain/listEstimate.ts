@@ -442,10 +442,11 @@ export function pantryHits(
     });
     if (!same.length) continue;
     const first = same[0];
-    // Italac e Ninho não se somam: só há número quando tudo é o mesmo produto (ou o mesmo nome), na mesma unidade.
+    // Italac e Ninho não se somam, nem com o mesmo nome na despensa (os dois renomeados para "Leite"): só há
+    // número quando tudo é o mesmo produto, ou o mesmo nome sem dois produtos diferentes entre as entradas.
+    const products = new Set(same.flatMap(({ entry }) => (entry.product_id ? [entry.product_id] : [])));
     const oneThing =
-      same.every(({ entry }) => entry.product_id != null && entry.product_id === first.entry.product_id) ||
-      same.every(({ key }) => key === first.key);
+      products.size <= 1 && (same.every(({ entry }) => entry.product_id != null) || same.every(({ key }) => key === first.key));
     const countable = oneThing && same.every(({ entry }) => entry.unit === first.entry.unit);
     const expiries = same.flatMap(({ entry }) => (entry.expires_on ? [entry.expires_on] : [])).sort();
     hits.set(item.id, {
