@@ -15,14 +15,28 @@ export function parseDecimal(input: string): number | null {
 }
 
 /**
+ * Um valor em reais, como parseDecimal, com uma diferença: sem vírgula, pontos
+ * de três em três dígitos são de milhar ("1.500" é mil e quinhentos e
+ * "12.345.678" também; dinheiro não tem três casas depois do ponto). "1.5",
+ * "15.90" e "1.500,50" continuam como lá. Só para dinheiro: numa quantidade,
+ * "1.500" kg é um quilo e meio, e é o parseDecimal que lê.
+ */
+export function parseMoney(input: string): number | null {
+  const s = input.replace(/[R$\s]/g, '');
+  // Com zero na frente ("0.500") não é milhar: fica com a leitura de sempre.
+  if (/^[1-9]\d{0,2}(\.\d{3})+$/.test(s)) return Number(s.replace(/\./g, ''));
+  return parseDecimal(input);
+}
+
+/**
  * O valor enquanto a pessoa ainda digita: "310," e "310." já valem 310, para a dica ao lado do campo
  * não piscar no instante da vírgula. A vírgula no fim já diz que os pontos são de milhar: "1.234," é mil
- * duzentos e trinta e quatro (quem apaga os centavos de "1.234,00" passa por aí). Na hora de salvar,
- * vale o parseDecimal.
+ * duzentos e trinta e quatro (quem apaga os centavos de "1.234,00" passa por aí). Sem vírgula, lê como o
+ * parseMoney ("1.500" já é mil e quinhentos), que é quem vale na hora de salvar.
  */
 export function parseTypingAmount(input: string): number | null {
   const typed = input.replace(/\s+$/, '');
-  return typed.endsWith(',') ? parseDecimal(`${typed}0`) : parseDecimal(typed.replace(/\.$/, ''));
+  return typed.endsWith(',') ? parseDecimal(`${typed}0`) : parseMoney(typed.replace(/\.$/, ''));
 }
 
 export function formatQuantity(quantity: number, unit: string): string {

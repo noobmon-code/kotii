@@ -3,7 +3,7 @@ import { Modal, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import type { ItemValues } from '@/data/receipts';
-import { parseDecimal } from '@/domain/money';
+import { parseDecimal, parseMoney } from '@/domain/money';
 import { UNITS, type Unit } from '@/lib/types';
 import { Backdrop } from '@/ui/Backdrop';
 import { notify } from '@/ui/dialogs';
@@ -36,8 +36,9 @@ export function ReceiptItemEditor({
 
   function save() {
     const qty = parseDecimal(quantity);
+    // O preço unitário pode ter três casas (o litro da gasolina a "5.899"): só o total lê o ponto de três em três como milhar.
     const price = parseDecimal(unitPrice);
-    const sum = parseDecimal(total);
+    const sum = parseMoney(total);
     if (!description.trim() || !qty || qty <= 0) {
       notify('Confira o item', 'Informe a descrição e uma quantidade maior que zero.');
       return;

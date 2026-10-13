@@ -9,7 +9,7 @@ import { useAuth } from '@/lib/auth';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { FINANCE_CATEGORIES, type FinanceCategory } from '@/domain/finance';
 import { formatTaxDoc, parseTaxDoc } from '@/domain/incomeTax';
-import { parseDecimal } from '@/domain/money';
+import { parseMoney } from '@/domain/money';
 import { errorMessage } from '@/lib/supabase';
 import type { Expense } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -49,7 +49,7 @@ function ExpenseForm({ expense }: { expense?: Expense }) {
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
   function submit() {
-    const value = parseDecimal(amount);
+    const value = parseMoney(amount);
     const spentOn = parseBRDate(date);
     if (!description.trim()) return notify('Descreva o gasto', 'Ex.: Feira, Farmácia, Conserto da máquina.');
     if (value == null || value <= 0) return notify('Informe o valor', 'Use um valor como 86,50.');
