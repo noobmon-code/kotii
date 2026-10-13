@@ -18,7 +18,8 @@ import {
 // (a busca limitada, o "troquei hoje" que não duplica) e o que o app faz com a resposta de um banco
 // que ainda não tem as tabelas. "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockCalls: { method: string; path: string; query: Record<string, string>; prefer: string; body: unknown }[] = [];
-const mockReplies: { status: number; body?: unknown }[] = [];
+// `hang`: a resposta nunca chega (rede ruim), para ver quem espera por ela.
+const mockReplies: { status: number; body?: unknown; hang?: boolean }[] = [];
 
 jest.mock('@/lib/supabase', () => {
   const { createClient } = jest.requireActual<typeof import('@supabase/supabase-js')>('@supabase/supabase-js');
@@ -35,6 +36,7 @@ jest.mock('@/lib/supabase', () => {
           body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
         });
         const reply = mockReplies.shift() ?? { status: 200, body: [] };
+        if (reply.hang) return new Promise<Response>(() => undefined);
         return new Response(reply.body === undefined ? null : JSON.stringify(reply.body), {
           status: reply.status,
           headers: { 'Content-Type': 'application/json' },
@@ -179,6 +181,18 @@ describe('gravações', () => {
     expect(SUPPLY_GONE).toBe('Esta reposição não existe mais.');
     // Mesmo com a falha, a lista volta do servidor e a linha velha some.
     expect(listed()).toBe(2);
+  });
+
+  it('a gravação que falha avisa na hora: o erro não espera a lista ser buscada de novo', async () => {
+    const screen = mount(() => ({ list: useSupplies(), record: useRecordRefill(), save: useSaveSupply() }));
+    await settled(async () => undefined);
+    // A troca falha e a nova busca da lista fica sem resposta (rede ruim): o erro tem de chegar mesmo assim.
+    mockReplies.push({ status: 500, body: { code: 'XX000', details: null, hint: null, message: 'falhou' } }, { status: 200, hang: true });
+    await settled(async () => {
+      await expect(screen.current.record.mutateAsync({ supplyId: 's1', date: '2026-10-12' })).rejects.toMatchObject({ message: 'falhou' });
+    });
+    // Mesmo assim a lista foi pedida de novo.
+    expect(mockCalls.filter((c) => c.method === 'GET' && c.path === '/rest/v1/supplies').length).toBe(2);
   });
 
   it('criar com "quando começou o atual": a reposição e a primeira troca', async () => {

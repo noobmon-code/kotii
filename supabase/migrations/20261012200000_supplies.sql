@@ -1,9 +1,9 @@
 -- O que acaba sem passar por nota fiscal: gás de cozinha, galão de água,
 -- ração, areia do gato, refil do filtro. Chegam por entrega ou sem nota, duram
 -- semanas e ninguém lembra quando o atual começou. A casa cadastra essas
--- poucas coisas ("reposições") e anota cada troca; o app calcula, só pelas
--- trocas, quando a atual deve acabar (src/domain/supplies.ts) e avisa uns
--- dias antes.
+-- poucas coisas ("reposições") e anota cada troca; o app calcula, pelas
+-- trocas (nos primeiros ciclos, junto com a estimativa), quando a atual deve
+-- acabar (src/domain/supplies.ts) e avisa uns dias antes.
 
 create table public.supplies (
   id uuid primary key default gen_random_uuid(),
@@ -22,7 +22,8 @@ create table public.supplies (
 );
 create index supplies_household_idx on public.supplies (household_id);
 
--- Uma troca: o dia em que um novo começou. É a única fonte da previsão.
+-- Uma troca: o dia em que um novo começou. É a base da previsão (nos
+-- primeiros ciclos, junto com a estimativa).
 create table public.supply_refills (
   id uuid primary key default gen_random_uuid(),
   household_id uuid not null default public.current_household_id()

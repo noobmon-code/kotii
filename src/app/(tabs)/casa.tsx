@@ -63,6 +63,6 @@ export default function HouseScreen() {
 }
 
 const styles = StyleSheet.create({
-  // O mesmo espaço que a despensa põe entre as partes dela.
-  gap: { gap: space.lg },
+  // O mesmo espaço que a despensa põe entre as partes dela; cresce para o "carregando" da despensa ficar no meio do que sobra.
+  gap: { gap: space.lg, flexGrow: 1 },
 });

@@ -1,7 +1,7 @@
 // O que acaba sem nota fiscal (gás, água, ração): as reposições da casa com
 // as últimas trocas de cada uma. A previsão sai delas em src/domain/supplies.ts.
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { useRef } from 'react';
 
@@ -101,8 +101,18 @@ export function useSaveSupply() {
       return supplyId;
     },
     // Também na falha: a reposição pode ter sido criada antes de a troca falhar.
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['supplies'] }),
+    onSettled: (_data, error) => settled(queryClient, error),
   });
+}
+
+/**
+ * Depois de gravar (ou de falhar), a lista é buscada de novo. No sucesso a ação espera por ela, para a tela já
+ * mostrar a previsão nova; na falha, não: com a rede ruim essa busca insiste por vários segundos, e o aviso do
+ * erro tem de aparecer na hora.
+ */
+function settled(queryClient: QueryClient, error: unknown) {
+  const refetched = queryClient.invalidateQueries({ queryKey: ['supplies'] });
+  return error ? undefined : refetched;
 }
 
 export function useRecordRefill() {
@@ -110,7 +120,7 @@ export function useRecordRefill() {
   return useMutation({
     mutationFn: ({ supplyId, date }: { supplyId: string; date: string }) => recordRefill(supplyId, date),
     // Também na falha: se a reposição foi excluída por outra pessoa, a linha velha some da tela.
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['supplies'] }),
+    onSettled: (_data, error) => settled(queryClient, error),
   });
 }
 
