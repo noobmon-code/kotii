@@ -2,7 +2,9 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
+import { MARKET_TRIP_PUSH_KEY, marketTripErrorMessage, useMarketTripPush } from '@/data/marketTrips';
 import { HOUSE_REMINDER_KINDS, type HouseReminderKind } from '@/domain/houseReminders';
+import { TRIP_PUSH_OPTION } from '@/domain/marketTrips';
 import { syncOtherHouses, useHouseReminderData, useHouseReminderTarget } from '@/features/useReminderSync';
 import { useHousehold } from '@/lib/auth';
 import {
@@ -27,6 +29,8 @@ export function HouseRemindersSection() {
   const households = useHousehold().data?.households;
   const queryClient = useQueryClient();
   const [kinds, setKinds] = useState<Record<HouseReminderKind, boolean> | null>(null);
+  // "Alguém indo ao mercado": não é um aviso agendado aqui, e sim uma opção deste navegador no servidor.
+  const tripPush = useMarketTripPush();
 
   useEffect(() => {
     if (remindersSupported) getHouseReminderKinds().then(setKinds).catch(() => undefined);
@@ -44,9 +48,20 @@ export function HouseRemindersSection() {
       else notify('Não deu para ligar os avisos', errorMessage(ok));
       return;
     }
-    if (data && target) syncHouseReminders(data, target).catch(() => undefined);
+    // O primeiro aviso ligado inscreve o navegador, e a inscrição nasce com "Alguém indo ao mercado" ligado.
+    const rereadTripPush = () => void queryClient.invalidateQueries({ queryKey: [MARKET_TRIP_PUSH_KEY] });
+    if (data && target) syncHouseReminders(data, target).catch(() => undefined).then(rereadTripPush);
+    else rereadTripPush();
     // As outras casas também, sem esperar o app abrir de novo.
     if (target && households) syncOtherHouses(queryClient, households, target.householdId).catch(() => undefined);
+  }
+
+  async function toggleTripPush(enabled: boolean) {
+    // Ligar pede a permissão e inscreve o navegador no servidor: pode falhar sem internet.
+    const ok = await tripPush.set(enabled).catch((err: unknown) => err);
+    if (ok === true) return;
+    if (ok === false) notify('Sem permissão', `Para receber os avisos: ${PERMISSION_HINT.charAt(0).toLowerCase()}${PERMISSION_HINT.slice(1)}`);
+    else notify(enabled ? 'Não deu para ligar o aviso' : 'Não deu para desligar o aviso', marketTripErrorMessage(ok));
   }
 
   return (
@@ -68,6 +83,21 @@ export function HouseRemindersSection() {
               />
             </Row>
           ))}
+          {/* Só onde existe: no navegador, com a opção já no banco (e depois de lida). */}
+          {typeof tripPush.value === 'boolean' ? (
+            <Row style={styles.row}>
+              <View style={styles.flex}>
+                <Text variant="label">{TRIP_PUSH_OPTION.label}</Text>
+                <Text variant="small">{TRIP_PUSH_OPTION.hint}.</Text>
+              </View>
+              <Switch
+                accessibilityLabel={`Avisos de ${TRIP_PUSH_OPTION.label.toLowerCase()}`}
+                value={tripPush.value}
+                onValueChange={toggleTripPush}
+                trackColor={{ true: c.primary }}
+              />
+            </Row>
+          ) : null}
         </ListCard>
       ) : (
         <Card>

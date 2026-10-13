@@ -6,7 +6,7 @@
 // cancelar e listar. O service worker (public/sw.js) mostra o aviso.
 
 import { supabase, unwrap } from './supabase';
-import { base64UrlToBytes, sameKey, scheduleRow, TRIGGER_TYPES, type ScheduleRequest } from './webPushSchedule';
+import { base64UrlToBytes, isServerPush, sameKey, scheduleRow, TRIGGER_TYPES, type ScheduleRequest } from './webPushSchedule';
 
 /** Este navegador recebe avisos? (No iPhone, só com o app na tela de início, iOS 16.4 ou mais novo.) */
 export const webPushSupported =
@@ -96,6 +96,31 @@ const lastSubscription = {
 };
 
 /**
+ * "Alguém indo ao mercado" desligado neste navegador. A opção vale no
+ * servidor, na inscrição (push_subscriptions.market_trips); a escolha fica
+ * também aqui porque a inscrição troca (chave nova, inscrição vencida, sair
+ * e entrar na conta) e a nova nasce com a opção ligada.
+ */
+const MARKET_TRIPS_OFF_KEY = 'kotii:push-market-trips-off';
+const marketTripsOff = {
+  get: (): boolean => {
+    try {
+      return window.localStorage.getItem(MARKET_TRIPS_OFF_KEY) === '1';
+    } catch {
+      return false;
+    }
+  },
+  set: (off: boolean) => {
+    try {
+      if (off) window.localStorage.setItem(MARKET_TRIPS_OFF_KEY, '1');
+      else window.localStorage.removeItem(MARKET_TRIPS_OFF_KEY);
+    } catch {
+      // Sem armazenamento: vale o que está no servidor.
+    }
+  },
+};
+
+/**
  * Inscreve este navegador no servidor e devolve o id da inscrição: uma vez
  * por sessão do app, e de novo se o fuso mudou (o app ficou aberto numa
  * viagem), para os avisos diários tocarem na hora de lá. `fresh` confere no
@@ -119,6 +144,14 @@ function ensureSubscription({ fresh = false }: { fresh?: boolean } = {}): Promis
     const previous = lastSubscription.get();
     if (previous && previous !== subscription) subscriptionChanged = true;
     lastSubscription.set(subscription);
+    // Inscrição nova para este navegador: quem tinha desligado "Alguém indo ao
+    // mercado" continua sem receber (num banco de antes da opção, nada a fazer).
+    if (previous !== subscription && marketTripsOff.get()) {
+      await supabase.rpc('set_push_market_trips', { p_endpoint: endpoint, p_enabled: false }).then(
+        () => undefined,
+        () => undefined,
+      );
+    }
     return subscription;
   })().catch((err) => {
     if (registered?.id === id) registered = null;
@@ -158,9 +191,13 @@ export const webScheduler = {
   cancelScheduledNotificationAsync: async (id: string): Promise<void> => {
     unwrap(await supabase.from('push_schedule').delete().eq('id', id));
   },
+  /** Os lembretes que o app agendou: o que o servidor pôs na agenda por conta própria não entra. */
   getAllScheduledNotificationsAsync: async (): Promise<{ identifier: string }[]> => {
-    const rows = unwrap(await supabase.from('push_schedule').select('id').eq('subscription_id', await ensureSubscription())) as { id: string }[];
-    return rows.map((row) => ({ identifier: row.id }));
+    const rows = unwrap(await supabase.from('push_schedule').select('id, data').eq('subscription_id', await ensureSubscription())) as {
+      id: string;
+      data: unknown;
+    }[];
+    return rows.filter((row) => !isServerPush(row.data)).map((row) => ({ identifier: row.id }));
   },
 };
 
@@ -179,6 +216,49 @@ export async function pruneWebSchedule(keep: string[]): Promise<{ changed: boole
   subscriptionChanged = false;
   if (!changed) unwrap(await supabase.rpc('prune_push_schedule', { p_subscription_id: subscription, p_keep: keep }));
   return { changed };
+}
+
+/** A inscrição que o navegador já tem, sem criar uma (null: nenhuma, ou o service worker não iniciou). */
+async function currentBrowserSubscription(): Promise<PushSubscription | null> {
+  const registration = await serviceWorker().catch(() => null);
+  return (await registration?.pushManager.getSubscription().catch(() => null)) ?? null;
+}
+
+/**
+ * Este navegador recebe o aviso de "alguém indo ao mercado"? Só com a
+ * permissão dada, a inscrição no servidor e a opção ligada nela. A leitura
+ * vai ao servidor mesmo sem inscrição: num banco de antes da opção ela
+ * falha (a coluna não existe) e quem chamou esconde a opção.
+ */
+export async function getMarketTripsPush(): Promise<boolean> {
+  const rows = unwrap(await supabase.from('push_subscriptions').select('endpoint, market_trips')) as {
+    endpoint: string;
+    market_trips: boolean;
+  }[];
+  if (!webPushSupported || !granted()) return false;
+  const endpoint = (await currentBrowserSubscription())?.endpoint;
+  return rows.some((row) => row.endpoint === endpoint && row.market_trips);
+}
+
+/**
+ * Liga ou desliga o aviso de "alguém indo ao mercado" neste navegador.
+ * Ligar pede a permissão (o pedido sai primeiro, ainda dentro do toque) e
+ * inscreve o navegador, como qualquer outro aviso; devolve false sem a
+ * permissão. Desligar deixa a inscrição: os outros avisos continuam.
+ */
+export async function setMarketTripsPush(enabled: boolean): Promise<boolean> {
+  if (enabled) {
+    if ((await Notification.requestPermission()) !== 'granted') return false;
+    marketTripsOff.set(false);
+    // Confere no servidor: a inscrição pode ter sido apagada com o app aberto.
+    await ensureSubscription({ fresh: true });
+  }
+  const endpoint = (await currentBrowserSubscription())?.endpoint;
+  if (endpoint) unwrap(await supabase.rpc('set_push_market_trips', { p_endpoint: endpoint, p_enabled: enabled }));
+  else if (enabled) throw new Error('O navegador não completou a inscrição para avisos.');
+  // Só depois de o servidor aceitar: sem a opção no banco, nada fica guardado aqui.
+  if (!enabled) marketTripsOff.set(true);
+  return true;
 }
 
 /** Este navegador deixa de receber avisos (ao sair da conta). */

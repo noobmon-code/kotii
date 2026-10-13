@@ -14,6 +14,7 @@ import {
 import { useBills, useBudgets, useSpending } from '@/data/finance';
 import { useDocuments, useEquipmentList } from '@/data/house';
 import { useAddItemsToList, usePurchaseRecords, useShoppingLists } from '@/data/market';
+import { useRefreshMarketTrips } from '@/data/marketTrips';
 import { useMenu } from '@/data/menu';
 import { useRefreshWeather } from '@/data/weather';
 import { useReceipts } from '@/data/receipts';
@@ -35,6 +36,7 @@ import { PayBillModal } from '@/features/finance/PayBillModal';
 import { hasHealthToday, healthTodayCount, HealthTodaySections } from '@/features/health/HealthTodaySections';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { InstallAppCard } from '@/features/InstallAppCard';
+import { MarketTripBanner } from '@/features/MarketTrip';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useJustListed } from '@/features/RecentPurchases';
 import { WeatherCard } from '@/features/WeatherCard';
@@ -148,11 +150,13 @@ export default function TodayScreen() {
     ...health.queries,
   ];
   const refreshing = queries.some((q) => q.isRefetching);
-  // O clima fica fora de `queries` (não conta para "tudo em dia"), mas atualiza junto.
+  // O clima e as idas ao mercado ficam fora de `queries` (não contam para "tudo em dia"), mas atualizam junto.
   const refreshWeather = useRefreshWeather();
+  const refreshTrips = useRefreshMarketTrips();
   const refresh = () => {
     queries.forEach((q) => q.refetch());
     refreshWeather();
+    refreshTrips();
   };
 
   const taken = new Set((doses.data ?? []).map((d) => doseKey(d.medication_id, d.scheduled_on, d.scheduled_time)));
@@ -281,6 +285,9 @@ export default function TodayScreen() {
         </View>
         <SkyArt period={period} size={104} />
       </View>
+
+      {/* Alguém da casa está indo às compras: ainda dá tempo de pôr na lista o que falta. */}
+      <MarketTripBanner lists={lists.data} openable />
 
       <WeatherCard now={now} />
 

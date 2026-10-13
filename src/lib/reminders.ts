@@ -117,6 +117,25 @@ export async function askReminderPermission(): Promise<boolean> {
   return remindersSupported && ensurePermission();
 }
 
+/**
+ * "Alguém indo ao mercado": o aviso que o servidor manda na hora em que
+ * alguém da casa toca em "Estou indo ao mercado" (announce_market_trip). Só
+ * no navegador: no celular não há push remoto, lá o aviso aparece dentro do
+ * app. Não é um lembrete agendado aqui, e sim uma opção da inscrição deste
+ * navegador no servidor.
+ */
+export const marketTripPushSupported = Platform.OS === 'web' && remindersSupported;
+
+/** A opção está ligada neste navegador? Lança o erro do banco que ainda não tem a opção. */
+export async function getMarketTripPush(): Promise<boolean> {
+  return marketTripPushSupported && webPush().getMarketTripsPush();
+}
+
+/** Liga (pedindo a permissão, ainda dentro do toque) ou desliga. Retorna false sem permissão. */
+export function setMarketTripPush(enabled: boolean): Promise<boolean> {
+  return marketTripPushSupported ? webPush().setMarketTripsPush(enabled) : Promise.resolve(false);
+}
+
 export async function hasReminders(medicationId: string): Promise<boolean> {
   return (await AsyncStorage.getItem(storageKey(medicationId))) !== null;
 }

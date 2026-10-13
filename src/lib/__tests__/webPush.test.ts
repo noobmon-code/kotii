@@ -12,15 +12,22 @@ async function inBrowser(
       inserts: unknown[][];
       setTimezone: (tz: string) => void;
       setServerSubscription: (id: string) => void;
+      /** O que o banco devolve numa leitura de cada tabela (ou o erro dela). */
+      tables: Record<string, unknown[] | { error: unknown }>;
+      storage: Map<string, string>;
+      setPermission: (permission: string, afterAsking?: string) => void;
     },
   ) => Promise<void>,
-  { lastSubscription }: { lastSubscription?: string } = {},
+  { lastSubscription, tripsOff }: { lastSubscription?: string; tripsOff?: boolean } = {},
 ) {
   const rpc: [string, Record<string, unknown>][] = [];
   const inserts: unknown[][] = [];
   let timezone = 'America/Sao_Paulo';
   let serverSubscription = 'sub-1';
   const storage = new Map<string, string>(lastSubscription ? [['kotii:push-subscription', lastSubscription]] : []);
+  if (tripsOff) storage.set('kotii:push-market-trips-off', '1');
+  const tables: Record<string, unknown[] | { error: unknown }> = {};
+  const notification = { permission: 'granted', afterAsking: 'granted' };
   let current: unknown = null;
   const g = globalThis as Record<string, unknown>;
   const saved = { window: g.window, navigator: g.navigator, Notification: g.Notification };
@@ -55,7 +62,12 @@ async function inBrowser(
       },
     },
   });
-  g.Notification = { permission: 'granted', requestPermission: async () => 'granted' };
+  g.Notification = {
+    get permission() {
+      return notification.permission;
+    },
+    requestPermission: async () => (notification.permission = notification.afterAsking),
+  };
   const spy = jest.spyOn(Intl, 'DateTimeFormat').mockImplementation(
     () => ({ resolvedOptions: () => ({ timeZone: timezone }) }) as unknown as Intl.DateTimeFormat,
   );
@@ -69,10 +81,16 @@ async function inBrowser(
             if (name === 'register_push_subscription') return { data: serverSubscription, error: null };
             return { data: null, error: null };
           },
-          from: () => ({
+          from: (table: string) => ({
             insert: async (rows: unknown[]) => {
               inserts.push(rows);
               return { data: null, error: null };
+            },
+            // A leitura com ou sem filtro (.eq), como o cliente do Supabase: dá para esperar nos dois.
+            select: () => {
+              const rows = tables[table] ?? [];
+              const result = Promise.resolve(Array.isArray(rows) ? { data: rows, error: null } : { data: null, error: rows.error });
+              return Object.assign(result, { eq: () => result });
             },
           }),
         },
@@ -87,6 +105,9 @@ async function inBrowser(
         inserts,
         setTimezone: (tz) => (timezone = tz),
         setServerSubscription: (id) => (serverSubscription = id),
+        tables,
+        storage,
+        setPermission: (permission, afterAsking = permission) => Object.assign(notification, { permission, afterAsking }),
       });
     });
   } finally {
@@ -138,6 +159,98 @@ describe('avisos no navegador', () => {
       expect(await webPush.pruneWebSchedule(['a'])).toEqual({ changed: true });
       await webPush.webScheduler.scheduleManyAsync([daily(8)]);
       expect(browser.inserts[1]).toEqual([expect.objectContaining({ subscription_id: 'sub-2' })]);
+    });
+  });
+
+  it('o aviso que o servidor pôs na agenda não conta como lembrete do app', async () => {
+    await inBrowser(async (webPush, browser) => {
+      browser.tables.push_schedule = [
+        { id: 'a', data: { medicationId: 'm1', householdId: 'h1' } },
+        { id: 'ida', data: { reminder: 'ida:t1', server: true, householdId: 'h1' } },
+        { id: 'b', data: {} },
+      ];
+      expect(await webPush.webScheduler.getAllScheduledNotificationsAsync()).toEqual([{ identifier: 'a' }, { identifier: 'b' }]);
+    });
+  });
+
+  describe('"alguém indo ao mercado" neste navegador', () => {
+    const endpoint = 'https://fcm.googleapis.com/fcm/send/navegador';
+    const flagCalls = (rpc: [string, Record<string, unknown>][]) => rpc.filter(([name]) => name === 'set_push_market_trips').map(([, args]) => args);
+
+    it('ligado só com a permissão, a inscrição deste navegador no servidor e a opção ligada nela', async () => {
+      await inBrowser(async (webPush, browser) => {
+        // Sem inscrição neste navegador.
+        browser.tables.push_subscriptions = [{ endpoint, market_trips: true }];
+        expect(await webPush.getMarketTripsPush()).toBe(false);
+        // Inscrito (qualquer aviso ligado inscreve).
+        await webPush.webScheduler.scheduleManyAsync([daily(8)]);
+        expect(await webPush.getMarketTripsPush()).toBe(true);
+        browser.tables.push_subscriptions = [{ endpoint, market_trips: false }];
+        expect(await webPush.getMarketTripsPush()).toBe(false);
+        // A opção ligada em outro navegador da mesma conta não vale para este.
+        browser.tables.push_subscriptions = [{ endpoint: 'https://fcm.googleapis.com/fcm/send/outro', market_trips: true }];
+        expect(await webPush.getMarketTripsPush()).toBe(false);
+        // Permissão tirada nas configurações do navegador.
+        browser.tables.push_subscriptions = [{ endpoint, market_trips: true }];
+        browser.setPermission('denied');
+        expect(await webPush.getMarketTripsPush()).toBe(false);
+      });
+    });
+
+    it('banco de antes da opção: a leitura falha mesmo sem inscrição (quem chama esconde a opção)', async () => {
+      await inBrowser(async (webPush, browser) => {
+        browser.setPermission('default');
+        browser.tables.push_subscriptions = { error: { code: '42703', message: 'column push_subscriptions.market_trips does not exist' } };
+        await expect(webPush.getMarketTripsPush()).rejects.toMatchObject({ code: '42703' });
+      });
+    });
+
+    it('ligar pede a permissão, inscreve o navegador e liga a opção nele', async () => {
+      await inBrowser(async (webPush, browser) => {
+        browser.setPermission('default', 'granted');
+        expect(await webPush.setMarketTripsPush(true)).toBe(true);
+        expect(browser.rpc.map(([name]) => name)).toEqual(['push_public_key', 'register_push_subscription', 'set_push_market_trips']);
+        expect(flagCalls(browser.rpc)).toEqual([{ p_endpoint: endpoint, p_enabled: true }]);
+      });
+    });
+
+    it('sem a permissão, nada é inscrito nem ligado', async () => {
+      await inBrowser(async (webPush, browser) => {
+        browser.setPermission('default', 'denied');
+        expect(await webPush.setMarketTripsPush(true)).toBe(false);
+        expect(browser.rpc).toEqual([]);
+      });
+    });
+
+    it('desligar muda só a opção: a inscrição (e os outros avisos) ficam', async () => {
+      await inBrowser(async (webPush, browser) => {
+        await webPush.webScheduler.scheduleManyAsync([daily(8)]);
+        expect(await webPush.setMarketTripsPush(false)).toBe(true);
+        expect(flagCalls(browser.rpc)).toEqual([{ p_endpoint: endpoint, p_enabled: false }]);
+        expect(browser.rpc.some(([name]) => name === 'unregister_push_subscription')).toBe(false);
+        expect(browser.storage.get('kotii:push-market-trips-off')).toBe('1');
+        // Ligar de novo esquece a escolha guardada.
+        await webPush.setMarketTripsPush(true);
+        expect(browser.storage.has('kotii:push-market-trips-off')).toBe(false);
+      });
+    });
+
+    it('desligado, e a inscrição trocou (ou a pessoa saiu e entrou): a nova nasce ligada e o navegador a desliga de novo', async () => {
+      await inBrowser(
+        async (webPush, browser) => {
+          await webPush.webScheduler.scheduleManyAsync([daily(8)]);
+          expect(flagCalls(browser.rpc)).toEqual([{ p_endpoint: endpoint, p_enabled: false }]);
+          // A mesma inscrição conferida de novo: nada a repetir.
+          await webPush.pruneWebSchedule([]);
+          expect(flagCalls(browser.rpc)).toHaveLength(1);
+        },
+        { tripsOff: true },
+      );
+      // Quem nunca desligou não manda nada.
+      await inBrowser(async (webPush, browser) => {
+        await webPush.webScheduler.scheduleManyAsync([daily(8)]);
+        expect(flagCalls(browser.rpc)).toEqual([]);
+      });
     });
   });
 

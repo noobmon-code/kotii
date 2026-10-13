@@ -2916,4 +2916,410 @@ begin
 end $$;
 reset role;
 
+-- ---------------------------------------------------------------------------
+\echo '• "estou indo ao mercado": a ida, o aviso nos navegadores dos outros e os limites'
+\set user_p '00000000-0000-0000-0000-000000000031'
+\set user_q '00000000-0000-0000-0000-000000000032'
+\set user_r '00000000-0000-0000-0000-000000000033'
+\set user_s '00000000-0000-0000-0000-000000000034'
+\set user_u '00000000-0000-0000-0000-000000000035'
+\set user_t '00000000-0000-0000-0000-000000000036'
+reset role;
+insert into auth.users (id) values (:'user_p'), (:'user_q'), (:'user_r'), (:'user_s'), (:'user_u'), (:'user_t');
+do $$
+begin
+  assert public.push_text(E'  Ana\n\r\tMaria da‮ Silva  ', 40) = 'Ana Maria da Silva', 'one line, no control or direction characters';
+  assert public.push_text(E'Ana \n' || repeat('x', 50), 4) = 'Ana', 'cut, and no space left at the end';
+  assert public.push_text(null, 40) = '' and public.push_text(E'\n\t', 40) = '', 'nothing left: the caller falls back';
+end $$;
+set role authenticated;
+
+-- A casa P: Paula (dona, com um nome de exibição hostil), Quim, Rita, Sara e Ugo.
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+select (public.create_household('Casa P', E'Paula\n\r\tMalvada ' || repeat('x', 300))).id as hh_p \gset
+select set_config('test.hh_p', :'hh_p', false) \gset
+select invite_code as invite_p from public.households where id = :'hh_p' \gset
+insert into public.shopping_lists (name, kind) values (E'Compras\ndo mês ' || repeat('y', 300), 'mercado') returning id as list_p1 \gset
+insert into public.shopping_lists (name, kind) values ('Farmácia', 'farmacia') returning id as list_p2 \gset
+select set_config('test.list_p1', :'list_p1', false) \gset
+select set_config('test.list_p2', :'list_p2', false) \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-p1', 'k', 'a', 'UTC') \gset
+
+-- Quim recebe em dois navegadores.
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+select public.join_household(:'invite_p', 'Quim') \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-q1', 'k', 'a', 'UTC') \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-q2', 'k', 'a', 'UTC') \gset
+
+-- Rita desligou "Alguém indo ao mercado" no navegador dela.
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+select public.join_household(:'invite_p', 'Rita') \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-r1', 'k', 'a', 'UTC') \gset
+do $$
+begin
+  assert (select market_trips from public.push_subscriptions), 'a browser that receives Kotii notifications starts with the trips on';
+  assert public.set_push_market_trips('https://fcm.googleapis.com/fcm/send/ida-r1', false), 'the owner switches her browser off';
+  assert not (select market_trips from public.push_subscriptions), 'and reads it back';
+  assert not public.set_push_market_trips('https://fcm.googleapis.com/fcm/send/ida-q1', false), 'a foreign endpoint changes nothing';
+end $$;
+
+-- A agenda do navegador de Sara está cheia.
+select set_config('request.jwt.claim.sub', :'user_s', false) \gset
+select public.join_household(:'invite_p', 'Sara') \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-s1', 'k', 'a', 'UTC') \gset
+insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute)
+select gen_random_uuid(), (select id from public.push_subscriptions), 'Aviso ' || n, 'daily', 8, 0
+from generate_series(1, public.max_push_schedule()) n;
+
+select set_config('request.jwt.claim.sub', :'user_u', false) \gset
+select public.join_household(:'invite_p', 'Ugo') \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-u1', 'k', 'a', 'UTC') \gset
+
+-- Outra casa: Téo, e Paula também mora nela.
+select set_config('request.jwt.claim.sub', :'user_t', false) \gset
+select (public.create_household('Casa T', 'Téo')).id as hh_t \gset
+select set_config('test.hh_t', :'hh_t', false) \gset
+select invite_code as invite_t from public.households where id = :'hh_t' \gset
+insert into public.shopping_lists (name, kind) values ('Mercado', 'mercado') returning id as list_t1 \gset
+select set_config('test.list_t1', :'list_t1', false) \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-t1', 'k', 'a', 'UTC') \gset
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+select public.join_household(:'invite_t', 'Paula') \gset
+
+reset role;
+do $$
+begin
+  assert (select count(*) from public.push_subscriptions where endpoint like '%/ida-q1' and market_trips) = 1, 'Rita did not touch the other member browser';
+end $$;
+set role anon;
+do $$
+begin
+  perform public.announce_market_trip(gen_random_uuid());
+  raise exception 'FAIL: anon announced a trip';
+exception when insufficient_privilege then null;
+end $$;
+set role authenticated;
+
+-- Paula avisa, com a casa P aberta.
+do $$
+declare
+  hp uuid := current_setting('test.hh_p')::uuid;
+  list uuid := current_setting('test.list_p1')::uuid;
+  r jsonb;
+  again jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', hp)::text, true);
+  begin
+    perform public.announce_market_trip(current_setting('test.list_t1')::uuid);
+    raise exception 'FAIL: announced a list of another household (even one the person lives in)';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.announce_market_trip(gen_random_uuid());
+    raise exception 'FAIL: announced a list that does not exist';
+  exception when no_data_found then null;
+  end;
+  assert not exists (select 1 from public.market_trips), 'a refused announcement leaves no trip';
+
+  r := public.announce_market_trip(list);
+  assert (r ->> 'repeated')::boolean = false, 'a new trip';
+  assert (r ->> 'members')::int = 4, 'four other members';
+  assert (r ->> 'notified')::int = 2, 'two of them had a notification queued (Quim once, Ugo; not Rita, not Sara)';
+  perform set_config('test.trip_1', r ->> 'trip_id', false);
+  assert (select count(*) from public.push_schedule) = 0, 'nothing in the announcer own browser';
+  assert (select count(*) from public.market_trips where id = (r ->> 'trip_id')::uuid and user_id = auth.uid() and list_id = list
+    and ended_at is null and ends_at = created_at + interval '2 hours') = 1, 'the trip lasts two hours';
+
+  again := public.announce_market_trip(list);
+  assert again ->> 'trip_id' = r ->> 'trip_id' and (again ->> 'repeated')::boolean and (again ->> 'notified')::int = 0,
+    'within 30 minutes: the same trip, nobody notified again';
+  assert (again ->> 'created_at')::timestamptz = (r ->> 'created_at')::timestamptz, 'with the time of the first announcement';
+  assert (select count(*) from public.market_trips) = 1, 'and no second trip';
+end $$;
+
+reset role;
+do $$
+declare
+  hp uuid := current_setting('test.hh_p')::uuid;
+  trip text := current_setting('test.trip_1');
+  who text := 'Paula Malvada ' || repeat('x', 26);
+  list_name text := 'Compras do mês ' || repeat('y', 45);
+  queued public.push_schedule;
+begin
+  assert (
+    select array_agg(s.endpoint order by s.endpoint)
+    from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where p.data ? 'server'
+  ) = array[
+    'https://fcm.googleapis.com/fcm/send/ida-q1', 'https://fcm.googleapis.com/fcm/send/ida-q2', 'https://fcm.googleapis.com/fcm/send/ida-u1'
+  ], 'one row per browser of the other members with the option on: not the announcer, not the one who switched it off, not the full one, not the other household (nor the announcer other household), and nothing from the repeat';
+  assert (select count(distinct (p.title, p.body, p.data::text, p.repeat)) from public.push_schedule p where p.data ? 'server') = 1,
+    'all the same notice (each of them lives in one household: no household name in the title)';
+  select * into queued from public.push_schedule p where p.data ? 'server' limit 1;
+  assert char_length(who) = 40 and queued.title = who || ' está indo ao mercado', 'title from the stored name: one line, cut at 40';
+  assert char_length(list_name) = 60 and queued.body = 'Falta alguma coisa? Ponha na lista “' || list_name || '” agora.',
+    'body from the stored list name: one line, cut at 60';
+  assert queued.title !~ '[[:cntrl:]]' and queued.body !~ '[[:cntrl:]]', 'no line breaks or control characters';
+  assert queued.data = jsonb_build_object('reminder', 'ida:' || trip, 'server', true, 'householdId', hp), 'tagged as a server row of this trip and household';
+  assert queued.repeat = 'once' and queued.fire_at <= now() and queued.next_at <= now() and queued.claimed_at is null, 'due right away';
+  assert (select display_name from public.market_trips where id = trip::uuid) = who, 'the trip keeps the name that went out';
+  assert (select count(*) from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where s.endpoint like '%/ida-s1') = public.max_push_schedule(), 'the full browser was skipped without failing the others';
+end $$;
+
+-- A send-push de hoje levaria essas linhas.
+set role service_role;
+do $$
+begin
+  assert (
+    select array_agg(d.endpoint order by d.endpoint) from public.take_due_pushes(now() + interval '1 second') d
+    where d.data ->> 'reminder' = 'ida:' || current_setting('test.trip_1')
+  ) = array[
+    'https://fcm.googleapis.com/fcm/send/ida-q1', 'https://fcm.googleapis.com/fcm/send/ida-q2', 'https://fcm.googleapis.com/fcm/send/ida-u1'
+  ], 'take_due_pushes hands the queued rows to send-push';
+end $$;
+reset role;
+update public.push_schedule set claimed_at = null;
+set role authenticated;
+
+-- No navegador de Quim: a poda do app deixa o aviso do servidor; ele não encerra a ida de Paula nem escreve direto.
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+declare
+  trip uuid := current_setting('test.trip_1')::uuid;
+  sub uuid := (select id from public.push_subscriptions where endpoint like '%/ida-q1');
+begin
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute)
+  values (gen_random_uuid(), sub, 'Lembrete que o app esqueceu', 'daily', 8, 0);
+  assert public.prune_push_schedule(sub, '{}') = 1, 'the prune still removes what the app no longer knows';
+  assert (select array_agg(data ->> 'reminder') from public.push_schedule where subscription_id = sub) = array['ida:' || trip],
+    'and keeps the row the server queued';
+
+  assert (select count(*) from public.market_trips where id = trip) = 1, 'the household reads the trip';
+  assert not public.end_market_trip(trip), 'another member does not end it';
+  assert (select ended_at from public.market_trips where id = trip) is null, 'still on';
+  begin
+    insert into public.market_trips (household_id, list_id, user_id, display_name, ends_at)
+    values (current_setting('test.hh_p')::uuid, current_setting('test.list_p1')::uuid, auth.uid(), 'Quim', now() + interval '2 hours');
+    raise exception 'FAIL: inserted a trip directly';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update public.market_trips set ended_at = now() where id = trip;
+    raise exception 'FAIL: updated a trip directly';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from public.market_trips where id = trip;
+    raise exception 'FAIL: deleted a trip directly';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- Ugo desliga a opção: o aviso de ida que estava na fila dele sai, o resto da agenda fica.
+select set_config('request.jwt.claim.sub', :'user_u', false) \gset
+do $$
+declare
+  sub uuid := (select id from public.push_subscriptions);
+begin
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute)
+  values (gen_random_uuid(), sub, 'Lembrete do Ugo', 'daily', 8, 0);
+  assert public.set_push_market_trips('https://fcm.googleapis.com/fcm/send/ida-u1', false), 'switched off';
+  assert (select array_agg(title) from public.push_schedule) = array['Lembrete do Ugo'], 'the queued trip notice left, the reminder stayed';
+  assert public.set_push_market_trips('https://fcm.googleapis.com/fcm/send/ida-u1', true), 'and on again';
+  delete from public.push_schedule;
+end $$;
+
+-- A outra casa não lê as idas da casa P, nem pedindo por ela.
+select set_config('request.jwt.claim.sub', :'user_t', false) \gset
+do $$
+begin
+  assert (select count(*) from public.market_trips) = 0, 'another household does not read the trips';
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_p'))::text, true);
+  assert (select count(*) from public.market_trips) = 0, 'nor by asking for that household';
+  assert not public.end_market_trip(current_setting('test.trip_1')::uuid), 'nor ends them';
+  assert (select count(*) from public.push_schedule) = 0, 'and got no notice';
+end $$;
+
+-- Paula encerra: vale para a casa toda, e o que não saiu deixa a fila.
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  trip uuid := current_setting('test.trip_1')::uuid;
+  r jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_p'))::text, true);
+  assert public.end_market_trip(trip), 'the author ends the trip';
+  assert (select ended_at from public.market_trips where id = trip) is not null, 'ended for everyone';
+  assert not public.end_market_trip(trip), 'ending twice does nothing';
+
+  -- Uma lista de farmácia: o aviso não fala em mercado.
+  r := public.announce_market_trip(current_setting('test.list_p2')::uuid);
+  assert (r ->> 'repeated')::boolean = false and (r ->> 'notified')::int = 2, 'another list is another trip';
+  perform set_config('test.trip_2', r ->> 'trip_id', false);
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_1')),
+    'the undelivered notices of the ended trip are gone';
+  assert (select count(*) from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_2')
+    and title like '% está indo às compras' and body = 'Falta alguma coisa? Ponha na lista “Farmácia” agora.') = 3,
+    'a list that is not a market one says "às compras"';
+  assert (select count(*) from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where s.endpoint like '%/ida-s1') = public.max_push_schedule(), 'the other browsers kept their schedule';
+end $$;
+
+-- Ugo é tirado da casa: o aviso que ainda não saiu para ele some, e os próximos não vão.
+set role authenticated;
+do $$
+declare
+  hp uuid := current_setting('test.hh_p')::uuid;
+  r jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', hp)::text, true);
+  perform public.remove_member(hp, '00000000-0000-0000-0000-000000000035');
+  -- A ida da lista de mercado foi encerrada: avisar de novo é uma ida nova.
+  r := public.announce_market_trip(current_setting('test.list_p1')::uuid);
+  assert (r ->> 'repeated')::boolean = false and (r ->> 'members')::int = 3 and (r ->> 'notified')::int = 1,
+    'after an ended trip a new one starts, only for who still lives in the household';
+  perform set_config('test.trip_3', r ->> 'trip_id', false);
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (
+    select 1 from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where s.endpoint like '%/ida-u1'
+  ), 'the removed member lost the queued notice and got no new one';
+  assert (select count(*) from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_3')) = 2,
+    'the new trip went to the two browsers of the member that is left with the option on';
+  -- Meia hora depois (as idas de até agora ficam 31 minutos mais velhas).
+  update public.market_trips set created_at = created_at - interval '31 minutes';
+end $$;
+
+-- Até 5 idas novas por pessoa, por casa, em 24 horas.
+set role authenticated;
+do $$
+declare
+  hp uuid := current_setting('test.hh_p')::uuid;
+  r jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', hp)::text, true);
+  r := public.announce_market_trip(current_setting('test.list_p1')::uuid);
+  assert (r ->> 'repeated')::boolean = false and r ->> 'trip_id' <> current_setting('test.trip_3'), 'after 30 minutes: a new trip (the fourth)';
+  r := public.announce_market_trip(current_setting('test.list_p2')::uuid);
+  assert (r ->> 'repeated')::boolean = false and r ->> 'trip_id' <> current_setting('test.trip_2'), 'and the fifth';
+  assert (select count(*) from public.market_trips where user_id = auth.uid()) = 5, 'five trips in the day';
+end $$;
+reset role;
+update public.market_trips set created_at = created_at - interval '31 minutes';
+select count(*) as queued_before from public.push_schedule where data ? 'server' \gset
+select set_config('test.queued_before', :'queued_before', false) \gset
+set role authenticated;
+do $$
+declare
+  r jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_p'))::text, true);
+  begin
+    perform public.announce_market_trip(current_setting('test.list_p1')::uuid);
+    raise exception 'FAIL: a sixth trip in 24 hours';
+  exception when sqlstate 'NK005' then null;
+  end;
+  assert (select count(*) from public.market_trips where user_id = auth.uid()) = 5, 'the refused one left no trip';
+
+  -- O limite é por casa: na casa T, Paula ainda avisa, e só quem mora lá recebe.
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_t'))::text, true);
+  begin
+    perform public.announce_market_trip(current_setting('test.list_p1')::uuid);
+    raise exception 'FAIL: announced a list of the household that is not open';
+  exception when no_data_found then null;
+  end;
+  r := public.announce_market_trip(current_setting('test.list_t1')::uuid);
+  assert (r ->> 'members')::int = 1 and (r ->> 'notified')::int = 1, 'in the other household: its one other member';
+  perform set_config('test.trip_t', r ->> 'trip_id', false);
+end $$;
+reset role;
+do $$
+begin
+  assert (
+    select array_agg(s.endpoint) from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where p.data ->> 'reminder' = 'ida:' || current_setting('test.trip_t')
+  ) = array['https://fcm.googleapis.com/fcm/send/ida-t1'], 'only the member of the household the announcer is in';
+  assert (select title from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_t'))
+    = 'Paula está indo ao mercado', 'with the name she has in that household';
+  assert (select count(*) from public.push_schedule where data ? 'server') = current_setting('test.queued_before')::int + 1,
+    'the refused announcement queued nothing';
+  -- A primeira ida faz mais de 24 horas: volta a caber uma.
+  update public.market_trips set created_at = now() - interval '25 hours' where id = current_setting('test.trip_1')::uuid;
+end $$;
+set role authenticated;
+do $$
+declare
+  r jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_p'))::text, true);
+  r := public.announce_market_trip(current_setting('test.list_p1')::uuid);
+  assert (r ->> 'repeated')::boolean = false, 'a trip older than 24 hours no longer counts';
+end $$;
+
+-- Téo avisa na casa T: Paula mora em duas casas, então o aviso dela diz de qual é.
+select set_config('request.jwt.claim.sub', :'user_t', false) \gset
+do $$
+declare
+  r jsonb;
+begin
+  r := public.announce_market_trip(current_setting('test.list_t1')::uuid);
+  assert (r ->> 'members')::int = 1 and (r ->> 'notified')::int = 1, 'Téo tells the household he shares with Paula';
+  perform set_config('test.trip_t2', r ->> 'trip_id', false);
+end $$;
+reset role;
+do $$
+begin
+  assert (
+    select array_agg(s.endpoint || ' > ' || p.title)
+    from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where p.data ->> 'reminder' = 'ida:' || current_setting('test.trip_t2')
+  ) = array['https://fcm.googleapis.com/fcm/send/ida-p1 > Téo está indo ao mercado · Casa T'],
+    'who lives in more than one household reads which one it is';
+end $$;
+set role authenticated;
+
+-- Quem saiu da casa não avisa nela; sozinha numa casa, não há quem avisar (nem ida).
+select set_config('request.jwt.claim.sub', :'user_u', false) \gset
+do $$
+declare
+  r jsonb;
+  list uuid;
+begin
+  begin
+    perform public.announce_market_trip(current_setting('test.list_p1')::uuid);
+    raise exception 'FAIL: announced without a household';
+  exception when insufficient_privilege then
+    assert sqlerrm = 'sem casa', 'the same error the other functions give without a household';
+  end;
+  perform public.create_household('Casa U', 'Ugo');
+  insert into public.shopping_lists (name) values ('Mercado') returning id into list;
+  r := public.announce_market_trip(list);
+  assert r ->> 'trip_id' is null and (r ->> 'members')::int = 0 and (r ->> 'notified')::int = 0, 'nobody to tell';
+  assert not exists (select 1 from public.market_trips), 'and no trip';
+end $$;
+
+-- A lista apagada leva as idas dela.
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_p'))::text, true);
+  delete from public.shopping_lists where id = current_setting('test.list_p2')::uuid;
+  assert not exists (select 1 from public.market_trips where id = current_setting('test.trip_2')::uuid), 'the trips go with the list';
+  assert exists (select 1 from public.market_trips where id = current_setting('test.trip_3')::uuid), 'the other list keeps its own';
+end $$;
+reset role;
+delete from public.push_subscriptions where endpoint like '%/ida-%';
+do $$
+begin
+  assert not exists (select 1 from public.push_schedule where data ? 'server'), 'the queued notices go with the browsers';
+end $$;
+
 \echo 'OK — todos os testes do banco passaram'

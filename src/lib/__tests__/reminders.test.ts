@@ -49,6 +49,23 @@ describe('reminders', () => {
       });
     }
   });
+
+  it('"alguém indo ao mercado" só existe no navegador: no celular nem carrega o módulo do Web Push', async () => {
+    await jest.isolateModulesAsync(async () => {
+      jest.doMock('react-native', () => ({ Platform: { OS: 'android' } }));
+      jest.doMock('expo', () => ({ isRunningInExpoGo: () => false }));
+      jest.doMock('@react-native-async-storage/async-storage', () => ({}));
+      jest.doMock('../webPush', () => {
+        throw new Error('o Web Push não é usado no celular');
+      });
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const reminders: Reminders = require('../reminders');
+      expect(reminders.remindersSupported).toBe(true);
+      expect(reminders.marketTripPushSupported).toBe(false);
+      expect(await reminders.getMarketTripPush()).toBe(false);
+      expect(await reminders.setMarketTripPush(true)).toBe(false);
+    });
+  });
 });
 
 describe('reminder scheduling', () => {
@@ -226,6 +243,8 @@ describe('no navegador (Web Push)', () => {
     let unregistered = 0;
     let next = 0;
     let subscriptionChanged = false;
+    // "Alguém indo ao mercado": a opção da inscrição deste navegador no servidor.
+    const tripPush = { on: true };
     await jest.isolateModulesAsync(async () => {
       jest.doMock('react-native', () => ({ Platform: { OS: 'web' } }));
       jest.doMock('expo', () => ({ isRunningInExpoGo: () => false }));
@@ -266,6 +285,11 @@ describe('no navegador (Web Push)', () => {
           return { changed: subscriptionChanged };
         },
         unregisterWebPush: async () => void (unregistered += 1),
+        getMarketTripsPush: async () => tripPush.on,
+        setMarketTripsPush: async (enabled: boolean) => {
+          tripPush.on = enabled;
+          return true;
+        },
       }));
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       await scenario(require('../reminders'), {
@@ -303,6 +327,21 @@ describe('no navegador (Web Push)', () => {
       expect(reminders.remindersSupported).toBe(false);
       expect(reminders.remindersUnavailableReason()).toMatch(/tela de início/);
       expect(await reminders.enableReminders(medication, { householdId: 'casa' })).toBe(false);
+    });
+  });
+
+  it('"alguém indo ao mercado": onde há Web Push, a opção é a da inscrição deste navegador; sem ele, não existe', async () => {
+    await onWeb(true, async (reminders) => {
+      expect(reminders.marketTripPushSupported).toBe(true);
+      expect(await reminders.getMarketTripPush()).toBe(true);
+      expect(await reminders.setMarketTripPush(false)).toBe(true);
+      expect(await reminders.getMarketTripPush()).toBe(false);
+    });
+    await onWeb(false, async (reminders) => {
+      expect(reminders.marketTripPushSupported).toBe(false);
+      expect(await reminders.getMarketTripPush()).toBe(false);
+      expect(await reminders.setMarketTripPush(true)).toBe(false);
+      expect(await reminders.getMarketTripPush()).toBe(false);
     });
   });
 
