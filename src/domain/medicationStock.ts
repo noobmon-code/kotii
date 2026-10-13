@@ -58,15 +58,15 @@ export function treatmentOver(m: MedicationSchedule, today: string): boolean {
 }
 
 /**
- * Num tratamento por número de doses, quantas ficam para depois de hoje pelo
- * horário: o total menos as previstas do início até hoje (nunca menos que
+ * Num tratamento por número de doses, quantas o horário ainda prevê depois de
+ * `day`: o total menos as previstas do início até esse dia (nunca menos que
  * zero). null: o tratamento não é por número de doses.
  */
-function courseDosesAfter(m: MedicationSchedule, today: string): number | null {
+function courseDosesAfter(m: MedicationSchedule, day: string): number | null {
   const total = m.totalDoses;
   if (!total) return null;
   let planned = 0;
-  for (let date = m.startOn; date <= today && planned < total; date = addDays(date, 1)) {
+  for (let date = m.startOn; date <= day && planned < total; date = addDays(date, 1)) {
     if (takesOn(m, date)) planned += m.times.length;
   }
   return Math.max(0, total - planned);
@@ -96,13 +96,15 @@ export function estimateStock(m: StockedMedication, today: string): StockEstimat
   // O que sobra depois das doses de hoje: acompanha a conta até ela passar de hoje.
   let unitsLeft = left;
   let lastFull: string | null = null;
-  // Num tratamento por número de doses, de amanhã em diante só as que faltam
-  // (até hoje vale o horário: as marcações não entram na conta). As que faltam
-  // pelas marcações ainda incluem as de hoje que ninguém marcou, e essas já
-  // saíram do estoque pelo horário: contá-las de novo daria uma dose a mais
-  // depois do fim, e o estado mudaria a cada dose marcada. Por isso o limite é
-  // também o que o horário deixa para depois de hoje.
-  let courseLeft = Math.min(dosesLeft(m) ?? Infinity, courseDosesAfter(m, today) ?? Infinity);
+  // Num tratamento por número de doses, o horário só tem esse número de doses
+  // do início ao fim: as que ele ainda prevê depois do dia da contagem são o
+  // teto da conta inteira (um tratamento que já passou do fim pelo horário,
+  // com doses sem marcar, não segue gastando o estoque). De amanhã em diante
+  // vale também o que falta pelas marcações. As de hoje que ninguém marcou já
+  // saíram pelo horário: é o teto do horário que impede contá-las de novo, e
+  // por isso o estado não muda a cada dose marcada.
+  let scheduleLeft = courseDosesAfter(m, counted) ?? Infinity;
+  let courseLeft = dosesLeft(m) ?? Infinity;
   const done = (ends: StockEstimate['ends']): StockEstimate => {
     const runsOutOn = ends === 'stock' ? (lastFull ?? counted) : null;
     return { unitsLeft, runsOutOn, daysLeft: runsOutOn ? diffDays(today, runsOutOn) : null, ends };
@@ -112,10 +114,12 @@ export function estimateStock(m: StockedMedication, today: string): StockEstimat
     if (m.endOn && date > m.endOn) return done('treatment');
     if (takesOn(m, date)) {
       for (let dose = 0; dose < m.times.length; dose += 1) {
+        if (scheduleLeft <= 0) return done('treatment');
         if (date > today) {
           if (courseLeft <= 0) return done('treatment');
           courseLeft -= 1;
         }
+        scheduleLeft -= 1;
         if (left < perDose) return done('stock');
         left = round(left - perDose);
         lastFull = date;
@@ -411,11 +415,12 @@ export function refillReminders(medications: StockedMedication[], today: string)
       const counted = m.stockCountedOn ?? today;
       const eve = addDays(runsOutOn, -1);
       out.push({ id: m.id, date: warnOn, title: 'Remédio acabando', body: `${who} acaba ${inDays(warn)}.` });
-      // O dia do aviso de antes já passou (a caixa foi contada já no fim, ou
-      // este aparelho só soube dela depois): fica um aviso na véspera. Ele tem a
-      // data dele, como os outros, e não a de quando o plano é feito: refazer o
-      // plano não o faz tocar de novo. Contada na véspera, só resta o do dia.
-      if ((warnOn < today || warnOn <= counted) && eve > counted) {
+      // A caixa foi contada já dentro do prazo do aviso de antes (que não toca
+      // mais, ou toca no próprio dia da contagem): fica um aviso na véspera. Sai
+      // da contagem, e não de quando o plano é feito: todo aparelho da casa
+      // recebe os mesmos avisos, e refazer o plano não o faz tocar de novo.
+      // Contada na véspera, só resta o do dia.
+      if (warnOn <= counted && eve > counted) {
         out.push({ id: m.id, date: eve, title: 'Remédio acaba amanhã', body: `${who} acaba amanhã, pelas contas do app.` });
       }
       out.push({ id: m.id, date: runsOutOn, title: 'Remédio acaba hoje', body: `${who} acaba hoje, pelas contas do app.` });
@@ -571,16 +576,20 @@ export function restockBase(form: StockForm, initial: StockForm): { ok: true; ba
 /** O texto junto de "Quantas unidades vieram": a que a caixa nova é somada. */
 export function restockHint(m: StockedMedication, form: StockForm, initial: StockForm, today: string): string {
   const fromToday = 'passa a contar a partir de hoje.';
-  if (stockEdited(form, initial)) {
-    return form.stock.trim()
-      ? `O app soma ao número que você escreveu em “Quanto tem agora” e ${fromToday}`
-      : `Com “Quanto tem agora” vazio, o app conta só esta caixa e ${fromToday}`;
-  }
   const status = stockStatus(m, today);
+  const late = (status.kind === 'out' || status.kind === 'stale') && status.ranOutOn < today;
+  if (stockEdited(form, initial)) {
+    if (!form.stock.trim()) return `Com “Quanto tem agora” vazio, o app conta só esta caixa e ${fromToday}`;
+    // Compra atrasada e a pessoa já escreveu quanto tem: se o número já é o da
+    // caixa nova, somar a caixa de novo contaria em dobro. Diz o que tocar.
+    return late
+      ? 'Se esse número já conta a caixa nova, toque em “Cancelar” e depois em “Salvar”. “Somar ao estoque” soma mais uma caixa a ele.'
+      : `O app soma ao número que você escreveu em “Quanto tem agora” e ${fromToday}`;
+  }
   // Compra registrada dias depois: o app não sabe se a caixa nova já está em
   // uso (aí somar a caixa inteira é contar a mais) ou se a pessoa ficou esses
   // dias sem o remédio. Não muda a conta sozinho: diz o que fazer.
-  if ((status.kind === 'out' || status.kind === 'stale') && status.ranOutOn < today) {
+  if (late) {
     return `Pelas contas do app, a caixa anterior acabou em ${dayMonth(status.ranOutOn, today)}. Se você já está usando a nova, escreva em “Quanto tem agora” quantas unidades ainda tem, em vez de somar a caixa inteira.`;
   }
   return estimateStock(m, today)

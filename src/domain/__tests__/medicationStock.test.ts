@@ -182,6 +182,19 @@ describe('estimateStock: a conta pelo horário das doses', () => {
       }
     });
 
+    it('tratamento que passou do fim pelo horário, com doses sem marcar: o estoque não segue sendo gasto', () => {
+      // 10 doses, uma por dia, de 01/10 a 10/10, nenhuma marcada; a caixa foi contada na véspera do início.
+      const course = { startOn: '2026-10-01', totalDoses: 10, takenCount: 0, stockCountedOn: '2026-09-30' };
+      // A caixa era a do tratamento: no dia seguinte ao fim ela não "acabou", o tratamento é que terminou.
+      expect(estimate({ ...course, stockCount: 10 })).toEqual({ unitsLeft: 0, runsOutOn: null, daysLeft: null, ends: 'treatment' });
+      expect(labels({ ...course, stockCount: 10 })).toEqual([]);
+      // Com sobra, a sobra fica: o horário não gasta mais doses do que o tratamento tem.
+      expect(estimate({ ...course, stockCount: 12 })).toMatchObject({ unitsLeft: 2, ends: 'treatment' });
+      expect(estimate({ ...course, stockCount: 12 }, '2026-10-30')).toMatchObject({ unitsLeft: 2, ends: 'treatment' });
+      // Faltando para o próprio tratamento, acabou de verdade: no dia da última dose que a caixa cobriu.
+      expect(estimate({ ...course, stockCount: 8 })).toMatchObject({ unitsLeft: 0, runsOutOn: '2026-10-08', ends: 'stock' });
+    });
+
     it('quem não marca as doses: vale o horário; quem adiantou doses: valem as que faltam', () => {
       // Pelo horário, as 10 doses (03/10 a 12/10) terminam hoje: nada mais a gastar, com ou sem marcação.
       expect(estimate({ startOn: '2026-10-03', totalDoses: 10, takenCount: 0, stockCount: 5 })).toMatchObject({ unitsLeft: 5, ends: 'treatment' });
@@ -427,8 +440,13 @@ describe('"Comprei mais"', () => {
     expect(hint('2026-11-21')).toBe(late);
     // Parado há mais de 14 dias: a mesma orientação.
     expect(hint('2026-12-20')).toBe(late);
-    // A pessoa seguiu a orientação e escreveu quanto tem: a base é o número dela.
-    expect(hint('2026-11-21', '20')).toBe('O app soma ao número que você escreveu em “Quanto tem agora” e passa a contar a partir de hoje.');
+    // A pessoa seguiu a orientação e escreveu quanto tem: somar a caixa agora contaria em dobro, e o texto diz o que tocar.
+    const typed = 'Se esse número já conta a caixa nova, toque em “Cancelar” e depois em “Salvar”. “Somar ao estoque” soma mais uma caixa a ele.';
+    expect(hint('2026-11-21', '20')).toBe(typed);
+    expect(hint('2026-12-20', '20')).toBe(typed);
+    // No dia em que a caixa acaba ainda não é compra atrasada; e com o campo apagado a caixa entra sozinha.
+    expect(hint('2026-11-11', '20')).toBe('O app soma ao número que você escreveu em “Quanto tem agora” e passa a contar a partir de hoje.');
+    expect(hint('2026-11-21', '')).toBe('Com “Quanto tem agora” vazio, o app conta só esta caixa e passa a contar a partir de hoje.');
     // A conta em si não muda: quem comprou hoje, depois de dias sem o remédio, soma a caixa inteira.
     expect(restock(med(), '2026-11-21', 30)).toEqual({ stockCount: 30, stockCountedOn: '2026-11-21' });
     expect(restock(med(), '2026-11-21', 30, 20)).toEqual({ stockCount: 50, stockCountedOn: '2026-11-21' });
@@ -597,18 +615,20 @@ describe('os avisos por notificação', () => {
       expect(dated({ stockCount: 20, warnDays: 1 }, '2026-10-31')).toEqual(dated({ stockCount: 20, warnDays: 1 }));
     });
 
-    it('depois que o dia do aviso de antes passa, a véspera entra no plano e fica até tocar', () => {
-      // Quem ligou o aviso (ou abriu o app neste aparelho) só depois de 25/10 ainda é avisado antes do dia.
-      const late = [
-        ['2026-10-31', ...eve],
-        ['2026-11-01', ...day],
-      ];
+    it('a véspera sai da contagem, e não de quando o plano é feito: todo aparelho recebe os mesmos avisos', () => {
+      // Contada com bastante: quem abre o app só depois do aviso de antes (25/10) não ganha um aviso a mais.
       expect(dated({ stockCount: 20 }, '2026-10-25').map(([date]) => date)).toEqual(['2026-10-25', '2026-11-01']);
-      expect(dated({ stockCount: 20 }, '2026-10-26')).toEqual(late);
-      expect(dated({ stockCount: 20 }, '2026-10-30')).toEqual(late);
-      // Na manhã da véspera ele continua no plano (o horário quem confere é planHouseReminders).
-      expect(dated({ stockCount: 20 }, '2026-10-31')).toEqual(late);
-      expect(dated({ stockCount: 20 }, '2026-11-01')).toEqual([['2026-11-01', ...day]]);
+      for (const on of ['2026-10-26', '2026-10-30', '2026-10-31', '2026-11-01']) {
+        expect(dated({ stockCount: 20 }, on)).toEqual([['2026-11-01', ...day]]);
+      }
+      // Contada já no fim (4 dias, aviso de 7): a véspera fica no plano até a manhã dela, em qualquer dia em que ele for feito.
+      for (const on of ['2026-10-12', '2026-10-14', '2026-10-15']) {
+        expect(dated({ stockCount: 4 }, on)).toEqual([
+          ['2026-10-15', ...eve],
+          ['2026-10-16', ...day],
+        ]);
+      }
+      expect(dated({ stockCount: 4 }, '2026-10-16')).toEqual([['2026-10-16', ...day]]);
     });
 
     it('contada no próprio dia do aviso de antes (cartela de 7, aviso de 7): ele, a véspera e o dia', () => {

@@ -381,7 +381,7 @@ describe('planHouseReminders: remédios e receitas acabando', () => {
     expect(HOUSE_REMINDER_KINDS.find((k) => k.key === 'refills')).toEqual({
       key: 'refills',
       label: 'Remédios e receitas acabando',
-      hint: 'Quando faltar uma semana para a caixa acabar (ou os dias que você escolher), no dia em que acaba e uma semana antes de a receita vencer, às 9h',
+      hint: 'Quando faltar uma semana para a caixa acabar (ou os dias que você escolher), no dia em que acaba e uma semana antes de a receita vencer, às 9h. Caixa contada já perto do fim avisa na véspera',
     });
   });
 
@@ -439,10 +439,11 @@ describe('planHouseReminders: remédios e receitas acabando', () => {
     expect(keys({ today: '2026-09-30', nowTime: '09:00', medications: [low] })).toEqual(['refills:m1:2026-10-01']);
     // Contada na véspera: só o do dia.
     expect(keys({ medications: [{ ...noPrescription, stockCount: 1 }] })).toEqual(['refills:m1:2026-09-28']);
-    // Com bastante: depois que o dia do aviso de antes (30/09) passa, a véspera (06/10) entra e fica.
+    // Com bastante: o aviso de antes (30/09) e o do dia (07/10); a véspera é só para a caixa contada já no fim,
+    // mesmo quando o plano é feito depois do aviso de antes.
     expect(keys({ today: '2026-09-30', medications: [noPrescription] })).toEqual(['refills:m1:2026-09-30', 'refills:m1:2026-10-07']);
     for (const today of ['2026-10-01', '2026-10-05', '2026-10-06']) {
-      expect(keys({ today, medications: [noPrescription] })).toEqual(['refills:m1:2026-10-06', 'refills:m1:2026-10-07']);
+      expect(keys({ today, medications: [noPrescription] })).toEqual(['refills:m1:2026-10-07']);
     }
   });
 

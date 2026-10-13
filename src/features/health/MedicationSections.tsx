@@ -101,10 +101,12 @@ export function MedicationsToday({ today }: { today: string }) {
 export function MedicationRefills({ rows }: { rows: RefillRow[] }) {
   const lists = useShoppingLists();
   const addToList = useAddToPharmacyList();
-  // Um pedido por vez. O botão fica dentro de uma linha que abre o remédio:
-  // desativado, o toque passaria para a linha; por isso ele segue ativo e o
-  // toque repetido é ignorado aqui.
-  const adding = useRef(false);
+  // O botão fica dentro de uma linha que abre o remédio: desativado, o toque
+  // passaria para a linha; por isso ele segue ativo. O toque repetido no mesmo
+  // remédio é ignorado aqui, e o de outro remédio espera a vez: um pedido de
+  // cada vez, para dois seguidos não criarem duas listas de farmácia.
+  const adding = useRef(new Set<string>());
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
   const listed = useMemo(
     () =>
       new Set(
@@ -117,24 +119,23 @@ export function MedicationRefills({ rows }: { rows: RefillRow[] }) {
   if (!rows.length) return null;
 
   function add(row: RefillRow) {
-    if (adding.current) return;
-    adding.current = true;
-    addToList.mutate(
+    if (adding.current.has(row.itemName)) return;
+    adding.current.add(row.itemName);
+    queue.current = queue.current
       // Sempre uma unidade: repetir o toque não pede outra caixa.
-      { name: row.itemName, category: 'medicamentos', productId: null, quantity: 1, unit: 'un' },
-      {
+      .then(() => addToList.mutateAsync({ name: row.itemName, category: 'medicamentos', productId: null, quantity: 1, unit: 'un' }))
+      .then(
         // A lista vem do servidor: outra pessoa pode ter posto o mesmo remédio agora há pouco.
-        onSuccess: (list) =>
+        (list) =>
           notify(
             list.added ? 'Adicionado à lista' : 'Já estava na lista',
             list.added ? `${row.itemName} foi para "${list.name}".` : `${row.itemName} já estava pendente em "${list.name}".`,
           ),
-        onError: (err) => notify('Erro', errorMessage(err)),
-        onSettled: () => {
-          adding.current = false;
-        },
-      },
-    );
+        (err) => notify('Erro', errorMessage(err)),
+      )
+      .finally(() => {
+        adding.current.delete(row.itemName);
+      });
   }
 
   return (

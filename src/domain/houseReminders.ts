@@ -30,7 +30,7 @@ export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint
   {
     key: 'refills',
     label: REFILLS_REMINDER_LABEL,
-    hint: 'Quando faltar uma semana para a caixa acabar (ou os dias que você escolher), no dia em que acaba e uma semana antes de a receita vencer, às 9h',
+    hint: 'Quando faltar uma semana para a caixa acabar (ou os dias que você escolher), no dia em que acaba e uma semana antes de a receita vencer, às 9h. Caixa contada já perto do fim avisa na véspera',
   },
   {
     key: 'weather',
