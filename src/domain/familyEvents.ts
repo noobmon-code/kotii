@@ -446,6 +446,23 @@ export function entryDetail(entry: CalendarEntry): string | null {
   return [entry.who, entry.ride, bringText(entry.bring)].filter(Boolean).join(' · ') || null;
 }
 
+/**
+ * "Ana, Carla leva", ou "faz 8 anos": o detalhe curto, para o resumo de amanhã
+ * (entre parênteses, depois do título). O local e o que levar não entram aqui:
+ * o resumo é para ler de uma olhada. Quando o compromisso é de quem leva (ou
+ * de quem só busca), o nome vai uma vez: "Beto leva e busca", e não "Beto,
+ * Beto leva e busca".
+ */
+export function entryShortDetail(entry: CalendarEntry): string | null {
+  if (entry.kind === 'aniversario') return entry.age ? ageText(entry.age) : null;
+  const { who, ride } = entry;
+  // Só o nome inteiro, seguido do verbo: "Ana Paula leva" não é da Ana.
+  const repeated =
+    !!who && !!ride && (ride === `${who} busca` || ride === `${who} leva` || ride === `${who} leva e busca` || ride.startsWith(`${who} leva, `));
+  // Dentro do parêntese, "ninguém leva" (o dia em que quem costuma levar não vai) fica em minúscula.
+  return [repeated ? null : who, ride?.replace(/^Ninguém/, 'ninguém')].filter(Boolean).join(', ') || null;
+}
+
 /** O que mudou num dia, para a lista de dias com mudança: "Não vai ter", "Vó Maria leva", "Ninguém busca". */
 export function describeDayChange(change: EventDayValues, nameOf: (id: string | null) => string | null): string {
   if (change.cancelled) return 'Não vai ter';
