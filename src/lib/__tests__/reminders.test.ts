@@ -328,12 +328,45 @@ describe('no navegador (Web Push)', () => {
       );
       expect([...web.scheduled.values()]).toEqual([
         {
-          content: { title: 'Amanhã, terça-feira', body: 'Luz (R$ 180,00)', data: { reminder: 'eve:amanha:2026-09-28:20:00', householdId: 'casa' } },
+          // A casa vai junto na identificação do resumo (ver o teste das duas casas, abaixo).
+          content: { title: 'Amanhã, terça-feira', body: 'Luz (R$ 180,00)', data: { reminder: 'eve:amanha:2026-09-28:20:00:casa', householdId: 'casa' } },
           trigger: { type: 'date', date: new Date(2026, 8, 28, 20, 0), channelId: 'casa' },
         },
       ]);
       await reminders.setHouseReminderKind('eve', false);
       expect(web.scheduled.size).toBe(0);
+    });
+  });
+
+  it('duas casas com resumo na mesma noite: cada um leva a sua casa na identificação, e um não substitui o outro', async () => {
+    await onWeb(true, async (reminders, web) => {
+      await reminders.setHouseReminderKind('bills', true);
+      await reminders.setHouseReminderKind('eve', true);
+      const house = (id: string, name: string) => ({
+        bills: [{ id, name, amount: 180, next_due_on: '2026-09-29', active: true, autopay: false }],
+        documents: [],
+        chores: [],
+        appointments: [],
+        vaccines: [],
+        equipment: [],
+      });
+      await reminders.syncHouseReminders(house('b1', 'Luz'), { householdId: 'casa', label: 'Casa', today: '2026-09-27' });
+      await reminders.syncHouseReminders(house('b2', 'IPTU'), { householdId: 'praia', label: 'Praia', today: '2026-09-27' });
+      const sent = [...web.scheduled.values()].map((r) => (r as { content: { title: string; data: { reminder: string; householdId: string } } }).content);
+      // O navegador mostra uma notificação por identificação (a tag do service
+      // worker): com a mesma nas duas casas, o resumo de uma apagaria o da outra.
+      expect(sent.filter((c) => c.data.reminder.startsWith('eve:')).map((c) => [c.title, c.data])).toEqual([
+        ['Amanhã, terça-feira · Casa', { reminder: 'eve:amanha:2026-09-28:20:00:casa', householdId: 'casa' }],
+        ['Amanhã, terça-feira · Praia', { reminder: 'eve:amanha:2026-09-28:20:00:praia', householdId: 'praia' }],
+      ]);
+      // Os outros avisos já têm o item na chave: seguem como eram.
+      expect(sent.map((c) => c.data.reminder).filter((key) => !key.startsWith('eve:'))).toEqual([
+        'bills:b1:2026-09-28',
+        'bills:b1:2026-09-29',
+        'bills:b2:2026-09-28',
+        'bills:b2:2026-09-29',
+      ]);
+      expect(new Set(sent.map((c) => c.data.reminder)).size).toBe(sent.length);
     });
   });
 
@@ -603,7 +636,7 @@ describe('house reminders', () => {
       await reminders.setHouseReminderKind('appointments', true);
       await reminders.setHouseReminderKind('eve', true);
       await reminders.syncHouseReminders(withConsulta, { householdId: 'casa', today });
-      expect(remindersOf(live)).toEqual(['appointments:a1:2026-09-29:07:00', 'eve:amanha:2026-09-28:20:00']);
+      expect(remindersOf(live)).toEqual(['appointments:a1:2026-09-29:07:00', 'eve:amanha:2026-09-28:20:00:casa']);
       const [summary] = summaries(live);
       expect(summary).toMatchObject({ title: 'Amanhã, terça-feira', body: '9h Pediatra (Bia) · Luz (R$ 180,00)' });
       expect((live.get(summary.id) as unknown as { trigger: unknown }).trigger).toEqual({
@@ -664,15 +697,15 @@ describe('house reminders', () => {
       await reminders.setHouseReminderKind('appointments', true);
       await reminders.setHouseReminderKind('eve', true);
       await reminders.syncHouseReminders(withConsulta, { householdId: 'casa', today });
-      expect(remindersOf(live)).toEqual(['appointments:a1:2026-09-29:07:00', 'eve:amanha:2026-09-28:20:00']);
+      expect(remindersOf(live)).toEqual(['appointments:a1:2026-09-29:07:00', 'eve:amanha:2026-09-28:20:00:casa']);
       const [held] = summaries(live);
       // Os aparelhos não carregaram: o resumo já agendado fica, e as consultas são refeitas sem contar com ele.
       await reminders.syncHouseReminders({ ...withConsulta, equipment: undefined }, { householdId: 'casa', today });
-      expect(remindersOf(live)).toEqual(['appointments:a1:2026-09-28:19:00', 'appointments:a1:2026-09-29:07:00', 'eve:amanha:2026-09-28:20:00']);
+      expect(remindersOf(live)).toEqual(['appointments:a1:2026-09-28:19:00', 'appointments:a1:2026-09-29:07:00', 'eve:amanha:2026-09-28:20:00:casa']);
       expect(live.has(held.id)).toBe(true);
       // Carregaram: volta a ser uma notificação só naquela noite.
       await reminders.syncHouseReminders(withConsulta, { householdId: 'casa', today });
-      expect(remindersOf(live)).toEqual(['appointments:a1:2026-09-29:07:00', 'eve:amanha:2026-09-28:20:00']);
+      expect(remindersOf(live)).toEqual(['appointments:a1:2026-09-29:07:00', 'eve:amanha:2026-09-28:20:00:casa']);
     });
   });
 
@@ -692,12 +725,16 @@ describe('house reminders', () => {
   });
 
   it('resumo com várias casas: leva o nome da casa e, no teto curto, sai antes do aviso da conta', async () => {
-    await withHouse(async (reminders, { live }) => {
+    await withHouse(async (reminders, { live, storage }) => {
       await reminders.setHouseReminderKind('bills', true);
       await reminders.setHouseReminderKind('eve', true);
       await reminders.syncHouseReminders(loaded, { householdId: 'praia', label: 'Praia', today });
-      expect(remindersOf(live)).toEqual(['bills:b1:2026-09-28', 'bills:b1:2026-09-29', 'eve:amanha:2026-09-28:20:00']);
+      // A casa vai na identificação do aviso (no navegador, é ela que separa os resumos de duas casas)…
+      expect(remindersOf(live)).toEqual(['bills:b1:2026-09-28', 'bills:b1:2026-09-29', 'eve:amanha:2026-09-28:20:00:praia']);
       expect(summaries(live).map((s) => s.title)).toEqual(['Amanhã, terça-feira · Praia']);
+      // …mas não na chave do plano, de que sai a assinatura: ninguém é reagendado por causa dela.
+      const stored = JSON.parse(storage.get('house-reminders:scheduled:praia')!) as { signature: string };
+      expect(stored.signature).toContain('"key":"eve:amanha:2026-09-28:20:00","kind":"eve"');
       await reminders.syncHouseReminders(loaded, { householdId: 'praia', label: 'Praia', limit: 2, today });
       expect(remindersOf(live)).toEqual(['bills:b1:2026-09-28', 'bills:b1:2026-09-29']);
     });

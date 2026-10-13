@@ -587,6 +587,10 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
       unknown.has(kind) && (!live || live.has(previous!.ids[i])) ? [{ id: previous!.ids[i], kind }] : [],
     );
     const heldIds = new Set(held.map((r) => r.id));
+    // Os que ficam guardam a vaga, os resumos também: com o teto curto, o aviso
+    // próprio mais distante pode ficar de fora até a próxima sincronização
+    // completa. Tirar a vaga do resumo que fica não é seguro: sem as consultas,
+    // ele pode ser o único aviso de véspera de uma delas.
     const limit = Math.min(target.limit ?? HOUSE_REMINDER_LIMIT, SCHEDULED_NOTIFICATIONS_LIMIT - others) - held.length;
     const planKinds = {
       ...kinds,
@@ -640,8 +644,14 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
       plan.map((reminder) => {
         const [y, m, d] = reminder.date.split('-').map(Number);
         const [hour, minute] = reminder.time.split(':').map(Number);
+        // No navegador, `reminder` vira a etiqueta da notificação, e a de mesma
+        // etiqueta substitui a anterior. A chave do resumo não tem um item da
+        // casa (é a mesma em todas), então a casa vai junto: o resumo de uma
+        // não apaga o de outra na mesma noite. Só aqui: a chave do plano, e com
+        // ela a assinatura, ficam como são.
+        const tag = reminder.kind === 'eve' ? `${reminder.key}:${householdId}` : reminder.key;
         return {
-          content: { title: reminder.title, body: reminder.body, data: { reminder: reminder.key, householdId } },
+          content: { title: reminder.title, body: reminder.body, data: { reminder: tag, householdId } },
           trigger: {
             type: Notifications.SchedulableTriggerInputTypes.DATE,
             date: new Date(y, m - 1, d, hour, minute),

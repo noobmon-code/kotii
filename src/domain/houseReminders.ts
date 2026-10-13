@@ -27,7 +27,7 @@ export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint
   {
     key: 'eve',
     label: 'Resumo de amanhã',
-    hint: 'Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, contas, tarefas, vacinas e documentos. Só quando há alguma coisa',
+    hint: 'Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, contas, tarefas, vacinas e documentos. Só quando há alguma coisa. Com ele ligado, a consulta de amanhã vem nele, no lugar do aviso das 19h',
   },
 ];
 
@@ -65,6 +65,15 @@ export const EVE_SUMMARY_DAYS = 7;
 /** Para ler na tela de bloqueio: até 4 itens escritos (com mais, 3 e "e mais N") e 180 caracteres. */
 const EVE_SUMMARY_ITEMS = 4;
 const EVE_SUMMARY_LENGTH = 180;
+/**
+ * Tarefa "diária" a cada tantos dias ainda é rotina: no resumo, tocaria toda
+ * noite (ou noite sim, noite não) sem dizer nada de novo. Fica fora dele.
+ */
+const EVE_ROUTINE_DAYS = 3;
+/** Do local da consulta cedo cabe pelo menos isto (a vírgula e o começo do nome), ou ele não entra. */
+const EVE_PLACE_MIN = 8;
+/** Depois de qualquer hora do dia, na fila do teto (ver o fim de planHouseReminders). */
+const END_OF_DAY = '24:00';
 
 export interface HouseReminderInput {
   kinds: Record<HouseReminderKind, boolean>;
@@ -96,7 +105,7 @@ export interface HouseReminderInput {
   overdueWarned?: string[];
 }
 
-/** A ordem dos itens no resumo de amanhã. Uma fonte nova de itens entra aqui e em eveItems. */
+/** A ordem dos itens no resumo de amanhã. Uma fonte nova de itens entra aqui, em EveSummaryInput e em eveItems. */
 const EVE_ORDER = ['appointments', 'bills', 'vaccines', 'chores', 'documents', 'equipment'] as const;
 
 export interface EveItem {
@@ -106,6 +115,8 @@ export interface EveItem {
   text: string;
   /** Ordem dentro da fonte (a hora da consulta); igual ou sem ela, pelo texto. */
   sort: string;
+  /** O local da consulta cedo: vai depois do texto, e é o primeiro a encolher quando falta espaço. */
+  place?: string;
 }
 
 export interface EveSummary {
@@ -128,6 +139,36 @@ function shortTime(time: string): string {
 }
 
 /**
+ * A hora do aviso de 2 horas antes da consulta. null quando cairia de
+ * madrugada: consulta cedo fica só com a véspera.
+ */
+function appointmentLeadTime(time: string): string | null {
+  const [h, m] = time.split(':').map(Number);
+  const lead = h * 60 + m - APPOINTMENT_LEAD_MINUTES;
+  if (lead < EARLIEST_LEAD_MINUTES) return null;
+  return `${String(Math.floor(lead / 60)).padStart(2, '0')}:${String(lead % 60).padStart(2, '0')}`;
+}
+
+/**
+ * As vacinas do dia, um item por pessoa: várias da mesma pessoa vão juntas
+ * ("Vacinas de Bia: Hepatite A e Tríplice"), para o nome não se repetir.
+ * "De Bia", porque "da Bia" ou "do Beto" seria adivinhar.
+ */
+function eveVaccines(vaccines: NonNullable<EveSummaryInput['vaccines']>, day: string): Pick<EveItem, 'id' | 'text'>[] {
+  const byPerson = new Map<string, { id: string; name: string }[]>();
+  for (const v of vaccines) {
+    if (v.next_dose_on !== day) continue;
+    byPerson.set(v.person, [...(byPerson.get(v.person) ?? []), { id: v.id, name: v.dose ? `${v.name} (${v.dose})` : v.name }]);
+  }
+  return [...byPerson].map(([person, doses]) => {
+    // Pelo nome, como os itens: a ordem em que os dados chegam não muda o texto.
+    const names = doses.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR') || a.id.localeCompare(b.id)).map((d) => d.name);
+    const listed = names.length > 1 ? `${names.slice(0, -1).join(', ')} e ${names[names.length - 1]}` : names[0];
+    return { id: doses.map((d) => d.id).join('+'), text: `${names.length > 1 ? 'Vacinas' : 'Vacina'}${person ? ` de ${person}` : ''}: ${listed}` };
+  });
+}
+
+/**
  * O que a casa tem em `day`, na ordem do resumo. Só datas que os dados já
  * têm: as repetições que a Agenda mostra como previsão não entram.
  */
@@ -136,18 +177,20 @@ function eveItems(input: EveSummaryInput, day: string): EveItem[] {
   const items = [
     ...(input.appointments ?? [])
       .filter((a) => a.status === 'agendada' && a.date === day)
-      .map((a) => item('appointments', a.id, `${shortTime(a.time)} ${a.title}${a.person ? ` (${a.person})` : ''}`, a.time)),
-    // Débito automático não precisa de ninguém, como nos avisos de conta.
+      .map((a) => ({
+        ...item('appointments', a.id, `${shortTime(a.time)} ${a.title}${a.person ? ` (${a.person})` : ''}`, a.time),
+        // A consulta cedo não tem o aviso de 2 horas antes, que diria onde é: o local vai aqui.
+        ...(a.location && !appointmentLeadTime(a.time) ? { place: a.location } : {}),
+      })),
+    // Débito automático não precisa de ninguém, como nos avisos de conta. Sem
+    // o valor, só o nome não diria que é uma conta.
     ...input.bills
       .filter((b) => b.active && !b.autopay && b.next_due_on === day)
-      .map((b) => item('bills', b.id, b.amount != null ? `${b.name} (${formatBRL(b.amount)})` : b.name)),
-    // "Vacina de Bia": "da Bia" ou "do Beto" seria adivinhar.
-    ...(input.vaccines ?? [])
-      .filter((v) => v.next_dose_on === day)
-      .map((v) => item('vaccines', v.id, `Vacina${v.person ? ` de ${v.person}` : ''}: ${v.dose ? `${v.name} (${v.dose})` : v.name}`)),
-    // Tarefa de todo dia faria o resumo tocar toda noite sem dizer nada de novo.
+      .map((b) => item('bills', b.id, b.amount != null ? `${b.name} (${formatBRL(b.amount)})` : `Conta: ${b.name}`)),
+    ...eveVaccines(input.vaccines ?? [], day).map((v) => item('vaccines', v.id, v.text)),
+    // Tarefa de todo dia (ou quase: ver EVE_ROUTINE_DAYS) faria o resumo tocar toda noite sem dizer nada de novo.
     ...input.chores
-      .filter((c) => c.active && c.due_on === day && !(c.recurrence === 'daily' && (c.interval_count ?? 1) === 1))
+      .filter((c) => c.active && c.due_on === day && !(c.recurrence === 'daily' && (c.interval_count ?? 1) <= EVE_ROUTINE_DAYS))
       .map((c) => item('chores', c.id, c.equipment_id ? `Manutenção: ${c.title}` : c.title)),
     ...input.documents.filter((d) => d.expires_on === day).map((d) => item('documents', d.id, `Vence: ${d.title}`)),
     ...(input.equipment ?? []).filter((e) => e.warranty_until === day).map((e) => item('equipment', e.id, `Fim da garantia: ${e.name}`)),
@@ -169,9 +212,15 @@ function fitTexts(texts: string[], room: number): string[] {
   const total = (max: number) => texts.reduce((sum, text) => sum + Math.min(text.length, max), 0);
   let max = Math.max(...texts.map((text) => text.length));
   while (max > 1 && total(max) > room) max -= 1;
-  // O corte não parte um emoji ao meio.
-  const cut = (text: string) => `${text.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, '').trimEnd()}…`;
-  return texts.map((text) => (text.length > max ? cut(text) : text));
+  return texts.map((text) => shorten(text, max));
+}
+
+/**
+ * O texto em até `max` caracteres, com "…" no fim se foi cortado. O corte não
+ * parte um emoji ao meio nem deixa uma vírgula solta antes do "…".
+ */
+function shorten(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, '').replace(/[\s,]+$/, '')}…` : text;
 }
 
 /**
@@ -184,11 +233,19 @@ export function eveSummary(input: EveSummaryInput, day: string): EveSummary | nu
   const written = items.length > EVE_SUMMARY_ITEMS ? EVE_SUMMARY_ITEMS - 1 : items.length;
   const more = items.length > written ? ` e mais ${items.length - written}` : '';
   const separator = ' · ';
-  const texts = fitTexts(
-    items.slice(0, written).map((i) => i.text),
-    EVE_SUMMARY_LENGTH - more.length - separator.length * (written - 1),
-  );
-  return { title: `Amanhã, ${WEEKDAY_NAMES[weekdayOf(day)]}`, body: texts.join(separator) + more, items, written };
+  const shown = items.slice(0, written);
+  const room = EVE_SUMMARY_LENGTH - more.length - separator.length * (written - 1);
+  const texts = fitTexts(shown.map((i) => i.text), room);
+  // O local da consulta cedo fica com o espaço que os itens deixam: inteiro,
+  // cortado ou, se sobra pouco, fora. Nenhum item encolhe por causa dele.
+  let left = room - texts.reduce((sum, text) => sum + text.length, 0);
+  const parts = shown.map((item, i) => {
+    const place = item.place ? `, ${item.place}` : '';
+    const fitted = place.length <= left || left >= EVE_PLACE_MIN ? shorten(place, left) : '';
+    left -= fitted.length;
+    return texts[i] + fitted;
+  });
+  return { title: `Amanhã, ${WEEKDAY_NAMES[weekdayOf(day)]}`, body: parts.join(separator) + more, items, written };
 }
 
 /** Identifica um atraso: pagar a conta (ou registrar a dose) muda a data, e o atraso novo avisa de novo. */
@@ -288,12 +345,8 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
       if (summary) standIn.add(summary);
       else add('appointments', a.id, addDays(a.date, -1), 'Consulta amanhã', body, { at: APPOINTMENT_EVE_TIME });
       // Duas horas antes, mas não de madrugada: consulta cedo fica só com a véspera.
-      const [h, m] = a.time.split(':').map(Number);
-      const lead = h * 60 + m - APPOINTMENT_LEAD_MINUTES;
-      if (lead >= EARLIEST_LEAD_MINUTES) {
-        const at = `${String(Math.floor(lead / 60)).padStart(2, '0')}:${String(lead % 60).padStart(2, '0')}`;
-        add('appointments', a.id, a.date, 'Consulta daqui a 2 horas', body, { at });
-      }
+      const at = appointmentLeadTime(a.time);
+      if (at) add('appointments', a.id, a.date, 'Consulta daqui a 2 horas', body, { at });
     }
   }
 
@@ -320,19 +373,22 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
 
   const limit = Math.max(0, input.limit ?? HOUSE_REMINDER_LIMIT);
   const soonest = (a: HouseReminder, b: HouseReminder) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time) || a.key.localeCompare(b.key);
-  // O resumo de amanhã é um extra: com o teto curto (várias casas, muitos
-  // remédios), ele sai antes de qualquer aviso próprio dos mesmos dias (conta,
-  // consulta, vacina…), da noite mais distante para a mais próxima; só os
-  // avisos de depois desses dias esperam por ele (a janela anda). Menos o que
-  // está no lugar de um "Consulta amanhã": esse vale como o aviso que ele
-  // substitui, na mesma vez da fila, para a consulta não ficar sem a véspera
-  // por causa do teto.
-  const placed = (r: HouseReminder) => (standIn.has(r.key) ? { ...r, time: APPOINTMENT_EVE_TIME, key: '' } : r);
-  const own = out.filter((r) => r.kind !== 'eve' || standIn.has(r.key)).sort((a, b) => soonest(placed(a), placed(b)));
-  const extras = out.filter((r) => r.kind === 'eve' && !standIn.has(r.key)).sort(soonest);
-  // O último dia de que um resumo fala.
-  const lastSummaryDay = addDays(today, EVE_SUMMARY_DAYS);
-  return [...own.filter((r) => r.date <= lastSummaryDay), ...extras, ...own.filter((r) => r.date > lastSummaryDay)]
+  // A vez de cada um na fila do teto (várias casas, muitos remédios): os avisos
+  // próprios, pela hora em que tocam. O resumo de uma noite entra logo depois
+  // de todos os avisos próprios até o dia de que ele fala (o seguinte) e antes
+  // dos de depois: não toma a vaga de um aviso daquele dia nem dos anteriores,
+  // e os das noites mais distantes saem primeiro. O custo: com ele ligado, um
+  // aviso próprio de dois ou mais dias adiante pode esperar a janela andar (o
+  // plano é refeito a cada vez que o app abre). O resumo que está no lugar de
+  // um "Consulta amanhã" vale como o aviso que substitui, na vez dele, para a
+  // consulta não ficar sem a véspera por causa do teto.
+  const placed = (r: HouseReminder) => {
+    if (r.kind !== 'eve') return r;
+    if (standIn.has(r.key)) return { ...r, time: APPOINTMENT_EVE_TIME, key: '' };
+    return { ...r, date: addDays(r.date, 1), time: END_OF_DAY };
+  };
+  return out
+    .sort((a, b) => soonest(placed(a), placed(b)))
     .slice(0, limit)
     .sort(soonest);
 }
