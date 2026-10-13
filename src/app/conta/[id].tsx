@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
 import { BILL_PAYMENTS_LIMIT, useBill, useBillPayments, useDeleteBill, useSaveBill, useUndoBillPayment } from '@/data/finance';
-import { ABOVE_USUAL_LABEL, billUsualNote, paymentsAboveUsual } from '@/domain/billUsual';
+import { ABOVE_USUAL_LABEL, billUsualNote, paymentHistory, paymentsAboveUsual } from '@/domain/billUsual';
 import { parseBoleto, type Boleto } from '@/domain/boleto';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { BILL_RECURRENCES, FINANCE_CATEGORIES, type BillRecurrence, type FinanceCategory } from '@/domain/finance';
@@ -339,11 +339,10 @@ function PaymentHistory({ bill }: { bill: Bill }) {
   if (payments.isPending) return <Loading />;
   if (payments.isError) return <ErrorNotice error={payments.error} onRetry={() => payments.refetch()} />;
   if (!payments.data.length) return null;
-  // Cada pagamento contra o normal da época dele, não o de hoje. A busca traz um pagamento além dos
-  // que a tela mostra: se ele veio, há mais para trás, e os mais antigos podem estar sem parte da média.
-  const complete = payments.data.length <= BILL_PAYMENTS_LIMIT;
-  const aboveUsual = paymentsAboveUsual(bill, payments.data, { complete });
-  const shown = payments.data.slice(0, BILL_PAYMENTS_LIMIT);
+  // Cada pagamento contra o normal da época dele, não o de hoje. Se a busca trouxe o pagamento que só
+  // marca que há mais para trás, os mais antigos da tela podem estar sem parte da média.
+  const { shown, known, complete } = paymentHistory(payments.data, BILL_PAYMENTS_LIMIT);
+  const aboveUsual = paymentsAboveUsual(bill, known, { complete });
 
   return (
     <Section title="Pagamentos">

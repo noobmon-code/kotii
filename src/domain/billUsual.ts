@@ -115,6 +115,18 @@ export function paymentsAboveUsual(
   );
 }
 
+/**
+ * O histórico como a tela da conta usa. `rows` vem do mais novo para o mais
+ * antigo, com até `limit + 2` pagamentos: os `limit` primeiros aparecem
+ * (`shown`); o seguinte ainda entra na conta do normal (`known`); o último
+ * só diz que há mais para trás e fica fora da conta. Se ele não veio, veio
+ * tudo (`complete`), tenha a conta 24 ou 25 pagamentos.
+ */
+export function paymentHistory<T>(rows: T[], limit: number): { shown: T[]; known: T[]; complete: boolean } {
+  const known = rows.slice(0, limit + 1);
+  return { shown: rows.slice(0, limit), known, complete: known.length === rows.length };
+}
+
 /** O normal da conta para o vencimento em aberto. Conta anual ou de uma vez só não tem. */
 export function billUsual(bill: Pick<UsualBill, 'id' | 'recurrence' | 'next_due_on'>, payments: BillUsualPayment[]): Usual | null {
   if (bill.recurrence !== 'monthly') return null;

@@ -88,8 +88,8 @@ export function useDeleteBill() {
 }
 
 /**
- * Quantos pagamentos a tela da conta mostra. A busca traz um a mais: se ele veio, o histórico
- * continua para trás (a tela não o mostra, mas sabe que os mais antigos estão sem parte da média).
+ * Quantos pagamentos a tela da conta mostra. A busca traz dois a mais: um ainda entra na conta do
+ * normal dos que aparecem; o outro só diz que o histórico continua para trás (ver paymentHistory).
  */
 export const BILL_PAYMENTS_LIMIT = 24;
 
@@ -104,7 +104,7 @@ export function useBillPayments(billId: string | undefined) {
           .select('id, bill_id, due_on, paid_on, amount, paid_by')
           .eq('bill_id', billId!)
           .order('due_on', { ascending: false })
-          .limit(BILL_PAYMENTS_LIMIT + 1),
+          .limit(BILL_PAYMENTS_LIMIT + 2),
       ) as BillPayment[],
   });
 }

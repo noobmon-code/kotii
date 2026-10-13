@@ -13,6 +13,7 @@ import {
   describeUsualAverage,
   judgePayments,
   knownNextAmount,
+  paymentHistory,
   paymentsAboveUsual,
   payUsualNote,
   usualAmount,
@@ -159,6 +160,31 @@ describe('judgePayments', () => {
     // A janela de julho começa no próprio 10/01, o mais antigo que veio: está inteira.
     const july = monthly([100, 100, 100, 100, 100, 100, 200], '2026-07').reverse();
     expect([...paymentsAboveUsual(bill(), july, { complete: false })]).toEqual(['2026-07-10']);
+  });
+
+  it('o histórico da tela: 24 aparecem, o 25º entra na conta e só o 26º diz que há mais para trás', () => {
+    const rows = (n: number) => Array.from({ length: n }, (_, i) => i);
+    const sizes = (n: number) => {
+      const { shown, known, complete } = paymentHistory(rows(n), 24);
+      return [shown.length, known.length, complete];
+    };
+    expect(sizes(0)).toEqual([0, 0, true]);
+    expect(sizes(24)).toEqual([24, 24, true]);
+    // Exatamente 25: veio tudo, e o 25º completa a janela dos mais antigos da tela.
+    expect(sizes(25)).toEqual([24, 25, true]);
+    expect(sizes(26)).toEqual([24, 25, false]);
+    expect(paymentHistory(rows(26), 24).known).not.toContain(25);
+
+    // 25 pagamentos mensais, do mais novo para o mais antigo; o pico é o 4º mais antigo, com três antes dele.
+    const payments = monthly([100, 100, 100, 200, ...Array.from({ length: 21 }, () => 100)], '2024-09').reverse();
+    const spike = payments[21].due_on;
+    const all = paymentHistory(payments, 24);
+    expect(all.complete).toBe(true);
+    expect([...paymentsAboveUsual(bill(), all.known, { complete: all.complete })]).toEqual([spike]);
+    // Com um 26º para trás, a janela do pico pode ter pagamentos que não vieram: sem selo.
+    const more = paymentHistory([...payments, { ...payments[24], due_on: '2022-08-10' }], 24);
+    expect(more.complete).toBe(false);
+    expect([...paymentsAboveUsual(bill(), more.known, { complete: more.complete })]).toEqual([]);
   });
 
   it('conta anual ou de uma vez só não tem selo no histórico', () => {
