@@ -25,7 +25,7 @@ import {
   takesOn,
   type MedicationSchedule,
 } from '../medications';
-import { formatBRL, parseDecimal } from '../money';
+import { formatBRL, parseDecimal, parseMoney, parseTypingAmount } from '../money';
 import { describeExpiry, estimateExpiry, expiryStatus } from '../pantry';
 import { guessCategory, normalizeSearch } from '../search';
 
@@ -138,6 +138,66 @@ describe('money', () => {
     expect(parseDecimal('1.5')).toBe(1.5);
     expect(parseDecimal('abc')).toBeNull();
     expect(parseDecimal('')).toBeNull();
+    // Quantidade: "1.500" kg é um quilo e meio.
+    expect(parseDecimal('1.500')).toBe(1.5);
+  });
+
+  it('reads money: dots in groups of three are thousands, even without the cents', () => {
+    expect(parseMoney('1.500')).toBe(1500);
+    expect(parseMoney('2.000')).toBe(2000);
+    expect(parseMoney('999.999')).toBe(999999);
+    expect(parseMoney('12.345.678')).toBe(12345678);
+    expect(parseMoney('R$ 1.500')).toBe(1500);
+    expect(parseMoney(' 1.500 ')).toBe(1500);
+    // O resto é lido como em parseDecimal.
+    expect(parseMoney('1.5')).toBe(1.5);
+    expect(parseMoney('15.90')).toBe(15.9);
+    expect(parseMoney('1.500,50')).toBe(1500.5);
+    expect(parseMoney('1.500,00')).toBe(1500);
+    expect(parseMoney('12,90')).toBe(12.9);
+    expect(parseMoney('180')).toBe(180);
+    expect(parseMoney('R$ 3')).toBe(3);
+    expect(parseMoney('1.50')).toBe(1.5);
+    expect(parseMoney('1234.567')).toBe(1234.567);
+    // Mais um zero em "1.500" não vira R$ 1,50: quatro ou mais dígitos depois de um ponto só não é valor em reais.
+    expect(parseMoney('1.5000')).toBeNull();
+    expect(parseMoney('0.5000')).toBeNull();
+    expect(parseMoney('1234.5678')).toBeNull();
+    expect(parseMoney('1.5000,00')).toBe(15000);
+    // Zero na frente não é milhar: continua sendo cinquenta centavos.
+    expect(parseMoney('0.500')).toBe(0.5);
+    expect(parseMoney('1.500.00')).toBeNull();
+    expect(parseMoney('-1.500')).toBeNull();
+    expect(parseMoney('abc')).toBeNull();
+    expect(parseMoney('')).toBeNull();
+  });
+
+  it('reads the amount while it is still being typed', () => {
+    expect(parseTypingAmount('310,')).toBe(310);
+    expect(parseTypingAmount('310.')).toBe(310);
+    expect(parseTypingAmount('310,9')).toBe(310.9);
+    expect(parseTypingAmount('R$ 310, ')).toBe(310);
+    // A vírgula no fim diz que o ponto é de milhar: apagando os centavos de "1.234,00".
+    expect(parseTypingAmount('1.234,')).toBe(1234);
+    expect(parseTypingAmount('1.234,0')).toBe(1234);
+    expect(parseTypingAmount('12.345.678,')).toBe(12345678);
+    expect(parseTypingAmount(',')).toBeNull();
+    expect(parseTypingAmount('')).toBeNull();
+    // Sem vírgula, o ponto de três em três dígitos é de milhar, como na hora de salvar:
+    // a dica ao lado do campo compara o mesmo valor que vai ser gravado.
+    expect(parseTypingAmount('1.500')).toBe(1500);
+    expect(parseTypingAmount('1.500.')).toBe(1500);
+    expect(parseTypingAmount('12.345.678')).toBe(12345678);
+    expect(parseTypingAmount('1.5')).toBe(1.5);
+    expect(parseTypingAmount('1.50')).toBe(1.5);
+    expect(parseTypingAmount('0.500')).toBe(0.5);
+    for (const typed of ['1.500', '1.500,5', '1.500,50', '1.5', '15.90', '180', 'R$ 2.000', '0.500', '1.50']) {
+      expect(parseTypingAmount(typed)).toBe(parseMoney(typed));
+    }
+    // Salvar continua exigindo o valor completo.
+    expect(parseDecimal('310,')).toBeNull();
+    expect(parseMoney('310,')).toBeNull();
+    expect(parseMoney('1.500.')).toBeNull();
   });
 
   it('formats BRL', () => {

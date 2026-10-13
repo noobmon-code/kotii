@@ -14,7 +14,8 @@ const TABS: Tab[] = ['resumo', 'contas', 'notas'];
 
 const QUERIES: Record<Tab, string[]> = {
   resumo: ['spending', 'bills'],
-  contas: ['bills'],
+  // Os pagamentos recentes decidem o selo "Acima do normal" das contas.
+  contas: ['bills', 'billPayments'],
   notas: ['receipts'],
 };
 

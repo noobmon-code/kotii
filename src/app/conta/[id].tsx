@@ -3,25 +3,37 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
-import { useBill, useBillPayments, useDeleteBill, useSaveBill, useUndoBillPayment } from '@/data/finance';
+import {
+  BILL_PAYMENTS_LIMIT,
+  useBill,
+  useBillPaymentHistory,
+  useBillPayments,
+  useDeleteBill,
+  useSaveBill,
+  useUndoBillPayment,
+} from '@/data/finance';
+import { ABOVE_USUAL_LABEL, billUsualNote, paymentHistory, paymentsAboveUsual } from '@/domain/billUsual';
 import { parseBoleto, type Boleto } from '@/domain/boleto';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { BILL_RECURRENCES, FINANCE_CATEGORIES, type BillRecurrence, type FinanceCategory } from '@/domain/finance';
 import { formatTaxDoc, parseTaxDoc } from '@/domain/incomeTax';
-import { formatBRL, parseDecimal } from '@/domain/money';
+import { formatBRL, parseMoney } from '@/domain/money';
 import { billSubtitle } from '@/features/finance/BillsPanel';
 import { BoletoScanner } from '@/features/finance/BoletoScanner';
 import { PayBillModal } from '@/features/finance/PayBillModal';
 import { useHousehold } from '@/lib/auth';
+import { settledData } from '@/lib/settledData';
 import { errorMessage } from '@/lib/supabase';
 import type { Bill } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
 import {
+  Badge,
   Button,
   Card,
   Chip,
   DateField,
   ErrorNotice,
+  Icon,
   IconButton,
   ListCard,
   ListRow,
@@ -75,6 +87,10 @@ function BillForm({ bill }: { bill?: Bill }) {
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
   const dueISO = parseBRDate(due);
   const boletoLine = boleto ? parseBoleto(boleto, todayISO())?.line : undefined;
+  // O boleto que está na tela (lido agora ou guardado) contra o normal da
+  // conta. Sem os pagamentos em dia (carregando, buscando de novo ou com erro), não aparece nada.
+  const payments = useBillPayments(bill?.id);
+  const usualNote = bill ? billUsualNote({ ...bill, boleto }, settledData(payments) ?? [], todayISO()) : null;
 
   // Pagar vale para o vencimento gravado; vencimento mudado precisa ser salvo
   // antes. Boleto lido e ainda não salvo vai para a conta primeiro: o valor
@@ -115,7 +131,7 @@ function BillForm({ bill }: { bill?: Bill }) {
   }
 
   function submit() {
-    const value = variable ? null : parseDecimal(amount);
+    const value = variable ? null : parseMoney(amount);
     if (!name.trim()) return notify('Informe o nome', 'Ex.: Condomínio, Internet, Escola.');
     if (!variable && value == null) return notify('Informe o valor', 'Ou marque que o valor varia a cada mês.');
     if (!dueISO) return notify('Data inválida', 'Informe o vencimento como dd/mm/aaaa.');
@@ -158,7 +174,18 @@ function BillForm({ bill }: { bill?: Bill }) {
 
       {bill ? (
         <Card style={styles.status}>
-          <Text variant="muted">{capitalizeFirst(billSubtitle(bill, todayISO()))}</Text>
+          <View style={styles.tight}>
+            <Text variant="muted">{capitalizeFirst(billSubtitle(bill, todayISO()))}</Text>
+            {usualNote && !usualNote.above ? <Text variant="small">{usualNote.text}</Text> : null}
+          </View>
+          {usualNote?.above ? (
+            <Row>
+              <Icon name="trending-up" color="warning" />
+              <Text variant="body" style={styles.flex}>
+                {usualNote.text}
+              </Text>
+            </Row>
+          ) : null}
           {bill.active ? <Button title="Registrar pagamento" icon="check" onPress={startPayment} /> : null}
         </Card>
       ) : null}
@@ -313,24 +340,34 @@ function BillForm({ bill }: { bill?: Bill }) {
 }
 
 function PaymentHistory({ bill }: { bill: Bill }) {
-  const payments = useBillPayments(bill.id);
+  const payments = useBillPaymentHistory(bill.id);
   const undo = useUndoBillPayment();
   const members = useHousehold().data?.members ?? [];
 
   if (payments.isPending) return <Loading />;
   if (payments.isError) return <ErrorNotice error={payments.error} onRetry={() => payments.refetch()} />;
-  if (!payments.data.length) return null;
+  const { rows, total } = payments.data;
+  if (!rows.length) return null;
+  // Cada pagamento contra o normal da época dele, não o de hoje. A busca traz mais alguns além dos que a
+  // tela mostra; se mesmo assim a conta tem mais para trás, quem ficou sem a janela inteira não ganha selo.
+  const { shown, complete } = paymentHistory(rows, total, BILL_PAYMENTS_LIMIT);
+  const aboveUsual = paymentsAboveUsual(bill, rows, { complete });
 
   return (
     <Section title="Pagamentos">
       <ListCard>
-        {payments.data.map((p, index) => {
+        {shown.map((p, index) => {
           const who = members.find((m) => m.user_id === p.paid_by)?.display_name;
           return (
             <ListRow
               key={p.id}
               title={`Vencimento ${formatBRDate(p.due_on)}`}
-              subtitle={[`Pago em ${formatBRDate(p.paid_on)}`, who].filter(Boolean).join(' · ')}
+              subtitle={
+                <View style={styles.tight}>
+                  <Text variant="muted">{[`Pago em ${formatBRDate(p.paid_on)}`, who].filter(Boolean).join(' · ')}</Text>
+                  {aboveUsual.has(p.due_on) ? <Badge label={ABOVE_USUAL_LABEL} tone="warning" /> : null}
+                </View>
+              }
               right={
                 <Row>
                   <Text variant="label">{formatBRL(p.amount)}</Text>
@@ -361,6 +398,7 @@ function PaymentHistory({ bill }: { bill: Bill }) {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   group: { gap: space.sm },
+  tight: { gap: space.xs },
   wrap: { flexWrap: 'wrap' },
   status: { gap: space.md },
 });
