@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { usualPaymentsSince, type BillUsualPayment } from '@/domain/billUsual';
+import { USUAL_PAYMENTS, usualPaymentsSince, type BillUsualPayment } from '@/domain/billUsual';
 import { toISODate } from '@/domain/dates';
 import type { MedicalEntry } from '@/domain/incomeTax';
 import {
@@ -87,25 +87,47 @@ export function useDeleteBill() {
   });
 }
 
-/**
- * Quantos pagamentos a tela da conta mostra. A busca traz dois a mais: um ainda entra na conta do
- * normal dos que aparecem; o outro só diz que o histórico continua para trás (ver paymentHistory).
- */
+/** Quantos pagamentos a tela da conta mostra. */
 export const BILL_PAYMENTS_LIMIT = 24;
+/** A busca traz mais alguns para trás: os que entram no normal do mais antigo da tela. */
+const BILL_PAYMENTS_FETCH = BILL_PAYMENTS_LIMIT + USUAL_PAYMENTS;
 
+/** Os pagamentos mais recentes de uma conta e quantos ela tem ao todo. */
+export interface BillPaymentPage {
+  rows: BillPayment[];
+  total: number;
+}
+
+async function fetchBillPayments(billId: string): Promise<BillPaymentPage> {
+  const result = await supabase
+    .from('bill_payments')
+    .select('id, bill_id, due_on, paid_on, amount, paid_by', { count: 'exact' })
+    .eq('bill_id', billId)
+    .order('due_on', { ascending: false })
+    .limit(BILL_PAYMENTS_FETCH);
+  const rows = unwrap(result) as BillPayment[];
+  // Sem a contagem (o servidor sempre manda), a página cheia conta como cortada.
+  return { rows, total: result.count ?? (rows.length < BILL_PAYMENTS_FETCH ? rows.length : rows.length + 1) };
+}
+
+const paymentRows = (page: BillPaymentPage) => page.rows;
+
+/** Os pagamentos mais recentes da conta, do mais novo para o mais antigo. */
 export function useBillPayments(billId: string | undefined) {
   return useQuery({
     queryKey: ['billPayments', billId],
     enabled: Boolean(billId),
-    queryFn: async () =>
-      unwrap(
-        await supabase
-          .from('bill_payments')
-          .select('id, bill_id, due_on, paid_on, amount, paid_by')
-          .eq('bill_id', billId!)
-          .order('due_on', { ascending: false })
-          .limit(BILL_PAYMENTS_LIMIT + 2),
-      ) as BillPayment[],
+    queryFn: () => fetchBillPayments(billId!),
+    select: paymentRows,
+  });
+}
+
+/** A mesma busca (e o mesmo cache) com o total da conta: a tela sabe se o histórico veio inteiro (paymentHistory). */
+export function useBillPaymentHistory(billId: string | undefined) {
+  return useQuery({
+    queryKey: ['billPayments', billId],
+    enabled: Boolean(billId),
+    queryFn: () => fetchBillPayments(billId!),
   });
 }
 

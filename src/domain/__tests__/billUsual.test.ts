@@ -162,29 +162,34 @@ describe('judgePayments', () => {
     expect([...paymentsAboveUsual(bill(), july, { complete: false })]).toEqual(['2026-07-10']);
   });
 
-  it('o histórico da tela: 24 aparecem, o 25º entra na conta e só o 26º diz que há mais para trás', () => {
+  it('o histórico da tela: 24 aparecem, e se veio inteiro sai da contagem do servidor, não do tamanho da página', () => {
     const rows = (n: number) => Array.from({ length: n }, (_, i) => i);
-    const sizes = (n: number) => {
-      const { shown, known, complete } = paymentHistory(rows(n), 24);
-      return [shown.length, known.length, complete];
+    // A busca traz até 30 (os 24 da tela e os 6 que entram no normal do mais antigo deles).
+    const history = (total: number) => {
+      const { shown, complete } = paymentHistory(rows(Math.min(total, 30)), total, 24);
+      return [shown.length, complete];
     };
-    expect(sizes(0)).toEqual([0, 0, true]);
-    expect(sizes(24)).toEqual([24, 24, true]);
-    // Exatamente 25: veio tudo, e o 25º completa a janela dos mais antigos da tela.
-    expect(sizes(25)).toEqual([24, 25, true]);
-    expect(sizes(26)).toEqual([24, 25, false]);
-    expect(paymentHistory(rows(26), 24).known).not.toContain(25);
+    expect(history(0)).toEqual([0, true]);
+    expect(history(24)).toEqual([24, true]);
+    expect(history(25)).toEqual([24, true]);
+    expect(history(26)).toEqual([24, true]);
+    // Exatamente a página cheia: veio tudo. Um a mais: há pagamento para trás que não veio.
+    expect(history(30)).toEqual([24, true]);
+    expect(history(31)).toEqual([24, false]);
+    expect(history(300)).toEqual([24, false]);
 
-    // 25 pagamentos mensais, do mais novo para o mais antigo; o pico é o 4º mais antigo, com três antes dele.
-    const payments = monthly([100, 100, 100, 200, ...Array.from({ length: 21 }, () => 100)], '2024-09').reverse();
-    const spike = payments[21].due_on;
-    const all = paymentHistory(payments, 24);
-    expect(all.complete).toBe(true);
-    expect([...paymentsAboveUsual(bill(), all.known, { complete: all.complete })]).toEqual([spike]);
-    // Com um 26º para trás, a janela do pico pode ter pagamentos que não vieram: sem selo.
-    const more = paymentHistory([...payments, { ...payments[24], due_on: '2022-08-10' }], 24);
-    expect(more.complete).toBe(false);
-    expect([...paymentsAboveUsual(bill(), more.known, { complete: more.complete })]).toEqual([]);
+    // 30 pagamentos mensais, do mais novo para o mais antigo; o pico é o 4º mais antigo, com três antes dele.
+    const payments = monthly([100, 100, 100, 200, ...Array.from({ length: 26 }, () => 100)], '2024-09').reverse();
+    const spike = payments[26].due_on;
+    const all = paymentHistory(payments, 30, 24);
+    expect([...paymentsAboveUsual(bill(), payments, { complete: all.complete })]).toEqual([spike]);
+    // Com um 31º para trás, a janela do pico pode ter pagamentos que não vieram: sem selo.
+    const more = paymentHistory(payments, 31, 24);
+    expect([...paymentsAboveUsual(bill(), payments, { complete: more.complete })]).toEqual([]);
+    // Os 24 da tela têm sempre a janela inteira entre os 30 que vieram: um pico entre eles ganha o selo
+    // mesmo com a conta cheia de pagamentos mais antigos.
+    const recent = monthly([...Array.from({ length: 27 }, () => 100), 200, 100, 100], '2024-09').reverse();
+    expect([...paymentsAboveUsual(bill(), recent, { complete: paymentHistory(recent, 300, 24).complete })]).toEqual([recent[2].due_on]);
   });
 
   it('conta anual ou de uma vez só não tem selo no histórico', () => {

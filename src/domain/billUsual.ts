@@ -10,7 +10,7 @@ import type { BillRecurrence } from './finance';
 import { formatBRL } from './money';
 
 /** O normal é a média de até 6 pagamentos, dos 6 meses antes do vencimento… */
-const USUAL_PAYMENTS = 6;
+export const USUAL_PAYMENTS = 6;
 const USUAL_MONTHS = 6;
 /** …e só existe com pelo menos 3. */
 const MIN_PAYMENTS = 3;
@@ -116,15 +116,15 @@ export function paymentsAboveUsual(
 }
 
 /**
- * O histórico como a tela da conta usa. `rows` vem do mais novo para o mais
- * antigo, com até `limit + 2` pagamentos: os `limit` primeiros aparecem
- * (`shown`); o seguinte ainda entra na conta do normal (`known`); o último
- * só diz que há mais para trás e fica fora da conta. Se ele não veio, veio
- * tudo (`complete`), tenha a conta 24 ou 25 pagamentos.
+ * O histórico como a tela da conta usa. `rows` são os pagamentos que a busca
+ * trouxe, do mais novo para o mais antigo, e `total` é quantos a conta tem
+ * (a contagem do servidor). Os `limit` primeiros aparecem; todos os que
+ * vieram entram na conta do normal; `complete` diz se vieram todos. Sai da
+ * contagem, e não do tamanho da página: a conta com exatamente tantos
+ * pagamentos quantos a busca traz veio inteira.
  */
-export function paymentHistory<T>(rows: T[], limit: number): { shown: T[]; known: T[]; complete: boolean } {
-  const known = rows.slice(0, limit + 1);
-  return { shown: rows.slice(0, limit), known, complete: known.length === rows.length };
+export function paymentHistory<T>(rows: T[], total: number, limit: number): { shown: T[]; complete: boolean } {
+  return { shown: rows.slice(0, limit), complete: total <= rows.length };
 }
 
 /** O normal da conta para o vencimento em aberto. Conta anual ou de uma vez só não tem. */

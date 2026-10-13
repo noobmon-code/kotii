@@ -145,6 +145,10 @@ describe('money', () => {
     expect(parseTypingAmount('310.')).toBe(310);
     expect(parseTypingAmount('310,9')).toBe(310.9);
     expect(parseTypingAmount('R$ 310, ')).toBe(310);
+    // A vírgula no fim diz que o ponto é de milhar: apagando os centavos de "1.234,00".
+    expect(parseTypingAmount('1.234,')).toBe(1234);
+    expect(parseTypingAmount('1.234,0')).toBe(1234);
+    expect(parseTypingAmount('12.345.678,')).toBe(12345678);
     expect(parseTypingAmount(',')).toBeNull();
     expect(parseTypingAmount('')).toBeNull();
     // Salvar continua exigindo o valor completo.

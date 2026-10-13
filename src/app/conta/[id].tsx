@@ -3,7 +3,15 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
-import { BILL_PAYMENTS_LIMIT, useBill, useBillPayments, useDeleteBill, useSaveBill, useUndoBillPayment } from '@/data/finance';
+import {
+  BILL_PAYMENTS_LIMIT,
+  useBill,
+  useBillPaymentHistory,
+  useBillPayments,
+  useDeleteBill,
+  useSaveBill,
+  useUndoBillPayment,
+} from '@/data/finance';
 import { ABOVE_USUAL_LABEL, billUsualNote, paymentHistory, paymentsAboveUsual } from '@/domain/billUsual';
 import { parseBoleto, type Boleto } from '@/domain/boleto';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
@@ -332,17 +340,18 @@ function BillForm({ bill }: { bill?: Bill }) {
 }
 
 function PaymentHistory({ bill }: { bill: Bill }) {
-  const payments = useBillPayments(bill.id);
+  const payments = useBillPaymentHistory(bill.id);
   const undo = useUndoBillPayment();
   const members = useHousehold().data?.members ?? [];
 
   if (payments.isPending) return <Loading />;
   if (payments.isError) return <ErrorNotice error={payments.error} onRetry={() => payments.refetch()} />;
-  if (!payments.data.length) return null;
-  // Cada pagamento contra o normal da época dele, não o de hoje. Se a busca trouxe o pagamento que só
-  // marca que há mais para trás, os mais antigos da tela podem estar sem parte da média.
-  const { shown, known, complete } = paymentHistory(payments.data, BILL_PAYMENTS_LIMIT);
-  const aboveUsual = paymentsAboveUsual(bill, known, { complete });
+  const { rows, total } = payments.data;
+  if (!rows.length) return null;
+  // Cada pagamento contra o normal da época dele, não o de hoje. A busca traz mais alguns além dos que a
+  // tela mostra; se mesmo assim a conta tem mais para trás, quem ficou sem a janela inteira não ganha selo.
+  const { shown, complete } = paymentHistory(rows, total, BILL_PAYMENTS_LIMIT);
+  const aboveUsual = paymentsAboveUsual(bill, rows, { complete });
 
   return (
     <Section title="Pagamentos">
