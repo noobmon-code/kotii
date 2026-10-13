@@ -1295,6 +1295,39 @@ describe('examTrends', () => {
     }
   });
 
+  it('o mesmo item duas vezes no laudo: cada um segue, nos outros grupos, o resultado da mesma vez', () => {
+    const curve = [result('Glicose', '92', 'mg/dL'), result('Glicose', '140', 'mg/dL')];
+    // O laudo seguinte veio com os dois em texto.
+    const written = examTrends([
+      exam('2026-01-10', curve, { title: 'Curva glicêmica' }),
+      exam('2026-06-10', [result('Glicose', 'Não realizado'), result('Glicose', 'Amostra hemolisada')], { title: 'Curva glicêmica' }),
+    ]);
+    expect(written.single.map((i) => [valueLabel(i.last), i.newerText?.value])).toEqual([
+      ['92 mg/dL', 'Não realizado'],
+      ['140 mg/dL', 'Amostra hemolisada'],
+    ]);
+    // Ou com os dois em outra unidade.
+    const units = examTrends([
+      exam('2026-01-10', curve, { title: 'Curva glicêmica' }),
+      exam('2026-06-10', [result('Glicose', '5,1', 'mmol/L'), result('Glicose', '7,8', 'mmol/L')], { title: 'Curva glicêmica' }),
+    ]);
+    expect(
+      units.single.filter((i) => i.last.unit === 'mg/dL').map((i) => [valueLabel(i.last), i.newerElsewhere && valueLabel(i.newerElsewhere)]),
+    ).toEqual([
+      ['92 mg/dL', '5,1 mmol/L'],
+      ['140 mg/dL', '7,8 mmol/L'],
+    ]);
+    // Só o segundo veio de novo (em texto): é a primeira vez do item em texto, e é a primeira linha que o recebe.
+    const one = examTrends([
+      exam('2026-01-10', curve, { title: 'Curva glicêmica' }),
+      exam('2026-06-10', [result('Glicose', 'Não realizado')], { title: 'Curva glicêmica' }),
+    ]);
+    expect(one.single.map((i) => [valueLabel(i.last), i.newerText?.value])).toEqual([
+      ['92 mg/dL', 'Não realizado'],
+      ['140 mg/dL', undefined],
+    ]);
+  });
+
   it('o mesmo nome em outro material fica à parte, e a linha avisa', () => {
     const trends = examTrends([
       exam('2026-01-10', [result('Densidade', '1,015'), result('pH', '6,0')], { title: 'Exames de rotina' }),

@@ -577,6 +577,8 @@ const NAME_SYMBOL = /([%#])\s*[)\]]?\s*$/;
 
 interface Group {
   key: string;
+  /** Qual das vezes do item no laudo (1 quando ele aparece uma vez só): a segunda vez é outro grupo. */
+  nth: number;
   /** O item sem a unidade: nome, material e, no nome genérico, o exame. */
   family: string;
   /** A família dos resultados em texto do mesmo item (num grupo de texto, a dele). */
@@ -753,7 +755,7 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
       seen.set(slot, nth);
       const key = nth > 1 ? `${slot}|${nth}` : slot;
       const groups = parsed ? numeric : textual;
-      const group = groups.get(key) ?? { key, family, textFamily, base, material, unitKey, name: '', points: [], examIndex, resultIndex };
+      const group = groups.get(key) ?? { key, nth, family, textFamily, base, material, unitKey, name: '', points: [], examIndex, resultIndex };
       group.points.push(point);
       // Do mais antigo para o mais novo: ficam o nome e a posição do último ponto.
       group.name = generic && title ? `${title}: ${name}` : name || 'Sem nome';
@@ -778,9 +780,12 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
   const newestOf = (groups: Group[]) => groups.reduce<Group | null>((max, other) => (!max || later(other, max) > 0 ? other : max), null);
   const toItem = (group: Group, isNumber: boolean): TrendItem => {
     const last = lastOf(group);
-    const others = isNumber ? families.get(group.family)!.filter((other) => sameInOtherUnit(other, group)) : [];
+    // O item que aparece duas vezes no laudo segue, nos outros grupos, o resultado da mesma vez: a primeira
+    // linha não toma para si o "mais novo" que é da segunda.
+    const sameTime = (other: Group) => other.nth === group.nth;
+    const others = isNumber ? families.get(group.family)!.filter((other) => sameTime(other) && sameInOtherUnit(other, group)) : [];
     const newest = newestOf(others);
-    const written = isNumber ? newestOf(texts.get(group.textFamily) ?? []) : null;
+    const written = isNumber ? newestOf((texts.get(group.textFamily) ?? []).filter(sameTime)) : null;
     const sameName = isNumber ? bases.get(group.base)!.filter((other) => other.material !== group.material) : [];
     return {
       key: group.key,
