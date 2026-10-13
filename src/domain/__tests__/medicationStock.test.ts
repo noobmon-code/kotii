@@ -755,6 +755,14 @@ describe('a seção "Estoque e receita" do remédio', () => {
     expect(keepStockOnRuleChange({}, saved, { ...rule, frequency: 'weekdays', weekdays: [1, 3] }, today)).toEqual(rebased);
     expect(keepStockOnRuleChange({}, saved, { ...rule, startOn: '2026-10-01' }, today)).toEqual(rebased);
     expect(keepStockOnRuleChange({}, saved, { ...rule, endOn: '2026-12-31' }, today)).toEqual(rebased);
+    // Passar a ser por número de doses (ou mudar esse número) também é mudar a regra: o que foi gasto até hoje foi pela de antes.
+    expect(keepStockOnRuleChange({}, saved, { ...rule, totalDoses: 30 }, today)).toEqual(rebased);
+    // O tratamento de 30 doses que começou em janeiro já tinha terminado, pelo horário, quando a caixa foi contada:
+    // por ele nada foi gasto desde então, e os 60 ficam, contados hoje, antes de a regra nova (uso contínuo) valer.
+    const course = { ...saved, totalDoses: 30 };
+    expect(keepStockOnRuleChange({}, course, { ...rule, totalDoses: null }, today)).toEqual({ stockCount: 60, stockCountedOn: today });
+    expect(keepStockOnRuleChange({}, course, { ...rule, totalDoses: 60 }, today)).toEqual({ stockCount: 60, stockCountedOn: today });
+    expect(keepStockOnRuleChange({}, course, { ...rule, totalDoses: 30 }, today)).toEqual({});
     expect(keepStockOnRuleChange({ doseUnits: 2 }, saved, rule, today)).toEqual({ doseUnits: 2, ...rebased });
     // A pessoa contou de novo (ou parou de acompanhar): vale o que ela disse.
     expect(keepStockOnRuleChange({ stockCount: 12, stockCountedOn: today }, saved, twice, today)).toEqual({ stockCount: 12, stockCountedOn: today });

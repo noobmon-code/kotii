@@ -465,9 +465,9 @@ export function restock(m: StockedMedication, today: string, boxUnits: number, b
   return { stockCount: round(left + Math.max(0, boxUnits)), stockCountedOn: today };
 }
 
-type Rule = Pick<MedicationSchedule, 'times' | 'startOn' | 'endOn' | 'frequency' | 'weekdays' | 'intervalDays'>;
+type Rule = Pick<MedicationSchedule, 'times' | 'startOn' | 'endOn' | 'frequency' | 'weekdays' | 'intervalDays' | 'totalDoses'>;
 
-/** A regra das doses, para comparar: horários, regularidade, início e fim. */
+/** A regra das doses, para comparar: horários, regularidade, início, fim e o número de doses do tratamento. */
 const ruleKey = (m: Rule) =>
   JSON.stringify([
     [...m.times].sort(),
@@ -476,6 +476,7 @@ const ruleKey = (m: Rule) =>
     m.intervalDays ?? null,
     m.startOn,
     m.endOn ?? null,
+    m.totalDoses ?? null,
   ]);
 
 /**

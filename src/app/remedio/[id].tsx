@@ -206,7 +206,15 @@ function MedicationForm({
     const stockChanges = keepStockOnRuleChange(
       stockRead.changes,
       medication && toSchedule(medication),
-      { times: values.times, startOn: values.start_on, endOn: values.end_on, frequency, weekdays: values.weekdays, intervalDays: values.interval_days },
+      {
+        times: values.times,
+        startOn: values.start_on,
+        endOn: values.end_on,
+        frequency,
+        weekdays: values.weekdays,
+        intervalDays: values.interval_days,
+        totalDoses: values.total_doses,
+      },
       today,
     );
     save.mutate(
