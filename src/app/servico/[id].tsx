@@ -1,5 +1,5 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
 import { useSaveExpense } from '@/data/finance';
@@ -17,8 +17,10 @@ import { getEquipmentCategory } from '@/domain/equipment';
 import { parseMoney } from '@/domain/money';
 import {
   canCopyToExpenses,
-  EXPENSE_COPY_SKIPPED,
+  expenseCopyGap,
+  expenseCopyGapNote,
   expenseCopyNote,
+  expenseCopySkippedNote,
   expenseDescription,
   getProviderTrade,
   SERVICE_WARRANTY_PRESETS,
@@ -64,6 +66,13 @@ export default function ServiceJobScreen() {
   const wanted = isNew ? aparelho : job.data?.equipment_id;
   const absent = wanted && equipment.data && !equipment.data.some((e) => e.id === wanted) ? wanted : undefined;
   const lone = useEquipment(absent);
+  // O prestador, a mesma coisa: com ele fora da lista daqui, ela é buscada de novo, uma vez (não há busca de um só).
+  const author = isNew ? prestador : job.data?.provider_id;
+  const authorAbsent = Boolean(author && providers.data && !providers.data.missing && !providers.data.rows.some((p) => p.id === author));
+  const { refetch: refetchProviders } = providers;
+  useEffect(() => {
+    if (authorAbsent) refetchProviders();
+  }, [authorAbsent, author, refetchProviders]);
   // Excluído aqui: a busca volta sem ele antes de a tela fechar, e isso não é "não existe mais".
   const [deleted, setDeleted] = useState(false);
 
@@ -149,14 +158,12 @@ function JobForm({
   const save = useSaveServiceJob();
   const remove = useDeleteServiceJob();
   const saveExpense = useSaveExpense();
-  const known = <T extends { id: string }>(list: T[], id: string | null | undefined) => (id && list.some((item) => item.id === id) ? id : null);
-  const [providerId, setProviderId] = useState(
-    job?.provider_id ?? known(providers, initialProviderId) ?? (providers.length === 1 ? providers[0].id : null),
-  );
-  // O aparelho fica como veio (do serviço, ou da tela do aparelho), mesmo que a
-  // lista daqui ainda não o tenha (ela pode ser de antes de ele ser cadastrado):
-  // só sai quando a pessoa escolhe "Nenhum aparelho". Se ele foi mesmo apagado,
-  // salvar avisa (o banco recusa), em vez de o serviço perder o aparelho calado.
+  // O prestador e o aparelho ficam como vieram (do serviço, ou da tela de onde a
+  // pessoa veio), mesmo que as listas daqui ainda não os tenham (elas podem ser
+  // de antes de eles serem cadastrados): o serviço não troca de prestador por
+  // conta própria, e o aparelho só sai quando a pessoa escolhe "Nenhum aparelho".
+  // Se um deles foi mesmo apagado, salvar avisa (o banco recusa).
+  const [providerId, setProviderId] = useState(job?.provider_id ?? initialProviderId ?? (providers.length === 1 ? providers[0].id : null));
   const [equipmentId, setEquipmentId] = useState(job ? job.equipment_id : initialEquipmentId);
   const [date, setDate] = useState(formatBRDate(job?.done_on ?? todayISO()));
   const [description, setDescription] = useState(job?.description ?? '');
@@ -174,8 +181,9 @@ function JobForm({
   // A mesma leitura de validateJob: "1.500" é mil e quinhentos.
   const offerExpense = canCopyToExpenses(amount.trim() ? parseMoney(amount) : null);
   // Moradia, ou Transporte quando é do mecânico ou num veículo: a linha do gasto e o gasto usam a mesma.
-  // Sem categoria (null): o aparelho do serviço não está entre os que a tela tem, e um carro entraria em Moradia.
-  const expenseCategory = serviceExpenseCategory(provider?.trade, appliance?.category, Boolean(equipmentId) && !appliance);
+  const expenseCategory = serviceExpenseCategory(provider?.trade, appliance?.category);
+  // O prestador ou o aparelho do serviço fora das listas daqui: sem eles a categoria (e o nome no gasto) sairia errada, e a cópia espera.
+  const expenseGap = expenseCopyGap(provider?.trade, { provider: Boolean(providerId) && !provider, equipment: Boolean(equipmentId) && !appliance });
 
   function applyWarranty(months: number) {
     setWarranty(formatBRDate(addMonths(parseBRDate(date) ?? todayISO(), months)));
@@ -193,9 +201,9 @@ function JobForm({
       return notify('Não deu para salvar', providerErrorMessage(err));
     }
     // Cópia de uma vez só: o gasto nasce agora e não fica ligado ao serviço.
-    if (toExpenses && canCopyToExpenses(values.amount) && !expenseCategory) {
-      notify('O serviço foi salvo, mas o gasto não', EXPENSE_COPY_SKIPPED);
-    } else if (toExpenses && canCopyToExpenses(values.amount) && expenseCategory) {
+    if (toExpenses && canCopyToExpenses(values.amount) && expenseGap) {
+      notify('O serviço foi salvo, mas o gasto não', expenseCopySkippedNote(expenseGap));
+    } else if (toExpenses && canCopyToExpenses(values.amount)) {
       try {
         await saveExpense.mutateAsync({
           values: {
@@ -222,7 +230,8 @@ function JobForm({
         <ListCard>
           <ListRow
             left={<IconBadge icon={trade?.icon ?? 'account-wrench-outline'} tone={provider ? 'primary' : 'neutral'} />}
-            title={provider?.name ?? 'Escolher prestador'}
+            // Escolhido, mas fora da lista que está aqui: sem o nome, e nunca "Escolher prestador".
+            title={provider?.name ?? (providerId ? 'Prestador' : 'Escolher prestador')}
             subtitle={trade?.label}
             right={<Icon name="chevron-right" color="textMuted" />}
             onPress={() => setPicking('provider')}
@@ -250,12 +259,12 @@ function JobForm({
           <Row>
             <View style={styles.flex}>
               <Text variant="label">Lançar também nos gastos da casa</Text>
-              <Text variant="small">{expenseCopyNote(Boolean(job), expenseCategory)}</Text>
+              <Text variant="small">{expenseGap ? expenseCopyGapNote(expenseGap) : expenseCopyNote(Boolean(job), expenseCategory)}</Text>
             </View>
             <Switch
-              value={toExpenses && Boolean(expenseCategory)}
+              value={toExpenses && !expenseGap}
               onValueChange={setToExpenses}
-              disabled={!expenseCategory}
+              disabled={Boolean(expenseGap)}
               trackColor={{ true: c.primary }}
               accessibilityLabel="Lançar também nos gastos da casa"
             />

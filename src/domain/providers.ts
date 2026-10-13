@@ -377,18 +377,47 @@ export function deleteProviderWarning(name: string, jobCount: number | null): st
  * Onde entra o serviço lançado nos gastos: Moradia, a categoria da manutenção
  * da casa; o do mecânico e o feito num veículo vão para Transporte, onde as
  * regras do banco já põem oficina e mecânica (domain/bankCategories).
- * `equipmentUnknown`: o serviço tem um aparelho, mas a tela não sabe qual é
- * (ele não está na lista que ela tem, que pode ser de antes de ele ser
- * cadastrado). Sem saber se é um veículo não há categoria (null), a não ser
- * a do mecânico: o conserto do carro não entra em Moradia por falta do dado.
  */
-export function serviceExpenseCategory(
-  trade: string | null | undefined,
-  equipmentCategory: string | null | undefined,
-  equipmentUnknown = false,
-): FinanceCategory | null {
-  if (trade === 'mecanico' || equipmentCategory === 'veiculo') return 'transporte';
-  return equipmentUnknown ? null : 'moradia';
+export function serviceExpenseCategory(trade: string | null | undefined, equipmentCategory: string | null | undefined): FinanceCategory {
+  return trade === 'mecanico' || equipmentCategory === 'veiculo' ? 'transporte' : 'moradia';
+}
+
+export type ExpenseCopyGap = 'provider' | 'equipment';
+
+/**
+ * O que a tela do serviço ainda não sabe e segura a cópia para os gastos. O
+ * serviço pode ter um prestador ou um aparelho que as listas da tela não têm
+ * (elas podem ser de antes de ele ser cadastrado, por outra pessoa da casa):
+ * `missing` diz qual dos dois está escolhido e fora da lista. Sem o prestador
+ * não se sabe o ofício (o do mecânico vai para Transporte) nem o nome que vai
+ * na descrição do gasto; sem o aparelho, não se sabe se é um veículo, e um
+ * conserto do carro entraria em Moradia. O aparelho não faz falta quando o
+ * prestador é o mecânico: já é Transporte.
+ */
+export function expenseCopyGap(trade: string | null | undefined, missing: { provider: boolean; equipment: boolean }): ExpenseCopyGap | null {
+  if (missing.provider) return 'provider';
+  return missing.equipment && trade !== 'mecanico' ? 'equipment' : null;
+}
+
+const EXPENSE_COPY_GAP: Record<ExpenseCopyGap, { why: string; fix: string }> = {
+  provider: {
+    why: 'Não deu para carregar o prestador deste serviço, e é o ofício dele que diz se o gasto entra em Moradia ou em Transporte.',
+    fix: 'Para lançar o gasto, escolha de novo quem fez o serviço.',
+  },
+  equipment: {
+    why: 'Não deu para carregar o aparelho deste serviço, e é ele que diz se o gasto entra em Moradia ou em Transporte.',
+    fix: 'Para lançar o gasto, escolha o aparelho logo abaixo.',
+  },
+};
+
+/** A linha do cartão "Lançar também nos gastos da casa" enquanto a cópia espera (ver expenseCopyGap): por quê, e o que fazer. */
+export function expenseCopyGapNote(gap: ExpenseCopyGap): string {
+  return `${EXPENSE_COPY_GAP[gap].why} ${EXPENSE_COPY_GAP[gap].fix}`;
+}
+
+/** Para quem salvou com a cópia ligada e o dado se perdeu antes: o serviço foi salvo, o gasto fica por conta da pessoa. */
+export function expenseCopySkippedNote(gap: ExpenseCopyGap): string {
+  return `${EXPENSE_COPY_GAP[gap].why} Lance o gasto em Finanças.`;
 }
 
 /** A descrição do gasto: "Trocou a resistência do chuveiro (Zé Eletricista)". */
@@ -397,12 +426,6 @@ export function expenseDescription(description: string, providerName: string): s
   const who = providerName.trim();
   return who ? `${what} (${who})` : what;
 }
-
-const EXPENSE_CATEGORY_UNKNOWN = 'Não deu para carregar o aparelho deste serviço, e é ele que diz se o gasto entra em Moradia ou em Transporte.';
-/** O gasto sem categoria (ver serviceExpenseCategory), na linha do cartão: a escolha do aparelho fica logo abaixo dele. */
-export const EXPENSE_COPY_UNKNOWN = `${EXPENSE_CATEGORY_UNKNOWN} Para lançar o gasto, escolha o aparelho logo abaixo.`;
-/** Para quem salvou com a cópia ligada e a categoria se perdeu antes: o serviço foi salvo, o gasto fica por conta da pessoa. */
-export const EXPENSE_COPY_SKIPPED = `${EXPENSE_CATEGORY_UNKNOWN} Lance o gasto em Finanças.`;
 
 /** Só serviço com valor acima de zero vira gasto (um gasto não pode ser de R$ 0,00). */
 export function canCopyToExpenses(amount: number | null): amount is number {
@@ -413,11 +436,9 @@ export function canCopyToExpenses(amount: number | null): amount is number {
  * A linha embaixo de "Lançar também nos gastos da casa": o gasto é uma cópia
  * feita na hora de salvar. Num serviço que já existia, lembra que lançar de
  * novo cria outro gasto (o app não sabe se ele já foi lançado). `category` é
- * a de serviceExpenseCategory: a linha diz onde o gasto entra de verdade, e,
- * sem categoria (o aparelho do serviço não carregou), por que não dá para lançar.
+ * a de serviceExpenseCategory: a linha diz onde o gasto entra de verdade.
  */
-export function expenseCopyNote(editing: boolean, category: FinanceCategory | null): string {
-  if (!category) return EXPENSE_COPY_UNKNOWN;
+export function expenseCopyNote(editing: boolean, category: FinanceCategory): string {
   const label = getFinanceCategory(category).label;
   return editing
     ? `Cria um gasto novo em ${label} (se este serviço já foi lançado, fica em dobro). Mudar o serviço depois não muda o gasto.`

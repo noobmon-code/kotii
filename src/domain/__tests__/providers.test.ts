@@ -6,9 +6,10 @@ import { FINANCE_CATEGORIES } from '../finance';
 import {
   canCopyToExpenses,
   deleteProviderWarning,
-  EXPENSE_COPY_SKIPPED,
-  EXPENSE_COPY_UNKNOWN,
+  expenseCopyGap,
+  expenseCopyGapNote,
   expenseCopyNote,
+  expenseCopySkippedNote,
   expenseDescription,
   getProviderTrade,
   groupProviders,
@@ -477,21 +478,30 @@ describe('gasto da casa', () => {
     }
   });
 
-  it('com um aparelho que a tela não conhece, não há categoria: o carro não entra em Moradia; o mecânico decide sozinho', () => {
-    expect(serviceExpenseCategory('eletricista', undefined, true)).toBeNull();
-    expect(serviceExpenseCategory('outros', undefined, true)).toBeNull();
-    expect(serviceExpenseCategory(undefined, undefined, true)).toBeNull();
-    expect(serviceExpenseCategory('mecanico', undefined, true)).toBe('transporte');
-    // Sem aparelho nenhum (ou com um que a tela conhece) nada muda.
-    expect(serviceExpenseCategory('eletricista', null, false)).toBe('moradia');
-    expect(serviceExpenseCategory('eletricista', 'veiculo', false)).toBe('transporte');
-    // A linha do cartão diz por que não dá para lançar e onde resolver; o aviso de quem salvou assim, o que fazer.
-    for (const editing of [false, true]) expect(expenseCopyNote(editing, null)).toBe(EXPENSE_COPY_UNKNOWN);
-    expect(EXPENSE_COPY_UNKNOWN).toBe(
+  it('prestador ou aparelho do serviço fora das listas da tela: a cópia para os gastos espera', () => {
+    const none = { provider: false, equipment: false };
+    expect(expenseCopyGap('eletricista', none)).toBeNull();
+    expect(expenseCopyGap(undefined, none)).toBeNull();
+    // Sem o aparelho não se sabe se é um veículo: o conserto do carro não entra em Moradia.
+    expect(expenseCopyGap('eletricista', { provider: false, equipment: true })).toBe('equipment');
+    expect(expenseCopyGap('outros', { provider: false, equipment: true })).toBe('equipment');
+    // O mecânico já é Transporte, com o aparelho que for.
+    expect(expenseCopyGap('mecanico', { provider: false, equipment: true })).toBeNull();
+    // Sem o prestador não há ofício (podia ser o mecânico) nem o nome que vai no gasto: espera, mesmo num veículo.
+    expect(expenseCopyGap(undefined, { provider: true, equipment: false })).toBe('provider');
+    expect(expenseCopyGap(undefined, { provider: true, equipment: true })).toBe('provider');
+    // A linha do cartão diz por quê e onde resolver; o aviso de quem salvou assim, o que fazer.
+    expect(expenseCopyGapNote('equipment')).toBe(
       'Não deu para carregar o aparelho deste serviço, e é ele que diz se o gasto entra em Moradia ou em Transporte. Para lançar o gasto, escolha o aparelho logo abaixo.',
     );
-    expect(EXPENSE_COPY_SKIPPED).toBe(
+    expect(expenseCopyGapNote('provider')).toBe(
+      'Não deu para carregar o prestador deste serviço, e é o ofício dele que diz se o gasto entra em Moradia ou em Transporte. Para lançar o gasto, escolha de novo quem fez o serviço.',
+    );
+    expect(expenseCopySkippedNote('equipment')).toBe(
       'Não deu para carregar o aparelho deste serviço, e é ele que diz se o gasto entra em Moradia ou em Transporte. Lance o gasto em Finanças.',
+    );
+    expect(expenseCopySkippedNote('provider')).toBe(
+      'Não deu para carregar o prestador deste serviço, e é o ofício dele que diz se o gasto entra em Moradia ou em Transporte. Lance o gasto em Finanças.',
     );
   });
 
