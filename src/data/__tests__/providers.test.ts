@@ -136,16 +136,15 @@ describe('prestadores e serviços', () => {
     expect(job.calls[0]).toBe('service_jobs.update({"description":"Trocou a placa"})');
   });
 
-  it('mudar o que outra pessoa já apagou avisa, em vez de fingir que salvou', async () => {
+  it('mudar o que já foi apagado avisa, em vez de fingir que salvou (sem dizer quem apagou: o app não sabe)', async () => {
     const gone = fakeDb({ data: null, error: null });
-    await expect(saveServiceProvider({ id: 'p1', values: {} as ProviderValues }, gone.db)).rejects.toThrow(
-      'Este cadastro não existe mais: outra pessoa da casa apagou.',
-    );
+    const error = await saveServiceProvider({ id: 'p1', values: {} as ProviderValues }, gone.db).catch((err: unknown) => err);
+    expect((error as Error).message).toBe('Este cadastro não existe mais.');
   });
 
   it('os erros chegam em palavras de gente', () => {
     expect(providerErrorMessage({ code: '23503', message: 'insert or update on table "service_jobs" violates foreign key constraint' })).toBe(
-      'Quem fez o serviço (ou o aparelho) foi apagado por outra pessoa da casa. Volte e escolha de novo.',
+      'O prestador ou o aparelho deste serviço não existe mais. Volte e escolha de novo.',
     );
     expect(providerErrorMessage(offline)).toBe('TypeError: Network request failed');
     expect(providerErrorMessage(null)).toBe('Algo deu errado. Tente novamente.');

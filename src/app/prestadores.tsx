@@ -8,6 +8,7 @@ import { groupProviders, jobLine, PROVIDER_SEARCH_MIN, searchProviders } from '@
 import { ProviderQuickActions } from '@/features/providers/ProviderContact';
 import type { ServiceProvider } from '@/lib/types';
 import {
+  Badge,
   Button,
   EmptyState,
   ErrorNotice,
@@ -68,7 +69,8 @@ export default function ProvidersScreen() {
         variant="secondary"
         onPress={() => router.push({ pathname: '/prestador/[id]', params: { id: 'novo' } })}
       />
-      {total > PROVIDER_SEARCH_MIN ? (
+      {/* Com uma busca digitada o campo fica, mesmo que a lista encolha: sem ele não haveria como desfazer o filtro. */}
+      {total > PROVIDER_SEARCH_MIN || query.trim() !== '' ? (
         <TextField
           value={query}
           onChangeText={setQuery}
@@ -89,7 +91,7 @@ export default function ProvidersScreen() {
         groups.map((group) => (
           <Section key={group.trade.key} title={group.trade.label}>
             <ListCard>
-              {group.rows.map(({ provider, lastJob }) => (
+              {group.rows.map(({ provider, lastJob, jobCount }) => (
                 <ListRow
                   key={provider.id}
                   left={<IconBadge icon={group.trade.icon} tone="primary" />}
@@ -98,6 +100,7 @@ export default function ProvidersScreen() {
                     <ProviderSummary
                       provider={provider}
                       trade={group.trade.label}
+                      used={jobCount > 0}
                       lastJob={lastJob ? jobLine(lastJob, lastJob.equipment_id ? equipmentNames.get(lastJob.equipment_id) : null) : noJobs}
                     />
                   }
@@ -113,22 +116,34 @@ export default function ProvidersScreen() {
   );
 }
 
-/** Embaixo do nome: o que faz, a marca de "recomendo" e o último serviço. */
-function ProviderSummary({ provider, trade, lastJob }: { provider: ServiceProvider; trade: string; lastJob: string | null }) {
+/**
+ * Embaixo do nome: o que faz, a marca de "recomendo" e o último serviço.
+ * "Recomendo" já vem ligado em todo cadastro, então o que aparece é a exceção
+ * ("Não recomendo"); o joinha fica só para quem a casa já chamou (`used`), e
+ * não para o contato que um vizinho indicou e ninguém usou.
+ */
+function ProviderSummary({
+  provider,
+  trade,
+  used,
+  lastJob,
+}: {
+  provider: ServiceProvider;
+  trade: string;
+  used: boolean;
+  lastJob: string | null;
+}) {
   return (
     <View>
       <Row gap={space.xs} style={styles.wrap}>
         <Text variant="small">{trade}</Text>
-        {provider.recommended ? (
-          <>
+        {!provider.recommended ? (
+          <Badge label="Não recomendo" tone="warning" />
+        ) : used ? (
+          <View accessible accessibilityRole="image" accessibilityLabel="Recomendo">
             <Icon name="thumb-up-outline" size={13} color="primary" />
-            <Text variant="small" color="primary">
-              Recomendo
-            </Text>
-          </>
-        ) : (
-          <Text variant="small">· Não recomendo</Text>
-        )}
+          </View>
+        ) : null}
       </Row>
       {lastJob ? <Text variant="muted">{lastJob}</Text> : null}
     </View>

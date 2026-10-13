@@ -1267,11 +1267,44 @@ begin
   perform set_config('test.equipment_c', own_eq::text, false);
 end $$;
 
+-- As permissões são as escritas na migração, não as do padrão do projeto (que
+-- nos stubs dá tudo a todos, como o Supabase fazia até 30/10/2026): quem não
+-- entrou não tem nenhuma; quem entrou e a chave de serviço leem e gravam. Uma
+-- de cada vez: com várias na mesma pergunta, has_table_privilege responde que
+-- sim quando QUALQUER uma delas existe.
+do $$
+declare
+  t text;
+  p text;
+begin
+  foreach t in array array['public.service_providers', 'public.service_jobs'] loop
+    foreach p in array array['select', 'insert', 'update', 'delete', 'truncate', 'references', 'trigger'] loop
+      assert not has_table_privilege('anon', t, p), format('anon must not have %s on %s', p, t);
+    end loop;
+    foreach p in array array['select', 'insert', 'update', 'delete'] loop
+      assert has_table_privilege('authenticated', t, p), format('authenticated must have %s on %s', p, t);
+      assert has_table_privilege('service_role', t, p), format('service_role must have %s on %s', p, t);
+    end loop;
+    foreach p in array array['truncate', 'references', 'trigger'] loop
+      assert not has_table_privilege('authenticated', t, p), format('authenticated must not have %s on %s', p, t);
+    end loop;
+  end loop;
+end $$;
+
+-- E na prática: sem entrar, nem a leitura passa da porta.
 set role anon;
 do $$
 begin
-  assert (select count(*) from public.service_providers) = 0, 'anon sees no providers';
-  assert (select count(*) from public.service_jobs) = 0, 'anon sees no jobs';
+  begin
+    perform count(*) from public.service_providers;
+    raise exception 'FAIL: anon read the providers';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform count(*) from public.service_jobs;
+    raise exception 'FAIL: anon read the jobs';
+  exception when insufficient_privilege then null;
+  end;
   begin
     insert into public.service_providers (household_id, name) values (current_setting('test.hh_a')::uuid, 'Anon');
     raise exception 'FAIL: anon created a provider';

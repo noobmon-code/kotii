@@ -35,6 +35,14 @@ create table public.service_providers (
 create index service_providers_household_idx on public.service_providers (household_id);
 
 alter table public.service_providers enable row level security;
+-- Permissões escritas aqui, sem contar com o padrão do projeto: a partir de
+-- 30/10/2026 o Supabase deixa de abrir as tabelas novas do schema public para
+-- a API, e esta migração pode ser aplicada depois dessa data (as tabelas que
+-- já existem continuam com as permissões delas). Sem isto, o app receberia
+-- "permission denied" em toda leitura e gravação. Quem não entrou não tem nada.
+revoke all on public.service_providers from anon, authenticated;
+grant select, insert, update, delete on public.service_providers to authenticated;
+grant all on public.service_providers to service_role;
 create policy "household members manage service providers" on public.service_providers for all to authenticated
   using (household_id = (select public.current_household_id()))
   with check (household_id = (select public.current_household_id()));
@@ -70,6 +78,10 @@ create index service_jobs_provider_idx on public.service_jobs (provider_id, done
 create index service_jobs_equipment_idx on public.service_jobs (equipment_id, done_on desc) where equipment_id is not null;
 
 alter table public.service_jobs enable row level security;
+-- As mesmas permissões escritas de service_providers, pelo mesmo motivo.
+revoke all on public.service_jobs from anon, authenticated;
+grant select, insert, update, delete on public.service_jobs to authenticated;
+grant all on public.service_jobs to service_role;
 create policy "household members manage service jobs" on public.service_jobs for all to authenticated
   using (household_id = (select public.current_household_id()))
   with check (household_id = (select public.current_household_id()));

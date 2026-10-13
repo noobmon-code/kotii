@@ -3,7 +3,7 @@ import { StyleSheet, View } from 'react-native';
 
 import { useChores } from '@/data/home';
 import { useEquipmentList } from '@/data/house';
-import { useServiceJobs } from '@/data/providers';
+import { useServiceJobs, useServiceProviders } from '@/data/providers';
 import { choreStatus, describeChoreStatus } from '@/domain/chores';
 import { todayISO } from '@/domain/dates';
 import { describeWarranty, getEquipmentCategory, warrantyStatus } from '@/domain/equipment';
@@ -19,6 +19,11 @@ export function EquipmentPanel() {
   const chores = useChores();
   // Se esta consulta falhar (ou o banco ainda não tiver a tabela), a lista segue sem o último serviço.
   const jobs = useServiceJobs();
+  // O botão "Prestadores" só some quando o banco respondeu que ainda não tem as
+  // tabelas (ele levaria a "Ainda não está disponível"). Enquanto a resposta
+  // não chega, ou se a consulta falhar por outro motivo, o botão fica.
+  const providers = useServiceProviders();
+  const providersMissing = providers.data?.missing === true;
 
   if (equipment.isPending) return <Loading />;
   if (equipment.isError) return <ErrorNotice error={equipment.error} onRetry={() => equipment.refetch()} />;
@@ -44,13 +49,15 @@ export function EquipmentPanel() {
           style={styles.action}
           onPress={() => router.push({ pathname: '/aparelho/[id]', params: { id: 'novo' } })}
         />
-        <Button
-          title="Prestadores"
-          icon="account-wrench-outline"
-          variant="secondary"
-          style={styles.action}
-          onPress={() => router.push('/prestadores')}
-        />
+        {providersMissing ? null : (
+          <Button
+            title="Prestadores"
+            icon="account-wrench-outline"
+            variant="secondary"
+            style={styles.action}
+            onPress={() => router.push('/prestadores')}
+          />
+        )}
       </Row>
       {equipment.data.length === 0 ? (
         <EmptyState

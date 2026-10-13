@@ -9,7 +9,7 @@ import type { ServiceJob, ServiceProvider } from '@/lib/types';
 import type { IconName } from './categories';
 import { formatBRDate, formatShortDate, parseBRDate } from './dates';
 import { getFinanceCategory, type FinanceCategory } from './finance';
-import { formatBRL, parseDecimal } from './money';
+import { formatBRL, parseMoney } from './money';
 import { normalizeSearch } from './search';
 
 // ---------------------------------------------------------------------------
@@ -118,16 +118,47 @@ function nationalNumber(digits: string): ParsedPhone | null {
 }
 
 /**
+ * Os trechos do texto que podem ser um telefone: o que sobra entre letras,
+ * barras, vírgulas e qualquer coisa que não seja dígito, espaço, parêntese,
+ * ponto, "+" ou traço, ficando só os trechos com algum dígito. Um telefone
+ * escrito sozinho dá um trecho só, mesmo com palavras em volta ("zap (11)
+ * 98765-4321 falar com a Ana"); "3456-7890 ramal 22" e "3456-7890/91" dão dois.
+ */
+function phonePieces(input: string): string[] {
+  return (
+    input
+      // Número colado de outro app: marcas invisíveis de direção do texto e
+      // traços tipográficos, que a pessoa nem vê, não partem o número.
+      .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '')
+      .replace(/[\u2010-\u2015\u2212]/g, '-')
+      // "0xx11": o "xx" guarda o lugar da operadora, não separa dois números. Só
+      // logo depois do zero do interurbano: em "3456-7890 xx 22" o zero é o fim
+      // do número, e o "xx" continua separando o que vem depois.
+      .replace(/(^|\D)0\s*xx\s*/i, (_, before: string) => `${before}0`)
+      .split(/[^0-9\s().+-]+/)
+      .map((piece) => piece.trim())
+      .filter((piece) => /\d/.test(piece))
+  );
+}
+
+// Nenhum telefone tem mais dígitos que isto (é também o limite de `phone_digits` no banco).
+const MAX_PHONE_DIGITS = 15;
+
+/**
  * Lê um telefone digitado de qualquer jeito: "(11) 98765-4321", "11 3456 7890",
  * "+55 11 98765-4321", "011 98765-4321", "0xx11 3456-7890", "98765-4321",
- * "0800 701 0102". Espaços, traços, parênteses e letras em volta não contam.
+ * "0800 701 0102". Espaços, traços, parênteses e palavras em volta não contam.
  * Devolve null quando não dá para reconhecer um número (curto ou comprido
- * demais, DDD que não existe, número que não começa como fixo nem celular).
+ * demais, DDD que não existe, número que não começa como fixo nem celular) e
+ * quando o texto tem mais de um (outro telefone, ramal, "casa 12"): juntar os
+ * dígitos de dois trechos daria um número completo, só que de outra pessoa.
  */
 export function parsePhone(input: string | null | undefined): ParsedPhone | null {
-  const text = (input ?? '').trim();
+  const pieces = phonePieces(input ?? '');
+  if (pieces.length !== 1) return null;
+  const text = pieces[0];
   const digits = text.replace(/\D/g, '');
-  if (digits.length < 8 || digits.length > 15) return null;
+  if (digits.length < 8 || digits.length > MAX_PHONE_DIGITS) return null;
 
   if (text.startsWith('+') && !digits.startsWith('55')) {
     return digits.length >= 10 ? { kind: 'exterior', digits } : null;
@@ -135,7 +166,12 @@ export function parsePhone(input: string | null | undefined): ParsedPhone | null
   if (!text.startsWith('+') && TOLL_FREE.test(digits)) return { kind: 'gratuito', digits };
 
   // Com o 55 do país na frente (12 ou 13 dígitos: não se confunde com o DDD 55, que dá 10 ou 11).
-  if (digits.startsWith('55') && digits.length >= 12) return nationalNumber(digits.slice(2));
+  if (digits.startsWith('55') && digits.length >= 12) {
+    const rest = digits.slice(2);
+    // "+55 (0xx11) …", "+55 011 …": o zero do interurbano depois do 55. Nenhum
+    // DDD começa com zero, então tirá-lo nunca troca um número por outro.
+    return nationalNumber(rest) ?? (rest.startsWith('0') ? nationalNumber(rest.slice(1)) : null);
+  }
   if (text.startsWith('+')) return null;
 
   if (digits.startsWith('0')) {
@@ -175,6 +211,13 @@ export function telLink(phoneDigits: string | null | undefined): string | null {
 /** O aviso embaixo do campo, enquanto a pessoa digita; null quando está tudo certo (ou vazio). */
 export function phoneHint(input: string): string | null {
   if (!input.trim()) return null;
+  // Mais de um número, ou número com ramal (também dois números separados só
+  // por espaço ou traço, que têm dígitos demais para um só): "incompleto" não
+  // é o problema, e o aviso diz o que fazer.
+  const pieces = phonePieces(input);
+  if (pieces.length > 1 || (pieces.length === 1 && pieces[0].replace(/\D/g, '').length > MAX_PHONE_DIGITS)) {
+    return 'Para os atalhos de WhatsApp e de ligar, deixe aqui um número só, com DDD. Outro número ou o ramal cabem nas observações.';
+  }
   const parsed = parsePhone(input);
   if (!parsed) return 'Não parece um telefone completo. Ele fica guardado assim, mas sem os atalhos de WhatsApp e de ligar.';
   if (parsed.kind === 'sem_ddd') return 'Sem o DDD não dá para abrir o WhatsApp. Ex.: (11) 98765-4321.';
@@ -232,7 +275,7 @@ export function groupProviders<P extends ProviderLike, J extends JobLike>(provid
   })).filter((group) => group.rows.length > 0);
 }
 
-/** A partir de quantos prestadores a lista ganha o campo de busca. */
+/** Com mais prestadores que isto, a lista ganha o campo de busca. */
 export const PROVIDER_SEARCH_MIN = 8;
 
 /**
@@ -329,8 +372,14 @@ export function deleteProviderWarning(name: string, jobCount: number | null): st
 // ---------------------------------------------------------------------------
 // Gasto da casa
 
-/** Onde entra o serviço lançado nos gastos: Moradia, a categoria da manutenção da casa. */
-export const SERVICE_EXPENSE_CATEGORY: FinanceCategory = 'moradia';
+/**
+ * Onde entra o serviço lançado nos gastos: Moradia, a categoria da manutenção
+ * da casa; o do mecânico e o feito num veículo vão para Transporte, onde as
+ * regras do banco já põem oficina e mecânica (domain/bankCategories).
+ */
+export function serviceExpenseCategory(trade: string | null | undefined, equipmentCategory: string | null | undefined): FinanceCategory {
+  return trade === 'mecanico' || equipmentCategory === 'veiculo' ? 'transporte' : 'moradia';
+}
 
 /** A descrição do gasto: "Trocou a resistência do chuveiro (Zé Eletricista)". */
 export function expenseDescription(description: string, providerName: string): string {
@@ -347,13 +396,14 @@ export function canCopyToExpenses(amount: number | null): amount is number {
 /**
  * A linha embaixo de "Lançar também nos gastos da casa": o gasto é uma cópia
  * feita na hora de salvar. Num serviço que já existia, lembra que lançar de
- * novo cria outro gasto (o app não sabe se ele já foi lançado).
+ * novo cria outro gasto (o app não sabe se ele já foi lançado). `category` é
+ * a de serviceExpenseCategory: a linha diz onde o gasto entra de verdade.
  */
-export function expenseCopyNote(editing: boolean): string {
-  const category = getFinanceCategory(SERVICE_EXPENSE_CATEGORY).label;
+export function expenseCopyNote(editing: boolean, category: FinanceCategory): string {
+  const label = getFinanceCategory(category).label;
   return editing
-    ? `Cria um gasto novo em ${category} (se este serviço já foi lançado, fica em dobro). Mudar o serviço depois não muda o gasto.`
-    : `Entra em ${category}, uma vez só: mudar o serviço depois não muda o gasto.`;
+    ? `Cria um gasto novo em ${label} (se este serviço já foi lançado, fica em dobro). Mudar o serviço depois não muda o gasto.`
+    : `Entra em ${label}, uma vez só: mudar o serviço depois não muda o gasto.`;
 }
 
 /** Prazos de garantia de serviço comuns, para preencher a data com um toque (contam do dia do serviço). */
@@ -437,7 +487,8 @@ export function validateJob(form: JobForm): { ok: true; values: JobValues } | In
   if (!doneOn) return invalid('Data inválida', 'Informe o dia do serviço como dd/mm/aaaa.');
   let amount: number | null = null;
   if (form.amount.trim()) {
-    const value = parseDecimal(form.amount);
+    // Dinheiro: "1.500" aqui é mil e quinhentos.
+    const value = parseMoney(form.amount);
     if (value == null || value > MAX_AMOUNT) return invalid('Valor inválido', 'Use um valor como 180,00, ou deixe em branco.');
     amount = Math.round(value * 100) / 100;
   }

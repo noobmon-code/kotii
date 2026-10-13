@@ -25,7 +25,7 @@ import {
   takesOn,
   type MedicationSchedule,
 } from '../medications';
-import { formatBRL, parseDecimal } from '../money';
+import { formatBRL, parseDecimal, parseMoney } from '../money';
 import { describeExpiry, estimateExpiry, expiryStatus } from '../pantry';
 import { guessCategory, normalizeSearch } from '../search';
 
@@ -138,6 +138,34 @@ describe('money', () => {
     expect(parseDecimal('1.5')).toBe(1.5);
     expect(parseDecimal('abc')).toBeNull();
     expect(parseDecimal('')).toBeNull();
+    // Quantidade: "1.500" kg é um quilo e meio.
+    expect(parseDecimal('1.500')).toBe(1.5);
+  });
+
+  it('reads money: dots in groups of three are thousands, even without the cents', () => {
+    expect(parseMoney('1.500')).toBe(1500);
+    expect(parseMoney('2.000')).toBe(2000);
+    expect(parseMoney('999.999')).toBe(999999);
+    expect(parseMoney('12.345.678')).toBe(12345678);
+    expect(parseMoney('R$ 1.500')).toBe(1500);
+    expect(parseMoney(' 1.500 ')).toBe(1500);
+    // O resto é lido como em parseDecimal.
+    expect(parseMoney('1.5')).toBe(1.5);
+    expect(parseMoney('15.90')).toBe(15.9);
+    expect(parseMoney('1.500,50')).toBe(1500.5);
+    expect(parseMoney('1.500,00')).toBe(1500);
+    expect(parseMoney('12,90')).toBe(12.9);
+    expect(parseMoney('180')).toBe(180);
+    expect(parseMoney('R$ 3')).toBe(3);
+    expect(parseMoney('1.50')).toBe(1.5);
+    expect(parseMoney('1.5000')).toBe(1.5);
+    expect(parseMoney('1234.567')).toBe(1234.567);
+    // Zero na frente não é milhar: continua sendo cinquenta centavos.
+    expect(parseMoney('0.500')).toBe(0.5);
+    expect(parseMoney('1.500.00')).toBeNull();
+    expect(parseMoney('-1.500')).toBeNull();
+    expect(parseMoney('abc')).toBeNull();
+    expect(parseMoney('')).toBeNull();
   });
 
   it('formats BRL', () => {

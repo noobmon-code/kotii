@@ -11,7 +11,8 @@ async function openWhatsApp(link: string) {
 }
 
 async function call(link: string) {
-  if (!(await openExternal(link))) notify('Não deu para ligar', 'Este aparelho não faz ligações. Copie o telefone para ligar de outro.');
+  // "Daqui", e não "este aparelho": nesta parte do app, aparelho é a máquina de lavar.
+  if (!(await openExternal(link))) notify('Não deu para ligar daqui', 'Copie o telefone para ligar de outro lugar.');
 }
 
 async function copyPhone(phone: string) {

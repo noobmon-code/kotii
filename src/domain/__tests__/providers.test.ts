@@ -19,8 +19,8 @@ import {
   PROVIDER_LIMITS,
   PROVIDER_TRADES,
   searchProviders,
-  SERVICE_EXPENSE_CATEGORY,
   SERVICE_WARRANTY_PRESETS,
+  serviceExpenseCategory,
   serviceWarrantyText,
   telLink,
   validateJob,
@@ -97,6 +97,10 @@ describe('telefone: o que fica em phone_digits', () => {
       '0xx11 98765-4321',
       '015 11 98765-4321',
       '(011) 98765-4321',
+      '+55 (0xx11) 98765-4321',
+      '+55 (011) 98765-4321',
+      '+55 0 11 98765 4321',
+      '55 011 98765-4321',
     ]) {
       expect({ typed, parsed: parsePhone(typed) }).toEqual({ typed, parsed: { kind: 'celular', digits: '5511987654321' } });
     }
@@ -109,9 +113,30 @@ describe('telefone: o que fica em phone_digits', () => {
   });
 
   it('fixo com DDD', () => {
-    for (const typed of ['(11) 3456-7890', '11 3456 7890', '1134567890', '+55 11 3456-7890', '011 3456-7890', '0xx11 3456-7890', '0 21 11 3456-7890']) {
+    for (const typed of [
+      '(11) 3456-7890',
+      '11 3456 7890',
+      '1134567890',
+      '+55 11 3456-7890',
+      '011 3456-7890',
+      '0xx11 3456-7890',
+      '0 xx 11 3456 7890',
+      '0 21 11 3456-7890',
+      '+55 011 3456-7890',
+      '+55 (0xx11) 3456-7890',
+    ]) {
       expect({ typed, parsed: parsePhone(typed) }).toEqual({ typed, parsed: { kind: 'fixo', digits: '551134567890' } });
     }
+  });
+
+  it('com o 55 do país e o zero do interurbano juntos, como vem em cartão de visita', () => {
+    expect(parsePhone('+55 (0xx11) 91234-5678')).toEqual({ kind: 'celular', digits: '5511912345678' });
+    expect(parsePhone('+55 (011) 91234-5678')).toEqual({ kind: 'celular', digits: '5511912345678' });
+    expect(parsePhone('55 011 91234-5678')).toEqual({ kind: 'celular', digits: '5511912345678' });
+    expect(parsePhone('+55 011 3456-7890')).toEqual({ kind: 'fixo', digits: '551134567890' });
+    // O zero não salva um número que continua errado depois dele.
+    expect(parsePhone('+55 010 91234-5678')).toBeNull();
+    expect(parsePhone('+55 0 91234-5678')).toBeNull();
   });
 
   it('o DDD 55 não se confunde com o 55 do país', () => {
@@ -133,6 +158,51 @@ describe('telefone: o que fica em phone_digits', () => {
     expect(parsePhone('0300-123-4567')).toEqual({ kind: 'gratuito', digits: '03001234567' });
     expect(parsePhone('+1 (415) 555-2671')).toEqual({ kind: 'exterior', digits: '14155552671' });
     expect(parsePhone('+351 912 345 678')).toEqual({ kind: 'exterior', digits: '351912345678' });
+  });
+
+  it('ramal ou segundo número: nada, em vez de um número que é de outra pessoa', () => {
+    for (const typed of [
+      // Sem DDD, os dígitos do ramal completavam um número de outro lugar.
+      '3456-7890 ramal 22',
+      '3456-7890 r 22',
+      '3456-7890/91',
+      '91234-5678 r 2',
+      '(55) 3221-1234 ramal 22',
+      '(11) 3456-7890 ramal 22',
+      '3456-7890 ap 12',
+      '3456-7890 (falar com João, casa 12)',
+      // Número no nome do contato, antes do telefone.
+      'Zap 1: 98765-4321',
+      '(11) 98765-4321 / (11) 3456-7890',
+      '11 98765-4321 ou 11 91234-5678',
+      // O "xx" só guarda o lugar da operadora logo depois do zero do interurbano: aqui não cola o ramal no número.
+      '3456-7890 xx 22',
+      '3456-7890 XX22',
+    ]) {
+      const digits = normalizePhone(typed);
+      expect({ typed, digits, whatsapp: whatsappLink(digits), tel: telLink(digits) }).toEqual({ typed, digits: null, whatsapp: null, tel: null });
+    }
+  });
+
+  it('um número só, com palavras em volta, continua valendo', () => {
+    expect(normalizePhone('zap (11) 98765-4321 falar com a Ana')).toBe('5511987654321');
+    expect(normalizePhone('tel: +55 11 98765-4321')).toBe('5511987654321');
+    expect(normalizePhone('(11) 98765-4321 (WhatsApp)')).toBe('5511987654321');
+    expect(normalizePhone('0xx21 6543-2109')).toBe('5521965432109');
+    expect(normalizePhone('0 xx 11 3456 7890')).toBe('551134567890');
+    expect(normalizePhone('015 11 98765-4321')).toBe('5511987654321');
+    expect(normalizePhone('+1 (415) 555-2671')).toBe('14155552671');
+    expect(normalizePhone('11.98765.4321')).toBe('5511987654321');
+    // Depois da palavra vem um número inteiro, com DDD: é o mesmo que "cel 21 3456-7890".
+    expect(normalizePhone('casa 21 3456-7890')).toBe('552134567890');
+  });
+
+  it('número colado de outro app: traço tipográfico e marcas invisíveis não partem o número', () => {
+    expect(normalizePhone('\u202a+55 11 98765\u20114321\u202c')).toBe('5511987654321');
+    expect(normalizePhone('(11) 3456\u20137890')).toBe('551134567890');
+    expect(normalizePhone('(11) 3456\u20147890')).toBe('551134567890');
+    expect(normalizePhone('\u200e(11) 98765-4321\ufeff')).toBe('5511987654321');
+    expect(normalizePhone('11\u00a098765-4321')).toBe('5511987654321');
   });
 
   it('letras em volta não atrapalham; sem número, nada', () => {
@@ -179,6 +249,27 @@ describe('telefone: o que fica em phone_digits', () => {
     expect(phoneHint('0800 701 0102')).toBeNull();
     expect(phoneHint('98765-4321')).toMatch(/Sem o DDD/);
     expect(phoneHint('1234')).toMatch(/Não parece um telefone completo/);
+    expect(phoneHint('(10) 98765-4321')).toBe('Não parece um telefone completo. Ele fica guardado assim, mas sem os atalhos de WhatsApp e de ligar.');
+  });
+
+  it('com mais de um número ou com ramal, o aviso diz o que fazer', () => {
+    const onlyOne = 'Para os atalhos de WhatsApp e de ligar, deixe aqui um número só, com DDD. Outro número ou o ramal cabem nas observações.';
+    for (const typed of [
+      '(11) 98765-4321 / (11) 3456-7890',
+      '11 98765-4321 ou 11 91234-5678',
+      '(11) 98765-4321 ramal 12',
+      '3456-7890 ramal 22',
+      '3456-7890/91',
+      'Zap 1: 98765-4321',
+      // Dois números separados só por espaço ou traço: dígitos demais para um número só.
+      '(11) 98765-4321 (11) 3456-7890',
+      '11 98765-4321 - 11 3456-7890',
+    ]) {
+      expect({ typed, hint: phoneHint(typed) }).toEqual({ typed, hint: onlyOne });
+    }
+    // Palavras em volta de um número só não são um segundo número.
+    expect(phoneHint('zap (11) 98765-4321 falar com a Ana')).toBeNull();
+    expect(phoneHint('ligar na loja')).toMatch(/Não parece um telefone completo/);
   });
 });
 
@@ -362,15 +453,32 @@ describe('gasto da casa', () => {
     expect(expenseDescription('Faxina completa', '')).toBe('Faxina completa');
   });
 
-  it('vai para Moradia, uma categoria que já existe', () => {
-    expect(SERVICE_EXPENSE_CATEGORY).toBe('moradia');
-    expect(FINANCE_CATEGORIES.some((c) => c.key === SERVICE_EXPENSE_CATEGORY)).toBe(true);
+  it('vai para Moradia; do mecânico ou num veículo, para Transporte (categorias que já existem)', () => {
+    expect(serviceExpenseCategory('eletricista', 'eletrodomestico')).toBe('moradia');
+    expect(serviceExpenseCategory('diarista', null)).toBe('moradia');
+    expect(serviceExpenseCategory('outros', undefined)).toBe('moradia');
+    expect(serviceExpenseCategory(undefined, undefined)).toBe('moradia');
+    expect(serviceExpenseCategory('mecanico', null)).toBe('transporte');
+    expect(serviceExpenseCategory('mecanico', 'eletrodomestico')).toBe('transporte');
+    // O eletricista que mexeu no carro, o chaveiro que abriu o carro.
+    expect(serviceExpenseCategory('eletricista', 'veiculo')).toBe('transporte');
+    expect(serviceExpenseCategory('chaveiro', 'veiculo')).toBe('transporte');
+    for (const trade of PROVIDER_TRADES) {
+      for (const appliance of [null, 'veiculo', 'climatizacao']) {
+        const category = serviceExpenseCategory(trade.key, appliance);
+        expect(FINANCE_CATEGORIES.some((c) => c.key === category)).toBe(true);
+      }
+    }
   });
 
-  it('avisa que é uma cópia de uma vez só; num serviço que já existia, que pode ficar em dobro', () => {
-    expect(expenseCopyNote(false)).toBe('Entra em Moradia, uma vez só: mudar o serviço depois não muda o gasto.');
-    expect(expenseCopyNote(true)).toBe(
+  it('avisa que é uma cópia de uma vez só, e em qual categoria; num serviço que já existia, que pode ficar em dobro', () => {
+    expect(expenseCopyNote(false, 'moradia')).toBe('Entra em Moradia, uma vez só: mudar o serviço depois não muda o gasto.');
+    expect(expenseCopyNote(true, 'moradia')).toBe(
       'Cria um gasto novo em Moradia (se este serviço já foi lançado, fica em dobro). Mudar o serviço depois não muda o gasto.',
+    );
+    expect(expenseCopyNote(false, 'transporte')).toBe('Entra em Transporte, uma vez só: mudar o serviço depois não muda o gasto.');
+    expect(expenseCopyNote(true, 'transporte')).toBe(
+      'Cria um gasto novo em Transporte (se este serviço já foi lançado, fica em dobro). Mudar o serviço depois não muda o gasto.',
     );
   });
 
@@ -499,12 +607,30 @@ describe('formulário do serviço', () => {
     expect(amount('1.234,56')).toBe(1234.56);
     expect(amount('R$ 90')).toBe(90);
     expect(amount('90.5')).toBe(90.5);
+    expect(amount('15.90')).toBe(15.9);
     expect(amount('0')).toBe(0);
     expect(amount('12,346')).toBe(12.35);
     expect(amount('-50')).toBe('Valor inválido');
     expect(amount('cem reais')).toBe('Valor inválido');
     expect(amount('12,3,4')).toBe('Valor inválido');
     expect(amount('99999999999')).toBe('Valor inválido');
+  });
+
+  it('valor: ponto de milhar sem os centavos é mil, não um e meio', () => {
+    const amount = (typed: string) => {
+      const result = validateJob({ ...form, amount: typed });
+      return result.ok ? result.values.amount : result.title;
+    };
+    expect(amount('1.500')).toBe(1500);
+    expect(amount('2.000')).toBe(2000);
+    expect(amount('10.000')).toBe(10000);
+    expect(amount('R$ 1.500')).toBe(1500);
+    expect(amount('1.234')).toBe(1234);
+    expect(amount('12.345.678')).toBe(12345678);
+    expect(amount('1.500,00')).toBe(1500);
+    expect(amount('1.500,50')).toBe(1500.5);
+    expect(amount('1.5')).toBe(1.5);
+    expect(amount('99.999.999.999')).toBe('Valor inválido');
   });
 
   it('garantia: no dia do serviço vale; antes dele, não', () => {

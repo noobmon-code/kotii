@@ -14,16 +14,17 @@ import {
 } from '@/data/providers';
 import { addMonths, formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { getEquipmentCategory } from '@/domain/equipment';
-import { parseDecimal } from '@/domain/money';
+import { parseMoney } from '@/domain/money';
 import {
   canCopyToExpenses,
   expenseCopyNote,
   expenseDescription,
   getProviderTrade,
-  SERVICE_EXPENSE_CATEGORY,
   SERVICE_WARRANTY_PRESETS,
+  serviceExpenseCategory,
   validateJob,
 } from '@/domain/providers';
+import { goBackOr } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
 import type { Equipment, ServiceJob, ServiceProvider } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -61,16 +62,21 @@ export default function ServiceJobScreen() {
   const [deleted, setDeleted] = useState(false);
 
   if (deleted || providers.isPending || equipment.isPending || (!isNew && job.isPending)) return <Loading />;
-  if (providers.isError) {
+  // Aviso de erro só para o que não chegou nenhuma vez: quando uma atualização
+  // em segundo plano falha, o que já estava aqui continua valendo, e o
+  // formulário (com o que foi digitado) não sai da frente da pessoa.
+  const list = providers.data;
+  const appliances = equipment.data;
+  if (!list) {
     return <ErrorNotice error={new Error(providerErrorMessage(providers.error))} onRetry={() => providers.refetch()} />;
   }
-  if (!isNew && job.isError) {
+  if (!isNew && job.data === undefined) {
     return <ErrorNotice error={new Error(providerErrorMessage(job.error))} onRetry={() => job.refetch()} />;
   }
-  // Sem a lista de aparelhos, salvar poderia tirar do serviço o aparelho que ele já tem.
-  if (equipment.isError) return <ErrorNotice error={equipment.error} onRetry={() => equipment.refetch()} />;
+  // Uma lista de aparelhos de antes serve: o serviço não perde o aparelho que tem por ele não estar nela (ver JobForm).
+  if (!appliances) return <ErrorNotice error={equipment.error} onRetry={() => equipment.refetch()} />;
   // O app chegou antes das tabelas no banco.
-  if (providers.data.missing) {
+  if (list.missing) {
     return (
       <Screen edges={[]}>
         <EmptyState icon="account-wrench-outline" title="Ainda não está disponível" message={PROVIDERS_UNAVAILABLE} mood="calm" />
@@ -78,7 +84,7 @@ export default function ServiceJobScreen() {
     );
   }
   if (!isNew && !job.data) return <ErrorNotice error={new Error('Este serviço não existe mais.')} />;
-  if (providers.data.rows.length === 0) {
+  if (list.rows.length === 0) {
     return (
       <Screen edges={[]}>
         <Stack.Screen options={{ title: 'Novo serviço' }} />
@@ -90,7 +96,10 @@ export default function ServiceJobScreen() {
             <Button
               title="Novo prestador"
               icon="plus"
-              onPress={() => router.replace({ pathname: '/prestador/[id]', params: { id: 'novo' } })}
+              // O aparelho de onde a pessoa veio vai junto: depois de salvar o prestador, o serviço abre com ele.
+              onPress={() =>
+                router.replace({ pathname: '/prestador/[id]', params: aparelho ? { id: 'novo', aparelho } : { id: 'novo' } })
+              }
             />
           }
         />
@@ -101,8 +110,8 @@ export default function ServiceJobScreen() {
     <JobForm
       key={id}
       job={isNew ? undefined : (job.data ?? undefined)}
-      providers={providers.data.rows}
-      equipment={equipment.data}
+      providers={list.rows}
+      equipment={appliances}
       initialProviderId={prestador || null}
       initialEquipmentId={aparelho || null}
       onDeleted={() => setDeleted(true)}
@@ -133,8 +142,11 @@ function JobForm({
   const [providerId, setProviderId] = useState(
     job?.provider_id ?? known(providers, initialProviderId) ?? (providers.length === 1 ? providers[0].id : null),
   );
-  // Aparelho que já foi apagado não fica escolhido às escondidas.
-  const [equipmentId, setEquipmentId] = useState(known(equipment, job ? job.equipment_id : initialEquipmentId));
+  // O aparelho fica como veio (do serviço, ou da tela do aparelho), mesmo que a
+  // lista daqui ainda não o tenha (ela pode ser de antes de ele ser cadastrado):
+  // só sai quando a pessoa escolhe "Nenhum aparelho". Se ele foi mesmo apagado,
+  // salvar avisa (o banco recusa), em vez de o serviço perder o aparelho calado.
+  const [equipmentId, setEquipmentId] = useState(job ? job.equipment_id : initialEquipmentId);
   const [date, setDate] = useState(formatBRDate(job?.done_on ?? todayISO()));
   const [description, setDescription] = useState(job?.description ?? '');
   const [amount, setAmount] = useState(job?.amount != null ? job.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '');
@@ -148,7 +160,10 @@ function JobForm({
   const provider = providers.find((p) => p.id === providerId);
   const trade = provider ? getProviderTrade(provider.trade) : null;
   const appliance = equipment.find((e) => e.id === equipmentId);
-  const offerExpense = canCopyToExpenses(amount.trim() ? parseDecimal(amount) : null);
+  // A mesma leitura de validateJob: "1.500" é mil e quinhentos.
+  const offerExpense = canCopyToExpenses(amount.trim() ? parseMoney(amount) : null);
+  // Moradia, ou Transporte quando é do mecânico ou num veículo: a linha do gasto e o gasto usam a mesma.
+  const expenseCategory = serviceExpenseCategory(provider?.trade, appliance?.category);
 
   function applyWarranty(months: number) {
     setWarranty(formatBRDate(addMonths(parseBRDate(date) ?? todayISO(), months)));
@@ -173,7 +188,7 @@ function JobForm({
             description: expenseDescription(values.description, provider?.name ?? ''),
             amount: values.amount,
             spent_on: values.done_on,
-            category: SERVICE_EXPENSE_CATEGORY,
+            category: expenseCategory,
             notes: null,
           },
         });
@@ -181,7 +196,7 @@ function JobForm({
         notify('O serviço foi salvo, mas o gasto não', `${errorMessage(err)} Lance o gasto em Finanças.`);
       }
     }
-    router.back();
+    goBackOr({ pathname: '/prestador/[id]', params: { id: values.provider_id } });
   }
 
   return (
@@ -221,7 +236,7 @@ function JobForm({
           <Row>
             <View style={styles.flex}>
               <Text variant="label">Lançar também nos gastos da casa</Text>
-              <Text variant="small">{expenseCopyNote(Boolean(job))}</Text>
+              <Text variant="small">{expenseCopyNote(Boolean(job), expenseCategory)}</Text>
             </View>
             <Switch
               value={toExpenses}
@@ -233,13 +248,15 @@ function JobForm({
         </Card>
       ) : null}
 
-      {equipment.length ? (
+      {/* Com um aparelho já escolhido a linha aparece mesmo sem lista: é por ela que se chega a "Nenhum aparelho". */}
+      {equipment.length || equipmentId ? (
         <View style={styles.group}>
           <Text variant="label">Aparelho (opcional)</Text>
           <ListCard>
             <ListRow
-              left={<IconBadge icon={appliance ? getEquipmentCategory(appliance.category).icon : 'tools'} tone={appliance ? 'primary' : 'neutral'} />}
-              title={appliance?.name ?? 'Nenhum aparelho'}
+              left={<IconBadge icon={appliance ? getEquipmentCategory(appliance.category).icon : 'tools'} tone={equipmentId ? 'primary' : 'neutral'} />}
+              // Escolhido, mas fora da lista que está aqui: sem o nome, e nunca "Nenhum aparelho".
+              title={appliance?.name ?? (equipmentId ? 'Aparelho' : 'Nenhum aparelho')}
               subtitle={appliance?.location ?? undefined}
               right={<Icon name="chevron-right" color="textMuted" />}
               onPress={() => setPicking('equipment')}
@@ -271,7 +288,7 @@ function JobForm({
               remove.mutate(job.id, {
                 onSuccess: () => {
                   onDeleted();
-                  router.back();
+                  goBackOr({ pathname: '/prestador/[id]', params: { id: job.provider_id } });
                 },
                 onError: (err) => notify('Não deu para excluir', providerErrorMessage(err)),
               }),

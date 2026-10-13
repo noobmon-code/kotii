@@ -22,6 +22,7 @@ import {
   validateProvider,
 } from '@/domain/providers';
 import { ProviderContactButtons } from '@/features/providers/ProviderContact';
+import { goBackOr } from '@/lib/navigation';
 import type { ServiceProvider } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
 import {
@@ -43,33 +44,48 @@ import {
 import { space, useColors } from '@/ui/theme';
 
 export default function ProviderScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  // `aparelho`: a pessoa tocou em "Registrar serviço" num aparelho e ainda não havia quem fez.
+  // Ele segue daqui até o serviço, para o primeiro serviço não ficar sem o aparelho.
+  const { id, aparelho } = useLocalSearchParams<{ id: string; aparelho?: string }>();
   const isNew = id === 'novo';
   const providers = useServiceProviders();
   // Excluído aqui: a lista volta sem ele antes de a tela fechar, e isso não é "não existe mais".
   const [deleted, setDeleted] = useState(false);
   if (providers.isPending || deleted) return <Loading />;
-  if (providers.isError) {
+  // Aviso de erro só sem lista nenhuma: quando uma atualização em segundo plano
+  // falha, a lista que já estava aqui continua valendo, e o formulário (com o
+  // que foi digitado) não sai da frente da pessoa.
+  const list = providers.data;
+  if (!list) {
     return <ErrorNotice error={new Error(providerErrorMessage(providers.error))} onRetry={() => providers.refetch()} />;
   }
   // O app chegou antes das tabelas no banco.
-  if (providers.data.missing) {
+  if (list.missing) {
     return (
       <Screen edges={[]}>
         <EmptyState icon="account-wrench-outline" title="Ainda não está disponível" message={PROVIDERS_UNAVAILABLE} mood="calm" />
       </Screen>
     );
   }
-  const provider = isNew ? undefined : providers.data.rows.find((p) => p.id === id);
+  const provider = isNew ? undefined : list.rows.find((p) => p.id === id);
   if (!isNew && !provider) {
     // A lista ainda pode estar chegando com ele (acabou de ser criado).
     if (providers.isFetching) return <Loading />;
     return <ErrorNotice error={new Error('Este prestador não existe mais.')} />;
   }
-  return <ProviderForm key={id} provider={provider} onDeleted={() => setDeleted(true)} />;
+  return <ProviderForm key={id} provider={provider} equipmentId={aparelho || null} onDeleted={() => setDeleted(true)} />;
 }
 
-function ProviderForm({ provider, onDeleted }: { provider?: ServiceProvider; onDeleted: () => void }) {
+function ProviderForm({
+  provider,
+  equipmentId,
+  onDeleted,
+}: {
+  provider?: ServiceProvider;
+  /** O aparelho do serviço que a pessoa veio registrar, se veio de um. */
+  equipmentId: string | null;
+  onDeleted: () => void;
+}) {
   const c = useColors();
   const save = useSaveProvider();
   const remove = useDeleteProvider();
@@ -89,9 +105,14 @@ function ProviderForm({ provider, onDeleted }: { provider?: ServiceProvider; onD
       { id: provider?.id, values: result.values },
       {
         onSuccess: ({ id }) => {
+          if (provider) return goBackOr('/prestadores');
+          // Veio de "Registrar serviço" num aparelho: segue para o serviço, com quem fez
+          // e o aparelho já escolhidos. Troca esta tela por ele: Voltar cai no aparelho.
+          if (equipmentId) {
+            return router.replace({ pathname: '/servico/[id]', params: { id: 'novo', prestador: id, aparelho: equipmentId } });
+          }
           // Prestador novo: fica na tela para registrar o primeiro serviço.
-          if (provider) router.back();
-          else router.replace({ pathname: '/prestador/[id]', params: { id } });
+          router.replace({ pathname: '/prestador/[id]', params: { id } });
         },
         onError: (err) => notify('Não deu para salvar', providerErrorMessage(err)),
       },
@@ -149,9 +170,11 @@ function ProviderForm({ provider, onDeleted }: { provider?: ServiceProvider; onD
       />
 
       {provider ? (
-        <ProviderJobs provider={provider} />
+        <ProviderJobs provider={provider} equipmentId={equipmentId} />
       ) : (
-        <Text variant="muted">Depois de salvar, registre aqui os serviços feitos.</Text>
+        <Text variant="muted">
+          {equipmentId ? 'Depois de salvar, o app abre o registro do serviço.' : 'Depois de salvar, registre aqui os serviços feitos.'}
+        </Text>
       )}
 
       {provider ? (
@@ -168,7 +191,7 @@ function ProviderForm({ provider, onDeleted }: { provider?: ServiceProvider; onD
                 remove.mutate(provider.id, {
                   onSuccess: () => {
                     onDeleted();
-                    router.back();
+                    goBackOr('/prestadores');
                   },
                   onError: (err) => notify('Não deu para excluir', providerErrorMessage(err)),
                 }),
@@ -181,7 +204,7 @@ function ProviderForm({ provider, onDeleted }: { provider?: ServiceProvider; onD
 }
 
 /** O histórico do que a pessoa já fez para a casa, do mais recente para o mais antigo. */
-function ProviderJobs({ provider }: { provider: ServiceProvider }) {
+function ProviderJobs({ provider, equipmentId }: { provider: ServiceProvider; equipmentId: string | null }) {
   const today = todayISO();
   const jobs = useProviderJobs(provider.id);
   // Sem os aparelhos, o histórico aparece do mesmo jeito, só sem o nome deles.
@@ -198,7 +221,13 @@ function ProviderJobs({ provider }: { provider: ServiceProvider }) {
           icon="plus"
           variant="ghost"
           compact
-          onPress={() => router.push({ pathname: '/servico/[id]', params: { id: 'novo', prestador: provider.id } })}
+          onPress={() =>
+            router.push({
+              pathname: '/servico/[id]',
+              // Quem chegou aqui a partir de um aparelho continua com ele escolhido.
+              params: equipmentId ? { id: 'novo', prestador: provider.id, aparelho: equipmentId } : { id: 'novo', prestador: provider.id },
+            })
+          }
         />
       }>
       {jobs.isError ? (

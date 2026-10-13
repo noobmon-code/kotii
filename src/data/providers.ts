@@ -27,8 +27,9 @@ const JOB_COLUMNS = 'id, provider_id, equipment_id, done_on, description, amount
 
 /** O que a pessoa lê enquanto o banco ainda não tem as tabelas. */
 export const PROVIDERS_UNAVAILABLE = 'Os prestadores ainda estão sendo ativados no Kotii. Tente de novo mais tarde.';
-const GONE = 'Este cadastro não existe mais: outra pessoa da casa apagou.';
-const LINK_GONE = 'Quem fez o serviço (ou o aparelho) foi apagado por outra pessoa da casa. Volte e escolha de novo.';
+// Sem dizer quem apagou: pode ter sido a própria pessoa, em outro aparelho.
+const GONE = 'Este cadastro não existe mais.';
+const LINK_GONE = 'O prestador ou o aparelho deste serviço não existe mais. Volte e escolha de novo.';
 
 /**
  * A tabela ainda não existe no banco (o app chegou antes da migração): o
