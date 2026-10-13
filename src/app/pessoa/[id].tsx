@@ -113,6 +113,7 @@ function PersonForm({ person, initialKind }: { person?: Person; initialKind: Per
         label="Nascimento"
         value={birth}
         onChangeText={setBirth}
+        hint="Aparece como aniversário na agenda."
       />
       {isPet ? (
         <TextField label="Espécie e raça" value={species} onChangeText={setSpecies} placeholder="Ex.: cachorro, vira-lata" />

@@ -1,5 +1,6 @@
 // Avisos da casa por notificação: contas, documentos, tarefas (inclusive
-// manutenções de aparelhos), consultas, vacinas e a dica do clima da manhã. Cada celular escolhe o que
+// manutenções de aparelhos), consultas, compromissos da família e aniversários,
+// vacinas e a dica do clima da manhã. Cada celular escolhe o que
 // quer receber; o plano sai daqui e o app agenda (src/lib/reminders.ts),
 // refazendo ao abrir, então a janela vai andando. À noite, o resumo de amanhã
 // junta numa notificação só o que a casa tem no dia seguinte (eveSummary).
@@ -7,17 +8,23 @@
 import type { Recurrence } from './chores';
 import { addDays, diffDays, formatBRDate } from './dates';
 import { describeDocumentStatus } from './documents';
+import { calendarEntries, eventReminderTexts, type FamilyCalendar } from './familyEvents';
 import { weekdayOf } from './health';
 import { formatBRL } from './money';
 import type { WeatherMorning } from './weather';
 
-export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'weather' | 'eve';
+export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments' | 'events' | 'vaccines' | 'weather' | 'eve';
 
 export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint: string }[] = [
   { key: 'bills', label: 'Contas a pagar', hint: 'Na véspera, no dia do vencimento e, se ficar em aberto, uma vez depois, às 9h' },
   { key: 'documents', label: 'Documentos', hint: 'Quando começa o prazo de renovar, uma semana antes e no dia em que vence, às 9h' },
   { key: 'chores', label: 'Tarefas e manutenções', hint: 'No dia marcado, às 9h' },
   { key: 'appointments', label: 'Consultas', hint: 'Na véspera, às 19h, e 2 horas antes' },
+  {
+    key: 'events',
+    label: 'Compromissos e aniversários',
+    hint: 'Na véspera, às 19h, e no dia, 1 hora antes do horário (sem horário, às 8h). Os de toda semana avisam só no dia',
+  },
   { key: 'vaccines', label: 'Vacinas', hint: 'Uma semana antes da próxima dose e no dia, às 9h' },
   {
     key: 'weather',
@@ -48,6 +55,12 @@ export const HOUSE_REMINDER_TIME = '09:00';
 export const APPOINTMENT_EVE_TIME = '19:00';
 const APPOINTMENT_LEAD_MINUTES = 120;
 const EARLIEST_LEAD_MINUTES = 7 * 60;
+/** Compromisso da família: na véspera à noite e uma hora antes; sem horário (e aniversário), de manhã. */
+export const EVENT_EVE_TIME = APPOINTMENT_EVE_TIME;
+const EVENT_LEAD_MINUTES = 60;
+export const EVENT_ALL_DAY_TIME = '08:00';
+/** Aviso do dia que toca antes disto é de madrugada: a rotina mantém o da véspera. */
+const EVENT_EARLY_TIME = '07:00';
 const VACCINE_LEAD_DAYS = 7;
 /** Vacina atrasada há mais que isso provavelmente foi tomada sem registrar: sem aviso. */
 const VACCINE_OVERDUE_DAYS = 60;
@@ -95,6 +108,8 @@ export interface HouseReminderInput {
   /** Consultas agendadas, com data e hora locais já separadas. */
   appointments?: { id: string; title: string; person: string; date: string; time: string; location: string | null; status: string }[];
   vaccines?: { id: string; name: string; dose: string | null; person: string; next_dose_on: string | null }[];
+  /** Compromissos da família com as mudanças de cada dia, e as fichas (nomes e aniversários). */
+  family?: FamilyCalendar;
   /** A dica mais importante de cada manhã (ver weatherMornings). */
   weather?: WeatherMorning[];
   /** Aparelhos, pela garantia que acaba (só o resumo de amanhã usa). */
@@ -254,6 +269,14 @@ export function eveSummary(input: EveSummaryInput, day: string): EveSummary | nu
 /** Identifica um atraso: pagar a conta (ou registrar a dose) muda a data, e o atraso novo avisa de novo. */
 export const overdueKey = (id: string, since: string) => `${id}:${since}`;
 
+/** A hora do aviso no dia do compromisso: uma hora antes (sem horário, às 8h); antes da 1h da manhã não há (fica só a véspera). */
+function eventDayTime(time: string | null): string | null {
+  if (!time) return EVENT_ALL_DAY_TIME;
+  const [h, m] = time.split(':').map(Number);
+  const lead = h * 60 + m - EVENT_LEAD_MINUTES;
+  return lead >= 0 ? `${String(Math.floor(lead / 60)).padStart(2, '0')}:${String(lead % 60).padStart(2, '0')}` : null;
+}
+
 export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
   const { kinds, today, nowTime } = input;
   const last = addDays(today, HOUSE_REMINDER_HORIZON_DAYS);
@@ -353,6 +376,23 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
     }
   }
 
+  if (kinds.events && input.family) {
+    // Até o dia seguinte ao fim da janela: a véspera dele ainda cabe. Dia
+    // marcado como "não vai ter" não vem, e quem leva ou busca é o daquele dia.
+    for (const entry of calendarEntries(input.family, today, addDays(last, 1))) {
+      const texts = eventReminderTexts(entry);
+      // Compromisso e dia: a véspera de uma vez não se confunde com o aviso da vez anterior.
+      const id = `${entry.id}@${entry.date}`;
+      const at = eventDayTime(entry.time);
+      // A rotina (toda semana, com quem leva e quem busca de sempre) avisa só
+      // no dia: véspera toda noite vira barulho. Sem aviso no dia, ou com ele de
+      // madrugada (antes das 7h, quando ninguém vê), a véspera fica.
+      const dayOnly = entry.routine && at !== null && at >= EVENT_EARLY_TIME;
+      if (texts.eve && !dayOnly) add('events', id, addDays(entry.date, -1), texts.eve, texts.body, { at: EVENT_EVE_TIME });
+      if (at) add('events', id, entry.date, texts.today, texts.body, { at });
+    }
+  }
+
   if (kinds.vaccines) {
     for (const v of input.vaccines ?? []) {
       if (!v.next_dose_on) continue;
@@ -390,7 +430,18 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
     return { ...r, date: addDays(r.date, 1), time: END_OF_DAY };
   };
   const plain = (r: HouseReminder) => r.kind === 'eve' && !standIn.has(r.key);
-  const turn = [...out].sort((a, b) => soonest(placed(a), placed(b)));
+  // Os compromissos têm a sua parte do teto: uma rotina dá aviso quase todo
+  // dia e, sozinha, tomaria as vagas das contas e dos documentos. Ficam com
+  // metade, ou com as vagas que os outros tipos não usam, se forem mais. O
+  // resumo comum de uma noite não entra nessa conta (a vez dele é a da fila):
+  // senão o de uma noite distante tiraria a vaga de um compromisso de antes.
+  const others = out.filter((r) => r.kind !== 'events');
+  const own = others.filter((r) => !plain(r)).length;
+  const events = out
+    .filter((r) => r.kind === 'events')
+    .sort(soonest)
+    .slice(0, Math.max(Math.ceil(limit / 2), limit - own));
+  const turn = [...others, ...events].sort((a, b) => soonest(placed(a), placed(b)));
   // A consulta não fica sem a véspera por causa de um resumo comum: os resumos
   // que levam uma consulta e caberiam sem resumo comum nenhum (é quando o
   // "Consulta amanhã" dela caberia com o resumo desligado) têm de ficar.

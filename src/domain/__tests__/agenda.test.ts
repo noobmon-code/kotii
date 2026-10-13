@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { addMonthsClamped, buildAgenda, monthGrid, type AgendaInput } from '../agenda';
+import { EMPTY_CALENDAR, NO_DAY_CHANGE, type FamilyEventLike } from '../familyEvents';
 import { toTimestamp } from '../health';
 
 const empty: AgendaInput = {
@@ -13,6 +14,7 @@ const empty: AgendaInput = {
   chores: [],
   documents: [],
   equipment: [],
+  calendar: EMPTY_CALENDAR,
 };
 
 describe('addMonthsClamped', () => {
@@ -126,6 +128,81 @@ describe('buildAgenda', () => {
       ['2032-03-31', 'Aluguel'],
       ['2032-03-31', 'Lixo'],
     ]);
+  });
+});
+
+describe('buildAgenda: compromissos da família e aniversários', () => {
+  const swim: FamilyEventLike = {
+    id: 'natacao',
+    title: 'Natação da Ana',
+    starts_on: '2026-10-06',
+    start_time: '16:00',
+    end_time: '17:00',
+    person_id: 'ana',
+    take_by: 'beto',
+    pick_up_by: 'carla',
+    location: 'Clube',
+    bring: 'touca e toalha',
+    recurrence: 'weekly',
+    weekdays: [2, 4],
+    until_on: null,
+  };
+  const meeting: FamilyEventLike = {
+    ...swim,
+    id: 'reuniao',
+    title: 'Reunião da escola',
+    starts_on: '2026-10-08',
+    start_time: null,
+    end_time: null,
+    person_id: null,
+    take_by: null,
+    pick_up_by: null,
+    location: null,
+    bring: null,
+    recurrence: 'none',
+    weekdays: null,
+  };
+  const people = [
+    { id: 'ana', name: 'Ana', kind: 'pessoa' as const, birth_date: '2018-10-08' },
+    { id: 'beto', name: 'Beto', kind: 'pessoa' as const, birth_date: null },
+    { id: 'carla', name: 'Carla', kind: 'pessoa' as const, birth_date: null },
+  ];
+  const days = [
+    { ...NO_DAY_CHANGE, event_id: 'natacao', occurs_on: '2026-10-13', cancelled: true },
+    { ...NO_DAY_CHANGE, event_id: 'natacao', occurs_on: '2026-10-15', override_take: true, take_by: 'carla' },
+  ];
+  const input: AgendaInput = { ...empty, from: '2026-10-04', to: '2026-10-17', calendar: { events: [swim, meeting], days, people } };
+
+  it('cada vez do compromisso é uma data certa (não previsão); o dia que não vai ter fica de fora', () => {
+    const events = buildAgenda(input).filter((e) => e.kind === 'compromisso' && e.id === 'natacao');
+    expect(events.map((e) => [e.key, e.time, e.endTime, e.detail, e.planned])).toEqual([
+      ['compromisso:natacao:2026-10-06', '16:00', '17:00', 'Ana · Beto leva, Carla busca · Levar: touca e toalha', false],
+      ['compromisso:natacao:2026-10-08', '16:00', '17:00', 'Ana · Beto leva, Carla busca · Levar: touca e toalha', false],
+      // Dia 13 não vai ter; no dia 15 a Carla leva e busca.
+      ['compromisso:natacao:2026-10-15', '16:00', '17:00', 'Ana · Carla leva e busca · Levar: touca e toalha', false],
+    ]);
+  });
+
+  it('no dia: o dia todo primeiro (pelo título), depois as horas marcadas, de todos os tipos', () => {
+    const events = buildAgenda({
+      ...input,
+      from: '2026-10-08',
+      to: '2026-10-08',
+      appointments: [{ id: 'a1', title: 'Pediatra', starts_at: toTimestamp('2026-10-08', '09:30'), status: 'agendada', person: 'Ana' }],
+      documents: [{ id: 'd1', title: 'CNH — Beto', expires_on: '2026-10-08' }],
+    });
+    expect(events.map((e) => [e.time, e.kind, e.id, e.title, e.detail])).toEqual([
+      [null, 'aniversario', 'ana', 'Aniversário de Ana', 'faz 8 anos'],
+      [null, 'documento', 'd1', 'CNH — Beto', 'Vence'],
+      [null, 'compromisso', 'reuniao', 'Reunião da escola', null],
+      ['09:30', 'consulta', 'a1', 'Pediatra', 'Ana'],
+      ['16:00', 'compromisso', 'natacao', 'Natação da Ana', 'Ana · Beto leva, Carla busca · Levar: touca e toalha'],
+    ]);
+  });
+
+  it('sem compromissos (a tabela ainda não existe): os aniversários continuam', () => {
+    const events = buildAgenda({ ...input, calendar: { events: [], days: [], people } });
+    expect(events.map((e) => [e.date, e.kind, e.title])).toEqual([['2026-10-08', 'aniversario', 'Aniversário de Ana']]);
   });
 });
 
