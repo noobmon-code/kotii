@@ -93,8 +93,17 @@ const round4 = (n: number) => Math.round(n * 10000) / 10000;
 const round8 = (n: number) => Math.round(n * 1e8) / 1e8;
 const average = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
 
-const newest = <T extends { purchasedAt: string }>(quotes: T[]) =>
-  quotes.reduce((a, b) => (Date.parse(b.purchasedAt) > Date.parse(a.purchasedAt) ? b : a));
+const byId = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+/**
+ * O preço mais recente. No empate de data (dois produtos na mesma nota, dois mercados no mesmo dia), sempre o
+ * mesmo: o de menor produto, mercado e unidade. Nem a ordem das ligações nem a dos preços decide a conta.
+ */
+const newest = (quotes: EstimatePrice[]) =>
+  quotes.reduce((a, b) => {
+    const [mine, theirs] = [Date.parse(b.purchasedAt), Date.parse(a.purchasedAt)];
+    if (mine !== theirs) return mine > theirs ? b : a;
+    return (byId(b.productId, a.productId) || byId(b.storeId, a.storeId) || byId(b.unit, a.unit)) < 0 ? b : a;
+  });
 
 /** O preço que serve à unidade da lista: nela; senão, numa que converte para ela (g e kg); senão, o mais recente. */
 function bestForUnit(listUnit: string, quotes: EstimatePrice[]): EstimatePrice {
@@ -445,29 +454,36 @@ export function pantryHits(
   const goneNames = new Map<string, Gone>();
   const goneProductNames = new Map<string, Gone>();
   const goneProducts = new Map<string, Gone>();
+  /**
+   * Entre dois palpites, o da compra mais recente. No empate de dia, sempre o mesmo: o do próprio produto antes
+   * do emprestado pelo nome, depois o de costume mais curto. A ordem em que os palpites e as ligações chegam não decide.
+   */
+  const later = (a: Gone | null, b: Gone | null): Gone | null => {
+    if (!a || !b) return a ?? b;
+    if (a.day !== b.day) return a.day > b.day ? a : b;
+    if (Boolean(a.lent) !== Boolean(b.lent)) return a.lent ? b : a;
+    return b.everyDays < a.everyDays ? b : a;
+  };
+  const keep = <K>(map: Map<K, Gone>, key: K, gone: Gone) => map.set(key, later(map.get(key) ?? null, gone) ?? gone);
   for (const gone of ranOut) {
     const latest = { day: toISODate(new Date(gone.lastAt)), everyDays: gone.everyDays };
     const name = normalizeSearch(gone.name);
-    const byName = gone.productId ? goneProductNames : goneNames;
-    if (latest.day > (byName.get(name)?.day ?? '')) byName.set(name, latest);
+    keep(gone.productId ? goneProductNames : goneNames, name, latest);
     // O palpite sem produto ("Leite" marcado na lista) é do produto que as notas ligaram a esse nome, quando é um
     // só: vale para as entradas dele e para o item que já o tem. Com dois ligados, não dá para saber qual acabou.
     const linked = gone.productId ? [] : [...new Set(links?.productsFor(gone.name))];
     const productId = gone.productId ?? (linked.length === 1 ? linked[0] : null);
-    if (productId && latest.day > (goneProducts.get(productId)?.day ?? '')) {
-      goneProducts.set(productId, gone.productId ? latest : { ...latest, lent: true });
-    }
+    if (productId) keep(goneProducts, productId, gone.productId ? latest : { ...latest, lent: true });
   }
-  /** O palpite de que acabou para esse nome ou produto (o da compra mais recente); null quando o app não acha que acabou. */
-  const goneOf = (key: string, productId: string | null): Gone | null => {
-    const later = (a: Gone | null, b: Gone | null) => (!a || !b ? (a ?? b) : a.day > b.day ? a : b);
-    // O palpite de um produto vale pelo nome só para o que não diz qual produto é (a entrada posta à mão, o item
-    // digitado). A entrada de outro produto com o mesmo nome (Italac e Ninho, os dois renomeados para "Leite")
-    // responde por ela mesma.
-    const byName = later(goneNames.get(key) ?? null, productId == null ? (goneProductNames.get(key) ?? null) : null);
-    const byProduct = (productId != null ? goneProducts.get(productId) : undefined) ?? null;
-    return later(byName, byProduct);
-  };
+  /**
+   * O palpite de que acabou que vale para uma entrada da despensa; null quando o app não acha que acabou. Com
+   * produto, só o do produto: o dele mesmo, ou o do nome que as notas ligaram só a ele (goneProducts). O nome
+   * igual não basta: "Leite" marcado na lista não diz se foi o Italac ou o Ninho, mesmo que os dois se chamem
+   * "Leite" na despensa. Sem produto (a entrada posta à mão), o nome é tudo o que se sabe: vale o palpite do
+   * nome e o de um produto com esse nome.
+   */
+  const goneOf = (key: string, productId: string | null): Gone | null =>
+    productId != null ? (goneProducts.get(productId) ?? null) : later(goneNames.get(key) ?? null, goneProductNames.get(key) ?? null);
   /**
    * A entrada é estoque que o palpite não viu: comprada depois (fora a mesma ida ao mercado) e ainda dentro do
    * costume. No palpite emprestado do nome basta ser de depois: o costume é o do nome ("Leite" marcado a cada 10
@@ -485,16 +501,23 @@ export function pantryHits(
   const hits = new Map<string, PantryHit>();
   for (const item of items) {
     const name = normalizeSearch(item.name);
-    // O item da lista acabou: só conta a entrada comprada depois disso (e ainda dentro do costume).
-    const itemGone = goneOf(name, item.productId);
+    // O item da lista acabou: só conta a entrada comprada depois disso (e ainda dentro do costume). O item com
+    // produto, pelo palpite do produto; o digitado, pelo do nome ("Leite" marcado na lista). O palpite de um
+    // produto que só tem o mesmo nome não é do item: vale para a entrada desse produto e para a posta à mão.
+    const itemGone = (item.productId != null ? goneProducts.get(item.productId) : goneNames.get(name)) ?? null;
     // O que acabou pode estar com o nome da nota, sob um produto ligado a este nome (tenha o item produto ou
     // não). A entrada sem produto (posta à mão) não diz qual é: vale o palpite mais recente entre os ligados.
-    const linkedGone = (links?.productsFor(item.name) ?? []).reduce<Gone | null>((latest, productId) => {
-      const gone = goneProducts.get(productId) ?? null;
-      return gone && (!latest || gone.day > latest.day) ? gone : latest;
-    }, null);
+    const linkedGone = (links?.productsFor(item.name) ?? []).reduce<Gone | null>(
+      (latest, productId) => later(latest, goneProducts.get(productId) ?? null),
+      null,
+    );
     const same = fresh.filter(({ entry, key }) => {
-      if (!stillThere(entry.purchased_on, itemGone)) return false;
+      // O palpite do item vale para a entrada do mesmo produto e para a que não diz o produto. O item digitado
+      // (sem produto) é o nome: se "Leite" acabou, acabou o que foi comprado antes, de qualquer produto que o
+      // cumpra. Já a entrada de OUTRO produto, ligado ao nome de um item que tem o seu, responde só por ela
+      // (passou pelo palpite dela em `fresh`): o Ninho não some porque o Italac acabou.
+      const ofAnother = item.productId != null && entry.product_id != null && entry.product_id !== item.productId;
+      if (!ofAnother && !stillThere(entry.purchased_on, itemGone)) return false;
       if (!entry.product_id && !stillThere(entry.purchased_on, linkedGone)) return false;
       if (item.productId && entry.product_id === item.productId) return true;
       // Outro produto só conta quando a pessoa já confirmou, numa nota, que ele cumpre este nome.
