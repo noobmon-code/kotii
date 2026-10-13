@@ -3,7 +3,7 @@ import { useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import {
-  toSchedule,
+  toSchedules,
   useChores,
   useCompleteChore,
   useDoses,
@@ -168,7 +168,7 @@ export default function TodayScreen() {
   };
 
   const taken = new Set((doses.data ?? []).map((d) => doseKey(d.medication_id, d.scheduled_on, d.scheduled_time)));
-  const pendingDoses = dosesForDay((medications.data ?? []).map(toSchedule), today, taken).filter(
+  const pendingDoses = dosesForDay(toSchedules(medications.data ?? [], today, doses.data), today, taken).filter(
     (d) => !taken.has(doseKey(d.medicationId, d.date, d.time)),
   );
 

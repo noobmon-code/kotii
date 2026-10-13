@@ -10,19 +10,26 @@
 --
 -- As quantidades têm teto, e não só piso: num numeric sem tamanho, NaN é maior
 -- que qualquer número e passaria num ">= 0" sozinho (Infinity também). O teto
--- fica acima do que o app grava (até 99.999 por contagem, duas somadas em
+-- fica acima do que o app grava (até 99999 por contagem, duas somadas em
 -- "Comprei mais", e até 1000 por dose).
+--
+-- As duas datas ficam entre 2000 e 2100 (o mesmo intervalo que o formulário
+-- aceita, MIN_STOCK_DATE e MAX_STOCK_DATE): a conta do app anda dia a dia a
+-- partir do dia da contagem, e um date aceita 'infinity' e o ano 9999, com os
+-- quais ela não terminaria.
 
 alter table public.medications
   -- Unidades (comprimidos, cápsulas, doses, ml) na última contagem; nulo: o app não acompanha o estoque.
   add column stock_count numeric check (stock_count is null or (stock_count >= 0 and stock_count < 1000000)),
   -- O dia da contagem (data local de quem contou).
-  add column stock_counted_on date,
+  add column stock_counted_on date
+    check (stock_counted_on is null or stock_counted_on between date '2000-01-01' and date '2100-12-31'),
   -- Unidades que cada dose usa (0,5 = meio comprimido).
   add column dose_units numeric not null default 1 check (dose_units > 0 and dose_units <= 1000),
   -- Com quantos dias de antecedência avisar que está acabando.
   add column stock_warn_days integer not null default 7 check (stock_warn_days between 1 and 60),
   -- Até quando a receita vale; não depende do estoque.
-  add column prescription_until date,
+  add column prescription_until date
+    check (prescription_until is null or prescription_until between date '2000-01-01' and date '2100-12-31'),
   -- A contagem e o dia dela andam juntos.
   add constraint medications_stock_counted check ((stock_count is null) = (stock_counted_on is null));

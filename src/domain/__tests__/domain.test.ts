@@ -22,6 +22,7 @@ import {
   parseTimes,
   planReminders,
   spacedTimes,
+  takenOn,
   takesOn,
   type MedicationSchedule,
 } from '../medications';
@@ -266,6 +267,20 @@ describe('medications', () => {
     expect(describeCourse(course)).toBe('4 de 5 doses');
     expect(describeCourse({ endOn: '2026-10-04' })).toBe('até 04/10/2026');
     expect(describeCourse({ endOn: null })).toBe('uso contínuo');
+  });
+
+  it('counts how many of the current times of the day are ticked', () => {
+    const taken = new Set([
+      doseKey('m1', '2026-09-26', '08:00'),
+      // Outro dia, outro remédio e um horário que o remédio não tem mais: não contam.
+      doseKey('m1', '2026-09-25', '20:00'),
+      doseKey('m2', '2026-09-26', '20:00'),
+      doseKey('m1', '2026-09-26', '07:00'),
+    ]);
+    expect(takenOn(base, '2026-09-26', taken)).toBe(1);
+    expect(takenOn(base, '2026-09-26', new Set([...taken, doseKey('m1', '2026-09-26', '20:00')]))).toBe(2);
+    expect(takenOn(base, '2026-09-27', taken)).toBe(0);
+    expect(takenOn(base, '2026-09-26', new Set())).toBe(0);
   });
 
   it('spreads N doses a day and computes the end of an N-day treatment', () => {

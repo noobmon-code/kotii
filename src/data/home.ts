@@ -12,6 +12,7 @@ import {
   type StockCount,
   type StockedMedication,
 } from '@/domain/medicationStock';
+import { doseKey, takenOn } from '@/domain/medications';
 import type { PantryTake } from '@/domain/pantry';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Chore, Medication, MedicationDose, PantryItem, Unit } from '@/lib/types';
@@ -274,7 +275,10 @@ export function useDeleteChore() {
 // ---------------------------------------------------------------------------
 // Remédios
 
-export function toSchedule(m: Medication): StockedMedication {
+/** doseKey de cada dose marcada (o que as regras leem). */
+const takenKeys = (doses: MedicationDose[]) => new Set(doses.map((d) => doseKey(d.medication_id, d.scheduled_on, d.scheduled_time)));
+
+function schedule(m: Medication, today: string, taken: ReadonlySet<string> | undefined): StockedMedication {
   return {
     id: m.id,
     personName: m.person_name,
@@ -289,12 +293,31 @@ export function toSchedule(m: Medication): StockedMedication {
     intervalDays: m.interval_days,
     totalDoses: m.total_doses,
     takenCount: m.taken_count,
+    takenToday: taken && takenOn(m, today, taken),
     stockCount: m.stock_count,
     stockCountedOn: m.stock_counted_on,
     doseUnits: m.dose_units,
     warnDays: m.stock_warn_days,
     prescriptionUntil: m.prescription_until,
   };
+}
+
+/**
+ * O remédio como as regras o leem. `doses` são as doses marcadas em `today`
+ * (useDoses(today)); delas sai `takenToday`, que a conta do estoque de um
+ * tratamento por número de doses usa para o estado não mudar a cada dose
+ * marcada. undefined enquanto não carregaram: a conta segue sem elas. Os dois
+ * são obrigatórios de propósito: a tela, o Nuke ou o aviso que montasse o
+ * remédio sem as marcações de hoje daria uma resposta diferente dos outros.
+ */
+export function toSchedule(m: Medication, today: string, doses: MedicationDose[] | undefined): StockedMedication {
+  return schedule(m, today, doses && takenKeys(doses));
+}
+
+/** Todos os remédios, como toSchedule. */
+export function toSchedules(medications: Medication[], today: string, doses: MedicationDose[] | undefined): StockedMedication[] {
+  const taken = doses && takenKeys(doses);
+  return medications.map((m) => schedule(m, today, taken));
 }
 
 type StockColumn = 'stock_count' | 'stock_counted_on' | 'dose_units' | 'stock_warn_days' | 'prescription_until';
@@ -467,17 +490,15 @@ export function useArchiveMedication() {
   });
 }
 
+/** As doses marcadas num dia. */
+export async function fetchDoses(date: string, db: SupabaseClient = supabase): Promise<MedicationDose[]> {
+  return unwrap(
+    await db.from('medication_doses').select('id, medication_id, scheduled_on, scheduled_time, taken_at').eq('scheduled_on', date),
+  ) as MedicationDose[];
+}
+
 export function useDoses(date: string) {
-  return useQuery({
-    queryKey: ['doses', date],
-    queryFn: async () =>
-      unwrap(
-        await supabase
-          .from('medication_doses')
-          .select('id, medication_id, scheduled_on, scheduled_time, taken_at')
-          .eq('scheduled_on', date),
-      ) as MedicationDose[],
-  });
+  return useQuery({ queryKey: ['doses', date], queryFn: () => fetchDoses(date) });
 }
 
 export function useToggleDose(date: string) {

@@ -508,6 +508,22 @@ describe('planHouseReminders: remédios e receitas acabando', () => {
     expect(keys({ medications: [{ ...ending, endOn: '2026-10-02' }] })).toEqual([]);
   });
 
+  it('tratamento por número de doses: marcar as doses de hoje não põe nem tira aviso do plano', () => {
+    // Amoxicilina, 20 doses desde 09/10: em 12/10, com 9 marcadas, passou de três para duas por dia, e a contagem
+    // recomeçou nesse dia com 10 comprimidos. Sobram 9 doses depois das duas de hoje.
+    const course: StockedMedication = { ...noPrescription, times: ['08:00', '20:00'], startOn: '2026-10-09', totalDoses: 20, stockCountedOn: '2026-10-12' };
+    const plan = (stockCount: number, ticked: number | undefined) =>
+      keys({ today: '2026-10-12', medications: [{ ...course, stockCount, takenCount: 9 + (ticked ?? 0), takenToday: ticked }] });
+    for (const ticked of [0, 1, 2]) {
+      // 10 comprimidos dão para o tratamento: nenhum aviso, com nenhuma, uma ou as duas doses de hoje marcadas.
+      expect(plan(10, ticked)).toEqual([]);
+      // Com 8 falta mesmo: os mesmos dois avisos o dia inteiro.
+      expect(plan(8, ticked)).toEqual(['refills:m1:2026-10-15', 'refills:m1:2026-10-16']);
+    }
+    // Sem as marcações de hoje (ainda não carregaram), a conta é a de antes: as duas doses de hoje contam de novo.
+    expect(plan(10, undefined)).toEqual(['refills:m1:2026-10-16', 'refills:m1:2026-10-17']);
+  });
+
   it('só na janela de 30 dias', () => {
     // Acaba em 03/11: o aviso de uma semana antes cai no último dia da janela (27/10); o do dia fica para depois.
     expect(keys({ medications: [{ ...noPrescription, stockCount: 37 }] })).toEqual(['refills:m1:2026-10-27']);

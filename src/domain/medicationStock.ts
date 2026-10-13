@@ -43,6 +43,12 @@ export const PRESCRIPTION_REMINDER_DAYS = 7;
 export const STALE_DAYS = 14;
 /** Até onde a conta anda, dia a dia; estoque para mais que isso é "mais de 3 anos". */
 export const ESTIMATE_HORIZON_DAYS = 3 * 365;
+/**
+ * As datas que o banco aceita no dia da contagem e em "Receita vale até" (os
+ * checks da migração do estoque dizem o mesmo intervalo; um teste compara).
+ */
+export const MIN_STOCK_DATE = '2000-01-01';
+export const MAX_STOCK_DATE = '2100-12-31';
 const MAX_STOCK = 99_999;
 const MAX_DOSE_UNITS = 1000;
 
@@ -92,6 +98,10 @@ export function estimateStock(m: StockedMedication, today: string): StockEstimat
   if (m.stockCount == null || !m.stockCountedOn || !m.active) return null;
   const perDose = doseUnitsOf(m);
   const counted = m.stockCountedOn;
+  // Dia da contagem que não é uma data, ou longe demais à frente de hoje (só
+  // chega assim por fora do app): a conta, que anda dia a dia a partir dele,
+  // não terminaria. Poucos dias à frente valem: é o relógio de outro aparelho.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(counted) || !(diffDays(today, counted) <= ESTIMATE_HORIZON_DAYS)) return null;
   let left = Math.max(0, m.stockCount);
   // O que sobra depois das doses de hoje: acompanha a conta até ela passar de hoje.
   let unitsLeft = left;
@@ -100,11 +110,15 @@ export function estimateStock(m: StockedMedication, today: string): StockEstimat
   // do início ao fim: as que ele ainda prevê depois do dia da contagem são o
   // teto da conta inteira (um tratamento que já passou do fim pelo horário,
   // com doses sem marcar, não segue gastando o estoque). De amanhã em diante
-  // vale também o que falta pelas marcações. As de hoje que ninguém marcou já
-  // saíram pelo horário: é o teto do horário que impede contá-las de novo, e
-  // por isso o estado não muda a cada dose marcada.
+  // vale também o que falta pelas marcações, menos as doses de hoje ainda sem
+  // marcar (`takenToday`), que já saíram pelo horário: assim marcar uma dose de
+  // hoje não muda o estado. Sem as marcações de hoje (não carregaram), só o
+  // teto do horário impede contá-las de novo, e ele não basta quando as
+  // marcações estão adiantadas (as vezes por dia diminuíram no meio do
+  // tratamento): até elas carregarem, a conta pode gastar doses a mais.
   let scheduleLeft = courseDosesAfter(m, counted) ?? Infinity;
-  let courseLeft = dosesLeft(m) ?? Infinity;
+  const pendingToday = m.takenToday === undefined || !takesOn(m, today) ? 0 : Math.max(0, m.times.length - m.takenToday);
+  let courseLeft = Math.max(0, (dosesLeft(m) ?? Infinity) - pendingToday);
   const done = (ends: StockEstimate['ends']): StockEstimate => {
     const runsOutOn = ends === 'stock' ? (lastFull ?? counted) : null;
     return { unitsLeft, runsOutOn, daysLeft: runsOutOn ? diffDays(today, runsOutOn) : null, ends };
@@ -294,6 +308,8 @@ export interface RefillRow {
   alerts: RefillAlert[];
   /** O item que "Pôr na lista da farmácia" cria. */
   itemName: string;
+  /** O mesmo item com o nome de quem toma ("Losartana — Ana"): é como ele vai para a lista enquanto outra pessoa da casa usa o mesmo remédio. */
+  personItemName: string;
   /**
    * O estoque, que é o que decide as ações da linha: acabando ('low'),
    * acabado ('out') ou parado ('stale'); null se a linha é só da receita
@@ -327,6 +343,7 @@ export function refillRows(medications: StockedMedication[], today: string): Ref
         title: medicationWho(m),
         alerts,
         itemName: pharmacyItemName(m, (sameName.get(nameKey(m)) ?? 0) > 1),
+        personItemName: pharmacyItemName(m, true),
         stock: stock === 'low' || stock === 'out' || stock === 'stale' ? stock : null,
         attention: alerts.some(needsAttention),
       };
@@ -338,6 +355,19 @@ export function refillRows(medications: StockedMedication[], today: string): Ref
         soonest(a) - soonest(b) ||
         a.title.localeCompare(b.title),
     );
+}
+
+/**
+ * Se a caixa da linha já está para comprar. `pending`: os itens pendentes das
+ * listas de farmácia abertas, por normalizeSearch. Vale o item de agora e o
+ * item com o nome de quem toma: posto na lista quando outra pessoa da casa
+ * usava o mesmo remédio, ele segue sendo desta caixa depois que o tratamento
+ * da outra termina (e o item de agora volta a ser só o nome). O contrário não
+ * vale: com duas pessoas no mesmo remédio, um item só com o nome não diz de
+ * quem é, e marcaria as duas linhas.
+ */
+export function onPharmacyList(row: Pick<RefillRow, 'itemName' | 'personItemName'>, pending: ReadonlySet<string>): boolean {
+  return pending.has(normalizeSearch(row.itemName)) || pending.has(normalizeSearch(row.personItemName));
 }
 
 /** O que o Nuke fica sabendo do estoque e das receitas (a frase sai de buildNukeContext). */
@@ -467,10 +497,15 @@ export function restock(m: StockedMedication, today: string, boxUnits: number, b
 
 type Rule = Pick<MedicationSchedule, 'times' | 'startOn' | 'endOn' | 'frequency' | 'weekdays' | 'intervalDays' | 'totalDoses'>;
 
-/** A regra das doses, para comparar: horários, regularidade, início, fim e o número de doses do tratamento. */
+/**
+ * A regra das doses, para comparar: quantas vezes por dia, regularidade,
+ * início, fim e o número de doses do tratamento. O horário em si não entra: a
+ * conta só lê quantas doses o dia tem, e trocar 08:00 por 07:30 não muda o que
+ * é gasto.
+ */
 const ruleKey = (m: Rule) =>
   JSON.stringify([
-    [...m.times].sort(),
+    m.times.length,
     m.frequency ?? 'daily',
     m.weekdays ? [...m.weekdays].sort((a, b) => a - b) : null,
     m.intervalDays ?? null,
@@ -486,10 +521,11 @@ const ruleKey = (m: Rule) =>
  * de amanhã em diante. Sem isso a mudança valeria para trás, e o estoque
  * pularia sem ninguém ter contado nada. `changes` é o que a seção do estoque
  * já muda (readStockForm): se a pessoa contou de novo, vale o que ela contou.
+ * Trocar só o horário não é mudar a regra (ver ruleKey): nada é mexido.
  *
  * Remédio que já tinha acabado: a contagem fica no dia em que acabou, e não
  * em hoje. "Deve ter acabado em 04/10" segue como estava, em vez de virar
- * "acaba hoje" (com aviso por notificação) só porque o horário mudou.
+ * "acaba hoje" (com aviso por notificação) só porque a regra mudou.
  */
 export function keepStockOnRuleChange(changes: StockChanges, before: StockedMedication | undefined, after: Rule, today: string): StockChanges {
   if (!before || changes.stockCount !== undefined) return changes;
@@ -505,8 +541,14 @@ export function formatUnits(units: number): string {
   return round(units).toLocaleString('pt-BR', { maximumFractionDigits: 2, useGrouping: false });
 }
 
-/** Unidades digitadas ("30", "12,5"); null se não for um número de 0 a 99.999. */
+/**
+ * Unidades digitadas ("30", "12,5", "12.5"); null se não for um número de 0 a
+ * 99999. Ponto seguido de exatamente três dígitos, sem vírgula ("1.000"), tanto
+ * pode ser mil como um: é recusado, para a pessoa escrever de novo, em vez de
+ * virar um número que ela não quis dizer.
+ */
 export function parseUnits(text: string): number | null {
+  if (!text.includes(',') && /\.\d{3}(?!\d)/.test(text)) return null;
   const value = parseDecimal(text);
   return value !== null && value <= MAX_STOCK ? value : null;
 }
@@ -632,6 +674,11 @@ export function readStockForm(form: StockForm, initial: StockForm, today: string
     const until = text ? parseBRDate(text) : null;
     if (text && !until) {
       return { ok: false, title: 'Data inválida', message: 'Informe até quando a receita vale como dd/mm/aaaa, ou deixe vazio.' };
+    }
+    // O banco só aceita datas deste intervalo: melhor o aviso daqui que o erro de lá.
+    if (until && (until < MIN_STOCK_DATE || until > MAX_STOCK_DATE)) {
+      const range = `${formatBRDate(MIN_STOCK_DATE)} e ${formatBRDate(MAX_STOCK_DATE)}`;
+      return { ok: false, title: 'Data inválida', message: `Em "Receita vale até", informe uma data entre ${range}, ou deixe vazio.` };
     }
     changes.prescriptionUntil = until;
   }

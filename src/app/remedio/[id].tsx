@@ -8,6 +8,7 @@ import {
   toSchedule,
   toStockValues,
   useArchiveMedication,
+  useDoses,
   useMedication,
   useSaveMedication,
 } from '@/data/home';
@@ -106,8 +107,11 @@ function MedicationForm({
   const [notes, setNotes] = useState(medication?.notes ?? '');
   const [remind, setRemind] = useState(() => !medication && remindByDefault());
   const today = todayISO();
+  // As doses de hoje já marcadas entram na conta do estoque (toSchedule), aqui como nas outras telas.
+  const tickedToday = useDoses(today);
   // "Estoque e receita" como a tela abriu: só o que a pessoa mudar daqui em diante é gravado (readStockForm).
-  const [savedStock, setSavedStock] = useState<StockForm>(() => stockFormOf(medication && toSchedule(medication), today));
+  // O que sobra hoje não depende das marcações de hoje: os campos abrem sem esperar por elas.
+  const [savedStock, setSavedStock] = useState<StockForm>(() => stockFormOf(medication && toSchedule(medication, today, tickedToday.data), today));
   const [stock, setStock] = useState(savedStock);
 
   // Uma vez por remédio: "Comprei mais" (ou uma busca nova) troca o objeto do
@@ -205,7 +209,7 @@ function MedicationForm({
     // Mudou a regra das doses de um remédio com estoque acompanhado: o que já foi gasto não muda com ela.
     const stockChanges = keepStockOnRuleChange(
       stockRead.changes,
-      medication && toSchedule(medication),
+      medication && toSchedule(medication, today, tickedToday.data),
       {
         times: values.times,
         startOn: values.start_on,

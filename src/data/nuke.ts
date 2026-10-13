@@ -6,7 +6,7 @@ import { router } from 'expo-router';
 
 import { useFamilyCalendar } from '@/data/family';
 import { useBills, useBudgets, useRecentBillPayments, useSaveExpense, useSpending } from '@/data/finance';
-import { toSchedule, useChores, useDoses, useMedications, usePantry, useSaveChore } from '@/data/home';
+import { toSchedules, useChores, useDoses, useMedications, usePantry, useSaveChore } from '@/data/home';
 import { useDocuments, useEquipmentList } from '@/data/house';
 import { useAppointments, usePeople } from '@/data/health';
 import { useAddToMarketList } from '@/data/market';
@@ -121,7 +121,8 @@ export function useNukeContext(today: string): NukeContextState {
   // Só com os pagamentos em dia: depois de pagar ou desfazer, os de antes diriam o que já não vale.
   const billsAbove = billsAboveUsual(bills.data ?? [], settledData(recentPayments) ?? [], today);
 
-  const schedules = (medications.data ?? []).map(toSchedule);
+  // Com as doses de hoje já marcadas: o estoque que o Nuke lê é o mesmo das telas.
+  const schedules = toSchedules(medications.data ?? [], today, doses.data);
 
   const snapshot: NukeSnapshot = {
     today,

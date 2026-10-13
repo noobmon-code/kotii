@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet } from 'react-native';
 
-import { toSchedule, useRestockMedication } from '@/data/home';
+import { toSchedule, useDoses, useRestockMedication } from '@/data/home';
 import { REFILLS_REMINDER_LABEL } from '@/domain/houseReminders';
 import {
   describePrescription,
@@ -50,7 +50,9 @@ export function MedicationStockSection({
   const restockMutation = useRestockMedication();
   // null: fechado; texto: quantas unidades vieram na caixa.
   const [box, setBox] = useState<string | null>(null);
-  const schedule = medication ? toSchedule(medication) : null;
+  // Com as doses de hoje já marcadas, como nas telas Hoje e Saúde: a frase daqui é a mesma de lá.
+  const doses = useDoses(today);
+  const schedule = medication ? toSchedule(medication, today, doses.data) : null;
   // As frases falam do que está salvo: com o número mudado e ainda não salvo, a do estoque some.
   const stockText = schedule && form.stock === initial.stock ? describeStock(stockStatus(schedule, today), today) : null;
   const prescriptionText =

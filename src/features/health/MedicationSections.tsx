@@ -2,11 +2,11 @@ import { router } from 'expo-router';
 import { type ReactNode, useMemo, useRef } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { toSchedule, useDoses, useMedications, useToggleDose } from '@/data/home';
+import { toSchedule, toSchedules, useDoses, useMedications, useToggleDose } from '@/data/home';
 import { useAddToPharmacyList, useShoppingLists } from '@/data/market';
 import { todayISO } from '@/domain/dates';
 import { currentTimeHHMM, describeCourse, describeFrequency, doseKey, dosesForDay } from '@/domain/medications';
-import { refillBadge, refillRows, type RefillAlert, type RefillRow } from '@/domain/medicationStock';
+import { onPharmacyList, refillBadge, refillRows, type RefillAlert, type RefillRow } from '@/domain/medicationStock';
 import { normalizeSearch } from '@/domain/search';
 import { errorMessage } from '@/lib/supabase';
 import type { Medication } from '@/lib/types';
@@ -23,11 +23,13 @@ import { space } from '@/ui/theme';
  */
 export function useRefills(today: string): { rows: RefillRow[]; attention: RefillRow[]; badges: ReadonlyMap<string, RefillAlert> } {
   const { data } = useMedications();
+  // As doses de hoje já marcadas entram na conta do estoque (toSchedule): marcar uma não muda as linhas.
+  const { data: doses } = useDoses(today);
   return useMemo(() => {
-    const rows = refillRows((data ?? []).map(toSchedule), today);
+    const rows = refillRows(toSchedules(data ?? [], today, doses), today);
     const attention = rows.filter((row) => row.attention);
     return { rows, attention, badges: new Map(attention.map((row) => [row.id, row.alerts[0]])) };
-  }, [data, today]);
+  }, [data, today, doses]);
 }
 
 /** O texto de baixo da linha de uma dose e, com a caixa acabando ou a receita vencendo, o selo do remédio. */
@@ -49,7 +51,7 @@ export function MedicationsToday({ today }: { today: string }) {
 
   if (!medications.data) return null;
   const taken = new Set((doses.data ?? []).map((d) => doseKey(d.medication_id, d.scheduled_on, d.scheduled_time)));
-  const slots = dosesForDay(medications.data.map(toSchedule), today, taken);
+  const slots = dosesForDay(toSchedules(medications.data, today, doses.data), today, taken);
   if (!slots.length) return null;
   const nowTime = currentTimeHHMM();
 
@@ -165,7 +167,7 @@ export function MedicationRefills({ rows }: { rows: RefillRow[] }) {
                         style={styles.refillAction}
                       />
                     )}
-                    {listed.has(normalizeSearch(row.itemName)) ? (
+                    {onPharmacyList(row, listed) ? (
                       <Badge label="Na lista da farmácia" tone="primary" />
                     ) : (
                       <Button
@@ -192,6 +194,8 @@ export function MedicationRefills({ rows }: { rows: RefillRow[] }) {
 /** Tratamentos em andamento (de uma pessoa, ou de todos). */
 export function MedicationList({ medications, personId }: { medications: Medication[]; personId: string | null }) {
   const today = todayISO();
+  // Para o selo ser o mesmo das telas Hoje e Saúde (ver toSchedule).
+  const doses = useDoses(today);
   return (
     <Section
       title="Remédios"
@@ -217,7 +221,7 @@ export function MedicationList({ medications, personId }: { medications: Medicat
       ) : (
         <ListCard>
           {medications.map((m) => {
-            const schedule = toSchedule(m);
+            const schedule = toSchedule(m, today, doses.data);
             // Caixa acabando ou receita vencendo: o selo diz o mais urgente.
             const badge = refillBadge(schedule, today);
             return (

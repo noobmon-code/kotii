@@ -1,7 +1,11 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+import { refillReminders, refillRows } from '@/domain/medicationStock';
+import type { Medication, MedicationDose } from '@/lib/types';
+
 import {
+  fetchDoses,
   fetchMedication,
   fetchMedications,
   isMissingStockColumn,
@@ -9,6 +13,7 @@ import {
   restockMedication,
   saveMedication,
   toSchedule,
+  toSchedules,
   toStockValues,
   type MedicationValues,
 } from '../home';
@@ -124,7 +129,13 @@ describe('ler os remédios', () => {
       stock_warn_days: 10,
       prescription_until: '2026-12-20',
     });
-    expect(toSchedule(medication)).toMatchObject({ stockCount: 12.5, stockCountedOn: '2026-10-10', doseUnits: 0.5, warnDays: 10, prescriptionUntil: '2026-12-20' });
+    expect(toSchedule(medication, '2026-10-12', undefined)).toMatchObject({
+      stockCount: 12.5,
+      stockCountedOn: '2026-10-10',
+      doseUnits: 0.5,
+      warnDays: 10,
+      prescriptionUntil: '2026-12-20',
+    });
   });
 
   it('banco de antes do estoque: lê de novo com as colunas de antes, e nenhum remédio tem estoque acompanhado', async () => {
@@ -224,6 +235,81 @@ describe('salvar o remédio', () => {
 
   it('outro erro ao salvar continua sendo erro', async () => {
     await expect(saveMedication({ id: 'm1', values, stock }, fakeDb(true, offline).db)).rejects.toEqual(offline);
+  });
+});
+
+describe('as doses de hoje já marcadas vão com o remédio, para a conta do estoque', () => {
+  const today = '2026-10-12';
+  const dose = (medication_id: string, scheduled_on: string, scheduled_time: string): MedicationDose => ({
+    id: `${medication_id} ${scheduled_on} ${scheduled_time}`,
+    medication_id,
+    scheduled_on,
+    scheduled_time,
+    taken_at: `${scheduled_on}T12:00:00Z`,
+  });
+  const twice = async (patch: Partial<Medication> = {}): Promise<Medication> => ({
+    ...(await fetchMedications(fakeDb(true).db))[0],
+    times: ['08:00', '20:00'],
+    ...patch,
+  });
+
+  it('de cada remédio, quantos dos horários de hoje já foram marcados', async () => {
+    const ana = await twice();
+    const beto = await twice({ id: 'm2' });
+    const doses = [
+      dose('m1', today, '08:00'),
+      dose('m2', today, '08:00'),
+      dose('m2', today, '20:00'),
+      // De outro dia, e de um horário que o remédio não tem mais: não contam.
+      dose('m1', '2026-10-11', '20:00'),
+      dose('m1', today, '06:00'),
+    ];
+    expect(toSchedules([ana, beto], today, doses).map((m) => [m.id, m.takenToday])).toEqual([
+      ['m1', 1],
+      ['m2', 2],
+    ]);
+    expect(toSchedule(ana, today, doses)).toEqual(toSchedules([ana, beto], today, doses)[0]);
+    expect(toSchedule(ana, today, []).takenToday).toBe(0);
+    // Marcações de outro dia entregues como se fossem de hoje: nenhuma conta.
+    expect(toSchedule(ana, '2026-10-13', doses).takenToday).toBe(0);
+  });
+
+  it('marcações que ainda não carregaram: o remédio vai sem elas', async () => {
+    const ana = await twice();
+    expect(toSchedule(ana, today, undefined).takenToday).toBeUndefined();
+    expect(toSchedules([ana], today, undefined)[0].takenToday).toBeUndefined();
+    expect(toSchedules([ana], today, undefined)[0]).toMatchObject({ id: 'm1', times: ['08:00', '20:00'], takenCount: 3 });
+  });
+
+  it('tratamento por número de doses com as marcações adiantadas: a mesma resposta a cada dose de hoje marcada', async () => {
+    // Amoxicilina, 20 doses desde 09/10: em 12/10, com 9 marcadas, passou de três para duas por dia; 10 comprimidos contados nesse dia.
+    const course = await twice({ start_on: '2026-10-09', total_doses: 20, stock_count: 10, stock_counted_on: today, dose_units: 1, stock_warn_days: 7, prescription_until: null });
+    const steps = [[], [dose('m1', today, '08:00')], [dose('m1', today, '08:00'), dose('m1', today, '20:00')]];
+    for (const doses of steps) {
+      const schedules = toSchedules([{ ...course, taken_count: 9 + doses.length }], today, doses);
+      // 10 comprimidos para as 9 doses que ficam depois das duas de hoje: nada a avisar, nas telas e por notificação.
+      expect(refillRows(schedules, today)).toEqual([]);
+      expect(refillReminders(schedules, today)).toEqual([]);
+    }
+    // Sem as marcações de hoje, a conta de antes (as duas doses de hoje contam de novo): avisa.
+    expect(refillRows(toSchedules([{ ...course, taken_count: 9 }], today, undefined), today)).toMatchObject([{ id: 'm1', stock: 'low' }]);
+  });
+
+  it('as doses marcadas de um dia, na casa pedida', async () => {
+    const asked: unknown[] = [];
+    const rows = [dose('m1', today, '08:00')];
+    const db = {
+      from: (table: string) => ({
+        select: (columns: string) => ({
+          eq: async (column: string, value: string) => {
+            asked.push([table, columns, column, value]);
+            return { data: rows, error: null };
+          },
+        }),
+      }),
+    } as unknown as SupabaseClient;
+    expect(await fetchDoses(today, db)).toEqual(rows);
+    expect(asked).toEqual([['medication_doses', 'id, medication_id, scheduled_on, scheduled_time, taken_at', 'scheduled_on', today]]);
   });
 });
 

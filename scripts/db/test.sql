@@ -3233,6 +3233,7 @@ do $$
 declare
   m uuid;
   r public.medications;
+  bad text;
 begin
   -- Remédio sem estoque acompanhado (como todos os de antes): nada contado, 1 por dose, aviso com 7 dias.
   insert into public.medications (person_name, name, times) values ('Paula', 'Losartana', array['08:00']) returning * into r;
@@ -3333,6 +3334,36 @@ begin
     raise exception 'FAIL: a count date without the count';
   exception when check_violation then null;
   end;
+  -- O dia da contagem e a data da receita ficam entre 2000 e 2100: um date aceita 'infinity' e o ano 9999, e a
+  -- conta do app, que anda dia a dia a partir do dia da contagem, não terminaria.
+  update public.medications set stock_counted_on = '2000-01-01', prescription_until = '2000-01-01' where id = m;
+  update public.medications set stock_counted_on = '2100-12-31', prescription_until = '2100-12-31' where id = m;
+  foreach bad in array array['infinity', '-infinity', '9999-12-31', '1999-12-31', '2101-01-01'] loop
+    begin
+      update public.medications set stock_counted_on = bad::date where id = m;
+      raise exception 'FAIL: a count dated %', bad;
+    exception when check_violation then null;
+    end;
+    begin
+      update public.medications set prescription_until = bad::date where id = m;
+      raise exception 'FAIL: a prescription valid until %', bad;
+    exception when check_violation then null;
+    end;
+  end loop;
+  begin
+    insert into public.medications (person_name, name, times, stock_count, stock_counted_on)
+      values ('Paula', 'X', array['08:00'], 30, 'infinity');
+    raise exception 'FAIL: a new medication counted on infinity';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.medications (person_name, name, times, prescription_until) values ('Paula', 'X', array['08:00'], 'infinity');
+    raise exception 'FAIL: a new medication with a prescription valid until infinity';
+  exception when check_violation then null;
+  end;
+  select * into r from public.medications where id = m;
+  assert r.stock_counted_on = '2100-12-31' and r.prescription_until = '2100-12-31', 'a refused date changes nothing';
+  update public.medications set stock_counted_on = '2026-10-12', prescription_until = '2026-12-20' where id = m;
   -- Parar de acompanhar: os dois vazios; a receita não depende do estoque.
   update public.medications set stock_count = null, stock_counted_on = null where id = m returning * into r;
   assert r.stock_count is null and r.prescription_until = '2026-12-20', 'the prescription stays without the stock';

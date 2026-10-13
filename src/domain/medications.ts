@@ -40,6 +40,12 @@ export interface MedicationSchedule {
   totalDoses?: number | null;
   /** Doses já tomadas (só importa com totalDoses). */
   takenCount?: number;
+  /**
+   * Dos horários de hoje, quantos já estão marcados (ver takenOn); undefined:
+   * as marcações de hoje não carregaram. Só a conta do estoque de um
+   * tratamento por número de doses usa (ver estimateStock).
+   */
+  takenToday?: number;
 }
 
 type Rule = Pick<MedicationSchedule, 'startOn' | 'endOn' | 'active' | 'frequency' | 'weekdays' | 'intervalDays'>;
@@ -89,6 +95,16 @@ export function takesOn(m: Rule, date: string): boolean {
 /** Doses que ainda faltam num tratamento por número de doses (null: sem limite). */
 export function dosesLeft(m: Pick<MedicationSchedule, 'totalDoses' | 'takenCount'>): number | null {
   return m.totalDoses ? Math.max(0, m.totalDoses - (m.takenCount ?? 0)) : null;
+}
+
+/**
+ * Dos horários que o remédio tem agora, quantos estão marcados nesse dia
+ * (`taken`: doseKey das doses marcadas). A marcação de um horário que o
+ * remédio não tem mais (foi trocado depois) não conta: a dose do horário novo
+ * segue por marcar.
+ */
+export function takenOn(m: Pick<MedicationSchedule, 'id' | 'times'>, date: string, taken: ReadonlySet<string>): number {
+  return m.times.filter((time) => taken.has(doseKey(m.id, date, time))).length;
 }
 
 /**
