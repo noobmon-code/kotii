@@ -17,7 +17,7 @@ import { parseBoleto, type Boleto } from '@/domain/boleto';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import { BILL_RECURRENCES, FINANCE_CATEGORIES, type BillRecurrence, type FinanceCategory } from '@/domain/finance';
 import { formatTaxDoc, parseTaxDoc } from '@/domain/incomeTax';
-import { formatBRL, parseDecimal } from '@/domain/money';
+import { formatBRL, parseMoney } from '@/domain/money';
 import { billSubtitle } from '@/features/finance/BillsPanel';
 import { BoletoScanner } from '@/features/finance/BoletoScanner';
 import { PayBillModal } from '@/features/finance/PayBillModal';
@@ -131,7 +131,7 @@ function BillForm({ bill }: { bill?: Bill }) {
   }
 
   function submit() {
-    const value = variable ? null : parseDecimal(amount);
+    const value = variable ? null : parseMoney(amount);
     if (!name.trim()) return notify('Informe o nome', 'Ex.: Condomínio, Internet, Escola.');
     if (!variable && value == null) return notify('Informe o valor', 'Ou marque que o valor varia a cada mês.');
     if (!dueISO) return notify('Data inválida', 'Informe o vencimento como dd/mm/aaaa.');
