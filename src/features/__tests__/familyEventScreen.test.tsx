@@ -224,6 +224,13 @@ const failReads = (rows: Row[]) =>
     throw new Error('TypeError: Network request failed');
   });
 const dayChip = (label: string) => dayChips().find((item) => item.props.label === label)!;
+/**
+ * Espera uma coisa aparecer na tela, em passos curtos, em vez de um tempo fixo: com a máquina ocupada, o cartão
+ * do dia pode ser desenhado um pouco depois de os dados chegarem.
+ */
+async function until(ready: () => boolean, capMs = 3000) {
+  for (let waited = 0; waited < capMs && !ready(); waited += 10) await settle(10);
+}
 const COPY_TITLE = 'Cópia guardada neste celular';
 const COPY_TEXT = 'Ainda não deu para conferir se este compromisso mudou em outro celular.';
 const UNCHECKED_QUESTION = [
@@ -478,6 +485,28 @@ describe('tela do compromisso: a cópia guardada, enquanto não deu para conferi
     expect(router.back).toHaveBeenCalledTimes(1);
   }, 15_000);
 
+  it('a busca do compromisso não responde: passado o limite outra vez, o aviso ganha o "Tentar de novo", que pede de novo', async () => {
+    await visitOnce();
+    // Este pedido nunca vai ter resposta.
+    hold('family_events');
+    open();
+    await settle(4300);
+    expect(page()).toContain(COPY_TITLE);
+    expect(button('Tentar de novo')).toBeUndefined();
+    // Mais quatro segundos sem resposta: a busca conta como a que não veio, e agora há o que tentar.
+    await settle(4200);
+    expect(page()).toContain(COPY_TITLE);
+    expect(button('Tentar de novo')).toBeDefined();
+
+    // A rede volta a responder aos pedidos novos; o de antes segue sem resposta.
+    mockDb.gates = {};
+    await press(button('Tentar de novo'));
+    await until(() => !page().includes(COPY_TITLE));
+    expect(page()).not.toContain(COPY_TITLE);
+    await press(button('Salvar'));
+    expect(confirmAction).not.toHaveBeenCalled();
+  }, 20_000);
+
   it('a busca falha: o aviso ganha o "Tentar de novo", e a busca que dá certo tira o aviso', async () => {
     await visitOnce();
     onlineManager.setOnline(false);
@@ -671,6 +700,30 @@ describe('tela do compromisso: o aviso de que mudou não vem do próprio salvar'
     await press(button('Salvar'));
     expect(confirmAction).toHaveBeenCalledTimes(1);
     expect(question()).toEqual(CHANGED_QUESTION);
+    expect(eventUpdates()).toHaveLength(1);
+  });
+
+  it('salvou, a tela continuou aberta, e outro celular pôs o compromisso de volta como estava ao abrir: é mudança de lá, a tela avisa e salvar pergunta', async () => {
+    open();
+    await settle();
+    act(() => field('O que levar')!.props.onChangeText('touca'));
+    await press(button('Salvar'));
+    await settle();
+    expect(router.back).toHaveBeenCalledTimes(1);
+    expect(client.getQueryData<Row>(['familyEvents', 'natacao'])).toMatchObject({ bring: 'touca' });
+    expect(page()).not.toContain('Este compromisso mudou');
+
+    // No outro celular alguém desfaz: o compromisso volta a ser exatamente o que esta tela tinha ao abrir.
+    Object.assign(mockDb.events[0], { bring: null });
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ['familyEvents'] });
+    });
+    await settle();
+    expect(page()).toContain('Este compromisso mudou');
+    await press(button('Salvar'));
+    expect(confirmAction).toHaveBeenCalledTimes(1);
+    expect(question()).toEqual(CHANGED_QUESTION);
+    // Só o primeiro salvar foi enviado: o segundo espera a resposta.
     expect(eventUpdates()).toHaveLength(1);
   });
 
@@ -912,7 +965,7 @@ describe('tela do compromisso: o que muda só num dia', () => {
 
   it('a ficha de quem foi escolhido para o dia foi apagada em outro celular: o toque avisa com a frase do dia, e a pessoa sai das escolhas', async () => {
     open({ id: 'natacao', dia: '2099-01-01' });
-    await settle();
+    await until(() => dayChips().length > 0);
     expect(dayChips().map((item) => item.props.label)).toContain('Beto');
     // Em outro celular a ficha do Beto foi apagada; esta tela ainda o oferece, e o banco recusa a chave.
     mockDb.people = mockDb.people.filter((p) => p.id !== 'beto');
@@ -925,11 +978,12 @@ describe('tela do compromisso: o que muda só num dia', () => {
           }
         : undefined;
     await press(dayChip('Beto'));
-    await settle();
+    await until(() => jest.mocked(notify).mock.calls.length > 0);
     expect(notify).toHaveBeenCalledTimes(1);
     expect(notify).toHaveBeenCalledWith('Erro', 'Essa pessoa não está mais nas fichas da casa. Escolha outra para este dia.');
     expect(mockDb.writes).toEqual([]);
     // As fichas foram buscadas de novo: o Beto não está mais entre as escolhas (nem do dia, nem do formulário).
+    await until(() => !chips().some((label) => label.startsWith('Beto')));
     expect(chips().some((label) => label.startsWith('Beto'))).toBe(false);
 
     // Outra pessoa para o dia grava normalmente.
@@ -946,13 +1000,14 @@ describe('tela do compromisso: o que muda só num dia', () => {
 
   it('o compromisso foi excluído em outro celular: o toque no dia segue dizendo isso', async () => {
     open({ id: 'natacao', dia: '2099-01-01' });
-    await settle();
+    await until(() => dayChips().length > 0);
     mockDb.refuse = () => ({
       code: '23503',
       message: 'insert or update on table "family_event_days" violates foreign key constraint "family_event_days_event_id_household_id_fkey"',
       details: 'Key is not present in table "family_events".',
     });
     await press(dayChip('Beto'));
+    await until(() => jest.mocked(notify).mock.calls.length > 0);
     expect(notify).toHaveBeenCalledWith('Erro', 'Este compromisso não existe mais: foi excluído. Volte para a agenda.');
   });
 });

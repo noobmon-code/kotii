@@ -172,16 +172,35 @@ function EventForm({
   // O compromisso como estava quando os campos foram preenchidos. Se o que chega do banco depois é outro (mudou
   // em outro celular, ou a cópia que abriu era antiga), salvar gravaria o de antes por cima: a tela avisa e
   // oferece atualizar, e o salvar pergunta antes.
-  const [opened] = useState(event);
-  // O que este formulário já mandou gravar. O compromisso que chega igual a isso não mudou "em outro celular":
-  // é o próprio salvar (o que está a caminho, o que falhou pela metade com o compromisso já gravado, ou o que
-  // deu certo com a tela ainda aberta). Guarda todos, e não só o último: com um segundo salvar a caminho, o
-  // que chega do banco ainda é o do primeiro.
-  const [sent, setSent] = useState<FamilyEventValues[]>([]);
-  const changedElsewhere = Boolean(event && opened && ![opened, ...sent].some((known) => sameEventFields(event, known)));
+  // `known` é o que esta tela sabe do compromisso, em ordem: como ele estava ao abrir e, depois, o que este
+  // formulário mandou gravar. O compromisso que chega igual a um deles não mudou "em outro celular": é a cópia
+  // que abriu ou o próprio salvar (o que está a caminho, o que falhou pela metade com o compromisso já gravado,
+  // ou o que deu certo com a tela ainda aberta). Com um segundo salvar a caminho, o que chega do banco ainda é
+  // o do primeiro: por isso a lista, e não só o último.
+  const [known, setKnown] = useState<(FamilyEvent | FamilyEventValues)[]>(() => (event ? [event] : []));
+  let knownAt = -1;
+  if (event) for (let index = known.length - 1; index >= 0 && knownAt < 0; index--) if (sameEventFields(event, known[index])) knownAt = index;
+  // Chegou um salvar daqui: o que veio antes dele deixa de ser "conhecido". Se outro celular puser o compromisso
+  // de volta como estava ao abrir, isso é uma mudança feita lá, e a tela avisa.
+  if (knownAt > 0) setKnown(known.slice(knownAt));
+  const changedElsewhere = Boolean(event && known.length && knownAt < 0);
   // A cópia guardada ainda não foi conferida nesta visita. Se a busca chega com outro compromisso, quem fala é
   // o aviso de que ele mudou (nunca os dois).
   const unchecked = !confirmed && !changedElsewhere;
+  // A conferência que não responde: passado o mesmo limite da abertura, conta como a que não veio, e a tela
+  // oferece tentar de novo (sem isso, as escolhas do dia ficariam paradas enquanto a rede não respondesse).
+  const [stalled, setStalled] = useState(false);
+  const waiting = !confirmed && checking;
+  useEffect(() => {
+    if (!waiting || stalled) return;
+    const timer = setTimeout(() => setStalled(true), FRESH_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [waiting, stalled]);
+  const onTheWay = checking && !stalled;
+  const check = () => {
+    setStalled(false);
+    onCheck();
+  };
   const [title, setTitle] = useState(event?.title ?? '');
   const [date, setDate] = useState(formatBRDate(event?.starts_on ?? day ?? todayISO()));
   const [startTime, setStartTime] = useState(event?.start_time ?? '');
@@ -248,7 +267,7 @@ function EventForm({
     }
     const values = result.values;
     const send = () => {
-      setSent((before) => [...before, values]);
+      setKnown((before) => [...before, values]);
       save.mutate({ id: event?.id, values }, { onSuccess: () => router.back(), onError });
     };
     // Uma pergunta por toque, e a resposta vale para o que a pessoa leu: se a busca chegar com a pergunta
@@ -272,11 +291,11 @@ function EventForm({
         <Card style={styles.group}>
           <Text variant="heading">Cópia guardada neste celular</Text>
           <Text variant="muted">Ainda não deu para conferir se este compromisso mudou em outro celular.</Text>
-          {/* Com a busca a caminho não há o que tentar: o botão vem quando ela falhou ou está parada (sem internet). */}
-          {checking ? null : <Button title="Tentar de novo" variant="secondary" icon="refresh" onPress={onCheck} />}
+          {/* Com a busca a caminho não há o que tentar: o botão vem quando ela falhou, está parada (sem internet) ou não responde. */}
+          {onTheWay ? null : <Button title="Tentar de novo" variant="secondary" icon="refresh" onPress={check} />}
         </Card>
       ) : null}
-      {event && series ? <DayChanges event={event} people={people} initialDay={day} confirmed={confirmed} checking={checking} onCheck={onCheck} /> : null}
+      {event && series ? <DayChanges event={event} people={people} initialDay={day} confirmed={confirmed} checking={onTheWay} onCheck={check} /> : null}
       {series ? (
         <View style={styles.group}>
           <Text variant="heading">Todas as vezes</Text>
@@ -404,7 +423,7 @@ function DayChanges({
   if (!days.data) {
     return daysStuck ? (
       <Card style={styles.group}>
-        <Text variant="small">Não deu para carregar o que muda em cada dia deste compromisso. Tente de novo mais tarde.</Text>
+        <Text variant="small">Não deu para carregar o que muda em cada dia deste compromisso.</Text>
         <Button title="Tentar de novo" variant="secondary" icon="refresh" onPress={retry} />
       </Card>
     ) : null;
