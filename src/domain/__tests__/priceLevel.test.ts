@@ -43,6 +43,31 @@ describe('storePriceIndex', () => {
     expect([apart.get('bom'), apart.get('caro'), apart.get('outro')]).toEqual([1, 1, 1]);
   });
 
+  it('um mercado com o mesmo produto por kg e por g entra uma vez só: com o preço mais novo ou, sem data, com a média dele', () => {
+    const dated = (storeId: string, unitPrice: number, unit: string, purchasedAt: string): LevelPrice => ({ ...price('queijo', storeId, unitPrice, unit), purchasedAt });
+    // Os dois mercados cobram R$ 40,00/kg hoje; a linha por g do "a" é de uma nota antiga (R$ 20,00/kg).
+    const rows = [
+      dated('a', 40, 'kg', '2026-10-01T12:00:00Z'),
+      dated('a', 0.02, 'g', '2026-06-01T12:00:00Z'),
+      dated('b', 40, 'kg', '2026-09-20T12:00:00Z'),
+    ];
+    for (const order of [rows, [...rows].reverse()]) {
+      const index = storePriceIndex(order);
+      expect([index.get('a'), index.get('b')]).toEqual([1, 1]);
+    }
+    // A linha por g é a mais nova: aí é ela o preço do "a" (R$ 20,00/kg contra R$ 40,00/kg do "b"; média 30).
+    const newer = storePriceIndex([rows[0], dated('a', 0.02, 'g', '2026-10-05T12:00:00Z'), rows[2]]);
+    expect(newer.get('a')).toBeCloseTo((20 / 30 + 2) / 3, 5);
+    expect(newer.get('b')).toBeCloseTo((40 / 30 + 2) / 3, 5);
+    // Sem data não dá para saber qual é o mais novo: a média do mercado (30), um voto por mercado (média 35).
+    const undated = storePriceIndex([price('queijo', 'a', 40, 'kg'), price('queijo', 'a', 0.02, 'g'), price('queijo', 'b', 40, 'kg')]);
+    expect(undated.get('a')).toBeCloseTo((30 / 35 + 2) / 3, 5);
+    expect(undated.get('b')).toBeCloseTo((40 / 35 + 2) / 3, 5);
+    // Duas linhas do mesmo mercado não fazem dois mercados: produto de um mercado só não diz nada.
+    const alone = storePriceIndex([price('queijo', 'a', 40, 'kg'), price('queijo', 'a', 0.02, 'g')]);
+    expect(alone.get('a')).toBe(1);
+  });
+
   it('preço zerado (brinde na nota) não entra: não zera o nível de ninguém', () => {
     const index = storePriceIndex([price('brinde', 'bom', 0), price('brinde', 'caro', 4), price('arroz', 'caro', 20)]);
     expect(index.get('bom')).toBeUndefined();

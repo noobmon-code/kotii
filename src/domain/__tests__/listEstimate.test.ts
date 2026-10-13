@@ -19,6 +19,7 @@ import {
   type EstimatePrice,
   type ItemEstimate,
   type PantryStock,
+  uncheckedPricesNote,
 } from '../listEstimate';
 import { LinkIndex, listNameKey } from '../listLinks';
 import { storePriceIndex } from '../priceLevel';
@@ -186,7 +187,8 @@ describe('estimateList', () => {
     );
     expect(estimate.byItem.get('p')).toMatchObject({ cost: 11.98, unit: 'kg', approximateQuantity: false });
     expect(estimate.byItem.get('s')).toMatchObject({ cost: 6, unit: 'l', approximateQuantity: false });
-    expect(estimate.byItem.get('q')).toMatchObject({ cost: 14.97, unit: 'g', approximateQuantity: false });
+    // O preço por g entra na conta já por kg (R$ 0,0499/g são R$ 49,90/kg): o custo é o mesmo.
+    expect(estimate.byItem.get('q')).toMatchObject({ cost: 14.97, unit: 'kg', unitPrice: 49.9, approximateQuantity: false });
     expect(estimate).toMatchObject({ total: 32.95, approximateCount: 0 });
     expect(formatItemCost(estimate.byItem.get('p')!)).toBe('R$ 11,98');
   });
@@ -201,6 +203,87 @@ describe('estimateList', () => {
     // 500 ml nunca viram 500 x o preço da unidade.
     expect(estimate.byItem.get('s')).toMatchObject({ cost: 7, approximateQuantity: true });
     expect(estimate).toMatchObject({ total: 18.49, pricedCount: 3, approximateCount: 3 });
+  });
+
+  it('o mesmo produto por kg num mercado e por g em outro (ou por litro e por ml): o último preço, o menor e a média olham os dois', () => {
+    const quotes = [
+      price('queijo', 'a', 49.9, '2026-08-05T12:00:00Z', 'kg'),
+      price('queijo', 'b', 0.0299, '2026-10-01T12:00:00Z', 'g'),
+      price('suco', 'a', 12, '2026-08-05T12:00:00Z', 'l'),
+      price('suco', 'b', 0.008, '2026-10-01T12:00:00Z', 'ml'),
+    ];
+    const list = [item('q', 'Queijo', 'queijo', 1, 'kg'), item('s', 'Suco', 'suco', 1, 'l')];
+    const estimate = estimateList(list, quotes);
+    // O último preço do queijo é o de outubro, por g: R$ 29,90 por kg. O de agosto, por kg, ficou para trás.
+    const queijo = estimate.byItem.get('q')!;
+    expect(queijo).toMatchObject({ cost: 29.9, unitPrice: 29.9, unit: 'kg', approximateQuantity: false });
+    expect(queijo.last).toEqual({ ...quotes[1], unit: 'kg', unitPrice: 29.9 });
+    expect(queijo.lowest).toEqual(queijo.last);
+    expect(estimate.byItem.get('s')).toMatchObject({ cost: 8, unitPrice: 8, unit: 'l' });
+    expect(estimate.total).toBe(37.9);
+    // Mercado sem o item: a média dos dois (R$ 39,90/kg e R$ 10,00/l), não só a do preço por kg.
+    const elsewhere = estimateList(list, quotes, { storeId: 'c' });
+    expect(elsewhere.byItem.get('q')).toMatchObject({ kind: 'estimated', cost: 39.9, unitPrice: 39.9, unit: 'kg' });
+    expect(elsewhere.byItem.get('s')).toMatchObject({ kind: 'estimated', cost: 10, unit: 'l' });
+    // O preço por g mais novo e mais caro: é o último, e o por kg de antes é o menor (a referência de promoção).
+    const dearer = estimateList(list, [quotes[0], price('queijo', 'b', 0.0599, '2026-10-01T12:00:00Z', 'g')]).byItem.get('q')!;
+    expect(dearer.last).toMatchObject({ storeId: 'b', unit: 'kg', unitPrice: 59.9 });
+    expect(dearer.lowest).toEqual(quotes[0]);
+    // Peso não vira volume, nem "un": continuam contas separadas.
+    const apart = estimateList(
+      [item('x', 'Azeite', 'azeite', 1, 'l')],
+      [
+        price('azeite', 'a', 40, '2026-10-01T12:00:00Z', 'l'),
+        price('azeite', 'b', 0.03, '2026-10-05T12:00:00Z', 'g'),
+        price('azeite', 'c', 25, '2026-10-06T12:00:00Z', 'un'),
+      ],
+    ).byItem.get('x')!;
+    expect(apart).toMatchObject({ cost: 40, unit: 'l' });
+    expect(apart.lowest).toMatchObject({ storeId: 'a', unitPrice: 40 });
+  });
+
+  it('o mesmo preço escrito por kg e por g é o mesmo preço: não aparece como "menor"', () => {
+    // 0,0049 x 1000 dá 4,8999999999999995 na conta do computador; ao entrar na regra, o preço volta às 4 casas da nota.
+    const quotes = [price('arroz', 'a', 4.9, '2026-10-01T12:00:00Z', 'kg'), price('arroz', 'b', 0.0049, '2026-09-01T12:00:00Z', 'g')];
+    const arroz = estimateList([item('a', 'Arroz', 'arroz', 2, 'kg')], quotes).byItem.get('a')!;
+    expect(arroz.lowest).toEqual(quotes[0]);
+    expect(arroz.cost).toBe(9.8);
+  });
+
+  it('um mercado com o produto por kg e por g: vale o preço mais novo de lá, e o antigo não vira "menor preço" nem entra na média', () => {
+    const quotes = [
+      price('queijo', 'a', 40, '2026-10-01T12:00:00Z', 'kg'),
+      // Uma nota antiga do mesmo mercado saiu por g (R$ 20,00/kg): o último preço de lá é o de outubro.
+      price('queijo', 'a', 0.02, '2026-06-01T12:00:00Z', 'g'),
+      price('queijo', 'b', 44, '2026-09-01T12:00:00Z', 'kg'),
+    ];
+    const list = [item('q', 'Queijo', 'queijo', 1, 'kg')];
+    for (const order of [quotes, [...quotes].reverse()]) {
+      const queijo = estimateList(list, order).byItem.get('q')!;
+      expect(queijo.last).toEqual(quotes[0]);
+      expect(queijo.lowest).toEqual(quotes[0]);
+      expect(estimateList(list, order, { storeId: 'a' }).byItem.get('q')).toMatchObject({ cost: 40, kind: 'known' });
+      // Num mercado sem o item, a média é de um preço por mercado: (40 + 44) / 2.
+      expect(estimateList(list, order, { storeId: 'c' }).byItem.get('q')).toMatchObject({ cost: 42, kind: 'estimated' });
+    }
+  });
+
+  it('item em "un" com preço por g ou por ml: a conta é de 1 kg ou 1 litro, nunca de 1 g', () => {
+    const estimate = estimateList(
+      [item('q', 'Queijo mussarela', 'queijo', 3), item('s', 'Suco', 'suco')],
+      [price('queijo', 'bom', 0.0599, undefined, 'g'), price('suco', 'bom', 0.012, undefined, 'ml')],
+    );
+    expect(estimate.byItem.get('q')).toMatchObject({ cost: 59.9, unit: 'kg', unitPrice: 59.9, approximateQuantity: true });
+    expect(estimate.byItem.get('s')).toMatchObject({ cost: 12, unit: 'l', approximateQuantity: true });
+    expect(formatItemCost(estimate.byItem.get('q')!)).toBe('~R$ 59,90');
+    expect(estimate).toMatchObject({ total: 71.9, approximateCount: 2 });
+  });
+
+  it('o preço estimado guarda as 4 casas da nota, não só os centavos', () => {
+    // Média de R$ 4,999 e R$ 4,50: R$ 4,7495 por kg (o custo, esse sim, é em centavos).
+    const quotes = [price('arroz', 'a', 4.999, undefined, 'kg'), price('arroz', 'b', 4.5, undefined, 'kg')];
+    const arroz = estimateList([item('a', 'Arroz', 'arroz', 2, 'kg')], quotes, { storeId: 'c' }).byItem.get('a')!;
+    expect(arroz).toMatchObject({ kind: 'estimated', unitPrice: 4.7495, cost: 9.5 });
   });
 
   it('prefere o preço na unidade da lista', () => {
@@ -305,6 +388,48 @@ describe('o produto de cada item', () => {
       ['l', 'italac'],
       ['p', 'pao'],
     ]);
+  });
+});
+
+describe('dois produtos com o mesmo nome, a não ser pelo acento', () => {
+  const products = [
+    { id: 'p1', name: 'Açúcar' },
+    { id: 'p2', name: 'Acucar' },
+    { id: 'p3', name: 'Açucar' },
+  ];
+  const list = [item('a', 'açúcar', null, 2)];
+  /** Todas as ordens em que os produtos (ou os preços) podem chegar. */
+  const orders = <T,>(values: T[]): T[][] =>
+    values.length < 2 ? [values] : values.flatMap((value, i) => orders([...values.slice(0, i), ...values.slice(i + 1)]).map((rest) => [value, ...rest]));
+  /** O produto e o custo do item em cada ordem: um só resultado quando a ordem não decide. */
+  const chosen = (quotes: EstimatePrice[]) =>
+    new Set(
+      orders(products).flatMap((productOrder) =>
+        orders(quotes).map((quoteOrder) => {
+          const cost = estimateList(list, quoteOrder, { products: productOrder }).byItem.get('a');
+          return cost ? `${cost.productId} ${cost.cost}` : 'sem preço';
+        }),
+      ),
+    );
+
+  it('só um deles tem preço: é dele o preço do item, chegue em que ordem chegar', () => {
+    expect(chosen([price('p1', 'bom', 5)])).toEqual(new Set(['p1 10']));
+    expect(chosen([price('p3', 'bom', 6)])).toEqual(new Set(['p3 12']));
+  });
+
+  it('mais de um com preço: vale o de preço mais recente; no empate de data, o de menor id', () => {
+    expect(
+      chosen([
+        price('p1', 'bom', 5, '2026-09-01T12:00:00Z'),
+        price('p2', 'caro', 6, '2026-10-01T12:00:00Z'),
+        price('p3', 'bom', 7, '2026-08-01T12:00:00Z'),
+      ]),
+    ).toEqual(new Set(['p2 12']));
+    expect(chosen([price('p3', 'bom', 7), price('p2', 'bom', 6)])).toEqual(new Set(['p2 12']));
+  });
+
+  it('nenhum com preço: o item fica sem preço, em qualquer ordem', () => {
+    expect(chosen([price('outro', 'bom', 5)])).toEqual(new Set(['sem preço']));
   });
 });
 
@@ -533,9 +658,43 @@ describe('a lista e "Onde comprar" dão o mesmo total', () => {
     expect(recommendation.plans[2].assignments.map((a) => a.approximateQuantity)).toEqual([false, false]);
   });
 
-  it('em centenas de listas sorteadas, em todos os mercados', () => {
-    // Sorteio com semente (mulberry32): as mesmas listas a cada rodada.
-    let state = 20261012;
+  it('queijo por kg num mercado e por g no outro, com a lista em "un": 1 kg nos dois, e ganha o mais barato', () => {
+    const list = [item('q', 'Queijo mussarela', 'queijo'), item('a', 'Arroz', 'arroz')];
+    const quotes = [
+      price('queijo', 'a', 49.9, '2026-10-01T12:00:00Z', 'kg'),
+      price('queijo', 'b', 0.0599, '2026-09-01T12:00:00Z', 'g'),
+      price('arroz', 'a', 20),
+      price('arroz', 'b', 20),
+    ];
+    const { recommendation, estimates } = expectSameAccount(list, quotes, {}, ['a', 'b']);
+    // No B o queijo é 1 kg a R$ 59,90, não 1 g a R$ 0,06: o A sai R$ 10,00 mais barato.
+    expect(recommendation.plans.map((p) => [p.storeIds[0], p.total])).toEqual([
+      ['a', 69.9],
+      ['b', 79.9],
+    ]);
+    expect(estimates.get('b')!.byItem.get('q')).toMatchObject({ cost: 59.9, unit: 'kg', kind: 'known', approximateQuantity: true });
+  });
+
+  it('mercado com o mesmo produto por kg e por g: o nível de preço conta o mercado uma vez só', () => {
+    const list = [item('q', 'Queijo', 'queijo', 0.5, 'kg'), item('c', 'Café', 'cafe')];
+    const quotes = [
+      price('queijo', 'a', 40, '2026-10-01T12:00:00Z', 'kg'),
+      // Nota antiga do A, por g (R$ 20,00/kg): não é mais o preço de lá.
+      price('queijo', 'a', 0.02, '2026-06-01T12:00:00Z', 'g'),
+      price('queijo', 'b', 40, '2026-09-20T12:00:00Z', 'kg'),
+      price('cafe', 'a', 18),
+    ];
+    const { recommendation } = expectSameAccount(list, quotes, {}, ['a', 'b']);
+    // Os dois cobram R$ 40,00/kg hoje: mesmo nível, e o café que o B não tem sai pela média, R$ 18,00.
+    expect(recommendation.plans.map((p) => [p.storeIds[0], p.total, p.estimatedCount])).toEqual([
+      ['a', 38, 0],
+      ['b', 38, 1],
+    ]);
+  });
+
+  /** Sorteio com semente (mulberry32): as mesmas listas a cada rodada. */
+  const seeded = (seed: number) => {
+    let state = seed;
     const random = () => {
       state = (state + 0x6d2b79f5) >>> 0;
       let t = Math.imul(state ^ (state >>> 15), state | 1);
@@ -545,6 +704,57 @@ describe('a lista e "Onde comprar" dão o mesmo total', () => {
     const int = (min: number, max: number) => min + Math.floor(random() * (max - min + 1));
     const pick = <T,>(values: readonly T[]) => values[int(0, values.length - 1)];
     const chance = (p: number) => random() < p;
+    return { random, int, pick, chance };
+  };
+
+  it('em listas sorteadas de coisas vendidas a peso e a volume: kg e g, litro e ml, às vezes os dois no mesmo mercado', () => {
+    const { int, pick, chance } = seeded(20261013);
+    const seen = { plans: 0, estimated: 0, approximate: 0, bothUnits: 0, perGram: 0 };
+    for (let round = 0; round < 300; round++) {
+      const stores = ['a', 'b', 'c', 'd'].slice(0, int(2, 4));
+      // Seis produtos: três a peso, três a volume.
+      const catalog = Array.from({ length: 6 }, (_, n) => ({ id: `p${n}`, name: `Produto ${n}`, units: n < 3 ? ['kg', 'g'] : ['l', 'ml'] }));
+      const quotes: EstimatePrice[] = [];
+      for (const product of catalog) {
+        for (const storeId of stores) {
+          if (chance(0.3)) continue;
+          // Cada nota saiu numa unidade; alguns mercados têm o produto nas duas (notas de dias diferentes).
+          const units = chance(0.25) ? product.units : [pick(product.units)];
+          if (units.length > 1) seen.bothUnits += 1;
+          for (const unit of units) {
+            // De R$ 3,00 a R$ 90,00 por kg ou litro; por g e por ml, com as 4 casas da nota.
+            const unitPrice = unit === 'g' || unit === 'ml' ? int(30, 900) / 10000 : int(300, 9000) / 100;
+            const day = `2026-${pick(['08', '09', '10'])}-${String(int(1, 28)).padStart(2, '0')}`;
+            quotes.push(price(product.id, storeId, unitPrice, `${day}T12:00:00Z`, unit));
+          }
+        }
+      }
+      const list = Array.from({ length: int(2, 6) }, (_, n) => {
+        const product = pick(catalog);
+        const unit = pick([...product.units, 'un']);
+        const quantity = unit === 'g' || unit === 'ml' ? int(1, 18) * 50 : unit === 'un' ? int(1, 6) : int(1, 6) / 2;
+        return item(`i${n}`, product.name, product.id, quantity, unit, chance(0.15));
+      });
+
+      const { recommendation, estimates } = expectSameAccount(list, quotes, {}, stores);
+      seen.plans += recommendation.plans.length;
+      for (const plan of recommendation.plans) {
+        for (const a of plan.assignments) {
+          const cost = estimates.get(plan.storeIds[0])!.byItem.get(a.itemKey)!;
+          // Toda resposta vem por kg ou por litro: nenhum item sai pelo preço de 1 g ou de 1 ml.
+          expect(['kg', 'l']).toContain(cost.unit);
+          if (a.kind === 'estimated') seen.estimated += 1;
+          if (a.approximateQuantity) seen.approximate += 1;
+          // O preço da nota veio por g ou por ml: entrou na conta convertido.
+          if (cost.used && !quotes.includes(cost.used)) seen.perGram += 1;
+        }
+      }
+    }
+    for (const count of Object.values(seen)) expect(count).toBeGreaterThan(40);
+  });
+
+  it('em centenas de listas sorteadas, em todos os mercados', () => {
+    const { random, int, pick, chance } = seeded(20261012);
 
     const NAMES = ['Leite', 'Refrigerante', 'Café', 'Sabão em pó', 'Queijo'];
     const UNITS = ['un', 'un', 'un', 'kg', 'g', 'l', 'ml'];
@@ -835,6 +1045,36 @@ describe('pantryHits', () => {
     expect(pantryHits(list, [sameDay, stock('Leite', null, { purchased_on: '2026-09-22' })], { links, today, ranOut }).size).toBe(0);
   });
 
+  it('o que acabou pelo nome da lista vale também para o item que já tem o produto ligado a esse nome', () => {
+    // "Leite" marcado na lista (sem produto) em 12 set, 22 set e 2 out: a cada 10 dias, última há 10. Acabou, pelo nome.
+    const ranOut = ranOutItems(['2026-09-12', '2026-09-22', '2026-10-02'].map((day) => purchase('Leite', null, day, 'list')), { now: endOf(today) });
+    expect(ranOut.map((r) => [r.name, r.productId])).toEqual([['Leite', null]]);
+    const links = new LinkIndex([{ name_key: 'leite', product_id: 'italac' }]);
+    // Uma nota pôs o Italac na despensa, e depois alguém pôs o leite na lista pela sugestão do produto.
+    const carton = (purchased_on: string) => [stock('Leite Integral Italac 1L', 'italac', { purchased_on })];
+    const backed = [item('l', 'Leite Integral Italac 1L', 'italac')];
+    // Sem as ligações, o palpite sobre "Leite" não diz nada sobre o Italac.
+    expect(pantryHits(backed, carton('2026-10-02'), { today, ranOut }).size).toBe(1);
+    // Com elas, "Leite" é o Italac: as caixas da última compra conhecida acabaram, como para o item digitado "Leite".
+    expect(pantryHits(backed, carton('2026-10-02'), { links, today, ranOut }).size).toBe(0);
+    expect(pantryHits([item('l', 'Leite', null)], carton('2026-10-02'), { links, today, ranOut }).size).toBe(0);
+    // Caixas compradas depois (e ainda dentro do costume) são estoque novo.
+    expect(pantryHits(backed, carton('2026-10-09'), { links, today, ranOut }).size).toBe(1);
+
+    // Nome ligado a dois produtos: o palpite não diz qual deles acabou, e a entrada de cada um responde por ela mesma.
+    const two = new LinkIndex([
+      { name_key: 'leite', product_id: 'italac' },
+      { name_key: 'leite', product_id: 'ninho' },
+    ]);
+    expect(pantryHits(backed, carton('2026-10-02'), { links: two, today, ranOut }).size).toBe(1);
+    const ninho = [stock('Leite Ninho 800g', 'ninho', { purchased_on: '2026-09-25' })];
+    expect(pantryHits([item('n', 'Leite Ninho 800g', 'ninho')], ninho, { links: two, today, ranOut }).size).toBe(1);
+
+    // O palpite que já sabe de qual produto é (o Ninho) não passa para outro pelas ligações do nome.
+    const ofNinho = [{ name: 'Leite', productId: 'ninho', lastAt: '2026-10-02T12:00:00', everyDays: 10 }];
+    expect(pantryHits(backed, carton('2026-10-02'), { links, today, ranOut: ofNinho }).size).toBe(1);
+  });
+
   it('o que passou muito do costume continua fora: o selo não volta depois de 3 vezes o intervalo', () => {
     const records = ['2026-09-08', '2026-09-18', '2026-09-28'].map((day) => purchase('Café Pilão 500g', 'pilao', day, 'receipt'));
     const pantry = [stock('Café Pilão 500g', 'pilao', { purchased_on: '2026-09-28', expires_on: '2027-03-27' })];
@@ -1004,6 +1244,75 @@ describe('textos da estimativa', () => {
         { storeName, today, chosenStore: 'dia' },
       ).slice(-2),
     ).toEqual(['Preço usado na conta: R$ 6,00/kg (Dia, 1 out).', 'O preço é por kg: a conta da lista usa 1 kg.']);
+  });
+
+  it('preço por g ou por ml aparece por kg ou por litro, nunca como "R$ 0,00/g"', () => {
+    const facts = (storeId: string | null, quotes: EstimatePrice[]) =>
+      itemFacts(estimateList([{ id: 'a', name: 'Arroz', productId: 'arroz', quantity: 500, unit: 'g', inCart: false }], quotes, { storeId }).byItem.get('a'), undefined, {
+        storeName,
+        today,
+        chosenStore: storeId,
+        promotionOnly: true,
+      });
+    const perGram = [
+      quote('assai', 0.0049, '2026-10-01', { productId: 'arroz', unit: 'g' }),
+      quote('atacadao', 0.0041, '2026-09-01', { productId: 'arroz', unit: 'g' }),
+    ];
+    expect(facts(null, perGram)).toEqual([
+      'Último preço: R$ 4,90/kg (Assaí, 1 out).',
+      'Menor preço: R$ 4,10/kg (Atacadão, 1 set).',
+      'Só em promoção: o preço bom é R$ 4,10/kg ou menos.',
+    ]);
+    // Estimado num mercado sem o item: a média, também por kg.
+    expect(facts('dia', perGram)[2]).toBe('Dia: a casa ainda não comprou este item lá; cerca de R$ 4,50/kg, pelo nível de preço de lá.');
+    // O mesmo queijo por kg num mercado e por g no outro: o por g, mais novo e mais caro, é o último; o por kg é o menor.
+    expect(
+      facts(null, [
+        quote('assai', 49.9, '2026-08-05', { productId: 'arroz', unit: 'kg' }),
+        quote('atacadao', 0.0599, '2026-10-01', { productId: 'arroz', unit: 'g' }),
+      ]),
+    ).toEqual([
+      'Último preço: R$ 59,90/kg (Atacadão, 1 out).',
+      'Menor preço: R$ 49,90/kg (Assaí, 5 ago).',
+      'Só em promoção: o preço bom é R$ 49,90/kg ou menos.',
+    ]);
+    // A frase não depende de quem montou a estimativa: um preço por ml sai por litro.
+    const perMl = quote('assai', 0.0083, '2026-10-03', { unit: 'ml' });
+    expect(itemFacts({ ...estimate, unit: 'ml', unitPrice: 0.0083, used: perMl, last: perMl, lowest: perMl }, undefined, { storeName, today })).toEqual([
+      'Último preço: R$ 8,30/l (Assaí, 3 out).',
+    ]);
+  });
+
+  it('lista em "un" com preço por g: os detalhes dizem que a conta usa 1 kg', () => {
+    const queijo = estimateList(
+      [{ id: 'q', name: 'Queijo mussarela', productId: 'queijo', quantity: 3, unit: 'un', inCart: false }],
+      [quote('assai', 49.9, '2026-10-03', { productId: 'queijo', unit: 'kg' }), quote('dia', 0.0599, '2026-09-01', { productId: 'queijo', unit: 'g' })],
+      { storeId: 'dia' },
+    ).byItem.get('q');
+    expect(itemFacts(queijo, undefined, { storeName, today, chosenStore: 'dia' })).toEqual([
+      'Último preço: R$ 49,90/kg (Assaí, 3 out).',
+      'Preço usado na conta: R$ 59,90/kg (Dia, 1 set).',
+      'O preço é por kg: a conta da lista usa 1 kg.',
+    ]);
+    // Para a estimativa montada com o preço como veio na nota, a frase é a mesma: nunca "usa 1 g".
+    const perGram = quote('dia', 0.0599, '2026-09-01', { unit: 'g' });
+    expect(
+      itemFacts({ ...estimate, cost: 59.9, unitPrice: 0.0599, unit: 'g', approximateQuantity: true, used: perGram }, undefined, {
+        storeName,
+        today,
+        chosenStore: 'dia',
+      }).slice(-2),
+    ).toEqual(['Preço usado na conta: R$ 59,90/kg (Dia, 1 set).', 'O preço é por kg: a conta da lista usa 1 kg.']);
+  });
+
+  it('sem as ligações ou os produtos carregados, o cartão diz que não deu para conferir o que ficou sem preço', () => {
+    expect(uncheckedPricesNote({ itemCount: 5, pricedCount: 3 }, false)).toBe('Não deu para conferir se os outros 2 itens já têm preço.');
+    expect(uncheckedPricesNote({ itemCount: 2, pricedCount: 1 }, false)).toBe('Não deu para conferir se o outro item já tem preço.');
+    // Carregados, ou com todos os itens com preço, não há o que avisar.
+    expect(uncheckedPricesNote({ itemCount: 5, pricedCount: 3 }, true)).toBeNull();
+    expect(uncheckedPricesNote({ itemCount: 5, pricedCount: 5 }, false)).toBeNull();
+    // Sem item com preço não há conta (nem "outros"): o cartão não aparece.
+    expect(uncheckedPricesNote({ itemCount: 5, pricedCount: 0 }, false)).toBeNull();
   });
 
   it('o que está na despensa, desde quando', () => {

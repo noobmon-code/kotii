@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import type { PurchaseRecord } from '../recentPurchases';
+import { fitsList, type PurchaseRecord } from '../recentPurchases';
 import { describeRestock, ranOutItems, restockFrom, restockSuggestions } from '../restock';
 
 const NOW = new Date('2026-09-27T15:00:00-03:00');
@@ -136,5 +136,15 @@ describe('ranOutItems e restockFrom', () => {
         restockSuggestions(records, { now: NOW, ...options }),
       );
     }
+  });
+
+  it('uma leitura sem o tipo da lista serve ao selo e à faixa: filtrada depois pelo tipo, a faixa é a mesma', () => {
+    // Como a tela da lista faz: o selo "Na despensa" olha tudo o que acabou; só a faixa fica com o que cabe na lista.
+    const all = ranOutItems(records, { now: NOW });
+    expect(all.map((i) => i.name)).toContain('Dipirona');
+    for (const listKind of ['mercado', 'farmacia', 'outros'] as const) {
+      expect(restockFrom(all.filter((i) => fitsList(i.category, listKind)))).toEqual(restockSuggestions(records, { now: NOW, listKind }));
+    }
+    expect(restockFrom(all.filter((i) => fitsList(i.category, 'farmacia'))).map((i) => i.name)).toEqual(['Dipirona']);
   });
 });

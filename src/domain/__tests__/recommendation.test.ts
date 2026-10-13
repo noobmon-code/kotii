@@ -146,6 +146,20 @@ describe('recommendStores', () => {
     expect(rec.plans[0].assignments[0]).toMatchObject({ cost: 5.9, approximateQuantity: true });
   });
 
+  it('counts one kg (or one litre), never one gram, when the list unit does not convert to a price per g or per ml', () => {
+    const rec = recommendStores(
+      [item('q', 'queijo', 3, 'un'), item('s', 'suco', 2, 'un')],
+      [price('queijo', 'x', 0.0599, 'g'), price('queijo', 'y', 0.0499, 'g'), price('suco', 'x', 0.008, 'ml'), price('suco', 'y', 0.012, 'ml')],
+      1,
+    );
+    // 1 kg of cheese and 1 l of juice in each store: x = 59.90 + 8.00, y = 49.90 + 12.00.
+    expect(rec.plans.map((p) => [p.storeIds[0], p.total])).toEqual([
+      ['y', 61.9],
+      ['x', 67.9],
+    ]);
+    expect(rec.plans[0].assignments.every((a) => a.approximateQuantity)).toBe(true);
+  });
+
   it('converts g to kg and ml to l exactly', () => {
     const rec = recommendStores(
       [item('p', 'presunto', 200, 'g'), item('s', 'suco', 500, 'ml')],

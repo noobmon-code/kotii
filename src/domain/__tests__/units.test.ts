@@ -27,4 +27,13 @@ describe('unidades', () => {
     expect(priceQuantity(500, 'ml', 'un')).toEqual({ quantity: 1, approximate: true });
     expect(priceQuantity(6, 'un', 'kg')).toEqual({ quantity: 1, approximate: true });
   });
+
+  it('sem conversão, a conta é de 1 kg, 1 litro ou 1 unidade: preço por g ou por ml nunca vira 1 g ou 1 ml', () => {
+    // 1000 x o preço por g é o preço de 1 kg.
+    expect(priceQuantity(3, 'un', 'g')).toEqual({ quantity: 1000, approximate: true });
+    expect(priceQuantity(1, 'un', 'ml')).toEqual({ quantity: 1000, approximate: true });
+    expect(priceQuantity(2, 'l', 'g')).toEqual({ quantity: 1000, approximate: true });
+    expect(priceQuantity(3, 'un', 'l')).toEqual({ quantity: 1, approximate: true });
+    expect(priceQuantity(2, 'kg', 'cx')).toEqual({ quantity: 1, approximate: true });
+  });
 });

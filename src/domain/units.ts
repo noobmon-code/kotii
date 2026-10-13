@@ -36,11 +36,13 @@ export function sameDimension(a: string, b: string): boolean {
 
 /**
  * Quantas unidades do preço a lista pede (200 g com preço por kg: 0,2). Quando
- * não dá para converter (3 un de banana com preço por kg), vale 1 unidade do
- * preço, qualquer que seja a quantidade: 500 ml nunca viram 500 x o preço da
- * unidade. Aí a quantidade é aproximada.
+ * não dá para converter (3 un de banana com preço por kg), vale 1 kg, 1 litro
+ * ou 1 unidade, qualquer que seja a quantidade: 500 ml nunca viram 500 x o
+ * preço da unidade. Com o preço por g ou por ml, isso é 1000 x o preço (1 kg,
+ * 1 litro), nunca 1 g: todo mercado responde na mesma medida. Aí a quantidade
+ * é aproximada.
  */
 export function priceQuantity(quantity: number, listUnit: string, priceUnit: string): { quantity: number; approximate: boolean } {
   const converted = convertQuantity(quantity, listUnit, priceUnit);
-  return converted == null ? { quantity: 1, approximate: true } : { quantity: converted, approximate: false };
+  return converted == null ? { quantity: pricePerBase(1, priceUnit).unitPrice, approximate: true } : { quantity: converted, approximate: false };
 }

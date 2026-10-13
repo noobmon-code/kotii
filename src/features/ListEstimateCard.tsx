@@ -2,7 +2,7 @@
 // preços do mercado em que a pessoa está) e o que está na despensa.
 
 import { useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 
 import {
   cartSplitLine,
@@ -10,6 +10,7 @@ import {
   describePantryHits,
   estimateHeadline,
   storeOptionNote,
+  uncheckedPricesNote,
   type ListEstimate,
 } from '@/domain/listEstimate';
 import { formatBRL } from '@/domain/money';
@@ -18,11 +19,15 @@ import { PickerModal } from '@/ui/PickerModal';
 import { Button, Card, Chip, Icon, IconBadge, Row, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
+// Como buscar de novo o que não chegou. No navegador não existe puxar para atualizar: lá é recarregar a página.
+const RETRY_HINT = Platform.OS === 'web' ? 'Recarregue a página para tentar de novo.' : 'Puxe a lista para baixo para tentar de novo.';
+
 export function ListEstimateCard({
   estimate,
   kind,
   storeId,
   storeNames,
+  sourcesLoaded,
   onChangeStore,
   inPantry,
 }: {
@@ -33,6 +38,8 @@ export function ListEstimateCard({
   storeId: string | null;
   /** Os nomes dos mercados; sem eles (ainda não carregaram), não há como dizer onde se está. */
   storeNames?: ReadonlyMap<string, string>;
+  /** false: as ligações ou os produtos não chegaram, e item sem preço pode ser só item que não deu para conferir. */
+  sourcesLoaded: boolean;
   onChangeStore: (storeId: string | null) => void;
   /** Nomes dos itens a comprar que estão na despensa. */
   inPantry: string[];
@@ -41,6 +48,7 @@ export function ListEstimateCard({
   const priced = estimate.pricedCount > 0;
   if (!priced && !inPantry.length) return null;
   const cartSplit = cartSplitLine(estimate);
+  const unchecked = uncheckedPricesNote(estimate, sourcesLoaded);
   const storeName = storeId ? storeNames?.get(storeId) : undefined;
   const place = kind === 'farmacia' ? 'farmácia' : 'mercado';
 
@@ -56,6 +64,7 @@ export function ListEstimateCard({
             </View>
           </Row>
           <Text variant="muted">{describeEstimate(estimate, storeName ?? null)}</Text>
+          {unchecked ? <Text variant="muted">{`${unchecked} ${RETRY_HINT}`}</Text> : null}
           {cartSplit ? <Text variant="muted">{cartSplit}</Text> : null}
           {storeNames ? (
             <Row style={styles.wrap}>
