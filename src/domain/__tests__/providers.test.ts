@@ -6,6 +6,8 @@ import { FINANCE_CATEGORIES } from '../finance';
 import {
   canCopyToExpenses,
   deleteProviderWarning,
+  EXPENSE_COPY_SKIPPED,
+  EXPENSE_COPY_UNKNOWN,
   expenseCopyNote,
   expenseDescription,
   getProviderTrade,
@@ -473,6 +475,24 @@ describe('gasto da casa', () => {
         expect(FINANCE_CATEGORIES.some((c) => c.key === category)).toBe(true);
       }
     }
+  });
+
+  it('com um aparelho que a tela não conhece, não há categoria: o carro não entra em Moradia; o mecânico decide sozinho', () => {
+    expect(serviceExpenseCategory('eletricista', undefined, true)).toBeNull();
+    expect(serviceExpenseCategory('outros', undefined, true)).toBeNull();
+    expect(serviceExpenseCategory(undefined, undefined, true)).toBeNull();
+    expect(serviceExpenseCategory('mecanico', undefined, true)).toBe('transporte');
+    // Sem aparelho nenhum (ou com um que a tela conhece) nada muda.
+    expect(serviceExpenseCategory('eletricista', null, false)).toBe('moradia');
+    expect(serviceExpenseCategory('eletricista', 'veiculo', false)).toBe('transporte');
+    // A linha do cartão diz por que não dá para lançar e onde resolver; o aviso de quem salvou assim, o que fazer.
+    for (const editing of [false, true]) expect(expenseCopyNote(editing, null)).toBe(EXPENSE_COPY_UNKNOWN);
+    expect(EXPENSE_COPY_UNKNOWN).toBe(
+      'Não deu para carregar o aparelho deste serviço, e é ele que diz se o gasto entra em Moradia ou em Transporte. Para lançar o gasto, escolha o aparelho logo abaixo.',
+    );
+    expect(EXPENSE_COPY_SKIPPED).toBe(
+      'Não deu para carregar o aparelho deste serviço, e é ele que diz se o gasto entra em Moradia ou em Transporte. Lance o gasto em Finanças.',
+    );
   });
 
   it('avisa que é uma cópia de uma vez só, e em qual categoria; num serviço que já existia, que pode ficar em dobro', () => {

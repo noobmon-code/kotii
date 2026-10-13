@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
 import { useSaveExpense } from '@/data/finance';
-import { useEquipmentList } from '@/data/house';
+import { useEquipment, useEquipmentList } from '@/data/house';
 import {
   PROVIDERS_UNAVAILABLE,
   providerErrorMessage,
@@ -17,6 +17,7 @@ import { getEquipmentCategory } from '@/domain/equipment';
 import { parseMoney } from '@/domain/money';
 import {
   canCopyToExpenses,
+  EXPENSE_COPY_SKIPPED,
   expenseCopyNote,
   expenseDescription,
   getProviderTrade,
@@ -58,6 +59,11 @@ export default function ServiceJobScreen() {
   const providers = useServiceProviders();
   const equipment = useEquipmentList();
   const job = useServiceJob(isNew ? undefined : id);
+  // O aparelho do serviço (ou o da tela de onde a pessoa veio) que a lista daqui não tem (ela pode ser de antes de
+  // ele ser cadastrado) é buscado à parte: o serviço mostra o nome dele e o gasto sabe se é um veículo.
+  const wanted = isNew ? aparelho : job.data?.equipment_id;
+  const absent = wanted && equipment.data && !equipment.data.some((e) => e.id === wanted) ? wanted : undefined;
+  const lone = useEquipment(absent);
   // Excluído aqui: a busca volta sem ele antes de a tela fechar, e isso não é "não existe mais".
   const [deleted, setDeleted] = useState(false);
 
@@ -116,7 +122,7 @@ export default function ServiceJobScreen() {
       key={id}
       job={isNew ? undefined : (job.data ?? undefined)}
       providers={list.rows}
-      equipment={appliances}
+      equipment={lone.data && lone.data.id === absent ? [...appliances, lone.data] : appliances}
       initialProviderId={prestador || null}
       initialEquipmentId={aparelho || null}
       onDeleted={() => setDeleted(true)}
@@ -168,7 +174,8 @@ function JobForm({
   // A mesma leitura de validateJob: "1.500" é mil e quinhentos.
   const offerExpense = canCopyToExpenses(amount.trim() ? parseMoney(amount) : null);
   // Moradia, ou Transporte quando é do mecânico ou num veículo: a linha do gasto e o gasto usam a mesma.
-  const expenseCategory = serviceExpenseCategory(provider?.trade, appliance?.category);
+  // Sem categoria (null): o aparelho do serviço não está entre os que a tela tem, e um carro entraria em Moradia.
+  const expenseCategory = serviceExpenseCategory(provider?.trade, appliance?.category, Boolean(equipmentId) && !appliance);
 
   function applyWarranty(months: number) {
     setWarranty(formatBRDate(addMonths(parseBRDate(date) ?? todayISO(), months)));
@@ -186,7 +193,9 @@ function JobForm({
       return notify('Não deu para salvar', providerErrorMessage(err));
     }
     // Cópia de uma vez só: o gasto nasce agora e não fica ligado ao serviço.
-    if (toExpenses && canCopyToExpenses(values.amount)) {
+    if (toExpenses && canCopyToExpenses(values.amount) && !expenseCategory) {
+      notify('O serviço foi salvo, mas o gasto não', EXPENSE_COPY_SKIPPED);
+    } else if (toExpenses && canCopyToExpenses(values.amount) && expenseCategory) {
       try {
         await saveExpense.mutateAsync({
           values: {
@@ -244,8 +253,9 @@ function JobForm({
               <Text variant="small">{expenseCopyNote(Boolean(job), expenseCategory)}</Text>
             </View>
             <Switch
-              value={toExpenses}
+              value={toExpenses && Boolean(expenseCategory)}
               onValueChange={setToExpenses}
+              disabled={!expenseCategory}
               trackColor={{ true: c.primary }}
               accessibilityLabel="Lançar também nos gastos da casa"
             />
