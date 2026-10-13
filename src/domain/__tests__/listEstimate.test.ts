@@ -1116,6 +1116,22 @@ describe('pantryHits', () => {
     expect(pantryHits(backed, carton('2026-10-02'), { links, today, ranOut: ofNinho }).size).toBe(1);
   });
 
+  it('o palpite de um produto não vale, pelo nome, para a entrada de outro produto de mesmo nome', () => {
+    // Italac e Ninho renomeados para "Leite" na despensa. O app acha que o Italac acabou (comprado a cada 5 dias, a última vez em 2 out).
+    const ranOut = [{ name: 'Leite', productId: 'italac', lastAt: '2026-10-02T12:00:00', everyDays: 5 }];
+    const pantry = [stock('Leite', 'italac', { purchased_on: '2026-10-02' }), stock('Leite', 'ninho', { purchased_on: '2026-10-01' })];
+    // O Ninho continua com o selo; o Italac, não.
+    expect(pantryHits([item('n', 'Leite', 'ninho')], pantry, { today, ranOut }).size).toBe(1);
+    expect(pantryHits([item('i', 'Leite', 'italac')], pantry, { today, ranOut }).size).toBe(0);
+    // Sem produto (o item digitado "Leite" e a entrada posta à mão), o nome é tudo o que se sabe: o palpite vale.
+    const byHand = [stock('Leite', null, { purchased_on: '2026-10-01' })];
+    expect(pantryHits([item('l', 'Leite', null)], byHand, { today, ranOut }).size).toBe(0);
+    expect(pantryHits([item('l', 'Leite', null)], byHand, { today, ranOut: [] }).size).toBe(1);
+    // E o palpite sem produto ("Leite" marcado na lista) segue valendo pelo nome, tenha a entrada produto ou não.
+    const named = [{ name: 'Leite', productId: null, lastAt: '2026-10-02T12:00:00', everyDays: 5 }];
+    expect(pantryHits([item('n', 'Leite', 'ninho')], pantry, { today, ranOut: named }).size).toBe(0);
+  });
+
   it('o que passou muito do costume continua fora: o selo não volta depois de 3 vezes o intervalo', () => {
     const records = ['2026-09-08', '2026-09-18', '2026-09-28'].map((day) => purchase('Café Pilão 500g', 'pilao', day, 'receipt'));
     const pantry = [stock('Café Pilão 500g', 'pilao', { purchased_on: '2026-09-28', expires_on: '2027-03-27' })];

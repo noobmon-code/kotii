@@ -440,12 +440,16 @@ export function pantryHits(
     /** O palpite é do nome ("Leite"), emprestado ao produto ligado a ele: ver stillThere. */
     lent?: boolean;
   }
+  // Pelo nome, o palpite que não sabe de qual produto é ("Leite" marcado na lista) fica separado do que sabe:
+  // este só vale, pelo nome, para o que também não diz o produto (ver goneOf).
   const goneNames = new Map<string, Gone>();
+  const goneProductNames = new Map<string, Gone>();
   const goneProducts = new Map<string, Gone>();
   for (const gone of ranOut) {
     const latest = { day: toISODate(new Date(gone.lastAt)), everyDays: gone.everyDays };
     const name = normalizeSearch(gone.name);
-    if (latest.day > (goneNames.get(name)?.day ?? '')) goneNames.set(name, latest);
+    const byName = gone.productId ? goneProductNames : goneNames;
+    if (latest.day > (byName.get(name)?.day ?? '')) byName.set(name, latest);
     // O palpite sem produto ("Leite" marcado na lista) é do produto que as notas ligaram a esse nome, quando é um
     // só: vale para as entradas dele e para o item que já o tem. Com dois ligados, não dá para saber qual acabou.
     const linked = gone.productId ? [] : [...new Set(links?.productsFor(gone.name))];
@@ -456,10 +460,13 @@ export function pantryHits(
   }
   /** O palpite de que acabou para esse nome ou produto (o da compra mais recente); null quando o app não acha que acabou. */
   const goneOf = (key: string, productId: string | null): Gone | null => {
-    const byName = goneNames.get(key) ?? null;
+    const later = (a: Gone | null, b: Gone | null) => (!a || !b ? (a ?? b) : a.day > b.day ? a : b);
+    // O palpite de um produto vale pelo nome só para o que não diz qual produto é (a entrada posta à mão, o item
+    // digitado). A entrada de outro produto com o mesmo nome (Italac e Ninho, os dois renomeados para "Leite")
+    // responde por ela mesma.
+    const byName = later(goneNames.get(key) ?? null, productId == null ? (goneProductNames.get(key) ?? null) : null);
     const byProduct = (productId != null ? goneProducts.get(productId) : undefined) ?? null;
-    if (!byName || !byProduct) return byName ?? byProduct;
-    return byName.day > byProduct.day ? byName : byProduct;
+    return later(byName, byProduct);
   };
   /**
    * A entrada é estoque que o palpite não viu: comprada depois (fora a mesma ida ao mercado) e ainda dentro do

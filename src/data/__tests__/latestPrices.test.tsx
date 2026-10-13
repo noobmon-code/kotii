@@ -123,11 +123,19 @@ describe('últimos preços da casa', () => {
     await expect(fetchLatestPrices()).rejects.toThrow(
       'Não foi possível carregar todos os preços da casa: são mais do que o app consegue ler de uma vez.',
     );
-    expect(ranges()).toHaveLength(20);
+    // As 20 páginas do teto, e a linha a mais que diz que há mais.
+    expect(ranges()).toHaveLength(21);
+    expect(ranges().at(-1)).toEqual([20_000, 20_000]);
     // Logo abaixo do teto, ainda carrega tudo.
     mockView.asked = [];
     mockView.rows = prices(19_999);
     expect(await fetchLatestPrices()).toHaveLength(19_999);
+    expect(ranges()).toHaveLength(20);
+    // E exatamente no teto também: as 20 páginas vêm cheias, e a linha a mais não existe.
+    mockView.asked = [];
+    mockView.rows = prices(20_000);
+    expect(await fetchLatestPrices()).toHaveLength(20_000);
+    expect(ranges()).toHaveLength(21);
   });
 
   it('a tela recebe a lista inteira, na mesma chave do cache', async () => {

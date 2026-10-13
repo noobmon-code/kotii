@@ -754,7 +754,7 @@ export function useStores() {
 
 /** O servidor devolve até 1000 linhas por pedido (max_rows padrão do Supabase). */
 const PRICE_PAGE = 1000;
-/** 20 mil preços: bem além de qualquer casa. Passando disso a busca falha, em vez de devolver uma lista cortada. */
+/** 20 mil preços: bem além de qualquer casa. Passando disso (com um preço a mais que seja) a busca falha, em vez de devolver uma lista cortada. */
 const PRICE_MAX_PAGES = 20;
 
 /**
@@ -766,8 +766,10 @@ const PRICE_MAX_PAGES = 20;
  */
 export async function fetchLatestPrices(): Promise<LatestPrice[]> {
   const prices: LatestPrice[] = [];
-  for (let page = 0; page < PRICE_MAX_PAGES; page++) {
+  for (let page = 0; ; page++) {
     const from = page * PRICE_PAGE;
+    // Lidas todas as páginas do teto, cheias: uma linha a mais é o que separa "exatamente o teto" de "preços demais".
+    const beyond = page === PRICE_MAX_PAGES;
     const rows = (unwrap(
       await supabase
         .from('latest_prices')
@@ -775,12 +777,15 @@ export async function fetchLatestPrices(): Promise<LatestPrice[]> {
         .order('product_id')
         .order('store_id')
         .order('unit')
-        .range(from, from + PRICE_PAGE - 1),
+        .range(from, beyond ? from : from + PRICE_PAGE - 1),
     ) ?? []) as LatestPrice[];
+    if (beyond) {
+      if (rows.length) throw new Error('Não foi possível carregar todos os preços da casa: são mais do que o app consegue ler de uma vez.');
+      return prices;
+    }
     prices.push(...rows);
     if (rows.length < PRICE_PAGE) return prices;
   }
-  throw new Error('Não foi possível carregar todos os preços da casa: são mais do que o app consegue ler de uma vez.');
 }
 
 export function useLatestPrices() {

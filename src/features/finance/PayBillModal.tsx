@@ -6,7 +6,7 @@ import { useBillPayments, usePayBill, useSetPaymentPayer } from '@/data/finance'
 import { payUsualNote } from '@/domain/billUsual';
 import { parseBoleto } from '@/domain/boleto';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
-import { parseDecimal, parseTypingAmount } from '@/domain/money';
+import { parseMoney, parseTypingAmount } from '@/domain/money';
 import { PayerChips } from '@/features/finance/PayerChips';
 import { useAuth } from '@/lib/auth';
 import { settledData } from '@/lib/settledData';
@@ -36,7 +36,7 @@ export function PayBillModal({ bill, onClose }: { bill: Bill; onClose: () => voi
   const usualNote = payUsualNote(bill, settledData(payments) ?? [], parseTypingAmount(amount));
 
   function confirm() {
-    const value = parseDecimal(amount);
+    const value = parseMoney(amount);
     const paidISO = parseBRDate(paidOn);
     if (value == null) {
       notify('Informe o valor', 'Use um valor como 187,40.');
