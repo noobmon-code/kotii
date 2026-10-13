@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { buildConfirmPayload, resolveItem, type CatalogProduct, type ReviewItem } from '../receiptReview';
+import { buildConfirmPayload, confirmBlock, goneProducts, resolveItem, type CatalogProduct, type ReviewItem } from '../receiptReview';
 
 const catalog = new Map<string, CatalogProduct>([
   ['p-arroz', { id: 'p-arroz', name: 'Arroz Tio João 5kg', category: 'graos', shelf_life_days: 30 }],
@@ -67,6 +67,60 @@ describe('resolveItem', () => {
   it('keeps a manual expiry', () => {
     const r = resolveItem(item(), { expiryManual: true, expiresOn: '2026-12-01' }, catalog, '2026-09-20');
     expect(r).toMatchObject({ expiresOn: '2026-12-01', expirySource: 'manual' });
+  });
+});
+
+describe('produto que sumiu do catálogo com a revisão aberta (foi juntado com outro em outro aparelho)', () => {
+  const picked = (productId: string) => ({ product: { kind: 'existing' as const, productId } });
+
+  it('separa a escolha que sumiu do produto do próprio item que sumiu', () => {
+    const items = [
+      item({ id: 'a' }),
+      item({ id: 'b', product_id: 'p-arroz' }),
+      item({ id: 'c', product_id: 'gone' }),
+      item({ id: 'd', product_id: 'gone' }),
+      item({ id: 'e', product_id: 'p-arroz' }),
+      item({ id: 'f' }),
+    ];
+    const overrides = {
+      // Escolheu um produto que foi juntado: a escolha tem de ser refeita.
+      a: picked('gone'),
+      // Escolheu outro que existe por cima de um item cujo produto sumiu: nada a fazer.
+      d: picked('p-deter'),
+      // Escolheu um que sumiu por cima de um item que tinha produto: também é escolha a refazer.
+      e: picked('gone'),
+      // Produto novo: escolha da pessoa que não depende do catálogo.
+      f: { product: { kind: 'new' as const, name: 'Arroz', category: 'graos' } },
+    };
+    expect(goneProducts(items, overrides, catalog)).toEqual({ chosen: ['a', 'e'], own: ['c'] });
+    expect(goneProducts(items, { ...overrides, a: { product: { kind: 'none' as const } }, e: picked('p-arroz') }, catalog)).toEqual({ chosen: [], own: ['c'] });
+    // Só o que não é produto (despensa, validade) mudado num item: o produto do item continua valendo.
+    expect(goneProducts([item({ id: 'c', product_id: 'gone' })], { c: { pantry: false } }, catalog)).toEqual({ chosen: [], own: ['c'] });
+    expect(goneProducts([], {}, catalog)).toEqual({ chosen: [], own: [] });
+  });
+
+  it('a escolha que sumiu impede a confirmação até ser refeita, com a frase no singular e no plural', () => {
+    expect(confirmBlock({ chosen: ['a'], own: [] }, false)).toEqual({
+      kind: 'choose',
+      title: 'Escolha o produto de novo',
+      message: 'O produto escolhido para um item desta nota foi juntado com outro em outro aparelho. Escolha de novo o produto desse item.',
+    });
+    expect(confirmBlock({ chosen: ['a', 'e'], own: ['c'] }, true)).toEqual({
+      kind: 'choose',
+      title: 'Escolha o produto de novo',
+      message: 'Os produtos escolhidos para 2 itens desta nota foram juntados com outros em outro aparelho. Escolha de novo o produto desses itens.',
+    });
+  });
+
+  it('o produto do próprio item fora do catálogo pede uma busca nova, uma vez só', () => {
+    expect(confirmBlock({ chosen: [], own: ['c'] }, false)).toEqual({
+      kind: 'refresh',
+      title: 'Produtos atualizados',
+      message: 'Um produto desta nota mudou em outro aparelho. Confira os itens e confirme de novo.',
+    });
+    // Já buscou de novo e ele continua fora: segue como produto novo, como sempre foi com o catálogo atrasado.
+    expect(confirmBlock({ chosen: [], own: ['c'] }, true)).toBeNull();
+    expect(confirmBlock({ chosen: [], own: [] }, false)).toBeNull();
   });
 });
 

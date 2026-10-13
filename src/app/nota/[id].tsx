@@ -42,6 +42,9 @@ import { describePriceAlert, priceAlerts, totalSaving, type AlertItem, type Pric
 import { houseNameOverride, keptName, noteNames, sameProduct, typedNameActions, withEntry } from '@/domain/receiptNames';
 import {
   buildConfirmPayload,
+  confirmBlock,
+  GONE_CHOICE_HINT,
+  goneProducts,
   resolveItem,
   type CatalogProduct,
   type ConfirmItem,
@@ -132,6 +135,8 @@ export default function ReceiptScreen() {
   const [checkingPantry, setCheckingPantry] = useState(false);
   // Trava já no toque: o estado só muda no próximo render.
   const confirming = useRef(false);
+  // A busca nova dos produtos e da nota, pedida uma vez quando o produto de um item sumiu do catálogo.
+  const refreshedGone = useRef(false);
 
   const catalog = useMemo(
     () => new Map<string, CatalogProduct>((products.data ?? []).map((p) => [p.id, p])),
@@ -179,6 +184,8 @@ export default function ReceiptScreen() {
   const totalMismatch = receipt.total != null && Math.abs(receipt.total - itemsTotal) > 0.05;
 
   const resolvedItems = new Map(items.map((item) => [item.id, resolveItem(item, overrides[item.id], catalog, purchasedOn)]));
+  // Produto que sumiu do catálogo com a revisão aberta (foi juntado com outro em outro aparelho).
+  const gone = goneProducts(items, overrides, catalog);
   const alertItems: AlertItem[] = items.flatMap((item) => {
     const product = resolvedItems.get(item.id)!.product;
     return product.kind === 'existing'
@@ -297,6 +304,23 @@ export default function ReceiptScreen() {
 
   async function doConfirm() {
     if (confirming.current || confirm.isPending || listPending || listFailed) return;
+    // Um produto desta nota foi juntado com outro: confirmar agora criaria de novo, pelo nome da nota, o
+    // produto que deixou de existir. A escolha que sumiu é refeita pela pessoa; o produto do próprio item
+    // volta com uma busca nova da nota e dos produtos.
+    const block = confirmBlock(gone, refreshedGone.current);
+    if (block) {
+      if (block.kind === 'refresh') {
+        refreshedGone.current = true;
+        confirming.current = true;
+        try {
+          await Promise.all([products.refetch(), receiptQuery.refetch()]);
+        } finally {
+          confirming.current = false;
+        }
+      }
+      notify(block.title, block.message);
+      return;
+    }
     const removals = listRemovals(listMatches, listItems);
     const forgotten = forgottenLinks(suggestedMatches, listChoices, listItems);
     let payload = buildConfirmPayload(items, overrides, catalog, purchasedOn).map((entry) => ({
@@ -498,7 +522,7 @@ export default function ReceiptScreen() {
               key={item.id}
               item={item}
               resolved={resolved}
-              alert={alert}
+              alert={gone.chosen.includes(item.id) ? GONE_CHOICE_HINT : alert}
               onEdit={() => setEditing({ item })}
               onPickProduct={() =>
                 setPicker({ kind: 'product', itemId: item.id, query: resolved.productName ?? item.suggested_name ?? '' })

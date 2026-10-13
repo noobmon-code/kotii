@@ -97,6 +97,67 @@ export interface ConfirmItem {
   };
 }
 
+/**
+ * Os itens em que um produto sumiu do catálogo (outra pessoa da casa o juntou com outro, com esta revisão
+ * aberta). O `resolveItem` já não manda o id que sumiu, mas o que ele põe no lugar é "produto novo", e
+ * confirmar assim criaria de novo, pelo nome da nota, o produto que acabou de ser juntado:
+ * - `chosen`: a pessoa escolheu nesta revisão um produto que não existe mais. A escolha tem de ser refeita.
+ * - `own`: o produto do próprio item (sem escolha por cima) não está no catálogo. Ou a nota é de antes da
+ *   junção (o banco já passou o item para o produto que ficou), ou os produtos são de antes de um produto
+ *   novo: buscar os dois de novo resolve.
+ */
+export function goneProducts(
+  items: ReviewItem[],
+  overrides: Record<string, ItemOverride>,
+  catalog: Map<string, CatalogProduct>,
+): { chosen: string[]; own: string[] } {
+  const chosen: string[] = [];
+  const own: string[] = [];
+  for (const item of items) {
+    const choice = overrides[item.id]?.product;
+    if (choice) {
+      if (choice.kind === 'existing' && !catalog.has(choice.productId)) chosen.push(item.id);
+    } else if (item.product_id && !catalog.has(item.product_id)) own.push(item.id);
+  }
+  return { chosen, own };
+}
+
+/** No item, no lugar do aviso de preço: a escolha que sumiu. */
+export const GONE_CHOICE_HINT = 'O produto escolhido foi juntado com outro. Escolha de novo.';
+
+export interface ConfirmBlock {
+  /** `choose`: a pessoa refaz a escolha. `refresh`: a tela busca os produtos e a nota de novo, e a pessoa confere. */
+  kind: 'choose' | 'refresh';
+  title: string;
+  message: string;
+}
+
+/**
+ * O que impede a confirmação de seguir (null: nada). A escolha que sumiu impede sempre, até ser refeita. O
+ * produto do próprio item fora do catálogo pede uma busca nova, uma vez só (`refreshed`): se depois dela ele
+ * continua fora, o item segue como produto novo, como sempre foi com o catálogo atrasado.
+ */
+export function confirmBlock(gone: { chosen: string[]; own: string[] }, refreshed: boolean): ConfirmBlock | null {
+  if (gone.chosen.length) {
+    return {
+      kind: 'choose',
+      title: 'Escolha o produto de novo',
+      message:
+        gone.chosen.length === 1
+          ? 'O produto escolhido para um item desta nota foi juntado com outro em outro aparelho. Escolha de novo o produto desse item.'
+          : `Os produtos escolhidos para ${gone.chosen.length} itens desta nota foram juntados com outros em outro aparelho. Escolha de novo o produto desses itens.`,
+    };
+  }
+  if (gone.own.length && !refreshed) {
+    return {
+      kind: 'refresh',
+      title: 'Produtos atualizados',
+      message: 'Um produto desta nota mudou em outro aparelho. Confira os itens e confirme de novo.',
+    };
+  }
+  return null;
+}
+
 /** Payload de confirm_receipt (ver migration). */
 export function buildConfirmPayload(
   items: ReviewItem[],
