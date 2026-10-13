@@ -111,6 +111,12 @@ create policy "household members manage family event days" on public.family_even
   using (household_id = (select public.current_household_id()))
   with check (household_id = (select public.current_household_id()));
 
+-- Permissões explícitas: a partir de 30/10/2026 a Supabase não dá mais acesso pela API às tabelas novas por
+-- padrão, e a migração pode ser aplicada depois disso. Quem entra é a pessoa logada (a regra acima diz o quê).
+revoke all on public.family_events, public.family_event_days from anon, authenticated;
+grant select, insert, update, delete on public.family_events, public.family_event_days to authenticated;
+grant all on public.family_events, public.family_event_days to service_role;
+
 -- Quem leva e quem busca é gente: pet não dirige. A chave estrangeira já
 -- garante que a ficha é da casa; aqui, o tipo dela. security definer: a regra
 -- vale para quem quer que grave.
