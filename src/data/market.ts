@@ -106,9 +106,14 @@ export function useOpenListItems() {
 const fetchListLinks = async () =>
   unwrap(await supabase.from('list_item_links').select('name_key, product_id')) as ListLink[];
 
+// Fora do hook: com a mesma função a cada render, o TanStack Query devolve o
+// mesmo LinkIndex enquanto os vínculos não mudam (e um useMemo que depende
+// dele não refaz a conta a cada letra digitada).
+const toLinkIndex = (links: ListLink[]) => new LinkIndex(links);
+
 /** Vínculos nome da lista -> produto que a casa já confirmou. */
 export function useListLinks() {
-  return useQuery({ queryKey: ['listLinks'], queryFn: fetchListLinks, select: (links) => new LinkIndex(links) });
+  return useQuery({ queryKey: ['listLinks'], queryFn: fetchListLinks, select: toLinkIndex });
 }
 
 /** Os vínculos já carregados, ou buscados agora; null se não deu (sem internet e nunca vistos neste aparelho). */
@@ -747,14 +752,44 @@ export function useStores() {
   });
 }
 
+/** O servidor devolve até 1000 linhas por pedido (max_rows padrão do Supabase). */
+const PRICE_PAGE = 1000;
+/** 20 mil preços: bem além de qualquer casa. Passando disso (com um preço a mais que seja) a busca falha, em vez de devolver uma lista cortada. */
+const PRICE_MAX_PAGES = 20;
+
+/**
+ * Os últimos preços da casa, todos: página por página, até vir uma
+ * incompleta. Num pedido só, a casa com mais de mil preços receberia os
+ * primeiros mil, calada, e a lista diria "todos os itens têm preço" sobre uma
+ * conta cortada. A ordem é a chave da view (produto, mercado, unidade): sem
+ * ela, as páginas não se encaixam.
+ */
+export async function fetchLatestPrices(): Promise<LatestPrice[]> {
+  const prices: LatestPrice[] = [];
+  for (let page = 0; ; page++) {
+    const from = page * PRICE_PAGE;
+    // Lidas todas as páginas do teto, cheias: uma linha a mais é o que separa "exatamente o teto" de "preços demais".
+    const beyond = page === PRICE_MAX_PAGES;
+    const rows = (unwrap(
+      await supabase
+        .from('latest_prices')
+        .select('product_id, store_id, unit, unit_price, purchased_at')
+        .order('product_id')
+        .order('store_id')
+        .order('unit')
+        .range(from, beyond ? from : from + PRICE_PAGE - 1),
+    ) ?? []) as LatestPrice[];
+    if (beyond) {
+      if (rows.length) throw new Error('Não foi possível carregar todos os preços da casa: são mais do que o app consegue ler de uma vez.');
+      return prices;
+    }
+    prices.push(...rows);
+    if (rows.length < PRICE_PAGE) return prices;
+  }
+}
+
 export function useLatestPrices() {
-  return useQuery({
-    queryKey: ['latestPrices'],
-    queryFn: async () =>
-      unwrap(
-        await supabase.from('latest_prices').select('product_id, store_id, unit, unit_price, purchased_at'),
-      ) as LatestPrice[],
-  });
+  return useQuery({ queryKey: ['latestPrices'], queryFn: fetchLatestPrices });
 }
 
 export function usePriceHistory(productId: string) {
