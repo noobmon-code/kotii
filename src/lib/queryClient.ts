@@ -20,8 +20,10 @@ const WEEK = 1000 * 60 * 60 * 24 * 7;
 
 // O que vai para o aparelho: o mínimo para usar a lista offline (a despensa,
 // para o limpar do carrinho sem internet não repetir o que já está nela; os
-// links das fotos dos itens, para vê-las sem internet) e o clima da casa
-// (a dica da tela Hoje e o aviso das 7h saem da última previsão).
+// links das fotos dos itens, para vê-las sem internet; os últimos preços, os
+// mercados e as ligações nome da lista -> produto, para a estimativa da lista
+// dentro do mercado) e o clima da casa (a dica da tela Hoje e o aviso das 7h
+// saem da última previsão).
 const PERSISTED = new Set([
   'household',
   'lists',
@@ -30,6 +32,9 @@ const PERSISTED = new Set([
   'products',
   'purchaseRecords',
   'pantry',
+  'latestPrices',
+  'stores',
+  'listLinks',
   'listPhotos',
   'householdLocation',
   'weather',

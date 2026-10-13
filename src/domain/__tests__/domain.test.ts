@@ -183,8 +183,21 @@ describe('money', () => {
     expect(parseTypingAmount('12.345.678,')).toBe(12345678);
     expect(parseTypingAmount(',')).toBeNull();
     expect(parseTypingAmount('')).toBeNull();
+    // Sem vírgula, o ponto de três em três dígitos é de milhar, como na hora de salvar:
+    // a dica ao lado do campo compara o mesmo valor que vai ser gravado.
+    expect(parseTypingAmount('1.500')).toBe(1500);
+    expect(parseTypingAmount('1.500.')).toBe(1500);
+    expect(parseTypingAmount('12.345.678')).toBe(12345678);
+    expect(parseTypingAmount('1.5')).toBe(1.5);
+    expect(parseTypingAmount('1.50')).toBe(1.5);
+    expect(parseTypingAmount('0.500')).toBe(0.5);
+    for (const typed of ['1.500', '1.500,5', '1.500,50', '1.5', '15.90', '180', 'R$ 2.000', '0.500', '1.50']) {
+      expect(parseTypingAmount(typed)).toBe(parseMoney(typed));
+    }
     // Salvar continua exigindo o valor completo.
     expect(parseDecimal('310,')).toBeNull();
+    expect(parseMoney('310,')).toBeNull();
+    expect(parseMoney('1.500.')).toBeNull();
   });
 
   it('formats BRL', () => {
