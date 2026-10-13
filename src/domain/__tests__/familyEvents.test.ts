@@ -21,6 +21,7 @@ import {
   parseTime,
   recurrenceHint,
   rideText,
+  sameEventFields,
   dayChangesAfterSave,
   staleDayDates,
   todayEntries,
@@ -201,8 +202,16 @@ describe('occurrencesOf (mudanças de um dia)', () => {
     expect(occurrencesOf(swim, cleaned, '2026-10-15', '2026-10-15').map((o) => o.take_by)).toEqual(['beto']);
     // O dia que saiu da regra (só às terças) sai junto, mesmo com mudança de verdade.
     expect(dayChangesAfterSave({ ...swim, weekdays: [2] }, changes).remove).toEqual(['2026-10-15', '2026-10-22']);
-    // "Ninguém leva" continua sendo mudança enquanto o compromisso tiver alguém.
-    expect(dayChangesAfterSave(swim, [day({ override_take: true, take_by: null })])).toEqual({ remove: [], rewrite: [] });
+    // "Ninguém leva" (a mudança marcada e sem pessoa) é sempre mudança, e salvar o compromisso não a apaga:
+    // nem quando ele tem alguém, nem quando o de sempre também é ninguém (o dia de quem cobria e teve a ficha
+    // apagada: a casa continua precisando saber, e só "Como sempre" ou outra pessoa no dia desfaz).
+    const nobody = [day({ override_take: true, take_by: null })];
+    expect(dayChangesAfterSave(swim, nobody)).toEqual({ remove: [], rewrite: [] });
+    expect(dayChangesAfterSave({ ...swim, take_by: null }, nobody)).toEqual({ remove: [], rewrite: [] });
+    expect(dayChangesAfterSave({ ...swim, take_by: null, pick_up_by: null }, [day({ override_take: true, take_by: null, override_pick_up: true, pick_up_by: null })])).toEqual({
+      remove: [],
+      rewrite: [],
+    });
   });
 
   it('compromisso que passou a "Não repete": as mudanças de dias saem todas, e a que sobrar não vale', () => {
@@ -219,6 +228,16 @@ describe('occurrencesOf (mudanças de um dia)', () => {
     expect(shown.map((e) => [e.date, e.ride])).toEqual([['2026-10-13', 'Beto leva, Carla busca']]);
   });
 
+  it('os campos do formulário: o mesmo compromisso, ou um que mudou no meio', () => {
+    const row = { ...swim, notes: null };
+    expect(sameEventFields(row, { ...row })).toBe(true);
+    expect(sameEventFields(row, { ...row, weekdays: [2, 4] })).toBe(true);
+    // Qualquer campo que o formulário guarda conta.
+    for (const patch of [{ start_time: '17:00' }, { take_by: 'vo' }, { take_by: null }, { weekdays: [2] }, { notes: 'levar atestado' }, { until_on: '2026-12-31' }, { title: 'Natação' }]) {
+      expect([patch, sameEventFields(row, { ...row, ...patch })]).toEqual([patch, false]);
+    }
+  });
+
   it('o que guardar para o dia: igual ao de sempre não é mudança', () => {
     expect(normalizeDayChange(swim, NO_DAY_CHANGE)).toBeNull();
     // Escolher o Beto (o de sempre) para o dia: nada a guardar.
@@ -227,8 +246,18 @@ describe('occurrencesOf (mudanças de um dia)', () => {
       ...NO_DAY_CHANGE,
       override_take: true,
     });
-    // "Ninguém" quando já não há ninguém de sempre: nada a guardar.
-    expect(normalizeDayChange({ take_by: null, pick_up_by: null }, { ...NO_DAY_CHANGE, override_take: true, take_by: null })).toBeNull();
+    // A mudança marcada e sem pessoa fica mesmo quando o de sempre é ninguém: é o dia que as telas chamam de
+    // "Ninguém leva" (quem cobria teve a ficha apagada), e o salvar do compromisso não pode apagá-la calado.
+    expect(normalizeDayChange({ take_by: null, pick_up_by: null }, { ...NO_DAY_CHANGE, override_take: true, take_by: null })).toEqual({
+      ...NO_DAY_CHANGE,
+      override_take: true,
+    });
+    expect(normalizeDayChange({ take_by: null, pick_up_by: null }, { ...NO_DAY_CHANGE, override_pick_up: true, pick_up_by: null })).toEqual({
+      ...NO_DAY_CHANGE,
+      override_pick_up: true,
+    });
+    // "Como sempre" (sem a marca) desfaz, e aí não há o que guardar.
+    expect(normalizeDayChange({ take_by: null, pick_up_by: null }, { ...NO_DAY_CHANGE, override_take: false, take_by: null })).toBeNull();
     // Sem marcar a mudança, o nome que veio junto não fica.
     expect(normalizeDayChange(swim, { ...NO_DAY_CHANGE, cancelled: true, take_by: 'vo' })).toEqual({ ...NO_DAY_CHANGE, cancelled: true });
     expect(normalizeDayChange(swim, { ...NO_DAY_CHANGE, override_pick_up: true, pick_up_by: 'vo' })).toEqual({
@@ -431,9 +460,19 @@ describe('calendarEntries', () => {
     // Quem nunca teve quem leve não ganha "ninguém leva": não é mudança, e a linha segue como era.
     const alone: FamilyEventLike = { ...swim, take_by: null };
     expect(calendarEntries({ ...changed, events: [alone], days: [] }, '2026-10-13', '2026-10-13').map((e) => e.ride)).toEqual(['Carla busca']);
-    // Nem a mudança que sobrou de quando havia alguém (o compromisso passou a não ter quem leve).
-    expect(calendarEntries({ ...changed, events: [alone] }, '2026-10-13', '2026-10-13').map((e) => [e.ride, e.routine])).toEqual([['Carla busca', true]]);
-    // A ficha que não está na lista (apagada, ou de quem saiu) não é "ninguém": o nome some, como antes.
+    // Já o dia com a mudança marcada e sem pessoa diz "Ninguém leva" mesmo quando o de sempre é ninguém: é o
+    // dia em que alguém ia levar só naquela vez e teve a ficha apagada (o banco deixa a mudança marcada). Não
+    // é rotina: o aviso da véspera toca, e alguém fica sabendo.
+    const dropped = calendarEntries({ ...changed, events: [alone] }, '2026-10-13', '2026-10-22');
+    expect(dropped.map((e) => [e.date, e.ride, e.routine])).toEqual([
+      ['2026-10-13', 'Ninguém leva, Carla busca', false],
+      ['2026-10-15', 'Ninguém busca', false],
+      ['2026-10-20', 'Ninguém leva nem busca', false],
+      ['2026-10-22', 'Carla busca', true],
+    ]);
+    // A ficha que não está na lista (o id segue no compromisso) não é "ninguém": o nome some, como antes.
+    // (Apagar a ficha de quem cobria um dia é outra coisa: o banco deixa aquele dia sem ninguém, e a linha
+    // dele é a de "Ninguém leva", como a do dia 13 lá em cima.)
     const gone = { ...changed, days: [], people: changed.people.filter((p) => p.id !== 'beto') };
     expect(calendarEntries(gone, '2026-10-13', '2026-10-13').map((e) => e.ride)).toEqual(['Carla busca']);
   });
@@ -488,6 +527,32 @@ describe('calendarLines (retrato do Nuke)', () => {
     expect(calendarLines(calendar, '2026-10-13').at(-1)).toBe(
       'ter 20/10 16:00–17:00 Natação da Ana (Ana, Vó Maria leva, Carla busca, local: Clube, levar: touca e toalha)',
     );
+  });
+
+  it('com mais linhas do que o retrato escreve, a rotina vai para o fim: o que cai no "e mais N" não é o compromisso avulso', () => {
+    // Escola de segunda a sexta de dois filhos e a natação: 12 vezes de rotina em 8 dias, mais a reunião do último dia.
+    const school = (id: string, title: string): FamilyEventLike => ({ ...swim, id, title, start_time: '07:30', end_time: null, bring: null, location: null, weekdays: [1, 2, 3, 4, 5] });
+    const meeting: FamilyEventLike = { ...swim, id: 'reuniao', title: 'Reunião de pais', starts_on: '2026-10-20', start_time: '19:00', end_time: null, recurrence: 'none', weekdays: null };
+    const busy: FamilyCalendar = {
+      events: [school('escola-ana', 'Escola da Ana'), school('escola-theo', 'Escola do Theo'), swim, meeting],
+      // Na quinta, 15/10, é a vó quem leva na natação: o dia que mudou também não é rotina.
+      days: [day({ occurs_on: '2026-10-15', override_take: true, take_by: 'vo' })],
+      people: people.map((p) => ({ ...p, birth_date: null })),
+    };
+    const all = calendarLines(busy, '2026-10-13');
+    expect(all).toHaveLength(16);
+    // Sem teto (ou com folga), a ordem é a dos dias, e a reunião é a última linha.
+    expect(all.at(-1)).toBe('ter 20/10 19:00 Reunião de pais (Ana, Beto leva, Carla busca, local: Clube, levar: touca e toalha)');
+    expect(calendarLines(busy, '2026-10-13', 7, 16)).toEqual(all);
+    // Com o teto menor, o que não é rotina vem primeiro (na ordem dos dias), e a rotina completa as vagas.
+    const capped = calendarLines(busy, '2026-10-13', 7, 10);
+    expect(capped).toHaveLength(16);
+    expect(capped.slice(0, 2)).toEqual([
+      'qui 15/10 16:00–17:00 Natação da Ana (Ana, Vó Maria leva, Carla busca, local: Clube, levar: touca e toalha)',
+      'ter 20/10 19:00 Reunião de pais (Ana, Beto leva, Carla busca, local: Clube, levar: touca e toalha)',
+    ]);
+    expect(capped[2]).toBe('hoje 07:30 Escola da Ana (Ana, Beto leva, Carla busca)');
+    expect([...capped].sort()).toEqual([...all].sort());
   });
 
   it('local e "o que levar" compridos são cortados: 25 linhas cheias ficam longe do corte do servidor', () => {

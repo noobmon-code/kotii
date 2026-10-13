@@ -22,6 +22,12 @@ const DAY_COLUMNS = 'event_id, occurs_on, cancelled, override_take, take_by, ove
 /** O que a pessoa lê quando tenta salvar e o banco ainda não tem as tabelas. */
 export const FAMILY_EVENTS_UNAVAILABLE = 'Os compromissos ainda estão sendo ativados no Kotii. Tente de novo mais tarde.';
 
+/** O que a pessoa lê quando muda um dia de um compromisso que já foi apagado (em outro celular). */
+export const FAMILY_EVENT_GONE = 'Este compromisso não existe mais: foi excluído. Volte para a agenda.';
+
+/** O que a pessoa lê quando alguém do compromisso (de quem é, quem leva ou quem busca) não tem mais ficha. */
+export const FAMILY_EVENT_PERSON_GONE = 'Uma das pessoas deste compromisso não está mais nas fichas da casa. Escolha de novo de quem é, quem leva e quem busca, e salve.';
+
 /**
  * A tabela ainda não existe no banco (o app chegou antes da migração): o
  * PostgREST responde PGRST205 ("Could not find the table ... in the schema
@@ -40,7 +46,15 @@ export function isMissingTable(error: unknown): boolean {
 
 /** O erro de salvar ou abrir um compromisso, em palavras de gente. */
 export function familyEventErrorMessage(error: unknown): string {
-  return isMissingTable(error) ? FAMILY_EVENTS_UNAVAILABLE : errorMessage(error);
+  if (isMissingTable(error)) return FAMILY_EVENTS_UNAVAILABLE;
+  // O banco recusou uma chave (23503). Na mudança de um dia, a chave do próprio compromisso: ele foi apagado
+  // em outro celular com esta tela aberta. Nas outras, a de uma ficha escolhida no formulário, que foi apagada.
+  if (error && typeof error === 'object' && (error as { code?: unknown }).code === '23503') {
+    const { message, details } = error as { message?: unknown; details?: unknown };
+    const text = `${typeof message === 'string' ? message : ''} ${typeof details === 'string' ? details : ''}`;
+    return text.includes('family_event_days_event_id') ? FAMILY_EVENT_GONE : FAMILY_EVENT_PERSON_GONE;
+  }
+  return errorMessage(error);
 }
 
 // O banco devolve a hora como "16:00:00".
@@ -108,15 +122,25 @@ export function useFamilyEvents() {
   return useQuery({ queryKey: ['familyEvents'], queryFn: () => fetchFamilyEvents() });
 }
 
-export function useFamilyEventDays() {
-  return useQuery({ queryKey: ['familyEventDays'], queryFn: () => fetchFamilyEventDays() });
+/**
+ * `fresh`: para quem vai editar (a tela do compromisso). Busca de novo ao abrir mesmo com o guardado ainda
+ * novo: a edição grava a linha inteira montada com o que está na tela, e o que está guardado pode ser de antes
+ * de uma mudança feita em outro celular.
+ */
+export interface FreshRead {
+  fresh?: boolean;
+}
+
+export function useFamilyEventDays({ fresh = false }: FreshRead = {}) {
+  return useQuery({ queryKey: ['familyEventDays'], queryFn: () => fetchFamilyEventDays(), ...(fresh ? { refetchOnMount: 'always' as const } : {}) });
 }
 
 /** Um compromisso; null se não existe mais (apagado por outra pessoa). */
-export function useFamilyEvent(id: string | undefined) {
+export function useFamilyEvent(id: string | undefined, { fresh = false }: FreshRead = {}) {
   return useQuery({
     queryKey: ['familyEvents', id],
     enabled: Boolean(id),
+    ...(fresh ? { refetchOnMount: 'always' as const } : {}),
     queryFn: async () => {
       const row = unwrap(await supabase.from('family_events').select(EVENT_COLUMNS).eq('id', id!).maybeSingle()) as FamilyEvent | null;
       return row ? fromRow(row) : null;
@@ -174,7 +198,10 @@ export async function saveFamilyEvent(
     unwrap(await db.from('family_events').insert(values));
     return;
   }
-  unwrap(await db.from('family_events').update(values).eq('id', id));
+  // Mudar um compromisso que foi excluído em outro celular "dá certo" sem mudar linha nenhuma. Pedindo a
+  // linha de volta dá para saber: sem ela, é erro, em vez de a tela fechar como se tivesse salvado.
+  const saved = unwrap(await db.from('family_events').update(values).eq('id', id).select('id').maybeSingle()) as { id: string } | null;
+  if (!saved) throw new Error(FAMILY_EVENT_GONE);
   const rows = unwrap(await db.from('family_event_days').select(DAY_COLUMNS).eq('event_id', id)) as FamilyEventDay[];
   const { remove, rewrite } = dayChangesAfterSave(values, rows);
   if (remove.length) unwrap(await db.from('family_event_days').delete().eq('event_id', id).in('occurs_on', remove));

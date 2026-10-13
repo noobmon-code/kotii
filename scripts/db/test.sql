@@ -2984,6 +2984,11 @@ begin
   exception when check_violation then null;
   end;
   begin
+    insert into public.family_events (title, starts_on, recurrence, weekdays) values ('Matriz', '2026-10-13', 'weekly', '{{1,2},{3,4}}');
+    raise exception 'FAIL: weekdays as a two-dimensional array';
+  exception when check_violation then null;
+  end;
+  begin
     insert into public.family_events (title, starts_on, recurrence, weekdays) values ('Mensal com dias', '2026-10-13', 'monthly', '{2}');
     raise exception 'FAIL: weekdays outside a weekly event';
   exception when check_violation then null;
