@@ -142,6 +142,15 @@ export interface EventOccurrence<E extends FamilyEventLike = FamilyEventLike> {
   date: string;
   take_by: string | null;
   pick_up_by: string | null;
+  /**
+   * Neste dia a mudança deixou sem ninguém para levar (ou buscar): o "Só neste
+   * dia: Ninguém", ou o dia de quem cobria e teve a ficha apagada (ou virou
+   * pet), que o banco deixa com a mudança marcada e sem pessoa. Vale também
+   * quando o de sempre já é ninguém: alguém tinha sido combinado só para
+   * aquele dia, e não vai mais.
+   */
+  nobody_takes: boolean;
+  nobody_picks_up: boolean;
 }
 
 /**
@@ -163,6 +172,8 @@ export function occurrencesOf<E extends FamilyEventLike>(event: E, days: EventDa
         date,
         take_by: change?.override_take ? change.take_by : event.take_by,
         pick_up_by: change?.override_pick_up ? change.pick_up_by : event.pick_up_by,
+        nobody_takes: Boolean(change?.override_take) && change!.take_by === null,
+        nobody_picks_up: Boolean(change?.override_pick_up) && change!.pick_up_by === null,
       },
     ];
   });
@@ -174,13 +185,18 @@ export function dayChangeOf(eventId: string, days: EventDayLike[], date: string)
 }
 
 /**
- * O que guardar para o dia: escolher para o dia o mesmo de sempre não é
- * mudança (e seguiria travado se o compromisso mudasse depois). null: nada
- * mudou, a linha do dia não fica.
+ * O que guardar para o dia: escolher para o dia a mesma pessoa de sempre não é
+ * mudança (e seguiria travado se o compromisso mudasse depois). A mudança
+ * marcada e sem pessoa é sempre mudança, também quando o de sempre é ninguém:
+ * é o "Só neste dia: Ninguém", ou o dia de quem cobria e teve a ficha apagada,
+ * e é esse dia que as telas e os avisos chamam de "Ninguém leva" (ver
+ * EventOccurrence). Ela só sai quando alguém escolhe "Como sempre" ou outra
+ * pessoa para o dia: salvar o compromisso não a apaga. null: nada mudou, a
+ * linha do dia não fica.
  */
 export function normalizeDayChange(event: Pick<FamilyEventLike, 'take_by' | 'pick_up_by'>, values: EventDayValues): EventDayValues | null {
-  const take = values.override_take && values.take_by !== event.take_by;
-  const pickUp = values.override_pick_up && values.pick_up_by !== event.pick_up_by;
+  const take = values.override_take && (values.take_by === null || values.take_by !== event.take_by);
+  const pickUp = values.override_pick_up && (values.pick_up_by === null || values.pick_up_by !== event.pick_up_by);
   if (!values.cancelled && !take && !pickUp) return null;
   return {
     cancelled: values.cancelled,
@@ -231,6 +247,33 @@ export function dayChangesAfterSave(
     }
   }
   return { remove, rewrite };
+}
+
+/** Os campos do compromisso que o formulário guarda. */
+const FORM_FIELDS = [
+  'title',
+  'starts_on',
+  'start_time',
+  'end_time',
+  'person_id',
+  'take_by',
+  'pick_up_by',
+  'location',
+  'bring',
+  'notes',
+  'recurrence',
+  'weekdays',
+  'until_on',
+] as const satisfies readonly (keyof FamilyEventValues)[];
+
+/**
+ * O compromisso é o mesmo nos campos do formulário? Quando o que chega do
+ * banco difere do que preencheu os campos, ele mudou no meio (em outro
+ * celular, ou a cópia guardada era antiga), e salvar gravaria o de antes por
+ * cima.
+ */
+export function sameEventFields(a: FamilyEventValues, b: FamilyEventValues): boolean {
+  return FORM_FIELDS.every((field) => JSON.stringify(a[field] ?? null) === JSON.stringify(b[field] ?? null));
 }
 
 /** Aniversário de uma ficha num ano: quantos anos faz. */
@@ -362,16 +405,19 @@ export function calendarEntries({ events, days, people }: FamilyCalendar, from: 
         endTime: event.start_time ? event.end_time : null,
         title: event.title,
         who: nameOf(event.person_id),
-        // Sem ninguém no dia e com alguém no de sempre: só "Só neste dia: Ninguém" chega aqui (a ficha
-        // apagada limpa as duas, e a que não está na lista continua com o id).
-        ride: rideText(nameOf(o.take_by), nameOf(o.pick_up_by), {
-          take: o.take_by === null && event.take_by !== null,
-          pickUp: o.pick_up_by === null && event.pick_up_by !== null,
-        }),
+        // O dia cuja mudança deixou sem ninguém (ver EventOccurrence) diz "Ninguém leva", e não é rotina, mesmo
+        // quando o de sempre também é ninguém: é isso que a casa precisa saber. Apagar a ficha de quem leva
+        // sempre limpa o de sempre (nada a dizer), e a ficha que só não está na lista continua com o id.
+        ride: rideText(nameOf(o.take_by), nameOf(o.pick_up_by), { take: o.nobody_takes, pickUp: o.nobody_picks_up }),
         location: event.location?.trim() || null,
         bring: event.bring?.trim() || null,
         age: null,
-        routine: event.recurrence === 'weekly' && o.take_by === event.take_by && o.pick_up_by === event.pick_up_by,
+        routine:
+          event.recurrence === 'weekly' &&
+          o.take_by === event.take_by &&
+          o.pick_up_by === event.pick_up_by &&
+          !o.nobody_takes &&
+          !o.nobody_picks_up,
       });
     }
   }
@@ -452,9 +498,17 @@ const NUKE_BRING_MAX = 120;
  * com "hoje", "amanhã" ou o dia da semana já escritos, para ele não fazer
  * conta de data. Ex.: "amanhã 16:00–17:00 Natação da Ana (Ana, Beto leva,
  * Carla busca, local: Clube, levar: touca)".
+ *
+ * `max`: quantas linhas o retrato escreve (o resto vira "e mais N"). Quando o
+ * período tem mais que isso, quem fica para o fim é a rotina (a vez de toda
+ * semana com as pessoas de sempre): o compromisso avulso, o dia que mudou e o
+ * aniversário vêm antes, cada grupo na ordem dos dias. Cada linha traz o dia
+ * escrito, então a ordem não muda o que ela diz.
  */
-export function calendarLines(calendar: FamilyCalendar, today: string, days = 7): string[] {
-  return calendarEntries(calendar, today, addDays(today, days)).map((entry) => {
+export function calendarLines(calendar: FamilyCalendar, today: string, days = 7, max = Infinity): string[] {
+  const entries = calendarEntries(calendar, today, addDays(today, days));
+  const ordered = entries.length > max ? [...entries.filter((entry) => !entry.routine), ...entries.filter((entry) => entry.routine)] : entries;
+  return ordered.map((entry) => {
     const ahead = diffDays(today, entry.date);
     const day = ahead === 0 ? 'hoje' : ahead === 1 ? 'amanhã' : weekdayDate(entry.date).toLowerCase().replace(',', '');
     const details =

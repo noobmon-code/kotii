@@ -23,7 +23,7 @@ import { upcomingAppointments } from '@/domain/health';
 import { doseKey, dosesForDay } from '@/domain/medications';
 import { refillSummary } from '@/domain/medicationStock';
 import { menuLines } from '@/domain/menu';
-import { buildNukeContext, parseActions, type NukeAction, type NukeScreen, type NukeSnapshot } from '@/domain/nuke';
+import { buildNukeContext, NUKE_LIST_LIMIT, parseActions, type NukeAction, type NukeScreen, type NukeSnapshot } from '@/domain/nuke';
 import { expiryStatus, groupPantry } from '@/domain/pantry';
 import { useHousehold } from '@/lib/auth';
 import { settledData } from '@/lib/settledData';
@@ -183,7 +183,8 @@ export function useNukeContext(today: string): NukeContextState {
         title: a.title,
         person: people.data?.find((p) => p.id === a.person_id)?.name ?? '',
       })),
-    events: calendarLines(family.calendar, today),
+    // Com mais linhas que o retrato escreve, a rotina é que fica para o "e mais N".
+    events: calendarLines(family.calendar, today, 7, NUKE_LIST_LIMIT),
     documents: documentsNeedingAttention(documents.data ?? [], today).map(({ document, status }) => ({
       title: document.title,
       status: describeDocumentStatus(status, document.expires_on),

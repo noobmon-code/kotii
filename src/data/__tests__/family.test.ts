@@ -4,6 +4,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { FamilyEventValues } from '@/domain/familyEvents';
 
 import {
+  FAMILY_EVENT_GONE,
+  FAMILY_EVENT_PERSON_GONE,
   FAMILY_EVENTS_UNAVAILABLE,
   familyEventErrorMessage,
   fetchFamilyEventDays,
@@ -69,16 +71,20 @@ function savingDb(answer: (op: string) => { data: unknown; error: unknown } | un
     from: (table: string) => {
       let op = table;
       const query: Record<string, unknown> = {
-        then: (resolve: (value: { data: unknown; error: unknown }) => void) => resolve(answer(op) ?? { data: null, error: null }),
+        // Sem resposta combinada: dá certo. O "mudar" devolve a linha mudada, como o banco quando ela existe.
+        then: (resolve: (value: { data: unknown; error: unknown }) => void) =>
+          resolve(answer(op) ?? { data: op === 'family_events.update' ? { id: 'e1' } : null, error: null }),
       };
       for (const verb of ['insert', 'update', 'select', 'delete', 'upsert']) {
         query[verb] = (...args: unknown[]) => {
+          // O `select` depois de gravar só pede a linha de volta: é o mesmo pedido.
+          if (verb === 'select' && op !== table) return query;
           op = `${table}.${verb}`;
           ops.push({ op, args });
           return query;
         };
       }
-      for (const filter of ['eq', 'in']) query[filter] = () => query;
+      for (const filter of ['eq', 'in', 'maybeSingle']) query[filter] = () => query;
       return query;
     },
   };
@@ -120,6 +126,15 @@ describe('salvar o compromisso', () => {
     expect(ops[3].args[0]).toEqual([
       { event_id: 'e1', occurs_on: '2026-10-20', cancelled: false, override_take: false, take_by: null, override_pick_up: true, pick_up_by: 'beto' },
     ]);
+  });
+
+  it('o compromisso foi excluído em outro celular: mudar não "dá certo" calado, e a limpeza dos dias nem começa', async () => {
+    // O banco responde sem erro e sem linha nenhuma mudada.
+    const gone = savingDb((op) => (op === 'family_events.update' ? { data: null, error: null } : undefined));
+    await expect(saveFamilyEvent({ id: 'e1', values }, gone.db)).rejects.toThrow(FAMILY_EVENT_GONE);
+    expect(gone.ops.map((o) => o.op)).toEqual(['family_events.update']);
+    const error = await saveFamilyEvent({ id: 'e1', values }, gone.db).catch((e: unknown) => e);
+    expect(familyEventErrorMessage(error)).toBe('Este compromisso não existe mais: foi excluído. Volte para a agenda.');
   });
 
   it('se a limpeza dos dias falha, o salvar falha junto (tocar em Salvar de novo termina)', async () => {
@@ -199,5 +214,16 @@ describe('compromissos antes da migração', () => {
     expect(familyEventErrorMessage(notInCache)).toBe(FAMILY_EVENTS_UNAVAILABLE);
     expect(familyEventErrorMessage(noRelation)).toBe('Os compromissos ainda estão sendo ativados no Kotii. Tente de novo mais tarde.');
     expect(familyEventErrorMessage(offline)).toBe('TypeError: Network request failed');
+    // A ficha de quem leva foi apagada com o formulário aberto: o banco recusa a chave, e a pessoa lê o que fazer.
+    const gone = { code: '23503', message: 'insert or update on table "family_events" violates foreign key constraint "family_events_take_by_household_id_fkey"' };
+    expect(familyEventErrorMessage(gone)).toBe(FAMILY_EVENT_PERSON_GONE);
+    // A mesma recusa na mudança de um dia, pela chave do próprio compromisso: ele foi excluído em outro celular.
+    const deleted = { code: '23503', message: 'insert or update on table "family_event_days" violates foreign key constraint "family_event_days_event_id_household_id_fkey"' };
+    expect(familyEventErrorMessage(deleted)).toBe(FAMILY_EVENT_GONE);
+    expect(FAMILY_EVENT_GONE).toBe('Este compromisso não existe mais: foi excluído. Volte para a agenda.');
+    // A ficha de quem ia levar naquele dia, apagada: é a chave de uma pessoa.
+    const driver = { code: '23503', message: 'insert or update on table "family_event_days" violates foreign key constraint "family_event_days_take_by_household_id_fkey"' };
+    expect(familyEventErrorMessage(driver)).toBe(FAMILY_EVENT_PERSON_GONE);
+    expect(FAMILY_EVENT_PERSON_GONE).toBe('Uma das pessoas deste compromisso não está mais nas fichas da casa. Escolha de novo de quem é, quem leva e quem busca, e salve.');
   });
 });

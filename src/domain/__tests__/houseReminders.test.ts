@@ -298,6 +298,21 @@ describe('planHouseReminders: compromissos da família e aniversários', () => {
     ]);
   });
 
+  it('quem ia levar só naquele dia teve a ficha apagada, num compromisso sem quem leve sempre: o dia sai da rotina e o aviso diz', () => {
+    // A natação não tem quem leve sempre; em 01/10 a vó ia levar, e a ficha dela foi apagada: o banco deixa
+    // a mudança marcada e sem pessoa.
+    const alone = { ...swim, take_by: null };
+    const days = [{ ...NO_DAY_CHANGE, event_id: 'natacao', occurs_on: '2026-10-01', override_take: true, take_by: null }];
+    const planned = rows({ family: withBirthday([alone], days) }).map(([key, , , , body]) => [key, body]);
+    // A véspera (19h) existe só para o dia que mudou, e diz que ninguém leva.
+    expect(planned.filter(([key]) => String(key).endsWith(':19:00'))).toEqual([
+      ['events:natacao@2026-10-01:2026-09-30:19:00', 'Ana · Ninguém leva, Carla busca · Clube · Levar: touca e toalha'],
+    ]);
+    expect(planned).toContainEqual(['events:natacao@2026-10-01:2026-10-01:15:00', 'Ana · Ninguém leva, Carla busca · Clube · Levar: touca e toalha']);
+    // Sem a mudança, é rotina: nenhuma véspera.
+    expect(rows({ family: withBirthday([alone], []) }).filter(([key]) => String(key).endsWith(':19:00'))).toEqual([]);
+  });
+
   it('só na janela de 30 dias, com o limite, e os mais próximos primeiro', () => {
     // No último dia da janela: a véspera e o do dia; um dia depois, só a véspera.
     const last = once({ id: 'fim', starts_on: '2026-10-27' });
