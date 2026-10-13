@@ -171,6 +171,16 @@ begin
   end if;
   -- Um aviso por vez por pessoa: dois toques juntos não criam duas idas nem passam do limite.
   perform pg_advisory_xact_lock(hashtextextended('market_trips:' || auth.uid()::text, 0));
+  -- E um de cada vez com a saída de um morador (leave_household e remove_member seguram a linha da casa
+  -- com FOR UPDATE): quem sai neste instante não é lido como morador aqui para ganhar o aviso depois de a
+  -- limpeza dele (member_left_market_trips) já ter passado. A gravação da ida já segurava a casa pela chave
+  -- estrangeira; aqui a espera vem antes de contar os moradores, e não depende disso. FOR SHARE: espera
+  -- quem está saindo sem travar as outras gravações da casa. Com a casa na mão, quem avisa tem de
+  -- continuar nela.
+  perform 1 from public.households h where h.id = hid for share;
+  if not exists (select 1 from public.household_members m where m.household_id = hid and m.user_id = auth.uid()) then
+    raise exception 'sem casa' using errcode = '42501';
+  end if;
 
   select count(*) into others from public.household_members m
     where m.household_id = hid and m.user_id <> auth.uid();

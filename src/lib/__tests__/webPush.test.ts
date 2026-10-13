@@ -16,6 +16,8 @@ async function inBrowser(
       tables: Record<string, unknown[] | { error: unknown }>;
       storage: Map<string, string>;
       setPermission: (permission: string, afterAsking?: string) => void;
+      /** O erro que uma chamada ao banco devolve no resultado (como o cliente do Supabase: sem lançar); null: dá certo. */
+      failRpc: (decide: ((name: string, args: Record<string, unknown>) => unknown) | null) => void;
     },
   ) => Promise<void>,
   { lastSubscription, tripsOff }: { lastSubscription?: string; tripsOff?: boolean } = {},
@@ -24,6 +26,7 @@ async function inBrowser(
   const inserts: unknown[][] = [];
   let timezone = 'America/Sao_Paulo';
   let serverSubscription = 'sub-1';
+  let rpcError: ((name: string, args: Record<string, unknown>) => unknown) | null = null;
   const storage = new Map<string, string>(lastSubscription ? [['kotii:push-subscription', lastSubscription]] : []);
   if (tripsOff) storage.set('kotii:push-market-trips-off', '1');
   const tables: Record<string, unknown[] | { error: unknown }> = {};
@@ -77,6 +80,8 @@ async function inBrowser(
         supabase: {
           rpc: async (name: string, args: Record<string, unknown>) => {
             rpc.push([name, args]);
+            const failed = rpcError?.(name, args);
+            if (failed) return { data: null, error: failed };
             if (name === 'push_public_key') return { data: 'BAEC', error: null };
             if (name === 'register_push_subscription') return { data: serverSubscription, error: null };
             return { data: null, error: null };
@@ -108,6 +113,7 @@ async function inBrowser(
         tables,
         storage,
         setPermission: (permission, afterAsking = permission) => Object.assign(notification, { permission, afterAsking }),
+        failRpc: (decide) => (rpcError = decide),
       });
     });
   } finally {
@@ -253,6 +259,80 @@ describe('avisos no navegador', () => {
         expect(await webPush.getMarketTripsPush()).toBe(true);
         expect(browser.storage.has('kotii:push-market-trips-off')).toBe(false);
       });
+    });
+
+    it('desligar de novo a inscrição trocada falha: a troca não fica registrada, e a próxima vez tenta outra vez', async () => {
+      await inBrowser(
+        async (webPush, browser) => {
+          const refused = { code: '57014', message: 'canceling statement due to statement timeout' };
+          browser.failRpc((name) => (name === 'set_push_market_trips' ? refused : null));
+          // O servidor não guardou o "desligado" da inscrição nova: nada é agendado nela e a antiga segue como a conhecida.
+          await expect(webPush.webScheduler.scheduleManyAsync([daily(8)])).rejects.toBe(refused);
+          expect(browser.inserts).toEqual([]);
+          expect(browser.storage.get('kotii:push-subscription')).toBe('sub-0');
+          expect(browser.storage.get('kotii:push-market-trips-off')).toBe('1');
+          // Da próxima vez dá certo: desliga, registra a troca e agenda.
+          browser.failRpc(null);
+          await webPush.webScheduler.scheduleManyAsync([daily(8)]);
+          expect(flagCalls(browser.rpc)).toEqual([
+            { p_endpoint: endpoint, p_enabled: false },
+            { p_endpoint: endpoint, p_enabled: false },
+          ]);
+          expect(browser.storage.get('kotii:push-subscription')).toBe('sub-1');
+          expect(browser.inserts).toHaveLength(1);
+        },
+        { tripsOff: true, lastSubscription: 'sub-0' },
+      );
+    });
+
+    it('banco de antes da opção: a inscrição trocada segue em frente (não há o que desligar)', async () => {
+      for (const code of ['PGRST202', '42883']) {
+        await inBrowser(
+          async (webPush, browser) => {
+            browser.failRpc((name) => (name === 'set_push_market_trips' ? { code, message: 'function does not exist' } : null));
+            await webPush.webScheduler.scheduleManyAsync([daily(8)]);
+            expect(browser.storage.get('kotii:push-subscription')).toBe('sub-1');
+            expect(browser.inserts).toHaveLength(1);
+          },
+          { tripsOff: true, lastSubscription: 'sub-0' },
+        );
+      }
+    });
+
+    it('ligar que falha no meio não esquece a escolha de não receber', async () => {
+      const refused = { code: '57014', message: 'canceling statement due to statement timeout' };
+      // A opção não foi aceita pelo servidor.
+      await inBrowser(
+        async (webPush, browser) => {
+          await webPush.webScheduler.scheduleManyAsync([daily(8)]);
+          browser.failRpc((name, args) => (name === 'set_push_market_trips' && args.p_enabled === true ? refused : null));
+          await expect(webPush.setMarketTripsPush(true)).rejects.toBe(refused);
+          expect(browser.storage.get('kotii:push-market-trips-off')).toBe('1');
+          // Com o servidor de volta, ligar dá certo e a escolha guardada sai.
+          browser.failRpc(null);
+          expect(await webPush.setMarketTripsPush(true)).toBe(true);
+          expect(browser.storage.has('kotii:push-market-trips-off')).toBe(false);
+        },
+        { tripsOff: true },
+      );
+      // A inscrição falhou antes de chegar na opção.
+      await inBrowser(
+        async (webPush, browser) => {
+          browser.failRpc((name) => (name === 'register_push_subscription' ? refused : null));
+          await expect(webPush.setMarketTripsPush(true)).rejects.toBe(refused);
+          expect(browser.storage.get('kotii:push-market-trips-off')).toBe('1');
+        },
+        { tripsOff: true },
+      );
+      // Sem a permissão do navegador, também não.
+      await inBrowser(
+        async (webPush, browser) => {
+          browser.setPermission('default', 'denied');
+          expect(await webPush.setMarketTripsPush(true)).toBe(false);
+          expect(browser.storage.get('kotii:push-market-trips-off')).toBe('1');
+        },
+        { tripsOff: true },
+      );
     });
 
     it('desligado, e a inscrição trocou (ou a pessoa saiu e entrou): a nova nasce ligada e o navegador a desliga de novo', async () => {

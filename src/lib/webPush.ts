@@ -120,6 +120,10 @@ const marketTripsOff = {
   },
 };
 
+/** O banco ainda não tem a opção de "alguém indo ao mercado": a função não existe (PGRST202 no PostgREST, 42883 no Postgres). */
+const marketTripsOptionMissing = (error: unknown) =>
+  ['PGRST202', '42883'].includes(String((error as { code?: unknown } | null)?.code));
+
 /**
  * Inscreve este navegador no servidor e devolve o id da inscrição: uma vez
  * por sessão do app, e de novo se o fuso mudou (o app ficou aberto numa
@@ -142,16 +146,18 @@ function ensureSubscription({ fresh = false }: { fresh?: boolean } = {}): Promis
       }),
     ) as string;
     const previous = lastSubscription.get();
+    // Inscrição nova para este navegador: quem tinha desligado "Alguém indo ao
+    // mercado" continua sem receber. A troca só fica registrada aqui depois de
+    // o servidor guardar isso: se ele não guardar, a inscrição falha (os avisos
+    // são refeitos na próxima vez) e a tentativa se repete, em vez de a nova
+    // ficar ligada sem ninguém saber. Num banco de antes da opção não há o que
+    // desligar. O cliente do Supabase devolve o erro no resultado, não lança.
+    if (previous !== subscription && marketTripsOff.get()) {
+      const { error } = await supabase.rpc('set_push_market_trips', { p_endpoint: endpoint, p_enabled: false });
+      if (error && !marketTripsOptionMissing(error)) throw error;
+    }
     if (previous && previous !== subscription) subscriptionChanged = true;
     lastSubscription.set(subscription);
-    // Inscrição nova para este navegador: quem tinha desligado "Alguém indo ao
-    // mercado" continua sem receber (num banco de antes da opção, nada a fazer).
-    if (previous !== subscription && marketTripsOff.get()) {
-      await supabase.rpc('set_push_market_trips', { p_endpoint: endpoint, p_enabled: false }).then(
-        () => undefined,
-        () => undefined,
-      );
-    }
     return subscription;
   })().catch((err) => {
     if (registered?.id === id) registered = null;
@@ -253,15 +259,16 @@ export async function getMarketTripsPush(): Promise<boolean> {
 export async function setMarketTripsPush(enabled: boolean): Promise<boolean> {
   if (enabled) {
     if ((await Notification.requestPermission()) !== 'granted') return false;
-    marketTripsOff.set(false);
     // Confere no servidor: a inscrição pode ter sido apagada com o app aberto.
     await ensureSubscription({ fresh: true });
   }
   const endpoint = (await currentBrowserSubscription())?.endpoint;
   if (endpoint) unwrap(await supabase.rpc('set_push_market_trips', { p_endpoint: endpoint, p_enabled: enabled }));
   else if (enabled) throw new Error('O navegador não completou a inscrição para avisos.');
-  // Só depois de o servidor aceitar: sem a opção no banco, nada fica guardado aqui.
-  if (!enabled) marketTripsOff.set(true);
+  // Só depois de o servidor aceitar. Ligar que falha no meio (a inscrição, ou a opção) deixa guardada a
+  // escolha de não receber: a inscrição que trocar esta continua nascendo desligada. E sem a opção no
+  // banco, nada fica guardado aqui.
+  marketTripsOff.set(!enabled);
   return true;
 }
 
