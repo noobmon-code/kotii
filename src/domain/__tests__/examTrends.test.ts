@@ -588,6 +588,12 @@ describe('examTrends', () => {
       'Microalbuminúria (urina)',
       'URINA TIPO 1',
       'EAS',
+      // A sigla com pontos ou espaços é a mesma sigla (e o "e" dela não separa dois exames).
+      'E.A.S.',
+      'E. A. S.',
+      'E A S',
+      'Urina (E.A.S.)',
+      'E.A.S. - rotina',
       'Sumário urinário',
       'Creatinina urinária',
       'Proteinúria de 24h',
@@ -930,6 +936,10 @@ describe('examTrends', () => {
       ['Pesquisa de sangue oculto', 'urina'],
     ]);
     expect(materials('Rotina', ['Sangue oculto nas fezes'])).toEqual([['Sangue oculto nas fezes', 'fezes']]);
+    expect(materials('E.A.S.', ['Sangue oculto', 'Sangue'])).toEqual([
+      ['Sangue oculto', 'urina'],
+      ['Sangue', 'urina'],
+    ]);
     expect(materials('Urina de 24 horas', ['Sangue oculto'])).toEqual([['Sangue oculto', '24h']]);
     const dipstick = [
       exam('2026-09-10', [result('Sangue oculto', 'Positivo (++)', null, 'alterado'), result('Densidade', '1,020')], { title: 'EAS' }),
@@ -938,6 +948,34 @@ describe('examTrends', () => {
     const lines = visitSummary(person(), dipstick, [], '2026-10-12');
     expect(lines).toContain('- Sangue oculto (fezes): Negativo em 12/09/2026\n');
     expect(lines).toContain('- Sangue oculto (urina): Positivo (++) em 10/09/2026 (marcado no laudo: alterado)\n');
+    // O nome que já escreve "fezes" não leva o material de novo ao lado; o que só o tem pela regra ("Sangue
+    // oculto", acima) leva.
+    const spelled = visitSummary(
+      person(),
+      [
+        exam('2026-09-10', [result('Gordura nas fezes', 'Ausente')], { title: 'Parasitológico' }),
+        exam('2026-09-12', [result('Gordura nas fezes', 'Presente')], { title: 'Líquor' }),
+      ],
+      [],
+      '2026-10-12',
+    );
+    expect(spelled).toContain('- Gordura nas fezes: Ausente em 10/09/2026\n');
+    expect(spelled).toContain('- Gordura nas fezes (fezes e líquor): Presente em 12/09/2026\n');
+    // Na tela são duas linhas de mesmo nome, em texto: cada uma diz de que material é.
+    expect(examTrends(dipstick).text.map((i) => [i.name, valueLabel(i.last), i.material, i.otherMaterials, apartNote(i)])).toEqual([
+      ['Sangue oculto', 'Positivo (++)', 'urina', ['fezes'], 'Exame de urina: não foi comparado com os resultados de mesmo nome de outros exames.'],
+      ['Sangue oculto', 'Negativo', 'fezes', ['urina'], 'Exame de fezes: não foi comparado com os resultados de mesmo nome de outros exames.'],
+    ]);
+    // O texto da urina ao lado do número do sangue: a linha do texto diz que é de urina; a do número segue como
+    // estava (um texto não entraria na série dela).
+    const mixed = examTrends([
+      exam('2026-09-01', [result('Leucócitos', '7.500', '/mm³')], { title: 'Hemograma' }),
+      exam('2026-09-10', [result('Leucócitos', 'Raros')], { title: 'EAS' }),
+    ]);
+    expect(mixed.single.map((i) => [i.material, i.otherMaterials, apartNote(i)])).toEqual([['', [], null]]);
+    expect(mixed.text.map((i) => [i.material, i.otherMaterials, apartNote(i)])).toEqual([
+      ['urina', [''], 'Exame de urina: não foi comparado com os resultados de mesmo nome de outros exames.'],
+    ]);
 
     // O mesmo item em três laudos, com títulos diferentes: uma linha só, em texto.
     const exams = [
@@ -1209,6 +1247,8 @@ describe('examTrends', () => {
   it('título que junta exames não vale como material: a série do sangue continua', () => {
     for (const title of [
       'Hemograma + EAS',
+      'Hemograma e E.A.S.',
+      'Hemograma + E. A. S.',
       'Sangue e urina',
       'Sangue/urina',
       'Exames de rotina (sangue e urina)',

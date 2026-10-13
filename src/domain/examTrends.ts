@@ -460,7 +460,10 @@ const BLOOD_EXAM = /\b(sangue(?! ocult)|sanguine[oa]s?|hematologic[oa]s?|hemogra
 const ANALYSIS = /\b(bioquimic[ao]s?|seric[oa]s?|plasmatic[oa]s?)\b/;
 const GENERIC = /\b(rotina|check ?up|laboratoria(l|is))\b/;
 
-const plainWords = (text: string) => normalizeSearch(text).replace(/[^a-z0-9]+/g, ' ');
+// "E.A.S." e "E A S": a sigla escrita com pontos ou espaços vira uma palavra só, antes de o "e" dela ser lido
+// como o "e" que separa dois exames.
+const joinAcronyms = (normalized: string) => normalized.replace(/\be[.\s]+a[.\s]+s\b\.?/g, 'eas');
+const plainWords = (text: string) => joinAcronyms(normalizeSearch(text)).replace(/[^a-z0-9]+/g, ' ');
 
 // Exames de um dia inteiro que não são de urina ("Holter 24 horas", "MAPA
 // 24h", "pH-metria de 24 horas"): neles, "24h" não diz o material. "MAPA" e
@@ -527,7 +530,7 @@ function titleMaterials(title: string): string[] {
   const found: string[][] = [];
   // Algum exame anterior do título já disse um material.
   let materialBefore = false;
-  for (const exam of normalizeSearch(title).split(TITLE_EXAMS)) {
+  for (const exam of joinAcronyms(normalizeSearch(title)).split(TITLE_EXAMS)) {
     const pieces = exam.split(TITLE_DETAILS).map((piece) => ({ materials: materialsIn(piece, dayLong), plain: plainWords(piece) }));
     // O primeiro pedaço deste exame que diz um material (-1: nenhum).
     const first = pieces.findIndex((piece) => piece.materials.length > 0);
@@ -775,12 +778,19 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
     });
   });
 
-  // O mesmo item em outra unidade (ou sem unidade) e o de mesmo nome em outro
-  // material: só entre grupos numéricos.
+  // O mesmo item em outra unidade (ou sem unidade): só entre grupos numéricos.
+  // O de mesmo nome em outro material: a linha de um número olha os outros
+  // números (são eles que entrariam na mesma série); a de um texto olha todos,
+  // em número ou em texto (o "Sangue oculto" da fita da urina e o das fezes saem
+  // os dois em texto, e cada linha tem de dizer de qual é).
   const families = new Map<string, Group[]>();
   const bases = new Map<string, Group[]>();
+  const numberBases = new Map<string, Group[]>();
   for (const group of numeric.values()) {
     families.set(group.family, [...(families.get(group.family) ?? []), group]);
+    numberBases.set(group.base, [...(numberBases.get(group.base) ?? []), group]);
+  }
+  for (const group of [...numeric.values(), ...textual.values()]) {
     bases.set(group.base, [...(bases.get(group.base) ?? []), group]);
   }
   // O mesmo item (com o mesmo material e, no nome genérico, o mesmo exame)
@@ -796,7 +806,7 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
     const others = isNumber ? families.get(group.family)!.filter((other) => sameTime(other) && sameInOtherUnit(other, group)) : [];
     const newest = newestOf(others);
     const written = isNumber ? newestOf((texts.get(group.textFamily) ?? []).filter(sameTime)) : null;
-    const sameName = isNumber ? bases.get(group.base)!.filter((other) => other.material !== group.material) : [];
+    const sameName = (isNumber ? numberBases : bases).get(group.base)!.filter((other) => other.material !== group.material);
     return {
       key: group.key,
       name: group.name,
@@ -925,7 +935,7 @@ export function visitSummary(person: SummaryPerson, exams: TrendExam[], medicati
   // do nome, a não ser que o próprio nome já diga ("Densidade urinária").
   // "Sangue oculto" quer dizer fezes pela regra, mas não está escrito: o
   // material vai ao lado (o da fita da urina e o das fezes saem diferentes).
-  const spelled = (name: string) => materialsIn(name).filter((material) => material !== 'fezes' || /fezes/.test(plainWords(name)));
+  const spelled = (name: string) => materialsIn(name).filter((material) => material !== 'fezes' || /\bfezes\b/.test(plainWords(name)));
   const materials = new Map<string, Set<string>>();
   for (const item of items) {
     const key = examItemKey(item.name);
