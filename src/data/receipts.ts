@@ -336,6 +336,8 @@ export function useConfirmReceipt(receiptId: string) {
         'lists',
         'listItems',
         'listLinks',
+        // A nota ensina apelidos novos, e é por eles que os preços de outras casas chegam aos produtos desta.
+        'sharedPrices',
       ]) {
         queryClient.invalidateQueries({ queryKey: [key] });
       }

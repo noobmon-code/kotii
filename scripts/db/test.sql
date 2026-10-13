@@ -1,6 +1,7 @@
 -- Testes do schema: isolamento entre famílias (RLS), matching, preços,
 -- confirmação de nota, recorrência de tarefas, remédios, saúde, aparelhos,
--- documentos, financeiro, saída da casa e compromissos da família.
+-- documentos, financeiro, saída da casa, compromissos da família e preços
+-- compartilhados entre casas.
 -- Rodado por scripts/db/test.sh depois de stubs.sql + migrations.
 
 \set ON_ERROR_STOP 1
@@ -3219,5 +3220,452 @@ begin
     'members and the service role reach family_event_days through the API';
   assert not has_table_privilege('authenticated', 'public.family_event_days', 'truncate, references, trigger'), 'and members get nothing beyond that on family_event_days';
 end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• preços compartilhados: o que entra, o que nunca entra, quem lê e quem não alcança as tabelas'
+-- Paula e Quico compram no mesmo atacado; Rita já comprou o mesmo arroz (tem o
+-- apelido) e Saulo não; Tina tem conta, mas não tem casa.
+\set user_p '00000000-0000-0000-0000-00000000002a'
+\set user_q '00000000-0000-0000-0000-00000000002b'
+\set user_r '00000000-0000-0000-0000-00000000002c'
+\set user_s '00000000-0000-0000-0000-00000000002d'
+\set user_t '00000000-0000-0000-0000-00000000002e'
+reset role;
+insert into auth.users (id) values (:'user_p'), (:'user_q'), (:'user_r'), (:'user_s'), (:'user_t');
+-- O que as notas confirmadas nos testes de cima tiverem compartilhado sai: aqui a conta começa do zero.
+truncate public.shared_prices, public.shared_stores;
+-- O banco da Supabase roda em UTC: o dia tem de sair de São Paulo, não do fuso da sessão.
+set time zone 'UTC';
+select set_config('test.sp_today', ((now() at time zone 'America/Sao_Paulo')::date)::text, false) \gset
+
+do $$
+begin
+  -- Nada que aponte de volta: uma coluna nova (casa, pessoa, nota, id, hora) derruba este teste.
+  assert (select array_agg(column_name || ' ' || data_type order by ordinal_position) from information_schema.columns
+            where table_schema = 'public' and table_name = 'shared_stores') = array['cnpj text', 'name text'],
+    'shared_stores has exactly cnpj and name';
+  assert (select array_agg(column_name || ' ' || data_type order by ordinal_position) from information_schema.columns
+            where table_schema = 'public' and table_name = 'shared_prices')
+    = array['store_cnpj text', 'item_key text', 'unit text', 'seen_on date', 'unit_price numeric'],
+    'shared_prices has exactly store, item key, unit, day and price';
+  assert (select count(*) from information_schema.columns
+            where table_schema = 'public' and table_name in ('shared_stores', 'shared_prices') and column_default is not null) = 0,
+    'no column fills itself (no sequence, no clock)';
+  assert (select array_agg(a.attname::text order by k.ord) from pg_index i
+            cross join lateral unnest(i.indkey) with ordinality as k (attnum, ord)
+            join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum
+            where i.indrelid = 'public.shared_prices'::regclass and i.indisprimary)
+    = array['store_cnpj', 'item_key', 'unit', 'seen_on'],
+    'one row per store, item, unit and day';
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+select public.create_household('Casa da Paula', 'Paula') \gset
+do $$
+declare
+  today constant date := current_setting('test.sp_today')::date;
+  d constant date := today - 10;
+  ata constant text := '11222333000181';
+  s_ata uuid;
+  s_other uuid;
+  s_hand uuid;
+  r uuid;
+begin
+  insert into public.stores (name, cnpj) values ('ATACADAO MOOCA', ata) returning id into s_ata;
+  insert into public.stores (name, cnpj) values ('SUPER OUTRO', '99888777000166') returning id into s_other;
+  -- Mercado criado à mão na revisão: sem CNPJ.
+  insert into public.stores (name) values ('Mercadinho da esquina') returning id into s_hand;
+
+  -- Nota do QR code às 22:30 (em UTC já é o dia seguinte).
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s_ata, (d + time '22:30') at time zone 'America/Sao_Paulo', '352610' || ata || repeat('0', 23) || '1', 'qrcode')
+    returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, quantity, unit, unit_price, total_price) values
+    (r, 0, 'ARROZ T.JOÃO 5KG', 'graos', 1, 'un', 22.90, 22.90),
+    -- Brinde: valor zero.
+    (r, 1, 'BRINDE SACOLA', 'outros', 1, 'un', 0, 0),
+    -- Remédio pela categoria sugerida (linha sem produto), pela do produto, e sugerido como remédio com produto de outra categoria.
+    (r, 2, 'DIPIRONA 500MG', 'medicamentos', 1, 'un', 8.50, 8.50),
+    (r, 3, 'PARACETAMOL 750', 'higiene', 1, 'un', 12.00, 12.00),
+    (r, 4, 'XAROPE VICK', 'medicamentos', 1, 'un', 30.00, 30.00),
+    -- Descrição que não deixa chave nenhuma.
+    (r, 5, '***', 'outros', 1, 'un', 3.00, 3.00),
+    (r, 6, 'BANANA PRATA', 'hortifruti', 1.2, 'kg', 6.99, 8.39),
+    -- A mesma descrição de novo, mais abaixo na nota: uma linha só, com este preço.
+    (r, 7, 'ARROZ T JOAO 5KG', 'graos', 1, 'un', 21.90, 21.90);
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', (select id from public.receipt_items where receipt_id = r and position = 0),
+      'new_product', jsonb_build_object('name', 'Arroz Tio João 5kg', 'category', 'graos')),
+    jsonb_build_object('id', (select id from public.receipt_items where receipt_id = r and position = 3),
+      'new_product', jsonb_build_object('name', 'Paracetamol', 'category', 'medicamentos')),
+    jsonb_build_object('id', (select id from public.receipt_items where receipt_id = r and position = 4),
+      'new_product', jsonb_build_object('name', 'Xarope', 'category', 'higiene'))
+  ));
+  perform set_config('test.sp_receipt_qr', r::text, false);
+
+  -- Nota lida pela foto, à 00:30 do dia seguinte, sem chave de acesso.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_ata, (d + 1 + time '00:30') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price) values (r, 'LEITE ITALAC 1L', 'un', 4.59, 4.59);
+  perform public.confirm_receipt(r, '[]');
+  perform set_config('test.sp_receipt_photo', r::text, false);
+
+  -- Digitada à mão, no mesmo mercado com CNPJ: nada.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_ata, (d + time '10:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price) values (r, 'FEIJAO CAMIL 1KG', 'un', 7.90, 7.90);
+  perform public.confirm_receipt(r, '[]');
+
+  -- Lida, mas num mercado sem CNPJ: nada.
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s_hand, (d + time '11:00') at time zone 'America/Sao_Paulo', '352610' || ata || repeat('0', 23) || '2', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price) values (r, 'CAFE PILAO 500G', 'un', 18.90, 18.90);
+  perform public.confirm_receipt(r, '[]');
+
+  -- Lida, e a pessoa apontou para outro mercado: o CNPJ da chave não é o dele. Nada.
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s_other, (d + time '12:00') at time zone 'America/Sao_Paulo', '352610' || ata || repeat('0', 23) || '3', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price) values (r, 'ACUCAR UNIAO 1KG', 'un', 4.99, 4.99);
+  perform public.confirm_receipt(r, '[]');
+
+  -- Foto sem chave num mercado com CNPJ: entra, com o nome dele.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_other, (d + time '13:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price) values (r, 'OLEO LIZA 900ML', 'un', 7.49, 7.49);
+  perform public.confirm_receipt(r, '[]');
+
+  -- Data no futuro (digitada errada na revisão): nada.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_ata, (today + 2 + time '10:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price) values (r, 'SAL CISNE 1KG', 'un', 2.99, 2.99);
+  perform public.confirm_receipt(r, '[]');
+
+  -- Rascunho: só a confirmação compartilha.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_ata, (d + time '14:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price) values (r, 'RASCUNHO NAO CONFIRMADO', 'un', 1.00, 1.00);
+end $$;
+
+reset role;
+do $$
+declare
+  d constant date := current_setting('test.sp_today')::date - 10;
+  ata constant text := '11222333000181';
+begin
+  -- Do QR: o arroz (uma linha, o preço da última) e a banana, no dia de São Paulo das 22:30. Da foto: o leite, no dia da 00:30.
+  assert (select array_agg(item_key || ' ' || unit || ' ' || seen_on || ' ' || unit_price order by item_key)
+            from public.shared_prices where store_cnpj = ata)
+    = array['ARROZ T JOAO 5KG un ' || d || ' 21.9000', 'BANANA PRATA kg ' || d || ' 6.9900', 'LEITE ITALAC 1L un ' || (d + 1) || ' 4.5900'],
+    'the QR receipt and the photo receipt share their lines, on the São Paulo day';
+  assert (select array_agg(item_key || ' ' || unit || ' ' || seen_on || ' ' || unit_price) from public.shared_prices where store_cnpj <> ata)
+    = array['OLEO LIZA 900ML un ' || d || ' 7.4900'], 'a photo without an access key shares under the store CNPJ';
+  -- Zero, remédio (por qualquer das duas categorias), chave vazia, nota à mão, mercado sem CNPJ, CNPJ que não é
+  -- o da chave, data no futuro e rascunho: nada disso está entre as quatro linhas.
+  assert (select count(*) from public.shared_prices) = 4, 'nothing else was shared';
+  assert (select array_agg(cnpj || ' ' || name order by cnpj) from public.shared_stores)
+    = array['11222333000181 ATACADAO MOOCA', '99888777000166 SUPER OUTRO'], 'the stores, by CNPJ, with the printed name';
+end $$;
+
+-- Quico: o mesmo arroz, no mesmo atacado, no mesmo dia, por outro preço.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+select public.create_household('Casa do Quico', 'Quico') \gset
+do $$
+declare
+  d constant date := current_setting('test.sp_today')::date - 10;
+  ata constant text := '11222333000181';
+  s uuid;
+  r uuid;
+begin
+  insert into public.stores (name, cnpj) values ('ATACADAO MOOCA LJ 12', ata) returning id into s;
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s, (d + time '09:00') at time zone 'America/Sao_Paulo', '352610' || ata || repeat('0', 23) || '7', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price) values (r, 'Arroz T. João 5kg', 'un', 23.50, 23.50);
+  perform public.confirm_receipt(r, '[]');
+end $$;
+
+reset role;
+do $$
+begin
+  assert (select count(*) from public.shared_prices where item_key = 'ARROZ T JOAO 5KG') = 1, 'two households, same item, store and day: ONE row';
+  assert (select unit_price from public.shared_prices where item_key = 'ARROZ T JOAO 5KG') = 23.50, 'the newer write is the price';
+  assert (select count(*) from public.shared_prices) = 4, 'and no row more';
+  assert (select name from public.shared_stores where cnpj = '11222333000181') = 'ATACADAO MOOCA LJ 12', 'the store name is the last one written';
+end $$;
+
+-- Rita já comprou esse arroz (numa nota digitada, que não compartilha nada): tem o apelido, vê o preço.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+select public.create_household('Casa da Rita', 'Rita') \gset
+do $$
+declare
+  d constant date := current_setting('test.sp_today')::date - 10;
+  r uuid;
+  i uuid;
+  p uuid;
+  seen record;
+begin
+  assert (select count(*) from public.shared_latest_prices()) = 0, 'a household without the description sees nothing';
+  insert into public.receipts (source) values ('manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
+    values (r, 'arroz t.joão 5kg', 'un', 26.00, 26.00) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', i, 'new_product', jsonb_build_object('name', 'Arroz', 'category', 'graos'))));
+  select id into p from public.products where name = 'Arroz';
+
+  assert (select count(*) from public.shared_latest_prices()) = 1, 'with the alias, the price of that description';
+  select * into seen from public.shared_latest_prices();
+  assert seen.product_id = p and seen.store_cnpj = '11222333000181' and seen.store_name = 'ATACADAO MOOCA LJ 12'
+    and seen.unit = 'un' and seen.unit_price = 23.50 and seen.seen_on = d, 'her product, the store as shared, the price and the day';
+  -- O que volta é só isso: nada de casa, pessoa, nota ou hora.
+  assert (select array_agg(k order by k) from jsonb_object_keys(to_jsonb(seen)) as k)
+    = array['product_id', 'seen_on', 'store_cnpj', 'store_name', 'unit', 'unit_price'], 'the answer has only these columns';
+  perform set_config('test.sp_product_r', p::text, false);
+end $$;
+
+-- Saulo comprou outro arroz: tem apelido, mas não este. E a loja dele veio sem nome da leitura.
+select set_config('request.jwt.claim.sub', :'user_s', false) \gset
+select public.create_household('Casa do Saulo', 'Saulo') \gset
+do $$
+declare
+  d constant date := current_setting('test.sp_today')::date - 10;
+  ata constant text := '11222333000181';
+  s uuid;
+  r uuid;
+  i uuid;
+begin
+  insert into public.receipts (source) values ('manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
+    values (r, 'ARROZ CAMIL 5KG', 'un', 24.00, 24.00) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', i, 'new_product', jsonb_build_object('name', 'Arroz', 'category', 'graos'))));
+  assert (select count(*) from public.product_aliases) = 1, 'S has an alias of its own';
+  assert (select count(*) from public.shared_latest_prices()) = 0, 'a household without that description sees nothing';
+
+  -- O nome que o app inventa quando a leitura não trouxe nenhum não troca o nome de verdade.
+  insert into public.stores (name, cnpj) values ('CNPJ ' || ata, ata) returning id into s;
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s, (d + time '15:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price) values (r, 'MACARRAO RENATA 500G', 'un', 3.99, 3.99);
+  perform public.confirm_receipt(r, '[]');
+end $$;
+
+-- Tina não tem casa: nada.
+select set_config('request.jwt.claim.sub', :'user_t', false) \gset
+do $$
+begin
+  assert public.current_household_id() is null, 'T has no household';
+  assert (select count(*) from public.shared_latest_prices()) = 0, 'no household, no rows';
+end $$;
+
+-- Sem entrar, nem a função.
+set role anon;
+do $$
+begin
+  perform public.shared_latest_prices();
+  raise exception 'FAIL: anon read the shared prices';
+exception when insufficient_privilege then null;
+end $$;
+
+-- A janela de 90 dias e "o mais recente de cada produto, mercado e unidade" (linhas postas direto, como servidor).
+reset role;
+do $$
+declare
+  today constant date := current_setting('test.sp_today')::date;
+begin
+  assert (select count(*) from public.shared_prices where item_key = 'MACARRAO RENATA 500G') = 1, 'the store without a printed name still shares';
+  assert (select name from public.shared_stores where cnpj = '11222333000181') = 'ATACADAO MOOCA LJ 12', 'and its placeholder name does not replace the real one';
+  insert into public.shared_prices (store_cnpj, item_key, unit, seen_on, unit_price) values
+    -- Há 91 dias, no outro mercado: velho demais.
+    ('99888777000166', 'ARROZ T JOAO 5KG', 'un', today - 91, 10.00),
+    -- No atacado, mais novo que a linha de há 10 dias.
+    ('11222333000181', 'ARROZ T JOAO 5KG', 'un', today - 3, 24.10),
+    -- Com data de amanhã (não entra pelo gatilho; aqui, para a leitura): não aparece.
+    ('11222333000181', 'ARROZ T JOAO 5KG', 'un', today + 1, 1.00),
+    -- Outra unidade é outra linha.
+    ('11222333000181', 'ARROZ T JOAO 5KG', 'kg', today - 5, 4.80);
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+do $$
+declare
+  today constant date := current_setting('test.sp_today')::date;
+  p constant uuid := current_setting('test.sp_product_r')::uuid;
+begin
+  assert (select array_agg(store_cnpj || ' ' || unit || ' ' || unit_price || ' ' || seen_on order by store_cnpj, unit) from public.shared_latest_prices())
+    = array['11222333000181 kg 4.8000 ' || (today - 5), '11222333000181 un 24.1000 ' || (today - 3)],
+    'the newest per store and unit, never a future day, never older than 90 days';
+  -- Um membro grava os próprios apelidos (é a regra de sempre): com a chave certa, recebe o preço dela.
+  -- É informação de mercado (preço, loja, dia), e só de chave exata: não há como listar a tabela.
+  insert into public.product_aliases (alias, product_id) values ('ARROZ TIO JOAO TP1 5KG', p);
+  begin
+    insert into public.product_aliases (alias, product_id) values ('arroz%', p);
+    raise exception 'FAIL: an alias that is not a normalised key';
+  exception when check_violation then null;
+  end;
+end $$;
+
+reset role;
+do $$
+declare
+  today constant date := current_setting('test.sp_today')::date;
+begin
+  insert into public.shared_prices (store_cnpj, item_key, unit, seen_on, unit_price) values
+    -- Há exatamente 90 dias: ainda vale.
+    ('99888777000166', 'ARROZ T JOAO 5KG', 'un', today - 90, 20.00),
+    -- A outra descrição do mesmo produto, mais nova: é ela o preço do produto no atacado.
+    ('11222333000181', 'ARROZ TIO JOAO TP1 5KG', 'un', today - 1, 25.00);
+end $$;
+
+set role authenticated;
+do $$
+declare
+  today constant date := current_setting('test.sp_today')::date;
+  p constant uuid := current_setting('test.sp_product_r')::uuid;
+begin
+  assert (select array_agg(store_cnpj || ' ' || unit || ' ' || unit_price || ' ' || seen_on order by store_cnpj, unit) from public.shared_latest_prices())
+    = array['11222333000181 kg 4.8000 ' || (today - 5), '11222333000181 un 25.0000 ' || (today - 1), '99888777000166 un 20.0000 ' || (today - 90)],
+    'one row per product, store and unit: the newest among the descriptions of the product; 90 days still count';
+  assert (select bool_and(product_id = p) from public.shared_latest_prices()), 'always for a product of the caller';
+end $$;
+
+-- As tabelas: ninguém do app lê nem grava, nem com casa, nem sem entrar.
+do $$
+declare
+  stmt text;
+begin
+  foreach stmt in array array[
+    'select 1 from public.shared_prices',
+    $q$insert into public.shared_prices values ('11222333000181', 'X', 'un', current_date, 1)$q$,
+    'update public.shared_prices set unit_price = 1',
+    'delete from public.shared_prices',
+    'select 1 from public.shared_stores',
+    $q$insert into public.shared_stores values ('00000000000191', 'X')$q$,
+    $q$update public.shared_stores set name = 'X'$q$,
+    'delete from public.shared_stores'
+  ] loop
+    begin
+      execute stmt;
+      raise exception 'FAIL: a member ran: %', stmt;
+    exception when insufficient_privilege then null;
+    end;
+  end loop;
+  begin
+    perform public.share_receipt_prices();
+    raise exception 'FAIL: a member called the trigger function';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set role anon;
+do $$
+declare
+  stmt text;
+begin
+  foreach stmt in array array[
+    'select 1 from public.shared_prices',
+    $q$insert into public.shared_prices values ('11222333000181', 'X', 'un', current_date, 1)$q$,
+    'update public.shared_prices set unit_price = 1',
+    'delete from public.shared_prices',
+    'select 1 from public.shared_stores',
+    $q$insert into public.shared_stores values ('00000000000191', 'X')$q$,
+    $q$update public.shared_stores set name = 'X'$q$,
+    'delete from public.shared_stores'
+  ] loop
+    begin
+      execute stmt;
+      raise exception 'FAIL: anon ran: %', stmt;
+    exception when insufficient_privilege then null;
+    end;
+  end loop;
+end $$;
+reset role;
+do $$
+declare
+  t text;
+  who text;
+  verb text;
+begin
+  -- Cada permissão conferida sozinha (com uma lista, has_table_privilege diz sim se a pessoa tem qualquer uma).
+  foreach t in array array['public.shared_stores', 'public.shared_prices'] loop
+    foreach verb in array array['select', 'insert', 'update', 'delete', 'truncate', 'references', 'trigger'] loop
+      foreach who in array array['anon', 'authenticated'] loop
+        assert not has_table_privilege(who, t, verb), format('%s has no %s on %s', who, verb, t);
+      end loop;
+    end loop;
+    foreach verb in array array['select', 'insert', 'update', 'delete'] loop
+      assert has_table_privilege('service_role', t, verb), format('the service role has %s on %s', verb, t);
+    end loop;
+    assert (select relrowsecurity from pg_class where oid = t::regclass), format('RLS is on for %s', t);
+  end loop;
+  assert (select count(*) from pg_policies where schemaname = 'public' and tablename in ('shared_stores', 'shared_prices')) = 0,
+    'and no policy opens the tables';
+  foreach who in array array['public', 'anon', 'authenticated'] loop
+    assert not has_function_privilege(who, 'public.share_receipt_prices()', 'execute'), format('%s cannot execute the trigger function', who);
+  end loop;
+  assert not has_function_privilege('public', 'public.shared_latest_prices()', 'execute'), 'the read function is not open to everyone';
+  assert not has_function_privilege('anon', 'public.shared_latest_prices()', 'execute'), 'anon cannot execute the read function';
+  assert has_function_privilege('authenticated', 'public.shared_latest_prices()', 'execute'), 'a signed-in person can';
+end $$;
+
+-- Compartilhar nunca derruba a confirmação: com a gravação recusada (uma regra posta aqui só para isso), a
+-- nota fica confirmada, com apelido e tudo, e nada dela entra (nem a linha que passaria).
+alter table public.shared_prices add constraint test_refuses_item check (item_key <> 'ITEM QUE EMPERRA') not valid;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  d constant date := current_setting('test.sp_today')::date - 2;
+  s uuid;
+  r uuid;
+  i uuid;
+begin
+  select id into s from public.stores where cnpj = '11222333000181';
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s, (d + time '10:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, unit, unit_price, total_price) values (r, 0, 'ITEM QUE EMPERRA', 'un', 5.00, 5.00);
+  insert into public.receipt_items (receipt_id, position, raw_description, unit, unit_price, total_price)
+    values (r, 1, 'SABAO OMO 1KG', 'un', 19.90, 19.90) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', i, 'new_product', jsonb_build_object('name', 'Sabão Omo 1kg', 'category', 'limpeza'))));
+  assert (select status from public.receipts where id = r) = 'confirmed', 'a failing share leaves the receipt confirmed';
+  assert (select count(*) from public.product_aliases where alias = 'SABAO OMO 1KG') = 1, 'with everything the confirmation does';
+  assert (select count(*) from public.latest_prices where store_id = s and unit_price = 19.90) = 1, 'and the household keeps its own price';
+
+  -- Confirmar de novo continua sendo erro, como antes.
+  begin
+    perform public.confirm_receipt(r, '[]');
+    raise exception 'FAIL: receipt confirmed twice';
+  exception when unique_violation then null;
+  end;
+  begin
+    perform public.confirm_receipt(current_setting('test.sp_receipt_photo')::uuid, '[]');
+    raise exception 'FAIL: receipt confirmed twice';
+  exception when unique_violation then null;
+  end;
+
+  -- Só a passagem de rascunho para confirmada compartilha: mexer numa nota já confirmada (e gravar o status
+  -- de novo, igual) não regrava nada.
+  update public.receipt_items set unit_price = 9.99 where receipt_id = current_setting('test.sp_receipt_photo')::uuid;
+  update public.receipts set status = 'confirmed' where id = current_setting('test.sp_receipt_photo')::uuid;
+
+  -- Excluir a nota não retira o que ela deu: nada liga uma coisa à outra.
+  delete from public.receipts where id = current_setting('test.sp_receipt_qr')::uuid;
+end $$;
+reset role;
+alter table public.shared_prices drop constraint test_refuses_item;
+do $$
+declare
+  d constant date := current_setting('test.sp_today')::date - 10;
+begin
+  assert (select count(*) from public.shared_prices where item_key in ('ITEM QUE EMPERRA', 'SABAO OMO 1KG')) = 0,
+    'nothing of the receipt whose share failed, not even the line that would pass';
+  assert (select count(*) from public.receipts where id = current_setting('test.sp_receipt_qr')::uuid) = 0, 'the receipt is gone';
+  assert (select unit_price from public.shared_prices where item_key = 'BANANA PRATA' and seen_on = d) = 6.99, 'and what it shared stays';
+  assert (select unit_price from public.shared_prices where item_key = 'LEITE ITALAC 1L') = 4.59,
+    'confirming twice, or touching a confirmed receipt, changed nothing';
+end $$;
+reset time zone;
 
 \echo 'OK — todos os testes do banco passaram'

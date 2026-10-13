@@ -6,6 +6,7 @@ import { usePriceHistory, useProducts, useRenameProduct, useStores } from '@/dat
 import { CATEGORIES, getCategory } from '@/domain/categories';
 import { formatShortDate, toISODate } from '@/domain/dates';
 import { formatBRL } from '@/domain/money';
+import { SharedPricesSection } from '@/features/SharedPrices';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
@@ -101,6 +102,8 @@ export default function ProductScreen() {
           </ListCard>
         )}
       </Section>
+
+      <SharedPricesSection productId={product.id} />
 
       {(history.data?.length ?? 0) > latestByStore.length ? (
         <Section title="Histórico">
