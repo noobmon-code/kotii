@@ -1146,13 +1146,48 @@ describe('pantryHits', () => {
     // O Ninho continua com o selo; o Italac, não.
     expect(pantryHits([item('n', 'Leite', 'ninho')], pantry, { today, ranOut }).size).toBe(1);
     expect(pantryHits([item('i', 'Leite', 'italac')], pantry, { today, ranOut }).size).toBe(0);
+    // O item digitado "Leite" aceita as duas entradas pelo nome: a do Italac acabou, a do Ninho continua lá.
+    const typed = pantryHits([item('l', 'Leite', null)], pantry, { today, ranOut });
+    expect(typed.get('l')).toMatchObject({ since: '2026-10-01' });
     // Sem produto (o item digitado "Leite" e a entrada posta à mão), o nome é tudo o que se sabe: o palpite vale.
     const byHand = [stock('Leite', null, { purchased_on: '2026-10-01' })];
     expect(pantryHits([item('l', 'Leite', null)], byHand, { today, ranOut }).size).toBe(0);
     expect(pantryHits([item('l', 'Leite', null)], byHand, { today, ranOut: [] }).size).toBe(1);
-    // E o palpite sem produto ("Leite" marcado na lista) segue valendo pelo nome, tenha a entrada produto ou não.
+    // O palpite sem produto ("Leite" marcado na lista) vale para o item digitado "Leite", com qualquer entrada que o cumpra...
     const named = [{ name: 'Leite', productId: null, lastAt: '2026-10-02T12:00:00', everyDays: 5 }];
-    expect(pantryHits([item('n', 'Leite', 'ninho')], pantry, { today, ranOut: named }).size).toBe(0);
+    expect(pantryHits([item('l', 'Leite', null)], pantry, { today, ranOut: named }).size).toBe(0);
+    expect(pantryHits([item('l', 'Leite', null)], byHand, { today, ranOut: named }).size).toBe(0);
+    // ...mas não diz qual produto acabou: o item que tem produto só o recebe pela ligação do nome com um produto só.
+    expect(pantryHits([item('n', 'Leite', 'ninho')], pantry, { today, ranOut: named }).size).toBe(1);
+    const both = new LinkIndex([
+      { name_key: 'leite', product_id: 'italac' },
+      { name_key: 'leite', product_id: 'ninho' },
+    ]);
+    expect(pantryHits([item('i', 'Leite', 'italac')], pantry, { links: both, today, ranOut: named }).size).toBe(1);
+    const onlyNinho = new LinkIndex([{ name_key: 'leite', product_id: 'ninho' }]);
+    expect(pantryHits([item('n', 'Leite', 'ninho')], pantry, { links: onlyNinho, today, ranOut: named }).size).toBe(0);
+    expect(pantryHits([item('i', 'Leite', 'italac')], pantry, { links: onlyNinho, today, ranOut: named }).size).toBe(1);
+  });
+
+  it('o palpite do produto do item não tira o selo que vem de outro produto ligado ao mesmo nome', () => {
+    // O item é o Italac, e "Leite Integral Italac 1L" também foi cumprido por um Ninho numa nota (a ligação).
+    // O Italac acabou (a cada 5 dias, a última vez em 2 out); o Ninho, comprado em 28 set, não tem palpite.
+    const ranOut = [{ name: 'Leite Integral Italac 1L', productId: 'italac', lastAt: '2026-10-02T12:00:00', everyDays: 5 }];
+    const links = new LinkIndex([{ name_key: listNameKey('Leite Integral Italac 1L'), product_id: 'ninho' }]);
+    const ninho = stock('Leite Ninho 800g', 'ninho', { purchased_on: '2026-09-28' });
+    const italac = stock('Leite Integral Italac 1L', 'italac', { purchased_on: '2026-10-02' });
+    const backed = [item('i', 'Leite Integral Italac 1L', 'italac')];
+    // Sem as ligações, só o Italac contaria, e ele acabou.
+    expect(pantryHits(backed, [italac, ninho], { today, ranOut }).size).toBe(0);
+    // Com elas, o Ninho cumpre o item e continua na despensa: o palpite é do Italac.
+    const hits = pantryHits(backed, [italac, ninho], { links, today, ranOut });
+    expect([...hits.values()].map((hit) => hit.name)).toEqual(['Leite Ninho 800g']);
+    // Quando o próprio Ninho acaba, aí sim o selo sai.
+    const also = [...ranOut, { name: 'Leite Ninho 800g', productId: 'ninho', lastAt: '2026-09-28T12:00:00', everyDays: 7 }];
+    expect(pantryHits(backed, [italac, ninho], { links, today, ranOut: also }).size).toBe(0);
+    // A entrada posta à mão (sem produto) com o nome do item segue o palpite do item.
+    const byName = stock('Leite Integral Italac 1L', null, { purchased_on: '2026-09-28' });
+    expect(pantryHits(backed, [byName], { links, today, ranOut }).size).toBe(0);
   });
 
   it('palpites empatados no dia: o selo não depende da ordem em que eles e as ligações chegam', () => {
