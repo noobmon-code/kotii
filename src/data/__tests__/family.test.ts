@@ -71,16 +71,20 @@ function savingDb(answer: (op: string) => { data: unknown; error: unknown } | un
     from: (table: string) => {
       let op = table;
       const query: Record<string, unknown> = {
-        then: (resolve: (value: { data: unknown; error: unknown }) => void) => resolve(answer(op) ?? { data: null, error: null }),
+        // Sem resposta combinada: dá certo. O "mudar" devolve a linha mudada, como o banco quando ela existe.
+        then: (resolve: (value: { data: unknown; error: unknown }) => void) =>
+          resolve(answer(op) ?? { data: op === 'family_events.update' ? { id: 'e1' } : null, error: null }),
       };
       for (const verb of ['insert', 'update', 'select', 'delete', 'upsert']) {
         query[verb] = (...args: unknown[]) => {
+          // O `select` depois de gravar só pede a linha de volta: é o mesmo pedido.
+          if (verb === 'select' && op !== table) return query;
           op = `${table}.${verb}`;
           ops.push({ op, args });
           return query;
         };
       }
-      for (const filter of ['eq', 'in']) query[filter] = () => query;
+      for (const filter of ['eq', 'in', 'maybeSingle']) query[filter] = () => query;
       return query;
     },
   };
@@ -122,6 +126,15 @@ describe('salvar o compromisso', () => {
     expect(ops[3].args[0]).toEqual([
       { event_id: 'e1', occurs_on: '2026-10-20', cancelled: false, override_take: false, take_by: null, override_pick_up: true, pick_up_by: 'beto' },
     ]);
+  });
+
+  it('o compromisso foi excluído em outro celular: mudar não "dá certo" calado, e a limpeza dos dias nem começa', async () => {
+    // O banco responde sem erro e sem linha nenhuma mudada.
+    const gone = savingDb((op) => (op === 'family_events.update' ? { data: null, error: null } : undefined));
+    await expect(saveFamilyEvent({ id: 'e1', values }, gone.db)).rejects.toThrow(FAMILY_EVENT_GONE);
+    expect(gone.ops.map((o) => o.op)).toEqual(['family_events.update']);
+    const error = await saveFamilyEvent({ id: 'e1', values }, gone.db).catch((e: unknown) => e);
+    expect(familyEventErrorMessage(error)).toBe('Este compromisso não existe mais: foi excluído. Volte para a agenda.');
   });
 
   it('se a limpeza dos dias falha, o salvar falha junto (tocar em Salvar de novo termina)', async () => {

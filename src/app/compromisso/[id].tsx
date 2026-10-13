@@ -76,7 +76,8 @@ export default function FamilyEventScreen() {
   const { id, dia } = useLocalSearchParams<{ id: string; dia?: string }>();
   const isNew = id === 'novo';
   const people = usePeople();
-  const event = useFamilyEvent(isNew ? undefined : id);
+  // Quem edita parte do que está no banco: a tela busca o compromisso ao abrir, mesmo com o guardado ainda novo.
+  const event = useFamilyEvent(isNew ? undefined : id, { fresh: true });
   const day = dia && isValidISODate(dia) ? dia : null;
 
   // O formulário copia o compromisso para os campos uma vez só. Por isso espera a busca desta visita: o que
@@ -297,12 +298,17 @@ function EventForm({ event, people, day, onReload }: { event?: FamilyEvent; peop
  * o resto do formulário é de todas as vezes.
  */
 function DayChanges({ event, people, initialDay }: { event: FamilyEvent; people: Person[]; initialDay: string | null }) {
-  const days = useFamilyEventDays();
+  const days = useFamilyEventDays({ fresh: true });
   const save = useSaveFamilyEventDay();
   const today = todayISO();
   // Só um dia que é mesmo do compromisso (a regra pode ter mudado desde o toque).
   const [day, setDay] = useState(initialDay && isEventDate(event, initialDay) ? initialDay : null);
   const [showAll, setShowAll] = useState(false);
+  // Cada toque grava a linha inteira do dia, montada com o que está na tela. Por isso as escolhas só valem
+  // depois de uma busca desta visita ter chegado: o guardado pode ser de antes de uma mudança feita em outro
+  // celular, e o toque a apagaria. Depois da primeira que chegou, as buscas seguintes só atualizam a tela.
+  const [read, setRead] = useState(false);
+  if (!read && days.isSuccess && days.isFetchedAfterMount && !days.isFetching) setRead(true);
 
   if (!days.data) {
     return days.isError ? (
@@ -329,10 +335,10 @@ function DayChanges({ event, people, initialDay }: { event: FamilyEvent; people:
   // A lista fica acima do formulário: só os primeiros, e o resto num toque
   // (é por ela que se chega a um dia marcado como "não vai ter").
   const shown = showAll ? others : others.slice(0, OTHER_DAYS_SHOWN);
-  // Cada toque grava a linha inteira do dia, montada com o que está na tela. Enquanto a busca desta visita não
-  // chega, o que está na tela pode ser de antes de uma mudança feita em outro celular, e o toque a apagaria:
-  // as escolhas esperam, apagadas, como enquanto grava. Sem internet a busca fica parada, e elas ficam livres.
-  const saving = save.isPending || (days.isFetching && !days.isFetchedAfterMount);
+  // Enquanto grava, ou enquanto a busca desta visita não chegou, as escolhas esperam, apagadas.
+  const saving = save.isPending || !read;
+  // A busca não veio (falhou, ou está parada por falta de internet): a tela diz, com o que fazer.
+  const unread = !read && !days.isFetching;
 
   function change(patch: Partial<EventDayValues>) {
     if (!day || saving) return;
@@ -345,6 +351,12 @@ function DayChanges({ event, people, initialDay }: { event: FamilyEvent; people:
         <Card style={styles.group}>
           <Text variant="heading">Só neste dia</Text>
           <Text variant="muted">{longDate(day)}. O que você mudar aqui vale só para este dia.</Text>
+          {unread ? (
+            <>
+              <Text variant="small">Não deu para buscar agora como este dia está. Para mudar só este dia, é preciso buscar de novo.</Text>
+              <Button title="Tentar de novo" variant="secondary" icon="refresh" onPress={() => days.refetch()} />
+            </>
+          ) : null}
           {values.cancelled ? (
             <>
               <Row>

@@ -3,7 +3,9 @@ import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import FamilyEventScreen from '@/app/compromisso/[id]';
-import { confirmAction } from '@/ui/dialogs';
+import { router } from 'expo-router';
+
+import { confirmAction, notify } from '@/ui/dialogs';
 import { Button, Chip, ListRow, Loading, TextField } from '@/ui/primitives';
 
 // A tela de verdade, com as consultas de verdade de src/data/family.ts e um
@@ -45,7 +47,11 @@ jest.mock('@/lib/supabase', () => {
     const run = () => {
       if (!write) return { data: rowsOf().filter(matches).map((row) => ({ ...row })), error: null };
       mockDb.writes.push({ table: name, ...write });
-      if (write.verb === 'update') rowsOf().filter(matches).forEach((row) => Object.assign(row, write!.values));
+      if (write.verb === 'update') {
+        const hit = rowsOf().filter(matches);
+        hit.forEach((row) => Object.assign(row, write!.values));
+        return { data: hit.map((row) => ({ ...row })), error: null };
+      }
       if (write.verb === 'delete') {
         const kept = rowsOf().filter((row) => !matches(row));
         if (name === 'family_event_days') mockDb.days = kept;
@@ -85,10 +91,10 @@ jest.mock('@/lib/supabase', () => {
         const result = run();
         return { data: (result.data as Row[] | null)?.[0] ?? null, error: result.error };
       },
-      then: (resolve: (value: unknown) => unknown) =>
+      then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) =>
         Promise.resolve(write ? undefined : mockDb.gates[name as Table])
           .then(() => run())
-          .then(resolve),
+          .then(resolve, reject),
     };
     return builder;
   };
@@ -192,6 +198,8 @@ beforeEach(() => {
   mockDb.writes = [];
   mockDb.gates = {};
   jest.mocked(confirmAction).mockReset();
+  jest.mocked(notify).mockReset();
+  jest.mocked(router.back).mockReset();
 });
 
 afterEach(async () => {
@@ -231,22 +239,21 @@ describe('tela do compromisso: o formulário espera a busca desta visita', () =>
     expect(updates[0].values).toMatchObject({ start_time: '17:00', end_time: '18:00', take_by: 'beto', pick_up_by: 'carla', bring: 'touca' });
   });
 
-  it('guardado há pouco (menos de 30 segundos): abre na hora, sem "carregando"', async () => {
+  it('mesmo guardado há pouco (menos de 30 segundos), a tela busca de novo ao abrir: quem edita parte do que está no banco', async () => {
     open();
     await settle();
     await close();
+    // Dez segundos depois, em outro celular, o compromisso mudou. O guardado daqui ainda é "novo".
+    changeElsewhere();
     open();
-    expect(loading()).toBe(false);
-    expect(field('Começa às')!.props.value).toBe('16:00');
+    expect(loading()).toBe(true);
+    await settle();
+    expect(field('Começa às')!.props.value).toBe('17:00');
   });
 
   it('com o formulário aberto, outra busca não o tira da frente nem apaga o que foi digitado', async () => {
-    // Aberto pela segunda vez com o guardado ainda novo: esta visita não buscou nada ao abrir. É o caso em que
-    // a busca seguinte (a de uma ficha criada pelo "+ Pessoa", a de voltar ao app) seria a "primeira desta visita".
     open();
     await settle();
-    await close();
-    open();
     expect(field('O que levar')).toBeDefined();
     act(() => field('O que levar')!.props.onChangeText('touca e toalha'));
 
@@ -415,13 +422,12 @@ describe('tela do compromisso: o que muda só num dia', () => {
     expect(mockDb.days).toEqual([]);
   });
 
-  it('as escolhas do dia esperam a busca desta visita: o toque não grava por cima do que mudou em outro celular', async () => {
+  it('as escolhas do dia esperam a busca desta visita, mesmo com o guardado ainda novo: o toque não grava por cima do que mudou em outro celular', async () => {
     open({ id: 'natacao', dia: '2099-01-01' });
     await settle();
     await close();
-    // Em outro celular: nesse dia é o Beto quem busca.
+    // Dez segundos depois, em outro celular: nesse dia é o Beto quem busca. O guardado daqui ainda é "novo".
     mockDb.days = [dayRow({ occurs_on: '2099-01-01', override_pick_up: true, pick_up_by: 'beto' })];
-    age();
     const arrive = hold('family_event_days');
     open({ id: 'natacao', dia: '2099-01-01' });
     await settle();
@@ -450,5 +456,67 @@ describe('tela do compromisso: o que muda só num dia', () => {
         values: { event_id: 'natacao', occurs_on: '2099-01-01', cancelled: false, override_take: true, take_by: 'beto', override_pick_up: true, pick_up_by: 'beto' },
       },
     ]);
+  });
+  it('a busca das mudanças do dia falha: as escolhas não aceitam toque, a tela diz, e "Tentar de novo" resolve', async () => {
+    // Já aberto antes: as mudanças de cada dia estão guardadas. Na visita seguinte, a busca delas falha.
+    open({ id: 'natacao', dia: '2099-01-01' });
+    await settle();
+    await close();
+    const failing = jest.spyOn(mockDb.days, 'filter').mockImplementation(() => {
+      throw new Error('TypeError: Network request failed');
+    });
+    open({ id: 'natacao', dia: '2099-01-01' });
+    await settle();
+    expect(page()).toContain('Não deu para buscar agora como este dia está.');
+    await act(async () => {
+      dayChips()
+        .find((item) => item.props.label === 'Beto')!
+        .props.onPress();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(mockDb.writes).toEqual([]);
+
+    failing.mockRestore();
+    await act(async () => {
+      button('Tentar de novo')!.props.onPress();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    await settle();
+    expect(page()).not.toContain('Não deu para buscar agora como este dia está.');
+    await act(async () => {
+      dayChips()
+        .find((item) => item.props.label === 'Beto')!
+        .props.onPress();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(mockDb.writes.map((w) => `${w.table}:${w.verb}`)).toEqual(['family_event_days:upsert']);
+  });
+});
+
+describe('tela do compromisso: salvar', () => {
+  it('o compromisso foi excluído em outro celular com o formulário aberto: salvar avisa, e a tela não fecha como se tivesse gravado', async () => {
+    open();
+    await settle();
+    act(() => field('O que levar')!.props.onChangeText('touca'));
+    // Excluído no outro celular; nenhuma busca daqui soube ainda.
+    mockDb.events = [];
+    await act(async () => {
+      button('Salvar')!.props.onPress();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(notify).toHaveBeenCalledWith('Erro', 'Este compromisso não existe mais: foi excluído. Volte para a agenda.');
+    expect(router.back).not.toHaveBeenCalled();
+  });
+
+  it('salvou: a tela fecha', async () => {
+    open();
+    await settle();
+    act(() => field('O que levar')!.props.onChangeText('touca'));
+    await act(async () => {
+      button('Salvar')!.props.onPress();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(notify).not.toHaveBeenCalled();
+    expect(router.back).toHaveBeenCalledTimes(1);
   });
 });

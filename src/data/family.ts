@@ -122,15 +122,25 @@ export function useFamilyEvents() {
   return useQuery({ queryKey: ['familyEvents'], queryFn: () => fetchFamilyEvents() });
 }
 
-export function useFamilyEventDays() {
-  return useQuery({ queryKey: ['familyEventDays'], queryFn: () => fetchFamilyEventDays() });
+/**
+ * `fresh`: para quem vai editar (a tela do compromisso). Busca de novo ao abrir mesmo com o guardado ainda
+ * novo: a edição grava a linha inteira montada com o que está na tela, e o que está guardado pode ser de antes
+ * de uma mudança feita em outro celular.
+ */
+export interface FreshRead {
+  fresh?: boolean;
+}
+
+export function useFamilyEventDays({ fresh = false }: FreshRead = {}) {
+  return useQuery({ queryKey: ['familyEventDays'], queryFn: () => fetchFamilyEventDays(), ...(fresh ? { refetchOnMount: 'always' as const } : {}) });
 }
 
 /** Um compromisso; null se não existe mais (apagado por outra pessoa). */
-export function useFamilyEvent(id: string | undefined) {
+export function useFamilyEvent(id: string | undefined, { fresh = false }: FreshRead = {}) {
   return useQuery({
     queryKey: ['familyEvents', id],
     enabled: Boolean(id),
+    ...(fresh ? { refetchOnMount: 'always' as const } : {}),
     queryFn: async () => {
       const row = unwrap(await supabase.from('family_events').select(EVENT_COLUMNS).eq('id', id!).maybeSingle()) as FamilyEvent | null;
       return row ? fromRow(row) : null;
@@ -188,7 +198,10 @@ export async function saveFamilyEvent(
     unwrap(await db.from('family_events').insert(values));
     return;
   }
-  unwrap(await db.from('family_events').update(values).eq('id', id));
+  // Mudar um compromisso que foi excluído em outro celular "dá certo" sem mudar linha nenhuma. Pedindo a
+  // linha de volta dá para saber: sem ela, é erro, em vez de a tela fechar como se tivesse salvado.
+  const saved = unwrap(await db.from('family_events').update(values).eq('id', id).select('id').maybeSingle()) as { id: string } | null;
+  if (!saved) throw new Error(FAMILY_EVENT_GONE);
   const rows = unwrap(await db.from('family_event_days').select(DAY_COLUMNS).eq('event_id', id)) as FamilyEventDay[];
   const { remove, rewrite } = dayChangesAfterSave(values, rows);
   if (remove.length) unwrap(await db.from('family_event_days').delete().eq('event_id', id).in('occurs_on', remove));
