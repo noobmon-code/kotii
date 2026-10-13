@@ -26,6 +26,16 @@ export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint
   { key: 'supplies', label: 'Gás, água e ração', hint: 'Uns dias antes de acabar e no dia previsto, pela conta do Kotii, às 9h' },
 ];
 
+/**
+ * Os tipos que a lista de avisos oferece. Num banco ainda sem as tabelas das
+ * reposições (`suppliesAvailable === false`), o tipo delas não aparece: a
+ * pessoa ligaria um aviso sem ter onde cadastrar o gás. Só no `false`: sem
+ * resposta ainda (ou com a busca falhando sem internet), a linha fica.
+ */
+export function shownHouseReminderKinds(suppliesAvailable: boolean | undefined) {
+  return HOUSE_REMINDER_KINDS.filter((kind) => kind.key !== 'supplies' || suppliesAvailable !== false);
+}
+
 export interface HouseReminder {
   /** Tipo, item e dia: o mesmo aviso não é agendado duas vezes. */
   key: string;
@@ -181,9 +191,10 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
 
   if (kinds.supplies) {
     for (const supply of input.supplies ?? []) {
-      // No começo da janela de aviso e no dia previsto; o que já passou não entra.
+      // No começo da janela de aviso e no dia previsto (ciclo curto: um só, ver
+      // supplyReminders); o que já passou não entra.
       if (supply.warnOn) add('supplies', supply.id, supply.warnOn, supply.warnTitle, supply.body);
-      add('supplies', supply.id, supply.endsOn, supply.endTitle, supply.body);
+      if (supply.endsOn) add('supplies', supply.id, supply.endsOn, supply.endTitle, supply.body);
     }
   }
 

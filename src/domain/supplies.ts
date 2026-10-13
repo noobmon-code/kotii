@@ -1,7 +1,7 @@
 // O que acaba sem passar por nota fiscal: gás, galão de água, ração, areia do
 // gato, refil do filtro. A casa anota cada troca ("Troquei hoje") e a previsão
-// de quando o atual acaba sai só das trocas anotadas. É sempre previsão, nunca
-// certeza: o gás não obedece o app.
+// de quando o atual acaba sai das trocas anotadas (nos primeiros ciclos, junto
+// com uma estimativa). É sempre previsão, nunca certeza: o gás não obedece o app.
 
 import type { IconName } from './categories';
 import { addDays, diffDays, formatBRDate, parseBRDate } from './dates';
@@ -47,10 +47,19 @@ export interface SupplyLike {
 
 /** A previsão olha as últimas trocas: a casa muda (mais gente, outro fogão) e o costume antigo deixa de valer. */
 const INTERVALS_USED = 5;
+/**
+ * Com menos intervalos que isso, a estimativa (da pessoa ou do tipo) entra na
+ * mediana como mais um valor: o primeiro intervalo costuma ser parcial (o
+ * botijão já estava em uso no cadastro) e um "Troquei" esquecido dobra o
+ * seguinte. Sozinhos, virariam a previsão e o aviso chegaria tarde demais.
+ */
+const INTERVALS_TRUSTED = 3;
 /** O aviso começa nos últimos 15% da duração, entre 2 e 7 dias antes. */
 const WARNING_PERCENT = 15;
 const WARNING_MIN_DAYS = 2;
 const WARNING_MAX_DAYS = 7;
+/** Ciclo de até 5 dias (galão numa casa cheia): janela de 1 dia e um aviso só por ciclo, para não virar ruído. */
+const SHORT_CYCLE_DAYS = 5;
 
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
@@ -67,21 +76,35 @@ export function refillDays(refills: { refilled_on: string }[], today: string): s
   return [...new Set(refills.map((r) => r.refilled_on.slice(0, 10)))].filter((day) => day <= today).sort();
 }
 
-/** Quantos dias antes da data prevista a reposição passa a pedir atenção. */
+/**
+ * Quantos dias antes da data prevista a reposição passa a pedir atenção. O
+ * mínimo de 2 dias não passa de um terço do ciclo: sem isso, o que dura até 5
+ * dias ficaria "acabando" quase o tempo todo.
+ */
 export function warningDays(days: number): number {
-  return Math.min(WARNING_MAX_DAYS, Math.max(WARNING_MIN_DAYS, Math.round((days * WARNING_PERCENT) / 100)));
+  const least = Math.min(WARNING_MIN_DAYS, Math.max(1, Math.floor(days / 3)));
+  return Math.min(WARNING_MAX_DAYS, Math.max(least, Math.round((days * WARNING_PERCENT) / 100)));
 }
 
-/** De onde vem a duração: das trocas da casa, do que a pessoa estimou ou do costume do tipo. */
-export type DurationSource = 'trocas' | 'pessoa' | 'tipo';
+/**
+ * De onde vem a duração: das trocas da casa (`trocas`), do que a pessoa
+ * estimou (`pessoa`), do costume do tipo (`tipo`) ou, nos primeiros ciclos,
+ * da estimativa junto com as trocas (`misto`).
+ */
+export type DurationSource = 'trocas' | 'misto' | 'pessoa' | 'tipo';
 
 function durationOf(supply: SupplyLike, days: string[]): { days: number; source: DurationSource } | null {
   const intervals = days.slice(1).map((day, i) => diffDays(days[i], day));
-  // A mediana não se deixa levar por um intervalo fora da curva (viagem, botijão esquecido).
-  if (intervals.length) return { days: Math.max(1, Math.round(median(intervals.slice(-INTERVALS_USED)))), source: 'trocas' };
-  if (supply.typical_days && supply.typical_days > 0) return { days: supply.typical_days, source: 'pessoa' };
   const usual = getSupplyKind(supply.kind).typicalDays;
-  return usual ? { days: usual, source: 'tipo' } : null;
+  const estimate: { days: number; source: DurationSource } | null =
+    supply.typical_days && supply.typical_days > 0 ? { days: supply.typical_days, source: 'pessoa' } : usual ? { days: usual, source: 'tipo' } : null;
+  if (!intervals.length) return estimate;
+  // Poucos intervalos e uma estimativa: ela entra como mais um valor (ver INTERVALS_TRUSTED).
+  // Sem estimativa nenhuma, vale o histórico desde o primeiro intervalo.
+  const mixed = estimate && intervals.length < INTERVALS_TRUSTED;
+  // A mediana só segura um intervalo fora da curva (viagem, botijão esquecido) com três valores ou mais.
+  const values = mixed ? [...intervals, estimate.days] : intervals.slice(-INTERVALS_USED);
+  return { days: Math.max(1, Math.round(median(values))), source: mixed ? 'misto' : 'trocas' };
 }
 
 /** Com data prevista: quando foi a última troca, quanto dura e quando deve acabar. */
@@ -98,7 +121,7 @@ export interface SupplyDated {
 /**
  * - `sem_troca`: nenhuma troca anotada.
  * - `sem_previsao`: uma troca, mas nenhuma duração (tipo "Outro" sem estimativa).
- * - `em_dia`: longe da data prevista.
+ * - `em_dia`: longe da data prevista, ou trocado hoje.
  * - `acabando`: dentro da janela de aviso, até o dia previsto.
  * - `passou`: depois da data, por até mais uma duração.
  * - `parado`: muito depois; a casa provavelmente parou de anotar. Sem destaque nem aviso.
@@ -119,8 +142,10 @@ export function supplyForecast(supply: SupplyLike, today: string): SupplyForecas
   const endsOn = addDays(refilledOn, duration.days);
   const daysLeft = diffDays(today, endsOn);
   const warnDays = warningDays(duration.days);
+  // No dia da própria troca, com dia pela frente, nunca está acabando: o "Troquei" tem de tirar a linha da tela Hoje.
+  const fresh = refilledOn === today && daysLeft > 0;
   const state =
-    daysLeft > warnDays ? 'em_dia' : daysLeft >= 0 ? 'acabando' : -daysLeft <= duration.days ? 'passou' : 'parado';
+    daysLeft > warnDays || fresh ? 'em_dia' : daysLeft >= 0 ? 'acabando' : -daysLeft <= duration.days ? 'passou' : 'parado';
   return { state, refilledOn, ...duration, endsOn, daysLeft, warnDays };
 }
 
@@ -155,10 +180,18 @@ export function describeSupply(forecast: SupplyForecast, today: string): string 
   }
 }
 
+/** De onde vem o número, em três formas: sem intervalo, com a estimativa ainda na conta, só o histórico. */
+const SOURCE_LABEL: Record<DurationSource, string> = {
+  pessoa: 'estimativa',
+  tipo: 'estimativa',
+  misto: 'estimativa e suas trocas',
+  trocas: 'pelas suas trocas',
+};
+
 /** De onde vem o número: "dura cerca de 45 dias (pelas suas trocas)". Só enquanto há uma data prevista em jogo. */
 export function describeSupplyDuration(forecast: SupplyForecast): string | null {
   if (forecast.state !== 'em_dia' && forecast.state !== 'acabando' && forecast.state !== 'passou') return null;
-  return `dura cerca de ${countDays(forecast.days)} (${forecast.source === 'trocas' ? 'pelas suas trocas' : 'estimativa'})`;
+  return `dura cerca de ${countDays(forecast.days)} (${SOURCE_LABEL[forecast.source]})`;
 }
 
 /** A linha da reposição na Despensa: o estado e, quando há, de onde vem o número. */
@@ -182,6 +215,11 @@ export function supplyNeedsAttention(forecast: SupplyForecast): boolean {
 export function describeRefillSaved(forecast: SupplyForecast, today: string): string {
   if (forecast.state === 'sem_troca') return 'Anotado.';
   if (forecast.state === 'sem_previsao') return 'Anotado. O Kotii aprende a duração na próxima troca.';
+  // Troca antiga ("Troquei outro dia…") que pela conta já acabou: a frase do estado
+  // ("Sem troca desde…") soaria como se nada tivesse sido anotado.
+  if (forecast.state === 'passou' || forecast.state === 'parado') {
+    return 'Anotado. Pela conta, esse já deve ter acabado: toque em “Troquei hoje” quando começar um novo.';
+  }
   return `Anotado. ${describeSupply(forecast, today)}.`;
 }
 
@@ -280,16 +318,35 @@ export function parseRefillDate(text: string, today: string): Checked<string> {
   return { ok: true, value: date };
 }
 
+/** As respostas de "Quando começou o atual?", ao criar. */
+export type SupplyStart = 'hoje' | 'outro' | 'nao_sei';
+
+/**
+ * O dia da primeira troca, pela resposta a "Quando começou o atual?". Nada
+ * vem escolhido: sem resposta (null) é "Não sei", e nenhuma troca é anotada.
+ * "Hoje" só para o que começou hoje: um botijão pela metade dado como novo
+ * seria avisado depois de o gás acabar.
+ */
+export function parseSupplyStart(start: SupplyStart | null, day: string, today: string): Checked<string | null> {
+  if (start === 'hoje') return { ok: true, value: today };
+  if (start === 'outro') return parseRefillDate(day, today);
+  return { ok: true, value: null };
+}
+
 // ---------------------------------------------------------------------------
 // Avisos e Nuke
 
-/** Os dois avisos de uma reposição (ver planHouseReminders): no começo da janela e no dia previsto. */
+/**
+ * Os avisos de uma reposição (ver planHouseReminders): no começo da janela e
+ * no dia previsto. Ciclo curto (até 5 dias) fica com um só por ciclo.
+ */
 export interface SupplyReminder {
   id: string;
-  /** null: a janela começaria antes da própria troca (duração muito curta). */
+  /** null: a janela começaria no dia da própria troca (dura 1 dia), e nesse dia não se avisa. */
   warnOn: string | null;
   warnTitle: string;
-  endsOn: string;
+  /** null: ciclo curto, que já avisa no começo da janela. */
+  endsOn: string | null;
   endTitle: string;
   body: string;
 }
@@ -303,14 +360,18 @@ export function supplyReminders(supplies: (SupplyLike & { id: string; name: stri
   return supplies.flatMap((supply) => {
     const f = supplyForecast(supply, today);
     if (f.state !== 'em_dia' && f.state !== 'acabando') return [];
-    const warnOn = addDays(f.endsOn, -f.warnDays);
-    const lasts = f.source === 'trocas' ? `costuma durar ${countDays(f.days)}` : `deve durar cerca de ${countDays(f.days)} (estimativa)`;
+    const start = addDays(f.endsOn, -f.warnDays);
+    // O dia da troca está sempre em dia (ver supplyForecast): aviso nele chegaria logo depois do "Troquei".
+    const warnOn = start > f.refilledOn ? start : null;
+    const lasts = f.source === 'trocas' ? `costuma durar ${countDays(f.days)}` : `deve durar cerca de ${countDays(f.days)} (${SOURCE_LABEL[f.source]})`;
     return [
       {
         id: supply.id,
-        warnOn: warnOn < f.refilledOn ? null : warnOn,
-        warnTitle: `${supply.name} deve acabar em uns ${countDays(f.warnDays)}`,
-        endsOn: f.endsOn,
+        warnOn,
+        // Janela de 1 dia: "amanhã", nunca "em uns 1 dia".
+        warnTitle: f.warnDays === 1 ? `${supply.name} deve acabar amanhã` : `${supply.name} deve acabar em uns ${countDays(f.warnDays)}`,
+        // Um aviso por ciclo curto: o do dia previsto só quando o da véspera não existe.
+        endsOn: f.days <= SHORT_CYCLE_DAYS && warnOn ? null : f.endsOn,
         endTitle: `${supply.name} deve acabar hoje`,
         body: `Trocado em ${dayMonth(f.refilledOn, today)} · ${lasts}.`,
       },

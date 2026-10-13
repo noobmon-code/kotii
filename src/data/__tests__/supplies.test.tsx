@@ -6,10 +6,12 @@ import {
   fetchSupplies,
   isSuppliesMissing,
   SUPPLIES_NOT_READY,
+  SUPPLY_GONE,
   useDeleteRefill,
   useDeleteSupply,
   useRecordRefill,
   useSaveSupply,
+  useSupplies,
 } from '../supplies';
 
 // O cliente do Supabase de verdade, com a rede trocada: o que se confere aqui é o pedido que sai
@@ -153,6 +155,30 @@ describe('gravações', () => {
       body: { supply_id: 's1', refilled_on: '2026-10-12' },
     });
     expect(mockCalls[0].prefer).toContain('resolution=ignore-duplicates');
+  });
+
+  it('"Troquei" numa reposição que outra pessoa da casa acabou de excluir: aviso em português e a lista é buscada de novo', async () => {
+    const screen = mount(() => ({ list: useSupplies(), record: useRecordRefill() }));
+    const listed = () => mockCalls.filter((c) => c.method === 'GET' && c.path === '/rest/v1/supplies').length;
+    // A lista que a tela ainda mostra, com a reposição que já não existe.
+    await settled(async () => undefined);
+    expect(listed()).toBe(1);
+    // A chave estrangeira das trocas recusa: a reposição sumiu.
+    mockReplies.push({
+      status: 409,
+      body: {
+        code: '23503',
+        details: 'Key (supply_id, household_id)=(s1, h1) is not present in table "supplies".',
+        hint: null,
+        message: 'insert or update on table "supply_refills" violates foreign key constraint "supply_refills_supply_id_household_id_fkey"',
+      },
+    });
+    await settled(async () => {
+      await expect(screen.current.record.mutateAsync({ supplyId: 's1', date: '2026-10-12' })).rejects.toMatchObject({ message: 'Esta reposição não existe mais.' });
+    });
+    expect(SUPPLY_GONE).toBe('Esta reposição não existe mais.');
+    // Mesmo com a falha, a lista volta do servidor e a linha velha some.
+    expect(listed()).toBe(2);
   });
 
   it('criar com "quando começou o atual": a reposição e a primeira troca', async () => {

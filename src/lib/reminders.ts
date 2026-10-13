@@ -551,11 +551,15 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
     const weatherPlace = weather !== undefined ? data.weatherPlace : previous?.weatherPlace;
     // Consultas, vacinas, previsão ou reposições que não carregaram: os avisos
     // delas já agendados ficam como estão, e os outros tipos seguem normais.
+    // As reposições só entram com o tipo ligado: desligado, não há aviso delas
+    // para segurar (desligar já cancelou), e a busca atrasada mudaria a
+    // assinatura e refaria os avisos de todo mundo à toa. Só para elas: nas
+    // vacinas, é este conjunto que guarda as marcas de atraso já avisado.
     const unknown = new Set<HouseReminderKind>([
       ...(data.appointments === undefined ? (['appointments'] as const) : []),
       ...(data.vaccines === undefined ? (['vaccines'] as const) : []),
       ...(weather === undefined ? (['weather'] as const) : []),
-      ...(data.supplies === undefined ? (['supplies'] as const) : []),
+      ...(kinds.supplies && data.supplies === undefined ? (['supplies'] as const) : []),
     ]);
     // Aviso de atraso cuja hora já passou tocou: aquela conta (ou vacina) não
     // avisa de novo. Guarda só as que continuam atrasadas (paga, o vencimento

@@ -68,16 +68,19 @@ function written<T>(result: { data: T; error: unknown }): NonNullable<T> {
   return unwrap(result);
 }
 
+export const SUPPLY_GONE = 'Esta reposição não existe mais.';
+
 /**
  * Anota a troca de um dia. Uma por dia: o segundo toque (ou outra pessoa da
  * casa anotando a mesma troca) cai no `unique` e é ignorado, sem erro.
  */
 async function recordRefill(supplyId: string, date: string): Promise<void> {
-  written(
-    await supabase
-      .from('supply_refills')
-      .upsert({ supply_id: supplyId, refilled_on: date }, { onConflict: 'supply_id,refilled_on', ignoreDuplicates: true }),
-  );
+  const result = await supabase
+    .from('supply_refills')
+    .upsert({ supply_id: supplyId, refilled_on: date }, { onConflict: 'supply_id,refilled_on', ignoreDuplicates: true });
+  // A chave estrangeira recusou: outra pessoa da casa excluiu a reposição e esta tela ainda a mostrava.
+  if (result.error?.code === '23503') throw new Error(SUPPLY_GONE);
+  written(result);
 }
 
 export function useSaveSupply() {
@@ -106,7 +109,8 @@ export function useRecordRefill() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ supplyId, date }: { supplyId: string; date: string }) => recordRefill(supplyId, date),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['supplies'] }),
+    // Também na falha: se a reposição foi excluída por outra pessoa, a linha velha some da tela.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['supplies'] }),
   });
 }
 

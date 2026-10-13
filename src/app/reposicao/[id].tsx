@@ -2,12 +2,12 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { REFILLS_PER_SUPPLY, useDeleteRefill, useDeleteSupply, useSaveSupply, useSupplies } from '@/data/supplies';
+import { REFILLS_PER_SUPPLY, SUPPLY_GONE, useDeleteRefill, useDeleteSupply, useSaveSupply, useSupplies } from '@/data/supplies';
 import { formatBRDate, todayISO } from '@/domain/dates';
 import {
   describeRefill,
   getSupplyKind,
-  parseRefillDate,
+  parseSupplyStart,
   refillHistory,
   SUPPLY_DAYS_MAX,
   SUPPLY_KINDS,
@@ -17,12 +17,15 @@ import {
   supplyRowText,
   validateSupply,
   type SupplyKind,
+  type SupplyStart,
 } from '@/domain/supplies';
+import { SuppliesReminderHint } from '@/features/SuppliesSection';
 import { errorMessage } from '@/lib/supabase';
 import type { Supply } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
 import {
   Button,
+  Card,
   Chip,
   DateField,
   ErrorNotice,
@@ -51,15 +54,14 @@ export default function SupplyScreen() {
   if (!supply) {
     return (
       <Screen edges={[]}>
-        <Text variant="muted">Esta reposição não existe mais.</Text>
+        <Text variant="muted">{SUPPLY_GONE}</Text>
       </Screen>
     );
   }
   return <SupplyForm supply={supply} />;
 }
 
-type Start = 'hoje' | 'outro' | 'nao_sei';
-const STARTS: { value: Start; label: string }[] = [
+const STARTS: { value: SupplyStart; label: string }[] = [
   { value: 'hoje', label: 'Hoje' },
   { value: 'outro', label: 'Outro dia' },
   { value: 'nao_sei', label: 'Não sei' },
@@ -75,7 +77,8 @@ function SupplyForm({ supply }: { supply?: Supply }) {
   const [name, setName] = useState<string | null>(supply ? supply.name : null);
   const [typicalDays, setTypicalDays] = useState(supply?.typical_days ? String(supply.typical_days) : '');
   const [notes, setNotes] = useState(supply?.notes ?? '');
-  const [start, setStart] = useState<Start>('hoje');
+  // Nada vem escolhido: "Hoje" de saída daria como novo um botijão que já está pela metade.
+  const [start, setStart] = useState<SupplyStart | null>(null);
   const [startDay, setStartDay] = useState('');
 
   const kindInfo = getSupplyKind(kind);
@@ -88,17 +91,13 @@ function SupplyForm({ supply }: { supply?: Supply }) {
       notify('Confira os dados', checked.message);
       return;
     }
-    // Só ao criar: quando começou o atual vira a primeira troca ("Não sei" não anota nenhuma).
-    let startedOn: string | null = null;
-    if (!supply && start !== 'nao_sei') {
-      const day = start === 'hoje' ? ({ ok: true, value: today } as const) : parseRefillDate(startDay, today);
-      if (!day.ok) {
-        notify('Confira a data', day.message);
-        return;
-      }
-      startedOn = day.value;
+    // Só ao criar: quando começou o atual vira a primeira troca (sem escolha ou "Não sei", nenhuma).
+    const started = supply ? ({ ok: true, value: null } as const) : parseSupplyStart(start, startDay, today);
+    if (!started.ok) {
+      notify('Confira a data', started.message);
+      return;
     }
-    save.mutate({ id: supply?.id, values: checked.value, startedOn }, { onSuccess: () => router.back(), onError });
+    save.mutate({ id: supply?.id, values: checked.value, startedOn: started.value }, { onSuccess: () => router.back(), onError });
   }
 
   return (
@@ -126,10 +125,10 @@ function SupplyForm({ supply }: { supply?: Supply }) {
         keyboardType="number-pad"
         maxLength={String(SUPPLY_DAYS_MAX).length}
         placeholder={kindInfo.typicalDays ? `Ex.: ${kindInfo.typicalDays}` : 'Se souber'}
-        // A estimativa só vale no começo: com duas trocas anotadas, a previsão sai delas.
+        // A estimativa pesa só no começo: entra na conta junto com as trocas até a casa ter três intervalos (quatro trocas).
         hint={
           kindInfo.typicalDays
-            ? `Em branco, o Kotii começa com uns ${kindInfo.typicalDays} dias. Com duas trocas anotadas, passa a valer o que acontece na sua casa.`
+            ? `Em branco, o Kotii começa com uns ${kindInfo.typicalDays} dias. A cada troca anotada a conta se ajusta à sua casa; depois de quatro, vale só o que acontece nela.`
             : 'Em branco, a previsão aparece depois de duas trocas anotadas.'
         }
       />
@@ -145,6 +144,7 @@ function SupplyForm({ supply }: { supply?: Supply }) {
       {supply ? null : (
         <View style={styles.group}>
           <Text variant="label">Quando começou o atual?</Text>
+          <Text variant="small">Se o atual já está em uso há um tempo, escolha o dia: “Hoje” é só para o que começou hoje.</Text>
           <Row style={styles.wrap}>
             {STARTS.map((s) => (
               <Chip key={s.value} label={s.label} selected={start === s.value} onPress={() => setStart(s.value)} />
@@ -158,6 +158,12 @@ function SupplyForm({ supply }: { supply?: Supply }) {
           ) : null}
         </View>
       )}
+
+      {/* O aviso por notificação vem desligado: quem cadastra precisa saber onde ligar. */}
+      <Card style={styles.card}>
+        <Text variant="label">Aviso por notificação</Text>
+        <SuppliesReminderHint />
+      </Card>
 
       <Button title="Salvar" onPress={submit} loading={save.isPending} />
 
@@ -218,4 +224,5 @@ function RefillHistory({ supply, today, onDelete }: { supply: Supply; today: str
 const styles = StyleSheet.create({
   group: { gap: space.sm },
   wrap: { flexWrap: 'wrap' },
+  card: { gap: space.md },
 });

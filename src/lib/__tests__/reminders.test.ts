@@ -605,6 +605,36 @@ describe('house reminders', () => {
     });
   });
 
+  it('gás, água e ração desligado: a busca que ainda não carregou não refaz os avisos dos outros tipos', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('bills', true);
+      const loaded = { ...data, appointments: [], vaccines: [], weather: [], weatherPlace: null };
+      await reminders.syncHouseReminders({ ...loaded, supplies: [gas] }, { householdId: 'casa', today });
+      const ids = [...live.keys()];
+      expect(kindsOf(live)).toEqual(['bills']);
+      // Primeira abertura depois da atualização, ou troca de casa: as contas chegam antes das reposições.
+      await reminders.syncHouseReminders(loaded, { householdId: 'casa', today });
+      expect([...live.keys()]).toEqual(ids);
+      // E quando elas chegam, também nada muda.
+      await reminders.syncHouseReminders({ ...loaded, supplies: [gas] }, { householdId: 'casa', today });
+      expect([...live.keys()]).toEqual(ids);
+    });
+  });
+
+  it('gás, água e ração ligado: sem os dados, os avisos dos outros tipos são refeitos uma vez e os dele ficam', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('bills', true);
+      await reminders.setHouseReminderKind('supplies', true);
+      const loaded = { ...data, appointments: [], vaccines: [], weather: [], weatherPlace: null };
+      await reminders.syncHouseReminders({ ...loaded, supplies: [gas] }, { householdId: 'casa', today });
+      const held = [...live.entries()].filter(([, r]) => r.content.data.reminder.startsWith('supplies:')).map(([id]) => id);
+      expect(held).toHaveLength(2);
+      await reminders.syncHouseReminders(loaded, { householdId: 'casa', today });
+      expect(held.every((id) => live.has(id))).toBe(true);
+      expect(kindsOf(live)).toEqual(['bills', 'supplies']);
+    });
+  });
+
   it('várias casas: avisos separados, com o nome da casa; sair ou deixar de ser membro tira só os dela', async () => {
     await withHouse(async (reminders, { live, storage }) => {
       await reminders.setHouseReminderKind('bills', true);

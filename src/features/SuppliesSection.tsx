@@ -18,6 +18,7 @@ import {
   type SupplyForecast,
   type SupplyRow,
 } from '@/domain/supplies';
+import { REMINDER_PLACE, remindersSupported, remindersUnavailableReason } from '@/lib/reminders';
 import { errorMessage } from '@/lib/supabase';
 import type { Supply } from '@/lib/types';
 import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
@@ -79,8 +80,24 @@ export function useRefill() {
 }
 
 /**
+ * Onde ligar o aviso por notificação. Ele vem desligado e é de cada aparelho,
+ * e quem cuida da permissão é a lista dos avisos: aqui vai só o caminho, como
+ * na tela do clima, sem chave e sem ler o que está ligado.
+ */
+export function SuppliesReminderHint() {
+  if (!remindersSupported) return <Text variant="muted">{`${remindersUnavailableReason()} O aviso aparece na tela Hoje.`}</Text>;
+  return (
+    <>
+      <Text variant="muted">{`Para receber a notificação, ligue “${SUPPLIES_TITLE}” nos avisos ${REMINDER_PLACE}.`}</Text>
+      <Button title="Abrir os avisos" icon="bell-outline" variant="secondary" compact onPress={() => router.push('/familia')} />
+    </>
+  );
+}
+
+/**
  * Despensa: o que acaba sem nota fiscal, com a previsão de cada um. Fica acima
- * da despensa e não depende dela. Num banco ainda sem as tabelas, não aparece.
+ * da despensa e não depende dela: quem põe as duas na tela é a aba Casa. Num
+ * banco ainda sem as tabelas, não aparece.
  */
 export function SuppliesSection() {
   const today = todayISO();
@@ -162,6 +179,7 @@ export function SuppliesSection() {
           );
         })}
       </ListCard>
+      <SuppliesReminderHint />
       <ActionSheet
         visible={Boolean(selected)}
         onClose={() => setSelected(null)}
@@ -225,7 +243,17 @@ export function SuppliesTodaySection({ rows, today }: { rows: SupplyRow<Supply>[
             left={<IconBadge icon={getSupplyKind(supply.kind).icon} tone={iconTone(forecast)} />}
             title={supply.name}
             subtitle={describeSupply(forecast, today)}
-            right={<Button title="Troquei" variant="secondary" compact disabled={refill.isPending} onPress={() => refill.record(supply, today)} />}
+            right={
+              <Button
+                title="Troquei"
+                // Com mais de uma linha, o leitor de tela diz de qual é cada botão.
+                accessibilityLabel={`Anotar troca de ${supply.name}`}
+                variant="secondary"
+                compact
+                disabled={refill.isPending}
+                onPress={() => refill.record(supply, today)}
+              />
+            }
             onPress={() => router.push({ pathname: '/casa', params: { aba: 'despensa' } })}
           />
         ))}

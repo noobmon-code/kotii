@@ -132,7 +132,7 @@ export interface Supply {
   name: string;
   /** Chave de SUPPLY_KINDS (domain/supplies); desconhecida conta como "outros". */
   kind: string;
-  /** Estimativa da pessoa, em dias; vale até a casa ter as próprias trocas. */
+  /** Estimativa da pessoa, em dias; pesa só nos primeiros ciclos, até a casa ter as próprias trocas. */
   typical_days: number | null;
   notes: string | null;
   created_at: string;

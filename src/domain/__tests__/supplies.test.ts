@@ -9,6 +9,7 @@ import {
   forecastSupplies,
   getSupplyKind,
   parseRefillDate,
+  parseSupplyStart,
   refillDays,
   refillHistory,
   SUPPLY_KINDS,
@@ -83,29 +84,70 @@ describe('previsão', () => {
     expect(supplyForecast(supply('outros', ['2026-09-01']), '2026-10-01')).toEqual({ state: 'sem_previsao', refilledOn: '2026-09-01' });
   });
 
-  it('duas trocas: o intervalo da casa passa a valer, por cima de qualquer estimativa', () => {
+  /** Duração e origem com estes intervalos entre as trocas, vistas no dia da última. */
+  const duration = (gaps: number[], kind = 'gas', typical: number | null = null) => {
+    const refills = chain('2025-01-01', gaps);
+    const f = supplyForecast(supply(kind, refills, typical), refills[refills.length - 1]);
+    return 'days' in f ? [f.days, f.source] : null;
+  };
+
+  it('duas trocas: o intervalo da casa entra na conta junto com a estimativa, sem tomar o lugar dela', () => {
     expect(supplyForecast(supply('gas', ['2026-08-01', '2026-09-10'], 60), '2026-09-12')).toMatchObject({
       state: 'em_dia',
       refilledOn: '2026-09-10',
-      days: 40,
-      source: 'trocas',
-      endsOn: '2026-10-20',
+      // Mediana de 40 (o intervalo) e 60 (a estimativa da pessoa).
+      days: 50,
+      source: 'misto',
+      endsOn: '2026-10-30',
     });
-    // "Outro" sem estimativa ganha previsão na segunda troca.
+    // Sem a da pessoa, entra a do tipo (45): mediana de 40 e 45, arredondada.
+    expect(supplyForecast(supply('gas', ['2026-08-01', '2026-09-10']), '2026-09-12')).toMatchObject({ days: 43, source: 'misto' });
+    // "Outro" sem estimativa ganha previsão na segunda troca, só pelo intervalo.
     expect(supplyForecast(supply('outros', ['2026-08-01', '2026-09-10']), '2026-09-12')).toMatchObject({ days: 40, source: 'trocas' });
   });
 
+  it('com estimativa: ela conta como mais um valor até a casa ter 3 intervalos; depois, só o histórico', () => {
+    expect(duration([])).toEqual([45, 'tipo']);
+    expect(duration([], 'gas', 60)).toEqual([60, 'pessoa']);
+    expect(duration([30])).toEqual([38, 'misto']);
+    expect(duration([30], 'gas', 60)).toEqual([45, 'misto']);
+    expect(duration([30, 32])).toEqual([32, 'misto']);
+    expect(duration([30, 32], 'gas', 60)).toEqual([32, 'misto']);
+    // Três intervalos: a estimativa (da pessoa ou do tipo) sai da conta.
+    expect(duration([30, 32, 31])).toEqual([31, 'trocas']);
+    expect(duration([30, 32, 31], 'gas', 60)).toEqual([31, 'trocas']);
+    expect(duration([30, 32, 31, 90, 30, 33])).toEqual([32, 'trocas']);
+    expect(duration([30, 32, 31, 90, 30, 33], 'gas', 60)).toEqual([32, 'trocas']);
+  });
+
+  it('sem estimativa nenhuma: só o histórico, desde o primeiro intervalo', () => {
+    expect(duration([], 'outros')).toBeNull();
+    expect(duration([30], 'outros')).toEqual([30, 'trocas']);
+    expect(duration([30, 33], 'outros')).toEqual([32, 'trocas']);
+    expect(duration([30, 32, 31], 'outros')).toEqual([31, 'trocas']);
+    expect(duration([30, 32, 31, 90, 30, 33], 'outros')).toEqual([32, 'trocas']);
+  });
+
+  it('o botijão já em uso no cadastro: o primeiro intervalo, curto, não vira a previsão sozinho', () => {
+    // Cadastrado com o botijão pela metade: acabou em 20 dias. Depois, o normal da casa (45).
+    expect(duration([20])).toEqual([33, 'misto']);
+    expect(duration([20, 45])).toEqual([45, 'misto']);
+    expect(duration([20, 45, 45])).toEqual([45, 'trocas']);
+  });
+
+  it('um "Troquei" esquecido (intervalo de 105 dias) não leva a previsão para longe', () => {
+    expect(duration([105])).toEqual([75, 'misto']);
+    expect(duration([105, 45])).toEqual([45, 'misto']);
+    expect(duration([105, 45, 45])).toEqual([45, 'trocas']);
+  });
+
   it('mediana dos intervalos: quantidade ímpar, par (arredonda) e um intervalo fora da curva', () => {
-    const days = (gaps: number[]) => {
-      const refills = chain('2026-01-01', gaps);
-      const f = supplyForecast(supply('gas', refills), refills[refills.length - 1]);
-      return 'days' in f ? f.days : null;
-    };
+    const days = (gaps: number[]) => duration(gaps, 'outros')?.[0];
     expect(days([40, 50, 45])).toBe(45);
     expect(days([44, 45])).toBe(45);
     expect(days([40, 41])).toBe(41);
     expect(days([40, 44, 46, 50])).toBe(45);
-    // A viagem de 200 dias não puxa a previsão.
+    // A viagem de 200 dias não puxa a previsão (com três intervalos ou mais).
     expect(days([45, 44, 200, 46, 45])).toBe(45);
   });
 
@@ -126,8 +168,8 @@ describe('previsão', () => {
     const alone = supplyForecast(supply('gas', ['2026-09-01']), '2026-10-01');
     expect(supplyForecast(supply('gas', ['2026-09-01', '2026-12-25']), '2026-10-01')).toEqual(alone);
     expect(supplyForecast(supply('gas', ['2026-12-25']), '2026-10-01')).toEqual({ state: 'sem_troca' });
-    // No dia, ela vale como qualquer outra.
-    expect(supplyForecast(supply('gas', ['2026-09-01', '2026-12-25']), '2026-12-25')).toMatchObject({ refilledOn: '2026-12-25', days: 115, daysLeft: 115 });
+    // No dia, ela vale como qualquer outra: o intervalo de 115 dias entra na conta com a estimativa de 45.
+    expect(supplyForecast(supply('gas', ['2026-09-01', '2026-12-25']), '2026-12-25')).toMatchObject({ refilledOn: '2026-12-25', days: 80, daysLeft: 80 });
   });
 
   it('cada estado nas suas bordas', () => {
@@ -144,11 +186,38 @@ describe('previsão', () => {
     expect(supplyForecast(supply('gas', gas), '2026-12-01')).toMatchObject({ daysLeft: -46, endsOn: '2026-10-16' });
   });
 
-  it('janela de aviso: 15% da duração, no mínimo 2 e no máximo 7 dias', () => {
-    const windows = [1, 3, 10, 13, 14, 16, 17, 30, 43, 44, 45, 46, 47, 180, 730].map((d) => [d, warningDays(d)]);
+  it('no dia da própria troca nunca está acabando, por mais curto que seja o ciclo', () => {
+    // Dura 1 dia: trocado hoje, deve acabar amanhã. Hoje está em dia; amanhã, acabando.
+    const daily = supply('outros', ['2026-10-12'], 1);
+    expect(supplyForecast(daily, '2026-10-12')).toMatchObject({ state: 'em_dia', daysLeft: 1, warnDays: 1 });
+    expect(supplyForecast(daily, '2026-10-13')).toMatchObject({ state: 'acabando', daysLeft: 0 });
+    expect(supplyForecast(daily, '2026-10-14')).toMatchObject({ state: 'passou', daysLeft: -1 });
+    // Galão de 4 dias numa casa cheia: acabando só na véspera e no dia.
+    const galao = chain('2026-09-26', [4, 4, 4, 4]);
+    expect(galao[galao.length - 1]).toBe('2026-10-12');
+    expect(['2026-10-12', '2026-10-13', '2026-10-14', '2026-10-15', '2026-10-16', '2026-10-17'].map((d) => state('agua', galao, d))).toEqual([
+      'em_dia',
+      'em_dia',
+      'em_dia',
+      'acabando',
+      'acabando',
+      'passou',
+    ]);
+    // "Troquei" no dia previsto: a linha sai da tela Hoje.
+    const due = galao.slice(0, -1);
+    expect(suppliesNeedingAttention([supply('agua', due)], '2026-10-12')).toHaveLength(1);
+    expect(suppliesNeedingAttention([supply('agua', galao)], '2026-10-12')).toEqual([]);
+  });
+
+  it('janela de aviso: 15% da duração, de 2 a 7 dias; em ciclo curto, o mínimo cai para um terço dele', () => {
+    const windows = [1, 2, 3, 4, 5, 6, 10, 13, 14, 16, 17, 30, 43, 44, 45, 46, 47, 180, 730].map((d) => [d, warningDays(d)]);
     expect(windows).toEqual([
-      [1, 2],
-      [3, 2],
+      [1, 1],
+      [2, 1],
+      [3, 1],
+      [4, 1],
+      [5, 1],
+      [6, 2],
       [10, 2],
       [13, 2],
       [14, 2],
@@ -192,11 +261,18 @@ describe('textos', () => {
 
   it('a linha diz de onde vem o número, no singular e no plural', () => {
     expect(supplyRowText(supplyForecast(gas, '2026-10-01'), '2026-10-01')).toBe('Deve durar até 16/10 · dura cerca de 45 dias (estimativa)');
+    // Enquanto a estimativa ainda está na conta, a linha diz as duas coisas.
     expect(supplyRowText(supplyForecast(supply('gas', ['2026-08-01', '2026-09-10']), '2026-09-12'), '2026-09-12')).toBe(
+      'Deve durar até 23/10 · dura cerca de 43 dias (estimativa e suas trocas)',
+    );
+    const learned = supply('gas', ['2026-04-23', '2026-06-02', '2026-07-12', '2026-08-21']);
+    expect(supplyRowText(supplyForecast(learned, '2026-08-22'), '2026-08-22')).toBe('Deve durar até 30/09 · dura cerca de 40 dias (pelas suas trocas)');
+    expect(supplyRowText(supplyForecast(supply('outros', ['2026-08-01', '2026-09-10']), '2026-09-12'), '2026-09-12')).toBe(
       'Deve durar até 20/10 · dura cerca de 40 dias (pelas suas trocas)',
     );
-    const daily = supplyForecast(supply('outros', [today], 1), today);
-    expect(supplyRowText(daily, today)).toBe('Deve acabar amanhã · dura cerca de 1 dia (estimativa)');
+    const daily = supply('outros', [today], 1);
+    expect(supplyRowText(supplyForecast(daily, today), today)).toBe('Deve durar até 13/10 · dura cerca de 1 dia (estimativa)');
+    expect(supplyRowText(supplyForecast(daily, '2026-10-13'), '2026-10-13')).toBe('Deve acabar hoje · dura cerca de 1 dia (estimativa)');
     expect(supplyRowText(supplyForecast(gas, '2026-10-17'), '2026-10-17')).toBe(
       'Pela conta, já era para ter acabado · dura cerca de 45 dias (estimativa)',
     );
@@ -204,6 +280,17 @@ describe('textos', () => {
     expect(describeSupplyDuration(supplyForecast(gas, '2026-12-01'))).toBeNull();
     expect(describeSupplyDuration(supplyForecast(supply('gas', []), today))).toBeNull();
     expect(supplyRowText(supplyForecast(gas, '2026-12-01'), '2026-12-01')).toBe('Sem troca desde 01/09');
+  });
+
+  it('janela de 1 dia: "amanhã" na linha e no aviso, nunca "em uns 1 dia"; o selo não leva número', () => {
+    // Dura 3 dias: trocado em 10/10, deve acabar em 13/10; a janela é a véspera.
+    const short = supply('outros', ['2026-10-10'], 3, 'Galão de água');
+    const eve = supplyForecast(short, today);
+    expect(eve).toMatchObject({ state: 'acabando', daysLeft: 1, warnDays: 1 });
+    expect(supplyRowText(eve, today)).toBe('Deve acabar amanhã · dura cerca de 3 dias (estimativa)');
+    expect(supplyBadge(eve)).toEqual({ label: 'Acabando', tone: 'warning' });
+    expect(supplyReminders([short], '2026-10-11').map((r) => r.warnTitle)).toEqual(['Galão de água deve acabar amanhã']);
+    expect(supplyLines([short], today)).toEqual(['Galão de água — deve acabar amanhã']);
   });
 
   it('selo e atenção só para o que está acabando ou passou da data', () => {
@@ -230,6 +317,16 @@ describe('textos', () => {
     );
     // Troca anotada com uma data antiga ("Troquei outro dia").
     expect(describeRefillSaved(supplyForecast(supply('gas', ['2026-09-01']), '2026-10-14'), '2026-10-14')).toBe('Anotado. Deve acabar em uns 2 dias.');
+  });
+
+  it('confirmação de uma troca antiga que, pela conta, já acabou: diz o que fazer, sem parecer que nada foi anotado', () => {
+    const over = 'Anotado. Pela conta, esse já deve ter acabado: toque em “Troquei hoje” quando começar um novo.';
+    const passou = supplyForecast(supply('gas', ['2026-08-20']), today);
+    expect(passou.state).toBe('passou');
+    expect(describeRefillSaved(passou, today)).toBe(over);
+    const parado = supplyForecast(supply('filtro', ['2025-03-12']), today);
+    expect(parado.state).toBe('parado');
+    expect(describeRefillSaved(parado, today)).toBe(over);
   });
 
   it('histórico: da mais nova para a mais antiga, com quanto cada uma durou', () => {
@@ -334,9 +431,27 @@ describe('formulário', () => {
   });
 });
 
+describe('quando começou o atual (ao criar)', () => {
+  it('sem escolha é "Não sei": nenhuma troca anotada', () => {
+    expect(parseSupplyStart(null, '', today)).toEqual({ ok: true, value: null });
+    expect(parseSupplyStart('nao_sei', '', today)).toEqual({ ok: true, value: null });
+    // O dia digitado só vale com "Outro dia" escolhido.
+    expect(parseSupplyStart(null, '03/10/2026', today)).toEqual({ ok: true, value: null });
+    expect(parseSupplyStart('nao_sei', '03/10/2026', today)).toEqual({ ok: true, value: null });
+  });
+
+  it('"Hoje" anota a troca de hoje; "Outro dia", a do dia digitado, conferido', () => {
+    expect(parseSupplyStart('hoje', '', today)).toEqual({ ok: true, value: today });
+    expect(parseSupplyStart('hoje', '03/10/2026', today)).toEqual({ ok: true, value: today });
+    expect(parseSupplyStart('outro', '03/10/2026', today)).toEqual({ ok: true, value: '2026-10-03' });
+    expect(parseSupplyStart('outro', '', today)).toEqual({ ok: false, message: 'Use o formato dd/mm/aaaa.' });
+    expect(parseSupplyStart('outro', '13/10/2026', today)).toEqual({ ok: false, message: 'A troca não pode ser depois de hoje.' });
+  });
+});
+
 describe('avisos e Nuke', () => {
   it('dois avisos por reposição com previsão: no começo da janela e no dia previsto', () => {
-    expect(supplyReminders([supply('gas', ['2026-08-19', '2026-10-03'])], today)).toEqual([
+    expect(supplyReminders([supply('gas', ['2026-05-21', '2026-07-05', '2026-08-19', '2026-10-03'])], today)).toEqual([
       {
         id: 'Gás de cozinha',
         warnOn: '2026-11-10',
@@ -345,6 +460,10 @@ describe('avisos e Nuke', () => {
         endTitle: 'Gás de cozinha deve acabar hoje',
         body: 'Trocado em 03/10 · costuma durar 45 dias.',
       },
+    ]);
+    // Com a estimativa ainda na conta, o texto diz de onde vem o número.
+    expect(supplyReminders([supply('gas', ['2026-08-19', '2026-10-03'])], today)).toEqual([
+      expect.objectContaining({ warnOn: '2026-11-10', endsOn: '2026-11-17', body: 'Trocado em 03/10 · deve durar cerca de 45 dias (estimativa e suas trocas).' }),
     ]);
     // Pela estimativa, o texto não diz "costuma".
     expect(supplyReminders([supply('agua', ['2026-10-10'], null, 'Galão de água')], today)).toEqual([
@@ -368,7 +487,26 @@ describe('avisos e Nuke', () => {
     expect(supplyReminders(none, today)).toEqual([]);
   });
 
-  it('duração curta demais para a janela: só o aviso do dia', () => {
+  it('ciclo curto (até 5 dias): um aviso só por ciclo, na véspera; o do dia previsto fica para os ciclos mais longos', () => {
+    const lasting = (days: number) => supplyReminders([supply('outros', ['2026-10-10'], days, 'Galão')], '2026-10-10')[0];
+    const one = (warnOn: string, days: number) => ({
+      id: 'Galão',
+      warnOn,
+      warnTitle: 'Galão deve acabar amanhã',
+      endsOn: null,
+      endTitle: 'Galão deve acabar hoje',
+      body: `Trocado em 10/10 · deve durar cerca de ${days} dias (estimativa).`,
+    });
+    expect([2, 3, 4, 5].map((d) => lasting(d))).toEqual([one('2026-10-11', 2), one('2026-10-12', 3), one('2026-10-13', 4), one('2026-10-14', 5)]);
+    // A partir de 6 dias, os dois avisos.
+    expect(lasting(6)).toMatchObject({ warnOn: '2026-10-14', warnTitle: 'Galão deve acabar em uns 2 dias', endsOn: '2026-10-16' });
+    // Pelas trocas da casa também: galão de 4 em 4 dias.
+    expect(supplyReminders([supply('agua', ['2026-09-30', '2026-10-04', '2026-10-08', '2026-10-12'], null, 'Galão')], today)).toEqual([
+      expect.objectContaining({ warnOn: '2026-10-15', warnTitle: 'Galão deve acabar amanhã', endsOn: null, body: 'Trocado em 12/10 · costuma durar 4 dias.' }),
+    ]);
+  });
+
+  it('dura 1 dia: a véspera é o dia da própria troca, que não avisa; o aviso único é o do dia previsto', () => {
     expect(supplyReminders([supply('outros', [today], 1, 'Pão')], today)).toEqual([
       expect.objectContaining({ warnOn: null, endsOn: '2026-10-13', endTitle: 'Pão deve acabar hoje', body: 'Trocado em 12/10 · deve durar cerca de 1 dia (estimativa).' }),
     ]);

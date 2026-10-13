@@ -7,7 +7,6 @@ import { useAddToMarketList, useProducts } from '@/data/market';
 import { formatShortDate, todayISO } from '@/domain/dates';
 import { describeExpiry, expiryStatus, groupPantry, takeOne, type ExpiryStatus, type PantryGroup } from '@/domain/pantry';
 import { formatQuantity } from '@/domain/money';
-import { SuppliesSection } from '@/features/SuppliesSection';
 import { errorMessage } from '@/lib/supabase';
 import type { PantryItem } from '@/lib/types';
 import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
@@ -138,8 +137,6 @@ export function PantryPanel() {
         variant="secondary"
         onPress={() => router.push({ pathname: '/despensa/[id]', params: { id: 'novo' } })}
       />
-      {/* O que não passa por nota (gás, água, ração): acima da despensa, mesmo com ela vazia. */}
-      <SuppliesSection />
       {pantry.data.length === 0 ? (
         <EmptyState
           icon="fridge-outline"

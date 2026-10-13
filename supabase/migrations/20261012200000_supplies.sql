@@ -12,7 +12,8 @@ create table public.supplies (
   name text not null check (length(trim(name)) between 1 and 60),
   -- Para o ícone e a estimativa de partida (SUPPLY_KINDS no app).
   kind text not null default 'outros' check (kind in ('gas', 'agua', 'racao', 'areia', 'filtro', 'outros')),
-  -- Quanto a pessoa acha que dura, em dias. Só vale até a casa ter as próprias trocas.
+  -- Quanto a pessoa acha que dura, em dias. Pesa só nos primeiros ciclos, até a
+  -- casa ter as próprias trocas.
   typical_days integer check (typical_days between 1 and 730),
   notes text check (length(notes) <= 200),
   created_by uuid default auth.uid() references auth.users (id) on delete set null,
@@ -41,6 +42,15 @@ create table public.supply_refills (
     references public.supplies (id, household_id) on delete cascade
 );
 create index supply_refills_household_idx on public.supply_refills (household_id);
+
+-- Privilégios explícitos: a partir de 30/10/2026 o Supabase não expõe mais tabela
+-- nova do schema public à Data API por padrão, e esta migração pode ser
+-- aplicada depois dessa data (as tabelas que já existem ficam com os delas).
+-- Sem isto, o app receberia "permission denied" (42501) nas duas. As políticas
+-- abaixo são só para quem está logado: anon não ganha nada.
+revoke all on public.supplies, public.supply_refills from anon, authenticated;
+grant select, insert, update, delete on public.supplies, public.supply_refills to authenticated;
+grant all on public.supplies, public.supply_refills to service_role;
 
 alter table public.supplies enable row level security;
 create policy "household members manage supplies" on public.supplies for all to authenticated

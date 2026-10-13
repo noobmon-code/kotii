@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { HOUSE_REMINDER_KINDS, HOUSE_REMINDER_LIMIT, planHouseReminders, type HouseReminderInput } from '../houseReminders';
+import { HOUSE_REMINDER_KINDS, HOUSE_REMINDER_LIMIT, planHouseReminders, shownHouseReminderKinds, type HouseReminderInput } from '../houseReminders';
 import { supplyReminders } from '../supplies';
 
 const all = { bills: true, documents: true, chores: true, appointments: true, vaccines: true, weather: true, supplies: true };
@@ -133,8 +133,8 @@ describe('gás, água e ração', () => {
   });
   const today = '2026-10-12';
   const at = { ...base, today };
-  // Gás trocado em 19/08 e 03/10: dura 45 dias, deve acabar em 17/11.
-  const gas = supply('Gás de cozinha', 'gas', ['2026-08-19', '2026-10-03']);
+  // Gás trocado de 45 em 45 dias, a última vez em 03/10: deve acabar em 17/11. Com três intervalos, vale só o histórico da casa.
+  const gas = supply('Gás de cozinha', 'gas', ['2026-05-21', '2026-07-05', '2026-08-19', '2026-10-03']);
 
   it('o tipo aparece na lista dos avisos, com o rótulo e a dica', () => {
     expect(HOUSE_REMINDER_KINDS.find((k) => k.key === 'supplies')).toEqual({
@@ -142,6 +142,15 @@ describe('gás, água e ração', () => {
       label: 'Gás, água e ração',
       hint: 'Uns dias antes de acabar e no dia previsto, pela conta do Kotii, às 9h',
     });
+  });
+
+  it('num banco ainda sem as tabelas, a lista dos avisos não oferece o tipo; em qualquer outro caso, oferece', () => {
+    const keys = (available: boolean | undefined) => shownHouseReminderKinds(available).map((k) => k.key);
+    expect(keys(false)).toEqual(['bills', 'documents', 'chores', 'appointments', 'vaccines', 'weather']);
+    // Com as tabelas, e também enquanto a busca não respondeu (ou falhou sem internet).
+    expect(keys(true)).toEqual(HOUSE_REMINDER_KINDS.map((k) => k.key));
+    expect(keys(undefined)).toEqual(HOUSE_REMINDER_KINDS.map((k) => k.key));
+    expect(keys(true)).toContain('supplies');
   });
 
   it('avisa no começo da janela e no dia previsto, às 9h', () => {
@@ -177,6 +186,33 @@ describe('gás, água e ração', () => {
     expect(planHouseReminders({ ...at, supplies })).toHaveLength(2);
     expect(planHouseReminders({ ...at, kinds: { ...all, supplies: false }, supplies })).toEqual([]);
     expect(planHouseReminders(at)).toEqual([]);
+  });
+
+  it('ciclo curto (até 5 dias): um aviso só por ciclo, na véspera; desligado, nenhum', () => {
+    // Galão trocado de 4 em 4 dias, a última vez hoje (12/10): deve acabar em 16/10.
+    const galao = supply('Galão', 'agua', ['2026-09-30', '2026-10-04', '2026-10-08', '2026-10-12']);
+    const plan = (on: string, nowTime = '08:00', kinds = all) => planHouseReminders({ ...base, kinds, today: on, nowTime, supplies: supplyReminders([galao], on) });
+    expect(plan(today).map((r) => [r.key, r.time, r.title, r.body])).toEqual([
+      ['supplies:Galão:2026-10-15', '09:00', 'Galão deve acabar amanhã', 'Trocado em 12/10 · costuma durar 4 dias.'],
+    ]);
+    // Na véspera depois das 9h e no dia previsto, mais nada: o do dia é só dos ciclos longos.
+    expect(plan('2026-10-15', '10:00')).toEqual([]);
+    expect(plan('2026-10-16')).toEqual([]);
+    expect(plan(today, '08:00', { ...all, supplies: false })).toEqual([]);
+    // Com 6 dias já são os dois.
+    const six = supply('Areia', 'outros', ['2026-10-12'], 6);
+    expect(planHouseReminders({ ...at, supplies: supplyReminders([six], today) }).map((r) => [r.key, r.title])).toEqual([
+      ['supplies:Areia:2026-10-16', 'Areia deve acabar em uns 2 dias'],
+      ['supplies:Areia:2026-10-18', 'Areia deve acabar hoje'],
+    ]);
+    expect(planHouseReminders({ ...at, kinds: { ...all, supplies: false }, supplies: supplyReminders([six], today) })).toEqual([]);
+  });
+
+  it('dura 1 dia: nada no dia da troca; o aviso único é o do dia previsto', () => {
+    const bread = supply('Pão', 'outros', ['2026-10-12'], 1);
+    expect(planHouseReminders({ ...at, supplies: supplyReminders([bread], today) }).map((r) => [r.key, r.title])).toEqual([
+      ['supplies:Pão:2026-10-13', 'Pão deve acabar hoje'],
+    ]);
   });
 
   it('disputa o mesmo teto dos outros avisos, por ordem de data', () => {

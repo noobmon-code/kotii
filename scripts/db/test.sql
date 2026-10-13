@@ -1366,6 +1366,28 @@ begin
 end $$;
 
 \echo '• gás, água e ração: reposições e trocas'
+-- Os privilégios vêm da própria migração, e não do padrão do projeto (que o
+-- Supabase deixa de aplicar a tabela nova em 30/10/2026). Um por um: com uma
+-- lista separada por vírgula, has_table_privilege responde verdadeiro se o
+-- papel tiver QUALQUER um deles.
+do $$
+declare
+  t text;
+  p text;
+begin
+  foreach t in array array['public.supplies', 'public.supply_refills'] loop
+    foreach p in array array['select', 'insert', 'update', 'delete', 'truncate'] loop
+      assert not has_table_privilege('anon', t, p), format('anon must not have %s on %s', p, t);
+    end loop;
+    foreach p in array array['select', 'insert', 'update', 'delete'] loop
+      assert has_table_privilege('authenticated', t, p), format('authenticated needs %s on %s', p, t);
+      assert has_table_privilege('service_role', t, p), format('service_role needs %s on %s', p, t);
+    end loop;
+    foreach p in array array['truncate', 'references', 'trigger'] loop
+      assert not has_table_privilege('authenticated', t, p), format('authenticated must not have %s on %s', p, t);
+    end loop;
+  end loop;
+end $$;
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$
 declare
