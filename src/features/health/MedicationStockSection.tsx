@@ -12,6 +12,7 @@ import {
   restock,
   restockBase,
   restockHint,
+  stockDayError,
   stockStatus,
   type StockCount,
   type StockForm,
@@ -75,6 +76,12 @@ export function MedicationStockSection({
     const typed = restockBase(form, initial);
     if (!typed.ok) {
       notify(typed.title, typed.message);
+      return;
+    }
+    // A caixa é contada hoje: com a data do aparelho errada, o banco recusaria o dia.
+    const clock = stockDayError(today);
+    if (clock) {
+      notify(clock.title, clock.message);
       return;
     }
     const count = restock(schedule, today, units, typed.base);

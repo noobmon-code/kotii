@@ -23,6 +23,7 @@ import {
   restock,
   restockBase,
   restockHint,
+  stockDayError,
   STALE_DAYS,
   stockFormOf,
   stockStatus,
@@ -926,6 +927,19 @@ describe('a seção "Estoque e receita" do remédio', () => {
     // Data guardada fora do limite (só por fora do app) e não mexida: salvar o resto não esbarra nela.
     const stored = stockFormOf(med({ prescriptionUntil: '2150-01-01' }), today);
     expect(readStockForm({ ...stored, warnDays: '10' }, stored, today)).toEqual({ ok: true, changes: { warnDays: 10 } });
+  });
+
+  it('aparelho com a data errada (fora do que o banco aceita no dia da contagem): o aviso é daqui, em português', () => {
+    const clock = { ok: false, title: 'Confira a data do aparelho', message: expect.stringContaining('data deste aparelho') };
+    for (const wrong of ['1970-01-01', '1999-12-31', '2101-01-01']) {
+      expect(stockDayError(wrong)).toEqual(clock);
+      expect(readStockForm({ ...fresh, stock: '30' }, fresh, wrong)).toEqual(clock);
+      // Parar de acompanhar não grava dia nenhum, e o resto da seção também não: seguem salvando.
+      const counted = stockFormOf(med({ stockCount: 30, stockCountedOn: '2026-10-01' }), today);
+      expect(readStockForm({ ...counted, stock: '' }, counted, wrong)).toEqual({ ok: true, changes: { stockCount: null, stockCountedOn: null } });
+      expect(readStockForm({ ...counted, warnDays: '10' }, counted, wrong)).toEqual({ ok: true, changes: { warnDays: 10 } });
+    }
+    for (const right of [MIN_STOCK_DATE, today, MAX_STOCK_DATE]) expect(stockDayError(right)).toBeNull();
   });
 
   it('mudar a regra das doses não muda o que já foi gasto: a contagem recomeça de hoje, com o que sobrava', () => {

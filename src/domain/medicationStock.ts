@@ -600,6 +600,20 @@ const INVALID_STOCK: FormError = {
   message: 'Em "Quanto tem agora", informe um número, como 30 ou 12,5, ou deixe vazio.',
 };
 
+/**
+ * A contagem é guardada com o dia de hoje, e o banco só aceita esse dia entre
+ * MIN_STOCK_DATE e MAX_STOCK_DATE. Aparelho com a data errada (relógio zerado):
+ * melhor o aviso daqui que o erro de lá. null: a data serve.
+ */
+export function stockDayError(today: string): FormError | null {
+  if (today >= MIN_STOCK_DATE && today <= MAX_STOCK_DATE) return null;
+  return {
+    ok: false,
+    title: 'Confira a data do aparelho',
+    message: 'A data deste aparelho parece errada. Acerte o dia e a hora dele para o Kotii guardar de quando é a contagem.',
+  };
+}
+
 const stockEdited = (form: StockForm, initial: StockForm) => form.stock.trim() !== initial.stock.trim();
 
 /**
@@ -652,6 +666,8 @@ export function readStockForm(form: StockForm, initial: StockForm, today: string
     const text = form.stock.trim();
     const count = text ? parseUnits(text) : null;
     if (text && count === null) return INVALID_STOCK;
+    const clock = count === null ? null : stockDayError(today);
+    if (clock) return clock;
     changes.stockCount = count;
     changes.stockCountedOn = count === null ? null : today;
   }
