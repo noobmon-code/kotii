@@ -593,6 +593,7 @@ export function ListRow({
   onPress,
   onLongPress,
   dimmed,
+  accessibilityLabel,
 }: {
   left?: ReactNode;
   title: string;
@@ -601,10 +602,13 @@ export function ListRow({
   onPress?: () => void;
   onLongPress?: () => void;
   dimmed?: boolean;
+  /** O que o leitor de tela diz da linha inteira; sem ele, lê os textos na ordem em que aparecem. */
+  accessibilityLabel?: string;
 }) {
   const c = useColors();
   return (
     <Pressable
+      accessibilityLabel={accessibilityLabel}
       disabled={!onPress && !onLongPress}
       onPress={onPress}
       onLongPress={onLongPress}
