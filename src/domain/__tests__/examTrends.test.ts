@@ -2048,6 +2048,25 @@ describe('examTrends', () => {
     ]);
   });
 
+  it('exame sem data ou no futuro só com linhas de valor em branco não entra nas listas: não tem o que ficou de fora', () => {
+    const blank = [result('Glicose', ''), result('Ureia', '   ')];
+    const exams = [
+      exam('2026-01-10', [result('Glicose', '92', 'mg/dL')]),
+      exam(null, blank, { id: 'semdata-vazio', title: 'Sem data, em branco' }),
+      exam('2027-03-12', blank, { id: 'futuro-vazio', title: 'Futuro, em branco' }),
+      // Com uma linha preenchida no meio das em branco, entra.
+      exam(null, [...blank, result('TSH', '2,1', 'µUI/mL')], { id: 'semdata', title: 'Sem data' }),
+      exam('2027-04-01', [...blank, result('TSH', '2,4', 'µUI/mL')], { id: 'futuro', title: 'Futuro' }),
+    ];
+    const trends = examTrends(exams, '2026-10-12');
+    expect(trends.undated).toEqual([{ id: 'semdata', title: 'Sem data' }]);
+    expect(trends.future).toEqual([{ id: 'futuro', title: 'Futuro', date: '2027-04-01' }]);
+    // Só com os em branco, a tela não tem lista nenhuma para mostrar (e a entrada da evolução também não conta).
+    const only = examTrends(exams.slice(1, 3), '2026-10-12');
+    expect([only.series, only.single, only.text, only.undated, only.future, only.notDone]).toEqual([[], [], [], [], [], []]);
+    expect(hasExamResults(exams.slice(1, 3))).toBe(false);
+  });
+
   it('exame com resultados que não está como realizado fica de fora, numa lista à parte', () => {
     const exams = [
       exam('2026-01-10', [result('Hemoglobina', '13,0', 'g/dL')], { title: 'Hemograma' }),

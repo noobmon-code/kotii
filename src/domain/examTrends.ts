@@ -987,7 +987,9 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
     };
   };
   const numbers = [...numeric.values()].sort(byAttention).map((group) => toItem(group, true));
-  const outside = (kept: (e: TrendExam) => boolean) => done.filter((e) => kept(e) && e.results.length > 0);
+  // Só o exame com algum resultado preenchido: o que só tem linhas de valor em branco não tem nada que tenha
+  // ficado de fora (a mesma regra de hasExamResults).
+  const outside = (kept: (e: TrendExam) => boolean) => done.filter((e) => kept(e) && hasFilledResult(e.results));
   return {
     series: numbers
       .filter((item) => item.points.length > 1)

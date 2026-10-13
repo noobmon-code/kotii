@@ -39,14 +39,16 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
   const medications = useMedications();
   const [showAllPast, setShowAllPast] = useState(false);
 
-  // Quem tem resultados (resultOwners) entra na espera e no erro como as outras buscas: sem ela, a entrada da
-  // evolução em "Todos" sumiria calada, sem ter como tentar de novo.
-  const queries = [people, appointments, vaccines, exams, resultOwners, medications];
+  // Quem tem resultados (resultOwners) só decide para onde vai a entrada da evolução em "Todos". Aí ela entra na
+  // espera e no erro como as outras buscas: sem ela, a entrada sumiria calada, sem ter como tentar de novo. Com
+  // uma pessoa escolhida a entrada é sempre a dela, e a falha (ou a demora) dessa busca, que lê a casa toda, não
+  // tira da frente as consultas, as vacinas, os exames e os remédios que já chegaram.
+  const person = people.data?.find((p) => p.id === personId) ?? null;
+  const queries = person ? [people, appointments, vaccines, exams, medications] : [people, appointments, vaccines, exams, resultOwners, medications];
   const failed = queries.find((q) => q.isError);
   if (failed) return <ErrorNotice error={failed.error} onRetry={() => queries.forEach((q) => q.refetch())} />;
-  if (!people.data || !appointments.data || !vaccines.data || !exams.data || !resultOwners.data || !medications.data) return <Loading />;
+  if (!people.data || !appointments.data || !vaccines.data || !exams.data || !medications.data || (!person && !resultOwners.data)) return <Loading />;
 
-  const person = people.data.find((p) => p.id === personId) ?? null;
   const mine = <T extends { person_id: string | null }>(rows: T[]) => (person ? rows.filter((r) => r.person_id === person.id) : rows);
   const nameOf = (id: string) => (person ? null : people.data.find((p) => p.id === id)?.name ?? null);
   const add = (pathname: '/consulta/[id]' | '/vacina/[id]' | '/exame/[id]') =>
@@ -64,7 +66,7 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
   // Quem tem resultados sai da casa toda (useExamResultOwners): a lista de exames
   // daqui traz só os mais recentes, e por ela a entrada de "Todos" poderia levar
   // à pessoa errada.
-  const owners = new Set(resultOwners.data);
+  const owners = new Set(resultOwners.data ?? []);
   const hasResults = (p: Person) => owners.has(p.id) || hasExamResults(exams.data.filter((e) => e.person_id === p.id));
   const withResults = person ? [] : people.data.filter(hasResults);
   const trendsPerson = person ?? (withResults.length === 1 ? withResults[0] : null);
