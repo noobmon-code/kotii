@@ -208,9 +208,27 @@ export function useExams() {
   });
 }
 
-/** Quantos exames cada busca traz (o servidor devolve até mil linhas por vez) e até quantas buscas. */
+/** Até quantas páginas uma leitura inteira busca antes de desistir (ver readAllPages). */
+const MAX_PAGES = 200;
+export const TOO_MANY_ROWS = 'Há registros demais para ler de uma vez. Tente de novo mais tarde.';
+
+/**
+ * Lê uma busca inteira, página por página, até a página que vem incompleta.
+ * Se nem em MAX_PAGES acaba, falha: um histórico cortado nunca é entregue como
+ * se fosse inteiro (a evolução mostraria como "último" um resultado antigo).
+ */
+async function readAllPages<T>(pageSize: number, fetchPage: (from: number, to: number) => Promise<T[]>): Promise<T[]> {
+  const all: T[] = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const rows = await fetchPage(all.length, all.length + pageSize - 1);
+    all.push(...rows);
+    if (rows.length < pageSize) return all;
+  }
+  throw new Error(TOO_MANY_ROWS);
+}
+
+/** Quantos exames cada busca traz (o servidor devolve até mil linhas por vez). */
 const EXAM_PAGE = 500;
-const EXAM_PAGES = 40;
 
 /**
  * Todos os exames de uma pessoa, do mais antigo para o mais novo. A lista da
@@ -218,22 +236,20 @@ const EXAM_PAGES = 40;
  * muitos exames, a evolução e o resumo de quem faz poucos ficariam sem os
  * antigos, sem ninguém saber.
  */
-export async function fetchPersonExams(personId: string, db: SupabaseClient = supabase): Promise<Exam[]> {
-  const all: Exam[] = [];
-  for (let page = 0; page < EXAM_PAGES; page++) {
-    const rows = unwrap(
-      await db
-        .from('exams')
-        .select(EXAM_COLUMNS)
-        .eq('person_id', personId)
-        .order('created_at', { ascending: true })
-        .order('id', { ascending: true })
-        .range(all.length, all.length + EXAM_PAGE - 1),
-    ) as Exam[];
-    all.push(...rows);
-    if (rows.length < EXAM_PAGE) break;
-  }
-  return all;
+export function fetchPersonExams(personId: string, db: SupabaseClient = supabase): Promise<Exam[]> {
+  return readAllPages(
+    EXAM_PAGE,
+    async (from, to) =>
+      unwrap(
+        await db
+          .from('exams')
+          .select(EXAM_COLUMNS)
+          .eq('person_id', personId)
+          .order('created_at', { ascending: true })
+          .order('id', { ascending: true })
+          .range(from, to),
+      ) as Exam[],
+  );
 }
 
 /** Os exames de uma pessoa, inteiros (fetchPersonExams). A chave começa com 'exams': salvar ou excluir um exame já recarrega. */
@@ -245,9 +261,8 @@ export function usePersonExams(personId: string | undefined) {
   });
 }
 
-/** Quantas linhas cada busca de "quem tem resultados" traz (o teto do servidor) e até quantas buscas. */
+/** Quantas linhas cada busca de "quem tem resultados" traz (o teto do servidor). */
 const OWNER_PAGE = 1000;
-const OWNER_PAGES = 20;
 
 /**
  * Quem tem exame realizado com resultados, na casa toda. Pela lista da casa
@@ -256,21 +271,20 @@ const OWNER_PAGES = 20;
  * errada. Só a coluna da pessoa, em páginas.
  */
 export async function fetchExamResultOwners(db: SupabaseClient = supabase): Promise<string[]> {
-  const owners = new Set<string>();
-  for (let page = 0; page < OWNER_PAGES; page++) {
-    const rows = unwrap(
-      await db
-        .from('exams')
-        .select('person_id')
-        .eq('status', 'realizado')
-        .neq('results', '[]')
-        .order('id', { ascending: true })
-        .range(page * OWNER_PAGE, (page + 1) * OWNER_PAGE - 1),
-    ) as { person_id: string }[];
-    for (const row of rows) owners.add(row.person_id);
-    if (rows.length < OWNER_PAGE) break;
-  }
-  return [...owners];
+  const rows = await readAllPages(
+    OWNER_PAGE,
+    async (from, to) =>
+      unwrap(
+        await db
+          .from('exams')
+          .select('person_id')
+          .eq('status', 'realizado')
+          .neq('results', '[]')
+          .order('id', { ascending: true })
+          .range(from, to),
+      ) as { person_id: string }[],
+  );
+  return [...new Set(rows.map((row) => row.person_id))];
 }
 
 /** Quem tem resultados de exame (fetchExamResultOwners). A chave começa com 'exams': salvar ou excluir um exame já recarrega. */

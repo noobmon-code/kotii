@@ -4,7 +4,7 @@ import { SESSION_ENDED } from '@/lib/accessErrors';
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { fetchExamResultOwners, fetchPersonExams, readHealthDocument } from '../health';
+import { fetchExamResultOwners, fetchPersonExams, readHealthDocument, TOO_MANY_ROWS } from '../health';
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockLog: string[] = [];
@@ -87,6 +87,15 @@ describe('todos os exames de uma pessoa', () => {
     expect(exact.calls.filter((c) => c.includes('-'))).toEqual(['0-499', '500-999']);
 
     expect(await fetchPersonExams('ana', examsDb(0).db)).toEqual([]);
+  });
+
+  it('histórico que não acaba nunca é entregue cortado: a busca falha', async () => {
+    // Bem além de qualquer casa de verdade: mais páginas cheias do que a leitura aceita.
+    const endless = examsDb(500 * 200 + 1);
+    await expect(fetchPersonExams('ana', endless.db)).rejects.toThrow(TOO_MANY_ROWS);
+    // No limite exato, ainda vem tudo: a última página é a que vem incompleta.
+    const edge = examsDb(500 * 200 - 1);
+    expect(await fetchPersonExams('ana', edge.db)).toHaveLength(500 * 200 - 1);
   });
 });
 
