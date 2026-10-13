@@ -235,6 +235,26 @@ describe('avisos no navegador', () => {
       });
     });
 
+    it('desligada no servidor sem a escolha guardada aqui (foi a migração, ou os dados do navegador foram limpos): a leitura guarda a escolha', async () => {
+      await inBrowser(async (webPush, browser) => {
+        await webPush.webScheduler.scheduleManyAsync([daily(8)]);
+        browser.tables.push_subscriptions = [{ endpoint, market_trips: false }];
+        expect(browser.storage.has('kotii:push-market-trips-off')).toBe(false);
+        expect(await webPush.getMarketTripsPush()).toBe(false);
+        expect(browser.storage.get('kotii:push-market-trips-off')).toBe('1');
+      });
+      // Ligada neste navegador (desligada só em outro): nada é guardado.
+      await inBrowser(async (webPush, browser) => {
+        await webPush.webScheduler.scheduleManyAsync([daily(8)]);
+        browser.tables.push_subscriptions = [
+          { endpoint, market_trips: true },
+          { endpoint: 'https://fcm.googleapis.com/fcm/send/outro', market_trips: false },
+        ];
+        expect(await webPush.getMarketTripsPush()).toBe(true);
+        expect(browser.storage.has('kotii:push-market-trips-off')).toBe(false);
+      });
+    });
+
     it('desligado, e a inscrição trocou (ou a pessoa saiu e entrou): a nova nasce ligada e o navegador a desliga de novo', async () => {
       await inBrowser(
         async (webPush, browser) => {

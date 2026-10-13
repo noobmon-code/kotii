@@ -2940,6 +2940,11 @@ begin
   assert public.push_text(E'\u200D \u200C\uFE0F', 40) = '', 'the joiners that are kept do not make a name on their own';
   assert public.push_text(E'Ana\u00A0Maria', 40) = 'Ana Maria', 'a no-break space becomes a plain one';
   assert public.push_text(E'Ko\u200Btii\u202E: conta', 40) = 'Ko tii : conta', 'zero-width and direction characters do not hide inside a name';
+  assert public.push_text(E'a\u2066b\u2069c\u2067', 40) = 'a b c', 'the direction isolates go too';
+  assert public.push_text(E'\u034F', 40) = '' and public.push_text(E'\u17B4\u17B5\u2065\uFFF9\uFFFC', 40) = ''
+    and public.push_text(E'\U0001D159', 40) = '', 'rarer invisible characters do not make a name either';
+  assert public.push_text(E'\u0301', 40) = '', 'a combining accent with no letter under it is not a name';
+  assert public.push_text(E'Jose\u0301 A\u0303', 40) = E'Jose\u0301 A\u0303', 'accents typed as combining marks stay on their letters';
   -- A família (homem, mulher, menina) é um emoji só por causa dos U+200D: continua inteira.
   assert public.push_text(E'Casa \U0001F468\u200D\U0001F469\u200D\U0001F467', 40) = E'Casa \U0001F468\u200D\U0001F469\u200D\U0001F467',
     'an emoji sequence keeps its joiners';
@@ -3628,9 +3633,25 @@ insert into public.push_subscriptions (user_id, endpoint, p256dh, auth) values
 insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute)
 select gen_random_uuid(), s.id, 'Contas a pagar', 'daily', 8, 0
 from public.push_subscriptions s where s.endpoint like '%/antes-com-aviso';
+-- O banco de testes dá tudo a todos nas tabelas novas (stubs.sql), como a Supabase fazia até 30/10/2026: sem
+-- isso (desfeito no rollback), as permissões das tabelas recriadas são só as que a migração escreve, e a falta
+-- de um grant aparece aqui.
+alter default privileges in schema public revoke all on tables from anon, authenticated, service_role;
 \ir ../../supabase/migrations/20261012220000_market_trips.sql
 do $$
+declare
+  t text;
+  p text;
 begin
+  foreach p in array array['select', 'insert', 'update', 'delete'] loop
+    foreach t in array array['public.market_trips', 'public.market_trip_log'] loop
+      assert not has_table_privilege('anon', t, p), format('written by the migration: anon has no %s on %s', p, t);
+      assert has_table_privilege('service_role', t, p), format('written by the migration: service_role has %s on %s', p, t);
+    end loop;
+    assert not has_table_privilege('authenticated', 'public.market_trip_log', p), format('written by the migration: authenticated has no %s on the log', p);
+    assert has_table_privilege('authenticated', 'public.market_trips', p) = (p = 'select'),
+      format('written by the migration: authenticated only reads market_trips (%s)', p);
+  end loop;
   assert (select market_trips from public.push_subscriptions where endpoint like '%/antes-com-aviso'),
     'a browser with a notice scheduled starts with the option on';
   assert not (select market_trips from public.push_subscriptions where endpoint like '%/antes-sem-aviso'),

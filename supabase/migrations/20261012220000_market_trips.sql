@@ -18,8 +18,11 @@ alter table public.push_subscriptions add column market_trips boolean not null d
 -- Menos o navegador que hoje não tem nada agendado: é aquele em que a pessoa
 -- desligou todos os avisos do Kotii (a inscrição fica, porque a permissão do
 -- navegador continua dada), e ele não começa a receber este sem ela pedir.
--- As inscrições novas ficam com o padrão, ligado: elas são criadas quando a
--- pessoa liga um aviso.
+-- As inscrições novas ficam com o padrão, ligado. O app guarda no navegador
+-- quem desligou a opção (ou a encontrou desligada aqui) e desliga de novo a
+-- inscrição que um dia trocar esta; um navegador que nunca abriu a lista dos
+-- avisos depois desta migração e tem a inscrição refeita (sair e entrar na
+-- conta) volta ao padrão.
 update public.push_subscriptions s set market_trips = false
   where not exists (select 1 from public.push_schedule p where p.subscription_id = s.id);
 
@@ -98,14 +101,14 @@ immutable
 set search_path = ''
 as $$
   select case
-    when regexp_replace(c.clean, '[ \u200C\u200D\uFE00-\uFE0F\U000E0000-\U000E007F]+', '', 'g') = '' then ''
+    when regexp_replace(c.clean, '[ \u0300-\u036F\u200C\u200D\uFE00-\uFE0F\U000E0000-\U000E007F]+', '', 'g') = '' then ''
     else c.clean
   end
   from (
     select rtrim(left(btrim(regexp_replace(
       regexp_replace(
         coalesce(p_text, ''),
-        '[\u0001-\u001F\u007F-\u009F\u00A0\u00AD\u061C\u115F\u1160\u1680\u180E\u2000-\u200B\u200E\u200F\u2028-\u202F\u205F-\u2064\u2066-\u206F\u2800\u3000\u3164\uFEFF\uFFA0]+',
+        '[\u0001-\u001F\u007F-\u009F\u00A0\u00AD\u034F\u061C\u115F\u1160\u1680\u17B4\u17B5\u180E\u2000-\u200B\u200E\u200F\u2028-\u202F\u205F-\u206F\u2800\u3000\u3164\uFEFF\uFFA0\uFFF9-\uFFFC\U0001D159]+',
         ' ', 'g'
       ),
       '\s+', ' ', 'g'

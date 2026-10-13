@@ -237,7 +237,11 @@ export async function getMarketTripsPush(): Promise<boolean> {
   }[];
   if (!webPushSupported || !granted()) return false;
   const endpoint = (await currentBrowserSubscription())?.endpoint;
-  return rows.some((row) => row.endpoint === endpoint && row.market_trips);
+  const mine = rows.find((row) => row.endpoint === endpoint);
+  // Desligada no servidor sem a marca daqui (a migração a desligou para quem não tinha aviso nenhum, ou os dados
+  // do navegador foram limpos): a marca volta, para a inscrição que trocar esta não nascer ligada.
+  if (mine && !mine.market_trips) marketTripsOff.set(true);
+  return Boolean(mine?.market_trips);
 }
 
 /**
