@@ -1,14 +1,14 @@
 // Lembretes como notificações locais. Ficam no aparelho: cada pessoa da
 // família escolhe de quais remédios quer ser lembrada (só tocam dentro do
 // período do tratamento, ver planReminders) e quais avisos da casa quer
-// receber: contas, documentos, tarefas, consultas, vacinas e a dica do clima
-// da manhã (ver planHouseReminders). Quem tem várias casas recebe os de
-// todas: cada lembrete guardado diz de que casa é, e cada sincronização mexe
-// só nos da casa que ela recebeu.
+// receber: contas, documentos, tarefas, consultas, compromissos da família e
+// aniversários, vacinas e a dica do clima da manhã (ver planHouseReminders).
+// Quem tem várias casas recebe os de todas: cada lembrete guardado diz de que
+// casa é, e cada sincronização mexe só nos da casa que ela recebeu.
 // No navegador, a mesma agenda fica no servidor e chega por Web Push (ver
 // src/lib/webPush.ts): cada navegador inscrito é um "aparelho".
 // Entre os avisos da casa está o resumo de amanhã: à noite, uma notificação
-// só com o que a casa tem no dia seguinte.
+// só com o que a casa tem no dia seguinte, compromissos e aniversários inclusive.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { isRunningInExpoGo } from 'expo';
@@ -416,6 +416,8 @@ const NO_HOUSE_KINDS: Record<HouseReminderKind, boolean> = {
   documents: false,
   chores: false,
   appointments: false,
+  // Tipo novo: quem já tinha escolhido os avisos antes de ele existir começa com ele desligado, como os outros.
+  events: false,
   vaccines: false,
   weather: false,
   // Tipo novo: quem já tinha escolhido os avisos antes de ele existir começa com ele desligado, como os outros.
@@ -423,13 +425,17 @@ const NO_HOUSE_KINDS: Record<HouseReminderKind, boolean> = {
 };
 
 /**
- * Consultas, vacinas ou clima undefined: ainda não carregaram (os avisos
- * deles já agendados ficam como estão). `weatherPlace`: de onde é a previsão
- * (as coordenadas do local da casa; null sem local; undefined se o local não
- * carregou). `equipment` (as garantias, para o resumo de amanhã) undefined:
- * os aparelhos não carregaram.
+ * Consultas, vacinas, compromissos (`family`) ou clima undefined: ainda não
+ * carregaram (os avisos deles já agendados ficam como estão). `weatherPlace`:
+ * de onde é a previsão (as coordenadas do local da casa; null sem local;
+ * undefined se o local não carregou). `equipment` (as garantias, para o
+ * resumo de amanhã) undefined: os aparelhos não carregaram. O resumo de
+ * amanhã espera por todos: consultas, vacinas, `family` e `equipment`.
  */
-export type HouseReminderData = Pick<HouseReminderInput, 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'equipment' | 'weather'> & {
+export type HouseReminderData = Pick<
+  HouseReminderInput,
+  'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'family' | 'equipment' | 'weather'
+> & {
   weatherPlace?: string | null;
 };
 
@@ -550,17 +556,22 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
       data.weatherPlace !== previous.weatherPlace;
     const weather = moved ? [] : data.weather;
     const weatherPlace = weather !== undefined ? data.weatherPlace : previous?.weatherPlace;
-    // Consultas, vacinas ou previsão que não carregaram: os avisos delas já
-    // agendados ficam como estão, e os outros tipos seguem normais.
+    // Consultas, vacinas, compromissos ou previsão que não carregaram: os
+    // avisos deles já agendados ficam como estão, e os outros tipos seguem normais.
     const unknown = new Set<HouseReminderKind>([
       ...(data.appointments === undefined ? (['appointments'] as const) : []),
       ...(data.vaccines === undefined ? (['vaccines'] as const) : []),
+      ...(data.family === undefined ? (['events'] as const) : []),
       ...(weather === undefined ? (['weather'] as const) : []),
-      // O resumo de amanhã junta consultas, vacinas e garantias: sem alguma
-      // delas, sairia pela metade (sem a consulta de amanhã, pior que nenhum),
-      // então os já agendados ficam. Só com ele ligado: desligado, não há
-      // resumo agendado para ficar, e o plano de quem não o usa segue igual.
-      ...(kinds.eve && (data.appointments === undefined || data.vaccines === undefined || data.equipment === undefined) ? (['eve'] as const) : []),
+      // O resumo de amanhã junta consultas, vacinas, compromissos, aniversários e
+      // garantias: sem algum deles, sairia pela metade (sem a consulta ou a
+      // festa de amanhã, pior que nenhum), então os já agendados ficam. Só com
+      // ele ligado: desligado, não há resumo agendado para ficar, e o plano de
+      // quem não o usa segue igual.
+      ...(kinds.eve &&
+      (data.appointments === undefined || data.vaccines === undefined || data.family === undefined || data.equipment === undefined)
+        ? (['eve'] as const)
+        : []),
     ]);
     // Aviso de atraso cuja hora já passou tocou: aquela conta (ou vacina) não
     // avisa de novo. Guarda só as que continuam atrasadas (paga, o vencimento
@@ -581,24 +592,26 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
       .catch(() => null);
     const live = scheduled ? new Set(scheduled.map((n) => n.identifier)) : null;
     const others = (scheduled ?? []).filter((n) => !ours.has(n.identifier)).length;
-    // Avisos de consultas/vacinas que ficam (sem os dados delas): só os que
-    // ainda estão agendados; os que já tocaram não ocupam vaga.
+    // Avisos de consultas, vacinas ou compromissos que ficam (sem os dados
+    // deles): só os que ainda estão agendados; os que já tocaram não ocupam vaga.
     const held = (previous?.kinds ?? []).flatMap((kind, i) =>
       unknown.has(kind) && (!live || live.has(previous!.ids[i])) ? [{ id: previous!.ids[i], kind }] : [],
     );
     const heldIds = new Set(held.map((r) => r.id));
     // Os que ficam guardam a vaga, os resumos também: com o teto curto, o aviso
     // próprio mais distante pode ficar de fora até a próxima sincronização
-    // completa. Tirar a vaga do resumo que fica não é seguro: sem as consultas,
-    // ele pode ser o único aviso de véspera de uma delas.
+    // completa. Tirar a vaga do resumo que fica não é seguro: sem as consultas
+    // (ou os compromissos), ele pode ser o único aviso de véspera de um deles.
     const limit = Math.min(target.limit ?? HOUSE_REMINDER_LIMIT, SCHEDULED_NOTIFICATIONS_LIMIT - others) - held.length;
     const planKinds = {
       ...kinds,
       appointments: kinds.appointments && !unknown.has('appointments'),
       vaccines: kinds.vaccines && !unknown.has('vaccines'),
+      events: kinds.events && !unknown.has('events'),
       weather: kinds.weather && !unknown.has('weather'),
-      // Sem o resumo no plano, a consulta tem o "Consulta amanhã" dela: se um
-      // resumo já agendado ficar, dois avisos na mesma noite são melhores que nenhum.
+      // Sem o resumo no plano, a consulta tem o "Consulta amanhã" dela (e o
+      // compromisso, o "Amanhã: …"): se um resumo já agendado ficar, dois
+      // avisos na mesma noite são melhores que nenhum.
       eve: kinds.eve && !unknown.has('eve'),
     };
     // Com mais de uma casa, o aviso diz de qual é.
@@ -613,7 +626,7 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
     // data.householdId) são refeitos uma vez, para o servidor saber de qual são.
     const signature = `${JSON.stringify(plan)}|casa:${householdId}` + (unknown.size ? `|sem:${[...unknown].join(',')}` : '');
     if (previous?.signature === signature) {
-      // Nada a refazer, mas avisos de saúde ou do clima que já tocaram saem da lista guardada.
+      // Nada a refazer, mas avisos de saúde, de compromissos ou do clima que já tocaram saem da lista guardada.
       const keep = previous.ids.flatMap((id, i) => {
         const kind = previous.kinds?.[i];
         return kind && unknown.has(kind) && !heldIds.has(id) ? [] : [{ id, kind }];

@@ -1,6 +1,6 @@
 -- Testes do schema: isolamento entre famílias (RLS), matching, preços,
 -- confirmação de nota, recorrência de tarefas, remédios, saúde, aparelhos,
--- documentos, financeiro e saída da casa.
+-- documentos, financeiro, saída da casa e compromissos da família.
 -- Rodado por scripts/db/test.sh depois de stubs.sql + migrations.
 
 \set ON_ERROR_STOP 1
@@ -2915,5 +2915,309 @@ begin
   end;
 end $$;
 reset role;
+
+-- ---------------------------------------------------------------------------
+\echo '• compromissos da família: repetição, quem leva e busca, mudanças de um dia e isolamento'
+-- Nara mora na Casa da Nara, com a filha Ana, o Beto, a vó e o Rex; Otto mora
+-- em outra casa.
+\set user_n '00000000-0000-0000-0000-00000000001b'
+\set user_o '00000000-0000-0000-0000-00000000001c'
+reset role;
+insert into auth.users (id) values (:'user_n'), (:'user_o');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_o', false) \gset
+select (public.create_household('Casa do Otto', 'Otto')).id as hh_o \gset
+select set_config('request.jwt.claim.sub', :'user_n', false) \gset
+select (public.create_household('Casa da Nara', 'Nara')).id as hh_n \gset
+select set_config('test.hh_o', :'hh_o', false) \gset
+select set_config('test.hh_n', :'hh_n', false) \gset
+
+do $$
+declare
+  nara uuid;
+  ana uuid;
+  beto uuid;
+  vo uuid;
+  rex uuid;
+  swim uuid;
+  bath uuid;
+  e public.family_events;
+begin
+  select id into nara from public.people where member_user_id = auth.uid();
+  insert into public.people (name) values ('Ana') returning id into ana;
+  insert into public.people (name) values ('Beto') returning id into beto;
+  insert into public.people (name) values ('Vó Maria') returning id into vo;
+  insert into public.people (name, kind) values ('Rex', 'pet') returning id into rex;
+
+  -- Natação da Ana: terça e quinta, o Beto leva e a Nara busca.
+  insert into public.family_events (title, starts_on, start_time, end_time, person_id, take_by, pick_up_by, location, bring, recurrence, weekdays)
+  values ('Natação da Ana', '2026-10-13', '16:00', '17:00', ana, beto, nara, 'Clube', 'touca e toalha', 'weekly', '{2,4}')
+  returning * into e;
+  swim := e.id;
+  assert e.household_id = current_setting('test.hh_n')::uuid, 'the event belongs to the open household';
+  assert e.created_by = auth.uid(), 'created_by defaults to the user';
+  -- O compromisso pode ser de um pet; sem hora, é o dia todo.
+  insert into public.family_events (title, starts_on, person_id) values ('Banho do Rex', '2026-10-17', rex) returning id into bath;
+  assert (select recurrence = 'none' and start_time is null and weekdays is null from public.family_events where id = bath), 'defaults: once, all day';
+  insert into public.family_events (title, starts_on, recurrence, until_on) values ('Aluguel da quadra', '2026-10-31', 'monthly', '2026-12-31');
+  insert into public.family_events (title, starts_on, recurrence) values ('Aniversário da tia Lu', '2024-02-29', 'yearly');
+
+  -- Toda semana precisa dos dias: de 0 a 6, sem repetir; fora dela, não há dias.
+  begin
+    insert into public.family_events (title, starts_on, recurrence) values ('Sem dias', '2026-10-13', 'weekly');
+    raise exception 'FAIL: weekly event without weekdays';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.family_events (title, starts_on, recurrence, weekdays) values ('Sem dias', '2026-10-13', 'weekly', '{}');
+    raise exception 'FAIL: weekly event with no weekday';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.family_events (title, starts_on, recurrence, weekdays) values ('Dia 7', '2026-10-13', 'weekly', '{2,7}');
+    raise exception 'FAIL: weekday out of range';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.family_events (title, starts_on, recurrence, weekdays) values ('Repetido', '2026-10-13', 'weekly', '{2,2}');
+    raise exception 'FAIL: repeated weekday';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.family_events (title, starts_on, recurrence, weekdays) values ('Matriz', '2026-10-13', 'weekly', '{{1,2},{3,4}}');
+    raise exception 'FAIL: weekdays as a two-dimensional array';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.family_events (title, starts_on, recurrence, weekdays) values ('Mensal com dias', '2026-10-13', 'monthly', '{2}');
+    raise exception 'FAIL: weekdays outside a weekly event';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.family_events (title, starts_on, recurrence) values ('Todo dia', '2026-10-13', 'daily');
+    raise exception 'FAIL: unknown recurrence';
+  exception when check_violation then null;
+  end;
+
+  -- Pet não leva nem busca.
+  begin
+    insert into public.family_events (title, starts_on, take_by) values ('Passeio', '2026-10-13', rex);
+    raise exception 'FAIL: a pet takes someone';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.family_events set pick_up_by = rex where id = swim;
+    raise exception 'FAIL: a pet picks someone up';
+  exception when check_violation then null;
+  end;
+
+  -- Horários e datas.
+  begin
+    update public.family_events set end_time = '15:00' where id = swim;
+    raise exception 'FAIL: ends before it starts';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.family_events set end_time = '16:00' where id = swim;
+    raise exception 'FAIL: ends when it starts';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.family_events (title, starts_on, end_time) values ('Só o fim', '2026-10-13', '17:00');
+    raise exception 'FAIL: end time without a start time';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.family_events set until_on = '2026-10-12' where id = swim;
+    raise exception 'FAIL: until before the start';
+  exception when check_violation then null;
+  end;
+  update public.family_events set until_on = '2026-10-13' where id = swim;
+  update public.family_events set until_on = null where id = swim;
+  begin
+    update public.family_events set until_on = '2026-12-31' where id = bath;
+    raise exception 'FAIL: until on an event that does not repeat';
+  exception when check_violation then null;
+  end;
+
+  -- Textos.
+  begin
+    insert into public.family_events (title, starts_on) values ('   ', '2026-10-13');
+    raise exception 'FAIL: blank title';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.family_events (title, starts_on) values (repeat('x', 121), '2026-10-13');
+    raise exception 'FAIL: title too long';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.family_events set bring = repeat('x', 301) where id = swim;
+    raise exception 'FAIL: bring too long';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.family_events set location = repeat('x', 201) where id = swim;
+    raise exception 'FAIL: location too long';
+  exception when check_violation then null;
+  end;
+
+  -- Só neste dia: não vai ter; a vó leva; ninguém busca.
+  insert into public.family_event_days (event_id, occurs_on, cancelled) values (swim, '2026-10-15', true);
+  insert into public.family_event_days (event_id, occurs_on, override_take, take_by) values (swim, '2026-10-20', true, vo);
+  insert into public.family_event_days (event_id, occurs_on, override_pick_up) values (swim, '2026-10-22', true);
+  assert (select household_id from public.family_event_days where occurs_on = '2026-10-15') = current_setting('test.hh_n')::uuid,
+    'the day belongs to the open household';
+  begin
+    insert into public.family_event_days (event_id, occurs_on) values (swim, '2026-10-27');
+    raise exception 'FAIL: kept a day with nothing changed';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.family_event_days (event_id, occurs_on, cancelled, take_by) values (swim, '2026-10-27', true, vo);
+    raise exception 'FAIL: who takes without marking the change';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.family_event_days (event_id, occurs_on, override_pick_up, pick_up_by) values (swim, '2026-10-27', true, rex);
+    raise exception 'FAIL: a pet picks someone up on one day';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.family_event_days (event_id, occurs_on, cancelled) values (swim, '2026-10-15', true);
+    raise exception 'FAIL: two rows for the same day';
+  exception when unique_violation then null;
+  end;
+  -- Desfazer e mudar de novo: a linha do dia é uma só.
+  update public.family_event_days set cancelled = false, override_take = true, take_by = vo where event_id = swim and occurs_on = '2026-10-15';
+  update public.family_event_days set cancelled = true, override_take = false, take_by = null where event_id = swim and occurs_on = '2026-10-15';
+
+  perform set_config('test.ev_swim', swim::text, false);
+  perform set_config('test.ev_bath', bath::text, false);
+  perform set_config('test.p_ana', ana::text, false);
+  perform set_config('test.p_beto', beto::text, false);
+  perform set_config('test.p_vo', vo::text, false);
+end $$;
+
+-- Otto, de outra casa: não vê nem mexe em nada disso.
+select set_config('request.jwt.claim.sub', :'user_o', false) \gset
+do $$
+declare
+  swim uuid := current_setting('test.ev_swim')::uuid;
+  hh_n uuid := current_setting('test.hh_n')::uuid;
+  own uuid;
+begin
+  assert (select count(*) from public.family_events) = 0, 'O sees no foreign events';
+  assert (select count(*) from public.family_event_days) = 0, 'O sees no foreign day changes';
+  update public.family_events set title = 'Invadido';
+  delete from public.family_events;
+  update public.family_event_days set cancelled = true;
+  delete from public.family_event_days;
+  begin
+    insert into public.family_events (household_id, title, starts_on) values (hh_n, 'Invasão', '2026-10-13');
+    raise exception 'FAIL: O created an event in a foreign household';
+  exception when insufficient_privilege then null;
+  end;
+  -- Dia de um compromisso de outra casa: pela casa do Otto, o compromisso não
+  -- existe; dizendo que é da outra casa, a regra de acesso barra.
+  begin
+    insert into public.family_event_days (event_id, occurs_on, cancelled) values (swim, '2026-10-13', true);
+    raise exception 'FAIL: O changed a day of a foreign event';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    insert into public.family_event_days (event_id, occurs_on, household_id, cancelled) values (swim, '2026-10-13', hh_n, true);
+    raise exception 'FAIL: O changed a day of a foreign event, naming its household';
+  exception when insufficient_privilege then null;
+  end;
+  -- Ficha de outra casa não entra como "de quem é" nem como quem leva.
+  begin
+    insert into public.family_events (title, starts_on, person_id) values ('Da Ana', '2026-10-13', current_setting('test.p_ana')::uuid);
+    raise exception 'FAIL: event for a foreign person';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    insert into public.family_events (title, starts_on, take_by) values ('Carona', '2026-10-13', current_setting('test.p_beto')::uuid);
+    raise exception 'FAIL: a foreign person takes someone';
+  exception when foreign_key_violation then null;
+  end;
+  -- Na própria casa, funciona.
+  insert into public.family_events (title, starts_on) values ('Feira', '2026-10-13') returning id into own;
+  assert (select count(*) from public.family_events) = 1, 'O sees only the own event';
+  -- Mudar o compromisso de casa também não passa.
+  begin
+    update public.family_events set household_id = hh_n where id = own;
+    raise exception 'FAIL: moved an event to a foreign household';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- Nara de novo: nada mudou; fichas apagadas e compromissos apagados.
+select set_config('request.jwt.claim.sub', :'user_n', false) \gset
+do $$
+declare
+  swim uuid := current_setting('test.ev_swim')::uuid;
+  bath uuid := current_setting('test.ev_bath')::uuid;
+  ana uuid := current_setting('test.p_ana')::uuid;
+  beto uuid := current_setting('test.p_beto')::uuid;
+  vo uuid := current_setting('test.p_vo')::uuid;
+  e public.family_events;
+  d public.family_event_days;
+begin
+  assert (select count(*) from public.family_events) = 4, 'the events are untouched by O';
+  assert (select title from public.family_events where id = swim) = 'Natação da Ana', 'the title too';
+  assert (select count(*) from public.family_event_days where event_id = swim) = 3, 'and the day changes';
+  assert (select cancelled from public.family_event_days where event_id = swim and occurs_on = '2026-10-15'), 'still cancelled';
+
+  -- A ficha de quem leva some: o compromisso fica, sem quem leva.
+  delete from public.people where id = beto;
+  select * into e from public.family_events where id = swim;
+  assert e.take_by is null and e.pick_up_by is not null and e.person_id = ana, 'deleting the person clears only who takes';
+  -- A vó, que levava só no dia 20, vira pet por engano: naquele dia fica sem ninguém.
+  update public.family_events set pick_up_by = vo where id = swim;
+  update public.people set kind = 'pet' where id = vo;
+  select * into e from public.family_events where id = swim;
+  assert e.pick_up_by is null and e.person_id = ana, 'a profile that becomes a pet stops picking up';
+  select * into d from public.family_event_days where event_id = swim and occurs_on = '2026-10-20';
+  assert d.override_take and d.take_by is null, 'and stops taking on that day: nobody takes';
+  -- De volta a pessoa, leva de novo naquele dia; apagada, o dia fica sem ninguém.
+  update public.people set kind = 'pessoa' where id = vo;
+  update public.family_event_days set take_by = vo where event_id = swim and occurs_on = '2026-10-20';
+  delete from public.people where id = vo;
+  select * into d from public.family_event_days where event_id = swim and occurs_on = '2026-10-20';
+  assert d.override_take and d.take_by is null, 'deleting the person of a day change leaves nobody for that day';
+  -- A ficha de quem é o compromisso some: ele fica, da família toda.
+  delete from public.people where id = ana;
+  assert (select person_id is null and title = 'Natação da Ana' from public.family_events where id = swim), 'the event survives its person';
+  assert (select count(*) from public.family_event_days where event_id = swim) = 3, 'and so do its day changes';
+
+  -- Apagar o compromisso leva os dias dele, e só eles.
+  insert into public.family_event_days (event_id, occurs_on, cancelled) values (bath, '2026-10-17', true);
+  delete from public.family_events where id = swim;
+  assert (select count(*) from public.family_event_days where event_id = swim) = 0, 'deleting the event deletes its day changes';
+  assert (select count(*) from public.family_event_days) = 1, 'the other event keeps its own';
+  assert (select count(*) from public.family_events) = 3, 'the other events stay';
+end $$;
+
+-- A casa apagada leva compromissos e dias junto.
+reset role;
+do $$
+begin
+  delete from public.households where id = current_setting('test.hh_n')::uuid;
+  assert (select count(*) from public.family_events where household_id = current_setting('test.hh_n')::uuid) = 0, 'household gone, events gone';
+  assert (select count(*) from public.family_event_days) = 0, 'and day changes';
+  assert (select count(*) from public.family_events) = 1, 'the other household keeps its event';
+  -- As permissões das tabelas são explícitas: não dependem do padrão do projeto.
+  assert not has_table_privilege('anon', 'public.family_events', 'select, insert, update, delete, truncate'), 'anon has no access to family_events';
+  assert (select bool_and(has_table_privilege(who, 'public.family_events', verb))
+            from unnest(array['authenticated', 'service_role']) as who, unnest(array['select', 'insert', 'update', 'delete']) as verb),
+    'members and the service role reach family_events through the API';
+  assert not has_table_privilege('authenticated', 'public.family_events', 'truncate, references, trigger'), 'and members get nothing beyond that on family_events';
+  assert not has_table_privilege('anon', 'public.family_event_days', 'select, insert, update, delete, truncate'), 'anon has no access to family_event_days';
+  assert (select bool_and(has_table_privilege(who, 'public.family_event_days', verb))
+            from unnest(array['authenticated', 'service_role']) as who, unnest(array['select', 'insert', 'update', 'delete']) as verb),
+    'members and the service role reach family_event_days through the API';
+  assert not has_table_privilege('authenticated', 'public.family_event_days', 'truncate, references, trigger'), 'and members get nothing beyond that on family_event_days';
+end $$;
 
 \echo 'OK — todos os testes do banco passaram'
