@@ -84,6 +84,11 @@ export default function ServiceJobScreen() {
     );
   }
   if (!isNew && !job.data) return <ErrorNotice error={new Error('Este serviço não existe mais.')} />;
+  // A busca dos prestadores falhou e a lista de antes não tem quem acabou de ser salvo (ou não tem ninguém):
+  // pedir de novo, em vez de mandar cadastrar outra vez quem já está no banco.
+  if (providers.isError && (list.rows.length === 0 || (prestador && !list.rows.some((p) => p.id === prestador)))) {
+    return <ErrorNotice error={new Error(providerErrorMessage(providers.error))} onRetry={() => providers.refetch()} />;
+  }
   if (list.rows.length === 0) {
     return (
       <Screen edges={[]}>

@@ -158,6 +158,10 @@ describe('telefone: o que fica em phone_digits', () => {
     expect(parsePhone('0300-123-4567')).toEqual({ kind: 'gratuito', digits: '03001234567' });
     expect(parsePhone('+1 (415) 555-2671')).toEqual({ kind: 'exterior', digits: '14155552671' });
     expect(parsePhone('+351 912 345 678')).toEqual({ kind: 'exterior', digits: '351912345678' });
+    // Com uma palavra e um ponto antes do "+", continua sendo o mesmo número.
+    expect(parsePhone('tel. +1 (415) 555-2671')).toEqual({ kind: 'exterior', digits: '14155552671' });
+    expect(parsePhone('tel +1 (415) 555-2671')).toEqual({ kind: 'exterior', digits: '14155552671' });
+    expect(parsePhone('cel.: (11) 91234-5678')).toEqual(parsePhone('(11) 91234-5678'));
   });
 
   it('ramal ou segundo número: nada, em vez de um número que é de outra pessoa', () => {

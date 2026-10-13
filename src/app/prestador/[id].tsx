@@ -71,6 +71,10 @@ export default function ProviderScreen() {
   if (!isNew && !provider) {
     // A lista ainda pode estar chegando com ele (acabou de ser criado).
     if (providers.isFetching) return <Loading />;
+    // A busca falhou: a lista daqui é a de antes, e ele pode existir (acabou de ser salvo). Não é "não existe mais".
+    if (providers.isError) {
+      return <ErrorNotice error={new Error(providerErrorMessage(providers.error))} onRetry={() => providers.refetch()} />;
+    }
     return <ErrorNotice error={new Error('Este prestador não existe mais.')} />;
   }
   return <ProviderForm key={id} provider={provider} equipmentId={aparelho || null} onDeleted={() => setDeleted(true)} />;

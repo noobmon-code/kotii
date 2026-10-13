@@ -156,7 +156,8 @@ const MAX_PHONE_DIGITS = 15;
 export function parsePhone(input: string | null | undefined): ParsedPhone | null {
   const pieces = phonePieces(input ?? '');
   if (pieces.length !== 1) return null;
-  const text = pieces[0];
+  // "tel. +1 (415) …": o ponto de antes do número não esconde o "+".
+  const text = pieces[0].replace(/^[.\s-]+/, '');
   const digits = text.replace(/\D/g, '');
   if (digits.length < 8 || digits.length > MAX_PHONE_DIGITS) return null;
 
