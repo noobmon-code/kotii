@@ -2,10 +2,12 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { useBills } from '@/data/finance';
+import { useBills, useRecentBillPayments } from '@/data/finance';
+import { ABOVE_USUAL_LABEL, billsAboveUsual } from '@/domain/billUsual';
 import { todayISO } from '@/domain/dates';
 import { BILL_RECURRENCES, billStatus, describeBillStatus, getFinanceCategory, stillToPay } from '@/domain/finance';
 import { formatBRL } from '@/domain/money';
+import { settledData } from '@/lib/settledData';
 import type { Bill } from '@/lib/types';
 import {
   Badge,
@@ -36,15 +38,30 @@ export function billSubtitle(bill: Bill, today: string): string {
     .join(' · ');
 }
 
-/** Uma conta na lista, com o check de "paguei". */
-export function BillRow({ bill, today, onPay }: { bill: Bill; today: string; onPay: (bill: Bill) => void }) {
+/** Uma conta na lista, com o check de "paguei". `aboveUsual`: o valor já conhecido veio acima do normal da conta. */
+export function BillRow({
+  bill,
+  today,
+  onPay,
+  aboveUsual,
+}: {
+  bill: Bill;
+  today: string;
+  onPay: (bill: Bill) => void;
+  aboveUsual?: boolean;
+}) {
   const status = billStatus(bill.next_due_on, today);
   const tone: Tone = !bill.active ? 'neutral' : status.kind === 'atrasada' ? 'danger' : status.kind === 'hoje' ? 'warning' : 'primary';
   return (
     <ListRow
       left={<IconBadge icon={getFinanceCategory(bill.category).icon} tone={tone} />}
       title={bill.name}
-      subtitle={billSubtitle(bill, today)}
+      subtitle={
+        <View style={styles.subtitle}>
+          <Text variant="muted">{billSubtitle(bill, today)}</Text>
+          {aboveUsual ? <Badge label={ABOVE_USUAL_LABEL} tone="warning" /> : null}
+        </View>
+      }
       dimmed={!bill.active}
       onPress={() => router.push({ pathname: '/conta/[id]', params: { id: bill.id } })}
       right={bill.active ? <CheckCircle checked={false} label={`Registrar pagamento de ${bill.name}`} onPress={() => onPay(bill)} /> : null}
@@ -61,6 +78,7 @@ const GROUPS: { title: string; test: (days: number) => boolean }[] = [
 export function BillsPanel() {
   const today = todayISO();
   const bills = useBills();
+  const recentPayments = useRecentBillPayments(today);
   const [paying, setPaying] = useState<Bill | null>(null);
   const [showClosed, setShowClosed] = useState(false);
 
@@ -70,6 +88,8 @@ export function BillsPanel() {
   const active = bills.data.filter((b) => b.active);
   const closed = bills.data.filter((b) => !b.active);
   const due = stillToPay(active, today);
+  // Sem os pagamentos recentes em dia (carregando, buscando de novo ou com erro), nenhuma conta ganha o selo.
+  const aboveUsual = billsAboveUsual(active, settledData(recentPayments) ?? [], today);
   const daysTo = (b: Bill) => {
     const status = billStatus(b.next_due_on, today);
     return status.kind === 'atrasada' ? -status.days : status.kind === 'hoje' ? 0 : status.days;
@@ -108,7 +128,7 @@ export function BillsPanel() {
           <Section key={group.title} title={group.title}>
             <ListCard>
               {rows.map((bill) => (
-                <BillRow key={bill.id} bill={bill} today={today} onPay={setPaying} />
+                <BillRow key={bill.id} bill={bill} today={today} onPay={setPaying} aboveUsual={aboveUsual.has(bill.id)} />
               ))}
             </ListCard>
           </Section>
@@ -138,4 +158,5 @@ export function BillsPanel() {
 const styles = StyleSheet.create({
   gap: { gap: space.lg },
   summary: { gap: space.xs },
+  subtitle: { gap: space.xs },
 });

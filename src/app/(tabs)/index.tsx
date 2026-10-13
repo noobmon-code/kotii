@@ -11,13 +11,14 @@ import {
   usePantry,
   useToggleDose,
 } from '@/data/home';
-import { useBills, useBudgets, useSpending } from '@/data/finance';
+import { useBills, useBudgets, useRecentBillPayments, useSpending } from '@/data/finance';
 import { useDocuments, useEquipmentList } from '@/data/house';
 import { useAddItemsToList, usePurchaseRecords, useShoppingLists } from '@/data/market';
 import { useMenu } from '@/data/menu';
 import { useRefreshWeather } from '@/data/weather';
 import { useReceipts } from '@/data/receipts';
 import { useSupplies } from '@/data/supplies';
+import { billsAboveUsual } from '@/domain/billUsual';
 import { choreAssigneeLabel, choreStatus, describeChoreStatus } from '@/domain/chores';
 import { todayISO } from '@/domain/dates';
 import { describeDocumentStatus, documentsNeedingAttention, getDocumentKind } from '@/domain/documents';
@@ -42,6 +43,7 @@ import { useJustListed } from '@/features/RecentPurchases';
 import { SuppliesTodaySection } from '@/features/SuppliesSection';
 import { WeatherCard } from '@/features/WeatherCard';
 import { useHousehold } from '@/lib/auth';
+import { settledData } from '@/lib/settledData';
 import type { Bill } from '@/lib/types';
 import { errorMessage } from '@/lib/supabase';
 import { periodOf, SkyArt, type Period } from '@/ui/art';
@@ -126,6 +128,9 @@ export default function TodayScreen() {
   // O gasto do mês só importa aqui para o orçamento: sem limites, nem busca.
   const hasBudgets = Boolean(budgets.data?.length);
   const spending = useSpending(month, month, hasBudgets);
+  // Os pagamentos recentes só servem ao selo "acima do normal": sem conta para mostrar, nem busca.
+  const billsDue = billsDueSoon(bills.data ?? [], today);
+  const recentPayments = useRecentBillPayments(today, billsDue.length > 0);
   const purchases = usePurchaseRecords();
   const menu = useMenu(today, today);
   // Gás, água, ração: num banco ainda sem as tabelas a busca devolve vazio, sem erro.
@@ -154,11 +159,12 @@ export default function TodayScreen() {
     ...health.queries,
   ];
   const refreshing = queries.some((q) => q.isRefetching);
-  // O clima fica fora de `queries` (não conta para "tudo em dia"), mas atualiza junto.
+  // O clima e os pagamentos recentes ficam fora de `queries` (não contam para "tudo em dia"), mas atualizam junto.
   const refreshWeather = useRefreshWeather();
   const refresh = () => {
     queries.forEach((q) => q.refetch());
     refreshWeather();
+    if (billsDue.length) recentPayments.refetch();
   };
 
   const taken = new Set((doses.data ?? []).map((d) => doseKey(d.medication_id, d.scheduled_on, d.scheduled_time)));
@@ -175,7 +181,8 @@ export default function TodayScreen() {
   const suppliesDue = suppliesNeedingAttention(supplies.data?.supplies ?? [], today);
   const drafts = (receipts.data ?? []).filter((r) => r.status === 'draft');
   const documentsDue = documentsNeedingAttention(documents.data ?? [], today);
-  const billsDue = billsDueSoon(bills.data ?? [], today);
+  // Sem os pagamentos recentes em dia (carregando, buscando de novo ou com erro), nenhuma conta ganha o selo.
+  const billsAbove = billsAboveUsual(billsDue, settledData(recentPayments) ?? [], today);
   const warrantiesEnding = (equipment.data ?? [])
     .map((item) => ({ item, status: warrantyStatus(item.warranty_until, today) }))
     .filter(({ status }) => status.kind === 'acabando');
@@ -381,7 +388,7 @@ export default function TodayScreen() {
         <Section title="Contas">
           <ListCard>
             {billsDue.map((bill) => (
-              <BillRow key={bill.id} bill={bill} today={today} onPay={setPaying} />
+              <BillRow key={bill.id} bill={bill} today={today} onPay={setPaying} aboveUsual={billsAbove.has(bill.id)} />
             ))}
           </ListCard>
         </Section>

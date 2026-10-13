@@ -301,7 +301,13 @@ export function CheckCircle({ checked, onPress, label }: { checked: boolean; onP
 // ---------------------------------------------------------------------------
 // Formulário
 
-export function TextField({ label, hint, style, ...props }: TextInputProps & { label?: string; hint?: string }) {
+export function TextField({
+  label,
+  hint,
+  hintColor,
+  style,
+  ...props
+}: TextInputProps & { label?: string; hint?: string; hintColor?: keyof Colors }) {
   const c = useColors();
   return (
     <View style={styles.field}>
@@ -316,7 +322,11 @@ export function TextField({ label, hint, style, ...props }: TextInputProps & { l
         ]}
         {...props}
       />
-      {hint ? <Text variant="small">{hint}</Text> : null}
+      {hint ? (
+        <Text variant="small" color={hintColor}>
+          {hint}
+        </Text>
+      ) : null}
     </View>
   );
 }
