@@ -7,6 +7,8 @@
 // sincronização mexe só nos da casa que ela recebeu.
 // No navegador, a mesma agenda fica no servidor e chega por Web Push (ver
 // src/lib/webPush.ts): cada navegador inscrito é um "aparelho".
+// Entre os avisos da casa está o resumo de amanhã: à noite, uma notificação
+// só com o que a casa tem no dia seguinte.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { isRunningInExpoGo } from 'expo';
@@ -417,17 +419,20 @@ const NO_HOUSE_KINDS: Record<HouseReminderKind, boolean> = {
   vaccines: false,
   weather: false,
   supplies: false,
+  // Tipo novo: quem já tinha escolhido os avisos antes de ele existir começa com ele desligado, como os outros.
+  eve: false,
 };
 
 /**
  * Consultas, vacinas, clima ou reposições undefined: ainda não carregaram (os
  * avisos deles já agendados ficam como estão). `weatherPlace`: de onde é a
  * previsão (as coordenadas do local da casa; null sem local; undefined se o
- * local não carregou).
+ * local não carregou). `equipment` (as garantias, para o resumo de amanhã)
+ * undefined: os aparelhos não carregaram.
  */
 export type HouseReminderData = Pick<
   HouseReminderInput,
-  'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'weather' | 'supplies'
+  'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'equipment' | 'weather' | 'supplies'
 > & {
   weatherPlace?: string | null;
 };
@@ -560,6 +565,11 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
       ...(data.vaccines === undefined ? (['vaccines'] as const) : []),
       ...(weather === undefined ? (['weather'] as const) : []),
       ...(kinds.supplies && data.supplies === undefined ? (['supplies'] as const) : []),
+      // O resumo de amanhã junta consultas, vacinas e garantias: sem alguma
+      // delas, sairia pela metade (sem a consulta de amanhã, pior que nenhum),
+      // então os já agendados ficam. Só com ele ligado: desligado, não há
+      // resumo agendado para ficar, e o plano de quem não o usa segue igual.
+      ...(kinds.eve && (data.appointments === undefined || data.vaccines === undefined || data.equipment === undefined) ? (['eve'] as const) : []),
     ]);
     // Aviso de atraso cuja hora já passou tocou: aquela conta (ou vacina) não
     // avisa de novo. Guarda só as que continuam atrasadas (paga, o vencimento
@@ -586,6 +596,10 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
       unknown.has(kind) && (!live || live.has(previous!.ids[i])) ? [{ id: previous!.ids[i], kind }] : [],
     );
     const heldIds = new Set(held.map((r) => r.id));
+    // Os que ficam guardam a vaga, os resumos também: com o teto curto, o aviso
+    // próprio mais distante pode ficar de fora até a próxima sincronização
+    // completa. Tirar a vaga do resumo que fica não é seguro: sem as consultas,
+    // ele pode ser o único aviso de véspera de uma delas.
     const limit = Math.min(target.limit ?? HOUSE_REMINDER_LIMIT, SCHEDULED_NOTIFICATIONS_LIMIT - others) - held.length;
     const planKinds = {
       ...kinds,
@@ -593,6 +607,9 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
       vaccines: kinds.vaccines && !unknown.has('vaccines'),
       weather: kinds.weather && !unknown.has('weather'),
       supplies: kinds.supplies && !unknown.has('supplies'),
+      // Sem o resumo no plano, a consulta tem o "Consulta amanhã" dela: se um
+      // resumo já agendado ficar, dois avisos na mesma noite são melhores que nenhum.
+      eve: kinds.eve && !unknown.has('eve'),
     };
     // Com mais de uma casa, o aviso diz de qual é.
     const plan = planHouseReminders({ ...data, weather, kinds: planKinds, today, nowTime, limit, overdueWarned: warned }).map((r) =>
@@ -637,8 +654,14 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
       plan.map((reminder) => {
         const [y, m, d] = reminder.date.split('-').map(Number);
         const [hour, minute] = reminder.time.split(':').map(Number);
+        // No navegador, `reminder` vira a etiqueta da notificação, e a de mesma
+        // etiqueta substitui a anterior. A chave do resumo não tem um item da
+        // casa (é a mesma em todas), então a casa vai junto: o resumo de uma
+        // não apaga o de outra na mesma noite. Só aqui: a chave do plano, e com
+        // ela a assinatura, ficam como são.
+        const tag = reminder.kind === 'eve' ? `${reminder.key}:${householdId}` : reminder.key;
         return {
-          content: { title: reminder.title, body: reminder.body, data: { reminder: reminder.key, householdId } },
+          content: { title: reminder.title, body: reminder.body, data: { reminder: tag, householdId } },
           trigger: {
             type: Notifications.SchedulableTriggerInputTypes.DATE,
             date: new Date(y, m - 1, d, hour, minute),

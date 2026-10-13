@@ -1,9 +1,20 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { HOUSE_REMINDER_KINDS, HOUSE_REMINDER_LIMIT, planHouseReminders, shownHouseReminderKinds, type HouseReminderInput } from '../houseReminders';
+import { addDays } from '../dates';
+import { pendingNextDoses } from '../health';
+import {
+  EVE_SUMMARY_TIME,
+  eveSummary,
+  HOUSE_REMINDER_KINDS,
+  HOUSE_REMINDER_LIMIT,
+  planHouseReminders,
+  shownHouseReminderKinds,
+  type HouseReminderInput,
+} from '../houseReminders';
 import { supplyReminders } from '../supplies';
 
-const all = { bills: true, documents: true, chores: true, appointments: true, vaccines: true, weather: true, supplies: true };
+// Sem o resumo de amanhã (os testes dele vêm mais abaixo): com ele desligado, o plano é o de sempre.
+const all = { bills: true, documents: true, chores: true, appointments: true, vaccines: true, weather: true, supplies: true, eve: false };
 const base: HouseReminderInput = { kinds: all, bills: [], documents: [], chores: [], today: '2026-09-27', nowTime: '08:00' };
 const bill = { id: 'b1', name: 'Luz', amount: 230, next_due_on: '2026-10-05', active: true, autopay: false };
 const doc = { id: 'd1', title: 'Passaporte — Ana', expires_on: '2026-10-20', remind_days: 15 };
@@ -74,7 +85,7 @@ describe('planHouseReminders', () => {
   });
 
   it('só o que a pessoa escolheu, dentro de 30 dias e com limite', () => {
-    const kinds = { bills: false, documents: false, chores: true, appointments: false, vaccines: false, weather: false, supplies: false };
+    const kinds = { bills: false, documents: false, chores: true, appointments: false, vaccines: false, weather: false, supplies: false, eve: false };
     expect(planHouseReminders({ ...base, kinds, bills: [bill], documents: [doc], chores: [chore] })).toHaveLength(1);
     expect(planHouseReminders({ ...base, chores: [{ ...chore, due_on: '2026-11-30' }] })).toEqual([]);
     const many = Array.from({ length: 40 }, (_, i) => ({ ...chore, id: `c${i}` }));
@@ -146,7 +157,7 @@ describe('gás, água e ração', () => {
 
   it('num banco ainda sem as tabelas, a lista dos avisos não oferece o tipo; em qualquer outro caso, oferece', () => {
     const keys = (available: boolean | undefined) => shownHouseReminderKinds(available).map((k) => k.key);
-    expect(keys(false)).toEqual(['bills', 'documents', 'chores', 'appointments', 'vaccines', 'weather']);
+    expect(keys(false)).toEqual(['bills', 'documents', 'chores', 'appointments', 'vaccines', 'weather', 'eve']);
     // Com as tabelas, e também enquanto a busca não respondeu (ou falhou sem internet).
     expect(keys(true)).toEqual(HOUSE_REMINDER_KINDS.map((k) => k.key));
     expect(keys(undefined)).toEqual(HOUSE_REMINDER_KINDS.map((k) => k.key));
@@ -233,5 +244,744 @@ describe('gás, água e ração', () => {
     expect(planHouseReminders({ ...input, limit: 2 }).map((r) => r.key)).toEqual(['chores:antes:2026-10-15', 'supplies:Galão de água:2026-10-18']);
     const many = Array.from({ length: 40 }, (_, i) => supply(`s${i}`, 'agua', ['2026-10-10']));
     expect(planHouseReminders({ ...at, supplies: supplyReminders(many, today) })).toHaveLength(HOUSE_REMINDER_LIMIT);
+  });
+});
+
+describe('eveSummary (resumo de amanhã)', () => {
+  type Sources = Parameters<typeof eveSummary>[0];
+  // 29/09/2026 é uma terça-feira.
+  const day = '2026-09-29';
+  const empty: Sources = { bills: [], documents: [], chores: [], appointments: [], vaccines: [], equipment: [] };
+  const consulta = { id: 'a1', title: 'Pediatra', person: 'Bia', date: day, time: '09:00', location: 'Clínica Sol', status: 'agendada' };
+  const luz = { id: 'b1', name: 'Luz', amount: 180, next_due_on: day, active: true, autopay: false };
+  const vacina = { id: 'v1', name: 'Tríplice', dose: '2ª dose', person: 'Bia', next_dose_on: day };
+  const lixo = { id: 'c1', title: 'Pôr o lixo para fora', due_on: day, active: true, equipment_id: null, recurrence: 'weekly' as const, interval_count: 1 };
+  const filtro = { id: 'c2', title: 'Limpar o filtro', due_on: day, active: true, equipment_id: 'e1', recurrence: 'monthly' as const, interval_count: 3 };
+  const cnh = { id: 'd1', title: 'CNH do Beto', expires_on: day, remind_days: 30 };
+  const geladeira = { id: 'e2', name: 'Geladeira', warranty_until: day };
+  const summary = (input: Partial<Sources>, on = day) => eveSummary({ ...empty, ...input }, on);
+
+  it('um item só: o texto é o item, sem pontuação de lista', () => {
+    const alone: [Partial<Sources>, string][] = [
+      [{ appointments: [consulta] }, '9h Pediatra (Bia)'],
+      [{ appointments: [{ ...consulta, time: '09:30' }] }, '9h30 Pediatra (Bia)'],
+      [{ appointments: [{ ...consulta, time: '14:05', person: '' }] }, '14h05 Pediatra'],
+      [{ bills: [luz] }, 'Luz (R$ 180,00)'],
+      [{ bills: [{ ...luz, amount: null }] }, 'Conta: Luz'],
+      // O nome que já diz que é conta não ganha a palavra de novo.
+      [{ bills: [{ ...luz, name: 'Conta de luz', amount: null }] }, 'Conta de luz'],
+      [{ bills: [{ ...luz, name: 'contas da casa', amount: null }] }, 'contas da casa'],
+      [{ bills: [{ ...luz, name: 'Contador', amount: null }] }, 'Conta: Contador'],
+      [{ vaccines: [vacina] }, 'Vacina de Bia: Tríplice (2ª dose)'],
+      [{ vaccines: [{ ...vacina, dose: null, person: '' }] }, 'Vacina: Tríplice'],
+      [{ chores: [lixo] }, 'Pôr o lixo para fora'],
+      [{ chores: [filtro] }, 'Manutenção: Limpar o filtro'],
+      [{ documents: [cnh] }, 'Vence: CNH do Beto'],
+      [{ equipment: [geladeira] }, 'Fim da garantia: Geladeira'],
+    ];
+    for (const [input, text] of alone) {
+      expect(summary(input)).toMatchObject({ title: 'Amanhã, terça-feira', body: text, written: 1 });
+    }
+  });
+
+  it('o título diz que dia da semana é amanhã', () => {
+    // 27/09/2026 é um domingo.
+    const titles = Array.from({ length: 7 }, (_, i) => {
+      const on = addDays('2026-09-27', i);
+      return summary({ bills: [{ ...luz, next_due_on: on }] }, on)?.title;
+    });
+    expect(titles).toEqual([
+      'Amanhã, domingo',
+      'Amanhã, segunda-feira',
+      'Amanhã, terça-feira',
+      'Amanhã, quarta-feira',
+      'Amanhã, quinta-feira',
+      'Amanhã, sexta-feira',
+      'Amanhã, sábado',
+    ]);
+  });
+
+  it('tudo junto: consultas pela hora, depois contas, vacinas, tarefas e manutenções, documentos e garantias', () => {
+    const dentista = { ...consulta, id: 'a2', title: 'Dentista', person: 'Beto', time: '16:30' };
+    const everything = summary({
+      equipment: [geladeira],
+      documents: [cnh],
+      chores: [lixo, filtro],
+      vaccines: [vacina],
+      bills: [luz],
+      appointments: [dentista, consulta],
+    });
+    expect(everything?.items.map((i) => i.text)).toEqual([
+      '9h Pediatra (Bia)',
+      '16h30 Dentista (Beto)',
+      'Luz (R$ 180,00)',
+      'Vacina de Bia: Tríplice (2ª dose)',
+      'Manutenção: Limpar o filtro',
+      'Pôr o lixo para fora',
+      'Vence: CNH do Beto',
+      'Fim da garantia: Geladeira',
+    ]);
+    expect(everything).toMatchObject({ body: '9h Pediatra (Bia) · 16h30 Dentista (Beto) · Luz (R$ 180,00) e mais 5', written: 3 });
+  });
+
+  it('até 4 itens vão escritos; com mais, os 3 primeiros e "e mais N"', () => {
+    expect(summary({ bills: [luz], documents: [cnh] })?.body).toBe('Luz (R$ 180,00) · Vence: CNH do Beto');
+    expect(summary({ appointments: [consulta], bills: [luz], documents: [cnh], equipment: [geladeira] })?.body).toBe(
+      '9h Pediatra (Bia) · Luz (R$ 180,00) · Vence: CNH do Beto · Fim da garantia: Geladeira',
+    );
+    expect(summary({ appointments: [consulta], bills: [luz], vaccines: [vacina], documents: [cnh], equipment: [geladeira] })?.body).toBe(
+      '9h Pediatra (Bia) · Luz (R$ 180,00) · Vacina de Bia: Tríplice (2ª dose) e mais 2',
+    );
+  });
+
+  it('dia sem nada não tem resumo; o que é de outro dia não entra', () => {
+    const full = { appointments: [consulta], bills: [luz], vaccines: [vacina], chores: [lixo, filtro], documents: [cnh], equipment: [geladeira] };
+    expect(summary({})).toBeNull();
+    expect(summary(full, '2026-09-28')).toBeNull();
+    expect(summary(full, '2026-09-30')).toBeNull();
+  });
+
+  it('ficam de fora: tarefa de todo dia, débito automático, o que está desativado e consulta que não está agendada', () => {
+    const daily = { ...lixo, id: 'c3', title: 'Lavar a louça', recurrence: 'daily' as const };
+    expect(summary({ chores: [daily] })).toBeNull();
+    // A semanal que cai naquele dia entra.
+    expect(summary({ chores: [daily, lixo, { ...filtro, active: false }] })?.body).toBe('Pôr o lixo para fora');
+    expect(summary({ bills: [{ ...luz, autopay: true }, { ...luz, id: 'b2', active: false }] })).toBeNull();
+    expect(summary({ appointments: [{ ...consulta, status: 'cancelada' }, { ...consulta, id: 'a2', status: 'realizada' }] })).toBeNull();
+    expect(
+      summary({
+        documents: [{ ...cnh, expires_on: null }],
+        equipment: [{ ...geladeira, warranty_until: null }],
+        vaccines: [{ ...vacina, next_dose_on: null }],
+      }),
+    ).toBeNull();
+  });
+
+  it('vacina já tomada não entra (a sincronização só passa as doses por tomar)', () => {
+    const records = [
+      { id: 'v1', person_id: 'p1', name: 'Tríplice', dose: '1ª dose', applied_on: '2026-03-01', next_dose_on: day },
+      // A 2ª dose foi aplicada antes da data marcada: a próxima dose do registro anterior já foi.
+      { id: 'v2', person_id: 'p1', name: 'Tríplice', dose: '2ª dose', applied_on: '2026-09-20', next_dose_on: null },
+    ];
+    const pending = (list: typeof records) =>
+      pendingNextDoses(list).map((v) => ({ id: v.id, name: v.name, dose: v.dose, person: 'Bia', next_dose_on: v.next_dose_on }));
+    expect(summary({ vaccines: pending(records.slice(0, 1)) })?.body).toBe('Vacina de Bia: Tríplice (1ª dose)');
+    expect(summary({ vaccines: pending(records) })).toBeNull();
+  });
+
+  it('tarefa de rotina (diária, a cada 2 ou 3 dias) fica de fora como a de todo dia; a cada 4 dias ou mais, entra', () => {
+    const every = (interval_count: number) => ({
+      ...lixo,
+      id: `d${interval_count}`,
+      title: `A cada ${interval_count} dias`,
+      recurrence: 'daily' as const,
+      interval_count,
+    });
+    expect(summary({ chores: [every(1), every(2), every(3)] })).toBeNull();
+    expect(summary({ chores: [every(2), every(3), every(4), every(15)] })?.body).toBe('A cada 15 dias · A cada 4 dias');
+    // "Uma vez" (ou sem a repetição nos dados), semanal e mensal: entram, em qualquer intervalo.
+    const others = [
+      { ...lixo, id: 'n', title: 'Uma vez', recurrence: 'none' as const, interval_count: 1 },
+      { ...lixo, id: 's', title: 'Semanal', recurrence: 'weekly' as const, interval_count: 1 },
+      { ...lixo, id: 'm', title: 'Mensal', recurrence: 'monthly' as const, interval_count: 2 },
+      { id: 'x', title: 'Sem repetição', due_on: day, active: true, equipment_id: null },
+    ];
+    expect(summary({ chores: others })?.body).toBe('Mensal · Sem repetição · Semanal · Uma vez');
+  });
+
+  it('consulta cedo (sem o aviso de 2 horas antes) leva o local; as outras, não', () => {
+    const at = (time: string, location: string | null = 'Clínica Crescer') =>
+      summary({ appointments: [{ ...consulta, person: 'Theo', time, location }] })?.body;
+    expect(at('08:30')).toBe('8h30 Pediatra (Theo), Clínica Crescer');
+    expect(at('07:00')).toBe('7h Pediatra (Theo), Clínica Crescer');
+    expect(at('08:59')).toBe('8h59 Pediatra (Theo), Clínica Crescer');
+    // Das 9h em diante há o aviso de 2 horas antes, que diz o local.
+    expect(at('09:00')).toBe('9h Pediatra (Theo)');
+    expect(at('14:30')).toBe('14h30 Pediatra (Theo)');
+    expect(at('08:30', null)).toBe('8h30 Pediatra (Theo)');
+    // No meio dos outros itens, o local fica junto da consulta dele.
+    const early = { ...consulta, person: 'Theo', time: '08:30', location: 'Clínica Crescer' };
+    const dentista = { ...consulta, id: 'a2', title: 'Dentista', person: 'Beto', time: '16:30' };
+    expect(summary({ appointments: [dentista, early], bills: [luz] })).toMatchObject({
+      body: '8h30 Pediatra (Theo), Clínica Crescer · 16h30 Dentista (Beto) · Luz (R$ 180,00)',
+      items: [{ text: '8h30 Pediatra (Theo)', place: 'Clínica Crescer' }, { text: '16h30 Dentista (Beto)' }, { text: 'Luz (R$ 180,00)' }],
+    });
+  });
+
+  it('com o texto comprido, o local é o primeiro a encolher: os itens ficam inteiros e ele fica com o que sobra', () => {
+    const early = { ...consulta, person: 'Theo', time: '08:30', location: 'Clínica Crescer, na Avenida Paulista' };
+    const errand = (length: number) => ({ ...lixo, title: 'Buscar o bolo'.padEnd(length, '!') });
+    // Os outros itens deixam 27 caracteres: o local é cortado, e nenhum item.
+    const tight = summary({ appointments: [early], chores: [errand(130)] });
+    expect(tight?.body).toBe(`8h30 Pediatra (Theo), Clínica Crescer, na Aven… · ${errand(130).title}`);
+    expect(tight?.body).toHaveLength(180);
+    // O corte não deixa uma vírgula solta antes do "…".
+    expect(summary({ appointments: [early], chores: [errand(137)] })?.body).toBe(`8h30 Pediatra (Theo), Clínica Crescer… · ${errand(137).title}`);
+    // Sobrando menos que o começo do nome, o local não entra (nada de ", C…").
+    expect(summary({ appointments: [early], chores: [errand(150)] })?.body).toBe(`8h30 Pediatra (Theo) · ${errand(150).title}`);
+    // Local curto que cabe inteiro no pouco que sobra: entra.
+    expect(summary({ appointments: [{ ...early, location: 'UBS' }], chores: [errand(152)] })?.body).toBe(
+      `8h30 Pediatra (Theo), UBS · ${errand(152).title}`,
+    );
+    // Item comprido demais: ele é que é cortado, como sempre, e o local não entra.
+    const long = summary({ appointments: [{ ...early, title: 'Ortodontia'.repeat(30) }], bills: [luz] });
+    expect(long?.body).toBe(`${`8h30 ${'Ortodontia'.repeat(30)} (Theo)`.slice(0, 161)}… · Luz (R$ 180,00)`);
+    expect(long?.body).toHaveLength(180);
+    // Duas consultas cedo: o que sobra vai primeiro para o local da primeira.
+    const second = { ...early, id: 'a2', title: 'Exame de sangue', time: '08:45', location: 'Laboratório Central' };
+    const both = summary({ appointments: [second, early], chores: [errand(80)] });
+    expect(both?.body).toBe(
+      `8h30 Pediatra (Theo), Clínica Crescer, na Avenida Paulista · 8h45 Exame de sangue (Theo), Labora… · ${errand(80).title}`,
+    );
+    expect(both?.body).toHaveLength(180);
+    expect(summary({ appointments: [second, early], chores: [errand(96)] })?.body).toBe(
+      `8h30 Pediatra (Theo), Clínica Crescer, na Avenida… · 8h45 Exame de sangue (Theo) · ${errand(96).title}`,
+    );
+  });
+
+  it('várias vacinas da mesma pessoa viram um item só; uma só fica com o texto de sempre', () => {
+    const hepatite = { ...vacina, id: 'v2', name: 'Hepatite A', dose: null };
+    const gripe = { ...vacina, id: 'v3', name: 'Gripe', dose: null };
+    const two = summary({ vaccines: [vacina, hepatite] });
+    expect(two).toMatchObject({ body: 'Vacinas de Bia: Hepatite A e Tríplice (2ª dose)', written: 1 });
+    expect(two?.items).toEqual([{ source: 'vaccines', id: 'v2+v1', text: 'Vacinas de Bia: Hepatite A e Tríplice (2ª dose)', sort: '' }]);
+    // A ordem em que os dados chegam não muda o texto.
+    expect(summary({ vaccines: [hepatite, vacina] })?.body).toBe(two?.body);
+    expect(summary({ vaccines: [vacina, gripe, hepatite] })?.body).toBe('Vacinas de Bia: Gripe, Hepatite A e Tríplice (2ª dose)');
+    expect(summary({ vaccines: [{ ...vacina, person: '' }, { ...hepatite, person: '' }] })?.body).toBe('Vacinas: Hepatite A e Tríplice (2ª dose)');
+    // Cada pessoa tem o seu item.
+    expect(summary({ vaccines: [vacina, hepatite, { ...gripe, person: 'Beto' }] })?.body).toBe(
+      'Vacina de Beto: Gripe · Vacinas de Bia: Hepatite A e Tríplice (2ª dose)',
+    );
+    // Conta como um item: quatro itens vão escritos, e no "e mais N" ele vale um.
+    expect(summary({ appointments: [consulta], bills: [luz], vaccines: [vacina, hepatite, gripe], documents: [cnh] })?.body).toBe(
+      '9h Pediatra (Bia) · Luz (R$ 180,00) · Vacinas de Bia: Gripe, Hepatite A e Tríplice (2ª dose) · Vence: CNH do Beto',
+    );
+    expect(summary({ appointments: [consulta], bills: [luz], vaccines: [vacina, hepatite], documents: [cnh], equipment: [geladeira] })).toMatchObject({
+      body: '9h Pediatra (Bia) · Luz (R$ 180,00) · Vacinas de Bia: Hepatite A e Tríplice (2ª dose) e mais 2',
+      written: 3,
+    });
+    // O dia de vacinas do bebê cabe numa linha que dá para ler.
+    const baby = ['Pentavalente', 'Pneumocócica 10V', 'Rotavírus', 'VIP'].map((name, i) => ({
+      id: `b${i}`,
+      name,
+      dose: '2ª dose',
+      person: 'Theo',
+      next_dose_on: day,
+    }));
+    expect(summary({ vaccines: baby })?.body).toBe(
+      'Vacinas de Theo: Pentavalente (2ª dose), Pneumocócica 10V (2ª dose), Rotavírus (2ª dose) e VIP (2ª dose)',
+    );
+  });
+
+  it('nunca passa de 180 caracteres: o item comprido é cortado com "…" e os curtos ficam inteiros', () => {
+    const long = { ...consulta, title: 'Ortodontia'.repeat(30) };
+    const text = `9h ${long.title} (Bia)`;
+    const cut = summary({ appointments: [long], bills: [luz], documents: [cnh], equipment: [geladeira] });
+    expect(cut?.body).toBe(`${text.slice(0, 111)}… · Luz (R$ 180,00) · Vence: CNH do Beto · Fim da garantia: Geladeira`);
+    expect(cut?.body).toHaveLength(180);
+    // Sozinho, usa a linha toda.
+    expect(summary({ appointments: [long] })?.body).toBe(`${text.slice(0, 179)}…`);
+    // Dois compridos dividem o espaço.
+    const contract = { ...cnh, title: 'Contrato'.repeat(40) };
+    expect(summary({ appointments: [long], documents: [contract] })?.body).toBe(
+      `${text.slice(0, 87)}… · ${`Vence: ${contract.title}`.slice(0, 87)}…`,
+    );
+    // Com "e mais N", ele também conta no limite.
+    const many = summary({
+      appointments: [long, { ...long, id: 'a2', time: '10:00' }, { ...long, id: 'a3', time: '11:00' }],
+      bills: [luz],
+      documents: [cnh],
+    });
+    expect(many?.body).toHaveLength(180);
+    expect(many?.body.split(' · ').map((part) => part.slice(0, 12))).toEqual(['9h Ortodonti', '10h Ortodont', '11h Ortodont']);
+    expect(many?.body.endsWith('… e mais 2')).toBe(true);
+  });
+
+  it('o corte não parte um emoji ao meio', () => {
+    const teeth = { ...consulta, person: '', title: `A${'🦷'.repeat(120)}` };
+    expect(summary({ appointments: [teeth] })?.body).toBe(`9h A${'🦷'.repeat(87)}…`);
+  });
+});
+
+describe('planHouseReminders: resumo de amanhã', () => {
+  const none = { bills: false, documents: false, chores: false, appointments: false, vaccines: false, weather: false, supplies: false, eve: false };
+  const onlyEve = { ...none, eve: true };
+  const both = { ...none, appointments: true, eve: true };
+  const weekly = (due_on: string) => ({
+    id: `t-${due_on}`,
+    title: 'Trocar a roupa de cama',
+    due_on,
+    active: true,
+    equipment_id: null,
+    recurrence: 'weekly' as const,
+    interval_count: 1,
+  });
+  const appointment = { id: 'a1', title: 'Pediatra', person: 'Lia', date: '2026-10-02', time: '14:30', location: 'Clínica Sol', status: 'agendada' };
+  const keys = (plan: ReturnType<typeof planHouseReminders>) => plan.map((r) => r.key);
+
+  it('toca às 20h da véspera, nas próximas 7 noites, só nas que têm algo no dia seguinte', () => {
+    // Uma tarefa por dia, de hoje (domingo, 27/09) a 06/10: a de hoje e as de depois de 04/10 não têm noite na janela.
+    const chores = Array.from({ length: 10 }, (_, i) => weekly(addDays(base.today, i)));
+    const plan = planHouseReminders({ ...base, kinds: onlyEve, chores });
+    const weekdays = ['segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado', 'domingo'];
+    expect(plan.map((r) => [r.key, r.kind, r.date, r.time, r.title, r.body])).toEqual(
+      weekdays.map((weekday, i) => {
+        const evening = addDays(base.today, i);
+        return [`eve:amanha:${evening}:20:00`, 'eve', evening, EVE_SUMMARY_TIME, `Amanhã, ${weekday}`, 'Trocar a roupa de cama'];
+      }),
+    );
+    // A última noite é a de daqui a 6 dias (03/10), sobre o dia 04/10.
+    expect(plan[plan.length - 1].date).toBe('2026-10-03');
+    // Noite sem nada no dia seguinte fica em silêncio.
+    const some = planHouseReminders({ ...base, kinds: onlyEve, chores: [weekly('2026-09-30'), weekly('2026-10-02')] });
+    expect(some.map((r) => [r.date, r.title])).toEqual([
+      ['2026-09-29', 'Amanhã, quarta-feira'],
+      ['2026-10-01', 'Amanhã, sexta-feira'],
+    ]);
+    expect(planHouseReminders({ ...base, kinds: onlyEve })).toEqual([]);
+  });
+
+  it('a noite de hoje só entra se ainda não deu 20h', () => {
+    const chores = [weekly('2026-09-28'), weekly('2026-09-29')];
+    const evenings = (nowTime: string) => planHouseReminders({ ...base, kinds: onlyEve, nowTime, chores }).map((r) => r.date);
+    expect(evenings('19:59')).toEqual(['2026-09-27', '2026-09-28']);
+    expect(evenings('20:00')).toEqual(['2026-09-28']);
+    expect(evenings('23:10')).toEqual(['2026-09-28']);
+  });
+
+  it('duas tarefas de dia sim, dia não, alternadas, não fazem o resumo tocar toda noite', () => {
+    const everyOtherDay = (id: string, title: string, due_on: string) => ({
+      id,
+      title,
+      due_on,
+      active: true,
+      equipment_id: null,
+      recurrence: 'daily' as const,
+      interval_count: 2,
+    });
+    // Dez manhãs seguidas, o app aberto em todas: uma das tarefas é de hoje e a outra, de amanhã.
+    for (let i = 0; i < 10; i++) {
+      const today = addDays(base.today, i);
+      const chores = [
+        everyOtherDay('plantas', 'Regar as plantas', addDays(today, i % 2)),
+        everyOtherDay('areia', 'Limpar a caixa de areia', addDays(today, (i + 1) % 2)),
+      ];
+      expect(planHouseReminders({ ...base, today, kinds: onlyEve, chores })).toEqual([]);
+      // Com outra coisa no dia seguinte, o resumo fala só dela.
+      const withWeekly = planHouseReminders({ ...base, today, kinds: onlyEve, chores: [...chores, weekly(addDays(today, 1))] });
+      expect(withWeekly.map((r) => [r.date, r.body])).toEqual([[today, 'Trocar a roupa de cama']]);
+      // O aviso próprio delas, no dia, às 9h, continua.
+      const own = planHouseReminders({ ...base, today, kinds: { ...onlyEve, chores: true }, chores });
+      expect(keys(own)).toEqual([`chores:${i % 2 ? 'areia' : 'plantas'}:${today}`, `chores:${i % 2 ? 'plantas' : 'areia'}:${addDays(today, 1)}`]);
+    }
+  });
+
+  it('a dica do resumo diz que a consulta de amanhã vem nele; a das consultas é a de sempre', () => {
+    const hint = (key: string) => HOUSE_REMINDER_KINDS.find((kind) => kind.key === key)?.hint;
+    expect(hint('eve')).toBe(
+      'Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, contas, tarefas, vacinas e documentos. Só quando há alguma coisa. Com ele ligado, a consulta de amanhã vem nele, no lugar do aviso das 19h',
+    );
+    expect(hint('appointments')).toBe('Na véspera, às 19h, e 2 horas antes');
+  });
+
+  it('com o resumo ligado, a consulta vai nele e o "Consulta amanhã" das 19h não toca junto', () => {
+    const input = { ...base, appointments: [appointment] };
+    expect(planHouseReminders({ ...input, kinds: both }).map((r) => [r.key, r.title, r.body])).toEqual([
+      ['eve:amanha:2026-10-01:20:00', 'Amanhã, sexta-feira', '14h30 Pediatra (Lia)'],
+      ['appointments:a1:2026-10-02:12:30', 'Consulta daqui a 2 horas', 'Pediatra — Lia, às 14:30 (Clínica Sol).'],
+    ]);
+    // Resumo desligado: os avisos da consulta são os de sempre.
+    expect(keys(planHouseReminders({ ...input, kinds: { ...both, eve: false } }))).toEqual([
+      'appointments:a1:2026-10-01:19:00',
+      'appointments:a1:2026-10-02:12:30',
+    ]);
+    // Só o resumo ligado: a consulta aparece nele, sem os avisos de consulta.
+    expect(keys(planHouseReminders({ ...input, kinds: onlyEve }))).toEqual(['eve:amanha:2026-10-01:20:00']);
+  });
+
+  it('consulta cuja véspera ainda não tem resumo (além das 7 noites) continua com o aviso das 19h', () => {
+    const on = (date: string) => keys(planHouseReminders({ ...base, kinds: both, appointments: [{ ...appointment, date }] }));
+    // Véspera daqui a 6 dias: a última noite com resumo.
+    expect(on('2026-10-04')).toEqual(['eve:amanha:2026-10-03:20:00', 'appointments:a1:2026-10-04:12:30']);
+    expect(on('2026-10-05')).toEqual(['appointments:a1:2026-10-04:19:00', 'appointments:a1:2026-10-05:12:30']);
+    expect(on('2026-10-10')).toEqual(['appointments:a1:2026-10-09:19:00', 'appointments:a1:2026-10-10:12:30']);
+  });
+
+  it('consulta de amanhã, com a noite de hoje já passada: sem aviso à noite, com o resumo ou sem ele', () => {
+    const tomorrow = { ...appointment, date: '2026-09-28' };
+    const at = (nowTime: string, eve: boolean) => keys(planHouseReminders({ ...base, nowTime, kinds: { ...both, eve }, appointments: [tomorrow] }));
+    expect(at('20:30', true)).toEqual(['appointments:a1:2026-09-28:12:30']);
+    expect(at('20:30', false)).toEqual(['appointments:a1:2026-09-28:12:30']);
+    // Entre as 19h e as 20h, o resumo ainda toca.
+    expect(at('19:30', true)).toEqual(['eve:amanha:2026-09-27:20:00', 'appointments:a1:2026-09-28:12:30']);
+    expect(at('19:30', false)).toEqual(['appointments:a1:2026-09-28:12:30']);
+  });
+
+  it('consulta que não coube escrita no resumo ("e mais N") fica com o aviso das 19h', () => {
+    const five = ['08:00', '09:00', '10:00', '11:00', '15:00'].map((time, i) => ({ ...appointment, id: `a${i}`, time }));
+    const night = planHouseReminders({ ...base, kinds: both, appointments: five }).filter((r) => r.date === '2026-10-01');
+    expect(night.map((r) => [r.key, r.body])).toEqual([
+      ['appointments:a3:2026-10-01:19:00', 'Pediatra — Lia, às 11:00 (Clínica Sol).'],
+      ['appointments:a4:2026-10-01:19:00', 'Pediatra — Lia, às 15:00 (Clínica Sol).'],
+      ['eve:amanha:2026-10-01:20:00', '8h Pediatra (Lia), Clínica Sol · 9h Pediatra (Lia) · 10h Pediatra (Lia) e mais 2'],
+    ]);
+  });
+
+  // Uma casa com um pouco de tudo na semana (hoje é domingo, 27/09, 8h) e uma conta mais adiante.
+  const house: HouseReminderInput = {
+    ...base,
+    kinds: { ...all, eve: true },
+    bills: [
+      { id: 'luz', name: 'Luz', amount: 180, next_due_on: '2026-09-29', active: true, autopay: false },
+      { id: 'agua', name: 'Água', amount: null, next_due_on: '2026-10-01', active: true, autopay: false },
+      { id: 'net', name: 'Internet', amount: 99.9, next_due_on: '2026-10-15', active: true, autopay: false },
+    ],
+    chores: [weekly('2026-10-04')],
+    appointments: [{ ...appointment, id: 'ped', date: '2026-09-30', location: null }],
+    vaccines: [{ id: 'vac', name: 'Tríplice viral', dose: '2ª dose', person: 'Lia', next_dose_on: '2026-10-03' }],
+    equipment: [],
+  };
+  // Os avisos próprios dos dias do resumo (até 04/10), sem o "Consulta amanhã".
+  const week = [
+    'bills:luz:2026-09-28',
+    'bills:luz:2026-09-29',
+    'bills:agua:2026-09-30',
+    'appointments:ped:2026-09-30:12:30',
+    'bills:agua:2026-10-01',
+    'vaccines:vac:2026-10-03',
+    'chores:t-2026-10-04:2026-10-04',
+  ];
+  const later = ['bills:net:2026-10-14', 'bills:net:2026-10-15'];
+
+  it('desligado: nenhum resumo, e o resto do plano é o de sempre', () => {
+    const off = planHouseReminders({ ...house, kinds: all });
+    expect(keys(off)).toEqual([...week.slice(0, 2), 'appointments:ped:2026-09-29:19:00', ...week.slice(2), ...later]);
+    // Ligado: os mesmos avisos, mais os resumos, menos o "Consulta amanhã" da noite que tem resumo.
+    const on = planHouseReminders(house);
+    expect(on.filter((r) => r.kind !== 'eve')).toEqual(off.filter((r) => r.key !== 'appointments:ped:2026-09-29:19:00'));
+    expect(on.filter((r) => r.kind === 'eve').map((r) => [r.date, r.time, r.title, r.body])).toEqual([
+      ['2026-09-28', '20:00', 'Amanhã, terça-feira', 'Luz (R$ 180,00)'],
+      ['2026-09-29', '20:00', 'Amanhã, quarta-feira', '14h30 Pediatra (Lia)'],
+      ['2026-09-30', '20:00', 'Amanhã, quinta-feira', 'Conta: Água'],
+      ['2026-10-02', '20:00', 'Amanhã, sábado', 'Vacina de Lia: Tríplice viral (2ª dose)'],
+      ['2026-10-03', '20:00', 'Amanhã, domingo', 'Trocar a roupa de cama'],
+    ]);
+  });
+
+  const summaryOf = (evening: string) => `eve:amanha:${evening}:20:00`;
+
+  it('teto curto: o resumo de uma noite fica depois dos avisos próprios até o dia de que ele fala, e antes dos de depois', () => {
+    const at = (limit: number) => keys(planHouseReminders({ ...house, limit }));
+    // Com 8 vagas (o teto de cada casa para quem tem três): tudo até 01/10, com
+    // os resumos dessas noites. O de 29/09 leva a consulta e fica no lugar do
+    // "Consulta amanhã" dela.
+    const upToOctober1st = [
+      'bills:luz:2026-09-28',
+      summaryOf('2026-09-28'),
+      'bills:luz:2026-09-29',
+      summaryOf('2026-09-29'),
+      'bills:agua:2026-09-30',
+      'appointments:ped:2026-09-30:12:30',
+      summaryOf('2026-09-30'),
+      'bills:agua:2026-10-01',
+    ];
+    expect(at(8)).toEqual(upToOctober1st);
+    // O custo: sem o resumo, as mesmas 8 vagas iam até 04/10. Com ele, a vacina
+    // de 03/10 e a tarefa de 04/10 esperam a janela andar (o plano é refeito
+    // toda vez que o app abre).
+    expect(keys(planHouseReminders({ ...house, kinds: all, limit: 8 }))).toEqual([
+      'bills:luz:2026-09-28',
+      'bills:luz:2026-09-29',
+      'appointments:ped:2026-09-29:19:00',
+      'bills:agua:2026-09-30',
+      'appointments:ped:2026-09-30:12:30',
+      'bills:agua:2026-10-01',
+      'vaccines:vac:2026-10-03',
+      'chores:t-2026-10-04:2026-10-04',
+    ]);
+    // Duas vagas a mais: a vacina de 03/10 e o resumo da véspera dela.
+    expect(at(10)).toEqual([...upToOctober1st, summaryOf('2026-10-02'), 'vaccines:vac:2026-10-03']);
+    // Com 12, a tarefa de 04/10 e o resumo dela; só a conta de mais adiante fica de fora.
+    expect(at(12)).toEqual([...upToOctober1st, summaryOf('2026-10-02'), 'vaccines:vac:2026-10-03', summaryOf('2026-10-03'), 'chores:t-2026-10-04:2026-10-04']);
+    // Com folga, tudo: os 5 resumos e os avisos de mais adiante.
+    expect(at(24)).toEqual([...at(12), ...later]);
+    // O resumo não passa na frente de aviso do dia de que ele fala: com 2 vagas, ficam os dois avisos da luz.
+    expect(at(2)).toEqual(['bills:luz:2026-09-28', 'bills:luz:2026-09-29']);
+    // E as noites mais distantes saem primeiro.
+    expect(at(4)).toEqual(['bills:luz:2026-09-28', summaryOf('2026-09-28'), 'bills:luz:2026-09-29', summaryOf('2026-09-29')]);
+  });
+
+  // Muita coisa nos mesmos dias (hoje é domingo, 27/09, 8h): duas contas amanhã,
+  // duas consultas e duas contas na terça, e uma conta por dia de 06/10 a 10/10.
+  const billOn = (id: string, name: string, amount: number | null, next_due_on: string) => ({ id, name, amount, next_due_on, active: true, autopay: false });
+  const busy: HouseReminderInput = {
+    ...base,
+    kinds: { ...none, bills: true, chores: true, appointments: true, eve: true },
+    bills: [
+      billOn('aluguel', 'Aluguel', 1850, '2026-09-28'),
+      billOn('cond', 'Condomínio', 520, '2026-09-28'),
+      billOn('escola', 'Escola', null, '2026-09-29'),
+      billOn('luz', 'Luz', 180, '2026-09-29'),
+      billOn('net', 'Internet', 99.9, '2026-09-30'),
+      ...['06', '07', '08', '09', '10'].map((d) => billOn(`dia${d}`, `Conta do dia ${d}`, 50, `2026-10-${d}`)),
+    ],
+    chores: [{ ...weekly('2026-09-30'), id: 'lixo', title: 'Pôr o lixo para fora' }],
+    appointments: [
+      { id: 'ped', title: 'Pediatra', person: 'Lia', date: '2026-09-29', time: '08:00', location: 'Clínica Sol', status: 'agendada' },
+      { id: 'dent', title: 'Dentista', person: 'Caio', date: '2026-09-29', time: '14:30', location: null, status: 'agendada' },
+      { id: 'oft', title: 'Oftalmologista', person: 'Lia', date: '2026-10-01', time: '10:00', location: null, status: 'agendada' },
+    ],
+    vaccines: [],
+    equipment: [],
+  };
+
+  it('teto com muitas contas e consultas nos mesmos dias: o resumo desta noite fica, e o que sai são os avisos de mais adiante', () => {
+    const at = (limit: number) => keys(planHouseReminders({ ...busy, limit }));
+    expect(planHouseReminders(busy).filter((r) => r.kind === 'eve').map((r) => [r.date, r.body])).toEqual([
+      ['2026-09-27', 'Aluguel (R$ 1.850,00) · Condomínio (R$ 520,00)'],
+      ['2026-09-28', '8h Pediatra (Lia), Clínica Sol · 14h30 Dentista (Caio) · Conta: Escola · Luz (R$ 180,00)'],
+      ['2026-09-29', 'Internet (R$ 99,90) · Pôr o lixo para fora'],
+      ['2026-09-30', '10h Oftalmologista (Lia)'],
+    ]);
+    // 8 vagas: hoje e amanhã inteiros. O resumo desta noite (fala de amanhã) e
+    // o de amanhã à noite, que está no lugar dos dois "Consulta amanhã".
+    const upToTomorrow = [
+      'bills:aluguel:2026-09-27',
+      'bills:cond:2026-09-27',
+      summaryOf('2026-09-27'),
+      'bills:aluguel:2026-09-28',
+      'bills:cond:2026-09-28',
+      'bills:escola:2026-09-28',
+      'bills:luz:2026-09-28',
+      summaryOf('2026-09-28'),
+    ];
+    expect(at(8)).toEqual(upToTomorrow);
+    // 10 e 12: entram os avisos de terça, na ordem; as contas de quarta e o que vem depois ficam de fora.
+    expect(at(10)).toEqual([...upToTomorrow, 'bills:escola:2026-09-29', 'bills:luz:2026-09-29']);
+    const upToTuesday = [...upToTomorrow, 'bills:escola:2026-09-29', 'bills:luz:2026-09-29', 'bills:net:2026-09-29', 'appointments:dent:2026-09-29:12:30'];
+    expect(at(12)).toEqual(upToTuesday);
+    // 24 (uma casa): os 4 resumos e quase tudo. Saem os 3 avisos mais distantes.
+    const upToOctober8th = [
+      ...upToTuesday,
+      summaryOf('2026-09-29'),
+      'bills:net:2026-09-30',
+      'chores:lixo:2026-09-30',
+      summaryOf('2026-09-30'),
+      'appointments:oft:2026-10-01:08:00',
+      'bills:dia06:2026-10-05',
+      'bills:dia06:2026-10-06',
+      'bills:dia07:2026-10-06',
+      'bills:dia07:2026-10-07',
+      'bills:dia08:2026-10-07',
+      'bills:dia08:2026-10-08',
+      'bills:dia09:2026-10-08',
+    ];
+    expect(at(24)).toEqual(upToOctober8th);
+    expect(at(27)).toEqual([...upToOctober8th, 'bills:dia09:2026-10-09', 'bills:dia10:2026-10-09', 'bills:dia10:2026-10-10']);
+    // Sem o resumo, o teto de 24 chegava um aviso mais longe: os resumos de
+    // hoje e de terça à noite ocupam duas vagas, e o de amanhã à noite fica com
+    // a de dois "Consulta amanhã". Com ele ligado, o "vence hoje" de 09/10
+    // espera a janela andar.
+    const off = keys(planHouseReminders({ ...busy, kinds: { ...busy.kinds, eve: false }, limit: 24 }));
+    expect(off.filter((key) => !at(24).includes(key))).toEqual([
+      'appointments:dent:2026-09-28:19:00',
+      'appointments:ped:2026-09-28:19:00',
+      'appointments:oft:2026-09-30:19:00',
+      'bills:dia09:2026-10-09',
+    ]);
+  });
+
+  // A casa cheia da revisão (hoje é segunda, 12/10, 8h, tudo ligado): 7 contas,
+  // 13 tarefas (3 de todo dia), 3 consultas, 2 vacinas, 1 documento e a dica do
+  // clima toda manhã. São 14 avisos próprios só entre hoje e amanhã.
+  const choreOn = (id: string, title: string, due_on: string, recurrence: 'daily' | 'weekly' | 'monthly', interval_count = 1) => ({
+    id,
+    title,
+    due_on,
+    active: true,
+    equipment_id: null,
+    recurrence,
+    interval_count,
+  });
+  const family: HouseReminderInput = {
+    kinds: { ...all, eve: true },
+    today: '2026-10-12',
+    nowTime: '08:00',
+    bills: [
+      billOn('cond', 'Condomínio', 780, '2026-10-13'),
+      billOn('lia', 'Escola da Lia', null, '2026-10-13'),
+      billOn('caio', 'Escola do Caio', null, '2026-10-13'),
+      billOn('nat', 'Natação', 260, '2026-10-15'),
+      billOn('luz', 'Luz', 310.55, '2026-10-16'),
+      { ...billOn('net', 'Internet', 119.9, '2026-10-20'), autopay: true },
+      billOn('agua', 'Água', 142, '2026-10-21'),
+    ],
+    documents: [{ id: 'pass', title: 'Passaporte da Lia', expires_on: '2026-10-19', remind_days: 30 }],
+    chores: [
+      choreOn('louca', 'Lavar a louça', '2026-10-12', 'daily'),
+      choreOn('camas', 'Arrumar as camas', '2026-10-12', 'daily'),
+      choreOn('thor', 'Dar comida ao Thor', '2026-10-12', 'daily'),
+      choreOn('areia', 'Limpar a caixa de areia', '2026-10-13', 'daily', 2),
+      choreOn('plantas', 'Regar as plantas', '2026-10-13', 'daily', 2),
+      choreOn('roupa', 'Lavar roupa', '2026-10-13', 'daily', 3),
+      choreOn('lixo', 'Pôr o lixo para fora', '2026-10-14', 'weekly'),
+      choreOn('aspirador', 'Passar aspirador', '2026-10-15', 'weekly'),
+      { ...choreOn('filtro', 'Limpar o filtro do ar-condicionado', '2026-10-16', 'monthly', 3), equipment_id: 'ar' },
+      choreOn('feira', 'Feira', '2026-10-17', 'weekly'),
+      choreOn('banheiro', 'Lavar o banheiro', '2026-10-17', 'weekly'),
+      choreOn('banho', 'Banho no Thor', '2026-10-18', 'monthly'),
+      choreOn('cama', 'Trocar a roupa de cama', '2026-10-18', 'weekly'),
+    ],
+    appointments: [
+      { id: 'oft', title: 'Oftalmologista', person: 'Lia', date: '2026-10-14', time: '09:00', location: null, status: 'agendada' },
+      { id: 'dent', title: 'Dentista', person: 'Caio', date: '2026-10-14', time: '14:30', location: 'Odonto Kids', status: 'agendada' },
+      { id: 'vet', title: 'Veterinário', person: 'Thor', date: '2026-10-18', time: '11:00', location: null, status: 'agendada' },
+    ],
+    vaccines: [
+      { id: 'hpv', name: 'HPV', dose: '2ª dose', person: 'Lia', next_dose_on: '2026-10-16' },
+      { id: 'raiva', name: 'Antirrábica', dose: null, person: 'Thor', next_dose_on: '2026-10-18' },
+    ],
+    equipment: [{ id: 'maq', name: 'Máquina de lavar', warranty_until: '2026-10-15' }],
+    weather: Array.from({ length: 6 }, (_, i) => ({
+      date: addDays('2026-10-13', i),
+      time: '07:00',
+      title: 'Hoje é dia de lavar roupa',
+      body: 'Sem chuva até o fim da tarde.',
+    })),
+  };
+
+  it('casa cheia, uma casa só (teto 24): o resumo desta noite toca, em vez de ser o primeiro a sair', () => {
+    const plan = planHouseReminders(family);
+    expect(plan).toHaveLength(HOUSE_REMINDER_LIMIT);
+    expect(plan.filter((r) => r.kind === 'eve').map((r) => [r.date, r.body])).toEqual([
+      ['2026-10-12', 'Condomínio (R$ 780,00) · Conta: Escola da Lia · Conta: Escola do Caio'],
+      ['2026-10-13', '9h Oftalmologista (Lia) · 14h30 Dentista (Caio) · Pôr o lixo para fora'],
+    ]);
+    // Os avisos próprios são os mesmos de quem não usa o resumo: os dois
+    // resumos ficam com as vagas dos dois "Consulta amanhã" de 13/10.
+    const off = keys(planHouseReminders({ ...family, kinds: all }));
+    expect(keys(plan.filter((r) => r.kind !== 'eve'))).toEqual(off.filter((key) => !key.endsWith(':19:00')));
+    expect(off.filter((key) => key.endsWith(':19:00'))).toEqual(['appointments:dent:2026-10-13:19:00', 'appointments:oft:2026-10-13:19:00']);
+    // Com 8 vagas (três casas) nem os avisos próprios de hoje e de amanhã cabem: nenhum resumo, e o plano é o de quem não o usa.
+    expect(planHouseReminders({ ...family, limit: 8 })).toEqual(planHouseReminders({ ...family, kinds: all, limit: 8 }));
+    // Com 16, os 14 avisos de hoje e de amanhã e os dois resumos.
+    expect(planHouseReminders({ ...family, limit: 16 }).filter((r) => r.kind === 'eve').map((r) => r.date)).toEqual(['2026-10-12', '2026-10-13']);
+    expect(planHouseReminders({ ...family, limit: 15 }).filter((r) => r.kind === 'eve').map((r) => r.date)).toEqual(['2026-10-13']);
+  });
+
+  it('em qualquer teto: com o resumo de uma noite no plano, nenhum aviso próprio até o dia de que ele fala ficou de fora', () => {
+    for (const input of [house, busy, family]) {
+      const whole = planHouseReminders({ ...input, limit: 1000 });
+      // Os resumos que não estão no lugar de um "Consulta amanhã" (esses valem pelo aviso das 19h que substituem).
+      const carries = (evening: string) => {
+        const summary = eveSummary(input, addDays(evening, 1));
+        return !!summary && summary.items.slice(0, summary.written).some((item) => item.source === 'appointments');
+      };
+      const plain = whole.filter((r) => r.kind === 'eve' && !(input.kinds.appointments && carries(r.date)));
+      const own = whole.filter((r) => !plain.includes(r));
+      // A vez de cada aviso próprio na fila: o resumo que leva uma consulta entra às 19h, no lugar do aviso dela.
+      const turnOf = (r: (typeof whole)[number]) => `${r.date} ${r.kind === 'eve' ? '19:00' : r.time}`;
+      const inTurn = [...own].sort((a, b) => turnOf(a).localeCompare(turnOf(b)));
+      expect(plain.length).toBeGreaterThan(1);
+      for (let limit = 0; limit <= whole.length; limit++) {
+        const plan = keys(planHouseReminders({ ...input, limit }));
+        expect(plan).toHaveLength(limit);
+        const kept = plain.filter((r) => plan.includes(r.key));
+        // As noites mais distantes saem primeiro.
+        expect(kept).toEqual(plain.slice(0, kept.length));
+        // O resumo que leva uma consulta fica sempre que caberia sem resumo comum nenhum.
+        const owed = inTurn.slice(0, limit).filter((r) => r.kind === 'eve');
+        expect(plan).toEqual(expect.arrayContaining(keys(owed)));
+        const lastOwed = owed.map(turnOf).sort().at(-1) ?? '';
+        for (const summary of plain) {
+          if (plan.includes(summary.key)) {
+            // Ficou: todo aviso próprio até o dia de que ele fala também ficou.
+            const upTo = addDays(summary.date, 1);
+            expect(plan).toEqual(expect.arrayContaining(keys(own.filter((r) => r.date <= upTo))));
+          } else {
+            // Saiu: o que ficou de depois desse dia não passa do resumo que leva a consulta (foi para ele que a vaga foi).
+            const after = addDays(summary.date, 2);
+            expect(own.filter((r) => r.date >= after && plan.includes(r.key) && turnOf(r) > lastOwed)).toEqual([]);
+          }
+        }
+      }
+    }
+  });
+
+  it('consulta daqui a alguns dias: o resumo comum de uma noite anterior não tira a véspera dela', () => {
+    // Segunda, 12/10. Quem tem três casas fica com 8 avisos por casa.
+    const input: HouseReminderInput = {
+      kinds: { ...all, weather: false, eve: true },
+      today: '2026-10-12',
+      nowTime: '08:00',
+      bills: [
+        { id: 'luz', name: 'Luz', amount: 180, next_due_on: '2026-10-13', active: true, autopay: false },
+        { id: 'net', name: 'Internet', amount: 120, next_due_on: '2026-10-14', active: true, autopay: false },
+      ],
+      documents: [],
+      chores: [
+        { ...weekly('2026-10-14'), id: 'feira', title: 'Feira' },
+        { ...weekly('2026-10-15'), id: 'lixo', title: 'Pôr o lixo para fora' },
+      ],
+      appointments: [{ ...appointment, id: 'ped', date: '2026-10-16', time: '10:00', location: null }],
+      vaccines: [],
+      equipment: [],
+      limit: 8,
+    };
+    // Com o resumo desligado, as 8 vagas levam a véspera da consulta e as 2 horas antes.
+    expect(keys(planHouseReminders({ ...input, kinds: { ...input.kinds, eve: false } })).slice(-2)).toEqual([
+      'appointments:ped:2026-10-15:19:00',
+      'appointments:ped:2026-10-16:08:00',
+    ]);
+    // Ligado: o resumo de quinta à noite leva a consulta e fica; quem sai é o resumo comum da noite mais
+    // distante (o de terça). O de hoje à noite continua.
+    const plan = planHouseReminders(input);
+    expect(keys(plan)).toEqual([
+      'bills:luz:2026-10-12',
+      'eve:amanha:2026-10-12:20:00',
+      'bills:luz:2026-10-13',
+      'bills:net:2026-10-13',
+      'bills:net:2026-10-14',
+      'chores:feira:2026-10-14',
+      'chores:lixo:2026-10-15',
+      'eve:amanha:2026-10-15:20:00',
+    ]);
+    expect(plan.at(-1)).toMatchObject({ title: 'Amanhã, sexta-feira', body: '10h Pediatra (Lia)' });
+    // Com uma vaga a mais, ninguém precisa sair.
+    expect(keys(planHouseReminders({ ...input, limit: 9 }))).toEqual(expect.arrayContaining(['eve:amanha:2026-10-13:20:00', 'eve:amanha:2026-10-15:20:00']));
+  });
+
+  it('o resumo que leva a consulta não sai pelo teto antes do "Consulta amanhã" que ele substitui', () => {
+    // Três vagas: sem o resumo, os dois avisos da luz e o "Consulta amanhã".
+    expect(keys(planHouseReminders({ ...house, kinds: all, limit: 3 }))).toEqual([
+      'bills:luz:2026-09-28',
+      'bills:luz:2026-09-29',
+      'appointments:ped:2026-09-29:19:00',
+    ]);
+    // Com ele, o resumo da consulta fica no mesmo lugar; o da noite anterior
+    // (só a conta de luz), embora toque antes, é o que sai.
+    expect(keys(planHouseReminders({ ...house, limit: 3 }))).toEqual(['bills:luz:2026-09-28', 'bills:luz:2026-09-29', 'eve:amanha:2026-09-29:20:00']);
+    // Ele toca às 20h, mas entra na fila às 19h, a hora do aviso que substitui: um
+    // aviso das 19h30 daquela noite (2 horas antes de uma consulta das 21h30) não passa na frente.
+    const late = { ...appointment, id: 'noite', date: '2026-10-01', time: '21:30' };
+    const two = { ...base, kinds: both, appointments: [appointment, late], limit: 2 };
+    expect(keys(planHouseReminders({ ...two, kinds: { ...both, eve: false } }))).toEqual(['appointments:noite:2026-09-30:19:00', 'appointments:a1:2026-10-01:19:00']);
+    expect(keys(planHouseReminders(two))).toEqual(['eve:amanha:2026-09-30:20:00', 'eve:amanha:2026-10-01:20:00']);
+  });
+
+  it('entre as 19h e as 20h, o resumo desta noite com a consulta de amanhã também não sai pelo teto', () => {
+    // Às 19h30 o "Consulta amanhã" já não toca (com o resumo ligado, nem chegou
+    // a ser agendado): só o resumo das 20h avisa da consulta.
+    const input = { ...house, nowTime: '19:30', appointments: [{ ...appointment, id: 'ped', date: '2026-09-28' }] };
+    expect(planHouseReminders({ ...input, limit: 2 }).map((r) => [r.key, r.body])).toEqual([
+      ['eve:amanha:2026-09-27:20:00', '14h30 Pediatra (Lia)'],
+      ['bills:luz:2026-09-28', 'Luz — R$ 180,00'],
+    ]);
+    // Com os avisos de consulta desligados, ele é um resumo como os outros:
+    // depois do aviso de amanhã (o dia de que fala) e antes do de depois de amanhã.
+    const plain = (limit: number) => keys(planHouseReminders({ ...input, kinds: { ...input.kinds, appointments: false }, limit }));
+    expect(plain(1)).toEqual(['bills:luz:2026-09-28']);
+    expect(plain(2)).toEqual(['eve:amanha:2026-09-27:20:00', 'bills:luz:2026-09-28']);
   });
 });

@@ -89,6 +89,9 @@ function toHouseReminderData(
             weatherMornings(forecast, weatherContext(people, chores, equipment, today))
           : undefined,
     supplies: supplies && supplyReminders(supplies.supplies, today),
+    // As garantias que acabam, para o resumo de amanhã: ele só é refeito com
+    // tudo carregado (consultas, vacinas, fichas e os aparelhos).
+    equipment,
   };
 }
 
