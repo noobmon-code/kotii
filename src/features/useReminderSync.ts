@@ -94,6 +94,9 @@ function toHouseReminderData(
           ? // Às 7h da casa (pelo fuso dela), a partir de hoje lá.
             weatherMornings(forecast, weatherContext(people, chores, equipment, today))
           : undefined,
+    // As garantias que acabam, para o resumo de amanhã: ele só é refeito com
+    // tudo carregado (consultas, vacinas, fichas e os aparelhos).
+    equipment,
   };
 }
 
