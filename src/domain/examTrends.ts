@@ -426,34 +426,58 @@ const GENERIC_NAMES = new Set([
 
 // Material que não é sangue, quando o nome do resultado ou o título do exame
 // diz. Só separa: a "Creatinina" de um exame de urina não entra na série da do
-// sangue, e nada some por causa disso (a linha avisa: ver apartNote).
+// sangue, e nada some por causa disso (a linha avisa: ver apartNote). "Sangue
+// oculto" é o nome de um exame de fezes, no título e no nome do resultado.
 const MATERIALS: [string, RegExp][] = [
   ['urina', /\b(urina|urinari[a-z]*|eas)\b/],
   ['24h', /\b24 ?h(s|oras?)?\b/],
-  ['fezes', /\bfezes\b/],
+  ['fezes', /\b(fezes|sangue oculto)\b/],
   ['liquor', /\bliquor\b/],
 ];
 const MATERIAL_LABEL: Record<string, string> = { urina: 'urina', '24h': 'urina de 24 horas', fezes: 'fezes', liquor: 'líquor' };
 
-// O que diz "sangue" num título, e o que separa os exames dele ("+", ",",
-// ";", "&", "/", "|", o hífen ou o travessão entre espaços, e "e", "com" e
-// "mais" entre palavras). "Sangue oculto" é o nome de um exame de fezes: numa
-// parte só dele ("Fezes com sangue oculto"), não é o sangue ao lado das fezes.
-const BLOOD = /\b(sangue(?! ocult)|sanguine[oa]s?|seric[oa]s?|plasmatic[oa]s?|hematologic[oa]s?|hemograma|bioquimic[ao]s?|soro|plasma|lipidograma|coagulograma|glicemia)\b/;
-const TITLE_PARTS = /[+,;&/|]|\s[-–—]\s|\b(?:e|com|mais)\b/;
+// O que separa as partes de um título. Uns separam dois exames ("+", ",", ";",
+// "&", "/", e "e" e "mais" entre palavras); os outros prendem um detalhe ao
+// exame do lado (o hífen ou o travessão entre espaços, "|" e "com").
+const TITLE_EXAMS = /[+,;&/]|\b(?:e|mais)\b/;
+const TITLE_DETAILS = /\||\s[-–—]\s|\bcom\b/;
+// O que diz "sangue" num título. Umas palavras são o nome de um exame de
+// sangue; as outras dizem como ou por que o exame foi feito, e servem para
+// qualquer material ("Bioquímica do líquor", "EAS - rotina").
+const BLOOD_EXAM = /\b(sangue(?! ocult)|sanguine[oa]s?|hematologic[oa]s?|hemograma|soro|plasma|lipidograma|coagulograma|glicemia)\b/;
+const ANALYSIS = /\b(bioquimic[ao]s?|seric[oa]s?|plasmatic[oa]s?|rotina|check ?up|laboratoria(l|is))\b/;
 
 const plainWords = (text: string) => normalizeSearch(text).replace(/[^a-z0-9]+/g, ' ');
 
-// Exames de 24 horas que não são de urina ("Holter 24 horas", "MAPA 24h"):
-// com uma destas palavras, e sem falar de urina, "24h" não diz o material.
-const DAY_LONG = /\b(holter|mapa|pressao|phmetria|ecg|eletrocardiograma|monitorizacao)\b/;
-const URINE = MATERIALS[0][1];
-const dayLongNotUrine = (plain: string) => DAY_LONG.test(plain) && !URINE.test(plain);
+// Exames de um dia inteiro que não são de urina ("Holter 24 horas", "MAPA
+// 24h", "pH-metria de 24 horas"): neles, "24h" não diz o material. "MAPA" e
+// "pressão" só contam escritos antes do "24h": depois dele são o motivo de um
+// exame de urina ("Proteinúria 24h - controle de pressão"). E nada disso vale
+// quando o texto fala de urina ou tem um termo da urina de 24 horas. O que
+// sobra de limite: o motivo antes do "24h" e sem termo de urina ("Pressão alta
+// - sódio 24h") fica sem material.
+const DAY_LONG = /\b(holter|ph ?metria|polissonografia|eeg|eletroencefalograma|ecg|eletrocardiograma|monitorizacao)\b/;
+const DAY_LONG_BEFORE = /\b(mapa|m a p a|pressao)\b/;
+const DAY_URINE = /\b([a-z]+uria|clearance|depuracao|catecolaminas?|metanefrinas?)\b/;
+const [[, URINE], [, WHOLE_DAY]] = MATERIALS;
+const saysUrine = (plain: string) => URINE.test(plain) || DAY_URINE.test(plain);
 
-/** Os materiais ditos num texto. A urina de 24 horas é um material à parte da urina comum. */
-function materialsIn(text: string): string[] {
+function dayLongNotUrine(plain: string): boolean {
+  if (saysUrine(plain)) return false;
+  if (DAY_LONG.test(plain)) return true;
+  const reason = plain.search(DAY_LONG_BEFORE);
+  return reason >= 0 && reason < plain.search(WHOLE_DAY);
+}
+
+/**
+ * Os materiais ditos num texto. A urina de 24 horas é um material à parte da
+ * urina comum. `inDayLong`: o texto é parte de um exame de um dia inteiro que
+ * não é de urina ("FC média 24h" dentro de "Holter 24h"), e o "24h" dele só
+ * vale como material se o próprio texto falar de urina.
+ */
+function materialsIn(text: string, inDayLong = false): string[] {
   const plain = plainWords(text);
-  const dayLong = dayLongNotUrine(plain);
+  const dayLong = dayLongNotUrine(plain) || (inDayLong && !saysUrine(plain));
   const found = MATERIALS.filter(([material, pattern]) => pattern.test(plain) && !(dayLong && material === '24h')).map(([material]) => material);
   return found.includes('24h') ? found.filter((material) => material !== 'urina') : found;
 }
@@ -462,19 +486,28 @@ function materialsIn(text: string): string[] {
  * O material que o título do exame diz, quando ele é de um material só.
  * Título que junta materiais diferentes ("Hemograma + EAS", "Sangue e urina",
  * "Urina e fezes") não diz de qual é cada resultado: aí só vale o nome do
- * resultado. Uma parte que não fala de material ("Urina tipo I e sedimento")
- * não muda nada, e "sangue oculto nas fezes" é um exame de fezes. Sem palavra
- * de sangue na outra parte ("Rotina + EAS"), o título ainda vale como urina:
- * não dá para separar de "EAS - rotina", e o erro fica do lado de não comparar.
+ * resultado. Cada exame do título pode ter um detalhe preso a ele ("Líquor –
+ * bioquímica", "Hemograma com EAS"), e cada pedaço diz uma coisa: o material,
+ * se fala de um (mesmo ao lado de "sangue": "Pesquisa de sangue na urina");
+ * sangue, se tem o nome de um exame de sangue; e, com uma palavra de análise,
+ * sangue só quando o exame dele não diz material nenhum ("Bioquímica e EAS"
+ * são dois exames; "Urina com bioquímica" e "EAS - rotina" são de urina). O
+ * que sobra de limite: a parte sem material e sem palavra de sangue nem de
+ * análise ("Glicose e EAS", "TSH + urina") não diz nada, o título continua
+ * valendo como urina e o erro fica do lado de não comparar.
  */
 function titleMaterials(title: string): string[] {
   // O título inteiro, e não cada parte: em "MAPA - 24 horas" o nome do exame e o "24h" ficam em partes diferentes.
   const dayLong = dayLongNotUrine(plainWords(title));
   const found = normalizeSearch(title)
-    .split(TITLE_PARTS)
-    .map((part) => {
-      const materials = materialsIn(part).filter((material) => !(dayLong && material === '24h'));
-      return materials.length ? materials : BLOOD.test(plainWords(part)) ? ['sangue'] : [];
+    .split(TITLE_EXAMS)
+    .flatMap((exam) => {
+      const pieces = exam.split(TITLE_DETAILS).map((piece) => ({ materials: materialsIn(piece, dayLong), plain: plainWords(piece) }));
+      const named = pieces.some((piece) => piece.materials.length);
+      return pieces.map(({ materials, plain }) => {
+        if (materials.length) return materials;
+        return BLOOD_EXAM.test(plain) || (!named && ANALYSIS.test(plain)) ? ['sangue'] : [];
+      });
     })
     .filter((materials) => materials.length);
   // "Urina - 24 horas", "Creatinina urinária - 24h": a urina de uma parte é a
@@ -498,7 +531,7 @@ const BLOOD_NAME = /\b(seric[oa]s?|plasmatic[oa]s?|sanguine[oa]s?|no sangue|no s
  * sérica" no laudo do clearance, que é de urina de 24h) não pega o do título.
  */
 function materialKey(name: string, title: string): string {
-  const named = materialsIn(name);
+  const named = materialsIn(name, dayLongNotUrine(plainWords(title)));
   if (!named.length && BLOOD_NAME.test(plainWords(name))) return '';
   const found = new Set([...named, ...titleMaterials(title)]);
   if (found.has('24h')) found.delete('urina');
@@ -573,32 +606,43 @@ function listWords(words: string[]): string {
 }
 
 /**
+ * "Há um resultado mais recente…": o mesmo item tem um resultado mais novo em
+ * outra unidade ou guardado como texto (dos dois, o mais novo). O texto sai
+ * como foi guardado, sem a unidade do campo ao lado, e a data vem antes dele:
+ * um valor que já termina com ponto não leva outro. null sem nenhum dos dois.
+ */
+function newerNote(item: Pick<TrendItem, 'last' | 'newerElsewhere' | 'newerText'>): string | null {
+  const newer = item.newerElsewhere;
+  const text = item.newerText;
+  if (text && (!newer || text.date > newer.date)) {
+    const written = /[.!?…]$/.test(text.value) ? text.value : `${text.value}.`;
+    return `Há um resultado mais recente em texto (${formatBRDate(text.date)}): ${written} Não foi comparado.`;
+  }
+  if (!newer) return null;
+  const how = !newer.unit ? 'sem unidade' : item.last.unit ? 'em outra unidade' : 'com unidade';
+  return `Há um resultado mais recente ${how}: ${valueLabel(newer)} em ${formatBRDate(newer.date)}. Não foi comparado.`;
+}
+
+/**
  * O que a linha de um item numérico avisa quando o mesmo item também está em
  * outro grupo, por causa da unidade ou do material (os grupos não são
  * comparados, e isso não pode passar em silêncio): que há um resultado mais
- * novo em outra unidade ou guardado como texto (dos dois, o mais novo); no
- * grupo sem unidade, por que ele ficou à parte; e, entre materiais, que os de
- * mesmo nome não foram comparados. null quando não há o que avisar.
+ * novo em outra unidade ou guardado como texto; no grupo sem unidade, por que
+ * ele ficou à parte; e, entre materiais, que os de mesmo nome não foram
+ * comparados. O item de um material com outro de mesmo nome diz o material
+ * antes do outro aviso ("Exame de urina. Há um resultado mais recente…"): é
+ * ele que conta qual das duas linhas é qual. null quando não há o que avisar.
  */
 export function apartNote(
   item: Pick<TrendItem, 'last' | 'newerElsewhere' | 'newerText' | 'otherUnits' | 'material' | 'otherMaterials'>,
 ): string | null {
-  const newer = item.newerElsewhere;
-  const text = item.newerText;
-  if (text && (!newer || text.date > newer.date)) {
-    return `Há um resultado mais recente em texto: ${valueLabel(text)} em ${formatBRDate(text.date)}. Não foi comparado.`;
-  }
-  if (newer) {
-    const how = !newer.unit ? 'sem unidade' : item.last.unit ? 'em outra unidade' : 'com unidade';
-    return `Há um resultado mais recente ${how}: ${valueLabel(newer)} em ${formatBRDate(newer.date)}. Não foi comparado.`;
-  }
-  if (!item.last.unit && item.otherUnits.length) {
-    return `Sem unidade: não foi comparado com os resultados em ${listWords(item.otherUnits)}.`;
-  }
+  const exam = item.material && item.otherMaterials.length ? `Exame de ${materialLabel(item.material)}` : null;
+  const note =
+    newerNote(item) ??
+    (!item.last.unit && item.otherUnits.length ? `Sem unidade: não foi comparado com os resultados em ${listWords(item.otherUnits)}.` : null);
+  if (note) return exam ? `${exam}. ${note}` : note;
+  if (exam) return `${exam}: não foi comparado com os resultados de mesmo nome de outros exames.`;
   if (!item.otherMaterials.length) return null;
-  if (item.material) {
-    return `Exame de ${materialLabel(item.material)}: não foi comparado com os resultados de mesmo nome de outros exames.`;
-  }
   return `Não foi comparado com os resultados de mesmo nome dos exames de ${listWords(item.otherMaterials.map(materialLabel))}.`;
 }
 
@@ -848,7 +892,11 @@ export function visitSummary(person: SummaryPerson, exams: TrendExam[], medicati
       ? `${item.name} (${materialLabel(item.material)})`
       : item.name;
   // Há resultado mais novo do mesmo item em outro grupo ou em texto: a linha diz, em vez de passar por último.
-  const noted = (line: string, item: TrendItem) => (item.newerElsewhere || item.newerText ? `${line}. ${apartNote(item)}` : line);
+  // Só esse aviso: o material, quando é o caso, já vai ao lado do nome.
+  const noted = (line: string, item: TrendItem) => {
+    const note = newerNote(item);
+    return note ? `${line}. ${note}` : line;
+  };
   list(
     'Últimos resultados',
     recent.map((item) => noted(resultLine(item, nameOf(item)), item)),
