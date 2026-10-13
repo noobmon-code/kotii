@@ -611,6 +611,8 @@ interface Group {
   family: string;
   /** A família dos resultados em texto do mesmo item (num grupo de texto, a dele). */
   textFamily: string;
+  /** Na linha do percentual que só a unidade diz: a família dos textos de mesmo nome, sem símbolo. Nas outras, null. */
+  sameNameTexts: string | null;
   /** O item sem a unidade nem o material: para avisar que há outro de mesmo nome em outro material. */
   base: string;
   material: string;
@@ -744,7 +746,8 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
       // "LYM#": "%" vale como a unidade; "#" (a contagem), sem unidade nenhuma,
       // fica num grupo à parte do percentual e de quem não diz. O resto do nome
       // continua achando o sinônimo ("HbA1c %" é hemoglobina glicada).
-      const symbol = fieldUnit ? null : (name.match(NAME_SYMBOL)?.[1] ?? null);
+      const nameSymbol = name.match(NAME_SYMBOL)?.[1] ?? null;
+      const symbol = fieldUnit ? null : nameSymbol;
       const itemKey = examItemKey(name);
       const generic = GENERIC_NAMES.has(itemKey);
       const material = materialKey(name, title);
@@ -773,8 +776,17 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
       };
       const counted = symbol === '#' && !unit;
       const unitKey = normalizeUnit(unit) || (parsed && counted ? '#' : '');
-      // Em texto não há unidade para separar: o "#" segue na chave do item.
-      const textFamily = `t:${counted ? `${itemKey} #` : itemKey}|${material}|${generic ? exam.id : ''}`;
+      // Em texto quase nunca há unidade para separar: o "#" e o "%" seguem na
+      // chave do item. O percentual (o "%" no nome, "Linfócitos %", ou na
+      // unidade) é outra medida que a de quem não diz: o texto de um não é o
+      // "mais novo" do outro, e os dois em texto não viram um item só.
+      const percent = normalizeUnit(unit) === '%' || (symbol === '%' && !unit);
+      const textOf = (mark: string) => `t:${itemKey}${mark}|${material}|${generic ? exam.id : ''}`;
+      const textFamily = textOf(counted ? ' #' : percent ? ' %' : '');
+      // O percentual que só a unidade diz ("Hemoglobina glicada", em %) tem o
+      // mesmo nome do texto sem símbolo: esse texto, quando vem sem unidade
+      // ("Não realizado"), também é dele.
+      const sameNameTexts = parsed && percent && !nameSymbol ? textOf('') : null;
       const family = parsed ? `n:${item}` : textFamily;
       const base = `${itemKey}|${generic ? exam.id : ''}`;
       // O mesmo item duas vezes no laudo (em número ou em texto): a segunda ocorrência é outro grupo.
@@ -783,10 +795,11 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
       seen.set(slot, nth);
       const key = nth > 1 ? `${slot}|${nth}` : slot;
       const groups = parsed ? numeric : textual;
-      const group = groups.get(key) ?? { key, nth, family, textFamily, base, material, unitKey, name: '', points: [], examIndex, resultIndex };
+      const group = groups.get(key) ?? { key, nth, family, textFamily, sameNameTexts, base, material, unitKey, name: '', points: [], examIndex, resultIndex };
       group.points.push(point);
       // Do mais antigo para o mais novo: ficam o nome e a posição do último ponto.
       group.name = generic && title ? `${title}: ${name}` : name || 'Sem nome';
+      group.sameNameTexts = sameNameTexts;
       group.examIndex = examIndex;
       group.resultIndex = resultIndex;
       groups.set(key, group);
@@ -820,7 +833,8 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
     const sameTime = (other: Group) => other.nth === group.nth;
     const others = isNumber ? families.get(group.family)!.filter((other) => sameTime(other) && sameInOtherUnit(other, group)) : [];
     const newest = newestOf(others);
-    const written = isNumber ? newestOf((texts.get(group.textFamily) ?? []).filter(sameTime)) : null;
+    const unitless = group.sameNameTexts ? (texts.get(group.sameNameTexts) ?? []).filter((other) => !lastOf(other).unit) : [];
+    const written = isNumber ? newestOf([...(texts.get(group.textFamily) ?? []), ...unitless].filter(sameTime)) : null;
     const sameName = (isNumber ? numberBases : bases).get(group.base)!.filter((other) => other.material !== group.material);
     return {
       key: group.key,

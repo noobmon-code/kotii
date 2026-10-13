@@ -1408,6 +1408,51 @@ describe('examTrends', () => {
     expect(series(['0,8', '0,5', '0,7']).chart).toHaveLength(3);
   });
 
+  it('o percentual em texto não se mistura com quem não diz: nem no "mais novo", nem na lista', () => {
+    const newer = (before: ExamResult[], later: ExamResult[]) =>
+      Object.fromEntries(
+        examTrends([exam('2026-03-12', before), exam('2026-09-05', later)]).single.map((i) => [valueLabel(i.last), i.newerText?.value ?? null]),
+      );
+    const both = [result('Linfócitos %', '30'), result('Linfócitos', '2.100', '/mm³')];
+    // "Linfócitos %" em número, e depois um "Linfócitos" (sem o "%") em texto: outra medida, não é o mais novo dela.
+    expect(newer(both, [result('Linfócitos', 'Não realizado')])).toEqual({ '30%': null, '2.100 /mm³': 'Não realizado' });
+    expect(newer([result('Linfócitos %', '30')], [result('Linfócitos', 'Não realizado')])).toEqual({ '30%': null });
+    expect(newer([result('Linfócitos %', '30', '%')], [result('Linfócitos', 'Não realizado')])).toEqual({ '30%': null });
+    // O texto do percentual (o "%" no nome, ou na unidade do campo) é o mais novo da linha do percentual, e só dela.
+    for (const later of [result('Linfócitos %', 'Não realizado'), result('Linfócitos', 'Não realizado', '%'), result('LINFÓCITOS (%)', 'Não realizado')]) {
+      expect([later.name, later.unit, newer(both, [later])]).toEqual([later.name, later.unit, { '30%': 'Não realizado', '2.100 /mm³': null }]);
+    }
+    // O percentual que só a unidade diz ("Hemoglobina glicada", em %): o texto de mesmo nome e sem unidade é dele...
+    expect(newer([result('Hemoglobina glicada', '5,6', '%')], [result('HbA1c', 'Não realizado')])).toEqual({ '5,6%': 'Não realizado' });
+    expect(newer([result('Linfócitos', '30', '%'), result('Linfócitos', '2.100', '/mm³')], [result('Linfócitos', 'Não realizado')])).toEqual({
+      '30%': 'Não realizado',
+      '2.100 /mm³': 'Não realizado',
+    });
+    // ... e o que traz outra unidade no campo, ou o "#" no nome, não.
+    expect(newer([result('Linfócitos', '30', '%')], [result('Linfócitos', 'Não realizado', '/mm³')])).toEqual({ '30%': null });
+    expect(newer([result('Linfócitos', '30', '%')], [result('Linfócitos #', 'Não realizado')])).toEqual({ '30%': null });
+    // Na linha que acaba no nome com "%" (o último laudo), o texto sem o "%" segue sendo de outra medida.
+    const renamed = examTrends([
+      exam('2026-01-10', [result('Linfócitos', '32', '%')]),
+      exam('2026-03-12', [result('Linfócitos %', '30')]),
+      exam('2026-09-05', [result('Linfócitos', 'Não realizado')]),
+    ]);
+    expect(renamed.series.map((s) => [s.name, s.points.length, s.newerText])).toEqual([['Linfócitos %', 2, null]]);
+
+    // Em texto, com e sem o "%" não viram um item só.
+    const items = (exams: TrendExam[]) =>
+      examTrends(exams)
+        .text.map((i) => i.points.map((p) => p.value).join(' > '))
+        .sort();
+    expect(items([exam('2026-03-12', [result('Linfócitos %', 'aumentado')]), exam('2026-09-05', [result('Linfócitos', 'normal')])])).toEqual(['aumentado', 'normal']);
+    expect(
+      items([
+        exam('2026-03-12', [result('Linfócitos %', 'aumentado'), result('Linfócitos #', 'baixo'), result('Linfócitos', 'ver laudo')]),
+        exam('2026-09-05', [result('Linfócitos', 'normal'), result('Linfócitos', 'alto', '%')]),
+      ]),
+    ).toEqual(['aumentado > alto', 'baixo', 'ver laudo > normal']);
+  });
+
   it('o mesmo item duas vezes no laudo: cada um segue, nos outros grupos, o resultado da mesma vez', () => {
     const curve = [result('Glicose', '92', 'mg/dL'), result('Glicose', '140', 'mg/dL')];
     // O laudo seguinte veio com os dois em texto.
