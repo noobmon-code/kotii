@@ -248,6 +248,14 @@ export interface TrendItem {
    * diferente da do campo). Não entra nos pontos, na conta nem no gráfico.
    */
   newerText: TrendPoint | null;
+  /**
+   * Só nos textos, e só quando existe: o mesmo item tem um resultado mais novo
+   * em número ("Positivo" num ano, 1,2 mUI/mL no seguinte). Sai só no resumo
+   * para a consulta; a linha da tela não muda. `point` é null quando os laudos
+   * trazem duas medidas com esse nome (o percentual e a contagem) e não dá
+   * para saber qual é a deste texto: aí o resumo diz só a data.
+   */
+  newerNumber?: { date: string; point: TrendPoint | null };
   /** Unidades, como escritas, dos outros grupos do mesmo item (ver apartNote). */
   otherUnits: string[];
   /** De que material é, quando o nome ou o título do exame diz ("urina", "24h", "fezes", "liquor"); "" sem isso. */
@@ -282,6 +290,8 @@ export interface ExamTrends {
   undated: { id: string; title: string }[];
   /** Exames realizados com resultados e data depois de hoje: ficam de fora até a data ser conferida. */
   future: { id: string; title: string; date: string }[];
+  /** Exames com resultados anotados que estão como pedido ou agendado: ficam de fora até o status ser conferido. */
+  notDone: { id: string; title: string; status: TrendExam['status'] }[];
 }
 
 // Os resultados são JSON no banco: um campo que não veio como texto não derruba a tela.
@@ -295,10 +305,14 @@ export function hasExamResults(exams: TrendExam[]): boolean {
   return exams.some((e) => isDone(e) && e.results.length > 0);
 }
 
-/** "108 mg/dL", "5,6%", "Não reagente". */
+/**
+ * "108 mg/dL", "5,6%", "Não reagente". O "%" só cola no número ("< 0,5%"): no
+ * texto que veio com "%" no campo da unidade, ele vai ao lado como qualquer
+ * outra unidade ("Não realizado %").
+ */
 export function valueLabel(point: Pick<TrendPoint, 'value' | 'unit'>): string {
   if (!point.unit) return point.value;
-  return point.unit === '%' ? `${point.value}%` : `${point.value} ${point.unit}`;
+  return point.unit === '%' && /\d$/.test(point.value) ? `${point.value}%` : `${point.value} ${point.unit}`;
 }
 
 /** "1 resultado", "3 resultados". */
@@ -329,8 +343,10 @@ const isUnchanged = (change: string) => change.startsWith('igual');
  * de…". A diferença sai com as casas do laudo; a porcentagem é sobre o valor
  * anterior, arredondada (sem ela quando o anterior é zero). Em "%", a mudança
  * é em pontos percentuais e não leva porcentagem ("subiu 0,4 ponto
- * percentual…"; plural de 2 em diante). Sem conta, só o valor anterior ("era
- * 0,8 em…"): com "<" ou ">", e quando um valor é dez vezes o outro ou mais.
+ * percentual…"; plural de 2 em diante); vale também o "%" com o método ou
+ * outra palavra ao lado, como foi escrito ("% (NGSP)", "% do total"). Sem
+ * conta, só o valor anterior ("era 0,8 em…"): com "<" ou ">", e quando um
+ * valor é dez vezes o outro ou mais.
  */
 export function changeSentence(last: TrendPoint, previous: TrendPoint): string {
   const sameDay = previous.date === last.date;
@@ -346,7 +362,9 @@ export function changeSentence(last: TrendPoint, previous: TrendPoint): string {
   if (farApart(last.number, previous.number, FAR_APART)) return was;
   const amount = formatResultNumber(Math.abs(diff), decimals);
   const moved = `${diff > 0 ? 'subiu' : 'desceu'} ${amount}`;
-  if (normalizeUnit(last.unit) === '%') {
+  // A unidade como escrita, e não a chave dela: "% (NGSP)" é outro grupo que "%", mas a conta é a mesma. "%o" (por
+  // mil) e "mg%" não são o percentual.
+  if (/^%(?![a-z0-9])/i.test((last.unit ?? '').trim())) {
     return `${moved} ${Math.abs(diff) < 2 ? 'ponto percentual' : 'pontos percentuais'} desde ${since}`;
   }
   const percent = previous.number === 0 ? null : Math.round((Math.abs(diff) / Math.abs(previous.number)) * 100);
@@ -439,13 +457,20 @@ const GENERIC_NAMES = new Set([
 // sangue, e nada some por causa disso (a linha avisa: ver apartNote). "Sangue
 // oculto" é o nome de um exame de fezes, no título e no nome do resultado.
 // Cada material com os outros nomes que os laudos usam para o mesmo exame: o
-// EAS é também "elementos anormais (e sedimento)", urinálise, uroanálise e EQU;
-// as fezes, coprocultura, parasitológico e EPF; o líquor, LCR.
+// EAS é também "elementos anormais (e sedimento)", urinálise, uroanálise,
+// urianálise e EQU, e a cultura é urocultura ou urinocultura; as fezes,
+// coprocultura, (proto)parasitológico, EPF e PPF; o líquor, LCR. E com o jeito
+// de dizer o material sem a palavra dele: o que termina em "úria"
+// (microalbuminúria, proteinúria) é da urina, "fecal" das fezes e "liquórico"
+// do líquor. A palavra em "úria" pede duas letras antes: "Núria", no título, é
+// o nome de alguém (o que sobra de limite: "injúria" também lê como urina, e o
+// erro fica do lado de não comparar). "Clearance" e "depuração" não entram: o
+// laudo deles traz também a creatinina do sangue, que sairia como de urina.
 const MATERIALS: [string, RegExp][] = [
-  ['urina', /\b(urina|urinari[a-z]*|eas|equ|urinalise|uroanalise|urocultura|elementos anormais)\b/],
+  ['urina', /\b(urina|urinari[a-z]*|[a-z]{2,}uria|eas|equ|urinalise|uroanalise|urianalise|urocultura|urinocultura|elementos anormais)\b/],
   ['24h', /\b24 ?h(s|rs?|oras?)?\b/],
-  ['fezes', /\b(fezes|sangue oculto|coprocultura|coprologic[oa]s?|parasitologic[oa]s?|epf)\b/],
-  ['liquor', /\b(liquor|lcr|cefalorraqu(idi|i)an[oa])\b/],
+  ['fezes', /\b(fezes|feca(l|is)|sangue oculto|coprocultura|coprologic[oa]s?|parasitologic[oa]s?|protoparasitologic[oa]s?|epf|ppf)\b/],
+  ['liquor', /\b(liquor|liquoric[oa]s?|lcr|cefalorraqu(idi|i)an[oa])\b/],
 ];
 const MATERIAL_LABEL: Record<string, string> = { urina: 'urina', '24h': 'urina de 24 horas', fezes: 'fezes', liquor: 'líquor' };
 
@@ -530,7 +555,11 @@ function materialsIn(text: string, inDayLong = false): string[] {
  * sobra de limite: a parte sem material e sem nenhuma dessas palavras
  * ("Glicose e EAS", "TSH + urina") não diz nada, o título continua valendo
  * como urina e o erro fica do lado de não comparar; e a análise escrita antes
- * do material com um traço ("Bioquímica – líquor") lê como dois exames.
+ * do material com um traço ("Bioquímica – líquor") lê como dois exames. Leem
+ * como dois exames também o título que lista as seções de um exame só depois
+ * do material ("Líquor - citologia, bioquímica e cultura", "EAS (caracteres
+ * gerais, bioquímica e sedimento)": a análise fica sozinha na parte dela) e a
+ * genérica antes do material com um traço ("Exames de rotina - urina tipo 1").
  */
 function titleMaterials(title: string): string[] {
   // O título inteiro, e não cada parte: em "MAPA - 24 horas" o nome do exame e o "24h" ficam em partes diferentes.
@@ -564,10 +593,11 @@ function titleMaterials(title: string): string[] {
 /** O nome que é só "Sangue oculto": das fezes pela regra, mas também o nome de um item da fita da urina. */
 const isOccultBlood = (plain: string) => plain.trim() === 'sangue oculto';
 
-// O nome do resultado que diz sangue. Só o adjetivo e o "no sangue" por
-// extenso: a palavra "sangue" solta é também um item da urina ("Sangue", na
-// fita) e das fezes ("Sangue oculto").
-const BLOOD_NAME = /\b(seric[oa]s?|plasmatic[oa]s?|sanguine[oa]s?|no sangue|no soro|no plasma)\b/;
+// O nome do resultado que diz sangue: o adjetivo, "no sangue" por extenso, e
+// "soro", "plasma" e "glicemia" do jeito que vierem ("Creatinina - Soro",
+// "Sódio (plasma)"). A palavra "sangue" solta, de jeito nenhum: é também um
+// item da urina ("Sangue", na fita) e das fezes ("Sangue oculto").
+const BLOOD_NAME = /\b(seric[oa]s?|plasmatic[oa]s?|sanguine[oa]s?|no sangue|soro|plasma|glicemia)\b/;
 
 /**
  * O material do resultado: o que o nome dele diz; sem isso, o do título,
@@ -613,6 +643,8 @@ interface Group {
   textFamily: string;
   /** Na linha do percentual que só a unidade diz: a família dos textos de mesmo nome, sem símbolo. Nas outras, null. */
   sameNameTexts: string | null;
+  /** Na linha do número com unidade (que não o "%"): a família dos textos da contagem, com "#" no nome. Nas outras, null. */
+  countTexts: string | null;
   /** O item sem a unidade nem o material: para avisar que há outro de mesmo nome em outro material. */
   base: string;
   material: string;
@@ -626,6 +658,12 @@ interface Group {
 
 const lastOf = (group: Group) => group.points[group.points.length - 1];
 
+/** Algum laudo traz um resultado de cada grupo: são duas medidas, e não a mesma em outro momento. */
+function sharesReport(a: Group, b: Group): boolean {
+  const exams = new Set(a.points.map((point) => point.examId));
+  return b.points.some((point) => exams.has(point.examId));
+}
+
 /**
  * Dois grupos do mesmo item em unidades diferentes são "o mesmo em outra
  * unidade"? Não quando algum laudo traz os dois: o percentual e a contagem do
@@ -638,8 +676,21 @@ const lastOf = (group: Group) => group.points[group.points.length - 1];
 function sameInOtherUnit(a: Group, b: Group): boolean {
   if (a.unitKey === b.unitKey) return false;
   if ((!a.unitKey && b.unitKey === '#') || (a.unitKey === '#' && !b.unitKey)) return false;
-  const exams = new Set(a.points.map((point) => point.examId));
-  return !b.points.some((point) => exams.has(point.examId));
+  return !sharesReport(a, b);
+}
+
+/**
+ * O texto `text` é um resultado do item do número `number`? O da mesma vez no
+ * laudo e da família de textos que a linha do número lê: a dela; no percentual
+ * que só a unidade diz, a do nome sem símbolo, quando o texto veio sem unidade;
+ * e, no número com unidade, a da contagem com "#" no nome. Nunca o texto que
+ * algum laudo traz ao lado do número (a fita e o sedimento do EAS com o mesmo
+ * nome): esses são duas medidas, como dois números em unidades diferentes.
+ */
+function sameItemText(number: Group, text: Group): boolean {
+  if (number.nth !== text.nth || sharesReport(number, text)) return false;
+  if (text.family === number.textFamily || text.family === number.countTexts) return true;
+  return text.family === number.sameNameTexts && !lastOf(text).unit;
 }
 
 /** Positivo quando o último ponto de `a` vem depois do de `b`. */
@@ -682,6 +733,18 @@ function newerNote(item: Pick<TrendItem, 'last' | 'newerElsewhere' | 'newerText'
 }
 
 /**
+ * "Há um resultado mais recente em número…": o aviso da linha de um texto, só
+ * no resumo para a consulta (ver TrendItem.newerNumber). Com duas medidas de
+ * mesmo nome nos laudos, diz que há resultados mais novos sem escolher um.
+ */
+function newerNumberNote(item: Pick<TrendItem, 'newerNumber'>): string | null {
+  const newer = item.newerNumber;
+  if (!newer) return null;
+  if (!newer.point) return `Há resultados mais recentes em número (${formatBRDate(newer.date)}). Não foram comparados.`;
+  return `Há um resultado mais recente em número: ${valueLabel(newer.point)} em ${formatBRDate(newer.date)}. Não foi comparado.`;
+}
+
+/**
  * O que a linha de um item numérico avisa quando o mesmo item também está em
  * outro grupo, por causa da unidade ou do material (os grupos não são
  * comparados, e isso não pode passar em silêncio): que há um resultado mais
@@ -716,10 +779,19 @@ export function apartNote(
  * - o mesmo item duas vezes no mesmo laudo, em número ou em texto, são dois
  *   itens (a primeira ocorrência segue a primeira dos outros laudos, a segunda
  *   segue a segunda).
+ * As ocorrências são contadas por tipo, os números de um lado e os textos de
+ * outro: a amostra que veio em texto ("Amostra hemolisada") não guarda o
+ * lugar de um número. Num laudo com o item duas vezes em que uma delas veio
+ * em texto, o número que sobrou é a primeira ocorrência e segue a primeira
+ * dos outros laudos, mesmo sendo a segunda amostra. É um limite conhecido:
+ * contar as duas juntas partiria a série da contagem do EAS que vem ao lado
+ * do texto da fita sempre que outro laudo trouxesse só o número.
  * A ordem das listas: primeiro o que o último laudo marcou (é o que pede
  * atenção), depois o mais recente; na mesma data, a ordem do laudo.
  * Dois exames no mesmo dia mantêm os dois pontos, na ordem em que foram
- * criados.
+ * criados. O exame com resultados que está como pedido ou agendado não entra
+ * em nada disso: vai para `notDone`, para a tela pedir que o status seja
+ * conferido.
  */
 export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
   const done = exams.filter(isDone);
@@ -782,11 +854,17 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
       // "mais novo" do outro, e os dois em texto não viram um item só.
       const percent = normalizeUnit(unit) === '%' || (symbol === '%' && !unit);
       const textOf = (mark: string) => `t:${itemKey}${mark}|${material}|${generic ? exam.id : ''}`;
-      const textFamily = textOf(counted ? ' #' : percent ? ' %' : '');
+      // O texto com "#" no nome é da contagem mesmo com a unidade no campo ("Não realizado", em /mm³): a unidade
+      // não tira o "#" da chave dele, a não ser que diga que é o percentual.
+      const countText = !parsed && nameSymbol === '#' && !percent;
+      const textFamily = textOf(counted || countText ? ' #' : percent ? ' %' : '');
       // O percentual que só a unidade diz ("Hemoglobina glicada", em %) tem o
       // mesmo nome do texto sem símbolo: esse texto, quando vem sem unidade
       // ("Não realizado"), também é dele.
       const sameNameTexts = parsed && percent && !nameSymbol ? textOf('') : null;
+      // O número com unidade ("Linfócitos #" ou "Linfócitos", em /mm³: os dois são uma série só) também lê o texto
+      // da contagem. O percentual e o número sem unidade nem símbolo, não: são outras linhas.
+      const countTexts = parsed && normalizeUnit(unit) && !percent ? textOf(' #') : null;
       const family = parsed ? `n:${item}` : textFamily;
       const base = `${itemKey}|${generic ? exam.id : ''}`;
       // O mesmo item duas vezes no laudo (em número ou em texto): a segunda ocorrência é outro grupo.
@@ -795,11 +873,12 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
       seen.set(slot, nth);
       const key = nth > 1 ? `${slot}|${nth}` : slot;
       const groups = parsed ? numeric : textual;
-      const group = groups.get(key) ?? { key, nth, family, textFamily, sameNameTexts, base, material, unitKey, name: '', points: [], examIndex, resultIndex };
+      const group = groups.get(key) ?? { key, nth, family, textFamily, sameNameTexts, countTexts, base, material, unitKey, name: '', points: [], examIndex, resultIndex };
       group.points.push(point);
       // Do mais antigo para o mais novo: ficam o nome e a posição do último ponto.
       group.name = generic && title ? `${title}: ${name}` : name || 'Sem nome';
       group.sameNameTexts = sameNameTexts;
+      group.countTexts = countTexts;
       group.examIndex = examIndex;
       group.resultIndex = resultIndex;
       groups.set(key, group);
@@ -825,16 +904,39 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
   // guardado como texto: só para a linha do número dizer que há um mais novo.
   const texts = new Map<string, Group[]>();
   for (const group of textual.values()) texts.set(group.family, [...(texts.get(group.family) ?? []), group]);
+  // As famílias de texto que a linha de um número lê (ver sameItemText), e o caminho de volta: os números que leem
+  // cada família, para o texto saber que o mesmo item tem um número mais novo (só o resumo da consulta diz).
+  const textFamilies = (number: Group) =>
+    [...new Set([number.textFamily, number.sameNameTexts, number.countTexts])].filter((family): family is string => family !== null);
+  const readers = new Map<string, Group[]>();
+  for (const group of numeric.values()) {
+    for (const family of textFamilies(group)) readers.set(family, [...(readers.get(family) ?? []), group]);
+  }
   const newestOf = (groups: Group[]) => groups.reduce<Group | null>((max, other) => (!max || later(other, max) > 0 ? other : max), null);
   const toItem = (group: Group, isNumber: boolean): TrendItem => {
     const last = lastOf(group);
     // O item que aparece duas vezes no laudo segue, nos outros grupos, o resultado da mesma vez: a primeira
     // linha não toma para si o "mais novo" que é da segunda.
     const sameTime = (other: Group) => other.nth === group.nth;
-    const others = isNumber ? families.get(group.family)!.filter((other) => sameTime(other) && sameInOtherUnit(other, group)) : [];
-    const newest = newestOf(others);
-    const unitless = group.sameNameTexts ? (texts.get(group.sameNameTexts) ?? []).filter((other) => !lastOf(other).unit) : [];
-    const written = isNumber ? newestOf([...(texts.get(group.textFamily) ?? []), ...unitless].filter(sameTime)) : null;
+    const inFamily = isNumber ? families.get(group.family)!.filter(sameTime) : [];
+    const others = inFamily.filter((other) => sameInOtherUnit(other, group));
+    // O laudo que traz duas medidas com o mesmo nome (o percentual e a contagem) não diz qual delas é a desta
+    // linha, que veio de outro laudo. Na dúvida, o candidato não é o "mais novo" de ninguém: quando outro
+    // candidato veio no mesmo laudo que ele, e quando esta linha divide um laudo com outra medida (`rivals`) que
+    // também podia ficar com ele. As unidades continuam em `otherUnits`, para a linha sem unidade dizer por que
+    // ficou à parte.
+    const rivals = inFamily.filter((other) => other.unitKey !== group.unitKey && sharesReport(other, group));
+    const clear = others.filter(
+      (candidate) =>
+        !others.some((other) => other !== candidate && sharesReport(other, candidate)) && !rivals.some((rival) => sameInOtherUnit(candidate, rival)),
+    );
+    const newest = newestOf(clear);
+    const written = isNumber ? newestOf(textFamilies(group).flatMap((family) => texts.get(family) ?? []).filter((text) => sameItemText(group, text))) : null;
+    // Na linha do texto, os números do mesmo item. Com dois deles vindos no mesmo laudo (duas medidas com esse
+    // nome), não dá para saber qual é a deste texto: fica só a data do mais novo.
+    const measured = isNumber ? [] : (readers.get(group.family) ?? []).filter((other) => sameItemText(other, group));
+    const newestNumber = newestOf(measured);
+    const twoMeasures = measured.some((a) => measured.some((b) => a !== b && sharesReport(a, b)));
     const sameName = (isNumber ? numberBases : bases).get(group.base)!.filter((other) => other.material !== group.material);
     return {
       key: group.key,
@@ -843,6 +945,9 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
       last,
       newerElsewhere: newest && lastOf(newest).date > last.date ? lastOf(newest) : null,
       newerText: written && lastOf(written).date > last.date ? lastOf(written) : null,
+      ...(newestNumber && lastOf(newestNumber).date > last.date
+        ? { newerNumber: { date: lastOf(newestNumber).date, point: twoMeasures ? null : lastOf(newestNumber) } }
+        : {}),
       otherUnits: [...new Set(others.map((other) => lastOf(other).unit).filter((unit): unit is string => Boolean(unit)))],
       material: group.material,
       otherMaterials: [...new Set(sameName.map((other) => other.material))].sort((a, b) => materialRank(a) - materialRank(b)),
@@ -863,6 +968,7 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
     text: [...textual.values()].sort(byAttention).map((group) => toItem(group, false)),
     undated: outside((e) => !hasDate(e)).map((e) => ({ id: e.id, title: e.title })),
     future: outside(isFuture).map((e) => ({ id: e.id, title: e.title, date: e.exam_date!.slice(0, 10) })),
+    notDone: exams.filter((e) => !isDone(e) && e.results.some((r) => asText(r.value))).map((e) => ({ id: e.id, title: e.title, status: e.status })),
   };
 }
 
@@ -974,10 +1080,11 @@ export function visitSummary(person: SummaryPerson, exams: TrendExam[], medicati
     item.material && materials.get(examItemKey(item.name))!.size > 1 && !item.material.split('+').every((material) => spelled(item.name).includes(material))
       ? `${item.name} (${materialLabel(item.material)})`
       : item.name;
-  // Há resultado mais novo do mesmo item em outro grupo ou em texto: a linha diz, em vez de passar por último.
-  // Só esse aviso: o material, quando é o caso, já vai ao lado do nome.
+  // Há resultado mais novo do mesmo item em outro grupo ou em texto: a linha diz, em vez de passar por último. O
+  // texto marcado de um laudo antigo também diz quando o item tem um número mais novo, que pode nem estar no
+  // resumo. Só esses avisos: o material, quando é o caso, já vai ao lado do nome.
   const noted = (line: string, item: TrendItem) => {
-    const note = newerNote(item);
+    const note = newerNote(item) ?? newerNumberNote(item);
     return note ? `${line}. ${note}` : line;
   };
   list(
@@ -989,11 +1096,15 @@ export function visitSummary(person: SummaryPerson, exams: TrendExam[], medicati
   // também valor e data. O que ficou igual não entra em "O que mudou".
   const listed = new Set(recent.map((item) => item.key));
   const yearAgo = addMonths(today, -12);
+  const changed = trends.series.filter((s) => s.last.date >= yearAgo && !isUnchanged(s.change));
+  // Dois itens que saem no resumo com o mesmo nome (a curva com o item duas vezes, o percentual e a contagem do
+  // hemograma): só a mudança não diria de qual é, e os dois blocos não seguem a mesma ordem. Aí a linha leva
+  // valor e data mesmo já estando no bloco de cima.
+  const shown = new Map([...recent, ...changed].map((item) => [item.key, nameOf(item)]));
+  const repeated = (name: string) => [...shown.values()].filter((other) => other === name).length > 1;
   list(
     'O que mudou',
-    trends.series
-      .filter((s) => s.last.date >= yearAgo && !isUnchanged(s.change))
-      .map((s) => noted(listed.has(s.key) ? `${nameOf(s)}: ${s.change}` : `${resultLine(s, nameOf(s))}; ${s.change}`, s)),
+    changed.map((s) => noted(listed.has(s.key) && !repeated(nameOf(s)) ? `${nameOf(s)}: ${s.change}` : `${resultLine(s, nameOf(s))}; ${s.change}`, s)),
   );
 
   // Por fazer: primeiro os agendados de hoje em diante, o mais próximo antes;
@@ -1001,6 +1112,8 @@ export function visitSummary(person: SummaryPerson, exams: TrendExam[], medicati
   const dateOf = (e: TrendExam) => (hasDate(e) ? e.exam_date.slice(0, 10) : '');
   const ahead = (e: TrendExam) => e.status === 'agendado' && dateOf(e) >= today;
   const pending = mine.filter((e) => !isDone(e));
+  // O que tem resultados anotados e não está como realizado: a linha diz que eles ficaram de fora.
+  const withResults = new Set(trends.notDone.map((e) => e.id));
   list(
     'Exames pedidos ou agendados',
     [
@@ -1010,7 +1123,8 @@ export function visitSummary(person: SummaryPerson, exams: TrendExam[], medicati
       const status = EXAM_STATUS.find((s) => s.value === e.status)!.label.toLowerCase();
       // No pedido, a data guardada é a do pedido, não a do exame.
       const when = !dateOf(e) ? '' : e.status === 'pedido' ? ` em ${formatBRDate(dateOf(e))}` : `, ${formatBRDate(dateOf(e))}`;
-      return `${e.title} (${status}${when})`;
+      const left = withResults.has(e.id) ? '; tem resultados anotados, que ficaram fora deste resumo' : '';
+      return `${e.title} (${status}${when}${left})`;
     }),
   );
 
@@ -1027,7 +1141,8 @@ export function visitSummary(person: SummaryPerson, exams: TrendExam[], medicati
     ]);
   }
 
-  if (!blocks.length) blocks.push(['Ainda não há alergias, condições, remédios nem exames anotados no Kotii.']);
+  // "Resultados de exame", e não "exames": o exame realizado guardado só com as fotos não entra em bloco nenhum.
+  if (!blocks.length) blocks.push(['Ainda não há alergias, condições, remédios nem resultados de exame anotados no Kotii.']);
 
   const who = `${person.name.trim()}${species ? ` (${species})` : ''}${age ? `, ${age}` : ''}`;
   return [

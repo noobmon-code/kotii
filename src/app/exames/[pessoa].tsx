@@ -17,7 +17,7 @@ import {
   type TrendPoint,
   type TrendSeries,
 } from '@/domain/examTrends';
-import { flagLabel } from '@/domain/health';
+import { EXAM_STATUS, flagLabel } from '@/domain/health';
 import { TrendChart } from '@/features/health/TrendChart';
 import { VisitSummaryModal } from '@/features/health/VisitSummaryModal';
 import {
@@ -36,7 +36,7 @@ import {
   Section,
   Text,
 } from '@/ui/primitives';
-import { space } from '@/ui/theme';
+import { radius, space, useColors } from '@/ui/theme';
 
 /** Evolução dos resultados de exame de uma pessoa e o resumo para levar à consulta. */
 export default function ExamTrendsScreen() {
@@ -58,6 +58,9 @@ export default function ExamTrendsScreen() {
   const person = people.data.find((p) => p.id === pessoa);
   if (!person) return <ErrorNotice error={new Error('Pessoa não encontrada.')} />;
 
+  // Com tudo na tela e uma busca que falhou (a atualização em segundo plano): o que aparece é o que já estava
+  // carregado, e a tela diz isso em vez de passar um resultado antigo por último.
+  const failed = [people, exams, medications].filter((q) => q.isError);
   const allExams = exams.data;
   const allMedications = medications.data;
   const trends = examTrends(
@@ -82,10 +85,26 @@ export default function ExamTrendsScreen() {
         />
       </Card>
 
+      {failed.length ? <StaleNotice onRetry={() => failed.forEach((q) => void q.refetch())} /> : null}
+
       <TrendLists trends={trends} personName={person.name} />
 
       {summary !== null ? <VisitSummaryModal text={summary} onClose={() => setSummary(null)} /> : null}
     </Screen>
+  );
+}
+
+/** O aviso de que a atualização falhou, acima das listas: elas (e o resumo aberto) continuam na tela. */
+function StaleNotice({ onRetry }: { onRetry: () => void }) {
+  const c = useColors();
+  return (
+    <View style={[styles.stale, { backgroundColor: c.warningSoft }]} accessibilityRole="alert">
+      <Icon name="alert-circle-outline" size={18} color="warning" />
+      <Text variant="small" color="warning" style={styles.flex}>
+        Não foi possível atualizar. Mostrando o que já estava carregado.
+      </Text>
+      <Button title="Tentar de novo" variant="secondary" compact onPress={onRetry} />
+    </View>
   );
 }
 
@@ -150,12 +169,22 @@ function TrendLists({ trends, personName }: { trends: ExamTrends; personName: st
           <ExamRows exams={trends.future} />
         </Section>
       ) : null}
+
+      {trends.notDone.length ? (
+        <Section title="Exames que não estão como realizados">
+          <Text variant="muted">
+            Têm resultados anotados, mas estão como pedido ou agendado, e por isso ficaram de fora. Se o exame já foi feito,
+            toque nele e marque como realizado.
+          </Text>
+          <ExamRows exams={trends.notDone} />
+        </Section>
+      ) : null}
     </>
   );
 }
 
-/** Exames que ficaram fora da evolução; cada linha abre o exame para corrigir a data. */
-function ExamRows({ exams }: { exams: { id: string; title: string; date?: string }[] }) {
+/** Exames que ficaram fora da evolução; cada linha abre o exame para corrigir a data ou marcar como realizado. */
+function ExamRows({ exams }: { exams: { id: string; title: string; date?: string; status?: ExamTrends['notDone'][number]['status'] }[] }) {
   return (
     <ListCard>
       {exams.map((e) => (
@@ -163,7 +192,7 @@ function ExamRows({ exams }: { exams: { id: string; title: string; date?: string
           key={e.id}
           left={<IconBadge icon="test-tube" tone="info" />}
           title={e.title}
-          subtitle={e.date ? formatBRDate(e.date) : undefined}
+          subtitle={e.status ? EXAM_STATUS.find((s) => s.value === e.status)?.label : e.date ? formatBRDate(e.date) : undefined}
           right={<Icon name="chevron-right" color="textMuted" />}
           onPress={() => router.push({ pathname: '/exame/[id]', params: { id: e.id } })}
         />
@@ -238,6 +267,15 @@ function PointRow({ point }: { point: TrendPoint }) {
 
 const styles = StyleSheet.create({
   gap: { gap: space.sm },
+  flex: { flex: 1 },
+  stale: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    borderRadius: radius.md,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+  },
   lines: { gap: space.xs, alignItems: 'flex-start' },
   side: { alignItems: 'center' },
   points: { paddingLeft: space.lg, paddingBottom: space.sm },
