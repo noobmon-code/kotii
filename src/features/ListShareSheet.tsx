@@ -82,12 +82,15 @@ export function ListShareSheet({
   });
 
   // Até 30% da tela, mas sem empurrar as ações para fora em telas baixas (navegador do celular com a
-  // barra de endereço): ACTIONS_ROOM é o que o título, o aviso e as três ações ocupam no menu.
+  // barra de endereço): ACTIONS_ROOM é o que o título, o aviso e as três ações ocupam no menu. Quando nem
+  // com a prévia no mínimo cabe tudo (o celular deitado), o menu rola inteiro e as ações continuam ao alcance.
   const previewMax = Math.round(Math.max(PREVIEW_MIN, Math.min(height * 0.3, height * 0.85 - ACTIONS_ROOM)));
 
   return (
     <ActionSheet visible={visible} title="Mandar a lista" actions={actions} onClose={onClose}>
       <ScrollView
+        // A prévia rola por dentro do menu, que também rola (no Android, só assim).
+        nestedScrollEnabled
         style={[styles.preview, { backgroundColor: c.surfaceAlt, maxHeight: previewMax }]}
         contentContainerStyle={styles.previewContent}>
         <Text variant="body" selectable>

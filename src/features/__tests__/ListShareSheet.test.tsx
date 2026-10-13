@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import * as Clipboard from 'expo-clipboard';
-import { Modal, Platform, Share } from 'react-native';
+import { Modal, Platform, ScrollView, Share } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import { notify } from '@/ui/dialogs';
@@ -78,6 +78,24 @@ afterEach(async () => {
   renderer = undefined;
   jest.restoreAllMocks();
   delete (navigator as { share?: unknown }).share;
+});
+
+describe('tela baixa (o celular deitado)', () => {
+  it('a prévia e o aviso rolam junto com as ações: fixos, só o título e o Cancelar', async () => {
+    await open('android');
+    const scrolls = renderer!.root.findAllByType(ScrollView);
+    // A rolagem que tem as ações é a mesma que tem a prévia e o aviso.
+    const menu = scrolls.find((scroll) => textOf(scroll).includes('WhatsApp'))!;
+    expect(textOf(menu)).toContain('- Banana');
+    expect(textOf(menu)).toContain('Vai só o texto do que falta comprar');
+    expect(textOf(menu)).toContain('Copiar');
+    expect(textOf(menu)).not.toContain('Cancelar');
+    expect(textOf(menu)).not.toContain('Mandar a lista');
+    // A prévia rola por dentro dela.
+    const preview = scrolls.find((scroll) => scroll !== menu && textOf(scroll).includes('- Banana'))!;
+    expect(preview.props.nestedScrollEnabled).toBe(true);
+    expect(textOf(preview)).not.toContain('WhatsApp');
+  });
 });
 
 describe('"Outro app" quando o menu de compartilhar do sistema falha', () => {
