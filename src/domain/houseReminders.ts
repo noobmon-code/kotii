@@ -1,14 +1,17 @@
 // Avisos da casa por notificação: contas, documentos, tarefas (inclusive
 // manutenções de aparelhos), consultas, vacinas e a dica do clima da manhã. Cada celular escolhe o que
 // quer receber; o plano sai daqui e o app agenda (src/lib/reminders.ts),
-// refazendo ao abrir, então a janela vai andando.
+// refazendo ao abrir, então a janela vai andando. À noite, o resumo de amanhã
+// junta numa notificação só o que a casa tem no dia seguinte (eveSummary).
 
+import type { Recurrence } from './chores';
 import { addDays, diffDays, formatBRDate } from './dates';
 import { describeDocumentStatus } from './documents';
+import { weekdayOf } from './health';
 import { formatBRL } from './money';
 import type { WeatherMorning } from './weather';
 
-export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'weather';
+export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'weather' | 'eve';
 
 export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint: string }[] = [
   { key: 'bills', label: 'Contas a pagar', hint: 'Na véspera, no dia do vencimento e, se ficar em aberto, uma vez depois, às 9h' },
@@ -20,6 +23,11 @@ export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint
     key: 'weather',
     label: 'Dicas do clima',
     hint: 'Às 7h, quando o tempo pede algo: dia de lavar roupa, chuva, calor, frio, temporal. O bairro da casa se define no cartão do clima da tela Hoje',
+  },
+  {
+    key: 'eve',
+    label: 'Resumo de amanhã',
+    hint: 'Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, contas, tarefas, vacinas e documentos. Só quando há alguma coisa',
   },
 ];
 
@@ -50,17 +58,35 @@ export const SCHEDULED_NOTIFICATIONS_LIMIT = 64;
 export const HOUSE_REMINDER_LIMIT = 24;
 /** Além de quando abre o prazo, um lembrete de renovar uma semana antes. */
 export const RENEW_NUDGE_DAYS = 7;
+/** Resumo de amanhã: à noite, o que a casa tem no dia seguinte, numa notificação só. */
+export const EVE_SUMMARY_TIME = '20:00';
+/** Quantas noites ficam agendadas, a partir de hoje (a janela anda a cada sincronização). */
+export const EVE_SUMMARY_DAYS = 7;
+/** Para ler na tela de bloqueio: até 4 itens escritos (com mais, 3 e "e mais N") e 180 caracteres. */
+const EVE_SUMMARY_ITEMS = 4;
+const EVE_SUMMARY_LENGTH = 180;
 
 export interface HouseReminderInput {
   kinds: Record<HouseReminderKind, boolean>;
   bills: { id: string; name: string; amount: number | null; next_due_on: string; active: boolean; autopay: boolean }[];
   documents: { id: string; title: string; expires_on: string | null; remind_days: number }[];
-  chores: { id: string; title: string; due_on: string; active: boolean; equipment_id: string | null }[];
+  /** A repetição só importa para o resumo de amanhã: tarefa de todo dia fica fora dele. */
+  chores: {
+    id: string;
+    title: string;
+    due_on: string;
+    active: boolean;
+    equipment_id: string | null;
+    recurrence?: Recurrence;
+    interval_count?: number;
+  }[];
   /** Consultas agendadas, com data e hora locais já separadas. */
   appointments?: { id: string; title: string; person: string; date: string; time: string; location: string | null; status: string }[];
   vaccines?: { id: string; name: string; dose: string | null; person: string; next_dose_on: string | null }[];
   /** A dica mais importante de cada manhã (ver weatherMornings). */
   weather?: WeatherMorning[];
+  /** Aparelhos, pela garantia que acaba (só o resumo de amanhã usa). */
+  equipment?: { id: string; name: string; warranty_until: string | null }[];
   today: string;
   /** HH:MM de agora: aviso de hoje só se o horário ainda não passou. */
   nowTime: string;
@@ -68,6 +94,101 @@ export interface HouseReminderInput {
   limit?: number;
   /** Atrasos (de conta ou vacina) já avisados neste aparelho (overdueKey): não avisam de novo. */
   overdueWarned?: string[];
+}
+
+/** A ordem dos itens no resumo de amanhã. Uma fonte nova de itens entra aqui e em eveItems. */
+const EVE_ORDER = ['appointments', 'bills', 'vaccines', 'chores', 'documents', 'equipment'] as const;
+
+export interface EveItem {
+  source: (typeof EVE_ORDER)[number];
+  /** O item de origem (a consulta, a conta…). */
+  id: string;
+  text: string;
+  /** Ordem dentro da fonte (a hora da consulta); igual ou sem ela, pelo texto. */
+  sort: string;
+}
+
+export interface EveSummary {
+  title: string;
+  body: string;
+  /** Tudo o que o dia tem, na ordem do resumo. */
+  items: EveItem[];
+  /** Quantos itens o texto traz escritos; os outros ficam no "e mais N". */
+  written: number;
+}
+
+type EveSummaryInput = Pick<HouseReminderInput, 'bills' | 'documents' | 'chores' | 'appointments' | 'vaccines' | 'equipment'>;
+
+const WEEKDAY_NAMES = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
+
+/** "09:00" vira "9h"; "14:30", "14h30". */
+function shortTime(time: string): string {
+  const [h, m] = time.split(':').map(Number);
+  return `${h}h${m ? String(m).padStart(2, '0') : ''}`;
+}
+
+/**
+ * O que a casa tem em `day`, na ordem do resumo. Só datas que os dados já
+ * têm: as repetições que a Agenda mostra como previsão não entram.
+ */
+function eveItems(input: EveSummaryInput, day: string): EveItem[] {
+  const item = (source: EveItem['source'], id: string, text: string, sort = ''): EveItem => ({ source, id, text, sort });
+  const items = [
+    ...(input.appointments ?? [])
+      .filter((a) => a.status === 'agendada' && a.date === day)
+      .map((a) => item('appointments', a.id, `${shortTime(a.time)} ${a.title}${a.person ? ` (${a.person})` : ''}`, a.time)),
+    // Débito automático não precisa de ninguém, como nos avisos de conta.
+    ...input.bills
+      .filter((b) => b.active && !b.autopay && b.next_due_on === day)
+      .map((b) => item('bills', b.id, b.amount != null ? `${b.name} (${formatBRL(b.amount)})` : b.name)),
+    // "Vacina de Bia": "da Bia" ou "do Beto" seria adivinhar.
+    ...(input.vaccines ?? [])
+      .filter((v) => v.next_dose_on === day)
+      .map((v) => item('vaccines', v.id, `Vacina${v.person ? ` de ${v.person}` : ''}: ${v.dose ? `${v.name} (${v.dose})` : v.name}`)),
+    // Tarefa de todo dia faria o resumo tocar toda noite sem dizer nada de novo.
+    ...input.chores
+      .filter((c) => c.active && c.due_on === day && !(c.recurrence === 'daily' && (c.interval_count ?? 1) === 1))
+      .map((c) => item('chores', c.id, c.equipment_id ? `Manutenção: ${c.title}` : c.title)),
+    ...input.documents.filter((d) => d.expires_on === day).map((d) => item('documents', d.id, `Vence: ${d.title}`)),
+    ...(input.equipment ?? []).filter((e) => e.warranty_until === day).map((e) => item('equipment', e.id, `Fim da garantia: ${e.name}`)),
+  ];
+  return items.sort(
+    (a, b) =>
+      EVE_ORDER.indexOf(a.source) - EVE_ORDER.indexOf(b.source) ||
+      a.sort.localeCompare(b.sort) ||
+      a.text.localeCompare(b.text, 'pt-BR') ||
+      a.id.localeCompare(b.id),
+  );
+}
+
+/**
+ * Corta com "…" os textos mais compridos até a soma caber em `room`. Os
+ * curtos ficam inteiros: um título longo não toma o lugar dos outros itens.
+ */
+function fitTexts(texts: string[], room: number): string[] {
+  const total = (max: number) => texts.reduce((sum, text) => sum + Math.min(text.length, max), 0);
+  let max = Math.max(...texts.map((text) => text.length));
+  while (max > 1 && total(max) > room) max -= 1;
+  // O corte não parte um emoji ao meio.
+  const cut = (text: string) => `${text.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, '').trimEnd()}…`;
+  return texts.map((text) => (text.length > max ? cut(text) : text));
+}
+
+/**
+ * O resumo do dia `day`, para tocar na noite anterior: título, texto e os
+ * itens. null quando o dia não tem nada (aquela noite fica sem aviso).
+ */
+export function eveSummary(input: EveSummaryInput, day: string): EveSummary | null {
+  const items = eveItems(input, day);
+  if (!items.length) return null;
+  const written = items.length > EVE_SUMMARY_ITEMS ? EVE_SUMMARY_ITEMS - 1 : items.length;
+  const more = items.length > written ? ` e mais ${items.length - written}` : '';
+  const separator = ' · ';
+  const texts = fitTexts(
+    items.slice(0, written).map((i) => i.text),
+    EVE_SUMMARY_LENGTH - more.length - separator.length * (written - 1),
+  );
+  return { title: `Amanhã, ${WEEKDAY_NAMES[weekdayOf(day)]}`, body: texts.join(separator) + more, items, written };
 }
 
 /** Identifica um atraso: pagar a conta (ou registrar a dose) muda a data, e o atraso novo avisa de novo. */
@@ -90,9 +211,10 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
     body: string,
     { at = time, overdue }: { at?: string; overdue?: string } = {},
   ) => {
-    if (!upcoming(date, at)) return;
+    if (!upcoming(date, at)) return null;
     const key = `${kind}:${id}:${date}${at === time ? '' : `:${at}`}`;
     out.push({ key, kind, date, time: at, title, body, ...(overdue ? { overdue } : {}) });
+    return key;
   };
   // Atraso: só quando este aparelho o vê (sem aviso marcado de antemão, que
   // tocaria mesmo se alguém já tivesse resolvido), e uma vez.
@@ -100,6 +222,26 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
     const overdue = overdueKey(id, since);
     if (!warned.has(overdue)) add(kind, id, nextSlot, title, body, { overdue });
   };
+
+  // Resumo de amanhã: uma noite para cada um dos próximos dias que têm algo
+  // (hoje, só se ainda não deu a hora). A consulta escrita num resumo fica sem
+  // o "Consulta amanhã" dela: uma notificação à noite, e não duas. A que não
+  // está em nenhum (véspera além dessas noites, ou só no "e mais N") mantém o dela.
+  // `carried`: a consulta e o resumo (a chave dele) que a leva escrita.
+  const carried = new Map<string, string>();
+  if (kinds.eve) {
+    for (let i = 0; i < EVE_SUMMARY_DAYS; i++) {
+      const evening = addDays(today, i);
+      const summary = eveSummary(input, addDays(evening, 1));
+      const key = summary && add('eve', 'amanha', evening, summary.title, summary.body, { at: EVE_SUMMARY_TIME });
+      if (!key) continue;
+      for (const item of summary.items.slice(0, summary.written)) {
+        if (item.source === 'appointments') carried.set(item.id, key);
+      }
+    }
+  }
+  // Resumos que estão no lugar de um "Consulta amanhã" (ver o teto, no fim).
+  const standIn = new Set<string>();
 
   if (kinds.bills) {
     for (const bill of input.bills) {
@@ -142,7 +284,9 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
       if (a.status !== 'agendada') continue;
       const where = a.location ? ` (${a.location})` : '';
       const body = `${a.title} — ${a.person}, às ${a.time}${where}.`;
-      add('appointments', a.id, addDays(a.date, -1), 'Consulta amanhã', body, { at: APPOINTMENT_EVE_TIME });
+      const summary = carried.get(a.id);
+      if (summary) standIn.add(summary);
+      else add('appointments', a.id, addDays(a.date, -1), 'Consulta amanhã', body, { at: APPOINTMENT_EVE_TIME });
       // Duas horas antes, mas não de madrugada: consulta cedo fica só com a véspera.
       const [h, m] = a.time.split(':').map(Number);
       const lead = h * 60 + m - APPOINTMENT_LEAD_MINUTES;
@@ -174,7 +318,21 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
     }
   }
 
-  return out
-    .sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time) || a.key.localeCompare(b.key))
-    .slice(0, Math.max(0, input.limit ?? HOUSE_REMINDER_LIMIT));
+  const limit = Math.max(0, input.limit ?? HOUSE_REMINDER_LIMIT);
+  const soonest = (a: HouseReminder, b: HouseReminder) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time) || a.key.localeCompare(b.key);
+  // O resumo de amanhã é um extra: com o teto curto (várias casas, muitos
+  // remédios), ele sai antes de qualquer aviso próprio dos mesmos dias (conta,
+  // consulta, vacina…), da noite mais distante para a mais próxima; só os
+  // avisos de depois desses dias esperam por ele (a janela anda). Menos o que
+  // está no lugar de um "Consulta amanhã": esse vale como o aviso que ele
+  // substitui, na mesma vez da fila, para a consulta não ficar sem a véspera
+  // por causa do teto.
+  const placed = (r: HouseReminder) => (standIn.has(r.key) ? { ...r, time: APPOINTMENT_EVE_TIME, key: '' } : r);
+  const own = out.filter((r) => r.kind !== 'eve' || standIn.has(r.key)).sort((a, b) => soonest(placed(a), placed(b)));
+  const extras = out.filter((r) => r.kind === 'eve' && !standIn.has(r.key)).sort(soonest);
+  // O último dia de que um resumo fala.
+  const lastSummaryDay = addDays(today, EVE_SUMMARY_DAYS);
+  return [...own.filter((r) => r.date <= lastSummaryDay), ...extras, ...own.filter((r) => r.date > lastSummaryDay)]
+    .slice(0, limit)
+    .sort(soonest);
 }

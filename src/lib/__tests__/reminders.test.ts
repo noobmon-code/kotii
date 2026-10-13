@@ -318,6 +318,25 @@ describe('no navegador (Web Push)', () => {
     });
   });
 
+  it('o resumo de amanhã vai para a agenda do servidor, como os outros avisos da casa', async () => {
+    await onWeb(true, async (reminders, web) => {
+      expect(await reminders.setHouseReminderKind('eve', true)).toBe(true);
+      const bills = [{ id: 'b1', name: 'Luz', amount: 180, next_due_on: '2026-09-29', active: true, autopay: false }];
+      await reminders.syncHouseReminders(
+        { bills, documents: [], chores: [], appointments: [], vaccines: [], equipment: [] },
+        { householdId: 'casa', today: '2026-09-27' },
+      );
+      expect([...web.scheduled.values()]).toEqual([
+        {
+          content: { title: 'Amanhã, terça-feira', body: 'Luz (R$ 180,00)', data: { reminder: 'eve:amanha:2026-09-28:20:00', householdId: 'casa' } },
+          trigger: { type: 'date', date: new Date(2026, 8, 28, 20, 0), channelId: 'casa' },
+        },
+      ]);
+      await reminders.setHouseReminderKind('eve', false);
+      expect(web.scheduled.size).toBe(0);
+    });
+  });
+
   it('agenda no servidor; ao abrir, a agenda fica só com o que o navegador conhece; ao sair, a inscrição sai', async () => {
     await onWeb(true, async (reminders, web) => {
       expect(reminders.remindersSupported).toBe(true);
@@ -389,6 +408,7 @@ describe('house reminders', () => {
         appointments: false,
         vaccines: false,
         weather: false,
+        eve: false,
       });
     });
   });
@@ -563,6 +583,123 @@ describe('house reminders', () => {
       await reminders.setHouseReminderKind('documents', true);
       await reminders.syncHouseReminders(data, { householdId: 'casa', today });
       expect(live.size).toBe(64);
+    });
+  });
+
+  // O resumo de amanhã só é feito com consultas, vacinas e aparelhos carregados.
+  const loaded = { ...data, bills: [{ ...data.bills[0], amount: 180, next_due_on: '2026-09-29' }], appointments: [], vaccines: [], equipment: [] };
+  const pediatra = { id: 'a1', title: 'Pediatra', person: 'Bia', date: '2026-09-29', time: '09:00', location: null, status: 'agendada' };
+  const withConsulta = { ...loaded, appointments: [pediatra] };
+  type Live = Map<string, { content: { data: { reminder: string } } }>;
+  const remindersOf = (live: Live) => [...live.values()].map((r) => r.content.data.reminder).sort();
+  const summaries = (live: Live) =>
+    [...live.entries()].flatMap(([id, r]) => {
+      const { title, body, data: extra } = (r as unknown as { content: { title: string; body: string; data: { reminder: string } } }).content;
+      return extra.reminder.startsWith('eve:') ? [{ id, title, body }] : [];
+    });
+
+  it('resumo de amanhã: às 20h da véspera, no lugar do "Consulta amanhã"; desligar tira só ele', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('appointments', true);
+      await reminders.setHouseReminderKind('eve', true);
+      await reminders.syncHouseReminders(withConsulta, { householdId: 'casa', today });
+      expect(remindersOf(live)).toEqual(['appointments:a1:2026-09-29:07:00', 'eve:amanha:2026-09-28:20:00']);
+      const [summary] = summaries(live);
+      expect(summary).toMatchObject({ title: 'Amanhã, terça-feira', body: '9h Pediatra (Bia) · Luz (R$ 180,00)' });
+      expect((live.get(summary.id) as unknown as { trigger: unknown }).trigger).toEqual({
+        type: 'date',
+        date: new Date(2026, 8, 28, 20, 0),
+        channelId: 'casa',
+      });
+      // Desligar tira só o resumo, na hora; a próxima sincronização devolve o "Consulta amanhã".
+      await reminders.setHouseReminderKind('eve', false);
+      expect(remindersOf(live)).toEqual(['appointments:a1:2026-09-29:07:00']);
+      await reminders.syncHouseReminders(withConsulta, { householdId: 'casa', today });
+      expect(remindersOf(live)).toEqual(['appointments:a1:2026-09-28:19:00', 'appointments:a1:2026-09-29:07:00']);
+    });
+  });
+
+  it('quem já tinha escolhido os avisos antes de o resumo existir começa com ele desligado', async () => {
+    await withHouse(async (reminders, { live, storage }) => {
+      storage.set('house-reminders:kinds', JSON.stringify({ bills: true, documents: false, chores: false, appointments: true, vaccines: false, weather: false }));
+      expect((await reminders.getHouseReminderKinds()).eve).toBe(false);
+      await reminders.syncHouseReminders(withConsulta, { householdId: 'casa', today });
+      expect(remindersOf(live)).toEqual([
+        'appointments:a1:2026-09-28:19:00',
+        'appointments:a1:2026-09-29:07:00',
+        'bills:b1:2026-09-28',
+        'bills:b1:2026-09-29',
+      ]);
+    });
+  });
+
+  it('sem as consultas, as vacinas ou os aparelhos, o resumo agendado fica e nenhum é feito pela metade; com tudo de volta, é refeito', async () => {
+    await withHouse(async (reminders, { live, storage }) => {
+      await reminders.setHouseReminderKind('eve', true);
+      // Os aparelhos (as garantias) ainda não carregaram: nada de resumo por enquanto.
+      await reminders.syncHouseReminders({ ...loaded, equipment: undefined }, { householdId: 'casa', today });
+      expect(live.size).toBe(0);
+      await reminders.syncHouseReminders(loaded, { householdId: 'casa', today });
+      const [first] = summaries(live);
+      expect(first.body).toBe('Luz (R$ 180,00)');
+      // Marcaram uma consulta para o mesmo dia, mas falta um dos dados: o resumo fica como está.
+      for (const missing of ['appointments', 'vaccines', 'equipment'] as const) {
+        await reminders.syncHouseReminders({ ...withConsulta, [missing]: undefined }, { householdId: 'casa', today });
+        expect(summaries(live)).toEqual([first]);
+      }
+      // Tudo carregado: o resumo é refeito, agora com a consulta.
+      await reminders.syncHouseReminders(withConsulta, { householdId: 'casa', today });
+      expect(summaries(live).map((s) => s.body)).toEqual(['9h Pediatra (Bia) · Luz (R$ 180,00)']);
+      expect(live.has(first.id)).toBe(false);
+      // O resumo tocou (saiu da agenda) e as vacinas faltam de novo: ele não volta nem fica na lista guardada.
+      live.clear();
+      await reminders.syncHouseReminders({ ...withConsulta, vaccines: undefined }, { householdId: 'casa', today });
+      expect(live.size).toBe(0);
+      expect((JSON.parse(storage.get('house-reminders:scheduled:casa')!) as { ids: string[] }).ids).toEqual([]);
+    });
+  });
+
+  it('sem os dados do resumo, a consulta fica com o "Consulta amanhã" dela (dois avisos na noite, e não nenhum)', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('appointments', true);
+      await reminders.setHouseReminderKind('eve', true);
+      await reminders.syncHouseReminders(withConsulta, { householdId: 'casa', today });
+      expect(remindersOf(live)).toEqual(['appointments:a1:2026-09-29:07:00', 'eve:amanha:2026-09-28:20:00']);
+      const [held] = summaries(live);
+      // Os aparelhos não carregaram: o resumo já agendado fica, e as consultas são refeitas sem contar com ele.
+      await reminders.syncHouseReminders({ ...withConsulta, equipment: undefined }, { householdId: 'casa', today });
+      expect(remindersOf(live)).toEqual(['appointments:a1:2026-09-28:19:00', 'appointments:a1:2026-09-29:07:00', 'eve:amanha:2026-09-28:20:00']);
+      expect(live.has(held.id)).toBe(true);
+      // Carregaram: volta a ser uma notificação só naquela noite.
+      await reminders.syncHouseReminders(withConsulta, { householdId: 'casa', today });
+      expect(remindersOf(live)).toEqual(['appointments:a1:2026-09-29:07:00', 'eve:amanha:2026-09-28:20:00']);
+    });
+  });
+
+  it('só o texto do resumo mudou: ele é agendado de novo', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('eve', true);
+      await reminders.syncHouseReminders(loaded, { householdId: 'casa', today });
+      const [before] = summaries(live);
+      // Mesmos dados: nada é refeito.
+      await reminders.syncHouseReminders(loaded, { householdId: 'casa', today });
+      expect(summaries(live)).toEqual([before]);
+      // O valor da conta mudou (com os avisos de conta desligados, é só o texto do resumo que muda).
+      await reminders.syncHouseReminders({ ...loaded, bills: [{ ...loaded.bills[0], amount: 195.5 }] }, { householdId: 'casa', today });
+      expect(live.has(before.id)).toBe(false);
+      expect(summaries(live).map((s) => [s.title, s.body])).toEqual([['Amanhã, terça-feira', 'Luz (R$ 195,50)']]);
+    });
+  });
+
+  it('resumo com várias casas: leva o nome da casa e, no teto curto, sai antes do aviso da conta', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('bills', true);
+      await reminders.setHouseReminderKind('eve', true);
+      await reminders.syncHouseReminders(loaded, { householdId: 'praia', label: 'Praia', today });
+      expect(remindersOf(live)).toEqual(['bills:b1:2026-09-28', 'bills:b1:2026-09-29', 'eve:amanha:2026-09-28:20:00']);
+      expect(summaries(live).map((s) => s.title)).toEqual(['Amanhã, terça-feira · Praia']);
+      await reminders.syncHouseReminders(loaded, { householdId: 'praia', label: 'Praia', limit: 2, today });
+      expect(remindersOf(live)).toEqual(['bills:b1:2026-09-28', 'bills:b1:2026-09-29']);
     });
   });
 });
