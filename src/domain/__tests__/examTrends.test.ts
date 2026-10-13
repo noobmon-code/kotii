@@ -1769,6 +1769,26 @@ describe('examTrends', () => {
     expect(old(result('Neutrófilos', '9,5', '10³/µL', 'alto'))).toContain(
       '- Neutrófilos: 9,5 10³/µL em 12/03/2025 (marcado no laudo: acima). Há resultados mais recentes em outra unidade (05/03/2026). Não foram comparados.\n',
     );
+    // Com um texto no meio (05/09) e as duas medidas depois (10/09), o aviso fala dos mais novos, os de 10/09;
+    // com o texto por último, fala dele.
+    const mixed = (textDate: string, measuresDate: string) =>
+      visitSummary(
+        person(),
+        [
+          exam('2025-09-01', [result('Neutrófilos', '80', null, 'alto')]),
+          exam(textDate, [result('Neutrófilos', 'Amostra coagulada')]),
+          exam(measuresDate, [result('Neutrófilos', '55', '%'), result('Neutrófilos', '4.125', '/mm³')]),
+          exam('2026-09-20', [result('Glicose', '92', 'mg/dL')]),
+        ],
+        [],
+        '2026-10-13',
+      );
+    expect(mixed('2026-03-05', '2026-03-10')).toContain(
+      '- Neutrófilos: 80 em 01/09/2025 (marcado no laudo: acima). Há resultados mais recentes com unidade (10/03/2026). Não foram comparados.\n',
+    );
+    expect(mixed('2026-03-10', '2026-03-05')).toContain(
+      '- Neutrófilos: 80 em 01/09/2025 (marcado no laudo: acima). Há um resultado mais recente em texto (10/03/2026): Amostra coagulada. Não foi comparado.\n',
+    );
     // A linha da tela não muda: o aviso é só do resumo.
     const screen = examTrends([
       exam('2025-03-12', [result('Neutrófilos', '9,5', '10³/µL', 'alto')]),

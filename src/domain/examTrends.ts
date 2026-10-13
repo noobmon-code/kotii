@@ -1111,7 +1111,12 @@ export function visitSummary(person: SummaryPerson, exams: TrendExam[], medicati
   // texto marcado de um laudo antigo também diz quando o item tem um número mais novo, que pode nem estar no
   // resumo. Só esses avisos: o material, quando é o caso, já vai ao lado do nome.
   const noted = (line: string, item: TrendItem) => {
-    const note = newerNote(item) ?? newerNumberNote(item) ?? newerUnclearNote(item);
+    // Dos avisos, vale o do resultado mais novo: com um texto de 05/09 e resultados de 10/09 que não dá para
+    // dizer de qual medida são, a linha fala dos de 10/09 (o texto não é "o mais recente" do item). `newerUnclear`
+    // só existe sem `newerElsewhere`, então a disputa é só com o texto.
+    const unclear = item.newerUnclear;
+    const note =
+      unclear && (!item.newerText || unclear.date > item.newerText.date) ? newerUnclearNote(item) : (newerNote(item) ?? newerNumberNote(item));
     return note ? `${line}. ${note}` : line;
   };
   list(
