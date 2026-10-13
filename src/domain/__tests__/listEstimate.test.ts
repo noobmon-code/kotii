@@ -280,6 +280,29 @@ describe('estimateList', () => {
     expect(estimate).toMatchObject({ total: 71.9, approximateCount: 2 });
   });
 
+  it('dois produtos ligados ao mesmo nome, comprados na mesma nota: a ordem das ligações e dos preços não muda a conta', () => {
+    const at = '2026-10-05T18:30:00Z';
+    const quotes = [price('ninho', 'a', 32.9, at), price('italac', 'a', 5.49, at)];
+    const rows = [
+      { name_key: 'leite', product_id: 'ninho' },
+      { name_key: 'leite', product_id: 'italac' },
+    ];
+    const list = [item('l', 'Leite', null)];
+    const seen = new Set<string>();
+    for (const links of [rows, [...rows].reverse()]) {
+      for (const prices of [quotes, [...quotes].reverse()]) {
+        const estimate = estimateList(list, prices, { links: new LinkIndex(links) });
+        seen.add(`${estimate.byItem.get('l')!.productId} ${estimate.total}`);
+      }
+    }
+    // No empate, o de menor id: sempre o mesmo produto e o mesmo total.
+    expect([...seen]).toEqual(['italac 5.49']);
+    // O mesmo produto em dois mercados no mesmo instante: o último preço também não depende da ordem.
+    const two = [price('italac', 'b', 6.1, at), price('italac', 'a', 5.49, at)];
+    const totals = [two, [...two].reverse()].map((prices) => estimateList([item('i', 'Leite Italac', 'italac')], prices).total);
+    expect(totals).toEqual([5.49, 5.49]);
+  });
+
   it('o preço estimado de 1 unidade, escrito em reais, é o custo do item: não um centavo a mais', () => {
     // R$ 31,49 num mercado e R$ 9,57 no outro: num terceiro, cerca de R$ 20,53 (a média). E outros pares, em que
     // a média cai perto do meio centavo: arredondada duas vezes (4 casas, depois centavos), passava do custo.
@@ -1130,6 +1153,28 @@ describe('pantryHits', () => {
     // E o palpite sem produto ("Leite" marcado na lista) segue valendo pelo nome, tenha a entrada produto ou não.
     const named = [{ name: 'Leite', productId: null, lastAt: '2026-10-02T12:00:00', everyDays: 5 }];
     expect(pantryHits([item('n', 'Leite', 'ninho')], pantry, { today, ranOut: named }).size).toBe(0);
+  });
+
+  it('palpites empatados no dia: o selo não depende da ordem em que eles e as ligações chegam', () => {
+    // Italac e Ninho, ligados a "Leite", comprados pela última vez na mesma nota (2 out), com costumes diferentes:
+    // o Italac a cada 5 dias (acabou), o Ninho a cada 30. Uma caixa de "Leite" posta à mão em 5 out.
+    const guesses = [
+      { name: 'Leite Integral Italac 1L', productId: 'italac', lastAt: '2026-10-02T12:00:00', everyDays: 5 },
+      { name: 'Leite Ninho 800g', productId: 'ninho', lastAt: '2026-10-02T12:00:00', everyDays: 30 },
+    ];
+    const rows = [
+      { name_key: 'leite', product_id: 'ninho' },
+      { name_key: 'leite', product_id: 'italac' },
+    ];
+    const byHand = [stock('Leite', null, { purchased_on: '2026-10-06' })];
+    const sizes = new Set<number>();
+    for (const ranOut of [guesses, [...guesses].reverse()]) {
+      for (const links of [rows, [...rows].reverse()]) {
+        sizes.add(pantryHits([item('l', 'Leite', null)], byHand, { links: new LinkIndex(links), today, ranOut }).size);
+      }
+    }
+    // No empate vale o costume mais curto (5 dias): a caixa de 6 out, de 6 dias atrás, já passou dele. Sempre.
+    expect([...sizes]).toEqual([0]);
   });
 
   it('o que passou muito do costume continua fora: o selo não volta depois de 3 vezes o intervalo', () => {

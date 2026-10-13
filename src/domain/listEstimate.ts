@@ -93,8 +93,17 @@ const round4 = (n: number) => Math.round(n * 10000) / 10000;
 const round8 = (n: number) => Math.round(n * 1e8) / 1e8;
 const average = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
 
-const newest = <T extends { purchasedAt: string }>(quotes: T[]) =>
-  quotes.reduce((a, b) => (Date.parse(b.purchasedAt) > Date.parse(a.purchasedAt) ? b : a));
+const byId = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+/**
+ * O preço mais recente. No empate de data (dois produtos na mesma nota, dois mercados no mesmo dia), sempre o
+ * mesmo: o de menor produto, mercado e unidade. Nem a ordem das ligações nem a dos preços decide a conta.
+ */
+const newest = (quotes: EstimatePrice[]) =>
+  quotes.reduce((a, b) => {
+    const [mine, theirs] = [Date.parse(b.purchasedAt), Date.parse(a.purchasedAt)];
+    if (mine !== theirs) return mine > theirs ? b : a;
+    return (byId(b.productId, a.productId) || byId(b.storeId, a.storeId) || byId(b.unit, a.unit)) < 0 ? b : a;
+  });
 
 /** O preço que serve à unidade da lista: nela; senão, numa que converte para ela (g e kg); senão, o mais recente. */
 function bestForUnit(listUnit: string, quotes: EstimatePrice[]): EstimatePrice {
@@ -445,22 +454,29 @@ export function pantryHits(
   const goneNames = new Map<string, Gone>();
   const goneProductNames = new Map<string, Gone>();
   const goneProducts = new Map<string, Gone>();
+  /**
+   * Entre dois palpites, o da compra mais recente. No empate de dia, sempre o mesmo: o do próprio produto antes
+   * do emprestado pelo nome, depois o de costume mais curto. A ordem em que os palpites e as ligações chegam não decide.
+   */
+  const later = (a: Gone | null, b: Gone | null): Gone | null => {
+    if (!a || !b) return a ?? b;
+    if (a.day !== b.day) return a.day > b.day ? a : b;
+    if (Boolean(a.lent) !== Boolean(b.lent)) return a.lent ? b : a;
+    return b.everyDays < a.everyDays ? b : a;
+  };
+  const keep = <K>(map: Map<K, Gone>, key: K, gone: Gone) => map.set(key, later(map.get(key) ?? null, gone) ?? gone);
   for (const gone of ranOut) {
     const latest = { day: toISODate(new Date(gone.lastAt)), everyDays: gone.everyDays };
     const name = normalizeSearch(gone.name);
-    const byName = gone.productId ? goneProductNames : goneNames;
-    if (latest.day > (byName.get(name)?.day ?? '')) byName.set(name, latest);
+    keep(gone.productId ? goneProductNames : goneNames, name, latest);
     // O palpite sem produto ("Leite" marcado na lista) é do produto que as notas ligaram a esse nome, quando é um
     // só: vale para as entradas dele e para o item que já o tem. Com dois ligados, não dá para saber qual acabou.
     const linked = gone.productId ? [] : [...new Set(links?.productsFor(gone.name))];
     const productId = gone.productId ?? (linked.length === 1 ? linked[0] : null);
-    if (productId && latest.day > (goneProducts.get(productId)?.day ?? '')) {
-      goneProducts.set(productId, gone.productId ? latest : { ...latest, lent: true });
-    }
+    if (productId) keep(goneProducts, productId, gone.productId ? latest : { ...latest, lent: true });
   }
   /** O palpite de que acabou para esse nome ou produto (o da compra mais recente); null quando o app não acha que acabou. */
   const goneOf = (key: string, productId: string | null): Gone | null => {
-    const later = (a: Gone | null, b: Gone | null) => (!a || !b ? (a ?? b) : a.day > b.day ? a : b);
     // O palpite de um produto vale pelo nome só para o que não diz qual produto é (a entrada posta à mão, o item
     // digitado). A entrada de outro produto com o mesmo nome (Italac e Ninho, os dois renomeados para "Leite")
     // responde por ela mesma.
@@ -489,10 +505,10 @@ export function pantryHits(
     const itemGone = goneOf(name, item.productId);
     // O que acabou pode estar com o nome da nota, sob um produto ligado a este nome (tenha o item produto ou
     // não). A entrada sem produto (posta à mão) não diz qual é: vale o palpite mais recente entre os ligados.
-    const linkedGone = (links?.productsFor(item.name) ?? []).reduce<Gone | null>((latest, productId) => {
-      const gone = goneProducts.get(productId) ?? null;
-      return gone && (!latest || gone.day > latest.day) ? gone : latest;
-    }, null);
+    const linkedGone = (links?.productsFor(item.name) ?? []).reduce<Gone | null>(
+      (latest, productId) => later(latest, goneProducts.get(productId) ?? null),
+      null,
+    );
     const same = fresh.filter(({ entry, key }) => {
       if (!stillThere(entry.purchased_on, itemGone)) return false;
       if (!entry.product_id && !stillThere(entry.purchased_on, linkedGone)) return false;
