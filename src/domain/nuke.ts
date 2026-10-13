@@ -72,11 +72,15 @@ export interface NukeSnapshot {
     budgets?: { category: string; limit: number; spent: number }[];
   } | null;
   appointments: { starts_at: string; title: string; person: string }[];
+  /** Compromissos da família e aniversários de hoje aos próximos 7 dias (calendarLines). */
+  events?: string[];
   documents: { title: string; status: string }[];
   warranties: { name: string; status: string }[];
 }
 
-const LIMIT = 25;
+/** Quantos itens cada lista do retrato escreve; o resto vira "e mais N". */
+export const NUKE_LIST_LIMIT = 25;
+const LIMIT = NUKE_LIST_LIMIT;
 
 function listOrNone(items: string[], limit = LIMIT): string {
   if (!items.length) return 'nada';
@@ -127,6 +131,7 @@ export function buildNukeContext(s: NukeSnapshot): string {
     `Consultas (próximos 14 dias): ${listOrNone(
       s.appointments.map((a) => `${shortDate(a.starts_at.slice(0, 10))} ${a.starts_at.slice(11, 16)} ${a.title} (${a.person})`),
     )}.`,
+    `Compromissos da família e aniversários (hoje e próximos 7 dias): ${listOrNone(s.events ?? [])}.`,
     `Documentos pedindo atenção: ${listOrNone(s.documents.map((d) => `${d.title} — ${d.status}`))}.`,
     `Garantias acabando: ${listOrNone(s.warranties.map((w) => `${w.name} — ${w.status}`))}.`,
   );

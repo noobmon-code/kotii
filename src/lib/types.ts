@@ -1,5 +1,6 @@
 // Linhas do banco como o app as recebe (ver supabase/migrations).
 
+import type { EventDayLike, FamilyEventLike } from '@/domain/familyEvents';
 import type { DietMeal, DietShoppingItem, ExamResult, WorkoutSession } from '@/domain/health';
 import type { ListPriority } from '@/domain/listItem';
 
@@ -211,6 +212,17 @@ export interface Appointment {
   notes: string | null;
   status: 'agendada' | 'realizada' | 'cancelada';
 }
+
+/**
+ * Compromisso da família; quando repete, a linha é a regra e as datas saem
+ * dela (src/domain/familyEvents.ts). As horas chegam como HH:MM.
+ */
+export interface FamilyEvent extends FamilyEventLike {
+  notes: string | null;
+}
+
+/** O que muda num dia de um compromisso: quem leva, quem busca ou "não vai ter". */
+export type FamilyEventDay = EventDayLike;
 
 export interface Vaccine {
   id: string;

@@ -4,6 +4,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { router } from 'expo-router';
 
+import { useFamilyCalendar } from '@/data/family';
 import { useBills, useBudgets, useRecentBillPayments, useSaveExpense, useSpending } from '@/data/finance';
 import { toSchedule, useChores, useDoses, useMedications, usePantry, useSaveChore } from '@/data/home';
 import { useDocuments, useEquipmentList } from '@/data/house';
@@ -17,11 +18,12 @@ import { budgetProgress } from '@/domain/budget';
 import { addDays } from '@/domain/dates';
 import { describeDocumentStatus, documentsNeedingAttention } from '@/domain/documents';
 import { describeWarranty, warrantyStatus } from '@/domain/equipment';
+import { calendarLines } from '@/domain/familyEvents';
 import { monthLabel, monthRange, previousMonth, shiftMonth, summarize } from '@/domain/finance';
 import { upcomingAppointments } from '@/domain/health';
 import { doseKey, dosesForDay } from '@/domain/medications';
 import { menuLines } from '@/domain/menu';
-import { buildNukeContext, parseActions, type NukeAction, type NukeScreen, type NukeSnapshot } from '@/domain/nuke';
+import { buildNukeContext, NUKE_LIST_LIMIT, parseActions, type NukeAction, type NukeScreen, type NukeSnapshot } from '@/domain/nuke';
 import { expiryStatus, groupPantry } from '@/domain/pantry';
 import { supplyLines } from '@/domain/supplies';
 import { useHousehold } from '@/lib/auth';
@@ -72,6 +74,9 @@ export function useNukeContext(today: string): NukeContextState {
   const documents = useDocuments();
   const equipment = useEquipmentList();
   const menu = useMenu(today, addDays(today, 6));
+  // Fora de `queries`: sem os compromissos (não carregaram, ou as tabelas ainda
+  // não existem), o retrato sai com os aniversários, que vêm das fichas.
+  const family = useFamilyCalendar();
   // Fora de `queries`: o retrato não espera pelas reposições nem falha com
   // elas. Se ainda não chegaram (ou o banco não tem as tabelas), a linha fica de fora.
   const supplies = useSupplies();
@@ -97,6 +102,7 @@ export function useNukeContext(today: string): NukeContextState {
   if (missing.some((q) => q.isError)) {
     return { status: 'error', retry: () => missing.forEach((q) => q.refetch()) };
   }
+  // Os compromissos são um extra: o Nuke não espera por eles (sem eles, o retrato sai só com os aniversários).
   if (missing.length || !household.data) return { status: 'loading' };
   const { household: house, members, me } = household.data;
   const memberName = (id: string | null) => members.find((m) => m.user_id === id)?.display_name ?? null;
@@ -178,6 +184,8 @@ export function useNukeContext(today: string): NukeContextState {
         title: a.title,
         person: people.data?.find((p) => p.id === a.person_id)?.name ?? '',
       })),
+    // Com mais linhas que o retrato escreve, a rotina é que fica para o "e mais N".
+    events: calendarLines(family.calendar, today, 7, NUKE_LIST_LIMIT),
     documents: documentsNeedingAttention(documents.data ?? [], today).map(({ document, status }) => ({
       title: document.title,
       status: describeDocumentStatus(status, document.expires_on),
