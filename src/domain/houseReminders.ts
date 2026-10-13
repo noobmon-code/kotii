@@ -89,6 +89,8 @@ const EVE_PLACE_MIN = 8;
 const EVE_BRING_MIN = 15;
 /** Do título cortado ficam pelo menos estas letras (fora a hora e o "…"); sem isso, o parêntese do compromisso não fica à parte (ver fitItems). */
 const EVE_TITLE_MIN = 12;
+/** Do último verbo do parêntese ("leva", "busca") ficam pelo menos estas letras no corte de sempre ("bu…"), ou o título é que encolhe (ver fitItems). */
+const EVE_VERB_MIN = 2;
 /** Depois de qualquer hora do dia, na fila do teto (ver o fim de planHouseReminders). */
 const END_OF_DAY = '24:00';
 
@@ -292,30 +294,58 @@ function fitTexts(texts: string[], room: number): string[] {
 }
 
 /**
- * Os textos dos itens escritos, cabendo em `room`. O parêntese do compromisso
- * (de quem é, quem leva e busca) fica à parte, inteiro: quem divide o espaço,
- * e encolhe, são os títulos (o item sem parêntese é só título). Quando de um
- * título cortado sobrariam menos de EVE_TITLE_MIN letras, o parêntese desse
- * item volta para o texto e o corte dele é o de sempre, no fim.
+ * Os textos dos itens escritos, cabendo em `room`. O ponto de partida é o
+ * corte de sempre (fitTexts sobre os textos inteiros), e é ele que vale para
+ * tudo o que não é compromisso: a conta, a vacina ou a consulta nunca ficam
+ * com menos do que teriam sem os compromissos por perto. Ele também fica
+ * quando deixa todo parêntese legível (inteiro, ou sem o fim do último verbo).
+ * Senão, entre os compromissos, o parêntese (de quem é, quem leva e busca)
+ * fica à parte, inteiro, e quem divide o espaço deles, e encolhe, são os títulos. O
+ * compromisso de cujo título cortado sobrariam menos de EVE_TITLE_MIN letras
+ * volta ao corte de sempre, com o espaço que ele lhe dava, e os outros dividem
+ * o que fica.
  */
 function fitItems(items: EveItem[], room: number): string[] {
+  const usual = fitTexts(items.map((item) => item.text), room);
   // As letras do título que ficaram no item cortado: sem a hora da frente e sem o "…".
   const kept = (item: EveItem, cut: string) => cut.length - 1 - (item.sort ? shortTime(item.sort).length + 1 : 0);
-  let apart = items.map((item) => !!item.detail);
+  // O título com um parêntese dele mesmo, cortado lá dentro ("Reunião (pais…"), não fica colado no outro parêntese: o corte volta para antes, se ainda sobra título.
+  const closed = (item: EveItem, head: string) => {
+    const open = head.lastIndexOf('(');
+    if (!head.endsWith('…') || open < 0 || head.includes(')', open)) return head;
+    const cut = `${head.slice(0, open).replace(/[\s,]+$/, '')}…`;
+    return kept(item, cut) >= EVE_TITLE_MIN ? cut : head;
+  };
+  // O corte de sempre que só come o fim do último verbo do parêntese ("Vó Maria bus…") ainda diz quem leva e
+  // quem busca: fica ele, e nenhum título encolhe por duas letras.
+  const readable = (item: EveItem, cut: string) => {
+    if (cut === item.text) return true;
+    const verb = /(leva|busca)\)$/.exec(item.text)?.[1];
+    return !!verb && cut.length - 1 >= item.text.length - 1 - verb.length + EVE_VERB_MIN;
+  };
+  if (items.every((item, i) => !item.detail || readable(item, usual[i]))) return usual;
+  let sharing = items.map((item) => item.source === 'events');
   for (;;) {
-    const tails = items.map((item, i) => (apart[i] ? ` (${item.detail})` : ''));
+    // Sem parêntese para guardar, o corte de sempre.
+    if (!sharing.some((shares, i) => shares && items[i].detail)) return usual;
+    const tails = items.map((item, i) => (sharing[i] && item.detail ? ` (${item.detail})` : ''));
     const heads = items.map((item, i) => item.text.slice(0, item.text.length - tails[i].length));
-    const fitted = fitTexts(heads, room - tails.join('').length);
-    const texts = fitted.map((head, i) => head + tails[i]);
-    const short = items.map((item, i) => fitted[i] !== heads[i] && kept(item, fitted[i]) < EVE_TITLE_MIN);
+    // O espaço dos compromissos que dividem: o que sobra dos parênteses deles e do corte de sempre dos outros itens.
+    const own = room - tails.join('').length - usual.reduce((sum, text, i) => sum + (sharing[i] ? 0 : text.length), 0);
+    const at = items.flatMap((_, i) => (sharing[i] ? [i] : []));
+    const cut = fitTexts(at.map((i) => heads[i]), own);
     // Os parênteses sozinhos já não cabem (títulos de uma letra não têm o que cortar).
-    const over = texts.join('').length > room;
-    if (!apart.some(Boolean) || (!over && !short.some(Boolean))) return texts;
-    // Volta ao corte de sempre o compromisso cujo título ficou curto demais. Se
-    // quem ficou sem espaço foi só um item sem parêntese à parte, voltam todos:
-    // nenhum item some para o parêntese de outro ficar inteiro.
-    const back = !over && short.some((s, i) => s && apart[i]) ? short : apart;
-    apart = apart.map((a, i) => a && !back[i]);
+    if (cut.join('').length > own) return usual;
+    const fitted = new Map(at.map((i, k) => [i, cut[k]]));
+    const short = at.filter((i) => fitted.get(i) !== heads[i] && kept(items[i], fitted.get(i)!) < EVE_TITLE_MIN);
+    if (!short.length) {
+      return usual.map((text, i) => {
+        const head = fitted.get(i);
+        if (head === undefined) return text;
+        return (tails[i] ? closed(items[i], head) : head) + tails[i];
+      });
+    }
+    sharing = sharing.map((shares, i) => shares && !short.includes(i));
   }
 }
 
@@ -353,12 +383,14 @@ export function eveSummary(input: EveSummaryInput, day: string): EveSummary | nu
     left -= fitted.length;
     return fitted;
   };
+  // Primeiro os locais de todos, na ordem: o que levar de um compromisso não
+  // toma o lugar do local da consulta que vem depois dele.
+  const places = shown.map((item) => (item.place ? `, ${item.place}` : ''));
+  const placed = places.map((place) => fit(place, EVE_PLACE_MIN));
   const parts = shown.map((item, i) => {
-    const place = item.place ? `, ${item.place}` : '';
-    const fitted = fit(place, EVE_PLACE_MIN);
-    const text = texts[i] + fitted;
+    const text = texts[i] + placed[i];
     // O que levar só vem depois do local inteiro; o ponto não se repete depois de um texto que já termina com pontuação.
-    if (!item.bring || fitted !== place) return text;
+    if (!item.bring || placed[i] !== places[i]) return text;
     return text + fit(`${/[.!?…]$/.test(text) ? '' : '.'} ${item.bring}`, EVE_BRING_MIN);
   });
   return { title: `Amanhã, ${WEEKDAY_NAMES[weekdayOf(day)]}`, body: parts.join(separator) + more, items, written };
