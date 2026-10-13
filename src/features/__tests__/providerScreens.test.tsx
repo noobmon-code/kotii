@@ -333,19 +333,30 @@ describe('salvar o serviço', () => {
     await type(AMOUNT, '250,00');
   });
 
-  it('espera o serviço salvo voltar para o cache antes de fechar, com o formulário na frente', async () => {
-    hold(only('service_jobs', true));
+  it('não fica preso à busca do serviço salvo: o gasto é gravado e a tela fecha, e quem abre o mesmo serviço em seguida espera a busca', async () => {
+    await act(async () => copySwitch()!.props.onValueChange(true));
+    // Depois de salvar, nenhuma busca responde (internet lenta, ou que caiu).
+    hold((request) => request.verb === 'select');
     await press('Salvar');
     expect(asked('service_jobs', 'update')[0].values).toMatchObject({ amount: 250 });
-    // A busca do serviço salvo ainda anda: a tela não fechou, e o formulário não virou "carregando".
-    expect(router.back).not.toHaveBeenCalled();
-    expect(has(Loading)).toBe(false);
-    expect(field(AMOUNT)!.props.value).toBe('250,00');
-
-    await release('ok');
+    expect(mockNet.held.length).toBeGreaterThan(0);
+    // O gasto não espera a busca, nem o fechar da tela: o serviço já foi salvo.
+    expect(asked('expenses', 'insert').map((request) => request.values)).toEqual([expect.objectContaining({ amount: 250 })]);
     expect(router.back).toHaveBeenCalledTimes(1);
-    expect(queryClient.getQueryData<ServiceJob>([JOBS_KEY, 'job', 'j1'])?.amount).toBe(250);
     expect(notify).not.toHaveBeenCalled();
+
+    // O mesmo serviço aberto de novo, com a busca ainda a caminho: espera, em vez de mostrar o de antes (R$ 180,00).
+    await act(async () => renderer?.unmount());
+    expect(queryClient.getQueryData<ServiceJob>([JOBS_KEY, 'job', 'j1'])?.amount).toBe(180);
+    await open(ServiceJobScreen, { id: 'j1' });
+    expect(has(Loading)).toBe(true);
+    expect(field(AMOUNT)).toBeUndefined();
+
+    online();
+    await release('ok');
+    expect(field(AMOUNT)!.props.value).toBe('250,00');
+    expect(router.back).toHaveBeenCalledTimes(1);
+    expect(asked('expenses', 'insert')).toHaveLength(1);
   });
 
   it('a busca depois de salvar falhou: o serviço foi salvo, e a tela fecha sem aviso de erro', async () => {
