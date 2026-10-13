@@ -50,8 +50,11 @@ export function resolveItem(
   catalog: Map<string, CatalogProduct>,
   purchasedOn: string,
 ): ResolvedItem {
+  // Produto que não está mais no catálogo (outra pessoa da casa o juntou com outro) não é escolha: nem o que a
+  // pessoa escolheu nesta revisão, nem o do próprio item. Senão o id que sumiu iria para o banco a cada toque.
+  const chosen = override?.product;
   const product: ProductChoice =
-    override?.product ??
+    (chosen?.kind === 'existing' && !catalog.has(chosen.productId) ? undefined : chosen) ??
     (item.product_id && catalog.has(item.product_id)
       ? { kind: 'existing', productId: item.product_id }
       : {

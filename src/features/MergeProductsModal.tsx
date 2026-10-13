@@ -1,17 +1,20 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { FlatList, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useProducts } from '@/data/market';
-import { mergeErrorNotice, useMergeProducts } from '@/data/productMerge';
+import { isProductGone, mergeErrorNotice, useMergeProducts } from '@/data/productMerge';
 import { getCategory } from '@/domain/categories';
 import {
+  choiceLabel,
   defaultKeep,
   factsLine,
   MERGE_DONE_TITLE,
   mergeResult,
   mergeSummary,
   mergeWarnings,
+  NAME_GOES,
+  NAME_STAYS,
   similarProducts,
   type MergeSide,
 } from '@/domain/productMerge';
@@ -75,6 +78,10 @@ export function MergeProductsModal({
             onPickAnother={other ? undefined : () => setPicked(null)}
             onJoining={setJoining}
             onClose={close}
+            // Um dos dois já não existe (outra pessoa da casa juntou): não há o que confirmar. Quem escolheu na
+            // lista volta a ela, já sem o produto que sumiu; a sugestão fecha. Sem passar por `close`, que não
+            // fecha enquanto o pedido ainda conta como em andamento.
+            onGone={other ? onClose : () => setPicked(null)}
             onMerged={onMerged}
           />
         ) : (
@@ -154,6 +161,7 @@ function ConfirmStep({
   onPickAnother,
   onJoining,
   onClose,
+  onGone,
   onMerged,
 }: {
   opened: ProductName;
@@ -161,6 +169,8 @@ function ConfirmStep({
   onPickAnother?: () => void;
   onJoining: (joining: boolean) => void;
   onClose: () => void;
+  /** Um dos dois produtos não existe mais: sai da confirmação. */
+  onGone: () => void;
   onMerged: (keptId: string) => void;
 }) {
   const c = useColors();
@@ -168,6 +178,9 @@ function ConfirmStep({
   const merge = useMergeProducts();
   // null: a pessoa ainda não escolheu, vale o padrão (o de mais compras).
   const [chosen, setChosen] = useState<string | null>(null);
+  // O pedido de juntar já saiu. Trava no toque: dois toques no botão vermelho abrem dois diálogos (no iPhone os
+  // dois ficam na tela), e cada um guarda o `join` do mesmo render, onde `merge.isPending` ainda é falso.
+  const sent = useRef(false);
 
   if (!facts) {
     return (
@@ -185,18 +198,23 @@ function ConfirmStep({
   const summary = mergeSummary(side(gone), keep.name);
 
   const join = () => {
+    if (sent.current) return;
+    sent.current = true;
     onJoining(true);
     merge.mutate(
       { keepId: keep.id, mergeId: gone.id },
       {
         onSettled: () => onJoining(false),
         onSuccess: (moved) => {
+          // A trava continua: juntou, e um segundo diálogo ainda aberto não pode mandar de novo.
           notify(MERGE_DONE_TITLE, mergeResult(gone.name, keep.name, moved));
           onMerged(keep.id);
         },
         onError: (failure) => {
+          sent.current = false;
           const { title, message } = mergeErrorNotice(failure);
           notify(title, message);
+          if (isProductGone(failure)) onGone();
         },
       },
     );
@@ -209,7 +227,7 @@ function ConfirmStep({
         Os dois viram um produto só, com as compras e os preços dos dois. Escolha o nome que fica: a categoria e a validade aprendida
         ficam as dele.
       </Text>
-      <View style={styles.gap} accessibilityRole="radiogroup">
+      <View style={styles.gap} accessibilityRole="radiogroup" accessibilityLabel="Nome que fica">
         {[opened, other].map((product) => (
           <ProductChoice
             key={product.id}
@@ -262,8 +280,11 @@ function ProductChoice({
   return (
     <Pressable
       accessibilityRole="radio"
-      accessibilityState={{ selected, disabled }}
-      accessibilityLabel={`Ficar com o nome ${product.name}. ${line}`}
+      // Marcado: no celular o estado basta; na web só o aria-checked chega ao navegador (o react-native-web não
+      // repassa accessibilityState).
+      accessibilityState={{ checked: selected, disabled }}
+      aria-checked={selected}
+      accessibilityLabel={choiceLabel(product.name, line, selected)}
       disabled={disabled}
       onPress={onPress}
       style={[styles.choice, glass, selected && { borderColor: c.primary, borderTopColor: c.primary, borderLeftColor: c.primary }]}>
@@ -272,7 +293,7 @@ function ProductChoice({
       <View style={styles.choiceText}>
         <Text variant="label">{product.name}</Text>
         <Text variant="muted">{line}</Text>
-        <Badge label={selected ? 'Este nome fica' : 'Deixa de existir'} tone={selected ? 'primary' : 'neutral'} />
+        <Badge label={selected ? NAME_STAYS : NAME_GOES} tone={selected ? 'primary' : 'neutral'} />
       </View>
     </Pressable>
   );

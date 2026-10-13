@@ -28,6 +28,8 @@ import type {
   Unit,
 } from '@/lib/types';
 
+import { LISTED_PRODUCT_SOURCES, withFreshProducts } from './productMerge';
+
 // ---------------------------------------------------------------------------
 // Listas
 
@@ -222,18 +224,22 @@ export interface NewListItem {
 }
 
 export function useAddListItem(listId: string) {
+  const queryClient = useQueryClient();
   const invalidate = useInvalidateLists(listId);
   return useMutation({
-    mutationFn: async (item: NewListItem) =>
-      unwrap(
-        await supabase.from('shopping_list_items').insert({
-          list_id: listId,
-          name: item.name,
-          category: item.category,
-          product_id: item.productId,
-          quantity: item.quantity,
-          unit: item.unit,
-        }),
+    // O produto do item pode ter sido juntado com outro em outro aparelho (withFreshProducts).
+    mutationFn: (item: NewListItem) =>
+      withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
+        unwrap(
+          await supabase.from('shopping_list_items').insert({
+            list_id: listId,
+            name: item.name,
+            category: item.category,
+            product_id: item.productId,
+            quantity: item.quantity,
+            unit: item.unit,
+          }),
+        ),
       ),
     onSuccess: invalidate,
   });
@@ -302,16 +308,19 @@ export function useAddItemsToList() {
         toAdd = items.filter((item) => !names.has(normalizeSearch(item.name)));
       }
       if (toAdd.length) {
-        unwrap(
-          await supabase.from('shopping_list_items').insert(
-            toAdd.map((item) => ({
-              list_id: id,
-              name: item.name,
-              category: item.category,
-              product_id: item.productId,
-              quantity: item.quantity,
-              unit: item.unit,
-            })),
+        // O produto de um item pode ter sido juntado com outro em outro aparelho (withFreshProducts).
+        await withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
+          unwrap(
+            await supabase.from('shopping_list_items').insert(
+              toAdd.map((item) => ({
+                list_id: id,
+                name: item.name,
+                category: item.category,
+                product_id: item.productId,
+                quantity: item.quantity,
+                unit: item.unit,
+              })),
+            ),
           ),
         );
       }
@@ -344,15 +353,18 @@ export function useAddToMarketList() {
           .limit(1),
       ) as { id: string }[];
       if (pending.length) return { ...list, added: false };
-      unwrap(
-        await supabase.from('shopping_list_items').insert({
-          list_id: list.id,
-          name: item.name,
-          category: item.category,
-          product_id: item.productId,
-          quantity: item.quantity,
-          unit: item.unit,
-        }),
+      // O produto do item da despensa pode ter sido juntado com outro em outro aparelho (withFreshProducts).
+      await withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
+        unwrap(
+          await supabase.from('shopping_list_items').insert({
+            list_id: list.id,
+            name: item.name,
+            category: item.category,
+            product_id: item.productId,
+            quantity: item.quantity,
+            unit: item.unit,
+          }),
+        ),
       );
       return { ...list, added: true };
     },

@@ -5,6 +5,7 @@
 
 import { listNameKey } from './listLinks';
 import { normalizeSearch } from './search';
+import { convertQuantity } from './units';
 
 /** De onde vem o nome: da casa (produto, lista, compra), de outro item desta nota ou do catálogo de itens comuns. */
 export type NameSource = 'produto' | 'lista' | 'comprado' | 'nota' | 'comum';
@@ -78,6 +79,13 @@ const UNIT_ALIASES: Record<string, string> = {
 const UNITS = new Set(['kg', 'g', 'mg', 'ml', 'l', 'un', 'cm', 'mm', 'm', 'w', 'v', ...Object.keys(UNIT_ALIASES)]);
 // Doze unidades.
 const DOZEN = new Set(['duzia', 'duzias', 'dz']);
+// Versões que fazem outro produto e não estão em nenhum nome do catálogo de itens comuns ("Coca-Cola Zero", "Iogurte
+// light"). Só para as sugestões de juntar produtos (saysAnotherKind). Lista fechada e curta: uma palavra só entra
+// quando, com certeza, dá nome a outro produto; o que o catálogo já tem não se repete aqui.
+const OTHER_VERSIONS = new Set(['zero', 'light', 'diet', 'lite']);
+// Tamanho de roupa ou de fralda, sozinho no nome ("Fralda Pampers G"). Unidade colada no número é tamanho de
+// embalagem ("20g"), e disso cuidam as regras de tamanho.
+const WEAR_SIZES = new Set(['pp', 'p', 'm', 'g', 'gg', 'xg', 'xxg', 'eg']);
 
 /** A palavra no singular ("limoes" -> "limao", "papeis" -> "papel", "bananas" -> "banana"). */
 function singular(word: string): string {
@@ -279,6 +287,37 @@ export function sizeLabel(size: string): string {
   return `${number.replace('p', ',')} ${unit === 'l' ? 'L' : unit}`.trim();
 }
 
+/** O número e a unidade de um tamanho como o de `nameSizes` ("1p5l" é 1,5 e "l"). */
+function sizeQuantity(size: string): { value: number; unit: string } | null {
+  const [, number, unit] = SIZED.exec(size) ?? [];
+  return number ? { value: Number(number.replace('p', '.')), unit } : null;
+}
+
+/** Os dois tamanhos são a mesma quantidade: o mesmo texto, ou o mesmo peso ou volume em outra unidade ("1kg" e "1000g"). */
+function sameQuantity(a: string, b: string): boolean {
+  if (a === b) return true;
+  const [first, second] = [sizeQuantity(a), sizeQuantity(b)];
+  if (!first || !second) return false;
+  const converted = convertQuantity(first.value, first.unit, second.unit);
+  // A conta é com vírgula flutuante (0,35 L em ml): vale o mesmo número com uma folga mínima.
+  return converted != null && Math.abs(converted - second.value) <= 1e-9 * Math.max(1, Math.abs(second.value));
+}
+
+/**
+ * Os tamanhos de dois nomes (como os de `nameSizes`) são as mesmas quantidades: "5kg" e "5 kg", e também "1kg"
+ * e "1000g", "1 L" e "1000 ml". Cada tamanho de um precisa ter o seu no outro ("350ml c/12" não é "350ml").
+ */
+export function sameSizes(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const left = [...b];
+  return a.every((size) => {
+    const at = left.findIndex((other) => sameQuantity(size, other));
+    if (at < 0) return false;
+    left.splice(at, 1);
+    return true;
+  });
+}
+
 /**
  * Com a mesma chave, é o mesmo nome se as palavras vêm na mesma ordem ou se
  * nenhum dos dois tem "de", "para", "com"...: "Preto, feijões" é "Feijão
@@ -335,6 +374,14 @@ export interface NameIndex {
   expansions: Map<string, string[]>;
   /** "X de Y" e "X em Y" que algum nome conhece: X -> os Y ("pao" -> "queijo", "forma"). */
   compounds: Map<string, Set<string>>;
+  /**
+   * De quantos nomes veio cada coisa que o índice só sabe pelos nomes: as palavras do vocabulário que só nomes de
+   * produto trazem e cada par de `compounds` ("X Y"). Serve para conferir o nome de um produto como se ele ainda
+   * não existisse: o que só ele ensinou fica de fora (`hidden`, em sameProductPairs).
+   */
+  learned: { words: Map<string, number>; compounds: Map<string, number> };
+  /** O que não vale nesta conferência: palavras do vocabulário e pares de `compounds` ("X Y") que só o nome conferido trouxe. */
+  hidden?: { words: ReadonlySet<string>; compounds: ReadonlySet<string> };
 }
 
 const SOURCE_RANK: Record<NameSource, number> = { produto: 0, lista: 1, comprado: 2, nota: 3, comum: 4 };
@@ -349,11 +396,26 @@ function sameEntry(parsed: Parsed, index: Pick<NameIndex, 'byKey'>): Indexed | u
 }
 
 /** Entre grafias com as mesmas letras, a mais bem escrita: com acento, e sem ser tudo minúsculo ou tudo maiúsculo. */
-function spelling(name: string): number {
+export function spelling(name: string): number {
   const accents = normalizeSearch(name) !== name.toLowerCase();
   const plainCase = name === name.toLowerCase() || name === name.toUpperCase();
   return (accents ? 2 : 0) + (plainCase ? 0 : 1);
 }
+
+/** Os pares que o nome ensina: "Pão de queijo" (pao, queijo) e, colado por hífen, "Couve-flor" (couve, flor). */
+function compoundsOf(parsed: Parsed): [head: string, tail: string][] {
+  return parsed.parts.flatMap((part, at): [string, string][] => {
+    const link: Part | undefined = parsed.parts[at + 1];
+    const other: Part | undefined = parsed.parts[at + 2];
+    if (part.kind !== 'word') return [];
+    // "Pão de queijo" e, colado por hífen, "Couve-flor": o par é um nome só.
+    const tail = link?.kind === 'word' && link.joined ? link : link?.kind === 'link' && COMPOUND.has(link.text) && other?.kind === 'word' ? other : null;
+    return tail ? [[singular(part.text), singular(tail.text)]] : [];
+  });
+}
+
+/** O par de `compounds` num texto só, para contar e para esconder. */
+const compoundKey = (head: string, tail: string) => `${head} ${tail}`;
 
 /**
  * Junta os nomes de todas as fontes; a mesma grafia em mais de uma fica uma
@@ -367,8 +429,11 @@ export function indexNames(candidates: readonly NameCandidate[]): NameIndex {
   const byKey = new Map<string, Indexed>();
   // O vocabulário vem dos nomes antes de juntar: depois, cada entrada só guarda a fonte mais forte.
   const real = new Set<string>();
-  const fromProducts = new Set<string>();
+  // Com quantos nomes cada palavra de produto e cada par de `compounds` chegou (um nome conta uma vez).
+  const fromProducts = new Map<string, number>();
   const compounds = new Map<string, Set<string>>();
+  const compoundNames = new Map<string, number>();
+  const count = (counts: Map<string, number>, key: string) => counts.set(key, (counts.get(key) ?? 0) + 1);
   for (const candidate of candidates) {
     const name = candidate.name.trim();
     const parsed = parseName(name);
@@ -376,17 +441,13 @@ export function indexNames(candidates: readonly NameCandidate[]): NameIndex {
 
     // Item de lista ou compra ligado a um produto chega com o nome do produto.
     const ofProduct = candidate.source === 'produto' || candidate.productId != null;
-    for (const word of parsed.words) (ofProduct ? fromProducts : real).add(singular(word));
-    parsed.parts.forEach((part, at) => {
-      const link: Part | undefined = parsed.parts[at + 1];
-      const other: Part | undefined = parsed.parts[at + 2];
-      if (part.kind !== 'word') return;
-      // "Pão de queijo" e, colado por hífen, "Couve-flor": o par é um nome só.
-      const tail = link?.kind === 'word' && link.joined ? link : link?.kind === 'link' && COMPOUND.has(link.text) && other?.kind === 'word' ? other : null;
-      if (!tail) return;
-      const head = singular(part.text);
-      compounds.set(head, (compounds.get(head) ?? new Set<string>()).add(singular(tail.text)));
-    });
+    for (const word of new Set(parsed.words.map(singular))) {
+      if (ofProduct) count(fromProducts, word);
+      else real.add(word);
+    }
+    const pairs = compoundsOf(parsed);
+    for (const key of new Set(pairs.map(([head, tail]) => compoundKey(head, tail)))) count(compoundNames, key);
+    for (const [head, tail] of pairs) compounds.set(head, (compounds.get(head) ?? new Set<string>()).add(tail));
 
     const plain = byKey.get(parsed.key);
     const key = plain && !sameName(plain.parsed, parsed) ? orderedKey(parsed) : parsed.key;
@@ -416,10 +477,21 @@ export function indexNames(candidates: readonly NameCandidate[]): NameIndex {
 
   const vocabulary = new Set(real);
   const realWords = [...real];
-  for (const word of fromProducts) {
+  // As palavras que só os produtos trazem: as do catálogo e das listas valem com qualquer produto fora.
+  const learnedWords = new Map<string, number>();
+  for (const [word, names] of fromProducts) {
+    if (real.has(word)) continue;
+    learnedWords.set(word, names);
     if (!realWords.some((longer) => longer.length > word.length && longer.startsWith(word))) vocabulary.add(word);
   }
-  return { entries: [...byKey.values()], byKey, vocabulary, expansions: new Map(), compounds };
+  return {
+    entries: [...byKey.values()],
+    byKey,
+    vocabulary,
+    expansions: new Map(),
+    compounds,
+    learned: { words: learnedWords, compounds: compoundNames },
+  };
 }
 
 /** O nome que a casa já usa e é este mesmo nome (acento, plural e maiúsculas à parte), se houver. */
@@ -428,14 +500,19 @@ export function knownName(name: string, index: NameIndex): (NameCandidate & { ke
   return (parsed.key && sameEntry(parsed, index)) || null;
 }
 
+/** A palavra é do vocabulário, e não uma que só o nome conferido trouxe (`hidden`). */
+const inVocabulary = (word: string, index: NameIndex) => index.vocabulary.has(word) && !index.hidden?.words.has(word);
+
 /** As palavras do vocabulário que começam por este trecho. */
 function expansionsOf(short: string, index: NameIndex): string[] {
   let found = index.expansions.get(short);
   if (!found) {
+    // O que fica guardado é do vocabulário inteiro: o que está escondido sai na hora, a cada conferência.
     found = [...index.vocabulary].filter((word) => word.length > short.length && word.startsWith(short));
     index.expansions.set(short, found);
   }
-  return found;
+  const { hidden } = index;
+  return hidden?.words.size ? found.filter((word) => !hidden.words.has(word)) : found;
 }
 
 type WordMatch = 'no' | 'same' | 'abbreviation' | 'loose-abbreviation';
@@ -451,7 +528,7 @@ type WordMatch = 'no' | 'same' | 'abbreviation' | 'loose-abbreviation';
 function matchWord(noteWord: string, houseWord: string, index: NameIndex): WordMatch {
   if (singular(noteWord) === singular(houseWord)) return 'same';
   if (noteWord.length < 3 || noteWord.startsWith('sem-') || !houseWord.startsWith(noteWord)) return 'no';
-  if (index.vocabulary.has(singular(noteWord))) return 'no';
+  if (inVocabulary(singular(noteWord), index)) return 'no';
   const readings = new Set(expansionsOf(noteWord, index));
   const cut = readings.size === 1 && noteWord.length * 2 >= houseWord.length && !/[aeiou]$/.test(noteWord);
   return cut ? 'abbreviation' : 'loose-abbreviation';
@@ -493,20 +570,22 @@ function otherThingAfter(name: Parsed, count: number, last: string, index: NameI
   const linked = rest[0].kind === 'link' && COMPOUND.has(rest[0].text) && rest[1] === next;
   if (linked && !PACKAGING.has(word)) return true;
   if (OTHER_THING.has(word) || OTHER_THING.has(next.text)) return true;
-  return index.compounds.get(singular(last))?.has(word) ?? false;
+  const head = singular(last);
+  return Boolean(index.compounds.get(head)?.has(word)) && !index.hidden?.compounds.has(compoundKey(head, word));
 }
 
-function isConfident(note: Parsed, candidate: Indexed, index: NameIndex): boolean {
+/** Onde o nome da casa cabe com confiança no nome novo: a posição da primeira palavra dele, ou -1 se não cabe. */
+function confidentAt(note: Parsed, candidate: Indexed, index: NameIndex): number {
   const house = candidate.parsed;
   // O tamanho (ou a letra) do nome da casa precisa estar no nome novo, e sem dúvida: "Coca-Cola 2L" não serve
   // para a lata, nem "Água 5L" para "Agua 1 5l".
-  if (!house.variants.every((variant) => note.variants.includes(variant) && !note.doubtful.includes(variant))) return false;
+  if (!house.variants.every((variant) => note.variants.includes(variant) && !note.doubtful.includes(variant))) return -1;
   // Produto da casa com tamanho é um produto certo: o nome novo tem os mesmos tamanhos, nem um a mais ("c/12" é o
   // fardo, não a unidade), e o que sobra depois dele só pode ser embalagem ("Coca-Cola Lata 350ml" é a Coca-Cola
   // 350ml; "Coca-Cola Zero 2L" não é a Coca-Cola 2L) ou a palavra de versão com o número ("Arroz Tio João Tipo 1
   // 5kg" é o Arroz Tio João 5kg). Letra ou número de versão ("Vitamina C") não faz produto certo.
   const exactProduct = candidate.source === 'produto' && house.sizes.length > 0;
-  if (exactProduct && note.sizes.length !== house.sizes.length) return false;
+  if (exactProduct && note.sizes.length !== house.sizes.length) return -1;
   const last = house.words[house.words.length - 1];
   const tolerated = (word: string) => PACKAGING.has(singular(word)) || note.versionWords.includes(word);
   const fits = (start: number) => {
@@ -517,14 +596,18 @@ function isConfident(note: Parsed, candidate: Indexed, index: NameIndex): boolea
       !otherThingAfter(note, end, last, index)
     );
   };
-  if (runAt(note.words, house.words, 0, index)) return fits(0);
+  if (runAt(note.words, house.words, 0, index)) return fits(0) ? 0 : -1;
   // No meio do nome, só o produto certo escrito com o tipo na frente ("Coca-Cola 2L" em "Refrigerante Coca-Cola
   // 2l"): um produto sem tamanho no meio do nome é sabor ou ingrediente ("Sardinha Molho de Tomate").
-  if (!exactProduct || house.words.length < 2) return false;
+  if (!exactProduct || house.words.length < 2) return -1;
   for (let start = 1; start + house.words.length <= note.words.length; start++) {
-    if (fits(start)) return true;
+    if (fits(start)) return start;
   }
-  return false;
+  return -1;
+}
+
+function isConfident(note: Parsed, candidate: Indexed, index: NameIndex): boolean {
+  return confidentAt(note, candidate, index) >= 0;
 }
 
 export interface SimilarOptions {
@@ -558,8 +641,8 @@ const isHousehold = (source: NameSource) => source === 'produto' || source === '
 /**
  * Os nomes parecidos com `typed`, do mais parecido para o menos. `among`: só estes nomes do índice são
  * conferidos, e `typed` é o nome de um produto que já existe, visto como se ainda não existisse (o produto
- * dele fica de fora por `exceptProductId`): a entrada do índice com este nome é a dele mesmo, não um nome que
- * a casa já usava.
+ * dele fica de fora por `exceptProductId`, e o que só o nome dele ensinou ao índice, por `index.hidden`): a
+ * entrada do índice com este nome é a dele mesmo, não um nome que a casa já usava.
  */
 function findSimilar(typed: string, note: Parsed, index: NameIndex, options: SimilarOptions, among?: readonly Indexed[]): Found[] {
   const { category, exceptProductId, onlySame = false, onlyConfident = false, also } = options;
@@ -700,20 +783,107 @@ export interface SameProductPair {
 }
 
 /**
- * Os pares de produtos que já existem e parecem o mesmo produto. Não é uma regra nova: é a da sugestão que
- * o item da nota mostra sem a pessoa pedir (`suggestedName`), com cada nome conferido como se chegasse agora
- * numa nota e o produto dele ainda não existisse.
+ * As palavras dos nomes do catálogo de itens comuns, como na chave dos nomes (sem acento, minúsculas, no
+ * singular): "integral", "desnatado", "gas", "frances", "mascavo", "moida"... Cada uma dá nome a um tipo de
+ * produto. De "Leite sem lactose" entram "sem-lactose" e "lactose".
+ */
+export function kindWords(common: readonly { name: string }[]): Set<string> {
+  const words = new Set<string>();
+  for (const { name } of common) {
+    for (const word of parseName(name).words.map(singular)) {
+      words.add(word);
+      if (word.startsWith('sem-')) words.add(word.slice('sem-'.length));
+    }
+  }
+  return words;
+}
+
+/**
+ * O que um nome tem a mais que o outro diz que é outro tipo de produto, e não o mesmo com a marca? Só para as
+ * sugestões de juntar produtos, que aparecem sem a pessoa pedir: na dúvida, o app não sugere. `extra`: as
+ * palavras a mais, como na chave dos nomes (sem acento, minúsculas, no singular). É outro tipo quando uma delas:
+ * - é palavra de um nome do catálogo (`kinds`, de `kindWords`): "Leite integral", "Açúcar mascavo", "Água com gás";
+ * - vem com "sem", que muda o item ("sem-sal", "sem-alcool"), ou é o próprio "sem";
+ * - é uma versão que o catálogo não tem ("zero", "light"): OTHER_VERSIONS;
+ * - é um tamanho de roupa ou de fralda sozinho ("g" de "Fralda Pampers G"): WEAR_SIZES.
+ * Embalagem ("lata", "pet", "caixa") nunca é outro tipo, nem quando o catálogo a tem ("Sardinha em lata"). Uma
+ * variedade que o catálogo não conhece ("Limão siciliano") passa por marca: não dá para separar as duas.
+ */
+export function saysAnotherKind(extra: readonly string[], kinds: ReadonlySet<string>): boolean {
+  return extra.some(
+    (word) => !PACKAGING.has(word) && (word === 'sem' || word.startsWith('sem-') || kinds.has(word) || OTHER_VERSIONS.has(word) || WEAR_SIZES.has(word)),
+  );
+}
+
+const NO_KINDS: ReadonlySet<string> = new Set();
+
+/**
+ * O que o nome mais comprido tem além do mais curto, que acaba na palavra de número `end` dele: as palavras
+ * que vêm depois, no singular, e as letras e números soltos que só ele traz ("g" de "Fralda Pampers G"). A
+ * palavra de versão que veio com o número ("tipo" de "Tipo 1") não conta: diz a versão, não outro produto.
+ */
+function extraWords(longer: Parsed, shorter: Parsed, end: number): string[] {
+  const loose = longer.variants.filter((variant) => !longer.sizes.includes(variant) && !shorter.variants.includes(variant));
+  return [
+    ...longer.words
+      .slice(end)
+      .filter((word) => !longer.versionWords.includes(word))
+      .map(singular),
+    ...loose,
+  ];
+}
+
+/**
+ * O par que a sugestão do item da nota daria, mas com outro tipo de produto no nome mais comprido: o que ele
+ * tem a mais depois do nome mais curto ("integral" de "Leite integral") ou, antes dele, uma versão ("zero" de
+ * "Refrigerante Zero Coca-Cola 2L"). Antes dele, a palavra do catálogo é o tipo escrito na frente
+ * ("Refrigerante Coca-Cola 2l" é a "Coca-Cola 2L"), que a regra do produto certo já aceita.
+ */
+function anotherKind(note: Parsed, candidate: Indexed, index: NameIndex, kinds: ReadonlySet<string>): boolean {
+  const start = confidentAt(note, candidate, index);
+  const end = start + candidate.parsed.words.length;
+  return saysAnotherKind(extraWords(note, candidate.parsed, end), kinds) || saysAnotherKind(note.words.slice(0, start).map(singular), NO_KINDS);
+}
+
+/**
+ * Os dois nomes trazem tamanho, e é o mesmo produto com a marca ou sem ("Arroz 5kg" e "Arroz Tio João 5 kg").
+ * A sugestão do item da nota não chega aqui: para ela, produto com tamanho só aceita embalagem a mais, porque
+ * não sabe se o resto é marca ou outro tipo ("Coca-Cola Zero 2L"). Com `saysAnotherKind` dá para saber:
+ * - os tamanhos são as mesmas quantidades (`sameSizes`: "1kg" e "1000g" também), lidos sem dúvida;
+ * - as palavras do nome mais curto são o começo das do mais comprido (cortadas como na nota também valem);
+ * - a letra ou o número de versão do mais curto está no outro ("Vitamina C 500mg" não é a "Vitamina D 500mg");
+ * - o que o mais comprido tem a mais não faz outra coisa ("Leite de coco 1L") nem diz outro tipo.
+ */
+function sameSizeFit(note: Parsed, candidate: Indexed, index: NameIndex, kinds: ReadonlySet<string>): boolean {
+  const house = candidate.parsed;
+  const end = house.words.length;
+  if (!end || !house.sizes.length || !note.sizes.length || house.doubtful.length || note.doubtful.length) return false;
+  if (!sameSizes(house.sizes, note.sizes)) return false;
+  if (!house.variants.every((variant) => house.sizes.includes(variant) || note.variants.includes(variant))) return false;
+  if (!runAt(note.words, house.words, 0, index) || otherThingAfter(note, end, house.words[end - 1], index)) return false;
+  return !saysAnotherKind(extraWords(note, house, end), kinds);
+}
+
+/**
+ * Os pares de produtos que já existem e parecem o mesmo produto, para o app sugerir juntar.
  * - `igual`: o mesmo nome com outro acento, plural, unidade solta ou ordem das palavras ("Limão" e "Limões",
  *   "Banana Prata Kg" e "Banana prata"). Vale entre todos os produtos com esse nome.
- * - `parecido`: o melhor nome que cabe no outro com confiança, em geral o mesmo produto com a marca ou sem
- *   ("Arroz" e "Arroz Tio João 5kg"). Um produto com tamanho é um produto certo: só o que tem o mesmo tamanho
- *   e, de resto, embalagem ou versão ("Coca-Cola 2L" e "Refrigerante Coca-Cola 2l Pet"; "Coca-Cola Zero 2L",
- *   não). Produto que tem outro com o mesmo nome fica só com esse par, como o nome que já é da casa na nota.
+ * - `parecido`, pela sugestão que o item da nota mostra sem a pessoa pedir (`suggestedName`), com cada nome
+ *   conferido como se chegasse agora numa nota e o produto dele ainda não existisse: o melhor nome que cabe
+ *   nele com confiança, em geral o mesmo produto com a marca ou sem ("Arroz" e "Arroz Tio João 5kg"). Um produto
+ *   com tamanho é um produto certo: só o que tem o mesmo tamanho e, de resto, embalagem ou versão ("Coca-Cola
+ *   2L" e "Refrigerante Coca-Cola 2l Pet"). Daqui sai o par em que o nome mais comprido diz outro tipo de
+ *   produto ("Leite" e "Leite integral", "Coca-Cola" e "Coca-Cola Zero": `saysAnotherKind`).
+ * - `parecido`, pelo mesmo tamanho nos dois nomes, com a marca dentro ou fora ("Arroz 5kg" e "Arroz Tio João 5
+ *   kg": `sameSizeFit`). Este a nota não sugere.
+ * Produto que tem outro com o mesmo nome fica só com esse par, como o nome que já é da casa na nota. Na nota
+ * nada muda: as duas diferenças valem só aqui.
  * `common`: o catálogo de itens comuns, que mostra quando o nome mais comprido é outra coisa ("Pão de queijo",
- * "Leite condensado").
+ * "Leite condensado") ou outro tipo ("Leite integral").
  */
 export function sameProductPairs(products: readonly ProductName[], common: NameSources['common'] = []): SameProductPair[] {
   const index = indexNames(nameCandidates({ products, listItems: [], purchases: [], common }));
+  const kinds = kindWords(common);
   const named = products
     .map((product) => ({ product, typed: product.name.trim(), parsed: parseName(product.name.trim()) }))
     .filter(({ parsed }) => parsed.key);
@@ -752,9 +922,31 @@ export function sameProductPairs(products: readonly ProductName[], common: NameS
       ones.has(one) || parsed.words.some((cut) => cut.length >= 3 && word.startsWith(cut)) ? byFirstWord.get(word)! : [],
     );
     if (!among.length) continue;
-    const [best] = findSimilar(typed, parsed, index, { category: product.category, onlyConfident: true, exceptProductId: product.id }, among);
-    if (!best?.candidate.productId || (best.closeness !== 'igual' && vetoed(parsed, best.candidate, index))) continue;
-    add(product.id, best.candidate.productId, best.closeness);
+    // Como se o produto ainda não existisse: o que só o nome dele ensinou ao índice (uma palavra cortada que
+    // contaria como palavra de verdade, um "Banana-prata" que passaria por nome conhecido) não vale para ele.
+    const own = {
+      words: new Set(parsed.words.map(singular).filter((word) => index.learned.words.get(word) === 1)),
+      compounds: new Set(
+        compoundsOf(parsed)
+          .map(([head, tail]) => compoundKey(head, tail))
+          .filter((key) => index.learned.compounds.get(key) === 1),
+      ),
+    };
+    const view: NameIndex = { ...index, hidden: own };
+    const [best] = findSimilar(typed, parsed, view, { category: product.category, onlyConfident: true, exceptProductId: product.id }, among);
+    if (best?.candidate.productId) {
+      const same = best.closeness === 'igual';
+      if (same || !(vetoed(parsed, best.candidate, view) || anotherKind(parsed, best.candidate, view, kinds))) {
+        add(product.id, best.candidate.productId, best.closeness);
+      }
+    }
+    if (!parsed.sizes.length) continue;
+    // O mesmo tamanho com a marca dentro ou fora: o nome mais completo que servir.
+    const [sized] = among
+      .filter((candidate) => candidate.productId && candidate.productId !== product.id)
+      .filter((candidate) => sameSizeFit(parsed, candidate, view, kinds) && !vetoed(parsed, candidate, view))
+      .sort((a, b) => b.parsed.words.length - a.parsed.words.length || a.name.localeCompare(b.name, 'pt-BR'));
+    if (sized?.productId) add(product.id, sized.productId, 'parecido');
   }
   return [...pairs.values()];
 }

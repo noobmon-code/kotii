@@ -8,7 +8,18 @@
 import { COMMON_ITEMS } from './commonItems';
 import { formatShortDate, toISODate } from './dates';
 import { formatBRL } from './money';
-import { indexNames, nameCandidates, nameSizes, sameProductPairs, similarNames, sizeLabel, type ProductName } from './similarNames';
+import {
+  indexNames,
+  nameCandidates,
+  nameSizes,
+  sameProductPairs,
+  sameSizes,
+  similarNameKey,
+  similarNames,
+  sizeLabel,
+  spelling,
+  type ProductName,
+} from './similarNames';
 import { sameDimension } from './units';
 
 /** Par que a casa disse serem produtos diferentes, como o banco guarda: o id menor em `product_a`. */
@@ -27,10 +38,13 @@ const pairKey = (a: string, b: string) => {
   return `${product_a} ${product_b}`;
 };
 
-/** Os dois nomes trazem tamanhos, e não são os mesmos ("5kg" e "1kg"). Só um com tamanho não é tamanho diferente. */
+/**
+ * Os dois nomes trazem tamanhos, e não são as mesmas quantidades ("5kg" e "1kg"; "1kg" e "1000g" são a mesma).
+ * Só um com tamanho não é tamanho diferente.
+ */
 export function differentSizes(a: string, b: string): boolean {
   const [sizesA, sizesB] = [nameSizes(a).sizes, nameSizes(b).sizes];
-  return sizesA.length > 0 && sizesB.length > 0 && sizesA.join(' ') !== sizesB.join(' ');
+  return sizesA.length > 0 && sizesB.length > 0 && !sameSizes(sizesA, sizesB);
 }
 
 /** Dois produtos que parecem o mesmo, ainda sem ordem entre eles. */
@@ -41,13 +55,31 @@ export type MergePair = [ProductName, ProductName];
  * que a casa já disse serem diferentes e, sempre, os que trazem tamanhos
  * diferentes no nome: juntar "Arroz 5kg" com "Arroz 1kg" misturaria os preços.
  * Um produto nunca faz par com ele mesmo.
+ *
+ * "São diferentes" vale para o nome: quem é diferente do "Limão" é diferente
+ * de todo produto com esse nome em outra grafia ("Limao", "Limões"). Sem isso,
+ * um nome que só parece ("Limão siciliano") voltava como sugestão com o gêmeo
+ * que nascesse depois. Entre dois com o mesmo nome, só sai o par marcado.
  */
 export function mergeCandidates(products: readonly ProductName[], distinct: readonly DistinctPair[]): MergePair[] {
   const byId = new Map(products.map((product) => [product.id, product]));
   const refused = new Set(distinct.map((pair) => pairKey(pair.product_a, pair.product_b)));
-  return sameProductPairs(products, COMMON_ITEMS).flatMap(({ ids: [a, b] }): MergePair[] => {
+  const keys = new Map<string, string>();
+  const nameKey = (id: string) => {
+    if (!keys.has(id)) keys.set(id, similarNameKey(byId.get(id)?.name ?? ''));
+    return keys.get(id)!;
+  };
+  // Cada produto com os nomes de que a casa disse que ele é diferente.
+  const refusedNames = new Set<string>();
+  for (const { product_a, product_b } of distinct) {
+    if (nameKey(product_b)) refusedNames.add(`${product_a} ${nameKey(product_b)}`);
+    if (nameKey(product_a)) refusedNames.add(`${product_b} ${nameKey(product_a)}`);
+  }
+  const differentByName = (a: string, b: string) => refusedNames.has(`${a} ${nameKey(b)}`) || refusedNames.has(`${b} ${nameKey(a)}`);
+  return sameProductPairs(products, COMMON_ITEMS).flatMap(({ ids: [a, b], closeness }): MergePair[] => {
     const [first, second] = [byId.get(a), byId.get(b)];
     if (!first || !second || a === b || refused.has(pairKey(a, b)) || differentSizes(first.name, second.name)) return [];
+    if (closeness === 'parecido' && differentByName(a, b)) return [];
     return [[first, second]];
   });
 }
@@ -73,11 +105,23 @@ export interface MergeSuggestion {
 }
 
 /**
+ * O par com o nome mais bem escrito na frente (com acento, sem ser tudo
+ * maiúsculo ou minúsculo: "Detergente Ypê 500ml", não "Deterg Ype 500ml");
+ * com a mesma grafia, o mais comprido ("Biscoito Passatempo", não "Bisc
+ * Passatempo"); sem nada que os separe, fica a ordem em que vieram.
+ */
+function betterNamedFirst(pair: MergePair): MergePair {
+  const [a, b] = pair;
+  return (spelling(b.name) - spelling(a.name) || b.name.length - a.name.length) > 0 ? [b, a] : pair;
+}
+
+/**
  * As sugestões que aparecem: no máximo `limit`, os pares com mais compras
  * primeiro (somando os dois produtos). Cada produto aparece num par só de
  * cada vez ("Arroz" pode parecer com "Arroz Tio João 5kg" e com "Arroz Tio João
  * 1kg"; resolvido um, o outro vem). Com `productId` (a tela do produto), só
- * os pares dele: um de cada vez.
+ * os pares dele: um de cada vez. No empate de compras fica o produto aberto;
+ * sem produto aberto (Preços), o de nome mais bem escrito (`betterNamedFirst`).
  */
 export function mergeSuggestions(
   candidates: readonly MergePair[],
@@ -89,8 +133,9 @@ export function mergeSuggestions(
   return candidates
     .filter(([a, b]) => !productId || a.id === productId || b.id === productId)
     .map((pair): MergeSuggestion => {
-      // Na tela do produto, o aberto vem primeiro: no empate de compras, é ele que fica.
-      const [opened, other] = pair[1].id === productId ? [pair[1], pair[0]] : pair;
+      // Na tela do produto, o aberto vem primeiro: no empate de compras, é ele que fica. Em Preços ninguém abriu
+      // produto nenhum, e o primeiro do par seria o nome cortado da nota: vem primeiro o mais bem escrito.
+      const [opened, other] = !productId ? betterNamedFirst(pair) : pair[1].id === productId ? [pair[1], pair[0]] : pair;
       return defaultKeep(opened.id, other.id, purchases) === opened.id ? { keep: opened, other } : { keep: other, other: opened };
     })
     .sort(
@@ -217,29 +262,62 @@ function measure(unit: string): string {
 }
 
 /**
+ * O aviso de tamanho, quando os dois nomes trazem um: as quantidades não são
+ * as mesmas ("5 kg e 1 kg"; "1kg" e "1000g" são a mesma e não avisam), ou um
+ * tamanho foi lido com dúvida ("Agua 1 5l" pode ser 1,5 L ou 5 L). Com dúvida
+ * o app não afirma número nem que são diferentes, só pede para conferir,
+ * tenha o outro nome o número que tiver; o mesmo nome escrito de outro jeito
+ * ("AGUA 1 5L") não tem o que conferir.
+ */
+function sizeWarning(a: string, b: string): string | null {
+  const [sizesA, sizesB] = [nameSizes(a), nameSizes(b)];
+  if (!sizesA.sizes.length || !sizesB.sizes.length) return null;
+  if (sizesA.doubtful || sizesB.doubtful) {
+    return similarNameKey(a) === similarNameKey(b) ? null : `Confira se são do mesmo tamanho. ${MIXES_PRICES}`;
+  }
+  if (sameSizes(sizesA.sizes, sizesB.sizes)) return null;
+  const label = (sizes: string[]) => sizes.map(sizeLabel).join(' + ');
+  return `Parecem tamanhos diferentes (${label(sizesA.sizes)} e ${label(sizesB.sizes)}). ${MIXES_PRICES}`;
+}
+
+/**
  * Os avisos que aparecem antes do botão de juntar (a pessoa ainda pode
  * juntar): os nomes trazem tamanhos diferentes, ou os dois produtos nunca
  * foram comprados na mesma medida (um por peso, o outro por unidade).
  */
 export function mergeWarnings(a: MergeSide, b: MergeSide): string[] {
   const warnings: string[] = [];
-  if (differentSizes(a.name, b.name)) {
-    const [sizesA, sizesB] = [nameSizes(a.name), nameSizes(b.name)];
-    const label = (sizes: string[]) => sizes.map(sizeLabel).join(' + ');
-    // Tamanho lido com dúvida ("Agua 1 5l"): avisa, sem afirmar um número que pode não ser o do produto.
-    warnings.push(
-      sizesA.doubtful || sizesB.doubtful
-        ? `Os nomes parecem trazer tamanhos diferentes. ${MIXES_PRICES}`
-        : `Parecem tamanhos diferentes (${label(sizesA.sizes)} e ${label(sizesB.sizes)}). ${MIXES_PRICES}`,
-    );
-  }
+  const size = sizeWarning(a.name, b.name);
+  if (size) warnings.push(size);
   const [measuresA, measuresB] = [a, b].map((side) => [...new Set(side.facts.units.map(measure))]);
   if (measuresA.length && measuresB.length && !measuresA.some((m) => measuresB.includes(m))) {
-    warnings.push(
-      `As compras de "${a.name}" são ${measuresA.join(' e ')}, e as de "${b.name}", ${measuresB.join(' e ')}. ${MIXES_PRICES}`,
-    );
+    // O sujeito é o preço (as medidas vêm dos últimos preços): a frase não muda com o número de compras nem
+    // adivinha o gênero do nome do produto.
+    warnings.push(`O preço de "${a.name}" é ${measuresA.join(' e ')}, e o de "${b.name}", ${measuresB.join(' e ')}. ${MIXES_PRICES}`);
   }
   return warnings;
+}
+
+/** O que acontece com cada um dos dois nomes, na confirmação. */
+export const NAME_STAYS = 'Este nome fica';
+export const NAME_GOES = 'Deixa de existir';
+
+/**
+ * O que o leitor de tela diz de cada produto na confirmação. O rótulo entra no
+ * lugar do conteúdo do cartão: leva o nome, o que o app sabe do produto e o
+ * que acontece com ele ("Este nome fica" ou "Deixa de existir").
+ */
+export function choiceLabel(name: string, line: string, stays: boolean): string {
+  return `${name}. ${line}. ${stays ? NAME_STAYS : NAME_GOES}.`;
+}
+
+/** Os botões de cada par sugerido, para quem ouve a tela: sem o par, três "Juntar" seguidos não dizem de quê. */
+export function joinLabel(first: string, second: string): string {
+  return `Juntar ${first} com ${second}`;
+}
+
+export function distinctLabel(first: string, second: string): string {
+  return `${first} e ${second} são diferentes`;
 }
 
 export const MERGE_IRREVERSIBLE = 'Não dá para desfazer.';
@@ -293,6 +371,17 @@ export const MERGE_UNAVAILABLE_TITLE = 'Ainda não está disponível';
 export const MERGE_UNAVAILABLE = 'Juntar produtos ainda está sendo ativado no Kotii. Tente de novo mais tarde.';
 /** Outra pessoa da casa juntou ou apagou um dos dois enquanto a tela estava aberta. */
 export const MERGE_PRODUCT_GONE = 'Um destes produtos não existe mais: alguém da casa já juntou ou apagou.';
+/**
+ * A resposta de juntar não chegou a tempo. Não dá para saber se o banco juntou: a pessoa confere os produtos
+ * antes de tentar de novo.
+ */
+export const MERGE_NO_ANSWER_TITLE = 'Sem resposta';
+export const MERGE_NO_ANSWER = 'A resposta não chegou, e pode ser que os produtos já tenham sido juntados. Confira os produtos antes de tentar de novo.';
+/**
+ * Uma gravação (a nota, um item na lista) mandou um produto que outra pessoa da casa juntou com outro enquanto
+ * esta tela estava aberta. A tela busca os produtos de novo; a pessoa confere e repete.
+ */
+export const PRODUCT_MERGED_AWAY = 'Um produto daqui foi juntado com outro. Confira e tente de novo.';
 /** O banco não conseguiu passar tudo para o outro produto e desistiu de juntar (55000 de merge_products). */
 export const MERGE_BLOCKED = 'Não deu para juntar: uma parte do que é deste produto não pôde passar para o outro. Nada foi mudado.';
 /** O título do aviso depois de juntar. */

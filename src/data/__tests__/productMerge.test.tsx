@@ -2,13 +2,22 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
-import { MERGE_BLOCKED, MERGE_PRODUCT_GONE, MERGE_UNAVAILABLE, MERGE_UNAVAILABLE_TITLE, type DistinctPair } from '@/domain/productMerge';
+import {
+  MERGE_BLOCKED,
+  MERGE_NO_ANSWER,
+  MERGE_NO_ANSWER_TITLE,
+  MERGE_PRODUCT_GONE,
+  MERGE_UNAVAILABLE,
+  MERGE_UNAVAILABLE_TITLE,
+  type DistinctPair,
+} from '@/domain/productMerge';
 
 import { useRenameProduct } from '../market';
 import {
   fetchDistinctPairs,
   fetchPurchaseCounts,
   MERGE_REFRESHES,
+  MERGE_TIMEOUT_MS,
   mergeErrorNotice,
   useMarkDistinct,
   useMergeProducts,
@@ -34,6 +43,12 @@ const mockDb = {
   inserted: [] as { table: string; row: unknown }[],
   rpcs: [] as { name: string; args: unknown }[],
   rpcReply: { data: null as unknown, error: null as object | null },
+  /** As respostas dos próximos pedidos, na ordem; acabando, vale `rpcReply`. */
+  rpcReplies: [] as { data: unknown; error: object | null }[],
+  /** O pedido fica sem resposta: só o corte dele (o sinal) termina a espera. */
+  hold: false,
+  /** O sinal de corte que cada pedido recebeu. */
+  signals: [] as AbortSignal[],
 };
 
 jest.mock('expo-image-manipulator', () => ({ ImageManipulator: {}, SaveFormat: {} }));
@@ -80,9 +95,30 @@ jest.mock('@/lib/supabase', () => ({
       },
       update: () => ({ eq: async () => ({ data: null, error: null }) }),
     }),
-    rpc: async (name: string, args: unknown) => {
+    rpc: (name: string, args: unknown) => {
       mockDb.rpcs.push({ name, args });
-      return mockDb.rpcReply;
+      let signal: AbortSignal | undefined;
+      const answer = () =>
+        mockDb.hold
+          ? // Cortado, o postgrest-js não lança: devolve este erro.
+            new Promise((resolve) =>
+              signal?.addEventListener('abort', () =>
+                resolve({
+                  data: null,
+                  error: { message: 'AbortError: Aborted', details: '', hint: 'Request was aborted (timeout or manual cancellation)', code: '' },
+                }),
+              ),
+            )
+          : Promise.resolve(mockDb.rpcReplies.shift() ?? mockDb.rpcReply);
+      const request = {
+        abortSignal: (given: AbortSignal) => {
+          signal = given;
+          mockDb.signals.push(given);
+          return request;
+        },
+        then: (resolve: (reply: unknown) => unknown, reject: (error: unknown) => unknown) => answer().then(resolve, reject),
+      };
+      return request;
     },
   },
   unwrap: (result: { data: unknown; error: unknown }) => {
@@ -128,7 +164,20 @@ const flush = () => act(async () => new Promise<void>((resolve) => setTimeout(re
 afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
-  Object.assign(mockDb, { pairs: [], lines: [], cap: 1000, error: null, asked: [], inserted: [], rpcs: [], rpcReply: { data: null, error: null } });
+  jest.useRealTimers();
+  Object.assign(mockDb, {
+    pairs: [],
+    lines: [],
+    cap: 1000,
+    error: null,
+    asked: [],
+    inserted: [],
+    rpcs: [],
+    rpcReply: { data: null, error: null },
+    rpcReplies: [],
+    hold: false,
+    signals: [],
+  });
 });
 
 describe('pares "São diferentes"', () => {
@@ -308,6 +357,160 @@ describe('juntar', () => {
     });
     expect([...hook.invalidated].sort()).toEqual([...MERGE_REFRESHES].sort());
     expect(mergeErrorNotice(gone)).toEqual({ title: 'Erro', message: MERGE_PRODUCT_GONE });
+  });
+
+  // Duas pessoas da casa no mesmo instante (uma junta, a outra confirma uma nota ou junta outro par): o banco
+  // desfaz um dos pedidos inteiro (40P01). Repetir uma vez é seguro: a função é uma transação só.
+  describe('pedido desfeito pelo banco para destravar outro (40P01)', () => {
+    const deadlock = { code: '40P01', message: 'deadlock detected' };
+
+    it('tenta de novo uma vez, e a segunda resposta vale', async () => {
+      mockDb.rpcReplies = [
+        { data: null, error: deadlock },
+        { data: { purchases: 3, pantry: 0, list: 1 }, error: null },
+      ];
+      const hook = await withHook(() => useMergeProducts());
+      let moved: unknown;
+      await act(async () => {
+        moved = await hook.value().mutateAsync({ keepId: 'keep', mergeId: 'gone' });
+      });
+      expect(moved).toEqual({ purchases: 3, pantry: 0, list: 1 });
+      expect(mockDb.rpcs).toEqual([
+        { name: 'merge_products', args: { p_keep: 'keep', p_merge: 'gone' } },
+        { name: 'merge_products', args: { p_keep: 'keep', p_merge: 'gone' } },
+      ]);
+      expect([...hook.invalidated].sort()).toEqual([...MERGE_REFRESHES].sort());
+    });
+
+    it('de novo desfeito: para na segunda e o erro sobe, para o aviso pedir para tentar de novo', async () => {
+      mockDb.rpcReply = { data: null, error: deadlock };
+      const hook = await withHook(() => useMergeProducts());
+      await act(async () => {
+        await expect(hook.value().mutateAsync({ keepId: 'keep', mergeId: 'gone' })).rejects.toEqual(deadlock);
+      });
+      expect(mockDb.rpcs).toHaveLength(2);
+      // A frase é a do errorMessage do app (lib/supabase, conferida no teste dele); aqui ele é um dublê.
+      expect(mergeErrorNotice(deadlock)).toEqual({ title: 'Erro', message: 'deadlock detected' });
+    });
+
+    it('a segunda tentativa acha o produto já juntado: é o aviso de produto que não existe mais', async () => {
+      mockDb.rpcReplies = [
+        { data: null, error: deadlock },
+        { data: null, error: gone },
+      ];
+      const hook = await withHook(() => useMergeProducts());
+      await act(async () => {
+        await expect(hook.value().mutateAsync({ keepId: 'keep', mergeId: 'gone' })).rejects.toEqual(gone);
+      });
+      expect(mockDb.rpcs).toHaveLength(2);
+    });
+
+    it('os outros erros não se repetem', async () => {
+      for (const error of [gone, noFunction, { message: 'TypeError: Network request failed' }, { code: '55000', message: 'rows still point to the merged product' }]) {
+        mockDb.rpcs = [];
+        mockDb.rpcReply = { data: null, error };
+        const hook = await withHook(() => useMergeProducts());
+        await act(async () => {
+          await expect(hook.value().mutateAsync({ keepId: 'keep', mergeId: 'gone' })).rejects.toEqual(error);
+        });
+        expect(mockDb.rpcs).toHaveLength(1);
+        await act(async () => renderer?.unmount());
+      }
+    });
+
+    it('confirmar a nota nunca se repete sozinho: o segundo pedido levaria o id do produto que acabou de sumir', async () => {
+      mockDb.rpcReply = { data: null, error: deadlock };
+      const hook = await withHook(() => useConfirmReceipt('r1'));
+      await act(async () => {
+        await expect(hook.value().mutateAsync([])).rejects.toEqual(deadlock);
+      });
+      expect(mockDb.rpcs).toHaveLength(1);
+      expect(hook.invalidated).toEqual([]);
+    });
+  });
+
+  // Com sinal fraco o pedido pode ficar pendurado para sempre (no Android ele não tem prazo), e a confirmação
+  // não fecha enquanto o banco junta. O pedido é cortado; como o banco pode ter juntado antes do corte, o aviso
+  // manda conferir e tudo é buscado de novo.
+  describe('pedido de juntar sem resposta', () => {
+    it('é cortado depois do prazo: avisa que não dá para saber, não repete e busca tudo de novo', async () => {
+      jest.useFakeTimers();
+      mockDb.hold = true;
+      const hook = await withHook(() => useMergeProducts());
+      let failure: unknown;
+      await act(async () => {
+        hook
+          .value()
+          .mutateAsync({ keepId: 'keep', mergeId: 'gone' })
+          .catch((error: unknown) => {
+            failure = error;
+          });
+        await jest.advanceTimersByTimeAsync(MERGE_TIMEOUT_MS - 1);
+      });
+      expect(mockDb.signals).toHaveLength(1);
+      expect(mockDb.signals[0].aborted).toBe(false);
+      expect(failure).toBeUndefined();
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1);
+      });
+      expect(mockDb.signals[0].aborted).toBe(true);
+      expect((failure as Error).message).toBe(MERGE_NO_ANSWER);
+      // A gravação terminou: a tela deixa de girar e volta a poder ser fechada. (O cache avisa a tela por
+      // temporizadores, alguns passos depois do erro.)
+      await act(async () => {
+        for (let step = 0; step < 5; step += 1) await jest.advanceTimersByTimeAsync(1);
+      });
+      expect(hook.value().isPending).toBe(false);
+      expect(hook.value().isError).toBe(true);
+      expect(mockDb.rpcs).toHaveLength(1);
+      expect([...hook.invalidated].sort()).toEqual([...MERGE_REFRESHES].sort());
+      expect(mergeErrorNotice(failure)).toEqual({ title: MERGE_NO_ANSWER_TITLE, message: MERGE_NO_ANSWER });
+      expect(MERGE_NO_ANSWER).toBe('A resposta não chegou, e pode ser que os produtos já tenham sido juntados. Confira os produtos antes de tentar de novo.');
+      expect(MERGE_TIMEOUT_MS).toBe(25_000);
+    });
+
+    it('a resposta que chega desliga o prazo: nada é cortado depois', async () => {
+      jest.useFakeTimers();
+      mockDb.rpcReply = { data: { purchases: 1, pantry: 0, list: 0 }, error: null };
+      const hook = await withHook(() => useMergeProducts());
+      let moved: unknown;
+      await act(async () => {
+        hook
+          .value()
+          .mutateAsync({ keepId: 'keep', mergeId: 'gone' })
+          .then((result) => {
+            moved = result;
+          });
+        await jest.advanceTimersByTimeAsync(0);
+      });
+      expect(moved).toEqual({ purchases: 1, pantry: 0, list: 0 });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(MERGE_TIMEOUT_MS * 2);
+      });
+      expect(mockDb.signals[0].aborted).toBe(false);
+    });
+
+    it('o erro que chega também desliga o prazo', async () => {
+      jest.useFakeTimers();
+      mockDb.rpcReply = { data: null, error: gone };
+      const hook = await withHook(() => useMergeProducts());
+      let failure: unknown;
+      await act(async () => {
+        hook
+          .value()
+          .mutateAsync({ keepId: 'keep', mergeId: 'gone' })
+          .catch((error: unknown) => {
+            failure = error;
+          });
+        await jest.advanceTimersByTimeAsync(0);
+      });
+      expect(failure).toEqual(gone);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(MERGE_TIMEOUT_MS * 2);
+      });
+      expect(mockDb.signals[0].aborted).toBe(false);
+    });
   });
 
   it('a trava do banco (55000) diz que nada mudou; os outros erros saem com a mensagem deles', () => {

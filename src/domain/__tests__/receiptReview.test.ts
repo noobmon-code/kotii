@@ -38,6 +38,27 @@ describe('resolveItem', () => {
     expect(resolveItem(item({ product_id: 'gone' }), undefined, catalog, '2026-09-20').product.kind).toBe('new');
   });
 
+  // The product picked in the review was joined into another one on another phone: its id is gone.
+  it('ignores a chosen product that is not in the catalog and falls back to the line', () => {
+    const stale = { product: { kind: 'existing' as const, productId: 'gone' }, pantry: false };
+    expect(resolveItem(item({ product_id: 'p-arroz' }), stale, catalog, '2026-09-20')).toMatchObject({
+      product: { kind: 'existing', productId: 'p-arroz' },
+      productName: 'Arroz Tio João 5kg',
+      // The rest of what the person changed still counts.
+      pantry: false,
+    });
+    expect(resolveItem(item(), stale, catalog, '2026-09-20').product).toEqual({ kind: 'new', name: 'Arroz Tio João 5kg', category: 'graos' });
+    expect(resolveItem(item({ product_id: 'gone' }), stale, catalog, '2026-09-20').product.kind).toBe('new');
+  });
+
+  it('keeps the other choices as they are: a new product, no product, a product in the catalog', () => {
+    const chosen = (product: NonNullable<Parameters<typeof resolveItem>[1]>['product']) =>
+      resolveItem(item({ product_id: 'p-arroz' }), { product }, catalog, '2026-09-20').product;
+    expect(chosen({ kind: 'new', name: 'Arroz', category: 'graos' })).toEqual({ kind: 'new', name: 'Arroz', category: 'graos' });
+    expect(chosen({ kind: 'none' })).toEqual({ kind: 'none' });
+    expect(chosen({ kind: 'existing', productId: 'p-deter' })).toEqual({ kind: 'existing', productId: 'p-deter' });
+  });
+
   it('recomputes pantry default when the user switches product', () => {
     const r = resolveItem(item(), { product: { kind: 'existing', productId: 'p-deter' } }, catalog, '2026-09-20');
     expect(r).toMatchObject({ category: 'limpeza', pantry: false, expiresOn: null });
@@ -50,6 +71,17 @@ describe('resolveItem', () => {
 });
 
 describe('buildConfirmPayload', () => {
+  it('never sends a product id that is not in the catalog', () => {
+    const items = [item({ id: 'a', product_id: 'p-arroz' }), item({ id: 'b', product_id: 'gone' }), item({ id: 'c' })];
+    const stale = { product: { kind: 'existing' as const, productId: 'gone' } };
+    const payload = buildConfirmPayload(items, { a: stale, b: stale, c: stale }, catalog, '2026-09-20');
+    expect(payload.map((entry) => [entry.id, entry.product_id, entry.new_product?.name])).toEqual([
+      ['a', 'p-arroz', undefined],
+      ['b', undefined, 'Arroz Tio João 5kg'],
+      ['c', undefined, 'Arroz Tio João 5kg'],
+    ]);
+  });
+
   it('builds the RPC payload', () => {
     const items = [
       item({ id: 'a', product_id: 'p-arroz' }),

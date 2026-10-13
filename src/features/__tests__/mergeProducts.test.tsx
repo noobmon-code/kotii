@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
-import type { DistinctPair } from '@/domain/productMerge';
+import { MERGE_NO_ANSWER, type DistinctPair } from '@/domain/productMerge';
 import type { LatestPrice, Product } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
 
@@ -168,8 +168,15 @@ describe('confirmação de juntar', () => {
     const [first, second] = pressables('radio');
     expect(textOf(first)).toBe('Arroz 5kg2 compras · último preço R$ 24,90 em 5 out (Mercado Bom) · na despensa · na listaDeixa de existir');
     expect(textOf(second)).toBe('Arroz Tio João 5 kg12 compras · último preço R$ 25,90 em 10 out (Assaí)Este nome fica');
-    expect(first.props.accessibilityState).toEqual({ selected: false, disabled: false });
-    expect(second.props.accessibilityState).toEqual({ selected: true, disabled: false });
+    // Marcado, para o leitor de tela: no celular pelo estado, na web pelo aria-checked (que lá é o que chega).
+    expect(first.props.accessibilityState).toEqual({ checked: false, disabled: false });
+    expect(second.props.accessibilityState).toEqual({ checked: true, disabled: false });
+    expect([first.props['aria-checked'], second.props['aria-checked']]).toEqual([false, true]);
+    // O rótulo troca o conteúdo do cartão na leitura: leva junto o que acontece com cada nome.
+    expect([first.props.accessibilityLabel, second.props.accessibilityLabel]).toEqual([
+      'Arroz 5kg. 2 compras · último preço R$ 24,90 em 5 out (Mercado Bom) · na despensa · na lista. Deixa de existir.',
+      'Arroz Tio João 5 kg. 12 compras · último preço R$ 25,90 em 10 out (Assaí). Este nome fica.',
+    ]);
     expect(screen()).toContain(SUMMARY);
     // Os mesmos tamanhos nos dois nomes, e os dois comprados por unidade: nenhum aviso.
     expect(screen().join(' ')).not.toContain('Juntar mistura os preços');
@@ -191,7 +198,9 @@ describe('confirmação de juntar', () => {
   it('a pessoa escolhe o outro nome: a frase e o que vai para o banco mudam juntos', async () => {
     await open();
     await press(pressables('radio')[0]);
-    expect(pressables('radio').map((node) => node.props.accessibilityState.selected)).toEqual([true, false]);
+    expect(pressables('radio').map((node) => node.props.accessibilityState.checked)).toEqual([true, false]);
+    expect(pressables('radio').map((node) => node.props['aria-checked'])).toEqual([true, false]);
+    expect(pressables('radio')[0].props.accessibilityLabel).toMatch(/^Arroz 5kg\. .* Este nome fica\.$/);
     const summary = 'As 12 compras de "Arroz Tio João 5 kg" passam para "Arroz 5kg". Não dá para desfazer.';
     expect(screen()).toContain(summary);
     await press(button('Juntar produtos'));
@@ -203,7 +212,7 @@ describe('confirmação de juntar', () => {
 
   it('no empate de compras fica o produto de onde a pessoa partiu', async () => {
     await open(LIMOES, LIMAO);
-    expect(pressables('radio').map((node) => [textOf(node), node.props.accessibilityState.selected])).toEqual([
+    expect(pressables('radio').map((node) => [textOf(node), node.props.accessibilityState.checked])).toEqual([
       ['Limões1 compraEste nome fica', true],
       ['Limão1 compraDeixa de existir', false],
     ]);
@@ -226,7 +235,16 @@ describe('confirmação de juntar', () => {
   it('um comprado por peso e o outro por unidade: aviso', async () => {
     mockQueries.prices = loaded([price(BANANA.id, 's-bom', 5.9, '10-01', 'kg'), price(BANANAS.id, 's-assai', 0.8, '10-02')]);
     await open(BANANA, BANANAS);
-    expect(screen()).toContain('As compras de "Banana" são por peso, e as de "Bananas", por unidade. Juntar mistura os preços dos dois no histórico.');
+    // "Bananas" tem uma compra só: a frase fala do preço, não de "as compras".
+    expect(screen()).toContain('O preço de "Banana" é por peso, e o de "Bananas", por unidade. Juntar mistura os preços dos dois no histórico.');
+  });
+
+  it('a mesma quantidade em outra unidade não avisa; tamanho lido com dúvida pede para conferir', async () => {
+    await open(product('p-kg', 'Arroz 1kg'), product('p-g', 'Arroz 1000 g'));
+    expect(screen().join(' ')).not.toContain('Juntar mistura os preços');
+    await act(async () => renderer?.unmount());
+    await open(product('p-a', 'Agua 1 5l', 'bebidas'), product('p-b', 'Água 5L', 'bebidas'));
+    expect(screen()).toContain('Confira se são do mesmo tamanho. Juntar mistura os preços dos dois no histórico.');
   });
 
   it('banco ainda sem a função: avisa que ainda não está disponível e a tela continua aberta', async () => {
@@ -242,20 +260,83 @@ describe('confirmação de juntar', () => {
     expect(screen()).toContain(SUMMARY);
   });
 
-  it('produto que outra pessoa já juntou: avisa sem fechar', async () => {
+  // Antes a confirmação ficava aberta num par que não existe mais, com o botão vermelho pronto para falhar de novo.
+  it('produto que outra pessoa já juntou: avisa e fecha a confirmação', async () => {
     mockMerge.error = { code: 'P0002', message: 'product not found' };
     await open();
     await press(button('Juntar produtos'));
     await act(async () => lastConfirm()[3]());
     expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'Um destes produtos não existe mais: alguém da casa já juntou ou apagou.']]);
     expect(onMerged).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('produto que sumiu, com a resposta demorando: fecha mesmo assim (a tela ainda estava travada pelo pedido)', async () => {
+    mockMerge.error = { code: 'P0002', message: 'product not found' };
+    mockMerge.hold = true;
+    await open();
+    await press(button('Juntar produtos'));
+    await act(async () => lastConfirm()[3]());
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => mockMerge.finish());
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  // Dois toques no botão vermelho abrem dois diálogos (no iPhone os dois ficam na tela): confirmar os dois
+  // mandava dois pedidos, e o segundo respondia "produto não existe mais" depois de o primeiro ter juntado.
+  it('confirmar duas vezes manda um pedido só', async () => {
+    mockMerge.hold = true;
+    await open();
+    await press(button('Juntar produtos'));
+    await press(button('Juntar produtos'));
+    const [first, second] = jest.mocked(confirmAction).mock.calls.map((call) => call[3]);
+    await act(async () => first());
+    await act(async () => second());
+    expect(mockMerge.calls).toEqual([{ keepId: ARROZ_TJ.id, mergeId: ARROZ.id }]);
+    await act(async () => mockMerge.finish());
+    expect(onMerged.mock.calls).toEqual([[ARROZ_TJ.id]]);
+    expect(notify).toHaveBeenCalledTimes(1);
+    // Depois de juntar, o segundo diálogo ainda pode estar na tela: confirmar nele não manda mais nada.
+    await act(async () => second());
+    expect(mockMerge.calls).toHaveLength(1);
+  });
+
+  it('depois de um erro dá para mandar de novo', async () => {
+    mockMerge.error = { message: 'TypeError: Network request failed' };
+    await open();
+    await press(button('Juntar produtos'));
+    await act(async () => lastConfirm()[3]());
+    mockMerge.error = null;
+    await press(button('Juntar produtos'));
+    await act(async () => lastConfirm()[3]());
+    expect(mockMerge.calls).toHaveLength(2);
+    expect(onMerged.mock.calls).toEqual([[ARROZ_TJ.id]]);
+  });
+
+  it('pedido sem resposta: avisa que pode ter juntado, e a confirmação volta a poder ser fechada', async () => {
+    mockMerge.error = new Error(MERGE_NO_ANSWER);
+    mockMerge.hold = true;
+    await open();
+    await press(button('Juntar produtos'));
+    await act(async () => lastConfirm()[3]());
+    await press(button('Cancelar'));
+    expect(onClose).not.toHaveBeenCalled();
+    // O pedido foi cortado (quem corta é a busca; aqui ela é um dublê).
+    await act(async () => mockMerge.finish());
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Sem resposta', 'A resposta não chegou, e pode ser que os produtos já tenham sido juntados. Confira os produtos antes de tentar de novo.'],
+    ]);
+    expect(onMerged).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    await press(button('Cancelar'));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('enquanto o que o app sabe não carrega, não há o que confirmar; se falhou, dá para tentar de novo', async () => {
     mockQueries.counts = onTheWay();
     await open();
     expect(button('Juntar produtos')).toBeUndefined();
-    expect(pressables('radio')).toEqual([]);
+    expect(pressables('radio')).toHaveLength(0);
     await act(async () => renderer?.unmount());
 
     mockQueries.counts = failed();
@@ -323,12 +404,28 @@ describe('escolher com qual produto juntar', () => {
     const row = renderer!.root.findAll((node) => typeof node.props.onPress === 'function' && textOf(node) === 'Arroz Tio João 5 kgGrãos, massas e cereais')[0];
     await press(row);
     expect(pressables('radio').map((node) => node.props.accessibilityLabel)).toEqual([
-      'Ficar com o nome Arroz 5kg. 2 compras · último preço R$ 24,90 em 5 out (Mercado Bom) · na despensa · na lista',
-      'Ficar com o nome Arroz Tio João 5 kg. 12 compras · último preço R$ 25,90 em 10 out (Assaí)',
+      'Arroz 5kg. 2 compras · último preço R$ 24,90 em 5 out (Mercado Bom) · na despensa · na lista. Deixa de existir.',
+      'Arroz Tio João 5 kg. 12 compras · último preço R$ 25,90 em 10 out (Assaí). Este nome fica.',
     ]);
     await press(button('Escolher outro produto'));
     expect(screen()[0]).toBe('Juntar com qual produto?');
     expect(mockMerge.calls).toEqual([]);
+  });
+
+  // Quem escolheu na lista volta a ela: o produto que sumiu já não está lá, e dá para escolher outro. (Se o
+  // que sumiu foi o da tela, é a tela do produto que deixa de existir, com esta confirmação dentro.)
+  it('o produto escolhido já foi juntado por outra pessoa: avisa e volta para a lista', async () => {
+    mockMerge.error = { code: 'P0002', message: 'product not found' };
+    await open();
+    await press(renderer!.root.findAll((node) => typeof node.props.onPress === 'function' && textOf(node) === 'Arroz Tio João 5 kgGrãos, massas e cereais')[0]);
+    await press(button('Juntar produtos'));
+    await act(async () => lastConfirm()[3]());
+    expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'Um destes produtos não existe mais: alguém da casa já juntou ou apagou.']]);
+    expect(screen()[0]).toBe('Juntar com qual produto?');
+    expect(onClose).not.toHaveBeenCalled();
+    // E a lista fecha normalmente.
+    await press(renderer!.root.findAll((node) => node.props.accessibilityLabel === 'Fechar' && typeof node.props.onPress === 'function')[0]);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('casa com um produto só: diz que não há outro', async () => {
@@ -346,56 +443,98 @@ describe('cartão "Parecem o mesmo produto"', () => {
     expect(screen()).toEqual([
       'Parecem o mesmo produto',
       'Juntando, as compras e os preços dos dois ficam num produto só. Você decide.',
+      // O mesmo tamanho nos dois nomes, com a marca num só.
+      'Arroz Tio João 5 kg',
+      '12 compras',
+      'Arroz 5kg',
+      '2 compras',
+      'Juntar',
+      'São diferentes',
       'Banana',
       '6 compras',
       'Bananas',
       '1 compra',
       'Juntar',
       'São diferentes',
-      'Limão',
-      '1 compra',
+      // Empate de compras e de grafia: fica na frente o nome mais comprido.
       'Limões',
       '1 compra',
-      'Juntar',
-      'São diferentes',
-      'acucar',
+      'Limão',
       '1 compra',
-      'Açúcar',
-      'nenhuma compra',
       'Juntar',
       'São diferentes',
     ]);
   });
 
+  it('cada botão diz de qual par é, para quem ouve a tela', async () => {
+    await open();
+    expect(pressables('button').map((node) => node.props.accessibilityLabel)).toEqual([
+      'Juntar Arroz Tio João 5 kg com Arroz 5kg',
+      'Arroz Tio João 5 kg e Arroz 5kg são diferentes',
+      'Juntar Banana com Bananas',
+      'Banana e Bananas são diferentes',
+      'Juntar Limões com Limão',
+      'Limões e Limão são diferentes',
+    ]);
+  });
+
   it('"São diferentes" guarda o par para a casa', async () => {
     await open();
-    await press(button('São diferentes', 1));
-    expect(mockMarked).toEqual([{ a: LIMAO.id, b: LIMOES.id }]);
+    await press(button('São diferentes', 2));
+    expect(mockMarked).toEqual([{ a: LIMOES.id, b: LIMAO.id }]);
     expect(mockMerge.calls).toEqual([]);
   });
 
   it('o par que a casa já recusou não aparece, e o seguinte entra no lugar', async () => {
+    // A casa tem quatro pares; o do açúcar, com menos compras, espera a vez.
+    await open();
+    expect(screen()).not.toContain('acucar');
+    await act(async () => renderer?.unmount());
     mockQueries.distinct = loaded([{ product_a: BANANA.id, product_b: BANANAS.id }]);
-    mockQueries.products = loaded([...ALL, product('p-ovo', 'Ovo', 'ovos'), product('p-ovos', 'Ovos', 'ovos')]);
-    mockQueries.counts = loaded({ ...(mockQueries.counts.data as object), 'p-ovo': 0, 'p-ovos': 0 });
     await open();
     const shown = screen();
     expect(shown).not.toContain('Bananas');
     expect(shown.filter((text) => text === 'Juntar')).toHaveLength(3);
-    expect(shown).toContain('Ovos');
+    expect(shown.slice(-6)).toEqual(['acucar', '1 compra', 'Açúcar', 'nenhuma compra', 'Juntar', 'São diferentes']);
   });
 
   it('"Juntar" abre a confirmação do par e, juntado, avisa a tela com o produto que ficou', async () => {
     await open();
-    await press(button('Juntar', 0));
-    expect(pressables('radio').map((node) => node.props.accessibilityLabel)).toEqual(['Ficar com o nome Banana. 6 compras', 'Ficar com o nome Bananas. 1 compra']);
+    await press(button('Juntar', 1));
+    expect(pressables('radio').map((node) => node.props.accessibilityLabel)).toEqual(['Banana. 6 compras. Este nome fica.', 'Bananas. 1 compra. Deixa de existir.']);
     await press(button('Juntar produtos'));
     expect(lastConfirm()[1]).toBe('A compra de "Bananas" passa para "Banana". Não dá para desfazer.');
     await act(async () => lastConfirm()[3]());
     expect(mockMerge.calls).toEqual([{ keepId: BANANA.id, mergeId: BANANAS.id }]);
     expect(onMerged.mock.calls).toEqual([[BANANA.id]]);
     // A confirmação fechou.
-    expect(pressables('radio')).toEqual([]);
+    expect(pressables('radio')).toHaveLength(0);
+  });
+
+  it('o par que outra pessoa já juntou: avisa e a confirmação fecha, de volta ao cartão', async () => {
+    mockMerge.error = { code: 'P0002', message: 'product not found' };
+    await open();
+    await press(button('Juntar', 1));
+    await press(button('Juntar produtos'));
+    await act(async () => lastConfirm()[3]());
+    expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'Um destes produtos não existe mais: alguém da casa já juntou ou apagou.']]);
+    expect(pressables('radio')).toHaveLength(0);
+    expect(screen()[0]).toBe('Parecem o mesmo produto');
+    expect(onMerged).not.toHaveBeenCalled();
+  });
+
+  // Em Preços ninguém abriu produto nenhum: no empate, o cartão e a confirmação ficam com o nome mais bem escrito.
+  it('no empate de compras, o cartão e a confirmação ficam com o nome mais bem escrito', async () => {
+    const [cut, full] = [product('p-deterg', 'Deterg Ype 500ml', 'limpeza'), product('p-detergente', 'Detergente Ypê 500ml', 'limpeza')];
+    mockQueries.products = loaded([cut, full]);
+    mockQueries.counts = loaded({ [cut.id]: 1, [full.id]: 1 });
+    await open();
+    expect(screen().slice(2, 6)).toEqual(['Detergente Ypê 500ml', '1 compra', 'Deterg Ype 500ml', '1 compra']);
+    await press(button('Juntar', 0));
+    expect(pressables('radio').map((node) => [node.props.accessibilityLabel, node.props['aria-checked']])).toEqual([
+      ['Detergente Ypê 500ml. 1 compra. Este nome fica.', true],
+      ['Deterg Ype 500ml. 1 compra. Deixa de existir.', false],
+    ]);
   });
 
   it('na tela do produto, só a sugestão dele', async () => {

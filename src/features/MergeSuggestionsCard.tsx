@@ -2,7 +2,7 @@ import { Fragment, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { mergeErrorNotice, useMarkDistinct } from '@/data/productMerge';
-import { purchasesLabel, type MergeSuggestion } from '@/domain/productMerge';
+import { distinctLabel, joinLabel, purchasesLabel, type MergeSuggestion } from '@/domain/productMerge';
 import type { ProductName } from '@/domain/similarNames';
 import { notify } from '@/ui/dialogs';
 import { Button, Card, CategoryIcon, IconBadge, Row, Text } from '@/ui/primitives';
@@ -56,9 +56,18 @@ export function MergeSuggestionsCard({ productId, onMerged }: { productId?: stri
                 {product(keep)}
                 {product(other)}
                 <Row>
-                  <Button title="Juntar" icon="call-merge" compact style={styles.flex} disabled={marking} onPress={() => setMerging(suggestion)} />
+                  <Button
+                    title="Juntar"
+                    accessibilityLabel={joinLabel(keep.name, other.name)}
+                    icon="call-merge"
+                    compact
+                    style={styles.flex}
+                    disabled={marking}
+                    onPress={() => setMerging(suggestion)}
+                  />
                   <Button
                     title="São diferentes"
+                    accessibilityLabel={distinctLabel(keep.name, other.name)}
                     variant="secondary"
                     compact
                     style={styles.flex}

@@ -6,18 +6,22 @@
 // aparece (o app não teria como guardar o "São diferentes"); sem a função,
 // juntar avisa que ainda não está disponível.
 
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 
 import {
   MERGE_BLOCKED,
+  MERGE_NO_ANSWER,
+  MERGE_NO_ANSWER_TITLE,
   MERGE_PRODUCT_GONE,
   MERGE_UNAVAILABLE,
   MERGE_UNAVAILABLE_TITLE,
   orderedPair,
+  PRODUCT_MERGED_AWAY,
   type DistinctPair,
   type MergeMoved,
   type PurchaseCounts,
 } from '@/domain/productMerge';
+import { isDeadlock } from '@/lib/databaseErrors';
 import { errorMessage, supabase, unwrap } from '@/lib/supabase';
 
 import { isMissingFunction, isMissingTable } from './missingSchema';
@@ -133,10 +137,49 @@ export const MERGE_REFRESHES = [
  * O produto já não existe: outra pessoa da casa juntou ou apagou antes. É o P0002 de merge_products e, ao
  * gravar um par, a chave estrangeira que não acha o produto (23503).
  */
-function isProductGone(error: unknown): boolean {
+export function isProductGone(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
   return code === 'P0002' || code === '23503';
 }
+
+/**
+ * Uma gravação mandou o id de um produto que não existe mais: outra pessoa da casa juntou esse produto com
+ * outro, e este aparelho ainda tinha o id de antes. É o 23503 da chave estrangeira para `products` (pela
+ * mensagem do Postgres: "... is not present in table "products"", ou, sem os detalhes, o nome da chave, que
+ * leva a coluna: "..._product_id_household_id_fkey"). Outro 23503 (uma lista apagada em outro aparelho, a chave
+ * da casa numa tabela com "product" no nome) não é isto.
+ */
+export function isProductMergedAway(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || (error as { code?: unknown }).code !== '23503') return false;
+  const { message, details } = error as { message?: unknown; details?: unknown };
+  const text = `${typeof message === 'string' ? message : ''} ${typeof details === 'string' ? details : ''}`;
+  return text.includes('is not present in table "products"') || /insert or update on table "\w+" violates foreign key constraint "\w+_product_id_\w+"/.test(text);
+}
+
+/** De onde as telas tiram o id de produto que mandam ao pôr um item numa lista: produtos, despensa e compras recentes. */
+export const LISTED_PRODUCT_SOURCES = ['products', 'pantry', 'purchaseRecords'] as const;
+
+/**
+ * Roda uma gravação que manda o id de um produto guardado na tela (a nota em revisão, um item para a lista).
+ * Se o banco recusar porque o produto foi juntado com outro, busca de novo `refresh` (de onde o id veio) e só
+ * depois devolve o erro, já com a frase que a pessoa lê (PRODUCT_MERGED_AWAY): enquanto a busca não chega a
+ * gravação continua em andamento, e a tentativa seguinte sai com os ids de agora.
+ */
+export async function withFreshProducts<T>(queryClient: QueryClient, refresh: readonly string[], write: () => Promise<T>): Promise<T> {
+  try {
+    return await write();
+  } catch (error) {
+    if (!isProductMergedAway(error)) throw error;
+    await Promise.all(refresh.map((key) => queryClient.invalidateQueries({ queryKey: [key] })));
+    throw new Error(PRODUCT_MERGED_AWAY);
+  }
+}
+
+/** Quanto esperar a resposta de merge_products antes de desistir do pedido. */
+export const MERGE_TIMEOUT_MS = 25_000;
+
+/** O pedido de juntar foi cortado por falta de resposta (MERGE_TIMEOUT_MS): não se sabe se o banco juntou. */
+const isMergeUnanswered = (error: unknown) => error instanceof Error && error.message === MERGE_NO_ANSWER;
 
 /** `mergeId` deixa de existir e tudo o que era dele passa para `keepId`, no banco, de uma vez. Não dá para desfazer. */
 export function useMergeProducts() {
@@ -146,12 +189,30 @@ export function useMergeProducts() {
   };
   return useMutation({
     mutationFn: async ({ keepId, mergeId }: { keepId: string; mergeId: string }): Promise<MergeMoved> => {
-      const moved = unwrap(await supabase.rpc('merge_products', { p_keep: keepId, p_merge: mergeId })) as Partial<MergeMoved>;
-      return { purchases: Number(moved.purchases ?? 0), pantry: Number(moved.pantry ?? 0), list: Number(moved.list ?? 0) };
+      // Pedido pendurado (sinal fraco no mercado; no Android o pedido não tem prazo): sem cortar, a confirmação
+      // ficaria girando sem saída.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), MERGE_TIMEOUT_MS);
+      try {
+        const moved = unwrap(
+          await supabase.rpc('merge_products', { p_keep: keepId, p_merge: mergeId }).abortSignal(controller.signal),
+        ) as Partial<MergeMoved>;
+        return { purchases: Number(moved.purchases ?? 0), pantry: Number(moved.pantry ?? 0), list: Number(moved.list ?? 0) };
+      } catch (error) {
+        // Só este prazo corta o pedido. O banco pode ter juntado antes do corte: o erro diz isso à pessoa.
+        throw controller.signal.aborted ? new Error(MERGE_NO_ANSWER) : error;
+      } finally {
+        clearTimeout(timer);
+      }
     },
+    // O banco desfez o pedido para destravar o de outra pessoa da casa (40P01): repetir uma vez é seguro, a
+    // função é uma transação só (ou junta, ou diz que o produto não existe mais). Outro erro não se repete.
+    retry: (failures, error) => failures < 1 && isDeadlock(error),
+    retryDelay: 0,
     onSuccess: refresh,
-    // O produto sumiu por outro aparelho: o que está na tela ficou velho.
-    onError: (error) => (isProductGone(error) ? refresh() : undefined),
+    // O produto sumiu por outro aparelho, ou a resposta não chegou e o banco pode ter juntado: o que está na
+    // tela ficou velho.
+    onError: (error) => (isProductGone(error) || isMergeUnanswered(error) ? refresh() : undefined),
   });
 }
 
@@ -160,6 +221,7 @@ export function mergeErrorNotice(error: unknown): { title: string; message: stri
   if (isMissingFunction(error, 'merge_products') || isMissingTable(error, 'product_distinct_pairs')) {
     return { title: MERGE_UNAVAILABLE_TITLE, message: MERGE_UNAVAILABLE };
   }
+  if (isMergeUnanswered(error)) return { title: MERGE_NO_ANSWER_TITLE, message: MERGE_NO_ANSWER };
   if (isProductGone(error)) return { title: 'Erro', message: MERGE_PRODUCT_GONE };
   // A trava de merge_products: alguma linha não trocou de produto, e a função desfez tudo.
   if ((error as { code?: unknown } | null)?.code === '55000') return { title: 'Erro', message: MERGE_BLOCKED };
