@@ -2,17 +2,43 @@ import { router, type Href } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
+import { useFamilyCalendar } from '@/data/family';
 import { useBills } from '@/data/finance';
 import { useAppointments, usePeople, useVaccines } from '@/data/health';
 import { useChores } from '@/data/home';
 import { useDocuments, useEquipmentList } from '@/data/house';
 import { buildAgenda, monthGrid, type AgendaEvent, type AgendaKind } from '@/domain/agenda';
 import { todayISO } from '@/domain/dates';
+import { formatTimeRange } from '@/domain/familyEvents';
 import { monthLabel, shiftMonth } from '@/domain/finance';
-import { Card, ErrorNotice, Icon, IconButton, ListCard, ListRow, Loading, Row, Screen, Text, type IconName } from '@/ui/primitives';
+import { Button, Card, ErrorNotice, Icon, IconButton, ListCard, ListRow, Loading, Row, Screen, Text, type IconName } from '@/ui/primitives';
 import { radius, space, useColors, useTint, type Tint } from '@/ui/theme';
 
-const KINDS: Record<AgendaKind, { label: string; icon: IconName; tint: Tint; href: (id: string) => Href }> = {
+interface KindInfo {
+  label: string;
+  icon: IconName;
+  tint: Tint;
+  /** `date`: o dia tocado (o compromisso abre naquele dia). */
+  href: (id: string, date: string) => Href;
+  /** O título já diz o que é: a linha de baixo fica só com os detalhes. */
+  plain?: boolean;
+}
+
+const KINDS: Record<AgendaKind, KindInfo> = {
+  compromisso: {
+    label: 'Compromisso',
+    icon: 'calendar-star',
+    tint: 'purple',
+    href: (id, dia) => ({ pathname: '/compromisso/[id]', params: { id, dia } }),
+    plain: true,
+  },
+  aniversario: {
+    label: 'Aniversário',
+    icon: 'cake-variant-outline',
+    tint: 'yellow',
+    href: (id) => ({ pathname: '/pessoa/[id]', params: { id } }),
+    plain: true,
+  },
   consulta: { label: 'Consulta', icon: 'stethoscope', tint: 'pink', href: (id) => ({ pathname: '/consulta/[id]', params: { id } }) },
   vacina: { label: 'Vacina', icon: 'needle', tint: 'purple', href: (id) => ({ pathname: '/vacina/[id]', params: { id } }) },
   conta: { label: 'Conta', icon: 'cash', tint: 'green', href: (id) => ({ pathname: '/conta/[id]', params: { id } }) },
@@ -46,6 +72,8 @@ export default function AgendaScreen() {
   const documents = useDocuments();
   const equipment = useEquipmentList();
   const queries = [appointments, vaccines, people, bills, chores, documents, equipment];
+  // Fora de `queries`: os compromissos nunca viram tela de erro (sem eles, a agenda é a de sempre).
+  const family = useFamilyCalendar();
 
   const weeks = monthGrid(month);
   const from = weeks[0][0].date;
@@ -63,12 +91,24 @@ export default function AgendaScreen() {
     chores: chores.data ?? [],
     documents: documents.data ?? [],
     equipment: equipment.data ?? [],
+    calendar: family.calendar,
   });
   const byDay = new Map<string, AgendaEvent[]>();
   for (const event of events) byDay.set(event.date, [...(byDay.get(event.date) ?? []), event]);
 
   const failed = queries.find((q) => q.isError);
-  if (failed) return <ErrorNotice error={failed.error} onRetry={() => queries.forEach((q) => q.refetch())} />;
+  if (failed) {
+    return (
+      <ErrorNotice
+        error={failed.error}
+        onRetry={() => {
+          queries.forEach((q) => q.refetch());
+          family.refetch();
+        }}
+      />
+    );
+  }
+  // Os compromissos não seguram a agenda: enquanto carregam, ela aparece com o resto (e os aniversários).
   if (queries.some((q) => q.isPending)) return <Loading />;
 
   function goToMonth(delta: number) {
@@ -132,16 +172,20 @@ export default function AgendaScreen() {
       <Text variant="heading">{dayLabel(selected, today)}</Text>
       {dayEvents.length ? (
         <ListCard>
-          {dayEvents.map((event) => (
-            <ListRow
-              key={event.key}
-              left={<KindBadge kind={event.kind} />}
-              title={event.time ? `${event.time} · ${event.title}` : event.title}
-              subtitle={[KINDS[event.kind].label, event.detail].filter(Boolean).join(' · ')}
-              dimmed={event.planned}
-              onPress={() => router.push(KINDS[event.kind].href(event.id))}
-            />
-          ))}
+          {dayEvents.map((event) => {
+            const kind = KINDS[event.kind];
+            const time = formatTimeRange(event.time, event.endTime ?? null);
+            return (
+              <ListRow
+                key={event.key}
+                left={<KindBadge kind={event.kind} />}
+                title={time ? `${time} · ${event.title}` : event.title}
+                subtitle={kind.plain ? (event.detail ?? kind.label) : [kind.label, event.detail].filter(Boolean).join(' · ')}
+                dimmed={event.planned}
+                onPress={() => router.push(kind.href(event.id, event.date))}
+              />
+            );
+          })}
         </ListCard>
       ) : (
         <Card>
@@ -153,6 +197,12 @@ export default function AgendaScreen() {
           </Row>
         </Card>
       )}
+      <Button
+        title="Novo compromisso"
+        variant="secondary"
+        icon="calendar-plus"
+        onPress={() => router.push({ pathname: '/compromisso/[id]', params: { id: 'novo', dia: selected } })}
+      />
       <Text variant="small" style={[styles.center, { color: c.textMuted }]}>
         Contas e tarefas que se repetem aparecem apagadas nas próximas datas: é a previsão.
       </Text>

@@ -29,8 +29,20 @@ trap cleanup EXIT
 
 PSQL=("$PGBIN/psql" -h "$WORK" -p "$PORT" -U postgres -d postgres -X -q -v ON_ERROR_STOP=1)
 
+# Desde 30/10/2026 a Supabase não dá mais acesso pela API às tabelas novas do schema public: só vale o grant
+# que a migração escreve. As migrações de antes contam com o padrão antigo (o de stubs.sql). As de
+# NO_DEFAULT_GRANTS_FROM em diante rodam aqui sem ele, como vão rodar lá: a tabela nova sem grant fica sem
+# acesso, e os testes que a usam falham.
+NO_DEFAULT_GRANTS_FROM=20261010000000
+default_grants=on
+
 "${PSQL[@]}" -f "$ROOT/scripts/db/stubs.sql" >/dev/null
 for migration in "$ROOT"/supabase/migrations/*.sql; do
+  name="$(basename "$migration")"
+  if [[ "$default_grants" == on && "${name%%_*}" > "$NO_DEFAULT_GRANTS_FROM" ]]; then
+    "${PSQL[@]}" -c "alter default privileges in schema public revoke all on tables from anon, authenticated, service_role" >/dev/null
+    default_grants=off
+  fi
   "${PSQL[@]}" -f "$migration" >/dev/null
 done
 "${PSQL[@]}" -f "$ROOT/scripts/db/test.sql"
