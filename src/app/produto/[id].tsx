@@ -6,6 +6,7 @@ import { usePriceHistory, useProducts, useRenameProduct, useStores } from '@/dat
 import { CATEGORIES, getCategory } from '@/domain/categories';
 import { formatShortDate, toISODate } from '@/domain/dates';
 import { formatBRL } from '@/domain/money';
+import { PriceHistorySection } from '@/features/market/PriceHistorySection';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
@@ -102,24 +103,7 @@ export default function ProductScreen() {
         )}
       </Section>
 
-      {(history.data?.length ?? 0) > latestByStore.length ? (
-        <Section title="Histórico">
-          <ListCard>
-            {history.data!.map((obs, index) => (
-              <ListRow
-                key={`${obs.receipt_id}-${index}`}
-                title={storeName(obs.store_id)}
-                subtitle={formatShortDate(toISODate(new Date(obs.purchased_at)))}
-                right={
-                  <Text variant="muted">
-                    {formatBRL(obs.unit_price)}/{obs.unit}
-                  </Text>
-                }
-              />
-            ))}
-          </ListCard>
-        </Section>
-      ) : null}
+      <PriceHistorySection productId={product.id} productName={product.name} />
 
       <PickerModal
         visible={pickingCategory}
