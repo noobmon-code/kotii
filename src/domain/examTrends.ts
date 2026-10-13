@@ -364,6 +364,16 @@ function mixedReadings(points: TrendPoint[]): boolean {
 }
 
 /**
+ * A série tem um resultado que é um limite ("< 0,5", "> 5"). O gráfico dela
+ * também não é desenhado: o limite entraria como medida exata, e "> 5" seguido
+ * de "6" viraria uma linha subindo, quando o primeiro podia ser 10. A frase da
+ * mudança já não faz conta com esses (ver changeSentence).
+ */
+function boundedReadings(points: TrendPoint[]): boolean {
+  return points.some((point) => point.mark != null);
+}
+
+/**
  * Pontos do gráfico já na escala de 0 a 1. O x segue o tempo (dois exames
  * próximos ficam próximos); com tudo no mesmo dia, os pontos se espalham por
  * igual. O y vai do menor ao maior valor; todos iguais ficam no meio.
@@ -808,7 +818,7 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
       .map((item) => ({
         ...item,
         change: changeSentence(item.last, item.points[item.points.length - 2]),
-        chart: mixedReadings(item.points) ? [] : chartPoints(item.points),
+        chart: mixedReadings(item.points) || boundedReadings(item.points) ? [] : chartPoints(item.points),
       })),
     single: numbers.filter((item) => item.points.length === 1),
     text: [...textual.values()].sort(byAttention).map((group) => toItem(group, false)),

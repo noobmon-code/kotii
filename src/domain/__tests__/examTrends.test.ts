@@ -1295,6 +1295,19 @@ describe('examTrends', () => {
     }
   });
 
+  it('série com um limite ("<" ou ">") não tem gráfico: a linha diria uma direção que ninguém mediu', () => {
+    const series = (values: string[]) =>
+      examTrends(values.map((value, i) => exam(`2026-0${i + 1}-10`, [result('PSA', value, 'ng/mL')]))).series[0];
+    // "> 5" e depois "6": o primeiro podia ser 10.
+    expect(series(['> 5', '6']).chart).toEqual([]);
+    expect(series(['0,8', '< 0,5']).chart).toEqual([]);
+    expect(series(['0,8', 'inferior a 0,5', '0,7']).chart).toEqual([]);
+    // A série continua lá, com os valores como vieram; só não há desenho nem conta.
+    expect(series(['> 5', '6']).points.map((p) => p.value)).toEqual(['> 5', '6']);
+    // Sem limite nenhum, o gráfico de sempre.
+    expect(series(['0,8', '0,5', '0,7']).chart).toHaveLength(3);
+  });
+
   it('o mesmo item duas vezes no laudo: cada um segue, nos outros grupos, o resultado da mesma vez', () => {
     const curve = [result('Glicose', '92', 'mg/dL'), result('Glicose', '140', 'mg/dL')];
     // O laudo seguinte veio com os dois em texto.
