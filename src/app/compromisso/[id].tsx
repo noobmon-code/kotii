@@ -125,14 +125,18 @@ export default function FamilyEventScreen() {
   if (fetched && confirmedId !== id) setConfirmedId(id);
   const confirmed = isNew || fetched || confirmedId === id;
 
-  const failed = !shown && (people.isError || (!isNew && event.isError));
+  // A busca do compromisso que falha só é o fim quando não há cópia guardada. Com cópia, a tela abre com ela,
+  // sem conferir: o formulário avisa, oferece tentar de novo e pergunta antes de salvar (como quando a rede não
+  // responde ou não há internet).
+  const eventFailed = !isNew && event.isError && !event.data;
+  const failed = !shown && (people.isError || eventFailed);
   const waiting = !people.data || (!isNew && (event.isPending || awaitingFresh));
   const found = isNew || Boolean(event.data);
   // Guardado na própria renderização em que o formulário aparece (estado derivado, sem efeito).
   if (!shown && !failed && !waiting && found) setShownId(id);
 
   if (!shown && people.isError) return <ErrorNotice error={people.error} onRetry={() => people.refetch()} />;
-  if (!shown && !isNew && event.isError) {
+  if (!shown && eventFailed) {
     return <ErrorNotice error={new Error(familyEventErrorMessage(event.error))} onRetry={() => event.refetch()} />;
   }
   // Sem internet e sem cópia nenhuma, a busca fica parada: a tela diz, em vez de girar sem fim. Quando a

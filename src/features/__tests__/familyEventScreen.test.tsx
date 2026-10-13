@@ -149,9 +149,18 @@ const dayRow = (patch: Row): Row => ({
 let client: QueryClient;
 let renderer: ReactTestRenderer | undefined;
 
+/**
+ * Espera `ms` e, depois, deixa passar mais algumas voltas do laço de eventos. Com a máquina ocupada, o que foi
+ * agendado "para já" (o aviso de que uma busca chegou) pode só rodar depois do tempo pedido, e a tela ainda
+ * estaria como antes.
+ */
+async function pause(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
+}
 const settle = (ms = 30) =>
   act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, ms));
+    await pause(ms);
   });
 function open(params: Record<string, string> = { id: 'natacao' }) {
   mockRoute.params = params;
@@ -203,13 +212,13 @@ const changeElsewhere = () => Object.assign(mockDb.events[0], { start_time: '17:
 const press = (item: ReactTestInstance) =>
   act(async () => {
     item.props.onPress();
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await pause(30);
   });
 /** A internet volta: as buscas paradas seguem. */
 const online = () =>
   act(async () => {
     onlineManager.setOnline(true);
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await pause(30);
   });
 /** A tela já foi aberta uma vez (há uma cópia guardada) e fechada. */
 async function visitOnce(params?: Record<string, string>) {
@@ -251,7 +260,7 @@ const question = (n = 0) => jest.mocked(confirmAction).mock.calls[n].slice(0, 3)
 const accept = (n = 0) =>
   act(async () => {
     jest.mocked(confirmAction).mock.calls[n][3]();
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await pause(30);
   });
 const eventUpdates = () => mockDb.writes.filter((w) => w.table === 'family_events' && w.verb === 'update');
 
@@ -298,7 +307,7 @@ describe('tela do compromisso: o formulário espera a busca desta visita', () =>
     act(() => field('O que levar')!.props.onChangeText('touca'));
     await act(async () => {
       button('Salvar')!.props.onPress();
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await pause(30);
     });
     expect(confirmAction).not.toHaveBeenCalled();
     const updates = mockDb.writes.filter((w) => w.table === 'family_events' && w.verb === 'update');
@@ -387,7 +396,7 @@ describe('tela do compromisso: a cópia guardada, quando a busca não chega', ()
     // A internet volta, e a busca traz o compromisso como está agora.
     await act(async () => {
       onlineManager.setOnline(true);
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await pause(30);
     });
     await settle();
     // Os campos não mudam sozinhos (a pessoa pode estar digitando), mas a tela diz.
@@ -398,7 +407,7 @@ describe('tela do compromisso: a cópia guardada, quando a busca não chega', ()
     // Salvar assim pergunta antes, e só grava se a pessoa confirmar.
     await act(async () => {
       button('Salvar')!.props.onPress();
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await pause(30);
     });
     expect(mockDb.writes).toEqual([]);
     expect(confirmAction).toHaveBeenCalledTimes(1);
@@ -506,6 +515,39 @@ describe('tela do compromisso: a cópia guardada, enquanto não deu para conferi
     await press(button('Salvar'));
     expect(confirmAction).not.toHaveBeenCalled();
   }, 20_000);
+
+  it('a busca falha logo ao abrir, com cópia guardada: em vez do erro, abre a cópia com o aviso, e salvar pergunta', async () => {
+    await visitOnce();
+    changeElsewhere();
+    // A rede cai: a busca desta visita dá erro antes do limite da espera.
+    const failing = failReads(mockDb.events);
+    open();
+    await settle();
+    expect(field('Começa às')!.props.value).toBe('16:00');
+    expect(page()).toContain(COPY_TITLE);
+    expect(button('Tentar de novo')).toBeDefined();
+    await press(button('Salvar'));
+    expect(confirmAction).toHaveBeenCalledTimes(1);
+    expect(question()).toEqual(UNCHECKED_QUESTION);
+    expect(eventUpdates()).toEqual([]);
+
+    // A rede volta: a busca traz o compromisso que mudou em outro celular, e quem fala é o aviso de que mudou.
+    failing.mockRestore();
+    await press(button('Tentar de novo'));
+    await until(() => page().includes('Este compromisso mudou'));
+    expect(page()).toContain('Este compromisso mudou');
+    expect(page()).not.toContain(COPY_TITLE);
+  });
+
+  it('a busca falha logo ao abrir, sem cópia guardada: aí é o erro, com como tentar de novo', async () => {
+    const failing = failReads(mockDb.events);
+    open();
+    await settle();
+    expect(field('Começa às')).toBeUndefined();
+    expect(page()).not.toContain(COPY_TITLE);
+    expect(button('Tentar novamente') ?? button('Tentar de novo')).toBeDefined();
+    failing.mockRestore();
+  });
 
   it('a busca falha: o aviso ganha o "Tentar de novo", e a busca que dá certo tira o aviso', async () => {
     await visitOnce();
@@ -806,7 +848,7 @@ describe('tela do compromisso: o que muda só num dia', () => {
     act(() => field('O que levar')!.props.onChangeText('touca'));
     await act(async () => {
       button('Salvar')!.props.onPress();
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await pause(30);
     });
     expect(mockDb.writes.map((w) => `${w.table}:${w.verb}`)).toEqual(['family_events:update']);
     expect(mockDb.days).toHaveLength(1);
@@ -823,7 +865,7 @@ describe('tela do compromisso: o que muda só num dia', () => {
     act(() => renderer!.root.findAllByType(ListRow)[0].props.onPress());
     await act(async () => {
       chip('Como sempre: ninguém').props.onPress();
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await pause(30);
     });
     expect(mockDb.writes.map((w) => `${w.table}:${w.verb}`)).toEqual(['family_event_days:delete']);
     expect(mockDb.days).toEqual([]);
@@ -843,7 +885,7 @@ describe('tela do compromisso: o que muda só num dia', () => {
       dayChips()
         .find((item) => item.props.label === 'Beto')!
         .props.onPress();
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await pause(30);
     });
     expect(mockDb.writes).toEqual([]);
 
@@ -854,7 +896,7 @@ describe('tela do compromisso: o que muda só num dia', () => {
     expect(pickUp.map((item) => item.props.selected)).toEqual([false, true]);
     await act(async () => {
       pickUp[0].props.onPress();
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await pause(30);
     });
     expect(mockDb.writes).toEqual([
       {
@@ -879,14 +921,14 @@ describe('tela do compromisso: o que muda só num dia', () => {
       dayChips()
         .find((item) => item.props.label === 'Beto')!
         .props.onPress();
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await pause(30);
     });
     expect(mockDb.writes).toEqual([]);
 
     failing.mockRestore();
     await act(async () => {
       button('Tentar de novo')!.props.onPress();
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await pause(30);
     });
     await settle();
     expect(page()).not.toContain('Não deu para buscar agora como este dia está.');
@@ -894,7 +936,7 @@ describe('tela do compromisso: o que muda só num dia', () => {
       dayChips()
         .find((item) => item.props.label === 'Beto')!
         .props.onPress();
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await pause(30);
     });
     expect(mockDb.writes.map((w) => `${w.table}:${w.verb}`)).toEqual(['family_event_days:upsert']);
   });
@@ -1021,7 +1063,7 @@ describe('tela do compromisso: salvar', () => {
     mockDb.events = [];
     await act(async () => {
       button('Salvar')!.props.onPress();
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await pause(30);
     });
     expect(notify).toHaveBeenCalledWith('Erro', 'Este compromisso não existe mais: foi excluído. Volte para a agenda.');
     expect(router.back).not.toHaveBeenCalled();
@@ -1033,7 +1075,7 @@ describe('tela do compromisso: salvar', () => {
     act(() => field('O que levar')!.props.onChangeText('touca'));
     await act(async () => {
       button('Salvar')!.props.onPress();
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await pause(30);
     });
     expect(notify).not.toHaveBeenCalled();
     expect(router.back).toHaveBeenCalledTimes(1);
