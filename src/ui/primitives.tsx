@@ -585,6 +585,10 @@ export function CategoryIcon({
   return <View style={[styles.iconBadge, { width: size, height: size, backgroundColor: tint.bg }]}>{image}</View>;
 }
 
+/**
+ * Linha de lista. `expanded` (true ou false) é para a linha que abre e fecha
+ * um conteúdo logo abaixo: o leitor de tela anuncia um botão e se está aberto.
+ */
 export function ListRow({
   left,
   title,
@@ -593,6 +597,7 @@ export function ListRow({
   onPress,
   onLongPress,
   dimmed,
+  expanded,
 }: {
   left?: ReactNode;
   title: string;
@@ -601,10 +606,13 @@ export function ListRow({
   onPress?: () => void;
   onLongPress?: () => void;
   dimmed?: boolean;
+  expanded?: boolean;
 }) {
   const c = useColors();
   return (
     <Pressable
+      accessibilityRole={expanded === undefined ? undefined : 'button'}
+      aria-expanded={expanded}
       disabled={!onPress && !onLongPress}
       onPress={onPress}
       onLongPress={onLongPress}
