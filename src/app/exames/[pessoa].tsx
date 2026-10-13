@@ -19,6 +19,7 @@ import {
 } from '@/domain/examTrends';
 import { EXAM_STATUS, flagLabel } from '@/domain/health';
 import { TrendChart } from '@/features/health/TrendChart';
+import { StaleNotice } from '@/features/health/StaleNotice';
 import { VisitSummaryModal } from '@/features/health/VisitSummaryModal';
 import {
   Badge,
@@ -36,7 +37,7 @@ import {
   Section,
   Text,
 } from '@/ui/primitives';
-import { radius, space, useColors } from '@/ui/theme';
+import { space } from '@/ui/theme';
 
 /** Evolução dos resultados de exame de uma pessoa e o resumo para levar à consulta. */
 export default function ExamTrendsScreen() {
@@ -91,20 +92,6 @@ export default function ExamTrendsScreen() {
 
       {summary !== null ? <VisitSummaryModal text={summary} onClose={() => setSummary(null)} /> : null}
     </Screen>
-  );
-}
-
-/** O aviso de que a atualização falhou, acima das listas: elas (e o resumo aberto) continuam na tela. */
-function StaleNotice({ onRetry }: { onRetry: () => void }) {
-  const c = useColors();
-  return (
-    <View style={[styles.stale, { backgroundColor: c.warningSoft }]} accessibilityRole="alert">
-      <Icon name="alert-circle-outline" size={18} color="warning" />
-      <Text variant="small" color="warning" style={styles.flex}>
-        Não foi possível atualizar. Mostrando o que já estava carregado.
-      </Text>
-      <Button title="Tentar de novo" variant="secondary" compact onPress={onRetry} />
-    </View>
   );
 }
 
@@ -268,14 +255,6 @@ function PointRow({ point }: { point: TrendPoint }) {
 const styles = StyleSheet.create({
   gap: { gap: space.sm },
   flex: { flex: 1 },
-  stale: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    borderRadius: radius.md,
-    paddingHorizontal: space.md,
-    paddingVertical: space.sm,
-  },
   lines: { gap: space.xs, alignItems: 'flex-start' },
   side: { alignItems: 'center' },
   points: { paddingLeft: space.lg, paddingBottom: space.sm },

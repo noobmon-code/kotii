@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { CarePanel } from '@/features/health/CarePanel';
+import { StaleNotice } from '@/features/health/StaleNotice';
 import { Button, ErrorNotice, Loading } from '@/ui/primitives';
 
 // O painel de verdade, com as buscas trocadas por respostas prontas. O que se confere aqui: a busca de "quem tem
-// resultados de exame" (a casa toda) só segura o painel em "Todos", que é onde ela decide alguma coisa.
+// resultados de exame" (a casa toda) só segura o painel em "Todos", que é onde ela decide alguma coisa; e uma
+// atualização que falha com o dado já carregado não tira o painel da frente.
 
 interface Query {
   data: unknown;
@@ -38,6 +40,8 @@ const loaded = (data: unknown): Query => ({ data, isError: false, error: null, r
 const pending = (): Query => loaded(undefined);
 /** Nunca carregou e a busca falhou. */
 const failed = (): Query => ({ ...loaded(undefined), isError: true, error: new Error('sem rede') });
+/** Já tinha carregado, e a atualização em segundo plano falhou: o dado continua lá. */
+const stale = (data: unknown): Query => ({ ...loaded(data), isError: true, error: new Error('sem rede') });
 
 const person = (id: string, name: string) => ({
   id,
@@ -137,5 +141,51 @@ describe('painel de cuidados: a busca de quem tem resultados de exame', () => {
     mockQueries.vaccines = failed();
     open('ana');
     expect(has(ErrorNotice)).toBe(true);
+  });
+});
+
+describe('painel de cuidados: a atualização que falha com o dado já carregado', () => {
+  const retried = () => (['people', 'appointments', 'vaccines', 'exams', 'owners', 'medications'] as Name[]).filter((name) => mockQueries[name].refetch.mock.calls.length > 0);
+
+  it('em "Todos", a de quem tem resultados não esconde o painel: ele fica, com o aviso e a entrada de antes', () => {
+    mockQueries.owners = stale(['ana']);
+    open(null);
+    expect(has(ErrorNotice)).toBe(false);
+    expect(has(Loading)).toBe(false);
+    expect(has(StaleNotice)).toBe(true);
+    expect(buttons()).toContain('Evolução e resumo para a consulta');
+    // "Tentar de novo" refaz só a busca que falhou.
+    act(() => renderer.root.findByType(StaleNotice).props.onRetry());
+    expect(retried()).toEqual(['owners']);
+  });
+
+  it('a de qualquer outra busca também não: o painel fica com o que tinha, e o aviso diz que não atualizou', () => {
+    mockQueries.vaccines = stale([]);
+    mockQueries.exams = stale([exam('e1', 'ana')]);
+    open('ana');
+    expect(has(ErrorNotice)).toBe(false);
+    expect(has(StaleNotice)).toBe(true);
+    act(() => renderer.root.findByType(StaleNotice).props.onRetry());
+    expect(retried()).toEqual(['vaccines', 'exams']);
+  });
+
+  it('com uma pessoa escolhida, a de quem tem resultados nem aparece no aviso: ali ela não decide nada', () => {
+    mockQueries.owners = stale(['ana']);
+    open('ana');
+    expect(has(ErrorNotice)).toBe(false);
+    expect(has(StaleNotice)).toBe(false);
+  });
+
+  it('uma busca sem dado nenhum e com erro continua mostrando o erro inteiro, mesmo com outra só desatualizada', () => {
+    mockQueries.vaccines = stale([]);
+    mockQueries.exams = failed();
+    open('ana');
+    expect(has(ErrorNotice)).toBe(true);
+    expect(has(StaleNotice)).toBe(false);
+  });
+
+  it('sem falha nenhuma, não há aviso', () => {
+    open(null);
+    expect(has(StaleNotice)).toBe(false);
   });
 });

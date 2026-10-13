@@ -25,6 +25,7 @@ import {
 import { space } from '@/ui/theme';
 import { MedicationList } from './MedicationSections';
 import { openNewPerson, PersonChips } from './PersonChips';
+import { StaleNotice } from './StaleNotice';
 
 const PAST_LIMIT = 5;
 
@@ -45,8 +46,11 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
   // tira da frente as consultas, as vacinas, os exames e os remédios que já chegaram.
   const person = people.data?.find((p) => p.id === personId) ?? null;
   const queries = person ? [people, appointments, vaccines, exams, medications] : [people, appointments, vaccines, exams, resultOwners, medications];
-  const failed = queries.find((q) => q.isError);
-  if (failed) return <ErrorNotice error={failed.error} onRetry={() => queries.forEach((q) => q.refetch())} />;
+  // O erro inteiro só enquanto falta o dado da busca que falhou. Com tudo já carregado, a atualização em segundo
+  // plano que falha não tira o painel da frente: ele fica com o que tinha, e um aviso acima diz isso.
+  const failed = queries.filter((q) => q.isError);
+  const blocking = failed.find((q) => q.data === undefined);
+  if (blocking) return <ErrorNotice error={blocking.error} onRetry={() => queries.forEach((q) => q.refetch())} />;
   if (!people.data || !appointments.data || !vaccines.data || !exams.data || !medications.data || (!person && !resultOwners.data)) return <Loading />;
 
   const mine = <T extends { person_id: string | null }>(rows: T[]) => (person ? rows.filter((r) => r.person_id === person.id) : rows);
@@ -87,6 +91,8 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
 
   return (
     <View style={styles.gap}>
+      {failed.length ? <StaleNotice onRetry={() => failed.forEach((q) => void q.refetch())} /> : null}
+
       <PersonChips people={people.data} value={person?.id ?? null} onChange={onPersonChange} allLabel="Todos" onAdd={openNewPerson} />
 
       {person ? <PersonCard person={person} today={today} /> : null}
