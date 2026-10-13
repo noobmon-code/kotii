@@ -287,7 +287,7 @@ export default function TodayScreen() {
       </View>
 
       {/* Alguém da casa está indo às compras: ainda dá tempo de pôr na lista o que falta. */}
-      <MarketTripBanner lists={lists.data} openable />
+      <MarketTripBanner openable />
 
       <WeatherCard now={now} />
 

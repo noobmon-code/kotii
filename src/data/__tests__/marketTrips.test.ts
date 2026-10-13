@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { onlineManager } from '@tanstack/react-query';
 
-import { TRIP_LIMIT_REACHED, TRIP_NOT_READY } from '@/domain/marketTrips';
+import { TRIP_LIMIT_REACHED, TRIP_NOT_READY, TRIP_OFFLINE } from '@/domain/marketTrips';
 
-import { announceMarketTrip, fetchMarketTrips, isNotDeployed, marketTripErrorMessage, readMarketTripPush } from '../marketTrips';
+import { announceMarketTrip, endMarketTrip, fetchMarketTrips, isNotDeployed, marketTripErrorMessage, readMarketTripPush } from '../marketTrips';
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim. O que o banco
 // responde em cada chamada, e o que foi pedido a ele.
@@ -59,6 +59,9 @@ const MISSING_FUNCTION_PG = { code: '42883', message: 'function public.announce_
 const MISSING_COLUMN = { code: '42703', message: 'column push_subscriptions.market_trips does not exist' };
 const MISSING_COLUMN_REST = { code: 'PGRST204', message: "Could not find the 'market_trips' column of 'push_subscriptions' in the schema cache" };
 
+// O que a busca das idas pede: a ida e, junto, a lista dela.
+const TRIPS_SELECT = 'id, list_id, user_id, display_name, created_at, ends_at, ended_at, list:shopping_lists!inner(name, kind, archived_at)';
+
 beforeEach(() => {
   mockDb.trips = { data: [], error: null };
   mockDb.rpc = { data: null, error: null };
@@ -92,11 +95,26 @@ describe('banco de antes da migração das idas', () => {
     expect(await fetchMarketTrips()).toBeNull();
   });
 
+  it('as idas: a busca que traz a lista junto também responde pela tabela que falta, antes de olhar a lista', async () => {
+    // No banco antigo a lista existe e as idas não: o PostgREST recusa pela tabela pedida (market_trips).
+    mockDb.trips = { data: null, error: MISSING_TABLE };
+    expect(await fetchMarketTrips()).toBeNull();
+    expect(mockDb.filters[0]).toEqual(['market_trips', 'select', TRIPS_SELECT]);
+  });
+
+  it('encerrar: sem a função, a mesma mensagem', async () => {
+    for (const error of [MISSING_FUNCTION, MISSING_FUNCTION_PG]) {
+      mockDb.rpc = { data: null, error };
+      const failure = await endMarketTrip('ida').catch((err: unknown) => err);
+      expect(marketTripErrorMessage(failure, 'end')).toBe(TRIP_NOT_READY);
+    }
+  });
+
   it('avisar: sem a função, a mensagem diz que o aviso ainda está sendo ativado', async () => {
     for (const error of [MISSING_FUNCTION, MISSING_FUNCTION_PG]) {
       mockDb.rpc = { data: null, error };
       const failure = await announceMarketTrip('lista').catch((err: unknown) => err);
-      expect(marketTripErrorMessage(failure)).toBe(TRIP_NOT_READY);
+      expect(marketTripErrorMessage(failure, 'announce')).toBe(TRIP_NOT_READY);
     }
     expect(TRIP_NOT_READY).toBe('O aviso de ida ao mercado ainda está sendo ativado no Kotii. Tente de novo mais tarde.');
   });
@@ -114,12 +132,24 @@ describe('banco de antes da migração das idas', () => {
 describe('as idas da casa', () => {
   const now = new Date('2026-10-13T10:00:00Z');
 
-  it('busca as que ainda podem valer: não encerradas e antes do fim, as mais novas primeiro', async () => {
-    const rows = [{ id: 't1', list_id: 'l1', user_id: 'u1', display_name: 'Ana', created_at: '2026-10-13T09:50:00Z', ends_at: '2026-10-13T11:50:00Z', ended_at: null }];
+  it('busca as que ainda podem valer, cada uma com a lista dela: não encerradas e antes do fim, as mais novas primeiro', async () => {
+    const rows = [
+      {
+        id: 't1',
+        list_id: 'l1',
+        user_id: 'u1',
+        display_name: 'Ana',
+        created_at: '2026-10-13T09:50:00Z',
+        ends_at: '2026-10-13T11:50:00Z',
+        ended_at: null,
+        list: { name: 'Feira', kind: 'mercado', archived_at: null },
+      },
+    ];
     mockDb.trips = { data: rows, error: null };
     expect(await fetchMarketTrips(now)).toEqual(rows);
     expect(mockDb.filters).toEqual([
-      ['market_trips', 'select', 'id, list_id, user_id, display_name, created_at, ends_at, ended_at'],
+      // A lista vem na mesma busca (pelo FK da ida): a faixa não depende das listas guardadas no aparelho.
+      ['market_trips', 'select', TRIPS_SELECT],
       ['market_trips', 'is', 'ended_at', null],
       ['market_trips', 'gt', 'ends_at', '2026-10-13T10:00:00.000Z'],
       ['market_trips', 'order', 'created_at', { ascending: false }],
@@ -149,21 +179,73 @@ describe('avisar a casa', () => {
     expect(mockDb.calls).toEqual([['announce_market_trip', { p_list_id: 'lista-1' }]]);
   });
 
-  it('sem internet, nem tenta: diz para avisar quando a conexão voltar', async () => {
+  it('sem internet, nem tenta: diz para tentar de novo quando a conexão voltar', async () => {
     onlineManager.setOnline(false);
-    await expect(announceMarketTrip('lista-1')).rejects.toThrow('Sem internet agora. Avise a casa quando a conexão voltar.');
+    const failure = await announceMarketTrip('lista-1').catch((err: unknown) => err);
+    expect(marketTripErrorMessage(failure, 'announce')).toBe('Sem internet agora. Tente avisar de novo quando a conexão voltar.');
     expect(mockDb.calls).toEqual([]);
   });
 
   it('as mensagens dos erros: o limite do dia, a lista que saiu e o resto como veio', () => {
-    expect(marketTripErrorMessage({ code: 'NK005', message: 'too many market trips' })).toBe(TRIP_LIMIT_REACHED);
+    expect(marketTripErrorMessage({ code: 'NK005', message: 'too many market trips' }, 'announce')).toBe(TRIP_LIMIT_REACHED);
     expect(TRIP_LIMIT_REACHED).toBe('Você já avisou a casa várias vezes hoje. Tente de novo mais tarde.');
-    expect(marketTripErrorMessage({ code: 'P0002', message: 'list not found' })).toBe(
+    expect(marketTripErrorMessage({ code: 'P0002', message: 'list not found' }, 'announce')).toBe(
       'Esta lista não está mais aberta. Volte para as listas e escolha outra.',
     );
-    expect(marketTripErrorMessage(new Error('Sem internet agora. Avise a casa quando a conexão voltar.'))).toBe(
-      'Sem internet agora. Avise a casa quando a conexão voltar.',
-    );
+    expect(marketTripErrorMessage({ code: '42501', message: 'sem casa' }, 'announce')).toBe('sem casa');
+    expect(marketTripErrorMessage(new Error('Outro erro qualquer'), 'end')).toBe('Outro erro qualquer');
+  });
+});
+
+describe('encerrar a ida', () => {
+  it('chama a função com a ida e devolve se encerrou', async () => {
+    mockDb.rpc = { data: true, error: null };
+    expect(await endMarketTrip('ida-1')).toBe(true);
+    expect(mockDb.calls).toEqual([['end_market_trip', { p_trip_id: 'ida-1' }]]);
+  });
+
+  it('sem internet, nem tenta: diz para encerrar quando a conexão voltar', async () => {
+    onlineManager.setOnline(false);
+    const failure = await endMarketTrip('ida-1').catch((err: unknown) => err);
+    expect(marketTripErrorMessage(failure, 'end')).toBe('Sem internet agora. Encerre quando a conexão voltar.');
+    expect(mockDb.calls).toEqual([]);
+  });
+});
+
+describe('o pedido que não chegou ao servidor (sinal fraco, com o aparelho dizendo que há internet)', () => {
+  // Como o postgrest-js devolve o erro do fetch: o nome e o texto dele na mensagem, sem código.
+  const failures = [
+    { code: '', message: 'TypeError: Network request failed', details: '', hint: '' },
+    { code: '', message: 'TypeError: Failed to fetch', details: '', hint: '' },
+    { code: '', message: 'TypeError: Load failed', details: '', hint: '' },
+    { message: 'TypeError: NetworkError when attempting to fetch resource.' },
+    new TypeError('Failed to fetch'),
+    new TypeError('Network request failed'),
+  ];
+
+  it('vira a frase de sem internet de cada pedido, e não o texto do navegador', async () => {
+    for (const error of failures) {
+      expect(marketTripErrorMessage(error, 'end')).toBe(TRIP_OFFLINE.end);
+      expect(marketTripErrorMessage(error, 'announce')).toBe(TRIP_OFFLINE.announce);
+    }
+    expect(TRIP_OFFLINE).toEqual({
+      announce: 'Sem internet agora. Tente avisar de novo quando a conexão voltar.',
+      end: 'Sem internet agora. Encerre quando a conexão voltar.',
+    });
+    // Pelo caminho inteiro: a função responde com o erro do fetch.
+    mockDb.rpc = { data: null, error: failures[0] };
+    expect(marketTripErrorMessage(await endMarketTrip('ida-1').catch((err: unknown) => err), 'end')).toBe(TRIP_OFFLINE.end);
+    expect(marketTripErrorMessage(await announceMarketTrip('lista-1').catch((err: unknown) => err), 'announce')).toBe(TRIP_OFFLINE.announce);
+  });
+
+  it('um erro com código é do servidor: fica como veio, mesmo falando em fetch', () => {
+    expect(marketTripErrorMessage({ code: 'P0001', message: 'Failed to fetch the list' }, 'end')).toBe('Failed to fetch the list');
+    expect(marketTripErrorMessage({ code: '42501', message: 'TypeError: algo do servidor' }, 'announce')).toBe('TypeError: algo do servidor');
+  });
+
+  it('na opção dos avisos (sem dizer o pedido) nada muda: o erro fica como veio, e o banco antigo tem a mensagem dele', () => {
+    expect(marketTripErrorMessage(failures[0])).toBe('TypeError: Network request failed');
+    expect(marketTripErrorMessage(MISSING_FUNCTION)).toBe(TRIP_NOT_READY);
   });
 });
 

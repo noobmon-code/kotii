@@ -17,6 +17,12 @@ export interface MarketTrip {
   /** Duas horas depois do aviso. */
   ends_at: string;
   ended_at: string | null;
+  /**
+   * A lista da ida, lida junto com ela: a faixa não depende de a tela já
+   * conhecer a lista (a que outra pessoa acabou de criar ainda não está nas
+   * listas guardadas neste aparelho).
+   */
+  list: { name: string; kind: ListKind; archived_at: string | null };
 }
 
 /** O que announce_market_trip devolve. */
@@ -36,6 +42,11 @@ export interface AnnounceResult {
 export const TRIP_NOT_READY = 'O aviso de ida ao mercado ainda está sendo ativado no Kotii. Tente de novo mais tarde.';
 /** NK005: o limite de idas novas por pessoa em 24 horas. */
 export const TRIP_LIMIT_REACHED = 'Você já avisou a casa várias vezes hoje. Tente de novo mais tarde.';
+/** Sem internet, ou sem resposta do servidor (no mercado o sinal some): o que dizer em cada pedido. */
+export const TRIP_OFFLINE = {
+  announce: 'Sem internet agora. Tente avisar de novo quando a conexão voltar.',
+  end: 'Sem internet agora. Encerre quando a conexão voltar.',
+};
 
 /** A confirmação antes de avisar. */
 export const TRIP_CONFIRM = {
@@ -61,15 +72,16 @@ export function tripActionLabel(kind: ListKind): string {
 }
 
 /**
- * As idas que valem em `now`: não encerradas e antes do fim (em duas horas
- * exatas já acabou). De cada pessoa em cada lista, só a mais nova; da mais
+ * As idas que valem em `now`: não encerradas, antes do fim (em duas horas
+ * exatas já acabou) e de uma lista que continua aberta (arquivada, ninguém
+ * mais põe nada nela). De cada pessoa em cada lista, só a mais nova; da mais
  * nova para a mais antiga.
  */
 export function liveTrips(trips: readonly MarketTrip[], now: Date): MarketTrip[] {
   const at = now.getTime();
   const newest = new Map<string, MarketTrip>();
   for (const trip of trips) {
-    if (trip.ended_at || !(Date.parse(trip.ends_at) > at)) continue;
+    if (trip.ended_at || trip.list.archived_at || !(Date.parse(trip.ends_at) > at)) continue;
     const key = `${trip.user_id}|${trip.list_id}`;
     const seen = newest.get(key);
     if (!seen || Date.parse(trip.created_at) > Date.parse(seen.created_at)) newest.set(key, trip);
@@ -99,21 +111,29 @@ export function tripClock(createdAt: string): string {
 /**
  * A linha da faixa (tela Hoje e lista). Para quem avisou, a hora em que
  * avisou; para os outros, quem está indo e há quanto tempo, com as mesmas
- * palavras do aviso que o servidor manda.
+ * palavras do aviso que o servidor manda ("mercado" só na lista de mercado).
  */
-export function tripBannerText(trip: MarketTrip, { userId, kind, now }: { userId: string | undefined; kind: ListKind; now: Date }): string {
+export function tripBannerText(trip: MarketTrip, { userId, now }: { userId: string | undefined; now: Date }): string {
   if (trip.user_id === userId) return `Você avisou a casa às ${tripClock(trip.created_at)}`;
-  const going = kind === 'mercado' ? 'está indo ao mercado' : 'está indo às compras';
+  const going = trip.list.kind === 'mercado' ? 'está indo ao mercado' : 'está indo às compras';
   return `${trip.display_name} ${going} · ${tripAgo(trip.created_at, now)}`;
 }
 
-/** O que aconteceu depois de "Avisar agora", como foi: quantas pessoas tiveram aviso mandado, ou nenhuma. */
+/**
+ * O que aconteceu depois de "Avisar agora", como foi: quantas pessoas
+ * tiveram aviso mandado, de quantas (quem ficou sem a notificação só vê o
+ * aviso ao abrir o app, e quem avisou precisa saber), ou nenhuma.
+ */
 export function announceResultText(result: AnnounceResult, now: Date): string {
-  if (result.repeated) return `A casa já foi avisada ${result.created_at ? tripAgo(result.created_at, now) : 'agora há pouco'}.`;
+  // O aviso repetido não mandou nada, e o primeiro pode não ter chegado a ninguém: só diz que a pessoa já avisou.
+  if (result.repeated) return `Você já avisou a casa ${result.created_at ? tripAgo(result.created_at, now) : 'agora há pouco'}.`;
   // Ficou só na casa entre abrir a tela e tocar.
   if (result.members < 1) return 'Não há mais ninguém nesta casa para avisar.';
   if (result.notified < 1) {
     return 'Ninguém da casa está com os avisos do Kotii ligados no navegador. Quem abrir o app vê o aviso na tela Hoje.';
   }
-  return `Aviso enviado para ${result.notified} ${result.notified === 1 ? 'pessoa' : 'pessoas'}.`;
+  const missed = result.members - result.notified;
+  if (missed < 1) return `Aviso enviado para ${result.notified} ${result.notified === 1 ? 'pessoa' : 'pessoas'}.`;
+  const others = missed === 1 ? 'A outra vê o aviso quando abrir o app.' : 'As outras veem o aviso quando abrirem o app.';
+  return `Aviso enviado para ${result.notified} de ${result.members} pessoas. ${others}`;
 }

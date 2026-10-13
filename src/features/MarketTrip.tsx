@@ -11,7 +11,7 @@ import { notify } from '@/ui/dialogs';
 import { Button, Card, IconBadge, Row, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
-/** O que a faixa e o botão usam da lista. */
+/** O que o botão usa da lista. */
 interface TripList {
   id: string;
   kind: ListKind;
@@ -24,16 +24,21 @@ interface TripList {
  */
 export function MarketTripAction({ list }: { list: TripList }) {
   const members = useHousehold().data?.members.length ?? 0;
+  // A mesma busca da faixa (sem pedido a mais): null é o banco dizendo que ainda não tem as idas.
+  const notDeployed = useMarketTrips().data === null;
   const announce = useAnnounceMarketTrip();
   const [asking, setAsking] = useState(false);
   if (!canAnnounceTrip(members)) return null;
+  // Antes da migração o botão só poderia falhar: não aparece. Enquanto a busca
+  // não respondeu, sem internet ou com outro erro, ele fica (não some nem pisca).
+  if (notDeployed) return null;
 
   const label = tripActionLabel(list.kind);
   const tell = () =>
     announce.mutate(list.id, {
-      // Com o relógio de agora: "já foi avisada há N min".
+      // Com o relógio de agora: "você já avisou a casa há N min".
       onSuccess: (result) => notify(label, announceResultText(result, new Date())),
-      onError: (err) => notify('Não deu para avisar a casa', marketTripErrorMessage(err)),
+      onError: (err) => notify('Não deu para avisar a casa', marketTripErrorMessage(err, 'announce')),
     });
 
   return (
@@ -65,11 +70,15 @@ function useNow(): Date {
 /**
  * A faixa de quem está indo às compras, por duas horas ou até a pessoa
  * encerrar: na tela Hoje, as idas das listas abertas, com "Abrir a lista"
- * (`openable`); na lista, só as dela (`lists` com essa lista). Quem avisou vê
- * a hora do aviso e "Encerrar". Sem resposta do servidor (sem internet, ou o
- * banco ainda sem as idas), não há faixa nem erro.
+ * (`openable`); na lista, só as dela (`listId`). Quem avisou vê a hora do
+ * aviso e "Encerrar". Sem resposta do servidor (sem internet, ou o banco
+ * ainda sem as idas), não há faixa nem erro.
+ *
+ * A lista de cada ida vem com a ida (o tipo, e se foi arquivada): a faixa não
+ * depende das listas que a tela já buscou, que não sabem da lista que outra
+ * pessoa criou há pouco.
  */
-export function MarketTripBanner({ lists, openable = false }: { lists: readonly TripList[] | undefined; openable?: boolean }) {
+export function MarketTripBanner({ listId, openable = false }: { listId?: string; openable?: boolean }) {
   const userId = useAuth().session?.user.id;
   const trips = useMarketTrips();
   const end = useEndMarketTrip();
@@ -90,9 +99,7 @@ export function MarketTripBanner({ lists, openable = false }: { lists: readonly 
     return () => subscription.remove();
   }, [refetch]);
 
-  // Só das listas que a tela conhece: a ida de uma lista arquivada não aparece.
-  const kinds = new Map((lists ?? []).map((list) => [list.id, list.kind]));
-  const live = liveTrips(trips.data ?? [], now).filter((trip) => kinds.has(trip.list_id));
+  const live = liveTrips(trips.data ?? [], now).filter((trip) => !listId || trip.list_id === listId);
   if (!live.length) return null;
 
   return (
@@ -104,7 +111,7 @@ export function MarketTripBanner({ lists, openable = false }: { lists: readonly 
             <Row gap={space.md}>
               <IconBadge icon="cart-arrow-right" tone="primary" />
               <Text variant="body" style={styles.flex}>
-                {tripBannerText(trip, { userId, kind: kinds.get(trip.list_id) ?? 'outros', now })}
+                {tripBannerText(trip, { userId, now })}
               </Text>
             </Row>
             {mine || openable ? (
@@ -115,7 +122,7 @@ export function MarketTripBanner({ lists, openable = false }: { lists: readonly 
                     variant="ghost"
                     compact
                     loading={end.isPending && end.variables === trip.id}
-                    onPress={() => end.mutate(trip.id, { onError: (err) => notify('Não deu para encerrar', marketTripErrorMessage(err)) })}
+                    onPress={() => end.mutate(trip.id, { onError: (err) => notify('Não deu para encerrar', marketTripErrorMessage(err, 'end')) })}
                   />
                 ) : null}
                 {openable ? (

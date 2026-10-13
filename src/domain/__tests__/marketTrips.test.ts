@@ -14,7 +14,7 @@ import {
 
 const at = (iso: string) => new Date(iso);
 
-/** Uma ida avisada em `created`, que vale duas horas. */
+/** Uma ida avisada em `created`, que vale duas horas, de uma lista de mercado aberta. */
 const trip = (id: string, created: string, over: Partial<MarketTrip> = {}): MarketTrip => ({
   id,
   list_id: 'lista',
@@ -23,8 +23,12 @@ const trip = (id: string, created: string, over: Partial<MarketTrip> = {}): Mark
   created_at: created,
   ends_at: new Date(Date.parse(created) + 2 * 3_600_000).toISOString(),
   ended_at: null,
+  list: { name: 'Mercado', kind: 'mercado', archived_at: null },
   ...over,
 });
+
+/** A lista que veio com a ida, de outro tipo ou arquivada. */
+const listOf = (over: Partial<MarketTrip['list']>): MarketTrip['list'] => ({ name: 'Farmácia', kind: 'farmacia', archived_at: null, ...over });
 
 describe('liveTrips', () => {
   it('vale por duas horas: um instante antes ainda aparece, em duas horas exatas não', () => {
@@ -64,6 +68,15 @@ describe('liveTrips', () => {
 
   it('relógio do aparelho atrasado: a ida "do futuro" já aparece', () => {
     expect(liveTrips([trip('a', '2026-10-13T10:01:00Z')], at('2026-10-13T10:00:00Z')).map((t) => t.id)).toEqual(['a']);
+  });
+
+  it('lista arquivada: a ida dela não aparece, as das listas abertas sim', () => {
+    const archived = listOf({ archived_at: '2026-10-13T10:15:00Z' });
+    const trips = [trip('arquivada', '2026-10-13T10:10:00Z', { list_id: 'velha', list: archived }), trip('aberta', '2026-10-13T10:00:00Z')];
+    expect(liveTrips(trips, at('2026-10-13T10:30:00Z')).map((t) => t.id)).toEqual(['aberta']);
+    // A mesma pessoa avisou a lista duas vezes antes de ela ser arquivada: nenhuma das duas idas volta.
+    const twice = [trip('a', '2026-10-13T10:00:00Z', { list: archived }), trip('b', '2026-10-13T10:10:00Z', { list: archived })];
+    expect(liveTrips(twice, at('2026-10-13T10:30:00Z'))).toEqual([]);
   });
 
   it('data que não dá para ler não aparece (nem derruba a tela)', () => {
@@ -108,22 +121,23 @@ describe('tripBannerText', () => {
   const created = new Date(2026, 9, 13, 10, 32).toISOString();
   const now = new Date(2026, 9, 13, 10, 44);
   const going = trip('a', created);
+  // O tipo é o da lista que veio com a ida: a tela não precisa conhecer a lista.
+  const pharmacy = trip('f', created, { list: listOf({ kind: 'farmacia' }) });
+  const other = trip('o', created, { list: listOf({ kind: 'outros' }) });
 
   it('para os outros: quem está indo e há quanto tempo', () => {
-    expect(tripBannerText(going, { userId: 'beto', kind: 'mercado', now })).toBe('Ana está indo ao mercado · há 12 min');
-    expect(tripBannerText(going, { userId: 'beto', kind: 'mercado', now: new Date(2026, 9, 13, 10, 32, 20) })).toBe(
-      'Ana está indo ao mercado · agora há pouco',
-    );
+    expect(tripBannerText(going, { userId: 'beto', now })).toBe('Ana está indo ao mercado · há 12 min');
+    expect(tripBannerText(going, { userId: 'beto', now: new Date(2026, 9, 13, 10, 32, 20) })).toBe('Ana está indo ao mercado · agora há pouco');
   });
 
   it('para quem avisou: a hora em que avisou', () => {
-    expect(tripBannerText(going, { userId: 'ana', kind: 'mercado', now })).toBe('Você avisou a casa às 10:32');
-    expect(tripBannerText(going, { userId: 'ana', kind: 'farmacia', now })).toBe('Você avisou a casa às 10:32');
+    expect(tripBannerText(going, { userId: 'ana', now })).toBe('Você avisou a casa às 10:32');
+    expect(tripBannerText(pharmacy, { userId: 'ana', now })).toBe('Você avisou a casa às 10:32');
   });
 
   it('lista que não é de mercado: "às compras"', () => {
-    expect(tripBannerText(going, { userId: 'beto', kind: 'farmacia', now })).toBe('Ana está indo às compras · há 12 min');
-    expect(tripBannerText(going, { userId: undefined, kind: 'outros', now })).toBe('Ana está indo às compras · há 12 min');
+    expect(tripBannerText(pharmacy, { userId: 'beto', now })).toBe('Ana está indo às compras · há 12 min');
+    expect(tripBannerText(other, { userId: undefined, now })).toBe('Ana está indo às compras · há 12 min');
   });
 });
 
@@ -138,9 +152,26 @@ describe('announceResultText', () => {
     ...over,
   });
 
-  it('quantas pessoas tiveram aviso mandado, no singular e no plural', () => {
-    expect(announceResultText(result({ notified: 1 }), now)).toBe('Aviso enviado para 1 pessoa.');
-    expect(announceResultText(result({ notified: 2 }), now)).toBe('Aviso enviado para 2 pessoas.');
+  it('todos os outros tiveram aviso mandado: quantas pessoas, no singular e no plural', () => {
+    expect(announceResultText(result({ notified: 1, members: 1 }), now)).toBe('Aviso enviado para 1 pessoa.');
+    expect(announceResultText(result({ notified: 2, members: 2 }), now)).toBe('Aviso enviado para 2 pessoas.');
+    expect(announceResultText(result({ notified: 4, members: 4 }), now)).toBe('Aviso enviado para 4 pessoas.');
+  });
+
+  it('só parte da casa teve aviso mandado: diz de quantas, e que as outras veem no app', () => {
+    expect(announceResultText(result({ notified: 1, members: 3 }), now)).toBe(
+      'Aviso enviado para 1 de 3 pessoas. As outras veem o aviso quando abrirem o app.',
+    );
+    expect(announceResultText(result({ notified: 2, members: 4 }), now)).toBe(
+      'Aviso enviado para 2 de 4 pessoas. As outras veem o aviso quando abrirem o app.',
+    );
+    // Uma só ficou sem a notificação.
+    expect(announceResultText(result({ notified: 1, members: 2 }), now)).toBe('Aviso enviado para 1 de 2 pessoas. A outra vê o aviso quando abrir o app.');
+    expect(announceResultText(result({ notified: 2, members: 3 }), now)).toBe('Aviso enviado para 2 de 3 pessoas. A outra vê o aviso quando abrir o app.');
+  });
+
+  it('mais avisos do que moradores na conta (alguém saiu da casa no meio): só o número, sem "de"', () => {
+    expect(announceResultText(result({ notified: 3, members: 2 }), now)).toBe('Aviso enviado para 3 pessoas.');
   });
 
   it('ninguém com os avisos ligados: diz que o aviso fica na tela Hoje', () => {
@@ -149,12 +180,16 @@ describe('announceResultText', () => {
     );
   });
 
-  it('avisada de novo em menos de 30 minutos: há quanto tempo foi o aviso que vale', () => {
-    expect(announceResultText(result({ repeated: true, created_at: '2026-10-13T10:00:00Z' }), now)).toBe('A casa já foi avisada há 12 min.');
-    expect(announceResultText(result({ repeated: true, created_at: '2026-10-13T10:11:30Z' }), now)).toBe('A casa já foi avisada agora há pouco.');
+  it('avisada de novo em menos de 30 minutos: há quanto tempo a pessoa avisou, sem dizer que chegou a alguém', () => {
+    expect(announceResultText(result({ repeated: true, created_at: '2026-10-13T10:00:00Z' }), now)).toBe('Você já avisou a casa há 12 min.');
+    expect(announceResultText(result({ repeated: true, created_at: '2026-10-13T10:11:30Z' }), now)).toBe('Você já avisou a casa agora há pouco.');
     // O relógio do aparelho atrás do servidor.
-    expect(announceResultText(result({ repeated: true, created_at: '2026-10-13T10:13:00Z' }), now)).toBe('A casa já foi avisada agora há pouco.');
-    expect(announceResultText(result({ repeated: true, created_at: null }), now)).toBe('A casa já foi avisada agora há pouco.');
+    expect(announceResultText(result({ repeated: true, created_at: '2026-10-13T10:13:00Z' }), now)).toBe('Você já avisou a casa agora há pouco.');
+    expect(announceResultText(result({ repeated: true, created_at: null }), now)).toBe('Você já avisou a casa agora há pouco.');
+    // O servidor repete sem contar ninguém (notified 0): é o aviso repetido, não "ninguém com os avisos ligados".
+    expect(announceResultText(result({ repeated: true, notified: 0, members: 3, created_at: '2026-10-13T10:00:00Z' }), now)).toBe(
+      'Você já avisou a casa há 12 min.',
+    );
   });
 
   it('ficou só na casa: não há quem avisar', () => {

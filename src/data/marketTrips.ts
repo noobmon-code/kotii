@@ -4,8 +4,9 @@
 //
 // O app pode ser publicado antes de a migração chegar ao banco: sem a tabela,
 // a coluna ou as funções, nada daqui vira erro na tela. As idas voltam como
-// "não há" (null: sem faixa), a opção dos avisos some e avisar diz que o
-// recurso ainda está sendo ativado.
+// "não há" (null: sem faixa e sem o botão de avisar), a opção dos avisos some
+// e avisar, num toque antes dessa resposta, diz que o recurso ainda está
+// sendo ativado.
 //
 // As idas ficam só na memória: a chave não entra em PERSISTED
 // (lib/queryClient). Uma faixa de horas atrás, aberta sem internet, só
@@ -13,7 +14,7 @@
 
 import { onlineManager, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { TRIP_LIMIT_REACHED, TRIP_NOT_READY, type AnnounceResult, type MarketTrip } from '@/domain/marketTrips';
+import { TRIP_LIMIT_REACHED, TRIP_NOT_READY, TRIP_OFFLINE, type AnnounceResult, type MarketTrip } from '@/domain/marketTrips';
 import { getMarketTripPush, marketTripPushSupported, setMarketTripPush } from '@/lib/reminders';
 import { errorMessage, supabase, unwrap } from '@/lib/supabase';
 
@@ -38,16 +39,21 @@ export function isNotDeployed(error: unknown): boolean {
 /**
  * As idas da casa aberta que ainda podem valer (liveTrips, no domínio,
  * decide de novo a cada minuto da tela). null: o banco ainda não tem as idas.
+ *
+ * A lista vem junto (pelo FK da ida, que é de lista e casa): a faixa da tela
+ * Hoje não espera as listas guardadas no aparelho, que não sabem da lista
+ * que outra pessoa criou há pouco. No banco de antes das idas a resposta
+ * continua sendo a da tabela que falta (PGRST205), antes de olhar a lista.
  */
 export async function fetchMarketTrips(now: Date = new Date()): Promise<MarketTrip[] | null> {
   const { data, error } = await supabase
     .from('market_trips')
-    .select('id, list_id, user_id, display_name, created_at, ends_at, ended_at')
+    .select('id, list_id, user_id, display_name, created_at, ends_at, ended_at, list:shopping_lists!inner(name, kind, archived_at)')
     .is('ended_at', null)
     .gt('ends_at', now.toISOString())
     .order('created_at', { ascending: false })
     .limit(50);
-  if (!error) return (data ?? []) as MarketTrip[];
+  if (!error) return (data ?? []) as unknown as MarketTrip[];
   if (isNotDeployed(error)) return null;
   throw error;
 }
@@ -77,8 +83,15 @@ export function useRefreshMarketTrips() {
 /** Avisa a casa aberta (announce_market_trip): a ida e o aviso nos navegadores dos outros. */
 export async function announceMarketTrip(listId: string): Promise<AnnounceResult> {
   // Sem internet o pedido falharia com o texto do navegador.
-  if (!onlineManager.isOnline()) throw new Error('Sem internet agora. Avise a casa quando a conexão voltar.');
+  if (!onlineManager.isOnline()) throw new Error(TRIP_OFFLINE.announce);
   return unwrap(await supabase.rpc('announce_market_trip', { p_list_id: listId })) as AnnounceResult;
+}
+
+/** Encerra a própria ida para a casa toda (end_market_trip); devolve se encerrou. */
+export async function endMarketTrip(tripId: string): Promise<boolean> {
+  // Como em avisar: as mutações do app saem mesmo sem internet (networkMode 'always'), e no mercado o sinal some.
+  if (!onlineManager.isOnline()) throw new Error(TRIP_OFFLINE.end);
+  return unwrap(await supabase.rpc('end_market_trip', { p_trip_id: tripId })) as boolean;
 }
 
 export function useAnnounceMarketTrip() {
@@ -94,7 +107,7 @@ export function useAnnounceMarketTrip() {
 export function useEndMarketTrip() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (tripId: string) => unwrap(await supabase.rpc('end_market_trip', { p_trip_id: tripId })) as boolean,
+    mutationFn: endMarketTrip,
     onSuccess: (_ended, tripId) => {
       // A faixa some já; a busca confirma.
       queryClient.setQueryData<MarketTrip[] | null>([MARKET_TRIPS_KEY], (trips) => (trips ? trips.filter((trip) => trip.id !== tripId) : trips));
@@ -103,9 +116,25 @@ export function useEndMarketTrip() {
   });
 }
 
-/** A mensagem para um erro de avisar ou encerrar. */
-export function marketTripErrorMessage(error: unknown): string {
+/**
+ * O pedido não chegou ao servidor: sinal fraco, com o aparelho ainda dizendo
+ * que há internet (o que onlineManager não vê). O postgrest-js devolve o erro
+ * do fetch sem código, com o nome e o texto dele na mensagem ("TypeError:
+ * Network request failed" no celular, "TypeError: Failed to fetch" no Chrome).
+ */
+function isFetchFailure(error: unknown): boolean {
+  if (codeOf(error)) return false;
+  const message = error && typeof error === 'object' && 'message' in error && typeof error.message === 'string' ? error.message : '';
+  return message.startsWith('TypeError') || message.includes('Failed to fetch') || message.includes('Network request failed');
+}
+
+/**
+ * A mensagem para um erro de avisar (`announce`), de encerrar (`end`) ou da
+ * opção dos avisos (sem `action`: ali o pedido que não chegou fica como veio).
+ */
+export function marketTripErrorMessage(error: unknown, action?: keyof typeof TRIP_OFFLINE): string {
   if (isNotDeployed(error)) return TRIP_NOT_READY;
+  if (action && isFetchFailure(error)) return TRIP_OFFLINE[action];
   const code = codeOf(error);
   if (code === 'NK005') return TRIP_LIMIT_REACHED;
   // A lista foi arquivada ou apagada por outra pessoa com a tela aberta.

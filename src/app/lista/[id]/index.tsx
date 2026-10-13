@@ -471,7 +471,7 @@ export default function ShoppingListScreen() {
       <Stack.Screen options={{ title: list.data.name }} />
       <OfflineNotice />
       {/* Alguém da casa (ou a própria pessoa) avisou que está indo às compras desta lista. */}
-      <MarketTripBanner lists={[list.data]} />
+      <MarketTripBanner listId={list.data.id} />
 
       <Card style={styles.addCard}>
         <Row>
