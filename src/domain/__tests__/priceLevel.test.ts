@@ -28,6 +28,21 @@ describe('storePriceIndex', () => {
     expect(index.get('caro')).toBe(1);
   });
 
+  it('o mesmo produto por kg num mercado e por g no outro (ou litro e ml) entra na mesma conta, convertido', () => {
+    const index = storePriceIndex([
+      price('banana', 'bom', 6, 'kg'),
+      price('banana', 'caro', 0.0072, 'g'),
+      price('suco', 'bom', 0.008, 'ml'),
+      price('suco', 'caro', 9.6, 'l'),
+    ]);
+    // Banana: R$ 6,00 e R$ 7,20 por kg (média 6,60). Suco: R$ 8,00 e R$ 9,60 por litro (média 8,80).
+    expect(index.get('bom')).toBeCloseTo((2 * (6 / 6.6) + 2) / 4, 5);
+    expect(index.get('caro')).toBeCloseTo((2 * (7.2 / 6.6) + 2) / 4, 5);
+    // Peso e volume não se misturam, nem com "un".
+    const apart = storePriceIndex([price('x', 'bom', 6, 'kg'), price('x', 'caro', 9, 'l'), price('x', 'outro', 2, 'un')]);
+    expect([apart.get('bom'), apart.get('caro'), apart.get('outro')]).toEqual([1, 1, 1]);
+  });
+
   it('preço zerado (brinde na nota) não entra: não zera o nível de ninguém', () => {
     const index = storePriceIndex([price('brinde', 'bom', 0), price('brinde', 'caro', 4), price('arroz', 'caro', 20)]);
     expect(index.get('bom')).toBeUndefined();

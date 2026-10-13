@@ -18,6 +18,17 @@ export function convertQuantity(quantity: number, from: string, to: string): num
   return (quantity * a.inBase) / b.inBase;
 }
 
+/**
+ * O preço na unidade em que os da mesma grandeza se comparam: por kg para peso
+ * e por litro para volume (R$ 0,0072 por g são R$ 7,20 por kg). As outras
+ * unidades ficam como estão: "un" não vira peso nem volume.
+ */
+export function pricePerBase(unitPrice: number, unit: string): { unit: string; unitPrice: number } {
+  const scale = SCALES[unit];
+  if (!scale) return { unit, unitPrice };
+  return { unit: scale.measures === 'peso' ? 'kg' : 'l', unitPrice: (unitPrice * 1000) / scale.inBase };
+}
+
 /** As duas unidades medem a mesma coisa: a mesma unidade, g e kg, ou ml e l. */
 export function sameDimension(a: string, b: string): boolean {
   return convertQuantity(1, a, b) != null;

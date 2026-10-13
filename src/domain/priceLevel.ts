@@ -3,6 +3,8 @@
 // que a estimativa da lista (listEstimate) e "Onde comprar" (recommendation)
 // estimam o que um mercado ainda não tem nas notas.
 
+import { pricePerBase } from './units';
+
 export interface LevelPrice {
   productId: string;
   storeId: string;
@@ -24,7 +26,9 @@ const MAX_LEVEL = 1.6;
  * Nível de preço por mercado (1 = na média; 0,92 = 8% abaixo): a média de
  * preço no mercado / preço médio, nos produtos que aparecem em dois mercados
  * ou mais, puxada para 1 quando são poucos e presa a uma faixa plausível.
- * Mercado sem produto em comum com outro fica em 1. Preço zerado ou negativo
+ * Mercado sem produto em comum com outro fica em 1. O mesmo produto por kg
+ * num mercado e por g no outro (ou por litro e por ml) entra na mesma conta,
+ * convertido; "un" e kg continuam sem se comparar. Preço zerado ou negativo
  * (brinde na nota) não é preço: fica de fora, e o mercado que só tem desses
  * nem aparece.
  */
@@ -32,8 +36,9 @@ export function storePriceIndex(prices: readonly LevelPrice[]): Map<string, numb
   const groups = new Map<string, LevelPrice[]>();
   for (const price of prices) {
     if (!(price.unitPrice > 0)) continue;
-    const key = `${price.productId}\u0000${price.unit}`;
-    groups.set(key, [...(groups.get(key) ?? []), price]);
+    const { unit, unitPrice } = pricePerBase(price.unitPrice, price.unit);
+    const key = `${price.productId}\u0000${unit}`;
+    groups.set(key, [...(groups.get(key) ?? []), { ...price, unit, unitPrice }]);
   }
   const index = new Map<string, number>();
   const ratios = new Map<string, number[]>();
