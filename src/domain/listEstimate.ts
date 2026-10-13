@@ -77,7 +77,12 @@ export interface ListEstimate {
   estimatedCount: number;
   /** Itens com preço em que a quantidade é aproximada (a unidade da lista não converte para a do preço). */
   approximateCount: number;
-  /** Mercados com preço de nota para algum item da lista, do que cobre mais itens para o que cobre menos. */
+  /**
+   * Os mercados em que dá para estimar a lista (os das notas da casa), do que
+   * tem preço de nota para mais itens dela para o que tem para menos. Com
+   * zero, a conta de lá sai toda estimada pelo nível de preço do mercado.
+   * Vazio enquanto nenhum item tem preço.
+   */
   stores: { storeId: string; knownCount: number }[];
 }
 
@@ -172,9 +177,8 @@ interface PricedItem {
  * o produto de cada item (itemResolver) e, em cada mercado, o preço que vale
  * lá. null para item sem preço nenhum.
  */
-function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources) {
+function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, index = storePriceIndex(prices)) {
   const resolve = itemResolver(prices, sources);
-  const index = storePriceIndex(prices);
 
   return (item: Pick<EstimateItem, 'name' | 'productId' | 'quantity' | 'unit'>): PricedItem | null => {
     const resolved = resolve(item);
@@ -257,10 +261,12 @@ export function estimateList(
   prices: readonly EstimatePrice[],
   { links, products, storeId = null }: PriceSources & { storeId?: string | null } = {},
 ): ListEstimate {
-  const price = itemPricer(prices, { links, products });
+  const index = storePriceIndex(prices);
+  const price = itemPricer(prices, { links, products }, index);
 
   const byItem = new Map<string, ItemEstimate>();
-  const known = new Map<string, number>();
+  // Todo mercado com nível de preço pode ser escolhido, mesmo sem preço de nota para esta lista.
+  const known = new Map<string, number>([...index.keys()].map((store) => [store, 0]));
   for (const item of items) {
     const priced = price(item);
     if (!priced) continue;
@@ -288,10 +294,18 @@ export function estimateList(
     pricedCount: byItem.size,
     estimatedCount: estimates.filter((estimate) => estimate.kind === 'estimated').length,
     approximateCount: estimates.filter((estimate) => estimate.approximateQuantity).length,
-    stores: [...known]
-      .map(([id, knownCount]) => ({ storeId: id, knownCount }))
-      .sort((a, b) => b.knownCount - a.knownCount || a.storeId.localeCompare(b.storeId)),
+    stores: byItem.size
+      ? [...known]
+          .map(([id, knownCount]) => ({ storeId: id, knownCount }))
+          .sort((a, b) => b.knownCount - a.knownCount || a.storeId.localeCompare(b.storeId))
+      : [],
   };
+}
+
+/** A linha de cada mercado na escolha de "Onde você está comprando?". */
+export function storeOptionNote(knownCount: number): string {
+  if (!knownCount) return 'Nenhum item da lista com preço lá: a conta sai estimada';
+  return `${knownCount} ${knownCount === 1 ? 'item da lista com preço' : 'itens da lista com preço'}`;
 }
 
 /**
@@ -356,6 +370,9 @@ export interface PantryHit {
  * mais que tenha passado do costume) fica de fora: está na lista justamente
  * porque acabou. Só a entrada mais nova que a última compra que esse palpite
  * conhece (`lastAt`) continua valendo: é compra que ele não viu, estoque novo.
+ * Para o item sem produto, o palpite vale também pelos produtos que as notas
+ * já ligaram ao nome dele: se o Italac acabou, a entrada "Leite" posta à mão
+ * antes disso não traz o selo de volta.
  * Mais nova de verdade (não a mesma ida ao mercado, lida um ou dois dias
  * depois) e só enquanto ela mesma não passar do intervalo de costume
  * (`everyDays`): depois disso, também acabou.
@@ -407,8 +424,17 @@ export function pantryHits(
     const name = normalizeSearch(item.name);
     // O item da lista acabou: só conta a entrada comprada depois disso (e ainda dentro do costume).
     const itemGone = goneOf(name, item.productId);
+    // Item sem produto: o que acabou pode estar com o nome da nota, sob um produto ligado a este nome. A entrada
+    // sem produto (posta à mão) não diz qual é: vale o palpite mais recente entre os produtos ligados.
+    const linkedGone = item.productId
+      ? null
+      : (links?.productsFor(item.name) ?? []).reduce<Gone | null>((latest, productId) => {
+          const gone = goneProducts.get(productId) ?? null;
+          return gone && (!latest || gone.day > latest.day) ? gone : latest;
+        }, null);
     const same = fresh.filter(({ entry, key }) => {
       if (!stillThere(entry.purchased_on, itemGone)) return false;
+      if (!entry.product_id && !stillThere(entry.purchased_on, linkedGone)) return false;
       if (item.productId && entry.product_id === item.productId) return true;
       // Outro produto só conta quando a pessoa já confirmou, numa nota, que ele cumpre este nome.
       if (entry.product_id && links?.has(item.name, entry.product_id)) return true;
