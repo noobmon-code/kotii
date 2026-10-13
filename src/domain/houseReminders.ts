@@ -8,7 +8,7 @@
 import type { Recurrence } from './chores';
 import { addDays, diffDays, formatBRDate } from './dates';
 import { describeDocumentStatus } from './documents';
-import { calendarEntries, entryShortDetail, eventReminderTexts, type CalendarEntry, type FamilyCalendar } from './familyEvents';
+import { bringText, calendarEntries, entryShortDetail, eventReminderTexts, type CalendarEntry, type FamilyCalendar } from './familyEvents';
 import { weekdayOf } from './health';
 import { formatBRL } from './money';
 import type { WeatherMorning } from './weather';
@@ -34,7 +34,7 @@ export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint
   {
     key: 'eve',
     label: 'Resumo de amanhã',
-    hint: 'Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, compromissos, aniversários, contas, tarefas, vacinas e documentos. Só quando há alguma coisa. Com ele ligado, a consulta e o compromisso de amanhã vêm nele, no lugar do aviso das 19h',
+    hint: 'Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, compromissos, aniversários, contas, tarefas, vacinas e documentos. Só quando há algo fora da rotina (o compromisso de toda semana e a tarefa de todo dia não entram). Com ele ligado, a consulta e o compromisso de amanhã vêm nele, no lugar do aviso das 19h',
   },
 ];
 
@@ -59,7 +59,7 @@ const EARLIEST_LEAD_MINUTES = 7 * 60;
 export const EVENT_EVE_TIME = APPOINTMENT_EVE_TIME;
 const EVENT_LEAD_MINUTES = 60;
 export const EVENT_ALL_DAY_TIME = '08:00';
-/** Aviso do dia que toca antes disto é de madrugada: a rotina mantém o da véspera. */
+/** Aviso do dia que toca antes disto é de madrugada: a rotina mantém o da véspera, e o resumo de amanhã diz o local e o que levar. */
 const EVENT_EARLY_TIME = '07:00';
 const VACCINE_LEAD_DAYS = 7;
 /** Vacina atrasada há mais que isso provavelmente foi tomada sem registrar: sem aviso. */
@@ -83,8 +83,12 @@ const EVE_SUMMARY_LENGTH = 180;
  * noite (ou noite sim, noite não) sem dizer nada de novo. Fica fora dele.
  */
 const EVE_ROUTINE_DAYS = 3;
-/** Do local da consulta cedo cabe pelo menos isto (a vírgula e o começo do nome), ou ele não entra. */
+/** Do local da consulta (ou do compromisso) cedo cabe pelo menos isto (a vírgula e o começo do nome), ou ele não entra. */
 const EVE_PLACE_MIN = 8;
+/** Do que levar no compromisso cedo cabe pelo menos isto (o "Levar:" e o começo da lista), ou ele não entra. */
+const EVE_BRING_MIN = 15;
+/** Do título cortado ficam pelo menos estas letras (fora a hora e o "…"); sem isso, o parêntese do compromisso não fica à parte (ver fitItems). */
+const EVE_TITLE_MIN = 12;
 /** Depois de qualquer hora do dia, na fila do teto (ver o fim de planHouseReminders). */
 const END_OF_DAY = '24:00';
 
@@ -137,8 +141,15 @@ export interface EveItem {
   text: string;
   /** A hora (da consulta, do compromisso), para a ordem; sem ela, vazio, e a ordem é pelo texto. */
   sort: string;
-  /** O local da consulta cedo: vai depois do texto, e é o primeiro a encolher quando falta espaço. */
+  /**
+   * No compromisso, o parêntese que `text` já traz no fim (de quem é, quem leva
+   * e busca): quando falta espaço, é o título que encolhe, e ele fica inteiro.
+   */
+  detail?: string;
+  /** O local da consulta ou do compromisso cedo: vai depois do texto, e é o primeiro a encolher quando falta espaço. */
   place?: string;
+  /** O que levar no compromisso cedo ("Levar: …"): depois do local, com o que sobrar. */
+  bring?: string;
 }
 
 export interface EveSummary {
@@ -200,17 +211,27 @@ const occurrenceId = (entry: Pick<CalendarEntry, 'id' | 'date'>) => `${entry.id}
  * dia: faria o resumo tocar toda noite sem dizer nada de novo. Dia marcado
  * como "não vai ter" não vem, e quem leva ou busca é o daquele dia.
  */
-function eveFamily(family: FamilyCalendar, day: string): Pick<EveItem, 'source' | 'id' | 'text' | 'sort'>[] {
+function eveFamily(family: FamilyCalendar, day: string): EveItem[] {
   return calendarEntries(family, day, day)
     .filter((entry) => !entry.routine)
     .map((entry) => {
       const birthday = entry.kind === 'aniversario';
       const detail = entryShortDetail(entry);
+      // O compromisso sem aviso no dia (antes da 1h), ou com ele de madrugada,
+      // contava com a véspera das 19h para dizer onde é e o que levar. O
+      // resumo fica no lugar dela: os dois vão aqui, como o local da consulta cedo.
+      const at = eventDayTime(entry.time);
+      const early = !birthday && (at === null || at < EVENT_EARLY_TIME);
+      const bring = early ? bringText(entry.bring) : null;
       return {
         source: birthday ? ('birthdays' as const) : ('events' as const),
         id: birthday ? entry.id : occurrenceId(entry),
         text: `${entry.time ? `${shortTime(entry.time)} ` : ''}${entry.title}${detail ? ` (${detail})` : ''}`,
         sort: entry.time ?? '',
+        // Só o parêntese do compromisso fica à parte: no aniversário, a idade encolhe antes do nome.
+        ...(detail && !birthday ? { detail } : {}),
+        ...(early && entry.location ? { place: entry.location } : {}),
+        ...(bring ? { bring } : {}),
       };
     });
 }
@@ -230,7 +251,7 @@ function eveItems(input: EveSummaryInput, day: string): EveItem[] {
         // A consulta cedo não tem o aviso de 2 horas antes, que diria onde é: o local vai aqui.
         ...(a.location && !appointmentLeadTime(a.time) ? { place: a.location } : {}),
       })),
-    ...(input.family ? eveFamily(input.family, day) : []).map((e) => item(e.source, e.id, e.text, e.sort)),
+    ...(input.family ? eveFamily(input.family, day) : []),
     // Débito automático não precisa de ninguém, como nos avisos de conta. Sem
     // o valor, só o nome não diria que é uma conta.
     ...input.bills
@@ -271,11 +292,43 @@ function fitTexts(texts: string[], room: number): string[] {
 }
 
 /**
+ * Os textos dos itens escritos, cabendo em `room`. O parêntese do compromisso
+ * (de quem é, quem leva e busca) fica à parte, inteiro: quem divide o espaço,
+ * e encolhe, são os títulos (o item sem parêntese é só título). Quando de um
+ * título cortado sobrariam menos de EVE_TITLE_MIN letras, o parêntese desse
+ * item volta para o texto e o corte dele é o de sempre, no fim.
+ */
+function fitItems(items: EveItem[], room: number): string[] {
+  // As letras do título que ficaram no item cortado: sem a hora da frente e sem o "…".
+  const kept = (item: EveItem, cut: string) => cut.length - 1 - (item.sort ? shortTime(item.sort).length + 1 : 0);
+  let apart = items.map((item) => !!item.detail);
+  for (;;) {
+    const tails = items.map((item, i) => (apart[i] ? ` (${item.detail})` : ''));
+    const heads = items.map((item, i) => item.text.slice(0, item.text.length - tails[i].length));
+    const fitted = fitTexts(heads, room - tails.join('').length);
+    const texts = fitted.map((head, i) => head + tails[i]);
+    const short = items.map((item, i) => fitted[i] !== heads[i] && kept(item, fitted[i]) < EVE_TITLE_MIN);
+    // Os parênteses sozinhos já não cabem (títulos de uma letra não têm o que cortar).
+    const over = texts.join('').length > room;
+    if (!apart.some(Boolean) || (!over && !short.some(Boolean))) return texts;
+    // Volta ao corte de sempre o compromisso cujo título ficou curto demais. Se
+    // quem ficou sem espaço foi só um item sem parêntese à parte, voltam todos:
+    // nenhum item some para o parêntese de outro ficar inteiro.
+    const back = !over && short.some((s, i) => s && apart[i]) ? short : apart;
+    apart = apart.map((a, i) => a && !back[i]);
+  }
+}
+
+/**
  * O texto em até `max` caracteres, com "…" no fim se foi cortado. O corte não
- * parte um emoji ao meio nem deixa uma vírgula solta antes do "…".
+ * parte um emoji ao meio, nem deixa antes do "…" uma vírgula solta ou um
+ * parêntese recém-aberto (" (", " (A", " (An").
  */
 function shorten(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, '').replace(/[\s,]+$/, '')}…` : text;
+  if (text.length <= max) return text;
+  const loose = (cut: string) => cut.replace(/[\s,]+$/, '');
+  // O parêntese que mal abriu sai, com o espaço ou a vírgula que ficarem soltos antes dele.
+  return `${loose(loose(text.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, '')).replace(/\([^()]{0,2}$/, ''))}…`;
 }
 
 /**
@@ -290,15 +343,23 @@ export function eveSummary(input: EveSummaryInput, day: string): EveSummary | nu
   const separator = ' · ';
   const shown = items.slice(0, written);
   const room = EVE_SUMMARY_LENGTH - more.length - separator.length * (written - 1);
-  const texts = fitTexts(shown.map((i) => i.text), room);
-  // O local da consulta cedo fica com o espaço que os itens deixam: inteiro,
-  // cortado ou, se sobra pouco, fora. Nenhum item encolhe por causa dele.
+  const texts = fitItems(shown, room);
+  // O local da consulta cedo, e o local e o que levar do compromisso cedo,
+  // ficam com o espaço que os itens deixam: inteiros, cortados ou, se sobra
+  // pouco, fora. Nenhum item encolhe por causa deles.
   let left = room - texts.reduce((sum, text) => sum + text.length, 0);
+  const fit = (piece: string, min: number) => {
+    const fitted = piece.length <= left || left >= min ? shorten(piece, left) : '';
+    left -= fitted.length;
+    return fitted;
+  };
   const parts = shown.map((item, i) => {
     const place = item.place ? `, ${item.place}` : '';
-    const fitted = place.length <= left || left >= EVE_PLACE_MIN ? shorten(place, left) : '';
-    left -= fitted.length;
-    return texts[i] + fitted;
+    const fitted = fit(place, EVE_PLACE_MIN);
+    const text = texts[i] + fitted;
+    // O que levar só vem depois do local inteiro; o ponto não se repete depois de um texto que já termina com pontuação.
+    if (!item.bring || fitted !== place) return text;
+    return text + fit(`${/[.!?…]$/.test(text) ? '' : '.'} ${item.bring}`, EVE_BRING_MIN);
   });
   return { title: `Amanhã, ${WEEKDAY_NAMES[weekdayOf(day)]}`, body: parts.join(separator) + more, items, written };
 }
@@ -431,7 +492,8 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
       // no dia: véspera toda noite vira barulho. Sem aviso no dia, ou com ele de
       // madrugada (antes das 7h, quando ninguém vê), a véspera fica.
       const dayOnly = entry.routine && at !== null && at >= EVENT_EARLY_TIME;
-      // Escrito no resumo daquela noite, a véspera é ele (o aniversário não tem véspera, e a rotina não vai no resumo).
+      // Escrito no resumo daquela noite, a véspera é ele (o aniversário não tem véspera, e a rotina não vai no
+      // resumo). Do compromisso cedo, ele diz também o local e o que levar, que a véspera diria (ver eveFamily).
       const summary = entry.kind === 'compromisso' ? carried.get(carriedKey('events', id)) : undefined;
       const eve = addDays(entry.date, -1);
       if (summary) {

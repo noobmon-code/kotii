@@ -364,6 +364,31 @@ describe('calendarEntries', () => {
     expect(entryShortDetail({ ...entries[0], age: 0 })).toBeNull();
   });
 
+  it('o detalhe curto não repete o nome quando o compromisso é de quem leva (ou de quem só busca)', () => {
+    // A natação é do Beto, e ele mesmo vai e volta. (15/10: um dia sem aniversário.)
+    const own = (patch: Partial<FamilyEventLike>, family = people) =>
+      calendarEntries({ events: [{ ...swim, person_id: 'beto', ...patch }], days: [], people: family }, '2026-10-15', '2026-10-15').map(entryShortDetail);
+    expect(own({ take_by: 'beto', pick_up_by: 'beto' })).toEqual(['Beto leva e busca']);
+    expect(own({ take_by: 'beto', pick_up_by: null })).toEqual(['Beto leva']);
+    expect(own({ take_by: 'beto', pick_up_by: 'carla' })).toEqual(['Beto leva, Carla busca']);
+    expect(own({ take_by: null, pick_up_by: 'beto' })).toEqual(['Beto busca']);
+    // Outra pessoa leva: os dois nomes.
+    expect(own({ take_by: 'carla', pick_up_by: null })).toEqual(['Beto, Carla leva']);
+    // Só o nome inteiro vale: a Ana não é a Ana Paula, nem a Ana Paula é a Ana.
+    const paula: PersonLike = { id: 'paula', name: 'Ana Paula', kind: 'pessoa', birth_date: null };
+    expect(own({ person_id: 'ana', take_by: 'paula', pick_up_by: null }, [...people, paula])).toEqual(['Ana, Ana Paula leva']);
+    expect(own({ person_id: 'ana', take_by: null, pick_up_by: 'paula' }, [...people, paula])).toEqual(['Ana, Ana Paula busca']);
+    expect(own({ person_id: 'ana', take_by: 'paula', pick_up_by: 'paula' }, [...people, paula])).toEqual(['Ana, Ana Paula leva e busca']);
+    expect(own({ person_id: 'paula', take_by: 'ana', pick_up_by: null }, [...people, paula])).toEqual(['Ana Paula, Ana leva']);
+    // Nem o sobrenome que começa como o verbo (nomes digitados em minúsculas): "ana leva…" ali não é a ana levando.
+    const lower: PersonLike[] = [
+      { id: 'ana', name: 'ana', kind: 'pessoa', birth_date: null },
+      { id: 'tia', name: 'ana levandowski', kind: 'pessoa', birth_date: null },
+    ];
+    expect(own({ person_id: 'ana', take_by: 'tia', pick_up_by: null }, lower)).toEqual(['ana, ana levandowski leva']);
+    expect(own({ person_id: 'ana', take_by: 'tia', pick_up_by: 'ana' }, lower)).toEqual(['ana, ana levandowski leva, ana busca']);
+  });
+
   it('ficha apagada (ou de quem saiu): o nome some, o compromisso fica', () => {
     const entries = calendarEntries({ ...calendar, people: people.filter((p) => p.id !== 'carla') }, '2026-10-22', '2026-10-22');
     expect(entries.map(entryDetail)).toEqual(['Ana · Beto leva · Levar: touca e toalha']);

@@ -387,12 +387,18 @@ export function entryDetail(entry: CalendarEntry): string | null {
 
 /**
  * "Ana, Carla leva", ou "faz 8 anos": o detalhe curto, para o resumo de amanhã
- * (entre parênteses, depois do título). O local e o que levar não entram: são
- * do aviso do próprio compromisso, e o resumo é para ler de uma olhada.
+ * (entre parênteses, depois do título). O local e o que levar não entram aqui:
+ * o resumo é para ler de uma olhada. Quando o compromisso é de quem leva (ou
+ * de quem só busca), o nome vai uma vez: "Beto leva e busca", e não "Beto,
+ * Beto leva e busca".
  */
 export function entryShortDetail(entry: CalendarEntry): string | null {
   if (entry.kind === 'aniversario') return entry.age ? ageText(entry.age) : null;
-  return [entry.who, entry.ride].filter(Boolean).join(', ') || null;
+  const { who, ride } = entry;
+  // Só o nome inteiro, seguido do verbo: "Ana Paula leva" não é da Ana.
+  const repeated =
+    !!who && !!ride && (ride === `${who} busca` || ride === `${who} leva` || ride === `${who} leva e busca` || ride.startsWith(`${who} leva, `));
+  return [repeated ? null : who, ride].filter(Boolean).join(', ') || null;
 }
 
 /** O que mudou num dia, para a lista de dias com mudança: "Não vai ter", "Vó Maria leva", "Ninguém busca". */

@@ -713,8 +713,20 @@ describe('eveSummary (resumo de amanhã)', () => {
     for (const [patch, text] of alone) {
       expect(summary({ family: calendar([commitment(patch)]) })).toMatchObject({ title: 'Amanhã, terça-feira', body: text, written: 1 });
     }
+    // O compromisso é de quem leva: o nome vai uma vez só. A Ana e a Ana Paula são duas pessoas.
+    const own = { title: 'Dentista', start_time: '07:30', person_id: 'beto' };
+    expect(summary({ family: calendar([commitment({ ...own, take_by: 'beto', pick_up_by: 'beto' })]) })?.body).toBe('7h30 Dentista (Beto leva e busca)');
+    expect(summary({ family: calendar([commitment({ ...own, take_by: 'beto', pick_up_by: 'carla' })]) })?.body).toBe('7h30 Dentista (Beto leva, Carla busca)');
+    expect(summary({ family: calendar([commitment({ ...own, pick_up_by: 'beto' })]) })?.body).toBe('7h30 Dentista (Beto busca)');
+    const paula = { id: 'paula', name: 'Ana Paula', kind: 'pessoa' as const, birth_date: null };
+    expect(summary({ family: calendar([commitment({ person_id: 'ana', take_by: 'paula' })], [], [...kin, paula]) })?.body).toBe('16h Festa do João (Ana, Ana Paula leva)');
     // O item diz de qual compromisso e de qual dia é (é assim que o aviso das 19h dele sai do plano).
     expect(summary({ family: calendar([commitment()]) })?.items).toEqual([{ source: 'events', id: 'festa@2026-09-29', text: '16h Festa do João', sort: '16:00' }]);
+    // O parêntese vai também à parte, para ficar inteiro quando o item encolhe; o do aniversário, não.
+    expect(summary({ family: calendar([commitment({ person_id: 'ana', take_by: 'carla' })], [], born({ beto: '1985-09-29' })) })?.items).toEqual([
+      { source: 'events', id: 'festa@2026-09-29', text: '16h Festa do João (Ana, Carla leva)', sort: '16:00', detail: 'Ana, Carla leva' },
+      { source: 'birthdays', id: 'beto', text: 'Aniversário de Beto (faz 41 anos)', sort: '' },
+    ]);
     // De outro dia, nada.
     expect(summary({ family: calendar([commitment()]) }, '2026-09-30')).toBeNull();
   });
@@ -847,6 +859,284 @@ describe('eveSummary (resumo de amanhã)', () => {
     expect(tight?.body).toHaveLength(180);
   });
 
+  it('quando falta espaço, quem encolhe é o título do compromisso: o parêntese (de quem é, quem leva e busca) fica inteiro', () => {
+    const ride = { person_id: 'ana', take_by: 'carla', pick_up_by: 'vo' };
+    const tail = ' (Ana, Carla leva, Vó Maria busca)';
+    const long = commitment({ ...ride, title: 'Apresentação de fim de ano da turma do 3º ano B, no auditório novo da escola, com a exposição dos trabalhos de artes' });
+    // Um título comprido: o corte é nele, e quem leva e quem busca continuam lá. Os itens curtos ficam inteiros.
+    const one = summary({ appointments: [consulta], bills: [luz], family: calendar([long]) });
+    expect(one?.body).toBe(`9h Pediatra (Bia) · ${`16h ${long.title}`.slice(0, 107)}…${tail} · Luz (R$ 180,00)`);
+    expect(one?.body).toHaveLength(180);
+    // O item guarda o texto inteiro e, à parte, o parêntese.
+    expect(one?.items[1]).toMatchObject({ text: `16h ${long.title}${tail}`, detail: 'Ana, Carla leva, Vó Maria busca' });
+    // Dois compridos: os títulos dividem o espaço que os parênteses deixam.
+    const other = { ...long, id: 'outra', start_time: '17:00', person_id: null, take_by: 'beto', pick_up_by: 'beto' };
+    const two = summary({ appointments: [consulta], bills: [luz], family: calendar([long, other]) });
+    expect(two?.body).toBe(
+      `9h Pediatra (Bia) · ${`16h ${long.title}`.slice(0, 41)}…${tail} · ${`17h ${long.title}`.slice(0, 41)}… (Beto leva e busca) · Luz (R$ 180,00)`,
+    );
+    expect(two?.body).toHaveLength(179);
+    // O sábado cheio: três compromissos com quem leva e quem busca e um jantar. Os parênteses ficam inteiros,
+    // e o espaço é dividido entre os títulos: quem encolhe é o mais comprido.
+    const saturday = [
+      commitment({ id: 'futebol', title: 'Futebol da Ana', start_time: '09:00', person_id: 'ana', take_by: 'beto', pick_up_by: 'beto' }),
+      commitment({ ...ride, id: 'marina', title: 'Festa da Marina', start_time: '14:00' }),
+      commitment({ id: 'ingles', title: 'Aula de inglês', person_id: 'ana', take_by: 'vo', pick_up_by: 'carla' }),
+      commitment({ id: 'jantar', title: 'Jantar na casa dos avós', start_time: '19:00' }),
+    ];
+    const full = summary({ family: calendar(saturday) });
+    expect(full?.body).toBe(
+      '9h Futebol da Ana (Ana, Beto leva e busca) · 14h Festa da Marina (Ana, Carla leva, Vó Maria busca) · 16h Aula de inglês (Ana, Vó Maria leva, Carla busca) · 19h Jantar na casa dos…',
+    );
+    expect(full?.written).toBe(4);
+    // Título de qualquer tamanho, sozinho ou com até três outros itens: nunca passa de 180 e o parêntese está sempre lá, fechado.
+    for (let length = 1; length <= 120; length++) {
+      for (let others = 0; others <= 3; others++) {
+        const events = [
+          commitment({ id: 'x', title: 'T'.repeat(length), start_time: '08:00', person_id: 'ana', take_by: 'carla' }),
+          ...Array.from({ length: others }, (_, i) => commitment({ id: `o${i}`, title: `Coisa ${i} ${'c'.repeat(30)}`, start_time: `1${i}:00` })),
+        ];
+        const body = summary({ family: calendar(events) })?.body ?? '';
+        expect(body.length).toBeLessThanOrEqual(180);
+        expect([length, others, body.split(' · ')[0].endsWith(' (Ana, Carla leva)')]).toEqual([length, others, true]);
+      }
+    }
+  });
+
+  it('se do título sobrariam menos de 12 letras, o item volta ao corte de sempre, no fim; os que ainda cabem ficam com o parêntese', () => {
+    const ride = { person_id: 'ana', take_by: 'carla', pick_up_by: 'vo' };
+    const tail = ' (Ana, Carla leva, Vó Maria busca)';
+    // Quatro compromissos com o parêntese inteiro não cabem nem com 12 letras de cada título: o corte de sempre.
+    const four = [
+      commitment({ ...ride, id: 'futebol', title: 'Futebol da Ana', start_time: '09:00' }),
+      commitment({ ...ride, id: 'marina', title: 'Festa da Marina', start_time: '14:00' }),
+      commitment({ ...ride, id: 'ingles', title: 'Aula de inglês' }),
+      commitment({ ...ride, id: 'jantar', title: 'Jantar na casa dos avós', start_time: '19:00' }),
+    ];
+    expect(summary({ family: calendar(four) })?.body).toBe(
+      '9h Futebol da Ana (Ana, Carla leva, Vó Ma… · 14h Festa da Marina (Ana, Carla leva, Vó… · 16h Aula de inglês (Ana, Carla leva, Vó M… · 19h Jantar na casa dos avós (Ana, Carla l…',
+    );
+    // Só um não guarda as 12 letras (a hora "16h30" toma mais espaço): é ele que volta ao corte no fim.
+    // Os outros seguem com o título cortado e o parêntese inteiro.
+    const mixed = summary({
+      documents: [{ ...cnh, title: 'Passaporte da Ana' }],
+      family: calendar([
+        commitment({ ...ride, id: 'feira', title: 'Feira de ciências da escola nova', start_time: null }),
+        commitment({ id: 'bale', title: 'Apresentação de balé', start_time: '16:30', person_id: 'ana', take_by: 'vo', pick_up_by: 'carla' }),
+        commitment({ id: 'futebol', title: 'Futebol de salão', start_time: '09:00', person_id: 'beto', take_by: 'vo', pick_up_by: 'vo' }),
+      ]),
+    });
+    expect(mixed?.body).toBe(
+      `9h Futebol de salão (Beto, Vó Maria leva e busca) · 16h30 Apresentação de balé (Ana… · Feira de ciências da escola nova${tail} · Vence: Passaporte da Ana`,
+    );
+    expect(mixed?.body).toHaveLength(180);
+    // Nomes compridos e títulos curtos: os parênteses inteiros deixariam o documento com menos de 12 letras.
+    // Nenhum item some para outro ficar inteiro: todos voltam ao corte de sempre.
+    const names: FamilyCalendar['people'] = [
+      { id: 'duda', name: 'Maria Eduarda', kind: 'pessoa', birth_date: null },
+      { id: 'vo', name: 'Vó Maria Aparecida', kind: 'pessoa', birth_date: null },
+      { id: 'tio', name: 'Tio João Carlos', kind: 'pessoa', birth_date: null },
+    ];
+    const wide = { start_time: null, person_id: 'duda', take_by: 'vo', pick_up_by: 'tio' };
+    const crowded = summary({
+      documents: [{ ...cnh, title: 'Passaporte da Ana' }],
+      family: calendar(
+        [commitment({ ...wide, id: 'judo', title: 'Judô' }), commitment({ ...wide, id: 'bale', title: 'Balé' }), commitment({ id: 'coral', title: 'Coral', start_time: null, take_by: 'tio' })],
+        [],
+        names,
+      ),
+    });
+    const wideTail = ' (Maria Eduarda, Vó Maria Aparecida leva, Tio João Carlos busca)';
+    expect(crowded?.body).toBe(
+      `${`Balé${wideTail}`.slice(0, 58)}… · Coral (Tio João Carlos leva) · ${`Judô${wideTail}`.slice(0, 58)}… · Vence: Passaporte da Ana`,
+    );
+    expect(crowded?.body).toHaveLength(179);
+    // Títulos de uma letra não têm o que cortar: se só os parênteses já passam do espaço, o corte de sempre também vale.
+    const tiny = summary({ family: calendar(['A', 'B', 'C', 'D'].map((title) => commitment({ ...wide, id: title, title })), [], names) });
+    expect(tiny?.body).toBe(['A', 'B', 'C', 'D'].map((title) => `${title} (Maria Eduarda, Vó Maria Aparecida leva…`).join(' · '));
+  });
+
+  it('itens ao acaso: o texto nunca passa de 180, nenhum parêntese fica recém-aberto e nenhum item cortado fica com menos de 12 letras do título', () => {
+    let state = 14;
+    const next = () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 4294967296;
+    };
+    const int = (max: number) => Math.floor(next() * max);
+    const pick = <T,>(list: readonly T[]) => list[int(list.length)];
+    const ids = [null, 'ana', 'beto', 'carla', 'vo'];
+    const seen = { whole: 0, title: 0, back: 0, plain: 0 };
+    for (let round = 0; round < 800; round++) {
+      const events = Array.from({ length: 1 + int(5) }, (_, i) =>
+        commitment({
+          id: `e${i}`,
+          title: `${'ABCDE'[i]}${'t'.repeat(int(pick([10, 40, 120])))}`,
+          start_time: pick([null, '09:00', '16:30', '19:00']),
+          person_id: pick(ids),
+          take_by: pick(ids),
+          pick_up_by: pick(ids),
+        }),
+      );
+      const bills = Array.from({ length: int(3) }, (_, i) => ({ ...luz, id: `b${i}`, name: `Conta ${i}${'c'.repeat(int(pick([5, 70])))}` }));
+      const result = summary({ bills, family: calendar(events) });
+      const body = result?.body ?? '';
+      expect(body.length).toBeLessThanOrEqual(180);
+      expect([round, /\([^()]{0,2}…/.test(body)]).toEqual([round, false]);
+      const parts = body.replace(/ e mais \d+$/, '').split(' · ');
+      expect(parts).toHaveLength(result?.written ?? 0);
+      parts.forEach((part, i) => {
+        const item = result!.items[i];
+        if (part === item.text) return void (seen.whole += 1);
+        const hour = /^\d+h\d* /.exec(item.text)?.[0].length ?? 0;
+        const tail = item.detail ? ` (${item.detail})` : '';
+        // Ou o título encolheu e o parêntese está inteiro, ou o corte foi no fim.
+        const titleCut = !!tail && part.endsWith(tail);
+        const cut = titleCut ? part.slice(0, part.length - tail.length) : part;
+        seen[titleCut ? 'title' : tail ? 'back' : 'plain'] += 1;
+        expect([round, i, cut.endsWith('…'), cut.length - 1 - hour >= 12]).toEqual([round, i, true, true]);
+        expect(item.text.startsWith(cut.slice(0, -1))).toBe(true);
+      });
+    }
+    // Houve de tudo: itens inteiros, títulos cortados com o parêntese inteiro, compromissos que voltaram ao corte no fim e itens sem parêntese cortados.
+    expect(seen.whole).toBeGreaterThan(1000);
+    expect(seen.title).toBeGreaterThan(300);
+    expect(seen.back).toBeGreaterThan(10);
+    expect(seen.plain).toBeGreaterThan(30);
+  });
+
+  it('o corte não deixa um parêntese recém-aberto antes do "…": nada de " (…", " (B…" nem " (Bi…"', () => {
+    // A consulta sozinha: o corte cai logo depois de abrir o parêntese da pessoa.
+    const at = (length: number) => summary({ appointments: [{ ...consulta, title: 'X'.repeat(length) }] })?.body;
+    expect(at(174)).toBe(`9h ${'X'.repeat(174)}…`);
+    expect(at(173)).toBe(`9h ${'X'.repeat(173)}…`);
+    expect(at(172)).toBe(`9h ${'X'.repeat(172)}…`);
+    // Cabendo inteiro, fica como está; e com três letras do nome ou mais, o começo dele fica.
+    expect(at(171)).toBe(`9h ${'X'.repeat(171)} (Bia)`);
+    expect(summary({ appointments: [{ ...consulta, person: 'Theo', title: 'X'.repeat(171) }] })?.body).toBe(`9h ${'X'.repeat(171)} (The…`);
+    // A dose da vacina, do mesmo jeito.
+    const dose = (length: number) => summary({ vaccines: [{ ...vacina, name: 'V'.repeat(length) }] })?.body;
+    expect(dose(162)).toBe(`Vacina de Bia: ${'V'.repeat(162)}…`);
+    expect(dose(160)).toBe(`Vacina de Bia: ${'V'.repeat(160)}…`);
+    // O espaço que sobra no fim do corte não esconde o parêntese ("(2ª " também sai).
+    expect(dose(159)).toBe(`Vacina de Bia: ${'V'.repeat(159)}…`);
+    expect(dose(158)).toBe(`Vacina de Bia: ${'V'.repeat(158)} (2ª d…`);
+    // E o compromisso que voltou ao corte no fim (quatro com o parêntese comprido, como no teste acima).
+    const ride = { person_id: 'ana', take_by: 'carla', pick_up_by: 'vo' };
+    const first = (length: number) =>
+      summary({
+        family: calendar([
+          commitment({ ...ride, id: 'x', title: 'T'.repeat(length), start_time: '09:00' }),
+          commitment({ ...ride, id: 'marina', title: 'Festa da Marina', start_time: '14:00' }),
+          commitment({ ...ride, id: 'ingles', title: 'Aula de inglês' }),
+          commitment({ ...ride, id: 'jantar', title: 'Jantar na casa dos avós', start_time: '19:00' }),
+        ]),
+      })?.body.split(' · ')[0];
+    expect(first(36)).toBe(`9h ${'T'.repeat(36)}…`);
+    expect(first(35)).toBe(`9h ${'T'.repeat(35)}…`);
+    expect(first(34)).toBe(`9h ${'T'.repeat(34)}…`);
+    expect(first(33)).toBe(`9h ${'T'.repeat(33)} (Ana…`);
+    // Qualquer tamanho, com até três contas ao lado: nenhum texto termina um item com o parêntese recém-aberto.
+    for (let length = 100; length <= 180; length++) {
+      for (let others = 0; others <= 3; others++) {
+        const bills = Array.from({ length: others }, (_, i) => ({ ...luz, id: `b${i}`, name: `Conta ${i} ${'c'.repeat(30)}` }));
+        const body = summary({ appointments: [{ ...consulta, title: 'X'.repeat(length) }], bills })?.body ?? '';
+        expect(body.length).toBeLessThanOrEqual(180);
+        expect([length, others, /\([^()]{0,2}…/.test(body)]).toEqual([length, others, false]);
+      }
+    }
+  });
+
+  it('compromisso cedo (sem aviso no dia, ou com ele antes das 7h) leva o local e o que levar; os outros, não', () => {
+    const trip = (patch: Partial<FamilyEventLike> = {}) =>
+      commitment({ title: 'Passeio da escola', start_time: '06:30', person_id: 'ana', take_by: 'carla', location: 'Portão 2 da escola', bring: 'lanche e boné', ...patch });
+    const at = (patch: Partial<FamilyEventLike> = {}) => summary({ family: calendar([trip(patch)]) })?.body;
+    // O aviso do dia tocaria às 5h30: a véspera das 19h era quem dizia onde é e o que levar, e o resumo está no lugar dela.
+    expect(at()).toBe('6h30 Passeio da escola (Ana, Carla leva), Portão 2 da escola. Levar: lanche e boné');
+    // Antes da 1h nem há aviso no dia.
+    expect(at({ title: 'Voo para Recife', start_time: '00:40', location: 'Aeroporto de Guarulhos, terminal 2', bring: 'passaportes' })).toBe(
+      '0h40 Voo para Recife (Ana, Carla leva), Aeroporto de Guarulhos, terminal 2. Levar: passaportes',
+    );
+    expect(at({ start_time: '00:00' })).toBe('0h Passeio da escola (Ana, Carla leva), Portão 2 da escola. Levar: lanche e boné');
+    expect(at({ start_time: '01:00' })).toBe('1h Passeio da escola (Ana, Carla leva), Portão 2 da escola. Levar: lanche e boné');
+    expect(at({ start_time: '07:59' })).toBe('7h59 Passeio da escola (Ana, Carla leva), Portão 2 da escola. Levar: lanche e boné');
+    // Das 8h em diante o aviso de 1 hora antes toca às 7h ou depois, e diz; sem horário, o das 8h do dia.
+    expect(at({ start_time: '08:00' })).toBe('8h Passeio da escola (Ana, Carla leva)');
+    expect(at({ start_time: '16:00' })).toBe('16h Passeio da escola (Ana, Carla leva)');
+    expect(at({ start_time: null })).toBe('Passeio da escola (Ana, Carla leva)');
+    // Só o local, só o que levar, ou nenhum dos dois.
+    expect(at({ bring: null })).toBe('6h30 Passeio da escola (Ana, Carla leva), Portão 2 da escola');
+    expect(at({ location: null })).toBe('6h30 Passeio da escola (Ana, Carla leva). Levar: lanche e boné');
+    expect(at({ location: '  ', bring: ' ' })).toBe('6h30 Passeio da escola (Ana, Carla leva)');
+    expect(at({ person_id: null, take_by: null })).toBe('6h30 Passeio da escola, Portão 2 da escola. Levar: lanche e boné');
+    // O ponto não se repete depois de um título ou de um local que já termina com pontuação.
+    expect(at({ title: 'Passeio da escola!', person_id: null, take_by: null, location: null })).toBe('6h30 Passeio da escola! Levar: lanche e boné');
+    expect(at({ location: 'Portão 2.' })).toBe('6h30 Passeio da escola (Ana, Carla leva), Portão 2. Levar: lanche e boné');
+    // No item, os dois vão à parte do texto.
+    expect(summary({ family: calendar([trip()]) })?.items).toEqual([
+      {
+        source: 'events',
+        id: 'festa@2026-09-29',
+        text: '6h30 Passeio da escola (Ana, Carla leva)',
+        sort: '06:30',
+        detail: 'Ana, Carla leva',
+        place: 'Portão 2 da escola',
+        bring: 'Levar: lanche e boné',
+      },
+    ]);
+    // A vez de toda semana em que muda quem leva vai no resumo, e cedo leva também o local e o que levar; a rotina segue fora.
+    const school = trip({ id: 'escola', title: 'Escola', starts_on: '2026-02-02', start_time: '07:30', location: 'Colégio', bring: 'lancheira', recurrence: 'weekly', weekdays: [1, 2, 3, 4, 5] });
+    expect(summary({ family: calendar([school]) })).toBeNull();
+    const granny = { ...NO_DAY_CHANGE, event_id: 'escola', occurs_on: day, override_take: true, take_by: 'vo' };
+    expect(summary({ family: calendar([school], [granny]) })?.body).toBe('7h30 Escola (Ana, Vó Maria leva), Colégio. Levar: lancheira');
+    // No meio dos outros itens, ficam junto do compromisso deles; a consulta cedo segue com o local dela.
+    const early = { ...consulta, time: '08:30', location: 'Clínica Crescer' };
+    expect(summary({ appointments: [early], bills: [luz], family: calendar([trip()]) })?.body).toBe(
+      '6h30 Passeio da escola (Ana, Carla leva), Portão 2 da escola. Levar: lanche e boné · 8h30 Pediatra (Bia), Clínica Crescer · Luz (R$ 180,00)',
+    );
+    // O que não vai escrito (ficou no "e mais N") não leva nada.
+    const five = ['01:00', '02:00', '03:00', '04:00', '05:00'].map((start_time, i) => trip({ id: `c${i}`, title: `Saída ${i + 1}`, start_time, person_id: null, take_by: null, location: `Lugar ${i + 1}`, bring: null }));
+    expect(summary({ family: calendar(five) })?.body).toBe('1h Saída 1, Lugar 1 · 2h Saída 2, Lugar 2 · 3h Saída 3, Lugar 3 e mais 2');
+  });
+
+  it('o local e o que levar do compromisso cedo ficam com o que sobra: encolhem primeiro, e nenhum item encolhe por causa deles', () => {
+    const trip = commitment({ title: 'Passeio da escola', start_time: '06:30', person_id: 'ana', take_by: 'carla', location: 'Portão 2 da escola', bring: 'lanche e boné' });
+    const item = '6h30 Passeio da escola (Ana, Carla leva)';
+    const errand = (length: number) => ({ ...lixo, title: 'Buscar o bolo'.padEnd(length, '!') });
+    const at = (length: number, patch: Partial<FamilyEventLike> = {}) => summary({ chores: [errand(length)], family: calendar([{ ...trip, ...patch }]) })?.body;
+    // Cabem os dois, justos.
+    expect(at(95)).toBe(`${item}, Portão 2 da escola. Levar: lanche e boné · ${errand(95).title}`);
+    expect(at(95)).toHaveLength(180);
+    // Falta um caractere: o que levar é cortado; o local e os itens ficam inteiros.
+    expect(at(96)).toBe(`${item}, Portão 2 da escola. Levar: lanche e bo… · ${errand(96).title}`);
+    expect(at(102)).toBe(`${item}, Portão 2 da escola. Levar: lanch… · ${errand(102).title}`);
+    // Sobrando menos que o "Levar:" e o começo da lista, ele não entra (nada de ". Levar: l…").
+    expect(at(103)).toBe(`${item}, Portão 2 da escola · ${errand(103).title}`);
+    expect(at(117)).toBe(`${item}, Portão 2 da escola · ${errand(117).title}`);
+    // Nem o local cabe inteiro: ele é cortado, e o que levar fica para o aviso do dia.
+    expect(at(118)).toBe(`${item}, Portão 2 da esco… · ${errand(118).title}`);
+    expect(at(129)).toBe(`${item}, Portã… · ${errand(129).title}`);
+    expect(at(130)).toBe(`${item} · ${errand(130).title}`);
+    // Sem local, o que levar fica com o que sobra.
+    expect(at(115, { location: null })).toBe(`${item}. Levar: lanche e boné · ${errand(115).title}`);
+    expect(at(120, { location: null })).toBe(`${item}. Levar: lanche… · ${errand(120).title}`);
+    expect(at(123, { location: null })).toBe(`${item} · ${errand(123).title}`);
+    // Texto comprido (o formulário aceita 300 letras em "o que levar"): usa a linha toda, e não mais.
+    const list = 'lanche, garrafa de água, boné, protetor solar, autorização assinada, casaco, tênis fechado, dinheiro para a lembrancinha e o documento da criança';
+    const alone = summary({ family: calendar([{ ...trip, bring: list }]) });
+    expect(alone?.body).toBe(`${item}, Portão 2 da escola. ${`Levar: ${list}`.slice(0, 117)}…`);
+    expect(alone?.body).toHaveLength(180);
+    // Em qualquer aperto, o resto do resumo é o mesmo de quando o compromisso não tem local nem o que levar.
+    for (let length = 13; length <= 175; length++) {
+      const withTail = at(length) ?? '';
+      const without = at(length, { location: null, bring: null }) ?? '';
+      expect(withTail.length).toBeLessThanOrEqual(180);
+      const [first, second] = without.split(' · ');
+      expect([length, withTail.startsWith(first), withTail.endsWith(` · ${second}`)]).toEqual([length, true, true]);
+    }
+    // Item comprido demais: ele é que é cortado, como sempre, e nem o local entra.
+    expect(at(170)).toBe(`${item} · ${errand(170).title.slice(0, 136)}…`);
+  });
+
   it('casa sem compromisso nem aniversário naquele dia: o resumo é o de sempre', () => {
     const house = { appointments: [consulta], bills: [luz], vaccines: [vacina], chores: [lixo, filtro], documents: [cnh], equipment: [geladeira] };
     const usual = summary(house);
@@ -937,10 +1227,10 @@ describe('planHouseReminders: resumo de amanhã', () => {
     }
   });
 
-  it('a dica do resumo diz que a consulta e o compromisso de amanhã vêm nele; as das consultas e dos compromissos são as de sempre', () => {
+  it('a dica do resumo diz que a rotina não entra e que a consulta e o compromisso de amanhã vêm nele; as das consultas e dos compromissos são as de sempre', () => {
     const hint = (key: string) => HOUSE_REMINDER_KINDS.find((kind) => kind.key === key)?.hint;
     expect(hint('eve')).toBe(
-      'Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, compromissos, aniversários, contas, tarefas, vacinas e documentos. Só quando há alguma coisa. Com ele ligado, a consulta e o compromisso de amanhã vêm nele, no lugar do aviso das 19h',
+      'Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, compromissos, aniversários, contas, tarefas, vacinas e documentos. Só quando há algo fora da rotina (o compromisso de toda semana e a tarefa de todo dia não entram). Com ele ligado, a consulta e o compromisso de amanhã vêm nele, no lugar do aviso das 19h',
     );
     expect(hint('appointments')).toBe('Na véspera, às 19h, e 2 horas antes');
     expect(hint('events')).toBe('Na véspera, às 19h, e no dia, 1 hora antes do horário (sem horário, às 8h). Os de toda semana avisam só no dia');
@@ -1378,6 +1668,42 @@ describe('planHouseReminders: resumo de amanhã com compromissos e aniversários
     expect(plan({ family: calendar([commitment({ title: 'Voo para Recife', start_time: '00:40' })]) }).map((r) => [r.key, r.body])).toEqual([
       ['eve:amanha:2026-09-28:20:00', '0h40 Voo para Recife'],
     ]);
+  });
+
+  it('compromisso cedo: uma notificação só naquela noite, e o resumo diz onde é e o que levar, como dizia a véspera das 19h', () => {
+    const rows = (input: Partial<HouseReminderInput>) => plan(input).map((r) => [r.key, r.title, r.body]);
+    const off = { ...both, eve: false };
+    // Voo à 0h40: não há aviso no dia. O resumo está no lugar da véspera, e leva o que ela dizia.
+    const flight = commitment({ title: 'Voo para Recife', start_time: '00:40', person_id: 'ana', take_by: 'carla', location: 'Aeroporto de Guarulhos, terminal 2', bring: 'passaportes' });
+    expect(rows({ family: calendar([flight]) })).toEqual([
+      ['eve:amanha:2026-09-28:20:00', 'Amanhã, terça-feira', '0h40 Voo para Recife (Ana, Carla leva), Aeroporto de Guarulhos, terminal 2. Levar: passaportes'],
+    ]);
+    expect(rows({ kinds: off, family: calendar([flight]) })).toEqual([
+      ['events:festa@2026-09-29:2026-09-28:19:00', 'Amanhã: Voo para Recife às 00:40', 'Ana · Carla leva · Aeroporto de Guarulhos, terminal 2 · Levar: passaportes'],
+    ]);
+    // Passeio às 6h: o aviso do dia toca às 5h, tarde para arrumar a mochila. À noite, o resumo já diz.
+    const trip = commitment({ title: 'Passeio da escola', start_time: '06:00', person_id: 'ana', take_by: 'carla', location: 'Portão 2 da escola', bring: 'lanche e boné' });
+    const day = ['events:festa@2026-09-29:2026-09-29:05:00', 'Hoje às 06:00: Passeio da escola', 'Ana · Carla leva · Portão 2 da escola · Levar: lanche e boné'];
+    expect(rows({ family: calendar([trip]) })).toEqual([
+      ['eve:amanha:2026-09-28:20:00', 'Amanhã, terça-feira', '6h Passeio da escola (Ana, Carla leva), Portão 2 da escola. Levar: lanche e boné'],
+      day,
+    ]);
+    expect(rows({ kinds: off, family: calendar([trip]) })).toEqual([
+      ['events:festa@2026-09-29:2026-09-28:19:00', 'Amanhã: Passeio da escola às 06:00', 'Ana · Carla leva · Portão 2 da escola · Levar: lanche e boné'],
+      day,
+    ]);
+    // Às 16h, o aviso de 1 hora antes diz onde é e o que levar: o resumo fica curto.
+    expect(rows({ family: calendar([{ ...trip, start_time: '16:00' }]) })).toEqual([
+      ['eve:amanha:2026-09-28:20:00', 'Amanhã, terça-feira', '16h Passeio da escola (Ana, Carla leva)'],
+      ['events:festa@2026-09-29:2026-09-29:15:00', 'Hoje às 16:00: Passeio da escola', 'Ana · Carla leva · Portão 2 da escola · Levar: lanche e boné'],
+    ]);
+    // O local e o que levar só mudam o texto do resumo: o plano tem os mesmos avisos, nas mesmas horas.
+    const bare = { ...trip, location: null, bring: null };
+    for (let limit = 0; limit <= 3; limit++) {
+      const bills = [{ ...bill, next_due_on: '2026-09-29' }];
+      const kinds = { ...both, bills: true };
+      expect(keys(plan({ kinds, bills, family: calendar([trip]), limit }))).toEqual(keys(plan({ kinds, bills, family: calendar([bare]), limit })));
+    }
   });
 
   it('aniversário e rotina: o resumo não tira aviso de ninguém', () => {
