@@ -15,7 +15,7 @@ export interface SheetAction {
 /**
  * Menu de ações de baixo para cima, igual em iOS, Android e web. `children` é
  * o que a tela mostra junto (ex.: a prévia do texto que vai ser mandado):
- * fica entre o título e as ações, fora da rolagem delas.
+ * fica entre o título e as ações e rola com elas.
  */
 export function ActionSheet({
   visible,
@@ -58,9 +58,11 @@ export function ActionSheet({
           <Pressable
             style={[styles.sheet, { backgroundColor: c.surface, borderColor: c.glassBorder, maxHeight: height * 0.85 }]}>
             {title ? <Text variant="heading">{title}</Text> : null}
-            {children}
-            {/* Mensagem longa e muitas ações (uma por compra na despensa) rolam; o Cancelar fica à vista. */}
+            {/* Só o título e o Cancelar ficam fixos. O resto rola junto: mensagem longa, muitas ações (uma por compra
+                na despensa) e o que a tela pôs no menu. Numa tela baixa (o celular deitado), a prévia e o aviso
+                fixos deixariam as ações sem espaço para tocar. */}
             <ScrollView style={styles.scroll} contentContainerStyle={styles.gap} bounces={false}>
+              {children}
               {message ? <Text variant="muted">{message}</Text> : null}
               <View style={styles.actions}>
                 {actions.map((action, index) => (
