@@ -398,6 +398,18 @@ describe('valor impresso e as diferenças do total da nota', () => {
     expect(marketMonth([receipt(at(MONTH, 8), [line('Arroz', 'graos', 30)])], MONTH, AFTER).noValue).toBeNull();
   });
 
+  it('mês só de farmácia com item sem valor: a frase não fala de um total que a tela não mostra', () => {
+    const one = marketMonth([receipt(at(MONTH, 8), [line('Dipirona', 'medicamentos', 12), line('Gaze', 'medicamentos', 0)], { total: 10 })], MONTH, AFTER);
+    expect(one.trips).toEqual([]);
+    expect(one.noValue).toMatchObject({ label: '1 item sem valor', hint: 'Veio sem valor na nota. Abra a nota para ver qual é.' });
+    const two = marketMonth(
+      [receipt(at(MONTH, 8), [line('Dipirona', 'medicamentos', 12), line('Gaze', 'medicamentos', 0), line('Algodão', 'medicamentos', 0)], { total: 10 })],
+      MONTH,
+      AFTER,
+    );
+    expect(two.noValue).toMatchObject({ label: '2 itens sem valor', hint: 'Vieram sem valor na nota. Abra a nota para ver quais são.' });
+  });
+
   it('nota com total e nenhum item: o valor inteiro fica como "sem item lido"', () => {
     const month = marketMonth([receipt(at(MONTH, 10), [], { total: 80 })], MONTH, AFTER);
     expect(month.headline).toBe('R$ 80,00 em 1 ida');
@@ -551,6 +563,10 @@ describe('por categoria', () => {
     const discounted = marketMonth([receipt(at(MONTH, 10), [line('Arroz', 'graos', 75), line('Sal', 'temperos', 0.25)], { total: 70 })], MONTH, AFTER);
     expect(discounted.shareBasis).toBe('As porcentagens são sobre os itens lidos (R$ 75,25).');
     expect(discounted.categories[1].accessibilityLabel).toBe('Temperos e molhos: R$ 0,25, menos de 1% dos itens');
+    // Nota em que nenhum valor foi lido: não há porcentagem, e a frase não aparece para falar de R$ 0,00.
+    const unreadValues = marketMonth([receipt(at(MONTH, 10), [line('Brinde', 'outros', 0)], { total: 50 })], MONTH, AFTER);
+    expect(unreadValues.headline).toBe('R$ 50,00 em 1 ida');
+    expect(unreadValues.shareBasis).toBeNull();
   });
 
   it('empate no valor: pelo nome, sempre na mesma ordem', () => {

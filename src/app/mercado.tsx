@@ -217,7 +217,12 @@ function MonthBody({
                 style={({ pressed }) => [styles.detailsHeader, pressed && styles.pressed]}>
                 <View style={styles.flex}>
                   <Text variant="label">Como este total fecha</Text>
-                  {detailsOpen ? null : <Text variant="small">{summary.closing}</Text>}
+                  {/* Duas linhas no máximo: aberto, tudo o que a frase diz aparece em linhas próprias. */}
+                  {detailsOpen ? null : (
+                    <Text variant="small" numberOfLines={2}>
+                      {summary.closing}
+                    </Text>
+                  )}
                 </View>
                 <Icon name={detailsOpen ? 'chevron-up' : 'chevron-down'} color="textMuted" />
               </Pressable>

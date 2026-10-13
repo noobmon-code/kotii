@@ -590,7 +590,8 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
     categories,
     items,
     stores,
-    shareBasis: sharesOfItems ? `As porcentagens são sobre os itens lidos (${money(current.itemsCents)}).` : null,
+    // Sem nenhum valor lido não há porcentagem para explicar.
+    shareBasis: sharesOfItems && current.itemsCents > 0 ? `As porcentagens são sobre os itens lidos (${money(current.itemsCents)}).` : null,
     closing: closing || null,
     discount:
       discountCents > 0
@@ -614,9 +615,13 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
       noValueCount > 0
         ? {
             label: plural(noValueCount, 'item sem valor', 'itens sem valor'),
-            // Nota confirmada não se edita: a frase diz o que dá para fazer, que é abrir e ver.
-            hint:
-              noValueCount === 1
+            // Nota confirmada não se edita: a frase diz o que dá para fazer, que é abrir e ver. Num mês sem ida
+            // ao mercado (só farmácia) não há "este total" na tela para o item entrar como zero.
+            hint: !current.trips.length
+              ? noValueCount === 1
+                ? 'Veio sem valor na nota. Abra a nota para ver qual é.'
+                : 'Vieram sem valor na nota. Abra a nota para ver quais são.'
+              : noValueCount === 1
                 ? 'Entra como zero neste total. Abra a nota para ver qual é.'
                 : 'Entram como zero neste total. Abra a nota para ver quais são.',
             receipts: current.noValue.map((entry) => ref(entry.receipt, entry.date, plural(entry.count, 'item', 'itens'))),
