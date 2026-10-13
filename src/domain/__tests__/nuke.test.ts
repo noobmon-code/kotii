@@ -60,6 +60,25 @@ describe('nuke context', () => {
     expect(text).toContain('Orçamento de setembro: Moradia R$ 2.500,00 de R$ 2.400,00 (passou); Lazer R$ 0,00 de R$ 300,00.');
   });
 
+  it('says when a bill came above its usual amount, with the numbers ready', () => {
+    const text = buildNukeContext({
+      ...snapshot,
+      bills: [
+        {
+          name: 'Luz',
+          amount: null,
+          next_due_on: '2026-10-10',
+          autopay: false,
+          aboveUsual: 'boleto de R$ 310,00, R$ 85,00 (38%) acima do normal: média R$ 225,00 dos últimos 6 pagamentos',
+        },
+        { name: 'Internet', amount: 120, next_due_on: '2026-10-05', autopay: true },
+      ],
+    });
+    expect(text).toContain(
+      'Luz valor varia, boleto de R$ 310,00, R$ 85,00 (38%) acima do normal: média R$ 225,00 dos últimos 6 pagamentos — vence 10/10; Internet R$ 120,00 — vence 05/10 (débito automático).',
+    );
+  });
+
   it('caps long lists', () => {
     const many = { ...snapshot, pantry: Array.from({ length: 45 }, (_, i) => `Item ${i}`) };
     expect(buildNukeContext(many)).toContain('Item 39; e mais 5.');

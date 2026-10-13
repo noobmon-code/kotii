@@ -58,7 +58,8 @@ export interface NukeSnapshot {
   shopping: { list: string; items: { name: string; quantity: number; unit: string }[] }[];
   /** Cardápio de hoje em diante (menuLines). */
   menu?: string[];
-  bills: { name: string; amount: number | null; next_due_on: string; autopay: boolean }[];
+  /** `aboveUsual`: o valor já conhecido está acima do normal da conta (describeAboveForNuke). */
+  bills: { name: string; amount: number | null; next_due_on: string; autopay: boolean; aboveUsual?: string }[];
   spending: {
     month: string;
     total: number;
@@ -103,7 +104,7 @@ export function buildNukeContext(s: NukeSnapshot): string {
     `Contas (atrasadas e próximos 30 dias): ${listOrNone(
       s.bills.map(
         (b) =>
-          `${b.name} ${b.amount != null ? formatBRL(b.amount) : 'valor varia'} — ${b.next_due_on < s.today ? 'venceu' : 'vence'} ${shortDate(b.next_due_on)}${b.autopay ? ' (débito automático)' : ''}`,
+          `${b.name} ${b.amount != null ? formatBRL(b.amount) : 'valor varia'}${b.aboveUsual ? `, ${b.aboveUsual}` : ''} — ${b.next_due_on < s.today ? 'venceu' : 'vence'} ${shortDate(b.next_due_on)}${b.autopay ? ' (débito automático)' : ''}`,
       ),
     )}.`,
   ];
