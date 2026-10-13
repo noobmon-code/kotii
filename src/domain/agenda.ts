@@ -1,21 +1,34 @@
-// Agenda da casa: consultas, vacinas, contas, tarefas, manutenções,
-// documentos e garantias num calendário só. Contas e tarefas que se repetem
-// aparecem também nas próximas datas, como previsão: a data certa sai quando
-// a conta é paga ou a tarefa é feita.
+// Agenda da casa: compromissos da família, aniversários, consultas, vacinas,
+// contas, tarefas, manutenções, documentos e garantias num calendário só.
+// Contas e tarefas que se repetem aparecem também nas próximas datas, como
+// previsão: a data certa sai quando a conta é paga ou a tarefa é feita. Um
+// compromisso que se repete tem data certa em todas as vezes: não é previsão.
 
 import { addDays, diffDays } from './dates';
+import { calendarEntries, entryDetail, type FamilyCalendar } from './familyEvents';
 import { pendingNextDoses, splitTimestamp, type VaccineLike } from './health';
 
-export type AgendaKind = 'consulta' | 'vacina' | 'conta' | 'tarefa' | 'manutencao' | 'documento' | 'garantia';
+export type AgendaKind =
+  | 'compromisso'
+  | 'aniversario'
+  | 'consulta'
+  | 'vacina'
+  | 'conta'
+  | 'tarefa'
+  | 'manutencao'
+  | 'documento'
+  | 'garantia';
 
 export interface AgendaEvent {
   key: string;
   kind: AgendaKind;
-  /** O item de origem (consulta, conta…), para abrir a tela dele. */
+  /** O item de origem (consulta, conta…; no aniversário, a ficha), para abrir a tela dele. */
   id: string;
   date: string;
-  /** Só consultas têm hora. */
+  /** Consultas e compromissos com horário; null: o dia todo. */
   time: string | null;
+  /** Até que horas vai (só compromissos). */
+  endTime?: string | null;
   title: string;
   detail: string | null;
   /** Repetição prevista, e não a data já marcada. */
@@ -48,6 +61,8 @@ export interface AgendaInput {
   }[];
   documents: { id: string; title: string; expires_on: string | null }[];
   equipment: { id: string; name: string; warranty_until: string | null }[];
+  /** Compromissos da família, as mudanças de cada dia e as fichas (para os nomes e os aniversários). */
+  calendar: FamilyCalendar;
 }
 
 /** Soma meses mantendo o dia (31 vira o último dia nos meses curtos), como o banco faz com as contas. */
@@ -86,6 +101,12 @@ export function buildAgenda(input: AgendaInput): AgendaEvent[] {
   const push = (event: Omit<AgendaEvent, 'key'>) => {
     if (inRange(event.date)) events.push({ ...event, key: `${event.kind}:${event.id}:${event.date}` });
   };
+
+  // Compromissos (o dia marcado como "não vai ter" já saiu) e aniversários.
+  for (const entry of calendarEntries(input.calendar, from, to)) {
+    const { kind, id, date, time, endTime, title } = entry;
+    push({ kind, id, date, time, endTime, title, detail: entryDetail(entry), planned: false });
+  }
 
   for (const a of input.appointments) {
     if (a.status === 'cancelada') continue;
