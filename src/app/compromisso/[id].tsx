@@ -1,5 +1,5 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import {
@@ -82,10 +82,8 @@ export default function FamilyEventScreen() {
   const failed = !shown && (people.isError || (!isNew && event.isError));
   const waiting = !people.data || (!isNew && (event.isPending || (!shown && event.isFetching && !event.isFetchedAfterMount)));
   const found = isNew || Boolean(event.data);
-  const ready = !failed && !waiting && found;
-  useEffect(() => {
-    if (ready) setShownId(id);
-  }, [ready, id]);
+  // Guardado na própria renderização em que o formulário aparece (estado derivado, sem efeito).
+  if (!shown && !failed && !waiting && found) setShownId(id);
 
   if (!shown && people.isError) return <ErrorNotice error={people.error} onRetry={() => people.refetch()} />;
   if (!shown && !isNew && event.isError) {
