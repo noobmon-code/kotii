@@ -594,6 +594,23 @@ describe('examTrends', () => {
       'E A S',
       'Urina (E.A.S.)',
       'E.A.S. - rotina',
+      // Os outros nomes que os laudos dão ao mesmo exame.
+      'Urinálise',
+      'Uroanálise',
+      'Urocultura',
+      'EQU',
+      'Elementos anormais e sedimento',
+      'Elementos anormais do sedimento',
+      'Urina 24hrs',
+      'Urina 24 hrs',
+      'Proteinúria 24hrs',
+      'Coprocultura',
+      'Parasitológico',
+      'Exame coprológico funcional',
+      'EPF',
+      'LCR',
+      'Líquido cefalorraquidiano',
+      'Líquido cefalorraquiano',
       'Sumário urinário',
       'Creatinina urinária',
       'Proteinúria de 24h',
@@ -747,6 +764,12 @@ describe('examTrends', () => {
       ['Polissonografia', 'Polissonografia 24h'],
       ['EEG', 'EEG 24 horas'],
       ['Eletroencefalograma', 'Eletroencefalograma de 24h'],
+      // As siglas escritas com pontos ou espaços são as mesmas siglas.
+      ['EEG', 'E.E.G. 24h'],
+      ['ECG', 'E.C.G. 24 horas'],
+      ['E.C.G.', 'ECG com monitorização de 24 horas'],
+      ['E C G', 'E. C. G. - 24h'],
+      ['MAPA', 'M A P A 24h'],
     ]) {
       const exams = [
         exam('2025-03-10', [result('Frequência cardíaca média', '72', 'bpm')], { title: first }),
@@ -799,7 +822,19 @@ describe('examTrends', () => {
           title,
         }),
       ]).single.map((i) => i.material);
-    for (const title of ['Holter 24h', 'Holter', 'MAPA 24 horas', 'MAPA', 'M.A.P.A.', 'Laudo do MAPA', 'Polissonografia 24h', 'EEG 24 horas', 'pH-metria de 24 horas']) {
+    for (const title of [
+      'Holter 24h',
+      'Holter',
+      'MAPA 24 horas',
+      'MAPA',
+      'M.A.P.A.',
+      'Laudo do MAPA',
+      'Polissonografia 24h',
+      'EEG 24 horas',
+      'E.E.G. 24h',
+      'E.C.G. 24h',
+      'pH-metria de 24 horas',
+    ]) {
       expect([title, names(title)]).toEqual([title, ['', '', '24h', '24h']]);
     }
     // O laudo guardado como "MAPA" e o seguinte, como "MAPA 24h": as médias de 24 horas são uma série só.
@@ -936,6 +971,10 @@ describe('examTrends', () => {
       ['Pesquisa de sangue oculto', 'urina'],
     ]);
     expect(materials('Rotina', ['Sangue oculto nas fezes'])).toEqual([['Sangue oculto nas fezes', 'fezes']]);
+    // A sigla com pontos não muda nada no resto do título: "T.S.H. e E.A.S." continua sendo um exame ao lado do EAS.
+    expect(materials('Hemograma e E.A.S.', ['Hemoglobina'])).toEqual([['Hemoglobina', '']]);
+    expect(materials('E.A.S. e urocultura', ['Densidade'])).toEqual([['Densidade', 'urina']]);
+    expect(materials('E.A.S. e urocultura', ['Sangue oculto'])).toEqual([['Sangue oculto', 'urina']]);
     expect(materials('E.A.S.', ['Sangue oculto', 'Sangue'])).toEqual([
       ['Sangue oculto', 'urina'],
       ['Sangue', 'urina'],
@@ -1249,6 +1288,9 @@ describe('examTrends', () => {
       'Hemograma + EAS',
       'Hemograma e E.A.S.',
       'Hemograma + E. A. S.',
+      'Hemograma e urocultura',
+      'Hemograma + EPF',
+      'Hemograma, EQU e parasitológico',
       'Sangue e urina',
       'Sangue/urina',
       'Exames de rotina (sangue e urina)',

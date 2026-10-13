@@ -438,11 +438,14 @@ const GENERIC_NAMES = new Set([
 // diz. Só separa: a "Creatinina" de um exame de urina não entra na série da do
 // sangue, e nada some por causa disso (a linha avisa: ver apartNote). "Sangue
 // oculto" é o nome de um exame de fezes, no título e no nome do resultado.
+// Cada material com os outros nomes que os laudos usam para o mesmo exame: o
+// EAS é também "elementos anormais (e sedimento)", urinálise, uroanálise e EQU;
+// as fezes, coprocultura, parasitológico e EPF; o líquor, LCR.
 const MATERIALS: [string, RegExp][] = [
-  ['urina', /\b(urina|urinari[a-z]*|eas)\b/],
-  ['24h', /\b24 ?h(s|oras?)?\b/],
-  ['fezes', /\b(fezes|sangue oculto)\b/],
-  ['liquor', /\bliquor\b/],
+  ['urina', /\b(urina|urinari[a-z]*|eas|equ|urinalise|uroanalise|urocultura|elementos anormais)\b/],
+  ['24h', /\b24 ?h(s|rs?|oras?)?\b/],
+  ['fezes', /\b(fezes|sangue oculto|coprocultura|coprologic[oa]s?|parasitologic[oa]s?|epf)\b/],
+  ['liquor', /\b(liquor|lcr|cefalorraqu(idi|i)an[oa])\b/],
 ];
 const MATERIAL_LABEL: Record<string, string> = { urina: 'urina', '24h': 'urina de 24 horas', fezes: 'fezes', liquor: 'líquor' };
 
@@ -460,9 +463,14 @@ const BLOOD_EXAM = /\b(sangue(?! ocult)|sanguine[oa]s?|hematologic[oa]s?|hemogra
 const ANALYSIS = /\b(bioquimic[ao]s?|seric[oa]s?|plasmatic[oa]s?)\b/;
 const GENERIC = /\b(rotina|check ?up|laboratoria(l|is))\b/;
 
-// "E.A.S." e "E A S": a sigla escrita com pontos ou espaços vira uma palavra só, antes de o "e" dela ser lido
-// como o "e" que separa dois exames.
-const joinAcronyms = (normalized: string) => normalized.replace(/\be[.\s]+a[.\s]+s\b\.?/g, 'eas');
+// A sigla escrita com pontos ("E.A.S.", "E.C.G.", "E.E.G.", "M.A.P.A.") vira uma palavra só, antes de o "e" dela
+// ser lido como o "e" que separa dois exames. Com espaços no lugar dos pontos, só as que o app conhece.
+const joinAcronyms = (normalized: string) =>
+  normalized
+    // Cada letra com o seu ponto ("e. a. s."), ou a última sem ele e colada ("e.a.s"): o "e" solto que vem depois
+    // ("E.A.S. e urocultura") não é da sigla.
+    .replace(/\b(?:(?:[a-z]\.\s?)+[a-z]\.|(?:[a-z]\.)+[a-z]\b)/g, (dotted) => `${dotted.replace(/[.\s]/g, '')} `)
+    .replace(/\b(?:e a s|e e g|e c g|m a p a)\b/g, (spaced) => spaced.replace(/ /g, ''));
 const plainWords = (text: string) => joinAcronyms(normalizeSearch(text)).replace(/[^a-z0-9]+/g, ' ');
 
 // Exames de um dia inteiro que não são de urina ("Holter 24 horas", "MAPA
