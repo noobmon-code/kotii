@@ -3,8 +3,9 @@ import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { useMedications } from '@/data/home';
-import { useAppointments, useExams, usePeople, useVaccines } from '@/data/health';
+import { useAppointments, useExamResultOwners, useExams, usePeople, useVaccines } from '@/data/health';
 import { formatBRDate, formatShortDate, todayISO } from '@/domain/dates';
+import { hasExamResults } from '@/domain/examTrends';
 import { ageLabel, describeWhen, EXAM_STATUS, isOverdueAppointment, upcomingAppointments } from '@/domain/health';
 import type { Person } from '@/lib/types';
 import {
@@ -24,6 +25,7 @@ import {
 import { space } from '@/ui/theme';
 import { MedicationList } from './MedicationSections';
 import { openNewPerson, PersonChips } from './PersonChips';
+import { StaleNotice } from './StaleNotice';
 
 const PAST_LIMIT = 5;
 
@@ -34,15 +36,23 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
   const appointments = useAppointments();
   const vaccines = useVaccines();
   const exams = useExams();
+  const resultOwners = useExamResultOwners();
   const medications = useMedications();
   const [showAllPast, setShowAllPast] = useState(false);
 
-  const queries = [people, appointments, vaccines, exams, medications];
-  const failed = queries.find((q) => q.isError);
-  if (failed) return <ErrorNotice error={failed.error} onRetry={() => queries.forEach((q) => q.refetch())} />;
-  if (!people.data || !appointments.data || !vaccines.data || !exams.data || !medications.data) return <Loading />;
+  // Quem tem resultados (resultOwners) só decide para onde vai a entrada da evolução em "Todos". Aí ela entra na
+  // espera e no erro como as outras buscas: sem ela, a entrada sumiria calada, sem ter como tentar de novo. Com
+  // uma pessoa escolhida a entrada é sempre a dela, e a falha (ou a demora) dessa busca, que lê a casa toda, não
+  // tira da frente as consultas, as vacinas, os exames e os remédios que já chegaram.
+  const person = people.data?.find((p) => p.id === personId) ?? null;
+  const queries = person ? [people, appointments, vaccines, exams, medications] : [people, appointments, vaccines, exams, resultOwners, medications];
+  // O erro inteiro só enquanto falta o dado da busca que falhou. Com tudo já carregado, a atualização em segundo
+  // plano que falha não tira o painel da frente: ele fica com o que tinha, e um aviso acima diz isso.
+  const failed = queries.filter((q) => q.isError);
+  const blocking = failed.find((q) => q.data === undefined);
+  if (blocking) return <ErrorNotice error={blocking.error} onRetry={() => queries.forEach((q) => q.refetch())} />;
+  if (!people.data || !appointments.data || !vaccines.data || !exams.data || !medications.data || (!person && !resultOwners.data)) return <Loading />;
 
-  const person = people.data.find((p) => p.id === personId) ?? null;
   const mine = <T extends { person_id: string | null }>(rows: T[]) => (person ? rows.filter((r) => r.person_id === person.id) : rows);
   const nameOf = (id: string) => (person ? null : people.data.find((p) => p.id === id)?.name ?? null);
   const add = (pathname: '/consulta/[id]' | '/vacina/[id]' | '/exame/[id]') =>
@@ -54,6 +64,16 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
   const visiblePast = showAllPast ? past : past.slice(0, PAST_LIMIT);
   const personVaccines = mine(vaccines.data);
   const personExams = mine(exams.data);
+  // Evolução e resumo são de uma pessoa só. Com ela escolhida, a entrada existe
+  // sempre (sem resultados, a tela ainda monta o resumo). Em "Todos", vai
+  // direto quando só uma pessoa tem resultados; com mais de uma, pede a escolha.
+  // Quem tem resultados sai da casa toda (useExamResultOwners): a lista de exames
+  // daqui traz só os mais recentes, e por ela a entrada de "Todos" poderia levar
+  // à pessoa errada.
+  const owners = new Set(resultOwners.data ?? []);
+  const hasResults = (p: Person) => owners.has(p.id) || hasExamResults(exams.data.filter((e) => e.person_id === p.id));
+  const withResults = person ? [] : people.data.filter(hasResults);
+  const trendsPerson = person ?? (withResults.length === 1 ? withResults[0] : null);
   const personMedications = person
     ? medications.data.filter((m) => m.person_id === person.id)
     : medications.data;
@@ -71,6 +91,8 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
 
   return (
     <View style={styles.gap}>
+      {failed.length ? <StaleNotice onRetry={() => failed.forEach((q) => void q.refetch())} /> : null}
+
       <PersonChips people={people.data} value={person?.id ?? null} onChange={onPersonChange} allLabel="Todos" onAdd={openNewPerson} />
 
       {person ? <PersonCard person={person} today={today} /> : null}
@@ -132,6 +154,17 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
       </Section>
 
       <Section title="Exames" action={<Button title="Exame" icon="plus" variant="ghost" compact onPress={() => add('/exame/[id]')} />}>
+        {trendsPerson ? (
+          <Button
+            title={hasResults(trendsPerson) ? 'Evolução e resumo para a consulta' : 'Resumo para a consulta'}
+            icon={hasResults(trendsPerson) ? 'chart-line' : 'text-box-outline'}
+            variant="secondary"
+            compact
+            onPress={() => router.push({ pathname: '/exames/[pessoa]', params: { pessoa: trendsPerson.id } })}
+          />
+        ) : withResults.length > 1 ? (
+          <Text variant="muted">Escolha acima de quem são os exames para ver a evolução e o resumo para a consulta.</Text>
+        ) : null}
         {personExams.length === 0 ? (
           <Text variant="muted">Nenhum exame. Fotografe o pedido ou o laudo e a IA transcreve os resultados.</Text>
         ) : (
