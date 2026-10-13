@@ -285,15 +285,15 @@ describe('planHouseReminders: compromissos da família e aniversários', () => {
     ]);
   });
 
-  it('dia que não vai ter não avisa; quem leva naquele dia vai no aviso', () => {
+  it('dia que não vai ter não avisa; quem leva naquele dia vai no aviso, e que ninguém busca também', () => {
     const days = [
       { ...NO_DAY_CHANGE, event_id: 'natacao', occurs_on: '2026-09-29', cancelled: true },
       { ...NO_DAY_CHANGE, event_id: 'natacao', occurs_on: '2026-10-01', override_take: true, take_by: 'vo', override_pick_up: true, pick_up_by: null },
     ];
     expect(rows({ family: withBirthday([swim], days) }).map(([key, , , , body]) => [key, body])).toEqual([
       ['events:ana@2026-09-30:2026-09-30:08:00', 'Faz 8 anos.'],
-      ['events:natacao@2026-10-01:2026-09-30:19:00', 'Ana · Vó Maria leva · Clube · Levar: touca e toalha'],
-      ['events:natacao@2026-10-01:2026-10-01:15:00', 'Ana · Vó Maria leva · Clube · Levar: touca e toalha'],
+      ['events:natacao@2026-10-01:2026-09-30:19:00', 'Ana · Vó Maria leva, ninguém busca · Clube · Levar: touca e toalha'],
+      ['events:natacao@2026-10-01:2026-10-01:15:00', 'Ana · Vó Maria leva, ninguém busca · Clube · Levar: touca e toalha'],
     ]);
   });
 

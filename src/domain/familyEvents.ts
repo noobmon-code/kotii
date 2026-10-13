@@ -271,8 +271,18 @@ export function formatTimeRange(start: string | null, end: string | null): strin
   return end ? `${start}–${end}` : start;
 }
 
-/** "Beto leva, Carla busca", "Beto leva e busca", "Carla busca" ou null. */
-export function rideText(take: string | null, pickUp: string | null): string | null {
+/**
+ * "Beto leva, Carla busca", "Beto leva e busca", "Carla busca" ou null.
+ * `nobody`: neste dia ninguém leva (ou busca) quem costuma ser levado. A falta
+ * é a mudança, e a linha a diz ("Ninguém leva, Carla busca") em vez de só
+ * perder um nome.
+ */
+export function rideText(take: string | null, pickUp: string | null, nobody: { take?: boolean; pickUp?: boolean } = {}): string | null {
+  const noTake = !take && Boolean(nobody.take);
+  const noPickUp = !pickUp && Boolean(nobody.pickUp);
+  if (noTake && noPickUp) return 'Ninguém leva nem busca';
+  if (noTake) return pickUp ? `Ninguém leva, ${pickUp} busca` : 'Ninguém leva';
+  if (noPickUp) return take ? `${take} leva, ninguém busca` : 'Ninguém busca';
   if (take && pickUp) return take === pickUp ? `${take} leva e busca` : `${take} leva, ${pickUp} busca`;
   if (take) return `${take} leva`;
   return pickUp ? `${pickUp} busca` : null;
@@ -352,7 +362,12 @@ export function calendarEntries({ events, days, people }: FamilyCalendar, from: 
         endTime: event.start_time ? event.end_time : null,
         title: event.title,
         who: nameOf(event.person_id),
-        ride: rideText(nameOf(o.take_by), nameOf(o.pick_up_by)),
+        // Sem ninguém no dia e com alguém no de sempre: só "Só neste dia: Ninguém" chega aqui (a ficha
+        // apagada limpa as duas, e a que não está na lista continua com o id).
+        ride: rideText(nameOf(o.take_by), nameOf(o.pick_up_by), {
+          take: o.take_by === null && event.take_by !== null,
+          pickUp: o.pick_up_by === null && event.pick_up_by !== null,
+        }),
         location: event.location?.trim() || null,
         bring: event.bring?.trim() || null,
         age: null,
@@ -463,7 +478,8 @@ export function calendarLines(calendar: FamilyCalendar, today: string, days = 7)
         ? [entry.age ? ageText(entry.age) : null]
         : [
             entry.who,
-            entry.ride,
+            // No meio da lista, "ninguém leva" vai em minúscula.
+            entry.ride?.replace(/^Ninguém/, 'ninguém') ?? null,
             entry.location ? `local: ${clip(entry.location, NUKE_LOCATION_MAX)}` : null,
             entry.bring ? `levar: ${clip(entry.bring, NUKE_BRING_MAX)}` : null,
           ];
