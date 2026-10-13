@@ -3258,6 +3258,41 @@ begin
     raise exception 'FAIL: dose units without a value';
   exception when not_null_violation then null;
   end;
+  -- NaN e Infinity não são quantidade (no numeric, NaN é maior que qualquer
+  -- número: passaria num ">= 0" sozinho), nem um número sem tamanho de caixa.
+  begin
+    update public.medications set stock_count = 'NaN' where id = m;
+    raise exception 'FAIL: NaN stock';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set stock_count = 'Infinity' where id = m;
+    raise exception 'FAIL: infinite stock';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set stock_count = 1000000 where id = m;
+    raise exception 'FAIL: a million units';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set dose_units = 'NaN' where id = m;
+    raise exception 'FAIL: NaN dose units';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set dose_units = 'Infinity' where id = m;
+    raise exception 'FAIL: infinite dose units';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set dose_units = 1000.5 where id = m;
+    raise exception 'FAIL: more than 1000 units per dose';
+  exception when check_violation then null;
+  end;
+  -- O teto deixa passar o que o app grava: duas caixas de 99.999 somadas ("Comprei mais") e 1000 por dose.
+  update public.medications set stock_count = 199998, dose_units = 1000 where id = m;
+  update public.medications set stock_count = 0, dose_units = 0.5 where id = m;
   -- O aviso vai de 1 a 60 dias.
   update public.medications set stock_warn_days = 1 where id = m;
   update public.medications set stock_warn_days = 60 where id = m;

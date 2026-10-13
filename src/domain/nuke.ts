@@ -3,6 +3,7 @@
 
 import { formatBRDate } from './dates';
 import { getFinanceCategory } from './finance';
+import type { RefillSummary } from './medicationStock';
 import { formatBRL, formatQuantity } from './money';
 
 export type NukeScreen =
@@ -52,8 +53,8 @@ export interface NukeSnapshot {
   me: string;
   members: string[];
   doses: { time: string; name: string; person: string; taken: boolean }[];
-  /** Remédios com a caixa acabando ou a receita vencendo (refillLines). */
-  refills?: string[];
+  /** Estoque e receita dos remédios: quantos o app acompanha e o estado dos que estão acabando (refillSummary). */
+  refills?: RefillSummary;
   chores: { title: string; due_on: string; assignee: string | null }[];
   expiring: { name: string; expires_on: string }[];
   pantry: string[];
@@ -87,14 +88,29 @@ function listOrNone(items: string[], limit = LIMIT): string {
 
 const shortDate = (iso: string) => formatBRDate(iso).slice(0, 5);
 
+/**
+ * A linha do estoque e das receitas, só sobre o que o app acompanha. O estoque
+ * é uma conta pelas doses previstas, não uma contagem: o Nuke repassa como
+ * estimativa. Sem remédio em uso não há linha; com remédios e nenhum
+ * acompanhado, a linha diz que o app não sabe (um "nada" aqui viraria "nenhum
+ * remédio está acabando" na resposta, sem base nenhuma).
+ */
+function refillsLine(refills: RefillSummary | undefined): string[] {
+  if (!refills?.inUse) return [];
+  if (!refills.followed) return ['Estoque e receita dos remédios: o app não acompanha o de nenhum remédio (ninguém informou quanto tem).'];
+  const state = refills.lines.length ? listOrNone(refills.lines) : 'nenhum acabando nem com a receita vencendo';
+  return [
+    `Remédios com estoque ou receita acompanhados pelo app (${refills.followed} de ${refills.inUse} em uso; estimativa pelas doses previstas): ${state}.`,
+  ];
+}
+
 /** Texto compacto com o estado da casa, em linhas curtas para a IA ler. */
 export function buildNukeContext(s: NukeSnapshot): string {
   const lines = [
     `Casa: ${s.household}. Moradores: ${s.members.map((m) => (m === s.me ? `${m} (quem está falando)` : m)).join(', ')}.`,
     `Hoje: ${formatBRDate(s.today)}.`,
     `Remédios de hoje: ${listOrNone(s.doses.map((d) => `${d.time} ${d.name} (${d.person}) ${d.taken ? 'tomado' : 'pendente'}`))}.`,
-    // O estoque é uma conta do app pelas doses previstas, não uma contagem: o Nuke repassa como estimativa.
-    `Remédios acabando ou com a receita vencendo (estimativa do app pelas doses previstas): ${listOrNone(s.refills ?? [])}.`,
+    ...refillsLine(s.refills),
     `Tarefas (atrasadas e próximos 7 dias): ${listOrNone(
       s.chores.map((c) => `${c.title} — ${c.due_on < s.today ? 'atrasada desde' : 'vence'} ${shortDate(c.due_on)}${c.assignee ? ` (${c.assignee})` : ''}`),
     )}.`,

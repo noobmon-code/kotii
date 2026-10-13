@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { Image } from 'expo-image';
-import { Children, Fragment, useState, type ReactNode } from 'react';
+import { Children, Fragment, useState, type ReactNode, type RefObject } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -73,6 +73,7 @@ export function Screen({
   edges = ['top'],
   footer,
   fab,
+  scrollRef,
 }: {
   children: ReactNode;
   scroll?: boolean;
@@ -82,6 +83,8 @@ export function Screen({
   footer?: ReactNode;
   /** Tela com o botão do Nuke por cima: sobra espaço no fim para ele não cobrir nada. */
   fab?: boolean;
+  /** Para a tela que abre já numa parte dela (o `y` de um filho direto, em onLayout, é a posição a rolar). */
+  scrollRef?: RefObject<ScrollView | null>;
 }) {
   const c = useColors();
   const content = <View style={[styles.content, fab && styles.contentWithFab]}>{children}</View>;
@@ -90,6 +93,7 @@ export function Screen({
       <Backdrop />
       {scroll ? (
         <ScrollView
+          ref={scrollRef}
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.scrollContent}
           refreshControl={

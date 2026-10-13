@@ -77,6 +77,7 @@ function SummaryPanel({ today }: { today: string }) {
         <Tile icon="test-tube" tint="blue" label="Exame" onPress={() => newItem('/exame/[id]')} />
       </View>
       <MedicationsToday today={today} />
+      {/* Aqui entram também os parados há mais de duas semanas (selo neutro), que a tela Hoje não lista: é o caminho até "Atualizar estoque". */}
       <MedicationRefills rows={refills.rows} />
       <HealthTodaySections overview={overview} today={today} />
       {empty ? (

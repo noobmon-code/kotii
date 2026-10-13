@@ -12,14 +12,18 @@ import {
   readStockForm,
   refillAlerts,
   refillBadge,
-  refillLines,
   refillReminders,
   refillRows,
+  refillSummary,
   restock,
+  restockBase,
+  restockHint,
+  STALE_DAYS,
   stockFormOf,
   stockStatus,
   type StockedMedication,
 } from '../medicationStock';
+import { normalizeSearch } from '../search';
 
 // 12/10/2026 é uma segunda-feira.
 const today = '2026-10-12';
@@ -117,23 +121,80 @@ describe('estimateStock: a conta pelo horário das doses', () => {
   });
 
   it('tratamento por número de doses: de amanhã em diante, só as doses que faltam', () => {
-    // 10 doses, 4 tomadas: faltam 6.
-    const course = { totalDoses: 10, takenCount: 4 };
+    // 10 doses, uma por dia desde 09/10: com a de hoje, 4 previstas e 4 tomadas; faltam 6.
+    const course = { startOn: '2026-10-09', totalDoses: 10, takenCount: 4 };
     expect(estimate(course)).toMatchObject({ unitsLeft: 30, runsOutOn: null, ends: 'treatment' });
     expect(estimate({ ...course, stockCount: 6 })).toMatchObject({ runsOutOn: null, ends: 'treatment' });
     expect(estimate({ ...course, stockCount: 3 })).toMatchObject({ runsOutOn: '2026-10-15', daysLeft: 3, ends: 'stock' });
     // Até hoje vale o horário, não as marcações: contado há 3 dias, três doses a menos.
-    expect(estimate({ totalDoses: 20, takenCount: 15, stockCount: 10, stockCountedOn: '2026-10-09' })).toMatchObject({
+    expect(estimate({ startOn: '2026-09-27', totalDoses: 20, takenCount: 15, stockCount: 10, stockCountedOn: '2026-10-09' })).toMatchObject({
       unitsLeft: 7,
       runsOutOn: null,
       ends: 'treatment',
     });
   });
 
+  describe('tratamento por número de doses: a dose de hoje não conta duas vezes', () => {
+    // 10 doses, uma por dia, de 12/10 a 21/10; a caixa foi contada na véspera do início.
+    const course = (patch: Partial<StockedMedication> = {}, on = today) =>
+      stockStatus(med({ startOn: today, totalDoses: 10, takenCount: 0, stockCountedOn: '2026-10-11', ...patch }), on);
+
+    it('estoque igual às doses que faltam dá para o tratamento, antes e depois de marcar a de hoje', () => {
+      for (const takenCount of [0, 1]) {
+        expect(course({ stockCount: 10, takenCount })).toMatchObject({ kind: 'plenty', estimate: { ends: 'treatment', runsOutOn: null } });
+        // Uma a mais também; uma a menos acaba na véspera da última dose.
+        expect(course({ stockCount: 11, takenCount })).toMatchObject({ kind: 'plenty', estimate: { ends: 'treatment' } });
+        expect(course({ stockCount: 9, takenCount })).toMatchObject({ kind: 'plenty', estimate: { ends: 'stock', runsOutOn: '2026-10-20', daysLeft: 8 } });
+      }
+      const text = (takenCount: number) => describeStock(course({ stockCount: 10, takenCount }), today);
+      expect(text(0)).toBe('Dá para o tratamento todo, pelas contas do app.');
+      expect(text(1)).toBe(text(0));
+    });
+
+    it('marcar a dose do dia não muda o estado, em nenhum dia do tratamento', () => {
+      // No 4º dia (15/10), antes de marcar (3 tomadas) e depois (4).
+      for (const stockCount of [9, 10, 11]) {
+        expect(course({ stockCount, takenCount: 3 }, '2026-10-15')).toEqual(course({ stockCount, takenCount: 4 }, '2026-10-15'));
+      }
+      expect(course({ stockCount: 10, takenCount: 3 }, '2026-10-15')).toMatchObject({ kind: 'plenty', estimate: { unitsLeft: 6, ends: 'treatment' } });
+      // Com uma a menos, o dia em que acaba é o mesmo de antes (20/10), agora dentro do aviso.
+      expect(course({ stockCount: 9, takenCount: 3 }, '2026-10-15')).toMatchObject({ kind: 'low', daysLeft: 5, runsOutOn: '2026-10-20' });
+    });
+
+    it('contado no meio do tratamento, na noite de um dia anterior', () => {
+      // 5 tomadas até 16/10 e 5 comprimidos contados naquela noite; na manhã de 17/10, a do dia ainda sem marcar.
+      const midway = { stockCountedOn: '2026-10-16', takenCount: 5 };
+      expect(course({ ...midway, stockCount: 5 }, '2026-10-17')).toMatchObject({ kind: 'plenty', estimate: { unitsLeft: 4, ends: 'treatment' } });
+      expect(course({ ...midway, stockCount: 5, takenCount: 6 }, '2026-10-17')).toEqual(course({ ...midway, stockCount: 5 }, '2026-10-17'));
+      expect(course({ ...midway, stockCount: 4 }, '2026-10-17')).toMatchObject({ kind: 'low', daysLeft: 3, runsOutOn: '2026-10-20' });
+      expect(course({ ...midway, stockCount: 6 }, '2026-10-17')).toMatchObject({ kind: 'plenty', estimate: { ends: 'treatment' } });
+    });
+
+    it('três doses por dia: 21 doses em 7 dias', () => {
+      const thrice = (stockCount: number, takenCount: number) =>
+        course({ times: ['08:00', '14:00', '20:00'], totalDoses: 21, stockCount, takenCount });
+      // Nenhuma, uma ou as três de hoje marcadas: o mesmo estado.
+      for (const takenCount of [0, 1, 3]) {
+        expect(thrice(21, takenCount)).toMatchObject({ kind: 'plenty', estimate: { ends: 'treatment' } });
+        expect(thrice(22, takenCount)).toMatchObject({ kind: 'plenty', estimate: { ends: 'treatment' } });
+        // Uma a menos: falta a última dose do último dia (18/10).
+        expect(thrice(20, takenCount)).toMatchObject({ kind: 'low', daysLeft: 6, runsOutOn: '2026-10-18' });
+      }
+    });
+
+    it('quem não marca as doses: vale o horário; quem adiantou doses: valem as que faltam', () => {
+      // Pelo horário, as 10 doses (03/10 a 12/10) terminam hoje: nada mais a gastar, com ou sem marcação.
+      expect(estimate({ startOn: '2026-10-03', totalDoses: 10, takenCount: 0, stockCount: 5 })).toMatchObject({ unitsLeft: 5, ends: 'treatment' });
+      // 8 marcadas no primeiro dia: só faltam 2 (amanhã e depois).
+      expect(estimate({ startOn: today, totalDoses: 10, takenCount: 8, stockCount: 3 })).toMatchObject({ ends: 'treatment' });
+      expect(estimate({ startOn: today, totalDoses: 10, takenCount: 8, stockCount: 1 })).toMatchObject({ ends: 'stock', runsOutOn: '2026-10-13' });
+    });
+  });
+
   it('contado há muito tempo: acabou, e o que sobra nunca fica negativo', () => {
     expect(estimate({ stockCountedOn: '2026-01-01' })).toEqual({ unitsLeft: 0, runsOutOn: '2026-01-31', daysLeft: -254, ends: 'stock' });
     expect(estimate({ stockCountedOn: '2026-01-01', doseUnits: 4 })?.unitsLeft).toBe(2);
-    // Contado zero: acabou no dia da contagem.
+    // Contado zero: a conta para no dia da contagem (e o estado já é o de quem acabou, ver stockStatus).
     expect(estimate({ stockCount: 0 })).toEqual({ unitsLeft: 0, runsOutOn: today, daysLeft: 0, ends: 'stock' });
   });
 
@@ -176,11 +237,50 @@ describe('estados e textos do estoque', () => {
     expect(labels({ stockCount: 3 })).toEqual(['Acaba em 3 dias']);
     expect(labels({ stockCount: 2 })).toEqual(['Acaba em 2 dias']);
     expect(labels({ stockCount: 1 })).toEqual(['Acaba amanhã']);
-    expect(labels({ stockCount: 0 })).toEqual(['Acaba hoje']);
+    // A última dose que a caixa cobre é a de hoje (1 contado ontem).
+    const lastToday = { stockCount: 1, stockCountedOn: '2026-10-11' };
+    expect(labels(lastToday)).toEqual(['Acaba hoje']);
     expect(sentence({ stockCount: 3 })).toBe('Acaba em 3 dias (15/10), pelas contas do app.');
     expect(sentence({ stockCount: 1 })).toBe('Acaba amanhã, pelas contas do app.');
-    expect(sentence({ stockCount: 0 })).toBe('Acaba hoje, pelas contas do app.');
+    expect(sentence(lastToday)).toBe('Acaba hoje, pelas contas do app.');
     expect(refillBadge(med({ stockCount: 3 }), today)).toEqual({ about: 'stock', label: 'Acaba em 3 dias', tone: 'warning', days: 3 });
+  });
+
+  it('estoque que não cobre nem a próxima dose já acabou, no dia da contagem também', () => {
+    // A pessoa disse que não tem (ou que tem menos que uma dose): o app não responde "acaba hoje".
+    for (const none of [{ stockCount: 0 }, { stockCount: 1, doseUnits: 2 }, { stockCount: 0.5 }]) {
+      expect(stockStatus(med(none), today)).toMatchObject({ kind: 'out', ranOutOn: today });
+      expect(labels(none)).toEqual(['Deve ter acabado']);
+      expect(refillBadge(med(none), today)).toMatchObject({ tone: 'danger', days: 0 });
+      expect(sentence(none)).toBe('Sem estoque para a próxima dose, pelas contas do app.');
+      // Nem aviso por notificação.
+      expect(refillReminders([med(none)], today)).toEqual([]);
+    }
+    // O que sobra (menos que uma dose) continua lá.
+    expect(stockStatus(med({ stockCount: 1, doseUnits: 2 }), today)).toMatchObject({ estimate: { unitsLeft: 1 } });
+    // A próxima dose é só na quarta (remédio de segunda, quarta e sexta): já não há para ela.
+    expect(sentence({ stockCount: 0, frequency: 'weekdays', weekdays: [1, 3, 5] })).toBe('Sem estoque para a próxima dose, pelas contas do app.');
+    // Do dia seguinte em diante, a frase de quem acabou, com o dia da contagem.
+    expect(sentence({ stockCount: 0 }, '2026-10-13')).toBe('Deve ter acabado em 12/10, pelas contas do app.');
+  });
+
+  it(`acabou há mais de ${STALE_DAYS} dias sem ninguém atualizar: o aviso vira um selo neutro`, () => {
+    // 3 contados em 01/10: acabou em 04/10. No 14º dia depois (18/10) ainda pede atenção; no 15º, não mais.
+    const out = { stockCount: 3, stockCountedOn: '2026-10-01' };
+    expect(STALE_DAYS).toBe(14);
+    expect(stockStatus(med(out), '2026-10-18')).toMatchObject({ kind: 'out', ranOutOn: '2026-10-04' });
+    expect(refillAlerts(med(out), '2026-10-18')).toEqual([{ about: 'stock', label: 'Deve ter acabado', tone: 'danger', days: -14 }]);
+    expect(stockStatus(med(out), '2026-10-19')).toMatchObject({ kind: 'stale', ranOutOn: '2026-10-04' });
+    expect(refillAlerts(med(out), '2026-10-19')).toEqual([{ about: 'stock', label: 'Estoque sem atualizar desde 04/10', tone: 'neutral', days: -15 }]);
+    expect(sentence(out, '2026-10-19')).toBe(
+      'Estoque sem atualizar desde 04/10. Escreva quanto tem agora, ou apague o número para o app parar de acompanhar.',
+    );
+    // No ano seguinte, a data vai com o ano. E nada de notificação.
+    expect(labels(out, '2027-01-10')).toEqual(['Estoque sem atualizar desde 04/10/2026']);
+    expect(refillReminders([med(out)], '2026-10-19')).toEqual([]);
+    // Contado zero: os 14 dias contam do dia da contagem.
+    expect(stockStatus(med({ stockCount: 0 }), '2026-10-26').kind).toBe('out');
+    expect(stockStatus(med({ stockCount: 0 }), '2026-10-27').kind).toBe('stale');
   });
 
   it('pelas contas já acabou: o app não sabe, só estima', () => {
@@ -238,6 +338,22 @@ describe('receita', () => {
     expect(labels({ stockCount: 3, prescriptionUntil: '2026-10-22' })).toEqual(['Acaba em 3 dias', 'Receita vence em 10 dias']);
     expect(labels({ stockCount: 3, prescriptionUntil: '2026-10-01' })).toEqual(['Receita vencida', 'Acaba em 3 dias']);
     expect(refillBadge(med({ stockCount: 3, prescriptionUntil: '2026-10-01' }), today)?.label).toBe('Receita vencida');
+    // O que parou de pedir atenção (estoque acabado há mais de 14 dias) fica por último.
+    expect(labels({ stockCount: 3, stockCountedOn: '2026-09-01', prescriptionUntil: '2026-10-22' })).toEqual([
+      'Receita vence em 10 dias',
+      'Estoque sem atualizar desde 04/09',
+    ]);
+  });
+
+  it(`vencida há mais de ${STALE_DAYS} dias sem ninguém atualizar: selo neutro, com o dia`, () => {
+    // Venceu em 01/10: no 14º dia depois (15/10) ainda pede atenção; no 15º, não mais.
+    const expired = on('2026-10-01');
+    expect(prescriptionStatus(expired, '2026-10-15')).toEqual({ kind: 'expired', until: '2026-10-01' });
+    expect(refillAlerts(expired, '2026-10-15')).toEqual([{ about: 'prescription', label: 'Receita vencida', tone: 'danger', days: -14 }]);
+    expect(prescriptionStatus(expired, '2026-10-16')).toEqual({ kind: 'stale', until: '2026-10-01' });
+    expect(refillAlerts(expired, '2026-10-16')).toEqual([{ about: 'prescription', label: 'Receita venceu em 01/10', tone: 'neutral', days: -15 }]);
+    expect(describePrescription(prescriptionStatus(expired, '2026-10-16'), '2026-10-16')).toBe('A receita venceu em 01/10.');
+    expect(refillAlerts(expired, '2027-02-01')[0].label).toBe('Receita venceu em 01/10/2026');
   });
 });
 
@@ -255,44 +371,167 @@ describe('"Comprei mais"', () => {
     const next = restock(med({ stockCountedOn: '2026-01-01' }), today, 30);
     expect(estimateStock(med(next), today)).toMatchObject({ unitsLeft: 30, runsOutOn: '2026-11-11' });
   });
+
+  it('a pessoa corrigiu "Quanto tem agora" antes de somar: a caixa soma ao número digitado', () => {
+    // 30 contados há 10 dias: o campo abre com 20.
+    const saved = med({ stockCountedOn: '2026-10-02' });
+    const initial = stockFormOf(saved, today);
+    // Campo como abriu: vale a conta de hoje.
+    expect(restockBase(initial, initial)).toEqual({ ok: true, base: undefined });
+    expect(restock(saved, today, 30, undefined)).toEqual({ stockCount: 50, stockCountedOn: today });
+    // Corrigido para 5 (na caixa só havia 5): 35, e não 50.
+    expect(restockBase({ ...initial, stock: ' 5 ' }, initial)).toEqual({ ok: true, base: 5 });
+    expect(restock(saved, today, 30, 5)).toEqual({ stockCount: 35, stockCountedOn: today });
+    expect(restockBase({ ...initial, stock: '12,5' }, initial)).toEqual({ ok: true, base: 12.5 });
+    expect(restock(saved, today, 30, 12.5)).toEqual({ stockCount: 42.5, stockCountedOn: today });
+    // Campo apagado: fica só a caixa.
+    expect(restockBase({ ...initial, stock: '  ' }, initial)).toEqual({ ok: true, base: 0 });
+    expect(restock(saved, today, 30, 0)).toEqual({ stockCount: 30, stockCountedOn: today });
+    // Texto que não é número: o mesmo aviso de salvar, e nada é gravado.
+    const invalid = restockBase({ ...initial, stock: 'uns 5' }, initial);
+    expect(invalid).toEqual(readStockForm({ ...initial, stock: 'uns 5' }, initial, today));
+    expect(invalid).toMatchObject({ ok: false, title: 'Estoque inválido' });
+    // Primeira vez (o app ainda não acompanhava): 10 digitados mais a caixa de 30.
+    const untracked = med({ stockCount: null, stockCountedOn: null });
+    const empty = stockFormOf(untracked, today);
+    expect(restockBase(empty, empty)).toEqual({ ok: true, base: undefined });
+    expect(restockBase({ ...empty, stock: '10' }, empty)).toEqual({ ok: true, base: 10 });
+    expect(restock(untracked, today, 30, 10)).toEqual({ stockCount: 40, stockCountedOn: today });
+  });
+
+  it('o texto ao lado da caixa diz a que ela é somada', () => {
+    const hint = (patch: Partial<StockedMedication>, typed?: string, on = today) => {
+      const initial = stockFormOf(med(patch), on);
+      return restockHint(med(patch), typed === undefined ? initial : { ...initial, stock: typed }, initial, on);
+    };
+    const counted = { stockCountedOn: '2026-10-02' };
+    expect(hint(counted)).toBe('O app soma ao que ainda tem, pelas contas do app, e passa a contar a partir de hoje.');
+    // Com o número corrigido na tela, a base é ele, e não a conta do app.
+    expect(hint(counted, '5')).toBe('O app soma ao número que você escreveu em “Quanto tem agora” e passa a contar a partir de hoje.');
+    expect(hint(counted, '')).toBe('Com “Quanto tem agora” vazio, o app conta só esta caixa e passa a contar a partir de hoje.');
+    // O app ainda não acompanhava este remédio.
+    expect(hint({ stockCount: null, stockCountedOn: null })).toBe('O app começa a acompanhar por esta caixa e passa a contar a partir de hoje.');
+    expect(hint({ stockCount: null, stockCountedOn: null }, '10')).toBe(hint(counted, '5'));
+  });
+
+  it('compra registrada dias depois de a caixa acabar: o app diz o que fazer, sem mudar a conta sozinho', () => {
+    const hint = (on: string, typed?: string) => {
+      const initial = stockFormOf(med(), on);
+      return restockHint(med(), typed === undefined ? initial : { ...initial, stock: typed }, initial, on);
+    };
+    const late =
+      'Pelas contas do app, a caixa anterior acabou em 11/11. Se você já está usando a nova, escreva em “Quanto tem agora” quantas unidades ainda tem, em vez de somar a caixa inteira.';
+    // 30 contados em 12/10: a caixa acaba em 11/11. No dia, ainda é a frase de sempre; do dia seguinte em diante, a da compra atrasada.
+    expect(hint('2026-11-11')).toBe('O app soma ao que ainda tem, pelas contas do app, e passa a contar a partir de hoje.');
+    expect(hint('2026-11-12')).toBe(late);
+    expect(hint('2026-11-21')).toBe(late);
+    // Parado há mais de 14 dias: a mesma orientação.
+    expect(hint('2026-12-20')).toBe(late);
+    // A pessoa seguiu a orientação e escreveu quanto tem: a base é o número dela.
+    expect(hint('2026-11-21', '20')).toBe('O app soma ao número que você escreveu em “Quanto tem agora” e passa a contar a partir de hoje.');
+    // A conta em si não muda: quem comprou hoje, depois de dias sem o remédio, soma a caixa inteira.
+    expect(restock(med(), '2026-11-21', 30)).toEqual({ stockCount: 30, stockCountedOn: '2026-11-21' });
+    expect(restock(med(), '2026-11-21', 30, 20)).toEqual({ stockCount: 50, stockCountedOn: '2026-11-21' });
+  });
 });
 
-describe('o que a tela Hoje lista', () => {
+describe('o que as telas Hoje e Saúde listam', () => {
   const meds = [
     med({ id: 'ok', name: 'Vitamina D' }),
     med({ id: 'baixo', name: 'Losartana', dosage: '50 mg', stockCount: 3 }),
     med({ id: 'acabou', name: 'Puran', personName: 'Beto', stockCount: 3, stockCountedOn: '2026-10-01' }),
     med({ id: 'receita', name: 'Insulina', personName: 'Rex', stockCount: null, stockCountedOn: null, prescriptionUntil: '2026-10-22' }),
     med({ id: 'os-dois', name: 'Anticoncepcional', stockCount: 1, prescriptionUntil: '2026-10-14' }),
+    // Acabou em 04/09 e ninguém atualizou: não pede mais atenção.
+    med({ id: 'parado', name: 'Rivotril', personName: 'Beto', stockCount: 3, stockCountedOn: '2026-09-01' }),
     med({ id: 'encerrado', name: 'Antigo', stockCount: 0, active: false }),
   ];
 
-  it('um remédio por linha, só os que pedem atenção, o mais urgente primeiro', () => {
+  it('um remédio por linha, o mais urgente primeiro e o que parou de pedir atenção por último', () => {
     const rows = refillRows(meds, today);
-    expect(rows.map((row) => [row.id, row.title, row.alerts.map((a) => a.label), row.itemName])).toEqual([
-      ['acabou', 'Puran (Beto)', ['Deve ter acabado'], 'Puran'],
-      ['os-dois', 'Anticoncepcional (Ana)', ['Acaba amanhã', 'Receita vence em 2 dias'], 'Anticoncepcional'],
-      ['baixo', 'Losartana (Ana)', ['Acaba em 3 dias'], 'Losartana (50 mg)'],
-      ['receita', 'Insulina (Rex)', ['Receita vence em 10 dias'], 'Insulina'],
+    expect(rows.map((row) => [row.id, row.title, row.alerts.map((a) => a.label), row.itemName, row.stock, row.attention])).toEqual([
+      ['acabou', 'Puran (Beto)', ['Deve ter acabado'], 'Puran', 'out', true],
+      ['os-dois', 'Anticoncepcional (Ana)', ['Acaba amanhã', 'Receita vence em 2 dias'], 'Anticoncepcional', 'low', true],
+      ['baixo', 'Losartana (Ana)', ['Acaba em 3 dias'], 'Losartana', 'low', true],
+      // Só a receita: `stock` nulo, sem ação de farmácia.
+      ['receita', 'Insulina (Rex)', ['Receita vence em 10 dias'], 'Insulina', null, true],
+      ['parado', 'Rivotril (Beto)', ['Estoque sem atualizar desde 04/09'], 'Rivotril', 'stale', false],
     ]);
     // O primeiro selo de cada linha é o mais urgente: é o que dá a cor.
-    expect(rows.map((row) => row.alerts[0].tone)).toEqual(['danger', 'warning', 'warning', 'warning']);
+    expect(rows.map((row) => row.alerts[0].tone)).toEqual(['danger', 'warning', 'warning', 'warning', 'neutral']);
     expect(refillRows([med()], today)).toEqual([]);
   });
 
-  it('as linhas do Nuke dizem o estado de cada um', () => {
-    expect(refillLines(meds, today)).toEqual([
-      'Puran (Beto) — deve ter acabado',
-      'Anticoncepcional (Ana) — acaba amanhã, receita vence em 2 dias',
-      'Losartana (Ana) — acaba em 3 dias',
-      'Insulina (Rex) — receita vence em 10 dias',
+  it('estoque parado com a receita vencendo: a linha segue pedindo atenção, pela receita', () => {
+    const [row] = refillRows([med({ stockCount: 3, stockCountedOn: '2026-09-01', prescriptionUntil: '2026-10-22' })], today);
+    expect(row).toMatchObject({ stock: 'stale', attention: true });
+    expect(row.alerts.map((a) => [a.label, a.tone])).toEqual([
+      ['Receita vence em 10 dias', 'warning'],
+      ['Estoque sem atualizar desde 04/09', 'neutral'],
     ]);
+    // A receita vencida há muito tempo e a caixa acabando: o contrário.
+    const [other] = refillRows([med({ stockCount: 3, prescriptionUntil: '2026-09-01' })], today);
+    expect(other).toMatchObject({ stock: 'low', attention: true });
+    expect(other.alerts.map((a) => a.label)).toEqual(['Acaba em 3 dias', 'Receita venceu em 01/09']);
+    // As duas coisas paradas: nada pede atenção.
+    expect(refillRows([med({ stockCount: 3, stockCountedOn: '2026-09-01', prescriptionUntil: '2026-09-01' })], today)[0]).toMatchObject({
+      stock: 'stale',
+      attention: false,
+    });
   });
 
-  it('o item da lista da farmácia leva o nome e a dose', () => {
-    expect(pharmacyItemName({ name: ' Losartana ', dosage: ' 50 mg ' })).toBe('Losartana (50 mg)');
-    expect(pharmacyItemName({ name: 'Losartana', dosage: '  ' })).toBe('Losartana');
-    expect(pharmacyItemName({ name: 'Losartana', dosage: null })).toBe('Losartana');
+  it('o item da lista da farmácia é só o nome do remédio (a dose de cada tomada não vai)', () => {
+    expect(pharmacyItemName({ name: ' Losartana 50 mg ', personName: 'Ana' })).toBe('Losartana 50 mg');
+    expect(refillRows([med({ name: 'Losartana 50mg', dosage: '1 comprimido', stockCount: 3 })], today)[0].itemName).toBe('Losartana 50mg');
+  });
+
+  it('duas pessoas com o mesmo remédio: o item leva de quem é', () => {
+    const ana = med({ id: 'a', name: 'Losartana 50 mg', stockCount: 3 });
+    const beto = med({ id: 'b', name: 'Losartana 50 mg', personName: 'Beto', stockCount: 3 });
+    // As duas caixas acabando ao mesmo tempo: dois itens, um de cada pessoa.
+    expect(refillRows([ana, beto], today).map((row) => [row.id, row.itemName])).toEqual([
+      ['a', 'Losartana 50 mg — Ana'],
+      ['b', 'Losartana 50 mg — Beto'],
+    ]);
+    // Só a da Ana acabando (a do Beto tem bastante): o item dela já vai com o nome...
+    const [anaRow] = refillRows([ana, { ...beto, stockCount: 30 }], today);
+    expect(anaRow.itemName).toBe('Losartana 50 mg — Ana');
+    // ...e, com ele ainda pendente na lista, a caixa do Beto acabando não se confunde com ele.
+    const pending = new Set([normalizeSearch(anaRow.itemName)]);
+    const betoRow = refillRows([ana, beto], '2026-10-20').find((row) => row.id === 'b');
+    expect(betoRow?.itemName).toBe('Losartana 50 mg — Beto');
+    expect(pending.has(normalizeSearch(betoRow?.itemName ?? ''))).toBe(false);
+    // O nome igual vale sem acento nem maiúscula, e remédio sem estoque acompanhado também conta.
+    const [same] = refillRows([ana, { ...beto, name: ' LOSARTANA 50 MG', stockCount: null, stockCountedOn: null }], today);
+    expect(same.itemName).toBe('Losartana 50 mg — Ana');
+    // Tratamento do outro encerrado ou terminado: o item volta a ser só o nome.
+    for (const ended of [{ active: false }, { endOn: '2026-10-11' }, { totalDoses: 10, takenCount: 10 }]) {
+      expect(refillRows([ana, { ...beto, ...ended }], today).map((row) => row.itemName)).toEqual(['Losartana 50 mg']);
+    }
+    // Outro remédio da casa não muda nada.
+    expect(refillRows([ana, { ...beto, name: 'Puran' }], today).map((row) => row.itemName)).toEqual(['Losartana 50 mg', 'Puran']);
+  });
+
+  it('o resumo para o Nuke: quantos remédios em uso o app acompanha e o estado dos que pedem atenção ou pararam', () => {
+    const untracked = med({ id: 'sem', name: 'Dipirona', stockCount: null, stockCountedOn: null });
+    expect(refillSummary([...meds, untracked], today)).toEqual({
+      inUse: 7,
+      followed: 6,
+      lines: [
+        'Puran (Beto) — deve ter acabado',
+        'Anticoncepcional (Ana) — acaba amanhã, receita vence em 2 dias',
+        'Losartana (Ana) — acaba em 3 dias',
+        'Insulina (Rex) — receita vence em 10 dias',
+        'Rivotril (Beto) — estoque sem atualizar desde 04/09',
+      ],
+    });
+    // Nenhum remédio em uso; em uso sem nada acompanhado; acompanhados sem nada a dizer.
+    expect(refillSummary([], today)).toEqual({ inUse: 0, followed: 0, lines: [] });
+    expect(refillSummary([med({ active: false }), med({ endOn: '2026-10-11' })], today)).toEqual({ inUse: 0, followed: 0, lines: [] });
+    expect(refillSummary([untracked, { ...untracked, id: 'sem2' }], today)).toEqual({ inUse: 2, followed: 0, lines: [] });
+    expect(refillSummary([med(), untracked], today)).toEqual({ inUse: 2, followed: 1, lines: [] });
+    // Só a data da receita também é acompanhar.
+    expect(refillSummary([{ ...untracked, prescriptionUntil: '2027-03-01' }], today)).toEqual({ inUse: 1, followed: 1, lines: [] });
   });
 });
 
@@ -323,8 +562,104 @@ describe('os avisos por notificação', () => {
 
   it('nada para remédio sem estoque acompanhado, que já acabou ou que termina antes', () => {
     expect(refillReminders([med({ stockCount: null, stockCountedOn: null })], today)).toEqual([]);
+    // Acabou há poucos dias (ainda pede atenção nas telas) ou há muito tempo (parado): sem aviso.
+    expect(refillReminders([med({ stockCount: 3, stockCountedOn: '2026-10-01' })], today)).toEqual([]);
     expect(refillReminders([med({ stockCountedOn: '2026-01-01' })], today)).toEqual([]);
     expect(refillReminders([med({ endOn: '2026-10-20' })], today)).toEqual([]);
+  });
+
+  describe('caixa contada já dentro dos dias de aviso: o aviso da véspera', () => {
+    const dated = (patch: Partial<StockedMedication>, on = today) => refillReminders([med(patch)], on).map((r) => [r.date, r.title, r.body]);
+    const eve = ['Remédio acaba amanhã', 'Losartana (Ana) acaba amanhã, pelas contas do app.'];
+    const day = ['Remédio acaba hoje', 'Losartana (Ana) acaba hoje, pelas contas do app.'];
+
+    it('contada com 4 dias, aviso de 7: o de antes já passou; ficam a véspera e o dia', () => {
+      expect(dated({ stockCount: 4 })).toEqual([
+        ['2026-10-15', ...eve],
+        ['2026-10-16', ...day],
+      ]);
+    });
+
+    it('contada com 1 dia: a véspera é hoje mesmo; fica só o dia', () => {
+      expect(dated({ stockCount: 1 })).toEqual([['2026-10-13', ...day]]);
+    });
+
+    it('contada com bastante: o aviso de antes e o dia, sem a véspera', () => {
+      expect(dated({ stockCount: 20 })).toEqual([
+        ['2026-10-25', 'Remédio acabando', 'Losartana (Ana) acaba em 7 dias.'],
+        ['2026-11-01', ...day],
+      ]);
+      // Aviso de 1 dia: o aviso de antes já é o da véspera, um só.
+      expect(dated({ stockCount: 20, warnDays: 1 })).toEqual([
+        ['2026-10-31', 'Remédio acabando', 'Losartana (Ana) acaba amanhã.'],
+        ['2026-11-01', ...day],
+      ]);
+      expect(dated({ stockCount: 20, warnDays: 1 }, '2026-10-31')).toEqual(dated({ stockCount: 20, warnDays: 1 }));
+    });
+
+    it('depois que o dia do aviso de antes passa, a véspera entra no plano e fica até tocar', () => {
+      // Quem ligou o aviso (ou abriu o app neste aparelho) só depois de 25/10 ainda é avisado antes do dia.
+      const late = [
+        ['2026-10-31', ...eve],
+        ['2026-11-01', ...day],
+      ];
+      expect(dated({ stockCount: 20 }, '2026-10-25').map(([date]) => date)).toEqual(['2026-10-25', '2026-11-01']);
+      expect(dated({ stockCount: 20 }, '2026-10-26')).toEqual(late);
+      expect(dated({ stockCount: 20 }, '2026-10-30')).toEqual(late);
+      // Na manhã da véspera ele continua no plano (o horário quem confere é planHouseReminders).
+      expect(dated({ stockCount: 20 }, '2026-10-31')).toEqual(late);
+      expect(dated({ stockCount: 20 }, '2026-11-01')).toEqual([['2026-11-01', ...day]]);
+    });
+
+    it('contada no próprio dia do aviso de antes (cartela de 7, aviso de 7): ele, a véspera e o dia', () => {
+      expect(dated({ stockCount: 7 }).map(([date, title]) => [date, title])).toEqual([
+        ['2026-10-12', 'Remédio acabando'],
+        ['2026-10-18', 'Remédio acaba amanhã'],
+        ['2026-10-19', 'Remédio acaba hoje'],
+      ]);
+    });
+  });
+
+  describe('receita de um tratamento que termina antes', () => {
+    const dates = (patch: Partial<StockedMedication>) => refillReminders([med(patch)], today).map((r) => [r.id, r.date]);
+
+    it('com data de fim: os avisos da receita que cairiam depois dela não saem', () => {
+      // Termina em 15/10; a receita vale até 24/10 (avisos em 17/10 e 24/10).
+      expect(dates({ endOn: '2026-10-15', prescriptionUntil: '2026-10-24' })).toEqual([]);
+      // Termina em 20/10: o de 17/10 ainda cai dentro do tratamento.
+      expect(dates({ endOn: '2026-10-20', prescriptionUntil: '2026-10-24' })).toEqual([['m1@receita', '2026-10-17']]);
+      // Termina no dia em que a receita vence: os dois.
+      expect(dates({ endOn: '2026-10-24', prescriptionUntil: '2026-10-24' })).toEqual([
+        ['m1@receita', '2026-10-17'],
+        ['m1@receita', '2026-10-24'],
+      ]);
+    });
+
+    it('por número de doses: vale o dia da última dose prevista, com a de hoje marcada ou não', () => {
+      // 10 doses, uma por dia desde 05/10: a última é em 14/10. A receita vale até 21/10 (avisos em 14/10 e 21/10).
+      const course = { stockCount: null, stockCountedOn: null, startOn: '2026-10-05', totalDoses: 10, prescriptionUntil: '2026-10-21' };
+      for (const takenCount of [7, 8]) {
+        expect(dates({ ...course, takenCount })).toEqual([['m1@receita', '2026-10-14']]);
+      }
+      // Adiantou doses (9 tomadas): a última é amanhã, e nenhum aviso cai antes dela.
+      expect(dates({ ...course, takenCount: 9 })).toEqual([]);
+    });
+
+    it('por número de doses, com as marcações bem atrás do horário: na dúvida, os avisos ficam', () => {
+      // Pelo horário faltariam 2 doses; pelas marcações, 8: não dá para saber quando termina.
+      const course = { stockCount: null, stockCountedOn: null, startOn: '2026-10-05', totalDoses: 10, takenCount: 2, prescriptionUntil: '2026-10-21' };
+      expect(dates(course)).toEqual([
+        ['m1@receita', '2026-10-14'],
+        ['m1@receita', '2026-10-21'],
+      ]);
+    });
+
+    it('uso contínuo: os dois avisos, como sempre', () => {
+      expect(dates({ stockCount: null, stockCountedOn: null, prescriptionUntil: '2026-10-21' })).toEqual([
+        ['m1@receita', '2026-10-14'],
+        ['m1@receita', '2026-10-21'],
+      ]);
+    });
   });
 });
 
@@ -407,6 +742,39 @@ describe('a seção "Estoque e receita" do remédio', () => {
     // Remédio novo, ou sem estoque acompanhado: nada a manter.
     expect(keepStockOnRuleChange({}, undefined, twice, today)).toEqual({});
     expect(keepStockOnRuleChange({}, med({ stockCount: null, stockCountedOn: null }), twice, today)).toEqual({});
+  });
+
+  it('remédio que já tinha acabado: mudar a regra não muda o dia em que acabou nem cria aviso', () => {
+    // 3 contados em 01/10, um por dia: acabou em 04/10.
+    const saved = med({ stockCount: 3, stockCountedOn: '2026-10-01' });
+    const rule = { times: saved.times, startOn: saved.startOn, endOn: saved.endOn, frequency: 'daily' as const, weekdays: null, intervalDays: null };
+    expect(sentence(saved)).toBe('Deve ter acabado em 04/10, pelas contas do app.');
+    const changes = [
+      // Só o horário; uma vez por semana; duas vezes por dia.
+      { ...rule, times: ['07:00'] },
+      { ...rule, frequency: 'weekdays' as const, weekdays: [1] },
+      { ...rule, times: ['08:00', '20:00'] },
+    ];
+    for (const next of changes) {
+      // A contagem passa a ser o que sobrava (nada), no dia em que acabou, e não hoje.
+      const rebased = keepStockOnRuleChange({}, saved, next, today);
+      expect(rebased).toEqual({ stockCount: 0, stockCountedOn: '2026-10-04' });
+      const after = { ...saved, ...next, ...rebased };
+      expect(stockStatus(after, today)).toMatchObject({ kind: 'out', ranOutOn: '2026-10-04' });
+      expect(describeStock(stockStatus(after, today), today)).toBe('Deve ter acabado em 04/10, pelas contas do app.');
+      expect(refillAlerts(after, today).map((a) => a.label)).toEqual(['Deve ter acabado']);
+      expect(refillReminders([after], today)).toEqual([]);
+    }
+    // Sobra menor que uma dose: 3 contados, 2 por dose (acabou em 02/10, sobra 1); a dose passa a 1.
+    const half = med({ stockCount: 3, stockCountedOn: '2026-10-01', doseUnits: 2 });
+    expect(stockStatus(half, today)).toMatchObject({ kind: 'out', ranOutOn: '2026-10-02', estimate: { unitsLeft: 1 } });
+    const rebased = keepStockOnRuleChange({ doseUnits: 1 }, half, rule, today);
+    expect(rebased).toEqual({ doseUnits: 1, stockCount: 1, stockCountedOn: '2026-10-02' });
+    // A sobra dava para a dose de 03/10: continua acabado, sem voltar a "acaba hoje".
+    expect(stockStatus({ ...half, ...rebased }, today)).toMatchObject({ kind: 'out', ranOutOn: '2026-10-03' });
+    expect(refillReminders([{ ...half, ...rebased }], today)).toEqual([]);
+    // Contado zero hoje e, em seguida, o horário muda: segue contado hoje.
+    expect(keepStockOnRuleChange({}, med({ stockCount: 0 }), changes[0], today)).toEqual({ stockCount: 0, stockCountedOn: today });
   });
 
   it('unidades: vírgula decimal, sem separador de milhar', () => {

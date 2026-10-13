@@ -1,18 +1,23 @@
+import { router } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet } from 'react-native';
 
 import { toSchedule, useRestockMedication } from '@/data/home';
+import { REFILLS_REMINDER_LABEL } from '@/domain/houseReminders';
 import {
   describePrescription,
   describeStock,
   parseUnits,
   prescriptionStatus,
   restock,
+  restockBase,
+  restockHint,
   stockStatus,
   type StockCount,
   type StockForm,
 } from '@/domain/medicationStock';
 import { lastBoxUnits, rememberBoxUnits } from '@/lib/medicationBox';
+import { REMINDER_PLACE, remindersSupported } from '@/lib/reminders';
 import { errorMessage } from '@/lib/supabase';
 import type { Medication } from '@/lib/types';
 import { notify } from '@/ui/dialogs';
@@ -64,7 +69,13 @@ export function MedicationStockSection({
       notify('Quantidade inválida', 'Informe quantas unidades vieram, como 30.');
       return;
     }
-    const count = restock(schedule, today, units);
+    // "Quanto tem agora" corrigido e ainda não salvo: a caixa soma ao número da pessoa, e não à conta antiga.
+    const typed = restockBase(form, initial);
+    if (!typed.ok) {
+      notify(typed.title, typed.message);
+      return;
+    }
+    const count = restock(schedule, today, units, typed.base);
     restockMutation.mutate(
       { id: medication.id, count },
       {
@@ -91,7 +102,7 @@ export function MedicationStockSection({
         hint="Em comprimidos, cápsulas ou doses. A partir de amanhã, o app desconta cada dose prevista. Vazio, ele não acompanha o estoque."
       />
       {stockText ? <Text variant="label">{stockText}</Text> : null}
-      {medication ? (
+      {medication && schedule ? (
         box === null ? (
           <Button title="Comprei mais" variant="secondary" icon="plus" onPress={openBox} />
         ) : (
@@ -102,7 +113,7 @@ export function MedicationStockSection({
               onChangeText={setBox}
               keyboardType="decimal-pad"
               placeholder="Ex.: 30"
-              hint="O app soma ao que ainda tem, pelas contas dele, e recomeça a conta de hoje."
+              hint={restockHint(schedule, form, initial, today)}
               autoFocus
             />
             <Row>
@@ -117,7 +128,7 @@ export function MedicationStockSection({
         value={form.doseUnits}
         onChangeText={(doseUnits) => onChange({ doseUnits })}
         keyboardType="decimal-pad"
-        hint="Quantas unidades por dose: 1, 2 ou 0,5 (meio comprimido)."
+        hint="Quantas unidades por dose: 1, 2 ou 0,5 (meio comprimido). Se as doses do dia são diferentes, use a média."
       />
       <TextField
         label="Avisar quando faltar"
@@ -130,9 +141,18 @@ export function MedicationStockSection({
         label="Receita vale até"
         value={form.prescription}
         onChangeText={(prescription) => onChange({ prescription })}
-        hint="Se o remédio precisa de receita. O app avisa 15 dias antes de ela vencer."
+        hint="Se o remédio precisa de receita. O app mostra 15 dias antes de ela vencer e avisa por notificação uma semana antes."
       />
       {prescriptionText ? <Text variant="label">{prescriptionText}</Text> : null}
+      {/* Os avisos das telas valem sempre; a notificação, só para quem a ligou neste aparelho. */}
+      {remindersSupported ? (
+        <>
+          <Text variant="muted">
+            Para receber por notificação, ligue “{REFILLS_REMINDER_LABEL}” nos avisos {REMINDER_PLACE}.
+          </Text>
+          <Button title="Abrir os avisos" icon="bell-outline" variant="secondary" compact onPress={() => router.push('/familia')} />
+        </>
+      ) : null}
     </Card>
   );
 }

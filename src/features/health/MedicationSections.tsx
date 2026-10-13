@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { type ReactNode, useMemo } from 'react';
+import { type ReactNode, useMemo, useRef } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { toSchedule, useDoses, useMedications, useToggleDose } from '@/data/home';
@@ -16,19 +16,22 @@ import { space } from '@/ui/theme';
 
 /**
  * Os remédios com a caixa acabando (pelas contas do app) ou a receita
- * vencendo: `rows`, um por linha, o mais urgente primeiro, e `badges`, o selo
- * de cada um (o aviso mais urgente) para as linhas das doses.
+ * vencendo: `rows`, um por linha, o mais urgente primeiro; `attention`, só os
+ * que pedem atenção (sem os parados há mais de duas semanas: é o que a tela
+ * Hoje lista e conta como pendência); e `badges`, o selo de cada um desses (o
+ * aviso mais urgente) para as linhas das doses.
  */
-export function useRefills(today: string): { rows: RefillRow[]; badges: ReadonlyMap<string, RefillAlert> } {
+export function useRefills(today: string): { rows: RefillRow[]; attention: RefillRow[]; badges: ReadonlyMap<string, RefillAlert> } {
   const { data } = useMedications();
   return useMemo(() => {
     const rows = refillRows((data ?? []).map(toSchedule), today);
-    return { rows, badges: new Map(rows.map((row) => [row.id, row.alerts[0]])) };
+    const attention = rows.filter((row) => row.attention);
+    return { rows, attention, badges: new Map(attention.map((row) => [row.id, row.alerts[0]])) };
   }, [data, today]);
 }
 
 /** O texto de baixo da linha de uma dose e, com a caixa acabando ou a receita vencendo, o selo do remédio. */
-export function doseSubtitle(text: string, badge: RefillAlert | undefined): ReactNode {
+function doseSubtitle(text: string, badge: RefillAlert | undefined): ReactNode {
   if (!badge) return text;
   return (
     <View style={styles.refill}>
@@ -89,12 +92,19 @@ export function MedicationsToday({ today }: { today: string }) {
 
 /**
  * Uma linha por remédio que está acabando ou com a receita vencendo (telas
- * Hoje e Saúde), com o atalho para a lista da farmácia. O que já está para
- * comprar numa lista de farmácia aberta aparece como "Na lista da farmácia".
+ * Hoje e Saúde). Com a caixa acabando ou acabada, o atalho para a lista da
+ * farmácia (o que já está para comprar numa lista de farmácia aberta aparece
+ * como "Na lista da farmácia"); a linha só da receita não tem esse atalho.
+ * Com a caixa acabada pelas contas, a primeira ação é "Atualizar estoque": o
+ * mais provável é a pessoa já ter comprado e não ter dito ao app.
  */
 export function MedicationRefills({ rows }: { rows: RefillRow[] }) {
   const lists = useShoppingLists();
   const addToList = useAddToPharmacyList();
+  // Um pedido por vez. O botão fica dentro de uma linha que abre o remédio:
+  // desativado, o toque passaria para a linha; por isso ele segue ativo e o
+  // toque repetido é ignorado aqui.
+  const adding = useRef(false);
   const listed = useMemo(
     () =>
       new Set(
@@ -107,7 +117,10 @@ export function MedicationRefills({ rows }: { rows: RefillRow[] }) {
   if (!rows.length) return null;
 
   function add(row: RefillRow) {
+    if (adding.current) return;
+    adding.current = true;
     addToList.mutate(
+      // Sempre uma unidade: repetir o toque não pede outra caixa.
       { name: row.itemName, category: 'medicamentos', productId: null, quantity: 1, unit: 'un' },
       {
         // A lista vem do servidor: outra pessoa pode ter posto o mesmo remédio agora há pouco.
@@ -117,6 +130,9 @@ export function MedicationRefills({ rows }: { rows: RefillRow[] }) {
             list.added ? `${row.itemName} foi para "${list.name}".` : `${row.itemName} já estava pendente em "${list.name}".`,
           ),
         onError: (err) => notify('Erro', errorMessage(err)),
+        onSettled: () => {
+          adding.current = false;
+        },
       },
     );
   }
@@ -136,19 +152,32 @@ export function MedicationRefills({ rows }: { rows: RefillRow[] }) {
                     <Badge key={alert.about} label={alert.label} tone={alert.tone} />
                   ))}
                 </Row>
-                {listed.has(normalizeSearch(row.itemName)) ? (
-                  <Badge label="Na lista da farmácia" tone="primary" />
-                ) : (
-                  <Button
-                    title="Pôr na lista da farmácia"
-                    icon="cart-plus"
-                    variant="ghost"
-                    compact
-                    disabled={addToList.isPending}
-                    onPress={() => add(row)}
-                    style={styles.refillAction}
-                  />
-                )}
+                {row.stock ? (
+                  <Row gap={space.md} style={styles.wrap}>
+                    {row.stock === 'low' ? null : (
+                      <Button
+                        title="Atualizar estoque"
+                        icon="pencil-outline"
+                        variant="ghost"
+                        compact
+                        onPress={() => router.push({ pathname: '/remedio/[id]', params: { id: row.id, estoque: '1' } })}
+                        style={styles.refillAction}
+                      />
+                    )}
+                    {listed.has(normalizeSearch(row.itemName)) ? (
+                      <Badge label="Na lista da farmácia" tone="primary" />
+                    ) : (
+                      <Button
+                        title="Pôr na lista da farmácia"
+                        icon="cart-plus"
+                        variant="ghost"
+                        compact
+                        onPress={() => add(row)}
+                        style={styles.refillAction}
+                      />
+                    )}
+                  </Row>
+                ) : null}
               </View>
             }
             onPress={() => router.push({ pathname: '/remedio/[id]', params: { id: row.id } })}

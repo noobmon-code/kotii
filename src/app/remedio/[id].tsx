@@ -1,6 +1,6 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { Platform, StyleSheet, Switch, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Platform, type ScrollView, StyleSheet, Switch, View } from 'react-native';
 
 import { usePeople } from '@/data/health';
 import {
@@ -43,7 +43,8 @@ import { Button, Card, Chip, DateField, ErrorNotice, Loading, Row, Screen, Text,
 import { space, useColors } from '@/ui/theme';
 
 export default function MedicationScreen() {
-  const { id, pessoa } = useLocalSearchParams<{ id: string; pessoa?: string }>();
+  // `estoque`: quem chega por "Atualizar estoque" (telas Hoje e Saúde) abre já em "Estoque e receita".
+  const { id, pessoa, estoque } = useLocalSearchParams<{ id: string; pessoa?: string; estoque?: string }>();
   const isNew = id === 'novo';
   const medication = useMedication(isNew ? undefined : id);
   const people = usePeople();
@@ -51,19 +52,31 @@ export default function MedicationScreen() {
   if ((!isNew && medication.isPending) || people.isPending) return <Loading />;
   if (!isNew && medication.isError) return <ErrorNotice error={medication.error} />;
   if (people.isError) return <ErrorNotice error={people.error} onRetry={() => people.refetch()} />;
-  return <MedicationForm medication={isNew ? undefined : medication.data} people={people.data} initialPersonId={pessoa || null} />;
+  return (
+    <MedicationForm
+      medication={isNew ? undefined : medication.data}
+      people={people.data}
+      initialPersonId={pessoa || null}
+      openAtStock={Boolean(estoque)}
+    />
+  );
 }
 
 function MedicationForm({
   medication,
   people,
   initialPersonId,
+  openAtStock,
 }: {
   medication?: Medication;
   people: Person[];
   initialPersonId: string | null;
+  openAtStock: boolean;
 }) {
   const c = useColors();
+  // Abrir em "Estoque e receita": rola até lá uma vez, quando a seção ganha lugar na tela.
+  const scroll = useRef<ScrollView>(null);
+  const scrolledToStock = useRef(false);
   const save = useSaveMedication();
   // A casa do remédio (e o nome dela no aviso, com mais de uma casa).
   const target = useHouseReminderTarget();
@@ -97,9 +110,12 @@ function MedicationForm({
   const [savedStock, setSavedStock] = useState<StockForm>(() => stockFormOf(medication && toSchedule(medication), today));
   const [stock, setStock] = useState(savedStock);
 
+  // Uma vez por remédio: "Comprei mais" (ou uma busca nova) troca o objeto do
+  // remédio, e ler de novo desfaria o que a pessoa acabou de mudar na chave.
+  const medicationId = medication?.id;
   useEffect(() => {
-    if (medication) hasReminders(medication.id).then(setRemind).catch(() => undefined);
-  }, [medication]);
+    if (medicationId) hasReminders(medicationId).then(setRemind).catch(() => undefined);
+  }, [medicationId]);
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
@@ -217,7 +233,7 @@ function MedicationForm({
   }
 
   return (
-    <Screen edges={[]}>
+    <Screen edges={[]} scrollRef={scroll}>
       <Stack.Screen options={{ title: medication ? 'Editar remédio' : 'Novo remédio' }} />
       <View style={styles.group}>
         <Text variant="label">Para quem</Text>
@@ -305,19 +321,26 @@ function MedicationForm({
       </View>
       <TextField label="Observações" value={notes} onChangeText={setNotes} multiline placeholder="Ex.: tomar após as refeições" />
 
-      <MedicationStockSection
-        medication={medication}
-        form={stock}
-        initial={savedStock}
-        today={today}
-        onChange={(patch) => setStock((current) => ({ ...current, ...patch }))}
-        onRestocked={(count) => {
-          // A compra já foi gravada: o número novo vira o salvo, e salvar a tela depois não o grava de novo.
-          const counted = { stock: formatUnits(count.stockCount) };
-          setSavedStock((current) => ({ ...current, ...counted }));
-          setStock((current) => ({ ...current, ...counted }));
-        }}
-      />
+      <View
+        onLayout={(event) => {
+          if (!openAtStock || scrolledToStock.current) return;
+          scrolledToStock.current = true;
+          scroll.current?.scrollTo({ y: event.nativeEvent.layout.y, animated: false });
+        }}>
+        <MedicationStockSection
+          medication={medication}
+          form={stock}
+          initial={savedStock}
+          today={today}
+          onChange={(patch) => setStock((current) => ({ ...current, ...patch }))}
+          onRestocked={(count) => {
+            // A compra já foi gravada: o número novo vira o salvo, e salvar a tela depois não o grava de novo.
+            const counted = { stock: formatUnits(count.stockCount) };
+            setSavedStock((current) => ({ ...current, ...counted }));
+            setStock((current) => ({ ...current, ...counted }));
+          }}
+        />
+      </View>
 
       {remindersSupported ? (
         <Card>

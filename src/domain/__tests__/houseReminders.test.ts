@@ -411,14 +411,46 @@ describe('planHouseReminders: remédios e receitas acabando', () => {
   });
 
   it('o de hoje só se a hora ainda não passou; o que já passou não avisa', () => {
-    // Contado zero hoje: acaba hoje (o aviso de antes já ficou para trás).
-    const ending = { ...noPrescription, stockCount: 0 };
+    // Um comprimido contado ontem: a última dose que a caixa cobre é a de hoje (os avisos de antes já ficaram para trás).
+    const ending = { ...noPrescription, stockCount: 1, stockCountedOn: '2026-09-26' };
     expect(keys({ medications: [ending] })).toEqual(['refills:m1:2026-09-27']);
     expect(keys({ nowTime: '09:00', medications: [ending] })).toEqual([]);
-    // Pelas contas já acabou: não avisa de novo.
+    // Contado zero hoje (não cobre nem a próxima dose): já acabou, sem "acaba hoje".
+    expect(keys({ medications: [{ ...noPrescription, stockCount: 0 }] })).toEqual([]);
+    // Pelas contas já acabou, há poucos dias (25/09) ou há muito tempo (11/09, parado): não avisa de novo.
+    expect(keys({ medications: [{ ...noPrescription, stockCountedOn: '2026-09-15' }] })).toEqual([]);
     expect(keys({ medications: [{ ...noPrescription, stockCountedOn: '2026-09-01' }] })).toEqual([]);
-    // Receita já vencida: idem.
+    // Receita já vencida, há pouco ou há muito tempo: idem.
     expect(keys({ medications: [{ ...losartana, stockCount: null, stockCountedOn: null, prescriptionUntil: '2026-09-20' }] })).toEqual([]);
+    expect(keys({ medications: [{ ...losartana, stockCount: null, stockCountedOn: null, prescriptionUntil: '2026-08-20' }] })).toEqual([]);
+  });
+
+  it('caixa contada já no fim: o aviso da véspera tem a chave do dia dele e não muda a cada plano', () => {
+    // 4 contados hoje (27/09), aviso de 7 dias: acaba em 01/10; o aviso de antes (24/09) já passou.
+    const low = { ...noPrescription, stockCount: 4 };
+    expect(rows({ medications: [low] })).toEqual([
+      ['refills:m1:2026-09-30', '2026-09-30', '09:00', 'Remédio acaba amanhã', 'Losartana (Ana) acaba amanhã, pelas contas do app.'],
+      ['refills:m1:2026-10-01', '2026-10-01', '09:00', 'Remédio acaba hoje', 'Losartana (Ana) acaba hoje, pelas contas do app.'],
+    ]);
+    // Nos dias seguintes o plano é o mesmo, até a manhã da véspera; depois das 9h dela, só o do dia.
+    for (const today of ['2026-09-28', '2026-09-29', '2026-09-30']) {
+      expect(keys({ today, medications: [low] })).toEqual(['refills:m1:2026-09-30', 'refills:m1:2026-10-01']);
+    }
+    expect(keys({ today: '2026-09-30', nowTime: '09:00', medications: [low] })).toEqual(['refills:m1:2026-10-01']);
+    // Contada na véspera: só o do dia.
+    expect(keys({ medications: [{ ...noPrescription, stockCount: 1 }] })).toEqual(['refills:m1:2026-09-28']);
+    // Com bastante: depois que o dia do aviso de antes (30/09) passa, a véspera (06/10) entra e fica.
+    expect(keys({ today: '2026-09-30', medications: [noPrescription] })).toEqual(['refills:m1:2026-09-30', 'refills:m1:2026-10-07']);
+    for (const today of ['2026-10-01', '2026-10-05', '2026-10-06']) {
+      expect(keys({ today, medications: [noPrescription] })).toEqual(['refills:m1:2026-10-06', 'refills:m1:2026-10-07']);
+    }
+  });
+
+  it('receita de um tratamento que termina antes: o aviso que cairia depois do fim não sai', () => {
+    // Termina em 05/10; a receita vale até 10/10 (avisos em 03/10 e 10/10).
+    const ending = { ...losartana, stockCount: null, stockCountedOn: null, endOn: '2026-10-05' };
+    expect(keys({ medications: [ending] })).toEqual(['refills:m1@receita:2026-10-03']);
+    expect(keys({ medications: [{ ...ending, endOn: '2026-10-02' }] })).toEqual([]);
   });
 
   it('só na janela de 30 dias', () => {

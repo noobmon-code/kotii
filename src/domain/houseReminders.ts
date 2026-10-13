@@ -13,6 +13,9 @@ import type { WeatherMorning } from './weather';
 
 export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments' | 'events' | 'vaccines' | 'refills' | 'weather';
 
+/** O nome do aviso de caixa e receita acabando: a tela do remédio diz qual ligar. */
+export const REFILLS_REMINDER_LABEL = 'Remédios e receitas acabando';
+
 export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint: string }[] = [
   { key: 'bills', label: 'Contas a pagar', hint: 'Na véspera, no dia do vencimento e, se ficar em aberto, uma vez depois, às 9h' },
   { key: 'documents', label: 'Documentos', hint: 'Quando começa o prazo de renovar, uma semana antes e no dia em que vence, às 9h' },
@@ -26,7 +29,7 @@ export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint
   { key: 'vaccines', label: 'Vacinas', hint: 'Uma semana antes da próxima dose e no dia, às 9h' },
   {
     key: 'refills',
-    label: 'Remédios e receitas acabando',
+    label: REFILLS_REMINDER_LABEL,
     hint: 'Quando faltar uma semana para a caixa acabar (ou os dias que você escolher), no dia em que acaba e uma semana antes de a receita vencer, às 9h',
   },
   {
@@ -218,6 +221,7 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
 
   if (kinds.refills) {
     // A caixa acabando (pela conta do estoque) e a receita vencendo; o dia sai de lá, o horário e a janela, daqui.
+    // Cada aviso tem a chave do dia dele (o da véspera também): refazer o plano não o agenda de novo.
     for (const r of refillReminders(input.medications ?? [], today)) add('refills', r.id, r.date, r.title, r.body);
   }
 

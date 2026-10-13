@@ -12,6 +12,7 @@
 import { addDays, diffDays, formatBRDate, parseBRDate } from './dates';
 import { dosesLeft, takesOn, type MedicationSchedule } from './medications';
 import { parseDecimal } from './money';
+import { normalizeSearch } from './search';
 
 export interface StockedMedication extends MedicationSchedule {
   /** Unidades contadas (comprimidos, cápsulas, doses); null ou ausente: o app não acompanha o estoque. */
@@ -34,6 +35,12 @@ export const MAX_WARN_DAYS = 60;
 export const PRESCRIPTION_WARN_DAYS = 15;
 /** E avisa por notificação uma semana antes (e no dia). */
 export const PRESCRIPTION_REMINDER_DAYS = 7;
+/**
+ * Caixa acabada (pelas contas) ou receita vencida há mais dias que isto, sem
+ * ninguém atualizar: o app deixa de pedir atenção e mostra só um selo neutro.
+ * Aviso vermelho que nunca sai ensina a casa a não olhar para ele.
+ */
+export const STALE_DAYS = 14;
 /** Até onde a conta anda, dia a dia; estoque para mais que isso é "mais de 3 anos". */
 export const ESTIMATE_HORIZON_DAYS = 3 * 365;
 const MAX_STOCK = 99_999;
@@ -48,6 +55,21 @@ const round = (units: number) => Math.round(units * 10_000) / 10_000;
 /** Tratamento que já acabou (encerrado, passou do fim ou todas as doses tomadas): não tem estoque nem receita a avisar. */
 export function treatmentOver(m: MedicationSchedule, today: string): boolean {
   return !m.active || Boolean(m.endOn && m.endOn < today) || dosesLeft(m) === 0;
+}
+
+/**
+ * Num tratamento por número de doses, quantas ficam para depois de hoje pelo
+ * horário: o total menos as previstas do início até hoje (nunca menos que
+ * zero). null: o tratamento não é por número de doses.
+ */
+function courseDosesAfter(m: MedicationSchedule, today: string): number | null {
+  const total = m.totalDoses;
+  if (!total) return null;
+  let planned = 0;
+  for (let date = m.startOn; date <= today && planned < total; date = addDays(date, 1)) {
+    if (takesOn(m, date)) planned += m.times.length;
+  }
+  return Math.max(0, total - planned);
 }
 
 export interface StockEstimate {
@@ -75,8 +97,12 @@ export function estimateStock(m: StockedMedication, today: string): StockEstimat
   let unitsLeft = left;
   let lastFull: string | null = null;
   // Num tratamento por número de doses, de amanhã em diante só as que faltam
-  // (até hoje vale o horário: as marcações não entram na conta).
-  let courseLeft = dosesLeft(m) ?? Infinity;
+  // (até hoje vale o horário: as marcações não entram na conta). As que faltam
+  // pelas marcações ainda incluem as de hoje que ninguém marcou, e essas já
+  // saíram do estoque pelo horário: contá-las de novo daria uma dose a mais
+  // depois do fim, e o estado mudaria a cada dose marcada. Por isso o limite é
+  // também o que o horário deixa para depois de hoje.
+  let courseLeft = Math.min(dosesLeft(m) ?? Infinity, courseDosesAfter(m, today) ?? Infinity);
   const done = (ends: StockEstimate['ends']): StockEstimate => {
     const runsOutOn = ends === 'stock' ? (lastFull ?? counted) : null;
     return { unitsLeft, runsOutOn, daysLeft: runsOutOn ? diffDays(today, runsOutOn) : null, ends };
@@ -106,8 +132,14 @@ export type StockStatus =
   | { kind: 'plenty'; estimate: StockEstimate }
   /** Acaba dentro dos dias de aviso. */
   | { kind: 'low'; estimate: StockEstimate; daysLeft: number; runsOutOn: string }
-  /** Pelas contas, já acabou (o app não sabe: pode ter sido comprado sem registrar). */
-  | { kind: 'out'; estimate: StockEstimate; ranOutOn: string };
+  /**
+   * Pelas contas, já acabou (o app não sabe: pode ter sido comprado sem
+   * registrar). `ranOutOn` é o dia da última dose que a caixa cobriu, ou o da
+   * contagem, se ela não cobria nem a dose seguinte.
+   */
+  | { kind: 'out'; estimate: StockEstimate; ranOutOn: string }
+  /** Acabou há mais de STALE_DAYS e ninguém atualizou: não pede mais atenção. */
+  | { kind: 'stale'; estimate: StockEstimate; ranOutOn: string };
 
 export function stockStatus(m: StockedMedication, today: string): StockStatus {
   if (treatmentOver(m, today)) return { kind: 'none' };
@@ -115,7 +147,11 @@ export function stockStatus(m: StockedMedication, today: string): StockStatus {
   if (!estimate) return { kind: 'none' };
   const { runsOutOn, daysLeft } = estimate;
   if (runsOutOn === null || daysLeft === null) return { kind: 'plenty', estimate };
-  if (daysLeft < 0) return { kind: 'out', estimate, ranOutOn: runsOutOn };
+  // A conta parou no dia da contagem: o que há não cobre nem a próxima dose.
+  // Já acabou, no próprio dia também (quem escreveu 0 não lê "acaba hoje").
+  if (daysLeft < 0 || runsOutOn === m.stockCountedOn) {
+    return { kind: -daysLeft > STALE_DAYS ? 'stale' : 'out', estimate, ranOutOn: runsOutOn };
+  }
   return daysLeft <= warnDaysOf(m) ? { kind: 'low', estimate, daysLeft, runsOutOn } : { kind: 'plenty', estimate };
 }
 
@@ -123,12 +159,15 @@ export type PrescriptionStatus =
   | { kind: 'none' }
   | { kind: 'soon'; days: number; until: string }
   | { kind: 'today'; until: string }
-  | { kind: 'expired'; until: string };
+  | { kind: 'expired'; until: string }
+  /** Venceu há mais de STALE_DAYS e ninguém atualizou: não pede mais atenção. */
+  | { kind: 'stale'; until: string };
 
 export function prescriptionStatus(m: StockedMedication, today: string): PrescriptionStatus {
   const until = m.prescriptionUntil;
   if (!until || treatmentOver(m, today)) return { kind: 'none' };
   const days = diffDays(today, until);
+  if (days < -STALE_DAYS) return { kind: 'stale', until };
   if (days < 0) return { kind: 'expired', until };
   if (days === 0) return { kind: 'today', until };
   return days <= PRESCRIPTION_WARN_DAYS ? { kind: 'soon', days, until } : { kind: 'none' };
@@ -152,7 +191,13 @@ export function describeStock(status: StockStatus, today: string): string | null
     case 'none':
       return null;
     case 'out':
-      return `Deve ter acabado em ${dayMonth(status.ranOutOn, today)}, pelas contas do app.`;
+      // No dia em que foi contado (o que há não cobre a próxima dose), não há "acabou em" a dizer.
+      return status.ranOutOn < today
+        ? `Deve ter acabado em ${dayMonth(status.ranOutOn, today)}, pelas contas do app.`
+        : 'Sem estoque para a próxima dose, pelas contas do app.';
+    case 'stale':
+      // A saída está nesta tela: contar de novo ou parar de acompanhar.
+      return `Estoque sem atualizar desde ${dayMonth(status.ranOutOn, today)}. Escreva quanto tem agora, ou apague o número para o app parar de acompanhar.`;
     case 'low':
       return status.daysLeft > 1
         ? `Acaba em ${status.daysLeft} dias (${dayMonth(status.runsOutOn, today)}), pelas contas do app.`
@@ -171,6 +216,7 @@ export function describePrescription(status: PrescriptionStatus, today: string):
     case 'none':
       return null;
     case 'expired':
+    case 'stale':
       return `A receita venceu em ${dayMonth(status.until, today)}.`;
     case 'today':
       return 'A receita vence hoje.';
@@ -179,46 +225,63 @@ export function describePrescription(status: PrescriptionStatus, today: string):
   }
 }
 
-/** O que pede atenção num remédio: a caixa acabando (ou acabada) e a receita vencendo (ou vencida). */
+/** O que há a dizer de um remédio: a caixa acabando (ou acabada) e a receita vencendo (ou vencida). */
 export interface RefillAlert {
   about: 'stock' | 'prescription';
-  /** O texto do selo: "Acaba em 3 dias", "Deve ter acabado", "Receita vence hoje". */
+  /** O texto do selo: "Acaba em 3 dias", "Deve ter acabado", "Receita vence hoje", "Estoque sem atualizar desde 04/10". */
   label: string;
-  tone: 'warning' | 'danger';
+  /** 'neutral': parado há mais de STALE_DAYS; fica só como selo, sem pedir atenção. */
+  tone: 'warning' | 'danger' | 'neutral';
   /** Dias até acontecer (negativo: já passou), para ordenar. */
   days: number;
 }
 
-/** Os avisos de um remédio, o mais urgente primeiro (o que já passou; depois o estoque antes da receita). */
+const TONE_ORDER: RefillAlert['tone'][] = ['danger', 'warning', 'neutral'];
+
+/** Os avisos de um remédio, o mais urgente primeiro (o que já passou; depois o estoque antes da receita; o que parou, por último). */
 export function refillAlerts(m: StockedMedication, today: string): RefillAlert[] {
   const alerts: RefillAlert[] = [];
   const stock = stockStatus(m, today);
   if (stock.kind === 'out') alerts.push({ about: 'stock', label: 'Deve ter acabado', tone: 'danger', days: diffDays(today, stock.ranOutOn) });
+  if (stock.kind === 'stale') {
+    const label = `Estoque sem atualizar desde ${dayMonth(stock.ranOutOn, today)}`;
+    alerts.push({ about: 'stock', label, tone: 'neutral', days: diffDays(today, stock.ranOutOn) });
+  }
   if (stock.kind === 'low') alerts.push({ about: 'stock', label: `Acaba ${inDays(stock.daysLeft)}`, tone: 'warning', days: stock.daysLeft });
   const prescription = prescriptionStatus(m, today);
   if (prescription.kind === 'expired') {
     alerts.push({ about: 'prescription', label: 'Receita vencida', tone: 'danger', days: diffDays(today, prescription.until) });
+  }
+  if (prescription.kind === 'stale') {
+    const label = `Receita venceu em ${dayMonth(prescription.until, today)}`;
+    alerts.push({ about: 'prescription', label, tone: 'neutral', days: diffDays(today, prescription.until) });
   }
   if (prescription.kind === 'today') alerts.push({ about: 'prescription', label: 'Receita vence hoje', tone: 'warning', days: 0 });
   if (prescription.kind === 'soon') {
     alerts.push({ about: 'prescription', label: `Receita vence ${inDays(prescription.days)}`, tone: 'warning', days: prescription.days });
   }
   // A ordem de entrada (estoque, receita) desempata.
-  return alerts.sort((a, b) => Number(b.tone === 'danger') - Number(a.tone === 'danger'));
+  return alerts.sort((a, b) => TONE_ORDER.indexOf(a.tone) - TONE_ORDER.indexOf(b.tone));
 }
+
+/** Se o aviso pede atenção (o que parou há mais de STALE_DAYS não pede). */
+const needsAttention = (alert: RefillAlert) => alert.tone !== 'neutral';
 
 /** O selo do remédio nas listas: o aviso mais urgente; null se não há nenhum. */
 export function refillBadge(m: StockedMedication, today: string): RefillAlert | null {
   return refillAlerts(m, today)[0] ?? null;
 }
 
-/** O nome que vai para a lista da farmácia: o remédio e a dose ("Losartana 50mg (1 comprimido)"). */
-export function pharmacyItemName(m: Pick<MedicationSchedule, 'name' | 'dosage'>): string {
-  const dosage = m.dosage?.trim();
-  return dosage ? `${m.name.trim()} (${dosage})` : m.name.trim();
+/**
+ * O nome que vai para a lista da farmácia: só o do remédio (o campo "Dose" é
+ * quanto se toma de cada vez; na lista, leria como quanto comprar). Com
+ * `withPerson`, diz de quem é: "Losartana 50 mg — Beto".
+ */
+export function pharmacyItemName(m: Pick<MedicationSchedule, 'name' | 'personName'>, withPerson = false): string {
+  return withPerson ? `${m.name.trim()} — ${m.personName}` : m.name.trim();
 }
 
-/** Uma linha da tela Hoje: um remédio com a caixa acabando ou a receita vencendo. */
+/** Uma linha das telas Hoje e Saúde: um remédio com a caixa acabando ou a receita vencendo. */
 export interface RefillRow {
   id: string;
   /** "Losartana (Ana)". */
@@ -227,25 +290,74 @@ export interface RefillRow {
   alerts: RefillAlert[];
   /** O item que "Pôr na lista da farmácia" cria. */
   itemName: string;
+  /**
+   * O estoque, que é o que decide as ações da linha: acabando ('low'),
+   * acabado ('out') ou parado ('stale'); null se a linha é só da receita
+   * (receita vencida não se resolve no balcão da farmácia).
+   */
+  stock: 'low' | 'out' | 'stale' | null;
+  /** false: só avisos parados há mais de STALE_DAYS; a linha não conta como pendência nem aparece na tela Hoje. */
+  attention: boolean;
 }
 
-/** O que a tela Hoje lista: um remédio por linha, só os que pedem atenção, o mais urgente primeiro. */
+/**
+ * O que as telas listam: um remédio por linha, o mais urgente primeiro; os
+ * que só têm aviso parado (`attention: false`) ficam por último.
+ */
 export function refillRows(medications: StockedMedication[], today: string): RefillRow[] {
-  const soonest = (row: RefillRow) => Math.min(...row.alerts.map((a) => a.days));
+  // Duas pessoas da casa com o mesmo remédio em uso: o item da farmácia diz de
+  // quem é. Olha todos os remédios, e não só os que estão acabando: a caixa de
+  // um pode acabar com o item do outro ainda pendente na lista.
+  const sameName = new Map<string, number>();
+  const nameKey = (m: StockedMedication) => normalizeSearch(pharmacyItemName(m));
+  for (const m of medications) {
+    if (!treatmentOver(m, today)) sameName.set(nameKey(m), (sameName.get(nameKey(m)) ?? 0) + 1);
+  }
+  const soonest = (row: RefillRow) => Math.min(...row.alerts.filter((a) => a.tone === row.alerts[0].tone).map((a) => a.days));
   return medications
-    .map((m): RefillRow => ({ id: m.id, title: medicationWho(m), alerts: refillAlerts(m, today), itemName: pharmacyItemName(m) }))
+    .map((m): RefillRow => {
+      const alerts = refillAlerts(m, today);
+      const stock = stockStatus(m, today).kind;
+      return {
+        id: m.id,
+        title: medicationWho(m),
+        alerts,
+        itemName: pharmacyItemName(m, (sameName.get(nameKey(m)) ?? 0) > 1),
+        stock: stock === 'low' || stock === 'out' || stock === 'stale' ? stock : null,
+        attention: alerts.some(needsAttention),
+      };
+    })
     .filter((row) => row.alerts.length > 0)
     .sort(
       (a, b) =>
-        Number(b.alerts[0].tone === 'danger') - Number(a.alerts[0].tone === 'danger') ||
+        TONE_ORDER.indexOf(a.alerts[0].tone) - TONE_ORDER.indexOf(b.alerts[0].tone) ||
         soonest(a) - soonest(b) ||
         a.title.localeCompare(b.title),
     );
 }
 
-/** As linhas do Nuke: "Losartana (Ana) — acaba em 3 dias, receita vence em 10 dias". */
-export function refillLines(medications: StockedMedication[], today: string): string[] {
-  return refillRows(medications, today).map((row) => `${row.title} — ${row.alerts.map((a) => a.label.toLowerCase()).join(', ')}`);
+/** O que o Nuke fica sabendo do estoque e das receitas (a frase sai de buildNukeContext). */
+export interface RefillSummary {
+  /** Remédios em uso (tratamento em andamento). */
+  inUse: number;
+  /** Desses, os que têm o estoque ou a receita acompanhados pelo app. */
+  followed: number;
+  /** O estado dos que pedem atenção ou pararam: "Losartana (Ana) — acaba em 3 dias, receita vence em 10 dias". Sem os nomes dos outros. */
+  lines: string[];
+}
+
+/**
+ * Sem estoque nem receita informados, o app não sabe nada do remédio: o Nuke
+ * precisa distinguir "nenhum acabando" de "ninguém informou", para não
+ * tranquilizar sem base.
+ */
+export function refillSummary(medications: StockedMedication[], today: string): RefillSummary {
+  const inUse = medications.filter((m) => !treatmentOver(m, today));
+  return {
+    inUse: inUse.length,
+    followed: inUse.filter((m) => estimateStock(m, today) !== null || Boolean(m.prescriptionUntil)).length,
+    lines: refillRows(medications, today).map((row) => `${row.title} — ${row.alerts.map((a) => a.label.toLowerCase()).join(', ')}`),
+  };
 }
 
 /** Um aviso por notificação (o plano dos avisos da casa põe o horário e a janela). */
@@ -258,10 +370,33 @@ export interface RefillReminder {
 }
 
 /**
- * Os avisos de cada remédio: quando faltam os dias escolhidos para a caixa
- * acabar e no dia em que acaba; uma semana antes de a receita vencer e no dia.
- * Remédio sem estoque acompanhado só avisa a receita; o que já acabou (pelas
- * contas) não avisa de novo.
+ * O último dia de doses de um tratamento com fim, olhando até `limit`: a data
+ * de fim ou, num tratamento por número de doses, o dia da última dose prevista
+ * (as que o horário deixa para depois de hoje, como na conta do estoque).
+ * null: uso contínuo, termina depois de `limit`, ou não dá para saber (as
+ * marcações estão atrás do horário por mais que as doses de hoje).
+ */
+function lastDoseOn(m: MedicationSchedule, today: string, limit: string): string | null {
+  if (m.endOn) return m.endOn;
+  const left = dosesLeft(m);
+  const after = courseDosesAfter(m, today);
+  if (left === null || after === null) return null;
+  if (left - after > (takesOn(m, today) ? m.times.length : 0)) return null;
+  let budget = Math.min(left, after);
+  let last = today;
+  for (let date = addDays(today, 1); budget > 0 && date <= limit; date = addDays(date, 1)) {
+    if (!takesOn(m, date)) continue;
+    budget -= m.times.length;
+    last = date;
+  }
+  return budget > 0 ? null : last;
+}
+
+/**
+ * Os avisos de cada remédio, de hoje em diante: quando faltam os dias
+ * escolhidos para a caixa acabar e no dia em que acaba; uma semana antes de a
+ * receita vencer e no dia. Remédio sem estoque acompanhado só avisa a receita;
+ * o que já acabou (pelas contas) não avisa de novo.
  */
 export function refillReminders(medications: StockedMedication[], today: string): RefillReminder[] {
   const out: RefillReminder[] = [];
@@ -272,26 +407,40 @@ export function refillReminders(medications: StockedMedication[], today: string)
     const runsOutOn = stock.kind === 'low' ? stock.runsOutOn : stock.kind === 'plenty' ? stock.estimate.runsOutOn : null;
     if (runsOutOn) {
       const warn = warnDaysOf(m);
-      out.push(
-        { id: m.id, date: addDays(runsOutOn, -warn), title: 'Remédio acabando', body: `${who} acaba ${inDays(warn)}.` },
-        { id: m.id, date: runsOutOn, title: 'Remédio acaba hoje', body: `${who} acaba hoje, pelas contas do app.` },
-      );
+      const warnOn = addDays(runsOutOn, -warn);
+      const counted = m.stockCountedOn ?? today;
+      const eve = addDays(runsOutOn, -1);
+      out.push({ id: m.id, date: warnOn, title: 'Remédio acabando', body: `${who} acaba ${inDays(warn)}.` });
+      // O dia do aviso de antes já passou (a caixa foi contada já no fim, ou
+      // este aparelho só soube dela depois): fica um aviso na véspera. Ele tem a
+      // data dele, como os outros, e não a de quando o plano é feito: refazer o
+      // plano não o faz tocar de novo. Contada na véspera, só resta o do dia.
+      if ((warnOn < today || warnOn <= counted) && eve > counted) {
+        out.push({ id: m.id, date: eve, title: 'Remédio acaba amanhã', body: `${who} acaba amanhã, pelas contas do app.` });
+      }
+      out.push({ id: m.id, date: runsOutOn, title: 'Remédio acaba hoje', body: `${who} acaba hoje, pelas contas do app.` });
     }
     const until = m.prescriptionUntil;
     if (until && until >= today) {
       const id = `${m.id}@receita`;
+      // Tratamento que termina antes: o aviso que cairia depois do fim não sai (na dúvida, sai).
+      const last = lastDoseOn(m, today, until);
+      const during = (reminder: RefillReminder) => !last || reminder.date <= last;
       out.push(
-        {
-          id,
-          date: addDays(until, -PRESCRIPTION_REMINDER_DAYS),
-          title: 'Receita vencendo',
-          body: `A receita de ${who} vence ${inDays(PRESCRIPTION_REMINDER_DAYS)} (${formatBRDate(until)}).`,
-        },
-        { id, date: until, title: 'Receita vence hoje', body: `A receita de ${who} vence hoje.` },
+        ...[
+          {
+            id,
+            date: addDays(until, -PRESCRIPTION_REMINDER_DAYS),
+            title: 'Receita vencendo',
+            body: `A receita de ${who} vence ${inDays(PRESCRIPTION_REMINDER_DAYS)} (${formatBRDate(until)}).`,
+          },
+          { id, date: until, title: 'Receita vence hoje', body: `A receita de ${who} vence hoje.` },
+        ].filter(during),
       );
     }
   }
-  return out;
+  // O que já passou não tem como avisar.
+  return out.filter((reminder) => reminder.date >= today);
 }
 
 /** O que muda no banco quando o estoque é contado de novo. */
@@ -302,10 +451,12 @@ export interface StockCount {
 
 /**
  * "Comprei mais": o que a conta diz que sobra hoje, mais a caixa nova,
- * contado de novo hoje. Sem estoque acompanhado, começa pela caixa.
+ * contado de novo hoje. Sem estoque acompanhado, começa pela caixa. Com
+ * `base` (o número que a pessoa acabou de escrever em "Quanto tem agora", ver
+ * restockBase), a caixa soma a ele, e não à conta.
  */
-export function restock(m: StockedMedication, today: string, boxUnits: number): StockCount {
-  const left = estimateStock(m, today)?.unitsLeft ?? 0;
+export function restock(m: StockedMedication, today: string, boxUnits: number, base?: number): StockCount {
+  const left = base ?? estimateStock(m, today)?.unitsLeft ?? 0;
   return { stockCount: round(left + Math.max(0, boxUnits)), stockCountedOn: today };
 }
 
@@ -329,12 +480,18 @@ const ruleKey = (m: Rule) =>
  * de amanhã em diante. Sem isso a mudança valeria para trás, e o estoque
  * pularia sem ninguém ter contado nada. `changes` é o que a seção do estoque
  * já muda (readStockForm): se a pessoa contou de novo, vale o que ela contou.
+ *
+ * Remédio que já tinha acabado: a contagem fica no dia em que acabou, e não
+ * em hoje. "Deve ter acabado em 04/10" segue como estava, em vez de virar
+ * "acaba hoje" (com aviso por notificação) só porque o horário mudou.
  */
 export function keepStockOnRuleChange(changes: StockChanges, before: StockedMedication | undefined, after: Rule, today: string): StockChanges {
   if (!before || changes.stockCount !== undefined) return changes;
   if (changes.doseUnits === undefined && ruleKey(before) === ruleKey(after)) return changes;
   const estimate = estimateStock(before, today);
-  return estimate ? { ...changes, stockCount: estimate.unitsLeft, stockCountedOn: today } : changes;
+  if (!estimate) return changes;
+  const ranOutOn = estimate.runsOutOn !== null && estimate.runsOutOn < today ? estimate.runsOutOn : null;
+  return { ...changes, stockCount: estimate.unitsLeft, stockCountedOn: ranOutOn ?? today };
 }
 
 /** "30", "12,5". */
@@ -385,7 +542,51 @@ export interface StockChanges {
   prescriptionUntil?: string | null;
 }
 
-export type StockFormResult = { ok: true; changes: StockChanges } | { ok: false; title: string; message: string };
+type FormError = { ok: false; title: string; message: string };
+
+export type StockFormResult = { ok: true; changes: StockChanges } | FormError;
+
+const INVALID_STOCK: FormError = {
+  ok: false,
+  title: 'Estoque inválido',
+  message: 'Em "Quanto tem agora", informe um número, como 30 ou 12,5, ou deixe vazio.',
+};
+
+const stockEdited = (form: StockForm, initial: StockForm) => form.stock.trim() !== initial.stock.trim();
+
+/**
+ * A base de "Comprei mais": undefined se "Quanto tem agora" está como a tela
+ * abriu (vale a conta de hoje); o número digitado, se a pessoa o corrigiu e
+ * ainda não salvou (vazio é zero: fica só a caixa). Sem isso a correção seria
+ * trocada pela conta antiga mais a caixa, sem aviso. Texto que não é número:
+ * o mesmo aviso de salvar, e nada é somado.
+ */
+export function restockBase(form: StockForm, initial: StockForm): { ok: true; base: number | undefined } | FormError {
+  if (!stockEdited(form, initial)) return { ok: true, base: undefined };
+  const text = form.stock.trim();
+  const typed = text ? parseUnits(text) : 0;
+  return typed === null ? INVALID_STOCK : { ok: true, base: typed };
+}
+
+/** O texto junto de "Quantas unidades vieram": a que a caixa nova é somada. */
+export function restockHint(m: StockedMedication, form: StockForm, initial: StockForm, today: string): string {
+  const fromToday = 'passa a contar a partir de hoje.';
+  if (stockEdited(form, initial)) {
+    return form.stock.trim()
+      ? `O app soma ao número que você escreveu em “Quanto tem agora” e ${fromToday}`
+      : `Com “Quanto tem agora” vazio, o app conta só esta caixa e ${fromToday}`;
+  }
+  const status = stockStatus(m, today);
+  // Compra registrada dias depois: o app não sabe se a caixa nova já está em
+  // uso (aí somar a caixa inteira é contar a mais) ou se a pessoa ficou esses
+  // dias sem o remédio. Não muda a conta sozinho: diz o que fazer.
+  if ((status.kind === 'out' || status.kind === 'stale') && status.ranOutOn < today) {
+    return `Pelas contas do app, a caixa anterior acabou em ${dayMonth(status.ranOutOn, today)}. Se você já está usando a nova, escreva em “Quanto tem agora” quantas unidades ainda tem, em vez de somar a caixa inteira.`;
+  }
+  return estimateStock(m, today)
+    ? `O app soma ao que ainda tem, pelas contas do app, e ${fromToday}`
+    : `O app começa a acompanhar por esta caixa e ${fromToday}`;
+}
 
 /**
  * Lê a seção ao salvar. Só entra o que mudou em relação a `initial` (os campos
@@ -398,9 +599,7 @@ export function readStockForm(form: StockForm, initial: StockForm, today: string
   if (changed('stock')) {
     const text = form.stock.trim();
     const count = text ? parseUnits(text) : null;
-    if (text && count === null) {
-      return { ok: false, title: 'Estoque inválido', message: 'Em "Quanto tem agora", informe um número, como 30 ou 12,5, ou deixe vazio.' };
-    }
+    if (text && count === null) return INVALID_STOCK;
     changes.stockCount = count;
     changes.stockCountedOn = count === null ? null : today;
   }

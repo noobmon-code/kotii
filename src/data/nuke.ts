@@ -20,7 +20,7 @@ import { calendarLines } from '@/domain/familyEvents';
 import { monthLabel, monthRange, previousMonth, shiftMonth, summarize } from '@/domain/finance';
 import { upcomingAppointments } from '@/domain/health';
 import { doseKey, dosesForDay } from '@/domain/medications';
-import { refillLines } from '@/domain/medicationStock';
+import { refillSummary } from '@/domain/medicationStock';
 import { menuLines } from '@/domain/menu';
 import { buildNukeContext, parseActions, type NukeAction, type NukeScreen, type NukeSnapshot } from '@/domain/nuke';
 import { expiryStatus, groupPantry } from '@/domain/pantry';
@@ -127,7 +127,7 @@ export function useNukeContext(today: string): NukeContextState {
       person: d.personName,
       taken: taken.has(doseKey(d.medicationId, d.date, d.time)),
     })),
-    refills: refillLines(schedules, today),
+    refills: refillSummary(schedules, today),
     chores: (chores.data ?? [])
       .filter((c) => c.due_on <= weekAhead)
       .map((c) => ({ title: c.title, due_on: c.due_on, assignee: memberName(c.assigned_to) })),
