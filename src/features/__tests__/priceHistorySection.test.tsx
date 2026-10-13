@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { router } from 'expo-router';
+import { StyleSheet } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { Path } from 'react-native-svg';
 
 import { toPurchases, type Purchase, type PurchaseLine } from '@/domain/priceHistory';
 import { PriceChart } from '@/features/market/PriceChart';
 import { PriceHistorySection } from '@/features/market/PriceHistorySection';
-import { Badge, Button, Chip, ErrorNotice, ListRow, Loading, Segmented } from '@/ui/primitives';
+import { Badge, Button, Chip, ErrorNotice, ListRow, Loading, Segmented, Text } from '@/ui/primitives';
 
 // A seção de verdade, com as regras de verdade (domain/priceHistory); só a busca das compras é trocada por
 // respostas prontas. O que se confere aqui é o que a tela faz com elas e com os toques.
@@ -15,6 +16,8 @@ interface Query {
   data: Purchase[] | undefined;
   isError: boolean;
   error: unknown;
+  /** 'paused': sem internet, a busca espera a conexão. */
+  fetchStatus?: 'fetching' | 'paused' | 'idle';
   refetch: jest.Mock;
 }
 
@@ -270,8 +273,108 @@ describe('o histórico de preço na tela do produto', () => {
     expect(rows()).toHaveLength(4);
   });
 
-  it('produto sem nenhuma nota confirmada: a frase de sempre', async () => {
-    expect(await mount(loaded([]))).toBe(['Histórico de preço', 'Nenhuma nota confirmada com este produto ainda.'].join('\n'));
-    expect(renderer!.root.findAllByType(Chip)).toHaveLength(0);
+  it('sem internet e sem o histórico no aparelho: um aviso no lugar de girar sem fim', async () => {
+    const text = (await mount({ data: undefined, isError: false, error: null, fetchStatus: 'paused', refetch: jest.fn() })).split('\n');
+    expect([text[0], text.at(-1)]).toEqual(['Histórico de preço', 'Sem internet: o histórico de preço aparece quando a conexão voltar.']);
+    expect(renderer!.root.findAllByType(Loading)).toHaveLength(0);
+    // A busca segue sozinha quando a conexão volta: não há o que tentar de novo.
+    expect(renderer!.root.findByType(ErrorNotice).props.onRetry).toBeUndefined();
+  });
+
+  it('produto sem nenhuma nota confirmada: a seção não aparece (a tela já diz isso logo acima)', async () => {
+    expect(await mount(loaded([]))).toBe('');
+    expect(renderer!.toJSON()).toBeNull();
+  });
+
+  it('compra sem valor: fica na lista dizendo "sem valor", e o resumo não a conta como preço', async () => {
+    const text = await mount(loaded(toPurchases([line('2026-10-10', 25.9), line('2026-09-03', 0, { quantity: 2, totalPrice: 0 }), line('2026-07-12', 22.9)])));
+    expect(text).toContain('Subiu 13% desde 12 jul (era R$ 22,90)');
+    expect(text).toContain('Menor: R$ 22,90 (Assaí, 12 jul) · Maior: R$ 25,90 (Assaí, 10 out)');
+    expect(text).toContain('2 compras e 1 sem valor em 6 meses');
+    expect(text).not.toContain('R$ 0,00');
+    expect(rows()).toEqual(['Assaí · 10 out · 1 un · pagou R$ 25,90', 'Assaí · 3 set · 2 un · sem valor', 'Assaí · 12 jul · 1 un · pagou R$ 22,90']);
+    // À direita, onde iria o preço.
+    expect(text.split('\n').filter((t) => t === 'sem valor')).toHaveLength(1);
+  });
+
+  it('produto só com compras sem valor: a lista e uma frase no lugar do resumo, sem gráfico', async () => {
+    const text = await mount(loaded(toPurchases([line('2026-10-10', 0, { totalPrice: 0 }), line('2026-09-03', 0, { totalPrice: 0 })])));
+    expect(text).toBe(
+      ['Histórico de preço', '3 meses', '6 meses', '1 ano', 'Tudo', 'Nenhuma compra com valor ainda.', 'Assaí', '10 out · 1 un · sem valor', 'sem valor', 'Assaí', '3 set · 1 un · sem valor', 'sem valor'].join('\n'),
+    );
+    expect(renderer!.root.findAllByType(PriceChart)).toHaveLength(0);
+    // A frase é um aviso, não a última compra em destaque.
+    const notice = renderer!.root.findAllByType(Text).find((node) => node.props.children === 'Nenhuma compra com valor ainda.')!;
+    expect(notice.props.variant).toBe('muted');
+  });
+
+  it('duas lojas com o mesmo nome: um chip só, que mostra as compras das duas', async () => {
+    const sendas = (storeId: string) => ({ storeId, storeName: 'Sendas Distribuidora S/A' });
+    const text = await mount(loaded(toPurchases([line('2026-10-10', 25.9, sendas('sendas-1')), line('2026-09-03', 23.9, sendas('sendas-2')), line('2026-08-12', 21.9, atacadao)])));
+    expect(chips().slice(4)).toEqual(['[x] Todos', '[ ] Atacadão', '[ ] Sendas Distribuidora S/A']);
+    expect(text).not.toContain('em outro mercado: Sendas');
+    press('Sendas Distribuidora S/A');
+    expect(rows()).toEqual(['Sendas Distribuidora S/A · 10 out · 1 un · pagou R$ 25,90', 'Sendas Distribuidora S/A · 3 set · 1 un · pagou R$ 23,90']);
+    expect(page()).toContain('Subiu 8% desde 3 set (era R$ 23,90)');
+    expect(page()).not.toContain('outro mercado');
+  });
+
+  it('mercado escolhido, depois um período sem ele, depois um período com ele: o filtro não volta sozinho', async () => {
+    await mount(
+      loaded(
+        toPurchases([
+          line('2026-10-10', 25.9),
+          line('2026-09-03', 27.9),
+          line('2026-06-12', 21.9, atacadao),
+          line('2025-11-02', 19.9, atacadao),
+          line('2026-05-02', 23.9, { storeId: 'extra', storeName: 'Extra' }),
+          line('2026-04-02', 22.9, { storeId: null, storeName: null }),
+        ]),
+      ),
+    );
+    press('Atacadão');
+    expect(chips().slice(4)).toEqual(['[ ] Todos', '[ ] Assaí', '[x] Atacadão', '[ ] Extra']);
+    expect(rows()).toEqual(['Atacadão · 12 jun · 1 un · pagou R$ 21,90']);
+    // Em 3 meses só há Assaí: sem chips de mercado, todas as compras do período.
+    press('3 meses');
+    expect(chips()).toEqual(['[x] 3 meses', '[ ] 6 meses', '[ ] 1 ano', '[ ] Tudo']);
+    expect(rows()).toHaveLength(2);
+    // Em 1 ano o Atacadão volta a ter chip, mas ninguém tocou nele.
+    press('1 ano');
+    expect(chips().slice(4)).toEqual(['[x] Todos', '[ ] Assaí', '[ ] Atacadão', '[ ] Extra', '[ ] Mercado não informado']);
+    expect(rows()).toHaveLength(6);
+    expect(page()).toContain('6 compras em 1 ano');
+  });
+
+  it('na troca de unidade, o mercado que não tem compra na outra unidade também não volta sozinho', async () => {
+    await mount(
+      loaded(
+        toPurchases([
+          line('2026-10-10', 6.99, { unit: 'kg' }),
+          line('2026-09-10', 5.99, { unit: 'kg', ...atacadao }),
+          line('2026-08-10', 5.49, { unit: 'kg' }),
+          line('2026-10-01', 0.9),
+          line('2026-09-01', 0.8),
+          line('2025-10-20', 0.7, atacadao),
+        ]),
+      ),
+    );
+    press('Atacadão');
+    expect(rows()).toEqual(['Atacadão · 10 set · 1 kg · pagou R$ 5,99']);
+    act(() => renderer!.root.findByType(Segmented).props.onChange('un'));
+    // Por unidade, nos 6 meses, só há Assaí.
+    expect(chips()).toEqual(['[ ] 3 meses', '[x] 6 meses', '[ ] 1 ano', '[ ] Tudo']);
+    expect(rows()).toHaveLength(2);
+    press('Tudo');
+    expect(chips().slice(4)).toEqual(['[x] Todos', '[ ] Assaí', '[ ] Atacadão']);
+    expect(rows()).toHaveLength(3);
+  });
+
+  it('nome de mercado comprido: o chip tem a largura da linha como limite (na web ele não encolhe sozinho)', async () => {
+    const long = { storeId: 'bh', storeName: 'SUPERMERCADOS BH COMERCIO DE ALIMENTOS S/A' };
+    await mount(loaded(toPurchases([line('2026-10-10', 25.9, long), line('2026-09-03', 27.9)])));
+    const storeChips = renderer!.root.findAllByType(Chip).slice(4);
+    expect(storeChips.map((chip) => chip.props.label)).toEqual(['Todos', 'Assaí', 'SUPERMERCADOS BH COMERCIO DE ALIMENTOS S/A']);
+    for (const chip of storeChips) expect(StyleSheet.flatten(chip.parent!.props.style)).toMatchObject({ maxWidth: '100%' });
   });
 });

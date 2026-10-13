@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
-import type { Purchase } from '@/domain/priceHistory';
+import { storeKey, type Purchase } from '@/domain/priceHistory';
 
 import { fetchProductPurchases, PURCHASE_MAX_LINES, useProductPurchases } from '../market';
 
@@ -36,6 +36,10 @@ const mockTable = {
   counts: true,
   /** O pedido (a contar do zero) que falha. */
   failAt: undefined as number | undefined,
+  /** O pedido (a contar do zero) que volta vazio, com a contagem em zero: o que o servidor responde a quem ficou sem sessão. */
+  emptyAt: undefined as number | undefined,
+  /** O que acontece no banco logo antes de um pedido ser respondido (recebe o número dele, a contar do zero). */
+  before: undefined as ((request: number) => void) | undefined,
   asked: [] as Asked[],
   /** As linhas já por id: milhares delas não se ordenam de novo a cada página. */
   sorted: undefined as { rows: ItemRow[]; result: ItemRow[] } | undefined,
@@ -49,7 +53,9 @@ jest.mock('@/lib/supabase', () => ({
         const answer = () => {
           const request = mockTable.asked.length;
           mockTable.asked.push(asked);
+          mockTable.before?.(request);
           if (request === mockTable.failAt) return { data: null, count: null, error: new Error('sem permissão') };
+          if (request === mockTable.emptyAt) return { data: [], count: options?.count === 'exact' ? 0 : null, error: null };
           if (mockTable.sorted?.rows !== mockTable.rows) {
             mockTable.sorted = { rows: mockTable.rows, result: [...mockTable.rows].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) };
           }
@@ -129,6 +135,8 @@ afterEach(() => {
   mockTable.cap = 1000;
   mockTable.counts = true;
   mockTable.failAt = undefined;
+  mockTable.emptyAt = undefined;
+  mockTable.before = undefined;
   mockTable.asked = [];
 });
 
@@ -204,6 +212,32 @@ describe('as compras de um produto', () => {
     await expect(fetchProductPurchases('arroz')).rejects.toThrow('sem permissão');
   });
 
+  it('página vazia depois de o servidor dizer que ainda havia linhas: falha, em vez de dar a parte lida como o histórico inteiro', async () => {
+    // A sessão venceu entre uma página e outra: o servidor responde 200, sem linha nenhuma e com a contagem em zero.
+    mockTable.rows = riceLines(1500);
+    mockTable.emptyAt = 1;
+    await expect(fetchProductPurchases('arroz')).rejects.toThrow('Não foi possível carregar o histórico inteiro deste produto. Tente de novo.');
+    expect(mockTable.asked).toHaveLength(2);
+    // Na tentativa seguinte, com tudo no lugar, vem inteiro.
+    mockTable.asked = [];
+    mockTable.emptyAt = undefined;
+    expect(await fetchProductPurchases('arroz')).toHaveLength(1500);
+    // Uma leitura que já começa vazia é só um produto sem compras.
+    mockTable.asked = [];
+    mockTable.emptyAt = 0;
+    expect(await fetchProductPurchases('arroz')).toEqual([]);
+  });
+
+  it('linhas apagadas no meio da leitura (a página seguinte vem mais curta, não vazia) não são erro', async () => {
+    mockTable.rows = riceLines(1500);
+    // Entre a primeira página (que prometeu mais 500) e a segunda, alguém exclui uma nota: sobram 499.
+    mockTable.before = (request) => {
+      if (request === 1) mockTable.rows = mockTable.rows.filter((row) => row.id !== 'i001499');
+    };
+    expect(await fetchProductPurchases('arroz')).toHaveLength(1499);
+    expect(mockTable.asked).toHaveLength(2);
+  });
+
   it('compras demais para ler: falha com aviso claro, sem mostrar o histórico cortado', async () => {
     expect(PURCHASE_MAX_LINES).toBe(5000);
     mockTable.rows = riceLines(5001);
@@ -249,7 +283,8 @@ describe('as compras de um produto', () => {
     };
     await settle(() => seen.at(-1) !== undefined);
     expect(seen.at(-1)).toHaveLength(1500);
-    expect(seen.at(-1)![0]).toMatchObject({ store: 'assai', storeName: 'Assaí', baseUnit: 'un', discounted: false });
+    // Na seção, o mercado é o nome dele (domain/priceHistory, storeKey).
+    expect(seen.at(-1)![0]).toMatchObject({ store: storeKey('Assaí'), storeName: 'Assaí', baseUnit: 'un', discounted: false });
     expect(queryClient.getQueryData(['priceHistory', 'purchases', 'arroz'])).toHaveLength(1500);
 
     // O que confirmar e excluir uma nota fazem (data/receipts): invalidar ['priceHistory'] busca as compras de novo.

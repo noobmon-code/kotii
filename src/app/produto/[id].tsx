@@ -45,6 +45,11 @@ export default function ProductScreen() {
   for (const obs of history.data ?? []) if (!latest.has(obs.store_id)) latest.set(obs.store_id, obs);
   const latestByStore = [...latest.values()].sort((a, b) => a.unit_price - b.unit_price);
 
+  // Sem internet, o que não está guardado no aparelho fica com a busca parada (e ela segue sozinha quando a
+  // conexão volta): um aviso, em vez de girar sem fim.
+  if ([products, history, stores].some((query) => query.isPending && query.fetchStatus === 'paused')) {
+    return <ErrorNotice error={{ message: 'Sem internet: os preços deste produto aparecem quando a conexão voltar.' }} />;
+  }
   if (products.isPending || history.isPending || stores.isPending) return <Loading />;
   const error = products.error ?? history.error ?? stores.error;
   if (error) return <ErrorNotice error={error} />;

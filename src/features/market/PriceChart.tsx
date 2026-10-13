@@ -20,7 +20,8 @@ export function PriceChart({ chart }: { chart: PriceChartData }) {
   const c = useColors();
   // A largura é a do cartão, medida na tela: o desenho não estica nem corta em 320 px.
   const [width, setWidth] = useState(0);
-  const flat = chart.lowLabel === chart.highLabel;
+  // Quem diz que o preço não variou é o domínio, pela mesma regra das frases (os centavos).
+  const { flat } = chart;
   const x = (point: ChartPoint) => PAD + point.x * (width - 2 * PAD);
   const y = (point: ChartPoint) => HEIGHT - PAD - point.y * (HEIGHT - 2 * PAD);
   const latest = chart.points.find((point) => point.latest);

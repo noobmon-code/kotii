@@ -858,7 +858,9 @@ type PurchaseLineRow = {
  * preço, domain/priceHistory). Página por página, cada uma a partir do id da
  * última linha lida, com a contagem do servidor: página curta não é o fim (o
  * servidor corta em max_rows, calado), o fim é a contagem dizer que não
- * sobrou nada, ou a página vir vazia. Quem ordena e filtra é o app.
+ * sobrou nada, ou a página vir vazia. Página vazia logo depois de a contagem
+ * dizer que ainda havia linhas não é o fim: a leitura falha, em vez de dar a
+ * parte lida como o histórico inteiro. Quem ordena e filtra é o app.
  */
 export async function fetchProductPurchases(productId: string): Promise<PurchaseLine[]> {
   const lines: PurchaseLine[] = [];
@@ -866,6 +868,8 @@ export async function fetchProductPurchases(productId: string): Promise<Purchase
     new Error('Não foi possível carregar o histórico deste produto: são mais compras do que o app consegue ler de uma vez.');
   // O id da última linha lida: a página seguinte começa depois dela, mesmo que a lista mude no meio da leitura.
   let last: string | undefined;
+  // Quantas linhas a contagem da página anterior disse que ainda faltavam depois dela.
+  let promised = 0;
   for (;;) {
     let request = supabase
       .from('receipt_items')
@@ -878,6 +882,9 @@ export async function fetchProductPurchases(productId: string): Promise<Purchase
     // Quantas linhas ainda havia a partir daqui, contando as desta página.
     const left = result.count ?? null;
     if (lines.length + (left ?? rows.length) > PURCHASE_MAX_LINES) throw tooMany();
+    // Com a sessão vencida no meio da leitura, o servidor responde sem erro e sem linha nenhuma. Um erro comum:
+    // a busca tenta de novo, desde a primeira página (linhas apagadas de verdade dão uma contagem coerente na volta).
+    if (!rows.length && promised > 0) throw new Error('Não foi possível carregar o histórico inteiro deste produto. Tente de novo.');
     for (const row of rows) {
       lines.push({
         id: row.id,
@@ -892,6 +899,7 @@ export async function fetchProductPurchases(productId: string): Promise<Purchase
       });
     }
     if (!rows.length || (left != null && rows.length >= left)) return lines;
+    promised = left == null ? 0 : left - rows.length;
     last = rows[rows.length - 1].id;
   }
 }

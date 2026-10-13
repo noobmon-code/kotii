@@ -1,9 +1,14 @@
 // Histórico de preço de um produto: o que a casa pagou por ele em cada compra
 // (linhas de notas confirmadas), ao longo do tempo. O preço é sempre o impresso
-// na nota (unit_price), levado a kg, litro ou unidade para comparar; o que foi
-// pago (com desconto) aparece só na linha da compra. Unidades que não se
-// comparam (kg e un) nunca se misturam: cada uma tem o seu histórico. Tudo o
-// que a seção mostra (frases, gráfico, linhas) sai daqui; a tela só desenha.
+// na nota (unit_price), levado a kg, litro ou unidade para comparar e
+// arredondado para centavos uma vez só: é esse valor que a seção compara e
+// escreve. O que foi pago (com desconto) aparece só na linha da compra. Linha
+// com preço zero (a leitura não trouxe o valor, ou o item saiu de graça) não é
+// preço: fica na lista como "sem valor" e fora de tudo o que fala de preço.
+// Unidades que não se comparam (kg e un) nunca se misturam: cada uma tem o seu
+// histórico. Aqui um mercado é o nome dele: lojas de mesmo nome são uma só.
+// Tudo o que a seção mostra (frases, gráfico, linhas) sai daqui; a tela só
+// desenha.
 
 import { addMonths, diffDays, formatShortDate, toISODate } from './dates';
 import { formatBRL, formatQuantity } from './money';
@@ -30,7 +35,7 @@ export interface PurchaseLine {
 export interface Purchase {
   key: string;
   receiptId: string;
-  /** Chave do mercado: o id dele, ou NO_STORE. */
+  /** Chave do mercado: o nome dele (storeKey), ou NO_STORE. */
   store: string;
   storeName: string;
   /** Dia da compra no fuso do aparelho (AAAA-MM-DD). */
@@ -42,7 +47,7 @@ export interface Purchase {
   unit: string;
   /** A unidade em que os preços se comparam: kg, l ou un. */
   baseUnit: string;
-  /** O preço impresso, por `baseUnit`. */
+  /** O preço impresso, por `baseUnit`, já em centavos inteiros (roundPrice). Zero: compra sem valor. */
   price: number;
   /** O que foi pago, somando as linhas. */
   paid: number;
@@ -63,12 +68,42 @@ export const ALL_STORES = 'todos';
  */
 export const DISCOUNT_TOLERANCE_CENTS = 2;
 
+/**
+ * Metade da quarta casa decimal: o banco guarda o preço da linha com quatro
+ * casas, então o preço guardado pode estar até isto acima do verdadeiro. Numa
+ * linha em g ou ml a sobra se multiplica pela quantidade (900 ml a R$ 0,0086
+ * dão R$ 7,74 para um total de R$ 7,70) e não é desconto.
+ */
+const UNIT_PRICE_PRECISION = 0.00005;
+
 const cents = (value: number) => Math.round(value * 100);
 
-/** A linha saiu por menos do que quantidade x preço impresso (além do arredondamento). */
+/** A linha saiu por menos do que quantidade x preço impresso (além do arredondamento do total e do preço guardado). */
 export function hasDiscount(line: Pick<PurchaseLine, 'quantity' | 'unitPrice' | 'totalPrice'>): boolean {
-  return cents(line.quantity * line.unitPrice - line.totalPrice) > DISCOUNT_TOLERANCE_CENTS;
+  return cents(line.quantity * line.unitPrice - line.totalPrice - line.quantity * UNIT_PRICE_PRECISION) > DISCOUNT_TOLERANCE_CENTS;
 }
+
+/**
+ * O preço em centavos inteiros, que é como a tela o escreve. Seis casas antes
+ * de arredondar: 1,005 x 100 dá 100,49999999999999 no ponto flutuante, e o
+ * preço é R$ 1,01. toPurchases arredonda uma vez e a seção inteira compara e
+ * escreve esse valor: dois preços iguais na tela são o mesmo preço em toda
+ * frase e no gráfico.
+ */
+export function roundPrice(price: number): number {
+  return Math.round(Number((price * 100).toFixed(6))) / 100;
+}
+
+/** A compra tem preço. Preço impresso zero (ou que nem chega a um centavo) é compra sem valor: não entra em nada que fale de preço. */
+export const isPriced = (purchase: Pick<Purchase, 'price'>) => purchase.price > 0;
+
+/**
+ * Nesta seção um mercado é o nome dele, sem caixa nem espaços nas pontas
+ * (como o sameStoreName de data/receipts): duas filiais com o mesmo nome na
+ * nota, ou a mesma loja cadastrada duas vezes, são um mercado só. O prefixo
+ * separa o nome das outras chaves (uma loja chamada "Todos" não é ALL_STORES).
+ */
+export const storeKey = (name: string) => `nome:${name.trim().toLocaleLowerCase('pt-BR')}`;
 
 /** A mais recente primeiro; no mesmo instante (duas notas com a data digitada caem ao meio-dia), sempre na mesma ordem. */
 const newestFirst = (a: Purchase, b: Purchase) => b.time - a.time || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
@@ -92,18 +127,19 @@ export function toPurchases(lines: PurchaseLine[]): Purchase[] {
     }
     const at = new Date(line.purchasedAt);
     const base = pricePerBase(line.unitPrice, line.unit);
+    const storeName = line.storeId ? (line.storeName ?? 'Mercado') : NO_STORE_NAME;
     byKey.set(key, {
       key,
       receiptId: line.receiptId,
-      store: line.storeId ?? NO_STORE,
-      storeName: line.storeId ? (line.storeName ?? 'Mercado') : NO_STORE_NAME,
+      store: line.storeId ? storeKey(storeName) : NO_STORE,
+      storeName,
       // O dia é o do aparelho: a compra das 22h do dia 31 não cai no mês seguinte.
       day: toISODate(at),
       time: at.getTime(),
       quantity: line.quantity,
       unit: line.unit,
       baseUnit: base.unit,
-      price: base.unitPrice,
+      price: roundPrice(base.unitPrice),
       paid: line.totalPrice,
       discounted: hasDiscount(line),
     });
@@ -125,13 +161,18 @@ export function purchaseUnits(purchases: Purchase[]): string[] {
   return [...new Set(purchases.map((p) => p.baseUnit))].sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : 1));
 }
 
-/** A unidade com mais compras; no empate, a da compra mais recente. null sem compra nenhuma. */
+/**
+ * A unidade com mais compras com preço; no empate, a da mais recente delas.
+ * Sem nenhuma com preço, contam todas. null sem compra nenhuma.
+ */
 export function defaultUnit(purchases: Purchase[]): string | null {
+  const priced = purchases.filter(isPriced);
+  const counted = priced.length ? priced : purchases;
   const counts = new Map<string, number>();
-  for (const p of purchases) counts.set(p.baseUnit, (counts.get(p.baseUnit) ?? 0) + 1);
+  for (const p of counted) counts.set(p.baseUnit, (counts.get(p.baseUnit) ?? 0) + 1);
   const most = Math.max(0, ...counts.values());
   // As compras vêm da mais recente para a mais antiga: a primeira das empatadas é a mais nova.
-  return purchases.find((p) => counts.get(p.baseUnit) === most)?.baseUnit ?? null;
+  return counted.find((p) => counts.get(p.baseUnit) === most)?.baseUnit ?? null;
 }
 
 export type Period = '3m' | '6m' | '1a' | 'tudo';
@@ -154,9 +195,9 @@ export function inPeriod(purchases: Purchase[], period: Period, today: string): 
   return since ? purchases.filter((p) => p.day >= since) : purchases;
 }
 
-/** "6 meses" quando há pelo menos duas compras neles; senão, "Tudo". */
+/** "6 meses" quando há pelo menos duas compras com preço neles; senão, "Tudo". */
 export function defaultPeriod(purchases: Purchase[], today: string): Period {
-  return inPeriod(purchases, '6m', today).length >= 2 ? '6m' : 'tudo';
+  return inPeriod(purchases.filter(isPriced), '6m', today).length >= 2 ? '6m' : 'tudo';
 }
 
 export interface Option<T extends string = string> {
@@ -164,10 +205,14 @@ export interface Option<T extends string = string> {
   label: string;
 }
 
-/** Os chips de mercado: "Todos" e um por mercado, só quando as compras vêm de dois ou mais. */
+/**
+ * Os chips de mercado: "Todos" e um por nome de mercado, só quando as compras
+ * (com ou sem valor: todas estão na lista) vêm de dois ou mais. Nomes que só
+ * mudam na caixa são um chip, com o nome como veio na compra mais recente.
+ */
 export function storeOptions(purchases: Purchase[]): Option[] {
   const names = new Map<string, string>();
-  for (const p of purchases) names.set(p.store, p.storeName);
+  for (const p of [...purchases].sort(newestFirst)) if (!names.has(p.store)) names.set(p.store, p.storeName);
   if (names.size < 2) return [];
   const stores = [...names].map(([value, label]) => ({ value, label }));
   // Por nome; a compra sem mercado fica por último.
@@ -202,26 +247,27 @@ export function percentChange(from: number, to: number): number | null {
 
 /**
  * O que mudou da primeira compra do período para a última: "Subiu 13% desde
- * 12 jul (era R$ 22,90)", "Caiu 8% desde…", ou "Mesmo preço desde 12 jul"
- * quando a mudança arredonda para 0%. Só com compras em dois dias diferentes.
- * Com as duas em mercados diferentes (só acontece sem mercado escolhido), a
- * frase diz isso: diferença entre mercados não é o preço que subiu.
+ * 12 jul (era R$ 22,90)", "Caiu 8% desde…", "Mesmo preço desde 12 jul" com os
+ * mesmos centavos, ou "Quase o mesmo preço desde 12 jul (era R$ 100,00)" com
+ * centavos diferentes numa mudança que arredonda para 0% (logo abaixo vem
+ * "Menor: R$ 100,00 · Maior: R$ 100,40"). Só com compras com preço, em dois
+ * dias diferentes. Com as duas em mercados de nomes diferentes (só acontece
+ * sem mercado escolhido), a frase diz isso: diferença entre mercados não é o
+ * preço que subiu.
  */
 export function changeSentence(first: Purchase, last: Purchase, today: string): string | null {
-  if (first.day === last.day) return null;
+  if (first.day === last.day || !isPriced(first) || !isPriced(last)) return null;
   const since = `desde ${formatShortDate(first.day, yearOf(today))}`;
   const elsewhere =
     first.store === last.store ? null : first.store === NO_STORE ? 'numa compra sem mercado informado' : `em outro mercado: ${first.storeName}`;
-  const same = `Mesmo preço ${since}${elsewhere ? ` (${elsewhere})` : ''}`;
+  if (first.price === last.price) return `Mesmo preço ${since}${elsewhere ? ` (${elsewhere})` : ''}`;
   const was = `(era ${formatBRL(first.price)}${elsewhere ? `, ${elsewhere}` : ''})`;
   const percent = percentChange(first.price, last.price);
-  // Era de graça (preço zero na nota): se agora custa, subiu, sem porcento.
-  if (percent == null) return cents(last.price) > 0 ? `Subiu ${since} ${was}` : same;
-  if (percent === 0) return same;
+  if (!percent) return `Quase o mesmo preço ${since} ${was}`;
   return `${percent > 0 ? 'Subiu' : 'Caiu'} ${Math.abs(percent)}% ${since} ${was}`;
 }
 
-/** O menor e o maior preço; no empate, vale a compra mais recente. null sem compras. */
+/** O menor e o maior preço; no empate (os mesmos centavos, também entre uma compra em g e outra em kg), vale a compra mais recente. null sem compras. */
 export function priceRange(purchases: Purchase[]): { lowest: Purchase; highest: Purchase } | null {
   if (!purchases.length) return null;
   // Da mais recente para a mais antiga, só troca por um preço de fato menor (ou maior).
@@ -244,7 +290,7 @@ export function rangeSentence(purchases: Purchase[], period: Period, today: stri
   const range = priceRange(purchases);
   if (!range || purchases.length < 2) return null;
   const { lowest, highest } = range;
-  if (cents(lowest.price) === cents(highest.price)) {
+  if (lowest.price === highest.price) {
     return `Sempre ${formatBRL(lowest.price)}${period === 'tudo' ? '' : ' neste período'}`;
   }
   const at = (p: Purchase) => `${formatBRL(p.price)} (${p.storeName}, ${formatShortDate(p.day, yearOf(today))})`;
@@ -262,15 +308,20 @@ export function medianPrice(purchases: Purchase[]): number | null {
 /** "Costuma custar R$ 24,50": a mediana do período, a partir de três compras (e só se o preço variou). */
 export function usualSentence(purchases: Purchase[]): string | null {
   const range = priceRange(purchases);
-  if (!range || purchases.length < 3 || cents(range.lowest.price) === cents(range.highest.price)) return null;
-  return `Costuma custar ${formatBRL(medianPrice(purchases)!)}`;
+  if (!range || purchases.length < 3 || range.lowest.price === range.highest.price) return null;
+  // Entre dois preços, a mediana pode cair em meio centavo: sai em centavos como os outros.
+  return `Costuma custar ${formatBRL(roundPrice(medianPrice(purchases)!))}`;
 }
 
 const PERIOD_WORDS: Record<Period, string> = { '3m': ' em 3 meses', '6m': ' em 6 meses', '1a': ' em 1 ano', tudo: '' };
 
-/** "8 compras em 6 meses", "1 compra". */
-export function countSentence(count: number, period: Period): string {
-  return `${plural(count, 'compra', 'compras')}${PERIOD_WORDS[period]}`;
+/**
+ * "8 compras em 6 meses", "1 compra": as compras com preço. Com outras sem
+ * valor à vista, diz quantas ficaram de fora: "8 compras e 1 sem valor em 6
+ * meses".
+ */
+export function countSentence(count: number, period: Period, noValue = 0): string {
+  return `${plural(count, 'compra', 'compras')}${noValue > 0 ? ` e ${noValue} sem valor` : ''}${PERIOD_WORDS[period]}`;
 }
 
 /** Período sem compra nenhuma: diz isso e onde ver mais. */
@@ -279,21 +330,29 @@ export function emptyPeriodSentence(period: Period): string {
   return period === 'tudo' ? 'Nenhuma compra ainda.' : `Nenhuma compra ${when}. Veja em "Tudo".`;
 }
 
+/** Há compras à vista, mas nenhuma com preço: a lista aparece, e esta frase fica no lugar do resumo. */
+export function noValueSentence(period: Period): string {
+  return period === 'tudo' ? 'Nenhuma compra com valor ainda.' : 'Nenhuma compra com valor neste período.';
+}
+
 /**
  * O resumo acima do gráfico, uma frase por linha. `purchases` são as compras
  * à vista (da unidade, do período e do mercado escolhidos), da mais recente
- * para a mais antiga. Com uma compra só, o resumo é ela.
+ * para a mais antiga. Só as que têm preço entram nas frases; as sem valor
+ * aparecem na contagem. Com uma compra só, o resumo é ela.
  */
 export function summarize(purchases: Purchase[], { period, today }: { period: Period; today: string }): string[] {
   if (!purchases.length) return [emptyPeriodSentence(period)];
-  const last = purchases[0];
-  const first = purchases[purchases.length - 1];
+  const priced = purchases.filter(isPriced);
+  if (!priced.length) return [noValueSentence(period)];
+  const last = priced[0];
+  const first = priced[priced.length - 1];
   return [
     latestSentence(last, today),
     changeSentence(first, last, today),
-    rangeSentence(purchases, period, today),
-    usualSentence(purchases),
-    countSentence(purchases.length, period),
+    rangeSentence(priced, period, today),
+    usualSentence(priced),
+    countSentence(priced.length, period, purchases.length - priced.length),
   ].filter((sentence): sentence is string => sentence != null);
 }
 
@@ -321,12 +380,13 @@ export function chartPoints(purchases: Purchase[]): ChartPoint[] {
   if (!range) return [];
   const firstDay = sorted[0].day;
   const days = diffDays(firstDay, sorted[sorted.length - 1].day);
-  // Preços iguais como aparecem na tela (em centavos) são o mesmo preço: linha reta.
-  const spread = cents(range.highest.price) === cents(range.lowest.price) ? 0 : range.highest.price - range.lowest.price;
+  // Os preços já estão em centavos: iguais na tela são o mesmo preço, e a linha é reta.
+  const spread = range.highest.price - range.lowest.price;
   return sorted.map((p, index) => ({
     key: p.key,
     x: days > 0 ? diffDays(firstDay, p.day) / days : 0.5,
-    y: spread > 0 ? (p.price - range.lowest.price) / spread : 0.5,
+    // Nunca fora da área do desenho.
+    y: spread > 0 ? Math.min(1, Math.max(0, (p.price - range.lowest.price) / spread)) : 0.5,
     latest: index === sorted.length - 1,
   }));
 }
@@ -336,6 +396,8 @@ export interface PriceChart {
   /** O menor e o maior preço, escritos à esquerda (iguais quando o preço não variou). */
   lowLabel: string;
   highLabel: string;
+  /** O preço não variou: uma linha reta a meia altura, com um preço só à esquerda. */
+  flat: boolean;
   /** A primeira e a última data, embaixo. */
   firstDate: string;
   lastDate: string;
@@ -344,22 +406,24 @@ export interface PriceChart {
 }
 
 /**
- * O gráfico do preço ao longo do tempo. null sem compras em pelo menos dois
- * dias diferentes: com uma compra (ou várias no mesmo dia) não há linha do
- * tempo a desenhar, e o resumo e a lista bastam.
+ * O gráfico do preço ao longo do tempo, só das compras com preço. null sem
+ * elas em pelo menos dois dias diferentes: com uma compra (ou várias no mesmo
+ * dia) não há linha do tempo a desenhar, e o resumo e a lista bastam.
  */
 export function priceChart(purchases: Purchase[], { productName, today }: { productName: string; today: string }): PriceChart | null {
-  const points = chartPoints(purchases);
-  const range = priceRange(purchases);
+  const priced = purchases.filter(isPriced);
+  const points = chartPoints(priced);
+  const range = priceRange(priced);
   if (!range || !points.some((p) => p.x !== points[0].x)) return null;
-  const sorted = [...purchases].sort(newestFirst);
+  const sorted = [...priced].sort(newestFirst);
   const last = sorted[0];
   const firstDate = formatShortDate(sorted[sorted.length - 1].day, yearOf(today));
   const lastDate = formatShortDate(last.day, yearOf(today));
   const lowLabel = formatBRL(range.lowest.price);
   const highLabel = formatBRL(range.highest.price);
-  const prices = lowLabel === highLabel ? `sempre ${lowLabel}` : `de ${lowLabel} a ${highLabel}; o último, ${formatBRL(last.price)}`;
-  return { points, lowLabel, highLabel, firstDate, lastDate, label: `Preço de ${productName} de ${firstDate} a ${lastDate}: ${prices}` };
+  const flat = range.lowest.price === range.highest.price;
+  const prices = flat ? `sempre ${lowLabel}` : `de ${lowLabel} a ${highLabel}; o último, ${formatBRL(last.price)}`;
+  return { points, lowLabel, highLabel, flat, firstDate, lastDate, label: `Preço de ${productName} de ${firstDate} a ${lastDate}: ${prices}` };
 }
 
 // ---------------------------------------------------------------------------
@@ -371,20 +435,28 @@ export interface PurchaseRow {
   receiptId: string;
   /** O mercado. */
   title: string;
-  /** "10 out · 2 un · pagou R$ 51,80" (com o ano quando não é o de hoje). */
+  /** "10 out · 2 un · pagou R$ 51,80" (com o ano quando não é o de hoje); "10 out · 2 un · sem valor" na compra sem valor. */
   detail: string;
-  /** O preço impresso: "R$ 25,90/un". */
+  /** O preço impresso: "R$ 25,90/un"; "sem valor" quando a compra não tem preço. */
   price: string;
+  priced: boolean;
   discounted: boolean;
 }
 
+/** O que a linha diz no lugar do preço (e do que foi pago) na compra sem valor. */
+export const NO_VALUE = 'sem valor';
+
 export function purchaseRow(purchase: Purchase, today: string): PurchaseRow {
+  const priced = isPriced(purchase);
+  // Sem preço e sem nada pago, "pagou R$ 0,00" seria dar um valor que a nota não tem.
+  const paid = priced || cents(purchase.paid) > 0 ? `pagou ${formatBRL(purchase.paid)}` : NO_VALUE;
   return {
     key: purchase.key,
     receiptId: purchase.receiptId,
     title: purchase.storeName,
-    detail: `${formatShortDate(purchase.day, yearOf(today))} · ${formatQuantity(purchase.quantity, purchase.unit)} · pagou ${formatBRL(purchase.paid)}`,
-    price: perUnit(purchase),
+    detail: `${formatShortDate(purchase.day, yearOf(today))} · ${formatQuantity(purchase.quantity, purchase.unit)} · ${paid}`,
+    price: priced ? perUnit(purchase) : NO_VALUE,
+    priced,
     discounted: purchase.discounted,
   };
 }
@@ -420,6 +492,8 @@ export interface PriceHistoryView {
   stores: Option[];
   store: string;
   summary: string[];
+  /** A primeira frase do resumo é a última compra (em destaque); falso quando o resumo é só um aviso. */
+  headline: boolean;
   chart: PriceChart | null;
   rows: PurchaseRow[];
   /** "Ver mais (faltam 12)", ou null com todas as compras à vista. */
@@ -443,7 +517,7 @@ export function priceHistoryView(
   const period = choices.period ?? defaultPeriod(ofUnit, today);
   const ofPeriod = inPeriod(ofUnit, period, today);
   const stores = storeOptions(ofPeriod);
-  // O mercado escolhido que saiu de vista (outro período, outra unidade) volta a "Todos".
+  // O mercado escolhido que saiu de vista (outro período, outra unidade) volta a "Todos" (e chooseInHistory o esquece).
   const store = stores.some((s) => s.value === choices.store) ? choices.store! : ALL_STORES;
   const shown = store === ALL_STORES ? ofPeriod : ofPeriod.filter((p) => p.store === store);
   const visible = shown.slice(0, ROWS_AT_FIRST + Math.max(0, choices.more) * ROWS_PER_MORE);
@@ -455,8 +529,27 @@ export function priceHistoryView(
     stores,
     store,
     summary: summarize(shown, { period, today }),
+    headline: shown.some(isPriced),
     chart: priceChart(shown, { productName, today }),
     rows: visible.map((p) => purchaseRow(p, today)),
     more: moreLabel(shown.length - visible.length),
   };
+}
+
+/**
+ * As escolhas depois de um toque (outra unidade, outro período, outro
+ * mercado). A lista volta às primeiras compras, e o mercado guardado é o que
+ * a seção de fato vai mostrar: se o escolhido saiu de vista (sem compra na
+ * nova unidade ou no novo período), a escolha é esquecida, e ele não volta
+ * sozinho num toque seguinte.
+ */
+export function chooseInHistory(
+  purchases: Purchase[],
+  choices: HistoryChoices,
+  choice: Partial<Pick<HistoryChoices, 'unit' | 'period' | 'store'>>,
+  context: { today: string; productName: string },
+): HistoryChoices {
+  const next = { ...choices, ...choice, more: 0 };
+  const view = priceHistoryView(purchases, next, context);
+  return { ...next, store: !view || view.store === ALL_STORES ? null : view.store };
 }
