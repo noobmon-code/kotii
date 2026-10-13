@@ -840,6 +840,10 @@ describe('examTrends', () => {
       'Hemograma, EAS e parasitológico de fezes',
       'Bioquímica - EAS',
       'Urina e fezes',
+      // O sangue dito pelo adjetivo.
+      'Dosagens séricas e urinárias',
+      'Exames sanguíneos e de urina',
+      'Dosagem plasmática + urina de 24h',
     ]) {
       const trends = examTrends([
         exam('2026-01-10', [result('Hemoglobina', '13,1', 'g/dL'), result('Glicose', '92', 'mg/dL')], { title: 'Exames de rotina' }),

@@ -405,7 +405,7 @@ const MATERIAL_LABEL: Record<string, string> = { urina: 'urina', '24h': 'urina d
 
 // O que diz "sangue" num título, e o que separa os exames dele ("+", ",",
 // ";", "&", "/", " - " e o "e" entre palavras).
-const BLOOD = /\b(sangue|sanguine[oa]|hemograma|bioquimic[ao]|soro|plasma|lipidograma|coagulograma|glicemia)\b/;
+const BLOOD = /\b(sangue|sanguine[oa]s?|seric[oa]s?|plasmatic[oa]s?|hematologic[oa]s?|hemograma|bioquimic[ao]s?|soro|plasma|lipidograma|coagulograma|glicemia)\b/;
 const TITLE_PARTS = /[+,;&/]|\s-\s|\be\b/;
 
 const plainWords = (text: string) => normalizeSearch(text).replace(/[^a-z0-9]+/g, ' ');
