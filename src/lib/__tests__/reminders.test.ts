@@ -47,6 +47,9 @@ const losartana = {
   prescriptionUntil: '2026-10-10',
 };
 
+// A agenda da família carregada e vazia (nenhum compromisso, ninguém faz aniversário): o resumo de amanhã só é feito com ela.
+const noFamily = { events: [], days: [], people: [] };
+
 // Roda `scenario` num ambiente simulado: sistema, Expo Go ou não, e um
 // expo-notifications que lança erro ao ser carregado no Expo Go do Android
 // (comportamento real desde o SDK 53).
@@ -376,7 +379,7 @@ describe('no navegador (Web Push)', () => {
       expect(await reminders.setHouseReminderKind('eve', true)).toBe(true);
       const bills = [{ id: 'b1', name: 'Luz', amount: 180, next_due_on: '2026-09-29', active: true, autopay: false }];
       await reminders.syncHouseReminders(
-        { bills, documents: [], chores: [], appointments: [], vaccines: [], equipment: [] },
+        { bills, documents: [], chores: [], appointments: [], vaccines: [], family: noFamily, equipment: [] },
         { householdId: 'casa', today: '2026-09-27' },
       );
       expect([...web.scheduled.values()]).toEqual([
@@ -401,6 +404,7 @@ describe('no navegador (Web Push)', () => {
         chores: [],
         appointments: [],
         vaccines: [],
+        family: noFamily,
         equipment: [],
       });
       await reminders.syncHouseReminders(house('b1', 'Luz'), { householdId: 'casa', label: 'Casa', today: '2026-09-27' });
@@ -810,8 +814,15 @@ describe('house reminders', () => {
     });
   });
 
-  // O resumo de amanhã só é feito com consultas, vacinas e aparelhos carregados.
-  const loaded = { ...data, bills: [{ ...data.bills[0], amount: 180, next_due_on: '2026-09-29' }], appointments: [], vaccines: [], equipment: [] };
+  // O resumo de amanhã só é feito com consultas, vacinas, a agenda da família e os aparelhos carregados.
+  const loaded = {
+    ...data,
+    bills: [{ ...data.bills[0], amount: 180, next_due_on: '2026-09-29' }],
+    appointments: [],
+    vaccines: [],
+    family: noFamily,
+    equipment: [],
+  };
   const pediatra = { id: 'a1', title: 'Pediatra', person: 'Bia', date: '2026-09-29', time: '09:00', location: null, status: 'agendada' };
   const withConsulta = { ...loaded, appointments: [pediatra] };
   type Live = Map<string, { content: { data: { reminder: string } } }>;
@@ -857,7 +868,7 @@ describe('house reminders', () => {
     });
   });
 
-  it('sem as consultas, as vacinas ou os aparelhos, o resumo agendado fica e nenhum é feito pela metade; com tudo de volta, é refeito', async () => {
+  it('sem as consultas, as vacinas, a agenda da família ou os aparelhos, o resumo agendado fica e nenhum é feito pela metade; com tudo de volta, é refeito', async () => {
     await withHouse(async (reminders, { live, storage }) => {
       await reminders.setHouseReminderKind('eve', true);
       // Os aparelhos (as garantias) ainda não carregaram: nada de resumo por enquanto.
@@ -867,7 +878,7 @@ describe('house reminders', () => {
       const [first] = summaries(live);
       expect(first.body).toBe('Luz (R$ 180,00)');
       // Marcaram uma consulta para o mesmo dia, mas falta um dos dados: o resumo fica como está.
-      for (const missing of ['appointments', 'vaccines', 'equipment'] as const) {
+      for (const missing of ['appointments', 'vaccines', 'family', 'equipment'] as const) {
         await reminders.syncHouseReminders({ ...withConsulta, [missing]: undefined }, { householdId: 'casa', today });
         expect(summaries(live)).toEqual([first]);
       }
@@ -897,6 +908,79 @@ describe('house reminders', () => {
       // Carregaram: volta a ser uma notificação só naquela noite.
       await reminders.syncHouseReminders(withConsulta, { householdId: 'casa', today });
       expect(remindersOf(live)).toEqual(['appointments:a1:2026-09-29:07:00', 'eve:amanha:2026-09-28:20:00:casa']);
+    });
+  });
+
+  it('sem a agenda da família (ainda carregando), nenhum resumo é feito e os agendados ficam; quando ela chega, vêm com os compromissos e os aniversários', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('eve', true);
+      const target = { householdId: 'casa', today, nowTime: '08:00' };
+      // Os compromissos e as fichas ainda não carregaram: nada de resumo por enquanto (sairia sem a natação de terça).
+      await reminders.syncHouseReminders({ ...loaded, family: undefined }, target);
+      expect(live.size).toBe(0);
+      // Chegaram: a noite de segunda fala da natação e da conta de terça; a de terça, do aniversário de quarta.
+      await reminders.syncHouseReminders({ ...loaded, family }, target);
+      const planned = summaries(live);
+      expect(planned.map((s) => [s.title, s.body])).toEqual([
+        ['Amanhã, terça-feira', '16h Natação da Ana (Ana, Beto leva) · Luz (R$ 180,00)'],
+        ['Amanhã, quarta-feira', 'Aniversário de Ana (faz 8 anos)'],
+      ]);
+      // A agenda falta de novo (sem internet) e a conta mudou de valor: os resumos agendados ficam como estão.
+      const dearer = { ...loaded, bills: [{ ...loaded.bills[0], amount: 195.5 }] };
+      await reminders.syncHouseReminders({ ...dearer, family: undefined }, target);
+      expect(summaries(live)).toEqual(planned);
+      // Voltou: são refeitos, com o valor novo.
+      await reminders.syncHouseReminders({ ...dearer, family }, target);
+      expect(summaries(live).map((s) => s.body)).toEqual(['16h Natação da Ana (Ana, Beto leva) · Luz (R$ 195,50)', 'Aniversário de Ana (faz 8 anos)']);
+      expect(planned.some((s) => live.has(s.id))).toBe(false);
+    });
+  });
+
+  it('banco ainda sem as tabelas dos compromissos: a agenda vem só com as fichas, e o resumo não fica esperando', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('eve', true);
+      // É o que as buscas respondem antes da migração: nenhum compromisso, nenhuma mudança de dia.
+      await reminders.syncHouseReminders({ ...loaded, family: { ...family, events: [], days: [] } }, { householdId: 'casa', today, nowTime: '08:00' });
+      expect(summaries(live).map((s) => [s.title, s.body])).toEqual([
+        ['Amanhã, terça-feira', 'Luz (R$ 180,00)'],
+        ['Amanhã, quarta-feira', 'Aniversário de Ana (faz 8 anos)'],
+      ]);
+    });
+  });
+
+  it('resumo com compromisso: fica no lugar do "Amanhã: …" das 19h; sem os dados do resumo, o compromisso volta a ter a véspera dele', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('events', true);
+      await reminders.setHouseReminderKind('eve', true);
+      const target = { householdId: 'casa', today, nowTime: '08:00' };
+      const withFamily = { ...loaded, family };
+      // A natação de terça vai no resumo de segunda à noite: fica o aviso de 1 hora antes. O aniversário tem o aviso das 8h.
+      const complete = [
+        'eve:amanha:2026-09-28:20:00:casa',
+        'eve:amanha:2026-09-29:20:00:casa',
+        'events:ana@2026-09-30:2026-09-30:08:00',
+        'events:natacao@2026-09-29:2026-09-29:15:00',
+      ];
+      await reminders.syncHouseReminders(withFamily, target);
+      expect(remindersOf(live)).toEqual(complete);
+      const held = summaries(live);
+      // Os aparelhos não carregaram: os resumos agendados ficam, e os compromissos são refeitos sem contar
+      // com eles (dois avisos na noite de segunda, e não nenhum).
+      await reminders.syncHouseReminders({ ...withFamily, equipment: undefined }, target);
+      expect(remindersOf(live)).toEqual([...complete, 'events:natacao@2026-09-29:2026-09-28:19:00'].sort());
+      expect(held.every((s) => live.has(s.id))).toBe(true);
+      // Carregaram: volta a ser uma notificação só naquela noite.
+      await reminders.syncHouseReminders(withFamily, target);
+      expect(remindersOf(live)).toEqual(complete);
+      // Desligar o resumo tira só ele, na hora; a próxima sincronização devolve o "Amanhã: …".
+      await reminders.setHouseReminderKind('eve', false);
+      expect(remindersOf(live)).toEqual(complete.slice(2));
+      await reminders.syncHouseReminders(withFamily, target);
+      expect(remindersOf(live)).toEqual([
+        'events:ana@2026-09-30:2026-09-30:08:00',
+        'events:natacao@2026-09-29:2026-09-28:19:00',
+        'events:natacao@2026-09-29:2026-09-29:15:00',
+      ]);
     });
   });
 

@@ -100,6 +100,9 @@ function toHouseReminderData(
       next_dose_on: v.next_dose_on,
     })),
     // Os aniversários saem das fichas; sem as mudanças de cada dia não há como saber o que "não vai ter".
+    // O resumo de amanhã também espera por isto. Num banco ainda sem as tabelas
+    // dos compromissos as duas buscas respondem "nenhum" (não ficam sem
+    // resposta): a agenda vem só com as fichas, e o resumo não fica esperando.
     family: people && family.events && family.days ? { events: family.events, days: family.days, people } : undefined,
     // O nome de quem toma já vem no remédio: não depende das fichas.
     medications: medications && toSchedules(medications, today, ticked.date === today ? ticked.doses : undefined),
@@ -112,7 +115,7 @@ function toHouseReminderData(
             weatherMornings(forecast, weatherContext(people, chores, equipment, today))
           : undefined,
     // As garantias que acabam, para o resumo de amanhã: ele só é refeito com
-    // tudo carregado (consultas, vacinas, fichas e os aparelhos).
+    // tudo carregado (consultas, vacinas, fichas, compromissos e os aparelhos).
     equipment,
   };
 }

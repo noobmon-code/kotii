@@ -9,7 +9,7 @@
 // No navegador, a mesma agenda fica no servidor e chega por Web Push (ver
 // src/lib/webPush.ts): cada navegador inscrito é um "aparelho".
 // Entre os avisos da casa está o resumo de amanhã: à noite, uma notificação
-// só com o que a casa tem no dia seguinte.
+// só com o que a casa tem no dia seguinte, compromissos e aniversários inclusive.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { isRunningInExpoGo } from 'expo';
@@ -433,7 +433,8 @@ const NO_HOUSE_KINDS: Record<HouseReminderKind, boolean> = {
  * carregaram (os avisos deles já agendados ficam como estão). `weatherPlace`:
  * de onde é a previsão (as coordenadas do local da casa; null sem local;
  * undefined se o local não carregou). `equipment` (as garantias, para o
- * resumo de amanhã) undefined: os aparelhos não carregaram.
+ * resumo de amanhã) undefined: os aparelhos não carregaram. O resumo de
+ * amanhã espera por todos: consultas, vacinas, `family` e `equipment`.
  */
 export type HouseReminderData = Pick<
   HouseReminderInput,
@@ -567,11 +568,15 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
       ...(data.family === undefined ? (['events'] as const) : []),
       ...(data.medications === undefined ? (['refills'] as const) : []),
       ...(weather === undefined ? (['weather'] as const) : []),
-      // O resumo de amanhã junta consultas, vacinas e garantias: sem alguma
-      // delas, sairia pela metade (sem a consulta de amanhã, pior que nenhum),
-      // então os já agendados ficam. Só com ele ligado: desligado, não há
-      // resumo agendado para ficar, e o plano de quem não o usa segue igual.
-      ...(kinds.eve && (data.appointments === undefined || data.vaccines === undefined || data.equipment === undefined) ? (['eve'] as const) : []),
+      // O resumo de amanhã junta consultas, vacinas, compromissos, aniversários e
+      // garantias: sem algum deles, sairia pela metade (sem a consulta ou a
+      // festa de amanhã, pior que nenhum), então os já agendados ficam. Só com
+      // ele ligado: desligado, não há resumo agendado para ficar, e o plano de
+      // quem não o usa segue igual.
+      ...(kinds.eve &&
+      (data.appointments === undefined || data.vaccines === undefined || data.family === undefined || data.equipment === undefined)
+        ? (['eve'] as const)
+        : []),
     ]);
     // Aviso de atraso cuja hora já passou tocou: aquela conta (ou vacina) não
     // avisa de novo. Guarda só as que continuam atrasadas (paga, o vencimento
@@ -600,8 +605,8 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
     const heldIds = new Set(held.map((r) => r.id));
     // Os que ficam guardam a vaga, os resumos também: com o teto curto, o aviso
     // próprio mais distante pode ficar de fora até a próxima sincronização
-    // completa. Tirar a vaga do resumo que fica não é seguro: sem as consultas,
-    // ele pode ser o único aviso de véspera de uma delas.
+    // completa. Tirar a vaga do resumo que fica não é seguro: sem as consultas
+    // (ou os compromissos), ele pode ser o único aviso de véspera de um deles.
     const limit = Math.min(target.limit ?? HOUSE_REMINDER_LIMIT, SCHEDULED_NOTIFICATIONS_LIMIT - others) - held.length;
     const planKinds = {
       ...kinds,
@@ -610,8 +615,9 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
       events: kinds.events && !unknown.has('events'),
       refills: kinds.refills && !unknown.has('refills'),
       weather: kinds.weather && !unknown.has('weather'),
-      // Sem o resumo no plano, a consulta tem o "Consulta amanhã" dela: se um
-      // resumo já agendado ficar, dois avisos na mesma noite são melhores que nenhum.
+      // Sem o resumo no plano, a consulta tem o "Consulta amanhã" dela (e o
+      // compromisso, o "Amanhã: …"): se um resumo já agendado ficar, dois
+      // avisos na mesma noite são melhores que nenhum.
       eve: kinds.eve && !unknown.has('eve'),
     };
     // Com mais de uma casa, o aviso diz de qual é.
