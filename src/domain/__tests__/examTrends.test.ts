@@ -522,6 +522,8 @@ describe('examTrends', () => {
     ]);
     expect(trends.series.map((s) => s.points.map((p) => valueLabel(p)))).toEqual([['0,9 mg/dL', '1,1 mg/dL', '1,0 mg/dl']]);
     expect(trends.text.map((i) => [i.name, i.last.value, i.last.number])).toEqual([['Creatinina', '88 µmol/L', null]]);
+    // Sem a unidade do campo ao lado: "88 µmol/L mg/dL" não é o que o laudo diz.
+    expect(trends.text.map((i) => valueLabel(i.last))).toEqual(['88 µmol/L']);
   });
 
   it('dois exames no mesmo dia mantêm os dois pontos, na ordem em que foram criados', () => {
@@ -542,6 +544,22 @@ describe('examTrends', () => {
       ['Glicose', '140'],
     ]);
     expect(new Set(trends.single.map((i) => i.key)).size).toBe(2);
+  });
+
+  it('o mesmo item em texto duas vezes no mesmo laudo também são dois itens', () => {
+    const trends = examTrends([
+      exam('2026-03-12', [result('Nitrito', 'Negativo'), result('Nitrito', 'Positivo', null, 'alterado')], { title: 'Urina' }),
+      exam('2026-09-05', [result('Nitrito', 'Negativo'), result('Nitrito', 'Negativo')], { title: 'Urina' }),
+      exam('2026-09-06', [result('Conclusão', 'Sem alterações.'), result('Conclusão', 'Cisto simples no rim direito.')], { title: 'Ultrassom' }),
+    ]);
+    // A primeira ocorrência segue a primeira dos outros laudos; a segunda segue a segunda.
+    expect(trends.text.map((i) => [i.name, i.points.map((p) => p.value)])).toEqual([
+      ['Ultrassom: Conclusão', ['Sem alterações.']],
+      ['Ultrassom: Conclusão', ['Cisto simples no rim direito.']],
+      ['Nitrito', ['Negativo', 'Negativo']],
+      ['Nitrito', ['Positivo', 'Negativo']],
+    ]);
+    expect(new Set(trends.text.map((i) => i.key)).size).toBe(4);
   });
 
   it('entre laudos, a primeira ocorrência segue a primeira e a segunda segue a segunda', () => {
@@ -576,6 +594,12 @@ describe('examTrends', () => {
       'Clearance 24 horas',
       'Parasitológico de fezes',
       'Líquor',
+      // Um exame só, mesmo com "e", "/", " - " ou a palavra "sangue" no título.
+      'Urina tipo I e sedimento',
+      'Pesquisa de sangue oculto nas fezes',
+      'Relação albumina/creatinina (urina)',
+      'EAS - rotina',
+      'Urina 24h e clearance',
     ]) {
       const trends = blood(title);
       expect([title, trends.series.map((s) => [s.points.map((p) => p.value), s.change])]).toEqual([
@@ -808,7 +832,15 @@ describe('examTrends', () => {
   });
 
   it('título que junta exames não vale como material: a série do sangue continua', () => {
-    for (const title of ['Hemograma + EAS', 'Sangue e urina', 'Exames de rotina (sangue e urina)', 'Hemograma, EAS e parasitológico de fezes']) {
+    for (const title of [
+      'Hemograma + EAS',
+      'Sangue e urina',
+      'Sangue/urina',
+      'Exames de rotina (sangue e urina)',
+      'Hemograma, EAS e parasitológico de fezes',
+      'Bioquímica - EAS',
+      'Urina e fezes',
+    ]) {
       const trends = examTrends([
         exam('2026-01-10', [result('Hemoglobina', '13,1', 'g/dL'), result('Glicose', '92', 'mg/dL')], { title: 'Exames de rotina' }),
         exam(
@@ -867,6 +899,24 @@ describe('examTrends', () => {
     expect(differential.series.map((s) => [valueLabel(s.last), apartNote(s)])).toEqual([['60%', null]]);
     expect(differential.single.map((i) => [valueLabel(i.last), i.newerElsewhere, i.otherUnits, apartNote(i)])).toEqual([
       ['4.125 /mm³', null, [], null],
+    ]);
+    // Fora do diferencial, "%" e outra unidade em laudos diferentes são o mesmo item em outra unidade: avisa.
+    const glicada = examTrends([
+      exam('2026-03-12', [result('HbA1c', '5,6', '%')]),
+      exam('2026-09-05', [result('Hemoglobina glicada', '38', 'mmol/mol')]),
+    ]);
+    expect(glicada.single.map((i) => [valueLabel(i.last), apartNote(i)])).toEqual([
+      ['38 mmol/mol', null],
+      ['5,6%', 'Há um resultado mais recente em outra unidade: 38 mmol/mol em 05/09/2026. Não foi comparado.'],
+    ]);
+    // O laudo que traz as duas medidas é o que diz que são duas: daí em diante, cada uma segue a sua.
+    const both = examTrends([
+      exam('2026-03-12', [result('HbA1c', '5,6', '%'), result('HbA1c', '38', 'mmol/mol')]),
+      exam('2026-09-05', [result('HbA1c', '42', 'mmol/mol')]),
+    ]);
+    expect([...both.series, ...both.single].map((i) => [valueLabel(i.last), apartNote(i)])).toEqual([
+      ['42 mmol/mol', null],
+      ['5,6%', null],
     ]);
     // Sem unidade ao lado do percentual continua avisando.
     const bare = examTrends([exam('2026-03-12', [result('Hematócrito', '42')]), exam('2026-09-05', [result('Hematócrito', '41', '%')])]);

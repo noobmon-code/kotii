@@ -2,7 +2,7 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { useExams, usePeople } from '@/data/health';
+import { usePeople, usePersonExams } from '@/data/health';
 import { useMedications } from '@/data/home';
 import { formatBRDate, todayISO } from '@/domain/dates';
 import {
@@ -42,7 +42,8 @@ import { space } from '@/ui/theme';
 export default function ExamTrendsScreen() {
   const { pessoa } = useLocalSearchParams<{ pessoa: string }>();
   const people = usePeople();
-  const exams = useExams();
+  // Todos os exames da pessoa, e não a lista da casa, que traz só os mais recentes de todo mundo.
+  const exams = usePersonExams(pessoa);
   const medications = useMedications();
   // O resumo é dado de saúde: existe só aqui, na memória, enquanto a tela dele está aberta.
   const [summary, setSummary] = useState<string | null>(null);

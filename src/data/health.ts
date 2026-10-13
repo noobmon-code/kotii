@@ -208,6 +208,43 @@ export function useExams() {
   });
 }
 
+/** Quantos exames cada busca traz (o servidor devolve até mil linhas por vez) e até quantas buscas. */
+const EXAM_PAGE = 500;
+const EXAM_PAGES = 40;
+
+/**
+ * Todos os exames de uma pessoa, do mais antigo para o mais novo. A lista da
+ * casa (useExams) traz só os 300 mais recentes de todo mundo: numa casa com
+ * muitos exames, a evolução e o resumo de quem faz poucos ficariam sem os
+ * antigos, sem ninguém saber.
+ */
+export async function fetchPersonExams(personId: string, db: SupabaseClient = supabase): Promise<Exam[]> {
+  const all: Exam[] = [];
+  for (let page = 0; page < EXAM_PAGES; page++) {
+    const rows = unwrap(
+      await db
+        .from('exams')
+        .select(EXAM_COLUMNS)
+        .eq('person_id', personId)
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
+        .range(all.length, all.length + EXAM_PAGE - 1),
+    ) as Exam[];
+    all.push(...rows);
+    if (rows.length < EXAM_PAGE) break;
+  }
+  return all;
+}
+
+/** Os exames de uma pessoa, inteiros (fetchPersonExams). A chave começa com 'exams': salvar ou excluir um exame já recarrega. */
+export function usePersonExams(personId: string | undefined) {
+  return useQuery({
+    queryKey: ['exams', 'person', personId],
+    enabled: Boolean(personId),
+    queryFn: () => fetchPersonExams(personId!),
+  });
+}
+
 export function useExam(id: string | undefined) {
   return useQuery({
     queryKey: ['exams', id],
