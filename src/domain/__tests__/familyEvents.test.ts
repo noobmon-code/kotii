@@ -388,8 +388,16 @@ describe('calendarEntries', () => {
     // Quem nunca teve quem leve não ganha "ninguém leva": não é mudança, e a linha segue como era.
     const alone: FamilyEventLike = { ...swim, take_by: null };
     expect(calendarEntries({ ...changed, events: [alone], days: [] }, '2026-10-13', '2026-10-13').map((e) => e.ride)).toEqual(['Carla busca']);
-    // Nem a mudança que sobrou de quando havia alguém (o compromisso passou a não ter quem leve).
-    expect(calendarEntries({ ...changed, events: [alone] }, '2026-10-13', '2026-10-13').map((e) => [e.ride, e.routine])).toEqual([['Carla busca', true]]);
+    // Já o dia com a mudança marcada e sem pessoa diz "Ninguém leva" mesmo quando o de sempre é ninguém: é o
+    // dia em que alguém ia levar só naquela vez e teve a ficha apagada (o banco deixa a mudança marcada). Não
+    // é rotina: o aviso da véspera toca, e alguém fica sabendo.
+    const dropped = calendarEntries({ ...changed, events: [alone] }, '2026-10-13', '2026-10-22');
+    expect(dropped.map((e) => [e.date, e.ride, e.routine])).toEqual([
+      ['2026-10-13', 'Ninguém leva, Carla busca', false],
+      ['2026-10-15', 'Ninguém busca', false],
+      ['2026-10-20', 'Ninguém leva nem busca', false],
+      ['2026-10-22', 'Carla busca', true],
+    ]);
     // A ficha que não está na lista (o id segue no compromisso) não é "ninguém": o nome some, como antes.
     // (Apagar a ficha de quem cobria um dia é outra coisa: o banco deixa aquele dia sem ninguém, e a linha
     // dele é a de "Ninguém leva", como a do dia 13 lá em cima.)

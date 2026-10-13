@@ -142,6 +142,15 @@ export interface EventOccurrence<E extends FamilyEventLike = FamilyEventLike> {
   date: string;
   take_by: string | null;
   pick_up_by: string | null;
+  /**
+   * Neste dia a mudança deixou sem ninguém para levar (ou buscar): o "Só neste
+   * dia: Ninguém", ou o dia de quem cobria e teve a ficha apagada (ou virou
+   * pet), que o banco deixa com a mudança marcada e sem pessoa. Vale também
+   * quando o de sempre já é ninguém: alguém tinha sido combinado só para
+   * aquele dia, e não vai mais.
+   */
+  nobody_takes: boolean;
+  nobody_picks_up: boolean;
 }
 
 /**
@@ -163,6 +172,8 @@ export function occurrencesOf<E extends FamilyEventLike>(event: E, days: EventDa
         date,
         take_by: change?.override_take ? change.take_by : event.take_by,
         pick_up_by: change?.override_pick_up ? change.pick_up_by : event.pick_up_by,
+        nobody_takes: Boolean(change?.override_take) && change!.take_by === null,
+        nobody_picks_up: Boolean(change?.override_pick_up) && change!.pick_up_by === null,
       },
     ];
   });
@@ -362,18 +373,19 @@ export function calendarEntries({ events, days, people }: FamilyCalendar, from: 
         endTime: event.start_time ? event.end_time : null,
         title: event.title,
         who: nameOf(event.person_id),
-        // Sem ninguém no dia e com alguém no de sempre. Chegam aqui o "Só neste dia: Ninguém" e o dia de
-        // quem cobria e teve a ficha apagada (ou virou pet): o banco deixa o dia sem ninguém, com a mudança
-        // marcada, e é isso mesmo que a casa precisa saber. Apagar a ficha de quem leva sempre limpa o de
-        // sempre (nada a dizer), e a ficha que só não está na lista continua com o id.
-        ride: rideText(nameOf(o.take_by), nameOf(o.pick_up_by), {
-          take: o.take_by === null && event.take_by !== null,
-          pickUp: o.pick_up_by === null && event.pick_up_by !== null,
-        }),
+        // O dia cuja mudança deixou sem ninguém (ver EventOccurrence) diz "Ninguém leva", e não é rotina, mesmo
+        // quando o de sempre também é ninguém: é isso que a casa precisa saber. Apagar a ficha de quem leva
+        // sempre limpa o de sempre (nada a dizer), e a ficha que só não está na lista continua com o id.
+        ride: rideText(nameOf(o.take_by), nameOf(o.pick_up_by), { take: o.nobody_takes, pickUp: o.nobody_picks_up }),
         location: event.location?.trim() || null,
         bring: event.bring?.trim() || null,
         age: null,
-        routine: event.recurrence === 'weekly' && o.take_by === event.take_by && o.pick_up_by === event.pick_up_by,
+        routine:
+          event.recurrence === 'weekly' &&
+          o.take_by === event.take_by &&
+          o.pick_up_by === event.pick_up_by &&
+          !o.nobody_takes &&
+          !o.nobody_picks_up,
       });
     }
   }
