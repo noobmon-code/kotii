@@ -4,7 +4,14 @@
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { cartSplitLine, describeEstimate, describePantryHits, estimateHeadline, type ListEstimate } from '@/domain/listEstimate';
+import {
+  cartSplitLine,
+  describeEstimate,
+  describePantryHits,
+  estimateHeadline,
+  storeOptionNote,
+  type ListEstimate,
+} from '@/domain/listEstimate';
 import { formatBRL } from '@/domain/money';
 import type { ListKind } from '@/lib/types';
 import { PickerModal } from '@/ui/PickerModal';
@@ -76,18 +83,13 @@ export function ListEstimateCard({
           visible={choosing}
           title="Onde você está comprando?"
           placeholder={`Buscar ${place}`}
-          options={estimate.stores.flatMap((store) => {
-            const title = storeNames.get(store.storeId);
-            return title
-              ? [
-                  {
-                    id: store.storeId,
-                    title,
-                    subtitle: `${store.knownCount} ${store.knownCount === 1 ? 'item da lista com preço' : 'itens da lista com preço'}`,
-                  },
-                ]
-              : [];
-          })}
+          options={estimate.stores
+            .flatMap((store) => {
+              const title = storeNames.get(store.storeId);
+              return title ? [{ id: store.storeId, title, known: store.knownCount, subtitle: storeOptionNote(store.knownCount) }] : [];
+            })
+            // Quem tem preço para mais itens da lista primeiro; no empate (os sem nenhum, por exemplo), pelo nome.
+            .sort((a, b) => b.known - a.known || a.title.localeCompare(b.title, 'pt-BR'))}
           onClose={() => setChoosing(false)}
           onSelect={(id) => {
             onChangeStore(id);

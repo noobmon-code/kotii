@@ -12,6 +12,7 @@ import {
   itemFacts,
   listStorePrices,
   pantryHits,
+  storeOptionNote,
   storePriceNote,
   unpricedNote,
   type EstimateItem,
@@ -257,6 +258,23 @@ describe('estimateList', () => {
     ]);
   });
 
+  it('mercado das notas sem preço para nenhum item da lista também pode ser escolhido: a conta dele sai estimada', () => {
+    // Café só tem preço no bom; o caro entra com zero.
+    const list = [item('c', 'Café', 'cafe')];
+    expect(estimateList(list, prices).stores).toEqual([
+      { storeId: 'bom', knownCount: 1 },
+      { storeId: 'caro', knownCount: 0 },
+    ]);
+    expect(estimateList(list, prices, { storeId: 'caro' })).toMatchObject({ pricedCount: 1, estimatedCount: 1 });
+    expect([storeOptionNote(0), storeOptionNote(1), storeOptionNote(3)]).toEqual([
+      'Nenhum item da lista com preço lá: a conta sai estimada',
+      '1 item da lista com preço',
+      '3 itens da lista com preço',
+    ]);
+    // Sem nenhum item com preço não há o que estimar em mercado nenhum.
+    expect(estimateList([item('x', 'Sem preço', null)], prices).stores).toEqual([]);
+  });
+
   it('lista vazia ou sem preços dá zero', () => {
     expect(estimateList([], prices)).toMatchObject({ total: 0, itemCount: 0, pricedCount: 0, stores: [] });
     expect(estimateList([item('a', 'Arroz', 'arroz')], [])).toMatchObject({ total: 0, itemCount: 1, pricedCount: 0 });
@@ -383,11 +401,16 @@ describe('a lista e "Onde comprar" dão o mesmo total', () => {
   function expectSameAccount(list: EstimateItem[], quotes: EstimatePrice[], sources: Sources, storeIds: string[]) {
     const pending = list.filter((i) => !i.inCart);
     const recommendation = whereToBuy(list, quotes, sources);
-    const ranked = new Set(estimateList(pending, quotes, sources).stores.map((s) => s.storeId));
+    const ranked = new Set(
+      estimateList(pending, quotes, sources)
+        .stores.filter((s) => s.knownCount > 0)
+        .map((s) => s.storeId),
+    );
     const estimates = new Map(storeIds.map((storeId) => [storeId, estimateList(list, quotes, { ...sources, storeId })]));
     for (const [storeId, estimate] of estimates) {
       const plan = recommendation.plans.find((p) => p.storeIds[0] === storeId);
-      // Entram no ranking os mercados com preço de nota para algum item: os mesmos que a lista oferece para escolher.
+      // Entram no ranking os mercados com preço de nota para algum item. A lista oferece esses para escolher e também
+      // os que não têm nenhum (quem está lá vê a conta estimada), mas recomendar um deles seria palpite.
       expect(Boolean(plan)).toBe(ranked.has(storeId));
       if (!plan) continue;
       expect(plan.total).toBe(estimate.pendingTotal);
@@ -685,6 +708,33 @@ describe('pantryHits', () => {
       { name: 'Arroz', productId: null, lastAt: '2026-10-01T12:00:00', everyDays: 10 },
     ];
     expect([...pantryHits(list, pantry, { links, today, ranOut }).keys()]).toEqual(['o']);
+  });
+
+  it('o que acabou sob um produto ligado ao nome do item não volta pela entrada posta à mão', () => {
+    const links = new LinkIndex([
+      { name_key: 'leite', product_id: 'italac' },
+      { name_key: 'leite', product_id: 'ninho' },
+    ]);
+    const list = [item('l', 'Leite', null)];
+    // O palpite veio com o nome da nota, sob o produto.
+    const ranOut = [{ name: 'LEITE UHT ITALAC 1L', productId: 'italac', lastAt: '2026-09-20T12:00:00', everyDays: 7 }];
+    const manual = (purchased_on: string) => [stock('Leite', null, { purchased_on })];
+    expect(pantryHits(list, manual('2026-09-01'), { links, today }).has('l')).toBe(true);
+    // Posta à mão antes da última compra do Italac: acabou junto.
+    expect(pantryHits(list, manual('2026-09-01'), { links, today, ranOut }).has('l')).toBe(false);
+    // Posta à mão depois dela, e ainda dentro do costume: estoque novo.
+    expect(pantryHits(list, manual('2026-10-08'), { links, today, ranOut }).has('l')).toBe(true);
+    // A entrada de outro produto ligado ao nome responde por ela mesma: o Ninho não acabou.
+    const ninho = [stock('Leite Ninho 1L', 'ninho', { purchased_on: '2026-09-01' })];
+    expect(pantryHits(list, ninho, { links, today, ranOut }).has('l')).toBe(true);
+    // O item que já tem produto (o Ninho) aceita a mesma entrada pelo nome: o palpite dos ligados vale para ele também.
+    const withProduct = [item('l', 'Leite', 'ninho')];
+    expect(pantryHits(withProduct, manual('2026-09-01'), { links, today }).has('l')).toBe(true);
+    expect(pantryHits(withProduct, manual('2026-09-01'), { links, today, ranOut }).has('l')).toBe(false);
+    expect(pantryHits(withProduct, manual('2026-10-08'), { links, today, ranOut }).has('l')).toBe(true);
+    expect(pantryHits(withProduct, ninho, { links, today, ranOut }).has('l')).toBe(true);
+    // Sem ligação com o nome, o palpite de outro produto não diz nada sobre este item.
+    expect(pantryHits(list, manual('2026-09-01'), { links: new LinkIndex([]), today, ranOut }).has('l')).toBe(true);
   });
 
   it('"acho que acabou" de verdade: café comprado de 10 em 10 dias, última compra há 14', () => {

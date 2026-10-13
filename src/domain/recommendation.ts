@@ -190,6 +190,9 @@ export function recommendStores(
   // produtos que aparecem em 2+ lojas, puxada para 1 quando são poucos. Itens
   // de uma loja só não dizem nada sobre a loja.
   const level = givenIndex ?? storePriceIndex(priceAt ? prices : [...listPrices.values()].flat());
+  // Só entra na recomendação o mercado com preço de nota para algum item da lista. Na lista, quem diz onde
+  // está pode escolher qualquer mercado das notas (lá a conta sai estimada, e é a mesma daqui); mas
+  // recomendar a ida a um mercado só pelo nível de preço dele, sem um preço sequer desta lista, seria palpite.
   const storeIds = [...new Set(priced.flatMap((p) => p.knownStores))].sort();
   for (const id of storeIds) storeIndex.set(id, level.get(id) ?? 1);
 
