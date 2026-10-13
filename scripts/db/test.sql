@@ -3384,6 +3384,12 @@ reset role;
 do $$
 begin
   assert not exists (select 1 from public.chore_rotation), 'the orders left with the household';
+  -- As permissões da tabela são explícitas: não dependem do padrão do projeto.
+  assert not has_table_privilege('anon', 'public.chore_rotation', 'select, insert, update, delete, truncate'), 'anon has no access to chore_rotation';
+  assert (select bool_and(has_table_privilege(who, 'public.chore_rotation', verb))
+            from unnest(array['authenticated', 'service_role']) as who, unnest(array['select', 'insert', 'update', 'delete']) as verb),
+    'members and the service role reach chore_rotation through the API';
+  assert not has_table_privilege('authenticated', 'public.chore_rotation', 'truncate, references, trigger'), 'and members get nothing beyond that on chore_rotation';
   delete from public.household_file_cleanup where household_id = current_setting('test.hh_r')::uuid;
 end $$;
 

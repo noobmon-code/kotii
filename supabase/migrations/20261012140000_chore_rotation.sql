@@ -39,6 +39,12 @@ create policy "household members manage chore_rotation" on public.chore_rotation
   using (household_id = (select public.current_household_id()))
   with check (household_id = (select public.current_household_id()));
 
+-- Permissões explícitas: a partir de 30/10/2026 a Supabase não dá mais acesso pela API às tabelas novas por
+-- padrão, e a migração pode ser aplicada depois disso. Quem entra é a pessoa logada (a regra acima diz o quê).
+revoke all on public.chore_rotation from anon, authenticated;
+grant select, insert, update, delete on public.chore_rotation to authenticated;
+grant all on public.chore_rotation to service_role;
+
 -- Só pessoas revezam (um check não pode consultar outra tabela, daí o gatilho).
 create function public.chore_rotation_only_people()
 returns trigger
