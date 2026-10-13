@@ -4,7 +4,7 @@ import { SESSION_ENDED } from '@/lib/accessErrors';
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { fetchPersonExams, readHealthDocument } from '../health';
+import { fetchExamResultOwners, fetchPersonExams, readHealthDocument } from '../health';
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockLog: string[] = [];
@@ -87,6 +87,37 @@ describe('todos os exames de uma pessoa', () => {
     expect(exact.calls.filter((c) => c.includes('-'))).toEqual(['0-499', '500-999']);
 
     expect(await fetchPersonExams('ana', examsDb(0).db)).toEqual([]);
+  });
+});
+
+describe('quem tem resultados de exame, na casa toda', () => {
+  it('lê só a coluna da pessoa, dos realizados com resultados, em páginas, e devolve cada pessoa uma vez', async () => {
+    const calls: string[] = [];
+    // 2.300 exames com resultados, de três pessoas.
+    const rows = Array.from({ length: 2300 }, (_, i) => ({ person_id: ['ana', 'beto', 'rex'][i % 3] }));
+    const query = {
+      select: (columns: string) => {
+        calls.push(`select ${columns}`);
+        return query;
+      },
+      eq: (column: string, value: string) => {
+        calls.push(`${column}=${value}`);
+        return query;
+      },
+      neq: (column: string, value: string) => {
+        calls.push(`${column}<>${value}`);
+        return query;
+      },
+      order: () => query,
+      range: async (from: number, to: number) => {
+        calls.push(`${from}-${to}`);
+        return { data: rows.slice(from, to + 1), error: null };
+      },
+    };
+    const db = { from: () => query } as unknown as SupabaseClient;
+    expect((await fetchExamResultOwners(db)).sort()).toEqual(['ana', 'beto', 'rex']);
+    expect(calls.slice(0, 4)).toEqual(['select person_id', 'status=realizado', 'results<>[]', '0-999']);
+    expect(calls.filter((c) => /^\d+-\d+$/.test(c))).toEqual(['0-999', '1000-1999', '2000-2999']);
   });
 });
 

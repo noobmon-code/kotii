@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { useMedications } from '@/data/home';
-import { useAppointments, useExams, usePeople, useVaccines } from '@/data/health';
+import { useAppointments, useExamResultOwners, useExams, usePeople, useVaccines } from '@/data/health';
 import { formatBRDate, formatShortDate, todayISO } from '@/domain/dates';
 import { hasExamResults } from '@/domain/examTrends';
 import { ageLabel, describeWhen, EXAM_STATUS, isOverdueAppointment, upcomingAppointments } from '@/domain/health';
@@ -35,6 +35,7 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
   const appointments = useAppointments();
   const vaccines = useVaccines();
   const exams = useExams();
+  const resultOwners = useExamResultOwners();
   const medications = useMedications();
   const [showAllPast, setShowAllPast] = useState(false);
 
@@ -58,8 +59,12 @@ export function CarePanel({ personId, onPersonChange }: { personId: string | nul
   // Evolução e resumo são de uma pessoa só. Com ela escolhida, a entrada existe
   // sempre (sem resultados, a tela ainda monta o resumo). Em "Todos", vai
   // direto quando só uma pessoa tem resultados; com mais de uma, pede a escolha.
-  const hasResults = (p: Person) => hasExamResults(exams.data.filter((e) => e.person_id === p.id));
-  const withResults = person ? [] : people.data.filter(hasResults);
+  // Quem tem resultados sai da casa toda (useExamResultOwners): a lista de exames
+  // daqui traz só os mais recentes. Enquanto essa busca não chega, a entrada de
+  // "Todos" espera, para não levar à pessoa errada.
+  const owners = resultOwners.data ? new Set(resultOwners.data) : null;
+  const hasResults = (p: Person) => Boolean(owners?.has(p.id)) || hasExamResults(exams.data.filter((e) => e.person_id === p.id));
+  const withResults = person || !owners ? [] : people.data.filter(hasResults);
   const trendsPerson = person ?? (withResults.length === 1 ? withResults[0] : null);
   const personMedications = person
     ? medications.data.filter((m) => m.person_id === person.id)

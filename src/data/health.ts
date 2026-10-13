@@ -245,6 +245,39 @@ export function usePersonExams(personId: string | undefined) {
   });
 }
 
+/** Quantas linhas cada busca de "quem tem resultados" traz (o teto do servidor) e até quantas buscas. */
+const OWNER_PAGE = 1000;
+const OWNER_PAGES = 20;
+
+/**
+ * Quem tem exame realizado com resultados, na casa toda. Pela lista da casa
+ * (useExams, só os 300 exames mais recentes), quem só tem resultados antigos
+ * ficaria sem a entrada da evolução, ou a entrada de "Todos" levaria à pessoa
+ * errada. Só a coluna da pessoa, em páginas.
+ */
+export async function fetchExamResultOwners(db: SupabaseClient = supabase): Promise<string[]> {
+  const owners = new Set<string>();
+  for (let page = 0; page < OWNER_PAGES; page++) {
+    const rows = unwrap(
+      await db
+        .from('exams')
+        .select('person_id')
+        .eq('status', 'realizado')
+        .neq('results', '[]')
+        .order('id', { ascending: true })
+        .range(page * OWNER_PAGE, (page + 1) * OWNER_PAGE - 1),
+    ) as { person_id: string }[];
+    for (const row of rows) owners.add(row.person_id);
+    if (rows.length < OWNER_PAGE) break;
+  }
+  return [...owners];
+}
+
+/** Quem tem resultados de exame (fetchExamResultOwners). A chave começa com 'exams': salvar ou excluir um exame já recarrega. */
+export function useExamResultOwners() {
+  return useQuery({ queryKey: ['exams', 'owners'], queryFn: () => fetchExamResultOwners() });
+}
+
 export function useExam(id: string | undefined) {
   return useQuery({
     queryKey: ['exams', id],
