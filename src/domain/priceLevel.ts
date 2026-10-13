@@ -1,0 +1,77 @@
+// Nível de preço de cada mercado: quanto ele costuma ficar acima ou abaixo da
+// média nos produtos que a casa já comprou em mais de um mercado. É com ele
+// que a estimativa da lista (listEstimate) e "Onde comprar" (recommendation)
+// estimam o que um mercado ainda não tem nas notas.
+
+import { pricePerBase } from './units';
+
+export interface LevelPrice {
+  productId: string;
+  storeId: string;
+  unit: string;
+  unitPrice: number;
+  /** Quando a casa pagou esse preço (ISO), se quem chama sabe: decide qual vale quando o mercado tem dois do mesmo produto. */
+  purchasedAt?: string;
+}
+
+/**
+ * Poucos produtos em comum dizem pouco: a média (nível 1) entra na conta como
+ * se fossem mais 2 produtos. Com 1 em comum o nível anda um terço do caminho;
+ * com 8, quatro quintos.
+ */
+const AVERAGE_WEIGHT = 2;
+/** Fora desta faixa é erro de nota (embalagem trocada, preço digitado errado), não nível de preço. */
+const MIN_LEVEL = 0.6;
+const MAX_LEVEL = 1.6;
+
+const average = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
+
+/**
+ * O preço de um mercado num produto, um só: com o produto por kg numa nota e
+ * por g em outra, o mercado teria dois votos na média. Vale o mais novo (no
+ * empate de data, o menor); se alguma linha veio sem data, a média delas.
+ */
+function storePrice(rows: LevelPrice[]): number {
+  if (rows.some((row) => row.purchasedAt == null)) return average(rows.map((row) => row.unitPrice));
+  return rows.reduce((a, b) => {
+    const later = Date.parse(b.purchasedAt!) - Date.parse(a.purchasedAt!);
+    return later > 0 || (later === 0 && b.unitPrice < a.unitPrice) ? b : a;
+  }).unitPrice;
+}
+
+/**
+ * Nível de preço por mercado (1 = na média; 0,92 = 8% abaixo): a média de
+ * preço no mercado / preço médio, nos produtos que aparecem em dois mercados
+ * ou mais, puxada para 1 quando são poucos e presa a uma faixa plausível.
+ * Mercado sem produto em comum com outro fica em 1. O mesmo produto por kg
+ * num mercado e por g no outro (ou por litro e por ml) entra na mesma conta,
+ * convertido, e cada mercado entra com um preço só por produto (storePrice);
+ * "un" e kg continuam sem se comparar. Preço zerado ou negativo (brinde na
+ * nota) não é preço: fica de fora, e o mercado que só tem desses nem aparece.
+ */
+export function storePriceIndex(prices: readonly LevelPrice[]): Map<string, number> {
+  // Por produto e unidade de comparação, as linhas de cada mercado.
+  const groups = new Map<string, Map<string, LevelPrice[]>>();
+  for (const price of prices) {
+    if (!(price.unitPrice > 0)) continue;
+    const { unit, unitPrice } = pricePerBase(price.unitPrice, price.unit);
+    const key = `${price.productId}\u0000${unit}`;
+    const byStore = groups.get(key) ?? new Map<string, LevelPrice[]>();
+    byStore.set(price.storeId, [...(byStore.get(price.storeId) ?? []), { ...price, unit, unitPrice }]);
+    groups.set(key, byStore);
+  }
+  const index = new Map<string, number>();
+  const ratios = new Map<string, number[]>();
+  for (const byStore of groups.values()) {
+    for (const storeId of byStore.keys()) index.set(storeId, 1);
+    if (byStore.size < 2) continue;
+    const group = [...byStore].map(([storeId, rows]) => ({ storeId, unitPrice: storePrice(rows) }));
+    const mean = average(group.map((p) => p.unitPrice));
+    for (const price of group) ratios.set(price.storeId, [...(ratios.get(price.storeId) ?? []), price.unitPrice / mean]);
+  }
+  for (const [storeId, list] of ratios) {
+    const level = (list.reduce((sum, ratio) => sum + ratio, 0) + AVERAGE_WEIGHT) / (list.length + AVERAGE_WEIGHT);
+    index.set(storeId, Math.min(MAX_LEVEL, Math.max(MIN_LEVEL, level)));
+  }
+  return index;
+}

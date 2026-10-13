@@ -25,28 +25,41 @@ import {
   useListQueueBusy,
   useDeleteListItem,
   useEditListItem,
+  useLatestPrices,
   useListItems,
   useProducts,
   usePurchaseRecords,
   useRemovePendingListItem,
   useShoppingList,
+  useStores,
   useToggleListItem,
 } from '@/data/market';
 import { cartPantryRows, type CartPantryEntry, type CartPantryRow } from '@/domain/cartPantry';
 import { compareByAisle, getCategory } from '@/domain/categories';
+import {
+  currentStoreChoice,
+  estimateList,
+  formatItemCost,
+  itemFacts,
+  pantryHits,
+  type PantryHit,
+  type StoreChoice,
+} from '@/domain/listEstimate';
 import { compareForShopping } from '@/domain/listItem';
 import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { todayISO } from '@/domain/dates';
 import { parseDecimal } from '@/domain/money';
-import { recentPurchases, type RecentItem } from '@/domain/recentPurchases';
-import { restockSuggestions } from '@/domain/restock';
+import { fitsList, recentPurchases, type RecentItem } from '@/domain/recentPurchases';
+import { ranOutItems, restockFrom } from '@/domain/restock';
 import { guessCategory, normalizeSearch } from '@/domain/search';
 import { CartPantryModal } from '@/features/CartPantryModal';
 import { CommonItemsPicker } from '@/features/CommonItemsPicker';
+import { ListEstimateCard } from '@/features/ListEstimateCard';
 import { ListItemEditor, type ItemDetails, type PhotoChange } from '@/features/ListItemEditor';
+import { ListShareSheet } from '@/features/ListShareSheet';
 import { OfflineNotice } from '@/features/OfflineNotice';
 import { RecentPurchases, RestockStrip, useJustListed } from '@/features/RecentPurchases';
-import { ShoppingGrid } from '@/features/ShoppingGrid';
+import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
 import { useAuth, useHouseholdId } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { UNITS, type Product, type ShoppingListItem, type Unit } from '@/lib/types';
@@ -68,6 +81,12 @@ import {
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
+/**
+ * O mercado em que a pessoa disse estar, por lista, e quando disse: vale por
+ * uma ida ao mercado (currentStoreChoice), enquanto o app está aberto.
+ */
+const chosenStores = new Map<string, StoreChoice>();
+
 export default function ShoppingListScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { session } = useAuth();
@@ -86,6 +105,8 @@ export default function ShoppingListScreen() {
   const archive = useArchiveList(id);
   const pantry = usePantry();
   const links = useListLinks();
+  const prices = useLatestPrices();
+  const stores = useStores();
   const edit = useEditListItem(id);
   const setPhoto = useSetListItemPhoto();
   const householdId = useHouseholdId();
@@ -104,6 +125,8 @@ export default function ShoppingListScreen() {
     pantryUnknown: boolean;
   } | null>(null);
   const [editing, setEditing] = useState<ShoppingListItem | null>(null);
+  const [sharing, setSharing] = useState(false);
+  const [storeChoice, setStoreChoice] = useState<StoreChoice | null>(() => chosenStores.get(id) ?? null);
   // Some da faixa já no toque; volta quando a lista carregada trouxer o item e ele sair dela depois.
   const justAdded = useJustListed(items.data);
 
@@ -261,28 +284,95 @@ export default function ShoppingListScreen() {
   }
 
 
+  const listKind = list.data?.kind;
+  const today = todayISO();
+  // O que já passou do intervalo de costume: a leitura do histórico inteiro, que não depende da lista nem do tipo
+  // dela (a vitamina posta na lista do mercado também acaba). Só refaz quando o histórico ou o dia mudam; a faixa
+  // "Acho que acabou" e o selo "Na despensa" partem do resultado, sem ler tudo de novo a cada item posto no carrinho.
+  const ranOut = useMemo(
+    // Fim do dia de hoje: entram as compras de qualquer hora, e o dia novo refaz.
+    () => ranOutItems(purchases.data ?? [], { now: new Date(`${today}T23:59:59.999`) }),
+    [purchases.data, today],
+  );
+  // Sem o histórico carregado não dá para saber o que acabou: histórico vazio seria outra coisa.
+  const historyKnown = purchases.data !== undefined;
+
   // Do histórico, menos o que já está na lista (a comprar ou no carrinho); o
   // que "acabou" não se repete em "comprados recentemente". O histórico pode
   // ter milhares de linhas: só refaz quando ele ou a lista mudam, não a cada
   // letra digitada no campo.
-  const listKind = list.data?.kind;
-  const today = todayISO();
   const strips = useMemo(() => {
     if (!listKind || !items.data) return { restock: [], recent: [] };
     const inList = {
       names: new Set([...items.data.map((i) => normalizeSearch(i.name)), ...justAdded.pending]),
       productIds: new Set(items.data.flatMap((i) => (i.product_id ? [i.product_id] : []))),
     };
-    // Fim do dia de hoje: entram as compras de qualquer hora, e o dia novo refaz.
-    const now = new Date(`${today}T23:59:59.999`);
-    const restock = restockSuggestions(purchases.data ?? [], { now, listKind, exclude: inList });
+    // A faixa só sugere o que cabe neste tipo de lista (remédio não entra na do mercado).
+    const restock = restockFrom(ranOut.filter((i) => fitsList(i.category, listKind)), { exclude: inList });
     const recent = recentPurchases(purchases.data ?? [], {
-      now,
+      now: new Date(`${today}T23:59:59.999`),
       listKind,
       exclude: { ...inList, names: new Set([...inList.names, ...restock.map((i) => normalizeSearch(i.name))]) },
     });
     return { restock, recent };
-  }, [purchases.data, items.data, listKind, justAdded.pending, today]);
+  }, [ranOut, purchases.data, items.data, listKind, justAdded.pending, today]);
+
+  // O mercado escolhido só entra na conta com o nome dele carregado: enquanto os mercados não chegam (ou se
+  // ele não está entre eles), a escolha fica guardada e a conta sai pelo último preço pago.
+  const storeNames = useMemo(
+    () => (stores.data ? new Map(stores.data.map((store) => [store.id, store.name])) : undefined),
+    [stores.data],
+  );
+  const chosenStore = currentStoreChoice(storeChoice);
+  const storeId = chosenStore && storeNames?.has(chosenStore) ? chosenStore : null;
+
+  // Lista no mercado (domain/listEstimate): quanto deve dar e o que está na despensa. Sem os preços, as
+  // ligações ou a despensa carregados (sem internet e nunca vistos neste aparelho), mostra o que der. Só o selo
+  // "Na despensa" espera o histórico de compras: sem ele, apareceria justamente no que acabou. O aparelho que
+  // nunca carregou o histórico fica sem selo nenhum.
+  const market = useMemo(() => {
+    const all = items.data ?? [];
+    const estimate = estimateList(
+      all.map((i) => ({
+        id: i.id,
+        name: i.name,
+        productId: i.product_id,
+        quantity: Number(i.quantity),
+        unit: i.unit,
+        inCart: Boolean(i.checked_at),
+      })),
+      (prices.data ?? []).map((p) => ({
+        productId: p.product_id,
+        storeId: p.store_id,
+        unit: p.unit,
+        unitPrice: Number(p.unit_price),
+        purchasedAt: p.purchased_at,
+      })),
+      { links: links.data, products: products.data ?? [], storeId },
+    );
+    // O que o app acha que acabou não é "na despensa": tudo o que passou do costume (ranOut), sem tirar o que
+    // já está na lista (é dela que se trata) e sem os cortes da faixa "Acho que acabou".
+    const inPantry = historyKnown
+      ? pantryHits(
+          all.filter((i) => !i.checked_at).map((i) => ({ id: i.id, name: i.name, productId: i.product_id })),
+          pantry.data ?? [],
+          { links: links.data, today, ranOut },
+        )
+      : new Map<string, PantryHit>();
+    const hints = new Map<string, ItemHint>();
+    for (const i of all) {
+      const cost = estimate.byItem.get(i.id);
+      if (cost || inPantry.has(i.id)) hints.set(i.id, { cost: cost ? formatItemCost(cost) : undefined, inPantry: inPantry.has(i.id) });
+    }
+    return { estimate, inPantry, hints };
+  }, [items.data, prices.data, links.data, products.data, pantry.data, ranOut, historyKnown, storeId, today]);
+
+  // As ligações e os produtos dão preço ao item digitado solto. Se não chegaram (a busca falhou, ou sem internet e
+  // nunca vistos neste aparelho), o cartão diz que não deu para conferir o que ficou sem preço. A lista não espera
+  // por eles (abre sem internet), e enquanto a primeira busca ainda anda não há o que avisar.
+  const missed = (query: { data: unknown; isPending: boolean; fetchStatus: string }) =>
+    query.data === undefined && !(query.isPending && query.fetchStatus !== 'paused');
+  const sourcesLoaded = !missed(links) && !missed(products);
 
   // Na ordem dos corredores do mercado: frescos, despensa, bebidas, casa…
   // Urgentes no topo.
@@ -381,8 +471,10 @@ export default function ShoppingListScreen() {
   return (
     <Screen
       edges={[]}
+      // Puxar atualiza também os preços, a despensa, as ligações, os produtos, os mercados e o histórico: só os
+      // itens chegam sozinhos (tempo real). O indicador segue os itens, para as outras buscas não o fazerem piscar.
       refreshing={items.isRefetching}
-      onRefresh={() => items.refetch()}
+      onRefresh={() => [items, prices, pantry, links, products, stores, purchases].forEach((query) => void query.refetch())}
       footer={
         pending.length && list.data.kind !== 'outros' ? (
           <Button
@@ -452,9 +544,29 @@ export default function ShoppingListScreen() {
         />
       ) : null}
 
+      {list.data.kind !== 'outros' && (pending.length || checked.length) ? (
+        <ListEstimateCard
+          estimate={market.estimate}
+          kind={list.data.kind}
+          storeId={storeId}
+          storeNames={storeNames}
+          sourcesLoaded={sourcesLoaded}
+          onChangeStore={(store) => {
+            const choice = store ? { storeId: store, at: Date.now() } : null;
+            if (choice) chosenStores.set(id, choice);
+            else chosenStores.delete(id);
+            setStoreChoice(choice);
+          }}
+          inPantry={pending.filter((i) => market.inPantry.has(i.id)).map((i) => i.name)}
+        />
+      ) : null}
+
       {pending.length ? (
-        <Section title={`Para comprar (${pending.length})`}>
-          <ShoppingGrid items={pending} photos={photos} onToggle={toggleItem} onOpen={setEditing} />
+        <Section
+          title={`Para comprar (${pending.length})`}
+          // Para quem vai às compras e não tem o app; sem nada para comprar não há o que mandar.
+          action={<Button title="Mandar a lista" variant="ghost" compact onPress={() => setSharing(true)} />}>
+          <ShoppingGrid items={pending} photos={photos} hints={market.hints} onToggle={toggleItem} onOpen={setEditing} />
         </Section>
       ) : checked.length ? (
         <EmptyState
@@ -482,6 +594,7 @@ export default function ShoppingListScreen() {
             inCart
             onToggle={toggleItem}
             photos={photos}
+            hints={market.hints}
             onOpen={setEditing}
             onStore={syncing ? undefined : (item) => void openStore([item], true)}
           />
@@ -500,6 +613,15 @@ export default function ShoppingListScreen() {
           item={editing}
           photoUri={editingPendingUri ?? (editing.photo_path ? (photos.signed?.[editing.photo_path] ?? null) : null)}
           photoPending={Boolean(editingPendingUri)}
+          facts={(priority) =>
+            itemFacts(market.estimate.byItem.get(editing.id), market.inPantry.get(editing.id), {
+              storeName: (store) => storeNames?.get(store),
+              chosenStore: storeId,
+              promotionOnly: priority === 'promocao',
+              today,
+              productName: (product) => products.data?.find((p) => p.id === product)?.name,
+            })
+          }
           onSave={(details, photo) => saveDetails(editing, details, photo)}
           onRemove={() => removeItem(editing)}
           onClose={() => setEditing(null)}
@@ -515,6 +637,7 @@ export default function ShoppingListScreen() {
           onClose={() => setStoring(null)}
         />
       ) : null}
+      <ListShareSheet visible={sharing} list={list.data} items={items.data} onClose={() => setSharing(false)} />
       <CommonItemsPicker
         visible={pickerOpen}
         listKind={list.data.kind}
