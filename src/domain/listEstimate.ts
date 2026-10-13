@@ -13,7 +13,7 @@ import { formatBRL, formatQuantity } from './money';
 import { storePriceIndex } from './priceLevel';
 import { SAME_TRIP_DAYS } from './restock';
 import { normalizeSearch } from './search';
-import { priceQuantity, sameDimension } from './units';
+import { pricePerBase, priceQuantity, sameDimension } from './units';
 
 export interface EstimateItem {
   id: string;
@@ -37,7 +37,7 @@ export interface ItemEstimate {
   /** Quanto o item deve custar, na quantidade da lista. */
   cost: number;
   unitPrice: number;
-  /** A unidade do preço que entrou na conta (R$/kg não é R$/un). */
+  /** A unidade do preço que entrou na conta (R$/kg não é R$/un): o preço por g ou por ml entra já por kg ou por litro. */
   unit: string;
   /**
    * `known`: preço de nota, do mercado escolhido ou, sem mercado, o último que
@@ -45,7 +45,7 @@ export interface ItemEstimate {
    * sai do nível de preço dele (como em "Onde comprar").
    */
   kind: 'known' | 'estimated';
-  /** A unidade da lista não converte para a do preço (un x kg): o custo é o de 1 unidade do preço. */
+  /** A unidade da lista não converte para a do preço (un x kg): o custo é o de 1 kg, 1 litro ou 1 unidade. */
   approximateQuantity: boolean;
   /** O produto de onde saem o último preço, o "preço bom" e a estimativa do item (itemResolver). */
   productId: string;
@@ -87,6 +87,10 @@ export interface ListEstimate {
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+/** As 4 casas do preço por unidade nas notas (R$ 0,0499 por g). */
+const round4 = (n: number) => Math.round(n * 10000) / 10000;
+/** Só para tirar o ruído da conta em ponto flutuante: arredondar o preço estimado a 4 casas e depois a centavos podia dar um centavo a mais que o custo. */
+const round8 = (n: number) => Math.round(n * 1e8) / 1e8;
 const average = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
 
 const newest = <T extends { purchasedAt: string }>(quotes: T[]) =>
@@ -114,6 +118,31 @@ interface ResolvedItem {
 }
 
 /**
+ * Os preços como entram na regra. Por g vira por kg e por ml vira por litro
+ * (R$ 0,0499 por g são R$ 49,90 por kg): assim o último preço, o "preço bom" e
+ * a média do produto comparam o kg de um mercado com o g de outro, e nenhuma
+ * frase mostra "R$ 0,00/g". Preço por un, kg ou litro passa como veio (o mesmo
+ * objeto). E cada mercado fica com um preço só por produto e unidade, o mais
+ * novo (no empate de data, o menor): com o produto por kg numa nota e por g em
+ * outra, a linha antiga não é mais o preço de lá. Preço zerado (brinde na
+ * nota) não é preço.
+ */
+function comparablePrices(prices: readonly EstimatePrice[]): EstimatePrice[] {
+  const latest = new Map<string, EstimatePrice>();
+  for (const price of prices) {
+    if (!(price.unitPrice > 0)) continue;
+    const base = pricePerBase(price.unitPrice, price.unit);
+    // De volta às 4 casas: 0,0049 x 1000 dá 4,8999999999999995, que apareceria como "menor" que R$ 4,90.
+    const quote = base.unit === price.unit ? price : { ...price, unit: base.unit, unitPrice: round4(base.unitPrice) };
+    const key = `${quote.productId}\u0000${quote.storeId}\u0000${quote.unit}`;
+    const seen = latest.get(key);
+    const later = seen ? Date.parse(quote.purchasedAt) - Date.parse(seen.purchasedAt) : 0;
+    if (!seen || later > 0 || (later === 0 && quote.unitPrice < seen.unitPrice)) latest.set(key, quote);
+  }
+  return [...latest.values()];
+}
+
+/**
  * De qual produto saem os preços de cada item da lista (o último, o "preço
  * bom" e a estimativa pelo nível de preço): um só. O produto do próprio item;
  * se ele não tem produto, ou o produto não tem preço, os que já cumpriram esse
@@ -122,12 +151,21 @@ interface ResolvedItem {
  */
 function itemResolver(prices: readonly EstimatePrice[], { links, products = [] }: PriceSources) {
   const byProduct = new Map<string, EstimatePrice[]>();
-  for (const price of prices) {
-    // Preço zerado (brinde na nota) não é preço.
-    if (!(price.unitPrice > 0)) continue;
-    byProduct.set(price.productId, [...(byProduct.get(price.productId) ?? []), price]);
+  for (const price of comparablePrices(prices)) byProduct.set(price.productId, [...(byProduct.get(price.productId) ?? []), price]);
+  /** Quando o produto foi comprado por último; sem preço, antes de qualquer data. */
+  const lastBought = (productId: string) => Math.max(-Infinity, ...(byProduct.get(productId) ?? []).map((quote) => Date.parse(quote.purchasedAt)));
+  // Dois produtos podem ter o mesmo nome, a não ser pelo acento ("Açúcar" e "Acucar"). Vale o de preço mais
+  // recente; no empate, e sem preço em nenhum, o de menor id: a ordem em que os produtos chegam não decide.
+  const productByName = new Map<string, string>();
+  for (const product of products) {
+    const name = normalizeSearch(product.name);
+    const current = productByName.get(name);
+    if (current === undefined) productByName.set(name, product.id);
+    else if (current !== product.id) {
+      const [mine, theirs] = [lastBought(product.id), lastBought(current)];
+      if (mine > theirs || (mine === theirs && product.id < current)) productByName.set(name, product.id);
+    }
   }
-  const productByName = new Map(products.map((product) => [normalizeSearch(product.name), product.id]));
 
   return (item: Pick<EstimateItem, 'name' | 'productId' | 'unit'>): ResolvedItem | null => {
     // O produto do item; sem ele (ou se ele não tem preço), os que já cumpriram esse nome nas notas e o de mesmo nome.
@@ -197,7 +235,8 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
       return {
         source,
         cost: round2(unitPrice * quantity),
-        unitPrice: round2(unitPrice),
+        // Com as casas da nota, não em centavos: é o preço por unidade que os detalhes do item mostram.
+        unitPrice: round8(unitPrice),
         unit: priceUnit,
         kind: used ? 'known' : 'estimated',
         approximateQuantity: approximate,
@@ -372,7 +411,11 @@ export interface PantryHit {
  * conhece (`lastAt`) continua valendo: é compra que ele não viu, estoque novo.
  * O palpite vale também pelos produtos que as notas já ligaram ao nome do
  * item, tenha ele produto ou não: se o Italac acabou, a entrada "Leite" posta
- * à mão antes disso não traz o selo de volta.
+ * à mão antes disso não traz o selo de volta. E no sentido contrário: o
+ * palpite sem produto ("Leite" marcado na lista de 10 em 10 dias) vale para o
+ * produto que as notas ligaram a esse nome, quando é um só, e assim para o
+ * item da lista que já tem esse produto; com dois produtos ligados, não dá
+ * para saber qual acabou, e a entrada de cada um responde por ela mesma.
  * Mais nova de verdade (não a mesma ida ao mercado, lida um ou dois dias
  * depois) e só enquanto ela mesma não passar do intervalo de costume
  * (`everyDays`): depois disso, também acabou.
@@ -394,6 +437,8 @@ export function pantryHits(
   interface Gone {
     day: string;
     everyDays: number;
+    /** O palpite é do nome ("Leite"), emprestado ao produto ligado a ele: ver stillThere. */
+    lent?: boolean;
   }
   const goneNames = new Map<string, Gone>();
   const goneProducts = new Map<string, Gone>();
@@ -401,7 +446,13 @@ export function pantryHits(
     const latest = { day: toISODate(new Date(gone.lastAt)), everyDays: gone.everyDays };
     const name = normalizeSearch(gone.name);
     if (latest.day > (goneNames.get(name)?.day ?? '')) goneNames.set(name, latest);
-    if (gone.productId && latest.day > (goneProducts.get(gone.productId)?.day ?? '')) goneProducts.set(gone.productId, latest);
+    // O palpite sem produto ("Leite" marcado na lista) é do produto que as notas ligaram a esse nome, quando é um
+    // só: vale para as entradas dele e para o item que já o tem. Com dois ligados, não dá para saber qual acabou.
+    const linked = gone.productId ? [] : [...new Set(links?.productsFor(gone.name))];
+    const productId = gone.productId ?? (linked.length === 1 ? linked[0] : null);
+    if (productId && latest.day > (goneProducts.get(productId)?.day ?? '')) {
+      goneProducts.set(productId, gone.productId ? latest : { ...latest, lent: true });
+    }
   }
   /** O palpite de que acabou para esse nome ou produto (o da compra mais recente); null quando o app não acha que acabou. */
   const goneOf = (key: string, productId: string | null): Gone | null => {
@@ -410,9 +461,14 @@ export function pantryHits(
     if (!byName || !byProduct) return byName ?? byProduct;
     return byName.day > byProduct.day ? byName : byProduct;
   };
-  /** A entrada é estoque que o palpite não viu: comprada depois (fora a mesma ida ao mercado) e ainda dentro do costume. */
+  /**
+   * A entrada é estoque que o palpite não viu: comprada depois (fora a mesma ida ao mercado) e ainda dentro do
+   * costume. No palpite emprestado do nome basta ser de depois: o costume é o do nome ("Leite" marcado a cada 10
+   * dias), e quem diz se o produto comprado depois já acabou é o histórico dele mesmo (o palpite próprio dele,
+   * de compra mais recente, passa na frente deste).
+   */
   const stillThere = (purchasedOn: string, gone: Gone | null) =>
-    !gone || (diffDays(gone.day, purchasedOn) > SAME_TRIP_DAYS && diffDays(purchasedOn, today) < gone.everyDays);
+    !gone || (diffDays(gone.day, purchasedOn) > SAME_TRIP_DAYS && (gone.lent === true || diffDays(purchasedOn, today) < gone.everyDays));
   // O nome de cada entrada normalizado uma vez, fora do laço dos itens.
   const fresh = pantry
     .filter((entry) => !entry.expires_on || entry.expires_on >= today)
@@ -442,10 +498,11 @@ export function pantryHits(
     });
     if (!same.length) continue;
     const first = same[0];
-    // Italac e Ninho não se somam: só há número quando tudo é o mesmo produto (ou o mesmo nome), na mesma unidade.
+    // Italac e Ninho não se somam, nem com o mesmo nome na despensa (os dois renomeados para "Leite"): só há
+    // número quando tudo é o mesmo produto, ou o mesmo nome sem dois produtos diferentes entre as entradas.
+    const products = new Set(same.flatMap(({ entry }) => (entry.product_id ? [entry.product_id] : [])));
     const oneThing =
-      same.every(({ entry }) => entry.product_id != null && entry.product_id === first.entry.product_id) ||
-      same.every(({ key }) => key === first.key);
+      products.size <= 1 && (same.every(({ entry }) => entry.product_id != null) || same.every(({ key }) => key === first.key));
     const countable = oneThing && same.every(({ entry }) => entry.unit === first.entry.unit);
     const expiries = same.flatMap(({ entry }) => (entry.expires_on ? [entry.expires_on] : [])).sort();
     hits.set(item.id, {
@@ -459,7 +516,11 @@ export function pantryHits(
   return hits;
 }
 
-const perUnit = (unitPrice: number, unit: string) => `${formatBRL(unitPrice)}/${unit}`;
+/** "R$ 4,90/kg". O preço por g ou por ml aparece por kg ou por litro: em centavos, R$ 0,0049 por g seria "R$ 0,00/g". */
+const perUnit = (unitPrice: number, unit: string) => {
+  const base = pricePerBase(unitPrice, unit);
+  return `${formatBRL(base.unitPrice)}/${base.unit}`;
+};
 
 const sameQuote = (a: EstimatePrice, b: EstimatePrice) =>
   a.productId === b.productId && a.storeId === b.storeId && a.unit === b.unit && a.unitPrice === b.unitPrice && a.purchasedAt === b.purchasedAt;
@@ -496,6 +557,20 @@ export function storePriceNote(
 export function unpricedNote(item: Pick<EstimateItem, 'productId'>, sourcesLoaded: boolean): string {
   if (!sourcesLoaded) return 'Não deu para conferir se este item já tem preço';
   return item.productId ? 'Ainda não aparece em nenhuma nota' : 'Item digitado livre: ainda não ligado a um produto com preço';
+}
+
+/**
+ * A linha a mais do cartão da lista quando as ligações ou os produtos não
+ * chegaram (a busca falhou, ou sem internet e nunca vistos neste aparelho): o
+ * que ficou "fora da conta" pode ser só item que não deu para conferir. null
+ * quando chegaram ou quando todo item tem preço. Sem item nenhum com preço
+ * não há conta, e a linha (sozinha no cartão) fala da lista toda.
+ */
+export function uncheckedPricesNote(estimate: Pick<ListEstimate, 'itemCount' | 'pricedCount'>, sourcesLoaded: boolean): string | null {
+  const missing = estimate.itemCount - estimate.pricedCount;
+  if (sourcesLoaded || !missing) return null;
+  if (!estimate.pricedCount) return `Não deu para conferir se ${missing === 1 ? 'o item da lista já tem' : 'os itens da lista já têm'} preço.`;
+  return `Não deu para conferir se ${missing === 1 ? 'o outro item já tem' : `os outros ${missing} itens já têm`} preço.`;
 }
 
 /** O título do total: "A lista deve dar" só quando todos os itens têm preço; senão, diz que a conta é de parte deles. */
@@ -590,7 +665,11 @@ export function itemFacts(
       facts.push(`Preço usado na conta: ${perUnit(used.unitPrice, used.unit)}${other} ${where(used)}.`);
     }
     if (promotionOnly && cheaper) facts.push(`Só em promoção: o preço bom é ${perUnit(lowest.unitPrice, lowest.unit)} ou menos.`);
-    if (estimate.approximateQuantity) facts.push(`O preço é por ${unit}: a conta da lista usa 1 ${unit}.`);
+    if (estimate.approximateQuantity) {
+      // A conta é de 1 kg, 1 litro ou 1 unidade (units, priceQuantity): com o preço por g, de 1 kg, como o preço aparece.
+      const counted = pricePerBase(1, unit).unit;
+      facts.push(`O preço é por ${counted}: a conta da lista usa 1 ${counted}.`);
+    }
   }
   if (hit) {
     const amount = hit.quantity != null && hit.unit ? `${formatQuantity(hit.quantity, hit.unit)} de ` : '';

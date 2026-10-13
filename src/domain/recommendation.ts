@@ -33,7 +33,7 @@ export interface Assignment {
   storeId: string;
   cost: number;
   kind: 'known' | 'estimated';
-  /** A unidade da lista não converte para a do preço (un x kg): custo = 1 unidade de preço. */
+  /** A unidade da lista não converte para a do preço (un x kg): custo = 1 kg, 1 litro ou 1 unidade. */
   approximateQuantity: boolean;
 }
 
@@ -60,7 +60,7 @@ export interface Recommendation {
 export interface StorePriceAnswer {
   cost: number;
   kind: 'known' | 'estimated';
-  /** A unidade da lista não converte para a do preço (un x kg): custo = 1 unidade de preço. */
+  /** A unidade da lista não converte para a do preço (un x kg): custo = 1 kg, 1 litro ou 1 unidade. */
   approximateQuantity: boolean;
 }
 
@@ -170,7 +170,7 @@ export function recommendStores(
     for (const p of productPrices) if (p.unit === unit) byStore.set(p.storeId, p.unitPrice);
     const values = [...byStore.values()];
     const average = values.reduce((a, b) => a + b, 0) / values.length;
-    // 200 g com preço por kg é 0,2 x o preço; un x kg não converte: 1 unidade do preço.
+    // 200 g com preço por kg é 0,2 x o preço; un x kg não converte: 1 kg (e 1 kg também com o preço por g).
     const { quantity: multiplier, approximate } = priceQuantity(item.quantity, item.unit, unit);
     priced.push({
       item,

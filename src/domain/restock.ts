@@ -41,7 +41,9 @@ function median(values: number[]): number {
  * mais atrasado para o menos. Não tira o que já está na lista nem desiste do
  * que passou demais (isso é da faixa, restockFrom): para o selo "Na despensa"
  * (pantryHits), o que passou do costume acabou, por mais tempo que faça,
- * enquanto as três compras couberem no histórico.
+ * enquanto as três compras couberem no histórico. `listKind` deixa só o que
+ * cabe naquele tipo de lista: é para a faixa (restockSuggestions). O selo lê
+ * sem ele, porque a vitamina posta na lista do mercado também acaba.
  */
 export function ranOutItems(
   records: PurchaseRecord[],

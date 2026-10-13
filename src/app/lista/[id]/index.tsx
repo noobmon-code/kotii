@@ -36,12 +36,20 @@ import {
 } from '@/data/market';
 import { cartPantryRows, type CartPantryEntry, type CartPantryRow } from '@/domain/cartPantry';
 import { compareByAisle, getCategory } from '@/domain/categories';
-import { currentStoreChoice, estimateList, formatItemCost, itemFacts, pantryHits, type StoreChoice } from '@/domain/listEstimate';
+import {
+  currentStoreChoice,
+  estimateList,
+  formatItemCost,
+  itemFacts,
+  pantryHits,
+  type PantryHit,
+  type StoreChoice,
+} from '@/domain/listEstimate';
 import { compareForShopping } from '@/domain/listItem';
 import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { todayISO } from '@/domain/dates';
 import { parseDecimal } from '@/domain/money';
-import { recentPurchases, type RecentItem } from '@/domain/recentPurchases';
+import { fitsList, recentPurchases, type RecentItem } from '@/domain/recentPurchases';
 import { ranOutItems, restockFrom } from '@/domain/restock';
 import { guessCategory, normalizeSearch } from '@/domain/search';
 import { CartPantryModal } from '@/features/CartPantryModal';
@@ -278,14 +286,16 @@ export default function ShoppingListScreen() {
 
   const listKind = list.data?.kind;
   const today = todayISO();
-  // O que já passou do intervalo de costume: a leitura do histórico inteiro, que não depende da lista. Só refaz
-  // quando o histórico ou o dia mudam; a faixa "Acho que acabou" e o selo "Na despensa" partem do resultado,
-  // sem ler tudo de novo a cada item posto no carrinho.
+  // O que já passou do intervalo de costume: a leitura do histórico inteiro, que não depende da lista nem do tipo
+  // dela (a vitamina posta na lista do mercado também acaba). Só refaz quando o histórico ou o dia mudam; a faixa
+  // "Acho que acabou" e o selo "Na despensa" partem do resultado, sem ler tudo de novo a cada item posto no carrinho.
   const ranOut = useMemo(
     // Fim do dia de hoje: entram as compras de qualquer hora, e o dia novo refaz.
-    () => (listKind ? ranOutItems(purchases.data ?? [], { now: new Date(`${today}T23:59:59.999`), listKind }) : []),
-    [purchases.data, listKind, today],
+    () => ranOutItems(purchases.data ?? [], { now: new Date(`${today}T23:59:59.999`) }),
+    [purchases.data, today],
   );
+  // Sem o histórico carregado não dá para saber o que acabou: histórico vazio seria outra coisa.
+  const historyKnown = purchases.data !== undefined;
 
   // Do histórico, menos o que já está na lista (a comprar ou no carrinho); o
   // que "acabou" não se repete em "comprados recentemente". O histórico pode
@@ -297,7 +307,8 @@ export default function ShoppingListScreen() {
       names: new Set([...items.data.map((i) => normalizeSearch(i.name)), ...justAdded.pending]),
       productIds: new Set(items.data.flatMap((i) => (i.product_id ? [i.product_id] : []))),
     };
-    const restock = restockFrom(ranOut, { exclude: inList });
+    // A faixa só sugere o que cabe neste tipo de lista (remédio não entra na do mercado).
+    const restock = restockFrom(ranOut.filter((i) => fitsList(i.category, listKind)), { exclude: inList });
     const recent = recentPurchases(purchases.data ?? [], {
       now: new Date(`${today}T23:59:59.999`),
       listKind,
@@ -316,7 +327,9 @@ export default function ShoppingListScreen() {
   const storeId = chosenStore && storeNames?.has(chosenStore) ? chosenStore : null;
 
   // Lista no mercado (domain/listEstimate): quanto deve dar e o que está na despensa. Sem os preços, as
-  // ligações ou a despensa carregados (sem internet e nunca vistos neste aparelho), mostra o que der.
+  // ligações ou a despensa carregados (sem internet e nunca vistos neste aparelho), mostra o que der. Só o selo
+  // "Na despensa" espera o histórico de compras: sem ele, apareceria justamente no que acabou. O aparelho que
+  // nunca carregou o histórico fica sem selo nenhum.
   const market = useMemo(() => {
     const all = items.data ?? [];
     const estimate = estimateList(
@@ -339,18 +352,27 @@ export default function ShoppingListScreen() {
     );
     // O que o app acha que acabou não é "na despensa": tudo o que passou do costume (ranOut), sem tirar o que
     // já está na lista (é dela que se trata) e sem os cortes da faixa "Acho que acabou".
-    const inPantry = pantryHits(
-      all.filter((i) => !i.checked_at).map((i) => ({ id: i.id, name: i.name, productId: i.product_id })),
-      pantry.data ?? [],
-      { links: links.data, today, ranOut },
-    );
+    const inPantry = historyKnown
+      ? pantryHits(
+          all.filter((i) => !i.checked_at).map((i) => ({ id: i.id, name: i.name, productId: i.product_id })),
+          pantry.data ?? [],
+          { links: links.data, today, ranOut },
+        )
+      : new Map<string, PantryHit>();
     const hints = new Map<string, ItemHint>();
     for (const i of all) {
       const cost = estimate.byItem.get(i.id);
       if (cost || inPantry.has(i.id)) hints.set(i.id, { cost: cost ? formatItemCost(cost) : undefined, inPantry: inPantry.has(i.id) });
     }
     return { estimate, inPantry, hints };
-  }, [items.data, prices.data, links.data, products.data, pantry.data, ranOut, storeId, today]);
+  }, [items.data, prices.data, links.data, products.data, pantry.data, ranOut, historyKnown, storeId, today]);
+
+  // As ligações e os produtos dão preço ao item digitado solto. Se não chegaram (a busca falhou, ou sem internet e
+  // nunca vistos neste aparelho), o cartão diz que não deu para conferir o que ficou sem preço. A lista não espera
+  // por eles (abre sem internet), e enquanto a primeira busca ainda anda não há o que avisar.
+  const missed = (query: { data: unknown; isPending: boolean; fetchStatus: string }) =>
+    query.data === undefined && !(query.isPending && query.fetchStatus !== 'paused');
+  const sourcesLoaded = !missed(links) && !missed(products);
 
   // Na ordem dos corredores do mercado: frescos, despensa, bebidas, casa…
   // Urgentes no topo.
@@ -449,10 +471,10 @@ export default function ShoppingListScreen() {
   return (
     <Screen
       edges={[]}
-      // Puxar atualiza também os preços, a despensa, as ligações, os mercados e o histórico: só os itens chegam
-      // sozinhos (tempo real). O indicador segue os itens, para as outras buscas não o fazerem piscar.
+      // Puxar atualiza também os preços, a despensa, as ligações, os produtos, os mercados e o histórico: só os
+      // itens chegam sozinhos (tempo real). O indicador segue os itens, para as outras buscas não o fazerem piscar.
       refreshing={items.isRefetching}
-      onRefresh={() => [items, prices, pantry, links, stores, purchases].forEach((query) => void query.refetch())}
+      onRefresh={() => [items, prices, pantry, links, products, stores, purchases].forEach((query) => void query.refetch())}
       footer={
         pending.length && list.data.kind !== 'outros' ? (
           <Button
@@ -528,6 +550,7 @@ export default function ShoppingListScreen() {
           kind={list.data.kind}
           storeId={storeId}
           storeNames={storeNames}
+          sourcesLoaded={sourcesLoaded}
           onChangeStore={(store) => {
             const choice = store ? { storeId: store, at: Date.now() } : null;
             if (choice) chosenStores.set(id, choice);
