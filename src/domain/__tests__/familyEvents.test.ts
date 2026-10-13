@@ -20,6 +20,7 @@ import {
   parseTime,
   recurrenceHint,
   rideText,
+  sameEventFields,
   dayChangesAfterSave,
   staleDayDates,
   todayEntries,
@@ -200,8 +201,16 @@ describe('occurrencesOf (mudanças de um dia)', () => {
     expect(occurrencesOf(swim, cleaned, '2026-10-15', '2026-10-15').map((o) => o.take_by)).toEqual(['beto']);
     // O dia que saiu da regra (só às terças) sai junto, mesmo com mudança de verdade.
     expect(dayChangesAfterSave({ ...swim, weekdays: [2] }, changes).remove).toEqual(['2026-10-15', '2026-10-22']);
-    // "Ninguém leva" continua sendo mudança enquanto o compromisso tiver alguém.
-    expect(dayChangesAfterSave(swim, [day({ override_take: true, take_by: null })])).toEqual({ remove: [], rewrite: [] });
+    // "Ninguém leva" (a mudança marcada e sem pessoa) é sempre mudança, e salvar o compromisso não a apaga:
+    // nem quando ele tem alguém, nem quando o de sempre também é ninguém (o dia de quem cobria e teve a ficha
+    // apagada: a casa continua precisando saber, e só "Como sempre" ou outra pessoa no dia desfaz).
+    const nobody = [day({ override_take: true, take_by: null })];
+    expect(dayChangesAfterSave(swim, nobody)).toEqual({ remove: [], rewrite: [] });
+    expect(dayChangesAfterSave({ ...swim, take_by: null }, nobody)).toEqual({ remove: [], rewrite: [] });
+    expect(dayChangesAfterSave({ ...swim, take_by: null, pick_up_by: null }, [day({ override_take: true, take_by: null, override_pick_up: true, pick_up_by: null })])).toEqual({
+      remove: [],
+      rewrite: [],
+    });
   });
 
   it('compromisso que passou a "Não repete": as mudanças de dias saem todas, e a que sobrar não vale', () => {
@@ -218,6 +227,16 @@ describe('occurrencesOf (mudanças de um dia)', () => {
     expect(shown.map((e) => [e.date, e.ride])).toEqual([['2026-10-13', 'Beto leva, Carla busca']]);
   });
 
+  it('os campos do formulário: o mesmo compromisso, ou um que mudou no meio', () => {
+    const row = { ...swim, notes: null };
+    expect(sameEventFields(row, { ...row })).toBe(true);
+    expect(sameEventFields(row, { ...row, weekdays: [2, 4] })).toBe(true);
+    // Qualquer campo que o formulário guarda conta.
+    for (const patch of [{ start_time: '17:00' }, { take_by: 'vo' }, { take_by: null }, { weekdays: [2] }, { notes: 'levar atestado' }, { until_on: '2026-12-31' }, { title: 'Natação' }]) {
+      expect([patch, sameEventFields(row, { ...row, ...patch })]).toEqual([patch, false]);
+    }
+  });
+
   it('o que guardar para o dia: igual ao de sempre não é mudança', () => {
     expect(normalizeDayChange(swim, NO_DAY_CHANGE)).toBeNull();
     // Escolher o Beto (o de sempre) para o dia: nada a guardar.
@@ -226,8 +245,18 @@ describe('occurrencesOf (mudanças de um dia)', () => {
       ...NO_DAY_CHANGE,
       override_take: true,
     });
-    // "Ninguém" quando já não há ninguém de sempre: nada a guardar.
-    expect(normalizeDayChange({ take_by: null, pick_up_by: null }, { ...NO_DAY_CHANGE, override_take: true, take_by: null })).toBeNull();
+    // A mudança marcada e sem pessoa fica mesmo quando o de sempre é ninguém: é o dia que as telas chamam de
+    // "Ninguém leva" (quem cobria teve a ficha apagada), e o salvar do compromisso não pode apagá-la calado.
+    expect(normalizeDayChange({ take_by: null, pick_up_by: null }, { ...NO_DAY_CHANGE, override_take: true, take_by: null })).toEqual({
+      ...NO_DAY_CHANGE,
+      override_take: true,
+    });
+    expect(normalizeDayChange({ take_by: null, pick_up_by: null }, { ...NO_DAY_CHANGE, override_pick_up: true, pick_up_by: null })).toEqual({
+      ...NO_DAY_CHANGE,
+      override_pick_up: true,
+    });
+    // "Como sempre" (sem a marca) desfaz, e aí não há o que guardar.
+    expect(normalizeDayChange({ take_by: null, pick_up_by: null }, { ...NO_DAY_CHANGE, override_take: false, take_by: null })).toBeNull();
     // Sem marcar a mudança, o nome que veio junto não fica.
     expect(normalizeDayChange(swim, { ...NO_DAY_CHANGE, cancelled: true, take_by: 'vo' })).toEqual({ ...NO_DAY_CHANGE, cancelled: true });
     expect(normalizeDayChange(swim, { ...NO_DAY_CHANGE, override_pick_up: true, pick_up_by: 'vo' })).toEqual({

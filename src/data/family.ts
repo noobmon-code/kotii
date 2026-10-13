@@ -22,6 +22,9 @@ const DAY_COLUMNS = 'event_id, occurs_on, cancelled, override_take, take_by, ove
 /** O que a pessoa lê quando tenta salvar e o banco ainda não tem as tabelas. */
 export const FAMILY_EVENTS_UNAVAILABLE = 'Os compromissos ainda estão sendo ativados no Kotii. Tente de novo mais tarde.';
 
+/** O que a pessoa lê quando muda um dia de um compromisso que já foi apagado (em outro celular). */
+export const FAMILY_EVENT_GONE = 'Este compromisso não existe mais: foi excluído. Volte para a agenda.';
+
 /** O que a pessoa lê quando alguém do compromisso (de quem é, quem leva ou quem busca) não tem mais ficha. */
 export const FAMILY_EVENT_PERSON_GONE = 'Uma das pessoas deste compromisso não está mais nas fichas da casa. Escolha de novo de quem é, quem leva e quem busca, e salve.';
 
@@ -44,8 +47,13 @@ export function isMissingTable(error: unknown): boolean {
 /** O erro de salvar ou abrir um compromisso, em palavras de gente. */
 export function familyEventErrorMessage(error: unknown): string {
   if (isMissingTable(error)) return FAMILY_EVENTS_UNAVAILABLE;
-  // Uma ficha escolhida no formulário foi apagada enquanto ele estava aberto (o banco recusa a chave: 23503).
-  if (error && typeof error === 'object' && (error as { code?: unknown }).code === '23503') return FAMILY_EVENT_PERSON_GONE;
+  // O banco recusou uma chave (23503). Na mudança de um dia, a chave do próprio compromisso: ele foi apagado
+  // em outro celular com esta tela aberta. Nas outras, a de uma ficha escolhida no formulário, que foi apagada.
+  if (error && typeof error === 'object' && (error as { code?: unknown }).code === '23503') {
+    const { message, details } = error as { message?: unknown; details?: unknown };
+    const text = `${typeof message === 'string' ? message : ''} ${typeof details === 'string' ? details : ''}`;
+    return text.includes('family_event_days_event_id') ? FAMILY_EVENT_GONE : FAMILY_EVENT_PERSON_GONE;
+  }
   return errorMessage(error);
 }
 

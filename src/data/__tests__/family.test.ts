@@ -4,6 +4,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { FamilyEventValues } from '@/domain/familyEvents';
 
 import {
+  FAMILY_EVENT_GONE,
   FAMILY_EVENT_PERSON_GONE,
   FAMILY_EVENTS_UNAVAILABLE,
   familyEventErrorMessage,
@@ -203,6 +204,13 @@ describe('compromissos antes da migração', () => {
     // A ficha de quem leva foi apagada com o formulário aberto: o banco recusa a chave, e a pessoa lê o que fazer.
     const gone = { code: '23503', message: 'insert or update on table "family_events" violates foreign key constraint "family_events_take_by_household_id_fkey"' };
     expect(familyEventErrorMessage(gone)).toBe(FAMILY_EVENT_PERSON_GONE);
+    // A mesma recusa na mudança de um dia, pela chave do próprio compromisso: ele foi excluído em outro celular.
+    const deleted = { code: '23503', message: 'insert or update on table "family_event_days" violates foreign key constraint "family_event_days_event_id_household_id_fkey"' };
+    expect(familyEventErrorMessage(deleted)).toBe(FAMILY_EVENT_GONE);
+    expect(FAMILY_EVENT_GONE).toBe('Este compromisso não existe mais: foi excluído. Volte para a agenda.');
+    // A ficha de quem ia levar naquele dia, apagada: é a chave de uma pessoa.
+    const driver = { code: '23503', message: 'insert or update on table "family_event_days" violates foreign key constraint "family_event_days_take_by_household_id_fkey"' };
+    expect(familyEventErrorMessage(driver)).toBe(FAMILY_EVENT_PERSON_GONE);
     expect(FAMILY_EVENT_PERSON_GONE).toBe('Uma das pessoas deste compromisso não está mais nas fichas da casa. Escolha de novo de quem é, quem leva e quem busca, e salve.');
   });
 });

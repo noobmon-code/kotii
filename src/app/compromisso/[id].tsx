@@ -1,5 +1,5 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import {
@@ -22,6 +22,7 @@ import {
   NO_DAY_CHANGE,
   normalizeDayChange,
   recurrenceHint,
+  sameEventFields,
   validateEventForm,
   weekdayDate,
   type EventDayValues,
@@ -56,6 +57,12 @@ const onError = (err: unknown) => notify('Erro', familyEventErrorMessage(err));
 /** Quantos dos outros dias com mudança aparecem antes do "Ver todos". */
 const OTHER_DAYS_SHOWN = 6;
 
+/** Com uma cópia guardada, quanto a tela espera a busca desta visita antes de abrir com a cópia. */
+const FRESH_WAIT_MS = 4000;
+
+const CHANGED_TITLE = 'Este compromisso mudou';
+const CHANGED_MESSAGE = 'Ele foi alterado depois que esta tela abriu (em outro celular, por exemplo).';
+
 /** "Quinta-feira, 15 de outubro". */
 function longDate(date: string): string {
   const [y, m, d] = date.split('-').map(Number);
@@ -74,13 +81,26 @@ export default function FamilyEventScreen() {
 
   // O formulário copia o compromisso para os campos uma vez só. Por isso espera a busca desta visita: o que
   // está guardado pode ser de antes de uma mudança (daqui ou de outro celular), e salvar gravaria o de antes
-  // por cima. Sem internet a busca fica parada, e o guardado abre. Depois que o formulário apareceu, ele
-  // fica: outra busca (a da ficha criada pelo "+ Pessoa", a de voltar ao app) não o tira da frente, nem um
-  // erro dela, e o que foi digitado não some.
+  // por cima. A espera tem limite quando há uma cópia guardada (a internet que não responde não segura a
+  // tela), e sem internet a busca fica parada: nos dois casos abre a cópia, e o próprio formulário avisa se
+  // o compromisso que chegar depois for outro (ver EventForm). Depois que o formulário apareceu, ele fica:
+  // outra busca (a da ficha criada pelo "+ Pessoa", a de voltar ao app) não o tira da frente, nem um erro
+  // dela, e o que foi digitado não some. Só sai quando a busca diz que o compromisso não existe mais.
   const [shownId, setShownId] = useState<string | null>(null);
   const shown = shownId === id;
+  const [hurriedId, setHurriedId] = useState<string | null>(null);
+  const awaitingFresh = !isNew && !shown && hurriedId !== id && event.isFetching && !event.isFetchedAfterMount;
+  const hasCopy = Boolean(event.data);
+  useEffect(() => {
+    if (!awaitingFresh || !hasCopy) return;
+    const timer = setTimeout(() => setHurriedId(id), FRESH_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [awaitingFresh, hasCopy, id]);
+  // Quantas vezes a pessoa pediu "Atualizar": cada uma monta o formulário de novo, com o compromisso de agora.
+  const [reloads, setReloads] = useState(0);
+
   const failed = !shown && (people.isError || (!isNew && event.isError));
-  const waiting = !people.data || (!isNew && (event.isPending || (!shown && event.isFetching && !event.isFetchedAfterMount)));
+  const waiting = !people.data || (!isNew && (event.isPending || awaitingFresh));
   const found = isNew || Boolean(event.data);
   // Guardado na própria renderização em que o formulário aparece (estado derivado, sem efeito).
   if (!shown && !failed && !waiting && found) setShownId(id);
@@ -91,13 +111,27 @@ export default function FamilyEventScreen() {
   }
   if (!people.data || waiting) return <Loading />;
   if (!found) return <ErrorNotice error={new Error('Compromisso não encontrado.')} />;
-  return <EventForm event={isNew ? undefined : (event.data ?? undefined)} people={people.data} day={day} />;
+  return (
+    <EventForm
+      // Outro compromisso (ou o "Atualizar") é outro formulário: os campos nunca passam de um para o outro.
+      key={`${id}:${reloads}`}
+      event={isNew ? undefined : (event.data ?? undefined)}
+      people={people.data}
+      day={day}
+      onReload={() => setReloads((count) => count + 1)}
+    />
+  );
 }
 
-function EventForm({ event, people, day }: { event?: FamilyEvent; people: Person[]; day: string | null }) {
+function EventForm({ event, people, day, onReload }: { event?: FamilyEvent; people: Person[]; day: string | null; onReload: () => void }) {
   const save = useSaveFamilyEvent();
   const remove = useDeleteFamilyEvent();
   const drivers = driversOf(people);
+  // O compromisso como estava quando os campos foram preenchidos. Se o que chega do banco depois é outro (mudou
+  // em outro celular, ou a cópia que abriu era antiga), salvar gravaria o de antes por cima: a tela avisa e
+  // oferece atualizar, e o salvar pergunta antes.
+  const [opened] = useState(event);
+  const changedElsewhere = Boolean(event && opened && !sameEventFields(event, opened)) && !save.isPending && !save.isSuccess;
   const [title, setTitle] = useState(event?.title ?? '');
   const [date, setDate] = useState(formatBRDate(event?.starts_on ?? day ?? todayISO()));
   const [startTime, setStartTime] = useState(event?.start_time ?? '');
@@ -162,12 +196,22 @@ function EventForm({ event, people, day }: { event?: FamilyEvent; people: Person
       notify(result.title, result.message);
       return;
     }
-    save.mutate({ id: event?.id, values: result.values }, { onSuccess: () => router.back(), onError });
+    const values = result.values;
+    const send = () => save.mutate({ id: event?.id, values }, { onSuccess: () => router.back(), onError });
+    if (changedElsewhere) confirmAction(CHANGED_TITLE, `${CHANGED_MESSAGE} Salvar agora grava por cima dessas mudanças.`, 'Salvar assim mesmo', send);
+    else send();
   }
 
   return (
     <Screen edges={[]}>
       <Stack.Screen options={{ title: event ? 'Compromisso' : 'Novo compromisso' }} />
+      {changedElsewhere ? (
+        <Card style={styles.group}>
+          <Text variant="heading">{CHANGED_TITLE}</Text>
+          <Text variant="muted">{CHANGED_MESSAGE} Atualize para ver como ele está agora; o que você digitou aqui se perde.</Text>
+          <Button title="Atualizar" variant="secondary" icon="refresh" onPress={onReload} />
+        </Card>
+      ) : null}
       {event && series ? <DayChanges event={event} people={people} initialDay={day} /> : null}
       {series ? (
         <View style={styles.group}>
@@ -285,7 +329,10 @@ function DayChanges({ event, people, initialDay }: { event: FamilyEvent; people:
   // A lista fica acima do formulário: só os primeiros, e o resto num toque
   // (é por ela que se chega a um dia marcado como "não vai ter").
   const shown = showAll ? others : others.slice(0, OTHER_DAYS_SHOWN);
-  const saving = save.isPending;
+  // Cada toque grava a linha inteira do dia, montada com o que está na tela. Enquanto a busca desta visita não
+  // chega, o que está na tela pode ser de antes de uma mudança feita em outro celular, e o toque a apagaria:
+  // as escolhas esperam, apagadas, como enquanto grava. Sem internet a busca fica parada, e elas ficam livres.
+  const saving = save.isPending || (days.isFetching && !days.isFetchedAfterMount);
 
   function change(patch: Partial<EventDayValues>) {
     if (!day || saving) return;
@@ -386,7 +433,8 @@ function DayDriver({
       <Text variant="label">{label}</Text>
       <Row style={styles.wrap}>
         <Chip label={`Como sempre: ${nameOf(usual) ?? 'ninguém'}`} selected={!changed} onPress={() => onChange(false, null)} />
-        {usual ? <Chip label="Ninguém" selected={changed && value === null} onPress={() => onChange(true, null)} /> : null}
+        {/* Sem ninguém de sempre, "Ninguém" só aparece no dia que já está assim: o de quem ia levar só naquele dia e teve a ficha apagada. */}
+        {usual || (changed && value === null) ? <Chip label="Ninguém" selected={changed && value === null} onPress={() => onChange(true, null)} /> : null}
         {drivers
           .filter((p) => p.id !== usual)
           .map((p) => (

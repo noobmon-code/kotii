@@ -185,13 +185,18 @@ export function dayChangeOf(eventId: string, days: EventDayLike[], date: string)
 }
 
 /**
- * O que guardar para o dia: escolher para o dia o mesmo de sempre não é
- * mudança (e seguiria travado se o compromisso mudasse depois). null: nada
- * mudou, a linha do dia não fica.
+ * O que guardar para o dia: escolher para o dia a mesma pessoa de sempre não é
+ * mudança (e seguiria travado se o compromisso mudasse depois). A mudança
+ * marcada e sem pessoa é sempre mudança, também quando o de sempre é ninguém:
+ * é o "Só neste dia: Ninguém", ou o dia de quem cobria e teve a ficha apagada,
+ * e é esse dia que as telas e os avisos chamam de "Ninguém leva" (ver
+ * EventOccurrence). Ela só sai quando alguém escolhe "Como sempre" ou outra
+ * pessoa para o dia: salvar o compromisso não a apaga. null: nada mudou, a
+ * linha do dia não fica.
  */
 export function normalizeDayChange(event: Pick<FamilyEventLike, 'take_by' | 'pick_up_by'>, values: EventDayValues): EventDayValues | null {
-  const take = values.override_take && values.take_by !== event.take_by;
-  const pickUp = values.override_pick_up && values.pick_up_by !== event.pick_up_by;
+  const take = values.override_take && (values.take_by === null || values.take_by !== event.take_by);
+  const pickUp = values.override_pick_up && (values.pick_up_by === null || values.pick_up_by !== event.pick_up_by);
   if (!values.cancelled && !take && !pickUp) return null;
   return {
     cancelled: values.cancelled,
@@ -242,6 +247,33 @@ export function dayChangesAfterSave(
     }
   }
   return { remove, rewrite };
+}
+
+/** Os campos do compromisso que o formulário guarda. */
+const FORM_FIELDS = [
+  'title',
+  'starts_on',
+  'start_time',
+  'end_time',
+  'person_id',
+  'take_by',
+  'pick_up_by',
+  'location',
+  'bring',
+  'notes',
+  'recurrence',
+  'weekdays',
+  'until_on',
+] as const satisfies readonly (keyof FamilyEventValues)[];
+
+/**
+ * O compromisso é o mesmo nos campos do formulário? Quando o que chega do
+ * banco difere do que preencheu os campos, ele mudou no meio (em outro
+ * celular, ou a cópia guardada era antiga), e salvar gravaria o de antes por
+ * cima.
+ */
+export function sameEventFields(a: FamilyEventValues, b: FamilyEventValues): boolean {
+  return FORM_FIELDS.every((field) => JSON.stringify(a[field] ?? null) === JSON.stringify(b[field] ?? null));
 }
 
 /** Aniversário de uma ficha num ano: quantos anos faz. */
