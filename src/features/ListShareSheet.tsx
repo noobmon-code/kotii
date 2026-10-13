@@ -65,8 +65,14 @@ export function ListShareSheet({
     actions.push({
       label: 'Outro app',
       icon: 'share-variant-outline',
-      // Fechar o menu do sistema sem escolher não é erro.
-      onPress: () => void Share.share({ message: text }).catch(() => undefined),
+      onPress: () =>
+        void Share.share({ message: text }).catch((error: unknown) => {
+          // Fechar o menu do sistema sem escolher não é erro (no navegador, AbortError). No iOS a falha
+          // só chega depois de o menu ter aberto, vinda do app escolhido: dizer que não abriu seria mentira.
+          if (Platform.OS === 'ios' || (error as { name?: unknown } | null)?.name === 'AbortError') return;
+          // O menu não abriu e o do Kotii já fechou: o texto vai copiado.
+          void copy('Não deu para abrir o menu de compartilhar: o texto foi copiado, é só colar na conversa.');
+        }),
     });
   }
   actions.push({

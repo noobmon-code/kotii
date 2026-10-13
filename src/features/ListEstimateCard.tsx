@@ -2,20 +2,32 @@
 // preços do mercado em que a pessoa está) e o que está na despensa.
 
 import { useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 
-import { cartSplitLine, describeEstimate, describePantryHits, estimateHeadline, type ListEstimate } from '@/domain/listEstimate';
+import {
+  cartSplitLine,
+  describeEstimate,
+  describePantryHits,
+  estimateHeadline,
+  storeOptionNote,
+  uncheckedPricesNote,
+  type ListEstimate,
+} from '@/domain/listEstimate';
 import { formatBRL } from '@/domain/money';
 import type { ListKind } from '@/lib/types';
 import { PickerModal } from '@/ui/PickerModal';
 import { Button, Card, Chip, Icon, IconBadge, Row, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
+// Como buscar de novo o que não chegou. No navegador não existe puxar para atualizar: lá é recarregar a página.
+const RETRY_HINT = Platform.OS === 'web' ? 'Recarregue a página para tentar de novo.' : 'Puxe a lista para baixo para tentar de novo.';
+
 export function ListEstimateCard({
   estimate,
   kind,
   storeId,
   storeNames,
+  sourcesLoaded,
   onChangeStore,
   inPantry,
 }: {
@@ -26,13 +38,17 @@ export function ListEstimateCard({
   storeId: string | null;
   /** Os nomes dos mercados; sem eles (ainda não carregaram), não há como dizer onde se está. */
   storeNames?: ReadonlyMap<string, string>;
+  /** false: as ligações ou os produtos não chegaram, e item sem preço pode ser só item que não deu para conferir. */
+  sourcesLoaded: boolean;
   onChangeStore: (storeId: string | null) => void;
   /** Nomes dos itens a comprar que estão na despensa. */
   inPantry: string[];
 }) {
   const [choosing, setChoosing] = useState(false);
   const priced = estimate.pricedCount > 0;
-  if (!priced && !inPantry.length) return null;
+  const unchecked = uncheckedPricesNote(estimate, sourcesLoaded);
+  // Sem conta e sem nada na despensa, o cartão só aparece para dizer que não deu para conferir os preços.
+  if (!priced && !inPantry.length && !unchecked) return null;
   const cartSplit = cartSplitLine(estimate);
   const storeName = storeId ? storeNames?.get(storeId) : undefined;
   const place = kind === 'farmacia' ? 'farmácia' : 'mercado';
@@ -49,6 +65,7 @@ export function ListEstimateCard({
             </View>
           </Row>
           <Text variant="muted">{describeEstimate(estimate, storeName ?? null)}</Text>
+          {unchecked ? <Text variant="muted">{`${unchecked} ${RETRY_HINT}`}</Text> : null}
           {cartSplit ? <Text variant="muted">{cartSplit}</Text> : null}
           {storeNames ? (
             <Row style={styles.wrap}>
@@ -61,6 +78,8 @@ export function ListEstimateCard({
             </Row>
           ) : null}
         </>
+      ) : unchecked ? (
+        <Text variant="muted">{`${unchecked} ${RETRY_HINT}`}</Text>
       ) : null}
       {inPantry.length ? (
         <Row gap={space.sm} style={styles.top}>
@@ -76,18 +95,13 @@ export function ListEstimateCard({
           visible={choosing}
           title="Onde você está comprando?"
           placeholder={`Buscar ${place}`}
-          options={estimate.stores.flatMap((store) => {
-            const title = storeNames.get(store.storeId);
-            return title
-              ? [
-                  {
-                    id: store.storeId,
-                    title,
-                    subtitle: `${store.knownCount} ${store.knownCount === 1 ? 'item da lista com preço' : 'itens da lista com preço'}`,
-                  },
-                ]
-              : [];
-          })}
+          options={estimate.stores
+            .flatMap((store) => {
+              const title = storeNames.get(store.storeId);
+              return title ? [{ id: store.storeId, title, known: store.knownCount, subtitle: storeOptionNote(store.knownCount) }] : [];
+            })
+            // Quem tem preço para mais itens da lista primeiro; no empate (os sem nenhum, por exemplo), pelo nome.
+            .sort((a, b) => b.known - a.known || a.title.localeCompare(b.title, 'pt-BR'))}
           onClose={() => setChoosing(false)}
           onSelect={(id) => {
             onChangeStore(id);

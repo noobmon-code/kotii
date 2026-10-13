@@ -3,11 +3,15 @@
 // que a estimativa da lista (listEstimate) e "Onde comprar" (recommendation)
 // estimam o que um mercado ainda não tem nas notas.
 
+import { pricePerBase } from './units';
+
 export interface LevelPrice {
   productId: string;
   storeId: string;
   unit: string;
   unitPrice: number;
+  /** Quando a casa pagou esse preço (ISO), se quem chama sabe: decide qual vale quando o mercado tem dois do mesmo produto. */
+  purchasedAt?: string;
 }
 
 /**
@@ -20,27 +24,49 @@ const AVERAGE_WEIGHT = 2;
 const MIN_LEVEL = 0.6;
 const MAX_LEVEL = 1.6;
 
+const average = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
+
+/**
+ * O preço de um mercado num produto, um só: com o produto por kg numa nota e
+ * por g em outra, o mercado teria dois votos na média. Vale o mais novo (no
+ * empate de data, o menor); se alguma linha veio sem data, a média delas.
+ */
+function storePrice(rows: LevelPrice[]): number {
+  if (rows.some((row) => row.purchasedAt == null)) return average(rows.map((row) => row.unitPrice));
+  return rows.reduce((a, b) => {
+    const later = Date.parse(b.purchasedAt!) - Date.parse(a.purchasedAt!);
+    return later > 0 || (later === 0 && b.unitPrice < a.unitPrice) ? b : a;
+  }).unitPrice;
+}
+
 /**
  * Nível de preço por mercado (1 = na média; 0,92 = 8% abaixo): a média de
  * preço no mercado / preço médio, nos produtos que aparecem em dois mercados
  * ou mais, puxada para 1 quando são poucos e presa a uma faixa plausível.
- * Mercado sem produto em comum com outro fica em 1. Preço zerado ou negativo
- * (brinde na nota) não é preço: fica de fora, e o mercado que só tem desses
- * nem aparece.
+ * Mercado sem produto em comum com outro fica em 1. O mesmo produto por kg
+ * num mercado e por g no outro (ou por litro e por ml) entra na mesma conta,
+ * convertido, e cada mercado entra com um preço só por produto (storePrice);
+ * "un" e kg continuam sem se comparar. Preço zerado ou negativo (brinde na
+ * nota) não é preço: fica de fora, e o mercado que só tem desses nem aparece.
  */
 export function storePriceIndex(prices: readonly LevelPrice[]): Map<string, number> {
-  const groups = new Map<string, LevelPrice[]>();
+  // Por produto e unidade de comparação, as linhas de cada mercado.
+  const groups = new Map<string, Map<string, LevelPrice[]>>();
   for (const price of prices) {
     if (!(price.unitPrice > 0)) continue;
-    const key = `${price.productId}\u0000${price.unit}`;
-    groups.set(key, [...(groups.get(key) ?? []), price]);
+    const { unit, unitPrice } = pricePerBase(price.unitPrice, price.unit);
+    const key = `${price.productId}\u0000${unit}`;
+    const byStore = groups.get(key) ?? new Map<string, LevelPrice[]>();
+    byStore.set(price.storeId, [...(byStore.get(price.storeId) ?? []), { ...price, unit, unitPrice }]);
+    groups.set(key, byStore);
   }
   const index = new Map<string, number>();
   const ratios = new Map<string, number[]>();
-  for (const group of groups.values()) {
-    for (const price of group) index.set(price.storeId, 1);
-    if (new Set(group.map((p) => p.storeId)).size < 2) continue;
-    const mean = group.reduce((sum, p) => sum + p.unitPrice, 0) / group.length;
+  for (const byStore of groups.values()) {
+    for (const storeId of byStore.keys()) index.set(storeId, 1);
+    if (byStore.size < 2) continue;
+    const group = [...byStore].map(([storeId, rows]) => ({ storeId, unitPrice: storePrice(rows) }));
+    const mean = average(group.map((p) => p.unitPrice));
     for (const price of group) ratios.set(price.storeId, [...(ratios.get(price.storeId) ?? []), price.unitPrice / mean]);
   }
   for (const [storeId, list] of ratios) {

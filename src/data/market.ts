@@ -752,14 +752,39 @@ export function useStores() {
   });
 }
 
+/** O servidor devolve até 1000 linhas por pedido (max_rows padrão do Supabase). */
+const PRICE_PAGE = 1000;
+/** 20 mil preços: bem além de qualquer casa. Passando disso a busca falha, em vez de devolver uma lista cortada. */
+const PRICE_MAX_PAGES = 20;
+
+/**
+ * Os últimos preços da casa, todos: página por página, até vir uma
+ * incompleta. Num pedido só, a casa com mais de mil preços receberia os
+ * primeiros mil, calada, e a lista diria "todos os itens têm preço" sobre uma
+ * conta cortada. A ordem é a chave da view (produto, mercado, unidade): sem
+ * ela, as páginas não se encaixam.
+ */
+export async function fetchLatestPrices(): Promise<LatestPrice[]> {
+  const prices: LatestPrice[] = [];
+  for (let page = 0; page < PRICE_MAX_PAGES; page++) {
+    const from = page * PRICE_PAGE;
+    const rows = (unwrap(
+      await supabase
+        .from('latest_prices')
+        .select('product_id, store_id, unit, unit_price, purchased_at')
+        .order('product_id')
+        .order('store_id')
+        .order('unit')
+        .range(from, from + PRICE_PAGE - 1),
+    ) ?? []) as LatestPrice[];
+    prices.push(...rows);
+    if (rows.length < PRICE_PAGE) return prices;
+  }
+  throw new Error('Não foi possível carregar todos os preços da casa: são mais do que o app consegue ler de uma vez.');
+}
+
 export function useLatestPrices() {
-  return useQuery({
-    queryKey: ['latestPrices'],
-    queryFn: async () =>
-      unwrap(
-        await supabase.from('latest_prices').select('product_id, store_id, unit, unit_price, purchased_at'),
-      ) as LatestPrice[],
-  });
+  return useQuery({ queryKey: ['latestPrices'], queryFn: fetchLatestPrices });
 }
 
 export function usePriceHistory(productId: string) {
