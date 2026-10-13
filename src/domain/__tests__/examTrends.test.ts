@@ -10,6 +10,7 @@ import {
   examTrends,
   formatResultNumber,
   hasExamResults,
+  hasFilledResult,
   normalizeUnit,
   parseResultValue,
   valueLabel,
@@ -2145,6 +2146,12 @@ describe('examTrends', () => {
     expect(hasExamResults([exam('2026-01-10', [])])).toBe(false);
     expect(hasExamResults([exam('2026-01-10', [result('Glicose', '92')], { status: 'pedido' })])).toBe(false);
     expect(hasExamResults([exam(null, [result('Glicose', '92')])])).toBe(true);
+    // O laudo só com linhas de valor em branco não tem o que mostrar: a evolução ignora essas linhas.
+    expect(hasExamResults([exam('2026-01-10', [result('Glicose', ''), result('Ureia', '   ')])])).toBe(false);
+    expect(hasExamResults([exam('2026-01-10', [result('Glicose', ''), result('Ureia', '30')])])).toBe(true);
+    expect(hasFilledResult([])).toBe(false);
+    expect(hasFilledResult([{ value: null }, { value: ' ' }, {}])).toBe(false);
+    expect(hasFilledResult([{ value: 'Não reagente' }])).toBe(true);
   });
 
   it('a descrição falada de um gráfico longo lê só os mais recentes', () => {

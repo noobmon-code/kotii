@@ -104,33 +104,78 @@ describe('todos os exames de uma pessoa', () => {
 });
 
 describe('quem tem resultados de exame, na casa toda', () => {
-  it('lê só a coluna da pessoa, dos realizados com resultados, em páginas, e devolve cada pessoa uma vez', async () => {
+  /**
+   * Um banco de mentira com os exames realizados e com resultados de cada pessoa (`results` de cada um). Guarda
+   * cada pedido como "colunas | filtros | página".
+   */
+  function ownersDb(exams: { person_id: string; results: { value: string | null }[] }[]) {
     const calls: string[] = [];
-    // 2.300 exames com resultados, de três pessoas.
-    const rows = Array.from({ length: 2300 }, (_, i) => ({ person_id: ['ana', 'beto', 'rex'][i % 3] }));
-    const query = {
-      select: (columns: string) => {
-        calls.push(`select ${columns}`);
+    const db = {
+      from: () => {
+        let columns = '';
+        const filters: string[] = [];
+        let person: string | null = null;
+        const query = {
+          select: (asked: string) => {
+            columns = asked;
+            return query;
+          },
+          eq: (column: string, value: string) => {
+            filters.push(`${column}=${value}`);
+            if (column === 'person_id') person = value;
+            return query;
+          },
+          neq: (column: string, value: string) => {
+            filters.push(`${column}<>${value}`);
+            return query;
+          },
+          order: () => query,
+          range: async (from: number, to: number) => {
+            calls.push(`${columns} | ${filters.join(' ')} | ${from}-${to}`);
+            const rows = exams.filter((exam) => person === null || exam.person_id === person);
+            return { data: rows.slice(from, to + 1), error: null };
+          },
+        };
         return query;
-      },
-      eq: (column: string, value: string) => {
-        calls.push(`${column}=${value}`);
-        return query;
-      },
-      neq: (column: string, value: string) => {
-        calls.push(`${column}<>${value}`);
-        return query;
-      },
-      order: () => query,
-      range: async (from: number, to: number) => {
-        calls.push(`${from}-${to}`);
-        return { data: rows.slice(from, to + 1), error: null };
       },
     };
-    const db = { from: () => query } as unknown as SupabaseClient;
+    return { db: db as unknown as SupabaseClient, calls };
+  }
+  const filled = [{ value: '92' }];
+  const blank = [{ value: '' }, { value: '   ' }, { value: null }];
+
+  it('lê só a coluna da pessoa, dos realizados com resultados, em páginas, e devolve cada pessoa uma vez', async () => {
+    // 2.300 exames com resultados, de três pessoas.
+    const { db, calls } = ownersDb(Array.from({ length: 2300 }, (_, i) => ({ person_id: ['ana', 'beto', 'rex'][i % 3], results: filled })));
     expect((await fetchExamResultOwners(db)).sort()).toEqual(['ana', 'beto', 'rex']);
-    expect(calls.slice(0, 4)).toEqual(['select person_id', 'status=realizado', 'results<>[]', '0-999']);
-    expect(calls.filter((c) => /^\d+-\d+$/.test(c))).toEqual(['0-999', '1000-1999', '2000-2999']);
+    const people = calls.filter((call) => call.startsWith('person_id |'));
+    expect(people).toEqual([
+      'person_id | status=realizado results<>[] | 0-999',
+      'person_id | status=realizado results<>[] | 1000-1999',
+      'person_id | status=realizado results<>[] | 2000-2999',
+    ]);
+    // A conferência de cada pessoa para no primeiro laudo com um resultado preenchido: uma página pequena por pessoa.
+    expect(calls.filter((call) => call.startsWith('results |')).sort()).toEqual([
+      'results | person_id=ana status=realizado results<>[] | 0-19',
+      'results | person_id=beto status=realizado results<>[] | 0-19',
+      'results | person_id=rex status=realizado results<>[] | 0-19',
+    ]);
+  });
+
+  it('quem só tem laudo com os valores em branco não é "quem tem resultados"', async () => {
+    const { db, calls } = ownersDb([
+      // Ana: o primeiro laudo veio em branco, o segundo tem um valor.
+      { person_id: 'ana', results: blank },
+      { person_id: 'ana', results: [...blank, ...filled] },
+      // Beto: 25 laudos, todos em branco (a conferência lê as duas páginas e desiste).
+      ...Array.from({ length: 25 }, () => ({ person_id: 'beto', results: blank })),
+      // Rex: exatamente uma página cheia de laudos em branco e, depois dela, um com valor.
+      ...Array.from({ length: 20 }, () => ({ person_id: 'rex', results: blank })),
+      { person_id: 'rex', results: filled },
+    ]);
+    expect((await fetchExamResultOwners(db)).sort()).toEqual(['ana', 'rex']);
+    expect(calls.filter((call) => call.includes('person_id=beto')).map((call) => call.split(' | ')[2])).toEqual(['0-19', '20-39']);
+    expect(calls.filter((call) => call.includes('person_id=rex')).map((call) => call.split(' | ')[2])).toEqual(['0-19', '20-39']);
   });
 });
 

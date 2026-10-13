@@ -308,9 +308,14 @@ const isDone = (exam: TrendExam) => exam.status === 'realizado';
 const hasDate = (exam: TrendExam): exam is TrendExam & { exam_date: string } =>
   Boolean(exam.exam_date) && isValidISODate(exam.exam_date!.slice(0, 10));
 
-/** Há o que mostrar na evolução: algum exame realizado com resultados. */
+/** O laudo tem algum resultado preenchido? A linha com o valor em branco não conta: a evolução a ignora. */
+export function hasFilledResult(results: readonly { value?: unknown }[]): boolean {
+  return results.some((result) => asText(result.value) !== '');
+}
+
+/** Há o que mostrar na evolução: algum exame realizado com um resultado preenchido. */
 export function hasExamResults(exams: TrendExam[]): boolean {
-  return exams.some((e) => isDone(e) && e.results.length > 0);
+  return exams.some((e) => isDone(e) && hasFilledResult(e.results));
 }
 
 /**

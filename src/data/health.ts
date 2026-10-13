@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+import { hasFilledResult } from '@/domain/examTrends';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Appointment, DietPlan, Exam, Person, Vaccine, WorkoutLog, WorkoutPlan } from '@/lib/types';
 import { removeDocumentImages } from './house';
@@ -287,7 +288,33 @@ export async function fetchExamResultOwners(db: SupabaseClient = supabase): Prom
           .range(from, to),
       ) as { person_id: string }[],
   );
-  return [...new Set(rows.map((row) => row.person_id))];
+  const candidates = [...new Set(rows.map((row) => row.person_id))];
+  // O filtro do servidor só sabe que a lista de resultados não está vazia. O laudo só com linhas de valor em
+  // branco (a leitura de uma foto pode trazer) não conta para a evolução, e quem só tem laudos assim não é
+  // "quem tem resultados": cada pessoa é conferida, lendo os resultados dela até achar um preenchido.
+  const checked = await Promise.all(candidates.map(async (personId) => ((await hasFilledExamResult(personId, db)) ? personId : null)));
+  return checked.filter((personId): personId is string => personId !== null);
+}
+
+/** Quantos exames a conferência de cada pessoa lê por vez (bem abaixo do teto do servidor: a página incompleta é o fim). */
+const OWNER_CHECK_PAGE = 20;
+
+/** A pessoa tem algum exame realizado com um resultado preenchido? Lê os resultados aos poucos e para no primeiro que tem. */
+async function hasFilledExamResult(personId: string, db: SupabaseClient): Promise<boolean> {
+  for (let from = 0; ; from += OWNER_CHECK_PAGE) {
+    const rows = unwrap(
+      await db
+        .from('exams')
+        .select('results')
+        .eq('person_id', personId)
+        .eq('status', 'realizado')
+        .neq('results', '[]')
+        .order('id', { ascending: true })
+        .range(from, from + OWNER_CHECK_PAGE - 1),
+    ) as { results: { value?: unknown }[] }[];
+    if (rows.some((row) => hasFilledResult(row.results ?? []))) return true;
+    if (rows.length < OWNER_CHECK_PAGE) return false;
+  }
 }
 
 /** Quem tem resultados de exame (fetchExamResultOwners). A chave começa com 'exams': salvar ou excluir um exame já recarrega. */
