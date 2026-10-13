@@ -2,12 +2,14 @@ import { useState } from 'react';
 import { Modal, ScrollView, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { usePayBill, useSetPaymentPayer } from '@/data/finance';
+import { useBillPayments, usePayBill, useSetPaymentPayer } from '@/data/finance';
+import { payUsualNote } from '@/domain/billUsual';
 import { parseBoleto } from '@/domain/boleto';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
-import { parseDecimal } from '@/domain/money';
+import { parseDecimal, parseTypingAmount } from '@/domain/money';
 import { PayerChips } from '@/features/finance/PayerChips';
 import { useAuth } from '@/lib/auth';
+import { settledData } from '@/lib/settledData';
 import { errorMessage } from '@/lib/supabase';
 import type { Bill } from '@/lib/types';
 import { Backdrop } from '@/ui/Backdrop';
@@ -27,6 +29,11 @@ export function PayBillModal({ bill, onClose }: { bill: Bill; onClose: () => voi
   const suggested = boletoAmount ?? bill.amount;
   const [amount, setAmount] = useState(suggested != null ? suggested.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '');
   const [paidOn, setPaidOn] = useState(formatBRDate(todayISO()));
+  // O valor digitado contra o normal da conta: a comparação, quando existe,
+  // ocupa a linha da dica (uma linha só). Sem os pagamentos (carregando ou
+  // com erro), ficam as dicas de sempre.
+  const payments = useBillPayments(bill.id);
+  const usualNote = payUsualNote(bill, settledData(payments) ?? [], parseTypingAmount(amount));
 
   function confirm() {
     const value = parseDecimal(amount);
@@ -80,12 +87,15 @@ export function PayBillModal({ bill, onClose }: { bill: Bill; onClose: () => voi
             placeholder="0,00"
             autoFocus={suggested == null}
             hint={
-              boletoAmount != null
-                ? 'Valor do boleto guardado na conta.'
-                : bill.amount == null
-                  ? 'Esta conta varia: confira o valor no boleto.'
-                  : undefined
+              usualNote
+                ? usualNote.text
+                : boletoAmount != null
+                  ? 'Valor do boleto guardado na conta.'
+                  : bill.amount == null
+                    ? 'Esta conta varia: confira o valor no boleto.'
+                    : undefined
             }
+            hintColor={usualNote?.above ? 'warning' : undefined}
           />
           <DateField label="Pago em" value={paidOn} onChangeText={setPaidOn} />
           <PayerChips value={paidBy} onChange={setPaidBy} />

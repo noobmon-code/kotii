@@ -696,10 +696,12 @@ export function useClearCheckedItems() {
  * O que a casa comprou nos últimos meses: carrinhos limpos (histórico),
  * itens ainda marcados nas listas e itens de notas confirmadas ligados a um
  * produto. recentPurchases e restockSuggestions (domínio) juntam e ordenam.
+ * `enabled: false` não busca: a nota já confirmada não usa esse histórico.
  */
-export function usePurchaseRecords() {
+export function usePurchaseRecords({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['purchaseRecords'],
+    enabled,
     queryFn: async (): Promise<PurchaseRecord[]> => {
       const since = new Date(Date.now() - RESTOCK_HISTORY_DAYS * 86_400_000).toISOString();
       const [history, checked, receipts] = await Promise.all([

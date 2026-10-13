@@ -3203,6 +3203,17 @@ begin
   assert (select count(*) from public.family_events where household_id = current_setting('test.hh_n')::uuid) = 0, 'household gone, events gone';
   assert (select count(*) from public.family_event_days) = 0, 'and day changes';
   assert (select count(*) from public.family_events) = 1, 'the other household keeps its event';
+  -- As permissões das tabelas são explícitas: não dependem do padrão do projeto.
+  assert not has_table_privilege('anon', 'public.family_events', 'select, insert, update, delete, truncate'), 'anon has no access to family_events';
+  assert (select bool_and(has_table_privilege(who, 'public.family_events', verb))
+            from unnest(array['authenticated', 'service_role']) as who, unnest(array['select', 'insert', 'update', 'delete']) as verb),
+    'members and the service role reach family_events through the API';
+  assert not has_table_privilege('authenticated', 'public.family_events', 'truncate, references, trigger'), 'and members get nothing beyond that on family_events';
+  assert not has_table_privilege('anon', 'public.family_event_days', 'select, insert, update, delete, truncate'), 'anon has no access to family_event_days';
+  assert (select bool_and(has_table_privilege(who, 'public.family_event_days', verb))
+            from unnest(array['authenticated', 'service_role']) as who, unnest(array['select', 'insert', 'update', 'delete']) as verb),
+    'members and the service role reach family_event_days through the API';
+  assert not has_table_privilege('authenticated', 'public.family_event_days', 'truncate, references, trigger'), 'and members get nothing beyond that on family_event_days';
 end $$;
 
 -- ---------------------------------------------------------------------------

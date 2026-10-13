@@ -14,6 +14,17 @@ export function parseDecimal(input: string): number | null {
   return Number(s);
 }
 
+/**
+ * O valor enquanto a pessoa ainda digita: "310," e "310." já valem 310, para a dica ao lado do campo
+ * não piscar no instante da vírgula. A vírgula no fim já diz que os pontos são de milhar: "1.234," é mil
+ * duzentos e trinta e quatro (quem apaga os centavos de "1.234,00" passa por aí). Na hora de salvar,
+ * vale o parseDecimal.
+ */
+export function parseTypingAmount(input: string): number | null {
+  const typed = input.replace(/\s+$/, '');
+  return typed.endsWith(',') ? parseDecimal(`${typed}0`) : parseDecimal(typed.replace(/\.$/, ''));
+}
+
 export function formatQuantity(quantity: number, unit: string): string {
   const q = Number.isInteger(quantity) ? String(quantity) : quantity.toLocaleString('pt-BR', { maximumFractionDigits: 3 });
   return unit === 'un' ? `${q} un` : `${q} ${unit}`;
