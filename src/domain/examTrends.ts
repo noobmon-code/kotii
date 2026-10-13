@@ -561,26 +561,33 @@ function titleMaterials(title: string): string[] {
   return kinds.size === 1 && !kinds.has('sangue') ? parts[0] : [];
 }
 
+/** O nome que é só "Sangue oculto": das fezes pela regra, mas também o nome de um item da fita da urina. */
+const isOccultBlood = (plain: string) => plain.trim() === 'sangue oculto';
+
 // O nome do resultado que diz sangue. Só o adjetivo e o "no sangue" por
 // extenso: a palavra "sangue" solta é também um item da urina ("Sangue", na
 // fita) e das fezes ("Sangue oculto").
 const BLOOD_NAME = /\b(seric[oa]s?|plasmatic[oa]s?|sanguine[oa]s?|no sangue|no soro|no plasma)\b/;
 
 /**
- * O material do resultado: pelo nome dele e, quando o exame é de um material
- * só, pelo título. O nome que diz sangue e nenhum material ("Creatinina
- * sérica" no laudo do clearance, que é de urina de 24h) não pega o do título.
- * "Sangue oculto" (sem a palavra "fezes" no nome) dentro de um exame que é só
- * de outro material é um item desse exame: o da fita da urina, num EAS.
+ * O material do resultado: o que o nome dele diz; sem isso, o do título,
+ * quando o exame é de um material só. O nome diz mais que o título: a
+ * "Pesquisa de sangue oculto" dentro de um EAS é das fezes, e a "Creatinina
+ * urinária" de um laudo de líquor é da urina (a de um laudo de urina de 24
+ * horas é a de 24 horas, como sempre). O nome que diz sangue e nenhum
+ * material ("Creatinina sérica" no laudo do clearance) não pega o do título.
+ * A exceção é o nome que é só "Sangue oculto": é também um item da fita da
+ * urina, e dentro de um exame de um material só ele é desse exame.
  */
 function materialKey(name: string, title: string): string {
   const plainName = plainWords(name);
   const named = materialsIn(name, dayLongTitle(plainWords(title)));
   if (!named.length && BLOOD_NAME.test(plainName)) return '';
   const fromTitle = titleMaterials(title);
-  const occultOnly = named.length === 1 && named[0] === 'fezes' && !/\bfezes\b/.test(plainName);
-  const own = occultOnly && fromTitle.length === 1 && fromTitle[0] !== 'fezes' ? [] : named;
-  const found = new Set([...own, ...fromTitle]);
+  const own = isOccultBlood(plainName) && fromTitle.length === 1 ? [] : named;
+  const found = new Set(own.length ? own : fromTitle);
+  // A urina do nome, num exame de urina de 24 horas, é a de 24 horas.
+  if (found.has('urina') && fromTitle.includes('24h')) found.add('24h');
   if (found.has('24h')) found.delete('urina');
   return MATERIALS.map(([material]) => material)
     .filter((material) => found.has(material))
@@ -941,9 +948,9 @@ export function visitSummary(person: SummaryPerson, exams: TrendExam[], medicati
   // Itens de mesmo nome em materiais diferentes (a "Creatinina" do sangue e a
   // da urina) sairiam com o mesmo rótulo: o que tem material leva ele ao lado
   // do nome, a não ser que o próprio nome já diga ("Densidade urinária").
-  // "Sangue oculto" quer dizer fezes pela regra, mas não está escrito: o
-  // material vai ao lado (o da fita da urina e o das fezes saem diferentes).
-  const spelled = (name: string) => materialsIn(name).filter((material) => material !== 'fezes' || /\bfezes\b/.test(plainWords(name)));
+  // "Sangue oculto", só isso, não diz de onde é (o da fita da urina e o das
+  // fezes têm o mesmo nome): o material vai ao lado dos dois.
+  const spelled = (name: string) => (isOccultBlood(plainWords(name)) ? [] : materialsIn(name));
   const materials = new Map<string, Set<string>>();
   for (const item of items) {
     const key = examItemKey(item.name);

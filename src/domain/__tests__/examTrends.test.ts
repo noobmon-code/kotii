@@ -966,9 +966,27 @@ describe('examTrends', () => {
     // O item "Sangue" da fita, dentro de um EAS, continua sendo da urina. E o que o laboratório chama de "Sangue
     // oculto" na fita também: num exame só de urina, o item é dela (com "fezes" no nome, é das fezes).
     expect(materials('EAS', ['Sangue'])).toEqual([['Sangue', 'urina']]);
-    expect(materials('EAS', ['Sangue oculto', 'Pesquisa de sangue oculto'])).toEqual([
+    // Só o nome que é exatamente "Sangue oculto": qualquer outro que fale de sangue oculto é das fezes, onde estiver.
+    expect(materials('EAS', ['Sangue oculto', 'Pesquisa de sangue oculto', 'Sangue oculto (imunoquímico)', 'SANGUE OCULTO'])).toEqual([
       ['Sangue oculto', 'urina'],
-      ['Pesquisa de sangue oculto', 'urina'],
+      ['Pesquisa de sangue oculto', 'fezes'],
+      ['Sangue oculto (imunoquímico)', 'fezes'],
+      ['SANGUE OCULTO', 'urina'],
+    ]);
+    // O nome do resultado diz mais que o título: o material dele vale, e a urina dentro da urina de 24 horas é a de 24 horas.
+    expect(materials('Líquor', ['Creatinina urinária', 'Gordura nas fezes', 'Proteínas'])).toEqual([
+      ['Creatinina urinária', 'urina'],
+      ['Gordura nas fezes', 'fezes'],
+      ['Proteínas', 'liquor'],
+    ]);
+    expect(materials('Urina de 24 horas', ['Creatinina urinária', 'Sódio', 'Proteínas no líquor'])).toEqual([
+      ['Creatinina urinária', '24h'],
+      ['Sódio', '24h'],
+      ['Proteínas no líquor', 'liquor'],
+    ]);
+    expect(materials('EAS', ['Sódio 24h', 'Densidade'])).toEqual([
+      ['Sódio 24h', '24h'],
+      ['Densidade', 'urina'],
     ]);
     expect(materials('Rotina', ['Sangue oculto nas fezes'])).toEqual([['Sangue oculto nas fezes', 'fezes']]);
     // A sigla com pontos não muda nada no resto do título: "T.S.H. e E.A.S." continua sendo um exame ao lado do EAS.
@@ -987,19 +1005,19 @@ describe('examTrends', () => {
     const lines = visitSummary(person(), dipstick, [], '2026-10-12');
     expect(lines).toContain('- Sangue oculto (fezes): Negativo em 12/09/2026\n');
     expect(lines).toContain('- Sangue oculto (urina): Positivo (++) em 10/09/2026 (marcado no laudo: alterado)\n');
-    // O nome que já escreve "fezes" não leva o material de novo ao lado; o que só o tem pela regra ("Sangue
-    // oculto", acima) leva.
+    // O nome que já escreve o material não o leva de novo ao lado; o que o tem pelo título, ou pela regra
+    // ("Sangue oculto", acima), leva.
     const spelled = visitSummary(
       person(),
       [
-        exam('2026-09-10', [result('Gordura nas fezes', 'Ausente')], { title: 'Parasitológico' }),
-        exam('2026-09-12', [result('Gordura nas fezes', 'Presente')], { title: 'Líquor' }),
+        exam('2026-09-10', [result('Creatinina urinária', '120', 'mg/dL')], { title: 'EAS' }),
+        exam('2026-09-12', [result('Creatinina urinária', '1.200', 'mg/24h')], { title: 'Urina de 24 horas' }),
       ],
       [],
       '2026-10-12',
     );
-    expect(spelled).toContain('- Gordura nas fezes: Ausente em 10/09/2026\n');
-    expect(spelled).toContain('- Gordura nas fezes (fezes e líquor): Presente em 12/09/2026\n');
+    expect(spelled).toContain('- Creatinina urinária: 120 mg/dL em 10/09/2026\n');
+    expect(spelled).toContain('- Creatinina urinária (urina de 24 horas): 1.200 mg/24h em 12/09/2026\n');
     // Na tela são duas linhas de mesmo nome, em texto: cada uma diz de que material é.
     expect(examTrends(dipstick).text.map((i) => [i.name, valueLabel(i.last), i.material, i.otherMaterials, apartNote(i)])).toEqual([
       ['Sangue oculto', 'Positivo (++)', 'urina', ['fezes'], 'Exame de urina: não foi comparado com os resultados de mesmo nome de outros exames.'],
