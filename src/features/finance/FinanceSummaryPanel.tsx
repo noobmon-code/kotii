@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
-import { useBills, useBudgets, useSpending } from '@/data/finance';
+import { useBills, useBudgets, useSpending, useSpendingReceipts } from '@/data/finance';
 import { formatShortDate, todayISO } from '@/domain/dates';
 import {
   describeMonthDelta,
@@ -69,6 +69,8 @@ export function FinanceSummaryPanel() {
   const [category, setCategory] = useState<FinanceCategory | null>(null);
   // Um mês a mais que as colunas, para comparar o primeiro com o anterior.
   const spending = useSpending(shiftMonth(windowEnd, -MONTHS_SHOWN), windowEnd);
+  // As notas dessa mesma busca, para o total do "Mercado do mês": não é outra leitura.
+  const marketReceipts = useSpendingReceipts(shiftMonth(windowEnd, -MONTHS_SHOWN), windowEnd);
   const bills = useBills();
   const budgets = useBudgets();
   const members = useHousehold().data?.members ?? [];
@@ -161,7 +163,7 @@ export function FinanceSummaryPanel() {
             </Card>
           </Section>
 
-          <MarketMonthLink month={month} />
+          <MarketMonthLink month={month} receipts={marketReceipts.data} />
 
           {places.length > 1 ? (
             <Section title="Onde mais gastou">

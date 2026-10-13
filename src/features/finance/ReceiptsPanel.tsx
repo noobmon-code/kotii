@@ -76,7 +76,7 @@ export function ReceiptsPanel() {
 const styles = StyleSheet.create({
   gap: { gap: space.lg },
   actions: { gap: space.sm },
-  // O nome mais comprido leva mais espaço: em tela estreita nenhum dos dois quebra a linha.
+  // O nome mais comprido leva mais espaço, para os dois caberem numa linha num celular comum (de 360 de largura em diante).
   prices: { flex: 2 },
   market: { flex: 3 },
 });

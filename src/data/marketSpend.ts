@@ -22,22 +22,29 @@ const INCOMPLETE = 'As notas deste mês não chegaram inteiras. Tente de novo.';
 type PageResult = { data: unknown; error: unknown; count: number | null };
 
 /**
- * Uma consulta inteira, página por página. O servidor diz quantas linhas ela
- * tem (`count`) e a leitura só termina com todas na mão: página curta não é
- * prova de fim, porque o teto do servidor pode ser menor que a página pedida.
- * Mais linhas do que cabem (`room`): falha, nunca uma lista cortada.
+ * Uma consulta inteira, página por página, pelo id: cada página pede o que
+ * vem depois do último id da anterior (`after`; null na primeira). Lendo por
+ * posição, uma linha apagada ou incluída por outra pessoa da casa entre duas
+ * páginas deslocaria as seguintes, e uma linha seria pulada ou repetida,
+ * calada; pelo id, não. O servidor diz quantas linhas há dali em diante
+ * (`count`) e a leitura só termina quando a página traz todas: página curta
+ * não é prova de fim, porque o teto do servidor pode ser menor que a página
+ * pedida. Mais linhas do que cabem (`room`): falha, nunca uma lista cortada.
  */
-async function readAll<T>(page: (from: number, to: number) => PromiseLike<PageResult>, room: number): Promise<T[]> {
+async function readAll<T extends { id: string }>(page: (after: string | null) => PromiseLike<PageResult>, room: number): Promise<T[]> {
   const rows: T[] = [];
+  let after: string | null = null;
   for (;;) {
-    const result = await page(rows.length, rows.length + PAGE - 1);
+    const result = await page(after);
     const got = (unwrap(result) ?? []) as T[];
     rows.push(...got);
-    if (Math.max(rows.length, result.count ?? 0) > room) throw new Error(TOO_MANY);
+    // O que já veio mais o que o servidor diz que ainda falta.
+    if (rows.length + Math.max(0, (result.count ?? 0) - got.length) > room) throw new Error(TOO_MANY);
     // Sem a contagem (o servidor sempre manda), só uma página vazia diz que acabou.
-    if (result.count == null ? got.length === 0 : rows.length >= result.count) return rows;
+    if (result.count == null ? got.length === 0 : got.length >= result.count) return rows;
     // O servidor diz que há mais e não manda: melhor falhar do que seguir com o que veio.
     if (got.length === 0) throw new Error(INCOMPLETE);
+    after = got[got.length - 1].id;
   }
 }
 
@@ -51,7 +58,9 @@ type ReceiptRow = {
 };
 
 type LineRow = {
+  id: string;
   receipt_id: string;
+  position: number;
   raw_description: string;
   suggested_name: string | null;
   suggested_category: string | null;
@@ -64,13 +73,15 @@ type LineRow = {
 
 const RECEIPT_COLUMNS = 'id, purchased_at, total, status, store_id, store:stores(name)';
 const LINE_COLUMNS =
-  'receipt_id, raw_description, suggested_name, suggested_category, product_id, quantity, unit, total_price, product:products(name, category)';
+  'id, receipt_id, position, raw_description, suggested_name, suggested_category, product_id, quantity, unit, total_price, product:products(name, category)';
+
+const byId = (a: { id: string }, b: { id: string }) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 /**
  * As notas compradas de `fromMonth` a `toMonth` ("AAAA-MM", inclusive), com
  * os itens das confirmadas. Os limites são os do resumo de gastos: a data da
- * compra no fuso do aparelho. Os rascunhos vêm sem itens (a tela só diz
- * quantos esperam a revisão).
+ * compra no fuso do aparelho. Os rascunhos vêm sem itens (a tela só os lista
+ * para revisar).
  *
  * Os itens são lidos à parte, pelas notas, e não embutidos em cada nota: o
  * teto de linhas do servidor (max-rows do PostgREST) vale também para as
@@ -82,40 +93,35 @@ export async function fetchMarketReceipts(fromMonth: string, toMonth: string): P
   const startAt = new Date(sy, sm - 1, 1).toISOString();
   const endAt = new Date(ey, em, 1).toISOString();
 
-  // A ordem (data e, no empate, o id) é o que faz as páginas se encaixarem.
-  const receipts = await readAll<ReceiptRow>(
-    (from, to) =>
-      supabase
-        .from('receipts')
-        .select(RECEIPT_COLUMNS, { count: 'exact' })
-        .gte('purchased_at', startAt)
-        .lt('purchased_at', endAt)
-        .order('purchased_at')
-        .order('id')
-        .range(from, to),
-    MAX_RECEIPTS,
-  );
+  const receipts = await readAll<ReceiptRow>((after) => {
+    const query = supabase.from('receipts').select(RECEIPT_COLUMNS, { count: 'exact' }).gte('purchased_at', startAt).lt('purchased_at', endAt);
+    return (after ? query.gt('id', after) : query).order('id').limit(PAGE);
+  }, MAX_RECEIPTS);
+  // As páginas vêm pelo id; a ordem que se entrega é a da compra (e, no empate, o id).
+  receipts.sort((a, b) => Date.parse(a.purchased_at) - Date.parse(b.purchased_at) || byId(a, b));
 
   const confirmed = receipts.filter((r) => r.status === 'confirmed').map((r) => r.id);
-  const lines = new Map<string, MarketLine[]>();
+  const lines = new Map<string, LineRow[]>();
   let read = 0;
   for (let start = 0; start < confirmed.length; start += IDS_PER_REQUEST) {
     const ids = confirmed.slice(start, start + IDS_PER_REQUEST);
-    const rows = await readAll<LineRow>(
-      (from, to) =>
-        supabase
-          .from('receipt_items')
-          .select(LINE_COLUMNS, { count: 'exact' })
-          .in('receipt_id', ids)
-          .order('receipt_id')
-          .order('position')
-          .order('id')
-          .range(from, to),
-      MAX_LINES - read,
-    );
+    const rows = await readAll<LineRow>((after) => {
+      const query = supabase.from('receipt_items').select(LINE_COLUMNS, { count: 'exact' }).in('receipt_id', ids);
+      return (after ? query.gt('id', after) : query).order('id').limit(PAGE);
+    }, MAX_LINES - read);
     read += rows.length;
     for (const row of rows) {
-      const line: MarketLine = {
+      const ofReceipt = lines.get(row.receipt_id);
+      if (ofReceipt) ofReceipt.push(row);
+      else lines.set(row.receipt_id, [row]);
+    }
+  }
+
+  // Os itens de cada nota na ordem da nota: o nome do item sem produto é o da primeira linha em que ele aparece.
+  const linesOf = (receiptId: string): MarketLine[] =>
+    (lines.get(receiptId) ?? [])
+      .sort((a, b) => a.position - b.position || byId(a, b))
+      .map((row) => ({
         productId: row.product_id,
         productName: row.product?.name ?? null,
         productCategory: row.product?.category ?? null,
@@ -125,12 +131,7 @@ export async function fetchMarketReceipts(fromMonth: string, toMonth: string): P
         quantity: Number(row.quantity),
         unit: row.unit,
         totalPrice: row.total_price == null ? null : Number(row.total_price),
-      };
-      const ofReceipt = lines.get(row.receipt_id);
-      if (ofReceipt) ofReceipt.push(line);
-      else lines.set(row.receipt_id, [line]);
-    }
-  }
+      }));
 
   return receipts.map((r) => ({
     id: r.id,
@@ -139,7 +140,7 @@ export async function fetchMarketReceipts(fromMonth: string, toMonth: string): P
     total: r.total == null ? null : Number(r.total),
     storeId: r.store_id,
     storeName: r.store?.name ?? null,
-    lines: lines.get(r.id) ?? [],
+    lines: linesOf(r.id),
   }));
 }
 
@@ -147,7 +148,9 @@ export async function fetchMarketReceipts(fromMonth: string, toMonth: string): P
  * As notas de `month` e do mês anterior (a comparação precisa dele). A chave
  * começa com 'spending': confirmar, mudar ou excluir uma nota, e mudar o nome
  * ou a categoria de um produto, já recarregam. Como o resumo de gastos, não
- * fica guardada no aparelho.
+ * fica guardada no aparelho. É a busca da tela "Mercado do mês", e só dela: a
+ * entrada no resumo faz a conta com as notas que o resumo já leu
+ * (useSpendingReceipts).
  */
 export function useMarketReceipts(month: string) {
   return useQuery({

@@ -1,12 +1,20 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import { useMemo, useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { useMemo, useRef, useState } from 'react';
+import { Pressable, StyleSheet, View, type ScrollView } from 'react-native';
 
 import { useMarketReceipts } from '@/data/marketSpend';
 import { getCategory } from '@/domain/categories';
 import { todayISO } from '@/domain/dates';
 import { monthLabel, shiftMonth } from '@/domain/finance';
-import { marketMonth, monthFromParam, type MarketMonth, type MarketReceiptRef } from '@/domain/marketSpend';
+import {
+  MARKET_VIEWS,
+  marketMonth,
+  monthFromParam,
+  viewFromParam,
+  type MarketMonth,
+  type MarketReceiptRef,
+  type MarketView,
+} from '@/domain/marketSpend';
 import { BarRow } from '@/features/finance/BarRow';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import {
@@ -24,7 +32,7 @@ import {
   Loading,
   Row,
   Screen,
-  Section,
+  Segmented,
   Text,
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
@@ -38,26 +46,44 @@ const openReceipt = (id: string) => router.push({ pathname: '/nota/[id]', params
 
 /** Mercado do mês: para onde foi o dinheiro do mercado. As contas e os textos vêm de domain/marketSpend. */
 export default function MarketMonthScreen() {
-  const { mes } = useLocalSearchParams<{ mes?: string }>();
+  const { mes, aba } = useLocalSearchParams<{ mes?: string; aba?: string }>();
   const today = todayISO();
   const current = today.slice(0, 7);
   // O mês vive na URL: o resumo de gastos abre a tela no mês que estava mostrando.
   const month = monthFromParam(mes, current);
+  // A parte da tela (itens, categorias, idas ou mercados) também: um link abre direto nela, e recarregar a
+  // página não a perde. Trocar de parte não empilha telas (setParams não cria entrada no histórico): o
+  // voltar sai da tela, como nas abas de Finanças.
+  const view = viewFromParam(aba);
   const receipts = useMarketReceipts(month);
   const scanner = useReceiptScanner();
   const [category, setCategory] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const scroll = useRef<ScrollView>(null);
+  /** A altura em que a chave das partes está na tela rolável. */
+  const switchY = useRef(0);
   const summary = useMemo(() => (receipts.data ? marketMonth(receipts.data, month, today) : null), [receipts.data, month, today]);
 
   function goTo(target: string) {
     if (target > current) return;
     setCategory(null);
     setShowAll(false);
+    setDetailsOpen(false);
     router.setParams({ mes: target });
   }
 
+  /** Escolher uma categoria leva aos itens dela; tirar a escolha deixa a pessoa onde está. */
+  function chooseCategory(key: string | null) {
+    setCategory(key);
+    if (!key) return;
+    router.setParams({ aba: 'itens' });
+    // A categoria tocada pode estar lá embaixo na lista: a tela volta para a chave, com os itens logo abaixo.
+    scroll.current?.scrollTo({ y: Math.max(0, switchY.current - space.sm), animated: false });
+  }
+
   return (
-    <Screen edges={[]} refreshing={receipts.isRefetching} onRefresh={() => receipts.refetch()}>
+    <Screen edges={[]} scrollRef={scroll} refreshing={receipts.isRefetching} onRefresh={() => receipts.refetch()}>
       <Row style={styles.monthNav}>
         <IconButton icon="chevron-left" label="Mês anterior" onPress={() => goTo(shiftMonth(month, -1))} />
         <Text variant="label" style={styles.monthTitle}>
@@ -71,7 +97,18 @@ export default function MarketMonthScreen() {
       </Row>
 
       {receipts.isPending ? (
-        <Loading />
+        receipts.fetchStatus === 'paused' ? (
+          // Sem internet e sem este mês na memória, a busca fica parada (não vira erro) e volta sozinha com a
+          // conexão: um aviso, em vez de girar sem fim. Sem botão: tentar de novo não a faz andar.
+          <Card style={styles.notice}>
+            <Icon name="wifi-off" color="warning" />
+            <Text variant="muted" style={styles.flex}>
+              Sem internet. Os números aparecem quando a conexão voltar.
+            </Text>
+          </Card>
+        ) : (
+          <Loading />
+        )
       ) : !summary ? (
         // Sem as notas não há o que mostrar: o erro, nunca um mês "sem gasto".
         <ErrorNotice error={receipts.error} onRetry={() => receipts.refetch()} />
@@ -81,10 +118,17 @@ export default function MarketMonthScreen() {
           // A nova busca falhou e os números de antes continuam na tela.
           stale={receipts.isError}
           onRetry={() => receipts.refetch()}
+          view={view}
+          onView={(value) => router.setParams({ aba: value })}
           category={summary.categories.some((c) => c.key === category) ? category : null}
-          onCategory={setCategory}
+          onCategory={chooseCategory}
           showAll={showAll}
           onShowAll={setShowAll}
+          detailsOpen={detailsOpen}
+          onDetailsOpen={setDetailsOpen}
+          onSwitchLayout={(y) => {
+            switchY.current = y;
+          }}
           onAddReceipt={scanner.open}
           adding={scanner.busy}
         />
@@ -99,42 +143,33 @@ function MonthBody({
   summary,
   stale,
   onRetry,
+  view,
+  onView,
   category,
   onCategory,
   showAll,
   onShowAll,
+  detailsOpen,
+  onDetailsOpen,
+  onSwitchLayout,
   onAddReceipt,
   adding,
 }: {
   summary: MarketMonth;
   stale: boolean;
   onRetry: () => void;
+  view: MarketView;
+  onView: (view: MarketView) => void;
   category: string | null;
   onCategory: (category: string | null) => void;
   showAll: boolean;
   onShowAll: (all: boolean) => void;
+  detailsOpen: boolean;
+  onDetailsOpen: (open: boolean) => void;
+  onSwitchLayout: (y: number) => void;
   onAddReceipt: () => void;
   adding: boolean;
 }) {
-  const items = category ? summary.items.filter((item) => item.category === category) : summary.items;
-  const shown = showAll ? items : items.slice(0, ITEMS_SHOWN);
-  const apart = summary.discount || summary.unread || summary.noValue || summary.pharmacy ? <Apart summary={summary} /> : null;
-  // Os rascunhos do mês ainda não entraram no total: o aviso vem logo depois dele.
-  const drafts = summary.drafts ? (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${summary.drafts} Abrir as notas`}
-      onPress={() => router.push({ pathname: '/financas', params: { aba: 'notas' } })}>
-      <Card style={styles.notice}>
-        <IconBadge icon="receipt-text-outline" tone="info" />
-        <Text variant="muted" style={styles.flex}>
-          {summary.drafts}
-        </Text>
-        <Icon name="chevron-right" color="textMuted" />
-      </Card>
-    </Pressable>
-  ) : null;
-
   return (
     <>
       {stale ? (
@@ -157,8 +192,12 @@ function MonthBody({
             message="As compras aparecem aqui quando uma nota fiscal é confirmada. Fotografe o cupom ou leia o QR code da nota."
             action={<Button title="Adicionar nota" icon="camera-outline" onPress={onAddReceipt} loading={adding} />}
           />
-          {drafts}
-          {apart}
+          {/* Sem total na tela não há o que abrir e fechar: o que espera a revisão e o que ficou de fora já vêm à vista. */}
+          {summary.closing ? (
+            <Card style={styles.details}>
+              <Details summary={summary} />
+            </Card>
+          ) : null}
         </>
       ) : (
         <>
@@ -166,67 +205,35 @@ function MonthBody({
             <Text variant="muted">{summary.title}</Text>
             <Text variant="title">{summary.headline}</Text>
             {summary.comparison ? <Text variant="small">{summary.comparison}</Text> : null}
-            <Text variant="small">
-              Diferente da barra “Mercado” do Resumo: aqui entram limpeza, higiene e pet, e só conta o que veio de nota fiscal.
-            </Text>
           </Card>
-          {drafts}
 
-          <Section title="Por categoria">
-            <Card style={styles.bars}>
-              {summary.categories.map((c) => (
-                <BarRow
-                  key={c.key}
-                  left={<CategoryIcon category={c.key} size={28} />}
-                  label={c.label}
-                  amount={c.amount}
-                  share={c.share}
-                  value={c.cents}
-                  max={summary.categories[0].cents}
-                  selected={category === c.key}
-                  muted={category !== null && category !== c.key}
-                  note={c.versusPrevious}
-                  accessibilityLabel={c.accessibilityLabel}
-                  onPress={() => onCategory(category === c.key ? null : c.key)}
-                />
-              ))}
+          {summary.closing ? (
+            <Card style={styles.details}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ expanded: detailsOpen }}
+                accessibilityLabel={`Como este total fecha. ${summary.closing}`}
+                onPress={() => onDetailsOpen(!detailsOpen)}
+                style={({ pressed }) => [styles.detailsHeader, pressed && styles.pressed]}>
+                <View style={styles.flex}>
+                  <Text variant="label">Como este total fecha</Text>
+                  {detailsOpen ? null : <Text variant="small">{summary.closing}</Text>}
+                </View>
+                <Icon name={detailsOpen ? 'chevron-up' : 'chevron-down'} color="textMuted" />
+              </Pressable>
+              {detailsOpen ? <Details summary={summary} /> : null}
             </Card>
-            {apart}
-          </Section>
+          ) : null}
 
-          <Section
-            title="Por item"
-            action={category ? <Chip label={getCategory(category).label} icon="close" selected onPress={() => onCategory(null)} /> : null}>
-            <ListCard>
-              {shown.map((item) => (
-                <ListRow
-                  key={item.key}
-                  left={<CategoryIcon category={item.category} name={item.name} size={36} />}
-                  title={item.name}
-                  subtitle={item.detail}
-                  right={
-                    <View style={styles.amount}>
-                      <Text variant="label">{item.amount}</Text>
-                      <Text variant="small">{item.share}</Text>
-                    </View>
-                  }
-                  accessibilityLabel={item.accessibilityLabel}
-                  // Item que a casa não acompanha não tem tela de produto.
-                  onPress={item.productId ? () => router.push({ pathname: '/produto/[id]', params: { id: item.productId! } }) : undefined}
-                />
-              ))}
-            </ListCard>
-            {items.length > ITEMS_SHOWN ? (
-              <Button
-                title={showAll ? `Mostrar só os ${ITEMS_SHOWN} primeiros` : `Ver todos os ${items.length} itens`}
-                variant="ghost"
-                compact
-                onPress={() => onShowAll(!showAll)}
-              />
-            ) : null}
-          </Section>
+          <View onLayout={(event) => onSwitchLayout(event.nativeEvent.layout.y)}>
+            <Segmented value={view} onChange={onView} options={MARKET_VIEWS} />
+          </View>
 
-          <Section title="Idas do mês">
+          {view === 'itens' ? (
+            <Items summary={summary} category={category} onCategory={onCategory} showAll={showAll} onShowAll={onShowAll} />
+          ) : view === 'categorias' ? (
+            <Categories summary={summary} onCategory={onCategory} />
+          ) : view === 'idas' ? (
             <ListCard>
               {summary.trips.map((trip) => (
                 <ListRow
@@ -240,9 +247,7 @@ function MonthBody({
                 />
               ))}
             </ListCard>
-          </Section>
-
-          <Section title="Por mercado">
+          ) : (
             <ListCard>
               {summary.stores.map((store) => (
                 <ListRow
@@ -255,23 +260,125 @@ function MonthBody({
                 />
               ))}
             </ListCard>
-          </Section>
+          )}
+
+          <Text variant="small">
+            Diferente da barra “Mercado” do Resumo: aqui entram limpeza, higiene e pet, e só conta o que veio de nota fiscal.
+          </Text>
         </>
       )}
     </>
   );
 }
 
-/** O que fica à parte, depois das categorias: as diferenças do total das notas, os itens sem valor e a farmácia. */
-function Apart({ summary }: { summary: MarketMonth }) {
-  const { discount, unread, noValue, pharmacy } = summary;
+/** Os itens do mês, do que levou mais dinheiro para o que levou menos; com uma categoria escolhida, todos os dela. */
+function Items({
+  summary,
+  category,
+  onCategory,
+  showAll,
+  onShowAll,
+}: {
+  summary: MarketMonth;
+  category: string | null;
+  onCategory: (category: string | null) => void;
+  showAll: boolean;
+  onShowAll: (all: boolean) => void;
+}) {
+  const items = category ? summary.items.filter((item) => item.category === category) : summary.items;
+  // Nunca um corte calado: os 10 primeiros vêm com o "Ver todos", e a categoria escolhida vem inteira.
+  const shown = category || showAll ? items : items.slice(0, ITEMS_SHOWN);
+  const label = category ? getCategory(category).label : null;
+  if (items.length === 0) return <Text variant="muted">As notas deste mês vieram sem nenhum item lido.</Text>;
   return (
-    <Card style={styles.apart}>
+    <View style={styles.gapMd}>
+      {label ? (
+        <Row style={styles.wrap}>
+          <Text variant="muted">Só os itens de</Text>
+          <Chip
+            label={label}
+            icon="close"
+            selected
+            accessibilityLabel={`${label}: mostrar os itens de todas as categorias`}
+            onPress={() => onCategory(null)}
+          />
+        </Row>
+      ) : null}
+      <ListCard>
+        {shown.map((item) => (
+          <ListRow
+            key={item.key}
+            left={<CategoryIcon category={item.category} name={item.name} size={36} />}
+            title={item.name}
+            subtitle={item.detail}
+            right={
+              <View style={styles.amount}>
+                <Text variant="label">{item.amount}</Text>
+                <Text variant="small">{item.share}</Text>
+              </View>
+            }
+            accessibilityLabel={item.accessibilityLabel}
+            // Item que a casa não acompanha não tem tela de produto.
+            onPress={item.productId ? () => router.push({ pathname: '/produto/[id]', params: { id: item.productId! } }) : undefined}
+          />
+        ))}
+      </ListCard>
+      {!category && items.length > ITEMS_SHOWN ? (
+        <Button
+          title={showAll ? `Mostrar só os ${ITEMS_SHOWN} primeiros` : `Ver todos os ${items.length} itens`}
+          variant="ghost"
+          compact
+          onPress={() => onShowAll(!showAll)}
+        />
+      ) : null}
+      {summary.shareBasis ? <Text variant="small">{summary.shareBasis}</Text> : null}
+    </View>
+  );
+}
+
+/** Todas as categorias do mês, da maior para a menor. O toque leva aos itens da categoria. */
+function Categories({ summary, onCategory }: { summary: MarketMonth; onCategory: (category: string) => void }) {
+  if (summary.categories.length === 0) return <Text variant="muted">As notas deste mês vieram sem nenhum item lido.</Text>;
+  return (
+    <View style={styles.gapMd}>
+      <Text variant="small">Toque numa categoria para ver os itens dela.</Text>
+      <Card style={styles.bars}>
+        {summary.categories.map((c) => (
+          <BarRow
+            key={c.key}
+            left={<CategoryIcon category={c.key} size={28} />}
+            label={c.label}
+            // Os nomes das categorias de produto são compridos: duas linhas, em vez de "Grãos, massas e c…".
+            labelLines={2}
+            amount={c.amount}
+            share={c.share}
+            value={c.cents}
+            max={summary.categories[0].cents}
+            note={c.versusPrevious}
+            accessibilityLabel={c.accessibilityLabel}
+            onPress={() => onCategory(c.key)}
+          />
+        ))}
+        {summary.shareBasis ? <Text variant="small">{summary.shareBasis}</Text> : null}
+      </Card>
+    </View>
+  );
+}
+
+/**
+ * Como o total fecha: as diferenças do total das notas, os itens sem valor, a farmácia (fora da conta) e as
+ * notas que ainda esperam a revisão.
+ */
+function Details({ summary }: { summary: MarketMonth }) {
+  const { discount, unread, noValue, pharmacy, drafts } = summary;
+  return (
+    <>
       {discount ? <AmountLine label={discount.label} value={discount.value} accessibilityLabel={discount.accessibilityLabel} /> : null}
       {unread ? (
         <View style={styles.gapSm}>
           <AmountLine label={unread.label} value={unread.value} accessibilityLabel={unread.accessibilityLabel} />
-          <Text variant="small">A leitura pode ter perdido um item ou um valor. Abra a nota para conferir:</Text>
+          {/* Diferença de poucos centavos não manda abrir nota nenhuma: a frase só aparece com nota para conferir. */}
+          {unread.receipts.length > 0 ? <Text variant="small">A leitura pode ter perdido um item ou um valor. Abra a nota para conferir:</Text> : null}
           {unread.receipts.map((ref) => (
             <ReceiptLink key={ref.receiptId} receipt={ref} />
           ))}
@@ -280,14 +387,24 @@ function Apart({ summary }: { summary: MarketMonth }) {
       {noValue ? (
         <View style={styles.gapSm}>
           <Text variant="body">{noValue.label}</Text>
-          <Text variant="small">Contam zero até terem um valor. Abra a nota para preencher:</Text>
+          <Text variant="small">{noValue.hint}</Text>
           {noValue.receipts.map((ref) => (
             <ReceiptLink key={ref.receiptId} receipt={ref} />
           ))}
         </View>
       ) : null}
       {pharmacy ? <Text variant="muted">{pharmacy}</Text> : null}
-    </Card>
+      {drafts ? (
+        <View style={styles.gapSm}>
+          <Text variant="muted">{drafts.label}</Text>
+          {/* Cada rascunho abre a própria nota, onde é confirmado: nada aqui leva para as abas. */}
+          {drafts.receipts.map((ref) => (
+            <ReceiptLink key={ref.receiptId} receipt={ref} />
+          ))}
+          {drafts.more ? <Text variant="small">{drafts.more}</Text> : null}
+        </View>
+      ) : null}
+    </>
   );
 }
 
@@ -310,9 +427,13 @@ function ReceiptLink({ receipt }: { receipt: MarketReceiptRef }) {
       onPress={() => openReceipt(receipt.receiptId)}
       style={({ pressed }) => [styles.receiptLink, pressed && styles.pressed]}>
       <Icon name="receipt-text-outline" size={18} color="textMuted" />
-      <Text variant="muted" style={styles.flex} numberOfLines={1}>
-        {`${receipt.storeName} · ${receipt.date}`}
-      </Text>
+      {/* Em tela estreita só o nome do mercado é cortado: a data é o que separa duas notas do mesmo mercado. */}
+      <View style={styles.receiptName}>
+        <Text variant="muted" numberOfLines={1} style={styles.shrink}>
+          {receipt.storeName}
+        </Text>
+        <Text variant="muted" style={styles.noShrink}>{`· ${receipt.date}`}</Text>
+      </View>
       <Text variant="label">{receipt.value}</Text>
       <Icon name="chevron-right" size={18} color="textMuted" />
     </Pressable>
@@ -322,6 +443,8 @@ function ReceiptLink({ receipt }: { receipt: MarketReceiptRef }) {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   gapSm: { gap: space.sm },
+  gapMd: { gap: space.md },
+  wrap: { flexWrap: 'wrap' },
   monthNav: { justifyContent: 'space-between' },
   monthTitle: { flex: 1, textAlign: 'center' },
   navPlaceholder: { width: 30 },
@@ -329,8 +452,12 @@ const styles = StyleSheet.create({
   hero: { gap: space.xs },
   bars: { gap: space.lg },
   amount: { alignItems: 'flex-end' },
-  apart: { gap: space.lg },
+  details: { gap: space.lg },
+  detailsHeader: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   amountLine: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   receiptLink: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingVertical: space.xs },
+  receiptName: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: space.xs },
+  shrink: { flexShrink: 1 },
+  noShrink: { flexShrink: 0 },
   pressed: { opacity: 0.6 },
 });

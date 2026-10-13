@@ -1,18 +1,19 @@
 import { router } from 'expo-router';
 import { useMemo } from 'react';
 
-import { useMarketReceipts } from '@/data/marketSpend';
-import { todayISO } from '@/domain/dates';
-import { marketMonth } from '@/domain/marketSpend';
+import { marketTotal, type MarketTotalReceipt } from '@/domain/marketSpend';
 import { Icon, IconBadge, ListCard, ListRow } from '@/ui/primitives';
 
-/** No resumo de gastos: a entrada do "Mercado do mês", com o total do mês que o resumo está mostrando. */
-export function MarketMonthLink({ month }: { month: string }) {
-  const receipts = useMarketReceipts(month);
-  const today = todayISO();
-  const summary = useMemo(() => (receipts.data ? marketMonth(receipts.data, month, today) : null), [receipts.data, month, today]);
-  // Sem os números (ainda carregando, ou a busca falhou), a linha leva à tela do mesmo jeito: é lá que o erro aparece.
-  const subtitle = !summary ? 'Por categoria, por item e por mercado' : summary.trips.length ? summary.headline : summary.emptyTitle;
+/**
+ * No resumo de gastos: a entrada do "Mercado do mês", com o total do mês que
+ * o resumo está mostrando. O total sai das notas que o resumo já leu
+ * (`receipts`), pela mesma conta do cabeçalho da tela (marketTotal): a
+ * entrada não faz busca nenhuma, e muito menos a da tela.
+ */
+export function MarketMonthLink({ month, receipts }: { month: string; receipts: MarketTotalReceipt[] | undefined }) {
+  const total = useMemo(() => (receipts ? marketTotal(receipts, month) : null), [receipts, month]);
+  // Sem as notas na mão, a linha leva à tela do mesmo jeito.
+  const subtitle = !total ? 'Por categoria, por item e por mercado' : total.trips ? total.headline : total.emptyTitle;
   return (
     <ListCard>
       <ListRow

@@ -7,11 +7,12 @@ import { useColors } from '@/ui/theme';
 /**
  * Uma linha de barra horizontal, de uma cor só: nome, valor, parte do total
  * e a barra, na proporção da maior (`max`). Usada no resumo de gastos e no
- * mercado do mês; o toque escolhe a linha (quem usa filtra o que vem abaixo).
+ * mercado do mês; o toque escolhe a linha (quem usa decide o que isso mostra).
  */
 export function BarRow({
   left,
   label,
+  labelLines = 1,
   amount,
   share,
   value,
@@ -24,6 +25,11 @@ export function BarRow({
 }: {
   left: ReactNode;
   label: string;
+  /**
+   * Em quantas linhas o nome cabe antes de ser cortado. Uma no resumo de gastos, de nomes curtos; duas no
+   * mercado do mês, onde "Grãos, massas e cereais" não cabe ao lado do valor num celular estreito.
+   */
+  labelLines?: number;
   /** O valor por extenso ("R$ 180,00") e a parte ("22%"). */
   amount: string;
   share: string;
@@ -49,7 +55,7 @@ export function BarRow({
       style={styles.barRow}>
       <Row>
         {left}
-        <Text variant="body" style={styles.flex} numberOfLines={1}>
+        <Text variant="body" style={styles.flex} numberOfLines={labelLines}>
           {label}
         </Text>
         <Text variant="label">{amount}</Text>
