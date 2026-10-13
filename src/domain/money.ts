@@ -15,9 +15,11 @@ export function parseDecimal(input: string): number | null {
 }
 
 /**
- * Um valor em reais, como parseDecimal, com uma diferença: sem vírgula, pontos
- * de três em três dígitos são de milhar ("1.500" é mil e quinhentos e
- * "12.345.678" também; dinheiro não tem três casas depois do ponto). "1.5",
+ * Um valor em reais, como parseDecimal, com duas diferenças. Sem vírgula,
+ * pontos de três em três dígitos são de milhar ("1.500" é mil e quinhentos e
+ * "12.345.678" também; dinheiro não tem três casas depois do ponto). E um
+ * ponto só com quatro ou mais dígitos depois ("1.5000") não é valor nenhum
+ * (null): quem digitou mais um zero em "1.500" não quis dizer R$ 1,50. "1.5",
  * "15.90" e "1.500,50" continuam como lá. Só para dinheiro: numa quantidade,
  * "1.500" kg é um quilo e meio, e é o parseDecimal que lê.
  */
@@ -25,6 +27,7 @@ export function parseMoney(input: string): number | null {
   const s = input.replace(/[R$\s]/g, '');
   // Com zero na frente ("0.500") não é milhar: fica com a leitura de sempre.
   if (/^[1-9]\d{0,2}(\.\d{3})+$/.test(s)) return Number(s.replace(/\./g, ''));
+  if (/^\d+\.\d{4,}$/.test(s)) return null;
   return parseDecimal(input);
 }
 

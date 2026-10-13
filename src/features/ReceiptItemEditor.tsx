@@ -3,7 +3,7 @@ import { Modal, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import type { ItemValues } from '@/data/receipts';
-import { parseDecimal, parseMoney } from '@/domain/money';
+import { readReceiptItem } from '@/domain/receiptItem';
 import { UNITS, type Unit } from '@/lib/types';
 import { Backdrop } from '@/ui/Backdrop';
 import { notify } from '@/ui/dialogs';
@@ -35,21 +35,9 @@ export function ReceiptItemEditor({
   const [total, setTotal] = useState(toField(initial?.total_price, 2));
 
   function save() {
-    const qty = parseDecimal(quantity);
-    // O preço unitário pode ter três casas (o litro da gasolina a "5.899"): só o total lê o ponto de três em três como milhar.
-    const price = parseDecimal(unitPrice);
-    const sum = parseMoney(total);
-    if (!description.trim() || !qty || qty <= 0) {
-      notify('Confira o item', 'Informe a descrição e uma quantidade maior que zero.');
-      return;
-    }
-    if (price == null && sum == null) {
-      notify('Confira o item', 'Informe o preço unitário ou o total.');
-      return;
-    }
-    const unit_price = price ?? Math.round(((sum ?? 0) / qty) * 10000) / 10000;
-    const total_price = sum ?? Math.round(unit_price * qty * 100) / 100;
-    onSave({ raw_description: description.trim(), quantity: qty, unit, unit_price, total_price });
+    const result = readReceiptItem({ description, quantity, unitPrice, total });
+    if (!result.ok) return notify('Confira o item', result.message);
+    onSave({ ...result.values, unit });
   }
 
   return (

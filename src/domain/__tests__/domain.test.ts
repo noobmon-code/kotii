@@ -158,8 +158,12 @@ describe('money', () => {
     expect(parseMoney('180')).toBe(180);
     expect(parseMoney('R$ 3')).toBe(3);
     expect(parseMoney('1.50')).toBe(1.5);
-    expect(parseMoney('1.5000')).toBe(1.5);
     expect(parseMoney('1234.567')).toBe(1234.567);
+    // Mais um zero em "1.500" não vira R$ 1,50: quatro ou mais dígitos depois de um ponto só não é valor em reais.
+    expect(parseMoney('1.5000')).toBeNull();
+    expect(parseMoney('0.5000')).toBeNull();
+    expect(parseMoney('1234.5678')).toBeNull();
+    expect(parseMoney('1.5000,00')).toBe(15000);
     // Zero na frente não é milhar: continua sendo cinquenta centavos.
     expect(parseMoney('0.500')).toBe(0.5);
     expect(parseMoney('1.500.00')).toBeNull();
