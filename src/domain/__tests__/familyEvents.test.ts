@@ -281,6 +281,14 @@ describe('textos', () => {
     expect(rideText('Beto', null)).toBe('Beto leva');
     expect(rideText(null, 'Carla')).toBe('Carla busca');
     expect(rideText(null, null)).toBeNull();
+    // O dia em que ninguém leva (ou busca) quem costuma ser levado: a linha diz, em vez de só perder um nome.
+    expect(rideText(null, 'Carla', { take: true })).toBe('Ninguém leva, Carla busca');
+    expect(rideText('Beto', null, { pickUp: true })).toBe('Beto leva, ninguém busca');
+    expect(rideText(null, null, { take: true, pickUp: true })).toBe('Ninguém leva nem busca');
+    expect(rideText(null, null, { take: true })).toBe('Ninguém leva');
+    expect(rideText(null, null, { pickUp: true })).toBe('Ninguém busca');
+    // Com um nome, vale o nome.
+    expect(rideText('Beto', 'Carla', { take: true, pickUp: true })).toBe('Beto leva, Carla busca');
     expect(bringText(' touca e toalha ')).toBe('Levar: touca e toalha');
     expect(bringText('  ')).toBeNull();
     expect(ageText(8)).toBe('faz 8 anos');
@@ -349,6 +357,42 @@ describe('calendarEntries', () => {
   it('ficha apagada (ou de quem saiu): o nome some, o compromisso fica', () => {
     const entries = calendarEntries({ ...calendar, people: people.filter((p) => p.id !== 'carla') }, '2026-10-22', '2026-10-22');
     expect(entries.map(entryDetail)).toEqual(['Ana · Beto leva · Levar: touca e toalha']);
+  });
+
+  it('o dia em que ninguém leva (ou busca) quem costuma ser levado: a linha, o aviso, a Hoje e o Nuke dizem', () => {
+    const changed: FamilyCalendar = {
+      events: [swim],
+      days: [
+        day({ occurs_on: '2026-10-13', override_take: true, take_by: null }),
+        day({ occurs_on: '2026-10-15', override_pick_up: true, pick_up_by: null }),
+        day({ occurs_on: '2026-10-20', override_take: true, take_by: null, override_pick_up: true, pick_up_by: null }),
+      ],
+      people: people.map((p) => ({ ...p, birth_date: null })),
+    };
+    const entries = calendarEntries(changed, '2026-10-13', '2026-10-22');
+    expect(entries.map((e) => [e.date, e.ride, e.routine])).toEqual([
+      ['2026-10-13', 'Ninguém leva, Carla busca', false],
+      ['2026-10-15', 'Beto leva, ninguém busca', false],
+      ['2026-10-20', 'Ninguém leva nem busca', false],
+      ['2026-10-22', 'Beto leva, Carla busca', true],
+    ]);
+    expect(entryDetail(entries[0])).toBe('Ana · Ninguém leva, Carla busca · Levar: touca e toalha');
+    expect(eventReminderTexts(entries[0]).body).toBe('Ana · Ninguém leva, Carla busca · Clube · Levar: touca e toalha');
+    expect(todayEntries(changed, '2026-10-13')[0].subtitle).toBe('Hoje · 16:00–17:00 · Ana · Ninguém leva, Carla busca · Levar: touca e toalha');
+    // No retrato do Nuke a linha é uma lista entre parênteses: "ninguém" em minúscula, no meio dela.
+    expect(calendarLines(changed, '2026-10-13', 2)).toEqual([
+      'hoje 16:00–17:00 Natação da Ana (Ana, ninguém leva, Carla busca, local: Clube, levar: touca e toalha)',
+      'qui 15/10 16:00–17:00 Natação da Ana (Ana, Beto leva, ninguém busca, local: Clube, levar: touca e toalha)',
+    ]);
+
+    // Quem nunca teve quem leve não ganha "ninguém leva": não é mudança, e a linha segue como era.
+    const alone: FamilyEventLike = { ...swim, take_by: null };
+    expect(calendarEntries({ ...changed, events: [alone], days: [] }, '2026-10-13', '2026-10-13').map((e) => e.ride)).toEqual(['Carla busca']);
+    // Nem a mudança que sobrou de quando havia alguém (o compromisso passou a não ter quem leve).
+    expect(calendarEntries({ ...changed, events: [alone] }, '2026-10-13', '2026-10-13').map((e) => [e.ride, e.routine])).toEqual([['Carla busca', true]]);
+    // A ficha que não está na lista (apagada, ou de quem saiu) não é "ninguém": o nome some, como antes.
+    const gone = { ...changed, days: [], people: changed.people.filter((p) => p.id !== 'beto') };
+    expect(calendarEntries(gone, '2026-10-13', '2026-10-13').map((e) => e.ride)).toEqual(['Carla busca']);
   });
 
   it('rotina: a vez de toda semana em que quem leva e quem busca são os de sempre', () => {

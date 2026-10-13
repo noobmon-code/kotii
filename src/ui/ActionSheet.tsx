@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, type ReactNode } from 'react';
 import { Modal, Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -12,19 +12,25 @@ export interface SheetAction {
   onPress: () => void;
 }
 
-/** Menu de ações de baixo para cima, igual em iOS, Android e web. */
+/**
+ * Menu de ações de baixo para cima, igual em iOS, Android e web. `children` é
+ * o que a tela mostra junto (ex.: a prévia do texto que vai ser mandado):
+ * fica entre o título e as ações e rola com elas.
+ */
 export function ActionSheet({
   visible,
   title,
   message,
   actions,
   onClose,
+  children,
 }: {
   visible: boolean;
   title?: string;
   message?: string;
   actions: SheetAction[];
   onClose: () => void;
+  children?: ReactNode;
 }) {
   const c = useColors();
   const { height } = useWindowDimensions();
@@ -52,8 +58,11 @@ export function ActionSheet({
           <Pressable
             style={[styles.sheet, { backgroundColor: c.surface, borderColor: c.glassBorder, maxHeight: height * 0.85 }]}>
             {title ? <Text variant="heading">{title}</Text> : null}
-            {/* Mensagem longa e muitas ações (uma por compra na despensa) rolam; o Cancelar fica à vista. */}
+            {/* Só o título e o Cancelar ficam fixos. O resto rola junto: mensagem longa, muitas ações (uma por compra
+                na despensa) e o que a tela pôs no menu. Numa tela baixa (o celular deitado), a prévia e o aviso
+                fixos deixariam as ações sem espaço para tocar. */}
             <ScrollView style={styles.scroll} contentContainerStyle={styles.gap} bounces={false}>
+              {children}
               {message ? <Text variant="muted">{message}</Text> : null}
               <View style={styles.actions}>
                 {actions.map((action, index) => (
