@@ -12,6 +12,7 @@ import {
   usePantry,
   useToggleDose,
 } from '@/data/home';
+import { useFamilyCalendar } from '@/data/family';
 import { useBills, useBudgets, useRecentBillPayments, useSpending } from '@/data/finance';
 import { useDocuments, useEquipmentList } from '@/data/house';
 import { useAddItemsToList, usePurchaseRecords, useShoppingLists } from '@/data/market';
@@ -26,6 +27,7 @@ import { describeDocumentStatus, documentsNeedingAttention, getDocumentKind } fr
 import { budgetProgress, describeBudget } from '@/domain/budget';
 import { billsDueSoon, getFinanceCategory, monthRange, summarize } from '@/domain/finance';
 import { describeWarranty, getEquipmentCategory, warrantyStatus } from '@/domain/equipment';
+import { todayEntries } from '@/domain/familyEvents';
 import { currentTimeHHMM, doseKey, dosesForDay } from '@/domain/medications';
 import { MEALS } from '@/domain/menu';
 import { describeExpiry, expiryStatus } from '@/domain/pantry';
@@ -159,10 +161,13 @@ export default function TodayScreen() {
   const refreshing = queries.some((q) => q.isRefetching);
   // O clima e os pagamentos recentes ficam fora de `queries` (não contam para "tudo em dia"), mas atualizam junto.
   const refreshWeather = useRefreshWeather();
+  // Os compromissos também ficam fora de `queries`: sem eles (ou sem as tabelas deles), a tela é a de sempre.
+  const family = useFamilyCalendar();
   const refresh = () => {
     queries.forEach((q) => q.refetch());
     rotations.refetch();
     refreshWeather();
+    family.refetch();
     if (billsDue.length) recentPayments.refetch();
   };
 
@@ -185,6 +190,10 @@ export default function TodayScreen() {
     .filter(({ status }) => status.kind === 'acabando');
   const equipmentName = (id: string | null) => (id ? equipment.data?.find((e) => e.id === id)?.name : undefined);
   const activeLists = (lists.data ?? []).filter((l) => l.pending > 0);
+  // Compromissos da família e aniversários de hoje e de amanhã: têm a seção
+  // deles e não são pendência (com uma rotina, haveria um quase todo dia), por
+  // isso não entram no "tudo em dia" nem na frase do topo.
+  const familyToday = todayEntries(family.calendar, today);
   // "Acho que acabou": do mercado, menos o que já está em alguma lista aberta.
   const restock = useRestock(lists.isSuccess ? onLists : undefined, purchases.data, restocked.pending, today);
   // Categorias do mês que passaram ou estão perto do limite.
@@ -349,6 +358,28 @@ export default function TodayScreen() {
       ) : null}
 
       <HealthTodaySections overview={health} today={today} compact />
+
+      {familyToday.length ? (
+        <Section title="Compromissos">
+          <ListCard>
+            {familyToday.map((entry) => (
+              <ListRow
+                key={entry.key}
+                left={<IconBadge icon={entry.kind === 'aniversario' ? 'cake-variant-outline' : 'calendar-star'} tone="info" />}
+                title={entry.title}
+                subtitle={entry.subtitle}
+                onPress={() =>
+                  router.push(
+                    entry.kind === 'aniversario'
+                      ? { pathname: '/pessoa/[id]', params: { id: entry.id } }
+                      : { pathname: '/compromisso/[id]', params: { id: entry.id, dia: entry.date } },
+                  )
+                }
+              />
+            ))}
+          </ListCard>
+        </Section>
+      ) : null}
 
       {dueChores.length ? (
         <Section title="Tarefas">

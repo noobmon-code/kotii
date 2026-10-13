@@ -24,6 +24,7 @@ const snapshot: NukeSnapshot = {
     previousTotal: 3922.4,
   },
   appointments: [{ starts_at: '2026-10-02T14:00:00', title: 'Pediatra', person: 'Lucas' }],
+  events: ['amanhã 16:00–17:00 Natação da Ana (Ana, Beto leva, Carla busca, levar: touca e toalha)', 'qua 30/09 Aniversário de Ana (faz 8 anos)'],
   documents: [],
   warranties: [],
 };
@@ -38,6 +39,9 @@ describe('nuke context', () => {
     expect(text).toContain('Luz valor varia — venceu 26/09');
     expect(text).toContain('Gastos de setembro até hoje: R$ 3.646,90 (Moradia R$ 2.500,00). Agosto inteiro: R$ 3.922,40.');
     expect(text).toContain('02/10 14:00 Pediatra (Lucas)');
+    expect(text).toContain(
+      'Compromissos da família e aniversários (hoje e próximos 7 dias): amanhã 16:00–17:00 Natação da Ana (Ana, Beto leva, Carla busca, levar: touca e toalha); qua 30/09 Aniversário de Ana (faz 8 anos).',
+    );
     expect(text).toContain('Documentos pedindo atenção: nada.');
     expect(text).not.toContain('Orçamento');
   });
@@ -78,6 +82,10 @@ describe('nuke context', () => {
   it('caps long lists', () => {
     const many = { ...snapshot, pantry: Array.from({ length: 45 }, (_, i) => `Item ${i}`) };
     expect(buildNukeContext(many)).toContain('Item 39; e mais 5.');
+    const busy = { ...snapshot, events: Array.from({ length: 30 }, (_, i) => `hoje Compromisso ${i}`) };
+    expect(buildNukeContext(busy)).toContain('hoje Compromisso 24; e mais 5.');
+    // Retrato de antes dos compromissos (ou sem nenhum): a linha diz que não há.
+    expect(buildNukeContext({ ...snapshot, events: undefined })).toContain('Compromissos da família e aniversários (hoje e próximos 7 dias): nada.');
   });
 });
 
