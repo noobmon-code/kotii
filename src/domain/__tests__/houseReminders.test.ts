@@ -153,6 +153,10 @@ describe('eveSummary (resumo de amanhã)', () => {
       [{ appointments: [{ ...consulta, time: '14:05', person: '' }] }, '14h05 Pediatra'],
       [{ bills: [luz] }, 'Luz (R$ 180,00)'],
       [{ bills: [{ ...luz, amount: null }] }, 'Conta: Luz'],
+      // O nome que já diz que é conta não ganha a palavra de novo.
+      [{ bills: [{ ...luz, name: 'Conta de luz', amount: null }] }, 'Conta de luz'],
+      [{ bills: [{ ...luz, name: 'contas da casa', amount: null }] }, 'contas da casa'],
+      [{ bills: [{ ...luz, name: 'Contador', amount: null }] }, 'Conta: Contador'],
       [{ vaccines: [vacina] }, 'Vacina de Bia: Tríplice (2ª dose)'],
       [{ vaccines: [{ ...vacina, dose: null, person: '' }] }, 'Vacina: Tríplice'],
       [{ chores: [lixo] }, 'Pôr o lixo para fora'],
@@ -761,6 +765,9 @@ describe('planHouseReminders: resumo de amanhã', () => {
       };
       const plain = whole.filter((r) => r.kind === 'eve' && !(input.kinds.appointments && carries(r.date)));
       const own = whole.filter((r) => !plain.includes(r));
+      // A vez de cada aviso próprio na fila: o resumo que leva uma consulta entra às 19h, no lugar do aviso dela.
+      const turnOf = (r: (typeof whole)[number]) => `${r.date} ${r.kind === 'eve' ? '19:00' : r.time}`;
+      const inTurn = [...own].sort((a, b) => turnOf(a).localeCompare(turnOf(b)));
       expect(plain.length).toBeGreaterThan(1);
       for (let limit = 0; limit <= whole.length; limit++) {
         const plan = keys(planHouseReminders({ ...input, limit }));
@@ -768,19 +775,66 @@ describe('planHouseReminders: resumo de amanhã', () => {
         const kept = plain.filter((r) => plan.includes(r.key));
         // As noites mais distantes saem primeiro.
         expect(kept).toEqual(plain.slice(0, kept.length));
+        // O resumo que leva uma consulta fica sempre que caberia sem resumo comum nenhum.
+        const owed = inTurn.slice(0, limit).filter((r) => r.kind === 'eve');
+        expect(plan).toEqual(expect.arrayContaining(keys(owed)));
+        const lastOwed = owed.map(turnOf).sort().at(-1) ?? '';
         for (const summary of plain) {
           if (plan.includes(summary.key)) {
             // Ficou: todo aviso próprio até o dia de que ele fala também ficou.
             const upTo = addDays(summary.date, 1);
             expect(plan).toEqual(expect.arrayContaining(keys(own.filter((r) => r.date <= upTo))));
           } else {
-            // Saiu: nenhum aviso de depois desse dia ficou no lugar dele.
+            // Saiu: o que ficou de depois desse dia não passa do resumo que leva a consulta (foi para ele que a vaga foi).
             const after = addDays(summary.date, 2);
-            expect(own.filter((r) => r.date >= after && plan.includes(r.key))).toEqual([]);
+            expect(own.filter((r) => r.date >= after && plan.includes(r.key) && turnOf(r) > lastOwed)).toEqual([]);
           }
         }
       }
     }
+  });
+
+  it('consulta daqui a alguns dias: o resumo comum de uma noite anterior não tira a véspera dela', () => {
+    // Segunda, 12/10. Quem tem três casas fica com 8 avisos por casa.
+    const input: HouseReminderInput = {
+      kinds: { ...all, weather: false, eve: true },
+      today: '2026-10-12',
+      nowTime: '08:00',
+      bills: [
+        { id: 'luz', name: 'Luz', amount: 180, next_due_on: '2026-10-13', active: true, autopay: false },
+        { id: 'net', name: 'Internet', amount: 120, next_due_on: '2026-10-14', active: true, autopay: false },
+      ],
+      documents: [],
+      chores: [
+        { ...weekly('2026-10-14'), id: 'feira', title: 'Feira' },
+        { ...weekly('2026-10-15'), id: 'lixo', title: 'Pôr o lixo para fora' },
+      ],
+      appointments: [{ ...appointment, id: 'ped', date: '2026-10-16', time: '10:00', location: null }],
+      vaccines: [],
+      equipment: [],
+      limit: 8,
+    };
+    // Com o resumo desligado, as 8 vagas levam a véspera da consulta e as 2 horas antes.
+    expect(keys(planHouseReminders({ ...input, kinds: { ...input.kinds, eve: false } })).slice(-2)).toEqual([
+      'appointments:ped:2026-10-15:19:00',
+      'appointments:ped:2026-10-16:08:00',
+    ]);
+    // Ligado: o resumo de quinta à noite leva a consulta e fica; quem sai é o resumo comum da noite mais
+    // distante (o de terça). O de hoje à noite continua.
+    const plan = planHouseReminders(input);
+    expect(keys(plan)).toEqual([
+      'bills:luz:2026-10-12',
+      'eve:amanha:2026-10-12:20:00',
+      'bills:luz:2026-10-13',
+      'bills:net:2026-10-13',
+      'bills:net:2026-10-14',
+      'chores:feira:2026-10-14',
+      'chores:lixo:2026-10-15',
+      'eve:amanha:2026-10-15:20:00',
+    ]);
+    expect(plan.at(-1)).toMatchObject({ title: 'Amanhã, sexta-feira', body: '10h Pediatra (Lia)' });
+    // Com uma vaga a mais, ninguém precisa sair.
+    expect(keys(planHouseReminders({ ...input, limit: 9 }))).toEqual(expect.arrayContaining(['eve:amanha:2026-10-13:20:00', 'eve:amanha:2026-10-15:20:00']));
   });
 
   it('o resumo que leva a consulta não sai pelo teto antes do "Consulta amanhã" que ele substitui', () => {

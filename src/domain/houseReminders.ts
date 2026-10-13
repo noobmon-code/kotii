@@ -75,6 +75,9 @@ const EVE_PLACE_MIN = 8;
 /** Depois de qualquer hora do dia, na fila do teto (ver o fim de planHouseReminders). */
 const END_OF_DAY = '24:00';
 
+/** A conta sem valor no resumo: só o nome não diria que é uma conta ("Conta: Condomínio"), a não ser que ele já diga ("Conta de luz"). */
+const billName = (name: string) => (/^contas?\b/i.test(name.trim()) ? name : `Conta: ${name}`);
+
 export interface HouseReminderInput {
   kinds: Record<HouseReminderKind, boolean>;
   bills: { id: string; name: string; amount: number | null; next_due_on: string; active: boolean; autopay: boolean }[];
@@ -186,7 +189,7 @@ function eveItems(input: EveSummaryInput, day: string): EveItem[] {
     // o valor, só o nome não diria que é uma conta.
     ...input.bills
       .filter((b) => b.active && !b.autopay && b.next_due_on === day)
-      .map((b) => item('bills', b.id, b.amount != null ? `${b.name} (${formatBRL(b.amount)})` : `Conta: ${b.name}`)),
+      .map((b) => item('bills', b.id, b.amount != null ? `${b.name} (${formatBRL(b.amount)})` : billName(b.name))),
     ...eveVaccines(input.vaccines ?? [], day).map((v) => item('vaccines', v.id, v.text)),
     // Tarefa de todo dia (ou quase: ver EVE_ROUTINE_DAYS) faria o resumo tocar toda noite sem dizer nada de novo.
     ...input.chores
@@ -380,15 +383,28 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
   // e os das noites mais distantes saem primeiro. O custo: com ele ligado, um
   // aviso próprio de dois ou mais dias adiante pode esperar a janela andar (o
   // plano é refeito a cada vez que o app abre). O resumo que está no lugar de
-  // um "Consulta amanhã" vale como o aviso que substitui, na vez dele, para a
-  // consulta não ficar sem a véspera por causa do teto.
+  // um "Consulta amanhã" vale como o aviso que substitui, na vez dele.
   const placed = (r: HouseReminder) => {
     if (r.kind !== 'eve') return r;
     if (standIn.has(r.key)) return { ...r, time: APPOINTMENT_EVE_TIME, key: '' };
     return { ...r, date: addDays(r.date, 1), time: END_OF_DAY };
   };
-  return out
-    .sort((a, b) => soonest(placed(a), placed(b)))
+  const plain = (r: HouseReminder) => r.kind === 'eve' && !standIn.has(r.key);
+  const turn = [...out].sort((a, b) => soonest(placed(a), placed(b)));
+  // A consulta não fica sem a véspera por causa de um resumo comum: os resumos
+  // que levam uma consulta e caberiam sem resumo comum nenhum (é quando o
+  // "Consulta amanhã" dela caberia com o resumo desligado) têm de ficar.
+  // Enquanto um deles estiver de fora, sai o resumo comum da noite mais
+  // distante e o corte é refeito.
+  const owed = turn
+    .filter((r) => !plain(r))
     .slice(0, limit)
-    .sort(soonest);
+    .filter((r) => standIn.has(r.key));
+  let queue = turn;
+  for (;;) {
+    const kept = queue.slice(0, limit);
+    const farthest = kept.filter(plain).at(-1);
+    if (!farthest || owed.every((r) => kept.includes(r))) return kept.sort(soonest);
+    queue = queue.filter((r) => r !== farthest);
+  }
 }
