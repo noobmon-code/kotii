@@ -1743,8 +1743,38 @@ describe('examTrends', () => {
       [],
       '2026-10-12',
     );
-    expect(summary).toContain('- Linfócitos: 18 em 12/03/2025 (marcado no laudo: abaixo)\n');
+    // ... mas diz que há resultados mais novos, sem escolher um: a linha marcada não passa por último resultado.
+    expect(summary).toContain('- Linfócitos: 18 em 12/03/2025 (marcado no laudo: abaixo). Há resultados mais recentes com unidade (05/09/2026). Não foram comparados.\n');
     expect(summary).toContain('- Linfócitos: 900 em 12/03/2025 (marcado no laudo: abaixo)\n');
+    // O hemograma mais novo já saiu da janela do resumo (há outro exame depois): a linha antiga é a única do item,
+    // e é ela que avisa. Com a linha antiga em outra unidade, as palavras mudam.
+    const old = (first: ExamResult) =>
+      visitSummary(
+        person(),
+        [
+          exam('2025-03-12', [first], { title: 'Hemograma' }),
+          exam('2026-03-05', [result('Neutrófilos', '55', '%'), result('Neutrófilos', '4.125', '/mm³')], { title: 'Hemograma' }),
+          exam('2026-09-05', [result('Glicose', '92', 'mg/dL')], { title: 'Glicemia' }),
+        ],
+        [],
+        '2026-10-13',
+      );
+    expect(old(result('Neutrófilos', '80', null, 'alto'))).toContain(
+      '- Neutrófilos: 80 em 12/03/2025 (marcado no laudo: acima). Há resultados mais recentes com unidade (05/03/2026). Não foram comparados.\n',
+    );
+    expect(old(result('Neutrófilos', '9,5', '10³/µL', 'alto'))).toContain(
+      '- Neutrófilos: 9,5 10³/µL em 12/03/2025 (marcado no laudo: acima). Há resultados mais recentes em outra unidade (05/03/2026). Não foram comparados.\n',
+    );
+    // A linha da tela não muda: o aviso é só do resumo.
+    const screen = examTrends([
+      exam('2025-03-12', [result('Neutrófilos', '9,5', '10³/µL', 'alto')]),
+      exam('2026-03-05', [result('Neutrófilos', '55', '%'), result('Neutrófilos', '4.125', '/mm³')]),
+    ]);
+    expect(screen.single.map((i) => [valueLabel(i.last), apartNote(i), i.newerElsewhere, i.newerUnclear ?? null])).toEqual([
+      ['9,5 10³/µL', null, null, { date: '2026-03-05', unit: '/mm³' }],
+      ['55%', null, null, null],
+      ['4.125 /mm³', null, null, null],
+    ]);
   });
 
   it('o mesmo nome em outro material fica à parte, e a linha avisa', () => {

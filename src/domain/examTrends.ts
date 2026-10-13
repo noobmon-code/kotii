@@ -256,6 +256,14 @@ export interface TrendItem {
    * para saber qual é a deste texto: aí o resumo diz só a data.
    */
   newerNumber?: { date: string; point: TrendPoint | null };
+  /**
+   * Só nos numéricos, e só quando existe: o item tem resultados mais novos em
+   * outro grupo, mas o laudo deles traz duas medidas com esse nome e não dá
+   * para dizer qual é a desta linha (por isso `newerElsewhere` fica vazio).
+   * Sai só no resumo para a consulta, sem valor: a data, e que não foram
+   * comparados. `unit` é a unidade do mais novo deles, para as palavras.
+   */
+  newerUnclear?: { date: string; unit: string | null };
   /** Unidades, como escritas, dos outros grupos do mesmo item (ver apartNote). */
   otherUnits: string[];
   /** De que material é, quando o nome ou o título do exame diz ("urina", "24h", "fezes", "liquor"); "" sem isso. */
@@ -745,6 +753,19 @@ function newerNumberNote(item: Pick<TrendItem, 'newerNumber'>): string | null {
 }
 
 /**
+ * "Há resultados mais recentes…", sem valor: o aviso do resumo para a consulta
+ * quando o item tem resultados mais novos em outro grupo e não dá para dizer
+ * qual deles é o desta linha (ver TrendItem.newerUnclear). A linha marcada de
+ * um laudo antigo não passa por último resultado do item.
+ */
+function newerUnclearNote(item: Pick<TrendItem, 'last' | 'newerUnclear'>): string | null {
+  const newer = item.newerUnclear;
+  if (!newer) return null;
+  const how = !newer.unit ? 'sem unidade' : item.last.unit ? 'em outra unidade' : 'com unidade';
+  return `Há resultados mais recentes ${how} (${formatBRDate(newer.date)}). Não foram comparados.`;
+}
+
+/**
  * O que a linha de um item numérico avisa quando o mesmo item também está em
  * outro grupo, por causa da unidade ou do material (os grupos não são
  * comparados, e isso não pode passar em silêncio): que há um resultado mais
@@ -931,6 +952,11 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
         !others.some((other) => other !== candidate && sharesReport(other, candidate)) && !rivals.some((rival) => sameInOtherUnit(candidate, rival)),
     );
     const newest = newestOf(clear);
+    const elsewhere = newest && lastOf(newest).date > last.date ? lastOf(newest) : null;
+    // Os candidatos deixados de lado por essa dúvida: se o mais novo deles é mais novo que esta linha e nenhum
+    // candidato certo é, o resumo da consulta diz que há resultados mais novos, sem escolher um.
+    const doubtful = newestOf(others.filter((candidate) => !clear.includes(candidate)));
+    const unclear = !elsewhere && doubtful && lastOf(doubtful).date > last.date ? lastOf(doubtful) : null;
     const written = isNumber ? newestOf(textFamilies(group).flatMap((family) => texts.get(family) ?? []).filter((text) => sameItemText(group, text))) : null;
     // Na linha do texto, os números do mesmo item. Com dois deles vindos no mesmo laudo (duas medidas com esse
     // nome), não dá para saber qual é a deste texto: fica só a data do mais novo.
@@ -943,8 +969,9 @@ export function examTrends(exams: TrendExam[], today?: string): ExamTrends {
       name: group.name,
       points: group.points,
       last,
-      newerElsewhere: newest && lastOf(newest).date > last.date ? lastOf(newest) : null,
+      newerElsewhere: elsewhere,
       newerText: written && lastOf(written).date > last.date ? lastOf(written) : null,
+      ...(unclear ? { newerUnclear: { date: unclear.date, unit: unclear.unit } } : {}),
       ...(newestNumber && lastOf(newestNumber).date > last.date
         ? { newerNumber: { date: lastOf(newestNumber).date, point: twoMeasures ? null : lastOf(newestNumber) } }
         : {}),
@@ -1084,7 +1111,7 @@ export function visitSummary(person: SummaryPerson, exams: TrendExam[], medicati
   // texto marcado de um laudo antigo também diz quando o item tem um número mais novo, que pode nem estar no
   // resumo. Só esses avisos: o material, quando é o caso, já vai ao lado do nome.
   const noted = (line: string, item: TrendItem) => {
-    const note = newerNote(item) ?? newerNumberNote(item);
+    const note = newerNote(item) ?? newerNumberNote(item) ?? newerUnclearNote(item);
     return note ? `${line}. ${note}` : line;
   };
   list(
