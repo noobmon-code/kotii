@@ -413,7 +413,8 @@ export function entryShortDetail(entry: CalendarEntry): string | null {
   // Só o nome inteiro, seguido do verbo: "Ana Paula leva" não é da Ana.
   const repeated =
     !!who && !!ride && (ride === `${who} busca` || ride === `${who} leva` || ride === `${who} leva e busca` || ride.startsWith(`${who} leva, `));
-  return [repeated ? null : who, ride].filter(Boolean).join(', ') || null;
+  // Dentro do parêntese, "ninguém leva" (o dia em que quem costuma levar não vai) fica em minúscula.
+  return [repeated ? null : who, ride?.replace(/^Ninguém/, 'ninguém')].filter(Boolean).join(', ') || null;
 }
 
 /** O que mudou num dia, para a lista de dias com mudança: "Não vai ter", "Vó Maria leva", "Ninguém busca". */

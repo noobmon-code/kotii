@@ -810,8 +810,11 @@ describe('eveSummary (resumo de amanhã)', () => {
     expect(summary({ family: calendar([swim, school], [change({ override_pick_up: true, pick_up_by: 'vo' })]) })?.body).toBe(
       '16h Natação da Ana (Ana, Beto leva, Vó Maria busca)',
     );
-    // Ninguém leva neste dia: também é mudança.
-    expect(summary({ family: calendar([swim], [change({ override_take: true, take_by: null })]) })?.body).toBe('16h Natação da Ana (Ana, Carla busca)');
+    // Ninguém leva neste dia: também é mudança, e o resumo diz (é a única notificação daquela noite).
+    expect(summary({ family: calendar([swim], [change({ override_take: true, take_by: null })]) })?.body).toBe('16h Natação da Ana (Ana, ninguém leva, Carla busca)');
+    expect(summary({ family: calendar([swim], [change({ override_take: true, take_by: null, override_pick_up: true, pick_up_by: null })]) })?.body).toBe(
+      '16h Natação da Ana (Ana, ninguém leva nem busca)',
+    );
     // Guardado para o dia o mesmo de sempre: segue sendo a rotina.
     expect(summary({ family: calendar([swim], [change({ override_take: true, take_by: 'beto' })]) })).toBeNull();
     // A mudança é de outro dia (quinta): na terça, nada.
