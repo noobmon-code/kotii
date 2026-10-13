@@ -827,6 +827,10 @@ describe('examTrends', () => {
     expect(material('Check-up', 'Elastase fecal')).toBe('fezes');
     // "Núria" é o nome de uma pessoa, não um exame de urina.
     for (const title of ['Exames da Núria', 'Núria - check-up', 'Hemograma (Núria)']) expect([title, material(title)]).toEqual([title, '']);
+    // Nem no título de um exame de dia inteiro: o "24h" do Holter da Núria não vira urina de 24 horas.
+    for (const title of ['Holter Núria 24h', 'Holter 24 horas (Núria)', 'MAPA 24h - Núria', 'Núria: polissonografia 24h']) {
+      expect([title, material(title)]).toEqual([title, '']);
+    }
     // "Clearance" e "depuração" sem "24h" não dizem o material: o laudo deles traz também a creatinina do sangue.
     for (const title of ['Clearance de creatinina', 'Depuração de creatinina endógena']) expect([title, material(title)]).toEqual([title, '']);
   });

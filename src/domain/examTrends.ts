@@ -515,7 +515,7 @@ const plainWords = (text: string) => joinAcronyms(normalizeSearch(text)).replace
 // - sódio 24h") fica sem material.
 const DAY_LONG = /\b(holter|ph ?metria|polissonografia|eeg|eletroencefalograma|ecg|eletrocardiograma|monitorizacao)\b/;
 const DAY_LONG_BEFORE = /\b(mapa|m a p a|pressao)\b/;
-const DAY_URINE = /\b([a-z]+uria|clearance|depuracao|catecolaminas?|metanefrinas?)\b/;
+const DAY_URINE = /\b([a-z]{2,}uria|clearance|depuracao|catecolaminas?|metanefrinas?)\b/;
 const [[, URINE], [, WHOLE_DAY]] = MATERIALS;
 const saysUrine = (plain: string) => URINE.test(plain) || DAY_URINE.test(plain);
 
