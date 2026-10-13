@@ -308,6 +308,31 @@ export function searchProviders<P extends ProviderLike, J extends JobLike>(
   });
 }
 
+/**
+ * O que a busca não conseguiu olhar: os serviços (o que foi feito e, por
+ * eles, o aparelho) ou só os nomes dos aparelhos. `loading`: ainda chegando.
+ */
+export interface SearchGap {
+  what: 'jobs' | 'equipment';
+  loading: boolean;
+}
+
+const SEARCH_GAP: Record<SearchGap['what'], { loading: string; failed: string }> = {
+  jobs: { loading: 'Buscando também nos serviços…', failed: 'Não deu para buscar nos serviços: a busca olhou só o nome e o ofício.' },
+  equipment: { loading: 'Buscando também nos aparelhos…', failed: 'Não deu para buscar nos aparelhos: a busca não olhou o nome deles.' },
+};
+
+/**
+ * A linha da busca que não achou ninguém. "Nada encontrado" só quando ela
+ * olhou tudo: com os serviços ou os aparelhos ainda chegando, ou sem eles, quem
+ * consertou a geladeira pode existir. `onWeb`: no navegador não há o que puxar.
+ */
+export function emptySearchNote(query: string, gap: SearchGap | null, onWeb: boolean): string {
+  if (!gap) return `Nada encontrado para “${query.trim()}”.`;
+  if (gap.loading) return SEARCH_GAP[gap.what].loading;
+  return `${SEARCH_GAP[gap.what].failed} ${onWeb ? 'Recarregue a página para tentar de novo.' : 'Puxe para atualizar.'}`;
+}
+
 // ---------------------------------------------------------------------------
 // Textos dos serviços
 
@@ -399,20 +424,27 @@ export function expenseCopyGap(trade: string | null | undefined, missing: { prov
   return missing.equipment && trade !== 'mecanico' ? 'equipment' : null;
 }
 
-const EXPENSE_COPY_GAP: Record<ExpenseCopyGap, { why: string; fix: string }> = {
+const EXPENSE_COPY_GAP: Record<ExpenseCopyGap, { loading: string; why: string }> = {
   provider: {
+    loading: 'Carregando o prestador deste serviço…',
     why: 'Não deu para carregar o prestador deste serviço, e é o ofício dele que diz se o gasto entra em Moradia ou em Transporte.',
-    fix: 'Para lançar o gasto, escolha de novo quem fez o serviço.',
   },
   equipment: {
+    loading: 'Carregando o aparelho deste serviço…',
     why: 'Não deu para carregar o aparelho deste serviço, e é ele que diz se o gasto entra em Moradia ou em Transporte.',
-    fix: 'Para lançar o gasto, escolha o aparelho logo abaixo.',
   },
 };
 
-/** A linha do cartão "Lançar também nos gastos da casa" enquanto a cópia espera (ver expenseCopyGap): por quê, e o que fazer. */
-export function expenseCopyGapNote(gap: ExpenseCopyGap): string {
-  return `${EXPENSE_COPY_GAP[gap].why} ${EXPENSE_COPY_GAP[gap].fix}`;
+/**
+ * A linha do cartão "Lançar também nos gastos da casa" enquanto a cópia espera
+ * (ver expenseCopyGap). `loading`: o que falta ainda está chegando. Se não
+ * chegou, diz por quê e o que dá para fazer (a tela põe o "Tentar de novo"
+ * embaixo). Nunca manda escolher outro prestador ou outro aparelho: o do serviço
+ * não está na lista de escolha, e trocar mudaria o serviço e a categoria.
+ */
+export function expenseCopyGapNote(gap: ExpenseCopyGap, loading: boolean): string {
+  if (loading) return EXPENSE_COPY_GAP[gap].loading;
+  return `${EXPENSE_COPY_GAP[gap].why} Tente de novo, ou lance o gasto em Finanças.`;
 }
 
 /** Para quem salvou com a cópia ligada e o dado se perdeu antes: o serviço foi salvo, o gasto fica por conta da pessoa. */
@@ -427,9 +459,18 @@ export function expenseDescription(description: string, providerName: string): s
   return who ? `${what} (${who})` : what;
 }
 
-/** Só serviço com valor acima de zero vira gasto (um gasto não pode ser de R$ 0,00). */
+/** O valor como fica guardado no serviço: arredondado para centavos inteiros (numeric(12, 2) no banco). */
+function roundToCents(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * Só serviço com valor acima de zero vira gasto (um gasto não pode ser de
+ * R$ 0,00). Conta o valor como ele é guardado: "0,004" é R$ 0,00, e o cartão
+ * do gasto não aparece para ele.
+ */
 export function canCopyToExpenses(amount: number | null): amount is number {
-  return amount != null && amount > 0;
+  return amount != null && roundToCents(amount) > 0;
 }
 
 /**
@@ -529,7 +570,7 @@ export function validateJob(form: JobForm): { ok: true; values: JobValues } | In
     // Dinheiro: "1.500" aqui é mil e quinhentos.
     const value = parseMoney(form.amount);
     if (value == null || value > MAX_AMOUNT) return invalid('Valor inválido', 'Use um valor como 180,00, ou deixe em branco.');
-    amount = Math.round(value * 100) / 100;
+    amount = roundToCents(value);
   }
   const warranty = form.warranty.trim() ? parseBRDate(form.warranty) : null;
   if (form.warranty.trim() && !warranty) return invalid('Data inválida', 'Informe a garantia como dd/mm/aaaa, ou deixe em branco.');

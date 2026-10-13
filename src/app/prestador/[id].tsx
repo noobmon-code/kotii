@@ -23,6 +23,7 @@ import {
 } from '@/domain/providers';
 import { ProviderContactButtons } from '@/features/providers/ProviderContact';
 import { goBackOr } from '@/lib/navigation';
+import { settledData } from '@/lib/settledData';
 import type { ServiceProvider } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
 import {
@@ -93,8 +94,11 @@ function ProviderForm({
   const c = useColors();
   const save = useSaveProvider();
   const remove = useDeleteProvider();
-  // Só para o aviso de excluir dizer quantos serviços vão junto.
+  // Só para o aviso de excluir dizer quantos serviços vão junto. Conta só o que está em dia: durante uma nova
+  // busca, ou depois de uma que falhou, a lista é a de antes, e um serviço registrado depois (na tela do aparelho,
+  // ou por outra pessoa da casa) iria embora sem aviso. Sem saber, a pergunta fala do histórico todo.
   const jobs = useProviderJobs(provider?.id);
+  const settledJobs = settledData(jobs);
   const [name, setName] = useState(provider?.name ?? '');
   // Prestador novo começa sem ofício: a pessoa escolhe, em vez de ficar em "Outros" sem querer.
   const [trade, setTrade] = useState<string>(provider ? getProviderTrade(provider.trade).key : '');
@@ -189,7 +193,7 @@ function ProviderForm({
           onPress={() =>
             confirmAction(
               'Excluir prestador',
-              deleteProviderWarning(provider.name, jobs.data && !jobs.data.missing ? jobs.data.rows.length : null),
+              deleteProviderWarning(provider.name, settledJobs && !settledJobs.missing ? settledJobs.rows.length : null),
               'Excluir',
               () =>
                 remove.mutate(provider.id, {

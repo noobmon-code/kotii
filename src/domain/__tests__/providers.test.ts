@@ -3,9 +3,11 @@ import { readdirSync, readFileSync } from 'fs';
 import path from 'path';
 
 import { FINANCE_CATEGORIES } from '../finance';
+import { parseMoney } from '../money';
 import {
   canCopyToExpenses,
   deleteProviderWarning,
+  emptySearchNote,
   expenseCopyGap,
   expenseCopyGapNote,
   expenseCopyNote,
@@ -394,6 +396,28 @@ describe('lista de prestadores', () => {
     expect(names('eletricista faxina')).toEqual([]);
     expect(searchProviders('maquina', providers, withAppliance).map((p) => p.id)).toEqual([]);
   });
+
+  it('busca que não achou ninguém: só diz "Nada encontrado" quando olhou tudo', () => {
+    expect(emptySearchNote(' geladeira ', null, false)).toBe('Nada encontrado para “geladeira”.');
+    // Os serviços (o que foi feito e, por eles, o aparelho) ainda chegando, ou não chegaram.
+    expect(emptySearchNote('geladeira', { what: 'jobs', loading: true }, false)).toBe('Buscando também nos serviços…');
+    expect(emptySearchNote('geladeira', { what: 'jobs', loading: false }, false)).toBe(
+      'Não deu para buscar nos serviços: a busca olhou só o nome e o ofício. Puxe para atualizar.',
+    );
+    // Só os nomes dos aparelhos de fora.
+    expect(emptySearchNote('geladeira', { what: 'equipment', loading: true }, false)).toBe('Buscando também nos aparelhos…');
+    expect(emptySearchNote('geladeira', { what: 'equipment', loading: false }, false)).toBe(
+      'Não deu para buscar nos aparelhos: a busca não olhou o nome deles. Puxe para atualizar.',
+    );
+    // No navegador não há o que puxar.
+    expect(emptySearchNote('geladeira', { what: 'jobs', loading: false }, true)).toBe(
+      'Não deu para buscar nos serviços: a busca olhou só o nome e o ofício. Recarregue a página para tentar de novo.',
+    );
+    expect(emptySearchNote('geladeira', { what: 'equipment', loading: false }, true)).toBe(
+      'Não deu para buscar nos aparelhos: a busca não olhou o nome deles. Recarregue a página para tentar de novo.',
+    );
+    expect(emptySearchNote('geladeira', { what: 'jobs', loading: true }, true)).toBe('Buscando também nos serviços…');
+  });
 });
 
 describe('textos dos serviços', () => {
@@ -490,13 +514,20 @@ describe('gasto da casa', () => {
     // Sem o prestador não há ofício (podia ser o mecânico) nem o nome que vai no gasto: espera, mesmo num veículo.
     expect(expenseCopyGap(undefined, { provider: true, equipment: false })).toBe('provider');
     expect(expenseCopyGap(undefined, { provider: true, equipment: true })).toBe('provider');
-    // A linha do cartão diz por quê e onde resolver; o aviso de quem salvou assim, o que fazer.
-    expect(expenseCopyGapNote('equipment')).toBe(
-      'Não deu para carregar o aparelho deste serviço, e é ele que diz se o gasto entra em Moradia ou em Transporte. Para lançar o gasto, escolha o aparelho logo abaixo.',
+    // A linha do cartão, enquanto o que falta ainda está chegando.
+    expect(expenseCopyGapNote('equipment', true)).toBe('Carregando o aparelho deste serviço…');
+    expect(expenseCopyGapNote('provider', true)).toBe('Carregando o prestador deste serviço…');
+    // Não chegou: diz por quê e o que dá para fazer, sem mandar escolher outro prestador ou outro aparelho
+    // (o do serviço não está na lista de escolha). O aviso de quem salvou assim diz o que fazer.
+    expect(expenseCopyGapNote('equipment', false)).toBe(
+      'Não deu para carregar o aparelho deste serviço, e é ele que diz se o gasto entra em Moradia ou em Transporte. Tente de novo, ou lance o gasto em Finanças.',
     );
-    expect(expenseCopyGapNote('provider')).toBe(
-      'Não deu para carregar o prestador deste serviço, e é o ofício dele que diz se o gasto entra em Moradia ou em Transporte. Para lançar o gasto, escolha de novo quem fez o serviço.',
+    expect(expenseCopyGapNote('provider', false)).toBe(
+      'Não deu para carregar o prestador deste serviço, e é o ofício dele que diz se o gasto entra em Moradia ou em Transporte. Tente de novo, ou lance o gasto em Finanças.',
     );
+    for (const gap of ['provider', 'equipment'] as const) {
+      for (const loading of [true, false]) expect(expenseCopyGapNote(gap, loading)).not.toMatch(/escolha/i);
+    }
     expect(expenseCopySkippedNote('equipment')).toBe(
       'Não deu para carregar o aparelho deste serviço, e é ele que diz se o gasto entra em Moradia ou em Transporte. Lance o gasto em Finanças.',
     );
@@ -529,6 +560,22 @@ describe('gasto da casa', () => {
     expect(canCopyToExpenses(0.01)).toBe(true);
     expect(canCopyToExpenses(0)).toBe(false);
     expect(canCopyToExpenses(null)).toBe(false);
+  });
+
+  it('conta o valor como ele é guardado, em centavos: o que arredonda para R$ 0,00 não vira gasto', () => {
+    expect(canCopyToExpenses(0.004)).toBe(false);
+    expect(canCopyToExpenses(0.0049)).toBe(false);
+    expect(canCopyToExpenses(0.005)).toBe(true);
+    expect(canCopyToExpenses(0.006)).toBe(true);
+    // O cartão (pelo que foi digitado) e o serviço salvo (validateJob) dizem a mesma coisa.
+    const form = { providerId: 'ze', date: '12/03/2026', description: 'Apertou um parafuso', equipmentId: null, warranty: '', notes: '' };
+    for (const typed of ['0,004', '0,0049', '0,005', '0,01', '0', '0,00', '0.004', '1.500', '180,00', 'R$ 0,001']) {
+      const saved = validateJob({ ...form, amount: typed });
+      expect({ typed, ok: saved.ok }).toEqual({ typed, ok: true });
+      if (saved.ok) expect({ typed, card: canCopyToExpenses(parseMoney(typed)) }).toEqual({ typed, card: canCopyToExpenses(saved.values.amount) });
+    }
+    expect(canCopyToExpenses(parseMoney('0,004'))).toBe(false);
+    expect(canCopyToExpenses(parseMoney('0,005'))).toBe(true);
   });
 });
 

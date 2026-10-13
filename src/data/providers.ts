@@ -171,7 +171,9 @@ export function useSaveServiceJob() {
   const invalidate = useInvalidateProviders();
   return useMutation({
     mutationFn: (input: { id?: string; values: JobValues }) => saveServiceJob(input),
-    onSuccess: () => void invalidate(),
+    // Espera o serviço salvo voltar para o cache: a tela fecha em seguida, e quem abre o mesmo serviço logo
+    // depois não pode ver (e gravar de novo) o de antes. Uma busca que falha aqui não vira erro de salvar.
+    onSuccess: () => invalidate(),
   });
 }
 

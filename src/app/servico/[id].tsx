@@ -1,5 +1,5 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
 import { useSaveExpense } from '@/data/finance';
@@ -26,6 +26,7 @@ import {
   SERVICE_WARRANTY_PRESETS,
   serviceExpenseCategory,
   validateJob,
+  type ExpenseCopyGap,
 } from '@/domain/providers';
 import { goBackOr } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
@@ -75,8 +76,17 @@ export default function ServiceJobScreen() {
   }, [authorAbsent, author, refetchProviders]);
   // Excluído aqui: a busca volta sem ele antes de a tela fechar, e isso não é "não existe mais".
   const [deleted, setDeleted] = useState(false);
+  // O formulário copia o serviço para os campos uma vez só, quando aparece. Por isso o serviço que já existe
+  // espera a busca que esta tela pediu ao abrir: o que está guardado pode ser de antes de uma mudança, daqui ou
+  // de outro aparelho da casa, e salvar gravaria o de antes por cima. Depois que o formulário apareceu, ele
+  // fica: outra busca (a do próprio Salvar, a de voltar ao app) não o tira da frente, nem um erro dela.
+  const [shownId, setShownId] = useState<string | null>(null);
+  const formShown = shownId === id;
+  const markShown = useCallback(() => setShownId(id), [id]);
 
-  if (deleted || providers.isPending || equipment.isPending || (!isNew && job.isPending)) return <Loading />;
+  if (deleted || providers.isPending || equipment.isPending || (!isNew && (job.isPending || (!formShown && job.isFetching)))) {
+    return <Loading />;
+  }
   // Aviso de erro só para o que não chegou nenhuma vez: quando uma atualização
   // em segundo plano falha, o que já estava aqui continua valendo, e o
   // formulário (com o que foi digitado) não sai da frente da pessoa.
@@ -100,10 +110,13 @@ export default function ServiceJobScreen() {
   }
   if (!isNew && !job.data) return <ErrorNotice error={new Error('Este serviço não existe mais.')} />;
   // A busca dos prestadores falhou e a lista de antes não tem quem acabou de ser salvo (ou não tem ninguém):
-  // pedir de novo, em vez de mandar cadastrar outra vez quem já está no banco.
-  if (providers.isError && (list.rows.length === 0 || (prestador && !list.rows.some((p) => p.id === prestador)))) {
+  // pedir de novo, em vez de mandar cadastrar outra vez quem já está no banco. Com o formulário já aberto, quem
+  // falta não o tira da frente: o cartão do gasto avisa e tem o "Tentar de novo" (ver JobForm).
+  if (providers.isError && (list.rows.length === 0 || (!formShown && prestador && !list.rows.some((p) => p.id === prestador)))) {
     return <ErrorNotice error={new Error(providerErrorMessage(providers.error))} onRetry={() => providers.refetch()} />;
   }
+  // Lista vazia de antes, e a nova ainda a caminho: quem fez este serviço pode estar chegando nela.
+  if (list.rows.length === 0 && providers.isFetching) return <Loading />;
   if (list.rows.length === 0) {
     return (
       <Screen edges={[]}>
@@ -134,6 +147,19 @@ export default function ServiceJobScreen() {
       equipment={lone.data && lone.data.id === absent ? [...appliances, lone.data] : appliances}
       initialProviderId={prestador || null}
       initialEquipmentId={aparelho || null}
+      // Para o cartão do gasto, quando o prestador ou o aparelho do serviço não está nas listas: se ainda está
+      // chegando, e como pedir de novo.
+      sources={{
+        provider: { loading: providers.isFetching, retry: () => providers.refetch() },
+        equipment: {
+          loading: equipment.isFetching || lone.isFetching,
+          retry: () => {
+            equipment.refetch();
+            if (absent) lone.refetch();
+          },
+        },
+      }}
+      onShown={markShown}
       onDeleted={() => setDeleted(true)}
     />
   );
@@ -145,6 +171,8 @@ function JobForm({
   equipment,
   initialProviderId,
   initialEquipmentId,
+  sources,
+  onShown,
   onDeleted,
 }: {
   job?: ServiceJob;
@@ -152,6 +180,10 @@ function JobForm({
   equipment: Equipment[];
   initialProviderId: string | null;
   initialEquipmentId: string | null;
+  /** As buscas de onde vêm o prestador e o aparelho: se ainda andam, e como pedir de novo. */
+  sources: Record<ExpenseCopyGap, { loading: boolean; retry: () => void }>;
+  /** O formulário apareceu (com o serviço copiado para os campos). */
+  onShown: () => void;
   onDeleted: () => void;
 }) {
   const c = useColors();
@@ -174,6 +206,8 @@ function JobForm({
   const [picking, setPicking] = useState<'provider' | 'equipment' | null>(null);
   // Do toque em Salvar até fechar: um segundo toque não grava o serviço (nem o gasto) duas vezes.
   const [busy, setBusy] = useState(false);
+  // Avisa a tela: daqui em diante ela não troca o formulário por "carregando" nem pelo aviso de erro.
+  useEffect(onShown, [onShown]);
 
   const provider = providers.find((p) => p.id === providerId);
   const trade = provider ? getProviderTrade(provider.trade) : null;
@@ -184,6 +218,8 @@ function JobForm({
   const expenseCategory = serviceExpenseCategory(provider?.trade, appliance?.category);
   // O prestador ou o aparelho do serviço fora das listas daqui: sem eles a categoria (e o nome no gasto) sairia errada, e a cópia espera.
   const expenseGap = expenseCopyGap(provider?.trade, { provider: Boolean(providerId) && !provider, equipment: Boolean(equipmentId) && !appliance });
+  // A busca do que falta: enquanto anda, a linha diz "Carregando…"; se falhou, o cartão oferece "Tentar de novo".
+  const gapSource = expenseGap ? sources[expenseGap] : null;
 
   function applyWarranty(months: number) {
     setWarranty(formatBRDate(addMonths(parseBRDate(date) ?? todayISO(), months)));
@@ -255,11 +291,13 @@ function JobForm({
         </View>
       </Row>
       {offerExpense ? (
-        <Card>
+        <Card style={styles.group}>
           <Row>
             <View style={styles.flex}>
               <Text variant="label">Lançar também nos gastos da casa</Text>
-              <Text variant="small">{expenseGap ? expenseCopyGapNote(expenseGap) : expenseCopyNote(Boolean(job), expenseCategory)}</Text>
+              <Text variant="small">
+                {expenseGap ? expenseCopyGapNote(expenseGap, sources[expenseGap].loading) : expenseCopyNote(Boolean(job), expenseCategory)}
+              </Text>
             </View>
             <Switch
               value={toExpenses && !expenseGap}
@@ -269,6 +307,8 @@ function JobForm({
               accessibilityLabel="Lançar também nos gastos da casa"
             />
           </Row>
+          {/* Não chegou: dá para pedir de novo. O prestador e o aparelho do serviço continuam os mesmos. */}
+          {gapSource && !gapSource.loading ? <Button title="Tentar de novo" variant="secondary" compact onPress={gapSource.retry} /> : null}
         </Card>
       ) : null}
 

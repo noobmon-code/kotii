@@ -1,10 +1,10 @@
 import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 
 import { useEquipmentList } from '@/data/house';
 import { PROVIDERS_UNAVAILABLE, providerErrorMessage, useServiceJobs, useServiceProviders } from '@/data/providers';
-import { groupProviders, jobLine, PROVIDER_SEARCH_MIN, searchProviders } from '@/domain/providers';
+import { emptySearchNote, groupProviders, jobLine, PROVIDER_SEARCH_MIN, searchProviders, type SearchGap } from '@/domain/providers';
 import { ProviderQuickActions } from '@/features/providers/ProviderContact';
 import type { ServiceProvider } from '@/lib/types';
 import {
@@ -48,6 +48,8 @@ export default function ProvidersScreen() {
   const refresh = () => {
     providers.refetch();
     jobs.refetch();
+    // A busca também olha o nome dos aparelhos.
+    equipment.refetch();
   };
   // O app chegou antes das tabelas no banco.
   if (providers.data.missing) {
@@ -61,6 +63,12 @@ export default function ProvidersScreen() {
   const total = providers.data.rows.length;
   // Só diz que alguém não tem serviço quando os serviços chegaram.
   const noJobs = jobRows ? 'Nenhum serviço registrado' : null;
+  // A busca só olha os serviços e os aparelhos que chegaram: sem eles, não achar ninguém não é "Nada encontrado".
+  const searchGap: SearchGap | null = !jobRows
+    ? { what: 'jobs', loading: jobs.isFetching }
+    : !equipmentRows
+      ? { what: 'equipment', loading: equipment.isFetching }
+      : null;
   return (
     <Screen edges={[]} refreshing={providers.isRefetching} onRefresh={refresh}>
       <Button
@@ -86,7 +94,7 @@ export default function ProvidersScreen() {
           message="Diarista, eletricista, encanador, a assistência da máquina de lavar… Guarde o contato e o que cada um já fez: a casa toda acha o telefone e lembra quanto foi cobrado."
         />
       ) : groups.length === 0 ? (
-        <Text variant="muted">Nada encontrado para “{query.trim()}”.</Text>
+        <Text variant="muted">{emptySearchNote(query, searchGap, Platform.OS === 'web')}</Text>
       ) : (
         groups.map((group) => (
           <Section key={group.trade.key} title={group.trade.label}>
