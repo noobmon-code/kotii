@@ -1004,13 +1004,86 @@ describe('a seção "Estoque e receita" do remédio', () => {
     const half = med({ stockCount: 3, stockCountedOn: '2026-10-01', doseUnits: 2 });
     expect(stockStatus(half, today)).toMatchObject({ kind: 'out', ranOutOn: '2026-10-02', estimate: { unitsLeft: 1 } });
     const rebased = keepStockOnRuleChange({ doseUnits: 1 }, half, rule, today);
-    expect(rebased).toEqual({ doseUnits: 1, stockCount: 1, stockCountedOn: '2026-10-02' });
-    // A sobra dava para a dose de 03/10: continua acabado, sem voltar a "acaba hoje".
-    expect(stockStatus({ ...half, ...rebased }, today)).toMatchObject({ kind: 'out', ranOutOn: '2026-10-03' });
+    // A sobra não volta pela dose nova: pelas contas, a caixa acabou em 02/10 (antes, a sobra cobria a dose de 03/10).
+    expect(rebased).toEqual({ doseUnits: 1, stockCount: 0, stockCountedOn: '2026-10-02' });
+    expect(stockStatus({ ...half, ...rebased }, today)).toMatchObject({ kind: 'out', ranOutOn: '2026-10-02' });
     expect(refillReminders([{ ...half, ...rebased }], today)).toEqual([]);
     // Contado zero hoje e, em seguida, o horário muda: nada a gravar. Com uma regra nova, segue contado hoje.
     expect(keepStockOnRuleChange({}, med({ stockCount: 0 }), timeOnly, today)).toEqual({});
     expect(keepStockOnRuleChange({}, med({ stockCount: 0 }), changes[2], today)).toEqual({ stockCount: 0, stockCountedOn: today });
+  });
+
+  describe('remédio que já tinha acabado e a dose diminuiu: a sobra não cobre doses de dias que já passaram', () => {
+    const rule = { times: ['08:00'], startOn: '2026-01-01', endOn: null, frequency: 'daily' as const, weekdays: null, intervalDays: null };
+    /** O que a tela do remédio mostra, antes e depois de salvar a mudança. */
+    const screen = (m: StockedMedication, on = today) => ({
+      status: stockStatus(m, on),
+      text: describeStock(stockStatus(m, on), on),
+      badges: refillAlerts(m, on).map((a) => a.label),
+      notices: refillReminders([m], on),
+    });
+
+    it('meia unidade contada, uma por dose: a contagem não cobria dose nenhuma e segue acabada no mesmo dia', () => {
+      // 0,5 contado em 01/10, um por dose: acabou no dia da contagem.
+      const saved = med({ stockCount: 0.5, stockCountedOn: '2026-10-01' });
+      const before = screen(saved);
+      expect(before).toMatchObject({ status: { kind: 'out', ranOutOn: '2026-10-01' }, text: 'Deve ter acabado em 01/10, pelas contas do app.', notices: [] });
+      // "Cada dose usa" passa a 0,25: com a sobra guardada em 01/10, a conta cobriria 02/10 e 03/10.
+      const rebased = keepStockOnRuleChange({ doseUnits: 0.25 }, saved, rule, today);
+      expect(rebased).toEqual({ doseUnits: 0.25, stockCount: 0, stockCountedOn: '2026-10-01' });
+      const after = { ...saved, ...rebased };
+      expect(screen(after)).toEqual({ ...before, status: { ...before.status, estimate: expect.anything() } });
+      expect(stockStatus(after, today)).toMatchObject({ kind: 'out', ranOutOn: '2026-10-01' });
+      // "Quanto tem agora" abre com 0.
+      expect(stockFormOf(after, today).stock).toBe('0');
+      // Parado há mais de 14 dias: o mesmo selo neutro, com o mesmo dia.
+      const later = '2026-10-20';
+      const stale = keepStockOnRuleChange({ doseUnits: 0.25 }, saved, rule, later);
+      expect(stale).toEqual({ doseUnits: 0.25, stockCount: 0, stockCountedOn: '2026-10-01' });
+      expect(stockStatus({ ...saved, ...stale }, later)).toMatchObject({ kind: 'stale', ranOutOn: '2026-10-01' });
+      expect(screen({ ...saved, ...stale }, later).text).toBe(screen(saved, later).text);
+      expect(screen(saved, later).text).toBe('Estoque sem atualizar desde 01/10. Escreva quanto tem agora, ou apague o número para o app parar de acompanhar.');
+    });
+
+    it('caixa que cobriu doses e acabou antes de hoje: a contagem é zero no dia em que acabou', () => {
+      // 10,5 contados em 25/09, um por dia: cobre de 26/09 a 05/10 e sobra 0,5.
+      const saved = med({ stockCount: 10.5, stockCountedOn: '2026-09-25' });
+      expect(stockStatus(saved, today)).toMatchObject({ kind: 'out', ranOutOn: '2026-10-05', estimate: { unitsLeft: 0.5 } });
+      const rebased = keepStockOnRuleChange({ doseUnits: 0.25 }, saved, rule, today);
+      expect(rebased).toEqual({ doseUnits: 0.25, stockCount: 0, stockCountedOn: '2026-10-05' });
+      expect(stockStatus({ ...saved, ...rebased }, today)).toMatchObject({ kind: 'out', ranOutOn: '2026-10-05' });
+      expect(screen({ ...saved, ...rebased }).text).toBe('Deve ter acabado em 05/10, pelas contas do app.');
+      expect(stockFormOf({ ...saved, ...rebased }, today).stock).toBe('0');
+      // Outra mudança da regra (vezes por dia, regularidade): o mesmo zero no mesmo dia, sem aviso novo.
+      for (const next of [{ ...rule, times: ['08:00', '20:00'] }, { ...rule, frequency: 'weekdays' as const, weekdays: [2, 4] }]) {
+        const other = keepStockOnRuleChange({}, saved, next, today);
+        expect(other).toEqual({ stockCount: 0, stockCountedOn: '2026-10-05' });
+        expect(screen({ ...saved, ...next, ...other })).toMatchObject({
+          status: { kind: 'out', ranOutOn: '2026-10-05' },
+          text: 'Deve ter acabado em 05/10, pelas contas do app.',
+          badges: ['Deve ter acabado'],
+          notices: [],
+        });
+      }
+    });
+
+    it('ainda não tinha acabado (acaba hoje ou depois, ou contado hoje): o que sobra hoje, contado hoje', () => {
+      // 5,5 contados em 07/10: a última dose coberta é a de hoje, e sobra 0,5 depois dela. As doses de hoje foram
+      // pela dose de antes; a sobra, pela nova (0,25), cobre amanhã e depois.
+      const lastDay = med({ stockCount: 5.5, stockCountedOn: '2026-10-07' });
+      expect(stockStatus(lastDay, today)).toMatchObject({ kind: 'low', runsOutOn: today, daysLeft: 0 });
+      const rebased = keepStockOnRuleChange({ doseUnits: 0.25 }, lastDay, rule, today);
+      expect(rebased).toEqual({ doseUnits: 0.25, stockCount: 0.5, stockCountedOn: today });
+      expect(stockStatus({ ...lastDay, ...rebased }, today)).toMatchObject({ kind: 'low', runsOutOn: '2026-10-14', daysLeft: 2 });
+      expect(screen({ ...lastDay, ...rebased }).text).toBe('Acaba em 2 dias (14/10), pelas contas do app.');
+      // Acaba amanhã: idem.
+      const tomorrow = med({ stockCount: 6.5, stockCountedOn: '2026-10-07' });
+      expect(keepStockOnRuleChange({ doseUnits: 0.25 }, tomorrow, rule, today)).toEqual({ doseUnits: 0.25, stockCount: 1.5, stockCountedOn: today });
+      // Contado hoje com menos que uma dose: o número é o que a pessoa tem agora, e a dose nova vale de amanhã.
+      const countedToday = med({ stockCount: 0.5 });
+      expect(stockStatus(countedToday, today)).toMatchObject({ kind: 'out', ranOutOn: today });
+      expect(keepStockOnRuleChange({ doseUnits: 0.25 }, countedToday, rule, today)).toEqual({ doseUnits: 0.25, stockCount: 0.5, stockCountedOn: today });
+    });
   });
 
   it('trocar só o horário não é mudar a regra: a contagem, o estado e os avisos ficam como estão', () => {

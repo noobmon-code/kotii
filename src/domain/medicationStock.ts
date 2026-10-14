@@ -523,17 +523,20 @@ const ruleKey = (m: Rule) =>
  * já muda (readStockForm): se a pessoa contou de novo, vale o que ela contou.
  * Trocar só o horário não é mudar a regra (ver ruleKey): nada é mexido.
  *
- * Remédio que já tinha acabado: a contagem fica no dia em que acabou, e não
- * em hoje. "Deve ter acabado em 04/10" segue como estava, em vez de virar
- * "acaba hoje" (com aviso por notificação) só porque a regra mudou.
+ * Remédio que já tinha acabado antes de hoje: a contagem é zero, no dia em
+ * que acabou, e não em hoje. "Deve ter acabado em 04/10" segue como estava, em
+ * vez de virar "acaba hoje" (com aviso por notificação) só porque a regra
+ * mudou. Zero, e não a sobra: ela é menor que uma dose da regra de antes (por
+ * isso acabou), e com uma dose menor cobriria doses de dias que já passaram,
+ * mudando o dia em que acabou.
  */
 export function keepStockOnRuleChange(changes: StockChanges, before: StockedMedication | undefined, after: Rule, today: string): StockChanges {
   if (!before || changes.stockCount !== undefined) return changes;
   if (changes.doseUnits === undefined && ruleKey(before) === ruleKey(after)) return changes;
   const estimate = estimateStock(before, today);
   if (!estimate) return changes;
-  const ranOutOn = estimate.runsOutOn !== null && estimate.runsOutOn < today ? estimate.runsOutOn : null;
-  return { ...changes, stockCount: estimate.unitsLeft, stockCountedOn: ranOutOn ?? today };
+  if (estimate.runsOutOn !== null && estimate.runsOutOn < today) return { ...changes, stockCount: 0, stockCountedOn: estimate.runsOutOn };
+  return { ...changes, stockCount: estimate.unitsLeft, stockCountedOn: today };
 }
 
 /** "30", "12,5". */
