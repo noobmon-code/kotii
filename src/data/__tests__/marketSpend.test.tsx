@@ -86,10 +86,13 @@ jest.mock('@/lib/supabase', () => ({
         return query;
       },
       update: (values: Row) => ({
-        eq: async () => {
-          mockDb.updates.push({ table, values });
-          return { data: null, error: null };
-        },
+        // A gravação do produto pede a linha de volta (o produto existe).
+        eq: (_column: string, id: string) => ({
+          select: async () => {
+            mockDb.updates.push({ table, values });
+            return { data: [{ id }], error: null };
+          },
+        }),
       }),
     }),
   },

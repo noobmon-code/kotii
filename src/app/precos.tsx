@@ -7,6 +7,7 @@ import { formatBRL } from '@/domain/money';
 import { summarizePrices } from '@/domain/prices';
 import { normalizeSearch } from '@/domain/search';
 import { cheaperSharedHint, cheaperSharedPrice, SHARED_PRICES_NOTICE, type SharedPriceRow, sharedRowsByProduct } from '@/domain/sharedPrices';
+import { MergeSuggestionsCard } from '@/features/MergeSuggestionsCard';
 import { settledData } from '@/lib/settledData';
 import {
   CategoryIcon,
@@ -70,6 +71,8 @@ export default function PricesScreen() {
   return (
     <Screen edges={[]} refreshing={prices.isRefetching} onRefresh={() => prices.refetch()}>
       <TextField value={query} onChangeText={setQuery} placeholder="Buscar produto" autoCorrect={false} />
+      {/* Com uma busca digitada a pessoa procura um produto: a sugestão de juntar só aparece sem ela. */}
+      {query.trim() ? null : <MergeSuggestionsCard onMerged={(id) => router.push({ pathname: '/produto/[id]', params: { id } })} />}
       {rows.length === 0 ? (
         <EmptyState
           icon="chart-line"
