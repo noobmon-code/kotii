@@ -12,7 +12,7 @@
 // (lib/queryClient). Uma faixa de horas atrás, aberta sem internet, só
 // enganaria.
 
-import { onlineManager, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { onlineManager, useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRef, useState } from 'react';
 
 import { TRIP_LIMIT_REACHED, TRIP_NOT_READY, TRIP_OFFLINE, type AnnounceResult, type MarketTrip } from '@/domain/marketTrips';
@@ -48,9 +48,10 @@ export function isNotDeployed(error: unknown): boolean {
  *
  * A ida de lista arquivada sai já no servidor (o filtro na lista, com o
  * !inner, tira a ida inteira). Sem limite de linhas: o que volta são as idas
- * das últimas 2 horas, uma por pessoa em cada lista e até 5 por pessoa por
- * dia (announce_market_trip), mas a casa não tem limite de moradores, e um
- * corte podia deixar de fora a ida de alguém, sem faixa e sem "Encerrar".
+ * das últimas 2 horas, uma por pessoa em cada lista e até 5 por pessoa a
+ * cada 24 horas (announce_market_trip), mas a casa não tem limite de
+ * moradores, e um corte podia deixar de fora a ida de alguém, sem faixa e
+ * sem "Encerrar".
  */
 export async function fetchMarketTrips(now: Date = new Date()): Promise<MarketTrip[] | null> {
   const { data, error } = await supabase
@@ -110,16 +111,31 @@ export function useAnnounceMarketTrip() {
   });
 }
 
+const END_MARKET_TRIP_KEY = 'endMarketTrip';
+
 /** Encerra a própria ida para a casa toda. */
 export function useEndMarketTrip() {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: [END_MARKET_TRIP_KEY],
     mutationFn: endMarketTrip,
     onSuccess: (_ended, tripId) => {
       // A faixa some já; a busca confirma.
       queryClient.setQueryData<MarketTrip[] | null>([MARKET_TRIPS_KEY], (trips) => (trips ? trips.filter((trip) => trip.id !== tripId) : trips));
       void queryClient.invalidateQueries({ queryKey: [MARKET_TRIPS_KEY] });
     },
+  });
+}
+
+/**
+ * As idas que estão sendo encerradas agora, cada uma pelo seu pedido: o botão
+ * de cada uma gira enquanto o dela está no ar, também na outra tela que mostra
+ * a faixa e depois de a tela ser montada de novo.
+ */
+export function useEndingMarketTrips(): string[] {
+  return useMutationState({
+    filters: { mutationKey: [END_MARKET_TRIP_KEY], status: 'pending' },
+    select: (mutation) => mutation.state.variables as string,
   });
 }
 

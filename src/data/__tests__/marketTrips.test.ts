@@ -159,7 +159,7 @@ describe('as idas da casa', () => {
   });
 
   it('sem limite de linhas: nenhuma ida que vale fica de fora da resposta', async () => {
-    // Cada pessoa tem até 5 idas por dia na casa, mas a casa não tem limite de moradores.
+    // Cada pessoa tem até 5 idas a cada 24 horas na casa, mas a casa não tem limite de moradores.
     await fetchMarketTrips(now);
     expect(mockDb.filters.filter(([, step]) => step === 'limit' || step === 'range')).toEqual([]);
   });
@@ -193,9 +193,10 @@ describe('avisar a casa', () => {
     expect(mockDb.calls).toEqual([]);
   });
 
-  it('as mensagens dos erros: o limite do dia, a lista que saiu e o resto como veio', () => {
+  it('as mensagens dos erros: o limite das 24 horas, a lista que saiu e o resto como veio', () => {
     expect(marketTripErrorMessage({ code: 'NK005', message: 'too many market trips' }, 'announce')).toBe(TRIP_LIMIT_REACHED);
-    expect(TRIP_LIMIT_REACHED).toBe('Você já avisou a casa várias vezes hoje. Tente de novo mais tarde.');
+    // O limite conta as últimas 24 horas, e não o dia do calendário: os avisos de ontem à noite ainda contam de manhã.
+    expect(TRIP_LIMIT_REACHED).toBe('Você já avisou a casa muitas vezes nas últimas 24 horas. Tente de novo mais tarde.');
     expect(marketTripErrorMessage({ code: 'P0002', message: 'list not found' }, 'announce')).toBe(
       'Esta lista não está mais aberta. Volte para as listas e escolha outra.',
     );

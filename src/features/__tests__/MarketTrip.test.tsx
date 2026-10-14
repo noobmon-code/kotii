@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 import type { ReactElement } from 'react';
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from 'react-test-renderer';
 
+import { TRIP_LIMIT_REACHED } from '@/domain/marketTrips';
 import { ActionSheet } from '@/ui/ActionSheet';
 import { notify } from '@/ui/dialogs';
 
@@ -12,10 +13,12 @@ import { MarketTripAction, MarketTripBanner } from '../MarketTrip';
 // A faixa e o botão de verdade, com as idas lidas pelo caminho real
 // (data/marketTrips); só o banco é trocado. "mock" no nome: o jest.mock só
 // enxerga variáveis assim.
+type Answer = { data: unknown; error: unknown };
 const mockDb: {
   /** O que a busca das idas responde; null: ainda não respondeu. */
-  trips: { data: unknown; error: unknown } | null;
-  rpc: { data: unknown; error: unknown };
+  trips: Answer | null;
+  /** O que as funções respondem: a resposta, ou uma por chamada (que pode demorar). */
+  rpc: Answer | ((name: string, args: unknown) => Promise<Answer>);
   calls: [string, unknown][];
 } = { trips: { data: [], error: null }, rpc: { data: null, error: null }, calls: [] };
 
@@ -32,7 +35,7 @@ jest.mock('@/lib/supabase', () => ({
     },
     rpc: async (name: string, args: unknown) => {
       mockDb.calls.push([name, args]);
-      return mockDb.rpc;
+      return typeof mockDb.rpc === 'function' ? mockDb.rpc(name, args) : mockDb.rpc;
     },
   },
   unwrap: (result: { data: unknown; error: unknown }) => {
@@ -204,6 +207,40 @@ describe('"Encerrar" sem conexão', () => {
     await press('Encerrar');
     expect(notify).toHaveBeenCalledWith('Não deu para encerrar', 'Sem internet agora. Encerre quando a conexão voltar.');
   });
+
+  it('duas idas encerradas uma atrás da outra: cada uma gira enquanto espera e conta o próprio erro', async () => {
+    mockDb.trips = { data: [trip('t1', 4), trip('t2', 9, { list_id: 'outra' })], error: null };
+    const answers: Record<string, (answer: Answer) => void> = {};
+    mockDb.rpc = (_name, args) => new Promise((resolve) => (answers[(args as { p_trip_id: string }).p_trip_id] = resolve));
+    await render(<MarketTripBanner openable />);
+    const endButtons = () => tree.root.findAllByProps({ title: 'Encerrar' });
+    for (const index of [0, 1]) {
+      await act(async () => {
+        endButtons()[index].props.onPress();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+    expect(mockDb.calls).toEqual([
+      ['end_market_trip', { p_trip_id: 't1' }],
+      ['end_market_trip', { p_trip_id: 't2' }],
+    ]);
+    expect(endButtons().map((button) => button.props.loading)).toEqual([true, true]);
+    // A segunda encerra (e sai da faixa); a primeira continua esperando.
+    mockDb.trips = { data: [trip('t1', 4)], error: null };
+    await act(async () => {
+      answers.t2({ data: true, error: null });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(endButtons().map((button) => button.props.loading)).toEqual([true]);
+    // A primeira falha depois: o erro dela aparece, e a ida fica na faixa com o botão de volta.
+    await act(async () => {
+      answers.t1({ data: null, error: FETCH_FAILED });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(jest.mocked(notify).mock.calls).toEqual([['Não deu para encerrar', 'Sem internet agora. Encerre quando a conexão voltar.']]);
+    expect(endButtons().map((button) => button.props.loading)).toEqual([false]);
+    expect(textsOf(tree.toJSON())).toContain('Encerrar');
+  });
 });
 
 describe('o botão "Estou indo ao mercado"', () => {
@@ -255,5 +292,39 @@ describe('o botão "Estou indo ao mercado"', () => {
     onlineManager.setOnline(false);
     expect(await announce(null)).toEqual(['Não deu para avisar a casa', 'Sem internet agora. Tente avisar de novo quando a conexão voltar.']);
     expect(mockDb.calls).toEqual([]);
+  });
+
+  it('a resposta chega depois de a pessoa sair da tela: o resultado e o erro aparecem assim mesmo', async () => {
+    const answers: ((answer: Answer) => void)[] = [];
+    mockDb.rpc = () => new Promise((resolve) => answers.push(resolve));
+    const tellAndLeave = async () => {
+      await render(<MarketTripAction list={list} />);
+      await press('Estou indo ao mercado');
+      await act(async () => {
+        tree.root.findByType(ActionSheet).props.actions[0].onPress();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      // Com o pedido no ar, a pessoa volta para as listas.
+      await act(async () => tree.unmount());
+    };
+    const settle = async (answer: Answer) => {
+      await act(async () => {
+        answers.shift()?.(answer);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    };
+    await tellAndLeave();
+    await settle({ data: null, error: { code: 'NK005', message: 'too many market trips' } });
+    expect(notify).toHaveBeenLastCalledWith('Não deu para avisar a casa', TRIP_LIMIT_REACHED);
+    await tellAndLeave();
+    await settle({ data: { trip_id: 't1', created_at: new Date().toISOString(), notified: 2, members: 2, repeated: false }, error: null });
+    expect(notify).toHaveBeenLastCalledWith('Estou indo ao mercado', 'Aviso enviado para 2 pessoas.');
+    expect(notify).toHaveBeenCalledTimes(2);
+    expect(mockDb.calls).toEqual([
+      ['announce_market_trip', { p_list_id: 'lista' }],
+      ['announce_market_trip', { p_list_id: 'lista' }],
+    ]);
+    // O afterEach desmonta de novo: uma tela vazia no lugar.
+    await render(<></>);
   });
 });

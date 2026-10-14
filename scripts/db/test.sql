@@ -5067,6 +5067,19 @@ begin
   -- A família (homem, mulher, menina) é um emoji só por causa dos U+200D: continua inteira.
   assert public.push_text(E'Casa \U0001F468\u200D\U0001F469\u200D\U0001F467', 40) = E'Casa \U0001F468\u200D\U0001F469\u200D\U0001F467',
     'an emoji sequence keeps its joiners';
+  -- Os seletores de variação dos ideogramas (U+E0100–E01EF) e do mongol (U+180B–180F) e as marcas que se
+  -- combinam fora de U+0300–036F, sozinhos, não fazem um nome: o aviso diz "Alguém da casa".
+  assert public.push_text(E'\U000E0100', 40) = '' and public.push_text(E'\U000E01EF\U000E0100', 40) = '', 'ideographic variation selectors only';
+  assert public.push_text(E'\u180B', 40) = '' and public.push_text(E'\u180B\u180C\u180D\u180F', 40) = '', 'Mongolian variation selectors only';
+  assert public.push_text(E'\u20D0', 40) = '' and public.push_text(E'\u1AB0\u1DC4\u20D0\uFE20', 40) = '', 'combining marks of the other blocks only';
+  assert coalesce(nullif(public.push_text(E' \U000E0100\u180B\u20D0 ', 40), ''), 'Alguém da casa') = 'Alguém da casa', 'so the name falls back';
+  -- Os controles de formato que nunca são parte de um nome viram espaço, como os outros invisíveis.
+  assert public.push_text(E'\U0001BCA0\U0001D173\U0001D17A\uFFF0\uFFF8', 40) = '', 'format controls only';
+  assert public.push_text(E'Ana\U0001D173Maria\uFFF0Silva\U0001BCA3', 40) = 'Ana Maria Silva', 'format controls inside a name become spaces';
+  -- Dentro de um nome de verdade, os seletores e as marcas ficam: são parte da letra.
+  assert public.push_text(E'\u845B\U000E0100\u98FE', 40) = E'\u845B\U000E0100\u98FE', 'a name with an ideographic variation selector inside keeps it';
+  assert public.push_text(E'\u182D\u180B\u1823', 40) = E'\u182D\u180B\u1823', 'and so does a Mongolian name with its variation selector';
+  assert public.push_text(E'Zoe\u1DC4 Ana', 40) = E'Zoe\u1DC4 Ana', 'and a letter with a combining mark of another block';
 end $$;
 -- As permissões vêm da própria migração, e não do padrão do projeto (que o
 -- Supabase deixa de aplicar a tabela nova em 30/10/2026). Uma de cada vez: com
@@ -5098,6 +5111,37 @@ begin
     where schemaname = 'public' and tablename = 'market_trip_log' and indexname = 'market_trip_log_created_idx'
       and indexdef like '%USING btree (created_at)'
   ), 'the global purge of the log has an index on created_at';
+  -- Encerrar, avisar de novo, sair da casa e arquivar ou apagar a lista tiram da fila os avisos de uma ida
+  -- pelo data.reminder: num índice só das linhas do servidor, sem ler a agenda de todos os navegadores.
+  assert exists (
+    select 1 from pg_indexes
+    where schemaname = 'public' and tablename = 'push_schedule' and indexname = 'push_schedule_server_reminder_idx'
+      and indexdef like '%USING btree (((data ->> ''reminder''::text))) WHERE (data ? ''server''::text)'
+  ), 'the trip notices are reached through a partial index on data->>reminder, of the server rows only';
+end $$;
+-- E o planejador o usa nas buscas como as funções as escrevem (com o `data ? 'server'` do índice): o
+-- seqscan desligado só tira o empate de uma tabela pequena, e sem o índice o plano seria a leitura inteira.
+do $$
+declare
+  line text;
+  plan text := '';
+begin
+  perform set_config('enable_seqscan', 'off', true);
+  for line in execute $sql$
+    explain delete from public.push_schedule p
+      where p.data ? 'server' and p.data ->> 'reminder' = 'ida:' || '00000000-0000-0000-0000-000000000000'
+  $sql$ loop
+    plan := plan || line || ' / ';
+  end loop;
+  assert plan like '%Index Scan using push_schedule_server_reminder_idx%', 'the delete of a trip notices uses the index: ' || plan;
+  plan := '';
+  for line in execute $sql$
+    explain with ended as (select gen_random_uuid() as id)
+    delete from public.push_schedule p using ended e where p.data ? 'server' and p.data ->> 'reminder' = 'ida:' || e.id::text
+  $sql$ loop
+    plan := plan || line || ' / ';
+  end loop;
+  assert plan like '%Index Scan using push_schedule_server_reminder_idx%', 'and so does the delete of the notices of the trips just ended: ' || plan;
 end $$;
 set role authenticated;
 
@@ -5843,14 +5887,212 @@ reset role;
 delete from public.households where id = :'hh_v';
 delete from public.push_subscriptions where endpoint like '%/ida-%';
 
+-- Arquivar a lista encerra as idas dela, com os avisos que ainda não saíram; apagá-la leva as idas e os
+-- avisos delas. Sem isso, o aviso ia para os outros com o nome de uma lista fechada (ou que nem existe), e
+-- quem avisou não tinha mais o "Encerrar" para tirá-lo da fila. Casa X: Xênia avisa; Yuri e Zeca recebem.
+\set user_x '00000000-0000-0000-0000-000000000039'
+\set user_y '00000000-0000-0000-0000-00000000003a'
+\set user_z '00000000-0000-0000-0000-00000000003b'
+insert into auth.users (id) values (:'user_x'), (:'user_y'), (:'user_z');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_x', false) \gset
+select (public.create_household('Casa X', 'Xênia')).id as hh_x \gset
+select invite_code as invite_x from public.households where id = :'hh_x' \gset
+insert into public.shopping_lists (name, kind) values ('Mercado', 'mercado') returning id as list_x1 \gset
+insert into public.shopping_lists (name, kind) values ('Feira', 'mercado') returning id as list_x2 \gset
+insert into public.shopping_lists (name, kind) values ('Farmácia', 'farmacia') returning id as list_x3 \gset
+select set_config('test.list_x1', :'list_x1', false) \gset
+select set_config('test.list_x2', :'list_x2', false) \gset
+select set_config('test.list_x3', :'list_x3', false) \gset
+select set_config('request.jwt.claim.sub', :'user_y', false) \gset
+select public.join_household(:'invite_x', 'Yuri') \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-y1', 'k', 'a', 'UTC') \gset
+select set_config('request.jwt.claim.sub', :'user_z', false) \gset
+select public.join_household(:'invite_x', 'Zeca') \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-z1', 'k', 'a', 'UTC') \gset
+select set_config('request.jwt.claim.sub', :'user_x', false) \gset
+do $$
+declare
+  r jsonb;
+begin
+  r := public.announce_market_trip(current_setting('test.list_x1')::uuid);
+  assert (r ->> 'notified')::int = 2, 'Yuri and Zeca are told';
+  perform set_config('test.trip_x1', r ->> 'trip_id', false);
+  r := public.announce_market_trip(current_setting('test.list_x2')::uuid);
+  assert (r ->> 'notified')::int = 2, 'and told of the other list too';
+  perform set_config('test.trip_x2', r ->> 'trip_id', false);
+end $$;
+-- Yuri arquiva o "Mercado" logo depois (a compra já foi feita, ou era a lista errada), antes de o aviso sair.
+select set_config('request.jwt.claim.sub', :'user_y', false) \gset
+do $$
+begin
+  update public.shopping_lists set archived_at = now() where id = current_setting('test.list_x1')::uuid;
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_x1')::uuid) is not null,
+    'archiving the list ends its trip, for everyone';
+  -- Renomear outra lista, ou arquivar uma que não tem ida, não mexe em nada.
+  update public.shopping_lists set name = 'Feira de sábado' where id = current_setting('test.list_x2')::uuid;
+  update public.shopping_lists set archived_at = now() where id = current_setting('test.list_x3')::uuid;
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_x2')::uuid) is null,
+    'renaming a list, or archiving another one, leaves the trip on';
+end $$;
+-- Desarquivar a lista não traz a ida de volta (nem mexe em outra).
+do $$
+begin
+  update public.shopping_lists set archived_at = null where id = current_setting('test.list_x1')::uuid;
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_x1')::uuid) is not null,
+    'unarchiving does not bring the trip back';
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_x2')::uuid) is null, 'nor touches another one';
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_x1')),
+    'the notices of the archived list that had not gone out left the queue';
+  assert (select count(*) from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_x2')) = 2,
+    'the notices of the other list are still queued';
+end $$;
+-- Xênia apaga a "Feira": a ida vai com a lista (o FK), e os avisos dela também.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_x', false) \gset
+do $$
+begin
+  delete from public.shopping_lists where id = current_setting('test.list_x2')::uuid;
+  assert not exists (select 1 from public.market_trips where id = current_setting('test.trip_x2')::uuid), 'the trip went with the list';
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_x2')),
+    'and its notices did not stay in the queue without a trip';
+  assert not exists (
+    select 1 from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where s.endpoint like '%/ida-%' and p.data ? 'server'
+  ), 'nothing of Casa X is left in the queue';
+end $$;
+
+-- A inscrição nova de um navegador que desligou "Alguém indo ao mercado" nasce desligada, no mesmo pedido
+-- (o quinto argumento de register_push_subscription): sem um segundo pedido, que podia se perder e deixar
+-- a inscrição nova ligada. A linha que já existe fica como está, e a chamada de quatro argumentos (a dos
+-- apps já instalados) continua a mesma.
+do $$
+declare
+  fn regprocedure := 'public.register_push_subscription(text, text, text, text, boolean)'::regprocedure;
+begin
+  -- Sem valor padrão: com ele, a chamada do PostgREST com os quatro nomes ficaria ambígua.
+  assert (select pronargdefaults from pg_proc where oid = fn) = 0, 'no default on p_market_trips';
+  assert (select prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = fn),
+    'security definer with an empty search_path, as the four-argument one';
+  assert not has_function_privilege('anon', fn, 'execute') and has_function_privilege('authenticated', fn, 'execute'),
+    'for a signed-in person only';
+end $$;
+set role anon;
+do $$
+begin
+  perform public.register_push_subscription('https://fcm.googleapis.com/fcm/send/x', 'k', 'a', 'UTC', false);
+  raise exception 'FAIL: anon registered a browser';
+exception when insufficient_privilege then null;
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', '', false) \gset
+do $$
+begin
+  perform public.register_push_subscription('https://fcm.googleapis.com/fcm/send/x', 'k', 'a', 'UTC', false);
+  raise exception 'FAIL: registered without a user';
+exception when insufficient_privilege then null;
+end $$;
+-- Zeca tem um navegador ligado que depois passa para a conta de Yuri (outra pessoa entrou no mesmo navegador).
+select set_config('request.jwt.claim.sub', :'user_z', false) \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-z2', 'k', 'a', 'UTC') \gset
+select set_config('request.jwt.claim.sub', :'user_y', false) \gset
+do $$
+declare
+  y1 uuid := (select id from public.push_subscriptions where endpoint like '%/ida-y1');
+  y2 uuid;
+  y3 uuid;
+  y4 uuid;
+  z2 uuid;
+begin
+  begin
+    perform public.register_push_subscription('https://evil.example/fcm/send/x', 'k', 'a', 'UTC', false);
+    raise exception 'FAIL: registered an endpoint outside the push services';
+  exception when invalid_parameter_value then null;
+  end;
+  -- Yuri tinha desligado a opção, e a inscrição dele foi trocada (send-push apaga a que o serviço de push
+  -- recusa; sair e entrar na conta também): a nova nasce desligada.
+  y2 := public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-y2', 'k', 'a', 'UTC', false);
+  assert not (select market_trips from public.push_subscriptions where id = y2), 'a new subscription asked off is born off';
+  -- A linha que já existe fica como está: o valor do navegador pode ser velho, e a escolha guardada, mais nova.
+  assert public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-y2', 'k2', 'a', 'UTC', true) = y2,
+    'same browser, same subscription';
+  assert not (select market_trips from public.push_subscriptions where id = y2), 'an existing row off is not switched on';
+  assert (select p256dh from public.push_subscriptions where id = y2) = 'k2', 'the keys are still updated';
+  assert public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-y1', 'k', 'a', 'UTC', false) = y1
+    and (select market_trips from public.push_subscriptions where id = y1), 'an existing row on is not switched off';
+  -- Pedindo ligado, nasce ligada.
+  y3 := public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-y3', 'k', 'a', 'UTC', true);
+  assert (select market_trips from public.push_subscriptions where id = y3), 'a new subscription asked on is born on';
+  -- A chamada de quatro argumentos é a de sempre: a nova nasce ligada, a que existe fica como está.
+  y4 := public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-y4', 'k', 'a', 'UTC');
+  assert (select market_trips from public.push_subscriptions where id = y4), 'four arguments: a new one is born on';
+  assert public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-y2', 'k', 'a', 'UTC') = y2
+    and not (select market_trips from public.push_subscriptions where id = y2), 'four arguments: an existing row stays as it is';
+  -- O navegador que era de Zeca: a inscrição dele sai, e a de Yuri é nova, então nasce com a escolha.
+  z2 := public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-z2', 'k', 'a', 'UTC', false);
+  assert (select user_id from public.push_subscriptions where id = z2) = auth.uid()
+    and not (select market_trips from public.push_subscriptions where id = z2), 'a browser taken over from another account is new: born off';
+end $$;
+-- Xênia avisa: os navegadores que nasceram desligados ficam de fora.
+select set_config('request.jwt.claim.sub', :'user_x', false) \gset
+do $$
+declare
+  r jsonb;
+begin
+  r := public.announce_market_trip(current_setting('test.list_x1')::uuid);
+  assert (r ->> 'repeated')::boolean = false and (r ->> 'members')::int = 2 and (r ->> 'notified')::int = 2, 'a new trip, both told';
+  perform set_config('test.trip_x3', r ->> 'trip_id', false);
+end $$;
+reset role;
+do $$
+begin
+  assert (
+    select array_agg(s.endpoint order by s.endpoint)
+    from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where p.data ->> 'reminder' = 'ida:' || current_setting('test.trip_x3')
+  ) = array[
+    'https://fcm.googleapis.com/fcm/send/ida-y1', 'https://fcm.googleapis.com/fcm/send/ida-y3',
+    'https://fcm.googleapis.com/fcm/send/ida-y4', 'https://fcm.googleapis.com/fcm/send/ida-z1'
+  ], 'the browsers born off got nothing';
+end $$;
+-- Com só os navegadores que nasceram desligados, Yuri não conta entre os avisados (meia hora depois, outro aviso).
+delete from public.push_subscriptions
+  where endpoint in ('https://fcm.googleapis.com/fcm/send/ida-y1', 'https://fcm.googleapis.com/fcm/send/ida-y3', 'https://fcm.googleapis.com/fcm/send/ida-y4');
+update public.market_trips set created_at = created_at - interval '31 minutes' where household_id = :'hh_x';
+set role authenticated;
+do $$
+declare
+  r jsonb;
+begin
+  r := public.announce_market_trip(current_setting('test.list_x1')::uuid);
+  assert (r ->> 'repeated')::boolean = false and (r ->> 'members')::int = 2 and (r ->> 'notified')::int = 1,
+    'only Zeca: Yuri has only browsers born off';
+end $$;
+reset role;
+delete from public.households where id = :'hh_x';
+delete from public.push_subscriptions where endpoint like '%/ida-%';
+
 -- A opção em quem já estava inscrito quando a migração chega: o navegador sem nada agendado (a pessoa
 -- desligou todos os avisos) começa com ela desligada; o que tem aviso agendado, ligada. Para valer a
 -- conta da própria migração, ela é aplicada de novo aqui, sobre o banco de antes dela e com dados, e
 -- tudo é desfeito no fim.
 begin;
 drop trigger household_members_end_market_trips on public.household_members;
+drop trigger shopping_lists_end_market_trips on public.shopping_lists;
+drop trigger market_trips_gone on public.market_trips;
 drop function public.member_left_market_trips(), public.announce_market_trip(uuid), public.end_market_trip(uuid),
-  public.set_push_market_trips(text, boolean), public.push_text(text, int), public.max_market_trips();
+  public.set_push_market_trips(text, boolean), public.push_text(text, int), public.max_market_trips(),
+  public.list_archived_market_trips(), public.market_trip_gone(),
+  public.register_push_subscription(text, text, text, text, boolean);
+drop index public.push_schedule_server_reminder_idx;
 drop table public.market_trips, public.market_trip_log;
 alter table public.push_subscriptions drop column market_trips;
 insert into public.push_subscriptions (user_id, endpoint, p256dh, auth) values

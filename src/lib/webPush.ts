@@ -5,6 +5,8 @@
 // expo-notifications para src/lib/reminders.ts: pedir permissão, agendar,
 // cancelar e listar. O service worker (public/sw.js) mostra o aviso.
 
+import { isMissingFunction } from '@/data/missingSchema';
+
 import { supabase, unwrap } from './supabase';
 import { base64UrlToBytes, isServerPush, sameKey, scheduleRow, TRIGGER_TYPES, type ScheduleRequest } from './webPushSchedule';
 
@@ -99,7 +101,8 @@ const lastSubscription = {
  * "Alguém indo ao mercado" desligado neste navegador. A opção vale no
  * servidor, na inscrição (push_subscriptions.market_trips); a escolha fica
  * também aqui porque a inscrição troca (chave nova, inscrição vencida, sair
- * e entrar na conta) e a nova nasce com a opção ligada.
+ * e entrar na conta), e a nova nasce com o que este navegador pedir
+ * (register): desligada com esta marca, ligada sem ela.
  */
 const MARKET_TRIPS_OFF_KEY = 'kotii:push-market-trips-off';
 const marketTripsOff = {
@@ -120,9 +123,30 @@ const marketTripsOff = {
   },
 };
 
+/**
+ * Quantas vezes uma mudança da opção começou ou terminou aqui (setMarketTripsPush).
+ * A leitura que viu este número mudar enquanto esperava pode trazer do
+ * servidor o valor de antes da mudança: ela não mexe na marca.
+ */
+let marketTripsWrites = 0;
+
 /** O banco ainda não tem a opção de "alguém indo ao mercado": a função não existe (PGRST202 no PostgREST, 42883 no Postgres). */
 const marketTripsOptionMissing = (error: unknown) =>
   ['PGRST202', '42883'].includes(String((error as { code?: unknown } | null)?.code));
+
+/**
+ * Inscreve este endereço no servidor já com a escolha deste navegador para
+ * "Alguém indo ao mercado" (p_market_trips): a inscrição nova de quem
+ * desligou nasce desligada, no mesmo pedido, sem ficar ligada à espera de um
+ * segundo. Num banco sem essa versão da função (antes da migração, ou com o
+ * cache do PostgREST ainda sem ela), vai a de quatro argumentos, a de sempre.
+ */
+async function register(subscription: { p_endpoint: string; p_p256dh: string; p_auth: string; p_timezone: string }): Promise<string> {
+  const { data, error } = await supabase.rpc('register_push_subscription', { ...subscription, p_market_trips: !marketTripsOff.get() });
+  if (!error) return data as string;
+  if (!isMissingFunction(error, 'register_push_subscription')) throw error;
+  return unwrap(await supabase.rpc('register_push_subscription', subscription)) as string;
+}
 
 /**
  * Inscreve este navegador no servidor e devolve o id da inscrição: uma vez
@@ -137,21 +161,18 @@ function ensureSubscription({ fresh = false }: { fresh?: boolean } = {}): Promis
   const id: Promise<string> = (async () => {
     const { endpoint, keys } = (await browserSubscription()).toJSON();
     if (!endpoint || !keys?.p256dh || !keys.auth) throw new Error('O navegador não completou a inscrição para avisos.');
-    const subscription = unwrap(
-      await supabase.rpc('register_push_subscription', {
-        p_endpoint: endpoint,
-        p_p256dh: keys.p256dh,
-        p_auth: keys.auth,
-        p_timezone: timezone,
-      }),
-    ) as string;
+    const subscription = await register({ p_endpoint: endpoint, p_p256dh: keys.p256dh, p_auth: keys.auth, p_timezone: timezone });
     const previous = lastSubscription.get();
     // Inscrição nova para este navegador: quem tinha desligado "Alguém indo ao
-    // mercado" continua sem receber. A troca só fica registrada aqui depois de
-    // o servidor guardar isso: se ele não guardar, a inscrição falha (os avisos
-    // são refeitos na próxima vez) e a tentativa se repete, em vez de a nova
-    // ficar ligada sem ninguém saber. Num banco de antes da opção não há o que
-    // desligar. O cliente do Supabase devolve o erro no resultado, não lança.
+    // mercado" continua sem receber. A linha que register criou já nasceu
+    // desligada; este pedido cuida da que não nasceu nele e está ligada (criada
+    // pela de quatro argumentos, que register usa sem a outra, ou por um app
+    // antigo), porque a inscrição com a escolha não muda linha que já existe.
+    // A troca só fica registrada aqui depois de o servidor guardar isso: se ele
+    // não guardar, a inscrição falha (os avisos são refeitos na próxima vez) e
+    // a tentativa se repete, em vez de a nova ficar ligada sem ninguém saber.
+    // Num banco de antes da opção não há o que desligar. O cliente do Supabase
+    // devolve o erro no resultado, não lança.
     if (previous !== subscription && marketTripsOff.get()) {
       const { error } = await supabase.rpc('set_push_market_trips', { p_endpoint: endpoint, p_enabled: false });
       if (error && !marketTripsOptionMissing(error)) throw error;
@@ -235,18 +256,31 @@ async function currentBrowserSubscription(): Promise<PushSubscription | null> {
  * permissão dada, a inscrição no servidor e a opção ligada nela. A leitura
  * vai ao servidor mesmo sem inscrição: num banco de antes da opção ela
  * falha (a coluna não existe) e quem chamou esconde a opção.
+ *
+ * A marca daqui segue o servidor, com cuidado: uma leitura que uma mudança
+ * cruzou (marketTripsWrites) pode trazer o valor de antes e não mexe nela.
  */
 export async function getMarketTripsPush(): Promise<boolean> {
-  const rows = unwrap(await supabase.from('push_subscriptions').select('endpoint, market_trips')) as {
+  const writes = marketTripsWrites;
+  // A inscrição que este navegador já assentou antes da leitura sair (a troca terminou, com o pedido que desliga).
+  const settled = lastSubscription.get();
+  const rows = unwrap(await supabase.from('push_subscriptions').select('id, endpoint, market_trips')) as {
+    id: string;
     endpoint: string;
     market_trips: boolean;
   }[];
   if (!webPushSupported || !granted()) return false;
   const endpoint = (await currentBrowserSubscription())?.endpoint;
   const mine = rows.find((row) => row.endpoint === endpoint);
-  // Desligada no servidor sem a marca daqui (a migração a desligou para quem não tinha aviso nenhum, ou os dados
-  // do navegador foram limpos): a marca volta, para a inscrição que trocar esta não nascer ligada.
-  if (mine && !mine.market_trips) marketTripsOff.set(true);
+  if (mine && writes === marketTripsWrites) {
+    // Desligada no servidor sem a marca daqui (a migração a desligou para quem não tinha nada agendado, ou os dados
+    // do navegador foram limpos): a marca volta, para a inscrição que trocar esta não nascer ligada.
+    if (!mine.market_trips) marketTripsOff.set(true);
+    // Ligada na inscrição já assentada: a marca sai (um "ligar" que chegou ao servidor e perdeu a resposta deixou
+    // a marca; sem isto, a inscrição que trocar esta nasceria desligada). Na inscrição nova ainda sem assentar,
+    // "ligada" pode ser só como ela nasceu, antes do pedido que a desliga: a marca fica.
+    else if (mine.id === settled) marketTripsOff.set(false);
+  }
   return Boolean(mine?.market_trips);
 }
 
@@ -258,19 +292,25 @@ export async function getMarketTripsPush(): Promise<boolean> {
  * Desligar deixa a inscrição: os outros avisos continuam.
  */
 export async function setMarketTripsPush(enabled: boolean): Promise<boolean> {
-  if (enabled) {
-    if (!granted()) return false;
-    // Confere no servidor: a inscrição pode ter sido apagada com o app aberto.
-    await ensureSubscription({ fresh: true });
+  // No começo e no fim: a leitura que estiver no ar durante a mudança não mexe na marca.
+  marketTripsWrites += 1;
+  try {
+    if (enabled) {
+      if (!granted()) return false;
+      // Confere no servidor: a inscrição pode ter sido apagada com o app aberto.
+      await ensureSubscription({ fresh: true });
+    }
+    const endpoint = (await currentBrowserSubscription())?.endpoint;
+    if (endpoint) unwrap(await supabase.rpc('set_push_market_trips', { p_endpoint: endpoint, p_enabled: enabled }));
+    else if (enabled) throw new Error('O navegador não completou a inscrição para avisos.');
+    // Só depois de o servidor aceitar. Ligar que falha no meio (a inscrição, ou a opção) deixa guardada a
+    // escolha de não receber: a inscrição que trocar esta continua nascendo desligada (a leitura seguinte
+    // tira a marca se o "ligar" chegou lá). E sem a opção no banco, nada fica guardado aqui.
+    marketTripsOff.set(!enabled);
+    return true;
+  } finally {
+    marketTripsWrites += 1;
   }
-  const endpoint = (await currentBrowserSubscription())?.endpoint;
-  if (endpoint) unwrap(await supabase.rpc('set_push_market_trips', { p_endpoint: endpoint, p_enabled: enabled }));
-  else if (enabled) throw new Error('O navegador não completou a inscrição para avisos.');
-  // Só depois de o servidor aceitar. Ligar que falha no meio (a inscrição, ou a opção) deixa guardada a
-  // escolha de não receber: a inscrição que trocar esta continua nascendo desligada. E sem a opção no
-  // banco, nada fica guardado aqui.
-  marketTripsOff.set(!enabled);
-  return true;
 }
 
 /** Este navegador deixa de receber avisos (ao sair da conta). */

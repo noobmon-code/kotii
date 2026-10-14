@@ -40,8 +40,8 @@ export interface AnnounceResult {
 
 /** O banco ainda não tem a tabela, a coluna ou as funções (o app pode chegar antes da migração). */
 export const TRIP_NOT_READY = 'O aviso de ida ao mercado ainda está sendo ativado no Kotii. Tente de novo mais tarde.';
-/** NK005: o limite de idas novas por pessoa em 24 horas. */
-export const TRIP_LIMIT_REACHED = 'Você já avisou a casa várias vezes hoje. Tente de novo mais tarde.';
+/** NK005: o limite de idas novas por pessoa em 24 horas (as últimas 24, e não o dia do calendário: não diz "hoje"). */
+export const TRIP_LIMIT_REACHED = 'Você já avisou a casa muitas vezes nas últimas 24 horas. Tente de novo mais tarde.';
 /** Sem internet, ou sem resposta do servidor (no mercado o sinal some): o que dizer em cada pedido. */
 export const TRIP_OFFLINE = {
   announce: 'Sem internet agora. Tente avisar de novo quando a conexão voltar.',

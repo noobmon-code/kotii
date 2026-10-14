@@ -2,7 +2,7 @@ import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { AppState, StyleSheet, View } from 'react-native';
 
-import { marketTripErrorMessage, useAnnounceMarketTrip, useEndMarketTrip, useMarketTrips } from '@/data/marketTrips';
+import { marketTripErrorMessage, useAnnounceMarketTrip, useEndingMarketTrips, useEndMarketTrip, useMarketTrips } from '@/data/marketTrips';
 import { announceResultText, canAnnounceTrip, liveTrips, TRIP_CONFIRM, tripActionLabel, tripBannerText } from '@/domain/marketTrips';
 import { useAuth, useHousehold } from '@/lib/auth';
 import type { ListKind } from '@/lib/types';
@@ -34,12 +34,16 @@ export function MarketTripAction({ list }: { list: TripList }) {
   if (notDeployed) return null;
 
   const label = tripActionLabel(list.kind);
-  const tell = () =>
-    announce.mutate(list.id, {
+  // A resposta é esperada aqui, e não nas opções do mutate (que só valem com a tela aberta): quem volta para as
+  // listas com o pedido no ar fica sabendo do resultado, ou do erro, do mesmo jeito.
+  const tell = async () => {
+    try {
       // Com o relógio de agora: "você já avisou a casa há N min".
-      onSuccess: (result) => notify(label, announceResultText(result, new Date())),
-      onError: (err) => notify('Não deu para avisar a casa', marketTripErrorMessage(err, 'announce')),
-    });
+      notify(label, announceResultText(await announce.mutateAsync(list.id), new Date()));
+    } catch (err) {
+      notify('Não deu para avisar a casa', marketTripErrorMessage(err, 'announce'));
+    }
+  };
 
   return (
     <>
@@ -82,7 +86,11 @@ export function MarketTripBanner({ listId, openable = false }: { listId?: string
   const userId = useAuth().session?.user.id;
   const trips = useMarketTrips();
   const end = useEndMarketTrip();
+  const ending = useEndingMarketTrips();
   const now = useNow();
+  // Cada "Encerrar" espera o seu pedido: o erro de uma ida aparece mesmo com outra encerrada logo depois.
+  const close = (tripId: string) =>
+    void end.mutateAsync(tripId).catch((err: unknown) => notify('Não deu para encerrar', marketTripErrorMessage(err, 'end')));
 
   // Outra pessoa pode ter avisado enquanto a tela estava atrás de outra ou o
   // app, fechado: confere ao voltar (a busca que já estiver no ar serve).
@@ -117,13 +125,7 @@ export function MarketTripBanner({ listId, openable = false }: { listId?: string
             {mine || openable ? (
               <Row style={styles.actions}>
                 {mine ? (
-                  <Button
-                    title="Encerrar"
-                    variant="ghost"
-                    compact
-                    loading={end.isPending && end.variables === trip.id}
-                    onPress={() => end.mutate(trip.id, { onError: (err) => notify('Não deu para encerrar', marketTripErrorMessage(err, 'end')) })}
-                  />
+                  <Button title="Encerrar" variant="ghost" compact loading={ending.includes(trip.id)} onPress={() => close(trip.id)} />
                 ) : null}
                 {openable ? (
                   <Button
