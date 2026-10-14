@@ -2,7 +2,7 @@
 // carregado (produtos, últimos preços, despensa, listas). As regras e as
 // frases ficam em domain/productMerge.
 
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 
 import { usePantry } from '@/data/home';
 import { useLatestPrices, useOpenListItems, useProducts, useStores } from '@/data/market';
@@ -36,7 +36,16 @@ export function useMergeSuggestions(productId?: string): { suggestions: MergeSug
   }, [candidates, ids, counts.data, productId]);
 }
 
-/** O que o app sabe dos dois produtos que a pessoa pensa em juntar. */
+/**
+ * O que o app sabe dos dois produtos que a pessoa pensa em juntar. Juntar não
+ * tem volta: o que a confirmação mostra (o que passa da despensa e da lista,
+ * os avisos de unidade e de tamanho) tem de ter sido buscado com ela aberta,
+ * e não só estar guardado no aparelho, onde outro aparelho pode ter posto o
+ * produto na despensa ou numa lista depois. Ao abrir, cada busca é pedida de
+ * novo (a que já estava a caminho é aproveitada), e `facts` só vem quando
+ * todas chegaram depois disso e nenhuma falhou. A busca que falha aparece em
+ * `error`, mesmo havendo o que estava guardado.
+ */
 export function useMergeFacts(firstId: string, secondId: string) {
   const counts = usePurchaseCounts([firstId, secondId]);
   const prices = useLatestPrices();
@@ -44,15 +53,29 @@ export function useMergeFacts(firstId: string, secondId: string) {
   const pantry = usePantry();
   const listItems = useOpenListItems();
   const queries = [counts, prices, stores, pantry, listItems];
+  const refetchCounts = counts.refetch;
+  const refetchPrices = prices.refetch;
+  const refetchStores = stores.refetch;
+  const refetchPantry = pantry.refetch;
+  const refetchListItems = listItems.refetch;
+  // Também quando o par muda sem a confirmação fechar: o que estava guardado do par novo não é de agora.
+  useEffect(() => {
+    for (const refetch of [refetchCounts, refetchPrices, refetchStores, refetchPantry, refetchListItems]) {
+      void refetch({ cancelRefetch: false });
+    }
+  }, [firstId, secondId, refetchCounts, refetchPrices, refetchStores, refetchPantry, refetchListItems]);
   const facts = useMemo((): Record<string, ProductFacts> | null => {
     if (!counts.data || !prices.data || !stores.data || !pantry.data || !listItems.data) return null;
     const source = { purchases: counts.data, prices: prices.data, stores: stores.data, pantry: pantry.data, listItems: listItems.data };
     return { [firstId]: productFacts(firstId, source), [secondId]: productFacts(secondId, source) };
   }, [firstId, secondId, counts.data, prices.data, stores.data, pantry.data, listItems.data]);
+  // A última busca de alguma falhou: com ou sem o que estava guardado, não há o que confirmar.
+  const failed = queries.find((query) => query.error);
+  const current = !failed && queries.every((query) => query.isFetchedAfterMount);
   return {
-    facts,
+    facts: current ? facts : null,
     purchases: counts.data ?? NO_PURCHASES,
-    error: facts ? null : (queries.find((query) => query.error)?.error ?? null),
+    error: failed?.error ?? null,
     refetch: () => queries.forEach((query) => (query.error ? query.refetch() : undefined)),
   };
 }

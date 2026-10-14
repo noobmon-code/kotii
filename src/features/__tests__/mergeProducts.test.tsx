@@ -15,6 +15,8 @@ interface Query {
   data: unknown;
   isPending: boolean;
   error: unknown;
+  /** A busca já chegou (ou falhou) depois de a tela abrir: o que há não é só o que estava guardado. */
+  isFetchedAfterMount: boolean;
   refetch: jest.Mock;
 }
 
@@ -41,7 +43,8 @@ jest.mock('@/data/productMerge', () => ({
   ...jest.requireActual<typeof import('@/data/productMerge')>('@/data/productMerge'),
   useDistinctPairs: () => mockQueries.distinct,
   // Como a busca de verdade: sem produtos, não busca nada.
-  usePurchaseCounts: (ids: string[]) => (ids.length ? mockQueries.counts : { data: undefined, isPending: true, error: null, refetch: jest.fn() }),
+  usePurchaseCounts: (ids: string[]) =>
+    ids.length ? mockQueries.counts : { data: undefined, isPending: true, error: null, isFetchedAfterMount: false, refetch: jest.fn() },
   useMarkDistinct: () => ({ isPending: false, variables: undefined, mutate: (pair: unknown) => mockMarked.push(pair) }),
   useMergeProducts: () => ({
     isPending: false,
@@ -65,9 +68,13 @@ jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));
 
-const loaded = (data: unknown): Query => ({ data, isPending: false, error: null, refetch: jest.fn() });
-const onTheWay = (): Query => ({ ...loaded(undefined), isPending: true });
+const loaded = (data: unknown): Query => ({ data, isPending: false, error: null, isFetchedAfterMount: true, refetch: jest.fn() });
+const onTheWay = (): Query => ({ ...loaded(undefined), isPending: true, isFetchedAfterMount: false });
 const failed = (): Query => ({ ...loaded(undefined), error: new Error('Sem internet.') });
+/** O que estava guardado no aparelho, com a busca desta tela ainda a caminho. */
+const cached = (data: unknown): Query => ({ ...loaded(data), isFetchedAfterMount: false });
+/** O que estava guardado no aparelho, e a busca desta tela falhou. */
+const cachedAndFailed = (data: unknown): Query => ({ ...loaded(data), error: new Error('Sem internet.') });
 
 const product = (id: string, name: string, category = 'graos'): Product => ({ id, name, category, shelf_life_days: null });
 const price = (product_id: string, store_id: string, unit_price: number, day: string, unit: LatestPrice['unit'] = 'un'): LatestPrice => ({
@@ -343,9 +350,62 @@ describe('confirmação de juntar', () => {
     await open();
     expect(screen()).toContain('Sem internet.');
     expect(button('Juntar produtos')).toBeUndefined();
+    // Sem contar o pedido que a confirmação faz ao abrir: "Tentar de novo" busca só o que falhou.
+    mockQueries.counts.refetch.mockClear();
+    mockQueries.prices.refetch.mockClear();
     await press(button('Tentar de novo'));
     expect(mockQueries.counts.refetch).toHaveBeenCalledTimes(1);
     expect(mockQueries.prices.refetch).not.toHaveBeenCalled();
+  });
+
+  it('ao abrir, pede de novo tudo o que a confirmação mostra, aproveitando a busca que já estiver a caminho', async () => {
+    await open();
+    for (const key of ['counts', 'prices', 'stores', 'pantry', 'listItems']) {
+      expect(mockQueries[key].refetch.mock.calls).toEqual([[{ cancelRefetch: false }]]);
+    }
+    expect(mockQueries.products.refetch).not.toHaveBeenCalled();
+  });
+
+  it('só com o que estava guardado no aparelho não há o que confirmar: juntar não tem volta, e a despensa pode ter mudado em outro aparelho', async () => {
+    // Guardado: o produto não estava na despensa nem na lista. A busca desta confirmação ainda não voltou.
+    mockQueries.pantry = cached([]);
+    mockQueries.listItems = cached([]);
+    await open();
+    expect(button('Juntar produtos')).toBeUndefined();
+    expect(pressables('radio')).toHaveLength(0);
+    expect(screen().join(' ')).not.toContain('passam para');
+    await act(async () => renderer?.unmount());
+
+    // A busca chegou: outro aparelho tinha posto o produto na despensa e na lista, e a frase diz isso.
+    mockQueries.pantry = loaded([{ product_id: ARROZ.id }]);
+    mockQueries.listItems = loaded([{ product_id: ARROZ.id }]);
+    await open();
+    expect(screen()).toContain(SUMMARY);
+    expect(button('Juntar produtos')).toBeDefined();
+  });
+
+  it('basta uma das buscas ainda não ter voltado para a confirmação esperar', async () => {
+    for (const key of ['counts', 'prices', 'stores', 'pantry', 'listItems']) {
+      const fresh = mockQueries[key];
+      mockQueries[key] = cached(fresh.data);
+      await open();
+      expect(button('Juntar produtos')).toBeUndefined();
+      await act(async () => renderer?.unmount());
+      mockQueries[key] = fresh;
+    }
+  });
+
+  it('a busca falhou e havia dados guardados: mostra o erro, e não a confirmação com o que estava guardado', async () => {
+    mockQueries.pantry = cachedAndFailed([]);
+    await open();
+    expect(screen()).toContain('Sem internet.');
+    expect(button('Juntar produtos')).toBeUndefined();
+    expect(pressables('radio')).toHaveLength(0);
+    mockQueries.pantry.refetch.mockClear();
+    mockQueries.counts.refetch.mockClear();
+    await press(button('Tentar de novo'));
+    expect(mockQueries.pantry.refetch).toHaveBeenCalledTimes(1);
+    expect(mockQueries.counts.refetch).not.toHaveBeenCalled();
   });
 
   it('enquanto o banco junta, a tela não fecha; com a resposta, o aviso e o produto que ficou', async () => {
