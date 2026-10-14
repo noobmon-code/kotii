@@ -1,22 +1,25 @@
 import { describe, expect, it } from '@jest/globals';
 
+import { RECEIPT_CHECK_CENTS, receiptTotalMismatch } from '../marketSpend';
 import {
   confirmUnpricedQuestion,
   gapNotices,
+  hasReceiptTotal,
   pendingUnpriced,
   quantityText,
   readReceiptTotal,
   receiptGap,
+  receiptTotalAccess,
   receiptTotalField,
   receiptTotalText,
   TOTAL_TOLERANCE_CENTS,
   unpricedPrompt,
+  VALUE_NOT_SAVED,
   type GapLine,
 } from '../receiptGap';
 
 const line = (id: string, total_price: number, patch: Partial<GapLine> = {}): GapLine => ({
   id,
-  raw_description: `Item ${id}`,
   quantity: 1,
   unit: 'un',
   unit_price: total_price,
@@ -80,6 +83,37 @@ describe('o aviso do cabeçalho diz o que é a diferença', () => {
   });
 });
 
+describe('total que não passa de zero é "sem total"', () => {
+  it('o zero que a leitura gravou não vira aviso de desconto nem sugestão', () => {
+    // Antes: "A soma dos itens passa do total em R$ 50,00. Pode ser desconto.", com os gastos contando R$ 50,00.
+    const gap = gapOf(0, 50, line('x', 0));
+    expect(gap).toEqual({ itemsTotal: 50, missingCents: null, unpriced: ['x'], suggestion: null });
+    expect(gapNotices(gap)).toEqual([]);
+    expect(unpricedPrompt(gap, 'x', { status: 'draft', source: 'ai' })?.text).toBe('Sem valor: a leitura não pegou o preço deste item.');
+    expect(receiptGap(0, []).missingCents).toBeNull();
+    expect(gapOf(0.004, 50).missingCents).toBeNull();
+    expect(gapOf(-5, 50).missingCents).toBeNull();
+  });
+
+  it('um centavo já é total', () => {
+    expect(gapOf(0.01, 50).missingCents).toBe(-4999);
+    expect(hasReceiptTotal(0.01)).toBe(true);
+    expect(hasReceiptTotal(62.9)).toBe(true);
+    expect(hasReceiptTotal(0)).toBe(false);
+    expect(hasReceiptTotal(0.004)).toBe(false);
+    expect(hasReceiptTotal(-5)).toBe(false);
+    expect(hasReceiptTotal(null)).toBe(false);
+  });
+
+  it('a conta de "Mercado do mês" (domain/marketSpend) é a mesma: a folga é uma só, e o total zerado também é "sem total" lá', () => {
+    expect(RECEIPT_CHECK_CENTS).toBe(TOTAL_TOLERANCE_CENTS);
+    // Onde a tela da nota avisa de diferença, a conta do mês diz que a nota não fecha; e só ali.
+    for (const total of [null, 0, 0.004, 9.94, 9.95, 10, 10.05, 10.06, 62.9]) {
+      expect([total, receiptTotalMismatch(total, 10)]).toEqual([total, gapNotices(gapOf(total, 10)).length > 0]);
+    }
+  });
+});
+
 describe('itens sem valor', () => {
   it('sem valor é o total zerado, com ou sem preço unitário', () => {
     const gap = receiptGap(null, [line('a', 10), line('b', 0), line('c', 0, { unit_price: 4.5 }), line('d', 0.01), line('e', 0.004)]);
@@ -100,12 +134,15 @@ describe('itens sem valor', () => {
 
 describe('a sugestão: o que falta para o total pode ser o valor do único item sem valor', () => {
   it('um item sem valor e o total acima da soma dos outros', () => {
-    const gap = gapOf(62.9, 50, line('x', 0, { raw_description: 'QJO MUSS KG' }));
+    // O item como a tela o entrega, com a descrição e o resto.
+    const gap = gapOf(62.9, 50, { ...line('x', 0), raw_description: 'QJO MUSS KG' } as GapLine);
     expect(gap.suggestion).toEqual({
       itemId: 'x',
       amount: 12.9,
-      values: { raw_description: 'QJO MUSS KG', quantity: 1, unit: 'un', unit_price: 12.9, total_price: 12.9 },
+      values: { quantity: 1, unit: 'un', unit_price: 12.9, total_price: 12.9 },
     });
+    // Só o valor: a descrição não vai junto, para "Usar" não regravar o nome que outro aparelho corrigiu.
+    expect(Object.keys(gap.suggestion!.values).sort()).toEqual(['quantity', 'total_price', 'unit', 'unit_price']);
     expect(unpricedPrompt(gap, 'x', draft)).toEqual({
       text: 'Faltam R$ 12,90 para o total da nota. Pode ser o valor deste item.',
       suggestion: gap.suggestion,
@@ -200,28 +237,44 @@ describe('confirmar com itens ainda sem valor', () => {
   });
 
   it('a pergunta, no singular e no plural', () => {
+    // Só o que é verdade: a frase não promete nada sobre o histórico de preço.
     expect(confirmUnpricedQuestion(1)).toEqual({
       title: '1 item está sem valor',
-      message: 'Ele entra como R$ 0,00 nos gastos e não conta no histórico de preço. Confirmar assim mesmo?',
+      message: 'Ele entra como R$ 0,00 nos gastos. Confirmar assim mesmo?',
       confirmLabel: 'Confirmar',
+      cancelLabel: 'Cancelar',
     });
     expect(confirmUnpricedQuestion(2)).toEqual({
       title: '2 itens estão sem valor',
-      message: 'Eles entram como R$ 0,00 nos gastos e não contam no histórico de preço. Confirmar assim mesmo?',
+      message: 'Eles entram como R$ 0,00 nos gastos. Confirmar assim mesmo?',
       confirmLabel: 'Confirmar',
+      cancelLabel: 'Cancelar',
     });
+    expect(confirmUnpricedQuestion(3).title).toBe('3 itens estão sem valor');
+  });
+
+  it('o aviso de "Usar" ou "Salvar valor" que não achou o item sem valor', () => {
+    expect(VALUE_NOT_SAVED).toEqual({ title: 'Valor não salvo', message: 'Este item já tem valor ou não existe mais. A nota foi atualizada.' });
   });
 });
 
 describe('o total da nota, que a revisão deixa corrigir', () => {
   it('a linha mostra o valor, ou o convite para informar', () => {
     expect(receiptTotalText(62.9)).toBe('R$ 62,90');
-    expect(receiptTotalText(0)).toBe('R$ 0,00');
     expect(receiptTotalText(null)).toBe('informar');
+    // O zero gravado pela leitura é "sem total", como nos gastos.
+    expect(receiptTotalText(0)).toBe('informar');
+  });
+
+  it('o que o leitor de tela diz da linha, que é um botão', () => {
+    expect(receiptTotalAccess(46.38)).toEqual({ label: 'Total da nota: R$ 46,38', hint: 'Toque para corrigir' });
+    expect(receiptTotalAccess(null)).toEqual({ label: 'Total da nota: informar' });
+    expect(receiptTotalAccess(0)).toEqual({ label: 'Total da nota: informar' });
   });
 
   it('o campo abre com o total como ele é lido de volta', () => {
     expect(receiptTotalField(null)).toBe('');
+    expect(receiptTotalField(0)).toBe('');
     expect(receiptTotalField(62.9)).toBe('62,90');
     expect(receiptTotalField(1234.5)).toBe('1234,50');
     for (const total of [62.9, 1234.5, 0.07, 1500]) expect(readReceiptTotal(receiptTotalField(total))).toEqual({ ok: true, total });
@@ -234,8 +287,11 @@ describe('o total da nota, que a revisão deixa corrigir', () => {
     expect(readReceiptTotal('R$ 62,90')).toEqual({ ok: true, total: 62.9 });
     // Dinheiro: sem vírgula, o ponto de três em três dígitos é de milhar.
     expect(readReceiptTotal('1.500')).toEqual({ ok: true, total: 1500 });
-    expect(readReceiptTotal('0')).toEqual({ ok: true, total: 0 });
-    const unreadable = { ok: false, message: 'Confira o total da nota, ou deixe em branco.' };
+    // Zero digitado é o mesmo que em branco: os gastos já leem total zero como "sem total".
+    expect(readReceiptTotal('0')).toEqual({ ok: true, total: null });
+    expect(readReceiptTotal('0,00')).toEqual({ ok: true, total: null });
+    expect(readReceiptTotal('0,01')).toEqual({ ok: true, total: 0.01 });
+    const unreadable = { ok: false, title: 'Confira o total', message: 'Confira o total da nota, ou deixe em branco.' };
     expect(readReceiptTotal('62,9,0')).toEqual(unreadable);
     expect(readReceiptTotal('abc')).toEqual(unreadable);
     expect(readReceiptTotal('-5')).toEqual(unreadable);

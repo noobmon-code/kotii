@@ -97,8 +97,8 @@ describe('readReceiptItem', () => {
 describe('o item sem valor no formulário', () => {
   const stored = (quantity: number, unit_price: number, total_price: number) => ({ raw_description: 'QJO MUSS KG', quantity, unit_price, total_price });
   /** Abre o item gravado, a pessoa digita por cima de alguns campos e salva. */
-  const edited = (item: ReturnType<typeof stored>, typed: { unitPrice?: string; total?: string }) => {
-    const result = readReceiptItem({ ...receiptItemForm(item), ...typed });
+  const edited = (item: ReturnType<typeof stored>, typed: { unitPrice?: string; total?: string; description?: string }) => {
+    const result = readReceiptItem({ ...receiptItemForm(item), ...typed }, item);
     return result.ok ? [result.values.quantity, result.values.unit_price, result.values.total_price] : result.message;
   };
 
@@ -141,7 +141,21 @@ describe('o item sem valor no formulário', () => {
     expect(edited(stored(2, 9.99, 0), { total: '0' })).toEqual([2, 0, 0]);
   });
 
-  it('salvar sem digitar nada pede um dos dois, em vez de gravar o zero de novo', () => {
-    expect(edited(stored(2, 0, 0), {})).toBe('Informe o preço unitário ou o total.');
+  it('salvar sem digitar preço pede um dos dois e diz que 0 deixa sem valor, em vez de gravar o zero calado', () => {
+    const unpriced = 'Informe o preço unitário ou o total (0 para deixar sem valor).';
+    expect(edited(stored(2, 0, 0), {})).toBe(unpriced);
+    // Quem só queria corrigir o nome do brinde fica sabendo como salvar.
+    expect(edited(stored(1, 0, 0), { description: 'BRINDE SACOLA' })).toBe(unpriced);
+    expect(edited(stored(2, 9.99, 0), {})).toBe(unpriced);
+    expect(edited(stored(1, 0, 0), { description: 'BRINDE SACOLA', total: '0' })).toEqual([1, 0, 0]);
+  });
+
+  it('o aviso de sempre continua o do item que abriu com valor e o do item novo', () => {
+    const generic = 'Informe o preço unitário ou o total.';
+    expect(edited(stored(2, 7.9, 15.8), { unitPrice: '', total: '' })).toBe(generic);
+    expect(readReceiptItem({ ...receiptItemForm(), description: 'SACOLA' })).toEqual({ ok: false, message: generic });
+    // Os outros avisos não mudam para o item sem valor.
+    expect(edited(stored(2, 0, 0), { total: '1.350,' })).toBe('Confira o total do item, ou deixe em branco para calcular.');
+    expect(edited(stored(2, 0, 0), { description: ' ' })).toBe('Informe a descrição e uma quantidade maior que zero.');
   });
 });

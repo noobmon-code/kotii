@@ -12,17 +12,29 @@ export const TOTAL_TOLERANCE_CENTS = 5;
 
 const cents = (value: number) => Math.round(value * 100);
 
+/**
+ * A nota tem total? Total que não passa de zero é "sem total": é assim que os
+ * gastos já leem (domain/finance), a leitura por foto pode gravar 0, e um
+ * total zerado faria a nota inteira parecer desconto.
+ */
+export function hasReceiptTotal(total: number | null): total is number {
+  return total != null && cents(total) > 0;
+}
+
 /** O item da nota, com o que as contas e as frases precisam dele. */
 export interface GapLine {
   id: string;
-  raw_description: string;
   quantity: number;
   unit: Unit;
   unit_price: number;
   total_price: number;
 }
 
-/** O que "Usar" grava: o mesmo item, com o total que falta e o preço unitário que sai da quantidade dele. */
+/**
+ * O que "Usar" grava: só o valor do item (o total que falta e o preço unitário
+ * que sai da quantidade dele). A descrição fica de fora: a tela pode estar com
+ * a de antes de outro aparelho corrigir, e um toque não a regrava.
+ */
 export type GapValues = Omit<GapLine, 'id'>;
 
 export interface GapSuggestion {
@@ -35,7 +47,7 @@ export interface GapSuggestion {
 export interface ReceiptGap {
   /** Soma dos itens, em reais. */
   itemsTotal: number;
-  /** Total da nota menos a soma dos itens, em centavos: negativo quando a soma passa do total, null sem total. */
+  /** Total da nota menos a soma dos itens, em centavos: negativo quando a soma passa do total, null sem total (ou com total zerado). */
   missingCents: number | null;
   /** Os itens sem valor (total zerado), na ordem da nota. */
   unpriced: string[];
@@ -50,7 +62,7 @@ export interface ReceiptGap {
  */
 export function receiptGap(total: number | null, lines: GapLine[]): ReceiptGap {
   const sumCents = lines.reduce((sum, line) => sum + cents(line.total_price), 0);
-  const missingCents = total == null ? null : cents(total) - sumCents;
+  const missingCents = hasReceiptTotal(total) ? cents(total) - sumCents : null;
   const unpriced = lines.filter(hasNoValue);
   const only = unpriced.length === 1 ? unpriced[0] : null;
   return {
@@ -67,7 +79,6 @@ function suggest(line: GapLine, missingCents: number): GapSuggestion {
     itemId: line.id,
     amount,
     values: {
-      raw_description: line.raw_description,
       quantity: line.quantity,
       unit: line.unit,
       // A mesma conta do formulário quando a pessoa digita só o total (domain/receiptItem).
@@ -159,15 +170,30 @@ export function pendingUnpriced(gap: ReceiptGap, left: ReadonlySet<string>): str
   return gap.unpriced.filter((id) => !left.has(id));
 }
 
-/** A pergunta de "Confirmar nota" com itens ainda sem valor. */
-export function confirmUnpricedQuestion(count: number): { title: string; message: string; confirmLabel: string } {
+/**
+ * A pergunta de "Confirmar nota" com itens ainda sem valor. Diz só o que é
+ * verdade: do histórico de preço não promete nada (quem lê os preços é que
+ * deixa o zero de fora, em data/market).
+ */
+export function confirmUnpricedQuestion(count: number): { title: string; message: string; confirmLabel: string; cancelLabel: string } {
   const one = count === 1;
   return {
     title: `${itemCount(count)} ${one ? 'está' : 'estão'} sem valor`,
-    message: `${one ? 'Ele entra' : 'Eles entram'} como R$ 0,00 nos gastos e não ${one ? 'conta' : 'contam'} no histórico de preço. Confirmar assim mesmo?`,
+    message: `${one ? 'Ele entra' : 'Eles entram'} como R$ 0,00 nos gastos. Confirmar assim mesmo?`,
     confirmLabel: 'Confirmar',
+    cancelLabel: 'Cancelar',
   };
 }
+
+/**
+ * "Usar" ou "Salvar valor" que não achou o item ainda sem valor: outro
+ * aparelho já deu valor a ele, ou o apagou. O que a pessoa digitou não some
+ * calado.
+ */
+export const VALUE_NOT_SAVED = {
+  title: 'Valor não salvo',
+  message: 'Este item já tem valor ou não existe mais. A nota foi atualizada.',
+};
 
 /** "2 un × R$ 4,30"; sem valor e sem preço unitário, só a quantidade ("2 un"), em vez de "× R$ 0,00". */
 export function quantityText(line: Pick<GapLine, 'quantity' | 'unit' | 'unit_price' | 'total_price'>): string {
@@ -184,20 +210,30 @@ export const SAVE_TOTAL_LABEL = 'Salvar total';
 
 /** O que a linha do total mostra: o valor, ou o convite para informar um (nunca é obrigatório). */
 export function receiptTotalText(total: number | null): string {
-  return total == null ? 'informar' : formatBRL(total);
+  return hasReceiptTotal(total) ? formatBRL(total) : 'informar';
+}
+
+/** O que o leitor de tela diz da linha do total, que na revisão é um botão: "Total da nota: R$ 46,38", "Toque para corrigir". */
+export function receiptTotalAccess(total: number | null): { label: string; hint?: string } {
+  const label = `${RECEIPT_TOTAL_LABEL}: ${receiptTotalText(total)}`;
+  return hasReceiptTotal(total) ? { label, hint: 'Toque para corrigir' } : { label };
 }
 
 /** O total como o campo abre: "1234,50", que o parseMoney lê de volta igual. */
 export function receiptTotalField(total: number | null): string {
-  return total == null ? '' : total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false });
+  return hasReceiptTotal(total) ? total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }) : '';
 }
 
-export type ReceiptTotalResult = { ok: true; total: number | null } | { ok: false; message: string };
+export type ReceiptTotalResult = { ok: true; total: number | null } | { ok: false; title: string; message: string };
 
-/** O total digitado: em branco é "sem total" (null); o que não dá para ler avisa, em vez de apagar o total. */
+/**
+ * O total digitado: em branco é "sem total" (null), e zero também; o que não
+ * dá para ler avisa, em vez de apagar o total.
+ */
 export function readReceiptTotal(input: string): ReceiptTotalResult {
   if (!input.trim()) return { ok: true, total: null };
-  const total = parseMoney(input);
-  if (total == null) return { ok: false, message: 'Confira o total da nota, ou deixe em branco.' };
-  return { ok: true, total: cents(total) / 100 };
+  const typed = parseMoney(input);
+  if (typed == null) return { ok: false, title: 'Confira o total', message: 'Confira o total da nota, ou deixe em branco.' };
+  const total = cents(typed) / 100;
+  return { ok: true, total: hasReceiptTotal(total) ? total : null };
 }

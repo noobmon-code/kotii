@@ -258,8 +258,24 @@ export function useCreateManualReceipt() {
 export function useUpdateReceipt(id: string) {
   const invalidate = useInvalidateReceipt(id);
   return useMutation({
-    mutationFn: async (patch: Partial<Pick<Receipt, 'store_id' | 'purchased_at' | 'total' | 'paid_by'>>) =>
+    mutationFn: async (patch: Partial<Pick<Receipt, 'store_id' | 'purchased_at' | 'paid_by'>>) =>
       unwrap(await supabase.from('receipts').update(patch).eq('id', id)),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * O total da nota, que só a revisão deixa corrigir: a gravação só acha a nota
+ * enquanto ela é rascunho. Confirmada em outro aparelho, nada é gravado, e a
+ * nota relida (a tela vira a da nota confirmada) é o aviso. É uma gravação à
+ * parte da de data e de quem pagou, com o próprio "salvando": uma em andamento
+ * não segura a outra.
+ */
+export function useSetReceiptTotal(id: string) {
+  const invalidate = useInvalidateReceipt(id);
+  return useMutation({
+    mutationFn: async (total: number | null) =>
+      unwrap(await supabase.from('receipts').update({ total }).eq('id', id).eq('status', 'draft')),
     onSuccess: invalidate,
   });
 }
@@ -362,24 +378,30 @@ export function useDeleteReceipt(receiptId: string) {
 }
 
 /**
- * Nota já confirmada: o único conserto é dar valor ao item que ficou sem
- * (total zerado). A descrição não vai no pedido, e o filtro do total zerado
- * deixa quieto o item que já ganhou valor em outro aparelho. Esse item já
- * conta nos preços e nos gastos: salvar atualiza o mesmo que excluir a nota.
+ * Dar valor ao item que ficou sem (total zerado): o caminho de "Usar R$ …",
+ * na revisão e na nota confirmada, e o único conserto que a nota confirmada
+ * aceita. A descrição não vai no pedido, e o filtro do total zerado deixa
+ * quieto o item que já ganhou valor em outro aparelho: `filled` diz se o item
+ * foi gravado, para a tela avisar em vez de sumir calada com o valor
+ * escolhido. Na nota confirmada esse item já conta nos preços e nos gastos:
+ * salvar atualiza o mesmo que excluir a nota (na revisão a nota pode ter sido
+ * confirmada em outro aparelho, e refazer essas buscas não custa).
  */
 export function useFillReceiptItemValue(receiptId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, values }: { id: string; values: Omit<ItemValues, 'raw_description'> }) => {
+    mutationFn: async ({ id, values }: { id: string; values: Omit<ItemValues, 'raw_description'> }): Promise<{ filled: boolean }> => {
       const { quantity, unit, unit_price, total_price } = values;
-      return unwrap(
+      const rows = unwrap(
         await supabase
           .from('receipt_items')
           .update({ quantity, unit, unit_price, total_price })
           .eq('id', id)
           .eq('receipt_id', receiptId)
-          .eq('total_price', 0),
-      );
+          .eq('total_price', 0)
+          .select('id'),
+      ) as { id: string }[] | null;
+      return { filled: Boolean(rows?.length) };
     },
     onSuccess: () => {
       for (const key of CONFIRMED_ITEM_KEYS) {

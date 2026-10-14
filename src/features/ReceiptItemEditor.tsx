@@ -41,7 +41,8 @@ export function ReceiptItemEditor({
   const [total, setTotal] = useState(start.total);
 
   function save() {
-    const result = readReceiptItem({ description, quantity, unitPrice, total });
+    // Com o item como abriu: o que abriu sem valor ganha o aviso que fala do zero.
+    const result = readReceiptItem({ description, quantity, unitPrice, total }, initial);
     if (!result.ok) return notify('Confira o item', result.message);
     onSave({ ...result.values, unit });
   }

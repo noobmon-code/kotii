@@ -76,8 +76,13 @@ export function parseUnitPrice(input: string, quantity: number, total: number | 
  * preço unitário, ele sai do total; sem o total, do preço vezes a quantidade.
  * Total preenchido que não deu para ler ("1.350,") não é "vazio": avisa, em
  * vez de gravar no lugar dele o preço vezes a quantidade.
+ *
+ * `opened` é o item como o formulário abriu. O que abriu sem valor vem com os
+ * dois preços em branco, e salvar assim continua recusado (a nota pergunta,
+ * não grava o zero calada); mas o aviso diz que 0 vale, para quem só queria
+ * corrigir o nome ou a quantidade de um brinde.
  */
-export function readReceiptItem(form: ReceiptItemForm): ReceiptItemResult {
+export function readReceiptItem(form: ReceiptItemForm, opened?: { total_price: number }): ReceiptItemResult {
   const quantity = parseDecimal(form.quantity);
   if (!form.description.trim() || !quantity || quantity <= 0) {
     return { ok: false, message: 'Informe a descrição e uma quantidade maior que zero.' };
@@ -87,7 +92,10 @@ export function readReceiptItem(form: ReceiptItemForm): ReceiptItemResult {
     return { ok: false, message: 'Confira o total do item, ou deixe em branco para calcular.' };
   }
   const price = parseUnitPrice(form.unitPrice, quantity, total);
-  if (price == null && total == null) return { ok: false, message: 'Informe o preço unitário ou o total.' };
+  if (price == null && total == null) {
+    const unpriced = opened != null && hasNoValue(opened);
+    return { ok: false, message: unpriced ? 'Informe o preço unitário ou o total (0 para deixar sem valor).' : 'Informe o preço unitário ou o total.' };
+  }
   const unit_price = price ?? unitPriceFromTotal(total ?? 0, quantity);
   const total_price = total ?? Math.round(unit_price * quantity * 100) / 100;
   return { ok: true, values: { raw_description: form.description.trim(), quantity, unit_price, total_price } };
