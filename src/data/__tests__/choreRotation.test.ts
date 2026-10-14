@@ -319,6 +319,20 @@ describe('banco que ainda não tem a função (o app chegou antes da migração)
     expect(mockDb.calls).toEqual([...FALLBACK, ...FALLBACK]);
   });
 
+  it('a API não enxerga nem a função nem a tabela, mas o banco já tem o rodízio: ele recusa a troca da vez, e o aviso pede para tentar de novo', async () => {
+    // O cache do esquema ficou para trás (a olhada diz "sem a tabela"), e a tarefa está em rodízio no banco: gravada
+    // direto, a troca do responsável deixaria a ordem lá. O banco recusa (NK009) e nada muda.
+    const refused = { code: 'NK009', message: 'chore has a rotation', details: null, hint: null };
+    mockDb.update = { data: null, error: refused };
+    const err = await saveChore({ id: 'louca', values: { ...values, assigned_to: 'u-beto', kid_id: null }, rotation: [] }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe(ROTATION_NOT_READY);
+    expect(mockDb.calls).toEqual([...FALLBACK, 'update chores louca: title,notes,recurrence,interval_count,due_on,assigned_to,kid_id (devolve as linhas)']);
+    // Os outros erros da gravação direta seguem como estão.
+    mockDb.update = { data: null, error: HAS_ROTATION };
+    await expect(saveChore({ id: 'louca', values: ofBeto })).rejects.toBe(HAS_ROTATION);
+  });
+
   it('a olhada na tabela do rodízio falha (sem internet, outra recusa): o erro sobe, e nada é gravado', async () => {
     mockDb.probe = { data: null, error: OFFLINE };
     await expect(saveChore({ id: 'louca', values: ofBeto })).rejects.toBe(OFFLINE);

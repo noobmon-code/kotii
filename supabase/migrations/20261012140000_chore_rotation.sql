@@ -15,6 +15,7 @@
 --    de duas pessoas o rodízio acaba; o morador que sai da casa segue na ordem
 --    como pessoa sem o app; tarefa que vira "Uma vez" fica só com quem estava
 --    na vez.
+-- 5. A vez de uma tarefa em rodízio não muda por gravação direta do app.
 
 create table public.chore_rotation (
   chore_id uuid not null,
@@ -564,3 +565,50 @@ create trigger chores_one_off_ends_rotation
   for each row
   when (new.recurrence = 'none' and old.recurrence <> 'none')
   execute function public.chore_one_off_ends_rotation();
+
+-- =============================================================================
+-- 5. A vez de uma tarefa em rodízio não muda direto pela API
+-- =============================================================================
+
+-- Gravada direto na tabela, a troca do responsável de uma tarefa em rodízio
+-- deixaria a ordem lá, e a próxima conclusão seguiria revezando. Isso vem do
+-- app já instalado (de antes do rodízio) e do app novo quando a API ainda não
+-- enxerga save_chore (o cache do esquema demora depois da migração, e às vezes
+-- não recarrega): o app não sabe distinguir esse caso do banco sem o rodízio,
+-- o banco sabe. Recusa (NK009) e nada muda; o app novo pede para tentar de
+-- novo em instantes, aí já pela função.
+--
+-- "Direto pela API" é a instrução rodar como o papel da API: a função roda com
+-- os direitos de quem chama (sem security definer), então current_user é
+-- 'authenticated' (ou 'anon') na gravação direta, e o dono nas funções acima
+-- (save_chore, complete_chore, skip_chore_turn, os gatilhos da ordem e o da
+-- criança que ganha conta), que rodam como dono, e nas chaves estrangeiras
+-- (morador que sai da casa, ficha apagada), que o Postgres roda como dono da
+-- tabela. A ordem é lida com os direitos de quem grava: a pessoa lê as ordens
+-- da casa dela, e a tarefa que ela grava é dessa casa.
+--
+-- Só a troca de quem está na vez: título, data, pontos, o mesmo responsável e
+-- a tarefa sem rodízio passam como sempre. A que vira "Uma vez" com a mesma
+-- pessoa também (chores_one_off_ends_rotation encerra o rodízio).
+create function public.chore_turn_not_by_hand()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  if current_user in ('authenticated', 'anon')
+    and exists (select 1 from public.chore_rotation r where r.chore_id = new.id) then
+    raise exception 'chore has a rotation' using errcode = 'NK009';
+  end if;
+  return new;
+end;
+$$;
+-- O gatilho dispara sem esse direito: ninguém precisa chamar a função.
+revoke execute on function public.chore_turn_not_by_hand() from public, anon, authenticated;
+
+create trigger chores_turn_not_by_hand
+  before update of assigned_to, kid_id on public.chores
+  for each row
+  when (old.assigned_to is distinct from new.assigned_to or old.kid_id is distinct from new.kid_id)
+  execute function public.chore_turn_not_by_hand();

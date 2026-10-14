@@ -91,9 +91,12 @@ function knownOrder(order: string[], people: RotationPerson[]): RotationPerson[]
 /**
  * Quem vem depois: o seguinte na ordem (depois do último, o primeiro). Se a
  * vez é de alguém de fora da ordem (ou de ninguém), o primeiro, como no banco.
- * Null quando não há rodízio.
+ * Null quando não há rodízio, e quando a ordem tem alguém que este aparelho
+ * não carregou (hasUnknownPerson).
  */
 export function nextTurn(chore: ChoreTurn, order: string[], people: RotationPerson[]): RotationPerson | null {
+  // O banco passaria a vez para essa pessoa, e a conta só com as conhecidas diria o nome de outra.
+  if (hasUnknownPerson(order, people)) return null;
   const line = knownOrder(order, people);
   if (line.length < ROTATION_MIN_PEOPLE) return null;
   const current = currentTurn(chore, people);
@@ -125,7 +128,8 @@ export function skipTurnQuestion(from: string | null | undefined, to: string): s
 
 /**
  * "Vez de Beto · depois Carla" (com os pontos, se a vez é de criança e a
- * tarefa vale pontos). Null quando a tarefa não está em rodízio.
+ * tarefa vale pontos). Null quando a tarefa não está em rodízio, ou quando
+ * este aparelho não sabe quem vem depois (nextTurn).
  */
 export function rotationLabel(chore: ChoreTurn & { points: number }, order: string[], people: RotationPerson[]): string | null {
   const next = nextTurn(chore, order, people);
@@ -358,8 +362,8 @@ export function kidChores<C extends ChoreTurn & { id: string; points: number; du
 export const ROTATION_UNAVAILABLE = 'O rodízio ainda não está disponível nesta casa. Tente de novo mais tarde.';
 
 /**
- * O banco tem a tabela do rodízio, mas a API ainda não enxerga a função de salvar (o cache do esquema demora um
- * pouco depois da migração): gravar direto na tabela deixaria a ordem como estava. Nada é gravado.
+ * O banco tem o rodízio, mas a API ainda não enxerga a função de salvar (o cache do esquema demora um pouco depois
+ * da migração): gravar direto na tabela deixaria a ordem como estava. Nada é gravado (ver isRotationRefused).
  */
 export const ROTATION_NOT_READY = 'O servidor está terminando uma atualização. Tente salvar de novo em alguns instantes.';
 
@@ -389,6 +393,19 @@ const HAS_ROTATION_CODE = 'NK006';
 export function isRotationChangedElsewhere(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   return 'code' in error && error.code === HAS_ROTATION_CODE;
+}
+
+// O errcode com que o banco recusa a troca da vez gravada direto na tabela numa tarefa em rodízio.
+const TURN_BY_HAND_CODE = 'NK009';
+
+/**
+ * O banco recusou a gravação direta (a de saveChore quando a API não enxerga save_chore) porque ela trocaria a vez
+ * de uma tarefa em rodízio? A API não enxergava nem a tabela do rodízio (o cache do esquema ficou para trás), mas o
+ * banco a tem: nada foi salvo, e o aviso é ROTATION_NOT_READY.
+ */
+export function isRotationRefused(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  return 'code' in error && error.code === TURN_BY_HAND_CODE;
 }
 
 /**

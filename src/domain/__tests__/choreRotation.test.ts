@@ -7,6 +7,7 @@ import {
   groupRotations,
   hasUnknownPerson,
   isRotationChangedElsewhere,
+  isRotationRefused,
   isRotationUnavailable,
   kidChores,
   nextTurn,
@@ -18,6 +19,7 @@ import {
   ROTATION_CHANGED_ELSEWHERE,
   ROTATION_MAYBE_SAVED,
   ROTATION_MAYBE_SAVED_TITLE,
+  ROTATION_NOT_READY,
   ROTATION_PERSON_UNKNOWN,
   ROTATION_UNAVAILABLE,
   rotationAppearedElsewhere,
@@ -115,7 +117,19 @@ describe('de quem é a vez', () => {
     expect(nextTurn(ofBeto, ['p-beto'], people)).toBeNull();
     // Quem não é mais ficha da casa não conta.
     expect(nextTurn(ofBeto, ['p-beto', 'p-apagada'], people)).toBeNull();
-    expect(nextTurn(ofBeto, ['p-beto', 'p-apagada', 'p-lia'], people)).toEqual(lia);
+  });
+
+  it('ordem com alguém que este aparelho não conhece: não diz quem vem depois', () => {
+    // Beto → Carla → Lia, e este aparelho ainda não tem Carla: o banco passa a vez para ela, não para Lia.
+    const withoutCarla = people.filter((p) => p.id !== 'p-carla');
+    expect(nextTurn(ofBeto, order, withoutCarla)).toBeNull();
+    expect(nextTurn(ofLia, order, withoutCarla)).toBeNull();
+    expect(nextTurn(ofNobody, order, withoutCarla)).toBeNull();
+    // A ficha nova (ou apagada em outro celular) também, mesmo com duas conhecidas na ordem.
+    expect(nextTurn(ofBeto, ['p-beto', 'p-apagada', 'p-lia'], people)).toBeNull();
+    // Com todas as pessoas, como sempre.
+    expect(nextTurn(ofBeto, order, people)).toEqual(carla);
+    expect(nextTurn(ofLia, order, people)).toEqual(beto);
   });
 });
 
@@ -144,6 +158,22 @@ describe('textos do rodízio', () => {
     expect(choreTurnLabel({ ...ofLia, points: 10 }, [], members, records)).toBe('Lia · 10 pontos');
     expect(choreTurnLabel({ ...ofNobody, points: 0 }, [], members, records)).toBeNull();
     expect(choreTurnLabel({ ...ofCarla, points: 0 }, order, members, records)).toBe('Vez de Carla · depois Lia');
+  });
+
+  it('ordem com alguém que este aparelho não conhece: sem "depois", vale o responsável de sempre', () => {
+    // Beto → Carla → Lia, e a ficha de Carla ainda não chegou a este aparelho: "depois Lia" estaria errado.
+    const withoutCarla = records.filter((r) => r.id !== 'p-carla');
+    const onlyBeto = [members[0]];
+    expect(rotationLabel({ ...ofBeto, points: 0 }, order, rotationPeople(members, withoutCarla))).toBeNull();
+    expect(choreTurnLabel({ ...ofBeto, points: 0 }, order, members, withoutCarla)).toBe('Beto');
+    expect(choreTurnLabel({ ...ofLia, points: 10 }, order, members, withoutCarla)).toBe('Lia · 10 pontos');
+    expect(choreTurnLabel({ ...ofLia, points: 0 }, order, members, withoutCarla)).toBe('Lia');
+    // O mesmo com o morador que a lista de moradores deste aparelho ainda não tem (a ficha já chegou).
+    expect(choreTurnLabel({ ...ofBeto, points: 0 }, order, onlyBeto, records)).toBe('Beto');
+    expect(choreTurnLabel({ ...ofNobody, points: 0 }, order, onlyBeto, records)).toBeNull();
+    // Com as três pessoas, o rodízio de sempre.
+    expect(choreTurnLabel({ ...ofBeto, points: 0 }, order, members, records)).toBe('Vez de Beto · depois Carla');
+    expect(choreTurnLabel({ ...ofLia, points: 10 }, order, members, records)).toBe('Vez de Lia · 10 pontos · depois Beto');
   });
 
   it('numera a ordem', () => {
@@ -531,5 +561,25 @@ describe('o banco recusa o salvar do formulário que abriu sem rodízio, na tare
     expect(isRotationChangedElsewhere(new Error('chore has a rotation'))).toBe(false);
     expect(isRotationChangedElsewhere(null)).toBe(false);
     expect(isRotationChangedElsewhere('NK006')).toBe(false);
+    // A recusa da gravação direta da vez é outra coisa (isRotationRefused).
+    expect(isRotationChangedElsewhere({ code: 'NK009', message: 'chore has a rotation' })).toBe(false);
+  });
+});
+
+describe('o banco recusa a troca da vez gravada direto na tabela, numa tarefa em rodízio', () => {
+  it('reconhece a recusa pelo código', () => {
+    expect(isRotationRefused({ code: 'NK009', message: 'chore has a rotation', details: null, hint: null })).toBe(true);
+    // Nada foi salvo; tentar de novo daqui a pouco passa pela função que salva a tarefa inteira.
+    expect(ROTATION_NOT_READY).toBe('O servidor está terminando uma atualização. Tente salvar de novo em alguns instantes.');
+  });
+
+  it('os outros erros seguem como erros', () => {
+    expect(isRotationRefused({ code: 'NK006', message: 'chore has a rotation' })).toBe(false);
+    expect(isRotationRefused({ code: 'P0002', message: 'chore not found' })).toBe(false);
+    expect(isRotationRefused({ code: 'PGRST202', message: 'Could not find the function public.save_chore' })).toBe(false);
+    expect(isRotationRefused(new Error('chore has a rotation'))).toBe(false);
+    expect(isRotationRefused(new TypeError('Network request failed'))).toBe(false);
+    expect(isRotationRefused(null)).toBe(false);
+    expect(isRotationRefused('NK009')).toBe(false);
   });
 });

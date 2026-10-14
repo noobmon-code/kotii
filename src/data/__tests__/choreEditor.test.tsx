@@ -42,6 +42,11 @@ const mockServer: {
   old: boolean;
   /** Uma cópia de antes desta migração: tem o rodízio, mas não a função que salva a tarefa. */
   noSaveChore: boolean;
+  /**
+   * O banco tem o rodízio, mas o cache do esquema da API ficou para trás: ela não enxerga nem a função nem a tabela
+   * do rodízio. A gravação direta que troca a vez de uma tarefa em rodízio, o banco recusa (NK009).
+   */
+  staleCache: boolean;
   /** As buscas só respondem depois disto. */
   gate: Promise<void> | null;
   /** O que outro celular faz logo depois de este ler a ordem (uma vez só): a corrida entre conferir e gravar. */
@@ -51,11 +56,24 @@ const mockServer: {
   /** O próximo salvar chega ao servidor e grava, mas a resposta se perde no caminho (uma vez só). */
   dropAnswer: boolean;
   log: string[];
-} = { chore: null, order: [], down: [], old: false, noSaveChore: false, gate: null, afterCheck: null, failSave: null, dropAnswer: false, log: [] };
+} = {
+  chore: null,
+  order: [],
+  down: [],
+  old: false,
+  noSaveChore: false,
+  staleCache: false,
+  gate: null,
+  afterCheck: null,
+  failSave: null,
+  dropAnswer: false,
+  log: [],
+};
 // O que este celular sabe dos moradores, e a tarefa aberta ('nova': tarefa nova).
 const mockDevice = { members: mockMembers, id: 'c-1' };
 const mockBack = jest.fn();
 const mockNotify = jest.fn();
+const mockConfirm = jest.fn();
 const mockRefetchHousehold = jest.fn();
 
 jest.mock('expo-router', () => ({
@@ -70,7 +88,10 @@ jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null, SkyArt: () 
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/dialogs', () => ({
   notify: (title: string, message?: string) => mockNotify(title, message),
-  confirmAction: (_title: string, _message: string, _label: string, onConfirm: () => void) => onConfirm(),
+  confirmAction: (title: string, message: string, _label: string, onConfirm: () => void) => {
+    mockConfirm(title, message);
+    onConfirm();
+  },
 }));
 jest.mock('@/lib/auth', () => ({
   useHousehold: () => ({ data: { members: mockDevice.members }, refetch: () => mockRefetchHousehold() }),
@@ -92,6 +113,12 @@ jest.mock('@/lib/supabase', () => {
           mockServer.log.push(`update chores ${JSON.stringify(values)}`);
           // Na tarefa apagada, como em toda gravação que não acha a linha, nada muda e não há erro.
           const row = mockServer.chore;
+          // O gatilho do banco com o rodízio: a troca da vez de uma tarefa em rodízio, direto na tabela, é recusada e
+          // nada muda.
+          const turnChanged = (column: string) => column in values && values[column] !== row?.[column];
+          if (!mockServer.old && row && mockServer.order.length && (turnChanged('assigned_to') || turnChanged('kid_id'))) {
+            return { data: null, error: { code: 'NK009', message: 'chore has a rotation', details: null, hint: null } };
+          }
           if (row) mockServer.chore = { ...row, ...values };
           // Com `.select()`, a gravação devolve as linhas que mudou: a tarefa, ou nenhuma.
           return { data: calls.select ? (row ? [{ id: row.id }] : []) : null, error: null };
@@ -104,7 +131,7 @@ jest.mock('@/lib/supabase', () => {
       if (table === 'chore_rotation') {
         // Como a API responde pela tabela que o banco não tem.
         const missing = { code: 'PGRST205', message: "Could not find the table 'public.chore_rotation' in the schema cache" };
-        if (mockServer.old) return { data: null, error: missing };
+        if (mockServer.old || mockServer.staleCache) return { data: null, error: missing };
         const rows = mockServer.order.map((person_id, i) => ({ chore_id: 'c-1', person_id, position: i + 1 }));
         mockServer.afterCheck?.();
         mockServer.afterCheck = null;
@@ -181,7 +208,7 @@ jest.mock('@/lib/supabase', () => {
         mockServer.log.push(`rpc save_chore ${JSON.stringify(args)}`);
         // Como a API responde pela função que o banco não tem.
         const missing = { code: 'PGRST202', message: 'Could not find the function public.save_chore(p_assigned_to, p_chore_id, p_due_on) in the schema cache' };
-        if (mockServer.old || mockServer.noSaveChore) return { data: null, error: missing };
+        if (mockServer.old || mockServer.noSaveChore || mockServer.staleCache) return { data: null, error: missing };
         if (mockServer.failSave) return { data: null, error: mockServer.failSave };
         const saved = saveChore(args);
         if (!saved.error && mockServer.dropAnswer) {
@@ -296,6 +323,8 @@ async function open() {
     /** Só o toque, sem esperar o que ele começa. */
     tap: (label: string) => act(async () => void button(label).props.onPress()),
     busy: (label: string) => Boolean(button(label).props.loading),
+    /** Os botões na tela, pelo texto. */
+    buttons: () => root.findAllByType(Button).map((b) => b.props.title as string),
   };
 }
 
@@ -331,6 +360,7 @@ beforeEach(() => {
     down: [],
     old: false,
     noSaveChore: false,
+    staleCache: false,
     gate: null,
     afterCheck: null,
     failSave: null,
@@ -1235,6 +1265,66 @@ describe('banco com a tabela do rodízio, mas sem a função que salva a tarefa 
     expect(mockServer.chore).toMatchObject({ title: 'Lavar a louça', assigned_to: 'u-carla' });
     expect(mockNotify.mock.calls).toEqual([['Erro', ROTATION_NOT_READY]]);
     expect(mockBack).not.toHaveBeenCalled();
+  });
+});
+
+describe('banco com o rodízio, e a API sem enxergar nem a função nem a tabela (o cache do esquema ficou para trás)', () => {
+  it('a gravação direta que troca a vez é recusada pelo banco: nada é gravado, o aviso é o de tentar de novo, e o resto da tarefa ainda salva', async () => {
+    mockServer.staleCache = true;
+    const screen = await open();
+    await settle();
+    // Para a API não há rodízio: o formulário abre com a tarefa de Carla, e a conferência antes de salvar não acha ordem.
+    expect(screen.chips()).toEqual(OF_CARLA);
+    await screen.pick('Beto');
+
+    await screen.press('Salvar');
+    const update = (values: Row) =>
+      `update chores ${JSON.stringify({ title: 'Lavar a louça', notes: null, recurrence: 'daily', interval_count: 1, due_on: '2026-10-12', ...values })}`;
+    expect(mockServer.log).toEqual([
+      call({ p_points: 0, p_set_turn: true, p_assigned_to: 'u-beto', p_expect_none: true }),
+      update({ assigned_to: 'u-beto', kid_id: null, points: 0 }),
+    ]);
+    // A vez segue com Carla, no rodízio, e o aviso é em português: não "chore has a rotation".
+    expect(mockServer.order).toEqual(ORDER);
+    expect(mockServer.chore).toMatchObject({ assigned_to: 'u-carla', kid_id: null, points: 10 });
+    expect(mockNotify.mock.calls).toEqual([['Erro', ROTATION_NOT_READY]]);
+    expect(mockBack).not.toHaveBeenCalled();
+
+    // Sem trocar a vez, o banco aceita a gravação direta, como sempre.
+    mockServer.log = [];
+    await screen.pick('Carla');
+    await screen.typeTitle('Lavar a louça e as panelas');
+    await screen.press('Salvar');
+    expect(mockServer.log).toEqual([
+      call({ p_title: 'Lavar a louça e as panelas', p_points: 0, p_set_turn: true, p_assigned_to: 'u-carla', p_expect_none: true }),
+      update({ title: 'Lavar a louça e as panelas', assigned_to: 'u-carla', kid_id: null, points: 0 }),
+    ]);
+    expect(mockServer.chore).toMatchObject({ title: 'Lavar a louça e as panelas', assigned_to: 'u-carla' });
+    expect(mockServer.order).toEqual(ORDER);
+    expect(mockBack).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('"Pular a vez": só com a ordem que este celular conhece inteira', () => {
+  it('com todas as pessoas: pergunta de quem para quem e passa a vez', async () => {
+    const screen = await open();
+    await settle();
+    expect(screen.buttons()).toContain('Pular a vez');
+    await screen.press('Pular a vez');
+    expect(mockConfirm.mock.calls).toEqual([['Pular a vez', 'Passar a vez de Carla para Lia?']]);
+    expect(mockServer.log).toEqual(['rpc skip_chore_turn']);
+  });
+
+  it('alguém da ordem que este celular ainda não conhece: o botão não aparece, em vez de passar a vez para a pessoa errada', async () => {
+    // Beto → Carla → Lia, na vez de Beto; a lista de moradores deste celular ainda não tem Carla. O banco passaria a
+    // vez para Carla, e a pergunta diria "de Beto para Lia".
+    mockServer.chore = chore({ assigned_to: 'u-beto', points: 10 });
+    mockDevice.members = [mockMembers[0]];
+    const screen = await open();
+    await settle();
+    expect(screen.chips()).toEqual([...RECURRENCE, '[ ] Qualquer um', '[x] Rodízio', '[x] 1 Beto', '[x] 3 Lia']);
+    expect(screen.buttons()).not.toContain('Pular a vez');
+    expect(mockConfirm).not.toHaveBeenCalled();
   });
 });
 

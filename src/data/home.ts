@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { SAME_PURCHASE_DAYS, type PantryEntry } from '@/domain/cartPantry';
-import { groupRotations, isRotationUnavailable, ROTATION_NOT_READY, type ChoreRotations } from '@/domain/choreRotation';
+import { groupRotations, isRotationRefused, isRotationUnavailable, ROTATION_NOT_READY, type ChoreRotations } from '@/domain/choreRotation';
 import { choreGoneOnSave } from '@/domain/chores';
 import { addDays, diffDays } from '@/domain/dates';
 import type { MedicationSchedule } from '@/domain/medications';
@@ -236,7 +236,8 @@ export async function saveChore({
 
   // A função falta. Gravar direto na tabela só vale no banco que também não tem a tabela do rodízio: com ela lá (a
   // migração chegou e a API ainda não enxerga a função nova), a gravação direta não mexeria na ordem, e a tarefa que
-  // deixou o rodízio continuaria nele. Aí nada é gravado, e salvar de novo daqui a pouco usa a função.
+  // deixou o rodízio continuaria nele. Aí nada é gravado, e salvar de novo daqui a pouco usa a função. Esta olhada
+  // passa pela mesma API: se ela também não enxerga a tabela, quem segura é o banco (abaixo).
   const table = await supabase.from('chore_rotation').select('chore_id').limit(1);
   if (!table.error) throw new Error(ROTATION_NOT_READY);
   if (!isRotationUnavailable(table.error)) throw table.error;
@@ -244,7 +245,11 @@ export async function saveChore({
   // Banco que ainda não tem o rodízio (o app pode chegar antes da migração). Lá não há rodízio, nem a corrida por
   // ele: a tarefa vai direto na tabela, como antes de o rodízio existir, e a ordem pedida fica de fora.
   if (id) {
-    const written = unwrap(await supabase.from('chores').update(values).eq('id', id).select('id')) as { id: string }[];
+    const result = await supabase.from('chores').update(values).eq('id', id).select('id');
+    // A API também não enxergava a tabela, mas o banco já tem o rodízio (o cache do esquema ficou para trás): ele
+    // recusa a troca da vez de uma tarefa em rodízio. Nada foi gravado, e daqui a pouco o salvar passa pela função.
+    if (result.error && isRotationRefused(result.error)) throw new Error(ROTATION_NOT_READY);
+    const written = unwrap(result) as { id: string }[];
     // Apagada em outro aparelho: a gravação não acha a linha, e para a API isso não é erro.
     if (!written.length) throw choreGoneOnSave();
   }

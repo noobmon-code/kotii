@@ -3252,6 +3252,13 @@ create function pg_temp.save_order(p_chore_id uuid, p_people uuid[]) returns uui
   select public.save_chore(c.id, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, p_people => p_people)
   from public.chores c where c.id = p_chore_id;
 $$;
+-- O responsável salvo pela função sem falar da ordem (p_people nulo): a vez fica com quem foi escolhido, mesmo de
+-- fora da ordem. Direto na tabela, numa tarefa em rodízio, o banco recusa (ver chores_turn_not_by_hand, abaixo).
+create function pg_temp.save_turn(p_chore_id uuid, p_assigned_to uuid, p_kid_id uuid) returns uuid language sql as $$
+  select public.save_chore(c.id, c.title, c.notes, c.recurrence, c.interval_count, c.due_on,
+    p_set_turn => true, p_assigned_to => p_assigned_to, p_kid_id => p_kid_id)
+  from public.chores c where c.id = p_chore_id;
+$$;
 set role authenticated;
 
 -- A ordem: quem foi escolhido primeiro começa; pet, gente de outra casa, uma
@@ -3495,11 +3502,11 @@ begin
     'member turns earned nothing';
   assert (select count(*) from public.chore_completions where chore_id = dishes) = 3, 'three completions';
 
-  -- A vez é de alguém de fora da ordem (tarefa editada por um app antigo): o próximo é o primeiro.
-  update public.chores set assigned_to = null, kid_id = nina where id = dishes;
+  -- A vez é de alguém de fora da ordem (o responsável salvo sem mexer na ordem): o próximo é o primeiro.
+  perform pg_temp.save_turn(dishes, null, nina);
   select * into r from public.complete_chore(dishes, '2026-10-15', '2026-10-15');
   assert r.completed and r.person_id = nina and r.next_person_id = beto, 'turn outside the order: next is the first';
-  update public.chores set assigned_to = null, kid_id = null where id = dishes;
+  perform pg_temp.save_turn(dishes, null, null);
   select * into r from public.complete_chore(dishes, '2026-10-16', '2026-10-16');
   assert r.completed and r.next_person_id = beto, 'nobody in the turn: next is the first';
 
@@ -3593,6 +3600,103 @@ begin
   assert (select count(*) from public.chore_rotation where chore_id = dishes) = 0, 'a one-off chore has no rotation';
   assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000021', 'and keeps the person of the turn';
   update public.chores set recurrence = 'daily' where id = dishes;
+end $$;
+
+-- A vez de uma tarefa em rodízio não muda direto na tabela (NK009): a ordem ficaria lá, e a próxima conclusão
+-- seguiria revezando. É o que o app já instalado (de antes do rodízio) e o app novo, quando a API ainda não enxerga
+-- save_chore, fariam. O resto da tarefa, o mesmo responsável e a tarefa sem rodízio passam como sempre.
+do $$
+declare
+  beto uuid := current_setting('test.r_beto')::uuid;
+  rita uuid := current_setting('test.r_rita')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+  plain uuid;
+  was public.chores;
+  c public.chores;
+begin
+  perform pg_temp.save_order(dishes, array[beto, rita, lia]);
+  assert public.skip_chore_turn(dishes, beto) = rita, 'the rotation is back, on the turn of R';
+  select * into was from public.chores where id = dishes;
+  begin
+    update public.chores set assigned_to = auth.uid() where id = dishes;
+    raise exception 'FAIL: a member changed the assignee of a rotating chore straight in the table';
+  exception when sqlstate 'NK009' then
+    assert sqlerrm = 'chore has a rotation', sqlerrm;
+  end;
+  begin
+    update public.chores set assigned_to = null, kid_id = lia where id = dishes;
+    raise exception 'FAIL: a member gave the turn of a rotating chore to a kid straight in the table';
+  exception when sqlstate 'NK009' then null;
+  end;
+  begin
+    update public.chores set assigned_to = null where id = dishes;
+    raise exception 'FAIL: a member gave a rotating chore to anyone straight in the table';
+  exception when sqlstate 'NK009' then null;
+  end;
+  -- O app antigo grava a tarefa inteira de uma vez: com a troca do responsável, nada do resto fica.
+  begin
+    update public.chores set title = 'Lavar a louça e as panelas', recurrence = 'none', assigned_to = auth.uid() where id = dishes;
+    raise exception 'FAIL: a member changed the assignee of a rotating chore with the rest of it';
+  exception when sqlstate 'NK009' then null;
+  end;
+  select * into c from public.chores where id = dishes;
+  assert c = was, 'a refused write changes nothing in the chore';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[beto, rita, lia],
+    'nor in the order';
+
+  -- A vez de uma criança também (kid_id).
+  perform public.skip_chore_turn(dishes, rita);
+  begin
+    update public.chores set kid_id = null, assigned_to = auth.uid() where id = dishes;
+    raise exception 'FAIL: a member took the turn of a kid straight in the table';
+  exception when sqlstate 'NK009' then null;
+  end;
+  begin
+    update public.chores set kid_id = current_setting('test.r_nina')::uuid where id = dishes;
+    raise exception 'FAIL: a member passed the turn to another kid straight in the table';
+  exception when sqlstate 'NK009' then null;
+  end;
+  assert (select kid_id from public.chores where id = dishes) = lia, 'the kid keeps the turn';
+
+  -- O resto da tarefa, sim: título, observação, data e pontos; e a tarefa inteira com o mesmo responsável (o app
+  -- antigo manda tudo).
+  update public.chores set title = 'Lavar a louça e as panelas', notes = 'Com detergente', due_on = '2026-10-20', points = 7
+    where id = dishes;
+  select * into c from public.chores where id = dishes;
+  assert c.title = 'Lavar a louça e as panelas' and c.notes = 'Com detergente' and c.due_on = '2026-10-20' and c.points = 7
+    and c.assigned_to is null and c.kid_id = lia, 'the rest of a rotating chore is written straight as always';
+  update public.chores set assigned_to = null, kid_id = lia, title = 'Lavar a louça', notes = null, points = 10 where id = dishes;
+  select * into c from public.chores where id = dishes;
+  assert c.title = 'Lavar a louça' and c.notes is null and c.points = 10 and c.assigned_to is null and c.kid_id = lia,
+    'and so is the whole chore with the same assignee';
+  assert (select count(*) from public.chore_rotation where chore_id = dishes) = 3, 'and the order stays';
+
+  -- Tarefa sem rodízio: o responsável muda direto na tabela, como sempre.
+  insert into public.chores (title, recurrence, assigned_to) values ('Molhar as plantas', 'daily', auth.uid()) returning id into plain;
+  update public.chores set assigned_to = '00000000-0000-0000-0000-000000000021' where id = plain;
+  update public.chores set assigned_to = null, kid_id = lia where id = plain;
+  update public.chores set kid_id = null where id = plain;
+  select * into c from public.chores where id = plain;
+  assert c.assigned_to is null and c.kid_id is null, 'a chore without rotation changes its assignee straight in the table';
+  -- Nem a que já teve rodízio: acabado, ela volta a ser como as outras.
+  perform pg_temp.save_order(plain, array[beto, lia]);
+  perform pg_temp.save_order(plain, '{}');
+  update public.chores set assigned_to = '00000000-0000-0000-0000-000000000021', kid_id = null where id = plain;
+  assert (select assigned_to from public.chores where id = plain) = '00000000-0000-0000-0000-000000000021',
+    'nor after its rotation ended';
+  delete from public.chores where id = plain;
+
+  -- Pelas funções a vez muda como antes: pular, concluir, o responsável escolhido e a ordem nova.
+  assert public.skip_chore_turn(dishes, lia) = beto, 'skipping moves the turn';
+  assert (select next_person_id from public.complete_chore(dishes, '2026-10-20', '2026-10-20')) = rita, 'completing moves the turn';
+  perform pg_temp.save_turn(dishes, null, lia);
+  assert (select kid_id from public.chores where id = dishes) = lia, 'save_chore with a person chosen moves the turn';
+  perform pg_temp.save_order(dishes, array[rita, beto]);
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000021',
+    'a new order from save_chore moves the turn';
+  perform pg_temp.save_order(dishes, array[beto, rita, lia]);
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000021', 'R is on turn again';
 end $$;
 
 -- save_chore: o formulário grava a tarefa inteira numa chamada só, numa transação: os campos, o responsável (só
@@ -4145,6 +4249,16 @@ begin
       unnest(array['public.chore_turn_person(uuid, uuid, uuid)', 'public.chore_set_turn(uuid, uuid)', 'public.chore_next_person(uuid, integer)']) as fn
     where has_function_privilege(who, fn, 'execute')
   ), 'the pieces that read and move the turn are called by no role of the API';
+  -- A recusa da troca direta da vez roda com os direitos de quem grava (current_user é quem fez a instrução), e
+  -- dispara sem que ninguém da API possa chamá-la (os testes acima são da pessoa logada, sem esse direito).
+  assert not (select p.prosecdef from pg_proc p where p.oid = 'public.chore_turn_not_by_hand()'::regprocedure),
+    'chore_turn_not_by_hand is security invoker';
+  assert (select p.proconfig from pg_proc p where p.oid = 'public.chore_turn_not_by_hand()'::regprocedure) = array['search_path=""'],
+    'with an empty search_path';
+  assert not exists (
+    select 1 from unnest(array['public', 'anon', 'authenticated']) as who
+    where has_function_privilege(who, 'public.chore_turn_not_by_hand()', 'execute')
+  ), 'chore_turn_not_by_hand is called by no role of the API';
 end $$;
 
 -- As tarefas das corridas: três sem rodízio, de Beto, e a da varanda, que vale 4.
@@ -4395,12 +4509,17 @@ declare
   dishes uuid := current_setting('test.r_dishes')::uuid;
   sweep uuid;
   plain uuid;
+  dust uuid;
   c public.chores;
 begin
   insert into public.chores (title, recurrence, points) values ('Varrer a casa', 'weekly', 5) returning id into sweep;
   perform pg_temp.save_order(sweep, array[bidu, nina, teo, beto]);
   perform pg_temp.save_order(dishes, array[rita, nina, lia]);
   insert into public.chores (title, kid_id, points) values ('Guardar os brinquedos', nina, 5) returning id into plain;
+  -- Um rodízio sem Nina, mas na vez dela (o responsável salvo sem mexer na ordem).
+  insert into public.chores (title, recurrence) values ('Tirar o pó', 'weekly') returning id into dust;
+  perform pg_temp.save_order(dust, array[rita, lia]);
+  perform pg_temp.save_turn(dust, null, nina);
 
   -- Bidu vira pet na vez dele: sai da ordem, e a vez passa.
   update public.people set kind = 'pet', species = 'cachorro' where id = bidu;
@@ -4419,6 +4538,13 @@ begin
   assert (select assigned_to from public.chores where id = dishes) = auth.uid(), 'not her turn: the turn stays';
   select * into c from public.chores where id = plain;
   assert c.kid_id is null and c.assigned_to is null, 'a plain chore of hers goes back to anyone, as before';
+  -- A chave estrangeira tira a vez dela de um rodízio em que ela não está: o Postgres faz isso como dono da
+  -- tabela, não como quem apagou a ficha, e a recusa da gravação direta (NK009) não vale para ela.
+  select * into c from public.chores where id = dust;
+  assert c.kid_id is null and c.assigned_to is null, 'a rotating chore on her turn, outside the order, goes back to anyone';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dust) = array[rita, lia],
+    'and keeps its order';
+  delete from public.chores where id = dust;
 
   -- Teo é apagado na vez dele: sobra Beto, o rodízio acaba e a tarefa fica com ele.
   delete from public.people where id = teo;
@@ -4491,6 +4617,7 @@ declare
   beto uuid := current_setting('test.r_beto')::uuid;
   trash uuid := current_setting('test.r_trash')::uuid;
   plain uuid;
+  dust uuid;
   c public.chores;
   r record;
 begin
@@ -4498,6 +4625,10 @@ begin
   select * into c from public.chores where id = trash;
   assert c.assigned_to = '00000000-0000-0000-0000-000000000022', 'B is on turn';
   insert into public.chores (title, assigned_to) values ('Tarefa do Beto', '00000000-0000-0000-0000-000000000022') returning id into plain;
+  -- E um rodízio sem Beto, na vez dele (o responsável salvo sem mexer na ordem).
+  insert into public.chores (title, recurrence) values ('Tirar o pó', 'weekly') returning id into dust;
+  perform pg_temp.save_order(dust, array[rita, current_setting('test.r_lia')::uuid]);
+  perform pg_temp.save_turn(dust, '00000000-0000-0000-0000-000000000022', null);
   perform public.remove_member(current_setting('test.hh_r')::uuid, '00000000-0000-0000-0000-000000000022');
   assert (select member_user_id from public.people where id = beto) is null, 'the record stays, without the app';
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = trash) = array[rita, beto],
@@ -4506,6 +4637,11 @@ begin
   assert c.assigned_to is null and c.kid_id = beto, 'it was his turn: it still is, as a person without the app';
   select * into c from public.chores where id = plain;
   assert c.assigned_to is null and c.kid_id is null, 'a plain chore of his goes back to anyone, as before';
+  -- Pela chave estrangeira, como a ficha apagada: a recusa da gravação direta não segura a saída dele.
+  select * into c from public.chores where id = dust;
+  assert c.assigned_to is null and c.kid_id is null, 'a rotating chore on his turn, outside the order, goes back to anyone';
+  assert (select count(*) from public.chore_rotation where chore_id = dust) = 2, 'and keeps its order';
+  delete from public.chores where id = dust;
   select * into r from public.complete_chore(trash, '2026-10-19', '2026-10-19');
   assert r.completed and r.next_person_id = rita, 'the next completion passes the turn on (not stuck)';
   select * into r from public.complete_chore(trash, '2026-10-26', '2026-10-26');
