@@ -100,6 +100,15 @@ export function PantryPanel() {
       icon: 'check',
       onPress: () => consume.mutate(ids, { onError }),
     });
+    // Item ligado a um produto: a tela dele tem o histórico de preço.
+    const { productId } = group;
+    if (productId) {
+      actions.push({
+        label: 'Ver preços',
+        icon: 'chart-line',
+        onPress: () => router.push({ pathname: '/produto/[id]', params: { id: productId } }),
+      });
+    }
     // Uma por compra, da mais nova para a mais antiga; duas no mesmo dia e com a
     // mesma quantidade ganham um número para não confundir.
     const lots = several ? [...group.lots].reverse() : group.lots;

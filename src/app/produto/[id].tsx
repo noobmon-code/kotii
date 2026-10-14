@@ -2,10 +2,12 @@ import { Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet } from 'react-native';
 
-import { usePriceHistory, useProducts, useRenameProduct, useStores } from '@/data/market';
+import { usePriceHistory, useProductPurchases, useProducts, useRenameProduct, useStores } from '@/data/market';
 import { CATEGORIES, getCategory } from '@/domain/categories';
 import { formatShortDate, toISODate } from '@/domain/dates';
 import { formatBRL } from '@/domain/money';
+import { noStorePriceSentence } from '@/domain/priceHistory';
+import { PriceHistorySection } from '@/features/market/PriceHistorySection';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
@@ -32,6 +34,9 @@ export default function ProductScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const products = useProducts();
   const history = usePriceHistory(id);
+  // As compras inteiras, as mesmas que a seção do histórico lê (a mesma busca, uma vez só): a nota sem mercado
+  // não entra no "por mercado", e a frase de lá não pode dizer que não há nota nenhuma.
+  const purchases = useProductPurchases(id);
   const stores = useStores();
   const rename = useRenameProduct();
   const [name, setName] = useState<string | null>(null);
@@ -44,6 +49,11 @@ export default function ProductScreen() {
   for (const obs of history.data ?? []) if (!latest.has(obs.store_id)) latest.set(obs.store_id, obs);
   const latestByStore = [...latest.values()].sort((a, b) => a.unit_price - b.unit_price);
 
+  // Sem internet, o que não está guardado no aparelho fica com a busca parada (e ela segue sozinha quando a
+  // conexão volta): um aviso, em vez de girar sem fim.
+  if ([products, history, stores].some((query) => query.isPending && query.fetchStatus === 'paused')) {
+    return <ErrorNotice error={{ message: 'Sem internet: os preços deste produto aparecem quando a conexão voltar.' }} />;
+  }
   if (products.isPending || history.isPending || stores.isPending) return <Loading />;
   const error = products.error ?? history.error ?? stores.error;
   if (error) return <ErrorNotice error={error} />;
@@ -79,7 +89,7 @@ export default function ProductScreen() {
 
       <Section title="Último preço por mercado">
         {latestByStore.length === 0 ? (
-          <Text variant="muted">Nenhuma nota confirmada com este produto ainda.</Text>
+          <Text variant="muted">{noStorePriceSentence(purchases.data?.length)}</Text>
         ) : (
           <ListCard>
             {latestByStore.map((obs, index) => (
@@ -102,24 +112,7 @@ export default function ProductScreen() {
         )}
       </Section>
 
-      {(history.data?.length ?? 0) > latestByStore.length ? (
-        <Section title="Histórico">
-          <ListCard>
-            {history.data!.map((obs, index) => (
-              <ListRow
-                key={`${obs.receipt_id}-${index}`}
-                title={storeName(obs.store_id)}
-                subtitle={formatShortDate(toISODate(new Date(obs.purchased_at)))}
-                right={
-                  <Text variant="muted">
-                    {formatBRL(obs.unit_price)}/{obs.unit}
-                  </Text>
-                }
-              />
-            ))}
-          </ListCard>
-        </Section>
-      ) : null}
+      <PriceHistorySection productId={product.id} productName={product.name} />
 
       <PickerModal
         visible={pickingCategory}
