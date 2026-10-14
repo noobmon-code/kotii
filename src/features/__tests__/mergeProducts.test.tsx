@@ -1,27 +1,47 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
-import { MERGE_NO_ANSWER, type DistinctPair } from '@/domain/productMerge';
+import { MERGE_REFRESHES } from '@/data/productMerge';
+import { MERGE_NO_ANSWER, MERGE_RENAMED, type DistinctPair } from '@/domain/productMerge';
 import type { LatestPrice, Product } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
+import { CategoryIcon } from '@/ui/primitives';
 
 import { MergeProductsModal } from '../MergeProductsModal';
 import { MergeSuggestionsCard } from '../MergeSuggestionsCard';
 
 // A confirmação de juntar e o cartão "Parecem o mesmo produto" de verdade, com as buscas trocadas por respostas
-// prontas: o que se confere aqui é o que a pessoa lê e o que cada toque manda fazer.
+// prontas: o que se confere aqui é o que a pessoa lê e o que cada toque manda fazer. A leitura da confirmação
+// (fetchMergeFacts) é um banco de mentira, e a busca dela é a de verdade, dentro de um QueryClient.
 
 interface Query {
   data: unknown;
   isPending: boolean;
   error: unknown;
-  /** A busca já chegou (ou falhou) depois de a tela abrir: o que há não é só o que estava guardado. */
-  isFetchedAfterMount: boolean;
   refetch: jest.Mock;
 }
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockQueries: Record<string, Query> = {};
+/** O que o banco tem agora: é o que a leitura da confirmação devolve, na hora em que responde. */
+const mockBank: {
+  products: Product[];
+  counts: Record<string, number>;
+  prices: LatestPrice[];
+  stores: { id: string; name: string }[];
+  /** Os produtos com item aberto na despensa. */
+  pantry: string[];
+  /** Os produtos com item numa lista aberta. */
+  list: string[];
+  /** A leitura falha com este erro. */
+  error: Error | null;
+  /** A leitura fica esperando `release`. */
+  hold: boolean;
+  release: () => void;
+  /** Os pares que a confirmação pediu, na ordem. */
+  asked: [string, string][];
+} = { products: [], counts: {}, prices: [], stores: [], pantry: [], list: [], error: null, hold: false, release: () => undefined, asked: [] };
 /** O que o banco responde ao juntar: o que passou, ou um erro. Com `hold`, a resposta fica esperando `finish`. */
 const mockMerge: { calls: unknown[]; moved: object; error: object | null; hold: boolean; finish: () => void } = {
   calls: [],
@@ -32,19 +52,36 @@ const mockMerge: { calls: unknown[]; moved: object; error: object | null; hold: 
 };
 const mockMarked: unknown[] = [];
 
-jest.mock('@/data/home', () => ({ usePantry: () => mockQueries.pantry }));
-jest.mock('@/data/market', () => ({
-  useLatestPrices: () => mockQueries.prices,
-  useOpenListItems: () => mockQueries.listItems,
-  useProducts: () => mockQueries.products,
-  useStores: () => mockQueries.stores,
-}));
+// A confirmação não lê as listas da casa (itens das listas, últimos preços, mercados, despensa): este dublê só
+// tem os produtos, e ela quebraria aqui se voltasse a chamar as outras buscas.
+jest.mock('@/data/market', () => ({ useProducts: () => mockQueries.products }));
 jest.mock('@/data/productMerge', () => ({
   ...jest.requireActual<typeof import('@/data/productMerge')>('@/data/productMerge'),
+  fetchMergeFacts: async (firstId: string, secondId: string) => {
+    mockBank.asked.push([firstId, secondId]);
+    if (mockBank.hold) {
+      await new Promise<void>((resolve) => {
+        mockBank.release = resolve;
+      });
+    }
+    if (mockBank.error) throw mockBank.error;
+    const { productFacts } = jest.requireActual<typeof import('@/domain/productMerge')>('@/domain/productMerge');
+    const ids = [firstId, secondId];
+    const source = {
+      purchases: mockBank.counts,
+      prices: mockBank.prices,
+      stores: mockBank.stores,
+      pantry: mockBank.pantry.map((product_id) => ({ product_id })),
+      listItems: mockBank.list.map((product_id) => ({ product_id })),
+    };
+    return {
+      products: Object.fromEntries(mockBank.products.filter((product) => ids.includes(product.id)).map((product) => [product.id, product])),
+      facts: Object.fromEntries(ids.map((id) => [id, productFacts(id, source)])),
+    };
+  },
   useDistinctPairs: () => mockQueries.distinct,
   // Como a busca de verdade: sem produtos, não busca nada.
-  usePurchaseCounts: (ids: string[]) =>
-    ids.length ? mockQueries.counts : { data: undefined, isPending: true, error: null, isFetchedAfterMount: false, refetch: jest.fn() },
+  usePurchaseCounts: (ids: string[]) => (ids.length ? mockQueries.counts : { data: undefined, isPending: true, error: null, refetch: jest.fn() }),
   useMarkDistinct: () => ({ isPending: false, variables: undefined, mutate: (pair: unknown) => mockMarked.push(pair) }),
   useMergeProducts: () => ({
     isPending: false,
@@ -68,13 +105,9 @@ jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));
 
-const loaded = (data: unknown): Query => ({ data, isPending: false, error: null, isFetchedAfterMount: true, refetch: jest.fn() });
-const onTheWay = (): Query => ({ ...loaded(undefined), isPending: true, isFetchedAfterMount: false });
+const loaded = (data: unknown): Query => ({ data, isPending: false, error: null, refetch: jest.fn() });
+const onTheWay = (): Query => ({ ...loaded(undefined), isPending: true });
 const failed = (): Query => ({ ...loaded(undefined), error: new Error('Sem internet.') });
-/** O que estava guardado no aparelho, com a busca desta tela ainda a caminho. */
-const cached = (data: unknown): Query => ({ ...loaded(data), isFetchedAfterMount: false });
-/** O que estava guardado no aparelho, e a busca desta tela falhou. */
-const cachedAndFailed = (data: unknown): Query => ({ ...loaded(data), error: new Error('Sem internet.') });
 
 const product = (id: string, name: string, category = 'graos'): Product => ({ id, name, category, shelf_life_days: null });
 const price = (product_id: string, store_id: string, unit_price: number, day: string, unit: LatestPrice['unit'] = 'un'): LatestPrice => ({
@@ -98,16 +131,33 @@ const FEIJAO = product('p-feijao', 'Feijão carioca');
 const ALL = [ARROZ, ARROZ_TJ, ARROZ_1KG, LIMAO, LIMOES, BANANA, BANANAS, ACUCAR, ACUCAR2, FEIJAO];
 
 let renderer: ReactTestRenderer | undefined;
+let client: QueryClient;
 let onClose: jest.Mock<() => void>;
 let onMerged: jest.Mock<(keptId: string) => void>;
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+/** Deixa a busca da confirmação andar: a resposta chega e a tela se refaz alguns passos depois. */
+async function settle() {
+  for (let step = 0; step < 3; step += 1) {
+    await act(async () => {
+      await flush();
+    });
+  }
+}
 
 async function render(element: React.ReactElement) {
   await act(async () => {
-    renderer = create(element);
+    renderer = create(<QueryClientProvider client={client}>{element}</QueryClientProvider>);
     await flush();
   });
+  await settle();
+}
+
+/** A leitura que esperava responde, com o que o banco tem agora. */
+async function answer() {
+  mockBank.hold = false;
+  await act(async () => mockBank.release());
+  await settle();
 }
 
 const textOf = (node: ReactTestInstance | string): string => (typeof node === 'string' ? node : node.children.map(textOf).join(''));
@@ -122,7 +172,11 @@ async function press(node: ReactTestInstance) {
     node.props.onPress();
     await flush();
   });
+  await settle();
 }
+
+/** O que a busca da confirmação tem guardado na memória do app. */
+const kept = () => client.getQueryCache().findAll({ queryKey: ['mergeFacts'] });
 
 /** O diálogo de confirmação que a tela abriu por último: [título, mensagem, botão, o que roda ao confirmar]. */
 const lastConfirm = () => jest.mocked(confirmAction).mock.calls.at(-1)!;
@@ -136,34 +190,42 @@ beforeEach(() => {
   mockMerge.error = null;
   mockMerge.hold = false;
   mockMarked.length = 0;
-  Object.assign(mockQueries, {
-    products: loaded(ALL),
-    distinct: loaded([] as DistinctPair[]),
-    counts: loaded({
-      [ARROZ.id]: 2,
-      [ARROZ_TJ.id]: 12,
-      [ARROZ_1KG.id]: 0,
-      [LIMAO.id]: 1,
-      [LIMOES.id]: 1,
-      [BANANA.id]: 6,
-      [BANANAS.id]: 1,
-      [ACUCAR.id]: 0,
-      [ACUCAR2.id]: 1,
-      [FEIJAO.id]: 3,
-    }),
-    prices: loaded([price(ARROZ_TJ.id, 's-assai', 25.9, '10-10'), price(ARROZ_TJ.id, 's-bom', 27.5, '09-20'), price(ARROZ.id, 's-bom', 24.9, '10-05')]),
-    stores: loaded([
+  // Sem a segunda tentativa, que só faria o teste esperar.
+  client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  const counts = {
+    [ARROZ.id]: 2,
+    [ARROZ_TJ.id]: 12,
+    [ARROZ_1KG.id]: 0,
+    [LIMAO.id]: 1,
+    [LIMOES.id]: 1,
+    [BANANA.id]: 6,
+    [BANANAS.id]: 1,
+    [ACUCAR.id]: 0,
+    [ACUCAR2.id]: 1,
+    [FEIJAO.id]: 3,
+  };
+  Object.assign(mockQueries, { products: loaded(ALL), distinct: loaded([] as DistinctPair[]), counts: loaded(counts) });
+  Object.assign(mockBank, {
+    products: ALL,
+    counts,
+    prices: [price(ARROZ_TJ.id, 's-assai', 25.9, '10-10'), price(ARROZ_TJ.id, 's-bom', 27.5, '09-20'), price(ARROZ.id, 's-bom', 24.9, '10-05')],
+    stores: [
       { id: 's-assai', name: 'Assaí' },
       { id: 's-bom', name: 'Mercado Bom' },
-    ]),
-    pantry: loaded([{ product_id: ARROZ.id }]),
-    listItems: loaded([{ product_id: ARROZ.id }, { product_id: null }]),
+    ],
+    pantry: [ARROZ.id],
+    list: [ARROZ.id],
+    error: null,
+    hold: false,
+    release: () => undefined,
+    asked: [],
   });
 });
 
 afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
+  client.clear();
 });
 
 describe('confirmação de juntar', () => {
@@ -195,7 +257,7 @@ describe('confirmação de juntar', () => {
     expect(lastConfirm().slice(0, 3)).toEqual(['Juntar produtos', SUMMARY, 'Juntar']);
     expect(mockMerge.calls).toEqual([]);
     await act(async () => lastConfirm()[3]());
-    expect(mockMerge.calls).toEqual([{ keepId: ARROZ_TJ.id, mergeId: ARROZ.id }]);
+    expect(mockMerge.calls).toEqual([{ keepId: ARROZ_TJ.id, mergeId: ARROZ.id, keepName: ARROZ_TJ.name, mergeName: ARROZ.name }]);
     expect(jest.mocked(notify).mock.calls).toEqual([
       ['Agora é um produto só', '"Arroz 5kg" passou a ser "Arroz Tio João 5 kg". Foram junto 2 compras, 1 item da despensa e 1 item da lista.'],
     ]);
@@ -213,7 +275,7 @@ describe('confirmação de juntar', () => {
     await press(button('Juntar produtos'));
     expect(lastConfirm()[1]).toBe(summary);
     await act(async () => lastConfirm()[3]());
-    expect(mockMerge.calls).toEqual([{ keepId: ARROZ.id, mergeId: ARROZ_TJ.id }]);
+    expect(mockMerge.calls).toEqual([{ keepId: ARROZ.id, mergeId: ARROZ_TJ.id, keepName: ARROZ.name, mergeName: ARROZ_TJ.name }]);
     expect(onMerged.mock.calls).toEqual([[ARROZ.id]]);
   });
 
@@ -236,21 +298,25 @@ describe('confirmação de juntar', () => {
     expect(shown).toContain('"Arroz Tio João 1kg" deixa de existir e fica só "Arroz Tio João 5 kg". Não dá para desfazer.');
     await press(button('Juntar produtos'));
     await act(async () => lastConfirm()[3]());
-    expect(mockMerge.calls).toEqual([{ keepId: ARROZ_TJ.id, mergeId: ARROZ_1KG.id }]);
+    expect(mockMerge.calls).toEqual([{ keepId: ARROZ_TJ.id, mergeId: ARROZ_1KG.id, keepName: ARROZ_TJ.name, mergeName: ARROZ_1KG.name }]);
   });
 
   it('um comprado por peso e o outro por unidade: aviso', async () => {
-    mockQueries.prices = loaded([price(BANANA.id, 's-bom', 5.9, '10-01', 'kg'), price(BANANAS.id, 's-assai', 0.8, '10-02')]);
+    mockBank.prices = [price(BANANA.id, 's-bom', 5.9, '10-01', 'kg'), price(BANANAS.id, 's-assai', 0.8, '10-02')];
     await open(BANANA, BANANAS);
     // "Bananas" tem uma compra só: a frase fala do preço, não de "as compras".
     expect(screen()).toContain('O preço de "Banana" é por peso, e o de "Bananas", por unidade. Juntar mistura os preços dos dois no histórico.');
   });
 
   it('a mesma quantidade em outra unidade não avisa; tamanho lido com dúvida pede para conferir', async () => {
-    await open(product('p-kg', 'Arroz 1kg'), product('p-g', 'Arroz 1000 g'));
+    const [kg, g] = [product('p-kg', 'Arroz 1kg'), product('p-g', 'Arroz 1000 g')];
+    const [doubtful, sure] = [product('p-a', 'Agua 1 5l', 'bebidas'), product('p-b', 'Água 5L', 'bebidas')];
+    mockBank.products = [kg, g, doubtful, sure];
+    await open(kg, g);
+    expect(pressables('radio')).toHaveLength(2);
     expect(screen().join(' ')).not.toContain('Juntar mistura os preços');
     await act(async () => renderer?.unmount());
-    await open(product('p-a', 'Agua 1 5l', 'bebidas'), product('p-b', 'Água 5L', 'bebidas'));
+    await open(doubtful, sure);
     expect(screen()).toContain('Confira se são do mesmo tamanho. Juntar mistura os preços dos dois no histórico.');
   });
 
@@ -299,7 +365,7 @@ describe('confirmação de juntar', () => {
     const [first, second] = jest.mocked(confirmAction).mock.calls.map((call) => call[3]);
     await act(async () => first());
     await act(async () => second());
-    expect(mockMerge.calls).toEqual([{ keepId: ARROZ_TJ.id, mergeId: ARROZ.id }]);
+    expect(mockMerge.calls).toEqual([{ keepId: ARROZ_TJ.id, mergeId: ARROZ.id, keepName: ARROZ_TJ.name, mergeName: ARROZ.name }]);
     await act(async () => mockMerge.finish());
     expect(onMerged.mock.calls).toEqual([[ARROZ_TJ.id]]);
     expect(notify).toHaveBeenCalledTimes(1);
@@ -339,73 +405,224 @@ describe('confirmação de juntar', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('enquanto o que o app sabe não carrega, não há o que confirmar; se falhou, dá para tentar de novo', async () => {
-    mockQueries.counts = onTheWay();
+  it('enquanto a leitura não chega, não há o que confirmar; se falhou, dá para tentar de novo', async () => {
+    mockBank.hold = true;
     await open();
     expect(button('Juntar produtos')).toBeUndefined();
     expect(pressables('radio')).toHaveLength(0);
+    expect(screen()).toEqual(['Juntar produtos']);
+    await answer();
+    expect(screen()).toContain(SUMMARY);
+    expect(button('Juntar produtos')).toBeDefined();
     await act(async () => renderer?.unmount());
 
-    mockQueries.counts = failed();
+    mockBank.error = new Error('Sem internet.');
     await open();
     expect(screen()).toContain('Sem internet.');
     expect(button('Juntar produtos')).toBeUndefined();
-    // Sem contar o pedido que a confirmação faz ao abrir: "Tentar de novo" busca só o que falhou.
-    mockQueries.counts.refetch.mockClear();
-    mockQueries.prices.refetch.mockClear();
-    await press(button('Tentar de novo'));
-    expect(mockQueries.counts.refetch).toHaveBeenCalledTimes(1);
-    expect(mockQueries.prices.refetch).not.toHaveBeenCalled();
-  });
-
-  it('ao abrir, pede de novo tudo o que a confirmação mostra, aproveitando a busca que já estiver a caminho', async () => {
-    await open();
-    for (const key of ['counts', 'prices', 'stores', 'pantry', 'listItems']) {
-      expect(mockQueries[key].refetch.mock.calls).toEqual([[{ cancelRefetch: false }]]);
-    }
-    expect(mockQueries.products.refetch).not.toHaveBeenCalled();
-  });
-
-  it('só com o que estava guardado no aparelho não há o que confirmar: juntar não tem volta, e a despensa pode ter mudado em outro aparelho', async () => {
-    // Guardado: o produto não estava na despensa nem na lista. A busca desta confirmação ainda não voltou.
-    mockQueries.pantry = cached([]);
-    mockQueries.listItems = cached([]);
-    await open();
-    expect(button('Juntar produtos')).toBeUndefined();
     expect(pressables('radio')).toHaveLength(0);
-    expect(screen().join(' ')).not.toContain('passam para');
-    await act(async () => renderer?.unmount());
-
-    // A busca chegou: outro aparelho tinha posto o produto na despensa e na lista, e a frase diz isso.
-    mockQueries.pantry = loaded([{ product_id: ARROZ.id }]);
-    mockQueries.listItems = loaded([{ product_id: ARROZ.id }]);
-    await open();
+    // "Tentar de novo" lê de novo; enquanto a resposta não chega, o erro sai da tela e ainda não há o que confirmar.
+    mockBank.asked = [];
+    mockBank.error = null;
+    mockBank.hold = true;
+    await press(button('Tentar de novo'));
+    expect(mockBank.asked).toEqual([[ARROZ.id, ARROZ_TJ.id]]);
+    expect(screen()).toEqual(['Juntar produtos']);
+    await answer();
     expect(screen()).toContain(SUMMARY);
     expect(button('Juntar produtos')).toBeDefined();
   });
 
-  it('basta uma das buscas ainda não ter voltado para a confirmação esperar', async () => {
-    for (const key of ['counts', 'prices', 'stores', 'pantry', 'listItems']) {
-      const fresh = mockQueries[key];
-      mockQueries[key] = cached(fresh.data);
-      await open();
-      expect(button('Juntar produtos')).toBeUndefined();
-      await act(async () => renderer?.unmount());
-      mockQueries[key] = fresh;
-    }
+  it('ao abrir, uma leitura só, e só dos dois produtos; fechada a confirmação, nada fica guardado e a próxima lê de novo', async () => {
+    await open();
+    expect(mockBank.asked).toEqual([[ARROZ.id, ARROZ_TJ.id]]);
+    expect(kept()).toHaveLength(1);
+    await act(async () => renderer?.unmount());
+    await settle();
+    expect(kept()).toHaveLength(0);
+
+    // Outro aparelho tirou o produto da despensa e da lista: a confirmação seguinte já diz isso.
+    mockBank.pantry = [];
+    mockBank.list = [];
+    await open();
+    expect(mockBank.asked).toHaveLength(2);
+    expect(screen()).toContain('As 2 compras de "Arroz 5kg" passam para "Arroz Tio João 5 kg". Não dá para desfazer.');
   });
 
-  it('a busca falhou e havia dados guardados: mostra o erro, e não a confirmação com o que estava guardado', async () => {
-    mockQueries.pantry = cachedAndFailed([]);
+  // O que os dois nomes dizem e o que vai para o banco saem da leitura: a tela de onde a pessoa veio pode ter
+  // carregado os produtos antes de outro aparelho renomear um deles (um "Arroz" criado com o nome errado).
+  it('os nomes, as categorias e o que vai para o banco são os da leitura, e não os que a tela de antes guardava', async () => {
+    const now = product(ARROZ.id, 'Feijão carioca 1kg', 'graos');
+    mockBank.products = [now, ARROZ_TJ];
+    await open({ ...ARROZ, category: 'outros' }, { ...ARROZ_TJ, name: 'Arroz Tio Joao', category: 'outros' });
+    const shown = screen();
+    expect(shown.join(' ')).not.toContain('Arroz 5kg');
+    expect(shown.join(' ')).not.toContain('Arroz Tio Joao');
+    expect(pressables('radio').map((node) => node.props.accessibilityLabel)).toEqual([
+      'Feijão carioca 1kg. 2 compras · último preço R$ 24,90 em 5 out (Mercado Bom) · na despensa · na lista. Deixa de existir.',
+      'Arroz Tio João 5 kg. 12 compras · último preço R$ 25,90 em 10 out (Assaí). Este nome fica.',
+    ]);
+    // O desenho de cada um é o da categoria e do nome de agora.
+    expect(renderer!.root.findAllByType(CategoryIcon).map((icon) => [icon.props.category, icon.props.name])).toEqual([
+      ['graos', 'Feijão carioca 1kg'],
+      ['graos', 'Arroz Tio João 5 kg'],
+    ]);
+    // Os avisos também: com os nomes de agora, os tamanhos não batem.
+    expect(shown).toContain('Parecem tamanhos diferentes (1 kg e 5 kg). Juntar mistura os preços dos dois no histórico.');
+    const summary = 'As 2 compras, o que está na despensa e na lista de "Feijão carioca 1kg" passam para "Arroz Tio João 5 kg". Não dá para desfazer.';
+    expect(shown).toContain(summary);
+    await press(button('Juntar produtos'));
+    expect(lastConfirm()[1]).toBe(summary);
+    await act(async () => lastConfirm()[3]());
+    expect(mockMerge.calls).toEqual([{ keepId: ARROZ_TJ.id, mergeId: ARROZ.id, keepName: 'Arroz Tio João 5 kg', mergeName: 'Feijão carioca 1kg' }]);
+    expect(jest.mocked(notify).mock.calls[0][1]).toContain('"Feijão carioca 1kg" passou a ser "Arroz Tio João 5 kg".');
+  });
+
+  it('a despensa e a lista de cada um vêm das respostas da leitura', async () => {
+    // Só o produto que fica está na despensa; só o que some está numa lista.
+    mockBank.pantry = [ARROZ_TJ.id];
+    mockBank.list = [ARROZ.id];
     await open();
-    expect(screen()).toContain('Sem internet.');
+    expect(pressables('radio').map((node) => node.props.accessibilityLabel)).toEqual([
+      'Arroz 5kg. 2 compras · último preço R$ 24,90 em 5 out (Mercado Bom) · na lista. Deixa de existir.',
+      'Arroz Tio João 5 kg. 12 compras · último preço R$ 25,90 em 10 out (Assaí) · na despensa. Este nome fica.',
+    ]);
+    expect(screen()).toContain('As 2 compras e o que está na lista de "Arroz 5kg" passam para "Arroz Tio João 5 kg". Não dá para desfazer.');
+  });
+
+  // Quando a leitura não traz um dos dois, ele foi juntado ou apagado em outro aparelho: não há o que confirmar.
+  it('a leitura não trouxe um dos dois: avisa que não existe mais, fecha e busca de novo o que as telas mostram', async () => {
+    const invalidated: unknown[] = [];
+    const invalidate = client.invalidateQueries.bind(client);
+    client.invalidateQueries = ((filters?: { queryKey?: readonly unknown[] }) => {
+      invalidated.push(filters?.queryKey?.[0]);
+      return invalidate(filters);
+    }) as typeof client.invalidateQueries;
+    mockBank.products = ALL.filter((item) => item.id !== ARROZ_TJ.id);
+    await open();
+    expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'Um destes produtos não existe mais: alguém da casa já juntou ou apagou.']]);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onMerged).not.toHaveBeenCalled();
     expect(button('Juntar produtos')).toBeUndefined();
     expect(pressables('radio')).toHaveLength(0);
-    mockQueries.pantry.refetch.mockClear();
-    mockQueries.counts.refetch.mockClear();
-    await press(button('Tentar de novo'));
-    expect(mockQueries.pantry.refetch).toHaveBeenCalledTimes(1);
-    expect(mockQueries.counts.refetch).not.toHaveBeenCalled();
+    expect(mockMerge.calls).toEqual([]);
+    expect([...invalidated].sort()).toEqual([...MERGE_REFRESHES].sort());
+  });
+
+  // A leitura é de alguns segundos antes do toque. O banco confere os nomes que foram junto e recusa se um mudou.
+  describe('um dos dois mudou de nome em outro aparelho, com a confirmação já na tela', () => {
+    const renamed = { code: 'NK008', message: 'product renamed' };
+    const now = product(ARROZ.id, 'Feijão carioca 1kg');
+
+    it('avisa, lê de novo e continua aberta com o nome de agora; nada foi juntado', async () => {
+      await open();
+      await press(button('Juntar produtos'));
+      // O outro aparelho renomeia; o banco recusa o pedido, que levava o nome de antes.
+      mockBank.products = [now, ...ALL.filter((item) => item.id !== ARROZ.id)];
+      mockMerge.error = renamed;
+      mockBank.hold = true;
+      await act(async () => lastConfirm()[3]());
+      await settle();
+      expect(mockMerge.calls).toEqual([{ keepId: ARROZ_TJ.id, mergeId: ARROZ.id, keepName: 'Arroz Tio João 5 kg', mergeName: 'Arroz 5kg' }]);
+      expect(jest.mocked(notify).mock.calls).toEqual([['Confira os nomes', MERGE_RENAMED]]);
+      expect(onMerged).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+      // A leitura nova ainda não chegou: o nome de antes não fica na tela com o botão pronto.
+      expect(mockBank.asked).toHaveLength(2);
+      expect(button('Juntar produtos')).toBeUndefined();
+      expect(pressables('radio')).toHaveLength(0);
+      expect(screen().join(' ')).not.toContain('Arroz 5kg');
+
+      await answer();
+      const summary = 'As 2 compras, o que está na despensa e na lista de "Feijão carioca 1kg" passam para "Arroz Tio João 5 kg". Não dá para desfazer.';
+      expect(screen()).toContain(summary);
+      expect(screen().join(' ')).not.toContain('Arroz 5kg');
+      expect(onClose).not.toHaveBeenCalled();
+
+      // Conferidos os nomes, juntar de novo manda os de agora.
+      mockMerge.error = null;
+      await press(button('Juntar produtos'));
+      expect(lastConfirm()[1]).toBe(summary);
+      await act(async () => lastConfirm()[3]());
+      expect(mockMerge.calls[1]).toEqual({ keepId: ARROZ_TJ.id, mergeId: ARROZ.id, keepName: 'Arroz Tio João 5 kg', mergeName: 'Feijão carioca 1kg' });
+      expect(onMerged.mock.calls).toEqual([[ARROZ_TJ.id]]);
+    });
+
+    it('a leitura nova falhou: mostra o erro com "Tentar de novo", e não a confirmação com os nomes de antes', async () => {
+      await open();
+      await press(button('Juntar produtos'));
+      mockMerge.error = renamed;
+      mockBank.error = new Error('Sem internet.');
+      await act(async () => lastConfirm()[3]());
+      await settle();
+      expect(screen()).toContain('Sem internet.');
+      expect(button('Juntar produtos')).toBeUndefined();
+      expect(pressables('radio')).toHaveLength(0);
+      expect(screen().join(' ')).not.toContain('Arroz 5kg');
+      expect(onClose).not.toHaveBeenCalled();
+
+      mockBank.products = [now, ...ALL.filter((item) => item.id !== ARROZ.id)];
+      mockBank.error = null;
+      await press(button('Tentar de novo'));
+      expect(mockBank.asked).toHaveLength(3);
+      expect(pressables('radio')[0].props.accessibilityLabel).toMatch(/^Feijão carioca 1kg\. /);
+    });
+
+    it('a leitura nova já não traz o produto: avisa que não existe mais e fecha', async () => {
+      await open();
+      await press(button('Juntar produtos'));
+      mockMerge.error = renamed;
+      mockBank.products = ALL.filter((item) => item.id !== ARROZ.id);
+      await act(async () => lastConfirm()[3]());
+      await settle();
+      expect(jest.mocked(notify).mock.calls).toEqual([
+        ['Confira os nomes', MERGE_RENAMED],
+        ['Erro', 'Um destes produtos não existe mais: alguém da casa já juntou ou apagou.'],
+      ]);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // O que a busca tiver guardado de antes (aqui posto à mão) não é o que a confirmação mostra.
+  describe('com uma leitura mais antiga guardada', () => {
+    /** O que se sabia antes: o produto que some não estava na despensa nem na lista. */
+    const older = () =>
+      client.setQueryData(['mergeFacts', ARROZ.id, ARROZ_TJ.id], {
+        products: { [ARROZ.id]: ARROZ, [ARROZ_TJ.id]: ARROZ_TJ },
+        facts: {
+          [ARROZ.id]: { purchases: 2, lastPrice: null, inPantry: false, onList: false, units: [] },
+          [ARROZ_TJ.id]: { purchases: 12, lastPrice: null, inPantry: false, onList: false, units: [] },
+        },
+      });
+
+    it('só vale a leitura que chegou com a confirmação aberta: juntar não tem volta, e a despensa pode ter mudado em outro aparelho', async () => {
+      older();
+      mockBank.hold = true;
+      await open();
+      expect(mockBank.asked).toEqual([[ARROZ.id, ARROZ_TJ.id]]);
+      expect(button('Juntar produtos')).toBeUndefined();
+      expect(pressables('radio')).toHaveLength(0);
+      expect(screen().join(' ')).not.toContain('passam para');
+
+      // A leitura chegou: outro aparelho tinha posto o produto na despensa e na lista, e a frase diz isso.
+      await answer();
+      expect(screen()).toContain(SUMMARY);
+      expect(button('Juntar produtos')).toBeDefined();
+    });
+
+    it('a leitura falhou: mostra o erro, e não a confirmação com o que estava guardado', async () => {
+      older();
+      mockBank.error = new Error('Sem internet.');
+      await open();
+      expect(screen()).toContain('Sem internet.');
+      expect(button('Juntar produtos')).toBeUndefined();
+      expect(pressables('radio')).toHaveLength(0);
+      expect(screen().join(' ')).not.toContain('passam para');
+      mockBank.error = null;
+      await press(button('Tentar de novo'));
+      expect(mockBank.asked).toHaveLength(2);
+      expect(screen()).toContain(SUMMARY);
+    });
   });
 
   it('enquanto o banco junta, a tela não fecha; com a resposta, o aviso e o produto que ficou', async () => {
@@ -488,6 +705,28 @@ describe('escolher com qual produto juntar', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('o produto escolhido já não existe quando a leitura chega: avisa e volta para a lista, sem nada para confirmar', async () => {
+    mockBank.products = ALL.filter((item) => item.id !== ARROZ_TJ.id);
+    await open();
+    await press(renderer!.root.findAll((node) => typeof node.props.onPress === 'function' && textOf(node) === 'Arroz Tio João 5 kgGrãos, massas e cereais')[0]);
+    expect(mockBank.asked).toEqual([[ARROZ.id, ARROZ_TJ.id]]);
+    expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'Um destes produtos não existe mais: alguém da casa já juntou ou apagou.']]);
+    expect(screen()[0]).toBe('Juntar com qual produto?');
+    expect(onClose).not.toHaveBeenCalled();
+    expect(mockMerge.calls).toEqual([]);
+    // Escolher outro produto abre a confirmação dele, com a leitura dele.
+    await press(renderer!.root.findAll((node) => typeof node.props.onPress === 'function' && textOf(node) === 'Arroz Tio João 1kgGrãos, massas e cereais')[0]);
+    expect(mockBank.asked).toEqual([
+      [ARROZ.id, ARROZ_TJ.id],
+      [ARROZ.id, ARROZ_1KG.id],
+    ]);
+    expect(pressables('radio').map((node) => node.props.accessibilityLabel)).toEqual([
+      'Arroz 5kg. 2 compras · último preço R$ 24,90 em 5 out (Mercado Bom) · na despensa · na lista. Este nome fica.',
+      'Arroz Tio João 1kg. nenhuma compra. Deixa de existir.',
+    ]);
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
   it('casa com um produto só: diz que não há outro', async () => {
     mockQueries.products = loaded([ARROZ]);
     await open();
@@ -565,7 +804,7 @@ describe('cartão "Parecem o mesmo produto"', () => {
     await press(button('Juntar produtos'));
     expect(lastConfirm()[1]).toBe('A compra de "Bananas" passa para "Banana". Não dá para desfazer.');
     await act(async () => lastConfirm()[3]());
-    expect(mockMerge.calls).toEqual([{ keepId: BANANA.id, mergeId: BANANAS.id }]);
+    expect(mockMerge.calls).toEqual([{ keepId: BANANA.id, mergeId: BANANAS.id, keepName: BANANA.name, mergeName: BANANAS.name }]);
     expect(onMerged.mock.calls).toEqual([[BANANA.id]]);
     // A confirmação fechou.
     expect(pressables('radio')).toHaveLength(0);
@@ -588,6 +827,7 @@ describe('cartão "Parecem o mesmo produto"', () => {
     const [cut, full] = [product('p-deterg', 'Deterg Ype 500ml', 'limpeza'), product('p-detergente', 'Detergente Ypê 500ml', 'limpeza')];
     mockQueries.products = loaded([cut, full]);
     mockQueries.counts = loaded({ [cut.id]: 1, [full.id]: 1 });
+    Object.assign(mockBank, { products: [cut, full], counts: { [cut.id]: 1, [full.id]: 1 } });
     await open();
     expect(screen().slice(2, 6)).toEqual(['Detergente Ypê 500ml', '1 compra', 'Deterg Ype 500ml', '1 compra']);
     await press(button('Juntar', 0));

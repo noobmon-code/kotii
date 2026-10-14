@@ -184,10 +184,13 @@ export interface ProductFacts {
   units: string[];
 }
 
-/** O que as telas já têm carregado, de onde saem os fatos de cada produto. */
+/**
+ * De onde saem os fatos de cada produto: o que a confirmação de juntar leu do banco sobre os dois (fetchMergeFacts,
+ * em data/productMerge). Da despensa e das listas basta uma linha por produto: a pergunta é se existe.
+ */
 export interface ProductFactsSource {
   purchases: PurchaseCounts;
-  /** Os últimos preços da casa (um por produto, mercado e unidade). */
+  /** Os últimos preços (um por produto, mercado e unidade). */
   prices: readonly { product_id: string; store_id: string; unit: string; unit_price: number; purchased_at: string }[];
   stores: readonly { id: string; name: string }[];
   /** Itens abertos da despensa. */
@@ -384,5 +387,20 @@ export const MERGE_NO_ANSWER = 'A resposta não chegou, e pode ser que os produt
 export const PRODUCT_MERGED_AWAY = 'Um produto daqui foi juntado com outro. Confira e tente de novo.';
 /** O banco não conseguiu passar tudo para o outro produto e desistiu de juntar (55000 de merge_products). */
 export const MERGE_BLOCKED = 'Não deu para juntar: uma parte do que é deste produto não pôde passar para o outro. Nada foi mudado.';
+/**
+ * Um dos dois mudou de nome em outro aparelho depois de a confirmação buscar os produtos: a pessoa confirmou
+ * nomes que já não são os deles. O banco recusa antes de mudar qualquer coisa, e a confirmação busca os dois de
+ * novo para mostrar os nomes de agora.
+ */
+export const MERGE_RENAMED_TITLE = 'Confira os nomes';
+export const MERGE_RENAMED = 'Um destes produtos mudou de nome em outro aparelho, e nada foi juntado. Confira os nomes antes de juntar.';
+
+/**
+ * merge_products recusou porque um nome que a pessoa confirmou não é mais o do produto: o NK008, um código só
+ * dessa recusa (o texto do erro não decide nada).
+ */
+export function isProductRenamed(error: unknown): boolean {
+  return Boolean(error) && typeof error === 'object' && (error as { code?: unknown }).code === 'NK008';
+}
 /** O título do aviso depois de juntar. */
 export const MERGE_DONE_TITLE = 'Agora é um produto só';

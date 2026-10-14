@@ -1,5 +1,6 @@
 // Juntar produtos: os pares "São diferentes" da casa, as compras de cada
-// produto e a função do banco que junta (merge_products).
+// produto, o que a confirmação lê dos dois produtos (fetchMergeFacts) e a
+// função do banco que junta (merge_products).
 //
 // A tabela e a função chegam numa migração própria, e o app pode ser
 // publicado antes dela. Sem a tabela, os pares vêm como null e a sugestão não
@@ -9,20 +10,26 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 
 import {
+  isProductRenamed,
   MERGE_BLOCKED,
   MERGE_NO_ANSWER,
   MERGE_NO_ANSWER_TITLE,
   MERGE_PRODUCT_GONE,
+  MERGE_RENAMED,
+  MERGE_RENAMED_TITLE,
   MERGE_UNAVAILABLE,
   MERGE_UNAVAILABLE_TITLE,
   orderedPair,
   PRODUCT_MERGED_AWAY,
+  productFacts,
   type DistinctPair,
   type MergeMoved,
+  type ProductFacts,
   type PurchaseCounts,
 } from '@/domain/productMerge';
 import { isDeadlock } from '@/lib/databaseErrors';
 import { errorMessage, supabase, unwrap } from '@/lib/supabase';
+import type { LatestPrice, Product } from '@/lib/types';
 
 import { isMissingFunction, isMissingTable } from './missingSchema';
 
@@ -113,6 +120,59 @@ export function usePurchaseCounts(productIds: readonly string[], { keepPrevious 
   });
 }
 
+/** O que a confirmação de juntar mostra, lido do banco só sobre os dois produtos. */
+export interface MergeFacts {
+  /** Os produtos como estão no banco agora, pelo id. O que não está aqui foi juntado ou apagado em outro aparelho. */
+  products: Readonly<Record<string, Product | undefined>>;
+  /** O que o app sabe de cada um dos dois, pelo id. */
+  facts: Readonly<Record<string, ProductFacts>>;
+}
+
+/**
+ * Os dois produtos que a pessoa pensa em juntar, como estão no banco agora, e o que o app sabe de cada um.
+ * Juntar não tem volta, então nada aqui sai das listas da casa (despensa, itens das listas, últimos preços),
+ * que vêm num pedido só e o servidor corta em max_rows, calado: cada parte é pedida só para estes dois e tem
+ * tamanho certo. São duas linhas de produto; uma contagem (as compras); uma resposta de existe ou não existe
+ * por produto (despensa e lista, com os filtros dessas listas: o que não foi consumido, e o item de lista que
+ * não foi arquivada); e os últimos preços dos dois, que são poucos (um por mercado e unidade) e vêm com a
+ * contagem do servidor, que prova que vieram todos. Uma parte que falha, ou que não veio inteira, derruba a
+ * leitura: a confirmação nunca mostra um pedaço.
+ */
+export async function fetchMergeFacts(firstId: string, secondId: string): Promise<MergeFacts> {
+  const ids = [firstId, secondId];
+  // Uma linha basta: a pergunta é se o produto está lá.
+  const inPantry = (id: string) => supabase.from('pantry_items').select('product_id').eq('product_id', id).is('consumed_at', null).limit(1);
+  const onList = (id: string) =>
+    supabase.from('shopping_list_items').select('product_id, list:shopping_lists!inner(id)').eq('product_id', id).is('list.archived_at', null).limit(1);
+  const [found, purchases, priced, ...places] = await Promise.all([
+    supabase.from('products').select('id, name, category, shelf_life_days').in('id', ids),
+    fetchPurchaseCounts(ids),
+    supabase.from('latest_prices').select('product_id, store_id, unit, unit_price, purchased_at', { count: 'exact' }).in('product_id', ids),
+    inPantry(firstId),
+    inPantry(secondId),
+    onList(firstId),
+    onList(secondId),
+  ]);
+  const products = (unwrap(found) ?? []) as Product[];
+  const listed = (unwrap(priced) ?? []) as LatestPrice[];
+  // Sem a contagem, ou com ela maior do que o que veio, não dá para dizer que estes são todos os preços.
+  if (priced.count == null || priced.count > listed.length) throw new Error('Não foi possível carregar todos os preços destes produtos.');
+  // Um zero não é preço (ver fetchLatestPrices, em data/market): sai depois da conferência da contagem.
+  const prices = listed.filter((price) => price.unit_price > 0);
+  const [pantryFirst, pantrySecond, listFirst, listSecond] = places.map((place) => (unwrap(place) ?? []) as { product_id: string | null }[]);
+  // Os mercados desses preços, pelo id (cada pedido traz, no máximo, os ids que levou).
+  const storeIds = [...new Set(prices.map((price) => price.store_id))];
+  const stores: { id: string; name: string }[] = [];
+  for (let at = 0; at < storeIds.length; at += ID_CHUNK) {
+    stores.push(...((unwrap(await supabase.from('stores').select('id, name').in('id', storeIds.slice(at, at + ID_CHUNK))) ?? []) as typeof stores));
+  }
+  const source = { purchases, prices, stores, pantry: [...pantryFirst, ...pantrySecond], listItems: [...listFirst, ...listSecond] };
+  return {
+    products: Object.fromEntries(products.map((product) => [product.id, product])),
+    facts: Object.fromEntries(ids.map((id) => [id, productFacts(id, source)])),
+  };
+}
+
 /**
  * Tudo o que mostrava um dos dois produtos e precisa ser buscado de novo:
  * o que confirmar uma nota atualiza (useConfirmReceipt), o que renomear um
@@ -132,6 +192,11 @@ export const MERGE_REFRESHES = [
   'listLinks',
   'productDistinctPairs',
 ] as const;
+
+/** Busca de novo tudo o que mostrava um dos dois produtos (MERGE_REFRESHES). */
+export function refreshMergedProducts(queryClient: QueryClient) {
+  for (const key of MERGE_REFRESHES) queryClient.invalidateQueries({ queryKey: [key] });
+}
 
 /**
  * O produto já não existe: outra pessoa da casa juntou ou apagou antes. É o P0002 de merge_products e, ao
@@ -181,21 +246,33 @@ export const MERGE_TIMEOUT_MS = 25_000;
 /** O pedido de juntar foi cortado por falta de resposta (MERGE_TIMEOUT_MS): não se sabe se o banco juntou. */
 const isMergeUnanswered = (error: unknown) => error instanceof Error && error.message === MERGE_NO_ANSWER;
 
-/** `mergeId` deixa de existir e tudo o que era dele passa para `keepId`, no banco, de uma vez. Não dá para desfazer. */
+/** O que a confirmação manda juntar: os dois produtos e o nome de cada um como a pessoa leu nela. */
+export interface MergeRequest {
+  keepId: string;
+  mergeId: string;
+  keepName: string;
+  mergeName: string;
+}
+
+/**
+ * `mergeId` deixa de existir e tudo o que era dele passa para `keepId`, no banco, de uma vez. Não dá para
+ * desfazer. Os nomes vão junto: a busca da confirmação é de alguns segundos antes do toque, e o banco recusa
+ * (NK008, sem mudar nada) se um dos dois já tem outro nome.
+ */
 export function useMergeProducts() {
   const queryClient = useQueryClient();
-  const refresh = () => {
-    for (const key of MERGE_REFRESHES) queryClient.invalidateQueries({ queryKey: [key] });
-  };
+  const refresh = () => refreshMergedProducts(queryClient);
   return useMutation({
-    mutationFn: async ({ keepId, mergeId }: { keepId: string; mergeId: string }): Promise<MergeMoved> => {
+    mutationFn: async ({ keepId, mergeId, keepName, mergeName }: MergeRequest): Promise<MergeMoved> => {
       // Pedido pendurado (sinal fraco no mercado; no Android o pedido não tem prazo): sem cortar, a confirmação
       // ficaria girando sem saída.
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), MERGE_TIMEOUT_MS);
       try {
         const moved = unwrap(
-          await supabase.rpc('merge_products', { p_keep: keepId, p_merge: mergeId }).abortSignal(controller.signal),
+          await supabase
+            .rpc('merge_products', { p_keep: keepId, p_merge: mergeId, p_keep_name: keepName, p_merge_name: mergeName })
+            .abortSignal(controller.signal),
         ) as Partial<MergeMoved>;
         return { purchases: Number(moved.purchases ?? 0), pantry: Number(moved.pantry ?? 0), list: Number(moved.list ?? 0) };
       } catch (error) {
@@ -210,9 +287,9 @@ export function useMergeProducts() {
     retry: (failures, error) => failures < 1 && isDeadlock(error),
     retryDelay: 0,
     onSuccess: refresh,
-    // O produto sumiu por outro aparelho, ou a resposta não chegou e o banco pode ter juntado: o que está na
-    // tela ficou velho.
-    onError: (error) => (isProductGone(error) || isMergeUnanswered(error) ? refresh() : undefined),
+    // O produto sumiu ou mudou de nome por outro aparelho, ou a resposta não chegou e o banco pode ter juntado:
+    // o que está na tela ficou velho.
+    onError: (error) => (isProductGone(error) || isProductRenamed(error) || isMergeUnanswered(error) ? refresh() : undefined),
   });
 }
 
@@ -223,6 +300,7 @@ export function mergeErrorNotice(error: unknown): { title: string; message: stri
   }
   if (isMergeUnanswered(error)) return { title: MERGE_NO_ANSWER_TITLE, message: MERGE_NO_ANSWER };
   if (isProductGone(error)) return { title: 'Erro', message: MERGE_PRODUCT_GONE };
+  if (isProductRenamed(error)) return { title: MERGE_RENAMED_TITLE, message: MERGE_RENAMED };
   // A trava de merge_products: alguma linha não trocou de produto, e a função desfez tudo.
   if ((error as { code?: unknown } | null)?.code === '55000') return { title: 'Erro', message: MERGE_BLOCKED };
   return { title: 'Erro', message: errorMessage(error) };

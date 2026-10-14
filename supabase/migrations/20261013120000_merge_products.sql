@@ -69,9 +69,17 @@ create policy "household members re-point purchase history" on public.purchase_h
 -- Devolve o que passou: purchases (linhas de notas confirmadas), pantry (itens
 -- abertos da despensa) e list (itens de listas abertas) são o que a pessoa
 -- lê; os outros números são as linhas trocadas em cada tabela.
+--
+-- p_keep_name e p_merge_name: os nomes que a pessoa leu na confirmação. O app
+-- busca os dois produtos ao abrir a confirmação, mas entre essa busca e o toque
+-- passam alguns segundos, e outro aparelho pode renomear um deles (um "Arroz"
+-- criado com o nome errado vira "Feijão"): a pessoa confirmaria juntar arroz e
+-- acabaria com feijão no histórico, sem volta. Com os dois produtos travados,
+-- o nome dado que não for exatamente o da linha recusa com NK008, antes de
+-- qualquer troca. Sem o nome (omitido ou null), não há conferência.
 -- =============================================================================
 
-create function public.merge_products(p_keep uuid, p_merge uuid)
+create function public.merge_products(p_keep uuid, p_merge uuid, p_keep_name text default null, p_merge_name text default null)
 returns jsonb
 language plpgsql
 security invoker
@@ -100,7 +108,9 @@ begin
 
   -- Trava os dois sempre na ordem dos ids: duas pessoas juntando o mesmo par
   -- ao mesmo tempo (até em sentidos opostos) esperam uma pela outra, sem
-  -- deadlock, e a segunda já não encontra o produto que sumiu.
+  -- deadlock, e a segunda já não encontra o produto que sumiu. A trava também
+  -- segura quem renomeia: as linhas lidas logo abaixo, já com ela, trazem o
+  -- nome que vale até o fim desta transação.
   perform 1 from public.products p where p.id = least(p_keep, p_merge) for update;
   perform 1 from public.products p where p.id = greatest(p_keep, p_merge) for update;
   select * into keep from public.products p where p.id = p_keep;
@@ -111,6 +121,12 @@ begin
   -- Com a RLS os dois são da casa aberta; a conferência vale para quem passa por cima dela (service_role).
   if keep.household_id <> gone.household_id then
     raise exception 'products belong to different households' using errcode = '22023';
+  end if;
+  -- Os nomes que a pessoa confirmou. Depois de "não encontrado": quem não vê o
+  -- produto (outra casa) não fica sabendo se acertou o nome dele.
+  if (p_keep_name is not null and p_keep_name <> keep.name)
+    or (p_merge_name is not null and p_merge_name <> gone.name) then
+    raise exception 'product renamed' using errcode = 'NK008';
   end if;
 
   -- O que a pessoa vai ler que passou, contado antes da troca.
@@ -218,5 +234,5 @@ begin
 end;
 $$;
 
-revoke execute on function public.merge_products(uuid, uuid) from public, anon;
-grant execute on function public.merge_products(uuid, uuid) to authenticated;
+revoke execute on function public.merge_products(uuid, uuid, text, text) from public, anon;
+grant execute on function public.merge_products(uuid, uuid, text, text) to authenticated;

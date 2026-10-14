@@ -5,6 +5,9 @@ import {
   defaultKeep,
   differentSizes,
   factsLine,
+  isProductRenamed,
+  MERGE_RENAMED,
+  MERGE_RENAMED_TITLE,
   mergeCandidates,
   mergeResult,
   mergeSuggestions,
@@ -694,6 +697,28 @@ describe('mergeResult', () => {
 
   it('sem nada para passar, só o que aconteceu', () => {
     expect(result(0, 0, 0)).toBe(done);
+  });
+});
+
+// O banco confere os nomes que a pessoa leu na confirmação (merge_products) e recusa com um código só dele.
+describe('produto que mudou de nome com a confirmação aberta', () => {
+  it('o aviso diz o que houve, que nada foi juntado e o que fazer, sem adivinhar o gênero de ninguém', () => {
+    expect(MERGE_RENAMED_TITLE).toBe('Confira os nomes');
+    expect(MERGE_RENAMED).toBe('Um destes produtos mudou de nome em outro aparelho, e nada foi juntado. Confira os nomes antes de juntar.');
+  });
+
+  it('é o NK008 do banco, e só ele', () => {
+    expect(isProductRenamed({ code: 'NK008', message: 'product renamed' })).toBe(true);
+    // Produto que sumiu, a trava, o pedido desfeito e a função que falta têm cada um o seu aviso.
+    for (const code of ['P0002', '55000', '40P01', 'PGRST202', '23503', 'NK006', '']) {
+      expect(isProductRenamed({ code, message: 'product renamed' })).toBe(false);
+    }
+    // A mensagem não decide: só o código.
+    expect(isProductRenamed({ message: 'product renamed' })).toBe(false);
+    expect(isProductRenamed(new Error('NK008'))).toBe(false);
+    expect(isProductRenamed(null)).toBe(false);
+    expect(isProductRenamed(undefined)).toBe(false);
+    expect(isProductRenamed('NK008')).toBe(false);
   });
 });
 

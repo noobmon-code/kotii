@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -9,7 +9,9 @@ import {
   choiceLabel,
   defaultKeep,
   factsLine,
+  isProductRenamed,
   MERGE_DONE_TITLE,
+  MERGE_PRODUCT_GONE,
   mergeResult,
   mergeSummary,
   mergeWarnings,
@@ -45,7 +47,9 @@ import { useMergeFacts } from './useProductMerge';
  * Juntar dois produtos: a pessoa escolhe o outro produto (se a tela ainda não
  * sabe qual é), vê o que o app sabe de cada um, escolhe o nome que fica e
  * confirma. Um modal só, com os dois passos dentro: abrir um modal enquanto
- * outro fecha falha no iOS. Renderize só quando aberto.
+ * outro fecha falha no iOS. Renderize só quando aberto. `opened` e `other`
+ * dizem quais são os dois; o que a confirmação mostra deles (nome e categoria
+ * também) ela lê do banco.
  */
 export function MergeProductsModal({
   opened,
@@ -72,8 +76,8 @@ export function MergeProductsModal({
         <Backdrop />
         {picked ? (
           <ConfirmStep
-            opened={opened}
-            other={picked}
+            openedId={opened.id}
+            otherId={picked.id}
             // Quem escolheu na lista pode voltar a ela; a sugestão já veio com o par.
             onPickAnother={other ? undefined : () => setPicked(null)}
             onJoining={setJoining}
@@ -155,17 +159,24 @@ function PickStep({ opened, onPick, onClose }: { opened: ProductName; onPick: (p
   );
 }
 
+/**
+ * A confirmação. As props só dizem quais são os dois produtos: o nome, a
+ * categoria e o que o app sabe de cada um vêm da leitura feita com ela aberta
+ * (`useMergeFacts`), e é com isso que ela monta os dois lados, o nome que
+ * fica por padrão, os avisos, a frase e o que manda ao banco.
+ */
 function ConfirmStep({
-  opened,
-  other,
+  openedId,
+  otherId,
   onPickAnother,
   onJoining,
   onClose,
   onGone,
   onMerged,
 }: {
-  opened: ProductName;
-  other: ProductName;
+  /** O produto de onde a pessoa partiu. */
+  openedId: string;
+  otherId: string;
   onPickAnother?: () => void;
   onJoining: (joining: boolean) => void;
   onClose: () => void;
@@ -174,15 +185,26 @@ function ConfirmStep({
   onMerged: (keptId: string) => void;
 }) {
   const c = useColors();
-  const { facts, purchases, error, refetch } = useMergeFacts(opened.id, other.id);
+  const { read, gone: missing, error, refetch } = useMergeFacts(openedId, otherId);
   const merge = useMergeProducts();
   // null: a pessoa ainda não escolheu, vale o padrão (o de mais compras).
   const [chosen, setChosen] = useState<string | null>(null);
   // O pedido de juntar já saiu. Trava no toque: dois toques no botão vermelho abrem dois diálogos (no iPhone os
   // dois ficam na tela), e cada um guarda o `join` do mesmo render, onde `merge.isPending` ainda é falso.
   const sent = useRef(false);
+  // A leitura veio sem um dos dois: outra pessoa da casa juntou ou apagou, e não há o que confirmar. O mesmo
+  // aviso e a mesma saída de quando é o banco que responde isso ao juntar. Uma vez só.
+  const left = useRef(false);
+  useEffect(() => {
+    if (!missing || left.current) return;
+    left.current = true;
+    notify('Erro', MERGE_PRODUCT_GONE);
+    onGone();
+  }, [missing, onGone]);
 
-  if (!facts) {
+  const opened = read?.products[openedId];
+  const other = read?.products[otherId];
+  if (!read || !opened || !other) {
     return (
       <View style={styles.content}>
         <Header title="Juntar produtos" onClose={onClose} />
@@ -191,7 +213,8 @@ function ConfirmStep({
     );
   }
 
-  const keepId = chosen ?? defaultKeep(opened.id, other.id, purchases);
+  const { facts } = read;
+  const keepId = chosen ?? defaultKeep(opened.id, other.id, { [opened.id]: facts[opened.id].purchases, [other.id]: facts[other.id].purchases });
   const [keep, gone] = keepId === opened.id ? [opened, other] : [other, opened];
   const side = (product: ProductName): MergeSide => ({ name: product.name, facts: facts[product.id] });
   const warnings = mergeWarnings(side(opened), side(other));
@@ -202,7 +225,8 @@ function ConfirmStep({
     sent.current = true;
     onJoining(true);
     merge.mutate(
-      { keepId: keep.id, mergeId: gone.id },
+      // Os nomes que estão na tela vão junto: o banco recusa se um deles já não for o do produto.
+      { keepId: keep.id, mergeId: gone.id, keepName: keep.name, mergeName: gone.name },
       {
         onSettled: () => onJoining(false),
         onSuccess: (moved) => {
@@ -215,6 +239,9 @@ function ConfirmStep({
           const { title, message } = mergeErrorNotice(failure);
           notify(title, message);
           if (isProductGone(failure)) onGone();
+          // Um dos dois mudou de nome em outro aparelho e nada foi juntado: a confirmação continua aberta e lê
+          // os dois de novo, para mostrar os nomes de agora.
+          else if (isProductRenamed(failure)) refetch();
         },
       },
     );

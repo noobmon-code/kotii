@@ -1,13 +1,13 @@
-// Juntar produtos: o que as telas precisam, montado com o que já está
-// carregado (produtos, últimos preços, despensa, listas). As regras e as
-// frases ficam em domain/productMerge.
+// Juntar produtos: o que as telas precisam. As sugestões saem do que já está
+// carregado (produtos, pares, compras); a confirmação lê os dois produtos do
+// banco, só para ela. As regras e as frases ficam em domain/productMerge.
 
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo } from 'react';
 
-import { usePantry } from '@/data/home';
-import { useLatestPrices, useOpenListItems, useProducts, useStores } from '@/data/market';
-import { useDistinctPairs, usePurchaseCounts } from '@/data/productMerge';
-import { mergeCandidates, mergeSuggestions, productFacts, type MergeSuggestion, type ProductFacts, type PurchaseCounts } from '@/domain/productMerge';
+import { useProducts } from '@/data/market';
+import { fetchMergeFacts, refreshMergedProducts, useDistinctPairs, usePurchaseCounts, type MergeFacts } from '@/data/productMerge';
+import { mergeCandidates, mergeSuggestions, type MergeSuggestion, type PurchaseCounts } from '@/domain/productMerge';
 
 const NO_PURCHASES: PurchaseCounts = {};
 
@@ -37,45 +37,36 @@ export function useMergeSuggestions(productId?: string): { suggestions: MergeSug
 }
 
 /**
- * O que o app sabe dos dois produtos que a pessoa pensa em juntar. Juntar não
- * tem volta: o que a confirmação mostra (o que passa da despensa e da lista,
- * os avisos de unidade e de tamanho) tem de ter sido buscado com ela aberta,
- * e não só estar guardado no aparelho, onde outro aparelho pode ter posto o
- * produto na despensa ou numa lista depois. Ao abrir, cada busca é pedida de
- * novo (a que já estava a caminho é aproveitada), e `facts` só vem quando
- * todas chegaram depois disso e nenhuma falhou. A busca que falha aparece em
- * `error`, mesmo havendo o que estava guardado.
+ * Os dois produtos que a pessoa pensa em juntar, como estão no banco agora, e
+ * o que o app sabe de cada um. Juntar não tem volta: nada do que a confirmação
+ * mostra sai do que as telas já tinham carregado (os nomes que elas guardavam,
+ * as listas da casa, que o servidor pode cortar), e sim de uma leitura só
+ * sobre os dois (`fetchMergeFacts`), feita com a confirmação aberta e também
+ * quando o par muda. `read` só vem de uma leitura que chegou depois disso e
+ * deu certo: enquanto outra está a caminho não há o que confirmar, e a que
+ * falha aparece em `error`, mesmo havendo a de antes. Fechada a confirmação,
+ * nada fica na memória, e a chave não é das que vão para o aparelho
+ * (PERSISTED, em lib/queryClient). `gone`: a leitura veio sem um dos dois, que
+ * foi juntado ou apagado em outro aparelho; o que as telas mostram dele é
+ * buscado de novo, como depois de juntar.
  */
-export function useMergeFacts(firstId: string, secondId: string) {
-  const counts = usePurchaseCounts([firstId, secondId]);
-  const prices = useLatestPrices();
-  const stores = useStores();
-  const pantry = usePantry();
-  const listItems = useOpenListItems();
-  const queries = [counts, prices, stores, pantry, listItems];
-  const refetchCounts = counts.refetch;
-  const refetchPrices = prices.refetch;
-  const refetchStores = stores.refetch;
-  const refetchPantry = pantry.refetch;
-  const refetchListItems = listItems.refetch;
-  // Também quando o par muda sem a confirmação fechar: o que estava guardado do par novo não é de agora.
+export function useMergeFacts(firstId: string, secondId: string): { read: MergeFacts | null; gone: boolean; error: unknown; refetch: () => void } {
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: ['mergeFacts', firstId, secondId],
+    queryFn: () => fetchMergeFacts(firstId, secondId),
+    gcTime: 0,
+    staleTime: 0,
+    refetchOnMount: 'always',
+    // Só lê de novo quando a confirmação pede: voltar ao app não troca a tela no meio da leitura dela.
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+  const read = query.isSuccess && !query.isFetching && query.isFetchedAfterMount ? query.data : null;
+  const gone = read !== null && (!read.products[firstId] || !read.products[secondId]);
   useEffect(() => {
-    for (const refetch of [refetchCounts, refetchPrices, refetchStores, refetchPantry, refetchListItems]) {
-      void refetch({ cancelRefetch: false });
-    }
-  }, [firstId, secondId, refetchCounts, refetchPrices, refetchStores, refetchPantry, refetchListItems]);
-  const facts = useMemo((): Record<string, ProductFacts> | null => {
-    if (!counts.data || !prices.data || !stores.data || !pantry.data || !listItems.data) return null;
-    const source = { purchases: counts.data, prices: prices.data, stores: stores.data, pantry: pantry.data, listItems: listItems.data };
-    return { [firstId]: productFacts(firstId, source), [secondId]: productFacts(secondId, source) };
-  }, [firstId, secondId, counts.data, prices.data, stores.data, pantry.data, listItems.data]);
-  // A última busca de alguma falhou: com ou sem o que estava guardado, não há o que confirmar.
-  const failed = queries.find((query) => query.error);
-  const current = !failed && queries.every((query) => query.isFetchedAfterMount);
-  return {
-    facts: current ? facts : null,
-    purchases: counts.data ?? NO_PURCHASES,
-    error: failed?.error ?? null,
-    refetch: () => queries.forEach((query) => (query.error ? query.refetch() : undefined)),
-  };
+    if (gone) refreshMergedProducts(queryClient);
+  }, [gone, queryClient]);
+  const { refetch } = query;
+  return { read, gone, error: query.isFetching ? null : query.error, refetch: () => void refetch() };
 }
