@@ -3246,6 +3246,12 @@ select set_config('test.hh_r', :'hh_r', false) \gset
 -- As fichas, pelo nome: test.r_rita, test.r_beto, test.r_lia…
 select count(set_config('test.r_' || lower(name), id::text, false)) as people_r
   from public.people where household_id = :'hh_r' or name = 'Tito' \gset
+-- A ordem só se grava por save_chore, junto com a tarefa. Para os testes que só trocam a ordem: a tarefa como
+-- está no banco e a ordem nova, como o formulário que mostrou o rodízio e não mexeu em mais nada.
+create function pg_temp.save_order(p_chore_id uuid, p_people uuid[]) returns uuid language sql as $$
+  select public.save_chore(c.id, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, p_people => p_people)
+  from public.chores c where c.id = p_chore_id;
+$$;
 set role authenticated;
 
 -- A ordem: quem foi escolhido primeiro começa; pet, gente de outra casa, uma
@@ -3262,10 +3268,10 @@ declare
   once uuid;
   c public.chores;
 begin
-  -- O app grava a tarefa e, logo depois, a ordem.
+  -- A tarefa já existia (aqui, gravada direto na tabela, como o app antigo) e ganha a ordem.
   insert into public.chores (title, recurrence, due_on, assigned_to, points)
     values ('Lavar a louça', 'daily', '2026-10-12', auth.uid(), 10) returning id into dishes;
-  perform public.save_chore_rotation(dishes, array[beto, rita, lia]);
+  perform pg_temp.save_order(dishes, array[beto, rita, lia]);
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[beto, rita, lia],
     'the order is the order picked';
   select * into c from public.chores where id = dishes;
@@ -3273,28 +3279,28 @@ begin
     'a new rotation starts with the first of the order, even if the chore had someone else';
 
   begin
-    perform public.save_chore_rotation(dishes, array[beto, rex]);
+    perform pg_temp.save_order(dishes, array[beto, rex]);
     raise exception 'FAIL: a pet took part in a rotation';
   exception when check_violation then null;
   end;
   begin
-    perform public.save_chore_rotation(dishes, array[beto, tito]);
+    perform pg_temp.save_order(dishes, array[beto, tito]);
     raise exception 'FAIL: a person of another household took part in a rotation';
   exception when no_data_found then null;
   end;
   begin
-    perform public.save_chore_rotation(dishes, array[beto]);
+    perform pg_temp.save_order(dishes, array[beto]);
     raise exception 'FAIL: rotation with one person';
   exception when invalid_parameter_value then null;
   end;
   begin
-    perform public.save_chore_rotation(dishes, array[beto, rita, beto]);
+    perform pg_temp.save_order(dishes, array[beto, rita, beto]);
     raise exception 'FAIL: rotation with a repeated person';
   exception when invalid_parameter_value then null;
   end;
   insert into public.chores (title, due_on) values ('Trocar a lâmpada', '2026-10-12') returning id into once;
   begin
-    perform public.save_chore_rotation(once, array[beto, rita]);
+    perform pg_temp.save_order(once, array[beto, rita]);
     raise exception 'FAIL: rotation on a one-off chore';
   exception when invalid_parameter_value then null;
   end;
@@ -3386,12 +3392,12 @@ begin
   exception when insufficient_privilege then null;
   end;
   begin
-    perform public.save_chore_rotation(dishes, array[beto, rita]);
+    perform public.save_chore(dishes, 'Lavar a louça', null, 'daily', 1, '2026-10-12', p_people => array[beto, rita]);
     raise exception 'FAIL: O saved the order of a foreign chore';
   exception when no_data_found then null;
   end;
   begin
-    perform public.save_chore_rotation(dishes, '{}');
+    perform public.save_chore(dishes, 'Lavar a louça', null, 'daily', 1, '2026-10-12', p_people => '{}');
     raise exception 'FAIL: O ended a foreign rotation';
   exception when no_data_found then null;
   end;
@@ -3408,7 +3414,7 @@ begin
   -- Na casa dele, gente de outra casa não entra.
   insert into public.chores (title, recurrence) values ('Tarefa do Otto', 'weekly') returning id into mine;
   begin
-    perform public.save_chore_rotation(mine, array[tito, beto]);
+    perform pg_temp.save_order(mine, array[tito, beto]);
     raise exception 'FAIL: O put a foreign person in his rotation';
   exception when no_data_found then null;
   end;
@@ -3417,6 +3423,11 @@ end $$;
 set role anon;
 do $$
 begin
+  begin
+    perform public.save_chore(gen_random_uuid(), 'Anon', null, 'daily', 1, '2026-10-12', p_people => '{}');
+    raise exception 'FAIL: anon called save_chore';
+  exception when insufficient_privilege then null;
+  end;
   begin
     perform public.save_chore_rotation(gen_random_uuid(), '{}');
     raise exception 'FAIL: anon called save_chore_rotation';
@@ -3434,6 +3445,12 @@ begin
   begin
     perform public.chore_set_turn(current_setting('test.r_dishes')::uuid, current_setting('test.r_tito')::uuid);
     raise exception 'FAIL: app user called an internal rotation function';
+  exception when insufficient_privilege then null;
+  end;
+  -- As regras da ordem também são uma peça de dentro: pela API, a ordem só se grava junto com a tarefa (save_chore).
+  begin
+    perform public.save_chore_rotation(current_setting('test.r_dishes')::uuid, '{}');
+    raise exception 'FAIL: app user saved an order outside save_chore';
   exception when insufficient_privilege then null;
   end;
 end $$;
@@ -3488,7 +3505,7 @@ begin
 
   -- App já instalado: chama sem o vencimento e lê as colunas de sempre.
   insert into public.chores (title, recurrence, due_on) values ('Levar o lixo', 'weekly', '2026-10-12') returning id into trash;
-  perform public.save_chore_rotation(trash, array[rita, beto]);
+  perform pg_temp.save_order(trash, array[rita, beto]);
   select * into r from public.complete_chore(trash, '2026-10-12');
   assert r.completed and r.points = 0 and r.person_id is null and r.due_on = '2026-10-19' and r.active and r.next_person_id = beto,
     'the old call shape completes and passes the turn';
@@ -3531,7 +3548,7 @@ begin
   assert public.skip_chore_turn(plain, beto) is null, 'no rotation: nothing to skip';
   assert (select assigned_to from public.chores where id = plain) = auth.uid(), 'and the chore keeps its person';
   -- Apagar a tarefa leva a ordem dela.
-  perform public.save_chore_rotation(plain, array[lia, beto]);
+  perform pg_temp.save_order(plain, array[lia, beto]);
   delete from public.chores where id = plain;
   assert (select count(*) from public.chore_rotation where chore_id = plain) = 0, 'the order goes with the chore';
   begin
@@ -3552,25 +3569,25 @@ declare
   dishes uuid := current_setting('test.r_dishes')::uuid;
   c public.chores;
 begin
-  perform public.save_chore_rotation(dishes, array[lia, beto, nina]);
+  perform pg_temp.save_order(dishes, array[lia, beto, nina]);
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[lia, beto, nina],
     'the order is replaced at once';
   assert (select assigned_to from public.chores where id = dishes) = auth.uid(), 'who stays in the order keeps the turn';
-  perform public.save_chore_rotation(dishes, array[nina, lia]);
+  perform pg_temp.save_order(dishes, array[nina, lia]);
   select * into c from public.chores where id = dishes;
   assert c.assigned_to is null and c.kid_id = nina, 'who left the order hands the turn to the first';
-  perform public.save_chore_rotation(dishes, array[beto, rita, nina]);
+  perform pg_temp.save_order(dishes, array[beto, rita, nina]);
   assert (select kid_id from public.chores where id = dishes) = nina, 'the first is not forced when the turn is still in the order';
 
-  perform public.save_chore_rotation(dishes, '{}');
+  perform pg_temp.save_order(dishes, '{}');
   assert (select count(*) from public.chore_rotation where chore_id = dishes) = 0, 'an empty order ends the rotation';
   select * into c from public.chores where id = dishes;
   assert c.assigned_to is null and c.kid_id = nina, 'ending the rotation keeps the current person';
-  perform public.save_chore_rotation(dishes, null);
+  perform pg_temp.save_order(dishes, '{}');
   assert (select kid_id from public.chores where id = dishes) = nina, 'ending again changes nothing';
 
   -- O app antigo passa a tarefa para "Uma vez": o rodízio acaba e fica quem estava na vez.
-  perform public.save_chore_rotation(dishes, array[beto, rita, lia]);
+  perform pg_temp.save_order(dishes, array[beto, rita, lia]);
   perform public.skip_chore_turn(dishes, beto);
   update public.chores set recurrence = 'none' where id = dishes;
   assert (select count(*) from public.chore_rotation where chore_id = dishes) = 0, 'a one-off chore has no rotation';
@@ -3578,315 +3595,495 @@ begin
   update public.chores set recurrence = 'daily' where id = dishes;
 end $$;
 
--- A tarefa sem rodízio grava o responsável e os pontos por save_chore_single: conferir que ela segue sem
--- rodízio e gravar são um passo só no banco. Com rodízio a função recusa (NK006) e nada muda: o formulário que
--- abriu sem rodízio não põe a vez em quem pode nem estar na ordem criada, enquanto isso, em outro celular.
+-- save_chore: o formulário grava a tarefa inteira numa chamada só, numa transação: os campos, o responsável (só
+-- quando foi escolhido) e a ordem do rodízio. Recusada qualquer parte, nada daquela chamada fica gravado.
+-- Primeiro a tarefa nova.
 do $$
 declare
+  hh uuid := current_setting('test.hh_r')::uuid;
   rita uuid := current_setting('test.r_rita')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  rex uuid := current_setting('test.r_rex')::uuid;
+  room uuid;
+  lamp uuid;
+  upkeep uuid;
+  yard uuid;
+  fridge uuid;
+  loose uuid;
+  c public.chores;
+  chores_before integer;
+begin
+  -- Sem rodízio: os campos, os pontos e o responsável escolhido (uma criança).
+  room := public.save_chore(null, 'Arrumar a sala', 'Com o aspirador', 'weekly', 2, '2026-10-12', 5, p_set_turn => true, p_kid_id => lia);
+  select * into c from public.chores where id = room;
+  assert c.household_id = hh and c.title = 'Arrumar a sala' and c.notes = 'Com o aspirador' and c.recurrence = 'weekly'
+    and c.interval_count = 2 and c.due_on = '2026-10-12' and c.points = 5 and c.assigned_to is null and c.kid_id = lia
+    and c.active and c.equipment_id is null and c.created_by = auth.uid(),
+    'a new chore is created in the household of who calls, with the fields, the points and the person chosen';
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = room), 'and without an order';
+  -- Sem os pontos e sem responsável escolhido: 0 ponto, de qualquer um.
+  lamp := public.save_chore(null, 'Trocar a lâmpada', null, 'none', 1, '2026-10-12');
+  select * into c from public.chores where id = lamp;
+  assert c.recurrence = 'none' and c.points = 0 and c.assigned_to is null and c.kid_id is null,
+    'no points and no person in the call: a chore of anyone, worth nothing';
+  -- O responsável só é gravado quando o formulário o escolheu (p_set_turn).
+  loose := public.save_chore(null, 'Sem escolha', null, 'none', 1, '2026-10-12', p_assigned_to => auth.uid(), p_kid_id => lia);
+  select * into c from public.chores where id = loose;
+  assert c.assigned_to is null and c.kid_id is null, 'a person sent without p_set_turn is not written';
+  delete from public.chores where id = loose;
+  -- Manutenção: a tarefa nova nasce ligada ao aparelho.
+  insert into public.equipment (name) values ('Geladeira') returning id into fridge;
+  upkeep := public.save_chore(
+    null, 'Trocar o filtro', null, 'monthly', 6, '2026-11-01',
+    p_equipment_id => fridge, p_set_turn => true, p_assigned_to => auth.uid()
+  );
+  select * into c from public.chores where id = upkeep;
+  assert c.equipment_id = fridge and c.assigned_to = auth.uid() and c.kid_id is null and c.interval_count = 6,
+    'a new maintenance chore is tied to its equipment';
+
+  -- Já com rodízio: a ordem é gravada na mesma chamada, e a vez é do primeiro.
+  yard := public.save_chore(null, 'Regar o jardim', null, 'daily', 1, '2026-10-12', 10, p_people => array[rita, lia]);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = yard) = array[rita, lia],
+    'a new chore is created with its order';
+  select * into c from public.chores where id = yard;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null and c.points = 10,
+    'and the turn starts with the first of the order';
+
+  -- Rodízio recusado na tarefa nova: nem a tarefa fica.
+  chores_before := (select count(*) from public.chores);
+  begin
+    perform public.save_chore(null, 'Não fica', null, 'none', 1, '2026-10-12', p_people => array[rita, lia]);
+    raise exception 'FAIL: a new one-off chore was created with a rotation';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.save_chore(null, 'Não fica', null, 'daily', 1, '2026-10-12', p_people => array[rita, rex]);
+    raise exception 'FAIL: a new chore was created with a pet in its rotation';
+  exception when check_violation then null;
+  end;
+  begin
+    perform public.save_chore(null, 'Não fica', null, 'daily', 1, '2026-10-12', p_people => array[rita]);
+    raise exception 'FAIL: a new chore was created with a rotation of one person';
+  exception when invalid_parameter_value then null;
+  end;
+  assert (select count(*) from public.chores) = chores_before and not exists (select 1 from public.chores where title = 'Não fica'),
+    'a refused order leaves no chore behind';
+
+  perform set_config('test.r_room', room::text, false);
+  perform set_config('test.r_lamp', lamp::text, false);
+  perform set_config('test.r_upkeep', upkeep::text, false);
+  perform set_config('test.r_yard', yard::text, false);
+  perform set_config('test.r_fridge', fridge::text, false);
+end $$;
+
+-- A tarefa que já existe: os campos, e o responsável só quando foi escolhido.
+do $$
+declare
   lia uuid := current_setting('test.r_lia')::uuid;
   nina uuid := current_setting('test.r_nina')::uuid;
   tito uuid := current_setting('test.r_tito')::uuid;
-  room uuid;
-  yard uuid;
+  room uuid := current_setting('test.r_room')::uuid;
+  fridge uuid := current_setting('test.r_fridge')::uuid;
   c public.chores;
   was public.chores;
-  r record;
 begin
-  insert into public.chores (title, notes, recurrence, interval_count, due_on, assigned_to)
-    values ('Arrumar a sala', 'Com o aspirador', 'weekly', 2, '2026-10-12', auth.uid()) returning id into room;
+  -- Só os campos: o responsável e os pontos ficam como estão.
   select * into was from public.chores where id = room;
-
-  -- Sem rodízio: grava a criança e os pontos, e mais nada da tarefa.
-  perform public.save_chore_single(room, null, lia, 5);
+  assert public.save_chore(room, 'Arrumar a sala e o corredor', null, 'daily', 3, '2026-10-20') = room, 'the answer is the id of the chore';
   select * into c from public.chores where id = room;
-  assert c.assigned_to is null and c.kid_id = lia and c.points = 5, 'no rotation: the single save writes the person and the points';
-  was.assigned_to := null;
-  was.kid_id := lia;
-  was.points := 5;
-  assert c = was, 'and nothing else of the chore';
-  perform public.save_chore_single(room, '00000000-0000-0000-0000-000000000021', null, 0);
+  was.title := 'Arrumar a sala e o corredor';
+  was.notes := null;
+  was.recurrence := 'daily';
+  was.interval_count := 3;
+  was.due_on := '2026-10-20';
+  assert c = was, 'fields only: the person and the points stay, and so does everything else of the chore';
+  -- O aparelho é da tarefa nova: na que já existe, ele não muda.
+  perform public.save_chore(room, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, p_equipment_id => fridge);
+  select * into c from public.chores where id = room;
+  assert c = was, 'the equipment of a chore that exists does not change';
+
+  -- O responsável escolhido: um morador, uma criança (com os pontos), qualquer um.
+  perform public.save_chore(room, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, 0,
+    p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000021');
   select * into c from public.chores where id = room;
   assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null and c.points = 0, 'a member, and no points';
+  perform public.save_chore(room, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, 7, p_set_turn => true, p_kid_id => nina);
   -- Sem os pontos na chamada, eles ficam como estão.
-  perform public.save_chore_single(room, null, nina, 7);
-  perform public.save_chore_single(room, null, lia);
+  perform public.save_chore(room, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, p_set_turn => true, p_kid_id => lia);
   select * into c from public.chores where id = room;
-  assert c.kid_id = lia and c.points = 7, 'points left out of the call stay as they were';
-  perform public.save_chore_single(room, null, null, 0);
+  assert c.assigned_to is null and c.kid_id = lia and c.points = 7, 'a kid; points left out of the call stay as they were';
+  perform public.save_chore(room, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, 0, p_set_turn => true);
   select * into was from public.chores where id = room;
   assert was.assigned_to is null and was.kid_id is null and was.points = 0, 'nobody: the chore is of anyone';
 
-  -- Quem pode ser o responsável e quanto a tarefa vale seguem o que a tabela já exigia.
+  -- Quem pode ser o responsável e o que cada campo aceita seguem o que a tabela já exigia. A recusa não deixa
+  -- nada gravado: nem o título novo que veio na mesma chamada.
   begin
-    perform public.save_chore_single(room, null, tito, 0);
+    perform public.save_chore(room, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 3, p_set_turn => true, p_kid_id => tito);
     raise exception 'FAIL: a kid of another household became the person of the chore';
   exception when foreign_key_violation then null;
   end;
   begin
-    perform public.save_chore_single(room, '00000000-0000-0000-0000-000000000023', null, 0);
+    perform public.save_chore(room, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 3,
+      p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000023');
     raise exception 'FAIL: a member of another household became the person of the chore';
   exception when foreign_key_violation then null;
   end;
   begin
-    perform public.save_chore_single(room, null, lia, 1001);
+    perform public.save_chore(room, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 1001);
     raise exception 'FAIL: more points than a chore can be worth';
   exception when check_violation then null;
   end;
   begin
-    perform public.save_chore_single(gen_random_uuid(), null, null, 0);
-    raise exception 'FAIL: single save on a chore that does not exist';
-  exception when no_data_found then null;
+    perform public.save_chore(room, '  ', 'x', 'weekly', 9, '2026-12-01');
+    raise exception 'FAIL: a chore without a title';
+  exception when check_violation then null;
+  end;
+  begin
+    perform public.save_chore(room, 'Outro título', 'x', 'yearly', 9, '2026-12-01');
+    raise exception 'FAIL: a recurrence that does not exist';
+  exception when check_violation then null;
+  end;
+  begin
+    perform public.save_chore(room, 'Outro título', 'x', 'weekly', 0, '2026-12-01');
+    raise exception 'FAIL: an interval of zero';
+  exception when check_violation then null;
   end;
   select * into c from public.chores where id = room;
-  assert c = was, 'a refused value changes nothing';
+  assert c = was, 'a refused save changes nothing';
+  -- A tarefa que não existe (apagada em outro celular): a resposta que o app reconhece.
+  begin
+    perform public.save_chore(gen_random_uuid(), 'Outro título', null, 'weekly', 1, '2026-12-01');
+    raise exception 'FAIL: saved a chore that does not exist';
+  exception when no_data_found then
+    assert sqlerrm = 'chore not found', sqlerrm;
+  end;
+end $$;
 
-  -- Com rodízio (a vez é de Rita): recusa, seja quem for o responsável pedido, e nada muda.
-  insert into public.chores (title, recurrence, due_on, points) values ('Regar o jardim', 'daily', '2026-10-12', 10) returning id into yard;
-  perform public.save_chore_rotation(yard, array[rita, lia]);
+-- A repetição e a ordem na mesma chamada, e as recusas das regras da ordem.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  rex uuid := current_setting('test.r_rex')::uuid;
+  tito uuid := current_setting('test.r_tito')::uuid;
+  lamp uuid := current_setting('test.r_lamp')::uuid;
+  yard uuid := current_setting('test.r_yard')::uuid;
+  c public.chores;
+  was public.chores;
+begin
+  -- A tarefa "Uma vez" que passa a se repetir já com rodízio: uma chamada só. A repetição é gravada antes da
+  -- ordem, na mesma transação, e a vez vai para o primeiro.
+  perform public.save_chore(lamp, 'Trocar a lâmpada', null, 'weekly', 1, '2026-10-12', 10, p_people => array[beto, rita, lia], p_expect_none => true);
+  select * into was from public.chores where id = lamp;
+  assert was.recurrence = 'weekly' and was.assigned_to = auth.uid() and was.kid_id is null and was.points = 10,
+    'a one-off chore becomes a repeating one with its rotation in one call';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = lamp) = array[beto, rita, lia],
+    'with the order asked';
+
+  -- O contrário não existe: "Uma vez" e uma ordem na mesma chamada. A recusa desfaz a repetição gravada e traz de
+  -- volta o rodízio que o gatilho tinha encerrado.
+  begin
+    perform public.save_chore(lamp, 'Outro título', null, 'none', 1, '2026-10-12', p_people => array[rita, beto]);
+    raise exception 'FAIL: an order was saved on a chore that the same call made one-off';
+  exception when invalid_parameter_value then null;
+  end;
+  select * into c from public.chores where id = lamp;
+  assert c = was, 'the refusal undoes the recurrence written by the same call';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = lamp) = array[beto, rita, lia],
+    'and the rotation is whole';
+
+  -- A tarefa em rodízio que vira "Uma vez": o rodízio acaba e ela fica com quem está na vez no banco (Lia, a
+  -- quem a vez passou em outro celular). O formulário não manda o responsável: ele mandaria quem o aparelho
+  -- achava que estava na vez e, se não conhecesse Lia, outra pessoa da ordem, ou ninguém.
+  assert public.skip_chore_turn(lamp, beto) = rita and public.skip_chore_turn(lamp, rita) = lia, 'the turn passed to the kid';
+  perform public.save_chore(lamp, 'Trocar a lâmpada', null, 'none', 1, '2026-10-12', p_people => '{}');
+  select * into c from public.chores where id = lamp;
+  assert c.recurrence = 'none' and c.assigned_to is null and c.kid_id = lia and c.points = 10,
+    'a rotating chore turned one-off keeps whoever had the turn, and the points';
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = lamp), 'and has no rotation';
+  -- O mesmo sem falar da ordem (p_people nulo): quem encerra o rodízio é o gatilho, na mesma transação.
+  perform public.save_chore(lamp, 'Trocar a lâmpada', null, 'daily', 1, '2026-10-12', p_people => array[rita, beto]);
+  assert (select assigned_to from public.chores where id = lamp) = '00000000-0000-0000-0000-000000000021', 'rotating again: the turn is of the first';
+  perform public.save_chore(lamp, 'Trocar a lâmpada', null, 'none', 1, '2026-10-12');
+  select * into c from public.chores where id = lamp;
+  assert c.recurrence = 'none' and c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null,
+    'one-off without a word about the order: the holder stays too';
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = lamp), 'and the rotation is ended';
+
+  -- Encerrar o rodízio (ordem vazia). Com o responsável escolhido, é ele; sem, fica quem estava na vez.
+  perform public.save_chore(yard, 'Regar o jardim', null, 'daily', 1, '2026-10-12', 0, p_set_turn => true, p_assigned_to => auth.uid(), p_people => '{}');
+  select * into c from public.chores where id = yard;
+  assert c.assigned_to = auth.uid() and c.kid_id is null and c.points = 0, 'ending the rotation with a person chosen: the chore is of that person';
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = yard), 'an empty order ends the rotation';
+  perform public.save_chore(yard, 'Regar o jardim', null, 'daily', 1, '2026-10-12', 10, p_people => array[rita, lia]);
+  assert public.skip_chore_turn(yard, rita) = lia, 'the turn passed to the kid';
+  perform public.save_chore(yard, 'Regar o jardim', null, 'daily', 1, '2026-10-12', p_people => '{}');
+  select * into c from public.chores where id = yard;
+  assert c.assigned_to is null and c.kid_id = lia and c.points = 10, 'ending the rotation without choosing: whoever had the turn stays';
+  perform public.save_chore(yard, 'Regar o jardim', null, 'daily', 1, '2026-10-12', p_people => '{}');
+  assert (select kid_id from public.chores where id = yard) = lia, 'ending again changes nothing';
+
+  -- Cada recusa das regras da ordem desfaz também os campos gravados na mesma chamada.
+  perform public.save_chore(yard, 'Regar o jardim', null, 'daily', 1, '2026-10-12', 10, p_people => array[rita, lia, beto]);
   select * into was from public.chores where id = yard;
   begin
-    perform public.save_chore_single(yard, auth.uid(), null, 0);
-    raise exception 'FAIL: the single save put the turn on a member outside the order';
-  exception when sqlstate 'NK006' then null;
+    perform public.save_chore(yard, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => array[beto, rex]);
+    raise exception 'FAIL: a pet took part in a rotation';
+  exception when check_violation then null;
   end;
   begin
-    perform public.save_chore_single(yard, null, nina, 99);
-    raise exception 'FAIL: the single save put the turn on a kid outside the order';
-  exception when sqlstate 'NK006' then null;
+    perform public.save_chore(yard, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => array[beto, tito]);
+    raise exception 'FAIL: a person of another household took part in a rotation';
+  exception when no_data_found then
+    assert sqlerrm = 'Alguém do rodízio não está mais na casa. Confira a ordem e salve de novo.', sqlerrm;
   end;
   begin
-    perform public.save_chore_single(yard, null, lia, 10);
-    raise exception 'FAIL: the single save moved the turn inside the order';
-  exception when sqlstate 'NK006' then null;
+    perform public.save_chore(yard, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => array[beto]);
+    raise exception 'FAIL: rotation with one person';
+  exception when invalid_parameter_value then null;
   end;
   begin
-    perform public.save_chore_single(yard, null, null);
-    raise exception 'FAIL: the single save took the turn from everyone';
-  exception when sqlstate 'NK006' then null;
+    perform public.save_chore(yard, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => array[beto, rita, beto]);
+    raise exception 'FAIL: rotation with a repeated person';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.save_chore(yard, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => array[array[beto, rita]]);
+    raise exception 'FAIL: an order that is not a plain list';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.save_chore(yard, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99,
+      p_people => array(select gen_random_uuid() from generate_series(1, 21)));
+    raise exception 'FAIL: rotation with more than 20 people';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.save_chore(yard, 'Outro título', 'x', 'none', 1, '2026-12-01', 99, p_people => array[beto, rita]);
+    raise exception 'FAIL: rotation on a one-off chore';
+  exception when invalid_parameter_value then
+    assert sqlerrm = 'Só tarefa que se repete pode ter rodízio.', sqlerrm;
   end;
   select * into c from public.chores where id = yard;
-  assert c = was, 'a refused single save changes nothing in the chore';
-  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = yard) = array[rita, lia],
+  assert c = was, 'a refused order changes nothing in the chore: not the title, not the points, not the turn';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = yard) = array[rita, lia, beto],
     'nor in the order';
-  -- A conclusão seguinte é de quem estava na vez, e a vez segue a ordem.
-  select * into r from public.complete_chore(yard, '2026-10-12', '2026-10-12');
-  assert r.completed and r.points = 0 and r.person_id is null and r.next_person_id = lia, 'the turn was still of the member in the order';
-  select * into r from public.complete_chore(yard, '2026-10-13', '2026-10-13');
-  assert r.completed and r.points = 10 and r.person_id = lia and r.next_person_id = rita, 'and the points go to the kid whose turn it is';
-
-  -- O rodízio acabou: a tarefa volta a aceitar o responsável.
-  perform public.save_chore_rotation(yard, '{}');
-  perform public.save_chore_single(yard, auth.uid(), null, 0);
-  select * into c from public.chores where id = yard;
-  assert c.assigned_to = auth.uid() and c.kid_id is null and c.points = 0, 'with the rotation ended, the single save is accepted again';
-  perform set_config('test.r_room', room::text, false);
-  perform set_config('test.r_yard', yard::text, false);
-end $$;
--- Outra casa não grava o responsável desta tarefa, e quem não entrou nem chama a função.
-select set_config('request.jwt.claim.sub', :'user_o', false) \gset
-do $$
-declare
-  room uuid := current_setting('test.r_room')::uuid;
-begin
-  begin
-    perform public.save_chore_single(room, auth.uid(), null, 3);
-    raise exception 'FAIL: O became the person of a foreign chore';
-  exception when no_data_found then null;
-  end;
-  begin
-    perform public.save_chore_single(room, null, current_setting('test.r_tito')::uuid, 3);
-    raise exception 'FAIL: O put his kid in a foreign chore';
-  exception when no_data_found then null;
-  end;
-end $$;
-set role anon;
-do $$
-begin
-  begin
-    perform public.save_chore_single(gen_random_uuid(), null, null, 0);
-    raise exception 'FAIL: anon called save_chore_single';
-  exception when insufficient_privilege then null;
-  end;
-end $$;
-reset role;
-do $$
-declare
-  c public.chores;
-begin
-  select * into c from public.chores where id = current_setting('test.r_room')::uuid;
-  assert c.assigned_to is null and c.kid_id is null and c.points = 0, 'the foreign calls changed nothing';
-  -- Cada permissão conferida sozinha: quem chama é só quem entrou no app.
-  assert not has_function_privilege('public', 'public.save_chore_single(uuid, uuid, uuid, integer)', 'execute'),
-    'save_chore_single is not open to every role';
-  assert not has_function_privilege('anon', 'public.save_chore_single(uuid, uuid, uuid, integer)', 'execute'),
-    'anon cannot call save_chore_single';
-  assert has_function_privilege('authenticated', 'public.save_chore_single(uuid, uuid, uuid, integer)', 'execute'),
-    'members call save_chore_single';
-  -- Roda como dono (a casa é conferida dentro dela), com o search_path vazio, como as irmãs.
-  assert (select p.prosecdef from pg_proc p where p.oid = 'public.save_chore_single(uuid, uuid, uuid, integer)'::regprocedure),
-    'save_chore_single is security definer';
-  assert (select p.proconfig from pg_proc p where p.oid = 'public.save_chore_single(uuid, uuid, uuid, integer)'::regprocedure)
-    = array['search_path=""'], 'with an empty search_path';
 end $$;
 
--- O rodízio novo de uma tarefa que já existe: o formulário que abriu sem rodízio grava a ordem com o terceiro
--- argumento (p_expect_none). Conferir que a tarefa segue sem rodízio e criar a ordem são um passo só no banco,
--- como em save_chore_single: se outro celular criou um rodízio nesse meio-tempo, a função recusa (NK006) e nada
--- muda, em vez de trocar a ordem dele por outra. Sem o terceiro argumento, tudo como antes.
-set role authenticated;
-select set_config('request.jwt.claim.sub', :'user_s', false) \gset
+-- p_expect_none: o formulário abriu sem rodízio. Conferir que a tarefa segue sem rodízio e gravar são um passo só
+-- no banco, com a tarefa travada: se outro celular criou um rodízio nesse meio-tempo, a função recusa (NK006) e
+-- nada muda, em vez de pôr a vez em quem pode nem estar na ordem, ou de trocar por outra a ordem que o formulário
+-- nunca mostrou.
 do $$
 declare
   rita uuid := current_setting('test.r_rita')::uuid;
   beto uuid := current_setting('test.r_beto')::uuid;
   lia uuid := current_setting('test.r_lia')::uuid;
   nina uuid := current_setting('test.r_nina')::uuid;
-  tito uuid := current_setting('test.r_tito')::uuid;
   hall uuid;
-  attic uuid;
-  once uuid;
   c public.chores;
   was public.chores;
+  done record;
 begin
-  -- Sem rodízio (a tarefa era de Nina e vale 3): a ordem é criada e a vez vai para o primeiro, como em todo
-  -- rodízio novo. Nos pontos a função não mexe: o app os grava depois, com o resto da tarefa.
-  insert into public.chores (title, recurrence, due_on, kid_id, points)
-    values ('Varrer o corredor', 'daily', '2026-10-12', nina, 3) returning id into hall;
-  select * into was from public.chores where id = hall;
-  perform public.save_chore_rotation(hall, array[rita, lia], true);
+  -- Sem rodízio (a tarefa é de Nina e vale 3): o responsável escolhido é gravado, e a ordem nova também, com a
+  -- vez no primeiro, como em todo rodízio novo.
+  hall := public.save_chore(null, 'Varrer o corredor', null, 'daily', 1, '2026-10-12', 3, p_set_turn => true, p_kid_id => nina);
+  perform public.save_chore(hall, 'Varrer o corredor', null, 'daily', 1, '2026-10-12', 0,
+    p_set_turn => true, p_assigned_to => auth.uid(), p_expect_none => true);
+  select * into c from public.chores where id = hall;
+  assert c.assigned_to = auth.uid() and c.kid_id is null and c.points = 0, 'no rotation: the flagged save writes the person chosen';
+  perform public.save_chore(hall, 'Varrer o corredor', null, 'daily', 1, '2026-10-12', 10, p_people => array[rita, lia], p_expect_none => true);
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = hall) = array[rita, lia],
     'no rotation: the flagged save creates the order';
-  select * into c from public.chores where id = hall;
-  was.assigned_to := '00000000-0000-0000-0000-000000000021';
-  was.kid_id := null;
-  assert c = was, 'the turn goes to the first of the new order, and nothing else of the chore changes (the points stay)';
+  select * into was from public.chores where id = hall;
+  assert was.assigned_to = '00000000-0000-0000-0000-000000000021' and was.kid_id is null and was.points = 10,
+    'and the turn goes to the first of the new order, not to who the chore was of';
 
-  -- Com rodízio: recusa, seja qual for a ordem pedida (outra, a mesma, nenhuma, uma que nem valeria), e nada muda.
+  -- Com rodízio: recusa, seja o que for que o formulário pede (um responsável, outra ordem, nenhuma, só os
+  -- campos, uma ordem que nem valeria, "Uma vez"), e antes de olhar o pedido.
   begin
-    perform public.save_chore_rotation(hall, array[beto, nina], true);
+    perform public.save_chore(hall, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 0,
+      p_set_turn => true, p_assigned_to => auth.uid(), p_expect_none => true);
+    raise exception 'FAIL: the flagged save put the turn on a member outside the order';
+  exception when sqlstate 'NK006' then null;
+  end;
+  begin
+    perform public.save_chore(hall, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_set_turn => true, p_kid_id => lia, p_expect_none => true);
+    raise exception 'FAIL: the flagged save moved the turn inside the order';
+  exception when sqlstate 'NK006' then null;
+  end;
+  begin
+    perform public.save_chore(hall, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 0, p_set_turn => true, p_expect_none => true);
+    raise exception 'FAIL: the flagged save took the turn from everyone';
+  exception when sqlstate 'NK006' then null;
+  end;
+  begin
+    perform public.save_chore(hall, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => array[beto, nina], p_expect_none => true);
     raise exception 'FAIL: the flagged save replaced a rotation the form never showed';
   exception when sqlstate 'NK006' then null;
   end;
   begin
-    perform public.save_chore_rotation(hall, array[rita, lia], true);
-    raise exception 'FAIL: the flagged save went over a rotation with the same order';
+    perform public.save_chore(hall, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => array[lia, rita], p_expect_none => true);
+    raise exception 'FAIL: the flagged save went over a rotation of the same people in another order';
   exception when sqlstate 'NK006' then null;
   end;
   begin
-    perform public.save_chore_rotation(hall, '{}', true);
+    perform public.save_chore(hall, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => '{}', p_expect_none => true);
     raise exception 'FAIL: the flagged save ended a rotation the form never showed';
   exception when sqlstate 'NK006' then null;
   end;
   begin
-    perform public.save_chore_rotation(hall, array[beto], true);
+    perform public.save_chore(hall, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_expect_none => true);
+    raise exception 'FAIL: the flagged save wrote the fields of a chore that has a rotation';
+  exception when sqlstate 'NK006' then null;
+  end;
+  begin
+    perform public.save_chore(hall, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => array[beto], p_expect_none => true);
     raise exception 'FAIL: the flagged save looked at the order asked before the rotation that exists';
+  exception when sqlstate 'NK006' then null;
+  end;
+  begin
+    perform public.save_chore(hall, 'Outro título', 'x', 'none', 1, '2026-12-01', 99, p_expect_none => true);
+    raise exception 'FAIL: the flagged save made one-off a chore that has a rotation';
   exception when sqlstate 'NK006' then null;
   end;
   -- Pelo nome dos argumentos, como a API chama.
   begin
-    perform public.save_chore_rotation(p_chore_id => hall, p_people => array[lia, beto], p_expect_none => true);
+    perform public.save_chore(
+      p_chore_id => hall, p_title => 'Outro título', p_notes => null, p_recurrence => 'daily', p_interval_count => 1, p_due_on => '2026-12-01',
+      p_points => 0, p_equipment_id => null, p_set_turn => true, p_assigned_to => auth.uid(), p_kid_id => null, p_people => null, p_expect_none => true
+    );
     raise exception 'FAIL: the flagged save, called by name, went over a rotation';
-  exception when sqlstate 'NK006' then null;
+  exception when sqlstate 'NK006' then
+    assert sqlerrm = 'chore has a rotation', sqlerrm;
   end;
   select * into c from public.chores where id = hall;
-  assert c = was, 'a refused flagged save changes nothing in the chore: the turn and the points stay';
+  assert c = was, 'a refused flagged save changes nothing in the chore: not the title, not the turn, not the points';
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = hall) = array[rita, lia],
     'nor in the order';
+  -- A conclusão seguinte é de quem estava na vez, e a vez segue a ordem.
+  select * into done from public.complete_chore(hall, '2026-10-12', '2026-10-12');
+  assert done.completed and done.points = 0 and done.person_id is null and done.next_person_id = lia, 'the turn was still of the member in the order';
 
-  -- Sem o terceiro argumento, ou com ele falso (ou nulo), tudo como antes: a ordem é trocada inteira, quem
-  -- continua nela mantém a vez e, se saiu, a vez vai para o primeiro.
-  perform public.save_chore_rotation(hall, array[lia, rita, beto], false);
-  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = hall) = array[lia, rita, beto],
-    'a false flag replaces the order, as before';
-  assert (select assigned_to from public.chores where id = hall) = '00000000-0000-0000-0000-000000000021', 'and who stays in the order keeps the turn';
-  perform public.save_chore_rotation(hall, array[beto, nina]);
+  -- A mesma ordem não é o rodízio de outro celular: é a deste formulário, de uma chamada que chegou ao banco e
+  -- cuja resposta se perdeu. Salvar de novo passa, grava os campos, e a vez fica onde está (ela já passou para Lia).
+  perform public.save_chore(hall, 'Varrer o corredor e a escada', null, 'daily', 1, '2026-10-13', 10, p_people => array[rita, lia], p_expect_none => true);
   select * into c from public.chores where id = hall;
-  assert c.assigned_to = auth.uid() and c.kid_id is null and c.points = 3, 'two arguments: who left the order hands the turn to the first, as before';
-  perform public.save_chore_rotation(p_chore_id => hall, p_people => array[nina, beto]);
-  perform public.save_chore_rotation(hall, array[nina, beto, lia], null);
+  assert c.title = 'Varrer o corredor e a escada' and c.assigned_to is null and c.kid_id = lia and c.points = 10,
+    'the flagged save of the order the chore already has is not a conflict: the fields are written and the turn stays';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = hall) = array[rita, lia],
+    'and the order is the same';
+
+  -- Sem o aviso (o formulário mostrou o rodízio), ou com ele falso ou nulo: a ordem é trocada inteira, quem
+  -- continua nela mantém a vez e, se saiu, a vez vai para o primeiro.
+  perform public.save_chore(hall, c.title, null, 'daily', 1, '2026-10-13', 10, p_people => array[lia, rita, beto]);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = hall) = array[lia, rita, beto],
+    'without the flag the order is replaced';
+  assert (select kid_id from public.chores where id = hall) = lia, 'and who stays in the order keeps the turn';
+  perform public.save_chore(hall, c.title, null, 'daily', 1, '2026-10-13', 10, p_people => array[beto, nina], p_expect_none => false);
+  select * into c from public.chores where id = hall;
+  assert c.assigned_to = auth.uid() and c.kid_id is null, 'who left the order hands the turn to the first';
+  perform public.save_chore(hall, c.title, null, 'daily', 1, '2026-10-13', 10, p_people => array[nina, beto, lia], p_expect_none => null);
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = hall) = array[nina, beto, lia],
     'a null flag is no flag';
   assert (select assigned_to from public.chores where id = hall) = auth.uid(), 'and the turn stays';
-  perform public.save_chore_rotation(hall, '{}', false);
-  assert (select count(*) from public.chore_rotation where chore_id = hall) = 0, 'an empty order still ends the rotation';
 
   -- O rodízio acabou: a função volta a aceitar o aviso. Ordem vazia numa tarefa sem rodízio: nada a fazer, sem erro.
-  perform public.save_chore_rotation(hall, '{}', true);
-  assert (select count(*) from public.chore_rotation where chore_id = hall) = 0, 'a flagged empty order on a chore without rotation does nothing';
+  perform public.save_chore(hall, c.title, null, 'daily', 1, '2026-10-13', 10, p_people => '{}');
+  perform public.save_chore(hall, c.title, null, 'daily', 1, '2026-10-13', 10, p_people => '{}', p_expect_none => true);
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = hall), 'a flagged empty order on a chore without rotation does nothing';
   assert (select assigned_to from public.chores where id = hall) = auth.uid(), 'and the chore keeps its person';
-  perform public.save_chore_rotation(hall, array[lia, beto], true);
+  perform public.save_chore(hall, c.title, null, 'daily', 1, '2026-10-13', 10, p_people => array[lia, beto], p_expect_none => true);
   select * into c from public.chores where id = hall;
-  assert c.assigned_to is null and c.kid_id = lia and c.points = 3, 'with the rotation ended, the flagged save is accepted again, and the turn starts with the first';
-  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = hall) = array[lia, beto],
-    'with the order asked';
-
-  -- O que a função já recusava continua recusado com o aviso, e nada é criado.
-  insert into public.chores (title, recurrence, due_on, assigned_to) values ('Limpar o sótão', 'weekly', '2026-10-12', auth.uid())
-    returning id into attic;
-  insert into public.chores (title, due_on) values ('Trocar a lâmpada', '2026-10-12') returning id into once;
-  begin
-    perform public.save_chore_rotation(once, array[beto, rita], true);
-    raise exception 'FAIL: flagged rotation on a one-off chore';
-  exception when invalid_parameter_value then null;
-  end;
-  begin
-    perform public.save_chore_rotation(attic, array[beto], true);
-    raise exception 'FAIL: flagged rotation with one person';
-  exception when invalid_parameter_value then null;
-  end;
-  begin
-    perform public.save_chore_rotation(attic, array[beto, tito], true);
-    raise exception 'FAIL: a person of another household took part in a flagged rotation';
-  exception when no_data_found then null;
-  end;
-  begin
-    perform public.save_chore_rotation(gen_random_uuid(), array[beto, rita], true);
-    raise exception 'FAIL: flagged save on a chore that does not exist';
-  exception when no_data_found then null;
-  end;
-  assert not exists (select 1 from public.chore_rotation r where r.chore_id in (attic, once)), 'a refused order creates nothing';
-  assert (select assigned_to from public.chores where id = attic) = auth.uid(), 'and the chore keeps its person';
-
-  -- A tarefa que era "Uma vez" e passa a se repetir já com rodízio: o app grava antes só a repetição, e só na
-  -- tarefa que segue "Uma vez" (essa não tem rodízio). Aí a função aceita; com a tarefa já em rodízio, essa
-  -- gravação não acha a linha e nada muda.
-  update public.chores set recurrence = 'daily', interval_count = 1 where id = once and recurrence = 'none';
-  assert found, 'a chore that is still one-off takes the new recurrence';
-  perform public.save_chore_rotation(once, array[beto, rita], true);
-  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = once) = array[beto, rita],
-    'and then the flagged save creates its rotation';
-  update public.chores set recurrence = 'weekly', interval_count = 2 where id = once and recurrence = 'none';
-  assert not found, 'a chore that repeats (it may have a rotation) is not touched by that write';
-  select * into c from public.chores where id = once;
-  assert c.recurrence = 'daily' and c.interval_count = 1 and c.assigned_to = auth.uid(), 'its recurrence and its turn stay';
-  delete from public.chores where id = once;
+  assert c.assigned_to is null and c.kid_id = lia, 'with the rotation ended, the flagged save is accepted again, and the turn starts with the first';
   perform set_config('test.r_hall', hall::text, false);
-  perform set_config('test.r_attic', attic::text, false);
 end $$;
--- Outra casa não cria nem confere o rodízio desta tarefa: com ordem gravada ou sem, a resposta é a mesma (a
--- tarefa não existe para ela), e quem não entrou nem chama a função.
+
+-- Outra casa não salva nem confere esta tarefa: com rodízio ou sem, com o aviso ou sem, a resposta é a mesma (a
+-- tarefa não existe para ela). Na casa dela, gente e aparelho de outra casa não entram, e a tarefa nova não fica.
 select set_config('request.jwt.claim.sub', :'user_o', false) \gset
 do $$
 declare
   rita uuid := current_setting('test.r_rita')::uuid;
   beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  tito uuid := current_setting('test.r_tito')::uuid;
+  room uuid := current_setting('test.r_room')::uuid;
   hall uuid := current_setting('test.r_hall')::uuid;
-  attic uuid := current_setting('test.r_attic')::uuid;
+  mine uuid;
 begin
   begin
-    perform public.save_chore_rotation(hall, array[beto, rita], true);
+    perform public.save_chore(room, 'Do Otto', null, 'daily', 1, '2026-10-12', 3, p_set_turn => true, p_assigned_to => auth.uid());
+    raise exception 'FAIL: O saved a foreign chore';
+  exception when no_data_found then
+    assert sqlerrm = 'chore not found', sqlerrm;
+  end;
+  begin
+    perform public.save_chore(room, 'Do Otto', null, 'daily', 1, '2026-10-12', 3, p_set_turn => true, p_kid_id => tito, p_expect_none => true);
+    raise exception 'FAIL: O put his kid in a foreign chore';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.save_chore(hall, 'Do Otto', null, 'daily', 1, '2026-10-12', p_people => array[beto, rita], p_expect_none => true);
     raise exception 'FAIL: O learned of, or went over, a foreign rotation with the flag';
+  exception when no_data_found then
+    assert sqlerrm = 'chore not found', sqlerrm;
+  end;
+  begin
+    perform public.save_chore(hall, 'Do Otto', null, 'daily', 1, '2026-10-12', p_people => array[beto, rita]);
+    raise exception 'FAIL: O saved the order of a foreign chore';
   exception when no_data_found then null;
   end;
   begin
-    perform public.save_chore_rotation(attic, array[beto, rita], true);
-    raise exception 'FAIL: O created a rotation in a foreign chore with the flag';
+    perform public.save_chore(hall, 'Do Otto', null, 'daily', 1, '2026-10-12', p_people => '{}');
+    raise exception 'FAIL: O ended a foreign rotation';
   exception when no_data_found then null;
   end;
+
   begin
-    perform public.save_chore_rotation(attic, '{}', true);
-    raise exception 'FAIL: O called the flagged save on a foreign chore';
+    perform public.save_chore(null, 'Tarefa do Otto', null, 'weekly', 1, '2026-10-12', 5, p_set_turn => true, p_kid_id => lia);
+    raise exception 'FAIL: O gave his chore to a kid of another household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    perform public.save_chore(null, 'Tarefa do Otto', null, 'weekly', 1, '2026-10-12',
+      p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000021');
+    raise exception 'FAIL: O gave his chore to a member of another household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    perform public.save_chore(null, 'Tarefa do Otto', null, 'weekly', 1, '2026-10-12', p_equipment_id => current_setting('test.r_fridge')::uuid);
+    raise exception 'FAIL: O tied his chore to the equipment of another household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    perform public.save_chore(null, 'Tarefa do Otto', null, 'weekly', 1, '2026-10-12', p_people => array[tito, beto]);
+    raise exception 'FAIL: O put a foreign person in his rotation';
+  exception when no_data_found then
+    assert sqlerrm = 'Alguém do rodízio não está mais na casa. Confira a ordem e salve de novo.', sqlerrm;
+  end;
+  assert not exists (select 1 from public.chores where title = 'Tarefa do Otto'), 'a refused new chore is not created';
+  -- O que é dele, ele salva: a tarefa nasce na casa dele.
+  mine := public.save_chore(null, 'Tarefa do Otto', null, 'weekly', 1, '2026-10-12', 5, p_set_turn => true, p_kid_id => tito);
+  assert (select household_id from public.chores where id = mine) = public.current_household_id(), 'a new chore of O is created in his household';
+  delete from public.chores where id = mine;
+end $$;
+-- Quem ainda não tem casa não cria tarefa (rodando como dono, a regra de acesso da tabela não barraria).
+select set_config('request.jwt.claim.sub', :'user_t', false) \gset
+do $$
+begin
+  assert public.current_household_id() is null, 'T has no household yet';
+  begin
+    perform public.save_chore(null, 'Sem casa', null, 'none', 1, '2026-10-12');
+    raise exception 'FAIL: someone without a household created a chore';
+  exception when insufficient_privilege then
+    assert sqlerrm = 'sem casa', sqlerrm;
+  end;
+  begin
+    perform public.save_chore(current_setting('test.r_room')::uuid, 'Sem casa', null, 'none', 1, '2026-10-12');
+    raise exception 'FAIL: someone without a household saved a chore';
   exception when no_data_found then null;
   end;
 end $$;
@@ -3894,42 +4091,77 @@ set role anon;
 do $$
 begin
   begin
-    perform public.save_chore_rotation(gen_random_uuid(), '{}', true);
-    raise exception 'FAIL: anon called save_chore_rotation with the flag';
-  exception when insufficient_privilege then null;
+    perform public.save_chore(null, 'Anon', null, 'none', 1, '2026-10-12');
+    raise exception 'FAIL: anon called save_chore';
+  exception when insufficient_privilege then
+    -- A permissão da função, e não a recusa de dentro dela ("sem casa").
+    assert sqlerrm like 'permission denied for function%', sqlerrm;
   end;
 end $$;
 reset role;
 do $$
 declare
-  hall uuid := current_setting('test.r_hall')::uuid;
-  attic uuid := current_setting('test.r_attic')::uuid;
+  save constant text := 'public.save_chore(uuid, text, text, text, integer, date, integer, uuid, boolean, uuid, uuid, uuid[], boolean)';
+  rules constant text := 'public.save_chore_rotation(uuid, uuid[])';
+  c public.chores;
 begin
-  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = hall)
-    = array[current_setting('test.r_lia')::uuid, current_setting('test.r_beto')::uuid], 'the foreign calls changed nothing in the order';
-  assert not exists (select 1 from public.chore_rotation r where r.chore_id = attic), 'and created none';
-  -- Uma função só: a de dois argumentos não ficou para trás (a chamada com dois cai nesta, pelo padrão do terceiro).
+  select * into c from public.chores where id = current_setting('test.r_room')::uuid;
+  assert c.title = 'Arrumar a sala e o corredor' and c.assigned_to is null and c.kid_id is null and c.points = 0, 'the foreign calls changed nothing';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = current_setting('test.r_hall')::uuid)
+    = array[current_setting('test.r_lia')::uuid, current_setting('test.r_beto')::uuid], 'nor in the order';
+  assert not exists (select 1 from public.chores where title in ('Sem casa', 'Anon', 'Do Otto', 'Tarefa do Otto')), 'and created nothing';
+
+  -- Cada permissão conferida sozinha: quem chama save_chore é só quem entrou no app.
+  assert not has_function_privilege('public', save, 'execute'), 'save_chore is not open to every role';
+  assert not has_function_privilege('anon', save, 'execute'), 'anon cannot call save_chore';
+  assert has_function_privilege('authenticated', save, 'execute'), 'members call save_chore';
+  -- Roda como dono (a casa é conferida dentro dela), com o search_path vazio, como as irmãs.
+  assert (select p.prosecdef from pg_proc p where p.oid = save::regprocedure), 'save_chore is security definer';
+  assert (select p.proconfig from pg_proc p where p.oid = save::regprocedure) = array['search_path=""'], 'with an empty search_path';
+  assert (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'save_chore') = 1,
+    'save_chore is one function';
+  -- As regras da ordem são uma peça de dentro: ninguém as chama pela API, nem quem entrou no app.
+  assert not has_function_privilege('public', rules, 'execute'), 'save_chore_rotation is not open to every role';
+  assert not has_function_privilege('anon', rules, 'execute'), 'anon cannot call save_chore_rotation';
+  assert not has_function_privilege('authenticated', rules, 'execute'), 'members cannot call save_chore_rotation straight';
+  assert (select p.proconfig from pg_proc p where p.oid = rules::regprocedure) = array['search_path=""'],
+    'save_chore_rotation has an empty search_path';
+  -- O que saiu, saiu: a função do responsável e a ordem com o terceiro argumento.
+  assert not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'save_chore_single'),
+    'save_chore_single is gone';
+  assert to_regprocedure('public.save_chore_rotation(uuid, uuid[], boolean)') is null, 'the three-argument save_chore_rotation is gone';
   assert (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'save_chore_rotation') = 1,
     'save_chore_rotation is one function';
-  assert to_regprocedure('public.save_chore_rotation(uuid, uuid[])') is null, 'the two-argument signature is gone';
-  assert (select p.pronargdefaults from pg_proc p where p.oid = 'public.save_chore_rotation(uuid, uuid[], boolean)'::regprocedure) = 1,
-    'and the third argument is optional';
-  -- Cada permissão conferida sozinha: quem chama é só quem entrou no app.
-  assert not has_function_privilege('public', 'public.save_chore_rotation(uuid, uuid[], boolean)', 'execute'),
-    'save_chore_rotation is not open to every role';
-  assert not has_function_privilege('anon', 'public.save_chore_rotation(uuid, uuid[], boolean)', 'execute'),
-    'anon cannot call save_chore_rotation';
-  assert has_function_privilege('authenticated', 'public.save_chore_rotation(uuid, uuid[], boolean)', 'execute'),
-    'members call save_chore_rotation';
-  assert (select p.prosecdef from pg_proc p where p.oid = 'public.save_chore_rotation(uuid, uuid[], boolean)'::regprocedure),
-    'save_chore_rotation is security definer';
-  assert (select p.proconfig from pg_proc p where p.oid = 'public.save_chore_rotation(uuid, uuid[], boolean)'::regprocedure)
-    = array['search_path=""'], 'with an empty search_path';
+  -- As outras funções do rodízio: concluir e pular são de quem entrou no app; as peças de dentro, de ninguém.
+  assert not has_function_privilege('public', 'public.complete_chore(uuid, date, date)', 'execute'), 'complete_chore is not open to every role';
+  assert not has_function_privilege('anon', 'public.complete_chore(uuid, date, date)', 'execute'), 'anon cannot call complete_chore';
+  assert has_function_privilege('authenticated', 'public.complete_chore(uuid, date, date)', 'execute'), 'members call complete_chore';
+  assert not has_function_privilege('public', 'public.skip_chore_turn(uuid, uuid)', 'execute'), 'skip_chore_turn is not open to every role';
+  assert not has_function_privilege('anon', 'public.skip_chore_turn(uuid, uuid)', 'execute'), 'anon cannot call skip_chore_turn';
+  assert has_function_privilege('authenticated', 'public.skip_chore_turn(uuid, uuid)', 'execute'), 'members call skip_chore_turn';
+  assert not exists (
+    select 1
+    from unnest(array['public', 'anon', 'authenticated']) as who,
+      unnest(array['public.chore_turn_person(uuid, uuid, uuid)', 'public.chore_set_turn(uuid, uuid)', 'public.chore_next_person(uuid, integer)']) as fn
+    where has_function_privilege(who, fn, 'execute')
+  ), 'the pieces that read and move the turn are called by no role of the API';
 end $$;
 
+-- As tarefas das corridas: três sem rodízio, de Beto, e a da varanda, que vale 4.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_s', false) \gset
+do $$
+begin
+  perform set_config('test.r_attic', public.save_chore(null, 'Limpar o sótão', null, 'weekly', 1, '2026-10-12', p_set_turn => true, p_assigned_to => auth.uid())::text, false);
+  perform set_config('test.r_car', public.save_chore(null, 'Lavar o carro', null, 'weekly', 1, '2026-10-12', p_set_turn => true, p_assigned_to => auth.uid())::text, false);
+  perform set_config('test.r_walk', public.save_chore(null, 'Passear com o Rex', null, 'daily', 1, '2026-10-12', p_set_turn => true, p_assigned_to => auth.uid())::text, false);
+  perform set_config('test.r_porch', public.save_chore(null, 'Varrer a varanda', null, 'daily', 1, '2026-10-12', 4, p_set_turn => true, p_assigned_to => auth.uid())::text, false);
+end $$;
+reset role;
+
 -- A corrida, com duas sessões de verdade: esta e uma segunda, aberta com dblink (vem com o Postgres). Quem
--- chega depois espera a trava da linha da tarefa (as duas funções a pegam com "for update") e só confere o
--- rodízio depois de a primeira gravar.
+-- chega depois espera a trava da linha da tarefa (save_chore a pega com "for update" antes de qualquer outra
+-- coisa) e só confere o rodízio, ou a própria tarefa, depois de a primeira terminar.
 select exists (select 1 from pg_available_extensions where name = 'dblink') as has_dblink \gset
 \if :has_dblink
 create schema race;
@@ -3948,100 +4180,24 @@ select race.dblink_exec('beto', 'set role authenticated') as race_role \gset
 select set_config('test.race_pid', pid::text, false) as race_pid
   from race.dblink('beto', format('select set_config(''request.jwt.claim.sub'', %L, false), pg_backend_pid()', :'user_s')) as t (sub text, pid integer) \gset
 
--- 1. Rita cria o rodízio da sala (Rita, Lia) e ainda não terminou; Beto, com o formulário aberto sem rodízio,
---    salva a tarefa como dele. A gravação dele espera a de Rita e, quando ela termina, é recusada.
+-- (a) Rita cria o rodízio do sótão (Rita, Lia) e ainda não terminou; Beto, com o formulário aberto sem rodízio,
+--     salva a tarefa como dele, com outro título, outra repetição e outros pontos. A gravação dele espera a de
+--     Rita e, quando ela termina, é recusada inteira.
 set role authenticated;
 select set_config('request.jwt.claim.sub', :'user_r', false) \gset
 begin;
-select public.save_chore_rotation(
-  current_setting('test.r_room')::uuid,
-  array[current_setting('test.r_rita')::uuid, current_setting('test.r_lia')::uuid]
-) \gset
-reset role;
-select race.dblink_send_query(
-  'beto',
-  format('select public.save_chore_single(%L, %L, null, 0)', current_setting('test.r_room'), :'user_s')
-) as race_sent \gset
-do $$
-declare
-  beto_pid integer := current_setting('test.race_pid')::integer;
-begin
-  for i in 1..200 loop
-    exit when pg_backend_pid() = any (pg_blocking_pids(beto_pid));
-    perform pg_sleep(0.05);
-  end loop;
-  assert pg_backend_pid() = any (pg_blocking_pids(beto_pid)), 'the single save waits for the chore row that the rotation save holds';
-  assert race.dblink_is_busy('beto') = 1, 'and has not answered yet';
-end $$;
-commit;
-do $$
-declare
-  room uuid := current_setting('test.r_room')::uuid;
-  c public.chores;
-begin
-  begin
-    perform * from race.dblink_get_result('beto') as t (saved text);
-    raise exception 'FAIL: the single save went over a rotation created while it waited';
-  exception when sqlstate 'NK006' then null;
-  end;
-  select * into c from public.chores where id = room;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null, 'the turn is of the first of the new order, not of B';
-  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = room)
-    = array[current_setting('test.r_rita')::uuid, current_setting('test.r_lia')::uuid], 'and the order is whole';
-end $$;
--- A consulta que falhou terminou: a sessão de Beto fica livre para a próxima.
-select count(*) as race_drained from race.dblink_get_result('beto') as t (saved text) \gset
-
--- 2. Na ordem contrária: Rita salva o jardim como dela (sem rodízio) e ainda não terminou; Beto cria o rodízio
---    (Beto, Lia). A gravação dele espera e, como o rodízio é novo, a vez começa pelo primeiro da ordem.
-set role authenticated;
-begin;
-select public.save_chore_single(current_setting('test.r_yard')::uuid, :'user_r', null, 0) \gset
-reset role;
-select race.dblink_send_query(
-  'beto',
-  format('select public.save_chore_rotation(%L, array[%L, %L]::uuid[])', current_setting('test.r_yard'), current_setting('test.r_beto'), current_setting('test.r_lia'))
-) as race_sent \gset
-do $$
-declare
-  beto_pid integer := current_setting('test.race_pid')::integer;
-begin
-  for i in 1..200 loop
-    exit when pg_backend_pid() = any (pg_blocking_pids(beto_pid));
-    perform pg_sleep(0.05);
-  end loop;
-  assert pg_backend_pid() = any (pg_blocking_pids(beto_pid)), 'the rotation save waits for the chore row that the single save holds';
-end $$;
-commit;
-select count(*) as race_saved from race.dblink_get_result('beto') as t (saved text) \gset
-do $$
-declare
-  yard uuid := current_setting('test.r_yard')::uuid;
-  c public.chores;
-begin
-  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = yard)
-    = array[current_setting('test.r_beto')::uuid, current_setting('test.r_lia')::uuid], 'the rotation was created after the single save';
-  select * into c from public.chores where id = yard;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000022' and c.kid_id is null, 'and the turn is inside the order: of its first, not of R';
-end $$;
-
--- 3. Os dois formulários abriram sem rodízio e os dois criam um. Rita grava o do sótão (Rita, Lia) e ainda não
---    terminou; o de Beto (Beto, Nina) espera e, quando ela termina, é recusado: a ordem dela fica inteira.
--- (A consulta de antes, que deu certo, só termina quando não há mais resultado a ler.)
-select count(*) as race_drained from race.dblink_get_result('beto') as t (saved text) \gset
-set role authenticated;
-begin;
-select public.save_chore_rotation(
-  current_setting('test.r_attic')::uuid,
-  array[current_setting('test.r_rita')::uuid, current_setting('test.r_lia')::uuid],
-  true
-) \gset
+select public.save_chore(
+  current_setting('test.r_attic')::uuid, 'Limpar o sótão', null, 'weekly', 1, '2026-10-12', 10,
+  p_people => array[current_setting('test.r_rita')::uuid, current_setting('test.r_lia')::uuid], p_expect_none => true
+) as race_first \gset
+-- A tarefa como Rita a deixa: é com ela que se compara depois.
+select set_config('test.race_was', c::text, false) as race_was from public.chores c where c.id = current_setting('test.r_attic')::uuid \gset
 reset role;
 select race.dblink_send_query(
   'beto',
   format(
-    'select public.save_chore_rotation(%L, array[%L, %L]::uuid[], true)',
-    current_setting('test.r_attic'), current_setting('test.r_beto'), current_setting('test.r_nina')
+    'select public.save_chore(%L, ''Limpar o sótão e o porão'', ''de Beto'', ''daily'', 2, ''2026-11-01'', 0, p_set_turn => true, p_assigned_to => %L, p_expect_none => true)',
+    current_setting('test.r_attic'), :'user_s'
   )
 ) as race_sent \gset
 do $$
@@ -4052,45 +4208,38 @@ begin
     exit when pg_backend_pid() = any (pg_blocking_pids(beto_pid));
     perform pg_sleep(0.05);
   end loop;
-  assert pg_backend_pid() = any (pg_blocking_pids(beto_pid)), 'the flagged save waits for the chore row that the other rotation save holds';
+  assert pg_backend_pid() = any (pg_blocking_pids(beto_pid)), 'the flagged save waits for the chore row that the other save holds';
   assert race.dblink_is_busy('beto') = 1, 'and has not answered yet';
 end $$;
 commit;
 do $$
 declare
   attic uuid := current_setting('test.r_attic')::uuid;
-  c public.chores;
 begin
   begin
-    perform * from race.dblink_get_result('beto') as t (saved text);
-    raise exception 'FAIL: the flagged save replaced a rotation created while it waited';
+    perform * from race.dblink_get_result('beto') as t (saved uuid);
+    raise exception 'FAIL: the flagged save went over a rotation created while it waited';
   exception when sqlstate 'NK006' then null;
   end;
+  assert (select c::text from public.chores c where c.id = attic) = current_setting('test.race_was'),
+    'nothing of the refused save was written: the chore is as the first save left it, with the turn on the first of the new order';
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = attic)
-    = array[current_setting('test.r_rita')::uuid, current_setting('test.r_lia')::uuid], 'the order of who came first is whole';
-  select * into c from public.chores where id = attic;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null and c.points = 0,
-    'and the turn is of its first, not of anyone of the refused order';
+    = array[current_setting('test.r_rita')::uuid, current_setting('test.r_lia')::uuid], 'and the order is whole';
 end $$;
-select count(*) as race_drained from race.dblink_get_result('beto') as t (saved text) \gset
+-- A consulta que falhou terminou: a sessão de Beto fica livre para a próxima.
+select count(*) as race_drained from race.dblink_get_result('beto') as t (saved uuid) \gset
 
--- 4. Na ordem contrária, com quem chega depois sem o aviso (um app de antes, que manda dois argumentos): Rita
---    cria o rodízio do corredor (Rita, Nina) com o aviso e ainda não terminou; a gravação de Beto (Beto, Lia)
---    espera e depois troca a ordem, como sempre trocou. A vez, que era de Rita, vai para o primeiro da ordem nova.
+-- (b) Rita apaga o carro e ainda não terminou; Beto salva a tarefa. A gravação dele espera e, quando a tarefa
+--     some, responde que ela não existe: a resposta que o app troca pelo aviso da tarefa apagada.
 set role authenticated;
-select public.save_chore_rotation(current_setting('test.r_hall')::uuid, '{}') \gset
 begin;
-select public.save_chore_rotation(
-  current_setting('test.r_hall')::uuid,
-  array[current_setting('test.r_rita')::uuid, current_setting('test.r_nina')::uuid],
-  true
-) \gset
+delete from public.chores where id = current_setting('test.r_car')::uuid;
 reset role;
 select race.dblink_send_query(
   'beto',
   format(
-    'select public.save_chore_rotation(%L, array[%L, %L]::uuid[])',
-    current_setting('test.r_hall'), current_setting('test.r_beto'), current_setting('test.r_lia')
+    'select public.save_chore(%L, ''Lavar o carro por dentro'', null, ''weekly'', 1, ''2026-10-12'', 0, p_set_turn => true, p_assigned_to => %L, p_expect_none => true)',
+    current_setting('test.r_car'), :'user_s'
   )
 ) as race_sent \gset
 do $$
@@ -4101,44 +4250,136 @@ begin
     exit when pg_backend_pid() = any (pg_blocking_pids(beto_pid));
     perform pg_sleep(0.05);
   end loop;
-  assert pg_backend_pid() = any (pg_blocking_pids(beto_pid)), 'the save without the flag waits for the chore row that the flagged save holds';
+  assert pg_backend_pid() = any (pg_blocking_pids(beto_pid)), 'the save waits for the chore row that the delete holds';
 end $$;
 commit;
-select count(*) as race_saved from race.dblink_get_result('beto') as t (saved text) \gset
+do $$
+begin
+  begin
+    perform * from race.dblink_get_result('beto') as t (saved uuid);
+    raise exception 'FAIL: the save answered as if a chore deleted while it waited had been saved';
+  exception when no_data_found then
+    assert sqlerrm = 'chore not found', sqlerrm;
+  end;
+  assert not exists (select 1 from public.chores c where c.id = current_setting('test.r_car')::uuid), 'and the chore was not brought back';
+end $$;
+select count(*) as race_drained from race.dblink_get_result('beto') as t (saved uuid) \gset
+
+-- (c) Os dois formulários abriram sem rodízio e os dois criam um. Rita grava o do passeio (Rita, Lia) e ainda não
+--     terminou; o de Beto (Beto, Nina, com outro título e outros pontos) espera e, quando ela termina, é recusado
+--     inteiro: a ordem e a tarefa dela ficam como ela deixou.
+set role authenticated;
+begin;
+select public.save_chore(
+  current_setting('test.r_walk')::uuid, 'Passear com o Rex', null, 'daily', 1, '2026-10-12', 10,
+  p_people => array[current_setting('test.r_rita')::uuid, current_setting('test.r_lia')::uuid], p_expect_none => true
+) as race_first \gset
+select set_config('test.race_was', c::text, false) as race_was from public.chores c where c.id = current_setting('test.r_walk')::uuid \gset
+reset role;
+select race.dblink_send_query(
+  'beto',
+  format(
+    'select public.save_chore(%L, ''Passear com o Rex no parque'', ''de Beto'', ''weekly'', 2, ''2026-11-01'', 7, p_people => array[%L, %L]::uuid[], p_expect_none => true)',
+    current_setting('test.r_walk'), current_setting('test.r_beto'), current_setting('test.r_nina')
+  )
+) as race_sent \gset
 do $$
 declare
-  hall uuid := current_setting('test.r_hall')::uuid;
+  beto_pid integer := current_setting('test.race_pid')::integer;
+begin
+  for i in 1..200 loop
+    exit when pg_backend_pid() = any (pg_blocking_pids(beto_pid));
+    perform pg_sleep(0.05);
+  end loop;
+  assert pg_backend_pid() = any (pg_blocking_pids(beto_pid)), 'the second flagged save waits for the chore row that the first holds';
+  assert race.dblink_is_busy('beto') = 1, 'and has not answered yet';
+end $$;
+commit;
+do $$
+declare
+  walk uuid := current_setting('test.r_walk')::uuid;
+begin
+  begin
+    perform * from race.dblink_get_result('beto') as t (saved uuid);
+    raise exception 'FAIL: the flagged save replaced a rotation created while it waited';
+  exception when sqlstate 'NK006' then null;
+  end;
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = walk)
+    = array[current_setting('test.r_rita')::uuid, current_setting('test.r_lia')::uuid], 'the order of who came first is whole';
+  assert (select c::text from public.chores c where c.id = walk) = current_setting('test.race_was'),
+    'and the refused save is refused whole: the title, the recurrence, the points and the turn are of the first';
+end $$;
+select count(*) as race_drained from race.dblink_get_result('beto') as t (saved uuid) \gset
+
+-- (d) Na ordem contrária, quem chega depois não tem o que recusar: Rita salva a varanda como dela (sem rodízio) e
+--     ainda não terminou; Beto cria o rodízio (Beto, Lia). A gravação dele espera, é aceita inteira (os campos
+--     dele ficam) e, como o rodízio é novo, a vez começa pelo primeiro da ordem.
+set role authenticated;
+begin;
+select public.save_chore(
+  current_setting('test.r_porch')::uuid, 'Varrer a varanda', 'de Rita', 'daily', 1, '2026-10-12', 0,
+  p_set_turn => true, p_assigned_to => :'user_r', p_expect_none => true
+) as race_first \gset
+reset role;
+select race.dblink_send_query(
+  'beto',
+  format(
+    'select public.save_chore(%L, ''Varrer a varanda e a escada'', null, ''daily'', 1, ''2026-10-12'', 10, p_people => array[%L, %L]::uuid[], p_expect_none => true)',
+    current_setting('test.r_porch'), current_setting('test.r_beto'), current_setting('test.r_lia')
+  )
+) as race_sent \gset
+do $$
+declare
+  beto_pid integer := current_setting('test.race_pid')::integer;
+begin
+  for i in 1..200 loop
+    exit when pg_backend_pid() = any (pg_blocking_pids(beto_pid));
+    perform pg_sleep(0.05);
+  end loop;
+  assert pg_backend_pid() = any (pg_blocking_pids(beto_pid)), 'the save of the order waits for the chore row that the save of the person holds';
+end $$;
+commit;
+select count(*) as race_saved from race.dblink_get_result('beto') as t (saved uuid) \gset
+do $$
+declare
+  porch uuid := current_setting('test.r_porch')::uuid;
   c public.chores;
 begin
-  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = hall)
-    = array[current_setting('test.r_beto')::uuid, current_setting('test.r_lia')::uuid], 'without the flag the later save replaces the order, as before';
-  select * into c from public.chores where id = hall;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000022' and c.kid_id is null and c.points = 3,
-    'and the turn is inside the order that stayed: of its first';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = porch)
+    = array[current_setting('test.r_beto')::uuid, current_setting('test.r_lia')::uuid], 'the rotation was created after the save of the person';
+  select * into c from public.chores where id = porch;
+  assert c.title = 'Varrer a varanda e a escada' and c.notes is null and c.points = 10, 'the later save is written whole';
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000022' and c.kid_id is null, 'and the turn is inside the order: of its first, not of R';
 end $$;
+-- (A consulta que deu certo só termina quando não há mais resultado a ler.)
+select count(*) as race_drained from race.dblink_get_result('beto') as t (saved uuid) \gset
 select race.dblink_disconnect('beto') as race_closed \gset
 drop extension dblink;
 drop schema race;
 \else
-\echo '  (este Postgres não tem dblink: a corrida entre duas sessões não rodou; fica conferido que as duas funções travam a linha da tarefa)'
--- Sem a segunda sessão, o que se confere é o que segura a corrida: as duas funções travam a linha da tarefa
--- antes de olhar a ordem, então uma espera a outra terminar.
+\echo '  (este Postgres não tem dblink: a corrida entre duas sessões não rodou; fica conferido que save_chore trava a linha da tarefa antes de tudo)'
+-- Sem a segunda sessão, o que se confere é o que segura a corrida: a função trava a linha da tarefa antes de olhar
+-- a ordem e de gravar, então uma chamada espera a outra terminar.
 do $$
+declare
+  src text := (
+    select p.prosrc from pg_proc p
+    where p.oid = 'public.save_chore(uuid, text, text, text, integer, date, integer, uuid, boolean, uuid, uuid, uuid[], boolean)'::regprocedure
+  );
 begin
-  assert (select p.prosrc from pg_proc p where p.oid = 'public.save_chore_single(uuid, uuid, uuid, integer)'::regprocedure)
-    ~ 'for update;\s+if not found then.*chore_rotation', 'save_chore_single locks the chore row before it looks at the order';
-  assert (select p.prosrc from pg_proc p where p.oid = 'public.save_chore_rotation(uuid, uuid[], boolean)'::regprocedure)
-    ~ 'for update;\s+if not found then.*chore_rotation', 'and so does save_chore_rotation';
-  assert (select p.prosrc from pg_proc p where p.oid = 'public.save_chore_rotation(uuid, uuid[], boolean)'::regprocedure)
-    ~ 'for update;\s+if not found then.*p_expect_none.*NK006.*delete from', 'which, with the flag, refuses before it changes anything';
+  assert src ~ 'for update;\s+if not found then.*chore_rotation', 'save_chore locks the chore row before it looks at the order';
+  assert src ~ 'for update;\s+if not found then.*p_expect_none.*NK006.*update public\.chores', 'with the flag, it refuses before it writes anything';
+  assert src ~ 'update public\.chores.*perform public\.save_chore_rotation', 'and the fields and the order are written by the same call';
 end $$;
 \endif
 set role authenticated;
 select set_config('request.jwt.claim.sub', :'user_s', false) \gset
 delete from public.chores where id in (
-  current_setting('test.r_room')::uuid, current_setting('test.r_yard')::uuid,
-  current_setting('test.r_hall')::uuid, current_setting('test.r_attic')::uuid
+  current_setting('test.r_room')::uuid, current_setting('test.r_lamp')::uuid, current_setting('test.r_upkeep')::uuid,
+  current_setting('test.r_yard')::uuid, current_setting('test.r_hall')::uuid, current_setting('test.r_attic')::uuid,
+  current_setting('test.r_car')::uuid, current_setting('test.r_walk')::uuid, current_setting('test.r_porch')::uuid
 );
+delete from public.equipment where id = current_setting('test.r_fridge')::uuid;
 
 -- Ficha apagada (ou que virou pet) sai da ordem; se era a vez dela, a vez
 -- passa para o seguinte; com uma pessoa só, o rodízio acaba e a tarefa fica com ela.
@@ -4157,8 +4398,8 @@ declare
   c public.chores;
 begin
   insert into public.chores (title, recurrence, points) values ('Varrer a casa', 'weekly', 5) returning id into sweep;
-  perform public.save_chore_rotation(sweep, array[bidu, nina, teo, beto]);
-  perform public.save_chore_rotation(dishes, array[rita, nina, lia]);
+  perform pg_temp.save_order(sweep, array[bidu, nina, teo, beto]);
+  perform pg_temp.save_order(dishes, array[rita, nina, lia]);
   insert into public.chores (title, kid_id, points) values ('Guardar os brinquedos', nina, 5) returning id into plain;
 
   -- Bidu vira pet na vez dele: sai da ordem, e a vez passa.
@@ -4188,7 +4429,7 @@ begin
   assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000022', 'of the same person';
 
   -- Quem sai não estava na vez: a tarefa continua com quem estava.
-  perform public.save_chore_rotation(sweep, array[lia, beto]);
+  perform pg_temp.save_order(sweep, array[lia, beto]);
   assert public.skip_chore_turn(sweep, lia) = beto, 'B is on turn';
   perform set_config('test.r_sweep', sweep::text, false);
   perform set_config('test.r_plain', plain::text, false);

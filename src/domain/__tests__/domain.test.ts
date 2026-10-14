@@ -3,7 +3,7 @@ import glyphs from '@expo/vector-icons/build/vendor/react-native-vector-icons/gl
 
 import { CATEGORY_KEYS } from '../../../supabase/functions/_shared/categories';
 import { CATEGORIES, compareByAisle, getCategory } from '../categories';
-import { choreStatus, describeChoreStatus, describeRecurrence, isChoreGone, isChoreGoneOnSave } from '../chores';
+import { choreGoneOnSave, choreStatus, describeChoreStatus, describeRecurrence, isChoreGone, isChoreGoneOnSave } from '../chores';
 import {
   addDays,
   diffDays,
@@ -228,8 +228,11 @@ describe('chores', () => {
   });
 
   it('knows a chore that no longer exists from the answer of a save', () => {
-    // O que save_chore_single e save_chore_rotation respondem pela tarefa que não está mais nesta casa.
+    // O que save_chore responde pela tarefa que não está mais nesta casa.
     expect(isChoreGoneOnSave({ code: 'P0002', message: 'chore not found', details: null, hint: null })).toBe(true);
+    // No banco que ainda não tem save_chore, a gravação direto na tabela que não acha a linha vira o mesmo erro.
+    expect(isChoreGoneOnSave(choreGoneOnSave())).toBe(true);
+    expect(choreGoneOnSave()).toBeInstanceOf(Error);
     // O mesmo código, por outro motivo: a tarefa existe, quem saiu foi uma pessoa da ordem.
     expect(
       isChoreGoneOnSave({ code: 'P0002', message: 'Alguém do rodízio não está mais na casa. Confira a ordem e salve de novo.' }),

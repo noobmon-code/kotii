@@ -11,14 +11,15 @@ import {
   isRotationChangedElsewhere,
   nextTurn,
   numberedOrder,
+  openedWithoutRotation,
   orderHasKid,
   planRotationSave,
   plannedTurn,
-  REPEAT_SAVED_ROTATION_NOT,
   ROTATION_CHANGED_ELSEWHERE,
   ROTATION_CHECK_FAILED,
   ROTATION_PERSON_UNKNOWN,
-  ROTATION_SAVED_REST_NOT,
+  ROTATION_UNAVAILABLE,
+  rotationAppearedElsewhere,
   rotationErrorMessage,
   rotationLabel,
   rotationOf,
@@ -26,7 +27,6 @@ import {
   rotationPointsLabel,
   rotationProblem,
   skipTurnQuestion,
-  startsRotation,
   toggleInOrder,
   turnOf,
   type ChoreTurn,
@@ -109,9 +109,8 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
   const [kidId, setKidId] = useState<string | null>(chore?.kid_id ?? null);
   // A ordem gravada que o formulário mostrou ao abrir. É por ela que salvar
   // decide, não pela do cache naquela hora: a busca de fundo pode trazer um
-  // rodízio que esta tela nunca mostrou, e ela não pode encerrá-lo. Só muda quando é este formulário que
-  // cria o rodízio e o resto da tarefa não é salvo (ver submit).
-  const [shownOrder, setShownOrder] = useState(savedOrder);
+  // rodízio que esta tela nunca mostrou, e ela não pode encerrá-lo.
+  const [shownOrder] = useState(savedOrder);
   // Rodízio: as fichas na ordem escolhida. De quem é a vez não fica aqui: vem da tarefa.
   const [rotating, setRotating] = useState(shownOrder.length > 0);
   const [order, setOrder] = useState(shownOrder);
@@ -120,8 +119,6 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
   const [points, setPoints] = useState(
     String(chore && (chore.kid_id || orderHasKid(shownOrder, who) || hasUnknownPerson(shownOrder, who)) ? chore.points : 10),
   );
-  // Tarefa nova já criada, cujo rodízio não pôde ser gravado: salvar de novo atualiza essa, em vez de criar outra.
-  const [createdId, setCreatedId] = useState<string>();
   // Conferindo a ordem no servidor antes de salvar (ver submit). A trava é já no toque: o estado só muda no próximo render.
   const [checking, setChecking] = useState(false);
   const submitting = useRef(false);
@@ -131,6 +128,8 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
   const saved = chore ? { turn: chore, order: shownOrder } : undefined;
   // "Uma vez" não tem rodízio: fica só quem está na vez.
   const inRotation = rotating && recurrence !== 'none';
+  // Quem a tela mostra na vez. Se o rodízio já estava gravado, é só o que este aparelho sabe: a vez é do banco, e
+  // salvar não a manda (planRotationSave).
   const planned = plannedTurn(saved, order, who);
   const single: ChoreTurn = rotating ? turnOf(planned) : { assigned_to: kidId ? null : assignedTo, kid_id: kidId };
   const problem = inRotation ? rotationProblem(order, who) : null;
@@ -179,10 +178,12 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
       notify('Confira os dados', 'Título, data (dd/mm/aaaa) e intervalo entre 1 e 365 são obrigatórios.');
       return;
     }
-    // A ordem vai para o banco só com quem este aparelho conhece (planRotationSave). Se ela tem alguém que ele
-    // ainda não carregou (ficha ou morador de há pouco, ou a busca que falhou ao abrir), salvar tiraria essa pessoa
-    // do rodízio e, sendo a única criança, zeraria os pontos. Nada é gravado, e as listas são buscadas de novo.
-    if (inRotation && hasUnknownPerson(order, who)) {
+    // Com a ordem na tela (o rodízio, ou a tarefa em rodízio que virou "Uma vez"), o formulário tira dela, só com
+    // quem este aparelho conhece, a ordem a gravar, quem ele mostra na vez e se a tarefa vale pontos. Se ela tem
+    // alguém que ele ainda não carregou (ficha ou morador de há pouco, ou a busca que falhou ao abrir), salvar tiraria
+    // essa pessoa do rodízio ou, sendo ela quem está na vez, decidiria os pontos por outra pessoa. Nada é gravado, e
+    // as listas são buscadas de novo.
+    if (rotating && hasUnknownPerson(order, who)) {
       notify('Esta tarefa mudou', ROTATION_PERSON_UNKNOWN);
       peopleQuery.refetch();
       household.refetch();
@@ -192,9 +193,17 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
       notify('Rodízio incompleto', problem);
       return;
     }
-    // O formulário abriu sem rodízio (do que o aparelho tinha guardado) e a tarefa ganhou um em outro
-    // aparelho: salvar daqui trocaria a vez e os pontos por dados velhos.
-    if (chore && !shownOrder.length && savedOrder.length) {
+    const plan = planRotationSave({
+      saved,
+      recurrence,
+      choice: rotating ? { mode: 'rotation', order } : { mode: 'single', ...single },
+      people: who,
+    });
+    // O formulário abriu sem rodízio (do que o aparelho tinha guardado) e a tarefa ganhou um em outro aparelho:
+    // salvar daqui trocaria a vez e os pontos por dados velhos. A ordem igual à que ele está salvando não é de outro
+    // aparelho: é a dele, de um salvar que chegou ao servidor sem a resposta voltar, e salvar de novo passa.
+    const expectNone = openedWithoutRotation(saved);
+    if (expectNone && rotationAppearedElsewhere(savedOrder, plan.people)) {
       notify('Esta tarefa mudou', ROTATION_CHANGED_ELSEWHERE);
       return;
     }
@@ -207,13 +216,13 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
     // ter falhado. Por isso, no formulário que abriu sem rodízio, a ordem é conferida agora, direto no servidor (a
     // consulta em cache, sem internet, ficaria parada esperando e o botão não faria nada). Se não deu para
     // conferir, nada é gravado. No banco que ainda não tem o rodízio a resposta é "nenhuma ordem", e a tarefa salva.
-    // Esta conferência dá o aviso sem gravar nada, no caso comum; quem garante é o banco, que confere de novo na
-    // hora de gravar o responsável ou a ordem nova (saveChore), para o rodízio criado entre uma coisa e outra.
-    if (!checked && chore && !shownOrder.length) {
+    // Esta conferência dá o aviso sem gravar nada, no caso comum; quem garante é o banco, que confere de novo, com
+    // a tarefa travada, na mesma chamada que grava (saveChore), para o rodízio criado entre uma coisa e outra.
+    if (!checked && chore && expectNone) {
       submitting.current = true;
       setChecking(true);
       try {
-        if (rotationOf(await fetchChoreRotations(), chore.id).length) {
+        if (rotationAppearedElsewhere(rotationOf(await fetchChoreRotations(), chore.id), plan.people)) {
           notify('Esta tarefa mudou', ROTATION_CHANGED_ELSEWHERE);
           return;
         }
@@ -226,61 +235,44 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
       }
       return submitLatest.current();
     }
-    const plan = planRotationSave({
-      saved,
-      recurrence,
-      choice: rotating ? { mode: 'rotation', order } : { mode: 'single', ...single },
-      people: who,
-    });
-    const id = chore?.id ?? createdId;
+    // A tarefa em rodízio que vira "Uma vez" fica com quem está na vez no banco. Se a tela não mostra os pontos (quem
+    // este aparelho acha que está na vez tem o app), eles também ficam como estão: a vez pode ter passado para uma
+    // criança em outro celular, e o 0 daqui apagaria os pontos dela.
+    const turnStays = !plan.turn && plan.people?.length === 0;
     save.mutate(
       {
-        id,
+        id: chore?.id,
         values: {
           title: title.trim(),
           notes: notes.trim() || null,
           recurrence,
           interval_count: recurrence === 'none' ? 1 : count,
           due_on: dueISO,
-          // Num rodízio que já existia, o responsável nem vai: a vez fica com o banco.
+          // O responsável só vai quando a pessoa o escolheu: num rodízio a vez é do banco. (No rodízio novo vai o
+          // primeiro da ordem, que só o banco que ainda não tem o rodízio grava.)
           ...plan.turn,
-          points: pointsValue,
-          ...(id ? {} : { equipment_id: equipmentId }),
+          ...(turnStays && !earnsPoints ? {} : { points: pointsValue }),
+          ...(chore ? {} : { equipment_id: equipmentId }),
         },
         rotation: plan.people,
-        // Rodízio novo numa tarefa que já existe: a ordem vai primeiro, e o banco confere que ela segue sem rodízio.
-        expectNone: startsRotation(saved, plan.people),
+        expectNone,
       },
       {
+        // A tarefa é salva inteira, numa chamada só: ou deu certo, ou nada daquele toque ficou gravado.
         onSuccess: (result) => {
-          // A tarefa era "Uma vez" e só a repetição nova foi salva: a ordem falhou, e o resto nem foi tentado. Ela segue
-          // sem rodízio, e o formulário fica como está: salvar de novo grava a ordem e o resto.
-          if (result.repeatOnlyError) return notify(REPEAT_SAVED_ROTATION_NOT, errorMessage(result.repeatOnlyError));
-          if (result.restError) {
-            // A ordem nova foi salva; o resto da tarefa ficou de fora. O rodízio agora é o que este formulário
-            // criou: salvar de novo grava o resto como o de um rodízio que ele mostrou, sem esbarrar no próprio.
-            setShownOrder(plan.people ?? []);
-            return notify(ROTATION_SAVED_REST_NOT, errorMessage(result.restError));
-          }
-          if (!result.rotationError) return router.back();
-          // A tarefa foi apagada em outro aparelho: nem ela foi salva (a gravação não achou a linha).
-          if (isChoreGoneOnSave(result.rotationError)) return setGone(true);
-          // A tarefa foi salva; só o rodízio ficou de fora.
-          const unavailable = rotationErrorMessage(result.rotationError);
-          if (unavailable) {
-            notify('A tarefa foi salva, sem o rodízio', unavailable);
-            return router.back();
-          }
-          setCreatedId(result.id);
-          notify('A tarefa foi salva, mas o rodízio não', errorMessage(result.rotationError));
+          // Banco que ainda não tem o rodízio: a tarefa ficou salva, e a ordem pedida, de fora.
+          if (result.rotationUnavailable) notify('A tarefa foi salva, sem o rodízio', ROTATION_UNAVAILABLE);
+          router.back();
         },
         onError: (err) => {
-          // O banco recusou o responsável (ou a ordem nova): a tarefa ganhou um rodízio depois da conferência acima. Nada
-          // deste formulário foi salvo, ele fica aberto, e a tarefa e as ordens já estão sendo buscadas de novo (useSaveChore).
+          // O banco recusou: a tarefa ganhou um rodízio depois da conferência acima. Nada deste formulário foi salvo,
+          // ele fica aberto, e a tarefa e as ordens já estão sendo buscadas de novo (useSaveChore).
           if (isRotationChangedElsewhere(err)) return notify('Esta tarefa mudou', ROTATION_CHANGED_ELSEWHERE);
           // A tarefa foi apagada em outro aparelho (ou a pessoa saiu da casa): nada foi salvo e não há mais o que
           // editar. Em vez de um alerta com o texto do banco, o aviso que a tela já tem para isso, sem esperar a busca.
           if (isChoreGoneOnSave(err)) return setGone(true);
+          // As outras recusas e a falha de rede: o formulário fica aberto, e salvar de novo é seguro (se a chamada
+          // chegou ao servidor antes de a internet cair, a segunda grava a mesma coisa).
           onError(err);
         },
       },

@@ -7,10 +7,8 @@
 -- os pontos). Assim o app já instalado, que só conhece essas duas colunas,
 -- mostra a pessoa certa e conclui como antes.
 --
--- 1. save_chore_rotation grava a ordem (ou encerra o rodízio); save_chore_single
---    grava o responsável da tarefa sem rodízio, e recusa a que tem um. O
---    formulário que abriu sem rodízio e cria um pede o mesmo à primeira
---    (p_expect_none): ela recusa a tarefa que já tem rodízio.
+-- 1. save_chore grava a tarefa inteira numa chamada só: os campos, o
+--    responsável e a ordem do rodízio, numa transação (ou tudo, ou nada).
 -- 2. complete_chore passa a vez ao concluir e devolve quem é o próximo.
 -- 3. skip_chore_turn passa a vez sem concluir.
 -- 4. Gatilhos: quem sai da ordem (ficha apagada) passa a vez adiante; com menos
@@ -37,7 +35,7 @@ create table public.chore_rotation (
 create index chore_rotation_person_idx on public.chore_rotation (person_id);
 create index chore_rotation_household_idx on public.chore_rotation (household_id);
 
--- O app só lê a ordem. Quem grava são as funções abaixo (save_chore_rotation, complete_chore, skip_chore_turn) e
+-- O app só lê a ordem. Quem grava são as funções abaixo (save_chore, complete_chore, skip_chore_turn) e
 -- os gatilhos, que rodam como dono da tabela: escrita direta pela API aceitaria o que a função recusa (rodízio em
 -- tarefa que não se repete, ordem de uma pessoa só, a vez de alguém de fora da ordem).
 alter table public.chore_rotation enable row level security;
@@ -124,26 +122,19 @@ revoke execute on function public.chore_set_turn(uuid, uuid) from public, anon, 
 revoke execute on function public.chore_next_person(uuid, integer) from public, anon, authenticated;
 
 -- =============================================================================
--- 1. Gravar a ordem
+-- 1. Salvar a tarefa: os campos, o responsável e a ordem, de uma vez
 -- =============================================================================
 
+-- As regras da ordem, para save_chore (logo abaixo), que chama esta função
+-- com a tarefa já travada, a casa conferida e os campos novos gravados.
 -- p_people: as fichas na ordem do rodízio (duas ou mais, sem repetir), ou
 -- vazio para encerrar o rodízio (a tarefa fica com quem está na vez). Troca a
 -- ordem inteira de uma vez. Rodízio novo começa pelo primeiro; no que já
 -- existia, quem continua na ordem mantém a vez e, se saiu, ela vai para o
--- primeiro. A tarefa em si o app grava antes, direto na tabela, como sempre.
---
--- p_expect_none: o formulário abriu sem rodízio e vai criar um. Aí a função é
--- chamada antes de o resto da tarefa ser gravado e, com a tarefa travada,
--- confere que ela segue sem rodízio: se um foi criado nesse meio-tempo, em
--- outro celular, recusa (NK006, como save_chore_single) e nada muda, em vez
--- de trocar por outra a ordem que o formulário nunca mostrou. Aceita, a vez
--- vai para o primeiro (é um rodízio novo); os pontos e o resto da tarefa o app
--- grava em seguida. Falso, ou sem o argumento: tudo como acima.
-create function public.save_chore_rotation(p_chore_id uuid, p_people uuid[], p_expect_none boolean default false)
+-- primeiro.
+create function public.save_chore_rotation(p_chore_id uuid, p_people uuid[])
 returns void
 language plpgsql
-security definer
 set search_path = ''
 as $$
 declare
@@ -152,16 +143,7 @@ declare
   had boolean;
   turn uuid;
 begin
-  select * into c from public.chores ch
-  where ch.id = p_chore_id and ch.household_id = public.current_household_id()
-  for update;
-  if not found then
-    raise exception 'chore not found' using errcode = 'P0002';
-  end if;
-  -- Antes de qualquer outra coisa: quem não viu o rodízio não o troca nem o encerra.
-  if p_expect_none and exists (select 1 from public.chore_rotation r where r.chore_id = c.id) then
-    raise exception 'chore has a rotation' using errcode = 'NK006';
-  end if;
+  select * into c from public.chores ch where ch.id = p_chore_id;
 
   if n = 0 then
     delete from public.chore_rotation r where r.chore_id = c.id;
@@ -192,47 +174,121 @@ begin
   end if;
 end;
 $$;
-revoke execute on function public.save_chore_rotation(uuid, uuid[], boolean) from public, anon;
-grant execute on function public.save_chore_rotation(uuid, uuid[], boolean) to authenticated;
+-- Só por dentro de save_chore: nem quem entrou no app a chama. Direto pela
+-- API, gravaria a ordem separada do resto da tarefa, e sem a conferência do
+-- formulário que abriu sem rodízio (p_expect_none, abaixo): os pedidos soltos
+-- que save_chore existe para juntar.
+revoke execute on function public.save_chore_rotation(uuid, uuid[]) from public, anon, authenticated;
 
--- A tarefa sem rodízio: o responsável (p_assigned_to, morador; p_kid_id, quem
--- não tem o app; os dois nulos, qualquer um) e os pontos (nulo: ficam como
--- estão). O formulário que abriu sem rodízio grava os três por aqui, e não
--- direto na tabela: conferir "a tarefa segue sem rodízio?" e gravar são um
--- passo só, com a tarefa travada como em save_chore_rotation, então um espera
--- o outro terminar. Se um rodízio foi criado nesse meio-tempo, em outro
--- celular, a função recusa (NK006) e nada muda: gravado por cima, o
--- responsável de antes ficaria com a vez, talvez sem estar na ordem, e os
--- pontos da conclusão seguinte iriam para a pessoa errada. O resto da tarefa
--- (título, repetição, data) o app grava depois, direto na tabela, como sempre.
-create function public.save_chore_single(p_chore_id uuid, p_assigned_to uuid, p_kid_id uuid, p_points integer default null)
-returns void
+-- O formulário da tarefa grava tudo por aqui, numa chamada só: os campos, o
+-- responsável e a ordem do rodízio. É uma transação, com a tarefa travada do
+-- começo ao fim: se qualquer parte for recusada, nada fica gravado. Em dois ou
+-- três pedidos, outro celular criava um rodízio, apagava a tarefa ou mudava a
+-- repetição entre um e outro (ou a internet caía), e a tarefa ficava salva
+-- pela metade.
+--
+-- p_chore_id: nulo, a tarefa é nova (aí vale p_equipment_id, o aparelho da
+--   manutenção); senão, a que já existe, cujo aparelho não muda.
+-- p_points: nulo, os pontos ficam como estão (0 na tarefa nova).
+-- p_set_turn: o formulário escolheu o responsável (p_assigned_to, morador;
+--   p_kid_id, quem não tem o app; os dois nulos, qualquer um). Falso, a vez
+--   fica como está: num rodízio quem a põe é o banco, e a tarefa que vira
+--   "Uma vez" fica com quem estava nela (chores_one_off_ends_rotation), em vez
+--   de com quem o aparelho achava que estava.
+-- p_people: nulo, o formulário não mexe no rodízio; vazio, encerra o que
+--   houver; duas ou mais fichas, a ordem (save_chore_rotation). Vai depois
+--   dos campos: a tarefa "Uma vez" que passa a se repetir já com rodízio é
+--   uma chamada só.
+-- p_expect_none: o formulário abriu sem rodízio. Se a tarefa tem um (criado
+--   nesse meio-tempo, em outro celular), a função recusa (NK006) antes de
+--   gravar qualquer coisa: o responsável escolhido ficaria com a vez, talvez
+--   sem estar na ordem, ou a ordem que o formulário nunca mostrou seria
+--   trocada por outra. A ordem igual à que está sendo salva não é de outro
+--   celular: é a deste formulário, de uma chamada que chegou aqui e cuja
+--   resposta se perdeu (a internet caiu). Aí salvar de novo passa, e a vez
+--   fica onde está.
+--
+-- Devolve o id da tarefa.
+--
+-- Roda como dono, como complete_chore e skip_chore_turn: quem mora na casa só
+-- lê chore_rotation, então com os direitos de quem chama a ordem não seria
+-- gravada. Como dono, a regra de acesso de chores não vale, e a casa é
+-- conferida aqui: a tarefa que já existe é buscada na casa de quem chama, e a
+-- nova nasce nela. O responsável, a criança e o aparelho de outra casa são
+-- recusados pelas chaves estrangeiras da tarefa; as pessoas da ordem, por
+-- save_chore_rotation.
+create function public.save_chore(
+  p_chore_id uuid,
+  p_title text,
+  p_notes text,
+  p_recurrence text,
+  p_interval_count integer,
+  p_due_on date,
+  p_points integer default null,
+  p_equipment_id uuid default null,
+  p_set_turn boolean default false,
+  p_assigned_to uuid default null,
+  p_kid_id uuid default null,
+  p_people uuid[] default null,
+  p_expect_none boolean default false
+)
+returns uuid
 language plpgsql
 security definer
 set search_path = ''
 as $$
 declare
-  c public.chores;
+  hh uuid := public.current_household_id();
+  saved uuid := p_chore_id;
+  existing uuid[];
 begin
-  select * into c from public.chores ch
-  where ch.id = p_chore_id and ch.household_id = public.current_household_id()
-  for update;
-  if not found then
-    raise exception 'chore not found' using errcode = 'P0002';
-  end if;
-  if exists (select 1 from public.chore_rotation r where r.chore_id = c.id) then
-    raise exception 'chore has a rotation' using errcode = 'NK006';
+  if p_chore_id is null then
+    if hh is null then
+      raise exception 'sem casa' using errcode = '42501';
+    end if;
+    insert into public.chores (household_id, title, notes, recurrence, interval_count, due_on, points, equipment_id, assigned_to, kid_id)
+    values (
+      hh, p_title, p_notes, p_recurrence, p_interval_count, p_due_on, coalesce(p_points, 0), p_equipment_id,
+      case when p_set_turn then p_assigned_to end,
+      case when p_set_turn then p_kid_id end
+    )
+    returning id into saved;
+  else
+    perform 1 from public.chores ch
+    where ch.id = p_chore_id and ch.household_id = hh
+    for update;
+    if not found then
+      raise exception 'chore not found' using errcode = 'P0002';
+    end if;
+    -- Antes de qualquer gravação: quem não viu o rodízio não põe um responsável por cima dele, não o troca e
+    -- não o encerra.
+    existing := array(select r.person_id from public.chore_rotation r where r.chore_id = p_chore_id order by r.position);
+    if p_expect_none and cardinality(existing) > 0 and existing is distinct from p_people then
+      raise exception 'chore has a rotation' using errcode = 'NK006';
+    end if;
+
+    update public.chores ch
+      set title = p_title,
+          notes = p_notes,
+          recurrence = p_recurrence,
+          interval_count = p_interval_count,
+          due_on = p_due_on,
+          points = coalesce(p_points, ch.points),
+          assigned_to = case when p_set_turn then p_assigned_to else ch.assigned_to end,
+          kid_id = case when p_set_turn then p_kid_id else ch.kid_id end
+      where ch.id = p_chore_id;
   end if;
 
-  -- Quem pode ser o responsável é o que as chaves estrangeiras da tarefa já
-  -- dizem (morador ou ficha desta casa), e os pontos, o check da coluna.
-  update public.chores ch
-    set assigned_to = p_assigned_to, kid_id = p_kid_id, points = coalesce(p_points, ch.points)
-    where ch.id = c.id;
+  if p_people is not null then
+    perform public.save_chore_rotation(saved, p_people);
+  end if;
+  return saved;
 end;
 $$;
-revoke execute on function public.save_chore_single(uuid, uuid, uuid, integer) from public, anon;
-grant execute on function public.save_chore_single(uuid, uuid, uuid, integer) to authenticated;
+revoke execute on function public.save_chore(uuid, text, text, text, integer, date, integer, uuid, boolean, uuid, uuid, uuid[], boolean)
+  from public, anon;
+grant execute on function public.save_chore(uuid, text, text, text, integer, date, integer, uuid, boolean, uuid, uuid, uuid[], boolean)
+  to authenticated;
 
 -- =============================================================================
 -- 2. Concluir passa a vez
@@ -433,7 +489,7 @@ set search_path = ''
 as $$
 begin
   -- Primeiro as tarefas, depois as linhas da ordem: a mesma sequência de
-  -- travas de save_chore_rotation.
+  -- travas de save_chore.
   perform 1 from public.chores c
   where c.id in (select r.chore_id from public.chore_rotation r where r.person_id = old.id)
   order by c.id

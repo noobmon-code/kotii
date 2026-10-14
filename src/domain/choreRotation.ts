@@ -26,7 +26,7 @@ export interface ChoreTurn {
 export type ChoreRotations = Record<string, string[]>;
 
 export const ROTATION_MIN_PEOPLE = 2;
-/** O mesmo teto de save_chore_rotation. */
+/** O mesmo teto do banco (save_chore_rotation). */
 export const ROTATION_MAX_PEOPLE = 20;
 
 /**
@@ -251,9 +251,13 @@ export function plannedTurn(saved: SavedRotation | undefined, order: string[], p
 export type AssigneeChoice = { mode: 'rotation'; order: string[] } | ({ mode: 'single' } & ChoreTurn);
 
 export interface RotationSave {
-  /** O responsável a gravar na tarefa; undefined: a vez fica como está no banco. */
+  /**
+   * O responsável a gravar na tarefa; undefined: a vez fica como está no
+   * banco. Junto de uma ordem (rodízio novo), só vale para o banco que ainda
+   * não tem o rodízio: no que tem, a vez do rodízio novo quem põe é ele.
+   */
   turn?: ChoreTurn;
-  /** A ordem para save_chore_rotation (vazia: encerra o rodízio); null: não chamar. */
+  /** A ordem para o banco (vazia: encerra o rodízio); null: o formulário não mexe no rodízio. */
   people: string[] | null;
 }
 
@@ -263,10 +267,15 @@ export interface RotationSave {
  *   rodízio novo a vez é do primeiro; num que já existia o banco mantém a vez
  *   de quem continua na ordem (ou passa ao primeiro), então a tarefa nem
  *   manda o responsável: a vez pode ter andado em outro celular;
- * - rodízio numa tarefa que virou "Uma vez", ou com menos de duas pessoas:
- *   fica só a pessoa da vez, sem rodízio;
+ * - rodízio que o formulário mostrou, numa tarefa que virou "Uma vez": o
+ *   rodízio acaba e a tarefa fica com quem está na vez no banco. O formulário
+ *   não diz quem é: diria a pessoa que o aparelho tinha guardado (a vez pode
+ *   ter passado) e, sem conhecer quem está na vez, outra pessoa da ordem;
+ * - menos de duas pessoas, ou "Uma vez" num rodízio que só existe no
+ *   formulário (nenhum estava gravado): sem rodízio, fica a pessoa que a tela
+ *   mostra;
  * - uma pessoa só ou qualquer um: o que foi escolhido, e o rodízio que havia
- *   é encerrado. Sem rodízio antes, nada é chamado (o banco pode nem tê-lo).
+ *   é encerrado. Sem rodízio antes, a ordem nem é mandada.
  */
 export function planRotationSave(input: {
   saved?: SavedRotation;
@@ -278,6 +287,7 @@ export function planRotationSave(input: {
   const had = Boolean(saved?.order.length);
   const end = had ? [] : null;
   if (choice.mode === 'single') return { turn: { assigned_to: choice.assigned_to, kid_id: choice.kid_id }, people: end };
+  if (had && recurrence === 'none') return { people: [] };
   const line = knownOrder(choice.order, people);
   if (recurrence === 'none' || line.length < ROTATION_MIN_PEOPLE) {
     return { turn: turnOf(plannedTurn(saved, choice.order, people)), people: end };
@@ -287,16 +297,29 @@ export function planRotationSave(input: {
 }
 
 /**
- * A ordem a gravar (`people`, de planRotationSave) é um rodízio novo numa
- * tarefa que já existe, de um formulário que abriu sem rodízio? Aí é o banco
- * que confere, na hora de gravar a ordem, que a tarefa segue sem rodízio
- * (save_chore_rotation com p_expect_none): outro celular pode ter criado um
- * nesse meio-tempo, e a ordem dele seria trocada por esta sem ninguém ver. Na
- * tarefa nova não há o que conferir, e a ordem que o formulário mostrou ele
- * pode trocar.
+ * O formulário é de uma tarefa que já existe e abriu sem rodízio? É o que o
+ * salvar diz ao banco (p_expect_none de save_chore), para ele conferir, com a
+ * tarefa travada, que ela segue sem rodízio: outro celular pode ter criado um
+ * nesse meio-tempo, e o responsável escolhido aqui ficaria com a vez sem
+ * estar na ordem, ou a ordem de lá seria trocada pela daqui sem ninguém ver.
+ * Na tarefa nova não há o que conferir, e a ordem que o formulário mostrou
+ * ele pode trocar.
  */
-export function startsRotation(saved: SavedRotation | undefined, people: string[] | null): boolean {
-  return Boolean(saved && !saved.order.length && people?.length);
+export function openedWithoutRotation(saved: SavedRotation | undefined): boolean {
+  return Boolean(saved && !saved.order.length);
+}
+
+/**
+ * A ordem achada (`found`: no servidor, ou no que o aparelho buscou depois)
+ * é um rodízio que o formulário aberto sem rodízio não mostrou, criado em
+ * outro aparelho? Não quando é igual à que ele está salvando (`saving`, de
+ * planRotationSave): essa é a dele mesmo, de um salvar que chegou ao servidor
+ * e cuja resposta se perdeu (a internet caiu), e salvar de novo tem de
+ * passar. O banco decide do mesmo jeito (save_chore).
+ */
+export function rotationAppearedElsewhere(found: string[], saving: string[] | null): boolean {
+  if (!found.length) return false;
+  return !(saving && saving.length === found.length && saving.every((id, i) => id === found[i]));
 }
 
 // ---------------------------------------------------------------------------
@@ -344,33 +367,21 @@ export const ROTATION_CHANGED_ELSEWHERE = 'Ela ganhou um rodízio em outro apare
 const HAS_ROTATION_CODE = 'NK006';
 
 /**
- * O banco recusou o que veio de um formulário que abriu sem rodízio porque a
- * tarefa tem um: o responsável (save_chore_single) ou a ordem nova
- * (save_chore_rotation com p_expect_none)? É o rodízio criado em outro
- * aparelho entre a conferência do formulário e a gravação: nada foi salvo, e
- * o aviso é o mesmo da conferência (ROTATION_CHANGED_ELSEWHERE).
+ * O banco (save_chore) recusou o salvar de um formulário que abriu sem
+ * rodízio porque a tarefa tem um? É o rodízio criado em outro aparelho entre
+ * a conferência do formulário e a gravação: nada foi salvo, e o aviso é o
+ * mesmo da conferência (ROTATION_CHANGED_ELSEWHERE).
  */
 export function isRotationChangedElsewhere(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   return 'code' in error && error.code === HAS_ROTATION_CODE;
 }
 
-/** O rodízio tem alguém que este aparelho não conhece (hasUnknownPerson): salvar tiraria essa pessoa da ordem. */
+/**
+ * O rodízio tem alguém que este aparelho não conhece (hasUnknownPerson): salvar tiraria essa pessoa da ordem ou,
+ * na tarefa que vira "Uma vez", decidiria os pontos por quem o aparelho acha que está na vez.
+ */
 export const ROTATION_PERSON_UNKNOWN = 'O rodízio dela tem alguém que este aparelho ainda não carregou. Feche e abra de novo para editar.';
-
-/**
- * O título do aviso quando a ordem nova foi gravada e o resto da tarefa (título, repetição, data, pontos) não: no
- * rodízio novo de uma tarefa que já existe a ordem vai primeiro. É o contrário de "A tarefa foi salva, mas o
- * rodízio não", de quando a tarefa vai primeiro.
- */
-export const ROTATION_SAVED_REST_NOT = 'O rodízio foi salvo, mas o resto da tarefa não';
-
-/**
- * O título do aviso quando a tarefa era "Uma vez", a repetição nova foi gravada (ela vai antes da ordem, porque o
- * banco não aceita rodízio em tarefa que não se repete) e a ordem não: a tarefa já se repete, sem o rodízio e sem o
- * resto do formulário. Um "Erro" só deixaria a pessoa achar que nada mudou.
- */
-export const REPEAT_SAVED_ROTATION_NOT = 'A repetição foi salva, mas o rodízio não';
 
 /** Não deu para conferir, antes de salvar, se a tarefa ganhou um rodízio em outro aparelho: nada é gravado. */
 export const ROTATION_CHECK_FAILED = 'Não foi possível conferir se esta tarefa mudou em outro aparelho. Verifique a internet e tente de novo.';
@@ -380,22 +391,18 @@ export const ROTATION_CHECK_FAILED = 'Não foi possível conferir se esta tarefa
 const MISSING_CODES = new Set(['PGRST205', 'PGRST202', '42P01', '42883']);
 
 /**
- * O banco ainda não tem o rodízio (chore_rotation, save_chore_rotation,
- * save_chore_single, skip_chore_turn)? Aí ler as ordens devolve "nenhuma",
- * salvar ou pular avisa com ROTATION_UNAVAILABLE, em vez do erro cru, e o
- * responsável da tarefa sem rodízio é gravado direto na tabela, como antes.
- * Vale também para o banco com a save_chore_rotation de antes, de dois
- * argumentos: a chamada com p_expect_none não acha a função (PGRST202), e o
- * rodízio novo é gravado pelo caminho de antes (ver saveChore).
+ * O banco ainda não tem o rodízio (chore_rotation, save_chore,
+ * skip_chore_turn)? Aí ler as ordens devolve "nenhuma", pular avisa com
+ * ROTATION_UNAVAILABLE, em vez do erro cru, e salvar grava a tarefa direto na
+ * tabela, como antes de o rodízio existir, com o mesmo aviso se uma ordem foi
+ * pedida (ver saveChore).
  */
 export function isRotationUnavailable(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const code = 'code' in error ? String(error.code) : '';
   if (MISSING_CODES.has(code)) return true;
   const message = 'message' in error && typeof error.message === 'string' ? error.message : '';
-  return (
-    /chore_rotation|save_chore_rotation|save_chore_single|skip_chore_turn/.test(message) && /schema cache|does not exist/i.test(message)
-  );
+  return /chore_rotation|save_chore|skip_chore_turn/.test(message) && /schema cache|does not exist/i.test(message);
 }
 
 /** O aviso de uma falha do rodízio: a frase clara se o banco ainda não o tem; null para os outros erros. */

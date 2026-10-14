@@ -53,15 +53,24 @@ export function isChoreGone(error: unknown): boolean {
 }
 
 /**
- * O salvar respondeu que a tarefa não existe mais nesta casa (save_chore_single
- * e save_chore_rotation: P0002, "chore not found")? Foi apagada em outro
- * aparelho, ou a pessoa saiu da casa: nada foi salvo, e o aviso é o mesmo da
- * busca (CHORE_GONE). A mensagem também conta: com o mesmo código o banco diz
- * que alguém da ordem não está mais na casa, e aí a tarefa existe.
+ * O salvar respondeu que a tarefa não existe mais nesta casa (save_chore:
+ * P0002, "chore not found")? Foi apagada em outro aparelho, ou a pessoa saiu
+ * da casa: nada foi salvo, e o aviso é o mesmo da busca (CHORE_GONE). A
+ * mensagem também conta: com o mesmo código o banco diz que alguém da ordem
+ * não está mais na casa, e aí a tarefa existe.
  */
 export function isChoreGoneOnSave(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   return 'code' in error && error.code === 'P0002' && 'message' in error && error.message === 'chore not found';
+}
+
+/**
+ * O mesmo erro, para a gravação direto na tabela (o banco que ainda não tem
+ * save_chore): a que não acha a linha não é erro para a API, responde que
+ * gravou em nenhuma, e o formulário fecharia como se tivesse salvado.
+ */
+export function choreGoneOnSave(): Error {
+  return Object.assign(new Error('chore not found'), { code: 'P0002' });
 }
 
 /** Quem faz a tarefa: o morador, ou a criança com os pontos ("Lia · 10 pontos"). */

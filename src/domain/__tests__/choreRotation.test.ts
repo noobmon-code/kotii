@@ -11,14 +11,14 @@ import {
   kidChores,
   nextTurn,
   numberedOrder,
+  openedWithoutRotation,
   orderHasKid,
   planRotationSave,
   plannedTurn,
-  REPEAT_SAVED_ROTATION_NOT,
   ROTATION_CHANGED_ELSEWHERE,
   ROTATION_PERSON_UNKNOWN,
-  ROTATION_SAVED_REST_NOT,
   ROTATION_UNAVAILABLE,
+  rotationAppearedElsewhere,
   rotationErrorMessage,
   rotationLabel,
   rotationOf,
@@ -26,7 +26,6 @@ import {
   rotationPointsLabel,
   rotationProblem,
   skipTurnQuestion,
-  startsRotation,
   toggleInOrder,
   turnOf,
   type RotationPerson,
@@ -297,8 +296,8 @@ describe('editor: escolher a ordem', () => {
 describe('editor: o que salvar', () => {
   const rotation = (ids: string[]) => ({ mode: 'rotation' as const, order: ids });
 
-  it('rodízio novo: a ordem, e a vez é do primeiro', () => {
-    // Tarefa nova.
+  it('rodízio novo: a ordem, e o primeiro dela como responsável para o banco que ainda não tem o rodízio', () => {
+    // Tarefa nova. No banco com o rodízio, quem põe a vez no primeiro é ele, e esse responsável nem é mandado.
     expect(planRotationSave({ recurrence: 'daily', choice: rotation(['p-carla', 'p-beto', 'p-lia']), people })).toEqual({
       turn: ofCarla,
       people: ['p-carla', 'p-beto', 'p-lia'],
@@ -330,12 +329,17 @@ describe('editor: o que salvar', () => {
     ).toEqual({ turn: ofBeto, people: [] });
   });
 
-  it('"Uma vez": fica só a pessoa da vez e o rodízio acaba', () => {
-    expect(planRotationSave({ saved: { turn: ofCarla, order }, recurrence: 'none', choice: rotation(order), people })).toEqual({
-      turn: ofCarla,
+  it('"Uma vez" na tarefa em rodízio: o rodízio acaba e a vez fica com o banco, sem o formulário dizer de quem', () => {
+    expect(planRotationSave({ saved: { turn: ofCarla, order }, recurrence: 'none', choice: rotation(order), people })).toEqual({ people: [] });
+    // O aparelho nem conhece quem está na vez (Lia, uma ficha de há pouco): tirada da conta, a vez iria para o
+    // primeiro que ele conhece. Sem o responsável no que é salvo, ela fica com Lia.
+    const withoutLia = people.filter((p) => p.id !== 'p-lia');
+    expect(planRotationSave({ saved: { turn: ofLia, order }, recurrence: 'none', choice: rotation(order), people: withoutLia })).toEqual({
       people: [],
     });
-    // Tarefa nova que nem chegou a ter rodízio: o primeiro escolhido, e nada a encerrar.
+    // Mesmo com a ordem mexida antes de virar "Uma vez".
+    expect(planRotationSave({ saved: { turn: ofCarla, order }, recurrence: 'none', choice: rotation(['p-lia']), people })).toEqual({ people: [] });
+    // Tarefa nova que nem chegou a ter rodízio: o primeiro escolhido (a pessoa viu quem ficou), e nada a encerrar.
     expect(planRotationSave({ recurrence: 'none', choice: rotation(order), people })).toEqual({ turn: ofBeto, people: null });
   });
 
@@ -378,21 +382,30 @@ describe('editor: o que salvar', () => {
     ).toEqual({ turn: ofBeto, people: ['p-beto', 'p-lia'] });
   });
 
-  it('rodízio novo numa tarefa que já existe: quem confere que ela segue sem rodízio é o banco, ao gravar a ordem', () => {
-    const plain = { turn: ofCarla, order: [] };
-    const created = planRotationSave({ saved: plain, recurrence: 'weekly', choice: rotation(['p-lia', 'p-carla']), people });
-    expect(startsRotation(plain, created.people)).toBe(true);
-    // O formulário mostrou o rodízio: a ordem é trocada (ou encerrada) como sempre, sem conferência.
-    const shown = { turn: ofCarla, order };
-    expect(startsRotation(shown, planRotationSave({ saved: shown, recurrence: 'daily', choice: rotation(['p-lia', 'p-carla']), people }).people)).toBe(false);
-    expect(startsRotation(shown, planRotationSave({ saved: shown, recurrence: 'daily', choice: { mode: 'single', ...ofLia }, people }).people)).toBe(false);
-    // Sem ordem a gravar (uma pessoa só, "Uma vez", menos de duas pessoas): o responsável vai por save_chore_single.
-    expect(startsRotation(plain, planRotationSave({ saved: plain, recurrence: 'daily', choice: { mode: 'single', ...ofBeto }, people }).people)).toBe(false);
-    expect(startsRotation(plain, planRotationSave({ saved: plain, recurrence: 'none', choice: rotation(order), people }).people)).toBe(false);
-    expect(startsRotation(plain, planRotationSave({ saved: plain, recurrence: 'daily', choice: rotation(['p-lia']), people }).people)).toBe(false);
-    expect(startsRotation(plain, [])).toBe(false);
+  it('formulário de uma tarefa que já existe e abriu sem rodízio: é o que o salvar diz ao banco, para ele conferir que ela segue sem', () => {
+    // Seja o que for que ele salva: um responsável, um rodízio novo ou só os campos.
+    expect(openedWithoutRotation({ turn: ofCarla, order: [] })).toBe(true);
+    // O formulário mostrou o rodízio: pode trocá-lo ou encerrá-lo, sem conferência.
+    expect(openedWithoutRotation({ turn: ofCarla, order })).toBe(false);
     // Tarefa nova: ninguém mais pode ter criado um rodízio para ela.
-    expect(startsRotation(undefined, planRotationSave({ recurrence: 'daily', choice: rotation(order), people }).people)).toBe(false);
+    expect(openedWithoutRotation(undefined)).toBe(false);
+  });
+
+  it('a ordem achada no servidor é de outro aparelho, a não ser que seja a que este formulário está salvando', () => {
+    // O formulário abriu sem rodízio e salva um responsável: qualquer ordem achada é de outro aparelho.
+    expect(rotationAppearedElsewhere(order, null)).toBe(true);
+    expect(rotationAppearedElsewhere(order, [])).toBe(true);
+    // Ele cria um rodízio, e o achado é outro: outra gente, a mesma em outra ordem, ou uma pessoa a mais ou a menos.
+    expect(rotationAppearedElsewhere(order, ['p-lia', 'p-beto'])).toBe(true);
+    expect(rotationAppearedElsewhere(order, ['p-carla', 'p-beto', 'p-lia'])).toBe(true);
+    expect(rotationAppearedElsewhere(order, [...order, 'p-ana'])).toBe(true);
+    expect(rotationAppearedElsewhere(order, order.slice(0, 2))).toBe(true);
+    // A mesma ordem que ele está salvando: é a dele, de um salvar que chegou ao servidor e cuja resposta se perdeu.
+    expect(rotationAppearedElsewhere(order, [...order])).toBe(false);
+    // Nenhuma ordem achada: nada mudou.
+    expect(rotationAppearedElsewhere([], null)).toBe(false);
+    expect(rotationAppearedElsewhere([], order)).toBe(false);
+    expect(rotationAppearedElsewhere([], [])).toBe(false);
   });
 });
 
@@ -467,21 +480,17 @@ describe('banco sem o rodízio', () => {
     expect(isRotationUnavailable({ code: '42883', message: 'function public.save_chore_rotation(uuid, uuid[]) does not exist' })).toBe(true);
     // Sem código (erro refeito a partir da mensagem).
     expect(isRotationUnavailable(new Error('relation "public.chore_rotation" does not exist'))).toBe(true);
-    // A função que grava o responsável da tarefa sem rodízio chega na mesma migração.
+    // A função que salva a tarefa inteira (save_chore) chega na mesma migração: sem ela, o banco não tem o rodízio.
     expect(
       isRotationUnavailable({
         code: 'PGRST202',
-        message: 'Could not find the function public.save_chore_single(p_assigned_to, p_chore_id, p_kid_id, p_points) in the schema cache',
+        message:
+          'Could not find the function public.save_chore(p_assigned_to, p_chore_id, p_due_on, p_equipment_id, p_expect_none, p_interval_count, p_kid_id, p_notes, p_people, p_points, p_recurrence, p_set_turn, p_title) in the schema cache',
       }),
     ).toBe(true);
-    expect(isRotationUnavailable(new Error('function public.save_chore_single(uuid, uuid, uuid, integer) does not exist'))).toBe(true);
-    // Banco com a save_chore_rotation de dois argumentos (uma cópia de antes): a chamada com p_expect_none não acha a função.
-    expect(
-      isRotationUnavailable({
-        code: 'PGRST202',
-        message: 'Could not find the function public.save_chore_rotation(p_chore_id, p_expect_none, p_people) in the schema cache',
-      }),
-    ).toBe(true);
+    // Sem código (erro refeito a partir da mensagem), também pelo nome dela.
+    expect(isRotationUnavailable(new Error('function public.save_chore(uuid, text, text, text, integer, date) does not exist'))).toBe(true);
+    expect(isRotationUnavailable(new Error('Could not find the function public.save_chore(p_chore_id, p_title) in the schema cache'))).toBe(true);
   });
 
   it('os outros erros seguem como erros', () => {
@@ -499,25 +508,17 @@ describe('banco sem o rodízio', () => {
   });
 });
 
-describe('o banco recusa o responsável da tarefa que ganhou um rodízio', () => {
-  it('reconhece a recusa de save_chore_single pelo código', () => {
+describe('o banco recusa o salvar do formulário que abriu sem rodízio, na tarefa que ganhou um', () => {
+  it('reconhece a recusa de save_chore pelo código', () => {
     expect(isRotationChangedElsewhere({ code: 'NK006', message: 'chore has a rotation', details: null, hint: null })).toBe(true);
     // O aviso é o da conferência feita antes de gravar: para a pessoa, é a mesma situação.
     expect(ROTATION_CHANGED_ELSEWHERE).toBe('Ela ganhou um rodízio em outro aparelho. Feche e abra de novo para editar.');
   });
 
-  it('o aviso de quando a ordem nova foi gravada e o resto da tarefa não: o contrário de "a tarefa foi salva, mas o rodízio não"', () => {
-    expect(ROTATION_SAVED_REST_NOT).toBe('O rodízio foi salvo, mas o resto da tarefa não');
-  });
-
-  it('o aviso de quando a tarefa era "Uma vez", a repetição nova foi gravada e a ordem não: diz o que ficou salvo', () => {
-    expect(REPEAT_SAVED_ROTATION_NOT).toBe('A repetição foi salva, mas o rodízio não');
-  });
-
   it('os outros erros seguem como erros', () => {
     expect(isRotationChangedElsewhere({ code: 'P0002', message: 'chore not found' })).toBe(false);
     // Banco ainda sem a função: aí a tarefa é gravada direto, não é uma recusa.
-    expect(isRotationChangedElsewhere({ code: 'PGRST202', message: 'Could not find the function public.save_chore_single' })).toBe(false);
+    expect(isRotationChangedElsewhere({ code: 'PGRST202', message: 'Could not find the function public.save_chore' })).toBe(false);
     expect(isRotationChangedElsewhere({ code: '23503', message: 'insert or update on table "chores" violates foreign key constraint' })).toBe(false);
     expect(isRotationChangedElsewhere(new TypeError('Network request failed'))).toBe(false);
     expect(isRotationChangedElsewhere(new Error('chore has a rotation'))).toBe(false);
