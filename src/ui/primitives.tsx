@@ -208,6 +208,7 @@ export function Button({
   disabled,
   compact,
   style,
+  accessibilityLabel,
 }: {
   title: string;
   onPress: () => void;
@@ -217,6 +218,8 @@ export function Button({
   disabled?: boolean;
   compact?: boolean;
   style?: StyleProp<ViewStyle>;
+  /** Para o leitor de tela, quando o título sozinho não diz sobre o quê ("Troquei" em cada linha de uma lista). */
+  accessibilityLabel?: string;
 }) {
   const c = useColors();
   const palette: Record<ButtonVariant, { bg: string; fg: keyof Colors; border: string }> = {
@@ -231,6 +234,7 @@ export function Button({
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
       accessibilityState={{ disabled: inactive, busy: loading }}
       onPress={onPress}
       disabled={inactive}

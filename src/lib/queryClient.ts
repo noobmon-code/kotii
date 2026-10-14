@@ -23,7 +23,10 @@ const WEEK = 1000 * 60 * 60 * 24 * 7;
 // links das fotos dos itens, para vê-las sem internet; os últimos preços, os
 // mercados e as ligações nome da lista -> produto, para a estimativa da lista
 // dentro do mercado) e o clima da casa (a dica da tela Hoje e o aviso das 7h
-// saem da última previsão).
+// saem da última previsão). As reposições (gás, água, ração) vão junto com a
+// despensa, que é onde aparecem: são poucas linhas, sem nada sensível, e o
+// que fica guardado é sempre uma resposta inteira (ou "este banco ainda não
+// tem as tabelas").
 const PERSISTED = new Set([
   'household',
   'lists',
@@ -32,6 +35,7 @@ const PERSISTED = new Set([
   'products',
   'purchaseRecords',
   'pantry',
+  'supplies',
   'latestPrices',
   'stores',
   'listLinks',
