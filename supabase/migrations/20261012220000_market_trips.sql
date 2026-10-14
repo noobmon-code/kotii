@@ -138,7 +138,8 @@ grant execute on function public.max_market_trips() to authenticated;
  * Contra barulho: a mesma pessoa e a mesma lista, com a ida ainda valendo e
  * avisada há menos de 30 minutos, devolve a ida que existe e não manda nada;
  * e cada pessoa avisa até max_market_trips() idas novas por casa em 24 horas
- * (depois disso, NK005), contadas em market_trip_log.
+ * (depois disso, NK005), contadas em market_trip_log. Passados os 30 minutos,
+ * a ida nova encerra a anterior da pessoa na mesma lista.
  */
 create function public.announce_market_trip(p_list_id uuid)
 returns jsonb
@@ -243,12 +244,19 @@ begin
   -- quem sai da casa ou é tirado dela perde na hora o que ainda não saiu
   -- (member_left_market_trips, abaixo). Para quem mora em mais de uma casa, o
   -- título diz de qual é, também como nos lembretes.
+  -- FOR SHARE nas inscrições: quem desliga a opção neste instante
+  -- (set_push_market_trips) não fica com o aviso. Se o desligar veio antes, a
+  -- leitura espera ele terminar, relê a linha já desligada e deixa o navegador
+  -- de fora; se este aviso travou antes, o desligar espera ele terminar e apaga
+  -- da fila o que entrou. A ordem das travas é a das outras gravações da
+  -- agenda: a inscrição antes das linhas dela.
   for sub in
     select s.id, s.user_id,
       (select count(*) from public.household_members o where o.user_id = s.user_id) > 1 as several
     from public.push_subscriptions s
     join public.household_members m on m.user_id = s.user_id
     where m.household_id = hid and s.user_id <> auth.uid() and s.market_trips
+    for share of s
   loop
     begin
       insert into public.push_schedule (id, subscription_id, title, body, data, repeat, fire_at)
@@ -269,6 +277,21 @@ begin
       null;
     end;
   end loop;
+
+  -- A ida anterior da pessoa nesta lista, se ainda vale (avisada há mais de 30 minutos), acaba aqui, com
+  -- os avisos dela que não saíram (como em end_market_trip): a faixa mostra só a mais nova, e "Encerrar"
+  -- nela deixaria a antiga de volta até o fim das 2 horas. Vem depois do laço, e não antes da ida nova,
+  -- para travar as inscrições antes das linhas da agenda: na ordem contrária, este aviso e alguém
+  -- desligando a opção (que trava a inscrição e depois apaga o aviso) podiam esperar um pelo outro.
+  with ended as (
+    update public.market_trips t set ended_at = now()
+      where t.household_id = hid and t.list_id = p_list_id and t.user_id = auth.uid()
+        and t.ended_at is null and t.id <> trip.id
+    returning t.id
+  )
+  delete from public.push_schedule p
+    using ended e
+    where p.data ? 'server' and p.data ->> 'reminder' = 'ida:' || e.id::text;
 
   return jsonb_build_object(
     'trip_id', trip.id, 'created_at', trip.created_at,
@@ -343,7 +366,9 @@ create trigger household_members_end_market_trips
 /**
  * Liga ou desliga "Alguém indo ao mercado" num navegador da própria pessoa
  * (o endereço de outra conta não muda nada). Devolve se mudou algum.
- * Desligando, o aviso de ida que estava na fila deste navegador sai.
+ * Desligando, o aviso de ida que estava na fila deste navegador sai, também o
+ * de um aviso feito no mesmo instante (announce_market_trip trava a
+ * inscrição que lê: um dos dois espera o outro, e o desligar vale).
  */
 create function public.set_push_market_trips(p_endpoint text, p_enabled boolean)
 returns boolean
