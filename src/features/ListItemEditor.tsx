@@ -9,7 +9,7 @@ import { formatQuantity, parseDecimal } from '@/domain/money';
 import { errorMessage } from '@/lib/supabase';
 import { UNITS, type ShoppingListItem, type Unit } from '@/lib/types';
 import { Backdrop } from '@/ui/Backdrop';
-import { notify } from '@/ui/dialogs';
+import { confirmAction, notify } from '@/ui/dialogs';
 import { Button, Card, CategoryIcon, Chip, Icon, IconButton, Row, Text, TextField } from '@/ui/primitives';
 import { MAX_WIDTH, radius, space, useColors } from '@/ui/theme';
 
@@ -33,6 +33,7 @@ export function ListItemEditor({
   photoUri,
   photoPending,
   facts,
+  onSeePrices,
   onSave,
   onRemove,
   onClose,
@@ -43,6 +44,8 @@ export function ListItemEditor({
    * prioridade marcada aqui, ainda sem salvar: "só em promoção" mostra o preço bom.
    */
   facts?: (priority: ListPriority) => string[];
+  /** O item tem preço de um produto da casa: "Ver preços" leva à tela dele (quem chama fecha os detalhes). */
+  onSeePrices?: () => void;
   /** A foto atual (já enviada ou esperando internet). */
   photoUri: string | null;
   /** A foto atual ainda não subiu. */
@@ -53,7 +56,8 @@ export function ListItemEditor({
 }) {
   const c = useColors();
   const [name, setName] = useState(item.name);
-  const [quantity, setQuantity] = useState(formatQuantity(Number(item.quantity), item.unit).split(' ')[0]);
+  const initialQuantity = formatQuantity(Number(item.quantity), item.unit).split(' ')[0];
+  const [quantity, setQuantity] = useState(initialQuantity);
   const [unit, setUnit] = useState<Unit>(item.unit);
   const [notes, setNotes] = useState(item.notes ?? '');
   const [priority, setPriority] = useState<ListPriority>(item.priority ?? 'normal');
@@ -63,6 +67,19 @@ export function ListItemEditor({
   const qty = parseDecimal(quantity);
   const invalid = !name.trim() || !qty || qty <= 0;
   const shownFacts = facts?.(priority) ?? [];
+
+  /** "Ver preços" sai dos detalhes: com algo mudado e ainda não salvo, pergunta antes. */
+  function seePrices() {
+    const changed =
+      name !== item.name ||
+      quantity !== initialQuantity ||
+      unit !== item.unit ||
+      notes !== (item.notes ?? '') ||
+      priority !== (item.priority ?? 'normal') ||
+      photo.kind !== 'keep';
+    if (!changed) return onSeePrices?.();
+    confirmAction('Ver preços', 'As mudanças neste item ainda não foram salvas. Sair sem salvar?', 'Sair sem salvar', () => onSeePrices?.());
+  }
 
   async function choose(source: ScanSource) {
     try {
@@ -132,6 +149,7 @@ export function ListItemEditor({
                   {fact}
                 </Text>
               ))}
+              {onSeePrices ? <Button title="Ver preços" icon="chart-line" variant="ghost" compact onPress={seePrices} /> : null}
             </Card>
           ) : null}
 
