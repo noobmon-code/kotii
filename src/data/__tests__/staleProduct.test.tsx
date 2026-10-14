@@ -366,6 +366,35 @@ describe('gravar num produto que foi juntado: o banco não reclama de uma grava�
     expect(sent('pantry_items', 'eq')).toEqual([['id', 'pantry-1']]);
   });
 
+  it('a validade corrigida à mão: o produto que ficou também foi juntado no meio do caminho, e a gravação segue o item de novo', async () => {
+    // A foi juntado com B; entre ler o item (B) e gravar, B foi juntado com C.
+    const itemNow = ['p-b', 'p-c'];
+    mockDb.reply = (call) => {
+      if (call.target === 'pantry_items') return { data: { product_id: itemNow.shift() }, error: null };
+      const id = mockDb.sent.filter(([t, s]) => t === 'products' && s === 'eq').at(-1)![2][1];
+      return { data: id === 'p-c' ? [{ id }] : [], error: null };
+    };
+    await learnShelfLife('p-a', 30, 'pantry-1');
+    expect(mockDb.calls.map((call) => call.target)).toEqual(['products', 'pantry_items', 'products', 'pantry_items', 'products']);
+    expect(sent('products', 'eq')).toEqual([
+      ['id', 'p-a'],
+      ['id', 'p-b'],
+      ['id', 'p-c'],
+    ]);
+  });
+
+  it('a validade corrigida à mão: não fica tentando para sempre', async () => {
+    // Cada leitura aponta para um produto novo, e nenhuma gravação acha linha: para no terceiro produto.
+    let n = 0;
+    mockDb.reply = (call) => (call.target === 'pantry_items' ? { data: { product_id: `p-${++n}` }, error: null } : { data: [], error: null });
+    await learnShelfLife('p-0', 30, 'pantry-1');
+    expect(sent('products', 'eq')).toEqual([
+      ['id', 'p-0'],
+      ['id', 'p-1'],
+      ['id', 'p-2'],
+    ]);
+  });
+
   it('a validade corrigida à mão: com o produto no lugar, uma gravação só', async () => {
     mockDb.reply = () => ({ data: [{ id: 'p1' }], error: null });
     await learnShelfLife('p1', 30, 'pantry-1');

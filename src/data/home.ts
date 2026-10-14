@@ -65,17 +65,26 @@ export interface PantryValues {
   expiry_source: PantryItem['expiry_source'];
 }
 
+/** Quantos produtos a validade aprendida tenta alcançar: cada volta a mais é uma junção feita no meio do caminho. */
+const LEARN_ATTEMPTS = 3;
+
 /**
  * A validade corrigida à mão ensina o produto. O produto que a tela conhecia pode ter sido juntado com outro em
  * outro aparelho: a gravação não acha linha nenhuma, e o banco não reclama. Aí vale o produto em que o item da
- * despensa está agora (a junção passou o item para o que ficou). O item em si já está salvo: aqui nada falha.
+ * despensa está agora (a junção passou o item para o que ficou), e a gravação é conferida de novo: esse também
+ * pode ter sido juntado entre a leitura e a gravação. Para depois de LEARN_ATTEMPTS produtos, ou quando o item
+ * aponta para um já tentado ou para nenhum. O item em si já está salvo: aqui nada falha.
  */
 export async function learnShelfLife(productId: string, days: number, pantryItemId?: string): Promise<void> {
-  const learned = (unwrap(await supabase.from('products').update({ shelf_life_days: days }).eq('id', productId).select('id')) ?? []) as { id: string }[];
-  if (learned.length || !pantryItemId) return;
-  const item = unwrap(await supabase.from('pantry_items').select('product_id').eq('id', pantryItemId).maybeSingle()) as { product_id: string | null } | null;
-  if (!item?.product_id || item.product_id === productId) return;
-  unwrap(await supabase.from('products').update({ shelf_life_days: days }).eq('id', item.product_id).select('id'));
+  const tried = new Set<string>();
+  let target: string | null = productId;
+  while (target && !tried.has(target) && tried.size < LEARN_ATTEMPTS) {
+    tried.add(target);
+    const learned = (unwrap(await supabase.from('products').update({ shelf_life_days: days }).eq('id', target).select('id')) ?? []) as { id: string }[];
+    if (learned.length || !pantryItemId) return;
+    const item = unwrap(await supabase.from('pantry_items').select('product_id').eq('id', pantryItemId).maybeSingle()) as { product_id: string | null } | null;
+    target = item?.product_id ?? null;
+  }
 }
 
 export function useSavePantryItem() {
