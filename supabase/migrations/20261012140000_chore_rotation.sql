@@ -148,6 +148,7 @@ begin
   select * into c from public.chores ch where ch.id = p_chore_id;
 
   if n = 0 then
+    -- Num delete só, como abaixo: a tarefa fica com quem está na vez.
     delete from public.chore_rotation r where r.chore_id = c.id;
     return;
   end if;
@@ -167,6 +168,12 @@ begin
   had := exists (select 1 from public.chore_rotation r where r.chore_id = c.id);
   turn := public.chore_turn_person(c.household_id, c.assigned_to, c.kid_id);
 
+  -- Trocar a ordem não mexe na vez. O gatilho de quem sai da ordem
+  -- (chore_rotation_row_left) roda depois deste delete inteiro, quando não
+  -- sobra nenhuma linha da ordem para receber a vez, e por isso não a passa
+  -- adiante; o insert vem depois. Apagar linha a linha, ou rodar aquele gatilho
+  -- antes do delete, passaria a vez de quem continua na ordem para o seguinte
+  -- (os testes do banco de "Regravar a ordem nunca move a vez" pegam isso).
   delete from public.chore_rotation r where r.chore_id = c.id;
   insert into public.chore_rotation (chore_id, person_id, position, household_id)
   select c.id, t.x, t.ord, c.household_id from unnest(p_people) with ordinality as t (x, ord);
@@ -441,7 +448,7 @@ grant execute on function public.skip_chore_turn(uuid, uuid) to authenticated;
 -- que ficaram; se sobrou uma pessoa só, o rodízio acaba e a tarefa fica com
 -- ela. Roda no fim da instrução: quando a ordem inteira sai de uma vez
 -- (rodízio encerrado ou regravado), não sobra ninguém para receber a vez e a
--- tarefa fica com quem estava nela.
+-- tarefa fica com quem estava nela. Assim regravar a ordem não move a vez.
 create function public.chore_rotation_row_left()
 returns trigger
 language plpgsql

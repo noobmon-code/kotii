@@ -3602,6 +3602,72 @@ begin
   update public.chores set recurrence = 'daily' where id = dishes;
 end $$;
 
+-- Regravar a ordem nunca move a vez. save_chore_rotation apaga a ordem inteira e grava a nova; o gatilho de quem
+-- sai da ordem (chore_rotation_row_left) só roda no fim daquele delete, sem nenhuma linha da ordem, e por isso não
+-- passa a vez adiante. Apagado linha a linha, ou com o gatilho antes do delete, a vez de quem continua na ordem
+-- (ou de quem fica com a tarefa no fim do rodízio) passaria para o seguinte: estes casos pegam isso.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  sweep uuid;
+  yard uuid;
+  c public.chores;
+begin
+  -- Com um morador primeiro na ordem: Rita, depois Beto.
+  sweep := public.save_chore(null, 'Varrer a cozinha', null, 'daily', 1, '2026-10-12', 10, p_people => array[rita, beto]);
+  select * into c from public.chores where id = sweep;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null, 'the turn starts with R';
+  -- a. A mesma ordem, na vez do primeiro: fica com ele.
+  perform pg_temp.save_order(sweep, array[rita, beto]);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = sweep) = array[rita, beto],
+    'the same order is saved again';
+  select * into c from public.chores where id = sweep;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null,
+    'saving the same order on the turn of the first (a member) keeps the turn';
+  -- b. A mesma ordem, na vez do segundo: fica com ele.
+  assert public.skip_chore_turn(sweep, rita) = beto, 'the turn passed to B';
+  perform pg_temp.save_order(sweep, array[rita, beto]);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = sweep) = array[rita, beto],
+    'the same order is saved again, on the turn of B';
+  select * into c from public.chores where id = sweep;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000022' and c.kid_id is null,
+    'saving the same order on the turn of the second keeps the turn';
+  -- c. A ordem invertida, na vez do primeiro: a vez não acompanha a posição.
+  assert public.skip_chore_turn(sweep, beto) = rita, 'the turn is back with R';
+  perform pg_temp.save_order(sweep, array[beto, rita]);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = sweep) = array[beto, rita],
+    'the order is reversed';
+  select * into c from public.chores where id = sweep;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null,
+    'reversing the order keeps the turn of who had it';
+  -- d. Encerrar o rodízio na vez do primeiro: a tarefa fica com ele.
+  perform pg_temp.save_order(sweep, array[rita, beto]);
+  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000021', 'R still has the turn';
+  perform pg_temp.save_order(sweep, '{}');
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = sweep), 'ending the rotation leaves no row of the order';
+  select * into c from public.chores where id = sweep;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null,
+    'ending the rotation on the turn of the first (a member) keeps the chore with the member';
+
+  -- e. O mesmo com quem não tem o app primeiro na ordem (a vez em kid_id): Lia, depois Beto.
+  yard := public.save_chore(null, 'Varrer o quintal', null, 'daily', 1, '2026-10-12', 10, p_people => array[lia, beto]);
+  select * into c from public.chores where id = yard;
+  assert c.assigned_to is null and c.kid_id = lia, 'the turn starts with the kid';
+  perform pg_temp.save_order(yard, array[lia, beto]);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = yard) = array[lia, beto],
+    'the same order is saved again, with the kid first';
+  select * into c from public.chores where id = yard;
+  assert c.assigned_to is null and c.kid_id = lia, 'saving the same order on the turn of the first (a kid) keeps the turn';
+  perform pg_temp.save_order(yard, '{}');
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = yard), 'ending the rotation leaves no row of the order, with the kid';
+  select * into c from public.chores where id = yard;
+  assert c.assigned_to is null and c.kid_id = lia, 'ending the rotation on the turn of the first (a kid) keeps the chore with the kid';
+
+  delete from public.chores where id in (sweep, yard);
+end $$;
+
 -- A vez de uma tarefa em rodízio não muda direto na tabela (NK009): a ordem ficaria lá, e a próxima conclusão
 -- seguiria revezando. É o que o app já instalado (de antes do rodízio) e o app novo, quando a API ainda não enxerga
 -- save_chore, fariam. O resto da tarefa, o mesmo responsável e a tarefa sem rodízio passam como sempre.
