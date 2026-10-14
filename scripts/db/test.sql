@@ -1,6 +1,7 @@
 -- Testes do schema: isolamento entre famílias (RLS), matching, preços,
--- confirmação de nota, recorrência de tarefas, remédios, saúde, aparelhos,
--- documentos, financeiro, saída da casa e compromissos da família.
+-- confirmação de nota, recorrência e rodízio de tarefas, remédios, saúde,
+-- aparelhos, documentos, financeiro, saída da casa, compromissos da família e
+-- preços compartilhados entre casas.
 -- Rodado por scripts/db/test.sh depois de stubs.sql + migrations.
 
 \set ON_ERROR_STOP 1
@@ -1363,6 +1364,161 @@ select set_config('request.jwt.claim.sub', :'user_b', false) \gset
 do $$
 begin
   assert (select label from public.household_location) = 'Asa Sul, Brasília', 'B keeps the location, untouched by C';
+end $$;
+
+\echo '• gás, água e ração: reposições e trocas'
+-- Os privilégios vêm da própria migração, e não do padrão do projeto (que o
+-- Supabase deixa de aplicar a tabela nova em 30/10/2026). Um por um: com uma
+-- lista separada por vírgula, has_table_privilege responde verdadeiro se o
+-- papel tiver QUALQUER um deles.
+do $$
+declare
+  t text;
+  p text;
+begin
+  foreach t in array array['public.supplies', 'public.supply_refills'] loop
+    foreach p in array array['select', 'insert', 'update', 'delete', 'truncate'] loop
+      assert not has_table_privilege('anon', t, p), format('anon must not have %s on %s', p, t);
+    end loop;
+    foreach p in array array['select', 'insert', 'update', 'delete'] loop
+      assert has_table_privilege('authenticated', t, p), format('authenticated needs %s on %s', p, t);
+      assert has_table_privilege('service_role', t, p), format('service_role needs %s on %s', p, t);
+    end loop;
+    foreach p in array array['truncate', 'references', 'trigger'] loop
+      assert not has_table_privilege('authenticated', t, p), format('authenticated must not have %s on %s', p, t);
+    end loop;
+  end loop;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  gas uuid;
+  n integer;
+begin
+  insert into public.supplies (name, kind, typical_days, notes)
+    values ('Gás de cozinha', 'gas', 45, 'Disk gás: 3333-0000') returning id into gas;
+  perform set_config('test.supply_a', gas::text, false);
+  assert (select household_id from public.supplies where id = gas) = current_setting('test.hh_a')::uuid, 'the supply belongs to the open household';
+  assert (select created_by from public.supplies where id = gas) = auth.uid(), 'and records who created it';
+  insert into public.supply_refills (supply_id, refilled_on) values (gas, '2026-08-19'), (gas, '2026-10-03');
+
+  -- "Troquei hoje" duas vezes no mesmo dia é a mesma troca: o app grava com
+  -- on conflict do nothing (upsert com ignoreDuplicates), sem erro e sem linha nova.
+  insert into public.supply_refills (supply_id, refilled_on) values (gas, '2026-10-03')
+    on conflict (supply_id, refilled_on) do nothing;
+  get diagnostics n = row_count;
+  assert n = 0, 'the second tap on the same day writes nothing';
+  assert (select count(*) from public.supply_refills where supply_id = gas) = 2, 'one refill per supply per day';
+  begin
+    insert into public.supply_refills (supply_id, refilled_on) values (gas, '2026-10-03');
+    raise exception 'FAIL: two refills on the same day';
+  exception when unique_violation then null;
+  end;
+
+  begin
+    insert into public.supplies (name, kind) values ('   ', 'gas');
+    raise exception 'FAIL: empty supply name';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.supplies (name, kind) values (repeat('x', 61), 'gas');
+    raise exception 'FAIL: supply name over 60';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.supplies (name, kind) values ('Lenha', 'lenha');
+    raise exception 'FAIL: unknown supply kind';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.supplies (name, kind, typical_days) values ('Gás', 'gas', 0);
+    raise exception 'FAIL: zero typical days';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.supplies (name, kind, typical_days) values ('Gás', 'gas', 731);
+    raise exception 'FAIL: typical days over two years';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.supplies (name, kind, notes) values ('Gás', 'gas', repeat('x', 201));
+    raise exception 'FAIL: notes over 200';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.supply_refills (supply_id, refilled_on) values (gas, '1999-12-31');
+    raise exception 'FAIL: refill before 2000';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.supply_refills (supply_id, refilled_on) values (gas, '2101-01-01');
+    raise exception 'FAIL: refill after 2100';
+  exception when check_violation then null;
+  end;
+  -- Os limites em si passam: nome de 60, 730 dias, observação de 200, tipo padrão.
+  insert into public.supplies (name, typical_days, notes) values (repeat('x', 60), 730, repeat('x', 200));
+  assert (select kind from public.supplies where name = repeat('x', 60)) = 'outros', 'kind defaults to outros';
+  delete from public.supplies where name = repeat('x', 60);
+end $$;
+select set_config('request.jwt.claim.sub', :'user_b', false) \gset
+do $$
+begin
+  assert (select count(*) from public.supplies) = 1, 'B sees the household supplies';
+  insert into public.supply_refills (supply_id, refilled_on) values (current_setting('test.supply_a')::uuid, '2026-10-10');
+  assert (select count(*) from public.supply_refills) = 3, 'any member records a refill';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+declare
+  own uuid;
+begin
+  assert (select count(*) from public.supplies) = 0, 'C sees no foreign supplies';
+  assert (select count(*) from public.supply_refills) = 0, 'C sees no foreign refills';
+  update public.supplies set name = 'Invadido';
+  delete from public.supply_refills;
+  delete from public.supplies;
+
+  begin
+    insert into public.supplies (household_id, name, kind) values (current_setting('test.hh_a')::uuid, 'Invasor', 'gas');
+    raise exception 'FAIL: cross-household supply';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.supply_refills (household_id, supply_id, refilled_on)
+      values (current_setting('test.hh_a')::uuid, current_setting('test.supply_a')::uuid, '2026-10-05');
+    raise exception 'FAIL: cross-household refill';
+  exception when insufficient_privilege then null;
+  end;
+  -- Na própria casa, a troca não aponta para a reposição de outra.
+  begin
+    insert into public.supply_refills (supply_id, refilled_on) values (current_setting('test.supply_a')::uuid, '2026-10-05');
+    raise exception 'FAIL: refill attached to a foreign supply';
+  exception when foreign_key_violation then null;
+  end;
+  insert into public.supplies (name, kind) values ('Galão de água', 'agua') returning id into own;
+  insert into public.supply_refills (supply_id, refilled_on) values (own, '2026-10-01');
+  begin
+    update public.supply_refills set supply_id = current_setting('test.supply_a')::uuid where supply_id = own;
+    raise exception 'FAIL: refill moved to a foreign supply';
+  exception when foreign_key_violation then null;
+  end;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  assert (select name from public.supplies) = 'Gás de cozinha', 'A keeps the supply, untouched by C';
+  assert (select array_agg(refilled_on order by refilled_on) from public.supply_refills)
+    = array['2026-08-19', '2026-10-03', '2026-10-10']::date[], 'and its refills';
+  -- Troca anotada por engano sai sozinha; excluir a reposição leva o histórico junto.
+  delete from public.supply_refills where refilled_on = '2026-10-10';
+  assert (select count(*) from public.supply_refills) = 2, 'one refill deleted';
+  delete from public.supplies where id = current_setting('test.supply_a')::uuid;
+  assert (select count(*) from public.supply_refills) = 0, 'deleting the supply removes its refills';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  assert (select count(*) from public.supply_refills) = 1, 'C keeps its own refill';
 end $$;
 
 \echo '• limite de uso da IA'
@@ -3221,13 +3377,1672 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+\echo '• juntar produtos: tudo passa para o que fica, e "São diferentes" fica guardado'
+-- Paula e Quim moram juntos; Rita mora em outra casa.
+\set user_p '00000000-0000-0000-0000-000000000021'
+\set user_q '00000000-0000-0000-0000-000000000022'
+\set user_r '00000000-0000-0000-0000-000000000023'
+reset role;
+insert into auth.users (id) values (:'user_p'), (:'user_q'), (:'user_r');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+select (public.create_household('Casa da Paula', 'Paula')).invite_code as invite_p \gset
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+select public.join_household(:'invite_p', 'Quim') \gset
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+select (public.create_household('Casa da Rita', 'Rita')).id as hh_r \gset
+select set_config('test.hh_r', :'hh_r', false) \gset
+do $$
+declare
+  p uuid;
+begin
+  insert into public.products (name, category) values ('Arroz', 'graos') returning id into p;
+  insert into public.list_item_links (name_key, product_id) values ('arroz', p);
+  perform set_config('test.mp_rita', p::text, false);
+end $$;
+reset role;
+select id as hh_p from public.households where name = 'Casa da Paula' \gset
+select set_config('test.hh_p', :'hh_p', false) \gset
+
+-- As permissões que a migração escreve. Conferidas duas vezes: como a migração as deixou e depois de rodar
+-- de novo as partes dela que podem rodar de novo (os revoke e grant), que precisam dar no mesmo.
+create function pg_temp.merge_products_access() returns void language plpgsql as $$
+begin
+  -- Cada permissão conferida sozinha: com uma lista, has_table_privilege é verdadeiro se qualquer uma existir.
+  assert has_table_privilege('authenticated', 'public.product_distinct_pairs', 'select'), 'members read the pairs';
+  assert has_table_privilege('authenticated', 'public.product_distinct_pairs', 'insert'), 'members add a pair';
+  assert has_table_privilege('authenticated', 'public.product_distinct_pairs', 'delete'), 'members remove a pair';
+  assert not has_table_privilege('authenticated', 'public.product_distinct_pairs', 'update'), 'a pair is never edited';
+  assert not has_table_privilege('authenticated', 'public.product_distinct_pairs', 'truncate'), 'members do not truncate the pairs';
+  assert not has_table_privilege('authenticated', 'public.product_distinct_pairs', 'references'), 'members get no references on the pairs';
+  assert not has_table_privilege('authenticated', 'public.product_distinct_pairs', 'trigger'), 'members get no trigger on the pairs';
+  assert not has_table_privilege('anon', 'public.product_distinct_pairs', 'select'), 'anon does not read the pairs';
+  assert not has_table_privilege('anon', 'public.product_distinct_pairs', 'insert'), 'anon does not add a pair';
+  assert not has_table_privilege('anon', 'public.product_distinct_pairs', 'update'), 'anon does not edit a pair';
+  assert not has_table_privilege('anon', 'public.product_distinct_pairs', 'delete'), 'anon does not remove a pair';
+  assert not has_table_privilege('anon', 'public.product_distinct_pairs', 'truncate'), 'anon does not truncate the pairs';
+  assert has_table_privilege('service_role', 'public.product_distinct_pairs', 'select'), 'the service role reads the pairs';
+  assert has_table_privilege('service_role', 'public.product_distinct_pairs', 'insert'), 'the service role adds a pair';
+  assert has_table_privilege('service_role', 'public.product_distinct_pairs', 'update'), 'the service role edits a pair';
+  assert has_table_privilege('service_role', 'public.product_distinct_pairs', 'delete'), 'the service role removes a pair';
+  -- O histórico de compras: só o produto da linha pode mudar.
+  assert not has_table_privilege('authenticated', 'public.purchase_history', 'update'), 'members do not edit the purchase history';
+  assert has_column_privilege('authenticated', 'public.purchase_history', 'product_id', 'update'), 'except the product of a row';
+  assert not has_column_privilege('authenticated', 'public.purchase_history', 'name', 'update'), 'the name of a purchase stays';
+  assert not has_column_privilege('authenticated', 'public.purchase_history', 'quantity', 'update'), 'and its quantity';
+  assert not has_column_privilege('authenticated', 'public.purchase_history', 'bought_at', 'update'), 'and its date';
+  assert not has_column_privilege('authenticated', 'public.purchase_history', 'household_id', 'update'), 'and its household';
+  assert has_table_privilege('authenticated', 'public.purchase_history', 'select'), 'members still read the purchase history';
+  assert has_table_privilege('authenticated', 'public.purchase_history', 'delete'), 'and still forget a purchase';
+  -- A função de juntar, na assinatura com os nomes que a pessoa confirmou: cada papel conferido sozinho.
+  assert has_function_privilege('authenticated', 'public.merge_products(uuid, uuid, text, text)', 'execute'), 'members merge products';
+  assert not has_function_privilege('anon', 'public.merge_products(uuid, uuid, text, text)', 'execute'), 'anon does not';
+  assert not has_function_privilege('public', 'public.merge_products(uuid, uuid, text, text)', 'execute'), 'nor everyone (PUBLIC)';
+  -- Uma função só: a assinatura sem os nomes não existe (quem chama sem eles cai nesta, pelos padrões).
+  assert to_regprocedure('public.merge_products(uuid, uuid)') is null, 'the two-argument signature is gone';
+  assert (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'merge_products') = 1,
+    'one merge_products only';
+  -- Toda tabela que aponta para products está em merge_products: uma nova precisa entrar lá, senão o
+  -- produto apagado levaria (cascade) ou soltaria (set null) as linhas dela.
+  assert (
+    select array_agg(distinct t.relname::text order by t.relname::text)
+    from pg_constraint c join pg_class t on t.oid = c.conrelid
+    where c.contype = 'f' and c.confrelid = 'public.products'::regclass
+  ) = array['list_item_links', 'pantry_items', 'product_aliases', 'product_distinct_pairs', 'purchase_history',
+            'receipt_items', 'shopping_list_items'],
+    'a table that references products must be handled in merge_products';
+end $$;
+select pg_temp.merge_products_access() \gset
+revoke all on public.product_distinct_pairs from anon, authenticated;
+grant select, insert, delete on public.product_distinct_pairs to authenticated;
+grant all on public.product_distinct_pairs to service_role;
+revoke update on public.purchase_history from authenticated;
+grant update (product_id) on public.purchase_history to authenticated;
+revoke execute on function public.merge_products(uuid, uuid, text, text) from public, anon;
+grant execute on function public.merge_products(uuid, uuid, text, text) to authenticated;
+select pg_temp.merge_products_access() \gset
+
+-- Tudo o que juntar mexeria nos dois produtos, como quem chama vê: as linhas deles e o que aponta para cada
+-- um. Depois de uma recusa, tem de estar igual ao que era.
+create function pg_temp.merge_products_state(p_keep uuid, p_gone uuid) returns jsonb language sql as $$
+  select jsonb_build_object(
+    'products', (select jsonb_agg(to_jsonb(p) order by p.id) from public.products p where p.id in (p_keep, p_gone)),
+    'receipt_items', (select jsonb_agg(to_jsonb(i) order by i.id) from public.receipt_items i where i.product_id in (p_keep, p_gone)),
+    'pantry_items', (select jsonb_agg(to_jsonb(i) order by i.id) from public.pantry_items i where i.product_id in (p_keep, p_gone)),
+    'list_items', (select jsonb_agg(to_jsonb(i) order by i.id) from public.shopping_list_items i where i.product_id in (p_keep, p_gone)),
+    'purchase_history', (select jsonb_agg(to_jsonb(h) order by h.id) from public.purchase_history h where h.product_id in (p_keep, p_gone)),
+    'prices', (select jsonb_agg(to_jsonb(o) order by o.product_id, o.receipt_id, o.unit_price)
+      from public.price_observations o where o.product_id in (p_keep, p_gone)),
+    'latest_prices', (select jsonb_agg(to_jsonb(l) order by l.product_id, l.store_id, l.unit)
+      from public.latest_prices l where l.product_id in (p_keep, p_gone)),
+    'aliases', (select jsonb_agg(to_jsonb(a) order by a.alias) from public.product_aliases a where a.product_id in (p_keep, p_gone)),
+    'links', (select jsonb_agg(to_jsonb(k) order by k.name_key, k.product_id) from public.list_item_links k where k.product_id in (p_keep, p_gone)),
+    'pairs', (select jsonb_agg(to_jsonb(d) order by d.product_a, d.product_b)
+      from public.product_distinct_pairs d where d.product_a in (p_keep, p_gone) or d.product_b in (p_keep, p_gone))
+  );
+$$;
+
+-- Paula tem o mesmo arroz com dois nomes, e cada um espalhado por todas as tabelas.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  s_assai uuid;
+  s_bom uuid;
+  r uuid;
+  i uuid;
+  l uuid;
+  l_old uuid;
+  p_keep uuid;
+  p_gone uuid;
+  p_integral uuid;
+  p_parbo uuid;
+  ids uuid[];
+  tokens uuid[];
+begin
+  insert into public.stores (name) values ('Assaí') returning id into s_assai;
+  insert into public.stores (name) values ('Mercado Bom') returning id into s_bom;
+
+  -- "Arroz Tio João 5 kg": uma compra no Assaí, com a validade aprendida.
+  insert into public.receipts (store_id, purchased_at, source) values (s_assai, '2026-10-01 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'ARROZ T.JOAO 5KG', 1, 'un', 27.50, 27.50) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i,
+    'new_product', jsonb_build_object('name', 'Arroz Tio João 5 kg', 'category', 'graos'),
+    'pantry', jsonb_build_object('category', 'graos', 'purchased_on', '2026-10-01', 'expires_on', '2027-04-01', 'expiry_source', 'manual'))));
+  select id into p_keep from public.products where name = 'Arroz Tio João 5 kg';
+
+  -- "Arroz 5kg": duas compras (Mercado Bom e, depois, mais barato no Assaí) e um rascunho de nota.
+  insert into public.receipts (store_id, purchased_at, source) values (s_bom, '2026-10-05 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'ARROZ 5KG', 1, 'un', 25.90, 25.90) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i,
+    'new_product', jsonb_build_object('name', 'Arroz 5kg', 'category', 'mercearia'),
+    'pantry', jsonb_build_object('category', 'mercearia', 'purchased_on', '2026-10-05', 'expires_on', '2027-01-05', 'expiry_source', 'categoria'))));
+  select id into p_gone from public.products where name = 'Arroz 5kg';
+  update public.products set shelf_life_days = 90 where id = p_gone;
+  insert into public.receipts (store_id, purchased_at, source) values (s_assai, '2026-10-10 10:00-03', 'manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'ARROZ BRANCO 5KG', 2, 'un', 24.90, 49.80) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p_gone)));
+  insert into public.receipts (store_id, status) values (s_bom, 'draft') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit_price, total_price, product_id) values (r, 'ARROZ 5KG', 26, 26, p_gone);
+
+  -- Despensa: além do item aberto que veio da nota, um já consumido.
+  insert into public.pantry_items (product_id, name, category, consumed_at) values (p_gone, 'Arroz', 'mercearia', now());
+
+  -- Listas: um item aberto, um que já saiu pelo carrinho (histórico de compras) e um de lista arquivada.
+  insert into public.shopping_lists (name) values ('Mercado') returning id into l;
+  insert into public.shopping_list_items (list_id, name, product_id) values (l, 'Arroz', p_gone), (l, 'Feijão', null);
+  insert into public.shopping_list_items (list_id, name, product_id, checked_at) values (l, 'Arroz 5kg', p_gone, now());
+  select array_agg(id), array_agg(toggle_token) into ids, tokens
+    from public.shopping_list_items where list_id = l and checked_at is not null;
+  assert public.clear_checked_items(l, ids, tokens) = 1, 'the cart item went to the purchase history';
+  insert into public.shopping_lists (name, archived_at) values ('Semana passada', now()) returning id into l_old;
+  insert into public.shopping_list_items (list_id, name, product_id) values (l_old, 'Arroz', p_gone);
+
+  -- Ligações de nome de lista: "arroz" os dois já tinham; "arroz branco" só o que some.
+  insert into public.list_item_links (name_key, product_id) values ('arroz', p_keep), ('arroz', p_gone), ('arroz branco', p_gone);
+
+  -- "São diferentes": os dois entre si (e mesmo assim dá para juntar à mão), o que some com o integral, e
+  -- os dois com o parboilizado (ao juntar, sobra um par só).
+  insert into public.products (name, category) values ('Arroz integral', 'graos') returning id into p_integral;
+  insert into public.products (name, category) values ('Arroz parboilizado', 'graos') returning id into p_parbo;
+  insert into public.product_distinct_pairs (product_a, product_b) values
+    (least(p_keep, p_gone), greatest(p_keep, p_gone)),
+    (least(p_gone, p_integral), greatest(p_gone, p_integral)),
+    (least(p_gone, p_parbo), greatest(p_gone, p_parbo)),
+    (least(p_keep, p_parbo), greatest(p_keep, p_parbo));
+
+  perform set_config('test.mp_keep', p_keep::text, false);
+  perform set_config('test.mp_gone', p_gone::text, false);
+  perform set_config('test.mp_integral', p_integral::text, false);
+  perform set_config('test.mp_parbo', p_parbo::text, false);
+  perform set_config('test.mp_assai', s_assai::text, false);
+  perform set_config('test.mp_bom', s_bom::text, false);
+end $$;
+
+-- A tabela dos pares: só na ordem certa, só produtos da casa, sem edição.
+do $$
+declare
+  p_keep uuid := current_setting('test.mp_keep')::uuid;
+  p_integral uuid := current_setting('test.mp_integral')::uuid;
+begin
+  begin
+    insert into public.product_distinct_pairs (product_a, product_b) values (greatest(p_keep, p_integral), least(p_keep, p_integral));
+    raise exception 'FAIL: pair stored with the larger id first';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.product_distinct_pairs (product_a, product_b) values (p_keep, p_keep);
+    raise exception 'FAIL: a product paired with itself';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.product_distinct_pairs (product_a, product_b)
+      values (least(p_keep, current_setting('test.mp_rita')::uuid), greatest(p_keep, current_setting('test.mp_rita')::uuid));
+    raise exception 'FAIL: pair with a product of another household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    update public.product_distinct_pairs set created_at = now();
+    raise exception 'FAIL: a pair was edited';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.product_distinct_pairs (product_a, product_b)
+      select product_a, product_b from public.product_distinct_pairs limit 1;
+    raise exception 'FAIL: the same pair twice';
+  exception when unique_violation then null;
+  end;
+  -- O histórico de compras continua sem edição, fora o produto da linha (e só para um produto da casa).
+  begin
+    update public.purchase_history set name = 'Outro';
+    raise exception 'FAIL: a purchase was renamed';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update public.purchase_history set product_id = current_setting('test.mp_rita')::uuid;
+    raise exception 'FAIL: a purchase re-pointed to a product of another household';
+  exception when foreign_key_violation then null;
+  end;
+end $$;
+
+-- Quim (mesma casa) vê os pares; Rita (outra casa) não vê, não grava e não apaga nada da casa da Paula.
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+begin
+  assert (select count(*) from public.product_distinct_pairs) = 4, 'Q sees the household pairs';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+do $$
+declare
+  p_keep uuid := current_setting('test.mp_keep')::uuid;
+  p_gone uuid := current_setting('test.mp_gone')::uuid;
+  p_integral uuid := current_setting('test.mp_integral')::uuid;
+begin
+  assert (select count(*) from public.product_distinct_pairs) = 0, 'R sees no pairs of another household';
+  begin
+    insert into public.product_distinct_pairs (household_id, product_a, product_b)
+      values (current_setting('test.hh_p')::uuid, least(p_keep, p_integral), greatest(p_keep, p_integral));
+    raise exception 'FAIL: R wrote a pair into another household';
+  exception when insufficient_privilege then null;
+  end;
+  delete from public.product_distinct_pairs where product_a in (p_keep, p_gone) or product_b in (p_keep, p_gone);
+  assert not found, 'R cannot delete pairs of another household';
+  update public.purchase_history set product_id = null;
+  assert not found, 'R cannot touch the purchase history of another household';
+
+  -- Juntar produtos de outra casa: para Rita eles não existem, em nenhuma das duas posições.
+  begin
+    perform public.merge_products(p_keep, p_gone);
+    raise exception 'FAIL: R merged products of another household';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.merge_products(current_setting('test.mp_rita')::uuid, p_gone);
+    raise exception 'FAIL: R pulled a product of another household into hers';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.merge_products(p_keep, current_setting('test.mp_rita')::uuid);
+    raise exception 'FAIL: R pushed her product into another household';
+  exception when no_data_found then null;
+  end;
+  -- Com os nomes também: certos ou errados, a resposta é a mesma, e ela não fica sabendo o nome de nada.
+  begin
+    perform public.merge_products(p_keep, p_gone, 'Arroz Tio João 5 kg', 'Arroz 5kg');
+    raise exception 'FAIL: R merged products of another household by their names';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.merge_products(p_keep, p_gone, 'Outro nome', 'Outro nome');
+    raise exception 'FAIL: R was told the names of another household do not match';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.merge_products(current_setting('test.mp_rita')::uuid, p_gone, 'Arroz', 'Outro nome');
+    raise exception 'FAIL: R was told the name of a product of another household does not match';
+  exception when no_data_found then null;
+  end;
+  assert (select count(*) from public.products) = 1, 'R keeps her product';
+  assert (select count(*) from public.list_item_links) = 1, 'and its link';
+end $$;
+set role anon;
+do $$
+begin
+  begin
+    perform public.merge_products(current_setting('test.mp_keep')::uuid, current_setting('test.mp_gone')::uuid);
+    raise exception 'FAIL: anon merged products';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.merge_products(current_setting('test.mp_keep')::uuid, current_setting('test.mp_gone')::uuid,
+      'Arroz Tio João 5 kg', 'Arroz 5kg');
+    raise exception 'FAIL: anon merged products by their names';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform 1 from public.product_distinct_pairs;
+    raise exception 'FAIL: anon read the pairs';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set role authenticated;
+
+-- Paula tenta com o que não pode: o mesmo produto, um que não existe, um de outra casa. Nada muda.
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  p_keep uuid := current_setting('test.mp_keep')::uuid;
+  p_gone uuid := current_setting('test.mp_gone')::uuid;
+begin
+  begin
+    perform public.merge_products(p_keep, p_keep);
+    raise exception 'FAIL: a product merged with itself';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.merge_products(p_keep, gen_random_uuid());
+    raise exception 'FAIL: merged a product that does not exist';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.merge_products(gen_random_uuid(), p_gone);
+    raise exception 'FAIL: merged into a product that does not exist';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.merge_products(p_keep, null);
+    raise exception 'FAIL: merged without the other product';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.merge_products(p_keep, current_setting('test.mp_rita')::uuid);
+    raise exception 'FAIL: P merged a product of another household into hers';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.merge_products(current_setting('test.mp_rita')::uuid, p_gone);
+    raise exception 'FAIL: P merged her product into another household';
+  exception when no_data_found then null;
+  end;
+  assert (select count(*) from public.products) = 4, 'P keeps her four products';
+  assert (select count(*) from public.receipt_items where product_id = p_gone) = 3, 'and their receipt lines';
+  assert (select count(*) from public.list_item_links) = 3, 'and their links';
+  assert (select count(*) from public.product_distinct_pairs) = 4, 'and the pairs';
+end $$;
+
+-- Os nomes que a pessoa confirmou. O app busca os dois produtos ao abrir a confirmação; se outro aparelho
+-- renomeia um deles antes do toque, o pedido chega com o nome de antes e nada é juntado (NK008): nem as
+-- linhas dos dois produtos, nem a despensa, a lista, os preços, as descrições, as ligações ou os pares.
+select pg_temp.merge_products_state(current_setting('test.mp_keep')::uuid, current_setting('test.mp_gone')::uuid) as mp_before \gset
+select set_config('test.mp_before', :'mp_before', false) \gset
+do $$
+declare
+  p_keep uuid := current_setting('test.mp_keep')::uuid;
+  p_gone uuid := current_setting('test.mp_gone')::uuid;
+  before jsonb := current_setting('test.mp_before')::jsonb;
+  wrong record;
+begin
+  assert jsonb_array_length(before->'products') = 2 and jsonb_array_length(before->'receipt_items') = 4
+    and jsonb_array_length(before->'pantry_items') = 3 and jsonb_array_length(before->'list_items') = 2
+    and jsonb_array_length(before->'purchase_history') = 1 and jsonb_array_length(before->'prices') = 3
+    and jsonb_array_length(before->'latest_prices') = 3 and jsonb_array_length(before->'aliases') = 3
+    and jsonb_array_length(before->'links') = 3 and jsonb_array_length(before->'pairs') = 4,
+    format('what the two products have before: %s', before);
+  -- O nome errado de qualquer um dos dois lados, dos dois, e de um só com o outro sem nome. A comparação é
+  -- exata: outra caixa, sem acento ou com um espaço a mais já é outro nome.
+  for wrong in
+    select * from (values
+      ('Arroz Tio João 5 kg', 'Feijão carioca 1kg'),
+      ('Feijão carioca 1kg', 'Arroz 5kg'),
+      ('Feijão carioca 1kg', 'Feijão preto 1kg'),
+      (null, 'Feijão carioca 1kg'),
+      ('Feijão carioca 1kg', null),
+      ('Arroz 5kg', 'Arroz Tio João 5 kg'),
+      ('Arroz Tio João 5 kg', 'arroz 5kg'),
+      ('Arroz Tio Joao 5 kg', 'Arroz 5kg'),
+      ('Arroz Tio João 5 kg', 'Arroz 5kg '),
+      ('', 'Arroz 5kg')
+    ) as names (keep_name, gone_name)
+  loop
+    begin
+      perform public.merge_products(p_keep, p_gone, wrong.keep_name, wrong.gone_name);
+      raise exception 'FAIL: merged with names that are not the products'' names (%, %)', wrong.keep_name, wrong.gone_name;
+    exception when sqlstate 'NK008' then null;
+    end;
+    assert pg_temp.merge_products_state(p_keep, p_gone) = before,
+      format('a refusal by name changed something (%s, %s)', wrong.keep_name, wrong.gone_name);
+  end loop;
+  -- O nome certo não salva o que já era recusado: o mesmo produto, e o produto que não existe.
+  begin
+    perform public.merge_products(p_keep, p_keep, 'Arroz Tio João 5 kg', 'Arroz Tio João 5 kg');
+    raise exception 'FAIL: a product merged with itself by its name';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.merge_products(p_keep, gen_random_uuid(), 'Arroz Tio João 5 kg', 'Arroz 5kg');
+    raise exception 'FAIL: merged a product that does not exist by a name';
+  exception when no_data_found then null;
+  end;
+  assert pg_temp.merge_products_state(p_keep, p_gone) = before, 'nothing changed';
+end $$;
+-- O caso de verdade: o produto que ia sumir é renomeado (gravado, em outro pedido) e só depois chega o pedido de
+-- juntar, com os nomes que a confirmação tinha lido.
+update public.products set name = 'Feijão carioca 1kg' where id = current_setting('test.mp_gone')::uuid;
+do $$
+declare
+  p_keep uuid := current_setting('test.mp_keep')::uuid;
+  p_gone uuid := current_setting('test.mp_gone')::uuid;
+  renamed jsonb := pg_temp.merge_products_state(p_keep, p_gone);
+begin
+  assert renamed <> current_setting('test.mp_before')::jsonb, 'the rename is there';
+  begin
+    perform public.merge_products(p_keep, p_gone, 'Arroz Tio João 5 kg', 'Arroz 5kg');
+    raise exception 'FAIL: merged a product that was renamed after the confirmation read it';
+  exception when sqlstate 'NK008' then null;
+  end;
+  assert pg_temp.merge_products_state(p_keep, p_gone) = renamed, 'the renamed product and everything of the two stay as they were';
+  assert (select name from public.products where id = p_gone) = 'Feijão carioca 1kg', 'with the new name';
+  assert not exists (select 1 from public.list_item_links where name_key = 'feijao carioca 1kg'), 'and no link from a name that was never merged';
+end $$;
+-- O mesmo com o produto que ficaria.
+update public.products set name = 'Arroz 5kg' where id = current_setting('test.mp_gone')::uuid;
+update public.products set name = 'Arroz Tio João 5kg' where id = current_setting('test.mp_keep')::uuid;
+do $$
+declare
+  p_keep uuid := current_setting('test.mp_keep')::uuid;
+  p_gone uuid := current_setting('test.mp_gone')::uuid;
+  renamed jsonb := pg_temp.merge_products_state(p_keep, p_gone);
+begin
+  begin
+    perform public.merge_products(p_keep, p_gone, 'Arroz Tio João 5 kg', 'Arroz 5kg');
+    raise exception 'FAIL: merged into a product that was renamed after the confirmation read it';
+  exception when sqlstate 'NK008' then null;
+  end;
+  assert pg_temp.merge_products_state(p_keep, p_gone) = renamed, 'nothing changed either';
+  assert exists (select 1 from public.products where id = p_gone), 'the product that would go is still there';
+end $$;
+update public.products set name = 'Arroz Tio João 5 kg' where id = current_setting('test.mp_keep')::uuid;
+do $$
+begin
+  assert pg_temp.merge_products_state(current_setting('test.mp_keep')::uuid, current_setting('test.mp_gone')::uuid)
+    = current_setting('test.mp_before')::jsonb, 'with the names back, everything is as it was before the refusals';
+end $$;
+reset role;
+do $$
+begin
+  assert (select count(*) from public.products where household_id = current_setting('test.hh_r')::uuid) = 1, 'the other household keeps its product';
+  assert (select count(*) from public.list_item_links where household_id = current_setting('test.hh_r')::uuid) = 1, 'and its link';
+  -- Quem passa por cima da RLS também não junta produtos de casas diferentes.
+  begin
+    perform public.merge_products(current_setting('test.mp_keep')::uuid, current_setting('test.mp_rita')::uuid);
+    raise exception 'FAIL: products of two households merged';
+  exception when invalid_parameter_value then null;
+  end;
+  assert exists (select 1 from public.products where id = current_setting('test.mp_rita')::uuid), 'the other household still has its product';
+end $$;
+set role authenticated;
+
+-- Paula junta "Arroz 5kg" em "Arroz Tio João 5 kg".
+do $$
+declare
+  p_keep uuid := current_setting('test.mp_keep')::uuid;
+  p_gone uuid := current_setting('test.mp_gone')::uuid;
+  p_integral uuid := current_setting('test.mp_integral')::uuid;
+  p_parbo uuid := current_setting('test.mp_parbo')::uuid;
+  s_assai uuid := current_setting('test.mp_assai')::uuid;
+  s_bom uuid := current_setting('test.mp_bom')::uuid;
+  n_items bigint;
+  n_pantry bigint;
+  n_list bigint;
+  n_history bigint;
+  n_aliases bigint;
+  moved jsonb;
+begin
+  -- Antes: cada produto com a metade dele.
+  assert (select count(*) from public.receipt_items where product_id = p_keep) = 1, 'keep: one receipt line';
+  assert (select count(*) from public.receipt_items where product_id = p_gone) = 3, 'gone: three receipt lines (one in a draft)';
+  assert (select count(*) from public.price_observations where product_id = p_keep) = 1, 'keep: one price';
+  assert (select count(*) from public.price_observations where product_id = p_gone) = 2, 'gone: two prices';
+  assert (select count(*) from public.latest_prices where product_id = p_keep) = 1, 'keep: latest price in one store';
+  assert (select count(*) from public.pantry_items where product_id = p_keep) = 1, 'keep: one pantry item';
+  assert (select count(*) from public.pantry_items where product_id = p_gone) = 2, 'gone: two pantry items (one consumed)';
+  assert (select count(*) from public.shopping_list_items where product_id = p_gone) = 2, 'gone: two list items (one archived)';
+  assert (select count(*) from public.purchase_history where product_id = p_gone) = 1, 'gone: one purchase in the history';
+  assert (select count(*) from public.product_aliases where product_id = p_keep) = 1, 'keep: one alias';
+  assert (select count(*) from public.product_aliases where product_id = p_gone) = 2, 'gone: two aliases';
+  select count(*) into n_items from public.receipt_items;
+  select count(*) into n_pantry from public.pantry_items;
+  select count(*) into n_list from public.shopping_list_items;
+  select count(*) into n_history from public.purchase_history;
+  select count(*) into n_aliases from public.product_aliases;
+
+  moved := public.merge_products(p_keep, p_gone);
+
+  -- O que a função diz que passou.
+  assert moved = jsonb_build_object('kept', p_keep, 'purchases', 2, 'pantry', 1, 'list', 1, 'receipt_items', 3,
+    'pantry_items', 2, 'list_items', 2, 'purchase_history', 1, 'aliases', 2, 'links', 1), format('what moved: %s', moved);
+
+  -- Um produto só, com o nome, a categoria e a validade aprendida do que ficou.
+  assert not exists (select 1 from public.products where id = p_gone), 'the merged product is gone';
+  assert (select count(*) from public.products) = 3, 'one product less';
+  assert (select name from public.products where id = p_keep) = 'Arroz Tio João 5 kg', 'the kept name';
+  assert (select category from public.products where id = p_keep) = 'graos', 'the kept category';
+  assert (select shelf_life_days from public.products where id = p_keep) = 182, 'the kept learned shelf life';
+
+  -- Nenhuma linha se perdeu nem ficou sem produto: todas trocaram de produto.
+  assert (select count(*) from public.receipt_items) = n_items, 'no receipt line lost';
+  assert (select count(*) from public.pantry_items) = n_pantry, 'no pantry item lost';
+  assert (select count(*) from public.shopping_list_items) = n_list, 'no list item lost';
+  assert (select count(*) from public.purchase_history) = n_history, 'no purchase lost';
+  assert (select count(*) from public.product_aliases) = n_aliases, 'no alias lost';
+  assert (select count(*) from public.receipt_items where product_id = p_keep) = 4, 'every receipt line points to the kept product';
+  assert (select count(*) from public.receipt_items where product_id is null) = 0, 'no receipt line without product';
+  assert (select count(*) from public.pantry_items where product_id = p_keep) = 3, 'every pantry item too';
+  assert (select count(*) from public.shopping_list_items where product_id = p_keep) = 2, 'and the list items, archived list included';
+  assert (select count(*) from public.shopping_list_items where product_id is null) = 1, 'the free-text list item stays free';
+  assert (select count(*) from public.purchase_history where product_id = p_keep) = 1, 'and the purchase history';
+  assert (select name from public.purchase_history where product_id = p_keep) = 'Arroz 5kg', 'a purchase keeps the name it was bought with';
+  assert (select name from public.pantry_items where product_id = p_keep and consumed_at is not null) = 'Arroz', 'a pantry item keeps its name';
+
+  -- O histórico de preços e o último preço por mercado viram um só.
+  assert (select count(*) from public.price_observations where product_id = p_keep) = 3, 'both price histories under the kept product';
+  assert (select count(*) from public.price_observations where product_id = p_gone) = 0, 'none under the merged one';
+  assert (select count(*) from public.latest_prices where product_id = p_keep) = 2, 'latest price in both stores';
+  assert (select unit_price from public.latest_prices where product_id = p_keep and store_id = s_assai) = 24.90,
+    'Assaí: the newer purchase, which was of the merged product';
+  assert (select unit_price from public.latest_prices where product_id = p_keep and store_id = s_bom) = 25.90, 'Mercado Bom: the only one';
+
+  -- A memória das descrições: o que levava ao outro produto leva a este.
+  assert (select product_id from public.match_aliases(array['arroz 5kg'])) = p_keep, 'the alias of the merged product leads to the kept one';
+  assert (select product_id from public.match_aliases(array['ARROZ BRANCO 5KG'])) = p_keep, 'every alias of it';
+  assert (select product_id from public.match_aliases(array['Arroz T Joao 5kg'])) = p_keep, 'and the kept product keeps its own';
+
+  -- Ligações de nome de lista: a que os dois tinham fica uma vez, a do outro passa, e o nome antigo vira ligação.
+  assert (select array_agg(name_key order by name_key) from public.list_item_links where product_id = p_keep)
+    = array['arroz', 'arroz 5kg', 'arroz branco'], 'links of the kept product';
+  assert (select count(*) from public.list_item_links) = 3, 'no link left behind';
+
+  -- "São diferentes": o par dos dois sai, o do integral passa, e os dois do parboilizado viram um.
+  assert (select count(*) from public.product_distinct_pairs) = 2, 'two pairs left';
+  assert exists (select 1 from public.product_distinct_pairs
+    where product_a = least(p_keep, p_integral) and product_b = greatest(p_keep, p_integral)), 'the integral pair moved to the kept product';
+  assert exists (select 1 from public.product_distinct_pairs
+    where product_a = least(p_keep, p_parbo) and product_b = greatest(p_keep, p_parbo)), 'the parboilizado pair kept once';
+  assert not exists (select 1 from public.product_distinct_pairs where p_gone in (product_a, product_b)), 'no pair points to the merged product';
+
+  -- De novo, o produto já não existe.
+  begin
+    perform public.merge_products(p_keep, p_gone);
+    raise exception 'FAIL: merged the same product twice';
+  exception when no_data_found then null;
+  end;
+end $$;
+
+-- Quim (morador, não dono) também junta. O nome que some vira chave de lista como no app (listNameKey):
+-- sem acento nem pontuação, e até 200 caracteres; nome sem letra nem número não deixa ligação.
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+declare
+  p_pao uuid;
+  p_other uuid;
+  long_name text := repeat('Açaí ', 45);
+begin
+  insert into public.products (name, category) values ('Pão de queijo', 'padaria') returning id into p_pao;
+  insert into public.products (name, category) values ('  PÃO de Queijo (500g)!  ', 'padaria') returning id into p_other;
+  assert (public.merge_products(p_pao, p_other))->>'links' = '0', 'nothing to re-point';
+  assert (select array_agg(name_key) from public.list_item_links where product_id = p_pao) = array['pao de queijo 500g'],
+    'the old name as the app writes the list key';
+
+  insert into public.products (name, category) values ('!!!', 'outros') returning id into p_other;
+  perform public.merge_products(p_pao, p_other);
+  assert (select count(*) from public.list_item_links where product_id = p_pao) = 1, 'a name without letters leaves no link';
+
+  insert into public.products (name, category) values (long_name, 'outros') returning id into p_other;
+  perform public.merge_products(p_pao, p_other);
+  assert (select max(length(name_key)) from public.list_item_links where product_id = p_pao) = 199, 'a long name is cut at 200 and trimmed';
+  assert exists (select 1 from public.list_item_links where product_id = p_pao and name_key = rtrim(repeat('acai ', 40))), 'cut key';
+
+  -- O produto apagado leva os pares dele.
+  insert into public.products (name, category) values ('Pão francês', 'padaria') returning id into p_other;
+  insert into public.product_distinct_pairs (product_a, product_b) values (least(p_pao, p_other), greatest(p_pao, p_other));
+  delete from public.products where id = p_other;
+  assert not exists (select 1 from public.product_distinct_pairs where p_pao in (product_a, product_b)), 'deleting a product deletes its pairs';
+  perform set_config('test.mp_pao', p_pao::text, false);
+end $$;
+
+-- Com os nomes certos junta, e devolve o mesmo que sem eles. Sem nome (null, nos dois ou num só) não há
+-- conferência, como quando são omitidos; o nome dado de um lado só é conferido sozinho.
+do $$
+declare
+  p_pao uuid := current_setting('test.mp_pao')::uuid;
+  p_other uuid;
+  l uuid;
+  moved jsonb;
+begin
+  select id into l from public.shopping_lists where name = 'Mercado';
+  insert into public.products (name, category) values ('Pão de queijo Forno de Minas', 'congelados') returning id into p_other;
+  insert into public.pantry_items (product_id, name, category) values (p_other, 'Pão de queijo', 'congelados');
+  insert into public.shopping_list_items (list_id, name, product_id) values (l, 'Pão de queijo Forno de Minas', p_other);
+  moved := public.merge_products(p_pao, p_other, 'Pão de queijo', 'Pão de queijo Forno de Minas');
+  assert moved = jsonb_build_object('kept', p_pao, 'purchases', 0, 'pantry', 1, 'list', 1, 'receipt_items', 0,
+    'pantry_items', 1, 'list_items', 1, 'purchase_history', 0, 'aliases', 0, 'links', 0), format('what moved with the names: %s', moved);
+  assert not exists (select 1 from public.products where id = p_other), 'with the right names the product is merged';
+  assert (select name from public.products where id = p_pao) = 'Pão de queijo', 'the kept product keeps its name';
+  assert (select category from public.products where id = p_pao) = 'padaria', 'and its category';
+  assert (select count(*) from public.pantry_items where product_id = p_pao) = 1, 'the pantry item moved';
+  assert (select count(*) from public.shopping_list_items where product_id = p_pao) = 1, 'and the list item';
+  assert exists (select 1 from public.list_item_links where product_id = p_pao and name_key = 'pao de queijo forno de minas'),
+    'and the old name became a link';
+
+  -- Como o app chama: os quatro pelo nome.
+  insert into public.products (name, category) values ('Pão de queijo coquetel', 'congelados') returning id into p_other;
+  perform public.merge_products(p_keep => p_pao, p_merge => p_other, p_keep_name => 'Pão de queijo', p_merge_name => 'Pão de queijo coquetel');
+  assert not exists (select 1 from public.products where id = p_other), 'the four arguments by name';
+
+  -- null nos dois, e só os dois produtos pelo nome: sem conferência.
+  insert into public.products (name, category) values ('Pão de queijo tradicional', 'congelados') returning id into p_other;
+  perform public.merge_products(p_pao, p_other, null, null);
+  assert not exists (select 1 from public.products where id = p_other), 'null names are as no names';
+  insert into public.products (name, category) values ('Pão de queijo mineiro', 'congelados') returning id into p_other;
+  perform public.merge_products(p_keep => p_pao, p_merge => p_other);
+  assert not exists (select 1 from public.products where id = p_other), 'the two products by name, without the names';
+
+  -- Um nome só, certo: o outro lado não é conferido.
+  insert into public.products (name, category) values ('Pão de queijo recheado', 'congelados') returning id into p_other;
+  perform public.merge_products(p_pao, p_other, 'Pão de queijo', null);
+  assert not exists (select 1 from public.products where id = p_other), 'only the kept name given';
+  insert into public.products (name, category) values ('Pão de queijo palito', 'congelados') returning id into p_other;
+  perform public.merge_products(p_pao, p_other, null, 'Pão de queijo palito');
+  assert not exists (select 1 from public.products where id = p_other), 'only the merged name given';
+
+  -- Um nome só, errado: recusa, mesmo com o outro lado sem nome. Com o nome certo, junta.
+  insert into public.products (name, category) values ('Pão de queijo integral', 'congelados') returning id into p_other;
+  begin
+    perform public.merge_products(p_pao, p_other, null, 'Pão de queijo');
+    raise exception 'FAIL: merged with the wrong name of the merged product';
+  exception when sqlstate 'NK008' then null;
+  end;
+  begin
+    perform public.merge_products(p_pao, p_other, 'Pão de queijo integral', null);
+    raise exception 'FAIL: merged with the wrong name of the kept product';
+  exception when sqlstate 'NK008' then null;
+  end;
+  assert exists (select 1 from public.products where id = p_other), 'the product is still there';
+  assert not exists (select 1 from public.list_item_links where name_key = 'pao de queijo integral'), 'and its name left no link';
+  perform public.merge_products(p_pao, p_other, 'Pão de queijo', 'Pão de queijo integral');
+  assert not exists (select 1 from public.products where id = p_other), 'and then merged, with the right names';
+end $$;
+
+-- Se uma troca não alcança as linhas (aqui, sem a regra de UPDATE do histórico), nada é juntado: apagar o
+-- produto deixaria as compras sem ele.
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  l uuid;
+  p_pao uuid := current_setting('test.mp_pao')::uuid;
+  p_other uuid;
+  ids uuid[];
+  tokens uuid[];
+begin
+  insert into public.products (name, category) values ('Pão de queijo congelado', 'congelados') returning id into p_other;
+  select id into l from public.shopping_lists where name = 'Mercado';
+  insert into public.shopping_list_items (list_id, name, product_id, checked_at) values (l, 'Pão de queijo', p_other, now());
+  insert into public.shopping_list_items (list_id, name, product_id) values (l, 'Pão de queijo congelado', p_other);
+  select array_agg(id), array_agg(toggle_token) into ids, tokens
+    from public.shopping_list_items where list_id = l and checked_at is not null;
+  assert public.clear_checked_items(l, ids, tokens) = 1, 'one more purchase in the history';
+  perform set_config('test.mp_other', p_other::text, false);
+end $$;
+reset role;
+drop policy "household members re-point purchase history" on public.purchase_history;
+set role authenticated;
+do $$
+declare
+  p_pao uuid := current_setting('test.mp_pao')::uuid;
+  p_other uuid := current_setting('test.mp_other')::uuid;
+begin
+  begin
+    perform public.merge_products(p_pao, p_other);
+    raise exception 'FAIL: merged leaving the purchase history behind';
+  exception when sqlstate '55000' then null;
+  end;
+  assert exists (select 1 from public.products where id = p_other), 'the product is still there';
+  assert (select count(*) from public.purchase_history where product_id = p_other) = 1, 'with its purchase';
+  assert (select count(*) from public.shopping_list_items where product_id = p_other) = 1, 'and its list item: the whole merge was undone';
+end $$;
+reset role;
+create policy "household members re-point purchase history" on public.purchase_history for update to authenticated
+  using (household_id = (select public.current_household_id()))
+  with check (household_id = (select public.current_household_id()));
+set role authenticated;
+do $$
+declare
+  p_pao uuid := current_setting('test.mp_pao')::uuid;
+  p_other uuid := current_setting('test.mp_other')::uuid;
+begin
+  assert (public.merge_products(p_pao, p_other))->>'purchase_history' = '1', 'with the rule back, the purchase moves';
+  assert (select count(*) from public.purchase_history where product_id = p_pao) = 1, 'to the kept product';
+end $$;
+reset role;
+
+-- ---------------------------------------------------------------------------
+\echo '• preços compartilhados: o que entra, o que nunca entra, quem lê e quem não alcança a tabela'
+-- Paula e Quico compram no mesmo atacado, em São Paulo; Saulo também, numa
+-- leitura que veio sem o nome da loja. Rita já comprou o mesmo arroz (tem o
+-- apelido); Úrsula também, mas mora no Rio; Tina tem conta, mas não tem casa.
+\set user_p '00000000-0000-0000-0000-00000000002a'
+\set user_q '00000000-0000-0000-0000-00000000002b'
+\set user_r '00000000-0000-0000-0000-00000000002c'
+\set user_s '00000000-0000-0000-0000-00000000002d'
+\set user_t '00000000-0000-0000-0000-00000000002e'
+\set user_u '00000000-0000-0000-0000-00000000002f'
+reset role;
+insert into auth.users (id) values (:'user_p'), (:'user_q'), (:'user_r'), (:'user_s'), (:'user_t'), (:'user_u');
+-- O que as notas confirmadas nos testes de cima tiverem compartilhado sai: aqui a conta começa do zero.
+truncate public.shared_prices;
+-- O banco da Supabase roda em UTC: o dia tem de sair de São Paulo, não do fuso da sessão.
+set time zone 'UTC';
+select set_config('test.sp_today', ((now() at time zone 'America/Sao_Paulo')::date)::text, false) \gset
+
+do $$
+begin
+  -- Nada que aponte de volta: uma coluna nova (casa, pessoa, nota, id, hora) derruba este teste. A única data
+  -- além do dia da compra é o dia em que a linha passa a ser lida: um dia sem hora, igual para tudo o que foi
+  -- gravado no mesmo dia por qualquer casa, que a leitura nunca devolve.
+  assert (select array_agg(column_name || ' ' || data_type order by ordinal_position) from information_schema.columns
+            where table_schema = 'public' and table_name = 'shared_prices')
+    = array['store_cnpj text', 'store_uf text', 'store_name text', 'item_key text', 'unit text', 'seen_on date', 'unit_price numeric', 'visible_on date'],
+    'shared_prices has exactly store, state, name, item key, unit, day, price and the day it becomes readable';
+  assert (select bool_and(is_nullable = 'NO') from information_schema.columns
+            where table_schema = 'public' and table_name = 'shared_prices' and column_name in ('seen_on', 'visible_on')),
+    'both days are always there';
+  -- O nome da loja vai na linha do preço: uma tabela de lojas à parte mostraria o nome gravado hoje.
+  assert to_regclass('public.shared_stores') is null, 'there is no table of shared stores';
+  assert (select count(*) from information_schema.columns
+            where table_schema = 'public' and table_name = 'shared_prices' and column_default is not null) = 0,
+    'no column fills itself (no sequence, no clock)';
+  assert (select array_agg(a.attname::text order by k.ord) from pg_index i
+            cross join lateral unnest(i.indkey) with ordinality as k (attnum, ord)
+            join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum
+            where i.indrelid = 'public.shared_prices'::regclass and i.indisprimary)
+    = array['store_cnpj', 'item_key', 'unit', 'seen_on'],
+    'one row per store, item, unit and day';
+  -- A espera por uma trava vira erro que o gatilho engole. Sem isto, quem espera cai no tempo da instrução
+  -- (statement timeout), que nenhum exception apanha: a confirmação de outra casa falharia.
+  assert (select proconfig from pg_proc where oid = 'public.share_receipt_prices()'::regprocedure) @> array['lock_timeout=200ms'],
+    'the trigger function never waits more than 200 ms for a lock';
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+select public.create_household('Casa da Paula', 'Paula') \gset
+do $$
+declare
+  today constant date := current_setting('test.sp_today')::date;
+  d constant date := today - 10;
+  ata constant text := '11222333000181';
+  s_ata uuid;
+  s_other uuid;
+  s_hand uuid;
+  s_big uuid;
+  s uuid;
+  r uuid;
+  health text;
+  pharmacy text;
+  n integer := 10;
+begin
+  perform set_config('test.sp_house_p', public.current_household_id()::text, false);
+  insert into public.stores (name, cnpj) values ('ATACADAO MOOCA', ata) returning id into s_ata;
+  insert into public.stores (name, cnpj) values ('SUPER OUTRO', '99888777000166') returning id into s_other;
+  insert into public.stores (name, cnpj) values ('MERCADO GRANDE', '55444333000122') returning id into s_big;
+  -- Mercado criado à mão na revisão: sem CNPJ.
+  insert into public.stores (name) values ('Mercadinho da esquina') returning id into s_hand;
+
+  -- Nota do QR code às 22:30 (em UTC já é o dia seguinte), de São Paulo (a chave começa com 35).
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s_ata, (d + time '22:30') at time zone 'America/Sao_Paulo', '352610' || ata || repeat('0', 23) || '1', 'qrcode')
+    returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, quantity, unit, unit_price, total_price) values
+    (r, 0, 'ARROZ T.JOÃO 5KG', 'graos', 1, 'un', 22.90, 22.90),
+    -- Brinde: valor zero.
+    (r, 1, 'BRINDE SACOLA', 'papel', 1, 'un', 0, 0),
+    -- Descrição que não deixa chave nenhuma.
+    (r, 2, '***', 'graos', 1, 'un', 3.00, 3.00),
+    (r, 3, 'BANANA PRATA', 'hortifruti', 1.2, 'kg', 6.99, 8.39),
+    -- A mesma descrição de novo, mais abaixo na nota: uma linha só, com este preço.
+    (r, 4, 'ARROZ T JOAO 5KG', 'graos', 1, 'un', 21.90, 21.90),
+    -- O que o app não reconheceu fica em "outros", e "outros" não sai da casa: é lá que cai, na nota do QR
+    -- code, o remédio que ele não conhece (a segunda linha vira produto novo, também "outros").
+    (r, 5, 'BISC RECH OREO', 'outros', 1, 'un', 3.99, 3.99),
+    (r, 6, 'SERTRALINA 50MG C/30', 'outros', 1, 'un', 35.90, 35.90),
+    -- Higiene pessoal mistura xampu com item íntimo: fora.
+    (r, 7, 'SHAMPOO SEDA 325ML', 'higiene', 1, 'un', 12.90, 12.90),
+    -- As duas categorias precisam estar na lista: sugerida dentro e produto fora, ou o contrário, não entra.
+    (r, 8, 'QJ MUSSARELA KG', 'laticinios', 0.5, 'kg', 39.90, 19.95),
+    (r, 9, 'IOG NESTLE 170G', 'outros', 1, 'un', 2.99, 2.99),
+    -- Sem sugestão, com produto de categoria da lista: entra.
+    (r, 10, 'MACA GALA', null, 1, 'kg', 8.90, 8.90),
+    -- Sem sugestão e sem produto: não se sabe o que é, não entra.
+    (r, 11, 'TOMATE ITALIANO', null, 1, 'kg', 7.50, 7.50),
+    -- Chave com mais de 200 letras: só esta linha fica de fora, as outras entram.
+    (r, 12, repeat('ARROZ AGULHINHA ', 13) || 'TIPO 1', 'graos', 1, 'un', 5.00, 5.00);
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', (select id from public.receipt_items where receipt_id = r and position = 0),
+      'new_product', jsonb_build_object('name', 'Arroz Tio João 5kg', 'category', 'graos')),
+    jsonb_build_object('id', (select id from public.receipt_items where receipt_id = r and position = 6),
+      'new_product', jsonb_build_object('name', 'Sertralina', 'category', 'outros')),
+    jsonb_build_object('id', (select id from public.receipt_items where receipt_id = r and position = 8),
+      'new_product', jsonb_build_object('name', 'Queijo', 'category', 'outros')),
+    jsonb_build_object('id', (select id from public.receipt_items where receipt_id = r and position = 9),
+      'new_product', jsonb_build_object('name', 'Iogurte', 'category', 'laticinios')),
+    jsonb_build_object('id', (select id from public.receipt_items where receipt_id = r and position = 10),
+      'new_product', jsonb_build_object('name', 'Maçã', 'category', 'hortifruti'))
+  ));
+  perform set_config('test.sp_receipt_qr', r::text, false);
+
+  -- Nota lida pela foto, à 00:30 do dia seguinte, sem chave de acesso (e por isso sem estado).
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_ata, (d + 1 + time '00:30') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'LEITE ITALAC 1L', 'laticinios', 'un', 4.59, 4.59);
+  perform public.confirm_receipt(r, '[]');
+  perform set_config('test.sp_receipt_photo', r::text, false);
+
+  -- Digitada à mão, no mesmo mercado com CNPJ: nada.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_ata, (d + time '10:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'FEIJAO CAMIL 1KG', 'graos', 'un', 7.90, 7.90);
+  perform public.confirm_receipt(r, '[]');
+
+  -- Lida, mas num mercado sem CNPJ: nada.
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s_hand, (d + time '11:00') at time zone 'America/Sao_Paulo', '352610' || ata || repeat('0', 23) || '2', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'CHA MATTE LEAO 1L', 'cafe_cha', 'un', 6.90, 6.90);
+  perform public.confirm_receipt(r, '[]');
+
+  -- Lida, e a pessoa apontou para outro mercado: o CNPJ da chave não é o dele. Nada.
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s_other, (d + time '12:00') at time zone 'America/Sao_Paulo', '352610' || ata || repeat('0', 23) || '3', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'ACUCAR UNIAO 1KG', 'doces', 'un', 4.99, 4.99);
+  perform public.confirm_receipt(r, '[]');
+
+  -- Foto sem chave num mercado com CNPJ: entra, com o nome dele.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_other, (d + time '13:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'OLEO LIZA 900ML', 'oleos', 'un', 7.49, 7.49);
+  perform public.confirm_receipt(r, '[]');
+
+  -- Nome de loja com espaços em volta e comprido demais: vai aparado e cortado em 120 letras (aqui o corte
+  -- cai depois de um espaço, que também sai).
+  insert into public.stores (name, cnpj) values ('  ' || repeat('ABCDEFGHI ', 15) || ' ', '44555666000199') returning id into s;
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s, (d + time '13:30') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'VINAGRE CASTELO 750ML', 'temperos', 'un', 3.29, 3.29);
+  perform public.confirm_receipt(r, '[]');
+
+  -- Data no futuro (digitada errada na revisão): nada.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_ata, (today + 2 + time '10:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'SAL CISNE 1KG', 'temperos', 'un', 2.99, 2.99);
+  perform public.confirm_receipt(r, '[]');
+
+  -- Rascunho: só a confirmação compartilha.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_ata, (d + time '14:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'RASCUNHO NAO CONFIRMADO', 'graos', 'un', 1.00, 1.00);
+
+  -- Três itens de farmácia que o app põe em categoria de mercado (tempero, bebida e óleo). Num mercado comum,
+  -- numa nota sem remédio nenhum, entram: é o que as outras camadas existem para segurar.
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s_ata, (d + time '15:00') at time zone 'America/Sao_Paulo', '352610' || ata || repeat('0', 23) || '8', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price) values
+    (r, 'SAL DE FRUTA ENO', 'temperos', 'un', 3.50, 3.50),
+    (r, 'AGUA OXIGENADA 10V', 'bebidas', 'un', 4.50, 4.50),
+    (r, 'OLEO MINERAL 100ML', 'oleos', 'un', 9.90, 9.90);
+  perform public.confirm_receipt(r, '[]');
+
+  -- Nota com uma linha de REMÉDIO, pela categoria sugerida ou pela do produto: é compra de farmácia, e NADA
+  -- dela entra, nem os mesmos três itens.
+  n := n + 1;
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s_ata, (d + time '16:00') at time zone 'America/Sao_Paulo', '352610' || ata || repeat('0', 22) || n, 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price) values
+    (r, 'DIPIRONA 500MG ' || n, 'medicamentos', 'un', 8.50, 8.50),
+    (r, 'SAL DE FRUTA ENO ' || n, 'temperos', 'un', 3.50, 3.50),
+    (r, 'AGUA OXIGENADA 10V ' || n, 'bebidas', 'un', 4.50, 4.50),
+    (r, 'OLEO MINERAL 100ML ' || n, 'oleos', 'un', 9.90, 9.90);
+  perform public.confirm_receipt(r, '[]');
+
+  n := n + 1;
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_ata, (d + time '17:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price) values
+    (r, 0, 'ITEM SEM PISTA ' || n, null, 'un', 8.50, 8.50),
+    (r, 1, 'SAL DE FRUTA ENO ' || n, 'temperos', 'un', 3.50, 3.50),
+    (r, 2, 'AGUA OXIGENADA 10V ' || n, 'bebidas', 'un', 4.50, 4.50),
+    (r, 3, 'OLEO MINERAL 100ML ' || n, 'oleos', 'un', 9.90, 9.90);
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', (select id from public.receipt_items where receipt_id = r and position = 0),
+      'new_product', jsonb_build_object('name', 'Remédio ' || n, 'category', 'medicamentos'))));
+
+  -- Suplemento e primeiros socorros NÃO seguram a nota: é onde o app põe o iogurte proteico, a "vitamina de
+  -- banana" e o curativo, que vêm em nota de supermercado. A linha deles nunca entra (não está na lista); a
+  -- de laticínio da mesma nota entra. Também pela categoria sugerida e pela do produto.
+  foreach health in array array['suplementos', 'primeiros_socorros'] loop
+    n := n + 1;
+    insert into public.receipts (store_id, purchased_at, access_key, source)
+      values (s_big, (d + time '16:30') at time zone 'America/Sao_Paulo', '352610' || '55444333000122' || repeat('0', 22) || n, 'qrcode') returning id into r;
+    insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price) values
+      (r, 'LINHA DE SAUDE ' || n, health, 'un', 8.50, 8.50),
+      (r, 'LEITE DA MESMA NOTA ' || n, 'laticinios', 'un', 5.49, 5.49);
+    perform public.confirm_receipt(r, '[]');
+
+    n := n + 1;
+    insert into public.receipts (store_id, purchased_at, source)
+      values (s_big, (d + time '17:30') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+    insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price) values
+      (r, 0, 'LINHA DE SAUDE ' || n, null, 'un', 8.50, 8.50),
+      (r, 1, 'LEITE DA MESMA NOTA ' || n, 'laticinios', 'un', 5.49, 5.49);
+    perform public.confirm_receipt(r, jsonb_build_array(
+      jsonb_build_object('id', (select id from public.receipt_items where receipt_id = r and position = 0),
+        'new_product', jsonb_build_object('name', 'Produto de saúde ' || n, 'category', health))));
+  end loop;
+
+  -- Loja com nome de farmácia (com acento, sem acento, colado, em qualquer caixa), numa nota sem remédio
+  -- reconhecido: nada, nem os mesmos três itens. Da rede Pague Menos, a razão social e o nome de fachada; e
+  -- um nome com "supermercado" que também diz farmácia (os outros pedaços não têm exceção).
+  foreach pharmacy in array array[
+    'RAIA DROGASIL S/A', 'EMPREENDIMENTOS PAGUE MENOS S/A', 'DIMED S/A - DISTRIBUIDORA DE MEDICAMENTOS',
+    'Farmácia São João', 'PANVEL', 'Pharmapele Manipulação', 'PagueMenos', 'pague-menos',
+    'FARMACIAS PAGUE MENOS', 'Farmácia do Supermercado Pague Menos'
+  ] loop
+    n := n + 1;
+    insert into public.stores (name, cnpj) values (pharmacy, '700000000000' || n) returning id into s;
+    insert into public.receipts (store_id, purchased_at, source)
+      values (s, (d + time '18:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+    insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price) values
+      (r, 'SAL DE FRUTA ENO', 'temperos', 'un', 3.50, 3.50),
+      (r, 'AGUA OXIGENADA 10V', 'bebidas', 'un', 4.50, 4.50),
+      (r, 'OLEO MINERAL 100ML', 'oleos', 'un', 9.90, 9.90);
+    perform public.confirm_receipt(r, '[]');
+  end loop;
+
+  -- "Pague Menos" também é nome de supermercado (uma rede do interior de São Paulo, e outros pelo país):
+  -- quando o nome diz que é mercado (SUPERMERC, MERCADO ou ALIMENT), a loja compartilha como qualquer outra.
+  foreach pharmacy in array array[
+    'PAGUE MENOS COMERCIO DE PRODUTOS ALIMENTICIOS LTDA', 'SUPERMERCADO PAGUE MENOS', 'SUPERMERC PAGUE MENOS LTDA', 'Mercado Pague-Menos'
+  ] loop
+    n := n + 1;
+    insert into public.stores (name, cnpj) values (pharmacy, '710000000000' || n) returning id into s;
+    insert into public.receipts (store_id, purchased_at, source)
+      values (s, (d + time '18:30') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+    insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+      values (r, 'FEIJAO CARIOCA 1KG', 'graos', 'un', 7.90, 7.90);
+    perform public.confirm_receipt(r, '[]');
+  end loop;
+
+  -- O teto por nota: com 301 linhas, nada; com 300, todas.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_big, (d + time '19:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price)
+    select r, g, 'ITEM ALEM DO TETO ' || g, 'graos', 'un', 1 + g / 100.0, 1 + g / 100.0 from generate_series(1, 301) as g;
+  perform public.confirm_receipt(r, '[]');
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_big, (d + time '20:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price)
+    select r, g, 'ITEM NO TETO ' || g, 'graos', 'un', 1 + g / 100.0, 1 + g / 100.0 from generate_series(1, 300) as g;
+  perform public.confirm_receipt(r, '[]');
+
+  -- A compra de HOJE (QR code): entra na base, mas ninguém a lê antes de amanhã.
+  insert into public.receipts (store_id, access_key, source)
+    values (s_ata, '352610' || ata || repeat('0', 23) || '9', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'CAFE PILAO 500G', 'cafe_cha', 'un', 18.90, 18.90);
+  perform public.confirm_receipt(r, '[]');
+
+  -- A compra de ONTEM confirmada hoje (QR code, noutro mercado de São Paulo): o que segura a linha é o dia da
+  -- GRAVAÇÃO, não o da compra. Também só amanhã.
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s_other, (today - 1 + time '19:00') at time zone 'America/Sao_Paulo', '352610' || '99888777000166' || repeat('0', 23) || '4', 'qrcode')
+    returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'CAFE PILAO 500G', 'cafe_cha', 'un', 17.90, 17.90);
+  perform public.confirm_receipt(r, '[]');
+end $$;
+
+reset role;
+do $$
+declare
+  today constant date := current_setting('test.sp_today')::date;
+  d constant date := today - 10;
+  ata constant text := '11222333000181';
+begin
+  -- Tudo o que foi gravado hoje passa a ser lido amanhã, seja a compra de há 10 dias, de ontem ou de hoje.
+  assert (select count(*) from public.shared_prices where visible_on <> today + 1) = 0,
+    'every row written today becomes readable tomorrow, whatever its purchase day';
+  -- Do QR: o arroz (uma linha, o preço da última), a banana e a maçã, no dia de São Paulo das 22:30, com o
+  -- estado da chave. Da foto: o leite, no dia da 00:30, sem estado. E os três itens da nota sem remédio.
+  assert (select array_agg(item_key || ' ' || unit || ' ' || seen_on || ' ' || unit_price || ' ' || coalesce(store_uf, '-') order by item_key)
+            from public.shared_prices where store_cnpj = ata)
+    = array[
+      'AGUA OXIGENADA 10V un ' || d || ' 4.5000 35',
+      'ARROZ T JOAO 5KG un ' || d || ' 21.9000 35',
+      'BANANA PRATA kg ' || d || ' 6.9900 35',
+      'CAFE PILAO 500G un ' || today || ' 18.9000 35',
+      'LEITE ITALAC 1L un ' || (d + 1) || ' 4.5900 -',
+      'MACA GALA kg ' || d || ' 8.9000 35',
+      'OLEO MINERAL 100ML un ' || d || ' 9.9000 35',
+      'SAL DE FRUTA ENO un ' || d || ' 3.5000 35'
+    ],
+    'what is shared from the store: lines of the allowlist, on the São Paulo day, with the state of the access key';
+  assert (select bool_and(store_name = 'ATACADAO MOOCA') from public.shared_prices where store_cnpj = ata), 'each row carries the printed store name';
+  assert (select array_agg(item_key || ' ' || unit || ' ' || seen_on || ' ' || unit_price || ' ' || coalesce(store_uf, '-') || ' ' || store_name order by item_key)
+            from public.shared_prices where store_cnpj = '99888777000166')
+    = array['CAFE PILAO 500G un ' || (today - 1) || ' 17.9000 35 SUPER OUTRO', 'OLEO LIZA 900ML un ' || d || ' 7.4900 - SUPER OUTRO'],
+    'a photo without an access key shares under the store CNPJ, without a state; a receipt confirmed after its day, on its purchase day';
+  assert (select store_name from public.shared_prices where store_cnpj = '44555666000199') = rtrim(repeat('ABCDEFGHI ', 12)),
+    'the store name is trimmed and cut at 120 characters';
+  -- Zero, chave vazia, "outros" (o biscoito e o remédio que o app não reconheceu), higiene, categoria fora da
+  -- lista de um dos dois lados, linha sem categoria, chave comprida, nota à mão, mercado sem CNPJ, CNPJ que
+  -- não é o da chave, data no futuro, rascunho, nota com linha de remédio e loja com nome de farmácia: nada.
+  assert (select count(*) from public.shared_prices where item_key ~ '(SERTRALINA|OREO|SHAMPOO|MUSSARELA|NESTLE|TOMATE|AGULHINHA|DIPIRONA|SEM PISTA)') = 0,
+    'a line outside the allowlist is never shared: unrecognised medicine, hygiene, "outros", no category, a key that is too long';
+  assert (select count(*) from public.shared_prices where item_key ~ '^(SAL DE FRUTA ENO|AGUA OXIGENADA 10V|OLEO MINERAL 100ML) [0-9]+$') = 0,
+    'a receipt with a medicine line shares nothing, not even its lines of market categories';
+  -- Suplemento e primeiros socorros: a linha fica na casa, o resto da nota entra (duas notas de cada, quatro leites).
+  assert (select count(*) from public.shared_prices where item_key like 'LINHA DE SAUDE%') = 0, 'a supplements or first-aid line is never shared';
+  assert (select count(*) from public.shared_prices where store_cnpj = '55444333000122' and item_key ~ '^LEITE DA MESMA NOTA 1[3-6]$' and unit_price = 5.49) = 4,
+    'but it does not keep the rest of its receipt at home';
+  assert (select count(*) from public.shared_prices where store_cnpj like '7000000000%') = 0, 'a store named like a pharmacy shares nothing';
+  assert (select array_agg(store_name order by store_cnpj) from public.shared_prices where store_cnpj like '7100000000%' and item_key = 'FEIJAO CARIOCA 1KG')
+    = array['PAGUE MENOS COMERCIO DE PRODUTOS ALIMENTICIOS LTDA', 'SUPERMERCADO PAGUE MENOS', 'SUPERMERC PAGUE MENOS LTDA', 'Mercado Pague-Menos'],
+    'a supermarket called Pague Menos shares like any other store';
+  assert (select count(*) from public.shared_prices where item_key like 'ITEM ALEM DO TETO%') = 0, 'a receipt with more than 300 lines shares nothing';
+  assert (select count(*) from public.shared_prices where store_cnpj = '55444333000122' and item_key like 'ITEM NO TETO%') = 300, 'one with 300 lines shares them all';
+  -- O atacado, o outro mercado, a loja de nome comprido, as 300 do teto, os quatro leites e os quatro Pague Menos.
+  assert (select count(*) from public.shared_prices) = 8 + 2 + 1 + 300 + 4 + 4, 'nothing else was shared';
+
+  -- O dia vira só para a banana: como se a nota da Paula tivesse sido confirmada ontem, a linha já pode ser lida.
+  update public.shared_prices set visible_on = today where item_key = 'BANANA PRATA';
+end $$;
+
+-- Quico: o mesmo arroz e a mesma banana, no mesmo atacado, no mesmo dia de compra, por outros preços e com
+-- outro nome de loja; e o mesmo café de hoje, lido por foto (sem estado).
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+select public.create_household('Casa do Quico', 'Quico') \gset
+do $$
+declare
+  d constant date := current_setting('test.sp_today')::date - 10;
+  ata constant text := '11222333000181';
+  s uuid;
+  r uuid;
+begin
+  insert into public.stores (name, cnpj) values ('ATACADAO MOOCA LJ 12', ata) returning id into s;
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s, (d + time '09:00') at time zone 'America/Sao_Paulo', '352610' || ata || repeat('0', 23) || '7', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price) values
+    (r, 'Arroz T. João 5kg', 'graos', 'un', 23.50, 23.50),
+    (r, 'BANANA PRATA', 'hortifruti', 'kg', 7.49, 7.49);
+  perform public.confirm_receipt(r, '[]');
+
+  insert into public.receipts (store_id, source) values (s, 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'CAFE PILAO 500G', 'cafe_cha', 'un', 19.50, 19.50);
+  perform public.confirm_receipt(r, '[]');
+end $$;
+
+reset role;
+do $$
+declare
+  today constant date := current_setting('test.sp_today')::date;
+  ata constant text := '11222333000181';
+begin
+  assert (select count(*) from public.shared_prices where item_key = 'ARROZ T JOAO 5KG') = 1, 'two households, same item, store and day: ONE row';
+  -- O arroz foi gravado hoje pela Paula: ninguém leu ainda, e vale a última gravação, preço e nome (uma
+  -- confirmação honesta conserta uma falsa), mesmo sendo compra de há 10 dias. O dia em que passa a ser lida
+  -- não anda.
+  assert (select unit_price || ' ' || store_name || ' ' || visible_on from public.shared_prices where item_key = 'ARROZ T JOAO 5KG')
+    = '23.5000 ATACADAO MOOCA LJ 12 ' || (today + 1), 'a row nobody can read yet takes the newer write, and its day of becoming readable stays';
+  -- A banana já pode ser lida: se mudasse, quem a observa saberia que outra casa acabou de confirmar uma
+  -- nota. A MESMA confirmação que trocou o arroz a deixa como está: preço, nome, estado e dia.
+  assert (select unit_price || ' ' || store_name || ' ' || store_uf || ' ' || visible_on from public.shared_prices where item_key = 'BANANA PRATA')
+    = '6.9900 ATACADAO MOOCA 35 ' || today, 'a row that is already readable never changes';
+  -- O café de hoje no atacado: a última gravação, e o estado que a foto não traz continua o que a linha já tinha.
+  assert (select count(*) from public.shared_prices where item_key = 'CAFE PILAO 500G' and store_cnpj = ata) = 1, 'today too: ONE row';
+  assert (select unit_price || ' ' || store_name || ' ' || store_uf || ' ' || seen_on from public.shared_prices where item_key = 'CAFE PILAO 500G' and store_cnpj = ata)
+    = '19.5000 ATACADAO MOOCA LJ 12 35 ' || today, 'on the row of today the newer write is the price and the name';
+  assert (select count(*) from public.shared_prices) = 8 + 2 + 1 + 300 + 4 + 4, 'and no row more';
+end $$;
+
+-- Saulo comprou outro arroz (tem apelido, mas não o do arroz da Paula). A loja dele veio sem nome da leitura.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_s', false) \gset
+select public.create_household('Casa do Saulo', 'Saulo') \gset
+do $$
+declare
+  ata constant text := '11222333000181';
+  s uuid;
+  r uuid;
+  i uuid;
+begin
+  insert into public.receipts (source) values ('manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
+    values (r, 'ARROZ CAMIL 5KG', 'un', 24.00, 24.00) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', i, 'new_product', jsonb_build_object('name', 'Arroz', 'category', 'graos'))));
+  assert (select count(*) from public.product_aliases) = 1, 'S has an alias of its own';
+
+  -- O nome que o app inventa quando a leitura não trouxe nenhum não troca o nome de verdade; numa linha
+  -- nova, vai ele mesmo.
+  insert into public.stores (name, cnpj) values ('CNPJ ' || ata, ata) returning id into s;
+  insert into public.receipts (store_id, source) values (s, 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price) values
+    (r, 'CAFE PILAO 500G', 'cafe_cha', 'un', 20.00, 20.00),
+    (r, 'MACARRAO RENATA 500G', 'graos', 'un', 3.99, 3.99);
+  perform public.confirm_receipt(r, '[]');
+  -- Tem nota confirmada e o atacado entre os mercados dele, mas não a descrição do arroz da Paula.
+  assert (select count(*) from public.shared_latest_prices()) = 0, 'a household without that description sees nothing';
+end $$;
+
+-- As linhas para a leitura, postas direto (como servidor): o arroz em vários mercados, dias e estados.
+reset role;
+do $$
+declare
+  today constant date := current_setting('test.sp_today')::date;
+  ata constant text := '11222333000181';
+begin
+  assert (select unit_price || ' ' || store_name from public.shared_prices where item_key = 'CAFE PILAO 500G' and store_cnpj = ata) = '20.0000 ATACADAO MOOCA LJ 12',
+    'the placeholder name does not replace a real one (the price is still the newer)';
+  assert (select store_name || ' ' || coalesce(store_uf, '-') from public.shared_prices where item_key = 'MACARRAO RENATA 500G') = 'CNPJ ' || ata || ' -',
+    'and on a new row it is accepted';
+
+  -- A última coluna é o dia em que a linha passa a ser lida: o seguinte ao da gravação. Quase todas como a
+  -- nota confirmada no próprio dia da compra; as outras são o que se testa.
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
+    -- No atacado: a de há 3 dias é mais nova que a de há 6 (as duas já podem ser lidas) e que a de há 10;
+    -- outra unidade é outra linha.
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 6, 22.00, today - 5),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 3, 24.10, today - 2),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'kg', today - 5, 4.80, today - 4),
+    -- Ninguém lê ainda: a compra de anteontem e a de ontem gravadas HOJE (o que conta é o dia da gravação), a
+    -- de hoje, e uma de amanhã. Mais novas e mais baratas que a de há 3 dias, que continua sendo a que se vê.
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 2, 2.00, today + 1),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 1, 1.50, today + 1),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today, 1.00, today + 1),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today + 1, 0.50, today + 2),
+    -- Os 90 dias contam do dia da COMPRA: há 91 dias é velho demais, mesmo gravado há pouco (a nota
+    -- confirmada com atraso). Há exatamente 90: ainda vale (e é o mais barato de São Paulo).
+    ('99888777000166', '35', 'SUPER OUTRO', 'ARROZ T JOAO 5KG', 'un', today - 91, 10.00, today - 5),
+    ('60000000000108', '35', 'MERCADO SP 8', 'ARROZ T JOAO 5KG', 'un', today - 90, 15.00, today - 89),
+    -- No Rio e num mercado sem estado (só fotos): mais baratos, mas não para quem compra em São Paulo.
+    ('60000000000201', '33', 'MERCADO RJ', 'ARROZ T JOAO 5KG', 'un', today - 2, 9.00, today - 1),
+    ('60000000000301', null, 'MERCADO SEM ESTADO', 'ARROZ T JOAO 5KG', 'un', today - 2, 8.00, today - 1),
+    -- Gravada ontem, lida a partir de hoje: o primeiro dia em que aparece.
+    ('60000000000101', '35', 'MERCADO SP 1', 'ARROZ T JOAO 5KG', 'kg', today - 4, 5.10, today),
+    -- No MERCADO SP 2 (22 reais há 2 dias, logo abaixo): uma linha mais nova sem estado (nota lida por foto),
+    -- que para quem não compra ali não conta, e uma de hoje, que ninguém lê.
+    ('60000000000102', null, 'MERCADO SP 2', 'ARROZ T JOAO 5KG', 'un', today - 1, 1.50, today),
+    ('60000000000102', '35', 'MERCADO SP 2', 'ARROZ T JOAO 5KG', 'un', today, 1.00, today + 1),
+    -- Na padaria que vai ser mercado da Rita: sem estado, há exatamente 90 dias (vale); e há 91 (velho demais).
+    ('12345678000195', null, 'PADARIA DA RITA', 'ARROZ T JOAO 5KG', 'un', today - 90, 14.00, today - 89),
+    ('12345678000195', '35', 'PADARIA DA RITA', 'ARROZ T JOAO 5KG', 'kg', today - 91, 3.00, today - 90);
+  -- Sete mercados de São Paulo, de 21 a 27 reais.
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
+    select '6000000000010' || g, '35', 'MERCADO SP ' || g, 'ARROZ T JOAO 5KG', 'un', today - 2, 20 + g, today - 1 from generate_series(1, 7) as g;
+
+  -- A linha nunca pode ser lida no dia da compra, nem antes: o banco recusa, venha de onde vier.
+  begin
+    insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
+      values (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'l', today - 1, 3.00, today - 1);
+    raise exception 'FAIL: a row readable on its own purchase day';
+  exception when check_violation then null;
+  end;
+end $$;
+
+-- Rita tem a descrição do arroz e o atacado entre os mercados dela.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+select public.create_household('Casa da Rita', 'Rita') \gset
+do $$
+declare
+  today constant date := current_setting('test.sp_today')::date;
+  ata constant text := '11222333000181';
+  s_ata uuid;
+  s_bakery uuid;
+  r uuid;
+  i uuid;
+  p uuid;
+  c uuid;
+  seen record;
+begin
+  assert (select count(*) from public.shared_latest_prices()) = 0, 'a household without the description sees nothing';
+
+  -- Um membro grava os próprios produtos, apelidos e mercados (é a regra de sempre). Sem nota confirmada
+  -- nenhuma, ainda assim não vê nada.
+  insert into public.products (name, category) values ('Arroz', 'graos') returning id into p;
+  insert into public.product_aliases (alias, product_id) values ('ARROZ T JOAO 5KG', p);
+  insert into public.stores (name, cnpj) values ('Atacadão da Rita', ata) returning id into s_ata;
+  assert (select count(*) from public.shared_latest_prices()) = 0, 'a household with no confirmed receipt sees nothing';
+
+  -- Com uma nota confirmada (digitada, que não compartilha nada): os preços do atacado, que é mercado dela.
+  -- Dos outros mercados, nada: ela não tem nota lida em estado nenhum.
+  insert into public.receipts (source) values ('manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
+    values (r, 'arroz t.joão 5kg', 'un', 26.00, 26.00) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
+  assert (select array_agg(store_cnpj || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by unit) from public.shared_latest_prices())
+    = array[ata || ' kg 4.8000 ' || (today - 5) || ' true', ata || ' un 24.1000 ' || (today - 3) || ' true'],
+    'in her own stores: the newest READABLE row per store and unit, never one written today (whatever its purchase day) or dated ahead; nothing from other stores without a state';
+  select * into seen from public.shared_latest_prices() where unit = 'un';
+  assert seen.product_id = p and seen.store_name = 'ATACADAO MOOCA' and seen.store_uf = '35', 'her product, the store name and state as shared';
+  -- O que volta é só isso: nada de casa, pessoa, nota ou hora, nem o dia em que a linha passou a ser lida
+  -- (visible_on não sai do banco: diria em que dia a nota foi confirmada).
+  assert (select array_agg(k order by k) from jsonb_object_keys(to_jsonb(seen)) as k)
+    = array['mine', 'product_id', 'seen_on', 'store_cnpj', 'store_name', 'store_uf', 'unit', 'unit_price'], 'the answer has only these columns';
+  assert (select proargnames from pg_proc where oid = 'public.shared_latest_prices()'::regprocedure)
+    = array['product_id', 'store_cnpj', 'store_name', 'store_uf', 'unit', 'unit_price', 'seen_on', 'mine'],
+    'and the function declares no other column';
+  perform set_config('test.sp_product_r', p::text, false);
+
+  -- O estado vem só de nota LIDA e CONFIRMADA: um rascunho do QR code do Rio e uma nota digitada com chave
+  -- do Rio não abrem os mercados de lá.
+  insert into public.receipts (access_key, source) values ('332610' || '60000000000201' || repeat('0', 24), 'qrcode');
+  insert into public.receipts (access_key, source) values ('332610' || '60000000000201' || repeat('0', 23) || '1', 'manual') returning id into r;
+  perform public.confirm_receipt(r, '[]');
+  assert (select count(*) from public.shared_latest_prices() where not mine) = 0, 'a draft, or a hand-typed receipt, gives the household no state';
+
+  -- Uma nota lida em São Paulo (a chave começa com 35), na padaria: agora também os outros mercados do
+  -- estado, no máximo os 5 mais baratos de cada produto e unidade. Os do Rio e o sem estado não, por mais
+  -- baratos que sejam; e a linha sem estado só conta no mercado da própria casa (a padaria, agora).
+  insert into public.stores (name, cnpj) values ('Padaria do bairro', '12345678000195') returning id into s_bakery;
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s_bakery, (today - 20 + time '08:00') at time zone 'America/Sao_Paulo', '352610' || '12345678000195' || repeat('0', 24), 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'PAO FRANCES', 'padaria', 'kg', 17.90, 17.90);
+  perform public.confirm_receipt(r, '[]');
+  assert (select array_agg(store_name || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by mine desc, unit, unit_price) from public.shared_latest_prices())
+    = array[
+      'ATACADAO MOOCA kg 4.8000 ' || (today - 5) || ' true',
+      'PADARIA DA RITA un 14.0000 ' || (today - 90) || ' true',
+      'ATACADAO MOOCA un 24.1000 ' || (today - 3) || ' true',
+      'MERCADO SP 1 kg 5.1000 ' || (today - 4) || ' false',
+      'MERCADO SP 8 un 15.0000 ' || (today - 90) || ' false',
+      'MERCADO SP 1 un 21.0000 ' || (today - 2) || ' false',
+      'MERCADO SP 2 un 22.0000 ' || (today - 2) || ' false',
+      'MERCADO SP 3 un 23.0000 ' || (today - 2) || ' false',
+      'MERCADO SP 4 un 24.0000 ' || (today - 2) || ' false'
+    ],
+    'her own stores first, then the 5 cheapest of her state per product and unit; 90 days still count, 91 do not';
+
+  -- Outra descrição do mesmo produto, e o café como outro produto (um membro grava os próprios apelidos; só a
+  -- chave exata recebe preço: é informação de mercado, e não há como listar a tabela).
+  insert into public.products (name, category) values ('Café', 'cafe_cha') returning id into c;
+  insert into public.product_aliases (alias, product_id) values ('ARROZ TIO JOAO TP1 5KG', p), ('CAFE PILAO 500G', c);
+  begin
+    insert into public.product_aliases (alias, product_id) values ('arroz%', p);
+    raise exception 'FAIL: an alias that is not a normalised key';
+  exception when check_violation then null;
+  end;
+  -- O café foi comprado HOJE por três casas no atacado, e ONTEM no SUPER OUTRO, numa nota confirmada hoje; e
+  -- há arroz gravado hoje no atacado, de hoje e de dias que já passaram: quem pergunta hoje não vê nenhum.
+  assert (select count(*) from public.shared_latest_prices() where product_id = c or seen_on >= today) = 0, 'nothing bought or written today is visible today';
+  perform set_config('test.sp_product_c', c::text, false);
+
+  -- O macarrão que o Saulo gravou hoje com o nome inventado e sem estado: a Rita confirma, no mesmo dia, uma
+  -- nota do QR code do mesmo atacado. (Sem produto: não vira preço próprio dela nem apelido.)
+  insert into public.receipts (store_id, access_key, source) values (s_ata, '352610' || ata || repeat('0', 23) || '5', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'MACARRAO RENATA 500G', 'graos', 'un', 4.29, 4.29);
+  perform public.confirm_receipt(r, '[]');
+end $$;
+
+reset role;
+do $$
+declare
+  today constant date := current_setting('test.sp_today')::date;
+begin
+  -- A outra descrição do mesmo produto, mais nova, no MERCADO SP 1: é ela o preço do produto ali.
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
+    values ('60000000000101', '35', 'MERCADO SP 1', 'ARROZ TIO JOAO TP1 5KG', 'un', today - 1, 25.00, today);
+  -- A linha que ainda não pode ser lida aceita o nome de verdade e o estado no lugar do nome inventado e do
+  -- estado vazio (e o preço mais novo): é a nota de ontem com leitura ruim, consertada no mesmo dia.
+  assert (select unit_price || ' ' || store_name || ' ' || store_uf || ' ' || visible_on from public.shared_prices where item_key = 'MACARRAO RENATA 500G')
+    = '4.2900 Atacadão da Rita 35 ' || (today + 1), 'before it is readable, the real name and the state replace the placeholder';
+
+  -- O dia vira para o café. A linha da compra de ontem (SUPER OUTRO), gravada hoje, passa a poder ser lida
+  -- sem mudar em mais nada; a da compra de "hoje" no atacado passa a ser de ontem.
+  update public.shared_prices set visible_on = today where item_key = 'CAFE PILAO 500G' and store_cnpj = '99888777000166';
+  update public.shared_prices set seen_on = today - 1, visible_on = today where item_key = 'CAFE PILAO 500G' and store_cnpj = '11222333000181';
+end $$;
+
+set role authenticated;
+do $$
+declare
+  today constant date := current_setting('test.sp_today')::date;
+  ata constant text := '11222333000181';
+  p constant uuid := current_setting('test.sp_product_r')::uuid;
+  c constant uuid := current_setting('test.sp_product_c')::uuid;
+  s_ata constant uuid := (select id from public.stores where cnpj = ata);
+  r uuid;
+  i uuid;
+begin
+  -- Um rascunho da casa com o arroz, no atacado, de ontem: rascunho não é preço próprio e não esconde nada.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_ata, (today - 1 + time '10:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, product_id, unit, unit_price, total_price)
+    values (r, 'arroz no rascunho', p, 'un', 23.00, 23.00);
+  -- Uma nota confirmada da casa com o arroz no atacado, ontem, sem valor (preço zero: a leitura não trouxe o
+  -- valor): zero não é preço, e a compra sem valor não esconde nenhuma linha (a conta abaixo segue igual).
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_ata, (today - 1 + time '11:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
+    values (r, 'arroz sem valor', 'un', 0, 0) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
+
+  assert (select array_agg(store_name || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by mine desc, unit, unit_price, seen_on desc) from public.shared_latest_prices())
+    = array[
+      'ATACADAO MOOCA kg 4.8000 ' || (today - 5) || ' true',
+      'PADARIA DA RITA un 14.0000 ' || (today - 90) || ' true',
+      -- O café, a partir do dia seguinte: com o preço e o nome da última gravação.
+      'ATACADAO MOOCA LJ 12 un 20.0000 ' || (today - 1) || ' true',
+      'ATACADAO MOOCA un 24.1000 ' || (today - 3) || ' true',
+      'MERCADO SP 1 kg 5.1000 ' || (today - 4) || ' false',
+      'MERCADO SP 8 un 15.0000 ' || (today - 90) || ' false',
+      -- O café comprado ontem no SUPER OUTRO: no dia em que foi confirmado não aparecia; virado o dia, aparece.
+      'SUPER OUTRO un 17.9000 ' || (today - 1) || ' false',
+      'MERCADO SP 2 un 22.0000 ' || (today - 2) || ' false',
+      'MERCADO SP 3 un 23.0000 ' || (today - 2) || ' false',
+      'MERCADO SP 4 un 24.0000 ' || (today - 2) || ' false',
+      -- A descrição mais nova é o preço do produto no MERCADO SP 1; empatado com o MERCADO SP 5, fica o visto por último.
+      'MERCADO SP 1 un 25.0000 ' || (today - 1) || ' false'
+    ],
+    'one row per product, store and unit: the newest among the descriptions of the product; a row shows from the day after it was written';
+  assert (select bool_and(product_id in (p, c)) from public.shared_latest_prices()), 'always for a product of the caller';
+
+  -- O que a casa já sabe fica de fora, aqui mesmo no banco: com preço PRÓPRIO do produto num mercado dela com
+  -- aquele CNPJ, no mesmo dia ou depois, a linha é a compra dela ou notícia mais velha. Uma compra de há 5
+  -- dias (digitada: preço próprio é o de qualquer nota) tira a linha de há 5 dias, em qualquer unidade, e
+  -- deixa a de há 3.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_ata, (today - 5 + time '10:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
+    values (r, 'arroz a granel', 'un', 23.00, 23.00) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
+  assert (select array_agg(store_name || ' ' || unit || ' ' || unit_price order by unit_price) from public.shared_latest_prices() where mine and product_id = p)
+    = array['PADARIA DA RITA un 14.0000', 'ATACADAO MOOCA un 24.1000'],
+    'an own purchase on the same day or later hides the row, in that store only; an older one does not';
+  -- O dia da compra é o de São Paulo: às 23:30 de há 4 dias (em UTC já é o dia seguinte) ainda é mais velha
+  -- que a linha de há 3.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_ata, (today - 4 + time '23:30') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
+    values (r, 'arroz a granel', 'un', 23.00, 23.00) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
+  assert (select count(*) from public.shared_latest_prices() where mine and product_id = p and store_cnpj = ata) = 1, 'the day of the own purchase is the São Paulo day';
+  -- A compra de ontem tira o que sobrava do arroz no atacado. Só daquele produto, naquele mercado: o café
+  -- dali (visto ontem também) e os outros mercados continuam.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_ata, (today - 1 + time '12:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
+    values (r, 'arroz a granel', 'un', 23.00, 23.00) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
+  assert (select array_agg(store_name || ' ' || unit_price order by unit_price) from public.shared_latest_prices() where mine)
+    = array['PADARIA DA RITA 14.0000', 'ATACADAO MOOCA LJ 12 20.0000'], 'nothing of that product in that store is left; another product there, and another store, stay';
+  assert (select count(*) from public.shared_latest_prices() where not mine) = 7, 'and the other stores are untouched by it';
+
+  -- Pedindo a casa de outra pessoa no cabeçalho: nenhuma casa, nenhuma linha.
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.sp_house_p'))::text, true);
+  assert public.current_household_id() is null and (select count(*) from public.shared_latest_prices()) = 0, 'a forged household header reads nothing';
+end $$;
+
+-- Úrsula tem o mesmo arroz, comprado no Rio (a chave começa com 33): vê o mercado do Rio, e nenhum de São Paulo.
+select set_config('request.jwt.claim.sub', :'user_u', false) \gset
+select public.create_household('Casa da Úrsula', 'Úrsula') \gset
+do $$
+declare
+  today constant date := current_setting('test.sp_today')::date;
+  s uuid;
+  r uuid;
+  i uuid;
+begin
+  insert into public.stores (name, cnpj) values ('MERCADO CARIOCA', '33444555000177') returning id into s;
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s, (today - 6 + time '10:00') at time zone 'America/Sao_Paulo', '332610' || '33444555000177' || repeat('0', 24), 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'ARROZ T.JOAO 5KG', 'graos', 'un', 27.00, 27.00) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', i, 'new_product', jsonb_build_object('name', 'Arroz', 'category', 'graos'))));
+  -- A compra dela mesma também está na base, e não volta para ela.
+  assert (select array_agg(store_name || ' ' || store_uf || ' ' || unit_price || ' ' || mine) from public.shared_latest_prices())
+    = array['MERCADO RJ 33 9.0000 false'], 'only stores of the state where the household buys, and never its own purchase';
+end $$;
+
+-- Tina não tem casa: nada.
+select set_config('request.jwt.claim.sub', :'user_t', false) \gset
+do $$
+begin
+  assert public.current_household_id() is null, 'T has no household';
+  assert (select count(*) from public.shared_latest_prices()) = 0, 'no household, no rows';
+  -- O cartão da aba Família só pergunta se o compartilhamento existe: o sim não depende da casa.
+  assert public.shared_prices_available() is true, 'a signed-in person learns that sharing exists';
+end $$;
+
+-- Sem entrar, nem a função, nem a pergunta do cartão.
+set role anon;
+do $$
+begin
+  perform public.shared_latest_prices();
+  raise exception 'FAIL: anon read the shared prices';
+exception when insufficient_privilege then null;
+end $$;
+do $$
+begin
+  perform public.shared_prices_available();
+  raise exception 'FAIL: anon asked whether sharing exists';
+exception when insufficient_privilege then null;
+end $$;
+
+-- A tabela: ninguém do app lê nem grava, nem com casa, nem sem entrar.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+do $$
+declare
+  stmt text;
+begin
+  foreach stmt in array array[
+    'select 1 from public.shared_prices',
+    $q$insert into public.shared_prices values ('11222333000181', '35', 'X', 'X', 'un', current_date, 1, current_date + 1)$q$,
+    'update public.shared_prices set unit_price = 1',
+    'delete from public.shared_prices'
+  ] loop
+    begin
+      execute stmt;
+      raise exception 'FAIL: a member ran: %', stmt;
+    exception when insufficient_privilege then null;
+    end;
+  end loop;
+  begin
+    perform public.share_receipt_prices();
+    raise exception 'FAIL: a member called the trigger function';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set role anon;
+do $$
+declare
+  stmt text;
+begin
+  foreach stmt in array array[
+    'select 1 from public.shared_prices',
+    $q$insert into public.shared_prices values ('11222333000181', '35', 'X', 'X', 'un', current_date, 1, current_date + 1)$q$,
+    'update public.shared_prices set unit_price = 1',
+    'delete from public.shared_prices'
+  ] loop
+    begin
+      execute stmt;
+      raise exception 'FAIL: anon ran: %', stmt;
+    exception when insufficient_privilege then null;
+    end;
+  end loop;
+end $$;
+reset role;
+do $$
+declare
+  who text;
+  verb text;
+begin
+  -- Cada permissão conferida sozinha (com uma lista, has_table_privilege diz sim se a pessoa tem qualquer uma).
+  foreach verb in array array['select', 'insert', 'update', 'delete', 'truncate', 'references', 'trigger'] loop
+    foreach who in array array['anon', 'authenticated'] loop
+      assert not has_table_privilege(who, 'public.shared_prices', verb), format('%s has no %s on shared_prices', who, verb);
+    end loop;
+  end loop;
+  foreach verb in array array['select', 'insert', 'update', 'delete'] loop
+    assert has_table_privilege('service_role', 'public.shared_prices', verb), format('the service role has %s on shared_prices', verb);
+  end loop;
+  assert (select relrowsecurity from pg_class where oid = 'public.shared_prices'::regclass), 'RLS is on for shared_prices';
+  assert (select count(*) from pg_policies where schemaname = 'public' and tablename = 'shared_prices') = 0, 'and no policy opens the table';
+  foreach who in array array['public', 'anon', 'authenticated'] loop
+    assert not has_function_privilege(who, 'public.share_receipt_prices()', 'execute'), format('%s cannot execute the trigger function', who);
+  end loop;
+  assert not has_function_privilege('public', 'public.shared_latest_prices()', 'execute'), 'the read function is not open to everyone';
+  assert not has_function_privilege('anon', 'public.shared_latest_prices()', 'execute'), 'anon cannot execute the read function';
+  assert has_function_privilege('authenticated', 'public.shared_latest_prices()', 'execute'), 'a signed-in person can';
+  assert not has_function_privilege('public', 'public.shared_prices_available()', 'execute'), 'the availability question is not open to everyone';
+  assert not has_function_privilege('anon', 'public.shared_prices_available()', 'execute'), 'anon cannot ask it';
+  assert has_function_privilege('authenticated', 'public.shared_prices_available()', 'execute'), 'a signed-in person can ask it';
+  assert (select proconfig from pg_proc where oid = 'public.shared_prices_available()'::regprocedure) @> array['search_path=""'],
+    'the availability question has its search_path set';
+end $$;
+
+-- Compartilhar nunca derruba a confirmação: com a gravação recusada (uma regra posta aqui só para isso), a
+-- nota fica confirmada, com apelido e tudo, e nada dela entra (nem a linha que passaria).
+alter table public.shared_prices add constraint test_refuses_item check (item_key <> 'ITEM QUE EMPERRA') not valid;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  d constant date := current_setting('test.sp_today')::date - 2;
+  s uuid;
+  r uuid;
+  i uuid;
+begin
+  select id into s from public.stores where cnpj = '11222333000181';
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s, (d + time '10:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 0, 'ITEM QUE EMPERRA', 'graos', 'un', 5.00, 5.00);
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 1, 'SABAO OMO 1KG', 'limpeza', 'un', 19.90, 19.90) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', i, 'new_product', jsonb_build_object('name', 'Sabão Omo 1kg', 'category', 'limpeza'))));
+  assert (select status from public.receipts where id = r) = 'confirmed', 'a failing share leaves the receipt confirmed';
+  assert (select count(*) from public.product_aliases where alias = 'SABAO OMO 1KG') = 1, 'with everything the confirmation does';
+  assert (select count(*) from public.latest_prices where store_id = s and unit_price = 19.90) = 1, 'and the household keeps its own price';
+
+  -- Confirmar de novo continua sendo erro, como antes.
+  begin
+    perform public.confirm_receipt(r, '[]');
+    raise exception 'FAIL: receipt confirmed twice';
+  exception when unique_violation then null;
+  end;
+  begin
+    perform public.confirm_receipt(current_setting('test.sp_receipt_photo')::uuid, '[]');
+    raise exception 'FAIL: receipt confirmed twice';
+  exception when unique_violation then null;
+  end;
+
+  -- Só a passagem de rascunho para confirmada compartilha: mexer numa nota já confirmada (e gravar o status
+  -- de novo, igual) não regrava nada.
+  update public.receipt_items set raw_description = 'LEITE DEPOIS DE CONFIRMADA', unit_price = 9.99 where receipt_id = current_setting('test.sp_receipt_photo')::uuid;
+  update public.receipts set status = 'confirmed' where id = current_setting('test.sp_receipt_photo')::uuid;
+
+  -- Excluir a nota não retira o que ela deu: nada liga uma coisa à outra.
+  delete from public.receipts where id = current_setting('test.sp_receipt_qr')::uuid;
+end $$;
+reset role;
+alter table public.shared_prices drop constraint test_refuses_item;
+do $$
+declare
+  d constant date := current_setting('test.sp_today')::date - 10;
+begin
+  assert (select count(*) from public.shared_prices where item_key in ('ITEM QUE EMPERRA', 'SABAO OMO 1KG')) = 0,
+    'nothing of the receipt whose share failed, not even the line that would pass';
+  assert (select count(*) from public.receipts where id = current_setting('test.sp_receipt_qr')::uuid) = 0, 'the receipt is gone';
+  assert (select unit_price from public.shared_prices where item_key = 'BANANA PRATA' and seen_on = d) = 6.99, 'and what it shared stays';
+  assert (select unit_price from public.shared_prices where item_key = 'LEITE ITALAC 1L') = 4.59
+    and (select count(*) from public.shared_prices where item_key = 'LEITE DEPOIS DE CONFIRMADA') = 0,
+    'confirming twice, or touching a confirmed receipt, changed nothing';
+end $$;
+reset time zone;
+
+-- ---------------------------------------------------------------------------
+\echo '• zero não é preço: o item sem valor não vira observação nem último preço'
+-- Pri mora sozinha; o leite dela foi comprado com preço e, depois, sem valor.
+\set user_p '00000000-0000-0000-0000-00000000001d'
+\set user_q '00000000-0000-0000-0000-00000000001e'
+reset role;
+insert into auth.users (id) values (:'user_p'), (:'user_q');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+select (public.create_household('Casa do Quico', 'Quico')).id as hh_q \gset
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+select (public.create_household('Casa da Pri', 'Pri')).id as hh_p \gset
+
+do $$
+declare
+  store_a uuid;
+  store_b uuid;
+  leite uuid;
+  r uuid;
+  i uuid;
+  i_zero_b uuid;
+begin
+  insert into public.stores (name) values ('Mercado A') returning id into store_a;
+  insert into public.stores (name) values ('Mercado B') returning id into store_b;
+  insert into public.products (name, category) values ('Leite 1L', 'laticinios') returning id into leite;
+
+  -- Mercado A: o leite a R$ 5,90.
+  insert into public.receipts (store_id, purchased_at, total, source)
+    values (store_a, '2026-10-01 10:00-03', 5.90, 'manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'LEITE 1L', 1, 'un', 5.90, 5.90) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', leite)));
+  assert (select unit_price from public.latest_prices where product_id = leite and store_id = store_a) = 5.90, 'the real price is the latest price';
+
+  -- Mercado A, uma semana depois: a leitura não pegou o preço do leite.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (store_a, '2026-10-08 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'LEITE 1L', 2, 'un', 0, 0) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', leite)));
+
+  -- Mercado B: a única compra do leite ficou sem valor.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (store_b, '2026-10-09 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'LEITE 1L', 1, 'un', 0, 0) returning id into i_zero_b;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i_zero_b, 'product_id', leite)));
+
+  assert (select count(*) from public.receipt_items where product_id = leite) = 3, 'the lines without value stay on their receipts, linked to the product';
+  assert (select count(*) from public.price_observations where product_id = leite) = 1, 'a line without value is not a price observation';
+  assert (select count(*) from public.price_observations where unit_price <= 0) = 0, 'no zero in the observations';
+  assert (select unit_price from public.latest_prices where product_id = leite and store_id = store_a) = 5.90,
+    'the latest price of a store is its latest REAL price, not the zero that came after';
+  assert (select purchased_at from public.latest_prices where product_id = leite and store_id = store_a) = '2026-10-01 10:00-03'::timestamptz,
+    'with the date of that purchase';
+  assert (select count(*) from public.latest_prices where product_id = leite and store_id = store_b) = 0, 'a store with only a line without value has no price';
+
+  -- O valor preenchido depois na nota confirmada passa a ser preço.
+  update public.receipt_items set unit_price = 6.50, total_price = 6.50 where id = i_zero_b;
+  assert (select unit_price from public.latest_prices where product_id = leite and store_id = store_b) = 6.50, 'a value filled in later becomes a price';
+  assert (select count(*) from public.price_observations where product_id = leite) = 2, 'and an observation';
+
+  perform set_config('test.p_leite', leite::text, false);
+end $$;
+
+-- Outra casa não vê nada disso: as views seguem com as regras de quem lê.
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+begin
+  assert (select count(*) from public.price_observations) = 0, 'another household sees no observations';
+  assert (select count(*) from public.latest_prices) = 0, 'and no latest prices';
+end $$;
+
+reset role;
+do $$
+begin
+  assert (select reloptions::text from pg_class where oid = 'public.price_observations'::regclass) like '%security_invoker=true%',
+    'price_observations still runs with the reader''s rights';
+  assert (select reloptions::text from pg_class where oid = 'public.latest_prices'::regclass) like '%security_invoker=true%',
+    'and so does latest_prices';
+  assert (select array_agg(attname::text order by attnum) from pg_attribute
+            where attrelid = 'public.price_observations'::regclass and attnum > 0 and not attisdropped)
+         = array['household_id', 'product_id', 'store_id', 'purchased_at', 'unit_price', 'unit', 'receipt_id'],
+    'the columns of price_observations are the same, in the same order';
+  assert has_table_privilege('authenticated', 'public.price_observations', 'select')
+     and has_table_privilege('authenticated', 'public.latest_prices', 'select'), 'members still read both views';
+end $$;
+
+-- ---------------------------------------------------------------------------
 \echo '• rodízio de tarefas: a ordem, a vez ao concluir, pular a vez e quem sai da ordem'
 -- Rita e Beto moram na Casa do Rodízio, com Lia, Nina, Téo e Bidu (crianças,
 -- sem o app) e o pet Rex; Otto mora em outra casa, com o filho Tito.
-\set user_r '00000000-0000-0000-0000-000000000021'
-\set user_s '00000000-0000-0000-0000-000000000022'
-\set user_o '00000000-0000-0000-0000-000000000023'
-\set user_t '00000000-0000-0000-0000-000000000024'
+\set user_r '00000000-0000-0000-0000-000000000031'
+\set user_s '00000000-0000-0000-0000-000000000032'
+\set user_o '00000000-0000-0000-0000-000000000033'
+\set user_t '00000000-0000-0000-0000-000000000034'
 insert into auth.users (id) values (:'user_r'), (:'user_s'), (:'user_o'), (:'user_t');
 set role authenticated;
 select set_config('request.jwt.claim.sub', :'user_o', false) \gset
@@ -3282,7 +5097,7 @@ begin
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[beto, rita, lia],
     'the order is the order picked';
   select * into c from public.chores where id = dishes;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000022' and c.kid_id is null,
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000032' and c.kid_id is null,
     'a new rotation starts with the first of the order, even if the chore had someone else';
 
   begin
@@ -3482,11 +5297,11 @@ begin
   assert r.completed and r.points = 0 and r.person_id is null and r.next_person_id = rita and r.due_on = '2026-10-13',
     'a member turn: no points, and the turn passes to the next';
   select * into c from public.chores where id = dishes;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null, 'the chore is now of the next member';
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.kid_id is null, 'the chore is now of the next member';
   -- Toque duplo (ou outro celular) na mesma ocorrência: não passa a vez de novo.
   select * into r from public.complete_chore(dishes, '2026-10-12', '2026-10-12');
   assert not r.completed and r.next_person_id is null, 'a repeated completion passes no turn';
-  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000021', 'the turn passed once';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000031', 'the turn passed once';
 
   select * into r from public.complete_chore(dishes, '2026-10-13', '2026-10-13');
   assert r.completed and r.points = 0 and r.next_person_id = lia, 'the turn passes to the kid';
@@ -3543,12 +5358,12 @@ begin
   assert (select assigned_to from public.chores where id = dishes) = auth.uid(), 'B is on turn';
   assert public.skip_chore_turn(dishes, beto) = rita, 'skipping passes the turn to the next';
   select * into c from public.chores where id = dishes;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.due_on = '2026-10-17' and c.active, 'the date stays';
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.due_on = '2026-10-17' and c.active, 'the date stays';
   assert (select count(*) from public.chore_completions where chore_id = dishes) = 5, 'nothing in the history';
   assert (select balance from public.kid_points where person_id = lia) = 10, 'and no points';
   -- O outro celular ainda mostrava a vez de Beto.
   assert public.skip_chore_turn(dishes, beto) is null, 'a second skip from the old turn does nothing';
-  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000021', 'the turn passed once';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000031', 'the turn passed once';
   assert public.skip_chore_turn(dishes, rita) = lia and public.skip_chore_turn(dishes, lia) = beto, 'skipping wraps around too';
 
   insert into public.chores (title, recurrence, assigned_to) values ('Sem rodízio', 'daily', auth.uid()) returning id into plain;
@@ -3598,7 +5413,7 @@ begin
   perform public.skip_chore_turn(dishes, beto);
   update public.chores set recurrence = 'none' where id = dishes;
   assert (select count(*) from public.chore_rotation where chore_id = dishes) = 0, 'a one-off chore has no rotation';
-  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000021', 'and keeps the person of the turn';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000031', 'and keeps the person of the turn';
   update public.chores set recurrence = 'daily' where id = dishes;
 end $$;
 
@@ -3618,13 +5433,13 @@ begin
   -- Com um morador primeiro na ordem: Rita, depois Beto.
   sweep := public.save_chore(null, 'Varrer a cozinha', null, 'daily', 1, '2026-10-12', 10, p_people => array[rita, beto]);
   select * into c from public.chores where id = sweep;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null, 'the turn starts with R';
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.kid_id is null, 'the turn starts with R';
   -- a. A mesma ordem, na vez do primeiro: fica com ele.
   perform pg_temp.save_order(sweep, array[rita, beto]);
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = sweep) = array[rita, beto],
     'the same order is saved again';
   select * into c from public.chores where id = sweep;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null,
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.kid_id is null,
     'saving the same order on the turn of the first (a member) keeps the turn';
   -- b. A mesma ordem, na vez do segundo: fica com ele.
   assert public.skip_chore_turn(sweep, rita) = beto, 'the turn passed to B';
@@ -3632,7 +5447,7 @@ begin
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = sweep) = array[rita, beto],
     'the same order is saved again, on the turn of B';
   select * into c from public.chores where id = sweep;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000022' and c.kid_id is null,
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000032' and c.kid_id is null,
     'saving the same order on the turn of the second keeps the turn';
   -- c. A ordem invertida, na vez do primeiro: a vez não acompanha a posição.
   assert public.skip_chore_turn(sweep, beto) = rita, 'the turn is back with R';
@@ -3640,15 +5455,15 @@ begin
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = sweep) = array[beto, rita],
     'the order is reversed';
   select * into c from public.chores where id = sweep;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null,
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.kid_id is null,
     'reversing the order keeps the turn of who had it';
   -- d. Encerrar o rodízio na vez do primeiro: a tarefa fica com ele.
   perform pg_temp.save_order(sweep, array[rita, beto]);
-  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000021', 'R still has the turn';
+  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000031', 'R still has the turn';
   perform pg_temp.save_order(sweep, '{}');
   assert not exists (select 1 from public.chore_rotation r where r.chore_id = sweep), 'ending the rotation leaves no row of the order';
   select * into c from public.chores where id = sweep;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null,
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.kid_id is null,
     'ending the rotation on the turn of the first (a member) keeps the chore with the member';
 
   -- e. O mesmo com quem não tem o app primeiro na ordem (a vez em kid_id): Lia, depois Beto.
@@ -3713,14 +5528,14 @@ begin
 
   -- Os pontos do rodízio, na vez de um morador: o app antigo manda 0 (para ele, pontos eram só da tarefa de criança).
   -- A edição passa, com os pontos de antes: são das crianças da ordem, cada uma na sua vez.
-  assert was.points = 10 and was.assigned_to = '00000000-0000-0000-0000-000000000021' and was.kid_id is null,
+  assert was.points = 10 and was.assigned_to = '00000000-0000-0000-0000-000000000031' and was.kid_id is null,
     'the rotation is worth 10 points, on the turn of R';
   update public.chores
     set title = 'Lavar a louça e as panelas', notes = null, recurrence = 'daily', interval_count = 1, due_on = was.due_on,
-        assigned_to = '00000000-0000-0000-0000-000000000021', kid_id = null, points = 0
+        assigned_to = '00000000-0000-0000-0000-000000000031', kid_id = null, points = 0
     where id = dishes;
   select * into c from public.chores where id = dishes;
-  assert c.title = 'Lavar a louça e as panelas' and c.points = 10 and c.assigned_to = '00000000-0000-0000-0000-000000000021',
+  assert c.title = 'Lavar a louça e as panelas' and c.points = 10 and c.assigned_to = '00000000-0000-0000-0000-000000000031',
     'the old app renames a rotating chore on a member turn, and its points stay';
   -- Os outros valores passam, também na vez do morador.
   update public.chores set title = 'Lavar a louça', points = 12 where id = dishes;
@@ -3763,7 +5578,7 @@ begin
 
   -- Tarefa sem rodízio: o responsável muda direto na tabela, como sempre.
   insert into public.chores (title, recurrence, assigned_to) values ('Molhar as plantas', 'daily', auth.uid()) returning id into plain;
-  update public.chores set assigned_to = '00000000-0000-0000-0000-000000000021' where id = plain;
+  update public.chores set assigned_to = '00000000-0000-0000-0000-000000000031' where id = plain;
   update public.chores set assigned_to = null, kid_id = lia where id = plain;
   update public.chores set kid_id = null where id = plain;
   select * into c from public.chores where id = plain;
@@ -3776,8 +5591,8 @@ begin
   -- Nem a que já teve rodízio: acabado, ela volta a ser como as outras.
   perform pg_temp.save_order(plain, array[beto, lia]);
   perform pg_temp.save_order(plain, '{}');
-  update public.chores set assigned_to = '00000000-0000-0000-0000-000000000021', kid_id = null where id = plain;
-  assert (select assigned_to from public.chores where id = plain) = '00000000-0000-0000-0000-000000000021',
+  update public.chores set assigned_to = '00000000-0000-0000-0000-000000000031', kid_id = null where id = plain;
+  assert (select assigned_to from public.chores where id = plain) = '00000000-0000-0000-0000-000000000031',
     'nor after its rotation ended';
   delete from public.chores where id = plain;
 
@@ -3787,10 +5602,10 @@ begin
   perform pg_temp.save_turn(dishes, null, lia);
   assert (select kid_id from public.chores where id = dishes) = lia, 'save_chore with a person chosen moves the turn';
   perform pg_temp.save_order(dishes, array[rita, beto]);
-  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000021',
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000031',
     'a new order from save_chore moves the turn';
   perform pg_temp.save_order(dishes, array[beto, rita, lia]);
-  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000021', 'R is on turn again';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000031', 'R is on turn again';
   -- Os pontos pela função (o app novo, que mostra os pontos do rodízio): ela grava o que vier, até 0, na vez do morador.
   perform public.save_chore(ch.id, ch.title, ch.notes, ch.recurrence, ch.interval_count, ch.due_on, p_points => 0)
     from public.chores ch where ch.id = dishes;
@@ -3851,7 +5666,7 @@ begin
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = yard) = array[rita, lia],
     'a new chore is created with its order';
   select * into c from public.chores where id = yard;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null and c.points = 10,
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.kid_id is null and c.points = 10,
     'and the turn starts with the first of the order';
 
   -- Rodízio recusado na tarefa nova: nem a tarefa fica.
@@ -3909,9 +5724,9 @@ begin
 
   -- O responsável escolhido: um morador, uma criança (com os pontos), qualquer um.
   perform public.save_chore(room, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, 0,
-    p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000021');
+    p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000031');
   select * into c from public.chores where id = room;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null and c.points = 0, 'a member, and no points';
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.kid_id is null and c.points = 0, 'a member, and no points';
   perform public.save_chore(room, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, 7, p_set_turn => true, p_kid_id => nina);
   -- Sem os pontos na chamada, eles ficam como estão.
   perform public.save_chore(room, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, p_set_turn => true, p_kid_id => lia);
@@ -3930,7 +5745,7 @@ begin
   end;
   begin
     perform public.save_chore(room, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 3,
-      p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000023');
+      p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000033');
     raise exception 'FAIL: a member of another household became the person of the chore';
   exception when foreign_key_violation then null;
   end;
@@ -4010,10 +5825,10 @@ begin
   assert not exists (select 1 from public.chore_rotation r where r.chore_id = lamp), 'and has no rotation';
   -- O mesmo sem falar da ordem (p_people nulo): quem encerra o rodízio é o gatilho, na mesma transação.
   perform public.save_chore(lamp, 'Trocar a lâmpada', null, 'daily', 1, '2026-10-12', p_people => array[rita, beto]);
-  assert (select assigned_to from public.chores where id = lamp) = '00000000-0000-0000-0000-000000000021', 'rotating again: the turn is of the first';
+  assert (select assigned_to from public.chores where id = lamp) = '00000000-0000-0000-0000-000000000031', 'rotating again: the turn is of the first';
   perform public.save_chore(lamp, 'Trocar a lâmpada', null, 'none', 1, '2026-10-12');
   select * into c from public.chores where id = lamp;
-  assert c.recurrence = 'none' and c.assigned_to = '00000000-0000-0000-0000-000000000021' and c.kid_id is null,
+  assert c.recurrence = 'none' and c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.kid_id is null,
     'one-off without a word about the order: the holder stays too';
   assert not exists (select 1 from public.chore_rotation r where r.chore_id = lamp), 'and the rotation is ended';
 
@@ -4103,7 +5918,7 @@ begin
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = hall) = array[rita, lia],
     'no rotation: the flagged save creates the order';
   select * into was from public.chores where id = hall;
-  assert was.assigned_to = '00000000-0000-0000-0000-000000000021' and was.kid_id is null and was.points = 10,
+  assert was.assigned_to = '00000000-0000-0000-0000-000000000031' and was.kid_id is null and was.points = 10,
     'and the turn goes to the first of the new order, not to who the chore was of';
 
   -- Com rodízio: recusa, seja o que for que o formulário pede (um responsável, outra ordem, nenhuma, só os
@@ -4254,7 +6069,7 @@ begin
   end;
   begin
     perform public.save_chore(null, 'Tarefa do Otto', null, 'weekly', 1, '2026-10-12',
-      p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000021');
+      p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000031');
     raise exception 'FAIL: O gave his chore to a member of another household';
   exception when foreign_key_violation then null;
   end;
@@ -4564,7 +6379,7 @@ begin
     = array[current_setting('test.r_beto')::uuid, current_setting('test.r_lia')::uuid], 'the rotation was created after the save of the person';
   select * into c from public.chores where id = porch;
   assert c.title = 'Varrer a varanda e a escada' and c.notes is null and c.points = 10, 'the later save is written whole';
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000022' and c.kid_id is null, 'and the turn is inside the order: of its first, not of R';
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000032' and c.kid_id is null, 'and the turn is inside the order: of its first, not of R';
 end $$;
 -- (A consulta que deu certo só termina quando não há mais resultado a ler.)
 select count(*) as race_drained from race.dblink_get_result('beto') as t (saved uuid) \gset
@@ -4651,9 +6466,9 @@ begin
   delete from public.people where id = teo;
   assert (select count(*) from public.chore_rotation where chore_id = sweep) = 0, 'with one person left the order is dissolved';
   select * into c from public.chores where id = sweep;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000022' and c.kid_id is null, 'the chore stays with whoever is left';
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000032' and c.kid_id is null, 'the chore stays with whoever is left';
   assert (select next_person_id from public.complete_chore(sweep, '2026-10-12')) is null, 'it is a plain chore again';
-  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000022', 'of the same person';
+  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000032', 'of the same person';
 
   -- Quem sai não estava na vez: a tarefa continua com quem estava.
   perform pg_temp.save_order(sweep, array[lia, beto]);
@@ -4670,7 +6485,7 @@ begin
   delete from public.chore_rotation where chore_id = sweep and person_id = current_setting('test.r_lia')::uuid;
   assert found, 'the owner removed the row';
   assert (select count(*) from public.chore_rotation where chore_id = sweep) = 0, 'a row removed by hand dissolves the order too';
-  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000022', 'the turn stays where it was';
+  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000032', 'the turn stays where it was';
 end $$;
 set role authenticated;
 delete from public.chores where id in (current_setting('test.r_sweep')::uuid, current_setting('test.r_plain')::uuid);
@@ -4698,16 +6513,16 @@ declare
   c public.chores;
   r record;
 begin
-  assert (select member_user_id from public.people where id = lia) = '00000000-0000-0000-0000-000000000024', 'the kid has an account now';
+  assert (select member_user_id from public.people where id = lia) = '00000000-0000-0000-0000-000000000034', 'the kid has an account now';
   select * into c from public.chores where id = dishes;
-  assert c.kid_id is null and c.assigned_to = '00000000-0000-0000-0000-000000000024', 'her turn moved to the account';
+  assert c.kid_id is null and c.assigned_to = '00000000-0000-0000-0000-000000000034', 'her turn moved to the account';
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[rita, lia],
     'and she stays in the order';
   select * into r from public.complete_chore(dishes, c.due_on, c.due_on);
   assert r.completed and r.points = 0 and r.person_id is null and r.next_person_id = rita,
     'with an account she earns no points, and the turn passes to the next (nobody skipped)';
   assert public.skip_chore_turn(dishes, rita) = lia, 'the turn comes back to her as a member';
-  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000024', 'in assigned_to';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000034', 'in assigned_to';
 end $$;
 
 -- O morador sai da casa: a ficha dele fica, sem o app, e ele segue na ordem;
@@ -4724,13 +6539,13 @@ declare
 begin
   -- Lixo: Rita, Beto, na vez de Beto, que é tirado da casa.
   select * into c from public.chores where id = trash;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000022', 'B is on turn';
-  insert into public.chores (title, assigned_to) values ('Tarefa do Beto', '00000000-0000-0000-0000-000000000022') returning id into plain;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000032', 'B is on turn';
+  insert into public.chores (title, assigned_to) values ('Tarefa do Beto', '00000000-0000-0000-0000-000000000032') returning id into plain;
   -- E um rodízio sem Beto, na vez dele (o responsável salvo sem mexer na ordem).
   insert into public.chores (title, recurrence) values ('Tirar o pó', 'weekly') returning id into dust;
   perform pg_temp.save_order(dust, array[rita, current_setting('test.r_lia')::uuid]);
-  perform pg_temp.save_turn(dust, '00000000-0000-0000-0000-000000000022', null);
-  perform public.remove_member(current_setting('test.hh_r')::uuid, '00000000-0000-0000-0000-000000000022');
+  perform pg_temp.save_turn(dust, '00000000-0000-0000-0000-000000000032', null);
+  perform public.remove_member(current_setting('test.hh_r')::uuid, '00000000-0000-0000-0000-000000000032');
   assert (select member_user_id from public.people where id = beto) is null, 'the record stays, without the app';
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = trash) = array[rita, beto],
     'who left the household stays in the order';
