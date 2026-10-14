@@ -962,6 +962,19 @@ describe('comparação com o mês anterior', () => {
     const onlyLater = marketMonth([future], MONTH, today);
     expect(onlyLater.trips).toEqual([]);
     expect(onlyLater.closing).toBe('Sem contar 1 nota com data depois de hoje.');
+    // A nota de data futura só com itens de farmácia não é ida ao mercado, mas aparece: senão ninguém a acha para conferir a data.
+    const drugstore = receipt(at(MONTH, 22), [line('Dipirona', 'medicamentos', 12)], { storeId: 'dr', storeName: 'Drogasil' });
+    const mixed = receipt(at(MONTH, 23), [line('Arroz', 'graos', 30), line('Gaze', 'medicamentos', 10)], { storeId: 'dia', storeName: 'Dia' });
+    const withDrugstore = marketMonth([past, drugstore, mixed], MONTH, today);
+    expect(withDrugstore.headline).toBe('R$ 30,00 em 1 ida');
+    expect(withDrugstore.pharmacy).toBeNull();
+    expect(withDrugstore.later?.label).toBe('2 notas com data depois de hoje');
+    // O valor é o da nota inteira, mercado e farmácia.
+    expect(withDrugstore.later?.receipts.map((r) => [r.storeName, r.date, r.value])).toEqual([
+      ['Dia', '23 out', 'R$ 40,00'],
+      ['Drogasil', '22 out', 'R$ 12,00'],
+    ]);
+    expect(withDrugstore.closing).toBe('Sem contar 2 notas com data depois de hoje.');
     // Plural.
     const two = marketMonth([past, future, receipt(at(MONTH, 21), [line('Sal', 'temperos', 4)])], MONTH, today);
     expect(two.later?.label).toBe('2 notas com data depois de hoje');

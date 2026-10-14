@@ -167,7 +167,7 @@ export interface MarketMonth {
   unread: { label: string; value: string; accessibilityLabel: string; receipts: MarketReceiptRef[] } | null;
   /** Itens sem valor (contam zero), com as notas em que estão. */
   noValue: { label: string; hint: string; receipts: MarketReceiptRef[] } | null;
-  /** No mês corrente: as notas de mercado com data depois de hoje, que ficam de fora da conta "até hoje". */
+  /** No mês corrente: as notas confirmadas com data depois de hoje (de mercado ou só de farmácia), fora da conta "até hoje". */
   later: { label: string; hint: string; receipts: MarketReceiptRef[] } | null;
   /** "Farmácia, fora desta conta: R$ 42,00": o que foi pago nos itens de farmácia. */
   pharmacy: string | null;
@@ -477,7 +477,20 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
   const current = figures(receipts, range.start, end);
   // No mês corrente, o que tem data depois de hoje: fica de fora da conta, e a tela diz.
   const later = end < range.end ? figures(receipts, end, range.end) : null;
-  const laterTrips = later?.trips ?? [];
+  // Toda nota confirmada de data futura, seja ou não uma ida ao mercado: a que só tem itens de farmácia também
+  // precisa aparecer, para a pessoa poder abrir e conferir a data. O valor é o que a nota custou inteira.
+  const laterReceipts =
+    end < range.end
+      ? receipts
+          .filter((receipt) => receipt.status === 'confirmed')
+          .map((receipt) => ({ receipt, date: purchasedOn(receipt) }))
+          .filter(({ date }) => date >= end && date < range.end)
+          .sort((a, b) => Date.parse(b.receipt.purchasedAt) - Date.parse(a.receipt.purchasedAt) || a.receipt.id.localeCompare(b.receipt.id))
+          .map(({ receipt, date }) => {
+            const paid = receiptMoney(receipt);
+            return { receipt, date, cents: paid.paidCents + paid.pharmacyCents };
+          })
+      : [];
   // Os rascunhos esperam a revisão com a data que tiverem: os de data futura vêm junto (e primeiro, que são os mais novos).
   const drafts = later ? [...later.drafts, ...current.drafts] : current.drafts;
   const previous = previousWindow(month, today);
@@ -603,7 +616,7 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
     current.pharmacyCents > 0 ? `${money(current.pharmacyCents)} de farmácia` : null,
     noValueCount > 0 ? plural(noValueCount, 'item sem valor', 'itens sem valor') : null,
     draftCount > 0 ? plural(draftCount, 'nota que espera a revisão', 'notas que esperam a revisão') : null,
-    laterTrips.length > 0 ? plural(laterTrips.length, 'nota com data depois de hoje', 'notas com data depois de hoje') : null,
+    laterReceipts.length > 0 ? plural(laterReceipts.length, 'nota com data depois de hoje', 'notas com data depois de hoje') : null,
   ].filter((part): part is string => part !== null);
   const closing = [inside.length ? `Inclui ${joinNames(inside)}.` : null, outside.length ? `Sem contar ${joinNames(outside)}.` : null]
     .filter(Boolean)
@@ -663,14 +676,14 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
           }
         : null,
     later:
-      laterTrips.length > 0
+      laterReceipts.length > 0
         ? {
-            label: plural(laterTrips.length, 'nota com data depois de hoje', 'notas com data depois de hoje'),
+            label: plural(laterReceipts.length, 'nota com data depois de hoje', 'notas com data depois de hoje'),
             hint:
-              laterTrips.length === 1
+              laterReceipts.length === 1
                 ? 'Fica de fora desta conta até o dia chegar. Se a data está errada, abra a nota para conferir.'
                 : 'Ficam de fora desta conta até o dia chegar. Se a data está errada, abra a nota para conferir.',
-            receipts: laterTrips.map((trip) => ref(trip.receipt, trip.date, money(trip.money.paidCents))),
+            receipts: laterReceipts.map((entry) => ref(entry.receipt, entry.date, money(entry.cents))),
           }
         : null,
     pharmacy: current.pharmacyCents > 0 ? `Farmácia, fora desta conta: ${money(current.pharmacyCents)}` : null,
