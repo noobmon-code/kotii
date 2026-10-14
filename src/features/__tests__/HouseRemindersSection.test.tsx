@@ -40,6 +40,11 @@ jest.mock('@/features/useReminderSync', () => ({
   useHouseReminderTarget: () => null,
 }));
 jest.mock('@/lib/auth', () => ({ useHousehold: () => ({ data: undefined }) }));
+// As reposições (gás, água e ração): só para saber se o banco tem as tabelas delas. Sem resposta, a linha fica.
+const mockSupplies: { available: boolean | undefined } = { available: undefined };
+jest.mock('@/data/supplies', () => ({
+  useSupplies: () => ({ data: mockSupplies.available === undefined ? undefined : { available: mockSupplies.available } }),
+}));
 jest.mock('@/lib/supabase', () => ({
   supabase: {},
   unwrap: (result: { data: unknown }) => result.data,
@@ -85,6 +90,7 @@ const tripSwitch = () => tree.root.findAllByType(Switch).find((s) => s.props.acc
 beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity } } });
   Object.assign(mockDevice, { reminders: true, tripPush: true, read: async () => true });
+  mockSupplies.available = undefined;
   mockDevice.set = jest.fn(async () => true);
   jest.mocked(notify).mockClear();
 });
@@ -104,6 +110,23 @@ describe('"Alguém indo ao mercado" nos avisos deste navegador', () => {
     // Depois dos avisos da casa, no mesmo cartão.
     expect(texts.indexOf(LABEL)).toBeGreaterThan(texts.indexOf('Dicas do clima'));
     expect(tripSwitch()?.props.value).toBe(true);
+  });
+
+  it('junto com o aviso de gás, água e ração: os dois no mesmo cartão, a ida por último', async () => {
+    mockSupplies.available = true;
+    const texts = await render();
+    expect(texts).toContain('Gás, água e ração');
+    expect(texts.indexOf(LABEL)).toBeGreaterThan(texts.indexOf('Gás, água e ração'));
+    expect(texts.indexOf(LABEL)).toBeGreaterThan(texts.indexOf('Resumo de amanhã'));
+    expect(tripSwitch()?.props.value).toBe(true);
+  });
+
+  it('banco ainda sem as reposições: some só a linha delas, a da ida fica', async () => {
+    mockSupplies.available = false;
+    const texts = await render();
+    expect(texts).not.toContain('Gás, água e ração');
+    expect(texts).toContain('Contas a pagar');
+    expect(texts).toContain(LABEL);
   });
 
   it('desligado no servidor (ou navegador ainda sem inscrição): aparece desligado', async () => {

@@ -19,6 +19,7 @@ import { useRefreshMarketTrips } from '@/data/marketTrips';
 import { useMenu } from '@/data/menu';
 import { useRefreshWeather } from '@/data/weather';
 import { useReceipts } from '@/data/receipts';
+import { useSupplies } from '@/data/supplies';
 import { billsAboveUsual } from '@/domain/billUsual';
 import { choreAssigneeLabel, choreStatus, describeChoreStatus } from '@/domain/chores';
 import { todayISO } from '@/domain/dates';
@@ -33,6 +34,7 @@ import { describeExpiry, expiryStatus } from '@/domain/pantry';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { describeRestock, restockSuggestions, type RestockItem } from '@/domain/restock';
 import { normalizeSearch } from '@/domain/search';
+import { suppliesNeedingAttention } from '@/domain/supplies';
 import { cheerKid } from '@/features/ChoresPanel';
 import { BillRow } from '@/features/finance/BillsPanel';
 import { PayBillModal } from '@/features/finance/PayBillModal';
@@ -42,6 +44,7 @@ import { InstallAppCard } from '@/features/InstallAppCard';
 import { MarketTripBanner } from '@/features/MarketTrip';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useJustListed } from '@/features/RecentPurchases';
+import { SuppliesTodaySection } from '@/features/SuppliesSection';
 import { WeatherCard } from '@/features/WeatherCard';
 import { useHousehold } from '@/lib/auth';
 import { settledData } from '@/lib/settledData';
@@ -134,6 +137,8 @@ export default function TodayScreen() {
   const recentPayments = useRecentBillPayments(today, billsDue.length > 0);
   const purchases = usePurchaseRecords();
   const menu = useMenu(today, today);
+  // Gás, água, ração: num banco ainda sem as tabelas a busca devolve vazio, sem erro.
+  const supplies = useSupplies();
   const addToList = useAddItemsToList();
   const [paying, setPaying] = useState<Bill | null>(null);
   // Itens de todas as listas abertas; os postos agora há pouco somem já no toque.
@@ -154,6 +159,7 @@ export default function TodayScreen() {
     ...(hasBudgets ? [spending] : []),
     purchases,
     menu,
+    supplies,
     ...health.queries,
   ];
   const refreshing = queries.some((q) => q.isRefetching);
@@ -180,6 +186,8 @@ export default function TodayScreen() {
     const kind = expiryStatus(p.expires_on, today).kind;
     return kind === 'vencido' || kind === 'vence_logo';
   });
+  // O que está acabando ou passou da data prevista (pelas trocas anotadas).
+  const suppliesDue = suppliesNeedingAttention(supplies.data?.supplies ?? [], today);
   const drafts = (receipts.data ?? []).filter((r) => r.status === 'draft');
   const documentsDue = documentsNeedingAttention(documents.data ?? [], today);
   // Sem os pagamentos recentes em dia (carregando, buscando de novo ou com erro), nenhuma conta ganha o selo.
@@ -207,6 +215,7 @@ export default function TodayScreen() {
     !dueChores.length &&
     !billsDue.length &&
     !expiring.length &&
+    !suppliesDue.length &&
     !drafts.length &&
     !documentsDue.length &&
     !warrantiesEnding.length &&
@@ -222,6 +231,7 @@ export default function TodayScreen() {
     dueChores.length +
     billsDue.length +
     expiring.length +
+    suppliesDue.length +
     documentsDue.length +
     warrantiesEnding.length +
     budgetAlerts.length +
@@ -463,6 +473,8 @@ export default function TodayScreen() {
           </ListCard>
         </Section>
       ) : null}
+
+      <SuppliesTodaySection rows={suppliesDue} today={today} />
 
       {documentsDue.length ? (
         <Section title="Documentos">

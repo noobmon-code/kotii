@@ -17,6 +17,7 @@ import {
   uploadImages,
   type ScanSource,
 } from './images';
+import { withFreshProducts } from './productMerge';
 
 const RECEIPT_COLUMNS =
   'id, store_id, purchased_at, total, access_key, image_path, extra_image_paths, source, status, created_at, paid_by, store:stores(id, name)';
@@ -357,8 +358,13 @@ export function useDeleteReceiptItem(receiptId: string) {
 export function useConfirmReceipt(receiptId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (items: ConfirmItem[]) =>
-      unwrap(await supabase.rpc('confirm_receipt', { p_receipt_id: receiptId, p_items: items })),
+    // Um produto da nota pode ter sido juntado com outro em outro aparelho, com esta revisão aberta: os
+    // produtos e a nota são buscados de novo, os dois, antes de a gravação terminar. Só com os produtos de
+    // agora e a nota de antes, o item desse produto pareceria um produto novo, e confirmar o criaria de novo.
+    mutationFn: (items: ConfirmItem[]) =>
+      withFreshProducts(queryClient, ['products', 'receipt'], async () =>
+        unwrap(await supabase.rpc('confirm_receipt', { p_receipt_id: receiptId, p_items: items })),
+      ),
     onSuccess: () => {
       for (const key of [
         'receipts',
@@ -372,6 +378,10 @@ export function useConfirmReceipt(receiptId: string) {
         'lists',
         'listItems',
         'listLinks',
+        // A nota ensina apelidos novos, e é por eles que os preços de outras casas chegam aos produtos desta.
+        'sharedPrices',
+        // A leitura do QR code pode ter criado o mercado, e é pelo nome dele que a casa reconhece "os seus mercados".
+        'stores',
       ]) {
         queryClient.invalidateQueries({ queryKey: [key] });
       }
@@ -379,8 +389,12 @@ export function useConfirmReceipt(receiptId: string) {
   });
 }
 
-/** O que mostra os itens de uma nota já confirmada: comparativo, histórico de preço, gastos e compras recentes. */
-const CONFIRMED_ITEM_KEYS = ['receipts', 'latestPrices', 'priceHistory', 'spending', 'purchaseRecords'];
+/**
+ * O que mostra os itens de uma nota já confirmada: comparativo, histórico de preço, gastos, compras recentes e os
+ * preços de outras casas (a compra da casa esconde a linha de fora daquele mercado, e a casa sem nota confirmada
+ * nenhuma não vê preço de fora).
+ */
+const CONFIRMED_ITEM_KEYS = ['receipts', 'latestPrices', 'priceHistory', 'spending', 'purchaseRecords', 'sharedPrices'];
 
 export function useDeleteReceipt(receiptId: string) {
   const queryClient = useQueryClient();
