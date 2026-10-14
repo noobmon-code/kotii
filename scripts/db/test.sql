@@ -5038,8 +5038,8 @@ end $$;
 -- ---------------------------------------------------------------------------
 \echo '• estoque e receita dos remédios: limites das colunas e isolamento entre casas'
 -- Paula mora na Casa da Paula e toma Losartana; Quico mora em outra casa.
-\set user_p '00000000-0000-0000-0000-000000000030'
-\set user_q '00000000-0000-0000-0000-000000000031'
+\set user_p '00000000-0000-0000-0000-000000000050'
+\set user_q '00000000-0000-0000-0000-000000000051'
 reset role;
 insert into auth.users (id) values (:'user_p'), (:'user_q');
 set role authenticated;
@@ -5270,7 +5270,7 @@ begin
 end $$;
 -- Sem casa, nada.
 reset role;
-\set user_r '00000000-0000-0000-0000-000000000032'
+\set user_r '00000000-0000-0000-0000-000000000052'
 insert into auth.users (id) values (:'user_r');
 set role authenticated;
 select set_config('request.jwt.claim.sub', :'user_r', false) \gset
