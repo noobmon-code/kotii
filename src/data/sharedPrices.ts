@@ -32,7 +32,8 @@ const MAX_PAGES = 10;
 
 /**
  * Os preços de outras casas para os produtos desta: o mais recente de cada
- * produto, mercado e unidade, dos últimos 90 dias e nunca de hoje; dos
+ * produto, mercado e unidade, dos últimos 90 dias e nunca de nota confirmada
+ * hoje (cada preço aparece a partir do dia seguinte ao da confirmação); dos
  * mercados da própria casa (`mine`) todos e, dos outros, os 5 mais baratos do
  * estado onde ela compra. null quando a função não existe no banco. Página
  * por página, na ordem da chave da resposta, para as páginas se encaixarem.

@@ -3242,11 +3242,16 @@ select set_config('test.sp_today', ((now() at time zone 'America/Sao_Paulo')::da
 
 do $$
 begin
-  -- Nada que aponte de volta: uma coluna nova (casa, pessoa, nota, id, hora) derruba este teste.
+  -- Nada que aponte de volta: uma coluna nova (casa, pessoa, nota, id, hora) derruba este teste. A única data
+  -- além do dia da compra é o dia em que a linha passa a ser lida: um dia sem hora, igual para tudo o que foi
+  -- gravado no mesmo dia por qualquer casa, que a leitura nunca devolve.
   assert (select array_agg(column_name || ' ' || data_type order by ordinal_position) from information_schema.columns
             where table_schema = 'public' and table_name = 'shared_prices')
-    = array['store_cnpj text', 'store_uf text', 'store_name text', 'item_key text', 'unit text', 'seen_on date', 'unit_price numeric'],
-    'shared_prices has exactly store, state, name, item key, unit, day and price';
+    = array['store_cnpj text', 'store_uf text', 'store_name text', 'item_key text', 'unit text', 'seen_on date', 'unit_price numeric', 'visible_on date'],
+    'shared_prices has exactly store, state, name, item key, unit, day, price and the day it becomes readable';
+  assert (select bool_and(is_nullable = 'NO') from information_schema.columns
+            where table_schema = 'public' and table_name = 'shared_prices' and column_name in ('seen_on', 'visible_on')),
+    'both days are always there';
   -- O nome da loja vai na linha do preço: uma tabela de lojas à parte mostraria o nome gravado hoje.
   assert to_regclass('public.shared_stores') is null, 'there is no table of shared stores';
   assert (select count(*) from information_schema.columns
@@ -3399,37 +3404,60 @@ begin
     (r, 'OLEO MINERAL 100ML', 'oleos', 'un', 9.90, 9.90);
   perform public.confirm_receipt(r, '[]');
 
-  -- Nota com uma linha de saúde (remédio, suplemento ou primeiros socorros), pela categoria sugerida ou pela
-  -- do produto: é compra de farmácia, e NADA dela entra, nem os mesmos três itens.
-  foreach health in array array['medicamentos', 'suplementos', 'primeiros_socorros'] loop
+  -- Nota com uma linha de REMÉDIO, pela categoria sugerida ou pela do produto: é compra de farmácia, e NADA
+  -- dela entra, nem os mesmos três itens.
+  n := n + 1;
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s_ata, (d + time '16:00') at time zone 'America/Sao_Paulo', '352610' || ata || repeat('0', 22) || n, 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price) values
+    (r, 'DIPIRONA 500MG ' || n, 'medicamentos', 'un', 8.50, 8.50),
+    (r, 'SAL DE FRUTA ENO ' || n, 'temperos', 'un', 3.50, 3.50),
+    (r, 'AGUA OXIGENADA 10V ' || n, 'bebidas', 'un', 4.50, 4.50),
+    (r, 'OLEO MINERAL 100ML ' || n, 'oleos', 'un', 9.90, 9.90);
+  perform public.confirm_receipt(r, '[]');
+
+  n := n + 1;
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_ata, (d + time '17:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price) values
+    (r, 0, 'ITEM SEM PISTA ' || n, null, 'un', 8.50, 8.50),
+    (r, 1, 'SAL DE FRUTA ENO ' || n, 'temperos', 'un', 3.50, 3.50),
+    (r, 2, 'AGUA OXIGENADA 10V ' || n, 'bebidas', 'un', 4.50, 4.50),
+    (r, 3, 'OLEO MINERAL 100ML ' || n, 'oleos', 'un', 9.90, 9.90);
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', (select id from public.receipt_items where receipt_id = r and position = 0),
+      'new_product', jsonb_build_object('name', 'Remédio ' || n, 'category', 'medicamentos'))));
+
+  -- Suplemento e primeiros socorros NÃO seguram a nota: é onde o app põe o iogurte proteico, a "vitamina de
+  -- banana" e o curativo, que vêm em nota de supermercado. A linha deles nunca entra (não está na lista); a
+  -- de laticínio da mesma nota entra. Também pela categoria sugerida e pela do produto.
+  foreach health in array array['suplementos', 'primeiros_socorros'] loop
     n := n + 1;
     insert into public.receipts (store_id, purchased_at, access_key, source)
-      values (s_ata, (d + time '16:00') at time zone 'America/Sao_Paulo', '352610' || ata || repeat('0', 22) || n, 'qrcode') returning id into r;
+      values (s_big, (d + time '16:30') at time zone 'America/Sao_Paulo', '352610' || '55444333000122' || repeat('0', 22) || n, 'qrcode') returning id into r;
     insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price) values
-      (r, 'DIPIRONA 500MG ' || n, health, 'un', 8.50, 8.50),
-      (r, 'SAL DE FRUTA ENO ' || n, 'temperos', 'un', 3.50, 3.50),
-      (r, 'AGUA OXIGENADA 10V ' || n, 'bebidas', 'un', 4.50, 4.50),
-      (r, 'OLEO MINERAL 100ML ' || n, 'oleos', 'un', 9.90, 9.90);
+      (r, 'LINHA DE SAUDE ' || n, health, 'un', 8.50, 8.50),
+      (r, 'LEITE DA MESMA NOTA ' || n, 'laticinios', 'un', 5.49, 5.49);
     perform public.confirm_receipt(r, '[]');
 
     n := n + 1;
     insert into public.receipts (store_id, purchased_at, source)
-      values (s_ata, (d + time '17:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+      values (s_big, (d + time '17:30') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
     insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price) values
-      (r, 0, 'ITEM SEM PISTA ' || n, null, 'un', 8.50, 8.50),
-      (r, 1, 'SAL DE FRUTA ENO ' || n, 'temperos', 'un', 3.50, 3.50),
-      (r, 2, 'AGUA OXIGENADA 10V ' || n, 'bebidas', 'un', 4.50, 4.50),
-      (r, 3, 'OLEO MINERAL 100ML ' || n, 'oleos', 'un', 9.90, 9.90);
+      (r, 0, 'LINHA DE SAUDE ' || n, null, 'un', 8.50, 8.50),
+      (r, 1, 'LEITE DA MESMA NOTA ' || n, 'laticinios', 'un', 5.49, 5.49);
     perform public.confirm_receipt(r, jsonb_build_array(
       jsonb_build_object('id', (select id from public.receipt_items where receipt_id = r and position = 0),
         'new_product', jsonb_build_object('name', 'Produto de saúde ' || n, 'category', health))));
   end loop;
 
   -- Loja com nome de farmácia (com acento, sem acento, colado, em qualquer caixa), numa nota sem remédio
-  -- reconhecido: nada, nem os mesmos três itens.
+  -- reconhecido: nada, nem os mesmos três itens. Da rede Pague Menos, a razão social e o nome de fachada; e
+  -- um nome com "supermercado" que também diz farmácia (os outros pedaços não têm exceção).
   foreach pharmacy in array array[
     'RAIA DROGASIL S/A', 'EMPREENDIMENTOS PAGUE MENOS S/A', 'DIMED S/A - DISTRIBUIDORA DE MEDICAMENTOS',
-    'Farmácia São João', 'PANVEL', 'Pharmapele Manipulação', 'PagueMenos', 'pague-menos'
+    'Farmácia São João', 'PANVEL', 'Pharmapele Manipulação', 'PagueMenos', 'pague-menos',
+    'FARMACIAS PAGUE MENOS', 'Farmácia do Supermercado Pague Menos'
   ] loop
     n := n + 1;
     insert into public.stores (name, cnpj) values (pharmacy, '700000000000' || n) returning id into s;
@@ -3439,6 +3467,20 @@ begin
       (r, 'SAL DE FRUTA ENO', 'temperos', 'un', 3.50, 3.50),
       (r, 'AGUA OXIGENADA 10V', 'bebidas', 'un', 4.50, 4.50),
       (r, 'OLEO MINERAL 100ML', 'oleos', 'un', 9.90, 9.90);
+    perform public.confirm_receipt(r, '[]');
+  end loop;
+
+  -- "Pague Menos" também é nome de supermercado (uma rede do interior de São Paulo, e outros pelo país):
+  -- quando o nome diz que é mercado (SUPERMERC, MERCADO ou ALIMENT), a loja compartilha como qualquer outra.
+  foreach pharmacy in array array[
+    'PAGUE MENOS COMERCIO DE PRODUTOS ALIMENTICIOS LTDA', 'SUPERMERCADO PAGUE MENOS', 'SUPERMERC PAGUE MENOS LTDA', 'Mercado Pague-Menos'
+  ] loop
+    n := n + 1;
+    insert into public.stores (name, cnpj) values (pharmacy, '710000000000' || n) returning id into s;
+    insert into public.receipts (store_id, purchased_at, source)
+      values (s, (d + time '18:30') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
+    insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+      values (r, 'FEIJAO CARIOCA 1KG', 'graos', 'un', 7.90, 7.90);
     perform public.confirm_receipt(r, '[]');
   end loop;
 
@@ -3460,6 +3502,15 @@ begin
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 'CAFE PILAO 500G', 'cafe_cha', 'un', 18.90, 18.90);
   perform public.confirm_receipt(r, '[]');
+
+  -- A compra de ONTEM confirmada hoje (QR code, noutro mercado de São Paulo): o que segura a linha é o dia da
+  -- GRAVAÇÃO, não o da compra. Também só amanhã.
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s_other, (today - 1 + time '19:00') at time zone 'America/Sao_Paulo', '352610' || '99888777000166' || repeat('0', 23) || '4', 'qrcode')
+    returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'CAFE PILAO 500G', 'cafe_cha', 'un', 17.90, 17.90);
+  perform public.confirm_receipt(r, '[]');
 end $$;
 
 reset role;
@@ -3469,6 +3520,9 @@ declare
   d constant date := today - 10;
   ata constant text := '11222333000181';
 begin
+  -- Tudo o que foi gravado hoje passa a ser lido amanhã, seja a compra de há 10 dias, de ontem ou de hoje.
+  assert (select count(*) from public.shared_prices where visible_on <> today + 1) = 0,
+    'every row written today becomes readable tomorrow, whatever its purchase day';
   -- Do QR: o arroz (uma linha, o preço da última), a banana e a maçã, no dia de São Paulo das 22:30, com o
   -- estado da chave. Da foto: o leite, no dia da 00:30, sem estado. E os três itens da nota sem remédio.
   assert (select array_agg(item_key || ' ' || unit || ' ' || seen_on || ' ' || unit_price || ' ' || coalesce(store_uf, '-') order by item_key)
@@ -3485,26 +3539,38 @@ begin
     ],
     'what is shared from the store: lines of the allowlist, on the São Paulo day, with the state of the access key';
   assert (select bool_and(store_name = 'ATACADAO MOOCA') from public.shared_prices where store_cnpj = ata), 'each row carries the printed store name';
-  assert (select array_agg(item_key || ' ' || unit || ' ' || seen_on || ' ' || unit_price || ' ' || coalesce(store_uf, '-') || ' ' || store_name)
+  assert (select array_agg(item_key || ' ' || unit || ' ' || seen_on || ' ' || unit_price || ' ' || coalesce(store_uf, '-') || ' ' || store_name order by item_key)
             from public.shared_prices where store_cnpj = '99888777000166')
-    = array['OLEO LIZA 900ML un ' || d || ' 7.4900 - SUPER OUTRO'], 'a photo without an access key shares under the store CNPJ, without a state';
+    = array['CAFE PILAO 500G un ' || (today - 1) || ' 17.9000 35 SUPER OUTRO', 'OLEO LIZA 900ML un ' || d || ' 7.4900 - SUPER OUTRO'],
+    'a photo without an access key shares under the store CNPJ, without a state; a receipt confirmed after its day, on its purchase day';
   assert (select store_name from public.shared_prices where store_cnpj = '44555666000199') = rtrim(repeat('ABCDEFGHI ', 12)),
     'the store name is trimmed and cut at 120 characters';
   -- Zero, chave vazia, "outros" (o biscoito e o remédio que o app não reconheceu), higiene, categoria fora da
   -- lista de um dos dois lados, linha sem categoria, chave comprida, nota à mão, mercado sem CNPJ, CNPJ que
-  -- não é o da chave, data no futuro, rascunho, nota com linha de saúde e loja com nome de farmácia: nada.
+  -- não é o da chave, data no futuro, rascunho, nota com linha de remédio e loja com nome de farmácia: nada.
   assert (select count(*) from public.shared_prices where item_key ~ '(SERTRALINA|OREO|SHAMPOO|MUSSARELA|NESTLE|TOMATE|AGULHINHA|DIPIRONA|SEM PISTA)') = 0,
     'a line outside the allowlist is never shared: unrecognised medicine, hygiene, "outros", no category, a key that is too long';
   assert (select count(*) from public.shared_prices where item_key ~ '^(SAL DE FRUTA ENO|AGUA OXIGENADA 10V|OLEO MINERAL 100ML) [0-9]+$') = 0,
-    'a receipt with any health line shares nothing, not even its lines of market categories';
+    'a receipt with a medicine line shares nothing, not even its lines of market categories';
+  -- Suplemento e primeiros socorros: a linha fica na casa, o resto da nota entra (duas notas de cada, quatro leites).
+  assert (select count(*) from public.shared_prices where item_key like 'LINHA DE SAUDE%') = 0, 'a supplements or first-aid line is never shared';
+  assert (select count(*) from public.shared_prices where store_cnpj = '55444333000122' and item_key ~ '^LEITE DA MESMA NOTA 1[3-6]$' and unit_price = 5.49) = 4,
+    'but it does not keep the rest of its receipt at home';
   assert (select count(*) from public.shared_prices where store_cnpj like '7000000000%') = 0, 'a store named like a pharmacy shares nothing';
+  assert (select array_agg(store_name order by store_cnpj) from public.shared_prices where store_cnpj like '7100000000%' and item_key = 'FEIJAO CARIOCA 1KG')
+    = array['PAGUE MENOS COMERCIO DE PRODUTOS ALIMENTICIOS LTDA', 'SUPERMERCADO PAGUE MENOS', 'SUPERMERC PAGUE MENOS LTDA', 'Mercado Pague-Menos'],
+    'a supermarket called Pague Menos shares like any other store';
   assert (select count(*) from public.shared_prices where item_key like 'ITEM ALEM DO TETO%') = 0, 'a receipt with more than 300 lines shares nothing';
   assert (select count(*) from public.shared_prices where store_cnpj = '55444333000122' and item_key like 'ITEM NO TETO%') = 300, 'one with 300 lines shares them all';
-  assert (select count(*) from public.shared_prices) = 8 + 1 + 1 + 300, 'nothing else was shared';
+  -- O atacado, o outro mercado, a loja de nome comprido, as 300 do teto, os quatro leites e os quatro Pague Menos.
+  assert (select count(*) from public.shared_prices) = 8 + 2 + 1 + 300 + 4 + 4, 'nothing else was shared';
+
+  -- O dia vira só para a banana: como se a nota da Paula tivesse sido confirmada ontem, a linha já pode ser lida.
+  update public.shared_prices set visible_on = today where item_key = 'BANANA PRATA';
 end $$;
 
--- Quico: o mesmo arroz, no mesmo atacado, no mesmo dia (que já passou), por outro preço e com outro nome de
--- loja; e o mesmo café de hoje, lido por foto (sem estado).
+-- Quico: o mesmo arroz e a mesma banana, no mesmo atacado, no mesmo dia de compra, por outros preços e com
+-- outro nome de loja; e o mesmo café de hoje, lido por foto (sem estado).
 set role authenticated;
 select set_config('request.jwt.claim.sub', :'user_q', false) \gset
 select public.create_household('Casa do Quico', 'Quico') \gset
@@ -3518,8 +3584,9 @@ begin
   insert into public.stores (name, cnpj) values ('ATACADAO MOOCA LJ 12', ata) returning id into s;
   insert into public.receipts (store_id, purchased_at, access_key, source)
     values (s, (d + time '09:00') at time zone 'America/Sao_Paulo', '352610' || ata || repeat('0', 23) || '7', 'qrcode') returning id into r;
-  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
-    values (r, 'Arroz T. João 5kg', 'graos', 'un', 23.50, 23.50);
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price) values
+    (r, 'Arroz T. João 5kg', 'graos', 'un', 23.50, 23.50),
+    (r, 'BANANA PRATA', 'hortifruti', 'kg', 7.49, 7.49);
   perform public.confirm_receipt(r, '[]');
 
   insert into public.receipts (store_id, source) values (s, 'ai') returning id into r;
@@ -3532,18 +3599,23 @@ reset role;
 do $$
 declare
   today constant date := current_setting('test.sp_today')::date;
+  ata constant text := '11222333000181';
 begin
   assert (select count(*) from public.shared_prices where item_key = 'ARROZ T JOAO 5KG') = 1, 'two households, same item, store and day: ONE row';
-  -- A linha de um dia que já passou pode ter sido lida: se mudasse, quem a observa saberia que outra casa
-  -- acabou de confirmar uma nota. Fica como está, preço e nome.
-  assert (select unit_price || ' ' || store_name from public.shared_prices where item_key = 'ARROZ T JOAO 5KG') = '21.9000 ATACADAO MOOCA',
-    'a later confirmation for a day that has passed changes nothing anyone can read';
-  -- A de hoje ninguém leu ainda: vale a última gravação (uma confirmação honesta conserta uma falsa), e o
-  -- estado que a foto não traz continua o que a linha já tinha.
-  assert (select count(*) from public.shared_prices where item_key = 'CAFE PILAO 500G') = 1, 'today too: ONE row';
-  assert (select unit_price || ' ' || store_name || ' ' || store_uf || ' ' || seen_on from public.shared_prices where item_key = 'CAFE PILAO 500G')
+  -- O arroz foi gravado hoje pela Paula: ninguém leu ainda, e vale a última gravação, preço e nome (uma
+  -- confirmação honesta conserta uma falsa), mesmo sendo compra de há 10 dias. O dia em que passa a ser lida
+  -- não anda.
+  assert (select unit_price || ' ' || store_name || ' ' || visible_on from public.shared_prices where item_key = 'ARROZ T JOAO 5KG')
+    = '23.5000 ATACADAO MOOCA LJ 12 ' || (today + 1), 'a row nobody can read yet takes the newer write, and its day of becoming readable stays';
+  -- A banana já pode ser lida: se mudasse, quem a observa saberia que outra casa acabou de confirmar uma
+  -- nota. A MESMA confirmação que trocou o arroz a deixa como está: preço, nome, estado e dia.
+  assert (select unit_price || ' ' || store_name || ' ' || store_uf || ' ' || visible_on from public.shared_prices where item_key = 'BANANA PRATA')
+    = '6.9900 ATACADAO MOOCA 35 ' || today, 'a row that is already readable never changes';
+  -- O café de hoje no atacado: a última gravação, e o estado que a foto não traz continua o que a linha já tinha.
+  assert (select count(*) from public.shared_prices where item_key = 'CAFE PILAO 500G' and store_cnpj = ata) = 1, 'today too: ONE row';
+  assert (select unit_price || ' ' || store_name || ' ' || store_uf || ' ' || seen_on from public.shared_prices where item_key = 'CAFE PILAO 500G' and store_cnpj = ata)
     = '19.5000 ATACADAO MOOCA LJ 12 35 ' || today, 'on the row of today the newer write is the price and the name';
-  assert (select count(*) from public.shared_prices) = 8 + 1 + 1 + 300, 'and no row more';
+  assert (select count(*) from public.shared_prices) = 8 + 2 + 1 + 300 + 4 + 4, 'and no row more';
 end $$;
 
 -- Saulo comprou outro arroz (tem apelido, mas não o do arroz da Paula). A loja dele veio sem nome da leitura.
@@ -3583,33 +3655,52 @@ declare
   today constant date := current_setting('test.sp_today')::date;
   ata constant text := '11222333000181';
 begin
-  assert (select unit_price || ' ' || store_name from public.shared_prices where item_key = 'CAFE PILAO 500G') = '20.0000 ATACADAO MOOCA LJ 12',
+  assert (select unit_price || ' ' || store_name from public.shared_prices where item_key = 'CAFE PILAO 500G' and store_cnpj = ata) = '20.0000 ATACADAO MOOCA LJ 12',
     'the placeholder name does not replace a real one (the price is still the newer)';
-  assert (select store_name from public.shared_prices where item_key = 'MACARRAO RENATA 500G') = 'CNPJ ' || ata, 'and on a new row it is accepted';
+  assert (select store_name || ' ' || coalesce(store_uf, '-') from public.shared_prices where item_key = 'MACARRAO RENATA 500G') = 'CNPJ ' || ata || ' -',
+    'and on a new row it is accepted';
 
-  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price) values
-    -- No atacado: mais novo que a linha de há 10 dias; o de hoje e o de amanhã ninguém lê; outra unidade é outra linha.
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 3, 24.10),
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today, 1.00),
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today + 1, 0.50),
-    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'kg', today - 5, 4.80),
-    -- Há 91 dias: velho demais. Há exatamente 90: ainda vale (e é o mais barato de São Paulo).
-    ('99888777000166', '35', 'SUPER OUTRO', 'ARROZ T JOAO 5KG', 'un', today - 91, 10.00),
-    ('60000000000108', '35', 'MERCADO SP 8', 'ARROZ T JOAO 5KG', 'un', today - 90, 15.00),
+  -- A última coluna é o dia em que a linha passa a ser lida: o seguinte ao da gravação. Quase todas como a
+  -- nota confirmada no próprio dia da compra; as outras são o que se testa.
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
+    -- No atacado: a de há 3 dias é mais nova que a de há 6 (as duas já podem ser lidas) e que a de há 10;
+    -- outra unidade é outra linha.
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 6, 22.00, today - 5),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 3, 24.10, today - 2),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'kg', today - 5, 4.80, today - 4),
+    -- Ninguém lê ainda: a compra de anteontem e a de ontem gravadas HOJE (o que conta é o dia da gravação), a
+    -- de hoje, e uma de amanhã. Mais novas e mais baratas que a de há 3 dias, que continua sendo a que se vê.
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 2, 2.00, today + 1),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today - 1, 1.50, today + 1),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today, 1.00, today + 1),
+    (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'un', today + 1, 0.50, today + 2),
+    -- Os 90 dias contam do dia da COMPRA: há 91 dias é velho demais, mesmo gravado há pouco (a nota
+    -- confirmada com atraso). Há exatamente 90: ainda vale (e é o mais barato de São Paulo).
+    ('99888777000166', '35', 'SUPER OUTRO', 'ARROZ T JOAO 5KG', 'un', today - 91, 10.00, today - 5),
+    ('60000000000108', '35', 'MERCADO SP 8', 'ARROZ T JOAO 5KG', 'un', today - 90, 15.00, today - 89),
     -- No Rio e num mercado sem estado (só fotos): mais baratos, mas não para quem compra em São Paulo.
-    ('60000000000201', '33', 'MERCADO RJ', 'ARROZ T JOAO 5KG', 'un', today - 2, 9.00),
-    ('60000000000301', null, 'MERCADO SEM ESTADO', 'ARROZ T JOAO 5KG', 'un', today - 2, 8.00),
-    ('60000000000101', '35', 'MERCADO SP 1', 'ARROZ T JOAO 5KG', 'kg', today - 4, 5.10),
+    ('60000000000201', '33', 'MERCADO RJ', 'ARROZ T JOAO 5KG', 'un', today - 2, 9.00, today - 1),
+    ('60000000000301', null, 'MERCADO SEM ESTADO', 'ARROZ T JOAO 5KG', 'un', today - 2, 8.00, today - 1),
+    -- Gravada ontem, lida a partir de hoje: o primeiro dia em que aparece.
+    ('60000000000101', '35', 'MERCADO SP 1', 'ARROZ T JOAO 5KG', 'kg', today - 4, 5.10, today),
     -- No MERCADO SP 2 (22 reais há 2 dias, logo abaixo): uma linha mais nova sem estado (nota lida por foto),
     -- que para quem não compra ali não conta, e uma de hoje, que ninguém lê.
-    ('60000000000102', null, 'MERCADO SP 2', 'ARROZ T JOAO 5KG', 'un', today - 1, 1.50),
-    ('60000000000102', '35', 'MERCADO SP 2', 'ARROZ T JOAO 5KG', 'un', today, 1.00),
+    ('60000000000102', null, 'MERCADO SP 2', 'ARROZ T JOAO 5KG', 'un', today - 1, 1.50, today),
+    ('60000000000102', '35', 'MERCADO SP 2', 'ARROZ T JOAO 5KG', 'un', today, 1.00, today + 1),
     -- Na padaria que vai ser mercado da Rita: sem estado, há exatamente 90 dias (vale); e há 91 (velho demais).
-    ('12345678000195', null, 'PADARIA DA RITA', 'ARROZ T JOAO 5KG', 'un', today - 90, 14.00),
-    ('12345678000195', '35', 'PADARIA DA RITA', 'ARROZ T JOAO 5KG', 'kg', today - 91, 3.00);
+    ('12345678000195', null, 'PADARIA DA RITA', 'ARROZ T JOAO 5KG', 'un', today - 90, 14.00, today - 89),
+    ('12345678000195', '35', 'PADARIA DA RITA', 'ARROZ T JOAO 5KG', 'kg', today - 91, 3.00, today - 90);
   -- Sete mercados de São Paulo, de 21 a 27 reais.
-  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price)
-    select '6000000000010' || g, '35', 'MERCADO SP ' || g, 'ARROZ T JOAO 5KG', 'un', today - 2, 20 + g from generate_series(1, 7) as g;
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
+    select '6000000000010' || g, '35', 'MERCADO SP ' || g, 'ARROZ T JOAO 5KG', 'un', today - 2, 20 + g, today - 1 from generate_series(1, 7) as g;
+
+  -- A linha nunca pode ser lida no dia da compra, nem antes: o banco recusa, venha de onde vier.
+  begin
+    insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
+      values (ata, '35', 'ATACADAO MOOCA', 'ARROZ T JOAO 5KG', 'l', today - 1, 3.00, today - 1);
+    raise exception 'FAIL: a row readable on its own purchase day';
+  exception when check_violation then null;
+  end;
 end $$;
 
 -- Rita tem a descrição do arroz e o atacado entre os mercados dela.
@@ -3645,12 +3736,16 @@ begin
   perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
   assert (select array_agg(store_cnpj || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by unit) from public.shared_latest_prices())
     = array[ata || ' kg 4.8000 ' || (today - 5) || ' true', ata || ' un 24.1000 ' || (today - 3) || ' true'],
-    'in her own stores: the newest per store and unit, before today, never a future day; nothing from other stores without a state';
+    'in her own stores: the newest READABLE row per store and unit, never one written today (whatever its purchase day) or dated ahead; nothing from other stores without a state';
   select * into seen from public.shared_latest_prices() where unit = 'un';
   assert seen.product_id = p and seen.store_name = 'ATACADAO MOOCA' and seen.store_uf = '35', 'her product, the store name and state as shared';
-  -- O que volta é só isso: nada de casa, pessoa, nota ou hora.
+  -- O que volta é só isso: nada de casa, pessoa, nota ou hora, nem o dia em que a linha passou a ser lida
+  -- (visible_on não sai do banco: diria em que dia a nota foi confirmada).
   assert (select array_agg(k order by k) from jsonb_object_keys(to_jsonb(seen)) as k)
     = array['mine', 'product_id', 'seen_on', 'store_cnpj', 'store_name', 'store_uf', 'unit', 'unit_price'], 'the answer has only these columns';
+  assert (select proargnames from pg_proc where oid = 'public.shared_latest_prices()'::regprocedure)
+    = array['product_id', 'store_cnpj', 'store_name', 'store_uf', 'unit', 'unit_price', 'seen_on', 'mine'],
+    'and the function declares no other column';
   perform set_config('test.sp_product_r', p::text, false);
 
   -- O estado vem só de nota LIDA e CONFIRMADA: um rascunho do QR code do Rio e uma nota digitada com chave
@@ -3692,9 +3787,17 @@ begin
     raise exception 'FAIL: an alias that is not a normalised key';
   exception when check_violation then null;
   end;
-  -- O café foi comprado HOJE por três casas, e há um arroz de hoje no atacado: quem pergunta hoje não vê nenhum.
-  assert (select count(*) from public.shared_latest_prices() where product_id = c or seen_on >= today) = 0, 'nothing of today is visible today';
+  -- O café foi comprado HOJE por três casas no atacado, e ONTEM no SUPER OUTRO, numa nota confirmada hoje; e
+  -- há arroz gravado hoje no atacado, de hoje e de dias que já passaram: quem pergunta hoje não vê nenhum.
+  assert (select count(*) from public.shared_latest_prices() where product_id = c or seen_on >= today) = 0, 'nothing bought or written today is visible today';
   perform set_config('test.sp_product_c', c::text, false);
+
+  -- O macarrão que o Saulo gravou hoje com o nome inventado e sem estado: a Rita confirma, no mesmo dia, uma
+  -- nota do QR code do mesmo atacado. (Sem produto: não vira preço próprio dela nem apelido.)
+  insert into public.receipts (store_id, access_key, source) values (s_ata, '352610' || ata || repeat('0', 23) || '5', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'MACARRAO RENATA 500G', 'graos', 'un', 4.29, 4.29);
+  perform public.confirm_receipt(r, '[]');
 end $$;
 
 reset role;
@@ -3703,10 +3806,17 @@ declare
   today constant date := current_setting('test.sp_today')::date;
 begin
   -- A outra descrição do mesmo produto, mais nova, no MERCADO SP 1: é ela o preço do produto ali.
-  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price)
-    values ('60000000000101', '35', 'MERCADO SP 1', 'ARROZ TIO JOAO TP1 5KG', 'un', today - 1, 25.00);
-  -- O dia vira: o café de "hoje" passa a ser de ontem.
-  update public.shared_prices set seen_on = today - 1 where item_key = 'CAFE PILAO 500G';
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
+    values ('60000000000101', '35', 'MERCADO SP 1', 'ARROZ TIO JOAO TP1 5KG', 'un', today - 1, 25.00, today);
+  -- A linha que ainda não pode ser lida aceita o nome de verdade e o estado no lugar do nome inventado e do
+  -- estado vazio (e o preço mais novo): é a nota de ontem com leitura ruim, consertada no mesmo dia.
+  assert (select unit_price || ' ' || store_name || ' ' || store_uf || ' ' || visible_on from public.shared_prices where item_key = 'MACARRAO RENATA 500G')
+    = '4.2900 Atacadão da Rita 35 ' || (today + 1), 'before it is readable, the real name and the state replace the placeholder';
+
+  -- O dia vira para o café. A linha da compra de ontem (SUPER OUTRO), gravada hoje, passa a poder ser lida
+  -- sem mudar em mais nada; a da compra de "hoje" no atacado passa a ser de ontem.
+  update public.shared_prices set visible_on = today where item_key = 'CAFE PILAO 500G' and store_cnpj = '99888777000166';
+  update public.shared_prices set seen_on = today - 1, visible_on = today where item_key = 'CAFE PILAO 500G' and store_cnpj = '11222333000181';
 end $$;
 
 set role authenticated;
@@ -3735,13 +3845,15 @@ begin
       'ATACADAO MOOCA un 24.1000 ' || (today - 3) || ' true',
       'MERCADO SP 1 kg 5.1000 ' || (today - 4) || ' false',
       'MERCADO SP 8 un 15.0000 ' || (today - 90) || ' false',
+      -- O café comprado ontem no SUPER OUTRO: no dia em que foi confirmado não aparecia; virado o dia, aparece.
+      'SUPER OUTRO un 17.9000 ' || (today - 1) || ' false',
       'MERCADO SP 2 un 22.0000 ' || (today - 2) || ' false',
       'MERCADO SP 3 un 23.0000 ' || (today - 2) || ' false',
       'MERCADO SP 4 un 24.0000 ' || (today - 2) || ' false',
       -- A descrição mais nova é o preço do produto no MERCADO SP 1; empatado com o MERCADO SP 5, fica o visto por último.
       'MERCADO SP 1 un 25.0000 ' || (today - 1) || ' false'
     ],
-    'one row per product, store and unit: the newest among the descriptions of the product; a purchase shows from the next day on';
+    'one row per product, store and unit: the newest among the descriptions of the product; a row shows from the day after it was written';
   assert (select bool_and(product_id in (p, c)) from public.shared_latest_prices()), 'always for a product of the caller';
 
   -- O que a casa já sabe fica de fora, aqui mesmo no banco: com preço PRÓPRIO do produto num mercado dela com
@@ -3773,7 +3885,7 @@ begin
   perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
   assert (select array_agg(store_name || ' ' || unit_price order by unit_price) from public.shared_latest_prices() where mine)
     = array['PADARIA DA RITA 14.0000', 'ATACADAO MOOCA LJ 12 20.0000'], 'nothing of that product in that store is left; another product there, and another store, stay';
-  assert (select count(*) from public.shared_latest_prices() where not mine) = 6, 'and the other stores are untouched by it';
+  assert (select count(*) from public.shared_latest_prices() where not mine) = 7, 'and the other stores are untouched by it';
 
   -- Pedindo a casa de outra pessoa no cabeçalho: nenhuma casa, nenhuma linha.
   perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.sp_house_p'))::text, true);
@@ -3828,7 +3940,7 @@ declare
 begin
   foreach stmt in array array[
     'select 1 from public.shared_prices',
-    $q$insert into public.shared_prices values ('11222333000181', '35', 'X', 'X', 'un', current_date, 1)$q$,
+    $q$insert into public.shared_prices values ('11222333000181', '35', 'X', 'X', 'un', current_date, 1, current_date + 1)$q$,
     'update public.shared_prices set unit_price = 1',
     'delete from public.shared_prices'
   ] loop
@@ -3851,7 +3963,7 @@ declare
 begin
   foreach stmt in array array[
     'select 1 from public.shared_prices',
-    $q$insert into public.shared_prices values ('11222333000181', '35', 'X', 'X', 'un', current_date, 1)$q$,
+    $q$insert into public.shared_prices values ('11222333000181', '35', 'X', 'X', 'un', current_date, 1, current_date + 1)$q$,
     'update public.shared_prices set unit_price = 1',
     'delete from public.shared_prices'
   ] loop

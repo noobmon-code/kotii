@@ -41,9 +41,6 @@ export const SHARED_CATEGORIES: readonly string[] = [
   'pet',
 ];
 
-/** Uma linha destas na nota e a nota inteira não compartilha nada (`v_health` na migração). */
-export const HEALTH_CATEGORIES: readonly string[] = ['medicamentos', 'suplementos', 'primeiros_socorros'];
-
 /** Uma linha de shared_latest_prices. */
 export interface SharedPrice {
   product_id: string;

@@ -7,7 +7,6 @@ import {
   cheaperSharedHint,
   cheaperSharedPrice,
   describeSharedPrice,
-  HEALTH_CATEGORIES,
   type OwnPrice,
   saoPauloDay,
   seenLabel,
@@ -268,7 +267,15 @@ describe('o que se compartilha', () => {
 
   it('a lista do app é a mesma do gatilho no banco', () => {
     expect(sqlList('v_shared')).toEqual([...SHARED_CATEGORIES]);
-    expect(sqlList('v_health')).toEqual([...HEALTH_CATEGORIES]);
+  });
+
+  it('só a linha de remédio segura a nota inteira: a chave que o gatilho usa é a de uma categoria de verdade, fora da lista', () => {
+    // O app não tem lista para esta camada (não decide nada com ela): o que se confere aqui é que a chave
+    // escrita no gatilho continua existindo. Trocada a chave da categoria, a camada pararia sem aviso.
+    const medicine = /v_medicine constant text := '([a-z_]+)'/.exec(migration)?.[1];
+    expect(medicine).toBe('medicamentos');
+    expect(CATEGORIES.map((category) => category.key)).toContain(medicine);
+    expect(SHARED_CATEGORIES).not.toContain(medicine);
   });
 
   it('toda categoria tem lugar decidido: uma categoria nova não entra sozinha', () => {
@@ -276,7 +283,6 @@ describe('o que se compartilha', () => {
     expect(SHARED_CATEGORIES.filter((key) => !keys.includes(key))).toEqual([]);
     // Fora: higiene pessoal (mistura xampu com item íntimo), saúde, e "outros" (onde cai o remédio que o app não reconheceu).
     expect(keys.filter((key) => !SHARED_CATEGORIES.includes(key))).toEqual(['higiene', 'medicamentos', 'suplementos', 'primeiros_socorros', 'outros']);
-    expect([...HEALTH_CATEGORIES]).toEqual(['medicamentos', 'suplementos', 'primeiros_socorros']);
   });
 });
 

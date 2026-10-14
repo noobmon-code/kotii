@@ -9,22 +9,28 @@
 --    sequência nem hora de gravação: com qualquer um deles daria para juntar
 --    as linhas de uma mesma compra, ordená-las ou contá-las, e daí chegar a
 --    quem comprou. Uma linha diz só "este mercado cobrou tanto por este item
---    neste dia".
--- 2. Uma linha por (mercado, item, unidade, dia). A segunda casa que compra a
---    mesma coisa no mesmo mercado no mesmo dia cai NA MESMA linha: assim não
---    dá para contar quantas casas viram um preço, nem saber se há mais de uma.
--- 3. Só o dia da compra (em São Paulo), sem hora: a hora de uma nota, junto do
---    mercado, já seria quase um nome.
--- 4. Nada aparece no dia em que acontece. A leitura só devolve linhas de dias
---    ANTERIORES a hoje: a compra de hoje aparece para as outras casas a partir
---    de amanhã, e quem fica perguntando ao longo do dia não vê ninguém
---    confirmando nota. Por isso a linha de hoje pode ser regravada (vale a
---    última gravação: ninguém viu a anterior, e uma confirmação honesta
---    conserta uma falsa), e a linha de um dia que já passou NÃO muda mais: ela
---    já pode ter sido lida, e uma mudança nela avisaria quem a observa de que
---    outra casa acabou de confirmar uma nota. (O dia é o da COMPRA: a nota de
---    ontem confirmada hoje entra como linha nova e aparece na hora. Atrasar
---    também essa pediria guardar o dia da gravação, que a regra 1 não deixa.)
+--    neste dia". A única coisa a mais que ela guarda é o dia em que passa a
+--    ser lida (visible_on, regra 4), e ele cabe nesta regra: é um dia sem
+--    hora, o mesmo para todas as linhas gravadas naquele dia por qualquer
+--    casa, não diz quem gravou, e existe só para a leitura segurar a linha.
+--    Nunca sai do banco: a função de leitura não o devolve.
+-- 2. Uma linha por (mercado, item, unidade, dia da compra). A segunda casa
+--    que compra a mesma coisa no mesmo mercado no mesmo dia cai NA MESMA
+--    linha: assim não dá para contar quantas casas viram um preço, nem saber
+--    se há mais de uma.
+-- 3. Da compra, só o dia (em São Paulo), sem hora: a hora de uma nota, junto
+--    do mercado, já seria quase um nome.
+-- 4. Nada aparece no dia em que é gravado. Cada linha guarda o dia em que
+--    passa a ser lida (visible_on): o seguinte ao da GRAVAÇÃO, em São Paulo,
+--    seja a compra de hoje, de ontem ou de há um mês (a nota costuma ser
+--    confirmada depois do dia da compra). A leitura só devolve a linha quando
+--    esse dia chega: tudo o que foi gravado ao longo de um dia aparece junto,
+--    na virada do dia, e quem fica perguntando não vê ninguém confirmando
+--    nota. Enquanto a linha não pode ser lida, vale a última gravação (preço,
+--    nome e estado): ninguém viu a anterior, e uma confirmação honesta
+--    conserta uma falsa ou uma leitura ruim. Depois que pode ser lida, ela
+--    NÃO muda mais, e o dia dela nunca anda: uma mudança avisaria quem a
+--    observa de que outra casa acabou de confirmar uma nota.
 -- 5. O item é só a descrição da nota normalizada (normalize_alias, a mesma
 --    chave dos apelidos) mais a unidade. A descrição legível NÃO é guardada:
 --    uma linha pode ter sido redigitada na revisão, e não há marca disso por
@@ -42,11 +48,16 @@
 --       entram. "Outros" é onde cai, na nota do QR code, o remédio que o app
 --       não reconheceu (ele só conhece meia dúzia de nomes); o preço é que o
 --       item de mercado não reconhecido também fica de fora;
---    b) nota com QUALQUER linha de saúde não compartilha nada: é compra de
---       farmácia, e as outras linhas podem ser itens de saúde que caíram
---       noutra categoria ("SAL DE FRUTA" vira tempero, "AGUA OXIGENADA",
---       bebida);
---    c) loja com nome de farmácia não compartilha nada.
+--    b) nota com QUALQUER linha de remédio (categoria medicamentos, pela do
+--       produto ou pela sugerida) não compartilha nada: é compra de farmácia,
+--       e as outras linhas podem ser itens de saúde que caíram noutra
+--       categoria ("SAL DE FRUTA" vira tempero, "AGUA OXIGENADA", bebida).
+--       Suplemento e primeiros socorros NÃO seguram a nota: é onde o app põe
+--       o iogurte proteico, a "vitamina de banana" e o curativo, que vêm em
+--       nota de supermercado. A linha deles continua fora, pela camada (a);
+--    c) loja com nome de farmácia não compartilha nada. "Pague Menos" é
+--       também nome de supermercado: aí só segura a loja cujo nome não diz
+--       que é mercado.
 -- 8. O app nunca toca na tabela: sem policy e sem grant, nem para ler. Só as
 --    duas funções daqui leem e gravam.
 -- 9. Não há carga do passado: notas confirmadas antes desta migração não
@@ -56,7 +67,7 @@
 -- confirm_receipt não muda: quem grava é um gatilho na confirmação, que nunca
 -- faz a confirmação esperar nem falhar.
 
--- Sem id, sem casa, sem nota, sem hora: ver as regras 1 a 3 acima. Uma coluna
+-- Sem id, sem casa, sem nota, sem hora: ver as regras 1 a 4 acima. Uma coluna
 -- nova aqui precisa passar por elas (o teste do banco confere a lista).
 create table public.shared_prices (
   store_cnpj text not null check (store_cnpj ~ '^[0-9]{14}$'),
@@ -74,6 +85,10 @@ create table public.shared_prices (
   -- O dia da compra em São Paulo.
   seen_on date not null,
   unit_price numeric(12, 4) not null check (unit_price > 0),
+  -- O dia em que a linha passa a ser lida: o seguinte ao da gravação, em São
+  -- Paulo (regra 4). Sem valor padrão: quem grava diz o dia. Nunca o da compra
+  -- nem antes dele, e a leitura não o devolve.
+  visible_on date not null check (visible_on > seen_on),
   primary key (store_cnpj, item_key, unit, seen_on)
 );
 -- A leitura parte das descrições da casa e quer, de cada uma, as linhas mais
@@ -120,18 +135,27 @@ declare
     'congelados', 'frios', 'doces', 'snacks', 'temperos', 'oleos', 'bebidas',
     'alcoolicas', 'cafe_cha', 'limpeza', 'papel', 'bebe', 'pet'
   ];
-  -- Uma linha destas na nota e a nota inteira fica na casa.
-  v_health constant text[] := array['medicamentos', 'suplementos', 'primeiros_socorros'];
+  -- Uma linha de remédio na nota e a nota inteira fica na casa. Só remédio:
+  -- em suplemento e primeiros socorros o app põe item de supermercado. Um
+  -- teste do app confere que esta chave continua sendo a de uma categoria.
+  v_medicine constant text := 'medicamentos';
   -- Pedaços de nome de farmácia, procurados no nome sem acento e em maiúsculas
   -- (normalize_alias): DROG (Raia Drogasil, Drogaria São Paulo, Drogarias
   -- Pacheco, Drogaria Araujo), FARM (Farmácia e Drogaria Nissei, Imifarma, que
   -- é a Extrafarma, São João Farmácias), PHARM (as de manipulação), MEDICAMENT
   -- (Dimed Distribuidora de Medicamentos, que é a Panvel; Comércio de
   -- Medicamentos Brair, a São João; Cia Latino Americana de Medicamentos, a
-  -- Catarinense), e as duas redes cujo nome de fachada não tem nada disso.
-  v_pharmacy constant text := '(DROG|FARM|PHARM|MEDICAMENT|PAGUE ?MENOS|PANVEL)';
+  -- Catarinense), e a rede cujo nome de fachada não tem nada disso.
+  v_pharmacy constant text := '(DROG|FARM|PHARM|MEDICAMENT|PANVEL)';
+  -- A outra é a Pague Menos (Empreendimentos Pague Menos S/A). Mas o nome
+  -- também é de supermercado (a rede Supermercados Pague Menos, do interior de
+  -- São Paulo, e outros pelo país): só segura a loja cujo nome não diz que é
+  -- mercado.
+  v_pague_menos constant text := 'PAGUE ?MENOS';
+  v_market constant text := '(SUPERMERC|MERCADO|ALIMENT)';
   v_cnpj text;
   v_name text;
+  v_store text;
   v_day date;
   v_today constant date := (now() at time zone 'America/Sao_Paulo')::date;
 begin
@@ -154,7 +178,8 @@ begin
       return new;
     end if;
     -- Camada (c): farmácia pelo nome da loja.
-    if public.normalize_alias(v_name) ~ v_pharmacy then
+    v_store := public.normalize_alias(v_name);
+    if v_store ~ v_pharmacy or (v_store ~ v_pague_menos and v_store !~ v_market) then
       return new;
     end if;
 
@@ -170,22 +195,23 @@ begin
       return new;
     end if;
 
-    -- Camada (b): uma linha de saúde, pela categoria do produto ou pela
+    -- Camada (b): uma linha de remédio, pela categoria do produto ou pela
     -- sugerida na leitura, e nada desta nota sai da casa.
     if exists (
       select 1
         from public.receipt_items ri
         left join public.products p on p.id = ri.product_id and p.household_id = ri.household_id
         where ri.receipt_id = new.id
-          and (p.category = any (v_health) or ri.suggested_category = any (v_health))
+          and (p.category = v_medicine or ri.suggested_category = v_medicine)
     ) then
       return new;
     end if;
 
     -- A mesma descrição duas vezes na nota vira uma linha (a última impressa),
     -- e a ordem fixa evita que duas confirmações ao mesmo tempo se travem.
-    insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price)
-    select v_cnpj, substr(new.access_key, 1, 2), v_name, l.item_key, l.unit, v_day, l.unit_price
+    -- Tudo o que se grava hoje passa a ser lido amanhã (regra 4).
+    insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
+    select v_cnpj, substr(new.access_key, 1, 2), v_name, l.item_key, l.unit, v_day, l.unit_price, v_today + 1
       from (
         select distinct on (k.item_key, ri.unit) k.item_key, ri.unit, ri.unit_price
           from public.receipt_items ri
@@ -211,9 +237,9 @@ begin
           store_name = case when excluded.store_name ~ '^CNPJ [0-9]{14}$' then public.shared_prices.store_name else excluded.store_name end,
           -- A foto não traz o estado: fica o que a linha já tinha.
           store_uf = coalesce(excluded.store_uf, public.shared_prices.store_uf)
-      -- Só a linha de hoje, que ninguém leu ainda (regra 4). A de um dia que
-      -- já passou fica como está.
-      where public.shared_prices.seen_on = v_today;
+      -- Só a linha que ninguém leu ainda (regra 4): a que já pode ser lida
+      -- fica como está. E o dia em que ela passa a ser lida nunca anda.
+      where public.shared_prices.visible_on > v_today;
   exception when others then
     raise log 'share_receipt_prices: nada compartilhado (%)', sqlstate;
   end;
@@ -237,9 +263,10 @@ create trigger receipts_share_prices
 -- security definer: a única porta de leitura. Parte dos apelidos da própria
 -- casa (descrição de nota -> produto): a casa só recebe preço de descrição que
 -- ela mesma já confirmou numa nota. Para cada (produto, mercado, unidade), a
--- linha mais recente dos últimos 90 dias, nunca a de hoje (regra 4); nada que
--- diga de quem veio, nem quantas vezes foi vista. Sem casa aberta, ou numa
--- casa que ainda não confirmou nota nenhuma, nada.
+-- linha mais recente dos últimos 90 dias (pelo dia da compra) entre as que já
+-- podem ser lidas, nunca uma gravada hoje (regra 4); nada que diga de quem
+-- veio, quantas vezes foi vista, nem em que dia foi gravada. Sem casa aberta,
+-- ou numa casa que ainda não confirmou nota nenhuma, nada.
 --
 -- Sem geografia, a lista de todas as lojas do país que vendem um item é
 -- ruído. Então só voltam dois tipos de linha:
@@ -255,6 +282,14 @@ create trigger receipts_share_prices
 -- linha é a compra dela mesma ou notícia mais velha que a dela (só pode
 -- acontecer num mercado da casa). Feito aqui, na mesma fotografia do banco que
 -- a leitura (o app repete a regra por garantia).
+--
+-- O que segura a linha é visible_on (regra 4). "seen_on < hoje" já decorre dele
+-- (a tabela não aceita linha que possa ser lida no dia da compra) e fica
+-- escrito para os índices, que são pelo dia da compra, continuarem com os dois
+-- limites. E o hoje de visible_on vai por extenso, não como (select today from
+-- me): assim o planejador conhece o valor, vê que a condição quase não tira
+-- linha e mantém o plano que tinha sem ela (é o mesmo dia: now() não anda
+-- dentro da transação).
 --
 -- Isto é filtro de ruído, não de segurança: quem grava os próprios mercados e
 -- notas escolhe o CNPJ e o estado que quiser, e o que recebe continua sendo só
@@ -300,6 +335,7 @@ as $$
       join public.shared_prices p on p.store_cnpj = m.cnpj and p.item_key = a.alias
       where a.household_id = (select id from me)
         and p.seen_on >= (select today from me) - 90 and p.seen_on < (select today from me)
+        and p.visible_on <= (now() at time zone 'America/Sao_Paulo')::date
       -- Duas descrições do mesmo produto no mesmo dia: a mais barata, sempre a mesma.
       order by a.product_id, p.store_cnpj, p.unit, p.seen_on desc, p.unit_price, p.item_key
   ),
@@ -313,6 +349,7 @@ as $$
         and p.store_uf in (select uf from my_states)
         and not exists (select 1 from my_stores m where m.cnpj = p.store_cnpj)
         and p.seen_on >= (select today from me) - 90 and p.seen_on < (select today from me)
+        and p.visible_on <= (now() at time zone 'America/Sao_Paulo')::date
       order by a.product_id, p.store_cnpj, p.unit, p.seen_on desc, p.unit_price, p.item_key
   ),
   ranked as (
