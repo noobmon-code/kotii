@@ -3375,4 +3375,716 @@ begin
   assert not has_table_privilege('authenticated', 'public.family_event_days', 'truncate, references, trigger'), 'and members get nothing beyond that on family_event_days';
 end $$;
 
+-- ---------------------------------------------------------------------------
+\echo '• juntar produtos: tudo passa para o que fica, e "São diferentes" fica guardado'
+-- Paula e Quim moram juntos; Rita mora em outra casa.
+\set user_p '00000000-0000-0000-0000-000000000021'
+\set user_q '00000000-0000-0000-0000-000000000022'
+\set user_r '00000000-0000-0000-0000-000000000023'
+reset role;
+insert into auth.users (id) values (:'user_p'), (:'user_q'), (:'user_r');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+select (public.create_household('Casa da Paula', 'Paula')).invite_code as invite_p \gset
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+select public.join_household(:'invite_p', 'Quim') \gset
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+select (public.create_household('Casa da Rita', 'Rita')).id as hh_r \gset
+select set_config('test.hh_r', :'hh_r', false) \gset
+do $$
+declare
+  p uuid;
+begin
+  insert into public.products (name, category) values ('Arroz', 'graos') returning id into p;
+  insert into public.list_item_links (name_key, product_id) values ('arroz', p);
+  perform set_config('test.mp_rita', p::text, false);
+end $$;
+reset role;
+select id as hh_p from public.households where name = 'Casa da Paula' \gset
+select set_config('test.hh_p', :'hh_p', false) \gset
+
+-- As permissões que a migração escreve. Conferidas duas vezes: como a migração as deixou e depois de rodar
+-- de novo as partes dela que podem rodar de novo (os revoke e grant), que precisam dar no mesmo.
+create function pg_temp.merge_products_access() returns void language plpgsql as $$
+begin
+  -- Cada permissão conferida sozinha: com uma lista, has_table_privilege é verdadeiro se qualquer uma existir.
+  assert has_table_privilege('authenticated', 'public.product_distinct_pairs', 'select'), 'members read the pairs';
+  assert has_table_privilege('authenticated', 'public.product_distinct_pairs', 'insert'), 'members add a pair';
+  assert has_table_privilege('authenticated', 'public.product_distinct_pairs', 'delete'), 'members remove a pair';
+  assert not has_table_privilege('authenticated', 'public.product_distinct_pairs', 'update'), 'a pair is never edited';
+  assert not has_table_privilege('authenticated', 'public.product_distinct_pairs', 'truncate'), 'members do not truncate the pairs';
+  assert not has_table_privilege('authenticated', 'public.product_distinct_pairs', 'references'), 'members get no references on the pairs';
+  assert not has_table_privilege('authenticated', 'public.product_distinct_pairs', 'trigger'), 'members get no trigger on the pairs';
+  assert not has_table_privilege('anon', 'public.product_distinct_pairs', 'select'), 'anon does not read the pairs';
+  assert not has_table_privilege('anon', 'public.product_distinct_pairs', 'insert'), 'anon does not add a pair';
+  assert not has_table_privilege('anon', 'public.product_distinct_pairs', 'update'), 'anon does not edit a pair';
+  assert not has_table_privilege('anon', 'public.product_distinct_pairs', 'delete'), 'anon does not remove a pair';
+  assert not has_table_privilege('anon', 'public.product_distinct_pairs', 'truncate'), 'anon does not truncate the pairs';
+  assert has_table_privilege('service_role', 'public.product_distinct_pairs', 'select'), 'the service role reads the pairs';
+  assert has_table_privilege('service_role', 'public.product_distinct_pairs', 'insert'), 'the service role adds a pair';
+  assert has_table_privilege('service_role', 'public.product_distinct_pairs', 'update'), 'the service role edits a pair';
+  assert has_table_privilege('service_role', 'public.product_distinct_pairs', 'delete'), 'the service role removes a pair';
+  -- O histórico de compras: só o produto da linha pode mudar.
+  assert not has_table_privilege('authenticated', 'public.purchase_history', 'update'), 'members do not edit the purchase history';
+  assert has_column_privilege('authenticated', 'public.purchase_history', 'product_id', 'update'), 'except the product of a row';
+  assert not has_column_privilege('authenticated', 'public.purchase_history', 'name', 'update'), 'the name of a purchase stays';
+  assert not has_column_privilege('authenticated', 'public.purchase_history', 'quantity', 'update'), 'and its quantity';
+  assert not has_column_privilege('authenticated', 'public.purchase_history', 'bought_at', 'update'), 'and its date';
+  assert not has_column_privilege('authenticated', 'public.purchase_history', 'household_id', 'update'), 'and its household';
+  assert has_table_privilege('authenticated', 'public.purchase_history', 'select'), 'members still read the purchase history';
+  assert has_table_privilege('authenticated', 'public.purchase_history', 'delete'), 'and still forget a purchase';
+  -- A função de juntar, na assinatura com os nomes que a pessoa confirmou: cada papel conferido sozinho.
+  assert has_function_privilege('authenticated', 'public.merge_products(uuid, uuid, text, text)', 'execute'), 'members merge products';
+  assert not has_function_privilege('anon', 'public.merge_products(uuid, uuid, text, text)', 'execute'), 'anon does not';
+  assert not has_function_privilege('public', 'public.merge_products(uuid, uuid, text, text)', 'execute'), 'nor everyone (PUBLIC)';
+  -- Uma função só: a assinatura sem os nomes não existe (quem chama sem eles cai nesta, pelos padrões).
+  assert to_regprocedure('public.merge_products(uuid, uuid)') is null, 'the two-argument signature is gone';
+  assert (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'merge_products') = 1,
+    'one merge_products only';
+  -- Toda tabela que aponta para products está em merge_products: uma nova precisa entrar lá, senão o
+  -- produto apagado levaria (cascade) ou soltaria (set null) as linhas dela.
+  assert (
+    select array_agg(distinct t.relname::text order by t.relname::text)
+    from pg_constraint c join pg_class t on t.oid = c.conrelid
+    where c.contype = 'f' and c.confrelid = 'public.products'::regclass
+  ) = array['list_item_links', 'pantry_items', 'product_aliases', 'product_distinct_pairs', 'purchase_history',
+            'receipt_items', 'shopping_list_items'],
+    'a table that references products must be handled in merge_products';
+end $$;
+select pg_temp.merge_products_access() \gset
+revoke all on public.product_distinct_pairs from anon, authenticated;
+grant select, insert, delete on public.product_distinct_pairs to authenticated;
+grant all on public.product_distinct_pairs to service_role;
+revoke update on public.purchase_history from authenticated;
+grant update (product_id) on public.purchase_history to authenticated;
+revoke execute on function public.merge_products(uuid, uuid, text, text) from public, anon;
+grant execute on function public.merge_products(uuid, uuid, text, text) to authenticated;
+select pg_temp.merge_products_access() \gset
+
+-- Tudo o que juntar mexeria nos dois produtos, como quem chama vê: as linhas deles e o que aponta para cada
+-- um. Depois de uma recusa, tem de estar igual ao que era.
+create function pg_temp.merge_products_state(p_keep uuid, p_gone uuid) returns jsonb language sql as $$
+  select jsonb_build_object(
+    'products', (select jsonb_agg(to_jsonb(p) order by p.id) from public.products p where p.id in (p_keep, p_gone)),
+    'receipt_items', (select jsonb_agg(to_jsonb(i) order by i.id) from public.receipt_items i where i.product_id in (p_keep, p_gone)),
+    'pantry_items', (select jsonb_agg(to_jsonb(i) order by i.id) from public.pantry_items i where i.product_id in (p_keep, p_gone)),
+    'list_items', (select jsonb_agg(to_jsonb(i) order by i.id) from public.shopping_list_items i where i.product_id in (p_keep, p_gone)),
+    'purchase_history', (select jsonb_agg(to_jsonb(h) order by h.id) from public.purchase_history h where h.product_id in (p_keep, p_gone)),
+    'prices', (select jsonb_agg(to_jsonb(o) order by o.product_id, o.receipt_id, o.unit_price)
+      from public.price_observations o where o.product_id in (p_keep, p_gone)),
+    'latest_prices', (select jsonb_agg(to_jsonb(l) order by l.product_id, l.store_id, l.unit)
+      from public.latest_prices l where l.product_id in (p_keep, p_gone)),
+    'aliases', (select jsonb_agg(to_jsonb(a) order by a.alias) from public.product_aliases a where a.product_id in (p_keep, p_gone)),
+    'links', (select jsonb_agg(to_jsonb(k) order by k.name_key, k.product_id) from public.list_item_links k where k.product_id in (p_keep, p_gone)),
+    'pairs', (select jsonb_agg(to_jsonb(d) order by d.product_a, d.product_b)
+      from public.product_distinct_pairs d where d.product_a in (p_keep, p_gone) or d.product_b in (p_keep, p_gone))
+  );
+$$;
+
+-- Paula tem o mesmo arroz com dois nomes, e cada um espalhado por todas as tabelas.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  s_assai uuid;
+  s_bom uuid;
+  r uuid;
+  i uuid;
+  l uuid;
+  l_old uuid;
+  p_keep uuid;
+  p_gone uuid;
+  p_integral uuid;
+  p_parbo uuid;
+  ids uuid[];
+  tokens uuid[];
+begin
+  insert into public.stores (name) values ('Assaí') returning id into s_assai;
+  insert into public.stores (name) values ('Mercado Bom') returning id into s_bom;
+
+  -- "Arroz Tio João 5 kg": uma compra no Assaí, com a validade aprendida.
+  insert into public.receipts (store_id, purchased_at, source) values (s_assai, '2026-10-01 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'ARROZ T.JOAO 5KG', 1, 'un', 27.50, 27.50) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i,
+    'new_product', jsonb_build_object('name', 'Arroz Tio João 5 kg', 'category', 'graos'),
+    'pantry', jsonb_build_object('category', 'graos', 'purchased_on', '2026-10-01', 'expires_on', '2027-04-01', 'expiry_source', 'manual'))));
+  select id into p_keep from public.products where name = 'Arroz Tio João 5 kg';
+
+  -- "Arroz 5kg": duas compras (Mercado Bom e, depois, mais barato no Assaí) e um rascunho de nota.
+  insert into public.receipts (store_id, purchased_at, source) values (s_bom, '2026-10-05 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'ARROZ 5KG', 1, 'un', 25.90, 25.90) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i,
+    'new_product', jsonb_build_object('name', 'Arroz 5kg', 'category', 'mercearia'),
+    'pantry', jsonb_build_object('category', 'mercearia', 'purchased_on', '2026-10-05', 'expires_on', '2027-01-05', 'expiry_source', 'categoria'))));
+  select id into p_gone from public.products where name = 'Arroz 5kg';
+  update public.products set shelf_life_days = 90 where id = p_gone;
+  insert into public.receipts (store_id, purchased_at, source) values (s_assai, '2026-10-10 10:00-03', 'manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'ARROZ BRANCO 5KG', 2, 'un', 24.90, 49.80) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p_gone)));
+  insert into public.receipts (store_id, status) values (s_bom, 'draft') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit_price, total_price, product_id) values (r, 'ARROZ 5KG', 26, 26, p_gone);
+
+  -- Despensa: além do item aberto que veio da nota, um já consumido.
+  insert into public.pantry_items (product_id, name, category, consumed_at) values (p_gone, 'Arroz', 'mercearia', now());
+
+  -- Listas: um item aberto, um que já saiu pelo carrinho (histórico de compras) e um de lista arquivada.
+  insert into public.shopping_lists (name) values ('Mercado') returning id into l;
+  insert into public.shopping_list_items (list_id, name, product_id) values (l, 'Arroz', p_gone), (l, 'Feijão', null);
+  insert into public.shopping_list_items (list_id, name, product_id, checked_at) values (l, 'Arroz 5kg', p_gone, now());
+  select array_agg(id), array_agg(toggle_token) into ids, tokens
+    from public.shopping_list_items where list_id = l and checked_at is not null;
+  assert public.clear_checked_items(l, ids, tokens) = 1, 'the cart item went to the purchase history';
+  insert into public.shopping_lists (name, archived_at) values ('Semana passada', now()) returning id into l_old;
+  insert into public.shopping_list_items (list_id, name, product_id) values (l_old, 'Arroz', p_gone);
+
+  -- Ligações de nome de lista: "arroz" os dois já tinham; "arroz branco" só o que some.
+  insert into public.list_item_links (name_key, product_id) values ('arroz', p_keep), ('arroz', p_gone), ('arroz branco', p_gone);
+
+  -- "São diferentes": os dois entre si (e mesmo assim dá para juntar à mão), o que some com o integral, e
+  -- os dois com o parboilizado (ao juntar, sobra um par só).
+  insert into public.products (name, category) values ('Arroz integral', 'graos') returning id into p_integral;
+  insert into public.products (name, category) values ('Arroz parboilizado', 'graos') returning id into p_parbo;
+  insert into public.product_distinct_pairs (product_a, product_b) values
+    (least(p_keep, p_gone), greatest(p_keep, p_gone)),
+    (least(p_gone, p_integral), greatest(p_gone, p_integral)),
+    (least(p_gone, p_parbo), greatest(p_gone, p_parbo)),
+    (least(p_keep, p_parbo), greatest(p_keep, p_parbo));
+
+  perform set_config('test.mp_keep', p_keep::text, false);
+  perform set_config('test.mp_gone', p_gone::text, false);
+  perform set_config('test.mp_integral', p_integral::text, false);
+  perform set_config('test.mp_parbo', p_parbo::text, false);
+  perform set_config('test.mp_assai', s_assai::text, false);
+  perform set_config('test.mp_bom', s_bom::text, false);
+end $$;
+
+-- A tabela dos pares: só na ordem certa, só produtos da casa, sem edição.
+do $$
+declare
+  p_keep uuid := current_setting('test.mp_keep')::uuid;
+  p_integral uuid := current_setting('test.mp_integral')::uuid;
+begin
+  begin
+    insert into public.product_distinct_pairs (product_a, product_b) values (greatest(p_keep, p_integral), least(p_keep, p_integral));
+    raise exception 'FAIL: pair stored with the larger id first';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.product_distinct_pairs (product_a, product_b) values (p_keep, p_keep);
+    raise exception 'FAIL: a product paired with itself';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.product_distinct_pairs (product_a, product_b)
+      values (least(p_keep, current_setting('test.mp_rita')::uuid), greatest(p_keep, current_setting('test.mp_rita')::uuid));
+    raise exception 'FAIL: pair with a product of another household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    update public.product_distinct_pairs set created_at = now();
+    raise exception 'FAIL: a pair was edited';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.product_distinct_pairs (product_a, product_b)
+      select product_a, product_b from public.product_distinct_pairs limit 1;
+    raise exception 'FAIL: the same pair twice';
+  exception when unique_violation then null;
+  end;
+  -- O histórico de compras continua sem edição, fora o produto da linha (e só para um produto da casa).
+  begin
+    update public.purchase_history set name = 'Outro';
+    raise exception 'FAIL: a purchase was renamed';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update public.purchase_history set product_id = current_setting('test.mp_rita')::uuid;
+    raise exception 'FAIL: a purchase re-pointed to a product of another household';
+  exception when foreign_key_violation then null;
+  end;
+end $$;
+
+-- Quim (mesma casa) vê os pares; Rita (outra casa) não vê, não grava e não apaga nada da casa da Paula.
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+begin
+  assert (select count(*) from public.product_distinct_pairs) = 4, 'Q sees the household pairs';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+do $$
+declare
+  p_keep uuid := current_setting('test.mp_keep')::uuid;
+  p_gone uuid := current_setting('test.mp_gone')::uuid;
+  p_integral uuid := current_setting('test.mp_integral')::uuid;
+begin
+  assert (select count(*) from public.product_distinct_pairs) = 0, 'R sees no pairs of another household';
+  begin
+    insert into public.product_distinct_pairs (household_id, product_a, product_b)
+      values (current_setting('test.hh_p')::uuid, least(p_keep, p_integral), greatest(p_keep, p_integral));
+    raise exception 'FAIL: R wrote a pair into another household';
+  exception when insufficient_privilege then null;
+  end;
+  delete from public.product_distinct_pairs where product_a in (p_keep, p_gone) or product_b in (p_keep, p_gone);
+  assert not found, 'R cannot delete pairs of another household';
+  update public.purchase_history set product_id = null;
+  assert not found, 'R cannot touch the purchase history of another household';
+
+  -- Juntar produtos de outra casa: para Rita eles não existem, em nenhuma das duas posições.
+  begin
+    perform public.merge_products(p_keep, p_gone);
+    raise exception 'FAIL: R merged products of another household';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.merge_products(current_setting('test.mp_rita')::uuid, p_gone);
+    raise exception 'FAIL: R pulled a product of another household into hers';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.merge_products(p_keep, current_setting('test.mp_rita')::uuid);
+    raise exception 'FAIL: R pushed her product into another household';
+  exception when no_data_found then null;
+  end;
+  -- Com os nomes também: certos ou errados, a resposta é a mesma, e ela não fica sabendo o nome de nada.
+  begin
+    perform public.merge_products(p_keep, p_gone, 'Arroz Tio João 5 kg', 'Arroz 5kg');
+    raise exception 'FAIL: R merged products of another household by their names';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.merge_products(p_keep, p_gone, 'Outro nome', 'Outro nome');
+    raise exception 'FAIL: R was told the names of another household do not match';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.merge_products(current_setting('test.mp_rita')::uuid, p_gone, 'Arroz', 'Outro nome');
+    raise exception 'FAIL: R was told the name of a product of another household does not match';
+  exception when no_data_found then null;
+  end;
+  assert (select count(*) from public.products) = 1, 'R keeps her product';
+  assert (select count(*) from public.list_item_links) = 1, 'and its link';
+end $$;
+set role anon;
+do $$
+begin
+  begin
+    perform public.merge_products(current_setting('test.mp_keep')::uuid, current_setting('test.mp_gone')::uuid);
+    raise exception 'FAIL: anon merged products';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.merge_products(current_setting('test.mp_keep')::uuid, current_setting('test.mp_gone')::uuid,
+      'Arroz Tio João 5 kg', 'Arroz 5kg');
+    raise exception 'FAIL: anon merged products by their names';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform 1 from public.product_distinct_pairs;
+    raise exception 'FAIL: anon read the pairs';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set role authenticated;
+
+-- Paula tenta com o que não pode: o mesmo produto, um que não existe, um de outra casa. Nada muda.
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  p_keep uuid := current_setting('test.mp_keep')::uuid;
+  p_gone uuid := current_setting('test.mp_gone')::uuid;
+begin
+  begin
+    perform public.merge_products(p_keep, p_keep);
+    raise exception 'FAIL: a product merged with itself';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.merge_products(p_keep, gen_random_uuid());
+    raise exception 'FAIL: merged a product that does not exist';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.merge_products(gen_random_uuid(), p_gone);
+    raise exception 'FAIL: merged into a product that does not exist';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.merge_products(p_keep, null);
+    raise exception 'FAIL: merged without the other product';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.merge_products(p_keep, current_setting('test.mp_rita')::uuid);
+    raise exception 'FAIL: P merged a product of another household into hers';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.merge_products(current_setting('test.mp_rita')::uuid, p_gone);
+    raise exception 'FAIL: P merged her product into another household';
+  exception when no_data_found then null;
+  end;
+  assert (select count(*) from public.products) = 4, 'P keeps her four products';
+  assert (select count(*) from public.receipt_items where product_id = p_gone) = 3, 'and their receipt lines';
+  assert (select count(*) from public.list_item_links) = 3, 'and their links';
+  assert (select count(*) from public.product_distinct_pairs) = 4, 'and the pairs';
+end $$;
+
+-- Os nomes que a pessoa confirmou. O app busca os dois produtos ao abrir a confirmação; se outro aparelho
+-- renomeia um deles antes do toque, o pedido chega com o nome de antes e nada é juntado (NK008): nem as
+-- linhas dos dois produtos, nem a despensa, a lista, os preços, as descrições, as ligações ou os pares.
+select pg_temp.merge_products_state(current_setting('test.mp_keep')::uuid, current_setting('test.mp_gone')::uuid) as mp_before \gset
+select set_config('test.mp_before', :'mp_before', false) \gset
+do $$
+declare
+  p_keep uuid := current_setting('test.mp_keep')::uuid;
+  p_gone uuid := current_setting('test.mp_gone')::uuid;
+  before jsonb := current_setting('test.mp_before')::jsonb;
+  wrong record;
+begin
+  assert jsonb_array_length(before->'products') = 2 and jsonb_array_length(before->'receipt_items') = 4
+    and jsonb_array_length(before->'pantry_items') = 3 and jsonb_array_length(before->'list_items') = 2
+    and jsonb_array_length(before->'purchase_history') = 1 and jsonb_array_length(before->'prices') = 3
+    and jsonb_array_length(before->'latest_prices') = 3 and jsonb_array_length(before->'aliases') = 3
+    and jsonb_array_length(before->'links') = 3 and jsonb_array_length(before->'pairs') = 4,
+    format('what the two products have before: %s', before);
+  -- O nome errado de qualquer um dos dois lados, dos dois, e de um só com o outro sem nome. A comparação é
+  -- exata: outra caixa, sem acento ou com um espaço a mais já é outro nome.
+  for wrong in
+    select * from (values
+      ('Arroz Tio João 5 kg', 'Feijão carioca 1kg'),
+      ('Feijão carioca 1kg', 'Arroz 5kg'),
+      ('Feijão carioca 1kg', 'Feijão preto 1kg'),
+      (null, 'Feijão carioca 1kg'),
+      ('Feijão carioca 1kg', null),
+      ('Arroz 5kg', 'Arroz Tio João 5 kg'),
+      ('Arroz Tio João 5 kg', 'arroz 5kg'),
+      ('Arroz Tio Joao 5 kg', 'Arroz 5kg'),
+      ('Arroz Tio João 5 kg', 'Arroz 5kg '),
+      ('', 'Arroz 5kg')
+    ) as names (keep_name, gone_name)
+  loop
+    begin
+      perform public.merge_products(p_keep, p_gone, wrong.keep_name, wrong.gone_name);
+      raise exception 'FAIL: merged with names that are not the products'' names (%, %)', wrong.keep_name, wrong.gone_name;
+    exception when sqlstate 'NK008' then null;
+    end;
+    assert pg_temp.merge_products_state(p_keep, p_gone) = before,
+      format('a refusal by name changed something (%s, %s)', wrong.keep_name, wrong.gone_name);
+  end loop;
+  -- O nome certo não salva o que já era recusado: o mesmo produto, e o produto que não existe.
+  begin
+    perform public.merge_products(p_keep, p_keep, 'Arroz Tio João 5 kg', 'Arroz Tio João 5 kg');
+    raise exception 'FAIL: a product merged with itself by its name';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.merge_products(p_keep, gen_random_uuid(), 'Arroz Tio João 5 kg', 'Arroz 5kg');
+    raise exception 'FAIL: merged a product that does not exist by a name';
+  exception when no_data_found then null;
+  end;
+  assert pg_temp.merge_products_state(p_keep, p_gone) = before, 'nothing changed';
+end $$;
+-- O caso de verdade: o produto que ia sumir é renomeado (gravado, em outro pedido) e só depois chega o pedido de
+-- juntar, com os nomes que a confirmação tinha lido.
+update public.products set name = 'Feijão carioca 1kg' where id = current_setting('test.mp_gone')::uuid;
+do $$
+declare
+  p_keep uuid := current_setting('test.mp_keep')::uuid;
+  p_gone uuid := current_setting('test.mp_gone')::uuid;
+  renamed jsonb := pg_temp.merge_products_state(p_keep, p_gone);
+begin
+  assert renamed <> current_setting('test.mp_before')::jsonb, 'the rename is there';
+  begin
+    perform public.merge_products(p_keep, p_gone, 'Arroz Tio João 5 kg', 'Arroz 5kg');
+    raise exception 'FAIL: merged a product that was renamed after the confirmation read it';
+  exception when sqlstate 'NK008' then null;
+  end;
+  assert pg_temp.merge_products_state(p_keep, p_gone) = renamed, 'the renamed product and everything of the two stay as they were';
+  assert (select name from public.products where id = p_gone) = 'Feijão carioca 1kg', 'with the new name';
+  assert not exists (select 1 from public.list_item_links where name_key = 'feijao carioca 1kg'), 'and no link from a name that was never merged';
+end $$;
+-- O mesmo com o produto que ficaria.
+update public.products set name = 'Arroz 5kg' where id = current_setting('test.mp_gone')::uuid;
+update public.products set name = 'Arroz Tio João 5kg' where id = current_setting('test.mp_keep')::uuid;
+do $$
+declare
+  p_keep uuid := current_setting('test.mp_keep')::uuid;
+  p_gone uuid := current_setting('test.mp_gone')::uuid;
+  renamed jsonb := pg_temp.merge_products_state(p_keep, p_gone);
+begin
+  begin
+    perform public.merge_products(p_keep, p_gone, 'Arroz Tio João 5 kg', 'Arroz 5kg');
+    raise exception 'FAIL: merged into a product that was renamed after the confirmation read it';
+  exception when sqlstate 'NK008' then null;
+  end;
+  assert pg_temp.merge_products_state(p_keep, p_gone) = renamed, 'nothing changed either';
+  assert exists (select 1 from public.products where id = p_gone), 'the product that would go is still there';
+end $$;
+update public.products set name = 'Arroz Tio João 5 kg' where id = current_setting('test.mp_keep')::uuid;
+do $$
+begin
+  assert pg_temp.merge_products_state(current_setting('test.mp_keep')::uuid, current_setting('test.mp_gone')::uuid)
+    = current_setting('test.mp_before')::jsonb, 'with the names back, everything is as it was before the refusals';
+end $$;
+reset role;
+do $$
+begin
+  assert (select count(*) from public.products where household_id = current_setting('test.hh_r')::uuid) = 1, 'the other household keeps its product';
+  assert (select count(*) from public.list_item_links where household_id = current_setting('test.hh_r')::uuid) = 1, 'and its link';
+  -- Quem passa por cima da RLS também não junta produtos de casas diferentes.
+  begin
+    perform public.merge_products(current_setting('test.mp_keep')::uuid, current_setting('test.mp_rita')::uuid);
+    raise exception 'FAIL: products of two households merged';
+  exception when invalid_parameter_value then null;
+  end;
+  assert exists (select 1 from public.products where id = current_setting('test.mp_rita')::uuid), 'the other household still has its product';
+end $$;
+set role authenticated;
+
+-- Paula junta "Arroz 5kg" em "Arroz Tio João 5 kg".
+do $$
+declare
+  p_keep uuid := current_setting('test.mp_keep')::uuid;
+  p_gone uuid := current_setting('test.mp_gone')::uuid;
+  p_integral uuid := current_setting('test.mp_integral')::uuid;
+  p_parbo uuid := current_setting('test.mp_parbo')::uuid;
+  s_assai uuid := current_setting('test.mp_assai')::uuid;
+  s_bom uuid := current_setting('test.mp_bom')::uuid;
+  n_items bigint;
+  n_pantry bigint;
+  n_list bigint;
+  n_history bigint;
+  n_aliases bigint;
+  moved jsonb;
+begin
+  -- Antes: cada produto com a metade dele.
+  assert (select count(*) from public.receipt_items where product_id = p_keep) = 1, 'keep: one receipt line';
+  assert (select count(*) from public.receipt_items where product_id = p_gone) = 3, 'gone: three receipt lines (one in a draft)';
+  assert (select count(*) from public.price_observations where product_id = p_keep) = 1, 'keep: one price';
+  assert (select count(*) from public.price_observations where product_id = p_gone) = 2, 'gone: two prices';
+  assert (select count(*) from public.latest_prices where product_id = p_keep) = 1, 'keep: latest price in one store';
+  assert (select count(*) from public.pantry_items where product_id = p_keep) = 1, 'keep: one pantry item';
+  assert (select count(*) from public.pantry_items where product_id = p_gone) = 2, 'gone: two pantry items (one consumed)';
+  assert (select count(*) from public.shopping_list_items where product_id = p_gone) = 2, 'gone: two list items (one archived)';
+  assert (select count(*) from public.purchase_history where product_id = p_gone) = 1, 'gone: one purchase in the history';
+  assert (select count(*) from public.product_aliases where product_id = p_keep) = 1, 'keep: one alias';
+  assert (select count(*) from public.product_aliases where product_id = p_gone) = 2, 'gone: two aliases';
+  select count(*) into n_items from public.receipt_items;
+  select count(*) into n_pantry from public.pantry_items;
+  select count(*) into n_list from public.shopping_list_items;
+  select count(*) into n_history from public.purchase_history;
+  select count(*) into n_aliases from public.product_aliases;
+
+  moved := public.merge_products(p_keep, p_gone);
+
+  -- O que a função diz que passou.
+  assert moved = jsonb_build_object('kept', p_keep, 'purchases', 2, 'pantry', 1, 'list', 1, 'receipt_items', 3,
+    'pantry_items', 2, 'list_items', 2, 'purchase_history', 1, 'aliases', 2, 'links', 1), format('what moved: %s', moved);
+
+  -- Um produto só, com o nome, a categoria e a validade aprendida do que ficou.
+  assert not exists (select 1 from public.products where id = p_gone), 'the merged product is gone';
+  assert (select count(*) from public.products) = 3, 'one product less';
+  assert (select name from public.products where id = p_keep) = 'Arroz Tio João 5 kg', 'the kept name';
+  assert (select category from public.products where id = p_keep) = 'graos', 'the kept category';
+  assert (select shelf_life_days from public.products where id = p_keep) = 182, 'the kept learned shelf life';
+
+  -- Nenhuma linha se perdeu nem ficou sem produto: todas trocaram de produto.
+  assert (select count(*) from public.receipt_items) = n_items, 'no receipt line lost';
+  assert (select count(*) from public.pantry_items) = n_pantry, 'no pantry item lost';
+  assert (select count(*) from public.shopping_list_items) = n_list, 'no list item lost';
+  assert (select count(*) from public.purchase_history) = n_history, 'no purchase lost';
+  assert (select count(*) from public.product_aliases) = n_aliases, 'no alias lost';
+  assert (select count(*) from public.receipt_items where product_id = p_keep) = 4, 'every receipt line points to the kept product';
+  assert (select count(*) from public.receipt_items where product_id is null) = 0, 'no receipt line without product';
+  assert (select count(*) from public.pantry_items where product_id = p_keep) = 3, 'every pantry item too';
+  assert (select count(*) from public.shopping_list_items where product_id = p_keep) = 2, 'and the list items, archived list included';
+  assert (select count(*) from public.shopping_list_items where product_id is null) = 1, 'the free-text list item stays free';
+  assert (select count(*) from public.purchase_history where product_id = p_keep) = 1, 'and the purchase history';
+  assert (select name from public.purchase_history where product_id = p_keep) = 'Arroz 5kg', 'a purchase keeps the name it was bought with';
+  assert (select name from public.pantry_items where product_id = p_keep and consumed_at is not null) = 'Arroz', 'a pantry item keeps its name';
+
+  -- O histórico de preços e o último preço por mercado viram um só.
+  assert (select count(*) from public.price_observations where product_id = p_keep) = 3, 'both price histories under the kept product';
+  assert (select count(*) from public.price_observations where product_id = p_gone) = 0, 'none under the merged one';
+  assert (select count(*) from public.latest_prices where product_id = p_keep) = 2, 'latest price in both stores';
+  assert (select unit_price from public.latest_prices where product_id = p_keep and store_id = s_assai) = 24.90,
+    'Assaí: the newer purchase, which was of the merged product';
+  assert (select unit_price from public.latest_prices where product_id = p_keep and store_id = s_bom) = 25.90, 'Mercado Bom: the only one';
+
+  -- A memória das descrições: o que levava ao outro produto leva a este.
+  assert (select product_id from public.match_aliases(array['arroz 5kg'])) = p_keep, 'the alias of the merged product leads to the kept one';
+  assert (select product_id from public.match_aliases(array['ARROZ BRANCO 5KG'])) = p_keep, 'every alias of it';
+  assert (select product_id from public.match_aliases(array['Arroz T Joao 5kg'])) = p_keep, 'and the kept product keeps its own';
+
+  -- Ligações de nome de lista: a que os dois tinham fica uma vez, a do outro passa, e o nome antigo vira ligação.
+  assert (select array_agg(name_key order by name_key) from public.list_item_links where product_id = p_keep)
+    = array['arroz', 'arroz 5kg', 'arroz branco'], 'links of the kept product';
+  assert (select count(*) from public.list_item_links) = 3, 'no link left behind';
+
+  -- "São diferentes": o par dos dois sai, o do integral passa, e os dois do parboilizado viram um.
+  assert (select count(*) from public.product_distinct_pairs) = 2, 'two pairs left';
+  assert exists (select 1 from public.product_distinct_pairs
+    where product_a = least(p_keep, p_integral) and product_b = greatest(p_keep, p_integral)), 'the integral pair moved to the kept product';
+  assert exists (select 1 from public.product_distinct_pairs
+    where product_a = least(p_keep, p_parbo) and product_b = greatest(p_keep, p_parbo)), 'the parboilizado pair kept once';
+  assert not exists (select 1 from public.product_distinct_pairs where p_gone in (product_a, product_b)), 'no pair points to the merged product';
+
+  -- De novo, o produto já não existe.
+  begin
+    perform public.merge_products(p_keep, p_gone);
+    raise exception 'FAIL: merged the same product twice';
+  exception when no_data_found then null;
+  end;
+end $$;
+
+-- Quim (morador, não dono) também junta. O nome que some vira chave de lista como no app (listNameKey):
+-- sem acento nem pontuação, e até 200 caracteres; nome sem letra nem número não deixa ligação.
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+declare
+  p_pao uuid;
+  p_other uuid;
+  long_name text := repeat('Açaí ', 45);
+begin
+  insert into public.products (name, category) values ('Pão de queijo', 'padaria') returning id into p_pao;
+  insert into public.products (name, category) values ('  PÃO de Queijo (500g)!  ', 'padaria') returning id into p_other;
+  assert (public.merge_products(p_pao, p_other))->>'links' = '0', 'nothing to re-point';
+  assert (select array_agg(name_key) from public.list_item_links where product_id = p_pao) = array['pao de queijo 500g'],
+    'the old name as the app writes the list key';
+
+  insert into public.products (name, category) values ('!!!', 'outros') returning id into p_other;
+  perform public.merge_products(p_pao, p_other);
+  assert (select count(*) from public.list_item_links where product_id = p_pao) = 1, 'a name without letters leaves no link';
+
+  insert into public.products (name, category) values (long_name, 'outros') returning id into p_other;
+  perform public.merge_products(p_pao, p_other);
+  assert (select max(length(name_key)) from public.list_item_links where product_id = p_pao) = 199, 'a long name is cut at 200 and trimmed';
+  assert exists (select 1 from public.list_item_links where product_id = p_pao and name_key = rtrim(repeat('acai ', 40))), 'cut key';
+
+  -- O produto apagado leva os pares dele.
+  insert into public.products (name, category) values ('Pão francês', 'padaria') returning id into p_other;
+  insert into public.product_distinct_pairs (product_a, product_b) values (least(p_pao, p_other), greatest(p_pao, p_other));
+  delete from public.products where id = p_other;
+  assert not exists (select 1 from public.product_distinct_pairs where p_pao in (product_a, product_b)), 'deleting a product deletes its pairs';
+  perform set_config('test.mp_pao', p_pao::text, false);
+end $$;
+
+-- Com os nomes certos junta, e devolve o mesmo que sem eles. Sem nome (null, nos dois ou num só) não há
+-- conferência, como quando são omitidos; o nome dado de um lado só é conferido sozinho.
+do $$
+declare
+  p_pao uuid := current_setting('test.mp_pao')::uuid;
+  p_other uuid;
+  l uuid;
+  moved jsonb;
+begin
+  select id into l from public.shopping_lists where name = 'Mercado';
+  insert into public.products (name, category) values ('Pão de queijo Forno de Minas', 'congelados') returning id into p_other;
+  insert into public.pantry_items (product_id, name, category) values (p_other, 'Pão de queijo', 'congelados');
+  insert into public.shopping_list_items (list_id, name, product_id) values (l, 'Pão de queijo Forno de Minas', p_other);
+  moved := public.merge_products(p_pao, p_other, 'Pão de queijo', 'Pão de queijo Forno de Minas');
+  assert moved = jsonb_build_object('kept', p_pao, 'purchases', 0, 'pantry', 1, 'list', 1, 'receipt_items', 0,
+    'pantry_items', 1, 'list_items', 1, 'purchase_history', 0, 'aliases', 0, 'links', 0), format('what moved with the names: %s', moved);
+  assert not exists (select 1 from public.products where id = p_other), 'with the right names the product is merged';
+  assert (select name from public.products where id = p_pao) = 'Pão de queijo', 'the kept product keeps its name';
+  assert (select category from public.products where id = p_pao) = 'padaria', 'and its category';
+  assert (select count(*) from public.pantry_items where product_id = p_pao) = 1, 'the pantry item moved';
+  assert (select count(*) from public.shopping_list_items where product_id = p_pao) = 1, 'and the list item';
+  assert exists (select 1 from public.list_item_links where product_id = p_pao and name_key = 'pao de queijo forno de minas'),
+    'and the old name became a link';
+
+  -- Como o app chama: os quatro pelo nome.
+  insert into public.products (name, category) values ('Pão de queijo coquetel', 'congelados') returning id into p_other;
+  perform public.merge_products(p_keep => p_pao, p_merge => p_other, p_keep_name => 'Pão de queijo', p_merge_name => 'Pão de queijo coquetel');
+  assert not exists (select 1 from public.products where id = p_other), 'the four arguments by name';
+
+  -- null nos dois, e só os dois produtos pelo nome: sem conferência.
+  insert into public.products (name, category) values ('Pão de queijo tradicional', 'congelados') returning id into p_other;
+  perform public.merge_products(p_pao, p_other, null, null);
+  assert not exists (select 1 from public.products where id = p_other), 'null names are as no names';
+  insert into public.products (name, category) values ('Pão de queijo mineiro', 'congelados') returning id into p_other;
+  perform public.merge_products(p_keep => p_pao, p_merge => p_other);
+  assert not exists (select 1 from public.products where id = p_other), 'the two products by name, without the names';
+
+  -- Um nome só, certo: o outro lado não é conferido.
+  insert into public.products (name, category) values ('Pão de queijo recheado', 'congelados') returning id into p_other;
+  perform public.merge_products(p_pao, p_other, 'Pão de queijo', null);
+  assert not exists (select 1 from public.products where id = p_other), 'only the kept name given';
+  insert into public.products (name, category) values ('Pão de queijo palito', 'congelados') returning id into p_other;
+  perform public.merge_products(p_pao, p_other, null, 'Pão de queijo palito');
+  assert not exists (select 1 from public.products where id = p_other), 'only the merged name given';
+
+  -- Um nome só, errado: recusa, mesmo com o outro lado sem nome. Com o nome certo, junta.
+  insert into public.products (name, category) values ('Pão de queijo integral', 'congelados') returning id into p_other;
+  begin
+    perform public.merge_products(p_pao, p_other, null, 'Pão de queijo');
+    raise exception 'FAIL: merged with the wrong name of the merged product';
+  exception when sqlstate 'NK008' then null;
+  end;
+  begin
+    perform public.merge_products(p_pao, p_other, 'Pão de queijo integral', null);
+    raise exception 'FAIL: merged with the wrong name of the kept product';
+  exception when sqlstate 'NK008' then null;
+  end;
+  assert exists (select 1 from public.products where id = p_other), 'the product is still there';
+  assert not exists (select 1 from public.list_item_links where name_key = 'pao de queijo integral'), 'and its name left no link';
+  perform public.merge_products(p_pao, p_other, 'Pão de queijo', 'Pão de queijo integral');
+  assert not exists (select 1 from public.products where id = p_other), 'and then merged, with the right names';
+end $$;
+
+-- Se uma troca não alcança as linhas (aqui, sem a regra de UPDATE do histórico), nada é juntado: apagar o
+-- produto deixaria as compras sem ele.
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  l uuid;
+  p_pao uuid := current_setting('test.mp_pao')::uuid;
+  p_other uuid;
+  ids uuid[];
+  tokens uuid[];
+begin
+  insert into public.products (name, category) values ('Pão de queijo congelado', 'congelados') returning id into p_other;
+  select id into l from public.shopping_lists where name = 'Mercado';
+  insert into public.shopping_list_items (list_id, name, product_id, checked_at) values (l, 'Pão de queijo', p_other, now());
+  insert into public.shopping_list_items (list_id, name, product_id) values (l, 'Pão de queijo congelado', p_other);
+  select array_agg(id), array_agg(toggle_token) into ids, tokens
+    from public.shopping_list_items where list_id = l and checked_at is not null;
+  assert public.clear_checked_items(l, ids, tokens) = 1, 'one more purchase in the history';
+  perform set_config('test.mp_other', p_other::text, false);
+end $$;
+reset role;
+drop policy "household members re-point purchase history" on public.purchase_history;
+set role authenticated;
+do $$
+declare
+  p_pao uuid := current_setting('test.mp_pao')::uuid;
+  p_other uuid := current_setting('test.mp_other')::uuid;
+begin
+  begin
+    perform public.merge_products(p_pao, p_other);
+    raise exception 'FAIL: merged leaving the purchase history behind';
+  exception when sqlstate '55000' then null;
+  end;
+  assert exists (select 1 from public.products where id = p_other), 'the product is still there';
+  assert (select count(*) from public.purchase_history where product_id = p_other) = 1, 'with its purchase';
+  assert (select count(*) from public.shopping_list_items where product_id = p_other) = 1, 'and its list item: the whole merge was undone';
+end $$;
+reset role;
+create policy "household members re-point purchase history" on public.purchase_history for update to authenticated
+  using (household_id = (select public.current_household_id()))
+  with check (household_id = (select public.current_household_id()));
+set role authenticated;
+do $$
+declare
+  p_pao uuid := current_setting('test.mp_pao')::uuid;
+  p_other uuid := current_setting('test.mp_other')::uuid;
+begin
+  assert (public.merge_products(p_pao, p_other))->>'purchase_history' = '1', 'with the rule back, the purchase moves';
+  assert (select count(*) from public.purchase_history where product_id = p_pao) = 1, 'to the kept product';
+end $$;
+reset role;
+
 \echo 'OK — todos os testes do banco passaram'
