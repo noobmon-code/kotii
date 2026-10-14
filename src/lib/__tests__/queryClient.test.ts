@@ -125,6 +125,21 @@ describe('cache guardado no aparelho', () => {
     await flush();
   });
 
+  // Juntar não tem volta: a confirmação só mostra o que leu com ela aberta (useMergeFacts), e essa leitura não
+  // pode voltar do aparelho numa abertura seguinte do app.
+  it('o que a confirmação de juntar produtos leu não fica guardado no aparelho', async () => {
+    queryClient.setQueryData(['mergeFacts', 'p-arroz', 'p-arroz-tj'], { products: { 'p-arroz': { id: 'p-arroz', name: 'nome-lido-na-confirmacao' } } });
+    queryClient.setQueryData(['lists'], [{ id: 'l1', name: 'Compras da semana' }]);
+    saveNow();
+    await flush();
+    const saved = await stored();
+    expect(saved).toContain('Compras da semana');
+    expect(saved).not.toContain('nome-lido-na-confirmacao');
+    expect(saved).not.toContain('mergeFacts');
+    forgetCache();
+    await flush();
+  });
+
   it('as marcações e os limpar da fila também dizem de quem é o cache', () => {
     queryClient.setQueryData(['household', 'u1'], { household: { id: 'h1' } });
     queryClient.getMutationCache().build(queryClient, { mutationKey: TOGGLE_ITEM_KEY, gcTime: 0 }, {

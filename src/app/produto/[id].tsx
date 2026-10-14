@@ -1,4 +1,4 @@
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet } from 'react-native';
 
@@ -8,6 +8,9 @@ import { formatShortDate, toISODate } from '@/domain/dates';
 import { formatBRL } from '@/domain/money';
 import { noStorePriceSentence } from '@/domain/priceHistory';
 import { PriceHistorySection } from '@/features/market/PriceHistorySection';
+import { MergeProductsModal } from '@/features/MergeProductsModal';
+import { MergeSuggestionsCard } from '@/features/MergeSuggestionsCard';
+import { SharedPricesSection } from '@/features/SharedPrices';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
@@ -41,6 +44,7 @@ export default function ProductScreen() {
   const rename = useRenameProduct();
   const [name, setName] = useState<string | null>(null);
   const [pickingCategory, setPickingCategory] = useState(false);
+  const [joining, setJoining] = useState(false);
 
   const product = products.data?.find((p) => p.id === id);
 
@@ -70,6 +74,12 @@ export default function ProductScreen() {
     );
   }
 
+  // Juntou: se o nome que ficou foi o do outro produto, este deixou de existir e a tela passa a ser a dele.
+  function onMerged(keptId: string) {
+    setJoining(false);
+    if (keptId !== id) router.replace({ pathname: '/produto/[id]', params: { id: keptId } });
+  }
+
   return (
     <Screen edges={[]}>
       <Stack.Screen options={{ title: product.name }} />
@@ -86,6 +96,8 @@ export default function ProductScreen() {
           <Text variant="small">Validade aprendida: {product.shelf_life_days} dias após a compra.</Text>
         ) : null}
       </Card>
+
+      <MergeSuggestionsCard productId={product.id} onMerged={onMerged} />
 
       <Section title="Último preço por mercado">
         {latestByStore.length === 0 ? (
@@ -112,7 +124,13 @@ export default function ProductScreen() {
         )}
       </Section>
 
+      <SharedPricesSection productId={product.id} />
+
       <PriceHistorySection productId={product.id} productName={product.name} />
+
+      <Button title="Juntar com outro produto" icon="call-merge" variant="secondary" onPress={() => setJoining(true)} />
+
+      {joining ? <MergeProductsModal opened={product} onClose={() => setJoining(false)} onMerged={onMerged} /> : null}
 
       <PickerModal
         visible={pickingCategory}

@@ -7,6 +7,7 @@ import { LastMemberError, useLeaveHousehold, useRegenerateInviteCode, useRemoveM
 import { AiUsageSection } from '@/features/AiUsageSection';
 import { DocumentsSection } from '@/features/DocumentsSection';
 import { HouseRemindersSection } from '@/features/HouseRemindersSection';
+import { SharedPricesAbout } from '@/features/SharedPrices';
 import { signOut, useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -203,6 +204,8 @@ export default function FamilyScreen() {
       <HouseRemindersSection />
 
       <AiUsageSection />
+
+      <SharedPricesAbout />
 
       <Section title="Casa">
         <Text variant="muted">

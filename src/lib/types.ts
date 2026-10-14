@@ -121,6 +121,25 @@ export interface PantryItem {
   consumed_at: string | null;
 }
 
+/** O dia em que um novo começou (botijão, galão, saco de ração). */
+export interface SupplyRefill {
+  id: string;
+  refilled_on: string;
+}
+
+/** O que acaba sem nota fiscal (gás, água, ração), com as últimas trocas. */
+export interface Supply {
+  id: string;
+  name: string;
+  /** Chave de SUPPLY_KINDS (domain/supplies); desconhecida conta como "outros". */
+  kind: string;
+  /** Estimativa da pessoa, em dias; pesa só nos primeiros ciclos, até a casa ter as próprias trocas. */
+  typical_days: number | null;
+  notes: string | null;
+  created_at: string;
+  refills: SupplyRefill[];
+}
+
 export interface Chore {
   id: string;
   title: string;
