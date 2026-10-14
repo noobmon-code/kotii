@@ -200,8 +200,23 @@ async function choose(label: string) {
 /** Qual parte está escolhida na chave. */
 const chosen = () => renderer!.root.findByType(Segmented).props.value;
 
-/** Os títulos das linhas de lista na tela (os itens, as idas ou os mercados, conforme a parte), na ordem. */
-const rowTitles = () => renderer!.root.findAllByType(ListRow).map((row) => row.props.title);
+type Instance = ReactTestRenderer['root'];
+
+/** A linha está no card "O que mudou" (que vem antes da chave)? */
+const inChanges = (node: Instance) => {
+  for (let parent = node.parent; parent; parent = parent.parent) if (typeof parent.type === 'function' && parent.type.name === 'Changes') return true;
+  return false;
+};
+
+/** Os títulos das linhas de lista da parte escolhida na chave (os itens, as idas ou os mercados), na ordem. */
+const rowTitles = () =>
+  renderer!.root
+    .findAllByType(ListRow)
+    .filter((row) => !inChanges(row))
+    .map((row) => row.props.title);
+
+/** As linhas de "O que mudou". */
+const changeRows = () => renderer!.root.findAllByType(ListRow).filter(inChanges);
 
 /** Os nomes das barras de categoria na tela. */
 const barLabels = () => renderer!.root.findAllByType(BarRow).map((bar) => bar.props.label);
@@ -387,7 +402,12 @@ describe('mês carregado', () => {
     await press('Assaí: R$ 220,00, 3 out, 12 itens, farmácia fora: R$ 22,00. Abrir a nota');
     expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/nota/[id]', params: { id: 'o1' } });
     await choose('Mercados');
-    expect(renderer!.root.findAllByType(ListRow).map((row) => row.props.accessibilityLabel)).toEqual(['Assaí: R$ 220,00 em 1 ida', 'Dia: R$ 50,00 em 1 ida']);
+    expect(
+      renderer!.root
+        .findAllByType(ListRow)
+        .filter((row) => !inChanges(row))
+        .map((row) => row.props.accessibilityLabel),
+    ).toEqual(['Assaí: R$ 220,00 em 1 ida', 'Dia: R$ 50,00 em 1 ida']);
   });
 
   it('puxar para atualizar busca as notas de novo', async () => {
@@ -484,6 +504,114 @@ describe('como este total fecha', () => {
     expect(text).toContain(['Carnes', 'R$ 100,00', '77%', 'Grãos, massas e cereais', 'R$ 30,00', '23%'].join('\n'));
     expect(text).not.toContain('Não teve em agosto');
     expect(renderer!.root.findAllByType(BarRow).map((bar) => bar.props.accessibilityLabel)).toEqual(['Carnes: R$ 100,00, 77% do mês', 'Grãos, massas e cereais: R$ 30,00, 23% do mês']);
+  });
+});
+
+describe('o que mudou', () => {
+  // Contra a janela até 13 de setembro (Arroz R$ 30,00 por 1 un, Picanha R$ 100,00 por 1,5 kg): o arroz ficou mais
+  // caro e foi comprado em dobro, a picanha teve menos quantidade ao mesmo preço, e dez itens entraram.
+  const CARD = [
+    'O que mudou',
+    'Nos itens, R$ 130,00 a mais que até o dia 13 de setembro',
+    'Preço',
+    'Os mesmos 2 itens ficaram 4% mais caros',
+    '+R$ 5,00',
+    'Quantidade',
+    'Comprou mais dos mesmos itens',
+    '+R$ 10,00',
+    'Itens que não teve até o dia 13 de setembro',
+    '10 itens',
+    '+R$ 115,00',
+    // O total pago subiu R$ 140,00 (cabeçalho), os itens R$ 130,00: uma frase diz por quê, sem outro número.
+    'O total pago muda diferente porque inclui os descontos no total das notas e os valores sem item lido.',
+    'Arroz',
+    'Unidade: R$ 30,00 → R$ 32,50 · 1 un → 2 un',
+    '+R$ 35,00',
+    'Leite',
+    'Não teve até o dia 13 de setembro',
+    '+R$ 24,00',
+    'Queijo',
+    'Não teve até o dia 13 de setembro',
+    '+R$ 22,00',
+    'Ver todas as 12 mudanças',
+  ].join('\n');
+  const ALL_CHANGES = ['Arroz', 'Leite', 'Queijo', 'Picanha', 'Ração', 'Café', 'Feijão', 'Pão', 'Banana', 'Sabonete', 'Detergente', 'SACOLA'];
+
+  it('logo depois do cabeçalho e de "Como este total fecha", antes da chave: as partes e as 3 maiores mudanças', async () => {
+    const text = await mount();
+    expect(text).toContain(CARD);
+    expect(text.indexOf('Como este total fecha')).toBeLessThan(text.indexOf('O que mudou'));
+    expect(text.indexOf('O que mudou')).toBeLessThan(text.indexOf(['Itens', 'Categorias', 'Idas', 'Mercados'].join('\n')));
+    expect(changeRows().map((row) => row.props.title)).toEqual(['Arroz', 'Leite', 'Queijo']);
+    // A lista de itens da chave continua a mesma.
+    expect(rowTitles()).toEqual(TOP_TEN);
+    // Cada parte é lida inteira: o nome, o valor e a frase.
+    const spoken = renderer!.root.findAll(
+      (node) => typeof node.type === 'string' && node.props.accessible === true && /^(Preço|Quantidade|Itens que)/.test(String(node.props.accessibilityLabel ?? '')),
+    );
+    expect(spoken.map((node) => node.props.accessibilityLabel)).toEqual([
+      'Preço: mais R$ 5,00. Os mesmos 2 itens ficaram 4% mais caros',
+      'Quantidade: mais R$ 10,00. Comprou mais dos mesmos itens',
+      'Itens que não teve até o dia 13 de setembro: mais R$ 115,00. 10 itens',
+    ]);
+  });
+
+  it('"Ver todas" abre todas as mudanças, e "Mostrar só as 3 maiores" volta', async () => {
+    await mount();
+    await pressButton('Ver todas as 12 mudanças');
+    expect(changeRows().map((row) => row.props.title)).toEqual(ALL_CHANGES);
+    const text = page();
+    expect(text).toContain(['Picanha', 'kg: R$ 66,67 → R$ 66,67 · 1,5 kg → 1,2 kg', '−R$ 20,00', 'Ração', 'Não teve até o dia 13 de setembro', '+R$ 20,00'].join('\n'));
+    expect(text).toContain(['SACOLA', 'Não teve até o dia 13 de setembro', '+R$ 0,50', 'Mostrar só as 3 maiores'].join('\n'));
+    // O item sem valor não mudou nada: não aparece.
+    expect(changeRows().map((row) => row.props.title)).not.toContain('Brinde');
+    // A lista da chave não muda com isso.
+    expect(rowTitles()).toEqual(TOP_TEN);
+    await pressButton('Mostrar só as 3 maiores');
+    expect(changeRows().map((row) => row.props.title)).toEqual(['Arroz', 'Leite', 'Queijo']);
+  });
+
+  it('a mudança de um produto abre o produto; a do item que a casa não acompanha não abre nada', async () => {
+    await mount();
+    await pressButton('Ver todas as 12 mudanças');
+    await press('Picanha: menos R$ 20,00, preço do quilo de R$ 66,67 para R$ 66,67, quantidade de 1,5 kg para 1,2 kg');
+    expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/produto/[id]', params: { id: 'p-Picanha' } });
+    const sacola = changeRows().find((row) => row.props.title === 'SACOLA');
+    expect(sacola?.props.accessibilityLabel).toBe('SACOLA: mais R$ 0,50, não teve até o dia 13 de setembro');
+    expect(sacola?.props.onPress).toBeUndefined();
+  });
+
+  it('sem nota de mercado na janela do mês anterior não há card: o cabeçalho já diz', async () => {
+    mockState.params = { mes: '2026-09' };
+    const text = await mount();
+    expect(text).toContain('Não teve nota de mercado em agosto');
+    expect(text).not.toContain('O que mudou');
+    expect(changeRows()).toEqual([]);
+  });
+
+  it('sem diferença no total das notas, a frase do total pago não aparece; com poucas mudanças, nem o botão', async () => {
+    mockState.query = loaded([receipt('s1', at(9, 5), [line('Arroz', 'graos', 30)]), receipt('o1', at(10, 5), [line('Arroz', 'graos', 33), line('Café', 'cafe_cha', 18)])]);
+    const text = await mount();
+    expect(text).toContain(
+      [
+        'O que mudou',
+        'Nos itens, R$ 21,00 a mais que até o dia 13 de setembro',
+        'Preço',
+        'O mesmo item ficou 10% mais caro',
+        '+R$ 3,00',
+        'Itens que não teve até o dia 13 de setembro',
+        '1 item',
+        '+R$ 18,00',
+        'Café',
+        'Não teve até o dia 13 de setembro',
+        '+R$ 18,00',
+        'Arroz',
+        'Unidade: R$ 30,00 → R$ 33,00 · 1 un → 1 un',
+        '+R$ 3,00',
+      ].join('\n'),
+    );
+    expect(text).not.toContain('O total pago muda');
+    expect(text).not.toContain('mudanças');
   });
 });
 

@@ -6,6 +6,7 @@ import { useMarketReceipts } from '@/data/marketSpend';
 import { getCategory } from '@/domain/categories';
 import { todayISO } from '@/domain/dates';
 import { monthLabel, shiftMonth } from '@/domain/finance';
+import type { MarketChange } from '@/domain/marketChange';
 import {
   MARKET_VIEWS,
   marketMonth,
@@ -56,6 +57,7 @@ export default function MarketMonthScreen() {
   const scanner = useReceiptScanner();
   const [category, setCategory] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [showAllChanges, setShowAllChanges] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const scroll = useRef<ScrollView>(null);
   /** A altura em que a chave das partes está na tela rolável. */
@@ -66,6 +68,7 @@ export default function MarketMonthScreen() {
     if (target > current) return;
     setCategory(null);
     setShowAll(false);
+    setShowAllChanges(false);
     setDetailsOpen(false);
     router.setParams({ mes: target });
   }
@@ -121,6 +124,8 @@ export default function MarketMonthScreen() {
           onCategory={chooseCategory}
           showAll={showAll}
           onShowAll={setShowAll}
+          showAllChanges={showAllChanges}
+          onShowAllChanges={setShowAllChanges}
           detailsOpen={detailsOpen}
           onDetailsOpen={setDetailsOpen}
           onSwitchLayout={(y) => {
@@ -146,6 +151,8 @@ function MonthBody({
   onCategory,
   showAll,
   onShowAll,
+  showAllChanges,
+  onShowAllChanges,
   detailsOpen,
   onDetailsOpen,
   onSwitchLayout,
@@ -161,6 +168,8 @@ function MonthBody({
   onCategory: (category: string | null) => void;
   showAll: boolean;
   onShowAll: (all: boolean) => void;
+  showAllChanges: boolean;
+  onShowAllChanges: (all: boolean) => void;
   detailsOpen: boolean;
   onDetailsOpen: (open: boolean) => void;
   onSwitchLayout: (y: number) => void;
@@ -226,6 +235,9 @@ function MonthBody({
               {detailsOpen ? <Details summary={summary} /> : null}
             </Card>
           ) : null}
+
+          {/* Sem nota de mercado na janela do mês anterior não há com o que comparar: o cabeçalho já diz. */}
+          {summary.change ? <Changes change={summary.change} showAll={showAllChanges} onShowAll={onShowAllChanges} /> : null}
 
           <View onLayout={(event) => onSwitchLayout(event.nativeEvent.layout.y)}>
             <Segmented value={view} onChange={onView} options={MARKET_VIEWS} />
@@ -329,6 +341,57 @@ function Items({
       </ListCard>
       {cut ? <Button title={showAll ? cut.less : cut.more} variant="ghost" compact onPress={() => onShowAll(!showAll)} /> : null}
       {summary.shareBasis ? <Text variant="small">{summary.shareBasis}</Text> : null}
+    </View>
+  );
+}
+
+/**
+ * O que mudou em relação à janela do mês anterior: a diferença dos itens repartida em preço, quantidade, itens
+ * que entraram e que saíram (as partes somam exatamente a diferença), e os itens que mais mudaram, as 3 maiores
+ * com o "Ver todas". Os textos e as contas vêm de domain/marketChange.
+ */
+function Changes({ change, showAll, onShowAll }: { change: MarketChange; showAll: boolean; onShowAll: (all: boolean) => void }) {
+  const cut = change.itemsCut;
+  const shown = cut && !showAll ? change.items.slice(0, cut.shown) : change.items;
+  return (
+    <View style={styles.gapMd}>
+      <Card style={styles.details}>
+        <View style={styles.hero}>
+          <Text variant="label">O que mudou</Text>
+          <Text variant="body">{change.headline}</Text>
+        </View>
+        {change.parts.length ? (
+          <View style={styles.gapMd}>
+            {change.parts.map((part) => (
+              <View key={part.key} accessible accessibilityLabel={part.accessibilityLabel} style={styles.amountLine}>
+                <View style={styles.flex}>
+                  <Text variant="body">{part.label}</Text>
+                  {part.detail ? <Text variant="small">{part.detail}</Text> : null}
+                </View>
+                <Text variant="label">{part.amount}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+        {change.totalNote ? <Text variant="small">{change.totalNote}</Text> : null}
+      </Card>
+      {shown.length ? (
+        <ListCard>
+          {shown.map((item) => (
+            <ListRow
+              key={item.key}
+              left={<CategoryIcon category={item.category} name={item.name} size={36} />}
+              title={item.name}
+              subtitle={item.detail}
+              right={<Text variant="label">{item.amount}</Text>}
+              accessibilityLabel={item.accessibilityLabel}
+              // Item que a casa não acompanha não tem tela de produto.
+              onPress={item.productId ? () => router.push({ pathname: '/produto/[id]', params: { id: item.productId! } }) : undefined}
+            />
+          ))}
+        </ListCard>
+      ) : null}
+      {cut ? <Button title={showAll ? cut.less : cut.more} variant="ghost" compact onPress={() => onShowAll(!showAll)} /> : null}
     </View>
   );
 }

@@ -12,6 +12,7 @@ import { getCategory } from './categories';
 import { addDays, formatShortDate, toISODate } from './dates';
 import { describeMonthDelta, financeCategoryOfProduct, monthLabel, monthRange, shiftMonth } from './finance';
 import { listNameKey } from './listLinks';
+import { marketChange, type ChangePurchase, type MarketChange } from './marketChange';
 import { formatBRL, formatQuantity } from './money';
 import { hasReceiptTotal, TOTAL_TOLERANCE_CENTS } from './receiptGap';
 import { convertQuantity, sameDimension } from './units';
@@ -175,6 +176,11 @@ export interface MarketMonth {
   pharmacyCents: number;
   /** Rascunhos do mês, que ainda não contam: a frase, os mais recentes para abrir e "e mais 2 em Finanças > Notas". */
   drafts: { label: string; receipts: MarketReceiptRef[]; more: string | null } | null;
+  /**
+   * "O que mudou": por que os itens custaram mais ou menos que na janela do mês anterior (a do cabeçalho), em
+   * domain/marketChange. null sem ida no mês ou sem nota de mercado na janela (o cabeçalho já diz).
+   */
+  change: MarketChange | null;
   emptyTitle: string;
 }
 
@@ -378,7 +384,8 @@ interface ItemFigures {
   name: string;
   category: string;
   cents: number;
-  purchases: { quantity: number; unit: string }[];
+  /** Cada compra do item, com o valor impresso (zero sem valor): "O que mudou" precisa saber qual veio sem. */
+  purchases: ChangePurchase[];
   receiptIds: Set<string>;
 }
 
@@ -428,7 +435,7 @@ function figures(receipts: MarketReceipt[], start: string, end: string): Figures
       // O nome é o da compra mais recente (as notas vêm da mais nova para a mais antiga).
       const item = result.items.get(key) ?? { key, productId: line.productId, name: lineName(line), category, cents: 0, purchases: [], receiptIds: new Set() };
       item.cents += value;
-      item.purchases.push({ quantity: Number(line.quantity) || 0, unit: line.unit });
+      item.purchases.push({ quantity: Number(line.quantity) || 0, unit: line.unit, value });
       item.receiptIds.add(receipt.id);
       result.items.set(key, item);
     }
@@ -618,6 +625,23 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
       : `Não teve nota de mercado ${when(previous)}`;
   }
 
+  // O que mudou: os itens do período da tela contra os da mesma janela do cabeçalho e das categorias.
+  const bothPeriods = [...current.trips, ...compared.trips];
+  const change =
+    total.trips > 0 && hadPrevious
+      ? marketChange({
+          current: current.items,
+          previous: compared.items,
+          previousWhen: when(previous),
+          currentWhen: today.slice(0, 7) === month ? 'neste mês até hoje' : `em ${name}`,
+          paidDiffCents: total.totalCents - comparedTotal.totalCents,
+          receiptDifferences: {
+            discounts: bothPeriods.some((trip) => trip.money.marketDiffCents < 0),
+            unread: bothPeriods.some((trip) => trip.money.marketDiffCents > 0),
+          },
+        })
+      : null;
+
   const inside = [
     unreadCents > 0 ? `${money(unreadCents)} de notas sem item lido` : null,
     discountCents > 0 ? `${money(discountCents)} de descontos` : null,
@@ -720,6 +744,7 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
             }),
             more: draftCount > DRAFTS_SHOWN ? `e mais ${draftCount - DRAFTS_SHOWN} em Finanças > Notas` : null,
           },
+    change,
     emptyTitle: total.emptyTitle,
   };
 }
