@@ -5039,10 +5039,10 @@ end $$;
 \echo '• rodízio de tarefas: a ordem, a vez ao concluir, pular a vez e quem sai da ordem'
 -- Rita e Beto moram na Casa do Rodízio, com Lia, Nina, Téo e Bidu (crianças,
 -- sem o app) e o pet Rex; Otto mora em outra casa, com o filho Tito.
-\set user_r '00000000-0000-0000-0000-000000000031'
-\set user_s '00000000-0000-0000-0000-000000000032'
-\set user_o '00000000-0000-0000-0000-000000000033'
-\set user_t '00000000-0000-0000-0000-000000000034'
+\set user_r '00000000-0000-0000-0000-000000000041'
+\set user_s '00000000-0000-0000-0000-000000000042'
+\set user_o '00000000-0000-0000-0000-000000000043'
+\set user_t '00000000-0000-0000-0000-000000000044'
 insert into auth.users (id) values (:'user_r'), (:'user_s'), (:'user_o'), (:'user_t');
 set role authenticated;
 select set_config('request.jwt.claim.sub', :'user_o', false) \gset
@@ -5097,7 +5097,7 @@ begin
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[beto, rita, lia],
     'the order is the order picked';
   select * into c from public.chores where id = dishes;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000032' and c.kid_id is null,
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000042' and c.kid_id is null,
     'a new rotation starts with the first of the order, even if the chore had someone else';
 
   begin
@@ -5297,11 +5297,11 @@ begin
   assert r.completed and r.points = 0 and r.person_id is null and r.next_person_id = rita and r.due_on = '2026-10-13',
     'a member turn: no points, and the turn passes to the next';
   select * into c from public.chores where id = dishes;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.kid_id is null, 'the chore is now of the next member';
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.kid_id is null, 'the chore is now of the next member';
   -- Toque duplo (ou outro celular) na mesma ocorrência: não passa a vez de novo.
   select * into r from public.complete_chore(dishes, '2026-10-12', '2026-10-12');
   assert not r.completed and r.next_person_id is null, 'a repeated completion passes no turn';
-  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000031', 'the turn passed once';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000041', 'the turn passed once';
 
   select * into r from public.complete_chore(dishes, '2026-10-13', '2026-10-13');
   assert r.completed and r.points = 0 and r.next_person_id = lia, 'the turn passes to the kid';
@@ -5358,12 +5358,12 @@ begin
   assert (select assigned_to from public.chores where id = dishes) = auth.uid(), 'B is on turn';
   assert public.skip_chore_turn(dishes, beto) = rita, 'skipping passes the turn to the next';
   select * into c from public.chores where id = dishes;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.due_on = '2026-10-17' and c.active, 'the date stays';
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.due_on = '2026-10-17' and c.active, 'the date stays';
   assert (select count(*) from public.chore_completions where chore_id = dishes) = 5, 'nothing in the history';
   assert (select balance from public.kid_points where person_id = lia) = 10, 'and no points';
   -- O outro celular ainda mostrava a vez de Beto.
   assert public.skip_chore_turn(dishes, beto) is null, 'a second skip from the old turn does nothing';
-  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000031', 'the turn passed once';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000041', 'the turn passed once';
   assert public.skip_chore_turn(dishes, rita) = lia and public.skip_chore_turn(dishes, lia) = beto, 'skipping wraps around too';
 
   insert into public.chores (title, recurrence, assigned_to) values ('Sem rodízio', 'daily', auth.uid()) returning id into plain;
@@ -5413,7 +5413,7 @@ begin
   perform public.skip_chore_turn(dishes, beto);
   update public.chores set recurrence = 'none' where id = dishes;
   assert (select count(*) from public.chore_rotation where chore_id = dishes) = 0, 'a one-off chore has no rotation';
-  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000031', 'and keeps the person of the turn';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000041', 'and keeps the person of the turn';
   update public.chores set recurrence = 'daily' where id = dishes;
 end $$;
 
@@ -5433,13 +5433,13 @@ begin
   -- Com um morador primeiro na ordem: Rita, depois Beto.
   sweep := public.save_chore(null, 'Varrer a cozinha', null, 'daily', 1, '2026-10-12', 10, p_people => array[rita, beto]);
   select * into c from public.chores where id = sweep;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.kid_id is null, 'the turn starts with R';
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.kid_id is null, 'the turn starts with R';
   -- a. A mesma ordem, na vez do primeiro: fica com ele.
   perform pg_temp.save_order(sweep, array[rita, beto]);
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = sweep) = array[rita, beto],
     'the same order is saved again';
   select * into c from public.chores where id = sweep;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.kid_id is null,
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.kid_id is null,
     'saving the same order on the turn of the first (a member) keeps the turn';
   -- b. A mesma ordem, na vez do segundo: fica com ele.
   assert public.skip_chore_turn(sweep, rita) = beto, 'the turn passed to B';
@@ -5447,7 +5447,7 @@ begin
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = sweep) = array[rita, beto],
     'the same order is saved again, on the turn of B';
   select * into c from public.chores where id = sweep;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000032' and c.kid_id is null,
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000042' and c.kid_id is null,
     'saving the same order on the turn of the second keeps the turn';
   -- c. A ordem invertida, na vez do primeiro: a vez não acompanha a posição.
   assert public.skip_chore_turn(sweep, beto) = rita, 'the turn is back with R';
@@ -5455,15 +5455,15 @@ begin
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = sweep) = array[beto, rita],
     'the order is reversed';
   select * into c from public.chores where id = sweep;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.kid_id is null,
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.kid_id is null,
     'reversing the order keeps the turn of who had it';
   -- d. Encerrar o rodízio na vez do primeiro: a tarefa fica com ele.
   perform pg_temp.save_order(sweep, array[rita, beto]);
-  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000031', 'R still has the turn';
+  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000041', 'R still has the turn';
   perform pg_temp.save_order(sweep, '{}');
   assert not exists (select 1 from public.chore_rotation r where r.chore_id = sweep), 'ending the rotation leaves no row of the order';
   select * into c from public.chores where id = sweep;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.kid_id is null,
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.kid_id is null,
     'ending the rotation on the turn of the first (a member) keeps the chore with the member';
 
   -- e. O mesmo com quem não tem o app primeiro na ordem (a vez em kid_id): Lia, depois Beto.
@@ -5528,14 +5528,14 @@ begin
 
   -- Os pontos do rodízio, na vez de um morador: o app antigo manda 0 (para ele, pontos eram só da tarefa de criança).
   -- A edição passa, com os pontos de antes: são das crianças da ordem, cada uma na sua vez.
-  assert was.points = 10 and was.assigned_to = '00000000-0000-0000-0000-000000000031' and was.kid_id is null,
+  assert was.points = 10 and was.assigned_to = '00000000-0000-0000-0000-000000000041' and was.kid_id is null,
     'the rotation is worth 10 points, on the turn of R';
   update public.chores
     set title = 'Lavar a louça e as panelas', notes = null, recurrence = 'daily', interval_count = 1, due_on = was.due_on,
-        assigned_to = '00000000-0000-0000-0000-000000000031', kid_id = null, points = 0
+        assigned_to = '00000000-0000-0000-0000-000000000041', kid_id = null, points = 0
     where id = dishes;
   select * into c from public.chores where id = dishes;
-  assert c.title = 'Lavar a louça e as panelas' and c.points = 10 and c.assigned_to = '00000000-0000-0000-0000-000000000031',
+  assert c.title = 'Lavar a louça e as panelas' and c.points = 10 and c.assigned_to = '00000000-0000-0000-0000-000000000041',
     'the old app renames a rotating chore on a member turn, and its points stay';
   -- Os outros valores passam, também na vez do morador.
   update public.chores set title = 'Lavar a louça', points = 12 where id = dishes;
@@ -5578,7 +5578,7 @@ begin
 
   -- Tarefa sem rodízio: o responsável muda direto na tabela, como sempre.
   insert into public.chores (title, recurrence, assigned_to) values ('Molhar as plantas', 'daily', auth.uid()) returning id into plain;
-  update public.chores set assigned_to = '00000000-0000-0000-0000-000000000031' where id = plain;
+  update public.chores set assigned_to = '00000000-0000-0000-0000-000000000041' where id = plain;
   update public.chores set assigned_to = null, kid_id = lia where id = plain;
   update public.chores set kid_id = null where id = plain;
   select * into c from public.chores where id = plain;
@@ -5591,8 +5591,8 @@ begin
   -- Nem a que já teve rodízio: acabado, ela volta a ser como as outras.
   perform pg_temp.save_order(plain, array[beto, lia]);
   perform pg_temp.save_order(plain, '{}');
-  update public.chores set assigned_to = '00000000-0000-0000-0000-000000000031', kid_id = null where id = plain;
-  assert (select assigned_to from public.chores where id = plain) = '00000000-0000-0000-0000-000000000031',
+  update public.chores set assigned_to = '00000000-0000-0000-0000-000000000041', kid_id = null where id = plain;
+  assert (select assigned_to from public.chores where id = plain) = '00000000-0000-0000-0000-000000000041',
     'nor after its rotation ended';
   delete from public.chores where id = plain;
 
@@ -5602,10 +5602,10 @@ begin
   perform pg_temp.save_turn(dishes, null, lia);
   assert (select kid_id from public.chores where id = dishes) = lia, 'save_chore with a person chosen moves the turn';
   perform pg_temp.save_order(dishes, array[rita, beto]);
-  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000031',
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000041',
     'a new order from save_chore moves the turn';
   perform pg_temp.save_order(dishes, array[beto, rita, lia]);
-  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000031', 'R is on turn again';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000041', 'R is on turn again';
   -- Os pontos pela função (o app novo, que mostra os pontos do rodízio): ela grava o que vier, até 0, na vez do morador.
   perform public.save_chore(ch.id, ch.title, ch.notes, ch.recurrence, ch.interval_count, ch.due_on, p_points => 0)
     from public.chores ch where ch.id = dishes;
@@ -5666,7 +5666,7 @@ begin
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = yard) = array[rita, lia],
     'a new chore is created with its order';
   select * into c from public.chores where id = yard;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.kid_id is null and c.points = 10,
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.kid_id is null and c.points = 10,
     'and the turn starts with the first of the order';
 
   -- Rodízio recusado na tarefa nova: nem a tarefa fica.
@@ -5724,9 +5724,9 @@ begin
 
   -- O responsável escolhido: um morador, uma criança (com os pontos), qualquer um.
   perform public.save_chore(room, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, 0,
-    p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000031');
+    p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000041');
   select * into c from public.chores where id = room;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.kid_id is null and c.points = 0, 'a member, and no points';
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.kid_id is null and c.points = 0, 'a member, and no points';
   perform public.save_chore(room, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, 7, p_set_turn => true, p_kid_id => nina);
   -- Sem os pontos na chamada, eles ficam como estão.
   perform public.save_chore(room, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, p_set_turn => true, p_kid_id => lia);
@@ -5745,7 +5745,7 @@ begin
   end;
   begin
     perform public.save_chore(room, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 3,
-      p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000033');
+      p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000043');
     raise exception 'FAIL: a member of another household became the person of the chore';
   exception when foreign_key_violation then null;
   end;
@@ -5825,10 +5825,10 @@ begin
   assert not exists (select 1 from public.chore_rotation r where r.chore_id = lamp), 'and has no rotation';
   -- O mesmo sem falar da ordem (p_people nulo): quem encerra o rodízio é o gatilho, na mesma transação.
   perform public.save_chore(lamp, 'Trocar a lâmpada', null, 'daily', 1, '2026-10-12', p_people => array[rita, beto]);
-  assert (select assigned_to from public.chores where id = lamp) = '00000000-0000-0000-0000-000000000031', 'rotating again: the turn is of the first';
+  assert (select assigned_to from public.chores where id = lamp) = '00000000-0000-0000-0000-000000000041', 'rotating again: the turn is of the first';
   perform public.save_chore(lamp, 'Trocar a lâmpada', null, 'none', 1, '2026-10-12');
   select * into c from public.chores where id = lamp;
-  assert c.recurrence = 'none' and c.assigned_to = '00000000-0000-0000-0000-000000000031' and c.kid_id is null,
+  assert c.recurrence = 'none' and c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.kid_id is null,
     'one-off without a word about the order: the holder stays too';
   assert not exists (select 1 from public.chore_rotation r where r.chore_id = lamp), 'and the rotation is ended';
 
@@ -5918,7 +5918,7 @@ begin
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = hall) = array[rita, lia],
     'no rotation: the flagged save creates the order';
   select * into was from public.chores where id = hall;
-  assert was.assigned_to = '00000000-0000-0000-0000-000000000031' and was.kid_id is null and was.points = 10,
+  assert was.assigned_to = '00000000-0000-0000-0000-000000000041' and was.kid_id is null and was.points = 10,
     'and the turn goes to the first of the new order, not to who the chore was of';
 
   -- Com rodízio: recusa, seja o que for que o formulário pede (um responsável, outra ordem, nenhuma, só os
@@ -6069,7 +6069,7 @@ begin
   end;
   begin
     perform public.save_chore(null, 'Tarefa do Otto', null, 'weekly', 1, '2026-10-12',
-      p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000031');
+      p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000041');
     raise exception 'FAIL: O gave his chore to a member of another household';
   exception when foreign_key_violation then null;
   end;
@@ -6379,7 +6379,7 @@ begin
     = array[current_setting('test.r_beto')::uuid, current_setting('test.r_lia')::uuid], 'the rotation was created after the save of the person';
   select * into c from public.chores where id = porch;
   assert c.title = 'Varrer a varanda e a escada' and c.notes is null and c.points = 10, 'the later save is written whole';
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000032' and c.kid_id is null, 'and the turn is inside the order: of its first, not of R';
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000042' and c.kid_id is null, 'and the turn is inside the order: of its first, not of R';
 end $$;
 -- (A consulta que deu certo só termina quando não há mais resultado a ler.)
 select count(*) as race_drained from race.dblink_get_result('beto') as t (saved uuid) \gset
@@ -6466,9 +6466,9 @@ begin
   delete from public.people where id = teo;
   assert (select count(*) from public.chore_rotation where chore_id = sweep) = 0, 'with one person left the order is dissolved';
   select * into c from public.chores where id = sweep;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000032' and c.kid_id is null, 'the chore stays with whoever is left';
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000042' and c.kid_id is null, 'the chore stays with whoever is left';
   assert (select next_person_id from public.complete_chore(sweep, '2026-10-12')) is null, 'it is a plain chore again';
-  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000032', 'of the same person';
+  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000042', 'of the same person';
 
   -- Quem sai não estava na vez: a tarefa continua com quem estava.
   perform pg_temp.save_order(sweep, array[lia, beto]);
@@ -6485,7 +6485,7 @@ begin
   delete from public.chore_rotation where chore_id = sweep and person_id = current_setting('test.r_lia')::uuid;
   assert found, 'the owner removed the row';
   assert (select count(*) from public.chore_rotation where chore_id = sweep) = 0, 'a row removed by hand dissolves the order too';
-  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000032', 'the turn stays where it was';
+  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000042', 'the turn stays where it was';
 end $$;
 set role authenticated;
 delete from public.chores where id in (current_setting('test.r_sweep')::uuid, current_setting('test.r_plain')::uuid);
@@ -6513,16 +6513,16 @@ declare
   c public.chores;
   r record;
 begin
-  assert (select member_user_id from public.people where id = lia) = '00000000-0000-0000-0000-000000000034', 'the kid has an account now';
+  assert (select member_user_id from public.people where id = lia) = '00000000-0000-0000-0000-000000000044', 'the kid has an account now';
   select * into c from public.chores where id = dishes;
-  assert c.kid_id is null and c.assigned_to = '00000000-0000-0000-0000-000000000034', 'her turn moved to the account';
+  assert c.kid_id is null and c.assigned_to = '00000000-0000-0000-0000-000000000044', 'her turn moved to the account';
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[rita, lia],
     'and she stays in the order';
   select * into r from public.complete_chore(dishes, c.due_on, c.due_on);
   assert r.completed and r.points = 0 and r.person_id is null and r.next_person_id = rita,
     'with an account she earns no points, and the turn passes to the next (nobody skipped)';
   assert public.skip_chore_turn(dishes, rita) = lia, 'the turn comes back to her as a member';
-  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000034', 'in assigned_to';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000044', 'in assigned_to';
 end $$;
 
 -- O morador sai da casa: a ficha dele fica, sem o app, e ele segue na ordem;
@@ -6539,13 +6539,13 @@ declare
 begin
   -- Lixo: Rita, Beto, na vez de Beto, que é tirado da casa.
   select * into c from public.chores where id = trash;
-  assert c.assigned_to = '00000000-0000-0000-0000-000000000032', 'B is on turn';
-  insert into public.chores (title, assigned_to) values ('Tarefa do Beto', '00000000-0000-0000-0000-000000000032') returning id into plain;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000042', 'B is on turn';
+  insert into public.chores (title, assigned_to) values ('Tarefa do Beto', '00000000-0000-0000-0000-000000000042') returning id into plain;
   -- E um rodízio sem Beto, na vez dele (o responsável salvo sem mexer na ordem).
   insert into public.chores (title, recurrence) values ('Tirar o pó', 'weekly') returning id into dust;
   perform pg_temp.save_order(dust, array[rita, current_setting('test.r_lia')::uuid]);
-  perform pg_temp.save_turn(dust, '00000000-0000-0000-0000-000000000032', null);
-  perform public.remove_member(current_setting('test.hh_r')::uuid, '00000000-0000-0000-0000-000000000032');
+  perform pg_temp.save_turn(dust, '00000000-0000-0000-0000-000000000042', null);
+  perform public.remove_member(current_setting('test.hh_r')::uuid, '00000000-0000-0000-0000-000000000042');
   assert (select member_user_id from public.people where id = beto) is null, 'the record stays, without the app';
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = trash) = array[rita, beto],
     'who left the household stays in the order';
