@@ -168,7 +168,8 @@ begin
   had := exists (select 1 from public.chore_rotation r where r.chore_id = c.id);
   turn := public.chore_turn_person(c.household_id, c.assigned_to, c.kid_id);
 
-  -- Trocar a ordem não mexe na vez. O gatilho de quem sai da ordem
+  -- Regravar a ordem não mexe na vez de quem continua nela (quem saiu passa a
+  -- vez para o primeiro, logo abaixo). O gatilho de quem sai da ordem
   -- (chore_rotation_row_left) roda depois deste delete inteiro, quando não
   -- sobra nenhuma linha da ordem para receber a vez, e por isso não a passa
   -- adiante; o insert vem depois. Apagar linha a linha, ou rodar aquele gatilho
