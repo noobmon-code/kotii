@@ -146,7 +146,10 @@ grant execute on function public.add_to_pharmacy_list(text, text, text) to authe
 -- em si não conta, nem a ordem dos dias da semana), mais quanto cada dose usa.
 -- Ficam de fora a contagem zerada (não há o que pular) e a de hoje ou de
 -- ontem: o app de agora refaz a contagem de hoje com os mesmos valores, e o
--- dia do servidor (UTC) já é o seguinte na noite do Brasil. Só para quem usa a
+-- dia do servidor (UTC) já é o seguinte na noite do Brasil. Num celular com a
+-- data dois ou mais dias atrasada, a contagem que ele fez "hoje" já é de antes
+-- de ontem para o servidor: mudar a regra ali também para de acompanhar o
+-- estoque, e alguém conta de novo. Só para quem usa a
 -- API (authenticated, anon): as funções do banco que rodam como o dono
 -- (security definer) e a service role ficam como estão.
 create function public.medication_rule_without_recount()
