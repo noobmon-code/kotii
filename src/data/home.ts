@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { SAME_PURCHASE_DAYS, type PantryEntry } from '@/domain/cartPantry';
-import { groupRotations, isRotationUnavailable, type ChoreRotations } from '@/domain/choreRotation';
+import { groupRotations, isRotationUnavailable, ROTATION_NOT_READY, type ChoreRotations } from '@/domain/choreRotation';
 import { choreGoneOnSave } from '@/domain/chores';
 import { addDays, diffDays } from '@/domain/dates';
 import type { MedicationSchedule } from '@/domain/medications';
@@ -234,7 +234,14 @@ export async function saveChore({
   if (!error) return { id: data as string };
   if (!isRotationUnavailable(error)) throw error;
 
-  // Banco que ainda não tem a função (o app pode chegar antes da migração). Lá não há rodízio, nem a corrida por
+  // A função falta. Gravar direto na tabela só vale no banco que também não tem a tabela do rodízio: com ela lá (a
+  // migração chegou e a API ainda não enxerga a função nova), a gravação direta não mexeria na ordem, e a tarefa que
+  // deixou o rodízio continuaria nele. Aí nada é gravado, e salvar de novo daqui a pouco usa a função.
+  const table = await supabase.from('chore_rotation').select('chore_id').limit(1);
+  if (!table.error) throw new Error(ROTATION_NOT_READY);
+  if (!isRotationUnavailable(table.error)) throw table.error;
+
+  // Banco que ainda não tem o rodízio (o app pode chegar antes da migração). Lá não há rodízio, nem a corrida por
   // ele: a tarefa vai direto na tabela, como antes de o rodízio existir, e a ordem pedida fica de fora.
   if (id) {
     const written = unwrap(await supabase.from('chores').update(values).eq('id', id).select('id')) as { id: string }[];

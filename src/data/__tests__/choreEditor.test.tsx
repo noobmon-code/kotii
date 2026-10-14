@@ -7,6 +7,7 @@ import {
   ROTATION_CHANGED_ELSEWHERE,
   ROTATION_CHECK_FAILED,
   ROTATION_MAYBE_SAVED,
+  ROTATION_NOT_READY,
   ROTATION_PERSON_UNKNOWN,
   ROTATION_UNAVAILABLE,
 } from '@/domain/choreRotation';
@@ -1216,25 +1217,24 @@ describe('tarefa em rodízio que vira "Uma vez": fica com quem está na vez no b
   });
 });
 
-describe('cópia de antes desta migração (tem o rodízio, não a função que salva a tarefa inteira)', () => {
-  it('a tarefa é gravada direto na tabela, a ordem de lá fica como estava, e o aviso diz que o rodízio não foi salvo', async () => {
+describe('banco com a tabela do rodízio, mas sem a função que salva a tarefa inteira (a API ainda não a enxerga)', () => {
+  it('nada é gravado: gravar direto na tabela deixaria a ordem como estava; o formulário fica aberto e pede para tentar de novo', async () => {
     mockServer.noSaveChore = true;
     const screen = await open();
     await settle();
     expect(screen.chips()).toEqual(IN_ROTATION);
     await screen.typeTitle('Lavar a louça e as panelas');
-    await screen.pick('2 Carla');
+    // Sai do rodízio para uma pessoa só: a gravação direta mudaria o responsável e deixaria a ordem no banco.
+    await screen.pick('Qualquer um');
+    await screen.pick('Beto');
 
     await screen.press('Salvar');
-    // A função da ordem que essa cópia tem não é chamada: o app só conhece a que salva a tarefa inteira.
-    expect(mockServer.log).toEqual([
-      call({ p_title: 'Lavar a louça e as panelas', p_points: 10, p_people: ['p-beto', 'p-lia'] }),
-      'update chores {"title":"Lavar a louça e as panelas","notes":null,"recurrence":"daily","interval_count":1,"due_on":"2026-10-12","points":10}',
-    ]);
+    expect(mockServer.log).toEqual([call({ p_title: 'Lavar a louça e as panelas', p_points: 0, p_set_turn: true, p_assigned_to: 'u-beto', p_people: [] })]);
+    // A tarefa e a ordem como estavam: a vez segue com Carla, no rodízio.
     expect(mockServer.order).toEqual(ORDER);
-    expect(mockServer.chore).toMatchObject({ title: 'Lavar a louça e as panelas', assigned_to: 'u-carla', points: 10 });
-    expect(mockNotify.mock.calls).toEqual([['A tarefa foi salva, sem o rodízio', ROTATION_UNAVAILABLE]]);
-    expect(mockBack).toHaveBeenCalledTimes(1);
+    expect(mockServer.chore).toMatchObject({ title: 'Lavar a louça', assigned_to: 'u-carla' });
+    expect(mockNotify.mock.calls).toEqual([['Erro', ROTATION_NOT_READY]]);
+    expect(mockBack).not.toHaveBeenCalled();
   });
 });
 

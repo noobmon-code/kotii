@@ -358,6 +358,12 @@ export function kidChores<C extends ChoreTurn & { id: string; points: number; du
 export const ROTATION_UNAVAILABLE = 'O rodízio ainda não está disponível nesta casa. Tente de novo mais tarde.';
 
 /**
+ * O banco tem a tabela do rodízio, mas a API ainda não enxerga a função de salvar (o cache do esquema demora um
+ * pouco depois da migração): gravar direto na tabela deixaria a ordem como estava. Nada é gravado.
+ */
+export const ROTATION_NOT_READY = 'O servidor está terminando uma atualização. Tente salvar de novo em alguns instantes.';
+
+/**
  * O formulário abriu sem rodízio e a tarefa ganhou um em outro aparelho: salvar gravaria a vez e os pontos de
  * antes ou, criando um rodízio, trocaria a ordem que ele não mostrou.
  */

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
-import { isRotationChangedElsewhere, isRotationUnavailable } from '@/domain/choreRotation';
+import { isRotationChangedElsewhere, isRotationUnavailable, ROTATION_NOT_READY } from '@/domain/choreRotation';
 import { isChoreGoneOnSave } from '@/domain/chores';
 
 import { fetchChoreRotations, saveChore } from '../home';
@@ -15,6 +15,8 @@ const mockDb: {
   rpc: Answer | Answer[];
   /** O que a gravação direto na tabela responde (com `.select()`, as linhas que mudou). */
   update: Answer;
+  /** O que a olhada na tabela do rodízio responde, antes de gravar direto na tabela das tarefas. */
+  probe: Answer;
   /** Cada chamada a uma função do banco, com os argumentos como foram mandados. */
   rpcs: { name: string; args: Record<string, unknown> }[];
   /** Tudo o que foi ao banco, na ordem. */
@@ -23,6 +25,7 @@ const mockDb: {
   rotation: { data: [], error: null },
   rpc: { data: 'salva', error: null },
   update: { data: [{ id: 'louca' }], error: null },
+  probe: { data: null, error: null },
   rpcs: [],
   calls: [],
 };
@@ -30,7 +33,14 @@ const mockDb: {
 jest.mock('@/lib/supabase', () => ({
   supabase: {
     from: (table: string) => ({
-      select: () => ({ order: async () => mockDb.rotation }),
+      select: () => ({
+        order: async () => mockDb.rotation,
+        limit: async () => {
+          mockDb.calls.push(`olha ${table}`);
+          if (mockDb.probe instanceof Error) throw mockDb.probe;
+          return mockDb.probe;
+        },
+      }),
       insert: (values: Record<string, unknown>) => ({
         select: () => ({
           single: async () => {
@@ -109,6 +119,8 @@ beforeEach(() => {
   mockDb.rotation = { data: [], error: null };
   mockDb.rpc = { data: 'salva', error: null };
   mockDb.update = { data: [{ id: 'louca' }], error: null };
+  // O banco sem a função também não tem a tabela do rodízio (o app chegou antes da migração).
+  mockDb.probe = { data: null, error: NO_TABLE };
   mockDb.rpcs = [];
   mockDb.calls = [];
 });
@@ -265,6 +277,8 @@ describe('o banco recusa, ou a chamada falha: o erro sobe, e nada mais vai ao ba
 describe('banco que ainda não tem a função (o app chegou antes da migração): a tarefa vai direto na tabela, como antes de o rodízio existir', () => {
   const ofBeto = { ...values, assigned_to: 'u-beto', kid_id: null, points: 10 };
   const EVERYTHING = 'title,notes,recurrence,interval_count,due_on,assigned_to,kid_id,points';
+  // A chamada que falhou e a olhada que confere que o banco também não tem a tabela do rodízio.
+  const FALLBACK = [...ONE_CALL, 'olha chore_rotation'];
 
   beforeEach(() => {
     mockDb.rpc = { data: null, error: NO_FUNCTION };
@@ -272,17 +286,17 @@ describe('banco que ainda não tem a função (o app chegou antes da migração)
 
   it('tarefa nova, sem rodízio pedido: grava e pronto', async () => {
     expect(await saveChore({ values: { ...values, assigned_to: null, equipment_id: 'geladeira' } })).toEqual({ id: 'nova' });
-    expect(mockDb.calls).toEqual([...ONE_CALL, 'insert chores: title,notes,recurrence,interval_count,due_on,assigned_to,equipment_id']);
+    expect(mockDb.calls).toEqual([...FALLBACK, 'insert chores: title,notes,recurrence,interval_count,due_on,assigned_to,equipment_id']);
   });
 
   it('tarefa nova, com rodízio pedido: fica salva, com o primeiro da ordem como responsável, e o resultado diz que o rodízio ficou de fora', async () => {
     expect(await saveChore({ values: ofBeto, rotation: ['p-beto', 'p-lia'] })).toEqual({ id: 'nova', rotationUnavailable: true });
-    expect(mockDb.calls).toEqual([...ONE_CALL, `insert chores: ${EVERYTHING}`]);
+    expect(mockDb.calls).toEqual([...FALLBACK, `insert chores: ${EVERYTHING}`]);
   });
 
   it('tarefa que já existe, sem rodízio pedido: a gravação leva o responsável e pede a linha de volta', async () => {
     expect(await saveChore({ id: 'louca', values: ofBeto, expectNone: true })).toEqual({ id: 'louca' });
-    expect(mockDb.calls).toEqual([...ONE_CALL, `update chores louca: ${EVERYTHING} (devolve as linhas)`]);
+    expect(mockDb.calls).toEqual([...FALLBACK, `update chores louca: ${EVERYTHING} (devolve as linhas)`]);
   });
 
   it('tarefa que já existe, com rodízio pedido: fica salva, e o resultado diz que o rodízio ficou de fora', async () => {
@@ -290,30 +304,33 @@ describe('banco que ainda não tem a função (o app chegou antes da migração)
       id: 'louca',
       rotationUnavailable: true,
     });
-    expect(mockDb.calls).toEqual([...ONE_CALL, `update chores louca: ${EVERYTHING} (devolve as linhas)`]);
+    expect(mockDb.calls).toEqual([...FALLBACK, `update chores louca: ${EVERYTHING} (devolve as linhas)`]);
   });
 
-  it('uma cópia de antes desta migração, que tem o rodízio mas não a função: o mesmo caminho, e a função da ordem de lá não é chamada', async () => {
-    // O formulário mostrou o rodízio de lá e salva a ordem: os campos são gravados, a ordem fica como estava.
-    expect(await saveChore({ id: 'louca', values: { ...values, points: 10 }, rotation: ['p-lia', 'p-beto'] })).toEqual({
-      id: 'louca',
-      rotationUnavailable: true,
-    });
-    // Encerrando (ou virando "Uma vez"), não há ordem pedida: nada a avisar.
-    expect(await saveChore({ id: 'louca', values: { ...values, recurrence: 'none' }, rotation: [] })).toEqual({ id: 'louca' });
-    expect(mockDb.calls).toEqual([
-      ...ONE_CALL,
-      'update chores louca: title,notes,recurrence,interval_count,due_on,points (devolve as linhas)',
-      ...ONE_CALL,
-      'update chores louca: title,notes,recurrence,interval_count,due_on (devolve as linhas)',
-    ]);
-    expect(mockDb.rpcs.map((call) => call.name)).toEqual(['save_chore', 'save_chore']);
+  it('banco que já tem a tabela do rodízio, mas a API ainda não enxerga a função: nada é gravado, e o aviso pede para tentar de novo', async () => {
+    // Gravando direto na tabela, a tarefa que deixou o rodízio continuaria nele (a ordem não mudaria).
+    mockDb.probe = { data: [{ chore_id: 'louca' }], error: null };
+    await expect(saveChore({ id: 'louca', values: { ...values, assigned_to: 'u-beto', kid_id: null }, rotation: [] })).rejects.toThrow(
+      ROTATION_NOT_READY,
+    );
+    // Também a tarefa nova e a tabela vazia: o banco tem o rodízio, e quem salva é a função.
+    mockDb.probe = { data: [], error: null };
+    await expect(saveChore({ values: ofBeto, rotation: ['p-beto', 'p-lia'] })).rejects.toThrow(ROTATION_NOT_READY);
+    expect(mockDb.calls).toEqual([...FALLBACK, ...FALLBACK]);
+  });
+
+  it('a olhada na tabela do rodízio falha (sem internet, outra recusa): o erro sobe, e nada é gravado', async () => {
+    mockDb.probe = { data: null, error: OFFLINE };
+    await expect(saveChore({ id: 'louca', values: ofBeto })).rejects.toBe(OFFLINE);
+    mockDb.probe = new TypeError('Network request failed');
+    await expect(saveChore({ id: 'louca', values: ofBeto })).rejects.toBe(mockDb.probe);
+    expect(mockDb.calls).toEqual([...FALLBACK, ...FALLBACK]);
   });
 
   it('o Postgres dizendo o mesmo (42883) também cai aí', async () => {
     mockDb.rpc = { data: null, error: { code: '42883', message: 'function public.save_chore(uuid, text) does not exist' } };
     expect(await saveChore({ id: 'louca', values: ofBeto })).toEqual({ id: 'louca' });
-    expect(mockDb.calls).toEqual([...ONE_CALL, `update chores louca: ${EVERYTHING} (devolve as linhas)`]);
+    expect(mockDb.calls).toEqual([...FALLBACK, `update chores louca: ${EVERYTHING} (devolve as linhas)`]);
   });
 
   it('tarefa apagada em outro aparelho: a gravação não acha a linha, e isso sobe como a tarefa que não existe', async () => {
@@ -321,7 +338,7 @@ describe('banco que ainda não tem a função (o app chegou antes da migração)
     mockDb.update = { data: [], error: null };
     const gone = await saveChore({ id: 'louca', values: ofBeto, rotation: ['p-beto', 'p-lia'], expectNone: true }).catch((err: unknown) => err);
     expect(isChoreGoneOnSave(gone)).toBe(true);
-    expect(mockDb.calls).toEqual([...ONE_CALL, `update chores louca: ${EVERYTHING} (devolve as linhas)`]);
+    expect(mockDb.calls).toEqual([...FALLBACK, `update chores louca: ${EVERYTHING} (devolve as linhas)`]);
   });
 
   it('a gravação direto na tabela falha: o erro sobe', async () => {
