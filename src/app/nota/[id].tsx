@@ -37,6 +37,7 @@ import {
   type ListChoice,
   type ReceiptLine,
 } from '@/domain/listLinks';
+import { receiptTotalMismatch } from '@/domain/marketSpend';
 import { formatBRL, formatQuantity } from '@/domain/money';
 import { describePriceAlert, priceAlerts, totalSaving, type AlertItem, type PriceAlert } from '@/domain/priceAlert';
 import { houseNameOverride, keptName, noteNames, sameProduct, typedNameActions, withEntry } from '@/domain/receiptNames';
@@ -176,7 +177,8 @@ export default function ReceiptScreen() {
   const isDraft = receipt.status === 'draft';
   const purchasedOn = toISODate(new Date(receipt.purchased_at));
   const itemsTotal = Math.round(items.reduce((s, i) => s + i.total_price, 0) * 100) / 100;
-  const totalMismatch = receipt.total != null && Math.abs(receipt.total - itemsTotal) > 0.05;
+  // A mesma conta, em centavos, que a tela "Mercado do mês" usa para dizer quais notas abrir para conferir.
+  const totalMismatch = receiptTotalMismatch(receipt.total, itemsTotal);
 
   const resolvedItems = new Map(items.map((item) => [item.id, resolveItem(item, overrides[item.id], catalog, purchasedOn)]));
   const alertItems: AlertItem[] = items.flatMap((item) => {

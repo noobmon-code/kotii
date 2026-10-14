@@ -923,6 +923,10 @@ export function useRenameProduct() {
   return useMutation({
     mutationFn: async ({ id, name, category }: { id: string; name: string; category: string }) =>
       unwrap(await supabase.from('products').update({ name, category }).eq('id', id)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['products'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+      // A categoria do produto decide onde o item entra no resumo de gastos, e o nome aparece no mercado do mês.
+      queryClient.invalidateQueries({ queryKey: ['spending'] });
+    },
   });
 }
