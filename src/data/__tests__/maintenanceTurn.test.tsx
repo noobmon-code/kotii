@@ -4,7 +4,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import EquipmentScreen from '@/app/aparelho/[id]';
 import type { Chore } from '@/lib/types';
-import { CheckCircle } from '@/ui/primitives';
+import { CheckCircle, ListRow } from '@/ui/primitives';
 
 // A tela do aparelho de verdade, com os hooks de dados e o cache (QueryClient) de verdade; só o Supabase é de
 // mentira, e de cada tarefa ele devolve só as colunas que a consulta pediu, como o banco. O que se confere aqui:
@@ -42,8 +42,8 @@ const mockEquipment: Row = {
 };
 // A ordem do rodízio da manutenção: Beto, Lia, Nina.
 const mockOrder = ['p-beto', 'p-lia', 'p-nina'];
-// O servidor de mentira: a manutenção como está no banco.
-const mockServer: { chore: Row } = { chore: {} };
+// O servidor de mentira: a manutenção como está no banco (`noRotation`: banco ainda sem a migração do rodízio).
+const mockServer: { chore: Row; noRotation?: boolean } = { chore: {} };
 const mockNotify = jest.fn();
 
 jest.mock('expo-router', () => ({
@@ -75,6 +75,10 @@ jest.mock('@/lib/supabase', () => {
     const answer = async (): Promise<{ data: unknown; error: unknown }> => {
       if (table === 'equipment') return { data: mockEquipment, error: null };
       if (table === 'people') return { data: mockPeople, error: null };
+      if (table === 'chore_rotation') {
+        if (mockServer.noRotation) return { data: null, error: { code: '42P01', message: 'relation "public.chore_rotation" does not exist' } };
+        return { data: mockOrder.map((person_id, position) => ({ chore_id: 'c-1', person_id, position })), error: null };
+      }
       if (table === 'chores') {
         // Só as colunas pedidas: a que a consulta esquece não chega à tela.
         const columns = String(calls.select[0]).split(',').map((column) => column.trim());
@@ -168,6 +172,8 @@ async function open() {
   return {
     /** As manutenções que a tela buscou. */
     rows: () => client.getQueryData(['chores', 'equipment', 'e-1']),
+    /** O que a linha da manutenção diz embaixo do título. */
+    subtitle: () => root.findAllByType(ListRow).find((row) => row.props.title === 'Limpar o filtro')!.props.subtitle as string,
     /** Toca no círculo de "feita hoje" da manutenção. */
     complete: async () => {
       const circle = root.findAllByType(CheckCircle).find((c) => c.props.label === 'Registrar Limpar o filtro feita hoje')!;
@@ -187,6 +193,7 @@ beforeEach(() => {
   });
   // No banco a linha tem mais colunas do que a tela usa.
   mockServer.chore = { ...MAINTENANCE, household_id: 'h', created_by: 'u-beto', created_at: '2026-10-01T12:00:00Z' };
+  mockServer.noRotation = false;
   jest.clearAllMocks();
 });
 
@@ -222,5 +229,19 @@ describe('manutenções do aparelho: a linha traz a vez inteira', () => {
     mockServer.chore = { ...mockServer.chore, kid_id: 'p-nina' };
     await screen.complete();
     expect(mockNotify.mock.calls).toEqual([['+10 pontos para Nina!', `A vez já tinha passado para Nina. Próxima vez: Beto. ${BALANCE}`]]);
+  });
+
+  it('a linha diz de quem é a vez e quem vem depois, como a lista de tarefas, e acompanha a vez depois de concluir', async () => {
+    const screen = await open();
+    // No meio, a situação da data (muda com o dia em que o teste roda).
+    expect(screen.subtitle()).toMatch(/^Todo mês · [^·]+ · Vez de Lia · 10 pontos · depois Nina$/);
+    await screen.complete();
+    expect(screen.subtitle()).toContain('Vez de Nina · 10 pontos · depois Beto');
+  });
+
+  it('com o banco ainda sem o rodízio, a linha mostra o responsável de sempre', async () => {
+    mockServer.noRotation = true;
+    const screen = await open();
+    expect(screen.subtitle()).toMatch(/^Todo mês · [^·]+ · Lia · 10 pontos$/);
   });
 });
