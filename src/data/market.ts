@@ -819,6 +819,12 @@ const PRICE_MAX_PAGES = 20;
  * primeiros mil, calada, e a lista diria "todos os itens têm preço" sobre uma
  * conta cortada. A ordem é a chave da view (produto, mercado, unidade): sem
  * ela, as páginas não se encaixam.
+ *
+ * Um zero não é preço: é o item que ficou sem valor numa nota confirmada
+ * (domain/receiptItem), que a view conta como compra. Ele sai do que a busca
+ * devolve, e não da consulta: a view guarda uma linha só por produto, mercado
+ * e unidade, então aqui o mercado fica sem preço daquele produto até a próxima
+ * compra de verdade (o preço anterior só volta com `unit_price > 0` na view).
  */
 export async function fetchLatestPrices(): Promise<LatestPrice[]> {
   const prices: LatestPrice[] = [];
@@ -839,7 +845,8 @@ export async function fetchLatestPrices(): Promise<LatestPrice[]> {
       if (rows.length) throw new Error('Não foi possível carregar todos os preços da casa: são mais do que o app consegue ler de uma vez.');
       return prices;
     }
-    prices.push(...rows);
+    // A conta das páginas é com as linhas como vieram; o zero sai só do resultado.
+    prices.push(...rows.filter((row) => row.unit_price > 0));
     if (rows.length < PRICE_PAGE) return prices;
   }
 }
@@ -848,6 +855,12 @@ export function useLatestPrices() {
   return useQuery({ queryKey: ['latestPrices'], queryFn: fetchLatestPrices });
 }
 
+/**
+ * As compras de um produto, da mais nova para a mais antiga. Só preço maior
+ * que zero: o item sem valor de uma nota confirmada não é um preço de R$ 0,00.
+ * Aqui são as compras uma a uma, então a compra de verdade anterior do mesmo
+ * mercado fica no lugar do zero sozinha.
+ */
 export function usePriceHistory(productId: string) {
   return useQuery({
     queryKey: ['priceHistory', productId],
@@ -857,6 +870,7 @@ export function usePriceHistory(productId: string) {
           .from('price_observations')
           .select('product_id, store_id, unit, unit_price, purchased_at, receipt_id')
           .eq('product_id', productId)
+          .gt('unit_price', 0)
           .order('purchased_at', { ascending: false })
           .limit(100),
       ) as PriceObservation[],
@@ -866,7 +880,9 @@ export function usePriceHistory(productId: string) {
 /**
  * Preços de vários produtos nos meses antes de uma compra (alerta de preço na
  * nota). A janela sai da data da nota, não de hoje: uma nota antiga aberta
- * depois mostra os mesmos avisos. Dois dias de folga para o fuso.
+ * depois mostra os mesmos avisos. Dois dias de folga para o fuso. Só preço
+ * maior que zero, como em `usePriceHistory`: um item que ficou sem valor em
+ * outro mercado não vira "R$ 0,00 no Assaí".
  */
 export function usePriceObservations(productIds: string[], purchasedAt: string | undefined) {
   return useQuery({
@@ -881,6 +897,7 @@ export function usePriceObservations(productIds: string[], purchasedAt: string |
           .in('product_id', productIds)
           .gte('purchased_at', new Date(at - (PRICE_ALERT_HISTORY_DAYS + 2) * 86_400_000).toISOString())
           .lte('purchased_at', new Date(at + 2 * 86_400_000).toISOString())
+          .gt('unit_price', 0)
           .order('purchased_at', { ascending: false })
           .limit(1000),
       ) as PriceObservation[];

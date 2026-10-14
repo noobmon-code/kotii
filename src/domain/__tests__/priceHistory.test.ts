@@ -69,11 +69,21 @@ const NO_CHOICE: HistoryChoices = { unit: null, period: null, store: null, more:
 
 describe('a frase de "Último preço por mercado" sem nenhum mercado', () => {
   it('não diz que não há nota quando as compras existem, em notas sem mercado', () => {
-    expect(noStorePriceSentence(0)).toBe('Nenhuma nota confirmada com este produto ainda.');
-    expect(noStorePriceSentence(1)).toBe('A compra deste produto está numa nota sem mercado informado: veja o histórico abaixo.');
-    expect(noStorePriceSentence(3)).toBe('As compras deste produto estão em notas sem mercado informado: veja o histórico abaixo.');
+    const loose = { store: NO_STORE };
+    expect(noStorePriceSentence([])).toBe('Nenhuma nota confirmada com este produto ainda.');
+    expect(noStorePriceSentence([loose])).toBe('A compra deste produto está numa nota sem mercado informado: veja o histórico abaixo.');
+    expect(noStorePriceSentence([loose, loose, loose])).toBe('As compras deste produto estão em notas sem mercado informado: veja o histórico abaixo.');
     // Enquanto as compras não chegaram (ou a busca falhou), a frase não afirma nada sobre as notas.
     expect(noStorePriceSentence(undefined)).toBe('Nenhum preço por mercado ainda.');
+  });
+
+  it('compra com mercado e fora dos preços por mercado é a sem valor (zero não é preço): a frase não fala em nota sem mercado', () => {
+    const atStore = { store: storeKey('Assaí') };
+    expect(noStorePriceSentence([atStore])).toBe('A compra deste produto está sem valor: veja o histórico abaixo.');
+    expect(noStorePriceSentence([atStore, atStore])).toBe('As compras deste produto estão sem valor: veja o histórico abaixo.');
+    expect(noStorePriceSentence([atStore, { store: NO_STORE }])).toBe(
+      'As compras deste produto estão sem valor ou em notas sem mercado informado: veja o histórico abaixo.',
+    );
   });
 });
 
