@@ -124,8 +124,18 @@ export function MedicationRefills({ rows }: { rows: RefillRow[] }) {
     if (adding.current.has(row.itemName)) return;
     adding.current.add(row.itemName);
     queue.current = queue.current
-      // Sempre uma unidade: repetir o toque não pede outra caixa.
-      .then(() => addToList.mutateAsync({ name: row.itemName, category: 'medicamentos', productId: null, quantity: 1, unit: 'un' }))
+      // Sempre uma unidade: repetir o toque não pede outra caixa. O item com o nome de quem toma também conta
+      // como já na lista (ver onPharmacyList): o banco confere os dois.
+      .then(() =>
+        addToList.mutateAsync({
+          name: row.itemName,
+          altName: row.personItemName,
+          category: 'medicamentos',
+          productId: null,
+          quantity: 1,
+          unit: 'un',
+        }),
+      )
       .then(
         // A lista vem do servidor: outra pessoa pode ter posto o mesmo remédio agora há pouco.
         (list) =>

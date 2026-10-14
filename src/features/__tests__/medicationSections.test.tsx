@@ -198,6 +198,25 @@ describe('"Na lista da farmácia"', () => {
     expect(seen).not.toContain(listed);
   });
 
+  it('"Pôr na lista da farmácia" manda o item e o mesmo item com o nome de quem toma, para o banco não repetir nenhum dos dois', async () => {
+    mockAdd.mockImplementation(async () => ({ id: 'l1', name: 'Farmácia', added: true }));
+    const tap = async (medications: Medication[]) => {
+      mockAdd.mockClear();
+      await mount(<MedicationRefills rows={rows(medications)} />);
+      const offers = renderer!.root.findAll((node) => node.props.title === offer && typeof node.props.onPress === 'function');
+      await act(async () => offers[0].props.onPress());
+      return mockAdd.mock.calls.map(([item]) => item);
+    };
+    expect(await tap([ana])).toEqual([
+      { name: 'Losartana', altName: 'Losartana — Ana', category: 'medicamentos', productId: null, quantity: 1, unit: 'un' },
+    ]);
+    // Duas pessoas no mesmo remédio: o item já é o com o nome (e o só com o nome não vale por ele).
+    await act(async () => renderer?.unmount());
+    expect(await tap([ana, beto])).toEqual([
+      { name: 'Losartana — Ana', altName: 'Losartana — Ana', category: 'medicamentos', productId: null, quantity: 1, unit: 'un' },
+    ]);
+  });
+
   it('item já comprado (riscado), ou de uma lista que não é de farmácia: não conta', async () => {
     mockQueries.lists = [
       { id: 'l1', name: 'Farmácia', kind: 'farmacia', items: [{ name: 'Losartana', product_id: null, checked_at: '2026-10-01T12:00:00Z' }] },

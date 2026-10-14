@@ -564,16 +564,17 @@ export async function syncHouseReminders(data: HouseReminderData, target: HouseR
     const weatherPlace = weather !== undefined ? data.weatherPlace : previous?.weatherPlace;
     // Consultas, vacinas, compromissos, previsão, reposições ou remédios que não
     // carregaram: os avisos deles já agendados ficam como estão, e os outros
-    // tipos seguem normais. As reposições só entram com o tipo ligado:
-    // desligado, não há aviso delas para segurar (desligar já cancelou), e a
-    // busca atrasada mudaria a assinatura e refaria os avisos de todo mundo à
-    // toa. Só para elas: nas vacinas, é este conjunto que guarda as marcas de
-    // atraso já avisado.
+    // tipos seguem normais. As reposições e os remédios (os avisos de caixa e
+    // receita acabando) só entram com o tipo deles ligado: desligado, não há
+    // aviso deles para segurar (desligar já cancelou), e a busca atrasada
+    // mudaria a assinatura e refaria os avisos de todo mundo à toa. Só para
+    // eles: nas vacinas, é este conjunto que guarda as marcas de atraso já
+    // avisado.
     const unknown = new Set<HouseReminderKind>([
       ...(data.appointments === undefined ? (['appointments'] as const) : []),
       ...(data.vaccines === undefined ? (['vaccines'] as const) : []),
       ...(data.family === undefined ? (['events'] as const) : []),
-      ...(data.medications === undefined ? (['refills'] as const) : []),
+      ...(kinds.refills && data.medications === undefined ? (['refills'] as const) : []),
       ...(weather === undefined ? (['weather'] as const) : []),
       ...(kinds.supplies && data.supplies === undefined ? (['supplies'] as const) : []),
       // O resumo de amanhã junta consultas, vacinas, compromissos, aniversários e

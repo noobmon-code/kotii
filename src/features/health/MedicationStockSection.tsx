@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet } from 'react-native';
 
-import { toSchedule, useDoses, useRestockMedication } from '@/data/home';
+import { stockSeen, toSchedule, useDoses, useRestockMedication } from '@/data/home';
 import { REFILLS_REMINDER_LABEL } from '@/domain/houseReminders';
 import {
   describePrescription,
@@ -36,6 +36,7 @@ export function MedicationStockSection({
   form,
   initial,
   today,
+  saving = false,
   onChange,
   onRestocked,
 }: {
@@ -45,6 +46,8 @@ export function MedicationStockSection({
   /** Os campos como a tela abriu: as frases valem enquanto a pessoa não mexe neles. */
   initial: StockForm;
   today: string;
+  /** A tela está salvando o remédio: a compra espera, para as duas gravações não se cruzarem. */
+  saving?: boolean;
   onChange: (patch: Partial<StockForm>) => void;
   onRestocked: (count: StockCount) => void;
 }) {
@@ -85,8 +88,11 @@ export function MedicationStockSection({
       return;
     }
     const count = restock(schedule, today, units, typed.base);
+    // Somada à conta do app, a caixa parte do estoque desta cópia, e só entra se ele ainda é o do banco (outro
+    // celular pode ter contado ou registrado uma caixa nesse meio-tempo). Sobre o número digitado, vai como está.
+    const from = typed.base === undefined ? stockSeen(medication) : undefined;
     restockMutation.mutate(
-      { id: medication.id, count },
+      { id: medication.id, count, from },
       {
         onSuccess: () => {
           rememberBoxUnits(medication.id, box.trim());
@@ -113,7 +119,7 @@ export function MedicationStockSection({
       {stockText ? <Text variant="label">{stockText}</Text> : null}
       {medication && schedule ? (
         box === null ? (
-          <Button title="Comprei mais" variant="secondary" icon="plus" onPress={openBox} />
+          <Button title="Comprei mais" variant="secondary" icon="plus" onPress={openBox} disabled={saving} />
         ) : (
           <>
             <TextField
@@ -126,7 +132,7 @@ export function MedicationStockSection({
               autoFocus
             />
             <Row>
-              <Button title="Somar ao estoque" onPress={addBox} loading={restockMutation.isPending} style={styles.flex} />
+              <Button title="Somar ao estoque" onPress={addBox} loading={restockMutation.isPending} disabled={saving} style={styles.flex} />
               <Button title="Cancelar" variant="secondary" onPress={() => setBox(null)} disabled={restockMutation.isPending} />
             </Row>
           </>

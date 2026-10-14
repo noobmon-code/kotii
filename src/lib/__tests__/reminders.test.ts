@@ -685,6 +685,24 @@ describe('house reminders', () => {
     });
   });
 
+  it('remédios e receitas acabando desligado: os remédios que ainda não carregaram não refazem os avisos dos outros tipos', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('bills', true);
+      const loaded = { ...data, appointments: [], vaccines: [], weather: [], weatherPlace: null };
+      await reminders.syncHouseReminders({ ...loaded, medications: [losartana] }, { householdId: 'casa', today });
+      const ids = [...live.keys()];
+      expect(kindsOf(live)).toEqual(['bills']);
+      // Ao abrir o app, as contas chegam antes dos remédios (que não ficam guardados no aparelho).
+      await reminders.syncHouseReminders(loaded, { householdId: 'casa', today });
+      expect([...live.keys()]).toEqual(ids);
+      // E quando eles chegam (nenhum, ou os mesmos), também nada muda.
+      await reminders.syncHouseReminders({ ...loaded, medications: [] }, { householdId: 'casa', today });
+      expect([...live.keys()]).toEqual(ids);
+      await reminders.syncHouseReminders({ ...loaded, medications: [losartana] }, { householdId: 'casa', today });
+      expect([...live.keys()]).toEqual(ids);
+    });
+  });
+
   it('desligar um tipo cancela só os avisos dele, mesmo sem os dados da casa', async () => {
     await withHouse(async (reminders, { live }) => {
       await reminders.setHouseReminderKind('bills', true);

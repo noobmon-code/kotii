@@ -5,6 +5,7 @@ import {
   countDayError,
   describePrescription,
   describeStock,
+  doseRuleChanged,
   ESTIMATE_HORIZON_DAYS,
   estimateStock,
   formatUnits,
@@ -1143,6 +1144,99 @@ describe('a seção "Estoque e receita" do remédio', () => {
     expect(describeStock(stockStatus({ ...lastDay, times: ['08:00', '20:00'], ...rebased }, today), today)).toBe(
       'Sem estoque para a próxima dose, pelas contas do app.',
     );
+  });
+
+  it('doseRuleChanged: a regra das doses mudou, ou quanto cada dose usa, pelo valor', () => {
+    const rule = { times: ['08:00'], startOn: '2026-01-01', endOn: null, frequency: 'daily' as const, weekdays: null, intervalDays: null };
+    const saved = med();
+    expect(doseRuleChanged(saved, rule, {})).toBe(false);
+    // Só o horário, ou os dias da semana em outra ordem: a mesma regra.
+    expect(doseRuleChanged(saved, { ...rule, times: ['07:30'] }, {})).toBe(false);
+    const weekly = med({ frequency: 'weekdays', weekdays: [1, 3] });
+    expect(doseRuleChanged(weekly, { ...rule, frequency: 'weekdays', weekdays: [3, 1] }, {})).toBe(false);
+    // Vezes por dia, regularidade, início, fim e número de doses: regra nova.
+    for (const next of [
+      { ...rule, times: ['08:00', '20:00'] },
+      { ...rule, frequency: 'interval' as const, intervalDays: 2 },
+      { ...rule, startOn: '2026-02-01' },
+      { ...rule, endOn: '2026-12-31' },
+      { ...rule, totalDoses: 30 },
+    ]) {
+      expect(doseRuleChanged(saved, next, {})).toBe(true);
+    }
+    // "Cada dose usa" vale pelo número: "1,0" no lugar de "1" é a mesma dose; 2 ou 0,5, não.
+    expect(doseRuleChanged(saved, rule, { doseUnits: 1 })).toBe(false);
+    expect(doseRuleChanged(saved, rule, { doseUnits: 2 })).toBe(true);
+    expect(doseRuleChanged(saved, rule, { doseUnits: 0.5 })).toBe(true);
+    expect(doseRuleChanged(med({ doseUnits: 0.5 }), rule, { doseUnits: 0.5 })).toBe(false);
+    // Sem dose guardada, vale a de sempre (1).
+    expect(doseRuleChanged(med({ doseUnits: null }), rule, { doseUnits: 1 })).toBe(false);
+  });
+
+  it('escrever de novo a mesma dose ("1,0" no lugar de "1") não é mudar a regra: no dia em que a caixa acaba, segue "Acaba hoje"', () => {
+    const rule = { times: ['08:00'], startOn: '2026-01-01', endOn: null, frequency: 'daily' as const, weekdays: null, intervalDays: null };
+    const notices = (m: StockedMedication) => refillReminders([m], today).map((r) => [r.date, r.title]);
+    // 5 contados em 07/10, um por dia: a última dose coberta é a de hoje.
+    const lastDay = med({ stockCount: 5, stockCountedOn: '2026-10-07' });
+    const initial = stockFormOf(lastDay, today);
+    expect(initial.doseUnits).toBe('1');
+    const read = readStockForm({ ...initial, doseUnits: '1,0' }, initial, today);
+    expect(read).toEqual({ ok: true, changes: { doseUnits: 1 } });
+    const changes = keepStockOnRuleChange(read.ok ? read.changes : {}, lastDay, rule, today);
+    // A contagem fica como estava: nada a refazer.
+    expect(changes).toEqual({ doseUnits: 1 });
+    const after = { ...lastDay, ...changes };
+    expect(describeStock(stockStatus(after, today), today)).toBe('Acaba hoje, pelas contas do app.');
+    expect(notices(after)).toEqual([[today, 'Remédio acaba hoje']]);
+    // Meio comprimido escrito de outro jeito também.
+    const half = med({ stockCount: 5, stockCountedOn: '2026-10-07', doseUnits: 0.5 });
+    expect(keepStockOnRuleChange({ doseUnits: 0.5 }, half, rule, today)).toEqual({ doseUnits: 0.5 });
+    // Outra dose, sim: a contagem recomeça hoje (a regra nova no dia em que a caixa acaba, como antes).
+    expect(keepStockOnRuleChange({ doseUnits: 2 }, lastDay, rule, today)).toEqual({ doseUnits: 2, stockCount: 0, stockCountedOn: today });
+  });
+
+  it('o app de agora, ao mudar a regra de um remédio acompanhado, sempre grava uma contagem diferente da guardada (a não ser a de hoje ou um zero)', () => {
+    // É o que o gatilho do banco para os apps de antes do estoque usa para deixar os saves deste em paz: ele só age
+    // quando a regra muda e a contagem guardada (acima de zero, de antes de ontem) vem de volta igual.
+    const rule = { times: ['08:00'], startOn: '2026-01-01', endOn: null, frequency: 'daily' as const, weekdays: null, intervalDays: null };
+    const shapes = [
+      rule,
+      { ...rule, times: ['08:00', '20:00'] },
+      { ...rule, times: ['06:00', '14:00', '22:00'] },
+      { ...rule, frequency: 'weekdays' as const, weekdays: [1, 3, 5] },
+      { ...rule, frequency: 'interval' as const, intervalDays: 2 },
+    ];
+    let checked = 0;
+    for (const shape of shapes) {
+      for (const count of [0, 0.5, 1, 3, 7, 30, 90]) {
+        for (const ago of [0, 1, 2, 5, 20, 60]) {
+          for (const units of [0.5, 1, 2]) {
+            const before = med({ ...shape, stockCount: count, stockCountedOn: addDays(today, -ago), doseUnits: units });
+            const regularity =
+              shape.frequency === 'daily'
+                ? { frequency: 'interval' as const, weekdays: null, intervalDays: 3 }
+                : { frequency: 'daily' as const, weekdays: null, intervalDays: null };
+            const changes: [Parameters<typeof keepStockOnRuleChange>[0], Parameters<typeof keepStockOnRuleChange>[2]][] = [
+              [{}, { ...shape, times: [...shape.times, '23:00'] }],
+              [{}, { ...shape, ...regularity }],
+              [{}, { ...shape, startOn: '2025-12-01' }],
+              [{}, { ...shape, endOn: '2027-12-31' }],
+              [{}, { ...shape, totalDoses: 500 }],
+              [{ doseUnits: units * 2 }, shape],
+            ];
+            for (const [typed, after] of changes) {
+              if (!doseRuleChanged(before, after, typed)) continue;
+              const saved = keepStockOnRuleChange(typed, before, after, today);
+              expect(saved.stockCount).not.toBeUndefined();
+              const same = saved.stockCount === before.stockCount && saved.stockCountedOn === before.stockCountedOn;
+              if (same) expect(count === 0 || ago === 0).toBe(true);
+              checked += 1;
+            }
+          }
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(3000);
   });
 
   it('unidades: vírgula decimal, sem separador de milhar', () => {

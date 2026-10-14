@@ -9,7 +9,9 @@ import {
   fetchMedication,
   fetchMedications,
   isMissingStockColumn,
+  MEDICATION_STOCK_CHANGED,
   MEDICATION_STOCK_UNAVAILABLE,
+  MedicationStockChanged,
   restockMedication,
   saveMedication,
   toSchedule,
@@ -31,6 +33,8 @@ jest.mock('@/lib/supabase', () => ({
 const noColumn = { code: '42703', message: 'column medications.stock_count does not exist' };
 const notInCache = { code: 'PGRST204', message: "Could not find the 'stock_count' column of 'medications' in the schema cache" };
 const offline = { message: 'TypeError: Network request failed' };
+// O PostgREST quando `.single()` não acha linha nenhuma.
+const noRow = { code: 'PGRST116', details: 'The result contains 0 rows', hint: null, message: 'Cannot coerce the result to a single JSON object' };
 
 const oldRow = {
   id: 'm1',
@@ -70,22 +74,30 @@ const values = {
 /**
  * Um banco de mentira: guarda cada pedido (o verbo, as colunas pedidas de volta e o que foi gravado) e
  * responde como um banco novo (`hasStock`) ou como um de antes do estoque, que recusa o pedido que
- * fala das colunas novas, na leitura ou no corpo.
+ * fala das colunas novas, na leitura, no corpo ou nas condições. As condições (`filters`, na ordem dos
+ * pedidos) valem contra a linha que está no banco (`server`): sem ela as cumprir, nada volta.
  */
-function fakeDb(hasStock: boolean, failure?: { message: string }) {
+function fakeDb(hasStock: boolean, failure?: { message: string }, server?: Record<string, unknown>) {
   const requests: { verb: string; columns: string | null; body: Record<string, unknown> | null }[] = [];
+  const filters: [string, string, unknown][][] = [];
   const db = {
     from: () => {
       const request: (typeof requests)[number] = { verb: 'select', columns: null, body: null };
+      const conditions: [string, string, unknown][] = [];
       let one = false;
       const answer = () => {
         requests.push(request);
+        filters.push(conditions);
         if (failure) return { data: null, error: failure };
         const mentionsStock = (text: string | null) => Boolean(text && /stock_count|dose_units|prescription_until/.test(text));
         if (!hasStock && mentionsStock(JSON.stringify(request.body))) return { data: null, error: notInCache };
-        if (!hasStock && mentionsStock(request.columns)) return { data: null, error: noColumn };
+        if (!hasStock && (mentionsStock(request.columns) || conditions.some(([, column]) => mentionsStock(column)))) {
+          return { data: null, error: noColumn };
+        }
         if (request.columns === null) return { data: null, error: null };
-        const row = hasStock ? newRow : oldRow;
+        const row: Record<string, unknown> = server ?? (hasStock ? newRow : oldRow);
+        const hit = conditions.every(([op, column, value]) => (op === 'is' ? (row[column] ?? null) === value : String(row[column]) === String(value)));
+        if (!hit) return one ? { data: null, error: noRow } : { data: [], error: null };
         return { data: one ? row : [row], error: null };
       };
       const query: Record<string, unknown> = {
@@ -106,11 +118,17 @@ function fakeDb(hasStock: boolean, failure?: { message: string }) {
           return query;
         };
       }
-      for (const filter of ['eq', 'order']) query[filter] = () => query;
+      for (const op of ['eq', 'is']) {
+        query[op] = (column: string, value: unknown) => {
+          conditions.push([op, column, value]);
+          return query;
+        };
+      }
+      query.order = () => query;
       return query;
     },
   };
-  return { db: db as unknown as SupabaseClient, requests };
+  return { db: db as unknown as SupabaseClient, requests, filters };
 }
 
 const hasStockColumns = (columns: string | null) => Boolean(columns?.includes('stock_count'));
@@ -236,6 +254,61 @@ describe('salvar o remédio', () => {
   it('outro erro ao salvar continua sendo erro', async () => {
     await expect(saveMedication({ id: 'm1', values, stock }, fakeDb(true, offline).db)).rejects.toEqual(offline);
   });
+
+  describe('a contagem refeita pela regra nova parte de uma cópia: só é gravada sobre o estoque de onde saiu', () => {
+    // A cópia deste celular: 10 contados em 10/10; a regra passou a duas vezes por dia, e a conta refeita dá 6 hoje.
+    const rebased = toStockValues({ stockCount: 6, stockCountedOn: '2026-10-14' });
+    const from = { stock_count: 10, stock_counted_on: '2026-10-10' };
+    const twice = { ...values, times: ['08:00', '20:00'] };
+
+    it('vai com o estoque da cópia como condição, e grava quando o banco ainda tem o mesmo', async () => {
+      const { db, requests, filters } = fakeDb(true, undefined, { ...newRow, stock_count: '10', stock_counted_on: '2026-10-10' });
+      await saveMedication({ id: 'm1', values: twice, stock: rebased, from }, db);
+      expect(requests).toEqual([expect.objectContaining({ verb: 'update', body: { ...twice, ...rebased } })]);
+      expect(filters[0]).toEqual([
+        ['eq', 'id', 'm1'],
+        ['eq', 'stock_count', 10],
+        ['eq', 'stock_counted_on', '2026-10-10'],
+      ]);
+      // Sem estoque na cópia (o app não acompanhava), a condição é a de vazio.
+      const empty = fakeDb(true, undefined, { ...newRow, stock_count: null, stock_counted_on: null });
+      await saveMedication({ id: 'm1', values: twice, stock: rebased, from: { stock_count: null, stock_counted_on: null } }, empty.db);
+      expect(empty.filters[0]).toEqual([
+        ['eq', 'id', 'm1'],
+        ['is', 'stock_count', null],
+        ['is', 'stock_counted_on', null],
+      ]);
+    });
+
+    it('outro celular registrou uma caixa nesse meio-tempo: nada é gravado, e o erro diz para abrir o remédio de novo', async () => {
+      // No banco já está a compra de Ana: 36 contados hoje.
+      const { db, requests } = fakeDb(true, undefined, { ...newRow, stock_count: '36', stock_counted_on: '2026-10-14' });
+      await expect(saveMedication({ id: 'm1', values: twice, stock: rebased, from }, db)).rejects.toThrow(MEDICATION_STOCK_CHANGED);
+      expect(MEDICATION_STOCK_CHANGED).toBe('O estoque deste remédio mudou em outro aparelho, e nada foi salvo. Abra o remédio de novo para conferir.');
+      // Um pedido só, que não achou a linha: sem segunda tentativa por cima.
+      expect(requests).toHaveLength(1);
+      await expect(saveMedication({ id: 'm1', values: twice, stock: rebased, from }, fakeDb(true, undefined, { ...newRow, stock_count: '36', stock_counted_on: '2026-10-14' }).db)).rejects.toBeInstanceOf(MedicationStockChanged);
+    });
+
+    it('o número que a pessoa escreveu é a contagem dela: grava sem condição', async () => {
+      const { db, filters } = fakeDb(true, undefined, { ...newRow, stock_count: '36', stock_counted_on: '2026-10-14' });
+      await saveMedication({ id: 'm1', values: twice, stock: toStockValues({ stockCount: 12, stockCountedOn: '2026-10-14' }) }, db);
+      expect(filters[0]).toEqual([['eq', 'id', 'm1']]);
+    });
+
+    it('sem achar a linha e sem condição (a casa deixou de ser da pessoa), o erro é o do banco, como antes', async () => {
+      const { db } = fakeDb(true, undefined, { ...newRow, id: 'outro' });
+      await expect(saveMedication({ id: 'm1', values, stock: {} }, db)).rejects.toEqual(noRow);
+    });
+
+    it('banco de antes do estoque: a segunda tentativa vai sem o estoque e sem as condições dele', async () => {
+      const { db, requests, filters } = fakeDb(false);
+      const saved = await saveMedication({ id: 'm1', values: twice, stock: rebased, from }, db);
+      expect(saved.stockUnavailable).toBe(true);
+      expect(requests.map((r) => r.body)).toEqual([{ ...twice, ...rebased }, twice]);
+      expect(filters[1]).toEqual([['eq', 'id', 'm1']]);
+    });
+  });
 });
 
 describe('as doses de hoje já marcadas vão com o remédio, para a conta do estoque', () => {
@@ -326,5 +399,43 @@ describe('"Comprei mais"', () => {
     await expect(restockMedication({ id: 'm1', count }, fakeDb(false).db)).rejects.toThrow(MEDICATION_STOCK_UNAVAILABLE);
     expect(MEDICATION_STOCK_UNAVAILABLE).toBe('O estoque de remédios ainda está sendo ativado no Kotii. Tente de novo mais tarde.');
     await expect(restockMedication({ id: 'm1', count }, fakeDb(true, offline).db)).rejects.toEqual(offline);
+    // Com a condição também: o corpo já é recusado.
+    const from = { stock_count: 20, stock_counted_on: '2026-10-10' };
+    await expect(restockMedication({ id: 'm1', count, from }, fakeDb(false).db)).rejects.toThrow(MEDICATION_STOCK_UNAVAILABLE);
+  });
+
+  describe('somada à conta do app: só vale sobre o estoque de onde a conta saiu', () => {
+    // A cópia deste celular: 20 contados em 10/10, sobram 18 hoje; a caixa de 32 dá 50.
+    const from = { stock_count: 20, stock_counted_on: '2026-10-10' };
+
+    it('vai com o estoque da cópia como condição e pede a linha de volta', async () => {
+      const { db, requests, filters } = fakeDb(true, undefined, { ...newRow, stock_count: '20', stock_counted_on: '2026-10-10' });
+      await restockMedication({ id: 'm1', count, from }, db);
+      expect(requests).toEqual([{ verb: 'update', columns: 'id', body: { stock_count: 50, stock_counted_on: '2026-10-12' } }]);
+      expect(filters[0]).toEqual([
+        ['eq', 'id', 'm1'],
+        ['eq', 'stock_count', 20],
+        ['eq', 'stock_counted_on', '2026-10-10'],
+      ]);
+      // O app ainda não acompanhava: a caixa começa a conta só se ninguém contou nesse meio-tempo.
+      const empty = fakeDb(true, undefined, { ...newRow, stock_count: null, stock_counted_on: null });
+      await restockMedication({ id: 'm1', count, from: { stock_count: null, stock_counted_on: null } }, empty.db);
+      expect(empty.filters[0]).toEqual([
+        ['eq', 'id', 'm1'],
+        ['is', 'stock_count', null],
+        ['is', 'stock_counted_on', null],
+      ]);
+    });
+
+    it('outro celular contou ou registrou uma caixa nesse meio-tempo: nada é somado, e o erro diz para abrir de novo', async () => {
+      const { db, requests } = fakeDb(true, undefined, { ...newRow, stock_count: '40', stock_counted_on: '2026-10-12' });
+      await expect(restockMedication({ id: 'm1', count, from }, db)).rejects.toThrow(MEDICATION_STOCK_CHANGED);
+      expect(requests).toHaveLength(1);
+      // Começar pela caixa, com outro celular já acompanhando: idem.
+      const counted = fakeDb(true, undefined, { ...newRow, stock_count: '25', stock_counted_on: '2026-10-12' });
+      await expect(restockMedication({ id: 'm1', count, from: { stock_count: null, stock_counted_on: null } }, counted.db)).rejects.toBeInstanceOf(
+        MedicationStockChanged,
+      );
+    });
   });
 });

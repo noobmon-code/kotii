@@ -495,7 +495,8 @@ export function restock(m: StockedMedication, today: string, boxUnits: number, b
   return { stockCount: round(left + Math.max(0, boxUnits)), stockCountedOn: today };
 }
 
-type Rule = Pick<MedicationSchedule, 'times' | 'startOn' | 'endOn' | 'frequency' | 'weekdays' | 'intervalDays' | 'totalDoses'>;
+/** A regra das doses como a tela a salva (ver ruleKey). */
+export type DoseRule = Pick<MedicationSchedule, 'times' | 'startOn' | 'endOn' | 'frequency' | 'weekdays' | 'intervalDays' | 'totalDoses'>;
 
 /**
  * A regra das doses, para comparar: quantas vezes por dia, regularidade,
@@ -503,7 +504,7 @@ type Rule = Pick<MedicationSchedule, 'times' | 'startOn' | 'endOn' | 'frequency'
  * conta só lê quantas doses o dia tem, e trocar 08:00 por 07:30 não muda o que
  * é gasto.
  */
-const ruleKey = (m: Rule) =>
+const ruleKey = (m: DoseRule) =>
   JSON.stringify([
     m.times.length,
     m.frequency ?? 'daily',
@@ -515,13 +516,24 @@ const ruleKey = (m: Rule) =>
   ]);
 
 /**
+ * Se a regra das doses mudou (ver ruleKey) ou quanto cada dose usa, pelo
+ * número: "1,0" escrito no lugar de "1" é a mesma dose. É o que faz
+ * keepStockOnRuleChange refazer a contagem, e a tela conferir antes a data do
+ * aparelho, com que ela é refeita.
+ */
+export function doseRuleChanged(before: StockedMedication, after: DoseRule, changes: Pick<StockChanges, 'doseUnits'>): boolean {
+  return ruleKey(before) !== ruleKey(after) || (changes.doseUnits !== undefined && changes.doseUnits !== doseUnitsOf(before));
+}
+
+/**
  * A regra das doses (ou quanto cada dose usa) mudou num remédio com o estoque
  * acompanhado: o que foi gasto até hoje foi pela regra de antes. A contagem
  * passa a ser o que sobrava hoje por ela, contado hoje, e a regra nova vale
  * de amanhã em diante. Sem isso a mudança valeria para trás, e o estoque
  * pularia sem ninguém ter contado nada. `changes` é o que a seção do estoque
  * já muda (readStockForm): se a pessoa contou de novo, vale o que ela contou.
- * Trocar só o horário não é mudar a regra (ver ruleKey): nada é mexido.
+ * Trocar só o horário, ou escrever de novo a mesma dose, não é mudar a regra
+ * (ver doseRuleChanged): nada é mexido.
  *
  * Remédio que já tinha acabado antes de hoje: a contagem é zero, no dia em
  * que acabou, e não em hoje. "Deve ter acabado em 04/10" segue como estava, em
@@ -530,9 +542,9 @@ const ruleKey = (m: Rule) =>
  * isso acabou), e com uma dose menor cobriria doses de dias que já passaram,
  * mudando o dia em que acabou.
  */
-export function keepStockOnRuleChange(changes: StockChanges, before: StockedMedication | undefined, after: Rule, today: string): StockChanges {
+export function keepStockOnRuleChange(changes: StockChanges, before: StockedMedication | undefined, after: DoseRule, today: string): StockChanges {
   if (!before || changes.stockCount !== undefined) return changes;
-  if (changes.doseUnits === undefined && ruleKey(before) === ruleKey(after)) return changes;
+  if (!doseRuleChanged(before, after, changes)) return changes;
   const estimate = estimateStock(before, today);
   if (!estimate) return changes;
   if (estimate.runsOutOn !== null && estimate.runsOutOn < today) return { ...changes, stockCount: 0, stockCountedOn: estimate.runsOutOn };

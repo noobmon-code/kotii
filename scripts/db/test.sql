@@ -5303,4 +5303,375 @@ begin
 end $$;
 reset role;
 
+-- ---------------------------------------------------------------------------
+\echo '• "Pôr na lista da farmácia": o item entra uma vez só, em qualquer lista de farmácia aberta'
+-- Vera também mora na Casa da Paula: é o outro celular da casa.
+\set user_med_v '00000000-0000-0000-0000-000000000053'
+insert into auth.users (id) values (:'user_med_v');
+insert into public.household_members (household_id, user_id, display_name)
+  select m.household_id, :'user_med_v'::uuid, 'Vera' from public.household_members m where m.user_id = :'user_p';
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  current uuid := current_setting('test.pharmacy_p')::uuid;
+  newer uuid;
+  first record;
+  again record;
+begin
+  assert (select count(*) from public.shopping_list_items) = 0, 'P starts without list items';
+  -- Paula põe a Losartana: vai para a lista de farmácia aberta, como uma unidade de remédio ainda por comprar.
+  select * into first from public.add_to_pharmacy_list('Losartana');
+  assert first.added and first.list_id = current and first.list_name = 'Farmácia', 'the item goes to the open pharmacy list';
+  assert (
+    select i.name = 'Losartana' and i.category = 'medicamentos' and i.quantity = 1 and i.unit = 'un' and i.product_id is null
+      and i.checked_at is null
+    from public.shopping_list_items i where i.id = first.item_id
+  ), 'as one unit of a medication, still to buy';
+  -- De novo (outro toque, outro celular): fica o que já estava. Maiúsculas e espaços nas pontas não contam.
+  select * into again from public.add_to_pharmacy_list('  LOSARTANA ');
+  assert not again.added and again.item_id = first.item_id and again.list_id = current, 'a pending item of the same name is not added again';
+  assert (select count(*) from public.shopping_list_items) = 1, 'and nothing else is written';
+  -- O item com o nome de quem toma ("Nome — pessoa", como o app o põe quando duas pessoas da casa usam o mesmo
+  -- remédio) é o mesmo item. O contrário não: com duas pessoas no remédio, o item só com o nome não diz de quem é.
+  insert into public.shopping_list_items (list_id, name, category) values (current, 'Sinvastatina — Paula', 'medicamentos');
+  select * into again from public.add_to_pharmacy_list('Sinvastatina', 'Sinvastatina — Paula');
+  assert not again.added and again.list_id = current, 'the item with the name of who takes it counts as the same';
+  insert into public.shopping_list_items (list_id, name, category) values (current, 'Atenolol', 'medicamentos');
+  select * into again from public.add_to_pharmacy_list('Atenolol — Paula', 'Atenolol — Paula');
+  assert again.added, 'a pending plain name does not stand for the item that carries the person';
+  -- Já comprado (riscado no carrinho): não conta, e o remédio entra de novo.
+  update public.shopping_list_items set checked_at = now() where id = first.item_id;
+  select * into again from public.add_to_pharmacy_list('Losartana');
+  assert again.added and again.item_id <> first.item_id, 'a bought item does not count';
+  -- Outra lista de farmácia aberta, mais nova (feita à mão): o que está pendente na mais antiga não entra de
+  -- novo, e a resposta diz onde ele está.
+  insert into public.shopping_lists (name, kind, created_at) values ('Drogasil', 'farmacia', now() + interval '1 minute') returning id into newer;
+  assert (select id from public.open_pharmacy_list()) = newer, 'the newer pharmacy list is the open one';
+  select * into again from public.add_to_pharmacy_list('Losartana');
+  assert not again.added and again.list_id = current and again.list_name = 'Farmácia', 'pending on an older open pharmacy list: not added again';
+  assert (select count(*) from public.shopping_list_items where name = 'Losartana' and checked_at is null) = 1, 'one Losartana still to buy';
+  -- O que não está pendente em lista nenhuma vai para a mais nova.
+  select * into again from public.add_to_pharmacy_list('Puran T4');
+  assert again.added and again.list_id = newer and again.list_name = 'Drogasil', 'a new item goes to the newest open pharmacy list';
+  -- Pendente numa lista de mercado, ou numa de farmácia arquivada: não conta.
+  insert into public.shopping_list_items (list_id, name, category) values ((select id from public.open_market_list()), 'Omeprazol', 'medicamentos');
+  insert into public.shopping_list_items (list_id, name, category)
+    values ((select id from public.shopping_lists where kind = 'farmacia' and archived_at is not null limit 1), 'Dipirona', 'medicamentos');
+  select * into again from public.add_to_pharmacy_list('Omeprazol');
+  assert again.added and again.list_id = newer, 'an item on a market list does not count';
+  select * into again from public.add_to_pharmacy_list('Dipirona');
+  assert again.added and again.list_id = newer, 'nor one on an archived pharmacy list';
+  perform set_config('test.pharmacy_newer', newer::text, false);
+end $$;
+-- Vera, da mesma casa: acha o que Paula pôs.
+select set_config('request.jwt.claim.sub', :'user_med_v', false) \gset
+do $$
+declare
+  again record;
+begin
+  select * into again from public.add_to_pharmacy_list('puran t4');
+  assert not again.added and again.list_id = current_setting('test.pharmacy_newer')::uuid, 'another member of the household finds the pending item';
+end $$;
+reset role;
+
+-- Dois celulares da casa ao mesmo tempo, com duas sessões de verdade: esta (Paula) e a de Vera, aberta com
+-- dblink (vem com o Postgres).
+select exists (select 1 from pg_available_extensions where name = 'dblink') as has_dblink \gset
+\if :has_dblink
+create schema med_race;
+create extension dblink schema med_race;
+-- Se algo der errado, a sessão de Vera desiste em vez de esperar para sempre.
+select format(
+  'dbname=%s user=%s port=%s host=''%s''',
+  current_database(),
+  session_user,
+  current_setting('port'),
+  case when current_setting('listen_addresses') = '' then split_part(current_setting('unix_socket_directories'), ',', 1) else 'localhost' end
+) as med_race_conn \gset
+select med_race.dblink_connect('vera', :'med_race_conn') as med_race_connected \gset
+select med_race.dblink_exec('vera', 'set statement_timeout = ''30s''') as med_race_timeout \gset
+select med_race.dblink_exec('vera', 'set role authenticated') as med_race_role \gset
+select set_config('test.med_race_pid', pid::text, false) as med_race_pid
+  from med_race.dblink('vera', format('select set_config(''request.jwt.claim.sub'', %L, false), pg_backend_pid()', :'user_med_v')) as t (sub text, pid integer) \gset
+
+-- (a) Paula põe o Enalapril e ainda não terminou; Vera põe o mesmo. Vera espera a trava da casa e, quando Paula
+--     termina, acha o item dela: um Enalapril só.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+begin;
+select set_config('test.med_race_item', item_id::text, false) as med_race_item from public.add_to_pharmacy_list('Enalapril') \gset
+reset role;
+select med_race.dblink_send_query('vera', 'select item_id, added from public.add_to_pharmacy_list(''Enalapril'')') as med_race_sent \gset
+do $$
+declare
+  vera integer := current_setting('test.med_race_pid')::integer;
+begin
+  for i in 1..200 loop
+    exit when pg_backend_pid() = any (pg_blocking_pids(vera));
+    perform pg_sleep(0.05);
+  end loop;
+  assert pg_backend_pid() = any (pg_blocking_pids(vera)), 'the second add waits for the household lock of the first';
+  assert med_race.dblink_is_busy('vera') = 1, 'and has not answered yet';
+end $$;
+commit;
+do $$
+declare
+  r record;
+begin
+  select * into r from med_race.dblink_get_result('vera') as t (item_id uuid, added boolean);
+  assert not r.added and r.item_id = current_setting('test.med_race_item')::uuid, 'the second add finds the item of the first';
+  assert (select count(*) from public.shopping_list_items where name = 'Enalapril') = 1, 'one Enalapril on the lists';
+end $$;
+-- (A consulta só termina quando não há mais resultado a ler.)
+select count(*) as med_race_drained from med_race.dblink_get_result('vera') as t (item_id uuid, added boolean) \gset
+
+-- (b) Paula põe a Furosemida e ainda não terminou; Vera arquiva a lista em que ela entra. O arquivamento espera o
+--     item entrar (a ordem de sempre: pôs, depois arquivou), em vez de o item ir para uma lista que já não aparece.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+begin;
+select set_config('test.med_race_list', list_id::text, false) as med_race_list from public.add_to_pharmacy_list('Furosemida') \gset
+reset role;
+select med_race.dblink_send_query(
+  'vera',
+  format('update public.shopping_lists set archived_at = now() where id = %L', current_setting('test.med_race_list'))
+) as med_race_sent \gset
+do $$
+declare
+  vera integer := current_setting('test.med_race_pid')::integer;
+begin
+  assert current_setting('test.med_race_list')::uuid = current_setting('test.pharmacy_newer')::uuid, 'the item went to the newest open list';
+  for i in 1..200 loop
+    exit when pg_backend_pid() = any (pg_blocking_pids(vera));
+    perform pg_sleep(0.05);
+  end loop;
+  assert pg_backend_pid() = any (pg_blocking_pids(vera)), 'archiving the list waits for the add on it';
+end $$;
+commit;
+do $$
+declare
+  r record;
+begin
+  select * into r from med_race.dblink_get_result('vera') as t (status text);
+  assert r.status = 'UPDATE 1', r.status;
+  assert (
+    select l.archived_at is not null from public.shopping_lists l where l.id = current_setting('test.med_race_list')::uuid
+  ), 'the list was archived after the add';
+  assert (select count(*) from public.shopping_list_items where name = 'Furosemida') = 1, 'with the item on it';
+end $$;
+select count(*) as med_race_drained from med_race.dblink_get_result('vera') as t (status text) \gset
+
+-- (c) Na ordem contrária: Paula arquiva a última lista de farmácia aberta e ainda não terminou; Vera põe a
+--     Furosemida (a de antes ficou na lista arquivada). Ela espera o arquivamento e põe o item numa lista nova,
+--     aberta.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+begin;
+update public.shopping_lists set archived_at = now() where id = current_setting('test.pharmacy_p')::uuid;
+reset role;
+select med_race.dblink_send_query('vera', 'select list_id, added from public.add_to_pharmacy_list(''Furosemida'')') as med_race_sent \gset
+do $$
+declare
+  vera integer := current_setting('test.med_race_pid')::integer;
+begin
+  for i in 1..200 loop
+    exit when pg_backend_pid() = any (pg_blocking_pids(vera));
+    perform pg_sleep(0.05);
+  end loop;
+  assert pg_backend_pid() = any (pg_blocking_pids(vera)), 'the add waits for the archive of the list it found';
+end $$;
+commit;
+do $$
+declare
+  r record;
+begin
+  select * into r from med_race.dblink_get_result('vera') as t (list_id uuid, added boolean);
+  assert r.added, 'the item is added';
+  assert r.list_id <> all (array[current_setting('test.pharmacy_p')::uuid, current_setting('test.pharmacy_newer')::uuid]),
+    'to another list than the archived ones';
+  assert (select l.kind = 'farmacia' and l.archived_at is null and l.name = 'Farmácia' from public.shopping_lists l where l.id = r.list_id),
+    'a new open pharmacy list';
+  assert (select count(*) from public.shopping_list_items where name = 'Furosemida' and list_id = r.list_id and checked_at is null) = 1,
+    'with the item on it';
+end $$;
+select count(*) as med_race_drained from med_race.dblink_get_result('vera') as t (list_id uuid, added boolean) \gset
+select med_race.dblink_disconnect('vera') as med_race_closed \gset
+drop extension dblink;
+drop schema med_race;
+\else
+\echo '  (este Postgres não tem dblink: as corridas entre duas sessões não rodaram; fica conferido que add_to_pharmacy_list trava a casa e a lista)'
+do $$
+declare
+  src text := (select p.prosrc from pg_proc p where p.oid = 'public.add_to_pharmacy_list(text, text, text)'::regprocedure);
+begin
+  assert src ~ 'pg_advisory_xact_lock\(hashtextextended\(''open_pharmacy_list:''', 'add_to_pharmacy_list takes the household lock of open_pharmacy_list';
+  assert src ~ 'for update', 'and locks the list row before looking for the item';
+end $$;
+\endif
+
+-- Quico, de outra casa: não vê os itens da Paula, e o dele vai para a lista dele.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+declare
+  r record;
+begin
+  select * into r from public.add_to_pharmacy_list('Losartana');
+  assert r.added, 'another household does not see the pending items of P';
+  assert (select count(*) from public.shopping_lists where id = r.list_id) = 1, 'and the item goes to an own list';
+  assert (select count(*) from public.shopping_list_items) = 1, 'Q sees only the own item';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+begin
+  assert (select count(*) from public.shopping_list_items where name = 'Losartana' and checked_at is null) = 1, 'the item of Q is not on the lists of P';
+end $$;
+-- Sem casa, nada; anônimo não chama.
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+do $$
+begin
+  perform public.add_to_pharmacy_list('Losartana');
+  raise exception 'FAIL: pharmacy item without a household';
+exception when insufficient_privilege then
+  assert sqlerrm = 'sem casa', 'the error says there is no household';
+end $$;
+set role anon;
+do $$
+begin
+  perform public.add_to_pharmacy_list('Losartana');
+  raise exception 'FAIL: anon added a pharmacy item';
+exception when insufficient_privilege then null;
+end $$;
+reset role;
+do $$
+begin
+  assert not has_function_privilege('anon', 'public.add_to_pharmacy_list(text, text, text)', 'execute'), 'anon cannot execute add_to_pharmacy_list';
+  assert has_function_privilege('authenticated', 'public.add_to_pharmacy_list(text, text, text)', 'execute'), 'members can execute add_to_pharmacy_list';
+  assert (select proacl is not null from pg_proc where oid = 'public.add_to_pharmacy_list(text, text, text)'::regprocedure)
+    and not exists (
+    select 1 from pg_proc p, aclexplode(p.proacl) a
+    where p.oid = 'public.add_to_pharmacy_list(text, text, text)'::regprocedure and a.grantee = 0
+  ), 'and public has no grant on add_to_pharmacy_list';
+  assert not (select p.prosecdef from pg_proc p where p.oid = 'public.add_to_pharmacy_list(text, text, text)'::regprocedure),
+    'add_to_pharmacy_list runs as the caller (RLS applies)';
+end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• remédio salvo por um app de antes do estoque: a regra nova não lê a contagem antiga'
+-- O app de antes do estoque salva o remédio sem as colunas dele. Se muda a regra das doses de um remédio com o
+-- estoque acompanhado, o banco para de acompanhar o estoque (a contagem antiga, lida com a regra nova desde o dia
+-- em que foi feita, pularia sem ninguém ter contado nada). O app de agora sempre grava a contagem refeita.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  counted date := current_date - 3;
+  m uuid;
+  r public.medications;
+  change text;
+begin
+  -- (1) Duas vezes por dia, com o corpo do app de antes (sem o estoque): a contagem sai, a regra nova fica.
+  insert into public.medications (person_name, name, times, start_on, stock_count, stock_counted_on)
+    values ('Paula', 'Clonazepam', array['08:00'], '2026-01-01', 30, counted) returning id into m;
+  update public.medications
+    set person_id = null, person_name = 'Paula', name = 'Clonazepam', dosage = null, times = array['08:00', '20:00'], start_on = '2026-01-01',
+      end_on = null, notes = null, frequency = 'daily', weekdays = null, interval_days = null, total_doses = null
+    where id = m returning * into r;
+  assert r.stock_count is null and r.stock_counted_on is null, 'an old app changing the times a day stops following the stock';
+  assert r.times = array['08:00', '20:00'], 'and the new rule is saved';
+  -- Cada parte da regra conta, e "Cada dose usa" também.
+  foreach change in array array[
+    'frequency = ''weekdays'', weekdays = array[1]::smallint[]',
+    'frequency = ''interval'', interval_days = 2',
+    'start_on = ''2026-02-01''',
+    'end_on = ''2027-12-31''',
+    'total_doses = 500',
+    'dose_units = 2'
+  ] loop
+    insert into public.medications (person_name, name, times, start_on, stock_count, stock_counted_on)
+      values ('Paula', 'Clonazepam', array['08:00'], '2026-01-01', 30, counted) returning id into m;
+    execute format('update public.medications set %s where id = %L', change, m);
+    select * into r from public.medications where id = m;
+    assert r.stock_count is null and r.stock_counted_on is null, format('a rule change without a recount (%s) stops following the stock', change);
+  end loop;
+  -- Contada antes de ontem: já não é a contagem de hoje que o app de agora refaria igual.
+  insert into public.medications (person_name, name, times, start_on, stock_count, stock_counted_on)
+    values ('Paula', 'Clonazepam', array['08:00'], '2026-01-01', 30, current_date - 2) returning id into m;
+  update public.medications set times = array['08:00', '20:00'] where id = m returning * into r;
+  assert r.stock_count is null, 'a count from the day before yesterday is not kept under the new rule';
+
+  -- (2) O app de agora faz a mesma mudança e grava a contagem refeita (o que sobrava, contado hoje): fica.
+  insert into public.medications (person_name, name, times, start_on, stock_count, stock_counted_on)
+    values ('Paula', 'Clonazepam', array['08:00'], '2026-01-01', 30, counted) returning id into m;
+  update public.medications set times = array['08:00', '20:00'], stock_count = 27, stock_counted_on = current_date where id = m returning * into r;
+  assert r.stock_count = 27 and r.stock_counted_on = current_date and r.times = array['08:00', '20:00'], 'the recount of the current app stays';
+  -- Já tinha acabado: o zero no dia em que acabou também fica.
+  insert into public.medications (person_name, name, times, start_on, stock_count, stock_counted_on)
+    values ('Paula', 'Clonazepam', array['08:00'], '2026-01-01', 2, counted) returning id into m;
+  update public.medications set dose_units = 0.5, stock_count = 0, stock_counted_on = counted + 2 where id = m returning * into r;
+  assert r.stock_count = 0 and r.stock_counted_on = counted + 2 and r.dose_units = 0.5, 'the zero on the run-out day stays';
+
+  -- (3) Não é regra nova: só o horário (outros horários, ou os mesmos em outra ordem), os dias da semana em outra
+  --     ordem, o nome, a dose escrita ou as observações. A contagem fica.
+  insert into public.medications (person_name, name, times, start_on, frequency, weekdays, stock_count, stock_counted_on)
+    values ('Paula', 'Clonazepam', array['08:00', '20:00'], '2026-01-01', 'weekdays', array[1, 3]::smallint[], 30, counted) returning id into m;
+  update public.medications set times = array['21:00', '07:30'] where id = m;
+  update public.medications set weekdays = array[3, 1]::smallint[] where id = m;
+  update public.medications set name = 'Clonazepam 2 mg', dosage = '1 comprimido', notes = 'à noite' where id = m;
+  update public.medications set dose_units = 1, start_on = '2026-01-01', end_on = null, total_doses = null where id = m returning * into r;
+  assert r.stock_count = 30 and r.stock_counted_on = counted, 'clock times, weekday order, name, dosage and notes keep the count';
+  assert r.times = array['21:00', '07:30'] and r.weekdays = array[3, 1]::smallint[] and r.name = 'Clonazepam 2 mg', 'and are saved';
+
+  -- (4) Contagem zerada (nada a pular), e contagem de hoje ou de ontem (o app de agora refaz a de hoje com os
+  --     mesmos valores; à noite no Brasil, o dia do servidor já é o seguinte): ficam.
+  for r in
+    insert into public.medications (person_name, name, times, start_on, stock_count, stock_counted_on)
+      values ('Paula', 'Clonazepam', array['08:00'], '2026-01-01', 0, counted),
+        ('Paula', 'Clonazepam', array['08:00'], '2026-01-01', 30, current_date),
+        ('Paula', 'Clonazepam', array['08:00'], '2026-01-01', 30, current_date - 1)
+      returning *
+  loop
+    update public.medications set times = array['08:00', '20:00'] where id = r.id;
+    assert (select stock_count = r.stock_count and stock_counted_on = r.stock_counted_on from public.medications where id = r.id),
+      format('a count of %s on %s is kept', r.stock_count, r.stock_counted_on);
+  end loop;
+  perform set_config('test.med_old_rule', m::text, false);
+end $$;
+-- (5) Quem não usa a API não passa pelo gatilho: a service role e as funções do banco (aqui, o dono).
+reset role;
+do $$
+declare
+  m uuid;
+  r public.medications;
+begin
+  insert into public.medications (household_id, person_name, name, times, start_on, stock_count, stock_counted_on)
+    select household_id, 'Paula', 'Clonazepam', array['08:00'], '2026-01-01', 30, current_date - 3 from public.medications
+    where id = current_setting('test.med_old_rule')::uuid
+    returning id into m;
+  perform set_config('test.med_service', m::text, false);
+  update public.medications set times = array['08:00', '20:00'] where id = m returning * into r;
+  assert r.stock_count = 30, 'the owner (and so a security definer function) is left alone';
+end $$;
+set role service_role;
+do $$
+declare
+  r public.medications;
+begin
+  update public.medications set times = array['08:00', '14:00', '20:00'] where id = current_setting('test.med_service')::uuid returning * into r;
+  assert r.stock_count = 30 and r.stock_counted_on = current_date - 3, 'the service role is left alone';
+end $$;
+reset role;
+do $$
+begin
+  assert not (select p.prosecdef from pg_proc p where p.oid = 'public.medication_rule_without_recount()'::regprocedure),
+    'medication_rule_without_recount is security invoker';
+  assert (select p.proconfig from pg_proc p where p.oid = 'public.medication_rule_without_recount()'::regprocedure) = array['search_path=""'],
+    'with an empty search_path';
+  assert not exists (
+    select 1 from unnest(array['public', 'anon', 'authenticated']) as who
+    where has_function_privilege(who, 'public.medication_rule_without_recount()', 'execute')
+  ), 'medication_rule_without_recount is called by no role of the API';
+end $$;
+
 \echo 'OK — todos os testes do banco passaram'

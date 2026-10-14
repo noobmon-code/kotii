@@ -391,10 +391,10 @@ async function addItemOnce(queryClient: QueryClient, list: { id: string; name: s
   return { ...list, added: true };
 }
 
-function useAddToOpenList(openList: () => Promise<{ id: string; name: string }>) {
+function useAddToOpenList<T extends NewListItem>(add: (queryClient: QueryClient, item: T) => Promise<ListedItem>) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (item: NewListItem) => addItemOnce(queryClient, await openList(), item),
+    mutationFn: (item: T) => add(queryClient, item),
     onSuccess: (list) => {
       queryClient.invalidateQueries({ queryKey: ['lists'] });
       queryClient.invalidateQueries({ queryKey: ['listItems', list.id] });
@@ -408,12 +408,36 @@ function useAddToOpenList(openList: () => Promise<{ id: string; name: string }>)
  * pendente na lista, não duplica (`added: false`), então repetir é seguro.
  */
 export function useAddToMarketList() {
-  return useAddToOpenList(openMarketList);
+  return useAddToOpenList(async (queryClient, item: NewListItem) => addItemOnce(queryClient, await openMarketList(), item));
+}
+
+/** O remédio que vai para a lista da farmácia; `altName`: o mesmo item com o nome de quem toma (ver onPharmacyList). */
+export interface PharmacyItem extends NewListItem {
+  altName?: string | null;
+}
+
+/**
+ * Põe o remédio na lista da farmácia sem repetir. No servidor, numa vez só
+ * (add_to_pharmacy_list): acha ou cria a lista e só põe o item se ele não
+ * está pendente em nenhuma lista de farmácia aberta, com o nome ou com o nome
+ * de quem toma, sob a trava da casa. Duas pessoas tocando ao mesmo tempo não o
+ * põem duas vezes; `added: false` diz em que lista ele já estava. Sem a função
+ * (banco de antes da migração, ou o cache do PostgREST de antes dela), o
+ * caminho de antes: open_pharmacy_list e addItemOnce, que só confere a lista
+ * aberta e o nome exato.
+ */
+async function addToPharmacyList(queryClient: QueryClient, item: PharmacyItem): Promise<ListedItem> {
+  const added = await supabase.rpc('add_to_pharmacy_list', { p_item: item.name, p_alt_item: item.altName ?? null }).single();
+  if (!added.error || !isMissingFunction(added.error, 'add_to_pharmacy_list')) {
+    const row = unwrap(added) as { list_id: string; list_name: string; added: boolean };
+    return { id: row.list_id, name: row.list_name, added: row.added };
+  }
+  return addItemOnce(queryClient, await openPharmacyList(), item);
 }
 
 /** O mesmo, na lista de farmácia (ou cria "Farmácia"): o remédio que está acabando. */
 export function useAddToPharmacyList() {
-  return useAddToOpenList(openPharmacyList);
+  return useAddToOpenList(addToPharmacyList);
 }
 
 /**

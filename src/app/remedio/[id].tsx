@@ -1,3 +1,4 @@
+import { useIsMutating } from '@tanstack/react-query';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Platform, type ScrollView, StyleSheet, Switch, View } from 'react-native';
@@ -5,6 +6,8 @@ import { Platform, type ScrollView, StyleSheet, Switch, View } from 'react-nativ
 import { usePeople } from '@/data/health';
 import {
   MEDICATION_STOCK_UNAVAILABLE,
+  RESTOCK_MEDICATION_KEY,
+  stockSeen,
   toSchedule,
   toStockValues,
   useArchiveMedication,
@@ -21,7 +24,18 @@ import {
   WEEKDAYS,
   type MedicationFrequency,
 } from '@/domain/medications';
-import { countDayError, formatUnits, keepStockOnRuleChange, readStockForm, stockFormOf, type StockForm } from '@/domain/medicationStock';
+import {
+  countDayError,
+  doseRuleChanged,
+  formatUnits,
+  keepStockOnRuleChange,
+  readStockForm,
+  stockDayError,
+  stockFormOf,
+  type DoseRule,
+  type StockForm,
+} from '@/domain/medicationStock';
+import { StaleNotice } from '@/features/health/StaleNotice';
 import { forgetBoxUnits } from '@/lib/medicationBox';
 import {
   askReminderPermission,
@@ -51,14 +65,18 @@ export default function MedicationScreen() {
   const people = usePeople();
 
   if ((!isNew && medication.isPending) || people.isPending) return <Loading />;
-  if (!isNew && medication.isError) return <ErrorNotice error={medication.error} />;
-  if (people.isError) return <ErrorNotice error={people.error} onRetry={() => people.refetch()} />;
+  // O erro só toma a tela quando não há o que mostrar. Com o remédio já carregado, uma busca de novo que falha
+  // (a de depois de "Comprei mais", na farmácia sem sinal) deixa o formulário, com o que foi digitado, e avisa.
+  if (!isNew && !medication.data) return <ErrorNotice error={medication.error} onRetry={() => medication.refetch()} />;
+  if (!people.data) return <ErrorNotice error={people.error} onRetry={() => people.refetch()} />;
+  const failed = [people, ...(isNew ? [] : [medication])].filter((query) => query.isError);
   return (
     <MedicationForm
       medication={isNew ? undefined : medication.data}
       people={people.data}
       initialPersonId={pessoa || null}
       openAtStock={Boolean(estoque)}
+      onRetry={failed.length ? () => failed.forEach((query) => void query.refetch()) : undefined}
     />
   );
 }
@@ -68,17 +86,23 @@ function MedicationForm({
   people,
   initialPersonId,
   openAtStock,
+  onRetry,
 }: {
   medication?: Medication;
   people: Person[];
   initialPersonId: string | null;
   openAtStock: boolean;
+  /** Uma busca falhou com o formulário na tela: o aviso, com "Tentar de novo". */
+  onRetry?: () => void;
 }) {
   const c = useColors();
   // Abrir em "Estoque e receita": rola até lá uma vez, quando a seção ganha lugar na tela.
   const scroll = useRef<ScrollView>(null);
   const scrolledToStock = useRef(false);
   const save = useSaveMedication();
+  // "Comprei mais" a caminho: salvar agora partiria do estoque de antes da compra e chegaria depois dela, por
+  // cima. "Salvar" espera (e, salvando, a compra também espera: ver MedicationStockSection).
+  const restocking = useIsMutating({ mutationKey: RESTOCK_MEDICATION_KEY }) > 0;
   // A casa do remédio (e o nome dela no aviso, com mais de uma casa).
   const target = useHouseReminderTarget();
   const archive = useArchiveMedication();
@@ -206,29 +230,39 @@ function MedicationForm({
       interval_days: frequency === 'interval' ? interval : null,
       total_doses: duration === 'doses' ? doses : null,
     };
+    const before = medication && toSchedule(medication, today, tickedToday.data);
+    const rule: DoseRule = {
+      times: values.times,
+      startOn: values.start_on,
+      endOn: values.end_on,
+      frequency,
+      weekdays: values.weekdays,
+      intervalDays: values.interval_days,
+      totalDoses: values.total_doses,
+    };
+    // Regra nova num remédio com o estoque acompanhado, sem número digitado: o app refaz a contagem pela data do
+    // aparelho. Com ela fora do que o banco aceita, a conta já sai errada (antes de 2000 a regra nova valeria para
+    // trás; depois de 2100, a caixa zeraria), seja qual for o dia que ela daria: o aviso, e nada é salvo.
+    if (before?.stockCount != null && stockRead.changes.stockCount === undefined && doseRuleChanged(before, rule, stockRead.changes)) {
+      const deviceDay = stockDayError(today);
+      if (deviceDay) {
+        notify(deviceDay.title, deviceDay.message);
+        return;
+      }
+    }
     // Mudou a regra das doses de um remédio com estoque acompanhado: o que já foi gasto não muda com ela.
-    const stockChanges = keepStockOnRuleChange(
-      stockRead.changes,
-      medication && toSchedule(medication, today, tickedToday.data),
-      {
-        times: values.times,
-        startOn: values.start_on,
-        endOn: values.end_on,
-        frequency,
-        weekdays: values.weekdays,
-        intervalDays: values.interval_days,
-        totalDoses: values.total_doses,
-      },
-      today,
-    );
+    const stockChanges = keepStockOnRuleChange(stockRead.changes, before, rule, today);
     // A contagem refeita sozinha vai com o dia do aparelho: com a data errada, o mesmo aviso de contar à mão, e nada é salvo.
     const clock = countDayError(stockChanges);
     if (clock) {
       notify(clock.title, clock.message);
       return;
     }
+    // A contagem refeita parte da cópia que a tela tem: só vale sobre o estoque dela (outro celular pode ter
+    // registrado uma caixa nesse meio-tempo). O número que a pessoa escreveu vai como ela escreveu.
+    const rebased = stockRead.changes.stockCount === undefined && stockChanges.stockCount !== undefined;
     save.mutate(
-      { id: medication?.id, values, stock: toStockValues(stockChanges) },
+      { id: medication?.id, values, stock: toStockValues(stockChanges), from: rebased && medication ? stockSeen(medication) : undefined },
       {
         onSuccess: async ({ medication: saved, stockUnavailable }) => {
           try {
@@ -253,6 +287,7 @@ function MedicationForm({
   return (
     <Screen edges={[]} scrollRef={scroll}>
       <Stack.Screen options={{ title: medication ? 'Editar remédio' : 'Novo remédio' }} />
+      {onRetry ? <StaleNotice onRetry={onRetry} /> : null}
       <View style={styles.group}>
         <Text variant="label">Para quem</Text>
         <PersonChips people={people} value={personId} onChange={setPersonId} onAdd={openNewPerson} />
@@ -350,6 +385,7 @@ function MedicationForm({
           form={stock}
           initial={savedStock}
           today={today}
+          saving={save.isPending}
           onChange={(patch) => setStock((current) => ({ ...current, ...patch }))}
           onRestocked={(count) => {
             // A compra já foi gravada: o número novo vira o salvo, e salvar a tela depois não o grava de novo.
@@ -374,7 +410,7 @@ function MedicationForm({
         <Text variant="small">{remindersUnavailableReason()}</Text>
       )}
 
-      <Button title="Salvar" onPress={submit} loading={save.isPending} />
+      <Button title="Salvar" onPress={submit} loading={save.isPending || restocking} />
       {medication ? (
         <Button
           title="Encerrar tratamento"
