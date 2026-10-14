@@ -96,6 +96,20 @@ describe('cache guardado no aparelho', () => {
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
   });
 
+  it('os gastos e o mercado do mês não ficam guardados no aparelho; a lista de compras fica', async () => {
+    queryClient.setQueryData(['spending', 'market', '2026-10'], [{ id: 'nota-do-mercado' }]);
+    queryClient.setQueryData(['spending', '2026-04', '2026-10'], [{ id: 'lancamento-do-resumo' }]);
+    queryClient.setQueryData(['lists'], [{ id: 'l1', name: 'Compras da semana' }]);
+    saveNow();
+    await flush();
+    const saved = await stored();
+    expect(saved).toContain('Compras da semana');
+    expect(saved).not.toContain('nota-do-mercado');
+    expect(saved).not.toContain('lancamento-do-resumo');
+    forgetCache();
+    await flush();
+  });
+
   it('as marcações e os limpar da fila também dizem de quem é o cache', () => {
     queryClient.setQueryData(['household', 'u1'], { household: { id: 'h1' } });
     queryClient.getMutationCache().build(queryClient, { mutationKey: TOGGLE_ITEM_KEY, gcTime: 0 }, {

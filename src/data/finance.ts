@@ -9,10 +9,12 @@ import type { MedicalEntry } from '@/domain/incomeTax';
 import {
   buildEntries,
   monthRange,
+  type Entry,
   type ExpenseForSpending,
   type PaymentForSpending,
   type ReceiptForSpending,
 } from '@/domain/finance';
+import type { MarketTotalReceipt } from '@/domain/marketSpend';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Bill, BillPayment, Budget, Expense } from '@/lib/types';
 
@@ -235,62 +237,99 @@ type PaymentRow = {
   bill: { name: string; category: string } | null;
 };
 
+/** O que a busca dos gastos guarda: os lançamentos e as notas de onde vieram. */
+interface SpendingData {
+  entries: Entry[];
+  /**
+   * As notas confirmadas do período, com o valor e a categoria de cada item,
+   * como chegaram: é com elas que a entrada do "Mercado do mês" no resumo faz
+   * a conta do total (marketTotal), sem outra busca.
+   */
+  marketReceipts: MarketTotalReceipt[];
+}
+
+async function fetchSpending(fromMonth: string, toMonth: string): Promise<SpendingData> {
+  const start = monthRange(fromMonth).start;
+  const end = monthRange(toMonth).end;
+  // Data da compra no fuso do aparelho: limites do mês em hora local.
+  const [sy, sm] = fromMonth.split('-').map(Number);
+  const [ey, em] = toMonth.split('-').map(Number);
+  const startAt = new Date(sy, sm - 1, 1).toISOString();
+  const endAt = new Date(ey, em, 1).toISOString();
+
+  const [receipts, payments, expenses] = await Promise.all([
+    supabase
+      .from('receipts')
+      .select('id, purchased_at, total, paid_by, store:stores(name), receipt_items(total_price, suggested_category, product:products(category))')
+      .eq('status', 'confirmed')
+      .gte('purchased_at', startAt)
+      .lt('purchased_at', endAt),
+    supabase
+      .from('bill_payments')
+      .select('id, bill_id, paid_on, amount, paid_by, bill:bills(name, category)')
+      .gte('paid_on', start)
+      .lt('paid_on', end),
+    supabase.from('expenses').select('id, spent_on, amount, category, description, paid_by').gte('spent_on', start).lt('spent_on', end),
+  ]);
+
+  const receiptRows = unwrap(receipts) as unknown as ReceiptRow[];
+  const paymentRows = unwrap(payments) as unknown as PaymentRow[];
+  const expenseRows = unwrap(expenses) as ExpenseForSpending[];
+
+  const forSpending: ReceiptForSpending[] = receiptRows.map((r) => ({
+    id: r.id,
+    purchased_at_date: toISODate(new Date(r.purchased_at)),
+    total: r.total,
+    store_name: r.store?.name ?? null,
+    paid_by: r.paid_by,
+    items: r.receipt_items.map((i) => ({
+      total_price: i.total_price,
+      category: i.product?.category ?? i.suggested_category,
+    })),
+  }));
+  const paid: PaymentForSpending[] = paymentRows.map((p) => ({
+    id: p.id,
+    bill_id: p.bill_id,
+    paid_on: p.paid_on,
+    amount: p.amount,
+    bill_name: p.bill?.name ?? 'Conta',
+    bill_category: p.bill?.category ?? 'contas',
+    paid_by: p.paid_by,
+  }));
+  const marketReceipts: MarketTotalReceipt[] = receiptRows.map((r) => ({
+    purchasedAt: r.purchased_at,
+    status: 'confirmed',
+    total: r.total == null ? null : Number(r.total),
+    lines: r.receipt_items.map((i) => ({
+      productCategory: i.product?.category ?? null,
+      suggestedCategory: i.suggested_category,
+      totalPrice: i.total_price == null ? null : Number(i.total_price),
+    })),
+  }));
+  return { entries: buildEntries(forSpending, paid, expenseRows), marketReceipts };
+}
+
+/** Uma chave e uma busca para os dois usos abaixo: quem pede as notas não faz o servidor trabalhar de novo. */
+const spendingQuery = (fromMonth: string, toMonth: string) => ({
+  queryKey: ['spending', fromMonth, toMonth],
+  queryFn: () => fetchSpending(fromMonth, toMonth),
+});
+const entriesOf = (data: SpendingData) => data.entries;
+const marketReceiptsOf = (data: SpendingData) => data.marketReceipts;
+
 /** Lançamentos de `fromMonth` até `toMonth` (inclusive), no formato "AAAA-MM". */
 export function useSpending(fromMonth: string, toMonth: string, enabled = true) {
-  return useQuery({
-    queryKey: ['spending', fromMonth, toMonth],
-    enabled,
-    queryFn: async () => {
-      const start = monthRange(fromMonth).start;
-      const end = monthRange(toMonth).end;
-      // Data da compra no fuso do aparelho: limites do mês em hora local.
-      const [sy, sm] = fromMonth.split('-').map(Number);
-      const [ey, em] = toMonth.split('-').map(Number);
-      const startAt = new Date(sy, sm - 1, 1).toISOString();
-      const endAt = new Date(ey, em, 1).toISOString();
+  return useQuery({ ...spendingQuery(fromMonth, toMonth), enabled, select: entriesOf });
+}
 
-      const [receipts, payments, expenses] = await Promise.all([
-        supabase
-          .from('receipts')
-          .select('id, purchased_at, total, paid_by, store:stores(name), receipt_items(total_price, suggested_category, product:products(category))')
-          .eq('status', 'confirmed')
-          .gte('purchased_at', startAt)
-          .lt('purchased_at', endAt),
-        supabase
-          .from('bill_payments')
-          .select('id, bill_id, paid_on, amount, paid_by, bill:bills(name, category)')
-          .gte('paid_on', start)
-          .lt('paid_on', end),
-        supabase.from('expenses').select('id, spent_on, amount, category, description, paid_by').gte('spent_on', start).lt('spent_on', end),
-      ]);
-
-      const receiptRows = unwrap(receipts) as unknown as ReceiptRow[];
-      const paymentRows = unwrap(payments) as unknown as PaymentRow[];
-      const expenseRows = unwrap(expenses) as ExpenseForSpending[];
-
-      const forSpending: ReceiptForSpending[] = receiptRows.map((r) => ({
-        id: r.id,
-        purchased_at_date: toISODate(new Date(r.purchased_at)),
-        total: r.total,
-        store_name: r.store?.name ?? null,
-        paid_by: r.paid_by,
-        items: r.receipt_items.map((i) => ({
-          total_price: i.total_price,
-          category: i.product?.category ?? i.suggested_category,
-        })),
-      }));
-      const paid: PaymentForSpending[] = paymentRows.map((p) => ({
-        id: p.id,
-        bill_id: p.bill_id,
-        paid_on: p.paid_on,
-        amount: p.amount,
-        bill_name: p.bill?.name ?? 'Conta',
-        bill_category: p.bill?.category ?? 'contas',
-        paid_by: p.paid_by,
-      }));
-      return buildEntries(forSpending, paid, expenseRows);
-    },
-  });
+/**
+ * As notas confirmadas que a busca de useSpending já trouxe para o mesmo
+ * período (mesma chave, mesmo cache): só para a conta do total do mercado do
+ * mês na entrada do resumo. A tela "Mercado do mês" tem a própria leitura,
+ * paginada (useMarketReceipts), que o resumo nunca dispara.
+ */
+export function useSpendingReceipts(fromMonth: string, toMonth: string) {
+  return useQuery({ ...spendingQuery(fromMonth, toMonth), select: marketReceiptsOf });
 }
 
 // ---------------------------------------------------------------------------

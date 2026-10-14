@@ -37,10 +37,13 @@ export function ReceiptsPanel() {
 
   return (
     <View style={styles.gap}>
-      <Row>
-        <Button title="Adicionar nota" icon="camera-outline" onPress={scanner.open} loading={scanner.busy} style={styles.flex} />
-        <Button title="Preços" icon="chart-line" variant="secondary" onPress={() => router.push('/precos')} style={styles.flex} />
-      </Row>
+      <View style={styles.actions}>
+        <Button title="Adicionar nota" icon="camera-outline" onPress={scanner.open} loading={scanner.busy} />
+        <Row>
+          <Button title="Preços" icon="chart-line" variant="secondary" onPress={() => router.push('/precos')} style={styles.prices} />
+          <Button title="Mercado do mês" icon="cart-outline" variant="secondary" onPress={() => router.push('/mercado')} style={styles.market} />
+        </Row>
+      </View>
 
       {receipts.isPending ? <Loading /> : null}
       {receipts.isError ? <ErrorNotice error={receipts.error} onRetry={() => receipts.refetch()} /> : null}
@@ -71,6 +74,9 @@ export function ReceiptsPanel() {
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
   gap: { gap: space.lg },
+  actions: { gap: space.sm },
+  // O nome mais comprido leva mais espaço, para os dois caberem numa linha num celular comum (de 360 de largura em diante).
+  prices: { flex: 2 },
+  market: { flex: 3 },
 });
