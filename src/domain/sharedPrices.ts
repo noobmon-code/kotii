@@ -173,6 +173,8 @@ export function visibleSharedPrices(
   /** O dia da compra mais recente da casa, por produto e CNPJ. */
   const ownDay = new Map<string, string>();
   for (const price of own) {
+    // Zero não é preço (a compra "sem valor"): a casa não sabe quanto pagou ali, e a notícia de fora continua valendo.
+    if (!(price.unit_price > 0)) continue;
     const cnpj = cnpjOf.get(price.store_id);
     const day = saoPauloDay(price.purchased_at);
     if (!cnpj || !day) continue;

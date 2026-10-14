@@ -369,6 +369,8 @@ as $$
           and r.status = 'confirmed'
           and s.cnpj = m.store_cnpj
           and ri.product_id = m.product_id
+          -- Zero não é preço (a compra "sem valor"): não esconde nada, como nos outros leitores de preço.
+          and ri.unit_price > 0
           and (r.purchased_at at time zone 'America/Sao_Paulo')::date >= m.seen_on
     )
   union all

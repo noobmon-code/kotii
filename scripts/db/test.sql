@@ -3835,6 +3835,13 @@ begin
     values (s_ata, (today - 1 + time '10:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, product_id, unit, unit_price, total_price)
     values (r, 'arroz no rascunho', p, 'un', 23.00, 23.00);
+  -- Uma nota confirmada da casa com o arroz no atacado, ontem, sem valor (preço zero: a leitura não trouxe o
+  -- valor): zero não é preço, e a compra sem valor não esconde nenhuma linha (a conta abaixo segue igual).
+  insert into public.receipts (store_id, purchased_at, source)
+    values (s_ata, (today - 1 + time '11:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
+    values (r, 'arroz sem valor', 'un', 0, 0) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
 
   assert (select array_agg(store_name || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by mine desc, unit, unit_price, seen_on desc) from public.shared_latest_prices())
     = array[

@@ -105,6 +105,11 @@ describe('o que vale mostrar', () => {
   it('preço zerado não é preço', () => {
     expect(visibleSharedPrices([shared(ATACADAO, 0, '2026-10-10')], [], STORES)).toEqual([]);
   });
+
+  it('a compra da casa sem valor (preço zero) não esconde: a casa não sabe quanto pagou ali', () => {
+    const mine = [own('meu-atacadao', 0, '2026-10-12T12:00:00-03:00')];
+    expect(visibleSharedPrices([shared(ATACADAO, 21.9, '2026-10-11')], mine, STORES)).toHaveLength(1);
+  });
 });
 
 describe('as linhas de um produto', () => {
