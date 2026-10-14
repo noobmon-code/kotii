@@ -6,10 +6,13 @@ import path from 'path';
 import type { JobValues, ProviderValues } from '@/domain/providers';
 
 import {
+  deleteServiceProvider,
+  fetchProviderJobs,
   fetchServiceJob,
   fetchServiceJobs,
   fetchServiceProviders,
   isMissingTable,
+  PROVIDER_JOBS_CHANGED,
   providerErrorMessage,
   PROVIDERS_UNAVAILABLE,
   saveServiceJob,
@@ -25,23 +28,32 @@ jest.mock('@/lib/supabase', () => ({
   errorMessage: (error: { message?: string }) => error?.message ?? 'Algo deu errado. Tente novamente.',
 }));
 
-type Result = { data: unknown; error: unknown };
+type Result = { data: unknown; error: unknown; count?: number | null };
 
-/** Um banco de mentira: guarda cada passo do pedido ("tabela.verbo(args)") e responde `result`. */
-function fakeDb(result: Result) {
+/**
+ * Um banco de mentira: guarda cada passo do pedido ("tabela.verbo(args)", "rpc.função(args)") e responde
+ * `result`; com mais de uma resposta, uma por pedido, na ordem (a última se repete).
+ */
+function fakeDb(...results: Result[]) {
   const calls: string[] = [];
-  const db = {
-    from: (table: string) => {
-      const query: Record<string, unknown> = {
-        then: (resolve: (value: Result) => void) => resolve(result),
+  let asked = 0;
+  const chain = (name: string) => {
+    const query: Record<string, unknown> = {
+      then: (resolve: (value: Result) => void) => resolve(results[Math.min(asked++, results.length - 1)]),
+    };
+    for (const step of ['select', 'insert', 'update', 'delete', 'eq', 'order', 'single', 'maybeSingle']) {
+      query[step] = (...args: unknown[]) => {
+        calls.push(`${name}.${step}(${args.map((arg) => JSON.stringify(arg)).join(', ')})`);
+        return query;
       };
-      for (const step of ['select', 'insert', 'update', 'delete', 'eq', 'order', 'single', 'maybeSingle']) {
-        query[step] = (...args: unknown[]) => {
-          calls.push(`${table}.${step}(${args.map((arg) => JSON.stringify(arg)).join(', ')})`);
-          return query;
-        };
-      }
-      return query;
+    }
+    return query;
+  };
+  const db = {
+    from: (table: string) => chain(table),
+    rpc: (fn: string, args: unknown) => {
+      calls.push(`rpc.${fn}(${JSON.stringify(args)})`);
+      return chain(fn);
     },
   };
   return { db: db as unknown as SupabaseClient, calls };
@@ -148,6 +160,75 @@ describe('prestadores e serviços', () => {
     );
     expect(providerErrorMessage(offline)).toBe('TypeError: Network request failed');
     expect(providerErrorMessage(null)).toBe('Algo deu errado. Tente novamente.');
+  });
+});
+
+describe('excluir um prestador', () => {
+  // Como o banco responde quando o número de serviços que a pessoa leu não é mais o do prestador.
+  const changed = { code: 'NK010', message: 'Os serviços deste prestador mudaram em outro aparelho, e nada foi excluído. Confira o histórico e tente de novo.' };
+  // O PostgREST ainda sem a função no cache de esquema (ou o banco sem ela).
+  const noFunction = { code: 'PGRST202', message: 'Could not find the function public.delete_service_provider(p_expected_jobs, p_id) in the schema cache' };
+
+  it('os serviços dele vêm com quantos são ao todo, contados pelo banco (a lista pode vir cortada em 1000)', async () => {
+    const rows = [{ id: 'j1' }];
+    const { db, calls } = fakeDb({ data: rows, error: null, count: 1043 });
+    expect(await fetchProviderJobs('p1', db)).toEqual({ rows, missing: false, total: 1043 });
+    expect(calls).toEqual([
+      'service_jobs.select("id, provider_id, equipment_id, done_on, description, amount, warranty_until, notes, created_at", {"count":"exact"})',
+      'service_jobs.eq("provider_id", "p1")',
+      'service_jobs.order("done_on", {"ascending":false})',
+      'service_jobs.order("created_at", {"ascending":false})',
+    ]);
+    // Sem o número do banco, não se sabe quantos são.
+    expect(await fetchProviderJobs('p1', fakeDb({ data: rows, error: null }).db)).toEqual({ rows, missing: false, total: null });
+    expect(await fetchProviderJobs('p1', fakeDb({ data: null, error: notInCache }).db)).toEqual({ rows: [], missing: true, total: 0 });
+    await expect(fetchProviderJobs('p1', fakeDb({ data: null, error: offline }).db)).rejects.toBe(offline);
+  });
+
+  it('pela função do banco, com o número de serviços que a pessoa leu na pergunta (ou sem número: o histórico todo)', async () => {
+    const counted = fakeDb({ data: true, error: null });
+    expect(await deleteServiceProvider({ id: 'p1', expectedJobs: 2 }, counted.db)).toBe(true);
+    expect(counted.calls).toEqual(['rpc.delete_service_provider({"p_id":"p1","p_expected_jobs":2})']);
+    const whole = fakeDb({ data: true, error: null });
+    await deleteServiceProvider({ id: 'p1', expectedJobs: null }, whole.db);
+    expect(whole.calls).toEqual(['rpc.delete_service_provider({"p_id":"p1","p_expected_jobs":null})']);
+    // Já tinha sido excluído (em outro aparelho): não é erro, o que a pessoa queria já está feito.
+    expect(await deleteServiceProvider({ id: 'p1', expectedJobs: 0 }, fakeDb({ data: false, error: null }).db)).toBe(false);
+  });
+
+  it('o número mudou em outro aparelho (NK010): nada foi excluído, e o aviso diz isso', async () => {
+    const error = await deleteServiceProvider({ id: 'p1', expectedJobs: 0 }, fakeDb({ data: null, error: changed }).db).catch((err: unknown) => err);
+    expect(error).toBe(changed);
+    expect(providerErrorMessage(error)).toBe(PROVIDER_JOBS_CHANGED);
+    expect(PROVIDER_JOBS_CHANGED).toBe('Os serviços deste prestador mudaram em outro aparelho, e nada foi excluído. Confira o histórico e tente de novo.');
+    // Só o NK010: outro código não vira esta frase.
+    expect(providerErrorMessage({ code: 'NK008', message: 'product renamed' })).toBe('product renamed');
+  });
+
+  it('o banco (ou o cache de esquema do PostgREST) ainda sem a função: exclui do jeito de antes', async () => {
+    const stale = fakeDb({ data: null, error: noFunction }, { data: null, error: null });
+    expect(await deleteServiceProvider({ id: 'p1', expectedJobs: 2 }, stale.db)).toBe(true);
+    expect(stale.calls).toEqual([
+      'rpc.delete_service_provider({"p_id":"p1","p_expected_jobs":2})',
+      'service_providers.delete()',
+      'service_providers.eq("id", "p1")',
+    ]);
+    const old = fakeDb({ data: null, error: { code: '42883', message: 'function public.delete_service_provider(uuid, integer) does not exist' } }, { data: null, error: null });
+    await deleteServiceProvider({ id: 'p1', expectedJobs: null }, old.db);
+    expect(old.calls).toContain('service_providers.delete()');
+    // Sem as tabelas também: o aviso de "ainda sendo ativados".
+    const error = await deleteServiceProvider({ id: 'p1', expectedJobs: 1 }, fakeDb({ data: null, error: noFunction }, { data: null, error: notInCache }).db).catch(
+      (err: unknown) => err,
+    );
+    expect(providerErrorMessage(error)).toBe(PROVIDERS_UNAVAILABLE);
+  });
+
+  it('outro erro da função (ou de outra função lá dentro) não vira o excluir de antes', async () => {
+    const inner = { code: '42883', message: 'function public.outra_funcao(uuid) does not exist' };
+    const failed = fakeDb({ data: null, error: inner });
+    await expect(deleteServiceProvider({ id: 'p1', expectedJobs: 1 }, failed.db)).rejects.toBe(inner);
+    await expect(deleteServiceProvider({ id: 'p1', expectedJobs: 1 }, fakeDb({ data: null, error: offline }).db)).rejects.toBe(offline);
+    expect(failed.calls).toEqual(['rpc.delete_service_provider({"p_id":"p1","p_expected_jobs":1})']);
   });
 });
 

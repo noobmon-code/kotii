@@ -54,13 +54,15 @@ create table public.service_jobs (
     references public.households (id) on delete cascade,
   provider_id uuid not null,
   equipment_id uuid,
-  done_on date not null,
+  -- As datas entre 2000 e 2100, contra erro de digitação no ano (e 'infinity', que o tipo date aceita).
+  done_on date not null check (done_on between date '2000-01-01' and date '2100-12-31'),
   -- O que foi feito.
   description text not null check (length(trim(description)) between 1 and 200),
-  -- Nulo: valor não informado. Zero vale (voltou e não cobrou).
-  amount numeric(12, 2) check (amount >= 0),
+  -- Nulo: valor não informado. Zero vale (voltou e não cobrou). O teto também
+  -- recusa 'NaN', que passaria num ">= 0" sozinho.
+  amount numeric(12, 2) check (amount between 0 and 9999999999.99),
   -- Garantia do serviço (não a do aparelho).
-  warranty_until date,
+  warranty_until date check (warranty_until between date '2000-01-01' and date '2100-12-31'),
   notes text check (length(notes) <= 500),
   created_by uuid default auth.uid() references auth.users (id) on delete set null,
   created_at timestamptz not null default now(),
@@ -85,3 +87,43 @@ grant all on public.service_jobs to service_role;
 create policy "household members manage service jobs" on public.service_jobs for all to authenticated
   using (household_id = (select public.current_household_id()))
   with check (household_id = (select public.current_household_id()));
+
+-- Excluir um prestador leva o histórico dele (on delete cascade), e o app
+-- pergunta antes dizendo quantos serviços vão junto: p_expected_jobs é o
+-- número que a pessoa leu na pergunta. Entre a busca desse número e o toque
+-- em Excluir, outro aparelho pode registrar um serviço para ele, que iria
+-- embora sem aviso. Com o prestador travado, um número diferente recusa com
+-- NK010, sem apagar nada; o app busca os serviços de novo e a pessoa decide
+-- outra vez. A trava segura também o serviço que outro aparelho grava agora
+-- para ele: a chave estrangeira do serviço novo espera por ela e, com o
+-- prestador excluído, falha (o outro aparelho avisa que ele não existe mais).
+-- Sem o número (null: a pergunta falou do histórico todo, porque o app não
+-- sabia quantos são), não há conferência.
+--
+-- security invoker: a RLS da casa vale. Prestador que não existe mais, ou de
+-- outra casa, é "não encontrado": devolve false, sem apagar nada.
+create function public.delete_service_provider(p_id uuid, p_expected_jobs integer)
+returns boolean
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  v_jobs integer;
+begin
+  perform 1 from public.service_providers p where p.id = p_id for update;
+  if not found then
+    return false;
+  end if;
+  select count(*) into v_jobs from public.service_jobs j where j.provider_id = p_id;
+  if p_expected_jobs is not null and v_jobs <> p_expected_jobs then
+    raise exception 'Os serviços deste prestador mudaram em outro aparelho, e nada foi excluído. Confira o histórico e tente de novo.'
+      using errcode = 'NK010';
+  end if;
+  delete from public.service_providers p where p.id = p_id;
+  return true;
+end;
+$$;
+
+revoke execute on function public.delete_service_provider(uuid, integer) from public, anon;
+grant execute on function public.delete_service_provider(uuid, integer) to authenticated;

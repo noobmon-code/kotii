@@ -144,6 +144,25 @@ function phonePieces(input: string): string[] {
 // Nenhum telefone tem mais dígitos que isto (é também o limite de `phone_digits` no banco).
 const MAX_PHONE_DIGITS = 15;
 
+/** O trecho como ele é lido: "tel. +1 (415) …", o ponto de antes do número não esconde o "+". */
+function pieceText(piece: string): string {
+  return piece.replace(/^[.\s-]+/, '');
+}
+
+/**
+ * Um número local inteiro, no jeito de sempre (4 + 4 ou 5 + 4 dígitos:
+ * "3456-7890", "98765-4321"), com mais dígitos depois dele no mesmo trecho:
+ * "3456-7890 (22)", "3456-7890 22", "011 3456-7890 22". O que vem depois é o
+ * ramal, ou o DDD escrito no fim, e os dígitos juntos dariam outro DDD e o
+ * número de outra pessoa ("34 5678-9022"). Número de fora do país ("+" sem o
+ * 55) fica de fora: lá os grupos são outros.
+ */
+function localNumberThenMore(text: string): boolean {
+  if (text.startsWith('+') && !text.replace(/\D/g, '').startsWith('55')) return false;
+  const groups = text.split(/\D+/).filter(Boolean);
+  return groups.some((group, i) => (group.length === 4 || group.length === 5) && groups[i + 1]?.length === 4 && i + 2 < groups.length);
+}
+
 /**
  * Lê um telefone digitado de qualquer jeito: "(11) 98765-4321", "11 3456 7890",
  * "+55 11 98765-4321", "011 98765-4321", "0xx11 3456-7890", "98765-4321",
@@ -151,15 +170,16 @@ const MAX_PHONE_DIGITS = 15;
  * Devolve null quando não dá para reconhecer um número (curto ou comprido
  * demais, DDD que não existe, número que não começa como fixo nem celular) e
  * quando o texto tem mais de um (outro telefone, ramal, "casa 12"): juntar os
- * dígitos de dois trechos daria um número completo, só que de outra pessoa.
+ * dígitos de dois trechos (ou de um número inteiro e o que vem depois dele)
+ * daria um número completo, só que de outra pessoa.
  */
 export function parsePhone(input: string | null | undefined): ParsedPhone | null {
   const pieces = phonePieces(input ?? '');
   if (pieces.length !== 1) return null;
-  // "tel. +1 (415) …": o ponto de antes do número não esconde o "+".
-  const text = pieces[0].replace(/^[.\s-]+/, '');
+  const text = pieceText(pieces[0]);
   const digits = text.replace(/\D/g, '');
   if (digits.length < 8 || digits.length > MAX_PHONE_DIGITS) return null;
+  if (localNumberThenMore(text)) return null;
 
   if (text.startsWith('+') && !digits.startsWith('55')) {
     return digits.length >= 10 ? { kind: 'exterior', digits } : null;
@@ -176,6 +196,10 @@ export function parsePhone(input: string | null | undefined): ParsedPhone | null
   if (text.startsWith('+')) return null;
 
   if (digits.startsWith('0')) {
+    // "00351 …", "001 415 …": o 00 de ligar para fora (no jeito europeu, seguido do país; aqui, da operadora).
+    // Nenhuma operadora começa com zero, então não é o "zero + operadora" de baixo: tirar três dígitos deixaria
+    // um DDD e um número daqui, de outra pessoa.
+    if (digits.startsWith('00')) return null;
     // "011 98765-4321" (zero do interurbano) ou "015 11 98765-4321" (zero + operadora).
     const withoutZero = nationalNumber(digits.slice(1));
     return withoutZero ?? nationalNumber(digits.slice(3));
@@ -213,12 +237,20 @@ export function telLink(phoneDigits: string | null | undefined): string | null {
 export function phoneHint(input: string): string | null {
   if (!input.trim()) return null;
   // Mais de um número, ou número com ramal (também dois números separados só
-  // por espaço ou traço, que têm dígitos demais para um só): "incompleto" não
-  // é o problema, e o aviso diz o que fazer.
+  // por espaço ou traço, que têm dígitos demais para um só, e o número inteiro
+  // seguido de mais dígitos): "incompleto" não é o problema, e o aviso diz o
+  // que fazer.
   const pieces = phonePieces(input);
-  if (pieces.length > 1 || (pieces.length === 1 && pieces[0].replace(/\D/g, '').length > MAX_PHONE_DIGITS)) {
-    return 'Para os atalhos de WhatsApp e de ligar, deixe aqui um número só, com DDD. Outro número ou o ramal cabem nas observações.';
+  const [only] = pieces.length === 1 ? pieces.map(pieceText) : [];
+  const digits = only?.replace(/\D/g, '') ?? '';
+  const onlyOne = 'Para os atalhos de WhatsApp e de ligar, deixe aqui um número só, com DDD. Outro número ou o ramal cabem nas observações.';
+  if (pieces.length > 1) return onlyOne;
+  // O 00 de ligar para fora (os grupos que vêm depois são os de outro país): com o "+" no lugar, o app sabe que
+  // o número é de lá.
+  if (!only?.startsWith('+') && digits.startsWith('00')) {
+    return 'Com o 00 na frente, o número fica guardado sem os atalhos. Se ele é de fora do país, escreva com o + e o código do país, como +351 912 345 678.';
   }
+  if (only && (digits.length > MAX_PHONE_DIGITS || localNumberThenMore(only))) return onlyOne;
   const parsed = parsePhone(input);
   if (!parsed) return 'Não parece um telefone completo. Ele fica guardado assim, mas sem os atalhos de WhatsApp e de ligar.';
   if (parsed.kind === 'sem_ddd') return 'Sem o DDD não dá para abrir o WhatsApp. Ex.: (11) 98765-4321.';
@@ -315,6 +347,38 @@ export function searchProviders<P extends ProviderLike, J extends JobLike>(
 export interface SearchGap {
   what: 'jobs' | 'equipment';
   loading: boolean;
+}
+
+/** A leitura dos serviços ou dos aparelhos que a busca olha, como está nesta visita à lista. */
+export interface SearchSource {
+  /** Há linhas guardadas (desta visita ou de uma anterior). */
+  hasRows: boolean;
+  isFetching: boolean;
+  /** Uma busca terminou depois que a lista abriu (do TanStack: conta também a que falhou). */
+  isFetchedAfterMount: boolean;
+  isError: boolean;
+}
+
+function sourceGap(what: SearchGap['what'], source: SearchSource): SearchGap | null {
+  // Nada guardado: ainda chegando, ou não chegou.
+  if (!source.hasRows) return { what, loading: source.isFetching };
+  // O guardado é de uma visita anterior (ou de antes de uma busca que falhou), e a busca nova ainda anda: outro
+  // celular pode ter registrado o conserto depois.
+  if (source.isFetching && (!source.isFetchedAfterMount || source.isError)) return { what, loading: true };
+  // A busca desta visita falhou: o guardado pode estar velho.
+  if (source.isError) return { what, loading: false };
+  return null;
+}
+
+/**
+ * O que a busca não pôde olhar (ver emptySearchNote): os serviços e os
+ * aparelhos só valem depois da leitura desta visita. Os de uma visita
+ * anterior, guardados, podem não ter o que outro celular registrou depois;
+ * eles valem enquanto ninguém os está buscando de novo (ainda novos), não
+ * enquanto a busca anda nem depois de ela falhar.
+ */
+export function searchGap(jobs: SearchSource, equipment: SearchSource): SearchGap | null {
+  return sourceGap('jobs', jobs) ?? sourceGap('equipment', equipment);
 }
 
 const SEARCH_GAP: Record<SearchGap['what'], { loading: string; failed: string }> = {
@@ -594,8 +658,12 @@ export function validateProvider(form: ProviderForm): { ok: true; values: Provid
   };
 }
 
-// numeric(12, 2) no banco.
+// numeric(12, 2) no banco, que também confere de 0 até aqui.
 const MAX_AMOUNT = 9_999_999_999.99;
+// As datas de um serviço, como no banco: fora disso é erro de digitação no ano.
+const JOB_DATE_MIN = '2000-01-01';
+const JOB_DATE_MAX = '2100-12-31';
+const inJobDateRange = (iso: string) => iso >= JOB_DATE_MIN && iso <= JOB_DATE_MAX;
 
 /** O formulário do serviço como a pessoa digitou. */
 export interface JobForm {
@@ -621,6 +689,7 @@ export function validateJob(form: JobForm): { ok: true; values: JobValues } | In
   }
   const doneOn = parseBRDate(form.date);
   if (!doneOn) return invalid('Data inválida', 'Informe o dia do serviço como dd/mm/aaaa.');
+  if (!inJobDateRange(doneOn)) return invalid('Data inválida', 'Confira o ano da data do serviço.');
   let amount: number | null = null;
   if (form.amount.trim()) {
     // Dinheiro: "1.500" aqui é mil e quinhentos.
@@ -630,6 +699,7 @@ export function validateJob(form: JobForm): { ok: true; values: JobValues } | In
   }
   const warranty = form.warranty.trim() ? parseBRDate(form.warranty) : null;
   if (form.warranty.trim() && !warranty) return invalid('Data inválida', 'Informe a garantia como dd/mm/aaaa, ou deixe em branco.');
+  if (warranty && !inJobDateRange(warranty)) return invalid('Data inválida', 'Confira o ano da garantia.');
   if (warranty && warranty < doneOn) return invalid('Data inválida', 'A garantia não pode acabar antes do dia do serviço.');
   const notes = form.notes.trim();
   if (notes.length > PROVIDER_LIMITS.notes) {

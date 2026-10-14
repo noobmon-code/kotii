@@ -4,7 +4,7 @@ import { Platform, StyleSheet, View } from 'react-native';
 
 import { useEquipmentList } from '@/data/house';
 import { PROVIDERS_UNAVAILABLE, providerErrorMessage, useServiceJobs, useServiceProviders } from '@/data/providers';
-import { emptySearchNote, groupProviders, jobLine, PROVIDER_SEARCH_MIN, searchProviders, type SearchGap } from '@/domain/providers';
+import { emptySearchNote, groupProviders, jobLine, PROVIDER_SEARCH_MIN, searchGap, searchProviders } from '@/domain/providers';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { ProviderQuickActions } from '@/features/providers/ProviderContact';
 import type { ServiceProvider } from '@/lib/types';
@@ -48,7 +48,17 @@ export default function ProvidersScreen() {
   if (!providers.data) {
     return <ErrorNotice error={new Error(providerErrorMessage(providers.error))} onRetry={() => providers.refetch()} />;
   }
-  const stale = providers.isError ? <StaleNotice onRetry={() => providers.refetch()} /> : null;
+  // Os serviços também: o último de cada um e a busca saem deles.
+  const jobsStale = jobs.isError && Boolean(jobs.data);
+  const stale =
+    providers.isError || jobsStale ? (
+      <StaleNotice
+        onRetry={() => {
+          if (providers.isError) providers.refetch();
+          if (jobsStale) jobs.refetch();
+        }}
+      />
+    ) : null;
   const refresh = () => {
     providers.refetch();
     jobs.refetch();
@@ -67,12 +77,17 @@ export default function ProvidersScreen() {
   const total = providers.data.rows.length;
   // Só diz que alguém não tem serviço quando os serviços chegaram.
   const noJobs = jobRows ? 'Nenhum serviço registrado' : null;
-  // A busca só olha os serviços e os aparelhos que chegaram: sem eles, não achar ninguém não é "Nada encontrado".
-  const searchGap: SearchGap | null = !jobRows
-    ? { what: 'jobs', loading: jobs.isFetching }
-    : !equipmentRows
-      ? { what: 'equipment', loading: equipment.isFetching }
-      : null;
+  // A busca só olha os serviços e os aparelhos que chegaram nesta visita: sem eles, ou com os de uma visita
+  // anterior enquanto a busca nova anda (ou depois de ela falhar), não achar ninguém não é "Nada encontrado".
+  const gap = searchGap(
+    { hasRows: Boolean(jobRows), isFetching: jobs.isFetching, isFetchedAfterMount: jobs.isFetchedAfterMount, isError: jobs.isError },
+    {
+      hasRows: Boolean(equipmentRows),
+      isFetching: equipment.isFetching,
+      isFetchedAfterMount: equipment.isFetchedAfterMount,
+      isError: equipment.isError,
+    },
+  );
   return (
     <Screen edges={[]} refreshing={providers.isRefetching} onRefresh={refresh}>
       {stale}
@@ -99,7 +114,7 @@ export default function ProvidersScreen() {
           message="Diarista, eletricista, encanador, a assistência da máquina de lavar… Guarde o contato e o que cada um já fez: a casa toda acha o telefone e lembra quanto foi cobrado."
         />
       ) : groups.length === 0 ? (
-        <Text variant="muted">{emptySearchNote(query, searchGap, Platform.OS === 'web')}</Text>
+        <Text variant="muted">{emptySearchNote(query, gap, Platform.OS === 'web')}</Text>
       ) : (
         groups.map((group) => (
           <Section key={group.trade.key} title={group.trade.label}>

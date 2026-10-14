@@ -8,20 +8,23 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import ProviderScreen from '@/app/prestador/[id]';
 import ProvidersScreen from '@/app/prestadores';
 import ServiceJobScreen from '@/app/servico/[id]';
-import { fetchServiceProviders, JOBS_KEY, PROVIDERS_KEY } from '@/data/providers';
+import { DELETE_CHECK_MS, fetchServiceProviders, JOBS_KEY, PROVIDER_JOBS_CHANGED, PROVIDERS_KEY, type SoftList } from '@/data/providers';
+import { EquipmentPanel } from '@/features/EquipmentPanel';
 import { StaleNotice } from '@/features/health/StaleNotice';
+import { EquipmentServices } from '@/features/providers/EquipmentServices';
 import type { Equipment, ServiceJob, ServiceProvider } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Button, ErrorNotice, Loading, Screen, TextField } from '@/ui/primitives';
+import { Button, Chip, ErrorNotice, Loading, Screen, TextField } from '@/ui/primitives';
 
 // As telas dos prestadores de verdade, com as buscas de verdade e o cache de verdade, em cima de um banco de
 // mentira: o que se confere aqui é o que cada tela faz enquanto uma busca anda, quando ela falha e quando o que
 // está guardado é de antes. As regras de domain/ não enxergam nada disso.
 
-type Result = { data: unknown; error: unknown };
+type Result = { data: unknown; error: unknown; count?: number };
 interface Request {
+  /** A tabela, ou a função do banco (verbo 'rpc'). */
   table: string;
-  verb: 'select' | 'insert' | 'update' | 'delete';
+  verb: 'select' | 'insert' | 'update' | 'delete' | 'rpc';
   values?: Record<string, unknown>;
   filters: Record<string, unknown>;
   /** Pedido de uma linha só (.single() ou .maybeSingle()). */
@@ -43,9 +46,22 @@ const mockRoute = { params: {} as Record<string, string>, title: undefined as st
 /** O que o banco responde, como o PostgREST. */
 function mockAnswer(request: Request): Result {
   const { table, verb, values, filters } = request;
+  if (verb === 'rpc' && table === 'delete_service_provider') {
+    // Como a função do banco: com o prestador travado, confere o número de serviços que a pessoa leu.
+    const id = values?.p_id;
+    if (!mockNet.providers.some((p) => p.id === id)) return { data: false, error: null };
+    const jobs = mockNet.jobs.filter((job) => job.provider_id === id).length;
+    if (values?.p_expected_jobs != null && values.p_expected_jobs !== jobs) {
+      return { data: null, error: { code: 'NK010', message: 'Os serviços deste prestador mudaram em outro aparelho, e nada foi excluído.' } };
+    }
+    mockNet.providers = mockNet.providers.filter((p) => p.id !== id);
+    mockNet.jobs = mockNet.jobs.filter((job) => job.provider_id !== id);
+    return { data: true, error: null };
+  }
   if (verb === 'insert') {
     if (table === 'service_jobs') mockNet.jobs.push({ id: 'j-novo', created_at: '2026-10-13T12:00:00Z', ...values } as ServiceJob);
-    return { data: { id: table === 'service_jobs' ? 'j-novo' : 'novo' }, error: null };
+    if (table === 'service_providers') mockNet.providers.push({ id: 'p-novo', created_at: '2026-10-13T12:00:00Z', ...values } as ServiceProvider);
+    return { data: { id: table === 'service_jobs' ? 'j-novo' : table === 'service_providers' ? 'p-novo' : 'novo' }, error: null };
   }
   if (verb === 'update') {
     if (table === 'service_jobs') mockNet.jobs = mockNet.jobs.map((job) => (job.id === filters.id ? { ...job, ...values } : job));
@@ -58,7 +74,8 @@ function mockAnswer(request: Request): Result {
     const rows = mockNet.jobs.filter(
       (job) => (!filters.provider_id || job.provider_id === filters.provider_id) && (!filters.equipment_id || job.equipment_id === filters.equipment_id),
     );
-    return { data: rows, error: null };
+    // Quantos são ao todo, como o PostgREST responde a um pedido com count: 'exact'.
+    return { data: rows, error: null, count: rows.length };
   }
   if (table === 'equipment') {
     if (!request.one) return { data: mockNet.equipment, error: null };
@@ -66,6 +83,17 @@ function mockAnswer(request: Request): Result {
     return row ? { data: row, error: null } : { data: null, error: { code: 'PGRST116', message: 'Cannot coerce the result to a single JSON object' } };
   }
   return { data: [], error: null };
+}
+
+/** O pedido chega à rede: ela responde, segura ou falha, como `mockNet.mode` disser. */
+function mockSend(request: Request, resolve: (result: Result) => unknown, reject: (error: unknown) => unknown) {
+  mockNet.asked.push(request);
+  const mode = mockNet.mode(request);
+  const answer =
+    mode === 'hold'
+      ? new Promise<Result>((settle) => mockNet.held.push({ request, settle }))
+      : Promise.resolve(mode === 'fail' ? { data: null, error: { message: 'TypeError: Network request failed' } } : mockAnswer(request));
+  return answer.then(resolve, reject);
 }
 
 jest.mock('@/lib/supabase', () => ({
@@ -93,17 +121,13 @@ jest.mock('@/lib/supabase', () => ({
         },
         single: one,
         maybeSingle: one,
-        then: (resolve: (result: Result) => unknown, reject: (error: unknown) => unknown) => {
-          mockNet.asked.push(request);
-          const mode = mockNet.mode(request);
-          const answer =
-            mode === 'hold'
-              ? new Promise<Result>((settle) => mockNet.held.push({ request, settle }))
-              : Promise.resolve(mode === 'fail' ? { data: null, error: { message: 'TypeError: Network request failed' } } : mockAnswer(request));
-          return answer.then(resolve, reject);
-        },
+        then: (resolve: (result: Result) => unknown, reject: (error: unknown) => unknown) => mockSend(request, resolve, reject),
       };
       return query;
+    },
+    rpc: (fn: string, args: Record<string, unknown>) => {
+      const request: Request = { table: fn, verb: 'rpc', values: args, filters: {}, one: false };
+      return { then: (resolve: (result: Result) => unknown, reject: (error: unknown) => unknown) => mockSend(request, resolve, reject) };
     },
   },
   unwrap: (result: Result) => {
@@ -549,6 +573,113 @@ describe('o guardado depois de salvar é o que foi salvo', () => {
   });
 });
 
+describe('salvar o prestador não espera as buscas', () => {
+  const NAME = 'Pessoa ou empresa';
+
+  beforeEach(() => {
+    fresh([PROVIDERS_KEY], list([ZE]));
+    fresh(['equipment'], []);
+  });
+
+  /** O formulário de um prestador novo, preenchido: Maria, diarista. */
+  async function fillNew(params: Record<string, string>) {
+    await open(ProviderScreen, params);
+    await type(NAME, 'Maria Diarista');
+    await act(async () => renderer!.root.findAllByType(Chip).find((chip) => chip.props.label === 'Diarista')!.props.onPress());
+  }
+
+  /** Um prestador novo, salvo: o cadastro chega ao banco, e a internet cai antes da busca da lista. */
+  async function saveNewThenOffline(params: Record<string, string>) {
+    await fillNew(params);
+    hold((request) => request.verb === 'insert');
+    await press('Salvar prestador');
+    await act(async () => onlineManager.setOnline(false));
+    online();
+    await release('ok');
+  }
+
+  it('editar: a tela fecha logo depois de gravar, com as buscas ainda a caminho', async () => {
+    await open(ProviderScreen, { id: 'p-ze' });
+    await type(NAME, 'Zé da Luz');
+    hold((request) => request.verb === 'select');
+    await press('Salvar');
+    expect(asked('service_providers', 'update')).toHaveLength(1);
+    expect(mockNet.held.length).toBeGreaterThan(0);
+    expect(router.back).toHaveBeenCalledTimes(1);
+    expect(button('Salvar')!.props.loading).toBe(false);
+    expect(queryClient.getQueryData<SoftList<ServiceProvider>>([PROVIDERS_KEY])?.rows.map((p) => p.name)).toEqual(['Zé da Luz']);
+  });
+
+  it('o novo: segue para a tela dele com as buscas ainda a caminho, e ele já está na lista guardada', async () => {
+    await fillNew({ id: 'novo' });
+    hold((request) => request.verb === 'select');
+    await press('Salvar prestador');
+    expect(asked('service_providers', 'insert')).toHaveLength(1);
+    expect(mockNet.held.length).toBeGreaterThan(0);
+    expect(router.replace).toHaveBeenCalledWith({ pathname: '/prestador/[id]', params: { id: 'p-novo' } });
+    // Na ordem do nome, como o banco manda.
+    expect(queryClient.getQueryData<SoftList<ServiceProvider>>([PROVIDERS_KEY])).toEqual({
+      rows: [expect.objectContaining({ id: 'p-novo', name: 'Maria Diarista', trade: 'diarista' }), ZE],
+      missing: false,
+    });
+  });
+
+  it('a internet cai logo depois de salvar o novo: a tela dele abre com o que foi salvo, e não com "não existe mais"', async () => {
+    await saveNewThenOffline({ id: 'novo' });
+    expect(router.replace).toHaveBeenCalledWith({ pathname: '/prestador/[id]', params: { id: 'p-novo' } });
+    await act(async () => renderer?.unmount());
+    await open(ProviderScreen, { id: 'p-novo' });
+    expect(page()).not.toContain('não existe mais');
+    expect(field(NAME)!.props.value).toBe('Maria Diarista');
+  });
+
+  it('vindo de um aparelho, na casa sem prestador nenhum: o serviço abre com quem acabou de ser salvo, sem mandar cadastrar de novo', async () => {
+    mockNet.providers = [];
+    mockNet.equipment = [GELADEIRA];
+    fresh([PROVIDERS_KEY], list([]));
+    fresh(['equipment'], [GELADEIRA]);
+    await saveNewThenOffline({ id: 'novo', aparelho: 'e1' });
+    expect(router.replace).toHaveBeenCalledWith({ pathname: '/servico/[id]', params: { id: 'novo', prestador: 'p-novo', aparelho: 'e1' } });
+    await act(async () => renderer?.unmount());
+    await open(ServiceJobScreen, { id: 'novo', prestador: 'p-novo', aparelho: 'e1' });
+    expect(page()).not.toContain('Cadastre primeiro o prestador');
+    expect(page()).toContain('Maria Diarista');
+    expect(field(DESCRIPTION)).toBeDefined();
+  });
+});
+
+describe('sem internet, quem a lista guardada não tem não é "não existe mais"', () => {
+  it('a tela do prestador avisa que está sem internet, e abre sozinha quando ela volta', async () => {
+    const NAME = 'Pessoa ou empresa';
+    fresh([PROVIDERS_KEY], list([ZE]));
+    fresh(['equipment'], []);
+    mockNet.providers = [ZE, OFICINA];
+    onlineManager.setOnline(false);
+    await open(ProviderScreen, { id: 'p-mec' });
+    expect(page()).toContain('Sem internet: não deu para abrir este prestador.');
+    expect(page()).not.toContain('não existe mais');
+
+    await act(async () => onlineManager.setOnline(true));
+    await settle();
+    expect(field(NAME)!.props.value).toBe('Oficina do Tonho');
+  });
+
+  it('a tela do serviço, com a lista guardada vazia, espera a conexão em vez de mandar cadastrar o prestador', async () => {
+    old([PROVIDERS_KEY], list([]));
+    fresh(['equipment'], []);
+    onlineManager.setOnline(false);
+    await open(ServiceJobScreen, { id: 'novo', prestador: 'p-ze' });
+    expect(page()).not.toContain('Cadastre primeiro o prestador');
+    expect(button('Novo prestador')).toBeUndefined();
+    expect(has(Loading)).toBe(true);
+
+    await act(async () => onlineManager.setOnline(true));
+    await settle();
+    expect(page()).toContain('Zé Eletricista');
+    expect(field(DESCRIPTION)).toBeDefined();
+  });
+});
+
 describe('a cópia para os gastos espera a leitura desta visita do prestador e do aparelho', () => {
   const TONHO = provider('p-ton', 'Tonho', 'mecanico');
 
@@ -797,6 +928,13 @@ describe('valor que vira R$ 0,00 ao ser guardado', () => {
 describe('excluir o prestador', () => {
   const asks = () => (confirmAction as jest.Mock).mock.calls.at(-1)?.[1];
   const whole = 'Excluir Zé Eletricista e todo o histórico de serviços? Não dá para desfazer. Os gastos já lançados em Finanças continuam lá.';
+  const one = 'Excluir Zé Eletricista e o serviço registrado? Não dá para desfazer. Os gastos já lançados em Finanças continuam lá.';
+  /** A pessoa toca em "Excluir" na pergunta. */
+  async function confirm() {
+    await act(async () => ((confirmAction as jest.Mock).mock.calls.at(-1)?.[3] as () => void)());
+    await settle();
+  }
+  const deletes = () => asked('delete_service_provider', 'rpc').map((request) => request.values);
 
   beforeEach(() => {
     fresh([PROVIDERS_KEY], list([ZE]));
@@ -811,9 +949,114 @@ describe('excluir o prestador', () => {
     await press('Excluir prestador');
     expect(asks()).toBe(whole);
 
+    // O toque seguinte busca de novo (ver abaixo): agora a rede responde.
+    online();
     await release('ok');
     await press('Excluir prestador');
-    expect(asks()).toBe('Excluir Zé Eletricista e o serviço registrado? Não dá para desfazer. Os gastos já lançados em Finanças continuam lá.');
+    expect(asks()).toBe(one);
+  });
+
+  it('a lista guardada há segundos não vale: a tela busca os serviços de novo ao abrir, e a pergunta conta o que veio', async () => {
+    fresh([JOBS_KEY, 'provider', 'p-ze'], { ...list([]), total: 0 });
+    mockNet.jobs = [job({ description: 'Trocou o quadro de luz', amount: 1500 })];
+    await open(ProviderScreen, { id: 'p-ze' });
+    expect(asked('service_jobs', 'select')).toHaveLength(1);
+    expect(page()).toContain('Trocou o quadro de luz');
+    await press('Excluir prestador');
+    expect(asks()).toBe(one);
+  });
+
+  it('com a tela aberta, outro celular registra um serviço: o toque busca de novo, a pergunta conta o novo, e o banco confere esse número', async () => {
+    await open(ProviderScreen, { id: 'p-ze' });
+    expect(page()).toContain('Nenhum serviço registrado ainda.');
+    mockNet.jobs = [job({ description: 'Instalou o chuveiro novo', amount: 350 })];
+    const before = asked('service_jobs', 'select').length;
+    await press('Excluir prestador');
+    expect(asked('service_jobs', 'select')).toHaveLength(before + 1);
+    expect(asks()).toBe(one);
+    expect(page()).toContain('Instalou o chuveiro novo');
+
+    await confirm();
+    expect(deletes()).toEqual([{ p_id: 'p-ze', p_expected_jobs: 1 }]);
+    expect(asked('service_providers', 'delete')).toHaveLength(0);
+    expect(mockNet.providers).toEqual([]);
+    expect(router.back).toHaveBeenCalledTimes(1);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('outro celular registra um serviço entre a pergunta e o "Excluir": o banco recusa, nada é excluído, e o histórico vem de novo', async () => {
+    await open(ProviderScreen, { id: 'p-ze' });
+    await press('Excluir prestador');
+    expect(asks()).toBe('Excluir Zé Eletricista?');
+
+    mockNet.jobs = [job({ description: 'Instalou o chuveiro novo', amount: 350 })];
+    await confirm();
+    expect(deletes()).toEqual([{ p_id: 'p-ze', p_expected_jobs: 0 }]);
+    expect(notify).toHaveBeenCalledWith('Não deu para excluir', PROVIDER_JOBS_CHANGED);
+    expect(mockNet.providers).toEqual([ZE]);
+    expect(router.back).not.toHaveBeenCalled();
+    expect(page()).toContain('Instalou o chuveiro novo');
+
+    // A próxima pergunta já conta o serviço novo, e aí o banco aceita.
+    await press('Excluir prestador');
+    expect(asks()).toBe(one);
+    await confirm();
+    expect(deletes().at(-1)).toEqual({ p_id: 'p-ze', p_expected_jobs: 1 });
+    expect(router.back).toHaveBeenCalledTimes(1);
+  });
+
+  it('a pergunta que falou do histórico todo vai ao banco sem número: sai o que houver', async () => {
+    old([JOBS_KEY, 'provider', 'p-ze'], list([]));
+    mockNet.jobs = [job()];
+    hold(only('service_jobs'));
+    await open(ProviderScreen, { id: 'p-ze' });
+    await press('Excluir prestador');
+    expect(asks()).toBe(whole);
+    await confirm();
+    expect(deletes()).toEqual([{ p_id: 'p-ze', p_expected_jobs: null }]);
+    expect(mockNet.jobs).toEqual([]);
+    expect(router.back).toHaveBeenCalledTimes(1);
+  });
+
+  it('sem internet: o toque não busca, e a lista guardada não vale como "nenhum serviço"', async () => {
+    fresh([JOBS_KEY, 'provider', 'p-ze'], { ...list([]), total: 0 });
+    onlineManager.setOnline(false);
+    await open(ProviderScreen, { id: 'p-ze' });
+    await press('Excluir prestador');
+    expect(asks()).toBe(whole);
+    expect(asked('service_jobs', 'select')).toHaveLength(0);
+  });
+
+  it('a busca do toque não responde: o botão espera, e depois do prazo a pergunta fala do histórico todo', async () => {
+    await open(ProviderScreen, { id: 'p-ze' });
+    hold(only('service_jobs'));
+    jest.useFakeTimers();
+    try {
+      await act(async () => {
+        button('Excluir prestador')!.props.onPress();
+        await jest.advanceTimersByTimeAsync(DELETE_CHECK_MS - 1);
+      });
+      expect(confirmAction).not.toHaveBeenCalled();
+      expect(button('Excluir prestador')!.props.loading).toBe(true);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1);
+      });
+      expect(asks()).toBe(whole);
+      expect(button('Excluir prestador')!.props.loading).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('a pessoa sai da tela enquanto o toque busca: a pergunta não aparece depois, em outra tela', async () => {
+    await open(ProviderScreen, { id: 'p-ze' });
+    hold(only('service_jobs'));
+    await press('Excluir prestador');
+    expect(confirmAction).not.toHaveBeenCalled();
+    await act(async () => renderer?.unmount());
+    renderer = undefined;
+    await release('ok');
+    expect(confirmAction).not.toHaveBeenCalled();
   });
 
   it('a busca dos serviços falhou: a lista de antes não vale como "nenhum serviço"', async () => {
@@ -947,5 +1190,133 @@ describe('a busca na lista de prestadores', () => {
     await open(ProvidersScreen, {});
     await type(SEARCH, 'piscina');
     expect(page()).toContain('Nada encontrado para “piscina”.');
+  });
+
+  it('com os serviços de uma visita anterior: busca também neles enquanto a nova busca anda, e avisa se ela falhar', async () => {
+    // Guardados há dez minutos, sem o conserto que outro celular registrou depois.
+    old([JOBS_KEY], list([]));
+    fresh(['equipment'], [GELADEIRA]);
+    hold(only('service_jobs'));
+    await open(ProvidersScreen, {});
+    await type(SEARCH, 'geladeira');
+    expect(page()).toContain('Buscando também nos serviços…');
+    expect(page()).not.toContain('Nada encontrado');
+
+    await release('fail');
+    expect(page()).toContain('Não deu para buscar nos serviços: a busca olhou só o nome e o ofício. Puxe para atualizar.');
+    expect(page()).not.toContain('Nada encontrado');
+    expect(has(StaleNotice)).toBe(true);
+
+    online();
+    await press('Tentar de novo');
+    expect(page()).toContain('Prestador 3');
+    expect(page()).toContain(found);
+    expect(has(StaleNotice)).toBe(false);
+  });
+});
+
+describe('Casa → Aparelhos: uma atualização que falha não tira a lista da frente', () => {
+  async function openPanel() {
+    await act(async () => {
+      renderer = create(
+        <QueryClientProvider client={queryClient}>
+          <EquipmentPanel />
+        </QueryClientProvider>,
+      );
+    });
+    await settle();
+  }
+
+  beforeEach(() => {
+    fresh([PROVIDERS_KEY], list([ZE]));
+    fresh([JOBS_KEY], list([]));
+    fresh(['chores'], []);
+  });
+
+  it('a lista guardada e a busca de novo falhou: os aparelhos continuam, com o aviso e "Tentar de novo"', async () => {
+    fresh(['equipment'], [GELADEIRA]);
+    await openPanel();
+    expect(page()).toContain('Geladeira');
+
+    // Outra tela (a do serviço) leu os aparelhos de novo, e a busca falhou.
+    fail(only('equipment'));
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['equipment'] });
+    });
+    await settle();
+    expect(has(ErrorNotice)).toBe(false);
+    expect(page()).toContain('Geladeira');
+    expect(has(StaleNotice)).toBe(true);
+
+    mockNet.equipment = [GELADEIRA, CARRO];
+    online();
+    await press('Tentar de novo');
+    expect(has(StaleNotice)).toBe(false);
+    expect(page()).toContain('Carro');
+  });
+
+  it('nada guardado e a busca falhou: o aviso de erro, com "Tentar de novo"', async () => {
+    fail(only('equipment'));
+    await openPanel();
+    expect(has(ErrorNotice)).toBe(true);
+    expect(has(StaleNotice)).toBe(false);
+
+    mockNet.equipment = [GELADEIRA];
+    online();
+    await press('Tentar de novo');
+    expect(has(ErrorNotice)).toBe(false);
+    expect(page()).toContain('Geladeira');
+  });
+});
+
+describe('a seção de consertos na tela do aparelho, antes da migração', () => {
+  async function openSection() {
+    await act(async () => {
+      renderer = create(
+        <QueryClientProvider client={queryClient}>
+          <EquipmentServices equipmentId="e1" today="2026-10-14" />
+        </QueryClientProvider>,
+      );
+    });
+    await settle();
+  }
+
+  it('a lista de prestadores já disse que o banco não tem as tabelas: a seção não aparece nem enquanto a busca dos serviços anda', async () => {
+    fresh([PROVIDERS_KEY], { rows: [], missing: true });
+    hold(only('service_jobs'));
+    await openSection();
+    expect(mockNet.held).toHaveLength(1);
+    expect(page()).not.toContain('Consertos e serviços');
+    expect(button('Registrar serviço')).toBeUndefined();
+  });
+
+  it('com as tabelas no banco, a seção aparece já enquanto a busca dos serviços anda', async () => {
+    fresh([PROVIDERS_KEY], list([ZE]));
+    hold(only('service_jobs'));
+    await openSection();
+    expect(page()).toContain('Consertos e serviços');
+    expect(button('Registrar serviço')).toBeDefined();
+  });
+
+  it('a busca deste aparelho já respondeu que as tabelas existem: vale mais que a lista guardada de antes da migração', async () => {
+    fresh([PROVIDERS_KEY], { rows: [], missing: true });
+    mockNet.jobs = [job({ equipment_id: 'e1', description: 'Trocou a borracha' })];
+    await openSection();
+    expect(page()).toContain('Consertos e serviços');
+    expect(page()).toContain('Trocou a borracha');
+  });
+
+  it('a busca deste aparelho respondeu que o banco não tem as tabelas: a seção some', async () => {
+    fresh([PROVIDERS_KEY], list([ZE]));
+    hold(only('service_jobs'));
+    await openSection();
+    const held = mockNet.held.splice(0);
+    await act(async () => {
+      for (const { settle: answer } of held) {
+        answer({ data: null, error: { code: 'PGRST205', message: "Could not find the table 'public.service_jobs' in the schema cache" } });
+      }
+    });
+    await settle();
+    expect(page()).not.toContain('Consertos e serviços');
   });
 });

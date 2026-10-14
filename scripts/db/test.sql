@@ -1203,6 +1203,51 @@ begin
     raise exception 'FAIL: job for a provider that does not exist';
   exception when foreign_key_violation then null;
   end;
+  -- NaN passaria num ">= 0" sozinho (para o Postgres ele é maior que tudo); o teto o recusa.
+  begin
+    insert into public.service_jobs (provider_id, done_on, description, amount) values (ze, '2026-03-12', 'X', 'NaN');
+    raise exception 'FAIL: NaN job amount';
+  exception when check_violation then null;
+  end;
+  -- Datas de 2000 a 2100: 'infinity', um ano a mais ou a menos não entram, na data nem na garantia.
+  begin
+    insert into public.service_jobs (provider_id, done_on, description) values (ze, 'infinity', 'X');
+    raise exception 'FAIL: job done on infinity';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description, warranty_until) values (ze, '-infinity', 'X', '1900-01-01');
+    raise exception 'FAIL: job done on -infinity';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description) values (ze, '2101-01-01', 'X');
+    raise exception 'FAIL: job done in 2101';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description) values (ze, '1999-12-31', 'X');
+    raise exception 'FAIL: job done in 1999';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description, warranty_until) values (ze, '2026-03-12', 'X', 'infinity');
+    raise exception 'FAIL: service warranty until infinity';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description, warranty_until) values (ze, '2026-03-12', 'X', '2101-01-01');
+    raise exception 'FAIL: service warranty until 2101';
+  exception when check_violation then null;
+  end;
+  -- Os limites valem (o maior valor e as duas pontas das datas). Desfeito no fim: os testes seguintes contam os serviços.
+  begin
+    insert into public.service_jobs (provider_id, done_on, description, amount, warranty_until)
+      values (ze, '2000-01-01', 'X', 9999999999.99, '2100-12-31');
+    insert into public.service_jobs (provider_id, done_on, description, amount) values (ze, '2100-12-31', 'X', 0);
+    raise exception 'undo' using errcode = 'KT001';
+  exception when sqlstate 'KT001' then null;
+  end;
 end $$;
 
 -- Quem mora na mesma casa vê e muda tudo.
@@ -1342,6 +1387,70 @@ begin
   assert (select count(*) from public.service_jobs where provider_id = current_setting('test.provider_ze')::uuid) = 0, 'jobs go with the provider';
   assert (select count(*) from public.service_jobs) = 2, 'the other provider keeps its jobs';
 end $$;
+
+-- Excluir pelo app: delete_service_provider confere, com o prestador travado, o número de serviços que a pessoa
+-- leu na pergunta. Outro aparelho registrou um serviço depois dela (ou apagou um): nada é apagado (NK010).
+do $$
+declare
+  lu uuid;
+  confirmed integer;
+begin
+  insert into public.service_providers (name, trade) values ('Lu Jardins', 'jardineiro') returning id into lu;
+  insert into public.service_jobs (provider_id, done_on, description) values (lu, '2026-04-01', 'Podou as árvores');
+  insert into public.service_jobs (provider_id, done_on, description) values (lu, '2026-05-01', 'Cortou a grama');
+  foreach confirmed in array array[0, 1, 3] loop
+    begin
+      perform public.delete_service_provider(lu, confirmed);
+      raise exception 'FAIL: provider deleted with % jobs confirmed and 2 registered', confirmed;
+    exception when sqlstate 'NK010' then null;
+    end;
+    assert exists (select 1 from public.service_providers where id = lu), format('the provider stays (%s confirmed)', confirmed);
+    assert (select count(*) from public.service_jobs where provider_id = lu) = 2, format('and its jobs (%s confirmed)', confirmed);
+  end loop;
+  -- O número certo: o prestador e o histórico dele vão.
+  assert public.delete_service_provider(lu, 2), 'deleted with the right count';
+  assert not exists (select 1 from public.service_providers where id = lu), 'the provider is gone';
+  assert (select count(*) from public.service_jobs where provider_id = lu) = 0, 'and its jobs';
+  -- Outro aparelho já tinha excluído: não encontrado, sem erro e sem apagar nada.
+  assert not public.delete_service_provider(lu, 0), 'a provider that is gone is not found';
+  assert not public.delete_service_provider(gen_random_uuid(), null), 'nor one that never existed';
+  -- Sem o número, a pergunta falou do histórico todo: vai o que houver.
+  insert into public.service_providers (name) values ('Rafa Pinturas') returning id into lu;
+  insert into public.service_jobs (provider_id, done_on, description) values (lu, '2026-06-01', 'Pintou a sala');
+  assert public.delete_service_provider(lu, null), 'deleted without a count';
+  assert not exists (select 1 from public.service_providers where id = lu), 'the provider is gone';
+  assert (select count(*) from public.service_jobs where provider_id = lu) = 0, 'and its jobs';
+  assert (select count(*) from public.service_jobs) = 2, 'the other provider keeps its jobs';
+  perform set_config('test.provider_bia_jobs', (select count(*) from public.service_jobs where provider_id = current_setting('test.provider_bia')::uuid)::text, false);
+end $$;
+
+-- Prestador de outra casa: a função não o encontra, nem com o número certo, e não apaga nada.
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  assert not public.delete_service_provider(current_setting('test.provider_bia')::uuid, current_setting('test.provider_bia_jobs')::integer),
+    'C cannot delete a foreign provider with the right count';
+  assert not public.delete_service_provider(current_setting('test.provider_bia')::uuid, null), 'nor without a count';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  assert exists (select 1 from public.service_providers where id = current_setting('test.provider_bia')::uuid), 'the provider of A stays';
+  assert (select count(*) from public.service_jobs where provider_id = current_setting('test.provider_bia')::uuid)
+    = current_setting('test.provider_bia_jobs')::integer, 'with its jobs';
+  -- Só quem entrou chama a função: cada papel conferido sozinho.
+  assert has_function_privilege('authenticated', 'public.delete_service_provider(uuid, integer)', 'execute'), 'members delete a provider';
+  assert not has_function_privilege('anon', 'public.delete_service_provider(uuid, integer)', 'execute'), 'anon does not';
+  assert not has_function_privilege('public', 'public.delete_service_provider(uuid, integer)', 'execute'), 'nor everyone (PUBLIC)';
+end $$;
+set role anon;
+do $$
+begin
+  perform public.delete_service_provider(current_setting('test.provider_bia')::uuid, null);
+  raise exception 'FAIL: anon deleted a provider';
+exception when insufficient_privilege then null;
+end $$;
+set role authenticated;
 
 -- Apagar a casa leva prestadores e serviços (aparelho, prestador e casa
 -- apagados na mesma hora, cada um por um caminho). Desfeito no fim: a casa C

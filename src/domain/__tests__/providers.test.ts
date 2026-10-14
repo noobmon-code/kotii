@@ -24,6 +24,7 @@ import {
   PROVIDER_LIMITS,
   PROVIDER_TRADES,
   readOnThisVisit,
+  searchGap,
   searchProviders,
   SERVICE_WARRANTY_PRESETS,
   serviceExpenseCategory,
@@ -188,10 +189,45 @@ describe('telefone: o que fica em phone_digits', () => {
       // O "xx" só guarda o lugar da operadora logo depois do zero do interurbano: aqui não cola o ramal no número.
       '3456-7890 xx 22',
       '3456-7890 XX22',
+      // Ramal (ou o DDD escrito no fim) depois de um número local inteiro, só com espaço, traço ou parênteses:
+      // os dígitos juntos davam outro DDD e outro número ("34 5678-9022").
+      '3456-7890 (22)',
+      '3456-7890 22',
+      '98765-4321 (11)',
+      '3456 7890 22',
+      '3456-7890-22',
+      '3456-7890 - 22',
+      '2122-3344 55',
+      '98765-4321 2',
+      // O mesmo com o que vem antes do número local: o zero do interurbano (que também tira a operadora) ou o 55.
+      '011 3456-7890 22',
+      '(011) 3456-7890 (22)',
+      '0 11 3456-7890 22',
+      '55 3456-7890 22',
+      '+55 3456-7890 22',
     ]) {
       const digits = normalizePhone(typed);
       expect({ typed, digits, whatsapp: whatsappLink(digits), tel: telLink(digits) }).toEqual({ typed, digits: null, whatsapp: null, tel: null });
     }
+  });
+
+  it('"00" e o código de outro país: nada, em vez de um número do Brasil', () => {
+    // Aqui o 00 vem com a operadora; tirar três dígitos do jeito europeu sobrava um DDD e um número de outra pessoa.
+    for (const typed of ['00351 912 345 678', '00 351 912 345 678', '001 415 555 2671', '0044 7911 123456', '00598 94 123 456', '0055 11 98765-4321']) {
+      const digits = normalizePhone(typed);
+      expect({ typed, digits, whatsapp: whatsappLink(digits), tel: telLink(digits) }).toEqual({ typed, digits: null, whatsapp: null, tel: null });
+    }
+  });
+
+  it('o número local no fim, ou de fora do país com "+", continua valendo', () => {
+    expect(normalizePhone('55 11 3456 7890')).toBe('551134567890');
+    expect(normalizePhone('0 21 11 3456 7890')).toBe('551134567890');
+    expect(normalizePhone('+55 (11) 98765 4321')).toBe('5511987654321');
+    expect(normalizePhone('(11) 9 8765-4321')).toBe('5511987654321');
+    expect(normalizePhone('0800 701 0102')).toBe('08007010102');
+    // Os grupos de outro país são outros: o "+" diz de onde é.
+    expect(parsePhone('+49 30 1234 5678')).toEqual({ kind: 'exterior', digits: '493012345678' });
+    expect(parsePhone('+86 138 0013 8000')).toEqual({ kind: 'exterior', digits: '8613800138000' });
   });
 
   it('um número só, com palavras em volta, continua valendo', () => {
@@ -274,12 +310,26 @@ describe('telefone: o que fica em phone_digits', () => {
       // Dois números separados só por espaço ou traço: dígitos demais para um número só.
       '(11) 98765-4321 (11) 3456-7890',
       '11 98765-4321 - 11 3456-7890',
+      // Um número local inteiro e mais dígitos depois dele: o ramal, ou o DDD escrito no fim.
+      '3456-7890 (22)',
+      '3456-7890 22',
+      '98765-4321 (11)',
+      '011 3456-7890 22',
     ]) {
       expect({ typed, hint: phoneHint(typed) }).toEqual({ typed, hint: onlyOne });
     }
     // Palavras em volta de um número só não são um segundo número.
     expect(phoneHint('zap (11) 98765-4321 falar com a Ana')).toBeNull();
     expect(phoneHint('ligar na loja')).toMatch(/Não parece um telefone completo/);
+  });
+
+  it('com 00 na frente, o aviso diz como escrever o número de fora do país', () => {
+    const foreign = 'Com o 00 na frente, o número fica guardado sem os atalhos. Se ele é de fora do país, escreva com o + e o código do país, como +351 912 345 678.';
+    expect(phoneHint('00351 912 345 678')).toBe(foreign);
+    expect(phoneHint('001 415 555 2671')).toBe(foreign);
+    expect(phoneHint('0044 7911 123456')).toBe(foreign);
+    expect(phoneHint('+351 912 345 678')).toBeNull();
+    expect(phoneHint('011 98765-4321')).toBeNull();
   });
 });
 
@@ -396,6 +446,28 @@ describe('lista de prestadores', () => {
     expect(names('eletricista disjuntor')).toEqual(['ze']);
     expect(names('eletricista faxina')).toEqual([]);
     expect(searchProviders('maquina', providers, withAppliance).map((p) => p.id)).toEqual([]);
+  });
+
+  it('o que a busca não olhou: os serviços e os aparelhos só valem depois da leitura desta visita', () => {
+    const ready = { hasRows: true, isFetching: false, isFetchedAfterMount: true, isError: false };
+    expect(searchGap(ready, ready)).toBeNull();
+    // Nada guardado: chegando, ou não chegou (falhou, ou parada sem internet).
+    expect(searchGap({ ...ready, hasRows: false, isFetchedAfterMount: false, isFetching: true }, ready)).toEqual({ what: 'jobs', loading: true });
+    expect(searchGap({ ...ready, hasRows: false, isError: true }, ready)).toEqual({ what: 'jobs', loading: false });
+    expect(searchGap({ ...ready, hasRows: false, isFetchedAfterMount: false }, ready)).toEqual({ what: 'jobs', loading: false });
+    // O guardado de uma visita anterior não vale enquanto a busca desta anda, nem depois de ela falhar.
+    expect(searchGap({ ...ready, isFetchedAfterMount: false, isFetching: true }, ready)).toEqual({ what: 'jobs', loading: true });
+    expect(searchGap({ ...ready, isError: true }, ready)).toEqual({ what: 'jobs', loading: false });
+    // Pedindo de novo depois de uma que falhou: ainda chegando.
+    expect(searchGap({ ...ready, isError: true, isFetching: true }, ready)).toEqual({ what: 'jobs', loading: true });
+    // Uma busca nova depois da que chegou nesta visita (puxar para atualizar) não tira o que chegou.
+    expect(searchGap({ ...ready, isFetching: true }, ready)).toBeNull();
+    // O guardado que ninguém está buscando de novo (ainda novo) vale.
+    expect(searchGap({ ...ready, isFetchedAfterMount: false }, ready)).toBeNull();
+    // Os aparelhos, a mesma coisa; os serviços vêm primeiro (por eles a busca também chega ao aparelho).
+    expect(searchGap(ready, { ...ready, isFetchedAfterMount: false, isFetching: true })).toEqual({ what: 'equipment', loading: true });
+    expect(searchGap(ready, { ...ready, isError: true })).toEqual({ what: 'equipment', loading: false });
+    expect(searchGap({ ...ready, isError: true }, { ...ready, isError: true })).toEqual({ what: 'jobs', loading: false });
   });
 
   it('busca que não achou ninguém: só diz "Nada encontrado" quando olhou tudo', () => {
@@ -765,5 +837,22 @@ describe('formulário do serviço', () => {
       message: 'A garantia não pode acabar antes do dia do serviço.',
     });
     expect(validateJob({ ...form, warranty: 'junho' })).toMatchObject({ ok: false, title: 'Data inválida' });
+  });
+
+  it('as datas ficam entre 2000 e 2100, como no banco: um ano digitado errado avisa antes de salvar', () => {
+    const dates = (date: string, warranty = '') => {
+      const result = validateJob({ ...form, date, warranty });
+      return result.ok ? [result.values.done_on, result.values.warranty_until] : result.message;
+    };
+    expect(dates('01/01/2000')).toEqual(['2000-01-01', null]);
+    expect(dates('31/12/2100', '31/12/2100')).toEqual(['2100-12-31', '2100-12-31']);
+    expect(dates('12/03/26')).toEqual(['2026-03-12', null]);
+    expect(dates('31/12/1999')).toBe('Confira o ano da data do serviço.');
+    expect(dates('12/03/1926')).toBe('Confira o ano da data do serviço.');
+    expect(dates('01/01/2101')).toBe('Confira o ano da data do serviço.');
+    expect(dates('12/03/2026', '12/03/2101')).toBe('Confira o ano da garantia.');
+    expect(dates('12/03/2026', '12/03/9999')).toBe('Confira o ano da garantia.');
+    // A garantia de 3 meses de um serviço do último dia possível também passaria do limite.
+    expect(dates('31/12/2100', '31/03/2101')).toBe('Confira o ano da garantia.');
   });
 });

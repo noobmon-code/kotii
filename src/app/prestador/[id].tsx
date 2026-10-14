@@ -1,5 +1,6 @@
+import { onlineManager } from '@tanstack/react-query';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
 import { useEquipmentList } from '@/data/house';
@@ -7,6 +8,7 @@ import {
   PROVIDERS_UNAVAILABLE,
   providerErrorMessage,
   useDeleteProvider,
+  useProviderJobCount,
   useProviderJobs,
   useSaveProvider,
   useServiceProviders,
@@ -24,7 +26,6 @@ import {
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { ProviderContactButtons } from '@/features/providers/ProviderContact';
 import { goBackOr } from '@/lib/navigation';
-import { settledData } from '@/lib/settledData';
 import type { ServiceProvider } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
 import {
@@ -85,6 +86,11 @@ export default function ProviderScreen() {
     if (providers.isError) {
       return <ErrorNotice error={new Error(providerErrorMessage(providers.error))} onRetry={() => providers.refetch()} />;
     }
+    // Sem internet a busca fica parada, e a lista daqui é a guardada: ele pode estar no banco (salvo em outro
+    // celular). Quando a internet volta, a busca segue sozinha e o formulário abre.
+    if (providers.isPaused) {
+      return <ErrorNotice error={new Error('Sem internet: não deu para abrir este prestador.')} onRetry={() => providers.refetch()} />;
+    }
     return <ErrorNotice error={new Error('Este prestador não existe mais.')} />;
   }
   return (
@@ -108,11 +114,19 @@ function ProviderForm({
   const c = useColors();
   const save = useSaveProvider();
   const remove = useDeleteProvider();
-  // Só para o aviso de excluir dizer quantos serviços vão junto. Conta só o que está em dia: durante uma nova
-  // busca, ou depois de uma que falhou, a lista é a de antes, e um serviço registrado depois (na tela do aparelho,
-  // ou por outra pessoa da casa) iria embora sem aviso. Sem saber, a pergunta fala do histórico todo.
-  const jobs = useProviderJobs(provider?.id);
-  const settledJobs = settledData(jobs);
+  // Só para a pergunta de excluir dizer quantos serviços vão junto (ver useProviderJobCount): a lista guardada
+  // pode ser de antes de um serviço registrado em outro celular, que iria embora sem aviso.
+  const jobCount = useProviderJobCount(provider?.id);
+  // Do toque em "Excluir prestador" até a pergunta: a busca do toque está a caminho.
+  const [checking, setChecking] = useState(false);
+  // A pessoa saiu da tela enquanto o toque buscava: a pergunta não aparece depois, em outra tela.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [name, setName] = useState(provider?.name ?? '');
   // Prestador novo começa sem ofício: a pessoa escolhe, em vez de ficar em "Outros" sem querer.
   const [trade, setTrade] = useState<string>(provider ? getProviderTrade(provider.trade).key : '');
@@ -140,6 +154,32 @@ function ProviderForm({
         },
         onError: (err) => notify('Não deu para salvar', providerErrorMessage(err)),
       },
+    );
+  }
+
+  async function askDelete(target: ServiceProvider) {
+    // Sem saber quantos serviços são (a busca desta visita ainda anda, falhou ou está parada), a pergunta fala do
+    // histórico todo, e o banco não confere número nenhum: a pessoa aceita apagar o que houver. Sabendo, busca de
+    // novo na hora do toque, com a internet: com a tela aberta, outro celular pode ter registrado um serviço.
+    let count = jobCount.known;
+    if (count != null && onlineManager.isOnline()) {
+      setChecking(true);
+      count = await jobCount.recount();
+      if (!mounted.current) return;
+      setChecking(false);
+    }
+    confirmAction('Excluir prestador', deleteProviderWarning(target.name, count), 'Excluir', () =>
+      // O banco confere o número da pergunta: um serviço registrado depois dela, em outro celular, recusa (e nada sai).
+      remove.mutate(
+        { id: target.id, expectedJobs: count },
+        {
+          onSuccess: () => {
+            onDeleted();
+            goBackOr('/prestadores');
+          },
+          onError: (err) => notify('Não deu para excluir', providerErrorMessage(err)),
+        },
+      ),
     );
   }
 
@@ -206,21 +246,8 @@ function ProviderForm({
           title="Excluir prestador"
           variant="danger"
           icon="trash-can-outline"
-          onPress={() =>
-            confirmAction(
-              'Excluir prestador',
-              deleteProviderWarning(provider.name, settledJobs && !settledJobs.missing ? settledJobs.rows.length : null),
-              'Excluir',
-              () =>
-                remove.mutate(provider.id, {
-                  onSuccess: () => {
-                    onDeleted();
-                    goBackOr('/prestadores');
-                  },
-                  onError: (err) => notify('Não deu para excluir', providerErrorMessage(err)),
-                }),
-            )
-          }
+          loading={checking || remove.isPending}
+          onPress={() => void askDelete(provider)}
         />
       ) : null}
     </Screen>

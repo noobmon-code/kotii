@@ -13,14 +13,18 @@ import { ProviderQuickActions } from './ProviderContact';
  * novo, e é daqui que a pessoa quer chamar quem consertou.
  *
  * A tela do aparelho existia antes destas tabelas: se a consulta falhar, a
- * seção fica sem serviços, nunca com um aviso de erro no meio da tela; e
- * enquanto o banco não tiver as tabelas a seção nem aparece (o botão dela só
- * levaria a "Ainda não está disponível").
+ * seção fica sem serviços, nunca com um aviso de erro no meio da tela. Ela
+ * some (o botão dela só levaria a "Ainda não está disponível") quando o banco
+ * respondeu que não tem as tabelas: à busca dos serviços deste aparelho, ou,
+ * enquanto ela não respondeu, à da lista de prestadores, que a aba Casa já
+ * fez (assim ela não aparece nem enquanto a busca deste aparelho anda). Sem
+ * nenhuma das duas respostas ainda, ela aparece.
  */
 export function EquipmentServices({ equipmentId, today }: { equipmentId: string; today: string }) {
   const jobs = useEquipmentJobs(equipmentId);
   const providers = useServiceProviders();
-  if (jobs.data?.missing) return null;
+  // A resposta deste aparelho, quando já veio, vale mais que a da lista guardada (que pode ser de antes da migração).
+  if (jobs.data ? jobs.data.missing : providers.data?.missing) return null;
   const rows = jobs.data?.rows ?? [];
 
   return (

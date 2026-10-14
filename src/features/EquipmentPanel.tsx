@@ -8,6 +8,7 @@ import { choreStatus, describeChoreStatus } from '@/domain/chores';
 import { todayISO } from '@/domain/dates';
 import { describeWarranty, getEquipmentCategory, warrantyStatus } from '@/domain/equipment';
 import { lastServiceMention } from '@/domain/providers';
+import { StaleNotice } from '@/features/health/StaleNotice';
 import type { ServiceJob } from '@/lib/types';
 import { Badge, Button, EmptyState, ErrorNotice, IconBadge, ListCard, ListRow, Loading, Row } from '@/ui/primitives';
 import { space } from '@/ui/theme';
@@ -26,7 +27,9 @@ export function EquipmentPanel() {
   const providersMissing = providers.data?.missing === true;
 
   if (equipment.isPending) return <Loading />;
-  if (equipment.isError) return <ErrorNotice error={equipment.error} onRetry={() => equipment.refetch()} />;
+  // Aviso de erro só sem lista nenhuma: outras telas (a do serviço, a dos prestadores) buscam os aparelhos de novo,
+  // e quando essa busca falha a lista que já estava aqui continua, com o aviso de que pode não estar em dia.
+  if (!equipment.data) return <ErrorNotice error={equipment.error} onRetry={() => equipment.refetch()} />;
 
   // Próxima manutenção de cada aparelho (tarefas ativas já vêm por data).
   const nextMaintenance = new Map<string, { title: string; due_on: string }>();
@@ -41,6 +44,7 @@ export function EquipmentPanel() {
 
   return (
     <View style={styles.gap}>
+      {equipment.isError ? <StaleNotice onRetry={() => equipment.refetch()} /> : null}
       <Row style={styles.actions}>
         <Button
           title="Novo aparelho"

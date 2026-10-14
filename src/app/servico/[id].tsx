@@ -127,8 +127,9 @@ export default function ServiceJobScreen() {
   if (providers.isError && (list.rows.length === 0 || (!formShown && prestador && !list.rows.some((p) => p.id === prestador)))) {
     return <ErrorNotice error={new Error(providerErrorMessage(providers.error))} onRetry={() => providers.refetch()} />;
   }
-  // Lista vazia de antes, e a nova ainda a caminho: quem fez este serviço pode estar chegando nela.
-  if (list.rows.length === 0 && providers.isFetching) return <Loading />;
+  // Lista vazia de antes, e a nova ainda a caminho (ou parada, sem internet, até a conexão voltar): quem fez este
+  // serviço pode estar chegando nela.
+  if (list.rows.length === 0 && (providers.isFetching || providers.isPaused)) return <Loading />;
   if (list.rows.length === 0) {
     return (
       <Screen edges={[]}>
