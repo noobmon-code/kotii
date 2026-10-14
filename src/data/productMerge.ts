@@ -87,19 +87,21 @@ export async function fetchPurchaseCounts(productIds: readonly string[]): Promis
   const counts: Record<string, number> = Object.fromEntries(productIds.map((id) => [id, 0]));
   for (let at = 0; at < productIds.length; at += ID_CHUNK) {
     const ids = productIds.slice(at, at + ID_CHUNK);
-    for (let from = 0; ; from += PAGE) {
-      const rows = (unwrap(
-        await supabase
-          .from('receipt_items')
-          .select('product_id, receipt:receipts!inner(status)')
-          .eq('receipt.status', 'confirmed')
-          .in('product_id', ids)
-          // Uma ordem que não empata: sem ela as páginas não se encaixam.
-          .order('id')
-          .range(from, from + PAGE - 1),
-      ) ?? []) as { product_id: string }[];
+    // Com a contagem do servidor: página curta não é o fim (ele corta em max_rows, calado). O fim é a contagem
+    // dizer que não sobrou nada, ou a página vir vazia; a seguinte começa depois das linhas que vieram.
+    for (let from = 0; ; ) {
+      const result = await supabase
+        .from('receipt_items')
+        .select('product_id, receipt:receipts!inner(status)', { count: 'exact' })
+        .eq('receipt.status', 'confirmed')
+        .in('product_id', ids)
+        // Uma ordem que não empata: sem ela as páginas não se encaixam.
+        .order('id')
+        .range(from, from + PAGE - 1);
+      const rows = (unwrap(result) ?? []) as { product_id: string }[];
       for (const row of rows) counts[row.product_id] = (counts[row.product_id] ?? 0) + 1;
-      if (rows.length < PAGE) break;
+      from += rows.length;
+      if (!rows.length || (result.count != null && from >= result.count)) break;
     }
   }
   return counts;
@@ -244,7 +246,8 @@ export async function withFreshProducts<T>(queryClient: QueryClient, refresh: re
 export const MERGE_TIMEOUT_MS = 25_000;
 
 /** O pedido de juntar foi cortado por falta de resposta (MERGE_TIMEOUT_MS): não se sabe se o banco juntou. */
-const isMergeUnanswered = (error: unknown) => error instanceof Error && error.message === MERGE_NO_ANSWER;
+/** O pedido de juntar foi cortado sem resposta: pode ter juntado, ou não. */
+export const isMergeUnanswered = (error: unknown) => error instanceof Error && error.message === MERGE_NO_ANSWER;
 
 /** O que a confirmação manda juntar: os dois produtos e o nome de cada um como a pessoa leu nela. */
 export interface MergeRequest {

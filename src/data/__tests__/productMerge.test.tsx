@@ -348,6 +348,33 @@ describe('compras de cada produto', () => {
     ]);
   });
 
+  it('servidor que corta antes de mil: página curta não é o fim, e a seguinte começa depois das linhas que vieram', async () => {
+    mockDb.lines = [...lines('arroz', 700), ...lines('feijao', 5)];
+    mockDb.cap = 500;
+    expect(await fetchPurchaseCounts(['arroz', 'feijao'])).toEqual({ arroz: 700, feijao: 5 });
+    expect(mockDb.asked.map((request) => request.range)).toEqual([
+      [0, 999],
+      [500, 1499],
+    ]);
+  });
+
+  it('exatamente mil linhas: a contagem diz que acabou, sem pedido a mais', async () => {
+    mockDb.lines = lines('arroz', 1000);
+    expect(await fetchPurchaseCounts(['arroz'])).toEqual({ arroz: 1000 });
+    expect(mockDb.asked).toHaveLength(1);
+  });
+
+  it('servidor que não conta: lê até a página vir vazia', async () => {
+    mockDb.lines = lines('arroz', 1200);
+    mockDb.noCount = true;
+    expect(await fetchPurchaseCounts(['arroz'])).toEqual({ arroz: 1200 });
+    expect(mockDb.asked.map((request) => request.range)).toEqual([
+      [0, 999],
+      [1000, 1999],
+      [1200, 2199],
+    ]);
+  });
+
   it('muitos produtos vão em pedidos de 100 ids', async () => {
     const ids = Array.from({ length: 230 }, (_, n) => `p${n}`);
     mockDb.lines = ids.flatMap((id) => lines(id, 1));

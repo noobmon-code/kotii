@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import { MERGE_REFRESHES } from '@/data/productMerge';
@@ -226,6 +226,7 @@ afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
   client.clear();
+  onlineManager.setOnline(true);
 });
 
 describe('confirmação de juntar', () => {
@@ -401,7 +402,28 @@ describe('confirmação de juntar', () => {
     ]);
     expect(onMerged).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
+    // A confirmação leu os dois de novo: o banco pode ter juntado. Aqui não juntou, e ela continua como estava.
+    await settle();
+    expect(mockBank.asked).toHaveLength(2);
+    expect(button('Juntar produtos')).toBeDefined();
     await press(button('Cancelar'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('pedido sem resposta, e o banco já tinha juntado: a confirmação lê de novo, avisa que o produto não existe mais e sai', async () => {
+    mockMerge.error = new Error(MERGE_NO_ANSWER);
+    await open();
+    await press(button('Juntar produtos'));
+    // O banco juntou, e foi a resposta que se perdeu.
+    mockBank.products = ALL.filter((item) => item.id !== ARROZ.id);
+    await act(async () => lastConfirm()[3]());
+    await settle();
+    expect(mockBank.asked).toHaveLength(2);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Sem resposta', MERGE_NO_ANSWER],
+      ['Erro', 'Um destes produtos não existe mais: alguém da casa já juntou ou apagou.'],
+    ]);
+    expect(onMerged).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -546,6 +568,30 @@ describe('confirmação de juntar', () => {
       await act(async () => lastConfirm()[3]());
       expect(mockMerge.calls[1]).toEqual({ keepId: ARROZ_TJ.id, mergeId: ARROZ.id, keepName: 'Arroz Tio João 5 kg', mergeName: 'Feijão carioca 1kg' });
       expect(onMerged.mock.calls).toEqual([[ARROZ_TJ.id]]);
+    });
+
+    it('a leitura nova fica esperando a internet voltar: os nomes de antes não ficam na tela com o botão pronto', async () => {
+      await open();
+      await press(button('Juntar produtos'));
+      mockBank.products = [now, ...ALL.filter((item) => item.id !== ARROZ.id)];
+      mockMerge.error = renamed;
+      // O sinal cai junto com a recusa: a leitura nova nem sai.
+      onlineManager.setOnline(false);
+      await act(async () => lastConfirm()[3]());
+      await settle();
+      expect(jest.mocked(notify).mock.calls).toEqual([['Confira os nomes', MERGE_RENAMED]]);
+      expect(mockBank.asked).toHaveLength(1);
+      expect(button('Juntar produtos')).toBeUndefined();
+      expect(pressables('radio')).toHaveLength(0);
+      expect(screen().join(' ')).not.toContain('Arroz 5kg');
+      // A internet volta: a leitura sai, e a confirmação mostra o nome de agora.
+      await act(async () => {
+        onlineManager.setOnline(true);
+        await flush();
+      });
+      await settle();
+      expect(mockBank.asked).toHaveLength(2);
+      expect(pressables('radio')[0].props.accessibilityLabel).toMatch(/^Feijão carioca 1kg\. /);
     });
 
     it('a leitura nova falhou: mostra o erro com "Tentar de novo", e não a confirmação com os nomes de antes', async () => {

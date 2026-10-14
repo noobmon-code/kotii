@@ -3,7 +3,7 @@ import { FlatList, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useProducts } from '@/data/market';
-import { isProductGone, mergeErrorNotice, useMergeProducts } from '@/data/productMerge';
+import { isMergeUnanswered, isProductGone, mergeErrorNotice, useMergeProducts } from '@/data/productMerge';
 import { getCategory } from '@/domain/categories';
 import {
   choiceLabel,
@@ -240,8 +240,9 @@ function ConfirmStep({
           notify(title, message);
           if (isProductGone(failure)) onGone();
           // Um dos dois mudou de nome em outro aparelho e nada foi juntado: a confirmação continua aberta e lê
-          // os dois de novo, para mostrar os nomes de agora.
-          else if (isProductRenamed(failure)) refetch();
+          // os dois de novo, para mostrar os nomes de agora. O pedido que ficou sem resposta também: o banco
+          // pode ter juntado, e a tela não fica mostrando os dois como antes (se um sumiu, ela avisa e sai).
+          else if (isProductRenamed(failure) || isMergeUnanswered(failure)) refetch();
         },
       },
     );

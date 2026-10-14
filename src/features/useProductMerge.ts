@@ -62,11 +62,14 @@ export function useMergeFacts(firstId: string, secondId: string): { read: MergeF
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
-  const read = query.isSuccess && !query.isFetching && query.isFetchedAfterMount ? query.data : null;
+  // Só a busca parada conta como leitura feita: a que está a caminho ainda não chegou, e a que espera a internet
+  // voltar ("paused") nem saiu. Nos dois casos o que há é a leitura de antes.
+  const settled = query.fetchStatus === 'idle';
+  const read = query.isSuccess && settled && query.isFetchedAfterMount ? query.data : null;
   const gone = read !== null && (!read.products[firstId] || !read.products[secondId]);
   useEffect(() => {
     if (gone) refreshMergedProducts(queryClient);
   }, [gone, queryClient]);
   const { refetch } = query;
-  return { read, gone, error: query.isFetching ? null : query.error, refetch: () => void refetch() };
+  return { read, gone, error: settled ? query.error : null, refetch: () => void refetch() };
 }
