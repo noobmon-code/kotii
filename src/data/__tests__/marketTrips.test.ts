@@ -22,7 +22,7 @@ jest.mock('@/lib/supabase', () => ({
     from: (table: string) => {
       // A consulta encadeada do Supabase: cada filtro devolve a mesma consulta, e esperar por ela dá a resposta.
       const query: Record<string, unknown> = {};
-      for (const step of ['select', 'is', 'gt', 'order', 'limit']) {
+      for (const step of ['select', 'is', 'gt', 'order', 'limit', 'range']) {
         query[step] = (...args: unknown[]) => {
           mockDb.filters.push([table, step, ...args]);
           return query;
@@ -132,7 +132,7 @@ describe('banco de antes da migração das idas', () => {
 describe('as idas da casa', () => {
   const now = new Date('2026-10-13T10:00:00Z');
 
-  it('busca as que ainda podem valer, cada uma com a lista dela: não encerradas e antes do fim, as mais novas primeiro', async () => {
+  it('busca as que ainda podem valer, cada uma com a lista dela: não encerradas, antes do fim e de lista aberta, as mais novas primeiro', async () => {
     const rows = [
       {
         id: 't1',
@@ -152,9 +152,16 @@ describe('as idas da casa', () => {
       ['market_trips', 'select', TRIPS_SELECT],
       ['market_trips', 'is', 'ended_at', null],
       ['market_trips', 'gt', 'ends_at', '2026-10-13T10:00:00.000Z'],
+      // A lista arquivada sai no servidor (com o !inner, a ida sai junto), e não só depois, em liveTrips.
+      ['market_trips', 'is', 'list.archived_at', null],
       ['market_trips', 'order', 'created_at', { ascending: false }],
-      ['market_trips', 'limit', 50],
     ]);
+  });
+
+  it('sem limite de linhas: nenhuma ida que vale fica de fora da resposta', async () => {
+    // Cada pessoa tem até 5 idas por dia na casa, mas a casa não tem limite de moradores.
+    await fetchMarketTrips(now);
+    expect(mockDb.filters.filter(([, step]) => step === 'limit' || step === 'range')).toEqual([]);
   });
 
   it('nenhuma ida é lista vazia, não "banco antigo"', async () => {

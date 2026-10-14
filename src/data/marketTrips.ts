@@ -45,6 +45,12 @@ export function isNotDeployed(error: unknown): boolean {
  * Hoje não espera as listas guardadas no aparelho, que não sabem da lista
  * que outra pessoa criou há pouco. No banco de antes das idas a resposta
  * continua sendo a da tabela que falta (PGRST205), antes de olhar a lista.
+ *
+ * A ida de lista arquivada sai já no servidor (o filtro na lista, com o
+ * !inner, tira a ida inteira). Sem limite de linhas: o que volta são as idas
+ * das últimas 2 horas, uma por pessoa em cada lista e até 5 por pessoa por
+ * dia (announce_market_trip), mas a casa não tem limite de moradores, e um
+ * corte podia deixar de fora a ida de alguém, sem faixa e sem "Encerrar".
  */
 export async function fetchMarketTrips(now: Date = new Date()): Promise<MarketTrip[] | null> {
   const { data, error } = await supabase
@@ -52,8 +58,8 @@ export async function fetchMarketTrips(now: Date = new Date()): Promise<MarketTr
     .select('id, list_id, user_id, display_name, created_at, ends_at, ended_at, list:shopping_lists!inner(name, kind, archived_at)')
     .is('ended_at', null)
     .gt('ends_at', now.toISOString())
-    .order('created_at', { ascending: false })
-    .limit(50);
+    .is('list.archived_at', null)
+    .order('created_at', { ascending: false });
   if (!error) return (data ?? []) as unknown as MarketTrip[];
   if (isNotDeployed(error)) return null;
   throw error;
