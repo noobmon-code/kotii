@@ -130,6 +130,9 @@ type BeforeUse = { override: ItemOverride | undefined; keptName: string | undefi
 /** A linha do total tem 20 de altura: com a folga, o toque pega 44, sem mexer no desenho. */
 const TOTAL_ROW_SLOP = { top: 12, bottom: 12 };
 
+/** Quanto a tela espera pela nota relida depois de gravar o valor de um item, antes de soltar "Confirmar nota". */
+const SETTLE_WAIT_MS = 4000;
+
 export default function ReceiptScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const receiptQuery = useReceipt(id);
@@ -162,6 +165,9 @@ export default function ReceiptScreen() {
   const [totalText, setTotalText] = useState<string | null>(null);
   // Itens que a pessoa decidiu deixar sem valor nesta revisão. Não é guardado: abrir a nota de novo pergunta de novo.
   const [leftUnpriced, setLeftUnpriced] = useState<ReadonlySet<string>>(new Set());
+  // O mesmo conjunto também fora do estado: a confirmação que esperou uma gravação (a do total) lê o de agora,
+  // e não o do instante do toque.
+  const leftNow = useRef<ReadonlySet<string>>(new Set());
   const [imageUrls, setImageUrls] = useState<string[] | null>(null);
   const [checkingPantry, setCheckingPantry] = useState(false);
   // Trava já no toque: o estado só muda no próximo render.
@@ -169,6 +175,8 @@ export default function ReceiptScreen() {
   // Valores de item a caminho, do toque ("Usar R$ …" ou salvar no formulário) até a nota voltar do banco com
   // eles. A conta é a trava do toque; o estado é o que deixa "Confirmar nota" ocupado.
   const valueWrites = useRef(0);
+  // Quantas gravações de valor já saíram desta tela: quem esperou outra coisa sabe se alguma saiu nesse meio.
+  const valueSeq = useRef(0);
   const [settlingValue, setSettlingValue] = useState(false);
 
   const catalog = useMemo(
@@ -340,7 +348,10 @@ export default function ReceiptScreen() {
     if (!saveTotal.isPending) void commitTotal();
   }
 
-  const leaveUnpriced = (ids: string[]) => setLeftUnpriced((prev) => new Set([...prev, ...ids]));
+  const leaveUnpriced = (ids: string[]) => {
+    leftNow.current = new Set([...leftNow.current, ...ids]);
+    setLeftUnpriced(leftNow.current);
+  };
 
   /**
    * Um valor de item a caminho, do toque até a nota voltar do banco com ele.
@@ -351,15 +362,23 @@ export default function ReceiptScreen() {
    */
   async function settleValue<T>(write: Promise<T>, onWritten?: (result: T) => void) {
     valueWrites.current += 1;
+    valueSeq.current += 1;
     setSettlingValue(true);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       onWritten?.(await write);
-      let reread = await receiptQuery.refetch({ cancelRefetch: false });
-      // Outra gravação que termine no meio troca a releitura por uma mais nova: vale a última.
-      while (reread.isFetching) reread = await receiptQuery.refetch({ cancelRefetch: false });
+      const reread = async () => {
+        let read = await receiptQuery.refetch({ cancelRefetch: false });
+        // Outra gravação que termine no meio troca a releitura por uma mais nova: vale a última.
+        while (read.isFetching) read = await receiptQuery.refetch({ cancelRefetch: false });
+      };
+      // A espera tem limite: sem internet a releitura fica parada (e a rede muda não responde), e o botão
+      // giraria sem explicação. Passado o limite ele volta, e a confirmação vai ao banco e diz o erro.
+      await Promise.race([reread(), new Promise<void>((resolve) => (timer = setTimeout(resolve, SETTLE_WAIT_MS)))]);
     } catch (err) {
       onError(err);
     } finally {
+      clearTimeout(timer);
       valueWrites.current -= 1;
       if (!valueWrites.current) setSettlingValue(false);
     }
@@ -417,8 +436,13 @@ export default function ReceiptScreen() {
     if (confirming.current || valueWrites.current || confirm.isPending || listPending || listFailed) return;
     confirming.current = true;
     try {
+      const valuesBefore = valueSeq.current;
       if (!(await commitTotal())) return;
-      const pending = pendingUnpriced(gap, leftUnpriced);
+      // A gravação do total leva um tempo, e a tela seguiu viva: um valor de item gravado nesse meio (a caminho
+      // ou já de volta) para a confirmação, porque o que este toque sabe dos itens é de antes dele e perguntaria
+      // pelo item que acabou de ganhar valor. "Deixar sem valor" dado nesse meio vale.
+      if (valueWrites.current || valueSeq.current !== valuesBefore) return;
+      const pending = pendingUnpriced(gap, leftNow.current);
       if (pending.length) {
         const question = confirmUnpricedQuestion(pending.length);
         // askYesNo responde "não" também quando a pergunta é dispensada: a trava nunca fica presa.
@@ -491,7 +515,9 @@ export default function ReceiptScreen() {
     const itemId = editing?.item?.id;
     // Nota confirmada: o formulário só abre no item sem valor, e só o valor é gravado.
     if (!isDraft) {
-      if (!itemId) return;
+      // Um valor por vez, como no "Usar": o segundo toque, antes de o botão virar "carregando", acharia o item
+      // já com valor e diria que não salvou.
+      if (!itemId || valueWrites.current) return;
       void settleValue(fillValue.mutateAsync({ id: itemId, values }), (result) => {
         setEditing(null);
         tellIfNotFilled(result);

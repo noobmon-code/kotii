@@ -426,6 +426,43 @@ describe('nota em revisão: um item sem valor e o total da nota', () => {
     expect(button('Confirmar nota')!.props.loading).toBe(false);
   });
 
+  it('a nota não volta do banco (a rede caiu depois da gravação): a espera tem limite, e "Confirmar nota" deixa de girar', async () => {
+    await open();
+    // Esta releitura nunca vai ter resposta.
+    hold(receiptRead);
+    await press(chip('Usar R$ 12,90'));
+    expect(button('Confirmar nota')!.props.loading).toBe(true);
+    await settle(4200);
+    expect(button('Confirmar nota')!.props.loading).toBe(false);
+  }, 15_000);
+
+  it('com o total digitado a caminho, "Usar R$ …" tocado nesse meio para a confirmação: ela não pergunta pelo item que acabou de ganhar valor', async () => {
+    await open();
+    await press(totalRow());
+    act(() => field('Total da nota')!.props.onChangeText('62,90'));
+    const releaseTotal = hold(totalWrite);
+    await press(button('Confirmar nota'));
+    await press(chip('Usar R$ 12,90'));
+    await releaseTotal();
+    await settle();
+    expectNoQuestion();
+    expect(mockDb.rpcs).toEqual([]);
+    expect(said(card('QJO MUSS KG'))).toContain('R$ 12,90');
+  });
+
+  it('com o total digitado a caminho, "Deixar sem valor" tocado nesse meio vale: a confirmação segue sem perguntar', async () => {
+    await open();
+    await press(totalRow());
+    act(() => field('Total da nota')!.props.onChangeText('62,90'));
+    const releaseTotal = hold(totalWrite);
+    await press(button('Confirmar nota'));
+    await press(chip('Deixar sem valor'));
+    await releaseTotal();
+    await settle();
+    expect(asked('1 item está sem valor')).toEqual([]);
+    expect(mockDb.rpcs).toHaveLength(1);
+  });
+
   it('"Usar" e "Confirmar nota" no mesmo instante: a confirmação não anda nem pergunta', async () => {
     await open();
     await pressBoth(chip('Usar R$ 12,90'), button('Confirmar nota'));
@@ -1001,6 +1038,17 @@ describe('nota já confirmada: só o valor que faltou pode ser preenchido', () =
     // A nota relida mostra o valor que ficou, e o formulário (que só existe para o item sem valor) fecha.
     expect(said(card('Queijo muçarela'))).toEqual(['Queijo muçarela', '0,345 kg × R$ 28,99', 'R$ 10,00']);
     expect(field('Total do item')).toBeUndefined();
+  });
+
+  it('dois toques em "Salvar valor" no mesmo instante: uma gravação só, e nenhum aviso de que não salvou', async () => {
+    await open();
+    await press(chip('Preencher'));
+    act(() => field('Total do item')!.props.onChangeText('13,08'));
+    await pressBoth(button('Salvar valor'), button('Salvar valor'));
+    await settle();
+    expect(mockDb.writes).toHaveLength(1);
+    expect(notify).not.toHaveBeenCalled();
+    expect(said(card('Queijo muçarela'))).toEqual(['Queijo muçarela', '0,345 kg × R$ 37,91', 'R$ 13,08']);
   });
 
   it('"Salvar valor" que falha avisa do erro e deixa o formulário aberto, com o que foi digitado', async () => {
