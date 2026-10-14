@@ -205,6 +205,15 @@ describe('telefone: o que fica em phone_digits', () => {
       '0 11 3456-7890 22',
       '55 3456-7890 22',
       '+55 3456-7890 22',
+      // Também com o 55 colado no DDD antes do número local: o que vem depois dele continua sendo mais.
+      '+5511 3456-7890 22',
+      '5511 3456-7890 (22)',
+      '+55 11 3456-7890 22',
+      // Um ramal de quatro dígitos vira a segunda metade do último par, e o que sobra não é um número.
+      '3456-7890 1234',
+      '3456-7890 (1234)',
+      '98765-4321 1234',
+      '(11) 3456-7890 (1234)',
     ]) {
       const digits = normalizePhone(typed);
       expect({ typed, digits, whatsapp: whatsappLink(digits), tel: telLink(digits) }).toEqual({ typed, digits: null, whatsapp: null, tel: null });
@@ -228,6 +237,32 @@ describe('telefone: o que fica em phone_digits', () => {
     // Os grupos de outro país são outros: o "+" diz de onde é.
     expect(parsePhone('+49 30 1234 5678')).toEqual({ kind: 'exterior', digits: '493012345678' });
     expect(parsePhone('+86 138 0013 8000')).toEqual({ kind: 'exterior', digits: '8613800138000' });
+  });
+
+  it('o 55 colado no DDD antes do número local, e o 0800 em outros grupos, continuam valendo', () => {
+    // O número local é o último par de grupos do trecho; o "5511" antes dele é o 55 com o DDD, e não a primeira
+    // metade de um número seguido de mais.
+    for (const { typed, parsed } of [
+      { typed: '+5511 3456-7890', parsed: { kind: 'fixo', digits: '551134567890' } },
+      { typed: '+5511 3456 7890', parsed: { kind: 'fixo', digits: '551134567890' } },
+      { typed: '5511 3456-7890', parsed: { kind: 'fixo', digits: '551134567890' } },
+      { typed: '(5511) 3456-7890', parsed: { kind: 'fixo', digits: '551134567890' } },
+      { typed: '+5521 2345-6789', parsed: { kind: 'fixo', digits: '552123456789' } },
+      { typed: '5511 98765-4321', parsed: { kind: 'celular', digits: '5511987654321' } },
+      // O zero e a operadora colados no DDD, do mesmo jeito.
+      { typed: '01511 3456-7890', parsed: { kind: 'fixo', digits: '551134567890' } },
+      // Os grupos do 0800 não são 4 + 4: "0800 7010" não é um número local.
+      { typed: '0800 7010 102', parsed: { kind: 'gratuito', digits: '08007010102' } },
+      { typed: '0300 7891 234', parsed: { kind: 'gratuito', digits: '03007891234' } },
+    ]) {
+      expect({ typed, parsed: parsePhone(typed), hint: phoneHint(typed) }).toEqual({ typed, parsed, hint: null });
+    }
+    expect(whatsappLink(normalizePhone('+5511 3456-7890'))).toBe('https://wa.me/551134567890');
+    expect(telLink(normalizePhone('0800 7010 102'))).toBe('tel:08007010102');
+    // Limite conhecido (AGENTS.md e README): um fixo sem DDD que começa com 55 e um DDD, seguido de um ramal de
+    // quatro dígitos, tem os grupos do 55 colado no DDD e é lido assim.
+    expect(parsePhone('5511-3456 1234')).toEqual(parsePhone('5511 3456-1234'));
+    expect(parsePhone('5511-3456 1234')).toEqual({ kind: 'fixo', digits: '551134561234' });
   });
 
   it('um número só, com palavras em volta, continua valendo', () => {
@@ -315,6 +350,9 @@ describe('telefone: o que fica em phone_digits', () => {
       '3456-7890 22',
       '98765-4321 (11)',
       '011 3456-7890 22',
+      '+5511 3456-7890 22',
+      '5511 3456-7890 (22)',
+      '+55 11 3456-7890 22',
     ]) {
       expect({ typed, hint: phoneHint(typed) }).toEqual({ typed, hint: onlyOne });
     }

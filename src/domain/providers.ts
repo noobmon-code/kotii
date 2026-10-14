@@ -154,13 +154,25 @@ function pieceText(piece: string): string {
  * "3456-7890", "98765-4321"), com mais dígitos depois dele no mesmo trecho:
  * "3456-7890 (22)", "3456-7890 22", "011 3456-7890 22". O que vem depois é o
  * ramal, ou o DDD escrito no fim, e os dígitos juntos dariam outro DDD e o
- * número de outra pessoa ("34 5678-9022"). Número de fora do país ("+" sem o
- * 55) fica de fora: lá os grupos são outros.
+ * número de outra pessoa ("34 5678-9022"). O número local é o último par de
+ * grupos assim no trecho, porque é ele que fecha o que foi digitado; o que vem
+ * antes dele (o 55, o zero com a operadora, o DDD) não conta, mesmo quando tem
+ * quatro dígitos como a metade de um número ("+5511 3456-7890",
+ * "5511 3456-7890": o 55 colado no DDD). Ficam de fora o número de outro país
+ * ("+" sem o 55: lá os grupos são outros) e o 0800 escrito sem "+"
+ * ("0800 7010 102": os grupos dele não são 4 + 4, e os dígitos todos já são o
+ * número).
  */
 function localNumberThenMore(text: string): boolean {
-  if (text.startsWith('+') && !text.replace(/\D/g, '').startsWith('55')) return false;
+  const digits = text.replace(/\D/g, '');
+  if (text.startsWith('+') && !digits.startsWith('55')) return false;
+  if (!text.startsWith('+') && TOLL_FREE.test(digits)) return false;
   const groups = text.split(/\D+/).filter(Boolean);
-  return groups.some((group, i) => (group.length === 4 || group.length === 5) && groups[i + 1]?.length === 4 && i + 2 < groups.length);
+  // De trás para a frente: o primeiro par achado é o número local.
+  for (let i = groups.length - 2; i >= 0; i--) {
+    if ((groups[i].length === 4 || groups[i].length === 5) && groups[i + 1].length === 4) return i + 2 < groups.length;
+  }
+  return false;
 }
 
 /**
