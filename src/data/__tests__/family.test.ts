@@ -4,14 +4,18 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { FamilyEventValues } from '@/domain/familyEvents';
 
 import {
+  FAMILY_EVENT_DAY_PERSON_GONE,
   FAMILY_EVENT_GONE,
   FAMILY_EVENT_PERSON_GONE,
   FAMILY_EVENTS_UNAVAILABLE,
+  familyEventDayErrorMessage,
   familyEventErrorMessage,
   fetchFamilyEventDays,
   fetchFamilyEvents,
   isMissingTable,
+  isPersonGone,
   saveFamilyEvent,
+  saveFamilyEventDay,
 } from '../family';
 
 jest.mock('@/lib/supabase', () => ({
@@ -149,6 +153,56 @@ describe('salvar o compromisso', () => {
     const updating = savingDb((op) => (op === 'family_events.update' ? { data: null, error: offlineError } : undefined));
     await expect(saveFamilyEvent({ id: 'e1', values }, updating.db)).rejects.toBe(offlineError);
     expect(updating.ops.map((o) => o.op)).toEqual(['family_events.update']);
+  });
+});
+
+describe('gravar o que muda num dia', () => {
+  const change = { cancelled: false, override_take: true, take_by: 'beto', override_pick_up: false, pick_up_by: null };
+  // O que o banco responde quando recusa a chave: da ficha de quem leva, de quem busca, e a do próprio compromisso.
+  const refusal = (constraint: string, table: string) => ({
+    code: '23503',
+    message: `insert or update on table "family_event_days" violates foreign key constraint "${constraint}"`,
+    details: `Key is not present in table "${table}".`,
+  });
+  const takeGone = refusal('family_event_days_take_by_household_id_fkey', 'people');
+  const pickUpGone = refusal('family_event_days_pick_up_by_household_id_fkey', 'people');
+  const eventGone = refusal('family_event_days_event_id_household_id_fkey', 'family_events');
+
+  it('com mudança, grava a linha do dia; sem mudança, a linha sai', async () => {
+    const saving = savingDb(() => undefined);
+    await saveFamilyEventDay({ eventId: 'e1', date: '2026-10-15', change }, saving.db);
+    expect(saving.ops.map((o) => o.op)).toEqual(['family_event_days.upsert']);
+    expect(saving.ops[0].args[0]).toEqual({ event_id: 'e1', occurs_on: '2026-10-15', ...change });
+    const clearing = savingDb(() => undefined);
+    await saveFamilyEventDay({ eventId: 'e1', date: '2026-10-15', change: null }, clearing.db);
+    expect(clearing.ops.map((o) => o.op)).toEqual(['family_event_days.delete']);
+  });
+
+  it('a ficha de quem foi escolhido para o dia foi apagada: a frase é a do dia, não a do formulário', async () => {
+    for (const refused of [takeGone, pickUpGone]) {
+      const { db } = savingDb((op) => (op === 'family_event_days.upsert' ? { data: null, error: refused } : undefined));
+      const error = await saveFamilyEventDay({ eventId: 'e1', date: '2026-10-15', change }, db).catch((e: unknown) => e);
+      expect(error).toBe(refused);
+      expect(isPersonGone(error)).toBe(true);
+      expect(familyEventDayErrorMessage(error)).toBe(FAMILY_EVENT_DAY_PERSON_GONE);
+    }
+    expect(FAMILY_EVENT_DAY_PERSON_GONE).toBe('Essa pessoa não está mais nas fichas da casa. Escolha outra para este dia.');
+    // No Salvar do formulário, a mesma recusa segue com a frase dele.
+    expect(familyEventErrorMessage(takeGone)).toBe(FAMILY_EVENT_PERSON_GONE);
+  });
+
+  it('o compromisso foi excluído: a frase segue a de que ele não existe mais, e não é caso de buscar as fichas', async () => {
+    const { db } = savingDb((op) => (op === 'family_event_days.upsert' ? { data: null, error: eventGone } : undefined));
+    const error = await saveFamilyEventDay({ eventId: 'e1', date: '2026-10-15', change }, db).catch((e: unknown) => e);
+    expect(familyEventDayErrorMessage(error)).toBe(FAMILY_EVENT_GONE);
+    expect(isPersonGone(error)).toBe(false);
+  });
+
+  it('os outros erros da mudança de um dia seguem como são', () => {
+    expect(familyEventDayErrorMessage(offline)).toBe('TypeError: Network request failed');
+    expect(familyEventDayErrorMessage(notInCache)).toBe(FAMILY_EVENTS_UNAVAILABLE);
+    expect(isPersonGone(offline)).toBe(false);
+    expect(isPersonGone(null)).toBe(false);
   });
 });
 

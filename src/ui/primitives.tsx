@@ -83,7 +83,10 @@ export function Screen({
   footer?: ReactNode;
   /** Tela com o botão do Nuke por cima: sobra espaço no fim para ele não cobrir nada. */
   fab?: boolean;
-  /** Para a tela que abre já numa parte dela (o `y` de um filho direto, em onLayout, é a posição a rolar). */
+  /**
+   * Para a tela rolar sozinha até um ponto: abrir já numa parte dela (o `y` de um filho direto, em onLayout, é a
+   * posição a rolar) ou voltar ao começo de uma lista que acabou de mudar.
+   */
   scrollRef?: RefObject<ScrollView | null>;
 }) {
   const c = useColors();
@@ -485,17 +488,21 @@ export function Chip({
   selected,
   onPress,
   icon,
+  accessibilityLabel,
 }: {
   label: string;
   selected?: boolean;
   onPress?: () => void;
   icon?: IconName;
+  /** O que o leitor de tela diz do selo; sem ele, lê o rótulo. Para o selo que tira um filtro dizer que tira. */
+  accessibilityLabel?: string;
 }) {
   const c = useColors();
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityState={{ selected }}
+      accessibilityLabel={accessibilityLabel}
       onPress={onPress}
       style={[
         styles.chip,
@@ -601,6 +608,7 @@ export function ListRow({
   onPress,
   onLongPress,
   dimmed,
+  accessibilityLabel,
   expanded,
 }: {
   left?: ReactNode;
@@ -610,11 +618,14 @@ export function ListRow({
   onPress?: () => void;
   onLongPress?: () => void;
   dimmed?: boolean;
+  /** O que o leitor de tela diz da linha inteira; sem ele, lê os textos na ordem em que aparecem. */
+  accessibilityLabel?: string;
   expanded?: boolean;
 }) {
   const c = useColors();
   return (
     <Pressable
+      accessibilityLabel={accessibilityLabel}
       accessibilityRole={expanded === undefined ? undefined : 'button'}
       aria-expanded={expanded}
       disabled={!onPress && !onLongPress}

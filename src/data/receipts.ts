@@ -52,6 +52,15 @@ export function useReceipt(id: string) {
   });
 }
 
+/**
+ * De quando é a nota guardada (a leitura mais recente que chegou do banco), vista na hora da chamada e não no
+ * render: a tela da nota marca com isso a leitura que ficou atrás de uma gravação dela.
+ */
+export function useReceiptReadAt(id: string) {
+  const queryClient = useQueryClient();
+  return () => queryClient.getQueryState(['receipt', id])?.dataUpdatedAt ?? 0;
+}
+
 function useInvalidateReceipt(id?: string) {
   const queryClient = useQueryClient();
   return () => {
@@ -258,8 +267,28 @@ export function useCreateManualReceipt() {
 export function useUpdateReceipt(id: string) {
   const invalidate = useInvalidateReceipt(id);
   return useMutation({
-    mutationFn: async (patch: Partial<Pick<Receipt, 'store_id' | 'purchased_at' | 'total' | 'paid_by'>>) =>
+    mutationFn: async (patch: Partial<Pick<Receipt, 'store_id' | 'purchased_at' | 'paid_by'>>) =>
       unwrap(await supabase.from('receipts').update(patch).eq('id', id)),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * O total da nota, que só a revisão deixa corrigir: a gravação só acha a nota
+ * enquanto ela é rascunho. Confirmada em outro aparelho, nada é gravado, e a
+ * nota relida (a tela vira a da nota confirmada) é o aviso. É uma gravação à
+ * parte da de data e de quem pagou, com o próprio "salvando": uma em andamento
+ * não segura a outra.
+ */
+export function useSetReceiptTotal(id: string) {
+  const invalidate = useInvalidateReceipt(id);
+  return useMutation({
+    // Pede a linha de volta: a nota confirmada em outro aparelho não é achada (o filtro é o rascunho), e o banco
+    // não reclama. Quem chamou precisa saber que nada foi gravado, para não seguir como se a nota fosse rascunho.
+    mutationFn: async (total: number | null): Promise<{ saved: boolean }> => {
+      const rows = unwrap(await supabase.from('receipts').update({ total }).eq('id', id).eq('status', 'draft').select('id')) as { id: string }[] | null;
+      return { saved: Boolean(rows?.length) };
+    },
     onSuccess: invalidate,
   });
 }
@@ -298,14 +327,21 @@ export interface ItemValues {
 export function useSaveReceiptItem(receiptId: string) {
   const invalidate = useInvalidateReceipt(receiptId);
   return useMutation({
-    mutationFn: async ({ id, values, position }: { id?: string; values: ItemValues; position?: number }) =>
-      id
-        ? unwrap(await supabase.from('receipt_items').update(values).eq('id', id))
-        : unwrap(
-            await supabase
-              .from('receipt_items')
-              .insert({ ...values, receipt_id: receiptId, position: position ?? 0 }),
-          ),
+    // Devolve o id do item. O do item novo é o banco que dá, e a tela precisa dele antes de a nota voltar: o zero
+    // digitado de propósito é "deixar sem valor", e o item novo não pode perguntar pelo valor quando aparecer.
+    mutationFn: async ({ id, values, position }: { id?: string; values: ItemValues; position?: number }): Promise<{ id: string }> => {
+      if (id) {
+        unwrap(await supabase.from('receipt_items').update(values).eq('id', id));
+        return { id };
+      }
+      return unwrap(
+        await supabase
+          .from('receipt_items')
+          .insert({ ...values, receipt_id: receiptId, position: position ?? 0 })
+          .select('id')
+          .single(),
+      ) as { id: string };
+    },
     onSuccess: invalidate,
   });
 }
@@ -343,6 +379,9 @@ export function useConfirmReceipt(receiptId: string) {
   });
 }
 
+/** O que mostra os itens de uma nota já confirmada: comparativo, histórico de preço, gastos e compras recentes. */
+const CONFIRMED_ITEM_KEYS = ['receipts', 'latestPrices', 'priceHistory', 'spending', 'purchaseRecords'];
+
 export function useDeleteReceipt(receiptId: string) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -351,9 +390,47 @@ export function useDeleteReceipt(receiptId: string) {
       if (imagePaths.length) await supabase.storage.from('receipts').remove(imagePaths);
     },
     onSuccess: () => {
-      for (const key of ['receipts', 'latestPrices', 'priceHistory', 'spending', 'purchaseRecords']) {
+      for (const key of CONFIRMED_ITEM_KEYS) {
         queryClient.invalidateQueries({ queryKey: [key] });
       }
+    },
+  });
+}
+
+/**
+ * Dar valor ao item que ficou sem (total zerado): o caminho de "Usar R$ …",
+ * na revisão e na nota confirmada, e o único conserto que a nota confirmada
+ * aceita. A descrição não vai no pedido, e o filtro do total zerado deixa
+ * quieto o item que já ganhou valor em outro aparelho: `filled` diz se o item
+ * foi gravado, para a tela avisar em vez de sumir calada com o valor
+ * escolhido. Na nota confirmada esse item já conta nos preços e nos gastos:
+ * salvar atualiza o mesmo que excluir a nota (na revisão a nota pode ter sido
+ * confirmada em outro aparelho, e refazer essas buscas não custa).
+ */
+export function useFillReceiptItemValue(receiptId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    // Só o preço e o total. A quantidade e a unidade ficam como estão: na nota confirmada elas já foram para a
+    // despensa (confirm_receipt copia as duas para o item de lá), e mudá-las aqui deixaria as duas telas em
+    // desacordo.
+    mutationFn: async ({ id, values }: { id: string; values: Pick<ItemValues, 'unit_price' | 'total_price'> }): Promise<{ filled: boolean }> => {
+      const { unit_price, total_price } = values;
+      const rows = unwrap(
+        await supabase
+          .from('receipt_items')
+          .update({ unit_price, total_price })
+          .eq('id', id)
+          .eq('receipt_id', receiptId)
+          .eq('total_price', 0)
+          .select('id'),
+      ) as { id: string }[] | null;
+      return { filled: Boolean(rows?.length) };
+    },
+    onSuccess: () => {
+      for (const key of CONFIRMED_ITEM_KEYS) {
+        queryClient.invalidateQueries({ queryKey: [key] });
+      }
+      queryClient.invalidateQueries({ queryKey: ['receipt', receiptId] });
     },
   });
 }
