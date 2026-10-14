@@ -3927,14 +3927,22 @@ do $$
 begin
   assert public.current_household_id() is null, 'T has no household';
   assert (select count(*) from public.shared_latest_prices()) = 0, 'no household, no rows';
+  -- O cartão da aba Família só pergunta se o compartilhamento existe: o sim não depende da casa.
+  assert public.shared_prices_available() is true, 'a signed-in person learns that sharing exists';
 end $$;
 
--- Sem entrar, nem a função.
+-- Sem entrar, nem a função, nem a pergunta do cartão.
 set role anon;
 do $$
 begin
   perform public.shared_latest_prices();
   raise exception 'FAIL: anon read the shared prices';
+exception when insufficient_privilege then null;
+end $$;
+do $$
+begin
+  perform public.shared_prices_available();
+  raise exception 'FAIL: anon asked whether sharing exists';
 exception when insufficient_privilege then null;
 end $$;
 
@@ -4004,6 +4012,11 @@ begin
   assert not has_function_privilege('public', 'public.shared_latest_prices()', 'execute'), 'the read function is not open to everyone';
   assert not has_function_privilege('anon', 'public.shared_latest_prices()', 'execute'), 'anon cannot execute the read function';
   assert has_function_privilege('authenticated', 'public.shared_latest_prices()', 'execute'), 'a signed-in person can';
+  assert not has_function_privilege('public', 'public.shared_prices_available()', 'execute'), 'the availability question is not open to everyone';
+  assert not has_function_privilege('anon', 'public.shared_prices_available()', 'execute'), 'anon cannot ask it';
+  assert has_function_privilege('authenticated', 'public.shared_prices_available()', 'execute'), 'a signed-in person can ask it';
+  assert (select proconfig from pg_proc where oid = 'public.shared_prices_available()'::regprocedure) @> array['search_path=""'],
+    'the availability question has its search_path set';
 end $$;
 
 -- Compartilhar nunca derruba a confirmação: com a gravação recusada (uma regra posta aqui só para isso), a

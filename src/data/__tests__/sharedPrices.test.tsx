@@ -3,11 +3,12 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
-import type { SharedPrice } from '@/domain/sharedPrices';
+import { SHARING_ABOUT, type SharedPrice } from '@/domain/sharedPrices';
+import { SharedPricesAbout } from '@/features/SharedPrices';
 import { persistOptions, queryClient as appQueryClient } from '@/lib/queryClient';
 
 import { useConfirmReceipt, useDeleteReceipt, useFillReceiptItemValue } from '../receipts';
-import { fetchSharedPrices, isMissingFunction, useSharedPrices } from '../sharedPrices';
+import { fetchSharedPrices, fetchSharedPricesAvailable, isMissingFunction, useSharedPrices, useSharedPricesAvailable } from '../sharedPrices';
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim. O que o banco de mentira responde a cada função.
 const mockRpc: { answer: (name: string) => { data: unknown; error: unknown }; called: string[] } = {
@@ -25,6 +26,10 @@ jest.mock('expo-network', () => ({
 jest.mock('expo-image-manipulator', () => ({ ImageManipulator: {}, SaveFormat: {} }));
 jest.mock('expo-image-picker', () => ({}));
 jest.mock('@/lib/session', () => ({ endSessionIfGone: async () => false }));
+// O cartão da aba Família de verdade: os desenhos animados (reanimated), o fundo e as imagens não entram aqui.
+jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
+jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
+jest.mock('expo-image', () => ({ Image: () => null }));
 jest.mock('@/lib/supabase', () => {
   // Apagar a nota e dar valor ao item: uma consulta encadeada que, esperada, responde que gravou uma linha.
   const write = (): unknown =>
@@ -175,6 +180,38 @@ describe('preços de outras casas', () => {
   });
 });
 
+describe('o compartilhamento existe neste banco? (o cartão da aba Família)', () => {
+  /** Um banco de mentira que só responde a pergunta e guarda o nome de cada função chamada. */
+  function askingDb(answer: { data: unknown; error: unknown }) {
+    const asked: string[] = [];
+    const db = {
+      rpc: async (name: string) => {
+        asked.push(name);
+        return answer;
+      },
+    };
+    return { db: db as unknown as SupabaseClient, asked };
+  }
+  const probeNotInCache = { code: 'PGRST202', message: 'Could not find the function public.shared_prices_available without parameters in the schema cache' };
+  const probeNoFunction = { code: '42883', message: 'function public.shared_prices_available() does not exist' };
+
+  it.each([probeNotInCache, probeNoFunction])('sem a função no banco: não (false), sem erro', async (error) => {
+    const { db, asked } = askingDb({ data: null, error });
+    await expect(fetchSharedPricesAvailable(db)).resolves.toBe(false);
+    expect(asked).toEqual(['shared_prices_available']);
+  });
+
+  it('com a função: sim, perguntando só a ela, nunca à função dos preços', async () => {
+    const { db, asked } = askingDb({ data: true, error: null });
+    await expect(fetchSharedPricesAvailable(db)).resolves.toBe(true);
+    expect(asked).toEqual(['shared_prices_available']);
+  });
+
+  it('outro erro sobe (o cartão só deixa de aparecer)', async () => {
+    await expect(fetchSharedPricesAvailable(askingDb({ data: null, error: offline }).db)).rejects.toBe(offline);
+  });
+});
+
 /** Monta `Probe` com um cache novo e espera `done` (as buscas terminam fora do render). */
 async function mount(Probe: () => null, queryClient: QueryClient, done: () => boolean) {
   let renderer: ReactTestRenderer | undefined;
@@ -220,10 +257,61 @@ describe('no cache do app', () => {
 
   it('não fica guardado no aparelho (os preços da própria casa ficam)', () => {
     appQueryClient.setQueryData(['sharedPrices'], [price(1)]);
+    appQueryClient.setQueryData(['sharedPricesAvailable'], true);
     appQueryClient.setQueryData(['latestPrices'], []);
     const stored = (key: string) => persistOptions.dehydrateOptions.shouldDehydrateQuery(appQueryClient.getQueryCache().find({ queryKey: [key] })!);
     expect(stored('latestPrices')).toBe(true);
     expect(stored('sharedPrices')).toBe(false);
+    // A pergunta do cartão também não: aberto de novo, o app pergunta outra vez.
+    expect(stored('sharedPricesAvailable')).toBe(false);
+  });
+
+  it('a pergunta do cartão fica na chave sharedPricesAvailable; sem a função, não', async () => {
+    for (const [answer, expected] of [
+      [{ data: true, error: null }, true],
+      [{ data: null, error: notInCache }, false],
+    ] as const) {
+      mockRpc.answer = () => answer;
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+      const seen: unknown[] = [];
+      const renderer = await mount(
+        function Probe() {
+          seen.push(useSharedPricesAvailable().data);
+          return null;
+        },
+        queryClient,
+        () => seen.at(-1) !== undefined,
+      );
+      expect(seen.at(-1)).toBe(expected);
+      expect(queryClient.getQueryData(['sharedPricesAvailable'])).toBe(expected);
+      await act(async () => renderer.unmount());
+      queryClient.clear();
+    }
+    expect(mockRpc.called).toEqual(['shared_prices_available', 'shared_prices_available']);
+  });
+
+  it('o cartão da aba Família, sozinho na tela, só pergunta: nunca busca os preços', async () => {
+    mockRpc.answer = (name) => (name === 'shared_prices_available' ? { data: true, error: null } : { data: [price(1)], error: null });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(
+        <QueryClientProvider client={queryClient}>
+          <SharedPricesAbout />
+        </QueryClientProvider>,
+      );
+    });
+    const page = () => JSON.stringify(renderer!.toJSON());
+    for (let turn = 0; turn < 20 && !page().includes(SHARING_ABOUT); turn++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+    expect(page()).toContain(SHARING_ABOUT);
+    expect(mockRpc.called).toEqual(['shared_prices_available']);
+    expect(queryClient.getQueryCache().find({ queryKey: ['sharedPrices'] })).toBeUndefined();
+    await act(async () => renderer!.unmount());
+    queryClient.clear();
   });
 
   it('confirmar uma nota busca de novo os preços de outras casas', async () => {

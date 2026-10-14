@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 
 import { useLatestPrices, useStores } from '@/data/market';
-import { useSharedPrices } from '@/data/sharedPrices';
+import { useSharedPrices, useSharedPricesAvailable } from '@/data/sharedPrices';
 import {
   describeSharedPrice,
   seenLabel,
@@ -79,13 +79,14 @@ function SharedPriceList({ title, rows }: { title: string; rows: SharedPriceRow[
 }
 
 /**
- * Aba Família: o que a casa compartilha. Só quando o compartilhamento existe
- * no banco (a função respondeu); antes da migração, nada. Não há chave para
- * desligar: vale para toda casa, pelos termos de uso.
+ * Aba Família: o que a casa compartilha. Só quando o banco responde que o
+ * compartilhamento existe (uma pergunta de sim ou não, sem buscar os preços);
+ * antes da migração, enquanto pergunta ou se a pergunta falhou, nada. Não há
+ * chave para desligar: vale para toda casa, pelos termos de uso.
  */
 export function SharedPricesAbout() {
-  const shared = useSharedPrices();
-  if (!shared.data) return null;
+  const available = useSharedPricesAvailable();
+  if (available.data !== true) return null;
   return (
     <Section title={SHARING_TITLE}>
       <Card>

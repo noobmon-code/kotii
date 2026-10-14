@@ -23,7 +23,9 @@ interface Query {
 }
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
-const mockQueries: Record<'products' | 'history' | 'stores' | 'prices' | 'shared', Query> = {} as never;
+const mockQueries: Record<'products' | 'history' | 'stores' | 'prices' | 'shared' | 'available', Query> = {} as never;
+/** Quem pediu os preços de outras casas: o cartão da aba Família não pede. */
+const mockSharedPrices = jest.fn(() => mockQueries.shared);
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn() },
@@ -38,7 +40,7 @@ jest.mock('@/data/market', () => ({
   useRenameProduct: () => ({ mutate: jest.fn(), isPending: false }),
   useStores: () => mockQueries.stores,
 }));
-jest.mock('@/data/sharedPrices', () => ({ useSharedPrices: () => mockQueries.shared }));
+jest.mock('@/data/sharedPrices', () => ({ useSharedPrices: () => mockSharedPrices(), useSharedPricesAvailable: () => mockQueries.available }));
 // O histórico de preço do produto é uma seção à parte, com os testes dela: não entra no que se confere aqui.
 jest.mock('@/features/market/PriceHistorySection', () => ({ PriceHistorySection: () => null }));
 // A aba Família: a casa, as pessoas e as outras seções não entram no que se confere aqui.
@@ -160,7 +162,7 @@ async function press(label: string) {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  Object.assign(mockQueries, { products: loaded(PRODUCTS), stores: loaded(STORES), shared: loaded([]) });
+  Object.assign(mockQueries, { products: loaded(PRODUCTS), stores: loaded(STORES), shared: loaded([]), available: loaded(true) });
   household([own('mercadinho', 25, 20)]);
 });
 
@@ -374,10 +376,27 @@ describe('aba Família: "Preços compartilhados"', () => {
     expect(renderer!.root.findAll((node) => node.props.accessibilityRole === 'switch')).toHaveLength(0);
   });
 
-  it.each(NOT_AVAILABLE)('%s: o cartão não aparece e a aba é a de sempre', async (_name, answer) => {
+  it('o cartão só pergunta se o compartilhamento existe: a aba nunca pede os preços de outras casas', async () => {
+    // Nem quando os preços já estão aí, nem quando a função dos preços falta: o cartão segue a pergunta.
+    for (const shared of [loaded([seen(SUPER, 'SUPER OUTRO', 21.9, 3)]), loaded(null)]) {
+      mockQueries.shared = shared;
+      expect(await mount(<FamilyScreen />)).toContain(`Preços compartilhados${SHARING_ABOUT}`);
+      await act(async () => renderer?.unmount());
+    }
+    expect(mockSharedPrices).not.toHaveBeenCalled();
+  });
+
+  /** O banco ainda sem o compartilhamento (false), a pergunta a caminho e a que falhou. */
+  const CARD_NOT_AVAILABLE: [string, () => Query][] = [
+    ['o banco ainda não tem o compartilhamento', () => loaded(false)],
+    ['a pergunta ainda anda', onTheWay],
+    ['a pergunta falhou', failed],
+  ];
+
+  it.each(CARD_NOT_AVAILABLE)('%s: o cartão não aparece e a aba é a de sempre', async (_name, answer) => {
     const withCard = await mount(<FamilyScreen />);
     await act(async () => renderer?.unmount());
-    mockQueries.shared = answer();
+    mockQueries.available = answer();
     const page = await mount(<FamilyScreen />);
     // A aba inteira, menos o cartão: nada mais muda.
     expect(page).toBe(withCard.replace(`Preços compartilhados${SHARING_ABOUT}`, ''));

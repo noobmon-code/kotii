@@ -59,7 +59,8 @@
 --       também nome de supermercado: aí só segura a loja cujo nome não diz
 --       que é mercado.
 -- 8. O app nunca toca na tabela: sem policy e sem grant, nem para ler. Só as
---    duas funções daqui leem e gravam.
+--    duas funções daqui leem e gravam (a terceira, a do cartão da aba
+--    Família, só responde que o compartilhamento existe).
 -- 9. Não há carga do passado: notas confirmadas antes desta migração não
 --    entram. E excluir uma nota não retira o que ela deu: nada liga uma coisa
 --    à outra, de propósito.
@@ -381,3 +382,17 @@ $$;
 
 revoke execute on function public.shared_latest_prices() from public, anon;
 grant execute on function public.shared_latest_prices() to authenticated;
+
+-- O cartão da aba Família só precisa saber se o compartilhamento existe neste
+-- banco; perguntar à função de leitura calcularia e mandaria todos os preços.
+create function public.shared_prices_available()
+returns boolean
+language sql
+stable
+set search_path = ''
+as $$
+  select true;
+$$;
+
+revoke execute on function public.shared_prices_available() from public, anon;
+grant execute on function public.shared_prices_available() to authenticated;

@@ -4,8 +4,8 @@
 //
 // A função chega ao banco numa migração própria, e o app pode ser publicado
 // antes dela. Sem a função, a resposta é "não disponível" (null), nunca um
-// erro: as telas seguem como eram, sem a seção, a linha em Preços e o cartão
-// da aba Família.
+// erro: as telas seguem como eram, sem a seção e a linha em Preços. O cartão
+// da aba Família pergunta à parte (shared_prices_available), sem buscar preço.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { useQuery } from '@tanstack/react-query';
@@ -65,4 +65,24 @@ export async function fetchSharedPrices(db: SupabaseClient = supabase): Promise<
  */
 export function useSharedPrices() {
   return useQuery({ queryKey: ['sharedPrices'], queryFn: () => fetchSharedPrices(), staleTime: 5 * 60_000 });
+}
+
+/**
+ * O compartilhamento existe neste banco? É tudo o que o cartão da aba Família
+ * precisa saber: a função dos preços calcularia e mandaria todos eles para um
+ * parágrafo fixo. false quando a função não existe (o app chegou antes da
+ * migração); outro erro sobe.
+ */
+export async function fetchSharedPricesAvailable(db: SupabaseClient = supabase): Promise<boolean> {
+  const result = await db.rpc('shared_prices_available');
+  if (result.error && isMissingFunction(result.error, 'shared_prices_available')) return false;
+  return unwrap(result) === true;
+}
+
+/**
+ * A resposta só muda quando a migração é aplicada: perguntada uma vez por
+ * abertura do app (fica só na memória, fora do cache guardado no aparelho).
+ */
+export function useSharedPricesAvailable() {
+  return useQuery({ queryKey: ['sharedPricesAvailable'], queryFn: () => fetchSharedPricesAvailable(), staleTime: Infinity });
 }
