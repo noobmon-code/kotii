@@ -31,11 +31,14 @@ jest.mock('expo-router', () => ({
 jest.mock('@/data/market', () => ({
   useLatestPrices: () => mockQueries.prices,
   usePriceHistory: () => mockQueries.history,
+  useProductPurchases: () => ({ data: [] }),
   useProducts: () => mockQueries.products,
   useRenameProduct: () => ({ mutate: jest.fn(), isPending: false }),
   useStores: () => mockQueries.stores,
 }));
 jest.mock('@/data/sharedPrices', () => ({ useSharedPrices: () => mockQueries.shared }));
+// O histórico de preço do produto é uma seção à parte, com os testes dela: não entra no que se confere aqui.
+jest.mock('@/features/market/PriceHistorySection', () => ({ PriceHistorySection: () => null }));
 // A aba Família: a casa, as pessoas e as outras seções não entram no que se confere aqui.
 jest.mock('@/data/health', () => ({ usePeople: () => ({ data: [] }) }));
 jest.mock('@/data/home', () => ({ useKidPoints: () => ({ data: {} }) }));
