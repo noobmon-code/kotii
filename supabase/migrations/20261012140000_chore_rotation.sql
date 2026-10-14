@@ -588,9 +588,10 @@ create trigger chores_one_off_ends_rotation
 -- tabela. A ordem é lida com os direitos de quem grava: a pessoa lê as ordens
 -- da casa dela, e a tarefa que ela grava é dessa casa.
 --
--- Só a troca de quem está na vez: título, data, pontos, o mesmo responsável e
--- a tarefa sem rodízio passam como sempre. A que vira "Uma vez" com a mesma
--- pessoa também (chores_one_off_ends_rotation encerra o rodízio).
+-- Só a troca de quem está na vez é recusada: título, data, o mesmo responsável
+-- e a tarefa sem rodízio passam como sempre; os pontos também, menos o caso
+-- abaixo. A que vira "Uma vez" com a mesma pessoa também passa
+-- (chores_one_off_ends_rotation encerra o rodízio).
 --
 -- Os pontos, menos um caso: o app de antes do rodízio grava sempre 0 quando o
 -- responsável é um morador (para ele, pontos eram só da tarefa de criança).
