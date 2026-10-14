@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 import { isRotationChangedElsewhere, isRotationUnavailable } from '@/domain/choreRotation';
+import { isChoreGoneOnSave } from '@/domain/chores';
 
 import { fetchChoreRotations, saveChore } from '../home';
 
@@ -11,8 +12,19 @@ const mockDb: {
   rpc: { data: unknown; error: unknown } | Error;
   /** O que save_chore_single responde (as outras funções: `rpc`). */
   single: { data: unknown; error: unknown } | Error;
+  /** O que save_chore_rotation responde quando vem com p_expect_none (sem ele: `rpc`). */
+  flagged: { data: unknown; error: unknown } | Error;
+  /** O que a gravação direto na tabela responde. */
+  update: { data: unknown; error: unknown } | Error;
   calls: string[];
-} = { rotation: { data: [], error: null }, rpc: { data: null, error: null }, single: { data: null, error: null }, calls: [] };
+} = {
+  rotation: { data: [], error: null },
+  rpc: { data: null, error: null },
+  single: { data: null, error: null },
+  flagged: { data: null, error: null },
+  update: { data: null, error: null },
+  calls: [],
+};
 
 jest.mock('@/lib/supabase', () => ({
   supabase: {
@@ -26,22 +38,40 @@ jest.mock('@/lib/supabase', () => ({
           },
         }),
       }),
-      update: (values: Record<string, unknown>) => ({
-        eq: async (_column: string, id: string) => {
-          mockDb.calls.push(`update ${table} ${id}: ${Object.keys(values).join(',')}`);
-          return { data: null, error: null };
-        },
-      }),
+      update: (values: Record<string, unknown>) => {
+        // Uma consulta do supabase-js: `.eq()` uma ou mais vezes, e ela responde quando alguém espera por ela.
+        const filters: [string, unknown][] = [];
+        const query = {
+          eq: (column: string, value: unknown) => {
+            filters.push([column, value]);
+            return query;
+          },
+          then: (resolve: (value: unknown) => void, reject: (reason: unknown) => void) => {
+            // Além do id, o que mais a gravação exige da linha ("se recurrence=none").
+            const [[, id], ...more] = filters;
+            const only = more.map(([column, value]) => ` se ${column}=${value}`).join('');
+            mockDb.calls.push(`update ${table} ${id}: ${Object.keys(values).join(',')}${only}`);
+            return (mockDb.update instanceof Error ? Promise.reject(mockDb.update) : Promise.resolve(mockDb.update)).then(resolve, reject);
+          },
+        };
+        return query;
+      },
     }),
-    rpc: async (name: string, args: { p_chore_id: string; p_people?: string[]; p_assigned_to?: unknown; p_kid_id?: unknown; p_points?: unknown }) => {
+    rpc: async (
+      name: string,
+      args: { p_chore_id: string; p_people?: string[]; p_expect_none?: boolean; p_assigned_to?: unknown; p_kid_id?: unknown; p_points?: unknown },
+    ) => {
       if (name === 'save_chore_single') {
         mockDb.calls.push(`rpc ${name} ${args.p_chore_id}: ${JSON.stringify([args.p_assigned_to, args.p_kid_id, args.p_points])}`);
         if (mockDb.single instanceof Error) throw mockDb.single;
         return mockDb.single;
       }
-      mockDb.calls.push(`rpc ${name}: ${args.p_people?.join(',')}`);
-      if (mockDb.rpc instanceof Error) throw mockDb.rpc;
-      return mockDb.rpc;
+      // O terceiro argumento só aparece quando foi mandado: o banco com a função de dois argumentos não acha a de três.
+      const flagged = 'p_expect_none' in args;
+      mockDb.calls.push(`rpc ${name}: ${args.p_people?.join(',')}${flagged ? ` (p_expect_none: ${args.p_expect_none})` : ''}`);
+      const answer = flagged ? mockDb.flagged : mockDb.rpc;
+      if (answer instanceof Error) throw answer;
+      return answer;
     },
   },
   unwrap: (r: { data: unknown; error: unknown }) => {
@@ -57,8 +87,17 @@ const NO_SINGLE_FUNCTION = {
   code: 'PGRST202',
   message: 'Could not find the function public.save_chore_single(p_assigned_to, p_chore_id, p_kid_id, p_points) in the schema cache',
 };
-// A recusa de save_chore_single: a tarefa tem rodízio.
+// A recusa de save_chore_single, e de save_chore_rotation com p_expect_none: a tarefa tem rodízio.
 const HAS_ROTATION = { code: 'NK006', message: 'chore has a rotation', details: null, hint: null };
+// Banco com a save_chore_rotation de dois argumentos (uma cópia de antes): a de três a API não acha.
+const NO_FLAG = {
+  code: 'PGRST202',
+  message: 'Could not find the function public.save_chore_rotation(p_chore_id, p_expect_none, p_people) in the schema cache',
+};
+// A tarefa não está mais nesta casa (apagada em outro aparelho, ou a pessoa saiu da casa).
+const NOT_FOUND = { code: 'P0002', message: 'chore not found', details: null, hint: null };
+// Como o supabase-js devolve a falha de rede.
+const OFFLINE = { code: '', message: 'TypeError: Network request failed' };
 
 const values = { title: 'Lavar a louça', notes: null, recurrence: 'daily' as const, interval_count: 1, due_on: '2026-10-12' };
 
@@ -66,6 +105,8 @@ beforeEach(() => {
   mockDb.rotation = { data: [], error: null };
   mockDb.rpc = { data: null, error: null };
   mockDb.single = { data: null, error: null };
+  mockDb.flagged = { data: null, error: null };
+  mockDb.update = { data: null, error: null };
   mockDb.calls = [];
 });
 
@@ -182,5 +223,111 @@ describe('salvar a tarefa que já existe e não mostrou rodízio', () => {
     await saveChore({ id: 'louca', values: ofBeto, rotation: [] });
     await saveChore({ id: 'louca', values: ofBeto, rotation: ['p-beto', 'p-carla'] });
     expect(mockDb.calls).toEqual([EVERYTHING, 'rpc save_chore_rotation: ', EVERYTHING, 'rpc save_chore_rotation: p-beto,p-carla']);
+  });
+
+  it('tarefa apagada em outro aparelho: a função responde que ela não existe, o erro sobe e nada mais é gravado', async () => {
+    mockDb.single = { data: null, error: NOT_FOUND };
+    const gone = await saveChore({ id: 'louca', values: ofBeto }).catch((err: unknown) => err);
+    expect(gone).toBe(NOT_FOUND);
+    expect(isChoreGoneOnSave(gone)).toBe(true);
+    expect(mockDb.calls).toEqual([SINGLE]);
+  });
+});
+
+describe('salvar um rodízio novo na tarefa que já existe e não mostrou rodízio', () => {
+  // O que o editor manda: a vez do primeiro da ordem (para o banco de antes) e os pontos.
+  const ofBeto = { ...values, assigned_to: 'u-beto', kid_id: null, points: 10 };
+  const created = { id: 'louca', values: ofBeto, rotation: ['p-beto', 'p-lia'], expectNone: true };
+  const FLAGGED = 'rpc save_chore_rotation: p-beto,p-lia (p_expect_none: true)';
+  const UNFLAGGED = 'rpc save_chore_rotation: p-beto,p-lia';
+  const REST = 'update chores louca: title,notes,recurrence,interval_count,due_on,points';
+  const EVERYTHING = 'update chores louca: title,notes,recurrence,interval_count,due_on,assigned_to,kid_id,points';
+  const REPEATS = 'update chores louca: recurrence,interval_count se recurrence=none';
+
+  it('a ordem vai primeiro, pela função que confere que a tarefa segue sem rodízio; o resto depois, sem o responsável e com os pontos', async () => {
+    expect(await saveChore(created)).toEqual({ id: 'louca' });
+    // A vez quem põe é a função (o primeiro da ordem); os pontos, em que ela não mexe, vão com o resto.
+    expect(mockDb.calls).toEqual([FLAGGED, REST]);
+  });
+
+  it('a tarefa ganhou um rodízio em outro celular: a recusa do banco sobe como erro e nada mais é gravado', async () => {
+    mockDb.flagged = { data: null, error: HAS_ROTATION };
+    const refused = await saveChore(created).catch((err: unknown) => err);
+    expect(refused).toBe(HAS_ROTATION);
+    expect(isRotationChangedElsewhere(refused)).toBe(true);
+    expect(mockDb.calls).toEqual([FLAGGED]);
+  });
+
+  it('tarefa apagada em outro aparelho: o erro sobe e nada mais é gravado', async () => {
+    mockDb.flagged = { data: null, error: NOT_FOUND };
+    const gone = await saveChore(created).catch((err: unknown) => err);
+    expect(gone).toBe(NOT_FOUND);
+    expect(isChoreGoneOnSave(gone)).toBe(true);
+    expect(mockDb.calls).toEqual([FLAGGED]);
+  });
+
+  it('as outras falhas da função (sem internet, alguém da ordem que saiu da casa) também sobem, sem gravar o resto', async () => {
+    mockDb.flagged = new TypeError('Network request failed');
+    await expect(saveChore(created)).rejects.toBe(mockDb.flagged);
+    mockDb.flagged = { data: null, error: OFFLINE };
+    await expect(saveChore(created)).rejects.toBe(OFFLINE);
+    mockDb.flagged = { data: null, error: { code: 'P0002', message: 'Alguém do rodízio não está mais na casa. Confira a ordem e salve de novo.' } };
+    await expect(saveChore(created)).rejects.toMatchObject({ code: 'P0002' });
+    expect(mockDb.calls).toEqual([FLAGGED, FLAGGED, FLAGGED]);
+  });
+
+  it('o resto falha depois de a ordem ser gravada: volta no resultado, não como erro, para a tela dizer o que foi salvo', async () => {
+    mockDb.update = { data: null, error: OFFLINE };
+    expect(await saveChore(created)).toEqual({ id: 'louca', restError: OFFLINE });
+    mockDb.update = new TypeError('Network request failed');
+    expect(await saveChore(created)).toEqual({ id: 'louca', restError: mockDb.update });
+    expect(mockDb.calls).toEqual([FLAGGED, REST, FLAGGED, REST]);
+  });
+
+  it('banco ainda sem o rodízio (o app chegou antes da migração): o caminho de antes, e a falha da ordem volta no resultado', async () => {
+    mockDb.flagged = { data: null, error: NO_FUNCTION };
+    mockDb.rpc = { data: null, error: NO_FUNCTION };
+    const saved = await saveChore(created);
+    expect(saved.id).toBe('louca');
+    expect(isRotationUnavailable(saved.rotationError)).toBe(true);
+    expect(saved.restError).toBeUndefined();
+    // A tarefa inteira direto na tabela, com o responsável, e a ordem tentada como sempre foi.
+    expect(mockDb.calls).toEqual([FLAGGED, EVERYTHING, UNFLAGGED]);
+  });
+
+  it('banco com a função de dois argumentos (uma cópia de antes da migração): o caminho de antes grava a tarefa e a ordem', async () => {
+    mockDb.flagged = { data: null, error: NO_FLAG };
+    expect(await saveChore(created)).toEqual({ id: 'louca' });
+    expect(mockDb.calls).toEqual([FLAGGED, EVERYTHING, UNFLAGGED]);
+  });
+
+  it('a tarefa era "Uma vez": só a repetição vai antes, e só se ela segue "Uma vez" no banco (a função recusa rodízio em tarefa que não se repete)', async () => {
+    expect(await saveChore({ ...created, fromOneOff: true })).toEqual({ id: 'louca' });
+    expect(mockDb.calls).toEqual([REPEATS, FLAGGED, REST]);
+    mockDb.calls = [];
+    // Se nem a repetição pôde ser gravada, nada mais é tentado.
+    mockDb.update = { data: null, error: OFFLINE };
+    await expect(saveChore({ ...created, fromOneOff: true })).rejects.toBe(OFFLINE);
+    expect(mockDb.calls).toEqual([REPEATS]);
+  });
+
+  it('só o rodízio novo de uma tarefa que já existe passa por aí', async () => {
+    // Tarefa nova: ninguém mais pode ter criado um rodízio para ela.
+    await saveChore({ values: ofBeto, rotation: ['p-beto', 'p-lia'], expectNone: true });
+    // Sem ordem a gravar, o responsável vai pela função da tarefa sem rodízio.
+    await saveChore({ id: 'louca', values: ofBeto, rotation: null, expectNone: true });
+    // O formulário mostrou o rodízio: a tarefa primeiro e a ordem depois, sem o terceiro argumento.
+    await saveChore({ id: 'louca', values, rotation: ['p-beto', 'p-lia'] });
+    await saveChore({ id: 'louca', values, rotation: ['p-beto', 'p-lia'], expectNone: false });
+    expect(mockDb.calls).toEqual([
+      'insert chores: Lavar a louça',
+      UNFLAGGED,
+      'rpc save_chore_single louca: ["u-beto",null,10]',
+      'update chores louca: title,notes,recurrence,interval_count,due_on',
+      'update chores louca: title,notes,recurrence,interval_count,due_on',
+      UNFLAGGED,
+      'update chores louca: title,notes,recurrence,interval_count,due_on',
+      UNFLAGGED,
+    ]);
   });
 });

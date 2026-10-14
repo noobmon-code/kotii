@@ -52,6 +52,18 @@ export function isChoreGone(error: unknown): boolean {
   return 'code' in error && error.code === 'PGRST116';
 }
 
+/**
+ * O salvar respondeu que a tarefa não existe mais nesta casa (save_chore_single
+ * e save_chore_rotation: P0002, "chore not found")? Foi apagada em outro
+ * aparelho, ou a pessoa saiu da casa: nada foi salvo, e o aviso é o mesmo da
+ * busca (CHORE_GONE). A mensagem também conta: com o mesmo código o banco diz
+ * que alguém da ordem não está mais na casa, e aí a tarefa existe.
+ */
+export function isChoreGoneOnSave(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  return 'code' in error && error.code === 'P0002' && 'message' in error && error.message === 'chore not found';
+}
+
 /** Quem faz a tarefa: o morador, ou a criança com os pontos ("Lia · 10 pontos"). */
 export function choreAssigneeLabel(
   chore: { assigned_to: string | null; kid_id: string | null; points: number },

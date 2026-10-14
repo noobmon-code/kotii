@@ -8,7 +8,9 @@
 -- mostra a pessoa certa e conclui como antes.
 --
 -- 1. save_chore_rotation grava a ordem (ou encerra o rodízio); save_chore_single
---    grava o responsável da tarefa sem rodízio, e recusa a que tem um.
+--    grava o responsável da tarefa sem rodízio, e recusa a que tem um. O
+--    formulário que abriu sem rodízio e cria um pede o mesmo à primeira
+--    (p_expect_none): ela recusa a tarefa que já tem rodízio.
 -- 2. complete_chore passa a vez ao concluir e devolve quem é o próximo.
 -- 3. skip_chore_turn passa a vez sem concluir.
 -- 4. Gatilhos: quem sai da ordem (ficha apagada) passa a vez adiante; com menos
@@ -130,7 +132,15 @@ revoke execute on function public.chore_next_person(uuid, integer) from public, 
 -- ordem inteira de uma vez. Rodízio novo começa pelo primeiro; no que já
 -- existia, quem continua na ordem mantém a vez e, se saiu, ela vai para o
 -- primeiro. A tarefa em si o app grava antes, direto na tabela, como sempre.
-create function public.save_chore_rotation(p_chore_id uuid, p_people uuid[])
+--
+-- p_expect_none: o formulário abriu sem rodízio e vai criar um. Aí a função é
+-- chamada antes de o resto da tarefa ser gravado e, com a tarefa travada,
+-- confere que ela segue sem rodízio: se um foi criado nesse meio-tempo, em
+-- outro celular, recusa (NK006, como save_chore_single) e nada muda, em vez
+-- de trocar por outra a ordem que o formulário nunca mostrou. Aceita, a vez
+-- vai para o primeiro (é um rodízio novo); os pontos e o resto da tarefa o app
+-- grava em seguida. Falso, ou sem o argumento: tudo como acima.
+create function public.save_chore_rotation(p_chore_id uuid, p_people uuid[], p_expect_none boolean default false)
 returns void
 language plpgsql
 security definer
@@ -147,6 +157,10 @@ begin
   for update;
   if not found then
     raise exception 'chore not found' using errcode = 'P0002';
+  end if;
+  -- Antes de qualquer outra coisa: quem não viu o rodízio não o troca nem o encerra.
+  if p_expect_none and exists (select 1 from public.chore_rotation r where r.chore_id = c.id) then
+    raise exception 'chore has a rotation' using errcode = 'NK006';
   end if;
 
   if n = 0 then
@@ -178,8 +192,8 @@ begin
   end if;
 end;
 $$;
-revoke execute on function public.save_chore_rotation(uuid, uuid[]) from public, anon;
-grant execute on function public.save_chore_rotation(uuid, uuid[]) to authenticated;
+revoke execute on function public.save_chore_rotation(uuid, uuid[], boolean) from public, anon;
+grant execute on function public.save_chore_rotation(uuid, uuid[], boolean) to authenticated;
 
 -- A tarefa sem rodízio: o responsável (p_assigned_to, morador; p_kid_id, quem
 -- não tem o app; os dois nulos, qualquer um) e os pontos (nulo: ficam como

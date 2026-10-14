@@ -286,6 +286,19 @@ export function planRotationSave(input: {
   return had ? { people: order } : { turn: turnOf(line[0]), people: order };
 }
 
+/**
+ * A ordem a gravar (`people`, de planRotationSave) é um rodízio novo numa
+ * tarefa que já existe, de um formulário que abriu sem rodízio? Aí é o banco
+ * que confere, na hora de gravar a ordem, que a tarefa segue sem rodízio
+ * (save_chore_rotation com p_expect_none): outro celular pode ter criado um
+ * nesse meio-tempo, e a ordem dele seria trocada por esta sem ninguém ver. Na
+ * tarefa nova não há o que conferir, e a ordem que o formulário mostrou ele
+ * pode trocar.
+ */
+export function startsRotation(saved: SavedRotation | undefined, people: string[] | null): boolean {
+  return Boolean(saved && !saved.order.length && people?.length);
+}
+
 // ---------------------------------------------------------------------------
 // Pontos das crianças
 
@@ -321,17 +334,21 @@ export function kidChores<C extends ChoreTurn & { id: string; points: number; du
 
 export const ROTATION_UNAVAILABLE = 'O rodízio ainda não está disponível nesta casa. Tente de novo mais tarde.';
 
-/** O formulário abriu sem rodízio e a tarefa ganhou um em outro aparelho: salvar gravaria a vez e os pontos de antes. */
+/**
+ * O formulário abriu sem rodízio e a tarefa ganhou um em outro aparelho: salvar gravaria a vez e os pontos de
+ * antes ou, criando um rodízio, trocaria a ordem que ele não mostrou.
+ */
 export const ROTATION_CHANGED_ELSEWHERE = 'Ela ganhou um rodízio em outro aparelho. Feche e abra de novo para editar.';
 
-// O errcode com que save_chore_single recusa a tarefa que tem rodízio.
+// O errcode com que o banco recusa, do formulário que abriu sem rodízio, a tarefa que tem um.
 const HAS_ROTATION_CODE = 'NK006';
 
 /**
- * O banco recusou gravar o responsável de uma tarefa "sem rodízio" porque ela
- * tem um (save_chore_single)? É o rodízio criado em outro aparelho entre a
- * conferência do formulário e a gravação: nada foi salvo, e o aviso é o mesmo
- * da conferência (ROTATION_CHANGED_ELSEWHERE).
+ * O banco recusou o que veio de um formulário que abriu sem rodízio porque a
+ * tarefa tem um: o responsável (save_chore_single) ou a ordem nova
+ * (save_chore_rotation com p_expect_none)? É o rodízio criado em outro
+ * aparelho entre a conferência do formulário e a gravação: nada foi salvo, e
+ * o aviso é o mesmo da conferência (ROTATION_CHANGED_ELSEWHERE).
  */
 export function isRotationChangedElsewhere(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
@@ -340,6 +357,13 @@ export function isRotationChangedElsewhere(error: unknown): boolean {
 
 /** O rodízio tem alguém que este aparelho não conhece (hasUnknownPerson): salvar tiraria essa pessoa da ordem. */
 export const ROTATION_PERSON_UNKNOWN = 'O rodízio dela tem alguém que este aparelho ainda não carregou. Feche e abra de novo para editar.';
+
+/**
+ * O título do aviso quando a ordem nova foi gravada e o resto da tarefa (título, repetição, data, pontos) não: no
+ * rodízio novo de uma tarefa que já existe a ordem vai primeiro. É o contrário de "A tarefa foi salva, mas o
+ * rodízio não", de quando a tarefa vai primeiro.
+ */
+export const ROTATION_SAVED_REST_NOT = 'O rodízio foi salvo, mas o resto da tarefa não';
 
 /** Não deu para conferir, antes de salvar, se a tarefa ganhou um rodízio em outro aparelho: nada é gravado. */
 export const ROTATION_CHECK_FAILED = 'Não foi possível conferir se esta tarefa mudou em outro aparelho. Verifique a internet e tente de novo.';
@@ -353,6 +377,9 @@ const MISSING_CODES = new Set(['PGRST205', 'PGRST202', '42P01', '42883']);
  * save_chore_single, skip_chore_turn)? Aí ler as ordens devolve "nenhuma",
  * salvar ou pular avisa com ROTATION_UNAVAILABLE, em vez do erro cru, e o
  * responsável da tarefa sem rodízio é gravado direto na tabela, como antes.
+ * Vale também para o banco com a save_chore_rotation de antes, de dois
+ * argumentos: a chamada com p_expect_none não acha a função (PGRST202), e o
+ * rodízio novo é gravado pelo caminho de antes (ver saveChore).
  */
 export function isRotationUnavailable(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
