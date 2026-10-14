@@ -228,6 +228,10 @@ describe('a sugestão: o que falta para o total pode ser o valor do único item 
     expect(unpricedPrompt(two, 'x', confirmed)).toEqual({ text: null, suggestion: null, useLabel: null, fillLabel: 'Preencher', leaveLabel: null, caveat: null });
     // O que foi deixado sem valor na revisão continua podendo ser preenchido depois.
     expect(unpricedPrompt(two, 'x', confirmed, new Set(['x']))).not.toBeNull();
+    // O que a tela acabou de gravar e a nota ainda não mostra não pergunta de novo, na confirmada e na revisão.
+    expect(unpricedPrompt(two, 'x', confirmed, undefined, new Set(['x']))).toBeNull();
+    expect(unpricedPrompt(two, 'y', confirmed, undefined, new Set(['x']))).not.toBeNull();
+    expect(unpricedPrompt(two, 'x', { status: 'draft', source: 'ai' }, new Set(), new Set(['x']))).toBeNull();
     expect(unpricedPrompt(two, 'a', confirmed)).toBeNull();
   });
 });

@@ -138,14 +138,19 @@ export interface UnpricedPrompt {
  * "Deixar sem valor" nesta revisão (`left`; não é guardado, e abrir a nota de
  * novo pergunta de novo). Um brinde e um valor que a leitura perdeu são iguais
  * nos dados: por isso é pergunta, e a sugestão nunca é gravada sem o toque.
+ * `saved`: os itens cujo valor a tela acabou de gravar e a nota em tela ainda
+ * não mostra. Não perguntam, na revisão e na nota confirmada: outro toque
+ * acharia o item já com valor e diria que não salvou.
  */
 export function unpricedPrompt(
   gap: ReceiptGap,
   itemId: string,
   receipt: { status: 'draft' | 'confirmed'; source: 'ai' | 'manual' | 'qrcode' },
   left?: ReadonlySet<string>,
+  saved?: ReadonlySet<string>,
 ): UnpricedPrompt | null {
   if (!gap.unpriced.includes(itemId)) return null;
+  if (saved?.has(itemId)) return null;
   const draft = receipt.status === 'draft';
   if (draft && left?.has(itemId)) return null;
   const suggestion = gap.suggestion?.itemId === itemId ? gap.suggestion : null;

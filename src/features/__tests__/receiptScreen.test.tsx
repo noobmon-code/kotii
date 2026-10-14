@@ -1259,6 +1259,38 @@ describe('nota já confirmada: só o valor que faltou pode ser preenchido', () =
     expect(page()).not.toContain('Faltam');
   });
 
+  it('valor gravado e a nota que demora a voltar: o item não oferece "Usar" nem "Preencher" de novo (diria que não salvou), e mostra o valor quando ela chega', async () => {
+    await open();
+    const releaseRead = hold(receiptRead);
+    await press(chip('Usar R$ 12,90'));
+    await settle(4200);
+    expect(mockDb.items[1]).toMatchObject({ total_price: 12.9 });
+    // A nota em tela ainda é a de antes: o item aparece sem valor, mas sem os botões.
+    expect(said(card('Queijo muçarela'))).toEqual(['Queijo muçarela', '0,345 kg × R$ 37,90', 'sem valor']);
+    expect(chipLabels()).toEqual([]);
+    expect(writes('receipt_items')).toHaveLength(1);
+    expect(notify).not.toHaveBeenCalled();
+    await releaseRead();
+    expect(said(card('Queijo muçarela'))).toContain('R$ 12,90');
+    expect(page()).not.toContain('sem valor');
+  }, 15_000);
+
+  it('dois itens sem valor, um gravado com a nota a caminho: só ele deixa de oferecer "Preencher"', async () => {
+    seed(confirmedNote(), item('a', 'DETERGENTE YPE', 50), item('x', 'QJO MUSS KG', 0, { quantity: 0.345, unit: 'kg' }), item('y', 'SABAO EM PO', 0));
+    await open();
+    expect(chipLabels()).toEqual(['Preencher', 'Preencher']);
+    await press(chip('Preencher', card('QJO MUSS KG')));
+    act(() => field('Total do item')!.props.onChangeText('12,90'));
+    const releaseRead = hold(receiptRead);
+    await press(button('Salvar valor'));
+    await settle(4200);
+    expect(chipLabels(card('QJO MUSS KG'))).toEqual([]);
+    expect(chipLabels(card('SABAO EM PO'))).toEqual(['Preencher']);
+    await releaseRead();
+    expect(said(card('QJO MUSS KG'))).toContain('R$ 12,90');
+    expect(chipLabels(card('SABAO EM PO'))).toEqual(['Preencher']);
+  }, 15_000);
+
   it('item que já ganhou valor em outro aparelho: "Salvar valor" não grava por cima e avisa, em vez de sumir com o que foi digitado', async () => {
     await open();
     await press(chip('Preencher'));

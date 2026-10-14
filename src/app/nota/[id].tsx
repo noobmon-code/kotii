@@ -188,6 +188,9 @@ export default function ReceiptScreen() {
   // relida não voltou, ou que ficou sem resposta do banco. Enquanto a nota em tela for essa leitura
   // (`dataUpdatedAt`), "Confirmar nota" não vai com os itens dela.
   const staleRead = useRef(0);
+  // Os itens cujo valor esta tela gravou sem a nota voltar, cada um com a leitura que ficou para trás: enquanto a
+  // nota em tela for essa leitura, o item não pergunta de novo (nem na nota já confirmada).
+  const [savedAt, setSavedAt] = useState<Readonly<Record<string, number>>>({});
 
   const catalog = useMemo(
     () => new Map<string, CatalogProduct>((products.data ?? []).map((p) => [p.id, p])),
@@ -234,6 +237,8 @@ export default function ReceiptScreen() {
   // A soma, a diferença para o total e os itens sem valor: contas e frases em domain/receiptGap.
   const gap = receiptGap(receipt.total, items);
   const notices = gapNotices(gap);
+  // Os itens cujo valor foi gravado e que a nota em tela (a leitura de antes da gravação) ainda mostra sem ele.
+  const savedUnshown = new Set(Object.keys(savedAt).filter((itemId) => receiptQuery.dataUpdatedAt <= savedAt[itemId]));
   const totalAccess = receiptTotalAccess(receipt.total);
 
   const resolvedItems = new Map(items.map((item) => [item.id, resolveItem(item, overrides[item.id], catalog, purchasedOn)]));
@@ -413,13 +418,16 @@ export default function ReceiptScreen() {
       if (!read || read.isError) {
         // A nota não voltou (a busca falhou, ou não respondeu a tempo): a tela ficou atrás do que foi gravado, e
         // "Confirmar nota" busca a nota antes de seguir.
-        staleRead.current = receiptReadAt();
-        // O valor está gravado, e a tela ainda mostra o item como antes. O item deixa de perguntar (outro "Usar"
-        // acharia o item já com valor e diria que não salvou), e, se a busca falhou de vez, a pessoa fica
-        // sabendo; a que só demora ainda atualiza a tela. Com nada gravado (o item já tinha valor, ou saiu da
-        // nota), o aviso foi o de que não salvou, e nenhum "salvo" vem por cima dele.
+        const behind = receiptReadAt();
+        staleRead.current = behind;
+        // O valor está gravado, e a tela ainda mostra o item como antes. O item deixa de perguntar enquanto a
+        // nota em tela for essa leitura (outro "Usar" ou "Preencher" acharia o item já com valor e diria que
+        // não salvou), e, se a busca falhou de vez, a pessoa fica sabendo; a que só demora ainda atualiza a
+        // tela. Com nada gravado (o item já tinha valor, ou saiu da nota), o aviso foi o de que não salvou, e
+        // nenhum "salvo" vem por cima dele.
         if (written && shown) {
-          if (shown.itemId) leaveUnpriced([shown.itemId]);
+          const { itemId } = shown;
+          if (itemId) setSavedAt((prev) => ({ ...prev, [itemId]: behind }));
           if (read?.isError) notify(shown.saved.title, shown.saved.message);
         }
       }
@@ -798,7 +806,7 @@ export default function ReceiptScreen() {
           const resolved = resolvedItems.get(item.id)!;
           const alert = alertText(alerts.get(item.id));
           const before = beforeUse[item.id];
-          const prompt = unpricedPrompt(gap, item.id, receipt, leftUnpriced);
+          const prompt = unpricedPrompt(gap, item.id, receipt, leftUnpriced, savedUnshown);
           return isDraft ? (
             <DraftItemCard
               key={item.id}
