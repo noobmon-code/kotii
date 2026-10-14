@@ -63,19 +63,31 @@ export function ReceiptItemEditor({
           ) : (
             <TextField label="Descrição" value={description} onChangeText={setDescription} autoFocus={!initial} />
           )}
-          <Row gap={space.md}>
-            <View style={styles.flex}>
-              <TextField label="Quantidade" value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" />
-            </View>
-            <View style={styles.flex}>
+          {valueOnly ? (
+            // Na nota confirmada a quantidade e a unidade já foram para a despensa: aqui só se lê, e só o preço muda.
+            <>
+              <Text variant="muted">
+                {quantity} {unit}
+              </Text>
               <TextField label="Preço unitário" value={unitPrice} onChangeText={setUnitPrice} keyboardType="decimal-pad" placeholder="0,00" />
-            </View>
-          </Row>
-          <Row style={styles.wrap}>
-            {UNITS.map((u) => (
-              <Chip key={u} label={u} selected={unit === u} onPress={() => setUnit(u)} />
-            ))}
-          </Row>
+            </>
+          ) : (
+            <>
+              <Row gap={space.md}>
+                <View style={styles.flex}>
+                  <TextField label="Quantidade" value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" />
+                </View>
+                <View style={styles.flex}>
+                  <TextField label="Preço unitário" value={unitPrice} onChangeText={setUnitPrice} keyboardType="decimal-pad" placeholder="0,00" />
+                </View>
+              </Row>
+              <Row style={styles.wrap}>
+                {UNITS.map((u) => (
+                  <Chip key={u} label={u} selected={unit === u} onPress={() => setUnit(u)} />
+                ))}
+              </Row>
+            </>
+          )}
           <TextField
             label="Total do item"
             value={total}

@@ -139,10 +139,11 @@ describe('a sugestão: o que falta para o total pode ser o valor do único item 
     expect(gap.suggestion).toEqual({
       itemId: 'x',
       amount: 12.9,
-      values: { quantity: 1, unit: 'un', unit_price: 12.9, total_price: 12.9 },
+      values: { unit_price: 12.9, total_price: 12.9 },
     });
-    // Só o valor: a descrição não vai junto, para "Usar" não regravar o nome que outro aparelho corrigiu.
-    expect(Object.keys(gap.suggestion!.values).sort()).toEqual(['quantity', 'total_price', 'unit', 'unit_price']);
+    // Só o preço e o total: nem a descrição (para "Usar" não regravar o nome que outro aparelho corrigiu), nem a
+    // quantidade e a unidade (na nota confirmada elas já foram para a despensa).
+    expect(Object.keys(gap.suggestion!.values).sort()).toEqual(['total_price', 'unit_price']);
     expect(unpricedPrompt(gap, 'x', draft)).toEqual({
       text: 'Faltam R$ 12,90 para o total da nota. Pode ser o valor deste item.',
       suggestion: gap.suggestion,
@@ -157,11 +158,11 @@ describe('a sugestão: o que falta para o total pode ser o valor do único item 
 
   it('o preço unitário sai da quantidade do item, com as quatro casas que a coluna guarda', () => {
     const values = (patch: Partial<GapLine>, total = 62.9) => gapOf(total, 50, line('x', 0, patch)).suggestion?.values;
-    expect(values({ quantity: 3 })).toMatchObject({ quantity: 3, unit_price: 4.3, total_price: 12.9 });
-    expect(values({ quantity: 0.345, unit: 'kg' })).toMatchObject({ quantity: 0.345, unit: 'kg', unit_price: 37.3913, total_price: 12.9 });
+    expect(values({ quantity: 3 })).toEqual({ unit_price: 4.3, total_price: 12.9 });
+    expect(values({ quantity: 0.345, unit: 'kg' })).toEqual({ unit_price: 37.3913, total_price: 12.9 });
     expect(values({ quantity: 3 }, 60)).toMatchObject({ unit_price: 3.3333, total_price: 10 });
     // O preço unitário que a leitura trouxe sem o total é refeito: vale o que fecha a nota.
-    expect(values({ quantity: 2, unit_price: 9.99 })).toMatchObject({ quantity: 2, unit_price: 6.45, total_price: 12.9 });
+    expect(values({ quantity: 2, unit_price: 9.99 })).toEqual({ unit_price: 6.45, total_price: 12.9 });
   });
 
   it('o valor sugerido é o que falta, em centavos exatos', () => {

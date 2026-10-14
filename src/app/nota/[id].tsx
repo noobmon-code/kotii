@@ -58,6 +58,7 @@ import {
   unpricedPrompt,
   UNPRICED_LABEL,
   VALUE_NOT_SAVED,
+  VALUE_SAVED_NOT_SHOWN,
   type GapSuggestion,
   type UnpricedPrompt,
 } from '@/domain/receiptGap';
@@ -333,14 +334,17 @@ export default function ReceiptScreen() {
       notify(result.title, result.message);
       return false;
     }
+    let saved: boolean;
     try {
-      await saveTotal.mutateAsync(result.total);
+      ({ saved } = await saveTotal.mutateAsync(result.total));
     } catch (err) {
       onError(err);
       return false;
     }
     setTotalText(null);
-    return true;
+    // Nada gravado: a nota deixou de ser rascunho (foi confirmada em outro aparelho). A tela já está buscando a
+    // nota de novo e passa a mostrar a confirmada; quem chamou não segue como se ela ainda fosse rascunho.
+    return saved;
   }
 
   /** "Salvar total" (ou a tecla de enviar do campo): um salvamento por vez. */
@@ -360,7 +364,7 @@ export default function ReceiptScreen() {
    * perguntaria por ele. Aqui só se espera por essa mesma releitura, sem
    * começar outra. `onWritten` roda assim que o banco responde.
    */
-  async function settleValue<T>(write: Promise<T>, onWritten?: (result: T) => void) {
+  async function settleValue<T>(write: Promise<T>, onWritten?: (result: T) => void, itemId?: string) {
     valueWrites.current += 1;
     valueSeq.current += 1;
     setSettlingValue(true);
@@ -371,10 +375,18 @@ export default function ReceiptScreen() {
         let read = await receiptQuery.refetch({ cancelRefetch: false });
         // Outra gravação que termine no meio troca a releitura por uma mais nova: vale a última.
         while (read.isFetching) read = await receiptQuery.refetch({ cancelRefetch: false });
+        return read;
       };
       // A espera tem limite: sem internet a releitura fica parada (e a rede muda não responde), e o botão
       // giraria sem explicação. Passado o limite ele volta, e a confirmação vai ao banco e diz o erro.
-      await Promise.race([reread(), new Promise<void>((resolve) => (timer = setTimeout(resolve, SETTLE_WAIT_MS)))]);
+      const read = await Promise.race([reread(), new Promise<undefined>((resolve) => (timer = setTimeout(() => resolve(undefined), SETTLE_WAIT_MS)))]);
+      // A nota não voltou (a busca falhou, ou não respondeu a tempo): o valor está gravado, e a tela ainda mostra
+      // o item como antes. O item deixa de perguntar (outro "Usar" acharia o item já com valor e diria que não
+      // salvou), e, se a busca falhou de vez, a pessoa fica sabendo; a que só demora ainda atualiza a tela.
+      if (!read || read.isError) {
+        if (itemId) leaveUnpriced([itemId]);
+        if (read?.isError) notify(VALUE_SAVED_NOT_SHOWN.title, VALUE_SAVED_NOT_SHOWN.message);
+      }
     } catch (err) {
       onError(err);
     } finally {
@@ -397,7 +409,7 @@ export default function ReceiptScreen() {
   function applySuggestion(suggestion: GapSuggestion) {
     // Um valor por vez: com a nota ainda por voltar, o segundo toque acharia o item já com valor.
     if (valueWrites.current) return;
-    void settleValue(fillValue.mutateAsync({ id: suggestion.itemId, values: suggestion.values }), tellIfNotFilled);
+    void settleValue(fillValue.mutateAsync({ id: suggestion.itemId, values: suggestion.values }), tellIfNotFilled, suggestion.itemId);
   }
 
   /**
@@ -518,17 +530,27 @@ export default function ReceiptScreen() {
       // Um valor por vez, como no "Usar": o segundo toque, antes de o botão virar "carregando", acharia o item
       // já com valor e diria que não salvou.
       if (!itemId || valueWrites.current) return;
-      void settleValue(fillValue.mutateAsync({ id: itemId, values }), (result) => {
-        setEditing(null);
-        tellIfNotFilled(result);
-      });
+      // Só o preço e o total: a quantidade e a unidade da nota confirmada já estão na despensa.
+      const prices = { unit_price: values.unit_price, total_price: values.total_price };
+      void settleValue(
+        fillValue.mutateAsync({ id: itemId, values: prices }),
+        (result) => {
+          setEditing(null);
+          tellIfNotFilled(result);
+        },
+        itemId,
+      );
       return;
     }
-    void settleValue(saveItem.mutateAsync({ id: itemId, values, position: items.length }), () => {
-      // Zero digitado de propósito é a resposta da pessoa: o item não pergunta de novo.
-      if (itemId && hasNoValue(values)) leaveUnpriced([itemId]);
-      setEditing(null);
-    });
+    void settleValue(
+      saveItem.mutateAsync({ id: itemId, values, position: items.length }),
+      () => {
+        // Zero digitado de propósito é a resposta da pessoa: o item não pergunta de novo.
+        if (itemId && hasNoValue(values)) leaveUnpriced([itemId]);
+        setEditing(null);
+      },
+      itemId,
+    );
   }
 
   const pickerItem = picker && picker.kind !== 'store' ? items.find((i) => i.id === picker.itemId) : undefined;

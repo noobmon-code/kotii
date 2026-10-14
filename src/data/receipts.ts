@@ -274,8 +274,12 @@ export function useUpdateReceipt(id: string) {
 export function useSetReceiptTotal(id: string) {
   const invalidate = useInvalidateReceipt(id);
   return useMutation({
-    mutationFn: async (total: number | null) =>
-      unwrap(await supabase.from('receipts').update({ total }).eq('id', id).eq('status', 'draft')),
+    // Pede a linha de volta: a nota confirmada em outro aparelho não é achada (o filtro é o rascunho), e o banco
+    // não reclama. Quem chamou precisa saber que nada foi gravado, para não seguir como se a nota fosse rascunho.
+    mutationFn: async (total: number | null): Promise<{ saved: boolean }> => {
+      const rows = unwrap(await supabase.from('receipts').update({ total }).eq('id', id).eq('status', 'draft').select('id')) as { id: string }[] | null;
+      return { saved: Boolean(rows?.length) };
+    },
     onSuccess: invalidate,
   });
 }
@@ -390,12 +394,15 @@ export function useDeleteReceipt(receiptId: string) {
 export function useFillReceiptItemValue(receiptId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, values }: { id: string; values: Omit<ItemValues, 'raw_description'> }): Promise<{ filled: boolean }> => {
-      const { quantity, unit, unit_price, total_price } = values;
+    // Só o preço e o total. A quantidade e a unidade ficam como estão: na nota confirmada elas já foram para a
+    // despensa (confirm_receipt copia as duas para o item de lá), e mudá-las aqui deixaria as duas telas em
+    // desacordo.
+    mutationFn: async ({ id, values }: { id: string; values: Pick<ItemValues, 'unit_price' | 'total_price'> }): Promise<{ filled: boolean }> => {
+      const { unit_price, total_price } = values;
       const rows = unwrap(
         await supabase
           .from('receipt_items')
-          .update({ quantity, unit, unit_price, total_price })
+          .update({ unit_price, total_price })
           .eq('id', id)
           .eq('receipt_id', receiptId)
           .eq('total_price', 0)

@@ -324,7 +324,7 @@ describe('nota em revisão: um item sem valor e o total da nota', () => {
       {
         table: 'receipt_items',
         verb: 'update',
-        values: { quantity: 0.345, unit: 'kg', unit_price: 37.3913, total_price: 12.9 },
+        values: { unit_price: 37.3913, total_price: 12.9 },
         filters: { id: 'x', receipt_id: 'r1', total_price: 0 },
       },
     ]);
@@ -459,6 +459,30 @@ describe('nota em revisão: um item sem valor e o total da nota', () => {
     await press(chip('Deixar sem valor'));
     await releaseTotal();
     await settle();
+    expect(asked('1 item está sem valor')).toEqual([]);
+    expect(mockDb.rpcs).toHaveLength(1);
+  });
+
+  it('o valor é gravado e a nota não volta do banco (a busca falha): a pessoa fica sabendo que salvou, e o item não pergunta de novo', async () => {
+    await open();
+    // A gravação chega; a busca da nota, logo depois, falha.
+    mockDb.fails = [receiptRead];
+    await press(chip('Usar R$ 12,90'));
+    await settle();
+    expect(mockDb.items[1]).toMatchObject({ total_price: 12.9 });
+    expect(jest.mocked(notify).mock.calls).toEqual([['Valor salvo', 'Não deu para atualizar a nota na tela: o item pode aparecer sem valor até ela ser buscada de novo.']]);
+    // Com a busca da nota falhando, a tela é a do erro, com como tentar de novo: nada de "Usar" outra vez.
+    expect(chip('Usar R$ 12,90')).toBeUndefined();
+    // A rede volta e a nota é buscada de novo: o item aparece com o valor que foi gravado, sem pergunta.
+    mockDb.fails = [];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    expect(said(card('QJO MUSS KG'))).toContain('R$ 12,90');
+    expect(chip('Usar R$ 12,90')).toBeUndefined();
+    expect(button('Confirmar nota')!.props.loading).toBe(false);
+    await press(button('Confirmar nota'));
     expect(asked('1 item está sem valor')).toEqual([]);
     expect(mockDb.rpcs).toHaveLength(1);
   });
@@ -883,6 +907,24 @@ describe('o total da nota dá para corrigir na revisão', () => {
     expect(writes('receipts')).toHaveLength(2);
   });
 
+  it('nota confirmada em outro aparelho com o total digitado: "Confirmar nota" não segue como se fosse rascunho', async () => {
+    seed(receipt(), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    await press(totalRow());
+    act(() => field('Total da nota')!.props.onChangeText('50'));
+    mockDb.receipts[0].status = 'confirmed';
+    await press(button('Confirmar nota'));
+    await settle();
+    // O total não achou a nota em rascunho: nada de confirmar de novo, nem de erro do banco na cara da pessoa.
+    expect(writes('receipts')).toHaveLength(1);
+    expect(mockDb.rpcs).toEqual([]);
+    expect(notify).not.toHaveBeenCalled();
+    expectNoQuestion();
+    // A tela passou a ser a da nota confirmada.
+    expect(button('Confirmar nota')).toBeUndefined();
+    expect(page()).toContain('Compra em 10 jun');
+  });
+
   it('nota confirmada em outro aparelho: o total não é gravado, e a tela passa a ser a da nota confirmada', async () => {
     seed(receipt(), item('a', 'DETERGENTE YPE', 50));
     await open();
@@ -983,7 +1025,10 @@ describe('nota já confirmada: só o valor que faltou pode ser preenchido', () =
     expect(page()).toContain('Preencher valor | QJO MUSS KG');
     expect(field('Descrição')).toBeUndefined();
     expect(button('Remover item')).toBeUndefined();
-    expect(field('Quantidade')!.props.value).toBe('0,345');
+    // A quantidade e a unidade só se leem: já foram para a despensa quando a nota foi confirmada.
+    expect(field('Quantidade')).toBeUndefined();
+    expect(chipLabels()).not.toContain('kg');
+    expect(page()).toContain('0,345 kg');
     // Os dois preços em branco, também o unitário que a leitura trouxe sem o total.
     expect(field('Preço unitário')!.props.value).toBe('');
     expect(field('Total do item')!.props.value).toBe('');
@@ -996,7 +1041,7 @@ describe('nota já confirmada: só o valor que faltou pode ser preenchido', () =
       {
         table: 'receipt_items',
         verb: 'update',
-        values: { quantity: 0.345, unit: 'kg', unit_price: 37.913, total_price: 13.08 },
+        values: { unit_price: 37.913, total_price: 13.08 },
         filters: { id: 'x', receipt_id: 'r1', total_price: 0 },
       },
     ]);
@@ -1015,7 +1060,7 @@ describe('nota já confirmada: só o valor que faltou pode ser preenchido', () =
       {
         table: 'receipt_items',
         verb: 'update',
-        values: { quantity: 0.345, unit: 'kg', unit_price: 37.3913, total_price: 12.9 },
+        values: { unit_price: 37.3913, total_price: 12.9 },
         filters: { id: 'x', receipt_id: 'r1', total_price: 0 },
       },
     ]);

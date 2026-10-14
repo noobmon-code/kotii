@@ -35,7 +35,7 @@ export interface GapLine {
  * que sai da quantidade dele). A descrição fica de fora: a tela pode estar com
  * a de antes de outro aparelho corrigir, e um toque não a regrava.
  */
-export type GapValues = Omit<GapLine, 'id'>;
+export type GapValues = Pick<GapLine, 'unit_price' | 'total_price'>;
 
 export interface GapSuggestion {
   itemId: string;
@@ -78,9 +78,8 @@ function suggest(line: GapLine, missingCents: number): GapSuggestion {
   return {
     itemId: line.id,
     amount,
+    // Só o preço e o total: a quantidade e a unidade do item ficam como estão.
     values: {
-      quantity: line.quantity,
-      unit: line.unit,
       // A mesma conta do formulário quando a pessoa digita só o total (domain/receiptItem).
       unit_price: unitPriceFromTotal(amount, line.quantity),
       total_price: amount,
@@ -193,6 +192,15 @@ export function confirmUnpricedQuestion(count: number): { title: string; message
 export const VALUE_NOT_SAVED = {
   title: 'Valor não salvo',
   message: 'Este item já tem valor ou não existe mais. A nota foi atualizada.',
+};
+
+/**
+ * O valor foi gravado, mas a nota não voltou do banco (a busca falhou): a tela ainda mostra o item como antes.
+ * A pessoa fica sabendo, em vez de achar que não salvou e tentar de novo.
+ */
+export const VALUE_SAVED_NOT_SHOWN = {
+  title: 'Valor salvo',
+  message: 'Não deu para atualizar a nota na tela: o item pode aparecer sem valor até ela ser buscada de novo.',
 };
 
 /** "2 un × R$ 4,30"; sem valor e sem preço unitário, só a quantidade ("2 un"), em vez de "× R$ 0,00". */
