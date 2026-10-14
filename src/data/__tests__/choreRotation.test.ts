@@ -321,8 +321,9 @@ describe('banco que ainda não tem a função (o app chegou antes da migração)
 
   it('a API não enxerga nem a função nem a tabela, mas o banco já tem o rodízio: ele recusa a troca da vez, e o aviso pede para tentar de novo', async () => {
     // O cache do esquema ficou para trás (a olhada diz "sem a tabela"), e a tarefa está em rodízio no banco: gravada
-    // direto, a troca do responsável deixaria a ordem lá. O banco recusa (NK009) e nada muda.
-    const refused = { code: 'NK009', message: 'chore has a rotation', details: null, hint: null };
+    // direto, a troca do responsável deixaria a ordem lá. O banco recusa (NK009) e nada muda. O texto da recusa é o
+    // que o app já instalado mostra; este reconhece a recusa pelo código e mostra o aviso dele.
+    const refused = { code: 'NK009', message: 'Esta tarefa está em rodízio. Atualize o app para trocar o responsável.', details: null, hint: null };
     mockDb.update = { data: null, error: refused };
     const err = await saveChore({ id: 'louca', values: { ...values, assigned_to: 'u-beto', kid_id: null }, rotation: [] }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);

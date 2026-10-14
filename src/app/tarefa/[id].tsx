@@ -2,12 +2,13 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { fetchChoreRotations, useChore, useChoreRotations, useDeleteChore, useSaveChore, useSkipChoreTurn } from '@/data/home';
+import { choreReadSince, fetchChoreRotations, useChore, useChoreRotations, useDeleteChore, useSaveChore, useSkipChoreTurn } from '@/data/home';
 import { usePeople } from '@/data/health';
 import { useEquipment } from '@/data/house';
 import {
   currentTurn,
   hasUnknownPerson,
+  hasUnknownTurn,
   isRotationChangedElsewhere,
   nextTurn,
   numberedOrder,
@@ -29,6 +30,7 @@ import {
   rotationPeople,
   rotationPointsLabel,
   rotationProblem,
+  skipNotDoneMessage,
   skipTurnQuestion,
   toggleInOrder,
   turnOf,
@@ -142,6 +144,9 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
   const earnsPoints = inRotation ? orderHasKid(order, who) : Boolean(single.kid_id);
   // "Pular a vez" vale para o rodízio que está gravado, não para o que está sendo editado.
   const skipTo = chore?.active ? nextTurn(chore, savedOrder, who) : null;
+  // A tarefa diz de quem é a vez do rodízio que o formulário mostrou, e este aparelho não sabe quem é (a criança que
+  // acabou de entrar no app com a conta dela, e as listas daqui ainda de antes): para ele, a vez seria do primeiro.
+  const turnUnknown = Boolean(chore && shownOrder.length && hasUnknownTurn(chore, who));
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
@@ -156,8 +161,9 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
     if (rotating) {
       // Quem está na vez sai da ordem, tirado só com quem este aparelho conhece. Com alguém nela que ele ainda não
       // carregou, a vez pode ser dessa pessoa: a tela poria a tarefa com outra, e salvar a passaria para ela (com
-      // os pontos dela zerados). Fica no rodízio, e as listas são buscadas de novo.
-      if (hasUnknownPerson(order, who)) {
+      // os pontos dela zerados). O mesmo quando ele não sabe quem está na vez. Fica no rodízio, e as listas são
+      // buscadas de novo.
+      if (hasUnknownPerson(order, who) || turnUnknown) {
         notify('Esta tarefa mudou', ROTATION_PERSON_UNKNOWN);
         peopleQuery.refetch();
         household.refetch();
@@ -173,12 +179,32 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
   function askSkip() {
     if (!chore || !skipTo) return;
     const from = currentTurn(chore, who);
+    const to = skipTo;
     confirmAction(
       'Pular a vez',
-      skipTurnQuestion(from?.name, skipTo.name),
+      skipTurnQuestion(from?.name, to.name),
       'Passar a vez',
-      // Se a vez já passou em outro celular, nada muda e a tela mostra a de agora.
-      () => skip.mutate({ id: chore.id, from: from?.id ?? null }, { onError: (err) => notify('Erro', rotationErrorMessage(err) ?? errorMessage(err)) }),
+      () => {
+        const askedAt = Date.now();
+        // A vez só passa se ainda é de quem a tela mostrava e se vai para quem a pergunta nomeou: o servidor confere
+        // as duas coisas. Se a vez ou a ordem mudou em outro celular, nada muda, e o aviso diz isso depois de a
+        // tarefa ser lida de novo (o botão fica ocupado até lá).
+        skip.mutate(
+          { id: chore.id, from: from?.id ?? null, to: to.id },
+          {
+            onSuccess: (moved, _variables, _result, { client }) => {
+              if (moved) return;
+              const notice = skipNotDoneMessage(choreReadSince(client, chore.id, askedAt));
+              notify(notice.title, notice.message);
+            },
+            onError: (err) => {
+              // Apagada em outro aparelho (ou a pessoa saiu da casa): o aviso da tarefa apagada, como no salvar.
+              if (isChoreGoneOnSave(err)) return setGone(true);
+              notify('Erro', rotationErrorMessage(err) ?? errorMessage(err));
+            },
+          },
+        );
+      },
       false,
     );
   }
@@ -259,10 +285,11 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
       }
       return submitLatest.current();
     }
-    // A tarefa em rodízio que vira "Uma vez" fica com quem está na vez no banco. Se a tela não mostra os pontos (quem
-    // este aparelho acha que está na vez tem o app), eles também ficam como estão: a vez pode ter passado para uma
-    // criança em outro celular, e o 0 daqui apagaria os pontos dela.
-    const turnStays = !plan.turn && plan.people?.length === 0;
+    // A tarefa em rodízio que vira "Uma vez" fica com quem está na vez no banco, e o rodízio cuja ordem ninguém mexeu
+    // fica como está lá. Se a tela não mostra os pontos (quem este aparelho acha que está na vez tem o app, ou ninguém
+    // da ordem que ele mostra ganha pontos), eles também ficam como estão: a vez pode ter passado para uma criança, ou
+    // a ordem ganhado uma, em outro celular, e o 0 daqui apagaria os pontos dela.
+    const turnStays = !plan.turn && !plan.people?.length;
     if (expectNone && plan.people?.length) sentOrder.current = plan.people;
     save.mutate(
       {
@@ -402,7 +429,8 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
             <Text variant="muted">{problem}</Text>
           ) : (
             <>
-              {hasUnknownPerson(order, who) ? (
+              {/* Sem conhecer alguém da ordem, ou quem está na vez, a conta diria um nome errado. */}
+              {hasUnknownPerson(order, who) || turnUnknown ? (
                 <Text variant="muted">{ROTATION_ORDER_NOT_LOADED}</Text>
               ) : (
                 <Text variant="body">{rotationLabel({ ...turnOf(planned), points: 0 }, order, who)}</Text>

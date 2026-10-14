@@ -11,6 +11,7 @@ import {
   ROTATION_ORDER_NOT_LOADED,
   ROTATION_PERSON_UNKNOWN,
   ROTATION_UNAVAILABLE,
+  skipNotDoneMessage,
 } from '@/domain/choreRotation';
 import { CHORE_GONE } from '@/domain/chores';
 import { Button, Chip, ErrorNotice, Loading, Text, TextField } from '@/ui/primitives';
@@ -56,6 +57,10 @@ const mockServer: {
   failSave: unknown;
   /** O próximo salvar chega ao servidor e grava, mas a resposta se perde no caminho (uma vez só). */
   dropAnswer: boolean;
+  /** Com que erro o "Pular a vez" falha, sem mudar nada (nulo: responde como o banco). */
+  failSkip: unknown;
+  /** Os argumentos de cada "Pular a vez" que chegou ao servidor. */
+  skips: Row[];
   log: string[];
 } = {
   chore: null,
@@ -68,6 +73,8 @@ const mockServer: {
   afterCheck: null,
   failSave: null,
   dropAnswer: false,
+  failSkip: null,
+  skips: [],
   log: [],
 };
 // O que este celular sabe dos moradores, e a tarefa aberta ('nova': tarefa nova).
@@ -118,7 +125,9 @@ jest.mock('@/lib/supabase', () => {
           // nada muda.
           const turnChanged = (column: string) => column in values && values[column] !== row?.[column];
           if (!mockServer.old && row && mockServer.order.length && (turnChanged('assigned_to') || turnChanged('kid_id'))) {
-            return { data: null, error: { code: 'NK009', message: 'chore has a rotation', details: null, hint: null } };
+            // O texto é para o app já instalado, que o mostra como vem; este reconhece a recusa pelo código.
+            const message = 'Esta tarefa está em rodízio. Atualize o app para trocar o responsável.';
+            return { data: null, error: { code: 'NK009', message, details: null, hint: null } };
           }
           if (row) mockServer.chore = { ...row, ...values };
           // Com `.select()`, a gravação devolve as linhas que mudou: a tarefa, ou nenhuma.
@@ -198,10 +207,29 @@ jest.mock('@/lib/supabase', () => {
     mockServer.order = people ?? order;
     return { data: row.id, error: null };
   };
+  // Como skip_chore_turn no banco: passa a vez só se ela ainda é de p_from e, com p_to, só se o seguinte na ordem de
+  // agora é p_to (de quem está fora da ordem, ou de ninguém, a vez vai para o primeiro). Devolve de quem a vez passou
+  // a ser, ou nulo quando nada mudou.
+  const skipTurn = (args: Row): { data: unknown; error: unknown } => {
+    mockServer.log.push('rpc skip_chore_turn');
+    mockServer.skips.push(args);
+    if (mockServer.failSkip) return { data: null, error: mockServer.failSkip };
+    const row = mockServer.chore;
+    if (!row) return { data: null, error: { code: 'P0002', message: 'chore not found', details: null, hint: null } };
+    const order = mockServer.order;
+    const holder = row.kid_id ?? mockPeople.find((p) => p.member_user_id && p.member_user_id === row.assigned_to)?.id ?? null;
+    if (!row.active || holder !== args.p_from || order.length < 2) return { data: null, error: null };
+    const next = order[(order.indexOf(String(holder)) + 1) % order.length];
+    if (args.p_to != null && next !== args.p_to) return { data: null, error: null };
+    const account = mockPeople.find((p) => p.id === next)?.member_user_id ?? null;
+    mockServer.chore = { ...row, assigned_to: account, kid_id: account ? null : next };
+    return { data: next, error: null };
+  };
   return {
     supabase: {
       from: (table: string) => query(table),
       rpc: async (name: string, args: Row) => {
+        if (name === 'skip_chore_turn') return skipTurn(args);
         if (name !== 'save_chore') {
           mockServer.log.push(`rpc ${name}`);
           return { data: null, error: null };
@@ -324,6 +352,8 @@ async function open() {
     /** Só o toque, sem esperar o que ele começa. */
     tap: (label: string) => act(async () => void button(label).props.onPress()),
     busy: (label: string) => Boolean(button(label).props.loading),
+    /** O botão aceita toque? (Ocupado ou desligado, o toque não chega.) */
+    pressable: (label: string) => !button(label).findAll((node) => node.props.accessibilityRole === 'button')[0].props.disabled,
     /** Os botões na tela, pelo texto. */
     buttons: () => root.findAllByType(Button).map((b) => b.props.title as string),
     /** Os textos da tela, cada um inteiro. */
@@ -368,6 +398,8 @@ beforeEach(() => {
     afterCheck: null,
     failSave: null,
     dropAnswer: false,
+    failSkip: null,
+    skips: [],
     log: [],
   });
   Object.assign(mockDevice, { members: mockMembers, id: 'c-1' });
@@ -397,8 +429,9 @@ describe('editor de uma tarefa que já existe: abre com o que está no servidor'
     expect(screen.chips()).toEqual(IN_ROTATION);
 
     await screen.press('Salvar');
-    // Uma chamada só: a ordem vai inteira, e a tarefa nem manda o responsável: a vez fica com o banco. Os pontos são os do servidor.
-    expect(mockServer.log).toEqual([call({ p_points: 10, p_people: ORDER })]);
+    // Uma chamada só, e o rodízio que o formulário mostrou não vai de volta (ninguém mexeu na ordem), nem o
+    // responsável: o rodízio e a vez ficam com o banco. Os pontos são os do servidor.
+    expect(mockServer.log).toEqual([call({ p_points: 10 })]);
     expect(mockServer.order).toEqual(ORDER);
     expect(mockServer.chore).toMatchObject({ assigned_to: 'u-carla', points: 10 });
     expect(mockBack).toHaveBeenCalledTimes(1);
@@ -672,7 +705,7 @@ describe('formulário aberto sem rodízio: salvar confere a ordem no servidor an
     expect(screen.chips()).toEqual(IN_ROTATION);
     mockServer.down = ['chore_rotation'];
     await screen.press('Salvar');
-    expect(mockServer.log).toEqual([call({ p_points: 10, p_people: ORDER })]);
+    expect(mockServer.log).toEqual([call({ p_points: 10 })]);
     expect(mockNotify).not.toHaveBeenCalled();
   });
 
@@ -1100,7 +1133,7 @@ describe('tarefa apagada em outro aparelho com o formulário aberto: salvar diz 
     mockServer.chore = null;
 
     await screen.press('Salvar');
-    expect(mockServer.log).toEqual([call({ p_points: 10, p_people: ORDER })]);
+    expect(mockServer.log).toEqual([call({ p_points: 10 })]);
     expect(screen.notices()).toEqual([CHORE_GONE]);
     expect(mockNotify).not.toHaveBeenCalled();
     expect(mockBack).not.toHaveBeenCalled();
@@ -1149,7 +1182,7 @@ describe('rodízio com alguém que este celular não conhece: salvar não tira a
     expect(screen.title()).toBe('Lavar a louça e as panelas');
 
     await screen.press('Salvar');
-    expect(mockServer.log).toEqual([call({ p_title: 'Lavar a louça e as panelas', p_points: 25, p_people: ORDER })]);
+    expect(mockServer.log).toEqual([call({ p_title: 'Lavar a louça e as panelas', p_points: 25 })]);
     expect(mockBack).toHaveBeenCalledTimes(1);
   });
 
@@ -1287,7 +1320,7 @@ describe('banco com o rodízio, e a API sem enxergar nem a função nem a tabela
       call({ p_points: 0, p_set_turn: true, p_assigned_to: 'u-beto', p_expect_none: true }),
       update({ assigned_to: 'u-beto', kid_id: null, points: 0 }),
     ]);
-    // A vez segue com Carla, no rodízio, e o aviso é em português: não "chore has a rotation".
+    // A vez segue com Carla, no rodízio, e o aviso é o deste app (pelo código da recusa), não o texto do banco.
     expect(mockServer.order).toEqual(ORDER);
     expect(mockServer.chore).toMatchObject({ assigned_to: 'u-carla', kid_id: null, points: 10 });
     expect(mockNotify.mock.calls).toEqual([['Erro', ROTATION_NOT_READY]]);
@@ -1378,6 +1411,225 @@ describe('"Pular a vez": só com a ordem que este celular conhece inteira', () =
     // A linha da vez também não diz "depois Lia": diz que falta carregar alguém da ordem (sem uma linha em branco).
     expect(screen.texts()).toContain(ROTATION_ORDER_NOT_LOADED);
     expect(screen.texts().filter((text) => text.includes('depois') || text === '')).toEqual([]);
+  });
+});
+
+describe('"Pular a vez": a vez vai para quem a pergunta nomeou, e a tela espera a vez de agora', () => {
+  const NOTHING_DONE = skipNotDoneMessage(true);
+
+  it('o botão fica ocupado até a tarefa e as ordens chegarem de novo: um segundo toque não pergunta pela vez de antes', async () => {
+    const screen = await open();
+    await settle();
+    const release = holdFetches();
+    await screen.tap('Pular a vez');
+    await tick();
+    expect(mockConfirm.mock.calls).toEqual([['Pular a vez', 'Passar a vez de Carla para Lia?']]);
+    // A vez já passou no servidor, e a tela ainda não a leu de novo: o botão segue ocupado, e ocupado não aceita toque.
+    expect(mockServer.chore).toMatchObject({ assigned_to: null, kid_id: 'p-lia' });
+    expect(screen.texts()).toContain('Vez de Carla · depois Lia');
+    expect(screen.busy('Pular a vez')).toBe(true);
+    expect(screen.pressable('Pular a vez')).toBe(false);
+
+    release();
+    await settle();
+    expect(screen.busy('Pular a vez')).toBe(false);
+    expect(screen.texts()).toContain('Vez de Lia · depois Beto');
+    // A chamada leva de quem era a vez e quem a pergunta disse que fica com ela.
+    expect(mockServer.skips).toEqual([{ p_chore_id: 'c-1', p_from: 'p-carla', p_to: 'p-lia' }]);
+    expect(mockNotify).not.toHaveBeenCalled();
+    // O toque seguinte já pergunta pela vez de agora, e passa.
+    await screen.press('Pular a vez');
+    expect(mockConfirm.mock.calls[1]).toEqual(['Pular a vez', 'Passar a vez de Lia para Beto?']);
+    expect(mockServer.chore).toMatchObject({ assigned_to: 'u-beto', kid_id: null });
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('a vez já tinha passado em outro celular: nada muda, e o aviso diz isso depois de a tela mostrar a vez de agora', async () => {
+    const screen = await open();
+    await settle();
+    // Em outro celular alguém pulou a vez de Carla; esta tela ainda não buscou de novo.
+    mockServer.chore = { ...mockServer.chore, assigned_to: null, kid_id: 'p-lia' };
+    await screen.press('Pular a vez');
+    expect(mockConfirm.mock.calls).toEqual([['Pular a vez', 'Passar a vez de Carla para Lia?']]);
+    expect(mockServer.skips).toEqual([{ p_chore_id: 'c-1', p_from: 'p-carla', p_to: 'p-lia' }]);
+    // Nada mudou no servidor: a vez segue de Lia, e não passou para Beto.
+    expect(mockServer.chore).toMatchObject({ assigned_to: null, kid_id: 'p-lia' });
+    expect(mockNotify.mock.calls).toEqual([[NOTHING_DONE.title, NOTHING_DONE.message]]);
+    expect(screen.texts()).toContain('Vez de Lia · depois Beto');
+    expect(screen.busy('Pular a vez')).toBe(false);
+  });
+
+  it('a ordem mudou em outro celular e a seguinte agora é outra pessoa: a vez não vai para quem a pergunta não nomeou', async () => {
+    const screen = await open();
+    await settle();
+    // Em outro celular Lia saiu do rodízio; a vez segue com Carla, e a seguinte passa a ser Beto.
+    mockServer.order = ['p-carla', 'p-beto'];
+    await screen.press('Pular a vez');
+    expect(mockConfirm.mock.calls).toEqual([['Pular a vez', 'Passar a vez de Carla para Lia?']]);
+    expect(mockServer.skips).toEqual([{ p_chore_id: 'c-1', p_from: 'p-carla', p_to: 'p-lia' }]);
+    expect(mockServer.chore).toMatchObject({ assigned_to: 'u-carla', kid_id: null });
+    expect(mockNotify.mock.calls).toEqual([[NOTHING_DONE.title, NOTHING_DONE.message]]);
+    // Com a ordem de agora, a pergunta é outra, e a vez passa para quem ela nomeia.
+    await screen.press('Pular a vez');
+    expect(mockConfirm.mock.calls[1]).toEqual(['Pular a vez', 'Passar a vez de Carla para Beto?']);
+    expect(mockServer.skips[1]).toEqual({ p_chore_id: 'c-1', p_from: 'p-carla', p_to: 'p-beto' });
+    expect(mockServer.chore).toMatchObject({ assigned_to: 'u-beto', kid_id: null });
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it('nada mudou e a tarefa não pôde ser buscada de novo: o aviso não diz que a tela já mostra a vez de agora', async () => {
+    const screen = await open();
+    await settle();
+    mockServer.chore = { ...mockServer.chore, assigned_to: null, kid_id: 'p-lia' };
+    mockServer.down = ['chores', 'chore_rotation'];
+    await screen.press('Pular a vez');
+    const notReread = skipNotDoneMessage(false);
+    expect(mockNotify.mock.calls).toEqual([[notReread.title, notReread.message]]);
+    // A tela ainda é a de antes, e o formulário fica.
+    expect(screen.texts()).toContain('Vez de Carla · depois Lia');
+    expect(screen.title()).toBe('Lavar a louça');
+  });
+
+  it('tarefa que não existe mais para quem pula (apagada, ou a pessoa saiu da casa): o aviso da tarefa apagada, sem alerta', async () => {
+    const screen = await open();
+    await settle();
+    mockServer.failSkip = { code: 'P0002', message: 'chore not found', details: null, hint: null };
+    await screen.press('Pular a vez');
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(screen.notices()).toEqual([CHORE_GONE]);
+    expect(screen.title()).toBeUndefined();
+  });
+
+  it('apagada em outro aparelho, e a busca de depois também não a acha: o mesmo aviso, uma vez só', async () => {
+    const screen = await open();
+    await settle();
+    mockServer.chore = null;
+    await screen.press('Pular a vez');
+    expect(mockServer.skips).toHaveLength(1);
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(screen.notices()).toEqual([CHORE_GONE]);
+  });
+
+  it('banco que ainda não enxerga a função: o aviso de que o rodízio não está disponível, e o formulário fica', async () => {
+    const screen = await open();
+    await settle();
+    mockServer.failSkip = { code: 'PGRST202', message: 'Could not find the function public.skip_chore_turn(p_chore_id, p_from, p_to) in the schema cache' };
+    await screen.press('Pular a vez');
+    expect(mockNotify.mock.calls).toEqual([['Erro', ROTATION_UNAVAILABLE]]);
+    expect(screen.title()).toBe('Lavar a louça');
+  });
+});
+
+describe('quem está na vez é alguém que este celular ainda não carregou como está agora', () => {
+  it('a linha da vez não diz um nome errado, "Pular a vez" some e sair do rodízio não passa a tarefa para outra pessoa', async () => {
+    // Lia estava no rodízio sem o app e entrou na casa com a conta dela: a vez dela foi para a conta. As fichas e os
+    // moradores deste celular ainda são de antes (Lia sem conta).
+    mockServer.chore = chore({ assigned_to: 'u-lia', points: 10 });
+    const screen = await open();
+    await settle();
+    expect(screen.chips()).toEqual(IN_ROTATION);
+    // Contando a partir de "ninguém", a tela diria "Vez de Beto · depois Carla"; e o banco passaria de Lia para Beto.
+    expect(screen.texts()).toContain(ROTATION_ORDER_NOT_LOADED);
+    expect(screen.texts().filter((text) => text.startsWith('Vez de') || text.includes('depois'))).toEqual([]);
+    expect(screen.buttons()).not.toContain('Pular a vez');
+
+    // Saindo do rodízio, a tela poria a tarefa com Beto (o primeiro), e salvar a tiraria de Lia.
+    await screen.pick('Rodízio');
+    expect(mockNotify.mock.calls).toEqual([['Esta tarefa mudou', ROTATION_PERSON_UNKNOWN]]);
+    expect(screen.chips()).toEqual(IN_ROTATION);
+    expect(mockRefetchHousehold).toHaveBeenCalledTimes(1);
+
+    // Salvar o rodízio como está é seguro: nem a ordem nem o responsável vão, e a vez segue com Lia.
+    await screen.typeTitle('Lavar a louça e as panelas');
+    await screen.press('Salvar');
+    expect(mockServer.log).toEqual([call({ p_title: 'Lavar a louça e as panelas', p_points: 10 })]);
+    expect(mockServer.order).toEqual(ORDER);
+    expect(mockServer.chore).toMatchObject({ title: 'Lavar a louça e as panelas', assigned_to: 'u-lia', kid_id: null });
+    expect(mockBack).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('formulário que mostrou o rodízio e não mexeu na ordem: não a manda, e o que outro celular fez com o rodízio fica', () => {
+  it('só o título: o rodízio encerrado em outro celular segue encerrado, e a tarefa segue com Carla', async () => {
+    const screen = await open();
+    await settle();
+    expect(screen.texts()).toContain('Vez de Carla · depois Lia');
+    // Em outro celular decidem que Carla faz sempre: o rodízio acaba e a tarefa fica com ela. A busca de fundo chega
+    // (as listas já não mostram o rodízio), e o formulário aberto fica como estava.
+    mockServer.order = [];
+    await act(async () => void client.invalidateQueries());
+    await settle();
+    expect(client.getQueryData(['choreRotations'])).toEqual({});
+    expect(screen.chips()).toEqual(IN_ROTATION);
+
+    await screen.typeTitle('Lavar a louça e as panelas');
+    await screen.press('Salvar');
+    // Nem a ordem que ele mostrou (que recriaria o rodízio, com a vez em Beto), nem o responsável.
+    expect(mockServer.log).toEqual([call({ p_title: 'Lavar a louça e as panelas', p_points: 10 })]);
+    expect(sent(mockServer.log[0])).toMatchObject({ p_people: null, p_set_turn: false });
+    expect(mockServer.order).toEqual([]);
+    expect(mockServer.chore).toMatchObject({ title: 'Lavar a louça e as panelas', assigned_to: 'u-carla', kid_id: null, points: 10 });
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('a ordem que outro celular mudou também fica, com a vez de lá', async () => {
+    const screen = await open();
+    await settle();
+    // Em outro celular Lia sai do rodízio e Carla passa para o começo; a vez segue de Carla.
+    mockServer.order = ['p-carla', 'p-beto'];
+    await screen.typeTitle('Lavar a louça e as panelas');
+    await screen.press('Salvar');
+    expect(mockServer.log).toEqual([call({ p_title: 'Lavar a louça e as panelas', p_points: 10 })]);
+    expect(mockServer.order).toEqual(['p-carla', 'p-beto']);
+    expect(mockServer.chore).toMatchObject({ assigned_to: 'u-carla', kid_id: null });
+  });
+
+  it('a tela não mostra os pontos (ninguém da ordem ganha): eles não vão, e os que outro celular deu a uma criança ficam', async () => {
+    // Um rodízio só de moradores (Beto e Carla), sem pontos.
+    mockServer.chore = chore({ assigned_to: 'u-beto', points: 0 });
+    mockServer.order = ['p-beto', 'p-carla'];
+    const screen = await open();
+    await settle();
+    expect(screen.chips()).toEqual([...RECURRENCE, '[ ] Qualquer um', '[x] Rodízio', '[x] 1 Beto', '[x] 2 Carla', '[ ] Lia']);
+    expect(screen.texts().filter((text) => text.startsWith('pontos'))).toEqual([]);
+    // Em outro celular Lia entra no lugar de Carla, valendo 10 na vez dela.
+    mockServer.order = ['p-beto', 'p-lia'];
+    mockServer.chore = { ...mockServer.chore, points: 10 };
+
+    await screen.typeTitle('Lavar a louça e as panelas');
+    await screen.press('Salvar');
+    expect(mockServer.log).toEqual([call({ p_title: 'Lavar a louça e as panelas' })]);
+    expect(mockServer.order).toEqual(['p-beto', 'p-lia']);
+    expect(mockServer.chore).toMatchObject({ title: 'Lavar a louça e as panelas', assigned_to: 'u-beto', points: 10 });
+  });
+
+  it('tirar e pôr de volta a última da ordem deixa a ordem como estava: ela não vai', async () => {
+    const screen = await open();
+    await settle();
+    await screen.pick('3 Lia');
+    await screen.pick('Lia');
+    expect(screen.chips()).toEqual(IN_ROTATION);
+    await screen.press('Salvar');
+    expect(mockServer.log).toEqual([call({ p_points: 10 })]);
+    expect(mockBack).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('as recusas do rodízio vêm em português', () => {
+  it('alguém da ordem virou pet em outro celular: o alerta é a frase do banco, e nada é salvo', async () => {
+    const pets = 'Só pessoas da casa (não pets) entram no rodízio. Confira a ordem e salve de novo.';
+    const screen = await open();
+    await settle();
+    // Este celular ainda acha que Lia é pessoa; a pessoa tira Beto do rodízio, e a ordem vai.
+    await screen.pick('1 Beto');
+    mockServer.failSave = { code: '23514', message: pets, details: null, hint: null };
+    await screen.press('Salvar');
+    expect(mockServer.log).toEqual([call({ p_points: 10, p_people: ['p-carla', 'p-lia'] })]);
+    expect(mockNotify.mock.calls).toEqual([['Erro', pets]]);
+    expect(mockBack).not.toHaveBeenCalled();
+    expect(mockServer.order).toEqual(ORDER);
+    expect(screen.title()).toBe('Lavar a louça');
   });
 });
 

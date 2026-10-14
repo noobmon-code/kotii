@@ -1,6 +1,6 @@
 // Despensa, tarefas da casa e remédios.
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { SAME_PURCHASE_DAYS, type PantryEntry } from '@/domain/cartPantry';
@@ -329,24 +329,33 @@ export function useCompleteChore() {
 
 /**
  * "Pular a vez": passa a vez para o próximo do rodízio sem concluir a tarefa.
- * from: a ficha de quem a tela mostrava a vez; se ela já passou (outro
- * celular tocou antes), o servidor não passa de novo e devolve null.
+ * from: a ficha de quem a tela mostrava a vez; to: a de quem a pergunta disse
+ * que fica com ela. Se a vez já passou (outro celular tocou antes), ou se a
+ * seguinte agora é outra pessoa (a ordem mudou em outro celular), o servidor
+ * não passa e devolve null.
  */
 export function useSkipChoreTurn() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, from }: { id: string; from: string | null }) => {
-      const result = await supabase.rpc('skip_chore_turn', { p_chore_id: id, p_from: from });
+    mutationFn: async ({ id, from, to }: { id: string; from: string | null; to: string }) => {
+      const result = await supabase.rpc('skip_chore_turn', { p_chore_id: id, p_from: from, p_to: to });
       if (result.error) throw result.error;
       // De quem a vez passou a ser; null quando nada mudou.
       return result.data as string | null;
     },
-    // Também quando nada mudou ou falhou: a tela mostra de quem é a vez agora.
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['chores'] });
-      queryClient.invalidateQueries({ queryKey: ['choreRotations'] });
-    },
+    // Também quando nada mudou ou falhou: a tela mostra de quem é a vez agora. Devolvidas, as buscas seguram o
+    // "Pular a vez" ocupado até a vez ser lida de novo: antes disso, outro toque perguntaria pela vez de antes.
+    onSettled: () =>
+      Promise.all([queryClient.invalidateQueries({ queryKey: ['chores'] }), queryClient.invalidateQueries({ queryKey: ['choreRotations'] })]),
   });
+}
+
+/**
+ * A tarefa foi lida do servidor depois de `since` (ms)? Depois do "Pular a vez", é o que diz se a tela já mostra de
+ * quem é a vez agora: a busca que ele pede no fim pode ter falhado (sem internet), e a tela seguiria com a de antes.
+ */
+export function choreReadSince(client: QueryClient, id: string, since: number): boolean {
+  return (client.getQueryState(['chores', id])?.dataUpdatedAt ?? 0) >= since;
 }
 
 // ---------------------------------------------------------------------------

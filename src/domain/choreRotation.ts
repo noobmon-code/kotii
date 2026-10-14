@@ -91,17 +91,30 @@ function knownOrder(order: string[], people: RotationPerson[]): RotationPerson[]
 /**
  * Quem vem depois: o seguinte na ordem (depois do último, o primeiro). Se a
  * vez é de alguém de fora da ordem (ou de ninguém), o primeiro, como no banco.
- * Null quando não há rodízio, e quando a ordem tem alguém que este aparelho
- * não carregou (hasUnknownPerson).
+ * Null quando não há rodízio, quando a ordem tem alguém que este aparelho
+ * não carregou (hasUnknownPerson) e quando a tarefa diz de quem é a vez e ele
+ * não sabe quem é (hasUnknownTurn).
  */
 export function nextTurn(chore: ChoreTurn, order: string[], people: RotationPerson[]): RotationPerson | null {
   // O banco passaria a vez para essa pessoa, e a conta só com as conhecidas diria o nome de outra.
   if (hasUnknownPerson(order, people)) return null;
   const line = knownOrder(order, people);
   if (line.length < ROTATION_MIN_PEOPLE) return null;
+  // Contar a partir de "ninguém" diria o primeiro da ordem, e o banco conta a partir de quem está na vez.
+  if (hasUnknownTurn(chore, people)) return null;
   const current = currentTurn(chore, people);
   const at = current ? line.findIndex((p) => p.id === current.id) : -1;
   return line[(at + 1) % line.length];
+}
+
+/**
+ * A tarefa diz de quem é a vez (kid_id ou assigned_to), e este aparelho não
+ * sabe quem é: a ficha, ou o morador, que ele ainda não carregou como está
+ * agora (a criança da ordem que acabou de entrar no app com a conta dela, por
+ * exemplo, com as fichas e os moradores deste aparelho ainda de antes).
+ */
+export function hasUnknownTurn(chore: ChoreTurn, people: RotationPerson[]): boolean {
+  return Boolean(chore.kid_id || chore.assigned_to) && !currentTurn(chore, people);
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +137,20 @@ export function numberedOrder(order: string[], people: RotationPerson[]): string
 /** A pergunta do "Pular a vez". */
 export function skipTurnQuestion(from: string | null | undefined, to: string): string {
   return from ? `Passar a vez de ${from} para ${to}?` : `Passar a vez para ${to}?`;
+}
+
+/**
+ * "Pular a vez" não mudou nada (skip_chore_turn devolveu null): a pergunta era
+ * sobre a vez e a ordem que a tela tinha, e uma das duas já tinha mudado em
+ * outro aparelho. `read`: a tarefa foi lida de novo depois do toque, e a tela
+ * já mostra de quem é a vez; se essa busca falhou, ela ainda mostra a de antes.
+ */
+export function skipNotDoneMessage(read: boolean): { title: string; message: string } {
+  const where = read ? 'A tela agora mostra de quem é a vez.' : 'Feche e abra a tarefa de novo para ver de quem é a vez.';
+  return {
+    title: 'A vez não foi passada',
+    message: `A vez ou a ordem do rodízio já tinha mudado em outro aparelho, e nada foi feito. ${where}`,
+  };
 }
 
 /**
@@ -265,12 +292,23 @@ export interface RotationSave {
   people: string[] | null;
 }
 
+/** As mesmas pessoas, nas mesmas posições. */
+function sameOrder(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((id, i) => id === b[i]);
+}
+
 /**
  * O que salvar pela escolha feita no editor:
- * - rodízio (tarefa que se repete, duas ou mais pessoas): manda a ordem. Num
- *   rodízio novo a vez é do primeiro; num que já existia o banco mantém a vez
- *   de quem continua na ordem (ou passa ao primeiro), então a tarefa nem
- *   manda o responsável: a vez pode ter andado em outro celular;
+ * - rodízio novo (tarefa que se repete, duas ou mais pessoas): manda a ordem,
+ *   e a vez é do primeiro;
+ * - rodízio que o formulário mostrou: manda a ordem só quando a pessoa a
+ *   mudou. O banco mantém a vez de quem continua na ordem (ou passa ao
+ *   primeiro), então a tarefa nem manda o responsável: a vez pode ter andado
+ *   em outro celular. A ordem que ficou como estava não vai (null): o banco
+ *   fica com o rodízio, a ordem e a vez que tem agora, também quando outro
+ *   celular o encerrou, mudou a ordem ou fez a tarefa "Uma vez" nesse
+ *   meio-tempo. Mandada de volta, ela recriaria o rodízio encerrado lá (com a
+ *   vez no primeiro) ou desfaria a ordem nova;
  * - rodízio que o formulário mostrou, numa tarefa que virou "Uma vez": o
  *   rodízio acaba e a tarefa fica com quem está na vez no banco. O formulário
  *   não diz quem é: diria a pessoa que o aparelho tinha guardado (a vez pode
@@ -297,7 +335,8 @@ export function planRotationSave(input: {
     return { turn: turnOf(plannedTurn(saved, choice.order, people)), people: end };
   }
   const order = line.map((p) => p.id);
-  return had ? { people: order } : { turn: turnOf(line[0]), people: order };
+  if (!had) return { turn: turnOf(line[0]), people: order };
+  return { people: sameOrder(order, saved?.order ?? []) ? null : order };
 }
 
 /**
@@ -323,7 +362,7 @@ export function openedWithoutRotation(saved: SavedRotation | undefined): boolean
  */
 export function rotationAppearedElsewhere(found: string[], saving: string[] | null): boolean {
   if (!found.length) return false;
-  return !(saving && saving.length === found.length && saving.every((id, i) => id === found[i]));
+  return !(saving && sameOrder(saving, found));
 }
 
 // ---------------------------------------------------------------------------

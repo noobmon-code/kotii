@@ -5103,7 +5103,9 @@ begin
   begin
     perform pg_temp.save_order(dishes, array[beto, rex]);
     raise exception 'FAIL: a pet took part in a rotation';
-  exception when check_violation then null;
+  exception when check_violation then
+    -- Em português: o app mostra o texto do banco como ele vem.
+    assert sqlerrm = 'Só pessoas da casa (não pets) entram no rodízio. Confira a ordem e salve de novo.', sqlerrm;
   end;
   begin
     perform pg_temp.save_order(dishes, array[beto, tito]);
@@ -5366,6 +5368,19 @@ begin
   assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000041', 'the turn passed once';
   assert public.skip_chore_turn(dishes, rita) = lia and public.skip_chore_turn(dishes, lia) = beto, 'skipping wraps around too';
 
+  -- p_to: quem a pergunta disse que fica com a vez. A tela leu Beto → Rita → Lia, na vez de Beto ("de Beto para
+  -- Rita?"), e outro celular tira Rita da ordem antes do toque: a seguinte passa a ser Lia, que ninguém confirmou, e
+  -- nada muda. Com a pessoa que é mesmo a seguinte, passa; sem p_to (nulo, ou fora da chamada, como acima), passa
+  -- para quem vier, como antes.
+  perform pg_temp.save_order(dishes, array[beto, lia]);
+  assert public.skip_chore_turn(dishes, beto, rita) is null, 'a skip to the person the question named, who is no longer next, does nothing';
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to = auth.uid() and c.kid_id is null, 'and the turn stays';
+  assert public.skip_chore_turn(dishes, beto, lia) = lia, 'a skip to the person who is next passes the turn';
+  assert public.skip_chore_turn(dishes, lia, null) = beto, 'a null p_to passes the turn to whoever is next';
+  perform pg_temp.save_order(dishes, array[beto, rita, lia]);
+  assert (select assigned_to from public.chores where id = dishes) = auth.uid(), 'B is on turn again';
+
   insert into public.chores (title, recurrence, assigned_to) values ('Sem rodízio', 'daily', auth.uid()) returning id into plain;
   assert public.skip_chore_turn(plain, beto) is null, 'no rotation: nothing to skip';
   assert (select assigned_to from public.chores where id = plain) = auth.uid(), 'and the chore keeps its person';
@@ -5483,6 +5498,43 @@ begin
   delete from public.chores where id in (sweep, yard);
 end $$;
 
+-- O formulário que mostrou um rodízio e não mexeu na ordem não a manda (p_people nulo): o que outro celular fez com
+-- o rodízio nesse meio-tempo fica, e a vez também. Mandada de volta, a ordem que ele mostrou recriaria o rodízio
+-- encerrado (com a vez no primeiro, pela regra do rodízio novo) ou desfaria a ordem nova.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  nina uuid := current_setting('test.r_nina')::uuid;
+  shelf uuid;
+  c public.chores;
+begin
+  -- Rita, Beto e Lia; a vez chega a Lia.
+  shelf := public.save_chore(null, 'Tirar o pó da estante', null, 'daily', 1, '2026-10-12', 10, p_people => array[rita, beto, lia]);
+  assert public.skip_chore_turn(shelf, rita) = beto and public.skip_chore_turn(shelf, beto) = lia, 'the turn is with the kid';
+  -- a. Outro celular encerra o rodízio, e a tarefa fica com Lia. Este, que mostrava o rodízio, salva só o título.
+  perform pg_temp.save_order(shelf, '{}');
+  perform public.save_chore(shelf, 'Tirar o pó da estante e da mesa', null, 'daily', 1, '2026-10-12', 10);
+  select * into c from public.chores where id = shelf;
+  assert c.title = 'Tirar o pó da estante e da mesa' and c.points = 10, 'the fields of the form are saved';
+  assert c.assigned_to is null and c.kid_id = lia, 'a save without the order keeps the holder of a rotation ended elsewhere';
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = shelf), 'and the rotation stays ended';
+  -- b. Outro celular cria outro rodízio (Nina, Beto: a vez começa por Nina); este salva só o título.
+  perform pg_temp.save_order(shelf, array[nina, beto]);
+  perform public.save_chore(shelf, 'Tirar o pó da estante', null, 'daily', 1, '2026-10-12', 10);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = shelf) = array[nina, beto],
+    'a save without the order keeps the order changed elsewhere';
+  assert (select kid_id from public.chores where id = shelf) = nina, 'and its turn';
+  -- c. Outro celular faz a tarefa "Uma vez" (o rodízio acaba, e Nina fica com ela); este, que a mostrava diária, salva.
+  perform public.save_chore(shelf, 'Tirar o pó da estante', null, 'none', 1, '2026-10-12', p_people => '{}');
+  perform public.save_chore(shelf, 'Tirar o pó da estante', null, 'daily', 1, '2026-10-12', 10);
+  select * into c from public.chores where id = shelf;
+  assert c.recurrence = 'daily' and c.assigned_to is null and c.kid_id = nina, 'the recurrence of the form is saved, and the holder stays';
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = shelf), 'and no rotation comes back';
+  delete from public.chores where id = shelf;
+end $$;
+
 -- A vez de uma tarefa em rodízio não muda direto na tabela (NK009): a ordem ficaria lá, e a próxima conclusão
 -- seguiria revezando. É o que o app já instalado (de antes do rodízio) e o app novo, quando a API ainda não enxerga
 -- save_chore, fariam. O resto da tarefa, o mesmo responsável e a tarefa sem rodízio passam como sempre.
@@ -5503,7 +5555,8 @@ begin
     update public.chores set assigned_to = auth.uid() where id = dishes;
     raise exception 'FAIL: a member changed the assignee of a rotating chore straight in the table';
   exception when sqlstate 'NK009' then
-    assert sqlerrm = 'chore has a rotation', sqlerrm;
+    -- O app já instalado mostra o texto do banco como ele vem: em português, e pedindo para atualizar o app.
+    assert sqlerrm = 'Esta tarefa está em rodízio. Atualize o app para trocar o responsável.', sqlerrm;
   end;
   begin
     update public.chores set assigned_to = null, kid_id = lia where id = dishes;
@@ -6156,9 +6209,13 @@ begin
   assert not has_function_privilege('public', 'public.complete_chore(uuid, date, date)', 'execute'), 'complete_chore is not open to every role';
   assert not has_function_privilege('anon', 'public.complete_chore(uuid, date, date)', 'execute'), 'anon cannot call complete_chore';
   assert has_function_privilege('authenticated', 'public.complete_chore(uuid, date, date)', 'execute'), 'members call complete_chore';
-  assert not has_function_privilege('public', 'public.skip_chore_turn(uuid, uuid)', 'execute'), 'skip_chore_turn is not open to every role';
-  assert not has_function_privilege('anon', 'public.skip_chore_turn(uuid, uuid)', 'execute'), 'anon cannot call skip_chore_turn';
-  assert has_function_privilege('authenticated', 'public.skip_chore_turn(uuid, uuid)', 'execute'), 'members call skip_chore_turn';
+  assert not has_function_privilege('public', 'public.skip_chore_turn(uuid, uuid, uuid)', 'execute'), 'skip_chore_turn is not open to every role';
+  assert not has_function_privilege('anon', 'public.skip_chore_turn(uuid, uuid, uuid)', 'execute'), 'anon cannot call skip_chore_turn';
+  assert has_function_privilege('authenticated', 'public.skip_chore_turn(uuid, uuid, uuid)', 'execute'), 'members call skip_chore_turn';
+  -- Uma função só, com a pessoa que a pergunta nomeou (p_to, que pode ficar de fora da chamada).
+  assert to_regprocedure('public.skip_chore_turn(uuid, uuid)') is null
+    and (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'skip_chore_turn') = 1,
+    'skip_chore_turn is one function';
   assert not exists (
     select 1
     from unnest(array['public', 'anon', 'authenticated']) as who,

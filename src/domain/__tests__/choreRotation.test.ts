@@ -6,6 +6,7 @@ import {
   currentTurn,
   groupRotations,
   hasUnknownPerson,
+  hasUnknownTurn,
   isRotationChangedElsewhere,
   isRotationRefused,
   isRotationUnavailable,
@@ -29,6 +30,7 @@ import {
   rotationPeople,
   rotationPointsLabel,
   rotationProblem,
+  skipNotDoneMessage,
   skipTurnQuestion,
   toggleInOrder,
   turnOf,
@@ -131,6 +133,33 @@ describe('de quem é a vez', () => {
     expect(nextTurn(ofBeto, order, people)).toEqual(carla);
     expect(nextTurn(ofLia, order, people)).toEqual(beto);
   });
+
+  it('a tarefa diz de quem é a vez e este aparelho não sabe quem é: não diz quem vem depois, nem que é o primeiro', () => {
+    // Lia estava no rodízio sem o app e entrou na casa com a conta dela: a vez dela foi para assigned_to. Este
+    // aparelho buscou a tarefa de novo, mas as fichas e os moradores dele são de antes (Lia e Nina sem conta).
+    const stale = rotationPeople(members, [
+      ...records,
+      { id: 'p-nina', name: 'Nina', kind: 'pessoa', member_user_id: null },
+    ]);
+    const ofLiaWithApp = { assigned_to: 'u-lia', kid_id: null };
+    const dishes = ['p-beto', 'p-lia', 'p-nina'];
+    expect(hasUnknownPerson(dishes, stale)).toBe(false);
+    expect(currentTurn(ofLiaWithApp, stale)).toBeNull();
+    // O banco passa de Lia para Nina; contando a partir de "ninguém", daria Beto, o primeiro.
+    expect(nextTurn(ofLiaWithApp, dishes, stale)).toBeNull();
+    expect(rotationLabel({ ...ofLiaWithApp, points: 10 }, dishes, stale)).toBeNull();
+    expect(
+      choreTurnLabel({ ...ofLiaWithApp, points: 10 }, dishes, members, [...records, { id: 'p-nina', name: 'Nina', kind: 'pessoa', member_user_id: null }]),
+    ).toBeNull();
+    // A ficha da vez que este aparelho não tem (kid_id), com todas as da ordem conhecidas: o mesmo.
+    expect(nextTurn({ assigned_to: null, kid_id: 'p-nova' }, order, people)).toBeNull();
+    // Quem está na vez é conhecido e está fora da ordem, ou não há ninguém na vez: o primeiro, como no banco.
+    expect(nextTurn(ofCarla, ['p-lia', 'p-beto'], people)).toEqual(lia);
+    expect(nextTurn(ofNobody, order, people)).toEqual(beto);
+    expect(hasUnknownTurn(ofLiaWithApp, stale)).toBe(true);
+    expect(hasUnknownTurn(ofCarla, people)).toBe(false);
+    expect(hasUnknownTurn(ofNobody, people)).toBe(false);
+  });
 });
 
 describe('textos do rodízio', () => {
@@ -187,6 +216,18 @@ describe('textos do rodízio', () => {
     expect(skipTurnQuestion('Beto', 'Carla')).toBe('Passar a vez de Beto para Carla?');
     expect(skipTurnQuestion('Ana Clara', 'Lia')).toBe('Passar a vez de Ana Clara para Lia?');
     expect(skipTurnQuestion(null, 'Carla')).toBe('Passar a vez para Carla?');
+  });
+
+  it('pular a vez não mudou nada: diz que a vez ou a ordem já tinha mudado em outro aparelho, e onde ver a de agora', () => {
+    expect(skipNotDoneMessage(true)).toEqual({
+      title: 'A vez não foi passada',
+      message: 'A vez ou a ordem do rodízio já tinha mudado em outro aparelho, e nada foi feito. A tela agora mostra de quem é a vez.',
+    });
+    // A tarefa não foi lida de novo (a busca falhou): a tela ainda mostra a vez de antes.
+    expect(skipNotDoneMessage(false)).toEqual({
+      title: 'A vez não foi passada',
+      message: 'A vez ou a ordem do rodízio já tinha mudado em outro aparelho, e nada foi feito. Feche e abra a tarefa de novo para ver de quem é a vez.',
+    });
   });
 });
 
@@ -345,6 +386,16 @@ describe('editor: o que salvar', () => {
     expect(planRotationSave({ saved, recurrence: 'daily', choice: rotation(['p-lia', 'p-carla']), people })).toEqual({
       people: ['p-lia', 'p-carla'],
     });
+    // As mesmas pessoas em outra ordem, uma a mais ou uma a menos: a pessoa mudou a ordem.
+    expect(planRotationSave({ saved, recurrence: 'daily', choice: rotation(['p-carla', 'p-beto', 'p-lia']), people })).toEqual({
+      people: ['p-carla', 'p-beto', 'p-lia'],
+    });
+    expect(planRotationSave({ saved, recurrence: 'weekly', choice: rotation([...order, 'p-ana']), people })).toEqual({
+      people: [...order, 'p-ana'],
+    });
+    expect(planRotationSave({ saved, recurrence: 'daily', choice: rotation(['p-beto', 'p-carla']), people })).toEqual({
+      people: ['p-beto', 'p-carla'],
+    });
     // Quem continua na ordem mantém a vez; quem saiu passa para o primeiro.
     expect(plannedTurn(saved, ['p-lia', 'p-carla'], people)).toEqual(carla);
     expect(plannedTurn(saved, ['p-lia', 'p-beto'], people)).toEqual(lia);
@@ -398,7 +449,28 @@ describe('editor: o que salvar', () => {
       turn: ofBeto,
       people: [],
     });
-    expect(planRotationSave({ saved: shownRotation, recurrence: 'daily', choice: rotation(order), people })).toEqual({ people: order });
+    // Nem na ordem, quando ela ficou como estava: o banco fica com o rodízio, a ordem e a vez que tem agora.
+    expect(planRotationSave({ saved: shownRotation, recurrence: 'daily', choice: rotation(order), people })).toEqual({ people: null });
+  });
+
+  it('formulário que mostrou o rodízio e não mexeu na ordem: não a manda, e o que outro celular fez com o rodízio fica', () => {
+    // Mandada de volta, a ordem que ele mostrou recriaria o rodízio encerrado em outro celular (com a vez no
+    // primeiro) ou desfaria a ordem nova de lá. Sem ela, nem o responsável vai.
+    const shown = { turn: ofCarla, order };
+    expect(planRotationSave({ saved: shown, recurrence: 'daily', choice: rotation(order), people })).toEqual({ people: null });
+    // A repetição mudou, a ordem não.
+    expect(planRotationSave({ saved: shown, recurrence: 'monthly', choice: rotation([...order]), people })).toEqual({ people: null });
+    // Tirou e pôs de volta a mesma pessoa, no mesmo lugar: é a mesma ordem.
+    expect(planRotationSave({ saved: shown, recurrence: 'daily', choice: rotation(toggleInOrder(toggleInOrder(order, 'p-lia'), 'p-lia')), people })).toEqual({
+      people: null,
+    });
+    // Já tirar e pôr de volta quem não era o último muda o lugar dela.
+    expect(planRotationSave({ saved: shown, recurrence: 'daily', choice: rotation(toggleInOrder(toggleInOrder(order, 'p-beto'), 'p-beto')), people })).toEqual({
+      people: ['p-carla', 'p-lia', 'p-beto'],
+    });
+    // Encerrar continua mandando a ordem vazia: "Uma vez", ou uma pessoa só.
+    expect(planRotationSave({ saved: shown, recurrence: 'none', choice: rotation(order), people })).toEqual({ people: [] });
+    expect(planRotationSave({ saved: shown, recurrence: 'daily', choice: { mode: 'single', ...ofLia }, people })).toEqual({ turn: ofLia, people: [] });
   });
 
   it('tarefa sem rodízio continua como sempre: nada do rodízio é chamado', () => {
@@ -506,7 +578,7 @@ describe('banco sem o rodízio', () => {
   it('reconhece a tabela ou a função que ainda não existe', () => {
     expect(isRotationUnavailable({ code: 'PGRST205', message: "Could not find the table 'public.chore_rotation' in the schema cache" })).toBe(true);
     expect(
-      isRotationUnavailable({ code: 'PGRST202', message: 'Could not find the function public.skip_chore_turn(p_chore_id, p_from) in the schema cache' }),
+      isRotationUnavailable({ code: 'PGRST202', message: 'Could not find the function public.skip_chore_turn(p_chore_id, p_from, p_to) in the schema cache' }),
     ).toBe(true);
     expect(isRotationUnavailable({ code: '42P01', message: 'relation "public.chore_rotation" does not exist' })).toBe(true);
     expect(isRotationUnavailable({ code: '42883', message: 'function public.save_chore_rotation(uuid, uuid[]) does not exist' })).toBe(true);
@@ -569,6 +641,8 @@ describe('o banco recusa o salvar do formulário que abriu sem rodízio, na tare
 describe('o banco recusa a troca da vez gravada direto na tabela, numa tarefa em rodízio', () => {
   it('reconhece a recusa pelo código', () => {
     expect(isRotationRefused({ code: 'NK009', message: 'chore has a rotation', details: null, hint: null })).toBe(true);
+    // O texto do banco é para o app já instalado, que o mostra como vem; este reconhece a recusa só pelo código.
+    expect(isRotationRefused({ code: 'NK009', message: 'Esta tarefa está em rodízio. Atualize o app para trocar o responsável.' })).toBe(true);
     // Nada foi salvo; tentar de novo daqui a pouco passa pela função que salva a tarefa inteira.
     expect(ROTATION_NOT_READY).toBe('O servidor está terminando uma atualização. Tente salvar de novo em alguns instantes.');
   });

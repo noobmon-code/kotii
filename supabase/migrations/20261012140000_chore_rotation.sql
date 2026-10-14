@@ -50,7 +50,9 @@ revoke all on public.chore_rotation from anon, authenticated;
 grant select on public.chore_rotation to authenticated;
 grant all on public.chore_rotation to service_role;
 
--- Só pessoas revezam (um check não pode consultar outra tabela, daí o gatilho).
+-- Só pessoas revezam (um check não pode consultar outra tabela, daí o gatilho). A recusa é em português: o app mostra
+-- o texto do banco como ele vem (é o que aparece quando a lista de fichas do aparelho ainda tem como pessoa quem virou
+-- pet em outro celular).
 create function public.chore_rotation_only_people()
 returns trigger
 language plpgsql
@@ -62,7 +64,7 @@ begin
     select 1 from public.people p
     where p.id = new.person_id and p.household_id = new.household_id and p.kind = 'pessoa'
   ) then
-    raise exception 'only people of the household take part in a chore rotation' using errcode = '23514';
+    raise exception 'Só pessoas da casa (não pets) entram no rodízio. Confira a ordem e salve de novo.' using errcode = '23514';
   end if;
   return new;
 end;
@@ -403,9 +405,12 @@ grant execute on function public.complete_chore(uuid, date, date) to authenticat
 
 -- Passa a vez para o seguinte sem concluir: a data fica, sem pontos e sem
 -- nada no histórico. p_from é de quem a tela mostrava a vez (nulo: de
--- ninguém); se ela já passou (outro celular tocou antes), nada muda. Devolve
--- de quem a vez passou a ser, ou nulo quando nada mudou.
-create function public.skip_chore_turn(p_chore_id uuid, p_from uuid)
+-- ninguém); se ela já passou (outro celular tocou antes), nada muda. p_to é
+-- quem a pergunta disse que fica com a vez (nulo: quem vier, como na chamada
+-- com dois argumentos); se a seguinte agora é outra pessoa (a ordem mudou em
+-- outro celular depois que a tela a leu), nada muda também: ninguém confirmou
+-- essa pessoa. Devolve de quem a vez passou a ser, ou nulo quando nada mudou.
+create function public.skip_chore_turn(p_chore_id uuid, p_from uuid, p_to uuid default null)
 returns uuid
 language plpgsql
 security definer
@@ -434,12 +439,15 @@ begin
     c.id,
     (select r.position from public.chore_rotation r where r.chore_id = c.id and r.person_id = turn)
   );
+  if p_to is not null and nxt is distinct from p_to then
+    return null;
+  end if;
   perform public.chore_set_turn(c.id, nxt);
   return nxt;
 end;
 $$;
-revoke execute on function public.skip_chore_turn(uuid, uuid) from public, anon;
-grant execute on function public.skip_chore_turn(uuid, uuid) to authenticated;
+revoke execute on function public.skip_chore_turn(uuid, uuid, uuid) from public, anon;
+grant execute on function public.skip_chore_turn(uuid, uuid, uuid) to authenticated;
 
 -- =============================================================================
 -- 4. A ordem não quebra quando alguém sai dela
@@ -585,7 +593,9 @@ create trigger chores_one_off_ends_rotation
 -- enxerga save_chore (o cache do esquema demora depois da migração, e às vezes
 -- não recarrega): o app não sabe distinguir esse caso do banco sem o rodízio,
 -- o banco sabe. Recusa (NK009) e nada muda; o app novo pede para tentar de
--- novo em instantes, aí já pela função.
+-- novo em instantes, aí já pela função. O texto da recusa é em português e
+-- pede para atualizar o app: a versão já instalada o mostra como ele vem, e a
+-- nova reconhece a recusa pelo código.
 --
 -- "Direto pela API" é a instrução rodar como o papel da API: a função roda com
 -- os direitos de quem chama (sem security definer), então current_user é
@@ -617,7 +627,7 @@ begin
   if current_user in ('authenticated', 'anon')
     and exists (select 1 from public.chore_rotation r where r.chore_id = new.id) then
     if old.assigned_to is distinct from new.assigned_to or old.kid_id is distinct from new.kid_id then
-      raise exception 'chore has a rotation' using errcode = 'NK009';
+      raise exception 'Esta tarefa está em rodízio. Atualize o app para trocar o responsável.' using errcode = 'NK009';
     end if;
     if new.points = 0 and new.kid_id is null and old.points > 0 then
       new.points := old.points;

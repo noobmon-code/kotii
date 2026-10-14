@@ -24,13 +24,17 @@ export default function PointsScreen() {
   const people = usePeople();
   const balances = useKidPoints();
   const chores = useChores();
-  // Fora da espera e do erro: sem as ordens (ou no banco ainda sem o rodízio), cada criança vê só as tarefas dela.
-  const rotations = useChoreRotations().data;
+  // Fora da espera: com as ordens guardadas (ou no banco ainda sem o rodízio, que responde "nenhuma"), a tela não
+  // espera a busca delas. Enquanto não chegam, cada criança vê só as tarefas dela.
+  const rotations = useChoreRotations();
   const members = useHousehold().data?.members ?? [];
 
   if (people.isPending || balances.isPending || chores.isPending) return <Loading />;
-  const error = people.error ?? balances.error ?? chores.error;
-  if (error) return <ErrorNotice error={error} onRetry={() => [people, balances, chores].forEach((q) => q.refetch())} />;
+  // As ordens que falharam sem nada guardado entram no erro: sem elas, o cartão da criança que só reveza diria que
+  // ela não tem tarefa.
+  const ordersFailed = rotations.isError && rotations.data === undefined;
+  const error = people.error ?? balances.error ?? chores.error ?? (ordersFailed ? rotations.error : null);
+  if (error) return <ErrorNotice error={error} onRetry={() => [people, balances, chores, rotations].forEach((q) => q.refetch())} />;
 
   const kids = kidsOf(people.data ?? []);
   const who = rotationPeople(members, people.data ?? []);
@@ -55,7 +59,8 @@ export default function PointsScreen() {
             kid={kid}
             tint={TINTS[index % TINTS.length]}
             balance={balances.data?.[kid.id] ?? 0}
-            chores={kidChores(kid.id, chores.data ?? [], rotations, who, today)}
+            chores={kidChores(kid.id, chores.data ?? [], rotations.data, who, today)}
+            ordersKnown={rotations.data !== undefined}
           />
         ))
       )}
@@ -69,8 +74,23 @@ export default function PointsScreen() {
   );
 }
 
-/** chores: as tarefas da criança e as dos rodízios em que ela está, com o texto de cada uma (kidChores). */
-function KidCard({ kid, tint, balance, chores }: { kid: Person; tint: Tint; balance: number; chores: { chore: Chore; subtitle: string }[] }) {
+/**
+ * chores: as tarefas da criança e as dos rodízios em que ela está, com o texto de cada uma (kidChores).
+ * ordersKnown: as ordens dos rodízios chegaram; sem elas, a lista pode estar sem as tarefas em que a criança reveza.
+ */
+function KidCard({
+  kid,
+  tint,
+  balance,
+  chores,
+  ordersKnown,
+}: {
+  kid: Person;
+  tint: Tint;
+  balance: number;
+  chores: { chore: Chore; subtitle: string }[];
+  ordersKnown: boolean;
+}) {
   const t = useTint(tint);
   const today = todayISO();
   const history = useKidHistory(kid.id, addDays(today, -6));
@@ -104,9 +124,9 @@ function KidCard({ kid, tint, balance, chores }: { kid: Person; tint: Tint; bala
             />
           ))}
         </View>
-      ) : (
+      ) : ordersKnown ? (
         <Text variant="small">Nenhuma tarefa com pontos ainda: na tarefa, escolha {kid.name} como responsável.</Text>
-      )}
+      ) : null}
 
       <Button
         title="Trocar pontos por prêmio"
