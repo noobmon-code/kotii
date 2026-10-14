@@ -857,6 +857,10 @@ export function useRenameProduct() {
       await queryClient.invalidateQueries({ queryKey: ['products'] });
       throw new Error(PRODUCT_MERGED_AWAY);
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['products'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+      // A categoria do produto decide onde o item entra no resumo de gastos, e o nome aparece no mercado do mês.
+      queryClient.invalidateQueries({ queryKey: ['spending'] });
+    },
   });
 }

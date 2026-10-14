@@ -328,7 +328,8 @@ describe('juntar', () => {
     });
     await act(async () => renderer?.unmount());
     expect(confirm.invalidated.length).toBeGreaterThan(5);
-    expect(rename.invalidated).toEqual(['products']);
+    // O main passou a buscar os gastos de novo ao renomear (a categoria e o nome aparecem no mercado do mês).
+    expect(rename.invalidated).toEqual(['products', 'spending']);
 
     mockDb.rpcReply = { data: { purchases: 0, pantry: 0, list: 0 }, error: null };
     const merge = await withHook(() => useMergeProducts());

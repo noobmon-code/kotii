@@ -341,7 +341,7 @@ describe('gravar num produto que foi juntado: o banco não reclama de uma grava�
     const hook = await withHook(() => useRenameProduct());
     expect(await failure(() => hook.value().mutateAsync({ id: 'p1', name: 'Arroz', category: 'graos' }))).toBeUndefined();
     expect(sent('products', 'update')).toEqual([[{ name: 'Arroz', category: 'graos' }]]);
-    expect(hook.invalidated).toEqual(['products']);
+    expect(hook.invalidated).toEqual(['products', 'spending']);
   });
 
   it('a validade corrigida à mão: com o produto juntado, ensina o produto em que o item da despensa está agora', async () => {
