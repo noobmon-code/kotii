@@ -13,6 +13,7 @@ import { addDays, formatShortDate, toISODate } from './dates';
 import { describeMonthDelta, financeCategoryOfProduct, monthLabel, monthRange, shiftMonth } from './finance';
 import { listNameKey } from './listLinks';
 import { formatBRL, formatQuantity } from './money';
+import { hasReceiptTotal, TOTAL_TOLERANCE_CENTS } from './receiptGap';
 import { convertQuantity, sameDimension } from './units';
 
 /** O que a conta do total precisa de um item: o valor impresso e a categoria. */
@@ -189,20 +190,20 @@ export const MARKET_VIEWS: { value: MarketView; label: string }[] = [
 
 /**
  * Até quantos centavos de diferença entre o total da nota e a soma dos itens
- * a nota não é listada para conferir. É a folga do aviso "A soma não bate com
- * o total" na tela da nota, que usa a mesma conta (`receiptTotalMismatch`):
- * abaixo dela a pessoa abriria a nota e não veria nada de errado. Os valores
+ * a nota não é listada para conferir. É a folga do aviso de diferença na tela
+ * da nota ("Faltam R$ …", em domain/receiptGap), a mesma constante: abaixo
+ * dela a pessoa abriria a nota e não veria nada de errado. Os valores
  * continuam exatos; só a lista de notas usa a folga.
  */
-export const RECEIPT_CHECK_CENTS = 5;
+export const RECEIPT_CHECK_CENTS = TOTAL_TOLERANCE_CENTS;
 
 /**
  * O total da nota e a soma dos itens diferem mais do que a folga? Em centavos inteiros: em reais, 10,05 menos
  * 10,00 dá um fio acima de 0,05, e a tela da nota avisaria de uma diferença que a do mês não manda conferir.
- * Sem total (nota digitada à mão), não há o que comparar.
+ * Sem total (nota digitada à mão, ou total zerado: `hasReceiptTotal`), não há o que comparar.
  */
 export function receiptTotalMismatch(total: number | null, itemsTotal: number): boolean {
-  return total != null && Math.abs(Math.round(total * 100) - Math.round(itemsTotal * 100)) > RECEIPT_CHECK_CENTS;
+  return hasReceiptTotal(total) && Math.abs(Math.round(total * 100) - Math.round(itemsTotal * 100)) > RECEIPT_CHECK_CENTS;
 }
 
 /** Quantos rascunhos do mês aparecem um a um; o resto é contado. */
@@ -672,8 +673,9 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
       noValueCount > 0
         ? {
             label: plural(noValueCount, 'item sem valor', 'itens sem valor'),
-            // Nota confirmada não se edita: a frase diz o que dá para fazer, que é abrir e ver. Num mês sem ida
-            // ao mercado (só farmácia) não há "este total" na tela para o item entrar como zero.
+            // A frase diz o que dá para fazer daqui, que é abrir a nota e ver (é lá que o item sem valor da nota
+            // confirmada pode ganhar o valor). Num mês sem ida ao mercado (só farmácia) não há "este total" na
+            // tela para o item entrar como zero.
             hint: !current.trips.length
               ? noValueCount === 1
                 ? 'Veio sem valor na nota. Abra a nota para ver qual é.'
