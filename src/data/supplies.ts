@@ -92,8 +92,17 @@ export function useSaveSupply() {
     mutationFn: async ({ id, values, startedOn }: { id?: string; values: SupplyValues; startedOn?: string | null }) => {
       let supplyId = id ?? created.current;
       if (supplyId) {
-        written(await supabase.from('supplies').update(values).eq('id', supplyId));
-      } else {
+        // Com a linha de volta: sem ela, mudar uma reposição que outra pessoa da casa excluiu "dá certo" sem gravar nada.
+        const rows = written(await supabase.from('supplies').update(values).eq('id', supplyId).select('id')) as { id: string }[] | null;
+        if (!rows?.length) {
+          // Editando: a tela avisa e, com a lista buscada de novo, mostra que ela não existe mais.
+          if (id) throw new Error(SUPPLY_GONE);
+          // A que esta tela criou numa tentativa anterior sumiu: a pessoa está criando, então cria outra.
+          created.current = null;
+          supplyId = null;
+        }
+      }
+      if (!supplyId) {
         supplyId = (written(await supabase.from('supplies').insert(values).select('id').single()) as { id: string }).id;
         created.current = supplyId;
       }

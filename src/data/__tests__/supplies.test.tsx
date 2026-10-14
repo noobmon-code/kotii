@@ -228,7 +228,7 @@ describe('gravações', () => {
     });
     mockCalls.length = 0;
     mockReplies.length = 0;
-    mockReplies.push({ status: 204 }, { status: 201 });
+    mockReplies.push({ status: 200, body: [{ id: 's1' }] }, { status: 201 });
     await settled(async () => {
       await expect(save.current.mutateAsync({ values: { ...values, name: 'Gás' }, startedOn: '2026-10-12' })).resolves.toBe('s1');
     });
@@ -238,13 +238,51 @@ describe('gravações', () => {
     ]);
   });
 
+  it('a primeira troca falhou e, antes de salvar de novo, a reposição foi excluída: cria outra, com a troca', async () => {
+    const save = mount(() => useSaveSupply());
+    const values = { name: 'Gás de cozinha', kind: 'gas' as const, typical_days: null, notes: null };
+    mockReplies.push({ status: 201, body: { id: 's1' } }, { status: 500, body: { code: 'XX000', details: null, hint: null, message: 'caiu' } });
+    await settled(async () => {
+      await expect(save.current.mutateAsync({ values, startedOn: '2026-10-12' })).rejects.toMatchObject({ message: 'caiu' });
+    });
+    mockCalls.length = 0;
+    mockReplies.length = 0;
+    // A mudança não alcança nenhuma linha (outra pessoa da casa excluiu a s1): uma nova, a s2, e a troca vai nela.
+    mockReplies.push({ status: 200, body: [] }, { status: 201, body: { id: 's2' } }, { status: 201 });
+    await settled(async () => {
+      await expect(save.current.mutateAsync({ values, startedOn: '2026-10-12' })).resolves.toBe('s2');
+    });
+    expect(mockCalls.filter((c) => c.method !== 'GET').map((c) => [c.method, c.path, c.query.id ?? null, c.body])).toEqual([
+      ['PATCH', '/rest/v1/supplies', 'eq.s1', values],
+      ['POST', '/rest/v1/supplies', null, values],
+      ['POST', '/rest/v1/supply_refills', null, { supply_id: 's2', refilled_on: '2026-10-12' }],
+    ]);
+  });
+
+  it('editar uma reposição que outra pessoa da casa excluiu: aviso em português, nada criado, e a lista é buscada de novo', async () => {
+    const screen = mount(() => ({ list: useSupplies(), save: useSaveSupply() }));
+    const listed = () => mockCalls.filter((c) => c.method === 'GET' && c.path === '/rest/v1/supplies').length;
+    await settled(async () => undefined);
+    expect(listed()).toBe(1);
+    // O PostgREST responde que deu certo, mas sem nenhuma linha: não havia mais o que mudar.
+    mockReplies.push({ status: 200, body: [] });
+    await settled(async () => {
+      await expect(
+        screen.current.save.mutateAsync({ id: 's9', values: { name: 'Areia', kind: 'areia', typical_days: 15, notes: null } }),
+      ).rejects.toThrow(SUPPLY_GONE);
+    });
+    expect(mockCalls.filter((c) => c.method !== 'GET').map((c) => [c.method, c.path, c.query.id])).toEqual([['PATCH', '/rest/v1/supplies', 'eq.s9']]);
+    // A lista volta do servidor e a tela cai no "não existe mais".
+    expect(listed()).toBe(2);
+  });
+
   it('editar e apagar vão na linha certa', async () => {
     const save = mount(() => useSaveSupply());
     const removeRefill = mount(() => useDeleteRefill());
     const remove = mount(() => useDeleteSupply());
-    mockReplies.push({ status: 204 }, { status: 204 }, { status: 204 });
+    mockReplies.push({ status: 200, body: [{ id: 's9' }] }, { status: 204 }, { status: 204 });
     await settled(async () => {
-      await save.current.mutateAsync({ id: 's9', values: { name: 'Areia', kind: 'areia', typical_days: 15, notes: 'Saco de 4 kg' } });
+      await expect(save.current.mutateAsync({ id: 's9', values: { name: 'Areia', kind: 'areia', typical_days: 15, notes: 'Saco de 4 kg' } })).resolves.toBe('s9');
       await removeRefill.current.mutateAsync('r1');
       await remove.current.mutateAsync('s9');
     });
@@ -253,6 +291,9 @@ describe('gravações', () => {
       ['DELETE', '/rest/v1/supply_refills', 'eq.r1'],
       ['DELETE', '/rest/v1/supplies', 'eq.s9'],
     ]);
+    // A mudança pede a linha de volta: é como se sabe que ela ainda existia.
+    expect(mockCalls[0].query.select).toBe('id');
+    expect(mockCalls[0].prefer).toContain('return=representation');
   });
 
   it('banco ainda sem as tabelas: gravar avisa que os avisos estão sendo ativados', async () => {
@@ -264,6 +305,8 @@ describe('gravações', () => {
     expect(SUPPLIES_NOT_READY).toBe('Os avisos de gás, água e ração ainda estão sendo ativados no Kotii. Tente de novo mais tarde.');
     const attempts = [
       () => save.current.mutateAsync({ values, startedOn: '2026-10-12' }),
+      // Editar também: o aviso das tabelas vem antes do "não existe mais".
+      () => save.current.mutateAsync({ id: 's1', values }),
       () => record.current.mutateAsync({ supplyId: 's1', date: '2026-10-12' }),
       () => removeRefill.current.mutateAsync('r1'),
       () => remove.current.mutateAsync('s1'),
