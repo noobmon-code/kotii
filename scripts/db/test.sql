@@ -3410,6 +3410,83 @@ begin
     and r.prescription_until = '2026-12-20', 'the stock and the prescription are untouched by Q';
   assert (select count(*) from public.medications) = 1, 'and P does not see the medication of Q';
 end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• lista da farmácia aberta: acha a da casa ou cria uma só'
+do $$
+declare
+  first uuid;
+  again uuid;
+  market uuid;
+  other uuid;
+  blank uuid;
+begin
+  assert (select count(*) from public.shopping_lists) = 0, 'P starts without lists';
+  select id into first from public.open_pharmacy_list();
+  assert (select name = 'Farmácia' and kind = 'farmacia' and archived_at is null from public.shopping_lists where id = first),
+    'creates "Farmácia" when no pharmacy list is open';
+  select id into again from public.open_pharmacy_list('Outra');
+  assert again = first, 'the open pharmacy list is reused';
+  assert (select count(*) from public.shopping_lists) = 1, 'and no second list is created';
+  -- A de mercado aberta e a de farmácia arquivada não servem.
+  select id into market from public.open_market_list();
+  update public.shopping_lists set archived_at = now() where id = first;
+  select id into other from public.open_pharmacy_list();
+  assert other <> first and other <> market, 'neither an archived pharmacy list nor a market list is reused';
+  assert (select kind from public.shopping_lists where id = other) = 'farmacia', 'the new list is a pharmacy list';
+  -- Nome em branco (ou nulo): "Farmácia".
+  update public.shopping_lists set archived_at = now() where id = other;
+  select id into blank from public.open_pharmacy_list('   ');
+  assert (select name from public.shopping_lists where id = blank) = 'Farmácia', 'a blank name becomes "Farmácia"';
+  update public.shopping_lists set archived_at = now() where id = blank;
+  select id into blank from public.open_pharmacy_list(null);
+  assert (select name from public.shopping_lists where id = blank) = 'Farmácia', 'a null name becomes "Farmácia"';
+  perform set_config('test.pharmacy_p', blank::text, false);
+end $$;
+-- Quico, de outra casa: ganha a lista dele, nunca a da Paula.
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+declare
+  mine uuid;
+begin
+  select id into mine from public.open_pharmacy_list();
+  assert mine <> current_setting('test.pharmacy_p')::uuid, 'another household never gets the open pharmacy list of P';
+  assert (select count(*) from public.shopping_lists) = 1 and (select count(*) from public.shopping_lists where id = mine) = 1,
+    'Q sees only the own pharmacy list';
+end $$;
+-- Sem casa, nada.
+reset role;
+\set user_r '00000000-0000-0000-0000-00000000001f'
+insert into auth.users (id) values (:'user_r');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+do $$
+begin
+  perform public.open_pharmacy_list();
+  raise exception 'FAIL: pharmacy list without a household';
+exception when insufficient_privilege then
+  assert sqlerrm = 'sem casa', 'the error says there is no household';
+end $$;
+-- Anônimo não chama; só quem entrou, pelo grant explícito.
+set role anon;
+do $$
+begin
+  perform public.open_pharmacy_list();
+  raise exception 'FAIL: anon opened a pharmacy list';
+exception when insufficient_privilege then null;
+end $$;
+reset role;
+do $$
+begin
+  assert not has_function_privilege('anon', 'public.open_pharmacy_list(text)', 'execute'), 'anon cannot execute open_pharmacy_list';
+  assert has_function_privilege('authenticated', 'public.open_pharmacy_list(text)', 'execute'), 'members can execute open_pharmacy_list';
+  -- Sem acl, vale o padrão do Postgres (execute para public).
+  assert (select proacl is not null from pg_proc where oid = 'public.open_pharmacy_list(text)'::regprocedure)
+    and not exists (
+    select 1 from pg_proc p, aclexplode(p.proacl) a
+    where p.oid = 'public.open_pharmacy_list(text)'::regprocedure and a.grantee = 0
+  ), 'and public has no grant on open_pharmacy_list';
+end $$;
 reset role;
 
 \echo 'OK — todos os testes do banco passaram'

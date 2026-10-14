@@ -326,11 +326,24 @@ export function useAddItemsToList() {
 }
 
 /**
+ * A função do banco ainda não existe (o app chegou antes da migração, ou o
+ * cache de schema da API ainda não a vê): o PostgREST responde PGRST202 e o
+ * Postgres, 42883.
+ */
+function isMissingFunction(error: unknown): boolean {
+  const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
+  return code === 'PGRST202' || code === '42883';
+}
+
+/**
  * A lista de farmácia aberta mais recente da casa; sem nenhuma, cria uma com
- * `name`. Feito daqui, sem a trava por casa da lista de mercado: é um toque de
- * vez em quando (o remédio acabando), não a casa inteira pondo itens.
+ * `name`. No servidor, como a de mercado: numa transação com trava por casa,
+ * duas pessoas pondo remédio ao mesmo tempo não criam duas.
  */
 async function openPharmacyList(name = 'Farmácia'): Promise<{ id: string; name: string }> {
+  const opened = await supabase.rpc('open_pharmacy_list', { p_name: name }).single();
+  if (!opened.error || !isMissingFunction(opened.error)) return unwrap(opened) as { id: string; name: string };
+  // Banco sem a função: procura e cria daqui, sem a trava.
   const open = unwrap(
     await supabase
       .from('shopping_lists')

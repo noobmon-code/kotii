@@ -5,8 +5,10 @@
 -- O banco guarda só a contagem (quantas unidades havia e em que dia foram
 -- contadas); o que sobra hoje é uma conta do app pelas doses previstas desde
 -- então (src/domain/medicationStock.ts), não pelas doses marcadas. Sem tabela
--- nem função nova: as colunas ficam sob a regra de acesso que a tabela já tem
--- (household_id = current_household_id()).
+-- nova: as colunas ficam sob a regra de acesso que a tabela já tem
+-- (household_id = current_household_id()). A única função nova,
+-- open_pharmacy_list, acha ou cria a lista da farmácia ("Pôr na lista da
+-- farmácia").
 --
 -- As quantidades têm teto, e não só piso: num numeric sem tamanho, NaN é maior
 -- que qualquer número e passaria num ">= 0" sozinho (Infinity também). O teto
@@ -33,3 +35,38 @@ alter table public.medications
     check (prescription_until is null or prescription_until between date '2000-01-01' and date '2100-12-31'),
   -- A contagem e o dia dela andam juntos.
   add constraint medications_stock_counted check ((stock_count is null) = (stock_counted_on is null));
+
+-- A lista de farmácia aberta mais recente da casa; sem nenhuma, cria uma.
+-- Como open_market_list: procurar e criar numa transação só, com trava por
+-- casa, para duas pessoas pondo remédio na lista ao mesmo tempo, sem lista de
+-- farmácia aberta, não criarem duas "Farmácia" (cada item numa).
+create function public.open_pharmacy_list(p_name text default 'Farmácia')
+returns table (id uuid, name text)
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  hid uuid := public.current_household_id();
+begin
+  if hid is null then
+    raise exception 'sem casa' using errcode = '42501';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended('open_pharmacy_list:' || hid::text, 0));
+  return query
+    select l.id, l.name from public.shopping_lists l
+    where l.household_id = hid and l.kind = 'farmacia' and l.archived_at is null
+    order by l.created_at desc
+    limit 1;
+  if found then
+    return;
+  end if;
+  return query
+    insert into public.shopping_lists as l (name, kind)
+    values (coalesce(nullif(trim(p_name), ''), 'Farmácia'), 'farmacia')
+    returning l.id, l.name;
+end;
+$$;
+
+revoke execute on function public.open_pharmacy_list(text) from public, anon;
+grant execute on function public.open_pharmacy_list(text) to authenticated;
