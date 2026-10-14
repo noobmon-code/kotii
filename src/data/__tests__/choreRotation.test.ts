@@ -16,6 +16,8 @@ const mockDb: {
   flagged: { data: unknown; error: unknown } | Error;
   /** O que a gravação direto na tabela responde. */
   update: { data: unknown; error: unknown } | Error;
+  /** O que responde a gravação só da repetição, a que exige `recurrence=none`: a linha, se a tarefa era "Uma vez" no banco, ou nenhuma. */
+  repeats: { data: unknown; error: unknown } | Error;
   calls: string[];
 } = {
   rotation: { data: [], error: null },
@@ -23,6 +25,7 @@ const mockDb: {
   single: { data: null, error: null },
   flagged: { data: null, error: null },
   update: { data: null, error: null },
+  repeats: { data: [], error: null },
   calls: [],
 };
 
@@ -41,9 +44,15 @@ jest.mock('@/lib/supabase', () => ({
       update: (values: Record<string, unknown>) => {
         // Uma consulta do supabase-js: `.eq()` uma ou mais vezes, e ela responde quando alguém espera por ela.
         const filters: [string, unknown][] = [];
+        // Só com `.select()` a gravação devolve as linhas que mudou.
+        let returning = false;
         const query = {
           eq: (column: string, value: unknown) => {
             filters.push([column, value]);
+            return query;
+          },
+          select: () => {
+            returning = true;
             return query;
           },
           then: (resolve: (value: unknown) => void, reject: (reason: unknown) => void) => {
@@ -51,7 +60,10 @@ jest.mock('@/lib/supabase', () => ({
             const [[, id], ...more] = filters;
             const only = more.map(([column, value]) => ` se ${column}=${value}`).join('');
             mockDb.calls.push(`update ${table} ${id}: ${Object.keys(values).join(',')}${only}`);
-            return (mockDb.update instanceof Error ? Promise.reject(mockDb.update) : Promise.resolve(mockDb.update)).then(resolve, reject);
+            // A gravação com condição é a da repetição, e responde à parte: o teste diz se ela achou a linha.
+            const answer = more.length ? mockDb.repeats : mockDb.update;
+            if (answer instanceof Error) return Promise.reject(answer).then(resolve, reject);
+            return Promise.resolve(returning ? answer : { ...answer, data: null }).then(resolve, reject);
           },
         };
         return query;
@@ -107,6 +119,7 @@ beforeEach(() => {
   mockDb.single = { data: null, error: null };
   mockDb.flagged = { data: null, error: null };
   mockDb.update = { data: null, error: null };
+  mockDb.repeats = { data: [], error: null };
   mockDb.calls = [];
 });
 
@@ -242,12 +255,33 @@ describe('salvar um rodízio novo na tarefa que já existe e não mostrou rodíz
   const UNFLAGGED = 'rpc save_chore_rotation: p-beto,p-lia';
   const REST = 'update chores louca: title,notes,recurrence,interval_count,due_on,points';
   const EVERYTHING = 'update chores louca: title,notes,recurrence,interval_count,due_on,assigned_to,kid_id,points';
+  // A repetição, e só ela, vai antes de tudo, com a condição à vista: só grava na tarefa que segue "Uma vez" no banco.
   const REPEATS = 'update chores louca: recurrence,interval_count se recurrence=none';
+  // A tarefa era "Uma vez" no banco: a gravação da repetição achou a linha.
+  const ONE_OFF = { data: [{ id: 'louca' }], error: null };
 
-  it('a ordem vai primeiro, pela função que confere que a tarefa segue sem rodízio; o resto depois, sem o responsável e com os pontos', async () => {
+  it('a ordem vai antes do resto, pela função que confere que a tarefa segue sem rodízio; o resto depois, sem o responsável e com os pontos', async () => {
     expect(await saveChore(created)).toEqual({ id: 'louca' });
     // A vez quem põe é a função (o primeiro da ordem); os pontos, em que ela não mexe, vão com o resto.
-    expect(mockDb.calls).toEqual([FLAGGED, REST]);
+    expect(mockDb.calls).toEqual([REPEATS, FLAGGED, REST]);
+  });
+
+  it('a repetição vai sempre antes da ordem, e só grava se a tarefa segue "Uma vez" no banco (a função recusa rodízio em tarefa que não se repete)', async () => {
+    // Tarefa que se repete: a gravação não acha linha nenhuma, e nada muda.
+    expect(await saveChore(created)).toEqual({ id: 'louca' });
+    // "Uma vez" no banco, tenha o formulário aberto assim ou virado isso em outro celular depois: a repetição que
+    // ele mostra é gravada, e a função aceita a ordem. A sequência é a mesma, sem perguntar como o formulário abriu.
+    mockDb.repeats = ONE_OFF;
+    expect(await saveChore(created)).toEqual({ id: 'louca' });
+    expect(mockDb.calls).toEqual([REPEATS, FLAGGED, REST, REPEATS, FLAGGED, REST]);
+  });
+
+  it('nem a repetição pôde ser gravada: nada foi salvo, o erro sobe e nada mais é tentado', async () => {
+    mockDb.repeats = { data: null, error: OFFLINE };
+    await expect(saveChore(created)).rejects.toBe(OFFLINE);
+    mockDb.repeats = new TypeError('Network request failed');
+    await expect(saveChore(created)).rejects.toBe(mockDb.repeats);
+    expect(mockDb.calls).toEqual([REPEATS, REPEATS]);
   });
 
   it('a tarefa ganhou um rodízio em outro celular: a recusa do banco sobe como erro e nada mais é gravado', async () => {
@@ -255,7 +289,7 @@ describe('salvar um rodízio novo na tarefa que já existe e não mostrou rodíz
     const refused = await saveChore(created).catch((err: unknown) => err);
     expect(refused).toBe(HAS_ROTATION);
     expect(isRotationChangedElsewhere(refused)).toBe(true);
-    expect(mockDb.calls).toEqual([FLAGGED]);
+    expect(mockDb.calls).toEqual([REPEATS, FLAGGED]);
   });
 
   it('tarefa apagada em outro aparelho: o erro sobe e nada mais é gravado', async () => {
@@ -263,17 +297,39 @@ describe('salvar um rodízio novo na tarefa que já existe e não mostrou rodíz
     const gone = await saveChore(created).catch((err: unknown) => err);
     expect(gone).toBe(NOT_FOUND);
     expect(isChoreGoneOnSave(gone)).toBe(true);
-    expect(mockDb.calls).toEqual([FLAGGED]);
+    expect(mockDb.calls).toEqual([REPEATS, FLAGGED]);
   });
 
-  it('as outras falhas da função (sem internet, alguém da ordem que saiu da casa) também sobem, sem gravar o resto', async () => {
+  it('as outras falhas da função (sem internet, alguém da ordem que saiu da casa) também sobem, sem gravar o resto: a tarefa já se repetia, e nada foi salvo', async () => {
     mockDb.flagged = new TypeError('Network request failed');
     await expect(saveChore(created)).rejects.toBe(mockDb.flagged);
     mockDb.flagged = { data: null, error: OFFLINE };
     await expect(saveChore(created)).rejects.toBe(OFFLINE);
     mockDb.flagged = { data: null, error: { code: 'P0002', message: 'Alguém do rodízio não está mais na casa. Confira a ordem e salve de novo.' } };
     await expect(saveChore(created)).rejects.toMatchObject({ code: 'P0002' });
-    expect(mockDb.calls).toEqual([FLAGGED, FLAGGED, FLAGGED]);
+    expect(mockDb.calls).toEqual([REPEATS, FLAGGED, REPEATS, FLAGGED, REPEATS, FLAGGED]);
+  });
+
+  it('a tarefa era "Uma vez", a repetição foi gravada e a ordem falha: volta no resultado, não como erro, para a tela dizer o que foi salvo', async () => {
+    mockDb.repeats = ONE_OFF;
+    mockDb.flagged = { data: null, error: OFFLINE };
+    expect(await saveChore(created)).toEqual({ id: 'louca', repeatOnlyError: OFFLINE });
+    mockDb.flagged = new TypeError('Network request failed');
+    expect(await saveChore(created)).toEqual({ id: 'louca', repeatOnlyError: mockDb.flagged });
+    const left = { code: 'P0002', message: 'Alguém do rodízio não está mais na casa. Confira a ordem e salve de novo.' };
+    mockDb.flagged = { data: null, error: left };
+    expect(await saveChore(created)).toEqual({ id: 'louca', repeatOnlyError: left });
+    // O resto da tarefa nem é tentado: sem a ordem aceita, nada mais daquele formulário é gravado.
+    expect(mockDb.calls).toEqual([REPEATS, FLAGGED, REPEATS, FLAGGED, REPEATS, FLAGGED]);
+  });
+
+  it('com a repetição gravada, o rodízio criado em outro celular e a tarefa apagada seguem subindo como erro: a tela já tem o aviso de cada um', async () => {
+    mockDb.repeats = ONE_OFF;
+    mockDb.flagged = { data: null, error: HAS_ROTATION };
+    await expect(saveChore(created)).rejects.toBe(HAS_ROTATION);
+    mockDb.flagged = { data: null, error: NOT_FOUND };
+    await expect(saveChore(created)).rejects.toBe(NOT_FOUND);
+    expect(mockDb.calls).toEqual([REPEATS, FLAGGED, REPEATS, FLAGGED]);
   });
 
   it('o resto falha depois de a ordem ser gravada: volta no resultado, não como erro, para a tela dizer o que foi salvo', async () => {
@@ -281,7 +337,7 @@ describe('salvar um rodízio novo na tarefa que já existe e não mostrou rodíz
     expect(await saveChore(created)).toEqual({ id: 'louca', restError: OFFLINE });
     mockDb.update = new TypeError('Network request failed');
     expect(await saveChore(created)).toEqual({ id: 'louca', restError: mockDb.update });
-    expect(mockDb.calls).toEqual([FLAGGED, REST, FLAGGED, REST]);
+    expect(mockDb.calls).toEqual([REPEATS, FLAGGED, REST, REPEATS, FLAGGED, REST]);
   });
 
   it('banco ainda sem o rodízio (o app chegou antes da migração): o caminho de antes, e a falha da ordem volta no resultado', async () => {
@@ -292,26 +348,19 @@ describe('salvar um rodízio novo na tarefa que já existe e não mostrou rodíz
     expect(isRotationUnavailable(saved.rotationError)).toBe(true);
     expect(saved.restError).toBeUndefined();
     // A tarefa inteira direto na tabela, com o responsável, e a ordem tentada como sempre foi.
-    expect(mockDb.calls).toEqual([FLAGGED, EVERYTHING, UNFLAGGED]);
+    expect(mockDb.calls).toEqual([REPEATS, FLAGGED, EVERYTHING, UNFLAGGED]);
   });
 
   it('banco com a função de dois argumentos (uma cópia de antes da migração): o caminho de antes grava a tarefa e a ordem', async () => {
     mockDb.flagged = { data: null, error: NO_FLAG };
     expect(await saveChore(created)).toEqual({ id: 'louca' });
-    expect(mockDb.calls).toEqual([FLAGGED, EVERYTHING, UNFLAGGED]);
+    // Também com a repetição já gravada (a tarefa era "Uma vez"): não é uma falha, a tarefa inteira vem logo depois.
+    mockDb.repeats = ONE_OFF;
+    expect(await saveChore(created)).toEqual({ id: 'louca' });
+    expect(mockDb.calls).toEqual([REPEATS, FLAGGED, EVERYTHING, UNFLAGGED, REPEATS, FLAGGED, EVERYTHING, UNFLAGGED]);
   });
 
-  it('a tarefa era "Uma vez": só a repetição vai antes, e só se ela segue "Uma vez" no banco (a função recusa rodízio em tarefa que não se repete)', async () => {
-    expect(await saveChore({ ...created, fromOneOff: true })).toEqual({ id: 'louca' });
-    expect(mockDb.calls).toEqual([REPEATS, FLAGGED, REST]);
-    mockDb.calls = [];
-    // Se nem a repetição pôde ser gravada, nada mais é tentado.
-    mockDb.update = { data: null, error: OFFLINE };
-    await expect(saveChore({ ...created, fromOneOff: true })).rejects.toBe(OFFLINE);
-    expect(mockDb.calls).toEqual([REPEATS]);
-  });
-
-  it('só o rodízio novo de uma tarefa que já existe passa por aí', async () => {
+  it('só o rodízio novo de uma tarefa que já existe passa por aí: a tarefa nova e o formulário que mostrou o rodízio nem mandam a repetição antes', async () => {
     // Tarefa nova: ninguém mais pode ter criado um rodízio para ela.
     await saveChore({ values: ofBeto, rotation: ['p-beto', 'p-lia'], expectNone: true });
     // Sem ordem a gravar, o responsável vai pela função da tarefa sem rodízio.
@@ -329,5 +378,6 @@ describe('salvar um rodízio novo na tarefa que já existe e não mostrou rodíz
       'update chores louca: title,notes,recurrence,interval_count,due_on',
       UNFLAGGED,
     ]);
+    expect(mockDb.calls).not.toContain(REPEATS);
   });
 });

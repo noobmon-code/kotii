@@ -14,6 +14,7 @@ import {
   orderHasKid,
   planRotationSave,
   plannedTurn,
+  REPEAT_SAVED_ROTATION_NOT,
   ROTATION_CHANGED_ELSEWHERE,
   ROTATION_CHECK_FAILED,
   ROTATION_PERSON_UNKNOWN,
@@ -249,10 +250,12 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
         rotation: plan.people,
         // Rodízio novo numa tarefa que já existe: a ordem vai primeiro, e o banco confere que ela segue sem rodízio.
         expectNone: startsRotation(saved, plan.people),
-        fromOneOff: chore?.recurrence === 'none',
       },
       {
         onSuccess: (result) => {
+          // A tarefa era "Uma vez" e só a repetição nova foi salva: a ordem falhou, e o resto nem foi tentado. Ela segue
+          // sem rodízio, e o formulário fica como está: salvar de novo grava a ordem e o resto.
+          if (result.repeatOnlyError) return notify(REPEAT_SAVED_ROTATION_NOT, errorMessage(result.repeatOnlyError));
           if (result.restError) {
             // A ordem nova foi salva; o resto da tarefa ficou de fora. O rodízio agora é o que este formulário
             // criou: salvar de novo grava o resto como o de um rodízio que ele mostrou, sem esbarrar no próprio.

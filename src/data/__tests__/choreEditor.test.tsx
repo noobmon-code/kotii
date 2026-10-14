@@ -4,6 +4,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import ChoreScreen from '@/app/tarefa/[id]';
 import {
+  REPEAT_SAVED_ROTATION_NOT,
   ROTATION_CHANGED_ELSEWHERE,
   ROTATION_CHECK_FAILED,
   ROTATION_PERSON_UNKNOWN,
@@ -43,10 +44,12 @@ const mockServer: {
   gate: Promise<void> | null;
   /** O que outro celular faz logo depois de este ler a ordem (uma vez só): a corrida entre conferir e gravar. */
   afterCheck: (() => void) | null;
-  /** Com que erro a gravação direto na tabela das tarefas falha (nulo: grava). */
+  /** Com que erro a gravação da tarefa direto na tabela falha (nulo: grava). A que leva só a repetição, com condição, grava sempre. */
   failUpdate: unknown;
+  /** Com que erro a função da ordem falha, sem gravar nada (nulo: responde como o banco). */
+  failRotation: unknown;
   log: string[];
-} = { chore: null, order: [], down: [], old: false, gate: null, afterCheck: null, failUpdate: null, log: [] };
+} = { chore: null, order: [], down: [], old: false, gate: null, afterCheck: null, failUpdate: null, failRotation: null, log: [] };
 // O que este celular sabe dos moradores, e a tarefa aberta ('nova': tarefa nova).
 const mockDevice = { members: mockMembers, id: 'c-1' };
 const mockBack = jest.fn();
@@ -88,10 +91,13 @@ jest.mock('@/lib/supabase', () => {
           // O que a gravação exige da linha além do id ("se recurrence=none"): sem isso, ela não grava nada.
           const only = filters.slice(1);
           mockServer.log.push(`update chores ${JSON.stringify(values)}${only.map(([column, value]) => ` se ${column}=${value}`).join('')}`);
-          if (mockServer.failUpdate) return { data: null, error: mockServer.failUpdate };
+          if (mockServer.failUpdate && !only.length) return { data: null, error: mockServer.failUpdate };
           // Na tarefa apagada, como em toda gravação que não acha a linha, nada muda e não há erro.
           const row = mockServer.chore;
-          if (row && only.every(([column, value]) => row[String(column)] === value)) mockServer.chore = { ...row, ...values };
+          const matched = row && only.every(([column, value]) => row[String(column)] === value) ? row : null;
+          if (matched) mockServer.chore = { ...matched, ...values };
+          // Com `.select()`, a gravação devolve as linhas que mudou: a tarefa, ou nenhuma.
+          if (calls.select) return { data: matched ? [{ id: matched.id }] : [], error: null };
         }
         return { data: table === 'people' ? { ...mockPeople.find((p) => p.id === calls.eq[1]), ...values } : null, error: null };
       }
@@ -159,6 +165,7 @@ jest.mock('@/lib/supabase', () => {
           const people = args.p_people ?? [];
           const missing = { code: 'PGRST202', message: 'Could not find the function public.save_chore_rotation(p_chore_id, p_expect_none, p_people) in the schema cache' };
           if (mockServer.old) return { data: null, error: missing };
+          if (mockServer.failRotation) return { data: null, error: mockServer.failRotation };
           if (!mockServer.chore) return { data: null, error: gone };
           if (args.p_expect_none && mockServer.order.length) return { data: null, error: hasRotation };
           if (people.length && mockServer.chore.recurrence === 'none') {
@@ -287,6 +294,7 @@ beforeEach(() => {
     gate: null,
     afterCheck: null,
     failUpdate: null,
+    failRotation: null,
     log: [],
   });
   Object.assign(mockDevice, { members: mockMembers, id: 'c-1' });
@@ -618,7 +626,9 @@ describe('formulário aberto sem rodízio: salvar confere a ordem no servidor an
 
 describe('formulário aberto sem rodízio que cria um: quem confere que a tarefa segue sem rodízio é o banco, ao gravar a ordem', () => {
   const NEW_ORDER = ['p-lia', 'p-beto'];
-  // A ordem vai primeiro, com o terceiro argumento; o resto da tarefa depois, sem o responsável (a vez quem põe é a função).
+  // Antes de tudo, só a repetição, e só para a tarefa que segue "Uma vez" no banco: a função da ordem não aceita rodízio nela.
+  const REPEATS_SAVE = 'update chores {"recurrence":"daily","interval_count":1} se recurrence=none';
+  // A ordem vai antes do resto, com o terceiro argumento; o resto da tarefa depois, sem o responsável (a vez quem põe é a função).
   const FLAGGED_SAVE = 'rpc save_chore_rotation ["p-lia","p-beto"] p_expect_none=true';
   const rest = (title = 'Lavar a louça') =>
     `update chores {"title":"${title}","notes":null,"recurrence":"daily","interval_count":1,"due_on":"2026-10-12","points":10}`;
@@ -645,7 +655,8 @@ describe('formulário aberto sem rodízio que cria um: quem confere que a tarefa
   it('a ordem é gravada primeiro, e só depois o resto da tarefa, sem o responsável: a vez fica com o primeiro da ordem', async () => {
     const screen = await openAndPickRotation();
     await screen.press('Salvar');
-    expect(mockServer.log).toEqual([FLAGGED_SAVE, rest()]);
+    // A tarefa já se repete: a gravação da repetição não acha linha nenhuma, e nada muda com ela.
+    expect(mockServer.log).toEqual([REPEATS_SAVE, FLAGGED_SAVE, rest()]);
     expect(mockServer.order).toEqual(NEW_ORDER);
     expect(mockServer.chore).toMatchObject({ assigned_to: null, kid_id: 'p-lia', points: 10 });
     expect(mockNotify).not.toHaveBeenCalled();
@@ -662,8 +673,9 @@ describe('formulário aberto sem rodízio que cria um: quem confere que a tarefa
     };
 
     await screen.press('Salvar');
-    // Só a gravação recusada chegou ao servidor: a ordem de lá segue inteira, com a vez e os pontos dela, e nem o título novo foi salvo.
-    expect(mockServer.log).toEqual([FLAGGED_SAVE]);
+    // Só a gravação recusada mexeria em algo (a da repetição não achou tarefa "Uma vez", e nada mudou): a ordem de lá
+    // segue inteira, com a vez e os pontos dela, e nem o título novo foi salvo.
+    expect(mockServer.log).toEqual([REPEATS_SAVE, FLAGGED_SAVE]);
     expect(mockNotify.mock.calls).toEqual([CHANGED]);
     expect(mockBack).not.toHaveBeenCalled();
     expect(mockServer.order).toEqual(ORDER);
@@ -676,7 +688,7 @@ describe('formulário aberto sem rodízio que cria um: quem confere que a tarefa
 
     // Outro toque em Salvar nem vai ao servidor: o formulário aberto já sabe que a tarefa ganhou um rodízio.
     await screen.press('Salvar');
-    expect(mockServer.log).toEqual([FLAGGED_SAVE]);
+    expect(mockServer.log).toEqual([REPEATS_SAVE, FLAGGED_SAVE]);
     expect(mockNotify.mock.calls).toEqual([CHANGED, CHANGED]);
   });
 
@@ -685,7 +697,7 @@ describe('formulário aberto sem rodízio que cria um: quem confere que a tarefa
     await screen.typeTitle('Lavar a louça e as panelas');
     mockServer.failUpdate = OFFLINE;
     await screen.press('Salvar');
-    expect(mockServer.log).toEqual([FLAGGED_SAVE, rest('Lavar a louça e as panelas')]);
+    expect(mockServer.log).toEqual([REPEATS_SAVE, FLAGGED_SAVE, rest('Lavar a louça e as panelas')]);
     expect(mockNotify.mock.calls).toEqual([[ROTATION_SAVED_REST_NOT, 'TypeError: Network request failed']]);
     expect(mockBack).not.toHaveBeenCalled();
     expect(mockServer.order).toEqual(NEW_ORDER);
@@ -697,7 +709,7 @@ describe('formulário aberto sem rodízio que cria um: quem confere que a tarefa
     // rodízio que ele mostrou (sem o responsável e sem conferir de novo), e não esbarra no próprio rodízio.
     mockServer.failUpdate = null;
     await screen.press('Salvar');
-    expect(mockServer.log.slice(2)).toEqual([rest('Lavar a louça e as panelas'), 'rpc save_chore_rotation ["p-lia","p-beto"]']);
+    expect(mockServer.log.slice(3)).toEqual([rest('Lavar a louça e as panelas'), 'rpc save_chore_rotation ["p-lia","p-beto"]']);
     expect(mockServer.chore).toMatchObject({ title: 'Lavar a louça e as panelas', kid_id: 'p-lia', assigned_to: null, points: 10 });
     expect(mockNotify).toHaveBeenCalledTimes(1);
     expect(mockBack).toHaveBeenCalledTimes(1);
@@ -706,10 +718,53 @@ describe('formulário aberto sem rodízio que cria um: quem confere que a tarefa
   it('a tarefa era "Uma vez": a repetição é gravada antes da ordem, e só ela (o banco não aceita rodízio em tarefa que não se repete)', async () => {
     const screen = await openAndPickRotation({ recurrence: 'none' });
     await screen.press('Salvar');
-    expect(mockServer.log).toEqual(['update chores {"recurrence":"daily","interval_count":1} se recurrence=none', FLAGGED_SAVE, rest()]);
+    expect(mockServer.log).toEqual([REPEATS_SAVE, FLAGGED_SAVE, rest()]);
     expect(mockServer.order).toEqual(NEW_ORDER);
     expect(mockServer.chore).toMatchObject({ recurrence: 'daily', kid_id: 'p-lia', points: 10 });
     expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('a tarefa virou "Uma vez" em outro celular com o formulário aberto em "Diária": um toque só salva a repetição que ele mostra, a ordem e o resto', async () => {
+    const screen = await openAndPickRotation();
+    await screen.typeTitle('Lavar a louça e as panelas');
+    // O formulário abriu com a tarefa diária, e é isso que ele mostra; outro celular a muda logo depois da conferência deste.
+    mockServer.afterCheck = () => {
+      mockServer.chore = { ...mockServer.chore, recurrence: 'none' };
+    };
+
+    await screen.press('Salvar');
+    // Quem sabe se a tarefa é "Uma vez" é o banco, não o que o aparelho tinha: a repetição vai, com a condição, e acha a linha.
+    expect(mockServer.log).toEqual([REPEATS_SAVE, FLAGGED_SAVE, rest('Lavar a louça e as panelas')]);
+    expect(mockServer.order).toEqual(NEW_ORDER);
+    expect(mockServer.chore).toMatchObject({ title: 'Lavar a louça e as panelas', recurrence: 'daily', kid_id: 'p-lia', assigned_to: null, points: 10 });
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('a tarefa era "Uma vez" e a ordem falha depois de a repetição ser gravada: o aviso diz o que foi salvo, o formulário fica, e salvar de novo grava tudo', async () => {
+    const screen = await openAndPickRotation({ recurrence: 'none' });
+    await screen.typeTitle('Lavar a louça e as panelas');
+    mockServer.failRotation = OFFLINE;
+    await screen.press('Salvar');
+    expect(mockServer.log).toEqual([REPEATS_SAVE, FLAGGED_SAVE]);
+    // Não um "Erro" só: a tarefa já se repete no servidor, sem a ordem e sem o resto do que foi digitado.
+    expect(mockNotify.mock.calls).toEqual([[REPEAT_SAVED_ROTATION_NOT, 'TypeError: Network request failed']]);
+    expect(mockBack).not.toHaveBeenCalled();
+    expect(mockServer.order).toEqual([]);
+    expect(mockServer.chore).toMatchObject({ title: 'Lavar a louça', recurrence: 'daily', interval_count: 1, assigned_to: 'u-beto', kid_id: null, points: 0 });
+    expect(screen.title()).toBe('Lavar a louça e as panelas');
+    expect(screen.chips()).toEqual([...RECURRENCE, '[ ] Qualquer um', '[x] Rodízio', '[x] 2 Beto', '[ ] Carla', '[x] 1 Lia']);
+    expect(screen.busy('Salvar')).toBe(false);
+
+    // A tarefa segue sem rodízio, no servidor e para este formulário: salvar de novo confere, não acha mais a
+    // tarefa "Uma vez" (a repetição já está lá), grava a ordem pela mesma função e, depois, o resto.
+    mockServer.failRotation = null;
+    await screen.press('Salvar');
+    expect(mockServer.log.slice(2)).toEqual([REPEATS_SAVE, FLAGGED_SAVE, rest('Lavar a louça e as panelas')]);
+    expect(mockServer.order).toEqual(NEW_ORDER);
+    expect(mockServer.chore).toMatchObject({ title: 'Lavar a louça e as panelas', recurrence: 'daily', kid_id: 'p-lia', assigned_to: null, points: 10 });
+    expect(mockNotify).toHaveBeenCalledTimes(1);
     expect(mockBack).toHaveBeenCalledTimes(1);
   });
 
@@ -718,6 +773,7 @@ describe('formulário aberto sem rodízio que cria um: quem confere que a tarefa
     const screen = await openAndPickRotation();
     await screen.press('Salvar');
     expect(mockServer.log).toEqual([
+      REPEATS_SAVE,
       FLAGGED_SAVE,
       'update chores {"title":"Lavar a louça","notes":null,"recurrence":"daily","interval_count":1,"due_on":"2026-10-12","assigned_to":null,"kid_id":"p-lia","points":10}',
       'rpc save_chore_rotation ["p-lia","p-beto"]',
@@ -762,7 +818,11 @@ describe('tarefa apagada em outro aparelho com o formulário aberto: salvar diz 
     mockServer.down = ['chores'];
 
     await screen.press('Salvar');
-    expect(mockServer.log).toEqual(['rpc save_chore_rotation ["p-beto","p-lia"] p_expect_none=true']);
+    // A gravação da repetição, que vai antes, não acha a linha e não diz nada: quem responde que a tarefa não existe é a função.
+    expect(mockServer.log).toEqual([
+      'update chores {"recurrence":"daily","interval_count":1} se recurrence=none',
+      'rpc save_chore_rotation ["p-beto","p-lia"] p_expect_none=true',
+    ]);
     expect(screen.notices()).toEqual([CHORE_GONE]);
     expect(mockNotify).not.toHaveBeenCalled();
     expect(screen.title()).toBeUndefined();

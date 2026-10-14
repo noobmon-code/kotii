@@ -14,6 +14,7 @@ import {
   orderHasKid,
   planRotationSave,
   plannedTurn,
+  REPEAT_SAVED_ROTATION_NOT,
   ROTATION_CHANGED_ELSEWHERE,
   ROTATION_PERSON_UNKNOWN,
   ROTATION_SAVED_REST_NOT,
@@ -507,6 +508,10 @@ describe('o banco recusa o responsável da tarefa que ganhou um rodízio', () =>
 
   it('o aviso de quando a ordem nova foi gravada e o resto da tarefa não: o contrário de "a tarefa foi salva, mas o rodízio não"', () => {
     expect(ROTATION_SAVED_REST_NOT).toBe('O rodízio foi salvo, mas o resto da tarefa não');
+  });
+
+  it('o aviso de quando a tarefa era "Uma vez", a repetição nova foi gravada e a ordem não: diz o que ficou salvo', () => {
+    expect(REPEAT_SAVED_ROTATION_NOT).toBe('A repetição foi salva, mas o rodízio não');
   });
 
   it('os outros erros seguem como erros', () => {

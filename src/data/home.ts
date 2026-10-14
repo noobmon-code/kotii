@@ -4,7 +4,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { SAME_PURCHASE_DAYS, type PantryEntry } from '@/domain/cartPantry';
-import { groupRotations, isRotationUnavailable, type ChoreRotations } from '@/domain/choreRotation';
+import { groupRotations, isRotationChangedElsewhere, isRotationUnavailable, type ChoreRotations } from '@/domain/choreRotation';
+import { isChoreGoneOnSave } from '@/domain/chores';
 import { addDays, diffDays } from '@/domain/dates';
 import type { MedicationSchedule } from '@/domain/medications';
 import type { PantryTake } from '@/domain/pantry';
@@ -182,6 +183,8 @@ export interface SaveChoreResult {
   rotationError?: unknown;
   /** No rodízio novo de uma tarefa que já existia, em que a ordem vai primeiro: a ordem ficou salva, o resto da tarefa não. */
   restError?: unknown;
+  /** No mesmo rodízio novo, de uma tarefa que era "Uma vez" no banco: só a repetição ficou salva; a ordem (e o resto) não. */
+  repeatOnlyError?: unknown;
 }
 
 /**
@@ -222,20 +225,27 @@ async function saveSingleTurn(id: string, values: ChoreValues): Promise<Partial<
  * da tarefa vai direto na tabela: sem o responsável, e com os pontos, em que a
  * função não mexe. Se esse resto falhar, a ordem já está gravada: a falha
  * volta no resultado (`restError`), para a tela dizer o que foi salvo.
+ * Antes da ordem vai a repetição (abaixo); se só ela ficou gravada, a falha
+ * da ordem também volta no resultado (`repeatOnlyError`).
  * Null: o banco não tem a função de três argumentos (ainda sem a migração, ou
  * com a de dois, de uma cópia de antes), e quem chamou segue como antes.
  */
-async function saveNewRotation(id: string, values: ChoreValues, rotation: string[], fromOneOff: boolean): Promise<SaveChoreResult | null> {
-  if (fromOneOff) {
-    // A função recusa rodízio em tarefa "Uma vez", e a repetição nova ainda não está gravada. Só ela vai antes, e
-    // só se a tarefa segue "Uma vez" no banco: aí ela não tem rodízio (o de quem vira "Uma vez" o banco encerra),
-    // e a vez e os pontos de ninguém são tocados.
-    const repeats = { recurrence: values.recurrence, interval_count: values.interval_count };
-    unwrap(await supabase.from('chores').update(repeats).eq('id', id).eq('recurrence', 'none'));
-  }
-  const { error } = await supabase.rpc('save_chore_rotation', { p_chore_id: id, p_people: rotation, p_expect_none: true });
+async function saveNewRotation(id: string, values: ChoreValues, rotation: string[]): Promise<SaveChoreResult | null> {
+  // A função recusa rodízio em tarefa "Uma vez", e a repetição nova ainda não está gravada. Só ela vai antes, e
+  // só se a tarefa segue "Uma vez" no banco: aí ela não tem rodízio (o de quem vira "Uma vez" o banco encerra),
+  // e a vez e os pontos de ninguém são tocados. Vai sempre, sem olhar como o formulário abriu: na tarefa que se
+  // repete não acha linha nenhuma, e a que virou "Uma vez" em outro celular depois salva no primeiro toque.
+  const repeats = { recurrence: values.recurrence, interval_count: values.interval_count };
+  const changed = unwrap(await supabase.from('chores').update(repeats).eq('id', id).eq('recurrence', 'none').select('id')) as { id: string }[];
+  const wasOneOff = changed.length > 0;
+  const error = await supabase
+    .rpc('save_chore_rotation', { p_chore_id: id, p_people: rotation, p_expect_none: true })
+    .then((result) => result.error, (err: unknown) => err);
   if (error) {
     if (isRotationUnavailable(error)) return null;
+    // A repetição já está gravada: a falha volta no resultado, para a tela dizer o que foi salvo. O rodízio criado
+    // em outro celular e a tarefa apagada seguem como erro: a tela tem o aviso de cada um.
+    if (wasOneOff && !isRotationChangedElsewhere(error) && !isChoreGoneOnSave(error)) return { id, repeatOnlyError: error };
     throw error;
   }
   const { assigned_to, kid_id, ...rest } = values;
@@ -255,23 +265,21 @@ async function saveNewRotation(id: string, values: ChoreValues, rotation: string
  * são gravados primeiro, por saveSingleTurn, e se o banco recusar nada mais
  * daquele formulário é salvo. `expectNone`: o formulário abriu sem rodízio e
  * `rotation` cria um (startsRotation); aí a ordem é que vai primeiro, por
- * saveNewRotation, com a mesma recusa. `fromOneOff`: essa tarefa era "Uma vez".
+ * saveNewRotation, com a mesma recusa.
  */
 export async function saveChore({
   id,
   values,
   rotation,
   expectNone = false,
-  fromOneOff = false,
 }: {
   id?: string;
   values: ChoreValues;
   rotation?: string[] | null;
   expectNone?: boolean;
-  fromOneOff?: boolean;
 }): Promise<SaveChoreResult> {
   if (id && rotation?.length && expectNone) {
-    const created = await saveNewRotation(id, values, rotation, fromOneOff);
+    const created = await saveNewRotation(id, values, rotation);
     if (created) return created;
     // Banco sem a função de três argumentos: a tarefa e a ordem são gravadas como antes, abaixo.
   }

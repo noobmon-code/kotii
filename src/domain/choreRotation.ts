@@ -365,6 +365,13 @@ export const ROTATION_PERSON_UNKNOWN = 'O rodízio dela tem alguém que este apa
  */
 export const ROTATION_SAVED_REST_NOT = 'O rodízio foi salvo, mas o resto da tarefa não';
 
+/**
+ * O título do aviso quando a tarefa era "Uma vez", a repetição nova foi gravada (ela vai antes da ordem, porque o
+ * banco não aceita rodízio em tarefa que não se repete) e a ordem não: a tarefa já se repete, sem o rodízio e sem o
+ * resto do formulário. Um "Erro" só deixaria a pessoa achar que nada mudou.
+ */
+export const REPEAT_SAVED_ROTATION_NOT = 'A repetição foi salva, mas o rodízio não';
+
 /** Não deu para conferir, antes de salvar, se a tarefa ganhou um rodízio em outro aparelho: nada é gravado. */
 export const ROTATION_CHECK_FAILED = 'Não foi possível conferir se esta tarefa mudou em outro aparelho. Verifique a internet e tente de novo.';
 
