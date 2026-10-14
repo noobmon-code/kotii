@@ -77,9 +77,11 @@ export default function ServiceJobScreen() {
   // Excluído aqui: a busca volta sem ele antes de a tela fechar, e isso não é "não existe mais".
   const [deleted, setDeleted] = useState(false);
   // O formulário copia o serviço para os campos uma vez só, quando aparece. Por isso o serviço que já existe
-  // espera a busca que esta tela pediu ao abrir: o que está guardado pode ser de antes de uma mudança, daqui ou
-  // de outro aparelho da casa, e salvar gravaria o de antes por cima. Depois que o formulário apareceu, ele
-  // fica: outra busca (a do próprio Salvar, a de voltar ao app) não o tira da frente, nem um erro dela.
+  // espera a busca que esta tela pediu ao abrir (useServiceJob busca a cada abertura, mesmo com o guardado de
+  // segundos atrás; sem internet ela fica parada e vale o guardado): o que está guardado pode ser de antes de
+  // uma mudança, daqui ou de outro aparelho da casa, e salvar gravaria o de antes por cima. Depois que o
+  // formulário apareceu, ele fica: outra busca (a do próprio Salvar, a de voltar ao app) não o tira da frente,
+  // nem um erro dela.
   const [shownId, setShownId] = useState<string | null>(null);
   const formShown = shownId === id;
   const markShown = useCallback(() => setShownId(id), [id]);

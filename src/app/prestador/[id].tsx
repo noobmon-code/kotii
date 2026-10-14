@@ -1,5 +1,5 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
 import { useEquipmentList } from '@/data/house';
@@ -49,10 +49,18 @@ export default function ProviderScreen() {
   // Ele segue daqui até o serviço, para o primeiro serviço não ficar sem o aparelho.
   const { id, aparelho } = useLocalSearchParams<{ id: string; aparelho?: string }>();
   const isNew = id === 'novo';
-  const providers = useServiceProviders();
+  // O prestador que já existe é buscado de novo ao abrir, mesmo com a lista guardada ainda nova.
+  const providers = useServiceProviders({ fresh: !isNew });
   // Excluído aqui: a lista volta sem ele antes de a tela fechar, e isso não é "não existe mais".
   const [deleted, setDeleted] = useState(false);
-  if (providers.isPending || deleted) return <Loading />;
+  // O formulário copia o prestador para os campos uma vez só, quando aparece. Por isso o que já existe espera a
+  // busca que esta tela pediu ao abrir: a lista guardada pode ser de antes de uma mudança, daqui ou de outro
+  // aparelho da casa, e salvar gravaria o de antes por cima. Depois que o formulário apareceu, ele fica: outra
+  // busca (a do próprio Salvar, a de voltar ao app) não o tira da frente, nem um erro dela.
+  const [shownId, setShownId] = useState<string | null>(null);
+  const formShown = shownId === id;
+  const markShown = useCallback(() => setShownId(id), [id]);
+  if (providers.isPending || deleted || (!isNew && !formShown && providers.isFetching)) return <Loading />;
   // Aviso de erro só sem lista nenhuma: quando uma atualização em segundo plano
   // falha, a lista que já estava aqui continua valendo, e o formulário (com o
   // que foi digitado) não sai da frente da pessoa.
@@ -78,17 +86,22 @@ export default function ProviderScreen() {
     }
     return <ErrorNotice error={new Error('Este prestador não existe mais.')} />;
   }
-  return <ProviderForm key={id} provider={provider} equipmentId={aparelho || null} onDeleted={() => setDeleted(true)} />;
+  return (
+    <ProviderForm key={id} provider={provider} equipmentId={aparelho || null} onShown={markShown} onDeleted={() => setDeleted(true)} />
+  );
 }
 
 function ProviderForm({
   provider,
   equipmentId,
+  onShown,
   onDeleted,
 }: {
   provider?: ServiceProvider;
   /** O aparelho do serviço que a pessoa veio registrar, se veio de um. */
   equipmentId: string | null;
+  /** O formulário apareceu (com o prestador copiado para os campos). */
+  onShown: () => void;
   onDeleted: () => void;
 }) {
   const c = useColors();
@@ -105,6 +118,8 @@ function ProviderForm({
   const [phone, setPhone] = useState(provider?.phone ?? '');
   const [notes, setNotes] = useState(provider?.notes ?? '');
   const [recommended, setRecommended] = useState(provider?.recommended ?? true);
+  // Avisa a tela: daqui em diante ela não troca o formulário por "carregando".
+  useEffect(onShown, [onShown]);
 
   function submit() {
     const result = validateProvider({ name, trade, phone, notes, recommended });

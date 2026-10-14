@@ -93,8 +93,17 @@ export async function fetchServiceJob(id: string, db: SupabaseClient = supabase)
   return (unwrap(result) ?? null) as ServiceJob | null;
 }
 
-export function useServiceProviders() {
-  return useQuery({ queryKey: [PROVIDERS_KEY], queryFn: () => fetchServiceProviders() });
+/**
+ * `fresh`: para quem vai editar (a tela do prestador). Busca de novo ao abrir mesmo com a lista guardada ainda
+ * nova: o formulário copia o prestador uma vez só, e o que está guardado pode ser de antes de uma mudança feita
+ * em outro celular. Sem internet a busca fica parada e vale o guardado.
+ */
+export function useServiceProviders({ fresh = false }: { fresh?: boolean } = {}) {
+  return useQuery({
+    queryKey: [PROVIDERS_KEY],
+    queryFn: () => fetchServiceProviders(),
+    ...(fresh ? { refetchOnMount: 'always' as const } : {}),
+  });
 }
 
 /** Todos os serviços da casa (o último de cada prestador e a busca saem daqui). */
@@ -118,8 +127,17 @@ export function useEquipmentJobs(equipmentId: string | undefined) {
   });
 }
 
+/**
+ * Um serviço, para a tela que o edita: busca a cada vez que ela abre, mesmo com o guardado de menos de 30 s, para
+ * a tela esperar o que está no banco (ver servico/[id].tsx). Sem internet a busca fica parada e vale o guardado.
+ */
 export function useServiceJob(id: string | undefined) {
-  return useQuery({ queryKey: [JOBS_KEY, 'job', id], enabled: Boolean(id), queryFn: () => fetchServiceJob(id!) });
+  return useQuery({
+    queryKey: [JOBS_KEY, 'job', id],
+    enabled: Boolean(id),
+    refetchOnMount: 'always',
+    queryFn: () => fetchServiceJob(id!),
+  });
 }
 
 /** Busca de novo prestadores e serviços; a promessa termina quando as listas na tela chegaram. */

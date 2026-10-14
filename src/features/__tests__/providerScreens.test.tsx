@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import type { ComponentType } from 'react';
 import { Switch } from 'react-native';
@@ -263,6 +263,7 @@ afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
   queryClient.clear();
+  onlineManager.setOnline(true);
 });
 
 describe('o serviço que já existe espera a busca que a tela pediu', () => {
@@ -288,6 +289,32 @@ describe('o serviço que já existe espera a busca que a tela pediu', () => {
     await press('Salvar');
     expect(asked('service_jobs', 'update')[0].values).toMatchObject({ description: 'Trocou a embreagem', amount: 1500 });
     expect(asked('expenses', 'insert')[0].values).toMatchObject({ description: 'Trocou a embreagem (Zé Eletricista)', amount: 1500, category: 'moradia' });
+  });
+
+  it('guardado agora há pouco (menos de 30 s) e mudado em outro celular: espera a busca mesmo assim, e o formulário nunca mostra o guardado', async () => {
+    fresh([JOBS_KEY, 'job', 'j1'], job({ description: 'Orçamento da embreagem', amount: 180 }));
+    mockNet.jobs = [job({ description: 'Trocou a embreagem', amount: 1500 })];
+    hold(only('service_jobs', true));
+    await open(ServiceJobScreen, { id: 'j1' });
+    expect(has(Loading)).toBe(true);
+    expect(field(DESCRIPTION)).toBeUndefined();
+
+    // Se o formulário tivesse aparecido com o guardado, nem que fosse por um instante, ficaria com ele (a trava
+    // da tela): vir com o que está no banco mostra que ele não apareceu.
+    online();
+    await release('ok');
+    expect(field(DESCRIPTION)!.props.value).toBe('Trocou a embreagem');
+    expect(field(AMOUNT)!.props.value).toBe('1.500,00');
+  });
+
+  it('sem internet: o formulário abre com o que está guardado', async () => {
+    fresh([JOBS_KEY, 'job', 'j1'], job());
+    onlineManager.setOnline(false);
+    await open(ServiceJobScreen, { id: 'j1' });
+    expect(has(Loading)).toBe(false);
+    expect(field(DESCRIPTION)!.props.value).toBe('Trocou o disjuntor');
+    expect(field(AMOUNT)!.props.value).toBe('180,00');
+    expect(asked('service_jobs', 'select')).toHaveLength(0);
   });
 
   it('a busca falhou e há o que estava guardado: o formulário vem com ele', async () => {
@@ -321,6 +348,101 @@ describe('o serviço que já existe espera a busca que a tela pediu', () => {
     expect(mockRoute.title).toBe('Novo serviço');
     expect(field(DESCRIPTION)).toBeDefined();
     expect(asked('service_jobs', 'select')).toHaveLength(0);
+  });
+});
+
+describe('o prestador que já existe espera a busca que a tela pediu', () => {
+  const NAME = 'Pessoa ou empresa';
+  const NOTES = 'Ex.: só atende de manhã, cobra a visita';
+
+  beforeEach(() => {
+    fresh(['equipment'], []);
+  });
+
+  it('guardado agora há pouco e mudado em outro celular: o formulário só aparece com o que veio do banco, e é isso que Salvar grava', async () => {
+    fresh([PROVIDERS_KEY], list([ZE]));
+    mockNet.providers = [{ ...ZE, name: 'Zé da Luz', notes: 'Só atende de manhã' }];
+    hold(only('service_providers'));
+    await open(ProviderScreen, { id: 'p-ze' });
+    expect(has(Loading)).toBe(true);
+    expect(field(NAME)).toBeUndefined();
+
+    online();
+    await release('ok');
+    expect(field(NAME)!.props.value).toBe('Zé da Luz');
+    expect(field(NOTES)!.props.value).toBe('Só atende de manhã');
+    await press('Salvar');
+    expect(asked('service_providers', 'update')[0].values).toMatchObject({ name: 'Zé da Luz', notes: 'Só atende de manhã' });
+  });
+
+  it('sem internet: o formulário abre com a lista guardada', async () => {
+    fresh([PROVIDERS_KEY], list([ZE]));
+    onlineManager.setOnline(false);
+    await open(ProviderScreen, { id: 'p-ze' });
+    expect(has(Loading)).toBe(false);
+    expect(field(NAME)!.props.value).toBe('Zé Eletricista');
+    expect(asked('service_providers', 'select')).toHaveLength(0);
+  });
+
+  it('a busca falhou e há a lista guardada: o formulário vem com o que estava nela', async () => {
+    old([PROVIDERS_KEY], list([ZE]));
+    fail(only('service_providers'));
+    await open(ProviderScreen, { id: 'p-ze' });
+    expect(has(ErrorNotice)).toBe(false);
+    expect(field(NAME)!.props.value).toBe('Zé Eletricista');
+  });
+
+  it('com o formulário aberto, outra busca da lista não o tira da frente nem apaga o que foi digitado', async () => {
+    fresh([PROVIDERS_KEY], list([ZE]));
+    await open(ProviderScreen, { id: 'p-ze' });
+    await type(NAME, 'Zé da Luz Elétrica');
+
+    hold(only('service_providers'));
+    await act(async () => {
+      queryClient.invalidateQueries({ queryKey: [PROVIDERS_KEY] });
+    });
+    await settle();
+    expect(mockNet.held).toHaveLength(1);
+    expect(has(Loading)).toBe(false);
+    expect(field(NAME)!.props.value).toBe('Zé da Luz Elétrica');
+
+    await release('ok');
+    expect(field(NAME)!.props.value).toBe('Zé da Luz Elétrica');
+  });
+
+  it('a lista guardada ainda não o tem (acabou de ser criado): espera a que chega com ele', async () => {
+    fresh([PROVIDERS_KEY], list([ZE]));
+    mockNet.providers = [ZE, OFICINA];
+    hold(only('service_providers'));
+    await open(ProviderScreen, { id: 'p-mec' });
+    expect(has(Loading)).toBe(true);
+    expect(page()).not.toContain('não existe mais');
+
+    await release('ok');
+    expect(field(NAME)!.props.value).toBe('Oficina do Tonho');
+  });
+
+  it('a busca falhou e a lista guardada não o tem: pede de novo, sem dizer que ele não existe mais', async () => {
+    old([PROVIDERS_KEY], list([ZE]));
+    fail(only('service_providers'));
+    await open(ProviderScreen, { id: 'p-mec' });
+    expect(has(ErrorNotice)).toBe(true);
+    expect(page()).not.toContain('não existe mais');
+  });
+
+  it('a lista chegou e não o tem: "não existe mais"', async () => {
+    fresh([PROVIDERS_KEY], list([ZE]));
+    await open(ProviderScreen, { id: 'p-mec' });
+    expect(page()).toContain('Este prestador não existe mais.');
+  });
+
+  it('prestador novo abre na hora, sem esperar a lista', async () => {
+    fresh([PROVIDERS_KEY], list([ZE]));
+    hold(only('service_providers'));
+    await open(ProviderScreen, { id: 'novo' });
+    expect(mockRoute.title).toBe('Novo prestador');
+    expect(field(NAME)).toBeDefined();
+    expect(asked('service_providers', 'select')).toHaveLength(0);
   });
 });
 
