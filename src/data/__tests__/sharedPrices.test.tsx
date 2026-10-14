@@ -6,7 +6,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import type { SharedPrice } from '@/domain/sharedPrices';
 import { persistOptions, queryClient as appQueryClient } from '@/lib/queryClient';
 
-import { useConfirmReceipt } from '../receipts';
+import { useConfirmReceipt, useDeleteReceipt, useFillReceiptItemValue } from '../receipts';
 import { fetchSharedPrices, isMissingFunction, useSharedPrices } from '../sharedPrices';
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim. O que o banco de mentira responde a cada função.
@@ -25,21 +25,37 @@ jest.mock('expo-network', () => ({
 jest.mock('expo-image-manipulator', () => ({ ImageManipulator: {}, SaveFormat: {} }));
 jest.mock('expo-image-picker', () => ({}));
 jest.mock('@/lib/session', () => ({ endSessionIfGone: async () => false }));
-jest.mock('@/lib/supabase', () => ({
-  supabase: {
-    rpc: (name: string) => {
-      mockRpc.called.push(name);
-      const result = mockRpc.answer(name);
-      // Com .order().range() (os preços de outras casas) ou direto (confirmar a nota).
-      const query = { order: () => query, range: async () => result, then: (resolve: (value: unknown) => void) => resolve(result) };
-      return query;
+jest.mock('@/lib/supabase', () => {
+  // Apagar a nota e dar valor ao item: uma consulta encadeada que, esperada, responde que gravou uma linha.
+  const write = (): unknown =>
+    new Proxy(
+      {},
+      {
+        get: (_target, method: string) =>
+          method === 'then' ? (resolve: (value: unknown) => void) => resolve({ data: [{ id: 'i1' }], error: null }) : () => write(),
+      },
+    );
+  return {
+    supabase: {
+      from: (table: string) => {
+        mockRpc.called.push(`from ${table}`);
+        return write();
+      },
+      storage: { from: () => ({ remove: async () => ({ data: [], error: null }) }) },
+      rpc: (name: string) => {
+        mockRpc.called.push(name);
+        const result = mockRpc.answer(name);
+        // Com .order().range() (os preços de outras casas) ou direto (confirmar a nota).
+        const query = { order: () => query, range: async () => result, then: (resolve: (value: unknown) => void) => resolve(result) };
+        return query;
+      },
     },
-  },
-  unwrap: (result: { data: unknown; error: unknown }) => {
-    if (result.error) throw result.error;
-    return result.data;
-  },
-}));
+    unwrap: (result: { data: unknown; error: unknown }) => {
+      if (result.error) throw result.error;
+      return result.data;
+    },
+  };
+});
 
 // Como o PostgREST e o Postgres respondem quando a função ainda não existe.
 const notInCache = { code: 'PGRST202', message: 'Could not find the function public.shared_latest_prices without parameters in the schema cache' };
@@ -233,6 +249,39 @@ describe('no cache do app', () => {
     expect(keys).toContain('stores');
     // E tudo o que já buscava de novo continua lá.
     expect(keys).toEqual(expect.arrayContaining(['receipts', 'receipt', 'products', 'latestPrices', 'priceHistory', 'pantry', 'spending', 'purchaseRecords', 'lists', 'listItems', 'listLinks']));
+    await act(async () => renderer.unmount());
+    queryClient.clear();
+  });
+
+  it('apagar uma nota confirmada e dar valor ao item dela também buscam de novo os preços de outras casas', async () => {
+    // A compra da casa esconde a linha de fora daquele mercado (e a casa sem nota confirmada não vê nenhuma):
+    // tirar a nota pode trazer uma linha de volta, e dar valor ao item pode esconder uma.
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { gcTime: Infinity } } });
+    const invalidated = jest.spyOn(queryClient, 'invalidateQueries');
+    let remove: ReturnType<typeof useDeleteReceipt> | undefined;
+    let fill: ReturnType<typeof useFillReceiptItemValue> | undefined;
+    const renderer = await mount(
+      function Probe() {
+        remove = useDeleteReceipt('r1');
+        fill = useFillReceiptItemValue('r1');
+        return null;
+      },
+      queryClient,
+      () => remove !== undefined && fill !== undefined,
+    );
+    const keys = () => invalidated.mock.calls.map(([filters]) => (filters as { queryKey: string[] }).queryKey[0]);
+
+    await act(async () => {
+      await remove!.mutateAsync([]);
+    });
+    expect(keys()).toContain('sharedPrices');
+
+    invalidated.mockClear();
+    await act(async () => {
+      await fill!.mutateAsync({ id: 'i1', values: { unit_price: 5, total_price: 5 } });
+    });
+    expect(keys()).toContain('sharedPrices');
+    expect(mockRpc.called).toEqual(['from receipts', 'from receipt_items']);
     await act(async () => renderer.unmount());
     queryClient.clear();
   });
