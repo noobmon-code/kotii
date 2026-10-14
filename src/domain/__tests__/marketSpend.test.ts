@@ -925,6 +925,49 @@ describe('comparação com o mês anterior', () => {
     expect(marketMonth([...september, ...october], MONTH, '2026-10-20').comparison).toBe('R$ 55,00 a menos que até o dia 20 de setembro');
   });
 
+  it('mês corrente: a nota com data depois de hoje fica de fora da conta "até hoje", e a tela diz', () => {
+    const today = '2026-10-13';
+    const past = receipt(at(MONTH, 10), [line('Arroz', 'graos', 30)]);
+    // Hoje, tarde da noite: ainda é hoje.
+    const tonight = receipt(at(MONTH, 13, 23, 30), [line('Feijão', 'graos', 9)]);
+    const future = receipt(at(MONTH, 20), [line('Picanha', 'carnes', 100)], { storeId: 'dia', storeName: 'Dia' });
+    const futureDraft = receipt(at(MONTH, 25), [], { status: 'draft' });
+    const month = marketMonth([past, tonight, future, futureDraft], MONTH, today);
+    expect(month.title).toBe('Mercado de outubro até hoje');
+    expect(month.headline).toBe('R$ 39,00 em 2 idas');
+    expect(month.items.map((i) => i.name)).toEqual(['Arroz', 'Feijão']);
+    expect(month.trips).toHaveLength(2);
+    expect(month.categories.map((c) => [c.label, c.amount])).toEqual([['Grãos, massas e cereais', 'R$ 39,00']]);
+    expect(month.later).toEqual({
+      label: '1 nota com data depois de hoje',
+      hint: 'Fica de fora desta conta até o dia chegar. Se a data está errada, abra a nota para conferir.',
+      receipts: [{ receiptId: future.id, storeName: 'Dia', date: '20 out', value: 'R$ 100,00', accessibilityLabel: 'Dia, 20 out: R$ 100,00. Abrir a nota' }],
+    });
+    expect(month.closing).toBe('Sem contar 1 nota que espera a revisão e 1 nota com data depois de hoje.');
+    // O rascunho de data futura continua entre os que esperam a revisão.
+    expect(month.drafts?.receipts.map((r) => r.receiptId)).toEqual([futureDraft.id]);
+    // A linha do resumo de gastos faz a mesma conta.
+    expect(marketTotal([past, tonight, future, futureDraft], MONTH, today).headline).toBe('R$ 39,00 em 2 idas');
+
+    // Mês que já fechou (ou sem o dia de hoje): o mês inteiro, e nada "depois de hoje".
+    const closed = marketMonth([past, tonight, future], MONTH, AFTER);
+    expect(closed.headline).toBe('R$ 139,00 em 3 idas');
+    expect(closed.later).toBeNull();
+    expect(marketTotal([past, tonight, future], MONTH).headline).toBe('R$ 139,00 em 3 idas');
+    // No último dia do mês não há "depois de hoje" dentro dele.
+    expect(marketMonth([past, future], MONTH, '2026-10-31').later).toBeNull();
+    expect(marketMonth([past, future], MONTH, '2026-10-31').headline).toBe('R$ 130,00 em 2 idas');
+
+    // Só nota de data futura no mês corrente: nenhuma ida ainda, e a tela diz o que ficou de fora.
+    const onlyLater = marketMonth([future], MONTH, today);
+    expect(onlyLater.trips).toEqual([]);
+    expect(onlyLater.closing).toBe('Sem contar 1 nota com data depois de hoje.');
+    // Plural.
+    const two = marketMonth([past, future, receipt(at(MONTH, 21), [line('Sal', 'temperos', 4)])], MONTH, today);
+    expect(two.later?.label).toBe('2 notas com data depois de hoje');
+    expect(two.later?.hint).toBe('Ficam de fora desta conta até o dia chegar. Se a data está errada, abra a nota para conferir.');
+  });
+
   it('último dia do mês contra um mês mais curto: o anterior inteiro', () => {
     expect(marketMonth([...september, ...october], MONTH, '2026-10-31').comparison).toBe('R$ 55,00 a menos que em setembro');
   });

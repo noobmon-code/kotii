@@ -546,6 +546,24 @@ describe('sem notas, carregando e com erro', () => {
     expect(mockScanner.open).toHaveBeenCalledTimes(1);
   });
 
+  it('mês corrente com uma nota de data depois de hoje: ela fica de fora do total, e os detalhes dizem e levam à nota', async () => {
+    mockState.query = loaded([
+      receipt('m1', at(10, 5), [line('Arroz', 'graos', 30)]),
+      receipt('m2', at(10, 20), [line('Picanha', 'carnes', 100)], { storeId: 'dia', storeName: 'Dia' }),
+    ]);
+    const text = await mount();
+    expect(text).toContain('Mercado de outubro até hoje');
+    expect(text).toContain('R$ 30,00 em 1 ida');
+    expect(text).not.toContain('Picanha');
+    expect(text).toContain('Sem contar 1 nota com data depois de hoje.');
+    await press('Como este total fecha. Sem contar 1 nota com data depois de hoje.');
+    expect(page()).toContain(
+      ['1 nota com data depois de hoje', 'Fica de fora desta conta até o dia chegar. Se a data está errada, abra a nota para conferir.', 'Dia', '· 20 out', 'R$ 100,00'].join('\n'),
+    );
+    await press('Dia, 20 out: R$ 100,00. Abrir a nota');
+    expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/nota/[id]', params: { id: 'm2' } });
+  });
+
   it('mês só com rascunho e farmácia: continua sem ida, e diz logo o que está esperando e o que ficou de fora', async () => {
     mockState.query = loaded([
       receipt('f1', at(10, 2), [line('Dipirona', 'medicamentos', 12)], { storeId: 'dr', storeName: 'Drogasil' }),

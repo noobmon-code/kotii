@@ -367,7 +367,7 @@ function Categories({ summary, onCategory }: { summary: MarketMonth; onCategory:
  * notas que ainda esperam a revisão.
  */
 function Details({ summary }: { summary: MarketMonth }) {
-  const { discount, unread, noValue, pharmacy, drafts } = summary;
+  const { discount, unread, noValue, later, pharmacy, drafts } = summary;
   return (
     <>
       {discount ? <AmountLine label={discount.label} value={discount.value} accessibilityLabel={discount.accessibilityLabel} /> : null}
@@ -386,6 +386,15 @@ function Details({ summary }: { summary: MarketMonth }) {
           <Text variant="body">{noValue.label}</Text>
           <Text variant="small">{noValue.hint}</Text>
           {noValue.receipts.map((ref) => (
+            <ReceiptLink key={ref.receiptId} receipt={ref} />
+          ))}
+        </View>
+      ) : null}
+      {later ? (
+        <View style={styles.gapSm}>
+          <Text variant="body">{later.label}</Text>
+          <Text variant="small">{later.hint}</Text>
+          {later.receipts.map((ref) => (
             <ReceiptLink key={ref.receiptId} receipt={ref} />
           ))}
         </View>

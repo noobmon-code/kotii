@@ -1,6 +1,7 @@
 import { router } from 'expo-router';
 import { useMemo } from 'react';
 
+import { todayISO } from '@/domain/dates';
 import { marketTotal, type MarketTotalReceipt } from '@/domain/marketSpend';
 import { Icon, IconBadge, ListCard, ListRow } from '@/ui/primitives';
 
@@ -11,7 +12,9 @@ import { Icon, IconBadge, ListCard, ListRow } from '@/ui/primitives';
  * entrada não faz busca nenhuma, e muito menos a da tela.
  */
 export function MarketMonthLink({ month, receipts }: { month: string; receipts: MarketTotalReceipt[] | undefined }) {
-  const total = useMemo(() => (receipts ? marketTotal(receipts, month) : null), [receipts, month]);
+  // Com o dia de hoje: no mês corrente a conta vai até hoje, como na tela.
+  const today = todayISO();
+  const total = useMemo(() => (receipts ? marketTotal(receipts, month, today) : null), [receipts, month, today]);
   // Sem as notas na mão, a linha leva à tela do mesmo jeito.
   const subtitle = !total ? 'Por categoria, por item e por mercado' : total.trips ? total.headline : total.emptyTitle;
   return (

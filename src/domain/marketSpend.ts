@@ -167,6 +167,8 @@ export interface MarketMonth {
   unread: { label: string; value: string; accessibilityLabel: string; receipts: MarketReceiptRef[] } | null;
   /** Itens sem valor (contam zero), com as notas em que estão. */
   noValue: { label: string; hint: string; receipts: MarketReceiptRef[] } | null;
+  /** No mês corrente: as notas de mercado com data depois de hoje, que ficam de fora da conta "até hoje". */
+  later: { label: string; hint: string; receipts: MarketReceiptRef[] } | null;
   /** "Farmácia, fora desta conta: R$ 42,00": o que foi pago nos itens de farmácia. */
   pharmacy: string | null;
   pharmacyCents: number;
@@ -336,9 +338,22 @@ function paidBetween(receipts: MarketTotalReceipt[], start: string, end: string)
  * tela (marketMonth usa esta função) e da entrada no resumo de gastos, que a
  * faz com as notas que o resumo já leu: os dois números não têm como diferir.
  */
-export function marketTotal(receipts: MarketTotalReceipt[], month: string): MarketTotal {
+/**
+ * O fim (o dia seguinte ao último) do que conta num mês. No mês corrente a conta vai até hoje: é o que o
+ * título diz ("até hoje") e é com o mesmo trecho do mês anterior que ela é comparada. A nota com data depois
+ * de hoje (a data foi digitada errada, ou a compra ainda vai acontecer) fica de fora até o dia chegar.
+ */
+function periodEnd(month: string, today?: string): string {
   const range = monthRange(month);
-  const { totalCents, trips } = paidBetween(receipts, range.start, range.end);
+  if (!today || today.slice(0, 7) !== month) return range.end;
+  const tomorrow = addDays(today, 1);
+  return tomorrow < range.end ? tomorrow : range.end;
+}
+
+/** `today` diz se o mês é o corrente (aí a conta vai até hoje); sem ele, o mês inteiro. */
+export function marketTotal(receipts: MarketTotalReceipt[], month: string, today?: string): MarketTotal {
+  const range = monthRange(month);
+  const { totalCents, trips } = paidBetween(receipts, range.start, periodEnd(month, today));
   return {
     totalCents,
     trips,
@@ -457,8 +472,14 @@ const byAmountThenName = <T extends { cents: number; name: string; key: string }
 export function marketMonth(receipts: MarketReceipt[], month: string, today: string): MarketMonth {
   const range = monthRange(month);
   // O total e as idas do cabeçalho: a mesma conta da entrada no resumo de gastos.
-  const total = marketTotal(receipts, month);
-  const current = figures(receipts, range.start, range.end);
+  const end = periodEnd(month, today);
+  const total = marketTotal(receipts, month, today);
+  const current = figures(receipts, range.start, end);
+  // No mês corrente, o que tem data depois de hoje: fica de fora da conta, e a tela diz.
+  const later = end < range.end ? figures(receipts, end, range.end) : null;
+  const laterTrips = later?.trips ?? [];
+  // Os rascunhos esperam a revisão com a data que tiverem: os de data futura vêm junto (e primeiro, que são os mais novos).
+  const drafts = later ? [...later.drafts, ...current.drafts] : current.drafts;
   const previous = previousWindow(month, today);
   // As comparações (total e categorias) usam a janela do mês anterior; o valor de cada item é o do mês anterior inteiro.
   const compared = figures(receipts, previous.start, previous.end);
@@ -565,7 +586,7 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
   // Para conferir, só as notas em que a tela da nota também avisa que a soma não bate.
   const unreadTrips = current.trips.filter((trip) => trip.money.marketDiffCents > 0 && trip.money.diffCents > RECEIPT_CHECK_CENTS);
   const noValueCount = current.noValue.reduce((sum, entry) => sum + entry.count, 0);
-  const draftCount = current.drafts.length;
+  const draftCount = drafts.length;
 
   let comparison: string | null = null;
   if (total.trips > 0) {
@@ -582,6 +603,7 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
     current.pharmacyCents > 0 ? `${money(current.pharmacyCents)} de farmácia` : null,
     noValueCount > 0 ? plural(noValueCount, 'item sem valor', 'itens sem valor') : null,
     draftCount > 0 ? plural(draftCount, 'nota que espera a revisão', 'notas que esperam a revisão') : null,
+    laterTrips.length > 0 ? plural(laterTrips.length, 'nota com data depois de hoje', 'notas com data depois de hoje') : null,
   ].filter((part): part is string => part !== null);
   const closing = [inside.length ? `Inclui ${joinNames(inside)}.` : null, outside.length ? `Sem contar ${joinNames(outside)}.` : null]
     .filter(Boolean)
@@ -640,6 +662,17 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
             receipts: current.noValue.map((entry) => ref(entry.receipt, entry.date, plural(entry.count, 'item', 'itens'))),
           }
         : null,
+    later:
+      laterTrips.length > 0
+        ? {
+            label: plural(laterTrips.length, 'nota com data depois de hoje', 'notas com data depois de hoje'),
+            hint:
+              laterTrips.length === 1
+                ? 'Fica de fora desta conta até o dia chegar. Se a data está errada, abra a nota para conferir.'
+                : 'Ficam de fora desta conta até o dia chegar. Se a data está errada, abra a nota para conferir.',
+            receipts: laterTrips.map((trip) => ref(trip.receipt, trip.date, money(trip.money.paidCents))),
+          }
+        : null,
     pharmacy: current.pharmacyCents > 0 ? `Farmácia, fora desta conta: ${money(current.pharmacyCents)}` : null,
     pharmacyCents: current.pharmacyCents,
     drafts:
@@ -651,7 +684,7 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
                 ? `1 nota de ${name} ainda espera a revisão. Ela entra nesta conta quando for confirmada.`
                 : `${draftCount} notas de ${name} ainda esperam a revisão. Elas entram nesta conta quando forem confirmadas.`,
             // Cada rascunho abre a própria nota, que é onde ele é confirmado.
-            receipts: current.drafts.slice(0, DRAFTS_SHOWN).map(({ receipt, date }) => {
+            receipts: drafts.slice(0, DRAFTS_SHOWN).map(({ receipt, date }) => {
               const storeName = storeNameOf(receipt);
               return {
                 receiptId: receipt.id,
