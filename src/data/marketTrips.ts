@@ -162,19 +162,22 @@ export async function readMarketTripPush(): Promise<boolean | null> {
  * A opção em Família → "Avisos neste navegador". `value` undefined: ainda
  * lendo (ou não deu para ler). `set` liga ou desliga e devolve false quando
  * faltou a permissão do navegador. `pending`: uma mudança ainda no ar; até
- * ela terminar, outro toque não faz nada (devolve true: não há o que avisar).
+ * ela terminar, outro toque não faz nada (devolve true: não há o que avisar)
+ * e a chave mostra o que foi escolhido.
  */
 export function useMarketTripPush() {
   const queryClient = useQueryClient();
   const key = [MARKET_TRIP_PUSH_KEY];
   const query = useQuery({ queryKey: key, queryFn: readMarketTripPush, staleTime: 0, retry: false });
-  const [pending, setPending] = useState(false);
+  // A escolha ainda no ar. Uma leitura no meio da mudança (a que os outros avisos pedem, a de voltar ao app)
+  // traz do servidor o valor de antes: a chave segue mostrando a escolha até a mudança terminar.
+  const [chosen, setChosen] = useState<boolean | null>(null);
   // O estado chega depois de um segundo toque rápido; a ref, não.
   const inFlight = useRef(false);
   async function set(enabled: boolean): Promise<boolean> {
     if (inFlight.current) return true;
     inFlight.current = true;
-    setPending(true);
+    setChosen(enabled);
     // Primeiro o pedido: ligar pede a permissão, e o navegador só aceita dentro do toque.
     const request = setMarketTripPush(enabled);
     // Uma leitura que estivesse no ar não desfaz o que a pessoa acabou de escolher.
@@ -182,17 +185,18 @@ export function useMarketTripPush() {
     queryClient.setQueryData(key, enabled);
     try {
       const ok = await request;
-      if (!ok) queryClient.setQueryData(key, !enabled);
+      // Também quando deu certo: uma leitura no meio da mudança pode ter guardado o valor de antes.
+      queryClient.setQueryData(key, ok ? enabled : !enabled);
       return ok;
     } catch (error) {
       queryClient.setQueryData(key, !enabled);
       throw error;
     } finally {
       inFlight.current = false;
-      setPending(false);
+      setChosen(null);
       // O que vale é o que ficou no servidor.
       void queryClient.invalidateQueries({ queryKey: key });
     }
   }
-  return { value: query.data, set, pending };
+  return { value: chosen ?? query.data, set, pending: chosen !== null };
 }

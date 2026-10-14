@@ -201,6 +201,39 @@ describe('"Alguém indo ao mercado" nos avisos deste navegador', () => {
     expect(notify).not.toHaveBeenCalled();
   });
 
+  it('uma leitura no meio da mudança (a dos outros avisos) não faz a chave voltar ao valor de antes', async () => {
+    mockDevice.read = async () => false;
+    let answer = (_ok: boolean) => undefined as void;
+    mockDevice.set = jest.fn(() => new Promise<boolean>((resolve) => (answer = resolve)));
+    await render();
+    await act(async () => {
+      tripSwitch()?.props.onValueChange(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    // O servidor ainda diz "desligado": a releitura que ligar outro aviso pede chega antes de a mudança terminar.
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ['marketTripPush'] });
+    });
+    expect(client.getQueryData(['marketTripPush'])).toBe(false);
+    expect(tripSwitch()?.props.value).toBe(true);
+    expect(tripSwitch()?.props.disabled).toBe(true);
+    // A mudança termina; até a leitura seguinte voltar, a chave fica no que foi gravado.
+    let reread = (_value: boolean) => undefined as void;
+    mockDevice.read = () => new Promise<boolean>((resolve) => (reread = resolve));
+    await act(async () => {
+      answer(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(tripSwitch()?.props.disabled).toBe(false);
+    expect(tripSwitch()?.props.value).toBe(true);
+    await act(async () => {
+      reread(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(tripSwitch()?.props.value).toBe(true);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
   it('dois toques no mesmo instante, antes de a tela se atualizar: só o primeiro vale', async () => {
     mockDevice.read = async () => false;
     let answer = (_ok: boolean) => undefined as void;
