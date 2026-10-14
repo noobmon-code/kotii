@@ -8,11 +8,12 @@ import {
   ROTATION_CHECK_FAILED,
   ROTATION_MAYBE_SAVED,
   ROTATION_NOT_READY,
+  ROTATION_ORDER_NOT_LOADED,
   ROTATION_PERSON_UNKNOWN,
   ROTATION_UNAVAILABLE,
 } from '@/domain/choreRotation';
 import { CHORE_GONE } from '@/domain/chores';
-import { Button, Chip, ErrorNotice, Loading, TextField } from '@/ui/primitives';
+import { Button, Chip, ErrorNotice, Loading, Text, TextField } from '@/ui/primitives';
 
 import { useSavePerson } from '../health';
 
@@ -325,6 +326,8 @@ async function open() {
     busy: (label: string) => Boolean(button(label).props.loading),
     /** Os botões na tela, pelo texto. */
     buttons: () => root.findAllByType(Button).map((b) => b.props.title as string),
+    /** Os textos da tela, cada um inteiro. */
+    texts: () => root.findAllByType(Text).map((text) => [text.props.children].flat().join('')),
   };
 }
 
@@ -1309,6 +1312,7 @@ describe('"Pular a vez": só com a ordem que este celular conhece inteira', () =
   it('com todas as pessoas: pergunta de quem para quem e passa a vez', async () => {
     const screen = await open();
     await settle();
+    expect(screen.texts()).toContain('Vez de Carla · depois Lia');
     expect(screen.buttons()).toContain('Pular a vez');
     await screen.press('Pular a vez');
     expect(mockConfirm.mock.calls).toEqual([['Pular a vez', 'Passar a vez de Carla para Lia?']]);
@@ -1325,6 +1329,9 @@ describe('"Pular a vez": só com a ordem que este celular conhece inteira', () =
     expect(screen.chips()).toEqual([...RECURRENCE, '[ ] Qualquer um', '[x] Rodízio', '[x] 1 Beto', '[x] 3 Lia']);
     expect(screen.buttons()).not.toContain('Pular a vez');
     expect(mockConfirm).not.toHaveBeenCalled();
+    // A linha da vez também não diz "depois Lia": diz que falta carregar alguém da ordem (sem uma linha em branco).
+    expect(screen.texts()).toContain(ROTATION_ORDER_NOT_LOADED);
+    expect(screen.texts().filter((text) => text.includes('depois') || text === '')).toEqual([]);
   });
 });
 

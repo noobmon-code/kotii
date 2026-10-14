@@ -19,6 +19,7 @@ import {
   ROTATION_CHECK_FAILED,
   ROTATION_MAYBE_SAVED,
   ROTATION_MAYBE_SAVED_TITLE,
+  ROTATION_ORDER_NOT_LOADED,
   ROTATION_PERSON_UNKNOWN,
   ROTATION_UNAVAILABLE,
   rotationAppearedElsewhere,
@@ -398,7 +399,11 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
             <Text variant="muted">{problem}</Text>
           ) : (
             <>
-              <Text variant="body">{rotationLabel({ ...turnOf(planned), points: 0 }, order, who)}</Text>
+              {hasUnknownPerson(order, who) ? (
+                <Text variant="muted">{ROTATION_ORDER_NOT_LOADED}</Text>
+              ) : (
+                <Text variant="body">{rotationLabel({ ...turnOf(planned), points: 0 }, order, who)}</Text>
+              )}
               <Text variant="muted">
                 Ordem: {numberedOrder(order, who)}. Ao concluir a tarefa, a vez passa para a pessoa seguinte. Toque numa pessoa para pôr ou
                 tirar; a ordem é a dos toques.

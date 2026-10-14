@@ -414,6 +414,12 @@ export function isRotationRefused(error: unknown): boolean {
  */
 export const ROTATION_PERSON_UNKNOWN = 'O rodízio dela tem alguém que este aparelho ainda não carregou. Feche e abra de novo para editar.';
 
+/**
+ * Na tela da tarefa, no lugar de "Vez de … · depois …" quando a ordem tem alguém que este aparelho não carregou:
+ * a conta só com quem ele conhece diria o nome errado (nextTurn), e quem está na vez pode ser justamente essa pessoa.
+ */
+export const ROTATION_ORDER_NOT_LOADED = 'A ordem tem alguém que este aparelho ainda não carregou. Feche e abra a tarefa de novo para ver de quem é a vez.';
+
 /** Não deu para conferir, antes de salvar, se a tarefa ganhou um rodízio em outro aparelho: nada é gravado. */
 export const ROTATION_CHECK_FAILED = 'Não foi possível conferir se esta tarefa mudou em outro aparelho. Verifique a internet e tente de novo.';
 
