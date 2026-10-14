@@ -15,7 +15,8 @@
 --    de duas pessoas o rodízio acaba; o morador que sai da casa segue na ordem
 --    como pessoa sem o app; tarefa que vira "Uma vez" fica só com quem estava
 --    na vez.
--- 5. A vez de uma tarefa em rodízio não muda por gravação direta do app.
+-- 5. A vez de uma tarefa em rodízio não muda por gravação direta do app, e a
+--    edição do app antigo não zera os pontos dela.
 
 create table public.chore_rotation (
   chore_id uuid not null,
@@ -567,7 +568,7 @@ create trigger chores_one_off_ends_rotation
   execute function public.chore_one_off_ends_rotation();
 
 -- =============================================================================
--- 5. A vez de uma tarefa em rodízio não muda direto pela API
+-- 5. A vez de uma tarefa em rodízio não muda direto pela API, e o app antigo não zera os pontos
 -- =============================================================================
 
 -- Gravada direto na tabela, a troca do responsável de uma tarefa em rodízio
@@ -590,6 +591,13 @@ create trigger chores_one_off_ends_rotation
 -- Só a troca de quem está na vez: título, data, pontos, o mesmo responsável e
 -- a tarefa sem rodízio passam como sempre. A que vira "Uma vez" com a mesma
 -- pessoa também (chores_one_off_ends_rotation encerra o rodízio).
+--
+-- Os pontos, menos um caso: o app de antes do rodízio grava sempre 0 quando o
+-- responsável é um morador (para ele, pontos eram só da tarefa de criança).
+-- Na vez de um morador, a edição dele (o mesmo responsável, um nome novo)
+-- zeraria os pontos que as crianças da ordem ganham na vez delas. Aí a edição
+-- passa e os pontos ficam como estavam. Os outros valores, e o 0 na vez de uma
+-- criança (lá o app antigo mostra os pontos), passam como sempre.
 create function public.chore_turn_not_by_hand()
 returns trigger
 language plpgsql
@@ -599,7 +607,12 @@ as $$
 begin
   if current_user in ('authenticated', 'anon')
     and exists (select 1 from public.chore_rotation r where r.chore_id = new.id) then
-    raise exception 'chore has a rotation' using errcode = 'NK009';
+    if old.assigned_to is distinct from new.assigned_to or old.kid_id is distinct from new.kid_id then
+      raise exception 'chore has a rotation' using errcode = 'NK009';
+    end if;
+    if new.points = 0 and new.kid_id is null and old.points > 0 then
+      new.points := old.points;
+    end if;
   end if;
   return new;
 end;
@@ -608,7 +621,8 @@ $$;
 revoke execute on function public.chore_turn_not_by_hand() from public, anon, authenticated;
 
 create trigger chores_turn_not_by_hand
-  before update of assigned_to, kid_id on public.chores
+  before update of assigned_to, kid_id, points on public.chores
   for each row
-  when (old.assigned_to is distinct from new.assigned_to or old.kid_id is distinct from new.kid_id)
+  when (old.assigned_to is distinct from new.assigned_to or old.kid_id is distinct from new.kid_id
+    or old.points is distinct from new.points)
   execute function public.chore_turn_not_by_hand();

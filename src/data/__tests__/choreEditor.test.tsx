@@ -1306,6 +1306,52 @@ describe('banco com o rodízio, e a API sem enxergar nem a função nem a tabela
     expect(mockServer.order).toEqual(ORDER);
     expect(mockBack).toHaveBeenCalledTimes(1);
   });
+
+  it('o formulário que mostrou o rodízio nunca grava direto: encerrar o rodízio com a mesma pessoa na vez não salva, e o aviso é o de tentar de novo', async () => {
+    // O formulário abriu com o rodízio (a busca ao abrir enxergou a tabela); o salvar cai na API com o cache para trás.
+    const screen = await open();
+    await settle();
+    expect(screen.chips()).toEqual(IN_ROTATION);
+    mockServer.staleCache = true;
+    // Sai do rodízio e fica com Carla, que está na vez: a gravação direta não trocaria a vez, o banco não recusaria, e
+    // a ordem ficaria lá (a próxima conclusão seguiria revezando).
+    await screen.pick('Rodízio');
+    expect(screen.chips()).toEqual(OF_CARLA);
+
+    await screen.press('Salvar');
+    expect(mockServer.log).toEqual([call({ p_points: 0, p_set_turn: true, p_assigned_to: 'u-carla', p_people: [] })]);
+    expect(mockNotify.mock.calls).toEqual([['Erro', ROTATION_NOT_READY]]);
+    expect(mockBack).not.toHaveBeenCalled();
+    expect(screen.title()).toBe('Lavar a louça');
+    expect(screen.chips()).toEqual(OF_CARLA);
+    expect(mockServer.order).toEqual(ORDER);
+    expect(mockServer.chore).toMatchObject({ assigned_to: 'u-carla', kid_id: null, points: 10 });
+
+    // Daqui a pouco a API enxerga a função: salvar de novo encerra o rodízio por ela, e a tela fecha.
+    mockServer.staleCache = false;
+    mockServer.log = [];
+    await screen.press('Salvar');
+    expect(mockServer.log).toEqual([call({ p_points: 0, p_set_turn: true, p_assigned_to: 'u-carla', p_people: [] })]);
+    expect(mockServer.order).toEqual([]);
+    expect(mockBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('a tarefa sem rodízio ainda salva direto na tabela', async () => {
+    mockServer.order = [];
+    mockServer.staleCache = true;
+    const screen = await open();
+    await settle();
+    expect(screen.chips()).toEqual(OF_CARLA);
+    await screen.pick('Beto');
+    await screen.press('Salvar');
+    expect(mockServer.log).toEqual([
+      call({ p_points: 0, p_set_turn: true, p_assigned_to: 'u-beto', p_expect_none: true }),
+      `update chores ${JSON.stringify({ title: 'Lavar a louça', notes: null, recurrence: 'daily', interval_count: 1, due_on: '2026-10-12', assigned_to: 'u-beto', kid_id: null, points: 0 })}`,
+    ]);
+    expect(mockServer.chore).toMatchObject({ assigned_to: 'u-beto', kid_id: null });
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockBack).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('"Pular a vez": só com a ordem que este celular conhece inteira', () => {

@@ -3645,6 +3645,22 @@ begin
   assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[beto, rita, lia],
     'nor in the order';
 
+  -- Os pontos do rodízio, na vez de um morador: o app antigo manda 0 (para ele, pontos eram só da tarefa de criança).
+  -- A edição passa, com os pontos de antes: são das crianças da ordem, cada uma na sua vez.
+  assert was.points = 10 and was.assigned_to = '00000000-0000-0000-0000-000000000021' and was.kid_id is null,
+    'the rotation is worth 10 points, on the turn of R';
+  update public.chores
+    set title = 'Lavar a louça e as panelas', notes = null, recurrence = 'daily', interval_count = 1, due_on = was.due_on,
+        assigned_to = '00000000-0000-0000-0000-000000000021', kid_id = null, points = 0
+    where id = dishes;
+  select * into c from public.chores where id = dishes;
+  assert c.title = 'Lavar a louça e as panelas' and c.points = 10 and c.assigned_to = '00000000-0000-0000-0000-000000000021',
+    'the old app renames a rotating chore on a member turn, and its points stay';
+  -- Os outros valores passam, também na vez do morador.
+  update public.chores set title = 'Lavar a louça', points = 12 where id = dishes;
+  assert (select points from public.chores where id = dishes) = 12, 'other points are written straight';
+  update public.chores set points = 10 where id = dishes;
+
   -- A vez de uma criança também (kid_id).
   perform public.skip_chore_turn(dishes, rita);
   begin
@@ -3658,6 +3674,13 @@ begin
   exception when sqlstate 'NK009' then null;
   end;
   assert (select kid_id from public.chores where id = dishes) = lia, 'the kid keeps the turn';
+  -- Na vez da criança, os pontos mudam direto na tabela, como sempre (até para 0: aí o app antigo mostra os pontos, e
+  -- o 0 foi a pessoa que escolheu).
+  update public.chores set points = 15 where id = dishes;
+  assert (select points from public.chores where id = dishes) = 15, 'on a kid turn, the points change straight';
+  update public.chores set points = 0 where id = dishes;
+  assert (select points from public.chores where id = dishes) = 0, 'even to 0';
+  update public.chores set points = 10 where id = dishes;
 
   -- O resto da tarefa, sim: título, observação, data e pontos; e a tarefa inteira com o mesmo responsável (o app
   -- antigo manda tudo).
@@ -3679,6 +3702,11 @@ begin
   update public.chores set kid_id = null where id = plain;
   select * into c from public.chores where id = plain;
   assert c.assigned_to is null and c.kid_id is null, 'a chore without rotation changes its assignee straight in the table';
+  -- E os pontos também, até para 0, com um morador nela.
+  update public.chores set assigned_to = auth.uid(), points = 10 where id = plain;
+  update public.chores set points = 0 where id = plain;
+  assert (select points from public.chores where id = plain) = 0, 'a chore without rotation changes its points straight, even to 0';
+  update public.chores set assigned_to = null where id = plain;
   -- Nem a que já teve rodízio: acabado, ela volta a ser como as outras.
   perform pg_temp.save_order(plain, array[beto, lia]);
   perform pg_temp.save_order(plain, '{}');
@@ -3697,6 +3725,13 @@ begin
     'a new order from save_chore moves the turn';
   perform pg_temp.save_order(dishes, array[beto, rita, lia]);
   assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000021', 'R is on turn again';
+  -- Os pontos pela função (o app novo, que mostra os pontos do rodízio): ela grava o que vier, até 0, na vez do morador.
+  perform public.save_chore(ch.id, ch.title, ch.notes, ch.recurrence, ch.interval_count, ch.due_on, p_points => 0)
+    from public.chores ch where ch.id = dishes;
+  assert (select points from public.chores where id = dishes) = 0, 'save_chore sets the points of a rotation, even to 0';
+  perform public.save_chore(ch.id, ch.title, ch.notes, ch.recurrence, ch.interval_count, ch.due_on, p_points => 10, p_people => array[beto, rita, lia])
+    from public.chores ch where ch.id = dishes;
+  assert (select points from public.chores where id = dishes) = 10, 'and with the order too';
 end $$;
 
 -- save_chore: o formulário grava a tarefa inteira numa chamada só, numa transação: os campos, o responsável (só

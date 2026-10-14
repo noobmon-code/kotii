@@ -281,6 +281,9 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
         },
         rotation: plan.people,
         expectNone,
+        // O rodízio que este formulário mostrou prova que o banco o tem: sem a função de salvar, nada vai direto na
+        // tabela (a gravação que mantém a vez deixaria a ordem lá).
+        shownRotation: shownOrder.length > 0,
       },
       {
         // A tarefa é salva inteira, numa chamada só: ou deu certo, ou nada daquele toque ficou gravado.

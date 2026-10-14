@@ -201,17 +201,22 @@ export interface SaveChoreResult {
  * (openedWithoutRotation). O banco confere, com a tarefa travada, que ela
  * segue sem rodízio, e recusa se outro celular criou um nesse meio-tempo
  * (isRotationChangedElsewhere).
+ *
+ * `shownRotation`: o formulário mostrou um rodízio gravado. Então o banco tem o rodízio, e a função faltar só pode
+ * ser o cache do esquema da API: o salvar nunca vai direto na tabela (abaixo).
  */
 export async function saveChore({
   id,
   values,
   rotation = null,
   expectNone = false,
+  shownRotation = false,
 }: {
   id?: string;
   values: ChoreValues;
   rotation?: string[] | null;
   expectNone?: boolean;
+  shownRotation?: boolean;
 }): Promise<SaveChoreResult> {
   const setsTurn = !rotation?.length && (values.assigned_to !== undefined || values.kid_id !== undefined);
   const { data, error } = await supabase.rpc('save_chore', {
@@ -233,6 +238,9 @@ export async function saveChore({
   });
   if (!error) return { id: data as string };
   if (!isRotationUnavailable(error)) throw error;
+  // Com o rodízio na tela, a gravação direta que mantém a vez (encerrar o rodízio com a mesma pessoa, uma ordem nova,
+  // só o título) passaria pelo banco e deixaria a ordem como estava. Nada é gravado, e daqui a pouco vai pela função.
+  if (shownRotation) throw new Error(ROTATION_NOT_READY);
 
   // A função falta. Gravar direto na tabela só vale no banco que também não tem a tabela do rodízio: com ela lá (a
   // migração chegou e a API ainda não enxerga a função nova), a gravação direta não mexeria na ordem, e a tarefa que

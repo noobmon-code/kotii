@@ -333,6 +333,24 @@ describe('banco que ainda não tem a função (o app chegou antes da migração)
     await expect(saveChore({ id: 'louca', values: ofBeto })).rejects.toBe(HAS_ROTATION);
   });
 
+  it('formulário que mostrou um rodízio: o banco tem o rodízio, então a função faltar é o cache do esquema; nada é gravado, nem pela tabela', async () => {
+    // A olhada diria "sem a tabela" (o cache ficou para trás) e a gravação direta passaria: encerrar o rodízio com a
+    // mesma pessoa na vez não troca a vez, o banco não recusa, e a ordem ficaria lá. Seja o que for que o formulário
+    // muda (encerrar o rodízio, uma ordem nova, só o título), nem a olhada vai: o aviso é o de tentar de novo.
+    for (const rotation of [[], ['p-lia', 'p-beto'], null]) {
+      const err = await saveChore({ id: 'louca', values: { ...values, assigned_to: 'u-beto', kid_id: null, points: 0 }, rotation, shownRotation: true }).catch(
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toBe(ROTATION_NOT_READY);
+    }
+    expect(mockDb.calls).toEqual([...ONE_CALL, ...ONE_CALL, ...ONE_CALL]);
+    // A mesma chamada, sem o rodízio mostrado (o Nuke, o aparelho, o formulário que abriu sem rodízio): grava direto.
+    mockDb.calls = [];
+    expect(await saveChore({ id: 'louca', values: ofBeto })).toEqual({ id: 'louca' });
+    expect(mockDb.calls).toEqual([...FALLBACK, `update chores louca: ${EVERYTHING} (devolve as linhas)`]);
+  });
+
   it('a olhada na tabela do rodízio falha (sem internet, outra recusa): o erro sobe, e nada é gravado', async () => {
     mockDb.probe = { data: null, error: OFFLINE };
     await expect(saveChore({ id: 'louca', values: ofBeto })).rejects.toBe(OFFLINE);
