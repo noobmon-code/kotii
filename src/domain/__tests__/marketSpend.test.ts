@@ -6,6 +6,7 @@ import {
   MARKET_ITEMS_SHOWN,
   MARKET_VIEWS,
   RECEIPT_CHECK_CENTS,
+  receiptTotalMismatch,
   marketMonth,
   marketTotal,
   monthFromParam,
@@ -580,6 +581,21 @@ describe('por categoria', () => {
     expect(cut(11)).toEqual({ shown: 10, more: 'Ver todos os 11 itens', less: 'Mostrar só os 10 primeiros' });
     expect(cut(25)).toEqual({ shown: 10, more: 'Ver todos os 25 itens', less: 'Mostrar só os 10 primeiros' });
     expect(marketMonth([], MONTH, AFTER).itemsCut).toBeNull();
+  });
+
+  it('a tela da nota e a do mês usam a mesma folga, em centavos: exatamente 5 centavos não avisa em nenhuma das duas', () => {
+    // Em reais a conta engana: 10,05 - 10,00 passa um fio de 0,05.
+    expect(Math.abs(10.05 - 10) > 0.05).toBe(true);
+    expect(receiptTotalMismatch(10.05, 10)).toBe(false);
+    expect(receiptTotalMismatch(10, 10.05)).toBe(false);
+    expect(receiptTotalMismatch(10.06, 10)).toBe(true);
+    expect(receiptTotalMismatch(10, 10.06)).toBe(true);
+    expect(receiptTotalMismatch(0.3, 0.1 + 0.2)).toBe(false);
+    expect(receiptTotalMismatch(null, 10)).toBe(false);
+    // E a tela do mês lista a nota para conferir exatamente nos mesmos casos.
+    const listed = (total: number) =>
+      marketMonth([receipt(at(MONTH, 8), [line('Arroz', 'graos', 10)], { total })], MONTH, AFTER).unread?.receipts.length ?? 0;
+    for (const total of [10.01, 10.04, 10.05, 10.06, 10.5]) expect([total, listed(total) > 0]).toEqual([total, receiptTotalMismatch(total, 10)]);
   });
 
   it('empate no valor: pelo nome, sempre na mesma ordem', () => {

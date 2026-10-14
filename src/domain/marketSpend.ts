@@ -190,11 +190,20 @@ export const MARKET_VIEWS: { value: MarketView; label: string }[] = [
 /**
  * Até quantos centavos de diferença entre o total da nota e a soma dos itens
  * a nota não é listada para conferir. É a folga do aviso "A soma não bate com
- * o total" na tela da nota (`totalMismatch`, em src/app/nota/[id].tsx): abaixo
- * dela a pessoa abriria a nota e não veria nada de errado. Os valores
+ * o total" na tela da nota, que usa a mesma conta (`receiptTotalMismatch`):
+ * abaixo dela a pessoa abriria a nota e não veria nada de errado. Os valores
  * continuam exatos; só a lista de notas usa a folga.
  */
 export const RECEIPT_CHECK_CENTS = 5;
+
+/**
+ * O total da nota e a soma dos itens diferem mais do que a folga? Em centavos inteiros: em reais, 10,05 menos
+ * 10,00 dá um fio acima de 0,05, e a tela da nota avisaria de uma diferença que a do mês não manda conferir.
+ * Sem total (nota digitada à mão), não há o que comparar.
+ */
+export function receiptTotalMismatch(total: number | null, itemsTotal: number): boolean {
+  return total != null && Math.abs(Math.round(total * 100) - Math.round(itemsTotal * 100)) > RECEIPT_CHECK_CENTS;
+}
 
 /** Quantos rascunhos do mês aparecem um a um; o resto é contado. */
 const DRAFTS_SHOWN = 3;
