@@ -378,6 +378,10 @@ export function useConfirmReceipt(receiptId: string) {
         'lists',
         'listItems',
         'listLinks',
+        // A nota ensina apelidos novos, e é por eles que os preços de outras casas chegam aos produtos desta.
+        'sharedPrices',
+        // A leitura do QR code pode ter criado o mercado, e é pelo nome dele que a casa reconhece "os seus mercados".
+        'stores',
       ]) {
         queryClient.invalidateQueries({ queryKey: [key] });
       }
@@ -385,8 +389,12 @@ export function useConfirmReceipt(receiptId: string) {
   });
 }
 
-/** O que mostra os itens de uma nota já confirmada: comparativo, histórico de preço, gastos e compras recentes. */
-const CONFIRMED_ITEM_KEYS = ['receipts', 'latestPrices', 'priceHistory', 'spending', 'purchaseRecords'];
+/**
+ * O que mostra os itens de uma nota já confirmada: comparativo, histórico de preço, gastos, compras recentes e os
+ * preços de outras casas (a compra da casa esconde a linha de fora daquele mercado, e a casa sem nota confirmada
+ * nenhuma não vê preço de fora).
+ */
+const CONFIRMED_ITEM_KEYS = ['receipts', 'latestPrices', 'priceHistory', 'spending', 'purchaseRecords', 'sharedPrices'];
 
 export function useDeleteReceipt(receiptId: string) {
   const queryClient = useQueryClient();

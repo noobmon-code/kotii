@@ -10,6 +10,7 @@ import { noStorePriceSentence } from '@/domain/priceHistory';
 import { PriceHistorySection } from '@/features/market/PriceHistorySection';
 import { MergeProductsModal } from '@/features/MergeProductsModal';
 import { MergeSuggestionsCard } from '@/features/MergeSuggestionsCard';
+import { SharedPricesSection } from '@/features/SharedPrices';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
@@ -122,6 +123,8 @@ export default function ProductScreen() {
           </ListCard>
         )}
       </Section>
+
+      <SharedPricesSection productId={product.id} />
 
       <PriceHistorySection productId={product.id} productName={product.name} />
 
