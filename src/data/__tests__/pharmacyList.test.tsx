@@ -154,6 +154,8 @@ describe('pôr o remédio na lista da farmácia', () => {
     ['sem casa', { code: '42501', message: 'sem casa' }],
     ['sem internet', { message: 'TypeError: Network request failed' }],
     ['regra de acesso', { code: '42501', message: 'new row violates row-level security policy for table "shopping_lists"' }],
+    // A função existe e uma que ela chama, não: não é o banco de antes da migração.
+    ['outra função faltando lá dentro', { code: '42883', message: 'function public.normalize(text, unknown) does not exist' }],
   ])('qualquer outro erro (%s) chega a quem chamou, sem criar lista por fora', async (_case, error) => {
     mockDb.rpc.error = error;
     await expect(addToPharmacy()).rejects.toBe(error);
