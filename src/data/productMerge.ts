@@ -192,6 +192,9 @@ export const MERGE_REFRESHES = [
   'lists',
   'listItems',
   'listLinks',
+  // Os preços de outras casas chegam ao produto pelos apelidos dele, e os do que some passam para o que fica.
+  'sharedPrices',
+  'stores',
   'productDistinctPairs',
 ] as const;
 

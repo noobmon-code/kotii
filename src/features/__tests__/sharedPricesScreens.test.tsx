@@ -43,6 +43,9 @@ jest.mock('@/data/market', () => ({
 jest.mock('@/data/sharedPrices', () => ({ useSharedPrices: () => mockSharedPrices(), useSharedPricesAvailable: () => mockQueries.available }));
 // O histórico de preço do produto é uma seção à parte, com os testes dela: não entra no que se confere aqui.
 jest.mock('@/features/market/PriceHistorySection', () => ({ PriceHistorySection: () => null }));
+// Juntar produtos (o cartão de sugestões e a confirmação) também tem os testes dele.
+jest.mock('@/features/MergeSuggestionsCard', () => ({ MergeSuggestionsCard: () => null }));
+jest.mock('@/features/MergeProductsModal', () => ({ MergeProductsModal: () => null }));
 // A aba Família: a casa, as pessoas e as outras seções não entram no que se confere aqui.
 jest.mock('@/data/health', () => ({ usePeople: () => ({ data: [] }) }));
 jest.mock('@/data/home', () => ({ useKidPoints: () => ({ data: {} }) }));
@@ -179,8 +182,10 @@ const NOT_AVAILABLE: [string, () => Query][] = [
 ];
 
 describe('tela do produto: "Visto em outras casas"', () => {
-  /** A tela inteira de antes: o cartão do produto e o último preço da casa. */
+  /** A tela de antes, até onde entram os preços de outras casas: o cartão do produto e o último preço da casa. */
   const USUAL = `Grãos, massas e cereaisNome do produtoÚltimo preço por mercadoMercadinhoem ${short(20)}R$ 25,00/un`;
+  /** O botão de juntar produtos, que fecha a tela. */
+  const JOIN = 'Juntar com outro produto';
 
   it('os mercados da casa primeiro, com o nome que ela conhece; depois os outros, com o estado; e o aviso uma vez, embaixo', async () => {
     mockQueries.shared = loaded([
@@ -205,10 +210,10 @@ describe('tela do produto: "Visto em outras casas"', () => {
 
   it('cada lista só aparece quando tem linhas', async () => {
     mockQueries.shared = loaded([seen(SUPER, 'SUPER OUTRO', 21.9, 3)]);
-    expect(await mount(<ProductScreen />)).toBe(`${USUAL}Visto em outras casasEm outros mercadosSUPER OUTRO (SP)visto em ${short(3)}R$ 21,90/un${SHARED_PRICES_NOTICE}`);
+    expect(await mount(<ProductScreen />)).toBe(`${USUAL}Visto em outras casasEm outros mercadosSUPER OUTRO (SP)visto em ${short(3)}R$ 21,90/un${SHARED_PRICES_NOTICE}${JOIN}`);
     await act(async () => renderer?.unmount());
     mockQueries.shared = loaded([seenInMine(ATACADAO, 'ATACADAO S.A.', 22.9, 2)]);
-    expect(await mount(<ProductScreen />)).toBe(`${USUAL}Visto em outras casasNos seus mercadosAtacadãovisto em ${short(2)}R$ 22,90/un${SHARED_PRICES_NOTICE}`);
+    expect(await mount(<ProductScreen />)).toBe(`${USUAL}Visto em outras casasNos seus mercadosAtacadãovisto em ${short(2)}R$ 22,90/un${SHARED_PRICES_NOTICE}${JOIN}`);
   });
 
   it('para o leitor de tela, cada linha é um elemento só, que diz a frase inteira', async () => {
@@ -222,7 +227,7 @@ describe('tela do produto: "Visto em outras casas"', () => {
     const page = await mount(<ProductScreen />);
     expect(page).not.toContain('Visto em outras casas');
     expect(page).not.toContain(SHARED_PRICES_NOTICE);
-    expect(page).toBe(USUAL);
+    expect(page).toBe(USUAL + JOIN);
   });
 
   it('a compra da própria casa não aparece como de outra: mesmo CNPJ, no mesmo dia ou depois', async () => {
@@ -292,7 +297,7 @@ describe('tela do produto: "Visto em outras casas"', () => {
       mockQueries.shared = loaded([seen(SUPER, 'SUPER OUTRO', 21.9, 3)]);
       mockQueries[key] = query;
       // A tela é a de sempre: a seção some inteira (e volta quando a busca termina).
-      expect(await mount(<ProductScreen />)).toBe(USUAL);
+      expect(await mount(<ProductScreen />)).toBe(USUAL + JOIN);
       await act(async () => renderer?.unmount());
       Object.assign(mockQueries, { prices: loaded(prices), stores: loaded(STORES) });
     }
@@ -301,7 +306,7 @@ describe('tela do produto: "Visto em outras casas"', () => {
 
   it.each(NOT_AVAILABLE)('%s: a tela é a de sempre', async (_name, answer) => {
     mockQueries.shared = answer();
-    expect(await mount(<ProductScreen />)).toBe(USUAL);
+    expect(await mount(<ProductScreen />)).toBe(USUAL + JOIN);
   });
 });
 
