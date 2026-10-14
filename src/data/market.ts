@@ -13,6 +13,7 @@ import { useEffect } from 'react';
 import type { CartPantryEntry } from '@/domain/cartPantry';
 import { LinkIndex, type ListLink, type OpenListItem } from '@/domain/listLinks';
 import { PRICE_ALERT_HISTORY_DAYS } from '@/domain/priceAlert';
+import { toPurchases, type PurchaseLine } from '@/domain/priceHistory';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
 import { normalizeSearch } from '@/domain/search';
@@ -846,6 +847,91 @@ export function usePriceObservations(productIds: string[], purchasedAt: string |
           .limit(1000),
       ) as PriceObservation[];
     },
+  });
+}
+
+/** Linhas pedidas por vez. O servidor pode devolver menos (max_rows): a leitura segue de onde parou. */
+const PURCHASE_PAGE = 1000;
+/** 5 mil linhas de nota de um produto só: bem além de qualquer casa. Passando disso a busca falha, em vez de mostrar um histórico cortado. */
+export const PURCHASE_MAX_LINES = 5000;
+
+// Só as linhas de notas confirmadas: o !inner faz o filtro da nota valer para a linha (sem ele, a linha do
+// rascunho viria com a nota vazia). O mercado vem junto; nota sem mercado conta, com `store` nulo.
+const PURCHASE_COLUMNS =
+  'id, receipt_id, quantity, unit, unit_price, total_price, receipt:receipts!inner(purchased_at, store_id, store:stores(name))';
+
+type PurchaseLineRow = {
+  id: string;
+  receipt_id: string;
+  quantity: number;
+  unit: Unit;
+  unit_price: number;
+  total_price: number;
+  receipt: { purchased_at: string; store_id: string | null; store: { name: string } | null };
+};
+
+/**
+ * Todas as linhas de notas confirmadas ligadas ao produto (o histórico de
+ * preço, domain/priceHistory). Página por página, cada uma a partir do id da
+ * última linha lida, com a contagem do servidor: página curta não é o fim (o
+ * servidor corta em max_rows, calado), o fim é a contagem dizer que não
+ * sobrou nada, ou a página vir vazia. Página vazia logo depois de a contagem
+ * dizer que ainda havia linhas não é o fim: a leitura falha, em vez de dar a
+ * parte lida como o histórico inteiro. Quem ordena e filtra é o app.
+ */
+export async function fetchProductPurchases(productId: string): Promise<PurchaseLine[]> {
+  const lines: PurchaseLine[] = [];
+  const tooMany = () =>
+    new Error('Não foi possível carregar o histórico deste produto: são mais compras do que o app consegue ler de uma vez.');
+  // O id da última linha lida: a página seguinte começa depois dela, mesmo que a lista mude no meio da leitura.
+  let last: string | undefined;
+  // Quantas linhas a contagem da página anterior disse que ainda faltavam depois dela.
+  let promised = 0;
+  for (;;) {
+    let request = supabase
+      .from('receipt_items')
+      .select(PURCHASE_COLUMNS, { count: 'exact' })
+      .eq('product_id', productId)
+      .eq('receipt.status', 'confirmed');
+    if (last) request = request.gt('id', last);
+    const result = await request.order('id').limit(PURCHASE_PAGE);
+    const rows = (unwrap(result) ?? []) as unknown as PurchaseLineRow[];
+    // Quantas linhas ainda havia a partir daqui, contando as desta página.
+    const left = result.count ?? null;
+    if (lines.length + (left ?? rows.length) > PURCHASE_MAX_LINES) throw tooMany();
+    // Com a sessão vencida no meio da leitura, o servidor responde sem erro e sem linha nenhuma. Um erro comum:
+    // a busca tenta de novo, desde a primeira página (linhas apagadas de verdade dão uma contagem coerente na volta).
+    if (!rows.length && promised > 0) throw new Error('Não foi possível carregar o histórico inteiro deste produto. Tente de novo.');
+    for (const row of rows) {
+      lines.push({
+        id: row.id,
+        receiptId: row.receipt_id,
+        storeId: row.receipt.store_id,
+        storeName: row.receipt.store?.name ?? null,
+        purchasedAt: row.receipt.purchased_at,
+        quantity: Number(row.quantity),
+        unit: row.unit,
+        unitPrice: Number(row.unit_price),
+        totalPrice: Number(row.total_price),
+      });
+    }
+    if (!rows.length || (left != null && rows.length >= left)) return lines;
+    promised = left == null ? 0 : left - rows.length;
+    last = rows[rows.length - 1].id;
+  }
+}
+
+/**
+ * As compras de um produto, da mais recente para a mais antiga. A chave
+ * começa com 'priceHistory': confirmar ou excluir uma nota já recarrega. Não
+ * fica guardado no aparelho (queryClient, PERSISTED).
+ */
+export function useProductPurchases(productId: string) {
+  return useQuery({
+    queryKey: ['priceHistory', 'purchases', productId],
+    queryFn: () => fetchProductPurchases(productId),
+    // Fora do hook, a mesma função a cada render: as compras só são refeitas quando as linhas mudam.
+    select: toPurchases,
   });
 }
 
