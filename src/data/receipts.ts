@@ -327,14 +327,21 @@ export interface ItemValues {
 export function useSaveReceiptItem(receiptId: string) {
   const invalidate = useInvalidateReceipt(receiptId);
   return useMutation({
-    mutationFn: async ({ id, values, position }: { id?: string; values: ItemValues; position?: number }) =>
-      id
-        ? unwrap(await supabase.from('receipt_items').update(values).eq('id', id))
-        : unwrap(
-            await supabase
-              .from('receipt_items')
-              .insert({ ...values, receipt_id: receiptId, position: position ?? 0 }),
-          ),
+    // Devolve o id do item. O do item novo é o banco que dá, e a tela precisa dele antes de a nota voltar: o zero
+    // digitado de propósito é "deixar sem valor", e o item novo não pode perguntar pelo valor quando aparecer.
+    mutationFn: async ({ id, values, position }: { id?: string; values: ItemValues; position?: number }): Promise<{ id: string }> => {
+      if (id) {
+        unwrap(await supabase.from('receipt_items').update(values).eq('id', id));
+        return { id };
+      }
+      return unwrap(
+        await supabase
+          .from('receipt_items')
+          .insert({ ...values, receipt_id: receiptId, position: position ?? 0 })
+          .select('id')
+          .single(),
+      ) as { id: string };
+    },
     onSuccess: invalidate,
   });
 }

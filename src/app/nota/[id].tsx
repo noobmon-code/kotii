@@ -614,9 +614,10 @@ export default function ReceiptScreen() {
     }
     void settleValue(
       saveItem.mutateAsync({ id: itemId, values, position: items.length }),
-      () => {
-        // Zero digitado de propósito é a resposta da pessoa: o item não pergunta de novo.
-        if (itemId && hasNoValue(values)) leaveUnpriced([itemId]);
+      (saved) => {
+        // Zero digitado de propósito é a resposta da pessoa: o item não pergunta de novo. Vale também no item
+        // novo, pelo id que o banco deu a ele (a nota relida ainda vai trazê-lo).
+        if (hasNoValue(values)) leaveUnpriced([saved.id]);
         setEditing(null);
       },
       { itemId, saved: itemId ? VALUE_SAVED_NOT_SHOWN : ITEM_SAVED_NOT_SHOWN },

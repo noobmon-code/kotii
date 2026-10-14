@@ -76,7 +76,11 @@ jest.mock('@/lib/supabase', () => {
       const found = rows().filter(matches);
       if (!write) return { data: found.map((row) => ({ ...row })), error: null };
       if (write.verb === 'update') found.forEach((row) => Object.assign(row, write!.values));
-      if (write.verb === 'insert') mockDb.items.push({ id: `novo${mockDb.items.length}`, suggested_name: null, suggested_category: null, product_id: null, ...write.values });
+      if (write.verb === 'insert') {
+        const added = { id: `novo${mockDb.items.length}`, suggested_name: null, suggested_category: null, product_id: null, ...write.values };
+        mockDb.items.push(added);
+        return { data: returning ? [{ ...added }] : null, error: null };
+      }
       if (write.verb === 'delete') mockDb.items = mockDb.items.filter((row) => !matches(row));
       return { data: returning && write.verb === 'update' ? found.map((row) => ({ ...row })) : null, error: null };
     };
@@ -558,6 +562,34 @@ describe('nota em revisão: um item sem valor e o total da nota', () => {
     await press(button('Confirmar nota'));
     expectNoQuestion();
     expect(mockDb.rpcs).toHaveLength(1);
+  });
+
+  it('zero digitado de propósito num item novo vale igual: o item entra sem valor, sem perguntar, e confirmar não pergunta por ele', async () => {
+    seed(receipt({ total: 50 }), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    await press(button('Item'));
+    act(() => field('Descrição')!.props.onChangeText('BRINDE SACOLA'));
+    act(() => field('Total do item')!.props.onChangeText('0'));
+    await press(button('Salvar item'));
+    expect(writes('receipt_items')[0]).toMatchObject({ verb: 'insert', values: { raw_description: 'BRINDE SACOLA', unit_price: 0, total_price: 0 } });
+    // A nota voltou com o item novo: ele está sem valor, e é a resposta da pessoa.
+    const added = said(card('BRINDE SACOLA'));
+    expect(added).toContain('sem valor');
+    expect(chipLabels(card('BRINDE SACOLA'))).not.toContain('Deixar sem valor');
+    expect(chipLabels(card('BRINDE SACOLA'))).not.toContain('Preencher valor');
+    await press(button('Confirmar nota'));
+    expect(asked('1 item está sem valor')).toEqual([]);
+    expect(mockDb.rpcs).toHaveLength(1);
+  });
+
+  it('item novo sem zero nenhum (o total em branco é recusado pelo formulário): nada é gravado', async () => {
+    seed(receipt({ total: 50 }), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    await press(button('Item'));
+    act(() => field('Descrição')!.props.onChangeText('BRINDE SACOLA'));
+    await press(button('Salvar item'));
+    expect(mockDb.writes).toEqual([]);
+    expect(field('Descrição')).toBeDefined();
   });
 
   it('"Deixar sem valor": a pergunta sai, o "sem valor" fica, e confirmar não pergunta por esse item', async () => {
