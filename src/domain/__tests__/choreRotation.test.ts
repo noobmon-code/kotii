@@ -6,6 +6,7 @@ import {
   currentTurn,
   groupRotations,
   hasUnknownPerson,
+  isRotationChangedElsewhere,
   isRotationUnavailable,
   kidChores,
   nextTurn,
@@ -13,6 +14,7 @@ import {
   orderHasKid,
   planRotationSave,
   plannedTurn,
+  ROTATION_CHANGED_ELSEWHERE,
   ROTATION_PERSON_UNKNOWN,
   ROTATION_UNAVAILABLE,
   rotationErrorMessage,
@@ -445,6 +447,14 @@ describe('banco sem o rodízio', () => {
     expect(isRotationUnavailable({ code: '42883', message: 'function public.save_chore_rotation(uuid, uuid[]) does not exist' })).toBe(true);
     // Sem código (erro refeito a partir da mensagem).
     expect(isRotationUnavailable(new Error('relation "public.chore_rotation" does not exist'))).toBe(true);
+    // A função que grava o responsável da tarefa sem rodízio chega na mesma migração.
+    expect(
+      isRotationUnavailable({
+        code: 'PGRST202',
+        message: 'Could not find the function public.save_chore_single(p_assigned_to, p_chore_id, p_kid_id, p_points) in the schema cache',
+      }),
+    ).toBe(true);
+    expect(isRotationUnavailable(new Error('function public.save_chore_single(uuid, uuid, uuid, integer) does not exist'))).toBe(true);
   });
 
   it('os outros erros seguem como erros', () => {
@@ -459,5 +469,24 @@ describe('banco sem o rodízio', () => {
     expect(rotationErrorMessage({ code: 'PGRST202', message: 'x' })).toBe(ROTATION_UNAVAILABLE);
     expect(ROTATION_UNAVAILABLE).toBe('O rodízio ainda não está disponível nesta casa. Tente de novo mais tarde.');
     expect(rotationErrorMessage({ code: 'P0002', message: 'chore not found' })).toBeNull();
+  });
+});
+
+describe('o banco recusa o responsável da tarefa que ganhou um rodízio', () => {
+  it('reconhece a recusa de save_chore_single pelo código', () => {
+    expect(isRotationChangedElsewhere({ code: 'NK006', message: 'chore has a rotation', details: null, hint: null })).toBe(true);
+    // O aviso é o da conferência feita antes de gravar: para a pessoa, é a mesma situação.
+    expect(ROTATION_CHANGED_ELSEWHERE).toBe('Ela ganhou um rodízio em outro aparelho. Feche e abra de novo para editar.');
+  });
+
+  it('os outros erros seguem como erros', () => {
+    expect(isRotationChangedElsewhere({ code: 'P0002', message: 'chore not found' })).toBe(false);
+    // Banco ainda sem a função: aí a tarefa é gravada direto, não é uma recusa.
+    expect(isRotationChangedElsewhere({ code: 'PGRST202', message: 'Could not find the function public.save_chore_single' })).toBe(false);
+    expect(isRotationChangedElsewhere({ code: '23503', message: 'insert or update on table "chores" violates foreign key constraint' })).toBe(false);
+    expect(isRotationChangedElsewhere(new TypeError('Network request failed'))).toBe(false);
+    expect(isRotationChangedElsewhere(new Error('chore has a rotation'))).toBe(false);
+    expect(isRotationChangedElsewhere(null)).toBe(false);
+    expect(isRotationChangedElsewhere('NK006')).toBe(false);
   });
 });

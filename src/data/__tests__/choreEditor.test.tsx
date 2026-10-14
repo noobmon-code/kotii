@@ -34,8 +34,10 @@ const mockServer: {
   old: boolean;
   /** As buscas só respondem depois disto. */
   gate: Promise<void> | null;
+  /** O que outro celular faz logo depois de este ler a ordem (uma vez só): a corrida entre conferir e gravar. */
+  afterCheck: (() => void) | null;
   log: string[];
-} = { chore: null, order: [], down: [], old: false, gate: null, log: [] };
+} = { chore: null, order: [], down: [], old: false, gate: null, afterCheck: null, log: [] };
 // O que este celular sabe dos moradores, e a tarefa aberta ('nova': tarefa nova).
 const mockDevice = { members: mockMembers, id: 'c-1' };
 const mockBack = jest.fn();
@@ -84,7 +86,10 @@ jest.mock('@/lib/supabase', () => {
         // Como a API responde pela tabela que o banco não tem.
         const missing = { code: 'PGRST205', message: "Could not find the table 'public.chore_rotation' in the schema cache" };
         if (mockServer.old) return { data: null, error: missing };
-        return { data: mockServer.order.map((person_id, i) => ({ chore_id: 'c-1', person_id, position: i + 1 })), error: null };
+        const rows = mockServer.order.map((person_id, i) => ({ chore_id: 'c-1', person_id, position: i + 1 }));
+        mockServer.afterCheck?.();
+        mockServer.afterCheck = null;
+        return { data: rows, error: null };
       }
       if (table === 'people') return { data: mockPeople, error: null };
       if (table === 'chores' && calls.single) {
@@ -111,7 +116,17 @@ jest.mock('@/lib/supabase', () => {
   return {
     supabase: {
       from: (table: string) => query(table),
-      rpc: async (name: string, args: { p_people?: string[] }) => {
+      rpc: async (name: string, args: { p_people?: string[]; p_assigned_to?: unknown; p_kid_id?: unknown; p_points?: unknown }) => {
+        if (name === 'save_chore_single') {
+          // Como a função do banco: com rodízio, recusa; sem, grava o responsável e os pontos. O banco de antes da migração nem a tem.
+          const turn = { assigned_to: args.p_assigned_to, kid_id: args.p_kid_id, points: args.p_points };
+          mockServer.log.push(`rpc save_chore_single ${JSON.stringify(turn)}`);
+          const missing = { code: 'PGRST202', message: 'Could not find the function public.save_chore_single(p_assigned_to, p_chore_id, p_kid_id, p_points) in the schema cache' };
+          if (mockServer.old) return { data: null, error: missing };
+          if (mockServer.order.length) return { data: null, error: { code: 'NK006', message: 'chore has a rotation', details: null, hint: null } };
+          mockServer.chore = { ...mockServer.chore, ...turn };
+          return { data: null, error: null };
+        }
         mockServer.log.push(`rpc ${name} ${JSON.stringify(args.p_people)}`);
         if (name === 'save_chore_rotation') mockServer.order = args.p_people ?? [];
         return { data: null, error: null };
@@ -219,7 +234,15 @@ beforeEach(() => {
       mutations: { networkMode: 'always', gcTime: Infinity },
     },
   });
-  Object.assign(mockServer, { chore: chore({ assigned_to: 'u-carla', points: 10 }), order: ORDER, down: [], old: false, gate: null, log: [] });
+  Object.assign(mockServer, {
+    chore: chore({ assigned_to: 'u-carla', points: 10 }),
+    order: ORDER,
+    down: [],
+    old: false,
+    gate: null,
+    afterCheck: null,
+    log: [],
+  });
   Object.assign(mockDevice, { members: mockMembers, id: 'c-1' });
   jest.clearAllMocks();
 });
@@ -366,6 +389,12 @@ describe('editor aberto: o que chega depois não troca o formulário', () => {
 });
 
 describe('formulário aberto sem rodízio: salvar confere a ordem no servidor antes de gravar', () => {
+  // O responsável e os pontos vão pela função que confere o rodízio no banco; o resto da tarefa, direto na tabela, depois.
+  const SINGLE_SAVE = [
+    'rpc save_chore_single {"assigned_to":"u-beto","kid_id":null,"points":0}',
+    'update chores {"title":"Lavar a louça","notes":null,"recurrence":"daily","interval_count":1,"due_on":"2026-10-12"}',
+  ];
+  // No banco de antes da migração, a tarefa inteira vai direto na tabela.
   const PLAIN_SAVE =
     'update chores {"title":"Lavar a louça","notes":null,"recurrence":"daily","interval_count":1,"due_on":"2026-10-12","assigned_to":"u-beto","kid_id":null,"points":0}';
 
@@ -410,6 +439,41 @@ describe('formulário aberto sem rodízio: salvar confere a ordem no servidor an
     expect(mockServer.chore).toMatchObject({ points: 10 });
   });
 
+  it('rodízio criado em outro celular entre a conferência e a gravação: o banco recusa, o aviso é o mesmo e o formulário fica', async () => {
+    const screen = await openPlain();
+    await screen.typeTitle('Lavar a louça e as panelas');
+    // A conferência deste celular ainda não acha ordem nenhuma; a de Carla é criada logo depois dela.
+    mockServer.afterCheck = () => {
+      mockServer.chore = chore({ assigned_to: 'u-carla', points: 10 });
+      mockServer.order = ORDER;
+    };
+
+    await screen.press('Salvar');
+    // Só a gravação recusada chegou ao servidor: nem o título novo foi salvo.
+    expect(mockServer.log).toEqual([SINGLE_SAVE[0]]);
+    expect(mockNotify.mock.calls).toEqual([CHANGED]);
+    expect(mockBack).not.toHaveBeenCalled();
+    expect(mockServer.chore).toMatchObject({ title: 'Lavar a louça', assigned_to: 'u-carla', points: 10 });
+    expect(mockServer.order).toEqual(ORDER);
+    expect(screen.title()).toBe('Lavar a louça e as panelas');
+    expect(screen.busy('Salvar')).toBe(false);
+    // A tarefa e as ordens foram buscadas de novo: as listas já mostram o rodízio.
+    expect(client.getQueryData(['choreRotations'])).toEqual({ 'c-1': ORDER });
+    expect(client.getQueryData(['chores', 'c-1'])).toMatchObject({ assigned_to: 'u-carla', points: 10 });
+
+    // Outro toque em Salvar nem vai ao servidor: o formulário aberto já sabe que a tarefa ganhou um rodízio.
+    await screen.press('Salvar');
+    expect(mockServer.log).toEqual([SINGLE_SAVE[0]]);
+    expect(mockNotify.mock.calls).toEqual([CHANGED, CHANGED]);
+
+    // Fechado e aberto de novo, como o aviso pede, o editor abre com a ordem.
+    await act(async () => renderer!.unmount());
+    const reopened = await open();
+    await settle();
+    expect(reopened.chips()).toEqual(IN_ROTATION);
+    expect(reopened.title()).toBe('Lavar a louça');
+  });
+
   it('a conferência falha: avisa, nada é gravado e o formulário fica; com a internet de volta, salva', async () => {
     const screen = await openPlain();
     // Sem internet: a consulta em cache ficaria parada esperando. A conferência vai direto e falha na hora.
@@ -424,8 +488,9 @@ describe('formulário aberto sem rodízio: salvar confere a ordem no servidor an
     onlineManager.setOnline(true);
     mockServer.down = [];
     await screen.press('Salvar');
-    // A tarefa segue sem rodízio no servidor: grava como sempre, e nada do rodízio é chamado.
-    expect(mockServer.log).toEqual([PLAIN_SAVE]);
+    // A tarefa segue sem rodízio no servidor: o banco aceita o responsável, o resto é gravado, e a ordem não é chamada.
+    expect(mockServer.log).toEqual(SINGLE_SAVE);
+    expect(mockServer.chore).toMatchObject({ assigned_to: 'u-beto', kid_id: null, points: 0 });
     expect(mockNotify).toHaveBeenCalledTimes(1);
     expect(mockBack).toHaveBeenCalledTimes(1);
   });
@@ -438,7 +503,7 @@ describe('formulário aberto sem rodízio: salvar confere a ordem no servidor an
     await screen.tap('Salvar');
     release();
     await settle();
-    expect(mockServer.log).toEqual([PLAIN_SAVE]);
+    expect(mockServer.log).toEqual(SINGLE_SAVE);
     expect(mockBack).toHaveBeenCalledTimes(1);
   });
 
@@ -450,7 +515,7 @@ describe('formulário aberto sem rodízio: salvar confere a ordem no servidor an
     await screen.typeTitle('Lavar a louça e o fogão');
     release();
     await settle();
-    expect(mockServer.log).toEqual([PLAIN_SAVE.replace('"Lavar a louça"', '"Lavar a louça e o fogão"')]);
+    expect(mockServer.log).toEqual([SINGLE_SAVE[0], SINGLE_SAVE[1].replace('"Lavar a louça"', '"Lavar a louça e o fogão"')]);
     expect(mockBack).toHaveBeenCalledTimes(1);
   });
 
@@ -471,7 +536,9 @@ describe('formulário aberto sem rodízio: salvar confere a ordem no servidor an
     mockServer.old = true;
     const screen = await openPlain();
     await screen.press('Salvar');
-    expect(mockServer.log).toEqual([PLAIN_SAVE]);
+    // A função que confere o rodízio também não existe lá: a tarefa inteira vai direto na tabela.
+    expect(mockServer.log).toEqual([SINGLE_SAVE[0], PLAIN_SAVE]);
+    expect(mockServer.chore).toMatchObject({ assigned_to: 'u-beto', kid_id: null, points: 0 });
     expect(mockNotify).not.toHaveBeenCalled();
     expect(mockBack).toHaveBeenCalledTimes(1);
   });

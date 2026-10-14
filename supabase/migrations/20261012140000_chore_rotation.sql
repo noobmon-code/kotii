@@ -7,7 +7,8 @@
 -- os pontos). Assim o app já instalado, que só conhece essas duas colunas,
 -- mostra a pessoa certa e conclui como antes.
 --
--- 1. save_chore_rotation grava a ordem (ou encerra o rodízio).
+-- 1. save_chore_rotation grava a ordem (ou encerra o rodízio); save_chore_single
+--    grava o responsável da tarefa sem rodízio, e recusa a que tem um.
 -- 2. complete_chore passa a vez ao concluir e devolve quem é o próximo.
 -- 3. skip_chore_turn passa a vez sem concluir.
 -- 4. Gatilhos: quem sai da ordem (ficha apagada) passa a vez adiante; com menos
@@ -179,6 +180,45 @@ end;
 $$;
 revoke execute on function public.save_chore_rotation(uuid, uuid[]) from public, anon;
 grant execute on function public.save_chore_rotation(uuid, uuid[]) to authenticated;
+
+-- A tarefa sem rodízio: o responsável (p_assigned_to, morador; p_kid_id, quem
+-- não tem o app; os dois nulos, qualquer um) e os pontos (nulo: ficam como
+-- estão). O formulário que abriu sem rodízio grava os três por aqui, e não
+-- direto na tabela: conferir "a tarefa segue sem rodízio?" e gravar são um
+-- passo só, com a tarefa travada como em save_chore_rotation, então um espera
+-- o outro terminar. Se um rodízio foi criado nesse meio-tempo, em outro
+-- celular, a função recusa (NK006) e nada muda: gravado por cima, o
+-- responsável de antes ficaria com a vez, talvez sem estar na ordem, e os
+-- pontos da conclusão seguinte iriam para a pessoa errada. O resto da tarefa
+-- (título, repetição, data) o app grava depois, direto na tabela, como sempre.
+create function public.save_chore_single(p_chore_id uuid, p_assigned_to uuid, p_kid_id uuid, p_points integer default null)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  c public.chores;
+begin
+  select * into c from public.chores ch
+  where ch.id = p_chore_id and ch.household_id = public.current_household_id()
+  for update;
+  if not found then
+    raise exception 'chore not found' using errcode = 'P0002';
+  end if;
+  if exists (select 1 from public.chore_rotation r where r.chore_id = c.id) then
+    raise exception 'chore has a rotation' using errcode = 'NK006';
+  end if;
+
+  -- Quem pode ser o responsável é o que as chaves estrangeiras da tarefa já
+  -- dizem (morador ou ficha desta casa), e os pontos, o check da coluna.
+  update public.chores ch
+    set assigned_to = p_assigned_to, kid_id = p_kid_id, points = coalesce(p_points, ch.points)
+    where ch.id = c.id;
+end;
+$$;
+revoke execute on function public.save_chore_single(uuid, uuid, uuid, integer) from public, anon;
+grant execute on function public.save_chore_single(uuid, uuid, uuid, integer) to authenticated;
 
 -- =============================================================================
 -- 2. Concluir passa a vez

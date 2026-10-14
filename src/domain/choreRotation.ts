@@ -324,6 +324,20 @@ export const ROTATION_UNAVAILABLE = 'O rodízio ainda não está disponível nes
 /** O formulário abriu sem rodízio e a tarefa ganhou um em outro aparelho: salvar gravaria a vez e os pontos de antes. */
 export const ROTATION_CHANGED_ELSEWHERE = 'Ela ganhou um rodízio em outro aparelho. Feche e abra de novo para editar.';
 
+// O errcode com que save_chore_single recusa a tarefa que tem rodízio.
+const HAS_ROTATION_CODE = 'NK006';
+
+/**
+ * O banco recusou gravar o responsável de uma tarefa "sem rodízio" porque ela
+ * tem um (save_chore_single)? É o rodízio criado em outro aparelho entre a
+ * conferência do formulário e a gravação: nada foi salvo, e o aviso é o mesmo
+ * da conferência (ROTATION_CHANGED_ELSEWHERE).
+ */
+export function isRotationChangedElsewhere(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  return 'code' in error && error.code === HAS_ROTATION_CODE;
+}
+
 /** O rodízio tem alguém que este aparelho não conhece (hasUnknownPerson): salvar tiraria essa pessoa da ordem. */
 export const ROTATION_PERSON_UNKNOWN = 'O rodízio dela tem alguém que este aparelho ainda não carregou. Feche e abra de novo para editar.';
 
@@ -336,8 +350,9 @@ const MISSING_CODES = new Set(['PGRST205', 'PGRST202', '42P01', '42883']);
 
 /**
  * O banco ainda não tem o rodízio (chore_rotation, save_chore_rotation,
- * skip_chore_turn)? Aí ler as ordens devolve "nenhuma" e salvar ou pular
- * avisa com ROTATION_UNAVAILABLE, em vez do erro cru.
+ * save_chore_single, skip_chore_turn)? Aí ler as ordens devolve "nenhuma",
+ * salvar ou pular avisa com ROTATION_UNAVAILABLE, em vez do erro cru, e o
+ * responsável da tarefa sem rodízio é gravado direto na tabela, como antes.
  */
 export function isRotationUnavailable(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
@@ -345,7 +360,7 @@ export function isRotationUnavailable(error: unknown): boolean {
   if (MISSING_CODES.has(code)) return true;
   const message = 'message' in error && typeof error.message === 'string' ? error.message : '';
   return (
-    /chore_rotation|save_chore_rotation|skip_chore_turn/.test(message) && /schema cache|does not exist/i.test(message)
+    /chore_rotation|save_chore_rotation|save_chore_single|skip_chore_turn/.test(message) && /schema cache|does not exist/i.test(message)
   );
 }
 

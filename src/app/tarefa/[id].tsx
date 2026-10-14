@@ -8,6 +8,7 @@ import { useEquipment } from '@/data/house';
 import {
   currentTurn,
   hasUnknownPerson,
+  isRotationChangedElsewhere,
   nextTurn,
   numberedOrder,
   orderHasKid,
@@ -200,6 +201,8 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
     // ter falhado. Por isso, no formulário que abriu sem rodízio, a ordem é conferida agora, direto no servidor (a
     // consulta em cache, sem internet, ficaria parada esperando e o botão não faria nada). Se não deu para
     // conferir, nada é gravado. No banco que ainda não tem o rodízio a resposta é "nenhuma ordem", e a tarefa salva.
+    // Esta conferência dá o aviso sem gravar nada, no caso comum; quem garante é o banco, que confere de novo na
+    // hora de gravar o responsável (saveChore), para o rodízio criado entre uma coisa e outra.
     if (!checked && chore && !shownOrder.length) {
       submitting.current = true;
       setChecking(true);
@@ -252,7 +255,12 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
           setCreatedId(result.id);
           notify('A tarefa foi salva, mas o rodízio não', errorMessage(result.rotationError));
         },
-        onError,
+        onError: (err) => {
+          // O banco recusou o responsável: a tarefa ganhou um rodízio depois da conferência acima. Nada deste
+          // formulário foi salvo, ele fica aberto, e a tarefa e as ordens já estão sendo buscadas de novo (useSaveChore).
+          if (isRotationChangedElsewhere(err)) return notify('Esta tarefa mudou', ROTATION_CHANGED_ELSEWHERE);
+          onError(err);
+        },
       },
     );
   }

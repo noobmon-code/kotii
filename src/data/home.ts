@@ -123,7 +123,11 @@ export function useTakeOneFromPantry() {
 // ---------------------------------------------------------------------------
 // Tarefas
 
-const CHORE_COLUMNS = 'id, title, notes, recurrence, interval_count, due_on, assigned_to, active, equipment_id, kid_id, points';
+/**
+ * A tarefa inteira (o tipo Chore), para toda busca de tarefas: quem conclui passa a linha ao aviso da conclusão
+ * (completionMessage), e sem kid_id a vez de uma criança pareceria ter passado em outro celular.
+ */
+export const CHORE_COLUMNS = 'id, title, notes, recurrence, interval_count, due_on, assigned_to, active, equipment_id, kid_id, points';
 
 export async function fetchChores(db: SupabaseClient = supabase): Promise<Chore[]> {
   return unwrap(await db.from('chores').select(CHORE_COLUMNS).eq('active', true).order('due_on').order('title')) as Chore[];
@@ -178,9 +182,39 @@ export interface SaveChoreResult {
 }
 
 /**
+ * O responsável e os pontos de uma tarefa que já existe e cujo formulário não
+ * mostrou rodízio. Vão por save_chore_single, que confere no banco, com a
+ * tarefa travada, que ela segue sem rodízio: o formulário conferiu antes de
+ * salvar, mas outro celular pode criar um entre a conferência e a gravação, e
+ * o responsável de antes ficaria com a vez sem estar na ordem. Com rodízio, a
+ * função recusa e o erro sobe (isRotationChangedElsewhere), sem nada gravado.
+ * Devolve o que ainda falta gravar direto na tabela.
+ */
+async function saveSingleTurn(id: string, values: ChoreValues): Promise<Partial<ChoreValues>> {
+  const { assigned_to, kid_id, points, ...rest } = values;
+  // Sem o responsável nos valores, a edição não mexe nele: nada a conferir.
+  if (assigned_to === undefined && kid_id === undefined) return values;
+  const { error } = await supabase.rpc('save_chore_single', {
+    p_chore_id: id,
+    p_assigned_to: assigned_to ?? null,
+    p_kid_id: kid_id ?? null,
+    // Nulo: os pontos ficam como estão.
+    p_points: points ?? null,
+  });
+  if (!error) return rest;
+  // Banco que ainda não tem a função (o app pode chegar antes da migração): lá
+  // não há rodízio, e gravar a tarefa inteira direto na tabela é o certo.
+  if (isRotationUnavailable(error)) return values;
+  throw error;
+}
+
+/**
  * Grava a tarefa e, logo depois, a ordem do rodízio (`rotation`; vazia:
- * encerra o que havia). Sem `rotation`, só a tarefa, como sempre: nada do
- * rodízio é chamado, e o banco pode nem tê-lo.
+ * encerra o que havia). Sem `rotation`, só a tarefa: a ordem não é chamada,
+ * e o banco pode nem ter o rodízio. Na tarefa que já existe, sem `rotation`
+ * quer dizer que o formulário não mostrou rodízio: o responsável e os pontos
+ * são gravados primeiro, por saveSingleTurn, e se o banco recusar nada mais
+ * daquele formulário é salvo.
  */
 export async function saveChore({
   id,
@@ -191,7 +225,10 @@ export async function saveChore({
   values: ChoreValues;
   rotation?: string[] | null;
 }): Promise<SaveChoreResult> {
-  if (id) unwrap(await supabase.from('chores').update(values).eq('id', id));
+  if (id) {
+    const direct = rotation ? values : await saveSingleTurn(id, values);
+    unwrap(await supabase.from('chores').update(direct).eq('id', id));
+  }
   const saved: SaveChoreResult = {
     id: id ?? (unwrap(await supabase.from('chores').insert(values).select('id').single()) as { id: string }).id,
   };
@@ -208,7 +245,9 @@ export function useSaveChore() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: saveChore,
-    onSuccess: () => {
+    // Também na falha: se o banco recusou porque a tarefa ganhou um rodízio em outro celular, as telas
+    // passam a mostrá-lo; e o responsável pode ter sido gravado antes de o resto falhar.
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['chores'] });
       queryClient.invalidateQueries({ queryKey: ['choreRotations'] });
     },
