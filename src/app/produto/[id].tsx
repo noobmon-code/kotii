@@ -2,10 +2,11 @@ import { Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet } from 'react-native';
 
-import { usePriceHistory, useProducts, useRenameProduct, useStores } from '@/data/market';
+import { usePriceHistory, useProductPurchases, useProducts, useRenameProduct, useStores } from '@/data/market';
 import { CATEGORIES, getCategory } from '@/domain/categories';
 import { formatShortDate, toISODate } from '@/domain/dates';
 import { formatBRL } from '@/domain/money';
+import { noStorePriceSentence } from '@/domain/priceHistory';
 import { PriceHistorySection } from '@/features/market/PriceHistorySection';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
@@ -33,6 +34,9 @@ export default function ProductScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const products = useProducts();
   const history = usePriceHistory(id);
+  // As compras inteiras, as mesmas que a seção do histórico lê (a mesma busca, uma vez só): a nota sem mercado
+  // não entra no "por mercado", e a frase de lá não pode dizer que não há nota nenhuma.
+  const purchases = useProductPurchases(id);
   const stores = useStores();
   const rename = useRenameProduct();
   const [name, setName] = useState<string | null>(null);
@@ -85,7 +89,7 @@ export default function ProductScreen() {
 
       <Section title="Último preço por mercado">
         {latestByStore.length === 0 ? (
-          <Text variant="muted">Nenhuma nota confirmada com este produto ainda.</Text>
+          <Text variant="muted">{noStorePriceSentence(purchases.data?.length)}</Text>
         ) : (
           <ListCard>
             {latestByStore.map((obs, index) => (

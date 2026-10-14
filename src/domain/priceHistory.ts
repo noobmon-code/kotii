@@ -325,6 +325,19 @@ export function countSentence(count: number, period: Period, noValue = 0): strin
 }
 
 /** Período sem compra nenhuma: diz isso e onde ver mais. */
+/**
+ * A frase de "Último preço por mercado" quando nenhum mercado tem preço deste produto. A nota sem mercado não
+ * entra ali, mas é compra e aparece no histórico logo abaixo: a frase não pode dizer que não há nota nenhuma.
+ * `purchases`: quantas compras o produto tem ao todo; undefined enquanto não se sabe (buscando, ou a busca falhou).
+ */
+export function noStorePriceSentence(purchases: number | undefined): string {
+  if (purchases === undefined) return 'Nenhum preço por mercado ainda.';
+  if (purchases === 0) return 'Nenhuma nota confirmada com este produto ainda.';
+  return purchases === 1
+    ? 'A compra deste produto está numa nota sem mercado informado: veja o histórico abaixo.'
+    : 'As compras deste produto estão em notas sem mercado informado: veja o histórico abaixo.';
+}
+
 export function emptyPeriodSentence(period: Period): string {
   const when = period === '1a' ? 'no último ano' : `nos últimos ${PERIODS.find((p) => p.value === period)?.label}`;
   return period === 'tudo' ? 'Nenhuma compra ainda.' : `Nenhuma compra ${when}. Veja em "Tudo".`;

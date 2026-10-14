@@ -189,3 +189,28 @@ describe('a seção "Histórico de preço" sem internet', () => {
     expect(page()).toContain('2 compras em 6 meses');
   });
 });
+
+describe('produto comprado só em notas sem mercado', () => {
+  it('"Último preço por mercado" não diz que não há nota: as compras estão no histórico logo abaixo', async () => {
+    // A nota sem mercado não entra nos preços por mercado, mas é compra.
+    mockDb.tables.price_observations = [];
+    mockDb.tables.receipt_items = lines().map((line) => ({ ...line, receipt: { ...(line.receipt as Row), store_id: null, store: null } }));
+    open();
+    await settle();
+    await settle();
+    const text = page();
+    expect(text).toContain('As compras deste produto estão em notas sem mercado informado: veja o histórico abaixo.');
+    expect(text).not.toContain('Nenhuma nota confirmada com este produto ainda.');
+    expect(text).toEqual(expect.arrayContaining(['Histórico de preço', 'R$ 25,90/un · Mercado não informado · 10 out']));
+  });
+
+  it('sem compra nenhuma, a frase de sempre', async () => {
+    mockDb.tables.price_observations = [];
+    mockDb.tables.receipt_items = [];
+    open();
+    await settle();
+    await settle();
+    expect(page()).toContain('Nenhuma nota confirmada com este produto ainda.');
+    expect(page()).not.toContain('Histórico de preço');
+  });
+});

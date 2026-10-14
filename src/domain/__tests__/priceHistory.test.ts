@@ -17,6 +17,7 @@ import {
   medianPrice,
   moreLabel,
   NO_STORE,
+  noStorePriceSentence,
   noValueSentence,
   percentChange,
   periodStart,
@@ -65,6 +66,16 @@ const atacadao = { storeId: 'atacadao', storeName: 'Atacadão' };
 const noStore = { storeId: null, storeName: null };
 
 const NO_CHOICE: HistoryChoices = { unit: null, period: null, store: null, more: 0 };
+
+describe('a frase de "Último preço por mercado" sem nenhum mercado', () => {
+  it('não diz que não há nota quando as compras existem, em notas sem mercado', () => {
+    expect(noStorePriceSentence(0)).toBe('Nenhuma nota confirmada com este produto ainda.');
+    expect(noStorePriceSentence(1)).toBe('A compra deste produto está numa nota sem mercado informado: veja o histórico abaixo.');
+    expect(noStorePriceSentence(3)).toBe('As compras deste produto estão em notas sem mercado informado: veja o histórico abaixo.');
+    // Enquanto as compras não chegaram (ou a busca falhou), a frase não afirma nada sobre as notas.
+    expect(noStorePriceSentence(undefined)).toBe('Nenhum preço por mercado ainda.');
+  });
+});
 
 describe('as compras do produto', () => {
   it('arroz por unidade: o preço é o impresso, e a linha guarda quanto levou e quanto pagou', () => {
