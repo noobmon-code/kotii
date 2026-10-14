@@ -5,6 +5,7 @@ import { Platform, StyleSheet, View } from 'react-native';
 import { useEquipmentList } from '@/data/house';
 import { PROVIDERS_UNAVAILABLE, providerErrorMessage, useServiceJobs, useServiceProviders } from '@/data/providers';
 import { emptySearchNote, groupProviders, jobLine, PROVIDER_SEARCH_MIN, searchProviders, type SearchGap } from '@/domain/providers';
+import { StaleNotice } from '@/features/health/StaleNotice';
 import { ProviderQuickActions } from '@/features/providers/ProviderContact';
 import type { ServiceProvider } from '@/lib/types';
 import {
@@ -42,9 +43,12 @@ export default function ProvidersScreen() {
   );
 
   if (providers.isPending) return <Loading />;
-  if (providers.isError) {
+  // Aviso de erro só sem lista nenhuma: quando uma atualização falha (puxar para atualizar, sem internet), os
+  // contatos que já estavam aqui continuam, com o aviso de que podem não estar em dia.
+  if (!providers.data) {
     return <ErrorNotice error={new Error(providerErrorMessage(providers.error))} onRetry={() => providers.refetch()} />;
   }
+  const stale = providers.isError ? <StaleNotice onRetry={() => providers.refetch()} /> : null;
   const refresh = () => {
     providers.refetch();
     jobs.refetch();
@@ -71,6 +75,7 @@ export default function ProvidersScreen() {
       : null;
   return (
     <Screen edges={[]} refreshing={providers.isRefetching} onRefresh={refresh}>
+      {stale}
       <Button
         title="Novo prestador"
         icon="plus"

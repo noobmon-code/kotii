@@ -410,46 +410,102 @@ export function serviceExpenseCategory(trade: string | null | undefined, equipme
 export type ExpenseCopyGap = 'provider' | 'equipment';
 
 /**
- * O que a tela do serviço ainda não sabe e segura a cópia para os gastos. O
- * serviço pode ter um prestador ou um aparelho que as listas da tela não têm
- * (elas podem ser de antes de ele ser cadastrado, por outra pessoa da casa):
- * `missing` diz qual dos dois está escolhido e fora da lista. Sem o prestador
- * não se sabe o ofício (o do mecânico vai para Transporte) nem o nome que vai
- * na descrição do gasto; sem o aparelho, não se sabe se é um veículo, e um
- * conserto do carro entraria em Moradia. O aparelho não faz falta quando o
- * prestador é o mecânico: já é Transporte.
+ * Como está, nesta visita à tela do serviço, a leitura de onde vêm o
+ * prestador (a lista) ou o aparelho (a lista, ou ele sozinho). A tela pede
+ * as duas ao abrir, mesmo com o guardado de segundos atrás: o ofício ou o
+ * aparelho podem ter mudado em outro celular, e a categoria do gasto sai
+ * deles. "Confirmada" quer dizer que uma leitura terminou depois que a tela
+ * abriu (`isFetchedAfterMount` do TanStack, que conta só as respostas que
+ * chegaram depois) e que a última terminou bem (sem erro depois dela). Uma
+ * busca nova depois disso não desfaz o que chegou nesta visita; uma que
+ * falhou, sim.
  */
-export function expenseCopyGap(trade: string | null | undefined, missing: { provider: boolean; equipment: boolean }): ExpenseCopyGap | null {
-  if (missing.provider) return 'provider';
-  return missing.equipment && trade !== 'mecanico' ? 'equipment' : null;
+export type SourceRead = 'confirmed' | 'loading' | 'failed' | 'offline';
+
+export function readOnThisVisit(query: { isFetchedAfterMount: boolean; isError: boolean; isFetching: boolean; isPaused: boolean }): SourceRead {
+  if (query.isFetchedAfterMount && !query.isError) return 'confirmed';
+  if (query.isFetching) return 'loading';
+  // Sem internet a busca fica parada, e recomeça sozinha quando ela volta.
+  if (query.isPaused) return 'offline';
+  if (query.isError) return 'failed';
+  // Ainda não saiu (a busca de quem abre a tela sai em seguida).
+  return 'loading';
 }
 
-const EXPENSE_COPY_GAP: Record<ExpenseCopyGap, { loading: string; why: string }> = {
+/** O prestador ou o aparelho do serviço, para a cópia: se há um escolhido, se ele está no que a tela tem e a leitura de onde ele vem. */
+export interface ExpenseCopySource {
+  chosen: boolean;
+  found: boolean;
+  read: SourceRead;
+}
+
+/** Por que a cópia espera: a leitura ainda anda, falhou, ou está parada sem internet. */
+export type ExpenseCopyWait = Exclude<SourceRead, 'confirmed'>;
+
+function sourceWait({ chosen, found, read }: ExpenseCopySource): ExpenseCopyWait | null {
+  if (!chosen) return null;
+  // A leitura chegou e não o trouxe: não deu para carregar (a pessoa pode tentar de novo).
+  if (read === 'confirmed') return found ? null : 'failed';
+  return read;
+}
+
+/**
+ * O que a tela do serviço ainda não sabe e segura a cópia para os gastos. Sem
+ * o prestador não se sabe o ofício (o do mecânico vai para Transporte) nem o
+ * nome que vai na descrição do gasto; sem o aparelho, não se sabe se é um
+ * veículo, e um conserto do carro entraria em Moradia. Não basta estar nas
+ * listas da tela: elas podem ser de antes de ele ser cadastrado, ou de antes
+ * de uma mudança feita por outra pessoa da casa; vale o que chegou da leitura
+ * desta visita (ver readOnThisVisit). O aparelho não faz falta quando o
+ * prestador é o mecânico: já é Transporte.
+ */
+export function expenseCopyGap(
+  trade: string | null | undefined,
+  sources: Record<ExpenseCopyGap, ExpenseCopySource>,
+): { gap: ExpenseCopyGap; wait: ExpenseCopyWait } | null {
+  const provider = sourceWait(sources.provider);
+  if (provider) return { gap: 'provider', wait: provider };
+  if (trade === 'mecanico') return null;
+  const equipment = sourceWait(sources.equipment);
+  return equipment ? { gap: 'equipment', wait: equipment } : null;
+}
+
+const EXPENSE_COPY_GAP: Record<ExpenseCopyGap, { loading: string; what: string; decides: string }> = {
   provider: {
     loading: 'Carregando o prestador deste serviço…',
-    why: 'Não deu para carregar o prestador deste serviço, e é o ofício dele que diz se o gasto entra em Moradia ou em Transporte.',
+    what: 'o prestador deste serviço',
+    decides: 'é o ofício dele que diz se o gasto entra em Moradia ou em Transporte',
   },
   equipment: {
     loading: 'Carregando o aparelho deste serviço…',
-    why: 'Não deu para carregar o aparelho deste serviço, e é ele que diz se o gasto entra em Moradia ou em Transporte.',
+    what: 'o aparelho deste serviço',
+    decides: 'é ele que diz se o gasto entra em Moradia ou em Transporte',
   },
 };
 
+function whyGap(gap: ExpenseCopyGap): string {
+  return `Não deu para carregar ${EXPENSE_COPY_GAP[gap].what}, e ${EXPENSE_COPY_GAP[gap].decides}.`;
+}
+
 /**
  * A linha do cartão "Lançar também nos gastos da casa" enquanto a cópia espera
- * (ver expenseCopyGap). `loading`: o que falta ainda está chegando. Se não
- * chegou, diz por quê e o que dá para fazer (a tela põe o "Tentar de novo"
- * embaixo). Nunca manda escolher outro prestador ou outro aparelho: o do serviço
- * não está na lista de escolha, e trocar mudaria o serviço e a categoria.
+ * (ver expenseCopyGap): carregando; sem internet (a busca volta sozinha com
+ * ela, não há o que tentar); ou não chegou, com o porquê e o que dá para fazer
+ * (a tela põe o "Tentar de novo" embaixo). Nunca manda escolher outro
+ * prestador ou outro aparelho: o do serviço pode não estar na lista de
+ * escolha, e trocar mudaria o serviço e a categoria.
  */
-export function expenseCopyGapNote(gap: ExpenseCopyGap, loading: boolean): string {
-  if (loading) return EXPENSE_COPY_GAP[gap].loading;
-  return `${EXPENSE_COPY_GAP[gap].why} Tente de novo, ou lance o gasto em Finanças.`;
+export function expenseCopyGapNote(gap: ExpenseCopyGap, wait: ExpenseCopyWait): string {
+  if (wait === 'loading') return EXPENSE_COPY_GAP[gap].loading;
+  if (wait === 'offline') {
+    return `Sem internet, não dá para conferir ${EXPENSE_COPY_GAP[gap].what}, e ${EXPENSE_COPY_GAP[gap].decides}. Quando a internet voltar, dá para lançar daqui.`;
+  }
+  return `${whyGap(gap)} Tente de novo, ou lance o gasto em Finanças.`;
 }
 
 /** Para quem salvou com a cópia ligada e o dado se perdeu antes: o serviço foi salvo, o gasto fica por conta da pessoa. */
 export function expenseCopySkippedNote(gap: ExpenseCopyGap): string {
-  return `${EXPENSE_COPY_GAP[gap].why} Lance o gasto em Finanças.`;
+  return `${whyGap(gap)} Lance o gasto em Finanças.`;
 }
 
 /** A descrição do gasto: "Trocou a resistência do chuveiro (Zé Eletricista)". */

@@ -23,6 +23,7 @@ import {
   phoneHint,
   PROVIDER_LIMITS,
   PROVIDER_TRADES,
+  readOnThisVisit,
   searchProviders,
   SERVICE_WARRANTY_PRESETS,
   serviceExpenseCategory,
@@ -502,31 +503,73 @@ describe('gasto da casa', () => {
     }
   });
 
-  it('prestador ou aparelho do serviço fora das listas da tela: a cópia para os gastos espera', () => {
-    const none = { provider: false, equipment: false };
-    expect(expenseCopyGap('eletricista', none)).toBeNull();
-    expect(expenseCopyGap(undefined, none)).toBeNull();
-    // Sem o aparelho não se sabe se é um veículo: o conserto do carro não entra em Moradia.
-    expect(expenseCopyGap('eletricista', { provider: false, equipment: true })).toBe('equipment');
-    expect(expenseCopyGap('outros', { provider: false, equipment: true })).toBe('equipment');
-    // O mecânico já é Transporte, com o aparelho que for.
-    expect(expenseCopyGap('mecanico', { provider: false, equipment: true })).toBeNull();
+  it('a leitura de onde vêm o prestador e o aparelho, nesta visita à tela', () => {
+    const read = (over: Partial<{ isFetchedAfterMount: boolean; isError: boolean; isFetching: boolean; isPaused: boolean }> = {}) =>
+      readOnThisVisit({ isFetchedAfterMount: false, isError: false, isFetching: false, isPaused: false, ...over });
+    // A busca de quem abre está a caminho: o guardado (de antes de abrir) ainda não vale.
+    expect(read({ isFetching: true })).toBe('loading');
+    // Ainda não começou (sai logo em seguida): também espera.
+    expect(read()).toBe('loading');
+    // Chegou depois que a tela abriu e deu certo.
+    expect(read({ isFetchedAfterMount: true })).toBe('confirmed');
+    // Uma busca nova depois disso não desfaz o que chegou nesta visita.
+    expect(read({ isFetchedAfterMount: true, isFetching: true })).toBe('confirmed');
+    // Falhou (com o guardado de antes na mão), nesta visita ou depois de ter chegado: não vale.
+    expect(read({ isFetchedAfterMount: true, isError: true })).toBe('failed');
+    expect(read({ isError: true })).toBe('failed');
+    // Pedindo de novo depois da falha.
+    expect(read({ isFetchedAfterMount: true, isError: true, isFetching: true })).toBe('loading');
+    // Sem internet a busca fica parada.
+    expect(read({ isPaused: true })).toBe('offline');
+    expect(read({ isFetchedAfterMount: true, isError: true, isPaused: true })).toBe('offline');
+  });
+
+  it('a cópia para os gastos espera o prestador e o aparelho lidos nesta visita', () => {
+    const ok = { chosen: true, found: true, read: 'confirmed' } as const;
+    const none = { chosen: false, found: false, read: 'loading' } as const;
+    expect(expenseCopyGap('eletricista', { provider: ok, equipment: ok })).toBeNull();
+    expect(expenseCopyGap('eletricista', { provider: ok, equipment: none })).toBeNull();
+    expect(expenseCopyGap(undefined, { provider: none, equipment: none })).toBeNull();
+    // O prestador está na lista guardada, mas a leitura desta visita não chegou: o ofício pode ter mudado.
+    for (const read of ['loading', 'failed', 'offline'] as const) {
+      expect(expenseCopyGap('eletricista', { provider: { ...ok, read }, equipment: none })).toEqual({ gap: 'provider', wait: read });
+      expect(expenseCopyGap('mecanico', { provider: { ...ok, read }, equipment: ok })).toEqual({ gap: 'provider', wait: read });
+      // O aparelho, a mesma coisa (ele pode ter virado um veículo).
+      expect(expenseCopyGap('eletricista', { provider: ok, equipment: { ...ok, read } })).toEqual({ gap: 'equipment', wait: read });
+    }
+    // Fora das listas: enquanto a leitura anda, espera; se ela chegou sem ele, não deu para carregar.
+    expect(expenseCopyGap(undefined, { provider: { chosen: true, found: false, read: 'loading' }, equipment: none })).toEqual({ gap: 'provider', wait: 'loading' });
+    expect(expenseCopyGap(undefined, { provider: { chosen: true, found: false, read: 'confirmed' }, equipment: none })).toEqual({ gap: 'provider', wait: 'failed' });
+    expect(expenseCopyGap('outros', { provider: ok, equipment: { chosen: true, found: false, read: 'confirmed' } })).toEqual({ gap: 'equipment', wait: 'failed' });
     // Sem o prestador não há ofício (podia ser o mecânico) nem o nome que vai no gasto: espera, mesmo num veículo.
-    expect(expenseCopyGap(undefined, { provider: true, equipment: false })).toBe('provider');
-    expect(expenseCopyGap(undefined, { provider: true, equipment: true })).toBe('provider');
-    // A linha do cartão, enquanto o que falta ainda está chegando.
-    expect(expenseCopyGapNote('equipment', true)).toBe('Carregando o aparelho deste serviço…');
-    expect(expenseCopyGapNote('provider', true)).toBe('Carregando o prestador deste serviço…');
+    expect(expenseCopyGap(undefined, { provider: { chosen: true, found: false, read: 'failed' }, equipment: { ...ok, read: 'failed' } })).toEqual({
+      gap: 'provider',
+      wait: 'failed',
+    });
+    // O mecânico (lido nesta visita) já é Transporte, com o aparelho que for.
+    expect(expenseCopyGap('mecanico', { provider: ok, equipment: { chosen: true, found: false, read: 'failed' } })).toBeNull();
+  });
+
+  it('a linha do cartão enquanto a cópia espera', () => {
+    expect(expenseCopyGapNote('equipment', 'loading')).toBe('Carregando o aparelho deste serviço…');
+    expect(expenseCopyGapNote('provider', 'loading')).toBe('Carregando o prestador deste serviço…');
     // Não chegou: diz por quê e o que dá para fazer, sem mandar escolher outro prestador ou outro aparelho
     // (o do serviço não está na lista de escolha). O aviso de quem salvou assim diz o que fazer.
-    expect(expenseCopyGapNote('equipment', false)).toBe(
+    expect(expenseCopyGapNote('equipment', 'failed')).toBe(
       'Não deu para carregar o aparelho deste serviço, e é ele que diz se o gasto entra em Moradia ou em Transporte. Tente de novo, ou lance o gasto em Finanças.',
     );
-    expect(expenseCopyGapNote('provider', false)).toBe(
+    expect(expenseCopyGapNote('provider', 'failed')).toBe(
       'Não deu para carregar o prestador deste serviço, e é o ofício dele que diz se o gasto entra em Moradia ou em Transporte. Tente de novo, ou lance o gasto em Finanças.',
     );
+    // Sem internet a busca recomeça sozinha quando ela voltar: não há o que tentar de novo.
+    expect(expenseCopyGapNote('provider', 'offline')).toBe(
+      'Sem internet, não dá para conferir o prestador deste serviço, e é o ofício dele que diz se o gasto entra em Moradia ou em Transporte. Quando a internet voltar, dá para lançar daqui.',
+    );
+    expect(expenseCopyGapNote('equipment', 'offline')).toBe(
+      'Sem internet, não dá para conferir o aparelho deste serviço, e é ele que diz se o gasto entra em Moradia ou em Transporte. Quando a internet voltar, dá para lançar daqui.',
+    );
     for (const gap of ['provider', 'equipment'] as const) {
-      for (const loading of [true, false]) expect(expenseCopyGapNote(gap, loading)).not.toMatch(/escolha/i);
+      for (const wait of ['loading', 'failed', 'offline'] as const) expect(expenseCopyGapNote(gap, wait)).not.toMatch(/escolha/i);
     }
     expect(expenseCopySkippedNote('equipment')).toBe(
       'Não deu para carregar o aparelho deste serviço, e é ele que diz se o gasto entra em Moradia ou em Transporte. Lance o gasto em Finanças.',

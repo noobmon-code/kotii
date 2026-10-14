@@ -21,6 +21,7 @@ import {
   PROVIDER_TRADES,
   validateProvider,
 } from '@/domain/providers';
+import { StaleNotice } from '@/features/health/StaleNotice';
 import { ProviderContactButtons } from '@/features/providers/ProviderContact';
 import { goBackOr } from '@/lib/navigation';
 import { settledData } from '@/lib/settledData';
@@ -253,7 +254,9 @@ function ProviderJobs({ provider, equipmentId }: { provider: ServiceProvider; eq
           }
         />
       }>
-      {jobs.isError ? (
+      {/* O aviso de erro só sem nada guardado; com o histórico de antes, ele continua aqui, com o aviso de que pode não estar em dia. */}
+      {jobs.isError && jobs.data ? <StaleNotice onRetry={() => jobs.refetch()} /> : null}
+      {jobs.isError && !jobs.data ? (
         <ErrorNotice error={new Error(providerErrorMessage(jobs.error))} onRetry={() => jobs.refetch()} />
       ) : rows.length ? (
         <ListCard>

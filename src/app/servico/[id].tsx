@@ -23,10 +23,11 @@ import {
   expenseCopySkippedNote,
   expenseDescription,
   getProviderTrade,
+  readOnThisVisit,
   SERVICE_WARRANTY_PRESETS,
   serviceExpenseCategory,
   validateJob,
-  type ExpenseCopyGap,
+  type SourceRead,
 } from '@/domain/providers';
 import { goBackOr } from '@/lib/navigation';
 import { errorMessage } from '@/lib/supabase';
@@ -59,14 +60,23 @@ export default function ServiceJobScreen() {
   // `prestador` ou `aparelho`: serviço novo aberto da tela de um deles, que já vem escolhido.
   const { id, prestador, aparelho } = useLocalSearchParams<{ id: string; prestador?: string; aparelho?: string }>();
   const isNew = id === 'novo';
-  const providers = useServiceProviders();
-  const equipment = useEquipmentList();
+  // Os dois lidos de novo ao abrir, mesmo com o guardado de segundos atrás: o ofício do prestador e o aparelho dizem
+  // a categoria do gasto copiado, e podem ter mudado em outro celular. O formulário não espera estas leituras; só a
+  // cópia para os gastos (ver JobForm).
+  const providers = useServiceProviders({ fresh: true });
+  const equipment = useEquipmentList({ fresh: true });
   const job = useServiceJob(isNew ? undefined : id);
   // O aparelho do serviço (ou o da tela de onde a pessoa veio) que a lista daqui não tem (ela pode ser de antes de
   // ele ser cadastrado) é buscado à parte: o serviço mostra o nome dele e o gasto sabe se é um veículo.
   const wanted = isNew ? aparelho : job.data?.equipment_id;
   const absent = wanted && equipment.data && !equipment.data.some((e) => e.id === wanted) ? wanted : undefined;
-  const lone = useEquipment(absent);
+  const lone = useEquipment(absent, { fresh: true });
+  // Quando ele passa a faltar depois de a tela abrir, a busca dele é outra (outro id) e não sai sozinha com um
+  // guardado recente: pede aqui, junto da que já estiver a caminho.
+  const { refetch: refetchLone } = lone;
+  useEffect(() => {
+    if (absent) void refetchLone({ cancelRefetch: false });
+  }, [absent, refetchLone]);
   // O prestador, a mesma coisa: com ele fora da lista daqui, ela é buscada de novo, uma vez (não há busca de um só).
   const author = isNew ? prestador : job.data?.provider_id;
   const authorAbsent = Boolean(author && providers.data && !providers.data.missing && !providers.data.rows.some((p) => p.id === author));
@@ -149,12 +159,13 @@ export default function ServiceJobScreen() {
       equipment={lone.data && lone.data.id === absent ? [...appliances, lone.data] : appliances}
       initialProviderId={prestador || null}
       initialEquipmentId={aparelho || null}
-      // Para o cartão do gasto, quando o prestador ou o aparelho do serviço não está nas listas: se ainda está
-      // chegando, e como pedir de novo.
+      // Para o cartão do gasto: como está, nesta visita, a leitura de onde vêm o prestador e o aparelho, e como pedir
+      // de novo.
       sources={{
-        provider: { loading: providers.isFetching, retry: () => providers.refetch() },
+        provider: { read: readOnThisVisit(providers), retry: () => providers.refetch() },
         equipment: {
-          loading: equipment.isFetching || lone.isFetching,
+          read: readOnThisVisit(equipment),
+          lone: absent ? { id: absent, read: readOnThisVisit(lone) } : null,
           retry: () => {
             equipment.refetch();
             if (absent) lone.refetch();
@@ -182,8 +193,14 @@ function JobForm({
   equipment: Equipment[];
   initialProviderId: string | null;
   initialEquipmentId: string | null;
-  /** As buscas de onde vêm o prestador e o aparelho: se ainda andam, e como pedir de novo. */
-  sources: Record<ExpenseCopyGap, { loading: boolean; retry: () => void }>;
+  /**
+   * As leituras de onde vêm o prestador e o aparelho, nesta visita, e como pedir de novo. `lone`: o aparelho buscado
+   * à parte (o que a lista não tem), que vem dessa leitura e não da lista.
+   */
+  sources: {
+    provider: { read: SourceRead; retry: () => void };
+    equipment: { read: SourceRead; lone: { id: string; read: SourceRead } | null; retry: () => void };
+  };
   /** O formulário apareceu (com o serviço copiado para os campos). */
   onShown: () => void;
   onDeleted: () => void;
@@ -218,10 +235,18 @@ function JobForm({
   const offerExpense = canCopyToExpenses(amount.trim() ? parseMoney(amount) : null);
   // Moradia, ou Transporte quando é do mecânico ou num veículo: a linha do gasto e o gasto usam a mesma.
   const expenseCategory = serviceExpenseCategory(provider?.trade, appliance?.category);
-  // O prestador ou o aparelho do serviço fora das listas daqui: sem eles a categoria (e o nome no gasto) sairia errada, e a cópia espera.
-  const expenseGap = expenseCopyGap(provider?.trade, { provider: Boolean(providerId) && !provider, equipment: Boolean(equipmentId) && !appliance });
-  // A busca do que falta: enquanto anda, a linha diz "Carregando…"; se falhou, o cartão oferece "Tentar de novo".
-  const gapSource = expenseGap ? sources[expenseGap] : null;
+  // O prestador ou o aparelho do serviço que não veio da leitura desta visita (fora das listas daqui, ou nelas só
+  // pelo guardado): sem eles a categoria (e o nome no gasto) podia sair errada, e a cópia espera.
+  const { lone } = sources.equipment;
+  const expenseWait = expenseCopyGap(provider?.trade, {
+    provider: { chosen: Boolean(providerId), found: Boolean(provider), read: sources.provider.read },
+    equipment: {
+      chosen: Boolean(equipmentId),
+      found: Boolean(appliance),
+      read: lone && lone.id === equipmentId ? lone.read : sources.equipment.read,
+    },
+  });
+  const expenseGap = expenseWait?.gap ?? null;
 
   function applyWarranty(months: number) {
     setWarranty(formatBRDate(addMonths(parseBRDate(date) ?? todayISO(), months)));
@@ -298,7 +323,7 @@ function JobForm({
             <View style={styles.flex}>
               <Text variant="label">Lançar também nos gastos da casa</Text>
               <Text variant="small">
-                {expenseGap ? expenseCopyGapNote(expenseGap, sources[expenseGap].loading) : expenseCopyNote(Boolean(job), expenseCategory)}
+                {expenseWait ? expenseCopyGapNote(expenseWait.gap, expenseWait.wait) : expenseCopyNote(Boolean(job), expenseCategory)}
               </Text>
             </View>
             <Switch
@@ -309,8 +334,10 @@ function JobForm({
               accessibilityLabel="Lançar também nos gastos da casa"
             />
           </Row>
-          {/* Não chegou: dá para pedir de novo. O prestador e o aparelho do serviço continuam os mesmos. */}
-          {gapSource && !gapSource.loading ? <Button title="Tentar de novo" variant="secondary" compact onPress={gapSource.retry} /> : null}
+          {/* Não chegou: dá para pedir de novo (sem internet, a busca recomeça sozinha quando ela volta). O prestador e o aparelho do serviço continuam os mesmos. */}
+          {expenseWait?.wait === 'failed' ? (
+            <Button title="Tentar de novo" variant="secondary" compact onPress={sources[expenseWait.gap].retry} />
+          ) : null}
         </Card>
       ) : null}
 

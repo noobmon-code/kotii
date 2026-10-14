@@ -94,9 +94,10 @@ export async function fetchServiceJob(id: string, db: SupabaseClient = supabase)
 }
 
 /**
- * `fresh`: para quem vai editar (a tela do prestador). Busca de novo ao abrir mesmo com a lista guardada ainda
- * nova: o formulário copia o prestador uma vez só, e o que está guardado pode ser de antes de uma mudança feita
- * em outro celular. Sem internet a busca fica parada e vale o guardado.
+ * `fresh`: para quem vai editar (a tela do prestador) e para a tela do serviço (o ofício e o nome vão no gasto que
+ * ela copia). Busca de novo ao abrir mesmo com a lista guardada ainda nova: o formulário copia o prestador uma vez
+ * só, e o que está guardado pode ser de antes de uma mudança feita em outro celular. Sem internet a busca fica
+ * parada e vale o guardado.
  */
 export function useServiceProviders({ fresh = false }: { fresh?: boolean } = {}) {
   return useQuery({
@@ -167,11 +168,22 @@ export function saveServiceJob(input: { id?: string; values: JobValues }, db: Su
 }
 
 export function useSaveProvider() {
+  const queryClient = useQueryClient();
   const invalidate = useInvalidateProviders();
   return useMutation({
     mutationFn: (input: { id?: string; values: ProviderValues }) => saveServiceProvider(input),
-    // Espera a lista nova: a tela do prestador recém-criado abre em seguida e o procura nela.
-    onSuccess: () => invalidate(),
+    onSuccess: (_saved, input) => {
+      // A linha salva entra já na lista guardada, de onde o formulário copia o prestador: se a busca abaixo falhar
+      // (ou a internet cair antes), abrir de novo mostra o que foi salvo, e não o de antes, que Salvar gravaria
+      // por cima. Prestador novo não precisa: a tela dele espera a lista que chega com ele.
+      if (input.id) {
+        queryClient.setQueryData<SoftList<ServiceProvider>>([PROVIDERS_KEY], (old) =>
+          old ? { ...old, rows: old.rows.map((p) => (p.id === input.id ? { ...p, ...input.values } : p)) } : undefined,
+        );
+      }
+      // Espera a lista nova: a tela do prestador recém-criado abre em seguida e o procura nela.
+      return invalidate();
+    },
   });
 }
 
@@ -186,13 +198,22 @@ export function useDeleteProvider() {
 }
 
 export function useSaveServiceJob() {
+  const queryClient = useQueryClient();
   const invalidate = useInvalidateProviders();
   return useMutation({
     mutationFn: (input: { id?: string; values: JobValues }) => saveServiceJob(input),
-    // Sem esperar a busca: o serviço já está salvo, e o gasto que a tela copia em seguida (e o fechar dela) não
-    // pode ficar preso a uma internet que não responde. Quem abre o mesmo serviço logo depois não vê o de antes:
-    // a tela dele espera a busca que pede ao abrir (e esta aqui já marcou o guardado como velho).
-    onSuccess: () => void invalidate(),
+    onSuccess: (_saved, input) => {
+      // O serviço salvo entra já no guardado de onde o formulário o copia: se a busca abaixo falhar (ou a internet
+      // cair antes), abrir de novo sem internet mostra o que foi salvo, e não o de antes, que Salvar gravaria por
+      // cima. As listas de serviços esperam a busca (a ordem e o filtro delas podem mudar com o que foi salvo).
+      if (input.id) {
+        queryClient.setQueryData<ServiceJob | null>([JOBS_KEY, 'job', input.id], (old) => (old ? { ...old, ...input.values } : undefined));
+      }
+      // Sem esperar a busca: o serviço já está salvo, e o gasto que a tela copia em seguida (e o fechar dela) não
+      // pode ficar preso a uma internet que não responde. Quem abre o mesmo serviço logo depois espera a busca que
+      // a tela dele pede ao abrir (e esta aqui já marcou o guardado como velho).
+      void invalidate();
+    },
   });
 }
 

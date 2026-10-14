@@ -9,6 +9,7 @@ import ProviderScreen from '@/app/prestador/[id]';
 import ProvidersScreen from '@/app/prestadores';
 import ServiceJobScreen from '@/app/servico/[id]';
 import { fetchServiceProviders, JOBS_KEY, PROVIDERS_KEY } from '@/data/providers';
+import { StaleNotice } from '@/features/health/StaleNotice';
 import type { Equipment, ServiceJob, ServiceProvider } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
 import { Button, ErrorNotice, Loading, Screen, TextField } from '@/ui/primitives';
@@ -467,9 +468,9 @@ describe('salvar o serviço', () => {
     expect(router.back).toHaveBeenCalledTimes(1);
     expect(notify).not.toHaveBeenCalled();
 
-    // O mesmo serviço aberto de novo, com a busca ainda a caminho: espera, em vez de mostrar o de antes (R$ 180,00).
+    // O mesmo serviço aberto de novo, com a busca ainda a caminho: espera por ela (e o guardado já é o salvo).
     await act(async () => renderer?.unmount());
-    expect(queryClient.getQueryData<ServiceJob>([JOBS_KEY, 'job', 'j1'])?.amount).toBe(180);
+    expect(queryClient.getQueryData<ServiceJob>([JOBS_KEY, 'job', 'j1'])?.amount).toBe(250);
     await open(ServiceJobScreen, { id: 'j1' });
     expect(has(Loading)).toBe(true);
     expect(field(AMOUNT)).toBeUndefined();
@@ -493,8 +494,8 @@ describe('salvar o serviço', () => {
     fail((request) => request.verb === 'select');
     await press('Salvar');
     await act(async () => renderer?.unmount());
-    // O que ficou guardado é o serviço de antes de salvar (R$ 180,00).
-    expect(queryClient.getQueryData<ServiceJob>([JOBS_KEY, 'job', 'j1'])?.amount).toBe(180);
+    // O que ficou guardado é o serviço salvo, não o de antes (R$ 180,00).
+    expect(queryClient.getQueryData<ServiceJob>([JOBS_KEY, 'job', 'j1'])).toMatchObject({ id: 'j1', amount: 250, created_at: '2026-09-01T12:00:00Z' });
 
     hold(only('service_jobs', true));
     await open(ServiceJobScreen, { id: 'j1' });
@@ -504,6 +505,148 @@ describe('salvar o serviço', () => {
     online();
     await release('ok');
     expect(field(AMOUNT)!.props.value).toBe('250,00');
+  });
+});
+
+describe('o guardado depois de salvar é o que foi salvo', () => {
+  it('o serviço: a busca depois de salvar falhou, e ele é aberto de novo sem internet com o que foi salvo', async () => {
+    fresh([PROVIDERS_KEY], list([ZE]));
+    fresh(['equipment'], []);
+    mockNet.jobs = [job()];
+    await open(ServiceJobScreen, { id: 'j1' });
+    await type(AMOUNT, '250,00');
+    await type(DESCRIPTION, 'Trocou o disjuntor e a tomada');
+    fail((request) => request.verb === 'select');
+    await press('Salvar');
+    expect(asked('service_jobs', 'update')).toHaveLength(1);
+    await act(async () => renderer?.unmount());
+
+    onlineManager.setOnline(false);
+    await open(ServiceJobScreen, { id: 'j1' });
+    expect(has(Loading)).toBe(false);
+    expect(field(AMOUNT)!.props.value).toBe('250,00');
+    expect(field(DESCRIPTION)!.props.value).toBe('Trocou o disjuntor e a tomada');
+  });
+
+  it('o prestador: a busca depois de salvar falhou, e ele é aberto de novo sem internet com o que foi salvo', async () => {
+    const NAME = 'Pessoa ou empresa';
+    fresh([PROVIDERS_KEY], list([ZE, OFICINA]));
+    fresh(['equipment'], []);
+    mockNet.providers = [ZE, OFICINA];
+    await open(ProviderScreen, { id: 'p-ze' });
+    await type(NAME, 'Zé da Luz');
+    fail((request) => request.verb === 'select');
+    await press('Salvar');
+    expect(asked('service_providers', 'update')[0].values).toMatchObject({ name: 'Zé da Luz' });
+    expect(router.back).toHaveBeenCalledTimes(1);
+    await act(async () => renderer?.unmount());
+    // Só a linha salva muda; as outras ficam como estavam.
+    expect(queryClient.getQueryData([PROVIDERS_KEY])).toEqual(list([{ ...ZE, name: 'Zé da Luz' }, OFICINA]));
+
+    onlineManager.setOnline(false);
+    await open(ProviderScreen, { id: 'p-ze' });
+    expect(field(NAME)!.props.value).toBe('Zé da Luz');
+  });
+});
+
+describe('a cópia para os gastos espera a leitura desta visita do prestador e do aparelho', () => {
+  const TONHO = provider('p-ton', 'Tonho', 'mecanico');
+
+  beforeEach(() => {
+    mockNet.jobs = [job({ provider_id: 'p-ton', amount: 180 })];
+  });
+
+  it('o guardado diz Mecânico e o banco, Eletricista: a cópia espera a leitura, e sai em Moradia com o nome novo', async () => {
+    fresh([PROVIDERS_KEY], list([TONHO]));
+    fresh(['equipment'], []);
+    mockNet.providers = [{ ...TONHO, name: 'Tonho Eletricista', trade: 'eletricista' }];
+    hold(only('service_providers'));
+    await open(ServiceJobScreen, { id: 'j1' });
+    // O formulário não espera esta leitura; só a cópia.
+    expect(field(DESCRIPTION)!.props.value).toBe('Trocou o disjuntor');
+    expect(page()).toContain('Carregando o prestador deste serviço…');
+    expect(page()).not.toContain('Transporte');
+    expect(copySwitch()!.props).toMatchObject({ value: false, disabled: true });
+
+    online();
+    await release('ok');
+    expect(page()).toContain('Cria um gasto novo em Moradia');
+    expect(copySwitch()!.props.disabled).toBe(false);
+    await act(async () => copySwitch()!.props.onValueChange(true));
+    await press('Salvar');
+    expect(asked('expenses', 'insert')[0].values).toMatchObject({
+      description: 'Trocou o disjuntor (Tonho Eletricista)',
+      category: 'moradia',
+      amount: 180,
+    });
+  });
+
+  it('o aparelho guardado não é veículo e o do banco é: a cópia espera, e sai em Transporte', async () => {
+    fresh([PROVIDERS_KEY], list([SILVA]));
+    fresh(['equipment'], [GELADEIRA]);
+    mockNet.providers = [SILVA];
+    mockNet.equipment = [{ ...GELADEIRA, name: 'Moto', category: 'veiculo' } as Equipment];
+    mockNet.jobs = [job({ provider_id: 'p-out', equipment_id: 'e1' })];
+    hold(only('equipment'));
+    await open(ServiceJobScreen, { id: 'j1' });
+    expect(page()).toContain('Carregando o aparelho deste serviço…');
+    expect(copySwitch()!.props).toMatchObject({ value: false, disabled: true });
+
+    await release('ok');
+    expect(page()).toContain('Cria um gasto novo em Transporte');
+    expect(copySwitch()!.props.disabled).toBe(false);
+  });
+
+  it('a leitura falhou: o motivo e "Tentar de novo", mesmo com o prestador na lista guardada', async () => {
+    fresh([PROVIDERS_KEY], list([TONHO]));
+    fresh(['equipment'], []);
+    mockNet.providers = [TONHO];
+    fail(only('service_providers'));
+    await open(ServiceJobScreen, { id: 'j1' });
+    expect(has(ErrorNotice)).toBe(false);
+    expect(page()).toContain(
+      'Não deu para carregar o prestador deste serviço, e é o ofício dele que diz se o gasto entra em Moradia ou em Transporte. Tente de novo, ou lance o gasto em Finanças.',
+    );
+    expect(copySwitch()!.props).toMatchObject({ value: false, disabled: true });
+
+    online();
+    await press('Tentar de novo');
+    expect(page()).toContain('Cria um gasto novo em Transporte');
+    expect(copySwitch()!.props.disabled).toBe(false);
+    expect(button('Tentar de novo')).toBeUndefined();
+  });
+
+  it('sem internet: o formulário abre com o guardado, e a cópia fica desligada até a leitura chegar', async () => {
+    fresh([PROVIDERS_KEY], list([TONHO]));
+    fresh(['equipment'], []);
+    fresh([JOBS_KEY, 'job', 'j1'], job({ provider_id: 'p-ton', amount: 180 }));
+    mockNet.providers = [TONHO];
+    onlineManager.setOnline(false);
+    await open(ServiceJobScreen, { id: 'j1' });
+    expect(field(DESCRIPTION)!.props.value).toBe('Trocou o disjuntor');
+    expect(page()).toContain(
+      'Sem internet, não dá para conferir o prestador deste serviço, e é o ofício dele que diz se o gasto entra em Moradia ou em Transporte. Quando a internet voltar, dá para lançar daqui.',
+    );
+    expect(copySwitch()!.props).toMatchObject({ value: false, disabled: true });
+    // A busca volta sozinha com a internet: não há o que tentar de novo.
+    expect(button('Tentar de novo')).toBeUndefined();
+
+    await act(async () => onlineManager.setOnline(true));
+    await settle();
+    expect(page()).toContain('Cria um gasto novo em Transporte');
+    expect(copySwitch()!.props.disabled).toBe(false);
+  });
+
+  it('salvar o serviço não espera estas leituras', async () => {
+    fresh([PROVIDERS_KEY], list([TONHO]));
+    fresh(['equipment'], []);
+    hold((request) => request.verb === 'select' && request.table !== 'service_jobs');
+    await open(ServiceJobScreen, { id: 'j1' });
+    await type(AMOUNT, '200,00');
+    await press('Salvar');
+    expect(asked('service_jobs', 'update')[0].values).toMatchObject({ amount: 200 });
+    expect(router.back).toHaveBeenCalledTimes(1);
+    expect(asked('expenses', 'insert')).toHaveLength(0);
   });
 });
 
@@ -550,6 +693,8 @@ describe('a lista de prestadores que a tela do serviço tem é de antes', () => 
   it('a busca já tinha falhado antes de o formulário aparecer, e a lista não tem quem acabou de ser salvo: o aviso, com "Tentar de novo"', async () => {
     old([PROVIDERS_KEY], list([ZE]));
     fresh(['equipment'], [CARRO]);
+    // A tela lê os aparelhos de novo ao abrir: o banco também tem o carro.
+    mockNet.equipment = [CARRO];
     fail(only('service_providers'));
     await queryClient.fetchQuery({ queryKey: [PROVIDERS_KEY], queryFn: () => fetchServiceProviders() }).catch(() => undefined);
     await open(ServiceJobScreen, { id: 'novo', prestador: 'p-mec', aparelho: 'e-car' });
@@ -602,7 +747,8 @@ describe('a cópia para os gastos espera o prestador ou o aparelho que a tela n�
     mockNet.providers = [SILVA];
     mockNet.equipment = [GELADEIRA, CARRO];
     mockNet.jobs = [job({ provider_id: 'p-out', equipment_id: 'e-car', description: 'Trocou a embreagem', amount: 1500 })];
-    hold(only('equipment', true));
+    // A lista (lida de novo ao abrir) e o aparelho sozinho, os dois ainda a caminho.
+    hold(only('equipment'));
     await open(ServiceJobScreen, { id: 'j1' });
     expect(page()).toContain('Carregando o aparelho deste serviço…');
     expect(copySwitch()!.props).toMatchObject({ value: false, disabled: true });
@@ -683,6 +829,69 @@ describe('excluir o prestador', () => {
     await open(ProviderScreen, { id: 'p-ze' });
     await press('Excluir prestador');
     expect(asks()).toBe('Excluir Zé Eletricista?');
+  });
+});
+
+describe('uma atualização que falha não tira da frente o que já estava carregado', () => {
+  const STALE = 'Não foi possível atualizar. Mostrando o que já estava carregado.';
+
+  it('a lista de prestadores: puxar para atualizar falhou, e ela continua, com o aviso e "Tentar de novo"', async () => {
+    fresh([PROVIDERS_KEY], list([ZE]));
+    await open(ProvidersScreen, {});
+    expect(page()).toContain('Zé Eletricista');
+
+    fail(only('service_providers'));
+    await act(async () => renderer!.root.findByType(Screen).props.onRefresh());
+    await settle();
+    expect(has(ErrorNotice)).toBe(false);
+    expect(page()).toContain('Zé Eletricista');
+    expect(page()).toContain(STALE);
+
+    mockNet.providers = [ZE, OFICINA];
+    online();
+    const before = asked('service_providers', 'select').length;
+    await press('Tentar de novo');
+    expect(asked('service_providers', 'select')).toHaveLength(before + 1);
+    expect(has(StaleNotice)).toBe(false);
+    expect(page()).toContain('Oficina do Tonho');
+  });
+
+  it('a lista de prestadores sem nada guardado e a busca falhou: o aviso de erro, com "Tentar de novo"', async () => {
+    fail(only('service_providers'));
+    await open(ProvidersScreen, {});
+    expect(has(ErrorNotice)).toBe(true);
+    expect(has(StaleNotice)).toBe(false);
+
+    online();
+    await press('Tentar de novo');
+    expect(has(ErrorNotice)).toBe(false);
+    expect(page()).toContain('Zé Eletricista');
+  });
+
+  it('os serviços na tela do prestador: a busca falhou, e os que estavam continuam, com o aviso', async () => {
+    fresh([PROVIDERS_KEY], list([ZE]));
+    fresh(['equipment'], []);
+    old([JOBS_KEY, 'provider', 'p-ze'], list([job()]));
+    fail(only('service_jobs'));
+    await open(ProviderScreen, { id: 'p-ze' });
+    expect(has(ErrorNotice)).toBe(false);
+    expect(page()).toContain('Trocou o disjuntor');
+    expect(page()).toContain(STALE);
+
+    mockNet.jobs = [job(), job({ id: 'j2', description: 'Trocou a tomada', done_on: '2026-10-01' })];
+    online();
+    await press('Tentar de novo');
+    expect(has(StaleNotice)).toBe(false);
+    expect(page()).toContain('Trocou a tomada');
+  });
+
+  it('os serviços na tela do prestador, sem nada guardado: o aviso de erro no lugar deles', async () => {
+    fresh([PROVIDERS_KEY], list([ZE]));
+    fresh(['equipment'], []);
+    fail(only('service_jobs'));
+    await open(ProviderScreen, { id: 'p-ze' });
+    expect(has(ErrorNotice)).toBe(true);
+    expect(has(StaleNotice)).toBe(false);
   });
 });
 
