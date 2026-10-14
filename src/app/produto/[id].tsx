@@ -90,7 +90,7 @@ export default function ProductScreen() {
 
       <Section title="Último preço por mercado">
         {latestByStore.length === 0 ? (
-          <Text variant="muted">{noStorePriceSentence(purchases.data?.length)}</Text>
+          <Text variant="muted">{noStorePriceSentence(purchases.data)}</Text>
         ) : (
           <ListCard>
             {latestByStore.map((obs, index) => (

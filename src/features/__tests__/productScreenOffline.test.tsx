@@ -204,6 +204,18 @@ describe('produto comprado só em notas sem mercado', () => {
     expect(text).toEqual(expect.arrayContaining(['Histórico de preço', 'R$ 25,90/un · Mercado não informado · 10 out']));
   });
 
+  it('compra com mercado e sem valor: fica fora dos preços por mercado, e a frase diz que está sem valor', async () => {
+    // Zero não é preço: a leitura dos preços por mercado deixa a linha de fora.
+    mockDb.tables.price_observations = [];
+    mockDb.tables.receipt_items = [{ ...lines()[1], unit_price: 0, total_price: 0 }];
+    open();
+    await settle();
+    await settle();
+    expect(page()).toContain('A compra deste produto está sem valor: veja o histórico abaixo.');
+    expect(page()).not.toContain('sem mercado informado');
+    expect(page()).toContain('Histórico de preço');
+  });
+
   it('sem compra nenhuma, a frase de sempre', async () => {
     mockDb.tables.price_observations = [];
     mockDb.tables.receipt_items = [];

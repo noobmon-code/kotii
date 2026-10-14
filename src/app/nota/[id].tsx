@@ -18,9 +18,12 @@ import {
   useConfirmReceipt,
   useDeleteReceipt,
   useDeleteReceiptItem,
+  useFillReceiptItemValue,
   useReceipt,
+  useReceiptReadAt,
   useSaveReceiptItem,
   useSetReceiptStore,
+  useSetReceiptTotal,
   useUpdateReceipt,
   type ItemValues,
 } from '@/data/receipts';
@@ -37,9 +40,33 @@ import {
   type ListChoice,
   type ReceiptLine,
 } from '@/domain/listLinks';
-import { receiptTotalMismatch } from '@/domain/marketSpend';
-import { formatBRL, formatQuantity } from '@/domain/money';
+import { formatBRL } from '@/domain/money';
 import { describePriceAlert, priceAlerts, totalSaving, type AlertItem, type PriceAlert } from '@/domain/priceAlert';
+import {
+  confirmUnpricedQuestion,
+  gapNotices,
+  hasReceiptTotal,
+  ITEM_SAVED_NOT_SHOWN,
+  pendingUnpriced,
+  quantityText,
+  readReceiptTotal,
+  RECEIPT_CAUGHT_UP,
+  RECEIPT_STILL_BEHIND,
+  RECEIPT_TOTAL_HINT,
+  RECEIPT_TOTAL_LABEL,
+  receiptGap,
+  receiptTotalAccess,
+  receiptTotalField,
+  receiptTotalText,
+  SAVE_TOTAL_LABEL,
+  unpricedPrompt,
+  UNPRICED_LABEL,
+  VALUE_NOT_SAVED,
+  VALUE_SAVED_NOT_SHOWN,
+  type GapSuggestion,
+  type UnpricedPrompt,
+} from '@/domain/receiptGap';
+import { hasNoValue } from '@/domain/receiptItem';
 import { houseNameOverride, keptName, noteNames, sameProduct, typedNameActions, withEntry } from '@/domain/receiptNames';
 import {
   buildConfirmPayload,
@@ -86,6 +113,7 @@ import {
   Screen,
   Section,
   Text,
+  TextField,
 } from '@/ui/primitives';
 import { space, useColors } from '@/ui/theme';
 
@@ -104,14 +132,24 @@ const NOTE_OPTION = 'nota:';
 /** Como o item estava antes de "Usar": é o que "Desfazer" põe de volta. */
 type BeforeUse = { override: ItemOverride | undefined; keptName: string | undefined };
 
+/** A linha do total tem 20 de altura: com a folga, o toque pega 44, sem mexer no desenho. */
+const TOTAL_ROW_SLOP = { top: 12, bottom: 12 };
+
+/** Quanto a tela espera pela nota relida depois de gravar o valor de um item, antes de soltar "Confirmar nota". */
+const SETTLE_WAIT_MS = 4000;
+
 export default function ReceiptScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const receiptQuery = useReceipt(id);
+  const receiptReadAt = useReceiptReadAt(id);
   const products = useProducts();
   const stores = useStores();
   const setStore = useSetReceiptStore(id);
   const updateReceipt = useUpdateReceipt(id);
+  // O total tem a gravação dele (só na revisão): a da data ou a de quem pagou em andamento não a segura.
+  const saveTotal = useSetReceiptTotal(id);
   const saveItem = useSaveReceiptItem(id);
+  const fillValue = useFillReceiptItemValue(id);
   const deleteItem = useDeleteReceiptItem(id);
   const confirm = useConfirmReceipt(id);
   const deleteReceipt = useDeleteReceipt(id);
@@ -129,10 +167,30 @@ export default function ReceiptScreen() {
   const [picker, setPicker] = useState<Picker | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [dateText, setDateText] = useState<string | null>(null);
+  // O total da nota em edição (null: fechado). Só na revisão.
+  const [totalText, setTotalText] = useState<string | null>(null);
+  // Itens que a pessoa decidiu deixar sem valor nesta revisão. Não é guardado: abrir a nota de novo pergunta de novo.
+  const [leftUnpriced, setLeftUnpriced] = useState<ReadonlySet<string>>(new Set());
+  // O mesmo conjunto também fora do estado: a confirmação que esperou uma gravação (a do total) lê o de agora,
+  // e não o do instante do toque.
+  const leftNow = useRef<ReadonlySet<string>>(new Set());
   const [imageUrls, setImageUrls] = useState<string[] | null>(null);
   const [checkingPantry, setCheckingPantry] = useState(false);
   // Trava já no toque: o estado só muda no próximo render.
   const confirming = useRef(false);
+  // Valores de item a caminho, do toque ("Usar R$ …" ou salvar no formulário) até a nota voltar do banco com
+  // eles. A conta é a trava do toque; o estado é o que deixa "Confirmar nota" ocupado.
+  const valueWrites = useRef(0);
+  // Quantas gravações de valor já saíram desta tela: quem esperou outra coisa sabe se alguma saiu nesse meio.
+  const valueSeq = useRef(0);
+  const [settlingValue, setSettlingValue] = useState(false);
+  // A leitura da nota que ficou atrás do que esta tela gravou (de quando ela é): uma gravação de item cuja nota
+  // relida não voltou, ou que ficou sem resposta do banco. Enquanto a nota em tela for essa leitura
+  // (`dataUpdatedAt`), "Confirmar nota" não vai com os itens dela.
+  const staleRead = useRef(0);
+  // Os itens cujo valor esta tela gravou sem a nota voltar, cada um com a leitura que ficou para trás: enquanto a
+  // nota em tela for essa leitura, o item não pergunta de novo (nem na nota já confirmada).
+  const [savedAt, setSavedAt] = useState<Readonly<Record<string, number>>>({});
 
   const catalog = useMemo(
     () => new Map<string, CatalogProduct>((products.data ?? []).map((p) => [p.id, p])),
@@ -176,9 +234,12 @@ export default function ReceiptScreen() {
   const { receipt, items } = receiptQuery.data;
   const isDraft = receipt.status === 'draft';
   const purchasedOn = toISODate(new Date(receipt.purchased_at));
-  const itemsTotal = Math.round(items.reduce((s, i) => s + i.total_price, 0) * 100) / 100;
-  // A mesma conta, em centavos, que a tela "Mercado do mês" usa para dizer quais notas abrir para conferir.
-  const totalMismatch = receiptTotalMismatch(receipt.total, itemsTotal);
+  // A soma, a diferença para o total e os itens sem valor: contas e frases em domain/receiptGap.
+  const gap = receiptGap(receipt.total, items);
+  const notices = gapNotices(gap);
+  // Os itens cujo valor foi gravado e que a nota em tela (a leitura de antes da gravação) ainda mostra sem ele.
+  const savedUnshown = new Set(Object.keys(savedAt).filter((itemId) => receiptQuery.dataUpdatedAt <= savedAt[itemId]));
+  const totalAccess = receiptTotalAccess(receipt.total);
 
   const resolvedItems = new Map(items.map((item) => [item.id, resolveItem(item, overrides[item.id], catalog, purchasedOn)]));
   const alertItems: AlertItem[] = items.flatMap((item) => {
@@ -276,6 +337,155 @@ export default function ReceiptScreen() {
   }
 
   /**
+   * Grava o total que está no campo e o fecha. Devolve se a nota ficou com
+   * ele: `false` é o que não deu para ler (avisa, e o campo continua aberto)
+   * ou a gravação que falhou. Com o campo fechado não há o que gravar.
+   */
+  async function commitTotal(): Promise<boolean> {
+    if (totalText == null) return true;
+    const result = readReceiptTotal(totalText);
+    if (!result.ok) {
+      notify(result.title, result.message);
+      return false;
+    }
+    let saved: boolean;
+    try {
+      ({ saved } = await saveTotal.mutateAsync(result.total));
+    } catch (err) {
+      onError(err);
+      return false;
+    }
+    setTotalText(null);
+    // Nada gravado: a nota deixou de ser rascunho (foi confirmada em outro aparelho). A tela já está buscando a
+    // nota de novo e passa a mostrar a confirmada; quem chamou não segue como se ela ainda fosse rascunho.
+    return saved;
+  }
+
+  /** "Salvar total" (ou a tecla de enviar do campo): um salvamento por vez. */
+  function saveTypedTotal() {
+    if (!saveTotal.isPending) void commitTotal();
+  }
+
+  const leaveUnpriced = (ids: string[]) => {
+    leftNow.current = new Set([...leftNow.current, ...ids]);
+    setLeftUnpriced(leftNow.current);
+  };
+
+  /**
+   * Espera a nota voltar do banco, sem começar outra busca se já há uma a
+   * caminho. A espera tem limite: sem internet a busca fica parada (e a rede
+   * muda não responde), e o botão giraria sem explicação. Devolve a leitura,
+   * ou nada se ela não voltou a tempo.
+   */
+  async function rereadReceipt() {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const reread = async () => {
+      let read = await receiptQuery.refetch({ cancelRefetch: false });
+      // Outra gravação que termine no meio troca a releitura por uma mais nova: vale a última.
+      while (read.isFetching) read = await receiptQuery.refetch({ cancelRefetch: false });
+      return read;
+    };
+    try {
+      return await Promise.race([reread(), new Promise<undefined>((resolve) => (timer = setTimeout(() => resolve(undefined), SETTLE_WAIT_MS)))]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Uma gravação de item a caminho, do toque até a nota voltar do banco com
+   * ela. A gravação termina antes da releitura que ela mesma pede
+   * (data/receipts), e nesse meio a tela ainda mostra a nota de antes:
+   * "Confirmar nota" perguntaria pelo item que acabou de ganhar valor, ou iria
+   * sem o item novo. Aqui só se espera por essa mesma releitura, sem começar
+   * outra. `onWritten` roda assim que o banco responde, e devolve `false`
+   * quando a gravação não achou o item (nada desta tela foi gravado). `shown`
+   * é o que avisar se a nota não voltar, e o item que ganhou valor.
+   */
+  async function settleValue<T>(
+    write: Promise<T>,
+    onWritten?: (result: T) => boolean | void,
+    shown?: { itemId?: string; saved: { title: string; message: string } },
+  ) {
+    valueWrites.current += 1;
+    valueSeq.current += 1;
+    setSettlingValue(true);
+    try {
+      // Fora da chamada opcional: sem `onWritten`, o que vai dentro dos parênteses dela nem chega a ser esperado.
+      const result = await write;
+      const written = onWritten?.(result) !== false;
+      const read = await rereadReceipt();
+      if (!read || read.isError) {
+        // A nota não voltou (a busca falhou, ou não respondeu a tempo): a tela ficou atrás do que foi gravado, e
+        // "Confirmar nota" busca a nota antes de seguir.
+        const behind = receiptReadAt();
+        staleRead.current = behind;
+        // O valor está gravado, e a tela ainda mostra o item como antes. O item deixa de perguntar enquanto a
+        // nota em tela for essa leitura (outro "Usar" ou "Preencher" acharia o item já com valor e diria que
+        // não salvou), e, se a busca falhou de vez, a pessoa fica sabendo; a que só demora ainda atualiza a
+        // tela. Com nada gravado (o item já tinha valor, ou saiu da nota), o aviso foi o de que não salvou, e
+        // nenhum "salvo" vem por cima dele.
+        if (written && shown) {
+          const { itemId } = shown;
+          if (itemId) setSavedAt((prev) => ({ ...prev, [itemId]: behind }));
+          if (read?.isError) notify(shown.saved.title, shown.saved.message);
+        }
+      }
+    } catch (err) {
+      // Sem resposta do banco não dá para saber se gravou: a tela pode ter ficado para trás.
+      staleRead.current = receiptReadAt();
+      onError(err);
+    } finally {
+      valueWrites.current -= 1;
+      if (!valueWrites.current) setSettlingValue(false);
+    }
+  }
+
+  /**
+   * "Confirmar nota" com a tela atrás do que foi gravado: em vez de confirmar
+   * com os itens de antes (o item novo ficaria sem produto, fora da despensa e
+   * da lista, e a nota confirmada não se corrige), busca a nota e diz o que
+   * houve. A confirmação fica para o toque seguinte, já com os itens de agora.
+   */
+  async function catchUp() {
+    valueWrites.current += 1;
+    setSettlingValue(true);
+    try {
+      const read = await rereadReceipt();
+      // A busca que falha troca a tela pela do erro, com como tentar de novo: ali não há o que avisar.
+      if (read?.isError) return;
+      const notice = read ? RECEIPT_CAUGHT_UP : RECEIPT_STILL_BEHIND;
+      notify(notice.title, notice.message);
+    } finally {
+      valueWrites.current -= 1;
+      if (!valueWrites.current) setSettlingValue(false);
+    }
+  }
+
+  /**
+   * O item já tinha valor (ou saiu da nota) em outro aparelho: a pessoa fica sabendo que o dela não foi gravado.
+   * Devolve se gravou.
+   */
+  const tellIfNotFilled = ({ filled }: { filled: boolean }) => {
+    if (!filled) notify(VALUE_NOT_SAVED.title, VALUE_NOT_SAVED.message);
+    return filled;
+  };
+
+  /**
+   * "Usar R$ 12,90": grava no item o que falta para o total. Só depois do
+   * toque, nunca sozinho, e só no item que ainda está sem valor (na revisão
+   * também: a tela pode estar atrás do que outro aparelho já gravou).
+   */
+  function applySuggestion(suggestion: GapSuggestion) {
+    // Um valor por vez: com a nota ainda por voltar, o segundo toque acharia o item já com valor.
+    if (valueWrites.current) return;
+    void settleValue(fillValue.mutateAsync({ id: suggestion.itemId, values: suggestion.values }), tellIfNotFilled, {
+      itemId: suggestion.itemId,
+      saved: VALUE_SAVED_NOT_SHOWN,
+    });
+  }
+
+  /**
    * O que já foi para a despensa pelo carrinho (ou à mão) numa data próxima:
    * pergunta antes de repetir. Sem repetir, esses itens salvam só na nota.
    */
@@ -297,7 +507,46 @@ export default function ReceiptScreen() {
     return payload.map((p) => (skip.has(p.id) ? { ...p, pantry: undefined } : p));
   }
 
+  /**
+   * "Confirmar nota". Antes das outras perguntas: o total que ficou digitado
+   * no campo aberto é gravado (o que não dá para ler avisa, e nada mais
+   * acontece), e os itens sem valor que a pessoa nem preencheu nem deixou
+   * assim de propósito ganham a pergunta deles. Respondido "Confirmar", é
+   * decisão dela: se uma pergunta seguinte for cancelada, o próximo toque não
+   * pergunta de novo. Tudo sob a trava do toque, para o segundo toque não
+   * abrir a pergunta outra vez; com um valor de item a caminho, o toque não
+   * faz nada (perguntaria pelo item que acabou de ganhar valor).
+   */
   async function doConfirm() {
+    if (confirming.current || valueWrites.current || confirm.isPending || listPending || listFailed) return;
+    // A nota em tela é a leitura que ficou atrás do que esta tela gravou: os itens daqui não são os do banco.
+    if (receiptQuery.dataUpdatedAt <= staleRead.current) {
+      void catchUp();
+      return;
+    }
+    confirming.current = true;
+    try {
+      const valuesBefore = valueSeq.current;
+      if (!(await commitTotal())) return;
+      // A gravação do total leva um tempo, e a tela seguiu viva: um valor de item gravado nesse meio (a caminho
+      // ou já de volta) para a confirmação, porque o que este toque sabe dos itens é de antes dele e perguntaria
+      // pelo item que acabou de ganhar valor. "Deixar sem valor" dado nesse meio vale.
+      if (valueWrites.current || valueSeq.current !== valuesBefore) return;
+      const pending = pendingUnpriced(gap, leftNow.current);
+      if (pending.length) {
+        const question = confirmUnpricedQuestion(pending.length);
+        // askYesNo responde "não" também quando a pergunta é dispensada: a trava nunca fica presa.
+        if (!(await askYesNo(question.title, question.message, question.confirmLabel, question.cancelLabel))) return;
+        leaveUnpriced(pending);
+      }
+    } finally {
+      // Solta antes de seguir: a confirmação tem a trava dela, para a conferência da despensa.
+      confirming.current = false;
+    }
+    await confirmReviewed();
+  }
+
+  async function confirmReviewed() {
     if (confirming.current || confirm.isPending || listPending || listFailed) return;
     const removals = listRemovals(listMatches, listItems);
     const forgotten = forgottenLinks(suggestedMatches, listChoices, listItems);
@@ -353,9 +602,33 @@ export default function ReceiptScreen() {
   }
 
   function saveEditedItem(values: ItemValues) {
-    saveItem.mutate(
-      { id: editing?.item?.id, values, position: items.length },
-      { onSuccess: () => setEditing(null), onError },
+    const itemId = editing?.item?.id;
+    // Nota confirmada: o formulário só abre no item sem valor, e só o valor é gravado.
+    if (!isDraft) {
+      // Um valor por vez, como no "Usar": o segundo toque, antes de o botão virar "carregando", acharia o item
+      // já com valor e diria que não salvou.
+      if (!itemId || valueWrites.current) return;
+      // Só o preço e o total: a quantidade e a unidade da nota confirmada já estão na despensa.
+      const prices = { unit_price: values.unit_price, total_price: values.total_price };
+      void settleValue(
+        fillValue.mutateAsync({ id: itemId, values: prices }),
+        (result) => {
+          setEditing(null);
+          return tellIfNotFilled(result);
+        },
+        { itemId, saved: VALUE_SAVED_NOT_SHOWN },
+      );
+      return;
+    }
+    void settleValue(
+      saveItem.mutateAsync({ id: itemId, values, position: items.length }),
+      (saved) => {
+        // Zero digitado de propósito é a resposta da pessoa: o item não pergunta de novo. Vale também no item
+        // novo, pelo id que o banco deu a ele (a nota relida ainda vai trazê-lo).
+        if (hasNoValue(values)) leaveUnpriced([saved.id]);
+        setEditing(null);
+      },
+      { itemId, saved: itemId ? VALUE_SAVED_NOT_SHOWN : ITEM_SAVED_NOT_SHOWN },
     );
   }
 
@@ -381,7 +654,7 @@ export default function ReceiptScreen() {
             title={`Confirmar nota (${items.length} ${items.length === 1 ? 'item' : 'itens'})`}
             icon="check"
             onPress={doConfirm}
-            loading={confirm.isPending || checkingPantry || listPending}
+            loading={confirm.isPending || checkingPantry || listPending || saveTotal.isPending || settlingValue}
             disabled={!items.length || listFailed}
           />
         ) : undefined
@@ -410,16 +683,54 @@ export default function ReceiptScreen() {
         )}
         <Row style={styles.between}>
           <Text variant="muted">Soma dos itens</Text>
-          <Text variant="label">{formatBRL(itemsTotal)}</Text>
+          <Text variant="label">{formatBRL(gap.itemsTotal)}</Text>
         </Row>
-        {receipt.total != null ? (
+        {isDraft && totalText != null ? (
+          <View style={styles.gapSm}>
+            <TextField
+              label={RECEIPT_TOTAL_LABEL}
+              value={totalText}
+              onChangeText={setTotalText}
+              onSubmitEditing={saveTypedTotal}
+              keyboardType="decimal-pad"
+              placeholder="0,00"
+              hint={RECEIPT_TOTAL_HINT}
+              autoFocus
+            />
+            <Row>
+              <Button title={SAVE_TOTAL_LABEL} compact onPress={saveTypedTotal} loading={saveTotal.isPending} />
+              <Button title="Cancelar" variant="ghost" compact onPress={() => setTotalText(null)} />
+            </Row>
+          </View>
+        ) : isDraft ? (
+          // Na revisão o total dá para corrigir (a leitura também erra o total) ou informar; nunca é obrigatório.
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={totalAccess.label}
+            accessibilityHint={totalAccess.hint}
+            hitSlop={TOTAL_ROW_SLOP}
+            onPress={() => setTotalText(receiptTotalField(receipt.total))}
+            style={[styles.totalRow, styles.between]}>
+            <Text variant="muted">{RECEIPT_TOTAL_LABEL}</Text>
+            <Row gap={space.xs}>
+              <Text variant="label" color={hasReceiptTotal(receipt.total) ? undefined : 'primary'}>
+                {receiptTotalText(receipt.total)}
+              </Text>
+              <Icon name="pencil-outline" size={16} color="textMuted" />
+            </Row>
+          </Pressable>
+        ) : hasReceiptTotal(receipt.total) ? (
           <Row style={styles.between}>
-            <Text variant="muted">Total da nota</Text>
-            <Text variant="label">{formatBRL(receipt.total)}</Text>
+            <Text variant="muted">{RECEIPT_TOTAL_LABEL}</Text>
+            <Text variant="label">{receiptTotalText(receipt.total)}</Text>
           </Row>
         ) : null}
-        {totalMismatch ? (
-          <Badge label="A soma não bate com o total: confira itens e descontos" tone="warning" />
+        {notices.length ? (
+          <View style={styles.gapXs}>
+            {notices.map((text) => (
+              <Badge key={text} label={text} tone="warning" />
+            ))}
+          </View>
         ) : null}
         <PayerChips value={receipt.paid_by} onChange={(paidBy) => updateReceipt.mutate({ paid_by: paidBy }, { onError })} />
         {photos.length ? (
@@ -495,12 +806,16 @@ export default function ReceiptScreen() {
           const resolved = resolvedItems.get(item.id)!;
           const alert = alertText(alerts.get(item.id));
           const before = beforeUse[item.id];
+          const prompt = unpricedPrompt(gap, item.id, receipt, leftUnpriced, savedUnshown);
           return isDraft ? (
             <DraftItemCard
               key={item.id}
               item={item}
               resolved={resolved}
               alert={alert}
+              prompt={prompt}
+              onUseSuggestion={applySuggestion}
+              onLeaveUnpriced={() => leaveUnpriced([item.id])}
               onEdit={() => setEditing({ item })}
               onPickProduct={() =>
                 setPicker({ kind: 'product', itemId: item.id, query: resolved.productName ?? item.suggested_name ?? '' })
@@ -525,13 +840,15 @@ export default function ReceiptScreen() {
                 title={item.product_id ? (catalog.get(item.product_id)?.name ?? item.raw_description) : item.raw_description}
                 subtitle={
                   <View style={styles.gapXs}>
-                    <Text variant="muted">{`${formatQuantity(item.quantity, item.unit)} × ${formatBRL(item.unit_price)}`}</Text>
+                    <Text variant="muted">{quantityText(item)}</Text>
                     {alert ? <Badge label={alert} tone="warning" /> : null}
                   </View>
                 }
-                right={<Text variant="label">{formatBRL(item.total_price)}</Text>}
+                right={<ItemValue item={item} />}
                 onPress={item.product_id ? () => router.push({ pathname: '/produto/[id]', params: { id: item.product_id! } }) : undefined}
               />
+              {/* A nota confirmada não se edita, com uma exceção: dar valor ao item que ficou sem. */}
+              {prompt ? <ValueQuestion prompt={prompt} onUse={applySuggestion} onFill={() => setEditing({ item })} /> : null}
             </Card>
           );
         })}
@@ -684,15 +1001,18 @@ export default function ReceiptScreen() {
       {editing ? (
         <ReceiptItemEditor
           initial={editing.item}
-          saving={saveItem.isPending}
+          valueOnly={!isDraft}
+          saving={saveItem.isPending || fillValue.isPending}
           onClose={() => setEditing(null)}
           onSave={saveEditedItem}
           onDelete={
-            editing.item
+            editing.item && isDraft
               ? () => {
                   const target = editing.item!;
                   setEditing(null);
-                  deleteItem.mutate(target.id, { onError });
+                  // Pelo mesmo caminho das outras gravações de item: até a nota voltar sem ele, "Confirmar nota"
+                  // espera (iria com o item apagado, ou perguntaria pelo valor dele).
+                  void settleValue(deleteItem.mutateAsync(target.id));
                 }
               : undefined
           }
@@ -708,6 +1028,9 @@ function DraftItemCard({
   item,
   resolved,
   alert,
+  prompt,
+  onUseSuggestion,
+  onLeaveUnpriced,
   onEdit,
   onPickProduct,
   onPickCategory,
@@ -724,6 +1047,10 @@ function DraftItemCard({
   resolved: ResolvedItem;
   /** Aviso de preço já descrito (describePriceAlert). */
   alert: string | null;
+  /** A pergunta do item sem valor (domain/receiptGap); null se ele tem valor ou se a pessoa já respondeu. */
+  prompt: UnpricedPrompt | null;
+  onUseSuggestion: (suggestion: GapSuggestion) => void;
+  onLeaveUnpriced: () => void;
   onEdit: () => void;
   onPickProduct: () => void;
   onPickCategory: () => void;
@@ -783,11 +1110,9 @@ function DraftItemCard({
         <CategoryIcon category={resolved.category} name={artName} size={36} />
         <View style={styles.flex}>
           <Text variant="small">{item.raw_description}</Text>
-          <Text variant="muted">
-            {formatQuantity(item.quantity, item.unit)} × {formatBRL(item.unit_price)}
-          </Text>
+          <Text variant="muted">{quantityText(item)}</Text>
         </View>
-        <Text variant="label">{formatBRL(item.total_price)}</Text>
+        <ItemValue item={item} />
         <IconButton icon="pencil-outline" label={`Editar ${item.raw_description}`} onPress={onEdit} />
       </Row>
       {alert ? <Badge label={alert} tone="warning" /> : null}
@@ -802,6 +1127,7 @@ function DraftItemCard({
           <Chip label={getCategory(resolved.category).label} icon="tag-outline" onPress={onPickCategory} />
         ) : null}
       </Row>
+      {prompt ? <ValueQuestion prompt={prompt} onUse={onUseSuggestion} onFill={onEdit} onLeave={onLeaveUnpriced} /> : null}
       {similar ? (
         <View style={styles.gapXs}>
           <Text variant="small">{similarNameHint(similar)}</Text>
@@ -848,6 +1174,40 @@ function DraftItemCard({
   );
 }
 
+/** O valor do item; o que não tem valor diz "sem valor", baixinho, em vez de "R$ 0,00". */
+function ItemValue({ item }: { item: ReceiptItem }) {
+  return hasNoValue(item) ? <Text variant="muted">{UNPRICED_LABEL}</Text> : <Text variant="label">{formatBRL(item.total_price)}</Text>;
+}
+
+/**
+ * A pergunta do item sem valor, no jeito da sugestão de nome: frase pequena e
+ * botões. O app pergunta e sugere; nada é gravado sem o toque da pessoa.
+ */
+function ValueQuestion({
+  prompt,
+  onUse,
+  onFill,
+  onLeave,
+}: {
+  prompt: UnpricedPrompt;
+  onUse: (suggestion: GapSuggestion) => void;
+  onFill: () => void;
+  onLeave?: () => void;
+}) {
+  const { suggestion } = prompt;
+  return (
+    <View style={styles.gapXs}>
+      {prompt.text ? <Text variant="small">{prompt.text}</Text> : null}
+      <Row style={styles.wrap}>
+        {suggestion && prompt.useLabel ? <Chip label={prompt.useLabel} icon="check" onPress={() => onUse(suggestion)} /> : null}
+        <Chip label={prompt.fillLabel} icon="pencil-outline" onPress={onFill} />
+        {prompt.leaveLabel && onLeave ? <Chip label={prompt.leaveLabel} onPress={onLeave} /> : null}
+      </Row>
+      {prompt.caveat ? <Text variant="small">{prompt.caveat}</Text> : null}
+    </View>
+  );
+}
+
 /** Fotos da nota; nota comprida vem em partes, uma embaixo da outra. */
 function ImageViewer({ urls, onClose }: { urls: string[] | null; onClose: () => void }) {
   const c = useColors();
@@ -889,6 +1249,7 @@ const styles = StyleSheet.create({
   wrap: { flexWrap: 'wrap' },
   between: { justifyContent: 'space-between' },
   storeRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  totalRow: { flexDirection: 'row', alignItems: 'center' },
   expiry: { width: 140 },
   viewerHeader: { padding: space.lg },
   photos: { gap: space.sm, paddingBottom: space.xl },
