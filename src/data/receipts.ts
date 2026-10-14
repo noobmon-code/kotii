@@ -52,6 +52,15 @@ export function useReceipt(id: string) {
   });
 }
 
+/**
+ * De quando é a nota guardada (a leitura mais recente que chegou do banco), vista na hora da chamada e não no
+ * render: a tela da nota marca com isso a leitura que ficou atrás de uma gravação dela.
+ */
+export function useReceiptReadAt(id: string) {
+  const queryClient = useQueryClient();
+  return () => queryClient.getQueryState(['receipt', id])?.dataUpdatedAt ?? 0;
+}
+
 function useInvalidateReceipt(id?: string) {
   const queryClient = useQueryClient();
   return () => {

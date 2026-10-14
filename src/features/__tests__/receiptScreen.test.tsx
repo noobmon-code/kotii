@@ -351,7 +351,7 @@ describe('nota em revisão: um item sem valor e o total da nota', () => {
     Object.assign(mockDb.items[1], { unit_price: 28.99, total_price: 10 });
     await press(chip('Usar R$ 12,90'));
     expect(mockDb.items[1]).toMatchObject({ unit_price: 28.99, total_price: 10 });
-    expect(jest.mocked(notify).mock.calls).toEqual([['Valor não salvo', 'Este item já tem valor ou não existe mais. A nota foi atualizada.']]);
+    expect(jest.mocked(notify).mock.calls).toEqual([['Valor não salvo', 'Este item já tem valor ou não existe mais.']]);
     expect(said(card('QJO MUSS KG'))).toEqual(['QJO MUSS KG', '0,345 kg × R$ 28,99', 'R$ 10,00', 'Novo: QJO MUSS KG', 'Limpeza', 'Não vai para a despensa']);
   });
 
@@ -359,7 +359,7 @@ describe('nota em revisão: um item sem valor e o total da nota', () => {
     await open();
     mockDb.items = mockDb.items.filter((row) => row.id !== 'x');
     await press(chip('Usar R$ 12,90'));
-    expect(notify).toHaveBeenCalledWith('Valor não salvo', 'Este item já tem valor ou não existe mais. A nota foi atualizada.');
+    expect(notify).toHaveBeenCalledWith('Valor não salvo', 'Este item já tem valor ou não existe mais.');
     expect(page()).not.toContain('QJO MUSS KG');
     expect(page()).toContain('Itens (1)');
   });
@@ -609,6 +609,163 @@ describe('nota em revisão: um item sem valor e o total da nota', () => {
     expect(mockDb.rpcs).toEqual([]);
     // Cancelar não é decidir: o item continua perguntando.
     expect(chip('Deixar sem valor')).toBeDefined();
+  });
+});
+
+describe('a nota em tela atrás do que foi gravado', () => {
+  const cheese = () => item('x', 'QJO MUSS KG', 0, { quantity: 0.345, unit: 'kg' });
+  const pencil = (description: string) => renderer!.root.findAllByType(IconButton).find((entry) => entry.props.label === `Editar ${description}`);
+  /** Os itens que foram na confirmação. */
+  const confirmed = () => (mockDb.rpcs[0].args.p_items as Row[]).map((entry) => entry.id);
+  const CAUGHT_UP = ['Nota atualizada', 'Confira os itens e toque em "Confirmar nota" de novo.'];
+
+  it('item novo salvo e a nota que demora a voltar: "Confirmar nota" não vai com os itens de antes; busca a nota e pede o toque de novo', async () => {
+    seed(receipt({ total: 60 }), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    await press(button('Item'));
+    act(() => field('Descrição')!.props.onChangeText('SABAO EM PO'));
+    act(() => field('Total do item')!.props.onChangeText('10'));
+    const releaseRead = hold(receiptRead);
+    await press(button('Salvar item'));
+    // O item está no banco; a nota relida não chega, e a espera tem limite.
+    expect(mockDb.items).toHaveLength(2);
+    expect(button('Confirmar nota')!.props.loading).toBe(true);
+    await settle(4200);
+    expect(button('Confirmar nota')!.props).toMatchObject({ loading: false, title: 'Confirmar nota (1 item)' });
+
+    // Confirmar com os itens de antes deixaria o item novo sem produto, fora da despensa e da lista: a tela
+    // busca a nota, e ela ainda não vem.
+    await press(button('Confirmar nota'));
+    expect(button('Confirmar nota')!.props.loading).toBe(true);
+    await settle(4200);
+    expect(mockDb.rpcs).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['A nota ainda não atualizou', 'Os itens na tela podem estar diferentes do que foi salvo. Confira a internet e toque em "Confirmar nota" de novo.'],
+    ]);
+    expect(button('Confirmar nota')!.props.loading).toBe(false);
+
+    // No toque seguinte a nota chega: a pessoa confere e toca de novo.
+    await press(button('Confirmar nota'));
+    await releaseRead();
+    expect(mockDb.rpcs).toEqual([]);
+    expect(jest.mocked(notify).mock.calls[1]).toEqual(CAUGHT_UP);
+    expect(button('Confirmar nota')!.props).toMatchObject({ loading: false, title: 'Confirmar nota (2 itens)' });
+    expect(page()).toContain('SABAO EM PO');
+
+    await press(button('Confirmar nota'));
+    expect(confirmed()).toEqual(['a', 'novo1']);
+    expect(jest.mocked(notify).mock.calls).toHaveLength(3);
+  }, 20_000);
+
+  it('item novo salvo e a busca da nota que falha: o aviso é o do item, e depois de buscar de novo a confirmação leva os dois', async () => {
+    seed(receipt({ total: 60 }), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    await press(button('Item'));
+    act(() => field('Descrição')!.props.onChangeText('SABAO EM PO'));
+    act(() => field('Total do item')!.props.onChangeText('10'));
+    mockDb.fails = [receiptRead];
+    await press(button('Salvar item'));
+    await settle();
+    expect(jest.mocked(notify).mock.calls).toEqual([['Item salvo', 'Não deu para atualizar a nota na tela: o item aparece quando ela for buscada de novo.']]);
+    // A tela é a do erro, com como tentar de novo: não há "Confirmar nota" com os itens de antes.
+    expect(button('Confirmar nota')).toBeUndefined();
+    mockDb.fails = [];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    await press(button('Confirmar nota'));
+    expect(confirmed()).toEqual(['a', 'novo1']);
+  });
+
+  it('item que já ganhou valor em outro aparelho e a nota que não volta: o aviso é só o de que não salvou', async () => {
+    seed(receipt(), item('a', 'DETERGENTE YPE', 50), cheese());
+    await open();
+    Object.assign(mockDb.items[1], { unit_price: 28.99, total_price: 10 });
+    mockDb.fails = [receiptRead];
+    await press(chip('Usar R$ 12,90'));
+    await settle();
+    expect(mockDb.items[1]).toMatchObject({ unit_price: 28.99, total_price: 10 });
+    // Nada desta tela foi gravado: nenhum "Valor salvo" por cima do aviso.
+    expect(jest.mocked(notify).mock.calls).toEqual([['Valor não salvo', 'Este item já tem valor ou não existe mais.']]);
+    // A rede volta: a tela mostra o valor que o outro aparelho deu, e o item volta a valer como está no banco.
+    mockDb.fails = [];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    expect(said(card('QJO MUSS KG'))).toContain('R$ 10,00');
+    await press(button('Confirmar nota'));
+    expectNoQuestion();
+    expect(confirmed()).toEqual(['a', 'x']);
+  });
+
+  it('item que já ganhou valor em outro aparelho e a nota que demora: o item continua perguntando, e "Confirmar nota" busca a nota antes', async () => {
+    seed(receipt(), item('a', 'DETERGENTE YPE', 50), cheese());
+    await open();
+    Object.assign(mockDb.items[1], { unit_price: 28.99, total_price: 10 });
+    const releaseRead = hold(receiptRead);
+    await press(chip('Usar R$ 12,90'));
+    await settle(4200);
+    expect(jest.mocked(notify).mock.calls).toEqual([['Valor não salvo', 'Este item já tem valor ou não existe mais.']]);
+    // Nada foi gravado por esta tela: o item não é dado como resolvido.
+    expect(chip('Usar R$ 12,90')).toBeDefined();
+    await press(button('Confirmar nota'));
+    await releaseRead();
+    expectNoQuestion();
+    expect(mockDb.rpcs).toEqual([]);
+    expect(jest.mocked(notify).mock.calls[1]).toEqual(CAUGHT_UP);
+    expect(said(card('QJO MUSS KG'))).toContain('R$ 10,00');
+  }, 15_000);
+
+  it('gravação que fica sem resposta: não dá para saber se gravou, e "Confirmar nota" busca a nota antes de seguir', async () => {
+    seed(receipt(), item('a', 'DETERGENTE YPE', 50), cheese());
+    await open();
+    mockDb.fails = [itemWrite];
+    await press(chip('Usar R$ 12,90'));
+    expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'caiu a rede']]);
+    // A gravação tinha chegado ao banco: foi a resposta que se perdeu.
+    mockDb.fails = [];
+    Object.assign(mockDb.items[1], { unit_price: 37.3913, total_price: 12.9 });
+    await press(button('Confirmar nota'));
+    // Sem perguntar pelo item que a tela ainda mostra sem valor, e sem confirmar com ele assim.
+    expectNoQuestion();
+    expect(mockDb.rpcs).toEqual([]);
+    expect(jest.mocked(notify).mock.calls[1]).toEqual(CAUGHT_UP);
+    expect(said(card('QJO MUSS KG'))).toContain('R$ 12,90');
+    await press(button('Confirmar nota'));
+    expectNoQuestion();
+    expect(confirmed()).toEqual(['a', 'x']);
+  });
+
+  it('item removido: até a nota voltar sem ele, "Confirmar nota" espera, e não vai com o item apagado nem pergunta por ele', async () => {
+    seed(receipt({ total: 50 }), item('a', 'DETERGENTE YPE', 50), cheese());
+    await open();
+    await press(pencil('QJO MUSS KG'));
+    const releaseRead = hold(receiptRead);
+    await press(button('Remover item'));
+    expect(mockDb.items).toHaveLength(1);
+    expect(button('Confirmar nota')!.props.loading).toBe(true);
+    await press(button('Confirmar nota'));
+    expectNoQuestion();
+    expect(mockDb.rpcs).toEqual([]);
+    await releaseRead();
+    expect(button('Confirmar nota')!.props).toMatchObject({ loading: false, title: 'Confirmar nota (1 item)' });
+    await press(button('Confirmar nota'));
+    expectNoQuestion();
+    expect(confirmed()).toEqual(['a']);
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('remover que falha avisa do erro, como antes', async () => {
+    seed(receipt({ total: 50 }), item('a', 'DETERGENTE YPE', 50), cheese());
+    await open();
+    await press(pencil('QJO MUSS KG'));
+    mockDb.fails = [itemWrite];
+    await press(button('Remover item'));
+    expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'caiu a rede']]);
+    expect(mockDb.items).toHaveLength(2);
+    expect(button('Confirmar nota')!.props.loading).toBe(false);
   });
 });
 
@@ -1079,7 +1236,7 @@ describe('nota já confirmada: só o valor que faltou pode ser preenchido', () =
     expect(mockDb.writes).toHaveLength(1);
     expect(mockDb.writes[0].filters).toEqual({ id: 'x', receipt_id: 'r1', total_price: 0 });
     expect(mockDb.items[1]).toMatchObject({ unit_price: 28.99, total_price: 10 });
-    expect(jest.mocked(notify).mock.calls).toEqual([['Valor não salvo', 'Este item já tem valor ou não existe mais. A nota foi atualizada.']]);
+    expect(jest.mocked(notify).mock.calls).toEqual([['Valor não salvo', 'Este item já tem valor ou não existe mais.']]);
     // A nota relida mostra o valor que ficou, e o formulário (que só existe para o item sem valor) fecha.
     expect(said(card('Queijo muçarela'))).toEqual(['Queijo muçarela', '0,345 kg × R$ 28,99', 'R$ 10,00']);
     expect(field('Total do item')).toBeUndefined();

@@ -191,7 +191,7 @@ export function confirmUnpricedQuestion(count: number): { title: string; message
  */
 export const VALUE_NOT_SAVED = {
   title: 'Valor não salvo',
-  message: 'Este item já tem valor ou não existe mais. A nota foi atualizada.',
+  message: 'Este item já tem valor ou não existe mais.',
 };
 
 /**
@@ -201,6 +201,29 @@ export const VALUE_NOT_SAVED = {
 export const VALUE_SAVED_NOT_SHOWN = {
   title: 'Valor salvo',
   message: 'Não deu para atualizar a nota na tela: o item pode aparecer sem valor até ela ser buscada de novo.',
+};
+
+/** O mesmo, para o item novo: foi gravado e ainda não aparece. */
+export const ITEM_SAVED_NOT_SHOWN = {
+  title: 'Item salvo',
+  message: 'Não deu para atualizar a nota na tela: o item aparece quando ela for buscada de novo.',
+};
+
+/**
+ * "Confirmar nota" tocado com a tela atrás do que foi gravado por último (a nota relida não voltou a tempo, ou a
+ * gravação ficou sem resposta). Confirmar com os itens de antes deixaria o item novo sem produto, fora da despensa
+ * e da lista, e a nota confirmada não se corrige: a tela busca a nota e pede o toque de novo, já com os itens de
+ * agora.
+ */
+export const RECEIPT_CAUGHT_UP = {
+  title: 'Nota atualizada',
+  message: 'Confira os itens e toque em "Confirmar nota" de novo.',
+};
+
+/** A nota ainda não voltou: nada é confirmado com os itens de antes. */
+export const RECEIPT_STILL_BEHIND = {
+  title: 'A nota ainda não atualizou',
+  message: 'Os itens na tela podem estar diferentes do que foi salvo. Confira a internet e toque em "Confirmar nota" de novo.',
 };
 
 /** "2 un × R$ 4,30"; sem valor e sem preço unitário, só a quantidade ("2 un"), em vez de "× R$ 0,00". */

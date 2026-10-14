@@ -20,6 +20,7 @@ import {
   useDeleteReceiptItem,
   useFillReceiptItemValue,
   useReceipt,
+  useReceiptReadAt,
   useSaveReceiptItem,
   useSetReceiptStore,
   useSetReceiptTotal,
@@ -45,9 +46,12 @@ import {
   confirmUnpricedQuestion,
   gapNotices,
   hasReceiptTotal,
+  ITEM_SAVED_NOT_SHOWN,
   pendingUnpriced,
   quantityText,
   readReceiptTotal,
+  RECEIPT_CAUGHT_UP,
+  RECEIPT_STILL_BEHIND,
   RECEIPT_TOTAL_HINT,
   RECEIPT_TOTAL_LABEL,
   receiptGap,
@@ -137,6 +141,7 @@ const SETTLE_WAIT_MS = 4000;
 export default function ReceiptScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const receiptQuery = useReceipt(id);
+  const receiptReadAt = useReceiptReadAt(id);
   const products = useProducts();
   const stores = useStores();
   const setStore = useSetReceiptStore(id);
@@ -179,6 +184,10 @@ export default function ReceiptScreen() {
   // Quantas gravações de valor já saíram desta tela: quem esperou outra coisa sabe se alguma saiu nesse meio.
   const valueSeq = useRef(0);
   const [settlingValue, setSettlingValue] = useState(false);
+  // A leitura da nota que ficou atrás do que esta tela gravou (de quando ela é): uma gravação de item cuja nota
+  // relida não voltou, ou que ficou sem resposta do banco. Enquanto a nota em tela for essa leitura
+  // (`dataUpdatedAt`), "Confirmar nota" não vai com os itens dela.
+  const staleRead = useRef(0);
 
   const catalog = useMemo(
     () => new Map<string, CatalogProduct>((products.data ?? []).map((p) => [p.id, p])),
@@ -358,47 +367,100 @@ export default function ReceiptScreen() {
   };
 
   /**
-   * Um valor de item a caminho, do toque até a nota voltar do banco com ele.
-   * A gravação termina antes da releitura que ela mesma pede (data/receipts),
-   * e nesse meio a tela ainda mostra o item sem valor: "Confirmar nota"
-   * perguntaria por ele. Aqui só se espera por essa mesma releitura, sem
-   * começar outra. `onWritten` roda assim que o banco responde.
+   * Espera a nota voltar do banco, sem começar outra busca se já há uma a
+   * caminho. A espera tem limite: sem internet a busca fica parada (e a rede
+   * muda não responde), e o botão giraria sem explicação. Devolve a leitura,
+   * ou nada se ela não voltou a tempo.
    */
-  async function settleValue<T>(write: Promise<T>, onWritten?: (result: T) => void, itemId?: string) {
+  async function rereadReceipt() {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const reread = async () => {
+      let read = await receiptQuery.refetch({ cancelRefetch: false });
+      // Outra gravação que termine no meio troca a releitura por uma mais nova: vale a última.
+      while (read.isFetching) read = await receiptQuery.refetch({ cancelRefetch: false });
+      return read;
+    };
+    try {
+      return await Promise.race([reread(), new Promise<undefined>((resolve) => (timer = setTimeout(() => resolve(undefined), SETTLE_WAIT_MS)))]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Uma gravação de item a caminho, do toque até a nota voltar do banco com
+   * ela. A gravação termina antes da releitura que ela mesma pede
+   * (data/receipts), e nesse meio a tela ainda mostra a nota de antes:
+   * "Confirmar nota" perguntaria pelo item que acabou de ganhar valor, ou iria
+   * sem o item novo. Aqui só se espera por essa mesma releitura, sem começar
+   * outra. `onWritten` roda assim que o banco responde, e devolve `false`
+   * quando a gravação não achou o item (nada desta tela foi gravado). `shown`
+   * é o que avisar se a nota não voltar, e o item que ganhou valor.
+   */
+  async function settleValue<T>(
+    write: Promise<T>,
+    onWritten?: (result: T) => boolean | void,
+    shown?: { itemId?: string; saved: { title: string; message: string } },
+  ) {
     valueWrites.current += 1;
     valueSeq.current += 1;
     setSettlingValue(true);
-    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      onWritten?.(await write);
-      const reread = async () => {
-        let read = await receiptQuery.refetch({ cancelRefetch: false });
-        // Outra gravação que termine no meio troca a releitura por uma mais nova: vale a última.
-        while (read.isFetching) read = await receiptQuery.refetch({ cancelRefetch: false });
-        return read;
-      };
-      // A espera tem limite: sem internet a releitura fica parada (e a rede muda não responde), e o botão
-      // giraria sem explicação. Passado o limite ele volta, e a confirmação vai ao banco e diz o erro.
-      const read = await Promise.race([reread(), new Promise<undefined>((resolve) => (timer = setTimeout(() => resolve(undefined), SETTLE_WAIT_MS)))]);
-      // A nota não voltou (a busca falhou, ou não respondeu a tempo): o valor está gravado, e a tela ainda mostra
-      // o item como antes. O item deixa de perguntar (outro "Usar" acharia o item já com valor e diria que não
-      // salvou), e, se a busca falhou de vez, a pessoa fica sabendo; a que só demora ainda atualiza a tela.
+      // Fora da chamada opcional: sem `onWritten`, o que vai dentro dos parênteses dela nem chega a ser esperado.
+      const result = await write;
+      const written = onWritten?.(result) !== false;
+      const read = await rereadReceipt();
       if (!read || read.isError) {
-        if (itemId) leaveUnpriced([itemId]);
-        if (read?.isError) notify(VALUE_SAVED_NOT_SHOWN.title, VALUE_SAVED_NOT_SHOWN.message);
+        // A nota não voltou (a busca falhou, ou não respondeu a tempo): a tela ficou atrás do que foi gravado, e
+        // "Confirmar nota" busca a nota antes de seguir.
+        staleRead.current = receiptReadAt();
+        // O valor está gravado, e a tela ainda mostra o item como antes. O item deixa de perguntar (outro "Usar"
+        // acharia o item já com valor e diria que não salvou), e, se a busca falhou de vez, a pessoa fica
+        // sabendo; a que só demora ainda atualiza a tela. Com nada gravado (o item já tinha valor, ou saiu da
+        // nota), o aviso foi o de que não salvou, e nenhum "salvo" vem por cima dele.
+        if (written && shown) {
+          if (shown.itemId) leaveUnpriced([shown.itemId]);
+          if (read?.isError) notify(shown.saved.title, shown.saved.message);
+        }
       }
     } catch (err) {
+      // Sem resposta do banco não dá para saber se gravou: a tela pode ter ficado para trás.
+      staleRead.current = receiptReadAt();
       onError(err);
     } finally {
-      clearTimeout(timer);
       valueWrites.current -= 1;
       if (!valueWrites.current) setSettlingValue(false);
     }
   }
 
-  /** O item já tinha valor (ou saiu da nota) em outro aparelho: a pessoa fica sabendo que o dela não foi gravado. */
+  /**
+   * "Confirmar nota" com a tela atrás do que foi gravado: em vez de confirmar
+   * com os itens de antes (o item novo ficaria sem produto, fora da despensa e
+   * da lista, e a nota confirmada não se corrige), busca a nota e diz o que
+   * houve. A confirmação fica para o toque seguinte, já com os itens de agora.
+   */
+  async function catchUp() {
+    valueWrites.current += 1;
+    setSettlingValue(true);
+    try {
+      const read = await rereadReceipt();
+      // A busca que falha troca a tela pela do erro, com como tentar de novo: ali não há o que avisar.
+      if (read?.isError) return;
+      const notice = read ? RECEIPT_CAUGHT_UP : RECEIPT_STILL_BEHIND;
+      notify(notice.title, notice.message);
+    } finally {
+      valueWrites.current -= 1;
+      if (!valueWrites.current) setSettlingValue(false);
+    }
+  }
+
+  /**
+   * O item já tinha valor (ou saiu da nota) em outro aparelho: a pessoa fica sabendo que o dela não foi gravado.
+   * Devolve se gravou.
+   */
   const tellIfNotFilled = ({ filled }: { filled: boolean }) => {
     if (!filled) notify(VALUE_NOT_SAVED.title, VALUE_NOT_SAVED.message);
+    return filled;
   };
 
   /**
@@ -409,7 +471,10 @@ export default function ReceiptScreen() {
   function applySuggestion(suggestion: GapSuggestion) {
     // Um valor por vez: com a nota ainda por voltar, o segundo toque acharia o item já com valor.
     if (valueWrites.current) return;
-    void settleValue(fillValue.mutateAsync({ id: suggestion.itemId, values: suggestion.values }), tellIfNotFilled, suggestion.itemId);
+    void settleValue(fillValue.mutateAsync({ id: suggestion.itemId, values: suggestion.values }), tellIfNotFilled, {
+      itemId: suggestion.itemId,
+      saved: VALUE_SAVED_NOT_SHOWN,
+    });
   }
 
   /**
@@ -446,6 +511,11 @@ export default function ReceiptScreen() {
    */
   async function doConfirm() {
     if (confirming.current || valueWrites.current || confirm.isPending || listPending || listFailed) return;
+    // A nota em tela é a leitura que ficou atrás do que esta tela gravou: os itens daqui não são os do banco.
+    if (receiptQuery.dataUpdatedAt <= staleRead.current) {
+      void catchUp();
+      return;
+    }
     confirming.current = true;
     try {
       const valuesBefore = valueSeq.current;
@@ -536,9 +606,9 @@ export default function ReceiptScreen() {
         fillValue.mutateAsync({ id: itemId, values: prices }),
         (result) => {
           setEditing(null);
-          tellIfNotFilled(result);
+          return tellIfNotFilled(result);
         },
-        itemId,
+        { itemId, saved: VALUE_SAVED_NOT_SHOWN },
       );
       return;
     }
@@ -549,7 +619,7 @@ export default function ReceiptScreen() {
         if (itemId && hasNoValue(values)) leaveUnpriced([itemId]);
         setEditing(null);
       },
-      itemId,
+      { itemId, saved: itemId ? VALUE_SAVED_NOT_SHOWN : ITEM_SAVED_NOT_SHOWN },
     );
   }
 
@@ -931,7 +1001,9 @@ export default function ReceiptScreen() {
               ? () => {
                   const target = editing.item!;
                   setEditing(null);
-                  deleteItem.mutate(target.id, { onError });
+                  // Pelo mesmo caminho das outras gravações de item: até a nota voltar sem ele, "Confirmar nota"
+                  // espera (iria com o item apagado, ou perguntaria pelo valor dele).
+                  void settleValue(deleteItem.mutateAsync(target.id));
                 }
               : undefined
           }

@@ -5,6 +5,7 @@ import {
   confirmUnpricedQuestion,
   gapNotices,
   hasReceiptTotal,
+  ITEM_SAVED_NOT_SHOWN,
   pendingUnpriced,
   quantityText,
   readReceiptTotal,
@@ -14,7 +15,10 @@ import {
   receiptTotalText,
   TOTAL_TOLERANCE_CENTS,
   unpricedPrompt,
+  RECEIPT_CAUGHT_UP,
+  RECEIPT_STILL_BEHIND,
   VALUE_NOT_SAVED,
+  VALUE_SAVED_NOT_SHOWN,
   type GapLine,
 } from '../receiptGap';
 
@@ -255,7 +259,21 @@ describe('confirmar com itens ainda sem valor', () => {
   });
 
   it('o aviso de "Usar" ou "Salvar valor" que não achou o item sem valor', () => {
-    expect(VALUE_NOT_SAVED).toEqual({ title: 'Valor não salvo', message: 'Este item já tem valor ou não existe mais. A nota foi atualizada.' });
+    // Sem dizer que a nota foi atualizada: o aviso sai antes de a nota voltar, e ela pode não voltar.
+    expect(VALUE_NOT_SAVED).toEqual({ title: 'Valor não salvo', message: 'Este item já tem valor ou não existe mais.' });
+  });
+
+  it('gravou e a nota não voltou: o aviso diz que salvou, para o valor e para o item novo', () => {
+    expect(VALUE_SAVED_NOT_SHOWN.title).toBe('Valor salvo');
+    expect(ITEM_SAVED_NOT_SHOWN).toEqual({ title: 'Item salvo', message: 'Não deu para atualizar a nota na tela: o item aparece quando ela for buscada de novo.' });
+  });
+
+  it('"Confirmar nota" com a tela atrás do que foi gravado: a nota é buscada, e o toque é pedido de novo', () => {
+    expect(RECEIPT_CAUGHT_UP).toEqual({ title: 'Nota atualizada', message: 'Confira os itens e toque em "Confirmar nota" de novo.' });
+    expect(RECEIPT_STILL_BEHIND).toEqual({
+      title: 'A nota ainda não atualizou',
+      message: 'Os itens na tela podem estar diferentes do que foi salvo. Confira a internet e toque em "Confirmar nota" de novo.',
+    });
   });
 });
 
