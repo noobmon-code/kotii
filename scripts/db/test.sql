@@ -3220,4 +3220,92 @@ begin
   assert not has_table_privilege('authenticated', 'public.family_event_days', 'truncate, references, trigger'), 'and members get nothing beyond that on family_event_days';
 end $$;
 
+-- ---------------------------------------------------------------------------
+\echo '• zero não é preço: o item sem valor não vira observação nem último preço'
+-- Pri mora sozinha; o leite dela foi comprado com preço e, depois, sem valor.
+\set user_p '00000000-0000-0000-0000-00000000001d'
+\set user_q '00000000-0000-0000-0000-00000000001e'
+reset role;
+insert into auth.users (id) values (:'user_p'), (:'user_q');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+select (public.create_household('Casa do Quico', 'Quico')).id as hh_q \gset
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+select (public.create_household('Casa da Pri', 'Pri')).id as hh_p \gset
+
+do $$
+declare
+  store_a uuid;
+  store_b uuid;
+  leite uuid;
+  r uuid;
+  i uuid;
+  i_zero_b uuid;
+begin
+  insert into public.stores (name) values ('Mercado A') returning id into store_a;
+  insert into public.stores (name) values ('Mercado B') returning id into store_b;
+  insert into public.products (name, category) values ('Leite 1L', 'laticinios') returning id into leite;
+
+  -- Mercado A: o leite a R$ 5,90.
+  insert into public.receipts (store_id, purchased_at, total, source)
+    values (store_a, '2026-10-01 10:00-03', 5.90, 'manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'LEITE 1L', 1, 'un', 5.90, 5.90) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', leite)));
+  assert (select unit_price from public.latest_prices where product_id = leite and store_id = store_a) = 5.90, 'the real price is the latest price';
+
+  -- Mercado A, uma semana depois: a leitura não pegou o preço do leite.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (store_a, '2026-10-08 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'LEITE 1L', 2, 'un', 0, 0) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', leite)));
+
+  -- Mercado B: a única compra do leite ficou sem valor.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (store_b, '2026-10-09 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 'LEITE 1L', 1, 'un', 0, 0) returning id into i_zero_b;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i_zero_b, 'product_id', leite)));
+
+  assert (select count(*) from public.receipt_items where product_id = leite) = 3, 'the lines without value stay on their receipts, linked to the product';
+  assert (select count(*) from public.price_observations where product_id = leite) = 1, 'a line without value is not a price observation';
+  assert (select count(*) from public.price_observations where unit_price <= 0) = 0, 'no zero in the observations';
+  assert (select unit_price from public.latest_prices where product_id = leite and store_id = store_a) = 5.90,
+    'the latest price of a store is its latest REAL price, not the zero that came after';
+  assert (select purchased_at from public.latest_prices where product_id = leite and store_id = store_a) = '2026-10-01 10:00-03'::timestamptz,
+    'with the date of that purchase';
+  assert (select count(*) from public.latest_prices where product_id = leite and store_id = store_b) = 0, 'a store with only a line without value has no price';
+
+  -- O valor preenchido depois na nota confirmada passa a ser preço.
+  update public.receipt_items set unit_price = 6.50, total_price = 6.50 where id = i_zero_b;
+  assert (select unit_price from public.latest_prices where product_id = leite and store_id = store_b) = 6.50, 'a value filled in later becomes a price';
+  assert (select count(*) from public.price_observations where product_id = leite) = 2, 'and an observation';
+
+  perform set_config('test.p_leite', leite::text, false);
+end $$;
+
+-- Outra casa não vê nada disso: as views seguem com as regras de quem lê.
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+begin
+  assert (select count(*) from public.price_observations) = 0, 'another household sees no observations';
+  assert (select count(*) from public.latest_prices) = 0, 'and no latest prices';
+end $$;
+
+reset role;
+do $$
+begin
+  assert (select reloptions::text from pg_class where oid = 'public.price_observations'::regclass) like '%security_invoker=true%',
+    'price_observations still runs with the reader''s rights';
+  assert (select reloptions::text from pg_class where oid = 'public.latest_prices'::regclass) like '%security_invoker=true%',
+    'and so does latest_prices';
+  assert (select array_agg(attname::text order by attnum) from pg_attribute
+            where attrelid = 'public.price_observations'::regclass and attnum > 0 and not attisdropped)
+         = array['household_id', 'product_id', 'store_id', 'purchased_at', 'unit_price', 'unit', 'receipt_id'],
+    'the columns of price_observations are the same, in the same order';
+  assert has_table_privilege('authenticated', 'public.price_observations', 'select')
+     and has_table_privilege('authenticated', 'public.latest_prices', 'select'), 'members still read both views';
+end $$;
+
 \echo 'OK — todos os testes do banco passaram'
