@@ -21,7 +21,7 @@ import {
   WEEKDAYS,
   type MedicationFrequency,
 } from '@/domain/medications';
-import { formatUnits, keepStockOnRuleChange, readStockForm, stockFormOf, type StockForm } from '@/domain/medicationStock';
+import { countDayError, formatUnits, keepStockOnRuleChange, readStockForm, stockFormOf, type StockForm } from '@/domain/medicationStock';
 import { forgetBoxUnits } from '@/lib/medicationBox';
 import {
   askReminderPermission,
@@ -221,6 +221,12 @@ function MedicationForm({
       },
       today,
     );
+    // A contagem refeita sozinha vai com o dia do aparelho: com a data errada, o mesmo aviso de contar à mão, e nada é salvo.
+    const clock = countDayError(stockChanges);
+    if (clock) {
+      notify(clock.title, clock.message);
+      return;
+    }
     save.mutate(
       { id: medication?.id, values, stock: toStockValues(stockChanges) },
       {

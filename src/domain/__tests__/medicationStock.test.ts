@@ -2,6 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 
 import { addDays } from '../dates';
 import {
+  countDayError,
   describePrescription,
   describeStock,
   ESTIMATE_HORIZON_DAYS,
@@ -940,6 +941,36 @@ describe('a seção "Estoque e receita" do remédio', () => {
       expect(readStockForm({ ...counted, warnDays: '10' }, counted, wrong)).toEqual({ ok: true, changes: { warnDays: 10 } });
     }
     for (const right of [MIN_STOCK_DATE, today, MAX_STOCK_DATE]) expect(stockDayError(right)).toBeNull();
+  });
+
+  it('a regra das doses mudou num aparelho com a data errada: a contagem que o app refaz sozinho recebe o mesmo aviso', () => {
+    const clock = { ok: false, title: 'Confira a data do aparelho', message: expect.stringContaining('data deste aparelho') };
+    const wrong = '2101-01-03';
+    const rule = { times: ['08:00'], startOn: '2026-01-01', endOn: null, frequency: 'daily' as const, weekdays: null, intervalDays: null };
+    const twice = { ...rule, times: ['08:00', '20:00'] };
+    // 60 contados em 30/12/2100, um por dia: não acabou. A regra nova recomeçaria a conta no dia do aparelho, que o banco recusa.
+    const following = med({ stockCount: 60, stockCountedOn: '2100-12-30' });
+    const rebased = keepStockOnRuleChange({}, following, twice, wrong);
+    expect(rebased).toEqual({ stockCount: 56, stockCountedOn: wrong });
+    expect(countDayError(rebased)).toEqual(clock);
+    // Quanto cada dose usa também é regra: o mesmo aviso, e nada vai para o banco.
+    expect(countDayError(keepStockOnRuleChange({ doseUnits: 2 }, following, rule, wrong))).toEqual(clock);
+    // Com a data certa, a contagem recomeça de hoje, como sempre, sem aviso.
+    const saved = med({ stockCount: 60, stockCountedOn: '2026-09-22' });
+    const right = keepStockOnRuleChange({}, saved, twice, today);
+    expect(right).toEqual({ stockCount: 40, stockCountedOn: today });
+    expect(countDayError(right)).toBeNull();
+    // Já tinha acabado (3 contados em 01/12/2100, acabou em 04/12/2100): o zero vai no dia em que acabou, que já passou e o banco aceita.
+    const out = keepStockOnRuleChange({}, med({ stockCount: 3, stockCountedOn: '2100-12-01' }), twice, wrong);
+    expect(out).toEqual({ stockCount: 0, stockCountedOn: '2100-12-04' });
+    expect(countDayError(out)).toBeNull();
+    // Sem contagem a gravar (só o horário mudou, parou de acompanhar ou só o aviso mudou): nada a conferir.
+    expect(countDayError(keepStockOnRuleChange({}, following, { ...rule, times: ['07:00'] }, wrong))).toBeNull();
+    expect(countDayError({ stockCount: null, stockCountedOn: null })).toBeNull();
+    expect(countDayError({ warnDays: 10 })).toBeNull();
+    // O número digitado já foi conferido por readStockForm: nunca chega aqui com a data errada, e com a certa passa.
+    expect(readStockForm({ ...fresh, stock: '30' }, fresh, wrong)).toEqual(clock);
+    expect(countDayError({ stockCount: 30, stockCountedOn: today })).toBeNull();
   });
 
   it('mudar a regra das doses não muda o que já foi gasto: a contagem recomeça de hoje, com o que sobrava', () => {

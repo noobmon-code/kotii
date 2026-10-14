@@ -617,6 +617,19 @@ export function stockDayError(today: string): FormError | null {
   };
 }
 
+/**
+ * O dia da contagem que vai ser salva, conferido como em stockDayError. Serve
+ * para a que keepStockOnRuleChange refaz sozinha: com a regra nova, a contagem
+ * vai com o dia de hoje sem a pessoa ter digitado nada, e um aparelho com a
+ * data errada levaria o erro do banco em vez do aviso daqui. A tela não salva
+ * nada do remédio nesse caso (só a regra nova, sem a contagem, valeria para
+ * trás). O número digitado já foi conferido em readStockForm, e o dia em que a
+ * caixa acabou já passou: os dois passam. null: nada a gravar, ou a data serve.
+ */
+export function countDayError(changes: StockChanges): FormError | null {
+  return changes.stockCountedOn ? stockDayError(changes.stockCountedOn) : null;
+}
+
 const stockEdited = (form: StockForm, initial: StockForm) => form.stock.trim() !== initial.stock.trim();
 
 /**
