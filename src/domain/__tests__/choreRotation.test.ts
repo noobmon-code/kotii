@@ -16,6 +16,8 @@ import {
   planRotationSave,
   plannedTurn,
   ROTATION_CHANGED_ELSEWHERE,
+  ROTATION_MAYBE_SAVED,
+  ROTATION_MAYBE_SAVED_TITLE,
   ROTATION_PERSON_UNKNOWN,
   ROTATION_UNAVAILABLE,
   rotationAppearedElsewhere,
@@ -513,6 +515,11 @@ describe('o banco recusa o salvar do formulário que abriu sem rodízio, na tare
     expect(isRotationChangedElsewhere({ code: 'NK006', message: 'chore has a rotation', details: null, hint: null })).toBe(true);
     // O aviso é o da conferência feita antes de gravar: para a pessoa, é a mesma situação.
     expect(ROTATION_CHANGED_ELSEWHERE).toBe('Ela ganhou um rodízio em outro aparelho. Feche e abra de novo para editar.');
+  });
+
+  it('a ordem que o próprio formulário mandou, sem a resposta voltar: o aviso não culpa outro aparelho', () => {
+    expect(ROTATION_MAYBE_SAVED_TITLE).toBe('Confira o rodízio');
+    expect(ROTATION_MAYBE_SAVED).toBe('A tentativa anterior pode ter salvo o rodízio. Feche e abra de novo para conferir.');
   });
 
   it('os outros erros seguem como erros', () => {

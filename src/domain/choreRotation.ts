@@ -363,6 +363,14 @@ export const ROTATION_UNAVAILABLE = 'O rodízio ainda não está disponível nes
  */
 export const ROTATION_CHANGED_ELSEWHERE = 'Ela ganhou um rodízio em outro aparelho. Feche e abra de novo para editar.';
 
+/**
+ * O salvar anterior deste formulário ficou sem resposta (a internet caiu), e a ordem que está no servidor é a que
+ * ele mandou: a pessoa mudou o rodízio antes de tentar de novo. Não é de outro aparelho, mas também não dá para
+ * saber o que ficou gravado.
+ */
+export const ROTATION_MAYBE_SAVED_TITLE = 'Confira o rodízio';
+export const ROTATION_MAYBE_SAVED = 'A tentativa anterior pode ter salvo o rodízio. Feche e abra de novo para conferir.';
+
 // O errcode com que o banco recusa, do formulário que abriu sem rodízio, a tarefa que tem um.
 const HAS_ROTATION_CODE = 'NK006';
 

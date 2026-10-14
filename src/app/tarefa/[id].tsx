@@ -17,6 +17,8 @@ import {
   plannedTurn,
   ROTATION_CHANGED_ELSEWHERE,
   ROTATION_CHECK_FAILED,
+  ROTATION_MAYBE_SAVED,
+  ROTATION_MAYBE_SAVED_TITLE,
   ROTATION_PERSON_UNKNOWN,
   ROTATION_UNAVAILABLE,
   rotationAppearedElsewhere,
@@ -124,6 +126,9 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
   const submitting = useRef(false);
   // O salvar respondeu que a tarefa não existe mais: o aviso da tarefa apagada toma o lugar do formulário.
   const [gone, setGone] = useState(false);
+  // A ordem que o último salvar deste formulário mandou, quando ele abriu sem rodízio. Se a resposta se perdeu, a
+  // ordem que aparecer no servidor pode ser essa: não é de outro aparelho (ver submit).
+  const sentOrder = useRef<string[] | null>(null);
 
   const saved = chore ? { turn: chore, order: shownOrder } : undefined;
   // "Uma vez" não tem rodízio: fica só quem está na vez.
@@ -147,7 +152,18 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
 
   function toggleRotation() {
     // Saindo do rodízio, fica quem está na vez; entrando, quem já era o responsável é o primeiro.
-    if (rotating) return pickSingle(single);
+    if (rotating) {
+      // Quem está na vez sai da ordem, tirado só com quem este aparelho conhece. Com alguém nela que ele ainda não
+      // carregou, a vez pode ser dessa pessoa: a tela poria a tarefa com outra, e salvar a passaria para ela (com
+      // os pontos dela zerados). Fica no rodízio, e as listas são buscadas de novo.
+      if (hasUnknownPerson(order, who)) {
+        notify('Esta tarefa mudou', ROTATION_PERSON_UNKNOWN);
+        peopleQuery.refetch();
+        household.refetch();
+        return;
+      }
+      return pickSingle(single);
+    }
     const first = currentTurn(single, who);
     if (!order.length && first) setOrder([first.id]);
     setRotating(true);
@@ -203,8 +219,14 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
     // salvar daqui trocaria a vez e os pontos por dados velhos. A ordem igual à que ele está salvando não é de outro
     // aparelho: é a dele, de um salvar que chegou ao servidor sem a resposta voltar, e salvar de novo passa.
     const expectNone = openedWithoutRotation(saved);
+    // A ordem achada não é a que está sendo salva. Se é a que o salvar anterior deste formulário mandou (a resposta
+    // se perdeu e a pessoa mudou o rodízio depois), o aviso não culpa outro aparelho: pode ter sido gravada.
+    const tellChanged = (found: string[]) =>
+      sentOrder.current && !rotationAppearedElsewhere(found, sentOrder.current)
+        ? notify(ROTATION_MAYBE_SAVED_TITLE, ROTATION_MAYBE_SAVED)
+        : notify('Esta tarefa mudou', ROTATION_CHANGED_ELSEWHERE);
     if (expectNone && rotationAppearedElsewhere(savedOrder, plan.people)) {
-      notify('Esta tarefa mudou', ROTATION_CHANGED_ELSEWHERE);
+      tellChanged(savedOrder);
       return;
     }
     const pointsValue = earnsPoints ? Number.parseInt(points, 10) : 0;
@@ -222,8 +244,9 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
       submitting.current = true;
       setChecking(true);
       try {
-        if (rotationAppearedElsewhere(rotationOf(await fetchChoreRotations(), chore.id), plan.people)) {
-          notify('Esta tarefa mudou', ROTATION_CHANGED_ELSEWHERE);
+        const found = rotationOf(await fetchChoreRotations(), chore.id);
+        if (rotationAppearedElsewhere(found, plan.people)) {
+          tellChanged(found);
           return;
         }
       } catch {
@@ -239,6 +262,7 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
     // este aparelho acha que está na vez tem o app), eles também ficam como estão: a vez pode ter passado para uma
     // criança em outro celular, e o 0 daqui apagaria os pontos dela.
     const turnStays = !plan.turn && plan.people?.length === 0;
+    if (expectNone && plan.people?.length) sentOrder.current = plan.people;
     save.mutate(
       {
         id: chore?.id,
@@ -271,8 +295,9 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
           // A tarefa foi apagada em outro aparelho (ou a pessoa saiu da casa): nada foi salvo e não há mais o que
           // editar. Em vez de um alerta com o texto do banco, o aviso que a tela já tem para isso, sem esperar a busca.
           if (isChoreGoneOnSave(err)) return setGone(true);
-          // As outras recusas e a falha de rede: o formulário fica aberto, e salvar de novo é seguro (se a chamada
-          // chegou ao servidor antes de a internet cair, a segunda grava a mesma coisa).
+          // As outras recusas e a falha de rede: o formulário fica aberto, e salvar de novo é seguro na tarefa que já
+          // existe (se a chamada chegou ao servidor antes de a internet cair, a segunda grava a mesma coisa). A tarefa
+          // nova que chegou ao servidor sem a resposta voltar sai repetida, como as outras criações do app.
           onError(err);
         },
       },

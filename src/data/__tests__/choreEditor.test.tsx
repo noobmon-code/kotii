@@ -3,7 +3,13 @@ import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import ChoreScreen from '@/app/tarefa/[id]';
-import { ROTATION_CHANGED_ELSEWHERE, ROTATION_CHECK_FAILED, ROTATION_PERSON_UNKNOWN, ROTATION_UNAVAILABLE } from '@/domain/choreRotation';
+import {
+  ROTATION_CHANGED_ELSEWHERE,
+  ROTATION_CHECK_FAILED,
+  ROTATION_MAYBE_SAVED,
+  ROTATION_PERSON_UNKNOWN,
+  ROTATION_UNAVAILABLE,
+} from '@/domain/choreRotation';
 import { CHORE_GONE } from '@/domain/chores';
 import { Button, Chip, ErrorNotice, Loading, TextField } from '@/ui/primitives';
 
@@ -850,6 +856,21 @@ describe('a chamada falha pela rede: o alerta de erro, o formulário fica, e sal
     expect(mockBack).toHaveBeenCalledTimes(1);
   });
 
+  it('rodízio que chegou ao servidor sem a resposta, e a pessoa muda a ordem antes de tentar de novo: o aviso diz que a tentativa anterior pode ter salvo', async () => {
+    const screen = await openAndPickRotation();
+    mockServer.dropAnswer = true;
+    await screen.press('Salvar');
+    expect(mockNotify.mock.calls).toEqual([NETWORK_ERROR]);
+    expect(mockServer.order).toEqual(NEW_ORDER);
+    // A pessoa põe Carla no rodízio e tenta de novo: a ordem no servidor é a que este formulário mandou.
+    await screen.pick('Carla');
+    await screen.press('Salvar');
+    expect(mockServer.log).toEqual([created]);
+    expect(mockNotify.mock.calls).toEqual([NETWORK_ERROR, ['Confira o rodízio', ROTATION_MAYBE_SAVED]]);
+    expect(mockBack).not.toHaveBeenCalled();
+    expect(mockServer.order).toEqual(NEW_ORDER);
+  });
+
   it('depois da falha, o rodízio achado é outro (criado em outro celular): aí o aviso é o de sempre, e nada é gravado por cima', async () => {
     const screen = await openAndPickRotation();
     mockServer.failSave = OFFLINE;
@@ -1096,6 +1117,23 @@ describe('rodízio com alguém que este celular não conhece: salvar não tira a
     await screen.press('Salvar');
     expect(mockServer.log).toEqual([call({ p_title: 'Lavar a louça e as panelas', p_points: 25, p_people: ORDER })]);
     expect(mockBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('tirar o "Rodízio" com alguém da ordem que este celular não carregou: avisa e fica no rodízio, sem passar a tarefa para outra pessoa', async () => {
+    // A vez é de Lia (25 pontos), cadastrada em outro celular; as fichas deste são de antes dela, e a busca delas falhou ao abrir.
+    mockServer.chore = chore({ kid_id: 'p-lia', points: 25 });
+    mockServer.down = ['people'];
+    cached({ chore: chore({ kid_id: 'p-lia', points: 25 }), order: ORDER, people: mockPeople.slice(0, 2) }, HOUR);
+    const screen = await open();
+    await settle();
+    expect(screen.chips()).toEqual([...RECURRENCE, '[ ] Qualquer um', '[x] Rodízio', '[x] 1 Beto', '[x] 2 Carla']);
+    await screen.pick('Rodízio');
+    // Sem o aviso, a tela poria a tarefa com Beto (o primeiro que conhece), e salvar a tiraria de Lia, com 0 ponto.
+    expect(mockNotify.mock.calls).toEqual([UNKNOWN]);
+    expect(screen.chips()).toEqual([...RECURRENCE, '[ ] Qualquer um', '[x] Rodízio', '[x] 1 Beto', '[x] 2 Carla']);
+    expect(mockRefetchHousehold).toHaveBeenCalledTimes(1);
+    expect(mockServer.log).toEqual([]);
+    expect(mockServer.chore).toMatchObject({ kid_id: 'p-lia', points: 25 });
   });
 
   it('morador que entrou há pouco: a ficha chegou, mas a lista de moradores deste celular ainda não o tem', async () => {
