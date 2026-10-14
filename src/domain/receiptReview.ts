@@ -97,6 +97,16 @@ export interface ConfirmItem {
   };
 }
 
+export interface GoneProducts {
+  /** Ids dos itens cuja escolha desta revisão sumiu. */
+  chosen: string[];
+  /** "item:produto" (`goneKey`) dos itens cujo próprio produto não está no catálogo. */
+  own: string[];
+}
+
+/** O item e o produto que sumiu dele: é para este par que a busca nova vale. */
+export const goneKey = (itemId: string, productId: string) => `${itemId}:${productId}`;
+
 /**
  * Os itens em que um produto sumiu do catálogo (outra pessoa da casa o juntou com outro, com esta revisão
  * aberta). O `resolveItem` já não manda o id que sumiu, mas o que ele põe no lugar é "produto novo", e
@@ -104,20 +114,21 @@ export interface ConfirmItem {
  * - `chosen`: a pessoa escolheu nesta revisão um produto que não existe mais. A escolha tem de ser refeita.
  * - `own`: o produto do próprio item (sem escolha por cima) não está no catálogo. Ou a nota é de antes da
  *   junção (o banco já passou o item para o produto que ficou), ou os produtos são de antes de um produto
- *   novo: buscar os dois de novo resolve.
+ *   novo: buscar os dois de novo resolve. Vem como "item:produto" (`goneKey`): o mesmo item pode sumir de
+ *   novo, com OUTRO produto (o que ficou foi juntado com um terceiro), e aí é outra busca a fazer.
  */
 export function goneProducts(
   items: ReviewItem[],
   overrides: Record<string, ItemOverride>,
   catalog: Map<string, CatalogProduct>,
-): { chosen: string[]; own: string[] } {
+): GoneProducts {
   const chosen: string[] = [];
   const own: string[] = [];
   for (const item of items) {
     const choice = overrides[item.id]?.product;
     if (choice) {
       if (choice.kind === 'existing' && !catalog.has(choice.productId)) chosen.push(item.id);
-    } else if (item.product_id && !catalog.has(item.product_id)) own.push(item.id);
+    } else if (item.product_id && !catalog.has(item.product_id)) own.push(goneKey(item.id, item.product_id));
   }
   return { chosen, own };
 }
@@ -135,12 +146,13 @@ export interface ConfirmBlock {
 /**
  * O que impede a confirmação de seguir (null: nada). A escolha que sumiu impede sempre, até ser refeita. O
  * produto do próprio item fora do catálogo pede uma busca nova dos produtos e da nota, e impede até ela dar
- * certo: `refreshed` são os itens para os quais as DUAS buscas já chegaram (a tela só os guarda aí; com uma
- * das buscas falhando o catálogo pode continuar sem o produto, e confirmar o criaria de novo). O item que
- * continua fora depois de as duas chegarem segue como produto novo, como sempre foi; um item que sumir depois
- * pede a busca de novo.
+ * certo: `refreshed` são os pares "item:produto" para os quais as DUAS buscas já chegaram (a tela só os
+ * guarda aí; com uma das buscas falhando o catálogo pode continuar sem o produto, e confirmar o criaria de
+ * novo). O par que continua fora depois de as duas chegarem segue como produto novo, como sempre foi. Outro
+ * item que sumir depois, ou o mesmo item com outro produto (o produto que ficou foi juntado com um
+ * terceiro), pede a busca de novo.
  */
-export function confirmBlock(gone: { chosen: string[]; own: string[] }, refreshed: readonly string[]): ConfirmBlock | null {
+export function confirmBlock(gone: GoneProducts, refreshed: readonly string[]): ConfirmBlock | null {
   if (gone.chosen.length) {
     return {
       kind: 'choose',
@@ -151,7 +163,7 @@ export function confirmBlock(gone: { chosen: string[]; own: string[] }, refreshe
           : `Os produtos escolhidos para ${gone.chosen.length} itens desta nota foram juntados com outros em outro aparelho. Escolha de novo o produto desses itens.`,
     };
   }
-  if (gone.own.some((id) => !refreshed.includes(id))) {
+  if (gone.own.some((key) => !refreshed.includes(key))) {
     return {
       kind: 'refresh',
       title: 'Produtos atualizados',

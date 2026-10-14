@@ -93,7 +93,8 @@ jest.mock('@/lib/supabase', () => ({
         mockDb.inserted.push({ table, row });
         return { data: null, error: mockDb.error };
       },
-      update: () => ({ eq: async () => ({ data: null, error: null }) }),
+      // A gravação pede a linha de volta (o produto existe).
+      update: () => ({ eq: () => ({ select: async () => ({ data: [{ id: 'p1' }], error: null }) }) }),
     }),
     rpc: (name: string, args: unknown) => {
       mockDb.rpcs.push({ name, args });

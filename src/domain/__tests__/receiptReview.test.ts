@@ -101,10 +101,12 @@ describe('produto que sumiu do catálogo com a revisão aberta (foi juntado com 
       // Produto novo: escolha da pessoa que não depende do catálogo.
       f: { product: { kind: 'new' as const, name: 'Arroz', category: 'graos' } },
     };
-    expect(goneProducts(items, overrides, catalog)).toEqual({ chosen: ['a', 'e'], own: ['c'] });
-    expect(goneProducts(items, { ...overrides, a: { product: { kind: 'none' as const } }, e: picked('p-arroz') }, catalog)).toEqual({ chosen: [], own: ['c'] });
+    expect(goneProducts(items, overrides, catalog)).toEqual({ chosen: ['a', 'e'], own: ['c:gone'] });
+    expect(goneProducts(items, { ...overrides, a: { product: { kind: 'none' as const } }, e: picked('p-arroz') }, catalog)).toEqual({ chosen: [], own: ['c:gone'] });
     // Só o que não é produto (despensa, validade) mudado num item: o produto do item continua valendo.
-    expect(goneProducts([item({ id: 'c', product_id: 'gone' })], { c: { pantry: false } }, catalog)).toEqual({ chosen: [], own: ['c'] });
+    expect(goneProducts([item({ id: 'c', product_id: 'gone' })], { c: { pantry: false } }, catalog)).toEqual({ chosen: [], own: ['c:gone'] });
+    // O mesmo item, depois, com o produto que ficou também juntado com outro: é outro par.
+    expect(goneProducts([item({ id: 'c', product_id: 'gone-too' })], {}, catalog)).toEqual({ chosen: [], own: ['c:gone-too'] });
     expect(goneProducts([], {}, catalog)).toEqual({ chosen: [], own: [] });
   });
 
@@ -114,7 +116,7 @@ describe('produto que sumiu do catálogo com a revisão aberta (foi juntado com 
       title: 'Escolha o produto de novo',
       message: 'O produto escolhido para um item desta nota foi juntado com outro em outro aparelho. Escolha de novo o produto desse item.',
     });
-    expect(confirmBlock({ chosen: ['a', 'e'], own: ['c'] }, ['c'])).toEqual({
+    expect(confirmBlock({ chosen: ['a', 'e'], own: ['c:gone'] }, ['c:gone'])).toEqual({
       kind: 'choose',
       title: 'Escolha o produto de novo',
       message: 'Os produtos escolhidos para 2 itens desta nota foram juntados com outros em outro aparelho. Escolha de novo o produto desses itens.',
@@ -127,14 +129,18 @@ describe('produto que sumiu do catálogo com a revisão aberta (foi juntado com 
       title: 'Produtos atualizados',
       message: 'Um produto desta nota mudou em outro aparelho. Confira os itens e confirme de novo.',
     };
-    expect(confirmBlock({ chosen: [], own: ['c'] }, [])).toEqual(refresh);
-    // A busca falhou (a tela não guarda o item): continua impedindo, quantas vezes a pessoa tentar.
-    expect(confirmBlock({ chosen: [], own: ['c'] }, [])).toEqual(refresh);
+    expect(confirmBlock({ chosen: [], own: ['c:gone'] }, [])).toEqual(refresh);
+    // A busca falhou (a tela não guarda o par): continua impedindo, quantas vezes a pessoa tentar.
+    expect(confirmBlock({ chosen: [], own: ['c:gone'] }, [])).toEqual(refresh);
     // As duas buscas chegaram e ele continua fora: segue como produto novo, como sempre foi com o catálogo atrasado.
-    expect(confirmBlock({ chosen: [], own: ['c'] }, ['c'])).toBeNull();
+    expect(confirmBlock({ chosen: [], own: ['c:gone'] }, ['c:gone'])).toBeNull();
     // Outro item some depois (outra junção): pede a busca de novo.
-    expect(confirmBlock({ chosen: [], own: ['c', 'g'] }, ['c'])).toEqual(refresh);
-    expect(confirmBlock({ chosen: [], own: ['c', 'g'] }, ['c', 'g'])).toBeNull();
+    expect(confirmBlock({ chosen: [], own: ['c:gone', 'g:gone'] }, ['c:gone'])).toEqual(refresh);
+    expect(confirmBlock({ chosen: [], own: ['c:gone', 'g:gone'] }, ['c:gone', 'g:gone'])).toBeNull();
+    // O MESMO item some de novo: depois da primeira busca ele passou para o produto B, e B foi juntado com C.
+    // A busca já feita valia para o produto de antes, não para este.
+    expect(confirmBlock({ chosen: [], own: ['c:b'] }, ['c:gone'])).toEqual(refresh);
+    expect(confirmBlock({ chosen: [], own: ['c:b'] }, ['c:gone', 'c:b'])).toBeNull();
     expect(confirmBlock({ chosen: [], own: [] }, [])).toBeNull();
     expect(REFRESH_FAILED_NOTICE).toEqual({
       title: 'Não deu para atualizar',

@@ -4,7 +4,8 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { PRODUCT_MERGED_AWAY } from '@/domain/productMerge';
 
-import { useAddItemsToList, useAddListItem, useAddToMarketList, type NewListItem } from '../market';
+import { learnShelfLife } from '../home';
+import { useAddItemsToList, useAddListItem, useAddToMarketList, useRenameProduct, type NewListItem } from '../market';
 import { isProductMergedAway } from '../productMerge';
 import { useConfirmReceipt } from '../receipts';
 
@@ -25,6 +26,8 @@ const mockDb = {
   calls: [] as Call[],
   /** O que o banco responde a cada pedido. */
   reply: (_call: Call): Reply => ({ data: null, error: null }),
+  /** O que cada passo de cada pedido recebeu: [tabela, passo, argumentos]. */
+  sent: [] as [string, string, unknown[]][],
 };
 
 jest.mock('expo-image-manipulator', () => ({ ImageManipulator: {}, SaveFormat: {} }));
@@ -40,8 +43,9 @@ jest.mock('@/lib/supabase', () => {
         get: (_target, step) => {
           if (typeof step !== 'string') return undefined;
           if (step !== 'then') {
-            return () => {
+            return (...args: unknown[]) => {
               call.steps.push(step);
+              mockDb.sent.push([target, step, args]);
               return builder;
             };
           }
@@ -125,6 +129,7 @@ afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
   mockDb.calls = [];
+  mockDb.sent = [];
   mockDb.reply = () => ({ data: null, error: null });
 });
 
@@ -315,5 +320,69 @@ describe('pôr na lista um produto que foi juntado', () => {
 
   it('a frase é uma só, para a nota e para a lista', () => {
     expect(PRODUCT_MERGED_AWAY).toBe('Um produto daqui foi juntado com outro. Confira e tente de novo.');
+  });
+});
+
+describe('gravar num produto que foi juntado: o banco não reclama de uma gravação que não acha linha nenhuma', () => {
+  /** O que foi mandado em cada passo `step` dos pedidos à tabela `target`. */
+  const sent = (target: string, step: string) => mockDb.sent.filter(([t, s]) => t === target && s === step).map(([, , args]) => args);
+
+  it('mudar o nome ou a categoria: falha com a frase, e os produtos são buscados de novo', async () => {
+    mockDb.reply = () => ({ data: [], error: null });
+    const hook = await withHook(() => useRenameProduct());
+    const error = await failure(() => hook.value().mutateAsync({ id: 'p-gone', name: 'Arroz', category: 'graos' }));
+    expect((error as Error).message).toBe(PRODUCT_MERGED_AWAY);
+    expect(mockDb.calls).toEqual([{ target: 'products', steps: ['update', 'eq', 'select'] }]);
+    expect(hook.invalidated).toEqual(['products']);
+  });
+
+  it('mudar o nome de um produto que existe: grava e busca os produtos de novo, como antes', async () => {
+    mockDb.reply = () => ({ data: [{ id: 'p1' }], error: null });
+    const hook = await withHook(() => useRenameProduct());
+    expect(await failure(() => hook.value().mutateAsync({ id: 'p1', name: 'Arroz', category: 'graos' }))).toBeUndefined();
+    expect(sent('products', 'update')).toEqual([[{ name: 'Arroz', category: 'graos' }]]);
+    expect(hook.invalidated).toEqual(['products']);
+  });
+
+  it('a validade corrigida à mão: com o produto juntado, ensina o produto em que o item da despensa está agora', async () => {
+    let productWrites = 0;
+    mockDb.reply = (call) => {
+      if (call.target === 'pantry_items') return { data: { product_id: 'p-kept' }, error: null };
+      productWrites += 1;
+      // A primeira gravação é no produto que sumiu: nenhuma linha.
+      return { data: productWrites === 1 ? [] : [{ id: 'p-kept' }], error: null };
+    };
+    await learnShelfLife('p-gone', 30, 'pantry-1');
+    expect(mockDb.calls).toEqual([
+      { target: 'products', steps: ['update', 'eq', 'select'] },
+      { target: 'pantry_items', steps: ['select', 'eq', 'maybeSingle'] },
+      { target: 'products', steps: ['update', 'eq', 'select'] },
+    ]);
+    expect(sent('products', 'update')).toEqual([[{ shelf_life_days: 30 }], [{ shelf_life_days: 30 }]]);
+    expect(sent('products', 'eq')).toEqual([
+      ['id', 'p-gone'],
+      ['id', 'p-kept'],
+    ]);
+    expect(sent('pantry_items', 'eq')).toEqual([['id', 'pantry-1']]);
+  });
+
+  it('a validade corrigida à mão: com o produto no lugar, uma gravação só', async () => {
+    mockDb.reply = () => ({ data: [{ id: 'p1' }], error: null });
+    await learnShelfLife('p1', 30, 'pantry-1');
+    expect(mockDb.calls).toEqual([{ target: 'products', steps: ['update', 'eq', 'select'] }]);
+  });
+
+  it('a validade corrigida à mão: sem ter para onde ir, não inventa nem falha (o item da despensa já está salvo)', async () => {
+    // Item novo (ainda sem id): não há item para dizer qual é o produto agora.
+    mockDb.reply = () => ({ data: [], error: null });
+    await learnShelfLife('p-gone', 30);
+    expect(mockDb.calls.map((call) => call.target)).toEqual(['products']);
+    // O item da despensa ficou sem produto, ou segue apontando para o mesmo: nada a ensinar.
+    for (const current of [null, { product_id: null }, { product_id: 'p-gone' }]) {
+      mockDb.calls = [];
+      mockDb.reply = (call) => (call.target === 'pantry_items' ? { data: current, error: null } : { data: [], error: null });
+      await learnShelfLife('p-gone', 30, 'pantry-1');
+      expect(mockDb.calls.map((call) => call.target)).toEqual(['products', 'pantry_items']);
+    }
   });
 });

@@ -13,6 +13,7 @@ import { useEffect } from 'react';
 import type { CartPantryEntry } from '@/domain/cartPantry';
 import { LinkIndex, type ListLink, type OpenListItem } from '@/domain/listLinks';
 import { PRICE_ALERT_HISTORY_DAYS } from '@/domain/priceAlert';
+import { PRODUCT_MERGED_AWAY } from '@/domain/productMerge';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
 import { normalizeSearch } from '@/domain/search';
@@ -847,8 +848,15 @@ export function usePriceObservations(productIds: string[], purchasedAt: string |
 export function useRenameProduct() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, name, category }: { id: string; name: string; category: string }) =>
-      unwrap(await supabase.from('products').update({ name, category }).eq('id', id)),
+    mutationFn: async ({ id, name, category }: { id: string; name: string; category: string }) => {
+      // O banco não reclama de uma gravação que não acha linha nenhuma. O produto pode ter sido juntado com
+      // outro em outro aparelho: a gravação pede a linha de volta e, sem ela, falha com a frase de sempre, com
+      // os produtos já buscados de novo (a tela deixa de mostrar o que não existe mais).
+      const saved = (unwrap(await supabase.from('products').update({ name, category }).eq('id', id).select('id')) ?? []) as { id: string }[];
+      if (saved.length) return;
+      await queryClient.invalidateQueries({ queryKey: ['products'] });
+      throw new Error(PRODUCT_MERGED_AWAY);
+    },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['products'] }),
   });
 }
