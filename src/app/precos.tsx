@@ -6,7 +6,8 @@ import { useSharedPrices } from '@/data/sharedPrices';
 import { formatBRL } from '@/domain/money';
 import { summarizePrices } from '@/domain/prices';
 import { normalizeSearch } from '@/domain/search';
-import { cheaperSharedHint, cheaperSharedPrice, type SharedPriceRow, sharedRowsByProduct } from '@/domain/sharedPrices';
+import { cheaperSharedHint, cheaperSharedPrice, SHARED_PRICES_NOTICE, type SharedPriceRow, sharedRowsByProduct } from '@/domain/sharedPrices';
+import { settledData } from '@/lib/settledData';
 import {
   CategoryIcon,
   EmptyState,
@@ -39,10 +40,18 @@ export default function PricesScreen() {
   const shared = useSharedPrices();
   const [query, setQuery] = useState('');
 
+  // Só com os preços e os mercados da casa em dia: durante uma busca nova, o que ficou guardado é de antes, e
+  // "mais barato que o da casa" seria dito contra um preço que talvez já não seja o dela.
+  const settledPrices = settledData(prices);
+  const settledStores = settledData(stores);
+  const seenElsewhere = useMemo(
+    () => (shared.data && settledPrices && settledStores ? sharedRowsByProduct(shared.data, settledPrices, settledStores) : null),
+    [shared.data, settledPrices, settledStores],
+  );
+
   const rows = useMemo(() => {
     const storeName = new Map((stores.data ?? []).map((s) => [s.id, s.name]));
     const q = normalizeSearch(query);
-    const seenElsewhere = shared.data && prices.data && stores.data ? sharedRowsByProduct(shared.data, prices.data, stores.data) : null;
     return (products.data ?? [])
       .filter((p) => !q || normalizeSearch(p.name).includes(q))
       .map((p) => {
@@ -52,7 +61,7 @@ export default function PricesScreen() {
         return summary ? { product: p, summary, storeName, cheaper: cheaperSharedPrice(own, seenElsewhere?.get(p.id) ?? [], summary.unit) } : null;
       })
       .filter((r): r is NonNullable<typeof r> => r !== null);
-  }, [products.data, prices.data, stores.data, shared.data, query]);
+  }, [products.data, prices.data, stores.data, seenElsewhere, query]);
 
   if (products.isPending || prices.isPending || stores.isPending) return <Loading />;
   const error = products.error ?? prices.error ?? stores.error;
@@ -97,6 +106,8 @@ export default function PricesScreen() {
           ))}
         </ListCard>
       )}
+      {/* O aviso de que não é em tempo real, uma vez só, quando alguma linha mostra preço de outra casa. */}
+      {rows.some((row) => row.cheaper) ? <Text variant="small">{SHARED_PRICES_NOTICE}</Text> : null}
     </Screen>
   );
 }

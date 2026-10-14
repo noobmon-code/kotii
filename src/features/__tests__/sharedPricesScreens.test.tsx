@@ -14,6 +14,8 @@ import type { LatestPrice, PriceObservation, Product, Store } from '@/lib/types'
 interface Query {
   data: unknown;
   isPending: boolean;
+  isSuccess: boolean;
+  isFetching: boolean;
   isError: boolean;
   error: unknown;
   isRefetching: boolean;
@@ -66,11 +68,24 @@ jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 
-const loaded = (data: unknown): Query => ({ data, isPending: false, isError: false, error: null, isRefetching: false, refetch: jest.fn() });
+const loaded = (data: unknown): Query => ({
+  data,
+  isPending: false,
+  isSuccess: true,
+  isFetching: false,
+  isError: false,
+  error: null,
+  isRefetching: false,
+  refetch: jest.fn(),
+});
 /** A primeira busca ainda anda. */
-const onTheWay = (): Query => ({ ...loaded(undefined), isPending: true });
+const onTheWay = (): Query => ({ ...loaded(undefined), isPending: true, isSuccess: false, isFetching: true });
 /** Nunca carregou e a busca falhou. */
-const failed = (): Query => ({ ...loaded(undefined), isError: true, error: new Error('sem rede') });
+const failed = (): Query => ({ ...loaded(undefined), isSuccess: false, isError: true, error: new Error('sem rede') });
+/** Já tem dados e busca de novo (depois de confirmar uma nota, ou ao abrir a tela com dados de mais de meio minuto). */
+const refetching = (data: unknown): Query => ({ ...loaded(data), isFetching: true, isRefetching: true });
+/** A busca nova falhou e ficaram os dados de antes. */
+const failedKeeping = (data: unknown): Query => ({ ...loaded(data), isSuccess: false, isError: true, error: new Error('sem rede') });
 
 /** O dia de `ago` dias atrás: as telas dizem "visto em" com a data de hoje como referência do ano. */
 const day = (ago: number) => {
@@ -99,14 +114,20 @@ const own = (store_id: string, unit_price: number, ago: number): PriceObservatio
   purchased_at: noon(ago),
   receipt_id: `r-${store_id}-${ago}`,
 });
-const seen = (store_cnpj: string, store_name: string, unit_price: number, ago: number): SharedPrice => ({
+/** Um preço de outra casa, num mercado de São Paulo que não é da casa (salvo dito o contrário em `partial`). */
+const seen = (store_cnpj: string, store_name: string, unit_price: number, ago: number, partial: Partial<SharedPrice> = {}): SharedPrice => ({
   product_id: 'arroz',
   store_cnpj,
   store_name,
+  store_uf: '35',
   unit: 'un',
   unit_price,
   seen_on: day(ago),
+  mine: false,
+  ...partial,
 });
+/** O mesmo, num mercado da própria casa: o banco marca pelo CNPJ. */
+const seenInMine = (store_cnpj: string, store_name: string, unit_price: number, ago: number) => seen(store_cnpj, store_name, unit_price, ago, { mine: true });
 
 /** Os preços da casa: valem para a tela do produto (histórico) e para Preços (últimos preços). */
 function household(prices: PriceObservation[]) {
@@ -159,18 +180,40 @@ describe('tela do produto: "Visto em outras casas"', () => {
   /** A tela inteira de antes: o cartão do produto e o último preço da casa. */
   const USUAL = `Grãos, massas e cereaisNome do produtoÚltimo preço por mercadoMercadinhoem ${short(20)}R$ 25,00/un`;
 
-  it('com preços de outras casas: o mais barato primeiro, o mercado como veio, o dia, e o aviso embaixo', async () => {
-    mockQueries.shared = loaded([seen(ATACADAO, 'ATACADAO MOOCA', 22.9, 2), seen(SUPER, 'SUPER OUTRO', 21.9, 3)]);
+  it('os mercados da casa primeiro, com o nome que ela conhece; depois os outros, com o estado; e o aviso uma vez, embaixo', async () => {
+    mockQueries.shared = loaded([
+      seenInMine(ATACADAO, 'ATACADAO S.A.', 22.9, 2),
+      seen(SUPER, 'SUPER OUTRO', 21.9, 3),
+      seen('33444555000177', 'MERCADO CARIOCA', 23.5, 4, { store_uf: '33' }),
+      // Lido só por foto: não se sabe o estado.
+      seen('44555666000188', 'MERCADO DA FOTO', 24, 5, { store_uf: null }),
+    ]);
     const page = await mount(<ProductScreen />);
     expect(page).toContain(
-      `Visto em outras casasSUPER OUTROvisto em ${short(3)}R$ 21,90/unATACADAO MOOCAvisto em ${short(2)}R$ 22,90/un${SHARED_PRICES_NOTICE}`,
+      `Visto em outras casasNos seus mercadosAtacadãovisto em ${short(2)}R$ 22,90/un` +
+        `Em outros mercadosSUPER OUTRO (SP)visto em ${short(3)}R$ 21,90/unMERCADO CARIOCA (RJ)visto em ${short(4)}R$ 23,50/unMERCADO DA FOTOvisto em ${short(5)}R$ 24,00/un` +
+        SHARED_PRICES_NOTICE,
     );
     // Depois dos preços da própria casa.
     expect(page.indexOf('Visto em outras casas')).toBeGreaterThan(page.indexOf('Último preço por mercado'));
     expect(page).not.toContain('Ver mais');
-    // Para o leitor de tela, cada linha é uma frase só.
-    const labels = renderer!.root.findAll((node) => typeof node.props.accessibilityLabel === 'string').map((node) => node.props.accessibilityLabel);
-    expect(labels).toContain(`R$ 21,90/un · SUPER OUTRO · visto em ${short(3)}`);
+    expect(page.split(SHARED_PRICES_NOTICE)).toHaveLength(2);
+    expect(page).not.toContain('ATACADAO S.A.');
+  });
+
+  it('cada lista só aparece quando tem linhas', async () => {
+    mockQueries.shared = loaded([seen(SUPER, 'SUPER OUTRO', 21.9, 3)]);
+    expect(await mount(<ProductScreen />)).toBe(`${USUAL}Visto em outras casasEm outros mercadosSUPER OUTRO (SP)visto em ${short(3)}R$ 21,90/un${SHARED_PRICES_NOTICE}`);
+    await act(async () => renderer?.unmount());
+    mockQueries.shared = loaded([seenInMine(ATACADAO, 'ATACADAO S.A.', 22.9, 2)]);
+    expect(await mount(<ProductScreen />)).toBe(`${USUAL}Visto em outras casasNos seus mercadosAtacadãovisto em ${short(2)}R$ 22,90/un${SHARED_PRICES_NOTICE}`);
+  });
+
+  it('para o leitor de tela, cada linha é um elemento só, que diz a frase inteira', async () => {
+    mockQueries.shared = loaded([seen(SUPER, 'SUPER OUTRO', 21.9, 3)]);
+    await mount(<ProductScreen />);
+    const stops = renderer!.root.findAll((node) => typeof node.type === 'string' && node.props.accessible === true && textOf(node).includes('SUPER OUTRO'));
+    expect(stops.map((node) => node.props.accessibilityLabel)).toEqual([`R$ 21,90/un · SUPER OUTRO (SP) · visto em ${short(3)}`]);
   });
 
   it('sem nada a mostrar, a seção e o aviso não aparecem', async () => {
@@ -181,15 +224,16 @@ describe('tela do produto: "Visto em outras casas"', () => {
   });
 
   it('a compra da própria casa não aparece como de outra: mesmo CNPJ, no mesmo dia ou depois', async () => {
-    mockQueries.shared = loaded([seen(ATACADAO, 'ATACADAO MOOCA', 22.9, 2), seen(SUPER, 'SUPER OUTRO', 21.9, 3)]);
+    // O banco já tira essa linha na leitura; se a casa comprou depois da resposta, o app tira aqui.
+    mockQueries.shared = loaded([seenInMine(ATACADAO, 'ATACADAO S.A.', 22.9, 2), seen(SUPER, 'SUPER OUTRO', 21.9, 3)]);
     household([own('mercadinho', 25, 20), own('atacadao', 22.9, 2)]);
     const page = await mount(<ProductScreen />);
-    expect(page).toContain(`Visto em outras casasSUPER OUTROvisto em ${short(3)}R$ 21,90/un${SHARED_PRICES_NOTICE}`);
-    expect(page).not.toContain('ATACADAO MOOCA');
+    expect(page).toContain(`Visto em outras casasEm outros mercadosSUPER OUTRO (SP)visto em ${short(3)}R$ 21,90/un${SHARED_PRICES_NOTICE}`);
+    expect(page).not.toContain('Nos seus mercados');
   });
 
   it('quando só havia a compra da própria casa, a seção some inteira', async () => {
-    mockQueries.shared = loaded([seen(ATACADAO, 'ATACADAO MOOCA', 22.9, 2)]);
+    mockQueries.shared = loaded([seenInMine(ATACADAO, 'ATACADAO S.A.', 22.9, 2)]);
     household([own('atacadao', 22.9, 1)]);
     const page = await mount(<ProductScreen />);
     expect(page).not.toContain('Visto em outras casas');
@@ -202,23 +246,55 @@ describe('tela do produto: "Visto em outras casas"', () => {
     expect(await mount(<ProductScreen />)).toContain('ATACADAO MOOCA');
   });
 
-  it('mais de cinco: "Ver mais" mostra o resto, e o aviso continua lá', async () => {
-    mockQueries.shared = loaded(Array.from({ length: 7 }, (_, n) => seen(`0000000000000${n}`, `MERCADO ${n + 1}`, 20 + n, 4)));
+  it('mais de cinco: "Ver mais" traz mais 20 de cada vez, nunca a lista inteira de uma vez', async () => {
+    const market = (n: number) => `MERCADO ${String(n).padStart(2, '0')}`;
+    mockQueries.shared = loaded(Array.from({ length: 30 }, (_, n) => seen(`000000000000${String(n).padStart(2, '0')}`, market(n + 1), 20 + n, 4)));
+    const count = (page: string) => page.split('MERCADO ').length - 1;
     const page = await mount(<ProductScreen />);
-    expect(page).toContain('MERCADO 5');
-    expect(page).not.toContain('MERCADO 6');
+    expect(count(page)).toBe(5);
+    expect(page).toContain(market(5));
     expect(page).toContain(`Ver mais${SHARED_PRICES_NOTICE}`);
+    const more = await press('Ver mais');
+    expect(count(more)).toBe(25);
+    expect(more).toContain(`Ver mais${SHARED_PRICES_NOTICE}`);
     const all = await press('Ver mais');
-    expect(all).toContain('MERCADO 6');
-    expect(all).toContain('MERCADO 7');
+    expect(count(all)).toBe(30);
     expect(all).not.toContain('Ver mais');
     expect(all).toContain(SHARED_PRICES_NOTICE);
   });
 
-  it('sem os preços ou os mercados da casa carregados não dá para tirar a compra dela: nada aparece', async () => {
-    mockQueries.shared = loaded([seen(SUPER, 'SUPER OUTRO', 21.9, 3)]);
-    mockQueries.prices = failed();
-    expect(await mount(<ProductScreen />)).not.toContain('Visto em outras casas');
+  it('cada lista tem o seu "Ver mais"', async () => {
+    mockQueries.shared = loaded([
+      ...Array.from({ length: 7 }, (_, n) => seenInMine(`1000000000000${n}`, `MEU MERCADO ${n + 1}`, 20 + n, 4)),
+      seen(SUPER, 'SUPER OUTRO', 21.9, 3),
+    ]);
+    const page = await mount(<ProductScreen />);
+    expect(page).toContain('MEU MERCADO 5');
+    expect(page).not.toContain('MEU MERCADO 6');
+    // Só a lista dos mercados da casa passa de cinco.
+    expect(page).toContain(`R$ 24,00/unVer maisEm outros mercadosSUPER OUTRO (SP)visto em ${short(3)}R$ 21,90/un${SHARED_PRICES_NOTICE}`);
+    const all = await press('Ver mais');
+    expect(all).toContain('MEU MERCADO 7');
+    expect(all).not.toContain('Ver mais');
+  });
+
+  it('só com os preços e os mercados da casa em dia: durante uma busca nova, ou depois de uma que falhou, a seção espera', async () => {
+    const prices = [own('mercadinho', 25, 20)].map(({ receipt_id: _receipt, ...price }): LatestPrice => price);
+    const waiting: [keyof typeof mockQueries, Query][] = [
+      ['prices', refetching(prices)],
+      ['prices', failedKeeping(prices)],
+      ['prices', failed()],
+      ['stores', refetching(STORES)],
+    ];
+    for (const [key, query] of waiting) {
+      mockQueries.shared = loaded([seen(SUPER, 'SUPER OUTRO', 21.9, 3)]);
+      mockQueries[key] = query;
+      // A tela é a de sempre: a seção some inteira (e volta quando a busca termina).
+      expect(await mount(<ProductScreen />)).toBe(USUAL);
+      await act(async () => renderer?.unmount());
+      Object.assign(mockQueries, { prices: loaded(prices), stores: loaded(STORES) });
+    }
+    expect(await mount(<ProductScreen />)).toContain('Visto em outras casas');
   });
 
   it.each(NOT_AVAILABLE)('%s: a tela é a de sempre', async (_name, answer) => {
@@ -231,10 +307,31 @@ describe('Preços: a linha "Visto por"', () => {
   /** A tela inteira de antes: o produto, onde a casa comprou e por quanto. */
   const USUAL = 'Arroz Tio João 5kgSó em MercadinhoR$ 25,00';
 
-  it('aparece embaixo do produto quando outra casa viu mais barato que o menor preço da casa', async () => {
+  it('aparece embaixo do produto quando outra casa viu mais barato que o menor preço da casa, e o aviso vem uma vez, embaixo da lista', async () => {
     mockQueries.shared = loaded([seen(ATACADAO, 'ATACADAO MOOCA', 22.9, 2), seen(SUPER, 'SUPER OUTRO', 21.9, 3)]);
+    expect(await mount(<PricesScreen />)).toBe(
+      `Arroz Tio João 5kgSó em MercadinhoVisto por R$ 21,90/un · SUPER OUTRO (SP) · ${short(3)}, em outra casaR$ 25,00${SHARED_PRICES_NOTICE}`,
+    );
+  });
+
+  it('prefere o que foi visto num mercado da própria casa, com o nome que ela conhece', async () => {
+    mockQueries.shared = loaded([seenInMine(ATACADAO, 'ATACADAO S.A.', 22.9, 2), seen(SUPER, 'SUPER OUTRO', 21.9, 3)]);
+    expect(await mount(<PricesScreen />)).toBe(
+      `Arroz Tio João 5kgSó em MercadinhoVisto por R$ 22,90/un · Atacadão · ${short(2)}, em outra casaR$ 25,00${SHARED_PRICES_NOTICE}`,
+    );
+  });
+
+  it('com dois produtos avisados, o aviso continua sendo um só', async () => {
+    mockQueries.products = loaded([...PRODUCTS, { id: 'feijao', name: 'Feijão Camil 1kg', category: 'graos', shelf_life_days: null }]);
+    mockQueries.prices = loaded([
+      { product_id: 'arroz', store_id: 'mercadinho', unit: 'un', unit_price: 25, purchased_at: noon(20) },
+      { product_id: 'feijao', store_id: 'mercadinho', unit: 'un', unit_price: 9, purchased_at: noon(20) },
+    ]);
+    mockQueries.shared = loaded([seen(SUPER, 'SUPER OUTRO', 21.9, 3), seen(SUPER, 'SUPER OUTRO', 7.5, 3, { product_id: 'feijao' })]);
     const page = await mount(<PricesScreen />);
-    expect(page).toContain(`Arroz Tio João 5kgSó em MercadinhoVisto por R$ 21,90/un · SUPER OUTRO · ${short(3)}, em outra casaR$ 25,00`);
+    expect(page.split('Visto por')).toHaveLength(3);
+    expect(page.split(SHARED_PRICES_NOTICE)).toHaveLength(2);
+    expect(page.endsWith(SHARED_PRICES_NOTICE)).toBe(true);
   });
 
   it('não aparece quando o que outras casas viram é igual ou mais caro', async () => {
@@ -243,11 +340,20 @@ describe('Preços: a linha "Visto por"', () => {
   });
 
   it('nem quando o mais barato é a compra da própria casa', async () => {
-    mockQueries.shared = loaded([seen(ATACADAO, 'ATACADAO MOOCA', 22.9, 2)]);
+    mockQueries.shared = loaded([seenInMine(ATACADAO, 'ATACADAO S.A.', 22.9, 2)]);
     household([own('mercadinho', 25, 20), own('atacadao', 22.9, 2)]);
     const page = await mount(<PricesScreen />);
-    expect(page).toContain('Arroz Tio João 5kgMais barato: Atacadão · 2 mercadosR$ 22,90–25,00');
-    expect(page).not.toContain('Visto por');
+    expect(page).toBe('Arroz Tio João 5kgMais barato: Atacadão · 2 mercadosR$ 22,90–25,00');
+  });
+
+  it('enquanto os preços ou os mercados da casa são buscados de novo, a tela é a de sempre', async () => {
+    mockQueries.shared = loaded([seen(SUPER, 'SUPER OUTRO', 21.9, 3)]);
+    mockQueries.prices = refetching(mockQueries.prices.data);
+    expect(await mount(<PricesScreen />)).toBe(USUAL);
+    await act(async () => renderer?.unmount());
+    mockQueries.prices = loaded(mockQueries.prices.data);
+    mockQueries.stores = refetching(STORES);
+    expect(await mount(<PricesScreen />)).toBe(USUAL);
   });
 
   it('sem preços de outras casas, a tela é a de sempre', async () => {

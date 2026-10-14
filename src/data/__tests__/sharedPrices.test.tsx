@@ -50,9 +50,11 @@ const price = (n: number): SharedPrice => ({
   product_id: `p${String(n).padStart(5, '0')}`,
   store_cnpj: '11222333000181',
   store_name: 'Atacadão Mooca',
+  store_uf: '35',
   unit: 'un',
   unit_price: 10 + (n % 7),
   seen_on: '2026-10-10',
+  mine: n % 2 === 0,
 });
 
 /** Um banco de mentira: guarda cada pedido e responde as linhas da página pedida (ou o erro combinado). */
@@ -121,6 +123,17 @@ describe('preços de outras casas', () => {
   it('o preço chega como número, mesmo que o banco mande texto', async () => {
     const rows = await fetchSharedPrices(fakeDb([{ ...price(1), unit_price: '21.9000' }]).db);
     expect(rows?.[0].unit_price).toBe(21.9);
+  });
+
+  it('"é mercado da casa" só com um sim do banco, e o estado que não veio é "não se sabe"', async () => {
+    const { mine: _mine, store_uf: _state, ...bare } = price(2);
+    const rows = await fetchSharedPrices(fakeDb([price(2), price(1), bare, { ...bare, mine: 'true', store_uf: undefined }]).db);
+    expect(rows?.map((row) => [row.mine, row.store_uf])).toEqual([
+      [true, '35'],
+      [false, '35'],
+      [false, null],
+      [false, null],
+    ]);
   });
 
   it('mais de mil: página por página, até vir uma incompleta', async () => {
@@ -216,6 +229,8 @@ describe('no cache do app', () => {
     expect(mockRpc.called).toEqual(['confirm_receipt']);
     const keys = invalidated.mock.calls.map(([filters]) => (filters as { queryKey: string[] }).queryKey[0]);
     expect(keys).toContain('sharedPrices');
+    // A nota do QR code pode ter criado um mercado: é pelo nome dele que a casa reconhece "os seus mercados".
+    expect(keys).toContain('stores');
     // E tudo o que já buscava de novo continua lá.
     expect(keys).toEqual(expect.arrayContaining(['receipts', 'receipt', 'products', 'latestPrices', 'priceHistory', 'pantry', 'spending', 'purchaseRecords', 'lists', 'listItems', 'listLinks']));
     await act(async () => renderer.unmount());

@@ -1,5 +1,5 @@
 // Preços vistos em outras casas: o que o banco devolve para os produtos desta
-// (shared_latest_prices). O app nunca lê as tabelas compartilhadas, só essa
+// (shared_latest_prices). O app nunca lê a tabela compartilhada, só essa
 // função.
 //
 // A função chega ao banco numa migração própria, e o app pode ser publicado
@@ -32,9 +32,10 @@ const MAX_PAGES = 10;
 
 /**
  * Os preços de outras casas para os produtos desta: o mais recente de cada
- * produto, mercado e unidade, dos últimos 90 dias. null quando a função não
- * existe no banco. Página por página, na ordem da chave da resposta, para as
- * páginas se encaixarem.
+ * produto, mercado e unidade, dos últimos 90 dias e nunca de hoje; dos
+ * mercados da própria casa (`mine`) todos e, dos outros, os 5 mais baratos do
+ * estado onde ela compra. null quando a função não existe no banco. Página
+ * por página, na ordem da chave da resposta, para as páginas se encaixarem.
  */
 export async function fetchSharedPrices(db: SupabaseClient = supabase): Promise<SharedPrice[] | null> {
   const prices: SharedPrice[] = [];
@@ -47,8 +48,9 @@ export async function fetchSharedPrices(db: SupabaseClient = supabase): Promise<
       .range(page * PAGE, (page + 1) * PAGE - 1);
     if (result.error && isMissingFunction(result.error, 'shared_latest_prices')) return null;
     const rows = (unwrap(result) ?? []) as SharedPrice[];
-    // O preço é numeric no banco: garante número, venha como vier.
-    prices.push(...rows.map((row) => ({ ...row, unit_price: Number(row.unit_price) })));
+    // O preço é numeric no banco: garante número, venha como vier. "É mercado da casa" só com um sim de
+    // verdade, e estado que não veio é "não se sabe".
+    prices.push(...rows.map((row) => ({ ...row, unit_price: Number(row.unit_price), store_uf: row.store_uf ?? null, mine: row.mine === true })));
     if (rows.length < PAGE) break;
   }
   return prices;

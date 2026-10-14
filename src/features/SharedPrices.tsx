@@ -1,60 +1,80 @@
 import { useMemo, useState } from 'react';
-import { View } from 'react-native';
 
 import { useLatestPrices, useStores } from '@/data/market';
 import { useSharedPrices } from '@/data/sharedPrices';
 import {
   describeSharedPrice,
   seenLabel,
+  SHARED_PRICES_MINE,
   SHARED_PRICES_MORE,
   SHARED_PRICES_NOTICE,
+  SHARED_PRICES_OTHERS,
   SHARED_PRICES_TITLE,
   SHARED_ROWS_SHOWN,
+  SHARED_ROWS_STEP,
   sharedPriceLabel,
+  type SharedPriceRow,
   sharedRowsByProduct,
+  sharedStoreLabel,
   SHARING_ABOUT,
   SHARING_TITLE,
 } from '@/domain/sharedPrices';
+import { settledData } from '@/lib/settledData';
 import { Button, Card, IconBadge, ListCard, ListRow, Section, Text } from '@/ui/primitives';
 
 /**
- * "Visto em outras casas", na tela do produto: quanto ele custou em cada
- * mercado nas notas de outras casas, com o dia em que foi visto e o aviso de
- * que não é em tempo real. Só aparece com algo a mostrar. Sem os preços e os
- * mercados da própria casa carregados não dá para tirar o que é compra dela
- * mesma, então não mostra nada; e nunca vira erro na tela.
+ * "Visto em outras casas", na tela do produto: quanto ele custou nas notas de
+ * outras casas, primeiro nos mercados da própria casa (com o nome que ela
+ * conhece) e depois em outros do estado, com o dia em que foi visto e o aviso
+ * de que não é em tempo real. Só aparece com algo a mostrar, e só com os
+ * preços e os mercados da casa em dia: durante uma busca nova (ou depois de
+ * uma que falhou) o que ficou guardado é de antes, e a compra de agora
+ * apareceria como de outra casa. Nunca vira erro na tela.
  */
 export function SharedPricesSection({ productId }: { productId: string }) {
   const shared = useSharedPrices();
-  const own = useLatestPrices();
-  const stores = useStores();
-  const [showAll, setShowAll] = useState(false);
+  const own = settledData(useLatestPrices());
+  const stores = settledData(useStores());
 
   const rows = useMemo(
-    () => (shared.data && own.data && stores.data ? (sharedRowsByProduct(shared.data, own.data, stores.data).get(productId) ?? []) : []),
-    [shared.data, own.data, stores.data, productId],
+    () => (shared.data && own && stores ? (sharedRowsByProduct(shared.data, own, stores).get(productId) ?? []) : []),
+    [shared.data, own, stores, productId],
   );
   if (!rows.length) return null;
-  const shown = showAll ? rows : rows.slice(0, SHARED_ROWS_SHOWN);
 
   return (
     <Section title={SHARED_PRICES_TITLE}>
-      <ListCard>
-        {shown.map((row) => (
-          // Para o leitor de tela, a linha inteira de uma vez: preço, mercado e dia.
-          <View key={`${row.storeCnpj} ${row.unit}`} accessible accessibilityLabel={describeSharedPrice(row)}>
-            <ListRow
-              left={<IconBadge icon="store-outline" />}
-              title={row.storeName}
-              subtitle={seenLabel(row)}
-              right={<Text variant="label">{sharedPriceLabel(row)}</Text>}
-            />
-          </View>
-        ))}
-      </ListCard>
-      {rows.length > shown.length ? <Button title={SHARED_PRICES_MORE} variant="ghost" compact onPress={() => setShowAll(true)} /> : null}
+      <SharedPriceList title={SHARED_PRICES_MINE} rows={rows.filter((row) => row.mine)} />
+      <SharedPriceList title={SHARED_PRICES_OTHERS} rows={rows.filter((row) => !row.mine)} />
       <Text variant="small">{SHARED_PRICES_NOTICE}</Text>
     </Section>
+  );
+}
+
+/** Uma das duas listas, só quando tem linhas. "Ver mais" traz um tanto de cada vez: a lista nunca abre inteira de uma vez. */
+function SharedPriceList({ title, rows }: { title: string; rows: SharedPriceRow[] }) {
+  const [shown, setShown] = useState(SHARED_ROWS_SHOWN);
+  if (!rows.length) return null;
+  return (
+    <>
+      <Text variant="label">{title}</Text>
+      <ListCard>
+        {rows.slice(0, shown).map((row) => (
+          <ListRow
+            key={`${row.storeCnpj} ${row.unit}`}
+            // Para o leitor de tela, a linha inteira de uma vez: preço, mercado e dia.
+            accessibilityLabel={describeSharedPrice(row)}
+            left={<IconBadge icon="store-outline" />}
+            title={sharedStoreLabel(row)}
+            subtitle={seenLabel(row)}
+            right={<Text variant="label">{sharedPriceLabel(row)}</Text>}
+          />
+        ))}
+      </ListCard>
+      {rows.length > shown ? (
+        <Button title={SHARED_PRICES_MORE} variant="ghost" compact onPress={() => setShown((count) => count + SHARED_ROWS_STEP)} />
+      ) : null}
+    </>
   );
 }
 
