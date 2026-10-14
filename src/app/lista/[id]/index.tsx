@@ -442,6 +442,16 @@ export default function ShoppingListScreen() {
     }
   }
 
+  /** "Ver preços" nos detalhes do item: só quando ele tem preço, e leva ao produto de onde o preço sai. */
+  function seePricesOf(item: ShoppingListItem) {
+    const productId = market.estimate.byItem.get(item.id)?.productId;
+    if (!productId) return undefined;
+    return () => {
+      setEditing(null);
+      router.push({ pathname: '/produto/[id]', params: { id: productId } });
+    };
+  }
+
   /** Detalhes vão pela fila da lista (valem sem internet); a foto, pela fila de fotos. */
   async function saveDetails(item: ShoppingListItem, details: ItemDetails, photo: PhotoChange) {
     setEditing(null);
@@ -633,6 +643,7 @@ export default function ShoppingListScreen() {
               productName: (product) => products.data?.find((p) => p.id === product)?.name,
             })
           }
+          onSeePrices={seePricesOf(editing)}
           onSave={(details, photo) => saveDetails(editing, details, photo)}
           onRemove={() => removeItem(editing)}
           onClose={() => setEditing(null)}

@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
-import { useBills, useBudgets, useSpending } from '@/data/finance';
+import { useBills, useBudgets, useSpending, useSpendingReceipts } from '@/data/finance';
 import { formatShortDate, todayISO } from '@/domain/dates';
 import {
   describeMonthDelta,
@@ -19,7 +19,9 @@ import {
   type FinanceCategory,
 } from '@/domain/finance';
 import { formatBRL } from '@/domain/money';
+import { BarRow } from '@/features/finance/BarRow';
 import { BudgetSection } from '@/features/finance/BudgetSection';
+import { MarketMonthLink } from '@/features/finance/MarketMonthLink';
 import { SplitSection } from '@/features/finance/SplitSection';
 import { useHousehold } from '@/lib/auth';
 import {
@@ -67,6 +69,8 @@ export function FinanceSummaryPanel() {
   const [category, setCategory] = useState<FinanceCategory | null>(null);
   // Um mês a mais que as colunas, para comparar o primeiro com o anterior.
   const spending = useSpending(shiftMonth(windowEnd, -MONTHS_SHOWN), windowEnd);
+  // As notas dessa mesma busca, para o total do "Mercado do mês": não é outra leitura.
+  const marketReceipts = useSpendingReceipts(shiftMonth(windowEnd, -MONTHS_SHOWN), windowEnd);
   const bills = useBills();
   const budgets = useBudgets();
   const members = useHousehold().data?.members ?? [];
@@ -158,6 +162,8 @@ export function FinanceSummaryPanel() {
               <CategoryBars items={summary.byCategory} total={summary.total} selected={category} onSelect={setCategory} />
             </Card>
           </Section>
+
+          <MarketMonthLink month={month} receipts={marketReceipts.data} />
 
           {places.length > 1 ? (
             <Section title="Onde mais gastou">
@@ -274,39 +280,25 @@ function CategoryBars({
   selected: FinanceCategory | null;
   onSelect: (category: FinanceCategory | null) => void;
 }) {
-  const c = useColors();
   const max = items[0]?.amount ?? 0;
   return items.map(({ category, amount }) => {
     const info = getFinanceCategory(category);
     const isSelected = selected === category;
-    const muted = selected !== null && !isSelected;
     const share = total > 0 ? Math.round((amount / total) * 100) : 0;
-    const width = max > 0 ? Math.max(1, (amount / max) * 100) : 0;
     return (
-      <Pressable
+      <BarRow
         key={category}
-        accessibilityRole="button"
-        accessibilityState={{ selected: isSelected }}
+        left={<Icon name={info.icon} size={18} color="textMuted" />}
+        label={info.label}
+        amount={formatBRL(amount)}
+        share={`${share}%`}
+        value={amount}
+        max={max}
+        selected={isSelected}
+        muted={selected !== null && !isSelected}
         accessibilityLabel={`${info.label}: ${formatBRL(amount)}, ${share}% do mês`}
         onPress={() => onSelect(isSelected ? null : category)}
-        style={styles.barRow}>
-        <Row>
-          <Icon name={info.icon} size={18} color="textMuted" />
-          <Text variant="body" style={styles.flex} numberOfLines={1}>
-            {info.label}
-          </Text>
-          <Text variant="label">{formatBRL(amount)}</Text>
-          <Text variant="small" style={styles.share}>
-            {share}%
-          </Text>
-        </Row>
-        <View
-          style={[
-            styles.bar,
-            { width: `${width}%`, backgroundColor: muted ? c.textMuted : c.primary, opacity: muted ? 0.35 : 1 },
-          ]}
-        />
-      </Pressable>
+      />
     );
   });
 }
@@ -332,8 +324,4 @@ const styles = StyleSheet.create({
   // Topo arredondado (ponta do dado), base reta no eixo.
   column: { width: 20, borderTopLeftRadius: 4, borderTopRightRadius: 4 },
   bars: { gap: space.md },
-  barRow: { gap: 6 },
-  share: { width: 36, textAlign: 'right' },
-  // Começa reta no eixo, ponta arredondada.
-  bar: { height: 8, borderTopRightRadius: 4, borderBottomRightRadius: 4 },
 });
