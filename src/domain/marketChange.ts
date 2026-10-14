@@ -38,7 +38,7 @@ export interface MarketChangeInput {
   currentWhen: string;
   /** A diferença do total pago (a do cabeçalho), em centavos. */
   paidDiffCents: number;
-  /** O que, nos dois períodos, faz o total pago não ser a soma dos itens. */
+  /** O que soma diferente na janela e agora, e por isso faz o total pago mudar diferente dos itens. */
   receiptDifferences: { discounts: boolean; unread: boolean };
 }
 
@@ -79,7 +79,7 @@ export interface MarketChange {
   headline: string;
   /** Só as partes diferentes de zero, na ordem: preço, quantidade, novos, que saíram, sem como comparar. */
   parts: MarketChangePart[];
-  /** Quando o total pago muda diferente dos itens: a frase que diz por quê, sem outro número. */
+  /** Quando o total pago não muda como os itens: a frase que diz o que mais ele conta, sem outro número. */
   totalNote: string | null;
   /** Os itens que mudaram, da maior mudança (em valor absoluto) para a menor. */
   items: MarketChangeItem[];
@@ -88,7 +88,15 @@ export interface MarketChange {
 }
 
 /** Por que um item comprado nos dois períodos não tem preço e quantidade separáveis. */
-type NotComparable = 'compra sem valor' | 'sem quantidade' | 'unidades diferentes';
+type NotComparable = 'compra sem valor' | 'sem quantidade' | 'unidades diferentes' | 'pode ser outra embalagem' | 'preço muito diferente';
+
+/**
+ * Preço médio que muda mais que isto de um período para o outro (para cima ou para baixo) não é aumento nem
+ * promoção: é outra embalagem sob o mesmo item (fardo lido como 1 un contra caixinhas, saco de 5 kg contra os de
+ * 1 kg) ou nota errada. A faixa de priceLevel (0,6 a 1,6) mede um mercado contra a média e barraria um preço
+ * que só dobrou; aqui o dobro ainda é preço.
+ */
+const PRICE_JUMP_LIMIT = 2.5;
 
 const money = (amount: number) => formatBRL(amount / 100);
 // Sinal de menos de verdade (−), como o desconto da tela, não hífen.
@@ -118,7 +126,17 @@ function notComparable(before: ChangeItemFigures, now: ChangeItemFigures): NotCo
   const first = all[0].unit;
   if (!all.every((purchase) => sameDimension(purchase.unit, first))) return 'unidades diferentes';
   // Quantidade que nem chega a um milésimo da unidade base não dá preço médio.
-  if (all.some((purchase) => thousandths(purchase, baseUnit(first)) <= 0)) return 'sem quantidade';
+  const base = baseUnit(first);
+  if (all.some((purchase) => thousandths(purchase, base) <= 0)) return 'sem quantidade';
+  // O preço médio de cada período, sem comparar compra por compra: o fardo e as caixinhas nos dois períodos
+  // continuam comparáveis. c1 × q0 contra c0 × q1 é p1 contra p0, sem arredondar.
+  const quantity = (purchases: ChangePurchase[]) => purchases.reduce((sum, purchase) => sum + thousandths(purchase, base), 0);
+  const paidNow = now.cents * quantity(before.purchases);
+  const atOldPrice = before.cents * quantity(now.purchases);
+  if (paidNow > PRICE_JUMP_LIMIT * atOldPrice || atOldPrice > PRICE_JUMP_LIMIT * paidNow) {
+    // Em unidades, "1 un" é o pacote que a nota contou; por kg ou litro, o preço é que não bate.
+    return base === 'kg' || base === 'l' ? 'preço muito diferente' : 'pode ser outra embalagem';
+  }
   return null;
 }
 
@@ -192,8 +210,13 @@ export function marketChange(input: MarketChangeInput): MarketChange {
     }
     const reason = notComparable(before, now);
     if (reason) {
-      const detail = `${money(before.cents)} → ${money(now.cents)} · ${reason}`;
-      splits.push({ item: now, diff: now.cents - before.cents, kind: 'sem_comparacao', expected: 0, price: 0, detail, spokenDetail: `de ${money(before.cents)} para ${money(now.cents)}, ${reason}` });
+      // O lado sem dinheiro diz "sem valor", como o ranking: "R$ 0,00" ao lado de um valor negativo leria como
+      // economia. Aí o motivo já está dito; com dinheiro dos dois lados ele vem no fim.
+      const side = (amount: number) => (amount > 0 ? money(amount) : 'sem valor');
+      const noValueSide = before.cents <= 0 || now.cents <= 0;
+      const detail = `${side(before.cents)} → ${side(now.cents)}${noValueSide ? '' : ` · ${reason}`}`;
+      const spokenDetail = noValueSide ? `antes ${side(before.cents)}, agora ${side(now.cents)}` : `de ${money(before.cents)} para ${money(now.cents)}, ${reason}`;
+      splits.push({ item: now, diff: now.cents - before.cents, kind: 'sem_comparacao', expected: 0, price: 0, detail, spokenDetail });
       continue;
     }
     splits.push({ ...comparable(before, now), diff: now.cents - before.cents, kind: 'comparavel' });
@@ -232,13 +255,14 @@ export function marketChange(input: MarketChangeInput): MarketChange {
     part('sem_comparacao', 'Sem como comparar', sum(of('sem_comparacao'), (split) => split.diff), count('sem_comparacao')),
   ].filter((entry) => entry.cents !== 0);
 
-  // O total pago tem as diferenças das notas; os itens, não. Uma frase diz por que os dois mudam diferente, sem
-  // outro número. Se as duas diferenças não batem, alguma nota dos dois períodos tem desconto ou valor sem item.
+  // O total pago tem as diferenças das notas; os itens, não. Uma frase diz o que mais ele conta, sem outro número
+  // e sem dizer para que lado: vale com o total igual, a mais ou a menos. Se as duas diferenças não batem, os
+  // descontos ou os valores sem item somam diferente nos dois períodos, e só esses são nomeados.
   const reasons = [
     input.receiptDifferences.discounts ? 'os descontos no total das notas' : null,
     input.receiptDifferences.unread ? 'os valores sem item lido' : null,
   ].filter((reason): reason is string => reason !== null);
-  const totalNote = input.paidDiffCents !== diffCents && reasons.length ? `O total pago muda diferente porque inclui ${joinNames(reasons)}.` : null;
+  const totalNote = input.paidDiffCents !== diffCents && reasons.length ? `O total pago, lá em cima, também conta ${joinNames(reasons)}.` : null;
 
   const items = splits
     .filter((split) => split.diff !== 0)

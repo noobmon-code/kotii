@@ -62,6 +62,8 @@ export default function MarketMonthScreen() {
   const scroll = useRef<ScrollView>(null);
   /** A altura em que a chave das partes está na tela rolável. */
   const switchY = useRef(0);
+  /** A altura em que o card "O que mudou" está, no mesmo espaço da chave. */
+  const changesY = useRef(0);
   const summary = useMemo(() => (receipts.data ? marketMonth(receipts.data, month, today) : null), [receipts.data, month, today]);
 
   function goTo(target: string) {
@@ -80,6 +82,15 @@ export default function MarketMonthScreen() {
     router.setParams({ aba: 'itens' });
     // A categoria tocada pode estar lá embaixo na lista: a tela volta para a chave, com os itens logo abaixo.
     scroll.current?.scrollTo({ y: Math.max(0, switchY.current - space.sm), animated: false });
+  }
+
+  /**
+   * Fechar a lista longa de mudanças tira de cima as linhas por onde a pessoa rolou: sem voltar, a tela ficaria
+   * no meio do ranking. A tela não acompanha a rolagem, então volta sempre para o card.
+   */
+  function openChanges(all: boolean) {
+    setShowAllChanges(all);
+    if (!all) scroll.current?.scrollTo({ y: Math.max(0, changesY.current - space.sm), animated: false });
   }
 
   return (
@@ -125,11 +136,14 @@ export default function MarketMonthScreen() {
           showAll={showAll}
           onShowAll={setShowAll}
           showAllChanges={showAllChanges}
-          onShowAllChanges={setShowAllChanges}
+          onShowAllChanges={openChanges}
           detailsOpen={detailsOpen}
           onDetailsOpen={setDetailsOpen}
           onSwitchLayout={(y) => {
             switchY.current = y;
+          }}
+          onChangesLayout={(y) => {
+            changesY.current = y;
           }}
           onAddReceipt={scanner.open}
           adding={scanner.busy}
@@ -156,6 +170,7 @@ function MonthBody({
   detailsOpen,
   onDetailsOpen,
   onSwitchLayout,
+  onChangesLayout,
   onAddReceipt,
   adding,
 }: {
@@ -173,6 +188,7 @@ function MonthBody({
   detailsOpen: boolean;
   onDetailsOpen: (open: boolean) => void;
   onSwitchLayout: (y: number) => void;
+  onChangesLayout: (y: number) => void;
   onAddReceipt: () => void;
   adding: boolean;
 }) {
@@ -237,7 +253,11 @@ function MonthBody({
           ) : null}
 
           {/* Sem nota de mercado na janela do mês anterior não há com o que comparar: o cabeçalho já diz. */}
-          {summary.change ? <Changes change={summary.change} showAll={showAllChanges} onShowAll={onShowAllChanges} /> : null}
+          {summary.change ? (
+            <View onLayout={(event) => onChangesLayout(event.nativeEvent.layout.y)}>
+              <Changes change={summary.change} showAll={showAllChanges} onShowAll={onShowAllChanges} />
+            </View>
+          ) : null}
 
           <View onLayout={(event) => onSwitchLayout(event.nativeEvent.layout.y)}>
             <Segmented value={view} onChange={onView} options={MARKET_VIEWS} />

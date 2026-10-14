@@ -181,17 +181,75 @@ describe('o que mudou: as partes da diferença dos itens', () => {
     ]);
     expect(items(change)).toEqual([
       // Empate no valor: pelo nome.
-      ['Água', '−R$ 5,00', 'R$ 5,00 → R$ 0,00 · compra sem valor'],
-      ['Brinde', '+R$ 5,00', 'R$ 0,00 → R$ 5,00 · compra sem valor'],
+      // O lado sem valor diz "sem valor", como o ranking, nunca R$ 0,00 (que leria como economia); aí o motivo já
+      // está dito.
+      ['Água', '−R$ 5,00', 'R$ 5,00 → sem valor'],
+      ['Brinde', '+R$ 5,00', 'sem valor → R$ 5,00'],
       ['Ovos', '+R$ 3,00', 'R$ 12,00 → R$ 15,00 · sem quantidade'],
+      // Com dinheiro dos dois lados, mas uma compra sem valor: o motivo continua.
       ['Pão', '+R$ 2,00', 'R$ 10,00 → R$ 12,00 · compra sem valor'],
       ['Tomate', '−R$ 2,00', 'R$ 8,00 → R$ 6,00 · unidades diferentes'],
     ]);
     expect(parts(change)).toEqual([['Sem como comparar', '+R$ 3,00', '5 itens']]);
     expect(change.diffCents).toBe(300);
     expect(change.items[4].accessibilityLabel).toBe('Tomate: menos R$ 2,00, de R$ 8,00 para R$ 6,00, unidades diferentes');
+    expect(change.items[0].accessibilityLabel).toBe('Água: menos R$ 5,00, antes R$ 5,00, agora sem valor');
+    expect(change.items[1].accessibilityLabel).toBe('Brinde: mais R$ 5,00, antes sem valor, agora R$ 5,00');
+    expect(change.items[3].accessibilityLabel).toBe('Pão: mais R$ 2,00, de R$ 10,00 para R$ 12,00, compra sem valor');
     // Sem item comparável não há porcentagem nem parte de preço.
     expect(change.parts.find((p) => p.key === 'preco')).toBeUndefined();
+  });
+
+  it('preço médio que muda mais de 2,5 vezes não é aumento: outra embalagem ou preço muito diferente, sem como comparar', () => {
+    // O caso da revisão: dez itens 5% mais caros e o leite em fardo (lido como 1 un) contra 6 caixinhas.
+    const ten = ['Arroz', 'Feijão', 'Café', 'Açúcar', 'Óleo', 'Sal', 'Farinha', 'Macarrão', 'Molho', 'Sabão'];
+    const fardo = changeOf([
+      receipt(at(SEPTEMBER, 5), [...ten.map((name) => line(name, 'graos', 20)), line('Leite', 'laticinios', 55.08)]),
+      receipt(at(MONTH, 4), [...ten.map((name) => line(name, 'graos', 21)), line('Leite', 'laticinios', 29.94, 6)]),
+    ]);
+    expect(parts(fardo)).toEqual([
+      ['Preço', '+R$ 10,00', 'Os mesmos 10 itens ficaram 5% mais caros'],
+      ['Sem como comparar', '−R$ 25,14', '1 item'],
+    ]);
+    expect(parts(fardo).flat().join(' ')).not.toContain('mais baratos');
+    expect(partSum(fardo)).toBe(fardo.diffCents);
+    expect(items(fardo)[0]).toEqual(['Leite', '−R$ 25,14', 'R$ 55,08 → R$ 29,94 · pode ser outra embalagem']);
+    expect(fardo.items[0].accessibilityLabel).toBe('Leite: menos R$ 25,14, de R$ 55,08 para R$ 29,94, pode ser outra embalagem');
+
+    // O saco de 5 kg contra os de 1 kg, todos em "un".
+    const sacos = changeOf([receipt(at(SEPTEMBER, 5), [line('Arroz', 'graos', 29.9)]), receipt(at(MONTH, 4), [line('Arroz', 'graos', 22.47, 3)])]);
+    expect(parts(sacos)).toEqual([['Sem como comparar', '−R$ 7,43', '1 item']]);
+    expect(items(sacos)).toEqual([['Arroz', '−R$ 7,43', 'R$ 29,90 → R$ 22,47 · pode ser outra embalagem']]);
+  });
+
+  it('por kg ou litro: o dobro ainda compara, o triplo (para cima ou para baixo) não; 2,5 vezes ainda compara', () => {
+    const pair = (before: MarketLine, now: MarketLine) => changeOf([receipt(at(SEPTEMBER, 5), [before]), receipt(at(MONTH, 4), [now])]);
+    const double = pair(line('Carne', 'carnes', 40, 1, 'kg'), line('Carne', 'carnes', 80, 1, 'kg'));
+    expect(parts(double)).toEqual([['Preço', '+R$ 40,00', 'O mesmo item ficou 100% mais caro']]);
+    expect(items(double)).toEqual([['Carne', '+R$ 40,00', 'kg: R$ 40,00 → R$ 80,00 · 1 kg → 1 kg']]);
+    expect(items(pair(line('Carne', 'carnes', 40, 1, 'kg'), line('Carne', 'carnes', 100, 1000, 'g')))).toEqual([
+      ['Carne', '+R$ 60,00', 'kg: R$ 40,00 → R$ 100,00 · 1 kg → 1 kg'],
+    ]);
+    const triple = pair(line('Carne', 'carnes', 40, 1, 'kg'), line('Carne', 'carnes', 120, 1, 'kg'));
+    expect(parts(triple)).toEqual([['Sem como comparar', '+R$ 80,00', '1 item']]);
+    expect(items(triple)).toEqual([['Carne', '+R$ 80,00', 'R$ 40,00 → R$ 120,00 · preço muito diferente']]);
+    // Um terço do preço por kg: também fora.
+    expect(items(pair(line('Carne', 'carnes', 60, 1, 'kg'), line('Carne', 'carnes', 20, 1, 'kg')))).toEqual([
+      ['Carne', '−R$ 40,00', 'R$ 60,00 → R$ 20,00 · preço muito diferente'],
+    ]);
+    // 200 ml por R$ 8,00 são R$ 40,00 o litro, 4 vezes os R$ 10,00 de antes.
+    expect(items(pair(line('Suco', 'bebidas', 10, 1, 'l'), line('Suco', 'bebidas', 8, 200, 'ml')))).toEqual([
+      ['Suco', '−R$ 2,00', 'R$ 10,00 → R$ 8,00 · preço muito diferente'],
+    ]);
+  });
+
+  it('o fardo e as caixinhas nos dois períodos continuam comparáveis: vale a média de cada período', () => {
+    const change = changeOf([
+      receipt(at(SEPTEMBER, 5), [line('Leite', 'laticinios', 55.08), line('Leite', 'laticinios', 29.94, 6)]),
+      receipt(at(MONTH, 4), [line('Leite', 'laticinios', 57), line('Leite', 'laticinios', 31, 6)]),
+    ]);
+    expect(items(change)).toEqual([['Leite', '+R$ 2,98', 'Unidade: R$ 12,15 → R$ 12,57 · 7 un → 7 un']]);
+    expect(parts(change)).toEqual([['Preço', '+R$ 2,98', 'O mesmo item ficou 4% mais caro']]);
   });
 
   it('o mesmo produto duas vezes na mesma nota e em várias idas é um item só', () => {
@@ -341,19 +399,37 @@ describe('o mesmo escopo do resto da tela', () => {
 describe('o total pago e os itens', () => {
   const september = receipt(at(SEPTEMBER, 5), [line('Arroz', 'graos', 30)]);
 
-  it('com desconto ou valor sem item lido, uma frase diz por que o total pago muda diferente, sem outro número', () => {
+  it('com desconto ou valor sem item lido, uma frase neutra diz o que o total pago também conta, sem outro número', () => {
     const discounted = changeOf([september, receipt(at(MONTH, 4), [line('Arroz', 'graos', 40)], { total: 35 })]);
     expect(discounted.headline).toBe('Nos itens, R$ 10,00 a mais que em setembro');
-    expect(discounted.totalNote).toBe('O total pago muda diferente porque inclui os descontos no total das notas.');
+    expect(discounted.totalNote).toBe('O total pago, lá em cima, também conta os descontos no total das notas.');
     const unread = changeOf([september, receipt(at(MONTH, 4), [line('Arroz', 'graos', 40)], { total: 60 })]);
-    expect(unread.totalNote).toBe('O total pago muda diferente porque inclui os valores sem item lido.');
+    expect(unread.totalNote).toBe('O total pago, lá em cima, também conta os valores sem item lido.');
     // Desconto em setembro e valor sem item em outubro.
     const both = changeOf([
       receipt(at(SEPTEMBER, 5), [line('Arroz', 'graos', 30)], { total: 25 }),
       receipt(at(MONTH, 4), [line('Arroz', 'graos', 40)], { total: 60 }),
     ]);
-    expect(both.totalNote).toBe('O total pago muda diferente porque inclui os descontos no total das notas e os valores sem item lido.');
+    expect(both.totalNote).toBe('O total pago, lá em cima, também conta os descontos no total das notas e os valores sem item lido.');
     expect(both.headline).toBe('Nos itens, R$ 10,00 a mais que em setembro');
+  });
+
+  it('só diz o motivo que abre a diferença: o mesmo desconto nos dois períodos não é motivo', () => {
+    // O mesmo desconto de R$ 5,00 em setembro e em outubro; em outubro, R$ 3,00 sem item lido noutra nota.
+    const change = changeOf([
+      receipt(at(SEPTEMBER, 5), [line('Arroz', 'graos', 10)], { total: 5 }),
+      receipt(at(MONTH, 5), [line('Arroz', 'graos', 10)], { total: 5 }),
+      receipt(at(MONTH, 6), [line('Feijão', 'graos', 10)], { total: 13 }),
+    ]);
+    expect(change.headline).toBe('Nos itens, R$ 10,00 a mais que em setembro');
+    expect(change.totalNote).toBe('O total pago, lá em cima, também conta os valores sem item lido.');
+  });
+
+  it('o total pago igual ao de antes, com os itens mais caros: a frase neutra não contradiz o cabeçalho', () => {
+    const month = marketMonth([september, receipt(at(MONTH, 4), [line('Arroz', 'graos', 40)], { total: 30 })], MONTH, AFTER);
+    expect(month.comparison).toBe('Igual ao gasto em setembro');
+    expect(month.change!.headline).toBe('Nos itens, R$ 10,00 a mais que em setembro');
+    expect(month.change!.totalNote).toBe('O total pago, lá em cima, também conta os descontos no total das notas.');
   });
 
   it('a mesma diferença no total das notas nos dois períodos: o total pago muda igual aos itens, e a frase não aparece', () => {
@@ -367,11 +443,12 @@ describe('o total pago e os itens', () => {
 
 describe('as partes fecham a diferença, em notas de todo jeito', () => {
   it('preço + quantidade + novos + que saíram + sem comparação = itens agora − itens na janela, centavo por centavo', () => {
-    // Sorteio com semente: os mesmos números a cada vez.
+    // Sorteio com semente: os mesmos números a cada vez. Pelos bits altos: os baixos deste gerador se repetem a
+    // cada poucas chamadas (com "% 4", a escolha do valor nunca caía em "sem valor").
     let seed = 20261014;
     const random = (max: number) => {
       seed = (seed * 1103515245 + 12345) % 2147483648;
-      return seed % max;
+      return Math.floor((seed / 2147483648) * max);
     };
     const names = ['Arroz', 'Feijão', 'Leite', 'Queijo', 'Banana', 'Suco', 'Café', 'Sabão', 'Ração', 'Pão'];
     const categories = ['graos', 'limpeza', 'pet', 'medicamentos', 'laticinios', 'outros'];
@@ -383,16 +460,30 @@ describe('as partes fecham a diferença, em notas de todo jeito', () => {
       // Às vezes sem produto, agrupado pelo nome.
       return random(5) === 0 ? { ...base, productId: null, productName: null, productCategory: null, suggestedCategory: base.productCategory } : base;
     };
-    const randomReceipts = (month: string) =>
+    // Notas "arrumadas": cada nome sempre na mesma unidade, com valor e quantidade. Muitos itens comparáveis, com
+    // preços médios que às vezes mudam mais que a faixa e às vezes não.
+    const tidyLine = (): MarketLine => {
+      const index = random(names.length);
+      const unit = units[index % units.length];
+      const quantity = unit === 'un' ? 1 + random(6) : unit === 'g' || unit === 'ml' ? 1 + random(1000) : (1 + random(3000)) / 1000;
+      return line(names[index], categories[index % categories.length], (1 + random(30000)) / 100, quantity, unit);
+    };
+    const randomReceipts = (month: string, makeLine = randomLine) =>
       Array.from({ length: 1 + random(4) }, (_, n) => {
-        const lines = Array.from({ length: 1 + random(6) }, randomLine);
+        const lines = Array.from({ length: 1 + random(6) }, makeLine);
         const printed = lines.reduce((sum, l) => sum + Math.round((l.totalPrice ?? 0) * 100), 0);
         const total = [null, printed / 100, Math.max(1, printed - random(printed + 1)) / 100, (printed + 1 + random(5000)) / 100][random(4)];
         return receipt(at(month, 1 + n * 3, 8 + random(12)), lines, { total, status: random(10) === 0 ? 'draft' : 'confirmed' });
       });
     let checked = 0;
-    for (let round = 0; round < 400; round++) {
-      const receipts = [...randomReceipts(SEPTEMBER), ...randomReceipts(MONTH)];
+    // O sorteio passa pelos casos novos: preço médio fora da faixa e um lado sem valor.
+    let outOfBand = 0;
+    let noValueSide = 0;
+    let withPrice = 0;
+    for (let round = 0; round < 800; round++) {
+      // Metade de notas de todo jeito, metade arrumadas.
+      const makeLine = round < 400 ? randomLine : tidyLine;
+      const receipts = [...randomReceipts(SEPTEMBER, makeLine), ...randomReceipts(MONTH, makeLine)];
       const october = marketMonth(receipts, MONTH, AFTER);
       const september = marketMonth(receipts, SEPTEMBER, AFTER);
       if (!october.change) {
@@ -408,10 +499,24 @@ describe('as partes fecham a diferença, em notas de todo jeito', () => {
       expect(change.items.every((i) => i.cents !== 0)).toBe(true);
       // A frase do total pago aparece exatamente quando as duas diferenças não batem.
       expect(change.totalNote !== null).toBe(october.totalCents - september.totalCents !== change.diffCents);
+      // E só nomeia o que soma diferente nos dois meses (a janela aqui é setembro inteiro).
+      if (change.totalNote) {
+        expect(change.totalNote.includes('os descontos')).toBe(october.discount?.value !== september.discount?.value);
+        expect(change.totalNote.includes('sem item lido')).toBe(october.unread?.value !== september.unread?.value);
+      }
       // Da maior mudança para a menor.
       const sizes = change.items.map((i) => Math.abs(i.cents));
       expect(sizes).toEqual([...sizes].sort((a, b) => b - a));
+      // Nas linhas sem como comparar (sem "kg:", "Unidade:"…), o lado sem valor nunca vira "R$ 0,00".
+      const notComparable = change.items.filter((i) => i.detail.includes('→') && !i.detail.includes(':'));
+      expect(notComparable.filter((i) => i.detail.includes('R$ 0,00'))).toEqual([]);
+      outOfBand += change.items.filter((i) => /pode ser outra embalagem|preço muito diferente/.test(i.detail)).length;
+      noValueSide += change.items.filter((i) => i.detail.includes('sem valor →') || i.detail.endsWith('→ sem valor')).length;
+      if (change.parts.some((p) => p.key === 'preco')) withPrice += 1;
     }
-    expect(checked).toBeGreaterThan(200);
+    expect(checked).toBeGreaterThan(400);
+    expect(outOfBand).toBeGreaterThan(0);
+    expect(noValueSide).toBeGreaterThan(0);
+    expect(withPrice).toBeGreaterThan(0);
   });
 });

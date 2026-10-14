@@ -626,7 +626,10 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
   }
 
   // O que mudou: os itens do período da tela contra os da mesma janela do cabeçalho e das categorias.
-  const bothPeriods = [...current.trips, ...compared.trips];
+  // O total pago muda diferente dos itens pelo que os descontos e os valores sem item somam a mais ou a menos
+  // que na janela: o mesmo desconto nos dois períodos não abre diferença nenhuma, e não é motivo.
+  const comparedDiscountCents = compared.trips.reduce((sum, trip) => sum + Math.max(0, -trip.money.marketDiffCents), 0);
+  const comparedUnreadCents = compared.trips.reduce((sum, trip) => sum + Math.max(0, trip.money.marketDiffCents), 0);
   const change =
     total.trips > 0 && hadPrevious
       ? marketChange({
@@ -635,10 +638,7 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
           previousWhen: when(previous),
           currentWhen: today.slice(0, 7) === month ? 'neste mês até hoje' : `em ${name}`,
           paidDiffCents: total.totalCents - comparedTotal.totalCents,
-          receiptDifferences: {
-            discounts: bothPeriods.some((trip) => trip.money.marketDiffCents < 0),
-            unread: bothPeriods.some((trip) => trip.money.marketDiffCents > 0),
-          },
+          receiptDifferences: { discounts: discountCents !== comparedDiscountCents, unread: unreadCents !== comparedUnreadCents },
         })
       : null;
 

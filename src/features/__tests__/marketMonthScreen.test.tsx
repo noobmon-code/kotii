@@ -522,8 +522,8 @@ describe('o que mudou', () => {
     'Itens que não teve até o dia 13 de setembro',
     '10 itens',
     '+R$ 115,00',
-    // O total pago subiu R$ 140,00 (cabeçalho), os itens R$ 130,00: uma frase diz por quê, sem outro número.
-    'O total pago muda diferente porque inclui os descontos no total das notas e os valores sem item lido.',
+    // O total pago subiu R$ 140,00 (cabeçalho), os itens R$ 130,00: uma frase diz o que mais ele conta, sem outro número.
+    'O total pago, lá em cima, também conta os descontos no total das notas e os valores sem item lido.',
     'Arroz',
     'Unidade: R$ 30,00 → R$ 32,50 · 1 un → 2 un',
     '+R$ 35,00',
@@ -571,6 +571,22 @@ describe('o que mudou', () => {
     expect(changeRows().map((row) => row.props.title)).toEqual(['Arroz', 'Leite', 'Queijo']);
   });
 
+  it('fechar a lista longa volta a tela para o card, em vez de deixar a pessoa no meio do ranking', async () => {
+    await mount();
+    // O card está a 300 da tela rolável.
+    const scrollTo = jest.spyOn(renderer!.root.findByType(ScrollView).instance as ScrollView, 'scrollTo').mockImplementation(() => {});
+    // O ScrollView de teste é um só entre os testes: as chamadas de antes não contam aqui.
+    scrollTo.mockClear();
+    const card = renderer!.root.find((node) => typeof node.type === 'function' && node.type.name === 'Changes').parent!;
+    act(() => card.props.onLayout({ nativeEvent: { layout: { y: 300 } } }));
+    // Abrir não mexe na tela: a lista cresce para baixo.
+    await pressButton('Ver todas as 12 mudanças');
+    expect(scrollTo).not.toHaveBeenCalled();
+    await pressButton('Mostrar só as 3 maiores');
+    expect(scrollTo).toHaveBeenCalledWith({ y: 292, animated: false });
+    expect(changeRows()).toHaveLength(3);
+  });
+
   it('a mudança de um produto abre o produto; a do item que a casa não acompanha não abre nada', async () => {
     await mount();
     await pressButton('Ver todas as 12 mudanças');
@@ -610,7 +626,7 @@ describe('o que mudou', () => {
         '+R$ 3,00',
       ].join('\n'),
     );
-    expect(text).not.toContain('O total pago muda');
+    expect(text).not.toContain('O total pago');
     expect(text).not.toContain('mudanças');
   });
 });
