@@ -134,10 +134,13 @@ export interface ConfirmBlock {
 
 /**
  * O que impede a confirmação de seguir (null: nada). A escolha que sumiu impede sempre, até ser refeita. O
- * produto do próprio item fora do catálogo pede uma busca nova, uma vez só (`refreshed`): se depois dela ele
- * continua fora, o item segue como produto novo, como sempre foi com o catálogo atrasado.
+ * produto do próprio item fora do catálogo pede uma busca nova dos produtos e da nota, e impede até ela dar
+ * certo: `refreshed` são os itens para os quais as DUAS buscas já chegaram (a tela só os guarda aí; com uma
+ * das buscas falhando o catálogo pode continuar sem o produto, e confirmar o criaria de novo). O item que
+ * continua fora depois de as duas chegarem segue como produto novo, como sempre foi; um item que sumir depois
+ * pede a busca de novo.
  */
-export function confirmBlock(gone: { chosen: string[]; own: string[] }, refreshed: boolean): ConfirmBlock | null {
+export function confirmBlock(gone: { chosen: string[]; own: string[] }, refreshed: readonly string[]): ConfirmBlock | null {
   if (gone.chosen.length) {
     return {
       kind: 'choose',
@@ -148,7 +151,7 @@ export function confirmBlock(gone: { chosen: string[]; own: string[] }, refreshe
           : `Os produtos escolhidos para ${gone.chosen.length} itens desta nota foram juntados com outros em outro aparelho. Escolha de novo o produto desses itens.`,
     };
   }
-  if (gone.own.length && !refreshed) {
+  if (gone.own.some((id) => !refreshed.includes(id))) {
     return {
       kind: 'refresh',
       title: 'Produtos atualizados',
@@ -157,6 +160,25 @@ export function confirmBlock(gone: { chosen: string[]; own: string[] }, refreshe
   }
   return null;
 }
+
+/**
+ * As buscas pedidas chegaram, todas? Uma que falha (com o dado de antes ainda guardado, ela responde sem dar
+ * erro) ou que estoura conta como não chegou.
+ */
+export async function allArrived(fetches: (() => Promise<{ isSuccess: boolean }>)[]): Promise<boolean> {
+  try {
+    const results = await Promise.all(fetches.map((fetch) => fetch()));
+    return results.every((result) => result.isSuccess);
+  } catch {
+    return false;
+  }
+}
+
+/** A busca nova dos produtos ou da nota não chegou: a confirmação continua parada. */
+export const REFRESH_FAILED_NOTICE = {
+  title: 'Não deu para atualizar',
+  message: 'Um produto desta nota mudou em outro aparelho, e não deu para buscar os produtos e a nota de novo. Confira a internet e confirme outra vez.',
+};
 
 /** Payload de confirm_receipt (ver migration). */
 export function buildConfirmPayload(

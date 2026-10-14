@@ -42,9 +42,11 @@ import { describePriceAlert, priceAlerts, totalSaving, type AlertItem, type Pric
 import { houseNameOverride, keptName, noteNames, sameProduct, typedNameActions, withEntry } from '@/domain/receiptNames';
 import {
   buildConfirmPayload,
+  allArrived,
   confirmBlock,
   GONE_CHOICE_HINT,
   goneProducts,
+  REFRESH_FAILED_NOTICE,
   resolveItem,
   type CatalogProduct,
   type ConfirmItem,
@@ -135,8 +137,8 @@ export default function ReceiptScreen() {
   const [checkingPantry, setCheckingPantry] = useState(false);
   // Trava já no toque: o estado só muda no próximo render.
   const confirming = useRef(false);
-  // A busca nova dos produtos e da nota, pedida uma vez quando o produto de um item sumiu do catálogo.
-  const refreshedGone = useRef(false);
+  // Os itens cujo produto sumiu do catálogo e para os quais a busca nova dos produtos E da nota já chegou.
+  const refreshedGone = useRef<string[]>([]);
 
   const catalog = useMemo(
     () => new Map<string, CatalogProduct>((products.data ?? []).map((p) => [p.id, p])),
@@ -310,13 +312,21 @@ export default function ReceiptScreen() {
     const block = confirmBlock(gone, refreshedGone.current);
     if (block) {
       if (block.kind === 'refresh') {
-        refreshedGone.current = true;
+        const asked = gone.own;
         confirming.current = true;
+        let arrived = false;
         try {
-          await Promise.all([products.refetch(), receiptQuery.refetch()]);
+          arrived = await allArrived([() => products.refetch(), () => receiptQuery.refetch()]);
         } finally {
           confirming.current = false;
         }
+        // Só com as duas buscas na mão o item deixa de pedir a busca: com uma delas falhando, o catálogo pode
+        // continuar sem o produto, e a próxima confirmação o criaria de novo.
+        if (!arrived) {
+          notify(REFRESH_FAILED_NOTICE.title, REFRESH_FAILED_NOTICE.message);
+          return;
+        }
+        refreshedGone.current = [...new Set([...refreshedGone.current, ...asked])];
       }
       notify(block.title, block.message);
       return;

@@ -1,5 +1,14 @@
 import { describe, expect, it } from '@jest/globals';
-import { buildConfirmPayload, confirmBlock, goneProducts, resolveItem, type CatalogProduct, type ReviewItem } from '../receiptReview';
+import {
+  allArrived,
+  buildConfirmPayload,
+  confirmBlock,
+  goneProducts,
+  REFRESH_FAILED_NOTICE,
+  resolveItem,
+  type CatalogProduct,
+  type ReviewItem,
+} from '../receiptReview';
 
 const catalog = new Map<string, CatalogProduct>([
   ['p-arroz', { id: 'p-arroz', name: 'Arroz Tio João 5kg', category: 'graos', shelf_life_days: 30 }],
@@ -100,27 +109,55 @@ describe('produto que sumiu do catálogo com a revisão aberta (foi juntado com 
   });
 
   it('a escolha que sumiu impede a confirmação até ser refeita, com a frase no singular e no plural', () => {
-    expect(confirmBlock({ chosen: ['a'], own: [] }, false)).toEqual({
+    expect(confirmBlock({ chosen: ['a'], own: [] }, [])).toEqual({
       kind: 'choose',
       title: 'Escolha o produto de novo',
       message: 'O produto escolhido para um item desta nota foi juntado com outro em outro aparelho. Escolha de novo o produto desse item.',
     });
-    expect(confirmBlock({ chosen: ['a', 'e'], own: ['c'] }, true)).toEqual({
+    expect(confirmBlock({ chosen: ['a', 'e'], own: ['c'] }, ['c'])).toEqual({
       kind: 'choose',
       title: 'Escolha o produto de novo',
       message: 'Os produtos escolhidos para 2 itens desta nota foram juntados com outros em outro aparelho. Escolha de novo o produto desses itens.',
     });
   });
 
-  it('o produto do próprio item fora do catálogo pede uma busca nova, uma vez só', () => {
-    expect(confirmBlock({ chosen: [], own: ['c'] }, false)).toEqual({
+  it('o produto do próprio item fora do catálogo pede uma busca nova, e impede até as duas buscas chegarem', () => {
+    const refresh = {
       kind: 'refresh',
       title: 'Produtos atualizados',
       message: 'Um produto desta nota mudou em outro aparelho. Confira os itens e confirme de novo.',
+    };
+    expect(confirmBlock({ chosen: [], own: ['c'] }, [])).toEqual(refresh);
+    // A busca falhou (a tela não guarda o item): continua impedindo, quantas vezes a pessoa tentar.
+    expect(confirmBlock({ chosen: [], own: ['c'] }, [])).toEqual(refresh);
+    // As duas buscas chegaram e ele continua fora: segue como produto novo, como sempre foi com o catálogo atrasado.
+    expect(confirmBlock({ chosen: [], own: ['c'] }, ['c'])).toBeNull();
+    // Outro item some depois (outra junção): pede a busca de novo.
+    expect(confirmBlock({ chosen: [], own: ['c', 'g'] }, ['c'])).toEqual(refresh);
+    expect(confirmBlock({ chosen: [], own: ['c', 'g'] }, ['c', 'g'])).toBeNull();
+    expect(confirmBlock({ chosen: [], own: [] }, [])).toBeNull();
+    expect(REFRESH_FAILED_NOTICE).toEqual({
+      title: 'Não deu para atualizar',
+      message: 'Um produto desta nota mudou em outro aparelho, e não deu para buscar os produtos e a nota de novo. Confira a internet e confirme outra vez.',
     });
-    // Já buscou de novo e ele continua fora: segue como produto novo, como sempre foi com o catálogo atrasado.
-    expect(confirmBlock({ chosen: [], own: ['c'] }, true)).toBeNull();
-    expect(confirmBlock({ chosen: [], own: [] }, false)).toBeNull();
+  });
+});
+
+describe('as buscas novas dos produtos e da nota', () => {
+  const ok = async () => ({ isSuccess: true });
+  // A busca que falha com o dado de antes guardado responde, sem dar erro, dizendo que não deu certo.
+  const kept = async () => ({ isSuccess: false });
+  const broken = async (): Promise<{ isSuccess: boolean }> => {
+    throw new Error('sem rede');
+  };
+
+  it('só chegaram quando as duas deram certo', async () => {
+    expect(await allArrived([ok, ok])).toBe(true);
+    // A da nota chegou e a dos produtos não: o catálogo pode continuar sem o produto.
+    expect(await allArrived([kept, ok])).toBe(false);
+    expect(await allArrived([ok, kept])).toBe(false);
+    expect(await allArrived([broken, ok])).toBe(false);
+    expect(await allArrived([ok, broken])).toBe(false);
   });
 });
 
