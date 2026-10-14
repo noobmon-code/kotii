@@ -28,6 +28,9 @@ export const FAMILY_EVENT_GONE = 'Este compromisso não existe mais: foi excluí
 /** O que a pessoa lê quando alguém do compromisso (de quem é, quem leva ou quem busca) não tem mais ficha. */
 export const FAMILY_EVENT_PERSON_GONE = 'Uma das pessoas deste compromisso não está mais nas fichas da casa. Escolha de novo de quem é, quem leva e quem busca, e salve.';
 
+/** O que a pessoa lê quando quem ela escolheu para um dia ("Só neste dia") não tem mais ficha. */
+export const FAMILY_EVENT_DAY_PERSON_GONE = 'Essa pessoa não está mais nas fichas da casa. Escolha outra para este dia.';
+
 /**
  * A tabela ainda não existe no banco (o app chegou antes da migração): o
  * PostgREST responde PGRST205 ("Could not find the table ... in the schema
@@ -44,17 +47,36 @@ export function isMissingTable(error: unknown): boolean {
   );
 }
 
+/**
+ * A chave que o banco recusou (23503). Na mudança de um dia, pode ser a do próprio compromisso: ele foi apagado
+ * em outro celular com esta tela aberta. Nas outras, é a de uma ficha escolhida na tela, que foi apagada.
+ */
+function refusedKey(error: unknown): 'event' | 'person' | null {
+  if (!error || typeof error !== 'object' || (error as { code?: unknown }).code !== '23503') return null;
+  const { message, details } = error as { message?: unknown; details?: unknown };
+  const text = `${typeof message === 'string' ? message : ''} ${typeof details === 'string' ? details : ''}`;
+  return text.includes('family_event_days_event_id') ? 'event' : 'person';
+}
+
+/** O banco recusou a gravação porque alguém escolhido na tela não tem mais ficha. */
+export function isPersonGone(error: unknown): boolean {
+  return refusedKey(error) === 'person';
+}
+
 /** O erro de salvar ou abrir um compromisso, em palavras de gente. */
 export function familyEventErrorMessage(error: unknown): string {
   if (isMissingTable(error)) return FAMILY_EVENTS_UNAVAILABLE;
-  // O banco recusou uma chave (23503). Na mudança de um dia, a chave do próprio compromisso: ele foi apagado
-  // em outro celular com esta tela aberta. Nas outras, a de uma ficha escolhida no formulário, que foi apagada.
-  if (error && typeof error === 'object' && (error as { code?: unknown }).code === '23503') {
-    const { message, details } = error as { message?: unknown; details?: unknown };
-    const text = `${typeof message === 'string' ? message : ''} ${typeof details === 'string' ? details : ''}`;
-    return text.includes('family_event_days_event_id') ? FAMILY_EVENT_GONE : FAMILY_EVENT_PERSON_GONE;
-  }
+  const refused = refusedKey(error);
+  if (refused) return refused === 'event' ? FAMILY_EVENT_GONE : FAMILY_EVENT_PERSON_GONE;
   return errorMessage(error);
+}
+
+/**
+ * O erro de gravar o que muda num dia. A ficha apagada tem frase própria: o cartão do dia não tem "Salvar" nem
+ * "de quem é", que é o que a frase do formulário manda mexer.
+ */
+export function familyEventDayErrorMessage(error: unknown): string {
+  return isPersonGone(error) ? FAMILY_EVENT_DAY_PERSON_GONE : familyEventErrorMessage(error);
 }
 
 // O banco devolve a hora como "16:00:00".
@@ -133,6 +155,18 @@ export interface FreshRead {
 
 export function useFamilyEventDays({ fresh = false }: FreshRead = {}) {
   return useQuery({ queryKey: ['familyEventDays'], queryFn: () => fetchFamilyEventDays(), ...(fresh ? { refetchOnMount: 'always' as const } : {}) });
+}
+
+/**
+ * Pede de novo as mudanças de cada dia, largando o pedido que estiver a caminho (o que não responde). O `refetch`
+ * sozinho só troca o pedido em andamento quando já há algo guardado; sem nada guardado, ficaria esperando o mesmo.
+ */
+export function useRestartFamilyEventDays() {
+  const queryClient = useQueryClient();
+  return useCallback(() => {
+    queryClient.cancelQueries({ queryKey: ['familyEventDays'] });
+    queryClient.refetchQueries({ queryKey: ['familyEventDays'] });
+  }, [queryClient]);
 }
 
 /** Um compromisso; null se não existe mais (apagado por outra pessoa). */
@@ -236,13 +270,25 @@ export function useDeleteFamilyEvent() {
  * Grava o que muda num dia do compromisso (normalizeDayChange); `change`
  * nulo: nada mudou, a linha do dia sai.
  */
+export async function saveFamilyEventDay(
+  { eventId, date, change }: { eventId: string; date: string; change: EventDayValues | null },
+  db: SupabaseClient = supabase,
+): Promise<void> {
+  if (change) unwrap(await db.from('family_event_days').upsert({ event_id: eventId, occurs_on: date, ...change }, { onConflict: 'event_id,occurs_on' }));
+  else unwrap(await db.from('family_event_days').delete().eq('event_id', eventId).eq('occurs_on', date));
+}
+
 export function useSaveFamilyEventDay() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ eventId, date, change }: { eventId: string; date: string; change: EventDayValues | null }) =>
-      change
-        ? unwrap(await supabase.from('family_event_days').upsert({ event_id: eventId, occurs_on: date, ...change }, { onConflict: 'event_id,occurs_on' }))
-        : unwrap(await supabase.from('family_event_days').delete().eq('event_id', eventId).eq('occurs_on', date)),
+    mutationFn: (input: { eventId: string; date: string; change: EventDayValues | null }) => saveFamilyEventDay(input),
+    onError: (error) => {
+      // A ficha de quem foi escolhido foi apagada em outro celular: com as fichas e os dias buscados de novo, a
+      // pessoa sai das escolhas (e o dia que era dela aparece como ficou), em vez de o mesmo toque falhar de novo.
+      if (!isPersonGone(error)) return;
+      queryClient.invalidateQueries({ queryKey: ['people'] });
+      queryClient.invalidateQueries({ queryKey: ['familyEventDays'] });
+    },
     onSuccess: (_data, { eventId, date, change }) => {
       // Já na tela, sem esperar a busca: o próximo toque parte do que acabou de ser gravado.
       queryClient.setQueryData<FamilyEventDay[]>(['familyEventDays'], (rows) =>

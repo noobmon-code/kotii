@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { Image } from 'expo-image';
-import { Children, Fragment, useState, type ReactNode } from 'react';
+import { Children, Fragment, useState, type ReactNode, type RefObject } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -73,6 +73,7 @@ export function Screen({
   edges = ['top'],
   footer,
   fab,
+  scrollRef,
 }: {
   children: ReactNode;
   scroll?: boolean;
@@ -82,6 +83,8 @@ export function Screen({
   footer?: ReactNode;
   /** Tela com o botão do Nuke por cima: sobra espaço no fim para ele não cobrir nada. */
   fab?: boolean;
+  /** Para a tela rolar sozinha até um ponto (ex.: de volta ao começo de uma lista que acabou de mudar). */
+  scrollRef?: RefObject<ScrollView | null>;
 }) {
   const c = useColors();
   const content = <View style={[styles.content, fab && styles.contentWithFab]}>{children}</View>;
@@ -90,6 +93,7 @@ export function Screen({
       <Backdrop />
       {scroll ? (
         <ScrollView
+          ref={scrollRef}
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.scrollContent}
           refreshControl={
@@ -485,17 +489,21 @@ export function Chip({
   selected,
   onPress,
   icon,
+  accessibilityLabel,
 }: {
   label: string;
   selected?: boolean;
   onPress?: () => void;
   icon?: IconName;
+  /** O que o leitor de tela diz do selo; sem ele, lê o rótulo. Para o selo que tira um filtro dizer que tira. */
+  accessibilityLabel?: string;
 }) {
   const c = useColors();
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityState={{ selected }}
+      accessibilityLabel={accessibilityLabel}
       onPress={onPress}
       style={[
         styles.chip,
@@ -601,6 +609,7 @@ export function ListRow({
   onPress,
   onLongPress,
   dimmed,
+  accessibilityLabel,
   expanded,
 }: {
   left?: ReactNode;
@@ -610,11 +619,14 @@ export function ListRow({
   onPress?: () => void;
   onLongPress?: () => void;
   dimmed?: boolean;
+  /** O que o leitor de tela diz da linha inteira; sem ele, lê os textos na ordem em que aparecem. */
+  accessibilityLabel?: string;
   expanded?: boolean;
 }) {
   const c = useColors();
   return (
     <Pressable
+      accessibilityLabel={accessibilityLabel}
       accessibilityRole={expanded === undefined ? undefined : 'button'}
       aria-expanded={expanded}
       disabled={!onPress && !onLongPress}

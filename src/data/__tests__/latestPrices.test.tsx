@@ -138,6 +138,48 @@ describe('últimos preços da casa', () => {
     expect(ranges()).toHaveLength(21);
   });
 
+  it('um zero não é preço: a linha zerada (item que ficou sem valor na nota) sai do que a busca devolve, com os pedidos de sempre', async () => {
+    mockView.rows = prices(2300).map((row, n) => (n % 500 === 0 ? { ...row, unit_price: 0 } : row));
+    const rows = await fetchLatestPrices();
+    expect(rows).toHaveLength(2295);
+    expect(rows.every((row) => row.unit_price > 0)).toBe(true);
+    // O zero sai aqui, e não na consulta: as páginas e a ordem continuam as da chave da view.
+    expect(ranges()).toEqual([
+      [0, 999],
+      [1000, 1999],
+      [2000, 2999],
+    ]);
+    for (const request of mockView.asked) {
+      expect(request).toMatchObject({
+        table: 'latest_prices',
+        columns: 'product_id, store_id, unit, unit_price, purchased_at',
+        order: ['product_id', 'store_id', 'unit'],
+      });
+    }
+  });
+
+  it('a página cheia que tem um zero continua cheia na conta das páginas: a seguinte é pedida', async () => {
+    mockView.rows = prices(1000).map((row, n) => (n === 0 ? { ...row, unit_price: 0 } : row));
+    expect(await fetchLatestPrices()).toHaveLength(999);
+    expect(ranges()).toEqual([
+      [0, 999],
+      [1000, 1999],
+    ]);
+  });
+
+  it('o mercado cuja última linha é um zero fica sem preço daquele produto; os outros mercados continuam', async () => {
+    const at = '2026-10-01T12:00:00Z';
+    mockView.rows = [
+      { product_id: 'queijo', store_id: 'assai', unit: 'kg', unit_price: 0, purchased_at: at },
+      { product_id: 'queijo', store_id: 'dia', unit: 'kg', unit_price: 41.5, purchased_at: at },
+      { product_id: 'arroz', store_id: 'assai', unit: 'un', unit_price: 27.9, purchased_at: at },
+    ];
+    expect(await fetchLatestPrices()).toEqual([
+      { product_id: 'arroz', store_id: 'assai', unit: 'un', unit_price: 27.9, purchased_at: at },
+      { product_id: 'queijo', store_id: 'dia', unit: 'kg', unit_price: 41.5, purchased_at: at },
+    ]);
+  });
+
   it('a tela recebe a lista inteira, na mesma chave do cache', async () => {
     mockView.rows = prices(1500);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
