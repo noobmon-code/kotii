@@ -218,7 +218,7 @@ export function Button({
   disabled?: boolean;
   compact?: boolean;
   style?: StyleProp<ViewStyle>;
-  /** O que o leitor de tela diz no lugar do título, quando o título sozinho não basta (vários "Juntar" na mesma tela). */
+  /** O que o leitor de tela diz no lugar do título, quando o título sozinho não basta ("Troquei" em cada linha de uma lista, vários "Juntar" na mesma tela). */
   accessibilityLabel?: string;
 }) {
   const c = useColors();

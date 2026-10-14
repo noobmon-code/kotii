@@ -1365,6 +1365,161 @@ begin
   assert (select label from public.household_location) = 'Asa Sul, Brasília', 'B keeps the location, untouched by C';
 end $$;
 
+\echo '• gás, água e ração: reposições e trocas'
+-- Os privilégios vêm da própria migração, e não do padrão do projeto (que o
+-- Supabase deixa de aplicar a tabela nova em 30/10/2026). Um por um: com uma
+-- lista separada por vírgula, has_table_privilege responde verdadeiro se o
+-- papel tiver QUALQUER um deles.
+do $$
+declare
+  t text;
+  p text;
+begin
+  foreach t in array array['public.supplies', 'public.supply_refills'] loop
+    foreach p in array array['select', 'insert', 'update', 'delete', 'truncate'] loop
+      assert not has_table_privilege('anon', t, p), format('anon must not have %s on %s', p, t);
+    end loop;
+    foreach p in array array['select', 'insert', 'update', 'delete'] loop
+      assert has_table_privilege('authenticated', t, p), format('authenticated needs %s on %s', p, t);
+      assert has_table_privilege('service_role', t, p), format('service_role needs %s on %s', p, t);
+    end loop;
+    foreach p in array array['truncate', 'references', 'trigger'] loop
+      assert not has_table_privilege('authenticated', t, p), format('authenticated must not have %s on %s', p, t);
+    end loop;
+  end loop;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  gas uuid;
+  n integer;
+begin
+  insert into public.supplies (name, kind, typical_days, notes)
+    values ('Gás de cozinha', 'gas', 45, 'Disk gás: 3333-0000') returning id into gas;
+  perform set_config('test.supply_a', gas::text, false);
+  assert (select household_id from public.supplies where id = gas) = current_setting('test.hh_a')::uuid, 'the supply belongs to the open household';
+  assert (select created_by from public.supplies where id = gas) = auth.uid(), 'and records who created it';
+  insert into public.supply_refills (supply_id, refilled_on) values (gas, '2026-08-19'), (gas, '2026-10-03');
+
+  -- "Troquei hoje" duas vezes no mesmo dia é a mesma troca: o app grava com
+  -- on conflict do nothing (upsert com ignoreDuplicates), sem erro e sem linha nova.
+  insert into public.supply_refills (supply_id, refilled_on) values (gas, '2026-10-03')
+    on conflict (supply_id, refilled_on) do nothing;
+  get diagnostics n = row_count;
+  assert n = 0, 'the second tap on the same day writes nothing';
+  assert (select count(*) from public.supply_refills where supply_id = gas) = 2, 'one refill per supply per day';
+  begin
+    insert into public.supply_refills (supply_id, refilled_on) values (gas, '2026-10-03');
+    raise exception 'FAIL: two refills on the same day';
+  exception when unique_violation then null;
+  end;
+
+  begin
+    insert into public.supplies (name, kind) values ('   ', 'gas');
+    raise exception 'FAIL: empty supply name';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.supplies (name, kind) values (repeat('x', 61), 'gas');
+    raise exception 'FAIL: supply name over 60';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.supplies (name, kind) values ('Lenha', 'lenha');
+    raise exception 'FAIL: unknown supply kind';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.supplies (name, kind, typical_days) values ('Gás', 'gas', 0);
+    raise exception 'FAIL: zero typical days';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.supplies (name, kind, typical_days) values ('Gás', 'gas', 731);
+    raise exception 'FAIL: typical days over two years';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.supplies (name, kind, notes) values ('Gás', 'gas', repeat('x', 201));
+    raise exception 'FAIL: notes over 200';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.supply_refills (supply_id, refilled_on) values (gas, '1999-12-31');
+    raise exception 'FAIL: refill before 2000';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.supply_refills (supply_id, refilled_on) values (gas, '2101-01-01');
+    raise exception 'FAIL: refill after 2100';
+  exception when check_violation then null;
+  end;
+  -- Os limites em si passam: nome de 60, 730 dias, observação de 200, tipo padrão.
+  insert into public.supplies (name, typical_days, notes) values (repeat('x', 60), 730, repeat('x', 200));
+  assert (select kind from public.supplies where name = repeat('x', 60)) = 'outros', 'kind defaults to outros';
+  delete from public.supplies where name = repeat('x', 60);
+end $$;
+select set_config('request.jwt.claim.sub', :'user_b', false) \gset
+do $$
+begin
+  assert (select count(*) from public.supplies) = 1, 'B sees the household supplies';
+  insert into public.supply_refills (supply_id, refilled_on) values (current_setting('test.supply_a')::uuid, '2026-10-10');
+  assert (select count(*) from public.supply_refills) = 3, 'any member records a refill';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+declare
+  own uuid;
+begin
+  assert (select count(*) from public.supplies) = 0, 'C sees no foreign supplies';
+  assert (select count(*) from public.supply_refills) = 0, 'C sees no foreign refills';
+  update public.supplies set name = 'Invadido';
+  delete from public.supply_refills;
+  delete from public.supplies;
+
+  begin
+    insert into public.supplies (household_id, name, kind) values (current_setting('test.hh_a')::uuid, 'Invasor', 'gas');
+    raise exception 'FAIL: cross-household supply';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.supply_refills (household_id, supply_id, refilled_on)
+      values (current_setting('test.hh_a')::uuid, current_setting('test.supply_a')::uuid, '2026-10-05');
+    raise exception 'FAIL: cross-household refill';
+  exception when insufficient_privilege then null;
+  end;
+  -- Na própria casa, a troca não aponta para a reposição de outra.
+  begin
+    insert into public.supply_refills (supply_id, refilled_on) values (current_setting('test.supply_a')::uuid, '2026-10-05');
+    raise exception 'FAIL: refill attached to a foreign supply';
+  exception when foreign_key_violation then null;
+  end;
+  insert into public.supplies (name, kind) values ('Galão de água', 'agua') returning id into own;
+  insert into public.supply_refills (supply_id, refilled_on) values (own, '2026-10-01');
+  begin
+    update public.supply_refills set supply_id = current_setting('test.supply_a')::uuid where supply_id = own;
+    raise exception 'FAIL: refill moved to a foreign supply';
+  exception when foreign_key_violation then null;
+  end;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  assert (select name from public.supplies) = 'Gás de cozinha', 'A keeps the supply, untouched by C';
+  assert (select array_agg(refilled_on order by refilled_on) from public.supply_refills)
+    = array['2026-08-19', '2026-10-03', '2026-10-10']::date[], 'and its refills';
+  -- Troca anotada por engano sai sozinha; excluir a reposição leva o histórico junto.
+  delete from public.supply_refills where refilled_on = '2026-10-10';
+  assert (select count(*) from public.supply_refills) = 2, 'one refill deleted';
+  delete from public.supplies where id = current_setting('test.supply_a')::uuid;
+  assert (select count(*) from public.supply_refills) = 0, 'deleting the supply removes its refills';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  assert (select count(*) from public.supply_refills) = 1, 'C keeps its own refill';
+end $$;
+
 \echo '• limite de uso da IA'
 select set_config('request.jwt.claim.sub', :'user_a', false) \gset
 do $$

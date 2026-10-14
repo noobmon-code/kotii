@@ -1,6 +1,7 @@
 // Avisos da casa por notificação: contas, documentos, tarefas (inclusive
 // manutenções de aparelhos), consultas, compromissos da família e aniversários,
-// vacinas e a dica do clima da manhã. Cada celular escolhe o que
+// vacinas, a dica do clima da manhã e o que está para acabar (gás, água,
+// ração). Cada celular escolhe o que
 // quer receber; o plano sai daqui e o app agenda (src/lib/reminders.ts),
 // refazendo ao abrir, então a janela vai andando. À noite, o resumo de amanhã
 // junta numa notificação só o que a casa tem no dia seguinte (eveSummary).
@@ -11,9 +12,10 @@ import { describeDocumentStatus } from './documents';
 import { bringText, calendarEntries, entryShortDetail, eventReminderTexts, type CalendarEntry, type FamilyCalendar } from './familyEvents';
 import { weekdayOf } from './health';
 import { formatBRL } from './money';
+import type { SupplyReminder } from './supplies';
 import type { WeatherMorning } from './weather';
 
-export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments' | 'events' | 'vaccines' | 'weather' | 'eve';
+export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments' | 'events' | 'vaccines' | 'weather' | 'supplies' | 'eve';
 
 export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint: string }[] = [
   { key: 'bills', label: 'Contas a pagar', hint: 'Na véspera, no dia do vencimento e, se ficar em aberto, uma vez depois, às 9h' },
@@ -31,12 +33,23 @@ export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint
     label: 'Dicas do clima',
     hint: 'Às 7h, quando o tempo pede algo: dia de lavar roupa, chuva, calor, frio, temporal. O bairro da casa se define no cartão do clima da tela Hoje',
   },
+  { key: 'supplies', label: 'Gás, água e ração', hint: 'Uns dias antes de acabar e no dia previsto, pela conta do Kotii, às 9h' },
   {
     key: 'eve',
     label: 'Resumo de amanhã',
     hint: 'Toda noite, às 20h, o que a casa tem no dia seguinte: consultas, compromissos, aniversários, contas, tarefas, vacinas e documentos. Só quando há algo fora da rotina (o compromisso de toda semana e a tarefa de todo dia não entram). Com ele ligado, a consulta e o compromisso de amanhã vêm nele, no lugar do aviso das 19h',
   },
 ];
+
+/**
+ * Os tipos que a lista de avisos oferece. Num banco ainda sem as tabelas das
+ * reposições (`suppliesAvailable === false`), o tipo delas não aparece: a
+ * pessoa ligaria um aviso sem ter onde cadastrar o gás. Só no `false`: sem
+ * resposta ainda (ou com a busca falhando sem internet), a linha fica.
+ */
+export function shownHouseReminderKinds(suppliesAvailable: boolean | undefined) {
+  return HOUSE_REMINDER_KINDS.filter((kind) => kind.key !== 'supplies' || suppliesAvailable !== false);
+}
 
 export interface HouseReminder {
   /** Tipo, item e dia: o mesmo aviso não é agendado duas vezes. */
@@ -118,6 +131,8 @@ export interface HouseReminderInput {
   family?: FamilyCalendar;
   /** A dica mais importante de cada manhã (ver weatherMornings). */
   weather?: WeatherMorning[];
+  /** O que está para acabar, já com as datas e os textos (ver supplyReminders). */
+  supplies?: SupplyReminder[];
   /** Aparelhos, pela garantia que acaba (só o resumo de amanhã usa). */
   equipment?: { id: string; name: string; warranty_until: string | null }[];
   today: string;
@@ -555,6 +570,15 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
   if (kinds.weather) {
     for (const morning of input.weather ?? []) {
       add('weather', 'dia', morning.date, morning.title, morning.body, { at: morning.time });
+    }
+  }
+
+  if (kinds.supplies) {
+    for (const supply of input.supplies ?? []) {
+      // No começo da janela de aviso e no dia previsto (ciclo curto: um só, ver
+      // supplyReminders); o que já passou não entra.
+      if (supply.warnOn) add('supplies', supply.id, supply.warnOn, supply.warnTitle, supply.body);
+      if (supply.endsOn) add('supplies', supply.id, supply.endsOn, supply.endTitle, supply.body);
     }
   }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { buildNukeContext, describeAction, historyForApi, type NukeSnapshot, parseActions } from '../nuke';
+import { supplyLines } from '../supplies';
 
 const snapshot: NukeSnapshot = {
   today: '2026-09-27',
@@ -58,6 +59,20 @@ describe('nuke context', () => {
       },
     });
     expect(text).toContain('Orçamento de setembro: Moradia R$ 2.500,00 de R$ 2.400,00 (passou); Lazer R$ 0,00 de R$ 300,00.');
+  });
+
+  it('says when the gas, water and pet food should run out, only for a household that tracks them', () => {
+    const supply = (name: string, kind: string, days: string[]) => ({ name, kind, typical_days: null, refills: days.map((refilled_on) => ({ refilled_on })) });
+    const supplies = supplyLines([supply('Galão de água', 'agua', []), supply('Gás de cozinha', 'gas', ['2026-09-13'])], '2026-10-12');
+    const text = buildNukeContext({ ...snapshot, today: '2026-10-12', supplies });
+    expect(text).toContain('Gás, água e ração (previsão): Gás de cozinha — deve acabar em 28/10; Galão de água — sem previsão.');
+    // Logo depois da despensa, uma linha só.
+    const lines = text.split('\n');
+    expect(lines.findIndex((l) => l.startsWith('Gás, água e ração'))).toBe(lines.findIndex((l) => l.startsWith('Despensa (tem em casa)')) + 1);
+    // Retrato antigo (sem o campo) ou casa sem reposições: a linha não entra e o resto não muda.
+    expect(buildNukeContext(snapshot)).not.toContain('Gás, água e ração');
+    expect(buildNukeContext({ ...snapshot, supplies: [] })).toBe(buildNukeContext(snapshot));
+    expect(buildNukeContext({ ...snapshot, supplies: undefined })).toBe(buildNukeContext(snapshot));
   });
 
   it('says when a bill came above its usual amount, with the numbers ready', () => {
