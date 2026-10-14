@@ -14,6 +14,7 @@ import type { CartPantryEntry } from '@/domain/cartPantry';
 import { LinkIndex, type ListLink, type OpenListItem } from '@/domain/listLinks';
 import { PRICE_ALERT_HISTORY_DAYS } from '@/domain/priceAlert';
 import { toPurchases, type PurchaseLine } from '@/domain/priceHistory';
+import { PRODUCT_MERGED_AWAY } from '@/domain/productMerge';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
 import { normalizeSearch } from '@/domain/search';
@@ -28,6 +29,8 @@ import type {
   Store,
   Unit,
 } from '@/lib/types';
+
+import { LISTED_PRODUCT_SOURCES, withFreshProducts } from './productMerge';
 
 // ---------------------------------------------------------------------------
 // Listas
@@ -223,18 +226,22 @@ export interface NewListItem {
 }
 
 export function useAddListItem(listId: string) {
+  const queryClient = useQueryClient();
   const invalidate = useInvalidateLists(listId);
   return useMutation({
-    mutationFn: async (item: NewListItem) =>
-      unwrap(
-        await supabase.from('shopping_list_items').insert({
-          list_id: listId,
-          name: item.name,
-          category: item.category,
-          product_id: item.productId,
-          quantity: item.quantity,
-          unit: item.unit,
-        }),
+    // O produto do item pode ter sido juntado com outro em outro aparelho (withFreshProducts).
+    mutationFn: (item: NewListItem) =>
+      withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
+        unwrap(
+          await supabase.from('shopping_list_items').insert({
+            list_id: listId,
+            name: item.name,
+            category: item.category,
+            product_id: item.productId,
+            quantity: item.quantity,
+            unit: item.unit,
+          }),
+        ),
       ),
     onSuccess: invalidate,
   });
@@ -303,16 +310,19 @@ export function useAddItemsToList() {
         toAdd = items.filter((item) => !names.has(normalizeSearch(item.name)));
       }
       if (toAdd.length) {
-        unwrap(
-          await supabase.from('shopping_list_items').insert(
-            toAdd.map((item) => ({
-              list_id: id,
-              name: item.name,
-              category: item.category,
-              product_id: item.productId,
-              quantity: item.quantity,
-              unit: item.unit,
-            })),
+        // O produto de um item pode ter sido juntado com outro em outro aparelho (withFreshProducts).
+        await withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
+          unwrap(
+            await supabase.from('shopping_list_items').insert(
+              toAdd.map((item) => ({
+                list_id: id,
+                name: item.name,
+                category: item.category,
+                product_id: item.productId,
+                quantity: item.quantity,
+                unit: item.unit,
+              })),
+            ),
           ),
         );
       }
@@ -363,7 +373,7 @@ async function openPharmacyList(name = 'Farmácia'): Promise<{ id: string; name:
 type ListedItem = { id: string; name: string; added: boolean };
 
 /** Põe o item na lista, a não ser que já esteja pendente nela (`added: false`): repetir é seguro. */
-async function addItemOnce(list: { id: string; name: string }, item: NewListItem): Promise<ListedItem> {
+async function addItemOnce(queryClient: QueryClient, list: { id: string; name: string }, item: NewListItem): Promise<ListedItem> {
   const pending = unwrap(
     await supabase
       .from('shopping_list_items')
@@ -374,15 +384,18 @@ async function addItemOnce(list: { id: string; name: string }, item: NewListItem
       .limit(1),
   ) as { id: string }[];
   if (pending.length) return { ...list, added: false };
-  unwrap(
-    await supabase.from('shopping_list_items').insert({
-      list_id: list.id,
-      name: item.name,
-      category: item.category,
-      product_id: item.productId,
-      quantity: item.quantity,
-      unit: item.unit,
-    }),
+  // O produto do item (o da despensa, na lista de mercado) pode ter sido juntado com outro em outro aparelho (withFreshProducts).
+  await withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
+    unwrap(
+      await supabase.from('shopping_list_items').insert({
+        list_id: list.id,
+        name: item.name,
+        category: item.category,
+        product_id: item.productId,
+        quantity: item.quantity,
+        unit: item.unit,
+      }),
+    ),
   );
   return { ...list, added: true };
 }
@@ -390,7 +403,7 @@ async function addItemOnce(list: { id: string; name: string }, item: NewListItem
 function useAddToOpenList(openList: () => Promise<{ id: string; name: string }>) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (item: NewListItem) => addItemOnce(await openList(), item),
+    mutationFn: async (item: NewListItem) => addItemOnce(queryClient, await openList(), item),
     onSuccess: (list) => {
       queryClient.invalidateQueries({ queryKey: ['lists'] });
       queryClient.invalidateQueries({ queryKey: ['listItems', list.id] });
@@ -785,12 +798,54 @@ export function usePurchaseRecords({ enabled = true }: { enabled?: boolean } = {
 // ---------------------------------------------------------------------------
 // Produtos, lojas, preços
 
+/** Produtos por pedido (o servidor corta em max_rows, calado: 1000 no padrão do Supabase). */
+const PRODUCT_PAGE = 1000;
+/** Bem além de qualquer casa. Passando disso a busca falha, em vez de devolver o catálogo cortado. */
+export const PRODUCT_MAX = 20000;
+
+/**
+ * Os produtos da casa, todos, na ordem do nome. Num pedido só, a casa com mais
+ * de mil produtos receberia os primeiros mil, calada, e quem confere se um
+ * produto ainda existe daria por juntado (ou apagado) o que só ficou fora da
+ * página: a nota em revisão criaria um produto repetido, pelo nome da nota
+ * (domain/receiptReview). Página por página, cada uma a partir do id do último
+ * produto lido (um produto criado ou juntado no meio não desloca as outras),
+ * com a contagem do servidor: página curta não é o fim (o servidor corta em
+ * max_rows), o fim é a contagem dizer que não sobrou nada, ou a página vir
+ * vazia. Página vazia logo depois de a contagem dizer que ainda havia produtos
+ * não é o fim: a leitura falha, em vez de dar a parte lida como o catálogo
+ * inteiro.
+ */
+export async function fetchProducts(): Promise<Product[]> {
+  const products: Product[] = [];
+  // O id do último produto lido: a página seguinte começa depois dele.
+  let last: string | undefined;
+  // Quantos produtos a contagem da página anterior disse que ainda faltavam depois dela.
+  let promised = 0;
+  for (;;) {
+    let request = supabase.from('products').select('id, name, category, shelf_life_days', { count: 'exact' });
+    if (last) request = request.gt('id', last);
+    const result = await request.order('id').limit(PRODUCT_PAGE);
+    const rows = (unwrap(result) ?? []) as Product[];
+    // Quantos produtos ainda havia a partir daqui, contando os desta página.
+    const left = result.count ?? null;
+    if (products.length + (left ?? rows.length) > PRODUCT_MAX) {
+      throw new Error('Não foi possível carregar os produtos da casa: são mais do que o app consegue ler de uma vez.');
+    }
+    // Com a sessão vencida no meio da leitura, o servidor responde sem erro e sem linha nenhuma. Um erro comum: a
+    // busca tenta de novo, desde a primeira página.
+    if (!rows.length && promised > 0) throw new Error('Não foi possível carregar todos os produtos da casa. Tente de novo.');
+    products.push(...rows);
+    if (!rows.length || (left != null && rows.length >= left)) break;
+    promised = left == null ? 0 : left - rows.length;
+    last = rows[rows.length - 1].id;
+  }
+  // A ordem de antes, pelo nome, agora feita no app: as páginas vêm por id.
+  return products.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+}
+
 export function useProducts() {
-  return useQuery({
-    queryKey: ['products'],
-    queryFn: async () =>
-      unwrap(await supabase.from('products').select('id, name, category, shelf_life_days').order('name')) as Product[],
-  });
+  return useQuery({ queryKey: ['products'], queryFn: fetchProducts });
 }
 
 export function useStores() {
@@ -986,8 +1041,15 @@ export function useProductPurchases(productId: string) {
 export function useRenameProduct() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, name, category }: { id: string; name: string; category: string }) =>
-      unwrap(await supabase.from('products').update({ name, category }).eq('id', id)),
+    mutationFn: async ({ id, name, category }: { id: string; name: string; category: string }) => {
+      // O banco não reclama de uma gravação que não acha linha nenhuma. O produto pode ter sido juntado com
+      // outro em outro aparelho: a gravação pede a linha de volta e, sem ela, falha com a frase de sempre, com
+      // os produtos já buscados de novo (a tela deixa de mostrar o que não existe mais).
+      const saved = (unwrap(await supabase.from('products').update({ name, category }).eq('id', id).select('id')) ?? []) as { id: string }[];
+      if (saved.length) return;
+      await queryClient.invalidateQueries({ queryKey: ['products'] });
+      throw new Error(PRODUCT_MERGED_AWAY);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products'] });
       // A categoria do produto decide onde o item entra no resumo de gastos, e o nome aparece no mercado do mês.

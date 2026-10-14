@@ -11,6 +11,7 @@ import { useDocuments, useEquipmentList } from '@/data/house';
 import { useAppointments, usePeople } from '@/data/health';
 import { useAddToMarketList } from '@/data/market';
 import { useMenu } from '@/data/menu';
+import { useSupplies } from '@/data/supplies';
 import { functionErrorMessage } from '@/data/images';
 import { billsAboveUsual, describeAboveForNuke } from '@/domain/billUsual';
 import { budgetProgress } from '@/domain/budget';
@@ -25,6 +26,7 @@ import { refillSummary } from '@/domain/medicationStock';
 import { menuLines } from '@/domain/menu';
 import { buildNukeContext, NUKE_LIST_LIMIT, parseActions, type NukeAction, type NukeScreen, type NukeSnapshot } from '@/domain/nuke';
 import { expiryStatus, groupPantry } from '@/domain/pantry';
+import { supplyLines } from '@/domain/supplies';
 import { useHousehold } from '@/lib/auth';
 import { settledData } from '@/lib/settledData';
 import { supabase, unwrap } from '@/lib/supabase';
@@ -76,6 +78,9 @@ export function useNukeContext(today: string): NukeContextState {
   // Fora de `queries`: sem os compromissos (não carregaram, ou as tabelas ainda
   // não existem), o retrato sai com os aniversários, que vêm das fichas.
   const family = useFamilyCalendar();
+  // Fora de `queries`: o retrato não espera pelas reposições nem falha com
+  // elas. Se ainda não chegaram (ou o banco não tem as tabelas), a linha fica de fora.
+  const supplies = useSupplies();
 
   const queries = [
     household,
@@ -144,6 +149,7 @@ export function useNukeContext(today: string): NukeContextState {
       .filter((g) => g.expiresOn && ['vencido', 'vence_logo'].includes(expiryStatus(g.expiresOn, today).kind))
       .map((g) => ({ name: g.name, expires_on: g.expiresOn! })),
     pantry: pantryGroups.map((group) => group.name),
+    supplies: supplies.data ? supplyLines(supplies.data.supplies, today) : undefined,
     shopping: [...shopping].map(([list, items]) => ({ list, items })),
     menu: menuLines(menu.data ?? []),
     bills: (bills.data ?? [])

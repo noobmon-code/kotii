@@ -58,6 +58,8 @@ export interface NukeSnapshot {
   chores: { title: string; due_on: string; assignee: string | null }[];
   expiring: { name: string; expires_on: string }[];
   pantry: string[];
+  /** Gás, água, ração: a previsão de cada reposição (supplyLines). Sem o campo, a linha não entra. */
+  supplies?: string[];
   shopping: { list: string; items: { name: string; quantity: number; unit: string }[] }[];
   /** Cardápio de hoje em diante (menuLines). */
   menu?: string[];
@@ -119,6 +121,8 @@ export function buildNukeContext(s: NukeSnapshot): string {
     )}.`,
     `Despensa vencendo: ${listOrNone(s.expiring.map((p) => `${p.name} (${p.expires_on < s.today ? 'venceu' : 'vence'} ${shortDate(p.expires_on)})`))}.`,
     `Despensa (tem em casa): ${listOrNone(s.pantry, 40)}.`,
+    // Só para a casa que cadastrou alguma: sem reposições, a linha nem aparece.
+    ...(s.supplies?.length ? [`Gás, água e ração (previsão): ${listOrNone(s.supplies)}.`] : []),
     ...(s.shopping.length
       ? s.shopping.map((l) => `Lista "${l.list}" (falta comprar): ${listOrNone(l.items.map((i) => `${i.name} ${formatQuantity(i.quantity, i.unit)}`))}.`)
       : ['Listas de compras: nada pendente.']),

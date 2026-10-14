@@ -2,7 +2,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
-import { HOUSE_REMINDER_KINDS, type HouseReminderKind } from '@/domain/houseReminders';
+import { useSupplies } from '@/data/supplies';
+import { shownHouseReminderKinds, type HouseReminderKind } from '@/domain/houseReminders';
 import { syncOtherHouses, useHouseReminderData, useHouseReminderTarget } from '@/features/useReminderSync';
 import { useHousehold } from '@/lib/auth';
 import {
@@ -23,6 +24,8 @@ import { space, useColors } from '@/ui/theme';
 export function HouseRemindersSection() {
   const c = useColors();
   const { data } = useHouseReminderData();
+  // A mesma busca que os avisos já fazem: aqui, só para saber se este banco tem as tabelas das reposições.
+  const suppliesAvailable = useSupplies().data?.available;
   const target = useHouseReminderTarget();
   const households = useHousehold().data?.households;
   const queryClient = useQueryClient();
@@ -53,7 +56,7 @@ export function HouseRemindersSection() {
     <Section title={`Avisos ${REMINDER_PLACE}`}>
       {remindersSupported ? (
         <ListCard>
-          {HOUSE_REMINDER_KINDS.map((kind) => (
+          {shownHouseReminderKinds(suppliesAvailable).map((kind) => (
             <Row key={kind.key} style={styles.row}>
               <View style={styles.flex}>
                 <Text variant="label">{kind.label}</Text>

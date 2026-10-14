@@ -67,6 +67,7 @@ jest.mock('@/data/weather', () => ({
   fetchHouseholdLocation: async () => null,
   forecastQuery: () => ({}),
 }));
+jest.mock('@/data/supplies', () => ({ useSupplies: () => mockQuery({ available: true, supplies: [] }), fetchSupplies: async () => ({ available: true, supplies: [] }) }));
 jest.mock('@/data/home', () => ({
   ...jest.requireActual<typeof import('@/data/home')>('@/data/home'),
   useChores: () => mockQuery([]),
@@ -108,7 +109,7 @@ const course = (taken: number): Medication => ({
 });
 const tick = (date: string, time: string): MedicationDose => ({ id: `${date} ${time}`, medication_id: 'm1', scheduled_on: date, scheduled_time: time, taken_at: `${date}T12:00:00Z` });
 
-const kinds = { bills: false, documents: false, chores: false, appointments: false, events: false, vaccines: false, refills: true, weather: false, eve: false };
+const kinds = { bills: false, documents: false, chores: false, appointments: false, events: false, vaccines: false, refills: true, weather: false, supplies: false, eve: false };
 /** Os avisos de caixa acabando que sairiam desses dados. */
 const notices = (data: HouseReminderData | null | undefined) =>
   data ? planHouseReminders({ ...data, kinds, today: mockState.today, nowTime: '07:00' }).map((r) => r.key) : null;
