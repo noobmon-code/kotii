@@ -13,6 +13,7 @@
 // enganaria.
 
 import { onlineManager, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useRef, useState } from 'react';
 
 import { TRIP_LIMIT_REACHED, TRIP_NOT_READY, TRIP_OFFLINE, type AnnounceResult, type MarketTrip } from '@/domain/marketTrips';
 import { getMarketTripPush, marketTripPushSupported, setMarketTripPush } from '@/lib/reminders';
@@ -160,13 +161,20 @@ export async function readMarketTripPush(): Promise<boolean | null> {
 /**
  * A opção em Família → "Avisos neste navegador". `value` undefined: ainda
  * lendo (ou não deu para ler). `set` liga ou desliga e devolve false quando
- * faltou a permissão do navegador.
+ * faltou a permissão do navegador. `pending`: uma mudança ainda no ar; até
+ * ela terminar, outro toque não faz nada (devolve true: não há o que avisar).
  */
 export function useMarketTripPush() {
   const queryClient = useQueryClient();
   const key = [MARKET_TRIP_PUSH_KEY];
   const query = useQuery({ queryKey: key, queryFn: readMarketTripPush, staleTime: 0, retry: false });
+  const [pending, setPending] = useState(false);
+  // O estado chega depois de um segundo toque rápido; a ref, não.
+  const inFlight = useRef(false);
   async function set(enabled: boolean): Promise<boolean> {
+    if (inFlight.current) return true;
+    inFlight.current = true;
+    setPending(true);
     // Primeiro o pedido: ligar pede a permissão, e o navegador só aceita dentro do toque.
     const request = setMarketTripPush(enabled);
     // Uma leitura que estivesse no ar não desfaz o que a pessoa acabou de escolher.
@@ -180,9 +188,11 @@ export function useMarketTripPush() {
       queryClient.setQueryData(key, !enabled);
       throw error;
     } finally {
+      inFlight.current = false;
+      setPending(false);
       // O que vale é o que ficou no servidor.
       void queryClient.invalidateQueries({ queryKey: key });
     }
   }
-  return { value: query.data, set };
+  return { value: query.data, set, pending };
 }

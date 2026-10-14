@@ -68,6 +68,8 @@ create table public.market_trip_log (
   created_at timestamptz not null default now()
 );
 create index market_trip_log_household_idx on public.market_trip_log (household_id, user_id);
+-- Para cada aviso tirar o que já fez 24 horas, de todas as casas, sem ler o registro inteiro.
+create index market_trip_log_created_idx on public.market_trip_log (created_at);
 alter table public.market_trip_log enable row level security;
 revoke all on public.market_trip_log from anon, authenticated;
 grant all on public.market_trip_log to service_role;
@@ -163,7 +165,8 @@ begin
   if hid is null then
     raise exception 'sem casa' using errcode = '42501';
   end if;
-  -- A lista é da casa aberta (a de outra casa da pessoa também não serve).
+  -- A lista é da casa aberta (a de outra casa da pessoa também não serve). Conferida já, sem esperar as
+  -- travas abaixo; depois delas, de novo.
   select * into list from public.shopping_lists l
     where l.id = p_list_id and l.household_id = hid and l.archived_at is null;
   if not found then
@@ -180,6 +183,15 @@ begin
   perform 1 from public.households h where h.id = hid for share;
   if not exists (select 1 from public.household_members m where m.household_id = hid and m.user_id = auth.uid()) then
     raise exception 'sem casa' using errcode = '42501';
+  end if;
+  -- A lista de novo, agora travada (as travas sempre nesta ordem: a da pessoa, a casa, a lista): outro
+  -- aparelho pode tê-la arquivado depois da leitura de cima. FOR SHARE espera o arquivamento em curso
+  -- terminar e lê a linha como ficou; e, até este aviso terminar, a lista não é arquivada.
+  select * into list from public.shopping_lists l
+    where l.id = p_list_id and l.household_id = hid and l.archived_at is null
+    for share;
+  if not found then
+    raise exception 'list not found' using errcode = 'P0002';
   end if;
 
   select count(*) into others from public.household_members m

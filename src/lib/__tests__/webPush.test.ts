@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 
 type WebPush = typeof import('../webPush');
+type Reminders = typeof import('../reminders');
 
 // Navegador e Supabase em memória: o PushManager, a permissão, o fuso e as
 // chamadas ao banco.
@@ -8,6 +9,7 @@ async function inBrowser(
   scenario: (
     webPush: WebPush,
     browser: {
+      /** As chamadas ao banco, na ordem em que o servidor as atendeu. */
       rpc: [string, Record<string, unknown>][];
       inserts: unknown[][];
       setTimezone: (tz: string) => void;
@@ -18,6 +20,12 @@ async function inBrowser(
       setPermission: (permission: string, afterAsking?: string) => void;
       /** O erro que uma chamada ao banco devolve no resultado (como o cliente do Supabase: sem lançar); null: dá certo. */
       failRpc: (decide: ((name: string, args: Record<string, unknown>) => unknown) | null) => void;
+      /** Segura uma chamada ao banco até a promessa devolvida terminar (null: responde já). */
+      holdRpc: (decide: ((name: string, args: Record<string, unknown>) => Promise<void> | null) | null) => void;
+      /** Quantas vezes o navegador pediu a permissão. */
+      asked: () => number;
+      /** src/lib/reminders.ts neste navegador, por cima deste mesmo módulo do Web Push. */
+      reminders: () => Reminders;
     },
   ) => Promise<void>,
   { lastSubscription, tripsOff }: { lastSubscription?: string; tripsOff?: boolean } = {},
@@ -27,6 +35,8 @@ async function inBrowser(
   let timezone = 'America/Sao_Paulo';
   let serverSubscription = 'sub-1';
   let rpcError: ((name: string, args: Record<string, unknown>) => unknown) | null = null;
+  let rpcHold: ((name: string, args: Record<string, unknown>) => Promise<void> | null) | null = null;
+  let asked = 0;
   const storage = new Map<string, string>(lastSubscription ? [['kotii:push-subscription', lastSubscription]] : []);
   if (tripsOff) storage.set('kotii:push-market-trips-off', '1');
   const tables: Record<string, unknown[] | { error: unknown }> = {};
@@ -69,16 +79,30 @@ async function inBrowser(
     get permission() {
       return notification.permission;
     },
-    requestPermission: async () => (notification.permission = notification.afterAsking),
+    requestPermission: async () => {
+      asked += 1;
+      return (notification.permission = notification.afterAsking);
+    },
   };
   const spy = jest.spyOn(Intl, 'DateTimeFormat').mockImplementation(
     () => ({ resolvedOptions: () => ({ timeZone: timezone }) }) as unknown as Intl.DateTimeFormat,
   );
   try {
     await jest.isolateModulesAsync(async () => {
+      // Para src/lib/reminders.ts, quando o teste o usa: no navegador, sem nada guardado.
+      jest.doMock('react-native', () => ({ Platform: { OS: 'web' } }));
+      jest.doMock('expo', () => ({ isRunningInExpoGo: () => false }));
+      jest.doMock('@react-native-async-storage/async-storage', () => ({
+        getItem: async () => null,
+        setItem: async () => undefined,
+        removeItem: async () => undefined,
+        getAllKeys: async () => [],
+      }));
       jest.doMock('../supabase', () => ({
         supabase: {
           rpc: async (name: string, args: Record<string, unknown>) => {
+            const held = rpcHold?.(name, args);
+            if (held) await held;
             rpc.push([name, args]);
             const failed = rpcError?.(name, args);
             if (failed) return { data: null, error: failed };
@@ -114,6 +138,10 @@ async function inBrowser(
         storage,
         setPermission: (permission, afterAsking = permission) => Object.assign(notification, { permission, afterAsking }),
         failRpc: (decide) => (rpcError = decide),
+        holdRpc: (decide) => (rpcHold = decide),
+        asked: () => asked,
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        reminders: () => require('../reminders') as Reminders,
       });
     });
   } finally {
@@ -211,11 +239,19 @@ describe('avisos no navegador', () => {
       });
     });
 
+    // A permissão é pedida em lib/reminders, no toque e antes da fila (ver os testes dos dois toques, abaixo).
     it('ligar pede a permissão, inscreve o navegador e liga a opção nele', async () => {
-      await inBrowser(async (webPush, browser) => {
+      await inBrowser(async (_webPush, browser) => {
         browser.setPermission('default', 'granted');
-        expect(await webPush.setMarketTripsPush(true)).toBe(true);
-        expect(browser.rpc.map(([name]) => name)).toEqual(['push_public_key', 'register_push_subscription', 'set_push_market_trips']);
+        expect(await browser.reminders().setMarketTripPush(true)).toBe(true);
+        expect(browser.asked()).toBe(1);
+        // A inscrição sai com a permissão dada, e é conferida de novo (pode ter sido apagada com o app aberto).
+        expect(browser.rpc.map(([name]) => name)).toEqual([
+          'push_public_key',
+          'register_push_subscription',
+          'register_push_subscription',
+          'set_push_market_trips',
+        ]);
         expect(flagCalls(browser.rpc)).toEqual([{ p_endpoint: endpoint, p_enabled: true }]);
       });
     });
@@ -223,7 +259,12 @@ describe('avisos no navegador', () => {
     it('sem a permissão, nada é inscrito nem ligado', async () => {
       await inBrowser(async (webPush, browser) => {
         browser.setPermission('default', 'denied');
+        expect(await browser.reminders().setMarketTripPush(true)).toBe(false);
+        expect(browser.asked()).toBe(1);
+        expect(browser.rpc).toEqual([]);
+        // Chamado direto, sem a permissão, nem pede (fora do toque o navegador recusaria) nem inscreve.
         expect(await webPush.setMarketTripsPush(true)).toBe(false);
+        expect(browser.asked()).toBe(1);
         expect(browser.rpc).toEqual([]);
       });
     });
@@ -350,6 +391,67 @@ describe('avisos no navegador', () => {
       await inBrowser(async (webPush, browser) => {
         await webPush.webScheduler.scheduleManyAsync([daily(8)]);
         expect(flagCalls(browser.rpc)).toEqual([]);
+      });
+    });
+
+    // Um toque por cima do outro, pelo caminho que a tela usa (lib/reminders): uma mudança por vez, na ordem dos toques.
+    it('ligar (com a inscrição demorando) e desligar logo em seguida: vale o último toque, no servidor e aqui', async () => {
+      await inBrowser(
+        async (_webPush, browser) => {
+          const reminders = browser.reminders();
+          let release = () => undefined as void;
+          browser.holdRpc((name) => (name === 'register_push_subscription' ? new Promise<void>((resolve) => (release = resolve)) : null));
+          const on = reminders.setMarketTripPush(true);
+          // Dois toques são dois eventos: o segundo chega com o primeiro já no servidor, esperando a inscrição.
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          expect(browser.rpc.map(([name]) => name)).toEqual(['push_public_key']);
+          const off = reminders.setMarketTripPush(false);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          // O desligar espera o ligar terminar, em vez de passar na frente dele.
+          expect(flagCalls(browser.rpc)).toEqual([]);
+          release();
+          expect(await on).toBe(true);
+          expect(await off).toBe(true);
+          expect(flagCalls(browser.rpc)).toEqual([
+            // A inscrição nova nasce ligada e é desligada de novo (a escolha guardada aqui); depois, os dois toques.
+            { p_endpoint: endpoint, p_enabled: false },
+            { p_endpoint: endpoint, p_enabled: true },
+            { p_endpoint: endpoint, p_enabled: false },
+          ]);
+          expect(browser.storage.get('kotii:push-market-trips-off')).toBe('1');
+          // Com a permissão já dada, ninguém pediu de novo.
+          expect(browser.asked()).toBe(0);
+        },
+        { tripsOff: true },
+      );
+    });
+
+    it('ligar com outro pedido na fila: a permissão é pedida já, no toque, e não depois da espera; desligar nunca pede', async () => {
+      await inBrowser(async (webPush, browser) => {
+        // Inscrito por outro aviso, e ainda sem a permissão do navegador para este.
+        await webPush.webScheduler.scheduleManyAsync([daily(8)]);
+        browser.setPermission('default', 'granted');
+        let release = () => undefined as void;
+        browser.holdRpc((name, args) =>
+          name === 'set_push_market_trips' && args.p_enabled === false ? new Promise<void>((resolve) => (release = resolve)) : null,
+        );
+        const off = browser.reminders().setMarketTripPush(false);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(browser.asked()).toBe(0);
+        const on = browser.reminders().setMarketTripPush(true);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        // O desligar ainda está no servidor: o pedido de permissão do ligar já saiu, e o ligar espera a vez.
+        expect(browser.asked()).toBe(1);
+        expect(flagCalls(browser.rpc)).toEqual([]);
+        release();
+        expect(await off).toBe(true);
+        expect(await on).toBe(true);
+        expect(flagCalls(browser.rpc)).toEqual([
+          { p_endpoint: endpoint, p_enabled: false },
+          { p_endpoint: endpoint, p_enabled: true },
+        ]);
+        expect(browser.storage.has('kotii:push-market-trips-off')).toBe(false);
+        expect(browser.asked()).toBe(1);
       });
     });
   });

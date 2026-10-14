@@ -93,6 +93,8 @@ export function HouseRemindersSection() {
               <Switch
                 accessibilityLabel={`Avisos de ${TRIP_PUSH_OPTION.label.toLowerCase()}`}
                 value={tripPush.value}
+                // Uma mudança por vez: com a anterior no ar, a última escolha poderia perder para ela.
+                disabled={tripPush.pending}
                 onValueChange={toggleTripPush}
                 trackColor={{ true: c.primary }}
               />

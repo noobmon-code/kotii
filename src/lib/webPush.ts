@@ -252,13 +252,14 @@ export async function getMarketTripsPush(): Promise<boolean> {
 
 /**
  * Liga ou desliga o aviso de "alguém indo ao mercado" neste navegador.
- * Ligar pede a permissão (o pedido sai primeiro, ainda dentro do toque) e
- * inscreve o navegador, como qualquer outro aviso; devolve false sem a
- * permissão. Desligar deixa a inscrição: os outros avisos continuam.
+ * Ligar inscreve o navegador, como qualquer outro aviso; devolve false sem a
+ * permissão. Quem pede a permissão é src/lib/reminders.ts, ainda no toque e
+ * antes da fila: aqui, depois da espera, o navegador recusaria o pedido.
+ * Desligar deixa a inscrição: os outros avisos continuam.
  */
 export async function setMarketTripsPush(enabled: boolean): Promise<boolean> {
   if (enabled) {
-    if ((await Notification.requestPermission()) !== 'granted') return false;
+    if (!granted()) return false;
     // Confere no servidor: a inscrição pode ter sido apagada com o app aberto.
     await ensureSubscription({ fresh: true });
   }

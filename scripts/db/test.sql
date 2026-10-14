@@ -3277,6 +3277,12 @@ begin
   assert (select bool_and(c.relrowsecurity) from pg_class c where c.oid in ('public.market_trips'::regclass, 'public.market_trip_log'::regclass)),
     'row level security on both';
   assert not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'market_trip_log'), 'and no policy on the log: nobody reads it through the app';
+  -- Cada aviso tira do registro o que já fez 24 horas, de todas as casas: pela data, com índice.
+  assert exists (
+    select 1 from pg_indexes
+    where schemaname = 'public' and tablename = 'market_trip_log' and indexname = 'market_trip_log_created_idx'
+      and indexdef like '%USING btree (created_at)'
+  ), 'the global purge of the log has an index on created_at';
 end $$;
 set role authenticated;
 
@@ -3353,6 +3359,7 @@ declare
   list uuid := current_setting('test.list_p1')::uuid;
   r jsonb;
   again jsonb;
+  closed uuid;
 begin
   perform set_config('request.headers', json_build_object('x-household-id', hp)::text, true);
   begin
@@ -3363,6 +3370,14 @@ begin
   begin
     perform public.announce_market_trip(gen_random_uuid());
     raise exception 'FAIL: announced a list that does not exist';
+  exception when no_data_found then null;
+  end;
+  -- Uma lista arquivada (por outro aparelho, com a tela ainda aberta neste) também não serve.
+  insert into public.shopping_lists (name) values ('Arquivada') returning id into closed;
+  update public.shopping_lists set archived_at = now() where id = closed;
+  begin
+    perform public.announce_market_trip(closed);
+    raise exception 'FAIL: announced an archived list';
   exception when no_data_found then null;
   end;
   assert not exists (select 1 from public.market_trips), 'a refused announcement leaves no trip';

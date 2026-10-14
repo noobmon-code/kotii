@@ -133,9 +133,17 @@ export async function getMarketTripPush(): Promise<boolean> {
   return marketTripPushSupported && webPush().getMarketTripsPush();
 }
 
-/** Liga (pedindo a permissão, ainda dentro do toque) ou desliga. Retorna false sem permissão. */
-export function setMarketTripPush(enabled: boolean): Promise<boolean> {
-  return marketTripPushSupported ? webPush().setMarketTripsPush(enabled) : Promise.resolve(false);
+/**
+ * Liga (pedindo a permissão, ainda dentro do toque) ou desliga. Retorna false
+ * sem permissão. Na fila dos lembretes (também entre abas): mexe na mesma
+ * inscrição que eles, e dois toques seguidos gravam na ordem em que vieram.
+ */
+export async function setMarketTripPush(enabled: boolean): Promise<boolean> {
+  if (!marketTripPushSupported) return false;
+  // Como em setHouseReminderKind: a permissão antes da fila, porque o navegador
+  // recusa o pedido feito depois da espera, fora do toque. Desligar não pede nada.
+  if (enabled && !(await ensurePermission(HOUSE_CHANNEL))) return false;
+  return serialized(() => webPush().setMarketTripsPush(enabled));
 }
 
 export async function hasReminders(medicationId: string): Promise<boolean> {

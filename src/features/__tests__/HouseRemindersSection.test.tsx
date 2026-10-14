@@ -170,4 +170,55 @@ describe('"Alguém indo ao mercado" nos avisos deste navegador', () => {
     expect(tripSwitch()?.props.value).toBe(false);
     expect(notify).toHaveBeenCalledWith('Sem permissão', 'Para receber os avisos: permita as notificações do Kotii nas configurações do navegador.');
   });
+
+  it('com o ligar ainda no ar, a chave fica parada no que foi escolhido e um segundo toque não muda nada', async () => {
+    mockDevice.read = async () => false;
+    let answer = (_ok: boolean) => undefined as void;
+    mockDevice.set = jest.fn(() => new Promise<boolean>((resolve) => (answer = resolve)));
+    await render();
+    expect(tripSwitch()?.props.disabled).toBe(false);
+    await act(async () => {
+      tripSwitch()?.props.onValueChange(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(tripSwitch()?.props.value).toBe(true);
+    expect(tripSwitch()?.props.disabled).toBe(true);
+    // Um toque que ainda chega (a chave desabilitada não o impede em todo lugar) é ignorado.
+    await act(async () => {
+      tripSwitch()?.props.onValueChange(false);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(mockDevice.set).toHaveBeenCalledTimes(1);
+    expect(tripSwitch()?.props.value).toBe(true);
+    // O servidor responde: a chave volta a funcionar, ligada.
+    mockDevice.read = async () => true;
+    await act(async () => {
+      answer(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(tripSwitch()?.props.disabled).toBe(false);
+    expect(tripSwitch()?.props.value).toBe(true);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('dois toques no mesmo instante, antes de a tela se atualizar: só o primeiro vale', async () => {
+    mockDevice.read = async () => false;
+    let answer = (_ok: boolean) => undefined as void;
+    mockDevice.set = jest.fn(() => new Promise<boolean>((resolve) => (answer = resolve)));
+    await render();
+    const before = tripSwitch();
+    await act(async () => {
+      before?.props.onValueChange(true);
+      before?.props.onValueChange(false);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(mockDevice.set).toHaveBeenCalledTimes(1);
+    expect(mockDevice.set).toHaveBeenCalledWith(true);
+    mockDevice.read = async () => true;
+    await act(async () => {
+      answer(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(tripSwitch()?.props.value).toBe(true);
+  });
 });
