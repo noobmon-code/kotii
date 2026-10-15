@@ -6,7 +6,7 @@ import { router } from 'expo-router';
 
 import { useFamilyCalendar } from '@/data/family';
 import { useBills, useBudgets, useRecentBillPayments, useSaveExpense, useSpending } from '@/data/finance';
-import { toSchedule, useChoreRotations, useChores, useDoses, useMedications, usePantry, useSaveChore } from '@/data/home';
+import { toSchedules, useChoreRotations, useChores, useDoses, useMedications, usePantry, useSaveChore } from '@/data/home';
 import { useDocuments, useEquipmentList } from '@/data/house';
 import { useAppointments, usePeople } from '@/data/health';
 import { useAddToMarketList } from '@/data/market';
@@ -23,6 +23,7 @@ import { calendarLines } from '@/domain/familyEvents';
 import { monthLabel, monthRange, previousMonth, shiftMonth, summarize } from '@/domain/finance';
 import { upcomingAppointments } from '@/domain/health';
 import { doseKey, dosesForDay } from '@/domain/medications';
+import { refillSummary } from '@/domain/medicationStock';
 import { menuLines } from '@/domain/menu';
 import { buildNukeContext, NUKE_LIST_LIMIT, parseActions, type NukeAction, type NukeScreen, type NukeSnapshot } from '@/domain/nuke';
 import { expiryStatus, groupPantry } from '@/domain/pantry';
@@ -129,17 +130,21 @@ export function useNukeContext(today: string): NukeContextState {
   // Só com os pagamentos em dia: depois de pagar ou desfazer, os de antes diriam o que já não vale.
   const billsAbove = billsAboveUsual(bills.data ?? [], settledData(recentPayments) ?? [], today);
 
+  // Com as doses de hoje já marcadas: o estoque que o Nuke lê é o mesmo das telas.
+  const schedules = toSchedules(medications.data ?? [], today, doses.data);
+
   const snapshot: NukeSnapshot = {
     today,
     household: house.name,
     me: me.display_name,
     members: members.map((m) => m.display_name),
-    doses: dosesForDay((medications.data ?? []).map(toSchedule), today, taken).map((d) => ({
+    doses: dosesForDay(schedules, today, taken).map((d) => ({
       time: d.time,
       name: d.name,
       person: d.personName,
       taken: taken.has(doseKey(d.medicationId, d.date, d.time)),
     })),
+    refills: refillSummary(schedules, today),
     chores: (chores.data ?? [])
       .filter((c) => c.due_on <= weekAhead)
       // No rodízio, de quem é a vez (também a de quem não tem o app) e quem vem depois.

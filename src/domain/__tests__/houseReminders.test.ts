@@ -12,10 +12,11 @@ import {
   shownHouseReminderKinds,
   type HouseReminderInput,
 } from '../houseReminders';
+import type { StockedMedication } from '../medicationStock';
 import { supplyReminders } from '../supplies';
 
 // Sem o resumo de amanhã (os testes dele vêm mais abaixo): com ele desligado, o plano é o de sempre.
-const all = { bills: true, documents: true, chores: true, appointments: true, events: true, vaccines: true, weather: true, supplies: true, eve: false };
+const all = { bills: true, documents: true, chores: true, appointments: true, events: true, vaccines: true, refills: true, weather: true, supplies: true, eve: false };
 const base: HouseReminderInput = { kinds: all, bills: [], documents: [], chores: [], today: '2026-09-27', nowTime: '08:00' };
 const bill = { id: 'b1', name: 'Luz', amount: 230, next_due_on: '2026-10-05', active: true, autopay: false };
 const doc = { id: 'd1', title: 'Passaporte — Ana', expires_on: '2026-10-20', remind_days: 15 };
@@ -86,7 +87,7 @@ describe('planHouseReminders', () => {
   });
 
   it('só o que a pessoa escolheu, dentro de 30 dias e com limite', () => {
-    const kinds = { bills: false, documents: false, chores: true, appointments: false, events: false, vaccines: false, weather: false, supplies: false, eve: false };
+    const kinds = { bills: false, documents: false, chores: true, appointments: false, events: false, vaccines: false, refills: false, weather: false, supplies: false, eve: false };
     expect(planHouseReminders({ ...base, kinds, bills: [bill], documents: [doc], chores: [chore] })).toHaveLength(1);
     expect(planHouseReminders({ ...base, chores: [{ ...chore, due_on: '2026-11-30' }] })).toEqual([]);
     const many = Array.from({ length: 40 }, (_, i) => ({ ...chore, id: `c${i}` }));
@@ -158,7 +159,7 @@ describe('gás, água e ração', () => {
 
   it('num banco ainda sem as tabelas, a lista dos avisos não oferece o tipo; em qualquer outro caso, oferece', () => {
     const keys = (available: boolean | undefined) => shownHouseReminderKinds(available).map((k) => k.key);
-    expect(keys(false)).toEqual(['bills', 'documents', 'chores', 'appointments', 'events', 'vaccines', 'weather', 'eve']);
+    expect(keys(false)).toEqual(['bills', 'documents', 'chores', 'appointments', 'events', 'vaccines', 'refills', 'weather', 'eve']);
     // Com as tabelas, e também enquanto a busca não respondeu (ou falhou sem internet).
     expect(keys(true)).toEqual(HOUSE_REMINDER_KINDS.map((k) => k.key));
     expect(keys(undefined)).toEqual(HOUSE_REMINDER_KINDS.map((k) => k.key));
@@ -549,6 +550,181 @@ describe('planHouseReminders: compromissos da família e aniversários', () => {
     expect(rows({ family: undefined })).toEqual([]);
     // Sem compromissos (a tabela ainda não existe): os aniversários avisam.
     expect(rows({ family: withBirthday([]) }).map(([, , , title]) => title)).toEqual(['Hoje é aniversário de Ana']);
+  });
+});
+
+describe('planHouseReminders: remédios e receitas acabando', () => {
+  // Losartana da Ana: um comprimido por dia, 10 contados hoje (27/09): acaba em 07/10. A receita vale até 10/10.
+  const losartana: StockedMedication = {
+    id: 'm1',
+    personName: 'Ana',
+    name: 'Losartana',
+    dosage: null,
+    times: ['08:00'],
+    startOn: '2026-09-01',
+    endOn: null,
+    active: true,
+    stockCount: 10,
+    stockCountedOn: '2026-09-27',
+    doseUnits: 1,
+    warnDays: 7,
+    prescriptionUntil: '2026-10-10',
+  };
+  const noPrescription = { ...losartana, prescriptionUntil: null };
+  const rows = (input: Partial<HouseReminderInput>) => planHouseReminders({ ...base, ...input }).map((r) => [r.key, r.date, r.time, r.title, r.body]);
+  const keys = (input: Partial<HouseReminderInput>) => rows(input).map(([key]) => key);
+
+  it('o tipo aparece na lista de avisos, com o texto do que ele faz', () => {
+    expect(HOUSE_REMINDER_KINDS.find((k) => k.key === 'refills')).toEqual({
+      key: 'refills',
+      label: 'Remédios e receitas acabando',
+      hint: 'Quando faltar uma semana para a caixa acabar (ou os dias que você escolher), no dia em que acaba e uma semana antes de a receita vencer, às 9h. Caixa contada já perto do fim avisa na véspera',
+    });
+  });
+
+  it('às 9h: quando faltam os dias escolhidos, no dia em que acaba, uma semana antes de a receita vencer e no dia', () => {
+    expect(rows({ medications: [losartana] })).toEqual([
+      ['refills:m1:2026-09-30', '2026-09-30', '09:00', 'Remédio acabando', 'Losartana (Ana) acaba em 7 dias.'],
+      ['refills:m1@receita:2026-10-03', '2026-10-03', '09:00', 'Receita vencendo', 'A receita de Losartana (Ana) vence em 7 dias (10/10/2026).'],
+      ['refills:m1:2026-10-07', '2026-10-07', '09:00', 'Remédio acaba hoje', 'Losartana (Ana) acaba hoje, pelas contas do app.'],
+      ['refills:m1@receita:2026-10-10', '2026-10-10', '09:00', 'Receita vence hoje', 'A receita de Losartana (Ana) vence hoje.'],
+    ]);
+    // Aviso com 3 dias de antecedência: o primeiro anda para 04/10.
+    expect(rows({ medications: [{ ...noPrescription, warnDays: 3 }] }).map(([key, , , , body]) => [key, body])).toEqual([
+      ['refills:m1:2026-10-04', 'Losartana (Ana) acaba em 3 dias.'],
+      ['refills:m1:2026-10-07', 'Losartana (Ana) acaba hoje, pelas contas do app.'],
+    ]);
+  });
+
+  it('chaves estáveis: o mesmo plano de novo e no dia seguinte, e nenhuma repetida', () => {
+    const input = { medications: [losartana] };
+    expect(keys(input)).toEqual(keys(input));
+    // Amanhã a conta dá o mesmo dia: os avisos já agendados não mudam.
+    expect(keys({ ...input, today: '2026-09-28' })).toEqual(keys(input));
+    // A caixa e a receita do mesmo remédio no mesmo dia são dois avisos.
+    const sameDay = keys({ medications: [{ ...losartana, prescriptionUntil: '2026-10-07' }] });
+    expect(sameDay).toEqual(['refills:m1:2026-09-30', 'refills:m1@receita:2026-09-30', 'refills:m1:2026-10-07', 'refills:m1@receita:2026-10-07']);
+    expect(new Set(sameDay).size).toBe(4);
+  });
+
+  it('o de hoje só se a hora ainda não passou; o que já passou não avisa', () => {
+    // Um comprimido contado ontem: a última dose que a caixa cobre é a de hoje (os avisos de antes já ficaram para trás).
+    const ending = { ...noPrescription, stockCount: 1, stockCountedOn: '2026-09-26' };
+    expect(keys({ medications: [ending] })).toEqual(['refills:m1:2026-09-27']);
+    expect(keys({ nowTime: '09:00', medications: [ending] })).toEqual([]);
+    // Contado zero hoje (não cobre nem a próxima dose): já acabou, sem "acaba hoje".
+    expect(keys({ medications: [{ ...noPrescription, stockCount: 0 }] })).toEqual([]);
+    // Pelas contas já acabou, há poucos dias (25/09) ou há muito tempo (11/09, parado): não avisa de novo.
+    expect(keys({ medications: [{ ...noPrescription, stockCountedOn: '2026-09-15' }] })).toEqual([]);
+    expect(keys({ medications: [{ ...noPrescription, stockCountedOn: '2026-09-01' }] })).toEqual([]);
+    // Receita já vencida, há pouco ou há muito tempo: idem.
+    expect(keys({ medications: [{ ...losartana, stockCount: null, stockCountedOn: null, prescriptionUntil: '2026-09-20' }] })).toEqual([]);
+    expect(keys({ medications: [{ ...losartana, stockCount: null, stockCountedOn: null, prescriptionUntil: '2026-08-20' }] })).toEqual([]);
+  });
+
+  it('caixa contada já no fim: o aviso da véspera tem a chave do dia dele e não muda a cada plano', () => {
+    // 4 contados hoje (27/09), aviso de 7 dias: acaba em 01/10; o aviso de antes (24/09) já passou.
+    const low = { ...noPrescription, stockCount: 4 };
+    expect(rows({ medications: [low] })).toEqual([
+      ['refills:m1:2026-09-30', '2026-09-30', '09:00', 'Remédio acaba amanhã', 'Losartana (Ana) acaba amanhã, pelas contas do app.'],
+      ['refills:m1:2026-10-01', '2026-10-01', '09:00', 'Remédio acaba hoje', 'Losartana (Ana) acaba hoje, pelas contas do app.'],
+    ]);
+    // Nos dias seguintes o plano é o mesmo, até a manhã da véspera; depois das 9h dela, só o do dia.
+    for (const today of ['2026-09-28', '2026-09-29', '2026-09-30']) {
+      expect(keys({ today, medications: [low] })).toEqual(['refills:m1:2026-09-30', 'refills:m1:2026-10-01']);
+    }
+    expect(keys({ today: '2026-09-30', nowTime: '09:00', medications: [low] })).toEqual(['refills:m1:2026-10-01']);
+    // Contada na véspera: só o do dia.
+    expect(keys({ medications: [{ ...noPrescription, stockCount: 1 }] })).toEqual(['refills:m1:2026-09-28']);
+    // Com bastante: o aviso de antes (30/09) e o do dia (07/10); a véspera é só para a caixa contada já no fim,
+    // mesmo quando o plano é feito depois do aviso de antes.
+    expect(keys({ today: '2026-09-30', medications: [noPrescription] })).toEqual(['refills:m1:2026-09-30', 'refills:m1:2026-10-07']);
+    for (const today of ['2026-10-01', '2026-10-05', '2026-10-06']) {
+      expect(keys({ today, medications: [noPrescription] })).toEqual(['refills:m1:2026-10-07']);
+    }
+  });
+
+  it('receita de um tratamento que termina antes: o aviso que cairia depois do fim não sai', () => {
+    // Termina em 05/10; a receita vale até 10/10 (avisos em 03/10 e 10/10).
+    const ending = { ...losartana, stockCount: null, stockCountedOn: null, endOn: '2026-10-05' };
+    expect(keys({ medications: [ending] })).toEqual(['refills:m1@receita:2026-10-03']);
+    expect(keys({ medications: [{ ...ending, endOn: '2026-10-02' }] })).toEqual([]);
+  });
+
+  it('tratamento por número de doses: marcar as doses de hoje não põe nem tira aviso do plano', () => {
+    // Amoxicilina, 20 doses desde 09/10: em 12/10, com 9 marcadas, passou de três para duas por dia, e a contagem
+    // recomeçou nesse dia com 10 comprimidos. Sobram 9 doses depois das duas de hoje.
+    const course: StockedMedication = { ...noPrescription, times: ['08:00', '20:00'], startOn: '2026-10-09', totalDoses: 20, stockCountedOn: '2026-10-12' };
+    const plan = (stockCount: number, ticked: number | undefined) =>
+      keys({ today: '2026-10-12', medications: [{ ...course, stockCount, takenCount: 9 + (ticked ?? 0), takenToday: ticked }] });
+    for (const ticked of [0, 1, 2]) {
+      // 10 comprimidos dão para o tratamento: nenhum aviso, com nenhuma, uma ou as duas doses de hoje marcadas.
+      expect(plan(10, ticked)).toEqual([]);
+      // Com 8 falta mesmo: os mesmos dois avisos o dia inteiro.
+      expect(plan(8, ticked)).toEqual(['refills:m1:2026-10-15', 'refills:m1:2026-10-16']);
+    }
+    // Sem as marcações de hoje (ainda não carregaram), a conta é a de antes: as duas doses de hoje contam de novo.
+    expect(plan(10, undefined)).toEqual(['refills:m1:2026-10-16', 'refills:m1:2026-10-17']);
+  });
+
+  it('só na janela de 30 dias', () => {
+    // Acaba em 03/11: o aviso de uma semana antes cai no último dia da janela (27/10); o do dia fica para depois.
+    expect(keys({ medications: [{ ...noPrescription, stockCount: 37 }] })).toEqual(['refills:m1:2026-10-27']);
+    expect(keys({ medications: [{ ...noPrescription, stockCount: 38 }] })).toEqual([]);
+  });
+
+  it('nada para remédio sem estoque acompanhado, que termina antes ou encerrado; desligado ou sem os dados: nada', () => {
+    const untracked = { ...noPrescription, stockCount: null, stockCountedOn: null };
+    expect(rows({ medications: [untracked] })).toEqual([]);
+    // O tratamento termina antes de a caixa acabar.
+    expect(rows({ medications: [{ ...noPrescription, endOn: '2026-10-02' }] })).toEqual([]);
+    expect(rows({ medications: [{ ...losartana, active: false }] })).toEqual([]);
+    expect(rows({ kinds: { ...all, refills: false }, medications: [losartana] })).toEqual([]);
+    expect(rows({ medications: undefined })).toEqual([]);
+  });
+
+  it('fica fora do resumo de amanhã: a caixa ou a receita de amanhã não fazem o resumo tocar nem entram no texto dele', () => {
+    const input = { kinds: { ...all, eve: true }, medications: [losartana] };
+    expect(keys(input)).toEqual(keys({ medications: [losartana] }));
+    // Com uma conta no dia do primeiro aviso do remédio (30/09), o resumo da véspera fala só dela; os avisos do remédio seguem os mesmos.
+    const plan = planHouseReminders({ ...base, ...input, bills: [{ ...bill, next_due_on: '2026-09-30' }] });
+    expect(plan.filter((r) => r.kind === 'eve').map((r) => [r.key, r.body.includes('Luz'), r.body.includes('Losartana')])).toEqual([
+      ['eve:amanha:2026-09-29:20:00', true, false],
+    ]);
+    expect(plan.filter((r) => r.kind === 'refills').map((r) => r.key)).toEqual(keys({ medications: [losartana] }));
+  });
+
+  it('entra no teto como os outros tipos, sem mexer na parte dos compromissos', () => {
+    const daily: FamilyEventLike = {
+      id: 'aula',
+      title: 'Aula',
+      starts_on: '2026-09-01',
+      start_time: '10:00',
+      end_time: null,
+      person_id: null,
+      take_by: null,
+      pick_up_by: null,
+      location: null,
+      bring: null,
+      recurrence: 'weekly',
+      weekdays: [0, 1, 2, 3, 4, 5, 6],
+      until_on: null,
+    };
+    const family: FamilyCalendar = { events: [daily], days: [], people: [] };
+    const count = (input: Partial<HouseReminderInput>) => {
+      const plan = planHouseReminders({ ...base, family, medications: [losartana], ...input });
+      return (['events', 'refills', 'chores'] as const).map((kind) => plan.filter((r) => r.kind === kind).length);
+    };
+    // Só os 4 avisos do remédio além das aulas de todo dia: as aulas usam as vagas livres.
+    expect(count({})).toEqual([HOUSE_REMINDER_LIMIT - 4, 4, 0]);
+    // Com quarenta tarefas mais para a frente, os compromissos seguem com a metade deles;
+    // os avisos do remédio, mais próximos, entram antes das tarefas.
+    const chores = Array.from({ length: 40 }, (_, i) => ({ ...chore, id: `c${i}`, due_on: '2026-10-20' }));
+    expect(count({ chores })).toEqual([HOUSE_REMINDER_LIMIT / 2, 4, HOUSE_REMINDER_LIMIT / 2 - 4]);
+    // E os compromissos escolhidos são os mesmos com ou sem os remédios.
+    const events = (medications: StockedMedication[]) =>
+      planHouseReminders({ ...base, family, chores, medications }).flatMap((r) => (r.kind === 'events' ? [r.key] : []));
+    expect(events([losartana])).toEqual(events([]));
   });
 });
 
@@ -1379,7 +1555,7 @@ describe('eveSummary (resumo de amanhã)', () => {
 });
 
 describe('planHouseReminders: resumo de amanhã', () => {
-  const none = { bills: false, documents: false, chores: false, appointments: false, events: false, vaccines: false, weather: false, supplies: false, eve: false };
+  const none = { bills: false, documents: false, chores: false, appointments: false, events: false, vaccines: false, refills: false, weather: false, supplies: false, eve: false };
   const onlyEve = { ...none, eve: true };
   const both = { ...none, appointments: true, eve: true };
   const weekly = (due_on: string) => ({
@@ -1862,7 +2038,7 @@ describe('planHouseReminders: resumo de amanhã', () => {
 });
 
 describe('planHouseReminders: resumo de amanhã com compromissos e aniversários', () => {
-  const none = { bills: false, documents: false, chores: false, appointments: false, events: false, vaccines: false, weather: false, supplies: false, eve: false };
+  const none = { bills: false, documents: false, chores: false, appointments: false, events: false, vaccines: false, refills: false, weather: false, supplies: false, eve: false };
   // Compromissos e resumo ligados. Hoje é domingo, 27/09/2026, 8h; a festa é na terça, 29/09, às 16h.
   const both = { ...none, events: true, eve: true };
   const party = commitment({ person_id: 'ana', take_by: 'carla', bring: 'presente' });
@@ -2295,7 +2471,7 @@ describe('planHouseReminders: resumo de amanhã com compromissos e aniversários
         })),
       );
     return {
-      kinds: { bills: on(), documents: on(), chores: on(), appointments: on(), events: on(), vaccines: on(), weather: on(), supplies: false, eve: true },
+      kinds: { bills: on(), documents: on(), chores: on(), appointments: on(), events: on(), vaccines: on(), refills: false, weather: on(), supplies: false, eve: true },
       today: base.today,
       nowTime: pick(['08:00', '08:00', '19:30', '20:30']),
       bills: Array.from({ length: int(7) }, (_, i) => ({

@@ -3,7 +3,7 @@ import { useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import {
-  toSchedule,
+  toSchedules,
   useChoreRotations,
   useChores,
   useCompleteChore,
@@ -40,6 +40,7 @@ import { announceCompletion } from '@/features/ChoresPanel';
 import { BillRow } from '@/features/finance/BillsPanel';
 import { PayBillModal } from '@/features/finance/PayBillModal';
 import { hasHealthToday, healthTodayCount, HealthTodaySections } from '@/features/health/HealthTodaySections';
+import { MedicationRefills, useRefills } from '@/features/health/MedicationSections';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { InstallAppCard } from '@/features/InstallAppCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
@@ -178,10 +179,13 @@ export default function TodayScreen() {
   };
 
   const taken = new Set((doses.data ?? []).map((d) => doseKey(d.medication_id, d.scheduled_on, d.scheduled_time)));
-  const pendingDoses = dosesForDay((medications.data ?? []).map(toSchedule), today, taken).filter(
+  const pendingDoses = dosesForDay(toSchedules(medications.data ?? [], today, doses.data), today, taken).filter(
     (d) => !taken.has(doseKey(d.medicationId, d.date, d.time)),
   );
 
+  // Remédios com a caixa acabando (pelas contas do app) ou a receita vencendo: só os que pedem
+  // atenção (o que está parado há mais de duas semanas fica na tela Saúde e no remédio).
+  const refills = useRefills(today).attention;
   const dueChores = (chores.data ?? []).filter((c) => choreStatus(c.due_on, today).kind !== 'proxima');
   const expiring = (pantry.data ?? []).filter((p) => {
     const kind = expiryStatus(p.expires_on, today).kind;
@@ -213,6 +217,7 @@ export default function TodayScreen() {
   const nothingPending =
     queries.every((q) => q.isSuccess) &&
     !pendingDoses.length &&
+    !refills.length &&
     !dueChores.length &&
     !billsDue.length &&
     !expiring.length &&
@@ -229,6 +234,7 @@ export default function TodayScreen() {
   const glass = useGlassStyle();
   const attention =
     pendingDoses.length +
+    refills.length +
     dueChores.length +
     billsDue.length +
     expiring.length +
@@ -353,6 +359,7 @@ export default function TodayScreen() {
                 key={doseKey(d.medicationId, d.date, d.time)}
                 left={<IconBadge icon="pill" tone={d.time < nowTime ? 'warning' : 'info'} />}
                 title={`${d.time} · ${d.name}`}
+                // Sem o selo de caixa acabando: a seção logo abaixo já diz, uma vez por remédio.
                 subtitle={[d.personName, d.dosage].filter(Boolean).join(' · ')}
                 right={
                   <CheckCircle
@@ -366,6 +373,8 @@ export default function TodayScreen() {
           </ListCard>
         </Section>
       ) : null}
+
+      <MedicationRefills rows={refills} />
 
       <HealthTodaySections overview={health} today={today} compact />
 

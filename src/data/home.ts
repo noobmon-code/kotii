@@ -7,7 +7,14 @@ import { SAME_PURCHASE_DAYS, type PantryEntry } from '@/domain/cartPantry';
 import { groupRotations, isRotationRefused, isRotationUnavailable, ROTATION_NOT_READY, type ChoreRotations, type ChoreTurn } from '@/domain/choreRotation';
 import { choreGoneOnSave, isChoreGone } from '@/domain/chores';
 import { addDays, diffDays } from '@/domain/dates';
-import type { MedicationSchedule } from '@/domain/medications';
+import {
+  DEFAULT_DOSE_UNITS,
+  DEFAULT_WARN_DAYS,
+  type StockChanges,
+  type StockCount,
+  type StockedMedication,
+} from '@/domain/medicationStock';
+import { doseKey, takenOn } from '@/domain/medications';
 import type { PantryTake } from '@/domain/pantry';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Chore, ChoreRotationRow, Medication, MedicationDose, PantryItem, Unit } from '@/lib/types';
@@ -464,7 +471,10 @@ export function useDeleteChore() {
 // ---------------------------------------------------------------------------
 // Remédios
 
-export function toSchedule(m: Medication): MedicationSchedule {
+/** doseKey de cada dose marcada (o que as regras leem). */
+const takenKeys = (doses: MedicationDose[]) => new Set(doses.map((d) => doseKey(d.medication_id, d.scheduled_on, d.scheduled_time)));
+
+function schedule(m: Medication, today: string, taken: ReadonlySet<string> | undefined): StockedMedication {
   return {
     id: m.id,
     personName: m.person_name,
@@ -479,37 +489,137 @@ export function toSchedule(m: Medication): MedicationSchedule {
     intervalDays: m.interval_days,
     totalDoses: m.total_doses,
     takenCount: m.taken_count,
+    takenToday: taken && takenOn(m, today, taken),
+    stockCount: m.stock_count,
+    stockCountedOn: m.stock_counted_on,
+    doseUnits: m.dose_units,
+    warnDays: m.stock_warn_days,
+    prescriptionUntil: m.prescription_until,
   };
 }
 
-// Com a contagem de doses tomadas, para os tratamentos por número de doses.
-const MEDICATION_COLUMNS =
-  'id, person_id, person_name, name, dosage, times, start_on, end_on, notes, active, frequency, weekdays, interval_days, total_doses, medication_doses(count)';
+/**
+ * O remédio como as regras o leem. `doses` são as doses marcadas em `today`
+ * (useDoses(today)); delas sai `takenToday`, que a conta do estoque de um
+ * tratamento por número de doses usa para o estado não mudar a cada dose
+ * marcada. undefined enquanto não carregaram: a conta segue sem elas. Os dois
+ * são obrigatórios de propósito: a tela, o Nuke ou o aviso que montasse o
+ * remédio sem as marcações de hoje daria uma resposta diferente dos outros.
+ */
+export function toSchedule(m: Medication, today: string, doses: MedicationDose[] | undefined): StockedMedication {
+  return schedule(m, today, doses && takenKeys(doses));
+}
 
-type MedicationRow = Omit<Medication, 'taken_count'> & { medication_doses?: { count: number }[] };
+/** Todos os remédios, como toSchedule. */
+export function toSchedules(medications: Medication[], today: string, doses: MedicationDose[] | undefined): StockedMedication[] {
+  const taken = doses && takenKeys(doses);
+  return medications.map((m) => schedule(m, today, taken));
+}
+
+type StockColumn = 'stock_count' | 'stock_counted_on' | 'dose_units' | 'stock_warn_days' | 'prescription_until';
+
+const BASE_COLUMNS =
+  'id, person_id, person_name, name, dosage, times, start_on, end_on, notes, active, frequency, weekdays, interval_days, total_doses';
+const STOCK_COLUMNS = 'stock_count, stock_counted_on, dose_units, stock_warn_days, prescription_until';
+// Com a contagem de doses tomadas, para os tratamentos por número de doses.
+const DOSES_COUNT = 'medication_doses(count)';
+const MEDICATION_COLUMNS = `${BASE_COLUMNS}, ${STOCK_COLUMNS}, ${DOSES_COUNT}`;
+/** As colunas de antes do estoque, para o banco que ainda não recebeu a migração dele. */
+const LEGACY_MEDICATION_COLUMNS = `${BASE_COLUMNS}, ${DOSES_COUNT}`;
+
+/** O que a pessoa lê quando tenta salvar o estoque e o banco ainda não tem as colunas dele. */
+export const MEDICATION_STOCK_UNAVAILABLE = 'O estoque de remédios ainda está sendo ativado no Kotii. Tente de novo mais tarde.';
+
+/** O que a pessoa lê quando o estoque mudou em outro aparelho entre a leitura do remédio e a gravação. */
+export const MEDICATION_STOCK_CHANGED = 'O estoque deste remédio mudou em outro aparelho, e nada foi salvo. Abra o remédio de novo para conferir.';
+
+/** A gravação feita sobre uma cópia do remédio não achou mais o estoque de onde partiu: nada foi gravado. */
+export class MedicationStockChanged extends Error {
+  constructor() {
+    super(MEDICATION_STOCK_CHANGED);
+  }
+}
+
+/**
+ * O estoque como a cópia do remédio que a tela tem o mostra. A contagem
+ * refeita pela regra nova e "Comprei mais" somado à conta do app partem dele:
+ * vão com ele como condição, para não gravar por cima do que outro aparelho
+ * gravou nesse meio-tempo (uma caixa, outra contagem).
+ */
+export type StockSeen = Pick<Medication, 'stock_count' | 'stock_counted_on'>;
+
+export const stockSeen = (m: Medication): StockSeen => ({ stock_count: m.stock_count, stock_counted_on: m.stock_counted_on });
+
+type Filterable<Q> = { eq(column: string, value: unknown): Q; is(column: string, value: null): Q };
+
+/** Só a linha cujo estoque ainda é `seen` (o banco compara; o vazio, com "is"). */
+function whereStockIs<Q extends Filterable<Q>>(query: Q, seen: StockSeen): Q {
+  const counted = seen.stock_count === null ? query.is('stock_count', null) : query.eq('stock_count', seen.stock_count);
+  return seen.stock_counted_on === null ? counted.is('stock_counted_on', null) : counted.eq('stock_counted_on', seen.stock_counted_on);
+}
+
+/** `.single()` sem linha nenhuma (PGRST116). */
+const noRow = (error: unknown) => Boolean(error && typeof error === 'object' && (error as { code?: unknown }).code === 'PGRST116');
+
+/**
+ * As colunas do estoque ainda não existem no banco (o app chegou antes da
+ * migração): numa leitura o Postgres responde 42703 ("column
+ * medications.stock_count does not exist") e, numa gravação, o PostgREST
+ * responde PGRST204 ("Could not find the 'stock_count' column of
+ * 'medications' in the schema cache"). Só vale quando o erro fala de uma
+ * delas: outra coluna que falte é erro de verdade.
+ */
+export function isMissingStockColumn(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  if (typeof message !== 'string' || !/stock_count|stock_counted_on|dose_units|stock_warn_days|prescription_until/.test(message)) return false;
+  return code === '42703' || code === 'PGRST204' || /does not exist|could not find/i.test(message);
+}
+
+type MedicationRow = Omit<Medication, 'taken_count' | StockColumn> &
+  Partial<Pick<Medication, StockColumn>> & { medication_doses?: { count: number }[] };
 
 const fromRow = ({ medication_doses, ...m }: MedicationRow): Medication => ({
   ...m,
   taken_count: medication_doses?.[0]?.count ?? 0,
+  // Sem as colunas do estoque (banco de antes dele), o app não acompanha o estoque de nenhum remédio.
+  stock_count: m.stock_count == null ? null : Number(m.stock_count),
+  stock_counted_on: m.stock_counted_on ?? null,
+  dose_units: Number(m.dose_units ?? DEFAULT_DOSE_UNITS),
+  stock_warn_days: m.stock_warn_days ?? DEFAULT_WARN_DAYS,
+  prescription_until: m.prescription_until ?? null,
 });
 
+type Answer = { data: unknown; error: unknown };
+
+/**
+ * Lê (ou grava e lê de volta) com as colunas do estoque; se o banco ainda não
+ * as tem, repete com as de antes. A primeira tentativa não grava nada: a
+ * coluna que falta derruba o pedido inteiro.
+ */
+async function withStockFallback(run: (columns: string) => PromiseLike<Answer>): Promise<{ answer: Answer; legacy: boolean }> {
+  const answer = await run(MEDICATION_COLUMNS);
+  return isMissingStockColumn(answer.error) ? { answer: await run(LEGACY_MEDICATION_COLUMNS), legacy: true } : { answer, legacy: false };
+}
+
 export async function fetchMedications(db: SupabaseClient = supabase): Promise<Medication[]> {
-  return (
-    unwrap(await db.from('medications').select(MEDICATION_COLUMNS).eq('active', true).order('person_name').order('name')) as MedicationRow[]
-  ).map(fromRow);
+  const { answer } = await withStockFallback((columns) =>
+    db.from('medications').select(columns).eq('active', true).order('person_name').order('name'),
+  );
+  return (unwrap(answer) as MedicationRow[]).map(fromRow);
 }
 
 export function useMedications() {
   return useQuery({ queryKey: ['medications'], queryFn: () => fetchMedications() });
 }
 
+export async function fetchMedication(id: string, db: SupabaseClient = supabase): Promise<Medication> {
+  const { answer } = await withStockFallback((columns) => db.from('medications').select(columns).eq('id', id).single());
+  return fromRow(unwrap(answer) as MedicationRow);
+}
+
 export function useMedication(id: string | undefined) {
-  return useQuery({
-    queryKey: ['medications', id],
-    enabled: Boolean(id),
-    queryFn: async () =>
-      fromRow(unwrap(await supabase.from('medications').select(MEDICATION_COLUMNS).eq('id', id!).single()) as MedicationRow),
-  });
+  return useQuery({ queryKey: ['medications', id], enabled: Boolean(id), queryFn: () => fetchMedication(id!) });
 }
 
 export type MedicationValues = Pick<
@@ -528,16 +638,101 @@ export type MedicationValues = Pick<
   | 'total_doses'
 >;
 
+/** O que a seção "Estoque e receita" grava: só as colunas em que a pessoa mexeu. */
+export type MedicationStockValues = Partial<Pick<Medication, StockColumn>>;
+
+export function toStockValues(changes: StockChanges): MedicationStockValues {
+  const values: MedicationStockValues = {};
+  if (changes.stockCount !== undefined) values.stock_count = changes.stockCount;
+  if (changes.stockCountedOn !== undefined) values.stock_counted_on = changes.stockCountedOn;
+  if (changes.doseUnits !== undefined) values.dose_units = changes.doseUnits;
+  if (changes.warnDays !== undefined) values.stock_warn_days = changes.warnDays;
+  if (changes.prescriptionUntil !== undefined) values.prescription_until = changes.prescriptionUntil;
+  return values;
+}
+
+export interface SavedMedication {
+  medication: Medication;
+  /** A pessoa mexeu no estoque e o banco ainda não tem as colunas dele: o resto foi salvo, o estoque não. */
+  stockUnavailable: boolean;
+}
+
+/**
+ * Cria ou muda o remédio, com o que mudou na seção do estoque (`stock`). Num
+ * banco de antes do estoque, o remédio salva como sempre e `stockUnavailable`
+ * diz se ficou algo do estoque de fora, para a tela avisar. `from`: a
+ * contagem em `stock` foi refeita a partir da cópia (a regra mudou, ver
+ * keepStockOnRuleChange), e só vale sobre o estoque dela; se outro aparelho o
+ * mudou, nada é gravado (MedicationStockChanged). Um número que a pessoa
+ * escreveu vai sem `from`: é a contagem dela.
+ */
+export async function saveMedication(
+  { id, values, stock, from }: { id?: string; values: MedicationValues; stock?: MedicationStockValues; from?: StockSeen },
+  db: SupabaseClient = supabase,
+): Promise<SavedMedication> {
+  const wantsStock = Boolean(stock && Object.keys(stock).length);
+  const { answer, legacy } = await withStockFallback((columns) => {
+    const withStock = columns === MEDICATION_COLUMNS;
+    const body = withStock ? { ...values, ...stock } : values;
+    const table = db.from('medications');
+    if (!id) return table.insert(body).select(columns).single();
+    const update = table.update(body).eq('id', id);
+    // Sem as colunas do estoque no banco, nada dele é gravado, nem conferido.
+    return (withStock && from ? whereStockIs(update, from) : update).select(columns).single();
+  });
+  if (from && !legacy && noRow(answer.error)) throw new MedicationStockChanged();
+  return { medication: fromRow(unwrap(answer) as MedicationRow), stockUnavailable: legacy && wantsStock };
+}
+
+/** O estoque mudou em outro aparelho: o remédio aberto de novo (e as outras telas) já vêm com o de agora. */
+function refetchOnStockChanged(queryClient: ReturnType<typeof useQueryClient>, error: unknown) {
+  if (error instanceof MedicationStockChanged) queryClient.invalidateQueries({ queryKey: ['medications'] });
+}
+
 export function useSaveMedication() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, values }: { id?: string; values: MedicationValues }) =>
-      fromRow(
-        (id
-          ? unwrap(await supabase.from('medications').update(values).eq('id', id).select(MEDICATION_COLUMNS).single())
-          : unwrap(await supabase.from('medications').insert(values).select(MEDICATION_COLUMNS).single())) as MedicationRow,
-      ),
+    mutationFn: (input: { id?: string; values: MedicationValues; stock?: MedicationStockValues; from?: StockSeen }) => saveMedication(input),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['medications'] }),
+    onError: (error) => refetchOnStockChanged(queryClient, error),
+  });
+}
+
+/**
+ * "Comprei mais": grava a contagem nova (ver restock). Num banco de antes do
+ * estoque, avisa. `from`: a caixa foi somada à conta do app sobre a cópia, e
+ * só vale sobre o estoque dela (como em saveMedication); somada a um número
+ * que a pessoa escreveu, vai sem `from`.
+ */
+export async function restockMedication(
+  { id, count, from }: { id: string; count: StockCount; from?: StockSeen },
+  db: SupabaseClient = supabase,
+): Promise<void> {
+  const update = db.from('medications').update({ stock_count: count.stockCount, stock_counted_on: count.stockCountedOn }).eq('id', id);
+  // Com a condição, a linha volta: sem ela, a condição não achou o estoque da cópia.
+  const result = from ? await whereStockIs(update, from).select('id') : await update;
+  if (isMissingStockColumn(result.error)) throw new Error(MEDICATION_STOCK_UNAVAILABLE);
+  const rows = unwrap(result) as { id: string }[] | null;
+  if (from && !rows?.length) throw new MedicationStockChanged();
+}
+
+/** "Comprei mais" em andamento (useIsMutating): enquanto isso, "Salvar" espera. */
+export const RESTOCK_MEDICATION_KEY = ['restockMedication'];
+
+export function useRestockMedication() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationKey: RESTOCK_MEDICATION_KEY,
+    mutationFn: (input: { id: string; count: StockCount; from?: StockSeen }) => restockMedication(input),
+    onSuccess: (_data, { id, count }) => {
+      // Já na tela, sem esperar a busca: salvar o remédio logo em seguida parte da contagem nova.
+      queryClient.setQueryData<Medication>(
+        ['medications', id],
+        (m) => m && { ...m, stock_count: count.stockCount, stock_counted_on: count.stockCountedOn },
+      );
+      queryClient.invalidateQueries({ queryKey: ['medications'] });
+    },
+    onError: (error) => refetchOnStockChanged(queryClient, error),
   });
 }
 
@@ -550,17 +745,15 @@ export function useArchiveMedication() {
   });
 }
 
+/** As doses marcadas num dia. */
+export async function fetchDoses(date: string, db: SupabaseClient = supabase): Promise<MedicationDose[]> {
+  return unwrap(
+    await db.from('medication_doses').select('id, medication_id, scheduled_on, scheduled_time, taken_at').eq('scheduled_on', date),
+  ) as MedicationDose[];
+}
+
 export function useDoses(date: string) {
-  return useQuery({
-    queryKey: ['doses', date],
-    queryFn: async () =>
-      unwrap(
-        await supabase
-          .from('medication_doses')
-          .select('id, medication_id, scheduled_on, scheduled_time, taken_at')
-          .eq('scheduled_on', date),
-      ) as MedicationDose[],
-  });
+  return useQuery({ queryKey: ['doses', date], queryFn: () => fetchDoses(date) });
 }
 
 export function useToggleDose(date: string) {

@@ -177,6 +177,15 @@ export interface Medication {
   total_doses: number | null;
   /** Doses já registradas como tomadas (contagem do banco). */
   taken_count: number;
+  /** Estoque: unidades contadas e o dia da contagem (ver domain/medicationStock); os dois nulos: o app não acompanha. */
+  stock_count: number | null;
+  stock_counted_on: string | null;
+  /** Unidades que cada dose usa. */
+  dose_units: number;
+  /** Com quantos dias de antecedência avisar que a caixa está acabando. */
+  stock_warn_days: number;
+  /** Até quando a receita vale. */
+  prescription_until: string | null;
 }
 
 export interface MedicationDose {

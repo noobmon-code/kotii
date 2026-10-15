@@ -83,7 +83,10 @@ export function Screen({
   footer?: ReactNode;
   /** Tela com o botão do Nuke por cima: sobra espaço no fim para ele não cobrir nada. */
   fab?: boolean;
-  /** Para a tela rolar sozinha até um ponto (ex.: de volta ao começo de uma lista que acabou de mudar). */
+  /**
+   * Para a tela rolar sozinha até um ponto: abrir já numa parte dela (o `y` de um filho direto, em onLayout, é a
+   * posição a rolar) ou voltar ao começo de uma lista que acabou de mudar.
+   */
   scrollRef?: RefObject<ScrollView | null>;
 }) {
   const c = useColors();
