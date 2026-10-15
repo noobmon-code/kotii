@@ -6,7 +6,7 @@ import { router } from 'expo-router';
 
 import { useFamilyCalendar } from '@/data/family';
 import { useBills, useBudgets, useRecentBillPayments, useSaveExpense, useSpending } from '@/data/finance';
-import { toSchedule, useChores, useDoses, useMedications, usePantry, useSaveChore } from '@/data/home';
+import { toSchedule, useChoreRotations, useChores, useDoses, useMedications, usePantry, useSaveChore } from '@/data/home';
 import { useDocuments, useEquipmentList } from '@/data/house';
 import { useAppointments, usePeople } from '@/data/health';
 import { useAddToMarketList } from '@/data/market';
@@ -15,6 +15,7 @@ import { useSupplies } from '@/data/supplies';
 import { functionErrorMessage } from '@/data/images';
 import { billsAboveUsual, describeAboveForNuke } from '@/domain/billUsual';
 import { budgetProgress } from '@/domain/budget';
+import { rotationLabel, rotationOf, rotationPeople } from '@/domain/choreRotation';
 import { addDays } from '@/domain/dates';
 import { describeDocumentStatus, documentsNeedingAttention } from '@/domain/documents';
 import { describeWarranty, warrantyStatus } from '@/domain/equipment';
@@ -62,6 +63,8 @@ export function useNukeContext(today: string): NukeContextState {
   const medications = useMedications();
   const doses = useDoses(today);
   const chores = useChores();
+  // Fora de `queries`: sem as ordens do rodízio, a tarefa vai com o responsável de sempre.
+  const rotations = useChoreRotations();
   const pantry = usePantry();
   const pending = usePendingListItems();
   const bills = useBills();
@@ -106,6 +109,7 @@ export function useNukeContext(today: string): NukeContextState {
   if (missing.length || !household.data) return { status: 'loading' };
   const { household: house, members, me } = household.data;
   const memberName = (id: string | null) => members.find((m) => m.user_id === id)?.display_name ?? null;
+  const who = rotationPeople(members, people.data ?? []);
 
   const taken = new Set((doses.data ?? []).map((d) => doseKey(d.medication_id, d.scheduled_on, d.scheduled_time)));
   const weekAhead = addDays(today, 7);
@@ -138,7 +142,12 @@ export function useNukeContext(today: string): NukeContextState {
     })),
     chores: (chores.data ?? [])
       .filter((c) => c.due_on <= weekAhead)
-      .map((c) => ({ title: c.title, due_on: c.due_on, assignee: memberName(c.assigned_to) })),
+      // No rodízio, de quem é a vez (também a de quem não tem o app) e quem vem depois.
+      .map((c) => ({
+        title: c.title,
+        due_on: c.due_on,
+        assignee: rotationLabel(c, rotationOf(rotations.data, c.id), who) ?? memberName(c.assigned_to),
+      })),
     // Um produto por linha, pela validade mais próxima entre as compras.
     expiring: pantryGroups
       .filter((g) => g.expiresOn && ['vencido', 'vence_logo'].includes(expiryStatus(g.expiresOn, today).kind))

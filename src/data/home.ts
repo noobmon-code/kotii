@@ -1,14 +1,16 @@
 // Despensa, tarefas da casa e remédios.
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { SAME_PURCHASE_DAYS, type PantryEntry } from '@/domain/cartPantry';
+import { groupRotations, isRotationRefused, isRotationUnavailable, ROTATION_NOT_READY, type ChoreRotations, type ChoreTurn } from '@/domain/choreRotation';
+import { choreGoneOnSave, isChoreGone } from '@/domain/chores';
 import { addDays, diffDays } from '@/domain/dates';
 import type { MedicationSchedule } from '@/domain/medications';
 import type { PantryTake } from '@/domain/pantry';
 import { supabase, unwrap } from '@/lib/supabase';
-import type { Chore, Medication, MedicationDose, PantryItem, Unit } from '@/lib/types';
+import type { Chore, ChoreRotationRow, Medication, MedicationDose, PantryItem, Unit } from '@/lib/types';
 
 // ---------------------------------------------------------------------------
 // Despensa
@@ -144,7 +146,11 @@ export function useTakeOneFromPantry() {
 // ---------------------------------------------------------------------------
 // Tarefas
 
-const CHORE_COLUMNS = 'id, title, notes, recurrence, interval_count, due_on, assigned_to, active, equipment_id, kid_id, points';
+/**
+ * A tarefa inteira (o tipo Chore), para toda busca de tarefas: quem conclui passa a linha ao aviso da conclusão
+ * (completionMessage), e sem kid_id a vez de uma criança pareceria ter passado em outro celular.
+ */
+export const CHORE_COLUMNS = 'id, title, notes, recurrence, interval_count, due_on, assigned_to, active, equipment_id, kid_id, points';
 
 export async function fetchChores(db: SupabaseClient = supabase): Promise<Chore[]> {
   return unwrap(await db.from('chores').select(CHORE_COLUMNS).eq('active', true).order('due_on').order('title')) as Chore[];
@@ -154,26 +160,143 @@ export function useChores() {
   return useQuery({ queryKey: ['chores'], queryFn: () => fetchChores() });
 }
 
-export function useChore(id: string | undefined) {
+/**
+ * `fresh`: para o editor. Busca de novo ao abrir a tela, mesmo com o cache
+ * recente: o formulário não pode partir de uma tarefa (ou de uma ordem de
+ * rodízio) que outro celular já mudou, porque salvaria por cima.
+ */
+interface FreshOption {
+  fresh?: boolean;
+}
+
+export function useChore(id: string | undefined, { fresh = false }: FreshOption = {}) {
   return useQuery({
     queryKey: ['chores', id],
     enabled: Boolean(id),
+    refetchOnMount: fresh ? 'always' : true,
     queryFn: async () =>
       unwrap(await supabase.from('chores').select(CHORE_COLUMNS).eq('id', id!).single()) as Chore,
   });
 }
 
-export type ChoreValues = Pick<Chore, 'title' | 'notes' | 'recurrence' | 'interval_count' | 'due_on' | 'assigned_to'> &
-  Partial<Pick<Chore, 'equipment_id' | 'kid_id' | 'points'>>;
+/**
+ * As ordens de rodízio da casa, por tarefa (ver domain/choreRotation). No
+ * banco que ainda não tem o rodízio (o app pode chegar antes da migração),
+ * nenhuma, sem erro: as telas seguem como se ninguém revezasse.
+ */
+export async function fetchChoreRotations(db: SupabaseClient = supabase): Promise<ChoreRotations> {
+  const result = await db.from('chore_rotation').select('chore_id, person_id, position').order('position');
+  if (result.error && isRotationUnavailable(result.error)) return {};
+  return groupRotations(unwrap(result) as ChoreRotationRow[]);
+}
+
+export function useChoreRotations({ fresh = false }: FreshOption = {}) {
+  return useQuery({ queryKey: ['choreRotations'], refetchOnMount: fresh ? 'always' : true, queryFn: () => fetchChoreRotations() });
+}
+
+// Sem assigned_to e kid_id, a edição não mexe no responsável (num rodízio, a vez fica com o banco); sem points, os
+// pontos ficam como estão.
+export type ChoreValues = Pick<Chore, 'title' | 'notes' | 'recurrence' | 'interval_count' | 'due_on'> &
+  Partial<Pick<Chore, 'assigned_to' | 'equipment_id' | 'kid_id' | 'points'>>;
+
+/** A tarefa salva. */
+export interface SaveChoreResult {
+  id: string;
+  /** O banco ainda não tem o rodízio: a tarefa ficou salva, sem a ordem pedida. */
+  rotationUnavailable?: true;
+}
+
+/**
+ * Salva a tarefa inteira numa chamada só (save_chore): os campos, o
+ * responsável e a ordem do rodízio (`rotation`; vazia: encerra o que havia;
+ * sem ela, o formulário não mexe no rodízio), numa transação do banco. Ou
+ * tudo fica gravado, ou nada: a recusa (a tarefa ganhou um rodízio em outro
+ * celular, foi apagada, alguém da ordem saiu da casa) e a falha de rede sobem
+ * como erro, e salvar de novo é seguro.
+ *
+ * O responsável (`assigned_to`, `kid_id`) só é mandado sem uma ordem a
+ * gravar: aí é o que a pessoa escolheu. Com a ordem, a vez é do banco (do
+ * primeiro, no rodízio novo), e o responsável que vier em `values` só serve
+ * ao banco que ainda não tem a função (abaixo).
+ *
+ * `expectNone`: o formulário de uma tarefa que já existe abriu sem rodízio
+ * (openedWithoutRotation). O banco confere, com a tarefa travada, que ela
+ * segue sem rodízio, e recusa se outro celular criou um nesse meio-tempo
+ * (isRotationChangedElsewhere).
+ *
+ * `shownRotation`: o formulário mostrou um rodízio gravado. Então o banco tem o rodízio, e a função faltar só pode
+ * ser o cache do esquema da API: o salvar nunca vai direto na tabela (abaixo).
+ */
+export async function saveChore({
+  id,
+  values,
+  rotation = null,
+  expectNone = false,
+  shownRotation = false,
+}: {
+  id?: string;
+  values: ChoreValues;
+  rotation?: string[] | null;
+  expectNone?: boolean;
+  shownRotation?: boolean;
+}): Promise<SaveChoreResult> {
+  const setsTurn = !rotation?.length && (values.assigned_to !== undefined || values.kid_id !== undefined);
+  const { data, error } = await supabase.rpc('save_chore', {
+    p_chore_id: id ?? null,
+    p_title: values.title,
+    p_notes: values.notes,
+    p_recurrence: values.recurrence,
+    p_interval_count: values.interval_count,
+    p_due_on: values.due_on,
+    // Nulo: os pontos ficam como estão (0 na tarefa nova).
+    p_points: values.points ?? null,
+    p_equipment_id: values.equipment_id ?? null,
+    p_set_turn: setsTurn,
+    p_assigned_to: setsTurn ? (values.assigned_to ?? null) : null,
+    p_kid_id: setsTurn ? (values.kid_id ?? null) : null,
+    p_people: rotation,
+    // Na tarefa nova não há o que conferir.
+    p_expect_none: Boolean(id) && expectNone,
+  });
+  if (!error) return { id: data as string };
+  if (!isRotationUnavailable(error)) throw error;
+  // Com o rodízio na tela, a gravação direta que mantém a vez (encerrar o rodízio com a mesma pessoa, uma ordem nova,
+  // só o título) passaria pelo banco e deixaria a ordem como estava. Nada é gravado, e daqui a pouco vai pela função.
+  if (shownRotation) throw new Error(ROTATION_NOT_READY);
+
+  // A função falta. Gravar direto na tabela só vale no banco que também não tem a tabela do rodízio: com ela lá (a
+  // migração chegou e a API ainda não enxerga a função nova), a gravação direta não mexeria na ordem, e a tarefa que
+  // deixou o rodízio continuaria nele. Aí nada é gravado, e salvar de novo daqui a pouco usa a função. Esta olhada
+  // passa pela mesma API: se ela também não enxerga a tabela, quem segura é o banco (abaixo).
+  const table = await supabase.from('chore_rotation').select('chore_id').limit(1);
+  if (!table.error) throw new Error(ROTATION_NOT_READY);
+  if (!isRotationUnavailable(table.error)) throw table.error;
+
+  // Banco que ainda não tem o rodízio (o app pode chegar antes da migração). Lá não há rodízio, nem a corrida por
+  // ele: a tarefa vai direto na tabela, como antes de o rodízio existir, e a ordem pedida fica de fora.
+  if (id) {
+    const result = await supabase.from('chores').update(values).eq('id', id).select('id');
+    // A API também não enxergava a tabela, mas o banco já tem o rodízio (o cache do esquema ficou para trás): ele
+    // recusa a troca da vez de uma tarefa em rodízio. Nada foi gravado, e daqui a pouco o salvar passa pela função.
+    if (result.error && isRotationRefused(result.error)) throw new Error(ROTATION_NOT_READY);
+    const written = unwrap(result) as { id: string }[];
+    // Apagada em outro aparelho: a gravação não acha a linha, e para a API isso não é erro.
+    if (!written.length) throw choreGoneOnSave();
+  }
+  const saved = id ?? (unwrap(await supabase.from('chores').insert(values).select('id').single()) as { id: string }).id;
+  return rotation?.length ? { id: saved, rotationUnavailable: true } : { id: saved };
+}
 
 export function useSaveChore() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, values }: { id?: string; values: ChoreValues }) =>
-      id
-        ? unwrap(await supabase.from('chores').update(values).eq('id', id))
-        : unwrap(await supabase.from('chores').insert(values)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chores'] }),
+    mutationFn: saveChore,
+    // Também na falha: se o banco recusou porque a tarefa ganhou um rodízio em outro celular, as telas passam a
+    // mostrá-lo; e a chamada que falhou pela rede pode ter chegado ao banco e gravado a tarefa.
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['chores'] });
+      queryClient.invalidateQueries({ queryKey: ['choreRotations'] });
+    },
   });
 }
 
@@ -184,6 +307,8 @@ export interface CompleteChoreResult {
   person_id: string | null;
   due_on: string;
   active: boolean;
+  /** Rodízio: a ficha de quem passa a ser a vez. Não vem do banco que ainda não tem o rodízio. */
+  next_person_id?: string | null;
 }
 
 export function useCompleteChore() {
@@ -195,10 +320,56 @@ export function useCompleteChore() {
       unwrap(await supabase.rpc('complete_chore', { p_chore_id: id, p_today: today, p_due_on: dueOn })) as CompleteChoreResult,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['chores'] });
+      queryClient.invalidateQueries({ queryKey: ['choreRotations'] });
       queryClient.invalidateQueries({ queryKey: ['choreHistory'] });
       queryClient.invalidateQueries({ queryKey: ['kidPoints'] });
     },
   });
+}
+
+/**
+ * "Pular a vez": passa a vez para o próximo do rodízio sem concluir a tarefa.
+ * from: a ficha de quem a tela mostrava a vez; to: a de quem a pergunta disse
+ * que fica com ela. Se a vez já passou (outro celular tocou antes), ou se a
+ * seguinte agora é outra pessoa (a ordem mudou em outro celular), o servidor
+ * não passa e devolve null.
+ */
+export function useSkipChoreTurn() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, from, to }: { id: string; from: string | null; to: string }) => {
+      const result = await supabase.rpc('skip_chore_turn', { p_chore_id: id, p_from: from, p_to: to });
+      if (result.error) throw result.error;
+      // De quem a vez passou a ser; null quando nada mudou.
+      return result.data as string | null;
+    },
+    // Também quando nada mudou ou falhou: a tela mostra de quem é a vez agora. Devolvidas, as buscas seguram o
+    // "Pular a vez" ocupado até a vez ser lida de novo: antes disso, outro toque perguntaria pela vez de antes.
+    onSettled: () =>
+      Promise.all([queryClient.invalidateQueries({ queryKey: ['chores'] }), queryClient.invalidateQueries({ queryKey: ['choreRotations'] })]),
+  });
+}
+
+/**
+ * A tarefa foi lida do servidor depois de `since` (ms)? Depois do "Pular a vez", é o que diz se a tela já mostra de
+ * quem é a vez agora: a busca que ele pede no fim pode ter falhado (sem internet), e a tela seguiria com a de antes.
+ */
+export function choreReadSince(client: QueryClient, id: string, since: number): boolean {
+  return (client.getQueryState(['chores', id])?.dataUpdatedAt ?? 0) >= since;
+}
+
+/**
+ * Grava na tarefa em cache a vez que o servidor respondeu (o "Pular a vez" que passou), quando a busca de depois
+ * falhou: a tela e o próximo toque seguem o servidor, e não a vez de antes. Não conta como leitura (choreReadSince):
+ * a data da última busca fica como estava, e a busca segue devendo (a tarefa é lida quando a internet ou o app voltam).
+ */
+export function setCachedChoreTurn(client: QueryClient, id: string, turn: ChoreTurn): void {
+  const key = ['chores', id];
+  // A busca não achou a tarefa (apagada em outro aparelho, ou a pessoa saiu da casa): setQueryData limparia esse erro,
+  // e a tela seguiria com o formulário da tarefa apagada, em vez do aviso (isChoreGone).
+  if (isChoreGone(client.getQueryState(key)?.error)) return;
+  client.setQueryData<Chore>(key, (chore) => chore && { ...chore, ...turn }, { updatedAt: client.getQueryState(key)?.dataUpdatedAt });
+  client.invalidateQueries({ queryKey: key, exact: true, refetchType: 'none' });
 }
 
 // ---------------------------------------------------------------------------
@@ -283,7 +454,10 @@ export function useDeleteChore() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => unwrap(await supabase.from('chores').delete().eq('id', id)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chores'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['chores'] });
+      queryClient.invalidateQueries({ queryKey: ['choreRotations'] });
+    },
   });
 }
 

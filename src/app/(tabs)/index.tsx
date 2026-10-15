@@ -4,6 +4,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 
 import {
   toSchedule,
+  useChoreRotations,
   useChores,
   useCompleteChore,
   useDoses,
@@ -20,7 +21,8 @@ import { useRefreshWeather } from '@/data/weather';
 import { useReceipts } from '@/data/receipts';
 import { useSupplies } from '@/data/supplies';
 import { billsAboveUsual } from '@/domain/billUsual';
-import { choreAssigneeLabel, choreStatus, describeChoreStatus } from '@/domain/chores';
+import { choreTurnLabel, rotationOf, rotationPeople } from '@/domain/choreRotation';
+import { choreStatus, describeChoreStatus } from '@/domain/chores';
 import { todayISO } from '@/domain/dates';
 import { describeDocumentStatus, documentsNeedingAttention, getDocumentKind } from '@/domain/documents';
 import { budgetProgress, describeBudget } from '@/domain/budget';
@@ -34,7 +36,7 @@ import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { describeRestock, restockSuggestions, type RestockItem } from '@/domain/restock';
 import { normalizeSearch } from '@/domain/search';
 import { suppliesNeedingAttention } from '@/domain/supplies';
-import { cheerKid } from '@/features/ChoresPanel';
+import { announceCompletion } from '@/features/ChoresPanel';
 import { BillRow } from '@/features/finance/BillsPanel';
 import { PayBillModal } from '@/features/finance/PayBillModal';
 import { hasHealthToday, healthTodayCount, HealthTodaySections } from '@/features/health/HealthTodaySections';
@@ -115,6 +117,8 @@ export default function TodayScreen() {
   const medications = useMedications();
   const doses = useDoses(today);
   const chores = useChores();
+  // Fora de `queries`: sem as ordens do rodízio, a tarefa mostra o responsável de sempre.
+  const rotations = useChoreRotations();
   const pantry = usePantry();
   const lists = useShoppingLists();
   const receipts = useReceipts();
@@ -167,6 +171,7 @@ export default function TodayScreen() {
   const family = useFamilyCalendar();
   const refresh = () => {
     queries.forEach((q) => q.refetch());
+    rotations.refetch();
     refreshWeather();
     family.refetch();
     if (billsDue.length) recentPayments.refetch();
@@ -391,7 +396,7 @@ export default function TodayScreen() {
           <ListCard>
             {dueChores.map((chore) => {
               const status = choreStatus(chore.due_on, today);
-              const assignee = choreAssigneeLabel(chore, members, health.people);
+              const assignee = choreTurnLabel(chore, rotationOf(rotations.data, chore.id), members, health.people);
               return (
                 <ListRow
                   key={chore.id}
@@ -404,7 +409,10 @@ export default function TodayScreen() {
                       checked={false}
                       label={`Concluir ${chore.title}`}
                       onPress={() =>
-                        completeChore.mutate({ id: chore.id, today, dueOn: chore.due_on }, { onSuccess: (result) => cheerKid(result, health.people), onError })
+                        completeChore.mutate(
+                          { id: chore.id, today, dueOn: chore.due_on },
+                          { onSuccess: (result) => announceCompletion(result, rotationPeople(members, health.people), chore), onError },
+                        )
                       }
                     />
                   }

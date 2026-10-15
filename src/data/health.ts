@@ -33,8 +33,9 @@ export function usePeople() {
 export type PersonValues = Omit<Person, 'id' | 'member_user_id'>;
 
 export function useSavePerson() {
-  // A ficha que vira pet deixa de levar e buscar nos compromissos (gatilho no banco).
-  const invalidate = useInvalidate('people', 'medications', 'familyEvents', 'familyEventDays');
+  // A pessoa que vira pet sai dos rodízios no servidor (a vez passa adiante): as tarefas e as ordens também mudam.
+  // E deixa de levar e buscar nos compromissos (gatilho no banco).
+  const invalidate = useInvalidate('people', 'medications', 'chores', 'choreRotations', 'familyEvents', 'familyEventDays');
   return useMutation({
     mutationFn: async ({ id, values }: { id?: string; values: PersonValues }) => {
       if (!id) {
@@ -61,6 +62,9 @@ export function useDeletePerson() {
     'dietPlans',
     'medications',
     'documents',
+    // A ficha apagada sai das tarefas e dos rodízios (a vez passa adiante).
+    'chores',
+    'choreRotations',
     // Os compromissos ficam, sem o nome de quem saiu.
     'familyEvents',
     'familyEventDays',
