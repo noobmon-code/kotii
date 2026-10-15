@@ -154,25 +154,44 @@ function pieceText(piece: string): string {
  * "3456-7890", "98765-4321"), com mais dígitos depois dele no mesmo trecho:
  * "3456-7890 (22)", "3456-7890 22", "011 3456-7890 22". O que vem depois é o
  * ramal, ou o DDD escrito no fim, e os dígitos juntos dariam outro DDD e o
- * número de outra pessoa ("34 5678-9022"). O número local é o último par de
- * grupos assim no trecho, porque é ele que fecha o que foi digitado; o que vem
- * antes dele (o 55, o zero com a operadora, o DDD) não conta, mesmo quando tem
- * quatro dígitos como a metade de um número ("+5511 3456-7890",
- * "5511 3456-7890": o 55 colado no DDD). Ficam de fora o número de outro país
- * ("+" sem o 55: lá os grupos são outros) e o 0800 escrito sem "+"
- * ("0800 7010 102": os grupos dele não são 4 + 4, e os dígitos todos já são o
- * número).
+ * número de outra pessoa ("34 5678-9022"). O número local é lido onde a pessoa
+ * o escreveu:
+ * - o último grupo sozinho entre parênteses ("(1234)", "(22)") nunca é a
+ *   segunda metade dele: é o ramal, ou o DDD escrito no fim
+ *   ("5511 3456 (1234)");
+ * - entre os pares de grupos assim, vale o último com o traço no meio, colado
+ *   nas duas metades ("5511-3456 1234": o 1234 é o ramal; com espaço, como em
+ *   "5511-3456 - 1234", o traço separa o ramal), quando o par forma um número
+ *   local (nenhum começa com 0 ou 1, e o de 5 + 4 é o celular, com o 9) e não
+ *   começa logo depois do "+" (ali o traço vem depois do país e do DDD:
+ *   "+5511-3456 7890");
+ * - sem par com traço, vale o último par, como sempre: ele fecha o que foi
+ *   digitado, e o que vem antes dele (o 55, o zero com a operadora, o DDD) não
+ *   conta, mesmo quando tem quatro dígitos como a metade de um número
+ *   ("+5511 3456 7890", "5511 3456-7890": o 55 colado no DDD).
+ * Ficam de fora o número de outro país ("+" sem o 55: lá os grupos são outros)
+ * e o 0800 escrito sem "+" ("0800 7010 102": os grupos dele não são 4 + 4, e
+ * os dígitos todos já são o número).
  */
 function localNumberThenMore(text: string): boolean {
   const digits = text.replace(/\D/g, '');
   if (text.startsWith('+') && !digits.startsWith('55')) return false;
   if (!text.startsWith('+') && TOLL_FREE.test(digits)) return false;
-  const groups = text.split(/\D+/).filter(Boolean);
-  // De trás para a frente: o primeiro par achado é o número local.
+  // Cada grupo de dígitos, com o que vem antes dele.
+  const groups = [...text.matchAll(/(\D*)(\d+)/g)].map(([, before, group]) => ({ before, group }));
+  const lastInParens = /\(\s*\d+\s*\)\D*$/.test(text);
+  // Os pares (pelo primeiro grupo de cada um), de trás para a frente.
+  const pairs: number[] = [];
   for (let i = groups.length - 2; i >= 0; i--) {
-    if ((groups[i].length === 4 || groups[i].length === 5) && groups[i + 1].length === 4) return i + 2 < groups.length;
+    const halves = (groups[i].group.length === 4 || groups[i].group.length === 5) && groups[i + 1].group.length === 4;
+    if (halves && !(lastInParens && i === groups.length - 2)) pairs.push(i);
   }
-  return false;
+  const withHyphen = (i: number) =>
+    groups[i + 1].before === '-' &&
+    localNumber(groups[i].group + groups[i + 1].group) !== null &&
+    !(i === 0 && text.startsWith('+'));
+  const local = pairs.find(withHyphen) ?? pairs[0];
+  return local !== undefined && local + 2 < groups.length;
 }
 
 /**
@@ -264,6 +283,9 @@ export function phoneHint(input: string): string | null {
   }
   if (only && (digits.length > MAX_PHONE_DIGITS || localNumberThenMore(only))) return onlyOne;
   const parsed = parsePhone(input);
+  // Sem o último grupo de dígitos, o trecho é um telefone: esse grupo é o que sobra (o ramal, ou o DDD escrito no
+  // fim: "3456 7890 1234", "987654321 22"), e não falta nada no número.
+  if (!parsed && only && parsePhone(only.replace(/\d+\D*$/, ''))) return onlyOne;
   if (!parsed) return 'Não parece um telefone completo. Ele fica guardado assim, mas sem os atalhos de WhatsApp e de ligar.';
   if (parsed.kind === 'sem_ddd') return 'Sem o DDD não dá para abrir o WhatsApp. Ex.: (11) 98765-4321.';
   return null;

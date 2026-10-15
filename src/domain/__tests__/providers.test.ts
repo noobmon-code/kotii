@@ -209,7 +209,8 @@ describe('telefone: o que fica em phone_digits', () => {
       '+5511 3456-7890 22',
       '5511 3456-7890 (22)',
       '+55 11 3456-7890 22',
-      // Um ramal de quatro dígitos vira a segunda metade do último par, e o que sobra não é um número.
+      // Um ramal de quatro dígitos: o número é o par com o traço no meio, e o grupo entre parênteses no fim nunca é a
+      // metade dele.
       '3456-7890 1234',
       '3456-7890 (1234)',
       '98765-4321 1234',
@@ -240,17 +241,23 @@ describe('telefone: o que fica em phone_digits', () => {
   });
 
   it('o 55 colado no DDD antes do número local, e o 0800 em outros grupos, continuam valendo', () => {
-    // O número local é o último par de grupos do trecho; o "5511" antes dele é o 55 com o DDD, e não a primeira
-    // metade de um número seguido de mais.
+    // O número local é o par com o traço no meio ou, sem ele, o último par de grupos do trecho; o "5511" antes dele
+    // é o 55 com o DDD, e não a primeira metade de um número seguido de mais.
     for (const { typed, parsed } of [
       { typed: '+5511 3456-7890', parsed: { kind: 'fixo', digits: '551134567890' } },
       { typed: '+5511 3456 7890', parsed: { kind: 'fixo', digits: '551134567890' } },
+      { typed: '+5511-3456-7890', parsed: { kind: 'fixo', digits: '551134567890' } },
       { typed: '5511 3456-7890', parsed: { kind: 'fixo', digits: '551134567890' } },
+      { typed: '5511 3456 7890', parsed: { kind: 'fixo', digits: '551134567890' } },
       { typed: '(5511) 3456-7890', parsed: { kind: 'fixo', digits: '551134567890' } },
       { typed: '+5521 2345-6789', parsed: { kind: 'fixo', digits: '552123456789' } },
       { typed: '5511 98765-4321', parsed: { kind: 'celular', digits: '5511987654321' } },
-      // O zero e a operadora colados no DDD, do mesmo jeito.
+      // Logo depois do "+", o traço vem depois do país e do DDD: não é o do meio do número local.
+      { typed: '+5511-3456 7890', parsed: { kind: 'fixo', digits: '551134567890' } },
+      // O zero e a operadora colados no DDD, do mesmo jeito; com o traço também, porque "01511-3456" não é um
+      // número local (nenhum começa com zero).
       { typed: '01511 3456-7890', parsed: { kind: 'fixo', digits: '551134567890' } },
+      { typed: '01511-3456 7890', parsed: { kind: 'fixo', digits: '551134567890' } },
       // Os grupos do 0800 não são 4 + 4: "0800 7010" não é um número local.
       { typed: '0800 7010 102', parsed: { kind: 'gratuito', digits: '08007010102' } },
       { typed: '0300 7891 234', parsed: { kind: 'gratuito', digits: '03007891234' } },
@@ -259,10 +266,37 @@ describe('telefone: o que fica em phone_digits', () => {
     }
     expect(whatsappLink(normalizePhone('+5511 3456-7890'))).toBe('https://wa.me/551134567890');
     expect(telLink(normalizePhone('0800 7010 102'))).toBe('tel:08007010102');
-    // Limite conhecido (AGENTS.md e README): um fixo sem DDD que começa com 55 e um DDD, seguido de um ramal de
-    // quatro dígitos, tem os grupos do 55 colado no DDD e é lido assim.
-    expect(parsePhone('5511-3456 1234')).toEqual(parsePhone('5511 3456-1234'));
-    expect(parsePhone('5511-3456 1234')).toEqual({ kind: 'fixo', digits: '551134561234' });
+  });
+
+  it('o número local é o que a pessoa escreveu com o traço no meio, e o último grupo entre parênteses é o ramal', () => {
+    const onlyOne = 'Para os atalhos de WhatsApp e de ligar, deixe aqui um número só, com DDD. Outro número ou o ramal cabem nas observações.';
+    for (const typed of [
+      // Um fixo sem DDD cujos primeiros dígitos são os do 55 e de um DDD, e o ramal depois. O traço diz qual é o
+      // número ("5511-3456"), e o grupo entre parênteses no fim nunca é a metade dele. Antes, sem a palavra, eles
+      // eram lidos como o 55 colado no DDD (+55 11 3456-1234).
+      '5511-3456 1234',
+      '5511-3456 (1234)',
+      '5511 3456 (1234)',
+      // Com o ponto final de um texto colado depois dos parênteses, do mesmo jeito.
+      '5511 3456 (1234).',
+      '5521-3456 1234',
+      '5511-3456  1234',
+      // O traço com espaço em volta separa o ramal do número: não é o do meio do número.
+      '5511-3456 - 1234',
+      // Com a palavra, é outro trecho, como sempre.
+      '5511-3456 ramal 1234',
+    ]) {
+      const digits = normalizePhone(typed);
+      expect({ typed, digits, whatsapp: whatsappLink(digits), hint: phoneHint(typed) }).toEqual({ typed, digits: null, whatsapp: null, hint: onlyOne });
+    }
+    // Limites (AGENTS.md e README). Sem parênteses, com o número sem o traço no meio, ou com o traço também antes do
+    // ramal, os grupos são os do 55 colado no DDD ("5511 3456 7890", "+5511-3456-7890") e eles são lidos assim: em
+    // "5511-3456-1234" o último par com traço é "3456-1234".
+    for (const typed of ['5511 3456 1234', '5511-3456-1234']) {
+      expect({ typed, parsed: parsePhone(typed), hint: phoneHint(typed) }).toEqual({ typed, parsed: { kind: 'fixo', digits: '551134561234' }, hint: null });
+    }
+    // O número digitado sem nada no meio, e o ramal (ou o DDD) depois: os dígitos juntos dão o número de outra pessoa.
+    expect(parsePhone('34567890 (22)')).toEqual({ kind: 'fixo', digits: '553456789022' });
   });
 
   it('um número só, com palavras em volta, continua valendo', () => {
@@ -359,6 +393,26 @@ describe('telefone: o que fica em phone_digits', () => {
     // Palavras em volta de um número só não são um segundo número.
     expect(phoneHint('zap (11) 98765-4321 falar com a Ana')).toBeNull();
     expect(phoneHint('ligar na loja')).toMatch(/Não parece um telefone completo/);
+  });
+
+  it('um número inteiro e mais um grupo de dígitos: o aviso é o de um número só, não o de incompleto', () => {
+    const onlyOne = 'Para os atalhos de WhatsApp e de ligar, deixe aqui um número só, com DDD. Outro número ou o ramal cabem nas observações.';
+    for (const typed of [
+      // O ramal de quatro dígitos depois do número.
+      '(11) 3456-7890 (1234)',
+      '3456-7890 1234',
+      '011 3456-7890 1234',
+      '98765-4321 1234',
+      // Com o número sem traço, e o DDD no fim de um celular escrito junto: sem o último grupo, sobra um telefone.
+      '3456 7890 1234',
+      '11 3456 7890 1234',
+      '987654321 22',
+    ]) {
+      expect({ typed, parsed: parsePhone(typed), hint: phoneHint(typed) }).toEqual({ typed, parsed: null, hint: onlyOne });
+    }
+    // Sem o último grupo também não sobra um telefone (falta um dígito, ou sobra um no fim): continua incompleto.
+    expect(phoneHint('(11) 3456-789')).toMatch(/Não parece um telefone completo/);
+    expect(phoneHint('(11) 3456-78901')).toMatch(/Não parece um telefone completo/);
   });
 
   it('com 00 na frente, o aviso diz como escrever o número de fora do país', () => {
