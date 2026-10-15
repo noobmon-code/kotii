@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { router, useLocalSearchParams } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
@@ -28,10 +29,17 @@ export default function HouseScreen() {
   const equipment = useEquipmentList();
   const supplies = useSupplies();
   const active = { compras: lists, despensa: pantry, tarefas: chores, aparelhos: equipment }[tab];
-  // Na Despensa, puxar para atualizar traz também o gás, a água e a ração.
+  const queryClient = useQueryClient();
+  // Na Despensa, puxar para atualizar traz também o gás, a água e a ração. Em Tarefas, as ordens do rodízio e as
+  // fichas (os nomes), como a tela Hoje: com a tarefa nova e a ordem de antes, a lista diria quem vem depois num
+  // rodízio que já acabou ou mudou. Só as que a aba está mostrando (as outras abas nem as buscam).
   const refresh = () => {
     active.refetch();
     if (tab === 'despensa') supplies.refetch();
+    if (tab === 'tarefas') {
+      queryClient.refetchQueries({ queryKey: ['choreRotations'], type: 'active' });
+      queryClient.refetchQueries({ queryKey: ['people'], type: 'active' });
+    }
   };
 
   return (

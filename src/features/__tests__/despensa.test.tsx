@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from 'react-test-renderer';
 
 import HouseScreen from '@/app/(tabs)/casa';
@@ -69,8 +70,13 @@ function texts(node: ReactTestRendererJSON | ReactTestRendererJSON[] | string | 
 function open(pantry: object): ReactTestRenderer {
   mockQueries.pantry = { ...mockIdle, ...pantry };
   let screen: ReactTestRenderer | undefined;
+  // O cache só serve ao "puxar para atualizar" da aba (as buscas daqui são trocadas acima).
   act(() => {
-    screen = create(<HouseScreen />);
+    screen = create(
+      <QueryClientProvider client={new QueryClient()}>
+        <HouseScreen />
+      </QueryClientProvider>,
+    );
   });
   return screen!;
 }

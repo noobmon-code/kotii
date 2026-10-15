@@ -1,9 +1,20 @@
+import { useIsMutating } from '@tanstack/react-query';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { Platform, StyleSheet, Switch, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Platform, type ScrollView, StyleSheet, Switch, View } from 'react-native';
 
 import { usePeople } from '@/data/health';
-import { useArchiveMedication, useMedication, useSaveMedication } from '@/data/home';
+import {
+  MEDICATION_STOCK_UNAVAILABLE,
+  RESTOCK_MEDICATION_KEY,
+  stockSeen,
+  toSchedule,
+  toStockValues,
+  useArchiveMedication,
+  useDoses,
+  useMedication,
+  useSaveMedication,
+} from '@/data/home';
 import { diffDays, formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
 import {
   endAfterDays,
@@ -13,6 +24,19 @@ import {
   WEEKDAYS,
   type MedicationFrequency,
 } from '@/domain/medications';
+import {
+  countDayError,
+  doseRuleChanged,
+  formatUnits,
+  keepStockOnRuleChange,
+  readStockForm,
+  stockDayError,
+  stockFormOf,
+  type DoseRule,
+  type StockForm,
+} from '@/domain/medicationStock';
+import { StaleNotice } from '@/features/health/StaleNotice';
+import { forgetBoxUnits } from '@/lib/medicationBox';
 import {
   askReminderPermission,
   disableReminders,
@@ -25,6 +49,7 @@ import {
   remindersUnavailableReason,
 } from '@/lib/reminders';
 import { errorMessage } from '@/lib/supabase';
+import { MedicationStockSection } from '@/features/health/MedicationStockSection';
 import { openNewPerson, PersonChips } from '@/features/health/PersonChips';
 import { useHouseReminderTarget } from '@/features/useReminderSync';
 import type { Medication, Person } from '@/lib/types';
@@ -33,28 +58,51 @@ import { Button, Card, Chip, DateField, ErrorNotice, Loading, Row, Screen, Text,
 import { space, useColors } from '@/ui/theme';
 
 export default function MedicationScreen() {
-  const { id, pessoa } = useLocalSearchParams<{ id: string; pessoa?: string }>();
+  // `estoque`: quem chega por "Atualizar estoque" (telas Hoje e Saúde) abre já em "Estoque e receita".
+  const { id, pessoa, estoque } = useLocalSearchParams<{ id: string; pessoa?: string; estoque?: string }>();
   const isNew = id === 'novo';
   const medication = useMedication(isNew ? undefined : id);
   const people = usePeople();
 
   if ((!isNew && medication.isPending) || people.isPending) return <Loading />;
-  if (!isNew && medication.isError) return <ErrorNotice error={medication.error} />;
-  if (people.isError) return <ErrorNotice error={people.error} onRetry={() => people.refetch()} />;
-  return <MedicationForm medication={isNew ? undefined : medication.data} people={people.data} initialPersonId={pessoa || null} />;
+  // O erro só toma a tela quando não há o que mostrar. Com o remédio já carregado, uma busca de novo que falha
+  // (a de depois de "Comprei mais", na farmácia sem sinal) deixa o formulário, com o que foi digitado, e avisa.
+  if (!isNew && !medication.data) return <ErrorNotice error={medication.error} onRetry={() => medication.refetch()} />;
+  if (!people.data) return <ErrorNotice error={people.error} onRetry={() => people.refetch()} />;
+  const failed = [people, ...(isNew ? [] : [medication])].filter((query) => query.isError);
+  return (
+    <MedicationForm
+      medication={isNew ? undefined : medication.data}
+      people={people.data}
+      initialPersonId={pessoa || null}
+      openAtStock={Boolean(estoque)}
+      onRetry={failed.length ? () => failed.forEach((query) => void query.refetch()) : undefined}
+    />
+  );
 }
 
 function MedicationForm({
   medication,
   people,
   initialPersonId,
+  openAtStock,
+  onRetry,
 }: {
   medication?: Medication;
   people: Person[];
   initialPersonId: string | null;
+  openAtStock: boolean;
+  /** Uma busca falhou com o formulário na tela: o aviso, com "Tentar de novo". */
+  onRetry?: () => void;
 }) {
   const c = useColors();
+  // Abrir em "Estoque e receita": rola até lá uma vez, quando a seção ganha lugar na tela.
+  const scroll = useRef<ScrollView>(null);
+  const scrolledToStock = useRef(false);
   const save = useSaveMedication();
+  // "Comprei mais" a caminho: salvar agora partiria do estoque de antes da compra e chegaria depois dela, por
+  // cima. "Salvar" espera (e, salvando, a compra também espera: ver MedicationStockSection).
+  const restocking = useIsMutating({ mutationKey: RESTOCK_MEDICATION_KEY }) > 0;
   // A casa do remédio (e o nome dela no aviso, com mais de uma casa).
   const target = useHouseReminderTarget();
   const archive = useArchiveMedication();
@@ -82,10 +130,20 @@ function MedicationForm({
   const [totalDoses, setTotalDoses] = useState(String(medication?.total_doses ?? 10));
   const [notes, setNotes] = useState(medication?.notes ?? '');
   const [remind, setRemind] = useState(() => !medication && remindByDefault());
+  const today = todayISO();
+  // As doses de hoje já marcadas entram na conta do estoque (toSchedule), aqui como nas outras telas.
+  const tickedToday = useDoses(today);
+  // "Estoque e receita" como a tela abriu: só o que a pessoa mudar daqui em diante é gravado (readStockForm).
+  // O que sobra hoje não depende das marcações de hoje: os campos abrem sem esperar por elas.
+  const [savedStock, setSavedStock] = useState<StockForm>(() => stockFormOf(medication && toSchedule(medication, today, tickedToday.data), today));
+  const [stock, setStock] = useState(savedStock);
 
+  // Uma vez por remédio: "Comprei mais" (ou uma busca nova) troca o objeto do
+  // remédio, e ler de novo desfaria o que a pessoa acabou de mudar na chave.
+  const medicationId = medication?.id;
   useEffect(() => {
-    if (medication) hasReminders(medication.id).then(setRemind).catch(() => undefined);
-  }, [medication]);
+    if (medicationId) hasReminders(medicationId).then(setRemind).catch(() => undefined);
+  }, [medicationId]);
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
@@ -153,26 +211,60 @@ function MedicationForm({
       notify('Número de doses inválido', 'Informe quantas doses no total, de 1 a 1000.');
       return;
     }
+    const stockRead = readStockForm(stock, savedStock, today);
+    if (!stockRead.ok) {
+      notify(stockRead.title, stockRead.message);
+      return;
+    }
+    const values = {
+      person_id: person.id,
+      person_name: person.name,
+      name: name.trim(),
+      dosage: dosage.trim() || null,
+      times: parsedTimes,
+      start_on: startISO,
+      end_on: duration === 'days' && daysCount !== null ? endAfterDays(startISO, daysCount) : null,
+      notes: notes.trim() || null,
+      frequency,
+      weekdays: frequency === 'weekdays' ? weekdays : null,
+      interval_days: frequency === 'interval' ? interval : null,
+      total_doses: duration === 'doses' ? doses : null,
+    };
+    const before = medication && toSchedule(medication, today, tickedToday.data);
+    const rule: DoseRule = {
+      times: values.times,
+      startOn: values.start_on,
+      endOn: values.end_on,
+      frequency,
+      weekdays: values.weekdays,
+      intervalDays: values.interval_days,
+      totalDoses: values.total_doses,
+    };
+    // Regra nova num remédio com o estoque acompanhado, sem número digitado: o app refaz a contagem pela data do
+    // aparelho. Com ela fora do que o banco aceita, a conta já sai errada (antes de 2000 a regra nova valeria para
+    // trás; depois de 2100, a caixa zeraria), seja qual for o dia que ela daria: o aviso, e nada é salvo.
+    if (before?.stockCount != null && stockRead.changes.stockCount === undefined && doseRuleChanged(before, rule, stockRead.changes)) {
+      const deviceDay = stockDayError(today);
+      if (deviceDay) {
+        notify(deviceDay.title, deviceDay.message);
+        return;
+      }
+    }
+    // Mudou a regra das doses de um remédio com estoque acompanhado: o que já foi gasto não muda com ela.
+    const stockChanges = keepStockOnRuleChange(stockRead.changes, before, rule, today);
+    // A contagem refeita sozinha vai com o dia do aparelho: com a data errada, o mesmo aviso de contar à mão, e nada é salvo.
+    const clock = countDayError(stockChanges);
+    if (clock) {
+      notify(clock.title, clock.message);
+      return;
+    }
+    // A contagem refeita parte da cópia que a tela tem: só vale sobre o estoque dela (outro celular pode ter
+    // registrado uma caixa nesse meio-tempo). O número que a pessoa escreveu vai como ela escreveu.
+    const rebased = stockRead.changes.stockCount === undefined && stockChanges.stockCount !== undefined;
     save.mutate(
+      { id: medication?.id, values, stock: toStockValues(stockChanges), from: rebased && medication ? stockSeen(medication) : undefined },
       {
-        id: medication?.id,
-        values: {
-          person_id: person.id,
-          person_name: person.name,
-          name: name.trim(),
-          dosage: dosage.trim() || null,
-          times: parsedTimes,
-          start_on: startISO,
-          end_on: duration === 'days' && daysCount !== null ? endAfterDays(startISO, daysCount) : null,
-          notes: notes.trim() || null,
-          frequency,
-          weekdays: frequency === 'weekdays' ? weekdays : null,
-          interval_days: frequency === 'interval' ? interval : null,
-          total_doses: duration === 'doses' ? doses : null,
-        },
-      },
-      {
-        onSuccess: async (saved) => {
+        onSuccess: async ({ medication: saved, stockUnavailable }) => {
           try {
             if (remind && target) {
               const ok = await enableReminders(saved, target);
@@ -183,6 +275,8 @@ function MedicationForm({
           } catch (err) {
             onError(err);
           }
+          // O banco ainda não tem o estoque: o remédio foi salvo, e a pessoa fica sabendo do que ficou de fora.
+          if (stockUnavailable) notify('Remédio salvo, mas sem o estoque', MEDICATION_STOCK_UNAVAILABLE);
           router.back();
         },
         onError,
@@ -191,8 +285,9 @@ function MedicationForm({
   }
 
   return (
-    <Screen edges={[]}>
+    <Screen edges={[]} scrollRef={scroll}>
       <Stack.Screen options={{ title: medication ? 'Editar remédio' : 'Novo remédio' }} />
+      {onRetry ? <StaleNotice onRetry={onRetry} /> : null}
       <View style={styles.group}>
         <Text variant="label">Para quem</Text>
         <PersonChips people={people} value={personId} onChange={setPersonId} onAdd={openNewPerson} />
@@ -279,6 +374,28 @@ function MedicationForm({
       </View>
       <TextField label="Observações" value={notes} onChangeText={setNotes} multiline placeholder="Ex.: tomar após as refeições" />
 
+      <View
+        onLayout={(event) => {
+          if (!openAtStock || scrolledToStock.current) return;
+          scrolledToStock.current = true;
+          scroll.current?.scrollTo({ y: event.nativeEvent.layout.y, animated: false });
+        }}>
+        <MedicationStockSection
+          medication={medication}
+          form={stock}
+          initial={savedStock}
+          today={today}
+          saving={save.isPending}
+          onChange={(patch) => setStock((current) => ({ ...current, ...patch }))}
+          onRestocked={(count) => {
+            // A compra já foi gravada: o número novo vira o salvo, e salvar a tela depois não o grava de novo.
+            const counted = { stock: formatUnits(count.stockCount) };
+            setSavedStock((current) => ({ ...current, ...counted }));
+            setStock((current) => ({ ...current, ...counted }));
+          }}
+        />
+      </View>
+
       {remindersSupported ? (
         <Card>
           <Row>
@@ -293,7 +410,7 @@ function MedicationForm({
         <Text variant="small">{remindersUnavailableReason()}</Text>
       )}
 
-      <Button title="Salvar" onPress={submit} loading={save.isPending} />
+      <Button title="Salvar" onPress={submit} loading={save.isPending || restocking} />
       {medication ? (
         <Button
           title="Encerrar tratamento"
@@ -304,6 +421,7 @@ function MedicationForm({
               archive.mutate(medication.id, {
                 onSuccess: async () => {
                   await disableReminders(medication.id).catch(() => undefined);
+                  await forgetBoxUnits(medication.id);
                   router.back();
                 },
                 onError,

@@ -30,6 +30,23 @@ const family = {
   ],
 };
 
+// Losartana da Ana: 10 comprimidos contados em 27/09/2026 (acaba em 07/10) e receita até 10/10.
+const losartana = {
+  id: 'm1',
+  personName: 'Ana',
+  name: 'Losartana',
+  dosage: null,
+  times: ['08:00'],
+  startOn: '2026-09-01',
+  endOn: null,
+  active: true,
+  stockCount: 10,
+  stockCountedOn: '2026-09-27',
+  doseUnits: 1,
+  warnDays: 7,
+  prescriptionUntil: '2026-10-10',
+};
+
 // A agenda da família carregada e vazia (nenhum compromisso, ninguém faz aniversário): o resumo de amanhã só é feito com ela.
 const noFamily = { events: [], days: [], people: [] };
 
@@ -125,6 +142,11 @@ describe('reminder scheduling', () => {
     interval_days: null,
     total_doses: null,
     taken_count: 0,
+    stock_count: null,
+    stock_counted_on: null,
+    dose_units: 1,
+    stock_warn_days: 7,
+    prescription_until: null,
   });
 
   it('repeats weekly on the chosen weekdays (1 = domingo no expo-notifications)', async () => {
@@ -325,6 +347,11 @@ describe('no navegador (Web Push)', () => {
     interval_days: null,
     total_doses: null,
     taken_count: 0,
+    stock_count: null,
+    stock_counted_on: null,
+    dose_units: 1,
+    stock_warn_days: 7,
+    prescription_until: null,
   };
 
   it('sem Web Push, fica desligado e diz por quê (no iPhone, pela tela de início)', async () => {
@@ -462,6 +489,32 @@ describe('no navegador (Web Push)', () => {
       ]);
     });
   });
+
+  it('avisos de remédio e receita acabando vão para a agenda do servidor pelo mesmo caminho', async () => {
+    await onWeb(true, async (reminders, web) => {
+      await reminders.setHouseReminderKind('refills', true);
+      await reminders.syncHouseReminders(
+        { bills: [], documents: [], chores: [], medications: [losartana] },
+        { householdId: 'casa', today: '2026-09-27', nowTime: '08:00' },
+      );
+      const sent = [...web.scheduled.values()] as {
+        content: { title: string; body: string; data: { reminder: string; householdId: string } };
+        trigger: { type: string; date: Date };
+      }[];
+      expect(sent.map((r) => [r.content.title, r.content.body, r.trigger.type, r.trigger.date.getHours()])).toEqual([
+        ['Remédio acabando', 'Losartana (Ana) acaba em 7 dias.', 'date', 9],
+        ['Receita vencendo', 'A receita de Losartana (Ana) vence em 7 dias (10/10/2026).', 'date', 9],
+        ['Remédio acaba hoje', 'Losartana (Ana) acaba hoje, pelas contas do app.', 'date', 9],
+        ['Receita vence hoje', 'A receita de Losartana (Ana) vence hoje.', 'date', 9],
+      ]);
+      expect(sent.map((r) => r.content.data)).toEqual([
+        { reminder: 'refills:m1:2026-09-30', householdId: 'casa' },
+        { reminder: 'refills:m1@receita:2026-10-03', householdId: 'casa' },
+        { reminder: 'refills:m1:2026-10-07', householdId: 'casa' },
+        { reminder: 'refills:m1@receita:2026-10-10', householdId: 'casa' },
+      ]);
+    });
+  });
 });
 
 describe('house reminders', () => {
@@ -517,6 +570,7 @@ describe('house reminders', () => {
         appointments: false,
         events: false,
         vaccines: false,
+        refills: false,
         weather: false,
         supplies: false,
         eve: false,
@@ -576,7 +630,7 @@ describe('house reminders', () => {
 
   it('aparelho com escolhas guardadas de antes ganha o tipo novo desligado, sem perder as que tinha', async () => {
     await withHouse(async (reminders, { storage }) => {
-      // Como uma versão anterior gravou: sem as chaves `events`, `supplies` e `eve`.
+      // Como uma versão anterior gravou: sem as chaves `events`, `refills`, `supplies` e `eve`.
       storage.set('house-reminders:kinds', JSON.stringify({ bills: true, documents: false, chores: true, appointments: false, vaccines: false, weather: true }));
       expect(await reminders.getHouseReminderKinds()).toEqual({
         bills: true,
@@ -585,12 +639,67 @@ describe('house reminders', () => {
         appointments: false,
         events: false,
         vaccines: false,
+        refills: false,
         weather: true,
         supplies: false,
         eve: false,
       });
       await reminders.setHouseReminderKind('supplies', true);
       expect(await reminders.getHouseReminderKinds()).toMatchObject({ bills: true, chores: true, weather: true, supplies: true });
+    });
+  });
+
+  it('remédios e receitas acabando: tipo novo começa desligado; sem os remédios carregados, os já agendados ficam; "Comprei mais" refaz', async () => {
+    await withHouse(async (reminders, { live, storage }) => {
+      // Escolha guardada por uma versão anterior do app: sem o tipo novo.
+      storage.set('house-reminders:kinds', JSON.stringify({ bills: true, events: true }));
+      expect((await reminders.getHouseReminderKinds()).refills).toBe(false);
+      const target = { householdId: 'casa', today, nowTime: '08:00' };
+      const mine = () => [...live].filter(([, r]) => r.content.data.reminder.startsWith('refills:'));
+      const keys = () => mine().map(([, r]) => r.content.data.reminder).sort();
+      await reminders.syncHouseReminders({ ...data, medications: [losartana] }, target);
+      expect(keys()).toEqual([]);
+      await reminders.setHouseReminderKind('refills', true);
+      await reminders.syncHouseReminders({ ...data, medications: [losartana] }, target);
+      expect(keys()).toEqual(['refills:m1:2026-09-30', 'refills:m1:2026-10-07', 'refills:m1@receita:2026-10-03', 'refills:m1@receita:2026-10-10']);
+      const ids = [...live.keys()];
+      // Os mesmos dados de novo: nada é agendado duas vezes.
+      await reminders.syncHouseReminders({ ...data, medications: [losartana] }, target);
+      expect([...live.keys()]).toEqual(ids);
+      // Os remédios não carregaram (sem internet): os avisos deles ficam como estão, e os da conta seguem.
+      const scheduled = mine().map(([id]) => id);
+      await reminders.syncHouseReminders(data, target);
+      expect(mine().map(([id]) => id)).toEqual(scheduled);
+      expect(kindsOf(live)).toEqual(['bills', 'refills']);
+      // "Comprei mais" (10 a mais, contados hoje): o dia em que acaba muda, e os avisos acompanham; a receita fica.
+      await reminders.syncHouseReminders({ ...data, medications: [{ ...losartana, stockCount: 20 }] }, target);
+      expect(keys()).toEqual(['refills:m1:2026-10-10', 'refills:m1:2026-10-17', 'refills:m1@receita:2026-10-03', 'refills:m1@receita:2026-10-10']);
+      // Sem estoque acompanhado e sem receita (ou o banco de antes do estoque): nenhum aviso.
+      await reminders.syncHouseReminders({ ...data, medications: [{ ...losartana, stockCount: null, stockCountedOn: null, prescriptionUntil: null }] }, target);
+      expect(keys()).toEqual([]);
+      await reminders.syncHouseReminders({ ...data, medications: [losartana] }, target);
+      expect(keys()).toHaveLength(4);
+      // Desligar cancela só os dele.
+      await reminders.setHouseReminderKind('refills', false);
+      expect(kindsOf(live)).toEqual(['bills']);
+    });
+  });
+
+  it('remédios e receitas acabando desligado: os remédios que ainda não carregaram não refazem os avisos dos outros tipos', async () => {
+    await withHouse(async (reminders, { live }) => {
+      await reminders.setHouseReminderKind('bills', true);
+      const loaded = { ...data, appointments: [], vaccines: [], weather: [], weatherPlace: null };
+      await reminders.syncHouseReminders({ ...loaded, medications: [losartana] }, { householdId: 'casa', today });
+      const ids = [...live.keys()];
+      expect(kindsOf(live)).toEqual(['bills']);
+      // Ao abrir o app, as contas chegam antes dos remédios (que não ficam guardados no aparelho).
+      await reminders.syncHouseReminders(loaded, { householdId: 'casa', today });
+      expect([...live.keys()]).toEqual(ids);
+      // E quando eles chegam (nenhum, ou os mesmos), também nada muda.
+      await reminders.syncHouseReminders({ ...loaded, medications: [] }, { householdId: 'casa', today });
+      expect([...live.keys()]).toEqual(ids);
+      await reminders.syncHouseReminders({ ...loaded, medications: [losartana] }, { householdId: 'casa', today });
+      expect([...live.keys()]).toEqual(ids);
     });
   });
 

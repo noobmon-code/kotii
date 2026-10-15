@@ -30,6 +30,7 @@ import type {
   Unit,
 } from '@/lib/types';
 
+import { isMissingFunction } from './missingSchema';
 import { LISTED_PRODUCT_SOURCES, withFreshProducts } from './productMerge';
 
 // ---------------------------------------------------------------------------
@@ -336,45 +337,107 @@ export function useAddItemsToList() {
 }
 
 /**
- * Põe um item na lista de mercado aberta mais recente (ou cria "Mercado").
- * Usado pela despensa: "acabou -> comprar de novo". Se o item já está
- * pendente na lista, não duplica (`added: false`), então repetir é seguro.
+ * A lista de farmácia aberta mais recente da casa; sem nenhuma, cria uma com
+ * `name`. No servidor, como a de mercado: numa transação com trava por casa,
+ * duas pessoas pondo remédio ao mesmo tempo não criam duas.
  */
-export function useAddToMarketList() {
+async function openPharmacyList(name = 'Farmácia'): Promise<{ id: string; name: string }> {
+  const opened = await supabase.rpc('open_pharmacy_list', { p_name: name }).single();
+  if (!opened.error || !isMissingFunction(opened.error, 'open_pharmacy_list')) return unwrap(opened) as { id: string; name: string };
+  // Banco sem a função: procura e cria daqui, sem a trava.
+  const open = unwrap(
+    await supabase
+      .from('shopping_lists')
+      .select('id, name')
+      .eq('kind', 'farmacia')
+      .is('archived_at', null)
+      .order('created_at', { ascending: false })
+      .limit(1),
+  ) as { id: string; name: string }[];
+  if (open.length) return open[0];
+  return unwrap(await supabase.from('shopping_lists').insert({ name, kind: 'farmacia' }).select('id, name').single()) as {
+    id: string;
+    name: string;
+  };
+}
+
+type ListedItem = { id: string; name: string; added: boolean };
+
+/** Põe o item na lista, a não ser que já esteja pendente nela (`added: false`): repetir é seguro. */
+async function addItemOnce(queryClient: QueryClient, list: { id: string; name: string }, item: NewListItem): Promise<ListedItem> {
+  const pending = unwrap(
+    await supabase
+      .from('shopping_list_items')
+      .select('id')
+      .eq('list_id', list.id)
+      .is('checked_at', null)
+      .ilike('name', item.name.replace(/[\\%_]/g, '\\$&'))
+      .limit(1),
+  ) as { id: string }[];
+  if (pending.length) return { ...list, added: false };
+  // O produto do item (o da despensa, na lista de mercado) pode ter sido juntado com outro em outro aparelho (withFreshProducts).
+  await withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
+    unwrap(
+      await supabase.from('shopping_list_items').insert({
+        list_id: list.id,
+        name: item.name,
+        category: item.category,
+        product_id: item.productId,
+        quantity: item.quantity,
+        unit: item.unit,
+      }),
+    ),
+  );
+  return { ...list, added: true };
+}
+
+function useAddToOpenList<T extends NewListItem>(add: (queryClient: QueryClient, item: T) => Promise<ListedItem>) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (item: NewListItem): Promise<{ id: string; name: string; added: boolean }> => {
-      const list = await openMarketList();
-      const pending = unwrap(
-        await supabase
-          .from('shopping_list_items')
-          .select('id')
-          .eq('list_id', list.id)
-          .is('checked_at', null)
-          .ilike('name', item.name.replace(/[\\%_]/g, '\\$&'))
-          .limit(1),
-      ) as { id: string }[];
-      if (pending.length) return { ...list, added: false };
-      // O produto do item da despensa pode ter sido juntado com outro em outro aparelho (withFreshProducts).
-      await withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
-        unwrap(
-          await supabase.from('shopping_list_items').insert({
-            list_id: list.id,
-            name: item.name,
-            category: item.category,
-            product_id: item.productId,
-            quantity: item.quantity,
-            unit: item.unit,
-          }),
-        ),
-      );
-      return { ...list, added: true };
-    },
+    mutationFn: (item: T) => add(queryClient, item),
     onSuccess: (list) => {
       queryClient.invalidateQueries({ queryKey: ['lists'] });
       queryClient.invalidateQueries({ queryKey: ['listItems', list.id] });
     },
   });
+}
+
+/**
+ * Põe um item na lista de mercado aberta mais recente (ou cria "Mercado").
+ * Usado pela despensa: "acabou -> comprar de novo". Se o item já está
+ * pendente na lista, não duplica (`added: false`), então repetir é seguro.
+ */
+export function useAddToMarketList() {
+  return useAddToOpenList(async (queryClient, item: NewListItem) => addItemOnce(queryClient, await openMarketList(), item));
+}
+
+/** O remédio que vai para a lista da farmácia; `altName`: o mesmo item com o nome de quem toma (ver onPharmacyList). */
+export interface PharmacyItem extends NewListItem {
+  altName?: string | null;
+}
+
+/**
+ * Põe o remédio na lista da farmácia sem repetir. No servidor, numa vez só
+ * (add_to_pharmacy_list): acha ou cria a lista e só põe o item se ele não
+ * está pendente em nenhuma lista de farmácia aberta, com o nome ou com o nome
+ * de quem toma, sob a trava da casa. Duas pessoas tocando ao mesmo tempo não o
+ * põem duas vezes; `added: false` diz em que lista ele já estava. Sem a função
+ * (banco de antes da migração, ou o cache do PostgREST de antes dela), o
+ * caminho de antes: open_pharmacy_list e addItemOnce, que só confere a lista
+ * aberta e o nome exato.
+ */
+async function addToPharmacyList(queryClient: QueryClient, item: PharmacyItem): Promise<ListedItem> {
+  const added = await supabase.rpc('add_to_pharmacy_list', { p_item: item.name, p_alt_item: item.altName ?? null }).single();
+  if (!added.error || !isMissingFunction(added.error, 'add_to_pharmacy_list')) {
+    const row = unwrap(added) as { list_id: string; list_name: string; added: boolean };
+    return { id: row.list_id, name: row.list_name, added: row.added };
+  }
+  return addItemOnce(queryClient, await openPharmacyList(), item);
+}
+
+/** O mesmo, na lista de farmácia (ou cria "Farmácia"): o remédio que está acabando. */
+export function useAddToPharmacyList() {
+  return useAddToOpenList(addToPharmacyList);
 }
 
 /**
