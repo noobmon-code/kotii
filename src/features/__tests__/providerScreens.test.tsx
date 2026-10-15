@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { router } from 'expo-router';
-import type { ComponentType } from 'react';
+import type { ComponentType, ReactElement } from 'react';
 import { Switch } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -14,7 +14,8 @@ import { StaleNotice } from '@/features/health/StaleNotice';
 import { EquipmentServices } from '@/features/providers/EquipmentServices';
 import type { Equipment, ServiceJob, ServiceProvider } from '@/lib/types';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Button, Chip, ErrorNotice, Loading, Screen, TextField } from '@/ui/primitives';
+import { PickerModal } from '@/ui/PickerModal';
+import { Button, Chip, DateField, ErrorNotice, ListRow, Loading, Screen, TextField } from '@/ui/primitives';
 
 // As telas dos prestadores de verdade, com as buscas de verdade e o cache de verdade, em cima de um banco de
 // mentira: o que se confere aqui é o que cada tela faz enquanto uma busca anda, quando ela falha e quando o que
@@ -258,6 +259,11 @@ const has = (component: ComponentType<never>) => renderer!.root.findAllByType(co
 const field = (placeholder: string) => renderer!.root.findAllByType(TextField).find((input) => input.props.placeholder === placeholder);
 const button = (title: string) => renderer!.root.findAllByType(Button).find((item) => item.props.title === title);
 const copySwitch = () => renderer!.root.findAllByType(Switch).find((item) => item.props.accessibilityLabel === COPY);
+/** Uma lista de escolha da tela (de mentira aqui: o que se confere é o que a tela entrega a ela). */
+const picker = (title: string) => renderer!.root.findAllByType(PickerModal).find((item) => item.props.title === title);
+/** O que a lista de quem fez mostra no topo, acima dos prestadores (o "Novo prestador"), ou nada. */
+const newProviderAction = () =>
+  picker('Quem fez o serviço')!.props.extraActions?.('') as ReactElement<{ title: string; icon?: string; onPress: () => void }> | null | undefined;
 const asked = (table: string, verb: Request['verb']) => mockNet.asked.filter((request) => request.table === table && request.verb === verb);
 
 async function type(placeholder: string, text: string) {
@@ -908,7 +914,7 @@ describe('valor que vira R$ 0,00 ao ser guardado', () => {
   it('não oferece a cópia para os gastos, e salvar não cria gasto', async () => {
     fresh([PROVIDERS_KEY], list([ZE]));
     fresh(['equipment'], []);
-    await open(ServiceJobScreen, { id: 'novo' });
+    await open(ServiceJobScreen, { id: 'novo', prestador: 'p-ze' });
     await type(AMOUNT, '0,004');
     expect(copySwitch()).toBeUndefined();
     expect(page()).not.toContain(COPY);
@@ -922,6 +928,275 @@ describe('valor que vira R$ 0,00 ao ser guardado', () => {
     expect(asked('service_jobs', 'insert')[0].values).toMatchObject({ amount: 0 });
     expect(asked('expenses', 'insert')).toHaveLength(0);
     expect(notify).not.toHaveBeenCalled();
+  });
+});
+
+describe('serviço novo aberto de um aparelho: quem fez é a pessoa que escolhe', () => {
+  // A casa só cadastrou o mecânico, e o conserto é da geladeira.
+  beforeEach(() => {
+    mockNet.providers = [OFICINA];
+    mockNet.equipment = [GELADEIRA, CARRO];
+    fresh([PROVIDERS_KEY], list([OFICINA]));
+    fresh(['equipment'], [GELADEIRA, CARRO]);
+  });
+
+  it('o único prestador da casa, de outro ofício, não vem escolhido: Salvar pede quem fez, e escolhido na lista ele é gravado com o aparelho', async () => {
+    await open(ServiceJobScreen, { id: 'novo', aparelho: 'e1' });
+    expect(page()).toContain('Escolher prestador');
+    expect(page()).not.toContain('Oficina do Tonho');
+    // Sem ninguém escolhido, o teclado não abre na descrição, embaixo de "Quem fez".
+    expect(field(DESCRIPTION)!.props.autoFocus).toBe(false);
+
+    await type(DESCRIPTION, 'Trocou o termostato');
+    await press('Salvar');
+    expect(notify).toHaveBeenCalledWith('Confira os dados', 'Escolha quem fez o serviço.');
+    expect(asked('service_jobs', 'insert')).toHaveLength(0);
+    expect(router.back).not.toHaveBeenCalled();
+
+    await act(async () => picker('Quem fez o serviço')!.props.onSelect('p-mec'));
+    expect(page()).toContain('Oficina do Tonho');
+    await press('Salvar');
+    expect(asked('service_jobs', 'insert').map((request) => request.values)).toEqual([
+      expect.objectContaining({ provider_id: 'p-mec', equipment_id: 'e1', description: 'Trocou o termostato' }),
+    ]);
+    expect(router.back).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('"Novo prestador" na lista de quem fez', () => {
+  const NOTES = 'Peças trocadas, o que ficou combinado…';
+  const QUESTION = 'Cadastrar um prestador novo? O que você escreveu neste serviço não fica salvo.';
+  const TO_NEW = { pathname: '/prestador/[id]', params: { id: 'novo', aparelho: 'e1' } };
+  /** A pessoa toca em "Cadastrar" na pergunta (o "Cancelar" só fecha a pergunta). */
+  async function answerRegister() {
+    await act(async () => ((confirmAction as jest.Mock).mock.calls.at(-1)?.[3] as () => void)());
+  }
+  async function openProviderList() {
+    await act(async () => renderer!.root.findAllByType(ListRow).find((row) => row.props.title === 'Escolher prestador')!.props.onPress());
+  }
+
+  beforeEach(() => {
+    mockNet.providers = [OFICINA];
+    mockNet.equipment = [GELADEIRA, CARRO];
+    fresh([PROVIDERS_KEY], list([OFICINA]));
+    fresh(['equipment'], [GELADEIRA, CARRO]);
+  });
+
+  it('num serviço novo de um aparelho, com nada escrito: vai direto para o cadastro, com o aparelho (de lá o serviço volta com ele)', async () => {
+    await open(ServiceJobScreen, { id: 'novo', aparelho: 'e1' });
+    await openProviderList();
+    expect(picker('Quem fez o serviço')!.props.visible).toBe(true);
+    const action = newProviderAction();
+    expect(action?.type).toBe(Button);
+    expect(action?.props).toMatchObject({ title: 'Novo prestador', icon: 'plus' });
+
+    await act(async () => action!.props.onPress());
+    expect(confirmAction).not.toHaveBeenCalled();
+    expect(router.replace).toHaveBeenCalledWith(TO_NEW);
+    expect(picker('Quem fez o serviço')!.props.visible).toBe(false);
+  });
+
+  it('de ponta a ponta: quem foi cadastrado volta para um serviço novo, já escolhido, com o aparelho', async () => {
+    await open(ServiceJobScreen, { id: 'novo', aparelho: 'e1' });
+    await act(async () => newProviderAction()!.props.onPress());
+    await act(async () => renderer?.unmount());
+    await open(ProviderScreen, TO_NEW.params);
+    await type('Pessoa ou empresa', 'Rafa Refrigeração');
+    await act(async () => renderer!.root.findAllByType(Chip).find((chip) => chip.props.label === 'Técnico de aparelhos')!.props.onPress());
+    await press('Salvar prestador');
+    const back = { pathname: '/servico/[id]', params: { id: 'novo', prestador: 'p-novo', aparelho: 'e1' } };
+    expect(router.replace).toHaveBeenLastCalledWith(back);
+
+    await act(async () => renderer?.unmount());
+    await open(ServiceJobScreen, back.params);
+    expect(page()).toContain('Rafa Refrigeração');
+    expect(page()).toContain('Geladeira');
+    await type(DESCRIPTION, 'Trocou o termostato');
+    await type(AMOUNT, '350');
+    await act(async () => copySwitch()!.props.onValueChange(true));
+    await press('Salvar');
+    expect(asked('service_jobs', 'insert').map((request) => request.values)).toEqual([
+      expect.objectContaining({ provider_id: 'p-novo', equipment_id: 'e1', description: 'Trocou o termostato', amount: 350 }),
+    ]);
+    expect(asked('expenses', 'insert').map((request) => request.values)).toEqual([
+      expect.objectContaining({ description: 'Trocou o termostato (Rafa Refrigeração)', category: 'moradia' }),
+    ]);
+  });
+
+  it('com algo escrito, pergunta antes: "Cancelar" deixa o formulário como estava, e "Cadastrar" leva ao cadastro', async () => {
+    await open(ServiceJobScreen, { id: 'novo', aparelho: 'e1' });
+    await type(DESCRIPTION, 'Trocou o termostato');
+    await type(AMOUNT, '350');
+    await openProviderList();
+    await act(async () => newProviderAction()!.props.onPress());
+    expect(confirmAction).toHaveBeenCalledTimes(1);
+    expect(confirmAction).toHaveBeenCalledWith('Novo prestador', QUESTION, 'Cadastrar', expect.any(Function));
+    // Até a resposta, nada muda: quem cancela continua com a lista aberta e o que escreveu.
+    expect(router.replace).not.toHaveBeenCalled();
+    expect(picker('Quem fez o serviço')!.props.visible).toBe(true);
+    expect(field(DESCRIPTION)!.props.value).toBe('Trocou o termostato');
+    expect(field(AMOUNT)!.props.value).toBe('350');
+
+    await answerRegister();
+    expect(router.replace).toHaveBeenCalledWith(TO_NEW);
+  });
+
+  it.each([
+    { what: 'o valor digitado', fill: () => type(AMOUNT, '350') },
+    {
+      what: 'a garantia de um atalho',
+      fill: () => act(async () => renderer!.root.findAllByType(Chip).find((chip) => chip.props.label === '3 meses')!.props.onPress()),
+    },
+    { what: 'as observações escritas', fill: () => type(NOTES, 'Trocou a borracha da porta também') },
+    {
+      what: 'outra data',
+      fill: () => act(async () => renderer!.root.findAllByType(DateField).find((date) => date.props.label === 'Data')!.props.onChangeText('10/10/2026')),
+    },
+  ])('só com $what, também pergunta antes', async ({ fill }) => {
+    await open(ServiceJobScreen, { id: 'novo', aparelho: 'e1' });
+    await fill();
+    await act(async () => newProviderAction()!.props.onPress());
+    expect(confirmAction).toHaveBeenCalledWith('Novo prestador', QUESTION, 'Cadastrar', expect.any(Function));
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
+  it('o que foi apagado de novo não conta: só espaços, ou o campo esvaziado, vai direto', async () => {
+    await open(ServiceJobScreen, { id: 'novo', aparelho: 'e1' });
+    await type(DESCRIPTION, 'Trocou');
+    await type(DESCRIPTION, '');
+    await type(NOTES, '   ');
+    await act(async () => newProviderAction()!.props.onPress());
+    expect(confirmAction).not.toHaveBeenCalled();
+    expect(router.replace).toHaveBeenCalledWith(TO_NEW);
+  });
+
+  it('vai com o aparelho escolhido no formulário: outro aparelho, ou nenhum', async () => {
+    await open(ServiceJobScreen, { id: 'novo', aparelho: 'e1' });
+    await act(async () => picker('Em qual aparelho')!.props.onSelect('e-car'));
+    await act(async () => newProviderAction()!.props.onPress());
+    expect(router.replace).toHaveBeenLastCalledWith({ pathname: '/prestador/[id]', params: { id: 'novo', aparelho: 'e-car' } });
+
+    await act(async () => picker('Em qual aparelho')!.props.onSelect('nenhum'));
+    await act(async () => newProviderAction()!.props.onPress());
+    expect(router.replace).toHaveBeenLastCalledWith({ pathname: '/prestador/[id]', params: { id: 'novo' } });
+  });
+
+  it('num serviço novo aberto da tela de um prestador, também: quem fez pode ser outra pessoa', async () => {
+    await open(ServiceJobScreen, { id: 'novo', prestador: 'p-mec' });
+    expect(page()).toContain('Oficina do Tonho');
+    await act(async () => newProviderAction()!.props.onPress());
+    expect(router.replace).toHaveBeenCalledWith({ pathname: '/prestador/[id]', params: { id: 'novo' } });
+  });
+
+  it('num serviço que já existe, não há: trocar de tela deixaria para trás o serviço aberto', async () => {
+    mockNet.jobs = [job({ provider_id: 'p-mec', equipment_id: 'e1' })];
+    await open(ServiceJobScreen, { id: 'j1' });
+    expect(field(DESCRIPTION)!.props.value).toBe('Trocou o disjuntor');
+    expect(newProviderAction()).toBeFalsy();
+  });
+
+  it('enquanto o Salvar grava, não há: o serviço escrito está sendo salvo', async () => {
+    await open(ServiceJobScreen, { id: 'novo', aparelho: 'e1' });
+    await act(async () => picker('Quem fez o serviço')!.props.onSelect('p-mec'));
+    await type(DESCRIPTION, 'Trocou o termostato');
+    hold((request) => request.verb === 'insert');
+    await press('Salvar');
+    expect(mockNet.held).toHaveLength(1);
+    expect(newProviderAction()).toBeFalsy();
+
+    online();
+    await release('ok');
+    expect(asked('service_jobs', 'insert')).toHaveLength(1);
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+});
+
+describe('a tela do serviço fechada enquanto o Salvar grava', () => {
+  beforeEach(() => {
+    fresh([PROVIDERS_KEY], list([ZE]));
+    fresh(['equipment'], []);
+  });
+
+  /** Salvar com a gravação segura; a pessoa fecha a tela (arrasta para baixo, ou o voltar do Android), e aí ela chega. */
+  async function saveThenClose(how: 'ok' | 'fail' = 'ok') {
+    hold((request) => request.verb === 'insert');
+    await press('Salvar');
+    expect(mockNet.held).toHaveLength(1);
+    expect(router.back).not.toHaveBeenCalled();
+    await act(async () => renderer?.unmount());
+    renderer = undefined;
+    online();
+    await release(how);
+  }
+
+  it('o serviço é gravado, e a tela que estava embaixo não fecha', async () => {
+    await open(ServiceJobScreen, { id: 'novo', prestador: 'p-ze' });
+    await type(DESCRIPTION, 'Trocou o disjuntor');
+    await saveThenClose();
+    expect(asked('service_jobs', 'insert').map((request) => request.values)).toEqual([
+      expect.objectContaining({ provider_id: 'p-ze', description: 'Trocou o disjuntor' }),
+    ]);
+    expect(router.back).not.toHaveBeenCalled();
+    expect(router.replace).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('com a cópia ligada, o gasto pedido também é gravado, e a tela de baixo não fecha', async () => {
+    await open(ServiceJobScreen, { id: 'novo', prestador: 'p-ze' });
+    await type(DESCRIPTION, 'Trocou o disjuntor');
+    await type(AMOUNT, '180');
+    await act(async () => copySwitch()!.props.onValueChange(true));
+    await saveThenClose();
+    expect(asked('service_jobs', 'insert')).toHaveLength(1);
+    expect(asked('expenses', 'insert').map((request) => request.values)).toEqual([
+      expect.objectContaining({ description: 'Trocou o disjuntor (Zé Eletricista)', amount: 180, category: 'moradia' }),
+    ]);
+    expect(router.back).not.toHaveBeenCalled();
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
+  it('o gasto falha depois de a tela fechar: o aviso aparece do mesmo jeito, e a tela de baixo não fecha', async () => {
+    await open(ServiceJobScreen, { id: 'novo', prestador: 'p-ze' });
+    await type(DESCRIPTION, 'Trocou o disjuntor');
+    await type(AMOUNT, '180');
+    await act(async () => copySwitch()!.props.onValueChange(true));
+    hold((request) => request.verb === 'insert');
+    await press('Salvar');
+    await act(async () => renderer?.unmount());
+    renderer = undefined;
+    // O serviço chega; o gasto, que sai depois dele, falha.
+    fail((request) => request.table === 'expenses');
+    await release('ok');
+    expect(asked('service_jobs', 'insert')).toHaveLength(1);
+    expect(asked('expenses', 'insert')).toHaveLength(1);
+    expect(notify).toHaveBeenCalledWith('O serviço foi salvo, mas o gasto não', 'TypeError: Network request failed Lance o gasto em Finanças.');
+    expect(router.back).not.toHaveBeenCalled();
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
+  it('a gravação falha depois de a tela fechar: o aviso aparece do mesmo jeito', async () => {
+    await open(ServiceJobScreen, { id: 'novo', prestador: 'p-ze' });
+    await type(DESCRIPTION, 'Trocou o disjuntor');
+    await saveThenClose('fail');
+    expect(notify).toHaveBeenCalledWith('Não deu para salvar', expect.any(String));
+    expect(router.back).not.toHaveBeenCalled();
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
+  it('um serviço que já existe, editado: a mesma coisa', async () => {
+    mockNet.jobs = [job()];
+    await open(ServiceJobScreen, { id: 'j1' });
+    await type(AMOUNT, '250,00');
+    hold((request) => request.verb === 'update');
+    await press('Salvar');
+    expect(mockNet.held).toHaveLength(1);
+    await act(async () => renderer?.unmount());
+    renderer = undefined;
+    online();
+    await release('ok');
+    expect(asked('service_jobs', 'update')[0].values).toMatchObject({ amount: 250 });
+    expect(router.back).not.toHaveBeenCalled();
+    expect(router.replace).not.toHaveBeenCalled();
   });
 });
 

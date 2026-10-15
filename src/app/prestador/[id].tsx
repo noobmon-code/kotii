@@ -47,8 +47,8 @@ import {
 import { space, useColors } from '@/ui/theme';
 
 export default function ProviderScreen() {
-  // `aparelho`: a pessoa tocou em "Registrar serviço" num aparelho e ainda não havia quem fez.
-  // Ele segue daqui até o serviço, para o primeiro serviço não ficar sem o aparelho.
+  // `aparelho`: a pessoa veio de um serviço novo com aparelho, e quem fez ainda não estava cadastrado (a casa sem
+  // prestador nenhum, ou "Novo prestador" na lista de quem fez). Ele segue daqui até o serviço, que não fica sem ele.
   const { id, aparelho } = useLocalSearchParams<{ id: string; aparelho?: string }>();
   const isNew = id === 'novo';
   // O prestador que já existe é buscado de novo ao abrir, mesmo com a lista guardada ainda nova.
@@ -144,8 +144,8 @@ function ProviderForm({
       {
         onSuccess: ({ id }) => {
           if (provider) return goBackOr('/prestadores');
-          // Veio de "Registrar serviço" num aparelho: segue para o serviço, com quem fez
-          // e o aparelho já escolhidos. Troca esta tela por ele: Voltar cai no aparelho.
+          // Veio de um serviço novo com aparelho: segue para o serviço, com quem fez e o aparelho
+          // já escolhidos. Troca esta tela por ele: Voltar cai na tela de onde o serviço foi aberto.
           if (equipmentId) {
             return router.replace({ pathname: '/servico/[id]', params: { id: 'novo', prestador: id, aparelho: equipmentId } });
           }

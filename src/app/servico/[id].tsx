@@ -1,5 +1,5 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
 import { useSaveExpense } from '@/data/finance';
@@ -214,10 +214,15 @@ function JobForm({
   // pessoa veio), mesmo que as listas daqui ainda não os tenham (elas podem ser
   // de antes de eles serem cadastrados): o serviço não troca de prestador por
   // conta própria, e o aparelho só sai quando a pessoa escolhe "Nenhum aparelho".
-  // Se um deles foi mesmo apagado, salvar avisa (o banco recusa).
-  const [providerId, setProviderId] = useState(job?.provider_id ?? initialProviderId ?? (providers.length === 1 ? providers[0].id : null));
+  // Se um deles foi mesmo apagado, salvar avisa (o banco recusa). Sem prestador
+  // vindo de lugar nenhum (o serviço novo aberto de um aparelho), ninguém vem
+  // escolhido, nem o único da casa: ele pode ser de outro ofício (o mecânico,
+  // num conserto da geladeira), e o serviço e o gasto iriam para ele.
+  const [providerId, setProviderId] = useState(job?.provider_id ?? initialProviderId ?? null);
   const [equipmentId, setEquipmentId] = useState(job ? job.equipment_id : initialEquipmentId);
   const [date, setDate] = useState(formatBRDate(job?.done_on ?? todayISO()));
+  // A data com que o formulário abriu: outra data ali é algo que a pessoa escreveu (ver newProvider).
+  const [openedDate] = useState(date);
   const [description, setDescription] = useState(job?.description ?? '');
   const [amount, setAmount] = useState(job?.amount != null ? job.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '');
   const [warranty, setWarranty] = useState(job?.warranty_until ? formatBRDate(job.warranty_until) : '');
@@ -226,6 +231,15 @@ function JobForm({
   const [picking, setPicking] = useState<'provider' | 'equipment' | null>(null);
   // Do toque em Salvar até fechar: um segundo toque não grava o serviço (nem o gasto) duas vezes.
   const [busy, setBusy] = useState(false);
+  // A pessoa fechou a tela enquanto o Salvar gravava (arrastou para baixo, ou o voltar do Android): o que já
+  // foi pedido termina, mas voltar depois fecharia a tela de baixo (a do prestador, a do aparelho).
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   // Avisa a tela: daqui em diante ela não troca o formulário por "carregando" nem pelo aviso de erro.
   useEffect(onShown, [onShown]);
 
@@ -282,7 +296,24 @@ function JobForm({
         notify('O serviço foi salvo, mas o gasto não', `${errorMessage(err)} Lance o gasto em Finanças.`);
       }
     }
+    // A tela já fechou enquanto gravava (ver mounted): voltar agora fecharia a de baixo.
+    if (!mounted.current) return;
     goBackOr({ pathname: '/prestador/[id]', params: { id: values.provider_id } });
+  }
+
+  /**
+   * "Novo prestador", na lista de quem fez: troca esta tela pelo cadastro, que depois abre um serviço novo com
+   * quem foi cadastrado e o aparelho escolhido aqui (como na casa sem prestador nenhum). O que foi escrito neste
+   * serviço não vai junto: com algo escrito, pergunta antes.
+   */
+  function newProvider() {
+    const go = () => {
+      setPicking(null);
+      router.replace({ pathname: '/prestador/[id]', params: equipmentId ? { id: 'novo', aparelho: equipmentId } : { id: 'novo' } });
+    };
+    const typed = [description, amount, warranty, notes].some((text) => text.trim() !== '') || date !== openedDate;
+    if (!typed) return go();
+    confirmAction('Novo prestador', 'Cadastrar um prestador novo? O que você escreveu neste serviço não fica salvo.', 'Cadastrar', go);
   }
 
   return (
@@ -404,6 +435,11 @@ function JobForm({
           setPicking(null);
         }}
         onClose={() => setPicking(null)}
+        // Quem fez pode não estar na lista. Só num serviço novo e fora do Salvar: trocar de tela deixaria para trás
+        // o serviço aberto, ou o que está sendo gravado.
+        extraActions={() =>
+          !job && !busy ? <Button title="Novo prestador" icon="plus" variant="secondary" compact onPress={newProvider} /> : null
+        }
       />
       <PickerModal
         visible={picking === 'equipment'}
