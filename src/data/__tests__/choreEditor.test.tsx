@@ -1624,6 +1624,28 @@ describe('"Pular a vez": a vez vai para quem a pergunta nomeou, e a tela espera 
     expect(screen.notices()).toEqual([CHORE_GONE]);
   });
 
+  it('a vez passou, e a tarefa foi apagada em outro aparelho antes de ser lida de novo: o aviso da tarefa apagada, não o formulário com a vez da resposta', async () => {
+    const screen = await open();
+    await settle();
+    const release = holdFetches();
+    await screen.tap('Pular a vez');
+    await tick();
+    expect(mockConfirm.mock.calls).toEqual([['Pular a vez', 'Passar a vez de Carla para Lia?']]);
+    // A vez passou para Lia no servidor; antes de a tela ler a tarefa de novo, outro celular a apaga.
+    expect(mockServer.chore).toMatchObject({ assigned_to: null, kid_id: 'p-lia' });
+    mockServer.chore = null;
+
+    release();
+    await settle();
+    // A busca de depois não acha a tarefa. Gravada por cima desse erro, a vez da resposta deixaria na tela o formulário
+    // da tarefa apagada ("Vez de Lia · depois Beto"), sem aviso nenhum.
+    expect(screen.notices()).toEqual([CHORE_GONE]);
+    expect(screen.title()).toBeUndefined();
+    // E nenhum alerta de que a vez não foi passada: ela passou.
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockServer.skips).toEqual([{ p_chore_id: 'c-1', p_from: 'p-carla', p_to: 'p-lia' }]);
+  });
+
   it('banco que ainda não enxerga a função: o aviso de que o rodízio não está disponível, e o formulário fica', async () => {
     const screen = await open();
     await settle();

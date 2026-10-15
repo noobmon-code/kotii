@@ -5,7 +5,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { SAME_PURCHASE_DAYS, type PantryEntry } from '@/domain/cartPantry';
 import { groupRotations, isRotationRefused, isRotationUnavailable, ROTATION_NOT_READY, type ChoreRotations, type ChoreTurn } from '@/domain/choreRotation';
-import { choreGoneOnSave } from '@/domain/chores';
+import { choreGoneOnSave, isChoreGone } from '@/domain/chores';
 import { addDays, diffDays } from '@/domain/dates';
 import type { MedicationSchedule } from '@/domain/medications';
 import type { PantryTake } from '@/domain/pantry';
@@ -365,6 +365,9 @@ export function choreReadSince(client: QueryClient, id: string, since: number): 
  */
 export function setCachedChoreTurn(client: QueryClient, id: string, turn: ChoreTurn): void {
   const key = ['chores', id];
+  // A busca não achou a tarefa (apagada em outro aparelho, ou a pessoa saiu da casa): setQueryData limparia esse erro,
+  // e a tela seguiria com o formulário da tarefa apagada, em vez do aviso (isChoreGone).
+  if (isChoreGone(client.getQueryState(key)?.error)) return;
   client.setQueryData<Chore>(key, (chore) => chore && { ...chore, ...turn }, { updatedAt: client.getQueryState(key)?.dataUpdatedAt });
   client.invalidateQueries({ queryKey: key, exact: true, refetchType: 'none' });
 }
