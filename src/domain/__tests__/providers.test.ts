@@ -249,6 +249,7 @@ describe('telefone: o que fica em phone_digits', () => {
       { typed: '+5511-3456-7890', parsed: { kind: 'fixo', digits: '551134567890' } },
       { typed: '5511 3456-7890', parsed: { kind: 'fixo', digits: '551134567890' } },
       { typed: '5511 3456 7890', parsed: { kind: 'fixo', digits: '551134567890' } },
+      { typed: '5511.3456.7890', parsed: { kind: 'fixo', digits: '551134567890' } },
       { typed: '(5511) 3456-7890', parsed: { kind: 'fixo', digits: '551134567890' } },
       { typed: '+5521 2345-6789', parsed: { kind: 'fixo', digits: '552123456789' } },
       { typed: '5511 98765-4321', parsed: { kind: 'celular', digits: '5511987654321' } },
@@ -285,6 +286,9 @@ describe('telefone: o que fica em phone_digits', () => {
       '5511-3456 - 1234',
       // Com a palavra, é outro trecho, como sempre.
       '5511-3456 ramal 1234',
+      // O preço da regra: o 55 colado no DDD, com o traço logo depois e sem o "+", é lido como o número local, e o
+      // número inteiro também fica sem os atalhos (com o "+", ou sem esse traço, vale: ver o teste de cima).
+      '5511-3456 7890',
     ]) {
       const digits = normalizePhone(typed);
       expect({ typed, digits, whatsapp: whatsappLink(digits), hint: phoneHint(typed) }).toEqual({ typed, digits: null, whatsapp: null, hint: onlyOne });

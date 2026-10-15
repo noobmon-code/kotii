@@ -168,7 +168,11 @@ function pieceText(piece: string): string {
  * - sem par com traço, vale o último par, como sempre: ele fecha o que foi
  *   digitado, e o que vem antes dele (o 55, o zero com a operadora, o DDD) não
  *   conta, mesmo quando tem quatro dígitos como a metade de um número
- *   ("+5511 3456 7890", "5511 3456-7890": o 55 colado no DDD).
+ *   ("+5511 3456 7890", "5511 3456 7890", "5511.3456.7890": o 55 colado no
+ *   DDD; com o traço no número local, "5511 3456-7890" vale pela regra de
+ *   cima). O traço logo depois do 55 colado no DDD, sem o "+", é lido como o
+ *   do meio do número local: "5511-3456 7890" fica sem os atalhos, como
+ *   "5511-3456 1234".
  * Ficam de fora o número de outro país ("+" sem o 55: lá os grupos são outros)
  * e o 0800 escrito sem "+" ("0800 7010 102": os grupos dele não são 4 + 4, e
  * os dígitos todos já são o número).
