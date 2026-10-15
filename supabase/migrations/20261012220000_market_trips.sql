@@ -103,13 +103,14 @@ create index push_schedule_server_reminder_idx on public.push_schedule ((data ->
  *
  * O U+200C e o U+200D ficam: são eles que seguram juntas as sequências de
  * emoji (a família, a profissão). Ficam também os seletores de variação
- * (U+FE00–FE0F; U+180B–180F, do mongol; U+E0100–E01EF, dos ideogramas), as
- * marcas que se combinam com a letra de antes (U+0300–036F, U+1AB0–1AFF,
- * U+1DC0–1DFF, U+20D0–20FF, U+FE20–FE2F) e os caracteres de etiqueta
- * (U+E0000–E007F, das bandeiras): dentro de um nome de verdade eles são
- * parte da letra, e virar espaço partiria o nome. Sozinhos não fazem um
- * nome, e é o que a conta de fora olha: tirando os espaços e todos esses,
- * se não sobra nada, o nome é vazio.
+ * (U+FE00–FE0F; U+180B–180D, U+180F, do mongol; U+E0100–E01EF, dos
+ * ideogramas), as marcas que se combinam com a letra de antes (U+0300–036F,
+ * U+1AB0–1AFF, U+1DC0–1DFF, U+20D0–20FF, U+FE20–FE2F) e os caracteres de
+ * etiqueta (U+E0000–E007F, das bandeiras): dentro de um nome de verdade eles
+ * são parte da letra, e virar espaço partiria o nome. Sozinhos não fazem um
+ * nome, e é o que a conta de fora olha: tirando os espaços e todos esses (ali
+ * de U+180B a U+180F de uma vez, porque o U+180E já virou espaço), se não
+ * sobra nada, o nome é vazio.
  */
 create function public.push_text(p_text text, p_max int)
 returns text
@@ -301,7 +302,10 @@ begin
   -- os avisos dela que não saíram (como em end_market_trip): a faixa mostra só a mais nova, e "Encerrar"
   -- nela deixaria a antiga de volta até o fim das 2 horas. Vem depois do laço, e não antes da ida nova,
   -- para travar as inscrições antes das linhas da agenda: na ordem contrária, este aviso e alguém
-  -- desligando a opção (que trava a inscrição e depois apaga o aviso) podiam esperar um pelo outro.
+  -- desligando a opção (que trava a inscrição e depois apaga o aviso) podiam esperar um pelo outro. A ida
+  -- e os avisos dela num comando só, ao contrário de sair da casa e arquivar a lista: aqui é uma ida no
+  -- máximo (cada ida nova da pessoa encerra a anterior da lista, uma de cada vez pela trava da pessoa),
+  -- travada antes dos avisos dela.
   with ended as (
     update public.market_trips t set ended_at = now()
       where t.household_id = hid and t.list_id = p_list_id and t.user_id = auth.uid()
@@ -351,6 +355,11 @@ $$;
  * navegadores dela e ainda não saiu (a ida de alguém, avisada um instante
  * antes) sai da fila. O que é das outras casas dela fica.
  *
+ * Primeiro todas as idas da pessoa na casa, num comando só, e só depois os
+ * avisos, como no arquivamento da lista (list_archived_market_trips, abaixo):
+ * quem encerra várias idas não fica com o aviso de uma travado enquanto
+ * espera outra.
+ *
  * Num gatilho da linha de morador, e não dentro das duas funções: vale nos
  * dois caminhos sem recriá-las.
  */
@@ -360,14 +369,17 @@ language plpgsql
 security definer
 set search_path = ''
 as $$
+declare
+  ids uuid[];
 begin
   with ended as (
     update public.market_trips t set ended_at = now()
       where t.household_id = old.household_id and t.user_id = old.user_id and t.ended_at is null
     returning t.id
   )
+  select coalesce(array_agg(e.id), '{}') into ids from ended e;
   delete from public.push_schedule p
-    using ended e
+    using unnest(ids) e(id)
     where p.data ? 'server' and p.data ->> 'reminder' = 'ida:' || e.id::text;
   delete from public.push_schedule p
     using public.push_subscriptions s
@@ -389,7 +401,18 @@ create trigger household_members_end_market_trips
  * um aviso que sairia com o nome de uma lista fechada. Arquivar é uma gravação
  * direta do app (também das versões já instaladas), por isso um gatilho; e só
  * na passagem de aberta para arquivada: renomear ou desarquivar não mexe nas
- * idas. Os avisos vêm depois das idas, na ordem de end_market_trip.
+ * idas.
+ *
+ * Primeiro todas as idas da lista, num comando só, e só depois, em outro, os
+ * avisos delas: o arquivamento nunca fica com um aviso travado enquanto espera
+ * uma ida. Com uma ida e os avisos dela de cada vez, ele podia tirar da fila o
+ * aviso da ida de um morador para outro e então esperar a ida desse outro,
+ * travada porque ele estava saindo da casa naquele instante; a saída
+ * (member_left_market_trips), para tirar os avisos da casa dos navegadores
+ * dele, esperava justamente aquele aviso, e o banco derrubava um dos dois. A
+ * casa não é travada aqui: com a lista já travada, esperar a casa podia cruzar
+ * com a saída do último morador, que trava a casa e, para apagá-la, espera a
+ * lista.
  */
 create function public.list_archived_market_trips()
 returns trigger
@@ -397,14 +420,17 @@ language plpgsql
 security definer
 set search_path = ''
 as $$
+declare
+  ids uuid[];
 begin
   with ended as (
     update public.market_trips t set ended_at = now()
       where t.list_id = new.id and t.household_id = new.household_id and t.ended_at is null
     returning t.id
   )
+  select coalesce(array_agg(e.id), '{}') into ids from ended e;
   delete from public.push_schedule p
-    using ended e
+    using unnest(ids) e(id)
     where p.data ? 'server' and p.data ->> 'reminder' = 'ida:' || e.id::text;
   return null;
 end;

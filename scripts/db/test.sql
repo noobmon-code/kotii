@@ -5067,10 +5067,12 @@ begin
   -- A família (homem, mulher, menina) é um emoji só por causa dos U+200D: continua inteira.
   assert public.push_text(E'Casa \U0001F468\u200D\U0001F469\u200D\U0001F467', 40) = E'Casa \U0001F468\u200D\U0001F469\u200D\U0001F467',
     'an emoji sequence keeps its joiners';
-  -- Os seletores de variação dos ideogramas (U+E0100–E01EF) e do mongol (U+180B–180F) e as marcas que se
+  -- Os seletores de variação dos ideogramas (U+E0100–E01EF) e do mongol (U+180B–180D, U+180F) e as marcas que se
   -- combinam fora de U+0300–036F, sozinhos, não fazem um nome: o aviso diz "Alguém da casa".
   assert public.push_text(E'\U000E0100', 40) = '' and public.push_text(E'\U000E01EF\U000E0100', 40) = '', 'ideographic variation selectors only';
   assert public.push_text(E'\u180B', 40) = '' and public.push_text(E'\u180B\u180C\u180D\u180F', 40) = '', 'Mongolian variation selectors only';
+  -- O U+180E, entre eles, é o separador de vogais do mongol, e não um seletor: vira espaço, como os de largura zero.
+  assert public.push_text(E'A\u180EB', 40) = 'A B', 'the Mongolian vowel separator becomes a space inside a name';
   assert public.push_text(E'\u20D0', 40) = '' and public.push_text(E'\u1AB0\u1DC4\u20D0\uFE20', 40) = '', 'combining marks of the other blocks only';
   assert coalesce(nullif(public.push_text(E' \U000E0100\u180B\u20D0 ', 40), ''), 'Alguém da casa') = 'Alguém da casa', 'so the name falls back';
   -- Os controles de formato que nunca são parte de um nome viram espaço, como os outros invisíveis.
@@ -5142,6 +5144,18 @@ begin
     plan := plan || line || ' / ';
   end loop;
   assert plan like '%Index Scan using push_schedule_server_reminder_idx%', 'and so does the delete of the notices of the trips just ended: ' || plan;
+  -- Arquivar a lista e sair da casa encerram as idas num comando e tiram os avisos delas no seguinte, pelos ids.
+  -- Com poucas linhas, o planejador pode ler o índice inteiro por bitmap: também só as linhas do servidor.
+  plan := '';
+  for line in execute $sql$
+    explain delete from public.push_schedule p
+      using unnest('{00000000-0000-0000-0000-000000000000,00000000-0000-0000-0000-000000000001}'::uuid[]) e(id)
+      where p.data ? 'server' and p.data ->> 'reminder' = 'ida:' || e.id::text
+  $sql$ loop
+    plan := plan || line || ' / ';
+  end loop;
+  assert plan like '%Index Scan using push_schedule_server_reminder_idx%' or plan like '%Bitmap Index Scan on push_schedule_server_reminder_idx%',
+    'and so does the delete of the notices of the trips ended the statement before: ' || plan;
 end $$;
 set role authenticated;
 
@@ -5713,7 +5727,52 @@ begin
     'and his own waits in the browser of another member';
 end $$;
 
--- Quim sai da casa P. A ida dele ali acaba para todos, com os avisos dela que não saíram, e os avisos
+-- Mais uma ida de Quim na casa P, em outra lista, com o aviso dela na fila de Paula: ele sai com duas idas valendo ali.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+declare
+  list uuid;
+  r jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_p'))::text, true);
+  insert into public.shopping_lists (name) values ('Lista 8') returning id into list;
+  r := public.announce_market_trip(list);
+  assert (r ->> 'notified')::int = 1, 'Paula is told about his other trip';
+  perform set_config('test.trip_q8', r ->> 'trip_id', false);
+end $$;
+reset role;
+
+-- Quem encerra várias idas trava todas antes de tirar da fila o primeiro aviso (sair da casa, arquivar a
+-- lista). Com uma ida e os avisos dela de cada vez, a saída de um morador e o arquivamento de uma lista
+-- podiam esperar um pelo outro: um segurava o aviso que o outro ia tirar e esperava a ida que o outro já
+-- tinha travado, e o banco derrubava um dos dois. Este gatilho, só do teste, confere a ordem: quando sai
+-- da fila o aviso de uma ida já encerrada, nenhuma ida do mesmo grupo (a mesma pessoa na mesma casa, ou a
+-- mesma lista) ainda vale.
+create function public.test_trips_before_notices()
+returns trigger
+language plpgsql
+as $$
+declare
+  trip public.market_trips;
+begin
+  select * into trip from public.market_trips t where old.data ? 'server' and 'ida:' || t.id::text = old.data ->> 'reminder';
+  if trip.ended_at is not null and exists (
+    select 1 from public.market_trips t
+    where t.household_id = trip.household_id and t.ended_at is null
+      and case current_setting('test.trips_first') when 'list' then t.list_id = trip.list_id else t.user_id = trip.user_id end
+  ) then
+    raise exception 'FAIL: a trip notice left the queue while another trip of the same % was still on', current_setting('test.trips_first');
+  end if;
+  return old;
+end;
+$$;
+create trigger a_test_trips_before_notices
+  before delete on public.push_schedule
+  for each row execute function public.test_trips_before_notices();
+select set_config('test.trips_first', 'person', false) \gset
+
+-- Quim sai da casa P. As idas dele ali acabam para todos, com os avisos delas que não saíram, e os avisos
 -- da casa P deixam a fila dos navegadores dele. Na casa T, onde ele continua, nada muda.
 set role authenticated;
 select set_config('request.jwt.claim.sub', :'user_q', false) \gset
@@ -5728,6 +5787,7 @@ begin
   assert public.leave_household(current_setting('test.hh_p')::uuid) ->> 'status' = 'left', 'Quim leaves the household';
 end $$;
 reset role;
+drop trigger a_test_trips_before_notices on public.push_schedule;
 do $$
 declare
   hp text := current_setting('test.hh_p');
@@ -5737,6 +5797,9 @@ begin
     'the trip of who left is over for everyone';
   assert not exists (select 1 from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_q6')),
     'with its notices that had not gone out';
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_q8')::uuid) is not null
+    and not exists (select 1 from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_q8')),
+    'and so is his trip of the other list, with its notice';
   assert (select ended_at::text from public.market_trips where id = current_setting('test.trip_q7')::uuid) = current_setting('test.q7_ended'),
     'the trip he had already ended keeps the time it ended';
   -- A ida de Paula na lista de mercado é a do último aviso dela ali (cada aviso novo encerrou o anterior).
@@ -5889,7 +5952,7 @@ delete from public.push_subscriptions where endpoint like '%/ida-%';
 
 -- Arquivar a lista encerra as idas dela, com os avisos que ainda não saíram; apagá-la leva as idas e os
 -- avisos delas. Sem isso, o aviso ia para os outros com o nome de uma lista fechada (ou que nem existe), e
--- quem avisou não tinha mais o "Encerrar" para tirá-lo da fila. Casa X: Xênia avisa; Yuri e Zeca recebem.
+-- quem avisou não tinha mais o "Encerrar" para tirá-lo da fila. Casa X: Xênia avisa (Yuri também); Yuri e Zeca recebem.
 \set user_x '00000000-0000-0000-0000-000000000039'
 \set user_y '00000000-0000-0000-0000-00000000003a'
 \set user_z '00000000-0000-0000-0000-00000000003b'
@@ -5922,19 +5985,41 @@ begin
   assert (r ->> 'notified')::int = 2, 'and told of the other list too';
   perform set_config('test.trip_x2', r ->> 'trip_id', false);
 end $$;
--- Yuri arquiva o "Mercado" logo depois (a compra já foi feita, ou era a lista errada), antes de o aviso sair.
+-- Yuri também avisa o "Mercado" (Xênia não tem navegador inscrito: só Zeca recebe). A lista fica com duas idas valendo.
 select set_config('request.jwt.claim.sub', :'user_y', false) \gset
+do $$
+declare
+  r jsonb;
+begin
+  r := public.announce_market_trip(current_setting('test.list_x1')::uuid);
+  assert (r ->> 'notified')::int = 1, 'Zeca is told of the trip of Yuri';
+  perform set_config('test.trip_y1', r ->> 'trip_id', false);
+end $$;
+-- Arquivar a lista também encerra as duas antes de tirar o primeiro aviso da fila (o gatilho de teste confere).
+reset role;
+create trigger a_test_trips_before_notices
+  before delete on public.push_schedule
+  for each row execute function public.test_trips_before_notices();
+select set_config('test.trips_first', 'list', false) \gset
+set role authenticated;
+-- Yuri arquiva o "Mercado" logo depois (a compra já foi feita, ou era a lista errada), antes de os avisos saírem.
 do $$
 begin
   update public.shopping_lists set archived_at = now() where id = current_setting('test.list_x1')::uuid;
   assert (select ended_at from public.market_trips where id = current_setting('test.trip_x1')::uuid) is not null,
     'archiving the list ends its trip, for everyone';
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_y1')::uuid) is not null,
+    'and the trip of anyone else on that list';
   -- Renomear outra lista, ou arquivar uma que não tem ida, não mexe em nada.
   update public.shopping_lists set name = 'Feira de sábado' where id = current_setting('test.list_x2')::uuid;
   update public.shopping_lists set archived_at = now() where id = current_setting('test.list_x3')::uuid;
   assert (select ended_at from public.market_trips where id = current_setting('test.trip_x2')::uuid) is null,
     'renaming a list, or archiving another one, leaves the trip on';
 end $$;
+reset role;
+drop trigger a_test_trips_before_notices on public.push_schedule;
+drop function public.test_trips_before_notices();
+set role authenticated;
 -- Desarquivar a lista não traz a ida de volta (nem mexe em outra).
 do $$
 begin
@@ -5946,8 +6031,10 @@ end $$;
 reset role;
 do $$
 begin
-  assert not exists (select 1 from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_x1')),
-    'the notices of the archived list that had not gone out left the queue';
+  assert not exists (
+    select 1 from public.push_schedule
+    where data ->> 'reminder' in ('ida:' || current_setting('test.trip_x1'), 'ida:' || current_setting('test.trip_y1'))
+  ), 'the notices of the archived list that had not gone out left the queue';
   assert (select count(*) from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_x2')) = 2,
     'the notices of the other list are still queued';
 end $$;
