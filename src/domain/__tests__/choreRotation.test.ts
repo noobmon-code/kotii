@@ -17,6 +17,7 @@ import {
   orderHasKid,
   planRotationSave,
   plannedTurn,
+  rememberSentOrder,
   ROTATION_CHANGED_ELSEWHERE,
   ROTATION_MAYBE_SAVED,
   ROTATION_MAYBE_SAVED_TITLE,
@@ -218,15 +219,16 @@ describe('textos do rodízio', () => {
     expect(skipTurnQuestion(null, 'Carla')).toBe('Passar a vez para Carla?');
   });
 
-  it('pular a vez não mudou nada: diz que a vez ou a ordem já tinha mudado em outro aparelho, e onde ver a de agora', () => {
+  it('pular a vez não mudou nada: diz que a vez ou a ordem já tinha mudado, sem dizer onde, e onde ver a de agora', () => {
+    // Sem "em outro aparelho": quem mudou pode ter sido um toque anterior deste mesmo, cuja resposta se perdeu.
     expect(skipNotDoneMessage(true)).toEqual({
       title: 'A vez não foi passada',
-      message: 'A vez ou a ordem do rodízio já tinha mudado em outro aparelho, e nada foi feito. A tela agora mostra de quem é a vez.',
+      message: 'A vez ou a ordem do rodízio já tinha mudado, e nada foi feito. A tela agora mostra de quem é a vez.',
     });
     // A tarefa não foi lida de novo (a busca falhou): a tela ainda mostra a vez de antes.
     expect(skipNotDoneMessage(false)).toEqual({
       title: 'A vez não foi passada',
-      message: 'A vez ou a ordem do rodízio já tinha mudado em outro aparelho, e nada foi feito. Feche e abra a tarefa de novo para ver de quem é a vez.',
+      message: 'A vez ou a ordem do rodízio já tinha mudado, e nada foi feito. Feche e abra a tarefa de novo para ver de quem é a vez.',
     });
   });
 });
@@ -471,6 +473,50 @@ describe('editor: o que salvar', () => {
     // Encerrar continua mandando a ordem vazia: "Uma vez", ou uma pessoa só.
     expect(planRotationSave({ saved: shown, recurrence: 'none', choice: rotation(order), people })).toEqual({ people: [] });
     expect(planRotationSave({ saved: shown, recurrence: 'daily', choice: { mode: 'single', ...ofLia }, people })).toEqual({ turn: ofLia, people: [] });
+  });
+
+  it('o mesmo formulário já mandou outra ordem (a resposta pode ter se perdido): posto de volta como estava, manda a ordem de novo', () => {
+    // O servidor pode ter ficado com a ordem daquela tentativa (sem Lia, ou sem rodízio): a pessoa pôs o rodízio de
+    // volta de propósito, e sem a ordem ele ficaria como a tentativa o deixou.
+    const shown = { turn: ofCarla, order };
+    expect(planRotationSave({ saved: shown, recurrence: 'daily', choice: rotation(order), people, sent: ['p-beto', 'p-carla'] })).toEqual({
+      people: order,
+    });
+    // A tentativa foi "Uma vez", ou o fim do rodízio (a ordem vazia), e o formulário voltou para o rodízio.
+    expect(planRotationSave({ saved: shown, recurrence: 'daily', choice: rotation(order), people, sent: [] })).toEqual({ people: order });
+    // A tentativa mandou esta mesma ordem, ou nenhuma tentativa mandou ordem: não vai, como sempre.
+    expect(planRotationSave({ saved: shown, recurrence: 'daily', choice: rotation(order), people, sent: [...order] })).toEqual({ people: null });
+    expect(planRotationSave({ saved: shown, recurrence: 'daily', choice: rotation(order), people, sent: null })).toEqual({ people: null });
+    expect(planRotationSave({ saved: shown, recurrence: 'daily', choice: rotation(order), people })).toEqual({ people: null });
+    // O resto não muda: a ordem mudada vai, encerrar manda a vazia, e o rodízio novo começa pelo primeiro.
+    const sent = ['p-beto', 'p-carla'];
+    expect(planRotationSave({ saved: shown, recurrence: 'daily', choice: rotation(['p-lia', 'p-carla']), people, sent })).toEqual({
+      people: ['p-lia', 'p-carla'],
+    });
+    expect(planRotationSave({ saved: shown, recurrence: 'none', choice: rotation(order), people, sent })).toEqual({ people: [] });
+    expect(planRotationSave({ saved: shown, recurrence: 'daily', choice: { mode: 'single', ...ofLia }, people, sent })).toEqual({
+      turn: ofLia,
+      people: [],
+    });
+    expect(
+      planRotationSave({ saved: { turn: ofBeto, order: [] }, recurrence: 'daily', choice: rotation(['p-lia', 'p-beto']), people, sent: ['p-lia', 'p-beto'] }),
+    ).toEqual({ turn: ofLia, people: ['p-lia', 'p-beto'] });
+  });
+
+  it('o que o formulário guarda da ordem que mandou: a que não é a que ele mostrou', () => {
+    // Mostrou o rodízio: guarda a ordem mudada, e a vazia ("Uma vez", ou o fim do rodízio).
+    expect(rememberSentOrder(null, ['p-beto', 'p-carla'], order)).toEqual(['p-beto', 'p-carla']);
+    expect(rememberSentOrder(['p-beto', 'p-carla'], [], order)).toEqual([]);
+    // Mandar de novo a ordem que ele mostrou não apaga a de antes: essa tentativa pode nem ter chegado ao servidor,
+    // e lá ficaria a de antes. Salvar sem mandar ordem também não.
+    expect(rememberSentOrder(['p-beto', 'p-carla'], [...order], order)).toEqual(['p-beto', 'p-carla']);
+    expect(rememberSentOrder(['p-beto', 'p-carla'], null, order)).toEqual(['p-beto', 'p-carla']);
+    expect(rememberSentOrder(null, [...order], order)).toBeNull();
+    expect(rememberSentOrder(null, null, order)).toBeNull();
+    // Abriu sem rodízio: guarda cada rodízio que criou (ele nunca manda a ordem vazia), como sempre.
+    expect(rememberSentOrder(null, ['p-lia', 'p-beto'], [])).toEqual(['p-lia', 'p-beto']);
+    expect(rememberSentOrder(['p-lia', 'p-beto'], ['p-lia', 'p-beto', 'p-carla'], [])).toEqual(['p-lia', 'p-beto', 'p-carla']);
+    expect(rememberSentOrder(['p-lia', 'p-beto'], null, [])).toEqual(['p-lia', 'p-beto']);
   });
 
   it('tarefa sem rodízio continua como sempre: nada do rodízio é chamado', () => {

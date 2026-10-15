@@ -141,15 +141,17 @@ export function skipTurnQuestion(from: string | null | undefined, to: string): s
 
 /**
  * "Pular a vez" não mudou nada (skip_chore_turn devolveu null): a pergunta era
- * sobre a vez e a ordem que a tela tinha, e uma das duas já tinha mudado em
- * outro aparelho. `read`: a tarefa foi lida de novo depois do toque, e a tela
- * já mostra de quem é a vez; se essa busca falhou, ela ainda mostra a de antes.
+ * sobre a vez e a ordem que a tela tinha, e uma das duas já tinha mudado. Sem
+ * dizer onde: pode ter sido em outro aparelho ou num toque anterior deste,
+ * cuja resposta se perdeu. `read`: a tarefa foi lida de novo depois do toque,
+ * e a tela já mostra de quem é a vez; se essa busca falhou, ela ainda mostra a
+ * de antes.
  */
 export function skipNotDoneMessage(read: boolean): { title: string; message: string } {
   const where = read ? 'A tela agora mostra de quem é a vez.' : 'Feche e abra a tarefa de novo para ver de quem é a vez.';
   return {
     title: 'A vez não foi passada',
-    message: `A vez ou a ordem do rodízio já tinha mudado em outro aparelho, e nada foi feito. ${where}`,
+    message: `A vez ou a ordem do rodízio já tinha mudado, e nada foi feito. ${where}`,
   };
 }
 
@@ -308,7 +310,11 @@ function sameOrder(a: string[], b: string[]): boolean {
  *   fica com o rodízio, a ordem e a vez que tem agora, também quando outro
  *   celular o encerrou, mudou a ordem ou fez a tarefa "Uma vez" nesse
  *   meio-tempo. Mandada de volta, ela recriaria o rodízio encerrado lá (com a
- *   vez no primeiro) ou desfaria a ordem nova;
+ *   vez no primeiro) ou desfaria a ordem nova. A não ser que um salvar
+ *   anterior deste mesmo formulário tenha mandado outra ordem (`sent`: a
+ *   mudada, ou a vazia de "Uma vez" e do fim do rodízio): ele pode ter
+ *   chegado ao servidor mesmo sem a resposta voltar, e a pessoa pôs o
+ *   formulário de volta como estava de propósito. Aí a ordem vai;
  * - rodízio que o formulário mostrou, numa tarefa que virou "Uma vez": o
  *   rodízio acaba e a tarefa fica com quem está na vez no banco. O formulário
  *   não diz quem é: diria a pessoa que o aparelho tinha guardado (a vez pode
@@ -324,8 +330,10 @@ export function planRotationSave(input: {
   recurrence: Recurrence;
   choice: AssigneeChoice;
   people: RotationPerson[];
+  /** A ordem que um salvar anterior deste formulário mandou e que pode estar no servidor (rememberSentOrder). */
+  sent?: string[] | null;
 }): RotationSave {
-  const { saved, recurrence, choice, people } = input;
+  const { saved, recurrence, choice, people, sent } = input;
   const had = Boolean(saved?.order.length);
   const end = had ? [] : null;
   if (choice.mode === 'single') return { turn: { assigned_to: choice.assigned_to, kid_id: choice.kid_id }, people: end };
@@ -336,7 +344,19 @@ export function planRotationSave(input: {
   }
   const order = line.map((p) => p.id);
   if (!had) return { turn: turnOf(line[0]), people: order };
-  return { people: sameOrder(order, saved?.order ?? []) ? null : order };
+  // A ordem que o formulário mostrou fica de fora, menos quando o servidor pode estar com outra que ele mesmo mandou.
+  const unchanged = sameOrder(order, saved?.order ?? []) && (!sent || sameOrder(sent, order));
+  return { people: unchanged ? null : order };
+}
+
+/**
+ * O que o formulário guarda depois de um salvar (o `sent` de planRotationSave; no que abriu sem rodízio, também o
+ * que diz se a ordem achada é a dele, ROTATION_MAYBE_SAVED): a ordem que esse salvar mandou, quando não é a que o
+ * formulário mostrou ao abrir. Sem a resposta, o servidor pode ter ficado com ela. Mandar de novo a ordem mostrada não
+ * a apaga: essa tentativa pode nem ter chegado ao servidor, e lá estaria a de antes.
+ */
+export function rememberSentOrder(previous: string[] | null, people: string[] | null, shown: string[]): string[] | null {
+  return people && !sameOrder(people, shown) ? people : previous;
 }
 
 /**

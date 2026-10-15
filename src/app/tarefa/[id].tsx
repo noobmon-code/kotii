@@ -2,7 +2,16 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { choreReadSince, fetchChoreRotations, useChore, useChoreRotations, useDeleteChore, useSaveChore, useSkipChoreTurn } from '@/data/home';
+import {
+  choreReadSince,
+  fetchChoreRotations,
+  setCachedChoreTurn,
+  useChore,
+  useChoreRotations,
+  useDeleteChore,
+  useSaveChore,
+  useSkipChoreTurn,
+} from '@/data/home';
 import { usePeople } from '@/data/health';
 import { useEquipment } from '@/data/house';
 import {
@@ -16,6 +25,7 @@ import {
   orderHasKid,
   planRotationSave,
   plannedTurn,
+  rememberSentOrder,
   ROTATION_CHANGED_ELSEWHERE,
   ROTATION_CHECK_FAILED,
   ROTATION_MAYBE_SAVED,
@@ -42,7 +52,7 @@ import { kidsOf } from '@/domain/points';
 import { useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import type { Chore } from '@/lib/types';
-import { confirmAction, notify } from '@/ui/dialogs';
+import { confirmAction, notify, notifyAfterPaint } from '@/ui/dialogs';
 import { Button, Chip, DateField, ErrorNotice, Icon, Loading, Row, Screen, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
@@ -129,8 +139,10 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
   const submitting = useRef(false);
   // O salvar respondeu que a tarefa não existe mais: o aviso da tarefa apagada toma o lugar do formulário.
   const [gone, setGone] = useState(false);
-  // A ordem que o último salvar deste formulário mandou, quando ele abriu sem rodízio. Se a resposta se perdeu, a
-  // ordem que aparecer no servidor pode ser essa: não é de outro aparelho (ver submit).
+  // A última ordem que este formulário mandou ao salvar e que não é a que ele mostrou (rememberSentOrder). Se a
+  // resposta se perdeu, o servidor pode estar com ela: no formulário que abriu sem rodízio, a ordem que aparecer lá
+  // não é de outro aparelho; no que mostrou um rodízio, posto de volta como estava, ele manda a ordem de novo (ver
+  // submit).
   const sentOrder = useRef<string[] | null>(null);
 
   const saved = chore ? { turn: chore, order: shownOrder } : undefined;
@@ -187,15 +199,24 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
       () => {
         const askedAt = Date.now();
         // A vez só passa se ainda é de quem a tela mostrava e se vai para quem a pergunta nomeou: o servidor confere
-        // as duas coisas. Se a vez ou a ordem mudou em outro celular, nada muda, e o aviso diz isso depois de a
-        // tarefa ser lida de novo (o botão fica ocupado até lá).
+        // as duas coisas. Se uma delas já tinha mudado, nada muda, e o aviso diz isso depois de a tarefa ser lida de
+        // novo (o botão fica ocupado até lá).
         skip.mutate(
           { id: chore.id, from: from?.id ?? null, to: to.id },
           {
             onSuccess: (moved, _variables, _result, { client }) => {
-              if (moved) return;
-              const notice = skipNotDoneMessage(choreReadSince(client, chore.id, askedAt));
-              notify(notice.title, notice.message);
+              const read = choreReadSince(client, chore.id, askedAt);
+              if (moved) {
+                // A vez passou. Se a busca de depois falhou, a tela mostraria a vez de antes, e o próximo toque
+                // perguntaria por ela: vale a resposta do servidor, quando este aparelho sabe quem é a pessoa.
+                const person = who.find((p) => p.id === moved);
+                if (!read && person) setCachedChoreTurn(client, chore.id, turnOf(person));
+                return;
+              }
+              const notice = skipNotDoneMessage(read);
+              // O aviso fala do que a tela mostra, então vem depois de ela mostrar: as buscas avisam a tela num
+              // setTimeout(0), e o React a desenha logo em seguida, antes deste; o aviso sai no quadro seguinte.
+              setTimeout(() => notifyAfterPaint(notice.title, notice.message), 0);
             },
             onError: (err) => {
               // Apagada em outro aparelho (ou a pessoa saiu da casa): o aviso da tarefa apagada, como no salvar.
@@ -241,6 +262,7 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
       recurrence,
       choice: rotating ? { mode: 'rotation', order } : { mode: 'single', ...single },
       people: who,
+      sent: sentOrder.current,
     });
     // O formulário abriu sem rodízio (do que o aparelho tinha guardado) e a tarefa ganhou um em outro aparelho:
     // salvar daqui trocaria a vez e os pontos por dados velhos. A ordem igual à que ele está salvando não é de outro
@@ -285,12 +307,12 @@ function ChoreForm({ chore, equipmentId, savedOrder }: { chore?: Chore; equipmen
       }
       return submitLatest.current();
     }
-    // A tarefa em rodízio que vira "Uma vez" fica com quem está na vez no banco, e o rodízio cuja ordem ninguém mexeu
-    // fica como está lá. Se a tela não mostra os pontos (quem este aparelho acha que está na vez tem o app, ou ninguém
-    // da ordem que ele mostra ganha pontos), eles também ficam como estão: a vez pode ter passado para uma criança, ou
-    // a ordem ganhado uma, em outro celular, e o 0 daqui apagaria os pontos dela.
+    // A tarefa em rodízio que vira "Uma vez" fica com quem está na vez no banco, e o rodízio cuja ordem não vai (ver
+    // planRotationSave) fica como está lá. Se a tela não mostra os pontos (quem este aparelho acha que está na vez tem
+    // o app, ou ninguém da ordem que ele mostra ganha pontos), eles também ficam como estão: a vez pode ter passado
+    // para uma criança, ou a ordem ganhado uma, em outro celular, e o 0 daqui apagaria os pontos dela.
     const turnStays = !plan.turn && !plan.people?.length;
-    if (expectNone && plan.people?.length) sentOrder.current = plan.people;
+    sentOrder.current = rememberSentOrder(sentOrder.current, plan.people, shownOrder);
     save.mutate(
       {
         id: chore?.id,

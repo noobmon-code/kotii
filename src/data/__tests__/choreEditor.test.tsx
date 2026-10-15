@@ -96,6 +96,8 @@ jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null, SkyArt: () 
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/dialogs', () => ({
   notify: (title: string, message?: string) => mockNotify(title, message),
+  // Como no app fora da web: o aviso sai no quadro seguinte (requestAnimationFrame, que nos testes é um setTimeout).
+  notifyAfterPaint: (title: string, message?: string) => globalThis.requestAnimationFrame(() => mockNotify(title, message)),
   confirmAction: (title: string, message: string, _label: string, onConfirm: () => void) => {
     mockConfirm(title, message);
     onConfirm();
@@ -992,6 +994,80 @@ describe('a chamada falha pela rede: o alerta de erro, o formulário fica, e sal
     expect(mockNotify).toHaveBeenCalledTimes(1);
     expect(mockBack).toHaveBeenCalledTimes(1);
   });
+
+  // A tentativa que tira Lia do rodízio Beto, Carla, Lia (sem criança na ordem, 0 ponto), e a que a põe de volta.
+  const withoutLia = call({ p_points: 0, p_people: ['p-beto', 'p-carla'] });
+  const restored = call({ p_points: 10, p_people: ORDER });
+
+  it('formulário que mostrou o rodízio tirou Lia e a resposta se perdeu: com Lia de volta, a ordem vai de novo e Lia volta ao rodízio', async () => {
+    const screen = await open();
+    await settle();
+    await screen.pick('3 Lia');
+    mockServer.dropAnswer = true;
+    await screen.press('Salvar');
+    expect(mockServer.log).toEqual([withoutLia]);
+    expect(mockNotify.mock.calls).toEqual([NETWORK_ERROR]);
+    expect(mockBack).not.toHaveBeenCalled();
+    // O servidor gravou a ordem sem Lia. A pessoa viu o erro, decide manter Lia e a põe de volta: a tela mostra a
+    // ordem de quando abriu.
+    expect(mockServer.order).toEqual(['p-beto', 'p-carla']);
+    await screen.pick('Lia');
+    expect(screen.chips()).toEqual(IN_ROTATION);
+
+    await screen.press('Salvar');
+    // Igual à que o formulário mostrou, mas o servidor pode estar com a da tentativa anterior: a ordem vai, com os pontos de Lia.
+    expect(mockServer.log).toEqual([withoutLia, restored]);
+    expect(mockServer.order).toEqual(ORDER);
+    expect(mockServer.chore).toMatchObject({ assigned_to: 'u-carla', kid_id: null, points: 10 });
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    expect(mockBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('e se a tentativa com Lia de volta nem chega ao servidor: a seguinte manda a ordem de novo, em vez de deixar Lia de fora', async () => {
+    const screen = await open();
+    await settle();
+    await screen.pick('3 Lia');
+    mockServer.dropAnswer = true;
+    await screen.press('Salvar');
+    expect(mockServer.order).toEqual(['p-beto', 'p-carla']);
+    await screen.pick('Lia');
+    // Sem internet: a chamada com Lia de volta não chega, e o servidor segue sem ela.
+    mockServer.failSave = OFFLINE;
+    await screen.press('Salvar');
+    expect(mockServer.order).toEqual(['p-beto', 'p-carla']);
+    expect(mockNotify.mock.calls).toEqual([NETWORK_ERROR, NETWORK_ERROR]);
+
+    mockServer.failSave = null;
+    await screen.press('Salvar');
+    expect(mockServer.log).toEqual([withoutLia, restored, restored]);
+    expect(mockServer.order).toEqual(ORDER);
+    expect(mockServer.chore).toMatchObject({ assigned_to: 'u-carla', kid_id: null, points: 10 });
+    expect(mockBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('formulário que mostrou o rodízio virou "Uma vez" e a resposta se perdeu: de volta a "Diária", o rodízio vai de novo', async () => {
+    const screen = await open();
+    await settle();
+    await screen.pick('Uma vez');
+    const oneOff = call({ p_recurrence: 'none', p_people: [] });
+    mockServer.dropAnswer = true;
+    await screen.press('Salvar');
+    expect(mockServer.log).toEqual([oneOff]);
+    expect(mockNotify.mock.calls).toEqual([NETWORK_ERROR]);
+    // O servidor encerrou o rodízio, e a tarefa ficou "Uma vez", com Carla. A pessoa volta atrás.
+    expect(mockServer.order).toEqual([]);
+    expect(mockServer.chore).toMatchObject({ recurrence: 'none', assigned_to: 'u-carla', kid_id: null });
+    await screen.pick('Diária');
+    expect(screen.chips()).toEqual(IN_ROTATION);
+
+    await screen.press('Salvar');
+    expect(mockServer.log).toEqual([oneOff, restored]);
+    // O rodízio volta, como a tela mostra; recriado, ele começa pelo primeiro da ordem (a regra do banco).
+    expect(mockServer.order).toEqual(ORDER);
+    expect(mockServer.chore).toMatchObject({ recurrence: 'daily', assigned_to: 'u-beto', kid_id: null, points: 10 });
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    expect(mockBack).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('tarefa nova: a mesma chamada cria a tarefa e a ordem', () => {
@@ -1449,14 +1525,52 @@ describe('"Pular a vez": a vez vai para quem a pergunta nomeou, e a tela espera 
     await settle();
     // Em outro celular alguém pulou a vez de Carla; esta tela ainda não buscou de novo.
     mockServer.chore = { ...mockServer.chore, assigned_to: null, kid_id: 'p-lia' };
+    // O que a tela mostra na hora do aviso (na web ele é o alerta do navegador, que trava a página como ela está).
+    let behind: string[] = [];
+    mockNotify.mockImplementationOnce(() => {
+      behind = screen.texts();
+    });
     await screen.press('Pular a vez');
     expect(mockConfirm.mock.calls).toEqual([['Pular a vez', 'Passar a vez de Carla para Lia?']]);
     expect(mockServer.skips).toEqual([{ p_chore_id: 'c-1', p_from: 'p-carla', p_to: 'p-lia' }]);
     // Nada mudou no servidor: a vez segue de Lia, e não passou para Beto.
     expect(mockServer.chore).toMatchObject({ assigned_to: null, kid_id: 'p-lia' });
     expect(mockNotify.mock.calls).toEqual([[NOTHING_DONE.title, NOTHING_DONE.message]]);
+    // O aviso diz que a tela agora mostra de quem é a vez: quando ele aparece, ela já mostra.
+    expect(behind).toContain('Vez de Lia · depois Beto');
+    expect(behind).not.toContain('Vez de Carla · depois Lia');
     expect(screen.texts()).toContain('Vez de Lia · depois Beto');
     expect(screen.busy('Pular a vez')).toBe(false);
+  });
+
+  it('a vez passou, mas a tarefa não pôde ser buscada de novo: a tela segue a resposta do servidor, e o toque seguinte pergunta pela vez de agora', async () => {
+    const screen = await open();
+    await settle();
+    const readAt = client.getQueryState(['chores', 'c-1'])?.dataUpdatedAt;
+    // A internet oscila: o "Pular a vez" chega ao servidor, e as buscas de depois (a tarefa e as ordens) falham.
+    mockServer.down = ['chores', 'chore_rotation'];
+    await screen.press('Pular a vez');
+    expect(mockServer.skips).toEqual([{ p_chore_id: 'c-1', p_from: 'p-carla', p_to: 'p-lia' }]);
+    expect(mockServer.chore).toMatchObject({ assigned_to: null, kid_id: 'p-lia' });
+    // Sem a busca, vale a resposta: a vez passou para Lia, e a tela já diz isso. Nada a avisar.
+    expect(screen.texts()).toContain('Vez de Lia · depois Beto');
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(screen.busy('Pular a vez')).toBe(false);
+
+    // O toque seguinte pergunta pela vez de agora, e passa (a pergunta de antes não mudaria nada).
+    await screen.press('Pular a vez');
+    expect(mockConfirm.mock.calls).toEqual([
+      ['Pular a vez', 'Passar a vez de Carla para Lia?'],
+      ['Pular a vez', 'Passar a vez de Lia para Beto?'],
+    ]);
+    expect(mockServer.skips[1]).toEqual({ p_chore_id: 'c-1', p_from: 'p-lia', p_to: 'p-beto' });
+    expect(mockServer.chore).toMatchObject({ assigned_to: 'u-beto', kid_id: null });
+    expect(screen.texts()).toContain('Vez de Beto · depois Carla');
+    expect(mockNotify).not.toHaveBeenCalled();
+    // A tarefa em cache ganhou a vez da resposta, sem contar como lida do servidor (choreReadSince), e a busca segue
+    // devendo: quando a internet voltar, ela é lida de novo.
+    expect(client.getQueryData(['chores', 'c-1'])).toMatchObject({ assigned_to: 'u-beto', kid_id: null });
+    expect(client.getQueryState(['chores', 'c-1'])).toMatchObject({ dataUpdatedAt: readAt, isInvalidated: true });
   });
 
   it('a ordem mudou em outro celular e a seguinte agora é outra pessoa: a vez não vai para quem a pergunta não nomeou', async () => {

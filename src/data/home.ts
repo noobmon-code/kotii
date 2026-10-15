@@ -4,7 +4,7 @@ import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tansta
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { SAME_PURCHASE_DAYS, type PantryEntry } from '@/domain/cartPantry';
-import { groupRotations, isRotationRefused, isRotationUnavailable, ROTATION_NOT_READY, type ChoreRotations } from '@/domain/choreRotation';
+import { groupRotations, isRotationRefused, isRotationUnavailable, ROTATION_NOT_READY, type ChoreRotations, type ChoreTurn } from '@/domain/choreRotation';
 import { choreGoneOnSave } from '@/domain/chores';
 import { addDays, diffDays } from '@/domain/dates';
 import type { MedicationSchedule } from '@/domain/medications';
@@ -356,6 +356,17 @@ export function useSkipChoreTurn() {
  */
 export function choreReadSince(client: QueryClient, id: string, since: number): boolean {
   return (client.getQueryState(['chores', id])?.dataUpdatedAt ?? 0) >= since;
+}
+
+/**
+ * Grava na tarefa em cache a vez que o servidor respondeu (o "Pular a vez" que passou), quando a busca de depois
+ * falhou: a tela e o próximo toque seguem o servidor, e não a vez de antes. Não conta como leitura (choreReadSince):
+ * a data da última busca fica como estava, e a busca segue devendo (a tarefa é lida quando a internet ou o app voltam).
+ */
+export function setCachedChoreTurn(client: QueryClient, id: string, turn: ChoreTurn): void {
+  const key = ['chores', id];
+  client.setQueryData<Chore>(key, (chore) => chore && { ...chore, ...turn }, { updatedAt: client.getQueryState(key)?.dataUpdatedAt });
+  client.invalidateQueries({ queryKey: key, exact: true, refetchType: 'none' });
 }
 
 // ---------------------------------------------------------------------------
