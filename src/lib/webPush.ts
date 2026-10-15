@@ -102,7 +102,10 @@ const lastSubscription = {
  * servidor, na inscrição (push_subscriptions.market_trips); a escolha fica
  * também aqui porque a inscrição troca (chave nova, inscrição vencida, sair
  * e entrar na conta), e a nova nasce com o que este navegador pedir
- * (register): desligada com esta marca, ligada sem ela.
+ * (register): desligada com esta marca, ligada sem ela. A exceção é uma
+ * versão antiga do app, aberta em outra aba ou janela deste navegador, que
+ * refaça a inscrição primeiro: a linha nasce ligada (o limite está no
+ * AGENTS.md).
  */
 const MARKET_TRIPS_OFF_KEY = 'kotii:push-market-trips-off';
 const marketTripsOff = {
@@ -166,8 +169,10 @@ function ensureSubscription({ fresh = false }: { fresh?: boolean } = {}): Promis
     // Inscrição nova para este navegador: quem tinha desligado "Alguém indo ao
     // mercado" continua sem receber. A linha que register criou já nasceu
     // desligada; este pedido cuida da que não nasceu nele e está ligada (criada
-    // pela de quatro argumentos, que register usa sem a outra, ou por um app
-    // antigo), porque a inscrição com a escolha não muda linha que já existe.
+    // pela de quatro argumentos, que register usa sem a outra), porque a
+    // inscrição com a escolha não muda linha que já existe. A linha que um app
+    // antigo aberto em outra aba deste navegador criou não chega aqui: ele
+    // também guarda a inscrição como a última, e a troca não aparece.
     // A troca só fica registrada aqui depois de o servidor guardar isso: se ele
     // não guardar, a inscrição falha (os avisos são refeitos na próxima vez) e
     // a tentativa se repete, em vez de a nova ficar ligada sem ninguém saber.
