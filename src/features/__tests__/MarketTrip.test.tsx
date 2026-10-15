@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { defaultScheduler, notifyManager, onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import type { ReactElement } from 'react';
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from 'react-test-renderer';
@@ -131,12 +131,18 @@ beforeEach(() => {
   Object.assign(mockHouse, { user: 'ana', members: 2 });
   jest.mocked(notify).mockClear();
   jest.mocked(router.push).mockClear();
+  // O TanStack avisa a tela das mudanças do cache num setTimeout(0) dele, e o setTimeout(0) do teste podia
+  // rodar antes: às vezes a tela ainda não tinha acompanhado a resposta. Num microtask, o aviso do cache
+  // chega à tela junto com a resposta, antes de qualquer espera do teste.
+  notifyManager.setScheduler(queueMicrotask);
 });
 
 afterEach(async () => {
   await act(async () => tree.unmount());
   client.clear();
   onlineManager.setOnline(true);
+  // De volta ao agendador do app.
+  notifyManager.setScheduler(defaultScheduler);
 });
 
 describe('a faixa na tela Hoje', () => {
