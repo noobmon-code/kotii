@@ -3,7 +3,7 @@ import glyphs from '@expo/vector-icons/build/vendor/react-native-vector-icons/gl
 
 import { CATEGORY_KEYS } from '../../../supabase/functions/_shared/categories';
 import { CATEGORIES, compareByAisle, getCategory } from '../categories';
-import { choreStatus, describeChoreStatus, describeRecurrence } from '../chores';
+import { choreGoneOnSave, choreStatus, describeChoreStatus, describeRecurrence, isChoreGone, isChoreGoneOnSave } from '../chores';
 import {
   addDays,
   diffDays,
@@ -217,6 +217,34 @@ describe('chores', () => {
     expect(describeRecurrence('weekly', 1)).toBe('Toda semana');
     expect(describeRecurrence('daily', 2)).toBe('A cada 2 dias');
     expect(describeRecurrence('none', 1)).toBe('Uma vez');
+  });
+
+  it('knows a chore that no longer exists from a fetch that just failed', () => {
+    // O que a API responde ao `.single()` sem linha: a tarefa foi apagada em outro aparelho.
+    expect(isChoreGone({ code: 'PGRST116', details: 'The result contains 0 rows', message: 'Cannot coerce the result to a single JSON object' })).toBe(true);
+    expect(isChoreGone(new TypeError('Network request failed'))).toBe(false);
+    expect(isChoreGone({ code: '57014', message: 'canceling statement due to statement timeout' })).toBe(false);
+    expect(isChoreGone(null)).toBe(false);
+    expect(isChoreGone('PGRST116')).toBe(false);
+  });
+
+  it('knows a chore that no longer exists from the answer of a save', () => {
+    // O que save_chore responde pela tarefa que não está mais nesta casa.
+    expect(isChoreGoneOnSave({ code: 'P0002', message: 'chore not found', details: null, hint: null })).toBe(true);
+    // No banco que ainda não tem save_chore, a gravação direto na tabela que não acha a linha vira o mesmo erro.
+    expect(isChoreGoneOnSave(choreGoneOnSave())).toBe(true);
+    expect(choreGoneOnSave()).toBeInstanceOf(Error);
+    // O mesmo código, por outro motivo: a tarefa existe, quem saiu foi uma pessoa da ordem.
+    expect(
+      isChoreGoneOnSave({ code: 'P0002', message: 'Alguém do rodízio não está mais na casa. Confira a ordem e salve de novo.' }),
+    ).toBe(false);
+    // A busca sem linha é de isChoreGone; a recusa pelo rodízio criado em outro aparelho, de isRotationChangedElsewhere.
+    expect(isChoreGoneOnSave({ code: 'PGRST116', message: 'Cannot coerce the result to a single JSON object' })).toBe(false);
+    expect(isChoreGoneOnSave({ code: 'NK006', message: 'chore has a rotation' })).toBe(false);
+    expect(isChoreGoneOnSave(new Error('chore not found'))).toBe(false);
+    expect(isChoreGoneOnSave(new TypeError('Network request failed'))).toBe(false);
+    expect(isChoreGoneOnSave(null)).toBe(false);
+    expect(isChoreGoneOnSave('P0002')).toBe(false);
   });
 });
 

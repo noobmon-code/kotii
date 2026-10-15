@@ -322,6 +322,13 @@ export interface ChoreCompletion {
   completed_at: string;
 }
 
+/** Uma pessoa na ordem do rodízio de uma tarefa (a vez de agora fica na tarefa: assigned_to ou kid_id). */
+export interface ChoreRotationRow {
+  chore_id: string;
+  person_id: string;
+  position: number;
+}
+
 /** Documento da família; person_id nulo = documento da casa. */
 export interface HomeDocument {
   id: string;
