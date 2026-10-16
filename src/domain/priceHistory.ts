@@ -493,6 +493,11 @@ export function moreLabel(left: number): string | null {
   return left > 0 ? `Ver mais (${left === 1 ? 'falta' : 'faltam'} ${left})` : null;
 }
 
+/** O mesmo botão para o leitor de tela, que diz de qual lista ele é: a tela do produto tem outros "Ver mais". */
+export function moreAccessibilityLabel(left: number): string | null {
+  return left > 0 ? `Ver mais compras do histórico de preço (${left === 1 ? 'falta' : 'faltam'} ${left})` : null;
+}
+
 // ---------------------------------------------------------------------------
 // A seção inteira
 
@@ -521,6 +526,8 @@ export interface PriceHistoryView {
   rows: PurchaseRow[];
   /** "Ver mais (faltam 12)", ou null com todas as compras à vista. */
   more: string | null;
+  /** O que o leitor de tela diz nesse botão. */
+  moreAccessibilityLabel: string | null;
 }
 
 /**
@@ -544,6 +551,7 @@ export function priceHistoryView(
   const store = stores.some((s) => s.value === choices.store) ? choices.store! : ALL_STORES;
   const shown = store === ALL_STORES ? ofPeriod : ofPeriod.filter((p) => p.store === store);
   const visible = shown.slice(0, ROWS_AT_FIRST + Math.max(0, choices.more) * ROWS_PER_MORE);
+  const left = shown.length - visible.length;
   return {
     units: allUnits.length > 1 ? allUnits.map((value) => ({ value, label: unitLabel(value) })) : [],
     unit,
@@ -555,7 +563,8 @@ export function priceHistoryView(
     headline: shown.some(isPriced),
     chart: priceChart(shown, { productName, today }),
     rows: visible.map((p) => purchaseRow(p, today)),
-    more: moreLabel(shown.length - visible.length),
+    more: moreLabel(left),
+    moreAccessibilityLabel: moreAccessibilityLabel(left),
   };
 }
 

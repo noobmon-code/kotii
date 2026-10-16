@@ -107,10 +107,24 @@ afterEach(() => {
 });
 
 describe('preços de outras casas', () => {
-  // Sem código (um intermediário trocou a resposta), pelo texto, e só o desta função.
-  const noCode = { message: notInCache.message };
+  /** As respostas de "a função ainda não existe no banco". */
+  const MISSING: [string, unknown][] = [
+    ['PostgREST, fora do cache de esquema', notInCache],
+    ['Postgres, a função não existe', noFunction],
+    // Um intermediário trocou a resposta: vale o texto, e só o desta função.
+    ['sem código, com o texto desta função', { message: notInCache.message }],
+  ];
+  /** Os outros erros, que sobem. */
+  const OTHER: [string, unknown][] = [
+    ['sem rede', offline],
+    ['sem permissão', { code: '42501', message: 'permission denied for function shared_latest_prices' }],
+    ['tabela que não existe', { code: 'PGRST205', message: "Could not find the table 'public.x' in the schema cache" }],
+    // A função existe e falhou por dentro, ao chamar outra que não existe: é erro, não "não disponível".
+    ['42883 de outra função, saído de dentro desta', { code: '42883', message: 'function public.normalize(text, unknown) does not exist' }],
+    ['sem código, com o texto de outra função', { message: 'Could not find the function public.outra_funcao without parameters in the schema cache' }],
+  ];
 
-  it.each([notInCache, noFunction, noCode])('sem a função no banco: "não disponível" (null), sem erro', async (error) => {
+  it.each(MISSING)('sem a função no banco (%s): "não disponível" (null), sem erro', async (_case, error) => {
     const { db, asked } = fakeDb([], error);
     await expect(fetchSharedPrices(db)).resolves.toBeNull();
     expect(asked).toHaveLength(1);
@@ -160,15 +174,7 @@ describe('preços de outras casas', () => {
     expect(asked).toHaveLength(10);
   });
 
-  it.each([
-    offline,
-    { code: '42501', message: 'permission denied for function shared_latest_prices' },
-    { code: 'PGRST205', message: "Could not find the table 'public.x' in the schema cache" },
-    // A função existe e falhou por dentro, ao chamar outra que não existe: é erro, não "não disponível".
-    { code: '42883', message: 'function public.normalize(text, unknown) does not exist' },
-    // Sem código, o texto fala de outra função.
-    { message: 'Could not find the function public.outra_funcao without parameters in the schema cache' },
-  ])('outro erro sobe (a tela só deixa de mostrar a seção)', async (error) => {
+  it.each(OTHER)('outro erro sobe (%s): a tela só deixa de mostrar a seção', async (_case, error) => {
     await expect(fetchSharedPrices(fakeDb([], error).db)).rejects.toBe(error);
   });
 });
@@ -188,7 +194,10 @@ describe('o compartilhamento existe neste banco? (o cartão da aba Família)', (
   const probeNotInCache = { code: 'PGRST202', message: 'Could not find the function public.shared_prices_available without parameters in the schema cache' };
   const probeNoFunction = { code: '42883', message: 'function public.shared_prices_available() does not exist' };
 
-  it.each([probeNotInCache, probeNoFunction])('sem a função no banco: não (false), sem erro', async (error) => {
+  it.each<[string, unknown]>([
+    ['PostgREST, fora do cache de esquema', probeNotInCache],
+    ['Postgres, a função não existe', probeNoFunction],
+  ])('sem a função no banco (%s): não (false), sem erro', async (_case, error) => {
     const { db, asked } = askingDb({ data: null, error });
     await expect(fetchSharedPricesAvailable(db)).resolves.toBe(false);
     expect(asked).toEqual(['shared_prices_available']);
@@ -200,12 +209,12 @@ describe('o compartilhamento existe neste banco? (o cartão da aba Família)', (
     expect(asked).toEqual(['shared_prices_available']);
   });
 
-  it.each([offline, { code: '42883', message: 'function public.normalize(text, unknown) does not exist' }])(
-    'outro erro sobe (o cartão só deixa de aparecer)',
-    async (error) => {
-      await expect(fetchSharedPricesAvailable(askingDb({ data: null, error }).db)).rejects.toBe(error);
-    },
-  );
+  it.each<[string, unknown]>([
+    ['sem rede', offline],
+    ['42883 de outra função, saído de dentro desta', { code: '42883', message: 'function public.normalize(text, unknown) does not exist' }],
+  ])('outro erro sobe (%s): o cartão só deixa de aparecer', async (_case, error) => {
+    await expect(fetchSharedPricesAvailable(askingDb({ data: null, error }).db)).rejects.toBe(error);
+  });
 });
 
 /** Monta `Probe` com um cache novo e espera `done` (as buscas terminam fora do render). */

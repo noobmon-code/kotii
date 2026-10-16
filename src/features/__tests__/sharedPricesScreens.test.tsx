@@ -294,7 +294,7 @@ describe('tela do produto: "Visto em outras casas"', () => {
     const more = renderer!.root.findAll(
       (node) => typeof node.type === 'string' && node.props.accessibilityRole === 'button' && textOf(node) === 'Ver mais',
     );
-    expect(more.map((node) => node.props.accessibilityLabel)).toEqual(['Ver mais preços nos seus mercados', 'Ver mais preços em outros mercados']);
+    expect(more.map((node) => node.props.accessibilityLabel)).toEqual(['Ver mais preços de outras casas nos seus mercados', 'Ver mais preços de outras casas em outros mercados']);
   });
 
   it('só com os preços e os mercados da casa em dia: durante uma busca nova, ou depois de uma que falhou, a seção espera', async () => {
