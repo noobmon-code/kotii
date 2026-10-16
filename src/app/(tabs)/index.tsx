@@ -16,6 +16,7 @@ import { useFamilyCalendar } from '@/data/family';
 import { useBills, useBudgets, useRecentBillPayments, useSpending } from '@/data/finance';
 import { useDocuments, useEquipmentList } from '@/data/house';
 import { useAddItemsToList, usePurchaseRecords, useShoppingLists } from '@/data/market';
+import { useRefreshMarketTrips } from '@/data/marketTrips';
 import { useMenu } from '@/data/menu';
 import { useRefreshWeather } from '@/data/weather';
 import { useReceipts } from '@/data/receipts';
@@ -43,6 +44,7 @@ import { hasHealthToday, healthTodayCount, HealthTodaySections } from '@/feature
 import { MedicationRefills, useRefills } from '@/features/health/MedicationSections';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { InstallAppCard } from '@/features/InstallAppCard';
+import { MarketTripBanner } from '@/features/MarketTrip';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useJustListed } from '@/features/RecentPurchases';
 import { SuppliesTodaySection } from '@/features/SuppliesSection';
@@ -166,14 +168,16 @@ export default function TodayScreen() {
     ...health.queries,
   ];
   const refreshing = queries.some((q) => q.isRefetching);
-  // O clima e os pagamentos recentes ficam fora de `queries` (não contam para "tudo em dia"), mas atualizam junto.
+  // O clima, as idas ao mercado e os pagamentos recentes ficam fora de `queries` (não contam para "tudo em dia"), mas atualizam junto.
   const refreshWeather = useRefreshWeather();
+  const refreshTrips = useRefreshMarketTrips();
   // Os compromissos também ficam fora de `queries`: sem eles (ou sem as tabelas deles), a tela é a de sempre.
   const family = useFamilyCalendar();
   const refresh = () => {
     queries.forEach((q) => q.refetch());
     rotations.refetch();
     refreshWeather();
+    refreshTrips();
     family.refetch();
     if (billsDue.length) recentPayments.refetch();
   };
@@ -318,6 +322,9 @@ export default function TodayScreen() {
         </View>
         <SkyArt period={period} size={104} />
       </View>
+
+      {/* Alguém da casa está indo às compras: ainda dá tempo de pôr na lista o que falta. */}
+      <MarketTripBanner openable />
 
       <WeatherCard now={now} />
 

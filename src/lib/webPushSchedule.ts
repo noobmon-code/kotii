@@ -44,6 +44,16 @@ export function scheduleRow(id: string, subscriptionId: string, { content, trigg
   }
 }
 
+/**
+ * Linha que o servidor pôs na agenda deste navegador (o aviso de alguém indo
+ * ao mercado, announce_market_trip), marcada com data.server. Não é um
+ * lembrete do app: ele não a conta nem a refaz, e a poda do servidor
+ * (prune_push_schedule, que olha a mesma marca) a deixa lá até ser entregue.
+ */
+export function isServerPush(data: unknown): boolean {
+  return typeof data === 'object' && data !== null && !Array.isArray(data) && 'server' in data;
+}
+
 /** A chave pública VAPID (base64url) no formato que o PushManager pede. */
 export function base64UrlToBytes(value: string): Uint8Array<ArrayBuffer> {
   const base64 = value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '=');

@@ -77,6 +77,10 @@ jest.mock('@/features/CartPantryModal', () => ({ CartPantryModal: () => null }))
 jest.mock('@/features/CommonItemsPicker', () => ({ CommonItemsPicker: () => null }));
 jest.mock('@/features/ListItemEditor', () => ({ ListItemEditor: () => null }));
 jest.mock('@/features/OfflineNotice', () => ({ OfflineNotice: () => null }));
+// "Estou indo ao mercado" tem os testes dele (MarketTrip.test.tsx): aqui, só que a lista o atualiza junto.
+const mockRefreshTrips = jest.fn();
+jest.mock('@/data/marketTrips', () => ({ useRefreshMarketTrips: () => mockRefreshTrips }));
+jest.mock('@/features/MarketTrip', () => ({ MarketTripAction: () => null, MarketTripBanner: () => null }));
 jest.mock('@/features/RecentPurchases', () => ({
   ...jest.requireActual<typeof import('@/features/RecentPurchases')>('@/features/RecentPurchases'),
   RecentPurchases: () => null,
@@ -298,7 +302,9 @@ describe('ligações ou produtos que não chegaram', () => {
 
   it('puxar para atualizar busca de novo as ligações e os produtos', async () => {
     await mount();
+    mockRefreshTrips.mockClear();
     act(() => renderer!.root.findByType(Screen).props.onRefresh());
+    expect(mockRefreshTrips).toHaveBeenCalledTimes(1);
     for (const key of ['items', 'prices', 'pantry', 'links', 'products', 'stores', 'purchases']) {
       expect(mockQueries[key].refetch).toHaveBeenCalledTimes(1);
     }

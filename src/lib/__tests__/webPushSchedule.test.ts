@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { base64UrlToBytes, sameKey, scheduleRow, TRIGGER_TYPES } from '../webPushSchedule';
+import { base64UrlToBytes, isServerPush, sameKey, scheduleRow, TRIGGER_TYPES } from '../webPushSchedule';
 
 describe('agenda do navegador', () => {
   const content = { title: 'Amoxicilina — Ana', body: 'Hora de tomar: 5 ml', data: { medicationId: 'm1' } };
@@ -35,6 +35,19 @@ describe('agenda do navegador', () => {
       repeat: 'once',
       fire_at: '2026-10-01T12:00:00.000Z',
     });
+  });
+
+  it('linha posta pelo servidor (a marca data.server, a mesma que a poda do banco olha) não é lembrete do app', () => {
+    expect(isServerPush({ reminder: 'ida:t1', server: true, householdId: 'h1' })).toBe(true);
+    // A marca é a chave existir, como no banco (data ? 'server').
+    expect(isServerPush({ server: false })).toBe(true);
+    expect(isServerPush({ reminder: 'bills:b1:2026-10-10', householdId: 'h1' })).toBe(false);
+    expect(isServerPush({ medicationId: 'm1' })).toBe(false);
+    expect(isServerPush({})).toBe(false);
+    expect(isServerPush(null)).toBe(false);
+    expect(isServerPush(undefined)).toBe(false);
+    expect(isServerPush('server')).toBe(false);
+    expect(isServerPush(['server'])).toBe(false);
   });
 
   it('a chave pública do servidor vira os bytes que o navegador pede', () => {

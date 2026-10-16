@@ -1,8 +1,8 @@
 -- Testes do schema: isolamento entre famílias (RLS), matching, preços,
 -- confirmação de nota, recorrência e rodízio de tarefas, remédios, saúde,
 -- aparelhos, documentos, prestadores e consertos, financeiro, saída da casa,
--- compromissos da família, preços compartilhados entre casas e estoque dos
--- remédios.
+-- compromissos da família, preços compartilhados entre casas, estoque dos
+-- remédios e idas ao mercado.
 -- Rodado por scripts/db/test.sh depois de stubs.sql + migrations.
 
 \set ON_ERROR_STOP 1
@@ -7714,5 +7714,1186 @@ begin
     where has_function_privilege(who, 'public.medication_rule_without_recount()', 'execute')
   ), 'medication_rule_without_recount is called by no role of the API';
 end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• "estou indo ao mercado": a ida, o aviso nos navegadores dos outros e os limites'
+\set user_p '00000000-0000-0000-0000-000000000031'
+\set user_q '00000000-0000-0000-0000-000000000032'
+\set user_r '00000000-0000-0000-0000-000000000033'
+\set user_s '00000000-0000-0000-0000-000000000034'
+\set user_u '00000000-0000-0000-0000-000000000035'
+\set user_t '00000000-0000-0000-0000-000000000036'
+reset role;
+insert into auth.users (id) values (:'user_p'), (:'user_q'), (:'user_r'), (:'user_s'), (:'user_u'), (:'user_t');
+-- Os caracteres que não aparecem vão escritos com escapes (E'\u....'), aqui e na migração: nenhum fica solto no arquivo.
+do $$
+begin
+  assert public.push_text(E'  Ana\n\r\tMaria\u2028da\u202E Silva  ', 40) = 'Ana Maria da Silva', 'one line, no control or direction characters';
+  assert public.push_text(E'Ana \n' || repeat('x', 50), 4) = 'Ana', 'cut, and no space left at the end';
+  assert public.push_text(null, 40) = '' and public.push_text(E'\n\t', 40) = '', 'nothing left: the caller falls back';
+  assert public.push_text(repeat(E'\u202Eab', 100), 40) = left(repeat('ab ', 100), 40), '300 characters with direction overrides: one line, cut at the limit';
+  -- Um nome só com caracteres que não aparecem é um nome vazio.
+  assert public.push_text(E'\u200B\u200B', 40) = '', 'zero-width spaces only';
+  assert public.push_text(E'\u00A0\u00A0', 40) = '', 'no-break spaces only';
+  assert public.push_text(E'\u3164', 40) = '' and public.push_text(E'\uFEFF\u2060\u00AD\u061C\u200E', 40) = '', 'fillers, joiners and marks only';
+  assert public.push_text(E'\u200D \u200C\uFE0F', 40) = '', 'the joiners that are kept do not make a name on their own';
+  assert public.push_text(E'Ana\u00A0Maria', 40) = 'Ana Maria', 'a no-break space becomes a plain one';
+  assert public.push_text(E'Ko\u200Btii\u202E: conta', 40) = 'Ko tii : conta', 'zero-width and direction characters do not hide inside a name';
+  assert public.push_text(E'a\u2066b\u2069c\u2067', 40) = 'a b c', 'the direction isolates go too';
+  assert public.push_text(E'\u034F', 40) = '' and public.push_text(E'\u17B4\u17B5\u2065\uFFF9\uFFFC', 40) = ''
+    and public.push_text(E'\U0001D159', 40) = '', 'rarer invisible characters do not make a name either';
+  assert public.push_text(E'\u0301', 40) = '', 'a combining accent with no letter under it is not a name';
+  assert public.push_text(E'Jose\u0301 A\u0303', 40) = E'Jose\u0301 A\u0303', 'accents typed as combining marks stay on their letters';
+  -- A família (homem, mulher, menina) é um emoji só por causa dos U+200D: continua inteira.
+  assert public.push_text(E'Casa \U0001F468\u200D\U0001F469\u200D\U0001F467', 40) = E'Casa \U0001F468\u200D\U0001F469\u200D\U0001F467',
+    'an emoji sequence keeps its joiners';
+  -- Os seletores de variação dos ideogramas (U+E0100–E01EF) e do mongol (U+180B–180D, U+180F) e as marcas que se
+  -- combinam fora de U+0300–036F, sozinhos, não fazem um nome: o aviso diz "Alguém da casa".
+  assert public.push_text(E'\U000E0100', 40) = '' and public.push_text(E'\U000E01EF\U000E0100', 40) = '', 'ideographic variation selectors only';
+  assert public.push_text(E'\u180B', 40) = '' and public.push_text(E'\u180B\u180C\u180D\u180F', 40) = '', 'Mongolian variation selectors only';
+  -- O U+180E, entre eles, é o separador de vogais do mongol, e não um seletor: vira espaço, como os de largura zero.
+  assert public.push_text(E'A\u180EB', 40) = 'A B', 'the Mongolian vowel separator becomes a space inside a name';
+  assert public.push_text(E'\u20D0', 40) = '' and public.push_text(E'\u1AB0\u1DC4\u20D0\uFE20', 40) = '', 'combining marks of the other blocks only';
+  assert coalesce(nullif(public.push_text(E' \U000E0100\u180B\u20D0 ', 40), ''), 'Alguém da casa') = 'Alguém da casa', 'so the name falls back';
+  -- Os controles de formato que nunca são parte de um nome viram espaço, como os outros invisíveis.
+  assert public.push_text(E'\U0001BCA0\U0001D173\U0001D17A\uFFF0\uFFF8', 40) = '', 'format controls only';
+  assert public.push_text(E'Ana\U0001D173Maria\uFFF0Silva\U0001BCA3', 40) = 'Ana Maria Silva', 'format controls inside a name become spaces';
+  -- Dentro de um nome de verdade, os seletores e as marcas ficam: são parte da letra.
+  assert public.push_text(E'\u845B\U000E0100\u98FE', 40) = E'\u845B\U000E0100\u98FE', 'a name with an ideographic variation selector inside keeps it';
+  assert public.push_text(E'\u182D\u180B\u1823', 40) = E'\u182D\u180B\u1823', 'and so does a Mongolian name with its variation selector';
+  assert public.push_text(E'Zoe\u1DC4 Ana', 40) = E'Zoe\u1DC4 Ana', 'and a letter with a combining mark of another block';
+end $$;
+-- As permissões vêm da própria migração, e não do padrão do projeto (que o
+-- Supabase deixa de aplicar a tabela nova em 30/10/2026). Uma de cada vez: com
+-- várias na mesma pergunta, has_table_privilege responde que sim se o papel
+-- tiver QUALQUER uma delas.
+do $$
+declare
+  t text;
+  p text;
+begin
+  foreach p in array array['select', 'insert', 'update', 'delete', 'truncate', 'references', 'trigger'] loop
+    foreach t in array array['public.market_trips', 'public.market_trip_log'] loop
+      assert not has_table_privilege('anon', t, p), format('anon must not have %s on %s', p, t);
+      if p in ('select', 'insert', 'update', 'delete') then
+        assert has_table_privilege('service_role', t, p), format('service_role must have %s on %s', p, t);
+      end if;
+    end loop;
+    -- O registro do limite é só da função; nas idas, quem está logado só lê.
+    assert not has_table_privilege('authenticated', 'public.market_trip_log', p), format('authenticated must not have %s on market_trip_log', p);
+    assert has_table_privilege('authenticated', 'public.market_trips', p) = (p = 'select'),
+      format('authenticated must have select and nothing else on market_trips (%s)', p);
+  end loop;
+  assert (select bool_and(c.relrowsecurity) from pg_class c where c.oid in ('public.market_trips'::regclass, 'public.market_trip_log'::regclass)),
+    'row level security on both';
+  assert not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'market_trip_log'), 'and no policy on the log: nobody reads it through the app';
+  -- Cada aviso tira do registro o que já fez 24 horas, de todas as casas: pela data, com índice.
+  assert exists (
+    select 1 from pg_indexes
+    where schemaname = 'public' and tablename = 'market_trip_log' and indexname = 'market_trip_log_created_idx'
+      and indexdef like '%USING btree (created_at)'
+  ), 'the global purge of the log has an index on created_at';
+  -- Encerrar, avisar de novo, sair da casa e arquivar ou apagar a lista tiram da fila os avisos de uma ida
+  -- pelo data.reminder: num índice só das linhas do servidor, sem ler a agenda de todos os navegadores.
+  assert exists (
+    select 1 from pg_indexes
+    where schemaname = 'public' and tablename = 'push_schedule' and indexname = 'push_schedule_server_reminder_idx'
+      and indexdef like '%USING btree (((data ->> ''reminder''::text))) WHERE (data ? ''server''::text)'
+  ), 'the trip notices are reached through a partial index on data->>reminder, of the server rows only';
+end $$;
+-- E o planejador o usa nas buscas como as funções as escrevem (com o `data ? 'server'` do índice): o
+-- seqscan desligado só tira o empate de uma tabela pequena, e sem o índice o plano seria a leitura inteira.
+do $$
+declare
+  line text;
+  plan text := '';
+begin
+  perform set_config('enable_seqscan', 'off', true);
+  for line in execute $sql$
+    explain delete from public.push_schedule p
+      where p.data ? 'server' and p.data ->> 'reminder' = 'ida:' || '00000000-0000-0000-0000-000000000000'
+  $sql$ loop
+    plan := plan || line || ' / ';
+  end loop;
+  assert plan like '%Index Scan using push_schedule_server_reminder_idx%', 'the delete of a trip notices uses the index: ' || plan;
+  plan := '';
+  for line in execute $sql$
+    explain with ended as (select gen_random_uuid() as id)
+    delete from public.push_schedule p using ended e where p.data ? 'server' and p.data ->> 'reminder' = 'ida:' || e.id::text
+  $sql$ loop
+    plan := plan || line || ' / ';
+  end loop;
+  assert plan like '%Index Scan using push_schedule_server_reminder_idx%', 'and so does the delete of the notices of the trips just ended: ' || plan;
+  -- Arquivar a lista e sair da casa encerram as idas num comando e tiram os avisos delas no seguinte, pelos ids.
+  -- Com poucas linhas, o planejador pode ler o índice inteiro por bitmap: também só as linhas do servidor.
+  plan := '';
+  for line in execute $sql$
+    explain delete from public.push_schedule p
+      using unnest('{00000000-0000-0000-0000-000000000000,00000000-0000-0000-0000-000000000001}'::uuid[]) e(id)
+      where p.data ? 'server' and p.data ->> 'reminder' = 'ida:' || e.id::text
+  $sql$ loop
+    plan := plan || line || ' / ';
+  end loop;
+  assert plan like '%Index Scan using push_schedule_server_reminder_idx%' or plan like '%Bitmap Index Scan on push_schedule_server_reminder_idx%',
+    'and so does the delete of the notices of the trips ended the statement before: ' || plan;
+end $$;
+set role authenticated;
+
+-- A casa P: Paula (dona, com um nome de exibição hostil), Quim, Rita, Sara e Ugo.
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+select (public.create_household('Casa P', E'Paula\n\r\tMalvada ' || repeat('x', 300))).id as hh_p \gset
+select set_config('test.hh_p', :'hh_p', false) \gset
+select invite_code as invite_p from public.households where id = :'hh_p' \gset
+insert into public.shopping_lists (name, kind) values (E'Compras\ndo mês ' || repeat('y', 300), 'mercado') returning id as list_p1 \gset
+insert into public.shopping_lists (name, kind) values ('Farmácia', 'farmacia') returning id as list_p2 \gset
+select set_config('test.list_p1', :'list_p1', false) \gset
+select set_config('test.list_p2', :'list_p2', false) \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-p1', 'k', 'a', 'UTC') \gset
+
+-- Quim recebe em dois navegadores.
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+select public.join_household(:'invite_p', 'Quim') \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-q1', 'k', 'a', 'UTC') \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-q2', 'k', 'a', 'UTC') \gset
+
+-- Rita desligou "Alguém indo ao mercado" no navegador dela.
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+select public.join_household(:'invite_p', 'Rita') \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-r1', 'k', 'a', 'UTC') \gset
+do $$
+begin
+  assert (select market_trips from public.push_subscriptions), 'a browser that receives Kotii notifications starts with the trips on';
+  assert public.set_push_market_trips('https://fcm.googleapis.com/fcm/send/ida-r1', false), 'the owner switches her browser off';
+  assert not (select market_trips from public.push_subscriptions), 'and reads it back';
+  assert not public.set_push_market_trips('https://fcm.googleapis.com/fcm/send/ida-q1', false), 'a foreign endpoint changes nothing';
+end $$;
+
+-- A agenda do navegador de Sara está cheia.
+select set_config('request.jwt.claim.sub', :'user_s', false) \gset
+select public.join_household(:'invite_p', 'Sara') \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-s1', 'k', 'a', 'UTC') \gset
+insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute)
+select gen_random_uuid(), (select id from public.push_subscriptions), 'Aviso ' || n, 'daily', 8, 0
+from generate_series(1, public.max_push_schedule()) n;
+
+select set_config('request.jwt.claim.sub', :'user_u', false) \gset
+select public.join_household(:'invite_p', 'Ugo') \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-u1', 'k', 'a', 'UTC') \gset
+
+-- Outra casa: Téo, e Paula também mora nela.
+select set_config('request.jwt.claim.sub', :'user_t', false) \gset
+select (public.create_household('Casa T', 'Téo')).id as hh_t \gset
+select set_config('test.hh_t', :'hh_t', false) \gset
+select invite_code as invite_t from public.households where id = :'hh_t' \gset
+insert into public.shopping_lists (name, kind) values ('Mercado', 'mercado') returning id as list_t1 \gset
+select set_config('test.list_t1', :'list_t1', false) \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-t1', 'k', 'a', 'UTC') \gset
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+select public.join_household(:'invite_t', 'Paula') \gset
+
+reset role;
+do $$
+begin
+  assert (select count(*) from public.push_subscriptions where endpoint like '%/ida-q1' and market_trips) = 1, 'Rita did not touch the other member browser';
+end $$;
+set role anon;
+do $$
+begin
+  perform public.announce_market_trip(gen_random_uuid());
+  raise exception 'FAIL: anon announced a trip';
+exception when insufficient_privilege then null;
+end $$;
+set role authenticated;
+
+-- Paula avisa, com a casa P aberta.
+do $$
+declare
+  hp uuid := current_setting('test.hh_p')::uuid;
+  list uuid := current_setting('test.list_p1')::uuid;
+  r jsonb;
+  again jsonb;
+  closed uuid;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', hp)::text, true);
+  begin
+    perform public.announce_market_trip(current_setting('test.list_t1')::uuid);
+    raise exception 'FAIL: announced a list of another household (even one the person lives in)';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.announce_market_trip(gen_random_uuid());
+    raise exception 'FAIL: announced a list that does not exist';
+  exception when no_data_found then null;
+  end;
+  -- Uma lista arquivada (por outro aparelho, com a tela ainda aberta neste) também não serve.
+  insert into public.shopping_lists (name) values ('Arquivada') returning id into closed;
+  update public.shopping_lists set archived_at = now() where id = closed;
+  begin
+    perform public.announce_market_trip(closed);
+    raise exception 'FAIL: announced an archived list';
+  exception when no_data_found then null;
+  end;
+  assert not exists (select 1 from public.market_trips), 'a refused announcement leaves no trip';
+
+  r := public.announce_market_trip(list);
+  assert (r ->> 'repeated')::boolean = false, 'a new trip';
+  assert (r ->> 'members')::int = 4, 'four other members';
+  assert (r ->> 'notified')::int = 2, 'two of them had a notification queued (Quim once, Ugo; not Rita, not Sara)';
+  perform set_config('test.trip_1', r ->> 'trip_id', false);
+  assert (select count(*) from public.push_schedule) = 0, 'nothing in the announcer own browser';
+  assert (select count(*) from public.market_trips where id = (r ->> 'trip_id')::uuid and user_id = auth.uid() and list_id = list
+    and ended_at is null and ends_at = created_at + interval '2 hours') = 1, 'the trip lasts two hours';
+
+  again := public.announce_market_trip(list);
+  assert again ->> 'trip_id' = r ->> 'trip_id' and (again ->> 'repeated')::boolean and (again ->> 'notified')::int = 0,
+    'within 30 minutes: the same trip, nobody notified again';
+  assert (again ->> 'created_at')::timestamptz = (r ->> 'created_at')::timestamptz, 'with the time of the first announcement';
+  assert (select count(*) from public.market_trips) = 1, 'and no second trip';
+end $$;
+
+reset role;
+do $$
+declare
+  hp uuid := current_setting('test.hh_p')::uuid;
+  trip text := current_setting('test.trip_1');
+  who text := 'Paula Malvada ' || repeat('x', 26);
+  list_name text := 'Compras do mês ' || repeat('y', 45);
+  queued public.push_schedule;
+begin
+  assert (
+    select array_agg(s.endpoint order by s.endpoint)
+    from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where p.data ? 'server'
+  ) = array[
+    'https://fcm.googleapis.com/fcm/send/ida-q1', 'https://fcm.googleapis.com/fcm/send/ida-q2', 'https://fcm.googleapis.com/fcm/send/ida-u1'
+  ], 'one row per browser of the other members with the option on: not the announcer, not the one who switched it off, not the full one, not the other household (nor the announcer other household), and nothing from the repeat';
+  assert (select count(distinct (p.title, p.body, p.data::text, p.repeat)) from public.push_schedule p where p.data ? 'server') = 1,
+    'all the same notice (each of them lives in one household: no household name in the title)';
+  select * into queued from public.push_schedule p where p.data ? 'server' limit 1;
+  assert char_length(who) = 40 and queued.title = who || ' está indo ao mercado', 'title from the stored name: one line, cut at 40';
+  assert char_length(list_name) = 60 and queued.body = 'Falta alguma coisa? Ponha na lista “' || list_name || '” agora.',
+    'body from the stored list name: one line, cut at 60';
+  assert queued.title !~ '[[:cntrl:]]' and queued.body !~ '[[:cntrl:]]', 'no line breaks or control characters';
+  assert queued.data = jsonb_build_object('reminder', 'ida:' || trip, 'server', true, 'householdId', hp), 'tagged as a server row of this trip and household';
+  assert queued.repeat = 'once' and queued.fire_at <= now() and queued.next_at <= now() and queued.claimed_at is null, 'due right away';
+  assert (select display_name from public.market_trips where id = trip::uuid) = who, 'the trip keeps the name that went out';
+  assert (select count(*) from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where s.endpoint like '%/ida-s1') = public.max_push_schedule(), 'the full browser was skipped without failing the others';
+end $$;
+
+-- A send-push de hoje levaria essas linhas.
+set role service_role;
+do $$
+begin
+  assert (
+    select array_agg(d.endpoint order by d.endpoint) from public.take_due_pushes(now() + interval '1 second') d
+    where d.data ->> 'reminder' = 'ida:' || current_setting('test.trip_1')
+  ) = array[
+    'https://fcm.googleapis.com/fcm/send/ida-q1', 'https://fcm.googleapis.com/fcm/send/ida-q2', 'https://fcm.googleapis.com/fcm/send/ida-u1'
+  ], 'take_due_pushes hands the queued rows to send-push';
+end $$;
+reset role;
+update public.push_schedule set claimed_at = null;
+set role authenticated;
+
+-- No navegador de Quim: a poda do app deixa o aviso do servidor; ele não encerra a ida de Paula nem escreve direto.
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+declare
+  trip uuid := current_setting('test.trip_1')::uuid;
+  sub uuid := (select id from public.push_subscriptions where endpoint like '%/ida-q1');
+begin
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute)
+  values (gen_random_uuid(), sub, 'Lembrete que o app esqueceu', 'daily', 8, 0);
+  assert public.prune_push_schedule(sub, '{}') = 1, 'the prune still removes what the app no longer knows';
+  assert (select array_agg(data ->> 'reminder') from public.push_schedule where subscription_id = sub) = array['ida:' || trip],
+    'and keeps the row the server queued';
+
+  assert (select count(*) from public.market_trips where id = trip) = 1, 'the household reads the trip';
+  assert not public.end_market_trip(trip), 'another member does not end it';
+  assert (select ended_at from public.market_trips where id = trip) is null, 'still on';
+  begin
+    insert into public.market_trips (household_id, list_id, user_id, display_name, ends_at)
+    values (current_setting('test.hh_p')::uuid, current_setting('test.list_p1')::uuid, auth.uid(), 'Quim', now() + interval '2 hours');
+    raise exception 'FAIL: inserted a trip directly';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update public.market_trips set ended_at = now() where id = trip;
+    raise exception 'FAIL: updated a trip directly';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from public.market_trips where id = trip;
+    raise exception 'FAIL: deleted a trip directly';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- Ugo desliga a opção: o aviso de ida que estava na fila dele sai, o resto da agenda fica.
+select set_config('request.jwt.claim.sub', :'user_u', false) \gset
+do $$
+declare
+  sub uuid := (select id from public.push_subscriptions);
+begin
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute)
+  values (gen_random_uuid(), sub, 'Lembrete do Ugo', 'daily', 8, 0);
+  assert public.set_push_market_trips('https://fcm.googleapis.com/fcm/send/ida-u1', false), 'switched off';
+  assert (select array_agg(title) from public.push_schedule) = array['Lembrete do Ugo'], 'the queued trip notice left, the reminder stayed';
+  assert public.set_push_market_trips('https://fcm.googleapis.com/fcm/send/ida-u1', true), 'and on again';
+  delete from public.push_schedule;
+end $$;
+
+-- A outra casa não lê as idas da casa P, nem pedindo por ela.
+select set_config('request.jwt.claim.sub', :'user_t', false) \gset
+do $$
+begin
+  assert (select count(*) from public.market_trips) = 0, 'another household does not read the trips';
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_p'))::text, true);
+  assert (select count(*) from public.market_trips) = 0, 'nor by asking for that household';
+  assert not public.end_market_trip(current_setting('test.trip_1')::uuid), 'nor ends them';
+  assert (select count(*) from public.push_schedule) = 0, 'and got no notice';
+end $$;
+
+-- Paula encerra: vale para a casa toda, e o que não saiu deixa a fila.
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  trip uuid := current_setting('test.trip_1')::uuid;
+  r jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_p'))::text, true);
+  assert public.end_market_trip(trip), 'the author ends the trip';
+  assert (select ended_at from public.market_trips where id = trip) is not null, 'ended for everyone';
+  assert not public.end_market_trip(trip), 'ending twice does nothing';
+
+  -- Uma lista de farmácia: o aviso não fala em mercado.
+  r := public.announce_market_trip(current_setting('test.list_p2')::uuid);
+  assert (r ->> 'repeated')::boolean = false and (r ->> 'notified')::int = 2, 'another list is another trip';
+  perform set_config('test.trip_2', r ->> 'trip_id', false);
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_1')),
+    'the undelivered notices of the ended trip are gone';
+  assert (select count(*) from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_2')
+    and title like '% está indo às compras' and body = 'Falta alguma coisa? Ponha na lista “Farmácia” agora.') = 3,
+    'a list that is not a market one says "às compras"';
+  assert (select count(*) from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where s.endpoint like '%/ida-s1') = public.max_push_schedule(), 'the other browsers kept their schedule';
+end $$;
+
+-- Ugo é tirado da casa: o aviso que ainda não saiu para ele some, e os próximos não vão.
+set role authenticated;
+do $$
+declare
+  hp uuid := current_setting('test.hh_p')::uuid;
+  r jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', hp)::text, true);
+  perform public.remove_member(hp, '00000000-0000-0000-0000-000000000035');
+  -- A ida da lista de mercado foi encerrada: avisar de novo é uma ida nova.
+  r := public.announce_market_trip(current_setting('test.list_p1')::uuid);
+  assert (r ->> 'repeated')::boolean = false and (r ->> 'members')::int = 3 and (r ->> 'notified')::int = 1,
+    'after an ended trip a new one starts, only for who still lives in the household';
+  perform set_config('test.trip_3', r ->> 'trip_id', false);
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (
+    select 1 from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where s.endpoint like '%/ida-u1'
+  ), 'the removed member lost the queued notice and got no new one';
+  assert (select count(*) from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_3')) = 2,
+    'the new trip went to the two browsers of the member that is left with the option on';
+  -- Meia hora depois (as idas de até agora ficam 31 minutos mais velhas).
+  update public.market_trips set created_at = created_at - interval '31 minutes';
+end $$;
+
+-- Até 5 idas novas por pessoa, por casa, em 24 horas.
+set role authenticated;
+do $$
+declare
+  hp uuid := current_setting('test.hh_p')::uuid;
+  r jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', hp)::text, true);
+  r := public.announce_market_trip(current_setting('test.list_p1')::uuid);
+  assert (r ->> 'repeated')::boolean = false and r ->> 'trip_id' <> current_setting('test.trip_3'), 'after 30 minutes: a new trip (the fourth)';
+  r := public.announce_market_trip(current_setting('test.list_p2')::uuid);
+  assert (r ->> 'repeated')::boolean = false and r ->> 'trip_id' <> current_setting('test.trip_2'), 'and the fifth';
+  assert (select count(*) from public.market_trips where user_id = auth.uid()) = 5, 'five trips in the day';
+  begin
+    perform 1 from public.market_trip_log;
+    raise exception 'FAIL: a member read the log of announcements';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+reset role;
+do $$
+begin
+  -- O limite conta deste registro: uma linha por ida nova (o aviso repetido e os recusados não entram).
+  assert (select count(*) from public.market_trip_log
+    where user_id = '00000000-0000-0000-0000-000000000031' and household_id = current_setting('test.hh_p')::uuid) = 5
+    and (select count(*) from public.market_trip_log) = 5, 'one log row per new trip, with its person and household';
+end $$;
+update public.market_trips set created_at = created_at - interval '31 minutes';
+select count(*) as queued_before from public.push_schedule where data ? 'server' \gset
+select set_config('test.queued_before', :'queued_before', false) \gset
+set role authenticated;
+do $$
+declare
+  r jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_p'))::text, true);
+  begin
+    perform public.announce_market_trip(current_setting('test.list_p1')::uuid);
+    raise exception 'FAIL: a sixth trip in 24 hours';
+  exception when sqlstate 'NK005' then null;
+  end;
+  assert (select count(*) from public.market_trips where user_id = auth.uid()) = 5, 'the refused one left no trip';
+
+  -- O limite é por casa: na casa T, Paula ainda avisa, e só quem mora lá recebe.
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_t'))::text, true);
+  begin
+    perform public.announce_market_trip(current_setting('test.list_p1')::uuid);
+    raise exception 'FAIL: announced a list of the household that is not open';
+  exception when no_data_found then null;
+  end;
+  r := public.announce_market_trip(current_setting('test.list_t1')::uuid);
+  assert (r ->> 'members')::int = 1 and (r ->> 'notified')::int = 1, 'in the other household: its one other member';
+  perform set_config('test.trip_t', r ->> 'trip_id', false);
+end $$;
+reset role;
+do $$
+begin
+  assert (
+    select array_agg(s.endpoint) from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where p.data ->> 'reminder' = 'ida:' || current_setting('test.trip_t')
+  ) = array['https://fcm.googleapis.com/fcm/send/ida-t1'], 'only the member of the household the announcer is in';
+  assert (select title from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_t'))
+    = 'Paula está indo ao mercado', 'with the name she has in that household';
+  assert (select count(*) from public.push_schedule where data ? 'server') = current_setting('test.queued_before')::int + 1,
+    'the refused announcement queued nothing';
+  assert (select count(*) from public.market_trip_log) = 6, 'nor a log row: five in one household, one in the other';
+  -- O primeiro aviso faz mais de 24 horas: volta a caber um.
+  update public.market_trip_log set created_at = now() - interval '25 hours'
+    where id = (
+      select g.id from public.market_trip_log g
+      where g.household_id = current_setting('test.hh_p')::uuid
+      order by g.created_at
+      limit 1
+    );
+end $$;
+set role authenticated;
+do $$
+declare
+  r jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_p'))::text, true);
+  r := public.announce_market_trip(current_setting('test.list_p1')::uuid);
+  assert (r ->> 'repeated')::boolean = false, 'an announcement older than 24 hours no longer counts';
+  perform set_config('test.trip_p6', r ->> 'trip_id', false);
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.market_trip_log where created_at <= now() - interval '24 hours'),
+    'and it left the log in that same call';
+  assert (select count(*) from public.market_trip_log where household_id = current_setting('test.hh_p')::uuid) = 5
+    and (select count(*) from public.market_trip_log where household_id = current_setting('test.hh_t')::uuid) = 1,
+    'the day is full again in this household; the other one keeps its own count';
+end $$;
+set role authenticated;
+
+-- Téo avisa na casa T: Paula mora em duas casas, então o aviso dela diz de qual é.
+select set_config('request.jwt.claim.sub', :'user_t', false) \gset
+do $$
+declare
+  r jsonb;
+begin
+  r := public.announce_market_trip(current_setting('test.list_t1')::uuid);
+  assert (r ->> 'members')::int = 1 and (r ->> 'notified')::int = 1, 'Téo tells the household he shares with Paula';
+  perform set_config('test.trip_t2', r ->> 'trip_id', false);
+end $$;
+reset role;
+do $$
+begin
+  assert (
+    select array_agg(s.endpoint || ' > ' || p.title)
+    from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where p.data ->> 'reminder' = 'ida:' || current_setting('test.trip_t2')
+  ) = array['https://fcm.googleapis.com/fcm/send/ida-p1 > Téo está indo ao mercado · Casa T'],
+    'who lives in more than one household reads which one it is';
+end $$;
+set role authenticated;
+
+-- Quem saiu da casa não avisa nela; sozinha numa casa, não há quem avisar (nem ida).
+select set_config('request.jwt.claim.sub', :'user_u', false) \gset
+do $$
+declare
+  r jsonb;
+  list uuid;
+begin
+  begin
+    perform public.announce_market_trip(current_setting('test.list_p1')::uuid);
+    raise exception 'FAIL: announced without a household';
+  exception when insufficient_privilege then
+    assert sqlerrm = 'sem casa', 'the same error the other functions give without a household';
+  end;
+  perform public.create_household('Casa U', 'Ugo');
+  insert into public.shopping_lists (name) values ('Mercado') returning id into list;
+  r := public.announce_market_trip(list);
+  assert r ->> 'trip_id' is null and (r ->> 'members')::int = 0 and (r ->> 'notified')::int = 0, 'nobody to tell';
+  assert not exists (select 1 from public.market_trips), 'and no trip';
+end $$;
+
+-- A lista apagada leva as idas dela.
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_p'))::text, true);
+  delete from public.shopping_lists where id = current_setting('test.list_p2')::uuid;
+  assert not exists (select 1 from public.market_trips where id = current_setting('test.trip_2')::uuid), 'the trips go with the list';
+  assert exists (select 1 from public.market_trips where id = current_setting('test.trip_3')::uuid), 'the other list keeps its own';
+end $$;
+
+-- ...mas não leva a conta do dia. Quim avisa cinco listas e apaga cada uma em seguida: o sexto aviso não passa.
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+declare
+  list uuid;
+  r jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_p'))::text, true);
+  for n in 1..5 loop
+    insert into public.shopping_lists (name) values ('Lista ' || n) returning id into list;
+    r := public.announce_market_trip(list);
+    assert (r ->> 'repeated')::boolean = false and r ->> 'trip_id' is not null, 'each new list is a new trip';
+    delete from public.shopping_lists where id = list;
+  end loop;
+  assert not exists (select 1 from public.market_trips where user_id = auth.uid()), 'his trips went with their lists';
+  insert into public.shopping_lists (name) values ('Lista 6') returning id into list;
+  perform set_config('test.list_q6', list::text, false);
+  begin
+    perform public.announce_market_trip(list);
+    raise exception 'FAIL: deleting the lists gave the announcements of the day back';
+  exception when sqlstate 'NK005' then null;
+  end;
+end $$;
+
+-- O limite é de cada pessoa: Rita avisa. O nome dela e o da lista dela não têm nada que se veja.
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+do $$
+declare
+  list uuid;
+  r jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_p'))::text, true);
+  update public.household_members set display_name = E'\u200B\u00A0\u3164' where user_id = auth.uid();
+  insert into public.shopping_lists (name, kind) values (E'\u2060\uFEFF', 'mercado') returning id into list;
+  r := public.announce_market_trip(list);
+  assert (r ->> 'repeated')::boolean = false and (r ->> 'members')::int = 3 and (r ->> 'notified')::int = 2,
+    'another person of the household is not held by his limit';
+  perform set_config('test.trip_r', r ->> 'trip_id', false);
+end $$;
+reset role;
+do $$
+begin
+  assert (select count(*) from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where p.data ->> 'reminder' = 'ida:' || current_setting('test.trip_r') and s.endpoint like '%/ida-q_'
+      and p.title = 'Alguém da casa está indo ao mercado' and p.body = 'Falta alguma coisa? Ponha na lista agora.') = 2,
+    'nothing to see in the name: "Alguém da casa", and the list goes without its name';
+  assert (select display_name from public.market_trips where id = current_setting('test.trip_r')::uuid) = 'Alguém da casa',
+    'and the banner says the same';
+end $$;
+set role authenticated;
+
+-- E de cada casa: Quim entra na casa T e avisa lá.
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+select public.join_household(:'invite_t', 'Quim') \gset
+do $$
+declare
+  r jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_t'))::text, true);
+  r := public.announce_market_trip(current_setting('test.list_t1')::uuid);
+  assert (r ->> 'repeated')::boolean = false and (r ->> 'members')::int = 2 and (r ->> 'notified')::int = 2,
+    'in another household he still announces';
+  perform set_config('test.trip_qt', r ->> 'trip_id', false);
+end $$;
+
+-- Um dia depois, os avisos de Quim na casa P saem do registro e ele volta a avisar lá.
+reset role;
+update public.market_trip_log set created_at = created_at - interval '24 hours'
+  where user_id = :'user_q' and household_id = :'hh_p';
+set role authenticated;
+do $$
+declare
+  list uuid;
+  r jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_p'))::text, true);
+  r := public.announce_market_trip(current_setting('test.list_q6')::uuid);
+  assert (r ->> 'repeated')::boolean = false, 'after 24 hours he announces again';
+  perform set_config('test.trip_q6', r ->> 'trip_id', false);
+  -- Outra lista, avisada e encerrada em seguida (para adiante: sair da casa não mexe na ida que já tinha acabado).
+  insert into public.shopping_lists (name) values ('Lista 7') returning id into list;
+  r := public.announce_market_trip(list);
+  assert public.end_market_trip((r ->> 'trip_id')::uuid), 'he ends one of his trips himself';
+  perform set_config('test.trip_q7', r ->> 'trip_id', false);
+  perform set_config('test.q7_ended', (select ended_at::text from public.market_trips where id = (r ->> 'trip_id')::uuid), false);
+end $$;
+reset role;
+do $$
+declare
+  hp uuid := current_setting('test.hh_p')::uuid;
+  quim uuid := '00000000-0000-0000-0000-000000000032';
+begin
+  assert not exists (select 1 from public.market_trip_log where created_at <= now() - interval '24 hours'),
+    'what is older than 24 hours left the log';
+  assert (select count(*) from public.market_trip_log where user_id = quim and household_id = hp) = 2
+    and (select count(*) from public.market_trip_log where user_id = quim and household_id <> hp) = 1
+    and (select count(*) from public.market_trip_log where user_id <> quim and household_id = hp) = 6,
+    'only his old rows left: his other household and the other people keep theirs';
+end $$;
+
+-- A inscrição de um navegador some no meio do aviso (a pessoa saiu da conta naquele instante). Este
+-- gatilho, só do teste, apaga a do segundo navegador de Quim na hora em que a linha dele vai entrar.
+create function public.test_subscription_vanishes()
+returns trigger
+language plpgsql
+as $$
+begin
+  delete from public.push_subscriptions s where s.id = new.subscription_id and s.endpoint like '%/ida-q2';
+  return new;
+end;
+$$;
+create trigger a_test_subscription_vanishes
+  before insert on public.push_schedule
+  for each row execute function public.test_subscription_vanishes();
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_t', false) \gset
+do $$
+declare
+  list uuid;
+  r jsonb;
+begin
+  insert into public.shopping_lists (name) values ('Feira') returning id into list;
+  r := public.announce_market_trip(list);
+  assert (r ->> 'members')::int = 2 and (r ->> 'notified')::int = 2,
+    'the browser that vanished does not stop the announcement: Paula and Quim (in his other browser) are told';
+  perform set_config('test.trip_t3', r ->> 'trip_id', false);
+end $$;
+reset role;
+drop trigger a_test_subscription_vanishes on public.push_schedule;
+drop function public.test_subscription_vanishes();
+do $$
+begin
+  assert (
+    select array_agg(s.endpoint order by s.endpoint)
+    from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where p.data ->> 'reminder' = 'ida:' || current_setting('test.trip_t3')
+  ) = array['https://fcm.googleapis.com/fcm/send/ida-p1', 'https://fcm.googleapis.com/fcm/send/ida-q1'],
+    'one row for each browser that was still there';
+
+  -- Antes de Quim sair da casa P: o aviso de Rita espera nos dois navegadores dele, e o dele, no de Paula.
+  assert (select count(*) from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where s.endpoint like '%/ida-q_' and p.data ->> 'reminder' = 'ida:' || current_setting('test.trip_r')) = 2,
+    'the announcement of another member waits in his browsers';
+  assert exists (select 1 from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_q6')),
+    'and his own waits in the browser of another member';
+end $$;
+
+-- Mais uma ida de Quim na casa P, em outra lista, com o aviso dela na fila de Paula: ele sai com duas idas valendo ali.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+declare
+  list uuid;
+  r jsonb;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', current_setting('test.hh_p'))::text, true);
+  insert into public.shopping_lists (name) values ('Lista 8') returning id into list;
+  r := public.announce_market_trip(list);
+  assert (r ->> 'notified')::int = 1, 'Paula is told about his other trip';
+  perform set_config('test.trip_q8', r ->> 'trip_id', false);
+end $$;
+reset role;
+
+-- Quem encerra várias idas trava todas antes de tirar da fila o primeiro aviso (sair da casa, arquivar a
+-- lista). Com uma ida e os avisos dela de cada vez, a saída de um morador e o arquivamento de uma lista
+-- podiam esperar um pelo outro: um segurava o aviso que o outro ia tirar e esperava a ida que o outro já
+-- tinha travado, e o banco derrubava um dos dois. Este gatilho, só do teste, confere a ordem: quando sai
+-- da fila o aviso de uma ida já encerrada, nenhuma ida do mesmo grupo (a mesma pessoa na mesma casa, ou a
+-- mesma lista) ainda vale.
+create function public.test_trips_before_notices()
+returns trigger
+language plpgsql
+as $$
+declare
+  trip public.market_trips;
+begin
+  select * into trip from public.market_trips t where old.data ? 'server' and 'ida:' || t.id::text = old.data ->> 'reminder';
+  if trip.ended_at is not null and exists (
+    select 1 from public.market_trips t
+    where t.household_id = trip.household_id and t.ended_at is null
+      and case current_setting('test.trips_first') when 'list' then t.list_id = trip.list_id else t.user_id = trip.user_id end
+  ) then
+    raise exception 'FAIL: a trip notice left the queue while another trip of the same % was still on', current_setting('test.trips_first');
+  end if;
+  return old;
+end;
+$$;
+create trigger a_test_trips_before_notices
+  before delete on public.push_schedule
+  for each row execute function public.test_trips_before_notices();
+select set_config('test.trips_first', 'person', false) \gset
+
+-- Quim sai da casa P. As idas dele ali acabam para todos, com os avisos delas que não saíram, e os avisos
+-- da casa P deixam a fila dos navegadores dele. Na casa T, onde ele continua, nada muda.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+begin
+  -- Um lembrete da casa P que o app dele agendou: desse o gatilho não cuida (o app refaz a própria agenda).
+  insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute, data)
+  values (
+    gen_random_uuid(), (select id from public.push_subscriptions where endpoint like '%/ida-q1'), 'Contas a pagar', 'daily', 8, 0,
+    jsonb_build_object('reminder', 'bills', 'householdId', current_setting('test.hh_p'))
+  );
+  assert public.leave_household(current_setting('test.hh_p')::uuid) ->> 'status' = 'left', 'Quim leaves the household';
+end $$;
+reset role;
+drop trigger a_test_trips_before_notices on public.push_schedule;
+do $$
+declare
+  hp text := current_setting('test.hh_p');
+  quim uuid := '00000000-0000-0000-0000-000000000032';
+begin
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_q6')::uuid) is not null,
+    'the trip of who left is over for everyone';
+  assert not exists (select 1 from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_q6')),
+    'with its notices that had not gone out';
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_q8')::uuid) is not null
+    and not exists (select 1 from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_q8')),
+    'and so is his trip of the other list, with its notice';
+  assert (select ended_at::text from public.market_trips where id = current_setting('test.trip_q7')::uuid) = current_setting('test.q7_ended'),
+    'the trip he had already ended keeps the time it ended';
+  -- A ida de Paula na lista de mercado é a do último aviso dela ali (cada aviso novo encerrou o anterior).
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_r')::uuid) is null
+    and (select ended_at from public.market_trips where id = current_setting('test.trip_p6')::uuid) is null,
+    'the trips of the others are not touched';
+  assert not exists (
+    select 1 from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where s.user_id = quim and p.data ? 'server' and p.data ->> 'householdId' = hp
+  ), 'the notices of that household left his browsers';
+  assert exists (
+    select 1 from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where s.user_id = quim and p.title = 'Contas a pagar' and p.data ->> 'householdId' = hp
+  ), 'the reminder his own app scheduled is left to the app, as before';
+  assert exists (
+    select 1 from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where s.endpoint like '%/ida-p1' and p.data ->> 'reminder' = 'ida:' || current_setting('test.trip_r')
+  ), 'who stays keeps hers';
+  -- Na casa T, onde ele continua.
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_qt')::uuid) is null,
+    'in the household he is still in, his trip goes on';
+  assert (select count(*) from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_qt')) = 2,
+    'with its notices';
+  assert (
+    select array_agg(p.data ->> 'reminder')
+    from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where s.user_id = quim and p.data ? 'server'
+  ) = array['ida:' || current_setting('test.trip_t3')], 'and what that household queued for him is still there';
+end $$;
+
+-- Tirada da casa pela dona, a ida de Rita acaba do mesmo jeito.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  hp uuid := current_setting('test.hh_p')::uuid;
+begin
+  perform set_config('request.headers', json_build_object('x-household-id', hp)::text, true);
+  assert exists (select 1 from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_r')), 'before: her notice waits in the owner browser';
+  perform public.remove_member(hp, '00000000-0000-0000-0000-000000000033');
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_r')::uuid) is not null,
+    'removed by the owner: her trip is over too';
+  assert not exists (select 1 from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_r')),
+    'and its notice left the queue';
+end $$;
+
+-- Apagar a casa inteira, com idas valendo, passa pelo mesmo gatilho e leva as idas e o registro dela.
+reset role;
+delete from public.households where id = :'hh_t';
+do $$
+begin
+  assert not exists (select 1 from public.market_trips where id = current_setting('test.trip_qt')::uuid), 'the trips go with the household';
+  assert (select count(distinct household_id) from public.market_trip_log) = 1, 'and so does its log';
+end $$;
+delete from public.push_subscriptions where endpoint like '%/ida-%';
+do $$
+begin
+  assert not exists (select 1 from public.push_schedule where data ? 'server'), 'the queued notices go with the browsers';
+end $$;
+
+-- Avisar de novo a mesma lista depois dos 30 minutos, com a ida ainda valendo, encerra a ida anterior
+-- da pessoa: sem isso, "Encerrar" acabaria só com a nova e a antiga voltaria à faixa até as 2 horas.
+-- Casa V: Vera avisa, Vito também mora nela; cada um recebe no seu navegador.
+\set user_v '00000000-0000-0000-0000-000000000037'
+\set user_w '00000000-0000-0000-0000-000000000038'
+insert into auth.users (id) values (:'user_v'), (:'user_w');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_v', false) \gset
+select (public.create_household('Casa V', 'Vera')).id as hh_v \gset
+select invite_code as invite_v from public.households where id = :'hh_v' \gset
+insert into public.shopping_lists (name, kind) values ('Mercado', 'mercado') returning id as list_v1 \gset
+insert into public.shopping_lists (name, kind) values ('Farmácia', 'farmacia') returning id as list_v2 \gset
+select set_config('test.list_v1', :'list_v1', false) \gset
+select set_config('test.list_v2', :'list_v2', false) \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-v1', 'k', 'a', 'UTC') \gset
+select set_config('request.jwt.claim.sub', :'user_w', false) \gset
+select public.join_household(:'invite_v', 'Vito') \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-w1', 'k', 'a', 'UTC') \gset
+do $$
+declare
+  r jsonb;
+begin
+  -- A ida de outra pessoa, na mesma lista.
+  r := public.announce_market_trip(current_setting('test.list_v1')::uuid);
+  perform set_config('test.trip_w', r ->> 'trip_id', false);
+end $$;
+select set_config('request.jwt.claim.sub', :'user_v', false) \gset
+do $$
+declare
+  r jsonb;
+begin
+  -- A ida da mesma pessoa, em outra lista.
+  r := public.announce_market_trip(current_setting('test.list_v2')::uuid);
+  perform set_config('test.trip_v2', r ->> 'trip_id', false);
+  r := public.announce_market_trip(current_setting('test.list_v1')::uuid);
+  perform set_config('test.trip_v1a', r ->> 'trip_id', false);
+end $$;
+-- Quarenta minutos depois (o aviso dela ainda está na fila do navegador de Vito).
+select current_setting('test.trip_v1a') as trip_v1a \gset
+reset role;
+update public.market_trips set created_at = created_at - interval '40 minutes' where id = :'trip_v1a';
+set role authenticated;
+do $$
+declare
+  list uuid := current_setting('test.list_v1')::uuid;
+  old uuid := current_setting('test.trip_v1a')::uuid;
+  r jsonb;
+begin
+  r := public.announce_market_trip(list);
+  assert (r ->> 'repeated')::boolean = false and (r ->> 'notified')::int = 1 and (r ->> 'trip_id')::uuid <> old,
+    'after 30 minutes, with the trip still on: a new trip, and the household is told again';
+  perform set_config('test.trip_v1b', r ->> 'trip_id', false);
+  assert (select ended_at from public.market_trips where id = old) is not null, 'the earlier trip of the same list is over';
+  assert (
+    select array_agg(t.id) from public.market_trips t
+    where t.user_id = auth.uid() and t.list_id = list and t.ended_at is null
+  ) = array[(r ->> 'trip_id')::uuid], 'only the new one is on for her and this list';
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_v1a')),
+    'the notice of the earlier trip left the queue';
+  assert (
+    select array_agg(s.endpoint) from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where p.data ->> 'reminder' = 'ida:' || current_setting('test.trip_v1b')
+  ) = array['https://fcm.googleapis.com/fcm/send/ida-w1'], 'the new one is queued';
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_w')::uuid) is null
+    and exists (select 1 from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_w')),
+    'the trip of another person on the same list is untouched, with its notice';
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_v2')::uuid) is null
+    and exists (select 1 from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_v2')),
+    'and so is her trip of another list';
+end $$;
+set role authenticated;
+do $$
+declare
+  list uuid := current_setting('test.list_v1')::uuid;
+begin
+  assert public.end_market_trip(current_setting('test.trip_v1b')::uuid), 'she ends the new trip';
+  assert not exists (
+    select 1 from public.market_trips t where t.user_id = auth.uid() and t.list_id = list and t.ended_at is null
+  ), 'and none of hers on this list is left on: the earlier one does not come back';
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_w')::uuid) is null,
+    'the one of Vito goes on';
+end $$;
+reset role;
+delete from public.households where id = :'hh_v';
+delete from public.push_subscriptions where endpoint like '%/ida-%';
+
+-- Arquivar a lista encerra as idas dela, com os avisos que ainda não saíram; apagá-la leva as idas e os
+-- avisos delas. Sem isso, o aviso ia para os outros com o nome de uma lista fechada (ou que nem existe), e
+-- quem avisou não tinha mais o "Encerrar" para tirá-lo da fila. Casa X: Xênia avisa (Yuri também); Yuri e Zeca recebem.
+\set user_x '00000000-0000-0000-0000-000000000039'
+\set user_y '00000000-0000-0000-0000-00000000003a'
+\set user_z '00000000-0000-0000-0000-00000000003b'
+insert into auth.users (id) values (:'user_x'), (:'user_y'), (:'user_z');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_x', false) \gset
+select (public.create_household('Casa X', 'Xênia')).id as hh_x \gset
+select invite_code as invite_x from public.households where id = :'hh_x' \gset
+insert into public.shopping_lists (name, kind) values ('Mercado', 'mercado') returning id as list_x1 \gset
+insert into public.shopping_lists (name, kind) values ('Feira', 'mercado') returning id as list_x2 \gset
+insert into public.shopping_lists (name, kind) values ('Farmácia', 'farmacia') returning id as list_x3 \gset
+select set_config('test.list_x1', :'list_x1', false) \gset
+select set_config('test.list_x2', :'list_x2', false) \gset
+select set_config('test.list_x3', :'list_x3', false) \gset
+select set_config('request.jwt.claim.sub', :'user_y', false) \gset
+select public.join_household(:'invite_x', 'Yuri') \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-y1', 'k', 'a', 'UTC') \gset
+select set_config('request.jwt.claim.sub', :'user_z', false) \gset
+select public.join_household(:'invite_x', 'Zeca') \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-z1', 'k', 'a', 'UTC') \gset
+select set_config('request.jwt.claim.sub', :'user_x', false) \gset
+do $$
+declare
+  r jsonb;
+begin
+  r := public.announce_market_trip(current_setting('test.list_x1')::uuid);
+  assert (r ->> 'notified')::int = 2, 'Yuri and Zeca are told';
+  perform set_config('test.trip_x1', r ->> 'trip_id', false);
+  r := public.announce_market_trip(current_setting('test.list_x2')::uuid);
+  assert (r ->> 'notified')::int = 2, 'and told of the other list too';
+  perform set_config('test.trip_x2', r ->> 'trip_id', false);
+end $$;
+-- Yuri também avisa o "Mercado" (Xênia não tem navegador inscrito: só Zeca recebe). A lista fica com duas idas valendo.
+select set_config('request.jwt.claim.sub', :'user_y', false) \gset
+do $$
+declare
+  r jsonb;
+begin
+  r := public.announce_market_trip(current_setting('test.list_x1')::uuid);
+  assert (r ->> 'notified')::int = 1, 'Zeca is told of the trip of Yuri';
+  perform set_config('test.trip_y1', r ->> 'trip_id', false);
+end $$;
+-- Arquivar a lista também encerra as duas antes de tirar o primeiro aviso da fila (o gatilho de teste confere).
+reset role;
+create trigger a_test_trips_before_notices
+  before delete on public.push_schedule
+  for each row execute function public.test_trips_before_notices();
+select set_config('test.trips_first', 'list', false) \gset
+set role authenticated;
+-- Yuri arquiva o "Mercado" logo depois (a compra já foi feita, ou era a lista errada), antes de os avisos saírem.
+do $$
+begin
+  update public.shopping_lists set archived_at = now() where id = current_setting('test.list_x1')::uuid;
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_x1')::uuid) is not null,
+    'archiving the list ends its trip, for everyone';
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_y1')::uuid) is not null,
+    'and the trip of anyone else on that list';
+  -- Renomear outra lista, ou arquivar uma que não tem ida, não mexe em nada.
+  update public.shopping_lists set name = 'Feira de sábado' where id = current_setting('test.list_x2')::uuid;
+  update public.shopping_lists set archived_at = now() where id = current_setting('test.list_x3')::uuid;
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_x2')::uuid) is null,
+    'renaming a list, or archiving another one, leaves the trip on';
+end $$;
+reset role;
+drop trigger a_test_trips_before_notices on public.push_schedule;
+drop function public.test_trips_before_notices();
+set role authenticated;
+-- Desarquivar a lista não traz a ida de volta (nem mexe em outra).
+do $$
+begin
+  update public.shopping_lists set archived_at = null where id = current_setting('test.list_x1')::uuid;
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_x1')::uuid) is not null,
+    'unarchiving does not bring the trip back';
+  assert (select ended_at from public.market_trips where id = current_setting('test.trip_x2')::uuid) is null, 'nor touches another one';
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (
+    select 1 from public.push_schedule
+    where data ->> 'reminder' in ('ida:' || current_setting('test.trip_x1'), 'ida:' || current_setting('test.trip_y1'))
+  ), 'the notices of the archived list that had not gone out left the queue';
+  assert (select count(*) from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_x2')) = 2,
+    'the notices of the other list are still queued';
+end $$;
+-- Xênia apaga a "Feira": a ida vai com a lista (o FK), e os avisos dela também.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_x', false) \gset
+do $$
+begin
+  delete from public.shopping_lists where id = current_setting('test.list_x2')::uuid;
+  assert not exists (select 1 from public.market_trips where id = current_setting('test.trip_x2')::uuid), 'the trip went with the list';
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.push_schedule where data ->> 'reminder' = 'ida:' || current_setting('test.trip_x2')),
+    'and its notices did not stay in the queue without a trip';
+  assert not exists (
+    select 1 from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where s.endpoint like '%/ida-%' and p.data ? 'server'
+  ), 'nothing of Casa X is left in the queue';
+end $$;
+
+-- A inscrição nova de um navegador que desligou "Alguém indo ao mercado" nasce desligada, no mesmo pedido
+-- (o quinto argumento de register_push_subscription): sem um segundo pedido, que podia se perder e deixar
+-- a inscrição nova ligada. A linha que já existe fica como está, e a chamada de quatro argumentos (a dos
+-- apps já instalados) continua a mesma.
+do $$
+declare
+  fn regprocedure := 'public.register_push_subscription(text, text, text, text, boolean)'::regprocedure;
+begin
+  -- Sem valor padrão: com ele, a chamada do PostgREST com os quatro nomes ficaria ambígua.
+  assert (select pronargdefaults from pg_proc where oid = fn) = 0, 'no default on p_market_trips';
+  assert (select prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = fn),
+    'security definer with an empty search_path, as the four-argument one';
+  assert not has_function_privilege('anon', fn, 'execute') and has_function_privilege('authenticated', fn, 'execute'),
+    'for a signed-in person only';
+end $$;
+set role anon;
+do $$
+begin
+  perform public.register_push_subscription('https://fcm.googleapis.com/fcm/send/x', 'k', 'a', 'UTC', false);
+  raise exception 'FAIL: anon registered a browser';
+exception when insufficient_privilege then null;
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', '', false) \gset
+do $$
+begin
+  perform public.register_push_subscription('https://fcm.googleapis.com/fcm/send/x', 'k', 'a', 'UTC', false);
+  raise exception 'FAIL: registered without a user';
+exception when insufficient_privilege then null;
+end $$;
+-- Zeca tem um navegador ligado que depois passa para a conta de Yuri (outra pessoa entrou no mesmo navegador).
+select set_config('request.jwt.claim.sub', :'user_z', false) \gset
+select public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-z2', 'k', 'a', 'UTC') \gset
+select set_config('request.jwt.claim.sub', :'user_y', false) \gset
+do $$
+declare
+  y1 uuid := (select id from public.push_subscriptions where endpoint like '%/ida-y1');
+  y2 uuid;
+  y3 uuid;
+  y4 uuid;
+  z2 uuid;
+begin
+  begin
+    perform public.register_push_subscription('https://evil.example/fcm/send/x', 'k', 'a', 'UTC', false);
+    raise exception 'FAIL: registered an endpoint outside the push services';
+  exception when invalid_parameter_value then null;
+  end;
+  -- Yuri tinha desligado a opção, e a inscrição dele foi trocada (send-push apaga a que o serviço de push
+  -- recusa; sair e entrar na conta também): a nova nasce desligada.
+  y2 := public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-y2', 'k', 'a', 'UTC', false);
+  assert not (select market_trips from public.push_subscriptions where id = y2), 'a new subscription asked off is born off';
+  -- A linha que já existe fica como está: o valor do navegador pode ser velho, e a escolha guardada, mais nova.
+  assert public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-y2', 'k2', 'a', 'UTC', true) = y2,
+    'same browser, same subscription';
+  assert not (select market_trips from public.push_subscriptions where id = y2), 'an existing row off is not switched on';
+  assert (select p256dh from public.push_subscriptions where id = y2) = 'k2', 'the keys are still updated';
+  assert public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-y1', 'k', 'a', 'UTC', false) = y1
+    and (select market_trips from public.push_subscriptions where id = y1), 'an existing row on is not switched off';
+  -- Pedindo ligado, nasce ligada.
+  y3 := public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-y3', 'k', 'a', 'UTC', true);
+  assert (select market_trips from public.push_subscriptions where id = y3), 'a new subscription asked on is born on';
+  -- A chamada de quatro argumentos é a de sempre: a nova nasce ligada, a que existe fica como está.
+  y4 := public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-y4', 'k', 'a', 'UTC');
+  assert (select market_trips from public.push_subscriptions where id = y4), 'four arguments: a new one is born on';
+  assert public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-y2', 'k', 'a', 'UTC') = y2
+    and not (select market_trips from public.push_subscriptions where id = y2), 'four arguments: an existing row stays as it is';
+  -- O navegador que era de Zeca: a inscrição dele sai, e a de Yuri é nova, então nasce com a escolha.
+  z2 := public.register_push_subscription('https://fcm.googleapis.com/fcm/send/ida-z2', 'k', 'a', 'UTC', false);
+  assert (select user_id from public.push_subscriptions where id = z2) = auth.uid()
+    and not (select market_trips from public.push_subscriptions where id = z2), 'a browser taken over from another account is new: born off';
+end $$;
+-- Xênia avisa: os navegadores que nasceram desligados ficam de fora.
+select set_config('request.jwt.claim.sub', :'user_x', false) \gset
+do $$
+declare
+  r jsonb;
+begin
+  r := public.announce_market_trip(current_setting('test.list_x1')::uuid);
+  assert (r ->> 'repeated')::boolean = false and (r ->> 'members')::int = 2 and (r ->> 'notified')::int = 2, 'a new trip, both told';
+  perform set_config('test.trip_x3', r ->> 'trip_id', false);
+end $$;
+reset role;
+do $$
+begin
+  assert (
+    select array_agg(s.endpoint order by s.endpoint)
+    from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where p.data ->> 'reminder' = 'ida:' || current_setting('test.trip_x3')
+  ) = array[
+    'https://fcm.googleapis.com/fcm/send/ida-y1', 'https://fcm.googleapis.com/fcm/send/ida-y3',
+    'https://fcm.googleapis.com/fcm/send/ida-y4', 'https://fcm.googleapis.com/fcm/send/ida-z1'
+  ], 'the browsers born off got nothing';
+end $$;
+-- Com só os navegadores que nasceram desligados, Yuri não conta entre os avisados (meia hora depois, outro aviso).
+delete from public.push_subscriptions
+  where endpoint in ('https://fcm.googleapis.com/fcm/send/ida-y1', 'https://fcm.googleapis.com/fcm/send/ida-y3', 'https://fcm.googleapis.com/fcm/send/ida-y4');
+update public.market_trips set created_at = created_at - interval '31 minutes' where household_id = :'hh_x';
+set role authenticated;
+do $$
+declare
+  r jsonb;
+begin
+  r := public.announce_market_trip(current_setting('test.list_x1')::uuid);
+  assert (r ->> 'repeated')::boolean = false and (r ->> 'members')::int = 2 and (r ->> 'notified')::int = 1,
+    'only Zeca: Yuri has only browsers born off';
+end $$;
+reset role;
+delete from public.households where id = :'hh_x';
+delete from public.push_subscriptions where endpoint like '%/ida-%';
+
+-- A opção em quem já estava inscrito quando a migração chega: o navegador sem nada agendado (a pessoa
+-- desligou todos os avisos) começa com ela desligada; o que tem aviso agendado, ligada. Para valer a
+-- conta da própria migração, ela é aplicada de novo aqui, sobre o banco de antes dela e com dados, e
+-- tudo é desfeito no fim.
+begin;
+drop trigger household_members_end_market_trips on public.household_members;
+drop trigger shopping_lists_end_market_trips on public.shopping_lists;
+drop trigger market_trips_gone on public.market_trips;
+drop function public.member_left_market_trips(), public.announce_market_trip(uuid), public.end_market_trip(uuid),
+  public.set_push_market_trips(text, boolean), public.push_text(text, int), public.max_market_trips(),
+  public.list_archived_market_trips(), public.market_trip_gone(),
+  public.register_push_subscription(text, text, text, text, boolean);
+drop index public.push_schedule_server_reminder_idx;
+drop table public.market_trips, public.market_trip_log;
+alter table public.push_subscriptions drop column market_trips;
+insert into public.push_subscriptions (user_id, endpoint, p256dh, auth) values
+  (:'user_p', 'https://fcm.googleapis.com/fcm/send/antes-com-aviso', 'k', 'a'),
+  (:'user_p', 'https://fcm.googleapis.com/fcm/send/antes-sem-aviso', 'k', 'a');
+insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute)
+select gen_random_uuid(), s.id, 'Contas a pagar', 'daily', 8, 0
+from public.push_subscriptions s where s.endpoint like '%/antes-com-aviso';
+-- O banco de testes dá tudo a todos nas tabelas novas (stubs.sql), como a Supabase fazia até 30/10/2026: sem
+-- isso (desfeito no rollback), as permissões das tabelas recriadas são só as que a migração escreve, e a falta
+-- de um grant aparece aqui.
+alter default privileges in schema public revoke all on tables from anon, authenticated, service_role;
+\ir ../../supabase/migrations/20261012220000_market_trips.sql
+do $$
+declare
+  t text;
+  p text;
+begin
+  foreach p in array array['select', 'insert', 'update', 'delete'] loop
+    foreach t in array array['public.market_trips', 'public.market_trip_log'] loop
+      assert not has_table_privilege('anon', t, p), format('written by the migration: anon has no %s on %s', p, t);
+      assert has_table_privilege('service_role', t, p), format('written by the migration: service_role has %s on %s', p, t);
+    end loop;
+    assert not has_table_privilege('authenticated', 'public.market_trip_log', p), format('written by the migration: authenticated has no %s on the log', p);
+    assert has_table_privilege('authenticated', 'public.market_trips', p) = (p = 'select'),
+      format('written by the migration: authenticated only reads market_trips (%s)', p);
+  end loop;
+  assert (select market_trips from public.push_subscriptions where endpoint like '%/antes-com-aviso'),
+    'a browser with a notice scheduled starts with the option on';
+  assert not (select market_trips from public.push_subscriptions where endpoint like '%/antes-sem-aviso'),
+    'a browser with every notice off does not start receiving this one';
+  assert (select count(*) from public.push_schedule p join public.push_subscriptions s on s.id = p.subscription_id
+    where s.endpoint like '%/antes-%') = 1, 'and the schedule is as it was';
+end $$;
+rollback;
 
 \echo 'OK — todos os testes do banco passaram'

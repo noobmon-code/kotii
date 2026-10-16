@@ -34,6 +34,7 @@ import {
   useStores,
   useToggleListItem,
 } from '@/data/market';
+import { useRefreshMarketTrips } from '@/data/marketTrips';
 import { cartPantryRows, type CartPantryEntry, type CartPantryRow } from '@/domain/cartPantry';
 import { compareByAisle, getCategory } from '@/domain/categories';
 import {
@@ -57,6 +58,7 @@ import { CommonItemsPicker } from '@/features/CommonItemsPicker';
 import { ListEstimateCard } from '@/features/ListEstimateCard';
 import { ListItemEditor, type ItemDetails, type PhotoChange } from '@/features/ListItemEditor';
 import { ListShareSheet } from '@/features/ListShareSheet';
+import { MarketTripAction, MarketTripBanner } from '@/features/MarketTrip';
 import { OfflineNotice } from '@/features/OfflineNotice';
 import { RecentPurchases, RestockStrip, useJustListed } from '@/features/RecentPurchases';
 import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
@@ -111,6 +113,7 @@ export default function ShoppingListScreen() {
   const setPhoto = useSetListItemPhoto();
   const householdId = useHouseholdId();
   const queryClient = useQueryClient();
+  const refreshTrips = useRefreshMarketTrips();
 
   const [name, setName] = useState('');
   const [quantity, setQuantity] = useState('1');
@@ -484,7 +487,10 @@ export default function ShoppingListScreen() {
       // Puxar atualiza também os preços, a despensa, as ligações, os produtos, os mercados e o histórico: só os
       // itens chegam sozinhos (tempo real). O indicador segue os itens, para as outras buscas não o fazerem piscar.
       refreshing={items.isRefetching}
-      onRefresh={() => [items, prices, pantry, links, products, stores, purchases].forEach((query) => void query.refetch())}
+      onRefresh={() => {
+        [items, prices, pantry, links, products, stores, purchases].forEach((query) => void query.refetch());
+        refreshTrips();
+      }}
       footer={
         pending.length && list.data.kind !== 'outros' ? (
           <Button
@@ -496,6 +502,8 @@ export default function ShoppingListScreen() {
       }>
       <Stack.Screen options={{ title: list.data.name }} />
       <OfflineNotice />
+      {/* Alguém da casa (ou a própria pessoa) avisou que está indo às compras desta lista. */}
+      <MarketTripBanner listId={list.data.id} />
 
       <Card style={styles.addCard}>
         <Row>
@@ -570,6 +578,9 @@ export default function ShoppingListScreen() {
           inPantry={pending.filter((i) => market.inPantry.has(i.id)).map((i) => i.name)}
         />
       ) : null}
+
+      {/* Vale com a lista vazia também: é para os outros porem o que falta. Arquivada, não. */}
+      {list.data.archived_at ? null : <MarketTripAction list={list.data} />}
 
       {pending.length ? (
         <Section

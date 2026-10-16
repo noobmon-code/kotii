@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { onlineManager } from '@tanstack/react-query';
 
 import { CLEAR_CHECKED_KEY, EDIT_ITEM_KEY, TOGGLE_ITEM_KEY } from '@/data/market';
+import { MARKET_TRIP_PUSH_KEY, MARKET_TRIPS_KEY } from '@/data/marketTrips';
 import { JOBS_KEY, PROVIDERS_KEY } from '@/data/providers';
 
 import { accessErrorMessage, EXPECTS_ROWS_META, NO_HOUSEHOLD_ACCESS, REMOVED_FROM_HOUSEHOLD } from '../accessErrors';
@@ -109,6 +110,20 @@ describe('cache guardado no aparelho', () => {
     expect(saved).not.toContain('98765');
     expect(saved).not.toContain('Trocou o disjuntor');
     await AsyncStorage.removeItem('kotii:query-cache');
+  });
+
+  it('as idas ao mercado e a opção do aviso ficam só na memória', async () => {
+    queryClient.setQueryData(['lists'], [{ id: 'l1', name: 'Compras da semana' }]);
+    queryClient.setQueryData([MARKET_TRIPS_KEY], [{ id: 't1', display_name: 'Ana da ida' }]);
+    queryClient.setQueryData([MARKET_TRIP_PUSH_KEY], true);
+    saveNow();
+    await flush();
+    const saved = await stored();
+    expect(saved).toContain('Compras da semana');
+    expect(saved).not.toContain('Ana da ida');
+    expect(saved).not.toContain(MARKET_TRIP_PUSH_KEY);
+    forgetCache();
+    await flush();
   });
 
   it('os gastos e o mercado do mês não ficam guardados no aparelho; a lista de compras fica', async () => {
