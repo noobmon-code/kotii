@@ -7,6 +7,7 @@ import {
   seenLabel,
   SHARED_PRICES_MINE,
   SHARED_PRICES_MORE,
+  SHARED_PRICES_MORE_LABEL,
   SHARED_PRICES_NOTICE,
   SHARED_PRICES_OTHERS,
   SHARED_PRICES_TITLE,
@@ -44,15 +45,18 @@ export function SharedPricesSection({ productId }: { productId: string }) {
 
   return (
     <Section title={SHARED_PRICES_TITLE}>
-      <SharedPriceList title={SHARED_PRICES_MINE} rows={rows.filter((row) => row.mine)} />
-      <SharedPriceList title={SHARED_PRICES_OTHERS} rows={rows.filter((row) => !row.mine)} />
+      <SharedPriceList title={SHARED_PRICES_MINE} moreLabel={SHARED_PRICES_MORE_LABEL.mine} rows={rows.filter((row) => row.mine)} />
+      <SharedPriceList title={SHARED_PRICES_OTHERS} moreLabel={SHARED_PRICES_MORE_LABEL.others} rows={rows.filter((row) => !row.mine)} />
       <Text variant="small">{SHARED_PRICES_NOTICE}</Text>
     </Section>
   );
 }
 
-/** Uma das duas listas, só quando tem linhas. "Ver mais" traz um tanto de cada vez: a lista nunca abre inteira de uma vez. */
-function SharedPriceList({ title, rows }: { title: string; rows: SharedPriceRow[] }) {
+/**
+ * Uma das duas listas, só quando tem linhas. "Ver mais" traz um tanto de cada vez: a lista nunca abre inteira de uma
+ * vez. `moreLabel`: o que o leitor de tela diz nesse botão, que diz de qual das duas listas ele é.
+ */
+function SharedPriceList({ title, moreLabel, rows }: { title: string; moreLabel: string; rows: SharedPriceRow[] }) {
   const [shown, setShown] = useState(SHARED_ROWS_SHOWN);
   if (!rows.length) return null;
   return (
@@ -72,7 +76,13 @@ function SharedPriceList({ title, rows }: { title: string; rows: SharedPriceRow[
         ))}
       </ListCard>
       {rows.length > shown ? (
-        <Button title={SHARED_PRICES_MORE} variant="ghost" compact onPress={() => setShown((count) => count + SHARED_ROWS_STEP)} />
+        <Button
+          title={SHARED_PRICES_MORE}
+          accessibilityLabel={moreLabel}
+          variant="ghost"
+          compact
+          onPress={() => setShown((count) => count + SHARED_ROWS_STEP)}
+        />
       ) : null}
     </>
   );

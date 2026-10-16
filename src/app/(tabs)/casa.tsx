@@ -10,6 +10,7 @@ import { SuppliesSection } from '@/features/SuppliesSection';
 import { useChores, usePantry } from '@/data/home';
 import { useEquipmentList } from '@/data/house';
 import { useShoppingLists } from '@/data/market';
+import { JOBS_KEY, PROVIDERS_KEY } from '@/data/providers';
 import { useSupplies } from '@/data/supplies';
 import { PageTitle, Screen, Segmented } from '@/ui/primitives';
 import { space } from '@/ui/theme';
@@ -32,13 +33,21 @@ export default function HouseScreen() {
   const queryClient = useQueryClient();
   // Na Despensa, puxar para atualizar traz também o gás, a água e a ração. Em Tarefas, as ordens do rodízio e as
   // fichas (os nomes), como a tela Hoje: com a tarefa nova e a ordem de antes, a lista diria quem vem depois num
-  // rodízio que já acabou ou mudou. Só as que a aba está mostrando (as outras abas nem as buscam).
+  // rodízio que já acabou ou mudou. Em Aparelhos, o resto do que a lista mostra: a próxima manutenção (as tarefas),
+  // o último serviço (o conserto registrado em outro celular) e o botão dos prestadores, que volta quando o banco
+  // ganha as tabelas. Só as que a aba está mostrando (as outras abas nem as buscam), e dos serviços só a lista da
+  // casa toda (a de um prestador ou de um aparelho é de outra tela).
   const refresh = () => {
     active.refetch();
     if (tab === 'despensa') supplies.refetch();
     if (tab === 'tarefas') {
       queryClient.refetchQueries({ queryKey: ['choreRotations'], type: 'active' });
       queryClient.refetchQueries({ queryKey: ['people'], type: 'active' });
+    }
+    if (tab === 'aparelhos') {
+      chores.refetch();
+      queryClient.refetchQueries({ queryKey: [JOBS_KEY], exact: true, type: 'active' });
+      queryClient.refetchQueries({ queryKey: [PROVIDERS_KEY], exact: true, type: 'active' });
     }
   };
 

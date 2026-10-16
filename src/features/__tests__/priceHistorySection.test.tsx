@@ -224,6 +224,8 @@ describe('o histórico de preço na tela do produto', () => {
     expect(rows()).toHaveLength(10);
     const more = () => renderer!.root.findAllByType(Button).find((button) => String(button.props.title).startsWith('Ver mais'));
     expect(more()!.props.title).toBe('Ver mais (faltam 25)');
+    // O leitor de tela ouve de qual lista é: a tela do produto tem também os "Ver mais" dos preços de outras casas.
+    expect(more()!.props.accessibilityLabel).toBe('Ver mais (faltam 25) do histórico de preço');
     act(() => more()!.props.onPress());
     expect(rows()).toHaveLength(30);
     expect(more()!.props.title).toBe('Ver mais (faltam 5)');

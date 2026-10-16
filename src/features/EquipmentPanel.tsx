@@ -18,7 +18,8 @@ export function EquipmentPanel() {
   const today = todayISO();
   const equipment = useEquipmentList();
   const chores = useChores();
-  // Se esta consulta falhar (ou o banco ainda não tiver a tabela), a lista segue sem o último serviço.
+  // Se a primeira busca falhar (ou o banco ainda não tiver a tabela), a lista segue sem o último serviço; se uma
+  // busca de novo falhar (puxar para atualizar), fica o que já estava na tela.
   const jobs = useServiceJobs();
   // O botão "Prestadores" só some quando o banco respondeu que ainda não tem as
   // tabelas (ele levaria a "Ainda não está disponível"). Enquanto a resposta

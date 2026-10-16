@@ -8,7 +8,7 @@ import { SharedPricesAbout } from '@/features/SharedPrices';
 import { persistOptions, queryClient as appQueryClient } from '@/lib/queryClient';
 
 import { useConfirmReceipt, useDeleteReceipt, useFillReceiptItemValue } from '../receipts';
-import { fetchSharedPrices, fetchSharedPricesAvailable, isMissingFunction, useSharedPrices, useSharedPricesAvailable } from '../sharedPrices';
+import { fetchSharedPrices, fetchSharedPricesAvailable, useSharedPrices, useSharedPricesAvailable } from '../sharedPrices';
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim. O que o banco de mentira responde a cada função.
 const mockRpc: { answer: (name: string) => { data: unknown; error: unknown }; called: string[] } = {
@@ -106,26 +106,25 @@ afterEach(() => {
   appQueryClient.clear();
 });
 
-describe('a função que ainda não existe no banco', () => {
-  it('reconhece a resposta do PostgREST e a do Postgres', () => {
-    expect(isMissingFunction(notInCache, 'shared_latest_prices')).toBe(true);
-    expect(isMissingFunction(noFunction, 'shared_latest_prices')).toBe(true);
-    // Sem código (um intermediário trocou a resposta), pelo texto, e só o desta função.
-    expect(isMissingFunction({ message: notInCache.message }, 'shared_latest_prices')).toBe(true);
-    expect(isMissingFunction({ message: notInCache.message }, 'outra_funcao')).toBe(false);
-  });
-
-  it('outros erros não são "função que não existe"', () => {
-    expect(isMissingFunction(offline, 'shared_latest_prices')).toBe(false);
-    expect(isMissingFunction({ code: '42501', message: 'permission denied for function shared_latest_prices' }, 'shared_latest_prices')).toBe(false);
-    expect(isMissingFunction({ code: 'PGRST205', message: "Could not find the table 'public.x' in the schema cache" }, 'shared_latest_prices')).toBe(false);
-    expect(isMissingFunction(null, 'shared_latest_prices')).toBe(false);
-    expect(isMissingFunction('erro', 'shared_latest_prices')).toBe(false);
-  });
-});
-
 describe('preços de outras casas', () => {
-  it.each([notInCache, noFunction])('sem a função no banco: "não disponível" (null), sem erro', async (error) => {
+  /** As respostas de "a função ainda não existe no banco". */
+  const MISSING: [string, unknown][] = [
+    ['PostgREST, fora do cache de esquema', notInCache],
+    ['Postgres, a função não existe', noFunction],
+    // Um intermediário trocou a resposta: vale o texto, e só o desta função.
+    ['sem código, com o texto desta função', { message: notInCache.message }],
+  ];
+  /** Os outros erros, que sobem. */
+  const OTHER: [string, unknown][] = [
+    ['sem rede', offline],
+    ['sem permissão', { code: '42501', message: 'permission denied for function shared_latest_prices' }],
+    ['tabela que não existe', { code: 'PGRST205', message: "Could not find the table 'public.x' in the schema cache" }],
+    // A função existe e falhou por dentro, ao chamar outra que não existe: é erro, não "não disponível".
+    ['42883 de outra função, saído de dentro desta', { code: '42883', message: 'function public.normalize(text, unknown) does not exist' }],
+    ['sem código, com o texto de outra função', { message: 'Could not find the function public.outra_funcao without parameters in the schema cache' }],
+  ];
+
+  it.each(MISSING)('sem a função no banco (%s): "não disponível" (null), sem erro', async (_case, error) => {
     const { db, asked } = fakeDb([], error);
     await expect(fetchSharedPrices(db)).resolves.toBeNull();
     expect(asked).toHaveLength(1);
@@ -175,8 +174,8 @@ describe('preços de outras casas', () => {
     expect(asked).toHaveLength(10);
   });
 
-  it('outro erro sobe (a tela só deixa de mostrar a seção)', async () => {
-    await expect(fetchSharedPrices(fakeDb([], offline).db)).rejects.toBe(offline);
+  it.each(OTHER)('outro erro sobe (%s): a tela só deixa de mostrar a seção', async (_case, error) => {
+    await expect(fetchSharedPrices(fakeDb([], error).db)).rejects.toBe(error);
   });
 });
 
@@ -195,7 +194,10 @@ describe('o compartilhamento existe neste banco? (o cartão da aba Família)', (
   const probeNotInCache = { code: 'PGRST202', message: 'Could not find the function public.shared_prices_available without parameters in the schema cache' };
   const probeNoFunction = { code: '42883', message: 'function public.shared_prices_available() does not exist' };
 
-  it.each([probeNotInCache, probeNoFunction])('sem a função no banco: não (false), sem erro', async (error) => {
+  it.each<[string, unknown]>([
+    ['PostgREST, fora do cache de esquema', probeNotInCache],
+    ['Postgres, a função não existe', probeNoFunction],
+  ])('sem a função no banco (%s): não (false), sem erro', async (_case, error) => {
     const { db, asked } = askingDb({ data: null, error });
     await expect(fetchSharedPricesAvailable(db)).resolves.toBe(false);
     expect(asked).toEqual(['shared_prices_available']);
@@ -207,8 +209,11 @@ describe('o compartilhamento existe neste banco? (o cartão da aba Família)', (
     expect(asked).toEqual(['shared_prices_available']);
   });
 
-  it('outro erro sobe (o cartão só deixa de aparecer)', async () => {
-    await expect(fetchSharedPricesAvailable(askingDb({ data: null, error: offline }).db)).rejects.toBe(offline);
+  it.each<[string, unknown]>([
+    ['sem rede', offline],
+    ['42883 de outra função, saído de dentro desta', { code: '42883', message: 'function public.normalize(text, unknown) does not exist' }],
+  ])('outro erro sobe (%s): o cartão só deixa de aparecer', async (_case, error) => {
+    await expect(fetchSharedPricesAvailable(askingDb({ data: null, error }).db)).rejects.toBe(error);
   });
 });
 

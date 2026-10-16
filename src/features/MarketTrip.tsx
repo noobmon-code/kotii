@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { AppState, StyleSheet, View } from 'react-native';
 
 import { marketTripErrorMessage, useAnnounceMarketTrip, useEndingMarketTrips, useEndMarketTrip, useMarketTrips } from '@/data/marketTrips';
-import { announceResultText, canAnnounceTrip, liveTrips, TRIP_CONFIRM, tripActionLabel, tripBannerText } from '@/domain/marketTrips';
+import { announceResultText, canAnnounceTrip, liveTrips, TRIP_CONFIRM, tripActionLabel, tripBannerText, tripButtonLabels } from '@/domain/marketTrips';
 import { useAuth, useHousehold } from '@/lib/auth';
 import type { ListKind } from '@/lib/types';
 import { ActionSheet } from '@/ui/ActionSheet';
@@ -73,10 +73,10 @@ function useNow(): Date {
 
 /**
  * A faixa de quem está indo às compras, por duas horas ou até a pessoa
- * encerrar: na tela Hoje, as idas das listas abertas, com "Abrir a lista"
- * (`openable`); na lista, só as dela (`listId`). Quem avisou vê a hora do
- * aviso e "Encerrar". Sem resposta do servidor (sem internet, ou o banco
- * ainda sem as idas), não há faixa nem erro.
+ * encerrar: na tela Hoje, as idas das listas abertas, com o nome da lista e
+ * "Abrir a lista" (`openable`); na lista, só as dela (`listId`). Quem avisou
+ * vê a hora do aviso e "Encerrar". Sem resposta do servidor (sem internet, ou
+ * o banco ainda sem as idas), não há faixa nem erro.
  *
  * A lista de cada ida vem com a ida (o tipo, e se foi arquivada): a faixa não
  * depende das listas que a tela já buscou, que não sabem da lista que outra
@@ -114,22 +114,33 @@ export function MarketTripBanner({ listId, openable = false }: { listId?: string
     <Card style={styles.card}>
       {live.map((trip) => {
         const mine = trip.user_id === userId;
+        // Na tela Hoje, vários "Encerrar" e "Abrir a lista": o leitor de tela diz de qual ida é cada um. Na lista,
+        // o "Encerrar" é um só, o de quem avisou.
+        const labels = openable ? tripButtonLabels(trip) : undefined;
         return (
           <View key={trip.id} style={styles.trip}>
             <Row gap={space.md}>
               <IconBadge icon="cart-arrow-right" tone="primary" />
               <Text variant="body" style={styles.flex}>
-                {tripBannerText(trip, { userId, now })}
+                {tripBannerText(trip, { userId, now, withList: openable })}
               </Text>
             </Row>
             {mine || openable ? (
               <Row style={styles.actions}>
                 {mine ? (
-                  <Button title="Encerrar" variant="ghost" compact loading={ending.includes(trip.id)} onPress={() => close(trip.id)} />
+                  <Button
+                    title="Encerrar"
+                    accessibilityLabel={labels?.end}
+                    variant="ghost"
+                    compact
+                    loading={ending.includes(trip.id)}
+                    onPress={() => close(trip.id)}
+                  />
                 ) : null}
                 {openable ? (
                   <Button
                     title="Abrir a lista"
+                    accessibilityLabel={labels?.open}
                     variant="ghost"
                     compact
                     onPress={() => router.push({ pathname: '/lista/[id]', params: { id: trip.list_id } })}
@@ -147,6 +158,8 @@ export function MarketTripBanner({ listId, openable = false }: { listId?: string
 const styles = StyleSheet.create({
   card: { gap: space.md },
   trip: { gap: space.xs },
-  flex: { flex: 1 },
+  // minWidth 0: no navegador, uma palavra comprida sem espaço (no nome de quem avisou ou da lista) quebra dentro da
+  // faixa, em vez de empurrar a linha para fora da tela.
+  flex: { flex: 1, minWidth: 0 },
   actions: { justifyContent: 'flex-end' },
 });

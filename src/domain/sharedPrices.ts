@@ -98,6 +98,11 @@ export const SHARED_PRICES_OTHERS = 'Em outros mercados';
 export const SHARED_PRICES_NOTICE =
   'Preços de notas de outras casas que usam o Kotii, sem dizer de quem. Não são em tempo real: cada preço vale para o dia em que foi visto.';
 export const SHARED_PRICES_MORE = 'Ver mais';
+/** O que o leitor de tela diz em cada "Ver mais": as duas listas ficam na mesma tela, cada uma com o seu. */
+export const SHARED_PRICES_MORE_LABEL = {
+  mine: 'Ver mais preços de outras casas nos seus mercados',
+  others: 'Ver mais preços de outras casas em outros mercados',
+};
 
 /** O que a casa lê, na aba Família, sobre o que ela mesma compartilha. */
 export const SHARING_TITLE = 'Preços compartilhados';

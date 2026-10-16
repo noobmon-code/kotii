@@ -149,7 +149,7 @@ describe('a faixa na tela Hoje', () => {
   it('aparece sem depender das listas guardadas no aparelho, e "Abrir a lista" vai para a lista da ida', async () => {
     // Uma lista que este aparelho ainda não buscou: tudo o que a faixa usa vem com a ida.
     mockDb.trips = { data: [trip('t1', 4, { list_id: 'nova' })], error: null };
-    expect(await render(<MarketTripBanner openable />)).toEqual(['Beto está indo ao mercado · há 4 min', 'Abrir a lista']);
+    expect(await render(<MarketTripBanner openable />)).toEqual(['Beto está indo ao mercado · lista “Feira” · há 4 min', 'Abrir a lista']);
     await press('Abrir a lista');
     expect(router.push).toHaveBeenCalledWith({ pathname: '/lista/[id]', params: { id: 'nova' } });
   });
@@ -162,7 +162,7 @@ describe('a faixa na tela Hoje', () => {
       ],
       error: null,
     };
-    expect(await render(<MarketTripBanner openable />)).toEqual(['Beto está indo às compras · há 9 min', 'Abrir a lista']);
+    expect(await render(<MarketTripBanner openable />)).toEqual(['Beto está indo às compras · lista “Remédios” · há 9 min', 'Abrir a lista']);
     mockDb.trips = { data: [trip('t1', 4, { list: { name: 'Velha', kind: 'mercado', archived_at: '2026-10-13T10:00:00Z' } })], error: null };
     await act(async () => tree.unmount());
     client.clear();
@@ -173,7 +173,7 @@ describe('a faixa na tela Hoje', () => {
     mockHouse.user = 'beto';
     mockDb.trips = { data: [trip('t1', 4)], error: null };
     const texts = await render(<MarketTripBanner openable />);
-    expect(texts[0]).toMatch(/^Você avisou a casa às \d\d:\d\d$/);
+    expect(texts[0]).toMatch(/^Você avisou a casa às \d\d:\d\d · lista “Feira”$/);
     expect(texts.slice(1)).toEqual(['Encerrar', 'Abrir a lista']);
     mockDb.rpc = { data: true, error: null };
     mockDb.trips = { data: [], error: null };
@@ -182,12 +182,62 @@ describe('a faixa na tela Hoje', () => {
     expect(textsOf(tree.toJSON())).toEqual([]);
     expect(notify).not.toHaveBeenCalled();
   });
+
+  it('a mesma pessoa em duas listas: cada linha diz a lista, e o leitor de tela diz de qual lista é cada botão', async () => {
+    const twoLists = [trip('t1', 4), trip('t2', 9, { list_id: 'outra', list: { name: 'Mercado', kind: 'mercado', archived_at: null } })];
+    mockDb.trips = { data: twoLists, error: null };
+    expect(await render(<MarketTripBanner openable />)).toEqual([
+      'Beto está indo ao mercado · lista “Feira” · há 4 min',
+      'Abrir a lista',
+      'Beto está indo ao mercado · lista “Mercado” · há 9 min',
+      'Abrir a lista',
+    ]);
+    const labels = (title: string) => tree.root.findAllByProps({ title }).map((button) => button.props.accessibilityLabel);
+    expect(labels('Abrir a lista')).toEqual(['Abrir a lista “Feira”', 'Abrir a lista “Mercado”']);
+
+    // Quem avisou das duas.
+    await act(async () => tree.unmount());
+    client.clear();
+    mockHouse.user = 'beto';
+    const texts = await render(<MarketTripBanner openable />);
+    expect(texts.filter((text) => text.startsWith('Você avisou'))).toEqual([
+      expect.stringMatching(/^Você avisou a casa às \d\d:\d\d · lista “Feira”$/),
+      expect.stringMatching(/^Você avisou a casa às \d\d:\d\d · lista “Mercado”$/),
+    ]);
+    expect(labels('Encerrar')).toEqual([
+      expect.stringMatching(/^Encerrar a ida das \d\d:\d\d da lista “Feira”$/),
+      expect.stringMatching(/^Encerrar a ida das \d\d:\d\d da lista “Mercado”$/),
+    ]);
+    expect(labels('Abrir a lista')).toEqual(['Abrir a lista “Feira”', 'Abrir a lista “Mercado”']);
+  });
+
+  it('duas listas com o mesmo nome: o "Encerrar" de cada uma diz também a hora do aviso', async () => {
+    mockHouse.user = 'beto';
+    const market = { name: 'Mercado', kind: 'mercado', archived_at: null };
+    mockDb.trips = { data: [trip('t1', 4, { list: market }), trip('t2', 9, { list_id: 'outra', list: market })], error: null };
+    await render(<MarketTripBanner openable />);
+    const ends = tree.root.findAllByProps({ title: 'Encerrar' }).map((button) => String(button.props.accessibilityLabel));
+    expect(ends).toEqual([
+      expect.stringMatching(/^Encerrar a ida das \d\d:\d\d da lista “Mercado”$/),
+      expect.stringMatching(/^Encerrar a ida das \d\d:\d\d da lista “Mercado”$/),
+    ]);
+    expect(ends[0]).not.toBe(ends[1]);
+  });
 });
 
 describe('a faixa na lista', () => {
   it('só as idas desta lista, sem "Abrir a lista"', async () => {
     mockDb.trips = { data: [trip('t1', 4, { list_id: 'outra' }), trip('t2', 12)], error: null };
     expect(await render(<MarketTripBanner listId="lista" />)).toEqual(['Beto está indo ao mercado · há 12 min']);
+  });
+
+  it('sem o nome da lista, que é a da tela: a linha e o "Encerrar" de quem avisou ficam como eram', async () => {
+    mockHouse.user = 'beto';
+    mockDb.trips = { data: [trip('t1', 4)], error: null };
+    const texts = await render(<MarketTripBanner listId="lista" />);
+    expect(texts[0]).toMatch(/^Você avisou a casa às \d\d:\d\d$/);
+    expect(texts.slice(1)).toEqual(['Encerrar']);
+    expect(tree.root.findAllByProps({ title: 'Encerrar' }).map((button) => button.props.accessibilityLabel)).toEqual([undefined]);
   });
 });
 

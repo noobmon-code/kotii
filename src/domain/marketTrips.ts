@@ -108,15 +108,131 @@ export function tripClock(createdAt: string): string {
   return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
 }
 
+/** Até quantos caracteres (contados como o Array.from conta) do nome da lista a faixa da tela Hoje mostra. */
+const TRIP_LIST_NAME_MAX = 40;
+
+/** Faixas de caracteres, de [primeiro, último] código. */
+export type Ranges = readonly (readonly [number, number])[];
+
+/**
+ * Os que push_text (no banco, ao montar o aviso) troca por espaço: controles, espaços especiais, os de direção do
+ * texto (um "da direita para a esquerda" solto no meio da frase viraria o resto da linha) e os que não se veem.
+ * Esta e a próxima são cópias das duas classes do push_text, mais o U+0000: um teste lê a migração e falha se
+ * elas se separarem.
+ */
+export const PUSH_TEXT_HIDDEN: Ranges = [
+  [0x0000, 0x001f],
+  [0x007f, 0x009f],
+  [0x00a0, 0x00a0],
+  [0x00ad, 0x00ad],
+  [0x034f, 0x034f],
+  [0x061c, 0x061c],
+  [0x115f, 0x1160],
+  [0x1680, 0x1680],
+  [0x17b4, 0x17b5],
+  [0x180e, 0x180e],
+  [0x2000, 0x200b],
+  [0x200e, 0x200f],
+  [0x2028, 0x202f],
+  [0x205f, 0x206f],
+  [0x2800, 0x2800],
+  [0x3000, 0x3000],
+  [0x3164, 0x3164],
+  [0xfeff, 0xfeff],
+  [0xffa0, 0xffa0],
+  [0xfff0, 0xfffc],
+  [0x1bca0, 0x1bca3],
+  [0x1d159, 0x1d159],
+  [0x1d173, 0x1d17a],
+];
+/**
+ * Os que push_text não conta como algo que se vê (um nome só deles é vazio): acentos soltos, as junções dos
+ * emojis, os seletores de variação e as etiquetas. Todos se juntam ao caractere de antes.
+ */
+export const PUSH_TEXT_INVISIBLE: Ranges = [
+  [0x0300, 0x036f],
+  [0x180b, 0x180f],
+  [0x1ab0, 0x1aff],
+  [0x1dc0, 0x1dff],
+  [0x200c, 0x200d],
+  [0x20d0, 0x20ff],
+  [0xfe00, 0xfe0f],
+  [0xfe20, 0xfe2f],
+  [0xe0000, 0xe007f],
+  [0xe0100, 0xe01ef],
+];
+/** Os tons de pele, que também se juntam ao emoji de antes. */
+const SKIN_TONES: Ranges = [[0x1f3fb, 0x1f3ff]];
+/** As letras das bandeiras: cada bandeira é um par delas. */
+const REGIONAL: Ranges = [[0x1f1e6, 0x1f1ff]];
+const ZWJ = '\u200D';
+
+function inRanges(char: string, ranges: Ranges): boolean {
+  const code = char.codePointAt(0) ?? 0;
+  return ranges.some(([first, last]) => code >= first && code <= last);
+}
+
+/**
+ * O nome da lista de uma ida, como a tela Hoje o mostra: entre aspas, como no
+ * aviso que o servidor manda, limpo como lá (os caracteres que push_text troca
+ * por espaço, e os espaços e quebras de linha juntados num só) e, se for
+ * comprido demais, cortado com reticências, sem partir um emoji, uma bandeira
+ * ou uma letra acentuada. Vazio quando não sobra nada que se veja.
+ */
+export function tripListName(name: string): string {
+  const clean = Array.from(name, (char) => (inRanges(char, PUSH_TEXT_HIDDEN) ? ' ' : char))
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const chars = Array.from(clean);
+  if (chars.every((char) => char === ' ' || inRanges(char, PUSH_TEXT_INVISIBLE))) return '';
+  if (chars.length <= TRIP_LIST_NAME_MAX) return `“${clean}”`;
+  // Fica o que vem antes de `end`. O corte recua enquanto cairia dentro do que se vê como um caractere só: antes de
+  // algo que se junta ao de antes, ou logo depois de uma junção (o emoji de família é um só).
+  let end = TRIP_LIST_NAME_MAX - 1;
+  while (end > 0 && (inRanges(chars[end], PUSH_TEXT_INVISIBLE) || inRanges(chars[end], SKIN_TONES) || chars[end - 1] === ZWJ)) end--;
+  // Um número ímpar de letras de bandeira no fim deixaria meia bandeira.
+  let flagLetters = 0;
+  while (flagLetters < end && inRanges(chars[end - 1 - flagLetters], REGIONAL)) flagLetters++;
+  if (flagLetters % 2) end--;
+  // O nome que é um caractere só do começo ao corte (uma letra com dezenas de acentos, letras ligadas por junções):
+  // corta no limite mesmo, para não sobrar só as reticências.
+  if (end <= 0) end = TRIP_LIST_NAME_MAX - 1;
+  return `“${chars.slice(0, end).join('').trimEnd()}…”`;
+}
+
+/**
+ * O que o leitor de tela diz nos botões de uma ida na tela Hoje, onde há
+ * vários "Encerrar" e "Abrir a lista": de qual lista é cada um e, no
+ * "Encerrar", também a hora do aviso (duas listas podem ter o mesmo nome,
+ * como "Mercado"). Sem nome que se veja, "Abrir a lista" fica só com o título.
+ */
+export function tripButtonLabels(trip: MarketTrip): { end: string; open: string | undefined } {
+  const name = tripListName(trip.list.name);
+  const clock = tripClock(trip.created_at);
+  return {
+    end: name ? `Encerrar a ida das ${clock} da lista ${name}` : `Encerrar a ida das ${clock}`,
+    open: name ? `Abrir a lista ${name}` : undefined,
+  };
+}
+
 /**
  * A linha da faixa (tela Hoje e lista). Para quem avisou, a hora em que
  * avisou; para os outros, quem está indo e há quanto tempo, com as mesmas
  * palavras do aviso que o servidor manda ("mercado" só na lista de mercado).
+ * `withList`: também o nome da lista, para a tela Hoje, que junta as idas de
+ * todas as listas (a mesma pessoa pode ter avisado de duas). Na lista, ela já
+ * é a da tela.
  */
-export function tripBannerText(trip: MarketTrip, { userId, now }: { userId: string | undefined; now: Date }): string {
-  if (trip.user_id === userId) return `Você avisou a casa às ${tripClock(trip.created_at)}`;
+export function tripBannerText(
+  trip: MarketTrip,
+  { userId, now, withList = false }: { userId: string | undefined; now: Date; withList?: boolean },
+): string {
+  const name = withList ? tripListName(trip.list.name) : '';
+  const list = name ? ` · lista ${name}` : '';
+  if (trip.user_id === userId) return `Você avisou a casa às ${tripClock(trip.created_at)}${list}`;
   const going = trip.list.kind === 'mercado' ? 'está indo ao mercado' : 'está indo às compras';
-  return `${trip.display_name} ${going} · ${tripAgo(trip.created_at, now)}`;
+  return `${trip.display_name} ${going}${list} · ${tripAgo(trip.created_at, now)}`;
 }
 
 /**

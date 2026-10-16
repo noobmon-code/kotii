@@ -115,7 +115,13 @@ function PriceHistory({ productId, productName }: Props) {
         </ListCard>
       ) : null}
       {view.more ? (
-        <Button title={view.more} variant="ghost" compact onPress={() => setChoices((current) => ({ ...current, more: current.more + 1 }))} />
+        <Button
+          title={view.more}
+          accessibilityLabel={view.moreAccessibilityLabel ?? undefined}
+          variant="ghost"
+          compact
+          onPress={() => setChoices((current) => ({ ...current, more: current.more + 1 }))}
+        />
       ) : null}
     </Section>
   );
