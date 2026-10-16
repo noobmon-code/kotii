@@ -108,15 +108,40 @@ export function tripClock(createdAt: string): string {
   return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
 }
 
+/** Até quantas letras do nome da lista a faixa da tela Hoje mostra. */
+const TRIP_LIST_NAME_MAX = 40;
+
+/**
+ * O nome da lista de uma ida, como a tela Hoje o mostra: entre aspas, como no
+ * aviso que o servidor manda, com os espaços (e as quebras de linha) juntados
+ * num só e, se for comprido demais, cortado com reticências. Vazio quando o
+ * nome só tem espaços.
+ */
+export function tripListName(name: string): string {
+  const clean = name.replace(/\s+/g, ' ').trim();
+  if (!clean) return '';
+  const letters = Array.from(clean);
+  const shown = letters.length > TRIP_LIST_NAME_MAX ? `${letters.slice(0, TRIP_LIST_NAME_MAX - 1).join('').trimEnd()}…` : clean;
+  return `“${shown}”`;
+}
+
 /**
  * A linha da faixa (tela Hoje e lista). Para quem avisou, a hora em que
  * avisou; para os outros, quem está indo e há quanto tempo, com as mesmas
  * palavras do aviso que o servidor manda ("mercado" só na lista de mercado).
+ * `withList`: também o nome da lista, para a tela Hoje, que junta as idas de
+ * todas as listas (a mesma pessoa pode ter avisado de duas). Na lista, ela já
+ * é a da tela.
  */
-export function tripBannerText(trip: MarketTrip, { userId, now }: { userId: string | undefined; now: Date }): string {
-  if (trip.user_id === userId) return `Você avisou a casa às ${tripClock(trip.created_at)}`;
+export function tripBannerText(
+  trip: MarketTrip,
+  { userId, now, withList = false }: { userId: string | undefined; now: Date; withList?: boolean },
+): string {
+  const name = withList ? tripListName(trip.list.name) : '';
+  const list = name ? ` · lista ${name}` : '';
+  if (trip.user_id === userId) return `Você avisou a casa às ${tripClock(trip.created_at)}${list}`;
   const going = trip.list.kind === 'mercado' ? 'está indo ao mercado' : 'está indo às compras';
-  return `${trip.display_name} ${going} · ${tripAgo(trip.created_at, now)}`;
+  return `${trip.display_name} ${going}${list} · ${tripAgo(trip.created_at, now)}`;
 }
 
 /**

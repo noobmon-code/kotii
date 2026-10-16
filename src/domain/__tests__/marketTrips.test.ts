@@ -8,6 +8,7 @@ import {
   tripAgo,
   tripBannerText,
   tripClock,
+  tripListName,
   type AnnounceResult,
   type MarketTrip,
 } from '../marketTrips';
@@ -138,6 +139,47 @@ describe('tripBannerText', () => {
   it('lista que não é de mercado: "às compras"', () => {
     expect(tripBannerText(pharmacy, { userId: 'beto', now })).toBe('Ana está indo às compras · há 12 min');
     expect(tripBannerText(other, { userId: undefined, now })).toBe('Ana está indo às compras · há 12 min');
+  });
+
+  it('na tela Hoje (withList), também o nome da lista, entre aspas', () => {
+    expect(tripBannerText(going, { userId: 'beto', now, withList: true })).toBe('Ana está indo ao mercado · lista “Mercado” · há 12 min');
+    expect(tripBannerText(pharmacy, { userId: 'beto', now, withList: true })).toBe('Ana está indo às compras · lista “Farmácia” · há 12 min');
+    expect(tripBannerText(going, { userId: 'ana', now, withList: true })).toBe('Você avisou a casa às 10:32 · lista “Mercado”');
+  });
+
+  it('sem withList (a faixa da própria lista), sem o nome, como antes', () => {
+    expect(tripBannerText(going, { userId: 'beto', now, withList: false })).toBe('Ana está indo ao mercado · há 12 min');
+    expect(tripBannerText(going, { userId: 'ana', now, withList: false })).toBe('Você avisou a casa às 10:32');
+  });
+
+  it('a lista com um nome só de espaços fica sem ele', () => {
+    const blank = trip('b', created, { list: listOf({ name: ' \n\t ', kind: 'mercado' }) });
+    expect(tripBannerText(blank, { userId: 'beto', now, withList: true })).toBe('Ana está indo ao mercado · há 12 min');
+    expect(tripBannerText(blank, { userId: 'ana', now, withList: true })).toBe('Você avisou a casa às 10:32');
+  });
+});
+
+describe('tripListName', () => {
+  it('entre aspas, com os espaços e as quebras de linha juntados num só', () => {
+    expect(tripListName('Feira')).toBe('“Feira”');
+    expect(tripListName('  Feira\n de   sábado ')).toBe('“Feira de sábado”');
+  });
+
+  it('até 40 letras inteiro; mais que isso, cortado com reticências', () => {
+    expect(tripListName('a'.repeat(40))).toBe(`“${'a'.repeat(40)}”`);
+    expect(tripListName('a'.repeat(41))).toBe(`“${'a'.repeat(39)}…”`);
+    // O corte que cai num espaço não deixa o espaço antes das reticências.
+    expect(tripListName(`${'a'.repeat(38)} bbbbb`)).toBe(`“${'a'.repeat(38)}…”`);
+  });
+
+  it('conta por letra, e não parte um emoji ao meio', () => {
+    expect(tripListName(`${'a'.repeat(38)}🛒🛒`)).toBe(`“${'a'.repeat(38)}🛒🛒”`);
+    expect(tripListName(`${'a'.repeat(38)}🛒bbbbb`)).toBe(`“${'a'.repeat(38)}🛒…”`);
+  });
+
+  it('só espaços: vazio', () => {
+    expect(tripListName('')).toBe('');
+    expect(tripListName(' \n ')).toBe('');
   });
 });
 
