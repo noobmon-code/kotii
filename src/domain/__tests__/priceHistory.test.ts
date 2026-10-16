@@ -962,8 +962,8 @@ describe('as linhas da lista', () => {
   });
 
   it('para o leitor de tela, o "Ver mais" diz que é do histórico (a tela do produto tem outros)', () => {
-    expect(moreAccessibilityLabel(12)).toBe('Ver mais compras do histórico de preço (faltam 12)');
-    expect(moreAccessibilityLabel(1)).toBe('Ver mais compras do histórico de preço (falta 1)');
+    expect(moreAccessibilityLabel(12)).toBe('Ver mais (faltam 12) do histórico de preço');
+    expect(moreAccessibilityLabel(1)).toBe('Ver mais (falta 1) do histórico de preço');
     expect(moreAccessibilityLabel(0)).toBeNull();
   });
 });
@@ -1077,7 +1077,7 @@ describe('a seção inteira', () => {
     expect(first.rows).toHaveLength(10);
     expect(first.rows[0].detail).toContain('10 out');
     expect(first.more).toBe('Ver mais (faltam 25)');
-    expect(first.moreAccessibilityLabel).toBe('Ver mais compras do histórico de preço (faltam 25)');
+    expect(first.moreAccessibilityLabel).toBe('Ver mais (faltam 25) do histórico de preço');
     // O resumo e o gráfico são de todas, não só das que estão à vista.
     expect(first.summary.at(-1)).toBe('35 compras em 6 meses');
     expect(first.chart?.points).toHaveLength(35);

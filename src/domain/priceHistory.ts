@@ -493,9 +493,13 @@ export function moreLabel(left: number): string | null {
   return left > 0 ? `Ver mais (${left === 1 ? 'falta' : 'faltam'} ${left})` : null;
 }
 
-/** O mesmo botão para o leitor de tela, que diz de qual lista ele é: a tela do produto tem outros "Ver mais". */
+/**
+ * O mesmo botão para o leitor de tela, que diz de qual lista ele é (a tela do produto tem outros "Ver mais"). Começa
+ * pelo texto do botão inteiro, como ele aparece: quem usa o controle por voz diz o que está vendo.
+ */
 export function moreAccessibilityLabel(left: number): string | null {
-  return left > 0 ? `Ver mais compras do histórico de preço (${left === 1 ? 'falta' : 'faltam'} ${left})` : null;
+  const label = moreLabel(left);
+  return label && `${label} do histórico de preço`;
 }
 
 // ---------------------------------------------------------------------------
