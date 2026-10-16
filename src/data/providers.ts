@@ -3,9 +3,10 @@
 // As duas tabelas chegam ao banco numa migração própria, e o app pode ser
 // publicado antes dela. Por isso as listas daqui não derrubam ninguém: sem a
 // tabela, respondem "nada" e dizem que ela falta (`missing`, isMissingTable).
-// As telas que já existiam (aba Casa, tela do aparelho) tratam qualquer falha
-// destas consultas como "sem serviços", nunca como tela de erro; a tela dos
-// prestadores avisa que eles ainda não estão ativos, e salvar dá o mesmo aviso.
+// As telas que já existiam (aba Casa, tela do aparelho) tratam a falha destas
+// consultas como "sem serviços" (e a de uma busca de novo deixa o que já estava
+// na tela), nunca como tela de erro; a tela dos prestadores avisa que eles
+// ainda não estão ativos, e salvar dá o mesmo aviso.
 //
 // Nomes e telefones são de gente de fora da casa: estas consultas não entram
 // no cache guardado no aparelho (PERSISTED em lib/queryClient), não vão para

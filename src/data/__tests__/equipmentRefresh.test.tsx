@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import HouseScreen from '@/app/(tabs)/casa';
+import { fetchProviderJobs, fetchServiceJob, fetchServiceJobs, JOBS_KEY, useProviderJobs } from '@/data/providers';
 import { Button, ErrorNotice, ListRow, Screen } from '@/ui/primitives';
 
 // A aba Casa de verdade, no segmento Aparelhos, com a lista de aparelhos e os hooks de dados de verdade; só o
@@ -126,11 +128,13 @@ async function settle() {
   });
 }
 
-async function open() {
+/** Abre a aba; `beside`: outra tela aberta ao mesmo tempo, com o mesmo cache. */
+async function open(beside: ReactNode = null) {
   await act(async () => {
     renderer = create(
       <QueryClientProvider client={client}>
         <HouseScreen />
+        {beside}
       </QueryClientProvider>,
     );
   });
@@ -221,5 +225,27 @@ describe('Casa › Aparelhos: puxar para atualizar', () => {
     expect(screen.errorCards()).toBe(0);
     expect(screen.subtitle()).toMatch(/^Último serviço: /);
     expect(screen.hasProviders()).toBe(true);
+  });
+
+  it('dos serviços, só a lista da casa: as de um prestador, de um aparelho e de um serviço, guardadas de outras telas, não', async () => {
+    // As telas do prestador, do aparelho e do serviço foram abertas antes: as listas delas ficaram guardadas.
+    await client.prefetchQuery({ queryKey: [JOBS_KEY, 'provider', 'p-1'], queryFn: () => fetchProviderJobs('p-1') });
+    await client.prefetchQuery({ queryKey: [JOBS_KEY, 'equipment', 'e-1'], queryFn: () => fetchServiceJobs({ equipmentId: 'e-1' }) });
+    await client.prefetchQuery({ queryKey: [JOBS_KEY, 'job', 'j-1'], queryFn: () => fetchServiceJob('j-1') });
+    const screen = await open();
+    const before = mockServer.reads.service_jobs;
+    await screen.refresh();
+    expect(mockServer.reads.service_jobs - before).toBe(1);
+  });
+
+  it('nem a lista de um prestador que outra tela está mostrando agora', async () => {
+    function ProviderScreen() {
+      useProviderJobs('p-1');
+      return null;
+    }
+    const screen = await open(<ProviderScreen />);
+    const before = mockServer.reads.service_jobs;
+    await screen.refresh();
+    expect(mockServer.reads.service_jobs - before).toBe(1);
   });
 });
