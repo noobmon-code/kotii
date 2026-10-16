@@ -20,6 +20,7 @@ import {
 import { parseMoney } from '@/domain/money';
 import { announceCompletion } from '@/features/ChoresPanel';
 import { PhotoStrip } from '@/features/PhotoStrip';
+import { EquipmentServices } from '@/features/providers/EquipmentServices';
 import { useDraftPhotos } from '@/features/useDraftPhotos';
 import { usePhotoSheet } from '@/features/usePhotoSheet';
 import { useHousehold } from '@/lib/auth';
@@ -202,6 +203,7 @@ function EquipmentForm({ equipment }: { equipment?: Equipment }) {
       {equipment ? <MaintenanceSection equipment={equipment} today={today} /> : (
         <Text variant="muted">Depois de salvar, cadastre as manutenções (o app sugere as mais comuns).</Text>
       )}
+      {equipment ? <EquipmentServices equipmentId={equipment.id} today={today} /> : null}
 
       {equipment ? (
         <Button
