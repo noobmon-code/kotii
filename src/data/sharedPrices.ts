@@ -13,17 +13,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { SharedPrice } from '@/domain/sharedPrices';
 import { supabase, unwrap } from '@/lib/supabase';
 
-/**
- * A função ainda não existe no banco (o app chegou antes da migração): o
- * PostgREST responde PGRST202 ("Could not find the function ... in the schema
- * cache") e o Postgres, 42883 ("function ... does not exist").
- */
-export function isMissingFunction(error: unknown, name: string): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const { code, message } = error as { code?: unknown; message?: unknown };
-  if (code === 'PGRST202' || code === '42883') return true;
-  return typeof message === 'string' && message.includes(name) && /does not exist|could not find the function|schema cache/i.test(message);
-}
+import { isMissingFunction } from './missingSchema';
 
 /** O PostgREST corta em 1000 linhas por pedido (max_rows padrão do Supabase). */
 const PAGE = 1000;

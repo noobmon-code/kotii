@@ -8,7 +8,7 @@ import { SharedPricesAbout } from '@/features/SharedPrices';
 import { persistOptions, queryClient as appQueryClient } from '@/lib/queryClient';
 
 import { useConfirmReceipt, useDeleteReceipt, useFillReceiptItemValue } from '../receipts';
-import { fetchSharedPrices, fetchSharedPricesAvailable, isMissingFunction, useSharedPrices, useSharedPricesAvailable } from '../sharedPrices';
+import { fetchSharedPrices, fetchSharedPricesAvailable, useSharedPrices, useSharedPricesAvailable } from '../sharedPrices';
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim. O que o banco de mentira responde a cada função.
 const mockRpc: { answer: (name: string) => { data: unknown; error: unknown }; called: string[] } = {
@@ -106,26 +106,11 @@ afterEach(() => {
   appQueryClient.clear();
 });
 
-describe('a função que ainda não existe no banco', () => {
-  it('reconhece a resposta do PostgREST e a do Postgres', () => {
-    expect(isMissingFunction(notInCache, 'shared_latest_prices')).toBe(true);
-    expect(isMissingFunction(noFunction, 'shared_latest_prices')).toBe(true);
-    // Sem código (um intermediário trocou a resposta), pelo texto, e só o desta função.
-    expect(isMissingFunction({ message: notInCache.message }, 'shared_latest_prices')).toBe(true);
-    expect(isMissingFunction({ message: notInCache.message }, 'outra_funcao')).toBe(false);
-  });
-
-  it('outros erros não são "função que não existe"', () => {
-    expect(isMissingFunction(offline, 'shared_latest_prices')).toBe(false);
-    expect(isMissingFunction({ code: '42501', message: 'permission denied for function shared_latest_prices' }, 'shared_latest_prices')).toBe(false);
-    expect(isMissingFunction({ code: 'PGRST205', message: "Could not find the table 'public.x' in the schema cache" }, 'shared_latest_prices')).toBe(false);
-    expect(isMissingFunction(null, 'shared_latest_prices')).toBe(false);
-    expect(isMissingFunction('erro', 'shared_latest_prices')).toBe(false);
-  });
-});
-
 describe('preços de outras casas', () => {
-  it.each([notInCache, noFunction])('sem a função no banco: "não disponível" (null), sem erro', async (error) => {
+  // Sem código (um intermediário trocou a resposta), pelo texto, e só o desta função.
+  const noCode = { message: notInCache.message };
+
+  it.each([notInCache, noFunction, noCode])('sem a função no banco: "não disponível" (null), sem erro', async (error) => {
     const { db, asked } = fakeDb([], error);
     await expect(fetchSharedPrices(db)).resolves.toBeNull();
     expect(asked).toHaveLength(1);
@@ -175,8 +160,16 @@ describe('preços de outras casas', () => {
     expect(asked).toHaveLength(10);
   });
 
-  it('outro erro sobe (a tela só deixa de mostrar a seção)', async () => {
-    await expect(fetchSharedPrices(fakeDb([], offline).db)).rejects.toBe(offline);
+  it.each([
+    offline,
+    { code: '42501', message: 'permission denied for function shared_latest_prices' },
+    { code: 'PGRST205', message: "Could not find the table 'public.x' in the schema cache" },
+    // A função existe e falhou por dentro, ao chamar outra que não existe: é erro, não "não disponível".
+    { code: '42883', message: 'function public.normalize(text, unknown) does not exist' },
+    // Sem código, o texto fala de outra função.
+    { message: 'Could not find the function public.outra_funcao without parameters in the schema cache' },
+  ])('outro erro sobe (a tela só deixa de mostrar a seção)', async (error) => {
+    await expect(fetchSharedPrices(fakeDb([], error).db)).rejects.toBe(error);
   });
 });
 
@@ -207,9 +200,12 @@ describe('o compartilhamento existe neste banco? (o cartão da aba Família)', (
     expect(asked).toEqual(['shared_prices_available']);
   });
 
-  it('outro erro sobe (o cartão só deixa de aparecer)', async () => {
-    await expect(fetchSharedPricesAvailable(askingDb({ data: null, error: offline }).db)).rejects.toBe(offline);
-  });
+  it.each([offline, { code: '42883', message: 'function public.normalize(text, unknown) does not exist' }])(
+    'outro erro sobe (o cartão só deixa de aparecer)',
+    async (error) => {
+      await expect(fetchSharedPricesAvailable(askingDb({ data: null, error }).db)).rejects.toBe(error);
+    },
+  );
 });
 
 /** Monta `Probe` com um cache novo e espera `done` (as buscas terminam fora do render). */
