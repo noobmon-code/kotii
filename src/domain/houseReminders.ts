@@ -1,7 +1,7 @@
 // Avisos da casa por notificação: contas, documentos, tarefas (inclusive
 // manutenções de aparelhos), consultas, compromissos da família e aniversários,
-// vacinas, a dica do clima da manhã e o que está para acabar (gás, água,
-// ração). Cada celular escolhe o que
+// vacinas, remédios e receitas acabando, a dica do clima da manhã e o que está
+// para acabar (gás, água, ração). Cada celular escolhe o que
 // quer receber; o plano sai daqui e o app agenda (src/lib/reminders.ts),
 // refazendo ao abrir, então a janela vai andando. À noite, o resumo de amanhã
 // junta numa notificação só o que a casa tem no dia seguinte (eveSummary).
@@ -11,11 +11,15 @@ import { addDays, diffDays, formatBRDate } from './dates';
 import { describeDocumentStatus } from './documents';
 import { bringText, calendarEntries, entryShortDetail, eventReminderTexts, type CalendarEntry, type FamilyCalendar } from './familyEvents';
 import { weekdayOf } from './health';
+import { refillReminders, type StockedMedication } from './medicationStock';
 import { formatBRL } from './money';
 import type { SupplyReminder } from './supplies';
 import type { WeatherMorning } from './weather';
 
-export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments' | 'events' | 'vaccines' | 'weather' | 'supplies' | 'eve';
+export type HouseReminderKind = 'bills' | 'documents' | 'chores' | 'appointments' | 'events' | 'vaccines' | 'refills' | 'weather' | 'supplies' | 'eve';
+
+/** O nome do aviso de caixa e receita acabando: a tela do remédio diz qual ligar. */
+export const REFILLS_REMINDER_LABEL = 'Remédios e receitas acabando';
 
 export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint: string }[] = [
   { key: 'bills', label: 'Contas a pagar', hint: 'Na véspera, no dia do vencimento e, se ficar em aberto, uma vez depois, às 9h' },
@@ -28,6 +32,11 @@ export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint
     hint: 'Na véspera, às 19h, e no dia, 1 hora antes do horário (sem horário, às 8h). Os de toda semana avisam só no dia',
   },
   { key: 'vaccines', label: 'Vacinas', hint: 'Uma semana antes da próxima dose e no dia, às 9h' },
+  {
+    key: 'refills',
+    label: REFILLS_REMINDER_LABEL,
+    hint: 'Quando faltar uma semana para a caixa acabar (ou os dias que você escolher), no dia em que acaba e uma semana antes de a receita vencer, às 9h. Caixa contada já perto do fim avisa na véspera',
+  },
   {
     key: 'weather',
     label: 'Dicas do clima',
@@ -129,6 +138,8 @@ export interface HouseReminderInput {
   vaccines?: { id: string; name: string; dose: string | null; person: string; next_dose_on: string | null }[];
   /** Compromissos da família com as mudanças de cada dia, e as fichas (nomes e aniversários). */
   family?: FamilyCalendar;
+  /** Os remédios, com o estoque e a receita de cada um (ver refillReminders). */
+  medications?: StockedMedication[];
   /** A dica mais importante de cada manhã (ver weatherMornings). */
   weather?: WeatherMorning[];
   /** O que está para acabar, já com as datas e os textos (ver supplyReminders). */
@@ -565,6 +576,12 @@ export function planHouseReminders(input: HouseReminderInput): HouseReminder[] {
       add('vaccines', v.id, addDays(v.next_dose_on, -VACCINE_LEAD_DAYS), 'Vacina na semana que vem', `${v.person}: ${name} em ${formatBRDate(v.next_dose_on)}.`);
       add('vaccines', v.id, v.next_dose_on, 'Dia de vacina', `${v.person}: ${name}.`);
     }
+  }
+
+  if (kinds.refills) {
+    // A caixa acabando (pela conta do estoque) e a receita vencendo; o dia sai de lá, o horário e a janela, daqui.
+    // Cada aviso tem a chave do dia dele (o da véspera também): refazer o plano não o agenda de novo.
+    for (const r of refillReminders(input.medications ?? [], today)) add('refills', r.id, r.date, r.title, r.body);
   }
 
   if (kinds.weather) {

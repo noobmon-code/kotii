@@ -9,6 +9,11 @@ const snapshot: NukeSnapshot = {
   me: 'Ana',
   members: ['Ana', 'Beto'],
   doses: [{ time: '08:00', name: 'Vitamina D', person: 'Ana', taken: true }],
+  refills: {
+    inUse: 5,
+    followed: 3,
+    lines: ['Puran (Beto) — deve ter acabado', 'Losartana (Ana) — acaba em 3 dias, receita vence em 10 dias', 'Rivotril (Beto) — estoque sem atualizar desde 04/09'],
+  },
   chores: [
     { title: 'Limpar filtro', due_on: '2026-09-25', assignee: 'Beto' },
     { title: 'Regar plantas', due_on: '2026-09-29', assignee: null },
@@ -45,6 +50,36 @@ describe('nuke context', () => {
     );
     expect(text).toContain('Documentos pedindo atenção: nada.');
     expect(text).not.toContain('Orçamento');
+  });
+
+  describe('estoque e receita dos remédios: só o que o app acompanha', () => {
+    const line = (refills: NukeSnapshot['refills']) =>
+      buildNukeContext({ ...snapshot, refills })
+        .split('\n')
+        .filter((text) => /estoque|receita/i.test(text));
+
+    it('com remédios acompanhados: quantos são e o estado dos que estão acabando, como estimativa', () => {
+      expect(line(snapshot.refills)).toEqual([
+        'Remédios com estoque ou receita acompanhados pelo app (3 de 5 em uso; estimativa pelas doses previstas): Puran (Beto) — deve ter acabado; Losartana (Ana) — acaba em 3 dias, receita vence em 10 dias; Rivotril (Beto) — estoque sem atualizar desde 04/09.',
+      ]);
+      // Nenhum dos acompanhados pede atenção: diz isso só deles, sem falar pelos outros.
+      expect(line({ inUse: 5, followed: 3, lines: [] })).toEqual([
+        'Remédios com estoque ou receita acompanhados pelo app (3 de 5 em uso; estimativa pelas doses previstas): nenhum acabando nem com a receita vencendo.',
+      ]);
+    });
+
+    it('remédios em uso, mas nenhum acompanhado: o app não sabe, e diz que não sabe', () => {
+      expect(line({ inUse: 2, followed: 0, lines: [] })).toEqual([
+        'Estoque e receita dos remédios: o app não acompanha o de nenhum remédio (ninguém informou quanto tem).',
+      ]);
+    });
+
+    it('nenhum remédio em uso (ou retrato sem o campo): nenhuma linha, como antes do estoque', () => {
+      expect(line({ inUse: 0, followed: 0, lines: [] })).toEqual([]);
+      expect(line(undefined)).toEqual([]);
+      // E nunca um "nada" que tranquilize sem base.
+      expect(buildNukeContext({ ...snapshot, refills: { inUse: 2, followed: 0, lines: [] } })).not.toMatch(/Remédios[^\n]*: nada\./);
+    });
   });
 
   it('includes the month budget when there is one', () => {

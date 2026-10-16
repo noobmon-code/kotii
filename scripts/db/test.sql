@@ -1,7 +1,8 @@
 -- Testes do schema: isolamento entre famílias (RLS), matching, preços,
--- confirmação de nota, recorrência de tarefas, remédios, saúde, aparelhos,
--- documentos, financeiro, saída da casa, compromissos da família, preços
--- compartilhados entre casas e idas ao mercado.
+-- confirmação de nota, recorrência e rodízio de tarefas, remédios, saúde,
+-- aparelhos, documentos, prestadores e consertos, financeiro, saída da casa,
+-- compromissos da família, preços compartilhados entre casas, estoque dos
+-- remédios e idas ao mercado.
 -- Rodado por scripts/db/test.sh depois de stubs.sql + migrations.
 
 \set ON_ERROR_STOP 1
@@ -1079,6 +1080,402 @@ begin
   delete from public.people where id = current_setting('test.person_ana')::uuid;
   assert (select count(*) from public.documents) = 1, 'personal documents go with the person; household ones stay';
 end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• prestadores e consertos'
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+declare
+  eq uuid;
+  ze uuid;
+  bia uuid;
+  j uuid;
+begin
+  insert into public.equipment (name, category) values ('Máquina de lavar', 'eletrodomestico') returning id into eq;
+  insert into public.service_providers (name, trade, phone, phone_digits, notes)
+    values ('Zé da Luz', 'eletricista', '(11) 98765-4321', '5511987654321', 'Só atende de manhã')
+    returning id into ze;
+  insert into public.service_providers (name) values ('Bia') returning id into bia;
+  assert (select trade = 'outros' and recommended and phone is null and phone_digits is null
+      and created_by = auth.uid() and household_id = current_setting('test.hh_a')::uuid
+    from public.service_providers where id = bia), 'provider defaults';
+  insert into public.service_jobs (provider_id, equipment_id, done_on, description, amount, warranty_until, notes)
+    values (ze, eq, '2026-03-12', 'Trocou a placa', 180, '2026-06-12', 'Peça original') returning id into j;
+  assert (select created_by = auth.uid() and household_id = current_setting('test.hh_a')::uuid
+    from public.service_jobs where id = j), 'job defaults';
+  -- Não cobrou, e a garantia pode acabar no próprio dia.
+  insert into public.service_jobs (provider_id, done_on, description, amount, warranty_until)
+    values (ze, '2026-03-20', 'Voltou para apertar', 0, '2026-03-20');
+  insert into public.service_jobs (provider_id, done_on, description) values (bia, '2026-05-02', 'Faxina completa');
+  perform set_config('test.equipment_wash', eq::text, false);
+  perform set_config('test.provider_ze', ze::text, false);
+  perform set_config('test.provider_bia', bia::text, false);
+  perform set_config('test.job_ze', j::text, false);
+
+  begin
+    insert into public.service_providers (name) values ('   ');
+    raise exception 'FAIL: blank provider name';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name) values (repeat('a', 81));
+    raise exception 'FAIL: provider name over 80';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name, trade) values ('X', 'astronauta');
+    raise exception 'FAIL: invalid trade';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name, phone) values ('X', repeat('1', 41));
+    raise exception 'FAIL: phone over 40';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name, phone) values ('X', '  ');
+    raise exception 'FAIL: blank phone';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name, phone, phone_digits) values ('X', '(11) 98765-4321', '(11) 98765-4321');
+    raise exception 'FAIL: phone_digits with punctuation';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name, phone, phone_digits) values ('X', '1234567', '1234567');
+    raise exception 'FAIL: phone_digits too short';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name, phone, phone_digits) values ('X', repeat('1', 16), repeat('1', 16));
+    raise exception 'FAIL: phone_digits too long';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name, phone_digits) values ('X', '5511987654321');
+    raise exception 'FAIL: phone_digits without a phone';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_providers (name, notes) values ('X', repeat('a', 501));
+    raise exception 'FAIL: provider notes over 500';
+  exception when check_violation then null;
+  end;
+
+  begin
+    insert into public.service_jobs (done_on, description) values ('2026-03-12', 'Sem prestador');
+    raise exception 'FAIL: job without a provider';
+  exception when not_null_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, description) values (ze, 'Sem data');
+    raise exception 'FAIL: job without a date';
+  exception when not_null_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description) values (ze, '2026-03-12', '  ');
+    raise exception 'FAIL: blank job description';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description) values (ze, '2026-03-12', repeat('a', 201));
+    raise exception 'FAIL: job description over 200';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description, amount) values (ze, '2026-03-12', 'X', -1);
+    raise exception 'FAIL: negative job amount';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description, warranty_until)
+      values (ze, '2026-03-12', 'X', '2026-03-11');
+    raise exception 'FAIL: service warranty before the service';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description, notes) values (ze, '2026-03-12', 'X', repeat('a', 501));
+    raise exception 'FAIL: job notes over 500';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description) values (gen_random_uuid(), '2026-03-12', 'X');
+    raise exception 'FAIL: job for a provider that does not exist';
+  exception when foreign_key_violation then null;
+  end;
+  -- NaN passaria num ">= 0" sozinho (para o Postgres ele é maior que tudo); o teto o recusa.
+  begin
+    insert into public.service_jobs (provider_id, done_on, description, amount) values (ze, '2026-03-12', 'X', 'NaN');
+    raise exception 'FAIL: NaN job amount';
+  exception when check_violation then null;
+  end;
+  -- Datas de 2000 a 2100: 'infinity', um ano a mais ou a menos não entram, na data nem na garantia.
+  begin
+    insert into public.service_jobs (provider_id, done_on, description) values (ze, 'infinity', 'X');
+    raise exception 'FAIL: job done on infinity';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description, warranty_until) values (ze, '-infinity', 'X', '1900-01-01');
+    raise exception 'FAIL: job done on -infinity';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description) values (ze, '2101-01-01', 'X');
+    raise exception 'FAIL: job done in 2101';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description) values (ze, '1999-12-31', 'X');
+    raise exception 'FAIL: job done in 1999';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description, warranty_until) values (ze, '2026-03-12', 'X', 'infinity');
+    raise exception 'FAIL: service warranty until infinity';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description, warranty_until) values (ze, '2026-03-12', 'X', '2101-01-01');
+    raise exception 'FAIL: service warranty until 2101';
+  exception when check_violation then null;
+  end;
+  -- Os limites valem (o maior valor e as duas pontas das datas). Desfeito no fim: os testes seguintes contam os serviços.
+  begin
+    insert into public.service_jobs (provider_id, done_on, description, amount, warranty_until)
+      values (ze, '2000-01-01', 'X', 9999999999.99, '2100-12-31');
+    insert into public.service_jobs (provider_id, done_on, description, amount) values (ze, '2100-12-31', 'X', 0);
+    raise exception 'undo' using errcode = 'KT001';
+  exception when sqlstate 'KT001' then null;
+  end;
+end $$;
+
+-- Quem mora na mesma casa vê e muda tudo.
+select set_config('request.jwt.claim.sub', :'user_b', false) \gset
+do $$
+begin
+  assert (select count(*) from public.service_providers) = 2, 'B sees the household providers';
+  assert (select count(*) from public.service_jobs) = 3, 'B sees the household jobs';
+  update public.service_providers set recommended = false where id = current_setting('test.provider_bia')::uuid;
+  assert found, 'B edits a household provider';
+  insert into public.service_jobs (provider_id, done_on, description)
+    values (current_setting('test.provider_bia')::uuid, '2026-05-09', 'Faxina leve');
+end $$;
+
+-- Outra casa não lê nem escreve, e não liga um serviço a prestador ou aparelho daqui.
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+declare
+  own uuid;
+  own_eq uuid;
+begin
+  assert (select count(*) from public.service_providers) = 0, 'C sees no foreign providers';
+  assert (select count(*) from public.service_jobs) = 0, 'C sees no foreign jobs';
+
+  update public.service_providers set name = 'Hack' where id = current_setting('test.provider_ze')::uuid;
+  assert not found, 'C cannot edit a foreign provider';
+  delete from public.service_providers where id = current_setting('test.provider_ze')::uuid;
+  assert not found, 'C cannot delete a foreign provider';
+  update public.service_jobs set description = 'Hack' where id = current_setting('test.job_ze')::uuid;
+  assert not found, 'C cannot edit a foreign job';
+  delete from public.service_jobs where id = current_setting('test.job_ze')::uuid;
+  assert not found, 'C cannot delete a foreign job';
+
+  begin
+    insert into public.service_providers (household_id, name) values (current_setting('test.hh_a')::uuid, 'Intruso');
+    raise exception 'FAIL: C created a provider in another household';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.service_jobs (household_id, provider_id, done_on, description)
+      values (current_setting('test.hh_a')::uuid, current_setting('test.provider_ze')::uuid, '2026-03-12', 'Intruso');
+    raise exception 'FAIL: C created a job in another household';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.service_jobs (provider_id, done_on, description)
+      values (current_setting('test.provider_ze')::uuid, '2026-03-12', 'X');
+    raise exception 'FAIL: job for a foreign provider';
+  exception when foreign_key_violation then null;
+  end;
+
+  insert into public.service_providers (name, trade) values ('Caio Encanador', 'encanador') returning id into own;
+  insert into public.equipment (name) values ('Aquecedor') returning id into own_eq;
+  begin
+    insert into public.service_jobs (provider_id, equipment_id, done_on, description)
+      values (own, current_setting('test.equipment_wash')::uuid, '2026-03-12', 'X');
+    raise exception 'FAIL: job on foreign equipment';
+  exception when foreign_key_violation then null;
+  end;
+  insert into public.service_jobs (provider_id, equipment_id, done_on, description, amount)
+    values (own, own_eq, '2026-04-01', 'Trocou o registro', 90);
+  perform set_config('test.provider_c', own::text, false);
+  perform set_config('test.equipment_c', own_eq::text, false);
+end $$;
+
+-- As permissões são as escritas na migração, não as do padrão do projeto (que
+-- nos stubs dá tudo a todos, como o Supabase fazia até 30/10/2026): quem não
+-- entrou não tem nenhuma; quem entrou e a chave de serviço leem e gravam. Uma
+-- de cada vez: com várias na mesma pergunta, has_table_privilege responde que
+-- sim quando QUALQUER uma delas existe.
+do $$
+declare
+  t text;
+  p text;
+begin
+  foreach t in array array['public.service_providers', 'public.service_jobs'] loop
+    foreach p in array array['select', 'insert', 'update', 'delete', 'truncate', 'references', 'trigger'] loop
+      assert not has_table_privilege('anon', t, p), format('anon must not have %s on %s', p, t);
+    end loop;
+    foreach p in array array['select', 'insert', 'update', 'delete'] loop
+      assert has_table_privilege('authenticated', t, p), format('authenticated must have %s on %s', p, t);
+      assert has_table_privilege('service_role', t, p), format('service_role must have %s on %s', p, t);
+    end loop;
+    foreach p in array array['truncate', 'references', 'trigger'] loop
+      assert not has_table_privilege('authenticated', t, p), format('authenticated must not have %s on %s', p, t);
+    end loop;
+  end loop;
+end $$;
+
+-- E na prática: sem entrar, nem a leitura passa da porta.
+set role anon;
+do $$
+begin
+  begin
+    perform count(*) from public.service_providers;
+    raise exception 'FAIL: anon read the providers';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform count(*) from public.service_jobs;
+    raise exception 'FAIL: anon read the jobs';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.service_providers (household_id, name) values (current_setting('test.hh_a')::uuid, 'Anon');
+    raise exception 'FAIL: anon created a provider';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set role authenticated;
+
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  assert (select count(*) from public.service_providers) = 2, 'A still sees only its own providers';
+  -- Um serviço não muda para o prestador nem para o aparelho de outra casa.
+  begin
+    update public.service_jobs set provider_id = current_setting('test.provider_c')::uuid
+      where id = current_setting('test.job_ze')::uuid;
+    raise exception 'FAIL: job moved to a foreign provider';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    update public.service_jobs set equipment_id = current_setting('test.equipment_c')::uuid
+      where id = current_setting('test.job_ze')::uuid;
+    raise exception 'FAIL: job moved to foreign equipment';
+  exception when foreign_key_violation then null;
+  end;
+
+  -- Aparelho apagado: o serviço fica no histórico de quem fez, sem o aparelho.
+  delete from public.equipment where id = current_setting('test.equipment_wash')::uuid;
+  assert (select equipment_id is null and household_id = current_setting('test.hh_a')::uuid and provider_id is not null
+    from public.service_jobs where id = current_setting('test.job_ze')::uuid), 'deleting the equipment keeps the job';
+
+  -- Prestador apagado: o histórico dele vai junto; o dos outros fica.
+  delete from public.service_providers where id = current_setting('test.provider_ze')::uuid;
+  assert (select count(*) from public.service_jobs where provider_id = current_setting('test.provider_ze')::uuid) = 0, 'jobs go with the provider';
+  assert (select count(*) from public.service_jobs) = 2, 'the other provider keeps its jobs';
+end $$;
+
+-- Excluir pelo app: delete_service_provider confere, com o prestador travado, o número de serviços que a pessoa
+-- leu na pergunta. Outro aparelho registrou um serviço depois dela (ou apagou um): nada é apagado (NK010).
+do $$
+declare
+  lu uuid;
+  confirmed integer;
+begin
+  insert into public.service_providers (name, trade) values ('Lu Jardins', 'jardineiro') returning id into lu;
+  insert into public.service_jobs (provider_id, done_on, description) values (lu, '2026-04-01', 'Podou as árvores');
+  insert into public.service_jobs (provider_id, done_on, description) values (lu, '2026-05-01', 'Cortou a grama');
+  foreach confirmed in array array[0, 1, 3] loop
+    begin
+      perform public.delete_service_provider(lu, confirmed);
+      raise exception 'FAIL: provider deleted with % jobs confirmed and 2 registered', confirmed;
+    exception when sqlstate 'NK010' then null;
+    end;
+    assert exists (select 1 from public.service_providers where id = lu), format('the provider stays (%s confirmed)', confirmed);
+    assert (select count(*) from public.service_jobs where provider_id = lu) = 2, format('and its jobs (%s confirmed)', confirmed);
+  end loop;
+  -- O número certo: o prestador e o histórico dele vão.
+  assert public.delete_service_provider(lu, 2), 'deleted with the right count';
+  assert not exists (select 1 from public.service_providers where id = lu), 'the provider is gone';
+  assert (select count(*) from public.service_jobs where provider_id = lu) = 0, 'and its jobs';
+  -- Outro aparelho já tinha excluído: não encontrado, sem erro e sem apagar nada.
+  assert not public.delete_service_provider(lu, 0), 'a provider that is gone is not found';
+  assert not public.delete_service_provider(gen_random_uuid(), null), 'nor one that never existed';
+  -- Sem o número, a pergunta falou do histórico todo: vai o que houver.
+  insert into public.service_providers (name) values ('Rafa Pinturas') returning id into lu;
+  insert into public.service_jobs (provider_id, done_on, description) values (lu, '2026-06-01', 'Pintou a sala');
+  assert public.delete_service_provider(lu, null), 'deleted without a count';
+  assert not exists (select 1 from public.service_providers where id = lu), 'the provider is gone';
+  assert (select count(*) from public.service_jobs where provider_id = lu) = 0, 'and its jobs';
+  assert (select count(*) from public.service_jobs) = 2, 'the other provider keeps its jobs';
+  perform set_config('test.provider_bia_jobs', (select count(*) from public.service_jobs where provider_id = current_setting('test.provider_bia')::uuid)::text, false);
+end $$;
+
+-- Prestador de outra casa: a função não o encontra, nem com o número certo, e não apaga nada.
+select set_config('request.jwt.claim.sub', :'user_c', false) \gset
+do $$
+begin
+  assert not public.delete_service_provider(current_setting('test.provider_bia')::uuid, current_setting('test.provider_bia_jobs')::integer),
+    'C cannot delete a foreign provider with the right count';
+  assert not public.delete_service_provider(current_setting('test.provider_bia')::uuid, null), 'nor without a count';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_a', false) \gset
+do $$
+begin
+  assert exists (select 1 from public.service_providers where id = current_setting('test.provider_bia')::uuid), 'the provider of A stays';
+  assert (select count(*) from public.service_jobs where provider_id = current_setting('test.provider_bia')::uuid)
+    = current_setting('test.provider_bia_jobs')::integer, 'with its jobs';
+  -- Só quem entrou chama a função: cada papel conferido sozinho.
+  assert has_function_privilege('authenticated', 'public.delete_service_provider(uuid, integer)', 'execute'), 'members delete a provider';
+  assert not has_function_privilege('anon', 'public.delete_service_provider(uuid, integer)', 'execute'), 'anon does not';
+  assert not has_function_privilege('public', 'public.delete_service_provider(uuid, integer)', 'execute'), 'nor everyone (PUBLIC)';
+end $$;
+set role anon;
+do $$
+begin
+  perform public.delete_service_provider(current_setting('test.provider_bia')::uuid, null);
+  raise exception 'FAIL: anon deleted a provider';
+exception when insufficient_privilege then null;
+end $$;
+set role authenticated;
+
+-- Apagar a casa leva prestadores e serviços (aparelho, prestador e casa
+-- apagados na mesma hora, cada um por um caminho). Desfeito no fim: a casa C
+-- continua nos testes seguintes.
+reset role;
+do $$
+begin
+  assert (select count(*) from public.service_jobs where provider_id = current_setting('test.provider_c')::uuid) = 1, 'C has a job';
+  begin
+    delete from public.households where id = (
+      select household_id from public.service_providers where id = current_setting('test.provider_c')::uuid
+    );
+    assert not exists (select 1 from public.service_providers where id = current_setting('test.provider_c')::uuid), 'providers go with the household';
+    assert not exists (select 1 from public.service_jobs where provider_id = current_setting('test.provider_c')::uuid), 'jobs go with the household';
+    assert (select count(*) from public.service_providers) = 1, 'the other household keeps its providers';
+    raise exception 'undo' using errcode = 'KT001';
+  exception when sqlstate 'KT001' then null;
+  end;
+  assert (select count(*) from public.service_providers) = 2, 'household deletion undone';
+  -- Os testes seguintes contam aparelhos e gastos: nada daqui fica para trás.
+  delete from public.service_providers;
+  delete from public.equipment where id = current_setting('test.equipment_c')::uuid;
+end $$;
+set role authenticated;
 
 -- ---------------------------------------------------------------------------
 \echo '• financeiro: contas, pagamentos e gastos'
@@ -5033,6 +5430,2289 @@ begin
     'the columns of price_observations are the same, in the same order';
   assert has_table_privilege('authenticated', 'public.price_observations', 'select')
      and has_table_privilege('authenticated', 'public.latest_prices', 'select'), 'members still read both views';
+end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• rodízio de tarefas: a ordem, a vez ao concluir, pular a vez e quem sai da ordem'
+-- Rita e Beto moram na Casa do Rodízio, com Lia, Nina, Téo e Bidu (crianças,
+-- sem o app) e o pet Rex; Otto mora em outra casa, com o filho Tito.
+\set user_r '00000000-0000-0000-0000-000000000041'
+\set user_s '00000000-0000-0000-0000-000000000042'
+\set user_o '00000000-0000-0000-0000-000000000043'
+\set user_t '00000000-0000-0000-0000-000000000044'
+insert into auth.users (id) values (:'user_r'), (:'user_s'), (:'user_o'), (:'user_t');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_o', false) \gset
+select public.create_household('Casa do Otto', 'Otto') \gset
+insert into public.people (name) values ('Tito');
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+select (public.create_household('Casa do Rodízio', 'Rita')).invite_code as invite_r \gset
+select set_config('request.jwt.claim.sub', :'user_s', false) \gset
+select public.join_household(:'invite_r', 'Beto') \gset
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+insert into public.people (name) values ('Lia'), ('Nina'), ('Teo'), ('Bidu');
+insert into public.people (name, kind, species) values ('Rex', 'pet', 'cachorro');
+reset role;
+select id as hh_r from public.households where name = 'Casa do Rodízio' \gset
+select set_config('test.hh_r', :'hh_r', false) \gset
+-- As fichas, pelo nome: test.r_rita, test.r_beto, test.r_lia…
+select count(set_config('test.r_' || lower(name), id::text, false)) as people_r
+  from public.people where household_id = :'hh_r' or name = 'Tito' \gset
+-- A ordem só se grava por save_chore, junto com a tarefa. Para os testes que só trocam a ordem: a tarefa como
+-- está no banco e a ordem nova, como o formulário que mostrou o rodízio e não mexeu em mais nada.
+create function pg_temp.save_order(p_chore_id uuid, p_people uuid[]) returns uuid language sql as $$
+  select public.save_chore(c.id, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, p_people => p_people)
+  from public.chores c where c.id = p_chore_id;
+$$;
+-- O responsável salvo pela função sem falar da ordem (p_people nulo): a vez fica com quem foi escolhido, mesmo de
+-- fora da ordem. Direto na tabela, numa tarefa em rodízio, o banco recusa (ver chores_turn_not_by_hand, abaixo).
+create function pg_temp.save_turn(p_chore_id uuid, p_assigned_to uuid, p_kid_id uuid) returns uuid language sql as $$
+  select public.save_chore(c.id, c.title, c.notes, c.recurrence, c.interval_count, c.due_on,
+    p_set_turn => true, p_assigned_to => p_assigned_to, p_kid_id => p_kid_id)
+  from public.chores c where c.id = p_chore_id;
+$$;
+set role authenticated;
+
+-- A ordem: quem foi escolhido primeiro começa; pet, gente de outra casa, uma
+-- pessoa só, pessoa repetida e tarefa que não se repete ficam de fora.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  nina uuid := current_setting('test.r_nina')::uuid;
+  rex uuid := current_setting('test.r_rex')::uuid;
+  tito uuid := current_setting('test.r_tito')::uuid;
+  dishes uuid;
+  once uuid;
+  c public.chores;
+begin
+  -- A tarefa já existia (aqui, gravada direto na tabela, como o app antigo) e ganha a ordem.
+  insert into public.chores (title, recurrence, due_on, assigned_to, points)
+    values ('Lavar a louça', 'daily', '2026-10-12', auth.uid(), 10) returning id into dishes;
+  perform pg_temp.save_order(dishes, array[beto, rita, lia]);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[beto, rita, lia],
+    'the order is the order picked';
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000042' and c.kid_id is null,
+    'a new rotation starts with the first of the order, even if the chore had someone else';
+
+  begin
+    perform pg_temp.save_order(dishes, array[beto, rex]);
+    raise exception 'FAIL: a pet took part in a rotation';
+  exception when check_violation then
+    -- Em português: o app mostra o texto do banco como ele vem.
+    assert sqlerrm = 'Só pessoas da casa (não pets) entram no rodízio. Confira a ordem e salve de novo.', sqlerrm;
+  end;
+  begin
+    perform pg_temp.save_order(dishes, array[beto, tito]);
+    raise exception 'FAIL: a person of another household took part in a rotation';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform pg_temp.save_order(dishes, array[beto]);
+    raise exception 'FAIL: rotation with one person';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform pg_temp.save_order(dishes, array[beto, rita, beto]);
+    raise exception 'FAIL: rotation with a repeated person';
+  exception when invalid_parameter_value then null;
+  end;
+  insert into public.chores (title, due_on) values ('Trocar a lâmpada', '2026-10-12') returning id into once;
+  begin
+    perform pg_temp.save_order(once, array[beto, rita]);
+    raise exception 'FAIL: rotation on a one-off chore';
+  exception when invalid_parameter_value then null;
+  end;
+  -- A ordem só se grava pelas funções: direto na tabela, quem mora na casa só lê. Senão entraria o que a
+  -- função recusa (rodízio em tarefa que não se repete) e a vez ficaria com alguém de fora da ordem.
+  begin
+    insert into public.chore_rotation (chore_id, person_id, position) values (once, beto, 1), (once, rita, 2);
+    raise exception 'FAIL: a member wrote a rotation straight into a one-off chore';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.chore_rotation (chore_id, person_id, position) values (dishes, nina, 4);
+    raise exception 'FAIL: a member wrote straight into the order';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update public.chore_rotation set person_id = nina where chore_id = dishes and person_id = beto;
+    raise exception 'FAIL: a member changed the order straight in the table';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from public.chore_rotation where chore_id = dishes and person_id = lia;
+    raise exception 'FAIL: a member deleted from the order straight in the table';
+  exception when insufficient_privilege then null;
+  end;
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[beto, rita, lia],
+    'a refused order changes nothing';
+  delete from public.chores where id = once;
+  perform set_config('test.r_dishes', dishes::text, false);
+end $$;
+-- O que segura a tabela por baixo das funções (elas gravam como dono, e é como dono que se confere): só
+-- pessoas entram, e duas não ficam na mesma posição.
+reset role;
+do $$
+declare
+  hh uuid := current_setting('test.hh_r')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  rita uuid := current_setting('test.r_rita')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  nina uuid := current_setting('test.r_nina')::uuid;
+  rex uuid := current_setting('test.r_rex')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+begin
+  begin
+    insert into public.chore_rotation (chore_id, person_id, position, household_id) values (dishes, rex, 9, hh);
+    raise exception 'FAIL: a pet written straight into the order';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.chore_rotation (chore_id, person_id, position, household_id) values (dishes, nina, 1, hh);
+    raise exception 'FAIL: two people in the same position';
+  exception when unique_violation then null;
+  end;
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[beto, rita, lia],
+    'a refused row changes nothing';
+end $$;
+set role authenticated;
+
+-- Outra casa não lê nem mexe na ordem, nem chama as funções nesta tarefa.
+select set_config('request.jwt.claim.sub', :'user_o', false) \gset
+do $$
+declare
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  rita uuid := current_setting('test.r_rita')::uuid;
+  tito uuid := current_setting('test.r_tito')::uuid;
+  mine uuid;
+begin
+  assert (select count(*) from public.chore_rotation) = 0, 'O sees no foreign order';
+  begin
+    update public.chore_rotation set position = position + 10;
+    raise exception 'FAIL: O changed a foreign order';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from public.chore_rotation;
+    raise exception 'FAIL: O deleted a foreign order';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.chore_rotation (chore_id, person_id, position) values (dishes, tito, 9);
+    raise exception 'FAIL: O put his kid in a foreign chore';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.chore_rotation (chore_id, person_id, position, household_id)
+      values (dishes, beto, 9, current_setting('test.hh_r')::uuid);
+    raise exception 'FAIL: O wrote into a foreign household';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.save_chore(dishes, 'Lavar a louça', null, 'daily', 1, '2026-10-12', p_people => array[beto, rita]);
+    raise exception 'FAIL: O saved the order of a foreign chore';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.save_chore(dishes, 'Lavar a louça', null, 'daily', 1, '2026-10-12', p_people => '{}');
+    raise exception 'FAIL: O ended a foreign rotation';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.skip_chore_turn(dishes, beto);
+    raise exception 'FAIL: O skipped a foreign turn';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.complete_chore(dishes, '2026-10-12', '2026-10-12');
+    raise exception 'FAIL: O completed a foreign chore';
+  exception when no_data_found then null;
+  end;
+  -- Na casa dele, gente de outra casa não entra.
+  insert into public.chores (title, recurrence) values ('Tarefa do Otto', 'weekly') returning id into mine;
+  begin
+    perform pg_temp.save_order(mine, array[tito, beto]);
+    raise exception 'FAIL: O put a foreign person in his rotation';
+  exception when no_data_found then null;
+  end;
+  delete from public.chores where id = mine;
+end $$;
+set role anon;
+do $$
+begin
+  begin
+    perform public.save_chore(gen_random_uuid(), 'Anon', null, 'daily', 1, '2026-10-12', p_people => '{}');
+    raise exception 'FAIL: anon called save_chore';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.save_chore_rotation(gen_random_uuid(), '{}');
+    raise exception 'FAIL: anon called save_chore_rotation';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.skip_chore_turn(gen_random_uuid(), null);
+    raise exception 'FAIL: anon called skip_chore_turn';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set role authenticated;
+do $$
+begin
+  begin
+    perform public.chore_set_turn(current_setting('test.r_dishes')::uuid, current_setting('test.r_tito')::uuid);
+    raise exception 'FAIL: app user called an internal rotation function';
+  exception when insufficient_privilege then null;
+  end;
+  -- As regras da ordem também são uma peça de dentro: pela API, a ordem só se grava junto com a tarefa (save_chore).
+  begin
+    perform public.save_chore_rotation(current_setting('test.r_dishes')::uuid, '{}');
+    raise exception 'FAIL: app user saved an order outside save_chore';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- Concluir passa a vez (depois do último, volta ao primeiro); os pontos são
+-- de quem estava na vez, e só de quem não tem o app.
+select set_config('request.jwt.claim.sub', :'user_s', false) \gset
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  nina uuid := current_setting('test.r_nina')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+  trash uuid;
+  plain uuid;
+  c public.chores;
+  r record;
+begin
+  assert (select count(*) from public.chore_rotation where chore_id = dishes) = 3, 'B reads the household order';
+  select * into r from public.complete_chore(dishes, '2026-10-12', '2026-10-12');
+  assert r.completed and r.points = 0 and r.person_id is null and r.next_person_id = rita and r.due_on = '2026-10-13',
+    'a member turn: no points, and the turn passes to the next';
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.kid_id is null, 'the chore is now of the next member';
+  -- Toque duplo (ou outro celular) na mesma ocorrência: não passa a vez de novo.
+  select * into r from public.complete_chore(dishes, '2026-10-12', '2026-10-12');
+  assert not r.completed and r.next_person_id is null, 'a repeated completion passes no turn';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000041', 'the turn passed once';
+
+  select * into r from public.complete_chore(dishes, '2026-10-13', '2026-10-13');
+  assert r.completed and r.points = 0 and r.next_person_id = lia, 'the turn passes to the kid';
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to is null and c.kid_id = lia, 'a kid turn is kept in kid_id';
+  select * into r from public.complete_chore(dishes, '2026-10-14', '2026-10-14');
+  assert r.completed and r.points = 10 and r.person_id = lia and r.next_person_id = beto,
+    'the kid whose turn it was earns the points, and after the last comes the first';
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to = auth.uid() and c.kid_id is null, 'wrapped around to the first';
+  assert (select balance from public.kid_points where person_id = lia) = 10, 'points went to the kid of the turn';
+  assert (select coalesce(sum(points), 0) from public.chore_completions where chore_id = dishes and person_id is distinct from lia) = 0,
+    'member turns earned nothing';
+  assert (select count(*) from public.chore_completions where chore_id = dishes) = 3, 'three completions';
+
+  -- A vez é de alguém de fora da ordem (o responsável salvo sem mexer na ordem): o próximo é o primeiro.
+  perform pg_temp.save_turn(dishes, null, nina);
+  select * into r from public.complete_chore(dishes, '2026-10-15', '2026-10-15');
+  assert r.completed and r.person_id = nina and r.next_person_id = beto, 'turn outside the order: next is the first';
+  perform pg_temp.save_turn(dishes, null, null);
+  select * into r from public.complete_chore(dishes, '2026-10-16', '2026-10-16');
+  assert r.completed and r.next_person_id = beto, 'nobody in the turn: next is the first';
+
+  -- App já instalado: chama sem o vencimento e lê as colunas de sempre.
+  insert into public.chores (title, recurrence, due_on) values ('Levar o lixo', 'weekly', '2026-10-12') returning id into trash;
+  perform pg_temp.save_order(trash, array[rita, beto]);
+  select * into r from public.complete_chore(trash, '2026-10-12');
+  assert r.completed and r.points = 0 and r.person_id is null and r.due_on = '2026-10-19' and r.active and r.next_person_id = beto,
+    'the old call shape completes and passes the turn';
+  select * into r from public.complete_chore(trash, '2026-10-12');
+  assert not r.completed, 'old app double tap completes once';
+  assert (select assigned_to from public.chores where id = trash) = auth.uid(), 'and passes the turn once';
+
+  -- Tarefa sem rodízio: como sempre, sem próximo.
+  insert into public.chores (title, recurrence, due_on, assigned_to) values ('Arrumar a sala', 'daily', '2026-10-12', auth.uid())
+    returning id into plain;
+  select * into r from public.complete_chore(plain, '2026-10-12', '2026-10-12');
+  assert r.completed and r.next_person_id is null, 'no rotation: no next person';
+  assert (select assigned_to from public.chores where id = plain) = auth.uid(), 'a plain chore keeps its person';
+  delete from public.chores where id = plain;
+  perform set_config('test.r_trash', trash::text, false);
+end $$;
+
+-- Pular a vez: passa sem concluir, e dois toques ao mesmo tempo passam uma vez só.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+  c public.chores;
+  plain uuid;
+begin
+  assert (select assigned_to from public.chores where id = dishes) = auth.uid(), 'B is on turn';
+  assert public.skip_chore_turn(dishes, beto) = rita, 'skipping passes the turn to the next';
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.due_on = '2026-10-17' and c.active, 'the date stays';
+  assert (select count(*) from public.chore_completions where chore_id = dishes) = 5, 'nothing in the history';
+  assert (select balance from public.kid_points where person_id = lia) = 10, 'and no points';
+  -- O outro celular ainda mostrava a vez de Beto.
+  assert public.skip_chore_turn(dishes, beto) is null, 'a second skip from the old turn does nothing';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000041', 'the turn passed once';
+  assert public.skip_chore_turn(dishes, rita) = lia and public.skip_chore_turn(dishes, lia) = beto, 'skipping wraps around too';
+
+  -- p_to: quem a pergunta disse que fica com a vez. A tela leu Beto → Rita → Lia, na vez de Beto ("de Beto para
+  -- Rita?"), e outro celular tira Rita da ordem antes do toque: a seguinte passa a ser Lia, que ninguém confirmou, e
+  -- nada muda. Com a pessoa que é mesmo a seguinte, passa; sem p_to (nulo, ou fora da chamada, como acima), passa
+  -- para quem vier, como antes.
+  perform pg_temp.save_order(dishes, array[beto, lia]);
+  assert public.skip_chore_turn(dishes, beto, rita) is null, 'a skip to the person the question named, who is no longer next, does nothing';
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to = auth.uid() and c.kid_id is null, 'and the turn stays';
+  assert public.skip_chore_turn(dishes, beto, lia) = lia, 'a skip to the person who is next passes the turn';
+  assert public.skip_chore_turn(dishes, lia, null) = beto, 'a null p_to passes the turn to whoever is next';
+  perform pg_temp.save_order(dishes, array[beto, rita, lia]);
+  assert (select assigned_to from public.chores where id = dishes) = auth.uid(), 'B is on turn again';
+
+  insert into public.chores (title, recurrence, assigned_to) values ('Sem rodízio', 'daily', auth.uid()) returning id into plain;
+  assert public.skip_chore_turn(plain, beto) is null, 'no rotation: nothing to skip';
+  assert (select assigned_to from public.chores where id = plain) = auth.uid(), 'and the chore keeps its person';
+  -- Apagar a tarefa leva a ordem dela.
+  perform pg_temp.save_order(plain, array[lia, beto]);
+  delete from public.chores where id = plain;
+  assert (select count(*) from public.chore_rotation where chore_id = plain) = 0, 'the order goes with the chore';
+  begin
+    perform public.skip_chore_turn(gen_random_uuid(), beto);
+    raise exception 'FAIL: skipped a chore that does not exist';
+  exception when no_data_found then null;
+  end;
+end $$;
+
+-- Editar a ordem: quem continua nela mantém a vez; se saiu, a vez vai para o
+-- primeiro. Encerrar o rodízio deixa a tarefa com quem estava na vez.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  nina uuid := current_setting('test.r_nina')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+  c public.chores;
+begin
+  perform pg_temp.save_order(dishes, array[lia, beto, nina]);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[lia, beto, nina],
+    'the order is replaced at once';
+  assert (select assigned_to from public.chores where id = dishes) = auth.uid(), 'who stays in the order keeps the turn';
+  perform pg_temp.save_order(dishes, array[nina, lia]);
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to is null and c.kid_id = nina, 'who left the order hands the turn to the first';
+  perform pg_temp.save_order(dishes, array[beto, rita, nina]);
+  assert (select kid_id from public.chores where id = dishes) = nina, 'the first is not forced when the turn is still in the order';
+
+  perform pg_temp.save_order(dishes, '{}');
+  assert (select count(*) from public.chore_rotation where chore_id = dishes) = 0, 'an empty order ends the rotation';
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to is null and c.kid_id = nina, 'ending the rotation keeps the current person';
+  perform pg_temp.save_order(dishes, '{}');
+  assert (select kid_id from public.chores where id = dishes) = nina, 'ending again changes nothing';
+
+  -- O app antigo passa a tarefa para "Uma vez": o rodízio acaba e fica quem estava na vez.
+  perform pg_temp.save_order(dishes, array[beto, rita, lia]);
+  perform public.skip_chore_turn(dishes, beto);
+  update public.chores set recurrence = 'none' where id = dishes;
+  assert (select count(*) from public.chore_rotation where chore_id = dishes) = 0, 'a one-off chore has no rotation';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000041', 'and keeps the person of the turn';
+  update public.chores set recurrence = 'daily' where id = dishes;
+end $$;
+
+-- Regravar a ordem nunca move a vez. save_chore_rotation apaga a ordem inteira e grava a nova; o gatilho de quem
+-- sai da ordem (chore_rotation_row_left) só roda no fim daquele delete, sem nenhuma linha da ordem, e por isso não
+-- passa a vez adiante. Apagado linha a linha, ou com o gatilho antes do delete, a vez de quem continua na ordem
+-- (ou de quem fica com a tarefa no fim do rodízio) passaria para o seguinte: estes casos pegam isso.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  sweep uuid;
+  yard uuid;
+  c public.chores;
+begin
+  -- Com um morador primeiro na ordem: Rita, depois Beto.
+  sweep := public.save_chore(null, 'Varrer a cozinha', null, 'daily', 1, '2026-10-12', 10, p_people => array[rita, beto]);
+  select * into c from public.chores where id = sweep;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.kid_id is null, 'the turn starts with R';
+  -- a. A mesma ordem, na vez do primeiro: fica com ele.
+  perform pg_temp.save_order(sweep, array[rita, beto]);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = sweep) = array[rita, beto],
+    'the same order is saved again';
+  select * into c from public.chores where id = sweep;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.kid_id is null,
+    'saving the same order on the turn of the first (a member) keeps the turn';
+  -- b. A mesma ordem, na vez do segundo: fica com ele.
+  assert public.skip_chore_turn(sweep, rita) = beto, 'the turn passed to B';
+  perform pg_temp.save_order(sweep, array[rita, beto]);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = sweep) = array[rita, beto],
+    'the same order is saved again, on the turn of B';
+  select * into c from public.chores where id = sweep;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000042' and c.kid_id is null,
+    'saving the same order on the turn of the second keeps the turn';
+  -- c. A ordem invertida, na vez do primeiro: a vez não acompanha a posição.
+  assert public.skip_chore_turn(sweep, beto) = rita, 'the turn is back with R';
+  perform pg_temp.save_order(sweep, array[beto, rita]);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = sweep) = array[beto, rita],
+    'the order is reversed';
+  select * into c from public.chores where id = sweep;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.kid_id is null,
+    'reversing the order keeps the turn of who had it';
+  -- d. Encerrar o rodízio na vez do primeiro: a tarefa fica com ele.
+  perform pg_temp.save_order(sweep, array[rita, beto]);
+  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000041', 'R still has the turn';
+  perform pg_temp.save_order(sweep, '{}');
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = sweep), 'ending the rotation leaves no row of the order';
+  select * into c from public.chores where id = sweep;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.kid_id is null,
+    'ending the rotation on the turn of the first (a member) keeps the chore with the member';
+
+  -- e. O mesmo com quem não tem o app primeiro na ordem (a vez em kid_id): Lia, depois Beto.
+  yard := public.save_chore(null, 'Varrer o quintal', null, 'daily', 1, '2026-10-12', 10, p_people => array[lia, beto]);
+  select * into c from public.chores where id = yard;
+  assert c.assigned_to is null and c.kid_id = lia, 'the turn starts with the kid';
+  perform pg_temp.save_order(yard, array[lia, beto]);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = yard) = array[lia, beto],
+    'the same order is saved again, with the kid first';
+  select * into c from public.chores where id = yard;
+  assert c.assigned_to is null and c.kid_id = lia, 'saving the same order on the turn of the first (a kid) keeps the turn';
+  perform pg_temp.save_order(yard, '{}');
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = yard), 'ending the rotation leaves no row of the order, with the kid';
+  select * into c from public.chores where id = yard;
+  assert c.assigned_to is null and c.kid_id = lia, 'ending the rotation on the turn of the first (a kid) keeps the chore with the kid';
+
+  delete from public.chores where id in (sweep, yard);
+end $$;
+
+-- O formulário que mostrou um rodízio e não mexeu na ordem não a manda (p_people nulo): o que outro celular fez com
+-- o rodízio nesse meio-tempo fica, e a vez também. Mandada de volta, a ordem que ele mostrou recriaria o rodízio
+-- encerrado (com a vez no primeiro, pela regra do rodízio novo) ou desfaria a ordem nova.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  nina uuid := current_setting('test.r_nina')::uuid;
+  shelf uuid;
+  c public.chores;
+begin
+  -- Rita, Beto e Lia; a vez chega a Lia.
+  shelf := public.save_chore(null, 'Tirar o pó da estante', null, 'daily', 1, '2026-10-12', 10, p_people => array[rita, beto, lia]);
+  assert public.skip_chore_turn(shelf, rita) = beto and public.skip_chore_turn(shelf, beto) = lia, 'the turn is with the kid';
+  -- a. Outro celular encerra o rodízio, e a tarefa fica com Lia. Este, que mostrava o rodízio, salva só o título.
+  perform pg_temp.save_order(shelf, '{}');
+  perform public.save_chore(shelf, 'Tirar o pó da estante e da mesa', null, 'daily', 1, '2026-10-12', 10);
+  select * into c from public.chores where id = shelf;
+  assert c.title = 'Tirar o pó da estante e da mesa' and c.points = 10, 'the fields of the form are saved';
+  assert c.assigned_to is null and c.kid_id = lia, 'a save without the order keeps the holder of a rotation ended elsewhere';
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = shelf), 'and the rotation stays ended';
+  -- b. Outro celular cria outro rodízio (Nina, Beto: a vez começa por Nina); este salva só o título.
+  perform pg_temp.save_order(shelf, array[nina, beto]);
+  perform public.save_chore(shelf, 'Tirar o pó da estante', null, 'daily', 1, '2026-10-12', 10);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = shelf) = array[nina, beto],
+    'a save without the order keeps the order changed elsewhere';
+  assert (select kid_id from public.chores where id = shelf) = nina, 'and its turn';
+  -- c. Outro celular faz a tarefa "Uma vez" (o rodízio acaba, e Nina fica com ela); este, que a mostrava diária, salva.
+  perform public.save_chore(shelf, 'Tirar o pó da estante', null, 'none', 1, '2026-10-12', p_people => '{}');
+  perform public.save_chore(shelf, 'Tirar o pó da estante', null, 'daily', 1, '2026-10-12', 10);
+  select * into c from public.chores where id = shelf;
+  assert c.recurrence = 'daily' and c.assigned_to is null and c.kid_id = nina, 'the recurrence of the form is saved, and the holder stays';
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = shelf), 'and no rotation comes back';
+  delete from public.chores where id = shelf;
+end $$;
+
+-- A vez de uma tarefa em rodízio não muda direto na tabela (NK009): a ordem ficaria lá, e a próxima conclusão
+-- seguiria revezando. É o que o app já instalado (de antes do rodízio) e o app novo, quando a API ainda não enxerga
+-- save_chore, fariam. O resto da tarefa, o mesmo responsável e a tarefa sem rodízio passam como sempre.
+do $$
+declare
+  beto uuid := current_setting('test.r_beto')::uuid;
+  rita uuid := current_setting('test.r_rita')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+  plain uuid;
+  was public.chores;
+  c public.chores;
+begin
+  perform pg_temp.save_order(dishes, array[beto, rita, lia]);
+  assert public.skip_chore_turn(dishes, beto) = rita, 'the rotation is back, on the turn of R';
+  select * into was from public.chores where id = dishes;
+  begin
+    update public.chores set assigned_to = auth.uid() where id = dishes;
+    raise exception 'FAIL: a member changed the assignee of a rotating chore straight in the table';
+  exception when sqlstate 'NK009' then
+    -- O app já instalado mostra o texto do banco como ele vem: em português, e pedindo para atualizar o app.
+    assert sqlerrm = 'Esta tarefa está em rodízio. Atualize o app para trocar o responsável.', sqlerrm;
+  end;
+  begin
+    update public.chores set assigned_to = null, kid_id = lia where id = dishes;
+    raise exception 'FAIL: a member gave the turn of a rotating chore to a kid straight in the table';
+  exception when sqlstate 'NK009' then null;
+  end;
+  begin
+    update public.chores set assigned_to = null where id = dishes;
+    raise exception 'FAIL: a member gave a rotating chore to anyone straight in the table';
+  exception when sqlstate 'NK009' then null;
+  end;
+  -- O app antigo grava a tarefa inteira de uma vez: com a troca do responsável, nada do resto fica.
+  begin
+    update public.chores set title = 'Lavar a louça e as panelas', recurrence = 'none', assigned_to = auth.uid() where id = dishes;
+    raise exception 'FAIL: a member changed the assignee of a rotating chore with the rest of it';
+  exception when sqlstate 'NK009' then null;
+  end;
+  select * into c from public.chores where id = dishes;
+  assert c = was, 'a refused write changes nothing in the chore';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[beto, rita, lia],
+    'nor in the order';
+
+  -- Os pontos do rodízio, na vez de um morador: o app antigo manda 0 (para ele, pontos eram só da tarefa de criança).
+  -- A edição passa, com os pontos de antes: são das crianças da ordem, cada uma na sua vez.
+  assert was.points = 10 and was.assigned_to = '00000000-0000-0000-0000-000000000041' and was.kid_id is null,
+    'the rotation is worth 10 points, on the turn of R';
+  update public.chores
+    set title = 'Lavar a louça e as panelas', notes = null, recurrence = 'daily', interval_count = 1, due_on = was.due_on,
+        assigned_to = '00000000-0000-0000-0000-000000000041', kid_id = null, points = 0
+    where id = dishes;
+  select * into c from public.chores where id = dishes;
+  assert c.title = 'Lavar a louça e as panelas' and c.points = 10 and c.assigned_to = '00000000-0000-0000-0000-000000000041',
+    'the old app renames a rotating chore on a member turn, and its points stay';
+  -- Os outros valores passam, também na vez do morador.
+  update public.chores set title = 'Lavar a louça', points = 12 where id = dishes;
+  assert (select points from public.chores where id = dishes) = 12, 'other points are written straight';
+  update public.chores set points = 10 where id = dishes;
+
+  -- A vez de uma criança também (kid_id).
+  perform public.skip_chore_turn(dishes, rita);
+  begin
+    update public.chores set kid_id = null, assigned_to = auth.uid() where id = dishes;
+    raise exception 'FAIL: a member took the turn of a kid straight in the table';
+  exception when sqlstate 'NK009' then null;
+  end;
+  begin
+    update public.chores set kid_id = current_setting('test.r_nina')::uuid where id = dishes;
+    raise exception 'FAIL: a member passed the turn to another kid straight in the table';
+  exception when sqlstate 'NK009' then null;
+  end;
+  assert (select kid_id from public.chores where id = dishes) = lia, 'the kid keeps the turn';
+  -- Na vez da criança, os pontos mudam direto na tabela, como sempre (até para 0: aí o app antigo mostra os pontos, e
+  -- o 0 foi a pessoa que escolheu).
+  update public.chores set points = 15 where id = dishes;
+  assert (select points from public.chores where id = dishes) = 15, 'on a kid turn, the points change straight';
+  update public.chores set points = 0 where id = dishes;
+  assert (select points from public.chores where id = dishes) = 0, 'even to 0';
+  update public.chores set points = 10 where id = dishes;
+
+  -- O resto da tarefa, sim: título, observação, data e pontos; e a tarefa inteira com o mesmo responsável (o app
+  -- antigo manda tudo).
+  update public.chores set title = 'Lavar a louça e as panelas', notes = 'Com detergente', due_on = '2026-10-20', points = 7
+    where id = dishes;
+  select * into c from public.chores where id = dishes;
+  assert c.title = 'Lavar a louça e as panelas' and c.notes = 'Com detergente' and c.due_on = '2026-10-20' and c.points = 7
+    and c.assigned_to is null and c.kid_id = lia, 'the rest of a rotating chore is written straight as always';
+  update public.chores set assigned_to = null, kid_id = lia, title = 'Lavar a louça', notes = null, points = 10 where id = dishes;
+  select * into c from public.chores where id = dishes;
+  assert c.title = 'Lavar a louça' and c.notes is null and c.points = 10 and c.assigned_to is null and c.kid_id = lia,
+    'and so is the whole chore with the same assignee';
+  assert (select count(*) from public.chore_rotation where chore_id = dishes) = 3, 'and the order stays';
+
+  -- Tarefa sem rodízio: o responsável muda direto na tabela, como sempre.
+  insert into public.chores (title, recurrence, assigned_to) values ('Molhar as plantas', 'daily', auth.uid()) returning id into plain;
+  update public.chores set assigned_to = '00000000-0000-0000-0000-000000000041' where id = plain;
+  update public.chores set assigned_to = null, kid_id = lia where id = plain;
+  update public.chores set kid_id = null where id = plain;
+  select * into c from public.chores where id = plain;
+  assert c.assigned_to is null and c.kid_id is null, 'a chore without rotation changes its assignee straight in the table';
+  -- E os pontos também, até para 0, com um morador nela.
+  update public.chores set assigned_to = auth.uid(), points = 10 where id = plain;
+  update public.chores set points = 0 where id = plain;
+  assert (select points from public.chores where id = plain) = 0, 'a chore without rotation changes its points straight, even to 0';
+  update public.chores set assigned_to = null where id = plain;
+  -- Nem a que já teve rodízio: acabado, ela volta a ser como as outras.
+  perform pg_temp.save_order(plain, array[beto, lia]);
+  perform pg_temp.save_order(plain, '{}');
+  update public.chores set assigned_to = '00000000-0000-0000-0000-000000000041', kid_id = null where id = plain;
+  assert (select assigned_to from public.chores where id = plain) = '00000000-0000-0000-0000-000000000041',
+    'nor after its rotation ended';
+  delete from public.chores where id = plain;
+
+  -- Pelas funções a vez muda como antes: pular, concluir, o responsável escolhido e a ordem nova.
+  assert public.skip_chore_turn(dishes, lia) = beto, 'skipping moves the turn';
+  assert (select next_person_id from public.complete_chore(dishes, '2026-10-20', '2026-10-20')) = rita, 'completing moves the turn';
+  perform pg_temp.save_turn(dishes, null, lia);
+  assert (select kid_id from public.chores where id = dishes) = lia, 'save_chore with a person chosen moves the turn';
+  perform pg_temp.save_order(dishes, array[rita, beto]);
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000041',
+    'a new order from save_chore moves the turn';
+  perform pg_temp.save_order(dishes, array[beto, rita, lia]);
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000041', 'R is on turn again';
+  -- Os pontos pela função (o app novo, que mostra os pontos do rodízio): ela grava o que vier, até 0, na vez do morador.
+  perform public.save_chore(ch.id, ch.title, ch.notes, ch.recurrence, ch.interval_count, ch.due_on, p_points => 0)
+    from public.chores ch where ch.id = dishes;
+  assert (select points from public.chores where id = dishes) = 0, 'save_chore sets the points of a rotation, even to 0';
+  perform public.save_chore(ch.id, ch.title, ch.notes, ch.recurrence, ch.interval_count, ch.due_on, p_points => 10, p_people => array[beto, rita, lia])
+    from public.chores ch where ch.id = dishes;
+  assert (select points from public.chores where id = dishes) = 10, 'and with the order too';
+end $$;
+
+-- save_chore: o formulário grava a tarefa inteira numa chamada só, numa transação: os campos, o responsável (só
+-- quando foi escolhido) e a ordem do rodízio. Recusada qualquer parte, nada daquela chamada fica gravado.
+-- Primeiro a tarefa nova.
+do $$
+declare
+  hh uuid := current_setting('test.hh_r')::uuid;
+  rita uuid := current_setting('test.r_rita')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  rex uuid := current_setting('test.r_rex')::uuid;
+  room uuid;
+  lamp uuid;
+  upkeep uuid;
+  yard uuid;
+  fridge uuid;
+  loose uuid;
+  c public.chores;
+  chores_before integer;
+begin
+  -- Sem rodízio: os campos, os pontos e o responsável escolhido (uma criança).
+  room := public.save_chore(null, 'Arrumar a sala', 'Com o aspirador', 'weekly', 2, '2026-10-12', 5, p_set_turn => true, p_kid_id => lia);
+  select * into c from public.chores where id = room;
+  assert c.household_id = hh and c.title = 'Arrumar a sala' and c.notes = 'Com o aspirador' and c.recurrence = 'weekly'
+    and c.interval_count = 2 and c.due_on = '2026-10-12' and c.points = 5 and c.assigned_to is null and c.kid_id = lia
+    and c.active and c.equipment_id is null and c.created_by = auth.uid(),
+    'a new chore is created in the household of who calls, with the fields, the points and the person chosen';
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = room), 'and without an order';
+  -- Sem os pontos e sem responsável escolhido: 0 ponto, de qualquer um.
+  lamp := public.save_chore(null, 'Trocar a lâmpada', null, 'none', 1, '2026-10-12');
+  select * into c from public.chores where id = lamp;
+  assert c.recurrence = 'none' and c.points = 0 and c.assigned_to is null and c.kid_id is null,
+    'no points and no person in the call: a chore of anyone, worth nothing';
+  -- O responsável só é gravado quando o formulário o escolheu (p_set_turn).
+  loose := public.save_chore(null, 'Sem escolha', null, 'none', 1, '2026-10-12', p_assigned_to => auth.uid(), p_kid_id => lia);
+  select * into c from public.chores where id = loose;
+  assert c.assigned_to is null and c.kid_id is null, 'a person sent without p_set_turn is not written';
+  delete from public.chores where id = loose;
+  -- Manutenção: a tarefa nova nasce ligada ao aparelho.
+  insert into public.equipment (name) values ('Geladeira') returning id into fridge;
+  upkeep := public.save_chore(
+    null, 'Trocar o filtro', null, 'monthly', 6, '2026-11-01',
+    p_equipment_id => fridge, p_set_turn => true, p_assigned_to => auth.uid()
+  );
+  select * into c from public.chores where id = upkeep;
+  assert c.equipment_id = fridge and c.assigned_to = auth.uid() and c.kid_id is null and c.interval_count = 6,
+    'a new maintenance chore is tied to its equipment';
+
+  -- Já com rodízio: a ordem é gravada na mesma chamada, e a vez é do primeiro.
+  yard := public.save_chore(null, 'Regar o jardim', null, 'daily', 1, '2026-10-12', 10, p_people => array[rita, lia]);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = yard) = array[rita, lia],
+    'a new chore is created with its order';
+  select * into c from public.chores where id = yard;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.kid_id is null and c.points = 10,
+    'and the turn starts with the first of the order';
+
+  -- Rodízio recusado na tarefa nova: nem a tarefa fica.
+  chores_before := (select count(*) from public.chores);
+  begin
+    perform public.save_chore(null, 'Não fica', null, 'none', 1, '2026-10-12', p_people => array[rita, lia]);
+    raise exception 'FAIL: a new one-off chore was created with a rotation';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.save_chore(null, 'Não fica', null, 'daily', 1, '2026-10-12', p_people => array[rita, rex]);
+    raise exception 'FAIL: a new chore was created with a pet in its rotation';
+  exception when check_violation then null;
+  end;
+  begin
+    perform public.save_chore(null, 'Não fica', null, 'daily', 1, '2026-10-12', p_people => array[rita]);
+    raise exception 'FAIL: a new chore was created with a rotation of one person';
+  exception when invalid_parameter_value then null;
+  end;
+  assert (select count(*) from public.chores) = chores_before and not exists (select 1 from public.chores where title = 'Não fica'),
+    'a refused order leaves no chore behind';
+
+  perform set_config('test.r_room', room::text, false);
+  perform set_config('test.r_lamp', lamp::text, false);
+  perform set_config('test.r_upkeep', upkeep::text, false);
+  perform set_config('test.r_yard', yard::text, false);
+  perform set_config('test.r_fridge', fridge::text, false);
+end $$;
+
+-- A tarefa que já existe: os campos, e o responsável só quando foi escolhido.
+do $$
+declare
+  lia uuid := current_setting('test.r_lia')::uuid;
+  nina uuid := current_setting('test.r_nina')::uuid;
+  tito uuid := current_setting('test.r_tito')::uuid;
+  room uuid := current_setting('test.r_room')::uuid;
+  fridge uuid := current_setting('test.r_fridge')::uuid;
+  c public.chores;
+  was public.chores;
+begin
+  -- Só os campos: o responsável e os pontos ficam como estão.
+  select * into was from public.chores where id = room;
+  assert public.save_chore(room, 'Arrumar a sala e o corredor', null, 'daily', 3, '2026-10-20') = room, 'the answer is the id of the chore';
+  select * into c from public.chores where id = room;
+  was.title := 'Arrumar a sala e o corredor';
+  was.notes := null;
+  was.recurrence := 'daily';
+  was.interval_count := 3;
+  was.due_on := '2026-10-20';
+  assert c = was, 'fields only: the person and the points stay, and so does everything else of the chore';
+  -- O aparelho é da tarefa nova: na que já existe, ele não muda.
+  perform public.save_chore(room, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, p_equipment_id => fridge);
+  select * into c from public.chores where id = room;
+  assert c = was, 'the equipment of a chore that exists does not change';
+
+  -- O responsável escolhido: um morador, uma criança (com os pontos), qualquer um.
+  perform public.save_chore(room, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, 0,
+    p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000041');
+  select * into c from public.chores where id = room;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.kid_id is null and c.points = 0, 'a member, and no points';
+  perform public.save_chore(room, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, 7, p_set_turn => true, p_kid_id => nina);
+  -- Sem os pontos na chamada, eles ficam como estão.
+  perform public.save_chore(room, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, p_set_turn => true, p_kid_id => lia);
+  select * into c from public.chores where id = room;
+  assert c.assigned_to is null and c.kid_id = lia and c.points = 7, 'a kid; points left out of the call stay as they were';
+  perform public.save_chore(room, c.title, c.notes, c.recurrence, c.interval_count, c.due_on, 0, p_set_turn => true);
+  select * into was from public.chores where id = room;
+  assert was.assigned_to is null and was.kid_id is null and was.points = 0, 'nobody: the chore is of anyone';
+
+  -- Quem pode ser o responsável e o que cada campo aceita seguem o que a tabela já exigia. A recusa não deixa
+  -- nada gravado: nem o título novo que veio na mesma chamada.
+  begin
+    perform public.save_chore(room, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 3, p_set_turn => true, p_kid_id => tito);
+    raise exception 'FAIL: a kid of another household became the person of the chore';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    perform public.save_chore(room, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 3,
+      p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000043');
+    raise exception 'FAIL: a member of another household became the person of the chore';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    perform public.save_chore(room, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 1001);
+    raise exception 'FAIL: more points than a chore can be worth';
+  exception when check_violation then null;
+  end;
+  begin
+    perform public.save_chore(room, '  ', 'x', 'weekly', 9, '2026-12-01');
+    raise exception 'FAIL: a chore without a title';
+  exception when check_violation then null;
+  end;
+  begin
+    perform public.save_chore(room, 'Outro título', 'x', 'yearly', 9, '2026-12-01');
+    raise exception 'FAIL: a recurrence that does not exist';
+  exception when check_violation then null;
+  end;
+  begin
+    perform public.save_chore(room, 'Outro título', 'x', 'weekly', 0, '2026-12-01');
+    raise exception 'FAIL: an interval of zero';
+  exception when check_violation then null;
+  end;
+  select * into c from public.chores where id = room;
+  assert c = was, 'a refused save changes nothing';
+  -- A tarefa que não existe (apagada em outro celular): a resposta que o app reconhece.
+  begin
+    perform public.save_chore(gen_random_uuid(), 'Outro título', null, 'weekly', 1, '2026-12-01');
+    raise exception 'FAIL: saved a chore that does not exist';
+  exception when no_data_found then
+    assert sqlerrm = 'chore not found', sqlerrm;
+  end;
+end $$;
+
+-- A repetição e a ordem na mesma chamada, e as recusas das regras da ordem.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  rex uuid := current_setting('test.r_rex')::uuid;
+  tito uuid := current_setting('test.r_tito')::uuid;
+  lamp uuid := current_setting('test.r_lamp')::uuid;
+  yard uuid := current_setting('test.r_yard')::uuid;
+  c public.chores;
+  was public.chores;
+begin
+  -- A tarefa "Uma vez" que passa a se repetir já com rodízio: uma chamada só. A repetição é gravada antes da
+  -- ordem, na mesma transação, e a vez vai para o primeiro.
+  perform public.save_chore(lamp, 'Trocar a lâmpada', null, 'weekly', 1, '2026-10-12', 10, p_people => array[beto, rita, lia], p_expect_none => true);
+  select * into was from public.chores where id = lamp;
+  assert was.recurrence = 'weekly' and was.assigned_to = auth.uid() and was.kid_id is null and was.points = 10,
+    'a one-off chore becomes a repeating one with its rotation in one call';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = lamp) = array[beto, rita, lia],
+    'with the order asked';
+
+  -- O contrário não existe: "Uma vez" e uma ordem na mesma chamada. A recusa desfaz a repetição gravada e traz de
+  -- volta o rodízio que o gatilho tinha encerrado.
+  begin
+    perform public.save_chore(lamp, 'Outro título', null, 'none', 1, '2026-10-12', p_people => array[rita, beto]);
+    raise exception 'FAIL: an order was saved on a chore that the same call made one-off';
+  exception when invalid_parameter_value then null;
+  end;
+  select * into c from public.chores where id = lamp;
+  assert c = was, 'the refusal undoes the recurrence written by the same call';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = lamp) = array[beto, rita, lia],
+    'and the rotation is whole';
+
+  -- A tarefa em rodízio que vira "Uma vez": o rodízio acaba e ela fica com quem está na vez no banco (Lia, a
+  -- quem a vez passou em outro celular). O formulário não manda o responsável: ele mandaria quem o aparelho
+  -- achava que estava na vez e, se não conhecesse Lia, outra pessoa da ordem, ou ninguém.
+  assert public.skip_chore_turn(lamp, beto) = rita and public.skip_chore_turn(lamp, rita) = lia, 'the turn passed to the kid';
+  perform public.save_chore(lamp, 'Trocar a lâmpada', null, 'none', 1, '2026-10-12', p_people => '{}');
+  select * into c from public.chores where id = lamp;
+  assert c.recurrence = 'none' and c.assigned_to is null and c.kid_id = lia and c.points = 10,
+    'a rotating chore turned one-off keeps whoever had the turn, and the points';
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = lamp), 'and has no rotation';
+  -- O mesmo sem falar da ordem (p_people nulo): quem encerra o rodízio é o gatilho, na mesma transação.
+  perform public.save_chore(lamp, 'Trocar a lâmpada', null, 'daily', 1, '2026-10-12', p_people => array[rita, beto]);
+  assert (select assigned_to from public.chores where id = lamp) = '00000000-0000-0000-0000-000000000041', 'rotating again: the turn is of the first';
+  perform public.save_chore(lamp, 'Trocar a lâmpada', null, 'none', 1, '2026-10-12');
+  select * into c from public.chores where id = lamp;
+  assert c.recurrence = 'none' and c.assigned_to = '00000000-0000-0000-0000-000000000041' and c.kid_id is null,
+    'one-off without a word about the order: the holder stays too';
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = lamp), 'and the rotation is ended';
+
+  -- Encerrar o rodízio (ordem vazia). Com o responsável escolhido, é ele; sem, fica quem estava na vez.
+  perform public.save_chore(yard, 'Regar o jardim', null, 'daily', 1, '2026-10-12', 0, p_set_turn => true, p_assigned_to => auth.uid(), p_people => '{}');
+  select * into c from public.chores where id = yard;
+  assert c.assigned_to = auth.uid() and c.kid_id is null and c.points = 0, 'ending the rotation with a person chosen: the chore is of that person';
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = yard), 'an empty order ends the rotation';
+  perform public.save_chore(yard, 'Regar o jardim', null, 'daily', 1, '2026-10-12', 10, p_people => array[rita, lia]);
+  assert public.skip_chore_turn(yard, rita) = lia, 'the turn passed to the kid';
+  perform public.save_chore(yard, 'Regar o jardim', null, 'daily', 1, '2026-10-12', p_people => '{}');
+  select * into c from public.chores where id = yard;
+  assert c.assigned_to is null and c.kid_id = lia and c.points = 10, 'ending the rotation without choosing: whoever had the turn stays';
+  perform public.save_chore(yard, 'Regar o jardim', null, 'daily', 1, '2026-10-12', p_people => '{}');
+  assert (select kid_id from public.chores where id = yard) = lia, 'ending again changes nothing';
+
+  -- Cada recusa das regras da ordem desfaz também os campos gravados na mesma chamada.
+  perform public.save_chore(yard, 'Regar o jardim', null, 'daily', 1, '2026-10-12', 10, p_people => array[rita, lia, beto]);
+  select * into was from public.chores where id = yard;
+  begin
+    perform public.save_chore(yard, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => array[beto, rex]);
+    raise exception 'FAIL: a pet took part in a rotation';
+  exception when check_violation then null;
+  end;
+  begin
+    perform public.save_chore(yard, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => array[beto, tito]);
+    raise exception 'FAIL: a person of another household took part in a rotation';
+  exception when no_data_found then
+    assert sqlerrm = 'Alguém do rodízio não está mais na casa. Confira a ordem e salve de novo.', sqlerrm;
+  end;
+  begin
+    perform public.save_chore(yard, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => array[beto]);
+    raise exception 'FAIL: rotation with one person';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.save_chore(yard, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => array[beto, rita, beto]);
+    raise exception 'FAIL: rotation with a repeated person';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.save_chore(yard, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => array[array[beto, rita]]);
+    raise exception 'FAIL: an order that is not a plain list';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.save_chore(yard, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99,
+      p_people => array(select gen_random_uuid() from generate_series(1, 21)));
+    raise exception 'FAIL: rotation with more than 20 people';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.save_chore(yard, 'Outro título', 'x', 'none', 1, '2026-12-01', 99, p_people => array[beto, rita]);
+    raise exception 'FAIL: rotation on a one-off chore';
+  exception when invalid_parameter_value then
+    assert sqlerrm = 'Só tarefa que se repete pode ter rodízio.', sqlerrm;
+  end;
+  select * into c from public.chores where id = yard;
+  assert c = was, 'a refused order changes nothing in the chore: not the title, not the points, not the turn';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = yard) = array[rita, lia, beto],
+    'nor in the order';
+end $$;
+
+-- p_expect_none: o formulário abriu sem rodízio. Conferir que a tarefa segue sem rodízio e gravar são um passo só
+-- no banco, com a tarefa travada: se outro celular criou um rodízio nesse meio-tempo, a função recusa (NK006) e
+-- nada muda, em vez de pôr a vez em quem pode nem estar na ordem, ou de trocar por outra a ordem que o formulário
+-- nunca mostrou.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  nina uuid := current_setting('test.r_nina')::uuid;
+  hall uuid;
+  c public.chores;
+  was public.chores;
+  done record;
+begin
+  -- Sem rodízio (a tarefa é de Nina e vale 3): o responsável escolhido é gravado, e a ordem nova também, com a
+  -- vez no primeiro, como em todo rodízio novo.
+  hall := public.save_chore(null, 'Varrer o corredor', null, 'daily', 1, '2026-10-12', 3, p_set_turn => true, p_kid_id => nina);
+  perform public.save_chore(hall, 'Varrer o corredor', null, 'daily', 1, '2026-10-12', 0,
+    p_set_turn => true, p_assigned_to => auth.uid(), p_expect_none => true);
+  select * into c from public.chores where id = hall;
+  assert c.assigned_to = auth.uid() and c.kid_id is null and c.points = 0, 'no rotation: the flagged save writes the person chosen';
+  perform public.save_chore(hall, 'Varrer o corredor', null, 'daily', 1, '2026-10-12', 10, p_people => array[rita, lia], p_expect_none => true);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = hall) = array[rita, lia],
+    'no rotation: the flagged save creates the order';
+  select * into was from public.chores where id = hall;
+  assert was.assigned_to = '00000000-0000-0000-0000-000000000041' and was.kid_id is null and was.points = 10,
+    'and the turn goes to the first of the new order, not to who the chore was of';
+
+  -- Com rodízio: recusa, seja o que for que o formulário pede (um responsável, outra ordem, nenhuma, só os
+  -- campos, uma ordem que nem valeria, "Uma vez"), e antes de olhar o pedido.
+  begin
+    perform public.save_chore(hall, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 0,
+      p_set_turn => true, p_assigned_to => auth.uid(), p_expect_none => true);
+    raise exception 'FAIL: the flagged save put the turn on a member outside the order';
+  exception when sqlstate 'NK006' then null;
+  end;
+  begin
+    perform public.save_chore(hall, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_set_turn => true, p_kid_id => lia, p_expect_none => true);
+    raise exception 'FAIL: the flagged save moved the turn inside the order';
+  exception when sqlstate 'NK006' then null;
+  end;
+  begin
+    perform public.save_chore(hall, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 0, p_set_turn => true, p_expect_none => true);
+    raise exception 'FAIL: the flagged save took the turn from everyone';
+  exception when sqlstate 'NK006' then null;
+  end;
+  begin
+    perform public.save_chore(hall, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => array[beto, nina], p_expect_none => true);
+    raise exception 'FAIL: the flagged save replaced a rotation the form never showed';
+  exception when sqlstate 'NK006' then null;
+  end;
+  begin
+    perform public.save_chore(hall, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => array[lia, rita], p_expect_none => true);
+    raise exception 'FAIL: the flagged save went over a rotation of the same people in another order';
+  exception when sqlstate 'NK006' then null;
+  end;
+  begin
+    perform public.save_chore(hall, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => '{}', p_expect_none => true);
+    raise exception 'FAIL: the flagged save ended a rotation the form never showed';
+  exception when sqlstate 'NK006' then null;
+  end;
+  begin
+    perform public.save_chore(hall, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_expect_none => true);
+    raise exception 'FAIL: the flagged save wrote the fields of a chore that has a rotation';
+  exception when sqlstate 'NK006' then null;
+  end;
+  begin
+    perform public.save_chore(hall, 'Outro título', 'x', 'weekly', 9, '2026-12-01', 99, p_people => array[beto], p_expect_none => true);
+    raise exception 'FAIL: the flagged save looked at the order asked before the rotation that exists';
+  exception when sqlstate 'NK006' then null;
+  end;
+  begin
+    perform public.save_chore(hall, 'Outro título', 'x', 'none', 1, '2026-12-01', 99, p_expect_none => true);
+    raise exception 'FAIL: the flagged save made one-off a chore that has a rotation';
+  exception when sqlstate 'NK006' then null;
+  end;
+  -- Pelo nome dos argumentos, como a API chama.
+  begin
+    perform public.save_chore(
+      p_chore_id => hall, p_title => 'Outro título', p_notes => null, p_recurrence => 'daily', p_interval_count => 1, p_due_on => '2026-12-01',
+      p_points => 0, p_equipment_id => null, p_set_turn => true, p_assigned_to => auth.uid(), p_kid_id => null, p_people => null, p_expect_none => true
+    );
+    raise exception 'FAIL: the flagged save, called by name, went over a rotation';
+  exception when sqlstate 'NK006' then
+    assert sqlerrm = 'chore has a rotation', sqlerrm;
+  end;
+  select * into c from public.chores where id = hall;
+  assert c = was, 'a refused flagged save changes nothing in the chore: not the title, not the turn, not the points';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = hall) = array[rita, lia],
+    'nor in the order';
+  -- A conclusão seguinte é de quem estava na vez, e a vez segue a ordem.
+  select * into done from public.complete_chore(hall, '2026-10-12', '2026-10-12');
+  assert done.completed and done.points = 0 and done.person_id is null and done.next_person_id = lia, 'the turn was still of the member in the order';
+
+  -- A mesma ordem não é o rodízio de outro celular: é a deste formulário, de uma chamada que chegou ao banco e
+  -- cuja resposta se perdeu. Salvar de novo passa, grava os campos, e a vez fica onde está (ela já passou para Lia).
+  perform public.save_chore(hall, 'Varrer o corredor e a escada', null, 'daily', 1, '2026-10-13', 10, p_people => array[rita, lia], p_expect_none => true);
+  select * into c from public.chores where id = hall;
+  assert c.title = 'Varrer o corredor e a escada' and c.assigned_to is null and c.kid_id = lia and c.points = 10,
+    'the flagged save of the order the chore already has is not a conflict: the fields are written and the turn stays';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = hall) = array[rita, lia],
+    'and the order is the same';
+
+  -- Sem o aviso (o formulário mostrou o rodízio), ou com ele falso ou nulo: a ordem é trocada inteira, quem
+  -- continua nela mantém a vez e, se saiu, a vez vai para o primeiro.
+  perform public.save_chore(hall, c.title, null, 'daily', 1, '2026-10-13', 10, p_people => array[lia, rita, beto]);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = hall) = array[lia, rita, beto],
+    'without the flag the order is replaced';
+  assert (select kid_id from public.chores where id = hall) = lia, 'and who stays in the order keeps the turn';
+  perform public.save_chore(hall, c.title, null, 'daily', 1, '2026-10-13', 10, p_people => array[beto, nina], p_expect_none => false);
+  select * into c from public.chores where id = hall;
+  assert c.assigned_to = auth.uid() and c.kid_id is null, 'who left the order hands the turn to the first';
+  perform public.save_chore(hall, c.title, null, 'daily', 1, '2026-10-13', 10, p_people => array[nina, beto, lia], p_expect_none => null);
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = hall) = array[nina, beto, lia],
+    'a null flag is no flag';
+  assert (select assigned_to from public.chores where id = hall) = auth.uid(), 'and the turn stays';
+
+  -- O rodízio acabou: a função volta a aceitar o aviso. Ordem vazia numa tarefa sem rodízio: nada a fazer, sem erro.
+  perform public.save_chore(hall, c.title, null, 'daily', 1, '2026-10-13', 10, p_people => '{}');
+  perform public.save_chore(hall, c.title, null, 'daily', 1, '2026-10-13', 10, p_people => '{}', p_expect_none => true);
+  assert not exists (select 1 from public.chore_rotation r where r.chore_id = hall), 'a flagged empty order on a chore without rotation does nothing';
+  assert (select assigned_to from public.chores where id = hall) = auth.uid(), 'and the chore keeps its person';
+  perform public.save_chore(hall, c.title, null, 'daily', 1, '2026-10-13', 10, p_people => array[lia, beto], p_expect_none => true);
+  select * into c from public.chores where id = hall;
+  assert c.assigned_to is null and c.kid_id = lia, 'with the rotation ended, the flagged save is accepted again, and the turn starts with the first';
+  perform set_config('test.r_hall', hall::text, false);
+end $$;
+
+-- Outra casa não salva nem confere esta tarefa: com rodízio ou sem, com o aviso ou sem, a resposta é a mesma (a
+-- tarefa não existe para ela). Na casa dela, gente e aparelho de outra casa não entram, e a tarefa nova não fica.
+select set_config('request.jwt.claim.sub', :'user_o', false) \gset
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  tito uuid := current_setting('test.r_tito')::uuid;
+  room uuid := current_setting('test.r_room')::uuid;
+  hall uuid := current_setting('test.r_hall')::uuid;
+  mine uuid;
+begin
+  begin
+    perform public.save_chore(room, 'Do Otto', null, 'daily', 1, '2026-10-12', 3, p_set_turn => true, p_assigned_to => auth.uid());
+    raise exception 'FAIL: O saved a foreign chore';
+  exception when no_data_found then
+    assert sqlerrm = 'chore not found', sqlerrm;
+  end;
+  begin
+    perform public.save_chore(room, 'Do Otto', null, 'daily', 1, '2026-10-12', 3, p_set_turn => true, p_kid_id => tito, p_expect_none => true);
+    raise exception 'FAIL: O put his kid in a foreign chore';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.save_chore(hall, 'Do Otto', null, 'daily', 1, '2026-10-12', p_people => array[beto, rita], p_expect_none => true);
+    raise exception 'FAIL: O learned of, or went over, a foreign rotation with the flag';
+  exception when no_data_found then
+    assert sqlerrm = 'chore not found', sqlerrm;
+  end;
+  begin
+    perform public.save_chore(hall, 'Do Otto', null, 'daily', 1, '2026-10-12', p_people => array[beto, rita]);
+    raise exception 'FAIL: O saved the order of a foreign chore';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.save_chore(hall, 'Do Otto', null, 'daily', 1, '2026-10-12', p_people => '{}');
+    raise exception 'FAIL: O ended a foreign rotation';
+  exception when no_data_found then null;
+  end;
+
+  begin
+    perform public.save_chore(null, 'Tarefa do Otto', null, 'weekly', 1, '2026-10-12', 5, p_set_turn => true, p_kid_id => lia);
+    raise exception 'FAIL: O gave his chore to a kid of another household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    perform public.save_chore(null, 'Tarefa do Otto', null, 'weekly', 1, '2026-10-12',
+      p_set_turn => true, p_assigned_to => '00000000-0000-0000-0000-000000000041');
+    raise exception 'FAIL: O gave his chore to a member of another household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    perform public.save_chore(null, 'Tarefa do Otto', null, 'weekly', 1, '2026-10-12', p_equipment_id => current_setting('test.r_fridge')::uuid);
+    raise exception 'FAIL: O tied his chore to the equipment of another household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    perform public.save_chore(null, 'Tarefa do Otto', null, 'weekly', 1, '2026-10-12', p_people => array[tito, beto]);
+    raise exception 'FAIL: O put a foreign person in his rotation';
+  exception when no_data_found then
+    assert sqlerrm = 'Alguém do rodízio não está mais na casa. Confira a ordem e salve de novo.', sqlerrm;
+  end;
+  assert not exists (select 1 from public.chores where title = 'Tarefa do Otto'), 'a refused new chore is not created';
+  -- O que é dele, ele salva: a tarefa nasce na casa dele.
+  mine := public.save_chore(null, 'Tarefa do Otto', null, 'weekly', 1, '2026-10-12', 5, p_set_turn => true, p_kid_id => tito);
+  assert (select household_id from public.chores where id = mine) = public.current_household_id(), 'a new chore of O is created in his household';
+  delete from public.chores where id = mine;
+end $$;
+-- Quem ainda não tem casa não cria tarefa (rodando como dono, a regra de acesso da tabela não barraria).
+select set_config('request.jwt.claim.sub', :'user_t', false) \gset
+do $$
+begin
+  assert public.current_household_id() is null, 'T has no household yet';
+  begin
+    perform public.save_chore(null, 'Sem casa', null, 'none', 1, '2026-10-12');
+    raise exception 'FAIL: someone without a household created a chore';
+  exception when insufficient_privilege then
+    assert sqlerrm = 'sem casa', sqlerrm;
+  end;
+  begin
+    perform public.save_chore(current_setting('test.r_room')::uuid, 'Sem casa', null, 'none', 1, '2026-10-12');
+    raise exception 'FAIL: someone without a household saved a chore';
+  exception when no_data_found then null;
+  end;
+end $$;
+set role anon;
+do $$
+begin
+  begin
+    perform public.save_chore(null, 'Anon', null, 'none', 1, '2026-10-12');
+    raise exception 'FAIL: anon called save_chore';
+  exception when insufficient_privilege then
+    -- A permissão da função, e não a recusa de dentro dela ("sem casa").
+    assert sqlerrm like 'permission denied for function%', sqlerrm;
+  end;
+end $$;
+reset role;
+do $$
+declare
+  save constant text := 'public.save_chore(uuid, text, text, text, integer, date, integer, uuid, boolean, uuid, uuid, uuid[], boolean)';
+  rules constant text := 'public.save_chore_rotation(uuid, uuid[])';
+  c public.chores;
+begin
+  select * into c from public.chores where id = current_setting('test.r_room')::uuid;
+  assert c.title = 'Arrumar a sala e o corredor' and c.assigned_to is null and c.kid_id is null and c.points = 0, 'the foreign calls changed nothing';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = current_setting('test.r_hall')::uuid)
+    = array[current_setting('test.r_lia')::uuid, current_setting('test.r_beto')::uuid], 'nor in the order';
+  assert not exists (select 1 from public.chores where title in ('Sem casa', 'Anon', 'Do Otto', 'Tarefa do Otto')), 'and created nothing';
+
+  -- Cada permissão conferida sozinha: quem chama save_chore é só quem entrou no app.
+  assert not has_function_privilege('public', save, 'execute'), 'save_chore is not open to every role';
+  assert not has_function_privilege('anon', save, 'execute'), 'anon cannot call save_chore';
+  assert has_function_privilege('authenticated', save, 'execute'), 'members call save_chore';
+  -- Roda como dono (a casa é conferida dentro dela), com o search_path vazio, como as irmãs.
+  assert (select p.prosecdef from pg_proc p where p.oid = save::regprocedure), 'save_chore is security definer';
+  assert (select p.proconfig from pg_proc p where p.oid = save::regprocedure) = array['search_path=""'], 'with an empty search_path';
+  assert (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'save_chore') = 1,
+    'save_chore is one function';
+  -- As regras da ordem são uma peça de dentro: ninguém as chama pela API, nem quem entrou no app.
+  assert not has_function_privilege('public', rules, 'execute'), 'save_chore_rotation is not open to every role';
+  assert not has_function_privilege('anon', rules, 'execute'), 'anon cannot call save_chore_rotation';
+  assert not has_function_privilege('authenticated', rules, 'execute'), 'members cannot call save_chore_rotation straight';
+  assert (select p.proconfig from pg_proc p where p.oid = rules::regprocedure) = array['search_path=""'],
+    'save_chore_rotation has an empty search_path';
+  -- O que saiu, saiu: a função do responsável e a ordem com o terceiro argumento.
+  assert not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'save_chore_single'),
+    'save_chore_single is gone';
+  assert to_regprocedure('public.save_chore_rotation(uuid, uuid[], boolean)') is null, 'the three-argument save_chore_rotation is gone';
+  assert (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'save_chore_rotation') = 1,
+    'save_chore_rotation is one function';
+  -- As outras funções do rodízio: concluir e pular são de quem entrou no app; as peças de dentro, de ninguém.
+  assert not has_function_privilege('public', 'public.complete_chore(uuid, date, date)', 'execute'), 'complete_chore is not open to every role';
+  assert not has_function_privilege('anon', 'public.complete_chore(uuid, date, date)', 'execute'), 'anon cannot call complete_chore';
+  assert has_function_privilege('authenticated', 'public.complete_chore(uuid, date, date)', 'execute'), 'members call complete_chore';
+  assert not has_function_privilege('public', 'public.skip_chore_turn(uuid, uuid, uuid)', 'execute'), 'skip_chore_turn is not open to every role';
+  assert not has_function_privilege('anon', 'public.skip_chore_turn(uuid, uuid, uuid)', 'execute'), 'anon cannot call skip_chore_turn';
+  assert has_function_privilege('authenticated', 'public.skip_chore_turn(uuid, uuid, uuid)', 'execute'), 'members call skip_chore_turn';
+  -- Uma função só, com a pessoa que a pergunta nomeou (p_to, que pode ficar de fora da chamada).
+  assert to_regprocedure('public.skip_chore_turn(uuid, uuid)') is null
+    and (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'skip_chore_turn') = 1,
+    'skip_chore_turn is one function';
+  assert not exists (
+    select 1
+    from unnest(array['public', 'anon', 'authenticated']) as who,
+      unnest(array['public.chore_turn_person(uuid, uuid, uuid)', 'public.chore_set_turn(uuid, uuid)', 'public.chore_next_person(uuid, integer)']) as fn
+    where has_function_privilege(who, fn, 'execute')
+  ), 'the pieces that read and move the turn are called by no role of the API';
+  -- A recusa da troca direta da vez roda com os direitos de quem grava (current_user é quem fez a instrução), e
+  -- dispara sem que ninguém da API possa chamá-la (os testes acima são da pessoa logada, sem esse direito).
+  assert not (select p.prosecdef from pg_proc p where p.oid = 'public.chore_turn_not_by_hand()'::regprocedure),
+    'chore_turn_not_by_hand is security invoker';
+  assert (select p.proconfig from pg_proc p where p.oid = 'public.chore_turn_not_by_hand()'::regprocedure) = array['search_path=""'],
+    'with an empty search_path';
+  assert not exists (
+    select 1 from unnest(array['public', 'anon', 'authenticated']) as who
+    where has_function_privilege(who, 'public.chore_turn_not_by_hand()', 'execute')
+  ), 'chore_turn_not_by_hand is called by no role of the API';
+end $$;
+
+-- As tarefas das corridas: três sem rodízio, de Beto, e a da varanda, que vale 4.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_s', false) \gset
+do $$
+begin
+  perform set_config('test.r_attic', public.save_chore(null, 'Limpar o sótão', null, 'weekly', 1, '2026-10-12', p_set_turn => true, p_assigned_to => auth.uid())::text, false);
+  perform set_config('test.r_car', public.save_chore(null, 'Lavar o carro', null, 'weekly', 1, '2026-10-12', p_set_turn => true, p_assigned_to => auth.uid())::text, false);
+  perform set_config('test.r_walk', public.save_chore(null, 'Passear com o Rex', null, 'daily', 1, '2026-10-12', p_set_turn => true, p_assigned_to => auth.uid())::text, false);
+  perform set_config('test.r_porch', public.save_chore(null, 'Varrer a varanda', null, 'daily', 1, '2026-10-12', 4, p_set_turn => true, p_assigned_to => auth.uid())::text, false);
+end $$;
+reset role;
+
+-- A corrida, com duas sessões de verdade: esta e uma segunda, aberta com dblink (vem com o Postgres). Quem
+-- chega depois espera a trava da linha da tarefa (save_chore a pega com "for update" antes de qualquer outra
+-- coisa) e só confere o rodízio, ou a própria tarefa, depois de a primeira terminar.
+select exists (select 1 from pg_available_extensions where name = 'dblink') as has_dblink \gset
+\if :has_dblink
+create schema race;
+create extension dblink schema race;
+-- A segunda sessão é o celular de Beto. Se algo der errado, ela desiste em vez de esperar para sempre.
+select format(
+  'dbname=%s user=%s port=%s host=''%s''',
+  current_database(),
+  session_user,
+  current_setting('port'),
+  case when current_setting('listen_addresses') = '' then split_part(current_setting('unix_socket_directories'), ',', 1) else 'localhost' end
+) as race_conn \gset
+select race.dblink_connect('beto', :'race_conn') as race_connected \gset
+select race.dblink_exec('beto', 'set statement_timeout = ''30s''') as race_timeout \gset
+select race.dblink_exec('beto', 'set role authenticated') as race_role \gset
+select set_config('test.race_pid', pid::text, false) as race_pid
+  from race.dblink('beto', format('select set_config(''request.jwt.claim.sub'', %L, false), pg_backend_pid()', :'user_s')) as t (sub text, pid integer) \gset
+
+-- (a) Rita cria o rodízio do sótão (Rita, Lia) e ainda não terminou; Beto, com o formulário aberto sem rodízio,
+--     salva a tarefa como dele, com outro título, outra repetição e outros pontos. A gravação dele espera a de
+--     Rita e, quando ela termina, é recusada inteira.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+begin;
+select public.save_chore(
+  current_setting('test.r_attic')::uuid, 'Limpar o sótão', null, 'weekly', 1, '2026-10-12', 10,
+  p_people => array[current_setting('test.r_rita')::uuid, current_setting('test.r_lia')::uuid], p_expect_none => true
+) as race_first \gset
+-- A tarefa como Rita a deixa: é com ela que se compara depois.
+select set_config('test.race_was', c::text, false) as race_was from public.chores c where c.id = current_setting('test.r_attic')::uuid \gset
+reset role;
+select race.dblink_send_query(
+  'beto',
+  format(
+    'select public.save_chore(%L, ''Limpar o sótão e o porão'', ''de Beto'', ''daily'', 2, ''2026-11-01'', 0, p_set_turn => true, p_assigned_to => %L, p_expect_none => true)',
+    current_setting('test.r_attic'), :'user_s'
+  )
+) as race_sent \gset
+do $$
+declare
+  beto_pid integer := current_setting('test.race_pid')::integer;
+begin
+  for i in 1..200 loop
+    exit when pg_backend_pid() = any (pg_blocking_pids(beto_pid));
+    perform pg_sleep(0.05);
+  end loop;
+  assert pg_backend_pid() = any (pg_blocking_pids(beto_pid)), 'the flagged save waits for the chore row that the other save holds';
+  assert race.dblink_is_busy('beto') = 1, 'and has not answered yet';
+end $$;
+commit;
+do $$
+declare
+  attic uuid := current_setting('test.r_attic')::uuid;
+begin
+  begin
+    perform * from race.dblink_get_result('beto') as t (saved uuid);
+    raise exception 'FAIL: the flagged save went over a rotation created while it waited';
+  exception when sqlstate 'NK006' then null;
+  end;
+  assert (select c::text from public.chores c where c.id = attic) = current_setting('test.race_was'),
+    'nothing of the refused save was written: the chore is as the first save left it, with the turn on the first of the new order';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = attic)
+    = array[current_setting('test.r_rita')::uuid, current_setting('test.r_lia')::uuid], 'and the order is whole';
+end $$;
+-- A consulta que falhou terminou: a sessão de Beto fica livre para a próxima.
+select count(*) as race_drained from race.dblink_get_result('beto') as t (saved uuid) \gset
+
+-- (b) Rita apaga o carro e ainda não terminou; Beto salva a tarefa. A gravação dele espera e, quando a tarefa
+--     some, responde que ela não existe: a resposta que o app troca pelo aviso da tarefa apagada.
+set role authenticated;
+begin;
+delete from public.chores where id = current_setting('test.r_car')::uuid;
+reset role;
+select race.dblink_send_query(
+  'beto',
+  format(
+    'select public.save_chore(%L, ''Lavar o carro por dentro'', null, ''weekly'', 1, ''2026-10-12'', 0, p_set_turn => true, p_assigned_to => %L, p_expect_none => true)',
+    current_setting('test.r_car'), :'user_s'
+  )
+) as race_sent \gset
+do $$
+declare
+  beto_pid integer := current_setting('test.race_pid')::integer;
+begin
+  for i in 1..200 loop
+    exit when pg_backend_pid() = any (pg_blocking_pids(beto_pid));
+    perform pg_sleep(0.05);
+  end loop;
+  assert pg_backend_pid() = any (pg_blocking_pids(beto_pid)), 'the save waits for the chore row that the delete holds';
+end $$;
+commit;
+do $$
+begin
+  begin
+    perform * from race.dblink_get_result('beto') as t (saved uuid);
+    raise exception 'FAIL: the save answered as if a chore deleted while it waited had been saved';
+  exception when no_data_found then
+    assert sqlerrm = 'chore not found', sqlerrm;
+  end;
+  assert not exists (select 1 from public.chores c where c.id = current_setting('test.r_car')::uuid), 'and the chore was not brought back';
+end $$;
+select count(*) as race_drained from race.dblink_get_result('beto') as t (saved uuid) \gset
+
+-- (c) Os dois formulários abriram sem rodízio e os dois criam um. Rita grava o do passeio (Rita, Lia) e ainda não
+--     terminou; o de Beto (Beto, Nina, com outro título e outros pontos) espera e, quando ela termina, é recusado
+--     inteiro: a ordem e a tarefa dela ficam como ela deixou.
+set role authenticated;
+begin;
+select public.save_chore(
+  current_setting('test.r_walk')::uuid, 'Passear com o Rex', null, 'daily', 1, '2026-10-12', 10,
+  p_people => array[current_setting('test.r_rita')::uuid, current_setting('test.r_lia')::uuid], p_expect_none => true
+) as race_first \gset
+select set_config('test.race_was', c::text, false) as race_was from public.chores c where c.id = current_setting('test.r_walk')::uuid \gset
+reset role;
+select race.dblink_send_query(
+  'beto',
+  format(
+    'select public.save_chore(%L, ''Passear com o Rex no parque'', ''de Beto'', ''weekly'', 2, ''2026-11-01'', 7, p_people => array[%L, %L]::uuid[], p_expect_none => true)',
+    current_setting('test.r_walk'), current_setting('test.r_beto'), current_setting('test.r_nina')
+  )
+) as race_sent \gset
+do $$
+declare
+  beto_pid integer := current_setting('test.race_pid')::integer;
+begin
+  for i in 1..200 loop
+    exit when pg_backend_pid() = any (pg_blocking_pids(beto_pid));
+    perform pg_sleep(0.05);
+  end loop;
+  assert pg_backend_pid() = any (pg_blocking_pids(beto_pid)), 'the second flagged save waits for the chore row that the first holds';
+  assert race.dblink_is_busy('beto') = 1, 'and has not answered yet';
+end $$;
+commit;
+do $$
+declare
+  walk uuid := current_setting('test.r_walk')::uuid;
+begin
+  begin
+    perform * from race.dblink_get_result('beto') as t (saved uuid);
+    raise exception 'FAIL: the flagged save replaced a rotation created while it waited';
+  exception when sqlstate 'NK006' then null;
+  end;
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = walk)
+    = array[current_setting('test.r_rita')::uuid, current_setting('test.r_lia')::uuid], 'the order of who came first is whole';
+  assert (select c::text from public.chores c where c.id = walk) = current_setting('test.race_was'),
+    'and the refused save is refused whole: the title, the recurrence, the points and the turn are of the first';
+end $$;
+select count(*) as race_drained from race.dblink_get_result('beto') as t (saved uuid) \gset
+
+-- (d) Na ordem contrária, quem chega depois não tem o que recusar: Rita salva a varanda como dela (sem rodízio) e
+--     ainda não terminou; Beto cria o rodízio (Beto, Lia). A gravação dele espera, é aceita inteira (os campos
+--     dele ficam) e, como o rodízio é novo, a vez começa pelo primeiro da ordem.
+set role authenticated;
+begin;
+select public.save_chore(
+  current_setting('test.r_porch')::uuid, 'Varrer a varanda', 'de Rita', 'daily', 1, '2026-10-12', 0,
+  p_set_turn => true, p_assigned_to => :'user_r', p_expect_none => true
+) as race_first \gset
+reset role;
+select race.dblink_send_query(
+  'beto',
+  format(
+    'select public.save_chore(%L, ''Varrer a varanda e a escada'', null, ''daily'', 1, ''2026-10-12'', 10, p_people => array[%L, %L]::uuid[], p_expect_none => true)',
+    current_setting('test.r_porch'), current_setting('test.r_beto'), current_setting('test.r_lia')
+  )
+) as race_sent \gset
+do $$
+declare
+  beto_pid integer := current_setting('test.race_pid')::integer;
+begin
+  for i in 1..200 loop
+    exit when pg_backend_pid() = any (pg_blocking_pids(beto_pid));
+    perform pg_sleep(0.05);
+  end loop;
+  assert pg_backend_pid() = any (pg_blocking_pids(beto_pid)), 'the save of the order waits for the chore row that the save of the person holds';
+end $$;
+commit;
+select count(*) as race_saved from race.dblink_get_result('beto') as t (saved uuid) \gset
+do $$
+declare
+  porch uuid := current_setting('test.r_porch')::uuid;
+  c public.chores;
+begin
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = porch)
+    = array[current_setting('test.r_beto')::uuid, current_setting('test.r_lia')::uuid], 'the rotation was created after the save of the person';
+  select * into c from public.chores where id = porch;
+  assert c.title = 'Varrer a varanda e a escada' and c.notes is null and c.points = 10, 'the later save is written whole';
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000042' and c.kid_id is null, 'and the turn is inside the order: of its first, not of R';
+end $$;
+-- (A consulta que deu certo só termina quando não há mais resultado a ler.)
+select count(*) as race_drained from race.dblink_get_result('beto') as t (saved uuid) \gset
+select race.dblink_disconnect('beto') as race_closed \gset
+drop extension dblink;
+drop schema race;
+\else
+\echo '  (este Postgres não tem dblink: a corrida entre duas sessões não rodou; fica conferido que save_chore trava a linha da tarefa antes de tudo)'
+-- Sem a segunda sessão, o que se confere é o que segura a corrida: a função trava a linha da tarefa antes de olhar
+-- a ordem e de gravar, então uma chamada espera a outra terminar.
+do $$
+declare
+  src text := (
+    select p.prosrc from pg_proc p
+    where p.oid = 'public.save_chore(uuid, text, text, text, integer, date, integer, uuid, boolean, uuid, uuid, uuid[], boolean)'::regprocedure
+  );
+begin
+  assert src ~ 'for update;\s+if not found then.*chore_rotation', 'save_chore locks the chore row before it looks at the order';
+  assert src ~ 'for update;\s+if not found then.*p_expect_none.*NK006.*update public\.chores', 'with the flag, it refuses before it writes anything';
+  assert src ~ 'update public\.chores.*perform public\.save_chore_rotation', 'and the fields and the order are written by the same call';
+end $$;
+\endif
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_s', false) \gset
+delete from public.chores where id in (
+  current_setting('test.r_room')::uuid, current_setting('test.r_lamp')::uuid, current_setting('test.r_upkeep')::uuid,
+  current_setting('test.r_yard')::uuid, current_setting('test.r_hall')::uuid, current_setting('test.r_attic')::uuid,
+  current_setting('test.r_car')::uuid, current_setting('test.r_walk')::uuid, current_setting('test.r_porch')::uuid
+);
+delete from public.equipment where id = current_setting('test.r_fridge')::uuid;
+
+-- Ficha apagada (ou que virou pet) sai da ordem; se era a vez dela, a vez
+-- passa para o seguinte; com uma pessoa só, o rodízio acaba e a tarefa fica com ela.
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  nina uuid := current_setting('test.r_nina')::uuid;
+  teo uuid := current_setting('test.r_teo')::uuid;
+  bidu uuid := current_setting('test.r_bidu')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+  sweep uuid;
+  plain uuid;
+  dust uuid;
+  c public.chores;
+begin
+  insert into public.chores (title, recurrence, points) values ('Varrer a casa', 'weekly', 5) returning id into sweep;
+  perform pg_temp.save_order(sweep, array[bidu, nina, teo, beto]);
+  perform pg_temp.save_order(dishes, array[rita, nina, lia]);
+  insert into public.chores (title, kid_id, points) values ('Guardar os brinquedos', nina, 5) returning id into plain;
+  -- Um rodízio sem Nina, mas na vez dela (o responsável salvo sem mexer na ordem).
+  insert into public.chores (title, recurrence) values ('Tirar o pó', 'weekly') returning id into dust;
+  perform pg_temp.save_order(dust, array[rita, lia]);
+  perform pg_temp.save_turn(dust, null, nina);
+
+  -- Bidu vira pet na vez dele: sai da ordem, e a vez passa.
+  update public.people set kind = 'pet', species = 'cachorro' where id = bidu;
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = sweep) = array[nina, teo, beto],
+    'a person turned pet leaves the order';
+  assert (select kid_id from public.chores where id = sweep) = nina, 'and hands the turn to the next';
+
+  -- Nina é apagada: na vez dela (varrer) e fora da vez (louça).
+  delete from public.people where id = nina;
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = sweep) = array[teo, beto],
+    'a deleted record leaves the order';
+  select * into c from public.chores where id = sweep;
+  assert c.kid_id = teo and c.assigned_to is null, 'it was her turn: the turn goes to the next in the order';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[rita, lia],
+    'she leaves every order';
+  assert (select assigned_to from public.chores where id = dishes) = auth.uid(), 'not her turn: the turn stays';
+  select * into c from public.chores where id = plain;
+  assert c.kid_id is null and c.assigned_to is null, 'a plain chore of hers goes back to anyone, as before';
+  -- A chave estrangeira tira a vez dela de um rodízio em que ela não está: o Postgres faz isso como dono da
+  -- tabela, não como quem apagou a ficha, e a recusa da gravação direta (NK009) não vale para ela.
+  select * into c from public.chores where id = dust;
+  assert c.kid_id is null and c.assigned_to is null, 'a rotating chore on her turn, outside the order, goes back to anyone';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dust) = array[rita, lia],
+    'and keeps its order';
+  delete from public.chores where id = dust;
+
+  -- Teo é apagado na vez dele: sobra Beto, o rodízio acaba e a tarefa fica com ele.
+  delete from public.people where id = teo;
+  assert (select count(*) from public.chore_rotation where chore_id = sweep) = 0, 'with one person left the order is dissolved';
+  select * into c from public.chores where id = sweep;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000042' and c.kid_id is null, 'the chore stays with whoever is left';
+  assert (select next_person_id from public.complete_chore(sweep, '2026-10-12')) is null, 'it is a plain chore again';
+  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000042', 'of the same person';
+
+  -- Quem sai não estava na vez: a tarefa continua com quem estava.
+  perform pg_temp.save_order(sweep, array[lia, beto]);
+  assert public.skip_chore_turn(sweep, lia) = beto, 'B is on turn';
+  perform set_config('test.r_sweep', sweep::text, false);
+  perform set_config('test.r_plain', plain::text, false);
+end $$;
+-- A linha tirada à mão, como dono (quem mora na casa não apaga da ordem): o gatilho desfaz o rodízio do mesmo jeito.
+reset role;
+do $$
+declare
+  sweep uuid := current_setting('test.r_sweep')::uuid;
+begin
+  delete from public.chore_rotation where chore_id = sweep and person_id = current_setting('test.r_lia')::uuid;
+  assert found, 'the owner removed the row';
+  assert (select count(*) from public.chore_rotation where chore_id = sweep) = 0, 'a row removed by hand dissolves the order too';
+  assert (select assigned_to from public.chores where id = sweep) = '00000000-0000-0000-0000-000000000042', 'the turn stays where it was';
+end $$;
+set role authenticated;
+delete from public.chores where id in (current_setting('test.r_sweep')::uuid, current_setting('test.r_plain')::uuid);
+
+-- A criança da vez ganha conta no app: continua na ordem, agora como
+-- moradora, e a próxima conclusão não trava nem pula ninguém.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+begin
+  -- Ordem da louça: Rita, Lia; a vez é de Rita.
+  assert public.skip_chore_turn(dishes, rita) = lia, 'the turn goes to the kid';
+  assert (select kid_id from public.chores where id = dishes) = lia, 'kid turn';
+end $$;
+reset role;
+insert into public.household_members (household_id, user_id, display_name) values (:'hh_r', :'user_t', 'Lia');
+set role authenticated;
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+  c public.chores;
+  r record;
+begin
+  assert (select member_user_id from public.people where id = lia) = '00000000-0000-0000-0000-000000000044', 'the kid has an account now';
+  select * into c from public.chores where id = dishes;
+  assert c.kid_id is null and c.assigned_to = '00000000-0000-0000-0000-000000000044', 'her turn moved to the account';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = dishes) = array[rita, lia],
+    'and she stays in the order';
+  select * into r from public.complete_chore(dishes, c.due_on, c.due_on);
+  assert r.completed and r.points = 0 and r.person_id is null and r.next_person_id = rita,
+    'with an account she earns no points, and the turn passes to the next (nobody skipped)';
+  assert public.skip_chore_turn(dishes, rita) = lia, 'the turn comes back to her as a member';
+  assert (select assigned_to from public.chores where id = dishes) = '00000000-0000-0000-0000-000000000044', 'in assigned_to';
+end $$;
+
+-- O morador sai da casa: a ficha dele fica, sem o app, e ele segue na ordem;
+-- se era a vez dele, continua sendo.
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  beto uuid := current_setting('test.r_beto')::uuid;
+  trash uuid := current_setting('test.r_trash')::uuid;
+  plain uuid;
+  dust uuid;
+  c public.chores;
+  r record;
+begin
+  -- Lixo: Rita, Beto, na vez de Beto, que é tirado da casa.
+  select * into c from public.chores where id = trash;
+  assert c.assigned_to = '00000000-0000-0000-0000-000000000042', 'B is on turn';
+  insert into public.chores (title, assigned_to) values ('Tarefa do Beto', '00000000-0000-0000-0000-000000000042') returning id into plain;
+  -- E um rodízio sem Beto, na vez dele (o responsável salvo sem mexer na ordem).
+  insert into public.chores (title, recurrence) values ('Tirar o pó', 'weekly') returning id into dust;
+  perform pg_temp.save_order(dust, array[rita, current_setting('test.r_lia')::uuid]);
+  perform pg_temp.save_turn(dust, '00000000-0000-0000-0000-000000000042', null);
+  perform public.remove_member(current_setting('test.hh_r')::uuid, '00000000-0000-0000-0000-000000000042');
+  assert (select member_user_id from public.people where id = beto) is null, 'the record stays, without the app';
+  assert (select array_agg(person_id order by position) from public.chore_rotation where chore_id = trash) = array[rita, beto],
+    'who left the household stays in the order';
+  select * into c from public.chores where id = trash;
+  assert c.assigned_to is null and c.kid_id = beto, 'it was his turn: it still is, as a person without the app';
+  select * into c from public.chores where id = plain;
+  assert c.assigned_to is null and c.kid_id is null, 'a plain chore of his goes back to anyone, as before';
+  -- Pela chave estrangeira, como a ficha apagada: a recusa da gravação direta não segura a saída dele.
+  select * into c from public.chores where id = dust;
+  assert c.assigned_to is null and c.kid_id is null, 'a rotating chore on his turn, outside the order, goes back to anyone';
+  assert (select count(*) from public.chore_rotation where chore_id = dust) = 2, 'and keeps its order';
+  delete from public.chores where id = dust;
+  select * into r from public.complete_chore(trash, '2026-10-19', '2026-10-19');
+  assert r.completed and r.next_person_id = rita, 'the next completion passes the turn on (not stuck)';
+  select * into r from public.complete_chore(trash, '2026-10-26', '2026-10-26');
+  assert r.completed and r.next_person_id = beto, 'and comes back to him (nobody skipped)';
+  assert (select kid_id from public.chores where id = trash) = beto, 'in kid_id now';
+  delete from public.chores where id = plain;
+end $$;
+-- Lia sai sozinha, na vez dela na louça (Rita, Lia).
+select set_config('request.jwt.claim.sub', :'user_t', false) \gset
+do $$
+begin
+  assert (select assigned_to from public.chores where id = current_setting('test.r_dishes')::uuid) = auth.uid(), 'L is on turn';
+  assert (public.leave_household(current_setting('test.hh_r')::uuid))->>'status' = 'left', 'L left';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+do $$
+declare
+  rita uuid := current_setting('test.r_rita')::uuid;
+  lia uuid := current_setting('test.r_lia')::uuid;
+  dishes uuid := current_setting('test.r_dishes')::uuid;
+  c public.chores;
+  r record;
+begin
+  select * into c from public.chores where id = dishes;
+  assert c.assigned_to is null and c.kid_id = lia, 'leaving on her turn keeps the turn, as a person without the app';
+  select * into r from public.complete_chore(dishes, c.due_on, c.due_on);
+  assert r.completed and r.points = 10 and r.person_id = lia and r.next_person_id = rita,
+    'without the app she earns the points again, and the turn passes';
+end $$;
+-- Apagar a casa com rodízios dentro não esbarra em nada, nem com uma vez que
+-- acabou de passar para a moradora que sai por último.
+do $$
+begin
+  assert public.skip_chore_turn(current_setting('test.r_trash')::uuid, current_setting('test.r_beto')::uuid)
+    = current_setting('test.r_rita')::uuid, 'R is on turn';
+  assert (public.leave_household(current_setting('test.hh_r')::uuid, true))->>'status' = 'deleted', 'R closed the household';
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.chore_rotation), 'the orders left with the household';
+  -- As permissões da tabela são explícitas: não dependem do padrão do projeto. Um verbo de cada vez:
+  -- has_table_privilege com uma lista ("insert, update") é verdadeira quando qualquer um deles vale.
+  assert not exists (
+    select 1 from unnest(array['select', 'insert', 'update', 'delete', 'truncate', 'references', 'trigger']) as verb
+    where has_table_privilege('anon', 'public.chore_rotation', verb)
+  ), 'anon has no access to chore_rotation';
+  assert has_table_privilege('authenticated', 'public.chore_rotation', 'select'), 'members read chore_rotation through the API';
+  assert not has_table_privilege('authenticated', 'public.chore_rotation', 'insert'), 'members cannot insert into chore_rotation';
+  assert not has_table_privilege('authenticated', 'public.chore_rotation', 'update'), 'members cannot update chore_rotation';
+  assert not has_table_privilege('authenticated', 'public.chore_rotation', 'delete'), 'members cannot delete from chore_rotation';
+  assert not has_table_privilege('authenticated', 'public.chore_rotation', 'truncate'), 'members cannot truncate chore_rotation';
+  assert not exists (
+    select 1 from unnest(array['references', 'trigger']) as verb
+    where has_table_privilege('authenticated', 'public.chore_rotation', verb)
+  ), 'and members get nothing beyond reading chore_rotation';
+  assert (select bool_and(has_table_privilege('service_role', 'public.chore_rotation', verb))
+            from unnest(array['select', 'insert', 'update', 'delete']) as verb),
+    'the service role keeps full access to chore_rotation';
+  assert (select array_agg(cmd::text) from pg_policies where schemaname = 'public' and tablename = 'chore_rotation') = array['SELECT'],
+    'the only policy on chore_rotation is for reading';
+  delete from public.household_file_cleanup where household_id = current_setting('test.hh_r')::uuid;
+end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• estoque e receita dos remédios: limites das colunas e isolamento entre casas'
+-- Paula mora na Casa da Paula e toma Losartana; Quico mora em outra casa.
+\set user_p '00000000-0000-0000-0000-000000000050'
+\set user_q '00000000-0000-0000-0000-000000000051'
+reset role;
+insert into auth.users (id) values (:'user_p'), (:'user_q');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+select public.create_household('Casa do Quico', 'Quico') \gset
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+select public.create_household('Casa da Paula', 'Paula') \gset
+
+do $$
+declare
+  m uuid;
+  r public.medications;
+  bad text;
+begin
+  -- Remédio sem estoque acompanhado (como todos os de antes): nada contado, 1 por dose, aviso com 7 dias.
+  insert into public.medications (person_name, name, times) values ('Paula', 'Losartana', array['08:00']) returning * into r;
+  m := r.id;
+  perform set_config('test.med_p', m::text, false);
+  assert r.stock_count is null and r.stock_counted_on is null and r.prescription_until is null, 'no stock and no prescription by default';
+  assert r.dose_units = 1 and r.stock_warn_days = 7, 'one unit per dose and a week of warning by default';
+
+  -- A contagem com o dia dela, meio comprimido por dose, e a receita.
+  update public.medications
+    set stock_count = 12.5, stock_counted_on = '2026-10-12', dose_units = 0.5, stock_warn_days = 10, prescription_until = '2026-12-20'
+    where id = m returning * into r;
+  assert r.stock_count = 12.5 and r.stock_counted_on = '2026-10-12' and r.dose_units = 0.5 and r.stock_warn_days = 10
+    and r.prescription_until = '2026-12-20', 'stock, dose units, warning days and prescription are stored';
+  -- Contado zero (acabou) vale; negativo, não.
+  update public.medications set stock_count = 0 where id = m;
+  begin
+    update public.medications set stock_count = -1 where id = m;
+    raise exception 'FAIL: negative stock';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set dose_units = 0 where id = m;
+    raise exception 'FAIL: a dose that uses nothing';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set dose_units = -1 where id = m;
+    raise exception 'FAIL: negative dose units';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set dose_units = null where id = m;
+    raise exception 'FAIL: dose units without a value';
+  exception when not_null_violation then null;
+  end;
+  -- NaN e Infinity não são quantidade (no numeric, NaN é maior que qualquer
+  -- número: passaria num ">= 0" sozinho), nem um número sem tamanho de caixa.
+  begin
+    update public.medications set stock_count = 'NaN' where id = m;
+    raise exception 'FAIL: NaN stock';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set stock_count = 'Infinity' where id = m;
+    raise exception 'FAIL: infinite stock';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set stock_count = 1000000 where id = m;
+    raise exception 'FAIL: a million units';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set dose_units = 'NaN' where id = m;
+    raise exception 'FAIL: NaN dose units';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set dose_units = 'Infinity' where id = m;
+    raise exception 'FAIL: infinite dose units';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set dose_units = 1000.5 where id = m;
+    raise exception 'FAIL: more than 1000 units per dose';
+  exception when check_violation then null;
+  end;
+  -- O teto deixa passar o que o app grava: duas caixas de 99.999 somadas ("Comprei mais") e 1000 por dose.
+  update public.medications set stock_count = 199998, dose_units = 1000 where id = m;
+  update public.medications set stock_count = 0, dose_units = 0.5 where id = m;
+  -- O aviso vai de 1 a 60 dias.
+  update public.medications set stock_warn_days = 1 where id = m;
+  update public.medications set stock_warn_days = 60 where id = m;
+  begin
+    update public.medications set stock_warn_days = 0 where id = m;
+    raise exception 'FAIL: warning with zero days';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.medications set stock_warn_days = 61 where id = m;
+    raise exception 'FAIL: warning with 61 days';
+  exception when check_violation then null;
+  end;
+  -- A contagem e o dia dela andam juntos.
+  begin
+    update public.medications set stock_counted_on = null where id = m;
+    raise exception 'FAIL: a count without its date';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.medications (person_name, name, times, stock_count) values ('Paula', 'X', array['08:00'], 30);
+    raise exception 'FAIL: a new medication counted without a date';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.medications (person_name, name, times, stock_counted_on) values ('Paula', 'X', array['08:00'], '2026-10-12');
+    raise exception 'FAIL: a count date without the count';
+  exception when check_violation then null;
+  end;
+  -- O dia da contagem e a data da receita ficam entre 2000 e 2100: um date aceita 'infinity' e o ano 9999, e a
+  -- conta do app, que anda dia a dia a partir do dia da contagem, não terminaria.
+  update public.medications set stock_counted_on = '2000-01-01', prescription_until = '2000-01-01' where id = m;
+  update public.medications set stock_counted_on = '2100-12-31', prescription_until = '2100-12-31' where id = m;
+  foreach bad in array array['infinity', '-infinity', '9999-12-31', '1999-12-31', '2101-01-01'] loop
+    begin
+      update public.medications set stock_counted_on = bad::date where id = m;
+      raise exception 'FAIL: a count dated %', bad;
+    exception when check_violation then null;
+    end;
+    begin
+      update public.medications set prescription_until = bad::date where id = m;
+      raise exception 'FAIL: a prescription valid until %', bad;
+    exception when check_violation then null;
+    end;
+  end loop;
+  begin
+    insert into public.medications (person_name, name, times, stock_count, stock_counted_on)
+      values ('Paula', 'X', array['08:00'], 30, 'infinity');
+    raise exception 'FAIL: a new medication counted on infinity';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.medications (person_name, name, times, prescription_until) values ('Paula', 'X', array['08:00'], 'infinity');
+    raise exception 'FAIL: a new medication with a prescription valid until infinity';
+  exception when check_violation then null;
+  end;
+  select * into r from public.medications where id = m;
+  assert r.stock_counted_on = '2100-12-31' and r.prescription_until = '2100-12-31', 'a refused date changes nothing';
+  update public.medications set stock_counted_on = '2026-10-12', prescription_until = '2026-12-20' where id = m;
+  -- Parar de acompanhar: os dois vazios; a receita não depende do estoque.
+  update public.medications set stock_count = null, stock_counted_on = null where id = m returning * into r;
+  assert r.stock_count is null and r.prescription_until = '2026-12-20', 'the prescription stays without the stock';
+  -- "Comprei mais": 30, contados hoje.
+  update public.medications set stock_count = 30, stock_counted_on = '2026-10-12' where id = m;
+end $$;
+
+-- Quico, de outra casa: não vê nem mexe no estoque nem na receita da Paula.
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+declare
+  m uuid := current_setting('test.med_p')::uuid;
+  changed integer;
+begin
+  assert (select count(*) from public.medications where id = m) = 0, 'Q does not see the foreign medication';
+  assert (select count(*) from public.medications where stock_count is not null or prescription_until is not null) = 0,
+    'nor any stock or prescription';
+  update public.medications
+    set stock_count = 99, stock_counted_on = '2026-10-12', dose_units = 9, stock_warn_days = 60, prescription_until = '2030-01-01'
+    where id = m;
+  get diagnostics changed = row_count;
+  assert changed = 0, 'Q cannot change the foreign stock';
+  update public.medications set stock_count = null, stock_counted_on = null, prescription_until = null;
+  get diagnostics changed = row_count;
+  assert changed = 0, 'not even without naming the medication';
+  -- Na própria casa, funciona.
+  insert into public.medications (person_name, name, times, stock_count, stock_counted_on) values ('Quico', 'Puran', array['07:00'], 60, '2026-10-12');
+  assert (select count(*) from public.medications) = 1, 'Q sees only the own medication';
+end $$;
+
+-- Paula de novo: tudo como ela deixou.
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  r public.medications;
+begin
+  select * into r from public.medications where id = current_setting('test.med_p')::uuid;
+  assert r.stock_count = 30 and r.stock_counted_on = '2026-10-12' and r.dose_units = 0.5 and r.stock_warn_days = 60
+    and r.prescription_until = '2026-12-20', 'the stock and the prescription are untouched by Q';
+  assert (select count(*) from public.medications) = 1, 'and P does not see the medication of Q';
+end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• lista da farmácia aberta: acha a da casa ou cria uma só'
+do $$
+declare
+  first uuid;
+  again uuid;
+  market uuid;
+  other uuid;
+  blank uuid;
+begin
+  assert (select count(*) from public.shopping_lists) = 0, 'P starts without lists';
+  select id into first from public.open_pharmacy_list();
+  assert (select name = 'Farmácia' and kind = 'farmacia' and archived_at is null from public.shopping_lists where id = first),
+    'creates "Farmácia" when no pharmacy list is open';
+  select id into again from public.open_pharmacy_list('Outra');
+  assert again = first, 'the open pharmacy list is reused';
+  assert (select count(*) from public.shopping_lists) = 1, 'and no second list is created';
+  -- A de mercado aberta e a de farmácia arquivada não servem.
+  select id into market from public.open_market_list();
+  update public.shopping_lists set archived_at = now() where id = first;
+  select id into other from public.open_pharmacy_list();
+  assert other <> first and other <> market, 'neither an archived pharmacy list nor a market list is reused';
+  assert (select kind from public.shopping_lists where id = other) = 'farmacia', 'the new list is a pharmacy list';
+  -- Nome em branco (ou nulo): "Farmácia".
+  update public.shopping_lists set archived_at = now() where id = other;
+  select id into blank from public.open_pharmacy_list('   ');
+  assert (select name from public.shopping_lists where id = blank) = 'Farmácia', 'a blank name becomes "Farmácia"';
+  update public.shopping_lists set archived_at = now() where id = blank;
+  select id into blank from public.open_pharmacy_list(null);
+  assert (select name from public.shopping_lists where id = blank) = 'Farmácia', 'a null name becomes "Farmácia"';
+  perform set_config('test.pharmacy_p', blank::text, false);
+end $$;
+-- Quico, de outra casa: ganha a lista dele, nunca a da Paula.
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+declare
+  mine uuid;
+begin
+  select id into mine from public.open_pharmacy_list();
+  assert mine <> current_setting('test.pharmacy_p')::uuid, 'another household never gets the open pharmacy list of P';
+  assert (select count(*) from public.shopping_lists) = 1 and (select count(*) from public.shopping_lists where id = mine) = 1,
+    'Q sees only the own pharmacy list';
+end $$;
+-- Sem casa, nada.
+reset role;
+\set user_r '00000000-0000-0000-0000-000000000052'
+insert into auth.users (id) values (:'user_r');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+do $$
+begin
+  perform public.open_pharmacy_list();
+  raise exception 'FAIL: pharmacy list without a household';
+exception when insufficient_privilege then
+  assert sqlerrm = 'sem casa', 'the error says there is no household';
+end $$;
+-- Anônimo não chama; só quem entrou, pelo grant explícito.
+set role anon;
+do $$
+begin
+  perform public.open_pharmacy_list();
+  raise exception 'FAIL: anon opened a pharmacy list';
+exception when insufficient_privilege then null;
+end $$;
+reset role;
+do $$
+begin
+  assert not has_function_privilege('anon', 'public.open_pharmacy_list(text)', 'execute'), 'anon cannot execute open_pharmacy_list';
+  assert has_function_privilege('authenticated', 'public.open_pharmacy_list(text)', 'execute'), 'members can execute open_pharmacy_list';
+  -- Sem acl, vale o padrão do Postgres (execute para public).
+  assert (select proacl is not null from pg_proc where oid = 'public.open_pharmacy_list(text)'::regprocedure)
+    and not exists (
+    select 1 from pg_proc p, aclexplode(p.proacl) a
+    where p.oid = 'public.open_pharmacy_list(text)'::regprocedure and a.grantee = 0
+  ), 'and public has no grant on open_pharmacy_list';
+end $$;
+reset role;
+
+-- ---------------------------------------------------------------------------
+\echo '• "Pôr na lista da farmácia": o item entra uma vez só, em qualquer lista de farmácia aberta'
+-- Vera também mora na Casa da Paula: é o outro celular da casa.
+\set user_med_v '00000000-0000-0000-0000-000000000053'
+insert into auth.users (id) values (:'user_med_v');
+insert into public.household_members (household_id, user_id, display_name)
+  select m.household_id, :'user_med_v'::uuid, 'Vera' from public.household_members m where m.user_id = :'user_p';
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  current uuid := current_setting('test.pharmacy_p')::uuid;
+  newer uuid;
+  first record;
+  again record;
+begin
+  assert (select count(*) from public.shopping_list_items) = 0, 'P starts without list items';
+  -- Paula põe a Losartana: vai para a lista de farmácia aberta, como uma unidade de remédio ainda por comprar.
+  select * into first from public.add_to_pharmacy_list('Losartana');
+  assert first.added and first.list_id = current and first.list_name = 'Farmácia', 'the item goes to the open pharmacy list';
+  assert (
+    select i.name = 'Losartana' and i.category = 'medicamentos' and i.quantity = 1 and i.unit = 'un' and i.product_id is null
+      and i.checked_at is null
+    from public.shopping_list_items i where i.id = first.item_id
+  ), 'as one unit of a medication, still to buy';
+  -- De novo (outro toque, outro celular): fica o que já estava. Maiúsculas e espaços nas pontas não contam.
+  select * into again from public.add_to_pharmacy_list('  LOSARTANA ');
+  assert not again.added and again.item_id = first.item_id and again.list_id = current, 'a pending item of the same name is not added again';
+  assert (select count(*) from public.shopping_list_items) = 1, 'and nothing else is written';
+  -- O item com o nome de quem toma ("Nome — pessoa", como o app o põe quando duas pessoas da casa usam o mesmo
+  -- remédio) é o mesmo item. O contrário não: com duas pessoas no remédio, o item só com o nome não diz de quem é.
+  insert into public.shopping_list_items (list_id, name, category) values (current, 'Sinvastatina — Paula', 'medicamentos');
+  select * into again from public.add_to_pharmacy_list('Sinvastatina', 'Sinvastatina — Paula');
+  assert not again.added and again.list_id = current, 'the item with the name of who takes it counts as the same';
+  insert into public.shopping_list_items (list_id, name, category) values (current, 'Atenolol', 'medicamentos');
+  select * into again from public.add_to_pharmacy_list('Atenolol — Paula', 'Atenolol — Paula');
+  assert again.added, 'a pending plain name does not stand for the item that carries the person';
+  -- Já comprado (riscado no carrinho): não conta, e o remédio entra de novo.
+  update public.shopping_list_items set checked_at = now() where id = first.item_id;
+  select * into again from public.add_to_pharmacy_list('Losartana');
+  assert again.added and again.item_id <> first.item_id, 'a bought item does not count';
+  -- Outra lista de farmácia aberta, mais nova (feita à mão): o que está pendente na mais antiga não entra de
+  -- novo, e a resposta diz onde ele está.
+  insert into public.shopping_lists (name, kind, created_at) values ('Drogasil', 'farmacia', now() + interval '1 minute') returning id into newer;
+  assert (select id from public.open_pharmacy_list()) = newer, 'the newer pharmacy list is the open one';
+  select * into again from public.add_to_pharmacy_list('Losartana');
+  assert not again.added and again.list_id = current and again.list_name = 'Farmácia', 'pending on an older open pharmacy list: not added again';
+  assert (select count(*) from public.shopping_list_items where name = 'Losartana' and checked_at is null) = 1, 'one Losartana still to buy';
+  -- O que não está pendente em lista nenhuma vai para a mais nova.
+  select * into again from public.add_to_pharmacy_list('Puran T4');
+  assert again.added and again.list_id = newer and again.list_name = 'Drogasil', 'a new item goes to the newest open pharmacy list';
+  -- Pendente numa lista de mercado, ou numa de farmácia arquivada: não conta.
+  insert into public.shopping_list_items (list_id, name, category) values ((select id from public.open_market_list()), 'Omeprazol', 'medicamentos');
+  insert into public.shopping_list_items (list_id, name, category)
+    values ((select id from public.shopping_lists where kind = 'farmacia' and archived_at is not null limit 1), 'Dipirona', 'medicamentos');
+  select * into again from public.add_to_pharmacy_list('Omeprazol');
+  assert again.added and again.list_id = newer, 'an item on a market list does not count';
+  select * into again from public.add_to_pharmacy_list('Dipirona');
+  assert again.added and again.list_id = newer, 'nor one on an archived pharmacy list';
+  perform set_config('test.pharmacy_newer', newer::text, false);
+end $$;
+-- Vera, da mesma casa: acha o que Paula pôs.
+select set_config('request.jwt.claim.sub', :'user_med_v', false) \gset
+do $$
+declare
+  again record;
+begin
+  select * into again from public.add_to_pharmacy_list('puran t4');
+  assert not again.added and again.list_id = current_setting('test.pharmacy_newer')::uuid, 'another member of the household finds the pending item';
+end $$;
+reset role;
+
+-- Dois celulares da casa ao mesmo tempo, com duas sessões de verdade: esta (Paula) e a de Vera, aberta com
+-- dblink (vem com o Postgres).
+select exists (select 1 from pg_available_extensions where name = 'dblink') as has_dblink \gset
+\if :has_dblink
+create schema med_race;
+create extension dblink schema med_race;
+-- Se algo der errado, a sessão de Vera desiste em vez de esperar para sempre.
+select format(
+  'dbname=%s user=%s port=%s host=''%s''',
+  current_database(),
+  session_user,
+  current_setting('port'),
+  case when current_setting('listen_addresses') = '' then split_part(current_setting('unix_socket_directories'), ',', 1) else 'localhost' end
+) as med_race_conn \gset
+select med_race.dblink_connect('vera', :'med_race_conn') as med_race_connected \gset
+select med_race.dblink_exec('vera', 'set statement_timeout = ''30s''') as med_race_timeout \gset
+select med_race.dblink_exec('vera', 'set role authenticated') as med_race_role \gset
+select set_config('test.med_race_pid', pid::text, false) as med_race_pid
+  from med_race.dblink('vera', format('select set_config(''request.jwt.claim.sub'', %L, false), pg_backend_pid()', :'user_med_v')) as t (sub text, pid integer) \gset
+
+-- (a) Paula põe o Enalapril e ainda não terminou; Vera põe o mesmo. Vera espera a trava da casa e, quando Paula
+--     termina, acha o item dela: um Enalapril só.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+begin;
+select set_config('test.med_race_item', item_id::text, false) as med_race_item from public.add_to_pharmacy_list('Enalapril') \gset
+reset role;
+select med_race.dblink_send_query('vera', 'select item_id, added from public.add_to_pharmacy_list(''Enalapril'')') as med_race_sent \gset
+do $$
+declare
+  vera integer := current_setting('test.med_race_pid')::integer;
+begin
+  for i in 1..200 loop
+    exit when pg_backend_pid() = any (pg_blocking_pids(vera));
+    perform pg_sleep(0.05);
+  end loop;
+  assert pg_backend_pid() = any (pg_blocking_pids(vera)), 'the second add waits for the household lock of the first';
+  assert med_race.dblink_is_busy('vera') = 1, 'and has not answered yet';
+end $$;
+commit;
+do $$
+declare
+  r record;
+begin
+  select * into r from med_race.dblink_get_result('vera') as t (item_id uuid, added boolean);
+  assert not r.added and r.item_id = current_setting('test.med_race_item')::uuid, 'the second add finds the item of the first';
+  assert (select count(*) from public.shopping_list_items where name = 'Enalapril') = 1, 'one Enalapril on the lists';
+end $$;
+-- (A consulta só termina quando não há mais resultado a ler.)
+select count(*) as med_race_drained from med_race.dblink_get_result('vera') as t (item_id uuid, added boolean) \gset
+
+-- (b) Paula põe a Furosemida e ainda não terminou; Vera arquiva a lista em que ela entra. O arquivamento espera o
+--     item entrar (a ordem de sempre: pôs, depois arquivou), em vez de o item ir para uma lista que já não aparece.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+begin;
+select set_config('test.med_race_list', list_id::text, false) as med_race_list from public.add_to_pharmacy_list('Furosemida') \gset
+reset role;
+select med_race.dblink_send_query(
+  'vera',
+  format('update public.shopping_lists set archived_at = now() where id = %L', current_setting('test.med_race_list'))
+) as med_race_sent \gset
+do $$
+declare
+  vera integer := current_setting('test.med_race_pid')::integer;
+begin
+  assert current_setting('test.med_race_list')::uuid = current_setting('test.pharmacy_newer')::uuid, 'the item went to the newest open list';
+  for i in 1..200 loop
+    exit when pg_backend_pid() = any (pg_blocking_pids(vera));
+    perform pg_sleep(0.05);
+  end loop;
+  assert pg_backend_pid() = any (pg_blocking_pids(vera)), 'archiving the list waits for the add on it';
+end $$;
+commit;
+do $$
+declare
+  r record;
+begin
+  select * into r from med_race.dblink_get_result('vera') as t (status text);
+  assert r.status = 'UPDATE 1', r.status;
+  assert (
+    select l.archived_at is not null from public.shopping_lists l where l.id = current_setting('test.med_race_list')::uuid
+  ), 'the list was archived after the add';
+  assert (select count(*) from public.shopping_list_items where name = 'Furosemida') = 1, 'with the item on it';
+end $$;
+select count(*) as med_race_drained from med_race.dblink_get_result('vera') as t (status text) \gset
+
+-- (c) Na ordem contrária: Paula arquiva a última lista de farmácia aberta e ainda não terminou; Vera põe a
+--     Furosemida (a de antes ficou na lista arquivada). Ela espera o arquivamento e põe o item numa lista nova,
+--     aberta.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+begin;
+update public.shopping_lists set archived_at = now() where id = current_setting('test.pharmacy_p')::uuid;
+reset role;
+select med_race.dblink_send_query('vera', 'select list_id, added from public.add_to_pharmacy_list(''Furosemida'')') as med_race_sent \gset
+do $$
+declare
+  vera integer := current_setting('test.med_race_pid')::integer;
+begin
+  for i in 1..200 loop
+    exit when pg_backend_pid() = any (pg_blocking_pids(vera));
+    perform pg_sleep(0.05);
+  end loop;
+  assert pg_backend_pid() = any (pg_blocking_pids(vera)), 'the add waits for the archive of the list it found';
+end $$;
+commit;
+do $$
+declare
+  r record;
+begin
+  select * into r from med_race.dblink_get_result('vera') as t (list_id uuid, added boolean);
+  assert r.added, 'the item is added';
+  assert r.list_id <> all (array[current_setting('test.pharmacy_p')::uuid, current_setting('test.pharmacy_newer')::uuid]),
+    'to another list than the archived ones';
+  assert (select l.kind = 'farmacia' and l.archived_at is null and l.name = 'Farmácia' from public.shopping_lists l where l.id = r.list_id),
+    'a new open pharmacy list';
+  assert (select count(*) from public.shopping_list_items where name = 'Furosemida' and list_id = r.list_id and checked_at is null) = 1,
+    'with the item on it';
+end $$;
+select count(*) as med_race_drained from med_race.dblink_get_result('vera') as t (list_id uuid, added boolean) \gset
+select med_race.dblink_disconnect('vera') as med_race_closed \gset
+drop extension dblink;
+drop schema med_race;
+\else
+\echo '  (este Postgres não tem dblink: as corridas entre duas sessões não rodaram; fica conferido que add_to_pharmacy_list trava a casa e a lista)'
+do $$
+declare
+  src text := (select p.prosrc from pg_proc p where p.oid = 'public.add_to_pharmacy_list(text, text, text)'::regprocedure);
+begin
+  assert src ~ 'pg_advisory_xact_lock\(hashtextextended\(''open_pharmacy_list:''', 'add_to_pharmacy_list takes the household lock of open_pharmacy_list';
+  assert src ~ 'for update', 'and locks the list row before looking for the item';
+end $$;
+\endif
+
+-- Quico, de outra casa: não vê os itens da Paula, e o dele vai para a lista dele.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_q', false) \gset
+do $$
+declare
+  r record;
+begin
+  select * into r from public.add_to_pharmacy_list('Losartana');
+  assert r.added, 'another household does not see the pending items of P';
+  assert (select count(*) from public.shopping_lists where id = r.list_id) = 1, 'and the item goes to an own list';
+  assert (select count(*) from public.shopping_list_items) = 1, 'Q sees only the own item';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+begin
+  assert (select count(*) from public.shopping_list_items where name = 'Losartana' and checked_at is null) = 1, 'the item of Q is not on the lists of P';
+end $$;
+-- Sem casa, nada; anônimo não chama.
+select set_config('request.jwt.claim.sub', :'user_r', false) \gset
+do $$
+begin
+  perform public.add_to_pharmacy_list('Losartana');
+  raise exception 'FAIL: pharmacy item without a household';
+exception when insufficient_privilege then
+  assert sqlerrm = 'sem casa', 'the error says there is no household';
+end $$;
+set role anon;
+do $$
+begin
+  perform public.add_to_pharmacy_list('Losartana');
+  raise exception 'FAIL: anon added a pharmacy item';
+exception when insufficient_privilege then null;
+end $$;
+reset role;
+do $$
+begin
+  assert not has_function_privilege('anon', 'public.add_to_pharmacy_list(text, text, text)', 'execute'), 'anon cannot execute add_to_pharmacy_list';
+  assert has_function_privilege('authenticated', 'public.add_to_pharmacy_list(text, text, text)', 'execute'), 'members can execute add_to_pharmacy_list';
+  assert (select proacl is not null from pg_proc where oid = 'public.add_to_pharmacy_list(text, text, text)'::regprocedure)
+    and not exists (
+    select 1 from pg_proc p, aclexplode(p.proacl) a
+    where p.oid = 'public.add_to_pharmacy_list(text, text, text)'::regprocedure and a.grantee = 0
+  ), 'and public has no grant on add_to_pharmacy_list';
+  assert not (select p.prosecdef from pg_proc p where p.oid = 'public.add_to_pharmacy_list(text, text, text)'::regprocedure),
+    'add_to_pharmacy_list runs as the caller (RLS applies)';
+end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• remédio salvo por um app de antes do estoque: a regra nova não lê a contagem antiga'
+-- O app de antes do estoque salva o remédio sem as colunas dele. Se muda a regra das doses de um remédio com o
+-- estoque acompanhado, o banco para de acompanhar o estoque (a contagem antiga, lida com a regra nova desde o dia
+-- em que foi feita, pularia sem ninguém ter contado nada). O app de agora sempre grava a contagem refeita.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p', false) \gset
+do $$
+declare
+  counted date := current_date - 3;
+  m uuid;
+  r public.medications;
+  change text;
+begin
+  -- (1) Duas vezes por dia, com o corpo do app de antes (sem o estoque): a contagem sai, a regra nova fica.
+  insert into public.medications (person_name, name, times, start_on, stock_count, stock_counted_on)
+    values ('Paula', 'Clonazepam', array['08:00'], '2026-01-01', 30, counted) returning id into m;
+  update public.medications
+    set person_id = null, person_name = 'Paula', name = 'Clonazepam', dosage = null, times = array['08:00', '20:00'], start_on = '2026-01-01',
+      end_on = null, notes = null, frequency = 'daily', weekdays = null, interval_days = null, total_doses = null
+    where id = m returning * into r;
+  assert r.stock_count is null and r.stock_counted_on is null, 'an old app changing the times a day stops following the stock';
+  assert r.times = array['08:00', '20:00'], 'and the new rule is saved';
+  -- Cada parte da regra conta, e "Cada dose usa" também.
+  foreach change in array array[
+    'frequency = ''weekdays'', weekdays = array[1]::smallint[]',
+    'frequency = ''interval'', interval_days = 2',
+    'start_on = ''2026-02-01''',
+    'end_on = ''2027-12-31''',
+    'total_doses = 500',
+    'dose_units = 2'
+  ] loop
+    insert into public.medications (person_name, name, times, start_on, stock_count, stock_counted_on)
+      values ('Paula', 'Clonazepam', array['08:00'], '2026-01-01', 30, counted) returning id into m;
+    execute format('update public.medications set %s where id = %L', change, m);
+    select * into r from public.medications where id = m;
+    assert r.stock_count is null and r.stock_counted_on is null, format('a rule change without a recount (%s) stops following the stock', change);
+  end loop;
+  -- Contada antes de ontem: já não é a contagem de hoje que o app de agora refaria igual.
+  insert into public.medications (person_name, name, times, start_on, stock_count, stock_counted_on)
+    values ('Paula', 'Clonazepam', array['08:00'], '2026-01-01', 30, current_date - 2) returning id into m;
+  update public.medications set times = array['08:00', '20:00'] where id = m returning * into r;
+  assert r.stock_count is null, 'a count from the day before yesterday is not kept under the new rule';
+
+  -- (2) O app de agora faz a mesma mudança e grava a contagem refeita (o que sobrava, contado hoje): fica.
+  insert into public.medications (person_name, name, times, start_on, stock_count, stock_counted_on)
+    values ('Paula', 'Clonazepam', array['08:00'], '2026-01-01', 30, counted) returning id into m;
+  update public.medications set times = array['08:00', '20:00'], stock_count = 27, stock_counted_on = current_date where id = m returning * into r;
+  assert r.stock_count = 27 and r.stock_counted_on = current_date and r.times = array['08:00', '20:00'], 'the recount of the current app stays';
+  -- Já tinha acabado: o zero no dia em que acabou também fica.
+  insert into public.medications (person_name, name, times, start_on, stock_count, stock_counted_on)
+    values ('Paula', 'Clonazepam', array['08:00'], '2026-01-01', 2, counted) returning id into m;
+  update public.medications set dose_units = 0.5, stock_count = 0, stock_counted_on = counted + 2 where id = m returning * into r;
+  assert r.stock_count = 0 and r.stock_counted_on = counted + 2 and r.dose_units = 0.5, 'the zero on the run-out day stays';
+
+  -- (3) Não é regra nova: só o horário (outros horários, ou os mesmos em outra ordem), os dias da semana em outra
+  --     ordem, o nome, a dose escrita ou as observações. A contagem fica.
+  insert into public.medications (person_name, name, times, start_on, frequency, weekdays, stock_count, stock_counted_on)
+    values ('Paula', 'Clonazepam', array['08:00', '20:00'], '2026-01-01', 'weekdays', array[1, 3]::smallint[], 30, counted) returning id into m;
+  update public.medications set times = array['21:00', '07:30'] where id = m;
+  update public.medications set weekdays = array[3, 1]::smallint[] where id = m;
+  update public.medications set name = 'Clonazepam 2 mg', dosage = '1 comprimido', notes = 'à noite' where id = m;
+  update public.medications set dose_units = 1, start_on = '2026-01-01', end_on = null, total_doses = null where id = m returning * into r;
+  assert r.stock_count = 30 and r.stock_counted_on = counted, 'clock times, weekday order, name, dosage and notes keep the count';
+  assert r.times = array['21:00', '07:30'] and r.weekdays = array[3, 1]::smallint[] and r.name = 'Clonazepam 2 mg', 'and are saved';
+
+  -- (4) Contagem zerada (nada a pular), e contagem de hoje ou de ontem (o app de agora refaz a de hoje com os
+  --     mesmos valores; à noite no Brasil, o dia do servidor já é o seguinte): ficam.
+  for r in
+    insert into public.medications (person_name, name, times, start_on, stock_count, stock_counted_on)
+      values ('Paula', 'Clonazepam', array['08:00'], '2026-01-01', 0, counted),
+        ('Paula', 'Clonazepam', array['08:00'], '2026-01-01', 30, current_date),
+        ('Paula', 'Clonazepam', array['08:00'], '2026-01-01', 30, current_date - 1)
+      returning *
+  loop
+    update public.medications set times = array['08:00', '20:00'] where id = r.id;
+    assert (select stock_count = r.stock_count and stock_counted_on = r.stock_counted_on from public.medications where id = r.id),
+      format('a count of %s on %s is kept', r.stock_count, r.stock_counted_on);
+  end loop;
+  perform set_config('test.med_old_rule', m::text, false);
+end $$;
+-- (5) Quem não usa a API não passa pelo gatilho: a service role e as funções do banco (aqui, o dono).
+reset role;
+do $$
+declare
+  m uuid;
+  r public.medications;
+begin
+  insert into public.medications (household_id, person_name, name, times, start_on, stock_count, stock_counted_on)
+    select household_id, 'Paula', 'Clonazepam', array['08:00'], '2026-01-01', 30, current_date - 3 from public.medications
+    where id = current_setting('test.med_old_rule')::uuid
+    returning id into m;
+  perform set_config('test.med_service', m::text, false);
+  update public.medications set times = array['08:00', '20:00'] where id = m returning * into r;
+  assert r.stock_count = 30, 'the owner (and so a security definer function) is left alone';
+end $$;
+set role service_role;
+do $$
+declare
+  r public.medications;
+begin
+  update public.medications set times = array['08:00', '14:00', '20:00'] where id = current_setting('test.med_service')::uuid returning * into r;
+  assert r.stock_count = 30 and r.stock_counted_on = current_date - 3, 'the service role is left alone';
+end $$;
+reset role;
+do $$
+begin
+  assert not (select p.prosecdef from pg_proc p where p.oid = 'public.medication_rule_without_recount()'::regprocedure),
+    'medication_rule_without_recount is security invoker';
+  assert (select p.proconfig from pg_proc p where p.oid = 'public.medication_rule_without_recount()'::regprocedure) = array['search_path=""'],
+    'with an empty search_path';
+  assert not exists (
+    select 1 from unnest(array['public', 'anon', 'authenticated']) as who
+    where has_function_privilege(who, 'public.medication_rule_without_recount()', 'execute')
+  ), 'medication_rule_without_recount is called by no role of the API';
 end $$;
 
 -- ---------------------------------------------------------------------------

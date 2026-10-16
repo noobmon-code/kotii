@@ -151,6 +151,9 @@ function AppNavigator() {
           <Stack.Screen name="treino/[id]" options={{ title: 'Ficha de treino' }} />
           <Stack.Screen name="dieta/[id]" options={{ title: 'Plano alimentar' }} />
           <Stack.Screen name="aparelho/[id]" options={{ title: 'Aparelho' }} />
+          <Stack.Screen name="prestadores" options={{ title: 'Prestadores e consertos' }} />
+          <Stack.Screen name="prestador/[id]" options={{ title: 'Prestador' }} />
+          <Stack.Screen name="servico/[id]" options={{ title: 'Serviço', presentation: 'modal' }} />
           <Stack.Screen name="documento/[id]" options={{ title: 'Documento' }} />
           <Stack.Screen name="conta/[id]" options={{ title: 'Conta', presentation: 'modal' }} />
           <Stack.Screen name="gasto/[id]" options={{ title: 'Gasto', presentation: 'modal' }} />

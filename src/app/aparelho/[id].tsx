@@ -2,8 +2,10 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { useCompleteChore, useSaveChore } from '@/data/home';
+import { usePeople } from '@/data/health';
+import { useChoreRotations, useCompleteChore, useSaveChore } from '@/data/home';
 import { DOCUMENTS_BUCKET, useDeleteEquipment, useEquipment, useMaintenance, useSaveEquipment } from '@/data/house';
+import { choreTurnLabel, rotationOf, rotationPeople } from '@/domain/choreRotation';
 import { choreStatus, describeChoreStatus, describeRecurrence } from '@/domain/chores';
 import { addMonths, formatBRDate, formatShortDate, parseBRDate, todayISO, toISODate } from '@/domain/dates';
 import {
@@ -16,7 +18,9 @@ import {
   type MaintenanceSuggestion,
 } from '@/domain/equipment';
 import { parseMoney } from '@/domain/money';
+import { announceCompletion } from '@/features/ChoresPanel';
 import { PhotoStrip } from '@/features/PhotoStrip';
+import { EquipmentServices } from '@/features/providers/EquipmentServices';
 import { useDraftPhotos } from '@/features/useDraftPhotos';
 import { usePhotoSheet } from '@/features/usePhotoSheet';
 import { useHousehold } from '@/lib/auth';
@@ -199,6 +203,7 @@ function EquipmentForm({ equipment }: { equipment?: Equipment }) {
       {equipment ? <MaintenanceSection equipment={equipment} today={today} /> : (
         <Text variant="muted">Depois de salvar, cadastre as manutenções (o app sugere as mais comuns).</Text>
       )}
+      {equipment ? <EquipmentServices equipmentId={equipment.id} today={today} /> : null}
 
       {equipment ? (
         <Button
@@ -228,7 +233,10 @@ function EquipmentForm({ equipment }: { equipment?: Equipment }) {
 
 function MaintenanceSection({ equipment, today }: { equipment: Equipment; today: string }) {
   const members = useHousehold().data?.members ?? [];
+  const people = usePeople().data ?? [];
   const { chores, history } = useMaintenance(equipment.id);
+  // Sem as ordens (carregando, ou banco ainda sem o rodízio), cada manutenção mostra o responsável de sempre.
+  const rotations = useChoreRotations().data;
   const saveChore = useSaveChore();
   const complete = useCompleteChore();
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
@@ -278,7 +286,11 @@ function MaintenanceSection({ equipment, today }: { equipment: Equipment; today:
                   subtitle={[
                     describeRecurrence(chore.recurrence, chore.interval_count),
                     chore.active ? describeChoreStatus(status) : 'Encerrada',
-                  ].join(' · ')}
+                    // De quem é a vez, como na lista de tarefas e na tela Hoje ("Vez de Beto · depois Carla").
+                    chore.active ? choreTurnLabel(chore, rotationOf(rotations, chore.id), members, people) : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
                   dimmed={!chore.active}
                   onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: chore.id } })}
                   right={
@@ -286,7 +298,13 @@ function MaintenanceSection({ equipment, today }: { equipment: Equipment; today:
                       <CheckCircle
                         checked={false}
                         label={`Registrar ${chore.title} feita hoje`}
-                        onPress={() => complete.mutate({ id: chore.id, today, dueOn: chore.due_on }, { onError })}
+                        onPress={() =>
+                          complete.mutate(
+                            { id: chore.id, today, dueOn: chore.due_on },
+                            // Manutenção em rodízio: diz de quem é a próxima vez.
+                            { onSuccess: (result) => announceCompletion(result, rotationPeople(members, people), chore), onError },
+                          )
+                        }
                       />
                     ) : null
                   }

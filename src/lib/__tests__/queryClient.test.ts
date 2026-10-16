@@ -4,6 +4,7 @@ import { onlineManager } from '@tanstack/react-query';
 
 import { CLEAR_CHECKED_KEY, EDIT_ITEM_KEY, TOGGLE_ITEM_KEY } from '@/data/market';
 import { MARKET_TRIP_PUSH_KEY, MARKET_TRIPS_KEY } from '@/data/marketTrips';
+import { JOBS_KEY, PROVIDERS_KEY } from '@/data/providers';
 
 import { accessErrorMessage, EXPECTS_ROWS_META, NO_HOUSEHOLD_ACCESS, REMOVED_FROM_HOUSEHOLD } from '../accessErrors';
 import { setActiveHousehold } from '../activeHousehold';
@@ -95,6 +96,20 @@ describe('cache guardado no aparelho', () => {
     await flush();
     expect(await stored()).toBeNull();
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
+  });
+
+  it('prestadores e serviços (nomes e telefones de gente de fora da casa) não ficam guardados no aparelho', async () => {
+    queryClient.setQueryData(['lists'], [{ id: 'l1', name: 'Compras da semana' }]);
+    queryClient.setQueryData([PROVIDERS_KEY], { rows: [{ id: 'p1', name: 'Zé da Luz', phone: '(11) 98765-4321' }], missing: false });
+    queryClient.setQueryData([JOBS_KEY], { rows: [{ id: 'j1', description: 'Trocou o disjuntor' }], missing: false });
+    queryClient.setQueryData([JOBS_KEY, 'provider', 'p1'], { rows: [{ id: 'j1', description: 'Trocou o disjuntor' }], missing: false });
+    await saveNow();
+    const saved = (await stored()) ?? '';
+    expect(saved).toContain('Compras da semana');
+    expect(saved).not.toContain('Zé da Luz');
+    expect(saved).not.toContain('98765');
+    expect(saved).not.toContain('Trocou o disjuntor');
+    await AsyncStorage.removeItem('kotii:query-cache');
   });
 
   it('as idas ao mercado e a opção do aviso ficam só na memória', async () => {

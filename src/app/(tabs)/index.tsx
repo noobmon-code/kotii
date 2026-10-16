@@ -3,7 +3,8 @@ import { useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import {
-  toSchedule,
+  toSchedules,
+  useChoreRotations,
   useChores,
   useCompleteChore,
   useDoses,
@@ -21,7 +22,8 @@ import { useRefreshWeather } from '@/data/weather';
 import { useReceipts } from '@/data/receipts';
 import { useSupplies } from '@/data/supplies';
 import { billsAboveUsual } from '@/domain/billUsual';
-import { choreAssigneeLabel, choreStatus, describeChoreStatus } from '@/domain/chores';
+import { choreTurnLabel, rotationOf, rotationPeople } from '@/domain/choreRotation';
+import { choreStatus, describeChoreStatus } from '@/domain/chores';
 import { todayISO } from '@/domain/dates';
 import { describeDocumentStatus, documentsNeedingAttention, getDocumentKind } from '@/domain/documents';
 import { budgetProgress, describeBudget } from '@/domain/budget';
@@ -35,10 +37,11 @@ import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { describeRestock, restockSuggestions, type RestockItem } from '@/domain/restock';
 import { normalizeSearch } from '@/domain/search';
 import { suppliesNeedingAttention } from '@/domain/supplies';
-import { cheerKid } from '@/features/ChoresPanel';
+import { announceCompletion } from '@/features/ChoresPanel';
 import { BillRow } from '@/features/finance/BillsPanel';
 import { PayBillModal } from '@/features/finance/PayBillModal';
 import { hasHealthToday, healthTodayCount, HealthTodaySections } from '@/features/health/HealthTodaySections';
+import { MedicationRefills, useRefills } from '@/features/health/MedicationSections';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { InstallAppCard } from '@/features/InstallAppCard';
 import { MarketTripBanner } from '@/features/MarketTrip';
@@ -117,6 +120,8 @@ export default function TodayScreen() {
   const medications = useMedications();
   const doses = useDoses(today);
   const chores = useChores();
+  // Fora de `queries`: sem as ordens do rodízio, a tarefa mostra o responsável de sempre.
+  const rotations = useChoreRotations();
   const pantry = usePantry();
   const lists = useShoppingLists();
   const receipts = useReceipts();
@@ -170,6 +175,7 @@ export default function TodayScreen() {
   const family = useFamilyCalendar();
   const refresh = () => {
     queries.forEach((q) => q.refetch());
+    rotations.refetch();
     refreshWeather();
     refreshTrips();
     family.refetch();
@@ -177,10 +183,13 @@ export default function TodayScreen() {
   };
 
   const taken = new Set((doses.data ?? []).map((d) => doseKey(d.medication_id, d.scheduled_on, d.scheduled_time)));
-  const pendingDoses = dosesForDay((medications.data ?? []).map(toSchedule), today, taken).filter(
+  const pendingDoses = dosesForDay(toSchedules(medications.data ?? [], today, doses.data), today, taken).filter(
     (d) => !taken.has(doseKey(d.medicationId, d.date, d.time)),
   );
 
+  // Remédios com a caixa acabando (pelas contas do app) ou a receita vencendo: só os que pedem
+  // atenção (o que está parado há mais de duas semanas fica na tela Saúde e no remédio).
+  const refills = useRefills(today).attention;
   const dueChores = (chores.data ?? []).filter((c) => choreStatus(c.due_on, today).kind !== 'proxima');
   const expiring = (pantry.data ?? []).filter((p) => {
     const kind = expiryStatus(p.expires_on, today).kind;
@@ -212,6 +221,7 @@ export default function TodayScreen() {
   const nothingPending =
     queries.every((q) => q.isSuccess) &&
     !pendingDoses.length &&
+    !refills.length &&
     !dueChores.length &&
     !billsDue.length &&
     !expiring.length &&
@@ -228,6 +238,7 @@ export default function TodayScreen() {
   const glass = useGlassStyle();
   const attention =
     pendingDoses.length +
+    refills.length +
     dueChores.length +
     billsDue.length +
     expiring.length +
@@ -355,6 +366,7 @@ export default function TodayScreen() {
                 key={doseKey(d.medicationId, d.date, d.time)}
                 left={<IconBadge icon="pill" tone={d.time < nowTime ? 'warning' : 'info'} />}
                 title={`${d.time} · ${d.name}`}
+                // Sem o selo de caixa acabando: a seção logo abaixo já diz, uma vez por remédio.
                 subtitle={[d.personName, d.dosage].filter(Boolean).join(' · ')}
                 right={
                   <CheckCircle
@@ -368,6 +380,8 @@ export default function TodayScreen() {
           </ListCard>
         </Section>
       ) : null}
+
+      <MedicationRefills rows={refills} />
 
       <HealthTodaySections overview={health} today={today} compact />
 
@@ -398,7 +412,7 @@ export default function TodayScreen() {
           <ListCard>
             {dueChores.map((chore) => {
               const status = choreStatus(chore.due_on, today);
-              const assignee = choreAssigneeLabel(chore, members, health.people);
+              const assignee = choreTurnLabel(chore, rotationOf(rotations.data, chore.id), members, health.people);
               return (
                 <ListRow
                   key={chore.id}
@@ -411,7 +425,10 @@ export default function TodayScreen() {
                       checked={false}
                       label={`Concluir ${chore.title}`}
                       onPress={() =>
-                        completeChore.mutate({ id: chore.id, today, dueOn: chore.due_on }, { onSuccess: (result) => cheerKid(result, health.people), onError })
+                        completeChore.mutate(
+                          { id: chore.id, today, dueOn: chore.due_on },
+                          { onSuccess: (result) => announceCompletion(result, rotationPeople(members, health.people), chore), onError },
+                        )
                       }
                     />
                   }

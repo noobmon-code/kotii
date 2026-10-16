@@ -3,7 +3,7 @@ import glyphs from '@expo/vector-icons/build/vendor/react-native-vector-icons/gl
 
 import { CATEGORY_KEYS } from '../../../supabase/functions/_shared/categories';
 import { CATEGORIES, compareByAisle, getCategory } from '../categories';
-import { choreStatus, describeChoreStatus, describeRecurrence } from '../chores';
+import { choreGoneOnSave, choreStatus, describeChoreStatus, describeRecurrence, isChoreGone, isChoreGoneOnSave } from '../chores';
 import {
   addDays,
   diffDays,
@@ -22,6 +22,7 @@ import {
   parseTimes,
   planReminders,
   spacedTimes,
+  takenOn,
   takesOn,
   type MedicationSchedule,
 } from '../medications';
@@ -217,6 +218,34 @@ describe('chores', () => {
     expect(describeRecurrence('daily', 2)).toBe('A cada 2 dias');
     expect(describeRecurrence('none', 1)).toBe('Uma vez');
   });
+
+  it('knows a chore that no longer exists from a fetch that just failed', () => {
+    // O que a API responde ao `.single()` sem linha: a tarefa foi apagada em outro aparelho.
+    expect(isChoreGone({ code: 'PGRST116', details: 'The result contains 0 rows', message: 'Cannot coerce the result to a single JSON object' })).toBe(true);
+    expect(isChoreGone(new TypeError('Network request failed'))).toBe(false);
+    expect(isChoreGone({ code: '57014', message: 'canceling statement due to statement timeout' })).toBe(false);
+    expect(isChoreGone(null)).toBe(false);
+    expect(isChoreGone('PGRST116')).toBe(false);
+  });
+
+  it('knows a chore that no longer exists from the answer of a save', () => {
+    // O que save_chore responde pela tarefa que não está mais nesta casa.
+    expect(isChoreGoneOnSave({ code: 'P0002', message: 'chore not found', details: null, hint: null })).toBe(true);
+    // No banco que ainda não tem save_chore, a gravação direto na tabela que não acha a linha vira o mesmo erro.
+    expect(isChoreGoneOnSave(choreGoneOnSave())).toBe(true);
+    expect(choreGoneOnSave()).toBeInstanceOf(Error);
+    // O mesmo código, por outro motivo: a tarefa existe, quem saiu foi uma pessoa da ordem.
+    expect(
+      isChoreGoneOnSave({ code: 'P0002', message: 'Alguém do rodízio não está mais na casa. Confira a ordem e salve de novo.' }),
+    ).toBe(false);
+    // A busca sem linha é de isChoreGone; a recusa pelo rodízio criado em outro aparelho, de isRotationChangedElsewhere.
+    expect(isChoreGoneOnSave({ code: 'PGRST116', message: 'Cannot coerce the result to a single JSON object' })).toBe(false);
+    expect(isChoreGoneOnSave({ code: 'NK006', message: 'chore has a rotation' })).toBe(false);
+    expect(isChoreGoneOnSave(new Error('chore not found'))).toBe(false);
+    expect(isChoreGoneOnSave(new TypeError('Network request failed'))).toBe(false);
+    expect(isChoreGoneOnSave(null)).toBe(false);
+    expect(isChoreGoneOnSave('P0002')).toBe(false);
+  });
 });
 
 describe('medications', () => {
@@ -266,6 +295,20 @@ describe('medications', () => {
     expect(describeCourse(course)).toBe('4 de 5 doses');
     expect(describeCourse({ endOn: '2026-10-04' })).toBe('até 04/10/2026');
     expect(describeCourse({ endOn: null })).toBe('uso contínuo');
+  });
+
+  it('counts how many of the current times of the day are ticked', () => {
+    const taken = new Set([
+      doseKey('m1', '2026-09-26', '08:00'),
+      // Outro dia, outro remédio e um horário que o remédio não tem mais: não contam.
+      doseKey('m1', '2026-09-25', '20:00'),
+      doseKey('m2', '2026-09-26', '20:00'),
+      doseKey('m1', '2026-09-26', '07:00'),
+    ]);
+    expect(takenOn(base, '2026-09-26', taken)).toBe(1);
+    expect(takenOn(base, '2026-09-26', new Set([...taken, doseKey('m1', '2026-09-26', '20:00')]))).toBe(2);
+    expect(takenOn(base, '2026-09-27', taken)).toBe(0);
+    expect(takenOn(base, '2026-09-26', new Set())).toBe(0);
   });
 
   it('spreads N doses a day and computes the end of an N-day treatment', () => {

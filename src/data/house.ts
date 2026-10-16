@@ -5,7 +5,10 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Chore, ChoreCompletion, Equipment, HomeDocument } from '@/lib/types';
+import type { FreshRead } from './family';
+import { CHORE_COLUMNS } from './home';
 import { removeImages, signedImageUrl } from './images';
+import { JOBS_KEY } from './providers';
 
 /** Bucket das fotos de documentos e de aparelhos. */
 export const DOCUMENTS_BUCKET = 'documents';
@@ -28,14 +31,19 @@ export async function fetchEquipmentList(db: SupabaseClient = supabase): Promise
   return unwrap(await db.from('equipment').select(EQUIPMENT_COLUMNS).order('name')) as Equipment[];
 }
 
-export function useEquipmentList() {
-  return useQuery({ queryKey: ['equipment'], queryFn: () => fetchEquipmentList() });
+/**
+ * `fresh`: para a tela do serviço, que tira do aparelho a categoria do gasto que copia. Busca de novo ao abrir mesmo
+ * com o guardado ainda novo: ele pode ser de antes de uma mudança feita em outro celular.
+ */
+export function useEquipmentList({ fresh = false }: FreshRead = {}) {
+  return useQuery({ queryKey: ['equipment'], queryFn: () => fetchEquipmentList(), ...(fresh ? { refetchOnMount: 'always' as const } : {}) });
 }
 
-export function useEquipment(id: string | undefined) {
+export function useEquipment(id: string | undefined, { fresh = false }: FreshRead = {}) {
   return useQuery({
     queryKey: ['equipment', id],
     enabled: Boolean(id),
+    ...(fresh ? { refetchOnMount: 'always' as const } : {}),
     queryFn: async () =>
       unwrap(await supabase.from('equipment').select(EQUIPMENT_COLUMNS).eq('id', id!).single()) as Equipment,
   });
@@ -65,13 +73,16 @@ export function useDeleteEquipment() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['equipment'] });
       queryClient.invalidateQueries({ queryKey: ['chores'] });
+      // Os serviços feitos nele continuam no histórico de quem fez, agora sem o aparelho.
+      queryClient.invalidateQueries({ queryKey: [JOBS_KEY] });
     },
   });
 }
 
-const MAINTENANCE_COLUMNS = 'id, title, notes, recurrence, interval_count, due_on, assigned_to, active, equipment_id';
-
-/** Manutenções do aparelho (ativas e já encerradas) e o histórico de conclusões. */
+/**
+ * Manutenções do aparelho (ativas e já encerradas) e o histórico de conclusões. As manutenções vêm com as mesmas
+ * colunas da lista de tarefas (CHORE_COLUMNS): a tela conclui daqui, e o aviso precisa da vez como a linha a mostrava.
+ */
 export function useMaintenance(equipmentId: string | undefined) {
   const chores = useQuery({
     queryKey: ['chores', 'equipment', equipmentId],
@@ -80,7 +91,7 @@ export function useMaintenance(equipmentId: string | undefined) {
       unwrap(
         await supabase
           .from('chores')
-          .select(MAINTENANCE_COLUMNS)
+          .select(CHORE_COLUMNS)
           .eq('equipment_id', equipmentId!)
           .order('active', { ascending: false })
           .order('due_on'),
