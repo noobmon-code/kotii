@@ -204,8 +204,24 @@ describe('a faixa na tela Hoje', () => {
       expect.stringMatching(/^Você avisou a casa às \d\d:\d\d · lista “Feira”$/),
       expect.stringMatching(/^Você avisou a casa às \d\d:\d\d · lista “Mercado”$/),
     ]);
-    expect(labels('Encerrar')).toEqual(['Encerrar a ida da lista “Feira”', 'Encerrar a ida da lista “Mercado”']);
+    expect(labels('Encerrar')).toEqual([
+      expect.stringMatching(/^Encerrar a ida das \d\d:\d\d da lista “Feira”$/),
+      expect.stringMatching(/^Encerrar a ida das \d\d:\d\d da lista “Mercado”$/),
+    ]);
     expect(labels('Abrir a lista')).toEqual(['Abrir a lista “Feira”', 'Abrir a lista “Mercado”']);
+  });
+
+  it('duas listas com o mesmo nome: o "Encerrar" de cada uma diz também a hora do aviso', async () => {
+    mockHouse.user = 'beto';
+    const market = { name: 'Mercado', kind: 'mercado', archived_at: null };
+    mockDb.trips = { data: [trip('t1', 4, { list: market }), trip('t2', 9, { list_id: 'outra', list: market })], error: null };
+    await render(<MarketTripBanner openable />);
+    const ends = tree.root.findAllByProps({ title: 'Encerrar' }).map((button) => String(button.props.accessibilityLabel));
+    expect(ends).toEqual([
+      expect.stringMatching(/^Encerrar a ida das \d\d:\d\d da lista “Mercado”$/),
+      expect.stringMatching(/^Encerrar a ida das \d\d:\d\d da lista “Mercado”$/),
+    ]);
+    expect(ends[0]).not.toBe(ends[1]);
   });
 });
 

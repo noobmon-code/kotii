@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { AppState, StyleSheet, View } from 'react-native';
 
 import { marketTripErrorMessage, useAnnounceMarketTrip, useEndingMarketTrips, useEndMarketTrip, useMarketTrips } from '@/data/marketTrips';
-import { announceResultText, canAnnounceTrip, liveTrips, TRIP_CONFIRM, tripActionLabel, tripBannerText, tripListName } from '@/domain/marketTrips';
+import { announceResultText, canAnnounceTrip, liveTrips, TRIP_CONFIRM, tripActionLabel, tripBannerText, tripButtonLabels } from '@/domain/marketTrips';
 import { useAuth, useHousehold } from '@/lib/auth';
 import type { ListKind } from '@/lib/types';
 import { ActionSheet } from '@/ui/ActionSheet';
@@ -114,8 +114,9 @@ export function MarketTripBanner({ listId, openable = false }: { listId?: string
     <Card style={styles.card}>
       {live.map((trip) => {
         const mine = trip.user_id === userId;
-        // Na tela Hoje, vários "Encerrar" e "Abrir a lista": o leitor de tela diz de qual lista é cada um.
-        const listName = openable ? tripListName(trip.list.name) : '';
+        // Na tela Hoje, vários "Encerrar" e "Abrir a lista": o leitor de tela diz de qual ida é cada um. Na lista,
+        // o "Encerrar" é um só, o de quem avisou.
+        const labels = openable ? tripButtonLabels(trip) : undefined;
         return (
           <View key={trip.id} style={styles.trip}>
             <Row gap={space.md}>
@@ -129,7 +130,7 @@ export function MarketTripBanner({ listId, openable = false }: { listId?: string
                 {mine ? (
                   <Button
                     title="Encerrar"
-                    accessibilityLabel={listName ? `Encerrar a ida da lista ${listName}` : undefined}
+                    accessibilityLabel={labels?.end}
                     variant="ghost"
                     compact
                     loading={ending.includes(trip.id)}
@@ -139,7 +140,7 @@ export function MarketTripBanner({ listId, openable = false }: { listId?: string
                 {openable ? (
                   <Button
                     title="Abrir a lista"
-                    accessibilityLabel={listName ? `Abrir a lista ${listName}` : undefined}
+                    accessibilityLabel={labels?.open}
                     variant="ghost"
                     compact
                     onPress={() => router.push({ pathname: '/lista/[id]', params: { id: trip.list_id } })}
@@ -157,6 +158,8 @@ export function MarketTripBanner({ listId, openable = false }: { listId?: string
 const styles = StyleSheet.create({
   card: { gap: space.md },
   trip: { gap: space.xs },
-  flex: { flex: 1 },
+  // minWidth 0: no navegador, uma palavra comprida sem espaço (no nome de quem avisou ou da lista) quebra dentro da
+  // faixa, em vez de empurrar a linha para fora da tela.
+  flex: { flex: 1, minWidth: 0 },
   actions: { justifyContent: 'flex-end' },
 });

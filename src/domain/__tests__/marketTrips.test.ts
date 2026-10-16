@@ -7,6 +7,7 @@ import {
   tripActionLabel,
   tripAgo,
   tripBannerText,
+  tripButtonLabels,
   tripClock,
   tripListName,
   type AnnounceResult,
@@ -157,6 +158,30 @@ describe('tripBannerText', () => {
     expect(tripBannerText(blank, { userId: 'beto', now, withList: true })).toBe('Ana está indo ao mercado · há 12 min');
     expect(tripBannerText(blank, { userId: 'ana', now, withList: true })).toBe('Você avisou a casa às 10:32');
   });
+
+  it('o nome com um caractere de direção do texto não muda o resto da linha', () => {
+    const flipped = trip('r', created, { list: listOf({ name: '‮Feira', kind: 'mercado' }) });
+    expect(tripBannerText(flipped, { userId: 'beto', now, withList: true })).toBe('Ana está indo ao mercado · lista “Feira” · há 12 min');
+  });
+});
+
+describe('tripButtonLabels', () => {
+  const created = new Date(2026, 9, 13, 10, 32).toISOString();
+
+  it('para o leitor de tela: a lista de cada botão e, no "Encerrar", também a hora do aviso', () => {
+    expect(tripButtonLabels(trip('a', created))).toEqual({
+      end: 'Encerrar a ida das 10:32 da lista “Mercado”',
+      open: 'Abrir a lista “Mercado”',
+    });
+  });
+
+  it('o nome limpo como na linha; sem nome que se veja, só a hora no "Encerrar", e "Abrir a lista" com o título', () => {
+    expect(tripButtonLabels(trip('r', created, { list: listOf({ name: '‮Feira' }) })).open).toBe('Abrir a lista “Feira”');
+    expect(tripButtonLabels(trip('b', created, { list: listOf({ name: '​ ' }) }))).toEqual({
+      end: 'Encerrar a ida das 10:32',
+      open: undefined,
+    });
+  });
 });
 
 describe('tripListName', () => {
@@ -172,14 +197,46 @@ describe('tripListName', () => {
     expect(tripListName(`${'a'.repeat(38)} bbbbb`)).toBe(`“${'a'.repeat(38)}…”`);
   });
 
-  it('conta por letra, e não parte um emoji ao meio', () => {
+  it('conta um emoji como um caractere só', () => {
     expect(tripListName(`${'a'.repeat(38)}🛒🛒`)).toBe(`“${'a'.repeat(38)}🛒🛒”`);
     expect(tripListName(`${'a'.repeat(38)}🛒bbbbb`)).toBe(`“${'a'.repeat(38)}🛒…”`);
   });
 
-  it('só espaços: vazio', () => {
+  it('o corte não parte o que se vê como um caractere só: tom de pele, emoji de família, seletor, acento, bandeira', () => {
+    const a = (n: number) => 'a'.repeat(n);
+    // 👍 com tom de pele: fica de fora inteiro, e não o 👍 sem o tom.
+    expect(tripListName(`${a(38)}👍🏽bbb`)).toBe(`“${a(38)}…”`);
+    // A família é 👨, junção, 👩, junção, 👧: nada dela fica pela metade.
+    expect(tripListName(`${a(36)}👨‍👩‍👧bb`)).toBe(`“${a(36)}…”`);
+    // O coração com o seletor de emoji.
+    expect(tripListName(`${a(38)}❤️bb`)).toBe(`“${a(38)}…”`);
+    // O "e" com o acento separado (como alguns teclados escrevem o "é").
+    expect(tripListName(`${a(38)}ébb`)).toBe(`“${a(38)}…”`);
+    // Bandeira é um par de letras: meia bandeira não fica; uma inteira, sim.
+    expect(tripListName(`${a(38)}🇧🇷bbb`)).toBe(`“${a(38)}…”`);
+    expect(tripListName(`${a(37)}🇧🇷🇺🇸b`)).toBe(`“${a(37)}🇧🇷…”`);
+  });
+
+  it('limpa o nome como o aviso do servidor: os caracteres de direção do texto não viram o resto da linha', () => {
+    // Um "da direita para a esquerda" solto inverteria tudo o que vem depois na mesma linha (" · há 4 min").
+    expect(tripListName('‮Feira')).toBe('“Feira”');
+    expect(tripListName('Fei‮ra')).toBe('“Fei ra”');
+    expect(tripListName('⁧Feira⁩')).toBe('“Feira”');
+    expect(tripListName('‏Feira‎')).toBe('“Feira”');
+    // Controles e quebras de linha de outros tipos viram espaço.
+    expect(tripListName('Feira\u0085de\u0001sábado')).toBe('“Feira de sábado”');
+    // O nome escrito em hebraico ou árabe continua como está.
+    expect(tripListName('קניות')).toBe('“קניות”');
+  });
+
+  it('só espaços ou o que não se vê: vazio', () => {
     expect(tripListName('')).toBe('');
     expect(tripListName(' \n ')).toBe('');
+    expect(tripListName('​')).toBe('');
+    expect(tripListName('ㅤㅤ')).toBe('');
+    expect(tripListName('́')).toBe('');
+    expect(tripListName(' ‍️ ')).toBe('');
+    expect(tripListName('‮')).toBe('');
   });
 });
 
