@@ -1,9 +1,13 @@
 import { describe, expect, it } from '@jest/globals';
+import { readdirSync, readFileSync } from 'fs';
+import path from 'path';
 
 import {
   announceResultText,
   canAnnounceTrip,
   liveTrips,
+  PUSH_TEXT_HIDDEN,
+  PUSH_TEXT_INVISIBLE,
   tripActionLabel,
   tripAgo,
   tripBannerText,
@@ -12,6 +16,7 @@ import {
   tripListName,
   type AnnounceResult,
   type MarketTrip,
+  type Ranges,
 } from '../marketTrips';
 
 const at = (iso: string) => new Date(iso);
@@ -160,7 +165,7 @@ describe('tripBannerText', () => {
   });
 
   it('o nome com um caractere de direção do texto não muda o resto da linha', () => {
-    const flipped = trip('r', created, { list: listOf({ name: '‮Feira', kind: 'mercado' }) });
+    const flipped = trip('r', created, { list: listOf({ name: '\u202EFeira', kind: 'mercado' }) });
     expect(tripBannerText(flipped, { userId: 'beto', now, withList: true })).toBe('Ana está indo ao mercado · lista “Feira” · há 12 min');
   });
 });
@@ -176,8 +181,8 @@ describe('tripButtonLabels', () => {
   });
 
   it('o nome limpo como na linha; sem nome que se veja, só a hora no "Encerrar", e "Abrir a lista" com o título', () => {
-    expect(tripButtonLabels(trip('r', created, { list: listOf({ name: '‮Feira' }) })).open).toBe('Abrir a lista “Feira”');
-    expect(tripButtonLabels(trip('b', created, { list: listOf({ name: '​ ' }) }))).toEqual({
+    expect(tripButtonLabels(trip('r', created, { list: listOf({ name: '\u202EFeira' }) })).open).toBe('Abrir a lista “Feira”');
+    expect(tripButtonLabels(trip('b', created, { list: listOf({ name: '\u200B ' }) }))).toEqual({
       end: 'Encerrar a ida das 10:32',
       open: undefined,
     });
@@ -207,22 +212,29 @@ describe('tripListName', () => {
     // 👍 com tom de pele: fica de fora inteiro, e não o 👍 sem o tom.
     expect(tripListName(`${a(38)}👍🏽bbb`)).toBe(`“${a(38)}…”`);
     // A família é 👨, junção, 👩, junção, 👧: nada dela fica pela metade.
-    expect(tripListName(`${a(36)}👨‍👩‍👧bb`)).toBe(`“${a(36)}…”`);
+    expect(tripListName(`${a(36)}👨\u200D👩\u200D👧bb`)).toBe(`“${a(36)}…”`);
     // O coração com o seletor de emoji.
-    expect(tripListName(`${a(38)}❤️bb`)).toBe(`“${a(38)}…”`);
+    expect(tripListName(`${a(38)}❤\uFE0Fbb`)).toBe(`“${a(38)}…”`);
     // O "e" com o acento separado (como alguns teclados escrevem o "é").
-    expect(tripListName(`${a(38)}ébb`)).toBe(`“${a(38)}…”`);
+    expect(tripListName(`${a(38)}e\u0301bb`)).toBe(`“${a(38)}…”`);
     // Bandeira é um par de letras: meia bandeira não fica; uma inteira, sim.
     expect(tripListName(`${a(38)}🇧🇷bbb`)).toBe(`“${a(38)}…”`);
     expect(tripListName(`${a(37)}🇧🇷🇺🇸b`)).toBe(`“${a(37)}🇧🇷…”`);
   });
 
+  it('um nome que é um caractere só até o corte é cortado no limite, e não vira só reticências', () => {
+    const acute = String.fromCodePoint(0x301);
+    const zwj = String.fromCodePoint(0x200d);
+    expect(tripListName(`Z${acute.repeat(45)}`)).toBe(`“Z${acute.repeat(38)}…”`);
+    expect(tripListName(`a${zwj}`.repeat(25))).toBe(`“${`a${zwj}`.repeat(19)}a…”`);
+  });
+
   it('limpa o nome como o aviso do servidor: os caracteres de direção do texto não viram o resto da linha', () => {
     // Um "da direita para a esquerda" solto inverteria tudo o que vem depois na mesma linha (" · há 4 min").
-    expect(tripListName('‮Feira')).toBe('“Feira”');
-    expect(tripListName('Fei‮ra')).toBe('“Fei ra”');
-    expect(tripListName('⁧Feira⁩')).toBe('“Feira”');
-    expect(tripListName('‏Feira‎')).toBe('“Feira”');
+    expect(tripListName('\u202EFeira')).toBe('“Feira”');
+    expect(tripListName('Fei\u202Era')).toBe('“Fei ra”');
+    expect(tripListName('\u2067Feira\u2069')).toBe('“Feira”');
+    expect(tripListName('\u200FFeira\u200E')).toBe('“Feira”');
     // Controles e quebras de linha de outros tipos viram espaço.
     expect(tripListName('Feira\u0085de\u0001sábado')).toBe('“Feira de sábado”');
     // O nome escrito em hebraico ou árabe continua como está.
@@ -232,11 +244,11 @@ describe('tripListName', () => {
   it('só espaços ou o que não se vê: vazio', () => {
     expect(tripListName('')).toBe('');
     expect(tripListName(' \n ')).toBe('');
-    expect(tripListName('​')).toBe('');
-    expect(tripListName('ㅤㅤ')).toBe('');
-    expect(tripListName('́')).toBe('');
-    expect(tripListName(' ‍️ ')).toBe('');
-    expect(tripListName('‮')).toBe('');
+    expect(tripListName('\u200B')).toBe('');
+    expect(tripListName('\u3164\u3164')).toBe('');
+    expect(tripListName('\u0301')).toBe('');
+    expect(tripListName(' \u200D\uFE0F ')).toBe('');
+    expect(tripListName('\u202E')).toBe('');
   });
 });
 
@@ -308,5 +320,62 @@ describe('o botão da lista', () => {
     expect(canAnnounceTrip(1)).toBe(false);
     expect(canAnnounceTrip(2)).toBe(true);
     expect(canAnnounceTrip(5)).toBe(true);
+  });
+});
+
+describe('o nome limpo como no aviso do banco (push_text)', () => {
+  // A definição mais nova de push_text nas migrações, e as duas classes de caracteres dela, na ordem em que
+  // aparecem: a do que não conta como visível, depois a do que vira espaço.
+  const created = /create (or replace )?function public\.push_text\(/g;
+  const dir = path.join(__dirname, '../../../supabase/migrations');
+  const sources = readdirSync(dir)
+    .filter((name) => name.endsWith('.sql'))
+    .sort()
+    .map((name) => readFileSync(path.join(dir, name), 'utf8'));
+  const sql = sources.filter((text) => new RegExp(created.source).test(text)).at(-1) ?? '';
+  const start = [...sql.matchAll(created)].at(-1)?.index ?? 0;
+  const body = sql.slice(start, sql.indexOf('$$;', start));
+  const classes = [...body.matchAll(/'\[([^\]]+)\]\+'/g)].map((match) => match[1]);
+  // A barra das sequências de escape do Postgres (\u e \U), sem escrever uma barra aqui.
+  const backslash = String.fromCharCode(92);
+
+  /** Os códigos de uma classe do regex do Postgres: caracteres, \uXXXX, \UXXXXXXXX e faixas com hífen. */
+  function sqlCodes(sqlClass: string): number[] {
+    const codes: number[] = [];
+    let i = 0;
+    const next = (): number => {
+      if (sqlClass[i] === backslash) {
+        const digits = sqlClass[i + 1] === 'U' ? 8 : 4;
+        const code = parseInt(sqlClass.slice(i + 2, i + 2 + digits), 16);
+        i += 2 + digits;
+        return code;
+      }
+      const code = sqlClass.codePointAt(i)!;
+      i += code > 0xffff ? 2 : 1;
+      return code;
+    };
+    while (i < sqlClass.length) {
+      const first = next();
+      let last = first;
+      if (sqlClass[i] === '-') {
+        i++;
+        last = next();
+      }
+      for (let code = first; code <= last; code++) codes.push(code);
+    }
+    return codes.sort((a, b) => a - b);
+  }
+  const appCodes = (ranges: Ranges) => ranges.flatMap(([first, last]) => Array.from({ length: last - first + 1 }, (_, n) => first + n));
+
+  it('acha as duas classes do push_text', () => {
+    expect(classes).toHaveLength(2);
+  });
+
+  it('o que vira espaço é o mesmo do banco, mais o U+0000 (que o texto do Postgres nem guarda)', () => {
+    expect(appCodes(PUSH_TEXT_HIDDEN)).toEqual([0, ...sqlCodes(classes[1])]);
+  });
+
+  it('o que não conta como visível é o mesmo do banco, menos o espaço (que o app trata à parte)', () => {
+    expect(appCodes(PUSH_TEXT_INVISIBLE)).toEqual(sqlCodes(classes[0]).filter((code) => code !== 0x20));
   });
 });
