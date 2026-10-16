@@ -326,13 +326,14 @@ describe('o botão da lista', () => {
 describe('o nome limpo como no aviso do banco (push_text)', () => {
   // A definição mais nova de push_text nas migrações, e as duas classes de caracteres dela, na ordem em que
   // aparecem: a do que não conta como visível, depois a do que vira espaço.
-  const created = /create (or replace )?function public\.push_text\(/g;
+  // Em maiúsculas ou minúsculas, com qualquer espaço: uma migração nova que a escreva de outro jeito também vale.
+  const created = /create\s+(or\s+replace\s+)?function\s+public\.push_text\s*\(/gi;
   const dir = path.join(__dirname, '../../../supabase/migrations');
   const sources = readdirSync(dir)
     .filter((name) => name.endsWith('.sql'))
     .sort()
     .map((name) => readFileSync(path.join(dir, name), 'utf8'));
-  const sql = sources.filter((text) => new RegExp(created.source).test(text)).at(-1) ?? '';
+  const sql = sources.filter((text) => new RegExp(created.source, 'i').test(text)).at(-1) ?? '';
   const start = [...sql.matchAll(created)].at(-1)?.index ?? 0;
   const body = sql.slice(start, sql.indexOf('$$;', start));
   const classes = [...body.matchAll(/'\[([^\]]+)\]\+'/g)].map((match) => match[1]);
