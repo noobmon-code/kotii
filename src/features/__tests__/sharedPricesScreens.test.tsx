@@ -285,6 +285,18 @@ describe('tela do produto: "Visto em outras casas"', () => {
     expect(all).not.toContain('Ver mais');
   });
 
+  it('para o leitor de tela, cada "Ver mais" diz de qual das duas listas é', async () => {
+    mockQueries.shared = loaded([
+      ...Array.from({ length: 6 }, (_, n) => seenInMine(`1000000000000${n}`, `MEU MERCADO ${n + 1}`, 20 + n, 4)),
+      ...Array.from({ length: 6 }, (_, n) => seen(`2000000000000${n}`, `OUTRO MERCADO ${n + 1}`, 30 + n, 4)),
+    ]);
+    await mount(<ProductScreen />);
+    const more = renderer!.root.findAll(
+      (node) => typeof node.type === 'string' && node.props.accessibilityRole === 'button' && textOf(node) === 'Ver mais',
+    );
+    expect(more.map((node) => node.props.accessibilityLabel)).toEqual(['Ver mais preços nos seus mercados', 'Ver mais preços em outros mercados']);
+  });
+
   it('só com os preços e os mercados da casa em dia: durante uma busca nova, ou depois de uma que falhou, a seção espera', async () => {
     const prices = [own('mercadinho', 25, 20)].map(({ receipt_id: _receipt, ...price }): LatestPrice => price);
     const waiting: [keyof typeof mockQueries, Query][] = [
