@@ -14,6 +14,7 @@ import type { CartPantryEntry } from '@/domain/cartPantry';
 import { LinkIndex, type ListLink, type OpenListItem } from '@/domain/listLinks';
 import { PRICE_ALERT_HISTORY_DAYS } from '@/domain/priceAlert';
 import { toPurchases, type PurchaseLine } from '@/domain/priceHistory';
+import { listsFor, newListKind, PANTRY_LIST_GONE, type ListChoice } from '@/domain/pantryList';
 import { PRODUCT_MERGED_AWAY } from '@/domain/productMerge';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
@@ -32,7 +33,7 @@ import type {
 } from '@/lib/types';
 
 import { isMissingFunction } from './missingSchema';
-import { LISTED_PRODUCT_SOURCES, withFreshProducts } from './productMerge';
+import { isProductMergedAway, LISTED_PRODUCT_SOURCES, withFreshProducts } from './productMerge';
 
 // ---------------------------------------------------------------------------
 // Listas
@@ -400,6 +401,8 @@ function useAddToOpenList<T extends NewListItem>(add: (queryClient: QueryClient,
       queryClient.invalidateQueries({ queryKey: ['lists'] });
       queryClient.invalidateQueries({ queryKey: ['listItems', list.id] });
     },
+    // Na falha (a lista foi arquivada no meio, por exemplo), o próximo menu já parte das listas de agora.
+    onError: () => queryClient.invalidateQueries({ queryKey: ['lists'] }),
   });
 }
 
@@ -410,6 +413,84 @@ function useAddToOpenList<T extends NewListItem>(add: (queryClient: QueryClient,
  */
 export function useAddToMarketList() {
   return useAddToOpenList(async (queryClient, item: NewListItem) => addItemOnce(queryClient, await openMarketList(), item));
+}
+
+/**
+ * O item que acabou na despensa. `listId`: a lista que a pessoa escolheu (sem ela, a mais nova). `shownListId`: a
+ * "última lista" que o menu mostrou; vale enquanto estiver aberta, para o item ir para a lista que o menu disse,
+ * mesmo que outra tenha sido criada depois em outro aparelho.
+ */
+export interface PantryListItem extends NewListItem {
+  listId?: string;
+  shownListId?: string;
+}
+
+/**
+ * Despensa, "acabou": põe o item na lista escolhida ou, sem escolha, na lista
+ * aberta mais nova em que ele cabe (listsFor), lida agora no servidor: a que
+ * outra pessoa criou há pouco também conta. Sem nenhuma, a de mercado (ou a
+ * de farmácia, para remédio) de sempre, achada ou criada sob a trava da casa.
+ *
+ * O item entra por add_to_list, que só grava se a lista ainda está aberta,
+ * com a linha dela travada: arquivar no meio espera o item entrar. A escolhida
+ * que já não está aberta não recebe nada (PANTRY_LIST_GONE); a que o app
+ * escolheu e foi arquivada no meio dá lugar à próxima mais nova. Sem a função
+ * (banco de antes da migração, ou o cache do PostgREST de antes dela), o
+ * caminho de antes: addItemOnce, sem a trava.
+ */
+async function addToPantryList(queryClient: QueryClient, { listId, shownListId, ...item }: PantryListItem): Promise<ListedItem> {
+  const tried = new Set<string>();
+  for (;;) {
+    const open = unwrap(
+      await supabase.from('shopping_lists').select('id, name, kind, created_at').is('archived_at', null).order('created_at', { ascending: false }),
+    ) as ListChoice[];
+    let list: { id: string; name: string } | undefined;
+    if (listId) {
+      list = open.find((l) => l.id === listId);
+      if (!list) throw new Error(PANTRY_LIST_GONE);
+    } else {
+      const fitting = listsFor(item.category, open).filter((l) => !tried.has(l.id));
+      list = fitting.find((l) => l.id === shownListId) ?? fitting[0];
+    }
+    list ??= newListKind(item.category) === 'farmacia' ? await openPharmacyList() : await openMarketList();
+    const target = { id: list.id, name: list.name };
+    const added = await supabase
+      .rpc('add_to_list', {
+        p_list_id: target.id,
+        p_name: item.name,
+        p_category: item.category,
+        p_product_id: item.productId,
+        p_quantity: item.quantity,
+        p_unit: item.unit,
+      })
+      .single();
+    if (added.error && isMissingFunction(added.error, 'add_to_list')) return addItemOnce(queryClient, target, item);
+    if (added.error && isListNotOpen(added.error)) {
+      // Arquivada entre a leitura e a trava. A escolhida não muda sozinha; a do app, sim (uma vez por lista).
+      if (listId || tried.has(target.id)) throw new Error(PANTRY_LIST_GONE);
+      tried.add(target.id);
+      if (tried.size >= PANTRY_LIST_ATTEMPTS) throw new Error(PANTRY_LIST_GONE);
+      continue;
+    }
+    // O produto foi juntado com outro em outro aparelho (como em withFreshProducts).
+    if (added.error && isProductMergedAway(added.error)) {
+      await Promise.all(LISTED_PRODUCT_SOURCES.map((key) => queryClient.invalidateQueries({ queryKey: [key] })));
+      throw new Error(PRODUCT_MERGED_AWAY);
+    }
+    const row = unwrap(added) as { list_id: string; list_name: string; added: boolean };
+    return { id: row.list_id, name: row.list_name, added: row.added };
+  }
+}
+
+/** Quantas listas o app tenta quando a que ele escolheu é arquivada no meio. */
+const PANTRY_LIST_ATTEMPTS = 3;
+
+/** add_to_list: a lista não está mais aberta (P0002). */
+const isListNotOpen = (error: unknown) => (error as { code?: unknown } | null)?.code === 'P0002';
+
+/** O item que acabou na despensa vai para a última lista criada, ou para a que a pessoa escolheu. */
+export function useAddToPantryList() {
+  return useAddToOpenList(addToPantryList);
 }
 
 /** O remédio que vai para a lista da farmácia; `altName`: o mesmo item com o nome de quem toma (ver onPharmacyList). */

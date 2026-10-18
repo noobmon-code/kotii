@@ -10,7 +10,7 @@
 import { joinNames } from './cartPantry';
 import { getCategory } from './categories';
 import { addDays, formatShortDate, toISODate } from './dates';
-import { describeMonthDelta, financeCategoryOfProduct, monthLabel, monthRange, shiftMonth } from './finance';
+import { describeMonthDelta, financeCategoryOfProduct, monthLabel, monthRange, monthShortLabel, shiftMonth } from './finance';
 import { listNameKey } from './listLinks';
 import { marketChange, type ChangePurchase, type MarketChange } from './marketChange';
 import { formatBRL, formatQuantity } from './money';
@@ -746,6 +746,138 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
           },
     change,
     emptyTitle: total.emptyTitle,
+  };
+}
+
+/** Quantos meses o cartão de tendência mostra, contando o da tela: as notas lidas vão até o primeiro deles. */
+export const MARKET_TREND_MONTHS = 6;
+
+/** O que a barra e o leitor de tela dizem do mês sem ida ao mercado (sem nota, ou só com farmácia ou rascunho). */
+const NO_TRIP = 'sem ida';
+const NO_TRIP_SPOKEN = 'sem ida ao mercado';
+
+/** Um mês do cartão de tendência. */
+export interface MarketTrendBar {
+  month: string;
+  /** "mai" */
+  label: string;
+  /**
+   * O ano, só quando a janela atravessa o ano e só no primeiro mês de cada ano nela ("2025" em novembro,
+   * "2026" em janeiro); null nos outros.
+   */
+  year: string | null;
+  /** "hoje" no mês corrente, que ainda não fechou e conta só até hoje; null nos outros. */
+  note: string | null;
+  cents: number;
+  /** "R$ 1.240,00"; "sem ida ao mercado" no mês sem ida (aparece como zero, não some). */
+  amount: string;
+  /** O valor curto que cabe embaixo da barra: "840", "1,2 mil", "sem ida". */
+  short: string;
+  /** O mês teve ida ao mercado (nota confirmada com item de mercado). */
+  hasTrips: boolean;
+  /** O mês corrente, contado só até hoje. */
+  partial: boolean;
+}
+
+export interface MarketTrend {
+  /** "Últimos 6 meses", "6 meses até agosto", "Hortifrúti nos últimos 6 meses". */
+  title: string;
+  /** Do mais antigo para o mais recente (o da tela). */
+  bars: MarketTrendBar[];
+  /** A maior barra (ou a média, se for maior): é a altura cheia do gráfico. */
+  maxCents: number;
+  /** A média dos meses fechados com ida ao mercado; null sem nenhum. */
+  averageCents: number | null;
+  /** "Média dos meses fechados: R$ 1.100,00" */
+  average: string | null;
+  /** "2 meses sem ida ao mercado ficam fora da média."; null quando não há. */
+  averageNote: string | null;
+  /** Algum mês da janela teve ida ao mercado: sem nenhuma, a tela não mostra o cartão. */
+  hasAny: boolean;
+  /**
+   * O gráfico, para o leitor de tela: cada mês com o valor, e a média. Sem o título, que a tela escreve logo
+   * acima e o leitor já lê. Com o ano em cada mês quando a janela atravessa o ano.
+   */
+  accessibilityLabel: string;
+}
+
+/** O valor curto, embaixo da barra: o cartão já diz que é em reais. "840", "1,2 mil", "12 mil". */
+export function shortAmount(amountCents: number): string {
+  const reais = Math.round(amountCents / 100);
+  if (reais < 1000) return String(reais);
+  const thousands = reais / 1000;
+  const text = thousands < 10 ? thousands.toFixed(1).replace(/\.0$/, '').replace('.', ',') : String(Math.round(thousands));
+  return `${text} mil`;
+}
+
+/**
+ * Como o mercado andou nos `MARKET_TREND_MONTHS` meses que terminam no mês da tela: o total pago de cada mês
+ * (a conta do cabeçalho, a de `paidBetween`) ou, com `category`, a soma dos itens dela pelo valor impresso (a
+ * conta da linha da categoria). As mesmas regras da tela: só as idas ao mercado, farmácia fora, a data da
+ * compra no fuso do aparelho e, no mês corrente, só até hoje (a nota de data futura fica de fora, como no
+ * cabeçalho). Mês sem ida aparece como "sem ida", com barra zero. A média é só dos meses fechados com ida: o
+ * mês corrente está pela metade, e um mês sem nota nenhuma diz mais sobre o uso do app do que sobre o gasto
+ * (puxaria a média para baixo). Cada nota é vista uma vez: a data e o dinheiro dela são contados numa passada só.
+ */
+export function marketTrend(receipts: MarketTotalReceipt[], month: string, today: string, category: string | null = null): MarketTrend {
+  const currentMonth = today.slice(0, 7);
+  const first = shiftMonth(month, -(MARKET_TREND_MONTHS - 1));
+  const windows = Array.from({ length: MARKET_TREND_MONTHS }, (_, index) => {
+    const m = shiftMonth(first, index);
+    return { month: m, end: periodEnd(m, today), cents: 0, trips: 0 };
+  });
+  const byMonth = new Map(windows.map((window) => [window.month, window]));
+  for (const receipt of receipts) {
+    if (receipt.status !== 'confirmed') continue;
+    const date = purchasedOn(receipt);
+    const window = byMonth.get(date.slice(0, 7));
+    // Fora da janela, ou no mês corrente com data depois de hoje.
+    if (!window || date >= window.end) continue;
+    const paid = receiptMoney(receipt);
+    if (!paid.trip) continue;
+    window.trips += 1;
+    if (category == null) window.cents += paid.paidCents;
+    else for (const { category: key, value } of paid.market) if (key === category) window.cents += value;
+  }
+
+  const crossesYear = first.slice(0, 4) !== month.slice(0, 4);
+  const bars = windows.map(({ month: m, cents: value, trips }, index): MarketTrendBar => {
+    const hasTrips = trips > 0;
+    return {
+      month: m,
+      label: monthShortLabel(m),
+      year: crossesYear && (index === 0 || m.endsWith('-01')) ? m.slice(0, 4) : null,
+      note: m === currentMonth ? 'hoje' : null,
+      cents: hasTrips ? value : 0,
+      amount: hasTrips ? money(value) : NO_TRIP_SPOKEN,
+      short: hasTrips ? shortAmount(value) : NO_TRIP,
+      hasTrips,
+      partial: m === currentMonth,
+    };
+  });
+  const closed = bars.filter((bar) => !bar.partial);
+  const counted = closed.filter((bar) => bar.hasTrips);
+  const averageCents = counted.length ? Math.round(counted.reduce((sum, bar) => sum + bar.cents, 0) / counted.length) : null;
+  const skipped = closed.length - counted.length;
+  const average = averageCents == null ? null : `Média dos meses fechados: ${money(averageCents)}`;
+  const averageNote =
+    averageCents != null && skipped > 0
+      ? plural(skipped, `mês ${NO_TRIP_SPOKEN} fica fora da média.`, `meses ${NO_TRIP_SPOKEN} ficam fora da média.`)
+      : null;
+  const span = month === currentMonth ? `últimos ${MARKET_TREND_MONTHS} meses` : `${MARKET_TREND_MONTHS} meses até ${monthName(month)}`;
+  const title = category ? `${getCategory(category).label} ${month === currentMonth ? 'nos' : 'em'} ${span}` : capitalize(span);
+  // Na virada do ano, "dezembro de 2025": sem o ano, dezembro e janeiro lado a lado confundem.
+  const spokenMonth = (m: string) => (crossesYear ? monthLabel(m) : monthName(m));
+  const spokenBars = bars.map((bar) => `${capitalize(spokenMonth(bar.month))}${bar.partial ? ' até hoje' : ''}: ${bar.amount}`);
+  return {
+    title,
+    bars,
+    maxCents: Math.max(0, averageCents ?? 0, ...bars.map((bar) => bar.cents)),
+    averageCents,
+    average,
+    averageNote,
+    hasAny: bars.some((bar) => bar.hasTrips),
+    accessibilityLabel: [`${spokenBars.join('; ')}`, average, averageNote].filter(Boolean).join('. '),
   };
 }
 
