@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { readFileSync } from 'fs';
+import { readdirSync, readFileSync } from 'fs';
 import path from 'path';
 
 import { CATEGORIES } from '../categories';
@@ -263,7 +263,14 @@ describe('de quem é o mercado', () => {
 });
 
 describe('o que se compartilha', () => {
-  const migration = readFileSync(path.resolve(__dirname, '../../../supabase/migrations/20261014120000_shared_prices.sql'), 'utf8');
+  // A definição em vigor do gatilho: a da última migração que o (re)cria.
+  const migrations = path.resolve(__dirname, '../../../supabase/migrations');
+  const migration = readdirSync(migrations)
+    .filter((name) => name.endsWith('.sql'))
+    .sort()
+    .map((name) => readFileSync(path.join(migrations, name), 'utf8'))
+    .filter((sql) => /function public.share_receipt_prices()/.test(sql) && sql.includes('v_shared constant'))
+    .at(-1)!;
   /** A lista que o gatilho declara com esse nome: v_nome constant text[] := array['a', 'b', …]. */
   const sqlList = (name: string) => {
     const declared = new RegExp(`${name} constant text\\[\\] := array\\[([^\\]]*)\\]`).exec(migration);
