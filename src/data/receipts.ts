@@ -3,7 +3,7 @@
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { localDateTimeToISO, nfceItemsToDraft, type NfceItem, type NfceQr } from '@/domain/nfce';
+import { nfceItemsToDraft, nfceReceiptRow, type NfceItem, type NfceQr } from '@/domain/nfce';
 import type { ConfirmItem } from '@/domain/receiptReview';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Receipt, ReceiptItem, Unit } from '@/lib/types';
@@ -140,6 +140,8 @@ interface NfcePageResult {
   issuedAtLocal: string | null;
   total: number | null;
   items: NfceItem[];
+  /** A leitura que a função gravou no servidor (receipt_reads); ausente na função de antes, nula se não deu para gravar. */
+  readId?: string | null;
 }
 
 /** Mesmo nome de loja, sem caixa nem espaços nas pontas (num ILIKE, "%", "_" e "*" seriam curingas). */
@@ -227,19 +229,9 @@ export function useImportNfce() {
       );
 
       const storeId = await findOrCreateStore({ ...page.store, cnpj: page.store.cnpj ?? qr.cnpj });
+      // Com o id da leitura do servidor, quando a função devolveu um: é o que deixa a nota compartilhar preço.
       const receipt = unwrap(
-        await supabase
-          .from('receipts')
-          .insert({
-            store_id: storeId,
-            purchased_at: (page.issuedAtLocal && localDateTimeToISO(page.issuedAtLocal)) ?? new Date().toISOString(),
-            total: page.total,
-            access_key: qr.accessKey,
-            source: 'qrcode',
-            status: 'draft',
-          })
-          .select('id')
-          .single(),
+        await supabase.from('receipts').insert(nfceReceiptRow(page, qr, storeId)).select('id').single(),
       ) as { id: string };
       const items = nfceItemsToDraft(page.items, aliases).map((item) => ({ ...item, receipt_id: receipt.id }));
       const { error: itemsError } = await supabase.from('receipt_items').insert(items);
