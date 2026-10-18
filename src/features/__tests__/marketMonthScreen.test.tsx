@@ -811,12 +811,14 @@ describe('tendência dos últimos meses', () => {
   it('um cartão com os seis meses, o corrente "até hoje" e a média dos fechados, antes de "O que mudou"', async () => {
     const text = await mount();
     expect(charts()).toEqual([
-      'Últimos 6 meses. maio: sem nota de mercado; junho: sem nota de mercado; julho: sem nota de mercado; agosto: sem nota de mercado; ' +
-        'setembro: R$ 130,00; outubro até hoje: R$ 270,00. Média dos meses fechados: R$ 130,00. ' +
-        '4 meses sem nota de mercado ficam fora da média.',
+      'Maio: sem ida ao mercado; Junho: sem ida ao mercado; Julho: sem ida ao mercado; Agosto: sem ida ao mercado; ' +
+        'Setembro: R$ 130,00; Outubro até hoje: R$ 270,00. Média dos meses fechados: R$ 130,00. ' +
+        '4 meses sem ida ao mercado ficam fora da média.',
     ]);
-    expect(text).toContain(['mai', 'sem notas', 'jun', 'sem notas', 'jul', 'sem notas', 'ago', 'sem notas', 'set', '130', 'out', '270', 'até hoje'].join('\n'));
+    expect(text).toContain(['Últimos 6 meses', 'mai', 'sem ida', 'jun', 'sem ida', 'jul', 'sem ida', 'ago', 'sem ida', 'set', '130', 'out', '270', 'hoje'].join('\n'));
     expect(text).toContain('Média dos meses fechados: R$ 130,00');
+    // O título é lido uma vez, como cabeçalho; a imagem do gráfico começa direto nos meses.
+    expect(renderer!.root.findAll((node) => node.props.accessibilityRole === 'header' && node.props.children === 'Últimos 6 meses').length).toBeGreaterThan(0);
     expect(text.indexOf('Últimos 6 meses')).toBeLessThan(text.indexOf('O que mudou'));
   });
 
@@ -826,9 +828,9 @@ describe('tendência dos últimos meses', () => {
     await press('Grãos, massas e cereais: R$ 74,00, 28% dos itens, R$ 44,00 a mais que até o dia 13 de setembro');
     expect(charts()).toHaveLength(2);
     expect(charts()[1]).toBe(
-      'Grãos, massas e cereais nos últimos 6 meses. maio: sem nota de mercado; junho: sem nota de mercado; julho: sem nota de mercado; ' +
-        'agosto: sem nota de mercado; setembro: R$ 30,00; outubro até hoje: R$ 74,00. Média dos meses fechados: R$ 30,00. ' +
-        '4 meses sem nota de mercado ficam fora da média.',
+      'Maio: sem ida ao mercado; Junho: sem ida ao mercado; Julho: sem ida ao mercado; ' +
+        'Agosto: sem ida ao mercado; Setembro: R$ 30,00; Outubro até hoje: R$ 74,00. Média dos meses fechados: R$ 30,00. ' +
+        '4 meses sem ida ao mercado ficam fora da média.',
     );
     const text = page();
     // Entre o selo da categoria e a lista dos itens dela (o Arroz também aparece antes, em O que mudou).
@@ -843,7 +845,7 @@ describe('tendência dos últimos meses', () => {
     const text = await mount();
     expect(text).toContain('Nenhuma nota de mercado em outubro');
     expect(charts()).toHaveLength(1);
-    expect(charts()[0]).toContain('setembro: R$ 30,00; outubro até hoje: sem nota de mercado');
+    expect(charts()[0]).toContain('Setembro: R$ 30,00; Outubro até hoje: sem ida ao mercado');
   });
 
   it('sem nota nenhuma nos seis meses, nada de cartão vazio', async () => {

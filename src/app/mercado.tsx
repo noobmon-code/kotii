@@ -70,10 +70,10 @@ export default function MarketMonthScreen() {
   const summary = useMemo(() => (receipts.data ? marketMonth(receipts.data, month, today) : null), [receipts.data, month, today]);
   const trend = useMemo(() => (receipts.data ? marketTrend(receipts.data, month, today) : null), [receipts.data, month, today]);
   const chosen = summary?.categories.some((c) => c.key === category) ? category : null;
-  // A categoria escolhida, nos mesmos meses: como ela andou.
+  // A categoria escolhida, nos mesmos meses: como ela andou. Só os itens mostram o cartão, e só aí a conta é feita.
   const categoryTrend = useMemo(
-    () => (receipts.data && chosen ? marketTrend(receipts.data, month, today, chosen) : null),
-    [receipts.data, month, today, chosen],
+    () => (receipts.data && chosen && view === 'itens' ? marketTrend(receipts.data, month, today, chosen) : null),
+    [receipts.data, month, today, chosen, view],
   );
 
   function goTo(target: string) {

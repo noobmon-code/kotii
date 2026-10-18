@@ -49,7 +49,7 @@ const receipt = (purchasedAt: string, lines: MarketLine[], partial: Partial<Mark
 const noon = (date: string) => `${date}T12:00:00-03:00`;
 
 describe('tendência do mercado', () => {
-  it('seis meses, do mais antigo ao da tela; mês sem nota aparece como "sem notas" e fica fora da média', () => {
+  it('seis meses, do mais antigo ao da tela; mês sem ida aparece como "sem ida" e fica fora da média', () => {
     const receipts = [
       receipt(noon('2026-05-10'), [line('Arroz', 'graos', 100)]),
       // Junho sem nota nenhuma.
@@ -63,20 +63,21 @@ describe('tendência do mercado', () => {
     expect(trend.bars.map((bar) => bar.month)).toEqual(['2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10']);
     expect(trend.bars.map((bar) => bar.label)).toEqual(['mai', 'jun', 'jul', 'ago', 'set', 'out']);
     expect(trend.bars.map((bar) => bar.cents)).toEqual([10000, 0, 20000, 30000, 15000, 8000]);
-    expect(trend.bars[1]).toMatchObject({ hasNotes: false, amount: 'sem notas', short: 'sem notas', partial: false });
+    expect(trend.bars[1]).toMatchObject({ hasTrips: false, amount: 'sem ida ao mercado', short: 'sem ida', partial: false, year: null });
     // O mês corrente vem marcado e só até hoje.
-    expect(trend.bars[5]).toMatchObject({ partial: true, note: 'até hoje', amount: 'R$ 80,00', short: '80' });
+    expect(trend.bars[5]).toMatchObject({ partial: true, note: 'hoje', amount: 'R$ 80,00', short: '80' });
     expect(trend.bars.slice(0, 5).every((bar) => bar.note === null && !bar.partial)).toBe(true);
     // Média dos meses fechados com nota: maio, julho, agosto e setembro (junho fora, outubro pela metade).
     expect(trend.averageCents).toBe(18750);
     expect(trend.average).toBe('Média dos meses fechados: R$ 187,50');
-    expect(trend.averageNote).toBe('1 mês sem nota de mercado fica fora da média.');
+    expect(trend.averageNote).toBe('1 mês sem ida ao mercado fica fora da média.');
     expect(trend.maxCents).toBe(30000);
     expect(trend.title).toBe('Últimos 6 meses');
     expect(trend.hasAny).toBe(true);
     expect(trend.accessibilityLabel).toBe(
-      'Últimos 6 meses. maio: R$ 100,00; junho: sem nota de mercado; julho: R$ 200,00; agosto: R$ 300,00; setembro: R$ 150,00; ' +
-        'outubro até hoje: R$ 80,00. Média dos meses fechados: R$ 187,50. 1 mês sem nota de mercado fica fora da média.',
+      // Sem o título, que a tela escreve logo acima.
+      'Maio: R$ 100,00; Junho: sem ida ao mercado; Julho: R$ 200,00; Agosto: R$ 300,00; Setembro: R$ 150,00; ' +
+        'Outubro até hoje: R$ 80,00. Média dos meses fechados: R$ 187,50. 1 mês sem ida ao mercado fica fora da média.',
     );
   });
 
@@ -108,7 +109,13 @@ describe('tendência do mercado', () => {
     expect(across.bars.some((bar) => bar.partial)).toBe(false);
     expect(across.title).toBe('6 meses até março');
     expect(across.averageCents).toBe(5000);
-    expect(across.averageNote).toBe('4 meses sem nota de mercado ficam fora da média.');
+    expect(across.averageNote).toBe('4 meses sem ida ao mercado ficam fora da média.');
+    // O ano aparece no primeiro mês de cada ano da janela, e o leitor de tela diz o ano de cada mês.
+    expect(across.bars.map((bar) => bar.year)).toEqual(['2025', null, null, '2026', null, null]);
+    expect(across.accessibilityLabel.startsWith('Outubro de 2025: sem ida ao mercado; ')).toBe(true);
+    expect(across.accessibilityLabel).toContain('Dezembro de 2025: R$ 40,00; Janeiro de 2026: R$ 60,00; ');
+    // Dentro de um ano só, nada de ano.
+    expect(trend.bars.every((bar) => bar.year === null)).toBe(true);
   });
 
   it('mês corrente: só até hoje; a nota com data depois de hoje fica de fora, como no cabeçalho', () => {
@@ -122,7 +129,7 @@ describe('tendência do mercado', () => {
     const today = '2026-10-13';
     const trend = marketTrend(receipts, '2026-10', today);
     const current = trend.bars.at(-1)!;
-    expect(current).toMatchObject({ cents: 4200, partial: true, note: 'até hoje' });
+    expect(current).toMatchObject({ cents: 4200, partial: true, note: 'hoje' });
     // A barra do mês é o total do cabeçalho, das mesmas notas.
     expect(current.cents).toBe(marketMonth(receipts, '2026-10', today).totalCents);
     // Só o mês corrente: não há mês fechado com nota, então não há média.
@@ -141,7 +148,7 @@ describe('tendência do mercado', () => {
     const receipts = [
       // 100 de mercado e 50 de remédio, pagos 135: o desconto de 15 se reparte, 10 no mercado.
       receipt(noon('2026-09-10'), [line('Carne', 'carnes', 100), line('Dipirona', 'medicamentos', 50)], { total: 135 }),
-      // Nota só de farmácia não é ida ao mercado: agosto fica sem notas.
+      // Nota só de farmácia não é ida ao mercado: agosto fica sem ida.
       receipt(noon('2026-08-10'), [line('Dipirona', 'medicamentos', 20)]),
       // Rascunho não conta.
       receipt(noon('2026-07-10'), [line('Arroz', 'graos', 99)], { status: 'draft' }),
@@ -152,8 +159,8 @@ describe('tendência do mercado', () => {
     const byMonth = Object.fromEntries(trend.bars.map((bar) => [bar.month, bar]));
     expect(byMonth['2026-09'].cents).toBe(9000);
     expect(byMonth['2026-09'].cents).toBe(marketMonth(receipts, '2026-09', '2026-10-13').totalCents);
-    expect(byMonth['2026-08']).toMatchObject({ hasNotes: false, cents: 0, amount: 'sem notas' });
-    expect(byMonth['2026-07']).toMatchObject({ hasNotes: false, cents: 0 });
+    expect(byMonth['2026-08']).toMatchObject({ hasTrips: false, cents: 0, amount: 'sem ida ao mercado', short: 'sem ida' });
+    expect(byMonth['2026-07']).toMatchObject({ hasTrips: false, cents: 0 });
     expect(byMonth['2026-06'].cents).toBe(2500);
   });
 
@@ -168,24 +175,24 @@ describe('tendência do mercado', () => {
     const trend = marketTrend(receipts, '2026-10', today, 'hortifruti');
     const byMonth = Object.fromEntries(trend.bars.map((bar) => [bar.month, bar]));
     // Agosto: o valor impresso, sem a parte do desconto do total (é a conta da linha da categoria).
-    expect(byMonth['2026-08']).toMatchObject({ cents: 1200, amount: 'R$ 12,00', hasNotes: true });
-    // Setembro teve ida, mas nada de hortifrúti: zero, não "sem notas".
-    expect(byMonth['2026-09']).toMatchObject({ cents: 0, amount: 'R$ 0,00', short: '0', hasNotes: true });
-    expect(byMonth['2026-07']).toMatchObject({ hasNotes: false, amount: 'sem notas' });
+    expect(byMonth['2026-08']).toMatchObject({ cents: 1200, amount: 'R$ 12,00', hasTrips: true });
+    // Setembro teve ida, mas nada de hortifrúti: zero, não "sem ida".
+    expect(byMonth['2026-09']).toMatchObject({ cents: 0, amount: 'R$ 0,00', short: '0', hasTrips: true });
+    expect(byMonth['2026-07']).toMatchObject({ hasTrips: false, short: 'sem ida' });
     expect(byMonth['2026-10']).toMatchObject({ cents: 1800, partial: true });
     // A barra do mês é a linha da categoria na tela.
     expect(byMonth['2026-10'].cents).toBe(marketMonth(receipts, '2026-10', today).categories.find((c) => c.key === 'hortifruti')!.cents);
     // A média conta setembro (com ida, zero de hortifrúti) e deixa de fora os meses sem nota nenhuma.
     expect(trend.averageCents).toBe(600);
-    expect(trend.averageNote).toBe('3 meses sem nota de mercado ficam fora da média.');
+    expect(trend.averageNote).toBe('3 meses sem ida ao mercado ficam fora da média.');
     expect(trend.title).toMatch(/ nos últimos 6 meses$/);
     expect(marketTrend(receipts, '2026-09', today, 'hortifruti').title).toMatch(/ em 6 meses até setembro$/);
   });
 
-  it('sem nenhuma nota na janela: tudo "sem notas", sem média, e a tela não mostra o cartão', () => {
+  it('sem nenhuma nota na janela: tudo "sem ida", sem média, e a tela não mostra o cartão', () => {
     const trend = marketTrend([], '2026-10', '2026-10-13');
     expect(trend.hasAny).toBe(false);
-    expect(trend.bars.every((bar) => bar.amount === 'sem notas' && bar.cents === 0)).toBe(true);
+    expect(trend.bars.every((bar) => bar.short === 'sem ida' && bar.cents === 0)).toBe(true);
     expect(trend.maxCents).toBe(0);
     expect(trend.average).toBeNull();
   });
