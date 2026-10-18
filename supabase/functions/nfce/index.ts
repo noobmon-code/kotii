@@ -5,19 +5,25 @@
 // da Sefaz direto. A busca (sefaz.ts) só faz GET em domínios .gov.br e para
 // em CAPTCHA: Sefaz que pedem CAPTCHA (como a da Paraíba) respondem 422
 // `captcha` e o app manda a pessoa para a foto. Quem cria o rascunho de nota
-// é o app. Cada leitura conta no limite mensal da casa (use_ai, tipo nfce);
+// é o app. Quando a nota vem, o que foi lido também vai para receipt_reads
+// (com a chave secreta), e a resposta leva o id dessa leitura (readId): o app
+// o grava na nota, e só assim ela compartilha preço com outras casas
+// (_shared/receiptRead.ts). Cada leitura conta no limite mensal da casa (use_ai, tipo nfce);
 // quando ela volta está em reply.ts. Os logs nunca levam a chave, itens,
 // preços ou CPF/CNPJ: só host + caminho e a estrutura das páginas.
 
 import { createClient } from '@supabase/supabase-js';
 
 import { QuotaError, refundAiQuota, takeAiQuota } from '../_shared/aiQuota.ts';
-import { publishableKey } from '../_shared/apiKeys.ts';
+import { publishableKey, secretKey } from '../_shared/apiKeys.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
+import { receiptRead, saveReceiptRead } from '../_shared/receiptRead.ts';
 import { safeLocation } from './page.ts';
-import { isSefazUrl } from './parse.ts';
+import { isSefazUrl, type NfcePage } from './parse.ts';
+import { nfceReadDay, nfceReadLines } from './readLines.ts';
 import { replyFor } from './reply.ts';
 import { lookupNfce } from './sefaz.ts';
+import { accessKeyFromQr } from './uf.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -30,6 +36,28 @@ function json(body: unknown, status = 200): Response {
     status,
     headers: { ...CORS, 'Content-Type': 'application/json' },
   });
+}
+
+/**
+ * Grava o que a Sefaz mostrou como leitura da casa e devolve o id, ou null (sem
+ * casa aberta, ou a gravação falhou: a nota é lida do mesmo jeito, só não
+ * compartilha). O CNPJ é o da página, ou o da chave, como o app faz com o mercado.
+ */
+async function saveRead(householdId: unknown, page: NfcePage, url: string): Promise<string | null> {
+  if (typeof householdId !== 'string' || !householdId) return null;
+  const accessKey = accessKeyFromQr(url);
+  return await saveReceiptRead(
+    () => createClient(Deno.env.get('SUPABASE_URL')!, secretKey()),
+    receiptRead({
+      householdId,
+      source: 'qrcode',
+      accessKey,
+      cnpj: page.store.cnpj ?? accessKey?.slice(6, 20) ?? null,
+      storeName: page.store.name,
+      purchasedOn: nfceReadDay(page.issuedAtLocal),
+      lines: nfceReadLines(page.items),
+    }),
+  );
 }
 
 Deno.serve(async (req) => {
@@ -66,5 +94,9 @@ Deno.serve(async (req) => {
     log(`nfce ${result.kind}`, where, JSON.stringify(result.trace));
   }
   if (reply.refund) await refundAiQuota(ticket);
+  if (result.kind === 'ok') {
+    const { data: householdId } = await db.rpc('current_household_id');
+    return json({ ...result.page, readId: await saveRead(householdId, result.page, url) }, reply.status);
+  }
   return json(reply.body, reply.status);
 });
