@@ -301,12 +301,13 @@ describe('pôr na lista um produto que foi juntado', () => {
     const error = await failure(() => hook.value().mutateAsync(ARROZ));
     expect((error as Error).message).toBe(PRODUCT_MERGED_AWAY);
     expect(mockDb.calls.map((call) => call.target)).toEqual(['rpc open_market_list', 'shopping_list_items', 'shopping_list_items']);
-    expect([...hook.invalidated].sort()).toEqual(SOURCES);
+    // E as listas, como em toda falha de pôr na lista: o próximo menu parte das listas de agora.
+    expect([...hook.invalidated].sort()).toEqual(['lists', ...SOURCES]);
 
     mockDb.reply = failItems(listGone);
     hook.invalidated.length = 0;
     expect(await failure(() => hook.value().mutateAsync(ARROZ))).toEqual(listGone);
-    expect(hook.invalidated).toEqual([]);
+    expect(hook.invalidated).toEqual(['lists']);
   });
 
   it('deu certo: as listas são buscadas de novo, como antes', async () => {
