@@ -22,9 +22,11 @@ describe('termos de uso', () => {
     expect(section('Mudanças e contato')).toContain(TERMS_CONTACT);
   });
 
-  it('os preços compartilhados: ligados por padrão, sem identificar a casa e com o dia em que foram vistos', () => {
+  it('os preços compartilhados: sempre ligados, sem identificar a casa e com o dia em que foram vistos', () => {
     const prices = section('Preços compartilhados');
-    expect(prices).toContain('Por padrão');
+    expect(prices).toContain('Toda casa contribui e toda casa vê');
+    // Não há escolha: "por padrão" daria a entender que dá para desligar.
+    expect(prices.toLowerCase()).not.toContain('por padrão');
     expect(prices).toContain('CNPJ');
     expect(prices).toContain('não são em tempo real');
     expect(prices).toContain('não tem como desligar');
@@ -35,5 +37,21 @@ describe('termos de uso', () => {
     expect(all).toContain('Anthropic');
     expect(all).toContain('OpenRouter');
     expect(section('Consultor financeiro (beta)')).toContain('MeuPluggy');
+    expect(section('Inteligência artificial')).toContain('fora do Brasil');
+  });
+
+  it('o resumo que vai ao Nuke diz que leva nomes, remédios e consultas de cada pessoa', () => {
+    const ai = section('Inteligência artificial');
+    for (const part of ['o seu nome e os dos moradores', 'quem toma cada um', 'de quem é cada uma', 'aniversários', 'orçamento']) {
+      expect(ai).toContain(part);
+    }
+  });
+
+  it('apagar: diz o que não sai pelo app e manda o resto para o contato', () => {
+    const erase = section('Apagar dados e sair');
+    expect(erase).toContain('os remédios só são arquivados');
+    expect(erase).toContain(`Para apagar tudo o que é seu, escreva para ${TERMS_CONTACT}.`);
+    // Quem sai deixa a ficha de saúde como dependente.
+    expect(section('Sua conta e sua casa')).toContain('vira a ficha de um dependente');
   });
 });

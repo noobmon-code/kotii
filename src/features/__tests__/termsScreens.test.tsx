@@ -9,7 +9,21 @@ import { TERMS_CONSENT, TERMS_SECTIONS, TERMS_TITLE, termsVersionLabel } from '@
 // A tela dos termos e o link da tela de entrar. O link da aba Família e o do cartão dos preços compartilhados
 // estão em sharedPricesScreens.test.tsx, junto com o resto da aba.
 
-jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
+/** Se há para onde voltar, e quem escuta as mudanças da pilha (a tela dos termos). */
+let mockCanGoBack = true;
+const mockStateListeners = new Set<() => void>();
+jest.mock('expo-router', () => {
+  const navigation = {
+    addListener: (_event: string, listener: () => void) => {
+      mockStateListeners.add(listener);
+      return () => mockStateListeners.delete(listener);
+    },
+  };
+  return {
+    router: { push: jest.fn(), replace: jest.fn(), canGoBack: () => mockCanGoBack },
+    useNavigation: () => navigation,
+  };
+});
 jest.mock('@/lib/supabase', () => ({ supabase: { auth: {} }, errorMessage: (error: unknown) => String(error) }));
 jest.mock('@/lib/linkNotice', () => ({ clearLinkNotice: jest.fn(), linkNotice: () => null, useLinkNotice: () => null }));
 jest.mock('@/lib/passwordRecovery', () => ({ finishRecovery: jest.fn(), startRecovery: jest.fn() }));
@@ -43,6 +57,7 @@ const pressable = (label: string) =>
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockCanGoBack = true;
 });
 
 afterEach(async () => {
@@ -56,14 +71,29 @@ describe('tela dos termos', () => {
     const body = TERMS_SECTIONS.map((section) => section.title + section.paragraphs.join('')).join('');
     expect(page).toBe(`${TERMS_TITLE}${termsVersionLabel()}${body}${termsVersionLabel()}`);
   });
+
+  it('aberta direto (sem para onde voltar), mostra "Voltar", que leva ao começo do app', async () => {
+    mockCanGoBack = false;
+    const page = await mount(<TermsScreen />);
+    expect(page.startsWith(`Voltar${TERMS_TITLE}`)).toBe(true);
+    const [back] = pressable('Voltar');
+    await act(async () => back.props.onPress());
+    expect(router.replace).toHaveBeenCalledWith('/');
+  });
+
+  it('a pilha muda com ela aberta (uma guarda do _layout desligou as telas de antes): o "Voltar" aparece', async () => {
+    expect(await mount(<TermsScreen />)).not.toContain('Voltar');
+    mockCanGoBack = false;
+    await act(async () => mockStateListeners.forEach((listener) => listener()));
+    expect(textOf(renderer!.root).startsWith(`Voltar${TERMS_TITLE}`)).toBe(true);
+  });
 });
 
 describe('tela de entrar', () => {
-  it('avisa que continuar é concordar com os termos, e o link abre a tela deles', async () => {
+  it('avisa que continuar é concordar com os termos, e o botão abre a tela deles', async () => {
     const page = await mount(<SignInScreen />);
-    expect(page).toContain(`${TERMS_CONSENT} ${TERMS_TITLE}.`);
+    expect(page).toContain(`${TERMS_CONSENT}${TERMS_TITLE}`);
     const [link] = pressable(TERMS_TITLE);
-    expect(link.props.accessibilityRole).toBe('link');
     await act(async () => link.props.onPress());
     expect(router.push).toHaveBeenCalledWith('/termos');
   });
@@ -72,6 +102,6 @@ describe('tela de entrar', () => {
     await mount(<SignInScreen />);
     const [create] = pressable('Criar conta');
     await act(async () => create.props.onPress());
-    expect(textOf(renderer!.root)).toContain(`${TERMS_CONSENT} ${TERMS_TITLE}.`);
+    expect(textOf(renderer!.root)).toContain(`${TERMS_CONSENT}${TERMS_TITLE}`);
   });
 });

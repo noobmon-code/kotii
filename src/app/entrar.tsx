@@ -265,13 +265,13 @@ export default function SignInScreen() {
                   }}
                 />
               ) : null}
-              <Text variant="small" style={styles.center}>
-                {TERMS_CONSENT}{' '}
-                <Text variant="small" color="primary" accessibilityRole="link" onPress={() => router.push('/termos')}>
-                  {TERMS_TITLE}
+              {/* Um botão, não um trecho de texto tocável: área de toque de botão e, no navegador, abre com Enter. */}
+              <View style={styles.consent}>
+                <Text variant="small" style={styles.center}>
+                  {TERMS_CONSENT}
                 </Text>
-                .
-              </Text>
+                <Button title={TERMS_TITLE} variant="ghost" compact onPress={() => router.push('/termos')} />
+              </View>
             </View>
           </>
         )}
@@ -285,4 +285,5 @@ const styles = StyleSheet.create({
   center: { textAlign: 'center' },
   hero: { alignItems: 'center', gap: space.md, paddingTop: space.xl },
   form: { gap: space.lg },
+  consent: { alignItems: 'center' },
 });
