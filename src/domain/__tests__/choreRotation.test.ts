@@ -649,6 +649,10 @@ describe('banco sem o rodízio', () => {
     expect(isRotationUnavailable(new TypeError('Network request failed'))).toBe(false);
     expect(isRotationUnavailable(null)).toBe(false);
     expect(isRotationUnavailable('PGRST205')).toBe(false);
+    // O código do Postgres vindo de outra coisa que falta, lá dentro de uma função do rodízio que existe.
+    expect(isRotationUnavailable({ code: '42883', message: 'function public.push_text(text) does not exist' })).toBe(false);
+    expect(isRotationUnavailable({ code: '42P01', message: 'relation "public.chore_points" does not exist' })).toBe(false);
+    expect(isRotationUnavailable({ code: '42883' })).toBe(false);
   });
 
   it('o aviso é um só', () => {

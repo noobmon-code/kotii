@@ -44,6 +44,7 @@ import {
   formatItemCost,
   itemFacts,
   pantryHits,
+  seePricesProduct,
   type PantryHit,
   type StoreChoice,
 } from '@/domain/listEstimate';
@@ -453,9 +454,16 @@ export default function ShoppingListScreen() {
     }
   }
 
-  /** "Ver preços" nos detalhes do item: só quando ele tem preço, e leva ao produto de onde o preço sai. */
+  /**
+   * "Ver preços" nos detalhes do item: leva ao produto de onde o preço sai ou, sem preço, ao produto do item
+   * (o dele ou o que as notas ligaram ao nome), onde estão o histórico e os preços de outras casas.
+   */
   function seePricesOf(item: ShoppingListItem) {
-    const productId = market.estimate.byItem.get(item.id)?.productId;
+    const productId = seePricesProduct(
+      { name: item.name, productId: item.product_id },
+      market.estimate.byItem.get(item.id)?.productId,
+      links.data,
+    );
     if (!productId) return undefined;
     return () => {
       setEditing(null);

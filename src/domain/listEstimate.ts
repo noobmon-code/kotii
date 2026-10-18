@@ -754,6 +754,24 @@ export function unpricedNote(item: Pick<EstimateItem, 'productId'>, sourcesLoade
 }
 
 /**
+ * Qual produto "Ver preços" abre nos detalhes de um item da lista. Com preço,
+ * o produto de onde o preço sai (`pricedProductId`, da estimativa). Sem preço,
+ * o produto do próprio item; sem ele, o produto que as notas ligaram a esse
+ * nome, quando é um só: "Leite" ligado ao Italac e ao Ninho não diz qual abrir.
+ * Item sem produto nenhum não tem preço a ver (null).
+ */
+export function seePricesProduct(
+  item: Pick<EstimateItem, 'name' | 'productId'>,
+  pricedProductId: string | null | undefined,
+  links?: LinkIndex | null,
+): string | null {
+  if (pricedProductId) return pricedProductId;
+  if (item.productId) return item.productId;
+  const linked = [...new Set(links?.productsFor(item.name) ?? [])];
+  return linked.length === 1 ? linked[0] : null;
+}
+
+/**
  * A linha a mais do cartão da lista quando as ligações ou os produtos não
  * chegaram (a busca falhou, ou sem internet e nunca vistos neste aparelho): o
  * que ficou "fora da conta" pode ser só item que não deu para conferir. null

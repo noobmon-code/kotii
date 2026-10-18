@@ -44,7 +44,7 @@ export function ListItemEditor({
    * prioridade marcada aqui, ainda sem salvar: "só em promoção" mostra o preço bom.
    */
   facts?: (priority: ListPriority) => string[];
-  /** O item tem preço de um produto da casa: "Ver preços" leva à tela dele (quem chama fecha os detalhes). */
+  /** O item tem um produto, com ou sem preço: "Ver preços" leva à tela dele (quem chama fecha os detalhes). */
   onSeePrices?: () => void;
   /** A foto atual (já enviada ou esperando internet). */
   photoUri: string | null;
@@ -136,7 +136,8 @@ export function ListItemEditor({
             ) : null}
           </View>
 
-          {shownFacts.length ? (
+          {/* Item com produto e ainda sem preço também leva ao produto: o histórico e os preços de outras casas ficam lá. */}
+          {shownFacts.length || onSeePrices ? (
             <Card style={styles.gap}>
               <Row>
                 <Icon name="tag-outline" color="primary" />
@@ -149,6 +150,9 @@ export function ListItemEditor({
                   {fact}
                 </Text>
               ))}
+              {shownFacts.length ? null : (
+                <Text variant="muted">O histórico de preço e os preços vistos em outras casas ficam na tela do produto.</Text>
+              )}
               {onSeePrices ? <Button title="Ver preços" icon="chart-line" variant="ghost" compact onPress={seePrices} /> : null}
             </Card>
           ) : null}

@@ -18,6 +18,7 @@ import {
   moreAccessibilityLabel,
   moreLabel,
   NO_STORE,
+  PACK_ITEM,
   noStorePriceSentence,
   noValueSentence,
   percentChange,
@@ -943,6 +944,7 @@ describe('as linhas da lista', () => {
       title: 'Assaí',
       detail: '10 out · 2 un · pagou R$ 51,80',
       price: 'R$ 25,90/un',
+      size: null,
       priced: true,
       discounted: false,
     });
@@ -1093,5 +1095,166 @@ describe('a seção inteira', () => {
   it('com 10 compras ou menos não há "Ver mais"; com 11, falta 1', () => {
     expect(priceHistoryView(daily(10), NO_CHOICE, context)!.more).toBeNull();
     expect(priceHistoryView(daily(11), NO_CHOICE, context)!.more).toBe('Ver mais (falta 1)');
+  });
+});
+
+describe('embalagens de tamanhos diferentes', () => {
+  const context = { today: TODAY, productName: 'Arroz' };
+  const sized = (description: string) => ({ description });
+
+  it('o arroz de 5 kg e o de 1 kg se comparam pelo preço por kg, não pelo pacote', () => {
+    const purchases = toPurchases([
+      line('2026-10-10', 24.9, sized('ARROZ TIO JOAO T1 5KG')),
+      line('2026-08-12', 5.49, { ...atacadao, ...sized('ARROZ TIO JOAO T1 1KG') }),
+    ]);
+    expect(purchases.map((p) => [p.baseUnit, p.price, p.packagePrice])).toEqual([
+      ['kg', 4.98, 24.9],
+      ['kg', 5.49, 5.49],
+    ]);
+    const view = priceHistoryView(purchases, NO_CHOICE, context)!;
+    expect(view).toMatchObject({ unit: 'kg', units: [] });
+    // Por pacote, pareceria que o arroz subiu 354%; por kg, caiu.
+    expect(view.summary).toEqual([
+      'R$ 4,98/kg · Assaí · 10 out',
+      'Caiu 9% desde 12 ago (era R$ 5,49, em outro mercado: Atacadão)',
+      'Menor: R$ 4,98 (Assaí, 10 out) · Maior: R$ 5,49 (Atacadão, 12 ago)',
+      '2 compras em 6 meses',
+    ]);
+    expect(view.chart).toMatchObject({ lowLabel: 'R$ 4,98', highLabel: 'R$ 5,49' });
+    // A linha da compra mostra o preço impresso do pacote e, embaixo, o tamanho com o preço por kg.
+    expect(view.rows.map((row) => [row.detail, row.price, row.size])).toEqual([
+      ['10 out · 1 un · pagou R$ 24,90', 'R$ 24,90/un', '5 kg · R$ 4,98/kg'],
+      ['12 ago · 1 un · pagou R$ 5,49', 'R$ 5,49/un', '1 kg · R$ 5,49/kg'],
+    ]);
+  });
+
+  it('gramas e quilos, litros e mililitros: o preço sai por kg ou por litro', () => {
+    const beans = toPurchases([
+      line('2026-10-10', 4.79, sized('FEIJAO CARIOCA KICALDO 500G')),
+      line('2026-09-10', 8.99, sized('FEIJAO CARIOCA KICALDO 1KG')),
+    ]);
+    expect(beans.map((p) => `${p.price}/${p.baseUnit}`)).toEqual(['9.58/kg', '8.99/kg']);
+    const soda = toPurchases([
+      line('2026-10-10', 10.99, sized('REFRIG COCA COLA PET 2L')),
+      line('2026-09-10', 4.49, sized('REFRIG COCA COLA LT 350ML')),
+      line('2026-08-10', 39.9, sized('REFRIG COCA COLA LT 350ML C/12')),
+    ]);
+    expect(soda.map((p) => `${p.price}/${p.baseUnit}`)).toEqual(['5.5/l', '12.83/l', '9.5/l']);
+    expect(purchaseRow(soda[2], TODAY).size).toBe('12 x 350 ml · R$ 9,50/l');
+  });
+
+  it('o preço por kg sai do preço impresso, com as quatro casas, e é arredondado uma vez só', () => {
+    const [rice] = toPurchases([
+      line('2026-10-10', 24.9249, { ...sized('ARROZ 5KG'), totalPrice: 24.92 }),
+      line('2026-09-10', 5.49, sized('ARROZ 1KG')),
+    ]);
+    // 24,9249 / 5 = 4,98498: R$ 4,98. Do preço do pacote já arredondado (R$ 24,92), sairia R$ 4,98 também; o que
+    // importa é não arredondar o que já foi arredondado de um jeito que mude o centavo.
+    expect(rice).toMatchObject({ price: 4.98, packagePrice: 24.92 });
+    const [eggs] = toPurchases([line('2026-10-10', 9.9, sized('OVOS C/12')), line('2026-09-10', 21.9, sized('OVOS C/30'))]);
+    // 9,90 / 12 = 0,825: meio centavo arredonda para cima.
+    expect(eggs.price).toBe(0.83);
+  });
+
+  it('com um tamanho só, nada muda: o preço do pacote já se compara', () => {
+    const purchases = toPurchases([line('2026-10-10', 24.9, sized('ARROZ T1 5KG')), line('2026-09-10', 23.9, sized('ARROZ TIPO 1 5 KG'))]);
+    expect(purchases.map((p) => [p.baseUnit, p.price, p.packagePrice])).toEqual([
+      ['un', 24.9, null],
+      ['un', 23.9, null],
+    ]);
+    expect(purchaseRow(purchases[0], TODAY)).toMatchObject({ price: 'R$ 24,90/un', size: null });
+  });
+
+  it('a compra sem tamanho conhecido fica à parte, por unidade, como antes', () => {
+    const purchases = toPurchases([
+      line('2026-10-10', 24.9, sized('ARROZ TIO JOAO T1 5KG')),
+      line('2026-09-10', 5.49, sized('ARROZ TIO JOAO T1 1KG')),
+      line('2026-08-10', 19.9, sized('ARROZ TIO JOAO')),
+      // Sem a descrição, também não há tamanho.
+      line('2026-07-10', 21.9),
+    ]);
+    expect(purchases.map((p) => p.baseUnit)).toEqual(['kg', 'kg', 'un', 'un']);
+    const view = priceHistoryView(purchases, NO_CHOICE, context)!;
+    expect(view.units).toEqual([
+      { value: 'un', label: 'por unidade' },
+      { value: 'kg', label: 'por kg' },
+    ]);
+    const perPack = priceHistoryView(purchases, { ...NO_CHOICE, unit: 'un' }, context)!;
+    expect(perPack.summary[0]).toBe('R$ 19,90/un · Assaí · 10 ago');
+    expect(perPack.rows.map((row) => row.size)).toEqual([null, null]);
+  });
+
+  it('número que não é tamanho não vira preço por kg', () => {
+    const purchases = toPurchases([
+      line('2026-10-10', 4.99, sized('LEITE UHT 3 MARIAS INTEGRAL')),
+      line('2026-09-10', 5.29, sized('TOMATE 1A')),
+      line('2026-08-10', 4.49, sized('AGUA MIN 1 5L')),
+      line('2026-07-10', 9.9, sized('ARROZ TIPO 1 KG')),
+    ]);
+    expect(purchases.every((p) => p.baseUnit === 'un' && p.pack === null)).toBe(true);
+  });
+
+  it('vendido a peso e em pacote: o pacote entra no histórico por kg, junto com a compra a granel', () => {
+    const purchases = toPurchases([
+      line('2026-10-10', 49.9, { quantity: 0.412, unit: 'kg', totalPrice: 20.56, ...sized('QUEIJO MUSSARELA FATIADO KG') }),
+      line('2026-09-10', 12.9, sized('QUEIJO MUSSARELA TIROLEZ 150G')),
+    ]);
+    expect(purchases.map((p) => [p.baseUnit, p.price])).toEqual([
+      ['kg', 49.9],
+      ['kg', 86],
+    ]);
+    // A compra a peso não tem tamanho de pacote: o preço por kg já é o da nota.
+    expect(purchases[0]).toMatchObject({ pack: null, packagePrice: null });
+    const view = priceHistoryView(purchases, NO_CHOICE, { ...context, productName: 'Queijo' })!;
+    expect(view.rows.map((row) => [row.price, row.size])).toEqual([
+      ['R$ 49,90/kg', null],
+      ['R$ 12,90/un', '150 g · R$ 86,00/kg'],
+    ]);
+  });
+
+  it('pacotes com quantidades diferentes de itens: o preço de cada um', () => {
+    const purchases = toPurchases([
+      line('2026-10-10', 9.9, sized('OVOS BRANCOS C/12')),
+      line('2026-09-10', 21.9, sized('OVO BRANCO GRANJA 30UN')),
+    ]);
+    expect(purchases.map((p) => [p.baseUnit, p.price])).toEqual([
+      [PACK_ITEM, 0.83],
+      [PACK_ITEM, 0.73],
+    ]);
+    const view = priceHistoryView(purchases, NO_CHOICE, { ...context, productName: 'Ovos' })!;
+    expect(view.summary[0]).toBe('R$ 0,83 cada · Assaí · 10 out');
+    expect(view.rows.map((row) => row.size)).toEqual(['12 un · R$ 0,83 cada', '30 un · R$ 0,73 cada']);
+    expect(unitLabel(PACK_ITEM)).toBe('por item do pacote');
+  });
+
+  it('peso, volume e itens do pacote não se misturam', () => {
+    const purchases = toPurchases([
+      line('2026-10-10', 9.9, sized('OVOS C/12')),
+      line('2026-09-10', 21.9, sized('OVOS C/30')),
+      line('2026-08-10', 12.9, sized('OVOS LIQUIDOS 1KG')),
+    ]);
+    // Um tamanho só por peso: fica por unidade.
+    expect(purchaseUnits(purchases)).toEqual(['un', PACK_ITEM]);
+  });
+
+  it('linhas da mesma nota somadas com tamanhos diferentes não têm tamanho', () => {
+    const purchases = toPurchases([
+      line('2026-10-10', 5.49, sized('ARROZ 1KG')),
+      line('2026-10-10', 5.49, sized('ARROZ 1000G')),
+      line('2026-09-10', 5.49, sized('ARROZ 1KG')),
+      line('2026-09-10', 5.49, sized('ARROZ 2KG')),
+      line('2026-08-10', 24.9, sized('ARROZ 5KG')),
+    ]);
+    expect(purchases.map((p) => [p.day, p.quantity, p.pack?.label ?? null, p.baseUnit])).toEqual([
+      ['2026-10-10', 2, '1 kg', 'kg'],
+      ['2026-09-10', 2, null, 'un'],
+      ['2026-08-10', 1, '5 kg', 'kg'],
+    ]);
+  });
+
+  it('compra sem valor de um tamanho conhecido: a linha diz o tamanho e "sem valor"', () => {
+    const purchases = toPurchases([line('2026-10-10', 0, { ...sized('ARROZ 5KG'), totalPrice: 0 }), line('2026-09-10', 5.49, sized('ARROZ 1KG'))]);
+    expect(purchaseRow(purchases[0], TODAY)).toMatchObject({ price: 'sem valor', size: '5 kg', priced: false });
+    expect(priceHistoryView(purchases, NO_CHOICE, context)!.summary.at(-1)).toBe('1 compra e 1 sem valor');
   });
 });
