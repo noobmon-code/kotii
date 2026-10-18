@@ -18,6 +18,7 @@ import { PRODUCT_MERGED_AWAY } from '@/domain/productMerge';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
 import { normalizeSearch } from '@/domain/search';
+import { storePricesFromPurchases } from '@/domain/storePrices';
 import { EXPECTS_ROWS_META } from '@/lib/accessErrors';
 import { supabase, unwrap } from '@/lib/supabase';
 import type {
@@ -919,32 +920,10 @@ export function useLatestPrices() {
 }
 
 /**
- * As compras de um produto, da mais nova para a mais antiga. Só preço maior
- * que zero: o item sem valor de uma nota confirmada não é um preço de R$ 0,00.
- * Aqui são as compras uma a uma, então a compra de verdade anterior do mesmo
- * mercado fica no lugar do zero sozinha.
- */
-export function usePriceHistory(productId: string) {
-  return useQuery({
-    queryKey: ['priceHistory', productId],
-    queryFn: async () =>
-      unwrap(
-        await supabase
-          .from('price_observations')
-          .select('product_id, store_id, unit, unit_price, purchased_at, receipt_id')
-          .eq('product_id', productId)
-          .gt('unit_price', 0)
-          .order('purchased_at', { ascending: false })
-          .limit(100),
-      ) as PriceObservation[],
-  });
-}
-
-/**
  * Preços de vários produtos nos meses antes de uma compra (alerta de preço na
  * nota). A janela sai da data da nota, não de hoje: uma nota antiga aberta
  * depois mostra os mesmos avisos. Dois dias de folga para o fuso. Só preço
- * maior que zero, como em `usePriceHistory`: um item que ficou sem valor em
+ * maior que zero, como no histórico do produto: um item que ficou sem valor em
  * outro mercado não vira "R$ 0,00 no Assaí".
  */
 export function usePriceObservations(productIds: string[], purchasedAt: string | undefined) {
@@ -1042,17 +1021,36 @@ export async function fetchProductPurchases(productId: string): Promise<Purchase
   }
 }
 
+const productPurchasesKey = (productId: string) => ['priceHistory', 'purchases', productId];
+
 /**
  * As compras de um produto, da mais recente para a mais antiga. A chave
  * começa com 'priceHistory': confirmar ou excluir uma nota já recarrega. Não
- * fica guardado no aparelho (queryClient, PERSISTED).
+ * fica guardado no aparelho (queryClient, PERSISTED): são até milhares de
+ * linhas por produto aberto, e o armazenamento do aparelho (no navegador,
+ * poucos MB para o cache todo) é para o que a lista usa no mercado. Sem
+ * internet, o "Último preço por mercado" sai dos últimos preços, que ficam
+ * guardados (`useStorePrices`, domain/storePrices).
  */
 export function useProductPurchases(productId: string) {
   return useQuery({
-    queryKey: ['priceHistory', 'purchases', productId],
+    queryKey: productPurchasesKey(productId),
     queryFn: () => fetchProductPurchases(productId),
     // Fora do hook, a mesma função a cada render: as compras só são refeitas quando as linhas mudam.
     select: toPurchases,
+  });
+}
+
+/**
+ * O último preço de cada mercado, a partir das mesmas compras (a mesma chave:
+ * uma busca só para as duas leituras), todas e não só as mais recentes: um
+ * mercado onde a casa não compra há muito tempo continua na lista.
+ */
+export function useStorePrices(productId: string) {
+  return useQuery({
+    queryKey: productPurchasesKey(productId),
+    queryFn: () => fetchProductPurchases(productId),
+    select: storePricesFromPurchases,
   });
 }
 

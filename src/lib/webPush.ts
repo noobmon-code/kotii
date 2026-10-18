@@ -133,9 +133,11 @@ const marketTripsOff = {
  */
 let marketTripsWrites = 0;
 
-/** O banco ainda não tem a opção de "alguém indo ao mercado": a função não existe (PGRST202 no PostgREST, 42883 no Postgres). */
-const marketTripsOptionMissing = (error: unknown) =>
-  ['PGRST202', '42883'].includes(String((error as { code?: unknown } | null)?.code));
+/**
+ * O banco ainda não tem a opção de "alguém indo ao mercado": a função não existe (PGRST202 no PostgREST; o 42883
+ * do Postgres só quando fala dela, porque também sai de dentro dela quando falta outra coisa).
+ */
+const marketTripsOptionMissing = (error: unknown) => isMissingFunction(error, 'set_push_market_trips');
 
 /**
  * Inscreve este endereço no servidor já com a escolha deste navegador para
