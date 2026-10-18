@@ -8,6 +8,7 @@ import type { MarketLine, MarketReceipt, MarketTotalReceipt } from '@/domain/mar
 import { BarRow } from '@/features/finance/BarRow';
 import { FinanceSummaryPanel } from '@/features/finance/FinanceSummaryPanel';
 import { MarketMonthLink } from '@/features/finance/MarketMonthLink';
+import { MarketTrendChart } from '@/features/market/MarketTrendChart';
 import { Button, Chip, IconButton, ListRow, Screen, Segmented } from '@/ui/primitives';
 
 // A tela de verdade, com a busca das notas trocada por respostas prontas: o que se confere aqui é o que ela
@@ -797,5 +798,59 @@ describe('a entrada no resumo de gastos', () => {
     expect(mockState.asked).toEqual([]);
     await act(async () => row().props.onPress());
     expect(mockRouter.push).toHaveBeenCalledWith({ pathname: '/mercado', params: { mes: '2026-10' } });
+  });
+});
+
+describe('tendência dos últimos meses', () => {
+  /** Os gráficos de tendência na tela, pelo que o leitor de tela anuncia. */
+  const charts = () =>
+    renderer!.root
+      .findAllByType(MarketTrendChart)
+      .map((chart) => chart.findAll((node) => node.props.accessibilityRole === 'image')[0].props.accessibilityLabel);
+
+  it('um cartão com os seis meses, o corrente "até hoje" e a média dos fechados, antes de "O que mudou"', async () => {
+    const text = await mount();
+    expect(charts()).toEqual([
+      'Maio: sem ida ao mercado; Junho: sem ida ao mercado; Julho: sem ida ao mercado; Agosto: sem ida ao mercado; ' +
+        'Setembro: R$ 130,00; Outubro até hoje: R$ 270,00. Média dos meses fechados: R$ 130,00. ' +
+        '4 meses sem ida ao mercado ficam fora da média.',
+    ]);
+    expect(text).toContain(['Últimos 6 meses', 'mai', 'sem ida', 'jun', 'sem ida', 'jul', 'sem ida', 'ago', 'sem ida', 'set', '130', 'out', '270', 'hoje'].join('\n'));
+    expect(text).toContain('Média dos meses fechados: R$ 130,00');
+    // O título é lido uma vez, como cabeçalho; a imagem do gráfico começa direto nos meses.
+    expect(renderer!.root.findAll((node) => node.props.accessibilityRole === 'header' && node.props.children === 'Últimos 6 meses').length).toBeGreaterThan(0);
+    expect(text.indexOf('Últimos 6 meses')).toBeLessThan(text.indexOf('O que mudou'));
+  });
+
+  it('tocar numa categoria mostra como ela andou nos mesmos meses, acima dos itens dela; tirar a escolha tira o cartão', async () => {
+    mockState.params = { aba: 'categorias' };
+    await mount();
+    await press('Grãos, massas e cereais: R$ 74,00, 28% dos itens, R$ 44,00 a mais que até o dia 13 de setembro');
+    expect(charts()).toHaveLength(2);
+    expect(charts()[1]).toBe(
+      'Maio: sem ida ao mercado; Junho: sem ida ao mercado; Julho: sem ida ao mercado; ' +
+        'Agosto: sem ida ao mercado; Setembro: R$ 30,00; Outubro até hoje: R$ 74,00. Média dos meses fechados: R$ 30,00. ' +
+        '4 meses sem ida ao mercado ficam fora da média.',
+    );
+    const text = page();
+    // Entre o selo da categoria e a lista dos itens dela (o Arroz também aparece antes, em O que mudou).
+    expect(text.indexOf('Só os itens de')).toBeLessThan(text.indexOf('Grãos, massas e cereais nos últimos 6 meses'));
+    expect(text.indexOf('Grãos, massas e cereais nos últimos 6 meses')).toBeLessThan(text.lastIndexOf('Arroz'));
+    await press('Grãos, massas e cereais: mostrar os itens de todas as categorias');
+    expect(charts()).toHaveLength(1);
+  });
+
+  it('mês sem nota, com notas nos meses antes: a tendência aparece embaixo do aviso', async () => {
+    mockState.query = loaded([receipt('s1', at(9, 5), [line('Arroz', 'graos', 30)])]);
+    const text = await mount();
+    expect(text).toContain('Nenhuma nota de mercado em outubro');
+    expect(charts()).toHaveLength(1);
+    expect(charts()[0]).toContain('Setembro: R$ 30,00; Outubro até hoje: sem ida ao mercado');
+  });
+
+  it('sem nota nenhuma nos seis meses, nada de cartão vazio', async () => {
+    mockState.query = loaded([]);
+    await mount();
+    expect(charts()).toEqual([]);
   });
 });

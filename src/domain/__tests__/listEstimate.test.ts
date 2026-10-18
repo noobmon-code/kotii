@@ -846,7 +846,7 @@ describe('a lista e "Onde comprar" dão o mesmo total', () => {
           if (a.kind === 'estimated') seen.estimated += 1;
           if (a.approximateQuantity) seen.approximate += 1;
           if (cost.used && cost.used.productId !== cost.productId) seen.otherProduct += 1;
-          if (cost.used && cost.used.productId === cost.productId && cost.used.unit !== cost.last.unit) seen.otherUnit += 1;
+          if (cost.used && cost.used.productId === cost.productId && cost.used.unit !== cost.last?.unit) seen.otherUnit += 1;
         }
       }
     }
