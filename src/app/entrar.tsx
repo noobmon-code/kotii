@@ -1,6 +1,8 @@
+import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 
+import { TERMS_CONSENT, TERMS_TITLE } from '@/domain/terms';
 import { SESSION_ENDED } from '@/lib/accessErrors';
 import { resendWaitSeconds, translateAuthError } from '@/lib/authErrors';
 import { clearLinkNotice, linkNotice, useLinkNotice } from '@/lib/linkNotice';
@@ -263,6 +265,13 @@ export default function SignInScreen() {
                   }}
                 />
               ) : null}
+              <Text variant="small" style={styles.center}>
+                {TERMS_CONSENT}{' '}
+                <Text variant="small" color="primary" accessibilityRole="link" onPress={() => router.push('/termos')}>
+                  {TERMS_TITLE}
+                </Text>
+                .
+              </Text>
             </View>
           </>
         )}
