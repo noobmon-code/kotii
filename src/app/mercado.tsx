@@ -10,13 +10,16 @@ import type { MarketChange } from '@/domain/marketChange';
 import {
   MARKET_VIEWS,
   marketMonth,
+  marketTrend,
   monthFromParam,
   viewFromParam,
   type MarketMonth,
   type MarketReceiptRef,
+  type MarketTrend,
   type MarketView,
 } from '@/domain/marketSpend';
 import { BarRow } from '@/features/finance/BarRow';
+import { MarketTrendChart } from '@/features/market/MarketTrendChart';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import {
   Button,
@@ -65,6 +68,13 @@ export default function MarketMonthScreen() {
   /** A altura em que o card "O que mudou" está, no mesmo espaço da chave. */
   const changesY = useRef(0);
   const summary = useMemo(() => (receipts.data ? marketMonth(receipts.data, month, today) : null), [receipts.data, month, today]);
+  const trend = useMemo(() => (receipts.data ? marketTrend(receipts.data, month, today) : null), [receipts.data, month, today]);
+  const chosen = summary?.categories.some((c) => c.key === category) ? category : null;
+  // A categoria escolhida, nos mesmos meses: como ela andou.
+  const categoryTrend = useMemo(
+    () => (receipts.data && chosen ? marketTrend(receipts.data, month, today, chosen) : null),
+    [receipts.data, month, today, chosen],
+  );
 
   function goTo(target: string) {
     if (target > current) return;
@@ -131,7 +141,9 @@ export default function MarketMonthScreen() {
           onRetry={() => receipts.refetch()}
           view={view}
           onView={(value) => router.setParams({ aba: value })}
-          category={summary.categories.some((c) => c.key === category) ? category : null}
+          trend={trend}
+          categoryTrend={categoryTrend}
+          category={chosen}
           onCategory={chooseCategory}
           showAll={showAll}
           onShowAll={setShowAll}
@@ -157,6 +169,8 @@ export default function MarketMonthScreen() {
 
 function MonthBody({
   summary,
+  trend,
+  categoryTrend,
   stale,
   onRetry,
   view,
@@ -175,6 +189,8 @@ function MonthBody({
   adding,
 }: {
   summary: MarketMonth;
+  trend: MarketTrend | null;
+  categoryTrend: MarketTrend | null;
   stale: boolean;
   onRetry: () => void;
   view: MarketView;
@@ -220,6 +236,8 @@ function MonthBody({
               <Details summary={summary} />
             </Card>
           ) : null}
+          {/* Mês sem nota, mas com notas nos meses antes dele: a tendência continua dizendo como o mercado andou. */}
+          {trend?.hasAny ? <MarketTrendChart trend={trend} /> : null}
         </>
       ) : (
         <>
@@ -252,6 +270,8 @@ function MonthBody({
             </Card>
           ) : null}
 
+          {trend ? <MarketTrendChart trend={trend} /> : null}
+
           {/* Sem nota de mercado na janela do mês anterior não há com o que comparar: o cabeçalho já diz. */}
           {summary.change ? (
             <View onLayout={(event) => onChangesLayout(event.nativeEvent.layout.y)}>
@@ -264,7 +284,7 @@ function MonthBody({
           </View>
 
           {view === 'itens' ? (
-            <Items summary={summary} category={category} onCategory={onCategory} showAll={showAll} onShowAll={onShowAll} />
+            <Items summary={summary} category={category} trend={categoryTrend} onCategory={onCategory} showAll={showAll} onShowAll={onShowAll} />
           ) : view === 'categorias' ? (
             <Categories summary={summary} onCategory={onCategory} />
           ) : view === 'idas' ? (
@@ -309,12 +329,15 @@ function MonthBody({
 function Items({
   summary,
   category,
+  trend,
   onCategory,
   showAll,
   onShowAll,
 }: {
   summary: MarketMonth;
   category: string | null;
+  /** Com uma categoria escolhida: como ela andou nos últimos meses. */
+  trend: MarketTrend | null;
   onCategory: (category: string | null) => void;
   showAll: boolean;
   onShowAll: (all: boolean) => void;
@@ -340,6 +363,7 @@ function Items({
           />
         </Row>
       ) : null}
+      {trend ? <MarketTrendChart trend={trend} /> : null}
       <ListCard>
         {shown.map((item) => (
           <ListRow

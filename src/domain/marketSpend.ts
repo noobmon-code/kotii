@@ -10,7 +10,7 @@
 import { joinNames } from './cartPantry';
 import { getCategory } from './categories';
 import { addDays, formatShortDate, toISODate } from './dates';
-import { describeMonthDelta, financeCategoryOfProduct, monthLabel, monthRange, shiftMonth } from './finance';
+import { describeMonthDelta, financeCategoryOfProduct, monthLabel, monthRange, monthShortLabel, shiftMonth } from './finance';
 import { listNameKey } from './listLinks';
 import { marketChange, type ChangePurchase, type MarketChange } from './marketChange';
 import { formatBRL, formatQuantity } from './money';
@@ -746,6 +746,126 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
           },
     change,
     emptyTitle: total.emptyTitle,
+  };
+}
+
+/** Quantos meses o cartão de tendência mostra, contando o da tela: as notas lidas vão até o primeiro deles. */
+export const MARKET_TREND_MONTHS = 6;
+
+/** Um mês do cartão de tendência. */
+export interface MarketTrendBar {
+  month: string;
+  /** "mai" */
+  label: string;
+  /** "até hoje" no mês corrente, que ainda não fechou; null nos outros. */
+  note: string | null;
+  cents: number;
+  /** "R$ 1.240,00"; "sem notas" no mês sem nota de mercado (aparece como zero, não some). */
+  amount: string;
+  /** O valor curto que cabe embaixo da barra: "840", "1,2 mil", "sem notas". */
+  short: string;
+  /** O mês teve ida ao mercado (nota confirmada com item de mercado). */
+  hasNotes: boolean;
+  /** O mês corrente, contado só até hoje. */
+  partial: boolean;
+}
+
+export interface MarketTrend {
+  /** "Últimos 6 meses", "6 meses até agosto", "Hortifrúti nos últimos 6 meses". */
+  title: string;
+  /** Do mais antigo para o mais recente (o da tela). */
+  bars: MarketTrendBar[];
+  /** A maior barra (ou a média, se for maior): é a altura cheia do gráfico. */
+  maxCents: number;
+  /** A média dos meses fechados com nota de mercado; null sem nenhum. */
+  averageCents: number | null;
+  /** "Média dos meses fechados: R$ 1.100,00" */
+  average: string | null;
+  /** "2 meses sem nota de mercado ficam fora da média."; null quando não há. */
+  averageNote: string | null;
+  /** Algum mês da janela teve nota de mercado: sem nenhum, a tela não mostra o cartão. */
+  hasAny: boolean;
+  /** O gráfico inteiro, para o leitor de tela: cada mês com o valor, e a média. */
+  accessibilityLabel: string;
+}
+
+/** O valor curto, embaixo da barra: o cartão já diz que é em reais. "840", "1,2 mil", "12 mil". */
+export function shortAmount(amountCents: number): string {
+  const reais = Math.round(amountCents / 100);
+  if (reais < 1000) return String(reais);
+  const thousands = reais / 1000;
+  const text = thousands < 10 ? thousands.toFixed(1).replace(/\.0$/, '').replace('.', ',') : String(Math.round(thousands));
+  return `${text} mil`;
+}
+
+/**
+ * Um mês da tendência: o total pago (a mesma conta do cabeçalho, `paidBetween`) ou, com `category`, a soma
+ * dos itens dela pelo valor impresso (a conta da linha da categoria). Só as idas ao mercado contam, como na tela.
+ */
+function trendMonth(receipts: MarketTotalReceipt[], start: string, end: string, category: string | null): { cents: number; trips: number } {
+  const paid = paidBetween(receipts, start, end);
+  if (category == null) return { cents: paid.totalCents, trips: paid.trips };
+  let total = 0;
+  for (const receipt of receipts) {
+    if (receipt.status !== 'confirmed') continue;
+    const date = purchasedOn(receipt);
+    if (date < start || date >= end) continue;
+    const lines = receiptMoney(receipt);
+    if (!lines.trip) continue;
+    for (const { category: key, value } of lines.market) if (key === category) total += value;
+  }
+  return { cents: total, trips: paid.trips };
+}
+
+/**
+ * Como o mercado andou nos `MARKET_TREND_MONTHS` meses que terminam no mês da tela: o total pago de cada mês
+ * ou, com `category`, o que foi para os itens dela. As mesmas regras da tela: valor impresso, farmácia fora,
+ * a data da compra no fuso do aparelho e, no mês corrente, só até hoje (a nota de data futura fica de fora,
+ * como no cabeçalho). Mês sem nota de mercado aparece como "sem notas", com barra zero. A média é só dos meses
+ * fechados com nota de mercado: o mês corrente está pela metade, e um mês sem nota nenhuma diz mais sobre o
+ * uso do app do que sobre o gasto (puxaria a média para baixo).
+ */
+export function marketTrend(receipts: MarketTotalReceipt[], month: string, today: string, category: string | null = null): MarketTrend {
+  const currentMonth = today.slice(0, 7);
+  const bars: MarketTrendBar[] = [];
+  for (let back = MARKET_TREND_MONTHS - 1; back >= 0; back--) {
+    const m = shiftMonth(month, -back);
+    const { cents: value, trips } = trendMonth(receipts, monthRange(m).start, periodEnd(m, today), category);
+    const hasNotes = trips > 0;
+    bars.push({
+      month: m,
+      label: monthShortLabel(m),
+      note: m === currentMonth ? 'até hoje' : null,
+      cents: hasNotes ? value : 0,
+      amount: hasNotes ? money(value) : 'sem notas',
+      short: hasNotes ? shortAmount(value) : 'sem notas',
+      hasNotes,
+      partial: m === currentMonth,
+    });
+  }
+  const closed = bars.filter((bar) => !bar.partial);
+  const counted = closed.filter((bar) => bar.hasNotes);
+  const averageCents = counted.length ? Math.round(counted.reduce((sum, bar) => sum + bar.cents, 0) / counted.length) : null;
+  const skipped = closed.length - counted.length;
+  const average = averageCents == null ? null : `Média dos meses fechados: ${money(averageCents)}`;
+  const averageNote =
+    averageCents != null && skipped > 0
+      ? plural(skipped, 'mês sem nota de mercado fica fora da média.', 'meses sem nota de mercado ficam fora da média.')
+      : null;
+  const span = month === currentMonth ? `últimos ${MARKET_TREND_MONTHS} meses` : `${MARKET_TREND_MONTHS} meses até ${monthName(month)}`;
+  const title = category ? `${getCategory(category).label} ${month === currentMonth ? 'nos' : 'em'} ${span}` : capitalize(span);
+  const spokenBars = bars.map(
+    (bar) => `${monthName(bar.month)}${bar.partial ? ' até hoje' : ''}: ${bar.hasNotes ? money(bar.cents) : 'sem nota de mercado'}`,
+  );
+  return {
+    title,
+    bars,
+    maxCents: Math.max(0, averageCents ?? 0, ...bars.map((bar) => bar.cents)),
+    averageCents,
+    average,
+    averageNote,
+    hasAny: bars.some((bar) => bar.hasNotes),
+    accessibilityLabel: [`${title}. ${spokenBars.join('; ')}`, average, averageNote].filter(Boolean).join('. '),
   };
 }
 
