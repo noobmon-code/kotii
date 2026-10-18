@@ -14,6 +14,7 @@ import type { CartPantryEntry } from '@/domain/cartPantry';
 import { LinkIndex, type ListLink, type OpenListItem } from '@/domain/listLinks';
 import { PRICE_ALERT_HISTORY_DAYS } from '@/domain/priceAlert';
 import { toPurchases, type PurchaseLine } from '@/domain/priceHistory';
+import { listsFor, newListKind, PANTRY_LIST_GONE, type ListChoice } from '@/domain/pantryList';
 import { PRODUCT_MERGED_AWAY } from '@/domain/productMerge';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
@@ -409,6 +410,38 @@ function useAddToOpenList<T extends NewListItem>(add: (queryClient: QueryClient,
  */
 export function useAddToMarketList() {
   return useAddToOpenList(async (queryClient, item: NewListItem) => addItemOnce(queryClient, await openMarketList(), item));
+}
+
+/** O item que acabou na despensa; `listId`: a lista que a pessoa escolheu (sem ela, a mais nova). */
+export interface PantryListItem extends NewListItem {
+  listId?: string;
+}
+
+/**
+ * Despensa, "acabou": põe o item na lista escolhida ou, sem escolha, na lista
+ * aberta mais nova em que ele cabe (listsFor), lida agora no servidor: a que
+ * outra pessoa criou há pouco também conta. Sem nenhuma, a de mercado (ou a
+ * de farmácia, para remédio) de sempre, achada ou criada sob a trava da casa.
+ * A escolhida que já foi arquivada não recebe nada (PANTRY_LIST_GONE).
+ */
+async function addToPantryList(queryClient: QueryClient, { listId, ...item }: PantryListItem): Promise<ListedItem> {
+  const open = unwrap(
+    await supabase.from('shopping_lists').select('id, name, kind, created_at').is('archived_at', null).order('created_at', { ascending: false }),
+  ) as ListChoice[];
+  let list: { id: string; name: string } | undefined;
+  if (listId) {
+    list = open.find((l) => l.id === listId);
+    if (!list) throw new Error(PANTRY_LIST_GONE);
+  } else {
+    list = listsFor(item.category, open)[0];
+  }
+  list ??= newListKind(item.category) === 'farmacia' ? await openPharmacyList() : await openMarketList();
+  return addItemOnce(queryClient, { id: list.id, name: list.name }, item);
+}
+
+/** O item que acabou na despensa vai para a última lista criada, ou para a que a pessoa escolheu. */
+export function useAddToPantryList() {
+  return useAddToOpenList(addToPantryList);
 }
 
 /** O remédio que vai para a lista da farmácia; `altName`: o mesmo item com o nome de quem toma (ver onPharmacyList). */

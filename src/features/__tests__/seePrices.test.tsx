@@ -25,7 +25,8 @@ jest.mock('@/data/home', () => {
   };
 });
 jest.mock('@/data/market', () => ({
-  useAddToMarketList: () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false }),
+  useAddToPantryList: () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false }),
+  useShoppingLists: () => ({ data: [] }),
   useProducts: () => ({ data: [{ id: 'arroz', name: 'Arroz', category: 'mercearia', shelf_life_days: null }] }),
 }));
 jest.mock('@/data/images', () => ({ pickImages: jest.fn() }));
@@ -67,7 +68,8 @@ describe('"Ver preços" no item da despensa', () => {
       renderer = create(<PantryPanel />);
     });
     act(() => renderer!.root.findAllByType(ListRow).find((row) => row.props.title === name)!.props.onPress());
-    return renderer!.root.findByType(ActionSheet).props.actions;
+    // O primeiro menu é o do item; o segundo, o de escolher a lista.
+    return renderer!.root.findAllByType(ActionSheet)[0].props.actions;
   }
 
   it('item ligado a um produto: o menu ganha "Ver preços", que abre a tela do produto', async () => {

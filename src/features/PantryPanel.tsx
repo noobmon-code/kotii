@@ -3,9 +3,10 @@ import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { useConsumePantryItems, usePantry, useTakeOneFromPantry } from '@/data/home';
-import { useAddToMarketList, useProducts } from '@/data/market';
+import { useAddToPantryList, useProducts, useShoppingLists } from '@/data/market';
 import { formatShortDate, todayISO } from '@/domain/dates';
 import { describeExpiry, expiryStatus, groupPantry, takeOne, type ExpiryStatus, type PantryGroup } from '@/domain/pantry';
+import { listsFor, newListKind } from '@/domain/pantryList';
 import { formatQuantity } from '@/domain/money';
 import { errorMessage } from '@/lib/supabase';
 import type { PantryItem } from '@/lib/types';
@@ -49,21 +50,27 @@ export function PantryPanel() {
   const products = useProducts();
   const consume = useConsumePantryItems();
   const takeOneFrom = useTakeOneFromPantry();
-  const addToMarketList = useAddToMarketList();
+  const lists = useShoppingLists();
+  const addToList = useAddToPantryList();
   const [selected, setSelected] = useState<Group | null>(null);
+  // "Escolher a lista": o segundo menu, com as listas abertas em que o item cabe.
+  const [picking, setPicking] = useState<Group | null>(null);
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
+  const choicesFor = (group: Group) => listsFor(group.category, lists.data ?? []);
 
   // Primeiro a lista, depois a baixa: se a baixa falhar, o item continua na
   // despensa e repetir não duplica (a lista ignora item já pendente).
-  async function finishAndRestock(group: Group) {
+  // Sem `listId`, a lista é a mais nova em que o item cabe, conferida no servidor na hora.
+  async function finishAndRestock(group: Group, listId?: string) {
     const newest = group.lots[group.lots.length - 1];
     try {
-      const list = await addToMarketList.mutateAsync({
+      const list = await addToList.mutateAsync({
         name: group.name,
         category: group.category,
         productId: group.productId,
         quantity: newest.quantity,
         unit: newest.unit,
+        listId,
       });
       await consume.mutateAsync(group.lots.map((lot) => lot.id));
       notify(
@@ -80,9 +87,20 @@ export function PantryPanel() {
     const take = takeOne(group.lots);
     const oldest = group.lots[0];
     const several = group.lots.length > 1;
+    const choices = choicesFor(group);
+    const newestList = choices[0];
     const actions: SheetAction[] = [
-      { label: 'Acabou — pôr na lista de mercado', icon: 'cart-plus', onPress: () => finishAndRestock(group) },
+      {
+        label: newestList
+          ? `Acabou — pôr na última lista (“${newestList.name}”)`
+          : `Acabou — pôr na lista ${newListKind(group.category) === 'farmacia' ? 'da farmácia' : 'de mercado'}`,
+        icon: 'cart-plus',
+        onPress: () => finishAndRestock(group),
+      },
     ];
+    if (choices.length > 1) {
+      actions.push({ label: 'Acabou — escolher a lista', icon: 'format-list-bulleted', onPress: () => setPicking(group) });
+    }
     if (take) {
       const units = group.totals.find((t) => t.unit === 'un')?.quantity ?? 0;
       const left = Math.round((units - 1) * 1000) / 1000;
@@ -182,6 +200,20 @@ export function PantryPanel() {
         title={selected?.name}
         message={selected && selected.lots.length > 1 ? describeLots(selected) : undefined}
         actions={selected ? groupActions(selected) : []}
+      />
+      <ActionSheet
+        visible={Boolean(picking)}
+        onClose={() => setPicking(null)}
+        title={picking ? `${picking.name}: para qual lista?` : undefined}
+        actions={
+          picking
+            ? choicesFor(picking).map((list, index) => ({
+                label: index === 0 ? `${list.name} (a mais nova)` : list.name,
+                icon: 'cart-plus',
+                onPress: () => finishAndRestock(picking, list.id),
+              }))
+            : []
+        }
       />
     </View>
   );
