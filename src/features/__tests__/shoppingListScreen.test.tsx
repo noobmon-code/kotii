@@ -5,6 +5,7 @@ import ShoppingListScreen from '@/app/lista/[id]/index';
 import { toISODate } from '@/domain/dates';
 import { LinkIndex } from '@/domain/listLinks';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
+import { SHARED_PRICES_NOTICE, type SharedPrice } from '@/domain/sharedPrices';
 import type { ItemHint } from '@/features/ShoppingGrid';
 import type { LatestPrice, PantryItem, Product, ShoppingListItem } from '@/lib/types';
 import { Screen } from '@/ui/primitives';
@@ -66,6 +67,7 @@ jest.mock('@/data/market', () => {
     useStores: () => mockQueries.stores,
   };
 });
+jest.mock('@/data/sharedPrices', () => ({ useSharedPrices: () => mockQueries.shared }));
 jest.mock('@/lib/auth', () => ({ useAuth: () => ({ session: { user: { id: 'u1' } } }), useHouseholdId: () => 'h1' }));
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: unknown) => String(error) }));
 jest.mock('@/ui/dialogs', () => ({ askYesNo: jest.fn(), confirmAction: jest.fn(), notify: jest.fn() }));
@@ -171,6 +173,8 @@ beforeEach(() => {
     links: loaded(new LinkIndex([])),
     prices: loaded([]),
     stores: loaded([{ id: 's1', name: 'Assaí', cnpj: null, address: null }]),
+    // Banco sem a função dos preços de outras casas: a lista é a de sempre.
+    shared: loaded(null),
   });
 });
 
@@ -305,8 +309,63 @@ describe('ligações ou produtos que não chegaram', () => {
     mockRefreshTrips.mockClear();
     act(() => renderer!.root.findByType(Screen).props.onRefresh());
     expect(mockRefreshTrips).toHaveBeenCalledTimes(1);
-    for (const key of ['items', 'prices', 'pantry', 'links', 'products', 'stores', 'purchases']) {
+    for (const key of ['items', 'prices', 'pantry', 'links', 'products', 'stores', 'purchases', 'shared']) {
       expect(mockQueries[key].refetch).toHaveBeenCalledTimes(1);
     }
+  });
+});
+
+describe('preços de outras casas na conta da lista', () => {
+  const CNPJ = '11222333000181';
+  const notice = SHARED_PRICES_NOTICE;
+  /** Visto em outra casa, no Assaí da casa (pelo CNPJ) ou num mercado de fora. */
+  const seen = (product_id: string, unit_price: number, ago: number, partial: Partial<SharedPrice> = {}): SharedPrice => ({
+    product_id,
+    store_cnpj: CNPJ,
+    store_name: 'ASSAI ATACADISTA',
+    store_uf: '35',
+    unit: 'un',
+    unit_price,
+    seen_on: day(ago),
+    mine: true,
+    ...partial,
+  });
+
+  beforeEach(() => {
+    mockQueries.stores = loaded([{ id: 's1', name: 'Assaí', cnpj: CNPJ, address: null }]);
+    // O arroz tem preço da casa; o feijão não (a nota dele foi excluída), só o visto em outra casa.
+    mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz'), listItem('f', 'Feijão', 'feijao')]);
+    mockQueries.products = loaded([product('arroz', 'Arroz'), product('feijao', 'Feijão')]);
+    mockQueries.prices = loaded([latest('arroz', 25)]);
+  });
+
+  it('o item sem preço da casa usa o de outras casas, marcado, e o total diz quanto veio de lá', async () => {
+    mockQueries.shared = loaded([seen('feijao', 8.5, 2), seen('arroz', 19.9, 1)]);
+    const page = await mount();
+    expect(page).toContain('~R$ 33,50');
+    expect(page).toContain('todos os itens têm preço; R$ 8,50 do total é de 1 item com preço de outras casas');
+    expect(page).toContain(notice);
+    // O preço da casa vence o de outras casas, mesmo mais novo.
+    expect(mockSeen.hints?.get('a')).toEqual({ cost: 'R$ 25,00', inPantry: false });
+    expect(mockSeen.hints?.get('f')).toEqual({ cost: '~R$ 8,50', inPantry: false });
+  });
+
+  it.each([
+    ['o banco ainda não tem a função', () => loaded(null)],
+    ['a busca falhou', failed],
+    ['a primeira busca ainda anda', onTheWay],
+  ])('%s: a conta é só com os preços da casa, sem aviso', async (_why, state) => {
+    mockQueries.shared = state();
+    const page = await mount();
+    expect(page).toContain('1 de 2 itens tem preço');
+    expect(page).not.toContain(notice);
+    expect(mockSeen.hints?.has('f')).toBe(false);
+  });
+
+  it('sem os mercados da casa carregados, nada de outras casas: não dá para saber quais são dela', async () => {
+    mockQueries.shared = loaded([seen('feijao', 8.5, 2)]);
+    mockQueries.stores = failed();
+    expect(await mount()).not.toContain(notice);
+    expect(mockSeen.hints?.has('f')).toBe(false);
   });
 });

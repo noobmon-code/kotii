@@ -3,10 +3,12 @@ import { useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { useLatestPrices, useListItems, useListLinks, useProducts, useStores } from '@/data/market';
-import { formatItemCost, listStorePrices, storePriceNote, unpricedNote } from '@/domain/listEstimate';
+import { useSharedPrices } from '@/data/sharedPrices';
+import { formatItemCost, listSharedElsewhere, listStorePrices, storePriceNote, unpricedNote } from '@/domain/listEstimate';
 import { formatBRL, formatQuantity } from '@/domain/money';
 import { storePriceIndex } from '@/domain/priceLevel';
-import { recommendStores, type StorePlan } from '@/domain/recommendation';
+import { describeSharedOffer, recommendStores, sharedStoreOffers, type StorePlan } from '@/domain/recommendation';
+import { SHARED_PRICES_NOTICE, SHARED_PRICES_OTHERS, sharedQuotes } from '@/domain/sharedPrices';
 import type { ShoppingListItem } from '@/lib/types';
 import {
   Badge,
@@ -36,6 +38,9 @@ export default function WhereToBuyScreen() {
   const stores = useStores();
   const links = useListLinks();
   const products = useProducts();
+  // Preços de outras casas: onde a casa não tem preço num mercado dela, e à parte os mercados que não são dela.
+  // Sem a função no banco (null) ou com a busca falhando, a tela segue só com os preços da casa.
+  const shared = useSharedPrices();
   const [mode, setMode] = useState<Mode>('1');
 
   const pending = useMemo(() => (items.data ?? []).filter((i) => !i.checked_at), [items.data]);
@@ -49,23 +54,30 @@ export default function WhereToBuyScreen() {
       unitPrice: Number(p.unit_price),
       purchasedAt: p.purchased_at,
     }));
+    // Os mercados da casa se reconhecem pelo CNPJ: sem eles, nada de outras casas.
+    const seenElsewhere = shared.data && stores.data ? sharedQuotes(shared.data, prices.data ?? [], stores.data) : [];
+    const sources = { links: links.data, products: products.data ?? [], shared: seenElsewhere };
     const wanted = pending.map((i) => ({ id: i.id, name: i.name, productId: i.product_id, quantity: Number(i.quantity), unit: i.unit }));
     return {
       quotes,
       wanted: wanted.map((i) => ({ key: i.id, productId: i.productId, quantity: i.quantity, unit: i.unit })),
-      priceAt: listStorePrices(wanted, quotes, { links: links.data, products: products.data ?? [] }),
+      priceAt: listStorePrices(wanted, quotes, sources),
+      elsewhere: listSharedElsewhere(wanted, quotes, sources),
       storeIndex: storePriceIndex(quotes),
     };
-  }, [pending, prices.data, links.data, products.data]);
+  }, [pending, prices.data, links.data, products.data, shared.data, stores.data]);
   const recommendation = useMemo(
     () => recommendStores(account.wanted, account.quotes, Number(mode), { storeIndex: account.storeIndex, priceAt: account.priceAt }),
     [account, mode],
   );
+  const offers = useMemo(() => sharedStoreOffers(account.elsewhere, recommendation.plans[0]), [account, recommendation]);
 
   // As ligações e os produtos dão preço ao item digitado solto: sem esperar por eles, o total sairia sem esses
-  // itens e mudaria logo depois. Busca parada (sem internet) não segura a tela: cai no aviso de que não carregou.
+  // itens e mudaria logo depois. Os preços de outras casas também mudam o total: a primeira busca deles é
+  // esperada, mas a que falha (ou a função que não existe) não segura nada. Busca parada (sem internet) não segura
+  // a tela: cai no aviso de que não carregou.
   const onTheWay = (query: { isPending: boolean; fetchStatus: string }) => query.isPending && query.fetchStatus !== 'paused';
-  if (items.isPending || prices.isPending || stores.isPending || onTheWay(links) || onTheWay(products)) {
+  if (items.isPending || prices.isPending || stores.isPending || onTheWay(links) || onTheWay(products) || onTheWay(shared)) {
     return <Loading label="Comparando preços…" />;
   }
   const error = items.error ?? prices.error ?? stores.error;
@@ -77,9 +89,12 @@ export default function WhereToBuyScreen() {
   const storeName = (storeId: string) => stores.data?.find((s) => s.id === storeId)?.name ?? 'Mercado';
   const productName = (productId: string) => products.data?.find((p) => p.id === productId)?.name;
   const itemByKey = new Map(pending.map((i) => [i.id, i]));
-  // "Preço real" é o do próprio produto naquele mercado; o de outro produto com o mesmo nome conta à parte.
-  const otherProductCount = (plan: StorePlan) =>
-    plan.assignments.filter((a) => account.priceAt(a.itemKey, a.storeId)?.source === 'otherProduct').length;
+  // "Preço real" é o da casa, do próprio produto naquele mercado; o de outro produto com o mesmo nome e o visto em
+  // outras casas contam à parte.
+  const sourceCount = (plan: StorePlan, source: 'otherProduct' | 'shared') =>
+    plan.assignments.filter((a) => account.priceAt(a.itemKey, a.storeId)?.source === source).length;
+  const otherProductCount = (plan: StorePlan) => sourceCount(plan, 'otherProduct');
+  const sharedCount = (plan: StorePlan) => sourceCount(plan, 'shared');
   const best = recommendation.plans[0];
   const singlePlans = recommendation.plans.filter((p) => p.storeIds.length === 1);
   const bestSingle = singlePlans[0];
@@ -110,6 +125,7 @@ export default function WhereToBuyScreen() {
             storeName={storeName}
             itemCount={pending.length}
             otherProduct={otherProductCount(best)}
+            shared={sharedCount(best)}
             savings={best.storeIds.length > 1 && bestSingle ? bestSingle.total - best.total : 0}
           />
 
@@ -147,12 +163,13 @@ export default function WhereToBuyScreen() {
                 {singlePlans.map((plan, index) => {
                   const storeId = plan.storeIds[0];
                   const idx = recommendation.storeIndex.get(storeId) ?? 1;
+                  const seen = sharedCount(plan);
                   return (
                     <ListRow
                       key={storeId}
                       left={<IconBadge icon="store-outline" tone={index === 0 ? 'primary' : 'neutral'} />}
                       title={storeName(storeId)}
-                      subtitle={`${describeIndex(idx)} · ${plan.knownCount - otherProductCount(plan)} com preço real`}
+                      subtitle={`${describeIndex(idx)} · ${plan.knownCount - otherProductCount(plan) - seen} com preço real${seen ? ` · ${seen} de outras casas` : ''}`}
                       right={<Text variant="label">{formatBRL(plan.total)}</Text>}
                     />
                   );
@@ -162,6 +179,38 @@ export default function WhereToBuyScreen() {
           ) : null}
         </>
       )}
+
+      {offers.length ? (
+        <Section title={SHARED_PRICES_OTHERS}>
+          <Text variant="small">
+            Mercados onde outras casas viram itens desta lista. Ficam fora da comparação acima: a casa não tem preço do resto da
+            lista lá.
+          </Text>
+          {offers.map((offer) => (
+            <View key={offer.storeCnpj} style={styles.offer}>
+              <Text variant="label">{offer.storeLabel}</Text>
+              <Text variant="muted">{describeSharedOffer(offer)}</Text>
+              <ListCard>
+                {offer.items.map(({ itemKey, price }) => {
+                  const item = itemByKey.get(itemKey)!;
+                  return (
+                    <ListRow
+                      key={itemKey}
+                      left={<CategoryIcon category={item.category} name={item.name} size={36} />}
+                      title={item.name}
+                      subtitle={storePriceNote(price, productName) ?? undefined}
+                      right={<Text variant="label">{formatItemCost(price)}</Text>}
+                    />
+                  );
+                })}
+              </ListCard>
+            </View>
+          ))}
+        </Section>
+      ) : null}
+
+      {/* Algum preço da tela é de outras casas: o aviso de que não são em tempo real, uma vez. */}
+      {(best && sharedCount(best)) || offers.length ? <Text variant="small">{SHARED_PRICES_NOTICE}</Text> : null}
 
       {unpriced.length ? (
         <Section title="Sem preço registrado">
@@ -206,6 +255,7 @@ function PlanSummary({
   storeName,
   itemCount,
   otherProduct,
+  shared,
   savings,
 }: {
   plan: StorePlan;
@@ -213,6 +263,8 @@ function PlanSummary({
   itemCount: number;
   /** Itens cujo preço, nesse plano, é de outro produto com o mesmo nome. */
   otherProduct: number;
+  /** Itens cujo preço, nesse plano, é o visto em outras casas (a casa não tem preço deles lá). */
+  shared: number;
   savings: number;
 }) {
   const names = plan.storeIds.map(storeName).join(' + ');
@@ -227,8 +279,9 @@ function PlanSummary({
       </Row>
       <Text variant="title">{formatBRL(plan.total)}</Text>
       <Row style={styles.wrap}>
-        <Badge label={`${plan.knownCount - otherProduct} preços reais`} tone="primary" />
+        <Badge label={`${plan.knownCount - otherProduct - shared} preços reais`} tone="primary" />
         {otherProduct ? <Badge label={`${otherProduct} de outro produto`} tone="warning" /> : null}
+        {shared ? <Badge label={`${shared} de outras casas`} tone="info" /> : null}
         {plan.estimatedCount ? <Badge label={`${plan.estimatedCount} estimados`} tone="warning" /> : null}
         {plan.knownCount + plan.estimatedCount < itemCount ? (
           <Badge label={`${itemCount - plan.knownCount - plan.estimatedCount} sem preço`} />
@@ -243,4 +296,5 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   wrap: { flexWrap: 'wrap' },
   summary: { gap: space.md },
+  offer: { gap: space.sm },
 });
