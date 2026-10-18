@@ -975,12 +975,14 @@ export const PURCHASE_MAX_LINES = 5000;
 
 // Só as linhas de notas confirmadas: o !inner faz o filtro da nota valer para a linha (sem ele, a linha do
 // rascunho viria com a nota vazia). O mercado vem junto; nota sem mercado conta, com `store` nulo.
+// A descrição da linha traz o tamanho da embalagem ("ARROZ 5KG"), para comparar pacotes de tamanhos diferentes.
 const PURCHASE_COLUMNS =
-  'id, receipt_id, quantity, unit, unit_price, total_price, receipt:receipts!inner(purchased_at, store_id, store:stores(name))';
+  'id, receipt_id, raw_description, quantity, unit, unit_price, total_price, receipt:receipts!inner(purchased_at, store_id, store:stores(name))';
 
 type PurchaseLineRow = {
   id: string;
   receipt_id: string;
+  raw_description: string;
   quantity: number;
   unit: Unit;
   unit_price: number;
@@ -1031,6 +1033,7 @@ export async function fetchProductPurchases(productId: string): Promise<Purchase
         unit: row.unit,
         unitPrice: Number(row.unit_price),
         totalPrice: Number(row.total_price),
+        description: row.raw_description,
       });
     }
     if (!rows.length || (left != null && rows.length >= left)) return lines;
