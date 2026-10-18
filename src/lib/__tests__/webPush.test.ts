@@ -426,6 +426,19 @@ describe('avisos no navegador', () => {
       }
     });
 
+    it('um 42883 de outra função, de dentro da que desliga, não é o banco de antes: a troca falha e tenta de novo', async () => {
+      await inBrowser(
+        async (webPush, browser) => {
+          const inner = { code: '42883', message: 'function public.is_push_endpoint(text) does not exist' };
+          browser.failRpc((name) => (name === 'set_push_market_trips' ? inner : null));
+          await expect(webPush.webScheduler.scheduleManyAsync([daily(8)])).rejects.toBe(inner);
+          expect(browser.inserts).toEqual([]);
+          expect(browser.storage.get('kotii:push-subscription')).toBe('sub-0');
+        },
+        { tripsOff: true, lastSubscription: 'sub-0' },
+      );
+    });
+
     it('banco sem a inscrição com a escolha (ou o cache do PostgREST ainda sem ela): a de quatro argumentos e, depois, o pedido que desliga', async () => {
       const missing = [
         {
