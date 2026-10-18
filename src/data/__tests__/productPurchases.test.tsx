@@ -3,8 +3,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { storeKey, type Purchase } from '@/domain/priceHistory';
+import type { StorePrice } from '@/domain/storePrices';
 
-import { fetchProductPurchases, PURCHASE_MAX_LINES, useProductPurchases } from '../market';
+import { fetchProductPurchases, PURCHASE_MAX_LINES, useProductPurchases, useStorePrices } from '../market';
 
 interface ItemRow {
   id: string;
@@ -294,6 +295,43 @@ describe('as compras de um produto', () => {
     });
     await settle(() => seen.at(-1)?.length === 1501);
     expect(seen.at(-1)).toHaveLength(1501);
+    await act(async () => renderer?.unmount());
+    queryClient.clear();
+  });
+  it('"Último preço por mercado" sai das mesmas compras, todas: uma busca só, e o mercado de uma compra antiga continua lá', async () => {
+    // 1500 compras no Assaí, a mais nova sem valor (zero não é preço); uma só no Atacadão, bem antes; uma sem mercado.
+    const newest: ItemRow = { ...riceLines(1)[0], id: 'z-zero', receipt_id: 'r-zero', unit_price: 0, total_price: 0, receipt: { status: 'confirmed', purchased_at: '2026-10-09T15:00:00+00:00', ...assai } };
+    const lastReal: ItemRow = { ...riceLines(1)[0], id: 'z-real', receipt_id: 'r-real', unit_price: 26.5, total_price: 26.5, receipt: { status: 'confirmed', purchased_at: '2026-10-05T15:00:00+00:00', ...assai } };
+    const atacadao: ItemRow = { ...riceLines(1)[0], id: 'a-old', receipt_id: 'r-old', unit_price: 19.9, total_price: 19.9, receipt: { status: 'confirmed', purchased_at: '2025-02-01T15:00:00+00:00', store_id: 'atacadao', store: { name: 'Atacadão' } } };
+    const noStore: ItemRow = { ...riceLines(1)[0], id: 'n-none', receipt_id: 'r-none', unit_price: 9.9, total_price: 9.9, receipt: { status: 'confirmed', purchased_at: '2026-10-10T15:00:00+00:00', store_id: null, store: null } };
+    mockTable.rows = [...riceLines(1500), newest, lastReal, atacadao, noStore];
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+    const seen: { purchases?: Purchase[]; byStore?: StorePrice[] } = {};
+    function Probe() {
+      seen.purchases = useProductPurchases('arroz').data;
+      seen.byStore = useStorePrices('arroz').data;
+      return null;
+    }
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(
+        <QueryClientProvider client={queryClient}>
+          <Probe />
+        </QueryClientProvider>,
+      );
+    });
+    for (let turn = 0; turn < 50 && !seen.byStore; turn++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+    expect(seen.byStore).toEqual([
+      { storeId: 'atacadao', unit: 'un', unitPrice: 19.9, purchasedAt: '2025-02-01T15:00:00+00:00' },
+      { storeId: 'assai', unit: 'un', unitPrice: 26.5, purchasedAt: '2026-10-05T15:00:00+00:00' },
+    ]);
+    expect(seen.purchases).toHaveLength(1504);
+    // As duas leituras, uma busca: duas páginas de mil, nem um pedido a mais.
+    expect(mockTable.asked).toHaveLength(2);
     await act(async () => renderer?.unmount());
     queryClient.clear();
   });
