@@ -3,8 +3,10 @@
 // e unidade, tirado de uma nota lida por alguma casa, sem dizer qual
 // (shared_latest_prices): os dos mercados da própria casa e, dos outros, os
 // mais baratos do estado onde ela compra. Aqui fica o que vale mostrar, em que
-// ordem, e as frases. Nada disso entra em conta nenhuma: a estimativa da lista
-// e o "Onde comprar" continuam só com os preços da própria casa.
+// ordem, e as frases. Na estimativa da lista e no "Onde comprar" eles só
+// cobrem onde a casa não tem preço próprio (sharedQuotes aqui, e a regra em
+// listEstimate): o preço da casa sempre vence, e eles não entram no nível de
+// preço dos mercados.
 
 import { formatShortDate } from './dates';
 import { formatBRL } from './money';
@@ -323,4 +325,36 @@ export function describeSharedPrice(row: SharedPriceRow, referenceYear?: number)
 /** A linha em Preços, embaixo do produto: "Visto por R$ 21,90/un · Atacadão Mooca · 10 out, em outra casa". */
 export function cheaperSharedHint(row: SharedPriceRow, referenceYear?: number): string {
   return `Visto por ${sharedPriceLabel(row)} · ${sharedStoreLabel(row)} · ${formatShortDate(row.seenOn, referenceYear)}, em outra casa`;
+}
+
+/**
+ * Um preço de outra casa pronto para a conta da lista: o de sharedPriceRows
+ * (por kg, por litro ou por unidade, sem o que a casa já sabe), com o produto
+ * e o mercado da casa que tem esse CNPJ. `storeId` null: o mercado não é da
+ * casa (vai para "Em outros mercados", no "Onde comprar").
+ */
+export interface SharedQuote extends SharedPriceRow {
+  productId: string;
+  storeId: string | null;
+}
+
+/**
+ * Os preços de outras casas como entram na lista. Mercado da casa só pelo
+ * CNPJ: dois mercados da casa com o mesmo CNPJ recebem o preço os dois. A
+ * linha que o banco diz ser de um mercado da casa, mas cujo CNPJ não está nos
+ * mercados que a casa tem agora (a lista de mercados é de antes), fica de
+ * fora: não é para aparecer como mercado de fora.
+ */
+export function sharedQuotes(shared: readonly SharedPrice[], own: readonly OwnPrice[], stores: readonly StoreCnpj[]): SharedQuote[] {
+  const idsByCnpj = new Map<string, string[]>();
+  for (const store of stores) if (store.cnpj) idsByCnpj.set(store.cnpj, [...(idsByCnpj.get(store.cnpj) ?? []), store.id]);
+  const quotes: SharedQuote[] = [];
+  for (const [productId, rows] of sharedRowsByProduct(shared, own, stores)) {
+    for (const row of rows) {
+      const ids = idsByCnpj.get(row.storeCnpj) ?? [];
+      if (ids.length) quotes.push(...ids.map((storeId) => ({ ...row, productId, storeId })));
+      else if (!row.mine) quotes.push({ ...row, productId, storeId: null });
+    }
+  }
+  return quotes;
 }

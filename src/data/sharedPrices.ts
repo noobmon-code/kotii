@@ -15,10 +15,21 @@ import { supabase, unwrap } from '@/lib/supabase';
 
 import { isMissingFunction } from './missingSchema';
 
-/** O PostgREST corta em 1000 linhas por pedido (max_rows padrão do Supabase). */
+/**
+ * O PostgREST corta em 1000 linhas por pedido (max_rows padrão do Supabase): uma página maior não vem maior,
+ * só cortada sem aviso.
+ */
 const PAGE = 1000;
-/** 10 mil preços de outras casas: além disso, o que veio já basta (são dicas, não entram em conta nenhuma). */
+/**
+ * 10 mil preços de outras casas: além disso, o que veio já basta. Eles só cobrem, na lista e no "Onde comprar",
+ * onde a casa não tem preço; faltar algum deixa o item como estava (estimado ou sem preço), nunca com conta errada.
+ */
 const MAX_PAGES = 10;
+/**
+ * Depois da primeira página cheia, as seguintes vão de três em três ao mesmo tempo: o "Onde comprar" espera a
+ * primeira busca, e dez pedidos em fila seriam dez esperas. Na casa comum, a primeira já é a última.
+ */
+const PARALLEL_PAGES = 3;
 
 /**
  * Os preços de outras casas para os produtos desta: o mais recente de cada
@@ -26,11 +37,11 @@ const MAX_PAGES = 10;
  * hoje (cada preço aparece a partir do dia seguinte ao da confirmação); dos
  * mercados da própria casa (`mine`) todos e, dos outros, os 5 mais baratos do
  * estado onde ela compra. null quando a função não existe no banco. Página
- * por página, na ordem da chave da resposta, para as páginas se encaixarem.
+ * por página, na ordem da chave da resposta, para as páginas se encaixarem;
+ * junta-se até a primeira incompleta.
  */
 export async function fetchSharedPrices(db: SupabaseClient = supabase): Promise<SharedPrice[] | null> {
-  const prices: SharedPrice[] = [];
-  for (let page = 0; page < MAX_PAGES; page++) {
+  const fetchPage = async (page: number) => {
     const result = await db
       .rpc('shared_latest_prices')
       .order('product_id')
@@ -38,13 +49,23 @@ export async function fetchSharedPrices(db: SupabaseClient = supabase): Promise<
       .order('unit')
       .range(page * PAGE, (page + 1) * PAGE - 1);
     if (result.error && isMissingFunction(result.error, 'shared_latest_prices')) return null;
-    const rows = (unwrap(result) ?? []) as SharedPrice[];
-    // O preço é numeric no banco: garante número, venha como vier. "É mercado da casa" só com um sim de
-    // verdade, e estado que não veio é "não se sabe".
-    prices.push(...rows.map((row) => ({ ...row, unit_price: Number(row.unit_price), store_uf: row.store_uf ?? null, mine: row.mine === true })));
-    if (rows.length < PAGE) break;
+    return (unwrap(result) ?? []) as SharedPrice[];
+  };
+  const first = await fetchPage(0);
+  if (!first) return null;
+  const pages: SharedPrice[][] = [first];
+  let next = 1;
+  while (pages.at(-1)!.length === PAGE && next < MAX_PAGES) {
+    const batch = Array.from({ length: Math.min(PARALLEL_PAGES, MAX_PAGES - next) }, (_, i) => next + i);
+    next += batch.length;
+    for (const rows of await Promise.all(batch.map(fetchPage))) {
+      pages.push(rows ?? []);
+      if ((rows ?? []).length < PAGE) break;
+    }
   }
-  return prices;
+  // O preço é numeric no banco: garante número, venha como vier. "É mercado da casa" só com um sim de
+  // verdade, e estado que não veio é "não se sabe".
+  return pages.flat().map((row) => ({ ...row, unit_price: Number(row.unit_price), store_uf: row.store_uf ?? null, mine: row.mine === true }));
 }
 
 /**
