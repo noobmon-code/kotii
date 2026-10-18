@@ -170,6 +170,19 @@ describe('"Onde comprar" com os preços de outras casas', () => {
     expect(page).not.toMatch(/\d+ casas/);
   });
 
+  it('o item que a casa nunca comprou, só com preço de outras casas: à parte, com o preço da lista, e não "sem preço"', async () => {
+    mockQueries.items = loaded([listItem('a', 'Arroz', 'arroz'), listItem('f', 'Feijão', 'feijao'), listItem('l', 'Leite', 'leite')]);
+    mockQueries.shared = loaded([seen('leite', DIA, 4.9, 2, { mine: true })]);
+    const page = await mount();
+    expect(page).toContain('Só com preço de outras casas');
+    expect(page).toContain(`Leite\nSó há preço de outras casas: Dia, visto em ${formatShortDate(day(2))}\n~R$ 4,90`);
+    expect(page).not.toContain('Sem preço registrado');
+    expect(page).not.toContain('Ainda não aparece em nenhuma nota');
+    // Os planos seguem só com os itens que a casa tem preço: nada de "sem preço" no resumo.
+    expect(page).not.toMatch(/\d+ sem preço/);
+    expect(page).toContain(SHARED_PRICES_NOTICE);
+  });
+
   it.each([
     ['a busca falhou', failed],
     ['a busca não saiu (sem internet)', () => ({ ...onTheWay(), fetchStatus: 'paused' as const })],

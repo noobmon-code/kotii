@@ -362,6 +362,14 @@ describe('preços de outras casas na conta da lista', () => {
     expect(mockSeen.hints?.has('f')).toBe(false);
   });
 
+  it('sem os preços da casa carregados, nada de outras casas: eles ocupariam o lugar dos dela', async () => {
+    mockQueries.shared = loaded([seen('feijao', 8.5, 2), seen('arroz', 19.9, 1)]);
+    mockQueries.prices = failed();
+    expect(await mount()).not.toContain(notice);
+    expect(mockSeen.hints?.has('a')).toBe(false);
+    expect(mockSeen.hints?.has('f')).toBe(false);
+  });
+
   it('sem os mercados da casa carregados, nada de outras casas: não dá para saber quais são dela', async () => {
     mockQueries.shared = loaded([seen('feijao', 8.5, 2)]);
     mockQueries.stores = failed();

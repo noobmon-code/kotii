@@ -6,7 +6,9 @@ import {
   formatItemCost,
   itemFacts,
   listSharedElsewhere,
+  listSharedOnly,
   listStorePrices,
+  sharedOnlyNote,
   storePriceNote,
   type EstimateItem,
   type EstimatePrice,
@@ -152,6 +154,36 @@ describe('preços de outras casas na conta da lista', () => {
     expect(itemFacts(leite, undefined, { storeName: () => undefined, today: '2026-10-12' })).toEqual([
       'Preço de outras casas na conta: R$ 4,20/un (ATACADAO S.A. (SP), visto em 12 out).',
       SHARED_PRICES_NOTICE,
+    ]);
+  });
+});
+
+describe('o item só com preço de outras casas e a escolha do mercado', () => {
+  it('fica à parte, com o mesmo preço que a lista mostra sem mercado escolhido; o item com preço da casa não', () => {
+    const shared = [seen('leite', null, 4.2, '2026-10-12'), seen('leite', 'dia', 4.9, '2026-10-08'), seen('feijao', 'dia', 7, '2026-10-10')];
+    const items = [...list, item('l', 'Leite', 'leite', 2)];
+    const only = listSharedOnly(items, prices, { shared });
+    expect([...only.keys()]).toEqual(['l']);
+    const lastPaid = estimateList(items, prices, { shared }).byItem.get('l')!;
+    expect(only.get('l')).toMatchObject({ cost: lastPaid.cost, shared: lastPaid.shared, source: 'shared' });
+    expect(formatItemCost(only.get('l')!)).toBe('~R$ 9,80');
+    expect(sharedOnlyNote(only.get('l')!, (id) => (id === 'dia' ? 'Dia' : undefined), 2026)).toBe('Só há preço de outras casas: Dia, visto em 8 out');
+    expect(sharedOnlyNote({ shared: shared[0] }, undefined, 2026)).toBe('Só há preço de outras casas: ATACADAO S.A. (SP), visto em 12 out');
+    // Fora dos planos, nenhum item fica "sem preço" por causa dele.
+    const wanted = items.filter((i) => !only.has(i.id));
+    const rec = recommendStores(asWanted(wanted), prices, 1, {
+      storeIndex: storePriceIndex(prices),
+      priceAt: listStorePrices(wanted, prices, { shared }),
+    });
+    expect(rec.unpricedKeys).toEqual([]);
+  });
+
+  it('"Onde você está comprando?" só oferece mercados com preço da casa, e conta o de outras casas só neles', () => {
+    const shared = [seen('feijao', 'dia', 7, '2026-10-10'), seen('arroz', 'so-de-outras', 20, '2026-10-10')];
+    const estimate = estimateList(list, prices, { shared });
+    expect(estimate.stores).toEqual([
+      { storeId: 'assai', knownCount: 2 },
+      { storeId: 'dia', knownCount: 2 },
     ]);
   });
 });

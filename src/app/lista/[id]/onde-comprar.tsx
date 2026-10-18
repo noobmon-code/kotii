@@ -4,7 +4,15 @@ import { StyleSheet, View } from 'react-native';
 
 import { useLatestPrices, useListItems, useListLinks, useProducts, useStores } from '@/data/market';
 import { useSharedPrices } from '@/data/sharedPrices';
-import { formatItemCost, listSharedElsewhere, listStorePrices, storePriceNote, unpricedNote } from '@/domain/listEstimate';
+import {
+  formatItemCost,
+  listSharedElsewhere,
+  listSharedOnly,
+  listStorePrices,
+  sharedOnlyNote,
+  storePriceNote,
+  unpricedNote,
+} from '@/domain/listEstimate';
 import { formatBRL, formatQuantity } from '@/domain/money';
 import { storePriceIndex } from '@/domain/priceLevel';
 import { describeSharedOffer, recommendStores, sharedStoreOffers, type StorePlan } from '@/domain/recommendation';
@@ -54,15 +62,21 @@ export default function WhereToBuyScreen() {
       unitPrice: Number(p.unit_price),
       purchasedAt: p.purchased_at,
     }));
-    // Os mercados da casa se reconhecem pelo CNPJ: sem eles, nada de outras casas.
-    const seenElsewhere = shared.data && stores.data ? sharedQuotes(shared.data, prices.data ?? [], stores.data) : [];
+    // Os mercados da casa se reconhecem pelo CNPJ, e o preço da casa sempre vence: sem os mercados ou sem os
+    // preços da casa carregados, nada de outras casas (eles ocupariam o lugar dos dela).
+    const seenElsewhere = shared.data && stores.data && prices.data ? sharedQuotes(shared.data, prices.data, stores.data) : [];
     const sources = { links: links.data, products: products.data ?? [], shared: seenElsewhere };
-    const wanted = pending.map((i) => ({ id: i.id, name: i.name, productId: i.product_id, quantity: Number(i.quantity), unit: i.unit }));
+    const all = pending.map((i) => ({ id: i.id, name: i.name, productId: i.product_id, quantity: Number(i.quantity), unit: i.unit }));
+    // O item sem preço nenhum da casa, só com o de outras casas, fica fora dos planos (não há preço dele em todo
+    // mercado nem média da casa para estimar) e aparece à parte, com o preço que a lista mostra.
+    const sharedOnly = listSharedOnly(all, quotes, sources);
+    const wanted = all.filter((i) => !sharedOnly.has(i.id));
     return {
       quotes,
       wanted: wanted.map((i) => ({ key: i.id, productId: i.productId, quantity: i.quantity, unit: i.unit })),
       priceAt: listStorePrices(wanted, quotes, sources),
-      elsewhere: listSharedElsewhere(wanted, quotes, sources),
+      elsewhere: listSharedElsewhere(all, quotes, sources),
+      sharedOnly,
       storeIndex: storePriceIndex(quotes),
     };
   }, [pending, prices.data, links.data, products.data, shared.data, stores.data]);
@@ -99,6 +113,10 @@ export default function WhereToBuyScreen() {
   const singlePlans = recommendation.plans.filter((p) => p.storeIds.length === 1);
   const bestSingle = singlePlans[0];
   const unpriced = recommendation.unpricedKeys.map((k) => itemByKey.get(k)!).filter(Boolean);
+  const sharedOnly = pending.flatMap((item) => {
+    const price = account.sharedOnly.get(item.id);
+    return price ? [[item, price] as const] : [];
+  });
 
   return (
     <Screen edges={[]}>
@@ -123,7 +141,7 @@ export default function WhereToBuyScreen() {
           <PlanSummary
             plan={best}
             storeName={storeName}
-            itemCount={pending.length}
+            itemCount={account.wanted.length}
             otherProduct={otherProductCount(best)}
             shared={sharedCount(best)}
             savings={best.storeIds.length > 1 && bestSingle ? bestSingle.total - best.total : 0}
@@ -209,8 +227,25 @@ export default function WhereToBuyScreen() {
         </Section>
       ) : null}
 
+      {sharedOnly.length ? (
+        <Section title="Só com preço de outras casas">
+          <ListCard>
+            {sharedOnly.map(([item, price]) => (
+              <ListRow
+                key={item.id}
+                left={<CategoryIcon category={item.category} name={item.name} size={36} />}
+                title={item.name}
+                subtitle={sharedOnlyNote(price, (storeId) => stores.data?.find((s) => s.id === storeId)?.name)}
+                right={<Text variant="label">{formatItemCost(price)}</Text>}
+              />
+            ))}
+          </ListCard>
+          <Text variant="small">A casa ainda não comprou esses itens: ficam fora da comparação e dos totais acima.</Text>
+        </Section>
+      ) : null}
+
       {/* Algum preço da tela é de outras casas: o aviso de que não são em tempo real, uma vez. */}
-      {(best && sharedCount(best)) || offers.length ? <Text variant="small">{SHARED_PRICES_NOTICE}</Text> : null}
+      {(best && sharedCount(best)) || offers.length || sharedOnly.length ? <Text variant="small">{SHARED_PRICES_NOTICE}</Text> : null}
 
       {unpriced.length ? (
         <Section title="Sem preço registrado">

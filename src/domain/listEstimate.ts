@@ -381,6 +381,27 @@ export function listStorePrices(
 }
 
 /**
+ * Os itens da lista sem preço nenhum da casa, só com o visto em outras casas,
+ * e o preço deles: o mesmo que a lista mostra sem mercado escolhido (o visto
+ * por último, de preferência num mercado da casa). No "Onde comprar" eles
+ * ficam fora dos planos (não têm resposta em todo mercado, e não há média da
+ * casa para estimar) e aparecem à parte.
+ */
+export function listSharedOnly(
+  items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId' | 'quantity' | 'unit'>[],
+  prices: readonly EstimatePrice[],
+  sources: PriceSources = {},
+): Map<string, StorePrice> {
+  const price = itemPricer(prices, sources);
+  const byItem = new Map<string, StorePrice>();
+  for (const item of items) {
+    const priced = price(item);
+    if (priced && !priced.last) byItem.set(item.id, priced.lastPaid());
+  }
+  return byItem;
+}
+
+/**
  * Os preços de outras casas para os itens da lista em mercados que não são da
  * casa ("Em outros mercados", no "Onde comprar"): por item, um por mercado,
  * do mesmo produto de onde sai o preço do item na lista. Só os itens que têm.
@@ -415,12 +436,13 @@ export function estimateList(
   const price = itemPricer(prices, { links, products, shared }, index);
 
   const byItem = new Map<string, ItemEstimate>();
-  // Todo mercado com nível de preço pode ser escolhido, mesmo sem preço de nota para esta lista.
+  // Todo mercado com nível de preço pode ser escolhido, mesmo sem preço de nota para esta lista. Só esses: o
+  // mercado da casa em que só outras casas viram preço (sem nota dela) não entra na escolha.
   const known = new Map<string, number>([...index.keys()].map((store) => [store, 0]));
   for (const item of items) {
     const priced = price(item);
     if (!priced) continue;
-    for (const store of priced.stores) known.set(store, (known.get(store) ?? 0) + 1);
+    for (const store of priced.stores) if (known.has(store)) known.set(store, known.get(store)! + 1);
     const answer = storeId ? priced.at(storeId) : priced.lastPaid();
     if (!answer) continue;
     const { cost, unitPrice, unit, kind, approximateQuantity, productId, used, shared: seen } = answer;
@@ -703,6 +725,21 @@ export function storePriceNote(
     return `Preço de ${(price.used && productName?.(price.used.productId)) || 'outro produto com esse nome'}`;
   }
   return price.approximateQuantity ? 'Preço por unidade da nota (quantidade em outra unidade)' : null;
+}
+
+/**
+ * A linha do item que só tem preço de outras casas, em "Onde comprar": de
+ * que mercado (o nome que a casa conhece, quando é dela) e de que dia.
+ */
+export function sharedOnlyNote(
+  price: Pick<StorePrice, 'shared'>,
+  storeName: (storeId: string) => string | undefined = () => undefined,
+  referenceYear?: number,
+): string {
+  const seen = price.shared;
+  if (!seen) return 'Só há preço de outras casas';
+  const place = (seen.storeId ? storeName(seen.storeId) : undefined) ?? sharedStoreLabel(seen);
+  return `Só há preço de outras casas: ${place}, ${seenLabel(seen, referenceYear)}`;
 }
 
 /**

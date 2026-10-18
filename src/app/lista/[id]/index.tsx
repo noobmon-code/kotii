@@ -114,7 +114,7 @@ export default function ShoppingListScreen() {
   // Preços de outras casas: só onde a casa não tem preço (domain/listEstimate). Sem a função no banco (null), com a
   // busca a caminho ou depois de uma que falhou, a conta sai só com os preços da casa: nunca vira erro na tela.
   const shared = useSharedPrices();
-  const edit =useEditListItem(id);
+  const edit = useEditListItem(id);
   const setPhoto = useSetListItemPhoto();
   const householdId = useHouseholdId();
   const queryClient = useQueryClient();
@@ -334,16 +334,16 @@ export default function ShoppingListScreen() {
   const chosenStore = currentStoreChoice(storeChoice);
   const storeId = chosenStore && storeNames?.has(chosenStore) ? chosenStore : null;
 
+  // Os mercados da casa se reconhecem pelo CNPJ, e o preço da casa sempre vence: sem os mercados ou sem os preços
+  // da casa carregados, os de outras casas ficam de fora (ocupariam o lugar dos dela).
+  const seenElsewhere = useMemo(
+    () => (shared.data && stores.data && prices.data ? sharedQuotes(shared.data, prices.data, stores.data) : []),
+    [shared.data, prices.data, stores.data],
+  );
   // Lista no mercado (domain/listEstimate): quanto deve dar e o que está na despensa. Sem os preços, as
   // ligações ou a despensa carregados (sem internet e nunca vistos neste aparelho), mostra o que der. Só o selo
   // "Na despensa" espera o histórico de compras: sem ele, apareceria justamente no que acabou. O aparelho que
   // nunca carregou o histórico fica sem selo nenhum.
-  // Os mercados da casa se reconhecem pelo CNPJ: sem eles carregados, não dá para saber quais são dela, e os preços
-  // de outras casas ficam de fora.
-  const seenElsewhere = useMemo(
-    () => (shared.data && stores.data ? sharedQuotes(shared.data, prices.data ?? [], stores.data) : []),
-    [shared.data, prices.data, stores.data],
-  );
   const market = useMemo(() => {
     const all = items.data ?? [];
     const estimate = estimateList(
