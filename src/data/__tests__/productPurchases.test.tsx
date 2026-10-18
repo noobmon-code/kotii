@@ -11,6 +11,7 @@ interface ItemRow {
   id: string;
   receipt_id: string;
   product_id: string;
+  raw_description: string;
   quantity: number;
   unit: string;
   unit_price: number;
@@ -119,6 +120,7 @@ function riceLines(count: number): ItemRow[] {
     id: `i${String(n).padStart(6, '0')}`,
     receipt_id: `r${n}`,
     product_id: 'arroz',
+    raw_description: 'ARROZ TIO JOAO T1 5KG',
     quantity: 1,
     unit: 'un',
     unit_price: 20 + (n % 50) / 10,
@@ -151,7 +153,7 @@ describe('as compras de um produto', () => {
     for (const request of mockTable.asked) {
       expect(request).toMatchObject({
         table: 'receipt_items',
-        columns: 'id, receipt_id, quantity, unit, unit_price, total_price, receipt:receipts!inner(purchased_at, store_id, store:stores(name))',
+        columns: 'id, receipt_id, raw_description, quantity, unit, unit_price, total_price, receipt:receipts!inner(purchased_at, store_id, store:stores(name))',
         count: 'exact',
         order: ['id'],
         limit: 1000,
@@ -163,13 +165,13 @@ describe('as compras de um produto', () => {
 
   it('a linha chega como o histórico a usa', async () => {
     mockTable.rows = [
-      { id: 'i1', receipt_id: 'r1', product_id: 'arroz', quantity: 2, unit: 'un', unit_price: 25.9, total_price: 51.8, receipt: { status: 'confirmed', purchased_at: '2026-10-10T15:00:00+00:00', ...assai } },
+      { id: 'i1', receipt_id: 'r1', product_id: 'arroz', raw_description: 'ARROZ TIO JOAO T1 5KG', quantity: 2, unit: 'un', unit_price: 25.9, total_price: 51.8, receipt: { status: 'confirmed', purchased_at: '2026-10-10T15:00:00+00:00', ...assai } },
       // Nota sem mercado conta.
-      { id: 'i2', receipt_id: 'r2', product_id: 'arroz', quantity: 0.755, unit: 'kg', unit_price: 39.9, total_price: 30.12, receipt: { status: 'confirmed', purchased_at: '2026-09-03T15:00:00+00:00', store_id: null, store: null } },
+      { id: 'i2', receipt_id: 'r2', product_id: 'arroz', raw_description: 'ARROZ GRANEL KG', quantity: 0.755, unit: 'kg', unit_price: 39.9, total_price: 30.12, receipt: { status: 'confirmed', purchased_at: '2026-09-03T15:00:00+00:00', store_id: null, store: null } },
     ];
     expect(await fetchProductPurchases('arroz')).toEqual([
-      { id: 'i1', receiptId: 'r1', storeId: 'assai', storeName: 'Assaí', purchasedAt: '2026-10-10T15:00:00+00:00', quantity: 2, unit: 'un', unitPrice: 25.9, totalPrice: 51.8 },
-      { id: 'i2', receiptId: 'r2', storeId: null, storeName: null, purchasedAt: '2026-09-03T15:00:00+00:00', quantity: 0.755, unit: 'kg', unitPrice: 39.9, totalPrice: 30.12 },
+      { id: 'i1', receiptId: 'r1', storeId: 'assai', storeName: 'Assaí', purchasedAt: '2026-10-10T15:00:00+00:00', quantity: 2, unit: 'un', unitPrice: 25.9, totalPrice: 51.8, description: 'ARROZ TIO JOAO T1 5KG' },
+      { id: 'i2', receiptId: 'r2', storeId: null, storeName: null, purchasedAt: '2026-09-03T15:00:00+00:00', quantity: 0.755, unit: 'kg', unitPrice: 39.9, totalPrice: 30.12, description: 'ARROZ GRANEL KG' },
     ]);
     expect(mockTable.asked).toHaveLength(1);
   });
@@ -286,6 +288,8 @@ describe('as compras de um produto', () => {
     expect(seen.at(-1)).toHaveLength(1500);
     // Na seção, o mercado é o nome dele (domain/priceHistory, storeKey).
     expect(seen.at(-1)![0]).toMatchObject({ store: storeKey('Assaí'), storeName: 'Assaí', baseUnit: 'un', discounted: false });
+    // O tamanho vem da descrição da nota; com um tamanho só, o preço segue por unidade.
+    expect(seen.at(-1)![0]).toMatchObject({ pack: { unit: 'kg', amount: 5, label: '5 kg' }, packagePrice: null });
     expect(queryClient.getQueryData(['priceHistory', 'purchases', 'arroz'])).toHaveLength(1500);
 
     // O que confirmar e excluir uma nota fazem (data/receipts): invalidar ['priceHistory'] busca as compras de novo.

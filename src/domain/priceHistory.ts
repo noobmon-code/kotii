@@ -7,11 +7,16 @@
 // preço: fica na lista como "sem valor" e fora de tudo o que fala de preço.
 // Unidades que não se comparam (kg e un) nunca se misturam: cada uma tem o seu
 // histórico. Aqui um mercado é o nome dele: lojas de mesmo nome são uma só.
+// Embalagens de tamanhos diferentes ("ARROZ 5KG" e "ARROZ 1KG", ambos "1 un")
+// se comparam pelo preço por kg, litro ou item do pacote, com o tamanho lido
+// na descrição da nota (packageSize); a compra de tamanho desconhecido fica no
+// histórico por unidade, como antes, sem tamanho inventado.
 // Tudo o que a seção mostra (frases, gráfico, linhas) sai daqui; a tela só
 // desenha.
 
 import { addMonths, diffDays, formatShortDate, toISODate } from './dates';
 import { formatBRL, formatQuantity } from './money';
+import { packageSize, samePackageSize, type PackageSize } from './packageSize';
 import { pricePerBase } from './units';
 
 /** Uma linha de nota confirmada ligada ao produto, como o banco a dá. */
@@ -29,6 +34,8 @@ export interface PurchaseLine {
   unitPrice: number;
   /** O que foi pago na linha (já com o desconto do item, se houve). */
   totalPrice: number;
+  /** A descrição como veio na nota ("ARROZ T1 5KG"), de onde sai o tamanho da embalagem; sem ela, o tamanho não é conhecido. */
+  description?: string;
 }
 
 /** Uma compra do produto: as linhas iguais de uma mesma nota (mesma unidade, mesmo preço impresso), somadas. */
@@ -45,10 +52,18 @@ export interface Purchase {
   /** Quantidade e unidade como na nota ("500 ml"). */
   quantity: number;
   unit: string;
-  /** A unidade em que os preços se comparam: kg, l ou un. */
+  /**
+   * A unidade em que os preços se comparam: kg, l, un ou PACK_ITEM. A compra por unidade de uma embalagem de
+   * tamanho conhecido passa a kg, l ou PACK_ITEM quando o produto tem embalagens de tamanhos diferentes (ou também
+   * é vendido a peso): ver compareBySize.
+   */
   baseUnit: string;
   /** O preço impresso, por `baseUnit`, já em centavos inteiros (roundPrice). Zero: compra sem valor. */
   price: number;
+  /** O tamanho da embalagem lido na nota, só na compra por unidade; null quando a nota não diz (ou deixa dúvida). */
+  pack: PackageSize | null;
+  /** Na compra comparada pelo tamanho, o preço impresso por embalagem (o `price` é por kg, l ou item); senão, null. */
+  packagePrice: number | null;
   /** O que foi pago, somando as linhas. */
   paid: number;
   discounted: boolean;
@@ -116,15 +131,21 @@ const newestFirst = (a: Purchase, b: Purchase) => b.time - a.time || (a.key < b.
  */
 export function toPurchases(lines: PurchaseLine[]): Purchase[] {
   const byKey = new Map<string, Purchase>();
+  // O preço impresso, sem arredondar: o preço por kg sai dele, não do já arredondado.
+  const printed = new Map<string, number>();
   for (const line of lines) {
     const key = `${line.receiptId}|${line.unit}|${line.unitPrice}`;
+    const pack = line.unit === 'un' && line.description ? packageSize(line.description) : null;
     const same = byKey.get(key);
     if (same) {
       same.quantity = Math.round((same.quantity + line.quantity) * 1000) / 1000;
       same.paid = cents(same.paid + line.totalPrice) / 100;
       same.discounted = same.discounted || hasDiscount(line);
+      // Duas linhas somadas com tamanhos diferentes (ou uma sem tamanho): o tamanho da compra não é conhecido.
+      if (!(same.pack && pack && samePackageSize(same.pack, pack))) same.pack = null;
       continue;
     }
+    printed.set(key, line.unitPrice);
     const at = new Date(line.purchasedAt);
     const base = pricePerBase(line.unitPrice, line.unit);
     const storeName = line.storeId ? (line.storeName ?? 'Mercado') : NO_STORE_NAME;
@@ -140,18 +161,50 @@ export function toPurchases(lines: PurchaseLine[]): Purchase[] {
       unit: line.unit,
       baseUnit: base.unit,
       price: roundPrice(base.unitPrice),
+      pack,
+      packagePrice: null,
       paid: line.totalPrice,
       discounted: hasDiscount(line),
     });
   }
-  return [...byKey.values()].sort(newestFirst);
+  return compareBySize([...byKey.values()], printed).sort(newestFirst);
+}
+
+/** A unidade das compras comparadas pelo item do pacote ("OVOS C/12" e "OVOS C/30": o preço de cada ovo). */
+export const PACK_ITEM = 'item';
+
+/**
+ * Embalagens de tamanhos diferentes do mesmo produto se comparam pelo tamanho:
+ * "ARROZ 5KG" a R$ 24,90 e "ARROZ 1KG" a R$ 5,49 são R$ 4,98 e R$ 5,49 por kg,
+ * e não um preço que caiu para um quinto. Para cada grandeza (peso, volume,
+ * itens do pacote), as compras por unidade com o tamanho conhecido passam a
+ * ser por kg, litro ou item quando há pelo menos dois tamanhos, ou quando o
+ * produto também é vendido a peso (ou a litro): aí entram no mesmo histórico
+ * que a compra a granel, que já tem preço por kg. Com um tamanho só, nada
+ * muda: o preço da embalagem já se compara. A compra sem tamanho conhecido
+ * fica por unidade, à parte. `printed`: o preço impresso de cada compra.
+ */
+function compareBySize(purchases: Purchase[], printed: ReadonlyMap<string, number>): Purchase[] {
+  const sold = new Set(purchases.map((p) => p.baseUnit));
+  for (const measure of ['kg', 'l', 'un'] as const) {
+    const packed = purchases.filter((p) => p.baseUnit === 'un' && p.pack?.unit === measure);
+    const sizes = packed.filter((p, index) => packed.findIndex((other) => samePackageSize(other.pack!, p.pack!)) === index);
+    const byWeight = measure !== 'un' && sold.has(measure);
+    if (!packed.length || (sizes.length < 2 && !byWeight)) continue;
+    for (const p of packed) {
+      p.packagePrice = p.price;
+      p.baseUnit = measure === 'un' ? PACK_ITEM : measure;
+      p.price = roundPrice((printed.get(p.key) ?? p.price) / p.pack!.amount);
+    }
+  }
+  return purchases;
 }
 
 // ---------------------------------------------------------------------------
 // Unidade, período e mercado
 
-const UNIT_ORDER = ['un', 'kg', 'l'];
-const UNIT_LABELS: Record<string, string> = { un: 'por unidade', kg: 'por kg', l: 'por litro' };
+const UNIT_ORDER = ['un', PACK_ITEM, 'kg', 'l'];
+const UNIT_LABELS: Record<string, string> = { un: 'por unidade', [PACK_ITEM]: 'por item do pacote', kg: 'por kg', l: 'por litro' };
 
 export const unitLabel = (unit: string) => UNIT_LABELS[unit] ?? `por ${unit}`;
 
@@ -224,7 +277,9 @@ export function storeOptions(purchases: Purchase[]): Option[] {
 // O resumo, em frases
 
 const yearOf = (today: string) => Number(today.slice(0, 4));
-const perUnit = (p: Purchase) => `${formatBRL(p.price)}/${p.baseUnit}`;
+/** "R$ 4,98/kg", "R$ 25,90/un"; por item do pacote, "R$ 0,83 cada". */
+const perUnit = (p: Pick<Purchase, 'price' | 'baseUnit'>) =>
+  p.baseUnit === PACK_ITEM ? `${formatBRL(p.price)} cada` : `${formatBRL(p.price)}/${p.baseUnit}`;
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** "R$ 25,90/un · Assaí · 10 out". */
@@ -462,6 +517,8 @@ export interface PurchaseRow {
   detail: string;
   /** O preço impresso: "R$ 25,90/un"; "sem valor" quando a compra não tem preço. */
   price: string;
+  /** Na compra comparada pelo tamanho, a embalagem e o preço que se compara: "5 kg · R$ 4,98/kg" ("5 kg" sem valor); senão, null. */
+  size: string | null;
   priced: boolean;
   discounted: boolean;
 }
@@ -478,7 +535,9 @@ export function purchaseRow(purchase: Purchase, today: string): PurchaseRow {
     receiptId: purchase.receiptId,
     title: purchase.storeName,
     detail: `${formatShortDate(purchase.day, yearOf(today))} · ${formatQuantity(purchase.quantity, purchase.unit)} · ${paid}`,
-    price: priced ? perUnit(purchase) : NO_VALUE,
+    // O preço da direita é o impresso, por embalagem; o que se compara (por kg, litro ou item) vem na linha do tamanho.
+    price: priced ? perUnit(purchase.packagePrice == null ? purchase : { price: purchase.packagePrice, baseUnit: 'un' }) : NO_VALUE,
+    size: purchase.packagePrice != null && purchase.pack ? (priced ? `${purchase.pack.label} · ${perUnit(purchase)}` : purchase.pack.label) : null,
     priced,
     discounted: purchase.discounted,
   };
