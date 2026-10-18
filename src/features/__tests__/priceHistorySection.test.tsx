@@ -379,4 +379,27 @@ describe('o histórico de preço na tela do produto', () => {
     expect(storeChips.map((chip) => chip.props.label)).toEqual(['Todos', 'Assaí', 'SUPERMERCADOS BH COMERCIO DE ALIMENTOS S/A']);
     for (const chip of storeChips) expect(StyleSheet.flatten(chip.parent!.props.style)).toMatchObject({ maxWidth: '100%' });
   });
+
+  it('pacotes de 5 kg e de 1 kg: o resumo compara o preço por kg, e cada compra diz o tamanho', async () => {
+    const text = await mount(
+      loaded(
+        toPurchases([
+          line('2026-10-10', 24.9, { description: 'ARROZ TIO JOAO T1 5KG' }),
+          line('2026-08-12', 5.49, { description: 'ARROZ TIO JOAO T1 1KG' }),
+          // Sem tamanho na nota: fica por unidade, à parte.
+          line('2026-07-12', 19.9, { description: 'ARROZ TIO JOAO' }),
+        ]),
+      ),
+    );
+    const [toggle] = renderer!.root.findAllByType(Segmented);
+    expect(toggle.props.value).toBe('kg');
+    expect(text).toContain('R$ 4,98/kg · Assaí · 10 out');
+    expect(text).toContain('Caiu 9% desde 12 ago (era R$ 5,49)');
+    expect(text).toContain(
+      ['10 out · 1 un · pagou R$ 24,90', '5 kg · R$ 4,98/kg', 'R$ 24,90/un', 'Assaí', '12 ago · 1 un · pagou R$ 5,49', '1 kg · R$ 5,49/kg', 'R$ 5,49/un'].join('\n'),
+    );
+    act(() => toggle.props.onChange('un'));
+    expect(page()).toContain('R$ 19,90/un · Assaí · 12 jul');
+    expect(page()).not.toContain('/kg');
+  });
 });
