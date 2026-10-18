@@ -14,7 +14,30 @@ const mockDb = {
   items: [] as Row[],
   /** Cada pedido, na ordem: 'rpc open_market_list', 'select shopping_lists', 'insert shopping_list_items'... */
   calls: [] as string[],
+  /** O banco já tem add_to_list (a migração chegou)? */
+  hasAddToList: true,
+  /** Listas que outro aparelho arquiva logo antes de add_to_list travar a linha delas. */
+  archivedMeanwhile: [] as string[],
 };
+
+/** add_to_list como o servidor a roda: a lista travada e aberta, sem repetir o pendente. */
+function mockAddToList(args: Row): { data: unknown; error: unknown } {
+  if (!mockDb.hasAddToList) {
+    return { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.add_to_list in the schema cache' } };
+  }
+  for (const id of mockDb.archivedMeanwhile) {
+    const archived = mockDb.lists.find((l) => l.id === id);
+    if (archived) archived.archived_at = '2026-10-18T12:00:00Z';
+  }
+  const list = mockDb.lists.find((l) => l.id === args.p_list_id && !l.archived_at);
+  if (!list) return { data: null, error: { code: 'P0002', message: 'list is not open' } };
+  const name = String(args.p_name).trim().toLowerCase();
+  const pending = mockDb.items.find((i) => i.list_id === list.id && !i.checked_at && String(i.name).trim().toLowerCase() === name);
+  if (pending) return { data: { list_id: list.id, list_name: list.name, item_id: pending.id, added: false }, error: null };
+  const row = { id: `item-${mockDb.items.length + 1}`, list_id: list.id, name: args.p_name, checked_at: null };
+  mockDb.items.push(row);
+  return { data: { list_id: list.id, list_name: list.name, item_id: row.id, added: true }, error: null };
+}
 
 jest.mock('@/lib/supabase', () => {
   const answer = (result: unknown) => ({
@@ -22,8 +45,9 @@ jest.mock('@/lib/supabase', () => {
   });
   return {
     supabase: {
-      rpc: (name: string) => {
+      rpc: (name: string, args: Row) => {
         mockDb.calls.push(`rpc ${name}`);
+        if (name === 'add_to_list') return { single: () => answer(mockAddToList(args)) };
         const kind = name === 'open_pharmacy_list' ? 'farmacia' : 'mercado';
         const row = { id: `${kind}-nova`, name: kind === 'farmacia' ? 'Farmácia' : 'Mercado', kind, archived_at: null, created_at: '2026-10-18T12:00:00Z' };
         mockDb.lists.push(row);
@@ -113,6 +137,8 @@ afterEach(() => {
   mockDb.lists = [];
   mockDb.items = [];
   mockDb.calls = [];
+  mockDb.hasAddToList = true;
+  mockDb.archivedMeanwhile = [];
 });
 
 describe('o que acabou na despensa vai para uma lista', () => {
@@ -158,5 +184,28 @@ describe('o que acabou na despensa vai para uma lista', () => {
     expect(await finish(pills)).toMatchObject({ name: 'Farmácia', added: true });
     expect(mockDb.calls).toContain('rpc open_pharmacy_list');
     expect(itemsIn('Feira')).toEqual([]);
+  });
+
+  it('a escolhida é arquivada entre a leitura e a trava: nada é gravado e o aviso pede outra', async () => {
+    mockDb.lists = [list('Feira', 'mercado', '2026-10-15T10:00:00Z'), list('Mercado', 'mercado', '2026-10-01T10:00:00Z')];
+    mockDb.archivedMeanwhile = ['Feira'];
+    await expect(finish({ ...rice, listId: 'Feira' })).rejects.toThrow(PANTRY_LIST_GONE);
+    expect(mockDb.items).toEqual([]);
+  });
+
+  it('a que o app escolheu é arquivada no meio: vai para a próxima mais nova', async () => {
+    mockDb.lists = [list('Feira', 'mercado', '2026-10-15T10:00:00Z'), list('Mercado', 'mercado', '2026-10-01T10:00:00Z')];
+    mockDb.archivedMeanwhile = ['Feira'];
+    expect(await finish(rice)).toEqual({ id: 'Mercado', name: 'Mercado', added: true });
+    expect(itemsIn('Feira')).toEqual([]);
+    expect(itemsIn('Mercado')).toEqual(['Arroz']);
+  });
+
+  it('banco sem add_to_list: o caminho de antes, conferindo a lista e o pendente daqui', async () => {
+    mockDb.hasAddToList = false;
+    mockDb.lists = [list('Feira', 'mercado', '2026-10-15T10:00:00Z')];
+    expect(await finish(rice)).toEqual({ id: 'Feira', name: 'Feira', added: true });
+    expect(mockDb.calls).toContain('insert shopping_list_items');
+    expect(itemsIn('Feira')).toEqual(['Arroz']);
   });
 });
