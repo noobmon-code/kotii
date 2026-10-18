@@ -482,9 +482,11 @@ export const ROTATION_ORDER_NOT_LOADED = 'A ordem tem alguém que este aparelho 
 /** Não deu para conferir, antes de salvar, se a tarefa ganhou um rodízio em outro aparelho: nada é gravado. */
 export const ROTATION_CHECK_FAILED = 'Não foi possível conferir se esta tarefa mudou em outro aparelho. Verifique a internet e tente de novo.';
 
-// Tabela ou função que o banco não tem: como a API responde (PGRST205 e
-// PGRST202) e os códigos do Postgres para o mesmo (42P01 e 42883).
-const MISSING_CODES = new Set(['PGRST205', 'PGRST202', '42P01', '42883']);
+// Tabela ou função que o cache da API não tem (PGRST205 e PGRST202). Os
+// códigos do Postgres para o mesmo (42P01 e 42883) também saem de dentro de
+// uma função que existe e chama algo que não existe: esses só contam pela
+// mensagem, quando ela fala do rodízio.
+const MISSING_CODES = new Set(['PGRST205', 'PGRST202']);
 
 /**
  * O banco ainda não tem o rodízio (chore_rotation, save_chore,

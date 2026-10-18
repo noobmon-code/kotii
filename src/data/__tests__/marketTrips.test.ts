@@ -88,6 +88,17 @@ describe('banco de antes da migração das idas', () => {
     expect(isNotDeployed(undefined)).toBe(false);
   });
 
+  it('o código do Postgres que vem de outra coisa que falta não é "antes da migração"', () => {
+    // Uma função das idas que existe e, lá dentro, chama outra que não existe: é erro de verdade.
+    expect(isNotDeployed({ code: '42883', message: 'function public.push_text(text) does not exist' })).toBe(false);
+    expect(isNotDeployed({ code: '42P01', message: 'relation "public.push_schedule" does not exist' })).toBe(false);
+    expect(isNotDeployed({ code: '42703', message: 'column l.archived_at does not exist' })).toBe(false);
+    expect(isNotDeployed({ code: '42883' })).toBe(false);
+    // O log das idas e a função de encerrar também são das idas.
+    expect(isNotDeployed({ code: '42P01', message: 'relation "public.market_trip_log" does not exist' })).toBe(true);
+    expect(isNotDeployed({ code: '42883', message: 'function public.end_market_trip(uuid) does not exist' })).toBe(true);
+  });
+
   it('as idas: sem a tabela, a resposta é "não há" (sem faixa e sem erro na tela)', async () => {
     mockDb.trips = { data: null, error: MISSING_TABLE };
     expect(await fetchMarketTrips()).toBeNull();
