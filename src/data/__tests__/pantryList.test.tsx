@@ -25,8 +25,9 @@ function mockAddToList(args: Row): { data: unknown; error: unknown } {
   if (!mockDb.hasAddToList) {
     return { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.add_to_list in the schema cache' } };
   }
-  for (const id of mockDb.archivedMeanwhile) {
-    const archived = mockDb.lists.find((l) => l.id === id);
+  // A lista pedida, se está entre as que outro aparelho arquiva no meio, fecha logo antes da trava.
+  if (mockDb.archivedMeanwhile.includes(String(args.p_list_id))) {
+    const archived = mockDb.lists.find((l) => l.id === args.p_list_id);
     if (archived) archived.archived_at = '2026-10-18T12:00:00Z';
   }
   const list = mockDb.lists.find((l) => l.id === args.p_list_id && !l.archived_at);
@@ -199,6 +200,22 @@ describe('o que acabou na despensa vai para uma lista', () => {
     expect(await finish(rice)).toEqual({ id: 'Mercado', name: 'Mercado', added: true });
     expect(itemsIn('Feira')).toEqual([]);
     expect(itemsIn('Mercado')).toEqual(['Arroz']);
+  });
+
+  it('a lista que o menu mostrou vale enquanto aberta, mesmo com outra criada depois em outro aparelho', async () => {
+    mockDb.lists = [list('Feira', 'mercado', '2026-10-15T10:00:00Z'), list('Nova', 'mercado', '2026-10-18T10:00:00Z')];
+    expect(await finish({ ...rice, shownListId: 'Feira' })).toEqual({ id: 'Feira', name: 'Feira', added: true });
+    // Fechada: a mais nova.
+    mockDb.lists[0].archived_at = '2026-10-18T11:00:00Z';
+    expect(await finish({ ...rice, name: 'Feijão', shownListId: 'Feira' })).toEqual({ id: 'Nova', name: 'Nova', added: true });
+  });
+
+  it('listas arquivadas uma depois da outra: para depois de 3 tentativas, sem gravar nada', async () => {
+    mockDb.lists = ['A', 'B', 'C', 'D'].map((id, i) => list(id, 'mercado', `2026-10-1${i}T10:00:00Z`));
+    mockDb.archivedMeanwhile = ['A', 'B', 'C', 'D'];
+    await expect(finish(rice)).rejects.toThrow(PANTRY_LIST_GONE);
+    expect(mockDb.calls.filter((c) => c === 'rpc add_to_list')).toHaveLength(3);
+    expect(mockDb.items).toEqual([]);
   });
 
   it('banco sem add_to_list: o caminho de antes, conferindo a lista e o pendente daqui', async () => {

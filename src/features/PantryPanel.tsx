@@ -60,8 +60,9 @@ export function PantryPanel() {
 
   // Primeiro a lista, depois a baixa: se a baixa falhar, o item continua na
   // despensa e repetir não duplica (a lista ignora item já pendente).
-  // Sem `listId`, a lista é a mais nova em que o item cabe, conferida no servidor na hora.
-  async function finishAndRestock(group: Group, listId?: string) {
+  // Sem `listId`, a lista é a que o menu mostrou como a última (`shownListId`), se ainda está aberta; senão, a mais
+  // nova em que o item cabe, conferida no servidor na hora.
+  async function finishAndRestock(group: Group, listId?: string, shownListId?: string) {
     const newest = group.lots[group.lots.length - 1];
     try {
       const list = await addToList.mutateAsync({
@@ -71,6 +72,7 @@ export function PantryPanel() {
         quantity: newest.quantity,
         unit: newest.unit,
         listId,
+        shownListId,
       });
       await consume.mutateAsync(group.lots.map((lot) => lot.id));
       notify(
@@ -95,7 +97,7 @@ export function PantryPanel() {
           ? `Acabou — pôr na última lista (“${newestList.name}”)`
           : `Acabou — pôr na lista ${newListKind(group.category) === 'farmacia' ? 'da farmácia' : 'de mercado'}`,
         icon: 'cart-plus',
-        onPress: () => finishAndRestock(group),
+        onPress: () => finishAndRestock(group, undefined, newestList?.id),
       },
     ];
     if (choices.length > 1) {
@@ -186,7 +188,11 @@ export function PantryPanel() {
                       group.lots.length > 1 ? `${describeTotals(group)} · ${group.lots.length} compras` : describeTotals(group)
                     }
                     right={status.kind === 'sem_validade' ? null : <Badge label={describeExpiry(status)} tone={section.tone} />}
-                    onPress={() => setSelected(group)}
+                    onPress={() => {
+                      // O menu diz qual é a última lista: confere as listas de novo enquanto ele abre.
+                      lists.refetch?.();
+                      setSelected(group);
+                    }}
                   />
                 ))}
               </ListCard>

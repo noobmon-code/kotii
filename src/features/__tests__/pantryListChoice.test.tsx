@@ -85,10 +85,10 @@ describe('"Acabou" na despensa', () => {
     expect(labels.slice(0, 2)).toEqual(['Acabou — pôr na última lista (“Feira”)', 'Acabou — escolher a lista']);
   });
 
-  it('o toque principal não fixa a lista: a mais nova é conferida no servidor na hora', async () => {
+  it('o toque principal manda a lista que o menu mostrou, sem fixá-la (fechada, vale a mais nova do servidor)', async () => {
     const actions = await actionsOf('Arroz');
     await act(async () => actions[0].onPress());
-    expect(mockAdd).toHaveBeenCalledWith(expect.objectContaining({ name: 'Arroz', listId: undefined }));
+    expect(mockAdd).toHaveBeenCalledWith(expect.objectContaining({ name: 'Arroz', listId: undefined, shownListId: 'l-Feira' }));
     expect(mockConsume).toHaveBeenCalledWith(['d-Arroz']);
     expect(notify).toHaveBeenCalledWith('Adicionado à lista', 'Arroz foi para "Feira".');
   });

@@ -31,7 +31,8 @@ begin
   select l.name into v_list_name
   from public.shopping_lists l
   where l.id = p_list_id and l.archived_at is null
-  for update;
+  -- Segura arquivar e apagar a lista (um update e um delete), sem fazer esperar quem põe outro item nela.
+  for no key update;
   if not found then
     raise exception 'list is not open' using errcode = 'P0002';
   end if;

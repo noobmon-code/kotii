@@ -400,6 +400,8 @@ function useAddToOpenList<T extends NewListItem>(add: (queryClient: QueryClient,
       queryClient.invalidateQueries({ queryKey: ['lists'] });
       queryClient.invalidateQueries({ queryKey: ['listItems', list.id] });
     },
+    // Na falha (a lista foi arquivada no meio, por exemplo), o próximo menu já parte das listas de agora.
+    onError: () => queryClient.invalidateQueries({ queryKey: ['lists'] }),
   });
 }
 
@@ -412,9 +414,14 @@ export function useAddToMarketList() {
   return useAddToOpenList(async (queryClient, item: NewListItem) => addItemOnce(queryClient, await openMarketList(), item));
 }
 
-/** O item que acabou na despensa; `listId`: a lista que a pessoa escolheu (sem ela, a mais nova). */
+/**
+ * O item que acabou na despensa. `listId`: a lista que a pessoa escolheu (sem ela, a mais nova). `shownListId`: a
+ * "última lista" que o menu mostrou; vale enquanto estiver aberta, para o item ir para a lista que o menu disse,
+ * mesmo que outra tenha sido criada depois em outro aparelho.
+ */
 export interface PantryListItem extends NewListItem {
   listId?: string;
+  shownListId?: string;
 }
 
 /**
@@ -430,7 +437,7 @@ export interface PantryListItem extends NewListItem {
  * (banco de antes da migração, ou o cache do PostgREST de antes dela), o
  * caminho de antes: addItemOnce, sem a trava.
  */
-async function addToPantryList(queryClient: QueryClient, { listId, ...item }: PantryListItem): Promise<ListedItem> {
+async function addToPantryList(queryClient: QueryClient, { listId, shownListId, ...item }: PantryListItem): Promise<ListedItem> {
   const tried = new Set<string>();
   for (;;) {
     const open = unwrap(
@@ -441,7 +448,8 @@ async function addToPantryList(queryClient: QueryClient, { listId, ...item }: Pa
       list = open.find((l) => l.id === listId);
       if (!list) throw new Error(PANTRY_LIST_GONE);
     } else {
-      list = listsFor(item.category, open).find((l) => !tried.has(l.id));
+      const fitting = listsFor(item.category, open).filter((l) => !tried.has(l.id));
+      list = fitting.find((l) => l.id === shownListId) ?? fitting[0];
     }
     list ??= newListKind(item.category) === 'farmacia' ? await openPharmacyList() : await openMarketList();
     const target = { id: list.id, name: list.name };
@@ -458,8 +466,9 @@ async function addToPantryList(queryClient: QueryClient, { listId, ...item }: Pa
     if (added.error && isMissingFunction(added.error, 'add_to_list')) return addItemOnce(queryClient, target, item);
     if (added.error && isListNotOpen(added.error)) {
       // Arquivada entre a leitura e a trava. A escolhida não muda sozinha; a do app, sim (uma vez por lista).
-      if (listId || tried.has(target.id) || tried.size >= PANTRY_LIST_ATTEMPTS) throw new Error(PANTRY_LIST_GONE);
+      if (listId || tried.has(target.id)) throw new Error(PANTRY_LIST_GONE);
       tried.add(target.id);
+      if (tried.size >= PANTRY_LIST_ATTEMPTS) throw new Error(PANTRY_LIST_GONE);
       continue;
     }
     // O produto foi juntado com outro em outro aparelho (como em withFreshProducts).
