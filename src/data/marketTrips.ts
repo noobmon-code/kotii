@@ -25,16 +25,26 @@ export const MARKET_TRIP_PUSH_KEY = 'marketTripPush';
 /** De quanto em quanto tempo as idas são conferidas com uma tela que as mostra aberta. */
 const TRIPS_REFETCH_MS = 2 * 60 * 1000;
 
-// Tabela (PGRST205, 42P01), função (PGRST202, 42883) ou coluna (PGRST204,
-// 42703) que o banco não tem: os códigos do PostgREST e os do Postgres.
-const NOT_DEPLOYED = new Set(['PGRST205', '42P01', 'PGRST202', '42883', 'PGRST204', '42703']);
+// Tabela (PGRST205), função (PGRST202) ou coluna (PGRST204) que o cache do
+// PostgREST não tem: só saem de um objeto que falta na API.
+const NOT_DEPLOYED_REST = new Set(['PGRST205', 'PGRST202', 'PGRST204']);
+// Os mesmos no Postgres (42P01, 42883, 42703) também saem de dentro de uma
+// função que existe e chama algo que não existe: só contam se a mensagem fala
+// de uma das partes das idas.
+const NOT_DEPLOYED_PG = new Set(['42P01', '42883', '42703']);
+const TRIP_OBJECTS = /market_trips|market_trip_log|announce_market_trip|end_market_trip/;
 
 const codeOf = (error: unknown): string | null =>
   error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : null;
 
+const messageOf = (error: unknown): string =>
+  error && typeof error === 'object' && 'message' in error && typeof error.message === 'string' ? error.message : '';
+
 /** O banco ainda não tem esta parte (a migração das idas não foi aplicada). */
 export function isNotDeployed(error: unknown): boolean {
-  return NOT_DEPLOYED.has(codeOf(error) ?? '');
+  const code = codeOf(error) ?? '';
+  if (NOT_DEPLOYED_REST.has(code)) return true;
+  return NOT_DEPLOYED_PG.has(code) && TRIP_OBJECTS.test(messageOf(error));
 }
 
 /**

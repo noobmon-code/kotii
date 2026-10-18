@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { router } from 'expo-router';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import FamilyScreen from '@/app/(tabs)/familia';
 import PricesScreen from '@/app/precos';
 import ProductScreen from '@/app/produto/[id]';
-import { router } from 'expo-router';
-
 import { formatShortDate, toISODate } from '@/domain/dates';
 import { SHARED_PRICES_NOTICE, SHARING_ABOUT, type SharedPrice } from '@/domain/sharedPrices';
+import { storePricesFromSaved } from '@/domain/storePrices';
 import { TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
 import type { LatestPrice, PriceObservation, Product, Store } from '@/lib/types';
 
@@ -37,10 +37,10 @@ jest.mock('expo-router', () => ({
 }));
 jest.mock('@/data/market', () => ({
   useLatestPrices: () => mockQueries.prices,
-  usePriceHistory: () => mockQueries.history,
   useProductPurchases: () => ({ data: [] }),
   useProducts: () => mockQueries.products,
   useRenameProduct: () => ({ mutate: jest.fn(), isPending: false }),
+  useStorePrices: () => mockQueries.history,
   useStores: () => mockQueries.stores,
 }));
 jest.mock('@/data/sharedPrices', () => ({ useSharedPrices: () => mockSharedPrices(), useSharedPricesAvailable: () => mockQueries.available }));
@@ -137,9 +137,9 @@ const seen = (store_cnpj: string, store_name: string, unit_price: number, ago: n
 /** O mesmo, num mercado da própria casa: o banco marca pelo CNPJ. */
 const seenInMine = (store_cnpj: string, store_name: string, unit_price: number, ago: number) => seen(store_cnpj, store_name, unit_price, ago, { mine: true });
 
-/** Os preços da casa: valem para a tela do produto (histórico) e para Preços (últimos preços). */
+/** Os preços da casa: valem para a tela do produto (o último de cada mercado, das compras) e para Preços (últimos preços). */
 function household(prices: PriceObservation[]) {
-  mockQueries.history = loaded(prices);
+  mockQueries.history = loaded(storePricesFromSaved(prices, 'arroz'));
   mockQueries.prices = loaded(prices.map(({ receipt_id: _receipt, ...price }): LatestPrice => price));
 }
 

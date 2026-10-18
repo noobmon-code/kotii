@@ -3,15 +3,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { priceAlerts } from '@/domain/priceAlert';
-import { summarizePrices } from '@/domain/prices';
 import type { PriceObservation } from '@/lib/types';
 
-import { usePriceHistory, usePriceObservations } from '../market';
+import { usePriceObservations } from '../market';
 
 // O item que ficou sem valor numa nota confirmada é uma linha de preço R$ 0,00
-// na view (ela não filtra o preço). Um zero não é preço: as duas leituras do
-// histórico pedem só o que é maior que zero, e a compra de verdade anterior do
-// mesmo mercado toma o lugar dele sozinha.
+// na view (ela não filtra o preço). Um zero não é preço: a leitura dos preços
+// antes de uma compra pede só o que é maior que zero, e a compra de verdade
+// anterior do mesmo mercado toma o lugar dele sozinha. (O "Último preço por
+// mercado" da tela do produto sai das compras dele: domain/storePrices.)
 
 type Filter = { op: 'eq' | 'in' | 'gte' | 'lte' | 'gt'; column: string; value: unknown };
 // "mock" no nome: o jest.mock só enxerga variáveis assim. A view de mentira, que atende aos filtros como o servidor.
@@ -117,33 +117,6 @@ afterEach(async () => {
 const ASSAI_REAL = point('s-assai', 37.9, '2026-08-20');
 const ASSAI_ZERO = point('s-assai', 0, '2026-09-10');
 const DIA_REAL = point('s-dia', 41.5, '2026-09-01');
-
-describe('histórico de preço de um produto (tela do produto)', () => {
-  it('pede só preço maior que zero, e o preço de verdade anterior do mercado fica no lugar do zero', async () => {
-    mockView.rows = [ASSAI_REAL, ASSAI_ZERO, DIA_REAL, point('s-assai', 0, '2026-09-12', { product_id: 'p-outro' })];
-    const rows = await read(() => usePriceHistory('p-queijo'));
-    expect(mockView.asked).toEqual([
-      {
-        table: 'price_observations',
-        filters: [
-          { op: 'eq', column: 'product_id', value: 'p-queijo' },
-          { op: 'gt', column: 'unit_price', value: 0 },
-        ],
-        limit: 100,
-      },
-    ]);
-    // Do mais novo para o mais antigo, sem a linha zerada.
-    expect(rows).toEqual([DIA_REAL, ASSAI_REAL]);
-    // A tela do produto resume o que recebe: o mais barato é o preço de verdade do Assaí, e não R$ 0,00.
-    expect(summarizePrices(rows)?.cheapest).toEqual(ASSAI_REAL);
-    expect(summarizePrices([ASSAI_REAL, ASSAI_ZERO, DIA_REAL])?.cheapest).toEqual(ASSAI_ZERO);
-  });
-
-  it('produto que só tem a linha zerada fica sem histórico', async () => {
-    mockView.rows = [ASSAI_ZERO];
-    expect(await read(() => usePriceHistory('p-queijo'))).toEqual([]);
-  });
-});
 
 describe('preços dos meses antes de uma compra (alerta de preço na nota)', () => {
   const PURCHASED_AT = '2026-09-27T15:00:00.000Z';
