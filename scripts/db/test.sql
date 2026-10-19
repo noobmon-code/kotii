@@ -4500,6 +4500,34 @@ reset role;
 insert into auth.users (id) values (:'user_p'), (:'user_q'), (:'user_r'), (:'user_s'), (:'user_t'), (:'user_u');
 -- O que as notas confirmadas nos testes de cima tiverem compartilhado sai: aqui a conta começa do zero.
 truncate public.shared_prices;
+-- Só compartilha a nota que tem a leitura do servidor (receipt_reads, gravada pelas funções nfce e parse-receipt
+-- com a chave secreta), e só as linhas que batem com ela. Aqui, antes de confirmar, a leitura é feita igual à
+-- nota (mercado, nome, chave, dia em São Paulo e linhas): estes testes dizem o que as regras de sempre fazem com
+-- o que foi lido. O que muda quando a nota e a leitura diferem está em "preços conferidos pelo servidor".
+create function pg_temp.read_as_printed(p_receipt uuid) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_id uuid;
+begin
+  insert into public.receipt_reads (household_id, source, access_key, store_cnpj, store_name, purchased_on, lines)
+  select r.household_id, case when r.source = 'qrcode' then 'qrcode' else 'ai' end, r.access_key, s.cnpj, s.name,
+         (r.purchased_at at time zone 'America/Sao_Paulo')::date,
+         coalesce((select jsonb_agg(jsonb_build_object('description', ri.raw_description, 'unit', ri.unit, 'unit_price', ri.unit_price)
+                     order by ri.position)
+                     from public.receipt_items ri where ri.receipt_id = r.id), '[]'::jsonb)
+    from public.receipts r
+    left join public.stores s on s.id = r.store_id and s.household_id = r.household_id
+    where r.id = p_receipt
+  returning id into v_id;
+  update public.receipts set read_id = v_id where id = p_receipt;
+end $$;
+-- A confirmação continua sendo de quem chama (sem security definer).
+create function pg_temp.confirm_as_read(p_receipt uuid, p_items jsonb) returns void
+language plpgsql as $$
+begin
+  perform pg_temp.read_as_printed(p_receipt);
+  perform public.confirm_receipt(p_receipt, p_items);
+end $$;
 -- O banco da Supabase roda em UTC: o dia tem de sair de São Paulo, não do fuso da sessão.
 set time zone 'UTC';
 select set_config('test.sp_today', ((now() at time zone 'America/Sao_Paulo')::date)::text, false) \gset
@@ -4586,7 +4614,7 @@ begin
     (r, 11, 'TOMATE ITALIANO', null, 1, 'kg', 7.50, 7.50),
     -- Chave com mais de 200 letras: só esta linha fica de fora, as outras entram.
     (r, 12, repeat('ARROZ AGULHINHA ', 13) || 'TIPO 1', 'graos', 1, 'un', 5.00, 5.00);
-  perform public.confirm_receipt(r, jsonb_build_array(
+  perform pg_temp.confirm_as_read(r, jsonb_build_array(
     jsonb_build_object('id', (select id from public.receipt_items where receipt_id = r and position = 0),
       'new_product', jsonb_build_object('name', 'Arroz Tio João 5kg', 'category', 'graos')),
     jsonb_build_object('id', (select id from public.receipt_items where receipt_id = r and position = 6),
@@ -4605,7 +4633,7 @@ begin
     values (s_ata, (d + 1 + time '00:30') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 'LEITE ITALAC 1L', 'laticinios', 'un', 4.59, 4.59);
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
   perform set_config('test.sp_receipt_photo', r::text, false);
 
   -- Digitada à mão, no mesmo mercado com CNPJ: nada.
@@ -4613,28 +4641,28 @@ begin
     values (s_ata, (d + time '10:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 'FEIJAO CAMIL 1KG', 'graos', 'un', 7.90, 7.90);
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
 
   -- Lida, mas num mercado sem CNPJ: nada.
   insert into public.receipts (store_id, purchased_at, access_key, source)
     values (s_hand, (d + time '11:00') at time zone 'America/Sao_Paulo', '352610' || ata || repeat('0', 23) || '2', 'qrcode') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 'CHA MATTE LEAO 1L', 'cafe_cha', 'un', 6.90, 6.90);
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
 
   -- Lida, e a pessoa apontou para outro mercado: o CNPJ da chave não é o dele. Nada.
   insert into public.receipts (store_id, purchased_at, access_key, source)
     values (s_other, (d + time '12:00') at time zone 'America/Sao_Paulo', '352610' || ata || repeat('0', 23) || '3', 'qrcode') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 'ACUCAR UNIAO 1KG', 'doces', 'un', 4.99, 4.99);
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
 
   -- Foto sem chave num mercado com CNPJ: entra, com o nome dele.
   insert into public.receipts (store_id, purchased_at, source)
     values (s_other, (d + time '13:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 'OLEO LIZA 900ML', 'oleos', 'un', 7.49, 7.49);
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
 
   -- Nome de loja com espaços em volta e comprido demais: vai aparado e cortado em 120 letras (aqui o corte
   -- cai depois de um espaço, que também sai).
@@ -4643,14 +4671,14 @@ begin
     values (s, (d + time '13:30') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 'VINAGRE CASTELO 750ML', 'temperos', 'un', 3.29, 3.29);
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
 
   -- Data no futuro (digitada errada na revisão): nada.
   insert into public.receipts (store_id, purchased_at, source)
     values (s_ata, (today + 2 + time '10:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 'SAL CISNE 1KG', 'temperos', 'un', 2.99, 2.99);
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
 
   -- Rascunho: só a confirmação compartilha.
   insert into public.receipts (store_id, purchased_at, source)
@@ -4666,7 +4694,7 @@ begin
     (r, 'SAL DE FRUTA ENO', 'temperos', 'un', 3.50, 3.50),
     (r, 'AGUA OXIGENADA 10V', 'bebidas', 'un', 4.50, 4.50),
     (r, 'OLEO MINERAL 100ML', 'oleos', 'un', 9.90, 9.90);
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
 
   -- Nota com uma linha de REMÉDIO, pela categoria sugerida ou pela do produto: é compra de farmácia, e NADA
   -- dela entra, nem os mesmos três itens.
@@ -4678,7 +4706,7 @@ begin
     (r, 'SAL DE FRUTA ENO ' || n, 'temperos', 'un', 3.50, 3.50),
     (r, 'AGUA OXIGENADA 10V ' || n, 'bebidas', 'un', 4.50, 4.50),
     (r, 'OLEO MINERAL 100ML ' || n, 'oleos', 'un', 9.90, 9.90);
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
 
   n := n + 1;
   insert into public.receipts (store_id, purchased_at, source)
@@ -4688,7 +4716,7 @@ begin
     (r, 1, 'SAL DE FRUTA ENO ' || n, 'temperos', 'un', 3.50, 3.50),
     (r, 2, 'AGUA OXIGENADA 10V ' || n, 'bebidas', 'un', 4.50, 4.50),
     (r, 3, 'OLEO MINERAL 100ML ' || n, 'oleos', 'un', 9.90, 9.90);
-  perform public.confirm_receipt(r, jsonb_build_array(
+  perform pg_temp.confirm_as_read(r, jsonb_build_array(
     jsonb_build_object('id', (select id from public.receipt_items where receipt_id = r and position = 0),
       'new_product', jsonb_build_object('name', 'Remédio ' || n, 'category', 'medicamentos'))));
 
@@ -4702,7 +4730,7 @@ begin
     insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price) values
       (r, 'LINHA DE SAUDE ' || n, health, 'un', 8.50, 8.50),
       (r, 'LEITE DA MESMA NOTA ' || n, 'laticinios', 'un', 5.49, 5.49);
-    perform public.confirm_receipt(r, '[]');
+    perform pg_temp.confirm_as_read(r, '[]');
 
     n := n + 1;
     insert into public.receipts (store_id, purchased_at, source)
@@ -4710,7 +4738,7 @@ begin
     insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price) values
       (r, 0, 'LINHA DE SAUDE ' || n, null, 'un', 8.50, 8.50),
       (r, 1, 'LEITE DA MESMA NOTA ' || n, 'laticinios', 'un', 5.49, 5.49);
-    perform public.confirm_receipt(r, jsonb_build_array(
+    perform pg_temp.confirm_as_read(r, jsonb_build_array(
       jsonb_build_object('id', (select id from public.receipt_items where receipt_id = r and position = 0),
         'new_product', jsonb_build_object('name', 'Produto de saúde ' || n, 'category', health))));
   end loop;
@@ -4731,7 +4759,7 @@ begin
       (r, 'SAL DE FRUTA ENO', 'temperos', 'un', 3.50, 3.50),
       (r, 'AGUA OXIGENADA 10V', 'bebidas', 'un', 4.50, 4.50),
       (r, 'OLEO MINERAL 100ML', 'oleos', 'un', 9.90, 9.90);
-    perform public.confirm_receipt(r, '[]');
+    perform pg_temp.confirm_as_read(r, '[]');
   end loop;
 
   -- "Pague Menos" também é nome de supermercado (uma rede do interior de São Paulo, e outros pelo país):
@@ -4745,7 +4773,7 @@ begin
       values (s, (d + time '18:30') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
     insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
       values (r, 'FEIJAO CARIOCA 1KG', 'graos', 'un', 7.90, 7.90);
-    perform public.confirm_receipt(r, '[]');
+    perform pg_temp.confirm_as_read(r, '[]');
   end loop;
 
   -- O teto por nota: com 301 linhas, nada; com 300, todas.
@@ -4753,19 +4781,19 @@ begin
     values (s_big, (d + time '19:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
   insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price)
     select r, g, 'ITEM ALEM DO TETO ' || g, 'graos', 'un', 1 + g / 100.0, 1 + g / 100.0 from generate_series(1, 301) as g;
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
   insert into public.receipts (store_id, purchased_at, source)
     values (s_big, (d + time '20:00') at time zone 'America/Sao_Paulo', 'ai') returning id into r;
   insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price)
     select r, g, 'ITEM NO TETO ' || g, 'graos', 'un', 1 + g / 100.0, 1 + g / 100.0 from generate_series(1, 300) as g;
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
 
   -- A compra de HOJE (QR code): entra na base, mas ninguém a lê antes de amanhã.
   insert into public.receipts (store_id, access_key, source)
     values (s_ata, '352610' || ata || repeat('0', 23) || '9', 'qrcode') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 'CAFE PILAO 500G', 'cafe_cha', 'un', 18.90, 18.90);
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
 
   -- A compra de ONTEM confirmada hoje (QR code, noutro mercado de São Paulo): o que segura a linha é o dia da
   -- GRAVAÇÃO, não o da compra. Também só amanhã.
@@ -4774,7 +4802,7 @@ begin
     returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 'CAFE PILAO 500G', 'cafe_cha', 'un', 17.90, 17.90);
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
 end $$;
 
 reset role;
@@ -4851,12 +4879,12 @@ begin
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price) values
     (r, 'Arroz T. João 5kg', 'graos', 'un', 23.50, 23.50),
     (r, 'BANANA PRATA', 'hortifruti', 'kg', 7.49, 7.49);
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
 
   insert into public.receipts (store_id, source) values (s, 'ai') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 'CAFE PILAO 500G', 'cafe_cha', 'un', 19.50, 19.50);
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
 end $$;
 
 reset role;
@@ -4896,7 +4924,7 @@ begin
   insert into public.receipts (source) values ('manual') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
     values (r, 'ARROZ CAMIL 5KG', 'un', 24.00, 24.00) returning id into i;
-  perform public.confirm_receipt(r, jsonb_build_array(
+  perform pg_temp.confirm_as_read(r, jsonb_build_array(
     jsonb_build_object('id', i, 'new_product', jsonb_build_object('name', 'Arroz', 'category', 'graos'))));
   assert (select count(*) from public.product_aliases) = 1, 'S has an alias of its own';
 
@@ -4907,7 +4935,7 @@ begin
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price) values
     (r, 'CAFE PILAO 500G', 'cafe_cha', 'un', 20.00, 20.00),
     (r, 'MACARRAO RENATA 500G', 'graos', 'un', 3.99, 3.99);
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
   -- Tem nota confirmada e o atacado entre os mercados dele, mas não a descrição do arroz da Paula.
   assert (select count(*) from public.shared_latest_prices()) = 0, 'a household without that description sees nothing';
 end $$;
@@ -4997,7 +5025,7 @@ begin
   insert into public.receipts (source) values ('manual') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
     values (r, 'arroz t.joão 5kg', 'un', 26.00, 26.00) returning id into i;
-  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
+  perform pg_temp.confirm_as_read(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
   assert (select array_agg(store_cnpj || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by unit) from public.shared_latest_prices())
     = array[ata || ' kg 4.8000 ' || (today - 5) || ' true', ata || ' un 24.1000 ' || (today - 3) || ' true'],
     'in her own stores: the newest READABLE row per store and unit, never one written today (whatever its purchase day) or dated ahead; nothing from other stores without a state';
@@ -5016,7 +5044,7 @@ begin
   -- do Rio não abrem os mercados de lá.
   insert into public.receipts (access_key, source) values ('332610' || '60000000000201' || repeat('0', 24), 'qrcode');
   insert into public.receipts (access_key, source) values ('332610' || '60000000000201' || repeat('0', 23) || '1', 'manual') returning id into r;
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
   assert (select count(*) from public.shared_latest_prices() where not mine) = 0, 'a draft, or a hand-typed receipt, gives the household no state';
 
   -- Uma nota lida em São Paulo (a chave começa com 35), na padaria: agora também os outros mercados do
@@ -5027,7 +5055,7 @@ begin
     values (s_bakery, (today - 20 + time '08:00') at time zone 'America/Sao_Paulo', '352610' || '12345678000195' || repeat('0', 24), 'qrcode') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 'PAO FRANCES', 'padaria', 'kg', 17.90, 17.90);
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
   assert (select array_agg(store_name || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by mine desc, unit, unit_price) from public.shared_latest_prices())
     = array[
       'ATACADAO MOOCA kg 4.8000 ' || (today - 5) || ' true',
@@ -5061,7 +5089,7 @@ begin
   insert into public.receipts (store_id, access_key, source) values (s_ata, '352610' || ata || repeat('0', 23) || '5', 'qrcode') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 'MACARRAO RENATA 500G', 'graos', 'un', 4.29, 4.29);
-  perform public.confirm_receipt(r, '[]');
+  perform pg_temp.confirm_as_read(r, '[]');
 end $$;
 
 reset role;
@@ -5105,7 +5133,7 @@ begin
     values (s_ata, (today - 1 + time '11:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
     values (r, 'arroz sem valor', 'un', 0, 0) returning id into i;
-  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
+  perform pg_temp.confirm_as_read(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
 
   assert (select array_agg(store_name || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by mine desc, unit, unit_price, seen_on desc) from public.shared_latest_prices())
     = array[
@@ -5135,7 +5163,7 @@ begin
     values (s_ata, (today - 5 + time '10:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
     values (r, 'arroz a granel', 'un', 23.00, 23.00) returning id into i;
-  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
+  perform pg_temp.confirm_as_read(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
   assert (select array_agg(store_name || ' ' || unit || ' ' || unit_price order by unit_price) from public.shared_latest_prices() where mine and product_id = p)
     = array['PADARIA DA RITA un 14.0000', 'ATACADAO MOOCA un 24.1000'],
     'an own purchase on the same day or later hides the row, in that store only; an older one does not';
@@ -5145,7 +5173,7 @@ begin
     values (s_ata, (today - 4 + time '23:30') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
     values (r, 'arroz a granel', 'un', 23.00, 23.00) returning id into i;
-  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
+  perform pg_temp.confirm_as_read(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
   assert (select count(*) from public.shared_latest_prices() where mine and product_id = p and store_cnpj = ata) = 1, 'the day of the own purchase is the São Paulo day';
   -- A compra de ontem tira o que sobrava do arroz no atacado. Só daquele produto, naquele mercado: o café
   -- dali (visto ontem também) e os outros mercados continuam.
@@ -5153,7 +5181,7 @@ begin
     values (s_ata, (today - 1 + time '12:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
     values (r, 'arroz a granel', 'un', 23.00, 23.00) returning id into i;
-  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
+  perform pg_temp.confirm_as_read(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', p)));
   assert (select array_agg(store_name || ' ' || unit_price order by unit_price) from public.shared_latest_prices() where mine)
     = array['PADARIA DA RITA 14.0000', 'ATACADAO MOOCA LJ 12 20.0000'], 'nothing of that product in that store is left; another product there, and another store, stay';
   assert (select count(*) from public.shared_latest_prices() where not mine) = 7, 'and the other stores are untouched by it';
@@ -5178,7 +5206,7 @@ begin
     values (s, (today - 6 + time '10:00') at time zone 'America/Sao_Paulo', '332610' || '33444555000177' || repeat('0', 24), 'qrcode') returning id into r;
   insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 'ARROZ T.JOAO 5KG', 'graos', 'un', 27.00, 27.00) returning id into i;
-  perform public.confirm_receipt(r, jsonb_build_array(
+  perform pg_temp.confirm_as_read(r, jsonb_build_array(
     jsonb_build_object('id', i, 'new_product', jsonb_build_object('name', 'Arroz', 'category', 'graos'))));
   -- A compra dela mesma também está na base, e não volta para ela.
   assert (select array_agg(store_name || ' ' || store_uf || ' ' || unit_price || ' ' || mine) from public.shared_latest_prices())
@@ -5302,7 +5330,7 @@ begin
     values (r, 0, 'ITEM QUE EMPERRA', 'graos', 'un', 5.00, 5.00);
   insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price)
     values (r, 1, 'SABAO OMO 1KG', 'limpeza', 'un', 19.90, 19.90) returning id into i;
-  perform public.confirm_receipt(r, jsonb_build_array(
+  perform pg_temp.confirm_as_read(r, jsonb_build_array(
     jsonb_build_object('id', i, 'new_product', jsonb_build_object('name', 'Sabão Omo 1kg', 'category', 'limpeza'))));
   assert (select status from public.receipts where id = r) = 'confirmed', 'a failing share leaves the receipt confirmed';
   assert (select count(*) from public.product_aliases where alias = 'SABAO OMO 1KG') = 1, 'with everything the confirmation does';
@@ -5341,6 +5369,401 @@ begin
   assert (select unit_price from public.shared_prices where item_key = 'LEITE ITALAC 1L') = 4.59
     and (select count(*) from public.shared_prices where item_key = 'LEITE DEPOIS DE CONFIRMADA') = 0,
     'confirming twice, or touching a confirmed receipt, changed nothing';
+end $$;
+reset time zone;
+
+-- ---------------------------------------------------------------------------
+\echo '• preços conferidos pelo servidor: só entra o que a leitura da nota trouxe'
+-- Elisa compra no atacado e mexe na nota na revisão; Edu é de outra casa. As leituras são gravadas como o
+-- servidor grava (service_role); a casa só passa o id delas na nota.
+\set user_e1 '00000000-0000-0000-0000-0000000000e1'
+\set user_e2 '00000000-0000-0000-0000-0000000000e2'
+\set user_e3 '00000000-0000-0000-0000-0000000000e3'
+reset role;
+insert into auth.users (id) values (:'user_e1'), (:'user_e2'), (:'user_e3');
+truncate public.shared_prices;
+set time zone 'UTC';
+select set_config('test.rr_today', ((now() at time zone 'America/Sao_Paulo')::date)::text, false) \gset
+
+do $$
+declare
+  verb text;
+begin
+  -- A tabela das leituras é só do servidor: o app não lê nem grava, nem com policy, nem com grant.
+  foreach verb in array array['select', 'insert', 'update', 'delete', 'truncate', 'references', 'trigger'] loop
+    assert not has_table_privilege('anon', 'public.receipt_reads', verb), format('anon has no %s on receipt_reads', verb);
+    assert not has_table_privilege('authenticated', 'public.receipt_reads', verb), format('authenticated has no %s on receipt_reads', verb);
+  end loop;
+  foreach verb in array array['select', 'insert', 'update', 'delete'] loop
+    assert has_table_privilege('service_role', 'public.receipt_reads', verb), format('the service role has %s on receipt_reads', verb);
+  end loop;
+  assert (select relrowsecurity from pg_class where oid = 'public.receipt_reads'::regclass), 'RLS is on for receipt_reads';
+  assert (select count(*) from pg_policies where schemaname = 'public' and tablename = 'receipt_reads') = 0, 'and no policy opens it';
+  -- A nota guarda o id da leitura, e a casa pode gravá-lo (é a nota dela).
+  assert has_column_privilege('authenticated', 'public.receipts', 'read_id', 'insert')
+    and has_column_privilege('authenticated', 'public.receipts', 'read_id', 'update'), 'a member writes read_id on a receipt';
+  -- A limpeza é só do agendador.
+  assert not has_function_privilege('public', 'public.forget_receipt_reads()', 'execute'), 'the cleanup is not open to everyone';
+  assert not has_function_privilege('anon', 'public.forget_receipt_reads()', 'execute'), 'anon cannot run the cleanup';
+  assert not has_function_privilege('authenticated', 'public.forget_receipt_reads()', 'execute'), 'a member cannot run the cleanup';
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_e2', false) \gset
+select set_config('test.rr_house_e2', (public.create_household('Casa do Edu', 'Edu')).id::text, false) \gset
+select set_config('request.jwt.claim.sub', :'user_e1', false) \gset
+select set_config('test.rr_house_e1', (public.create_household('Casa da Elisa', 'Elisa')).id::text, false) \gset
+do $$
+declare
+  d constant date := current_setting('test.rr_today')::date - 5;
+  cnpj constant text := '22333444000155';
+  s uuid;
+  r uuid;
+  k integer := 0;
+begin
+  -- O mercado com o nome que a Elisa deu; a data da nota, mudada na revisão para três dias antes.
+  insert into public.stores (name, cnpj) values ('Meu atacado', cnpj) returning id into s;
+  perform set_config('test.rr_store', s::text, false);
+  foreach k in array array[1, 2, 3, 4, 5, 6, 7, 8] loop
+    insert into public.receipts (store_id, purchased_at, access_key, source)
+      values (s, (d - 3 + time '10:00') at time zone 'America/Sao_Paulo', '352610' || cnpj || repeat('0', 23) || k, 'qrcode') returning id into r;
+    perform set_config('test.rr_receipt_' || k, r::text, false);
+  end loop;
+
+  -- A nota 1, como ficou depois da revisão.
+  r := current_setting('test.rr_receipt_1')::uuid;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, quantity, unit, unit_price, total_price) values
+    -- Igual ao lido: entra.
+    (r, 0, 'LEITE PIRACANJUBA 1L', 'laticinios', 1, 'un', 4.99, 4.99),
+    -- Igual ao lido, com outra caixa e outros espaços (a mesma chave): entra.
+    (r, 1, 'banana   prata', 'hortifruti', 1, 'kg', 6.99, 6.99),
+    -- Preço mudado na revisão (a leitura diz 18,90): fica na casa.
+    (r, 2, 'CAFE MELITTA 500G', 'cafe_cha', 1, 'un', 1.50, 1.50),
+    -- Descrição redigitada (a leitura diz ACUCAR UNIAO 1KG): fica na casa.
+    (r, 3, 'ACUCAR UNIAO 1KG REFINADO', 'doces', 1, 'un', 4.79, 4.79),
+    -- Unidade mudada (a leitura diz un): fica na casa.
+    (r, 4, 'FEIJAO KICALDO 1KG', 'graos', 1, 'kg', 8.90, 8.90),
+    -- Linha que a leitura não trouxe: fica na casa.
+    (r, 5, 'ARROZ QUE NINGUEM LEU 5KG', 'graos', 1, 'un', 0.99, 0.99),
+    -- Lida, mas fora da lista do que se compartilha: as regras de sempre continuam valendo.
+    (r, 6, 'SHAMPOO SEDA 325ML', 'higiene', 1, 'un', 12.90, 12.90);
+
+  -- As notas 2 a 8 têm a mesma linha, igual à da leitura de cada uma.
+  foreach k in array array[2, 3, 4, 5, 6, 7, 8] loop
+    insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+      values (current_setting('test.rr_receipt_' || k)::uuid, 'OLEO SOYA 900ML ' || k, 'oleos', 'un', 7.49, 7.49);
+  end loop;
+
+  -- A casa não alcança as leituras: nem ler, nem gravar.
+  begin
+    perform 1 from public.receipt_reads;
+    raise exception 'FAIL: a member read receipt_reads';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.receipt_reads (household_id, source, store_cnpj, purchased_on, lines)
+      values (public.current_household_id(), 'qrcode', cnpj, d, '[{"description": "LEITE FALSO", "unit": "un", "unit_price": 0.01}]');
+    raise exception 'FAIL: a member wrote a read';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- As leituras, como o servidor as grava: do atacado, com o nome impresso e o dia impresso (d, não o da revisão).
+reset role;
+set role service_role;
+do $$
+declare
+  d constant date := current_setting('test.rr_today')::date - 5;
+  cnpj constant text := '22333444000155';
+  hh constant uuid := current_setting('test.rr_house_e1')::uuid;
+  key_of text;
+  k integer;
+  rid uuid;
+begin
+  insert into public.receipt_reads (household_id, source, access_key, store_cnpj, store_name, purchased_on, lines)
+    values (hh, 'qrcode', '352610' || cnpj || repeat('0', 23) || '1', cnpj, 'ATACADAO DO PORTO LTDA', d, jsonb_build_array(
+      jsonb_build_object('description', 'LEITE PIRACANJUBA 1L', 'unit', 'un', 'unit_price', 4.99),
+      jsonb_build_object('description', 'BANANA PRATA', 'unit', 'kg', 'unit_price', 6.99),
+      jsonb_build_object('description', 'CAFE MELITTA 500G', 'unit', 'un', 'unit_price', 18.90),
+      jsonb_build_object('description', 'ACUCAR UNIAO 1KG', 'unit', 'un', 'unit_price', 4.79),
+      jsonb_build_object('description', 'FEIJAO KICALDO 1KG', 'unit', 'un', 'unit_price', 8.90),
+      jsonb_build_object('description', 'SHAMPOO SEDA 325ML', 'unit', 'un', 'unit_price', 12.90)))
+    returning id into rid;
+  perform set_config('test.rr_read_1', rid::text, false);
+
+  foreach k in array array[3, 4, 5, 6, 7, 8] loop
+    key_of := '352610' || cnpj || repeat('0', 23) || k;
+    insert into public.receipt_reads (household_id, source, access_key, store_cnpj, store_name, purchased_on, lines)
+      values (
+        hh, 'qrcode',
+        -- 4: a chave é de outro emissor (o CNPJ dela não é o da leitura).
+        case when k = 4 then '352610' || '99888777000166' || repeat('0', 23) || k else key_of end,
+        -- 5: a leitura não trouxe o CNPJ.
+        case when k = 5 then null else cnpj end,
+        -- 7: nem o nome (vai o "CNPJ ..." que o app põe no mercado novo).
+        case when k = 7 then null else 'ATACADAO DO PORTO LTDA' end,
+        -- 6: nem o dia.
+        case when k = 6 then null else d end,
+        -- 8: linhas que não são objetos (leitura malformada): a confirmação não falha, só nada entra.
+        case when k = 8 then '[1, 2]'::jsonb
+             else jsonb_build_array(jsonb_build_object('description', 'OLEO SOYA 900ML ' || k, 'unit', 'un', 'unit_price', 7.49)) end)
+      returning id into rid;
+    perform set_config('test.rr_read_' || k, rid::text, false);
+  end loop;
+
+  -- Uma leitura do Edu, de outra casa.
+  insert into public.receipt_reads (household_id, source, access_key, store_cnpj, store_name, purchased_on, lines)
+    values (current_setting('test.rr_house_e2')::uuid, 'qrcode', '352610' || cnpj || repeat('0', 23) || '9', cnpj, 'ATACADAO DO PORTO LTDA', d,
+      jsonb_build_array(jsonb_build_object('description', 'OLEO SOYA 900ML 2', 'unit', 'un', 'unit_price', 7.49)))
+    returning id into rid;
+  perform set_config('test.rr_read_e2', rid::text, false);
+end $$;
+
+reset role;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_e1', false) \gset
+do $$
+declare
+  k integer;
+begin
+  -- A nota da Elisa não aponta para a leitura de outra casa.
+  begin
+    update public.receipts set read_id = current_setting('test.rr_read_e2')::uuid where id = current_setting('test.rr_receipt_2')::uuid;
+    raise exception 'FAIL: a receipt pointed at the read of another household';
+  exception when foreign_key_violation then null;
+  end;
+  begin
+    insert into public.receipts (source, read_id) values ('qrcode', current_setting('test.rr_read_e2')::uuid);
+    raise exception 'FAIL: a receipt created with the read of another household';
+  exception when foreign_key_violation then null;
+  end;
+  -- Nem para um id que não existe.
+  begin
+    update public.receipts set read_id = gen_random_uuid() where id = current_setting('test.rr_receipt_2')::uuid;
+    raise exception 'FAIL: a receipt pointed at a read that does not exist';
+  exception when foreign_key_violation then null;
+  end;
+
+  -- A nota 2 fica sem leitura (um app antigo, ou uma nota de antes da leitura do servidor).
+  foreach k in array array[1, 3, 4, 5, 6, 7, 8] loop
+    update public.receipts set read_id = current_setting('test.rr_read_' || k)::uuid where id = current_setting('test.rr_receipt_' || k)::uuid;
+  end loop;
+  foreach k in array array[1, 2, 3, 4, 5, 6, 7, 8] loop
+    perform public.confirm_receipt(current_setting('test.rr_receipt_' || k)::uuid, '[]');
+  end loop;
+  assert (select count(*) from public.receipts where status = 'confirmed') = 8, 'every receipt is confirmed, shared or not';
+end $$;
+
+reset role;
+do $$
+declare
+  today constant date := current_setting('test.rr_today')::date;
+  d constant date := today - 5;
+  cnpj constant text := '22333444000155';
+begin
+  -- Da nota 1, só as duas linhas iguais às da leitura; com o nome impresso (não o que a casa deu ao mercado), o
+  -- dia impresso (não o da revisão) e o estado da chave.
+  assert (select array_agg(item_key || ' ' || unit || ' ' || unit_price || ' ' || seen_on || ' ' || store_uf || ' ' || store_name order by item_key)
+            from public.shared_prices where item_key not like 'OLEO SOYA%')
+    = array[
+      'BANANA PRATA kg 6.9900 ' || d || ' 35 ATACADAO DO PORTO LTDA',
+      'LEITE PIRACANJUBA 1L un 4.9900 ' || d || ' 35 ATACADAO DO PORTO LTDA'
+    ],
+    'only lines equal to the server read are shared, under the printed store name and day';
+  assert (select count(*) from public.shared_prices where item_key ~ '(CAFE MELITTA|ACUCAR|FEIJAO|NINGUEM|SHAMPOO)') = 0,
+    'an edited price, description or unit, a line the read did not have, and a line outside the allowlist stay at home';
+  -- Das notas 2 a 8: a 3 (tudo certo) e a 7 (sem nome impresso: vai o "CNPJ ..."). A 2 não tem leitura, a 4 tem
+  -- a chave de outro CNPJ, a 5 não tem CNPJ, a 6 não tem dia e a 8 é malformada.
+  assert (select array_agg(item_key || ' ' || store_name || ' ' || seen_on order by item_key) from public.shared_prices where item_key like 'OLEO SOYA%')
+    = array['OLEO SOYA 900ML 3 ATACADAO DO PORTO LTDA ' || d, 'OLEO SOYA 900ML 7 CNPJ ' || cnpj || ' ' || d],
+    'no read, a key of another issuer, no CNPJ, no day or a malformed read: nothing';
+  assert (select count(*) from public.shared_prices) = 4, 'and nothing else';
+  -- A leitura serve uma vez: confirmada a nota (compartilhando ou não), o gatilho a apaga, e a nota perde o ponteiro.
+  assert (select count(*) from public.receipt_reads where household_id = current_setting('test.rr_house_e1')::uuid) = 0,
+    'every read of a confirmed receipt is gone';
+  assert (select count(*) from public.receipts where household_id = current_setting('test.rr_house_e1')::uuid and read_id is not null) = 0,
+    'and the receipts no longer point at one';
+end $$;
+
+-- Mais leituras: farmácia pelo nome impresso e pelo nome que a casa deu, uma leitura em duas notas, a nota que volta a
+-- rascunho e é confirmada de novo, e a nota grande (300 itens contra 1000 linhas lidas), cronometrada.
+set role service_role;
+do $$
+declare
+  d constant date := current_setting('test.rr_today')::date - 5;
+  hh constant uuid := current_setting('test.rr_house_e1')::uuid;
+  rid uuid;
+  line jsonb;
+begin
+  insert into public.receipt_reads (household_id, source, store_cnpj, store_name, purchased_on, lines)
+    values (hh, 'ai', '33444555000166', 'DROGARIA SAO PAULO S/A', d,
+      jsonb_build_array(jsonb_build_object('description', 'AGUA MINERAL 500ML', 'unit', 'un', 'unit_price', 2.00)))
+    returning id into rid;
+  perform set_config('test.rr_read_c1', rid::text, false);
+  insert into public.receipt_reads (household_id, source, store_cnpj, store_name, purchased_on, lines)
+    values (hh, 'ai', '44555666000177', 'SUPERMERCADO BOM PRECO', d,
+      jsonb_build_array(jsonb_build_object('description', 'AGUA MINERAL 1L', 'unit', 'un', 'unit_price', 3.00)))
+    returning id into rid;
+  perform set_config('test.rr_read_c2', rid::text, false);
+  insert into public.receipt_reads (household_id, source, store_cnpj, store_name, purchased_on, lines)
+    values (hh, 'ai', '22333444000155', 'ATACADAO DO PORTO LTDA', d,
+      jsonb_build_array(jsonb_build_object('description', 'SUCO DEL VALLE 1L', 'unit', 'un', 'unit_price', 6.00)))
+    returning id into rid;
+  perform set_config('test.rr_read_reuse', rid::text, false);
+  insert into public.receipt_reads (household_id, source, store_cnpj, store_name, purchased_on, lines)
+    values (hh, 'ai', '22333444000155', 'ATACADAO DO PORTO LTDA', d,
+      jsonb_build_array(jsonb_build_object('description', 'BOLACHA MARIA', 'unit', 'un', 'unit_price', 4.00)))
+    returning id into rid;
+  perform set_config('test.rr_read_redo', rid::text, false);
+  select jsonb_agg(jsonb_build_object('description', 'LINHA LIDA DA NOTA GRANDE ' || g, 'unit', 'un', 'unit_price', 1 + g / 100.0) order by g)
+    into line from generate_series(1, 1000) as g;
+  insert into public.receipt_reads (household_id, source, store_cnpj, store_name, purchased_on, lines)
+    values (hh, 'ai', '55666777000188', 'MERCADO GRANDE DO PORTO', d, line)
+    returning id into rid;
+  perform set_config('test.rr_read_big', rid::text, false);
+
+  -- Leitura grande demais em bytes: o banco recusa (a função corta cada descrição em 200 letras).
+  begin
+    insert into public.receipt_reads (household_id, source, lines)
+      select hh, 'ai', jsonb_agg(jsonb_build_object('description', repeat('X', 500), 'unit', 'un', 'unit_price', 1))
+        from generate_series(1, 1000);
+    raise exception 'FAIL: a read of more than 400 kB';
+  exception when check_violation then null;
+  end;
+end $$;
+
+reset role;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_e1', false) \gset
+do $$
+declare
+  d constant date := current_setting('test.rr_today')::date - 5;
+  s uuid;
+  r uuid;
+  started timestamptz;
+  took interval;
+begin
+  -- (c) pelo nome IMPRESSO: a casa chamou a drogaria de "Mercado da rua", e nada entra.
+  insert into public.stores (name, cnpj) values ('Mercado da rua', '33444555000166') returning id into s;
+  insert into public.receipts (store_id, purchased_at, source, read_id)
+    values (s, d + time '10:00', 'ai', current_setting('test.rr_read_c1')::uuid) returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'AGUA MINERAL 500ML', 'bebidas', 'un', 2.00, 2.00);
+  perform public.confirm_receipt(r, '[]');
+  -- (c) pelo nome que a CASA deu: o impresso diz supermercado, a casa diz farmácia, e nada entra.
+  insert into public.stores (name, cnpj) values ('Farmácia do Zé', '44555666000177') returning id into s;
+  insert into public.receipts (store_id, purchased_at, source, read_id)
+    values (s, d + time '10:00', 'ai', current_setting('test.rr_read_c2')::uuid) returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'AGUA MINERAL 1L', 'bebidas', 'un', 3.00, 3.00);
+  perform public.confirm_receipt(r, '[]');
+
+  -- A mesma leitura em duas notas: a primeira confirmada a usa e a apaga; a segunda fica sem leitura.
+  select id into s from public.stores where cnpj = '22333444000155';
+  insert into public.receipts (store_id, purchased_at, source, read_id)
+    values (s, d + time '11:00', 'ai', current_setting('test.rr_read_reuse')::uuid) returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'SUCO DEL VALLE 1L', 'bebidas', 'un', 6.00, 6.00);
+  perform set_config('test.rr_reuse_a', r::text, false);
+  insert into public.receipts (store_id, purchased_at, source, read_id)
+    values (s, d + time '12:00', 'ai', current_setting('test.rr_read_reuse')::uuid) returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'SUCO DEL VALLE 1L', 'bebidas', 'un', 6.00, 6.00);
+  perform set_config('test.rr_reuse_b', r::text, false);
+  perform public.confirm_receipt(current_setting('test.rr_reuse_a')::uuid, '[]');
+  assert (select read_id from public.receipts where id = current_setting('test.rr_reuse_b')::uuid) is null,
+    'a read used by one confirmed receipt is gone for the other';
+
+  -- A nota que volta a rascunho e é confirmada de novo.
+  insert into public.receipts (store_id, purchased_at, source, read_id)
+    values (s, d + time '13:00', 'ai', current_setting('test.rr_read_redo')::uuid) returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'BOLACHA MARIA', 'snacks', 'un', 4.00, 4.00);
+  perform public.confirm_receipt(r, '[]');
+  perform set_config('test.rr_redo', r::text, false);
+
+  -- A nota grande: 300 itens (o teto), cada um contra as 1000 linhas da leitura.
+  insert into public.stores (name, cnpj) values ('Mercado grande', '55666777000188') returning id into s;
+  insert into public.receipts (store_id, purchased_at, source, read_id)
+    values (s, d + time '14:00', 'ai', current_setting('test.rr_read_big')::uuid) returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price)
+    select r, g, 'linha lida da nota grande ' || g, 'graos', 'un', 1 + g / 100.0, 1 + g / 100.0 from generate_series(1, 300) as g;
+  started := clock_timestamp();
+  perform public.confirm_receipt(r, '[]');
+  took := clock_timestamp() - started;
+  raise notice 'confirmar a nota de 300 itens contra 1000 linhas lidas: % ms', round(extract(epoch from took) * 1000);
+  -- Folgado para uma máquina lenta; o par item x linha, que este teste pegaria, levava segundos.
+  assert took < interval '1 second', format('the big receipt confirms in under a second (took %s)', took);
+end $$;
+
+reset role;
+do $$
+begin
+  assert (select count(*) from public.shared_prices where item_key like 'AGUA MINERAL%') = 0,
+    'a pharmacy by its printed name, or by the name the household gave it, shares nothing';
+  assert (select count(*) from public.shared_prices where item_key = 'SUCO DEL VALLE 1L') = 1, 'the first receipt with the read shared';
+  assert (select count(*) from public.shared_prices where item_key = 'BOLACHA MARIA') = 1, 'the receipt shared on its first confirmation';
+  assert (select count(*) from public.shared_prices where item_key like 'LINHA LIDA DA NOTA GRANDE %') = 300, 'the big receipt shared its 300 lines';
+  -- Para ver que a segunda confirmação não grava de novo, a linha sai.
+  delete from public.shared_prices where item_key in ('BOLACHA MARIA', 'SUCO DEL VALLE 1L');
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_e1', false) \gset
+do $$
+begin
+  perform public.confirm_receipt(current_setting('test.rr_reuse_b')::uuid, '[]');
+  update public.receipts set status = 'draft' where id = current_setting('test.rr_redo')::uuid;
+  update public.receipts set status = 'confirmed' where id = current_setting('test.rr_redo')::uuid;
+  assert (select status from public.receipts where id = current_setting('test.rr_redo')::uuid) = 'confirmed', 'confirmed again';
+end $$;
+reset role;
+do $$
+begin
+  assert (select count(*) from public.shared_prices where item_key in ('BOLACHA MARIA', 'SUCO DEL VALLE 1L')) = 0,
+    'the second receipt of a read, and a second confirmation, share nothing: the read is gone';
+  assert (select count(*) from public.receipt_reads where household_id = current_setting('test.rr_house_e1')::uuid) = 0,
+    'and no read is left';
+end $$;
+
+-- A limpeza: a leitura velha que nenhum rascunho espera sai; a de um rascunho e a recente ficam.
+set role service_role;
+do $$
+declare
+  hh constant uuid := current_setting('test.rr_house_e1')::uuid;
+  rid uuid;
+begin
+  insert into public.receipt_reads (household_id, source, lines) values (hh, 'ai', '[]') returning id into rid;
+  perform set_config('test.rr_read_draft', rid::text, false);
+  insert into public.receipt_reads (household_id, source, lines) values (hh, 'ai', '[]') returning id into rid;
+  perform set_config('test.rr_read_orphan', rid::text, false);
+  insert into public.receipt_reads (household_id, source, lines) values (hh, 'ai', '[]') returning id into rid;
+  perform set_config('test.rr_read_recent', rid::text, false);
+end $$;
+reset role;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_e1', false) \gset
+do $$
+declare
+  r uuid;
+begin
+  insert into public.receipts (source, read_id) values ('ai', current_setting('test.rr_read_draft')::uuid) returning id into r;
+  perform set_config('test.rr_draft', r::text, false);
+end $$;
+reset role;
+do $$
+begin
+  update public.receipt_reads set created_at = now() - interval '31 days'
+    where household_id in (current_setting('test.rr_house_e1')::uuid, current_setting('test.rr_house_e2')::uuid)
+      and id <> current_setting('test.rr_read_recent')::uuid;
+  -- A que ficou sem nota e a do Edu (as das notas confirmadas o gatilho já apagou).
+  assert public.forget_receipt_reads() = 1 + 1, 'the old reads no draft waits for go';
+  assert (select array_agg(id order by id) from public.receipt_reads where household_id = current_setting('test.rr_house_e1')::uuid)
+    = (select array_agg(x order by x) from unnest(array[current_setting('test.rr_read_draft')::uuid, current_setting('test.rr_read_recent')::uuid]) as x),
+    'the read a draft waits for and the recent one stay';
+  assert (select read_id from public.receipts where id = current_setting('test.rr_draft')::uuid) = current_setting('test.rr_read_draft')::uuid,
+    'the draft keeps its read';
+  -- A leitura do Edu também era velha e de nenhum rascunho.
+  assert (select count(*) from public.receipt_reads where household_id = current_setting('test.rr_house_e2')::uuid) = 0, 'the other household too';
 end $$;
 reset time zone;
 

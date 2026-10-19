@@ -143,6 +143,30 @@ export function nfceItemsToDraft(
     });
 }
 
+/**
+ * A nota (rascunho) criada a partir do QR code. `readId` é o id da leitura que a
+ * função `nfce` gravou no servidor: só a nota com ele compartilha preço com
+ * outras casas, e só as linhas iguais às lidas. Vai só quando a função devolveu
+ * um: o banco de antes da leitura do servidor não tem a coluna, e a nota é
+ * salva do mesmo jeito.
+ */
+export function nfceReceiptRow(
+  page: { issuedAtLocal: string | null; total: number | null; readId?: string | null },
+  qr: Pick<NfceQr, 'accessKey'>,
+  storeId: string | null,
+  now: Date = new Date(),
+) {
+  return {
+    store_id: storeId,
+    purchased_at: (page.issuedAtLocal && localDateTimeToISO(page.issuedAtLocal)) ?? now.toISOString(),
+    total: page.total,
+    access_key: qr.accessKey,
+    source: 'qrcode' as const,
+    status: 'draft' as const,
+    ...(page.readId ? { read_id: page.readId } : {}),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Quando a Sefaz não mostra a nota
 

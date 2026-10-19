@@ -97,11 +97,32 @@ export function parseNfceHtml(html: string): NfcePage {
   };
 }
 
+/**
+ * A "Chave de acesso" que a página mostra (44 dígitos, em grupos de 4), ou
+ * null. A leitura do servidor só guarda a chave do link do QR quando ela é a
+ * mesma da página: o link pode trazer outra (p= antes de chNFe, por exemplo).
+ */
+export function pageAccessKey(html: string): string | null {
+  const match = textOf(html).match(/Chave\s+de\s+acesso:?\s*((?:\d[\s.]*){44})/i);
+  const key = match ? match[1].replace(/\D/g, '') : '';
+  return key.length === 44 ? key : null;
+}
+
+/**
+ * A única porta fora da padrão que se aceita: a consulta de Pernambuco
+ * redireciona para https://nfce.sefaz.pe.gov.br:444/. Só essa combinação de
+ * protocolo, host e porta.
+ */
+export function isAllowedPort(url: URL): boolean {
+  return !url.port || (url.protocol === 'https:' && url.hostname.toLowerCase() === 'nfce.sefaz.pe.gov.br' && url.port === '444');
+}
+
 /** Só links de Sefaz (domínios .gov.br), em http ou https. */
 export function isSefazUrl(value: string): boolean {
   try {
     const url = new URL(value);
-    return (url.protocol === 'https:' || url.protocol === 'http:') && url.hostname.endsWith('.gov.br') && !url.username && !url.port;
+    return (url.protocol === 'https:' || url.protocol === 'http:') && url.hostname.endsWith('.gov.br') && !url.username && !url.password &&
+      isAllowedPort(url);
   } catch {
     return false;
   }

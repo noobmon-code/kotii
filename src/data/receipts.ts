@@ -3,7 +3,7 @@
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { localDateTimeToISO, nfceItemsToDraft, type NfceItem, type NfceQr } from '@/domain/nfce';
+import { nfceItemsToDraft, nfceReceiptRow, type NfceItem, type NfceQr } from '@/domain/nfce';
 import type { ConfirmItem } from '@/domain/receiptReview';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Receipt, ReceiptItem, Unit } from '@/lib/types';
@@ -140,6 +140,8 @@ interface NfcePageResult {
   issuedAtLocal: string | null;
   total: number | null;
   items: NfceItem[];
+  /** A leitura que a função gravou no servidor (receipt_reads); ausente na função de antes, nula se não deu para gravar. */
+  readId?: string | null;
 }
 
 /** Mesmo nome de loja, sem caixa nem espaços nas pontas (num ILIKE, "%", "_" e "*" seriam curingas). */
@@ -227,20 +229,8 @@ export function useImportNfce() {
       );
 
       const storeId = await findOrCreateStore({ ...page.store, cnpj: page.store.cnpj ?? qr.cnpj });
-      const receipt = unwrap(
-        await supabase
-          .from('receipts')
-          .insert({
-            store_id: storeId,
-            purchased_at: (page.issuedAtLocal && localDateTimeToISO(page.issuedAtLocal)) ?? new Date().toISOString(),
-            total: page.total,
-            access_key: qr.accessKey,
-            source: 'qrcode',
-            status: 'draft',
-          })
-          .select('id')
-          .single(),
-      ) as { id: string };
+      // Com o id da leitura do servidor, quando a função devolveu um: é o que deixa a nota compartilhar preço.
+      const receipt = await insertNfceReceipt(nfceReceiptRow(page, qr, storeId));
       const items = nfceItemsToDraft(page.items, aliases).map((item) => ({ ...item, receipt_id: receipt.id }));
       const { error: itemsError } = await supabase.from('receipt_items').insert(items);
       if (itemsError) {
@@ -251,6 +241,21 @@ export function useImportNfce() {
     },
     onSuccess: invalidate,
   });
+}
+
+/**
+ * Grava o rascunho da nota do QR code. A leitura do servidor leva a casa junto
+ * (chave estrangeira com household_id): se a pessoa trocou de casa entre a
+ * leitura e a gravação, o banco recusa o read_id (23503) e a nota é gravada de
+ * novo sem ele. Ela não se perde por isso, só não compartilha preço.
+ */
+export async function insertNfceReceipt(row: ReturnType<typeof nfceReceiptRow>): Promise<{ id: string }> {
+  const first = await supabase.from('receipts').insert(row).select('id').single();
+  if (first.error && 'read_id' in row && (first.error as { code?: string }).code === '23503') {
+    const { read_id: _refused, ...withoutRead } = row;
+    return unwrap(await supabase.from('receipts').insert(withoutRead).select('id').single()) as { id: string };
+  }
+  return unwrap(first) as { id: string };
 }
 
 export function useCreateManualReceipt() {

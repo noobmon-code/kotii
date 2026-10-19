@@ -76,5 +76,5 @@ Deno.test('Sefaz respondeu sem itens: 422 e a leitura conta', () => {
 });
 
 Deno.test('nota lida: 200 com a nota e a leitura conta', () => {
-  assertEquals(replyFor({ kind: 'ok', page: PAGE }, PB_QR), { status: 200, body: PAGE, refund: false });
+  assertEquals(replyFor({ kind: 'ok', page: PAGE, fetched: [PB_QR], pageUrl: PB_QR, accessKey: null }, PB_QR), { status: 200, body: PAGE, refund: false });
 });

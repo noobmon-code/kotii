@@ -5,17 +5,23 @@
 // da Sefaz direto. A busca (sefaz.ts) só faz GET em domínios .gov.br e para
 // em CAPTCHA: Sefaz que pedem CAPTCHA (como a da Paraíba) respondem 422
 // `captcha` e o app manda a pessoa para a foto. Quem cria o rascunho de nota
-// é o app. Cada leitura conta no limite mensal da casa (use_ai, tipo nfce);
-// quando ela volta está em reply.ts. Os logs nunca levam a chave, itens,
+// é o app. Quando a nota vem só por endereços de consulta oficiais
+// (official.ts), o que foi lido também vai para receipt_reads (com a chave
+// secreta), e a resposta leva o id dessa leitura (readId): o app o grava na
+// nota, e só assim ela compartilha preço com outras casas (read.ts,
+// _shared/receiptRead.ts). Cada leitura conta no limite mensal da casa
+// (use_ai, tipo nfce); quando ela volta está em reply.ts. Os logs nunca levam a chave, itens,
 // preços ou CPF/CNPJ: só host + caminho e a estrutura das páginas.
 
 import { createClient } from '@supabase/supabase-js';
 
 import { QuotaError, refundAiQuota, takeAiQuota } from '../_shared/aiQuota.ts';
-import { publishableKey } from '../_shared/apiKeys.ts';
+import { publishableKey, secretKey } from '../_shared/apiKeys.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
+import { saveReceiptRead } from '../_shared/receiptRead.ts';
 import { safeLocation } from './page.ts';
 import { isSefazUrl } from './parse.ts';
+import { nfceRead } from './read.ts';
 import { replyFor } from './reply.ts';
 import { lookupNfce } from './sefaz.ts';
 
@@ -66,5 +72,12 @@ Deno.serve(async (req) => {
     log(`nfce ${result.kind}`, where, JSON.stringify(result.trace));
   }
   if (reply.refund) await refundAiQuota(ticket);
+  if (result.kind === 'ok') {
+    const { data: householdId } = await db.rpc('current_household_id');
+    // Só a busca que passou por endereços oficiais vira leitura (read.ts); as outras seguem sem readId.
+    const read = nfceRead(result, url, householdId);
+    const readId = read ? await saveReceiptRead(() => createClient(Deno.env.get('SUPABASE_URL')!, secretKey()), read) : null;
+    return json({ ...result.page, readId }, reply.status);
+  }
   return json(reply.body, reply.status);
 });

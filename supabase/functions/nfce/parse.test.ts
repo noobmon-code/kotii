@@ -1,6 +1,6 @@
 import { assert, assertEquals } from '@std/assert';
 
-import { isSefazUrl, parseBRNumber, parseNfceHtml } from './parse.ts';
+import { isSefazUrl, pageAccessKey, parseBRNumber, parseNfceHtml } from './parse.ts';
 
 // Leiaute do Portal da NFC-e (consulta pelo QR code), resumido.
 const PAGE = `
@@ -65,5 +65,19 @@ Deno.test('só busca em sites de Sefaz', () => {
   assert(!isSefazUrl('https://example.com/?p=1'));
   assert(!isSefazUrl('https://gov.br.example.com/'));
   assert(!isSefazUrl('https://sefaz.gov.br:8443/x'));
+  // A única porta aceita: a 444 da consulta de Pernambuco, em https.
+  assert(isSefazUrl('https://nfce.sefaz.pe.gov.br:444/nfce/consulta?p=1'));
+  assert(!isSefazUrl('http://nfce.sefaz.pe.gov.br:444/nfce/consulta?p=1'));
+  assert(!isSefazUrl('https://www.sefaz.pb.gov.br:444/nfce'));
   assert(!isSefazUrl('file:///etc/passwd'));
+});
+
+Deno.test('pageAccessKey: a chave impressa, em grupos de 4, ou null', () => {
+  const key = '35261011222333000181650010000123451000012347';
+  const grouped = key.match(/.{4}/g)!.join(' ');
+  assertEquals(pageAccessKey(`<div><strong>Chave de acesso:</strong><br><span class="chave">${grouped}</span></div>`), key);
+  assertEquals(pageAccessKey(`<p>CHAVE DE ACESSO ${key}</p>`), key);
+  // Curta demais, ou só no link (não é o que a página mostra): null.
+  assertEquals(pageAccessKey('<p>Chave de acesso: 3526 1011</p>'), null);
+  assertEquals(pageAccessKey(`<a href="ver.jsp?chave=${key}">Ver</a>`), null);
 });

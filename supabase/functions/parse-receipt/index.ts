@@ -6,7 +6,10 @@
 // devolve a existente (duplicate), sem gastar a IA; senão a nota guarda essa
 // chave, a menos que a foto seja de outra nota (regras em accessKey.ts).
 //
-// Roda com o JWT do usuário: todas as leituras e escritas passam pela RLS.
+// Roda com o JWT do usuário: todas as leituras e escritas passam pela RLS,
+// menos uma. O que a IA leu também vai para receipt_reads, com a chave secreta,
+// e a nota guarda o id dessa leitura (read_id): só assim ela compartilha preço
+// com outras casas (_shared/receiptRead.ts).
 // Secrets: ANTHROPIC_API_KEY ou OPENROUTER_API_KEY (uma das duas);
 // RECEIPT_MODEL e RECEIPT_PROVIDER ("anthropic" | "openrouter") opcionais.
 // Com a chave da OpenRouter, ela é usada (padrão: DeepSeek V4.1 Flash).
@@ -14,9 +17,10 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 import { QuotaError, refundAiQuota, takeAiQuota } from '../_shared/aiQuota.ts';
-import { publishableKey } from '../_shared/apiKeys.ts';
+import { publishableKey, secretKey } from '../_shared/apiKeys.ts';
 import { ExtractionError, extractStructured, mediaTypeOf, toVisionImage, visionConfig } from '../_shared/vision.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
+import { forgetReceiptRead, insertWithRead, receiptRead, saoPauloDay, saveReceiptRead } from '../_shared/receiptRead.ts';
 import { duplicateBeforeRead, existingOnConflict, keyAfterRead, requestedAccessKey } from './accessKey.ts';
 import { cleanReceipt, ExtractedReceiptSchema, instructions, MAX_PHOTOS, sameStoreName, SYSTEM } from './extract.ts';
 
@@ -36,6 +40,8 @@ function json(body: unknown, status = 200): Response {
 const config = visionConfig(['RECEIPT']);
 
 const STORE_PAGE = 1000;
+
+const serverDb = () => createClient(Deno.env.get('SUPABASE_URL')!, secretKey());
 
 async function findOrCreateStore(
   db: SupabaseClient,
@@ -189,25 +195,53 @@ Deno.serve(async (req) => {
       address: receipt.address,
     });
 
-    const { data: created, error: receiptError } = await db
-      .from('receipts')
-      .insert({
-        store_id: storeId,
-        purchased_at: receipt.purchasedAt ?? new Date().toISOString(),
-        total: receipt.total,
-        access_key: accessKey,
-        image_path: imagePaths[0],
-        extra_image_paths: imagePaths.slice(1),
+    // A leitura antes da nota: a nota nasce apontando para ela. Sem leitura
+    // (o banco ainda sem a tabela, a chave secreta faltando), a nota é salva do
+    // mesmo jeito, só não compartilha preço.
+    let readId = await saveReceiptRead(
+      serverDb,
+      receiptRead({
+        householdId,
         source: 'ai',
-        status: 'draft',
-      })
-      .select('id')
-      .single();
-    if (receiptError) {
+        // A chave que a IA leu na foto, não a que o app mandou (essa é do QR que o celular leu: a nota guarda,
+        // mas o servidor não a viu).
+        accessKey: receipt.accessKey,
+        cnpj: receipt.cnpj,
+        storeName: receipt.storeName,
+        purchasedOn: saoPauloDay(receipt.purchasedAt),
+        lines: receipt.items.map((item) => ({ description: item.raw_description, unit: item.unit, unit_price: item.unit_price })),
+      }),
+    );
+    const dropRead = () => (readId ? forgetReceiptRead(serverDb, readId) : Promise.resolve());
+
+    const saved = await insertWithRead<{ id: string }>(
+      (withRead) =>
+        db
+          .from('receipts')
+          .insert({
+            ...(withRead ? { read_id: withRead } : {}),
+            store_id: storeId,
+            purchased_at: receipt.purchasedAt ?? new Date().toISOString(),
+            total: receipt.total,
+            access_key: accessKey,
+            image_path: imagePaths[0],
+            extra_image_paths: imagePaths.slice(1),
+            source: 'ai',
+            status: 'draft',
+          })
+          .select('id')
+          .single(),
+      readId,
+      dropRead,
+    );
+    readId = saved.readId;
+    const { data: created, error: receiptError } = saved;
+    if (receiptError || !created) {
+      await dropRead();
       // Mesma chave gravada ao mesmo tempo por outra leitura: vale a que chegou antes.
       const first = await existingOnConflict(receiptError, accessKey, findByKey);
       if (first) return json({ receipt_id: first, duplicate: true });
-      throw receiptError;
+      throw receiptError ?? new Error('receipt not returned');
     }
 
     if (receipt.items.length) {
@@ -216,6 +250,7 @@ Deno.serve(async (req) => {
         .insert(receipt.items.map((item) => ({ ...item, receipt_id: created.id })));
       if (itemsError) {
         await db.from('receipts').delete().eq('id', created.id);
+        await dropRead();
         throw itemsError;
       }
     }
