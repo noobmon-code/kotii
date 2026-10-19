@@ -16,6 +16,7 @@ import {
   sharedPriceLabel,
   type SharedPriceRow,
   sharedPriceRows,
+  sharedQuotes,
   sharedRowsByProduct,
   SHARING_ABOUT,
   stateAbbreviation,
@@ -325,5 +326,39 @@ describe('as frases', () => {
     expect(SHARING_ABOUT).toBe(
       'Os preços das notas lidas pelo app (mercado, item, preço e dia) entram numa base comum, sem dizer de qual casa são, para que outras casas vejam quanto cada coisa custa nos mercados. Ficam de fora as notas digitadas à mão, remédios e compras em farmácia, itens de higiene pessoal e o que o app não reconheceu. Cada preço aparece para as outras casas a partir do dia seguinte.',
     );
+  });
+});
+
+describe('os preços de outras casas como entram na lista (sharedQuotes)', () => {
+  it('ligados ao mercado da casa pelo CNPJ, com o nome que ela conhece; os de fora sem mercado da casa', () => {
+    const quotes = sharedQuotes(
+      [shared(ATACADAO, 22.9, '2026-10-10', { mine: true }), shared(SUPER, 21.5, '2026-10-09', { store_uf: '35' })],
+      [],
+      STORES,
+    );
+    expect(quotes).toEqual([
+      expect.objectContaining({ productId: 'arroz', storeId: null, storeCnpj: SUPER, storeName: 'Super Outro', state: 'SP', unitPrice: 21.5 }),
+      expect.objectContaining({ productId: 'arroz', storeId: 'meu-atacadao', storeCnpj: ATACADAO, storeName: 'Atacadão da esquina', unitPrice: 22.9 }),
+    ]);
+  });
+
+  it('dois mercados da casa com o mesmo CNPJ recebem o preço os dois', () => {
+    const stores = [...STORES, { id: 'outro-atacadao', cnpj: ATACADAO, name: 'Atacadão (outro cadastro)' }];
+    const quotes = sharedQuotes([shared(ATACADAO, 22.9, '2026-10-10', { mine: true })], [], stores);
+    expect(quotes.map((quote) => quote.storeId).sort()).toEqual(['meu-atacadao', 'outro-atacadao']);
+  });
+
+  it('o que a casa já sabe fica de fora, e o "mercado da casa" que ela não tem mais não vira mercado de fora', () => {
+    const quotes = sharedQuotes(
+      [shared(ATACADAO, 22.9, '2026-10-01', { mine: true }), shared(SUPER, 21.5, '2026-10-09', { mine: true })],
+      [own('meu-atacadao', 24.9, '2026-10-05T15:00:00Z')],
+      STORES,
+    );
+    expect(quotes).toEqual([]);
+  });
+
+  it('por g vira por kg, como nas outras telas', () => {
+    const [quote] = sharedQuotes([shared(SUPER, 0.0499, '2026-10-09', { unit: 'g' })], [], STORES);
+    expect(quote).toMatchObject({ unit: 'kg', unitPrice: 49.9, storeId: null });
   });
 });

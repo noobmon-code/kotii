@@ -5,6 +5,13 @@
 // "Onde comprar" (recommendation) faz a mesma conta: pergunta aqui o preço de
 // cada item em cada mercado (listStorePrices), com o mesmo nível de preço dos
 // mercados (priceLevel) e a mesma conversão de unidades (units).
+//
+// Onde a casa não tem preço, entra o preço visto em outras casas (`shared`,
+// sharedQuotes de domain/sharedPrices), marcado como tal e com o dia em que
+// foi visto. O preço da própria casa sempre vence: de qualquer produto ligado
+// ao item, em qualquer unidade, antes do de outras casas; e o de outras casas
+// vem antes da estimativa pelo nível de preço. Eles não entram no nível de
+// preço dos mercados nem no "último preço" e no "preço bom" do item.
 
 import { joinNames } from './cartPantry';
 import { diffDays, formatShortDate, toISODate, todayISO } from './dates';
@@ -13,6 +20,7 @@ import { formatBRL, formatQuantity } from './money';
 import { storePriceIndex } from './priceLevel';
 import { SAME_TRIP_DAYS } from './restock';
 import { normalizeSearch } from './search';
+import { SHARED_PRICES_NOTICE, seenLabel, sharedStoreLabel, type SharedQuote } from './sharedPrices';
 import { pricePerBase, priceQuantity, sameDimension } from './units';
 
 export interface EstimateItem {
@@ -41,8 +49,9 @@ export interface ItemEstimate {
   unit: string;
   /**
    * `known`: preço de nota, do mercado escolhido ou, sem mercado, o último que
-   * a casa pagou. `estimated`: o mercado escolhido não tem esse item; o preço
-   * sai do nível de preço dele (como em "Onde comprar").
+   * a casa pagou (ou, sem preço da casa, o visto em outras casas: `shared`).
+   * `estimated`: o mercado escolhido não tem esse item; o preço sai do nível
+   * de preço dele (como em "Onde comprar").
    */
   kind: 'known' | 'estimated';
   /** A unidade da lista não converte para a do preço (un x kg): o custo é o de 1 kg, 1 litro ou 1 unidade. */
@@ -50,15 +59,17 @@ export interface ItemEstimate {
   /** O produto de onde saem o último preço, o "preço bom" e a estimativa do item (itemResolver). */
   productId: string;
   /**
-   * O preço de nota que entrou na conta; null quando é estimado. No mercado
-   * escolhido pode ser de outro produto ligado ao mesmo nome (o do item não
-   * tem preço lá): aí o custo é aproximado.
+   * O preço de nota da casa que entrou na conta; null quando é estimado ou de
+   * outras casas. No mercado escolhido pode ser de outro produto ligado ao
+   * mesmo nome (o do item não tem preço lá): aí o custo é aproximado.
    */
   used: EstimatePrice | null;
-  /** O último preço que a casa pagou pelo item, em qualquer mercado. */
-  last: EstimatePrice;
-  /** O menor entre os últimos preços dos mercados, do mesmo produto: o "preço bom". */
-  lowest: EstimatePrice;
+  /** O preço visto em outras casas que entrou na conta: a casa não tem preço do item ali (ou em lugar nenhum). */
+  shared?: SharedQuote;
+  /** O último preço que a casa pagou pelo item, em qualquer mercado; null quando ela nunca pagou (o preço é de outras casas). */
+  last: EstimatePrice | null;
+  /** O menor entre os últimos preços dos mercados, do mesmo produto: o "preço bom". null como `last`. */
+  lowest: EstimatePrice | null;
 }
 
 export interface ListEstimate {
@@ -77,9 +88,12 @@ export interface ListEstimate {
   estimatedCount: number;
   /** Itens com preço em que a quantidade é aproximada (a unidade da lista não converte para a do preço). */
   approximateCount: number;
+  /** Itens cujo preço na conta é o visto em outras casas, e quanto do total vem deles. */
+  sharedCount: number;
+  sharedTotal: number;
   /**
    * Os mercados em que dá para estimar a lista (os das notas da casa), do que
-   * tem preço de nota para mais itens dela para o que tem para menos. Com
+   * tem preço (de nota da casa ou de outras casas) para mais itens dela para o que tem para menos. Com
    * zero, a conta de lá sai toda estimada pelo nível de preço do mercado.
    * Vazio enquanto nenhum item tem preço.
    */
@@ -106,16 +120,31 @@ const newest = (quotes: EstimatePrice[]) =>
   });
 
 /** O preço que serve à unidade da lista: nela; senão, numa que converte para ela (g e kg); senão, o mais recente. */
-function bestForUnit(listUnit: string, quotes: EstimatePrice[]): EstimatePrice {
+function bestForUnit<T extends { unit: string }>(listUnit: string, quotes: T[], latest: (quotes: T[]) => T): T {
   const exact = quotes.filter((quote) => quote.unit === listUnit);
-  if (exact.length) return newest(exact);
+  if (exact.length) return latest(exact);
   const convertible = quotes.filter((quote) => sameDimension(quote.unit, listUnit));
-  return newest(convertible.length ? convertible : quotes);
+  return latest(convertible.length ? convertible : quotes);
 }
+
+/**
+ * O preço de outras casas visto por último. No empate de dia, sempre o mesmo: o mais barato, depois o de menor
+ * produto, CNPJ, unidade e mercado da casa. A ordem em que o banco devolve as linhas não decide a conta.
+ */
+const newestShared = (quotes: SharedQuote[]) =>
+  quotes.reduce((a, b) => {
+    if (a.seenOn !== b.seenOn) return b.seenOn > a.seenOn ? b : a;
+    if (a.unitPrice !== b.unitPrice) return b.unitPrice < a.unitPrice ? b : a;
+    const order =
+      byId(b.productId, a.productId) || byId(b.storeCnpj, a.storeCnpj) || byId(b.unit, a.unit) || byId(b.storeId ?? '', a.storeId ?? '');
+    return order < 0 ? b : a;
+  });
 
 interface PriceSources {
   links?: LinkIndex;
   products?: readonly { id: string; name: string }[];
+  /** Os preços vistos em outras casas (sharedQuotes): só entram onde a casa não tem preço do item. */
+  shared?: readonly SharedQuote[];
 }
 
 interface ResolvedItem {
@@ -176,20 +205,23 @@ function itemResolver(prices: readonly EstimatePrice[], { links, products = [] }
     }
   }
 
-  return (item: Pick<EstimateItem, 'name' | 'productId' | 'unit'>): ResolvedItem | null => {
+  /** Os produtos que podem cumprir o item quando o dele não tem preço: os que já cumpriram esse nome nas notas e o de mesmo nome. */
+  const candidates = (item: Pick<EstimateItem, 'name'>): string[] => {
+    const sameName = productByName.get(normalizeSearch(item.name));
+    return [...new Set([...(links?.productsFor(item.name) ?? []), ...(sameName ? [sameName] : [])])];
+  };
+
+  const resolve = (item: Pick<EstimateItem, 'name' | 'productId' | 'unit'>): ResolvedItem | null => {
     // O produto do item; sem ele (ou se ele não tem preço), os que já cumpriram esse nome nas notas e o de mesmo nome.
     let all = item.productId ? (byProduct.get(item.productId) ?? []) : [];
-    if (!all.length) {
-      const sameName = productByName.get(normalizeSearch(item.name));
-      const candidates = new Set([...(links?.productsFor(item.name) ?? []), ...(sameName ? [sameName] : [])]);
-      all = [...candidates].flatMap((productId) => byProduct.get(productId) ?? []);
-    }
+    if (!all.length) all = candidates(item).flatMap((productId) => byProduct.get(productId) ?? []);
     if (!all.length) return null;
     // Entre vários produtos, vale o comprado mais recentemente, em qualquer unidade: a unidade é escolhida
     // depois, só entre os preços desse produto (um produto antigo na unidade da lista não passa na frente).
     const { productId } = newest(all);
     return { productId, own: all.filter((quote) => quote.productId === productId), all };
   };
+  return { resolve, candidates };
 }
 
 /** De onde vem o preço de um item da lista num mercado. */
@@ -200,46 +232,73 @@ export type StorePriceSource =
   | 'otherUnit'
   /** De outro produto ligado ao mesmo nome: o custo é aproximado. */
   | 'otherProduct'
+  /** A casa não tem o item nas notas de lá: é o preço visto em outras casas (`shared`). */
+  | 'shared'
   /** O mercado não tem o item nas notas: sai do nível de preço dele. */
   | 'estimated';
 
 /** O preço de um item da lista num mercado, e de onde ele vem (listStorePrices). */
-export interface StorePrice extends Pick<ItemEstimate, 'cost' | 'unitPrice' | 'unit' | 'kind' | 'approximateQuantity' | 'productId' | 'used'> {
+export interface StorePrice
+  extends Pick<ItemEstimate, 'cost' | 'unitPrice' | 'unit' | 'kind' | 'approximateQuantity' | 'productId' | 'used' | 'shared'> {
   source: StorePriceSource;
 }
 
 /** Um item com preço: o último, o "preço bom" e o preço dele em cada mercado. */
 interface PricedItem {
-  last: EstimatePrice;
-  lowest: EstimatePrice;
-  /** Os mercados com preço de nota para o item. */
+  /** null quando a casa nunca pagou pelo item: o preço dele é só o de outras casas. */
+  last: EstimatePrice | null;
+  lowest: EstimatePrice | null;
+  /** Os mercados da casa com preço para o item: de nota da casa ou visto em outras casas. */
   stores: Set<string>;
-  /** Sem mercado escolhido: o último preço que a casa pagou. */
+  /** Sem mercado escolhido: o último preço que a casa pagou (sem nenhum, o visto em outras casas). */
   lastPaid: () => StorePrice;
-  at: (storeId: string) => StorePrice;
+  /** null: o item só tem preço de outras casas, e nenhum desse mercado. */
+  at: (storeId: string) => StorePrice | null;
+  /** Os preços de outras casas em mercados que não são da casa, um por mercado (CNPJ). */
+  elsewhere: () => StorePrice[];
 }
 
 /**
  * A regra de preço da lista, uma só para a estimativa e para "Onde comprar":
  * o produto de cada item (itemResolver) e, em cada mercado, o preço que vale
- * lá. null para item sem preço nenhum.
+ * lá. null para item sem preço nenhum, nem da casa nem de outras casas.
  */
 function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, index = storePriceIndex(prices)) {
-  const resolve = itemResolver(prices, sources);
+  const { resolve, candidates } = itemResolver(prices, sources);
+  const sharedByProduct = new Map<string, SharedQuote[]>();
+  for (const quote of sources.shared ?? []) {
+    if (quote.unitPrice > 0) sharedByProduct.set(quote.productId, [...(sharedByProduct.get(quote.productId) ?? []), quote]);
+  }
+  /**
+   * Os preços de outras casas que servem ao item. Com preço da casa, só os do mesmo produto de onde ele sai (um
+   * produto só por item). Sem nenhum, como na casa: o produto do item; sem ele (ou sem preço de outras casas),
+   * os ligados ao nome e o de mesmo nome, valendo o visto por último.
+   */
+  const sharedOf = (item: Pick<EstimateItem, 'name' | 'productId'>, resolved: ResolvedItem | null): SharedQuote[] => {
+    if (resolved) return sharedByProduct.get(resolved.productId) ?? [];
+    let all = item.productId ? (sharedByProduct.get(item.productId) ?? []) : [];
+    if (!all.length) all = candidates(item).flatMap((productId) => sharedByProduct.get(productId) ?? []);
+    if (!all.length) return [];
+    const { productId } = newestShared(all);
+    return all.filter((quote) => quote.productId === productId);
+  };
 
   return (item: Pick<EstimateItem, 'name' | 'productId' | 'quantity' | 'unit'>): PricedItem | null => {
     const resolved = resolve(item);
-    if (!resolved) return null;
-    const { productId, own, all } = resolved;
+    const shared = sharedOf(item, resolved);
+    if (!resolved && !shared.length) return null;
+    const own = resolved?.own ?? [];
+    const all = resolved?.all ?? [];
+    const productId = resolved?.productId ?? shared[0].productId;
     // Na unidade da lista quando há preço nela; senão, numa que converte para ela; senão, na do preço mais recente.
-    const { unit } = bestForUnit(item.unit, own);
+    const { unit } = own.length ? bestForUnit(item.unit, own, newest) : bestForUnit(item.unit, shared, newestShared);
     const quotes = own.filter((quote) => quote.unit === unit);
-    const last = newest(quotes);
+    const last = quotes.length ? newest(quotes) : null;
     // O "preço bom" é do mesmo produto (outro produto do mesmo nome pode ser outra embalagem); no empate, o próprio último.
-    const lowest = quotes.reduce((a, b) => (b.unitPrice < a.unitPrice ? b : a), last);
+    const lowest = last && quotes.reduce((a, b) => (b.unitPrice < a.unitPrice ? b : a), last);
 
-    const priced = (source: StorePriceSource, used: EstimatePrice | null, unitPrice: number): StorePrice => {
-      const priceUnit = used?.unit ?? unit;
+    const priced = (source: StorePriceSource, used: EstimatePrice | null, unitPrice: number, seen?: SharedQuote): StorePrice => {
+      const priceUnit = seen?.unit ?? used?.unit ?? unit;
       const { quantity, approximate } = priceQuantity(item.quantity, item.unit, priceUnit);
       return {
         source,
@@ -247,11 +306,16 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
         // Com as casas da nota, não em centavos: é o preço por unidade que os detalhes do item mostram.
         unitPrice: round8(unitPrice),
         unit: priceUnit,
-        kind: used ? 'known' : 'estimated',
+        kind: used || seen ? 'known' : 'estimated',
         approximateQuantity: approximate,
         productId,
         used,
+        ...(seen ? { shared: seen } : {}),
       };
+    };
+    const fromShared = (list: SharedQuote[]) => {
+      const seen = bestForUnit(item.unit, list, newestShared);
+      return priced('shared', null, seen.unitPrice, seen);
     };
     // O preço de lá: do produto, na unidade de sempre; do produto, em outra unidade; ou de outro produto ligado ao mesmo nome.
     const tiers: [StorePriceSource, EstimatePrice[]][] = [
@@ -262,19 +326,36 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
     return {
       last,
       lowest,
-      stores: new Set(all.map((quote) => quote.storeId)),
-      lastPaid: () => priced('product', last, last.unitPrice),
+      stores: new Set([...all.map((quote) => quote.storeId), ...shared.flatMap((quote) => (quote.storeId ? [quote.storeId] : []))]),
+      lastPaid: () => {
+        if (last) return priced('product', last, last.unitPrice);
+        // Sem preço da casa: o visto por último, de preferência num mercado dela (é onde ela compra).
+        const home = shared.filter((quote) => quote.storeId != null);
+        return fromShared(home.length ? home : shared);
+      },
       at: (storeId) => {
         for (const [source, list] of tiers) {
           const here = list.filter((quote) => quote.storeId === storeId);
           if (!here.length) continue;
-          const used = bestForUnit(item.unit, here);
+          const used = bestForUnit(item.unit, here, newest);
           return priced(source, used, used.unitPrice);
         }
+        // A casa não tem o item nas notas de lá: o preço visto em outras casas nesse mercado (pelo CNPJ).
+        const seenHere = shared.filter((quote) => quote.storeId === storeId);
+        if (seenHere.length) return fromShared(seenHere);
+        // Sem preço da casa em lugar nenhum, não há média para estimar: o item fica sem preço aqui.
+        if (!quotes.length) return null;
         // O mercado não tem esse item nas notas: a média do produto nos outros, no nível de preço deste. Os preços
         // conhecidos entram como estão, sem dividir pelo nível do mercado de cada um: um nível ainda incerto pesaria
-        // duas vezes na conta.
+        // duas vezes na conta. Os de outras casas não entram na média: a estimativa é pela casa.
         return priced('estimated', null, average(quotes.map((quote) => quote.unitPrice)) * (index.get(storeId) ?? 1));
+      },
+      elsewhere: () => {
+        const byStore = new Map<string, SharedQuote[]>();
+        for (const quote of shared) {
+          if (quote.storeId == null) byStore.set(quote.storeCnpj, [...(byStore.get(quote.storeCnpj) ?? []), quote]);
+        }
+        return [...byStore.values()].map(fromShared);
       },
     };
   };
@@ -283,10 +364,11 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
 /**
  * O preço de cada item da lista em cada mercado, e de onde ele vem: do
  * produto do item, na unidade de sempre; dele, em outra unidade; de outro
- * produto ligado ao mesmo nome; ou estimado pelo nível de preço do mercado.
- * null para item sem preço nenhum (fica fora da conta). É a resposta que a
- * estimativa usa com o mercado escolhido e a que "Onde comprar" recebe
- * (recommendStores, `priceAt`): por isso as duas telas dão o mesmo total.
+ * produto ligado ao mesmo nome; o visto em outras casas nesse mercado; ou
+ * estimado pelo nível de preço do mercado. null para item sem preço ali (fica
+ * fora da conta). É a resposta que a estimativa usa com o mercado escolhido e
+ * a que "Onde comprar" recebe (recommendStores, `priceAt`): por isso as duas
+ * telas dão o mesmo total.
  */
 export function listStorePrices(
   items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId' | 'quantity' | 'unit'>[],
@@ -299,28 +381,83 @@ export function listStorePrices(
 }
 
 /**
+ * Os itens da lista sem preço nenhum da casa, só com o visto em outras casas,
+ * e o preço deles: o mesmo que a lista mostra sem mercado escolhido (o visto
+ * por último, de preferência num mercado da casa). No "Onde comprar" eles
+ * ficam fora dos planos (não têm resposta em todo mercado, e não há média da
+ * casa para estimar) e aparecem à parte.
+ */
+export function listSharedOnly(
+  items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId' | 'quantity' | 'unit'>[],
+  prices: readonly EstimatePrice[],
+  sources: PriceSources = {},
+): Map<string, StorePrice> {
+  const price = itemPricer(prices, sources);
+  const byItem = new Map<string, StorePrice>();
+  for (const item of items) {
+    const priced = price(item);
+    if (priced && !priced.last) byItem.set(item.id, priced.lastPaid());
+  }
+  return byItem;
+}
+
+/**
+ * Os preços de outras casas para os itens da lista em mercados que não são da
+ * casa ("Em outros mercados", no "Onde comprar"): por item, um por mercado,
+ * do mesmo produto de onde sai o preço do item na lista. Só os itens que têm.
+ */
+export function listSharedElsewhere(
+  items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId' | 'quantity' | 'unit'>[],
+  prices: readonly EstimatePrice[],
+  sources: PriceSources = {},
+): Map<string, StorePrice[]> {
+  const price = itemPricer(prices, sources);
+  const byItem = new Map<string, StorePrice[]>();
+  for (const item of items) {
+    const elsewhere = price(item)?.elsewhere() ?? [];
+    if (elsewhere.length) byItem.set(item.id, elsewhere);
+  }
+  return byItem;
+}
+
+/**
  * A estimativa da lista. Com `storeId` ("estou no Assaí"), vale o preço desse
- * mercado; o que ele não tem é estimado pelo nível de preço dele. Sem mercado,
- * vale o último preço que a casa pagou em cada item. Item sem preço nenhum
- * fica fora dos totais.
+ * mercado; o que a casa não tem de lá é o visto em outras casas nesse mercado
+ * ou, sem ele, estimado pelo nível de preço dele. Sem mercado, vale o último
+ * preço que a casa pagou em cada item (sem nenhum, o visto em outras casas).
+ * Item sem preço nenhum fica fora dos totais.
  */
 export function estimateList(
   items: readonly EstimateItem[],
   prices: readonly EstimatePrice[],
-  { links, products, storeId = null }: PriceSources & { storeId?: string | null } = {},
+  { links, products, shared, storeId = null }: PriceSources & { storeId?: string | null } = {},
 ): ListEstimate {
   const index = storePriceIndex(prices);
-  const price = itemPricer(prices, { links, products }, index);
+  const price = itemPricer(prices, { links, products, shared }, index);
 
   const byItem = new Map<string, ItemEstimate>();
-  // Todo mercado com nível de preço pode ser escolhido, mesmo sem preço de nota para esta lista.
+  // Todo mercado com nível de preço pode ser escolhido, mesmo sem preço de nota para esta lista. Só esses: o
+  // mercado da casa em que só outras casas viram preço (sem nota dela) não entra na escolha.
   const known = new Map<string, number>([...index.keys()].map((store) => [store, 0]));
   for (const item of items) {
     const priced = price(item);
     if (!priced) continue;
-    for (const store of priced.stores) known.set(store, (known.get(store) ?? 0) + 1);
-    const { cost, unitPrice, unit, kind, approximateQuantity, productId, used } = storeId ? priced.at(storeId) : priced.lastPaid();
-    byItem.set(item.id, { cost, unitPrice, unit, kind, approximateQuantity, productId, used, last: priced.last, lowest: priced.lowest });
+    for (const store of priced.stores) if (known.has(store)) known.set(store, known.get(store)! + 1);
+    const answer = storeId ? priced.at(storeId) : priced.lastPaid();
+    if (!answer) continue;
+    const { cost, unitPrice, unit, kind, approximateQuantity, productId, used, shared: seen } = answer;
+    byItem.set(item.id, {
+      cost,
+      unitPrice,
+      unit,
+      kind,
+      approximateQuantity,
+      productId,
+      used,
+      ...(seen ? { shared: seen } : {}),
+      last: priced.last,
+      lowest: priced.lowest,
+    });
   }
 
   const sum = (inCart: boolean) => round2(items.reduce((s, item) => s + (item.inCart === inCart ? (byItem.get(item.id)?.cost ?? 0) : 0), 0));
@@ -342,6 +479,8 @@ export function estimateList(
     pricedCount: byItem.size,
     estimatedCount: estimates.filter((estimate) => estimate.kind === 'estimated').length,
     approximateCount: estimates.filter((estimate) => estimate.approximateQuantity).length,
+    sharedCount: estimates.filter((estimate) => estimate.shared).length,
+    sharedTotal: round2(estimates.reduce((s, estimate) => s + (estimate.shared ? estimate.cost : 0), 0)),
     stores: byItem.size
       ? [...known]
           .map(([id, knownCount]) => ({ storeId: id, knownCount }))
@@ -555,27 +694,52 @@ const perUnit = (unitPrice: number, unit: string) => {
 const sameQuote = (a: EstimatePrice, b: EstimatePrice) =>
   a.productId === b.productId && a.storeId === b.storeId && a.unit === b.unit && a.unitPrice === b.unitPrice && a.purchasedAt === b.purchasedAt;
 
-/** Como o custo do item aparece na lista: "~" quando é estimado, a quantidade é aproximada ou o preço é de outro produto do mesmo nome. */
-export function formatItemCost(estimate: Pick<ItemEstimate, 'cost' | 'kind' | 'approximateQuantity' | 'productId' | 'used'>): string {
+/**
+ * Como o custo do item aparece na lista: "~" quando é estimado, a quantidade é aproximada, o preço é de outro
+ * produto do mesmo nome ou é o visto em outras casas (não é em tempo real).
+ */
+export function formatItemCost(estimate: Pick<ItemEstimate, 'cost' | 'kind' | 'approximateQuantity' | 'productId' | 'used' | 'shared'>): string {
   const otherProduct = estimate.used != null && estimate.used.productId !== estimate.productId;
-  return `${estimate.kind === 'estimated' || estimate.approximateQuantity || otherProduct ? '~' : ''}${formatBRL(estimate.cost)}`;
+  const rough = estimate.kind === 'estimated' || estimate.approximateQuantity || otherProduct || estimate.shared != null;
+  return `${rough ? '~' : ''}${formatBRL(estimate.cost)}`;
 }
 
 /**
  * A nota da linha de um item em "Onde comprar", da mesma resposta que dá o
- * custo (listStorePrices): estimado, de outro produto ligado ao nome (qual,
- * quando `productName` sabe) ou com a quantidade em outra unidade. null para o
- * preço de nota do próprio produto, na quantidade da lista: nada a avisar.
+ * custo (listStorePrices): estimado, de outras casas (com o dia em que foi
+ * visto), de outro produto ligado ao nome (qual, quando `productName` sabe) ou
+ * com a quantidade em outra unidade. null para o preço de nota do próprio
+ * produto, na quantidade da lista: nada a avisar.
  */
 export function storePriceNote(
-  price: Pick<StorePrice, 'source' | 'approximateQuantity' | 'used'>,
+  price: Pick<StorePrice, 'source' | 'approximateQuantity' | 'used' | 'shared'>,
   productName?: (productId: string) => string | undefined,
+  referenceYear?: number,
 ): string | null {
   if (price.source === 'estimated') return 'Estimado pelo nível de preço do mercado';
+  if (price.shared) {
+    const note = `Preço de outras casas, ${seenLabel(price.shared, referenceYear)}`;
+    return price.approximateQuantity ? `${note} (quantidade em outra unidade)` : note;
+  }
   if (price.source === 'otherProduct') {
     return `Preço de ${(price.used && productName?.(price.used.productId)) || 'outro produto com esse nome'}`;
   }
   return price.approximateQuantity ? 'Preço por unidade da nota (quantidade em outra unidade)' : null;
+}
+
+/**
+ * A linha do item que só tem preço de outras casas, em "Onde comprar": de
+ * que mercado (o nome que a casa conhece, quando é dela) e de que dia.
+ */
+export function sharedOnlyNote(
+  price: Pick<StorePrice, 'shared'>,
+  storeName: (storeId: string) => string | undefined = () => undefined,
+  referenceYear?: number,
+): string {
+  const seen = price.shared;
+  if (!seen) return 'Só há preço de outras casas';
+  const place = (seen.storeId ? storeName(seen.storeId) : undefined) ?? sharedStoreLabel(seen);
+  return `Só há preço de outras casas: ${place}, ${seenLabel(seen, referenceYear)}`;
 }
 
 /**
@@ -587,6 +751,24 @@ export function storePriceNote(
 export function unpricedNote(item: Pick<EstimateItem, 'productId'>, sourcesLoaded: boolean): string {
   if (!sourcesLoaded) return 'Não deu para conferir se este item já tem preço';
   return item.productId ? 'Ainda não aparece em nenhuma nota' : 'Item digitado livre: ainda não ligado a um produto com preço';
+}
+
+/**
+ * Qual produto "Ver preços" abre nos detalhes de um item da lista. Com preço,
+ * o produto de onde o preço sai (`pricedProductId`, da estimativa). Sem preço,
+ * o produto do próprio item; sem ele, o produto que as notas ligaram a esse
+ * nome, quando é um só: "Leite" ligado ao Italac e ao Ninho não diz qual abrir.
+ * Item sem produto nenhum não tem preço a ver (null).
+ */
+export function seePricesProduct(
+  item: Pick<EstimateItem, 'name' | 'productId'>,
+  pricedProductId: string | null | undefined,
+  links?: LinkIndex | null,
+): string | null {
+  if (pricedProductId) return pricedProductId;
+  if (item.productId) return item.productId;
+  const linked = [...new Set(links?.productsFor(item.name) ?? [])];
+  return linked.length === 1 ? linked[0] : null;
 }
 
 /**
@@ -614,15 +796,20 @@ export function estimateHeadline(estimate: Pick<ListEstimate, 'itemCount' | 'pri
  * lugar vem sem artigo antes ("do Farmácia São João" não existe).
  */
 export function describeEstimate(
-  estimate: Pick<ListEstimate, 'itemCount' | 'pricedCount' | 'estimatedCount' | 'approximateCount'>,
+  estimate: Pick<ListEstimate, 'itemCount' | 'pricedCount' | 'estimatedCount' | 'approximateCount'> &
+    Partial<Pick<ListEstimate, 'sharedCount' | 'sharedTotal'>>,
   storeName: string | null,
 ): string {
-  const { itemCount, pricedCount, estimatedCount, approximateCount } = estimate;
+  const { itemCount, pricedCount, estimatedCount, approximateCount, sharedCount = 0, sharedTotal = 0 } = estimate;
   const missing = itemCount - pricedCount;
   const clauses = [
     missing === 0 ? 'todos os itens têm preço' : `${pricedCount} de ${itemCount} itens ${pricedCount === 1 ? 'tem' : 'têm'} preço`,
     ...(storeName && estimatedCount
       ? [`${estimatedCount} ${estimatedCount === 1 ? 'é estimado' : 'são estimados'} pelo nível de preço de lá`]
+      : []),
+    // Quanto do total não é preço da casa: o visto em outras casas, onde ela não tem preço.
+    ...(sharedCount
+      ? [`${formatBRL(sharedTotal)} do total ${sharedCount === 1 ? 'é de 1 item' : `são de ${sharedCount} itens`} com preço de outras casas`]
       : []),
     ...(approximateCount ? [`em ${approximateCount} a quantidade é aproximada (o preço é por kg ou por unidade)`] : []),
   ].join('; ');
@@ -679,17 +866,22 @@ export function itemFacts(
     `(${[storeName(quote.storeId), day(toISODate(new Date(quote.purchasedAt)))].filter(Boolean).join(', ')})`;
   const facts: string[] = [];
   if (estimate) {
-    const { last, lowest, used, unit } = estimate;
+    const { last, lowest, used, unit, shared } = estimate;
     // Com um mercado só, o menor é o próprio último preço: não é referência de promoção.
-    const cheaper = lowest.unitPrice < last.unitPrice;
-    facts.push(`Último preço: ${perUnit(last.unitPrice, last.unit)} ${where(last)}.`);
+    const cheaper = last != null && lowest != null && lowest.unitPrice < last.unitPrice;
+    if (last) facts.push(`Último preço: ${perUnit(last.unitPrice, last.unit)} ${where(last)}.`);
     if (cheaper) facts.push(`Menor preço: ${perUnit(lowest.unitPrice, lowest.unit)} ${where(lowest)}.`);
-    if (!used) {
+    if (shared) {
+      // A casa não tem preço do item ali (ou em lugar nenhum): o de outras casas, com o mercado, o dia e o aviso.
+      const place = (shared.storeId ? storeName(shared.storeId) : undefined) ?? sharedStoreLabel(shared);
+      facts.push(`Preço de outras casas na conta: ${perUnit(shared.unitPrice, shared.unit)} (${place}, visto em ${day(shared.seenOn)}).`);
+      facts.push(SHARED_PRICES_NOTICE);
+    } else if (!used) {
       const place = chosenStore ? storeName(chosenStore) : undefined;
       facts.push(
         `${place ? `${place}: a` : 'A'} casa ainda não comprou este item lá; cerca de ${perUnit(estimate.unitPrice, unit)}, pelo nível de preço de lá.`,
       );
-    } else if (!sameQuote(used, last)) {
+    } else if (!last || !sameQuote(used, last)) {
       // No mercado escolhido, o preço da conta não é o último pago: diz qual foi, de onde e de quando.
       const other = used.productId === estimate.productId ? '' : `, de ${productName?.(used.productId) ?? 'outro produto com esse nome'}`;
       facts.push(`Preço usado na conta: ${perUnit(used.unitPrice, used.unit)}${other} ${where(used)}.`);

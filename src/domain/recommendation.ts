@@ -10,8 +10,15 @@
 // o preço de cada item em cada mercado já resolvido de lá (listStorePrices,
 // em `priceAt`) e o mesmo índice (priceLevel). Sem `priceAt`, a conta é a
 // daqui: o produto do item, numa unidade só para todos os mercados (units).
+//
+// Os preços de outras casas entram pelo `priceAt` (só onde a casa não tem
+// preço, num mercado dela) e, os de mercados que não são da casa, à parte
+// (sharedStoreOffers): ficam fora dos planos.
 
+import type { StorePrice } from './listEstimate';
+import { formatBRL } from './money';
 import { storePriceIndex } from './priceLevel';
+import { sharedStoreLabel } from './sharedPrices';
 import { priceQuantity, sameDimension } from './units';
 
 export interface ListItemInput {
@@ -246,4 +253,73 @@ export function recommendStores(
   );
 
   return { plans, storeIndex, unpricedKeys };
+}
+
+/**
+ * Um mercado que não é da casa, onde outras casas viram itens da lista ("Em
+ * outros mercados", no "Onde comprar"). Fica fora dos planos: a casa não tem
+ * preço do resto da lista lá, e recomendar a ida só por alguns itens seria
+ * palpite. Nunca diz quem viu nem quantas casas.
+ */
+export interface SharedStoreOffer {
+  storeCnpj: string;
+  /** O mercado como a linha o mostra (sharedStoreLabel: o nome da nota e a sigla do estado). */
+  storeLabel: string;
+  /** Os itens da lista com preço de outras casas lá, e o preço de cada um (listSharedElsewhere). */
+  items: { itemKey: string; price: StorePrice }[];
+  total: number;
+  /** Quanto esses mesmos itens custam no plano de cima; null quando algum deles não entrou nele (sem preço na casa). */
+  planTotal: number | null;
+}
+
+/** Quantos mercados de fora o "Onde comprar" mostra. */
+export const SHARED_STORES_SHOWN = 3;
+
+/**
+ * Os mercados de fora com preço de outras casas para itens da lista, os mais
+ * úteis primeiro: mais itens; depois, mais economia frente ao plano; depois o
+ * menor total, o nome e o CNPJ (a ordem em que as linhas chegam não decide).
+ */
+export function sharedStoreOffers(
+  elsewhere: ReadonlyMap<string, readonly StorePrice[]>,
+  plan: StorePlan | undefined,
+  limit = SHARED_STORES_SHOWN,
+): SharedStoreOffer[] {
+  const planCost = new Map((plan?.assignments ?? []).map((a) => [a.itemKey, a.cost]));
+  const byStore = new Map<string, SharedStoreOffer>();
+  for (const [itemKey, prices] of elsewhere) {
+    for (const price of prices) {
+      if (!price.shared) continue;
+      const { storeCnpj } = price.shared;
+      const offer = byStore.get(storeCnpj) ?? { storeCnpj, storeLabel: sharedStoreLabel(price.shared), items: [], total: 0, planTotal: 0 };
+      offer.items.push({ itemKey, price });
+      byStore.set(storeCnpj, offer);
+    }
+  }
+  const offers = [...byStore.values()].map((offer) => {
+    const inPlan = offer.items.map((i) => planCost.get(i.itemKey));
+    return {
+      ...offer,
+      total: round2(offer.items.reduce((s, i) => s + i.price.cost, 0)),
+      planTotal: inPlan.every((cost) => cost != null) ? round2(inPlan.reduce<number>((s, cost) => s + cost!, 0)) : null,
+    };
+  });
+  const savings = (offer: SharedStoreOffer) => (offer.planTotal == null ? 0 : offer.planTotal - offer.total);
+  return offers
+    .sort(
+      (a, b) =>
+        b.items.length - a.items.length ||
+        savings(b) - savings(a) ||
+        a.total - b.total ||
+        a.storeLabel.localeCompare(b.storeLabel, 'pt-BR') ||
+        (a.storeCnpj < b.storeCnpj ? -1 : a.storeCnpj > b.storeCnpj ? 1 : 0),
+    )
+    .slice(0, limit);
+}
+
+/** "2 itens da lista por ~R$ 25,40; no plano acima, R$ 29,10". */
+export function describeSharedOffer(offer: Pick<SharedStoreOffer, 'items' | 'total' | 'planTotal'>): string {
+  const count = offer.items.length === 1 ? '1 item' : `${offer.items.length} itens`;
+  const compared = offer.planTotal == null ? '' : `; no plano acima, ${formatBRL(offer.planTotal)}`;
+  return `${count} da lista por ~${formatBRL(offer.total)}${compared}`;
 }

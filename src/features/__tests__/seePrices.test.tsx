@@ -7,7 +7,7 @@ import { PantryPanel } from '@/features/PantryPanel';
 import type { PantryItem, ShoppingListItem } from '@/lib/types';
 import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
 import { confirmAction } from '@/ui/dialogs';
-import { Button, Chip, ListRow } from '@/ui/primitives';
+import { Button, Chip, ListRow, Text } from '@/ui/primitives';
 
 // "Ver preços": os dois caminhos novos até a tela do produto (e o histórico de preço dele), no item da
 // despensa e nos detalhes do item da lista.
@@ -25,7 +25,8 @@ jest.mock('@/data/home', () => {
   };
 });
 jest.mock('@/data/market', () => ({
-  useAddToMarketList: () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false }),
+  useAddToPantryList: () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false }),
+  useShoppingLists: () => ({ data: [] }),
   useProducts: () => ({ data: [{ id: 'arroz', name: 'Arroz', category: 'mercearia', shelf_life_days: null }] }),
 }));
 jest.mock('@/data/images', () => ({ pickImages: jest.fn() }));
@@ -67,7 +68,8 @@ describe('"Ver preços" no item da despensa', () => {
       renderer = create(<PantryPanel />);
     });
     act(() => renderer!.root.findAllByType(ListRow).find((row) => row.props.title === name)!.props.onPress());
-    return renderer!.root.findByType(ActionSheet).props.actions;
+    // O primeiro menu é o do item; o segundo, o de escolher a lista.
+    return renderer!.root.findAllByType(ActionSheet)[0].props.actions;
   }
 
   it('item ligado a um produto: o menu ganha "Ver preços", que abre a tela do produto', async () => {
@@ -108,10 +110,10 @@ describe('"Ver preços" nos detalhes do item da lista', () => {
   };
   const facts = () => ['Último preço: R$ 25,90/un (Assaí, 10 out).'];
 
-  async function open(onSeePrices?: () => void) {
+  async function open(onSeePrices?: () => void, shownFacts: string[] = facts()) {
     await act(async () => {
       renderer = create(
-        <ListItemEditor item={item} photoUri={null} photoPending={false} facts={facts} onSeePrices={onSeePrices} onSave={jest.fn()} onRemove={jest.fn()} onClose={jest.fn()} />,
+        <ListItemEditor item={item} photoUri={null} photoPending={false} facts={() => shownFacts} onSeePrices={onSeePrices} onSave={jest.fn()} onRemove={jest.fn()} onClose={jest.fn()} />,
       );
     });
     return renderer!.root.findAllByType(Button).find((button) => button.props.title === 'Ver preços');
@@ -125,8 +127,25 @@ describe('"Ver preços" nos detalhes do item da lista', () => {
     expect(confirmAction).not.toHaveBeenCalled();
   });
 
-  it('item sem preço: sem botão', async () => {
-    expect(await open()).toBeUndefined();
+  /** Os textos na tela dos detalhes. */
+  const texts = () => renderer!.root.findAllByType(Text).map((text) => [text.props.children].flat().join(''));
+
+  it('item com produto e sem preço: com botão, e a frase diz o que há na tela do produto', async () => {
+    const onSeePrices = jest.fn();
+    const button = await open(onSeePrices, []);
+    expect(texts()).toContain('O histórico de preço e os preços vistos em outras casas ficam na tela do produto.');
+    act(() => button!.props.onPress());
+    expect(onSeePrices).toHaveBeenCalledTimes(1);
+  });
+
+  it('item sem produto: sem botão (e sem o cartão, quando não há nada a dizer)', async () => {
+    expect(await open(undefined, [])).toBeUndefined();
+    expect(texts()).not.toContain('Preço e despensa');
+  });
+
+  it('item sem produto, mas na despensa: as frases, sem o botão', async () => {
+    expect(await open(undefined, ['Na despensa desde 1 out: Arroz.'])).toBeUndefined();
+    expect(texts()).toContain('Na despensa desde 1 out: Arroz.');
   });
 
   it('com algo mudado e ainda não salvo, pergunta antes de sair', async () => {

@@ -1,23 +1,24 @@
-// Mercado do mês: as notas de um mês e do mês anterior, com o mercado e todos
-// os itens. As contas ficam em domain/marketSpend.
+// Mercado do mês: as notas do mês e dos meses antes dele (o anterior para a
+// comparação, e os da tendência), com o mercado e todos os itens. As contas
+// ficam em domain/marketSpend.
 
 import { useQuery } from '@tanstack/react-query';
 
 import { shiftMonth } from '@/domain/finance';
-import type { MarketLine, MarketReceipt } from '@/domain/marketSpend';
+import { MARKET_TREND_MONTHS, type MarketLine, type MarketReceipt } from '@/domain/marketSpend';
 import { supabase, unwrap } from '@/lib/supabase';
 
 /** Linhas por pedido. O servidor corta em 1000 (max_rows padrão do Supabase), ou em menos, se o projeto baixar o teto. */
 const PAGE = 1000;
-/** Notas de dois meses: 2 mil é bem além de qualquer casa. Passando disso a busca falha, em vez de mostrar um mês pela metade. */
-const MAX_RECEIPTS = 2000;
+/** Notas de seis meses: mil por mês é bem além de qualquer casa. Passando disso a busca falha, em vez de mostrar um mês pela metade. */
+const MAX_RECEIPTS = 6000;
 /** Itens dessas notas, com o mesmo cuidado. */
-const MAX_LINES = 20_000;
+const MAX_LINES = 60_000;
 /** Notas por pedido de itens: os ids vão no endereço do pedido, que tem tamanho limitado. */
 const IDS_PER_REQUEST = 100;
 
-const TOO_MANY = 'Não foi possível carregar todas as notas deste mês: são mais do que o app consegue ler de uma vez.';
-const INCOMPLETE = 'As notas deste mês não chegaram inteiras. Tente de novo.';
+const TOO_MANY = 'Não foi possível carregar todas as notas destes meses: são mais do que o app consegue ler de uma vez.';
+const INCOMPLETE = 'As notas destes meses não chegaram inteiras. Tente de novo.';
 
 type PageResult = { data: unknown; error: unknown; count: number | null };
 
@@ -145,7 +146,9 @@ export async function fetchMarketReceipts(fromMonth: string, toMonth: string): P
 }
 
 /**
- * As notas de `month` e do mês anterior (a comparação precisa dele). A chave
+ * As notas de `month` e dos cinco meses antes dele: o anterior para a
+ * comparação, e todos para o cartão de tendência. Uma leitura só: o total do
+ * cabeçalho e a barra do mês na tendência saem das mesmas notas. A chave
  * começa com 'spending': confirmar, mudar ou excluir uma nota, e mudar o nome
  * ou a categoria de um produto, já recarregam. Como o resumo de gastos, não
  * fica guardada no aparelho. É a busca da tela "Mercado do mês", e só dela: a
@@ -155,6 +158,6 @@ export async function fetchMarketReceipts(fromMonth: string, toMonth: string): P
 export function useMarketReceipts(month: string) {
   return useQuery({
     queryKey: ['spending', 'market', month],
-    queryFn: () => fetchMarketReceipts(shiftMonth(month, -1), month),
+    queryFn: () => fetchMarketReceipts(shiftMonth(month, -(MARKET_TREND_MONTHS - 1)), month),
   });
 }

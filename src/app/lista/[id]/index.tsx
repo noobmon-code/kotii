@@ -35,6 +35,7 @@ import {
   useToggleListItem,
 } from '@/data/market';
 import { useRefreshMarketTrips } from '@/data/marketTrips';
+import { useSharedPrices } from '@/data/sharedPrices';
 import { cartPantryRows, type CartPantryEntry, type CartPantryRow } from '@/domain/cartPantry';
 import { compareByAisle, getCategory } from '@/domain/categories';
 import {
@@ -43,6 +44,7 @@ import {
   formatItemCost,
   itemFacts,
   pantryHits,
+  seePricesProduct,
   type PantryHit,
   type StoreChoice,
 } from '@/domain/listEstimate';
@@ -53,6 +55,7 @@ import { parseDecimal } from '@/domain/money';
 import { fitsList, recentPurchases, type RecentItem } from '@/domain/recentPurchases';
 import { ranOutItems, restockFrom } from '@/domain/restock';
 import { guessCategory, normalizeSearch } from '@/domain/search';
+import { sharedQuotes } from '@/domain/sharedPrices';
 import { CartPantryModal } from '@/features/CartPantryModal';
 import { CommonItemsPicker } from '@/features/CommonItemsPicker';
 import { ListEstimateCard } from '@/features/ListEstimateCard';
@@ -109,6 +112,9 @@ export default function ShoppingListScreen() {
   const links = useListLinks();
   const prices = useLatestPrices();
   const stores = useStores();
+  // Preços de outras casas: só onde a casa não tem preço (domain/listEstimate). Sem a função no banco (null), com a
+  // busca a caminho ou depois de uma que falhou, a conta sai só com os preços da casa: nunca vira erro na tela.
+  const shared = useSharedPrices();
   const edit = useEditListItem(id);
   const setPhoto = useSetListItemPhoto();
   const householdId = useHouseholdId();
@@ -329,6 +335,12 @@ export default function ShoppingListScreen() {
   const chosenStore = currentStoreChoice(storeChoice);
   const storeId = chosenStore && storeNames?.has(chosenStore) ? chosenStore : null;
 
+  // Os mercados da casa se reconhecem pelo CNPJ, e o preço da casa sempre vence: sem os mercados ou sem os preços
+  // da casa carregados, os de outras casas ficam de fora (ocupariam o lugar dos dela).
+  const seenElsewhere = useMemo(
+    () => (shared.data && stores.data && prices.data ? sharedQuotes(shared.data, prices.data, stores.data) : []),
+    [shared.data, prices.data, stores.data],
+  );
   // Lista no mercado (domain/listEstimate): quanto deve dar e o que está na despensa. Sem os preços, as
   // ligações ou a despensa carregados (sem internet e nunca vistos neste aparelho), mostra o que der. Só o selo
   // "Na despensa" espera o histórico de compras: sem ele, apareceria justamente no que acabou. O aparelho que
@@ -351,7 +363,7 @@ export default function ShoppingListScreen() {
         unitPrice: Number(p.unit_price),
         purchasedAt: p.purchased_at,
       })),
-      { links: links.data, products: products.data ?? [], storeId },
+      { links: links.data, products: products.data ?? [], shared: seenElsewhere, storeId },
     );
     // O que o app acha que acabou não é "na despensa": tudo o que passou do costume (ranOut), sem tirar o que
     // já está na lista (é dela que se trata) e sem os cortes da faixa "Acho que acabou".
@@ -368,7 +380,7 @@ export default function ShoppingListScreen() {
       if (cost || inPantry.has(i.id)) hints.set(i.id, { cost: cost ? formatItemCost(cost) : undefined, inPantry: inPantry.has(i.id) });
     }
     return { estimate, inPantry, hints };
-  }, [items.data, prices.data, links.data, products.data, pantry.data, ranOut, historyKnown, storeId, today]);
+  }, [items.data, prices.data, links.data, products.data, seenElsewhere, pantry.data, ranOut, historyKnown, storeId, today]);
 
   // As ligações e os produtos dão preço ao item digitado solto. Se não chegaram (a busca falhou, ou sem internet e
   // nunca vistos neste aparelho), o cartão diz que não deu para conferir o que ficou sem preço. A lista não espera
@@ -442,9 +454,16 @@ export default function ShoppingListScreen() {
     }
   }
 
-  /** "Ver preços" nos detalhes do item: só quando ele tem preço, e leva ao produto de onde o preço sai. */
+  /**
+   * "Ver preços" nos detalhes do item: leva ao produto de onde o preço sai ou, sem preço, ao produto do item
+   * (o dele ou o que as notas ligaram ao nome), onde estão o histórico e os preços de outras casas.
+   */
   function seePricesOf(item: ShoppingListItem) {
-    const productId = market.estimate.byItem.get(item.id)?.productId;
+    const productId = seePricesProduct(
+      { name: item.name, productId: item.product_id },
+      market.estimate.byItem.get(item.id)?.productId,
+      links.data,
+    );
     if (!productId) return undefined;
     return () => {
       setEditing(null);
@@ -484,11 +503,12 @@ export default function ShoppingListScreen() {
   return (
     <Screen
       edges={[]}
-      // Puxar atualiza também os preços, a despensa, as ligações, os produtos, os mercados e o histórico: só os
-      // itens chegam sozinhos (tempo real). O indicador segue os itens, para as outras buscas não o fazerem piscar.
+      // Puxar atualiza também os preços (os da casa e os de outras casas), a despensa, as ligações, os produtos, os
+      // mercados e o histórico: só os itens chegam sozinhos (tempo real). O indicador segue os itens, para as outras
+      // buscas não o fazerem piscar.
       refreshing={items.isRefetching}
       onRefresh={() => {
-        [items, prices, pantry, links, products, stores, purchases].forEach((query) => void query.refetch());
+        [items, prices, pantry, links, products, stores, purchases, shared].forEach((query) => void query.refetch());
         refreshTrips();
       }}
       footer={

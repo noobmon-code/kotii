@@ -303,25 +303,25 @@ describe('notas do mercado do mês', () => {
     mockDb.tables.receipts = [receiptRow('a', at(2026, 10, 3))];
     mockDb.tables.receipt_items = linesOf('a', 3);
     mockDb.overcount = 1;
-    await expect(fetchMarketReceipts('2026-09', '2026-10')).rejects.toThrow('As notas deste mês não chegaram inteiras. Tente de novo.');
+    await expect(fetchMarketReceipts('2026-09', '2026-10')).rejects.toThrow('As notas destes meses não chegaram inteiras. Tente de novo.');
   });
 
   it('itens demais para ler: falha com aviso claro em vez de cortar', async () => {
-    const tooMany = 'Não foi possível carregar todas as notas deste mês: são mais do que o app consegue ler de uma vez.';
+    const tooMany = 'Não foi possível carregar todas as notas destes meses: são mais do que o app consegue ler de uma vez.';
     // 150 notas (dois pedidos de itens): o teto é da leitura inteira, não de cada pedido.
     mockDb.tables.receipts = Array.from({ length: 150 }, (_, n) => receiptRow(`r${String(n).padStart(4, '0')}`, at(2026, 10, 1 + (n % 28), n % 24)));
     const ids = mockDb.tables.receipts.map((r) => String(r.id)).sort();
-    mockDb.tables.receipt_items = [...linesOf(ids[0], 19_000), ...linesOf(ids[120], 1001)];
+    mockDb.tables.receipt_items = [...linesOf(ids[0], 59_000), ...linesOf(ids[120], 1001)];
     await expect(fetchMarketReceipts('2026-09', '2026-10')).rejects.toThrow(tooMany);
     // Exatamente no teto, ainda carrega tudo.
     mockDb.asked = [];
-    mockDb.tables.receipt_items = [...linesOf(ids[0], 19_000), ...linesOf(ids[120], 1000)];
+    mockDb.tables.receipt_items = [...linesOf(ids[0], 59_000), ...linesOf(ids[120], 1000)];
     const receipts = await fetchMarketReceipts('2026-09', '2026-10');
-    expect(receipts.reduce((sum, r) => sum + r.lines.length, 0)).toBe(20_000);
+    expect(receipts.reduce((sum, r) => sum + r.lines.length, 0)).toBe(60_000);
   });
 
   it('notas demais para ler: falha logo no primeiro pedido', async () => {
-    mockDb.tables.receipts = Array.from({ length: 2001 }, (_, n) => receiptRow(`r${String(n).padStart(4, '0')}`, at(2026, 10, 1 + (n % 28), n % 24)));
+    mockDb.tables.receipts = Array.from({ length: 6001 }, (_, n) => receiptRow(`r${String(n).padStart(4, '0')}`, at(2026, 10, 1 + (n % 28), n % 24)));
     await expect(fetchMarketReceipts('2026-09', '2026-10')).rejects.toThrow('são mais do que o app consegue ler de uma vez');
     expect(mockDb.asked).toHaveLength(1);
   });
@@ -346,8 +346,15 @@ describe('na tela', () => {
     return renderer!;
   }
 
-  it('a tela recebe o mês e o anterior, numa chave que começa com "spending"', async () => {
-    mockDb.tables.receipts = [receiptRow('set', at(2026, 9, 10)), receiptRow('out', at(2026, 10, 10)), receiptRow('ago', at(2026, 8, 10))];
+  it('a tela recebe o mês e os cinco antes dele (o anterior e os da tendência), numa chave que começa com "spending"', async () => {
+    mockDb.tables.receipts = [
+      receiptRow('set', at(2026, 9, 10)),
+      receiptRow('out', at(2026, 10, 10)),
+      receiptRow('mai', at(2026, 5, 1, 0)),
+      // Antes do primeiro mês da tendência e depois do mês da tela: ficam de fora.
+      receiptRow('abr', at(2026, 4, 30, 23)),
+      receiptRow('nov', at(2026, 11, 1, 0)),
+    ];
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
     const seen: (MarketReceipt[] | undefined)[] = [];
     function Probe() {
@@ -355,7 +362,7 @@ describe('na tela', () => {
       return null;
     }
     const renderer = await mount(queryClient, Probe, () => seen.at(-1) !== undefined);
-    expect(seen.at(-1)?.map((r) => r.id)).toEqual(['set', 'out']);
+    expect(seen.at(-1)?.map((r) => r.id)).toEqual(['mai', 'set', 'out']);
     // Quem invalida 'spending' (confirmar, mudar ou excluir uma nota) recarrega esta consulta também.
     expect(queryClient.getQueryCache().findAll({ queryKey: ['spending'] }).map((q) => q.queryKey)).toEqual([['spending', 'market', '2026-10']]);
     await act(async () => renderer.unmount());

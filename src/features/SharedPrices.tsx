@@ -1,4 +1,6 @@
+import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
+import { StyleSheet } from 'react-native';
 
 import { useLatestPrices, useStores } from '@/data/market';
 import { useSharedPrices, useSharedPricesAvailable } from '@/data/sharedPrices';
@@ -20,8 +22,10 @@ import {
   SHARING_ABOUT,
   SHARING_TITLE,
 } from '@/domain/sharedPrices';
+import { TERMS_TITLE } from '@/domain/terms';
 import { settledData } from '@/lib/settledData';
 import { Button, Card, IconBadge, ListCard, ListRow, Section, Text } from '@/ui/primitives';
+import { space } from '@/ui/theme';
 
 /**
  * "Visto em outras casas", na tela do produto: quanto ele custou nas notas de
@@ -99,9 +103,14 @@ export function SharedPricesAbout() {
   if (available.data !== true) return null;
   return (
     <Section title={SHARING_TITLE}>
-      <Card>
+      <Card style={styles.about}>
         <Text variant="muted">{SHARING_ABOUT}</Text>
+        <Button title={TERMS_TITLE} icon="shield-account-outline" variant="ghost" compact onPress={() => router.push('/termos')} />
       </Card>
     </Section>
   );
 }
+
+const styles = StyleSheet.create({
+  about: { gap: space.sm },
+});

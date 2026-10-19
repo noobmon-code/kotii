@@ -9319,4 +9319,69 @@ begin
 end $$;
 rollback;
 
+-- ---------------------------------------------------------------------------
+\echo '• "Acabou" na despensa: add_to_list só põe o item numa lista aberta da casa, uma vez'
+-- Casa D (Dora) e Casa E (Edu), cada uma com as suas listas.
+\set user_dl '00000000-0000-0000-0000-0000000000d1'
+\set user_el '00000000-0000-0000-0000-0000000000d2'
+insert into auth.users (id) values (:'user_dl'), (:'user_el');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_el', false) \gset
+select (public.create_household('Casa E', 'Edu')).id as hh_el \gset
+insert into public.shopping_lists (name, kind) values ('Do Edu', 'mercado') returning id as list_el \gset
+select set_config('test.list_el', :'list_el', false) \gset
+select set_config('request.jwt.claim.sub', :'user_dl', false) \gset
+select (public.create_household('Casa D', 'Dora')).id as hh_dl \gset
+insert into public.shopping_lists (name, kind) values ('Feira', 'mercado') returning id as list_dl \gset
+insert into public.shopping_lists (name, kind, archived_at) values ('Antiga', 'mercado', now()) returning id as list_dl_old \gset
+select set_config('test.list_dl', :'list_dl', false) \gset
+select set_config('test.list_dl_old', :'list_dl_old', false) \gset
+do $$
+declare
+  feira uuid := current_setting('test.list_dl')::uuid;
+  first record;
+  again record;
+begin
+  select * into first from public.add_to_list(feira, '  Arroz ', 'mercearia', null, 2, 'un');
+  assert first.added and first.list_id = feira and first.list_name = 'Feira', 'the item goes to the open list';
+  assert (
+    select i.name = 'Arroz' and i.category = 'mercearia' and i.quantity = 2 and i.unit = 'un' and i.checked_at is null
+    from public.shopping_list_items i where i.id = first.item_id
+  ), 'with its name trimmed, category and quantity';
+  select * into again from public.add_to_list(feira, 'ARROZ', 'mercearia');
+  assert not again.added and again.item_id = first.item_id, 'pending with the same name: not added again';
+  update public.shopping_list_items set checked_at = now() where id = first.item_id;
+  select * into again from public.add_to_list(feira, 'Arroz', 'mercearia');
+  assert again.added and again.item_id <> first.item_id, 'already in the cart: it goes in again';
+  begin
+    perform public.add_to_list(current_setting('test.list_dl_old')::uuid, 'Feijão', 'mercearia');
+    raise exception 'FAIL: an item went into an archived list';
+  exception when no_data_found then null;
+  end;
+  begin
+    perform public.add_to_list(current_setting('test.list_el')::uuid, 'Feijão', 'mercearia');
+    raise exception 'FAIL: an item went into another house''s list';
+  exception when no_data_found then null;
+  end;
+  assert not exists (select 1 from public.shopping_list_items where name = 'Feijão'), 'and nothing was written';
+end $$;
+reset role;
+-- Edu não viu nada da Casa D, e a lista dele ficou vazia.
+select count(*) = 0 as el_empty from public.shopping_list_items where list_id = :'list_el' \gset
+\if :el_empty
+\else
+  \echo 'FAIL: the other house''s list got an item'
+  select 1/0;
+\endif
+do $$
+begin
+  assert not has_function_privilege('anon', 'public.add_to_list(uuid, text, text, uuid, numeric, text)', 'execute'), 'anon cannot execute add_to_list';
+  assert has_function_privilege('authenticated', 'public.add_to_list(uuid, text, text, uuid, numeric, text)', 'execute'), 'members can execute add_to_list';
+  assert not exists (
+    select 1 from pg_proc p, aclexplode(p.proacl) a
+    where p.oid = 'public.add_to_list(uuid, text, text, uuid, numeric, text)'::regprocedure and a.grantee = 0
+  ), 'and public has no grant on add_to_list';
+end $$;
+delete from public.households where id in (:'hh_dl', :'hh_el');
+
 \echo 'OK — todos os testes do banco passaram'

@@ -163,6 +163,9 @@ function AppNavigator() {
           <Stack.Screen name="consultor/lancamentos" options={{ title: 'Lançamentos do banco' }} />
           <Stack.Screen name="consultor/conversa" options={{ headerShown: false, presentation: 'modal' }} />
         </Stack.Protected>
+        {/* Os termos abrem em qualquer estado (sem conta, criando a senha nova, sem casa ou numa casa). Ficam por
+            último: com uma guarda desligada, o app volta para a primeira tela disponível, que nunca é esta. */}
+        <Stack.Screen name="termos" options={{ title: 'Termos de uso' }} />
       </Stack>
     </ThemeProvider>
   );

@@ -156,16 +156,23 @@ describe('preços de outras casas', () => {
     ]);
   });
 
-  it('mais de mil: página por página, até vir uma incompleta', async () => {
+  it('mais de mil: depois da primeira página cheia, as seguintes de três em três, juntas até a primeira incompleta', async () => {
     const { db, asked } = fakeDb(Array.from({ length: 2300 }, (_, n) => price(n)));
     const rows = await fetchSharedPrices(db);
     expect(rows).toHaveLength(2300);
-    expect(new Set(rows?.map((row) => row.product_id)).size).toBe(2300);
+    expect(rows?.map((row) => row.product_id)).toEqual(Array.from({ length: 2300 }, (_, n) => price(n).product_id));
     expect(asked.map((request) => request.range)).toEqual([
       [0, 999],
       [1000, 1999],
       [2000, 2999],
+      [3000, 3999],
     ]);
+  });
+
+  it('com a primeira página incompleta, um pedido só', async () => {
+    const { db, asked } = fakeDb(Array.from({ length: 999 }, (_, n) => price(n)));
+    await expect(fetchSharedPrices(db)).resolves.toHaveLength(999);
+    expect(asked).toHaveLength(1);
   });
 
   it('para em dez páginas: são dicas, o que veio já basta', async () => {

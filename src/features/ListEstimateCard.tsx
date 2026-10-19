@@ -1,5 +1,6 @@
 // Lista no mercado: quanto a lista deve dar (pelo último preço pago, ou pelos
-// preços do mercado em que a pessoa está) e o que está na despensa.
+// preços do mercado em que a pessoa está, com os de outras casas onde a casa
+// não tem preço) e o que está na despensa.
 
 import { useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
@@ -14,6 +15,7 @@ import {
   type ListEstimate,
 } from '@/domain/listEstimate';
 import { formatBRL } from '@/domain/money';
+import { SHARED_PRICES_NOTICE } from '@/domain/sharedPrices';
 import type { ListKind } from '@/lib/types';
 import { PickerModal } from '@/ui/PickerModal';
 import { Button, Card, Chip, Icon, IconBadge, Row, Text } from '@/ui/primitives';
@@ -65,6 +67,8 @@ export function ListEstimateCard({
             </View>
           </Row>
           <Text variant="muted">{describeEstimate(estimate, storeName ?? null)}</Text>
+          {/* Parte da conta é de preços vistos em outras casas: sempre com o aviso de que não são em tempo real. */}
+          {estimate.sharedCount ? <Text variant="small">{SHARED_PRICES_NOTICE}</Text> : null}
           {unchecked ? <Text variant="muted">{`${unchecked} ${RETRY_HINT}`}</Text> : null}
           {cartSplit ? <Text variant="muted">{cartSplit}</Text> : null}
           {storeNames ? (

@@ -1,6 +1,8 @@
+import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 
+import { TERMS_CONSENT, TERMS_TITLE } from '@/domain/terms';
 import { SESSION_ENDED } from '@/lib/accessErrors';
 import { resendWaitSeconds, translateAuthError } from '@/lib/authErrors';
 import { clearLinkNotice, linkNotice, useLinkNotice } from '@/lib/linkNotice';
@@ -263,6 +265,13 @@ export default function SignInScreen() {
                   }}
                 />
               ) : null}
+              {/* Um botão, não um trecho de texto tocável: área de toque de botão e, no navegador, abre com Enter. */}
+              <View style={styles.consent}>
+                <Text variant="small" style={styles.center}>
+                  {TERMS_CONSENT}
+                </Text>
+                <Button title={TERMS_TITLE} variant="ghost" compact onPress={() => router.push('/termos')} />
+              </View>
             </View>
           </>
         )}
@@ -276,4 +285,5 @@ const styles = StyleSheet.create({
   center: { textAlign: 'center' },
   hero: { alignItems: 'center', gap: space.md, paddingTop: space.xl },
   form: { gap: space.lg },
+  consent: { alignItems: 'center' },
 });

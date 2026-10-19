@@ -97,7 +97,17 @@ function PriceHistory({ productId, productName }: Props) {
             <ListRow
               key={row.key}
               title={row.title}
-              subtitle={row.detail}
+              subtitle={
+                row.size ? (
+                  // Embalagens de tamanhos diferentes: o tamanho e o preço por kg (ou litro, ou item), que é o que o resumo compara.
+                  <View>
+                    <Text variant="muted">{row.detail}</Text>
+                    <Text variant="muted">{row.size}</Text>
+                  </View>
+                ) : (
+                  row.detail
+                )
+              }
               right={
                 <View style={styles.price}>
                   <Text variant={row.priced ? 'label' : 'muted'}>{row.price}</Text>

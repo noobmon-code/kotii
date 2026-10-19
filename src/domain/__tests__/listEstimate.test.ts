@@ -15,6 +15,7 @@ import {
   storeOptionNote,
   storePriceNote,
   unpricedNote,
+  seePricesProduct,
   type EstimateItem,
   type EstimatePrice,
   type ItemEstimate,
@@ -845,7 +846,7 @@ describe('a lista e "Onde comprar" dão o mesmo total', () => {
           if (a.kind === 'estimated') seen.estimated += 1;
           if (a.approximateQuantity) seen.approximate += 1;
           if (cost.used && cost.used.productId !== cost.productId) seen.otherProduct += 1;
-          if (cost.used && cost.used.productId === cost.productId && cost.used.unit !== cost.last.unit) seen.otherUnit += 1;
+          if (cost.used && cost.used.productId === cost.productId && cost.used.unit !== cost.last?.unit) seen.otherUnit += 1;
         }
       }
     }
@@ -1488,5 +1489,34 @@ describe('o mercado escolhido vale por uma ida ao mercado', () => {
     expect(currentStoreChoice({ storeId: 'assai', at }, at + CHOSEN_STORE_MS - 1)).toBe('assai');
     expect(currentStoreChoice({ storeId: 'assai', at }, at + CHOSEN_STORE_MS)).toBeNull();
     expect(CHOSEN_STORE_MS).toBe(6 * 60 * 60 * 1000);
+  });
+});
+
+describe('seePricesProduct', () => {
+  const links = new LinkIndex([
+    { name_key: 'leite', product_id: 'italac' },
+    { name_key: 'leite', product_id: 'ninho' },
+    { name_key: 'cafe', product_id: 'melitta' },
+  ]);
+
+  it('com preço, abre o produto de onde o preço sai', () => {
+    expect(seePricesProduct({ name: 'Arroz', productId: 'arroz' }, 'arroz-5kg', links)).toBe('arroz-5kg');
+  });
+
+  it('sem preço, abre o produto do item', () => {
+    expect(seePricesProduct({ name: 'Arroz', productId: 'arroz' }, undefined, links)).toBe('arroz');
+    expect(seePricesProduct({ name: 'Leite', productId: 'italac' }, null, links)).toBe('italac');
+  });
+
+  it('item digitado solto: o produto ligado ao nome, quando é um só', () => {
+    expect(seePricesProduct({ name: 'Café', productId: null }, undefined, links)).toBe('melitta');
+    // Dois produtos cumprem "Leite": não dá para saber qual abrir.
+    expect(seePricesProduct({ name: 'leite', productId: null }, undefined, links)).toBeNull();
+  });
+
+  it('item sem produto nenhum (ou sem as ligações carregadas) não tem preço a ver', () => {
+    expect(seePricesProduct({ name: 'Bolo da vó', productId: null }, undefined, links)).toBeNull();
+    expect(seePricesProduct({ name: 'Café', productId: null }, undefined, null)).toBeNull();
+    expect(seePricesProduct({ name: 'Café', productId: null }, undefined)).toBeNull();
   });
 });
