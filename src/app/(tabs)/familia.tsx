@@ -7,6 +7,7 @@ import { LastMemberError, useLeaveHousehold, useRegenerateInviteCode, useRemoveM
 import { AiUsageSection } from '@/features/AiUsageSection';
 import { DocumentsSection } from '@/features/DocumentsSection';
 import { HouseRemindersSection } from '@/features/HouseRemindersSection';
+import { TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
 import { SharedPricesAbout } from '@/features/SharedPrices';
 import { signOut, useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
@@ -222,6 +223,15 @@ export default function FamilyScreen() {
 
       <Section title="Conta">
         <Text variant="muted">{session?.user.email}</Text>
+        <ListCard>
+          <ListRow
+            left={<IconBadge icon="shield-account-outline" tone="neutral" />}
+            title={TERMS_TITLE}
+            subtitle={termsVersionLabel()}
+            right={<Icon name="chevron-right" color="textMuted" />}
+            onPress={() => router.push('/termos')}
+          />
+        </ListCard>
         <Button
           title="Sair da conta"
           variant="danger"

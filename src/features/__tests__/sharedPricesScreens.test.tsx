@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { router } from 'expo-router';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import FamilyScreen from '@/app/(tabs)/familia';
@@ -7,6 +8,7 @@ import ProductScreen from '@/app/produto/[id]';
 import { formatShortDate, toISODate } from '@/domain/dates';
 import { SHARED_PRICES_NOTICE, SHARING_ABOUT, type SharedPrice } from '@/domain/sharedPrices';
 import { storePricesFromSaved } from '@/domain/storePrices';
+import { TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
 import type { LatestPrice, PriceObservation, Product, Store } from '@/lib/types';
 
 // As telas de verdade (produto, Preços e Família), com as buscas trocadas por respostas prontas: o que se confere
@@ -417,9 +419,25 @@ describe('aba Família: "Preços compartilhados"', () => {
     mockQueries.available = answer();
     const page = await mount(<FamilyScreen />);
     // A aba inteira, menos o cartão: nada mais muda.
-    expect(page).toBe(withCard.replace(`Preços compartilhados${SHARING_ABOUT}`, ''));
+    expect(page).toBe(withCard.replace(`Preços compartilhados${SHARING_ABOUT}${TERMS_TITLE}`, ''));
     expect(page).not.toContain('Preços compartilhados');
     expect(page).toContain('Casa da AnaFamília');
     expect(page).toContain('Código de conviteABC234');
+  });
+
+  it('o cartão leva aos termos de uso, que dizem que o compartilhamento vem ligado', async () => {
+    const page = await mount(<FamilyScreen />);
+    expect(page).toContain(`Preços compartilhados${SHARING_ABOUT}${TERMS_TITLE}`);
+    await press(TERMS_TITLE);
+    expect(router.push).toHaveBeenCalledWith('/termos');
+  });
+
+  it('a conta também leva aos termos, com a data da versão, mesmo sem o cartão', async () => {
+    mockQueries.available = loaded(false);
+    const page = await mount(<FamilyScreen />);
+    const row = `${TERMS_TITLE}${termsVersionLabel()}`;
+    expect(page).toContain(`ana@exemplo.com${row}`);
+    await press(row);
+    expect(router.push).toHaveBeenCalledWith('/termos');
   });
 });
