@@ -5,12 +5,12 @@
 import { formatBRDate } from './dates';
 
 /** Data da versão do texto (AAAA-MM-DD). Muda a cada mudança no texto. */
-export const TERMS_VERSION = '2026-10-18';
+export const TERMS_VERSION = '2026-10-19';
 
 export const TERMS_TITLE = 'Termos de uso e privacidade';
 
-/** Marcador do contato: o dono troca pelo e-mail de verdade antes de o texto valer. */
-export const TERMS_CONTACT = '[e-mail de contato]';
+/** O e-mail para dúvidas, pedidos da LGPD e para apagar a conta. */
+export const TERMS_CONTACT = 'andrebarbusci@gmail.com';
 
 /** "Versão de 18/10/2026". */
 export function termsVersionLabel(version: string = TERMS_VERSION): string {
@@ -39,7 +39,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
       'A conta é feita com e-mail e senha. Guarde a senha só com você; se esquecer, o app manda uma mensagem para o seu e-mail para criar uma senha nova.',
       'Os dados ficam numa casa. Quem entra com o código de convite vê e edita tudo o que é da casa: listas, notas, despensa, tarefas, saúde, documentos e finanças. Só convide quem pode ver isso. Uma conta pode estar em até 5 casas, e cada casa só vê os próprios dados.',
       'Quem cria a casa é o responsável por ela: pode trocar o código de convite e tirar moradores. Se o responsável sai, a casa passa para o morador mais antigo.',
-      `O que um morador registrou continua com a casa depois que ele sai ou é tirado dela, inclusive a ficha de saúde dele: ela vira a ficha de um dependente, que os outros moradores continuam vendo e editando, e que quem saiu não consegue mais apagar. Se não quiser que fique, apague antes de sair o que o app deixa apagar (veja "Apagar dados e sair") e peça o resto pelo ${TERMS_CONTACT}.`,
+      `O que um morador registrou continua com a casa depois que ele sai ou é tirado dela, inclusive a ficha de saúde dele: ela vira a ficha de um dependente, que os outros moradores continuam vendo e editando, e que quem saiu não consegue mais apagar. Se não quiser que fique, apague antes de sair o que o app deixa apagar (veja "Apagar dados e sair") e peça o resto pelo e-mail ${TERMS_CONTACT}.`,
     ],
   },
   {
@@ -101,7 +101,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
   {
     title: 'Seus direitos (LGPD)',
     paragraphs: [
-      `Pela Lei Geral de Proteção de Dados (Lei 13.709/2018), você pode pedir a confirmação de que tratamos os seus dados, o acesso a eles, a correção, a cópia em formato portátil, a informação de com quem são compartilhados, a exclusão e a revogação do consentimento. Peça pelo ${TERMS_CONTACT}.`,
+      `Pela Lei Geral de Proteção de Dados (Lei 13.709/2018), você pode pedir a confirmação de que tratamos os seus dados, o acesso a eles, a correção, a cópia em formato portátil, a informação de com quem são compartilhados, a exclusão e a revogação do consentimento. Peça pelo e-mail ${TERMS_CONTACT}.`,
     ],
   },
   {
