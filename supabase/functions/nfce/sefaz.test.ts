@@ -89,6 +89,23 @@ Deno.test('segue redirecionamento, meta refresh e JavaScript até a página com 
   assertEquals(calls.length, 4);
   assertPlainGets(calls);
   assertEquals(calls[3].headers['Referer'], 'http://www.sefaz.rn.gov.br/nfce/quadro.jsp');
+  // Para official.ts: todo endereço buscado, em ordem, e o da página dos itens. Esta não mostra a chave.
+  assertEquals(result.fetched, calls.map((call) => call.url));
+  assertEquals(result.pageUrl, 'https://app.sefaz.rn.gov.br/nota.jsp?x=1');
+  assertEquals(result.accessKey, null);
+});
+
+Deno.test('a chave de acesso impressa na página vem junto com os itens', async () => {
+  const qr = `https://nfce.sefaz.rn.gov.br/consulta?p=${KEY_RN}|2|1|1|HASH`;
+  const spaced = KEY_RN.replace(/(\d{4})/g, '$1 ').trim();
+  const { fn } = fakeFetch({
+    [qr]: () => html(`${PORTAL}<div><strong>Chave de acesso:</strong><br><span class="chave">${spaced}</span></div>`),
+  });
+  const result = await lookupNfce(qr, fn);
+  assertEquals(result.kind, 'ok');
+  if (result.kind !== 'ok') return;
+  assertEquals(result.accessKey, KEY_RN);
+  assertEquals(result.fetched, [qr]);
 });
 
 Deno.test('página 2xx sem itens nem CAPTCHA: resume a estrutura (empty)', async () => {

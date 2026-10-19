@@ -20,7 +20,7 @@ import { QuotaError, refundAiQuota, takeAiQuota } from '../_shared/aiQuota.ts';
 import { publishableKey, secretKey } from '../_shared/apiKeys.ts';
 import { ExtractionError, extractStructured, mediaTypeOf, toVisionImage, visionConfig } from '../_shared/vision.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
-import { forgetReceiptRead, receiptRead, saoPauloDay, saveReceiptRead } from '../_shared/receiptRead.ts';
+import { forgetReceiptRead, insertWithRead, receiptRead, saoPauloDay, saveReceiptRead } from '../_shared/receiptRead.ts';
 import { duplicateBeforeRead, existingOnConflict, keyAfterRead, requestedAccessKey } from './accessKey.ts';
 import { cleanReceipt, ExtractedReceiptSchema, instructions, MAX_PHOTOS, sameStoreName, SYSTEM } from './extract.ts';
 
@@ -198,7 +198,7 @@ Deno.serve(async (req) => {
     // A leitura antes da nota: a nota nasce apontando para ela. Sem leitura
     // (o banco ainda sem a tabela, a chave secreta faltando), a nota é salva do
     // mesmo jeito, só não compartilha preço.
-    const readId = await saveReceiptRead(
+    let readId = await saveReceiptRead(
       serverDb,
       receiptRead({
         householdId,
@@ -214,27 +214,34 @@ Deno.serve(async (req) => {
     );
     const dropRead = () => (readId ? forgetReceiptRead(serverDb, readId) : Promise.resolve());
 
-    const { data: created, error: receiptError } = await db
-      .from('receipts')
-      .insert({
-        ...(readId ? { read_id: readId } : {}),
-        store_id: storeId,
-        purchased_at: receipt.purchasedAt ?? new Date().toISOString(),
-        total: receipt.total,
-        access_key: accessKey,
-        image_path: imagePaths[0],
-        extra_image_paths: imagePaths.slice(1),
-        source: 'ai',
-        status: 'draft',
-      })
-      .select('id')
-      .single();
-    if (receiptError) {
+    const saved = await insertWithRead<{ id: string }>(
+      (withRead) =>
+        db
+          .from('receipts')
+          .insert({
+            ...(withRead ? { read_id: withRead } : {}),
+            store_id: storeId,
+            purchased_at: receipt.purchasedAt ?? new Date().toISOString(),
+            total: receipt.total,
+            access_key: accessKey,
+            image_path: imagePaths[0],
+            extra_image_paths: imagePaths.slice(1),
+            source: 'ai',
+            status: 'draft',
+          })
+          .select('id')
+          .single(),
+      readId,
+      dropRead,
+    );
+    readId = saved.readId;
+    const { data: created, error: receiptError } = saved;
+    if (receiptError || !created) {
       await dropRead();
       // Mesma chave gravada ao mesmo tempo por outra leitura: vale a que chegou antes.
       const first = await existingOnConflict(receiptError, accessKey, findByKey);
       if (first) return json({ receipt_id: first, duplicate: true });
-      throw receiptError;
+      throw receiptError ?? new Error('receipt not returned');
     }
 
     if (receipt.items.length) {

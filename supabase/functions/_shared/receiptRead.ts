@@ -34,6 +34,12 @@ export interface ReceiptRead {
 /** O banco recusa mais que isso; uma nota com mais de 300 linhas já não compartilha nada. */
 export const MAX_READ_LINES = 1000;
 
+/**
+ * Descrição mais longa que isso é cortada: a chave compartilhada tem até 200
+ * letras (a linha de chave maior nunca entra), e o banco tem um teto em bytes.
+ */
+export const MAX_DESCRIPTION = 200;
+
 const digits = (value: string | null | undefined, length: number) => {
   const only = (value ?? '').replace(/\D/g, '');
   return only.length === length ? only : null;
@@ -67,7 +73,11 @@ export function receiptRead(input: {
     store_name: name,
     purchased_on: input.purchasedOn && /^\d{4}-\d{2}-\d{2}$/.test(input.purchasedOn) ? input.purchasedOn : null,
     lines: input.lines
-      .map((line) => ({ description: line.description.trim().replace(/\s+/g, ' '), unit: line.unit, unit_price: line.unit_price }))
+      .map((line) => ({
+        description: line.description.trim().replace(/\s+/g, ' ').slice(0, MAX_DESCRIPTION).trim(),
+        unit: line.unit,
+        unit_price: line.unit_price,
+      }))
       .filter((line) => line.description && Number.isFinite(line.unit_price))
       .slice(0, MAX_READ_LINES),
   };
@@ -90,6 +100,24 @@ export async function saveReceiptRead(serverDb: () => SupabaseClient, read: Rece
     console.warn('receipt read not saved', err instanceof Error ? err.name : 'error');
     return null;
   }
+}
+
+/**
+ * Grava a nota com a leitura e, se o banco recusar a leitura (23503: a chave
+ * estrangeira leva a casa, e a pessoa trocou de casa entre a leitura e a
+ * gravação), apaga a leitura e grava a nota sem ela: a nota não se perde por
+ * isso, só não compartilha. Qualquer outro erro volta como veio.
+ */
+export async function insertWithRead<T>(
+  insert: (readId: string | null) => PromiseLike<{ data: T | null; error: { code?: string } | null }>,
+  readId: string | null,
+  dropRead: () => Promise<void>,
+): Promise<{ data: T | null; error: { code?: string } | null; readId: string | null }> {
+  const first = await insert(readId);
+  if (!first.error || !readId || first.error.code !== '23503') return { ...first, readId };
+  console.warn('receipt read refused by the receipt, saving without it', first.error.code);
+  await dropRead();
+  return { ...(await insert(null)), readId: null };
 }
 
 /** Apaga a leitura que ficou sem nota (a nota não foi gravada). Falhar aqui só deixa a limpeza diária para depois. */

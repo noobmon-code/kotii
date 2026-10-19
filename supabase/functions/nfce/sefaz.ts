@@ -7,7 +7,7 @@
 // QR (isCaptchaGated, antes de cada pedido). O `fetch` é injetado para os
 // testes (sefaz.test.ts) não usarem rede.
 
-import { type NfcePage, isSefazUrl, parseNfceHtml } from './parse.ts';
+import { type NfcePage, isSefazUrl, pageAccessKey, parseNfceHtml } from './parse.ts';
 import { decodeHtml, describePage, type Fetched, isCaptchaGated, nextHop, type PageSummary, safeLocation } from './page.ts';
 
 const MAX_BYTES = 3_000_000;
@@ -32,7 +32,16 @@ export type TraceEntry =
   | { step: string; captchaGate: string };
 
 export type Lookup =
-  | { kind: 'ok'; page: NfcePage }
+  | {
+    kind: 'ok';
+    page: NfcePage;
+    /** Todo endereço buscado, em ordem: o do QR, os redirecionamentos e os saltos (official.ts decide se a leitura vale). */
+    fetched: string[];
+    /** O endereço da página de onde saíram os itens. */
+    pageUrl: string;
+    /** A "Chave de acesso" impressa na página, ou null. */
+    accessKey: string | null;
+  }
   /** A página pede CAPTCHA (ou leva ao ATF da PB): nada foi lido. */
   | { kind: 'captcha'; trace: TraceEntry[] }
   /** A página final (a que não leva a outra) respondeu 2xx, mas sem itens nem CAPTCHA. */
@@ -82,13 +91,20 @@ async function readCapped(response: Response): Promise<Uint8Array> {
  * GET de uma página, seguindo os redirecionamentos HTTP só para .gov.br.
  * Para antes de buscar um endereço do ATF da PB (`gate`), também o primeiro.
  */
-async function get(fetchFn: FetchFn, start: string, deadline: number, referer?: string): Promise<{ page: Fetched } | { gate: string }> {
+async function get(
+  fetchFn: FetchFn,
+  start: string,
+  deadline: number,
+  referer: string | undefined,
+  requested: string[],
+): Promise<{ page: Fetched } | { gate: string }> {
   let url = start;
   const redirects: string[] = [];
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     if (isCaptchaGated(url)) return { gate: url };
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error('time budget exhausted');
+    requested.push(url);
     const response = await fetchFn(url, {
       method: 'GET',
       redirect: 'manual',
@@ -124,13 +140,14 @@ export async function lookupNfce(qrUrl: string, fetchFn: FetchFn = fetch, budget
   const deadline = Date.now() + budget;
   const trace: TraceEntry[] = [];
   const visited = new Set<string>();
+  const fetched: string[] = [];
   let url = qrUrl;
   let referer: string | undefined;
   try {
     for (let hop = 0; hop <= MAX_PAGE_HOPS; hop++) {
       const step = hop === 0 ? 'qr' : `salto-${hop}`;
       visited.add(url);
-      const got = await get(fetchFn, url, deadline, referer);
+      const got = await get(fetchFn, url, deadline, referer, fetched);
       if ('gate' in got) {
         trace.push({ step, captchaGate: safeLocation(got.gate) });
         return { kind: 'captcha', trace };
@@ -140,7 +157,7 @@ export async function lookupNfce(qrUrl: string, fetchFn: FetchFn = fetch, budget
       trace.push(summary);
       if (ok(page)) {
         const parsed = parseNfceHtml(page.html);
-        if (parsed.items.length) return { kind: 'ok', page: parsed };
+        if (parsed.items.length) return { kind: 'ok', page: parsed, fetched, pageUrl: page.url, accessKey: pageAccessKey(page.html) };
       }
       // Sem itens e com CAPTCHA (mesmo num 403 de verificação): para aqui,
       // sem seguir nada desta página.

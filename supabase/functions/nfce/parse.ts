@@ -97,6 +97,17 @@ export function parseNfceHtml(html: string): NfcePage {
   };
 }
 
+/**
+ * A "Chave de acesso" que a página mostra (44 dígitos, em grupos de 4), ou
+ * null. A leitura do servidor só guarda a chave do link do QR quando ela é a
+ * mesma da página: o link pode trazer outra (p= antes de chNFe, por exemplo).
+ */
+export function pageAccessKey(html: string): string | null {
+  const match = textOf(html).match(/Chave\s+de\s+acesso:?\s*((?:\d[\s.]*){44})/i);
+  const key = match ? match[1].replace(/\D/g, '') : '';
+  return key.length === 44 ? key : null;
+}
+
 /** Só links de Sefaz (domínios .gov.br), em http ou https. */
 export function isSefazUrl(value: string): boolean {
   try {

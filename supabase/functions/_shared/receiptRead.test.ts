@@ -1,7 +1,7 @@
 import { assertEquals } from '@std/assert';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { forgetReceiptRead, MAX_READ_LINES, receiptRead, saoPauloDay, saveReceiptRead } from './receiptRead.ts';
+import { forgetReceiptRead, insertWithRead, MAX_DESCRIPTION, MAX_READ_LINES, receiptRead, saoPauloDay, saveReceiptRead } from './receiptRead.ts';
 
 const KEY = '35261011222333000181650010000123451000012347';
 
@@ -108,4 +108,52 @@ Deno.test('forgetReceiptRead apaga pelo id e nunca lança', async () => {
   await forgetReceiptRead(server.factory, 'r1');
   assertEquals(server.calls, [['from', 'receipt_reads'], ['delete'], ['eq', 'id', 'r1']]);
   await forgetReceiptRead(fakeServer(new Error('rede')).factory, 'r1');
+});
+
+Deno.test('receiptRead: descrição comprida é cortada em 200 letras', () => {
+  const read = receiptRead({
+    householdId: 'h1',
+    source: 'ai',
+    accessKey: null,
+    cnpj: null,
+    storeName: null,
+    purchasedOn: null,
+    lines: [{ description: 'A'.repeat(199) + ' ' + 'B'.repeat(500), unit: 'un', unit_price: 1 }],
+  });
+  assertEquals(read.lines[0].description, 'A'.repeat(199));
+  assertEquals(MAX_DESCRIPTION, 200);
+});
+
+Deno.test('insertWithRead: grava com a leitura quando dá', async () => {
+  const tries: (string | null)[] = [];
+  let dropped = 0;
+  const result = await insertWithRead((readId) => {
+    tries.push(readId);
+    return Promise.resolve({ data: { id: 'n1' }, error: null });
+  }, 'r1', () => Promise.resolve(void dropped++));
+  assertEquals(result, { data: { id: 'n1' }, error: null, readId: 'r1' });
+  assertEquals([tries, dropped], [['r1'], 0]);
+});
+
+Deno.test('insertWithRead: leitura recusada (23503, a pessoa trocou de casa) apaga a leitura e grava a nota sem ela', async () => {
+  const tries: (string | null)[] = [];
+  let dropped = 0;
+  const result = await insertWithRead((readId) => {
+    tries.push(readId);
+    return Promise.resolve(readId ? { data: null, error: { code: '23503' } } : { data: { id: 'n1' }, error: null });
+  }, 'r1', () => Promise.resolve(void dropped++));
+  assertEquals(result, { data: { id: 'n1' }, error: null, readId: null });
+  assertEquals([tries, dropped], [['r1', null], 1]);
+});
+
+Deno.test('insertWithRead: outro erro, ou sem leitura, volta como veio, sem nova tentativa', async () => {
+  for (const [readId, code] of [['r1', '23505'], [null, '23503']] as const) {
+    const tries: (string | null)[] = [];
+    const result = await insertWithRead((id) => {
+      tries.push(id);
+      return Promise.resolve({ data: null, error: { code } });
+    }, readId, () => Promise.resolve());
+    assertEquals(result, { data: null, error: { code }, readId });
+    assertEquals(tries, [readId]);
+  }
 });
