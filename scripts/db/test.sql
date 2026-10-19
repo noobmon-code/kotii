@@ -5578,10 +5578,154 @@ begin
     = array['OLEO SOYA 900ML 3 ATACADAO DO PORTO LTDA ' || d, 'OLEO SOYA 900ML 7 CNPJ ' || cnpj || ' ' || d],
     'no read, a key of another issuer, no CNPJ, no day or a malformed read: nothing';
   assert (select count(*) from public.shared_prices) = 4, 'and nothing else';
+  -- A leitura serve uma vez: confirmada a nota (compartilhando ou não), o gatilho a apaga, e a nota perde o ponteiro.
+  assert (select count(*) from public.receipt_reads where household_id = current_setting('test.rr_house_e1')::uuid) = 0,
+    'every read of a confirmed receipt is gone';
+  assert (select count(*) from public.receipts where household_id = current_setting('test.rr_house_e1')::uuid and read_id is not null) = 0,
+    'and the receipts no longer point at one';
 end $$;
 
--- A limpeza: a leitura velha que nenhum rascunho espera sai (e a nota confirmada só perde o ponteiro); a de um
--- rascunho e a recente ficam.
+-- Mais leituras: farmácia pelo nome impresso e pelo nome que a casa deu, uma leitura em duas notas, a nota que volta a
+-- rascunho e é confirmada de novo, e a nota grande (300 itens contra 1000 linhas lidas), cronometrada.
+set role service_role;
+do $$
+declare
+  d constant date := current_setting('test.rr_today')::date - 5;
+  hh constant uuid := current_setting('test.rr_house_e1')::uuid;
+  rid uuid;
+  line jsonb;
+begin
+  insert into public.receipt_reads (household_id, source, store_cnpj, store_name, purchased_on, lines)
+    values (hh, 'ai', '33444555000166', 'DROGARIA SAO PAULO S/A', d,
+      jsonb_build_array(jsonb_build_object('description', 'AGUA MINERAL 500ML', 'unit', 'un', 'unit_price', 2.00)))
+    returning id into rid;
+  perform set_config('test.rr_read_c1', rid::text, false);
+  insert into public.receipt_reads (household_id, source, store_cnpj, store_name, purchased_on, lines)
+    values (hh, 'ai', '44555666000177', 'SUPERMERCADO BOM PRECO', d,
+      jsonb_build_array(jsonb_build_object('description', 'AGUA MINERAL 1L', 'unit', 'un', 'unit_price', 3.00)))
+    returning id into rid;
+  perform set_config('test.rr_read_c2', rid::text, false);
+  insert into public.receipt_reads (household_id, source, store_cnpj, store_name, purchased_on, lines)
+    values (hh, 'ai', '22333444000155', 'ATACADAO DO PORTO LTDA', d,
+      jsonb_build_array(jsonb_build_object('description', 'SUCO DEL VALLE 1L', 'unit', 'un', 'unit_price', 6.00)))
+    returning id into rid;
+  perform set_config('test.rr_read_reuse', rid::text, false);
+  insert into public.receipt_reads (household_id, source, store_cnpj, store_name, purchased_on, lines)
+    values (hh, 'ai', '22333444000155', 'ATACADAO DO PORTO LTDA', d,
+      jsonb_build_array(jsonb_build_object('description', 'BOLACHA MARIA', 'unit', 'un', 'unit_price', 4.00)))
+    returning id into rid;
+  perform set_config('test.rr_read_redo', rid::text, false);
+  select jsonb_agg(jsonb_build_object('description', 'LINHA LIDA DA NOTA GRANDE ' || g, 'unit', 'un', 'unit_price', 1 + g / 100.0) order by g)
+    into line from generate_series(1, 1000) as g;
+  insert into public.receipt_reads (household_id, source, store_cnpj, store_name, purchased_on, lines)
+    values (hh, 'ai', '55666777000188', 'MERCADO GRANDE DO PORTO', d, line)
+    returning id into rid;
+  perform set_config('test.rr_read_big', rid::text, false);
+
+  -- Leitura grande demais em bytes: o banco recusa (a função corta cada descrição em 200 letras).
+  begin
+    insert into public.receipt_reads (household_id, source, lines)
+      select hh, 'ai', jsonb_agg(jsonb_build_object('description', repeat('X', 500), 'unit', 'un', 'unit_price', 1))
+        from generate_series(1, 1000);
+    raise exception 'FAIL: a read of more than 400 kB';
+  exception when check_violation then null;
+  end;
+end $$;
+
+reset role;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_e1', false) \gset
+do $$
+declare
+  d constant date := current_setting('test.rr_today')::date - 5;
+  s uuid;
+  r uuid;
+  started timestamptz;
+  took interval;
+begin
+  -- (c) pelo nome IMPRESSO: a casa chamou a drogaria de "Mercado da rua", e nada entra.
+  insert into public.stores (name, cnpj) values ('Mercado da rua', '33444555000166') returning id into s;
+  insert into public.receipts (store_id, purchased_at, source, read_id)
+    values (s, d + time '10:00', 'ai', current_setting('test.rr_read_c1')::uuid) returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'AGUA MINERAL 500ML', 'bebidas', 'un', 2.00, 2.00);
+  perform public.confirm_receipt(r, '[]');
+  -- (c) pelo nome que a CASA deu: o impresso diz supermercado, a casa diz farmácia, e nada entra.
+  insert into public.stores (name, cnpj) values ('Farmácia do Zé', '44555666000177') returning id into s;
+  insert into public.receipts (store_id, purchased_at, source, read_id)
+    values (s, d + time '10:00', 'ai', current_setting('test.rr_read_c2')::uuid) returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'AGUA MINERAL 1L', 'bebidas', 'un', 3.00, 3.00);
+  perform public.confirm_receipt(r, '[]');
+
+  -- A mesma leitura em duas notas: a primeira confirmada a usa e a apaga; a segunda fica sem leitura.
+  select id into s from public.stores where cnpj = '22333444000155';
+  insert into public.receipts (store_id, purchased_at, source, read_id)
+    values (s, d + time '11:00', 'ai', current_setting('test.rr_read_reuse')::uuid) returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'SUCO DEL VALLE 1L', 'bebidas', 'un', 6.00, 6.00);
+  perform set_config('test.rr_reuse_a', r::text, false);
+  insert into public.receipts (store_id, purchased_at, source, read_id)
+    values (s, d + time '12:00', 'ai', current_setting('test.rr_read_reuse')::uuid) returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'SUCO DEL VALLE 1L', 'bebidas', 'un', 6.00, 6.00);
+  perform set_config('test.rr_reuse_b', r::text, false);
+  perform public.confirm_receipt(current_setting('test.rr_reuse_a')::uuid, '[]');
+  assert (select read_id from public.receipts where id = current_setting('test.rr_reuse_b')::uuid) is null,
+    'a read used by one confirmed receipt is gone for the other';
+
+  -- A nota que volta a rascunho e é confirmada de novo.
+  insert into public.receipts (store_id, purchased_at, source, read_id)
+    values (s, d + time '13:00', 'ai', current_setting('test.rr_read_redo')::uuid) returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'BOLACHA MARIA', 'snacks', 'un', 4.00, 4.00);
+  perform public.confirm_receipt(r, '[]');
+  perform set_config('test.rr_redo', r::text, false);
+
+  -- A nota grande: 300 itens (o teto), cada um contra as 1000 linhas da leitura.
+  insert into public.stores (name, cnpj) values ('Mercado grande', '55666777000188') returning id into s;
+  insert into public.receipts (store_id, purchased_at, source, read_id)
+    values (s, d + time '14:00', 'ai', current_setting('test.rr_read_big')::uuid) returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price)
+    select r, g, 'linha lida da nota grande ' || g, 'graos', 'un', 1 + g / 100.0, 1 + g / 100.0 from generate_series(1, 300) as g;
+  started := clock_timestamp();
+  perform public.confirm_receipt(r, '[]');
+  took := clock_timestamp() - started;
+  raise notice 'confirmar a nota de 300 itens contra 1000 linhas lidas: % ms', round(extract(epoch from took) * 1000);
+  -- Folgado para uma máquina lenta; o par item x linha, que este teste pegaria, levava segundos.
+  assert took < interval '1 second', format('the big receipt confirms in under a second (took %s)', took);
+end $$;
+
+reset role;
+do $$
+begin
+  assert (select count(*) from public.shared_prices where item_key like 'AGUA MINERAL%') = 0,
+    'a pharmacy by its printed name, or by the name the household gave it, shares nothing';
+  assert (select count(*) from public.shared_prices where item_key = 'SUCO DEL VALLE 1L') = 1, 'the first receipt with the read shared';
+  assert (select count(*) from public.shared_prices where item_key = 'BOLACHA MARIA') = 1, 'the receipt shared on its first confirmation';
+  assert (select count(*) from public.shared_prices where item_key like 'LINHA LIDA DA NOTA GRANDE %') = 300, 'the big receipt shared its 300 lines';
+  -- Para ver que a segunda confirmação não grava de novo, a linha sai.
+  delete from public.shared_prices where item_key in ('BOLACHA MARIA', 'SUCO DEL VALLE 1L');
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_e1', false) \gset
+do $$
+begin
+  perform public.confirm_receipt(current_setting('test.rr_reuse_b')::uuid, '[]');
+  update public.receipts set status = 'draft' where id = current_setting('test.rr_redo')::uuid;
+  update public.receipts set status = 'confirmed' where id = current_setting('test.rr_redo')::uuid;
+  assert (select status from public.receipts where id = current_setting('test.rr_redo')::uuid) = 'confirmed', 'confirmed again';
+end $$;
+reset role;
+do $$
+begin
+  assert (select count(*) from public.shared_prices where item_key in ('BOLACHA MARIA', 'SUCO DEL VALLE 1L')) = 0,
+    'the second receipt of a read, and a second confirmation, share nothing: the read is gone';
+  assert (select count(*) from public.receipt_reads where household_id = current_setting('test.rr_house_e1')::uuid) = 0,
+    'and no read is left';
+end $$;
+
+-- A limpeza: a leitura velha que nenhum rascunho espera sai; a de um rascunho e a recente ficam.
 set role service_role;
 do $$
 declare
@@ -5611,16 +5755,13 @@ begin
   update public.receipt_reads set created_at = now() - interval '31 days'
     where household_id in (current_setting('test.rr_house_e1')::uuid, current_setting('test.rr_house_e2')::uuid)
       and id <> current_setting('test.rr_read_recent')::uuid;
-  -- As sete das notas confirmadas da Elisa, a que ficou sem nota e a do Edu.
-  assert public.forget_receipt_reads() = 7 + 1 + 1, 'the old reads of confirmed receipts and the orphans go';
+  -- A que ficou sem nota e a do Edu (as das notas confirmadas o gatilho já apagou).
+  assert public.forget_receipt_reads() = 1 + 1, 'the old reads no draft waits for go';
   assert (select array_agg(id order by id) from public.receipt_reads where household_id = current_setting('test.rr_house_e1')::uuid)
     = (select array_agg(x order by x) from unnest(array[current_setting('test.rr_read_draft')::uuid, current_setting('test.rr_read_recent')::uuid]) as x),
     'the read a draft waits for and the recent one stay';
   assert (select read_id from public.receipts where id = current_setting('test.rr_draft')::uuid) = current_setting('test.rr_read_draft')::uuid,
     'the draft keeps its read';
-  assert (select count(*) from public.receipts where read_id is null
-            and household_id = current_setting('test.rr_house_e1')::uuid and status = 'confirmed') = 8,
-    'a confirmed receipt only loses the pointer';
   -- A leitura do Edu também era velha e de nenhum rascunho.
   assert (select count(*) from public.receipt_reads where household_id = current_setting('test.rr_house_e2')::uuid) = 0, 'the other household too';
 end $$;
