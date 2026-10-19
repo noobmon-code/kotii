@@ -108,11 +108,21 @@ export function pageAccessKey(html: string): string | null {
   return key.length === 44 ? key : null;
 }
 
+/**
+ * A única porta fora da padrão que se aceita: a consulta de Pernambuco
+ * redireciona para https://nfce.sefaz.pe.gov.br:444/. Só essa combinação de
+ * protocolo, host e porta.
+ */
+export function isAllowedPort(url: URL): boolean {
+  return !url.port || (url.protocol === 'https:' && url.hostname.toLowerCase() === 'nfce.sefaz.pe.gov.br' && url.port === '444');
+}
+
 /** Só links de Sefaz (domínios .gov.br), em http ou https. */
 export function isSefazUrl(value: string): boolean {
   try {
     const url = new URL(value);
-    return (url.protocol === 'https:' || url.protocol === 'http:') && url.hostname.endsWith('.gov.br') && !url.username && !url.port;
+    return (url.protocol === 'https:' || url.protocol === 'http:') && url.hostname.endsWith('.gov.br') && !url.username && !url.password &&
+      isAllowedPort(url);
   } catch {
     return false;
   }

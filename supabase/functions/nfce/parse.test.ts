@@ -65,6 +65,10 @@ Deno.test('só busca em sites de Sefaz', () => {
   assert(!isSefazUrl('https://example.com/?p=1'));
   assert(!isSefazUrl('https://gov.br.example.com/'));
   assert(!isSefazUrl('https://sefaz.gov.br:8443/x'));
+  // A única porta aceita: a 444 da consulta de Pernambuco, em https.
+  assert(isSefazUrl('https://nfce.sefaz.pe.gov.br:444/nfce/consulta?p=1'));
+  assert(!isSefazUrl('http://nfce.sefaz.pe.gov.br:444/nfce/consulta?p=1'));
+  assert(!isSefazUrl('https://www.sefaz.pb.gov.br:444/nfce'));
   assert(!isSefazUrl('file:///etc/passwd'));
 });
 

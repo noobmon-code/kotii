@@ -42,7 +42,13 @@ Deno.test('nfceRead: a página com outra chave, ou sem chave, deixa a leitura se
 
 Deno.test('nfceRead: caminho fora dos endereços oficiais, ou sem casa, não vira leitura', () => {
   assertEquals(nfceRead(ok(KEY, [QR, 'https://arquivos.fazenda.sp.gov.br/nota.html'], 'https://arquivos.fazenda.sp.gov.br/nota.html'), QR, 'h1'), null);
-  assertEquals(nfceRead(ok(KEY, ['http://www.nfce.fazenda.sp.gov.br/qrcode'], 'http://www.nfce.fazenda.sp.gov.br/qrcode'), QR, 'h1'), null);
+  assertEquals(nfceRead(ok(KEY, ['http://www.nfce.fazenda.sp.gov.br:8080/qrcode'], 'http://www.nfce.fazenda.sp.gov.br:8080/qrcode'), QR, 'h1'), null);
   assertEquals(nfceRead(ok(KEY), QR, null), null);
   assertEquals(nfceRead(ok(KEY), QR, ''), null);
+});
+
+Deno.test('nfceRead: por http num host da lista também vira leitura (PR responde em http sem redirecionar)', () => {
+  const qr = `http://www.fazenda.pr.gov.br/nfce/qrcode?p=${KEY}|2|1|1|HASH`;
+  const read = nfceRead(ok(KEY, [qr], qr), qr, 'h1');
+  assertEquals(read?.access_key, KEY);
 });

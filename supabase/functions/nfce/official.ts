@@ -2,11 +2,17 @@
 // alimenta os preços de outras casas). A busca aceita qualquer .gov.br
 // (parse.ts, isSefazUrl) para o rascunho da casa; mas uma página .gov.br com
 // HTML de terceiros (um arquivo enviado a um portal, um subdomínio abandonado)
-// não pode virar preço na base de todos. Então a leitura só é gravada quando a
-// página dos itens veio por https de um endereço de consulta da NFC-e das 27
-// Sefaz, e todo endereço buscado no caminho (o do QR, os redirecionamentos e
-// os saltos de página) também é um deles. Fora disso, a nota é lida do mesmo
-// jeito, só sem leitura (e não compartilha). Sem rede: testado em official.test.ts.
+// não pode virar preço na base de todos. Então a leitura só é gravada quando
+// todo endereço buscado no caminho (o do QR, os redirecionamentos, os saltos de
+// página e o da página dos itens) é um endereço de consulta da NFC-e das 27
+// Sefaz. Fora disso, a nota é lida do mesmo jeito, só sem leitura (e não
+// compartilha). Sem rede: testado em official.test.ts.
+//
+// http também vale: a proteção é a lista fechada de hosts, e várias Sefaz só
+// respondem em http (BA, CE) ou respondem em http sem redirecionar (PR).
+// Exigir https deixaria esses estados de fora sem fechar nada que a lista não
+// feche (o pedido sai do servidor, não da rede de quem lê a nota). Porta, só a
+// 444 de Pernambuco, em https (isAllowedPort, em parse.ts).
 //
 // Os hosts são os de consulta pelo QR code e de consulta pública em produção
 // (a tabela do Portal da NFC-e, como a reproduzem os emissores, p. ex. o
@@ -14,6 +20,8 @@
 // busca já percorre (PB: www4 e receita; RN: sefaz e app). Ambiente de
 // homologação não entra. Uma Sefaz que mudar de endereço só deixa de
 // compartilhar até entrar aqui.
+
+import { isAllowedPort } from './parse.ts';
 
 const HOSTS_BY_STATE: Record<string, readonly string[]> = {
   AC: ['www.sefaznet.ac.gov.br'],
@@ -58,17 +66,17 @@ function parsed(value: string): URL | null {
   }
 }
 
-/** Endereço de consulta da NFC-e de uma Sefaz (http ou https, sem usuário nem porta). */
+/** Endereço de consulta da NFC-e de uma Sefaz (http ou https, sem usuário, sem porta salvo a de PE). */
 export function isOfficialNfceUrl(value: string): boolean {
   const url = parsed(value);
-  return !!url && (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password && !url.port &&
+  return !!url && (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password && isAllowedPort(url) &&
     HOSTS.has(url.hostname.toLowerCase());
 }
 
 /**
- * A busca pode ir para receipt_reads: a página de onde saíram os itens veio por
- * https de um endereço oficial, e todo endereço buscado também é oficial.
+ * A busca pode ir para receipt_reads: a página de onde saíram os itens e todo
+ * endereço buscado no caminho são endereços oficiais.
  */
 export function isOfficialRead(fetched: readonly string[], pageUrl: string): boolean {
-  return parsed(pageUrl)?.protocol === 'https:' && isOfficialNfceUrl(pageUrl) && fetched.length > 0 && fetched.every(isOfficialNfceUrl);
+  return isOfficialNfceUrl(pageUrl) && fetched.length > 0 && fetched.every(isOfficialNfceUrl);
 }

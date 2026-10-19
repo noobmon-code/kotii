@@ -415,3 +415,14 @@ Deno.test('mensagem de erro sem endereço completo nem números longos', () => {
     'TypeError: error sending request for url (http://www.sefaz.pb.gov.br/nfce): dns error #',
   );
 });
+
+Deno.test('Pernambuco: segue o redirecionamento para a porta 444', async () => {
+  const qr = `http://nfce.sefaz.pe.gov.br/nfce/consulta?p=${KEY_RN}|2|1|1|HASH`;
+  const final = `https://nfce.sefaz.pe.gov.br:444/nfce/consulta?p=${KEY_RN}`;
+  const { fn } = fakeFetch({ [qr]: () => redirect(final), [final]: () => html(PORTAL) });
+  const result = await lookupNfce(qr, fn);
+  assertEquals(result.kind, 'ok');
+  if (result.kind !== 'ok') return;
+  assertEquals(result.fetched, [qr, final]);
+  assertEquals(result.pageUrl, final);
+});

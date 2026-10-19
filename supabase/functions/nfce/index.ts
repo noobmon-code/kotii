@@ -5,7 +5,7 @@
 // da Sefaz direto. A busca (sefaz.ts) só faz GET em domínios .gov.br e para
 // em CAPTCHA: Sefaz que pedem CAPTCHA (como a da Paraíba) respondem 422
 // `captcha` e o app manda a pessoa para a foto. Quem cria o rascunho de nota
-// é o app. Quando a nota vem por https de um endereço de consulta oficial
+// é o app. Quando a nota vem só por endereços de consulta oficiais
 // (official.ts), o que foi lido também vai para receipt_reads (com a chave
 // secreta), e a resposta leva o id dessa leitura (readId): o app o grava na
 // nota, e só assim ela compartilha preço com outras casas (read.ts,
