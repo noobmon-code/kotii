@@ -16,8 +16,9 @@ describe('termos de uso', () => {
     for (const s of TERMS_SECTIONS) expect(s.paragraphs.every((p) => p.trim().length > 0)).toBe(true);
   });
 
-  it('o contato fica marcado para o dono preencher, nos pedidos da LGPD e no fim', () => {
-    expect(TERMS_CONTACT).toBe('[e-mail de contato]');
+  it('o contato é um e-mail, nos pedidos da LGPD e no fim, e não sobra marcador para preencher', () => {
+    expect(TERMS_CONTACT).toMatch(/^[^\s@]+@[^\s@]+\.[a-z]+$/);
+    expect(all).not.toMatch(/\[[^\]]*\]/);
     expect(section('Seus direitos (LGPD)')).toContain(TERMS_CONTACT);
     expect(section('Mudanças e contato')).toContain(TERMS_CONTACT);
   });
