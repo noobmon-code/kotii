@@ -205,6 +205,54 @@ describe('apagar a conta', () => {
     expect(signOut).not.toHaveBeenCalled();
   });
 
+  it('uma casa que seria apagada ganhou um morador depois do aviso: relê as casas e avisa, sem sair da conta', async () => {
+    const message = 'Uma das casas que seriam apagadas tem um morador novo desde o aviso, e ela ficaria com ele.';
+    invoke.mockResolvedValue({ data: null, error: reply(409, { code: 'houses_changed', error: message }) });
+    await mount();
+    await typePassword('segredo');
+    rpc.mockResolvedValue({ data: HOUSES.map((h) => ({ ...h, last: false })), error: null });
+    await pressDelete();
+    expect(invoke).toHaveBeenCalledWith('delete-account', { body: { password: 'segredo', deleteHouseholds: ['casa-praia'] } });
+    expect(notify).toHaveBeenCalledWith('Suas casas mudaram', message);
+    // Relida: nenhuma casa é apagada agora, e o próximo pedido não leva nenhuma.
+    expect(page()).not.toContain('Você é a última pessoa');
+    expect(page()).toContain('Nas casas "Cidade" e "Praia", o que você registrou continua com a casa');
+    expect(signOut).not.toHaveBeenCalled();
+    invoke.mockClear();
+    invoke.mockResolvedValue({ data: { status: 'deleted', deletedHouseholds: 0 }, error: null });
+    await pressDelete();
+    expect(invoke).toHaveBeenCalledWith('delete-account', { body: { password: 'segredo', deleteHouseholds: [] } });
+  });
+
+  it('a pessoa saiu da tela antes da resposta: o erro ainda é avisado', async () => {
+    let answer: (value: { data: unknown; error: unknown }) => void = () => undefined;
+    invoke.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    await mount();
+    await typePassword('errada');
+    await pressDelete();
+    await act(async () => renderer!.unmount());
+    renderer = undefined;
+    await act(async () => answer({ data: null, error: reply(403, { code: 'wrong_password', error: 'Senha errada. Nada foi apagado.' }) }));
+    await settle();
+    expect(notify).toHaveBeenCalledWith('Senha errada', 'Confira a senha e tente de novo. Nada foi apagado.');
+    expect(signOut).not.toHaveBeenCalled();
+  });
+
+  it('a pessoa saiu da tela antes de uma falha qualquer: o erro da função ainda é avisado', async () => {
+    let answer: (value: { data: unknown; error: unknown }) => void = () => undefined;
+    invoke.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    await mount();
+    await typePassword('segredo');
+    await pressDelete();
+    await act(async () => renderer!.unmount());
+    renderer = undefined;
+    await act(async () =>
+      answer({ data: null, error: reply(429, { code: 'too_many_attempts', error: 'Muitas tentativas seguidas. Espere alguns minutos e tente de novo.' }) }),
+    );
+    await settle();
+    expect(notify).toHaveBeenCalledWith('Não deu para apagar a conta', 'Muitas tentativas seguidas. Espere alguns minutos e tente de novo.');
+  });
+
   it('a função publicada responde 404 pelo relay: o mesmo aviso com o e-mail', async () => {
     invoke.mockResolvedValue({
       data: null,

@@ -1,17 +1,10 @@
 import { useState } from 'react';
 import { StyleSheet } from 'react-native';
 
-import {
-  AccountDeletionUnavailable,
-  HousesChangedError,
-  useAccountDeletionPreview,
-  useDeleteAccount,
-  WrongPasswordError,
-} from '@/data/account';
+import { AccountDeletionUnavailable, HousesChangedError, useAccountDeletionPreview, useDeleteAccount } from '@/data/account';
 import { accountDeletionNotes, accountDeletionUnavailable, housesToDelete } from '@/domain/account';
 import { TERMS_CONTACT } from '@/domain/terms';
 import { useAuth } from '@/lib/auth';
-import { errorMessage } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
 import { Button, Card, ErrorNotice, Loading, Screen, Section, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
@@ -54,18 +47,13 @@ export default function DeleteAccountScreen() {
   }
   const deleteHouseholds = housesToDelete(houses);
 
+  // Só o que é da tela: o aviso de cada erro sai do hook, mesmo com a tela já fechada.
   function onError(err: Error) {
     if (err instanceof AccountDeletionUnavailable) {
       setUnavailable(true);
-      notify('Ainda não disponível', accountDeletionUnavailable(TERMS_CONTACT));
-    } else if (err instanceof WrongPasswordError) {
-      notify('Senha errada', 'Confira a senha e tente de novo. Nada foi apagado.');
     } else if (err instanceof HousesChangedError) {
       // O aviso de cima muda com a releitura; a pessoa confirma de novo.
       preview.refetch();
-      notify('Suas casas mudaram', err.message);
-    } else {
-      notify('Não deu para apagar a conta', errorMessage(err));
     }
   }
 

@@ -4,7 +4,8 @@
 // o corpo do pedido não diz de quem é a conta, então ninguém apaga outra.
 //
 // 1. A senha de novo, com o e-mail da própria conta: um token esquecido
-//    num aparelho não basta para apagar a conta.
+//    num aparelho não basta para apagar a conta. Cada tentativa conta antes
+//    (até 5 por hora por conta, no banco), e a senha certa zera a conta.
 // 2. O banco (delete_account_data, uma transação): sai de cada casa, apaga
 //    a casa em que ela é a última (só as que o app avisou), solta o dono
 //    dos arquivos e apaga o que é só dela.
@@ -38,8 +39,14 @@ export type PasswordCheck = 'ok' | 'wrong' | 'too_many' | 'failed';
 
 /** O erro do banco quando uma casa ficou só com a pessoa sem o app ter avisado (leave_household). */
 export const LAST_MEMBER_CODE = 'NK001';
+/** O erro do banco quando uma casa que o app avisou que seria apagada ganhou um morador. */
+export const NOT_LAST_CODE = 'NK011';
 
 export interface DeleteAccountDeps {
+  /** Conta uma tentativa de senha desta conta; false quando já passou do limite (e não conta). */
+  countAttempt(userId: string): Promise<boolean>;
+  /** A senha conferiu: a contagem recomeça. */
+  clearAttempts(userId: string): Promise<void>;
   /** Entra com o e-mail e a senha; 'ok' só se a conta que entrou é a de `userId`. */
   checkPassword(userId: string, email: string, password: string): Promise<PasswordCheck>;
   /** delete_account_data; lança o erro do banco (com `code`). */
@@ -68,15 +75,27 @@ export async function deleteAccount(
   if (!user.email) {
     return fail(400, 'no_email', 'Esta conta não tem e-mail para conferir a senha.');
   }
-  const check = await deps.checkPassword(user.id, user.email, request.password).catch((err) => {
-    console.error('password check failed', err);
-    return 'failed' as const;
+  // Conta antes de conferir: pedidos ao mesmo tempo também passam pelo limite.
+  const allowed = await deps.countAttempt(user.id).catch((err) => {
+    console.error('attempt count failed', err);
+    return null;
   });
+  const check: PasswordCheck =
+    allowed === null
+      ? 'failed'
+      : !allowed
+        ? 'too_many'
+        : await deps.checkPassword(user.id, user.email, request.password).catch((err) => {
+            console.error('password check failed', err);
+            return 'failed' as const;
+          });
   if (check === 'wrong') return fail(403, 'wrong_password', 'Senha errada. Nada foi apagado.');
   if (check === 'too_many') {
     return fail(429, 'too_many_attempts', 'Muitas tentativas seguidas. Espere alguns minutos e tente de novo.');
   }
   if (check !== 'ok') return fail(503, 'check_failed', 'Não deu para conferir a senha agora. Nada foi apagado. Tente de novo.');
+  // Se não zerar, a pessoa só tem uma tentativa a menos nesta hora.
+  await deps.clearAttempts(user.id).catch((err) => console.error('attempt clear failed', err));
 
   let result: { deleted: string[]; left: string[] };
   try {
@@ -87,6 +106,13 @@ export async function deleteAccount(
         409,
         'last_member',
         'Uma das suas casas ficou só com você desde o aviso, e ela seria apagada. Confira de novo antes de apagar a conta.',
+      );
+    }
+    if (codeOf(err) === NOT_LAST_CODE) {
+      return fail(
+        409,
+        'houses_changed',
+        'Uma das casas que seriam apagadas tem um morador novo desde o aviso, e ela ficaria com ele. Confira de novo antes de apagar a conta.',
       );
     }
     console.error('delete_account_data failed', err);

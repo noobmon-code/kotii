@@ -1,5 +1,5 @@
 // POST { password, deleteHouseholds: [ids] } -> { status: 'deleted', deletedHouseholds }
-//   | 403 { code: 'wrong_password' } | 409 { code: 'last_member' } | 429 { code: 'too_many_attempts' }
+//   | 403 { code: 'wrong_password' } | 409 { code: 'last_member' | 'houses_changed' } | 429 { code: 'too_many_attempts' }
 //   | 500/503 { code, error }
 //
 // Apaga a conta de quem chamou (Família → Conta → "Apagar minha conta"). A
@@ -46,6 +46,15 @@ Deno.serve(async (req) => {
 
   const admin = createClient(url, secretKey(), { auth: NO_SESSION });
   const deps: DeleteAccountDeps = {
+    countAttempt: async (userId) => {
+      const { data, error } = await admin.rpc('count_account_deletion_attempt', { p_user_id: userId });
+      if (error) throw error;
+      return data === true;
+    },
+    clearAttempts: async (userId) => {
+      const { error } = await admin.rpc('clear_account_deletion_attempts', { p_user_id: userId });
+      if (error) throw error;
+    },
     checkPassword: async (userId, email, password): Promise<PasswordCheck> => {
       // Um cliente só para conferir: a sessão que nasce aqui sai em seguida
       // (e, de todo jeito, some com o usuário).

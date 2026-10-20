@@ -3,6 +3,8 @@
 // moradores, e a tela mostra "Ex-morador". Nos acertos da divisão, quem
 // apagou a conta fica sem id (o banco põe nulo), e também é "Ex-morador".
 
+import { TERMS_CONTACT } from './terms';
+
 /** Como aparece quem não está mais na casa. */
 export const FORMER_MEMBER = 'Ex-morador';
 
@@ -51,10 +53,11 @@ export function accountDeletionNotes(houses: readonly DeletionHouse[]): string[]
   if (kept.length) {
     const owned = kept.filter((h) => h.role === 'owner');
     notes.push(
-      `${kept.length === 1 ? 'Em' : 'Nas casas'} ${houseList(kept.map((h) => h.name))}, o que você registrou continua com a casa: listas, notas, gastos, tarefas. A sua ficha de saúde vira a ficha de um dependente, e nos acertos da divisão de gastos você aparece como "${FORMER_MEMBER}".` +
+      `${kept.length === 1 ? 'Em' : 'Nas casas'} ${houseList(kept.map((h) => h.name))}, o que você registrou continua com a casa: listas, notas, gastos, tarefas, documentos e fotos. A sua ficha, com a saúde e os documentos, vira a ficha de um dependente, que os outros moradores continuam vendo e editando, e nos acertos da divisão de gastos você aparece como "${FORMER_MEMBER}".` +
         (owned.length
           ? ` ${owned.length === 1 ? 'A casa em que você é responsável passa' : 'As casas em que você é responsável passam'} para o morador mais antigo.`
-          : ''),
+          : '') +
+        ` Se não quiser que fique, apague antes o que o app deixa apagar e peça o resto pelo e-mail ${TERMS_CONTACT}.`,
     );
   }
   if (gone.length) {

@@ -9,7 +9,12 @@
 --    responsável, o consultor (beta_access e fin_*) sai junto pela chave
 --    estrangeira. A casa em que ela é a última pessoa é apagada, mas só se o
 --    app avisou (p_delete_households); senão, NK001 e nada muda, como em
---    leave_household. As fotos das casas apagadas entram na fila de limpeza.
+--    leave_household. E o contrário: a casa que o app avisou que seria
+--    apagada e que ganhou um morador desde o aviso não passa adiante com o
+--    que é dela sem ela saber: NK011 e nada muda (a tela relê as casas). As
+--    casas vão na ordem do id, a mesma para todo mundo: duas pessoas das
+--    mesmas casas apagando a conta ao mesmo tempo não se travam. As fotos das
+--    casas apagadas entram na fila de limpeza.
 -- 2. O que impede apagar o usuário: households.created_by (on delete
 --    restrict) passa para o responsável que ficou, e os arquivos do Storage
 --    (o Supabase não apaga o usuário dono de arquivos) ficam sem dono: as
@@ -22,6 +27,10 @@
 --    histórico em cascata. A conta do mês não muda: como já acontece com
 --    quem sai da casa, o acerto com quem não mora mais nela fica fora dela.
 --    Os outros registros dela (quem pagou, quem fez) já viravam nulo.
+-- 5. A senha tem limite por conta (account_deletion_attempts): a função
+--    conta cada tentativa antes de conferir a senha e zera a conta quando a
+--    senha confere. O limite do Auth é por IP, e aqui o IP é o da função,
+--    o mesmo para todo mundo.
 
 -- -----------------------------------------------------------------------------
 -- Sair de uma casa, por uma pessoa dada: o corpo de leave_household, que agora
@@ -163,13 +172,17 @@ begin
   -- A mesma trava de criar e entrar numa casa: nenhuma entrada no meio.
   perform pg_advisory_xact_lock(hashtextextended('households:' || p_user_id::text, 0));
 
+  -- Na ordem do id, e não na de quem apaga: a trava de cada casa sai sempre na mesma ordem.
   for house in
-    select m.household_id from public.household_members m where m.user_id = p_user_id order by m.joined_at, m.household_id
+    select m.household_id from public.household_members m where m.user_id = p_user_id order by m.household_id
   loop
     -- A casa em que ela ficou sozinha sem o app ter avisado: NK001 desfaz tudo.
     result := public.leave_household_as(p_user_id, house, house = any (coalesce(p_delete_households, '{}')));
     if result ->> 'status' = 'deleted' then
       deleted := deleted || house;
+    elsif house = any (coalesce(p_delete_households, '{}')) then
+      -- O app avisou que esta casa seria apagada, e ela ganhou um morador: desfaz tudo.
+      raise exception 'household is no longer hers alone' using errcode = 'NK011';
     else
       kept := kept || house;
     end if;
@@ -212,3 +225,59 @@ $$;
 
 revoke execute on function public.delete_account_data(uuid, uuid[]) from public, anon, authenticated;
 grant execute on function public.delete_account_data(uuid, uuid[]) to service_role;
+
+-- -----------------------------------------------------------------------------
+-- Tentativas de senha ao apagar a conta: até 5 por hora (contada da primeira),
+-- por conta. Só a chave secreta: a função delete-account conta a tentativa
+-- antes de conferir a senha (assim, pedidos ao mesmo tempo também contam) e
+-- zera quando a senha confere. A linha sai com o usuário.
+-- -----------------------------------------------------------------------------
+
+create table public.account_deletion_attempts (
+  user_id uuid primary key references auth.users (id) on delete cascade,
+  attempts integer not null default 0 check (attempts >= 0),
+  window_started_at timestamptz not null default now()
+);
+alter table public.account_deletion_attempts enable row level security;
+revoke all on public.account_deletion_attempts from anon, authenticated;
+
+-- true: a tentativa foi contada e a senha pode ser conferida; false: já são 5 nesta hora, e nada é contado.
+create function public.count_account_deletion_attempt(p_user_id uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  tries public.account_deletion_attempts;
+begin
+  if p_user_id is null then
+    raise exception 'user required' using errcode = '22023';
+  end if;
+  insert into public.account_deletion_attempts as a (user_id, attempts, window_started_at)
+  values (p_user_id, 0, now())
+  on conflict (user_id) do update
+    set attempts = case when a.window_started_at > now() - interval '1 hour' then a.attempts else 0 end,
+        window_started_at = case when a.window_started_at > now() - interval '1 hour' then a.window_started_at else now() end
+  returning * into tries;
+  if tries.attempts >= 5 then
+    return false;
+  end if;
+  update public.account_deletion_attempts a set attempts = a.attempts + 1 where a.user_id = p_user_id;
+  return true;
+end;
+$$;
+
+create function public.clear_account_deletion_attempts(p_user_id uuid)
+returns void
+language sql
+security definer
+set search_path = ''
+as $$
+  delete from public.account_deletion_attempts a where a.user_id = p_user_id;
+$$;
+
+revoke execute on function public.count_account_deletion_attempt(uuid) from public, anon, authenticated;
+grant execute on function public.count_account_deletion_attempt(uuid) to service_role;
+revoke execute on function public.clear_account_deletion_attempts(uuid) from public, anon, authenticated;
+grant execute on function public.clear_account_deletion_attempts(uuid) to service_role;

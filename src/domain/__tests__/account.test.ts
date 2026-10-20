@@ -9,6 +9,7 @@ import {
   housesToDelete,
   memberName,
 } from '../account';
+import { TERMS_CONTACT } from '../terms';
 
 const members = [
   { user_id: 'ana', display_name: 'Ana' },
@@ -47,11 +48,11 @@ describe('apagar a conta: o que o app avisa antes', () => {
     expect(housesToDelete([])).toEqual([]);
   });
 
-  it('casa dividida e casa só dela: o que fica, o que some e quem fica responsável', () => {
+  it('casa dividida e casa só dela: o que fica (também os documentos e a ficha), o que some e quem fica responsável', () => {
     const notes = accountDeletionNotes([house('Cidade', { role: 'owner' }), house('Praia', { last: true })]);
     expect(notes[0]).toContain('Não tem volta');
     expect(notes[1]).toBe(
-      'Em "Cidade", o que você registrou continua com a casa: listas, notas, gastos, tarefas. A sua ficha de saúde vira a ficha de um dependente, e nos acertos da divisão de gastos você aparece como "Ex-morador". A casa em que você é responsável passa para o morador mais antigo.',
+      `Em "Cidade", o que você registrou continua com a casa: listas, notas, gastos, tarefas, documentos e fotos. A sua ficha, com a saúde e os documentos, vira a ficha de um dependente, que os outros moradores continuam vendo e editando, e nos acertos da divisão de gastos você aparece como "Ex-morador". A casa em que você é responsável passa para o morador mais antigo. Se não quiser que fique, apague antes o que o app deixa apagar e peça o resto pelo e-mail ${TERMS_CONTACT}.`,
     );
     expect(notes[2]).toBe(
       'Você é a última pessoa em "Praia": a casa é apagada junto, com tudo o que tem (listas, notas, despensa, tarefas, saúde, documentos e fotos).',

@@ -17,7 +17,12 @@
 // ao Auth quem é a pessoa: "user_not_found" prova que a conta foi apagada, e
 // a limpeza do aparelho roda como numa exclusão que respondeu. Só isso prova:
 // a sessão que terminou por outro motivo (saiu de todos os aparelhos, trocou a
-// senha) não apaga nada do aparelho.
+// senha) não apaga nada do aparelho. Limite: isso só vale enquanto o token de
+// acesso guardado não venceu (cerca de uma hora). Depois, o getUser tenta
+// renovar a sessão, o Auth recusa (o usuário não existe) e a resposta é esse
+// erro, não "user_not_found": a sessão termina como num login vencido, e as
+// conversas, os aceites e a casa guardada da conta apagada ficam no aparelho
+// (só dela, por id, que ninguém mais usa).
 
 import { FunctionsHttpError, FunctionsRelayError, isAuthApiError } from '@supabase/supabase-js';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -25,12 +30,13 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { functionErrorDetails } from '@/data/images';
 import { isMissingFunction } from '@/data/missingSchema';
 import { forgetTermsOnDevice } from '@/data/terms';
-import type { DeletionHouse } from '@/domain/account';
+import { accountDeletionUnavailable, type DeletionHouse } from '@/domain/account';
+import { TERMS_CONTACT } from '@/domain/terms';
 import { forgetConversations } from '@/features/nuke/conversation';
 import { forgetStoredHousehold } from '@/lib/activeHousehold';
 import { forgetRecoveryOf } from '@/lib/passwordRecovery';
 import { signOut } from '@/lib/session';
-import { supabase } from '@/lib/supabase';
+import { errorMessage, supabase } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 
 /** A função delete-account (ou a parte do banco) ainda não foi publicada. */
@@ -43,7 +49,7 @@ export class AccountDeletionUnavailable extends Error {
 /** A senha não confere: nada foi apagado. */
 export class WrongPasswordError extends Error {}
 
-/** Uma casa ficou só com a pessoa depois do aviso: a tela relê as casas e pede de novo. */
+/** As casas mudaram depois do aviso (uma ficou só com a pessoa, ou ganhou um morador): a tela relê as casas e pede de novo. */
 export class HousesChangedError extends Error {}
 
 const FALLBACK = 'Não deu para apagar a conta agora. Tente de novo.';
@@ -103,7 +109,7 @@ export async function requestAccountDeletion(password: string, deleteHouseholds:
   if (outcomeUnknown(error) && (await accountIsGone())) return;
   const { message, code } = await functionErrorDetails(error, FALLBACK);
   if (code === 'wrong_password') throw new WrongPasswordError(message);
-  if (code === 'last_member') throw new HousesChangedError(message);
+  if (code === 'last_member' || code === 'houses_changed') throw new HousesChangedError(message);
   throw new Error(message);
 }
 
@@ -136,6 +142,19 @@ export function useDeleteAccount(userId: string | undefined) {
       // sobrar termina sozinha na próxima renovação, que o Auth recusa.
       if (userId) await forgetDeletedAccount(userId).catch(() => undefined);
       notify('Conta apagada', 'Sua conta foi apagada. Obrigado por ter usado o Kotii.');
+    },
+    // Também no hook: a resposta chega mesmo se a pessoa já voltou da tela. O que é da tela (reler as
+    // casas, trocar pelo aviso do e-mail) fica na chamada, que só roda com ela aberta.
+    onError: (err) => {
+      if (err instanceof AccountDeletionUnavailable) {
+        notify('Ainda não disponível', accountDeletionUnavailable(TERMS_CONTACT));
+      } else if (err instanceof WrongPasswordError) {
+        notify('Senha errada', 'Confira a senha e tente de novo. Nada foi apagado.');
+      } else if (err instanceof HousesChangedError) {
+        notify('Suas casas mudaram', err.message);
+      } else {
+        notify('Não deu para apagar a conta', errorMessage(err));
+      }
     },
   });
 }

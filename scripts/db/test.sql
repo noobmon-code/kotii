@@ -9696,9 +9696,10 @@ declare
   result jsonb;
 begin
   assert has_function_privilege('service_role', 'public.delete_account_data(uuid, uuid[])', 'execute'), 'the secret key calls it';
-  -- Sem o aviso de que a casa dela será apagada: nada muda.
+  -- Sem o aviso de que a casa dela será apagada: nada muda. (Com a casa dividida na lista, a ordem das
+  -- casas, pelo id, decidiria entre NK001 e NK011; o bloco da Jade cobre o NK011.)
   begin
-    perform public.delete_account_data(dani, array[shared]);
+    perform public.delete_account_data(dani, '{}');
     raise exception 'FAIL: deleted a household the app did not announce';
   exception when sqlstate 'NK001' then null;
   end;
@@ -9811,8 +9812,9 @@ declare
 begin
   -- Nenhuma casa em que ela é a última: o app não avisou nada, e não precisava.
   result := public.delete_account_data(fabi, '{}');
-  assert result -> 'left' = jsonb_build_array(gil_house, noowner) or result -> 'left' = jsonb_build_array(noowner, gil_house),
-    'Fabi left both households she lives in';
+  -- Na ordem do id (a mesma para quem apagar ao mesmo tempo), e não na de quando ela entrou.
+  assert result -> 'left' = (select jsonb_agg(h order by h) from unnest(array[gil_house, noowner]) h),
+    'Fabi left both households she lives in, in id order';
   assert result -> 'deleted' = jsonb_build_array(empty), 'the household with nobody in it is reported as deleted';
 end $$;
 reset role;
@@ -9840,4 +9842,138 @@ end $$;
 delete from public.household_file_cleanup where household_id = :'hh_d_empty';
 delete from public.households where id in (:'hh_d_gil', :'hh_d_noowner');
 
+\echo '• apagar a conta: a casa avisada como apagada que ganhou um morador desfaz tudo (NK011)'
+-- Jade é a única da casa dela quando abre a tela; antes de ela confirmar, Kai entra com o código.
+\set user_d8 '00000000-0000-0000-0000-0000000001d8'
+\set user_d9 '00000000-0000-0000-0000-0000000001d9'
+reset role;
+insert into auth.users (id) values (:'user_d8'), (:'user_d9');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_d8', false) \gset
+select (public.create_household('Praia da Jade', 'Jade')).id as hh_d_jade \gset
+select invite_code as invite_jade from public.households where id = :'hh_d_jade' \gset
+select set_config('request.headers', json_build_object('x-household-id', :'hh_d_jade')::text, false) \gset
+insert into public.shopping_lists (name) values ('Lista da Jade');
+select set_config('test.hh_d_jade', :'hh_d_jade', false) \gset
+do $$
+begin
+  assert (select p.last from public.account_deletion_preview() p where p.id = current_setting('test.hh_d_jade')::uuid),
+    'the screen says Jade is the last one';
+end $$;
+select set_config('request.headers', '', false) \gset
+select set_config('request.jwt.claim.sub', :'user_d9', false) \gset
+select public.join_household(:'invite_jade', 'Kai') \gset
+set role service_role;
+select set_config('request.jwt.claim.sub', '', false) \gset
+do $$
+declare
+  jade uuid := '00000000-0000-0000-0000-0000000001d8';
+  praia uuid := current_setting('test.hh_d_jade')::uuid;
+begin
+  begin
+    perform public.delete_account_data(jade, array[praia]);
+    raise exception 'FAIL: handed over a household the app said would be deleted';
+  exception when sqlstate 'NK011' then null;
+  end;
+end $$;
+reset role;
+do $$
+declare
+  jade uuid := '00000000-0000-0000-0000-0000000001d8';
+  kai uuid := '00000000-0000-0000-0000-0000000001d9';
+  praia uuid := current_setting('test.hh_d_jade')::uuid;
+begin
+  assert exists (select 1 from public.household_members where household_id = praia and user_id = jade and role = 'owner'),
+    'Jade is still in her household, as the owner';
+  assert (select created_by from public.households where id = praia) = jade, 'the household is still hers';
+  assert exists (select 1 from public.household_members where household_id = praia and user_id = kai), 'Kai stays';
+  assert exists (select 1 from public.shopping_lists where household_id = praia and name = 'Lista da Jade'), 'her list stays';
+  assert not exists (select 1 from public.household_file_cleanup where household_id = praia), 'no photos queued';
+end $$;
+
+\echo '• apagar a conta: até 5 tentativas de senha por hora por conta, só pela chave secreta'
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_d8', false) \gset
+do $$
+begin
+  begin
+    perform public.count_account_deletion_attempt(auth.uid());
+    raise exception 'FAIL: app user counted an attempt';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.clear_account_deletion_attempts(auth.uid());
+    raise exception 'FAIL: app user cleared the attempts';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform 1 from public.account_deletion_attempts;
+    raise exception 'FAIL: app user read the attempts';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set role anon;
+do $$
+begin
+  perform public.count_account_deletion_attempt('00000000-0000-0000-0000-0000000001d8'::uuid);
+  raise exception 'FAIL: anon counted an attempt';
+exception when insufficient_privilege then null;
+end $$;
+set role service_role;
+select set_config('request.jwt.claim.sub', '', false) \gset
+do $$
+declare
+  jade uuid := '00000000-0000-0000-0000-0000000001d8';
+  kai uuid := '00000000-0000-0000-0000-0000000001d9';
+begin
+  for i in 1..5 loop
+    assert public.count_account_deletion_attempt(jade), format('attempt %s is allowed', i);
+  end loop;
+  assert not public.count_account_deletion_attempt(jade), 'the sixth in the hour is refused';
+  assert not public.count_account_deletion_attempt(jade), 'and so is the seventh';
+  assert public.count_account_deletion_attempt(kai), 'another account has its own count';
+end $$;
+reset role;
+do $$
+begin
+  assert (select attempts from public.account_deletion_attempts where user_id = '00000000-0000-0000-0000-0000000001d8') = 5,
+    'a refused try does not count';
+end $$;
+-- Uma hora depois da primeira, a contagem recomeça.
+update public.account_deletion_attempts set window_started_at = now() - interval '61 minutes' where user_id = :'user_d8';
+set role service_role;
+do $$
+begin
+  assert public.count_account_deletion_attempt('00000000-0000-0000-0000-0000000001d8'::uuid), 'a new hour starts over';
+end $$;
+reset role;
+do $$
+declare
+  jade uuid := '00000000-0000-0000-0000-0000000001d8';
+begin
+  assert (select attempts from public.account_deletion_attempts where user_id = jade) = 1, 'counting this one';
+  assert (select window_started_at from public.account_deletion_attempts where user_id = jade) > now() - interval '1 minute',
+    'and the hour starts now';
+end $$;
+-- A senha certa zera, e só a dela.
+set role service_role;
+select public.clear_account_deletion_attempts(:'user_d8') \gset
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.account_deletion_attempts where user_id = '00000000-0000-0000-0000-0000000001d8'),
+    'the right password clears the count';
+  assert exists (select 1 from public.account_deletion_attempts where user_id = '00000000-0000-0000-0000-0000000001d9'), 'only hers';
+end $$;
+-- A contagem sai com a conta.
+delete from public.households where id = :'hh_d_jade';
+delete from auth.users where id = :'user_d9';
+do $$
+begin
+  assert not exists (select 1 from public.account_deletion_attempts where user_id = '00000000-0000-0000-0000-0000000001d9'),
+    'the count goes with the account';
+end $$;
+delete from auth.users where id = :'user_d8';
+
 \echo 'OK — todos os testes do banco passaram'
+
