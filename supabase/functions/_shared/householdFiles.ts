@@ -1,7 +1,10 @@
 // Apaga as fotos de uma casa (<bucket>/<casa>/<arquivo>) depois que o banco
 // já apagou a casa, a partir da fila household_file_cleanup (quem falhar
-// fica para a próxima vez). Sem rede: testado em cleanup.test.ts com um
-// Storage e uma fila falsos.
+// fica para a próxima vez). Usado por leave-household (sair da casa e o
+// agendamento) e por delete-account (as casas em que a pessoa era a última).
+// Sem rede: testado em householdFiles.test.ts com um Storage e uma fila falsos.
+
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 export const BUCKETS = ['receipts', 'health', 'documents'] as const;
 
@@ -61,4 +64,31 @@ export async function drainCleanupQueue(
     }
   }
   return result;
+}
+
+/** A fila household_file_cleanup no banco, pela chave secreta (o app não a lê). */
+export function adminCleanupQueue(admin: SupabaseClient): CleanupQueue {
+  return {
+    pending: async (limit) => {
+      const { data: rows, error } = await admin
+        .from('household_file_cleanup')
+        .select('household_id, attempts')
+        .order('attempts')
+        .order('requested_at')
+        .limit(limit);
+      if (error) throw error;
+      return (rows ?? []).map((row) => ({ householdId: row.household_id as string, attempts: row.attempts as number }));
+    },
+    done: async (householdId) => {
+      await admin.from('household_file_cleanup').delete().eq('household_id', householdId);
+    },
+    failed: async (householdId, attempts) => {
+      await admin.from('household_file_cleanup').update({ attempts }).eq('household_id', householdId);
+    },
+  };
+}
+
+/** Limpa as fotos das casas da fila com a chave secreta. */
+export function drainHouseholdFiles(admin: SupabaseClient, limit?: number): Promise<{ done: string[]; failed: string[] }> {
+  return drainCleanupQueue(adminCleanupQueue(admin), (name) => admin.storage.from(name), limit);
 }

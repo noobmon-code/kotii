@@ -10,6 +10,7 @@ import {
   useWorkoutLogs,
   useWorkoutPlan,
 } from '@/data/health';
+import { memberName } from '@/domain/account';
 import { addDays, formatBRDate, formatShortDate, parseBRDate, todayISO } from '@/domain/dates';
 import {
   describeExercise,
@@ -196,7 +197,7 @@ function WorkoutPlanView({ plan }: { plan: WorkoutPlan }) {
                 key={log.id}
                 left={<Badge label={formatShortDate(log.done_on)} />}
                 title={log.session_name}
-                subtitle={members.find((m) => m.user_id === log.done_by)?.display_name}
+                subtitle={memberName(members, log.done_by) ?? undefined}
               />
             ))}
           </ListCard>

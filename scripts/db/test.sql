@@ -9384,4 +9384,161 @@ begin
 end $$;
 delete from public.households where id in (:'hh_dl', :'hh_el');
 
+-- ---------------------------------------------------------------------------
+\echo '• apagar a conta: sai de cada casa, a casa em que é a última some, os acertos ficam como ex-morador'
+\set user_d1 '00000000-0000-0000-0000-0000000001d1'
+\set user_d2 '00000000-0000-0000-0000-0000000001d2'
+\set user_d3 '00000000-0000-0000-0000-0000000001d3'
+insert into auth.users (id) values (:'user_d1'), (:'user_d2'), (:'user_d3');
+set role authenticated;
+-- Dani cria a casa que divide com Elo (e é a responsável) e outra só dela.
+select set_config('request.jwt.claim.sub', :'user_d1', false) \gset
+select (public.create_household('Casa Dividida', 'Dani')).id as hh_d_shared \gset
+select (public.create_household('Casa da Dani', 'Dani')).id as hh_d_solo \gset
+select invite_code as invite_d from public.households where id = :'hh_d_shared' \gset
+select set_config('request.jwt.claim.sub', :'user_d2', false) \gset
+select public.join_household(:'invite_d', 'Elo') \gset
+-- Iuri (outra conta, outra casa): nada dele muda.
+select set_config('request.jwt.claim.sub', :'user_d3', false) \gset
+select (public.create_household('Casa do Iuri', 'Iuri')).id as hh_d_other \gset
+insert into public.shopping_lists (name) values ('Do Iuri');
+select set_config('test.hh_d_shared', :'hh_d_shared', false) \gset
+select set_config('test.hh_d_solo', :'hh_d_solo', false) \gset
+select set_config('test.hh_d_other', :'hh_d_other', false) \gset
+
+select set_config('request.jwt.claim.sub', :'user_d1', false) \gset
+select set_config('request.headers', json_build_object('x-household-id', :'hh_d_shared')::text, false) \gset
+insert into public.shopping_lists (name) values ('Feira da Dani');
+insert into public.expenses (description, amount, spent_on) values ('Gás', 120, '2026-10-05');
+insert into public.settlements (month, from_user, to_user, amount) values ('2026-10', :'user_d1', :'user_d2', 30);
+insert into public.settlements (month, from_user, to_user, amount) values ('2026-10', :'user_d2', :'user_d1', 10);
+insert into storage.objects (bucket_id, name) values ('receipts', :'hh_d_shared' || '/nota-da-dani.jpg');
+select set_config('request.headers', json_build_object('x-household-id', :'hh_d_solo')::text, false) \gset
+insert into public.shopping_lists (name) values ('Só da Dani');
+insert into storage.objects (bucket_id, name) values ('receipts', :'hh_d_solo' || '/nota-sozinha.jpg');
+do $$
+declare
+  preview record;
+begin
+  -- O que o app mostra antes: a casa dividida passa adiante, a dela é apagada.
+  assert (select count(*) from public.account_deletion_preview()) = 2, 'both households of Dani';
+  select * into preview from public.account_deletion_preview() p where p.id = current_setting('test.hh_d_shared')::uuid;
+  assert not preview.last and preview.role = 'owner' and not preview.finance, 'shared: Elo stays, Dani is the owner, no advisor';
+  select * into preview from public.account_deletion_preview() p where p.id = current_setting('test.hh_d_solo')::uuid;
+  assert preview.last, 'solo: Dani is the last one';
+  begin
+    perform public.delete_account_data(auth.uid(), '{}');
+    raise exception 'FAIL: app user called delete_account_data';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.leave_household_as(auth.uid(), current_setting('test.hh_d_shared')::uuid, true);
+    raise exception 'FAIL: app user called leave_household_as';
+  exception when insufficient_privilege then null;
+  end;
+  perform public.register_push_subscription('https://fcm.googleapis.com/fcm/send/dani', 'k', 'a', 'UTC');
+end $$;
+select set_config('request.headers', '', false) \gset
+reset role;
+-- O consultor da Dani na casa dividida, e o que só ela tem.
+insert into public.beta_access (user_id, household_id, feature) values (:'user_d1', :'hh_d_shared', 'finance');
+insert into public.fin_connections (user_id, household_id, label, pluggy_item_id) values (:'user_d1', :'hh_d_shared', 'Banco', 'item-dani');
+insert into public.household_sessions (session_id, user_id, household_id) values ('sessao-dani', :'user_d1', :'hh_d_shared');
+insert into public.join_attempts (user_id, failed) values (:'user_d1', 2);
+insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute, next_at)
+  select gen_random_uuid(), s.id, 'Remédio', 'daily', 8, 0, now() from public.push_subscriptions s where s.user_id = :'user_d1';
+set role anon;
+do $$
+begin
+  perform public.account_deletion_preview();
+  raise exception 'FAIL: anon called account_deletion_preview';
+exception when insufficient_privilege then null;
+end $$;
+set role service_role;
+select set_config('request.jwt.claim.sub', '', false) \gset
+do $$
+declare
+  dani uuid := '00000000-0000-0000-0000-0000000001d1';
+  shared uuid := current_setting('test.hh_d_shared')::uuid;
+  solo uuid := current_setting('test.hh_d_solo')::uuid;
+  result jsonb;
+begin
+  assert has_function_privilege('service_role', 'public.delete_account_data(uuid, uuid[])', 'execute'), 'the secret key calls it';
+  -- Sem o aviso de que a casa dela será apagada: nada muda.
+  begin
+    perform public.delete_account_data(dani, array[shared]);
+    raise exception 'FAIL: deleted a household the app did not announce';
+  exception when sqlstate 'NK001' then null;
+  end;
+  assert (select count(*) from public.household_members where user_id = dani) = 2, 'unconfirmed: Dani is still in both';
+  assert exists (select 1 from public.households where id = solo), 'unconfirmed: her household stays';
+  result := public.delete_account_data(dani, array[solo]);
+  assert result -> 'deleted' = jsonb_build_array(solo), 'her household was deleted';
+  assert result -> 'left' = jsonb_build_array(shared), 'she left the shared one';
+end $$;
+reset role;
+-- Por fim, o Auth apaga o usuário: nada mais o segura.
+delete from auth.users where id = :'user_d1';
+do $$
+declare
+  dani uuid := '00000000-0000-0000-0000-0000000001d1';
+  elo uuid := '00000000-0000-0000-0000-0000000001d2';
+  shared uuid := current_setting('test.hh_d_shared')::uuid;
+  solo uuid := current_setting('test.hh_d_solo')::uuid;
+begin
+  assert not exists (select 1 from auth.users where id = dani), 'Dani is gone from auth';
+  assert not exists (select 1 from public.households where id = solo), 'her household is gone';
+  assert not exists (select 1 from public.shopping_lists where name = 'Só da Dani'), 'with its data';
+  assert exists (select 1 from public.household_file_cleanup where household_id = solo), 'its photos are queued';
+  -- A casa dividida fica com Elo, com o que Dani registrou.
+  assert (select created_by from public.households where id = shared) = elo, 'Elo now owns the shared household';
+  assert (select role from public.household_members where household_id = shared and user_id = elo) = 'owner', 'Elo is the owner';
+  assert exists (select 1 from public.shopping_lists where household_id = shared and name = 'Feira da Dani'), 'her list stays';
+  assert (select paid_by from public.expenses where household_id = shared and description = 'Gás') is null, 'her expense stays, without the payer';
+  assert (select count(*) from public.settlements where household_id = shared) = 2, 'the settlements stay';
+  assert exists (
+    select 1 from public.settlements where household_id = shared and from_user is null and to_user = elo and amount = 30
+  ), 'Dani paid Elo: now from a former resident';
+  assert exists (
+    select 1 from public.settlements where household_id = shared and from_user = elo and to_user is null and amount = 10
+  ), 'Elo paid Dani: now to a former resident';
+  assert exists (
+    select 1 from public.people where household_id = shared and name = 'Dani' and member_user_id is null
+  ), 'her health record became a dependent';
+  -- A foto fica com a casa, sem dono.
+  assert (
+    select owner is null and owner_id is null from storage.objects where name = shared::text || '/nota-da-dani.jpg'
+  ), 'the photo stays with the household, without an owner';
+  assert not exists (select 1 from public.beta_access where user_id = dani), 'the advisor is gone';
+  assert not exists (select 1 from public.fin_connections where user_id = dani), 'with her banks';
+  assert not exists (select 1 from public.push_subscriptions where user_id = dani), 'her browser subscriptions are gone';
+  assert not exists (select 1 from public.push_schedule where title = 'Remédio'), 'with the schedule';
+  assert not exists (select 1 from public.household_sessions where user_id = dani), 'her sessions are gone';
+  assert not exists (select 1 from public.join_attempts where user_id = dani), 'her invite attempts are gone';
+  -- Ninguém mais muda.
+  assert exists (select 1 from public.household_members where user_id = elo and household_id = shared), 'Elo stays';
+  assert exists (select 1 from public.shopping_lists where name = 'Do Iuri'), 'other households are untouched';
+  assert exists (select 1 from auth.users where id = elo), 'Elo is still in auth';
+end $$;
+set role service_role;
+do $$
+declare
+  result jsonb;
+begin
+  -- Iuri, sozinho na casa dele, sem o aviso de que ela seria apagada: nada muda.
+  begin
+    perform public.delete_account_data('00000000-0000-0000-0000-0000000001d3'::uuid, '{}');
+    raise exception 'FAIL: deleted Iuri''s household without the warning';
+  exception when sqlstate 'NK001' then null;
+  end;
+  assert exists (select 1 from public.households where id = current_setting('test.hh_d_other')::uuid), 'Iuri keeps his household';
+  assert exists (select 1 from public.shopping_lists where name = 'Do Iuri'), 'with his list';
+  -- Quem já não tem casa nenhuma (segunda tentativa depois de uma falha no Auth): nada a fazer, sem erro.
+  result := public.delete_account_data('00000000-0000-0000-0000-0000000001d1'::uuid, '{}');
+  assert result = jsonb_build_object('deleted', '[]'::jsonb, 'left', '[]'::jsonb), 'nothing left to do';
+end $$;
+reset role;
+delete from public.household_file_cleanup where household_id = :'hh_d_solo';
+delete from public.households where id in (:'hh_d_shared', :'hh_d_other');
+
 \echo 'OK — todos os testes do banco passaram'

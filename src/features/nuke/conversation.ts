@@ -94,6 +94,23 @@ export function clearConversation(userId: string) {
   emit();
 }
 
+/**
+ * A conta foi apagada: as conversas dela, de todas as casas (e a de antes das
+ * várias casas), saem do aparelho e da memória.
+ */
+export async function forgetConversations(accountId: string): Promise<void> {
+  epoch += 1;
+  if (owner === accountId || owner?.startsWith(`${accountId}:`)) {
+    messages = EMPTY;
+    pending = false;
+    owner = null;
+    emit();
+  }
+  const mine = (key: string) => key === storageKey(accountId) || key.startsWith(storageKey(`${accountId}:`));
+  const keys = (await AsyncStorage.getAllKeys().catch(() => [] as readonly string[])).filter(mine);
+  if (keys.length) await AsyncStorage.multiRemove([...keys]).catch(() => undefined);
+}
+
 /** Marca que há uma pergunta de `userId` esperando resposta. */
 export function setPending(userId: string, value: boolean, since = epoch) {
   if (owner !== userId || since !== epoch) return;

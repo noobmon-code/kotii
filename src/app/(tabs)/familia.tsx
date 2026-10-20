@@ -238,6 +238,14 @@ export default function FamilyScreen() {
           icon="logout"
           onPress={() => confirmAction('Sair da conta', 'Deseja sair desta conta neste aparelho?', 'Sair', () => signOut())}
         />
+        {/* A tela explica antes o que fica com cada casa e pede a senha de novo. */}
+        <Button
+          title="Apagar minha conta"
+          variant="ghost"
+          compact
+          icon="account-remove-outline"
+          onPress={() => router.push('/apagar-conta')}
+        />
       </Section>
     </Screen>
   );

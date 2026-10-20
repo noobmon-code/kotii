@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { useBills, useBudgets, useSpending, useSpendingReceipts } from '@/data/finance';
+import { memberName } from '@/domain/account';
 import { formatShortDate, todayISO } from '@/domain/dates';
 import {
   describeMonthDelta,
@@ -75,7 +76,7 @@ export function FinanceSummaryPanel() {
   const budgets = useBudgets();
   const members = useHousehold().data?.members ?? [];
   const payerName = (id: string | null | undefined) =>
-    members.length > 1 && id ? members.find((m) => m.user_id === id)?.display_name : undefined;
+    (members.length > 1 && memberName(members, id)) || undefined;
 
   function goTo(target: string) {
     if (target > current) return;
