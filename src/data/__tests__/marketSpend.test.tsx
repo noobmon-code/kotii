@@ -3,11 +3,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { summarize, type Entry } from '@/domain/finance';
-import { marketMonth, marketTotal, type MarketReceipt, type MarketTotalReceipt } from '@/domain/marketSpend';
+import { marketMonth, marketSpendsOf, marketTotal, type MarketData, type MarketTotalReceipt } from '@/domain/marketSpend';
 
 import { useSpending, useSpendingReceipts } from '../finance';
 import { useRenameProduct } from '../market';
-import { fetchMarketReceipts, useMarketReceipts } from '../marketSpend';
+import { fetchMarketReceipts, fetchMarketSpends, useMarketData } from '../marketSpend';
 
 type Row = Record<string, unknown>;
 type Filter = { op: 'gte' | 'lt' | 'in' | 'gt' | 'eq'; column: string; value: unknown };
@@ -56,7 +56,8 @@ jest.mock('@/lib/supabase', () => ({
               const wanted = new Set(value as unknown[]);
               return (row: Row) => wanted.has(row[column]);
             }
-            if (op === 'eq') return (row: Row) => row[column] === value;
+            // "bill.category": o campo da linha embutida (com !inner, a linha sem ela fica de fora).
+            if (op === 'eq') return (row: Row) => column.split('.').reduce<unknown>((at, key) => (at as Row | null)?.[key], row) === value;
             if (op === 'gt') return (row: Row) => rank(row[column]) > rank(value);
             const edge = Date.parse(String(value));
             return (row: Row) => (op === 'gte' ? Date.parse(String(row[column])) >= edge : Date.parse(String(row[column])) < edge);
@@ -330,25 +331,119 @@ describe('notas do mercado do mês', () => {
   });
 });
 
-describe('na tela', () => {
-  /** Monta o que usa a consulta e espera a busca terminar. */
-  async function mount(queryClient: QueryClient, Probe: () => null, done: () => boolean) {
-    let renderer: ReactTestRenderer | undefined;
+/** Monta o que usa a consulta e espera a busca terminar. */
+async function mount(queryClient: QueryClient, Probe: () => null, done: () => boolean) {
+  let renderer: ReactTestRenderer | undefined;
+  await act(async () => {
+    renderer = create(
+      <QueryClientProvider client={queryClient}>
+        <Probe />
+      </QueryClientProvider>,
+    );
+  });
+  for (let turn = 0; turn < 20 && !done(); turn++) {
     await act(async () => {
-      renderer = create(
-        <QueryClientProvider client={queryClient}>
-          <Probe />
-        </QueryClientProvider>,
-      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    for (let turn = 0; turn < 20 && !done(); turn++) {
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
-    }
-    return renderer!;
   }
+  return renderer!;
+}
 
+describe('gastos de mercado lançados sem nota', () => {
+  const spendsInBank = () => {
+    mockDb.tables.expenses = [
+      { id: 'e1', spent_on: '2026-10-05', amount: 42.5, category: 'mercado', description: 'Feira de domingo' },
+      // Outra categoria: fica no Resumo, não aqui.
+      { id: 'e2', spent_on: '2026-10-06', amount: 90, category: 'alimentacao', description: 'Pizza' },
+      // O dia antes do primeiro mês e o dia depois do último: fora.
+      { id: 'e3', spent_on: '2026-08-31', amount: 10, category: 'mercado', description: 'Feira' },
+      { id: 'e4', spent_on: '2026-11-01', amount: 10, category: 'mercado', description: 'Feira' },
+    ];
+    mockDb.tables.bill_payments = [
+      { id: 'p1', bill_id: 'b1', paid_on: '2026-09-10', amount: 80, bill: { name: 'Cesta do sacolão', category: 'mercado' } },
+      { id: 'p2', bill_id: 'b2', paid_on: '2026-10-10', amount: 120, bill: { name: 'Luz', category: 'contas' } },
+    ];
+  };
+
+  it('lê os gastos avulsos e os pagamentos de conta da categoria Mercado, pelas datas do Resumo', async () => {
+    spendsInBank();
+    expect(await fetchMarketSpends('2026-09', '2026-10')).toEqual([
+      { key: 'gasto-e1', source: 'gasto', refId: 'e1', date: '2026-10-05', amount: 42.5, name: 'Feira de domingo' },
+      // O pagamento abre a conta, onde ele aparece.
+      { key: 'conta-p1', source: 'conta', refId: 'b1', date: '2026-09-10', amount: 80, name: 'Cesta do sacolão' },
+    ]);
+    expect(requests('expenses')).toEqual([
+      {
+        table: 'expenses',
+        columns: 'id, spent_on, amount, category, description',
+        count: 'exact',
+        filters: [
+          { op: 'eq', column: 'category', value: 'mercado' },
+          { op: 'gte', column: 'spent_on', value: '2026-09-01' },
+          { op: 'lt', column: 'spent_on', value: '2026-11-01' },
+        ],
+        order: ['id'],
+        limit: 1000,
+      },
+    ]);
+    // A categoria do pagamento é a da conta: o filtro vale para a conta embutida.
+    expect(requests('bill_payments')).toEqual([
+      {
+        table: 'bill_payments',
+        columns: 'id, bill_id, paid_on, amount, bill:bills!inner(name, category)',
+        count: 'exact',
+        filters: [
+          { op: 'eq', column: 'bill.category', value: 'mercado' },
+          { op: 'gte', column: 'paid_on', value: '2026-09-01' },
+          { op: 'lt', column: 'paid_on', value: '2026-11-01' },
+        ],
+        order: ['id'],
+        limit: 1000,
+      },
+    ]);
+    // A conta que ainda vai vencer não é gasto: só os pagamentos são lidos, nunca as contas em aberto.
+    expect(requests('bills')).toEqual([]);
+  });
+
+  it('gastos demais para ler: falha com aviso claro em vez de cortar', async () => {
+    mockDb.cap = 500;
+    mockDb.tables.expenses = Array.from({ length: 6001 }, (_, n) => ({
+      id: `e${String(n).padStart(5, '0')}`,
+      spent_on: '2026-10-05',
+      amount: 1,
+      category: 'mercado',
+      description: 'Feira',
+    }));
+    await expect(fetchMarketSpends('2026-09', '2026-10')).rejects.toThrow(
+      'Não foi possível carregar todos os gastos destes meses: são mais do que o app consegue ler de uma vez.',
+    );
+  });
+
+  it('a entrada no resumo e a tela dão o mesmo total, com os gastos sem nota: cada uma pela leitura dela', async () => {
+    spendsInBank();
+    mockDb.tables.receipts = [receiptRow('out', at(2026, 10, 3), { total: 30 })];
+    mockDb.tables.receipt_items = [lineRow('out', 0, { total_price: 30 })];
+    for (const row of mockDb.tables.receipts) row.receipt_items = mockDb.tables.receipt_items.filter((item) => item.receipt_id === row.id);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+    const seen: { entries?: Entry[]; receipts?: MarketTotalReceipt[] } = {};
+    function Probe() {
+      seen.entries = useSpending('2026-09', '2026-10').data;
+      seen.receipts = useSpendingReceipts('2026-09', '2026-10').data;
+      return null;
+    }
+    const renderer = await mount(queryClient, Probe, () => seen.receipts !== undefined && seen.entries !== undefined);
+    // O resumo lê todos os gastos; a entrada tira deles os de mercado.
+    const row = marketTotal(seen.receipts!, '2026-10', undefined, marketSpendsOf(seen.entries!));
+    expect(row.headline).toBe('R$ 72,50 em 2 idas');
+    const screen = marketMonth(await fetchMarketReceipts('2026-09', '2026-10'), '2026-10', '2026-11-05', await fetchMarketSpends('2026-09', '2026-10'));
+    expect(screen.headline).toBe(row.headline);
+    expect(marketTotal(seen.receipts!, '2026-09', undefined, marketSpendsOf(seen.entries!)).headline).toBe('R$ 80,00 em 1 ida');
+    await act(async () => renderer.unmount());
+    queryClient.clear();
+  });
+});
+
+describe('na tela', () => {
   it('a tela recebe o mês e os cinco antes dele (o anterior e os da tendência), numa chave que começa com "spending"', async () => {
     mockDb.tables.receipts = [
       receiptRow('set', at(2026, 9, 10)),
@@ -358,14 +453,20 @@ describe('na tela', () => {
       receiptRow('abr', at(2026, 4, 30, 23)),
       receiptRow('nov', at(2026, 11, 1, 0)),
     ];
+    mockDb.tables.expenses = [
+      { id: 'e-mai', spent_on: '2026-05-01', amount: 20, category: 'mercado', description: 'Feira' },
+      { id: 'e-abr', spent_on: '2026-04-30', amount: 20, category: 'mercado', description: 'Feira' },
+    ];
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
-    const seen: (MarketReceipt[] | undefined)[] = [];
+    const seen: (MarketData | undefined)[] = [];
     function Probe() {
-      seen.push(useMarketReceipts('2026-10').data);
+      seen.push(useMarketData('2026-10').data);
       return null;
     }
     const renderer = await mount(queryClient, Probe, () => seen.at(-1) !== undefined);
-    expect(seen.at(-1)?.map((r) => r.id)).toEqual(['mai', 'set', 'out']);
+    expect(seen.at(-1)?.receipts.map((r) => r.id)).toEqual(['mai', 'set', 'out']);
+    // Os gastos sem nota dos mesmos meses vêm na mesma leitura.
+    expect(seen.at(-1)?.spends.map((s) => s.key)).toEqual(['gasto-e-mai']);
     // Quem invalida 'spending' (confirmar, mudar ou excluir uma nota) recarrega esta consulta também.
     expect(queryClient.getQueryCache().findAll({ queryKey: ['spending'] }).map((q) => q.queryKey)).toEqual([['spending', 'market', '2026-10']]);
     await act(async () => renderer.unmount());

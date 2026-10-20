@@ -1,5 +1,5 @@
 // Leitura inteira de uma consulta, página por página, pelo id. Usada pelo
-// Mercado do mês (notas e itens de seis meses) e pelos rascunhos de Finanças
+// Mercado do mês (notas, itens e gastos de seis meses) e pelos rascunhos de Finanças
 // > Notas: nos dois, uma lista cortada calada mostraria uma conta errada ou
 // esconderia uma nota.
 
