@@ -1,10 +1,12 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { onlineManager } from '@tanstack/react-query';
+import { focusManager, onlineManager } from '@tanstack/react-query';
+import { AppState } from 'react-native';
 
-import { CLEAR_CHECKED_KEY, EDIT_ITEM_KEY, TOGGLE_ITEM_KEY } from '@/data/market';
+import { ADD_ITEM_KEY, CLEAR_CHECKED_KEY, EDIT_ITEM_KEY, REMOVE_ITEM_KEY, TOGGLE_ITEM_KEY } from '@/data/market';
 import { MARKET_TRIP_PUSH_KEY, MARKET_TRIPS_KEY } from '@/data/marketTrips';
 import { JOBS_KEY, PROVIDERS_KEY } from '@/data/providers';
+import { notify } from '@/ui/dialogs';
 
 import { accessErrorMessage, EXPECTS_ROWS_META, NO_HOUSEHOLD_ACCESS, REMOVED_FROM_HOUSEHOLD } from '../accessErrors';
 import { setActiveHousehold } from '../activeHousehold';
@@ -24,7 +26,12 @@ jest.mock('expo-network', () => ({
   getNetworkStateAsync: () => network.current ?? Promise.resolve({ isConnected: true, isInternetReachable: true }),
 }));
 
-jest.mock('@/lib/supabase', () => ({ supabase: {}, unwrap: (result: { data: unknown }) => result.data }));
+jest.mock('@/lib/supabase', () => ({
+  supabase: {},
+  unwrap: (result: { data: unknown }) => result.data,
+  errorMessage: (error: { message: string }) => error.message,
+}));
+jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const stored = () => AsyncStorage.getItem('kotii:query-cache');
@@ -308,6 +315,7 @@ describe('mudança sem erro, talvez barrada pela casa', () => {
   it('marcar e editar item pedem as linhas de volta', () => {
     expect(queryClient.getMutationDefaults(TOGGLE_ITEM_KEY).meta).toEqual(EXPECTS_ROWS_META);
     expect(queryClient.getMutationDefaults(EDIT_ITEM_KEY).meta).toEqual(EXPECTS_ROWS_META);
+    expect(queryClient.getMutationDefaults(REMOVE_ITEM_KEY).meta).toEqual(EXPECTS_ROWS_META);
   });
 
   it('nenhuma linha: busca as casas de novo (o que leva a pessoa para outra casa), sem erro', async () => {
@@ -355,5 +363,103 @@ describe('mudança sem erro, talvez barrada pela casa', () => {
     network.listener?.({ isConnected: false, isInternetReachable: false });
     await write([]);
     expect(queryFn).not.toHaveBeenCalled();
+  });
+});
+
+describe('voltar ao app no celular', () => {
+  it('o app em primeiro plano conta como foco (as consultas velhas buscam de novo); no fundo, não', () => {
+    const listeners = jest
+      .mocked(AppState.addEventListener)
+      .mock.calls.filter(([type]) => type === 'change')
+      .map(([, listener]) => listener as (state: string) => void);
+    expect(listeners.length).toBeGreaterThan(0);
+    const tell = (state: string) => listeners.forEach((listener) => listener(state));
+    tell('background');
+    expect(focusManager.isFocused()).toBe(false);
+    tell('active');
+    expect(focusManager.isFocused()).toBe(true);
+    // A central de notificações do iPhone por cima também não é o app em uso.
+    tell('inactive');
+    expect(focusManager.isFocused()).toBe(false);
+    tell('active');
+  });
+});
+
+describe('aparelho sem espaço para o cache', () => {
+  // O AsyncStorage de mentira já é um jest.fn: a gravação de sempre volta no fim.
+  const setItem = jest.mocked(AsyncStorage.setItem);
+  const original = setItem.getMockImplementation();
+
+  afterEach(() => {
+    if (original) setItem.mockImplementation(original);
+  });
+
+  it('guarda a fila e as listas sem o resto, e avisa uma vez só', async () => {
+    // Cabe só o que é pequeno, como um localStorage quase cheio.
+    setItem.mockImplementation(async (key: string, value: string) => {
+      if (value.length > 3000) throw new Error('QuotaExceededError');
+      await AsyncStorage.multiSet([[key, value]]);
+    });
+    queryClient.getMutationCache().build(queryClient, { mutationKey: TOGGLE_ITEM_KEY, gcTime: Infinity }, {
+      variables: { id: 'marcacao-na-fila', checked: true, userId: 'u1', at: '', token: 't0', nextToken: 't1' },
+      isPaused: true,
+      status: 'pending',
+    } as never);
+    queryClient.setQueryData(['lists'], [{ id: 'l1', name: 'Compras da semana' }]);
+    queryClient.setQueryData(['latestPrices'], [{ product_id: 'p'.repeat(5000) }]);
+    await saveNow();
+    const saved = (await stored()) ?? '';
+    expect(saved).toContain('Compras da semana');
+    expect(saved).toContain('marcacao-na-fila');
+    expect(saved).not.toContain('latestPrices');
+    await flush();
+    expect(jest.mocked(notify).mock.calls.map(([title]) => title)).toEqual(['Pouco espaço no aparelho']);
+    // A hora do aviso fica guardada à parte: na próxima abertura do app ele não volta (cachePersister).
+    expect(await AsyncStorage.getItem('kotii:low-space-warned')).toMatch(/^\d+$/);
+    await saveNow();
+    await flush();
+    expect(notify).toHaveBeenCalledTimes(1);
+    await AsyncStorage.removeItem('kotii:query-cache');
+  });
+});
+
+describe('a fila guardada no meio do envio', () => {
+  afterEach(async () => {
+    await AsyncStorage.removeItem('kotii:query-cache');
+  });
+
+  it('o que está saindo agora (da fila da lista ou da das fotos) também fica guardado; fora delas, só o parado', async () => {
+    const build = (mutationKey: unknown[], id: string, isPaused: boolean) =>
+      queryClient.getMutationCache().build(queryClient, { mutationKey, gcTime: Infinity }, {
+        variables: { id, userId: 'u1' },
+        isPaused,
+        status: 'pending',
+        failureCount: 0,
+      } as never);
+    build(TOGGLE_ITEM_KEY, 'marcacao-saindo', false);
+    build(EDIT_ITEM_KEY, 'edicao-esperando', true);
+    // Outra ação qualquer, sem fila: não volta numa próxima abertura.
+    build(['outraAcao'], 'fora-da-fila', false);
+    await saveNow();
+    const saved = (await stored()) ?? '';
+    expect(saved).toContain('marcacao-saindo');
+    expect(saved).toContain('edicao-esperando');
+    expect(saved).not.toContain('fora-da-fila');
+
+    // Reaberto, o que estava saindo volta parado (para sair com a conexão) e como já tentado.
+    const restored = await persistOptions.persister.restoreClient();
+    const states = Object.fromEntries(
+      (restored?.clientState.mutations ?? []).map((m) => [(m.state.variables as { id: string }).id, [m.state.isPaused, m.state.failureCount]]),
+    );
+    expect(states).toEqual({ 'marcacao-saindo': [true, 1], 'edicao-esperando': [true, 0] });
+  });
+});
+
+describe('a fila que desiste de um item posto', () => {
+  it('avisa a pessoa onde ela estiver, com o nome do item (também o pôr guardado, sem a tela que o pôs)', async () => {
+    jest.mocked(notify).mockClear();
+    const onError = queryClient.getMutationDefaults(ADD_ITEM_KEY).onError as (error: Error, input: unknown) => Promise<void>;
+    await onError(new Error('A lista não existe mais.'), { id: 'x', listId: 'l1', userId: 'u1', token: 't', name: 'Leite' });
+    expect(jest.mocked(notify).mock.calls).toEqual([['Item não foi para a lista', '"Leite" não entrou na lista: A lista não existe mais.']]);
   });
 });

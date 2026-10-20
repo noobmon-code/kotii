@@ -6,9 +6,11 @@ import { toISODate } from '@/domain/dates';
 import { LinkIndex } from '@/domain/listLinks';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { SHARED_PRICES_NOTICE, type SharedPrice } from '@/domain/sharedPrices';
+import { CartPantryModal } from '@/features/CartPantryModal';
 import type { ItemHint } from '@/features/ShoppingGrid';
 import type { LatestPrice, PantryItem, Product, ShoppingListItem } from '@/lib/types';
-import { Screen } from '@/ui/primitives';
+import { StaleNotice } from '@/features/health/StaleNotice';
+import { Button, ErrorNotice, Loading, Screen, TextField } from '@/ui/primitives';
 
 // A tela da lista de verdade, com as buscas trocadas por respostas prontas: o que se confere aqui é o que ela
 // faz com o que cada busca devolve (carregada, a caminho, falhou), que as regras de domain/ não enxergam.
@@ -44,20 +46,21 @@ jest.mock('@/data/listPhotos', () => ({
   usePendingPhotoUri: () => null,
   useSetListItemPhoto: () => ({ mutate: jest.fn() }),
 }));
+/** O que a tela pediu à fila da lista: itens postos e o limpar. */
+const mockQueue = { add: jest.fn(), clear: jest.fn() };
 jest.mock('@/data/market', () => {
   const mutation = () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false });
   return {
-    listQueueBusy: () => false,
     loadListLinks: jest.fn(),
     newToggleToken: () => 'selo',
-    useAddListItem: mutation,
+    removalWaitsForQueue: () => false,
+    useAddListItem: () => ({ add: mockQueue.add }),
     useArchiveList: mutation,
-    useClearCheckedItems: mutation,
-    useDeleteListItem: mutation,
+    useClearCheckedItems: () => ({ mutate: mockQueue.clear }),
     useEditListItem: mutation,
+    useRemoveListItem: () => ({ remove: jest.fn() }),
     useRemovePendingListItem: mutation,
     useToggleListItem: mutation,
-    useListQueueBusy: () => false,
     useListItems: () => mockQueries.items,
     useListLinks: () => mockQueries.links,
     useLatestPrices: () => mockQueries.prices,
@@ -101,6 +104,8 @@ jest.mock('@/features/ShoppingGrid', () => ({
 const loaded = (data: unknown): Query => ({ data, isPending: false, isError: false, error: null, fetchStatus: 'idle', isRefetching: false, refetch: jest.fn() });
 /** Nunca carregou neste aparelho e a busca falhou. */
 const failed = (): Query => ({ ...loaded(undefined), isError: true, error: new Error('sem rede') });
+/** A busca nova falhou e ficou o que já estava carregado (ou guardado no aparelho). */
+const failedKeeping = (data: unknown, error: unknown = new Error('sem rede')): Query => ({ ...loaded(data), isError: true, error });
 /** A primeira busca ainda anda. */
 const onTheWay = (): Query => ({ ...loaded(undefined), isPending: true, fetchStatus: 'fetching' });
 /** Sem internet e nunca visto neste aparelho: a busca nem saiu. */
@@ -375,5 +380,101 @@ describe('preços de outras casas na conta da lista', () => {
     mockQueries.stores = failed();
     expect(await mount()).not.toContain(notice);
     expect(mockSeen.hints?.has('f')).toBe(false);
+  });
+});
+
+describe('sem internet', () => {
+  it('a lista que nunca foi aberta neste aparelho diz isso, em vez de girar sem fim', async () => {
+    // A lista veio do resumo guardado; os itens nunca foram buscados aqui, e a busca está parada.
+    mockQueries.items = paused();
+    const page = await mount();
+    expect(page).toContain('Sem internet');
+    expect(page).toContain('Esta lista ainda não foi aberta neste aparelho. Ela aparece aqui quando a conexão voltar.');
+    expect(renderer!.root.findAllByType(Loading)).toHaveLength(0);
+  });
+
+  it('nem a lista no resumo guardado: a mesma frase', async () => {
+    mockQueries.list = paused();
+    mockQueries.items = paused();
+    expect(await mount()).toContain('Esta lista ainda não foi aberta neste aparelho.');
+  });
+
+  it('a primeira busca andando (com internet) continua com o carregando', async () => {
+    mockQueries.items = onTheWay();
+    const page = await mount();
+    expect(page).not.toContain('Sem internet');
+    expect(renderer!.root.findAllByType(Loading)).toHaveLength(1);
+  });
+
+  it('pôr item vai pela fila e o campo fica livre na hora, sem esperar o servidor', async () => {
+    await mount();
+    mockQueue.add.mockClear();
+    const [field] = renderer!.root.findAllByType(TextField);
+    act(() => field.props.onChangeText('Café'));
+    const button = renderer!.root.findAll((node) => node.type === Button && node.props.title === 'Adicionar "Café"')[0];
+    act(() => button.props.onPress());
+    // Sem aviso próprio: se a fila desistir, o aviso sai dela (lib/queryClient), também com a tela fechada.
+    expect(mockQueue.add).toHaveBeenCalledWith({ name: 'Café', category: expect.any(String), productId: null, quantity: 1, unit: 'un' }, 'u1');
+    expect(renderer!.root.findAllByType(TextField)[0].props.value).toBe('');
+  });
+
+  it('"Limpar" vale com a fila andando e leva junto o que vai para o histórico', async () => {
+    const leite = { ...listItem('l', 'Leite', null, 'laticinios'), checked_at: '2026-10-20T10:00:00Z', toggle_token: 'l1' };
+    mockQueries.items = loaded([listItem('a', 'Arroz', null), leite]);
+    await mount();
+    mockQueue.clear.mockClear();
+    const limpar = renderer!.root.findAll((node) => node.type === Button && node.props.title === 'Limpar')[0];
+    expect(limpar.props.disabled).toBeFalsy();
+    await act(async () => limpar.props.onPress());
+    await act(async () => renderer!.root.findByType(CartPantryModal).props.onConfirm([]));
+    expect(mockQueue.clear).toHaveBeenCalledWith(
+      {
+        listId: 'l1',
+        userId: 'u1',
+        items: [{ id: 'l', token: 'l1' }],
+        pantry: [],
+        bought: [{ name: 'Leite', category: 'laticinios', productId: null, quantity: 1, unit: 'un', at: '2026-10-20T10:00:00Z', source: 'list' }],
+      },
+      expect.anything(),
+    );
+  });
+});
+
+describe('a busca que falha com a lista já na tela (voltar ao app com sinal fraco)', () => {
+  const arroz = listItem('a', 'Arroz', null);
+  const offline = { code: '', message: 'TypeError: Network request failed', details: '', hint: '' };
+
+  it('a lista continua na tela, com o aviso de que é a guardada, em vez da tela de erro', async () => {
+    mockQueries.list = failedKeeping(mockQueries.list.data, offline);
+    mockQueries.items = failedKeeping([arroz], offline);
+    const page = await mount();
+    expect(renderer!.root.findAllByType(ErrorNotice)).toHaveLength(0);
+    expect(page).toContain('Para comprar (1)');
+    expect(page).toContain('Sem internet agora. Mostrando a lista como estava da última vez.');
+    // "Tentar de novo" busca a lista e os itens.
+    act(() => renderer!.root.findByType(StaleNotice).props.onRetry());
+    expect(mockQueries.list.refetch).toHaveBeenCalled();
+    expect(mockQueries.items.refetch).toHaveBeenCalled();
+  });
+
+  it('outro erro, com os itens já carregados: o aviso de sempre, e a lista fica', async () => {
+    mockQueries.items = failedKeeping([arroz]);
+    const page = await mount();
+    expect(renderer!.root.findAllByType(ErrorNotice)).toHaveLength(0);
+    expect(page).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
+    expect(page).toContain('Para comprar (1)');
+  });
+
+  it('sem nada carregado, a tela de erro continua', async () => {
+    mockQueries.items = failed();
+    await mount();
+    expect(renderer!.root.findAllByType(ErrorNotice)).toHaveLength(1);
+    expect(renderer!.root.findAllByType(StaleNotice)).toHaveLength(0);
+  });
+
+  it('com a busca dando certo, nenhum aviso', async () => {
+    mockQueries.items = loaded([arroz]);
+    await mount();
+    expect(renderer!.root.findAllByType(StaleNotice)).toHaveLength(0);
   });
 });
