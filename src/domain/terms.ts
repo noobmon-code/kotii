@@ -5,7 +5,7 @@
 import { formatBRDate } from './dates';
 
 /** Data da versão do texto (AAAA-MM-DD). Muda a cada mudança no texto. */
-export const TERMS_VERSION = '2026-10-19';
+export const TERMS_VERSION = '2026-10-20';
 
 export const TERMS_TITLE = 'Termos de uso e privacidade';
 
@@ -74,9 +74,9 @@ export const TERMS_SECTIONS: TermsSection[] = [
   {
     title: 'Preços compartilhados',
     paragraphs: [
-      'Toda casa contribui e toda casa vê. Quando você confirma uma nota lida pelo app (pelo QR code ou pela foto), os preços dela entram numa base de preços comum a todas as casas do Kotii: o mercado (pelo CNPJ, com o nome impresso na nota e, quando a nota tem chave de acesso, o estado), a descrição de cada item padronizada (sem acentos e em maiúsculas), a unidade, o preço e o dia da compra.',
+      'Toda casa contribui e toda casa vê. Quando você confirma uma nota lida pelo app (pelo QR code ou pela foto), os preços que o app leu nela entram numa base de preços comum a todas as casas do Kotii: o mercado (pelo CNPJ, com o nome impresso na nota, sem o CPF que às vezes vem nele, e, quando a nota tem chave de acesso, o estado), a descrição de cada item padronizada (sem acentos e em maiúsculas), a unidade, o preço e o dia da compra.',
       'Não entra nada que identifique você ou a sua casa: nem quem comprou, nem de qual casa, nem a nota, a quantidade, o total ou a hora. A mesma coisa comprada no mesmo mercado no mesmo dia por duas casas vira uma linha só: não dá para saber quem são as casas que viram um preço, nem quantas são.',
-      'Ficam de fora as notas digitadas à mão, os remédios (e a nota inteira que tenha remédio), as compras em farmácia, os suplementos, os primeiros socorros, os itens de higiene pessoal e o que o app não reconheceu.',
+      'Ficam de fora as notas digitadas à mão, os remédios (e a nota inteira que tenha remédio), as compras em farmácia, os suplementos, os primeiros socorros, os itens de higiene pessoal e o que o app não reconheceu. Também fica na casa o que você corrige na revisão: a linha redigitada, o preço ou a unidade corrigidos e a linha acrescentada; e a nota lida pela foto em que você troca o mercado ou a data não entra.',
       'Os preços de outras casas não são em tempo real: cada um aparece com o dia em que foi visto, e só a partir do dia seguinte ao da confirmação da nota. Eles vêm das notas de outras pessoas e podem não valer mais.',
       'O compartilhamento faz parte do app e não tem como desligar; a nota digitada à mão não entra na base. Excluir uma nota não retira os preços que ela já deu, porque nada liga uma coisa à outra.',
     ],
