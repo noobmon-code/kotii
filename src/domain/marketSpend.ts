@@ -5,12 +5,15 @@
 // no total, ou valor sem item lido) e nunca é espalhada pelos itens, como faz
 // o resumo de gastos (buildEntries em finance.ts, que não muda por causa
 // daqui). Limpeza, higiene e pet são mercado; remédio fica de fora da conta e
-// aparece numa linha só.
+// aparece numa linha só. Os gastos avulsos e as contas pagas que a pessoa
+// lança como Mercado (a feira, o sacolão) também entram no total, nas idas e
+// na tendência, como idas sem itens: não têm item para o ranking nem
+// categoria de produto.
 
 import { joinNames } from './cartPantry';
 import { getCategory } from './categories';
 import { addDays, formatShortDate, toISODate } from './dates';
-import { describeMonthDelta, financeCategoryOfProduct, monthLabel, monthRange, monthShortLabel, shiftMonth } from './finance';
+import { describeMonthDelta, financeCategoryOfProduct, monthLabel, monthRange, monthShortLabel, shiftMonth, type Entry } from './finance';
 import { listNameKey } from './listLinks';
 import { marketChange, type ChangePurchase, type MarketChange } from './marketChange';
 import { formatBRL, formatQuantity } from './money';
@@ -57,9 +60,63 @@ export interface MarketReceipt extends MarketTotalReceipt {
   lines: MarketLine[];
 }
 
+/**
+ * Um gasto de mercado lançado sem nota: um gasto avulso ou o pagamento de uma conta, da categoria "Mercado" do
+ * Resumo. Não tem itens: conta no total, nas idas e na tendência, nunca nos itens nem nas categorias de produto.
+ */
+export interface MarketSpend {
+  /** Único: o id do lançamento no Resumo ("gasto-…", "conta-…"). */
+  key: string;
+  source: 'gasto' | 'conta';
+  /** O que o toque abre: o gasto, ou a conta (o pagamento é visto na tela da conta). */
+  refId: string;
+  /** O dia do gasto ou do pagamento ("AAAA-MM-DD"): não tem hora nem fuso. */
+  date: string;
+  /** Em reais. */
+  amount: number;
+  /** O nome que a pessoa deu ao gasto, ou o nome da conta. */
+  name: string;
+}
+
+/** As notas e os gastos sem nota que a tela do mês usa, lidos juntos. */
+export interface MarketData {
+  receipts: MarketReceipt[];
+  spends: MarketSpend[];
+}
+
+/**
+ * Os gastos sem nota da categoria "Mercado", tirados dos lançamentos do Resumo (buildEntries): a mesma regra de
+ * categoria, de data e do que é pago. Conta só entra pelo pagamento (a que ainda vai vencer não é gasto), e a nota
+ * fiscal fica de fora: ela já entra pelos itens. Uma nota confirmada nunca vira gasto avulso, então nada é
+ * contado duas vezes.
+ */
+export function marketSpendsOf(entries: Entry[]): MarketSpend[] {
+  return entries
+    .filter((entry): entry is Entry & { source: 'gasto' | 'conta' } => entry.source !== 'nota' && entry.category === 'mercado')
+    .map((entry) => ({
+      key: entry.id,
+      source: entry.source,
+      refId: entry.refId,
+      date: entry.date,
+      amount: entry.amount,
+      name: entry.description.trim() || (entry.source === 'gasto' ? 'Gasto avulso' : 'Conta'),
+    }));
+}
+
+/** O que o toque numa ida, ou numa linha para conferir, abre. */
+export interface MarketOpen {
+  kind: 'nota' | 'gasto' | 'conta';
+  id: string;
+}
+
+const OPEN_LABELS: Record<MarketOpen['kind'], string> = { nota: 'Abrir a nota', gasto: 'Abrir o gasto', conta: 'Abrir a conta' };
+
+/** O que o leitor de tela diz que o toque faz: "Abrir a nota", "Abrir o gasto", "Abrir a conta". */
+export const openLabel = (open: MarketOpen) => OPEN_LABELS[open.kind];
+
 /** O total do mês, como aparece no cabeçalho da tela e na entrada do resumo de gastos. */
 export interface MarketTotal {
-  /** O que foi pago: itens mais a parte do mercado nas diferenças das notas, sem a farmácia. */
+  /** O que foi pago: itens mais a parte do mercado nas diferenças das notas, sem a farmácia, mais os gastos sem nota. */
   totalCents: number;
   trips: number;
   /** "R$ 1.240,00 em 6 idas" */
@@ -76,7 +133,8 @@ export interface MarketCategory {
   share: string;
   /**
    * A diferença para o mês anterior, em palavras: "R$ 35,00 a mais que em setembro", "Igual a setembro",
-   * "Não teve em setembro". Vazia quando o mês anterior não teve nota de mercado nenhuma (o cabeçalho já diz).
+   * "Não teve em setembro". Vazia quando o mês anterior não teve nota de mercado nenhuma: sem itens, não há com o
+   * que comparar (sem compra nenhuma, o cabeçalho diz; só com gasto sem nota, o total compara e as categorias não).
    */
   versusPrevious: string;
   accessibilityLabel: string;
@@ -105,18 +163,24 @@ export interface MarketItem {
 }
 
 export interface MarketTrip {
-  receiptId: string;
+  /** Único na lista: o id da nota, ou o do gasto sem nota. */
+  key: string;
+  /** O que o toque abre: a nota, o gasto ou a conta. */
+  opens: MarketOpen;
+  /** O mercado da nota, ou o nome do gasto sem nota. */
   storeName: string;
   cents: number;
   amount: string;
-  /** "12 out · 18 itens" */
+  /** "12 out · 18 itens"; sem nota, "12 out · gasto avulso · sem itens". */
   detail: string;
   accessibilityLabel: string;
 }
 
 export interface MarketStore {
-  /** O id do mercado; '' para as notas sem mercado. */
+  /** O id do mercado; '' para as notas sem mercado; "avulso:…" para os gastos sem nota de mesmo nome. */
   key: string;
+  /** Os gastos lançados sem nota com este nome ("Feira"): não têm itens. */
+  noReceipt: boolean;
   name: string;
   /**
    * Só quando outro mercado do mês tem o mesmo nome: o endereço, o CNPJ ou, sem nenhum dos dois, "loja 2".
@@ -125,7 +189,7 @@ export interface MarketStore {
   place: string | null;
   cents: number;
   amount: string;
-  /** "3 idas", ou "Av. Brasil, 100 · 3 idas" com dois mercados de mesmo nome. */
+  /** "3 idas", "Av. Brasil, 100 · 3 idas" com dois mercados de mesmo nome, ou "2 idas · sem nota". */
   detail: string;
   accessibilityLabel: string;
 }
@@ -141,11 +205,16 @@ export interface MarketStoreMonth {
   trips: MarketTrip[];
   /** Do que levou mais dinheiro para o que levou menos; a parte é sobre os itens deste mercado. */
   items: MarketItem[];
+  /** O que a parte dos itens diz quando não há nenhum. */
+  emptyItems: string;
 }
 
-/** Uma nota para a pessoa abrir e conferir. */
+/** Uma nota (ou um gasto sem nota) para a pessoa abrir e conferir. */
 export interface MarketReceiptRef {
-  receiptId: string;
+  /** Único na lista: o id da nota, ou o do gasto sem nota. */
+  key: string;
+  /** O que o toque abre: a nota, o gasto ou a conta. */
+  opens: MarketOpen;
   storeName: string;
   /** "12 out" */
   date: string;
@@ -161,7 +230,7 @@ export interface MarketMonth {
   month: string;
   /** "Mercado de outubro até hoje" */
   title: string;
-  /** O que foi pago: itens mais as diferenças das notas, sem a farmácia. */
+  /** O que foi pago: itens mais as diferenças das notas, sem a farmácia, mais os gastos sem nota. */
   totalCents: number;
   /** A soma dos itens, pelo valor impresso: é sobre ela que as partes (%) são contadas. */
   itemsCents: number;
@@ -169,12 +238,14 @@ export interface MarketMonth {
   headline: string;
   /** Comparação com o mês anterior; null sem idas no mês. */
   comparison: string | null;
-  /** Da mais recente para a mais antiga. */
+  /** Da mais recente para a mais antiga, com os gastos sem nota no meio, pela data. */
   trips: MarketTrip[];
   /** Da maior para a menor. */
   categories: MarketCategory[];
   /** Do que levou mais dinheiro para o que levou menos. */
   items: MarketItem[];
+  /** O que os itens e as categorias dizem quando não há item nenhum: as notas vieram sem item lido, ou só há gasto sem nota. */
+  emptyItems: string;
   /**
    * Com mais itens do que a lista mostra de início: quantos ela mostra e o que os dois botões dizem
    * ("Ver todos os 25 itens" / "Mostrar só os 10 primeiros"). null quando cabem todos.
@@ -188,6 +259,8 @@ export interface MarketMonth {
    * de notas sem item lido e R$ 10,00 de descontos."; null quando não há nada disso no mês.
    */
   closing: string | null;
+  /** Os gastos avulsos e as contas lançados como Mercado: estão no total e não têm itens. */
+  withoutReceipt: { label: string; value: string; accessibilityLabel: string } | null;
   /** Notas com total abaixo da soma dos itens. */
   discount: { label: string; value: string; accessibilityLabel: string } | null;
   /**
@@ -197,7 +270,10 @@ export interface MarketMonth {
   unread: { label: string; value: string; accessibilityLabel: string; receipts: MarketReceiptRef[] } | null;
   /** Itens sem valor (contam zero), com as notas em que estão. */
   noValue: { label: string; hint: string; receipts: MarketReceiptRef[] } | null;
-  /** No mês corrente: as notas confirmadas com data depois de hoje (de mercado ou só de farmácia), fora da conta "até hoje". */
+  /**
+   * No mês corrente: as notas confirmadas com data depois de hoje (de mercado ou só de farmácia) e os gastos sem
+   * nota com data depois de hoje, fora da conta "até hoje".
+   */
   later: { label: string; hint: string; receipts: MarketReceiptRef[] } | null;
   /** "Farmácia, fora desta conta: R$ 42,00": o que foi pago nos itens de farmácia. */
   pharmacy: string | null;
@@ -206,7 +282,7 @@ export interface MarketMonth {
   drafts: { label: string; receipts: MarketReceiptRef[]; more: string | null } | null;
   /**
    * "O que mudou": por que os itens custaram mais ou menos que na janela do mês anterior (a do cabeçalho), em
-   * domain/marketChange. null sem ida no mês ou sem nota de mercado na janela (o cabeçalho já diz).
+   * domain/marketChange. null sem nota de mercado no mês ou na janela: os gastos sem nota não têm itens.
    */
   change: MarketChange | null;
   emptyTitle: string;
@@ -376,8 +452,30 @@ function receiptMoney<L extends MarketTotalLine>(receipt: { total: number | null
   };
 }
 
-/** O que foi pago de mercado, e em quantas idas, nas notas confirmadas com a data da compra em [start, end). */
-function paidBetween(receipts: MarketTotalReceipt[], start: string, end: string): { totalCents: number; trips: number } {
+interface SpendFigures {
+  spend: MarketSpend;
+  cents: number;
+}
+
+/**
+ * Os gastos sem nota com a data em [start, end), do mais recente para o mais antigo (a chave desempata). O dia é
+ * o que a pessoa lançou, sem fuso, como no Resumo. Pagamento de zero não é ida ao mercado.
+ */
+function spendsBetween(spends: MarketSpend[], start: string, end: string): SpendFigures[] {
+  return spends
+    .filter((spend) => spend.date >= start && spend.date < end)
+    .map((spend) => ({ spend, cents: Math.max(0, cents(spend.amount)) }))
+    .filter(({ cents: value }) => value > 0)
+    .sort((a, b) => b.spend.date.localeCompare(a.spend.date) || a.spend.key.localeCompare(b.spend.key));
+}
+
+const centsOf = (spends: SpendFigures[]) => spends.reduce((sum, { cents: value }) => sum + value, 0);
+
+/**
+ * O que foi pago de mercado, e em quantas idas, nas notas confirmadas com a data da compra em [start, end) e nos
+ * gastos sem nota com a data no mesmo trecho.
+ */
+function paidBetween(receipts: MarketTotalReceipt[], spends: MarketSpend[], start: string, end: string): { totalCents: number; trips: number } {
   let totalCents = 0;
   let trips = 0;
   for (const receipt of receipts) {
@@ -389,14 +487,10 @@ function paidBetween(receipts: MarketTotalReceipt[], start: string, end: string)
     totalCents += paid.paidCents;
     trips += 1;
   }
-  return { totalCents, trips };
+  const loose = spendsBetween(spends, start, end);
+  return { totalCents: totalCents + centsOf(loose), trips: trips + loose.length };
 }
 
-/**
- * O total do mercado de um mês e o número de idas. É a conta do cabeçalho da
- * tela (marketMonth usa esta função) e da entrada no resumo de gastos, que a
- * faz com as notas que o resumo já leu: os dois números não têm como diferir.
- */
 /**
  * O fim (o dia seguinte ao último) do que conta num mês. No mês corrente a conta vai até hoje: é o que o
  * título diz ("até hoje") e é com o mesmo trecho do mês anterior que ela é comparada. A nota com data depois
@@ -409,15 +503,21 @@ function periodEnd(month: string, today?: string): string {
   return tomorrow < range.end ? tomorrow : range.end;
 }
 
-/** `today` diz se o mês é o corrente (aí a conta vai até hoje); sem ele, o mês inteiro. */
-export function marketTotal(receipts: MarketTotalReceipt[], month: string, today?: string): MarketTotal {
+/**
+ * O total do mercado de um mês e o número de idas, com os gastos sem nota (`spends`). É a conta do cabeçalho da
+ * tela (marketMonth usa esta função) e da entrada no resumo de gastos, que a faz com as notas e os lançamentos
+ * que o resumo já leu: é a mesma conta, então a entrada bate com a tela enquanto a leitura do resumo vier
+ * inteira (ela é uma busca só, sem páginas; a da tela lê em páginas e falha em vez de cortar). `today` diz se o
+ * mês é o corrente (aí a conta vai até hoje); sem ele, o mês inteiro.
+ */
+export function marketTotal(receipts: MarketTotalReceipt[], month: string, today?: string, spends: MarketSpend[] = []): MarketTotal {
   const range = monthRange(month);
-  const { totalCents, trips } = paidBetween(receipts, range.start, periodEnd(month, today));
+  const { totalCents, trips } = paidBetween(receipts, spends, range.start, periodEnd(month, today));
   return {
     totalCents,
     trips,
     headline: `${money(totalCents)} em ${plural(trips, 'ida', 'idas')}`,
-    emptyTitle: `Nenhuma nota de mercado em ${monthName(month)}`,
+    emptyTitle: `Nenhuma compra de mercado em ${monthName(month)}`,
   };
 }
 
@@ -587,9 +687,18 @@ function itemRows(current: Figures, shareOfWhat: string, previous: { month: stri
   });
 }
 
-/** As linhas das idas, na ordem das idas (da mais recente para a mais antiga). */
-function tripRows(trips: TripFigures[], shortDate: (date: string) => string): MarketTrip[] {
-  return trips.map((trip): MarketTrip => {
+/** O que a linha da ida sem nota diz dela: o que é, como no Resumo. */
+const SPEND_KINDS: Record<MarketSpend['source'], string> = { gasto: 'gasto avulso', conta: 'conta paga' };
+
+/**
+ * Pela data, da mais recente para a mais antiga. As duas listas já vêm nessa ordem e a ordenação é estável: cada
+ * uma fica na ordem dela, e no mesmo dia a nota (que tem hora) vem antes do gasto sem nota (que não tem).
+ */
+const byDate = <T extends { date: string }>(receipts: T[], spends: T[]): T[] => [...receipts, ...spends].sort((a, b) => b.date.localeCompare(a.date));
+
+/** As linhas das idas, da mais recente para a mais antiga: as notas e os gastos sem nota, pela data. */
+function tripRows(trips: TripFigures[], spends: SpendFigures[], shortDate: (date: string) => string): MarketTrip[] {
+  const fromReceipts = trips.map((trip) => {
     const storeName = storeNameOf(trip.receipt);
     const detail = [
       shortDate(trip.date),
@@ -598,27 +707,52 @@ function tripRows(trips: TripFigures[], shortDate: (date: string) => string): Ma
     ]
       .filter(Boolean)
       .join(' · ');
-    return {
-      receiptId: trip.receipt.id,
+    const row: MarketTrip = {
+      key: trip.receipt.id,
+      opens: { kind: 'nota', id: trip.receipt.id },
       storeName,
       cents: trip.money.paidCents,
       amount: money(trip.money.paidCents),
       detail,
       accessibilityLabel: `${storeName}: ${money(trip.money.paidCents)}, ${detail.replace(/ · /g, ', ')}`,
     };
+    return { date: trip.date, row };
   });
+  const fromSpends = spends.map(({ spend, cents: value }) => {
+    // Sem itens: a linha diz isso, e é por isso que o gasto não aparece nos itens nem nas categorias.
+    const detail = [shortDate(spend.date), SPEND_KINDS[spend.source], 'sem itens'].join(' · ');
+    const row: MarketTrip = {
+      key: spend.key,
+      opens: { kind: spend.source, id: spend.refId },
+      storeName: spend.name,
+      cents: value,
+      amount: money(value),
+      detail,
+      accessibilityLabel: `${spend.name}: ${money(value)}, ${detail.replace(/ · /g, ', ')}`,
+    };
+    return { date: spend.date, row };
+  });
+  return byDate(fromReceipts, fromSpends).map(({ row }) => row);
 }
 
 /**
- * Tudo o que a tela "Mercado do mês" mostra, a partir das notas do mês e do
- * mês anterior (com mercado e itens). `today` diz se o mês é o corrente.
+ * Os gastos sem nota de mesmo nome ("Feira" toda semana) ficam juntos na lista de mercados, pelo nome sem acento,
+ * maiúscula nem pontuação, como os itens sem produto. O prefixo não se confunde com o id de um mercado.
  */
-export function marketMonth(receipts: MarketReceipt[], month: string, today: string): MarketMonth {
+const spendStoreKey = (spend: MarketSpend) => `avulso:${listNameKey(spend.name) || spend.name.toLowerCase()}`;
+
+/**
+ * Tudo o que a tela "Mercado do mês" mostra, a partir das notas do mês e do mês anterior (com mercado e itens) e
+ * dos gastos sem nota lançados como Mercado (`spends`). `today` diz se o mês é o corrente.
+ */
+export function marketMonth(receipts: MarketReceipt[], month: string, today: string, spends: MarketSpend[] = []): MarketMonth {
   const range = monthRange(month);
   // O total e as idas do cabeçalho: a mesma conta da entrada no resumo de gastos.
   const end = periodEnd(month, today);
-  const total = marketTotal(receipts, month, today);
+  const total = marketTotal(receipts, month, today, spends);
   const current = figures(receipts, range.start, end);
+  const currentSpends = spendsBetween(spends, range.start, end);
+  const spendCents = centsOf(currentSpends);
   // No mês corrente, o que tem data depois de hoje: fica de fora da conta, e a tela diz.
   const later = end < range.end ? figures(receipts, end, range.end) : null;
   // Toda nota confirmada de data futura, seja ou não uma ida ao mercado: a que só tem itens de farmácia também
@@ -635,28 +769,34 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
             return { receipt, date, cents: paid.paidCents + paid.pharmacyCents };
           })
       : [];
+  // O gasto sem nota com data depois de hoje também fica de fora até o dia chegar, e aparece junto, para conferir.
+  const laterSpends = end < range.end ? spendsBetween(spends, end, range.end) : [];
+  const laterCount = laterReceipts.length + laterSpends.length;
   // Os rascunhos esperam a revisão com a data que tiverem: os de data futura vêm junto (e primeiro, que são os mais novos).
   const drafts = later ? [...later.drafts, ...current.drafts] : current.drafts;
   const previous = previousWindow(month, today);
   // As comparações (total e categorias) usam a janela do mês anterior; o valor de cada item é o do mês anterior inteiro.
   const compared = figures(receipts, previous.start, previous.end);
-  const comparedTotal = paidBetween(receipts, previous.start, previous.end);
+  const comparedTotal = paidBetween(receipts, spends, previous.start, previous.end);
+  const comparedSpendCents = centsOf(spendsBetween(spends, previous.start, previous.end));
   const previousWhole = previous.uptoDay ? figures(receipts, previous.start, monthRange(previous.month).end) : compared;
   const year = Number(today.slice(0, 4));
   const name = monthName(month);
   const shortDate = (date: string) => formatShortDate(date, year);
-  // Com desconto no total ou valor sem item lido, o total pago não é a soma dos itens: a parte diz de quê é.
+  // Com desconto no total, valor sem item lido ou gasto sem nota, o total pago não é a soma dos itens: a parte diz de quê é.
   const sharesOfItems = total.totalCents !== current.itemsCents;
   const shareOfWhat = sharesOfItems ? 'dos itens' : 'do mês';
-  // Mês anterior sem nota de mercado: o cabeçalho diz isso uma vez, e as categorias não repetem.
+  // Mês anterior sem compra de mercado: o cabeçalho diz isso uma vez.
   const hadPrevious = comparedTotal.trips > 0;
+  // As categorias e "O que mudou" são dos itens: só se comparam com um mês anterior que teve nota de mercado.
+  const hadPreviousItems = compared.trips.length > 0;
 
   const categories = [...current.categories]
     .map(([key, amount]) => ({ key, name: getCategory(key).label, cents: amount }))
     .sort(byAmountThenName)
     .map(({ key, name: label, cents: amount }): MarketCategory => {
       const share = shareOf(amount, current.itemsCents);
-      const versus = hadPrevious ? versusPrevious(amount, compared.categories.get(key) ?? 0, previous) : '';
+      const versus = hadPreviousItems ? versusPrevious(amount, compared.categories.get(key) ?? 0, previous) : '';
       return {
         key,
         label,
@@ -669,15 +809,17 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
     });
 
   const items = itemRows(current, shareOfWhat, { month: previous.month, items: previousWhole.items });
-  const trips = tripRows(current.trips, shortDate);
+  const trips = tripRows(current.trips, currentSpends, shortDate);
 
-  // Por mercado: pelo id, não pelo nome (dois mercados podem ter o mesmo nome).
-  const byStore = new Map<string, { key: string; name: string; address: string; cnpj: string; cents: number; trips: number }>();
+  // Por mercado: pelo id, não pelo nome (dois mercados podem ter o mesmo nome). Os gastos sem nota, pelo nome.
+  type StoreFigures = { key: string; noReceipt: boolean; name: string; address: string; cnpj: string; cents: number; trips: number };
+  const byStore = new Map<string, StoreFigures>();
   for (const trip of current.trips) {
     const key = storeKeyOf(trip.receipt);
     // O endereço e o CNPJ da ida mais recente (as idas vêm da mais nova para a mais antiga).
     const store = byStore.get(key) ?? {
       key,
+      noReceipt: false,
       name: storeNameOf(trip.receipt),
       address: trip.receipt.storeAddress?.trim() ?? '',
       cnpj: trip.receipt.storeCnpj?.trim() ?? '',
@@ -688,24 +830,54 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
     store.trips += 1;
     byStore.set(key, store);
   }
+  for (const { spend, cents: value } of currentSpends) {
+    const key = spendStoreKey(spend);
+    // O nome do gasto mais recente (os gastos vêm do mais novo para o mais antigo).
+    const store = byStore.get(key) ?? { key, noReceipt: true, name: spend.name, address: '', cnpj: '', cents: 0, trips: 0 };
+    store.cents += value;
+    store.trips += 1;
+    byStore.set(key, store);
+  }
   const sortedStores = [...byStore.values()].sort(byAmountThenName);
+  // Só um mercado de nota precisa de endereço para se separar de outro de mesmo nome: o gasto sem nota já diz "sem nota".
+  const receiptStores = sortedStores.filter((store) => !store.noReceipt);
   const stores = sortedStores.map((store): MarketStore => {
-    const place = storePlace(store, sortedStores);
-    const detail = [place, plural(store.trips, 'ida', 'idas')].filter(Boolean).join(' · ');
+    const place = store.noReceipt ? null : storePlace(store, receiptStores);
+    const idas = plural(store.trips, 'ida', 'idas');
+    const detail = [place, idas, store.noReceipt ? 'sem nota' : null].filter(Boolean).join(' · ');
     return {
       key: store.key,
+      noReceipt: store.noReceipt,
       name: store.name,
       place,
       cents: store.cents,
       amount: money(store.cents),
       detail,
-      accessibilityLabel: `${place ? `${store.name}, ${place}` : store.name}: ${money(store.cents)} em ${plural(store.trips, 'ida', 'idas')}`,
+      accessibilityLabel: `${place ? `${store.name}, ${place}` : store.name}: ${money(store.cents)} em ${idas}${store.noReceipt ? ', sem nota' : ''}`,
     };
   });
 
   const ref = (receipt: MarketReceipt, date: string, value: string): MarketReceiptRef => {
     const storeName = storeNameOf(receipt);
-    return { receiptId: receipt.id, storeName, date: shortDate(date), value, accessibilityLabel: `${storeName}, ${shortDate(date)}: ${value}. Abrir a nota` };
+    return {
+      key: receipt.id,
+      opens: { kind: 'nota', id: receipt.id },
+      storeName,
+      date: shortDate(date),
+      value,
+      accessibilityLabel: `${storeName}, ${shortDate(date)}: ${value}. Abrir a nota`,
+    };
+  };
+  const spendRef = ({ spend, cents: value }: SpendFigures): MarketReceiptRef => {
+    const opens: MarketOpen = { kind: spend.source, id: spend.refId };
+    return {
+      key: spend.key,
+      opens,
+      storeName: spend.name,
+      date: shortDate(spend.date),
+      value: money(value),
+      accessibilityLabel: `${spend.name}, ${shortDate(spend.date)}: ${money(value)}. ${openLabel(opens)}`,
+    };
   };
   // As duas linhas usam a parte do mercado na diferença de cada nota, sem uma abater a outra.
   const discountCents = current.trips.reduce((sum, trip) => sum + Math.max(0, -trip.money.marketDiffCents), 0);
@@ -719,27 +891,52 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
   if (total.trips > 0) {
     comparison = hadPrevious
       ? describeMonthDelta(total.totalCents / 100, { month: previous.month, amount: comparedTotal.totalCents / 100, uptoDay: previous.uptoDay })
-      : `Não teve nota de mercado ${when(previous)}`;
+      : `Não teve compra de mercado ${when(previous)}`;
   }
 
   // O que mudou: os itens do período da tela contra os da mesma janela do cabeçalho e das categorias.
-  // O total pago muda diferente dos itens pelo que os descontos e os valores sem item somam a mais ou a menos
-  // que na janela: o mesmo desconto nos dois períodos não abre diferença nenhuma, e não é motivo.
+  // O total pago muda diferente dos itens pelo que os descontos, os valores sem item e os gastos sem nota somam a
+  // mais ou a menos que na janela: o mesmo valor nos dois períodos não abre diferença nenhuma, e não é motivo.
   const comparedDiscountCents = compared.trips.reduce((sum, trip) => sum + Math.max(0, -trip.money.marketDiffCents), 0);
   const comparedUnreadCents = compared.trips.reduce((sum, trip) => sum + Math.max(0, trip.money.marketDiffCents), 0);
   const change =
-    total.trips > 0 && hadPrevious
+    current.trips.length > 0 && hadPreviousItems
       ? marketChange({
           current: current.items,
           previous: compared.items,
           previousWhen: when(previous),
           currentWhen: today.slice(0, 7) === month ? 'neste mês até hoje' : `em ${name}`,
           paidDiffCents: total.totalCents - comparedTotal.totalCents,
-          receiptDifferences: { discounts: discountCents !== comparedDiscountCents, unread: unreadCents !== comparedUnreadCents },
+          receiptDifferences: {
+            discounts: discountCents !== comparedDiscountCents,
+            unread: unreadCents !== comparedUnreadCents,
+            withoutReceipt: spendCents !== comparedSpendCents,
+          },
         })
       : null;
 
+  // O que tem data depois de hoje, em palavras: "1 nota", "2 gastos", "1 nota e 1 conta".
+  const laterWhat = joinNames(
+    [
+      [laterReceipts.length, 'nota', 'notas'] as const,
+      [laterSpends.filter(({ spend }) => spend.source === 'gasto').length, 'gasto', 'gastos'] as const,
+      [laterSpends.filter(({ spend }) => spend.source === 'conta').length, 'conta', 'contas'] as const,
+    ]
+      .filter(([count]) => count > 0)
+      .map(([count, one, many]) => plural(count, one, many)),
+  );
+  // Um tipo só: "dá para corrigir na nota" (a nota confirmada também deixa corrigir a data); mais de um, cada
+  // linha abre o que é.
+  const laterOpen = !laterSpends.length
+    ? 'dá para corrigir na nota'
+    : !laterReceipts.length && laterSpends.every(({ spend }) => spend.source === 'gasto')
+      ? 'dá para corrigir no gasto'
+      : !laterReceipts.length && laterSpends.every(({ spend }) => spend.source === 'conta')
+        ? 'dá para corrigir na conta'
+        : 'toque para abrir e corrigir';
+
   const inside = [
+    spendCents > 0 ? `${money(spendCents)} de gastos lançados sem nota` : null,
     unreadCents > 0 ? `${money(unreadCents)} de notas sem item lido` : null,
     discountCents > 0 ? `${money(discountCents)} de descontos` : null,
   ].filter((part): part is string => part !== null);
@@ -747,7 +944,7 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
     current.pharmacyCents > 0 ? `${money(current.pharmacyCents)} de farmácia` : null,
     noValueCount > 0 ? plural(noValueCount, 'item sem valor', 'itens sem valor') : null,
     draftCount > 0 ? plural(draftCount, 'nota que espera a revisão', 'notas que esperam a revisão') : null,
-    laterReceipts.length > 0 ? plural(laterReceipts.length, 'nota com data depois de hoje', 'notas com data depois de hoje') : null,
+    laterCount > 0 ? `${laterWhat} com data depois de hoje` : null,
   ].filter((part): part is string => part !== null);
   const closing = [inside.length ? `Inclui ${joinNames(inside)}.` : null, outside.length ? `Sem contar ${joinNames(outside)}.` : null]
     .filter(Boolean)
@@ -763,6 +960,11 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
     trips,
     categories,
     items,
+    // Só gasto sem nota no mês: não há nota para ter vindo sem item lido.
+    emptyItems:
+      current.trips.length === 0 && currentSpends.length > 0
+        ? 'Os gastos de mercado deste mês foram lançados sem nota, e por isso não têm itens.'
+        : 'As notas deste mês vieram sem nenhum item lido.',
     // Nunca um corte calado: os primeiros vêm com o botão de ver todos.
     itemsCut:
       items.length > MARKET_ITEMS_SHOWN
@@ -772,6 +974,14 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
     // Sem nenhum valor lido não há porcentagem para explicar.
     shareBasis: sharesOfItems && current.itemsCents > 0 ? `As porcentagens são sobre os itens lidos (${money(current.itemsCents)}).` : null,
     closing: closing || null,
+    withoutReceipt:
+      spendCents > 0
+        ? {
+            label: 'Gastos lançados sem nota',
+            value: money(spendCents),
+            accessibilityLabel: `Gastos lançados sem nota: ${money(spendCents)}`,
+          }
+        : null,
     discount:
       discountCents > 0
         ? {
@@ -795,8 +1005,8 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
         ? {
             label: plural(noValueCount, 'item sem valor', 'itens sem valor'),
             // A frase diz o que dá para fazer daqui, que é abrir a nota e ver (é lá que o item sem valor da nota
-            // confirmada pode ganhar o valor). Num mês sem ida ao mercado (só farmácia) não há "este total" na
-            // tela para o item entrar como zero.
+            // confirmada pode ganhar o valor). Sem nota de mercado no mês (só farmácia), o item não está em
+            // total nenhum da tela para entrar como zero.
             hint: !current.trips.length
               ? noValueCount === 1
                 ? 'Veio sem valor na nota. Abra a nota para ver qual é.'
@@ -808,14 +1018,15 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
           }
         : null,
     later:
-      laterReceipts.length > 0
+      laterCount > 0
         ? {
-            label: plural(laterReceipts.length, 'nota com data depois de hoje', 'notas com data depois de hoje'),
-            hint:
-              laterReceipts.length === 1
-                ? 'Fica de fora desta conta até o dia chegar. Se a data está errada, dá para corrigir na nota.'
-                : 'Ficam de fora desta conta até o dia chegar. Se a data está errada, dá para corrigir na nota.',
-            receipts: laterReceipts.map((entry) => ref(entry.receipt, entry.date, money(entry.cents))),
+            label: `${laterWhat} com data depois de hoje`,
+            // "Deste total", não "desta conta": aqui "conta" pode ser a conta paga.
+            hint: `${laterCount === 1 ? 'Fica' : 'Ficam'} de fora deste total até o dia chegar. Se a data está errada, ${laterOpen}.`,
+            receipts: byDate(
+              laterReceipts.map((entry) => ({ date: entry.date, ref: ref(entry.receipt, entry.date, money(entry.cents)) })),
+              laterSpends.map((entry) => ({ date: entry.spend.date, ref: spendRef(entry) })),
+            ).map((entry) => entry.ref),
           }
         : null,
     pharmacy: current.pharmacyCents > 0 ? `Farmácia, fora desta conta: ${money(current.pharmacyCents)}` : null,
@@ -829,10 +1040,11 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
                 ? `1 nota de ${name} ainda espera a revisão. Ela entra nesta conta quando for confirmada.`
                 : `${draftCount} notas de ${name} ainda esperam a revisão. Elas entram nesta conta quando forem confirmadas.`,
             // Cada rascunho abre a própria nota, que é onde ele é confirmado.
-            receipts: drafts.slice(0, DRAFTS_SHOWN).map(({ receipt, date }) => {
+            receipts: drafts.slice(0, DRAFTS_SHOWN).map(({ receipt, date }): MarketReceiptRef => {
               const storeName = storeNameOf(receipt);
               return {
-                receiptId: receipt.id,
+                key: receipt.id,
+                opens: { kind: 'nota', id: receipt.id },
                 storeName,
                 date: shortDate(date),
                 value: 'Revisar',
@@ -849,24 +1061,46 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
 /**
  * Um mercado da lista do mês (`store`, de `marketMonth`), aberto: as idas e os itens dele no mesmo período da
  * tela (no mês corrente, até hoje), pelas mesmas contas. A parte de cada item é sobre os itens deste mercado.
- * null quando o mercado não teve ida no período.
+ * Os gastos sem nota de mesmo nome (`store.noReceipt`) vêm com as idas deles e nenhum item. null quando o mercado
+ * não teve ida no período.
  */
-export function marketStoreMonth(receipts: MarketReceipt[], month: string, today: string, store: MarketStore): MarketStoreMonth | null {
+export function marketStoreMonth(
+  receipts: MarketReceipt[],
+  month: string,
+  today: string,
+  store: MarketStore,
+  spends: MarketSpend[] = [],
+): MarketStoreMonth | null {
   const range = monthRange(month);
+  const end = periodEnd(month, today);
+  const year = Number(today.slice(0, 4));
+  const shortDate = (date: string) => formatShortDate(date, year);
+  if (store.noReceipt) {
+    const own = spendsBetween(spends, range.start, end).filter(({ spend }) => spendStoreKey(spend) === store.key);
+    if (!own.length) return null;
+    return {
+      key: store.key,
+      title: store.name,
+      headline: `${money(centsOf(own))} em ${plural(own.length, 'ida', 'idas')}`,
+      trips: tripRows([], own, shortDate),
+      items: [],
+      emptyItems: own.length === 1 ? 'Lançado sem nota: não tem itens.' : 'Lançados sem nota: não têm itens.',
+    };
+  }
   const current = figures(
     receipts.filter((receipt) => storeKeyOf(receipt) === store.key),
     range.start,
-    periodEnd(month, today),
+    end,
   );
   if (!current.trips.length) return null;
-  const year = Number(today.slice(0, 4));
   const paid = current.trips.reduce((sum, trip) => sum + trip.money.paidCents, 0);
   return {
     key: store.key,
     title: store.place ? `${store.name} (${store.place})` : store.name,
     headline: `${money(paid)} em ${plural(current.trips.length, 'ida', 'idas')}`,
-    trips: tripRows(current.trips, (date) => formatShortDate(date, year)),
+    trips: tripRows(current.trips, [], shortDate),
     items: itemRows(current, 'dos itens deste mercado', null),
+    emptyItems: 'As notas deste mercado vieram sem nenhum item lido.',
   };
 }
 
@@ -991,18 +1225,22 @@ export function noCategoryItems(category: string, month: string): string {
 }
 
 /**
- * Por que o total do mercado não é a barra "Mercado" do Resumo, numa frase: a tela do mês diz no pé (`where`
- * 'mes'), e a entrada no Resumo, logo abaixo dela ('resumo'). As duas contas diferem de propósito: aqui só
- * entram as notas fiscais (as contas e os gastos avulsos lançados como Mercado ficam no Resumo), com as
- * categorias que o Resumo põe em outras barras (limpeza, higiene, papel e bebê em "Limpeza e higiene", pet em
- * "Pet", e os itens "Outros" em "Outros"), e sem os remédios. No mês corrente, a nota com data depois de hoje
- * também fica de fora daqui (o Resumo a conta); num mês passado não há essa nota, e a frase não fala dela.
- * No Resumo, "aqui" seria o próprio Resumo: lá a frase diz o nome da tela, "no Mercado do mês".
+ * Por que o total do mercado não é a barra "Mercado" do Resumo, em duas frases: a tela do mês diz no pé (`where`
+ * 'mes'), e a entrada no Resumo, logo abaixo dela ('resumo'). As duas contas diferem de propósito nas notas
+ * fiscais: aqui elas entram com as categorias que o Resumo põe em outras barras (limpeza, higiene, papel e bebê
+ * em "Limpeza e higiene", pet em "Pet", e os itens "Outros" em "Outros"), e sem os remédios. Os gastos avulsos e
+ * as contas pagas lançados como Mercado contam nos dois. No mês corrente, o que tem data depois de hoje fica de fora
+ * daqui (o Resumo conta); num mês passado não há nada assim, e a frase não fala disso. No Resumo, "aqui" seria o
+ * próprio Resumo: lá a frase diz o nome da tela, "no Mercado do mês", e "lá".
  */
 export function marketVsSummary(month: string, today: string, where: 'mes' | 'resumo'): string {
   const start = where === 'mes' ? 'Diferente da barra “Mercado” do Resumo: aqui' : 'Diferente da barra “Mercado”: no Mercado do mês';
-  const later = today.slice(0, 7) === month ? ', sem remédio e sem nota com data depois de hoje' : ', sem remédio';
-  return `${start} só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”${later}.`;
+  const there = where === 'mes' ? '' : ' lá';
+  const later = today.slice(0, 7) === month ? ', e o que tem data depois de hoje fica de fora' : '';
+  return (
+    `${start} as notas fiscais entram com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio. ` +
+    `Os gastos avulsos e as contas pagas lançados como Mercado também contam${there}${later}.`
+  );
 }
 
 /** Quantos meses o cartão de tendência mostra, contando o da tela: as notas lidas vão até o primeiro deles. */
@@ -1011,9 +1249,12 @@ export const MARKET_TREND_MONTHS = 6;
 /** Embaixo do cartão de tendência, quando cada mês abre na tela. */
 export const MARKET_TREND_HINT = 'Toque num mês para ver o mercado dele.';
 
-/** O que a barra e o leitor de tela dizem do mês sem ida ao mercado (sem nota, ou só com farmácia ou rascunho). */
+/** O que a barra e o leitor de tela dizem do mês sem ida ao mercado (sem nota nem gasto, ou só com farmácia ou rascunho). */
 const NO_TRIP = 'sem ida';
 const NO_TRIP_SPOKEN = 'sem ida ao mercado';
+/** Na tendência de uma categoria, o mês que só teve gastos sem nota: não há item para dizer quanto foi nela. */
+const NO_ITEMS = 'sem nota';
+const NO_ITEMS_SPOKEN = 'só gastos lançados sem nota';
 
 /** Um mês do cartão de tendência. */
 export interface MarketTrendBar {
@@ -1032,8 +1273,13 @@ export interface MarketTrendBar {
   amount: string;
   /** O valor curto que cabe embaixo da barra: "840", "1,2 mil", "sem ida". */
   short: string;
-  /** O mês teve ida ao mercado (nota confirmada com item de mercado). */
+  /** O mês teve ida ao mercado (nota confirmada com item de mercado, ou gasto sem nota). */
   hasTrips: boolean;
+  /**
+   * Na tendência de uma categoria, o mês teve ida mas só gastos sem nota: sem itens, o valor dela não é zero, é
+   * desconhecido ("sem nota"), e o mês fica fora da média.
+   */
+  noItems: boolean;
   /** O mês corrente, contado só até hoje. */
   partial: boolean;
   /**
@@ -1082,13 +1328,22 @@ export function shortAmount(amountCents: number): string {
  * cabeçalho). Mês sem ida aparece como "sem ida", com barra zero. A média é só dos meses fechados com ida: o
  * mês corrente está pela metade, e um mês sem nota nenhuma diz mais sobre o uso do app do que sobre o gasto
  * (puxaria a média para baixo). Cada nota é vista uma vez: a data e o dinheiro dela são contados numa passada só.
+ * Os gastos sem nota (`spends`) entram no total de cada mês como idas, com o mesmo corte de data. Numa categoria
+ * de produto eles não têm valor (não têm itens): o mês que só teve gasto sem nota diz "sem nota", e não zero, e
+ * fica fora da média, que zero ali puxaria para baixo sem ser verdade.
  */
-export function marketTrend(receipts: MarketTotalReceipt[], month: string, today: string, category: string | null = null): MarketTrend {
+export function marketTrend(
+  receipts: MarketTotalReceipt[],
+  month: string,
+  today: string,
+  category: string | null = null,
+  spends: MarketSpend[] = [],
+): MarketTrend {
   const currentMonth = today.slice(0, 7);
   const first = shiftMonth(month, -(MARKET_TREND_MONTHS - 1));
   const windows = Array.from({ length: MARKET_TREND_MONTHS }, (_, index) => {
     const m = shiftMonth(first, index);
-    return { month: m, end: periodEnd(m, today), cents: 0, trips: 0 };
+    return { month: m, end: periodEnd(m, today), cents: 0, trips: 0, receiptTrips: 0 };
   });
   const byMonth = new Map(windows.map((window) => [window.month, window]));
   for (const receipt of receipts) {
@@ -1100,16 +1355,23 @@ export function marketTrend(receipts: MarketTotalReceipt[], month: string, today
     const paid = receiptMoney(receipt);
     if (!paid.trip) continue;
     window.trips += 1;
+    window.receiptTrips += 1;
     if (category == null) window.cents += paid.paidCents;
     else for (const { category: key, value } of paid.market) if (key === category) window.cents += value;
+  }
+  for (const window of windows) {
+    const loose = spendsBetween(spends, monthRange(window.month).start, window.end);
+    window.trips += loose.length;
+    if (category == null) window.cents += centsOf(loose);
   }
 
   const crossesYear = first.slice(0, 4) !== month.slice(0, 4);
   // Na virada do ano, "dezembro de 2025": sem o ano, dezembro e janeiro lado a lado confundem.
   const spokenMonth = (m: string) => (crossesYear ? monthLabel(m) : monthName(m));
-  const bars = windows.map(({ month: m, cents: value, trips }, index): MarketTrendBar => {
+  const bars = windows.map(({ month: m, cents: value, trips, receiptTrips }, index): MarketTrendBar => {
     const hasTrips = trips > 0;
-    const amount = hasTrips ? money(value) : NO_TRIP_SPOKEN;
+    const noItems = category != null && hasTrips && receiptTrips === 0;
+    const amount = !hasTrips ? NO_TRIP_SPOKEN : noItems ? NO_ITEMS_SPOKEN : money(value);
     const spoken = `${capitalize(spokenMonth(m))}${m === currentMonth ? ' até hoje' : ''}: ${amount}`;
     return {
       month: m,
@@ -1118,8 +1380,9 @@ export function marketTrend(receipts: MarketTotalReceipt[], month: string, today
       note: m === currentMonth ? 'hoje' : null,
       cents: hasTrips ? value : 0,
       amount,
-      short: hasTrips ? shortAmount(value) : NO_TRIP,
+      short: !hasTrips ? NO_TRIP : noItems ? NO_ITEMS : shortAmount(value),
       hasTrips,
+      noItems,
       partial: m === currentMonth,
       spoken,
       // O gráfico termina no mês da tela.
@@ -1127,13 +1390,19 @@ export function marketTrend(receipts: MarketTotalReceipt[], month: string, today
     };
   });
   const closed = bars.filter((bar) => !bar.partial);
-  const counted = closed.filter((bar) => bar.hasTrips);
+  const counted = closed.filter((bar) => bar.hasTrips && !bar.noItems);
   const averageCents = counted.length ? Math.round(counted.reduce((sum, bar) => sum + bar.cents, 0) / counted.length) : null;
-  const skipped = closed.length - counted.length;
+  const withoutTrips = closed.filter((bar) => !bar.hasTrips).length;
+  const withoutItems = closed.filter((bar) => bar.noItems).length;
   const average = averageCents == null ? null : `Média dos meses fechados: ${money(averageCents)}`;
+  // "1 mês sem ida ao mercado e 1 mês só com gastos lançados sem nota ficam fora da média."
+  const skipped = [
+    withoutTrips ? plural(withoutTrips, `mês ${NO_TRIP_SPOKEN}`, `meses ${NO_TRIP_SPOKEN}`) : null,
+    withoutItems ? plural(withoutItems, 'mês só com gastos lançados sem nota', 'meses só com gastos lançados sem nota') : null,
+  ].filter((part): part is string => part !== null);
   const averageNote =
-    averageCents != null && skipped > 0
-      ? plural(skipped, `mês ${NO_TRIP_SPOKEN} fica fora da média.`, `meses ${NO_TRIP_SPOKEN} ficam fora da média.`)
+    averageCents != null && skipped.length
+      ? `${joinNames(skipped)} ${withoutTrips + withoutItems === 1 ? 'fica' : 'ficam'} fora da média.`
       : null;
   const span = month === currentMonth ? `últimos ${MARKET_TREND_MONTHS} meses` : `${MARKET_TREND_MONTHS} meses até ${monthName(month)}`;
   const title = category ? `${getCategory(category).label} ${month === currentMonth ? 'nos' : 'em'} ${span}` : capitalize(span);
