@@ -307,7 +307,7 @@ function MonthBody({
               <Details summary={summary} />
             </Card>
           ) : null}
-          {/* Mês sem nota, mas com notas nos meses antes dele: a tendência continua dizendo como o mercado andou. */}
+          {/* Mês sem ida, mas com idas (nota ou gasto de mercado) nos meses antes dele: a tendência continua dizendo como o mercado andou. */}
           {trend?.hasAny ? <MarketTrendChart trend={trend} onSelect={(bar) => onMonth(bar.month)} /> : null}
         </>
       ) : (

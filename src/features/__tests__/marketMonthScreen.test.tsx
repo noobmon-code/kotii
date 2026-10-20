@@ -1208,6 +1208,11 @@ describe('gastos de mercado lançados sem nota', () => {
     const september = monthButtons(card).find((bar) => bar.props.accessibilityLabel === 'Setembro: só gastos lançados sem nota. Abrir este mês');
     expect(september).toBeDefined();
     expect(card.props.trend.averageNote).toBe('3 meses sem ida ao mercado e 1 mês só com gastos lançados sem nota ficam fora da média.');
+    // "sem nota" não é um valor: vem apagado como "sem ida", não na cor dos valores.
+    const colorOf = (label: string) =>
+      StyleSheet.flatten(card.findAll((node) => node.type === RNText && node.props.children === label)[0].props.style).color;
+    expect(colorOf('sem nota')).toBe(colorOf('sem ida'));
+    expect(colorOf('sem nota')).not.toBe(colorOf('30'));
     await act(async () => september!.props.onPress());
     expect(mockState.params.mes).toBe('2026-09');
     expect(categoryChips()).toHaveLength(0);

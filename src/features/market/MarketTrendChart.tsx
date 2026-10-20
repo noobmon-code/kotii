@@ -59,7 +59,7 @@ export function MarketTrendChart({ trend, onSelect }: { trend: MarketTrend; onSe
         <Text variant="small" color={bar.partial ? 'primary' : undefined} style={styles.tiny}>
           {bar.label}
         </Text>
-        <Text variant="small" color={bar.hasTrips ? 'text' : undefined} style={styles.tiny}>
+        <Text variant="small" color={bar.hasTrips && !bar.noItems ? 'text' : undefined} style={styles.tiny}>
           {bar.short}
         </Text>
         {bar.note ? (

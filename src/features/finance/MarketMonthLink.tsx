@@ -14,7 +14,8 @@ import { space } from '@/ui/theme';
  * (`receipts`) e dos lançamentos dele (`entries`, de onde vêm os gastos
  * avulsos e as contas pagas lançados como Mercado), pela mesma conta do
  * cabeçalho da tela (marketTotal): a entrada não faz busca nenhuma, e muito
- * menos a da tela. Logo abaixo, a frase que diz por que o número não é o da
+ * menos a da tela. Bate com a tela enquanto a leitura do resumo vier inteira
+ * (ela é uma busca só, sem páginas; a da tela lê em páginas). Logo abaixo, a frase que diz por que o número não é o da
  * barra "Mercado" do resumo.
  */
 export function MarketMonthLink({

@@ -506,8 +506,9 @@ function periodEnd(month: string, today?: string): string {
 /**
  * O total do mercado de um mês e o número de idas, com os gastos sem nota (`spends`). É a conta do cabeçalho da
  * tela (marketMonth usa esta função) e da entrada no resumo de gastos, que a faz com as notas e os lançamentos
- * que o resumo já leu: os dois números não têm como diferir. `today` diz se o mês é o corrente (aí a conta vai
- * até hoje); sem ele, o mês inteiro.
+ * que o resumo já leu: é a mesma conta, então a entrada bate com a tela enquanto a leitura do resumo vier
+ * inteira (ela é uma busca só, sem páginas; a da tela lê em páginas e falha em vez de cortar). `today` diz se o
+ * mês é o corrente (aí a conta vai até hoje); sem ele, o mês inteiro.
  */
 export function marketTotal(receipts: MarketTotalReceipt[], month: string, today?: string, spends: MarketSpend[] = []): MarketTotal {
   const range = monthRange(month);
