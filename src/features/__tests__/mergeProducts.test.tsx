@@ -248,8 +248,9 @@ describe('confirmação de juntar', () => {
       'Arroz Tio João 5 kg. 12 compras · último preço R$ 25,90 em 10 out (Assaí). Este nome fica.',
     ]);
     expect(screen()).toContain(SUMMARY);
-    // Os mesmos tamanhos nos dois nomes, e os dois comprados por unidade: nenhum aviso.
+    // Os mesmos tamanhos nos dois nomes, os dois comprados por unidade e na mesma categoria: nenhum aviso.
     expect(screen().join(' ')).not.toContain('Juntar mistura os preços');
+    expect(screen().join(' ')).not.toContain('categorias diferentes');
   });
 
   it('o botão vermelho pede a confirmação dizendo o que acontece e que não dá para desfazer; só então junta', async () => {
@@ -307,6 +308,25 @@ describe('confirmação de juntar', () => {
     await open(BANANA, BANANAS);
     // "Bananas" tem uma compra só: a frase fala do preço, não de "as compras".
     expect(screen()).toContain('O preço de "Banana" é por peso, e o de "Bananas", por unidade. Juntar mistura os preços dos dois no histórico.');
+  });
+
+  it('categorias diferentes: o aviso diz qual fica (a do nome que fica) e que as compras dos meses passados mudam junto', async () => {
+    mockBank.products = mockBank.products.map((item) => (item.id === ARROZ.id ? { ...item, category: 'outros' } : item));
+    await open();
+    expect(screen()).toContain(
+      'Os dois estão em categorias diferentes: "Arroz Tio João 5 kg" em Grãos, massas e cereais, "Arroz 5kg" em Outros. ' +
+        'Fica Grãos, massas e cereais: as compras de "Arroz 5kg", também as dos meses passados, passam para essa categoria no Mercado do mês e em Finanças.',
+    );
+    // Escolher o outro nome troca a categoria que fica, e o aviso diz isso.
+    await press(pressables('radio')[0]);
+    expect(screen()).toContain(
+      'Os dois estão em categorias diferentes: "Arroz 5kg" em Outros, "Arroz Tio João 5 kg" em Grãos, massas e cereais. ' +
+        'Fica Outros: as compras de "Arroz Tio João 5 kg", também as dos meses passados, passam para essa categoria no Mercado do mês e em Finanças.',
+    );
+    // Ainda dá para juntar.
+    await press(button('Juntar produtos'));
+    await act(async () => lastConfirm()[3]());
+    expect(mockMerge.calls).toEqual([{ keepId: ARROZ.id, mergeId: ARROZ_TJ.id, keepName: ARROZ.name, mergeName: ARROZ_TJ.name }]);
   });
 
   it('a mesma quantidade em outra unidade não avisa; tamanho lido com dúvida pede para conferir', async () => {

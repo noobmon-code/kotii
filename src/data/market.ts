@@ -12,19 +12,19 @@ import { useEffect } from 'react';
 
 import type { CartPantryEntry } from '@/domain/cartPantry';
 import { LinkIndex, type ListLink, type OpenListItem } from '@/domain/listLinks';
-import { PRICE_ALERT_HISTORY_DAYS } from '@/domain/priceAlert';
+import { PRICE_ALERT_HISTORY_DAYS, type PricePoint } from '@/domain/priceAlert';
 import { toPurchases, type PurchaseLine } from '@/domain/priceHistory';
 import { listsFor, newListKind, PANTRY_LIST_GONE, type ListChoice } from '@/domain/pantryList';
-import { PRODUCT_MERGED_AWAY } from '@/domain/productMerge';
+import { PRODUCT_MERGED_AWAY, PRODUCT_NAME_TAKEN } from '@/domain/productMerge';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
 import { normalizeSearch } from '@/domain/search';
+import type { ProductName } from '@/domain/similarNames';
 import { storePricesFromPurchases } from '@/domain/storePrices';
 import { EXPECTS_ROWS_META } from '@/lib/accessErrors';
 import { supabase, unwrap } from '@/lib/supabase';
 import type {
   LatestPrice,
-  PriceObservation,
   Product,
   ShoppingList,
   ShoppingListItem,
@@ -1000,31 +1000,91 @@ export function useLatestPrices() {
   return useQuery({ queryKey: ['latestPrices'], queryFn: fetchLatestPrices });
 }
 
+/** Linhas pedidas por vez para o alerta da nota. O servidor pode devolver menos (max_rows): a leitura segue de onde parou. */
+const OBSERVATION_PAGE = 1000;
+/** Bem além de qualquer nota. Passando disso a busca falha (a nota fica sem avisos), em vez de comparar com uma parte do histórico. */
+export const OBSERVATION_MAX_LINES = 20000;
+
+// As linhas de notas confirmadas, com a descrição (o tamanho da embalagem, como no histórico do produto) e a nota
+// junto; o !inner faz os filtros da nota valerem para a linha.
+const OBSERVATION_COLUMNS = 'id, product_id, receipt_id, raw_description, unit, unit_price, receipt:receipts!inner(purchased_at, store_id)';
+
+type ObservationRow = {
+  id: string;
+  product_id: string;
+  receipt_id: string;
+  raw_description: string;
+  unit: Unit;
+  unit_price: number;
+  receipt: { purchased_at: string; store_id: string | null };
+};
+
 /**
  * Preços de vários produtos nos meses antes de uma compra (alerta de preço na
- * nota). A janela sai da data da nota, não de hoje: uma nota antiga aberta
- * depois mostra os mesmos avisos. Dois dias de folga para o fuso. Só preço
- * maior que zero, como no histórico do produto: um item que ficou sem valor em
- * outro mercado não vira "R$ 0,00 no Assaí".
+ * nota), das linhas das notas confirmadas: com a descrição, que traz o
+ * tamanho da embalagem (a view price_observations não a tem), para o pacote de
+ * 5 kg não ser comparado com o preço do de 1 kg. A janela sai da data da nota,
+ * não de hoje: uma nota antiga aberta depois mostra os mesmos avisos. Dois
+ * dias de folga para o fuso. Só preço maior que zero, como no histórico do
+ * produto: um item que ficou sem valor em outro mercado não vira "R$ 0,00 no
+ * Assaí". Como a view, só as notas com mercado.
+ *
+ * Página por página, cada uma a partir do id da última linha lida, com a
+ * contagem do servidor, como fetchProductPurchases: numa nota grande de uma
+ * casa que compra muito, um pedido só cortaria calado os preços mais antigos
+ * da janela, e o "acima do costume" sairia só dos recentes.
  */
+export async function fetchPriceObservations(productIds: string[], purchasedAt: string): Promise<PricePoint[]> {
+  const at = new Date(purchasedAt).getTime();
+  const from = new Date(at - (PRICE_ALERT_HISTORY_DAYS + 2) * 86_400_000).toISOString();
+  const to = new Date(at + 2 * 86_400_000).toISOString();
+  const points: PricePoint[] = [];
+  // Quantas linhas já vieram (com e sem mercado): é com elas que a contagem do servidor se confere.
+  let read = 0;
+  let last: string | undefined;
+  let promised = 0;
+  for (;;) {
+    let request = supabase
+      .from('receipt_items')
+      .select(OBSERVATION_COLUMNS, { count: 'exact' })
+      .in('product_id', productIds)
+      .eq('receipt.status', 'confirmed')
+      .gte('receipt.purchased_at', from)
+      .lte('receipt.purchased_at', to)
+      .gt('unit_price', 0);
+    if (last) request = request.gt('id', last);
+    const result = await request.order('id').limit(OBSERVATION_PAGE);
+    const rows = (unwrap(result) ?? []) as unknown as ObservationRow[];
+    const left = result.count ?? null;
+    if (read + (left ?? rows.length) > OBSERVATION_MAX_LINES) {
+      throw new Error('Não foi possível comparar os preços desta nota: são mais compras do que o app consegue ler de uma vez.');
+    }
+    // Com a sessão vencida no meio da leitura, o servidor responde sem erro e sem linha nenhuma: um erro comum.
+    if (!rows.length && promised > 0) throw new Error('Não foi possível ler todos os preços para comparar. Tente de novo.');
+    read += rows.length;
+    for (const row of rows) {
+      if (!row.receipt.store_id) continue;
+      points.push({
+        product_id: row.product_id,
+        store_id: row.receipt.store_id,
+        unit: row.unit,
+        unit_price: Number(row.unit_price),
+        purchased_at: row.receipt.purchased_at,
+        receipt_id: row.receipt_id,
+        description: row.raw_description,
+      });
+    }
+    if (!rows.length || (left != null && rows.length >= left)) return points;
+    promised = left == null ? 0 : left - rows.length;
+    last = rows[rows.length - 1].id;
+  }
+}
+
 export function usePriceObservations(productIds: string[], purchasedAt: string | undefined) {
   return useQuery({
     queryKey: ['priceHistory', 'many', productIds, purchasedAt],
     enabled: productIds.length > 0 && !!purchasedAt,
-    queryFn: async () => {
-      const at = new Date(purchasedAt!).getTime();
-      return unwrap(
-        await supabase
-          .from('price_observations')
-          .select('product_id, store_id, unit, unit_price, purchased_at, receipt_id')
-          .in('product_id', productIds)
-          .gte('purchased_at', new Date(at - (PRICE_ALERT_HISTORY_DAYS + 2) * 86_400_000).toISOString())
-          .lte('purchased_at', new Date(at + 2 * 86_400_000).toISOString())
-          .gt('unit_price', 0)
-          .order('purchased_at', { ascending: false })
-          .limit(1000),
-      ) as PriceObservation[];
-    },
+    queryFn: () => fetchPriceObservations(productIds, purchasedAt!),
   });
 }
 
@@ -1135,6 +1195,42 @@ export function useStorePrices(productId: string) {
   });
 }
 
+/**
+ * O nome novo já é de outro produto da casa (products_household_name_key, sem contar maiúsculas). `other`: esse
+ * produto, para a tela oferecer juntar os dois; null quando não deu para achá-lo (apagado no meio, por exemplo).
+ */
+export class ProductNameTakenError extends Error {
+  constructor(readonly other: ProductName | null) {
+    super(PRODUCT_NAME_TAKEN);
+    this.name = 'ProductNameTakenError';
+  }
+}
+
+/** Chave única violada (23505): na tabela de produtos, só o nome pode repetir. */
+const isUniqueViolation = (error: unknown) => (error as { code?: unknown } | null)?.code === '23505';
+
+/** Teto do pedido do outro produto com o mesmo nome: sem *, vem um só; com *, os outros que casam são poucos. */
+const PRODUCT_NAMED_MAX = 200;
+
+/**
+ * O outro produto com esse nome: a mesma comparação do banco (lower), com ilike e o nome escapado. O PostgREST lê
+ * o * do nome como %, sem escape possível: "arroz*" também acha "Arroz Integral". O pedido traz todos os que
+ * casam (o outro produto está sempre entre eles) e fica o de nome igual sem contar maiúsculas; sem ele, só quando
+ * veio um único, que então é o que o banco recusou.
+ */
+async function productNamed(name: string, exceptId: string): Promise<ProductName | null> {
+  const found = await supabase
+    .from('products')
+    .select('id, name, category')
+    .ilike('name', name.replace(/[\\%_]/g, '\\$&'))
+    .neq('id', exceptId)
+    .limit(PRODUCT_NAMED_MAX);
+  if (found.error) return null;
+  const rows = (found.data ?? []) as ProductName[];
+  const key = name.toLowerCase();
+  return rows.find((row) => row.name.toLowerCase() === key) ?? (rows.length === 1 ? rows[0] : null);
+}
+
 export function useRenameProduct() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -1142,7 +1238,10 @@ export function useRenameProduct() {
       // O banco não reclama de uma gravação que não acha linha nenhuma. O produto pode ter sido juntado com
       // outro em outro aparelho: a gravação pede a linha de volta e, sem ela, falha com a frase de sempre, com
       // os produtos já buscados de novo (a tela deixa de mostrar o que não existe mais).
-      const saved = (unwrap(await supabase.from('products').update({ name, category }).eq('id', id).select('id')) ?? []) as { id: string }[];
+      const updated = await supabase.from('products').update({ name, category }).eq('id', id).select('id');
+      // O nome já é de outro produto: em vez do texto do banco, qual é ele (a tela oferece juntar os dois).
+      if (updated.error && isUniqueViolation(updated.error)) throw new ProductNameTakenError(await productNamed(name, id));
+      const saved = (unwrap(updated) ?? []) as { id: string }[];
       if (saved.length) return;
       await queryClient.invalidateQueries({ queryKey: ['products'] });
       throw new Error(PRODUCT_MERGED_AWAY);

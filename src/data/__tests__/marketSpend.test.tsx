@@ -156,7 +156,8 @@ afterEach(() => {
 describe('notas do mercado do mês', () => {
   it('pede as notas dos dois meses pela data da compra no fuso do aparelho, com mercado, e os itens das confirmadas', async () => {
     mockDb.tables.receipts = [
-      receiptRow('set', at(2026, 9, 1, 0, 0, 0), { total: '30.50' }),
+      // O endereço e o CNPJ do mercado vêm junto: separam dois mercados de mesmo nome.
+      receiptRow('set', at(2026, 9, 1, 0, 0, 0), { total: '30.50', store: { name: 'Assaí', address: 'Av. Brasil, 100', cnpj: '12345678000190' } }),
       receiptRow('out', at(2026, 10, 31, 23, 59, 59), { store_id: null, store: null }),
       receiptRow('rascunho', at(2026, 10, 5), { status: 'draft', total: 9 }),
       // Um segundo antes e a meia-noite seguinte: fora.
@@ -185,6 +186,8 @@ describe('notas do mercado do mês', () => {
       total: 30.5,
       storeId: 's1',
       storeName: 'Assaí',
+      storeAddress: 'Av. Brasil, 100',
+      storeCnpj: '12345678000190',
       lines: [
         {
           productId: 'p1',
@@ -199,14 +202,14 @@ describe('notas do mercado do mês', () => {
         },
       ],
     });
-    expect(receipts[2]).toMatchObject({ storeId: null, storeName: null, total: null });
+    expect(receipts[2]).toMatchObject({ storeId: null, storeName: null, storeAddress: null, storeCnpj: null, total: null });
     // Os itens de cada nota na ordem da nota.
     expect(receipts[2].lines.map((l) => l.rawDescription)).toEqual(['PAO', 'SACOLA']);
 
     expect(requests('receipts')).toEqual([
       {
         table: 'receipts',
-        columns: 'id, purchased_at, total, status, store_id, store:stores(name)',
+        columns: 'id, purchased_at, total, status, store_id, store:stores(name, address, cnpj)',
         count: 'exact',
         filters: [
           { op: 'gte', column: 'purchased_at', value: at(2026, 9, 1, 0, 0, 0) },

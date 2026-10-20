@@ -71,10 +71,15 @@ export function parseNfceHtml(html: string): NfcePage {
   for (let i = 0; i < starts.length; i++) {
     const chunk = html.slice(starts[i], starts[i + 1] ?? html.length);
     const description = textOf(chunk.match(/^<span[^>]*>([\s\S]*?)<\/span>/i)?.[1] ?? '');
-    const totalPrice = parseBRNumber(field(chunk, 'valor') ?? '');
-    if (!description || totalPrice === null) continue;
-    const quantity = parseBRNumber(afterLabel(field(chunk, 'Rqtd'))) ?? 1;
-    const unitPrice = parseBRNumber(afterLabel(field(chunk, 'RvlUnit'))) ?? 0;
+    const value = field(chunk, 'valor');
+    const quantityText = field(chunk, 'Rqtd');
+    const unitPriceText = field(chunk, 'RvlUnit');
+    // Só é item o trecho com algum campo de item: um título solto na página não vira linha.
+    if (!description || (value === null && quantityText === null && unitPriceText === null)) continue;
+    // Valor que não dá para ler: o item fica, com total 0, e a revisão pergunta o valor, como na foto.
+    const totalPrice = parseBRNumber(value ?? '') ?? 0;
+    const quantity = parseBRNumber(afterLabel(quantityText)) ?? 1;
+    const unitPrice = parseBRNumber(afterLabel(unitPriceText)) ?? 0;
     const code = (field(chunk, 'RCod') ?? '').replace(/\D/g, '') || null;
     items.push({ description, code, quantity, unit: afterLabel(field(chunk, 'RUN')) || 'UN', unitPrice, totalPrice });
   }

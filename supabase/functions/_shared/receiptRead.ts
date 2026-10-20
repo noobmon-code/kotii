@@ -11,6 +11,8 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+import { isValidAccessKey, isValidCnpj } from './fiscalIds.ts';
+
 export interface ReadLine {
   /** Descrição como impressa, sem espaços nas pontas nem repetidos. */
   description: string;
@@ -40,9 +42,10 @@ export const MAX_READ_LINES = 1000;
  */
 export const MAX_DESCRIPTION = 200;
 
-const digits = (value: string | null | undefined, length: number) => {
+/** Só os dígitos, e só se passarem no verificador: chave ou CNPJ lido errado não vai para a base comum. */
+const checked = (value: string | null | undefined, valid: (digits: string) => boolean) => {
   const only = (value ?? '').replace(/\D/g, '');
-  return only.length === length ? only : null;
+  return valid(only) ? only : null;
 };
 
 /** Dia de um instante em São Paulo (AAAA-MM-DD), ou null se não for uma data. */
@@ -68,8 +71,8 @@ export function receiptRead(input: {
   return {
     household_id: input.householdId,
     source: input.source,
-    access_key: digits(input.accessKey, 44),
-    store_cnpj: digits(input.cnpj, 14),
+    access_key: checked(input.accessKey, isValidAccessKey),
+    store_cnpj: checked(input.cnpj, isValidCnpj),
     store_name: name,
     purchased_on: input.purchasedOn && /^\d{4}-\d{2}-\d{2}$/.test(input.purchasedOn) ? input.purchasedOn : null,
     lines: input.lines
