@@ -15,6 +15,7 @@ import {
   marketTrend,
   marketVsSummary,
   monthFromParam,
+  noCategoryItems,
   orderMarketItems,
   QUANTITY_ORDER_NOTE,
   viewFromParam,
@@ -24,6 +25,7 @@ import {
   type MarketReceiptRef,
   type MarketStoreMonth,
   type MarketTrend,
+  type MarketTrendBar,
   type MarketView,
 } from '@/domain/marketSpend';
 import { BarRow } from '@/features/finance/BarRow';
@@ -82,7 +84,6 @@ export default function MarketMonthScreen() {
   const changesY = useRef(0);
   const summary = useMemo(() => (receipts.data ? marketMonth(receipts.data, month, today) : null), [receipts.data, month, today]);
   const trend = useMemo(() => (receipts.data ? marketTrend(receipts.data, month, today) : null), [receipts.data, month, today]);
-  const chosen = summary?.categories.some((c) => c.key === category) ? category : null;
   const chosenStore = store === null ? undefined : summary?.stores.find((s) => s.key === store);
   // O mercado escolhido: as idas e os itens dele no mês. Só a parte dos mercados o mostra, e só aí a conta é feita.
   const storeMonth = useMemo(
@@ -90,12 +91,16 @@ export default function MarketMonthScreen() {
     [receipts.data, month, today, chosenStore, view],
   );
   // A categoria escolhida, nos mesmos meses: como ela andou. Só os itens mostram o cartão, e só aí a conta é feita.
+  // Também no mês sem nada dela: o selo, o cartão e a frase "Nenhum item de…" dizem isso, e o cartão leva a outro mês.
   const categoryTrend = useMemo(
-    () => (receipts.data && chosen && view === 'itens' ? marketTrend(receipts.data, month, today, chosen) : null),
-    [receipts.data, month, today, chosen, view],
+    () => (receipts.data && category && view === 'itens' ? marketTrend(receipts.data, month, today, category) : null),
+    [receipts.data, month, today, category, view],
   );
 
-  /** Troca de mês. Pelo cartão da categoria, a categoria continua escolhida (`keepCategory`). */
+  /**
+   * Troca de mês. Pelo cartão da categoria, a categoria continua escolhida (`keepCategory`), mesmo que o mês não
+   * tenha nada dela; num mês sem ida nenhuma, ela sai (a tela só diz que o mês não tem nota).
+   */
   function goTo(target: string, keepCategory = false) {
     if (target > current) return;
     if (!keepCategory) setCategory(null);
@@ -172,7 +177,7 @@ export default function MarketMonthScreen() {
           categoryTrend={categoryTrend}
           onMonth={goTo}
           vsSummary={marketVsSummary(month, today, 'mes')}
-          category={chosen}
+          category={category}
           onCategory={chooseCategory}
           storeMonth={storeMonth}
           onStore={chooseStore}
@@ -284,7 +289,7 @@ function MonthBody({
             </Card>
           ) : null}
           {/* Mês sem nota, mas com notas nos meses antes dele: a tendência continua dizendo como o mercado andou. */}
-          {trend?.hasAny ? <MarketTrendChart trend={trend} onSelect={onMonth} /> : null}
+          {trend?.hasAny ? <MarketTrendChart trend={trend} onSelect={(bar) => onMonth(bar.month)} /> : null}
         </>
       ) : (
         <>
@@ -317,7 +322,7 @@ function MonthBody({
             </Card>
           ) : null}
 
-          {trend ? <MarketTrendChart trend={trend} onSelect={onMonth} /> : null}
+          {trend ? <MarketTrendChart trend={trend} onSelect={(bar) => onMonth(bar.month)} /> : null}
 
           {/* Sem nota de mercado na janela do mês anterior não há com o que comparar: o cabeçalho já diz. */}
           {summary.change ? (
@@ -335,7 +340,8 @@ function MonthBody({
               summary={summary}
               category={category}
               trend={categoryTrend}
-              onMonth={(month) => onMonth(month, true)}
+              // A categoria fica no mês que teve ida; sem ida nenhuma, a tela só diz que o mês não tem nota.
+              onMonth={(bar) => onMonth(bar.month, bar.hasTrips)}
               onCategory={onCategory}
               order={order}
               onOrder={onOrder}
@@ -389,7 +395,8 @@ function MonthBody({
 
 /**
  * Os itens do mês, na ordem escolhida (por valor, quantidade ou idas); com uma categoria escolhida, todos os
- * dela. Por quantidade, cada medida vem num grupo, e os que não se somam ficam por último, num grupo que diz isso.
+ * dela (ou, no mês sem nada dela, o selo, o cartão dela e uma frase dizendo isso). Por quantidade, cada medida
+ * vem num grupo, e os que não se somam ficam por último, num grupo que diz isso.
  */
 function Items({
   summary,
@@ -407,7 +414,7 @@ function Items({
   /** Com uma categoria escolhida: como ela andou nos últimos meses. */
   trend: MarketTrend | null;
   /** Um mês tocado no cartão da categoria. */
-  onMonth: (month: string) => void;
+  onMonth: (bar: MarketTrendBar) => void;
   onCategory: (category: string | null) => void;
   order: MarketItemOrder;
   onOrder: (order: MarketItemOrder) => void;
@@ -415,12 +422,12 @@ function Items({
   onShowAll: (all: boolean) => void;
 }) {
   const items = category ? summary.items.filter((item) => item.category === category) : summary.items;
-  // Nunca um corte calado: os primeiros vêm com o "Ver todos" (quantos e o que os botões dizem saem das
-  // regras, em `itemsCut`), e a categoria escolhida vem inteira.
+  // Nunca um corte calado: os primeiros vêm com o "Ver todos" (quantos, o corte por medida e o que os botões
+  // dizem saem das regras), e a categoria escolhida vem inteira.
   const cut = category ? null : summary.itemsCut;
-  const groups = orderMarketItems(items, order, cut && !showAll ? cut.shown : undefined);
+  const { groups, toggle } = orderMarketItems(items, order, cut, showAll);
   const label = category ? getCategory(category).label : null;
-  if (items.length === 0) return <Text variant="muted">As notas deste mês vieram sem nenhum item lido.</Text>;
+  if (items.length === 0 && !category) return <Text variant="muted">As notas deste mês vieram sem nenhum item lido.</Text>;
   return (
     <View style={styles.gapMd}>
       {label ? (
@@ -436,36 +443,44 @@ function Items({
         </Row>
       ) : null}
       {trend ? <MarketTrendChart trend={trend} onSelect={onMonth} /> : null}
-      <Row style={styles.wrap}>
-        <Text variant="muted">Ordem:</Text>
-        {MARKET_ITEM_ORDERS.map((option) => (
-          <Chip
-            key={option.value}
-            label={option.label}
-            selected={order === option.value}
-            accessibilityLabel={`Ordenar os itens por ${option.label.toLowerCase()}`}
-            onPress={() => onOrder(option.value)}
-          />
-        ))}
-      </Row>
-      {order === 'quantidade' ? <Text variant="small">{QUANTITY_ORDER_NOTE}</Text> : null}
-      {groups.map((group) => (
-        <View key={group.key} style={styles.gapSm}>
-          {group.title ? (
-            <Text variant="label" accessibilityRole="header">
-              {group.title}
-            </Text>
-          ) : null}
-          {group.hint ? <Text variant="small">{group.hint}</Text> : null}
-          <ListCard>
-            {group.items.map((item) => (
-              <ItemRow key={item.key} item={item} />
+      {category && items.length === 0 ? (
+        // Aberto pelo cartão da categoria num mês sem nada dela: o selo fica, e a frase diz por que a lista está vazia.
+        <Text variant="muted">{noCategoryItems(category, summary.month)}</Text>
+      ) : (
+        <>
+          <Row style={styles.wrap}>
+            <Text variant="muted">Ordem:</Text>
+            {MARKET_ITEM_ORDERS.map((option) => (
+              <Chip
+                key={option.value}
+                label={option.label}
+                selected={order === option.value}
+                accessibilityLabel={`Ordenar os itens por ${option.label.toLowerCase()}`}
+                onPress={() => onOrder(option.value)}
+              />
             ))}
-          </ListCard>
-        </View>
-      ))}
-      {cut ? <Button title={showAll ? cut.less : cut.more} variant="ghost" compact onPress={() => onShowAll(!showAll)} /> : null}
-      {summary.shareBasis ? <Text variant="small">{summary.shareBasis}</Text> : null}
+          </Row>
+          {order === 'quantidade' ? <Text variant="small">{QUANTITY_ORDER_NOTE}</Text> : null}
+          {groups.map((group) => (
+            <View key={group.key} style={styles.gapSm}>
+              {group.title ? (
+                <Text variant="label" accessibilityRole="header">
+                  {group.title}
+                </Text>
+              ) : null}
+              {group.hint ? <Text variant="small">{group.hint}</Text> : null}
+              <ListCard>
+                {group.items.map((item) => (
+                  <ItemRow key={item.key} item={item} />
+                ))}
+              </ListCard>
+              {group.rest ? <Text variant="small">{group.rest}</Text> : null}
+            </View>
+          ))}
+          {toggle ? <Button title={toggle} variant="ghost" compact onPress={() => onShowAll(!showAll)} /> : null}
+          {summary.shareBasis ? <Text variant="small">{summary.shareBasis}</Text> : null}
+        </>
+      )}
     </View>
   );
 }

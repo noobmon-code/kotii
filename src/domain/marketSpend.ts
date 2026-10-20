@@ -533,16 +533,25 @@ const formatCnpj = (cnpj: string) => {
   return digits.length === 14 ? `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}/${digits.slice(8, 12)}-${digits.slice(12)}` : cnpj;
 };
 
+type StorePlaceInput = { key: string; name: string; address: string; cnpj: string };
+
 /**
  * O que separa um mercado de outro do mesmo nome no mês (duas unidades do Assaí): o endereço; sem ele, o CNPJ;
- * sem nenhum dos dois, "loja 1", "loja 2", na ordem da lista. null quando nenhum outro mercado tem o nome.
+ * sem nenhum dos dois, "sem endereço" ou, com mais de um assim, "loja 1", "loja 2". Só esses entram na conta
+ * dos números (o que já mostra o endereço não leva número, então nunca há "loja 2" sem "loja 1"), e na ordem
+ * do id do mercado, não do valor: a mesma unidade não troca de número de um mês para o outro só porque gastou
+ * mais. null quando nenhum outro mercado tem o nome.
  */
-function storePlace(store: { key: string; name: string; address: string; cnpj: string }, all: { key: string; name: string }[]): string | null {
+function storePlace(store: StorePlaceInput, all: StorePlaceInput[]): string | null {
   const same = all.filter((other) => other.name.toLocaleLowerCase('pt-BR') === store.name.toLocaleLowerCase('pt-BR'));
   if (same.length < 2) return null;
   if (store.address) return store.address;
   if (store.cnpj) return `CNPJ ${formatCnpj(store.cnpj)}`;
-  return `loja ${same.findIndex((other) => other.key === store.key) + 1}`;
+  const bare = same
+    .filter((other) => !other.address && !other.cnpj)
+    .map((other) => other.key)
+    .sort((a, b) => a.localeCompare(b));
+  return bare.length < 2 ? 'sem endereço' : `loja ${bare.indexOf(store.key) + 1}`;
 }
 
 /**
@@ -881,7 +890,25 @@ export interface MarketItemGroup {
   /** O que o grupo quer dizer, quando precisa: o dos itens que não se somam. */
   hint: string | null;
   items: MarketItem[];
+  /**
+   * Por quantidade, com o corte: quantos itens do grupo ficaram para o "Ver todos" ("Mais 15 itens por unidade:
+   * veja em “Ver todos”."); null quando o grupo vem inteiro.
+   */
+  rest: string | null;
 }
+
+/** Os itens na ordem escolhida, já com o corte: os grupos e o que o botão do corte diz. */
+export interface MarketItemList {
+  groups: MarketItemGroup[];
+  /** "Ver todos os 25 itens" / "Mostrar só os 10 primeiros"; null quando não há o que esconder. */
+  toggle: string | null;
+}
+
+/** Por quantidade, com o corte, cada medida mostra pelo menos estes primeiros: nenhum grupo some da tela. */
+export const MARKET_ITEMS_SHOWN_PER_MEASURE = 3;
+
+/** O botão que volta ao corte, quando ele é feito por medida. */
+const LESS_BY_MEASURE = 'Mostrar só os primeiros de cada medida';
 
 const MEASURE_TITLES: Record<string, string> = { un: 'Por unidade', peso: 'Por peso', volume: 'Por volume' };
 const MEASURE_ORDER = ['un', 'peso', 'volume'];
@@ -894,13 +921,24 @@ const MIXED_HINT = 'Comprados ora por unidade, ora por peso ou volume: a quantid
  * leite não se comparam, então cada medida vem num grupo (por unidade, por peso, por volume, e a unidade que
  * vier diferente com o nome dela), do que foi mais comprado para o que foi menos; os itens comprados em
  * medidas que não se somam (por unidade numa ida e por peso na outra) ficam por último, num grupo que diz isso.
- * `shown` corta a lista (os primeiros, na ordem dos grupos), sem deixar grupo vazio.
+ *
+ * `cut` (o `itemsCut` do mês), sem `showAll`, mostra só os primeiros. Num grupo só (por valor, por idas, ou
+ * tudo numa medida), os `cut.shown` primeiros. Por quantidade, com mais de uma medida, o corte é por grupo:
+ * cada medida mostra os primeiros dela (pelo menos MARKET_ITEMS_SHOWN_PER_MEASURE), e as vagas que sobram vão
+ * para os grupos na ordem; assim o peso e o volume nunca somem atrás de dez itens por unidade, e cada grupo
+ * cortado diz quantos ficaram para o "Ver todos". Corte que não esconde nada não tem botão.
  */
-export function orderMarketItems(items: MarketItem[], order: MarketItemOrder, shown?: number): MarketItemGroup[] {
+export function orderMarketItems(
+  items: MarketItem[],
+  order: MarketItemOrder,
+  cut: { shown: number; more: string; less: string } | null = null,
+  showAll = false,
+): MarketItemList {
   const tieBreak = (a: MarketItem, b: MarketItem) => b.cents - a.cents || a.name.localeCompare(b.name, 'pt-BR') || a.key.localeCompare(b.key);
   let groups: MarketItemGroup[];
-  if (order === 'valor') groups = [{ key: 'todos', title: null, hint: null, items }];
-  else if (order === 'idas') groups = [{ key: 'todos', title: null, hint: null, items: [...items].sort((a, b) => b.trips - a.trips || tieBreak(a, b)) }];
+  if (order === 'valor') groups = [{ key: 'todos', title: null, hint: null, items, rest: null }];
+  else if (order === 'idas')
+    groups = [{ key: 'todos', title: null, hint: null, items: [...items].sort((a, b) => b.trips - a.trips || tieBreak(a, b)), rest: null }];
   else {
     const byMeasure = new Map<string, MarketItem[]>();
     for (const item of items) {
@@ -915,23 +953,41 @@ export function orderMarketItems(items: MarketItem[], order: MarketItemOrder, sh
         title: measure === '' ? MIXED : (MEASURE_TITLES[measure] ?? `Em ${measure}`),
         hint: measure === '' ? MIXED_HINT : null,
         items: byMeasure.get(measure)!.sort((a, b) => (b.quantity?.amount ?? 0) - (a.quantity?.amount ?? 0) || tieBreak(a, b)),
+        rest: null,
       }));
   }
-  if (shown == null) return groups;
-  let left = shown;
-  return groups
-    .map((group) => {
-      const cut = group.items.slice(0, Math.max(0, left));
-      left -= cut.length;
-      return { ...group, items: cut };
-    })
-    .filter((group) => group.items.length > 0);
+  // Sem itens não há grupo nenhum.
+  groups = groups.filter((group) => group.items.length > 0);
+  if (!cut) return { groups, toggle: null };
+
+  const byMeasure = groups.length > 1;
+  const counts = groups.map((group) => Math.min(group.items.length, byMeasure ? Math.max(MARKET_ITEMS_SHOWN_PER_MEASURE, Math.floor(cut.shown / groups.length)) : cut.shown));
+  let left = cut.shown - counts.reduce((sum, count) => sum + count, 0);
+  groups.forEach((group, index) => {
+    const extra = Math.min(Math.max(0, left), group.items.length - counts[index]);
+    counts[index] += extra;
+    left -= extra;
+  });
+  const hidden = groups.reduce((sum, group, index) => sum + group.items.length - counts[index], 0);
+  if (hidden === 0) return { groups, toggle: null };
+  if (showAll) return { groups, toggle: byMeasure ? LESS_BY_MEASURE : cut.less };
+  return {
+    groups: groups.map((group, index) => {
+      const restCount = group.items.length - counts[index];
+      const name = group.title ? group.title.charAt(0).toLocaleLowerCase('pt-BR') + group.title.slice(1) : null;
+      return {
+        ...group,
+        items: group.items.slice(0, counts[index]),
+        rest: byMeasure && name && restCount > 0 ? `Mais ${plural(restCount, 'item', 'itens')} ${name}: veja em “Ver todos”.` : null,
+      };
+    }),
+    toggle: cut.more,
+  };
 }
 
-/** A ordem pedida; sem ela, ou com uma que não existe, por valor. */
-export function itemOrderFromParam(value: string | string[] | undefined): MarketItemOrder {
-  const wanted = Array.isArray(value) ? value[0] : value;
-  return MARKET_ITEM_ORDERS.find((order) => order.value === wanted)?.value ?? 'valor';
+/** Com uma categoria escolhida que não tem item no mês: a frase no lugar da lista. */
+export function noCategoryItems(category: string, month: string): string {
+  return `Nenhum item de “${getCategory(category).label}” em ${monthName(month)}.`;
 }
 
 /**
@@ -941,9 +997,10 @@ export function itemOrderFromParam(value: string | string[] | undefined): Market
  * categorias que o Resumo põe em outras barras (limpeza, higiene, papel e bebê em "Limpeza e higiene", pet em
  * "Pet", e os itens "Outros" em "Outros"), e sem os remédios. No mês corrente, a nota com data depois de hoje
  * também fica de fora daqui (o Resumo a conta); num mês passado não há essa nota, e a frase não fala dela.
+ * No Resumo, "aqui" seria o próprio Resumo: lá a frase diz o nome da tela, "no Mercado do mês".
  */
 export function marketVsSummary(month: string, today: string, where: 'mes' | 'resumo'): string {
-  const start = where === 'mes' ? 'Diferente da barra “Mercado” do Resumo: aqui' : 'Diferente da barra “Mercado”: aqui';
+  const start = where === 'mes' ? 'Diferente da barra “Mercado” do Resumo: aqui' : 'Diferente da barra “Mercado”: no Mercado do mês';
   const later = today.slice(0, 7) === month ? ', sem remédio e sem nota com data depois de hoje' : ', sem remédio';
   return `${start} só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”${later}.`;
 }
@@ -984,6 +1041,11 @@ export interface MarketTrendBar {
    * hoje: sem ida ao mercado". Com o ano quando a janela atravessa o ano.
    */
   spoken: string;
+  /**
+   * O que o botão do mês diz, em todas as plataformas (na web o estado "selecionado" de um botão não chega ao
+   * leitor de tela): "Setembro: R$ 130,00. Abrir este mês"; o último, o mês da tela, "…. Mês aberto".
+   */
+  accessibilityLabel: string;
 }
 
 export interface MarketTrend {
@@ -1048,6 +1110,7 @@ export function marketTrend(receipts: MarketTotalReceipt[], month: string, today
   const bars = windows.map(({ month: m, cents: value, trips }, index): MarketTrendBar => {
     const hasTrips = trips > 0;
     const amount = hasTrips ? money(value) : NO_TRIP_SPOKEN;
+    const spoken = `${capitalize(spokenMonth(m))}${m === currentMonth ? ' até hoje' : ''}: ${amount}`;
     return {
       month: m,
       label: monthShortLabel(m),
@@ -1058,7 +1121,9 @@ export function marketTrend(receipts: MarketTotalReceipt[], month: string, today
       short: hasTrips ? shortAmount(value) : NO_TRIP,
       hasTrips,
       partial: m === currentMonth,
-      spoken: `${capitalize(spokenMonth(m))}${m === currentMonth ? ' até hoje' : ''}: ${amount}`,
+      spoken,
+      // O gráfico termina no mês da tela.
+      accessibilityLabel: m === month ? `${spoken}. Mês aberto` : `${spoken}. Abrir este mês`,
     };
   });
   const closed = bars.filter((bar) => !bar.partial);

@@ -16,10 +16,11 @@ const MIN_BAR = 3;
  * Cartão da tendência do mercado: uma barra por mês, o mês corrente (só até hoje) em tom claro com a borda
  * tracejada, e a média dos meses fechados como uma linha tracejada. Só desenha: os valores, os textos e as frases
  * para o leitor de tela vêm prontos de `marketTrend` (domain/marketSpend). O título é lido como cabeçalho. Cada
- * mês (a barra e os textos embaixo dela) é um botão que abre aquele mês (`onSelect`), e o leitor de tela lê mês a
- * mês; o último é o mês aberto na tela, marcado, e o toque nele não faz nada.
+ * mês (a barra e os textos embaixo dela) é um botão que abre aquele mês (`onSelect` recebe a barra tocada), e o
+ * leitor de tela lê mês a mês; o último é o mês aberto na tela, marcado, e o toque nele não faz nada. O rótulo
+ * diz "Mês aberto": na web, o estado "selecionado" de um botão não chega ao leitor de tela.
  */
-export function MarketTrendChart({ trend, onSelect }: { trend: MarketTrend; onSelect: (month: string) => void }) {
+export function MarketTrendChart({ trend, onSelect }: { trend: MarketTrend; onSelect: (bar: MarketTrendBar) => void }) {
   const c = useColors();
   // A largura da área das barras, medida na tela: a linha da média vai de uma ponta à outra.
   const [width, setWidth] = useState(0);
@@ -81,10 +82,10 @@ export function MarketTrendChart({ trend, onSelect }: { trend: MarketTrend; onSe
             key={bar.month}
             accessibilityRole="button"
             accessibilityState={{ selected: bar.month === open }}
-            accessibilityLabel={bar.month === open ? bar.spoken : `${bar.spoken}. Abrir este mês`}
+            accessibilityLabel={bar.accessibilityLabel}
             // O mês da tela já está aberto.
             disabled={bar.month === open}
-            onPress={() => onSelect(bar.month)}
+            onPress={() => onSelect(bar)}
             style={({ pressed }) => [styles.column, pressed && styles.pressed]}>
             {column(bar)}
           </Pressable>

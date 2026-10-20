@@ -1,12 +1,12 @@
 import { describe, expect, it } from '@jest/globals';
 
 import {
-  itemOrderFromParam,
   MARKET_ITEM_ORDERS,
   marketMonth,
   marketStoreMonth,
   marketTrend,
   marketVsSummary,
+  noCategoryItems,
   orderMarketItems,
   type MarketLine,
   type MarketReceipt,
@@ -62,16 +62,13 @@ const HOUSE = [
   receipt(at(MONTH, 10), [line('Leite', 'laticinios', 30, 6), line('Pão', 'padaria', 4, 5), line('Feijão', 'graos', 9, 1, 'kg'), line('Água', 'bebidas', 6, 3000, 'ml')]),
 ];
 
-const names = (groups: ReturnType<typeof orderMarketItems>) => groups.map((group) => [group.title, group.items.map((item) => item.name)]);
+const names = (list: ReturnType<typeof orderMarketItems>) => list.groups.map((group) => [group.title, group.items.map((item) => item.name)]);
 
 describe('a ordem dos itens', () => {
   const { items } = marketMonth(HOUSE, MONTH, AFTER);
 
-  it('as três ordens, Valor primeiro; a ordem pedida que não existe cai em Valor', () => {
+  it('as três ordens, Valor primeiro', () => {
     expect(MARKET_ITEM_ORDERS.map((order) => order.label)).toEqual(['Valor', 'Quantidade', 'Idas']);
-    expect(itemOrderFromParam(undefined)).toBe('valor');
-    expect(itemOrderFromParam(['idas'])).toBe('idas');
-    expect(itemOrderFromParam('qualquer')).toBe('valor');
   });
 
   it('por valor: um grupo só, na ordem do mês (do que levou mais dinheiro)', () => {
@@ -89,15 +86,16 @@ describe('a ordem dos itens', () => {
   });
 
   it('por quantidade: unidade, peso e volume em grupos, do mais comprado; o que não se soma por último, dizendo por quê', () => {
-    const groups = orderMarketItems(items, 'quantidade');
-    expect(names(groups)).toEqual([
+    const list = orderMarketItems(items, 'quantidade');
+    expect(names(list)).toEqual([
       ['Por unidade', ['Pão', 'Leite', 'Café']],
       ['Por peso', ['Arroz', 'Feijão']],
       // 3 litros de água passam de 1 litro de suco.
       ['Por volume', ['Água', 'Suco']],
       ['Em medidas que não se somam', ['Tomate']],
     ]);
-    expect(groups.map((group) => group.hint)).toEqual([
+    expect(list.toggle).toBeNull();
+    expect(list.groups.map((group) => group.hint)).toEqual([
       null,
       null,
       null,
@@ -121,14 +119,89 @@ describe('a ordem dos itens', () => {
     expect(names(orderMarketItems(items, 'idas'))).toEqual([[null, ['Leite', 'Pão', 'Tomate', 'Arroz', 'Café', 'Feijão', 'Suco', 'Água']]]);
   });
 
-  it('o corte pega os primeiros na ordem dos grupos e não deixa grupo vazio', () => {
-    expect(names(orderMarketItems(items, 'quantidade', 4))).toEqual([
-      ['Por unidade', ['Pão', 'Leite', 'Café']],
-      ['Por peso', ['Arroz']],
+  it('por valor e por idas, o corte pega os primeiros; o botão diz quantos são e volta aos primeiros', () => {
+    const cut = { shown: 2, more: 'Ver todos os 8 itens', less: 'Mostrar só os 2 primeiros' };
+    expect(orderMarketItems(items, 'valor', cut)).toEqual({ groups: [expect.objectContaining({ title: null, rest: null })], toggle: 'Ver todos os 8 itens' });
+    expect(names(orderMarketItems(items, 'valor', cut))).toEqual([[null, ['Leite', 'Arroz']]]);
+    expect(names(orderMarketItems(items, 'idas', cut))).toEqual([[null, ['Leite', 'Pão']]]);
+    const all = orderMarketItems(items, 'valor', cut, true);
+    expect(all.groups[0].items).toHaveLength(items.length);
+    expect(all.toggle).toBe('Mostrar só os 2 primeiros');
+    // Sem corte, todos, e nenhum botão.
+    expect(orderMarketItems(items, 'idas')).toEqual({ groups: [expect.objectContaining({ items: expect.any(Array) })], toggle: null });
+    expect(orderMarketItems(items, 'idas').groups[0].items).toHaveLength(items.length);
+  });
+
+  it('por quantidade, o corte é por medida: dez itens por unidade não escondem o peso, o volume nem o que não se soma', () => {
+    const units = Array.from({ length: 12 }, (_, index) => line(`Unidade ${String(index + 1).padStart(2, '0')}`, 'limpeza', 1, 12 - index));
+    const month = marketMonth(
+      [
+        receipt(at(MONTH, 3), [
+          ...units,
+          ...[4, 3, 2, 1].map((kg) => line(`Peso ${kg}`, 'carnes', 1, kg, 'kg')),
+          line('Litro 2', 'bebidas', 1, 2, 'l'),
+          line('Litro 1', 'bebidas', 1, 1, 'l'),
+          line('Tomate', 'hortifruti', 1, 0.5, 'kg'),
+        ]),
+        receipt(at(MONTH, 8), [line('Tomate', 'hortifruti', 1, 2)]),
+      ],
+      MONTH,
+      AFTER,
+    );
+    expect(month.itemsCut).toEqual({ shown: 10, more: 'Ver todos os 19 itens', less: 'Mostrar só os 10 primeiros' });
+    const list = orderMarketItems(month.items, 'quantidade', month.itemsCut);
+    // Cada medida com os primeiros dela (pelo menos 3); a vaga que sobra vai para o primeiro grupo.
+    expect(names(list)).toEqual([
+      ['Por unidade', ['Unidade 01', 'Unidade 02', 'Unidade 03', 'Unidade 04']],
+      ['Por peso', ['Peso 4', 'Peso 3', 'Peso 2']],
+      ['Por volume', ['Litro 2', 'Litro 1']],
+      ['Em medidas que não se somam', ['Tomate']],
     ]);
-    expect(names(orderMarketItems(items, 'valor', 2))).toEqual([[null, ['Leite', 'Arroz']]]);
-    // Sem corte, todos.
-    expect(orderMarketItems(items, 'idas').flatMap((group) => group.items)).toHaveLength(items.length);
+    expect(list.groups.flatMap((group) => group.items)).toHaveLength(10);
+    // O grupo cortado diz quantos ficaram para o "Ver todos"; o que veio inteiro não diz nada.
+    expect(list.groups.map((group) => group.rest)).toEqual([
+      'Mais 8 itens por unidade: veja em “Ver todos”.',
+      'Mais 1 item por peso: veja em “Ver todos”.',
+      null,
+      null,
+    ]);
+    expect(list.groups[3].hint).toContain('a quantidade não se soma');
+    expect(list.toggle).toBe('Ver todos os 19 itens');
+
+    const all = orderMarketItems(month.items, 'quantidade', month.itemsCut, true);
+    expect(all.groups.map((group) => group.items.length)).toEqual([12, 4, 2, 1]);
+    expect(all.groups.map((group) => group.rest)).toEqual([null, null, null, null]);
+    // Voltar ao corte não é "os 10 primeiros": é o começo de cada medida.
+    expect(all.toggle).toBe('Mostrar só os primeiros de cada medida');
+  });
+
+  it('por quantidade, as vagas de uma medida pequena vão para as outras; numa medida só, os 10 primeiros', () => {
+    const many = (count: number) => Array.from({ length: count }, (_, index) => line(`Item ${String(index + 1).padStart(2, '0')}`, 'limpeza', 1, count - index));
+    const twoMeasures = marketMonth([receipt(at(MONTH, 3), [...many(25), line('Carne', 'carnes', 1, 1, 'kg')])], MONTH, AFTER);
+    const two = orderMarketItems(twoMeasures.items, 'quantidade', twoMeasures.itemsCut);
+    expect(two.groups.map((group) => [group.title, group.items.length, group.rest])).toEqual([
+      ['Por unidade', 9, 'Mais 16 itens por unidade: veja em “Ver todos”.'],
+      ['Por peso', 1, null],
+    ]);
+
+    const oneMeasure = marketMonth([receipt(at(MONTH, 3), many(12))], MONTH, AFTER);
+    const one = orderMarketItems(oneMeasure.items, 'quantidade', oneMeasure.itemsCut);
+    expect(one.groups.map((group) => [group.title, group.items.length, group.rest])).toEqual([['Por unidade', 10, null]]);
+    expect(orderMarketItems(oneMeasure.items, 'quantidade', oneMeasure.itemsCut, true).toggle).toBe('Mostrar só os 10 primeiros');
+  });
+
+  it('corte que, por medida, já mostra todos os itens não tem botão', () => {
+    // 8 itens em 4 medidas: até 3 de cada cabem todos.
+    const list = orderMarketItems(items, 'quantidade', { shown: 4, more: 'Ver todos os 8 itens', less: 'Mostrar só os 4 primeiros' });
+    expect(list.groups.flatMap((group) => group.items)).toHaveLength(items.length);
+    expect(list.toggle).toBeNull();
+    expect(list.groups.map((group) => group.rest)).toEqual([null, null, null, null]);
+  });
+});
+
+describe('uma categoria escolhida sem item no mês', () => {
+  it('a frase diz a categoria e o mês', () => {
+    expect(noCategoryItems('graos', '2026-08')).toBe('Nenhum item de “Grãos, massas e cereais” em agosto.');
   });
 });
 
@@ -149,6 +222,42 @@ describe('mercados de mesmo nome', () => {
       ['ASSAÍ', 'CNPJ 12.345.678/0001-90', 'CNPJ 12.345.678/0001-90 · 1 ida', 'ASSAÍ, CNPJ 12.345.678/0001-90: R$ 20,00 em 1 ida'],
       ['Dia', null, '1 ida', 'Dia: R$ 10,00 em 1 ida'],
     ]);
+  });
+
+  it('só os que não têm endereço nem CNPJ ganham número: um sozinho é "sem endereço", nunca "loja 2" sem "loja 1"', () => {
+    const month = marketMonth(
+      [
+        receipt(at(MONTH, 3), [line('Arroz', 'graos', 30)], { storeId: 'a3', storeCnpj: '12345678000190' }),
+        receipt(at(MONTH, 4), [line('Arroz', 'graos', 20)], { storeId: 'a2' }),
+        receipt(at(MONTH, 5), [line('Arroz', 'graos', 10)], { storeId: 'a1', storeAddress: 'Av. Brasil, 100' }),
+      ],
+      MONTH,
+      AFTER,
+    );
+    expect(month.stores.map((store) => [store.key, store.place])).toEqual([
+      ['a3', 'CNPJ 12.345.678/0001-90'],
+      ['a2', 'sem endereço'],
+      ['a1', 'Av. Brasil, 100'],
+    ]);
+  });
+
+  it('os números seguem o mercado, não o valor do mês: a mesma unidade não troca de número quando gasta mais', () => {
+    const places = (month: string, zCents: number, aCents: number) =>
+      Object.fromEntries(
+        marketMonth(
+          [
+            receipt(at(month, 3), [line('Arroz', 'graos', zCents)], { storeId: 'z9' }),
+            receipt(at(month, 4), [line('Arroz', 'graos', aCents)], { storeId: 'b1' }),
+            receipt(at(month, 5), [line('Arroz', 'graos', 5)], { storeId: 'm5', storeAddress: 'Rua X, 1' }),
+          ],
+          month,
+          AFTER,
+        ).stores.map((store) => [store.key, store.place]),
+      );
+    const october = places(MONTH, 50, 10);
+    const september = places('2026-09', 10, 50);
+    expect(october).toEqual({ b1: 'loja 1', z9: 'loja 2', m5: 'Rua X, 1' });
+    expect(september).toEqual(october);
   });
 });
 
@@ -216,8 +325,9 @@ describe('por que não é a barra "Mercado" do Resumo', () => {
     expect(marketVsSummary('2026-09', '2026-10-13', 'mes')).toBe(
       'Diferente da barra “Mercado” do Resumo: aqui só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio.',
     );
+    // No Resumo, "aqui" seria o próprio Resumo: a frase diz o nome da tela.
     expect(marketVsSummary(MONTH, '2026-10-13', 'resumo')).toBe(
-      'Diferente da barra “Mercado”: aqui só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio e sem nota com data depois de hoje.',
+      'Diferente da barra “Mercado”: no Mercado do mês só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio e sem nota com data depois de hoje.',
     );
   });
 });
@@ -233,6 +343,10 @@ describe('cada mês da tendência, para o leitor de tela', () => {
       'Setembro: R$ 30,00',
       'Outubro até hoje: R$ 40,00',
     ]);
+    // O botão de cada mês: abrir; o último, o mês da tela, diz que está aberto (na web, o "selecionado" não chega).
+    expect(trend.bars.map((bar) => bar.accessibilityLabel).slice(-2)).toEqual(['Setembro: R$ 30,00. Abrir este mês', 'Outubro até hoje: R$ 40,00. Mês aberto']);
+    const past = marketTrend([receipt(at('2026-09', 5), [line('Arroz', 'graos', 30)])], '2026-09', '2026-10-13');
+    expect(past.bars.at(-1)!.accessibilityLabel).toBe('Setembro: R$ 30,00. Mês aberto');
     const crossing = marketTrend([], '2027-02', '2027-02-10');
     expect(crossing.bars.map((bar) => bar.spoken).slice(3, 5)).toEqual(['Dezembro de 2026: sem ida ao mercado', 'Janeiro de 2027: sem ida ao mercado']);
   });
