@@ -4,6 +4,7 @@ import type { ReactElement } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import ProductScreen from '@/app/produto/[id]';
+import { PRODUCT_CATEGORY_NOTE } from '@/domain/productCategory';
 import { NO_SAVED_PRICES_OFFLINE, SAVED_PRICES_ERROR, SAVED_PRICES_OFFLINE } from '@/domain/storePrices';
 import { PriceHistorySection } from '@/features/market/PriceHistorySection';
 import { Loading } from '@/ui/primitives';
@@ -24,7 +25,14 @@ jest.mock('expo-router', () => ({
 }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
-jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
+// O seletor de categoria não abre aqui: só se guarda o que a tela manda para ele.
+const mockPicker: { props: Record<string, unknown> | null } = { props: null };
+jest.mock('@/ui/PickerModal', () => ({
+  PickerModal: (props: Record<string, unknown>) => {
+    mockPicker.props = props;
+    return null;
+  },
+}));
 // Os desenhos animados e o fundo não entram no que se confere aqui.
 jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
@@ -163,6 +171,14 @@ describe('tela do produto sem internet', () => {
     // Com a conexão de volta, a lista sai do histórico: no banco, só o Assaí.
     expect(storesListed()).toEqual(['Assaí']);
     expect(page()).toEqual(expect.arrayContaining(['Último preço por mercado', 'Histórico de preço', 'R$ 25,90/un · Assaí · 10 out', '2 compras em 6 meses']));
+  });
+
+  it('o seletor de categoria diz que a categoria vale também para as compras dos meses passados', async () => {
+    savedOnDevice();
+    onlineManager.setOnline(false);
+    open();
+    await settle();
+    expect(mockPicker.props).toMatchObject({ title: 'Categoria', message: PRODUCT_CATEGORY_NOTE });
   });
 
   it('sem preço deste produto guardado: diz isso, sem dizer que não há nota', async () => {

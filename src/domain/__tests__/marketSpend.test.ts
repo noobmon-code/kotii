@@ -732,10 +732,11 @@ describe('idas e mercados', () => {
       AFTER,
     );
     expect(month.stores).toEqual([
-      { key: 'a1', name: 'Assaí', cents: 6100, amount: 'R$ 61,00', detail: '2 idas', accessibilityLabel: 'Assaí: R$ 61,00 em 2 idas' },
-      { key: 'a2', name: 'Assaí', cents: 2900, amount: 'R$ 29,00', detail: '1 ida', accessibilityLabel: 'Assaí: R$ 29,00 em 1 ida' },
+      // Dois mercados de mesmo nome, sem endereço nem CNPJ: "loja 1" e "loja 2", na ordem do id do mercado.
+      { key: 'a1', name: 'Assaí', place: 'loja 1', cents: 6100, amount: 'R$ 61,00', detail: 'loja 1 · 2 idas', accessibilityLabel: 'Assaí, loja 1: R$ 61,00 em 2 idas' },
+      { key: 'a2', name: 'Assaí', place: 'loja 2', cents: 2900, amount: 'R$ 29,00', detail: 'loja 2 · 1 ida', accessibilityLabel: 'Assaí, loja 2: R$ 29,00 em 1 ida' },
       // O que foi pago, com o valor sem item lido.
-      { key: '', name: 'Sem mercado informado', cents: 1700, amount: 'R$ 17,00', detail: '2 idas', accessibilityLabel: 'Sem mercado informado: R$ 17,00 em 2 idas' },
+      { key: '', name: 'Sem mercado informado', place: null, cents: 1700, amount: 'R$ 17,00', detail: '2 idas', accessibilityLabel: 'Sem mercado informado: R$ 17,00 em 2 idas' },
     ]);
     expect(month.stores.reduce((sum, s) => sum + s.cents, 0)).toBe(month.totalCents);
     expect(month.trips.reduce((sum, t) => sum + t.cents, 0)).toBe(month.totalCents);
@@ -956,7 +957,7 @@ describe('comparação com o mês anterior', () => {
     expect(month.categories.map((c) => [c.label, c.amount])).toEqual([['Grãos, massas e cereais', 'R$ 39,00']]);
     expect(month.later).toEqual({
       label: '1 nota com data depois de hoje',
-      hint: 'Fica de fora desta conta até o dia chegar. Se a data está errada, abra a nota para conferir.',
+      hint: 'Fica de fora desta conta até o dia chegar. Se a data está errada, dá para corrigir na nota.',
       receipts: [{ receiptId: future.id, storeName: 'Dia', date: '20 out', value: 'R$ 100,00', accessibilityLabel: 'Dia, 20 out: R$ 100,00. Abrir a nota' }],
     });
     expect(month.closing).toBe('Sem contar 1 nota que espera a revisão e 1 nota com data depois de hoje.');
@@ -994,7 +995,7 @@ describe('comparação com o mês anterior', () => {
     // Plural.
     const two = marketMonth([past, future, receipt(at(MONTH, 21), [line('Sal', 'temperos', 4)])], MONTH, today);
     expect(two.later?.label).toBe('2 notas com data depois de hoje');
-    expect(two.later?.hint).toBe('Ficam de fora desta conta até o dia chegar. Se a data está errada, abra a nota para conferir.');
+    expect(two.later?.hint).toBe('Ficam de fora desta conta até o dia chegar. Se a data está errada, dá para corrigir na nota.');
   });
 
   it('último dia do mês contra um mês mais curto: o anterior inteiro', () => {

@@ -4,7 +4,8 @@
 // `access_key` (opcional): a chave do QR code, quando a Sefaz pediu o "não
 // sou robô" e a nota veio pela foto. Se a casa já tem uma nota com ela,
 // devolve a existente (duplicate), sem gastar a IA; senão a nota guarda essa
-// chave, a menos que a foto seja de outra nota (regras em accessKey.ts).
+// chave, a menos que a foto seja de outra nota, e o CNPJ dela acha o mercado
+// quando a IA não leu um CNPJ válido (regras em accessKey.ts).
 //
 // Roda com o JWT do usuário: todas as leituras e escritas passam pela RLS,
 // menos uma. O que a IA leu também vai para receipt_reads, com a chave secreta,
@@ -21,8 +22,20 @@ import { publishableKey, secretKey } from '../_shared/apiKeys.ts';
 import { ExtractionError, extractStructured, mediaTypeOf, toVisionImage, visionConfig } from '../_shared/vision.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
 import { forgetReceiptRead, insertWithRead, receiptRead, saoPauloDay, saveReceiptRead } from '../_shared/receiptRead.ts';
-import { duplicateBeforeRead, existingOnConflict, keyAfterRead, requestedAccessKey } from './accessKey.ts';
-import { cleanReceipt, ExtractedReceiptSchema, instructions, MAX_PHOTOS, sameStoreName, SYSTEM } from './extract.ts';
+import { duplicateBeforeRead, existingOnConflict, keyAfterRead, photoIds, requestedAccessKey } from './accessKey.ts';
+import {
+  BOUGHT_RECEIPTS,
+  type BoughtReceipt,
+  boughtProducts,
+  CATALOG_LIMIT,
+  cleanReceipt,
+  ExtractedReceiptSchema,
+  instructions,
+  MAX_PHOTOS,
+  promptCatalog,
+  sameStoreName,
+  SYSTEM,
+} from './extract.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -140,12 +153,24 @@ Deno.serve(async (req) => {
     }
   }
 
-  const { data: catalog, error: catalogError } = await db
-    .from('products')
-    .select('id, name')
-    .order('name')
-    .limit(400);
-  if (catalogError) return json({ error: 'Falha ao ler produtos.' }, 500);
+  // Os produtos que a IA vê: os mais comprados nas notas mais novas e, depois,
+  // os cadastrados por último (promptCatalog). Sem as compras, só os mais novos.
+  // As compras vêm pelas notas da casa (índice household_id + purchased_at) e
+  // os itens de cada uma (índice receipt_id + position): pela receipt_items
+  // direto, sem índice na casa nem na data, a busca varreria as linhas de todas as casas.
+  const [newestResult, boughtResult] = await Promise.all([
+    db.from('products').select('id, name').order('created_at', { ascending: false }).order('id').limit(CATALOG_LIMIT),
+    db
+      .from('receipts')
+      .select('receipt_items(position, product:products(id, name))')
+      .eq('household_id', householdId)
+      .order('purchased_at', { ascending: false })
+      .order('id')
+      .limit(BOUGHT_RECEIPTS),
+  ]);
+  if (newestResult.error) return json({ error: 'Falha ao ler produtos.' }, 500);
+  if (boughtResult.error) console.warn('parse-receipt: purchases not read for the catalog', boughtResult.error.code);
+  const catalog = promptCatalog(boughtProducts((boughtResult.data ?? []) as unknown as BoughtReceipt[]), newestResult.data ?? []);
 
   let ticket;
   try {
@@ -189,9 +214,11 @@ Deno.serve(async (req) => {
     if (mismatch) console.warn('parse-receipt: the photo is not the note whose QR code was read; keeping the key read from the photo');
     if (existing) return json({ receipt_id: existing, duplicate: true });
 
+    // Sem CNPJ lido, o da chave do QR acha o mercado da casa; a leitura do servidor fica só com o que a IA leu.
+    const ids = photoIds({ accessKey: receipt.accessKey, cnpj: receipt.cnpj }, givenKey, mismatch);
     const storeId = await findOrCreateStore(db, {
       name: receipt.storeName,
-      cnpj: receipt.cnpj,
+      cnpj: ids.storeCnpj,
       address: receipt.address,
     });
 
@@ -203,13 +230,14 @@ Deno.serve(async (req) => {
       receiptRead({
         householdId,
         source: 'ai',
-        // A chave que a IA leu na foto, não a que o app mandou (essa é do QR que o celular leu: a nota guarda,
-        // mas o servidor não a viu).
-        accessKey: receipt.accessKey,
-        cnpj: receipt.cnpj,
+        // A chave e o CNPJ que a IA leu na foto, não os da chave que o app mandou (essa é do QR que o celular
+        // leu: a nota guarda, o mercado usa o CNPJ dela, mas o servidor não a viu).
+        accessKey: ids.read.accessKey,
+        cnpj: ids.read.cnpj,
         storeName: receipt.storeName,
         purchasedOn: saoPauloDay(receipt.purchasedAt),
-        lines: receipt.items.map((item) => ({ description: item.raw_description, unit: item.unit, unit_price: item.unit_price })),
+        // Sem a linha de preço que a nota não imprimiu (quantidade e preço unitário ilegíveis): ela não compartilha.
+        lines: receipt.readLines,
       }),
     );
     const dropRead = () => (readId ? forgetReceiptRead(serverDb, readId) : Promise.resolve());

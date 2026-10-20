@@ -2,7 +2,7 @@
 -- confirmação de nota, recorrência e rodízio de tarefas, remédios, saúde,
 -- aparelhos, documentos, prestadores e consertos, financeiro, saída da casa,
 -- compromissos da família, preços compartilhados entre casas, estoque dos
--- remédios e idas ao mercado.
+-- remédios, idas ao mercado e aceite dos termos.
 -- Rodado por scripts/db/test.sh depois de stubs.sql + migrations.
 
 \set ON_ERROR_STOP 1
@@ -9383,5 +9383,237 @@ begin
   ), 'and public has no grant on add_to_list';
 end $$;
 delete from public.households where id in (:'hh_dl', :'hh_el');
+
+-- ---------------------------------------------------------------------------
+\echo '• nota confirmada corrigida: data, mercado e total ficam na casa, e a base comum não muda'
+-- Caio confirma uma nota do QR code (que compartilha) e depois corrige a data, o mercado e o total, como o app
+-- faz (uma coisa por vez, só na nota confirmada). Nina, de outra casa, não alcança a nota dele.
+\set user_nc1 '00000000-0000-0000-0000-0000000001c1'
+\set user_nc2 '00000000-0000-0000-0000-0000000001c2'
+reset role;
+insert into auth.users (id) values (:'user_nc1'), (:'user_nc2');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_nc2', false) \gset
+select set_config('test.nc_house_2', (public.create_household('Casa da Nina', 'Nina')).id::text, false) \gset
+select set_config('request.jwt.claim.sub', :'user_nc1', false) \gset
+select set_config('test.nc_house_1', (public.create_household('Casa do Caio', 'Caio')).id::text, false) \gset
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  cnpj constant text := '44555666000177';
+  s uuid;
+  r uuid;
+begin
+  insert into public.stores (name, cnpj) values ('Mercadinho da esquina', cnpj) returning id into s;
+  perform set_config('test.nc_store', s::text, false);
+  -- O mercado certo, que a casa já tinha (sem CNPJ, criado à mão).
+  insert into public.stores (name) values ('Feira de domingo') returning id into s;
+  perform set_config('test.nc_store_right', s::text, false);
+  insert into public.receipts (store_id, purchased_at, access_key, source, total)
+    values (current_setting('test.nc_store')::uuid, (today - 2 + time '10:00') at time zone 'America/Sao_Paulo',
+      '352610' || cnpj || repeat('0', 23) || '1', 'qrcode', 14.48)
+    returning id into r;
+  perform set_config('test.nc_receipt', r::text, false);
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, quantity, unit, unit_price, total_price) values
+    (r, 0, 'LEITE NC INTEGRAL 1L', 'laticinios', 1, 'un', 5.49, 5.49),
+    (r, 1, 'PAO NC FRANCES', 'padaria', 1, 'kg', 8.99, 8.99);
+end $$;
+
+reset role;
+set role service_role;
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  cnpj constant text := '44555666000177';
+  rid uuid;
+begin
+  insert into public.receipt_reads (household_id, source, access_key, store_cnpj, store_name, purchased_on, lines)
+    values (current_setting('test.nc_house_1')::uuid, 'qrcode', '352610' || cnpj || repeat('0', 23) || '1', cnpj, 'MERCADINHO DA ESQUINA LTDA', today - 2,
+      jsonb_build_array(
+        jsonb_build_object('description', 'LEITE NC INTEGRAL 1L', 'unit', 'un', 'unit_price', 5.49),
+        jsonb_build_object('description', 'PAO NC FRANCES', 'unit', 'kg', 'unit_price', 8.99)))
+    returning id into rid;
+  perform set_config('test.nc_read', rid::text, false);
+end $$;
+
+reset role;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_nc1', false) \gset
+do $$
+begin
+  update public.receipts set read_id = current_setting('test.nc_read')::uuid where id = current_setting('test.nc_receipt')::uuid;
+  perform public.confirm_receipt(current_setting('test.nc_receipt')::uuid, '[]');
+end $$;
+
+-- A base comum depois da confirmação, como ficou: é com ela que o resto é comparado.
+reset role;
+select set_config('test.nc_shared', (
+  select md5(coalesce(string_agg(sp::text, '|' order by sp.store_cnpj, sp.item_key, sp.unit, sp.seen_on), '')) from public.shared_prices sp
+), false) \gset
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+begin
+  assert (select array_agg(item_key || ' ' || unit_price || ' ' || seen_on || ' ' || store_name order by item_key)
+            from public.shared_prices where item_key like '% NC %')
+    = array[
+      'LEITE NC INTEGRAL 1L 5.4900 ' || (today - 2) || ' MERCADINHO DA ESQUINA LTDA',
+      'PAO NC FRANCES 8.9900 ' || (today - 2) || ' MERCADINHO DA ESQUINA LTDA'
+    ],
+    'the confirmation shared the two lines, as read';
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_nc1', false) \gset
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  r constant uuid := current_setting('test.nc_receipt')::uuid;
+  n integer;
+begin
+  -- A data, o mercado e o total, um de cada vez e só na nota confirmada (o filtro do app): o banco aceita os três.
+  update public.receipts set purchased_at = (today - 9 + time '12:00') at time zone 'America/Sao_Paulo' where id = r and status = 'confirmed';
+  get diagnostics n = row_count;
+  assert n = 1, 'the purchase date of a confirmed receipt can be corrected';
+  update public.receipts set store_id = current_setting('test.nc_store_right')::uuid where id = r and status = 'confirmed';
+  get diagnostics n = row_count;
+  assert n = 1, 'and its store';
+  update public.receipts set total = 20.00 where id = r and status = 'confirmed';
+  get diagnostics n = row_count;
+  assert n = 1, 'and its total';
+  -- Também um mercado novo, criado na hora, e "sem total".
+  insert into public.stores (name) values ('Hortifruti novo');
+  update public.receipts set store_id = (select id from public.stores where name = 'Hortifruti novo'), total = null where id = r and status = 'confirmed';
+  update public.receipts set store_id = current_setting('test.nc_store_right')::uuid, total = 20.00 where id = r and status = 'confirmed';
+  -- Nem regravar o status de uma nota já confirmada passa pelo gatilho (ele só olha a passagem de rascunho para confirmada).
+  update public.receipts set status = 'confirmed' where id = r;
+  assert (select (purchased_at at time zone 'America/Sao_Paulo')::date = today - 9 and store_id = current_setting('test.nc_store_right')::uuid
+                 and total = 20.00 and status = 'confirmed' and read_id is null
+            from public.receipts where id = r),
+    'the receipt keeps the corrections, still confirmed and without a read';
+end $$;
+
+-- Nina, de outra casa, não acha a nota do Caio para corrigir.
+select set_config('request.jwt.claim.sub', :'user_nc2', false) \gset
+do $$
+declare
+  n integer;
+begin
+  update public.receipts set purchased_at = now(), total = 1 where id = current_setting('test.nc_receipt')::uuid;
+  get diagnostics n = row_count;
+  assert n = 0, 'a member of another household cannot correct the receipt';
+end $$;
+
+reset role;
+do $$
+begin
+  assert (
+    select md5(coalesce(string_agg(sp::text, '|' order by sp.store_cnpj, sp.item_key, sp.unit, sp.seen_on), '')) from public.shared_prices sp
+  ) = current_setting('test.nc_shared'),
+    'correcting a confirmed receipt adds nothing to the shared prices and changes no line (day, store name, price)';
+  assert (select (purchased_at at time zone 'America/Sao_Paulo')::date from public.receipts where id = current_setting('test.nc_receipt')::uuid)
+    = (now() at time zone 'America/Sao_Paulo')::date - 9,
+    'and the other household did not change it';
+  assert (select count(*) from public.receipt_reads where household_id = current_setting('test.nc_house_1')::uuid) = 0,
+    'there is no read left to share again';
+end $$;
+delete from public.households where id in (current_setting('test.nc_house_1')::uuid, current_setting('test.nc_house_2')::uuid);
+
+-- ---------------------------------------------------------------------------
+\echo '• Termos: cada pessoa grava e lê só o próprio aceite, uma vez por versão'
+\set user_t1 '00000000-0000-0000-0000-0000000001b1'
+\set user_t2 '00000000-0000-0000-0000-0000000001b2'
+insert into auth.users (id) values (:'user_t1'), (:'user_t2');
+set role anon;
+do $$
+begin
+  perform public.accept_terms('2026-10-20');
+  raise exception 'FAIL: anon accepted the terms';
+exception when insufficient_privilege then null;
+end $$;
+do $$
+begin
+  perform 1 from public.terms_acceptances;
+  raise exception 'FAIL: anon read the acceptances';
+exception when insufficient_privilege then null;
+end $$;
+set role authenticated;
+-- Sem conta (sem o sub do token), a função não grava nada.
+select set_config('request.jwt.claim.sub', '', false) \gset
+do $$
+begin
+  perform public.accept_terms('2026-10-20');
+  raise exception 'FAIL: accepted without an account';
+exception when insufficient_privilege then null;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_t1', false) \gset
+do $$
+declare
+  first_at timestamptz;
+begin
+  assert (select count(*) from public.terms_acceptances) = 0, 'nothing accepted yet';
+  perform public.accept_terms('2026-10-20');
+  select accepted_at into first_at from public.terms_acceptances where version = '2026-10-20';
+  assert first_at is not null, 'the acceptance is there, with the server time';
+  -- Repetir não duplica nem muda a hora do primeiro aceite.
+  perform public.accept_terms('2026-10-20');
+  assert (select count(*) from public.terms_acceptances) = 1, 'accepting again does not add a row';
+  assert (select accepted_at from public.terms_acceptances where version = '2026-10-20') = first_at, 'nor change its time';
+  perform public.accept_terms('2026-10-19');
+  assert (select array_agg(version order by version) from public.terms_acceptances) = array['2026-10-19', '2026-10-20'],
+    'another version is another row';
+  begin
+    perform public.accept_terms('qualquer coisa');
+    raise exception 'FAIL: a version that is not a date';
+  exception when check_violation then null;
+  end;
+  -- Direto na tabela, nada: nem gravar, nem mudar a hora, nem apagar.
+  begin
+    insert into public.terms_acceptances (user_id, version) values (auth.uid(), '2026-01-01');
+    raise exception 'FAIL: inserted an acceptance directly';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update public.terms_acceptances set accepted_at = now() - interval '1 year';
+    raise exception 'FAIL: changed an acceptance';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from public.terms_acceptances;
+    raise exception 'FAIL: deleted an acceptance';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_t2', false) \gset
+do $$
+begin
+  assert (select count(*) from public.terms_acceptances) = 0, 'the other person sees none of the first one''s acceptances';
+  perform public.accept_terms('2026-10-20');
+  assert (select count(*) from public.terms_acceptances) = 1 and (select user_id from public.terms_acceptances) = auth.uid(),
+    'and records only their own';
+end $$;
+reset role;
+do $$
+begin
+  assert (select count(*) from public.terms_acceptances where user_id = '00000000-0000-0000-0000-0000000001b1') = 2, 'first person: two versions';
+  assert (select count(*) from public.terms_acceptances where user_id = '00000000-0000-0000-0000-0000000001b2') = 1, 'second person: one';
+  assert not has_function_privilege('anon', 'public.accept_terms(text)', 'execute'), 'anon cannot execute accept_terms';
+  assert has_function_privilege('authenticated', 'public.accept_terms(text)', 'execute'), 'people can execute accept_terms';
+  assert not exists (
+    select 1 from pg_proc p, aclexplode(p.proacl) a
+    where p.oid = 'public.accept_terms(text)'::regprocedure and a.grantee = 0
+  ), 'and public has no grant on accept_terms';
+  assert (select prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = 'public.accept_terms(text)'::regprocedure),
+    'security definer with a fixed search_path';
+end $$;
+-- A conta apagada leva os aceites dela.
+delete from auth.users where id = :'user_t1';
+select count(*) = 1 as terms_cascade from public.terms_acceptances \gset
+\if :terms_cascade
+\else
+  \echo 'FAIL: the deleted account''s acceptances stayed'
+  select 1/0;
+\endif
+delete from auth.users where id = :'user_t2';
 
 \echo 'OK — todos os testes do banco passaram'

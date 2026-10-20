@@ -3,22 +3,10 @@
 // repetida na casa. A busca por chave no banco é injetada (`FindByKey`), para
 // testar sem banco em accessKey.test.ts; index.ts só liga as peças.
 
-/** Dígito verificador da chave (módulo 11, pesos 2 a 9), como no app (src/domain/nfce.ts). */
-export function accessKeyCheckDigit(first43: string): number {
-  let sum = 0;
-  let weight = 2;
-  for (let i = first43.length - 1; i >= 0; i--) {
-    sum += Number(first43[i]) * weight;
-    weight = weight === 9 ? 2 : weight + 1;
-  }
-  const rest = sum % 11;
-  return rest < 2 ? 0 : 11 - rest;
-}
+import { accessKeyCheckDigit, cnpjFromAccessKey, isValidAccessKey } from '../_shared/fiscalIds.ts';
 
-/** 44 dígitos com o dígito verificador certo. */
-export function isValidAccessKey(key: string): boolean {
-  return /^\d{44}$/.test(key) && accessKeyCheckDigit(key.slice(0, 43)) === Number(key[43]);
-}
+// Os verificadores ficam em _shared: a leitura gravada no servidor também confere.
+export { accessKeyCheckDigit, isValidAccessKey };
 
 /**
  * Chave que o app mandou junto com as fotos (a do QR code). Ausente: null;
@@ -100,4 +88,27 @@ export async function keyAfterRead(
  */
 export function existingOnConflict(error: { code?: string } | null, key: string | null, find: FindByKey): Promise<string | null> {
   return error?.code === '23505' && key ? find(key) : Promise.resolve(null);
+}
+
+/** Chave e CNPJ da nota da foto, por destino. */
+export interface PhotoIds {
+  /** O CNPJ com que se acha ou cria o mercado da casa. */
+  storeCnpj: string | null;
+  /** O que vai para a leitura do servidor (receipt_reads): só o que a IA leu na foto. */
+  read: { accessKey: string | null; cnpj: string | null };
+}
+
+/**
+ * O mercado da casa sai do CNPJ que a IA leu (já conferido no cleanReceipt)
+ * e, sem ele, do CNPJ dentro da chave do QR, quando a foto é da nota do QR
+ * (sem `mismatch`): é o caminho da Sefaz com "não sou robô", e sem isso a foto
+ * em que a IA não pegou o CNPJ criaria outro mercado. A leitura do servidor
+ * fica só com o que a IA leu: a chave do QR veio do celular, o servidor não
+ * a viu, e a base comum continua só com o que o servidor leu.
+ */
+export function photoIds(read: { accessKey: string | null; cnpj: string | null }, given: string | null, mismatch: boolean): PhotoIds {
+  return {
+    storeCnpj: read.cnpj ?? (given && !mismatch ? cnpjFromAccessKey(given) : null),
+    read: { accessKey: read.accessKey, cnpj: read.cnpj },
+  };
 }

@@ -19,7 +19,7 @@ import { useAddItemsToList, usePurchaseRecords, useShoppingLists } from '@/data/
 import { useRefreshMarketTrips } from '@/data/marketTrips';
 import { useMenu } from '@/data/menu';
 import { useRefreshWeather } from '@/data/weather';
-import { useReceipts } from '@/data/receipts';
+import { useDraftReceipts } from '@/data/receipts';
 import { useSupplies } from '@/data/supplies';
 import { billsAboveUsual } from '@/domain/billUsual';
 import { choreTurnLabel, rotationOf, rotationPeople } from '@/domain/choreRotation';
@@ -48,6 +48,7 @@ import { MarketTripBanner } from '@/features/MarketTrip';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useJustListed } from '@/features/RecentPurchases';
 import { SuppliesTodaySection } from '@/features/SuppliesSection';
+import { TermsNoticeCard } from '@/features/TermsNotice';
 import { WeatherCard } from '@/features/WeatherCard';
 import { useHousehold } from '@/lib/auth';
 import { settledData } from '@/lib/settledData';
@@ -124,7 +125,8 @@ export default function TodayScreen() {
   const rotations = useChoreRotations();
   const pantry = usePantry();
   const lists = useShoppingLists();
-  const receipts = useReceipts();
+  // Todos os rascunhos, também os antigos: a lista de notas não corta nenhum.
+  const receipts = useDraftReceipts();
   const toggleDose = useToggleDose(today);
   const completeChore = useCompleteChore();
   const scanner = useReceiptScanner();
@@ -197,7 +199,7 @@ export default function TodayScreen() {
   });
   // O que está acabando ou passou da data prevista (pelas trocas anotadas).
   const suppliesDue = suppliesNeedingAttention(supplies.data?.supplies ?? [], today);
-  const drafts = (receipts.data ?? []).filter((r) => r.status === 'draft');
+  const drafts = receipts.data ?? [];
   const documentsDue = documentsNeedingAttention(documents.data ?? [], today);
   // Sem os pagamentos recentes em dia (carregando, buscando de novo ou com erro), nenhuma conta ganha o selo.
   const billsAbove = billsAboveUsual(billsDue, settledData(recentPayments) ?? [], today);
@@ -322,6 +324,9 @@ export default function TodayScreen() {
         </View>
         <SkyArt period={period} size={104} />
       </View>
+
+      {/* Os termos mudaram (ou a pessoa nunca os viu): um aviso que some no "Entendi". */}
+      <TermsNoticeCard />
 
       {/* Alguém da casa está indo às compras: ainda dá tempo de pôr na lista o que falta. */}
       <MarketTripBanner openable />

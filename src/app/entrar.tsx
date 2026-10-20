@@ -2,6 +2,7 @@ import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 
+import { acceptTermsAtSignIn } from '@/data/terms';
 import { TERMS_CONSENT, TERMS_TITLE } from '@/domain/terms';
 import { SESSION_ENDED } from '@/lib/accessErrors';
 import { resendWaitSeconds, translateAuthError } from '@/lib/authErrors';
@@ -58,12 +59,16 @@ export default function SignInScreen() {
       if (mode === 'entrar') {
         // Entrar com a senha encerra uma recuperação que ficou pela metade neste aparelho.
         await finishRecovery();
-        const { error } = await supabase.auth.signInWithPassword({ email: trimmed, password });
+        const { data, error } = await supabase.auth.signInWithPassword({ email: trimmed, password });
         if (error) throw error;
+        // Esta tela diz que continuar é concordar com os termos: a conta sem aceite nenhum grava o de agora.
+        void acceptTermsAtSignIn(data.user.id, false);
       } else {
         const { data, error } = await supabase.auth.signUp({ email: trimmed, password });
         if (error) throw error;
-        if (!data.session) {
+        // Com o e-mail a confirmar ainda não há sessão: o aceite fica para a primeira entrada.
+        if (data.session) void acceptTermsAtSignIn(data.session.user.id, true);
+        else {
           notify('Confirme seu e-mail', 'Enviamos um link de confirmação. Depois é só entrar.');
           setMode('entrar');
         }

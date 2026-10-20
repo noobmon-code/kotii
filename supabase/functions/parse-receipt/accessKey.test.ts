@@ -7,6 +7,7 @@ import {
   existingOnConflict,
   isValidAccessKey,
   keyAfterRead,
+  photoIds,
   requestedAccessKey,
 } from './accessKey.ts';
 
@@ -116,4 +117,25 @@ Deno.test('existingOnConflict: outro erro ou nota sem chave: null, sem buscar', 
   assertEquals(await existingOnConflict(null, A, find), null);
   assertEquals(await existingOnConflict({ code: '23505' }, null, find), null);
   assertEquals(calls, []);
+});
+
+// Chave do QR com um CNPJ que passa no verificador (11.222.333/0001-81); o de A não passa.
+const QR_CNPJ = '11222333000181';
+const QR = '25261011222333000181650010000123451000012345';
+
+Deno.test('photoIds: sem CNPJ lido, o da chave do QR acha o mercado, e a leitura do servidor fica sem ele', () => {
+  assert(isValidAccessKey(QR));
+  assertEquals(photoIds({ accessKey: null, cnpj: null }, QR, false), {
+    storeCnpj: QR_CNPJ,
+    read: { accessKey: null, cnpj: null },
+  });
+});
+
+Deno.test('photoIds: o CNPJ lido pela IA vale para os dois; a foto de outra nota não usa o QR', () => {
+  const read = { accessKey: B, cnpj: '12345678000195' };
+  assertEquals(photoIds(read, QR, false), { storeCnpj: '12345678000195', read });
+  assertEquals(photoIds({ accessKey: B, cnpj: null }, QR, true).storeCnpj, null);
+  // Sem QR, ou com um QR cujo CNPJ não passa no verificador: só o que a IA leu.
+  assertEquals(photoIds({ accessKey: null, cnpj: null }, null, false).storeCnpj, null);
+  assertEquals(photoIds({ accessKey: null, cnpj: null }, A, false).storeCnpj, null);
 });

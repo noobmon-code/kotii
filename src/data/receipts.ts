@@ -1,9 +1,10 @@
 // Notas fiscais: leitura por foto (IA), revisão e confirmação.
 
 import { FunctionsHttpError } from '@supabase/supabase-js';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { nfceItemsToDraft, nfceReceiptRow, type NfceItem, type NfceQr } from '@/domain/nfce';
+import { RECEIPTS_PAGE } from '@/domain/receiptList';
 import type { ConfirmItem } from '@/domain/receiptReview';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Receipt, ReceiptItem, Unit } from '@/lib/types';
@@ -18,23 +19,95 @@ import {
   type ScanSource,
 } from './images';
 import { withFreshProducts } from './productMerge';
+import { readAll } from './readAll';
 
 const RECEIPT_COLUMNS =
   'id, store_id, purchased_at, total, access_key, image_path, extra_image_paths, source, status, created_at, paid_by, store:stores(id, name)';
 const ITEM_COLUMNS =
   'id, receipt_id, position, raw_description, suggested_name, suggested_category, product_id, quantity, unit, unit_price, total_price';
 
-export function useReceipts() {
-  return useQuery({
-    queryKey: ['receipts'],
-    queryFn: async () =>
-      unwrap(
-        await supabase
-          .from('receipts')
-          .select(`${RECEIPT_COLUMNS}, receipt_items(count)`)
-          .order('purchased_at', { ascending: false })
-          .limit(200),
-      ) as unknown as (Receipt & { receipt_items: { count: number }[] })[],
+/** Uma nota da lista de Finanças > Notas: com quantos itens ela tem. */
+export type ReceiptListRow = Receipt & { receipt_items: { count: number }[] };
+
+const LIST_COLUMNS = `${RECEIPT_COLUMNS}, receipt_items(count)`;
+/** Linhas por pedido dos rascunhos: o teto do servidor (max_rows padrão do Supabase). */
+const DRAFTS_PAGE = 1000;
+/** Rascunhos são poucos; passando disso a busca falha, em vez de esconder um. */
+const MAX_DRAFTS = 5000;
+
+/**
+ * Todos os rascunhos da casa ("Para revisar"), do mais recente para o mais antigo: nenhum fica de fora por ser
+ * antigo. Lidos inteiros, página por página pelo id (readAll); passando do que o app lê de uma vez, a busca
+ * falha em vez de cortar a lista.
+ */
+export async function fetchDraftReceipts(): Promise<ReceiptListRow[]> {
+  const rows = await readAll<ReceiptListRow>(
+    (after) => {
+      const query = supabase.from('receipts').select(LIST_COLUMNS, { count: 'exact' }).eq('status', 'draft');
+      return (after ? query.gt('id', after) : query).order('id').limit(DRAFTS_PAGE);
+    },
+    MAX_DRAFTS,
+    {
+      tooMany: 'São mais notas para revisar do que o app consegue ler de uma vez.',
+      incomplete: 'As notas para revisar não chegaram inteiras. Tente de novo.',
+    },
+  );
+  return rows.sort((a, b) => Date.parse(b.purchased_at) - Date.parse(a.purchased_at) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+}
+
+export function useDraftReceipts() {
+  return useQuery({ queryKey: ['receipts', 'drafts'], queryFn: fetchDraftReceipts });
+}
+
+/** Onde a página seguinte do histórico começa: logo depois desta nota, na ordem da compra (e do id, no empate). */
+export interface ReceiptCursor {
+  purchasedAt: string;
+  id: string;
+}
+
+export interface ReceiptHistoryPage {
+  rows: ReceiptListRow[];
+  /** Quantas notas confirmadas ainda vêm depois desta página; null quando o servidor não contou. */
+  remaining: number | null;
+}
+
+/**
+ * Uma página do histórico: as notas confirmadas da mais recente para a mais antiga, as que vêm depois de
+ * `after`. Pelo cursor (a data da compra e o id da última nota lida), não pela posição: uma nota nova ou
+ * apagada entre duas páginas não pula nem repete nenhuma. O servidor conta quantas vêm dali em diante, e o
+ * botão de ver mais diz quantas faltam.
+ */
+export async function fetchReceiptHistoryPage(after: ReceiptCursor | null): Promise<ReceiptHistoryPage> {
+  const query = supabase.from('receipts').select(LIST_COLUMNS, { count: 'exact' }).eq('status', 'confirmed');
+  // A data entre aspas: o horário traz ":" e "." (e o fuso, "+"), que o filtro "or" leria como separadores.
+  const older = after
+    ? query.or(`purchased_at.lt."${after.purchasedAt}",and(purchased_at.eq."${after.purchasedAt}",id.lt.${after.id})`)
+    : query;
+  const result = await older.order('purchased_at', { ascending: false }).order('id', { ascending: false }).limit(RECEIPTS_PAGE);
+  const rows = (unwrap(result) ?? []) as unknown as ReceiptListRow[];
+  if (result.count == null) return { rows, remaining: rows.length < RECEIPTS_PAGE ? 0 : null };
+  // O servidor diz que há mais e não manda: melhor o erro do que um histórico que acaba antes da hora.
+  if (rows.length === 0 && result.count > 0) throw new Error('O histórico de notas não chegou inteiro. Tente de novo.');
+  return { rows, remaining: Math.max(0, result.count - rows.length) };
+}
+
+/** O cursor da página seguinte; undefined quando não há mais nota. */
+export function nextReceiptCursor(page: ReceiptHistoryPage): ReceiptCursor | undefined {
+  const last = page.rows[page.rows.length - 1];
+  if (!last || page.remaining === 0) return undefined;
+  return { purchasedAt: last.purchased_at, id: last.id };
+}
+
+/**
+ * O histórico de Finanças > Notas, em páginas de RECEIPTS_PAGE notas confirmadas. A chave começa com
+ * 'receipts': confirmar, mudar ou excluir uma nota já recarrega (as páginas já abertas vêm de novo, em ordem).
+ */
+export function useReceiptHistory() {
+  return useInfiniteQuery({
+    queryKey: ['receipts', 'history'],
+    queryFn: ({ pageParam }) => fetchReceiptHistoryPage(pageParam),
+    initialPageParam: null as ReceiptCursor | null,
+    getNextPageParam: nextReceiptCursor,
   });
 }
 
@@ -299,26 +372,34 @@ export function useSetReceiptTotal(id: string) {
   });
 }
 
+/** O mercado escolhido na nota: um da casa, ou um novo, criado com o nome digitado. */
+export type StoreChoice = { id: string } | { name: string };
+
+async function storeIdFor(store: StoreChoice): Promise<string> {
+  if ('id' in store) return store.id;
+  const created = unwrap(await supabase.from('stores').insert({ name: store.name }).select('id').single()) as { id: string };
+  return created.id;
+}
+
+/**
+ * O mercado novo é criado antes de a nota gravar. Se a nota falhar depois, o mercado já existe: os mercados da
+ * casa são buscados de novo mesmo assim, para o seletor mostrá-lo e a pessoa escolhê-lo em vez de criar outro
+ * com o mesmo nome.
+ */
+function refreshCreatedStore(queryClient: QueryClient, store: StoreChoice) {
+  if ('name' in store) queryClient.invalidateQueries({ queryKey: ['stores'] });
+}
+
 export function useSetReceiptStore(receiptId: string) {
   const invalidate = useInvalidateReceipt(receiptId);
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (store: { id: string } | { name: string }) => {
-      let storeId: string;
-      if ('id' in store) {
-        storeId = store.id;
-      } else {
-        const created = unwrap(
-          await supabase.from('stores').insert({ name: store.name }).select('id').single(),
-        ) as { id: string };
-        storeId = created.id;
-      }
+    mutationFn: async (store: StoreChoice) => {
+      const storeId = await storeIdFor(store);
       unwrap(await supabase.from('receipts').update({ store_id: storeId }).eq('id', receiptId));
     },
-    onSuccess: () => {
-      invalidate();
-      queryClient.invalidateQueries({ queryKey: ['stores'] });
-    },
+    onSuccess: invalidate,
+    onSettled: (_data, _error, store) => refreshCreatedStore(queryClient, store),
   });
 }
 
@@ -400,6 +481,51 @@ export function useConfirmReceipt(receiptId: string) {
  * nenhuma não vê preço de fora).
  */
 const CONFIRMED_ITEM_KEYS = ['receipts', 'latestPrices', 'priceHistory', 'spending', 'purchaseRecords', 'sharedPrices'];
+
+/** Uma correção da nota já confirmada, uma por vez: a data da compra, o mercado ou o total. */
+export type ReceiptCorrection = { purchased_at: string } | { store: StoreChoice } | { total: number | null };
+
+/**
+ * Corrigir a nota já confirmada (domain/receiptEdit). Vale para a casa: a data
+ * põe a nota no mês certo dos gastos e do Mercado do mês, e o mercado e a data
+ * mudam o histórico de preço e o comparativo; os preços que a nota deu para
+ * outras casas não mudam (o gatilho de shared_prices só dispara na passagem de
+ * rascunho para confirmada, e a leitura do servidor some nela). A gravação só
+ * acha a nota confirmada e pede a linha de volta: `saved` falso é a nota
+ * excluída em outro aparelho. A linha gravada vai para a nota guardada antes de
+ * a busca nova chegar, para o campo que fecha mostrar o que foi gravado.
+ */
+export function useCorrectReceipt(receiptId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (change: ReceiptCorrection): Promise<{ saved: boolean; receipt: Receipt | null }> => {
+      const patch = 'store' in change ? { store_id: await storeIdFor(change.store) } : change;
+      const rows = unwrap(
+        await supabase.from('receipts').update(patch).eq('id', receiptId).eq('status', 'confirmed').select(RECEIPT_COLUMNS),
+      ) as unknown as Receipt[] | null;
+      const receipt = rows?.[0] ?? null;
+      return { saved: Boolean(receipt), receipt };
+    },
+    onSuccess: ({ receipt }, change) => {
+      const key = ['receipt', receiptId];
+      if (receipt) {
+        // Os itens guardados continuam os da leitura de antes, e a data dela também: a tela da nota sabe por ela
+        // se a nota em tela ficou atrás de um valor de item gravado.
+        queryClient.setQueryData<{ receipt: Receipt; items: ReceiptItem[] }>(key, (data) => data && { ...data, receipt }, {
+          updatedAt: queryClient.getQueryState(key)?.dataUpdatedAt,
+        });
+      }
+      for (const name of CONFIRMED_ITEM_KEYS) {
+        queryClient.invalidateQueries({ queryKey: [name] });
+      }
+      queryClient.invalidateQueries({ queryKey: key });
+    },
+    // O mercado criado aqui entra na lista dos mercados da casa, também quando a nota não gravou.
+    onSettled: (_data, _error, change) => {
+      if ('store' in change) refreshCreatedStore(queryClient, change.store);
+    },
+  });
+}
 
 export function useDeleteReceipt(receiptId: string) {
   const queryClient = useQueryClient();
