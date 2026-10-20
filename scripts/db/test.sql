@@ -9385,6 +9385,141 @@ end $$;
 delete from public.households where id in (:'hh_dl', :'hh_el');
 
 -- ---------------------------------------------------------------------------
+\echo '• nota confirmada corrigida: data, mercado e total ficam na casa, e a base comum não muda'
+-- Caio confirma uma nota do QR code (que compartilha) e depois corrige a data, o mercado e o total, como o app
+-- faz (uma coisa por vez, só na nota confirmada). Nina, de outra casa, não alcança a nota dele.
+\set user_nc1 '00000000-0000-0000-0000-0000000001c1'
+\set user_nc2 '00000000-0000-0000-0000-0000000001c2'
+reset role;
+insert into auth.users (id) values (:'user_nc1'), (:'user_nc2');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_nc2', false) \gset
+select set_config('test.nc_house_2', (public.create_household('Casa da Nina', 'Nina')).id::text, false) \gset
+select set_config('request.jwt.claim.sub', :'user_nc1', false) \gset
+select set_config('test.nc_house_1', (public.create_household('Casa do Caio', 'Caio')).id::text, false) \gset
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  cnpj constant text := '44555666000177';
+  s uuid;
+  r uuid;
+begin
+  insert into public.stores (name, cnpj) values ('Mercadinho da esquina', cnpj) returning id into s;
+  perform set_config('test.nc_store', s::text, false);
+  -- O mercado certo, que a casa já tinha (sem CNPJ, criado à mão).
+  insert into public.stores (name) values ('Feira de domingo') returning id into s;
+  perform set_config('test.nc_store_right', s::text, false);
+  insert into public.receipts (store_id, purchased_at, access_key, source, total)
+    values (current_setting('test.nc_store')::uuid, (today - 2 + time '10:00') at time zone 'America/Sao_Paulo',
+      '352610' || cnpj || repeat('0', 23) || '1', 'qrcode', 14.48)
+    returning id into r;
+  perform set_config('test.nc_receipt', r::text, false);
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, quantity, unit, unit_price, total_price) values
+    (r, 0, 'LEITE NC INTEGRAL 1L', 'laticinios', 1, 'un', 5.49, 5.49),
+    (r, 1, 'PAO NC FRANCES', 'padaria', 1, 'kg', 8.99, 8.99);
+end $$;
+
+reset role;
+set role service_role;
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  cnpj constant text := '44555666000177';
+  rid uuid;
+begin
+  insert into public.receipt_reads (household_id, source, access_key, store_cnpj, store_name, purchased_on, lines)
+    values (current_setting('test.nc_house_1')::uuid, 'qrcode', '352610' || cnpj || repeat('0', 23) || '1', cnpj, 'MERCADINHO DA ESQUINA LTDA', today - 2,
+      jsonb_build_array(
+        jsonb_build_object('description', 'LEITE NC INTEGRAL 1L', 'unit', 'un', 'unit_price', 5.49),
+        jsonb_build_object('description', 'PAO NC FRANCES', 'unit', 'kg', 'unit_price', 8.99)))
+    returning id into rid;
+  perform set_config('test.nc_read', rid::text, false);
+end $$;
+
+reset role;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_nc1', false) \gset
+do $$
+begin
+  update public.receipts set read_id = current_setting('test.nc_read')::uuid where id = current_setting('test.nc_receipt')::uuid;
+  perform public.confirm_receipt(current_setting('test.nc_receipt')::uuid, '[]');
+end $$;
+
+-- A base comum depois da confirmação, como ficou: é com ela que o resto é comparado.
+reset role;
+select set_config('test.nc_shared', (
+  select md5(coalesce(string_agg(sp::text, '|' order by sp.store_cnpj, sp.item_key, sp.unit, sp.seen_on), '')) from public.shared_prices sp
+), false) \gset
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+begin
+  assert (select array_agg(item_key || ' ' || unit_price || ' ' || seen_on || ' ' || store_name order by item_key)
+            from public.shared_prices where item_key like '% NC %')
+    = array[
+      'LEITE NC INTEGRAL 1L 5.4900 ' || (today - 2) || ' MERCADINHO DA ESQUINA LTDA',
+      'PAO NC FRANCES 8.9900 ' || (today - 2) || ' MERCADINHO DA ESQUINA LTDA'
+    ],
+    'the confirmation shared the two lines, as read';
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_nc1', false) \gset
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  r constant uuid := current_setting('test.nc_receipt')::uuid;
+  n integer;
+begin
+  -- A data, o mercado e o total, um de cada vez e só na nota confirmada (o filtro do app): o banco aceita os três.
+  update public.receipts set purchased_at = (today - 9 + time '12:00') at time zone 'America/Sao_Paulo' where id = r and status = 'confirmed';
+  get diagnostics n = row_count;
+  assert n = 1, 'the purchase date of a confirmed receipt can be corrected';
+  update public.receipts set store_id = current_setting('test.nc_store_right')::uuid where id = r and status = 'confirmed';
+  get diagnostics n = row_count;
+  assert n = 1, 'and its store';
+  update public.receipts set total = 20.00 where id = r and status = 'confirmed';
+  get diagnostics n = row_count;
+  assert n = 1, 'and its total';
+  -- Também um mercado novo, criado na hora, e "sem total".
+  insert into public.stores (name) values ('Hortifruti novo');
+  update public.receipts set store_id = (select id from public.stores where name = 'Hortifruti novo'), total = null where id = r and status = 'confirmed';
+  update public.receipts set store_id = current_setting('test.nc_store_right')::uuid, total = 20.00 where id = r and status = 'confirmed';
+  -- Nem regravar o status de uma nota já confirmada passa pelo gatilho (ele só olha a passagem de rascunho para confirmada).
+  update public.receipts set status = 'confirmed' where id = r;
+  assert (select (purchased_at at time zone 'America/Sao_Paulo')::date = today - 9 and store_id = current_setting('test.nc_store_right')::uuid
+                 and total = 20.00 and status = 'confirmed' and read_id is null
+            from public.receipts where id = r),
+    'the receipt keeps the corrections, still confirmed and without a read';
+end $$;
+
+-- Nina, de outra casa, não acha a nota do Caio para corrigir.
+select set_config('request.jwt.claim.sub', :'user_nc2', false) \gset
+do $$
+declare
+  n integer;
+begin
+  update public.receipts set purchased_at = now(), total = 1 where id = current_setting('test.nc_receipt')::uuid;
+  get diagnostics n = row_count;
+  assert n = 0, 'a member of another household cannot correct the receipt';
+end $$;
+
+reset role;
+do $$
+begin
+  assert (
+    select md5(coalesce(string_agg(sp::text, '|' order by sp.store_cnpj, sp.item_key, sp.unit, sp.seen_on), '')) from public.shared_prices sp
+  ) = current_setting('test.nc_shared'),
+    'correcting a confirmed receipt adds nothing to the shared prices and changes no line (day, store name, price)';
+  assert (select (purchased_at at time zone 'America/Sao_Paulo')::date from public.receipts where id = current_setting('test.nc_receipt')::uuid)
+    = (now() at time zone 'America/Sao_Paulo')::date - 9,
+    'and the other household did not change it';
+  assert (select count(*) from public.receipt_reads where household_id = current_setting('test.nc_house_1')::uuid) = 0,
+    'there is no read left to share again';
+end $$;
+delete from public.households where id in (current_setting('test.nc_house_1')::uuid, current_setting('test.nc_house_2')::uuid);
+
+-- ---------------------------------------------------------------------------
 \echo '• Termos: cada pessoa grava e lê só o próprio aceite, uma vez por versão'
 \set user_t1 '00000000-0000-0000-0000-0000000001b1'
 \set user_t2 '00000000-0000-0000-0000-0000000001b2'

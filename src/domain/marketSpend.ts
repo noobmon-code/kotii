@@ -813,8 +813,8 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
             label: plural(laterReceipts.length, 'nota com data depois de hoje', 'notas com data depois de hoje'),
             hint:
               laterReceipts.length === 1
-                ? 'Fica de fora desta conta até o dia chegar. Se a data está errada, abra a nota para conferir.'
-                : 'Ficam de fora desta conta até o dia chegar. Se a data está errada, abra a nota para conferir.',
+                ? 'Fica de fora desta conta até o dia chegar. Se a data está errada, dá para corrigir na nota.'
+                : 'Ficam de fora desta conta até o dia chegar. Se a data está errada, dá para corrigir na nota.',
             receipts: laterReceipts.map((entry) => ref(entry.receipt, entry.date, money(entry.cents))),
           }
         : null,

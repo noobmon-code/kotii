@@ -720,7 +720,7 @@ describe('sem notas, carregando e com erro', () => {
     expect(text).toContain('Sem contar 1 nota com data depois de hoje.');
     await press('Como este total fecha. Sem contar 1 nota com data depois de hoje.');
     expect(page()).toContain(
-      ['1 nota com data depois de hoje', 'Fica de fora desta conta até o dia chegar. Se a data está errada, abra a nota para conferir.', 'Dia', '· 20 out', 'R$ 100,00'].join('\n'),
+      ['1 nota com data depois de hoje', 'Fica de fora desta conta até o dia chegar. Se a data está errada, dá para corrigir na nota.', 'Dia', '· 20 out', 'R$ 100,00'].join('\n'),
     );
     await press('Dia, 20 out: R$ 100,00. Abrir a nota');
     expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/nota/[id]', params: { id: 'm2' } });
