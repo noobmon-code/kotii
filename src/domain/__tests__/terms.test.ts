@@ -49,6 +49,14 @@ describe('termos de uso', () => {
     expect(prices).toContain('nem quantas são');
   });
 
+  it('os preços compartilhados: o que fica de fora, o que a revisão segura e o nome do mercado sem CPF', () => {
+    const prices = section('Preços compartilhados');
+    for (const part of ['os suplementos', 'os primeiros socorros', 'os itens de higiene pessoal', 'o que você corrige na revisão', 'troca o mercado ou a data']) {
+      expect(prices).toContain(part);
+    }
+    expect(prices).toContain('sem o CPF');
+  });
+
   it('não promete o que não cumpre: no dia em que só uma casa comprou num mercado, os preços contam o que ela comprou', () => {
     const prices = section('Preços compartilhados');
     expect(prices).toContain('Ninguém vê de qual casa veio um preço');

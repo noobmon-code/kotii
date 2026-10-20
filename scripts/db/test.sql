@@ -5768,6 +5768,241 @@ end $$;
 reset time zone;
 
 -- ---------------------------------------------------------------------------
+\echo '• preços compartilhados: nome do mercado sem CPF, e a foto com mercado ou dia trocados na revisão fica na casa'
+-- Fábio compra no mercadinho de um MEI (razão social com CPF) e lê notas pela foto, corrigindo algumas na revisão.
+\set user_f1 '00000000-0000-0000-0000-0000000001a1'
+reset role;
+insert into auth.users (id) values (:'user_f1');
+truncate public.shared_prices;
+set time zone 'UTC';
+select set_config('test.cf_today', ((now() at time zone 'America/Sao_Paulo')::date)::text, false) \gset
+
+do $$
+declare
+  fn text;
+  who text;
+  cnpj constant text := '66777888000199';
+begin
+  -- As duas funções novas são só do gatilho (e da limpeza): ninguém de fora as chama.
+  foreach fn in array array['public.shared_store_name(text, text)', 'public.access_key_valid(text)'] loop
+    foreach who in array array['public', 'anon', 'authenticated'] loop
+      assert not has_function_privilege(who, fn, 'execute'), format('%s cannot execute %s', who, fn);
+    end loop;
+    assert (select proconfig from pg_proc where oid = fn::regprocedure) = array['search_path=""'], format('%s has an empty search_path', fn);
+  end loop;
+  -- O gatilho recriado guarda os atributos de antes.
+  assert (select prosecdef from pg_proc where oid = 'public.share_receipt_prices()'::regprocedure), 'the trigger function is still security definer';
+  assert (select proconfig from pg_proc where oid = 'public.share_receipt_prices()'::regprocedure) @> array['search_path=""', 'lock_timeout=200ms'],
+    'with an empty search_path and the 200 ms lock_timeout';
+  foreach who in array array['public', 'anon', 'authenticated'] loop
+    assert not has_function_privilege(who, 'public.share_receipt_prices()', 'execute'), format('%s cannot execute the trigger function', who);
+  end loop;
+
+  -- O dígito verificador, conferido com chaves calculadas como o app calcula (accessKeyCheckDigit).
+  assert public.access_key_valid('41261066777888000199650010000012341123456798'), 'a key with its check digit (8)';
+  assert public.access_key_valid('41261066777888000199650010000012341123456801'), 'a key whose rest is 10 (check digit 1)';
+  assert public.access_key_valid('41261066777888000199650010000012341123456810'), 'a key whose rest is 0 or 1 (check digit 0)';
+  assert public.access_key_valid('35261099888777000166650010000007771876543228'), 'another valid key';
+  assert not public.access_key_valid('41261066777888000199650010000012341123456797'), 'one digit off fails';
+  assert not public.access_key_valid('41261066777888000199650010000012341123456789'), 'a swapped pair fails';
+  assert not public.access_key_valid('4126106677788800019965001000001234112345679'), '43 digits fail';
+  assert not public.access_key_valid(null), 'no key is no valid key';
+
+  -- O nome: sai a sequência de 11 dígitos (junta ou separada, e o "CPF" escrito antes), e o que sobra
+  -- em volta dela; o CNPJ (14 dígitos) e o resto do nome ficam como estavam.
+  assert public.shared_store_name('JOAO DA SILVA 12345678901', cnpj) = 'JOAO DA SILVA', 'a CPF with no punctuation';
+  assert public.shared_store_name('MARIA DE SOUZA 123.456.789-01', cnpj) = 'MARIA DE SOUZA', 'a CPF with dots and a dash';
+  assert public.shared_store_name('12345678901 ANA LIMA', cnpj) = 'ANA LIMA', 'a CPF at the start';
+  assert public.shared_store_name('MERCADINHO DA ANA - CPF: 123.456.789-01', cnpj) = 'MERCADINHO DA ANA', 'the CPF label and a hanging dash go with it';
+  assert public.shared_store_name('JOSE  123456789-01  PEREIRA ME', cnpj) = 'JOSE PEREIRA ME', 'a CPF in the middle';
+  assert public.shared_store_name('123.456.789-01', cnpj) = 'CNPJ ' || cnpj, 'only a CPF: the placeholder of the app';
+  assert public.shared_store_name('CPF 12345678901 -', cnpj) = 'CNPJ ' || cnpj, 'nothing but the CPF and punctuation: the placeholder';
+  assert public.shared_store_name('ATACADAO 11222333000181', cnpj) = 'ATACADAO 11222333000181', 'a CNPJ (14 digits) stays';
+  assert public.shared_store_name('ATACADAO 11.222.333/0001-81', cnpj) = 'ATACADAO 11.222.333/0001-81', 'a punctuated CNPJ stays';
+  assert public.shared_store_name('LOJA 1234567890', cnpj) = 'LOJA 1234567890', 'ten digits stay';
+  -- Outros jeitos de escrever o CPF (uma foto lida pela IA, a página de uma Sefaz) também saem.
+  assert public.shared_store_name('JOSE PEREIRA 123.456.789.01', cnpj) = 'JOSE PEREIRA', 'a dot before the check digits';
+  assert public.shared_store_name('JOSE PEREIRA 123 456 789 01', cnpj) = 'JOSE PEREIRA', 'a CPF split by spaces';
+  assert public.shared_store_name('JOSE PEREIRA 123456789 01', cnpj) = 'JOSE PEREIRA', 'a space before the check digits';
+  assert public.shared_store_name('JOSE PEREIRA CPF 123.456.789/01', cnpj) = 'JOSE PEREIRA', 'a slash before the check digits';
+  assert public.shared_store_name('JOSE PEREIRA 123.456.789 - 01', cnpj) = 'JOSE PEREIRA', 'a spaced dash before the check digits';
+  assert public.shared_store_name('JOSE PEREIRA 123-456-789-01', cnpj) = 'JOSE PEREIRA', 'a CPF split by dashes';
+  assert public.shared_store_name('ATACADAO 11 222 333 0001 81', cnpj) = 'ATACADAO 11 222 333 0001 81', 'a CNPJ split by spaces stays';
+  assert public.shared_store_name('LOJA (11) 98765-4321', cnpj) = 'LOJA (11) 98765-4321', 'a phone number stays';
+  -- Os parênteses ou colchetes que embrulhavam o CPF saem junto; os outros ficam.
+  assert public.shared_store_name('JOAO DA SILVA (12345678901)', cnpj) = 'JOAO DA SILVA', 'brackets around the CPF go with it';
+  assert public.shared_store_name('JOAO DA SILVA (CPF 123.456.789-01)', cnpj) = 'JOAO DA SILVA', 'brackets around the CPF and its label';
+  assert public.shared_store_name('JOAO DA SILVA [123.456.789-01] ME', cnpj) = 'JOAO DA SILVA ME', 'square brackets in the middle';
+  assert public.shared_store_name('JOAO (FILIAL) 12345678901', cnpj) = 'JOAO (FILIAL)', 'brackets with a word stay';
+  assert public.shared_store_name('SUPER BOM ( )', cnpj) = 'SUPER BOM ( )', 'a name without a CPF keeps its brackets, as before';
+  assert public.shared_store_name('CNPJ ' || cnpj, cnpj) = 'CNPJ ' || cnpj, 'the placeholder stays';
+  assert public.shared_store_name('  SUPER   BOM LTDA.  ', cnpj) = 'SUPER   BOM LTDA.', 'a name without a CPF is only trimmed, as before';
+  assert public.shared_store_name(repeat('ABCDEFGHI ', 11) || '123.456.789-01 FIM', cnpj) = repeat('ABCDEFGHI ', 11) || 'FIM',
+    'the CPF goes before the cut at 120 characters';
+  assert public.shared_store_name(null, cnpj) = 'CNPJ ' || cnpj and public.shared_store_name('   ', cnpj) = 'CNPJ ' || cnpj, 'no name: the placeholder';
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_f1', false) \gset
+select set_config('test.cf_house', (public.create_household('Casa do Fábio', 'Fábio')).id::text, false) \gset
+
+-- As leituras, como o servidor as grava. Todas do mercadinho (o mesmo CNPJ), do mesmo dia, com uma linha cada.
+reset role;
+set role service_role;
+do $$
+declare
+  d constant date := current_setting('test.cf_today')::date - 4;
+  cnpj constant text := '66777888000199';
+  hh constant uuid := current_setting('test.cf_house')::uuid;
+  k text;
+  rid uuid;
+begin
+  foreach k in array array['qr', 'ok', 'store', 'hand', 'nostore', 'day', 'midnight', 'badkey', 'badother', 'other', 'onlycpf'] loop
+    insert into public.receipt_reads (household_id, source, access_key, store_cnpj, store_name, purchased_on, lines)
+      values (
+        hh,
+        case when k = 'qr' then 'qrcode' else 'ai' end,
+        case k
+          -- QR code: a chave do link, conferida na página da Sefaz; o dígito verificador nunca foi olhado aqui.
+          when 'qr' then '35261066777888000199000000000000000000000002'
+          -- Foto com a chave certa (do Paraná).
+          when 'ok' then '41261066777888000199650010000012341123456798'
+          -- A mesma com um dígito lido errado: não vale (nem estado).
+          when 'badkey' then '41261066777888000199650010000012341123456797'
+          -- Chave errada que nem é deste mercado: não vale, e por isso também não segura a nota.
+          when 'badother' then '35261099888777000166650010000007771876543229'
+          -- Chave certa de outro emissor: segura a nota, como antes.
+          when 'other' then '35261099888777000166650010000007771876543228'
+          else null
+        end,
+        cnpj,
+        case k
+          when 'qr' then 'MARIA DE SOUZA 123.456.789-01'
+          when 'onlycpf' then '123.456.789-01'
+          else 'JOAO DA SILVA 12345678901'
+        end,
+        d,
+        jsonb_build_array(jsonb_build_object('description', 'ITEM DA NOTA ' || upper(k), 'unit', 'un', 'unit_price', 5.00)))
+      returning id into rid;
+    perform set_config('test.cf_read_' || k, rid::text, false);
+  end loop;
+end $$;
+
+reset role;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_f1', false) \gset
+do $$
+declare
+  d constant date := current_setting('test.cf_today')::date - 4;
+  s_mei uuid;
+  s_other uuid;
+  s_hand uuid;
+  k text;
+  s uuid;
+  bought timestamptz;
+  r uuid;
+begin
+  insert into public.stores (name, cnpj) values ('Mercadinho do João', '66777888000199') returning id into s_mei;
+  -- O mercado que a IA leu errado e a casa trocou na revisão (outro CNPJ), e um criado à mão (sem CNPJ).
+  insert into public.stores (name, cnpj) values ('Super da esquina', '77888999000155') returning id into s_other;
+  insert into public.stores (name) values ('Feirinha') returning id into s_hand;
+
+  foreach k in array array['qr', 'ok', 'store', 'hand', 'nostore', 'day', 'midnight', 'badkey', 'badother', 'other', 'onlycpf'] loop
+    s := case k when 'store' then s_other when 'hand' then s_hand when 'nostore' then null
+                -- QR code com o mercado trocado na revisão: continua compartilhando pela leitura.
+                when 'qr' then s_other
+                else s_mei end;
+    bought := case k
+            -- A data trocada na revisão: um dia antes.
+            when 'day' then (d - 1 + time '10:00') at time zone 'America/Sao_Paulo'
+            -- Às 23:30 em São Paulo (em UTC já é o dia seguinte): o dia da nota é o de São Paulo.
+            when 'midnight' then (d + time '23:30') at time zone 'America/Sao_Paulo'
+            -- QR code com a data trocada na revisão: continua compartilhando pela leitura.
+            when 'qr' then (d - 2 + time '10:00') at time zone 'America/Sao_Paulo'
+            else (d + time '10:00') at time zone 'America/Sao_Paulo'
+          end;
+    insert into public.receipts (store_id, purchased_at, source, read_id)
+      values (s, bought, case when k = 'qr' then 'qrcode' else 'ai' end, current_setting('test.cf_read_' || k)::uuid)
+      returning id into r;
+    insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+      values (r, 'ITEM DA NOTA ' || upper(k), 'graos', 'un', 5.00, 5.00);
+    perform public.confirm_receipt(r, '[]');
+  end loop;
+end $$;
+
+reset role;
+do $$
+declare
+  today constant date := current_setting('test.cf_today')::date;
+  d constant date := today - 4;
+begin
+  assert (select array_agg(item_key || ' | ' || store_name || ' | ' || coalesce(store_uf, '-') || ' | ' || seen_on order by item_key)
+            from public.shared_prices)
+    = array[
+      -- A chave errada é ignorada: compartilha sem estado.
+      'ITEM DA NOTA BADKEY | JOAO DA SILVA | - | ' || d,
+      'ITEM DA NOTA BADOTHER | JOAO DA SILVA | - | ' || d,
+      'ITEM DA NOTA MIDNIGHT | JOAO DA SILVA | - | ' || d,
+      -- A chave certa dá o estado.
+      'ITEM DA NOTA OK | JOAO DA SILVA | 41 | ' || d,
+      'ITEM DA NOTA ONLYCPF | CNPJ 66777888000199 | - | ' || d,
+      -- QR code: o mercado, o dia e a chave da leitura, mesmo com a nota mudada na revisão.
+      'ITEM DA NOTA QR | MARIA DE SOUZA | 35 | ' || d
+    ],
+    'the CPF leaves the store name; a photo shares only with the read''s CNPJ and São Paulo day; a key with a wrong check digit gives no state';
+  -- Foto com o mercado trocado (outro CNPJ, ou um sem CNPJ, ou nenhum), com a data trocada, ou com a chave certa
+  -- de outro emissor: nada.
+  assert (select count(*) from public.shared_prices where item_key ~ 'ITEM DA NOTA (STORE|HAND|NOSTORE|DAY|OTHER)$') = 0,
+    'a photo whose store or day was changed in the review stays at home';
+  assert (select count(*) from public.shared_prices where store_name ~ '[0-9]{3}[.]?[0-9]{3}[.]?[0-9]{3}-?[0-9]{2}' and store_name !~ '^CNPJ ') = 0,
+    'no CPF reached the shared table';
+  assert (select count(*) from public.receipt_reads where household_id = current_setting('test.cf_house')::uuid) = 0,
+    'every read was used once and deleted, shared or not';
+end $$;
+
+-- A limpeza única: o nome com CPF que já estava na base sai limpo. Para valer a conta da própria migração, ela é
+-- aplicada de novo aqui, sobre linhas postas direto (como as gravadas antes dela), e tudo é desfeito no fim.
+begin;
+do $$
+declare
+  today constant date := current_setting('test.cf_today')::date;
+begin
+  truncate public.shared_prices;
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on) values
+    -- Já pode ser lida, com o nome do MEI.
+    ('66777888000199', '35', 'JOAO DA SILVA 12345678901', 'ARROZ VELHO', 'un', today - 9, 20.00, today - 8),
+    -- Ainda não pode ser lida, com o CPF pontuado.
+    ('66777888000199', '35', 'JOAO DA SILVA 123.456.789-01', 'FEIJAO NOVO', 'un', today, 8.00, today + 1),
+    -- Só o CPF.
+    ('66777888000188', null, '12345678901', 'LEITE SO CPF', 'un', today - 3, 4.00, today - 2),
+    -- Sem CPF: não muda.
+    ('11222333000181', '35', 'ATACADAO 11222333000181', 'CAFE', 'un', today - 3, 18.00, today - 2),
+    ('11222333000181', '35', 'SUPER   BOM LTDA.', 'ACUCAR', 'un', today - 3, 4.00, today - 2);
+end $$;
+\ir ../../supabase/migrations/20261020120000_shared_prices_fixes.sql
+do $$
+declare
+  today constant date := current_setting('test.cf_today')::date;
+begin
+  assert (select array_agg(item_key || ' | ' || store_name || ' | ' || coalesce(store_uf, '-') || ' | ' || unit_price || ' | ' || seen_on || ' | ' || visible_on order by item_key)
+            from public.shared_prices)
+    = array[
+      'ACUCAR | SUPER   BOM LTDA. | 35 | 4.0000 | ' || (today - 3) || ' | ' || (today - 2),
+      'ARROZ VELHO | JOAO DA SILVA | 35 | 20.0000 | ' || (today - 9) || ' | ' || (today - 8),
+      'CAFE | ATACADAO 11222333000181 | 35 | 18.0000 | ' || (today - 3) || ' | ' || (today - 2),
+      'FEIJAO NOVO | JOAO DA SILVA | 35 | 8.0000 | ' || today || ' | ' || (today + 1),
+      'LEITE SO CPF | CNPJ 66777888000188 | - | 4.0000 | ' || (today - 3) || ' | ' || (today - 2)
+    ],
+    'the one-time cleanup takes the CPF out of stored names, readable or not, and touches nothing else';
+  -- Aplicada de novo, a migração deixa o gatilho como estava.
+  assert (select prosecdef from pg_proc where oid = 'public.share_receipt_prices()'::regprocedure)
+    and (select proconfig from pg_proc where oid = 'public.share_receipt_prices()'::regprocedure) @> array['search_path=""', 'lock_timeout=200ms'],
+    'the trigger function keeps its attributes';
+end $$;
+rollback;
+reset time zone;
+
+-- ---------------------------------------------------------------------------
 \echo '• zero não é preço: o item sem valor não vira observação nem último preço'
 -- Pri mora sozinha; o leite dela foi comprado com preço e, depois, sem valor.
 \set user_p '00000000-0000-0000-0000-00000000001d'
