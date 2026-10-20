@@ -48,6 +48,7 @@ import { MarketTripBanner } from '@/features/MarketTrip';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useJustListed } from '@/features/RecentPurchases';
 import { SuppliesTodaySection } from '@/features/SuppliesSection';
+import { TermsNoticeCard } from '@/features/TermsNotice';
 import { WeatherCard } from '@/features/WeatherCard';
 import { useHousehold } from '@/lib/auth';
 import { settledData } from '@/lib/settledData';
@@ -323,6 +324,9 @@ export default function TodayScreen() {
         </View>
         <SkyArt period={period} size={104} />
       </View>
+
+      {/* Os termos mudaram (ou a pessoa nunca os viu): um aviso que some no "Entendi". */}
+      <TermsNoticeCard />
 
       {/* Alguém da casa está indo às compras: ainda dá tempo de pôr na lista o que falta. */}
       <MarketTripBanner openable />

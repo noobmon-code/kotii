@@ -2,16 +2,19 @@ import { router, useNavigation } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { StyleSheet } from 'react-native';
 
+import { useTermsNotice } from '@/data/terms';
 import { TERMS_SECTIONS, TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
 import { Button, Card, Screen, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 /**
  * Termos de uso e privacidade. Abre com ou sem conta (da tela de entrar, da aba Família e do cartão dos preços
- * compartilhados): não lê nada da casa nem do banco, só o texto de domain/terms.
+ * compartilhados): não lê nada da casa, só o texto de domain/terms. Com conta e sem o aceite desta versão
+ * (data/terms), termina com o mesmo "Entendi" do aviso da tela Hoje.
  */
 export default function TermsScreen() {
   const canGoBack = useCanGoBack();
+  const { notice, accept } = useTermsNotice();
   return (
     <Screen>
       {canGoBack ? null : (
@@ -33,6 +36,16 @@ export default function TermsScreen() {
         </Section>
       ))}
       <Text variant="small">{termsVersionLabel()}</Text>
+      {notice ? (
+        <Button
+          title="Entendi"
+          onPress={() => {
+            void accept();
+            // Leu até o fim e entendeu: volta para onde estava (em geral, o aviso da tela Hoje, que já sumiu).
+            if (canGoBack) router.back();
+          }}
+        />
+      ) : null}
     </Screen>
   );
 }
