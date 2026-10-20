@@ -81,3 +81,20 @@ Deno.test('pageAccessKey: a chave impressa, em grupos de 4, ou null', () => {
   assertEquals(pageAccessKey('<p>Chave de acesso: 3526 1011</p>'), null);
   assertEquals(pageAccessKey(`<a href="ver.jsp?chave=${key}">Ver</a>`), null);
 });
+
+Deno.test('item sem valor legível fica, com total 0, para a revisão perguntar; título solto não vira item', () => {
+  const html = `
+  <table id="tabResult">
+    <tr><td><span class="txtTit">CAFE PILAO 500G</span><span class="RCod">(Código: 789 )</span>
+      <span class="Rqtd"><strong>Qtde.:</strong>2</span><span class="RUN"><strong>UN: </strong>UN</span>
+      <span class="RvlUnit"><strong>Vl. Unit.:</strong>&nbsp;18,9</span></td>
+      <td class="txtTit noWrap">Vl. Total<br /><span class="valor"></span></td></tr>
+    <tr><td><span class="txtTit">AÇÚCAR 1KG</span>
+      <span class="Rqtd"><strong>Qtde.:</strong>1</span><span class="RUN"><strong>UN: </strong>UN</span></td></tr>
+  </table>
+  <div><span class="txtTit">Informações gerais da Nota</span></div>`;
+  assertEquals(parseNfceHtml(html).items, [
+    { description: 'CAFE PILAO 500G', code: '789', quantity: 2, unit: 'UN', unitPrice: 18.9, totalPrice: 0 },
+    { description: 'AÇÚCAR 1KG', code: null, quantity: 1, unit: 'UN', unitPrice: 0, totalPrice: 0 },
+  ]);
+});

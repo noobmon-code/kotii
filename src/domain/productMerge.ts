@@ -385,6 +385,15 @@ export const MERGE_NO_ANSWER = 'A resposta não chegou, e pode ser que os produt
  * esta tela estava aberta. A tela busca os produtos de novo; a pessoa confere e repete.
  */
 export const PRODUCT_MERGED_AWAY = 'Um produto daqui foi juntado com outro. Confira e tente de novo.';
+/**
+ * Renomear para o nome de outro produto da casa (o banco não deixa dois com o mesmo nome, sem contar maiúsculas):
+ * se forem a mesma coisa, o caminho é juntar os dois.
+ */
+export const PRODUCT_NAME_TAKEN = 'Já existe um produto com esse nome.';
+/** "Já existe o produto “Arroz”. Se é o mesmo, junte os dois: as compras e os preços ficam num produto só." */
+export function productNameTakenHint(otherName: string): string {
+  return `Já existe o produto “${otherName}”. Se é o mesmo, junte os dois: as compras e os preços ficam num produto só.`;
+}
 /** O banco não conseguiu passar tudo para o outro produto e desistiu de juntar (55000 de merge_products). */
 export const MERGE_BLOCKED = 'Não deu para juntar: uma parte do que é deste produto não pôde passar para o outro. Nada foi mudado.';
 /**

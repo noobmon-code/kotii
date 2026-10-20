@@ -269,10 +269,11 @@ export default function ReceiptScreen() {
   const resolvedItems = new Map(items.map((item) => [item.id, resolveItem(item, overrides[item.id], catalog, purchasedOn)]));
   // Produto que sumiu do catálogo com a revisão aberta (foi juntado com outro em outro aparelho).
   const gone = goneProducts(items, overrides, catalog);
+  // A descrição da nota traz o tamanho da embalagem: o pacote de 5 kg se compara pelo preço por kg.
   const alertItems: AlertItem[] = items.flatMap((item) => {
     const product = resolvedItems.get(item.id)!.product;
     return product.kind === 'existing'
-      ? [{ id: item.id, productId: product.productId, unit: item.unit, unitPrice: item.unit_price, quantity: item.quantity }]
+      ? [{ id: item.id, productId: product.productId, unit: item.unit, unitPrice: item.unit_price, quantity: item.quantity, description: item.raw_description }]
       : [];
   });
   const alerts = priceAlerts(alertItems, priceHistory.data ?? [], { receiptId: receipt.id, storeId: receipt.store_id, purchasedOn });

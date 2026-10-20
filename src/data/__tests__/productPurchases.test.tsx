@@ -329,9 +329,10 @@ describe('as compras de um produto', () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
       });
     }
+    // Todas de 5 kg (um tamanho só): o preço segue por pacote, com o tamanho para a linha mostrar.
     expect(seen.byStore).toEqual([
-      { storeId: 'atacadao', unit: 'un', unitPrice: 19.9, purchasedAt: '2025-02-01T15:00:00+00:00' },
-      { storeId: 'assai', unit: 'un', unitPrice: 26.5, purchasedAt: '2026-10-05T15:00:00+00:00' },
+      { storeId: 'atacadao', unit: 'un', unitPrice: 19.9, purchasedAt: '2025-02-01T15:00:00+00:00', packLabel: '5 kg', packagePrice: null },
+      { storeId: 'assai', unit: 'un', unitPrice: 26.5, purchasedAt: '2026-10-05T15:00:00+00:00', packLabel: '5 kg', packagePrice: null },
     ]);
     expect(seen.purchases).toHaveLength(1504);
     // As duas leituras, uma busca: duas páginas de mil, nem um pedido a mais.

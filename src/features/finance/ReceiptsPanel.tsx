@@ -1,21 +1,32 @@
 import { router } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
-import { useReceipts } from '@/data/receipts';
+import { useDraftReceipts, useReceiptHistory, type ReceiptListRow } from '@/data/receipts';
 import { formatShortDate, toISODate } from '@/domain/dates';
 import { formatBRL } from '@/domain/money';
+import { receiptsByMonth, receiptsMore } from '@/domain/receiptList';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { Badge, Button, EmptyState, ErrorNotice, IconBadge, ListCard, ListRow, Loading, Row, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
+/**
+ * Finanças > Notas: os rascunhos para revisar (todos, também os antigos) e o histórico das confirmadas, da mais
+ * recente para a mais antiga, separado por mês e em páginas: o que ainda não veio é contado, com o botão de
+ * ver mais. Nenhuma nota some calada.
+ */
 export function ReceiptsPanel() {
-  const receipts = useReceipts();
+  const drafts = useDraftReceipts();
+  const history = useReceiptHistory();
   const scanner = useReceiptScanner();
 
-  const drafts = (receipts.data ?? []).filter((r) => r.status === 'draft');
-  const confirmed = (receipts.data ?? []).filter((r) => r.status === 'confirmed');
+  const confirmed = history.data?.pages.flatMap((page) => page.rows) ?? [];
+  const months = receiptsByMonth(confirmed);
+  const shown = months.reduce((sum, group) => sum + group.receipts.length, 0);
+  const lastPage = history.data?.pages[history.data.pages.length - 1];
+  const more = lastPage && history.hasNextPage ? receiptsMore(shown, lastPage.remaining) : null;
+  const empty = drafts.data?.length === 0 && confirmed.length === 0 && history.data !== undefined;
 
-  const renderReceipt = (r: NonNullable<typeof receipts.data>[number]) => {
+  const renderReceipt = (r: ReceiptListRow) => {
     const count = r.receipt_items[0]?.count ?? 0;
     return (
       <ListRow
@@ -45,10 +56,9 @@ export function ReceiptsPanel() {
         </Row>
       </View>
 
-      {receipts.isPending ? <Loading /> : null}
-      {receipts.isError ? <ErrorNotice error={receipts.error} onRetry={() => receipts.refetch()} /> : null}
+      {drafts.isPending || history.isPending ? <Loading /> : null}
 
-      {receipts.data && receipts.data.length === 0 ? (
+      {empty ? (
         <EmptyState
           icon="receipt-text-outline"
           title="Nenhuma nota ainda"
@@ -56,15 +66,35 @@ export function ReceiptsPanel() {
         />
       ) : null}
 
-      {drafts.length ? (
+      {/* Os rascunhos e o histórico são duas buscas: uma que falha não esconde a outra. */}
+      {drafts.isError && !drafts.data ? <ErrorNotice error={drafts.error} onRetry={() => drafts.refetch()} /> : null}
+      {drafts.data?.length ? (
         <Section title="Para revisar">
-          <ListCard>{drafts.map(renderReceipt)}</ListCard>
+          <ListCard>{drafts.data.map(renderReceipt)}</ListCard>
         </Section>
       ) : null}
 
-      {confirmed.length ? (
+      {history.isError && !history.data ? <ErrorNotice error={history.error} onRetry={() => history.refetch()} /> : null}
+      {months.length ? (
         <Section title="Histórico">
-          <ListCard>{confirmed.map(renderReceipt)}</ListCard>
+          {months.map((group) => (
+            <View key={group.month} style={styles.month}>
+              <Text variant="label" accessibilityRole="header">
+                {group.title}
+              </Text>
+              <ListCard>{group.receipts.map(renderReceipt)}</ListCard>
+            </View>
+          ))}
+          {/* A página seguinte que falhou: as notas que já vieram ficam, com o erro e o "Tentar de novo". */}
+          {history.isFetchNextPageError ? <ErrorNotice error={history.error} onRetry={() => history.fetchNextPage()} /> : null}
+          {more ? (
+            <View style={styles.more}>
+              {more.note ? <Text variant="small">{more.note}</Text> : null}
+              {history.isFetchNextPageError ? null : (
+                <Button title={more.button} variant="secondary" compact loading={history.isFetchingNextPage} onPress={() => history.fetchNextPage()} />
+              )}
+            </View>
+          ) : null}
         </Section>
       ) : null}
 
@@ -79,4 +109,6 @@ const styles = StyleSheet.create({
   // O nome mais comprido leva mais espaço, para os dois caberem numa linha num celular comum (de 360 de largura em diante).
   prices: { flex: 2 },
   market: { flex: 3 },
+  month: { gap: space.sm },
+  more: { gap: space.sm },
 });

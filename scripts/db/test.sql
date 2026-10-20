@@ -2,7 +2,7 @@
 -- confirmação de nota, recorrência e rodízio de tarefas, remédios, saúde,
 -- aparelhos, documentos, prestadores e consertos, financeiro, saída da casa,
 -- compromissos da família, preços compartilhados entre casas, estoque dos
--- remédios e idas ao mercado.
+-- remédios, idas ao mercado e aceite dos termos.
 -- Rodado por scripts/db/test.sh depois de stubs.sql + migrations.
 
 \set ON_ERROR_STOP 1
@@ -9518,5 +9518,102 @@ begin
     'there is no read left to share again';
 end $$;
 delete from public.households where id in (current_setting('test.nc_house_1')::uuid, current_setting('test.nc_house_2')::uuid);
+
+-- ---------------------------------------------------------------------------
+\echo '• Termos: cada pessoa grava e lê só o próprio aceite, uma vez por versão'
+\set user_t1 '00000000-0000-0000-0000-0000000001b1'
+\set user_t2 '00000000-0000-0000-0000-0000000001b2'
+insert into auth.users (id) values (:'user_t1'), (:'user_t2');
+set role anon;
+do $$
+begin
+  perform public.accept_terms('2026-10-20');
+  raise exception 'FAIL: anon accepted the terms';
+exception when insufficient_privilege then null;
+end $$;
+do $$
+begin
+  perform 1 from public.terms_acceptances;
+  raise exception 'FAIL: anon read the acceptances';
+exception when insufficient_privilege then null;
+end $$;
+set role authenticated;
+-- Sem conta (sem o sub do token), a função não grava nada.
+select set_config('request.jwt.claim.sub', '', false) \gset
+do $$
+begin
+  perform public.accept_terms('2026-10-20');
+  raise exception 'FAIL: accepted without an account';
+exception when insufficient_privilege then null;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_t1', false) \gset
+do $$
+declare
+  first_at timestamptz;
+begin
+  assert (select count(*) from public.terms_acceptances) = 0, 'nothing accepted yet';
+  perform public.accept_terms('2026-10-20');
+  select accepted_at into first_at from public.terms_acceptances where version = '2026-10-20';
+  assert first_at is not null, 'the acceptance is there, with the server time';
+  -- Repetir não duplica nem muda a hora do primeiro aceite.
+  perform public.accept_terms('2026-10-20');
+  assert (select count(*) from public.terms_acceptances) = 1, 'accepting again does not add a row';
+  assert (select accepted_at from public.terms_acceptances where version = '2026-10-20') = first_at, 'nor change its time';
+  perform public.accept_terms('2026-10-19');
+  assert (select array_agg(version order by version) from public.terms_acceptances) = array['2026-10-19', '2026-10-20'],
+    'another version is another row';
+  begin
+    perform public.accept_terms('qualquer coisa');
+    raise exception 'FAIL: a version that is not a date';
+  exception when check_violation then null;
+  end;
+  -- Direto na tabela, nada: nem gravar, nem mudar a hora, nem apagar.
+  begin
+    insert into public.terms_acceptances (user_id, version) values (auth.uid(), '2026-01-01');
+    raise exception 'FAIL: inserted an acceptance directly';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update public.terms_acceptances set accepted_at = now() - interval '1 year';
+    raise exception 'FAIL: changed an acceptance';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from public.terms_acceptances;
+    raise exception 'FAIL: deleted an acceptance';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_t2', false) \gset
+do $$
+begin
+  assert (select count(*) from public.terms_acceptances) = 0, 'the other person sees none of the first one''s acceptances';
+  perform public.accept_terms('2026-10-20');
+  assert (select count(*) from public.terms_acceptances) = 1 and (select user_id from public.terms_acceptances) = auth.uid(),
+    'and records only their own';
+end $$;
+reset role;
+do $$
+begin
+  assert (select count(*) from public.terms_acceptances where user_id = '00000000-0000-0000-0000-0000000001b1') = 2, 'first person: two versions';
+  assert (select count(*) from public.terms_acceptances where user_id = '00000000-0000-0000-0000-0000000001b2') = 1, 'second person: one';
+  assert not has_function_privilege('anon', 'public.accept_terms(text)', 'execute'), 'anon cannot execute accept_terms';
+  assert has_function_privilege('authenticated', 'public.accept_terms(text)', 'execute'), 'people can execute accept_terms';
+  assert not exists (
+    select 1 from pg_proc p, aclexplode(p.proacl) a
+    where p.oid = 'public.accept_terms(text)'::regprocedure and a.grantee = 0
+  ), 'and public has no grant on accept_terms';
+  assert (select prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = 'public.accept_terms(text)'::regprocedure),
+    'security definer with a fixed search_path';
+end $$;
+-- A conta apagada leva os aceites dela.
+delete from auth.users where id = :'user_t1';
+select count(*) = 1 as terms_cascade from public.terms_acceptances \gset
+\if :terms_cascade
+\else
+  \echo 'FAIL: the deleted account''s acceptances stayed'
+  select 1/0;
+\endif
+delete from auth.users where id = :'user_t2';
 
 \echo 'OK — todos os testes do banco passaram'

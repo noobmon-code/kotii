@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
-import { PRODUCT_MERGED_AWAY } from '@/domain/productMerge';
+import { PRODUCT_MERGED_AWAY, PRODUCT_NAME_TAKEN } from '@/domain/productMerge';
 
 import { learnShelfLife } from '../home';
-import { useAddItemsToList, useAddListItem, useAddToMarketList, useRenameProduct, type NewListItem } from '../market';
+import { ProductNameTakenError, useAddItemsToList, useAddListItem, useAddToMarketList, useRenameProduct, type NewListItem } from '../market';
 import { isProductMergedAway } from '../productMerge';
 import { useConfirmReceipt } from '../receipts';
 
@@ -343,6 +343,65 @@ describe('gravar num produto que foi juntado: o banco não reclama de uma grava�
     expect(await failure(() => hook.value().mutateAsync({ id: 'p1', name: 'Arroz', category: 'graos' }))).toBeUndefined();
     expect(sent('products', 'update')).toEqual([[{ name: 'Arroz', category: 'graos' }]]);
     expect(hook.invalidated).toEqual(['products', 'spending']);
+  });
+
+  /** Como o PostgREST devolve o nome repetido (products_household_name_key, por lower(name)). */
+  const nameTaken = { code: '23505', message: 'duplicate key value violates unique constraint "products_household_name_key"', details: 'Key (household_id, lower(name))=(h, arroz) already exists.', hint: null };
+
+  it('renomear para o nome de outro produto: em vez do texto do banco, o erro diz qual é o outro', async () => {
+    const other = { id: 'p-arroz', name: 'Arroz', category: 'graos' };
+    mockDb.reply = (call) => (call.steps[0] === 'update' ? { data: null, error: nameTaken } : { data: [other], error: null });
+    const hook = await withHook(() => useRenameProduct());
+    const error = await failure(() => hook.value().mutateAsync({ id: 'p1', name: 'ARROZ_100%', category: 'graos' }));
+    expect(error).toBeInstanceOf(ProductNameTakenError);
+    expect((error as ProductNameTakenError).message).toBe(PRODUCT_NAME_TAKEN);
+    expect((error as ProductNameTakenError).other).toEqual(other);
+    expect(mockDb.calls).toEqual([
+      { target: 'products', steps: ['update', 'eq', 'select'] },
+      { target: 'products', steps: ['select', 'ilike', 'neq', 'limit'] },
+    ]);
+    // O nome como o banco compara (sem maiúsculas), com o % e o _ escapados; e nunca o próprio produto.
+    expect(sent('products', 'ilike')).toEqual([['name', 'ARROZ\\_100\\%']]);
+    expect(sent('products', 'neq')).toEqual([['id', 'p1']]);
+    expect(hook.invalidated).toEqual([]);
+  });
+
+  it('o * do nome vale como % no PostgREST: fica o produto de nome igual, e não outro que casou', async () => {
+    const integral = { id: 'p-integral', name: 'Arroz Integral', category: 'graos' };
+    const star = { id: 'p-star', name: 'Arroz*', category: 'graos' };
+    mockDb.reply = (call) => (call.steps[0] === 'update' ? { data: null, error: nameTaken } : { data: [integral, star], error: null });
+    const hook = await withHook(() => useRenameProduct());
+    const error = await failure(() => hook.value().mutateAsync({ id: 'p1', name: 'arroz*', category: 'graos' }));
+    expect((error as ProductNameTakenError).other).toEqual(star);
+    // Não só o primeiro que veio: todos os que casam, até o teto.
+    expect(sent('products', 'limit')).toEqual([[200]]);
+  });
+
+  it('vários que casam e nenhum de nome igual: o aviso sem o outro produto, em vez de juntar com o errado', async () => {
+    const rows = [
+      { id: 'p-integral', name: 'Arroz Integral', category: 'graos' },
+      { id: 'p-branco', name: 'Arroz Branco', category: 'graos' },
+    ];
+    mockDb.reply = (call) => (call.steps[0] === 'update' ? { data: null, error: nameTaken } : { data: rows, error: null });
+    const hook = await withHook(() => useRenameProduct());
+    const error = await failure(() => hook.value().mutateAsync({ id: 'p1', name: 'arroz*', category: 'graos' }));
+    expect(error).toBeInstanceOf(ProductNameTakenError);
+    expect((error as ProductNameTakenError).other).toBeNull();
+  });
+
+  it('sem conseguir achar o outro produto, o mesmo aviso, sem ele', async () => {
+    mockDb.reply = (call) => (call.steps[0] === 'update' ? { data: null, error: nameTaken } : { data: null, error: { message: 'sem rede' } });
+    const hook = await withHook(() => useRenameProduct());
+    const error = await failure(() => hook.value().mutateAsync({ id: 'p1', name: 'Arroz', category: 'graos' }));
+    expect(error).toBeInstanceOf(ProductNameTakenError);
+    expect((error as ProductNameTakenError).other).toBeNull();
+  });
+
+  it('outro erro do banco segue como veio', async () => {
+    const other = { code: '42501', message: 'permission denied for table products' };
+    mockDb.reply = () => ({ data: null, error: other });
+    const hook = await withHook(() => useRenameProduct());
+    expect(await failure(() => hook.value().mutateAsync({ id: 'p1', name: 'Arroz', category: 'graos' }))).toBe(other);
   });
 
   it('a validade corrigida à mão: com o produto juntado, ensina o produto em que o item da despensa está agora', async () => {

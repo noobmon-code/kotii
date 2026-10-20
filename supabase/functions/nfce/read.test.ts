@@ -3,8 +3,8 @@ import { assertEquals } from '@std/assert';
 import type { NfcePage } from './parse.ts';
 import { nfceRead } from './read.ts';
 
-const KEY = '35261011222333000181650010000123451000012347';
-const OTHER_KEY = '35261099888777000166650010000123451000012347';
+const KEY = '35261011222333000181650010000123451000012341';
+const OTHER_KEY = '35261099888777000166650010000123451000012348';
 const QR = `https://www.nfce.fazenda.sp.gov.br/qrcode?p=${KEY}|2|1|1|HASH`;
 const PAGE_URL = 'https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx';
 
@@ -51,4 +51,11 @@ Deno.test('nfceRead: por http num host da lista também vira leitura (PR respond
   const qr = `http://www.fazenda.pr.gov.br/nfce/qrcode?p=${KEY}|2|1|1|HASH`;
   const read = nfceRead(ok(KEY, [qr], qr), qr, 'h1');
   assertEquals(read?.access_key, KEY);
+});
+
+Deno.test('nfceRead: CNPJ da página que não passa no verificador dá lugar ao da chave conferida', () => {
+  const wrong = { ...PAGE, store: { ...PAGE.store, cnpj: '11222333000182' } };
+  assertEquals(nfceRead(ok(KEY, [QR, PAGE_URL], PAGE_URL, wrong), QR, 'h1')?.store_cnpj, '11222333000181');
+  // Sem a chave conferida, nenhum: um CNPJ errado na base comum seria outro mercado.
+  assertEquals(nfceRead(ok(null, [QR, PAGE_URL], PAGE_URL, wrong), QR, 'h1')?.store_cnpj, null);
 });

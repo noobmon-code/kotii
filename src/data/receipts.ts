@@ -1,9 +1,10 @@
 // Notas fiscais: leitura por foto (IA), revisão e confirmação.
 
 import { FunctionsHttpError } from '@supabase/supabase-js';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { nfceItemsToDraft, nfceReceiptRow, type NfceItem, type NfceQr } from '@/domain/nfce';
+import { RECEIPTS_PAGE } from '@/domain/receiptList';
 import type { ConfirmItem } from '@/domain/receiptReview';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Receipt, ReceiptItem, Unit } from '@/lib/types';
@@ -18,23 +19,95 @@ import {
   type ScanSource,
 } from './images';
 import { withFreshProducts } from './productMerge';
+import { readAll } from './readAll';
 
 const RECEIPT_COLUMNS =
   'id, store_id, purchased_at, total, access_key, image_path, extra_image_paths, source, status, created_at, paid_by, store:stores(id, name)';
 const ITEM_COLUMNS =
   'id, receipt_id, position, raw_description, suggested_name, suggested_category, product_id, quantity, unit, unit_price, total_price';
 
-export function useReceipts() {
-  return useQuery({
-    queryKey: ['receipts'],
-    queryFn: async () =>
-      unwrap(
-        await supabase
-          .from('receipts')
-          .select(`${RECEIPT_COLUMNS}, receipt_items(count)`)
-          .order('purchased_at', { ascending: false })
-          .limit(200),
-      ) as unknown as (Receipt & { receipt_items: { count: number }[] })[],
+/** Uma nota da lista de Finanças > Notas: com quantos itens ela tem. */
+export type ReceiptListRow = Receipt & { receipt_items: { count: number }[] };
+
+const LIST_COLUMNS = `${RECEIPT_COLUMNS}, receipt_items(count)`;
+/** Linhas por pedido dos rascunhos: o teto do servidor (max_rows padrão do Supabase). */
+const DRAFTS_PAGE = 1000;
+/** Rascunhos são poucos; passando disso a busca falha, em vez de esconder um. */
+const MAX_DRAFTS = 5000;
+
+/**
+ * Todos os rascunhos da casa ("Para revisar"), do mais recente para o mais antigo: nenhum fica de fora por ser
+ * antigo. Lidos inteiros, página por página pelo id (readAll); passando do que o app lê de uma vez, a busca
+ * falha em vez de cortar a lista.
+ */
+export async function fetchDraftReceipts(): Promise<ReceiptListRow[]> {
+  const rows = await readAll<ReceiptListRow>(
+    (after) => {
+      const query = supabase.from('receipts').select(LIST_COLUMNS, { count: 'exact' }).eq('status', 'draft');
+      return (after ? query.gt('id', after) : query).order('id').limit(DRAFTS_PAGE);
+    },
+    MAX_DRAFTS,
+    {
+      tooMany: 'São mais notas para revisar do que o app consegue ler de uma vez.',
+      incomplete: 'As notas para revisar não chegaram inteiras. Tente de novo.',
+    },
+  );
+  return rows.sort((a, b) => Date.parse(b.purchased_at) - Date.parse(a.purchased_at) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+}
+
+export function useDraftReceipts() {
+  return useQuery({ queryKey: ['receipts', 'drafts'], queryFn: fetchDraftReceipts });
+}
+
+/** Onde a página seguinte do histórico começa: logo depois desta nota, na ordem da compra (e do id, no empate). */
+export interface ReceiptCursor {
+  purchasedAt: string;
+  id: string;
+}
+
+export interface ReceiptHistoryPage {
+  rows: ReceiptListRow[];
+  /** Quantas notas confirmadas ainda vêm depois desta página; null quando o servidor não contou. */
+  remaining: number | null;
+}
+
+/**
+ * Uma página do histórico: as notas confirmadas da mais recente para a mais antiga, as que vêm depois de
+ * `after`. Pelo cursor (a data da compra e o id da última nota lida), não pela posição: uma nota nova ou
+ * apagada entre duas páginas não pula nem repete nenhuma. O servidor conta quantas vêm dali em diante, e o
+ * botão de ver mais diz quantas faltam.
+ */
+export async function fetchReceiptHistoryPage(after: ReceiptCursor | null): Promise<ReceiptHistoryPage> {
+  const query = supabase.from('receipts').select(LIST_COLUMNS, { count: 'exact' }).eq('status', 'confirmed');
+  // A data entre aspas: o horário traz ":" e "." (e o fuso, "+"), que o filtro "or" leria como separadores.
+  const older = after
+    ? query.or(`purchased_at.lt."${after.purchasedAt}",and(purchased_at.eq."${after.purchasedAt}",id.lt.${after.id})`)
+    : query;
+  const result = await older.order('purchased_at', { ascending: false }).order('id', { ascending: false }).limit(RECEIPTS_PAGE);
+  const rows = (unwrap(result) ?? []) as unknown as ReceiptListRow[];
+  if (result.count == null) return { rows, remaining: rows.length < RECEIPTS_PAGE ? 0 : null };
+  // O servidor diz que há mais e não manda: melhor o erro do que um histórico que acaba antes da hora.
+  if (rows.length === 0 && result.count > 0) throw new Error('O histórico de notas não chegou inteiro. Tente de novo.');
+  return { rows, remaining: Math.max(0, result.count - rows.length) };
+}
+
+/** O cursor da página seguinte; undefined quando não há mais nota. */
+export function nextReceiptCursor(page: ReceiptHistoryPage): ReceiptCursor | undefined {
+  const last = page.rows[page.rows.length - 1];
+  if (!last || page.remaining === 0) return undefined;
+  return { purchasedAt: last.purchased_at, id: last.id };
+}
+
+/**
+ * O histórico de Finanças > Notas, em páginas de RECEIPTS_PAGE notas confirmadas. A chave começa com
+ * 'receipts': confirmar, mudar ou excluir uma nota já recarrega (as páginas já abertas vêm de novo, em ordem).
+ */
+export function useReceiptHistory() {
+  return useInfiniteQuery({
+    queryKey: ['receipts', 'history'],
+    queryFn: ({ pageParam }) => fetchReceiptHistoryPage(pageParam),
+    initialPageParam: null as ReceiptCursor | null,
+    getNextPageParam: nextReceiptCursor,
   });
 }
 

@@ -90,7 +90,10 @@ export function Screen({
   scrollRef?: RefObject<ScrollView | null>;
 }) {
   const c = useColors();
-  const content = <View style={[styles.content, fab && styles.contentWithFab]}>{children}</View>;
+  // Sem a rolagem da tela, o conteúdo ocupa só a altura dela (flex 1, e não só flexGrow): no navegador, com o
+  // flexShrink 0 e a base auto do react-native-web, ele cresceria até a altura da lista que tem dentro, e a lista
+  // (que rola sozinha) não teria uma altura para rolar.
+  const content = <View style={[styles.content, !scroll && styles.flex, fab && styles.contentWithFab]}>{children}</View>;
   return (
     <SafeAreaView edges={edges} style={[styles.screen, { backgroundColor: c.background }]}>
       <Backdrop />
