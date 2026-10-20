@@ -18,9 +18,10 @@
 --    agenda), as sessões e as tentativas de código de convite. O resto que
 --    aponta para o usuário (pesos da divisão, idas ao mercado) sai com ele.
 -- 4. Os acertos da divisão de gastos ficam com a casa: quem apagou a conta
---    vira nulo (o app mostra "Ex-morador") em vez de o acerto sumir em
---    cascata e mudar a conta do mês de quem ficou. Os outros registros dela
---    (quem pagou, quem fez) já viravam nulo.
+--    vira nulo (o app mostra "Ex-morador") em vez de o acerto sumir do
+--    histórico em cascata. A conta do mês não muda: como já acontece com
+--    quem sai da casa, o acerto com quem não mora mais nela fica fora dela.
+--    Os outros registros dela (quem pagou, quem fez) já viravam nulo.
 
 -- -----------------------------------------------------------------------------
 -- Sair de uma casa, por uma pessoa dada: o corpo de leave_household, que agora

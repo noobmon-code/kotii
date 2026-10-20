@@ -4,17 +4,27 @@
 // o que fica neste aparelho sai como no "Sair" (lib/session: lembretes,
 // inscrição dos avisos do navegador, cache, sessão guardada) e mais o que o
 // "Sair" deixa para a volta da pessoa: a marca da recuperação de senha (se
-// for a dela), as conversas com o Nuke e a casa aberta guardada.
+// for a dela), as conversas com o Nuke, a casa aberta guardada e os aceites
+// dos termos guardados aqui.
 //
 // O app pode chegar antes da migração e da função: sem a parte do banco, a
 // prévia é null; sem a função, o pedido dá AccountDeletionUnavailable. Nos
 // dois casos a tela manda escrever para o contato dos termos.
+//
+// A resposta de uma exclusão que deu certo pode se perder (internet fraca):
+// a próxima tentativa recebe 401, porque a conta já não existe. Antes de
+// tratar o 401 (ou uma falha sem resposta da função) como erro, o app pergunta
+// ao Auth quem é a pessoa: "user_not_found" prova que a conta foi apagada, e
+// a limpeza do aparelho roda como numa exclusão que respondeu. Só isso prova:
+// a sessão que terminou por outro motivo (saiu de todos os aparelhos, trocou a
+// senha) não apaga nada do aparelho.
 
-import { FunctionsHttpError } from '@supabase/supabase-js';
+import { FunctionsHttpError, FunctionsRelayError, isAuthApiError } from '@supabase/supabase-js';
 import { useMutation, useQuery } from '@tanstack/react-query';
 
 import { functionErrorDetails } from '@/data/images';
 import { isMissingFunction } from '@/data/missingSchema';
+import { forgetTermsOnDevice } from '@/data/terms';
 import type { DeletionHouse } from '@/domain/account';
 import { forgetConversations } from '@/features/nuke/conversation';
 import { forgetStoredHousehold } from '@/lib/activeHousehold';
@@ -57,14 +67,40 @@ export function useAccountDeletionPreview(userId: string | undefined) {
   });
 }
 
+const statusOf = (error: { context?: unknown }): number | undefined => (error.context as Response | undefined)?.status;
+
+/** Função não publicada: a plataforma responde 404 (a função nunca responde 404), às vezes como erro do relay. */
+function functionMissing(error: unknown): boolean {
+  return (error instanceof FunctionsHttpError || error instanceof FunctionsRelayError) && statusOf(error) === 404;
+}
+
+/**
+ * Sem uma resposta da função que diga o que houve: 401 (a função não achou a pessoa), falha de rede ou do
+ * relay, erro do servidor. As respostas com motivo (senha errada, casa que mudou, muitas tentativas) não entram.
+ */
+function outcomeUnknown(error: unknown): boolean {
+  if (!(error instanceof FunctionsHttpError)) return true;
+  const status = statusOf(error);
+  return status === undefined || status === 401 || status >= 500;
+}
+
+/** O Auth diz que a conta desta sessão não existe mais. Qualquer outra resposta (ou falha) não prova nada. */
+export async function accountIsGone(): Promise<boolean> {
+  try {
+    const { error } = await supabase.auth.getUser();
+    return isAuthApiError(error) && error.code === 'user_not_found';
+  } catch {
+    return false;
+  }
+}
+
 /** Pede à função para apagar a conta. `deleteHouseholds`: as casas que a tela avisou que serão apagadas. */
 export async function requestAccountDeletion(password: string, deleteHouseholds: string[]): Promise<void> {
   const { error } = await supabase.functions.invoke('delete-account', { body: { password, deleteHouseholds } });
   if (!error) return;
-  // Função não publicada: a plataforma responde 404 (a função nunca responde 404).
-  if (error instanceof FunctionsHttpError && (error.context as Response | undefined)?.status === 404) {
-    throw new AccountDeletionUnavailable();
-  }
+  if (functionMissing(error)) throw new AccountDeletionUnavailable();
+  // Uma tentativa anterior apagou a conta e a resposta se perdeu: feito.
+  if (outcomeUnknown(error) && (await accountIsGone())) return;
   const { message, code } = await functionErrorDetails(error, FALLBACK);
   if (code === 'wrong_password') throw new WrongPasswordError(message);
   if (code === 'last_member') throw new HousesChangedError(message);
@@ -73,12 +109,19 @@ export async function requestAccountDeletion(password: string, deleteHouseholds:
 
 /** A conta já não existe: sai daqui e leva o que o aparelho guardava dela. */
 export async function forgetDeletedAccount(userId: string): Promise<void> {
-  await signOut();
-  // Depois de sair, como em "Cancelar e sair" da senha nova: a marca nunca sai com a sessão ainda aqui.
-  // Só a marca desta conta: a de outra conta do aparelho continua pedindo a senha nova.
-  await Promise.all([forgetRecoveryOf(userId), forgetConversations(userId), forgetStoredHousehold(userId)]).catch(
-    () => undefined,
+  const signedOut = await signOut().then(
+    () => true,
+    () => false,
   );
+  // Depois de sair, como em "Cancelar e sair" da senha nova: a marca nunca sai com a sessão ainda aqui
+  // (se a saída falhou, ela fica). Só a marca desta conta: a de outra conta do aparelho continua pedindo a
+  // senha nova. O resto sai de todo jeito: é só desta conta, que não existe mais.
+  await Promise.all([
+    signedOut ? forgetRecoveryOf(userId) : undefined,
+    forgetConversations(userId),
+    forgetStoredHousehold(userId),
+    forgetTermsOnDevice(userId),
+  ]).catch(() => undefined);
 }
 
 export function useDeleteAccount(userId: string | undefined) {
@@ -89,7 +132,9 @@ export function useDeleteAccount(userId: string | undefined) {
     },
     // No hook, e não na chamada: a tela some quando a conta sai.
     onSuccess: async () => {
-      if (userId) await forgetDeletedAccount(userId);
+      // A conta já não existe: uma falha ao sair daqui não vira "não deu para apagar". A sessão que
+      // sobrar termina sozinha na próxima renovação, que o Auth recusa.
+      if (userId) await forgetDeletedAccount(userId).catch(() => undefined);
       notify('Conta apagada', 'Sua conta foi apagada. Obrigado por ter usado o Kotii.');
     },
   });

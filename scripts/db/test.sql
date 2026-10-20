@@ -9773,4 +9773,71 @@ reset role;
 delete from public.household_file_cleanup where household_id = :'hh_d_solo';
 delete from public.households where id in (:'hh_d_shared', :'hh_d_other');
 
+\echo '• apagar a conta: o created_by que sobrou passa adiante e a casa sem ninguém sai, senão o Auth não apaga'
+-- Dados de antes de a saída passar a casa adiante: Fabi é só moradora, mas o created_by de três casas ainda
+-- é dela. Na do Gil, ele é o responsável (e Hana, a moradora mais antiga); na da Hana e do Ivo, ninguém é
+-- responsável (vale o mais antigo, Ivo); a terceira não tem ninguém. Sem passar adiante e apagar, o
+-- created_by (on delete restrict) seguraria a conta no Auth.
+\set user_d4 '00000000-0000-0000-0000-0000000001d4'
+\set user_d5 '00000000-0000-0000-0000-0000000001d5'
+\set user_d6 '00000000-0000-0000-0000-0000000001d6'
+\set user_d7 '00000000-0000-0000-0000-0000000001d7'
+reset role;
+insert into auth.users (id) values (:'user_d4'), (:'user_d5'), (:'user_d6'), (:'user_d7');
+insert into public.households (name, invite_code, created_by) values ('Casa do Gil', 'DELGIL', :'user_d4')
+  returning id as hh_d_gil \gset
+insert into public.households (name, invite_code, created_by) values ('Casa sem responsável', 'DELSEM', :'user_d4')
+  returning id as hh_d_noowner \gset
+insert into public.households (name, invite_code, created_by) values ('Casa vazia', 'DELVAZ', :'user_d4')
+  returning id as hh_d_empty \gset
+insert into public.household_members (household_id, user_id, display_name, role, joined_at) values
+  (:'hh_d_gil', :'user_d6', 'Hana', 'member', now() - interval '3 days'),
+  (:'hh_d_gil', :'user_d5', 'Gil', 'owner', now() - interval '2 days'),
+  (:'hh_d_gil', :'user_d4', 'Fabi', 'member', now() - interval '1 day'),
+  (:'hh_d_noowner', :'user_d7', 'Ivo', 'member', now() - interval '2 days'),
+  (:'hh_d_noowner', :'user_d6', 'Hana', 'member', now() - interval '1 day'),
+  (:'hh_d_noowner', :'user_d4', 'Fabi', 'member', now());
+select set_config('test.hh_d_gil', :'hh_d_gil', false) \gset
+select set_config('test.hh_d_noowner', :'hh_d_noowner', false) \gset
+select set_config('test.hh_d_empty', :'hh_d_empty', false) \gset
+set role service_role;
+do $$
+declare
+  fabi uuid := '00000000-0000-0000-0000-0000000001d4';
+  gil_house uuid := current_setting('test.hh_d_gil')::uuid;
+  noowner uuid := current_setting('test.hh_d_noowner')::uuid;
+  empty uuid := current_setting('test.hh_d_empty')::uuid;
+  result jsonb;
+begin
+  -- Nenhuma casa em que ela é a última: o app não avisou nada, e não precisava.
+  result := public.delete_account_data(fabi, '{}');
+  assert result -> 'left' = jsonb_build_array(gil_house, noowner) or result -> 'left' = jsonb_build_array(noowner, gil_house),
+    'Fabi left both households she lives in';
+  assert result -> 'deleted' = jsonb_build_array(empty), 'the household with nobody in it is reported as deleted';
+end $$;
+reset role;
+do $$
+declare
+  gil uuid := '00000000-0000-0000-0000-0000000001d5';
+  ivo uuid := '00000000-0000-0000-0000-0000000001d7';
+  gil_house uuid := current_setting('test.hh_d_gil')::uuid;
+  noowner uuid := current_setting('test.hh_d_noowner')::uuid;
+  empty uuid := current_setting('test.hh_d_empty')::uuid;
+begin
+  assert (select created_by from public.households where id = gil_house) = gil, 'goes to the owner, not the oldest member';
+  assert (select created_by from public.households where id = noowner) = ivo, 'without an owner, to the oldest member';
+  assert not exists (select 1 from public.households where id = empty), 'the empty household is gone';
+  assert exists (select 1 from public.household_file_cleanup where household_id = empty), 'with its photos queued';
+  assert (select count(*) from public.household_members where household_id = gil_house) = 2, 'Gil and Hana stay';
+  assert (select count(*) from public.household_members where household_id = noowner) = 2, 'Ivo and Hana stay';
+end $$;
+-- Nada mais segura a conta: o Auth apaga.
+delete from auth.users where id = :'user_d4';
+do $$
+begin
+  assert not exists (select 1 from auth.users where id = '00000000-0000-0000-0000-0000000001d4'), 'Fabi is gone from auth';
+end $$;
+delete from public.household_file_cleanup where household_id = :'hh_d_empty';
+delete from public.households where id in (:'hh_d_gil', :'hh_d_noowner');
+
 \echo 'OK — todos os testes do banco passaram'
