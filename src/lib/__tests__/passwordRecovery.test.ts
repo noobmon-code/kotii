@@ -6,6 +6,7 @@ import {
   ensureRecovery,
   finishRecovery,
   forgetRecoveryInMemory,
+  forgetRecoveryOf,
   readRecovery,
   recoveringUserId,
   recoveryAfterStorage,
@@ -58,6 +59,22 @@ describe('recuperação de senha', () => {
     await flush();
     expect(recoveringUserId()).toBeNull();
     expect(await AsyncStorage.getItem(MARK_KEY)).toBeNull();
+  });
+
+  it('a conta apagada leva só a marca dela: a de outra conta do aparelho fica', async () => {
+    startRecovery('bia');
+    await flush();
+    await forgetRecoveryOf('ana');
+    expect(await AsyncStorage.getItem(MARK_KEY)).toBe('bia');
+    expect(recoveringUserId()).toBe('bia');
+    startRecovery('ana');
+    await flush();
+    await forgetRecoveryOf('ana');
+    expect(await AsyncStorage.multiGet([MARK_KEY, MARK_BY_KEY])).toEqual([
+      [MARK_KEY, null],
+      [MARK_BY_KEY, null],
+    ]);
+    expect(recoveringUserId()).toBeNull();
   });
 
   it('a sessão que sai (aqui ou em outra aba) esquece a marca na memória, e a próxima entrada relê o aparelho', async () => {

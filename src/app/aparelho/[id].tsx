@@ -5,6 +5,7 @@ import { StyleSheet, View } from 'react-native';
 import { usePeople } from '@/data/health';
 import { useChoreRotations, useCompleteChore, useSaveChore } from '@/data/home';
 import { DOCUMENTS_BUCKET, useDeleteEquipment, useEquipment, useMaintenance, useSaveEquipment } from '@/data/house';
+import { memberName } from '@/domain/account';
 import { choreTurnLabel, rotationOf, rotationPeople } from '@/domain/choreRotation';
 import { choreStatus, describeChoreStatus, describeRecurrence } from '@/domain/chores';
 import { addMonths, formatBRDate, formatShortDate, parseBRDate, todayISO, toISODate } from '@/domain/dates';
@@ -340,7 +341,7 @@ function MaintenanceSection({ equipment, today }: { equipment: Equipment; today:
                 key={done.id}
                 left={<Badge label={formatShortDate(toISODate(new Date(done.completed_at)))} />}
                 title={list.find((c) => c.id === done.chore_id)?.title ?? 'Manutenção'}
-                subtitle={members.find((m) => m.user_id === done.completed_by)?.display_name}
+                subtitle={memberName(members, done.completed_by) ?? undefined}
               />
             ))}
           </ListCard>

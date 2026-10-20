@@ -104,6 +104,17 @@ describe('termos de uso', () => {
     expect(section('Sua conta e sua casa')).toContain('vira a ficha de um dependente');
   });
 
+  it('apagar a conta: pelo app, com a senha, o que fica com a casa e o contato para quem não conseguir', () => {
+    const erase = section('Apagar dados e sair');
+    expect(erase).not.toContain('ainda não tem um botão');
+    expect(erase).toContain('use "Apagar minha conta" na aba Família, confirmando com a sua senha');
+    expect(erase).toContain('você aparece como "Ex-morador"');
+    expect(erase).toContain('A casa em que você é a última pessoa é apagada');
+    expect(erase).toContain('Não tem volta.');
+    expect(erase).toContain(`Se não conseguir apagar a conta pelo app, escreva para ${TERMS_CONTACT}`);
+    expect(section('Sua conta e sua casa')).toContain('sai, é tirado dela ou apaga a conta');
+  });
+
   it('diz que uma mudança importante é avisada no app', () => {
     expect(section('Mudanças e contato')).toContain('o app avisa na tela Hoje');
   });

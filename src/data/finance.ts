@@ -432,8 +432,9 @@ export function useSaveSplitWeights() {
 export interface Settlement {
   id: string;
   month: string;
-  from_user: string;
-  to_user: string;
+  /** Nulo: quem passou ou recebeu apagou a conta (o acerto fica, com "Ex-morador"). */
+  from_user: string | null;
+  to_user: string | null;
   amount: number;
 }
 
