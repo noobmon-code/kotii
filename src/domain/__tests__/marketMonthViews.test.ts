@@ -318,17 +318,22 @@ describe('um mercado aberto', () => {
 });
 
 describe('por que não é a barra "Mercado" do Resumo', () => {
-  it('na tela do mês e no Resumo; no mês corrente fala da nota com data depois de hoje, num mês passado não', () => {
+  it('na tela do mês e no Resumo; no mês corrente fala do que tem data depois de hoje, num mês passado não', () => {
+    // Os gastos avulsos e as contas pagas de Mercado contam nos dois: a diferença está nas notas.
     expect(marketVsSummary(MONTH, '2026-10-13', 'mes')).toBe(
-      'Diferente da barra “Mercado” do Resumo: aqui só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio e sem nota com data depois de hoje.',
+      'Diferente da barra “Mercado” do Resumo: aqui as notas fiscais entram com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio. ' +
+        'Os gastos avulsos e as contas pagas lançados como Mercado também contam, e o que tem data depois de hoje fica de fora.',
     );
     expect(marketVsSummary('2026-09', '2026-10-13', 'mes')).toBe(
-      'Diferente da barra “Mercado” do Resumo: aqui só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio.',
+      'Diferente da barra “Mercado” do Resumo: aqui as notas fiscais entram com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio. ' +
+        'Os gastos avulsos e as contas pagas lançados como Mercado também contam.',
     );
-    // No Resumo, "aqui" seria o próprio Resumo: a frase diz o nome da tela.
+    // No Resumo, "aqui" seria o próprio Resumo: a frase diz o nome da tela, e "lá".
     expect(marketVsSummary(MONTH, '2026-10-13', 'resumo')).toBe(
-      'Diferente da barra “Mercado”: no Mercado do mês só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio e sem nota com data depois de hoje.',
+      'Diferente da barra “Mercado”: no Mercado do mês as notas fiscais entram com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio. ' +
+        'Os gastos avulsos e as contas pagas lançados como Mercado também contam lá, e o que tem data depois de hoje fica de fora.',
     );
+    expect(marketVsSummary('2026-09', '2026-10-13', 'resumo')).not.toContain('depois de hoje');
   });
 });
 

@@ -38,8 +38,11 @@ export interface MarketChangeInput {
   currentWhen: string;
   /** A diferença do total pago (a do cabeçalho), em centavos. */
   paidDiffCents: number;
-  /** O que soma diferente na janela e agora, e por isso faz o total pago mudar diferente dos itens. */
-  receiptDifferences: { discounts: boolean; unread: boolean };
+  /**
+   * O que soma diferente na janela e agora, e por isso faz o total pago mudar diferente dos itens: os descontos e
+   * os valores sem item das notas, e os gastos lançados sem nota (`withoutReceipt`, que não têm itens).
+   */
+  receiptDifferences: { discounts: boolean; unread: boolean; withoutReceipt: boolean };
 }
 
 export type MarketChangePartKey = 'preco' | 'quantidade' | 'novos' | 'fora' | 'sem_comparacao';
@@ -257,8 +260,9 @@ export function marketChange(input: MarketChangeInput): MarketChange {
 
   // O total pago tem as diferenças das notas; os itens, não. Uma frase diz o que mais ele conta, sem outro número
   // e sem dizer para que lado: vale com o total igual, a mais ou a menos. Se as duas diferenças não batem, os
-  // descontos ou os valores sem item somam diferente nos dois períodos, e só esses são nomeados.
+  // descontos, os valores sem item ou os gastos sem nota somam diferente nos dois períodos, e só esses são nomeados.
   const reasons = [
+    input.receiptDifferences.withoutReceipt ? 'os gastos lançados sem nota' : null,
     input.receiptDifferences.discounts ? 'os descontos no total das notas' : null,
     input.receiptDifferences.unread ? 'os valores sem item lido' : null,
   ].filter((reason): reason is string => reason !== null);

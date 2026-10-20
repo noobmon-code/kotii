@@ -163,7 +163,7 @@ export function FinanceSummaryPanel() {
             </Card>
           </Section>
 
-          <MarketMonthLink month={month} receipts={marketReceipts.data} />
+          <MarketMonthLink month={month} receipts={marketReceipts.data} entries={entries} />
 
           {places.length > 1 ? (
             <Section title="Onde mais gastou">

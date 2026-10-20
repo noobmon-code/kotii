@@ -4,7 +4,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import MarketMonthScreen from '@/app/mercado';
 import type { Entry } from '@/domain/finance';
-import type { MarketLine, MarketReceipt, MarketTotalReceipt } from '@/domain/marketSpend';
+import type { MarketData, MarketLine, MarketReceipt, MarketSpend, MarketTotalReceipt } from '@/domain/marketSpend';
 import { BarRow } from '@/features/finance/BarRow';
 import { FinanceSummaryPanel } from '@/features/finance/FinanceSummaryPanel';
 import { MarketMonthLink } from '@/features/finance/MarketMonthLink';
@@ -16,7 +16,7 @@ import { Button, Chip, IconButton, ListRow, Screen, Segmented } from '@/ui/primi
 // contas e os textos são de domain/marketSpend, de verdade.
 
 interface Query {
-  data: MarketReceipt[] | undefined;
+  data: MarketData | undefined;
   isPending: boolean;
   isError: boolean;
   error: unknown;
@@ -62,7 +62,7 @@ jest.mock('expo-router', () => {
   };
 });
 jest.mock('@/data/marketSpend', () => ({
-  useMarketReceipts: (month: string) => {
+  useMarketData: (month: string) => {
     mockState.asked.push(month);
     return mockState.query;
   },
@@ -91,11 +91,20 @@ jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));
 
-const loaded = (data: MarketReceipt[]): Query => ({ data, isPending: false, isError: false, error: null, fetchStatus: 'idle', isRefetching: false, refetch: jest.fn() });
+/** As notas e os gastos de mercado lançados sem nota, carregados. */
+const loaded = (receipts: MarketReceipt[], spends: MarketSpend[] = []): Query => ({
+  data: { receipts, spends },
+  isPending: false,
+  isError: false,
+  error: null,
+  fetchStatus: 'idle',
+  isRefetching: false,
+  refetch: jest.fn(),
+});
 /** Nunca carregou e a busca falhou. */
 const failed = (): Query => ({ ...loaded([]), data: undefined, isError: true, error: new Error('Sem conexão com a internet.') });
 /** Já tinha carregado e a nova busca falhou: os dados de antes continuam. */
-const staleAfterFailure = (data: MarketReceipt[]): Query => ({ ...loaded(data), isError: true, error: new Error('Sem conexão com a internet.') });
+const staleAfterFailure = (receipts: MarketReceipt[]): Query => ({ ...loaded(receipts), isError: true, error: new Error('Sem conexão com a internet.') });
 const onTheWay = (): Query => ({ ...loaded([]), data: undefined, isPending: true, fetchStatus: 'fetching' });
 /** Sem internet e nunca visto neste aparelho: a busca nem saiu, e não vira erro. */
 const paused = (): Query => ({ ...loaded([]), data: undefined, isPending: true, fetchStatus: 'paused' });
@@ -160,7 +169,8 @@ const HOUSE: MarketReceipt[] = [
 const CLOSING = 'Inclui R$ 20,00 de notas sem item lido e R$ 10,00 de descontos. Sem contar R$ 22,00 de farmácia, 1 item sem valor e 1 nota que espera a revisão.';
 /** No pé da tela, no mês corrente: por que este total não é a barra do Resumo. */
 const NOT_THE_RESUMO =
-  'Diferente da barra “Mercado” do Resumo: aqui só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio e sem nota com data depois de hoje.';
+  'Diferente da barra “Mercado” do Resumo: aqui as notas fiscais entram com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio. ' +
+  'Os gastos avulsos e as contas pagas lançados como Mercado também contam, e o que tem data depois de hoje fica de fora.';
 
 let renderer: ReactTestRenderer | undefined;
 
@@ -518,7 +528,7 @@ describe('como este total fecha', () => {
   it('primeiro mês de uso: as categorias não repetem que o mês anterior não teve nota', async () => {
     mockState.params = { mes: '2026-09', aba: 'categorias' };
     const text = await mount();
-    expect(text).toContain('Não teve nota de mercado em agosto');
+    expect(text).toContain('Não teve compra de mercado em agosto');
     expect(text).toContain(['Carnes', 'R$ 100,00', '77%', 'Grãos, massas e cereais', 'R$ 30,00', '23%'].join('\n'));
     expect(text).not.toContain('Não teve em agosto');
     expect(renderer!.root.findAllByType(BarRow).map((bar) => bar.props.accessibilityLabel)).toEqual(['Carnes: R$ 100,00, 77% do mês', 'Grãos, massas e cereais: R$ 30,00, 23% do mês']);
@@ -618,7 +628,7 @@ describe('o que mudou', () => {
   it('sem nota de mercado na janela do mês anterior não há card: o cabeçalho já diz', async () => {
     mockState.params = { mes: '2026-09' };
     const text = await mount();
-    expect(text).toContain('Não teve nota de mercado em agosto');
+    expect(text).toContain('Não teve compra de mercado em agosto');
     expect(text).not.toContain('O que mudou');
     expect(changeRows()).toEqual([]);
   });
@@ -668,7 +678,7 @@ describe('o mês', () => {
     expect(text).toContain('Mercado de setembro');
     expect(text).not.toContain('até hoje');
     expect(text).toContain('R$ 130,00 em 1 ida');
-    expect(text).toContain('Não teve nota de mercado em agosto');
+    expect(text).toContain('Não teve compra de mercado em agosto');
     expect(navLabels()).toEqual(['Mês anterior', 'Próximo mês']);
     await press('Próximo mês');
     expect(mockRouter.setParams).toHaveBeenCalledWith({ mes: '2026-10' });
@@ -699,8 +709,8 @@ describe('sem notas, carregando e com erro', () => {
   it('mês sem nota confirmada diz isso e leva a adicionar uma nota', async () => {
     mockState.query = loaded([]);
     const text = await mount();
-    expect(text).toContain('Nenhuma nota de mercado em outubro');
-    expect(text).toContain('As compras aparecem aqui quando uma nota fiscal é confirmada. Fotografe o cupom ou leia o QR code da nota.');
+    expect(text).toContain('Nenhuma compra de mercado em outubro');
+    expect(text).toContain('As compras aparecem aqui quando uma nota fiscal é confirmada ou um gasto é lançado como Mercado em Finanças. Fotografe o cupom ou leia o QR code da nota.');
     expect(text).not.toContain('em 0 idas');
     expect(text).not.toContain('Como este total fecha');
     expect(renderer!.root.findAllByType(Segmented)).toHaveLength(0);
@@ -720,7 +730,7 @@ describe('sem notas, carregando e com erro', () => {
     expect(text).toContain('Sem contar 1 nota com data depois de hoje.');
     await press('Como este total fecha. Sem contar 1 nota com data depois de hoje.');
     expect(page()).toContain(
-      ['1 nota com data depois de hoje', 'Fica de fora desta conta até o dia chegar. Se a data está errada, dá para corrigir na nota.', 'Dia', '· 20 out', 'R$ 100,00'].join('\n'),
+      ['1 nota com data depois de hoje', 'Fica de fora deste total até o dia chegar. Se a data está errada, dá para corrigir na nota.', 'Dia', '· 20 out', 'R$ 100,00'].join('\n'),
     );
     await press('Dia, 20 out: R$ 100,00. Abrir a nota');
     expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/nota/[id]', params: { id: 'm2' } });
@@ -733,7 +743,7 @@ describe('sem notas, carregando e com erro', () => {
       receipt('r2', at(10, 4), [], { status: 'draft' }),
     ]);
     const text = await mount();
-    expect(text).toContain('Nenhuma nota de mercado em outubro');
+    expect(text).toContain('Nenhuma compra de mercado em outubro');
     // Sem total na tela, não há o que abrir: as linhas já vêm à vista.
     expect(text).not.toContain('Como este total fecha');
     expect(text).toContain('Farmácia, fora desta conta: R$ 12,00');
@@ -762,7 +772,7 @@ describe('sem notas, carregando e com erro', () => {
     mockState.query = failed();
     const text = await mount();
     expect(text).toContain('Sem conexão com a internet.');
-    expect(text).not.toContain('Nenhuma nota de mercado');
+    expect(text).not.toContain('Nenhuma compra de mercado');
     expect(text).not.toContain('R$');
     await pressButton('Tentar de novo');
     expect(mockState.query.refetch).toHaveBeenCalledTimes(1);
@@ -787,31 +797,31 @@ describe('a entrada no resumo de gastos', () => {
   const row = () => renderer!.root.findAllByType(ListRow).find((candidate) => candidate.props.title === 'Para onde foi o dinheiro do mercado')!;
 
   it('faz a conta com as notas que o resumo já leu, sem a busca da tela, e abre a tela no mês', async () => {
-    const text = await mount(<MarketMonthLink month="2026-09" receipts={HOUSE} />);
+    const text = await mount(<MarketMonthLink month="2026-09" receipts={HOUSE} entries={[]} />);
     // Num mês passado não há nota de data futura, e a frase não fala dela.
     expect(text).toBe(
       [
         'Para onde foi o dinheiro do mercado',
         'R$ 130,00 em 1 ida',
-        'Diferente da barra “Mercado”: no Mercado do mês só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio.',
+        'Diferente da barra “Mercado”: no Mercado do mês as notas fiscais entram com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio. Os gastos avulsos e as contas pagas lançados como Mercado também contam lá.',
       ].join('\n'),
     );
     await act(async () => renderer?.unmount());
     // O mesmo total que a tela mostra para outubro.
-    expect(await mount(<MarketMonthLink month="2026-10" receipts={HOUSE} />)).toContain('R$ 270,00 em 2 idas');
+    expect(await mount(<MarketMonthLink month="2026-10" receipts={HOUSE} entries={[]} />)).toContain('R$ 270,00 em 2 idas');
     expect(mockState.asked).toEqual([]);
     await act(async () => row().props.onPress());
     expect(mockRouter.push).toHaveBeenCalledWith({ pathname: '/mercado', params: { mes: '2026-10' } });
   });
 
   it('sem nota de mercado no mês, diz isso; sem as notas na mão, continua levando à tela', async () => {
-    expect(await mount(<MarketMonthLink month="2026-10" receipts={[]} />)).toContain('Nenhuma nota de mercado em outubro');
+    expect(await mount(<MarketMonthLink month="2026-10" receipts={[]} entries={[]} />)).toContain('Nenhuma compra de mercado em outubro');
     await act(async () => renderer?.unmount());
-    expect(await mount(<MarketMonthLink month="2026-10" receipts={undefined} />)).toBe(
+    expect(await mount(<MarketMonthLink month="2026-10" receipts={undefined} entries={[]} />)).toBe(
       [
         'Para onde foi o dinheiro do mercado',
         'Por categoria, por item e por mercado',
-        'Diferente da barra “Mercado”: no Mercado do mês só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio e sem nota com data depois de hoje.',
+        'Diferente da barra “Mercado”: no Mercado do mês as notas fiscais entram com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio. Os gastos avulsos e as contas pagas lançados como Mercado também contam lá, e o que tem data depois de hoje fica de fora.',
       ].join('\n'),
     );
     expect(row().props.onPress).toBeDefined();
@@ -890,7 +900,7 @@ describe('tendência dos últimos meses', () => {
   it('mês sem nota, com notas nos meses antes: a tendência aparece embaixo do aviso', async () => {
     mockState.query = loaded([receipt('s1', at(9, 5), [line('Arroz', 'graos', 30)])]);
     const text = await mount();
-    expect(text).toContain('Nenhuma nota de mercado em outubro');
+    expect(text).toContain('Nenhuma compra de mercado em outubro');
     expect(charts()).toHaveLength(1);
     expect(charts()[0].slice(-2)).toEqual([`Setembro: R$ 30,00${OPEN}`, 'Outubro até hoje: sem ida ao mercado. Mês aberto']);
   });
@@ -1094,7 +1104,7 @@ describe('o mês pela tendência e a frase do pé', () => {
     await pressInCard('Junho: sem ida ao mercado. Abrir este mês');
     expect(mockState.params.mes).toBe('2026-06');
     text = page();
-    expect(text).toContain('Nenhuma nota de mercado em junho');
+    expect(text).toContain('Nenhuma compra de mercado em junho');
     expect(categoryChips()).toHaveLength(0);
     expect(categoryCard()).toBeUndefined();
   });
@@ -1102,14 +1112,132 @@ describe('o mês pela tendência e a frase do pé', () => {
   it('a frase do pé aparece também no mês sem ida; num mês passado, sem falar de data depois de hoje', async () => {
     mockState.query = loaded([]);
     let text = await mount();
-    expect(text).toContain('Nenhuma nota de mercado em outubro');
+    expect(text).toContain('Nenhuma compra de mercado em outubro');
     expect(text.split('\n').at(-1)).toBe(NOT_THE_RESUMO);
     await act(async () => renderer?.unmount());
     mockState.query = loaded(HOUSE);
     mockState.params = { mes: '2026-09' };
     text = await mount();
     expect(text.split('\n').at(-1)).toBe(
-      'Diferente da barra “Mercado” do Resumo: aqui só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio.',
+      'Diferente da barra “Mercado” do Resumo: aqui as notas fiscais entram com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio. ' +
+        'Os gastos avulsos e as contas pagas lançados como Mercado também contam.',
     );
+  });
+});
+
+describe('gastos de mercado lançados sem nota', () => {
+  /** Um gasto avulso ("gasto:id"), ou o pagamento de uma conta ("conta:id da conta"), lançado como Mercado em Finanças. */
+  const spend = (ref: string, date: string, amount: number, name: string): MarketSpend => {
+    const [source, refId] = ref.split(':') as ['gasto' | 'conta', string];
+    return { key: `${source}-${refId}`, source, refId, date, amount, name };
+  };
+  const FEIRA = spend('gasto:e1', '2026-10-12', 25.5, 'Feira');
+  const CESTA = spend('conta:b1', '2026-10-08', 80, 'Cesta do sacolão');
+
+  it('entram no total e nas idas, pela data, e tocar abre o gasto ou a conta', async () => {
+    mockState.query = loaded(HOUSE, [FEIRA, CESTA]);
+    mockState.params = { aba: 'idas' };
+    const text = await mount();
+    expect(text).toContain('R$ 375,50 em 4 idas');
+    expect(rowTitles()).toEqual(['Feira', 'Dia', 'Cesta do sacolão', 'Assaí']);
+    expect(text).toContain(['Feira', '12 out · gasto avulso · sem itens', 'R$ 25,50'].join('\n'));
+    expect(text).toContain(['Cesta do sacolão', '8 out · conta paga · sem itens', 'R$ 80,00'].join('\n'));
+    await press('Feira: R$ 25,50, 12 out, gasto avulso, sem itens. Abrir o gasto');
+    expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/gasto/[id]', params: { id: 'e1' } });
+    await press('Cesta do sacolão: R$ 80,00, 8 out, conta paga, sem itens. Abrir a conta');
+    expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/conta/[id]', params: { id: 'b1' } });
+    // A nota continua abrindo a nota.
+    await press('Dia: R$ 50,00, 10 out, 2 itens. Abrir a nota');
+    expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/nota/[id]', params: { id: 'o2' } });
+  });
+
+  it('"Como este total fecha" diz quanto foi lançado sem nota; os itens e as categorias continuam das notas', async () => {
+    mockState.query = loaded(HOUSE, [FEIRA, CESTA]);
+    const closing =
+      'Inclui R$ 105,50 de gastos lançados sem nota, R$ 20,00 de notas sem item lido e R$ 10,00 de descontos. Sem contar R$ 22,00 de farmácia, 1 item sem valor e 1 nota que espera a revisão.';
+    const text = await mount();
+    expect(text).toContain(['Como este total fecha', closing].join('\n'));
+    expect(rowTitles()).toEqual(TOP_TEN);
+    expect(text).toContain('As porcentagens são sobre os itens lidos (R$ 260,00).');
+    await press(`Como este total fecha. ${closing}`);
+    expect(page()).toContain(['Gastos lançados sem nota', 'R$ 105,50', 'Descontos no total das notas'].join('\n'));
+  });
+
+  it('nos mercados, o gasto sem nota abre as idas dele, sem itens', async () => {
+    mockState.query = loaded(HOUSE, [FEIRA]);
+    mockState.params = { aba: 'mercados' };
+    await mount();
+    expect(rowTitles()).toEqual(['Assaí', 'Dia', 'Feira']);
+    expect(page()).toContain(['Feira', '1 ida · sem nota', 'R$ 25,50'].join('\n'));
+    await press('Feira: R$ 25,50 em 1 ida, sem nota. Ver as idas e os itens');
+    expect(page()).toContain('Lançado sem nota: não tem itens.');
+    await press('Feira: R$ 25,50, 12 out, gasto avulso, sem itens. Abrir o gasto');
+    expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/gasto/[id]', params: { id: 'e1' } });
+  });
+
+  it('com data depois de hoje, fica de fora e aparece para conferir, abrindo o gasto', async () => {
+    mockState.query = loaded([], [spend('gasto:e9', '2026-10-20', 30, 'Feira')]);
+    const text = await mount();
+    // Sem nada até hoje, a tela diz que o mês não tem compra, e o que ficou de fora já vem à vista.
+    expect(text).toContain('Nenhuma compra de mercado em outubro');
+    expect(text).toContain(
+      ['1 gasto com data depois de hoje', 'Fica de fora deste total até o dia chegar. Se a data está errada, dá para corrigir no gasto.', 'Feira', '· 20 out', 'R$ 30,00'].join('\n'),
+    );
+    await press('Feira, 20 out: R$ 30,00. Abrir o gasto');
+    expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/gasto/[id]', params: { id: 'e9' } });
+  });
+
+  it('mês só com gastos sem nota: total, idas e a frase de por que não há itens', async () => {
+    mockState.query = loaded([], [FEIRA]);
+    const text = await mount();
+    expect(text).toContain('R$ 25,50 em 1 ida');
+    expect(text).toContain('Os gastos de mercado deste mês foram lançados sem nota, e por isso não têm itens.');
+    expect(text).not.toContain('As notas deste mês vieram sem nenhum item lido.');
+  });
+
+  it('no cartão da categoria, o mês só com gastos sem nota diz "sem nota" e, tocado, tira a categoria', async () => {
+    mockState.query = loaded(
+      [receipt('o', at(10, 3), [line('Arroz', 'graos', 30)]), receipt('j', at(7, 5), [line('Feijão', 'graos', 9)])],
+      [spend('gasto:s1', '2026-09-06', 20, 'Feira')],
+    );
+    mockState.params = { aba: 'categorias' };
+    await mount();
+    const grains = renderer!.root.findAllByType(BarRow).find((bar) => bar.props.label === 'Grãos, massas e cereais');
+    await act(async () => grains!.props.onPress());
+    const card = renderer!.root.findAllByType(MarketTrendChart).find((chart) => chart.props.trend.title.startsWith('Grãos'))!;
+    const september = monthButtons(card).find((bar) => bar.props.accessibilityLabel === 'Setembro: só gastos lançados sem nota. Abrir este mês');
+    expect(september).toBeDefined();
+    expect(card.props.trend.averageNote).toBe('3 meses sem ida ao mercado e 1 mês só com gastos lançados sem nota ficam fora da média.');
+    // "sem nota" não é um valor: vem apagado como "sem ida", não na cor dos valores.
+    const colorOf = (label: string) =>
+      StyleSheet.flatten(card.findAll((node) => node.type === RNText && node.props.children === label)[0].props.style).color;
+    expect(colorOf('sem nota')).toBe(colorOf('sem ida'));
+    expect(colorOf('sem nota')).not.toBe(colorOf('30'));
+    await act(async () => september!.props.onPress());
+    expect(mockState.params.mes).toBe('2026-09');
+    expect(categoryChips()).toHaveLength(0);
+    const text = page();
+    expect(text).toContain('R$ 20,00 em 1 ida');
+    expect(text).toContain('Os gastos de mercado deste mês foram lançados sem nota, e por isso não têm itens.');
+  });
+
+  it('a entrada no Resumo soma os gastos e as contas pagas de Mercado que o Resumo já leu, e só eles', async () => {
+    const entries: Entry[] = [
+      { id: 'gasto-e1', source: 'gasto', refId: 'e1', date: '2026-10-12', amount: 25.5, category: 'mercado', description: 'Feira' },
+      { id: 'conta-p1', source: 'conta', refId: 'b1', date: '2026-10-08', amount: 80, category: 'mercado', description: 'Cesta do sacolão' },
+      { id: 'gasto-e2', source: 'gasto', refId: 'e2', date: '2026-10-09', amount: 90, category: 'alimentacao', description: 'Pizza' },
+      // A nota já entra pelos itens: não conta de novo.
+      { id: 'nota-o2', source: 'nota', refId: 'o2', date: '2026-10-10', amount: 50, category: 'mercado', description: 'Dia' },
+    ];
+    expect(await mount(<MarketMonthLink month="2026-10" receipts={HOUSE} entries={entries} />)).toContain('R$ 375,50 em 4 idas');
+    await act(async () => renderer?.unmount());
+    mockState.spending.entries = entries;
+    mockState.spending.receipts = HOUSE.filter((r) => r.status === 'confirmed');
+    await mount(<FinanceSummaryPanel />);
+    expect(page()).toContain(['Para onde foi o dinheiro do mercado', 'R$ 375,50 em 4 idas'].join('\n'));
+    // O mesmo total que a tela mostra.
+    await act(async () => renderer?.unmount());
+    mockState.query = loaded(HOUSE, [FEIRA, CESTA]);
+    expect(await mount()).toContain('R$ 375,50 em 4 idas');
   });
 });
