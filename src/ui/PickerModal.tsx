@@ -33,6 +33,7 @@ export function PickerModal({
   suggestions,
   suggestionsTitle,
   onSelectSuggestion = onSelect,
+  message,
 }: {
   visible: boolean;
   title: string;
@@ -45,6 +46,8 @@ export function PickerModal({
   suggestions?: (query: string) => PickerOption[];
   suggestionsTitle?: string;
   onSelectSuggestion?: (id: string) => void;
+  /** Uma frase logo abaixo do título: o que a escolha muda. */
+  message?: string;
 }) {
   const c = useColors();
   const [query, setQuery] = useState(initialQuery);
@@ -67,6 +70,7 @@ export function PickerModal({
             </Text>
             <IconButton icon="close" label="Fechar" onPress={onClose} />
           </View>
+          {message ? <Text variant="muted">{message}</Text> : null}
           <TextField value={query} onChangeText={setQuery} placeholder={placeholder} autoFocus autoCorrect={false} />
           {extraActions?.(query.trim())}
           <FlatList

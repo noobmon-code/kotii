@@ -1,13 +1,32 @@
 import { describe, expect, it } from '@jest/globals';
 
+import { formatShortDate } from '../dates';
 import type { PurchaseLine } from '../priceHistory';
-import { latestByStore, storePricesFromPurchases, storePricesFromSaved, storePricesView, type SavedPrice, type StorePrice } from '../storePrices';
+import {
+  latestByStore,
+  storePriceDetail,
+  storePriceGroups,
+  storePriceLabel,
+  storePricesFromPurchases,
+  storePricesFromSaved,
+  storePricesView,
+  type SavedPrice,
+  type StorePrice,
+} from '../storePrices';
 
 const at = (day: string, time = '15:00') => new Date(`${day}T${time}:00`).toISOString();
-const price = (storeId: string, unitPrice: number, day: string, unit = 'un'): StorePrice => ({ storeId, unit, unitPrice, purchasedAt: at(day) });
+const price = (storeId: string, unitPrice: number, day: string, unit = 'un', pack: Partial<StorePrice> = {}): StorePrice => ({
+  storeId,
+  unit,
+  unitPrice,
+  purchasedAt: at(day),
+  packLabel: null,
+  packagePrice: null,
+  ...pack,
+});
 
 let serial = 0;
-function line(storeId: string | null, unitPrice: number, day: string): PurchaseLine {
+function line(storeId: string | null, unitPrice: number, day: string, patch: Partial<PurchaseLine> = {}): PurchaseLine {
   serial += 1;
   return {
     id: `i${serial}`,
@@ -19,6 +38,7 @@ function line(storeId: string | null, unitPrice: number, day: string): PurchaseL
     unit: 'un',
     unitPrice,
     totalPrice: unitPrice,
+    ...patch,
   };
 }
 
@@ -64,15 +84,93 @@ describe('o último preço de cada mercado', () => {
     expect(byStore.map((p) => p.storeId)).toEqual(['atacadao', 'assai']);
   });
 
-  it('dos guardados no aparelho: só os do produto, e o mais recente quando o mercado tem preço em duas unidades', () => {
+  it('dos guardados no aparelho: só os do produto, e o preço de cada unidade à parte', () => {
     const rows = [
       saved('arroz', 'assai', 25.9, '2026-10-10'),
       saved('arroz', 'assai', 5.5, '2026-08-01', 'kg'),
       saved('arroz', 'dia', 24.5, '2026-09-01'),
       saved('leite', 'assai', 3.99, '2026-10-10'),
     ];
-    expect(storePricesFromSaved(rows, 'arroz')).toEqual([price('dia', 24.5, '2026-09-01'), price('assai', 25.9, '2026-10-10')]);
+    expect(storePriceGroups(storePricesFromSaved(rows, 'arroz'))).toEqual([
+      { unit: 'un', title: 'Por unidade', prices: [price('dia', 24.5, '2026-09-01'), price('assai', 25.9, '2026-10-10')] },
+      { unit: 'kg', title: 'Por kg', prices: [price('assai', 5.5, '2026-08-01', 'kg')] },
+    ]);
     expect(storePricesFromSaved(rows, 'feijao')).toEqual([]);
+  });
+
+  it('dos guardados no aparelho: g e kg na mesma conta, por kg (o tamanho do pacote ali não se sabe)', () => {
+    const rows = [saved('queijo', 'assai', 0.0399, '2026-10-10', 'g'), saved('queijo', 'dia', 42.9, '2026-10-01', 'kg')];
+    expect(storePricesFromSaved(rows, 'queijo')).toEqual([price('assai', 39.9, '2026-10-10', 'kg'), price('dia', 42.9, '2026-10-01', 'kg')]);
+  });
+});
+
+describe('só se compara o que está na mesma unidade', () => {
+  it('pacotes de 5 kg e de 1 kg: pelo preço por kg, e o de 5 kg é o mais barato', () => {
+    const byStore = storePricesFromPurchases([
+      line('assai', 24.9, '2026-10-10', { description: 'ARROZ T1 5KG' }),
+      line('dia', 5.49, '2026-10-12', { description: 'ARROZ T1 1KG' }),
+    ]);
+    expect(storePriceGroups(byStore)).toEqual([
+      {
+        unit: 'kg',
+        title: 'Por kg',
+        prices: [
+          price('assai', 4.98, '2026-10-10', 'kg', { packLabel: '5 kg', packagePrice: 24.9 }),
+          price('dia', 5.49, '2026-10-12', 'kg', { packLabel: '1 kg', packagePrice: 5.49 }),
+        ],
+      },
+    ]);
+    expect(storePriceLabel(byStore[0])).toBe('R$ 4,98/kg');
+    expect(storePriceDetail(byStore[0])).toBe(`5 kg por R$ 24,90 · em ${formatShortDate('2026-10-10')}`);
+  });
+
+  it('kg e unidade não se comparam: cada um na sua lista, sem "Mais barato" entre eles', () => {
+    const groups = storePriceGroups(
+      storePricesFromPurchases([
+        line('assai', 6.99, '2026-10-10', { unit: 'kg', description: 'BANANA PRATA KG' }),
+        line('dia', 1.2, '2026-10-12', { description: 'BANANA PRATA UN' }),
+        line('carrefour', 7.49, '2026-10-05', { unit: 'kg', description: 'BANANA PRATA' }),
+      ]),
+    );
+    expect(groups.map((group) => [group.title, group.prices.map((p) => `${p.storeId} ${storePriceLabel(p)}`)])).toEqual([
+      ['Por kg', ['assai R$ 6,99/kg', 'carrefour R$ 7,49/kg']],
+      ['Por unidade', ['dia R$ 1,20/un']],
+    ]);
+  });
+
+  it('a linha em g aparece por kg, junto com a de kg', () => {
+    const byStore = storePricesFromPurchases([
+      line('assai', 0.0399, '2026-10-10', { unit: 'g', quantity: 300, description: 'QUEIJO MUSSARELA' }),
+      line('dia', 42.9, '2026-10-12', { unit: 'kg', description: 'QUEIJO MUSSARELA KG' }),
+    ]);
+    expect(byStore.map(storePriceLabel)).toEqual(['R$ 39,90/kg', 'R$ 42,90/kg']);
+    expect(storePriceGroups(byStore)).toHaveLength(1);
+  });
+
+  it('um tamanho só: segue o preço do pacote, que já se compara, com o tamanho embaixo', () => {
+    const byStore = storePricesFromPurchases([
+      line('assai', 24.9, '2026-10-10', { description: 'ARROZ T1 5KG' }),
+      line('dia', 26.5, '2026-10-12', { description: 'ARROZ TIPO 1 5 KG' }),
+    ]);
+    expect(byStore).toEqual([
+      price('assai', 24.9, '2026-10-10', 'un', { packLabel: '5 kg' }),
+      price('dia', 26.5, '2026-10-12', 'un', { packLabel: '5 kg' }),
+    ]);
+    expect(storePriceDetail(byStore[0])).toBe(`5 kg · em ${formatShortDate('2026-10-10')}`);
+  });
+
+  it('o mesmo mercado com preço por kg e por unidade aparece nas duas listas', () => {
+    const groups = storePriceGroups([price('assai', 6.99, '2026-10-10', 'kg'), price('assai', 1.2, '2026-09-01'), price('dia', 1.5, '2026-10-01')]);
+    expect(groups.map((group) => group.prices.map((p) => p.storeId))).toEqual([['assai', 'dia'], ['assai']]);
+  });
+
+  it('por item do pacote: "cada"', () => {
+    const byStore = storePricesFromPurchases([
+      line('assai', 9.9, '2026-10-10', { description: 'OVOS BRANCOS C/12' }),
+      line('dia', 21, '2026-10-12', { description: 'OVOS BRANCOS C/30' }),
+    ]);
+    expect(byStore.map(storePriceLabel)).toEqual(['R$ 0,70 cada', 'R$ 0,83 cada']);
+    expect(storePriceGroups(byStore)[0].title).toBe('Por item do pacote');
   });
 });
 

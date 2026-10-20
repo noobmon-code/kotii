@@ -12,6 +12,7 @@ import {
   Chip,
   EmptyState,
   ErrorNotice,
+  Icon,
   IconBadge,
   type IconName,
   ListCard,
@@ -96,6 +97,17 @@ export function ShoppingListsPanel() {
           ))}
         </ListCard>
       )}
+
+      {/* Daqui também se chega ao dinheiro do mercado, que nasce das notas das compras destas listas. */}
+      <ListCard>
+        <ListRow
+          left={<IconBadge icon="cart-outline" tone="primary" />}
+          title="Para onde foi o dinheiro do mercado"
+          subtitle="Mercado do mês: por item, por categoria e por mercado"
+          right={<Icon name="chevron-right" color="textMuted" />}
+          onPress={() => router.push('/mercado')}
+        />
+      </ListCard>
 
       <ListCard>
         <ListRow

@@ -51,6 +51,9 @@ export interface MarketReceipt extends MarketTotalReceipt {
   id: string;
   storeId: string | null;
   storeName: string | null;
+  /** O endereço e o CNPJ do mercado: separam dois mercados de mesmo nome. */
+  storeAddress?: string | null;
+  storeCnpj?: string | null;
   lines: MarketLine[];
 }
 
@@ -92,6 +95,13 @@ export interface MarketItem {
   /** Quanto foi comprado, em quantas idas e o valor do mês anterior: "10 kg · em 3 idas · setembro: R$ 80,00". */
   detail: string;
   accessibilityLabel: string;
+  /** Em quantas idas do mês o item foi comprado. */
+  trips: number;
+  /**
+   * Quanto foi comprado, para ordenar: a medida ('un', 'peso', 'volume', ou a unidade como veio) e a soma em
+   * milésimos da unidade pequena (g, ml, un). null quando as compras vieram em medidas que não se somam.
+   */
+  quantity: { measure: string; amount: number } | null;
 }
 
 export interface MarketTrip {
@@ -108,11 +118,29 @@ export interface MarketStore {
   /** O id do mercado; '' para as notas sem mercado. */
   key: string;
   name: string;
+  /**
+   * Só quando outro mercado do mês tem o mesmo nome: o endereço, o CNPJ ou, sem nenhum dos dois, "loja 2".
+   * null quando o nome basta.
+   */
+  place: string | null;
   cents: number;
   amount: string;
-  /** "3 idas" */
+  /** "3 idas", ou "Av. Brasil, 100 · 3 idas" com dois mercados de mesmo nome. */
   detail: string;
   accessibilityLabel: string;
+}
+
+/** Um mercado tocado na lista: as idas e os itens dele no mês. */
+export interface MarketStoreMonth {
+  key: string;
+  /** "Assaí", ou "Assaí (Av. Brasil, 100)" com dois mercados de mesmo nome. */
+  title: string;
+  /** "R$ 61,00 em 2 idas" */
+  headline: string;
+  /** Da mais recente para a mais antiga. */
+  trips: MarketTrip[];
+  /** Do que levou mais dinheiro para o que levou menos; a parte é sobre os itens deste mercado. */
+  items: MarketItem[];
 }
 
 /** Uma nota para a pessoa abrir e conferir. */
@@ -255,14 +283,29 @@ function itemKey(line: MarketLine, category: string): string {
  * (un e kg).
  */
 export function totalQuantity(parts: { quantity: number; unit: string }[]): string | null {
+  const sum = sumQuantity(parts);
+  if (!sum) return null;
+  const { small, thousandths } = sum;
+  const big = small === 'g' ? 'kg' : small === 'ml' ? 'l' : null;
+  return big && thousandths >= 1_000_000 ? formatQuantity(thousandths / 1_000_000, big) : formatQuantity(thousandths / 1000, small);
+}
+
+/** A soma na unidade pequena (g, ml, ou a própria unidade), em milésimos inteiros; null quando não se somam. */
+function sumQuantity(parts: { quantity: number; unit: string }[]): { small: string; thousandths: number } | null {
   if (!parts.length) return null;
   const first = parts[0].unit;
   if (!parts.every((part) => sameDimension(part.unit, first))) return null;
-  // Soma na unidade pequena (g, ml), em milésimos inteiros: 0,1 kg + 0,2 kg não vira 0,30000000000000004.
+  // Em milésimos inteiros: 0,1 kg + 0,2 kg não vira 0,30000000000000004.
   const small = convertQuantity(1, first, 'g') != null ? 'g' : convertQuantity(1, first, 'ml') != null ? 'ml' : first;
   const thousandths = parts.reduce((sum, part) => sum + Math.round((convertQuantity(part.quantity, part.unit, small) ?? 0) * 1000), 0);
-  const big = small === 'g' ? 'kg' : small === 'ml' ? 'l' : null;
-  return big && thousandths >= 1_000_000 ? formatQuantity(thousandths / 1_000_000, big) : formatQuantity(thousandths / 1000, small);
+  return { small, thousandths };
+}
+
+/** Quanto foi comprado, para ordenar: peso com peso, volume com volume, unidade com unidade. */
+function quantityOf(parts: { quantity: number; unit: string }[]): MarketItem['quantity'] {
+  const sum = sumQuantity(parts);
+  if (!sum) return null;
+  return { measure: sum.small === 'g' ? 'peso' : sum.small === 'ml' ? 'volume' : sum.small, amount: sum.thousandths };
 }
 
 function shareOf(part: number, whole: number): string {
@@ -482,6 +525,90 @@ const storeNameOf = (receipt: MarketReceipt) => receipt.storeName?.trim() || (re
 const byAmountThenName = <T extends { cents: number; name: string; key: string }>(a: T, b: T) =>
   b.cents - a.cents || a.name.localeCompare(b.name, 'pt-BR') || a.key.localeCompare(b.key);
 
+/** O mercado da nota, como a lista de mercados junta: pelo id; '' para as notas sem mercado. */
+const storeKeyOf = (receipt: MarketReceipt) => receipt.storeId ?? '';
+
+const formatCnpj = (cnpj: string) => {
+  const digits = cnpj.replace(/\D/g, '');
+  return digits.length === 14 ? `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}/${digits.slice(8, 12)}-${digits.slice(12)}` : cnpj;
+};
+
+type StorePlaceInput = { key: string; name: string; address: string; cnpj: string };
+
+/**
+ * O que separa um mercado de outro do mesmo nome no mês (duas unidades do Assaí): o endereço; sem ele, o CNPJ;
+ * sem nenhum dos dois, "sem endereço" ou, com mais de um assim, "loja 1", "loja 2". Só esses entram na conta
+ * dos números (o que já mostra o endereço não leva número, então nunca há "loja 2" sem "loja 1"), e na ordem
+ * do id do mercado, não do valor: a mesma unidade não troca de número de um mês para o outro só porque gastou
+ * mais. null quando nenhum outro mercado tem o nome.
+ */
+function storePlace(store: StorePlaceInput, all: StorePlaceInput[]): string | null {
+  const same = all.filter((other) => other.name.toLocaleLowerCase('pt-BR') === store.name.toLocaleLowerCase('pt-BR'));
+  if (same.length < 2) return null;
+  if (store.address) return store.address;
+  if (store.cnpj) return `CNPJ ${formatCnpj(store.cnpj)}`;
+  const bare = same
+    .filter((other) => !other.address && !other.cnpj)
+    .map((other) => other.key)
+    .sort((a, b) => a.localeCompare(b));
+  return bare.length < 2 ? 'sem endereço' : `loja ${bare.indexOf(store.key) + 1}`;
+}
+
+/**
+ * As linhas dos itens, do que levou mais dinheiro para o que levou menos. `shareOfWhat` diz de quê é a parte
+ * para o leitor de tela; `previous`, quando vem, põe o valor de cada item no mês anterior.
+ */
+function itemRows(current: Figures, shareOfWhat: string, previous: { month: string; items: Map<string, ItemFigures> } | null): MarketItem[] {
+  return [...current.items.values()].sort(byAmountThenName).map((item): MarketItem => {
+    const amount = item.cents > 0 ? money(item.cents) : 'sem valor';
+    const share = shareOf(item.cents, current.itemsCents);
+    const before = previous?.items.get(item.key)?.cents ?? 0;
+    const detail = [
+      // Unidades que não se somam (un e kg): em vez da quantidade, quantas vezes foi comprado.
+      totalQuantity(item.purchases) ?? plural(item.purchases.length, 'compra', 'compras'),
+      `em ${plural(item.receiptIds.size, 'ida', 'idas')}`,
+      previous && before > 0 ? `${monthName(previous.month)}: ${money(before)}` : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    return {
+      key: item.key,
+      productId: item.productId,
+      name: item.name,
+      category: item.category,
+      cents: item.cents,
+      amount,
+      share,
+      detail,
+      accessibilityLabel: `${item.name}: ${amount}, ${spokenShare(share, shareOfWhat)}, ${detail.replace(/ · /g, ', ')}`,
+      trips: item.receiptIds.size,
+      quantity: quantityOf(item.purchases),
+    };
+  });
+}
+
+/** As linhas das idas, na ordem das idas (da mais recente para a mais antiga). */
+function tripRows(trips: TripFigures[], shortDate: (date: string) => string): MarketTrip[] {
+  return trips.map((trip): MarketTrip => {
+    const storeName = storeNameOf(trip.receipt);
+    const detail = [
+      shortDate(trip.date),
+      plural(trip.lines, 'item', 'itens'),
+      trip.money.pharmacyCents > 0 ? `farmácia fora: ${money(trip.money.pharmacyCents)}` : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    return {
+      receiptId: trip.receipt.id,
+      storeName,
+      cents: trip.money.paidCents,
+      amount: money(trip.money.paidCents),
+      detail,
+      accessibilityLabel: `${storeName}: ${money(trip.money.paidCents)}, ${detail.replace(/ · /g, ', ')}`,
+    };
+  });
+}
+
 /**
  * Tudo o que a tela "Mercado do mês" mostra, a partir das notas do mês e do
  * mês anterior (com mercado e itens). `today` diz se o mês é o corrente.
@@ -541,68 +668,38 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
       };
     });
 
-  const items = [...current.items.values()].sort(byAmountThenName).map((item): MarketItem => {
-    const amount = item.cents > 0 ? money(item.cents) : 'sem valor';
-    const share = shareOf(item.cents, current.itemsCents);
-    const before = previousWhole.items.get(item.key)?.cents ?? 0;
-    const detail = [
-      // Unidades que não se somam (un e kg): em vez da quantidade, quantas vezes foi comprado.
-      totalQuantity(item.purchases) ?? plural(item.purchases.length, 'compra', 'compras'),
-      `em ${plural(item.receiptIds.size, 'ida', 'idas')}`,
-      before > 0 ? `${monthName(previous.month)}: ${money(before)}` : null,
-    ]
-      .filter(Boolean)
-      .join(' · ');
-    return {
-      key: item.key,
-      productId: item.productId,
-      name: item.name,
-      category: item.category,
-      cents: item.cents,
-      amount,
-      share,
-      detail,
-      accessibilityLabel: `${item.name}: ${amount}, ${spokenShare(share, shareOfWhat)}, ${detail.replace(/ · /g, ', ')}`,
-    };
-  });
-
-  const trips = current.trips.map((trip): MarketTrip => {
-    const storeName = storeNameOf(trip.receipt);
-    const detail = [
-      shortDate(trip.date),
-      plural(trip.lines, 'item', 'itens'),
-      trip.money.pharmacyCents > 0 ? `farmácia fora: ${money(trip.money.pharmacyCents)}` : null,
-    ]
-      .filter(Boolean)
-      .join(' · ');
-    return {
-      receiptId: trip.receipt.id,
-      storeName,
-      cents: trip.money.paidCents,
-      amount: money(trip.money.paidCents),
-      detail,
-      accessibilityLabel: `${storeName}: ${money(trip.money.paidCents)}, ${detail.replace(/ · /g, ', ')}`,
-    };
-  });
+  const items = itemRows(current, shareOfWhat, { month: previous.month, items: previousWhole.items });
+  const trips = tripRows(current.trips, shortDate);
 
   // Por mercado: pelo id, não pelo nome (dois mercados podem ter o mesmo nome).
-  const byStore = new Map<string, { key: string; name: string; cents: number; trips: number }>();
+  const byStore = new Map<string, { key: string; name: string; address: string; cnpj: string; cents: number; trips: number }>();
   for (const trip of current.trips) {
-    const key = trip.receipt.storeId ?? '';
-    const store = byStore.get(key) ?? { key, name: storeNameOf(trip.receipt), cents: 0, trips: 0 };
+    const key = storeKeyOf(trip.receipt);
+    // O endereço e o CNPJ da ida mais recente (as idas vêm da mais nova para a mais antiga).
+    const store = byStore.get(key) ?? {
+      key,
+      name: storeNameOf(trip.receipt),
+      address: trip.receipt.storeAddress?.trim() ?? '',
+      cnpj: trip.receipt.storeCnpj?.trim() ?? '',
+      cents: 0,
+      trips: 0,
+    };
     store.cents += trip.money.paidCents;
     store.trips += 1;
     byStore.set(key, store);
   }
-  const stores = [...byStore.values()].sort(byAmountThenName).map((store): MarketStore => {
-    const detail = plural(store.trips, 'ida', 'idas');
+  const sortedStores = [...byStore.values()].sort(byAmountThenName);
+  const stores = sortedStores.map((store): MarketStore => {
+    const place = storePlace(store, sortedStores);
+    const detail = [place, plural(store.trips, 'ida', 'idas')].filter(Boolean).join(' · ');
     return {
       key: store.key,
       name: store.name,
+      place,
       cents: store.cents,
       amount: money(store.cents),
       detail,
-      accessibilityLabel: `${store.name}: ${money(store.cents)} em ${detail}`,
+      accessibilityLabel: `${place ? `${store.name}, ${place}` : store.name}: ${money(store.cents)} em ${plural(store.trips, 'ida', 'idas')}`,
     };
   });
 
@@ -716,8 +813,8 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
             label: plural(laterReceipts.length, 'nota com data depois de hoje', 'notas com data depois de hoje'),
             hint:
               laterReceipts.length === 1
-                ? 'Fica de fora desta conta até o dia chegar. Se a data está errada, abra a nota para conferir.'
-                : 'Ficam de fora desta conta até o dia chegar. Se a data está errada, abra a nota para conferir.',
+                ? 'Fica de fora desta conta até o dia chegar. Se a data está errada, dá para corrigir na nota.'
+                : 'Ficam de fora desta conta até o dia chegar. Se a data está errada, dá para corrigir na nota.',
             receipts: laterReceipts.map((entry) => ref(entry.receipt, entry.date, money(entry.cents))),
           }
         : null,
@@ -749,8 +846,170 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
   };
 }
 
+/**
+ * Um mercado da lista do mês (`store`, de `marketMonth`), aberto: as idas e os itens dele no mesmo período da
+ * tela (no mês corrente, até hoje), pelas mesmas contas. A parte de cada item é sobre os itens deste mercado.
+ * null quando o mercado não teve ida no período.
+ */
+export function marketStoreMonth(receipts: MarketReceipt[], month: string, today: string, store: MarketStore): MarketStoreMonth | null {
+  const range = monthRange(month);
+  const current = figures(
+    receipts.filter((receipt) => storeKeyOf(receipt) === store.key),
+    range.start,
+    periodEnd(month, today),
+  );
+  if (!current.trips.length) return null;
+  const year = Number(today.slice(0, 4));
+  const paid = current.trips.reduce((sum, trip) => sum + trip.money.paidCents, 0);
+  return {
+    key: store.key,
+    title: store.place ? `${store.name} (${store.place})` : store.name,
+    headline: `${money(paid)} em ${plural(current.trips.length, 'ida', 'idas')}`,
+    trips: tripRows(current.trips, (date) => formatShortDate(date, year)),
+    items: itemRows(current, 'dos itens deste mercado', null),
+  };
+}
+
+/** A ordem dos itens do mês. */
+export type MarketItemOrder = 'valor' | 'quantidade' | 'idas';
+
+export const MARKET_ITEM_ORDERS: { value: MarketItemOrder; label: string }[] = [
+  { value: 'valor', label: 'Valor' },
+  { value: 'quantidade', label: 'Quantidade' },
+  { value: 'idas', label: 'Idas' },
+];
+
+/** Na ordem por quantidade, a frase de cima: por que os itens vêm em grupos. */
+export const QUANTITY_ORDER_NOTE = 'A quantidade só se soma na mesma medida: o que é por unidade, por peso e por volume vem separado.';
+
+/** Os itens numa ordem, em grupos: um só (sem título) por valor e por idas; por quantidade, um por medida. */
+export interface MarketItemGroup {
+  key: string;
+  /** "Por peso"; null no grupo único. */
+  title: string | null;
+  /** O que o grupo quer dizer, quando precisa: o dos itens que não se somam. */
+  hint: string | null;
+  items: MarketItem[];
+  /**
+   * Por quantidade, com o corte: quantos itens do grupo ficaram para o "Ver todos" ("Mais 15 itens por unidade:
+   * veja em “Ver todos”."); null quando o grupo vem inteiro.
+   */
+  rest: string | null;
+}
+
+/** Os itens na ordem escolhida, já com o corte: os grupos e o que o botão do corte diz. */
+export interface MarketItemList {
+  groups: MarketItemGroup[];
+  /** "Ver todos os 25 itens" / "Mostrar só os 10 primeiros"; null quando não há o que esconder. */
+  toggle: string | null;
+}
+
+/** Por quantidade, com o corte, cada medida mostra pelo menos estes primeiros: nenhum grupo some da tela. */
+export const MARKET_ITEMS_SHOWN_PER_MEASURE = 3;
+
+/** O botão que volta ao corte, quando ele é feito por medida. */
+const LESS_BY_MEASURE = 'Mostrar só os primeiros de cada medida';
+
+const MEASURE_TITLES: Record<string, string> = { un: 'Por unidade', peso: 'Por peso', volume: 'Por volume' };
+const MEASURE_ORDER = ['un', 'peso', 'volume'];
+const MIXED = 'Em medidas que não se somam';
+const MIXED_HINT = 'Comprados ora por unidade, ora por peso ou volume: a quantidade não se soma, e a linha diz quantas compras foram.';
+
+/**
+ * Os itens na ordem escolhida. Por valor: a de `marketMonth` (do que levou mais dinheiro). Por idas: em
+ * quantas idas do mês o item foi comprado, e no empate o valor. Por quantidade: 2 kg de arroz e 12 caixas de
+ * leite não se comparam, então cada medida vem num grupo (por unidade, por peso, por volume, e a unidade que
+ * vier diferente com o nome dela), do que foi mais comprado para o que foi menos; os itens comprados em
+ * medidas que não se somam (por unidade numa ida e por peso na outra) ficam por último, num grupo que diz isso.
+ *
+ * `cut` (o `itemsCut` do mês), sem `showAll`, mostra só os primeiros. Num grupo só (por valor, por idas, ou
+ * tudo numa medida), os `cut.shown` primeiros. Por quantidade, com mais de uma medida, o corte é por grupo:
+ * cada medida mostra os primeiros dela (pelo menos MARKET_ITEMS_SHOWN_PER_MEASURE), e as vagas que sobram vão
+ * para os grupos na ordem; assim o peso e o volume nunca somem atrás de dez itens por unidade, e cada grupo
+ * cortado diz quantos ficaram para o "Ver todos". Corte que não esconde nada não tem botão.
+ */
+export function orderMarketItems(
+  items: MarketItem[],
+  order: MarketItemOrder,
+  cut: { shown: number; more: string; less: string } | null = null,
+  showAll = false,
+): MarketItemList {
+  const tieBreak = (a: MarketItem, b: MarketItem) => b.cents - a.cents || a.name.localeCompare(b.name, 'pt-BR') || a.key.localeCompare(b.key);
+  let groups: MarketItemGroup[];
+  if (order === 'valor') groups = [{ key: 'todos', title: null, hint: null, items, rest: null }];
+  else if (order === 'idas')
+    groups = [{ key: 'todos', title: null, hint: null, items: [...items].sort((a, b) => b.trips - a.trips || tieBreak(a, b)), rest: null }];
+  else {
+    const byMeasure = new Map<string, MarketItem[]>();
+    for (const item of items) {
+      const measure = item.quantity?.measure ?? '';
+      byMeasure.set(measure, [...(byMeasure.get(measure) ?? []), item]);
+    }
+    const rank = (measure: string) => (measure === '' ? MEASURE_ORDER.length + 1 : MEASURE_ORDER.includes(measure) ? MEASURE_ORDER.indexOf(measure) : MEASURE_ORDER.length);
+    groups = [...byMeasure.keys()]
+      .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+      .map((measure) => ({
+        key: measure || 'misturado',
+        title: measure === '' ? MIXED : (MEASURE_TITLES[measure] ?? `Em ${measure}`),
+        hint: measure === '' ? MIXED_HINT : null,
+        items: byMeasure.get(measure)!.sort((a, b) => (b.quantity?.amount ?? 0) - (a.quantity?.amount ?? 0) || tieBreak(a, b)),
+        rest: null,
+      }));
+  }
+  // Sem itens não há grupo nenhum.
+  groups = groups.filter((group) => group.items.length > 0);
+  if (!cut) return { groups, toggle: null };
+
+  const byMeasure = groups.length > 1;
+  const counts = groups.map((group) => Math.min(group.items.length, byMeasure ? Math.max(MARKET_ITEMS_SHOWN_PER_MEASURE, Math.floor(cut.shown / groups.length)) : cut.shown));
+  let left = cut.shown - counts.reduce((sum, count) => sum + count, 0);
+  groups.forEach((group, index) => {
+    const extra = Math.min(Math.max(0, left), group.items.length - counts[index]);
+    counts[index] += extra;
+    left -= extra;
+  });
+  const hidden = groups.reduce((sum, group, index) => sum + group.items.length - counts[index], 0);
+  if (hidden === 0) return { groups, toggle: null };
+  if (showAll) return { groups, toggle: byMeasure ? LESS_BY_MEASURE : cut.less };
+  return {
+    groups: groups.map((group, index) => {
+      const restCount = group.items.length - counts[index];
+      const name = group.title ? group.title.charAt(0).toLocaleLowerCase('pt-BR') + group.title.slice(1) : null;
+      return {
+        ...group,
+        items: group.items.slice(0, counts[index]),
+        rest: byMeasure && name && restCount > 0 ? `Mais ${plural(restCount, 'item', 'itens')} ${name}: veja em “Ver todos”.` : null,
+      };
+    }),
+    toggle: cut.more,
+  };
+}
+
+/** Com uma categoria escolhida que não tem item no mês: a frase no lugar da lista. */
+export function noCategoryItems(category: string, month: string): string {
+  return `Nenhum item de “${getCategory(category).label}” em ${monthName(month)}.`;
+}
+
+/**
+ * Por que o total do mercado não é a barra "Mercado" do Resumo, numa frase: a tela do mês diz no pé (`where`
+ * 'mes'), e a entrada no Resumo, logo abaixo dela ('resumo'). As duas contas diferem de propósito: aqui só
+ * entram as notas fiscais (as contas e os gastos avulsos lançados como Mercado ficam no Resumo), com as
+ * categorias que o Resumo põe em outras barras (limpeza, higiene, papel e bebê em "Limpeza e higiene", pet em
+ * "Pet", e os itens "Outros" em "Outros"), e sem os remédios. No mês corrente, a nota com data depois de hoje
+ * também fica de fora daqui (o Resumo a conta); num mês passado não há essa nota, e a frase não fala dela.
+ * No Resumo, "aqui" seria o próprio Resumo: lá a frase diz o nome da tela, "no Mercado do mês".
+ */
+export function marketVsSummary(month: string, today: string, where: 'mes' | 'resumo'): string {
+  const start = where === 'mes' ? 'Diferente da barra “Mercado” do Resumo: aqui' : 'Diferente da barra “Mercado”: no Mercado do mês';
+  const later = today.slice(0, 7) === month ? ', sem remédio e sem nota com data depois de hoje' : ', sem remédio';
+  return `${start} só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”${later}.`;
+}
+
 /** Quantos meses o cartão de tendência mostra, contando o da tela: as notas lidas vão até o primeiro deles. */
 export const MARKET_TREND_MONTHS = 6;
+
+/** Embaixo do cartão de tendência, quando cada mês abre na tela. */
+export const MARKET_TREND_HINT = 'Toque num mês para ver o mercado dele.';
 
 /** O que a barra e o leitor de tela dizem do mês sem ida ao mercado (sem nota, ou só com farmácia ou rascunho). */
 const NO_TRIP = 'sem ida';
@@ -777,6 +1036,16 @@ export interface MarketTrendBar {
   hasTrips: boolean;
   /** O mês corrente, contado só até hoje. */
   partial: boolean;
+  /**
+   * O mês e o valor, para o leitor de tela (cada mês do cartão é um botão): "Setembro: R$ 130,00", "Outubro até
+   * hoje: sem ida ao mercado". Com o ano quando a janela atravessa o ano.
+   */
+  spoken: string;
+  /**
+   * O que o botão do mês diz, em todas as plataformas (na web o estado "selecionado" de um botão não chega ao
+   * leitor de tela): "Setembro: R$ 130,00. Abrir este mês"; o último, o mês da tela, "…. Mês aberto".
+   */
+  accessibilityLabel: string;
 }
 
 export interface MarketTrend {
@@ -794,11 +1063,6 @@ export interface MarketTrend {
   averageNote: string | null;
   /** Algum mês da janela teve ida ao mercado: sem nenhuma, a tela não mostra o cartão. */
   hasAny: boolean;
-  /**
-   * O gráfico, para o leitor de tela: cada mês com o valor, e a média. Sem o título, que a tela escreve logo
-   * acima e o leitor já lê. Com o ano em cada mês quando a janela atravessa o ano.
-   */
-  accessibilityLabel: string;
 }
 
 /** O valor curto, embaixo da barra: o cartão já diz que é em reais. "840", "1,2 mil", "12 mil". */
@@ -841,18 +1105,25 @@ export function marketTrend(receipts: MarketTotalReceipt[], month: string, today
   }
 
   const crossesYear = first.slice(0, 4) !== month.slice(0, 4);
+  // Na virada do ano, "dezembro de 2025": sem o ano, dezembro e janeiro lado a lado confundem.
+  const spokenMonth = (m: string) => (crossesYear ? monthLabel(m) : monthName(m));
   const bars = windows.map(({ month: m, cents: value, trips }, index): MarketTrendBar => {
     const hasTrips = trips > 0;
+    const amount = hasTrips ? money(value) : NO_TRIP_SPOKEN;
+    const spoken = `${capitalize(spokenMonth(m))}${m === currentMonth ? ' até hoje' : ''}: ${amount}`;
     return {
       month: m,
       label: monthShortLabel(m),
       year: crossesYear && (index === 0 || m.endsWith('-01')) ? m.slice(0, 4) : null,
       note: m === currentMonth ? 'hoje' : null,
       cents: hasTrips ? value : 0,
-      amount: hasTrips ? money(value) : NO_TRIP_SPOKEN,
+      amount,
       short: hasTrips ? shortAmount(value) : NO_TRIP,
       hasTrips,
       partial: m === currentMonth,
+      spoken,
+      // O gráfico termina no mês da tela.
+      accessibilityLabel: m === month ? `${spoken}. Mês aberto` : `${spoken}. Abrir este mês`,
     };
   });
   const closed = bars.filter((bar) => !bar.partial);
@@ -866,9 +1137,6 @@ export function marketTrend(receipts: MarketTotalReceipt[], month: string, today
       : null;
   const span = month === currentMonth ? `últimos ${MARKET_TREND_MONTHS} meses` : `${MARKET_TREND_MONTHS} meses até ${monthName(month)}`;
   const title = category ? `${getCategory(category).label} ${month === currentMonth ? 'nos' : 'em'} ${span}` : capitalize(span);
-  // Na virada do ano, "dezembro de 2025": sem o ano, dezembro e janeiro lado a lado confundem.
-  const spokenMonth = (m: string) => (crossesYear ? monthLabel(m) : monthName(m));
-  const spokenBars = bars.map((bar) => `${capitalize(spokenMonth(bar.month))}${bar.partial ? ' até hoje' : ''}: ${bar.amount}`);
   return {
     title,
     bars,
@@ -877,7 +1145,6 @@ export function marketTrend(receipts: MarketTotalReceipt[], month: string, today
     average,
     averageNote,
     hasAny: bars.some((bar) => bar.hasTrips),
-    accessibilityLabel: [`${spokenBars.join('; ')}`, average, averageNote].filter(Boolean).join('. '),
   };
 }
 

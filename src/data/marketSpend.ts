@@ -6,7 +6,9 @@ import { useQuery } from '@tanstack/react-query';
 
 import { shiftMonth } from '@/domain/finance';
 import { MARKET_TREND_MONTHS, type MarketLine, type MarketReceipt } from '@/domain/marketSpend';
-import { supabase, unwrap } from '@/lib/supabase';
+import { supabase } from '@/lib/supabase';
+
+import { readAll } from './readAll';
 
 /** Linhas por pedido. O servidor corta em 1000 (max_rows padrão do Supabase), ou em menos, se o projeto baixar o teto. */
 const PAGE = 1000;
@@ -19,35 +21,7 @@ const IDS_PER_REQUEST = 100;
 
 const TOO_MANY = 'Não foi possível carregar todas as notas destes meses: são mais do que o app consegue ler de uma vez.';
 const INCOMPLETE = 'As notas destes meses não chegaram inteiras. Tente de novo.';
-
-type PageResult = { data: unknown; error: unknown; count: number | null };
-
-/**
- * Uma consulta inteira, página por página, pelo id: cada página pede o que
- * vem depois do último id da anterior (`after`; null na primeira). Lendo por
- * posição, uma linha apagada ou incluída por outra pessoa da casa entre duas
- * páginas deslocaria as seguintes, e uma linha seria pulada ou repetida,
- * calada; pelo id, não. O servidor diz quantas linhas há dali em diante
- * (`count`) e a leitura só termina quando a página traz todas: página curta
- * não é prova de fim, porque o teto do servidor pode ser menor que a página
- * pedida. Mais linhas do que cabem (`room`): falha, nunca uma lista cortada.
- */
-async function readAll<T extends { id: string }>(page: (after: string | null) => PromiseLike<PageResult>, room: number): Promise<T[]> {
-  const rows: T[] = [];
-  let after: string | null = null;
-  for (;;) {
-    const result = await page(after);
-    const got = (unwrap(result) ?? []) as T[];
-    rows.push(...got);
-    // O que já veio mais o que o servidor diz que ainda falta.
-    if (rows.length + Math.max(0, (result.count ?? 0) - got.length) > room) throw new Error(TOO_MANY);
-    // Sem a contagem (o servidor sempre manda), só uma página vazia diz que acabou.
-    if (result.count == null ? got.length === 0 : got.length >= result.count) return rows;
-    // O servidor diz que há mais e não manda: melhor falhar do que seguir com o que veio.
-    if (got.length === 0) throw new Error(INCOMPLETE);
-    after = got[got.length - 1].id;
-  }
-}
+const MESSAGES = { tooMany: TOO_MANY, incomplete: INCOMPLETE };
 
 type ReceiptRow = {
   id: string;
@@ -55,7 +29,7 @@ type ReceiptRow = {
   total: number | null;
   status: 'draft' | 'confirmed';
   store_id: string | null;
-  store: { name: string } | null;
+  store: { name: string; address: string | null; cnpj: string | null } | null;
 };
 
 type LineRow = {
@@ -72,7 +46,7 @@ type LineRow = {
   product: { name: string; category: string } | null;
 };
 
-const RECEIPT_COLUMNS = 'id, purchased_at, total, status, store_id, store:stores(name)';
+const RECEIPT_COLUMNS = 'id, purchased_at, total, status, store_id, store:stores(name, address, cnpj)';
 const LINE_COLUMNS =
   'id, receipt_id, position, raw_description, suggested_name, suggested_category, product_id, quantity, unit, total_price, product:products(name, category)';
 
@@ -97,7 +71,7 @@ export async function fetchMarketReceipts(fromMonth: string, toMonth: string): P
   const receipts = await readAll<ReceiptRow>((after) => {
     const query = supabase.from('receipts').select(RECEIPT_COLUMNS, { count: 'exact' }).gte('purchased_at', startAt).lt('purchased_at', endAt);
     return (after ? query.gt('id', after) : query).order('id').limit(PAGE);
-  }, MAX_RECEIPTS);
+  }, MAX_RECEIPTS, MESSAGES);
   // As páginas vêm pelo id; a ordem que se entrega é a da compra (e, no empate, o id).
   receipts.sort((a, b) => Date.parse(a.purchased_at) - Date.parse(b.purchased_at) || byId(a, b));
 
@@ -109,7 +83,7 @@ export async function fetchMarketReceipts(fromMonth: string, toMonth: string): P
     const rows = await readAll<LineRow>((after) => {
       const query = supabase.from('receipt_items').select(LINE_COLUMNS, { count: 'exact' }).in('receipt_id', ids);
       return (after ? query.gt('id', after) : query).order('id').limit(PAGE);
-    }, MAX_LINES - read);
+    }, MAX_LINES - read, MESSAGES);
     read += rows.length;
     for (const row of rows) {
       const ofReceipt = lines.get(row.receipt_id);
@@ -141,6 +115,9 @@ export async function fetchMarketReceipts(fromMonth: string, toMonth: string): P
     total: r.total == null ? null : Number(r.total),
     storeId: r.store_id,
     storeName: r.store?.name ?? null,
+    // O endereço (ou o CNPJ) separa dois mercados de mesmo nome na tela.
+    storeAddress: r.store?.address ?? null,
+    storeCnpj: r.store?.cnpj ?? null,
     lines: linesOf(r.id),
   }));
 }
