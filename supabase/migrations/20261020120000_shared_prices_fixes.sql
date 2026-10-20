@@ -4,8 +4,9 @@
 -- 1. Nome com CPF. A razão social do MEI aberto antes de 2019 é o nome
 --    completo mais o CPF, e é assim que ela sai impressa na nota e chegava à
 --    base comum (e a "Em outros mercados" das casas do estado). Agora o
---    gatilho tira do nome toda sequência de 11 dígitos (com ou sem ponto e
---    traço, e o "CPF" escrito antes dela); se não sobra nome, vai o "CNPJ ..."
+--    gatilho tira do nome toda sequência de 11 dígitos (com ou sem ponto,
+--    traço, barra ou espaço entre os grupos, o "CPF" escrito antes dela e os
+--    parênteses que ficam vazios); se não sobra nome, vai o "CNPJ ..."
 --    que o app já põe no mercado sem nome. Um número maior (o CNPJ, de 14)
 --    não é tocado. As linhas já gravadas passam pela mesma limpeza, uma vez,
 --    no fim desta migração.
