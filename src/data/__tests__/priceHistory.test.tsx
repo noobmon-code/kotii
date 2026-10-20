@@ -2,66 +2,85 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
-import { priceAlerts } from '@/domain/priceAlert';
-import type { PriceObservation } from '@/lib/types';
+import { priceAlerts, type PricePoint } from '@/domain/priceAlert';
 
-import { usePriceObservations } from '../market';
+import { OBSERVATION_MAX_LINES, usePriceObservations } from '../market';
 
-// O item que ficou sem valor numa nota confirmada é uma linha de preço R$ 0,00
-// na view (ela não filtra o preço). Um zero não é preço: a leitura dos preços
-// antes de uma compra pede só o que é maior que zero, e a compra de verdade
-// anterior do mesmo mercado toma o lugar dele sozinha. (O "Último preço por
-// mercado" da tela do produto sai das compras dele: domain/storePrices.)
+// Os preços dos meses antes de uma compra (alerta de preço na nota) saem das linhas das notas confirmadas, com a
+// descrição (o tamanho da embalagem). O item que ficou sem valor numa nota confirmada é uma linha de preço R$ 0,00:
+// um zero não é preço, e a leitura pede só o que é maior que zero (a compra de verdade anterior do mesmo mercado
+// toma o lugar dele sozinha). O servidor corta cada resposta em 1000 linhas: a leitura segue página por página.
+// (O "Último preço por mercado" da tela do produto sai das compras dele: domain/storePrices.)
+
+interface ItemRow {
+  id: string;
+  product_id: string;
+  receipt_id: string;
+  raw_description: string;
+  unit: string;
+  unit_price: number;
+  receipt: { status: 'draft' | 'confirmed'; purchased_at: string; store_id: string | null };
+}
 
 type Filter = { op: 'eq' | 'in' | 'gte' | 'lte' | 'gt'; column: string; value: unknown };
-// "mock" no nome: o jest.mock só enxerga variáveis assim. A view de mentira, que atende aos filtros como o servidor.
-const mockView = {
-  rows: [] as PriceObservation[],
-  asked: [] as { table: string; filters: Filter[]; limit: number | null }[],
+
+// "mock" no nome: o jest.mock só enxerga variáveis assim. A tabela de mentira, que atende aos filtros como o servidor.
+const mockTable = {
+  rows: [] as ItemRow[],
+  /** O teto de linhas por pedido (max_rows do Supabase). */
+  cap: 1000,
+  asked: [] as { table: string; columns: string; filters: Filter[]; order: string[]; limit: number | null }[],
 };
 
 jest.mock('@/lib/supabase', () => ({
   supabase: {
-    from: (table: string) => {
-      const filters: Filter[] = [];
-      let limit: number | null = null;
-      let newestFirst = false;
-      const keeps = (row: PriceObservation) =>
-        filters.every(({ op, column, value }) => {
-          const cell = row[column as keyof PriceObservation];
-          if (op === 'eq') return cell === value;
-          if (op === 'in') return (value as unknown[]).includes(cell);
-          if (op === 'gte') return cell >= (value as string | number);
-          if (op === 'lte') return cell <= (value as string | number);
-          return cell > (value as string | number);
-        });
-      const filter = (op: Filter['op']) => (column: string, value: unknown) => {
-        filters.push({ op, column, value });
+    from: (table: string) => ({
+      select: (columns: string, options?: { count?: string }) => {
+        const asked = { table, columns, filters: [] as Filter[], order: [] as string[], limit: null as number | null };
+        const cell = (row: ItemRow, column: string): unknown =>
+          column.startsWith('receipt.') ? row.receipt[column.slice(8) as keyof ItemRow['receipt']] : row[column as keyof ItemRow];
+        const keeps = (row: ItemRow) =>
+          asked.filters.every(({ op, column, value }) => {
+            const found = cell(row, column) as string | number;
+            if (op === 'eq') return found === value;
+            if (op === 'in') return (value as unknown[]).includes(found);
+            if (op === 'gte') return found >= (value as string | number);
+            if (op === 'lte') return found <= (value as string | number);
+            return found > (value as string | number);
+          });
+        const filter = (op: Filter['op']) => (column: string, value: unknown) => {
+          asked.filters.push({ op, column, value });
+          return query;
+        };
+        const query = {
+          in: filter('in'),
+          eq: filter('eq'),
+          gte: filter('gte'),
+          lte: filter('lte'),
+          gt: filter('gt'),
+          order: (column: string) => {
+            asked.order.push(column);
+            return query;
+          },
+          limit: (count: number) => {
+            asked.limit = count;
+            return query;
+          },
+          then: (resolve: (result: unknown) => void) => {
+            mockTable.asked.push(asked);
+            // O !inner: os filtros da nota tiram a linha; sem ele, a nota viria vazia.
+            if (!/receipt:receipts!inner\(/.test(columns)) throw new Error('sem !inner');
+            const found = mockTable.rows.filter(keeps).sort((a, b) => (a.id < b.id ? -1 : 1));
+            resolve({
+              data: found.slice(0, Math.min(asked.limit ?? Infinity, mockTable.cap)).map(({ receipt: { status: _status, ...receipt }, ...row }) => ({ ...row, receipt })),
+              count: options?.count === 'exact' ? found.length : null,
+              error: null,
+            });
+          },
+        };
         return query;
-      };
-      const query = {
-        select: () => query,
-        eq: filter('eq'),
-        in: filter('in'),
-        gte: filter('gte'),
-        lte: filter('lte'),
-        gt: filter('gt'),
-        order: (_column: string, options?: { ascending?: boolean }) => {
-          newestFirst = options?.ascending === false;
-          return query;
-        },
-        limit: (count: number) => {
-          limit = count;
-          return query;
-        },
-        then: (resolve: (result: unknown) => void) => {
-          mockView.asked.push({ table, filters: [...filters], limit });
-          const rows = mockView.rows.filter(keeps).sort((a, b) => (a.purchased_at < b.purchased_at ? -1 : 1) * (newestFirst ? -1 : 1));
-          resolve({ data: rows.slice(0, limit ?? undefined), error: null });
-        },
-      };
-      return query;
-    },
+      },
+    }),
   },
   unwrap: (result: { data: unknown; error: unknown }) => {
     if (result.error) throw result.error;
@@ -69,25 +88,42 @@ jest.mock('@/lib/supabase', () => ({
   },
 }));
 
-const point = (store_id: string, unit_price: number, day: string, patch: Partial<PriceObservation> = {}): PriceObservation => ({
-  product_id: 'p-queijo',
-  store_id,
-  unit: 'kg',
-  unit_price,
-  purchased_at: `${day}T15:00:00.000Z`,
-  receipt_id: `r-${store_id}-${day}`,
-  ...patch,
+let serial = 0;
+const line = (store_id: string | null, unit_price: number, day: string, patch: Partial<Omit<ItemRow, 'receipt'>> & { status?: 'draft' } = {}): ItemRow => {
+  serial += 1;
+  const { status, ...rest } = patch;
+  return {
+    id: `i${String(serial).padStart(6, '0')}`,
+    product_id: 'p-queijo',
+    receipt_id: `r-${store_id}-${day}-${serial}`,
+    raw_description: 'QUEIJO MUSSARELA KG',
+    unit: 'kg',
+    unit_price,
+    ...rest,
+    receipt: { status: status ?? 'confirmed', purchased_at: `${day}T15:00:00.000Z`, store_id },
+  };
+};
+/** O ponto que a leitura entrega para essa linha. */
+const pointOf = (row: ItemRow): PricePoint => ({
+  product_id: row.product_id,
+  store_id: row.receipt.store_id!,
+  unit: row.unit,
+  unit_price: row.unit_price,
+  purchased_at: row.receipt.purchased_at,
+  receipt_id: row.receipt_id,
+  description: row.raw_description,
 });
 
 let queryClient: QueryClient | undefined;
 let renderer: ReactTestRenderer | undefined;
 
-/** O que a tela recebe de uma dessas leituras, depois de a busca terminar. */
-async function read(useRows: () => { data: PriceObservation[] | undefined }): Promise<PriceObservation[]> {
+/** O que a tela recebe da leitura, depois de a busca terminar (ou falhar). */
+async function read(productIds: string[], purchasedAt: string): Promise<{ data?: PricePoint[]; error?: unknown }> {
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
-  const seen: (PriceObservation[] | undefined)[] = [];
+  const seen: { data?: PricePoint[]; error?: unknown }[] = [];
   function Probe() {
-    seen.push(useRows().data);
+    const query = usePriceObservations(productIds, purchasedAt);
+    seen.push({ data: query.data, error: query.error ?? undefined });
     return null;
   }
   await act(async () => {
@@ -97,62 +133,118 @@ async function read(useRows: () => { data: PriceObservation[] | undefined }): Pr
       </QueryClientProvider>,
     );
   });
-  for (let turn = 0; turn < 20 && seen.at(-1) === undefined; turn++) {
+  for (let turn = 0; turn < 50 && !seen.at(-1)?.data && !seen.at(-1)?.error; turn++) {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
   }
-  return seen.at(-1) ?? [];
+  return seen.at(-1) ?? {};
 }
 
 afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
   queryClient?.clear();
-  mockView.rows = [];
-  mockView.asked = [];
+  mockTable.rows = [];
+  mockTable.asked = [];
+  mockTable.cap = 1000;
 });
 
-// O Assaí vendeu o queijo a 37,90 em agosto; em setembro, a leitura da nota de lá não pegou o valor.
-const ASSAI_REAL = point('s-assai', 37.9, '2026-08-20');
-const ASSAI_ZERO = point('s-assai', 0, '2026-09-10');
-const DIA_REAL = point('s-dia', 41.5, '2026-09-01');
+const PURCHASED_AT = '2026-09-27T15:00:00.000Z';
+const RECEIPT = { receiptId: 'r-agora', storeId: 's-dia', purchasedOn: '2026-09-27' };
+/** O queijo desta nota, comprado no Dia a 39,90 o quilo. */
+const cheese = { id: 'i1', productId: 'p-queijo', unit: 'kg', unitPrice: 39.9, quantity: 1 };
 
 describe('preços dos meses antes de uma compra (alerta de preço na nota)', () => {
-  const PURCHASED_AT = '2026-09-27T15:00:00.000Z';
-  const RECEIPT = { receiptId: 'r-agora', storeId: 's-dia', purchasedOn: '2026-09-27' };
-  /** O queijo desta nota, comprado no Dia a 39,90 o quilo. */
-  const cheese = { id: 'i1', productId: 'p-queijo', unit: 'kg', unitPrice: 39.9, quantity: 1 };
-
-  it('pede só preço maior que zero, dentro da janela da compra', async () => {
-    mockView.rows = [ASSAI_REAL, ASSAI_ZERO, DIA_REAL];
-    const rows = await read(() => usePriceObservations(['p-queijo'], PURCHASED_AT));
-    expect(mockView.asked).toHaveLength(1);
-    expect(mockView.asked[0]).toMatchObject({ table: 'price_observations', limit: 1000 });
-    expect(mockView.asked[0].filters.map(({ op, column }) => `${column} ${op}`)).toEqual(['product_id in', 'purchased_at gte', 'purchased_at lte', 'unit_price gt']);
-    expect(mockView.asked[0].filters.at(-1)).toEqual({ op: 'gt', column: 'unit_price', value: 0 });
-    expect(rows).toEqual([DIA_REAL, ASSAI_REAL]);
+  it('pede às linhas das notas confirmadas só preço maior que zero, dentro da janela da compra, com a descrição', async () => {
+    // O Assaí vendeu o queijo a 37,90 em agosto; em setembro, a leitura da nota de lá não pegou o valor.
+    const assaiReal = line('s-assai', 37.9, '2026-08-20');
+    const diaReal = line('s-dia', 41.5, '2026-09-01');
+    mockTable.rows = [
+      assaiReal,
+      line('s-assai', 0, '2026-09-10'),
+      diaReal,
+      line('s-dia', 30, '2026-09-15', { status: 'draft' }),
+      line('s-dia', 30, '2026-05-01'),
+      line('s-dia', 30, '2026-10-15'),
+      line('s-dia', 30, '2026-09-15', { product_id: 'p-leite' }),
+    ];
+    const { data } = await read(['p-queijo'], PURCHASED_AT);
+    expect(mockTable.asked).toHaveLength(1);
+    expect(mockTable.asked[0]).toMatchObject({ table: 'receipt_items', order: ['id'], limit: 1000 });
+    expect(mockTable.asked[0].columns).toContain('raw_description');
+    expect(mockTable.asked[0].filters.map(({ op, column }) => `${column} ${op}`)).toEqual([
+      'product_id in',
+      'receipt.status eq',
+      'receipt.purchased_at gte',
+      'receipt.purchased_at lte',
+      'unit_price gt',
+    ]);
+    expect(mockTable.asked[0].filters.at(-1)).toEqual({ op: 'gt', column: 'unit_price', value: 0 });
+    expect(data).toEqual([pointOf(assaiReal), pointOf(diaReal)]);
   });
 
-  it('o alerta não nasce de um ponto de R$ 0,00 do histórico', async () => {
-    mockView.rows = [ASSAI_ZERO, DIA_REAL];
-    // Com a linha zerada no histórico, o aviso seria "R$ 0,00 no Assaí", com o preço inteiro como economia.
-    expect(priceAlerts([cheese], mockView.rows, RECEIPT).get('i1')).toEqual({ kind: 'cheaper_elsewhere', storeId: 's-assai', price: 0, on: '2026-09-10', saving: 39.9 });
-    // Com o que a leitura entrega, não há aviso: 39,90 no Dia, que antes vendia a 41,50.
-    const rows = await read(() => usePriceObservations(['p-queijo'], PURCHASED_AT));
-    expect(rows).toEqual([DIA_REAL]);
-    expect(priceAlerts([cheese], rows, RECEIPT).size).toBe(0);
+  it('o alerta não nasce de um ponto de R$ 0,00, e o preço de verdade anterior do outro mercado continua valendo', async () => {
+    const assai = line('s-assai', 33.9, '2026-08-20');
+    mockTable.rows = [assai, line('s-assai', 0, '2026-09-10'), line('s-dia', 41.5, '2026-09-01')];
+    const { data } = await read(['p-queijo'], PURCHASED_AT);
+    expect(priceAlerts([cheese], data!, RECEIPT).get('i1')).toEqual({
+      kind: 'cheaper_elsewhere',
+      storeId: 's-assai',
+      price: 33.9,
+      unit: 'kg',
+      on: '2026-08-20',
+      saving: 6,
+    });
   });
 
-  it('e o preço de verdade anterior do outro mercado continua valendo para o alerta', async () => {
-    mockView.rows = [point('s-assai', 33.9, '2026-08-20'), ASSAI_ZERO, DIA_REAL];
-    const rows = await read(() => usePriceObservations(['p-queijo'], PURCHASED_AT));
-    expect(priceAlerts([cheese], rows, RECEIPT).get('i1')).toEqual({ kind: 'cheaper_elsewhere', storeId: 's-assai', price: 33.9, on: '2026-08-20', saving: 6 });
+  it('a nota sem mercado não entra (como na view de antes)', async () => {
+    mockTable.rows = [line(null, 20, '2026-09-10'), line('s-dia', 41.5, '2026-09-01')];
+    const { data } = await read(['p-queijo'], PURCHASED_AT);
+    expect(data!.map((point) => point.store_id)).toEqual(['s-dia']);
   });
 
-  it('o item que está ele mesmo sem valor já não gerava alerta', async () => {
-    mockView.rows = [ASSAI_REAL, DIA_REAL];
-    const rows = await read(() => usePriceObservations(['p-queijo'], PURCHASED_AT));
-    expect(priceAlerts([{ ...cheese, unitPrice: 0 }], rows, RECEIPT).size).toBe(0);
+  it('com mais de 1000 preços, lê todas as páginas: o preço mais antigo da janela entra na conta', async () => {
+    // 1500 compras recentes no Dia a 39,90 e, bem no começo da janela, no Assaí a 31,90.
+    const recent = Array.from({ length: 1500 }, () => line('s-dia', 39.9, '2026-09-20'));
+    const oldest = line('s-assai', 31.9, '2026-07-01');
+    mockTable.rows = [oldest, ...recent];
+    const { data } = await read(['p-queijo'], PURCHASED_AT);
+    expect(data).toHaveLength(1501);
+    expect(data).toContainEqual(pointOf(oldest));
+    // Duas páginas de mil, a segunda a partir do id da última lida.
+    expect(mockTable.asked).toHaveLength(2);
+    expect(mockTable.asked[1].filters.at(-1)).toEqual({ op: 'gt', column: 'id', value: mockTable.rows[1000].id });
+  });
+
+  it('o servidor que corta abaixo do pedido: a leitura segue até a contagem fechar', async () => {
+    mockTable.cap = 400;
+    mockTable.rows = Array.from({ length: 900 }, () => line('s-dia', 39.9, '2026-09-20'));
+    const { data } = await read(['p-queijo'], PURCHASED_AT);
+    expect(data).toHaveLength(900);
+    expect(mockTable.asked).toHaveLength(3);
+  });
+
+  it('mais linhas do que o app lê de uma vez: falha (a nota fica sem avisos), em vez de comparar com uma parte', async () => {
+    mockTable.rows = Array.from({ length: OBSERVATION_MAX_LINES + 1 }, () => line('s-dia', 39.9, '2026-09-20'));
+    const { data, error } = await read(['p-queijo'], PURCHASED_AT);
+    expect(data).toBeUndefined();
+    expect((error as Error).message).toContain('mais compras do que o app consegue ler');
+    expect(mockTable.asked).toHaveLength(1);
+  });
+
+  it('o pacote de 5 kg desta nota não ouve "mais barato" do preço do pacote de 1 kg', async () => {
+    mockTable.rows = [
+      line('s-assai', 5.49, '2026-09-20', { product_id: 'p-arroz', unit: 'un', raw_description: 'ARROZ T1 1KG' }),
+      line('s-assai', 5.59, '2026-09-01', { product_id: 'p-arroz', unit: 'un', raw_description: 'ARROZ T1 1KG' }),
+    ];
+    const { data } = await read(['p-arroz'], PURCHASED_AT);
+    const rice = { id: 'i2', productId: 'p-arroz', unit: 'un', unitPrice: 24.9, quantity: 1, description: 'ARROZ T1 5KG' };
+    expect(priceAlerts([rice], data!, RECEIPT).size).toBe(0);
+    // Sem a descrição (como era com a view), o aviso seria "R$ 5,49 no Assaí".
+    expect(priceAlerts([{ ...rice, description: undefined }], data!.map(({ description: _d, ...point }) => point), RECEIPT).get('i2')).toMatchObject({
+      kind: 'cheaper_elsewhere',
+      price: 5.49,
+    });
   });
 });

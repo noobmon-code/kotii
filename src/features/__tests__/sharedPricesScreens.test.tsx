@@ -36,6 +36,8 @@ jest.mock('expo-router', () => ({
   useLocalSearchParams: () => ({ id: 'arroz' }),
 }));
 jest.mock('@/data/market', () => ({
+  ProductNameTakenError: class extends Error {},
+  useAddToPantryList: () => ({ mutateAsync: jest.fn(), isPending: false }),
   useLatestPrices: () => mockQueries.prices,
   useProductPurchases: () => ({ data: [] }),
   useProducts: () => mockQueries.products,
@@ -186,7 +188,7 @@ const NOT_AVAILABLE: [string, () => Query][] = [
 
 describe('tela do produto: "Visto em outras casas"', () => {
   /** A tela de antes, até onde entram os preços de outras casas: o cartão do produto e o último preço da casa. */
-  const USUAL = `Grãos, massas e cereaisNome do produtoÚltimo preço por mercadoMercadinhoem ${short(20)}R$ 25,00/un`;
+  const USUAL = `Grãos, massas e cereaisNome do produtoPôr na listaÚltimo preço por mercadoMercadinhoem ${short(20)}R$ 25,00/un`;
   /** O botão de juntar produtos, que fecha a tela. */
   const JOIN = 'Juntar com outro produto';
 
