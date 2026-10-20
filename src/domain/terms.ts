@@ -70,6 +70,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
     paragraphs: [
       'Só quem tem 18 anos ou mais pode criar uma conta. Os dados de crianças e adolescentes, e de quem não usa o app, entram pela conta de um adulto da casa, que responde por eles.',
       'A conta é feita com e-mail e senha. Guarde a senha só com você; se esquecer, o app manda uma mensagem para o seu e-mail para criar uma senha nova.',
+      'O app guarda na sua conta quais versões destes termos você aceitou e quando (ao criar a conta, ao entrar sem ter aceitado nenhuma ou ao tocar em "Entendi"), e guarda essas versões também neste aparelho.',
       'Os dados ficam numa casa. Quem entra com o código de convite vê e edita tudo o que é da casa: listas, notas, despensa, tarefas, saúde, documentos e finanças. Só convide quem pode ver isso. Uma conta pode estar em até 5 casas, e cada casa só vê os próprios dados.',
       'Quem cria a casa é o responsável por ela: pode trocar o código de convite e tirar moradores. Se o responsável sai, a casa passa para o morador mais antigo.',
       `O que um morador registrou continua com a casa depois que ele sai ou é tirado dela, inclusive a ficha de saúde dele: ela vira a ficha de um dependente, que os outros moradores continuam vendo e editando, e que quem saiu não consegue mais apagar. Se não quiser que fique, apague antes de sair o que o app deixa apagar (veja "Apagar dados e sair") e peça o resto pelo e-mail ${TERMS_CONTACT}.`,
@@ -109,7 +110,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
     paragraphs: [
       'Toda casa contribui e toda casa vê. Quando você confirma uma nota lida pelo app (pelo QR code ou pela foto), os preços dela entram numa base de preços comum a todas as casas do Kotii: o mercado (pelo CNPJ, com o nome impresso na nota e, quando a nota tem chave de acesso, o estado), a descrição de cada item padronizada (sem acentos e em maiúsculas), a unidade, o preço e o dia da compra.',
       'Ninguém vê de qual casa veio um preço: não entra quem comprou, nem de qual casa, nem a nota, a quantidade, o total ou a hora. A mesma coisa comprada no mesmo mercado no mesmo dia por duas casas vira uma linha só: não dá para saber quem são as casas que viram um preço, nem quantas são.',
-      'Mas, num mercado em que só a sua casa usa o Kotii, os preços daquele mercado num dia são os da sua compra: quem vê esses preços pode deduzir o que foi comprado lá naquele dia.',
+      'Mas, num dia em que só a sua casa, entre as que usam o Kotii, comprou num mercado (o que é comum num mercado pequeno), os preços daquele mercado naquele dia são os da sua compra: quem vê esses preços pode deduzir o que foi comprado lá naquele dia.',
       'Ficam de fora as notas digitadas à mão, os remédios (e a nota inteira que tenha remédio), as compras em farmácia, os suplementos, os primeiros socorros, os itens de higiene pessoal e o que o app não reconheceu.',
       'Os preços de outras casas não são em tempo real: cada um aparece com o dia em que foi visto, e só a partir do dia seguinte ao da confirmação da nota. Eles vêm das notas de outras pessoas e podem não valer mais.',
       'O compartilhamento faz parte do app e não tem como desligar; a nota digitada à mão não entra na base. Excluir uma nota não retira os preços que ela já deu, porque nada liga uma coisa à outra.',

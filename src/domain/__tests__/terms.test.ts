@@ -49,12 +49,21 @@ describe('termos de uso', () => {
     expect(prices).toContain('nem quantas são');
   });
 
-  it('não promete o que não cumpre: num mercado com uma casa só, os preços do dia contam o que ela comprou', () => {
+  it('não promete o que não cumpre: no dia em que só uma casa comprou num mercado, os preços contam o que ela comprou', () => {
     const prices = section('Preços compartilhados');
     expect(prices).toContain('Ninguém vê de qual casa veio um preço');
     expect(prices).not.toContain('Não entra nada que identifique você');
-    expect(prices).toContain('num mercado em que só a sua casa usa o Kotii');
+    // O risco é por dia (a base junta as casas só no mesmo mercado, item e dia de compra), não só no mercado
+    // em que nenhuma outra casa compra: um mercado com outras casas em outros dias também entra.
+    expect(prices).toContain('num dia em que só a sua casa, entre as que usam o Kotii, comprou num mercado');
+    expect(prices).not.toContain('num mercado em que só a sua casa usa o Kotii');
     expect(prices).toContain('pode deduzir o que foi comprado lá naquele dia');
+  });
+
+  it('diz que guarda o aceite destes termos: quais versões e quando', () => {
+    const account = section('Sua conta e sua casa');
+    expect(account).toContain('O app guarda na sua conta quais versões destes termos você aceitou e quando');
+    expect(account).toContain('também neste aparelho');
   });
 
   it('idade: conta só com 18 anos ou mais; crianças entram pela conta de um adulto da casa', () => {

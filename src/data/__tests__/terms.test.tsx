@@ -24,6 +24,9 @@ const mockDb = {
   rpcError: null as unknown,
   /** Os aceites que chegaram à accept_terms. */
   accepted: [] as string[],
+  /** Respostas que demoram: a próxima leitura (com as linhas da hora em que foi feita) ou gravação espera. */
+  selectGates: [] as Promise<void>[],
+  rpcGates: [] as Promise<void>[],
 };
 
 jest.mock('@react-native-async-storage/async-storage', () =>
@@ -43,12 +46,18 @@ jest.mock('@/lib/supabase', () => ({
     from: (table: string) => ({
       select: () => ({
         eq: async (_column: string, userId: string) => {
-          if (mockDb.tableError) return { data: null, error: mockDb.tableError };
-          return { data: table === 'terms_acceptances' && userId === 'u1' ? mockDb.rows.map((version) => ({ version })) : [], error: null };
+          const response = mockDb.tableError
+            ? { data: null, error: mockDb.tableError }
+            : { data: table === 'terms_acceptances' && userId === 'u1' ? mockDb.rows.map((version) => ({ version })) : [], error: null };
+          const gate = mockDb.selectGates.shift();
+          if (gate) await gate;
+          return response;
         },
       }),
     }),
     rpc: async (name: string, args: { p_version: string }) => {
+      const gate = mockDb.rpcGates.shift();
+      if (gate) await gate;
       if (mockDb.rpcError) return { data: null, error: mockDb.rpcError };
       if (name === 'accept_terms') {
         mockDb.accepted.push(args.p_version);
@@ -111,6 +120,8 @@ beforeEach(async () => {
   mockDb.tableError = null;
   mockDb.rpcError = null;
   mockDb.accepted = [];
+  mockDb.selectGates = [];
+  mockDb.rpcGates = [];
   await AsyncStorage.clear();
   jest.clearAllMocks();
 });
@@ -184,6 +195,29 @@ describe('a entrada pela tela de entrar', () => {
     mockDb.rpcError = OFFLINE;
     await expect(acceptTermsAtSignIn(ME, false)).resolves.toBeUndefined();
     await expect(acceptTermsAtSignIn(ME, true)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['a primeira entrada de uma conta sem aceite', false],
+    ['a conta criada agora', true],
+  ])('%s: a tela Hoje que leu antes da gravação não mostra o aviso para tirá-lo logo depois', async (_label, created) => {
+    // A tela Hoje abre durante a entrada: a leitura dela foi feita sem aceite nenhum e ainda não voltou.
+    let releaseRead!: () => void;
+    mockDb.selectGates.push(new Promise<void>((resolve) => (releaseRead = resolve)));
+    expect(await mountCard()).toBe('');
+    // A gravação demora; a leitura da tela Hoje volta antes dela, sem o aceite.
+    let releaseRecord!: () => void;
+    mockDb.rpcGates.push(new Promise<void>((resolve) => (releaseRecord = resolve)));
+    const signIn = acceptTermsAtSignIn(ME, created);
+    await settle();
+    releaseRead();
+    await settle();
+    expect(shown()).toBe('');
+    releaseRecord();
+    await act(async () => signIn);
+    await settle();
+    expect(shown()).toBe('');
+    expect(mockDb.accepted).toEqual([TERMS_ACCEPT_VERSION]);
   });
 
   it('sem a migração, o aceite da conta criada fica no aparelho e o aviso não aparece', async () => {

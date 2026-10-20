@@ -81,7 +81,15 @@ export async function acceptTerms(userId: string, version: string = TERMS_ACCEPT
  */
 export async function acceptTermsAtSignIn(userId: string, created: boolean, db: SupabaseClient = supabase): Promise<void> {
   try {
-    if (created || !(await fetchAcceptedTerms(userId, db)).length) await acceptTerms(userId, TERMS_ACCEPT_VERSION, db);
+    if (created || !(await fetchAcceptedTerms(userId, db)).length) {
+      // A tela Hoje pode abrir e ler o aceite antes de ele chegar ao aparelho e ao banco: essa leitura não pode
+      // mostrar o aviso e tirá-lo sozinho logo depois. Como no "Entendi", o aviso sai antes de gravar.
+      await appQueryClient.cancelQueries({ queryKey: termsQueryKey(userId) });
+      appQueryClient.setQueryData<string[]>(termsQueryKey(userId), (old) =>
+        old?.includes(TERMS_ACCEPT_VERSION) ? old : [...(old ?? []), TERMS_ACCEPT_VERSION],
+      );
+      await acceptTerms(userId, TERMS_ACCEPT_VERSION, db);
+    }
   } catch {
     // Sem internet ou outro erro: o aviso da tela Hoje cobre.
   }
