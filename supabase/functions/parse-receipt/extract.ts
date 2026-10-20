@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { CATEGORY_KEYS } from '../_shared/categories.ts';
 import { cnpjFromAccessKey, isValidAccessKey, isValidCnpj } from '../_shared/fiscalIds.ts';
+import type { ReadLine } from '../_shared/receiptRead.ts';
 
 export const UNITS = ['un', 'kg', 'g', 'l', 'ml'] as const;
 
@@ -38,8 +39,24 @@ export interface CatalogProduct {
 /** Quantos produtos da casa vão para a IA: a lista entra no pedido e custa a cada leitura. */
 export const CATALOG_LIMIT = 400;
 
-/** Quantas linhas de nota, das mais novas, contam como "mais comprados". */
-export const BOUGHT_LINES = 1000;
+/** Quantas notas da casa, das mais novas, contam como "mais comprados" (umas mil linhas). */
+export const BOUGHT_RECEIPTS = 50;
+
+/** Uma nota como a busca do catálogo a traz: os itens com o produto (objeto, muitos para um; a lista que o tipo promete também serve). */
+export interface BoughtReceipt {
+  receipt_items: { position: number; product: CatalogProduct | CatalogProduct[] | null }[] | null;
+}
+
+/**
+ * Os produtos das linhas de nota, da nota mais nova para a mais antiga e, em
+ * cada nota, na ordem impressa, com repetição: o `bought` de `promptCatalog`.
+ * Linha sem produto fica de fora.
+ */
+export function boughtProducts(receipts: BoughtReceipt[]): CatalogProduct[] {
+  return receipts.flatMap((receipt) =>
+    [...(receipt.receipt_items ?? [])].sort((a, b) => a.position - b.position).flatMap((line) => line.product ?? [])
+  );
+}
 
 /**
  * Os produtos da casa que a IA vê, até `limit`: primeiro os mais comprados nas
@@ -117,9 +134,28 @@ export interface CleanReceipt {
   accessKey: string | null;
   total: number | null;
   items: CleanItem[];
+  /**
+   * As linhas para a leitura do servidor (receipt_reads): só as de preço
+   * unitário lido na nota, ou tirado do total e da quantidade lida, maior que
+   * zero. A linha sem os dois fica no rascunho com 1 × total, mas esse preço
+   * não foi impresso e não pode ir para a base comum.
+   */
+  readLines: ReadLine[];
 }
 
 const round = (n: number, digits: number) => Math.round(n * 10 ** digits) / 10 ** digits;
+
+/**
+ * A quantidade da linha: a lida; sem ela, a que sai do total e do preço
+ * unitário lidos (inteira em "un", em que um desconto deixa a conta quebrada);
+ * sem nenhum dos dois, 1.
+ */
+function lineQuantity(quantity: number | null, unit: (typeof UNITS)[number], unitPrice: number | null, total: number): number {
+  if (quantity != null && quantity > 0) return round(quantity, 3);
+  if (unitPrice == null || !(unitPrice > 0) || !(total > 0)) return 1;
+  const derived = unit === 'un' ? Math.round(total / unitPrice) : round(total / unitPrice, 3);
+  return derived > 0 ? derived : 1;
+}
 
 /**
  * Normaliza o que veio da IA para o que o banco aceita: chave e CNPJ só com
@@ -127,7 +163,9 @@ const round = (n: number, digits: number) => Math.round(n * 10 ** digits) / 10 *
  * válida, quantidades positivas, preço unitário coerente e ids de produto que
  * realmente existem na família (alias exato tem prioridade). Preço ilegível
  * (null) vira 0, o "sem valor" que a revisão pergunta à pessoa; linha negativa
- * (cancelamento, desconto que a IA pôs como item) fica de fora.
+ * (cancelamento, desconto que a IA pôs como item) fica de fora. Quantidade
+ * ilegível sai do total e do preço unitário; sem o preço unitário, a linha
+ * fica de fora de `readLines` (nunca compartilha um preço por kg inventado).
  */
 export function cleanReceipt(
   extracted: ExtractedReceipt,
@@ -145,14 +183,21 @@ export function cleanReceipt(
       : null;
 
   const items: CleanItem[] = [];
+  const readLines: ReadLine[] = [];
   for (const it of extracted.items) {
     const raw = it.raw_description.trim();
     if (!raw) continue;
     // Zerar a linha negativa faria a revisão pedir o preço de um "CANCELAMENTO".
     if ((it.total_price ?? 0) < 0 || (it.unit_price ?? 0) < 0) continue;
-    const quantity = it.quantity != null && it.quantity > 0 ? round(it.quantity, 3) : 1;
     const total = it.total_price == null ? 0 : round(it.total_price, 2);
-    const unitPrice = it.unit_price != null && it.unit_price > 0 ? round(it.unit_price, 4) : round(total / quantity, 4);
+    const quantity = lineQuantity(it.quantity, it.unit, it.unit_price, total);
+    const readPrice = it.unit_price != null && it.unit_price > 0 ? it.unit_price : null;
+    const unitPrice = readPrice != null ? round(readPrice, 4) : round(total / quantity, 4);
+    // Sem preço unitário nem quantidade lidos, o preço é o total sobre 1, que a nota não imprimiu;
+    // sem valor nenhum (preço 0), não há o que a leitura guardar.
+    if (unitPrice > 0 && (readPrice != null || (it.quantity != null && it.quantity > 0))) {
+      readLines.push({ description: raw, unit: it.unit, unit_price: unitPrice });
+    }
     const suggested = it.matched_product_id && catalogIds.has(it.matched_product_id) ? it.matched_product_id : null;
     items.push({
       position: items.length,
@@ -175,6 +220,7 @@ export function cleanReceipt(
     accessKey,
     total: extracted.total != null && extracted.total >= 0 ? round(extracted.total, 2) : null,
     items,
+    readLines,
   };
 }
 

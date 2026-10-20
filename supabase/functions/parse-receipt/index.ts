@@ -24,9 +24,10 @@ import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
 import { forgetReceiptRead, insertWithRead, receiptRead, saoPauloDay, saveReceiptRead } from '../_shared/receiptRead.ts';
 import { duplicateBeforeRead, existingOnConflict, keyAfterRead, photoIds, requestedAccessKey } from './accessKey.ts';
 import {
-  BOUGHT_LINES,
+  BOUGHT_RECEIPTS,
+  type BoughtReceipt,
+  boughtProducts,
   CATALOG_LIMIT,
-  type CatalogProduct,
   cleanReceipt,
   ExtractedReceiptSchema,
   instructions,
@@ -154,21 +155,22 @@ Deno.serve(async (req) => {
 
   // Os produtos que a IA vê: os mais comprados nas notas mais novas e, depois,
   // os cadastrados por último (promptCatalog). Sem as compras, só os mais novos.
+  // As compras vêm pelas notas da casa (índice household_id + purchased_at) e
+  // os itens de cada uma (índice receipt_id + position): pela receipt_items
+  // direto, sem índice na casa nem na data, a busca varreria as linhas de todas as casas.
   const [newestResult, boughtResult] = await Promise.all([
     db.from('products').select('id, name').order('created_at', { ascending: false }).order('id').limit(CATALOG_LIMIT),
     db
-      .from('receipt_items')
-      .select('product:products(id, name)')
-      .not('product_id', 'is', null)
-      .order('created_at', { ascending: false })
-      .limit(BOUGHT_LINES),
+      .from('receipts')
+      .select('receipt_items(position, product:products(id, name))')
+      .eq('household_id', householdId)
+      .order('purchased_at', { ascending: false })
+      .order('id')
+      .limit(BOUGHT_RECEIPTS),
   ]);
   if (newestResult.error) return json({ error: 'Falha ao ler produtos.' }, 500);
   if (boughtResult.error) console.warn('parse-receipt: purchases not read for the catalog', boughtResult.error.code);
-  // O produto da linha vem como objeto (muitos para um); o flatMap aceita também a lista que o tipo promete.
-  const boughtRows = (boughtResult.data ?? []) as unknown as { product: CatalogProduct | CatalogProduct[] | null }[];
-  const bought = boughtRows.flatMap((row) => row.product ?? []);
-  const catalog = promptCatalog(bought, newestResult.data ?? []);
+  const catalog = promptCatalog(boughtProducts((boughtResult.data ?? []) as unknown as BoughtReceipt[]), newestResult.data ?? []);
 
   let ticket;
   try {
@@ -234,7 +236,8 @@ Deno.serve(async (req) => {
         cnpj: ids.read.cnpj,
         storeName: receipt.storeName,
         purchasedOn: saoPauloDay(receipt.purchasedAt),
-        lines: receipt.items.map((item) => ({ description: item.raw_description, unit: item.unit, unit_price: item.unit_price })),
+        // Sem a linha de preço que a nota não imprimiu (quantidade e preço unitário ilegíveis): ela não compartilha.
+        lines: receipt.readLines,
       }),
     );
     const dropRead = () => (readId ? forgetReceiptRead(serverDb, readId) : Promise.resolve());

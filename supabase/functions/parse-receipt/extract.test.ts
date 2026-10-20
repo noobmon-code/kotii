@@ -2,6 +2,7 @@ import { assertEquals } from '@std/assert';
 
 import { extractStructured, type VisionConfig } from '../_shared/vision.ts';
 import {
+  boughtProducts,
   type CatalogProduct,
   cleanReceipt,
   type ExtractedReceipt,
@@ -67,6 +68,10 @@ Deno.test('cleans identifiers, dates and items', () => {
   assertEquals(r.items[0].product_id, 'p-arroz', 'alias wins over model suggestion');
   assertEquals(r.items[1].product_id, 'p-banana', 'valid model suggestion kept');
   assertEquals(r.items[1].unit_price, 6, 'unit price derived from total / weight');
+  assertEquals(r.readLines, [
+    { description: 'ARROZ T.JOAO 5KG', unit: 'un', unit_price: 25 },
+    { description: 'BANANA PRATA', unit: 'kg', unit_price: 6 },
+  ]);
 });
 
 Deno.test('drops invalid identifiers and unknown product ids', () => {
@@ -120,6 +125,8 @@ Deno.test('preço ilegível (null) passa no schema e vira 0, o "sem valor" que a
     // O preço unitário lido fica; o total não é calculado (pode ter desconto), a revisão pergunta.
     ['PAO', 1, 12.9, 0],
   ]);
+  // O preço unitário impresso vai para a leitura do servidor; o leite, sem preço nenhum, não.
+  assertEquals(r.readLines, [{ description: 'PAO', unit: 'un', unit_price: 12.9 }]);
 });
 
 Deno.test('preço ilegível não derruba a nota pela OpenRouter', async () => {
@@ -177,6 +184,52 @@ Deno.test('promptCatalog: primeiro os mais comprados (empate: o comprado por úl
   const many = Array.from({ length: 500 }, (_, i) => p(`a${String(i).padStart(3, '0')}`));
   assertEquals(promptCatalog([p('zebra')], many).some((x) => x.id === 'zebra'), true);
   assertEquals(promptCatalog([p('zebra')], many).length, 400);
+});
+
+Deno.test('boughtProducts: da nota mais nova para a mais antiga, cada uma na ordem impressa, sem as linhas sem produto', () => {
+  const p = (id: string): CatalogProduct => ({ id, name: `Produto ${id}` });
+  const bought = boughtProducts([
+    { receipt_items: [{ position: 1, product: p('arroz') }, { position: 0, product: p('leite') }, { position: 2, product: null }] },
+    { receipt_items: null },
+    { receipt_items: [{ position: 0, product: [p('cafe')] }] },
+  ]);
+  assertEquals(bought.map((x) => x.id), ['leite', 'arroz', 'cafe']);
+});
+
+Deno.test('quantidade ilegível: sai do total e do preço unitário lidos; sem o preço, a linha não vai para a leitura do servidor', () => {
+  const r = cleanReceipt(
+    {
+      ...base,
+      items: [
+        // Peso ilegível, R$/kg e total legíveis: o peso sai da conta.
+        line({ raw_description: 'BANANA PRATA KG', unit: 'kg', quantity: null, unit_price: 5.99, total_price: 3.2 }),
+        // Peso e R$/kg ilegíveis, só o total: 1 kg × total no rascunho, mas esse R$/kg não foi impresso.
+        line({ raw_description: 'TOMATE KG', unit: 'kg', quantity: null, unit_price: null, total_price: 3.21 }),
+        // Em "un", com desconto no total, a quantidade é inteira.
+        line({ raw_description: 'IOGURTE', quantity: null, unit_price: 3.5, total_price: 9 }),
+        // Quantidade lida e preço unitário ilegível: o preço sai do total e da quantidade, que foram lidos.
+        line({ raw_description: 'BATATA KG', unit: 'kg', quantity: 1.25, unit_price: null, total_price: 7.5 }),
+        // Quantidade e preço unitário ilegíveis em "un": também não vai.
+        line({ raw_description: 'SABAO', quantity: null, unit_price: null, total_price: 12 }),
+      ],
+    },
+    new Set(),
+    new Map(),
+  );
+  assertEquals(r.items.map((i) => [i.raw_description, i.quantity, i.unit_price, i.total_price]), [
+    ['BANANA PRATA KG', 0.534, 5.99, 3.2],
+    ['TOMATE KG', 1, 3.21, 3.21],
+    ['IOGURTE', 3, 3.5, 9],
+    ['BATATA KG', 1.25, 6, 7.5],
+    ['SABAO', 1, 12, 12],
+  ]);
+  assertEquals(r.readLines, [
+    { description: 'BANANA PRATA KG', unit: 'kg', unit_price: 5.99 },
+    { description: 'IOGURTE', unit: 'un', unit_price: 3.5 },
+    { description: 'BATATA KG', unit: 'kg', unit_price: 6 },
+  ]);
+  // Nenhuma linha da leitura leva o preço que a nota não imprimiu.
+  assertEquals(r.readLines.some((l) => l.unit_price === 3.21 || l.unit_price === 12), false);
 });
 
 Deno.test('instructions explain the overlap when the receipt comes in several photos', () => {

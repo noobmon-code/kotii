@@ -1,7 +1,7 @@
 // Chave de acesso da nota e CNPJ do emitente: os dígitos verificadores, para
-// não gravar o que foi lido errado (a chave com um dígito trocado não acha a
-// nota do QR da mesma compra; o CNPJ errado cria mercado repetido e não
-// compartilha). Sem rede: testado em fiscalIds.test.ts.
+// não gravar nem compartilhar o que foi lido errado. Descartar não junta as
+// notas: a foto que fica sem chave continua sem par com o QR da mesma compra.
+// Sem rede: testado em fiscalIds.test.ts.
 
 /**
  * Dígito verificador módulo 11, com pesos 2 a 9 da direita para a esquerda:
