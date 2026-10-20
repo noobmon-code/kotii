@@ -8,7 +8,8 @@ export function normalizeSearch(value: string): string {
 }
 
 // Palavra-chave -> categoria, para itens digitados livremente na lista.
-// Ordem importa: a primeira palavra encontrada vence.
+// Vence a palavra que aparece primeiro no nome ("Ração sabor frango" é pet);
+// no mesmo lugar, a que vem antes aqui ("agua sanitaria" antes de "agua").
 const KEYWORDS: [string, string][] = [
   ['agua sanitaria', 'limpeza'],
   ['papel higienico', 'papel'],
@@ -122,6 +123,22 @@ const KEYWORDS: [string, string][] = [
 ];
 
 /**
+ * Onde a nota fiscal escreve a palavra-chave de mais de uma palavra com a
+ * última cortada ("AGUA SANIT", "PAPEL HIG"), ou -1. As de antes vêm
+ * inteiras, e da última ficam 3 letras ou mais.
+ */
+function cutKeywordAt(text: string, keyword: string): number {
+  const words = keyword.split(' ');
+  const last = words.pop()!;
+  const head = ` ${words.join(' ')} `;
+  for (let at = text.indexOf(head); at >= 0; at = text.indexOf(head, at + 1)) {
+    const cut = text.slice(at + head.length).split(' ')[0];
+    if (cut.length >= 3 && cut.length < last.length && last.startsWith(cut)) return at;
+  }
+  return -1;
+}
+
+/**
  * Chute de categoria: palavra inteira, ou prefixo de palavra para palavras-chave
  * com 5+ letras ("congelad" acha "congelados", mas "sal" não acha "salmão").
  * `abbreviated`: descrição de nota fiscal, que abrevia ("DETERG", "CONGEL");
@@ -129,14 +146,21 @@ const KEYWORDS: [string, string][] = [
  */
 export function guessCategory(name: string, { abbreviated = false }: { abbreviated?: boolean } = {}): string {
   const text = ` ${normalizeSearch(name).replace(/[^a-z0-9-]+/g, ' ').trim()} `;
+  let best: { at: number; category: string } | null = null;
   for (const [keyword, category] of KEYWORDS) {
-    if (text.includes(` ${keyword} `) || (keyword.length >= 5 && text.includes(` ${keyword}`))) return category;
+    const whole = text.indexOf(` ${keyword} `);
+    let at = whole >= 0 ? whole : keyword.length >= 5 ? text.indexOf(` ${keyword}`) : -1;
+    if (at < 0 && abbreviated && keyword.includes(' ')) at = cutKeywordAt(text, keyword);
+    if (at >= 0 && (!best || at < best.at)) best = { at, category };
   }
+  if (best) return best.category;
   if (!abbreviated) return 'outros';
-  // Palavra de 5+ letras que é o começo de uma palavra-chave.
-  const words = text.trim().split(' ').filter((word) => word.length >= 5 && /^[a-z]+$/.test(word));
-  for (const [keyword, category] of KEYWORDS) {
-    if (!keyword.includes(' ') && words.some((word) => keyword.startsWith(word))) return category;
+  // Palavra de 5+ letras que é o começo de uma palavra-chave; também aqui, vence a que vem primeiro no nome.
+  const words = text.trim().split(' ');
+  for (const word of words) {
+    if (word.length < 5 || !/^[a-z]+$/.test(word)) continue;
+    const found = KEYWORDS.find(([keyword]) => !keyword.includes(' ') && keyword.startsWith(word));
+    if (found) return found[1];
   }
   return 'outros';
 }

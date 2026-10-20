@@ -5,6 +5,7 @@ import { getCategory } from './categories';
 import { diffDays, toISODate } from './dates';
 import { LinkIndex } from './listLinks';
 import { estimateExpiry, type ExpirySource } from './pantry';
+import { sameItemFit } from './sameItem';
 import { normalizeSearch } from './search';
 
 /** Até tantos dias de diferença, carrinho e nota contam como a mesma compra. */
@@ -20,12 +21,22 @@ export interface PantryEntry {
 /**
  * Mesmo produto; nome de lista ligado ao produto do outro ("Cebola" do
  * carrinho e "Cebola Granel 600g" da nota, depois que a pessoa ligou os
- * dois); ou nomes em que um começa pelo outro ("Leite" e "Leite Italac 1L").
+ * dois); nomes em que um começa pelo outro ("Leite" e "Leite Italac 1L"); ou
+ * o mesmo item da revisão da nota (domain/sameItem), de outra marca ou que
+ * pode ser ele ("Leite IL Desnatado" do carrinho e "Leite UHT Parmalat" da
+ * nota, "Carne" e "Bombom da Alcatra"): aqui é só a pergunta antes de
+ * repetir, e o mesmo critério da nota não deixa o item entrar duas vezes.
  */
 function sameItem(a: { productId: string | null; name: string }, b: PantryEntry, links: LinkIndex): boolean {
-  if (a.productId && b.product_id) return a.productId === b.product_id;
+  if (a.productId && a.productId === b.product_id) return true;
   if (a.productId && links.has(b.name, a.productId)) return true;
   if (b.product_id && links.has(a.name, b.product_id)) return true;
+  const fits = [sameItemFit({ name: a.name }, { names: [b.name] }), sameItemFit({ name: b.name }, { names: [a.name] })];
+  // Outra coisa, mesmo começando pelo mesmo nome ("Leite" e "Leite condensado").
+  if (fits.includes('outro')) return false;
+  if (fits.some((fit) => fit === 'mesmo' || fit === 'talvez')) return true;
+  // Dois produtos diferentes não são o mesmo só porque um nome começa pelo outro.
+  if (a.productId && b.product_id) return false;
   const x = normalizeSearch(a.name);
   const y = normalizeSearch(b.name);
   if (!x || !y) return false;

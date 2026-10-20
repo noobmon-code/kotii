@@ -99,6 +99,16 @@ describe('search', () => {
     expect(guessCategory('DETERG YPE NEUTRO 500ML', { abbreviated: true })).toBe('limpeza');
     expect(guessCategory('Guarda chuva')).toBe('outros');
   });
+
+  it('a palavra que vem primeiro no nome decide, não a ordem da tabela', () => {
+    expect(guessCategory('RACAO GATO SABOR FRANGO 1KG', { abbreviated: true })).toBe('pet');
+    expect(guessCategory('Ração sabor frango')).toBe('pet');
+    expect(guessCategory('Pão de queijo congelado')).toBe('padaria');
+    // No mesmo lugar, a mais específica da tabela; e a nota que corta a última palavra ("SANIT") também vale.
+    expect(guessCategory('Água sanitária 2L')).toBe('limpeza');
+    expect(guessCategory('AGUA SANIT BRILHO 1L', { abbreviated: true })).toBe('limpeza');
+    expect(guessCategory('AGUA MIN CRISTAL 1,5L', { abbreviated: true })).toBe('bebidas');
+  });
 });
 
 describe('pantry expiry', () => {

@@ -140,8 +140,9 @@ describe('sameListedName', () => {
       line('r-tomate', 'Tomate para Molho Kg'),
       line('r-laranja', 'Laranja p/ Suco Kg'),
       line('r-leite', 'Leite com Café'),
+      line('r-lenco', 'Papel Lenço Kleenex'),
     ];
-    const list = ['Limões', 'bananas', 'Banana kg', 'Molho de tomate', 'Suco de laranja', 'Café com leite'].map((name, at) => ({
+    const list = ['Limões', 'bananas', 'Banana kg', 'Molho de tomate', 'Suco de laranja', 'Café com leite', 'Lenço de papel'].map((name, at) => ({
       id: 'l' + (at + 1),
       name,
       category: 'outros',
@@ -151,10 +152,9 @@ describe('sameListedName', () => {
       ['l1', 'r-limao', true],
       ['l2', 'r-banana', true],
       ['l3', 'r-banana', true],
-      // As mesmas palavras em outra ordem: continua aparecendo, desmarcado, para a pessoa decidir.
-      ['l4', 'r-tomate', false],
-      ['l5', 'r-laranja', false],
-      ['l6', 'r-leite', false],
+      // As mesmas palavras em outra ordem: continua aparecendo, desmarcado, para a pessoa decidir. Quando o app sabe
+      // que é outro item (tomate para molho é tomate, laranja para suco é laranja: domain/sameItem), nem sugere.
+      ['l7', 'r-lenco', false],
     ]);
   });
 });

@@ -4,6 +4,7 @@
 // lista de compras ("Banana", "Bananas", "Banana Prata Kg").
 
 import { listNameKey } from './listLinks';
+import { LOOSE_UNITS, OTHER_THING, PACKAGING, singular } from './nameWords';
 import { normalizeSearch } from './search';
 import { convertQuantity } from './units';
 
@@ -45,29 +46,13 @@ const LINKS = new Set(['de', 'da', 'do', 'das', 'dos', 'em', 'no', 'na', 'nos', 
 const COMPOUND = new Set(['de', 'da', 'do', 'das', 'dos', 'em']);
 // Dão um papel a cada palavra: com uma destas, a ordem faz parte do nome ("Suco de laranja" não é "Laranja para suco"). "E" não entra.
 const ROLE_LINKS = new Set(['de', 'da', 'do', 'das', 'dos', 'em', 'no', 'na', 'para', 'com', 'ao', 'por']);
-// Embalagem: não muda o produto.
-const PACKAGING = new Set([
-  'lata', 'latinha', 'garrafa', 'pet', 'vidro', 'frasco', 'pote', 'caixa', 'caixinha', 'pacote', 'pack', 'fardo', 'sache',
-  'refil', 'bandeja', 'barra', 'tablete', 'rolo', 'embalagem', 'granel', 'long', 'neck', 'tetra', 'pak',
-]);
-// Logo depois do nome da casa, fazem outra coisa mesmo sem "de" ou "em", que a nota fiscal corta ("Leite coco",
-// "Batata palha", "Água tônica", "Óleo motor"). No singular e sem acento. É uma lista fechada, só para a sugestão
-// que aparece sem a pessoa pedir: não é para crescer junto com o catálogo de itens comuns.
-const OTHER_THING = new Set([
-  'coco', 'soja', 'queijo', 'palha', 'tonica', 'oxigenada', 'sanitaria', 'poro', 'cacau', 'fruta', 'lactea', 'fermentado',
-  'condensado', 'evaporado', 'toalha', 'higienico', 'po', 'doce', 'instantaneo', 'vegetal', 'ingles', 'chips', 'alho',
-  'motor', 'passa', 'empanado', 'frita', 'frito',
-]);
+// Embalagem (PACKAGING), unidade solta (LOOSE_UNITS) e o que logo depois do nome faz outra coisa (OTHER_THING)
+// estão em domain/nameWords, junto do singular: o "mesmo item" da lista e da nota usa as mesmas listas.
 // Depois de uma destas, o número é a versão do item ("Arroz Tipo 1", "T.1", "Nº 5"), não um pedaço do tamanho.
 const VERSION_WORDS = new Set(['tipo', 'tp', 'tam', 'tamanho', 'numero', 'num', 'nr', 't', 'n', 'no']);
 // Marcas curtas demais para ter certeza: depois delas, um número de mais de um dígito com a unidade é o
 // tamanho ("Detergente N 500 ml"), não a versão ("Arroz T 1 5kg").
 const SHORT_MARKS = new Set(['t', 'n', 'no']);
-// Unidade solta ("Banana Prata Kg", "Alface Unidade") não diz o que é o item nem o tamanho.
-const LOOSE_UNITS = new Set([
-  'kg', 'gr', 'mg', 'ml', 'lt', 'un', 'und', 'unid', 'pct', 'pc', 'cx', 'fd', 'cm', 'mm',
-  'litro', 'litros', 'quilo', 'quilos', 'kilo', 'kilos', 'grama', 'gramas', 'unidade', 'unidades',
-]);
 // A mesma unidade escrita de outro jeito.
 const UNIT_ALIASES: Record<string, string> = {
   gr: 'g', grs: 'g', gs: 'g', grama: 'g', gramas: 'g',
@@ -86,21 +71,6 @@ const OTHER_VERSIONS = new Set(['zero', 'light', 'diet', 'lite']);
 // Tamanho de roupa ou de fralda, sozinho no nome ("Fralda Pampers G"). Unidade colada no número é tamanho de
 // embalagem ("20g"), e disso cuidam as regras de tamanho.
 const WEAR_SIZES = new Set(['pp', 'p', 'm', 'g', 'gg', 'xg', 'xxg', 'eg']);
-
-/** A palavra no singular ("limoes" -> "limao", "papeis" -> "papel", "bananas" -> "banana"). */
-function singular(word: string): string {
-  // "sem-gas" já está pronto (ver parseName).
-  if (word.startsWith('sem-')) return word;
-  if (word.length >= 4 && /[ao]es$/.test(word)) return `${word.slice(0, -3)}ao`;
-  if (word.length > 4 && word.endsWith('eis')) return `${word.slice(0, -3)}el`;
-  if (word.length > 4 && word.endsWith('ais')) return `${word.slice(0, -3)}al`;
-  if (word.length > 4 && word.endsWith('ois')) return `${word.slice(0, -3)}ol`;
-  if (word.length > 3 && word.endsWith('ns')) return `${word.slice(0, -2)}m`;
-  if (word.length > 4 && /[rz]es$/.test(word)) return word.slice(0, -2);
-  // Plural em "s" só depois de vogal: "sals" é abreviação, não plural de "sal".
-  if (word.length > 3 && /[aeiou]s$/.test(word)) return word.slice(0, -1);
-  return word;
-}
 
 // Número, com a vírgula guardada como "p" ("1,5" chega aqui como "1p5": a pontuação sai antes).
 const NUMBER = /^\d+(?:p\d+)?$/;

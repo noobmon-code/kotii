@@ -89,8 +89,8 @@ describe('matchListItems', () => {
     expect(matchListItems([item('l1', 'Filtro de papel')], receipt, new LinkIndex())[0].receiptItemId).toBe('r-filtro');
   });
 
-  it('sem palavra em comum, não adivinha', () => {
-    expect(matchListItems([item('l1', 'Filtro de café'), item('l2', 'Coca Zero'), item('l3', 'Detergente')], receipt, new LinkIndex())).toEqual([]);
+  it('sem o mesmo item nem palavra em comum, não adivinha', () => {
+    expect(matchListItems([item('l1', 'Detergente'), item('l2', 'Feijão')], receipt, new LinkIndex())).toEqual([]);
   });
 
   it('o mesmo item da nota cumpre mais de um item de lista', () => {
@@ -159,9 +159,8 @@ describe('matchListItems com outra noção de mesmo nome', () => {
       names: ['Tomate para Molho Kg', 'TOMATE P/ MOLHO KG'],
       category: 'hortifruti',
     };
-    expect(matchListItems([item('l1', 'Molho de tomate')], [tomate], new LinkIndex(), sameLoose)).toEqual([
-      { listItemId: 'l1', receiptItemId: 'r-tomate', reason: 'nome', checked: false },
-    ]);
+    // E tomate para molho é tomate, outro item (domain/sameItem): nem sugere.
+    expect(matchListItems([item('l1', 'Molho de tomate')], [tomate], new LinkIndex(), sameLoose)).toEqual([]);
     // Na ordem do item da lista, é o mesmo nome.
     const molho: ReceiptLine = { ...tomate, id: 'r-molho', name: 'Molho Tomate', names: ['Molho Tomate'] };
     expect(matchListItems([item('l1', 'Molho de tomate')], [tomate, molho], new LinkIndex(), sameLoose)).toEqual([
@@ -180,6 +179,8 @@ describe('matchListItems com outra noção de mesmo nome', () => {
 
   it('sem pedir, a marca continua só para o nome escrito igual', () => {
     expect(matchListItems(list, [limao, banana], new LinkIndex()).map((m) => [m.listItemId, m.checked])).toEqual([
+      // "Limões" é o mesmo item que o limão, mas fora do carrinho só sugere.
+      ['l1', false],
       ['l2', false],
       ['l3', false],
       ['l4', false],
@@ -193,7 +194,7 @@ describe('matchListItems com outra noção de mesmo nome', () => {
 });
 
 describe('applyListChoices e listRemovals', () => {
-  const listItems = [item('l1', 'Cebola'), item('l2', 'Filtro de café'), item('l3', 'Coca', 'p-coca')];
+  const listItems = [item('l1', 'Cebola'), item('l2', 'Saco de lixo'), item('l3', 'Coca', 'p-coca')];
   const matches = matchListItems(listItems, [COCA, CEBOLA, FILTRO], new LinkIndex());
 
   it('a pessoa marca a sugestão, liga um item à mão e desfaz outro', () => {
@@ -208,7 +209,7 @@ describe('applyListChoices e listRemovals', () => {
     ]);
     expect(Object.fromEntries(listRemovals(chosen, listItems))).toEqual({
       'r-cebola': [{ id: 'l1', name: 'Cebola', name_key: 'cebola' }],
-      'r-filtro': [{ id: 'l2', name: 'Filtro de café', name_key: 'filtro de cafe' }],
+      'r-filtro': [{ id: 'l2', name: 'Saco de lixo', name_key: 'saco de lixo' }],
     });
   });
 
@@ -222,8 +223,9 @@ describe('despensa sem repetir, com vínculos', () => {
 
   it('o "Filtro de café" do carrinho é o filtro Melitta da nota', () => {
     const entries = [{ product_id: null, name: 'Filtro de café', purchased_on: '2026-10-03' }];
-    expect(findSamePurchase({ productId: 'p-filtro', name: 'Filtro de Papel Melitta' }, '2026-10-04', entries)).toBeUndefined();
-    expect(findSamePurchase({ productId: 'p-filtro', name: 'Filtro de Papel Melitta' }, '2026-10-04', entries, links)).toBe(
+    // Pelo nome da nota, o app não sabe que item é ("Melitta 102"): só a ligação diz.
+    expect(findSamePurchase({ productId: 'p-filtro', name: 'Melitta 102 c/30' }, '2026-10-04', entries)).toBeUndefined();
+    expect(findSamePurchase({ productId: 'p-filtro', name: 'Melitta 102 c/30' }, '2026-10-04', entries, links)).toBe(
       entries[0],
     );
   });

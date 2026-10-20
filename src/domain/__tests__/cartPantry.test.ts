@@ -36,8 +36,20 @@ describe('findSamePurchase', () => {
     expect(findSamePurchase({ productId: null, name: 'Leiteira' }, '2026-09-26', entries)).toBeUndefined();
   });
 
-  it('produtos diferentes não batem, mesmo com o nome parecido', () => {
-    expect(findSamePurchase({ productId: 'p-outro', name: 'Arroz Tio João 5kg' }, '2026-09-25', entries)).toBeUndefined();
+  it('produto de outra marca do mesmo item bate: é a pergunta antes de repetir, com o critério da revisão da nota', () => {
+    expect(findSamePurchase({ productId: 'p-outro', name: 'Arroz Camil Polido 5kg' }, '2026-09-25', entries)?.name).toBe('Arroz Tio João 5kg');
+    expect(findSamePurchase({ productId: 'p-parmalat', name: 'Leite UHT Parmalat Caixa' }, '2026-09-26', entries)?.name).toBe('Leite');
+  });
+
+  it('outra coisa não bate, nem com o nome começando igual', () => {
+    expect(findSamePurchase({ productId: 'p-feijao', name: 'Feijão Carioca 1kg' }, '2026-09-25', entries)).toBeUndefined();
+    expect(findSamePurchase({ productId: null, name: 'Leite condensado' }, '2026-09-26', entries)).toBeUndefined();
+    expect(findSamePurchase({ productId: 'p-integral', name: 'Arroz integral' }, '2026-09-25', [entries[0]])?.name).toBe('Arroz Tio João 5kg');
+  });
+
+  it('o corte de carne da nota é a "Carne" que o carrinho guardou', () => {
+    const fromCart = [{ product_id: null, name: 'Carne', purchased_on: '2026-10-20' }];
+    expect(findSamePurchase({ productId: 'p-bombom', name: 'Bombom da Alcatra' }, '2026-10-20', fromCart)).toBe(fromCart[0]);
   });
 
   it(`só vale até ${SAME_PURCHASE_DAYS} dias de diferença, para os dois lados`, () => {

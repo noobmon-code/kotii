@@ -8,7 +8,7 @@ import { fetchPantryNear } from '@/data/home';
 import { formatBRL } from '@/domain/money';
 import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
-import { Button, Card, Chip, IconButton, TextField } from '@/ui/primitives';
+import { Button, Card, CheckCircle, Chip, IconButton, TextField } from '@/ui/primitives';
 
 // A tela da nota de verdade, com as consultas e gravações de verdade de
 // src/data/receipts.ts e um "banco" em memória atrás do cliente do Supabase.
@@ -33,7 +33,7 @@ const mockDb: {
   /** Pedidos que falham (a rede caiu). */
   fails: ((request: MockRequest) => boolean)[];
 } = { receipts: [], items: [], stores: [], writes: [], rpcs: [], reads: {}, holds: [], fails: [] };
-const mockMarket: { products: Row[]; pantryNear: Row[] } = { products: [], pantryNear: [] };
+const mockMarket: { products: Row[]; pantryNear: Row[]; listItems: Row[] } = { products: [], pantryNear: [], listItems: [] };
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn(), back: jest.fn() },
@@ -55,7 +55,7 @@ jest.mock('@/data/market', () => {
   const links = loaded(new Links([]));
   return {
     useListLinks: () => links,
-    useOpenListItems: () => loaded([]),
+    useOpenListItems: () => loaded(mockMarket.listItems),
     usePriceObservations: () => loaded([]),
     useProducts: () => loaded(mockMarket.products),
     usePurchaseRecords: () => loaded([]),
@@ -297,6 +297,7 @@ beforeEach(() => {
   mockDb.fails = [];
   mockMarket.products = [];
   mockMarket.pantryNear = [];
+  mockMarket.listItems = [];
   answers = {};
   jest.mocked(confirmAction).mockReset();
   jest.mocked(askYesNo).mockReset();
@@ -1716,3 +1717,84 @@ describe('nota sem nada a perguntar: a tela é a de sempre', () => {
   });
 });
 
+
+describe('a lista de compras na revisão: o mesmo item, de qualquer marca', () => {
+  // A lista diz o item sem a marca (ou com a marca da última compra) e a nota traz outra.
+  const listItem = (id: string, name: string, category: string, inCart: boolean): Row => ({
+    id,
+    list_id: 'lista1',
+    list_name: 'Mercado',
+    name,
+    category,
+    product_id: null,
+    checked_at: inCart ? `${YEAR}-06-10T14:00:00.000Z` : null,
+  });
+  beforeEach(() => {
+    seed(
+      receipt(),
+      item('a', 'CAFE BOA TARDE 500G', 18.9, { suggested_name: 'Café Boa Tarde 500g', suggested_category: 'cafe_cha' }),
+      item('b', 'OVOS GRANJA SOL CAIPIRA', 22, { suggested_name: 'Ovos Granja Sol Caipira', suggested_category: 'ovos' }),
+      item('c', 'LEITE UHT SERRANA CX', 22, { suggested_name: 'Leite UHT Serrana', suggested_category: 'laticinios' }),
+    );
+    mockMarket.listItems = [
+      listItem('l1', 'Café em pó', 'cafe_cha', true),
+      listItem('l2', 'Ovo Caipira Fazendinha', 'ovos', false),
+      listItem('l3', 'Leite desnatado', 'laticinios', true),
+      listItem('l4', 'Saco de lixo', 'limpeza', false),
+    ];
+  });
+  const checkCircle = (name: string) => renderer!.root.findAllByType(CheckCircle).find((entry) => entry.props.label === `Tirar ${name} da lista`);
+  const yes = (name: string) =>
+    renderer!.root.findAllByType(Button).find((entry) => entry.props.title === 'Sim' && String(entry.props.accessibilityLabel).endsWith(`tirar ${name} da lista`));
+
+  it('o item do carrinho vem marcado; o que não estava, e o que a nota não diz se é o tipo pedido, vêm como sugestão', async () => {
+    await open();
+    const text = page();
+    // No carrinho e uma linha só da nota é café: marcado sozinho.
+    expect(checkCircle('Café em pó')!.props.checked).toBe(true);
+    expect(text).toContain('Café em pó | Comprado: Café Boa Tarde 500g | Estava no carrinho e é o mesmo item');
+    expect(yes('Café em pó')).toBeUndefined();
+    // Fora do carrinho, o mesmo item de outra marca: a sugestão, com a pergunta de um toque.
+    expect(checkCircle('Ovo Caipira Fazendinha')!.props.checked).toBe(false);
+    expect(text).toContain('Ovo Caipira Fazendinha | Na nota: Ovos Granja Sol Caipira | O mesmo item, de outra marca ou com outro nome | Comprou este?');
+    expect(yes('Ovo Caipira Fazendinha')!.props.accessibilityLabel).toBe('Sim, comprei Ovos Granja Sol Caipira: tirar Ovo Caipira Fazendinha da lista');
+    // No carrinho, mas a nota não diz se o leite é desnatado: só sugestão.
+    expect(checkCircle('Leite desnatado')!.props.checked).toBe(false);
+    expect(text).toContain('Leite desnatado | Na nota: Leite UHT Serrana | Pode ser este: confira | Comprou este?');
+    // O que não veio fica de fora, atrás de "Ligar item".
+    expect(checkCircle('Saco de lixo')).toBeUndefined();
+    expect(button('Ligar item')).toBeDefined();
+    expect(text).toContain('Nas sugestões, toque em "Sim" no que você comprou.');
+  });
+
+  it('"Sim" marca a sugestão, e confirmar tira da lista o que está marcado', async () => {
+    await open();
+    await press(yes('Ovo Caipira Fazendinha'));
+    expect(checkCircle('Ovo Caipira Fazendinha')!.props.checked).toBe(true);
+    // Marcado pela pessoa: a dica não diz que estava no carrinho (não estava).
+    expect(page()).toContain('Ovo Caipira Fazendinha | Comprado: Ovos Granja Sol Caipira | O mesmo item, de outra marca ou com outro nome');
+    expect(yes('Ovo Caipira Fazendinha')).toBeUndefined();
+
+    await press(button('Confirmar nota'));
+    expect(mockDb.rpcs.map(({ fn }) => fn)).toEqual(['confirm_receipt']);
+    const sent = mockDb.rpcs[0].args.p_items as Row[];
+    // O café (do carrinho) e o ovo (do "Sim") saem da lista e ensinam a ligação; o leite desmarcado fica.
+    expect(sent.map((entry) => [entry.id, entry.list_items ?? null])).toEqual([
+      ['a', [{ id: 'l1', name: 'Café em pó', name_key: 'cafe em po' }]],
+      ['b', [{ id: 'l2', name: 'Ovo Caipira Fazendinha', name_key: 'ovo caipira fazendinha' }]],
+      ['c', null],
+    ]);
+    expect(String(jest.mocked(notify).mock.calls[0][1])).toContain('2 itens saíram da lista.');
+  });
+
+  it('com duas linhas que podem ser o item, nem o do carrinho vem marcado sozinho', async () => {
+    seed(
+      receipt(),
+      item('a', 'CAFE BOA TARDE 500G', 18.9, { suggested_name: 'Café Boa Tarde 500g', suggested_category: 'cafe_cha' }),
+      item('d', 'CAFE SERRA AZUL 250G', 44, { suggested_name: 'Café Serra Azul 250g', suggested_category: 'cafe_cha' }),
+    );
+    await open();
+    expect(checkCircle('Café em pó')!.props.checked).toBe(false);
+    expect(yes('Café em pó')).toBeDefined();
+  });
+});
