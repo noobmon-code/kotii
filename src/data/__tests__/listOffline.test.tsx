@@ -6,6 +6,7 @@ import { resumeInFlight } from '@/lib/cachePersister';
 import type { ShoppingListItem } from '@/lib/types';
 
 import {
+  type ListQueueEvents,
   loadListLinks,
   queuedAddSettled,
   registerListMutations,
@@ -37,6 +38,10 @@ const mockDb = {
   replies: [] as { op: string; reply: { data: unknown; error: unknown } }[],
   /** As listas abertas, com os itens, como o servidor devolve o resumo. */
   lists: [] as Record<string, unknown>[],
+  /** Os itens inteiros, para a busca deles por lista (`in('list_id', ...)`). */
+  items: [] as { list_id: string }[],
+  /** As buscas (tabela, colunas e filtros), na ordem. */
+  reads: [] as { table: string; columns: string; filters: [string, string, unknown][] }[],
   gate: undefined as Promise<void> | undefined,
   /** O que o portão segura (a marcação, sem dizer outra coisa). */
   gateOps: ['update'],
@@ -45,9 +50,11 @@ const mockDb = {
 jest.mock('@/lib/supabase', () => {
   const request = (table: string) => {
     const sent: Sent = { op: 'select', table, filters: [] };
+    let columns = '';
     let recorded = false;
     const record = () => {
       if (!recorded && sent.op !== 'select') mockDb.sent.push(sent);
+      if (!recorded && sent.op === 'select') mockDb.reads.push({ table, columns, filters: sent.filters });
       recorded = true;
     };
     const answer = () => {
@@ -55,12 +62,17 @@ jest.mock('@/lib/supabase', () => {
       const at = mockDb.replies.findIndex((r) => r.op === sent.op);
       if (at >= 0) return mockDb.replies.splice(at, 1)[0].reply;
       if (sent.op === 'select' && table === 'shopping_lists') return { data: mockDb.lists, error: null };
+      const byList = sent.filters.find(([filter, column]) => filter === 'in' && column === 'list_id')?.[2] as string[] | undefined;
+      if (sent.op === 'select' && byList) return { data: mockDb.items.filter((i) => byList.includes(i.list_id)), error: null };
       if (sent.op === 'select') return { data: [], error: null };
       const id = sent.filters.find(([, column]) => column === 'id')?.[2];
       return { data: sent.op === 'insert' ? null : [{ id }], error: null };
     };
     const builder: Record<string, unknown> = {
-      select: () => builder,
+      select: (selected: string) => {
+        if (sent.op === 'select') columns = selected;
+        return builder;
+      },
       insert: (values: Record<string, unknown>) => {
         Object.assign(sent, { op: 'insert', values });
         return builder;
@@ -124,12 +136,12 @@ const item = (id: string, name: string, extra: Partial<ShoppingListItem> = {}): 
 const clients: QueryClient[] = [];
 let renderers: ReactTestRenderer[] = [];
 
-function newClient() {
+function newClient(events?: ListQueueEvents) {
   // Como no app (lib/queryClient): fora da fila, as ações não esperam a conexão; o que está guardado não some.
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: Infinity, staleTime: Infinity }, mutations: { networkMode: 'always', gcTime: 0 } },
   });
-  registerListMutations(client);
+  registerListMutations(client, events);
   clients.push(client);
   return client;
 }
@@ -197,6 +209,8 @@ afterEach(async () => {
   mockDb.sent = [];
   mockDb.replies = [];
   mockDb.lists = [];
+  mockDb.items = [];
+  mockDb.reads = [];
   mockDb.gate = undefined;
   mockDb.gateOps = ['update'];
 });
@@ -332,6 +346,29 @@ describe('pôr, marcar, editar e tirar sem internet', () => {
     await expect(queuedAddSettled(client, 'outro')).resolves.toBeUndefined();
   });
 
+  it('tirar a foto só tira a que estava no item no toque: a que outra pessoa pôs depois fica', async () => {
+    const client = newClient();
+    const cafe = item('cafe', 'Café', { photo_path: 'casa/item-p1.jpg' });
+    openList(client, [cafe]);
+    const hooks = await listHooks(client);
+    await act(async () => {
+      hooks().edit.mutate({ id: 'cafe', listId: 'l1', userId: 'u1', values: { notes: 'Pilão', photo_path: null }, expectedPhotoPath: 'casa/item-p1.jpg' });
+      hooks().edit.mutate({ id: 'cafe', listId: 'l1', userId: 'u1', values: { photo_path: null }, expectedPhotoPath: 'casa/item-p2.jpg' });
+    });
+    expect(client.getQueryData<ShoppingListItem[]>(['listItems', 'l1'])![0]).toMatchObject({ notes: 'Pilão', photo_path: null });
+    onlineManager.setOnline(true);
+    await act(async () => {
+      await client.resumePausedMutations();
+    });
+    await flush();
+    expect(mockDb.sent.map((s) => [s.values, s.filters])).toEqual([
+      // Os outros campos pelo id; a foto só se ainda é a mesma.
+      [{ notes: 'Pilão' }, [['eq', 'id', 'cafe']]],
+      [{ photo_path: null }, [['eq', 'id', 'cafe'], ['eq', 'photo_path', 'casa/item-p1.jpg']]],
+      [{ photo_path: null }, [['eq', 'id', 'cafe'], ['eq', 'photo_path', 'casa/item-p2.jpg']]],
+    ]);
+  });
+
   it('tirar um item cujo pôr já saiu vai para a fila, depois dele', async () => {
     const client = newClient();
     openList(client, []);
@@ -381,17 +418,25 @@ describe('sinal fraco', () => {
     expect(client.getMutationCache().getAll().map((m) => m.state.status)).toEqual(['success']);
   });
 
-  it('a fila desiste (a lista foi apagada em outro aparelho): o item que apareceu no toque sai da tela e do resumo', async () => {
+  const GONE = {
+    op: 'insert',
+    reply: {
+      data: null,
+      error: {
+        code: '23503',
+        message: 'insert or update on table "shopping_list_items" violates foreign key constraint "shopping_list_items_list_id_fkey"',
+      },
+    },
+  };
+
+  it('a fila desiste (a lista foi apagada em outro aparelho): o item sai da tela e do resumo, e a pessoa fica sabendo', async () => {
     jest.useFakeTimers();
-    const client = newClient();
+    const onAddDropped = jest.fn();
+    const client = newClient({ onAddDropped });
     openList(client, [ARROZ]);
     const hooks = await listHooks(client);
     onlineManager.setOnline(true);
-    const gone = {
-      code: '23503',
-      message: 'insert or update on table "shopping_list_items" violates foreign key constraint "shopping_list_items_list_id_fkey"',
-    };
-    for (let i = 0; i < 4; i++) mockDb.replies.push({ op: 'insert', reply: { data: null, error: gone } });
+    for (let i = 0; i < 4; i++) mockDb.replies.push(GONE);
     const onError = jest.fn();
     await act(async () => hooks().add.add(leite, 'u1', { onError }));
     expect(names(client)).toEqual(['Arroz', 'Leite']);
@@ -402,6 +447,46 @@ describe('sinal fraco', () => {
     expect(onError).toHaveBeenCalledTimes(1);
     expect(names(client)).toEqual(['Arroz']);
     expect(summary(client)).toMatchObject({ pending: 1, total: 1, items: [{ name: 'Arroz' }] });
+    // O aviso sai da fila, não da tela: vale também para o pôr guardado que sai depois de reabrir o app.
+    expect(onAddDropped).toHaveBeenCalledTimes(1);
+    expect(onAddDropped.mock.calls[0][0]).toMatchObject({ name: 'Leite', listId: 'l1' });
+  });
+
+  it('depois de várias faltas de resposta, o 502 do gateway (sem código, em HTML) não faz a fila desistir', async () => {
+    jest.useFakeTimers();
+    const onAddDropped = jest.fn();
+    const client = newClient({ onAddDropped });
+    openList(client, []);
+    const hooks = await listHooks(client);
+    onlineManager.setOnline(true);
+    const gateway = (status: number) => ({ op: 'insert', reply: { data: null, error: { message: `<html><h1>${status} Bad Gateway</h1></html>` }, status } });
+    mockDb.replies.push(NETWORK(), NETWORK(), NETWORK(), NETWORK(), gateway(502), gateway(520), NETWORK('AbortError: Aborted'));
+    await act(async () => hooks().add.add(leite, 'u1'));
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(300_000);
+    });
+    expect(mockDb.sent).toHaveLength(8);
+    expect(onAddDropped).not.toHaveBeenCalled();
+    expect(names(client)).toEqual(['Leite']);
+    expect(client.getMutationCache().getAll().map((m) => m.state.status)).toEqual(['success']);
+  });
+
+  it('só as falhas de verdade contam para desistir: as faltas de resposta antes delas não', async () => {
+    jest.useFakeTimers();
+    const onAddDropped = jest.fn();
+    const client = newClient({ onAddDropped });
+    openList(client, []);
+    const hooks = await listHooks(client);
+    onlineManager.setOnline(true);
+    // Quatro faltas de resposta e três recusas: ainda insiste (até três novas tentativas depois da primeira recusa).
+    mockDb.replies.push(NETWORK(), NETWORK(), NETWORK(), NETWORK(), GONE, NETWORK(), GONE, GONE);
+    await act(async () => hooks().add.add(leite, 'u1'));
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(300_000);
+    });
+    expect(mockDb.sent).toHaveLength(9);
+    expect(onAddDropped).not.toHaveBeenCalled();
+    expect(names(client)).toEqual(['Leite']);
   });
 
   it('a resposta do pôr se perdeu e a conexão caiu: tirar o item vai para a fila depois dele (o servidor pode ter gravado)', async () => {
@@ -532,13 +617,17 @@ describe('lista que nunca foi aberta neste aparelho', () => {
     shopping_list_items: items,
   });
 
-  it('os itens das listas abertas vêm com o resumo e ficam guardados, na ordem; o resumo guarda só o que usa', async () => {
+  it('os itens das 8 listas abertas mais novas vêm num pedido à parte e ficam guardados, na ordem; o resumo é leve', async () => {
     onlineManager.setOnline(true);
     const feira = [
       item('b', 'Banana', { list_id: 'l2', created_at: '2026-10-20T09:05:00Z' }),
       item('a', 'Alface', { list_id: 'l2', created_at: '2026-10-20T09:00:00Z' }),
     ];
-    mockDb.lists = [row('l2', 'Feira', feira)];
+    // O resumo traz de cada item só o nome, o produto e a marcação; as listas vêm da mais nova para a mais velha.
+    const ref = ({ name, product_id, checked_at }: ShoppingListItem) => ({ name, product_id, checked_at });
+    const older = Array.from({ length: 8 }, (_, n) => row(`v${n}`, `Velha ${n}`, []));
+    mockDb.lists = [{ ...row('l2', 'Feira', []), shopping_list_items: feira.map(ref) }, ...older];
+    mockDb.items = [...feira, item('x', 'Sabão', { list_id: 'v7' })];
     const client = newClient();
     function Probe() {
       useShoppingLists();
@@ -548,22 +637,49 @@ describe('lista que nunca foi aberta neste aparelho', () => {
       renderers.push(create(<QueryClientProvider client={client}><Probe /></QueryClientProvider>));
     });
     await flush();
-    expect(client.getQueryData<ShoppingListItem[]>(['listItems', 'l2'])?.map((i) => i.name)).toEqual(['Alface', 'Banana']);
-    expect(client.getQueryData(['lists'])).toEqual([
-      {
-        id: 'l2',
-        name: 'Feira',
-        kind: 'mercado',
-        archived_at: null,
-        created_at: '2026-10-19T12:00:00Z',
-        pending: 2,
-        total: 2,
-        items: [
-          { name: 'Banana', product_id: null, checked_at: null },
-          { name: 'Alface', product_id: null, checked_at: null },
-        ],
-      },
+    expect(mockDb.reads.map((r) => [r.table, r.columns])).toEqual([
+      ['shopping_lists', 'id, name, kind, archived_at, created_at, shopping_list_items(name, product_id, checked_at)'],
+      ['shopping_list_items', expect.stringContaining('notes, priority, photo_path')],
     ]);
+    const ids = ['l2', ...older.slice(0, 7).map((l) => l.id)];
+    expect(mockDb.reads[1].filters).toContainEqual(['in', 'list_id', ids]);
+    expect(client.getQueryData<ShoppingListItem[]>(['listItems', 'l2'])?.map((i) => i.name)).toEqual(['Alface', 'Banana']);
+    expect(client.getQueryData(['listItems', 'v0'])).toEqual([]);
+    // A nona lista (a mais velha) não fica guardada: é buscada quando for aberta.
+    expect(client.getQueryData(['listItems', 'v7'])).toBeUndefined();
+    expect((client.getQueryData<unknown[]>(['lists']) ?? [])[0]).toEqual({
+      id: 'l2',
+      name: 'Feira',
+      kind: 'mercado',
+      archived_at: null,
+      created_at: '2026-10-19T12:00:00Z',
+      pending: 2,
+      total: 2,
+      items: [
+        { name: 'Banana', product_id: null, checked_at: null },
+        { name: 'Alface', product_id: null, checked_at: null },
+      ],
+    });
+  });
+
+  it('a busca dos itens que falha não derruba o resumo', async () => {
+    onlineManager.setOnline(true);
+    mockDb.lists = [row('l2', 'Feira', [])];
+    mockDb.replies.push({ op: 'select', reply: { data: mockDb.lists, error: null } });
+    mockDb.replies.push({ op: 'select', reply: { data: null, error: { code: '', message: 'TypeError: Network request failed' } } });
+    const client = newClient();
+    const seen: { lists?: ReturnType<typeof useShoppingLists> } = {};
+    function Probe() {
+      seen.lists = useShoppingLists();
+      return null;
+    }
+    await act(async () => {
+      renderers.push(create(<QueryClientProvider client={client}><Probe /></QueryClientProvider>));
+    });
+    await flush();
+    expect(seen.lists?.isError).toBe(false);
+    expect(seen.lists?.data).toHaveLength(1);
+    expect(client.getQueryData(['listItems', 'l2'])).toBeUndefined();
   });
 
   it('com a fila andando, os itens guardados não são trocados pelos que vieram com o resumo', async () => {
@@ -588,6 +704,8 @@ describe('lista que nunca foi aberta neste aparelho', () => {
     await flush();
     expect(client.getQueryData(['lists'])).toHaveLength(1);
     expect(client.getQueryData<ShoppingListItem[]>(['listItems', 'l2'])?.[0].checked_at).toBe('2026-10-20T10:00:00Z');
+    // Nem busca os itens: a resposta seria jogada fora.
+    expect(mockDb.reads.map((r) => r.table)).toEqual(['shopping_lists']);
     mockDb.gate = undefined;
     release();
     await flush();

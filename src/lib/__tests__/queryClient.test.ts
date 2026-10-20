@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { focusManager, onlineManager } from '@tanstack/react-query';
 import { AppState } from 'react-native';
 
-import { CLEAR_CHECKED_KEY, EDIT_ITEM_KEY, REMOVE_ITEM_KEY, TOGGLE_ITEM_KEY } from '@/data/market';
+import { ADD_ITEM_KEY, CLEAR_CHECKED_KEY, EDIT_ITEM_KEY, REMOVE_ITEM_KEY, TOGGLE_ITEM_KEY } from '@/data/market';
 import { MARKET_TRIP_PUSH_KEY, MARKET_TRIPS_KEY } from '@/data/marketTrips';
 import { JOBS_KEY, PROVIDERS_KEY } from '@/data/providers';
 import { notify } from '@/ui/dialogs';
@@ -26,7 +26,11 @@ jest.mock('expo-network', () => ({
   getNetworkStateAsync: () => network.current ?? Promise.resolve({ isConnected: true, isInternetReachable: true }),
 }));
 
-jest.mock('@/lib/supabase', () => ({ supabase: {}, unwrap: (result: { data: unknown }) => result.data }));
+jest.mock('@/lib/supabase', () => ({
+  supabase: {},
+  unwrap: (result: { data: unknown }) => result.data,
+  errorMessage: (error: { message: string }) => error.message,
+}));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -448,5 +452,14 @@ describe('a fila guardada no meio do envio', () => {
       (restored?.clientState.mutations ?? []).map((m) => [(m.state.variables as { id: string }).id, [m.state.isPaused, m.state.failureCount]]),
     );
     expect(states).toEqual({ 'marcacao-saindo': [true, 1], 'edicao-esperando': [true, 0] });
+  });
+});
+
+describe('a fila que desiste de um item posto', () => {
+  it('avisa a pessoa onde ela estiver, com o nome do item (também o pôr guardado, sem a tela que o pôs)', async () => {
+    jest.mocked(notify).mockClear();
+    const onError = queryClient.getMutationDefaults(ADD_ITEM_KEY).onError as (error: Error, input: unknown) => Promise<void>;
+    await onError(new Error('A lista não existe mais.'), { id: 'x', listId: 'l1', userId: 'u1', token: 't', name: 'Leite' });
+    expect(jest.mocked(notify).mock.calls).toEqual([['Item não foi para a lista', '"Leite" não entrou na lista: A lista não existe mais.']]);
   });
 });

@@ -67,6 +67,20 @@ export function waitingSummary(counts: QueueCounts): string {
   return `${named.slice(0, -1).join(', ')} e ${named[named.length - 1]}`;
 }
 
+/**
+ * A pergunta de sair da conta. Sair apaga deste aparelho a fila que espera a
+ * conexão (ela não pode sair com a sessão de outra conta): com algo nela, a
+ * pergunta diz o que se perde. Sair continua possível (aparelho emprestado ou
+ * perdido).
+ */
+export function signOutQuestion(counts: QueueCounts): string {
+  const waiting = waitingSummary(counts);
+  if (!waiting) return 'Deseja sair desta conta neste aparelho?';
+  const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+  const verbs = total === 1 ? 'ainda espera a conexão e se perde' : 'ainda esperam a conexão e se perdem';
+  return `${waiting} ${verbs} se você sair agora. Deseja sair mesmo assim?`;
+}
+
 /** O que o resumo das listas sabe de cada item (o nome e o produto, para "Acabou" e a tela Hoje). */
 export interface ListItemRef {
   name: string;

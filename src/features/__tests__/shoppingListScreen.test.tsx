@@ -9,7 +9,8 @@ import { SHARED_PRICES_NOTICE, type SharedPrice } from '@/domain/sharedPrices';
 import { CartPantryModal } from '@/features/CartPantryModal';
 import type { ItemHint } from '@/features/ShoppingGrid';
 import type { LatestPrice, PantryItem, Product, ShoppingListItem } from '@/lib/types';
-import { Button, Loading, Screen, TextField } from '@/ui/primitives';
+import { StaleNotice } from '@/features/health/StaleNotice';
+import { Button, ErrorNotice, Loading, Screen, TextField } from '@/ui/primitives';
 
 // A tela da lista de verdade, com as buscas trocadas por respostas prontas: o que se confere aqui é o que ela
 // faz com o que cada busca devolve (carregada, a caminho, falhou), que as regras de domain/ não enxergam.
@@ -103,6 +104,8 @@ jest.mock('@/features/ShoppingGrid', () => ({
 const loaded = (data: unknown): Query => ({ data, isPending: false, isError: false, error: null, fetchStatus: 'idle', isRefetching: false, refetch: jest.fn() });
 /** Nunca carregou neste aparelho e a busca falhou. */
 const failed = (): Query => ({ ...loaded(undefined), isError: true, error: new Error('sem rede') });
+/** A busca nova falhou e ficou o que já estava carregado (ou guardado no aparelho). */
+const failedKeeping = (data: unknown, error: unknown = new Error('sem rede')): Query => ({ ...loaded(data), isError: true, error });
 /** A primeira busca ainda anda. */
 const onTheWay = (): Query => ({ ...loaded(undefined), isPending: true, fetchStatus: 'fetching' });
 /** Sem internet e nunca visto neste aparelho: a busca nem saiu. */
@@ -410,11 +413,8 @@ describe('sem internet', () => {
     act(() => field.props.onChangeText('Café'));
     const button = renderer!.root.findAll((node) => node.type === Button && node.props.title === 'Adicionar "Café"')[0];
     act(() => button.props.onPress());
-    expect(mockQueue.add).toHaveBeenCalledWith(
-      { name: 'Café', category: expect.any(String), productId: null, quantity: 1, unit: 'un' },
-      'u1',
-      { onError: expect.any(Function) },
-    );
+    // Sem aviso próprio: se a fila desistir, o aviso sai dela (lib/queryClient), também com a tela fechada.
+    expect(mockQueue.add).toHaveBeenCalledWith({ name: 'Café', category: expect.any(String), productId: null, quantity: 1, unit: 'un' }, 'u1');
     expect(renderer!.root.findAllByType(TextField)[0].props.value).toBe('');
   });
 
@@ -437,5 +437,44 @@ describe('sem internet', () => {
       },
       expect.anything(),
     );
+  });
+});
+
+describe('a busca que falha com a lista já na tela (voltar ao app com sinal fraco)', () => {
+  const arroz = listItem('a', 'Arroz', null);
+  const offline = { code: '', message: 'TypeError: Network request failed', details: '', hint: '' };
+
+  it('a lista continua na tela, com o aviso de que é a guardada, em vez da tela de erro', async () => {
+    mockQueries.list = failedKeeping(mockQueries.list.data, offline);
+    mockQueries.items = failedKeeping([arroz], offline);
+    const page = await mount();
+    expect(renderer!.root.findAllByType(ErrorNotice)).toHaveLength(0);
+    expect(page).toContain('Para comprar (1)');
+    expect(page).toContain('Sem internet agora. Mostrando a lista como estava da última vez.');
+    // "Tentar de novo" busca a lista e os itens.
+    act(() => renderer!.root.findByType(StaleNotice).props.onRetry());
+    expect(mockQueries.list.refetch).toHaveBeenCalled();
+    expect(mockQueries.items.refetch).toHaveBeenCalled();
+  });
+
+  it('outro erro, com os itens já carregados: o aviso de sempre, e a lista fica', async () => {
+    mockQueries.items = failedKeeping([arroz]);
+    const page = await mount();
+    expect(renderer!.root.findAllByType(ErrorNotice)).toHaveLength(0);
+    expect(page).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
+    expect(page).toContain('Para comprar (1)');
+  });
+
+  it('sem nada carregado, a tela de erro continua', async () => {
+    mockQueries.items = failed();
+    await mount();
+    expect(renderer!.root.findAllByType(ErrorNotice)).toHaveLength(1);
+    expect(renderer!.root.findAllByType(StaleNotice)).toHaveLength(0);
+  });
+
+  it('com a busca dando certo, nenhum aviso', async () => {
+    mockQueries.items = loaded([arroz]);
+    await mount();
+    expect(renderer!.root.findAllByType(StaleNotice)).toHaveLength(0);
   });
 });

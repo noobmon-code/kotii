@@ -65,7 +65,9 @@ import { MarketTripAction, MarketTripBanner } from '@/features/MarketTrip';
 import { OfflineNotice } from '@/features/OfflineNotice';
 import { RecentPurchases, RestockStrip, useJustListed } from '@/features/RecentPurchases';
 import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
+import { StaleNotice } from '@/features/health/StaleNotice';
 import { useAuth, useHouseholdId } from '@/lib/auth';
+import { isNetworkFailure } from '@/lib/networkErrors';
 import { errorMessage } from '@/lib/supabase';
 import { UNITS, type Product, type ShoppingListItem, type Unit } from '@/lib/types';
 import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
@@ -85,6 +87,9 @@ import {
   TextField,
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
+
+/** A lista na tela é a guardada: a busca não chegou ao servidor. */
+const STALE_OFFLINE = 'Sem internet agora. Mostrando a lista como estava da última vez.';
 
 /**
  * O mercado em que a pessoa disse estar, por lista, e quando disse: vale por
@@ -180,6 +185,7 @@ export default function ShoppingListScreen() {
   }
 
   // Pôr item vai pela fila da lista: aparece na hora, também sem internet, e o campo já fica livre para o próximo.
+  // Se a fila desistir, o aviso sai dela (lib/queryClient), também com a tela já fechada.
   function add(product?: Product) {
     const itemName = product?.name ?? name.trim();
     if (!itemName) return;
@@ -193,7 +199,6 @@ export default function ShoppingListScreen() {
         unit,
       },
       session!.user.id,
-      { onError },
     );
     resetForm();
   }
@@ -212,7 +217,6 @@ export default function ShoppingListScreen() {
         unit: fromForm && unit !== 'un' ? unit : item.unit,
       },
       session!.user.id,
-      { onError },
     );
     if (fromForm) resetForm();
   }
@@ -235,7 +239,6 @@ export default function ShoppingListScreen() {
             unit: item.unit,
           },
           session!.user.id,
-          { onError },
         );
         return true;
       }
@@ -287,6 +290,7 @@ export default function ShoppingListScreen() {
   }
 
   // A falha de cada toque devolve o próprio item à faixa (cada pedido tem o seu onError, mesmo com toques seguidos).
+  // O aviso da falha sai da fila (lib/queryClient), como nos outros jeitos de pôr item.
   function addRecent(item: Omit<RecentItem, 'times'>) {
     justAdded.add([item.name]);
     addItem.add(
@@ -298,12 +302,7 @@ export default function ShoppingListScreen() {
         unit: item.unit,
       },
       session!.user.id,
-      {
-        onError: (err) => {
-          justAdded.drop([item.name]);
-          onError(err);
-        },
-      },
+      { onError: () => justAdded.drop([item.name]) },
     );
   }
 
@@ -426,8 +425,11 @@ export default function ShoppingListScreen() {
     );
   }
   if (list.isPending || items.isPending) return <Loading />;
-  if (list.isError) return <ErrorNotice error={list.error} onRetry={() => list.refetch()} />;
-  if (items.isError) return <ErrorNotice error={items.error} onRetry={() => items.refetch()} />;
+  // O erro só toma a tela quando não há o que mostrar. Com a lista já carregada (ou guardada), a busca que falhou
+  // (voltar ao app com sinal fraco, puxar para atualizar) deixa a lista na tela, com um aviso em cima.
+  if (!list.data) return <ErrorNotice error={list.error} onRetry={() => list.refetch()} />;
+  if (!items.data) return <ErrorNotice error={items.error} onRetry={() => items.refetch()} />;
+  const staleError = list.isError ? list.error : items.isError ? items.error : null;
 
   const { restock: restockItems, recent: recentItems } = strips;
 
@@ -510,8 +512,10 @@ export default function ShoppingListScreen() {
     if (details.notes !== (item.notes ?? null)) values.notes = details.notes;
     if (details.priority !== (item.priority ?? 'normal')) values.priority = details.priority;
     if (photo.kind !== 'keep') dropPendingPhotos(queryClient, item.id);
-    if (photo.kind === 'remove' && item.photo_path) values.photo_path = null;
-    if (Object.keys(values).length) edit.mutate({ id: item.id, listId: id, userId, values }, { onError });
+    // Tira só a foto que estava no item: a que outra pessoa puser antes de esta edição chegar ao servidor fica.
+    const expectedPhotoPath = photo.kind === 'remove' && item.photo_path ? item.photo_path : undefined;
+    if (expectedPhotoPath) values.photo_path = null;
+    if (Object.keys(values).length) edit.mutate({ id: item.id, listId: id, userId, values, expectedPhotoPath }, { onError });
     if (photo.kind === 'new') {
       try {
         if (!householdId) throw new Error('Família não carregada.');
@@ -545,6 +549,12 @@ export default function ShoppingListScreen() {
       }>
       <Stack.Screen options={{ title: list.data.name }} />
       <OfflineNotice />
+      {staleError ? (
+        <StaleNotice
+          message={isNetworkFailure(staleError) ? STALE_OFFLINE : undefined}
+          onRetry={() => [list, items].forEach((query) => void query.refetch())}
+        />
+      ) : null}
       {/* Alguém da casa (ou a própria pessoa) avisou que está indo às compras desta lista. */}
       <MarketTripBanner listId={list.data.id} />
 

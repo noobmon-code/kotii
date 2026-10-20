@@ -27,6 +27,13 @@ export const SUPABASE_ANON_KEY = anonKey ?? 'not-configured';
  */
 export const SESSION_STORAGE_KEY = `sb-${new URL(projectUrl).hostname.split('.')[0]}-auth-token`;
 
+/**
+ * Prazo de cada pedido ao banco (PostgREST). Acima do de juntar produtos (MERGE_TIMEOUT_MS, 25 s), que tem o
+ * próprio aviso, e do prazo que o Supabase dá aos comandos de quem entrou (8 s): só corta o pedido que ficou
+ * sem resposta.
+ */
+export const DB_TIMEOUT_MS = 30_000;
+
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     // Cifrada no celular, com a chave no cofre do sistema (ver sessionStorage).
@@ -38,6 +45,9 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   },
   // Todo pedido diz qual casa está aberta neste aparelho (ver activeHousehold).
   global: { fetch: fetchWithHousehold() },
+  // No Android o pedido não tem prazo: com sinal fraco, um que nunca recebe resposta seguraria a fila da lista
+  // (que anda um de cada vez) por minutos. Cortado, ele volta como falta de resposta e a fila tenta de novo.
+  db: { timeout: DB_TIMEOUT_MS },
 });
 
 const householdClients = new Map<string, SupabaseClient>();

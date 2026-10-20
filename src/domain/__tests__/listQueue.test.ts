@@ -8,6 +8,7 @@ import {
   summaryWithItem,
   summaryWithout,
   type QueuedAction,
+  signOutQuestion,
   waitingSummary,
   wasAttempted,
 } from '../listQueue';
@@ -161,5 +162,20 @@ describe('o aviso do que espera a conexão', () => {
   it('uma coisa só, ou nada', () => {
     expect(waitingSummary({ ...none, removes: 1 })).toBe('1 item tirado');
     expect(waitingSummary(none)).toBe('');
+  });
+});
+
+describe('sair da conta com algo esperando a conexão', () => {
+  const none = { adds: 0, marks: 0, edits: 0, removes: 0, clears: 0, photos: 0 };
+
+  it('com a fila vazia, a pergunta de sempre', () => {
+    expect(signOutQuestion(none)).toBe('Deseja sair desta conta neste aparelho?');
+  });
+
+  it('diz o que se perde, sem impedir a saída', () => {
+    expect(signOutQuestion({ ...none, adds: 2, marks: 1 })).toBe(
+      '2 itens novos e 1 marcação ainda esperam a conexão e se perdem se você sair agora. Deseja sair mesmo assim?',
+    );
+    expect(signOutQuestion({ ...none, photos: 1 })).toBe('1 foto ainda espera a conexão e se perde se você sair agora. Deseja sair mesmo assim?');
   });
 });

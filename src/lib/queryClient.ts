@@ -16,6 +16,7 @@ import { notify } from '@/ui/dialogs';
 import { isHouseholdAccessError, leftHousehold, markRemovedFromHousehold, wroteNoRows } from './accessErrors';
 import { getActiveHousehold } from './activeHousehold';
 import { type CacheWriteFailure, createCachePersister, createWriteFailureWarner, resumeInFlight } from './cachePersister';
+import { errorMessage } from './supabase';
 
 const WEEK = 1000 * 60 * 60 * 24 * 7;
 
@@ -121,7 +122,11 @@ export const queryClient = new QueryClient({
     mutations: { networkMode: 'always' },
   },
 });
-registerListMutations(queryClient);
+registerListMutations(queryClient, {
+  // A fila só desiste do que não passa sozinho (a lista apagada em outro aparelho, por exemplo). O item some da
+  // lista, e a pessoa fica sabendo onde estiver, também quando o pôr saiu de uma fila guardada.
+  onAddDropped: (input, error) => notify('Item não foi para a lista', `"${input.name}" não entrou na lista: ${errorMessage(error)}`),
+});
 registerListPhotoMutations(queryClient);
 
 /** Marcações, edições, limpar e fotos da lista: o que espera internet guardado no aparelho. */

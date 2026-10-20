@@ -3,6 +3,8 @@ import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { useCreateList, useShoppingLists } from '@/data/market';
+import { StaleNotice } from '@/features/health/StaleNotice';
+import { isNetworkFailure } from '@/lib/networkErrors';
 import type { ListKind } from '@/lib/types';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
@@ -30,6 +32,9 @@ export const LIST_KINDS: { value: ListKind; label: string; icon: IconName }[] = 
   { value: 'outros', label: 'Outros', icon: 'shopping-outline' },
 ];
 
+/** As listas na tela são as guardadas: a busca não chegou ao servidor. */
+const LISTS_OFFLINE = 'Sem internet agora. Mostrando as listas como estavam da última vez.';
+
 export function ShoppingListsPanel() {
   const lists = useShoppingLists();
   const createList = useCreateList();
@@ -53,10 +58,15 @@ export function ShoppingListsPanel() {
   }
 
   if (lists.isPending) return <Loading />;
-  if (lists.isError) return <ErrorNotice error={lists.error} onRetry={() => lists.refetch()} />;
+  // O erro só toma o lugar das listas quando não há nenhuma para mostrar: com as guardadas, a busca que falhou
+  // (voltar ao app com sinal fraco) as deixa na tela, com um aviso em cima.
+  if (!lists.data) return <ErrorNotice error={lists.error} onRetry={() => lists.refetch()} />;
 
   return (
     <View style={styles.gap}>
+      {lists.isError ? (
+        <StaleNotice message={isNetworkFailure(lists.error) ? LISTS_OFFLINE : undefined} onRetry={() => lists.refetch()} />
+      ) : null}
       {creating ? (
         <Card style={styles.gap}>
           <Text variant="heading">Nova lista</Text>
