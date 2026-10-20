@@ -201,7 +201,7 @@ describe('o mesmo corte de data das notas', () => {
     expect(marketTotal([assai], MONTH, TODAY, [...today, ...futureSpend, ...futureBill]).totalCents).toBe(month.totalCents);
     expect(month.later).toEqual({
       label: '1 gasto e 1 conta com data depois de hoje',
-      hint: 'Ficam de fora deste total até o dia chegar. Se a data está errada, toque para abrir e conferir.',
+      hint: 'Ficam de fora deste total até o dia chegar. Se a data está errada, toque para abrir e corrigir.',
       receipts: [
         {
           key: 'conta-p1',
@@ -220,13 +220,13 @@ describe('o mesmo corte de data das notas', () => {
   it('cada tipo diz o que abrir; com nota e gasto juntos, a nota vem contada primeiro', () => {
     const spend = marketMonth([assai], MONTH, TODAY, futureSpend);
     expect(spend.later?.label).toBe('1 gasto com data depois de hoje');
-    expect(spend.later?.hint).toBe('Fica de fora deste total até o dia chegar. Se a data está errada, abra o gasto para conferir.');
+    expect(spend.later?.hint).toBe('Fica de fora deste total até o dia chegar. Se a data está errada, dá para corrigir no gasto.');
     expect(marketMonth([assai], MONTH, TODAY, futureBill).later?.hint).toBe(
-      'Fica de fora deste total até o dia chegar. Se a data está errada, abra a conta para conferir.',
+      'Fica de fora deste total até o dia chegar. Se a data está errada, dá para corrigir na conta.',
     );
     const both = marketMonth([assai, receipt(at(MONTH, 22), [line('Feijão', 'graos', 9)])], MONTH, TODAY, futureSpend);
     expect(both.later?.label).toBe('1 nota e 1 gasto com data depois de hoje');
-    expect(both.later?.hint).toBe('Ficam de fora deste total até o dia chegar. Se a data está errada, toque para abrir e conferir.');
+    expect(both.later?.hint).toBe('Ficam de fora deste total até o dia chegar. Se a data está errada, toque para abrir e corrigir.');
     expect(both.later?.receipts.map((r) => [r.storeName, r.date, r.opens.kind])).toEqual([
       ['Assaí', '22 out', 'nota'],
       ['Feira', '20 out', 'gasto'],

@@ -925,14 +925,15 @@ export function marketMonth(receipts: MarketReceipt[], month: string, today: str
       .filter(([count]) => count > 0)
       .map(([count, one, many]) => plural(count, one, many)),
   );
-  // Um tipo só: "abra a nota"; mais de um, cada linha abre o que é.
+  // Um tipo só: "dá para corrigir na nota" (a nota confirmada também deixa corrigir a data); mais de um, cada
+  // linha abre o que é.
   const laterOpen = !laterSpends.length
-    ? 'abra a nota para conferir'
+    ? 'dá para corrigir na nota'
     : !laterReceipts.length && laterSpends.every(({ spend }) => spend.source === 'gasto')
-      ? 'abra o gasto para conferir'
+      ? 'dá para corrigir no gasto'
       : !laterReceipts.length && laterSpends.every(({ spend }) => spend.source === 'conta')
-        ? 'abra a conta para conferir'
-        : 'toque para abrir e conferir';
+        ? 'dá para corrigir na conta'
+        : 'toque para abrir e corrigir';
 
   const inside = [
     spendCents > 0 ? `${money(spendCents)} de gastos lançados sem nota` : null,

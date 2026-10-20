@@ -957,7 +957,7 @@ describe('comparação com o mês anterior', () => {
     expect(month.categories.map((c) => [c.label, c.amount])).toEqual([['Grãos, massas e cereais', 'R$ 39,00']]);
     expect(month.later).toEqual({
       label: '1 nota com data depois de hoje',
-      hint: 'Fica de fora deste total até o dia chegar. Se a data está errada, abra a nota para conferir.',
+      hint: 'Fica de fora deste total até o dia chegar. Se a data está errada, dá para corrigir na nota.',
       receipts: [{ key: future.id, opens: { kind: 'nota', id: future.id }, storeName: 'Dia', date: '20 out', value: 'R$ 100,00', accessibilityLabel: 'Dia, 20 out: R$ 100,00. Abrir a nota' }],
     });
     expect(month.closing).toBe('Sem contar 1 nota que espera a revisão e 1 nota com data depois de hoje.');
@@ -995,7 +995,7 @@ describe('comparação com o mês anterior', () => {
     // Plural.
     const two = marketMonth([past, future, receipt(at(MONTH, 21), [line('Sal', 'temperos', 4)])], MONTH, today);
     expect(two.later?.label).toBe('2 notas com data depois de hoje');
-    expect(two.later?.hint).toBe('Ficam de fora deste total até o dia chegar. Se a data está errada, abra a nota para conferir.');
+    expect(two.later?.hint).toBe('Ficam de fora deste total até o dia chegar. Se a data está errada, dá para corrigir na nota.');
   });
 
   it('último dia do mês contra um mês mais curto: o anterior inteiro', () => {

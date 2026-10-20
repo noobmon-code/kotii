@@ -730,7 +730,7 @@ describe('sem notas, carregando e com erro', () => {
     expect(text).toContain('Sem contar 1 nota com data depois de hoje.');
     await press('Como este total fecha. Sem contar 1 nota com data depois de hoje.');
     expect(page()).toContain(
-      ['1 nota com data depois de hoje', 'Fica de fora deste total até o dia chegar. Se a data está errada, abra a nota para conferir.', 'Dia', '· 20 out', 'R$ 100,00'].join('\n'),
+      ['1 nota com data depois de hoje', 'Fica de fora deste total até o dia chegar. Se a data está errada, dá para corrigir na nota.', 'Dia', '· 20 out', 'R$ 100,00'].join('\n'),
     );
     await press('Dia, 20 out: R$ 100,00. Abrir a nota');
     expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/nota/[id]', params: { id: 'm2' } });
@@ -1181,7 +1181,7 @@ describe('gastos de mercado lançados sem nota', () => {
     // Sem nada até hoje, a tela diz que o mês não tem compra, e o que ficou de fora já vem à vista.
     expect(text).toContain('Nenhuma compra de mercado em outubro');
     expect(text).toContain(
-      ['1 gasto com data depois de hoje', 'Fica de fora deste total até o dia chegar. Se a data está errada, abra o gasto para conferir.', 'Feira', '· 20 out', 'R$ 30,00'].join('\n'),
+      ['1 gasto com data depois de hoje', 'Fica de fora deste total até o dia chegar. Se a data está errada, dá para corrigir no gasto.', 'Feira', '· 20 out', 'R$ 30,00'].join('\n'),
     );
     await press('Feira, 20 out: R$ 30,00. Abrir o gasto');
     expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/gasto/[id]', params: { id: 'e9' } });
