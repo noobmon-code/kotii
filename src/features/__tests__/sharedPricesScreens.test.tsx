@@ -56,7 +56,13 @@ jest.mock('@/data/health', () => ({ usePeople: () => ({ data: [] }) }));
 jest.mock('@/data/home', () => ({ useKidPoints: () => ({ data: {} }) }));
 jest.mock('@/data/household', () => {
   const mutation = () => ({ mutate: jest.fn(), isPending: false });
-  return { LastMemberError: class extends Error {}, useLeaveHousehold: mutation, useRegenerateInviteCode: mutation, useRemoveMember: mutation };
+  return {
+    LastMemberError: class extends Error {},
+    useLeaveHousehold: mutation,
+    useRegenerateInviteCode: mutation,
+    useRemoveMember: mutation,
+    useSignOutQuestion: () => () => 'Deseja sair desta conta neste aparelho?',
+  };
 });
 jest.mock('@/lib/auth', () => {
   const me = { household_id: 'h1', user_id: 'u1', display_name: 'Ana', role: 'owner' };

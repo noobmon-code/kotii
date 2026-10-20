@@ -7,8 +7,9 @@ import { onlineManager, type QueryClient, useMutation, useQueryClient } from '@t
 import { FunctionsHttpError } from '@supabase/supabase-js';
 
 import { functionErrorMessage } from '@/data/images';
-import { photoQueueBusy } from '@/data/listPhotos';
+import { photoQueueBusy, waitingCounts } from '@/data/listPhotos';
 import { listQueueBusy } from '@/data/market';
+import { signOutQuestion } from '@/domain/listQueue';
 import { clearConversation, conversationOwner } from '@/features/nuke/conversation';
 import { setActiveHousehold } from '@/lib/activeHousehold';
 import type { HouseholdState } from '@/lib/auth';
@@ -56,6 +57,15 @@ function assertCanSwitch(queryClient: QueryClient) {
   if (listQueueBusy(queryClient) || photoQueueBusy(queryClient)) {
     throw new Error('Ainda há marcações ou fotos da lista esperando internet nesta casa. Troque quando elas subirem.');
   }
+}
+
+/**
+ * A pergunta de sair da conta, feita na hora do toque: diz o que ainda espera
+ * a conexão neste aparelho (e se perde ao sair), sem impedir a saída.
+ */
+export function useSignOutQuestion() {
+  const queryClient = useQueryClient();
+  return () => signOutQuestion(waitingCounts(queryClient));
 }
 
 /**

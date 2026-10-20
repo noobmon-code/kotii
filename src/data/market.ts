@@ -1,9 +1,10 @@
 // Mercado: listas de compras, produtos, lojas e preços.
 
 import {
+  type Mutation,
+  onlineManager,
   type QueryClient,
   type QueryFunctionContext,
-  useIsMutating,
   useMutation,
   useQuery,
   useQueryClient,
@@ -12,6 +13,19 @@ import { useEffect } from 'react';
 
 import type { CartPantryEntry } from '@/domain/cartPantry';
 import { LinkIndex, type ListLink, type OpenListItem } from '@/domain/listLinks';
+import {
+  cartPurchases,
+  itemsWithNew,
+  type ListItemRef,
+  type ListSummaryCounts,
+  planRemoval,
+  type QueuedAction,
+  type QueuedKind,
+  queuedListItem,
+  summaryWithItem,
+  summaryWithout,
+  wasAttempted,
+} from '@/domain/listQueue';
 import { PRICE_ALERT_HISTORY_DAYS, type PricePoint } from '@/domain/priceAlert';
 import { toPurchases, type PurchaseLine } from '@/domain/priceHistory';
 import { listsFor, newListKind, PANTRY_LIST_GONE, type ListChoice } from '@/domain/pantryList';
@@ -22,6 +36,7 @@ import { normalizeSearch } from '@/domain/search';
 import type { ProductName } from '@/domain/similarNames';
 import { storePricesFromPurchases } from '@/domain/storePrices';
 import { EXPECTS_ROWS_META } from '@/lib/accessErrors';
+import { isTransientFailure, withStatus } from '@/lib/networkErrors';
 import { supabase, unwrap } from '@/lib/supabase';
 import type {
   LatestPrice,
@@ -38,11 +53,6 @@ import { isProductMergedAway, LISTED_PRODUCT_SOURCES, withFreshProducts } from '
 // ---------------------------------------------------------------------------
 // Listas
 
-/** Fila da lista (marcações e limpar o carrinho) ainda andando, inclusive a restaurada ao reabrir o app. */
-export function useListQueueBusy() {
-  return useIsMutating({ predicate: inListQueue }) > 0;
-}
-
 /**
  * Busca de listas e itens que respeita a fila: com marcações ainda por
  * enviar, a resposta do servidor desfaria na tela as que faltam. Então
@@ -50,40 +60,88 @@ export function useListQueueBusy() {
  * que já está no cache, e a busca de verdade vem quando a fila acaba
  * (registerListMutations).
  */
-export function unlessListQueueBusy<T>(fetch: () => Promise<T>) {
-  return async ({ client, queryKey }: QueryFunctionContext) => {
-    const cached = client.getQueryData<T>(queryKey);
-    if (cached !== undefined && listQueueBusy(client)) return cached;
-    return fetch();
+export function unlessListQueueBusy<T>(fetch: (context: QueryFunctionContext) => Promise<T>) {
+  return async (context: QueryFunctionContext) => {
+    const cached = context.client.getQueryData<T>(context.queryKey);
+    if (cached !== undefined && listQueueBusy(context.client)) return cached;
+    return fetch(context);
   };
 }
 
-type ListItemRef = { name: string; product_id: string | null; checked_at: string | null };
-type ListSummary = ShoppingList & { pending: number; total: number; items: ListItemRef[] };
+type ListSummary = ShoppingList & ListSummaryCounts;
 
 // O cache guardado no aparelho por versões anteriores tem listas sem `items`.
 const withItems = (lists: ListSummary[]) => (lists.every((l) => l.items) ? lists : lists.map((l) => ({ ...l, items: l.items ?? [] })));
 
+/** As colunas do item que a tela da lista usa. */
+const LIST_ITEM_COLUMNS =
+  'id, list_id, product_id, name, category, quantity, unit, notes, priority, photo_path, checked_at, checked_by, toggle_token, created_at';
+
+/**
+ * Quantas listas abertas (as mais novas) já ficam com os itens guardados no
+ * aparelho, sem precisar ter sido abertas nele: o bastante para o mercado sem
+ * sinal, sem encher o armazenamento (no navegador, poucos MB para o cache todo).
+ */
+const PRELOADED_LISTS = 8;
+
+const byCreation = (a: ShoppingListItem, b: ShoppingListItem) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0);
+
+/**
+ * Os itens das listas abertas mais novas, num pedido à parte do resumo, ficam
+ * guardados como se cada lista tivesse sido aberta: a lista que outra pessoa
+ * criou abre no mercado sem internet. Só com a fila parada (com ela, a
+ * resposta desfaria o que ainda falta enviar, e nem vale buscar), e só onde o
+ * que está guardado é mais velho que este pedido. Sem pressa e sem aviso: se
+ * falhar, o resumo continua valendo e a lista é buscada quando for aberta.
+ */
+async function preloadListItems(client: QueryClient, listIds: string[]) {
+  if (!listIds.length || listQueueBusy(client)) return;
+  const startedAt = Date.now();
+  let rows: ShoppingListItem[];
+  try {
+    rows = unwrap(
+      await supabase.from('shopping_list_items').select(LIST_ITEM_COLUMNS).in('list_id', listIds).order('created_at'),
+    ) as ShoppingListItem[];
+  } catch {
+    return;
+  }
+  if (listQueueBusy(client)) return;
+  for (const id of listIds) {
+    const key = ['listItems', id];
+    const state = client.getQueryState(key);
+    if (state && (state.dataUpdatedAt >= startedAt || state.fetchStatus === 'fetching')) continue;
+    client.setQueryData(key, rows.filter((i) => i.list_id === id).sort(byCreation), { updatedAt: startedAt });
+  }
+}
+
+/**
+ * As listas abertas, com o nome, o produto e a marcação de cada item (o que as telas de fora da lista usam);
+ * os itens inteiros só das mais novas, à parte (ver preloadListItems).
+ */
+async function fetchListSummaries({ client }: QueryFunctionContext): Promise<ListSummary[]> {
+  const rows = unwrap(
+    await supabase
+      .from('shopping_lists')
+      .select('id, name, kind, archived_at, created_at, shopping_list_items(name, product_id, checked_at)')
+      .is('archived_at', null)
+      .order('created_at', { ascending: false }),
+  ) as (ShoppingList & { shopping_list_items: ListItemRef[] })[];
+  void preloadListItems(
+    client,
+    rows.slice(0, PRELOADED_LISTS).map((row) => row.id),
+  );
+  return rows.map(({ shopping_list_items, ...list }): ListSummary => ({
+    ...list,
+    pending: shopping_list_items.filter((i) => !i.checked_at).length,
+    total: shopping_list_items.length,
+    items: shopping_list_items.map(({ name, product_id, checked_at }) => ({ name, product_id, checked_at })),
+  }));
+}
+
+const listSummaries = unlessListQueueBusy(fetchListSummaries);
+
 export function useShoppingLists() {
-  return useQuery({
-    queryKey: ['lists'],
-    select: withItems,
-    queryFn: unlessListQueueBusy(async () => {
-      const rows = unwrap(
-        await supabase
-          .from('shopping_lists')
-          .select('id, name, kind, archived_at, created_at, shopping_list_items(name, product_id, checked_at)')
-          .is('archived_at', null)
-          .order('created_at', { ascending: false }),
-      ) as (ShoppingList & { shopping_list_items: ListItemRef[] })[];
-      return rows.map(({ shopping_list_items, ...list }): ListSummary => ({
-        ...list,
-        pending: shopping_list_items.filter((i) => !i.checked_at).length,
-        total: shopping_list_items.length,
-        items: shopping_list_items,
-      }));
-    }),
-  });
+  return useQuery({ queryKey: ['lists'], select: withItems, queryFn: listSummaries });
 }
 
 /** Item ainda numa lista aberta, com o nome da lista (a nota tira da lista o que a compra cumpriu). */
@@ -125,6 +183,12 @@ export function useListLinks() {
 
 /** Os vínculos já carregados, ou buscados agora; null se não deu (sem internet e nunca vistos neste aparelho). */
 export async function loadListLinks(queryClient: QueryClient): Promise<LinkIndex | null> {
+  // Sem internet a busca ficaria parada esperando a conexão (sem dar certo nem errado), e quem espera a
+  // resposta (o "Limpar", a geladeira) não faria nada: fica com o que estiver guardado.
+  if (!onlineManager.isOnline()) {
+    const cached = queryClient.getQueryData<ListLink[]>(['listLinks']);
+    return cached ? new LinkIndex(cached) : null;
+  }
   try {
     return new LinkIndex(await queryClient.ensureQueryData({ queryKey: ['listLinks'], queryFn: fetchListLinks }));
   } catch {
@@ -132,13 +196,25 @@ export async function loadListLinks(queryClient: QueryClient): Promise<LinkIndex
   }
 }
 
+/** A lista como o resumo das listas a guardou (a que nunca foi aberta neste aparelho também está lá). */
+function listFromSummary(queryClient: QueryClient, id: string): ShoppingList | undefined {
+  const found = queryClient.getQueryData<ListSummary[]>(['lists'])?.find((l) => l.id === id);
+  if (!found) return undefined;
+  const { id: listId, name, kind, archived_at, created_at } = found;
+  return { id: listId, name, kind, archived_at, created_at };
+}
+
 export function useShoppingList(id: string) {
+  const queryClient = useQueryClient();
   return useQuery({
     queryKey: ['list', id],
     queryFn: async () =>
       unwrap(
         await supabase.from('shopping_lists').select('id, name, kind, archived_at, created_at').eq('id', id).single(),
       ) as ShoppingList,
+    // Sem internet, a lista que nunca foi aberta aqui sai do resumo; com internet, a busca de sempre a confere.
+    initialData: () => listFromSummary(queryClient, id),
+    initialDataUpdatedAt: () => queryClient.getQueryState(['lists'])?.dataUpdatedAt,
   });
 }
 
@@ -168,9 +244,7 @@ export function useListItems(listId: string) {
         unwrap(
           await supabase
             .from('shopping_list_items')
-            .select(
-              'id, list_id, product_id, name, category, quantity, unit, notes, priority, photo_path, checked_at, checked_by, toggle_token, created_at',
-            )
+            .select(LIST_ITEM_COLUMNS)
             .eq('list_id', listId)
             .order('created_at'),
         ) as ShoppingListItem[],
@@ -228,26 +302,96 @@ export interface NewListItem {
   unit: Unit;
 }
 
+/**
+ * Pôr item na lista, pela fila da lista: sem internet o item aparece na hora
+ * e vai quando a conexão volta, na ordem dos toques. O id e o selo saem do
+ * aparelho: a marcação, a edição e a foto que vierem antes de o servidor
+ * responder já acham o item, e repetir o envio não o duplica.
+ */
+export const ADD_ITEM_KEY = ['addListItem'];
+
+export interface AddItemInput extends NewListItem {
+  /** O id do item, gerado no aparelho. */
+  id: string;
+  listId: string;
+  /** Quem pôs: a fila não sai com a sessão de outra conta. */
+  userId: string;
+  /** O selo do item (toggle_token): a primeira marcação parte dele. */
+  token: string;
+}
+
+/** Conflito na chave (23505): o único campo único do item é o id, então ele já foi numa tentativa anterior. */
+const isSameIdAlreadySaved = (error: unknown) => (error as { code?: unknown } | null)?.code === '23505';
+
+async function addListItem(queryClient: QueryClient, { id, listId, userId, token, ...item }: AddItemInput) {
+  await requireQueueSession(userId);
+  const row = {
+    id,
+    list_id: listId,
+    name: item.name,
+    category: item.category,
+    product_id: item.productId,
+    quantity: item.quantity,
+    unit: item.unit,
+    toggle_token: token,
+  };
+  const insert = async (values: typeof row) => {
+    const { error, status } = await supabase.from('shopping_list_items').insert(values);
+    // A resposta da tentativa anterior é que não chegou: o item já está lá.
+    if (error && !isSameIdAlreadySaved(error)) throw withStatus(error, status);
+  };
+  try {
+    await insert(row);
+  } catch (error) {
+    if (!isProductMergedAway(error)) throw error;
+    // O produto foi juntado com outro em outro aparelho enquanto o item esperava a vez: ninguém está olhando
+    // para responder, então o item entra pelo nome, sem o produto (as ligações da lista acham o preço).
+    for (const key of LISTED_PRODUCT_SOURCES) void queryClient.invalidateQueries({ queryKey: [key] });
+    await insert({ ...row, product_id: null });
+  }
+}
+
+/** O item posto aparece já na lista e no resumo das listas. */
+async function showAdded(queryClient: QueryClient, input: AddItemInput) {
+  const item = queuedListItem(input, new Date().toISOString());
+  await queryClient.cancelQueries({ queryKey: ['listItems', input.listId] });
+  queryClient.setQueryData<ShoppingListItem[]>(['listItems', input.listId], (items) => (items ? itemsWithNew(items, item) : items));
+  await queryClient.cancelQueries({ queryKey: ['lists'] });
+  queryClient.setQueryData<ListSummary[]>(['lists'], (lists) =>
+    lists ? summaryWithItem(lists, input.listId, { name: item.name, product_id: item.product_id, checked_at: null }) : lists,
+  );
+}
+
 export function useAddListItem(listId: string) {
   const queryClient = useQueryClient();
-  const invalidate = useInvalidateLists(listId);
-  return useMutation({
-    // O produto do item pode ter sido juntado com outro em outro aparelho (withFreshProducts).
-    mutationFn: (item: NewListItem) =>
-      withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
-        unwrap(
-          await supabase.from('shopping_list_items').insert({
-            list_id: listId,
-            name: item.name,
-            category: item.category,
-            product_id: item.productId,
-            quantity: item.quantity,
-            unit: item.unit,
-          }),
-        ),
-      ),
-    onSuccess: invalidate,
+  const mutation = useMutation<unknown, Error, AddItemInput>({
+    mutationKey: ADD_ITEM_KEY,
+    onMutate: (input) => showAdded(queryClient, input),
   });
+  return {
+    /**
+     * Põe o item; `onError` só vem quando a fila desiste (a lista apagada, por exemplo). O aviso à pessoa sai
+     * da fila (registerListMutations), também para o pôr guardado que sai depois de reabrir o app.
+     */
+    add: (item: NewListItem, userId: string, options?: QueuedCallbacks) =>
+      settle(mutation.mutateAsync({ ...item, id: newToggleToken(), listId, userId, token: newToggleToken() }), options),
+  };
+}
+
+interface QueuedCallbacks {
+  onSuccess?: () => void;
+  onError?: (error: Error) => void;
+}
+
+/**
+ * Os avisos de cada toque, pela promessa dele: com dois toques seguidos, os callbacks de `mutate` só valeriam
+ * para o último. Sem internet a promessa fica esperando a conexão, sem prender a tela.
+ */
+function settle(request: Promise<unknown>, options?: QueuedCallbacks) {
+  request.then(
+    () => options?.onSuccess?.(),
+    (error: Error) => options?.onError?.(error),
+  );
 }
 
 /** Nomes dos itens ainda não comprados de uma lista, para não duplicar. */
@@ -541,7 +685,7 @@ export interface ToggleItemInput {
   nextToken: string;
 }
 
-/** Selo novo (formato uuid). Não precisa ser secreto, só não repetir. */
+/** Selo novo (formato uuid); também o id do item posto pela fila. Não precisa ser secreto, só não repetir. */
 export function newToggleToken(): string {
   const hex = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16));
   hex[12] = '4';
@@ -566,7 +710,7 @@ export class ForeignToggleError extends Error {
 
 async function toggleListItem({ id, checked, userId, at, token, nextToken }: ToggleItemInput) {
   await requireQueueSession(userId);
-  return unwrap(
+  return unwrapQueued(
     await supabase
       .from('shopping_list_items')
       .update(
@@ -582,8 +726,9 @@ async function toggleListItem({ id, checked, userId, at, token, nextToken }: Tog
 }
 
 /**
- * Marcar itens e limpar o carrinho andam numa fila só, na ordem dos toques:
- * um limpar nunca cruza com uma marcação (e as duas sobrevivem a fechar o
+ * Pôr, marcar, editar e tirar itens e limpar o carrinho andam numa fila só,
+ * na ordem dos toques: um limpar nunca cruza com uma marcação, e a marcação
+ * de um item posto sem internet sai depois dele (e tudo sobrevive a fechar o
  * app, com o que ficou esperando a vez).
  */
 export const LIST_QUEUE_SCOPE = { id: 'list-items' };
@@ -598,21 +743,68 @@ export function listQueueBusy(queryClient: QueryClient) {
   return queryClient.isMutating({ predicate: inListQueue }) > 0;
 }
 
+/** Os dados do pedido da fila, ou o erro dele com o status HTTP (um 502 do gateway espera, ver isTransientFailure). */
+function unwrapQueued<T>(result: { data: T; error: unknown; status?: number }): NonNullable<T> {
+  if (result.error) throw withStatus(result.error, result.status);
+  return result.data as NonNullable<T>;
+}
+
+/** Por ação da fila (as variáveis dela, as mesmas a cada tentativa): quantas falhas contam para desistir. */
+const countedFailures = new WeakMap<object, number>();
+/** Por erro: a quantas falhas que contam ele levou a ação. */
+const failureNumber = new WeakMap<object, number>();
+
+/**
+ * A função de uma ação da fila, contando só as falhas que não passam sozinhas:
+ * o TanStack Query conta também as faltas de resposta, e depois de algumas
+ * delas (sinal fraco) a primeira falha de verdade faria a fila desistir na hora.
+ */
+export function countingFailures<V, R>(fn: (input: V) => Promise<R>) {
+  return async (input: V): Promise<R> => {
+    try {
+      return await fn(input);
+    } catch (error) {
+      if (input !== null && typeof input === 'object' && error !== null && typeof error === 'object' && !isTransientFailure(error)) {
+        const count = (countedFailures.get(input) ?? 0) + 1;
+        countedFailures.set(input, count);
+        failureNumber.set(error, count);
+      }
+      throw error;
+    }
+  };
+}
+
 /**
  * Fila guardada no aparelho: pausa sem internet (ou com a sessão à espera de
  * renovação) em vez de falhar, e anda uma de cada vez, na ordem. Com a
  * sessão à espera (o Supabase tenta de novo a cada minuto), insiste por uns
- * 5 minutos em vez de desistir.
+ * 5 minutos em vez de desistir. O pedido que não chegou ao servidor (sinal
+ * fraco, com o aparelho ainda dizendo que há internet; ou cortado pelo prazo)
+ * e o que o servidor recusou só por agora (o 502 do gateway, o impasse com o
+ * pedido de outra pessoa) esperam como sem internet: tenta de novo sem
+ * desistir, no máximo a cada 30 s. Para desistir só contam as outras falhas
+ * (countingFailures). Reenviar não repete nada: o pôr e o tirar vão pelo id,
+ * a marcação e o limpar pelo selo.
  */
 export function queuedDefaults(scope: { id: string }) {
   return {
     networkMode: 'online',
     scope,
-    retry: (failures: number, error: Error) =>
-      !(error instanceof ForeignToggleError) && failures < (error instanceof SessionPendingError ? 20 : 3),
+    retry: (failures: number, error: Error) => {
+      if (error instanceof ForeignToggleError) return false;
+      if (isTransientFailure(error)) return true;
+      // Sem a contagem da ação (o erro não é um objeto), vale a do TanStack Query.
+      const counted = (error !== null && typeof error === 'object' ? failureNumber.get(error) : undefined) ?? failures + 1;
+      return counted <= (error instanceof SessionPendingError ? 20 : 3);
+    },
     retryDelay: (failures: number, error: Error) =>
       error instanceof SessionPendingError ? 15_000 : Math.min(1000 * 2 ** failures, 30_000),
   } as const;
+}
+
+/** O pôr que a fila desistiu de enviar (a pessoa precisa saber: o item digitado sai da tela). */
+export interface ListQueueEvents {
+  onAddDropped?: (input: AddItemInput, error: Error) => void;
 }
 
 /** Sessão desta conta, ou o erro que a fila entende (esperar a renovação; ação de outra conta). */
@@ -623,21 +815,36 @@ export async function requireQueueSession(userId: string) {
 }
 
 /** O que a fila precisa para rodar uma marcação restaurada depois de o app reabrir. */
-export function registerListMutations(queryClient: QueryClient) {
+export function registerListMutations(queryClient: QueryClient, events: ListQueueEvents = {}) {
   const queued = queuedDefaults(LIST_QUEUE_SCOPE);
+  queryClient.setMutationDefaults(ADD_ITEM_KEY, {
+    ...queued,
+    mutationFn: countingFailures((input: AddItemInput) => addListItem(queryClient, input)),
+    // A fila desistiu (a lista foi apagada, por exemplo): o item que apareceu no toque sai da tela, e a pessoa
+    // fica sabendo, também quando o pôr veio de uma fila guardada e a tela que o pôs já fechou.
+    onError: async (error: Error, input: AddItemInput) => {
+      await hideItems(queryClient, input.listId, new Set([input.id]));
+      events.onAddDropped?.(input, error);
+    },
+  });
+  queryClient.setMutationDefaults(REMOVE_ITEM_KEY, {
+    ...queued,
+    mutationFn: countingFailures((input: RemoveItemInput) => removeListItem(input)),
+    meta: EXPECTS_ROWS_META,
+  });
   queryClient.setMutationDefaults(TOGGLE_ITEM_KEY, {
     ...queued,
-    mutationFn: (input: ToggleItemInput) => toggleListItem(input),
+    mutationFn: countingFailures((input: ToggleItemInput) => toggleListItem(input)),
     meta: EXPECTS_ROWS_META,
   });
   queryClient.setMutationDefaults(EDIT_ITEM_KEY, {
     ...queued,
-    mutationFn: (input: EditItemInput) => editListItem(input),
+    mutationFn: countingFailures((input: EditItemInput) => editListItem(input)),
     meta: EXPECTS_ROWS_META,
   });
   queryClient.setMutationDefaults(CLEAR_CHECKED_KEY, {
     ...queued,
-    mutationFn: (input: ClearCheckedInput) => clearCheckedItems(input),
+    mutationFn: countingFailures((input: ClearCheckedInput) => clearCheckedItems(input)),
     // Aqui e não no hook: vale também para o limpar que ficou na fila e sai
     // depois de reabrir o app.
     onSuccess: (moved: unknown, input: ClearCheckedInput) => {
@@ -700,11 +907,29 @@ export interface EditItemInput {
   userId: string;
   /** Só os campos que mudaram; photo_path só para tirar a foto (null). */
   values: Partial<Pick<ShoppingListItem, 'name' | 'category' | 'quantity' | 'unit' | 'notes' | 'priority'>> & { photo_path?: null };
+  /**
+   * Ao tirar a foto: a que estava no item no toque. Só ela sai: a foto que outra pessoa pôs depois (o envio
+   * repetido, ou o que esperava a conexão, chega depois dela) fica. A edição guardada por versões anteriores
+   * não tem: tira a que estiver.
+   */
+  expectedPhotoPath?: string;
 }
 
-async function editListItem({ id, userId, values }: EditItemInput) {
+async function editListItem({ id, userId, values, expectedPhotoPath }: EditItemInput) {
   await requireQueueSession(userId);
-  return unwrap(await supabase.from('shopping_list_items').update(values).eq('id', id).select('id'));
+  const { photo_path: _photo, ...rest } = values;
+  const clearsPhoto = 'photo_path' in values;
+  if (!clearsPhoto || !expectedPhotoPath) {
+    return unwrapQueued(await supabase.from('shopping_list_items').update(values).eq('id', id).select('id'));
+  }
+  // Os outros campos pelo id; a foto só se ainda é a mesma (o gatilho manda a tirada para a lixeira).
+  const rows = Object.keys(rest).length
+    ? unwrapQueued(await supabase.from('shopping_list_items').update(rest).eq('id', id).select('id'))
+    : undefined;
+  const cleared = unwrapQueued(
+    await supabase.from('shopping_list_items').update({ photo_path: null }).eq('id', id).eq('photo_path', expectedPhotoPath).select('id'),
+  );
+  return rows ?? cleared;
 }
 
 export function useEditListItem(listId: string) {
@@ -746,12 +971,119 @@ export function useRemovePendingListItem(listId: string) {
   });
 }
 
-export function useDeleteListItem(listId: string) {
-  const invalidate = useInvalidateLists(listId);
-  return useMutation({
-    mutationFn: async (id: string) => unwrap(await supabase.from('shopping_list_items').delete().eq('id', id).select('id')),
-    meta: EXPECTS_ROWS_META,
-    onSuccess: invalidate,
+/**
+ * Tirar item da lista, pela fila da lista (vale sem internet). Item posto
+ * sem internet que ainda não saiu: os dois se cancelam (domain/listQueue).
+ */
+export const REMOVE_ITEM_KEY = ['removeListItem'];
+
+export interface RemoveItemInput {
+  id: string;
+  listId: string;
+  userId: string;
+  /** Só se ainda está para comprar: o que alguém pôs no carrinho enquanto isso fica. */
+  onlyPending?: boolean;
+  /** Só se continua sem descrição, foto e prioridade (o catálogo tira sem perguntar o item simples). */
+  plainOnly?: boolean;
+}
+
+async function removeListItem({ id, userId, onlyPending, plainOnly }: RemoveItemInput) {
+  await requireQueueSession(userId);
+  let request = supabase.from('shopping_list_items').delete().eq('id', id);
+  if (onlyPending) request = request.is('checked_at', null);
+  if (plainOnly) request = request.is('notes', null).is('photo_path', null).eq('priority', 'normal');
+  return unwrapQueued(await request.select('id'));
+}
+
+/** O item sai já da lista e do resumo das listas. */
+async function hideItems(queryClient: QueryClient, listId: string, ids: ReadonlySet<string>) {
+  const key = ['listItems', listId];
+  await queryClient.cancelQueries({ queryKey: key });
+  const gone = (queryClient.getQueryData<ShoppingListItem[]>(key) ?? []).filter((i) => ids.has(i.id));
+  queryClient.setQueryData<ShoppingListItem[]>(key, (items) => items?.filter((i) => !ids.has(i.id)));
+  await queryClient.cancelQueries({ queryKey: ['lists'] });
+  queryClient.setQueryData<ListSummary[]>(['lists'], (lists) =>
+    lists ? summaryWithout(lists, listId, gone.map(({ name, product_id, checked_at }) => ({ name, product_id, checked_at }))) : lists,
+  );
+}
+
+const QUEUE_KINDS: [readonly string[], QueuedKind][] = [
+  [ADD_ITEM_KEY, 'add'],
+  [TOGGLE_ITEM_KEY, 'toggle'],
+  [EDIT_ITEM_KEY, 'edit'],
+  [REMOVE_ITEM_KEY, 'remove'],
+  [CLEAR_CHECKED_KEY, 'clear'],
+];
+
+/** A fila da lista como a regra de tirar item a enxerga (domain/listQueue), na ordem dos toques. */
+function queuedActions(queryClient: QueryClient): QueuedAction<Mutation<unknown, Error, unknown, unknown>>[] {
+  return queryClient
+    .getMutationCache()
+    .getAll()
+    .filter((mutation) => inListQueue(mutation) && mutation.state.status === 'pending')
+    .flatMap((mutation) => {
+      const kind = QUEUE_KINDS.find(([key]) => key[0] === mutation.options.mutationKey?.[0])?.[1];
+      if (!kind) return [];
+      const variables = mutation.state.variables as { id?: string } | undefined;
+      return [{ ref: mutation, kind, itemId: kind === 'clear' ? null : (variables?.id ?? null), started: wasAttempted(mutation.state) }];
+    });
+}
+
+export function useRemoveListItem(listId: string) {
+  const queryClient = useQueryClient();
+  const mutation = useMutation<unknown, Error, RemoveItemInput>({
+    mutationKey: REMOVE_ITEM_KEY,
+    onMutate: (input) => hideItems(queryClient, listId, new Set([input.id])),
+  });
+  return {
+    remove: (input: Omit<RemoveItemInput, 'listId'>, options?: QueuedCallbacks) => {
+      const plan = planRemoval(queuedActions(queryClient), input.id);
+      if (plan.send) {
+        settle(mutation.mutateAsync({ ...input, listId }), options);
+        return;
+      }
+      // Pôr e tirar antes de a conexão voltar: nada vai ao servidor.
+      const cache = queryClient.getMutationCache();
+      for (const queued of plan.drop) {
+        // A ação nunca termina: sem prazo de limpeza, ela não fica agendando outra limpeza para sempre.
+        queued.setOptions({ ...queued.options, gcTime: Infinity });
+        cache.remove(queued);
+      }
+      void hideItems(queryClient, listId, new Set([input.id]));
+      options?.onSuccess?.();
+    },
+  };
+}
+
+/**
+ * Tirar item pelo catálogo vai pela fila quando não dá para perguntar ao
+ * servidor como o item está agora: sem internet, ou com a fila ainda
+ * enviando (a lista daqui pode não ser a de lá).
+ */
+export function removalWaitsForQueue(queryClient: QueryClient) {
+  return listQueueBusy(queryClient) || !onlineManager.isOnline();
+}
+
+/**
+ * O item posto pela fila e ainda não gravado (esperando a vez ou a conexão):
+ * espera ele chegar ao servidor (ou sair da fila). A foto do item, que anda
+ * numa fila própria, só sobe depois, senão não acharia o item.
+ */
+export function queuedAddSettled(queryClient: QueryClient, itemId: string): Promise<void> {
+  const cache = queryClient.getMutationCache();
+  const waiting = () =>
+    cache.findAll({
+      mutationKey: ADD_ITEM_KEY,
+      status: 'pending',
+      predicate: (mutation) => (mutation.state.variables as AddItemInput | undefined)?.id === itemId,
+    }).length > 0;
+  if (!waiting()) return Promise.resolve();
+  return new Promise((resolve) => {
+    const unsubscribe = cache.subscribe(() => {
+      if (waiting()) return;
+      unsubscribe();
+      resolve();
+    });
   });
 }
 
@@ -766,6 +1098,11 @@ export interface ClearCheckedInput {
   items: { id: string; token: string }[];
   /** O que vai também para a despensa, com a quantidade confirmada (só sai o que saiu do carrinho). */
   pantry?: CartPantryEntry[];
+  /**
+   * O que sai do carrinho, para o histórico guardado (cartPurchases). Vai junto porque a lista o tira da tela
+   * já no toque. O limpar guardado por versões anteriores não tem: o histórico sai da lista guardada.
+   */
+  bought?: PurchaseRecord[];
 }
 
 /** Limpa o carrinho: os itens marcados saem da lista e vão para o histórico de compras. */
@@ -774,7 +1111,7 @@ async function clearCheckedItems({ listId, userId, items, pantry }: ClearChecked
   await requireQueueSession(userId);
   if (!items.length) return 0;
   // O selo é único por marcação: id e selo batendo, o item está como no toque.
-  return unwrap(
+  return unwrapQueued(
     await supabase.rpc('clear_checked_items', {
       p_list_id: listId,
       p_ids: items.map((i) => i.id),
@@ -784,41 +1121,35 @@ async function clearCheckedItems({ listId, userId, items, pantry }: ClearChecked
   ) as number;
 }
 
-/** Limpa o carrinho na vez dele na fila da lista (depois das marcações que vieram antes). */
 /**
  * O que saiu do carrinho entra já no histórico guardado: a lista recarregada
  * não o mostra mais e, se o histórico ainda não tiver a compra (a busca dele
  * anda em separado e pode falhar), "Acho que acabou" o sugeriria de novo.
  */
-function recordClearedPurchases(queryClient: QueryClient, { listId, items }: ClearCheckedInput) {
+function recordClearedPurchases(queryClient: QueryClient, { listId, items, bought }: ClearCheckedInput) {
   const ids = new Set(items.map((i) => i.id));
-  const cleared = (queryClient.getQueryData<ShoppingListItem[]>(['listItems', listId]) ?? []).filter(
-    (i) => ids.has(i.id) && i.checked_at,
-  );
+  const cleared =
+    bought ?? cartPurchases((queryClient.getQueryData<ShoppingListItem[]>(['listItems', listId]) ?? []).filter((i) => ids.has(i.id)));
   if (!cleared.length) return;
   queryClient.setQueryData<PurchaseRecord[]>(['purchaseRecords'], (records) => {
     if (!records) return records;
     const known = new Set(records.filter((r) => r.source === 'list').map((r) => `${r.name}|${r.at}`));
-    const added = cleared
-      .filter((i) => !known.has(`${i.name}|${i.checked_at}`))
-      .map(
-        (i): PurchaseRecord => ({
-          name: i.name,
-          category: i.category,
-          productId: i.product_id,
-          quantity: Number(i.quantity),
-          unit: i.unit,
-          at: i.checked_at!,
-          source: 'list',
-        }),
-      );
+    const added = cleared.filter((r) => !known.has(`${r.name}|${r.at}`));
     return added.length ? [...added, ...records] : records;
   });
 }
 
-export function useClearCheckedItems() {
+/**
+ * Limpa o carrinho na vez dele na fila da lista (depois das marcações que
+ * vieram antes). Os itens saem da tela já no toque, também sem internet.
+ */
+export function useClearCheckedItems(listId: string) {
+  const queryClient = useQueryClient();
   // Atualizar histórico e listas fica nos padrões da fila (registerListMutations).
-  return useMutation<unknown, Error, ClearCheckedInput>({ mutationKey: CLEAR_CHECKED_KEY });
+  return useMutation<unknown, Error, ClearCheckedInput>({
+    mutationKey: CLEAR_CHECKED_KEY,
+    onMutate: (input) => hideItems(queryClient, listId, new Set(input.items.map((i) => i.id))),
+  });
 }
 
 /**
