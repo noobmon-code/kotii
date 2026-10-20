@@ -240,6 +240,7 @@ create table public.account_deletion_attempts (
 );
 alter table public.account_deletion_attempts enable row level security;
 revoke all on public.account_deletion_attempts from anon, authenticated;
+grant all on public.account_deletion_attempts to service_role;
 
 -- true: a tentativa foi contada e a senha pode ser conferida; false: já são 5 nesta hora, e nada é contado.
 create function public.count_account_deletion_attempt(p_user_id uuid)
