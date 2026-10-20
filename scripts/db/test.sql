@@ -5808,7 +5808,7 @@ begin
   assert not public.access_key_valid('4126106677788800019965001000001234112345679'), '43 digits fail';
   assert not public.access_key_valid(null), 'no key is no valid key';
 
-  -- O nome: sai a sequência de 11 dígitos (com ou sem ponto e traço, e o "CPF" escrito antes), e o que sobra
+  -- O nome: sai a sequência de 11 dígitos (junta ou separada, e o "CPF" escrito antes), e o que sobra
   -- em volta dela; o CNPJ (14 dígitos) e o resto do nome ficam como estavam.
   assert public.shared_store_name('JOAO DA SILVA 12345678901', cnpj) = 'JOAO DA SILVA', 'a CPF with no punctuation';
   assert public.shared_store_name('MARIA DE SOUZA 123.456.789-01', cnpj) = 'MARIA DE SOUZA', 'a CPF with dots and a dash';
@@ -5820,6 +5820,21 @@ begin
   assert public.shared_store_name('ATACADAO 11222333000181', cnpj) = 'ATACADAO 11222333000181', 'a CNPJ (14 digits) stays';
   assert public.shared_store_name('ATACADAO 11.222.333/0001-81', cnpj) = 'ATACADAO 11.222.333/0001-81', 'a punctuated CNPJ stays';
   assert public.shared_store_name('LOJA 1234567890', cnpj) = 'LOJA 1234567890', 'ten digits stay';
+  -- Outros jeitos de escrever o CPF (uma foto lida pela IA, a página de uma Sefaz) também saem.
+  assert public.shared_store_name('JOSE PEREIRA 123.456.789.01', cnpj) = 'JOSE PEREIRA', 'a dot before the check digits';
+  assert public.shared_store_name('JOSE PEREIRA 123 456 789 01', cnpj) = 'JOSE PEREIRA', 'a CPF split by spaces';
+  assert public.shared_store_name('JOSE PEREIRA 123456789 01', cnpj) = 'JOSE PEREIRA', 'a space before the check digits';
+  assert public.shared_store_name('JOSE PEREIRA CPF 123.456.789/01', cnpj) = 'JOSE PEREIRA', 'a slash before the check digits';
+  assert public.shared_store_name('JOSE PEREIRA 123.456.789 - 01', cnpj) = 'JOSE PEREIRA', 'a spaced dash before the check digits';
+  assert public.shared_store_name('JOSE PEREIRA 123-456-789-01', cnpj) = 'JOSE PEREIRA', 'a CPF split by dashes';
+  assert public.shared_store_name('ATACADAO 11 222 333 0001 81', cnpj) = 'ATACADAO 11 222 333 0001 81', 'a CNPJ split by spaces stays';
+  assert public.shared_store_name('LOJA (11) 98765-4321', cnpj) = 'LOJA (11) 98765-4321', 'a phone number stays';
+  -- Os parênteses ou colchetes que embrulhavam o CPF saem junto; os outros ficam.
+  assert public.shared_store_name('JOAO DA SILVA (12345678901)', cnpj) = 'JOAO DA SILVA', 'brackets around the CPF go with it';
+  assert public.shared_store_name('JOAO DA SILVA (CPF 123.456.789-01)', cnpj) = 'JOAO DA SILVA', 'brackets around the CPF and its label';
+  assert public.shared_store_name('JOAO DA SILVA [123.456.789-01] ME', cnpj) = 'JOAO DA SILVA ME', 'square brackets in the middle';
+  assert public.shared_store_name('JOAO (FILIAL) 12345678901', cnpj) = 'JOAO (FILIAL)', 'brackets with a word stay';
+  assert public.shared_store_name('SUPER BOM ( )', cnpj) = 'SUPER BOM ( )', 'a name without a CPF keeps its brackets, as before';
   assert public.shared_store_name('CNPJ ' || cnpj, cnpj) = 'CNPJ ' || cnpj, 'the placeholder stays';
   assert public.shared_store_name('  SUPER   BOM LTDA.  ', cnpj) = 'SUPER   BOM LTDA.', 'a name without a CPF is only trimmed, as before';
   assert public.shared_store_name(repeat('ABCDEFGHI ', 11) || '123.456.789-01 FIM', cnpj) = repeat('ABCDEFGHI ', 11) || 'FIM',

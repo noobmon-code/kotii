@@ -37,13 +37,17 @@ immutable
 set search_path = ''
 as $$
 declare
-  -- 11 dígitos (CPF), com ou sem ponto e traço, que não são pedaço de um número
-  -- maior (o CNPJ tem 14); o "CPF" escrito antes vai junto.
-  v_cpf constant text := '(\mCPF[\s:.-]*)?(?<![0-9])[0-9]{3}[.]?[0-9]{3}[.]?[0-9]{3}-?[0-9]{2}(?![0-9])';
+  -- 11 dígitos (CPF) em grupos de 3, 3, 3 e 2, juntos ou separados por ponto,
+  -- traço ou espaço (e barra antes dos 2 últimos), que não são pedaço de um
+  -- número maior (o CNPJ tem 14); o "CPF" escrito antes vai junto. Na dúvida,
+  -- sai mais texto, nunca menos.
+  v_cpf constant text := '(\mCPF[\s:.-]*)?(?<![0-9])[0-9]{3}[\s.-]?[0-9]{3}[\s.-]?[0-9]{3}(\s?[./-]\s?|\s)?[0-9]{2}(?![0-9])';
   v_name text := trim(coalesce(p_name, ''));
 begin
   if v_name ~* v_cpf then
     v_name := regexp_replace(v_name, v_cpf, ' ', 'gi');
+    -- Os parênteses ou colchetes em volta do CPF, que ficaram vazios.
+    v_name := regexp_replace(v_name, '[(\[][\s.,;:/|-]*[)\]]', ' ', 'g');
     -- O que sobrou em volta do número: espaços repetidos e um traço ou dois-pontos pendurado.
     v_name := regexp_replace(v_name, '\s+', ' ', 'g');
     v_name := regexp_replace(v_name, '^[\s.,;:/|-]+|[\s.,;:/|-]+$', '', 'g');
