@@ -30,3 +30,7 @@ verify_jwt = true
 [functions.nuke-finance]
 # Conversa com o consultor financeiro (beta), só pela API da Anthropic.
 verify_jwt = true
+
+[functions.delete-account]
+# Apagar a conta (Família → Conta): o token da pessoa e a senha dela de novo.
+verify_jwt = true

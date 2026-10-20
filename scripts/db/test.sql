@@ -9620,6 +9620,141 @@ end $$;
 delete from public.households where id in (:'hh_dl', :'hh_el');
 
 -- ---------------------------------------------------------------------------
+\echo '• nota confirmada corrigida: data, mercado e total ficam na casa, e a base comum não muda'
+-- Caio confirma uma nota do QR code (que compartilha) e depois corrige a data, o mercado e o total, como o app
+-- faz (uma coisa por vez, só na nota confirmada). Nina, de outra casa, não alcança a nota dele.
+\set user_nc1 '00000000-0000-0000-0000-0000000001c1'
+\set user_nc2 '00000000-0000-0000-0000-0000000001c2'
+reset role;
+insert into auth.users (id) values (:'user_nc1'), (:'user_nc2');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_nc2', false) \gset
+select set_config('test.nc_house_2', (public.create_household('Casa da Nina', 'Nina')).id::text, false) \gset
+select set_config('request.jwt.claim.sub', :'user_nc1', false) \gset
+select set_config('test.nc_house_1', (public.create_household('Casa do Caio', 'Caio')).id::text, false) \gset
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  cnpj constant text := '44555666000177';
+  s uuid;
+  r uuid;
+begin
+  insert into public.stores (name, cnpj) values ('Mercadinho da esquina', cnpj) returning id into s;
+  perform set_config('test.nc_store', s::text, false);
+  -- O mercado certo, que a casa já tinha (sem CNPJ, criado à mão).
+  insert into public.stores (name) values ('Feira de domingo') returning id into s;
+  perform set_config('test.nc_store_right', s::text, false);
+  insert into public.receipts (store_id, purchased_at, access_key, source, total)
+    values (current_setting('test.nc_store')::uuid, (today - 2 + time '10:00') at time zone 'America/Sao_Paulo',
+      '352610' || cnpj || repeat('0', 23) || '1', 'qrcode', 14.48)
+    returning id into r;
+  perform set_config('test.nc_receipt', r::text, false);
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, quantity, unit, unit_price, total_price) values
+    (r, 0, 'LEITE NC INTEGRAL 1L', 'laticinios', 1, 'un', 5.49, 5.49),
+    (r, 1, 'PAO NC FRANCES', 'padaria', 1, 'kg', 8.99, 8.99);
+end $$;
+
+reset role;
+set role service_role;
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  cnpj constant text := '44555666000177';
+  rid uuid;
+begin
+  insert into public.receipt_reads (household_id, source, access_key, store_cnpj, store_name, purchased_on, lines)
+    values (current_setting('test.nc_house_1')::uuid, 'qrcode', '352610' || cnpj || repeat('0', 23) || '1', cnpj, 'MERCADINHO DA ESQUINA LTDA', today - 2,
+      jsonb_build_array(
+        jsonb_build_object('description', 'LEITE NC INTEGRAL 1L', 'unit', 'un', 'unit_price', 5.49),
+        jsonb_build_object('description', 'PAO NC FRANCES', 'unit', 'kg', 'unit_price', 8.99)))
+    returning id into rid;
+  perform set_config('test.nc_read', rid::text, false);
+end $$;
+
+reset role;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_nc1', false) \gset
+do $$
+begin
+  update public.receipts set read_id = current_setting('test.nc_read')::uuid where id = current_setting('test.nc_receipt')::uuid;
+  perform public.confirm_receipt(current_setting('test.nc_receipt')::uuid, '[]');
+end $$;
+
+-- A base comum depois da confirmação, como ficou: é com ela que o resto é comparado.
+reset role;
+select set_config('test.nc_shared', (
+  select md5(coalesce(string_agg(sp::text, '|' order by sp.store_cnpj, sp.item_key, sp.unit, sp.seen_on), '')) from public.shared_prices sp
+), false) \gset
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+begin
+  assert (select array_agg(item_key || ' ' || unit_price || ' ' || seen_on || ' ' || store_name order by item_key)
+            from public.shared_prices where item_key like '% NC %')
+    = array[
+      'LEITE NC INTEGRAL 1L 5.4900 ' || (today - 2) || ' MERCADINHO DA ESQUINA LTDA',
+      'PAO NC FRANCES 8.9900 ' || (today - 2) || ' MERCADINHO DA ESQUINA LTDA'
+    ],
+    'the confirmation shared the two lines, as read';
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_nc1', false) \gset
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  r constant uuid := current_setting('test.nc_receipt')::uuid;
+  n integer;
+begin
+  -- A data, o mercado e o total, um de cada vez e só na nota confirmada (o filtro do app): o banco aceita os três.
+  update public.receipts set purchased_at = (today - 9 + time '12:00') at time zone 'America/Sao_Paulo' where id = r and status = 'confirmed';
+  get diagnostics n = row_count;
+  assert n = 1, 'the purchase date of a confirmed receipt can be corrected';
+  update public.receipts set store_id = current_setting('test.nc_store_right')::uuid where id = r and status = 'confirmed';
+  get diagnostics n = row_count;
+  assert n = 1, 'and its store';
+  update public.receipts set total = 20.00 where id = r and status = 'confirmed';
+  get diagnostics n = row_count;
+  assert n = 1, 'and its total';
+  -- Também um mercado novo, criado na hora, e "sem total".
+  insert into public.stores (name) values ('Hortifruti novo');
+  update public.receipts set store_id = (select id from public.stores where name = 'Hortifruti novo'), total = null where id = r and status = 'confirmed';
+  update public.receipts set store_id = current_setting('test.nc_store_right')::uuid, total = 20.00 where id = r and status = 'confirmed';
+  -- Nem regravar o status de uma nota já confirmada passa pelo gatilho (ele só olha a passagem de rascunho para confirmada).
+  update public.receipts set status = 'confirmed' where id = r;
+  assert (select (purchased_at at time zone 'America/Sao_Paulo')::date = today - 9 and store_id = current_setting('test.nc_store_right')::uuid
+                 and total = 20.00 and status = 'confirmed' and read_id is null
+            from public.receipts where id = r),
+    'the receipt keeps the corrections, still confirmed and without a read';
+end $$;
+
+-- Nina, de outra casa, não acha a nota do Caio para corrigir.
+select set_config('request.jwt.claim.sub', :'user_nc2', false) \gset
+do $$
+declare
+  n integer;
+begin
+  update public.receipts set purchased_at = now(), total = 1 where id = current_setting('test.nc_receipt')::uuid;
+  get diagnostics n = row_count;
+  assert n = 0, 'a member of another household cannot correct the receipt';
+end $$;
+
+reset role;
+do $$
+begin
+  assert (
+    select md5(coalesce(string_agg(sp::text, '|' order by sp.store_cnpj, sp.item_key, sp.unit, sp.seen_on), '')) from public.shared_prices sp
+  ) = current_setting('test.nc_shared'),
+    'correcting a confirmed receipt adds nothing to the shared prices and changes no line (day, store name, price)';
+  assert (select (purchased_at at time zone 'America/Sao_Paulo')::date from public.receipts where id = current_setting('test.nc_receipt')::uuid)
+    = (now() at time zone 'America/Sao_Paulo')::date - 9,
+    'and the other household did not change it';
+  assert (select count(*) from public.receipt_reads where household_id = current_setting('test.nc_house_1')::uuid) = 0,
+    'there is no read left to share again';
+end $$;
+delete from public.households where id in (current_setting('test.nc_house_1')::uuid, current_setting('test.nc_house_2')::uuid);
+
+-- ---------------------------------------------------------------------------
 \echo '• Termos: cada pessoa grava e lê só o próprio aceite, uma vez por versão'
 \set user_t1 '00000000-0000-0000-0000-0000000001b1'
 \set user_t2 '00000000-0000-0000-0000-0000000001b2'
@@ -9716,4 +9851,364 @@ select count(*) = 1 as terms_cascade from public.terms_acceptances \gset
 \endif
 delete from auth.users where id = :'user_t2';
 
+-- ---------------------------------------------------------------------------
+\echo '• apagar a conta: sai de cada casa, a casa em que é a última some, os acertos ficam como ex-morador'
+\set user_d1 '00000000-0000-0000-0000-0000000001d1'
+\set user_d2 '00000000-0000-0000-0000-0000000001d2'
+\set user_d3 '00000000-0000-0000-0000-0000000001d3'
+insert into auth.users (id) values (:'user_d1'), (:'user_d2'), (:'user_d3');
+set role authenticated;
+-- Dani cria a casa que divide com Elo (e é a responsável) e outra só dela.
+select set_config('request.jwt.claim.sub', :'user_d1', false) \gset
+select (public.create_household('Casa Dividida', 'Dani')).id as hh_d_shared \gset
+select (public.create_household('Casa da Dani', 'Dani')).id as hh_d_solo \gset
+select invite_code as invite_d from public.households where id = :'hh_d_shared' \gset
+select set_config('request.jwt.claim.sub', :'user_d2', false) \gset
+select public.join_household(:'invite_d', 'Elo') \gset
+-- Iuri (outra conta, outra casa): nada dele muda.
+select set_config('request.jwt.claim.sub', :'user_d3', false) \gset
+select (public.create_household('Casa do Iuri', 'Iuri')).id as hh_d_other \gset
+insert into public.shopping_lists (name) values ('Do Iuri');
+select set_config('test.hh_d_shared', :'hh_d_shared', false) \gset
+select set_config('test.hh_d_solo', :'hh_d_solo', false) \gset
+select set_config('test.hh_d_other', :'hh_d_other', false) \gset
+
+select set_config('request.jwt.claim.sub', :'user_d1', false) \gset
+select set_config('request.headers', json_build_object('x-household-id', :'hh_d_shared')::text, false) \gset
+insert into public.shopping_lists (name) values ('Feira da Dani');
+insert into public.expenses (description, amount, spent_on) values ('Gás', 120, '2026-10-05');
+insert into public.settlements (month, from_user, to_user, amount) values ('2026-10', :'user_d1', :'user_d2', 30);
+insert into public.settlements (month, from_user, to_user, amount) values ('2026-10', :'user_d2', :'user_d1', 10);
+insert into storage.objects (bucket_id, name) values ('receipts', :'hh_d_shared' || '/nota-da-dani.jpg');
+select set_config('request.headers', json_build_object('x-household-id', :'hh_d_solo')::text, false) \gset
+insert into public.shopping_lists (name) values ('Só da Dani');
+insert into storage.objects (bucket_id, name) values ('receipts', :'hh_d_solo' || '/nota-sozinha.jpg');
+do $$
+declare
+  preview record;
+begin
+  -- O que o app mostra antes: a casa dividida passa adiante, a dela é apagada.
+  assert (select count(*) from public.account_deletion_preview()) = 2, 'both households of Dani';
+  select * into preview from public.account_deletion_preview() p where p.id = current_setting('test.hh_d_shared')::uuid;
+  assert not preview.last and preview.role = 'owner' and not preview.finance, 'shared: Elo stays, Dani is the owner, no advisor';
+  select * into preview from public.account_deletion_preview() p where p.id = current_setting('test.hh_d_solo')::uuid;
+  assert preview.last, 'solo: Dani is the last one';
+  begin
+    perform public.delete_account_data(auth.uid(), '{}');
+    raise exception 'FAIL: app user called delete_account_data';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.leave_household_as(auth.uid(), current_setting('test.hh_d_shared')::uuid, true);
+    raise exception 'FAIL: app user called leave_household_as';
+  exception when insufficient_privilege then null;
+  end;
+  perform public.register_push_subscription('https://fcm.googleapis.com/fcm/send/dani', 'k', 'a', 'UTC');
+end $$;
+select set_config('request.headers', '', false) \gset
+reset role;
+-- O consultor da Dani na casa dividida, e o que só ela tem.
+insert into public.beta_access (user_id, household_id, feature) values (:'user_d1', :'hh_d_shared', 'finance');
+insert into public.fin_connections (user_id, household_id, label, pluggy_item_id) values (:'user_d1', :'hh_d_shared', 'Banco', 'item-dani');
+insert into public.household_sessions (session_id, user_id, household_id) values ('sessao-dani', :'user_d1', :'hh_d_shared');
+insert into public.join_attempts (user_id, failed) values (:'user_d1', 2);
+insert into public.push_schedule (id, subscription_id, title, repeat, hour, minute, next_at)
+  select gen_random_uuid(), s.id, 'Remédio', 'daily', 8, 0, now() from public.push_subscriptions s where s.user_id = :'user_d1';
+set role anon;
+do $$
+begin
+  perform public.account_deletion_preview();
+  raise exception 'FAIL: anon called account_deletion_preview';
+exception when insufficient_privilege then null;
+end $$;
+set role service_role;
+select set_config('request.jwt.claim.sub', '', false) \gset
+do $$
+declare
+  dani uuid := '00000000-0000-0000-0000-0000000001d1';
+  shared uuid := current_setting('test.hh_d_shared')::uuid;
+  solo uuid := current_setting('test.hh_d_solo')::uuid;
+  result jsonb;
+begin
+  assert has_function_privilege('service_role', 'public.delete_account_data(uuid, uuid[])', 'execute'), 'the secret key calls it';
+  -- Sem o aviso de que a casa dela será apagada: nada muda. (Com a casa dividida na lista, a ordem das
+  -- casas, pelo id, decidiria entre NK001 e NK011; o bloco da Jade cobre o NK011.)
+  begin
+    perform public.delete_account_data(dani, '{}');
+    raise exception 'FAIL: deleted a household the app did not announce';
+  exception when sqlstate 'NK001' then null;
+  end;
+  assert (select count(*) from public.household_members where user_id = dani) = 2, 'unconfirmed: Dani is still in both';
+  assert exists (select 1 from public.households where id = solo), 'unconfirmed: her household stays';
+  result := public.delete_account_data(dani, array[solo]);
+  assert result -> 'deleted' = jsonb_build_array(solo), 'her household was deleted';
+  assert result -> 'left' = jsonb_build_array(shared), 'she left the shared one';
+end $$;
+reset role;
+-- Por fim, o Auth apaga o usuário: nada mais o segura.
+delete from auth.users where id = :'user_d1';
+do $$
+declare
+  dani uuid := '00000000-0000-0000-0000-0000000001d1';
+  elo uuid := '00000000-0000-0000-0000-0000000001d2';
+  shared uuid := current_setting('test.hh_d_shared')::uuid;
+  solo uuid := current_setting('test.hh_d_solo')::uuid;
+begin
+  assert not exists (select 1 from auth.users where id = dani), 'Dani is gone from auth';
+  assert not exists (select 1 from public.households where id = solo), 'her household is gone';
+  assert not exists (select 1 from public.shopping_lists where name = 'Só da Dani'), 'with its data';
+  assert exists (select 1 from public.household_file_cleanup where household_id = solo), 'its photos are queued';
+  -- A casa dividida fica com Elo, com o que Dani registrou.
+  assert (select created_by from public.households where id = shared) = elo, 'Elo now owns the shared household';
+  assert (select role from public.household_members where household_id = shared and user_id = elo) = 'owner', 'Elo is the owner';
+  assert exists (select 1 from public.shopping_lists where household_id = shared and name = 'Feira da Dani'), 'her list stays';
+  assert (select paid_by from public.expenses where household_id = shared and description = 'Gás') is null, 'her expense stays, without the payer';
+  assert (select count(*) from public.settlements where household_id = shared) = 2, 'the settlements stay';
+  assert exists (
+    select 1 from public.settlements where household_id = shared and from_user is null and to_user = elo and amount = 30
+  ), 'Dani paid Elo: now from a former resident';
+  assert exists (
+    select 1 from public.settlements where household_id = shared and from_user = elo and to_user is null and amount = 10
+  ), 'Elo paid Dani: now to a former resident';
+  assert exists (
+    select 1 from public.people where household_id = shared and name = 'Dani' and member_user_id is null
+  ), 'her health record became a dependent';
+  -- A foto fica com a casa, sem dono.
+  assert (
+    select owner is null and owner_id is null from storage.objects where name = shared::text || '/nota-da-dani.jpg'
+  ), 'the photo stays with the household, without an owner';
+  assert not exists (select 1 from public.beta_access where user_id = dani), 'the advisor is gone';
+  assert not exists (select 1 from public.fin_connections where user_id = dani), 'with her banks';
+  assert not exists (select 1 from public.push_subscriptions where user_id = dani), 'her browser subscriptions are gone';
+  assert not exists (select 1 from public.push_schedule where title = 'Remédio'), 'with the schedule';
+  assert not exists (select 1 from public.household_sessions where user_id = dani), 'her sessions are gone';
+  assert not exists (select 1 from public.join_attempts where user_id = dani), 'her invite attempts are gone';
+  -- Ninguém mais muda.
+  assert exists (select 1 from public.household_members where user_id = elo and household_id = shared), 'Elo stays';
+  assert exists (select 1 from public.shopping_lists where name = 'Do Iuri'), 'other households are untouched';
+  assert exists (select 1 from auth.users where id = elo), 'Elo is still in auth';
+end $$;
+set role service_role;
+do $$
+declare
+  result jsonb;
+begin
+  -- Iuri, sozinho na casa dele, sem o aviso de que ela seria apagada: nada muda.
+  begin
+    perform public.delete_account_data('00000000-0000-0000-0000-0000000001d3'::uuid, '{}');
+    raise exception 'FAIL: deleted Iuri''s household without the warning';
+  exception when sqlstate 'NK001' then null;
+  end;
+  assert exists (select 1 from public.households where id = current_setting('test.hh_d_other')::uuid), 'Iuri keeps his household';
+  assert exists (select 1 from public.shopping_lists where name = 'Do Iuri'), 'with his list';
+  -- Quem já não tem casa nenhuma (segunda tentativa depois de uma falha no Auth): nada a fazer, sem erro.
+  result := public.delete_account_data('00000000-0000-0000-0000-0000000001d1'::uuid, '{}');
+  assert result = jsonb_build_object('deleted', '[]'::jsonb, 'left', '[]'::jsonb), 'nothing left to do';
+end $$;
+reset role;
+delete from public.household_file_cleanup where household_id = :'hh_d_solo';
+delete from public.households where id in (:'hh_d_shared', :'hh_d_other');
+
+\echo '• apagar a conta: o created_by que sobrou passa adiante e a casa sem ninguém sai, senão o Auth não apaga'
+-- Dados de antes de a saída passar a casa adiante: Fabi é só moradora, mas o created_by de três casas ainda
+-- é dela. Na do Gil, ele é o responsável (e Hana, a moradora mais antiga); na da Hana e do Ivo, ninguém é
+-- responsável (vale o mais antigo, Ivo); a terceira não tem ninguém. Sem passar adiante e apagar, o
+-- created_by (on delete restrict) seguraria a conta no Auth.
+\set user_d4 '00000000-0000-0000-0000-0000000001d4'
+\set user_d5 '00000000-0000-0000-0000-0000000001d5'
+\set user_d6 '00000000-0000-0000-0000-0000000001d6'
+\set user_d7 '00000000-0000-0000-0000-0000000001d7'
+reset role;
+insert into auth.users (id) values (:'user_d4'), (:'user_d5'), (:'user_d6'), (:'user_d7');
+insert into public.households (name, invite_code, created_by) values ('Casa do Gil', 'DELGIL', :'user_d4')
+  returning id as hh_d_gil \gset
+insert into public.households (name, invite_code, created_by) values ('Casa sem responsável', 'DELSEM', :'user_d4')
+  returning id as hh_d_noowner \gset
+insert into public.households (name, invite_code, created_by) values ('Casa vazia', 'DELVAZ', :'user_d4')
+  returning id as hh_d_empty \gset
+insert into public.household_members (household_id, user_id, display_name, role, joined_at) values
+  (:'hh_d_gil', :'user_d6', 'Hana', 'member', now() - interval '3 days'),
+  (:'hh_d_gil', :'user_d5', 'Gil', 'owner', now() - interval '2 days'),
+  (:'hh_d_gil', :'user_d4', 'Fabi', 'member', now() - interval '1 day'),
+  (:'hh_d_noowner', :'user_d7', 'Ivo', 'member', now() - interval '2 days'),
+  (:'hh_d_noowner', :'user_d6', 'Hana', 'member', now() - interval '1 day'),
+  (:'hh_d_noowner', :'user_d4', 'Fabi', 'member', now());
+select set_config('test.hh_d_gil', :'hh_d_gil', false) \gset
+select set_config('test.hh_d_noowner', :'hh_d_noowner', false) \gset
+select set_config('test.hh_d_empty', :'hh_d_empty', false) \gset
+set role service_role;
+do $$
+declare
+  fabi uuid := '00000000-0000-0000-0000-0000000001d4';
+  gil_house uuid := current_setting('test.hh_d_gil')::uuid;
+  noowner uuid := current_setting('test.hh_d_noowner')::uuid;
+  empty uuid := current_setting('test.hh_d_empty')::uuid;
+  result jsonb;
+begin
+  -- Nenhuma casa em que ela é a última: o app não avisou nada, e não precisava.
+  result := public.delete_account_data(fabi, '{}');
+  -- Na ordem do id (a mesma para quem apagar ao mesmo tempo), e não na de quando ela entrou.
+  assert result -> 'left' = (select jsonb_agg(h order by h) from unnest(array[gil_house, noowner]) h),
+    'Fabi left both households she lives in, in id order';
+  assert result -> 'deleted' = jsonb_build_array(empty), 'the household with nobody in it is reported as deleted';
+end $$;
+reset role;
+do $$
+declare
+  gil uuid := '00000000-0000-0000-0000-0000000001d5';
+  ivo uuid := '00000000-0000-0000-0000-0000000001d7';
+  gil_house uuid := current_setting('test.hh_d_gil')::uuid;
+  noowner uuid := current_setting('test.hh_d_noowner')::uuid;
+  empty uuid := current_setting('test.hh_d_empty')::uuid;
+begin
+  assert (select created_by from public.households where id = gil_house) = gil, 'goes to the owner, not the oldest member';
+  assert (select created_by from public.households where id = noowner) = ivo, 'without an owner, to the oldest member';
+  assert not exists (select 1 from public.households where id = empty), 'the empty household is gone';
+  assert exists (select 1 from public.household_file_cleanup where household_id = empty), 'with its photos queued';
+  assert (select count(*) from public.household_members where household_id = gil_house) = 2, 'Gil and Hana stay';
+  assert (select count(*) from public.household_members where household_id = noowner) = 2, 'Ivo and Hana stay';
+end $$;
+-- Nada mais segura a conta: o Auth apaga.
+delete from auth.users where id = :'user_d4';
+do $$
+begin
+  assert not exists (select 1 from auth.users where id = '00000000-0000-0000-0000-0000000001d4'), 'Fabi is gone from auth';
+end $$;
+delete from public.household_file_cleanup where household_id = :'hh_d_empty';
+delete from public.households where id in (:'hh_d_gil', :'hh_d_noowner');
+
+\echo '• apagar a conta: a casa avisada como apagada que ganhou um morador desfaz tudo (NK011)'
+-- Jade é a única da casa dela quando abre a tela; antes de ela confirmar, Kai entra com o código.
+\set user_d8 '00000000-0000-0000-0000-0000000001d8'
+\set user_d9 '00000000-0000-0000-0000-0000000001d9'
+reset role;
+insert into auth.users (id) values (:'user_d8'), (:'user_d9');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_d8', false) \gset
+select (public.create_household('Praia da Jade', 'Jade')).id as hh_d_jade \gset
+select invite_code as invite_jade from public.households where id = :'hh_d_jade' \gset
+select set_config('request.headers', json_build_object('x-household-id', :'hh_d_jade')::text, false) \gset
+insert into public.shopping_lists (name) values ('Lista da Jade');
+select set_config('test.hh_d_jade', :'hh_d_jade', false) \gset
+do $$
+begin
+  assert (select p.last from public.account_deletion_preview() p where p.id = current_setting('test.hh_d_jade')::uuid),
+    'the screen says Jade is the last one';
+end $$;
+select set_config('request.headers', '', false) \gset
+select set_config('request.jwt.claim.sub', :'user_d9', false) \gset
+select public.join_household(:'invite_jade', 'Kai') \gset
+set role service_role;
+select set_config('request.jwt.claim.sub', '', false) \gset
+do $$
+declare
+  jade uuid := '00000000-0000-0000-0000-0000000001d8';
+  praia uuid := current_setting('test.hh_d_jade')::uuid;
+begin
+  begin
+    perform public.delete_account_data(jade, array[praia]);
+    raise exception 'FAIL: handed over a household the app said would be deleted';
+  exception when sqlstate 'NK011' then null;
+  end;
+end $$;
+reset role;
+do $$
+declare
+  jade uuid := '00000000-0000-0000-0000-0000000001d8';
+  kai uuid := '00000000-0000-0000-0000-0000000001d9';
+  praia uuid := current_setting('test.hh_d_jade')::uuid;
+begin
+  assert exists (select 1 from public.household_members where household_id = praia and user_id = jade and role = 'owner'),
+    'Jade is still in her household, as the owner';
+  assert (select created_by from public.households where id = praia) = jade, 'the household is still hers';
+  assert exists (select 1 from public.household_members where household_id = praia and user_id = kai), 'Kai stays';
+  assert exists (select 1 from public.shopping_lists where household_id = praia and name = 'Lista da Jade'), 'her list stays';
+  assert not exists (select 1 from public.household_file_cleanup where household_id = praia), 'no photos queued';
+end $$;
+
+\echo '• apagar a conta: até 5 tentativas de senha por hora por conta, só pela chave secreta'
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_d8', false) \gset
+do $$
+begin
+  begin
+    perform public.count_account_deletion_attempt(auth.uid());
+    raise exception 'FAIL: app user counted an attempt';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.clear_account_deletion_attempts(auth.uid());
+    raise exception 'FAIL: app user cleared the attempts';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform 1 from public.account_deletion_attempts;
+    raise exception 'FAIL: app user read the attempts';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set role anon;
+do $$
+begin
+  perform public.count_account_deletion_attempt('00000000-0000-0000-0000-0000000001d8'::uuid);
+  raise exception 'FAIL: anon counted an attempt';
+exception when insufficient_privilege then null;
+end $$;
+set role service_role;
+select set_config('request.jwt.claim.sub', '', false) \gset
+do $$
+declare
+  jade uuid := '00000000-0000-0000-0000-0000000001d8';
+  kai uuid := '00000000-0000-0000-0000-0000000001d9';
+begin
+  for i in 1..5 loop
+    assert public.count_account_deletion_attempt(jade), format('attempt %s is allowed', i);
+  end loop;
+  assert not public.count_account_deletion_attempt(jade), 'the sixth in the hour is refused';
+  assert not public.count_account_deletion_attempt(jade), 'and so is the seventh';
+  assert public.count_account_deletion_attempt(kai), 'another account has its own count';
+end $$;
+reset role;
+do $$
+begin
+  assert (select attempts from public.account_deletion_attempts where user_id = '00000000-0000-0000-0000-0000000001d8') = 5,
+    'a refused try does not count';
+end $$;
+-- Uma hora depois da primeira, a contagem recomeça.
+update public.account_deletion_attempts set window_started_at = now() - interval '61 minutes' where user_id = :'user_d8';
+set role service_role;
+do $$
+begin
+  assert public.count_account_deletion_attempt('00000000-0000-0000-0000-0000000001d8'::uuid), 'a new hour starts over';
+end $$;
+reset role;
+do $$
+declare
+  jade uuid := '00000000-0000-0000-0000-0000000001d8';
+begin
+  assert (select attempts from public.account_deletion_attempts where user_id = jade) = 1, 'counting this one';
+  assert (select window_started_at from public.account_deletion_attempts where user_id = jade) > now() - interval '1 minute',
+    'and the hour starts now';
+end $$;
+-- A senha certa zera, e só a dela.
+set role service_role;
+select public.clear_account_deletion_attempts(:'user_d8') \gset
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.account_deletion_attempts where user_id = '00000000-0000-0000-0000-0000000001d8'),
+    'the right password clears the count';
+  assert exists (select 1 from public.account_deletion_attempts where user_id = '00000000-0000-0000-0000-0000000001d9'), 'only hers';
+end $$;
+-- A contagem sai com a conta.
+delete from public.households where id = :'hh_d_jade';
+delete from auth.users where id = :'user_d9';
+do $$
+begin
+  assert not exists (select 1 from public.account_deletion_attempts where user_id = '00000000-0000-0000-0000-0000000001d9'),
+    'the count goes with the account';
+end $$;
+delete from auth.users where id = :'user_d8';
+
 \echo 'OK — todos os testes do banco passaram'
+

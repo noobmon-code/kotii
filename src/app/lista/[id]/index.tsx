@@ -15,20 +15,19 @@ import {
 } from '@/data/listPhotos';
 import {
   type EditItemInput,
-  listQueueBusy,
   loadListLinks,
   newToggleToken,
+  removalWaitsForQueue,
   useAddListItem,
   useArchiveList,
   useClearCheckedItems,
   useListLinks,
-  useListQueueBusy,
-  useDeleteListItem,
   useEditListItem,
   useLatestPrices,
   useListItems,
   useProducts,
   usePurchaseRecords,
+  useRemoveListItem,
   useRemovePendingListItem,
   useShoppingList,
   useStores,
@@ -51,6 +50,7 @@ import {
 import { compareForShopping } from '@/domain/listItem';
 import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { todayISO } from '@/domain/dates';
+import { cartPurchases } from '@/domain/listQueue';
 import { parseDecimal } from '@/domain/money';
 import { fitsList, recentPurchases, type RecentItem } from '@/domain/recentPurchases';
 import { ranOutItems, restockFrom } from '@/domain/restock';
@@ -65,7 +65,9 @@ import { MarketTripAction, MarketTripBanner } from '@/features/MarketTrip';
 import { OfflineNotice } from '@/features/OfflineNotice';
 import { RecentPurchases, RestockStrip, useJustListed } from '@/features/RecentPurchases';
 import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
+import { StaleNotice } from '@/features/health/StaleNotice';
 import { useAuth, useHouseholdId } from '@/lib/auth';
+import { isNetworkFailure } from '@/lib/networkErrors';
 import { errorMessage } from '@/lib/supabase';
 import { UNITS, type Product, type ShoppingListItem, type Unit } from '@/lib/types';
 import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
@@ -86,6 +88,9 @@ import {
 } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
+/** A lista na tela é a guardada: a busca não chegou ao servidor. */
+const STALE_OFFLINE = 'Sem internet agora. Mostrando a lista como estava da última vez.';
+
 /**
  * O mercado em que a pessoa disse estar, por lista, e quando disse: vale por
  * uma ida ao mercado (currentStoreChoice), enquanto o app está aberto.
@@ -101,12 +106,11 @@ export default function ShoppingListScreen() {
   const purchases = usePurchaseRecords();
   const addItem = useAddListItem(id);
   const toggle = useToggleListItem(id);
-  const remove = useDeleteListItem(id);
+  const remove = useRemoveListItem(id);
   const removePending = useRemovePendingListItem(id);
-  const clearChecked = useClearCheckedItems();
-  // Limpar só com a fila da lista vazia: as marcações guardadas já chegaram
-  // ao servidor e não há outro limpar andando.
-  const syncing = useListQueueBusy();
+  // Limpar vale com a fila andando (e sem internet): ele entra nela depois das marcações, e os itens saem da tela
+  // já no toque, então não há como limpar o mesmo carrinho duas vezes.
+  const clearChecked = useClearCheckedItems(id);
   const archive = useArchiveList(id);
   const pantry = usePantry();
   const links = useListLinks();
@@ -180,11 +184,13 @@ export default function ShoppingListScreen() {
     setUnit('un');
   }
 
+  // Pôr item vai pela fila da lista: aparece na hora, também sem internet, e o campo já fica livre para o próximo.
+  // Se a fila desistir, o aviso sai dela (lib/queryClient), também com a tela já fechada.
   function add(product?: Product) {
     const itemName = product?.name ?? name.trim();
     if (!itemName) return;
     const qty = parseDecimal(quantity) ?? 1;
-    addItem.mutate(
+    addItem.add(
       {
         name: itemName,
         category: product?.category ?? guessCategory(itemName),
@@ -192,15 +198,16 @@ export default function ShoppingListScreen() {
         quantity: qty > 0 ? qty : 1,
         unit,
       },
-      { onSuccess: resetForm, onError },
+      session!.user.id,
     );
+    resetForm();
   }
 
   /** Item comum: liga ao produto da casa de mesmo nome, se existir. */
   function addCommon(item: CommonItem, fromForm = false) {
     const product = productByName.get(normalizeSearch(item.name));
     const qty = fromForm ? (parseDecimal(quantity) ?? 1) : 1;
-    addItem.mutate(
+    addItem.add(
       {
         name: product?.name ?? item.name,
         category: product?.category ?? item.category,
@@ -209,8 +216,9 @@ export default function ShoppingListScreen() {
         // A unidade do catálogo vale, a menos que o usuário tenha escolhido outra.
         unit: fromForm && unit !== 'un' ? unit : item.unit,
       },
-      { onSuccess: fromForm ? resetForm : undefined, onError },
+      session!.user.id,
     );
+    if (fromForm) resetForm();
   }
 
   /**
@@ -222,20 +230,17 @@ export default function ShoppingListScreen() {
     try {
       if (add) {
         const product = productByName.get(normalizeSearch(item.name));
-        await addItem.mutateAsync({
-          name: product?.name ?? item.name,
-          category: product?.category ?? item.category,
-          productId: product?.id ?? null,
-          quantity: 1,
-          unit: item.unit,
-        });
+        addItem.add(
+          {
+            name: product?.name ?? item.name,
+            category: product?.category ?? item.category,
+            productId: product?.id ?? null,
+            quantity: 1,
+            unit: item.unit,
+          },
+          session!.user.id,
+        );
         return true;
-      }
-      // Como o Limpar: com marcações ainda indo para o servidor, a lista
-      // daqui pode não ser a de lá (um item devolvido do carrinho, por exemplo).
-      if (listQueueBusy(queryClient)) {
-        notify('Espere um instante', 'As marcações da lista ainda estão sendo enviadas. Tente tirar o item de novo depois.');
-        return false;
       }
       const key = normalizeSearch(item.name);
       const matches = (items.data ?? []).filter((i) => !i.checked_at && normalizeSearch(i.name) === key);
@@ -247,6 +252,16 @@ export default function ShoppingListScreen() {
       const confirmRemoval = (name: string, when: string) =>
         askYesNo('Tirar da lista?', `${name} ${when} descrição, foto ou prioridade. Tirar da lista mesmo assim?`, 'Tirar', 'Manter');
       if (detailed && !(await confirmRemoval(matches[0].name, 'tem'))) return false;
+      // Sem internet, ou com a fila ainda enviando (a lista daqui pode não ser a de lá): tirar vai pela fila, depois
+      // do que veio antes, e no servidor só apaga o que ainda está para comprar (e, sem a confirmação, sem detalhes).
+      // O que outra pessoa mudou enquanto isso volta para a lista quando ela recarregar. A foto que espera internet
+      // só sai quando o item sai de verdade (data/listPhotos).
+      if (removalWaitsForQueue(queryClient)) {
+        for (const match of matches) {
+          remove.remove({ id: match.id, userId: session!.user.id, onlyPending: true, plainOnly: !detailed }, { onError });
+        }
+        return true;
+      }
       // A foto que espera internet só sai depois que o item saiu: se apagar
       // falhar (sem internet), o item fica com ela. Só apaga o que ainda está
       // para comprar e, sem a confirmação, o que ainda está sem detalhes: o
@@ -274,22 +289,21 @@ export default function ShoppingListScreen() {
     }
   }
 
-  // mutateAsync: com dois toques seguidos, os callbacks de mutate só valem
-  // para o último, e uma falha do primeiro deixaria o item escondido.
-  async function addRecent(item: Omit<RecentItem, 'times'>) {
+  // A falha de cada toque devolve o próprio item à faixa (cada pedido tem o seu onError, mesmo com toques seguidos).
+  // O aviso da falha sai da fila (lib/queryClient), como nos outros jeitos de pôr item.
+  function addRecent(item: Omit<RecentItem, 'times'>) {
     justAdded.add([item.name]);
-    try {
-      await addItem.mutateAsync({
+    addItem.add(
+      {
         name: item.name,
         category: item.category,
         productId: item.productId,
         quantity: item.quantity,
         unit: item.unit,
-      });
-    } catch (err) {
-      justAdded.drop([item.name]);
-      onError(err);
-    }
+      },
+      session!.user.id,
+      { onError: () => justAdded.drop([item.name]) },
+    );
   }
 
 
@@ -395,9 +409,27 @@ export default function ShoppingListScreen() {
   const checked = (items.data ?? []).filter((i) => i.checked_at).sort(compareByAisle);
   const pendingNames = new Set(pending.map((i) => normalizeSearch(i.name)));
 
+  // Sem internet e nunca aberta neste aparelho (nem veio com o resumo das listas): a busca fica parada até a
+  // conexão voltar, e a tela diz isso em vez de girar sem fim.
+  if ((list.isPending && list.fetchStatus === 'paused') || (items.isPending && items.fetchStatus === 'paused')) {
+    return (
+      <Screen edges={[]}>
+        <Stack.Screen options={{ title: list.data?.name ?? 'Lista' }} />
+        <EmptyState
+          icon="wifi-off"
+          title="Sem internet"
+          message="Esta lista ainda não foi aberta neste aparelho. Ela aparece aqui quando a conexão voltar."
+          mood="calm"
+        />
+      </Screen>
+    );
+  }
   if (list.isPending || items.isPending) return <Loading />;
-  if (list.isError) return <ErrorNotice error={list.error} onRetry={() => list.refetch()} />;
-  if (items.isError) return <ErrorNotice error={items.error} onRetry={() => items.refetch()} />;
+  // O erro só toma a tela quando não há o que mostrar. Com a lista já carregada (ou guardada), a busca que falhou
+  // (voltar ao app com sinal fraco, puxar para atualizar) deixa a lista na tela, com um aviso em cima.
+  if (!list.data) return <ErrorNotice error={list.error} onRetry={() => list.refetch()} />;
+  if (!items.data) return <ErrorNotice error={items.error} onRetry={() => items.refetch()} />;
+  const staleError = list.isError ? list.error : items.isError ? items.error : null;
 
   const { restock: restockItems, recent: recentItems } = strips;
 
@@ -429,30 +461,23 @@ export default function ShoppingListScreen() {
   const clearCart = (cart: ShoppingListItem[], toPantry: CartPantryEntry[]) => {
     setStoring(null);
     clearChecked.mutate(
-      { listId: id, userId: session!.user.id, items: cart.map((i) => ({ id: i.id, token: i.toggle_token })), pantry: toPantry },
+      {
+        listId: id,
+        userId: session!.user.id,
+        items: cart.map((i) => ({ id: i.id, token: i.toggle_token })),
+        pantry: toPantry,
+        bought: cartPurchases(cart),
+      },
       { onSuccess: () => emptyPhotoTrash(), onError },
     );
   };
+  // Tirar vai pela fila da lista (vale sem internet). A foto que esperava internet sai quando o item sai de verdade
+  // (data/listPhotos): se o tirar não der certo, o item volta com ela.
   const removeItem = (item: ShoppingListItem) =>
     confirmAction('Remover item', `Remover "${item.name}" da lista?`, 'Remover', () => {
       setEditing(null);
-      void removeWithPhoto(item.id);
+      remove.remove({ id: item.id, userId: session!.user.id }, { onSuccess: () => emptyPhotoTrash(), onError });
     });
-
-  /**
-   * Apaga o item e só então a foto que esperava internet (se apagar falhar, o
-   * item fica com ela). mutateAsync: com duas remoções seguidas, os callbacks
-   * de mutate só valeriam para a última.
-   */
-  async function removeWithPhoto(itemId: string) {
-    try {
-      await remove.mutateAsync(itemId);
-      dropPendingPhotos(queryClient, itemId);
-      emptyPhotoTrash();
-    } catch (err) {
-      onError(err);
-    }
-  }
 
   /**
    * "Ver preços" nos detalhes do item: leva ao produto de onde o preço sai ou, sem preço, ao produto do item
@@ -487,8 +512,10 @@ export default function ShoppingListScreen() {
     if (details.notes !== (item.notes ?? null)) values.notes = details.notes;
     if (details.priority !== (item.priority ?? 'normal')) values.priority = details.priority;
     if (photo.kind !== 'keep') dropPendingPhotos(queryClient, item.id);
-    if (photo.kind === 'remove' && item.photo_path) values.photo_path = null;
-    if (Object.keys(values).length) edit.mutate({ id: item.id, listId: id, userId, values }, { onError });
+    // Tira só a foto que estava no item: a que outra pessoa puser antes de esta edição chegar ao servidor fica.
+    const expectedPhotoPath = photo.kind === 'remove' && item.photo_path ? item.photo_path : undefined;
+    if (expectedPhotoPath) values.photo_path = null;
+    if (Object.keys(values).length) edit.mutate({ id: item.id, listId: id, userId, values, expectedPhotoPath }, { onError });
     if (photo.kind === 'new') {
       try {
         if (!householdId) throw new Error('Família não carregada.');
@@ -522,6 +549,12 @@ export default function ShoppingListScreen() {
       }>
       <Stack.Screen options={{ title: list.data.name }} />
       <OfflineNotice />
+      {staleError ? (
+        <StaleNotice
+          message={isNetworkFailure(staleError) ? STALE_OFFLINE : undefined}
+          onRetry={() => [list, items].forEach((query) => void query.refetch())}
+        />
+      ) : null}
       {/* Alguém da casa (ou a própria pessoa) avisou que está indo às compras desta lista. */}
       <MarketTripBanner listId={list.data.id} />
 
@@ -564,7 +597,7 @@ export default function ShoppingListScreen() {
           />
         ))}
         {name.trim() ? (
-          <Button title={`Adicionar "${name.trim()}"`} icon="plus" compact onPress={() => add()} loading={addItem.isPending} />
+          <Button title={`Adicionar "${name.trim()}"`} icon="plus" compact onPress={() => add()} />
         ) : (
           <Button title="Escolher dos itens comuns" icon="playlist-plus" variant="secondary" compact onPress={() => setPickerOpen(true)} />
         )}
@@ -622,13 +655,7 @@ export default function ShoppingListScreen() {
         <Section
           title={`No carrinho (${checked.length})`}
           action={
-            <Button
-              title="Limpar"
-              variant="ghost"
-              compact
-              disabled={syncing}
-              onPress={() => void openStore(checked, false)}
-            />
+            <Button title="Limpar" variant="ghost" compact onPress={() => void openStore(checked, false)} />
           }>
           <ShoppingGrid
             items={checked}
@@ -637,7 +664,7 @@ export default function ShoppingListScreen() {
             photos={photos}
             hints={market.hints}
             onOpen={setEditing}
-            onStore={syncing ? undefined : (item) => void openStore([item], true)}
+            onStore={(item) => void openStore([item], true)}
           />
         </Section>
       ) : null}

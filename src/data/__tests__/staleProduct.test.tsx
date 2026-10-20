@@ -5,7 +5,16 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { PRODUCT_MERGED_AWAY, PRODUCT_NAME_TAKEN } from '@/domain/productMerge';
 
 import { learnShelfLife } from '../home';
-import { ProductNameTakenError, useAddItemsToList, useAddListItem, useAddToMarketList, useRenameProduct, type NewListItem } from '../market';
+import {
+  ADD_ITEM_KEY,
+  ProductNameTakenError,
+  registerListMutations,
+  useAddItemsToList,
+  useAddListItem,
+  useAddToMarketList,
+  useRenameProduct,
+  type NewListItem,
+} from '../market';
 import { isProductMergedAway } from '../productMerge';
 import { useConfirmReceipt } from '../receipts';
 
@@ -59,7 +68,12 @@ jest.mock('@/lib/supabase', () => {
     return builder;
   };
   return {
-    supabase: { from: (table: string) => request(table), rpc: (name: string) => request(`rpc ${name}`) },
+    supabase: {
+      from: (table: string) => request(table),
+      rpc: (name: string) => request(`rpc ${name}`),
+      // A fila da lista só sai com a sessão de quem tocou.
+      auth: { getSession: async () => ({ data: { session: { user: { id: 'u1' } } }, error: null }) },
+    },
     unwrap: (result: Reply) => {
       if (result.error) throw result.error;
       return result.data;
@@ -88,9 +102,10 @@ const ARROZ: NewListItem = { name: 'Arroz 5kg', category: 'graos', productId: 'p
 let renderer: ReactTestRenderer | undefined;
 
 /** Roda um hook de verdade dentro de um QueryClient; devolve o que ele deu por último e as chaves invalidadas. */
-async function withHook<T>(useIt: () => T) {
+async function withHook<T>(useIt: () => T, setup?: (client: QueryClient) => void) {
   // Sem temporizador de limpeza do cache: o Jest não fica esperando por ele no fim.
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false, gcTime: 0 } } });
+  setup?.(client);
   const invalidated: unknown[] = [];
   const invalidate = client.invalidateQueries.bind(client);
   client.invalidateQueries = ((filters?: { queryKey?: readonly unknown[] }) => {
@@ -257,17 +272,42 @@ describe('pôr na lista um produto que foi juntado', () => {
     return { data: [], error: null };
   };
 
-  it('um item na lista aberta (useAddListItem)', async () => {
-    mockDb.reply = failItems(productGone('shopping_list_items'));
-    const hook = await withHook(() => useAddListItem('l1'));
-    const error = await failure(() => hook.value().mutateAsync(ARROZ));
-    expect((error as Error).message).toBe(PRODUCT_MERGED_AWAY);
-    expect([...hook.invalidated].sort()).toEqual(SOURCES);
+  // O item da lista aberta vai pela fila (pode ter esperado a conexão, sem ninguém olhando para responder): o
+  // produto juntado não vira erro, o item entra pelo nome, sem ele.
+  it('um item na lista aberta (useAddListItem): entra sem o produto, e os produtos são buscados de novo', async () => {
+    let inserts = 0;
+    mockDb.reply = (call) =>
+      call.target === 'shopping_list_items' && call.steps[0] === 'insert' && inserts++ === 0
+        ? { data: null, error: productGone('shopping_list_items') }
+        : { data: null, error: null };
+    // Como no app: os padrões da fila valem antes de a tela montar.
+    const hook = await withHook(
+      () => useAddListItem('l1'),
+      (client) => {
+        registerListMutations(client);
+        client.setMutationDefaults(ADD_ITEM_KEY, { ...client.getMutationDefaults(ADD_ITEM_KEY), retry: false });
+      },
+    );
+    const onError = jest.fn();
+    await act(async () => hook.value().add(ARROZ, 'u1', { onError }));
+    await flush();
+    const rows = mockDb.sent.filter(([, step]) => step === 'insert').map(([, , [row]]) => row as { product_id: string | null; name: string });
+    expect(rows.map((row) => [row.name, row.product_id])).toEqual([
+      ['Arroz 5kg', 'p-gone'],
+      ['Arroz 5kg', null],
+    ]);
+    expect(onError).not.toHaveBeenCalled();
+    expect([...new Set(hook.invalidated.filter((key) => SOURCES.includes(String(key))))].sort()).toEqual(SOURCES);
 
+    // Outro 23503 (a lista apagada em outro aparelho) continua sendo erro (aqui sem as tentativas da fila), sem
+    // buscar os produtos.
     mockDb.reply = failItems(listGone);
     hook.invalidated.length = 0;
-    expect(await failure(() => hook.value().mutateAsync(ARROZ))).toEqual(listGone);
-    expect(hook.invalidated).toEqual([]);
+    await act(async () => hook.value().add(ARROZ, 'u1', { onError }));
+    await flush();
+    expect(onError).toHaveBeenCalledWith(listGone);
+    // O histórico sempre fica marcado como velho no fim da fila; os produtos e a despensa, não.
+    expect(hook.invalidated.filter((key) => key === 'products' || key === 'pantry')).toEqual([]);
   });
 
   it('vários itens, numa lista que já existe ou numa nova (useAddItemsToList)', async () => {

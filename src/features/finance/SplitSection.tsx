@@ -3,6 +3,7 @@ import { Modal, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAddSettlement, useDeleteSettlement, useSaveSplitWeights, useSettlements, useSplitWeights } from '@/data/finance';
+import { FORMER_MEMBER, memberName } from '@/domain/account';
 import type { Entry } from '@/domain/finance';
 import { formatBRL, parseDecimal } from '@/domain/money';
 import { splitMonth } from '@/domain/split';
@@ -28,12 +29,14 @@ export function SplitSection({ entries, month, monthName }: { entries: Entry[]; 
   if (members.length < 2 || !weights.data || !settlements.data) return null;
 
   const people = members.map((m) => ({ userId: m.user_id, name: m.display_name }));
-  const nameOf = (id: string) => people.find((p) => p.userId === id)?.name ?? 'Alguém';
+  // Quem saiu da casa (ou apagou a conta, e ficou sem id no acerto) aparece como ex-morador.
+  const nameOf = (id: string | null) => memberName(members, id) ?? FORMER_MEMBER;
   const result = splitMonth({
     entries: entries.map((e) => ({ amount: e.amount, paidBy: e.paidBy ?? null })),
     members: people,
     weights: weights.data,
-    settlements: settlements.data.map((s) => ({ from: s.from_user, to: s.to_user, amount: s.amount })),
+    // Acerto com quem apagou a conta não entra na conta do mês (como o de quem saiu da casa).
+    settlements: settlements.data.flatMap((s) => (s.from_user && s.to_user ? [{ from: s.from_user, to: s.to_user, amount: s.amount }] : [])),
   });
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
   const equal = people.every((p) => (weights.data[p.userId] ?? 1) === (weights.data[people[0].userId] ?? 1));

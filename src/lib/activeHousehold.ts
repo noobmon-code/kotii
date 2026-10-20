@@ -62,6 +62,17 @@ export function setActiveHousehold(userId: string, householdId: string | null): 
   return saving;
 }
 
+/** A conta foi apagada: a casa guardada para ela sai do aparelho (não há volta). */
+export function forgetStoredHousehold(userId: string): Promise<void> {
+  saving = saving.then(async () => {
+    const stored = await readStored();
+    if (!(userId in stored)) return;
+    delete stored[userId];
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(stored)).catch(() => undefined);
+  });
+  return saving;
+}
+
 /** Saiu da conta: os pedidos deixam de levar a casa (a escolha fica para a volta). */
 export function forgetActiveHousehold() {
   loadedFor = null;

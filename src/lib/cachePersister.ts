@@ -11,7 +11,96 @@ export interface KeyValueStorage {
   removeItem: (key: string) => Promise<void>;
 }
 
-export function createCachePersister({ storage, key, throttleMs }: { storage: KeyValueStorage; key: string; throttleMs: number }) {
+/**
+ * Gravar falhou (armazenamento cheio: no navegador, o localStorage tem poucos
+ * MB). `essential`: só o essencial ficou guardado; `lost`: nem isso, e o que
+ * estava guardado antes foi apagado (o cache velho, com uma fila velha, não
+ * volta numa próxima abertura).
+ */
+export type CacheWriteFailure = 'essential' | 'lost';
+
+/**
+ * O que ficou guardado da fila enquanto saía (o pedido no ar, ou esperando
+ * para tentar de novo, quando o app foi fechado) volta parado, para sair com
+ * o resto quando a conexão voltar: o TanStack Query só retoma o que está
+ * parado. E volta como já tentado (failureCount): o servidor pode ter
+ * gravado, então tirar o mesmo item não cancela mais o pôr, vai para a fila
+ * depois dele (domain/listQueue).
+ */
+export function resumeInFlight(client: PersistedClient | undefined): PersistedClient | undefined {
+  for (const mutation of client?.clientState.mutations ?? []) {
+    if (mutation.state.status !== 'pending' || mutation.state.isPaused) continue;
+    mutation.state = { ...mutation.state, isPaused: true, failureCount: Math.max(1, mutation.state.failureCount) };
+  }
+  return client;
+}
+
+/**
+ * Quando avisar da falha ao gravar. `essential` (o app segue com o
+ * essencial guardado, nada se perde): uma vez, e não a cada abertura do app
+ * (numa casa grande o cache inteiro nunca cabe, e a falha volta sempre); a
+ * hora do aviso fica guardada à parte, numa linha pequena que cabe quando o
+ * cache não cabe, e o aviso volta depois de `remindAfterMs`. `lost`: só
+ * quando há algo da fila esperando a conexão (é o que se perderia), uma vez
+ * por abertura.
+ */
+export function createWriteFailureWarner({
+  storage,
+  markerKey,
+  remindAfterMs,
+  queueWaiting,
+  warn,
+  now = Date.now,
+}: {
+  storage: KeyValueStorage;
+  markerKey: string;
+  remindAfterMs: number;
+  queueWaiting: () => boolean;
+  warn: (failure: CacheWriteFailure) => void;
+  now?: () => number;
+}) {
+  let essentialSeen = false;
+  let lostWarned = false;
+  return async (failure: CacheWriteFailure): Promise<void> => {
+    if (failure === 'lost') {
+      if (lostWarned || !queueWaiting()) return;
+      lostWarned = true;
+      warn('lost');
+      return;
+    }
+    // Nesta abertura já conferiu: não lê o aparelho a cada gravação.
+    if (essentialSeen) return;
+    essentialSeen = true;
+    let last = 0;
+    try {
+      last = Number(await storage.getItem(markerKey)) || 0;
+    } catch {
+      // Sem conseguir ler, avisa.
+    }
+    if (last && now() - last < remindAfterMs) return;
+    try {
+      await storage.setItem(markerKey, String(now()));
+    } catch {
+      // Nem a linha pequena coube: o aviso sai mesmo assim, e talvez de novo na próxima abertura.
+    }
+    warn('essential');
+  };
+}
+
+export function createCachePersister({
+  storage,
+  key,
+  throttleMs,
+  essential,
+  onWriteFailed,
+}: {
+  storage: KeyValueStorage;
+  key: string;
+  throttleMs: number;
+  /** O mínimo para guardar quando o cache inteiro não cabe (a fila de quem ficou sem internet, as listas). */
+  essential?: (client: PersistedClient) => PersistedClient;
+  onWriteFailed?: (failure: CacheWriteFailure) => void;
+}) {
   let queue: Promise<void> = Promise.resolve();
   let waiting: PersistedClient | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -27,10 +116,31 @@ export function createCachePersister({ storage, key, throttleMs }: { storage: Ke
     timer = undefined;
   };
 
+  /** Grava; sem espaço, tenta só o essencial e, sem espaço nem para ele, tira o cache velho. */
+  const write = async (client: PersistedClient) => {
+    try {
+      await storage.setItem(key, JSON.stringify(client));
+      return;
+    } catch {
+      // Segue para o essencial.
+    }
+    if (essential) {
+      try {
+        await storage.setItem(key, JSON.stringify(essential(client)));
+        onWriteFailed?.('essential');
+        return;
+      } catch {
+        // Nem o essencial coube.
+      }
+    }
+    await storage.removeItem(key).catch(() => undefined);
+    onWriteFailed?.('lost');
+  };
+
   const writeWaiting = () => {
     const client = waiting;
     dropWaiting();
-    return client ? enqueue(() => storage.setItem(key, JSON.stringify(client))) : queue;
+    return client ? enqueue(() => write(client)) : queue;
   };
 
   const persister: Persister = {

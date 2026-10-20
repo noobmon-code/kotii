@@ -42,6 +42,15 @@ async function saveDevice(userId: string, version: string): Promise<void> {
   }
 }
 
+/** A conta foi apagada: as versões que ela aceitou saem deste aparelho (no banco, saem com a conta). */
+export async function forgetTermsOnDevice(userId: string): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(deviceKey(userId));
+  } catch {
+    // Sem armazenamento: não há o que apagar.
+  }
+}
+
 /** Grava o aceite no banco. false: a função ainda não existe (o app chegou antes da migração); outro erro sobe. */
 async function recordAcceptance(version: string, db: SupabaseClient): Promise<boolean> {
   const result = await db.rpc('accept_terms', { p_version: version });

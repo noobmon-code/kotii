@@ -326,7 +326,8 @@ export function useSpending(fromMonth: string, toMonth: string, enabled = true) 
  * As notas confirmadas que a busca de useSpending já trouxe para o mesmo
  * período (mesma chave, mesmo cache): só para a conta do total do mercado do
  * mês na entrada do resumo. A tela "Mercado do mês" tem a própria leitura,
- * paginada (useMarketReceipts), que o resumo nunca dispara.
+ * paginada (useMarketData), que o resumo nunca dispara. Os gastos avulsos e
+ * as contas pagas de mercado a entrada tira dos lançamentos (useSpending).
  */
 export function useSpendingReceipts(fromMonth: string, toMonth: string) {
   return useQuery({ ...spendingQuery(fromMonth, toMonth), select: marketReceiptsOf });
@@ -431,8 +432,9 @@ export function useSaveSplitWeights() {
 export interface Settlement {
   id: string;
   month: string;
-  from_user: string;
-  to_user: string;
+  /** Nulo: quem passou ou recebeu apagou a conta (o acerto fica, com "Ex-morador"). */
+  from_user: string | null;
+  to_user: string | null;
   amount: number;
 }
 

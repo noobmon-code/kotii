@@ -20,8 +20,8 @@ import { createClient } from '@supabase/supabase-js';
 
 import { publishableKey, secretKey } from '../_shared/apiKeys.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
+import { drainHouseholdFiles } from '../_shared/householdFiles.ts';
 import { sameSecret } from '../_shared/secret.ts';
-import { type CleanupQueue, drainCleanupQueue } from './cleanup.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -42,25 +42,7 @@ Deno.serve(async (req) => {
 
   const url = Deno.env.get('SUPABASE_URL')!;
   const admin = createClient(url, secretKey());
-  const queue: CleanupQueue = {
-    pending: async (limit) => {
-      const { data: rows, error: queueError } = await admin
-        .from('household_file_cleanup')
-        .select('household_id, attempts')
-        .order('attempts')
-        .order('requested_at')
-        .limit(limit);
-      if (queueError) throw queueError;
-      return (rows ?? []).map((row) => ({ householdId: row.household_id as string, attempts: row.attempts as number }));
-    },
-    done: async (householdId) => {
-      await admin.from('household_file_cleanup').delete().eq('household_id', householdId);
-    },
-    failed: async (householdId, attempts) => {
-      await admin.from('household_file_cleanup').update({ attempts }).eq('household_id', householdId);
-    },
-  };
-  const drain = () => drainCleanupQueue(queue, (name) => admin.storage.from(name));
+  const drain = () => drainHouseholdFiles(admin);
 
   const body = (await req.json().catch(() => null)) as { drain?: unknown; householdId?: unknown; deleteIfLast?: unknown } | null;
   if (body?.drain === true) {

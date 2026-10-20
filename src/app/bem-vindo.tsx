@@ -1,4 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
+import { router } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
@@ -91,6 +92,7 @@ export default function WelcomeScreen() {
         <Button title={mode === 'criar' ? 'Criar casa' : 'Entrar na casa'} onPress={submit} loading={busy} />
       </Card>
       <Button title="Sair" variant="ghost" onPress={() => signOut()} />
+      <Button title="Apagar minha conta" variant="ghost" compact onPress={() => router.push('/apagar-conta')} />
     </Screen>
   );
 }

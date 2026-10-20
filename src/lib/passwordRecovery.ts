@@ -161,6 +161,19 @@ export async function finishRecovery(): Promise<void> {
 }
 
 /**
+ * A conta foi apagada: a marca dela, se ainda estiver no aparelho, sai (não há mais senha a criar). A
+ * marca de outra conta fica: tirá-la deixaria essa conta abrir a casa sem a senha nova.
+ */
+export async function forgetRecoveryOf(userId: string): Promise<void> {
+  await serialized(async () => {
+    if ((await AsyncStorage.getItem(MARK_KEY)) !== userId) return;
+    version += 1;
+    if (state.userId === userId) setState({ userId: null, readFor: state.readFor });
+    await AsyncStorage.multiRemove([MARK_KEY, MARK_BY_KEY]);
+  }).catch(() => undefined);
+}
+
+/**
  * A sessão saiu (aqui ou em outra aba): esquece a marca só na memória. O
  * aparelho continua com ela, e a próxima conta que entrar a lê de novo (a
  * entrada com a senha tira, o link ou código põe outra).

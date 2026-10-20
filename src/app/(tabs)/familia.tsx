@@ -3,7 +3,7 @@ import { Share, StyleSheet } from 'react-native';
 
 import { usePeople } from '@/data/health';
 import { useKidPoints } from '@/data/home';
-import { LastMemberError, useLeaveHousehold, useRegenerateInviteCode, useRemoveMember } from '@/data/household';
+import { LastMemberError, useLeaveHousehold, useRegenerateInviteCode, useRemoveMember, useSignOutQuestion } from '@/data/household';
 import { AiUsageSection } from '@/features/AiUsageSection';
 import { DocumentsSection } from '@/features/DocumentsSection';
 import { HouseRemindersSection } from '@/features/HouseRemindersSection';
@@ -23,6 +23,7 @@ export default function FamilyScreen() {
   const regenerateCode = useRegenerateInviteCode();
   const people = usePeople();
   const kidPoints = useKidPoints();
+  const signOutQuestion = useSignOutQuestion();
 
   if (!household.data) return <Loading />;
   const { household: house, members, me, households } = household.data;
@@ -236,7 +237,15 @@ export default function FamilyScreen() {
           title="Sair da conta"
           variant="danger"
           icon="logout"
-          onPress={() => confirmAction('Sair da conta', 'Deseja sair desta conta neste aparelho?', 'Sair', () => signOut())}
+          onPress={() => confirmAction('Sair da conta', signOutQuestion(), 'Sair', () => signOut())}
+        />
+        {/* A tela explica antes o que fica com cada casa e pede a senha de novo. */}
+        <Button
+          title="Apagar minha conta"
+          variant="ghost"
+          compact
+          icon="account-remove-outline"
+          onPress={() => router.push('/apagar-conta')}
         />
       </Section>
     </Screen>

@@ -8,11 +8,22 @@ import { type QueryClient, useMutation, useMutationState, useQuery } from '@tans
 import { decode } from 'base64-arraybuffer';
 
 import { fitForProductPhoto } from '@/domain/image';
+import type { QueueCounts } from '@/domain/listQueue';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { ShoppingListItem } from '@/lib/types';
 
 import { prepareImage } from './images';
-import { queuedDefaults, requireQueueSession } from './market';
+import {
+  ADD_ITEM_KEY,
+  CLEAR_CHECKED_KEY,
+  countingFailures,
+  EDIT_ITEM_KEY,
+  queuedAddSettled,
+  queuedDefaults,
+  REMOVE_ITEM_KEY,
+  requireQueueSession,
+  TOGGLE_ITEM_KEY,
+} from './market';
 
 /** Mesmo bucket das fotos de aparelhos: políticas e limpeza da casa apagada já valem. */
 export const LIST_PHOTO_BUCKET = 'documents';
@@ -41,6 +52,19 @@ export function photoQueueBusy(queryClient: QueryClient) {
   return queryClient.isMutating({ predicate: inPhotoQueue }) > 0;
 }
 
+/** Quanto de cada coisa espera para sair (ou está saindo), nas filas da lista e das fotos: o mesmo do aviso da lista. */
+export function waitingCounts(queryClient: QueryClient): QueueCounts {
+  const pending = (mutationKey: readonly string[]) => queryClient.isMutating({ mutationKey: [...mutationKey] });
+  return {
+    adds: pending(ADD_ITEM_KEY),
+    marks: pending(TOGGLE_ITEM_KEY),
+    edits: pending(EDIT_ITEM_KEY),
+    removes: pending(REMOVE_ITEM_KEY),
+    clears: pending(CLEAR_CHECKED_KEY),
+    photos: pending(LIST_PHOTO_KEY),
+  };
+}
+
 function randomKey(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -63,19 +87,44 @@ export async function pendingPhotoUri(key: string): Promise<string | null> {
   return base64 ? `data:image/jpeg;base64,${base64}` : null;
 }
 
+/**
+ * Prazo do envio da foto. O storage-js não tem um, e no Android o pedido sem resposta não acaba nunca: a fila de
+ * fotos (uma de cada vez) e a troca de casa ficariam presas. Cortado, ele volta como falta de resposta e a fila
+ * tenta de novo (o que já tinha subido dá 409 e só grava no item). Folgado: a foto reduzida passa disso só com
+ * o sinal quase parado.
+ */
+export const PHOTO_UPLOAD_TIMEOUT_MS = 120_000;
+
+/** Fotos tiradas da fila enquanto subiam ou esperavam a vez (dropPendingPhotos): não vão para o item. */
+const droppedPhotos = new Set<string>();
+
+function withinUploadTimeout<T>(upload: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('Network request timed out')), PHOTO_UPLOAD_TIMEOUT_MS);
+  });
+  return Promise.race([upload, timeout]).finally(() => clearTimeout(timer));
+}
+
 /** Sobe a foto e grava no item; devolve o caminho gravado (null se não gravou). */
 async function uploadListPhoto({ itemId, householdId, userId, photoKey }: ListPhotoInput): Promise<string | null> {
   await requireQueueSession(userId);
+  if (droppedPhotos.delete(photoKey)) return null;
   const base64 = await AsyncStorage.getItem(PENDING_PREFIX + photoKey);
   // Já subiu numa tentativa anterior, ou o aparelho apagou os dados do app.
   if (!base64) return null;
   const path = `${householdId}/item-${photoKey}.jpg`;
-  const { error } = await supabase.storage
-    .from(LIST_PHOTO_BUCKET)
-    .upload(path, decode(base64), { contentType: 'image/jpeg', cacheControl: String(WEEK_SECONDS) });
+  const { error } = await withinUploadTimeout(
+    supabase.storage.from(LIST_PHOTO_BUCKET).upload(path, decode(base64), { contentType: 'image/jpeg', cacheControl: String(WEEK_SECONDS) }),
+  );
   // Já existe: subiu numa tentativa que caiu antes de gravar no item.
   const status = (error as { statusCode?: string; status?: number } | null)?.statusCode ?? (error as { status?: number } | null)?.status;
   if (error && String(status) !== '409') throw error;
+  // Tirada (ou trocada por outra) enquanto subia: o arquivo não serve mais.
+  if (droppedPhotos.delete(photoKey)) {
+    await supabase.storage.from(LIST_PHOTO_BUCKET).remove([path]);
+    return null;
+  }
   const updated = unwrap(
     await supabase.from('shopping_list_items').update({ photo_path: path }).eq('id', itemId).select('id'),
   ) as { id: string }[];
@@ -89,7 +138,11 @@ async function uploadListPhoto({ itemId, householdId, userId, photoKey }: ListPh
 export function registerListPhotoMutations(queryClient: QueryClient) {
   queryClient.setMutationDefaults(LIST_PHOTO_KEY, {
     ...queuedDefaults(LIST_PHOTO_SCOPE),
-    mutationFn: (input: ListPhotoInput) => uploadListPhoto(input),
+    // A foto de um item posto sem internet espera o item chegar ao servidor (ele anda na fila da lista).
+    mutationFn: countingFailures(async (input: ListPhotoInput) => {
+      await queuedAddSettled(queryClient, input.itemId);
+      return uploadListPhoto(input);
+    }),
     onSuccess: async (path: string | null, input: ListPhotoInput) => {
       const key = ['listItems', input.listId];
       // A foto sai da fila agora: a lista já passa a tê-la, sem esperar a
@@ -104,21 +157,46 @@ export function registerListPhotoMutations(queryClient: QueryClient) {
       emptyPhotoTrash();
     },
   });
+  // A foto que espera internet sai quando o item saiu de verdade: o tirar apagou a linha no servidor, ou o item
+  // posto sem internet foi tirado antes de sair (os dois se cancelaram). Tirar que não deu certo (a fila desistiu,
+  // ou o item foi para o carrinho enquanto isso) deixa o item com a foto. Aqui, e não na tela: vale também para a
+  // fila guardada que sai depois de reabrir o app.
+  queryClient.getMutationCache().subscribe((event) => {
+    const { mutation } = event;
+    const itemId = (mutation?.state.variables as { id?: string } | undefined)?.id;
+    if (!mutation || !itemId) return;
+    const key = mutation.options.mutationKey?.[0];
+    const deleted =
+      key === REMOVE_ITEM_KEY[0] &&
+      event.type === 'updated' &&
+      event.action.type === 'success' &&
+      Array.isArray(mutation.state.data) &&
+      mutation.state.data.length > 0;
+    const cancelled = key === ADD_ITEM_KEY[0] && event.type === 'removed' && mutation.state.status === 'pending';
+    if (deleted || cancelled) dropPendingPhotos(queryClient, itemId);
+  });
 }
 
 /**
- * Tira da fila as fotos deste item que ainda esperam internet (trocada por
+ * Tira da fila as fotos deste item que ainda não foram para ele (trocada por
  * outra, removida, ou o item saiu da lista) e apaga as guardadas no aparelho.
+ * A que está parada sai da fila; a que está andando (subindo, esperando o pôr
+ * do item ou a próxima tentativa depois de uma falha) termina sem ir para o
+ * item. Também é a saída para a foto que não consegue subir: tirá-la do item
+ * libera a fila de fotos (e a troca de casa).
  */
 export function dropPendingPhotos(queryClient: QueryClient, itemId: string) {
   const cache = queryClient.getMutationCache();
   const waiting = cache.findAll({
     mutationKey: LIST_PHOTO_KEY,
-    predicate: (m) => m.state.isPaused && (m.state.variables as ListPhotoInput | undefined)?.itemId === itemId,
+    status: 'pending',
+    predicate: (m) => (m.state.variables as ListPhotoInput | undefined)?.itemId === itemId,
   });
   for (const mutation of waiting) {
-    cache.remove(mutation);
-    AsyncStorage.removeItem(PENDING_PREFIX + (mutation.state.variables as ListPhotoInput).photoKey).catch(() => undefined);
+    const { photoKey } = mutation.state.variables as ListPhotoInput;
+    if (mutation.state.isPaused) cache.remove(mutation);
+    else droppedPhotos.add(photoKey);
+    AsyncStorage.removeItem(PENDING_PREFIX + photoKey).catch(() => undefined);
   }
 }
 

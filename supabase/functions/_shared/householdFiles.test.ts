@@ -1,6 +1,6 @@
 import { assertEquals, assertRejects } from '@std/assert';
 
-import { type BucketApi, type CleanupQueue, drainCleanupQueue, removeHouseholdFiles } from './cleanup.ts';
+import { type BucketApi, type CleanupQueue, drainCleanupQueue, removeHouseholdFiles } from './householdFiles.ts';
 
 function fakeStorage(files: Record<string, string[]>, { stuck = false } = {}) {
   const calls: string[] = [];

@@ -12,6 +12,7 @@ import {
   useSaveBill,
   useUndoBillPayment,
 } from '@/data/finance';
+import { memberName } from '@/domain/account';
 import { ABOVE_USUAL_LABEL, billUsualNote, paymentHistory, paymentsAboveUsual } from '@/domain/billUsual';
 import { parseBoleto, type Boleto } from '@/domain/boleto';
 import { formatBRDate, parseBRDate, todayISO } from '@/domain/dates';
@@ -357,7 +358,7 @@ function PaymentHistory({ bill }: { bill: Bill }) {
     <Section title="Pagamentos">
       <ListCard>
         {shown.map((p, index) => {
-          const who = members.find((m) => m.user_id === p.paid_by)?.display_name;
+          const who = memberName(members, p.paid_by);
           return (
             <ListRow
               key={p.id}

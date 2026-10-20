@@ -4,17 +4,19 @@
 // guardada e sai quando a conexão volta.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { hashKey, MutationCache, onlineManager, QueryClient } from '@tanstack/react-query';
+import { focusManager, hashKey, MutationCache, onlineManager, QueryClient } from '@tanstack/react-query';
 import { persistQueryClientSave, type PersistedClient, type PersistQueryClientProviderProps } from '@tanstack/react-query-persist-client';
 import * as Network from 'expo-network';
 import { AppState, Platform } from 'react-native';
 
 import { forgetPendingPhotos, inPhotoQueue, registerListPhotoMutations } from '@/data/listPhotos';
 import { inListQueue, registerListMutations } from '@/data/market';
+import { notify } from '@/ui/dialogs';
 
 import { isHouseholdAccessError, leftHousehold, markRemovedFromHousehold, wroteNoRows } from './accessErrors';
 import { getActiveHousehold } from './activeHousehold';
-import { createCachePersister } from './cachePersister';
+import { type CacheWriteFailure, createCachePersister, createWriteFailureWarner, resumeInFlight } from './cachePersister';
+import { errorMessage } from './supabase';
 
 const WEEK = 1000 * 60 * 60 * 24 * 7;
 
@@ -120,7 +122,11 @@ export const queryClient = new QueryClient({
     mutations: { networkMode: 'always' },
   },
 });
-registerListMutations(queryClient);
+registerListMutations(queryClient, {
+  // A fila só desiste do que não passa sozinho (a lista apagada em outro aparelho, por exemplo). O item some da
+  // lista, e a pessoa fica sabendo onde estiver, também quando o pôr saiu de uma fila guardada.
+  onAddDropped: (input, error) => notify('Item não foi para a lista', `"${input.name}" não entrou na lista: ${errorMessage(error)}`),
+});
 registerListPhotoMutations(queryClient);
 
 /** Marcações, edições, limpar e fotos da lista: o que espera internet guardado no aparelho. */
@@ -173,13 +179,82 @@ onlineManager.setEventListener((setOnline) => {
   };
 });
 
+// No celular, o TanStack Query não sabe quando o app volta para a frente (na
+// web, o navegador avisa sozinho): sem isso, o que outra pessoa pôs na lista
+// com o app no fundo (o tempo real não reenvia o que perdeu) só aparecia
+// puxando a tela para atualizar. "inactive" (só no iPhone: a central de
+// notificações, uma ligação) conta como fora de foco.
+if (Platform.OS !== 'web') {
+  focusManager.setEventListener((setFocused) => {
+    const subscription = AppState.addEventListener('change', (state) => setFocused(state === 'active'));
+    return () => subscription.remove();
+  });
+}
+
 /** A sessão ainda vale (false: venceu e o Supabase ainda não renovou). */
 export function setSessionValid(valid: boolean) {
   sessionValid = valid;
   syncOnline();
 }
 
-const { persister, persistNow } = createCachePersister({ storage: AsyncStorage, key: 'kotii:query-cache', throttleMs: 1000 });
+// Sem espaço para o cache inteiro, fica o que a lista precisa no mercado; a
+// fila (pôr, marcar, editar, tirar, limpar e as fotos) vai sempre junto.
+const ESSENTIAL = new Set(['household', 'lists', 'list', 'listItems']);
+
+function essentialOnly(client: PersistedClient): PersistedClient {
+  return {
+    ...client,
+    clientState: {
+      ...client.clientState,
+      queries: client.clientState.queries.filter((query) => ESSENTIAL.has(String(query.queryKey[0]))),
+    },
+  };
+}
+
+// No navegador o espaço do app é fixo (o localStorage, de poucos MB): liberar espaço não adianta.
+const CACHE_FAILURE_TEXT: Record<'native' | 'web', Record<CacheWriteFailure, [string, string]>> = {
+  native: {
+    essential: [
+      'Pouco espaço no aparelho',
+      'O app guardou só as listas e o que espera a conexão. Preços e produtos podem não aparecer sem internet. Libere espaço no aparelho para o app guardar tudo.',
+    ],
+    lost: [
+      'Sem espaço no aparelho',
+      'O app não conseguiu guardar o que foi feito sem internet. Deixe o app aberto até a conexão voltar, para nada se perder, e libere espaço no aparelho.',
+    ],
+  },
+  web: {
+    essential: [
+      'Pouco espaço no navegador',
+      'O navegador guarda pouco para o app: ficaram guardadas só as listas e o que espera a conexão. Preços e produtos podem não aparecer sem internet.',
+    ],
+    lost: [
+      'Sem espaço no navegador',
+      'O navegador não deixou o app guardar o que foi feito sem internet. Deixe esta página aberta até a conexão voltar, para nada se perder.',
+    ],
+  },
+};
+
+/** Há algo da fila (da lista ou das fotos) esperando para sair. */
+const queueWaiting = () =>
+  queryClient.getMutationCache().findAll({ predicate: (m) => inSavedQueue(m) && m.state.status === 'pending' }).length > 0;
+
+const warnCacheFailure = createWriteFailureWarner({
+  storage: AsyncStorage,
+  markerKey: 'kotii:low-space-warned',
+  // Uma vez por mês, se o espaço continuar faltando.
+  remindAfterMs: 30 * 24 * 60 * 60 * 1000,
+  queueWaiting,
+  warn: (failure) => notify(...CACHE_FAILURE_TEXT[Platform.OS === 'web' ? 'web' : 'native'][failure]),
+});
+
+const { persister, persistNow } = createCachePersister({
+  storage: AsyncStorage,
+  key: 'kotii:query-cache',
+  throttleMs: 1000,
+  essential: essentialOnly,
+  onWriteFailed: (failure) => void warnCacheFailure(failure),
+});
 
 // Consultas guardadas que mudaram de nome, com os mesmos dados: o cache de
 // versões anteriores volta com o nome novo (sem isso, aberto sem internet,
@@ -197,12 +272,20 @@ function renameStoredQueries(client: PersistedClient | undefined): PersistedClie
 }
 
 export const persistOptions = {
-  persister: { ...persister, restoreClient: async () => renameStoredQueries(await persister.restoreClient()) },
+  persister: {
+    ...persister,
+    restoreClient: async () => resumeInFlight(renameStoredQueries(await persister.restoreClient())),
+  },
   maxAge: WEEK,
   // Mudou o formato dos dados guardados? Troque para descartar o cache antigo.
   buster: '1',
   dehydrateOptions: {
     shouldDehydrateQuery: (query) => query.state.status === 'success' && PERSISTED.has(String(query.queryKey[0])),
+    // Da fila da lista e da das fotos, guarda também o que está saindo agora: se o app for fechado no meio do
+    // envio (no mercado, com sinal fraco, ele pode levar muito tempo), o item posto não se perde. Reenviar é
+    // seguro (ver queuedDefaults). Fora delas, só o que está parado, como o TanStack Query faz.
+    shouldDehydrateMutation: (mutation) =>
+      mutation.state.isPaused || (inSavedQueue(mutation) && mutation.state.status === 'pending'),
   },
 } satisfies PersistQueryClientProviderProps['persistOptions'];
 
@@ -219,8 +302,10 @@ export function saveNow(): Promise<void> {
   }).catch(() => undefined);
 }
 
+// Também quando uma sai da fila sem ir ao servidor (pôr e tirar o mesmo item sem internet se cancelam).
 queryClient.getMutationCache().subscribe((event) => {
-  if (event.type === 'updated' && inSavedQueue(event.mutation)) saveNow();
+  if (!event.mutation || !inSavedQueue(event.mutation)) return;
+  if (event.type === 'updated' || (event.type === 'removed' && event.mutation.state.status === 'pending')) saveNow();
 });
 // Indo para o fundo (ou fechando), grava o que estiver pendente.
 AppState.addEventListener('change', (state) => {
