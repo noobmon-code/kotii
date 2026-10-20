@@ -56,7 +56,10 @@ describe('o pedido que não chegou ao servidor', () => {
     { code: '', message: 'TypeError: Failed to fetch', details: '', hint: '' },
     { code: '', message: 'TypeError: Load failed', details: '', hint: '' },
     { message: 'TypeError: NetworkError when attempting to fetch resource.' },
+    // O celular desiste do pedido com sinal fraco.
+    { code: '', message: 'TypeError: Network request timed out', details: '', hint: '' },
     new TypeError('Network request failed'),
+    new TypeError('Network request timed out'),
     new TypeError('Failed to fetch'),
   ];
 

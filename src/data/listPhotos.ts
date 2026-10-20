@@ -12,7 +12,7 @@ import { supabase, unwrap } from '@/lib/supabase';
 import type { ShoppingListItem } from '@/lib/types';
 
 import { prepareImage } from './images';
-import { queuedAddSettled, queuedDefaults, requireQueueSession } from './market';
+import { ADD_ITEM_KEY, queuedAddSettled, queuedDefaults, REMOVE_ITEM_KEY, requireQueueSession } from './market';
 
 /** Mesmo bucket das fotos de aparelhos: políticas e limpeza da casa apagada já valem. */
 export const LIST_PHOTO_BUCKET = 'documents';
@@ -107,6 +107,24 @@ export function registerListPhotoMutations(queryClient: QueryClient) {
       queryClient.invalidateQueries({ queryKey: key });
       emptyPhotoTrash();
     },
+  });
+  // A foto que espera internet sai quando o item saiu de verdade: o tirar apagou a linha no servidor, ou o item
+  // posto sem internet foi tirado antes de sair (os dois se cancelaram). Tirar que não deu certo (a fila desistiu,
+  // ou o item foi para o carrinho enquanto isso) deixa o item com a foto. Aqui, e não na tela: vale também para a
+  // fila guardada que sai depois de reabrir o app.
+  queryClient.getMutationCache().subscribe((event) => {
+    const { mutation } = event;
+    const itemId = (mutation?.state.variables as { id?: string } | undefined)?.id;
+    if (!mutation || !itemId) return;
+    const key = mutation.options.mutationKey?.[0];
+    const deleted =
+      key === REMOVE_ITEM_KEY[0] &&
+      event.type === 'updated' &&
+      event.action.type === 'success' &&
+      Array.isArray(mutation.state.data) &&
+      mutation.state.data.length > 0;
+    const cancelled = key === ADD_ITEM_KEY[0] && event.type === 'removed' && mutation.state.status === 'pending';
+    if (deleted || cancelled) dropPendingPhotos(queryClient, itemId);
   });
 }
 

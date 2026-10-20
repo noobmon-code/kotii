@@ -15,7 +15,7 @@ import { notify } from '@/ui/dialogs';
 
 import { isHouseholdAccessError, leftHousehold, markRemovedFromHousehold, wroteNoRows } from './accessErrors';
 import { getActiveHousehold } from './activeHousehold';
-import { type CacheWriteFailure, createCachePersister } from './cachePersister';
+import { type CacheWriteFailure, createCachePersister, createWriteFailureWarner, resumeInFlight } from './cachePersister';
 
 const WEEK = 1000 * 60 * 60 * 24 * 7;
 
@@ -206,31 +206,49 @@ function essentialOnly(client: PersistedClient): PersistedClient {
   };
 }
 
-/** O aviso já dado nesta abertura do app: um por tipo de falha, sem repetir a cada gravação. */
-const warnedCacheFailures = new Set<CacheWriteFailure>();
-
-function warnCacheFailure(failure: CacheWriteFailure) {
-  if (warnedCacheFailures.has(failure)) return;
-  warnedCacheFailures.add(failure);
-  if (failure === 'essential') {
-    notify(
+// No navegador o espaço do app é fixo (o localStorage, de poucos MB): liberar espaço não adianta.
+const CACHE_FAILURE_TEXT: Record<'native' | 'web', Record<CacheWriteFailure, [string, string]>> = {
+  native: {
+    essential: [
       'Pouco espaço no aparelho',
-      'O app guardou só as listas e o que espera a conexão. Preços e produtos podem não aparecer sem internet. Libere espaço no aparelho (ou no navegador) para o app guardar tudo.',
-    );
-  } else {
-    notify(
+      'O app guardou só as listas e o que espera a conexão. Preços e produtos podem não aparecer sem internet. Libere espaço no aparelho para o app guardar tudo.',
+    ],
+    lost: [
       'Sem espaço no aparelho',
-      'O app não conseguiu guardar o que foi feito sem internet. Deixe o app aberto até a conexão voltar, para nada se perder, e libere espaço no aparelho (ou no navegador).',
-    );
-  }
-}
+      'O app não conseguiu guardar o que foi feito sem internet. Deixe o app aberto até a conexão voltar, para nada se perder, e libere espaço no aparelho.',
+    ],
+  },
+  web: {
+    essential: [
+      'Pouco espaço no navegador',
+      'O navegador guarda pouco para o app: ficaram guardadas só as listas e o que espera a conexão. Preços e produtos podem não aparecer sem internet.',
+    ],
+    lost: [
+      'Sem espaço no navegador',
+      'O navegador não deixou o app guardar o que foi feito sem internet. Deixe esta página aberta até a conexão voltar, para nada se perder.',
+    ],
+  },
+};
+
+/** Há algo da fila (da lista ou das fotos) esperando para sair. */
+const queueWaiting = () =>
+  queryClient.getMutationCache().findAll({ predicate: (m) => inSavedQueue(m) && m.state.status === 'pending' }).length > 0;
+
+const warnCacheFailure = createWriteFailureWarner({
+  storage: AsyncStorage,
+  markerKey: 'kotii:low-space-warned',
+  // Uma vez por mês, se o espaço continuar faltando.
+  remindAfterMs: 30 * 24 * 60 * 60 * 1000,
+  queueWaiting,
+  warn: (failure) => notify(...CACHE_FAILURE_TEXT[Platform.OS === 'web' ? 'web' : 'native'][failure]),
+});
 
 const { persister, persistNow } = createCachePersister({
   storage: AsyncStorage,
   key: 'kotii:query-cache',
   throttleMs: 1000,
   essential: essentialOnly,
-  onWriteFailed: warnCacheFailure,
+  onWriteFailed: (failure) => void warnCacheFailure(failure),
 });
 
 // Consultas guardadas que mudaram de nome, com os mesmos dados: o cache de
@@ -249,12 +267,20 @@ function renameStoredQueries(client: PersistedClient | undefined): PersistedClie
 }
 
 export const persistOptions = {
-  persister: { ...persister, restoreClient: async () => renameStoredQueries(await persister.restoreClient()) },
+  persister: {
+    ...persister,
+    restoreClient: async () => resumeInFlight(renameStoredQueries(await persister.restoreClient())),
+  },
   maxAge: WEEK,
   // Mudou o formato dos dados guardados? Troque para descartar o cache antigo.
   buster: '1',
   dehydrateOptions: {
     shouldDehydrateQuery: (query) => query.state.status === 'success' && PERSISTED.has(String(query.queryKey[0])),
+    // Da fila da lista e da das fotos, guarda também o que está saindo agora: se o app for fechado no meio do
+    // envio (no mercado, com sinal fraco, ele pode levar muito tempo), o item posto não se perde. Reenviar é
+    // seguro (ver queuedDefaults). Fora delas, só o que está parado, como o TanStack Query faz.
+    shouldDehydrateMutation: (mutation) =>
+      mutation.state.isPaused || (inSavedQueue(mutation) && mutation.state.status === 'pending'),
   },
 } satisfies PersistQueryClientProviderProps['persistOptions'];
 

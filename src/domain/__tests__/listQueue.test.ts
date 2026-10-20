@@ -9,6 +9,7 @@ import {
   summaryWithout,
   type QueuedAction,
   waitingSummary,
+  wasAttempted,
 } from '../listQueue';
 
 const action = (ref: string, kind: QueuedAction<string>['kind'], itemId: string | null, started = false): QueuedAction<string> => ({
@@ -39,6 +40,19 @@ describe('tirar um item com a fila esperando', () => {
     const queue = [action('marca-arroz', 'toggle', 'arroz')];
     expect(planRemoval(queue, 'arroz')).toEqual({ drop: [], send: true });
     expect(planRemoval([], 'arroz')).toEqual({ drop: [], send: true });
+  });
+
+  it('o pôr que já tentou uma vez e parou sem internet conta como saído: o servidor pode ter gravado', () => {
+    // A resposta da primeira tentativa se perdeu e a conexão caiu: o pôr está parado de novo, mas já foi.
+    const add = wasAttempted({ isPaused: true, failureCount: 1 });
+    expect(add).toBe(true);
+    expect(planRemoval([action('poe-cafe', 'add', 'cafe', add)], 'cafe')).toEqual({ drop: [], send: true });
+  });
+
+  it('saiu: enviando agora, ou já tentou; parado sem ter tentado, ainda não', () => {
+    expect(wasAttempted({ isPaused: false, failureCount: 0 })).toBe(true);
+    expect(wasAttempted({ isPaused: false, failureCount: 2 })).toBe(true);
+    expect(wasAttempted({ isPaused: true, failureCount: 0 })).toBe(false);
   });
 
   it('o pôr de outro item não conta', () => {

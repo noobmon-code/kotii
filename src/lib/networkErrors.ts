@@ -6,10 +6,12 @@
 /** A frase para o pedido que não chegou, quando a tela não tem uma própria. */
 export const OFFLINE_TRY_AGAIN = 'Sem internet agora. Tente de novo quando a conexão voltar.';
 
-// O texto do fetch que falhou em cada lugar: "Network request failed" no
-// celular, "Failed to fetch" no Chrome, "Load failed" no Safari e
-// "NetworkError when attempting to fetch resource." no Firefox.
-const NETWORK_FAILURE = /failed to fetch|network request failed|load failed|networkerror/i;
+// O texto do fetch que falhou em cada lugar: "Network request failed" (ou
+// "Network request timed out", quando o sinal some no meio) no celular,
+// "Failed to fetch" no Chrome, "Load failed" no Safari e "NetworkError when
+// attempting to fetch resource." no Firefox. Não basta ser um TypeError: o
+// erro de programa ("Cannot read properties...") também é.
+const NETWORK_FAILURE = /failed to fetch|network request (?:failed|timed out)|load failed|networkerror/i;
 
 /** O texto é o de um fetch que não chegou ao servidor. */
 export function isNetworkFailureText(message: string): boolean {

@@ -238,8 +238,11 @@ describe('o pedido que não chegou ao servidor (sinal fraco, com o aparelho dize
     { code: '', message: 'TypeError: Failed to fetch', details: '', hint: '' },
     { code: '', message: 'TypeError: Load failed', details: '', hint: '' },
     { message: 'TypeError: NetworkError when attempting to fetch resource.' },
+    // O celular desiste do pedido com sinal fraco.
+    { code: '', message: 'TypeError: Network request timed out', details: '', hint: '' },
     new TypeError('Failed to fetch'),
     new TypeError('Network request failed'),
+    new TypeError('Network request timed out'),
   ];
 
   it('vira a frase de sem internet de cada pedido, e não o texto do navegador', async () => {

@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { dehydrate, hydrate, onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
+import { resumeInFlight } from '@/lib/cachePersister';
 import type { ShoppingListItem } from '@/lib/types';
 
 import {
+  loadListLinks,
   queuedAddSettled,
   registerListMutations,
   TOGGLE_ITEM_KEY,
@@ -36,6 +38,8 @@ const mockDb = {
   /** As listas abertas, com os itens, como o servidor devolve o resumo. */
   lists: [] as Record<string, unknown>[],
   gate: undefined as Promise<void> | undefined,
+  /** O que o portão segura (a marcação, sem dizer outra coisa). */
+  gateOps: ['update'],
 };
 
 jest.mock('@/lib/supabase', () => {
@@ -71,7 +75,7 @@ jest.mock('@/lib/supabase', () => {
       },
       then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) => {
         // Uma marcação segura pelo portão: a fila fica andando (no meio do envio) até ele abrir.
-        const held = sent.op === 'update' && mockDb.gate ? (record(), mockDb.gate) : Promise.resolve();
+        const held = mockDb.gateOps.includes(sent.op) && mockDb.gate ? (record(), mockDb.gate) : Promise.resolve();
         return held.then(answer).then(resolve, reject);
       },
     };
@@ -193,6 +197,8 @@ afterEach(async () => {
   mockDb.sent = [];
   mockDb.replies = [];
   mockDb.lists = [];
+  mockDb.gate = undefined;
+  mockDb.gateOps = ['update'];
 });
 
 describe('pôr, marcar, editar e tirar sem internet', () => {
@@ -345,6 +351,148 @@ describe('pôr, marcar, editar e tirar sem internet', () => {
       ['is', 'photo_path', null],
       ['eq', 'priority', 'normal'],
     ]);
+  });
+});
+
+describe('sinal fraco', () => {
+  const NETWORK = (message = 'TypeError: Network request failed') => ({ op: 'insert', reply: { data: null, error: { code: '', message } } });
+  const leite = { name: 'Leite', category: 'laticinios', productId: null, quantity: 1, unit: 'l' as const };
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('com o aparelho dizendo que há internet, o pôr que não chega ao servidor não desiste: o item fica e vai quando der', async () => {
+    jest.useFakeTimers();
+    const client = newClient();
+    openList(client, []);
+    const hooks = await listHooks(client);
+    onlineManager.setOnline(true);
+    mockDb.replies.push(NETWORK(), NETWORK('TypeError: Network request timed out'), NETWORK(), NETWORK(), NETWORK());
+    const onError = jest.fn();
+    await act(async () => hooks().add.add(leite, 'u1', { onError }));
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(120_000);
+    });
+    // Cinco pedidos sem resposta e o sexto chega: nada de aviso de erro, e o item nunca saiu da tela.
+    expect(mockDb.sent.map((s) => s.op)).toEqual(['insert', 'insert', 'insert', 'insert', 'insert', 'insert']);
+    expect(onError).not.toHaveBeenCalled();
+    expect(names(client)).toEqual(['Leite']);
+    expect(client.getMutationCache().getAll().map((m) => m.state.status)).toEqual(['success']);
+  });
+
+  it('a fila desiste (a lista foi apagada em outro aparelho): o item que apareceu no toque sai da tela e do resumo', async () => {
+    jest.useFakeTimers();
+    const client = newClient();
+    openList(client, [ARROZ]);
+    const hooks = await listHooks(client);
+    onlineManager.setOnline(true);
+    const gone = {
+      code: '23503',
+      message: 'insert or update on table "shopping_list_items" violates foreign key constraint "shopping_list_items_list_id_fkey"',
+    };
+    for (let i = 0; i < 4; i++) mockDb.replies.push({ op: 'insert', reply: { data: null, error: gone } });
+    const onError = jest.fn();
+    await act(async () => hooks().add.add(leite, 'u1', { onError }));
+    expect(names(client)).toEqual(['Arroz', 'Leite']);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(60_000);
+    });
+    expect(mockDb.sent.map((s) => s.op)).toEqual(['insert', 'insert', 'insert', 'insert']);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(names(client)).toEqual(['Arroz']);
+    expect(summary(client)).toMatchObject({ pending: 1, total: 1, items: [{ name: 'Arroz' }] });
+  });
+
+  it('a resposta do pôr se perdeu e a conexão caiu: tirar o item vai para a fila depois dele (o servidor pode ter gravado)', async () => {
+    jest.useFakeTimers();
+    const client = newClient();
+    openList(client, []);
+    const hooks = await listHooks(client);
+    onlineManager.setOnline(true);
+    mockDb.replies.push(NETWORK());
+    await act(async () => hooks().add.add({ ...leite, name: 'Pão', category: 'padaria', unit: 'un' }, 'u1'));
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    expect(mockDb.sent.map((s) => s.op)).toEqual(['insert']);
+    const pao = mockDb.sent[0].values!.id as string;
+    // O sinal some antes da nova tentativa: o pôr fica parado, esperando a conexão.
+    onlineManager.setOnline(false);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(5000);
+    });
+    expect(client.getMutationCache().getAll().map((m) => [m.state.isPaused, m.state.failureCount])).toEqual([[true, 1]]);
+
+    await act(async () => hooks().remove.remove({ id: pao, userId: 'u1' }));
+    expect(names(client)).toEqual([]);
+
+    // A conexão volta: o pôr esbarra no próprio id (já estava lá) e o tirar apaga a linha.
+    mockDb.replies.push({ op: 'insert', reply: { data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint "shopping_list_items_pkey"' } } });
+    onlineManager.setOnline(true);
+    await act(async () => {
+      await client.resumePausedMutations();
+      await jest.advanceTimersByTimeAsync(1000);
+    });
+    expect(mockDb.sent.map((s) => s.op)).toEqual(['insert', 'insert', 'delete']);
+    expect(mockDb.sent[2].filters).toEqual([['eq', 'id', pao]]);
+  });
+
+  it('o app fechado com o pôr ainda no ar: ele volta guardado e sai de novo, com a marcação depois, sem duplicar', async () => {
+    onlineManager.setOnline(true);
+    // O pedido do pôr fica no ar (sinal fraco) até o fim do teste.
+    let release!: () => void;
+    mockDb.gate = new Promise((resolve) => (release = resolve));
+    mockDb.gateOps = ['insert'];
+    const before = newClient();
+    openList(before, []);
+    const hooks = await listHooks(before);
+    await act(async () => hooks().add.add({ ...leite, name: 'Ovos', category: 'mercearia', unit: 'un' }, 'u1'));
+    await flush();
+    const ovos = before.getQueryData<ShoppingListItem[]>(['listItems', 'l1'])![0];
+    await act(async () => {
+      hooks().toggle.mutate({ id: ovos.id, checked: true, userId: 'u1', at: '2026-10-20T10:00:00Z', token: ovos.toggle_token, nextToken: 'o1' });
+    });
+    await flush();
+    expect(mockDb.sent.map((s) => s.op)).toEqual(['insert']);
+
+    // Como lib/queryClient guarda a fila: também o que está saindo agora; e volta parado (cachePersister).
+    const saved = JSON.parse(JSON.stringify(dehydrate(before, { shouldDehydrateMutation: (m) => m.state.status === 'pending' })));
+    for (const renderer of renderers.splice(0)) await act(async () => renderer.unmount());
+    const restored = resumeInFlight({ buster: '1', timestamp: 0, clientState: saved })!.clientState;
+    mockDb.gate = undefined;
+    const after = newClient();
+    hydrate(after, restored);
+    // O pôr que estava no ar conta como já tentado: tirar o item agora não o cancelaria.
+    expect(after.getMutationCache().getAll().map((m) => [m.options.mutationKey?.[0], m.state.isPaused, m.state.failureCount])).toEqual([
+      ['addListItem', true, 1],
+      ['toggleListItem', true, 0],
+    ]);
+    mockDb.replies.push({ op: 'insert', reply: { data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint "shopping_list_items_pkey"' } } });
+    await act(async () => {
+      await after.resumePausedMutations();
+    });
+    await flush();
+    expect(mockDb.sent.map((s) => s.op)).toEqual(['insert', 'insert', 'update']);
+    expect(mockDb.sent[1].values?.id).toBe(ovos.id);
+    expect(mockDb.sent[2].filters).toEqual([
+      ['eq', 'id', ovos.id],
+      ['eq', 'toggle_token', ovos.toggle_token],
+    ]);
+    // O app de antes some de vez (o pedido dele, solto agora, não muda mais nada).
+    before.clear();
+    release();
+    await flush();
+  });
+});
+
+describe('ligações da lista sem internet ("Limpar" e a geladeira)', () => {
+  it('sem internet, não fica esperando a busca: usa as guardadas ou segue sem elas', async () => {
+    const client = newClient();
+    await expect(loadListLinks(client)).resolves.toBeNull();
+    client.setQueryData(['listLinks'], []);
+    await expect(loadListLinks(client)).resolves.not.toBeNull();
+    expect(mockDb.sent).toEqual([]);
   });
 });
 

@@ -23,6 +23,7 @@ import {
   queuedListItem,
   summaryWithItem,
   summaryWithout,
+  wasAttempted,
 } from '@/domain/listQueue';
 import { PRICE_ALERT_HISTORY_DAYS } from '@/domain/priceAlert';
 import { toPurchases, type PurchaseLine } from '@/domain/priceHistory';
@@ -33,6 +34,7 @@ import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
 import { normalizeSearch } from '@/domain/search';
 import { storePricesFromPurchases } from '@/domain/storePrices';
 import { EXPECTS_ROWS_META } from '@/lib/accessErrors';
+import { isNetworkFailure } from '@/lib/networkErrors';
 import { supabase, unwrap } from '@/lib/supabase';
 import type {
   LatestPrice,
@@ -169,6 +171,12 @@ export function useListLinks() {
 
 /** Os vínculos já carregados, ou buscados agora; null se não deu (sem internet e nunca vistos neste aparelho). */
 export async function loadListLinks(queryClient: QueryClient): Promise<LinkIndex | null> {
+  // Sem internet a busca ficaria parada esperando a conexão (sem dar certo nem errado), e quem espera a
+  // resposta (o "Limpar", a geladeira) não faria nada: fica com o que estiver guardado.
+  if (!onlineManager.isOnline()) {
+    const cached = queryClient.getQueryData<ListLink[]>(['listLinks']);
+    return cached ? new LinkIndex(cached) : null;
+  }
   try {
     return new LinkIndex(await queryClient.ensureQueryData({ queryKey: ['listLinks'], queryFn: fetchListLinks }));
   } catch {
@@ -724,14 +732,18 @@ export function listQueueBusy(queryClient: QueryClient) {
  * Fila guardada no aparelho: pausa sem internet (ou com a sessão à espera de
  * renovação) em vez de falhar, e anda uma de cada vez, na ordem. Com a
  * sessão à espera (o Supabase tenta de novo a cada minuto), insiste por uns
- * 5 minutos em vez de desistir.
+ * 5 minutos em vez de desistir. O pedido que não chegou ao servidor (sinal
+ * fraco, com o aparelho ainda dizendo que há internet) espera como sem
+ * internet: tenta de novo sem desistir, no máximo a cada 30 s. Reenviar não
+ * repete nada: o pôr e o tirar vão pelo id, a marcação e o limpar pelo selo.
  */
 export function queuedDefaults(scope: { id: string }) {
   return {
     networkMode: 'online',
     scope,
     retry: (failures: number, error: Error) =>
-      !(error instanceof ForeignToggleError) && failures < (error instanceof SessionPendingError ? 20 : 3),
+      !(error instanceof ForeignToggleError) &&
+      (isNetworkFailure(error) || failures < (error instanceof SessionPendingError ? 20 : 3)),
     retryDelay: (failures: number, error: Error) =>
       error instanceof SessionPendingError ? 15_000 : Math.min(1000 * 2 ** failures, 30_000),
   } as const;
@@ -750,6 +762,9 @@ export function registerListMutations(queryClient: QueryClient) {
   queryClient.setMutationDefaults(ADD_ITEM_KEY, {
     ...queued,
     mutationFn: (input: AddItemInput) => addListItem(queryClient, input),
+    // A fila desistiu (a lista foi apagada, por exemplo): o item que apareceu no toque sai da tela, também
+    // quando o pôr veio de uma fila guardada e a tela que o pôs já fechou.
+    onError: (_error: Error, input: AddItemInput) => hideItems(queryClient, input.listId, new Set([input.id])),
   });
   queryClient.setMutationDefaults(REMOVE_ITEM_KEY, {
     ...queued,
@@ -931,7 +946,7 @@ function queuedActions(queryClient: QueryClient): QueuedAction<Mutation<unknown,
       const kind = QUEUE_KINDS.find(([key]) => key[0] === mutation.options.mutationKey?.[0])?.[1];
       if (!kind) return [];
       const variables = mutation.state.variables as { id?: string } | undefined;
-      return [{ ref: mutation, kind, itemId: kind === 'clear' ? null : (variables?.id ?? null), started: !mutation.state.isPaused }];
+      return [{ ref: mutation, kind, itemId: kind === 'clear' ? null : (variables?.id ?? null), started: wasAttempted(mutation.state) }];
     });
 }
 

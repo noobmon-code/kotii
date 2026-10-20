@@ -20,6 +20,16 @@ export interface QueuedAction<Ref> {
 }
 
 /**
+ * A ação já saiu alguma vez para o servidor: está saindo agora (não está
+ * parada) ou já tentou e falhou. Uma tentativa que falhou por falta de
+ * resposta pode ter chegado lá (a resposta é que se perdeu), mesmo que a
+ * ação esteja parada de novo, esperando a conexão.
+ */
+export function wasAttempted(state: { isPaused: boolean; failureCount: number }): boolean {
+  return !state.isPaused || state.failureCount > 0;
+}
+
+/**
  * Tirar um item da lista. Se o item foi posto sem internet e o pôr ainda
  * espera a vez, os dois se cancelam: o pôr sai da fila, junto com o que veio
  * depois para o mesmo item (marcações, edições), e nada vai ao servidor. Se o

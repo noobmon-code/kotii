@@ -251,11 +251,11 @@ export default function ShoppingListScreen() {
       if (detailed && !(await confirmRemoval(matches[0].name, 'tem'))) return false;
       // Sem internet, ou com a fila ainda enviando (a lista daqui pode não ser a de lá): tirar vai pela fila, depois
       // do que veio antes, e no servidor só apaga o que ainda está para comprar (e, sem a confirmação, sem detalhes).
-      // O que outra pessoa mudou enquanto isso volta para a lista quando ela recarregar.
+      // O que outra pessoa mudou enquanto isso volta para a lista quando ela recarregar. A foto que espera internet
+      // só sai quando o item sai de verdade (data/listPhotos).
       if (removalWaitsForQueue(queryClient)) {
         for (const match of matches) {
           remove.remove({ id: match.id, userId: session!.user.id, onlyPending: true, plainOnly: !detailed }, { onError });
-          dropPendingPhotos(queryClient, match.id);
         }
         return true;
       }
@@ -469,12 +469,12 @@ export default function ShoppingListScreen() {
       { onSuccess: () => emptyPhotoTrash(), onError },
     );
   };
-  // Tirar vai pela fila da lista (vale sem internet). A foto que esperava internet sai junto: o item não volta.
+  // Tirar vai pela fila da lista (vale sem internet). A foto que esperava internet sai quando o item sai de verdade
+  // (data/listPhotos): se o tirar não der certo, o item volta com ela.
   const removeItem = (item: ShoppingListItem) =>
     confirmAction('Remover item', `Remover "${item.name}" da lista?`, 'Remover', () => {
       setEditing(null);
       remove.remove({ id: item.id, userId: session!.user.id }, { onSuccess: () => emptyPhotoTrash(), onError });
-      dropPendingPhotos(queryClient, item.id);
     });
 
   /**

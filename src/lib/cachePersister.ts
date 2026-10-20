@@ -19,6 +19,74 @@ export interface KeyValueStorage {
  */
 export type CacheWriteFailure = 'essential' | 'lost';
 
+/**
+ * O que ficou guardado da fila enquanto saía (o pedido no ar, ou esperando
+ * para tentar de novo, quando o app foi fechado) volta parado, para sair com
+ * o resto quando a conexão voltar: o TanStack Query só retoma o que está
+ * parado. E volta como já tentado (failureCount): o servidor pode ter
+ * gravado, então tirar o mesmo item não cancela mais o pôr, vai para a fila
+ * depois dele (domain/listQueue).
+ */
+export function resumeInFlight(client: PersistedClient | undefined): PersistedClient | undefined {
+  for (const mutation of client?.clientState.mutations ?? []) {
+    if (mutation.state.status !== 'pending' || mutation.state.isPaused) continue;
+    mutation.state = { ...mutation.state, isPaused: true, failureCount: Math.max(1, mutation.state.failureCount) };
+  }
+  return client;
+}
+
+/**
+ * Quando avisar da falha ao gravar. `essential` (o app segue com o
+ * essencial guardado, nada se perde): uma vez, e não a cada abertura do app
+ * (numa casa grande o cache inteiro nunca cabe, e a falha volta sempre); a
+ * hora do aviso fica guardada à parte, numa linha pequena que cabe quando o
+ * cache não cabe, e o aviso volta depois de `remindAfterMs`. `lost`: só
+ * quando há algo da fila esperando a conexão (é o que se perderia), uma vez
+ * por abertura.
+ */
+export function createWriteFailureWarner({
+  storage,
+  markerKey,
+  remindAfterMs,
+  queueWaiting,
+  warn,
+  now = Date.now,
+}: {
+  storage: KeyValueStorage;
+  markerKey: string;
+  remindAfterMs: number;
+  queueWaiting: () => boolean;
+  warn: (failure: CacheWriteFailure) => void;
+  now?: () => number;
+}) {
+  let essentialSeen = false;
+  let lostWarned = false;
+  return async (failure: CacheWriteFailure): Promise<void> => {
+    if (failure === 'lost') {
+      if (lostWarned || !queueWaiting()) return;
+      lostWarned = true;
+      warn('lost');
+      return;
+    }
+    // Nesta abertura já conferiu: não lê o aparelho a cada gravação.
+    if (essentialSeen) return;
+    essentialSeen = true;
+    let last = 0;
+    try {
+      last = Number(await storage.getItem(markerKey)) || 0;
+    } catch {
+      // Sem conseguir ler, avisa.
+    }
+    if (last && now() - last < remindAfterMs) return;
+    try {
+      await storage.setItem(markerKey, String(now()));
+    } catch {
+      // Nem a linha pequena coube: o aviso sai mesmo assim, e talvez de novo na próxima abertura.
+    }
+    warn('essential');
+  };
+}
+
 export function createCachePersister({
   storage,
   key,

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import type { PersistedClient } from '@tanstack/react-query-persist-client';
 
-import { createCachePersister } from '../cachePersister';
+import { createCachePersister, createWriteFailureWarner } from '../cachePersister';
 
 const snapshot = (name: string): PersistedClient => ({ buster: '1', timestamp: 0, clientState: { queries: [], mutations: [], name } as never });
 
@@ -165,5 +165,75 @@ describe('armazenamento cheio', () => {
     await persistNow(snapshot('pequeno'));
     expect(saved(storage as never)).toBe('pequeno');
     expect(failures).toEqual(['essential']);
+  });
+});
+
+describe('o aviso de falha ao gravar', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  function setup({ waiting = false, failingStorage = false } = {}) {
+    const data = new Map<string, string>();
+    const storage = {
+      data,
+      getItem: async (key: string) => {
+        if (failingStorage) throw new Error('QuotaExceededError');
+        return data.get(key) ?? null;
+      },
+      setItem: async (key: string, value: string) => {
+        if (failingStorage) throw new Error('QuotaExceededError');
+        data.set(key, value);
+      },
+      removeItem: async (key: string) => {
+        data.delete(key);
+      },
+    };
+    const clock = { now: 1_000_000 };
+    const queue = { waiting };
+    const warned: string[] = [];
+    /** Uma abertura do app: um avisador novo, com o mesmo aparelho. */
+    const open = () =>
+      createWriteFailureWarner({
+        storage,
+        markerKey: 'avisado',
+        remindAfterMs: 30 * DAY,
+        queueWaiting: () => queue.waiting,
+        warn: (failure) => warned.push(failure),
+        now: () => clock.now,
+      });
+    return { storage, clock, queue, warned, open };
+  }
+
+  it('só o essencial coube: avisa uma vez, e não a cada abertura do app (numa casa grande a falha volta sempre)', async () => {
+    const { clock, warned, open } = setup();
+    const first = open();
+    await first('essential');
+    await first('essential');
+    expect(warned).toEqual(['essential']);
+    // Outro dia, o app aberto de novo: o cache inteiro continua sem caber, e o aviso não volta.
+    clock.now += 2 * DAY;
+    await open()('essential');
+    expect(warned).toEqual(['essential']);
+    // Um mês depois, se ainda falta espaço, lembra.
+    clock.now += 30 * DAY;
+    await open()('essential');
+    expect(warned).toEqual(['essential', 'essential']);
+  });
+
+  it('sem conseguir guardar nem a hora do aviso, avisa mesmo assim (uma vez por abertura)', async () => {
+    const { warned, open } = setup({ failingStorage: true });
+    const app = open();
+    await app('essential');
+    await app('essential');
+    expect(warned).toEqual(['essential']);
+  });
+
+  it('nada guardado: só avisa quando há algo da fila esperando a conexão (é o que se perderia)', async () => {
+    const { queue, warned, open } = setup();
+    const app = open();
+    await app('lost');
+    expect(warned).toEqual([]);
+    queue.waiting = true;
+    await app('lost');
+    await app('lost');
+    expect(warned).toEqual(['lost']);
   });
 });

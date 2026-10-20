@@ -408,9 +408,45 @@ describe('aparelho sem espaço para o cache', () => {
     expect(saved).toContain('Compras da semana');
     expect(saved).toContain('marcacao-na-fila');
     expect(saved).not.toContain('latestPrices');
+    await flush();
     expect(jest.mocked(notify).mock.calls.map(([title]) => title)).toEqual(['Pouco espaço no aparelho']);
+    // A hora do aviso fica guardada à parte: na próxima abertura do app ele não volta (cachePersister).
+    expect(await AsyncStorage.getItem('kotii:low-space-warned')).toMatch(/^\d+$/);
     await saveNow();
+    await flush();
     expect(notify).toHaveBeenCalledTimes(1);
     await AsyncStorage.removeItem('kotii:query-cache');
+  });
+});
+
+describe('a fila guardada no meio do envio', () => {
+  afterEach(async () => {
+    await AsyncStorage.removeItem('kotii:query-cache');
+  });
+
+  it('o que está saindo agora (da fila da lista ou da das fotos) também fica guardado; fora delas, só o parado', async () => {
+    const build = (mutationKey: unknown[], id: string, isPaused: boolean) =>
+      queryClient.getMutationCache().build(queryClient, { mutationKey, gcTime: Infinity }, {
+        variables: { id, userId: 'u1' },
+        isPaused,
+        status: 'pending',
+        failureCount: 0,
+      } as never);
+    build(TOGGLE_ITEM_KEY, 'marcacao-saindo', false);
+    build(EDIT_ITEM_KEY, 'edicao-esperando', true);
+    // Outra ação qualquer, sem fila: não volta numa próxima abertura.
+    build(['outraAcao'], 'fora-da-fila', false);
+    await saveNow();
+    const saved = (await stored()) ?? '';
+    expect(saved).toContain('marcacao-saindo');
+    expect(saved).toContain('edicao-esperando');
+    expect(saved).not.toContain('fora-da-fila');
+
+    // Reaberto, o que estava saindo volta parado (para sair com a conexão) e como já tentado.
+    const restored = await persistOptions.persister.restoreClient();
+    const states = Object.fromEntries(
+      (restored?.clientState.mutations ?? []).map((m) => [(m.state.variables as { id: string }).id, [m.state.isPaused, m.state.failureCount]]),
+    );
+    expect(states).toEqual({ 'marcacao-saindo': [true, 1], 'edicao-esperando': [true, 0] });
   });
 });

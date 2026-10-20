@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { dehydrate, hydrate, MutationObserver, onlineManager, QueryClient } from '@tanstack/react-query';
 
 import { keepPendingPhoto, LIST_PHOTO_KEY, type ListPhotoInput, pendingPhotoUri, registerListPhotoMutations } from '../listPhotos';
+import { ADD_ITEM_KEY, REMOVE_ITEM_KEY } from '../market';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -164,5 +165,54 @@ describe('fila de fotos da lista', () => {
     await flush();
     expect(calls).toEqual([]);
     expect(await pendingPhotoUri(key)).not.toBeNull();
+  });
+});
+
+describe('a foto que espera internet de um item tirado da lista', () => {
+  /** O tirar da fila da lista, com o que o servidor respondeu (as linhas apagadas). */
+  function removeItem(queryClient: QueryClient, rows: { id: string }[]) {
+    const observer = new MutationObserver<unknown, Error, { id: string }>(queryClient, {
+      mutationKey: REMOVE_ITEM_KEY,
+      networkMode: 'always',
+      mutationFn: async () => rows,
+    });
+    return observer.mutate({ id: 'sabao' });
+  }
+  const waitingPhotos = (queryClient: QueryClient) => queryClient.getMutationCache().findAll({ mutationKey: LIST_PHOTO_KEY }).length;
+
+  it('sai só quando o item sai de verdade: o tirar que não apagou nada (o item foi para o carrinho) deixa a foto', async () => {
+    onlineManager.setOnline(false);
+    const key = await keepPendingPhoto('file://foto.jpg');
+    const queryClient = client();
+    void send(queryClient, input(key));
+    await flush();
+    expect(waitingPhotos(queryClient)).toBe(1);
+
+    await removeItem(queryClient, []);
+    expect(waitingPhotos(queryClient)).toBe(1);
+    expect(await pendingPhotoUri(key)).not.toBeNull();
+
+    await removeItem(queryClient, [{ id: 'sabao' }]);
+    await flush();
+    expect(waitingPhotos(queryClient)).toBe(0);
+    expect(await pendingPhotoUri(key)).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
+  it('item posto e tirado sem internet (os dois se cancelaram): a foto dele também sai', async () => {
+    onlineManager.setOnline(false);
+    const key = await keepPendingPhoto('file://foto.jpg');
+    const queryClient = client();
+    const add = queryClient.getMutationCache().build(queryClient, { mutationKey: ADD_ITEM_KEY, gcTime: Infinity }, {
+      variables: { id: 'sabao' },
+      status: 'pending',
+      isPaused: true,
+    } as never);
+    void send(queryClient, input(key));
+    await flush();
+    queryClient.getMutationCache().remove(add);
+    await flush();
+    expect(waitingPhotos(queryClient)).toBe(0);
+    expect(await pendingPhotoUri(key)).toBeNull();
   });
 });
