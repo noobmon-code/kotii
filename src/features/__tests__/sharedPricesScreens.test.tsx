@@ -149,7 +149,7 @@ let renderer: ReactTestRenderer | undefined;
 
 const rawText = (node: ReactTestInstance | string): string => (typeof node === 'string' ? node : node.children.map(rawText).join(''));
 /** O que a tela escreve, sem os ícones (que são letras de uma fonte de desenhos). */
-const textOf = (node: ReactTestInstance | string) => rawText(node).replace(/[-]|[󰀀-􏿿]/gu, '');
+const textOf = (node: ReactTestInstance | string) => rawText(node).replace(/[\u{E000}-\u{F8FF}]|[\u{F0000}-\u{10FFFF}]/gu, '');
 
 /** Abre a tela e devolve tudo o que ela escreve. */
 async function mount(screen: React.ReactElement) {
