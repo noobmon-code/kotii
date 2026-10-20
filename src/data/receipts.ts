@@ -299,20 +299,21 @@ export function useSetReceiptTotal(id: string) {
   });
 }
 
+/** O mercado escolhido na nota: um da casa, ou um novo, criado com o nome digitado. */
+export type StoreChoice = { id: string } | { name: string };
+
+async function storeIdFor(store: StoreChoice): Promise<string> {
+  if ('id' in store) return store.id;
+  const created = unwrap(await supabase.from('stores').insert({ name: store.name }).select('id').single()) as { id: string };
+  return created.id;
+}
+
 export function useSetReceiptStore(receiptId: string) {
   const invalidate = useInvalidateReceipt(receiptId);
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (store: { id: string } | { name: string }) => {
-      let storeId: string;
-      if ('id' in store) {
-        storeId = store.id;
-      } else {
-        const created = unwrap(
-          await supabase.from('stores').insert({ name: store.name }).select('id').single(),
-        ) as { id: string };
-        storeId = created.id;
-      }
+    mutationFn: async (store: StoreChoice) => {
+      const storeId = await storeIdFor(store);
       unwrap(await supabase.from('receipts').update({ store_id: storeId }).eq('id', receiptId));
     },
     onSuccess: () => {
@@ -400,6 +401,49 @@ export function useConfirmReceipt(receiptId: string) {
  * nenhuma não vê preço de fora).
  */
 const CONFIRMED_ITEM_KEYS = ['receipts', 'latestPrices', 'priceHistory', 'spending', 'purchaseRecords', 'sharedPrices'];
+
+/** Uma correção da nota já confirmada, uma por vez: a data da compra, o mercado ou o total. */
+export type ReceiptCorrection = { purchased_at: string } | { store: StoreChoice } | { total: number | null };
+
+/**
+ * Corrigir a nota já confirmada (domain/receiptEdit). Vale para a casa: a data
+ * põe a nota no mês certo dos gastos e do Mercado do mês, e o mercado e a data
+ * mudam o histórico de preço e o comparativo; os preços que a nota deu para
+ * outras casas não mudam (o gatilho de shared_prices só dispara na passagem de
+ * rascunho para confirmada, e a leitura do servidor some nela). A gravação só
+ * acha a nota confirmada e pede a linha de volta: `saved` falso é a nota
+ * excluída em outro aparelho. A linha gravada vai para a nota guardada antes de
+ * a busca nova chegar, para o campo que fecha mostrar o que foi gravado.
+ */
+export function useCorrectReceipt(receiptId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (change: ReceiptCorrection): Promise<{ saved: boolean; receipt: Receipt | null }> => {
+      const patch = 'store' in change ? { store_id: await storeIdFor(change.store) } : change;
+      const rows = unwrap(
+        await supabase.from('receipts').update(patch).eq('id', receiptId).eq('status', 'confirmed').select(RECEIPT_COLUMNS),
+      ) as unknown as Receipt[] | null;
+      const receipt = rows?.[0] ?? null;
+      return { saved: Boolean(receipt), receipt };
+    },
+    onSuccess: ({ receipt }, change) => {
+      const key = ['receipt', receiptId];
+      if (receipt) {
+        // Os itens guardados continuam os da leitura de antes, e a data dela também: a tela da nota sabe por ela
+        // se a nota em tela ficou atrás de um valor de item gravado.
+        queryClient.setQueryData<{ receipt: Receipt; items: ReceiptItem[] }>(key, (data) => data && { ...data, receipt }, {
+          updatedAt: queryClient.getQueryState(key)?.dataUpdatedAt,
+        });
+      }
+      for (const name of CONFIRMED_ITEM_KEYS) {
+        queryClient.invalidateQueries({ queryKey: [name] });
+      }
+      queryClient.invalidateQueries({ queryKey: key });
+      // O mercado criado aqui entra na lista dos mercados da casa.
+      if ('store' in change) queryClient.invalidateQueries({ queryKey: ['stores'] });
+    },
+  });
+}
 
 export function useDeleteReceipt(receiptId: string) {
   const queryClient = useQueryClient();

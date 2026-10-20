@@ -7,6 +7,7 @@ import ReceiptScreen from '@/app/nota/[id]';
 import { fetchPantryNear } from '@/data/home';
 import { formatBRL } from '@/domain/money';
 import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
+import { PickerModal } from '@/ui/PickerModal';
 import { Button, Card, Chip, IconButton, TextField } from '@/ui/primitives';
 
 // A tela da nota de verdade, com as consultas e gravações de verdade de
@@ -21,6 +22,8 @@ type MockRequest = { table: string; verb: 'select' | 'update' | 'insert' | 'dele
 const mockDb: {
   receipts: Row[];
   items: Row[];
+  /** Os mercados da casa: a nota lida traz o dela pelo store_id, como o "store:stores(id, name)" do pedido. */
+  stores: Row[];
   writes: { table: string; verb: 'update' | 'insert' | 'delete'; values?: Row; filters: Row }[];
   rpcs: { fn: string; args: Row }[];
   /** Quantas vezes cada tabela foi lida. */
@@ -29,7 +32,7 @@ const mockDb: {
   holds: { match: (request: MockRequest) => boolean; gate: Promise<void>; open: () => void }[];
   /** Pedidos que falham (a rede caiu). */
   fails: ((request: MockRequest) => boolean)[];
-} = { receipts: [], items: [], writes: [], rpcs: [], reads: {}, holds: [], fails: [] };
+} = { receipts: [], items: [], stores: [], writes: [], rpcs: [], reads: {}, holds: [], fails: [] };
 const mockMarket: { products: Row[]; pantryNear: Row[] } = { products: [], pantryNear: [] };
 
 jest.mock('expo-router', () => ({
@@ -70,19 +73,30 @@ jest.mock('@/lib/supabase', () => {
     let write: { verb: 'update' | 'insert' | 'delete'; values?: Row } | null = null;
     // Como no servidor: a gravação só devolve as linhas que achou quando o pedido traz .select().
     let returning = false;
-    const rows = () => (name === 'receipts' ? mockDb.receipts : mockDb.items);
+    const rows = () => (name === 'receipts' ? mockDb.receipts : name === 'stores' ? mockDb.stores : mockDb.items);
     const matches = (row: Row) => filters.every(([column, value]) => row[column] === value);
+    // A nota sai com o mercado de agora, pelo store_id.
+    const out = (row: Row): Row => {
+      if (name !== 'receipts') return { ...row };
+      const store = mockDb.stores.find((entry) => entry.id === row.store_id);
+      return { ...row, store: store ? { id: store.id, name: store.name } : null };
+    };
     const run = () => {
       const found = rows().filter(matches);
-      if (!write) return { data: found.map((row) => ({ ...row })), error: null };
+      if (!write) return { data: found.map(out), error: null };
       if (write.verb === 'update') found.forEach((row) => Object.assign(row, write!.values));
       if (write.verb === 'insert') {
+        if (name === 'stores') {
+          const store = { id: `mercado${mockDb.stores.length}`, ...write.values };
+          mockDb.stores.push(store);
+          return { data: returning ? [{ ...store }] : null, error: null };
+        }
         const added = { id: `novo${mockDb.items.length}`, suggested_name: null, suggested_category: null, product_id: null, ...write.values };
         mockDb.items.push(added);
         return { data: returning ? [{ ...added }] : null, error: null };
       }
       if (write.verb === 'delete') mockDb.items = mockDb.items.filter((row) => !matches(row));
-      return { data: returning && write.verb === 'update' ? found.map((row) => ({ ...row })) : null, error: null };
+      return { data: returning && write.verb === 'update' ? found.map(out) : null, error: null };
     };
     const send = () => {
       if (write) mockDb.writes.push({ table: name, ...write, filters: Object.fromEntries(filters) });
@@ -113,7 +127,9 @@ jest.mock('@/lib/supabase', () => {
       },
       single: async () => {
         const result = await send();
-        return { data: (result.data as Row[] | null)?.[0] ?? null, error: result.error };
+        const row = (result.data as Row[] | null)?.[0] ?? null;
+        // Como no servidor: .single() sem linha nenhuma é erro.
+        return { data: row, error: result.error ?? (row ? null : { message: 'nada encontrado' }) };
       },
       then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) => Promise.resolve().then(send).then(resolve, reject),
     };
@@ -261,6 +277,10 @@ function expectNoQuestion() {
   expect(confirmAction).not.toHaveBeenCalled();
 }
 
+/** A frase da nota confirmada lida pelo app (QR code ou foto): o que se corrige vale para a casa. */
+const CORRECTION_NOTE =
+  'O que você corrigir aqui vale para a casa: gastos, Mercado do mês e histórico de preço. Os preços que esta nota já deu para outras casas não mudam.';
+
 /** Quem lê preço de nota confirmada: comparativo, histórico de um produto, gastos do mês e compras recentes. */
 const PRICE_QUERIES = [['latestPrices'], ['priceHistory', 'p1'], ['spending', '2026-06', '2026-06'], ['purchaseRecords']];
 const invalidated = () => PRICE_QUERIES.filter((key) => client.getQueryState(key)?.isInvalidated).map((key) => key[0]);
@@ -268,6 +288,7 @@ const invalidated = () => PRICE_QUERIES.filter((key) => client.getQueryState(key
 beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { networkMode: 'always', gcTime: Infinity } } });
   for (const key of PRICE_QUERIES) client.setQueryData(key, []);
+  mockDb.stores = [{ id: 's1', name: 'Assaí' }];
   mockDb.writes = [];
   mockDb.rpcs = [];
   mockDb.reads = {};
@@ -925,10 +946,10 @@ describe('o aviso do cabeçalho diz o que é a diferença', () => {
     expect(field('Total da nota')!.props.value).toBe('');
   });
 
-  it('nota confirmada com total zerado: a linha do total não aparece, nem o aviso', async () => {
+  it('nota confirmada com total zerado: a linha convida a informar o total, sem aviso', async () => {
     seed(receipt({ status: 'confirmed', total: 0 }), item('a', 'DETERGENTE YPE', 50));
     await open();
-    expect(header()).toEqual(['Mercado', 'Assaí', 'Compra em 10 jun', 'Soma dos itens', 'R$ 50,00']);
+    expect(header()).toEqual(['Mercado', 'Assaí', 'Data da compra', 'Soma dos itens', 'R$ 50,00', 'Total da nota', 'informar', CORRECTION_NOTE]);
   });
 });
 
@@ -1111,7 +1132,7 @@ describe('o total da nota dá para corrigir na revisão', () => {
     expectNoQuestion();
     // A tela passou a ser a da nota confirmada.
     expect(button('Confirmar nota')).toBeUndefined();
-    expect(page()).toContain('Compra em 10 jun');
+    expect(page()).toContain(CORRECTION_NOTE);
   });
 
   it('nota confirmada em outro aparelho: o total não é gravado, e a tela passa a ser a da nota confirmada', async () => {
@@ -1126,12 +1147,13 @@ describe('o total da nota dá para corrigir na revisão', () => {
     expect(said(renderer!.root.findAllByType(Card)[0])).toEqual([
       'Mercado',
       'Assaí',
-      'Compra em 10 jun',
+      'Data da compra',
       'Soma dos itens',
       'R$ 50,00',
       'Total da nota',
       'R$ 62,90',
       'Faltam R$ 12,90: a soma dos itens é menor que o total da nota.',
+      CORRECTION_NOTE,
     ]);
     expect(field('Total da nota')).toBeUndefined();
     expect(button('Confirmar nota')).toBeUndefined();
@@ -1179,7 +1201,7 @@ describe('o total da nota dá para corrigir na revisão', () => {
   });
 });
 
-describe('nota já confirmada: só o valor que faltou pode ser preenchido', () => {
+describe('nota já confirmada: dos itens, só o valor que faltou pode ser preenchido', () => {
   const confirmedNote = (patch: Row = {}) => receipt({ status: 'confirmed', source: 'qrcode', ...patch });
 
   beforeEach(() => {
@@ -1187,7 +1209,7 @@ describe('nota já confirmada: só o valor que faltou pode ser preenchido', () =
     seed(confirmedNote(), item('a', 'DETERGENTE YPE', 50), item('x', 'QJO MUSS KG', 0, { product_id: 'p1', quantity: 0.345, unit: 'kg', unit_price: 37.9 }));
   });
 
-  it('só o item sem valor tem "Preencher"; o resto da nota continua só para ler', async () => {
+  it('só o item sem valor tem "Preencher"; os outros itens continuam só para ler', async () => {
     await open();
     expect(said(card('DETERGENTE YPE'))).toEqual(['DETERGENTE YPE', '1 un × R$ 50,00', 'R$ 50,00']);
     expect(said(card('Queijo muçarela'))).toEqual([
@@ -1200,10 +1222,10 @@ describe('nota já confirmada: só o valor que faltou pode ser preenchido', () =
       'Se a nota teve desconto, o valor impresso do item é maior.',
     ]);
     expect(chipLabels()).toEqual(['Usar R$ 12,90', 'Preencher']);
-    // Sem lápis nos itens, sem "Item" novo, sem total para tocar e sem botão de confirmar.
+    // Sem lápis nos itens, sem "Item" novo e sem botão de confirmar; o total (como a data e o mercado) dá para corrigir.
     expect(renderer!.root.findAllByType(IconButton)).toHaveLength(0);
     expect(button('Item')).toBeUndefined();
-    expect(totalRow()).toBeUndefined();
+    expect(totalRow()).toBeDefined();
     expect(button('Confirmar nota')).toBeUndefined();
     expect(page()).toContain('Total da nota | R$ 62,90 | Faltam R$ 12,90: a soma dos itens é menor que o total da nota. | 1 item sem valor.');
   });
@@ -1337,6 +1359,225 @@ describe('nota já confirmada: só o valor que faltou pode ser preenchido', () =
   });
 });
 
+describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
+  const confirmedNote = (patch: Row = {}) =>
+    receipt({ status: 'confirmed', source: 'qrcode', access_key: '35260612345678000190650010000012341000012345', ...patch });
+  /** Além dos de preço: as notas, o Mercado do mês, os preços de outras casas e os mercados. */
+  const OTHER_QUERIES = [['receipts'], ['spending', 'market', '2026-06'], ['sharedPrices'], ['stores']];
+  const refreshed = () => [...PRICE_QUERIES, ...OTHER_QUERIES].filter((key) => client.getQueryState(key)?.isInvalidated).map((key) => key.join(':'));
+  const ALL_REFRESHED = ['latestPrices', 'priceHistory:p1', 'spending:2026-06:2026-06', 'purchaseRecords', 'receipts', 'spending:market:2026-06', 'sharedPrices'];
+  const storePicker = () => renderer!.root.findAllByType(PickerModal).find((entry) => entry.props.title === 'Mercado')!;
+  const header = () => said(renderer!.root.findAllByType(Card)[0]);
+  /** Digita a data no campo e sai dele, como a pessoa faz. */
+  async function typeDate(text: string) {
+    act(() => field('Data da compra')!.props.onChangeText(text));
+    await act(async () => {
+      field('Data da compra')!.props.onBlur();
+      await wait();
+    });
+  }
+  const noonOf = (iso: string) => new Date(`${iso}T12:00:00`).toISOString();
+
+  beforeEach(() => {
+    for (const key of OTHER_QUERIES) client.setQueryData(key, []);
+    mockDb.stores = [
+      { id: 's1', name: 'Assaí' },
+      { id: 's2', name: 'Atacadão' },
+    ];
+    seed(confirmedNote(), item('a', 'DETERGENTE YPE', 50), item('b', 'ARROZ 5KG', 12.9));
+  });
+
+  it('o cabeçalho tem o mercado para tocar, o campo da data, o total para tocar e a frase do que a correção muda', async () => {
+    await open();
+    expect(header()).toEqual(['Mercado', 'Assaí', 'Data da compra', 'Soma dos itens', 'R$ 62,90', 'Total da nota', 'R$ 62,90', CORRECTION_NOTE]);
+    expect(field('Data da compra')!.props.value).toBe(`10/06/${YEAR}`);
+    expect(storePicker().props.visible).toBe(false);
+    expect(totalRow().props.accessibilityHint).toBe('Toque para corrigir');
+    expect(mockDb.writes).toEqual([]);
+  });
+
+  it('nota digitada à mão: a frase não fala de outras casas (ela nunca deu preço para fora)', async () => {
+    seed(confirmedNote({ source: 'manual', access_key: null }), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    expect(page()).toContain('O que você corrigir aqui vale para a casa: gastos, Mercado do mês e histórico de preço. | Itens (1)');
+    expect(page()).not.toContain('outras casas');
+  });
+
+  it('a data: grava só na nota confirmada, e Finanças, Mercado do mês, histórico de preço e Notas se atualizam', async () => {
+    await open();
+    await typeDate(`11/06/${YEAR}`);
+    expect(mockDb.writes).toEqual([
+      { table: 'receipts', verb: 'update', values: { purchased_at: noonOf(`${YEAR}-06-11`) }, filters: { id: 'r1', status: 'confirmed' } },
+    ]);
+    expect(field('Data da compra')!.props.value).toBe(`11/06/${YEAR}`);
+    expect(refreshed()).toEqual(ALL_REFRESHED);
+    expect(notify).not.toHaveBeenCalled();
+    // Nada de confirmar de novo (é na confirmação que a nota compartilha preço), nem de mexer nos itens.
+    expect(mockDb.rpcs).toEqual([]);
+    expect(writes('receipt_items')).toEqual([]);
+  });
+
+  it('a data gravada vai para a nota guardada antes de a busca nova chegar: o campo não volta para a data de antes', async () => {
+    await open();
+    const releaseWrite = hold(dateWrite);
+    await typeDate(`11/06/${YEAR}`);
+    // A gravação está a caminho: o campo continua com o que foi digitado.
+    expect(field('Data da compra')!.props.value).toBe(`11/06/${YEAR}`);
+    const releaseRead = hold(receiptRead);
+    await releaseWrite();
+    // Gravou; a nota relida ainda não voltou, e o campo já mostra a data nova, vinda da linha gravada.
+    expect(client.getQueryState(['receipt', 'r1'])?.fetchStatus).toBe('fetching');
+    expect(field('Data da compra')!.props.value).toBe(`11/06/${YEAR}`);
+    await releaseRead();
+    expect(field('Data da compra')!.props.value).toBe(`11/06/${YEAR}`);
+  });
+
+  it('a mesma data não grava nada; a que não é data avisa e não grava', async () => {
+    await open();
+    await typeDate(`10/06/${YEAR}`);
+    expect(mockDb.writes).toEqual([]);
+    await typeDate('31/02/2026');
+    expect(jest.mocked(notify).mock.calls).toEqual([['Data inválida', 'Use o formato dd/mm/aaaa.']]);
+    expect(mockDb.writes).toEqual([]);
+    expect(field('Data da compra')!.props.value).toBe('31/02/2026');
+  });
+
+  it('a data que não chega ao banco avisa do erro, e o campo volta para a data da nota', async () => {
+    mockDb.fails = [dateWrite];
+    await open();
+    await typeDate(`11/06/${YEAR}`);
+    expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'caiu a rede']]);
+    expect(field('Data da compra')!.props.value).toBe(`10/06/${YEAR}`);
+    expect(refreshed()).toEqual([]);
+  });
+
+  it('o mercado: escolher outro da casa grava e atualiza as telas, e o nome novo aparece', async () => {
+    await open();
+    await press(renderer!.root.findAll((node) => typeof node.props.onPress === 'function' && said(node)[0] === 'Mercado')[0]);
+    expect(storePicker().props.visible).toBe(true);
+    await act(async () => {
+      storePicker().props.onSelect('s2');
+      await wait();
+    });
+    expect(storePicker().props.visible).toBe(false);
+    expect(mockDb.writes).toEqual([{ table: 'receipts', verb: 'update', values: { store_id: 's2' }, filters: { id: 'r1', status: 'confirmed' } }]);
+    expect(header().slice(0, 2)).toEqual(['Mercado', 'Atacadão']);
+    expect(refreshed()).toEqual([...ALL_REFRESHED, 'stores']);
+  });
+
+  it('o mercado: criar um pelo nome digitado, como no rascunho', async () => {
+    await open();
+    const create = storePicker().props.extraActions('Feira do bairro');
+    await act(async () => {
+      create.props.onPress();
+      await wait();
+    });
+    expect(mockDb.writes).toEqual([
+      { table: 'stores', verb: 'insert', values: { name: 'Feira do bairro' }, filters: {} },
+      { table: 'receipts', verb: 'update', values: { store_id: 'mercado2' }, filters: { id: 'r1', status: 'confirmed' } },
+    ]);
+    expect(header().slice(0, 2)).toEqual(['Mercado', 'Feira do bairro']);
+  });
+
+  it('a data e o mercado ao mesmo tempo: cada correção tem os seus avisos, e a falha da data não some atrás da do mercado', async () => {
+    mockDb.fails = [dateWrite];
+    await open();
+    const releaseDate = hold(dateWrite);
+    await typeDate(`11/06/${YEAR}`);
+    await act(async () => {
+      storePicker().props.onSelect('s2');
+      await wait();
+    });
+    expect(header().slice(0, 2)).toEqual(['Mercado', 'Atacadão']);
+    await releaseDate();
+    expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'caiu a rede']]);
+    expect(field('Data da compra')!.props.value).toBe(`10/06/${YEAR}`);
+    expect(mockDb.receipts[0].store_id).toBe('s2');
+  });
+
+  it('o mesmo mercado não grava nada', async () => {
+    await open();
+    await act(async () => {
+      storePicker().props.onSelect('s1');
+      await wait();
+    });
+    expect(mockDb.writes).toEqual([]);
+  });
+
+  it('o total: tocar abre o campo, salvar grava só na nota confirmada, fecha o campo e refaz a conta da diferença', async () => {
+    await open();
+    await press(totalRow());
+    expect(field('Total da nota')!.props.value).toBe('62,90');
+    act(() => field('Total da nota')!.props.onChangeText('72,90'));
+    await press(button('Salvar total'));
+    expect(mockDb.writes).toEqual([{ table: 'receipts', verb: 'update', values: { total: 72.9 }, filters: { id: 'r1', status: 'confirmed' } }]);
+    expect(field('Total da nota')).toBeUndefined();
+    expect(page()).toContain('Total da nota | R$ 72,90 | Faltam R$ 10,00: a soma dos itens é menor que o total da nota.');
+    expect(refreshed()).toEqual(ALL_REFRESHED);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('o total igual ao da nota só fecha o campo; o que não dá para ler avisa e o campo fica aberto', async () => {
+    await open();
+    await press(totalRow());
+    act(() => field('Total da nota')!.props.onChangeText('62,9'));
+    await press(button('Salvar total'));
+    expect(field('Total da nota')).toBeUndefined();
+    await press(totalRow());
+    act(() => field('Total da nota')!.props.onChangeText('62,9,0'));
+    await press(button('Salvar total'));
+    expect(jest.mocked(notify).mock.calls).toEqual([['Confira o total', 'Confira o total da nota, ou deixe em branco.']]);
+    expect(field('Total da nota')!.props.value).toBe('62,9,0');
+    expect(mockDb.writes).toEqual([]);
+  });
+
+  it('em branco, a nota fica sem total, como na revisão', async () => {
+    await open();
+    await press(totalRow());
+    act(() => field('Total da nota')!.props.onChangeText(''));
+    await press(button('Salvar total'));
+    expect(mockDb.writes.map((write) => write.values)).toEqual([{ total: null }]);
+    expect(page()).toContain('Total da nota | informar');
+  });
+
+  it('o total que não chega ao banco avisa do erro e deixa o campo com o que foi digitado', async () => {
+    mockDb.fails = [totalWrite];
+    await open();
+    await press(totalRow());
+    act(() => field('Total da nota')!.props.onChangeText('72,90'));
+    await press(button('Salvar total'));
+    expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'caiu a rede']]);
+    expect(field('Total da nota')!.props.value).toBe('72,90');
+    expect(button('Salvar total')!.props.loading).toBe(false);
+  });
+
+  it('nota excluída em outro aparelho: a correção avisa que não salvou', async () => {
+    await open();
+    await press(totalRow());
+    act(() => field('Total da nota')!.props.onChangeText('72,90'));
+    mockDb.receipts = [];
+    await press(button('Salvar total'));
+    expect(jest.mocked(notify).mock.calls).toEqual([['Correção não salva', 'Esta nota não existe mais.']]);
+    // A nota relida não vem: a tela passa a ser a do erro, com como tentar de novo.
+    expect(page()).not.toContain('Salvar total');
+    expect(page()).not.toContain('DETERGENTE YPE');
+  });
+
+  it('a revisão continua como antes: a data vai sem o filtro da nota confirmada, e não há a frase', async () => {
+    seed(receipt(), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    expect(page()).not.toContain(CORRECTION_NOTE);
+    await typeDate(`11/06/${YEAR}`);
+    expect(mockDb.writes).toEqual([{ table: 'receipts', verb: 'update', values: { purchased_at: noonOf(`${YEAR}-06-11`) }, filters: { id: 'r1' } }]);
+    await act(async () => {
+      storePicker().props.onSelect('s2');
+      await wait();
+    });
+    expect(mockDb.writes[1]).toEqual({ table: 'receipts', verb: 'update', values: { store_id: 's2' }, filters: { id: 'r1' } });
+    expect(button('Confirmar nota')).toBeDefined();
+  });
+});
+
 // O que a tela escrevia antes de existir a pergunta do item sem valor: tirado da versão anterior, com estes mesmos dados.
 const DRAFT_AS_BEFORE = [
   'Mercado',
@@ -1365,14 +1606,17 @@ const DRAFT_AS_BEFORE = [
   'Descartar nota',
   'Confirmar nota (2 itens)',
 ];
+// Na confirmada, com a data, o mercado e o total que ela ganhou para corrigir: o campo da data e a frase do que a
+// correção muda.
 const CONFIRMED_AS_BEFORE = [
   'Mercado',
   'Assaí',
-  'Compra em 10 jun',
+  'Data da compra',
   'Soma dos itens',
   'R$ 62,90',
   'Total da nota',
   'R$ 62,90',
+  CORRECTION_NOTE,
   'Itens (2)',
   'DETERGENTE YPE',
   '1 un × R$ 50,00',
@@ -1402,11 +1646,11 @@ describe('nota sem nada a perguntar: a tela é a de sempre', () => {
     expect(chipLabels()).toEqual([]);
   });
 
-  it('confirmada e sem total: a linha do total não aparece', async () => {
+  it('confirmada e sem total: a linha convida a informar, como na revisão', async () => {
     seed(receipt({ status: 'confirmed', total: null }), ...items());
     await open();
-    expect(page()).not.toContain('Total da nota');
-    expect(page()).not.toContain('informar');
+    expect(page()).toContain('Total da nota | informar');
+    expect(totalRow().props.accessibilityLabel).toBe('Total da nota: informar');
   });
 });
 

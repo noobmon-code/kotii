@@ -16,6 +16,7 @@ import {
 import {
   receiptImageUrl,
   useConfirmReceipt,
+  useCorrectReceipt,
   useDeleteReceipt,
   useDeleteReceiptItem,
   useFillReceiptItemValue,
@@ -26,6 +27,8 @@ import {
   useSetReceiptTotal,
   useUpdateReceipt,
   type ItemValues,
+  type ReceiptCorrection,
+  type StoreChoice,
 } from '@/data/receipts';
 import { joinNames, receiptPantryRepeats } from '@/domain/cartPantry';
 import { CATEGORIES, getCategory } from '@/domain/categories';
@@ -66,6 +69,14 @@ import {
   type GapSuggestion,
   type UnpricedPrompt,
 } from '@/domain/receiptGap';
+import {
+  confirmedEditNote,
+  CORRECTION_NOT_SAVED,
+  INVALID_DATE,
+  purchaseDateChange,
+  receiptEditing,
+  receiptTotalChange,
+} from '@/domain/receiptEdit';
 import { hasNoValue } from '@/domain/receiptItem';
 import { houseNameOverride, keptName, noteNames, sameProduct, typedNameActions, withEntry } from '@/domain/receiptNames';
 import {
@@ -153,6 +164,11 @@ export default function ReceiptScreen() {
   const updateReceipt = useUpdateReceipt(id);
   // O total tem a gravação dele (só na revisão): a da data ou a de quem pagou em andamento não a segura.
   const saveTotal = useSetReceiptTotal(id);
+  // Na nota confirmada, cada correção tem a gravação dela (com o próprio "salvando" e os próprios avisos): a da data
+  // a caminho não engole o erro da do mercado, nem segura o total.
+  const correctDate = useCorrectReceipt(id);
+  const correctStore = useCorrectReceipt(id);
+  const correctTotal = useCorrectReceipt(id);
   const saveItem = useSaveReceiptItem(id);
   const fillValue = useFillReceiptItemValue(id);
   const deleteItem = useDeleteReceiptItem(id);
@@ -240,6 +256,8 @@ export default function ReceiptScreen() {
 
   const { receipt, items } = receiptQuery.data;
   const isDraft = receipt.status === 'draft';
+  // O que dá para corrigir em cada momento (domain/receiptEdit).
+  const can = receiptEditing(receipt.status);
   const purchasedOn = toISODate(new Date(receipt.purchased_at));
   // A soma, a diferença para o total e os itens sem valor: contas e frases em domain/receiptGap.
   const gap = receiptGap(receipt.total, items);
@@ -333,16 +351,45 @@ export default function ReceiptScreen() {
     forgetUndo(itemId);
   }
 
+  /** Corrige a nota confirmada; a nota que sumiu em outro aparelho avisa que não salvou. */
+  function correctReceipt(mutation: typeof correctDate, change: ReceiptCorrection, onSettled?: () => void) {
+    mutation.mutate(change, {
+      onSuccess: ({ saved }) => {
+        if (!saved) notify(CORRECTION_NOT_SAVED.title, CORRECTION_NOT_SAVED.message);
+      },
+      onError,
+      onSettled,
+    });
+  }
+
   function commitDate() {
     if (dateText == null) return;
-    const iso = parseBRDate(dateText);
-    if (!iso) {
-      notify('Data inválida', 'Use o formato dd/mm/aaaa.');
+    const change = purchaseDateChange(dateText, purchasedOn);
+    if (change.kind === 'invalid') {
+      notify(INVALID_DATE.title, INVALID_DATE.message);
       return;
     }
-    // Meio-dia local: a data não "vira" ao converter para UTC.
-    updateReceipt.mutate({ purchased_at: new Date(`${iso}T12:00:00`).toISOString() }, { onError });
-    setDateText(null);
+    if (change.kind === 'same') {
+      setDateText(null);
+      return;
+    }
+    if (isDraft) {
+      updateReceipt.mutate({ purchased_at: change.purchasedAt }, { onError });
+      setDateText(null);
+    } else {
+      // Até a nota gravada voltar, o campo continua com o que foi digitado (e não com a data de antes); o que a
+      // pessoa digitar nesse meio fica.
+      const typed = dateText;
+      correctReceipt(correctDate, { purchased_at: change.purchasedAt }, () => setDateText((now) => (now === typed ? null : now)));
+    }
+  }
+
+  /** O mercado escolhido ou criado no seletor: na revisão, como sempre; na nota confirmada, uma correção. */
+  function chooseStore(store: StoreChoice) {
+    setPicker(null);
+    if ('id' in store && store.id === receipt.store_id) return;
+    if (isDraft) setStore.mutate(store, { onError });
+    else correctReceipt(correctStore, { store });
   }
 
   /**
@@ -370,9 +417,38 @@ export default function ReceiptScreen() {
     return saved;
   }
 
+  /**
+   * O total da nota confirmada: o mesmo campo da revisão, gravado como
+   * correção. O que não dá para ler avisa e o campo continua aberto; o mesmo
+   * valor só fecha o campo; a gravação que falha deixa o campo com o que foi
+   * digitado.
+   */
+  async function correctTypedTotal() {
+    if (totalText == null) return;
+    const change = receiptTotalChange(totalText, receipt.total);
+    if (change.kind === 'invalid') {
+      notify(change.title, change.message);
+      return;
+    }
+    if (change.kind === 'changed') {
+      try {
+        const { saved } = await correctTotal.mutateAsync({ total: change.total });
+        if (!saved) notify(CORRECTION_NOT_SAVED.title, CORRECTION_NOT_SAVED.message);
+      } catch (err) {
+        onError(err);
+        return;
+      }
+    }
+    setTotalText(null);
+  }
+
   /** "Salvar total" (ou a tecla de enviar do campo): um salvamento por vez. */
   function saveTypedTotal() {
-    if (!saveTotal.isPending) void commitTotal();
+    if (isDraft) {
+      if (!saveTotal.isPending) void commitTotal();
+    } else if (!correctTotal.isPending) {
+      void correctTypedTotal();
+    }
   }
 
   const leaveUnpriced = (ids: string[]) => {
@@ -696,15 +772,15 @@ export default function ReceiptScreen() {
       <Stack.Screen options={{ title: isDraft ? 'Revisar nota' : 'Nota fiscal' }} />
 
       <Card style={styles.gap}>
-        <Pressable disabled={!isDraft} onPress={() => setPicker({ kind: 'store' })} style={styles.storeRow}>
+        <Pressable disabled={!can.store} onPress={() => setPicker({ kind: 'store' })} style={styles.storeRow}>
           <Icon name="store-outline" color="primary" />
           <View style={styles.flex}>
             <Text variant="small">Mercado</Text>
             <Text variant="heading">{receipt.store?.name ?? 'Toque para escolher'}</Text>
           </View>
-          {isDraft ? <Icon name="chevron-right" color="textMuted" /> : null}
+          {can.store ? <Icon name="chevron-right" color="textMuted" /> : null}
         </Pressable>
-        {isDraft ? (
+        {can.date ? (
           <DateField
             label="Data da compra"
             value={dateText ?? formatBRDate(purchasedOn)}
@@ -719,7 +795,7 @@ export default function ReceiptScreen() {
           <Text variant="muted">Soma dos itens</Text>
           <Text variant="label">{formatBRL(gap.itemsTotal)}</Text>
         </Row>
-        {isDraft && totalText != null ? (
+        {can.total && totalText != null ? (
           <View style={styles.gapSm}>
             <TextField
               label={RECEIPT_TOTAL_LABEL}
@@ -732,12 +808,18 @@ export default function ReceiptScreen() {
               autoFocus
             />
             <Row>
-              <Button title={SAVE_TOTAL_LABEL} compact onPress={saveTypedTotal} loading={saveTotal.isPending} />
+              <Button
+                title={SAVE_TOTAL_LABEL}
+                compact
+                onPress={saveTypedTotal}
+                loading={isDraft ? saveTotal.isPending : correctTotal.isPending}
+              />
               <Button title="Cancelar" variant="ghost" compact onPress={() => setTotalText(null)} />
             </Row>
           </View>
-        ) : isDraft ? (
-          // Na revisão o total dá para corrigir (a leitura também erra o total) ou informar; nunca é obrigatório.
+        ) : can.total ? (
+          // O total dá para corrigir (a leitura também erra o total) ou informar, também depois de confirmar; nunca
+          // é obrigatório.
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={totalAccess.label}
@@ -767,6 +849,7 @@ export default function ReceiptScreen() {
           </View>
         ) : null}
         <PayerChips value={receipt.paid_by} onChange={(paidBy) => updateReceipt.mutate({ paid_by: paidBy }, { onError })} />
+        {isDraft ? null : <Text variant="small">{confirmedEditNote(receipt.source)}</Text>}
         {photos.length ? (
           <Button
             title={photos.length > 1 ? `Ver fotos da nota (${photos.length})` : 'Ver foto da nota'}
@@ -835,7 +918,7 @@ export default function ReceiptScreen() {
 
       <Section
         title={`Itens (${items.length})`}
-        action={isDraft ? <Button title="Item" icon="plus" variant="ghost" compact onPress={() => setEditing({})} /> : null}>
+        action={can.addItem ? <Button title="Item" icon="plus" variant="ghost" compact onPress={() => setEditing({})} /> : null}>
         {items.map((item) => {
           const resolved = resolvedItems.get(item.id)!;
           const alert = alertText(alerts.get(item.id));
@@ -881,7 +964,7 @@ export default function ReceiptScreen() {
                 right={<ItemValue item={item} />}
                 onPress={item.product_id ? () => router.push({ pathname: '/produto/[id]', params: { id: item.product_id! } }) : undefined}
               />
-              {/* A nota confirmada não se edita, com uma exceção: dar valor ao item que ficou sem. */}
+              {/* Dos itens da nota confirmada, só se corrige o valor do que ficou sem (domain/receiptEdit). */}
               {prompt ? <ValueQuestion prompt={prompt} onUse={applySuggestion} onFill={() => setEditing({ item })} /> : null}
             </Card>
           );
@@ -908,22 +991,10 @@ export default function ReceiptScreen() {
         placeholder="Buscar ou criar mercado"
         options={(stores.data ?? []).map((s) => ({ id: s.id, title: s.name, subtitle: s.address ?? undefined }))}
         onClose={() => setPicker(null)}
-        onSelect={(storeId) => {
-          setPicker(null);
-          setStore.mutate({ id: storeId }, { onError });
-        }}
+        onSelect={(storeId) => chooseStore({ id: storeId })}
         extraActions={(query) =>
           query ? (
-            <Button
-              title={`Criar "${query}"`}
-              icon="plus"
-              variant="secondary"
-              compact
-              onPress={() => {
-                setPicker(null);
-                setStore.mutate({ name: query }, { onError });
-              }}
-            />
+            <Button title={`Criar "${query}"`} icon="plus" variant="secondary" compact onPress={() => chooseStore({ name: query })} />
           ) : null
         }
       />
@@ -1035,7 +1106,7 @@ export default function ReceiptScreen() {
       {editing ? (
         <ReceiptItemEditor
           initial={editing.item}
-          valueOnly={!isDraft}
+          valueOnly={can.items === 'missingValue'}
           saving={saveItem.isPending || fillValue.isPending}
           onClose={() => setEditing(null)}
           onSave={saveEditedItem}
