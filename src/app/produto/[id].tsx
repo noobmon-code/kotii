@@ -7,6 +7,7 @@ import { CATEGORIES, getCategory } from '@/domain/categories';
 import { formatShortDate, toISODate } from '@/domain/dates';
 import { formatBRL } from '@/domain/money';
 import { noStorePriceSentence } from '@/domain/priceHistory';
+import { PRODUCT_CATEGORY_NOTE } from '@/domain/productCategory';
 import {
   NO_SAVED_PRICES_ERROR,
   NO_SAVED_PRICES_OFFLINE,
@@ -159,6 +160,8 @@ export default function ProductScreen() {
       <PickerModal
         visible={pickingCategory}
         title="Categoria"
+        // Mudar a categoria muda também os meses passados no Mercado do mês e em Finanças: a pessoa sabe antes.
+        message={PRODUCT_CATEGORY_NOTE}
         options={CATEGORIES.map((cat) => ({ id: cat.key, title: cat.label, left: <CategoryIcon category={cat.key} size={32} /> }))}
         onClose={() => setPickingCategory(false)}
         onSelect={(category) => {

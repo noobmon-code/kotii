@@ -8,13 +8,21 @@ import { todayISO } from '@/domain/dates';
 import { monthLabel, shiftMonth } from '@/domain/finance';
 import type { MarketChange } from '@/domain/marketChange';
 import {
+  MARKET_ITEM_ORDERS,
   MARKET_VIEWS,
   marketMonth,
+  marketStoreMonth,
   marketTrend,
+  marketVsSummary,
   monthFromParam,
+  orderMarketItems,
+  QUANTITY_ORDER_NOTE,
   viewFromParam,
+  type MarketItem,
+  type MarketItemOrder,
   type MarketMonth,
   type MarketReceiptRef,
+  type MarketStoreMonth,
   type MarketTrend,
   type MarketView,
 } from '@/domain/marketSpend';
@@ -44,6 +52,7 @@ import { space } from '@/ui/theme';
 const capitalizeFirst = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
 const openReceipt = (id: string) => router.push({ pathname: '/nota/[id]', params: { id } });
+const openProduct = (id: string) => router.push({ pathname: '/produto/[id]', params: { id } });
 
 /** Mercado do mês: para onde foi o dinheiro do mercado. As contas e os textos vêm de domain/marketSpend. */
 export default function MarketMonthScreen() {
@@ -59,6 +68,10 @@ export default function MarketMonthScreen() {
   const receipts = useMarketReceipts(month);
   const scanner = useReceiptScanner();
   const [category, setCategory] = useState<string | null>(null);
+  // O mercado tocado na lista de mercados: '' é o das notas sem mercado, null é nenhum.
+  const [store, setStore] = useState<string | null>(null);
+  // A ordem dos itens continua a mesma ao trocar de mês.
+  const [order, setOrder] = useState<MarketItemOrder>('valor');
   const [showAll, setShowAll] = useState(false);
   const [showAllChanges, setShowAllChanges] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -70,15 +83,23 @@ export default function MarketMonthScreen() {
   const summary = useMemo(() => (receipts.data ? marketMonth(receipts.data, month, today) : null), [receipts.data, month, today]);
   const trend = useMemo(() => (receipts.data ? marketTrend(receipts.data, month, today) : null), [receipts.data, month, today]);
   const chosen = summary?.categories.some((c) => c.key === category) ? category : null;
+  const chosenStore = store === null ? undefined : summary?.stores.find((s) => s.key === store);
+  // O mercado escolhido: as idas e os itens dele no mês. Só a parte dos mercados o mostra, e só aí a conta é feita.
+  const storeMonth = useMemo(
+    () => (receipts.data && chosenStore && view === 'mercados' ? marketStoreMonth(receipts.data, month, today, chosenStore) : null),
+    [receipts.data, month, today, chosenStore, view],
+  );
   // A categoria escolhida, nos mesmos meses: como ela andou. Só os itens mostram o cartão, e só aí a conta é feita.
   const categoryTrend = useMemo(
     () => (receipts.data && chosen && view === 'itens' ? marketTrend(receipts.data, month, today, chosen) : null),
     [receipts.data, month, today, chosen, view],
   );
 
-  function goTo(target: string) {
+  /** Troca de mês. Pelo cartão da categoria, a categoria continua escolhida (`keepCategory`). */
+  function goTo(target: string, keepCategory = false) {
     if (target > current) return;
-    setCategory(null);
+    if (!keepCategory) setCategory(null);
+    setStore(null);
     setShowAll(false);
     setShowAllChanges(false);
     setDetailsOpen(false);
@@ -92,6 +113,12 @@ export default function MarketMonthScreen() {
     router.setParams({ aba: 'itens' });
     // A categoria tocada pode estar lá embaixo na lista: a tela volta para a chave, com os itens logo abaixo.
     scroll.current?.scrollTo({ y: Math.max(0, switchY.current - space.sm), animated: false });
+  }
+
+  /** Tocar num mercado mostra as idas e os itens dele, logo abaixo da chave; tirar a escolha volta à lista. */
+  function chooseStore(key: string | null) {
+    setStore(key);
+    if (key !== null) scroll.current?.scrollTo({ y: Math.max(0, switchY.current - space.sm), animated: false });
   }
 
   /**
@@ -143,8 +170,14 @@ export default function MarketMonthScreen() {
           onView={(value) => router.setParams({ aba: value })}
           trend={trend}
           categoryTrend={categoryTrend}
+          onMonth={goTo}
+          vsSummary={marketVsSummary(month, today, 'mes')}
           category={chosen}
           onCategory={chooseCategory}
+          storeMonth={storeMonth}
+          onStore={chooseStore}
+          order={order}
+          onOrder={setOrder}
           showAll={showAll}
           onShowAll={setShowAll}
           showAllChanges={showAllChanges}
@@ -171,12 +204,18 @@ function MonthBody({
   summary,
   trend,
   categoryTrend,
+  onMonth,
+  vsSummary,
   stale,
   onRetry,
   view,
   onView,
   category,
   onCategory,
+  storeMonth,
+  onStore,
+  order,
+  onOrder,
   showAll,
   onShowAll,
   showAllChanges,
@@ -191,12 +230,20 @@ function MonthBody({
   summary: MarketMonth;
   trend: MarketTrend | null;
   categoryTrend: MarketTrend | null;
+  /** Abre outro mês; `keepCategory` mantém a categoria escolhida. */
+  onMonth: (month: string, keepCategory?: boolean) => void;
+  /** Por que este total não é a barra "Mercado" do Resumo. */
+  vsSummary: string;
   stale: boolean;
   onRetry: () => void;
   view: MarketView;
   onView: (view: MarketView) => void;
   category: string | null;
   onCategory: (category: string | null) => void;
+  storeMonth: MarketStoreMonth | null;
+  onStore: (store: string | null) => void;
+  order: MarketItemOrder;
+  onOrder: (order: MarketItemOrder) => void;
   showAll: boolean;
   onShowAll: (all: boolean) => void;
   showAllChanges: boolean;
@@ -237,7 +284,7 @@ function MonthBody({
             </Card>
           ) : null}
           {/* Mês sem nota, mas com notas nos meses antes dele: a tendência continua dizendo como o mercado andou. */}
-          {trend?.hasAny ? <MarketTrendChart trend={trend} /> : null}
+          {trend?.hasAny ? <MarketTrendChart trend={trend} onSelect={onMonth} /> : null}
         </>
       ) : (
         <>
@@ -270,7 +317,7 @@ function MonthBody({
             </Card>
           ) : null}
 
-          {trend ? <MarketTrendChart trend={trend} /> : null}
+          {trend ? <MarketTrendChart trend={trend} onSelect={onMonth} /> : null}
 
           {/* Sem nota de mercado na janela do mês anterior não há com o que comparar: o cabeçalho já diz. */}
           {summary.change ? (
@@ -284,7 +331,17 @@ function MonthBody({
           </View>
 
           {view === 'itens' ? (
-            <Items summary={summary} category={category} trend={categoryTrend} onCategory={onCategory} showAll={showAll} onShowAll={onShowAll} />
+            <Items
+              summary={summary}
+              category={category}
+              trend={categoryTrend}
+              onMonth={(month) => onMonth(month, true)}
+              onCategory={onCategory}
+              order={order}
+              onOrder={onOrder}
+              showAll={showAll}
+              onShowAll={onShowAll}
+            />
           ) : view === 'categorias' ? (
             <Categories summary={summary} onCategory={onCategory} />
           ) : view === 'idas' ? (
@@ -301,36 +358,47 @@ function MonthBody({
                 />
               ))}
             </ListCard>
+          ) : storeMonth ? (
+            <StoreDetail store={storeMonth} onStore={onStore} />
           ) : (
-            <ListCard>
-              {summary.stores.map((store) => (
-                <ListRow
-                  key={store.key}
-                  left={<IconBadge icon="store-outline" />}
-                  title={store.name}
-                  subtitle={store.detail}
-                  right={<Text variant="label">{store.amount}</Text>}
-                  accessibilityLabel={store.accessibilityLabel}
-                />
-              ))}
-            </ListCard>
+            <View style={styles.gapMd}>
+              <Text variant="small">Toque num mercado para ver as idas e os itens dele.</Text>
+              <ListCard>
+                {summary.stores.map((store) => (
+                  <ListRow
+                    key={store.key}
+                    left={<IconBadge icon="store-outline" />}
+                    title={store.name}
+                    subtitle={store.detail}
+                    right={<Text variant="label">{store.amount}</Text>}
+                    accessibilityLabel={`${store.accessibilityLabel}. Ver as idas e os itens`}
+                    onPress={() => onStore(store.key)}
+                  />
+                ))}
+              </ListCard>
+            </View>
           )}
-
-          <Text variant="small">
-            Diferente da barra “Mercado” do Resumo: aqui entram limpeza, higiene e pet, e só conta o que veio de nota fiscal.
-          </Text>
         </>
       )}
+
+      {/* No pé da tela, também no mês sem ida: por que este total não é a barra do Resumo. */}
+      <Text variant="small">{vsSummary}</Text>
     </>
   );
 }
 
-/** Os itens do mês, do que levou mais dinheiro para o que levou menos; com uma categoria escolhida, todos os dela. */
+/**
+ * Os itens do mês, na ordem escolhida (por valor, quantidade ou idas); com uma categoria escolhida, todos os
+ * dela. Por quantidade, cada medida vem num grupo, e os que não se somam ficam por último, num grupo que diz isso.
+ */
 function Items({
   summary,
   category,
   trend,
+  onMonth,
   onCategory,
+  order,
+  onOrder,
   showAll,
   onShowAll,
 }: {
@@ -338,7 +406,11 @@ function Items({
   category: string | null;
   /** Com uma categoria escolhida: como ela andou nos últimos meses. */
   trend: MarketTrend | null;
+  /** Um mês tocado no cartão da categoria. */
+  onMonth: (month: string) => void;
   onCategory: (category: string | null) => void;
+  order: MarketItemOrder;
+  onOrder: (order: MarketItemOrder) => void;
   showAll: boolean;
   onShowAll: (all: boolean) => void;
 }) {
@@ -346,7 +418,7 @@ function Items({
   // Nunca um corte calado: os primeiros vêm com o "Ver todos" (quantos e o que os botões dizem saem das
   // regras, em `itemsCut`), e a categoria escolhida vem inteira.
   const cut = category ? null : summary.itemsCut;
-  const shown = cut && !showAll ? items.slice(0, cut.shown) : items;
+  const groups = orderMarketItems(items, order, cut && !showAll ? cut.shown : undefined);
   const label = category ? getCategory(category).label : null;
   if (items.length === 0) return <Text variant="muted">As notas deste mês vieram sem nenhum item lido.</Text>;
   return (
@@ -363,28 +435,101 @@ function Items({
           />
         </Row>
       ) : null}
-      {trend ? <MarketTrendChart trend={trend} /> : null}
-      <ListCard>
-        {shown.map((item) => (
-          <ListRow
-            key={item.key}
-            left={<CategoryIcon category={item.category} name={item.name} size={36} />}
-            title={item.name}
-            subtitle={item.detail}
-            right={
-              <View style={styles.amount}>
-                <Text variant="label">{item.amount}</Text>
-                <Text variant="small">{item.share}</Text>
-              </View>
-            }
-            accessibilityLabel={item.accessibilityLabel}
-            // Item que a casa não acompanha não tem tela de produto.
-            onPress={item.productId ? () => router.push({ pathname: '/produto/[id]', params: { id: item.productId! } }) : undefined}
+      {trend ? <MarketTrendChart trend={trend} onSelect={onMonth} /> : null}
+      <Row style={styles.wrap}>
+        <Text variant="muted">Ordem:</Text>
+        {MARKET_ITEM_ORDERS.map((option) => (
+          <Chip
+            key={option.value}
+            label={option.label}
+            selected={order === option.value}
+            accessibilityLabel={`Ordenar os itens por ${option.label.toLowerCase()}`}
+            onPress={() => onOrder(option.value)}
           />
         ))}
-      </ListCard>
+      </Row>
+      {order === 'quantidade' ? <Text variant="small">{QUANTITY_ORDER_NOTE}</Text> : null}
+      {groups.map((group) => (
+        <View key={group.key} style={styles.gapSm}>
+          {group.title ? (
+            <Text variant="label" accessibilityRole="header">
+              {group.title}
+            </Text>
+          ) : null}
+          {group.hint ? <Text variant="small">{group.hint}</Text> : null}
+          <ListCard>
+            {group.items.map((item) => (
+              <ItemRow key={item.key} item={item} />
+            ))}
+          </ListCard>
+        </View>
+      ))}
       {cut ? <Button title={showAll ? cut.less : cut.more} variant="ghost" compact onPress={() => onShowAll(!showAll)} /> : null}
       {summary.shareBasis ? <Text variant="small">{summary.shareBasis}</Text> : null}
+    </View>
+  );
+}
+
+/** Um item: o valor e a parte à direita; o toque abre o produto. */
+function ItemRow({ item }: { item: MarketItem }) {
+  return (
+    <ListRow
+      left={<CategoryIcon category={item.category} name={item.name} size={36} />}
+      title={item.name}
+      subtitle={item.detail}
+      right={
+        <View style={styles.amount}>
+          <Text variant="label">{item.amount}</Text>
+          <Text variant="small">{item.share}</Text>
+        </View>
+      }
+      accessibilityLabel={item.accessibilityLabel}
+      // Item que a casa não acompanha não tem tela de produto.
+      onPress={item.productId ? () => openProduct(item.productId!) : undefined}
+    />
+  );
+}
+
+/** Um mercado tocado: o total dele, as idas (cada uma abre a nota) e os itens, com o selo que volta à lista. */
+function StoreDetail({ store, onStore }: { store: MarketStoreMonth; onStore: (store: string | null) => void }) {
+  return (
+    <View style={styles.gapMd}>
+      <Row style={styles.wrap}>
+        <Text variant="muted">Só o mercado</Text>
+        <Chip label={store.title} icon="close" selected accessibilityLabel={`${store.title}: mostrar todos os mercados`} onPress={() => onStore(null)} />
+      </Row>
+      <Text variant="heading">{store.headline}</Text>
+      <View style={styles.gapSm}>
+        <Text variant="label" accessibilityRole="header">
+          Idas
+        </Text>
+        <ListCard>
+          {store.trips.map((trip) => (
+            <ListRow
+              key={trip.receiptId}
+              left={<IconBadge icon="receipt-text-outline" />}
+              title={trip.detail}
+              right={<Text variant="label">{trip.amount}</Text>}
+              accessibilityLabel={`${trip.accessibilityLabel}. Abrir a nota`}
+              onPress={() => openReceipt(trip.receiptId)}
+            />
+          ))}
+        </ListCard>
+      </View>
+      <View style={styles.gapSm}>
+        <Text variant="label" accessibilityRole="header">
+          Itens
+        </Text>
+        {store.items.length ? (
+          <ListCard>
+            {store.items.map((item) => (
+              <ItemRow key={item.key} item={item} />
+            ))}
+          </ListCard>
+        ) : (
+          <Text variant="muted">As notas deste mercado vieram sem nenhum item lido.</Text>
+        )}
+      </View>
     </View>
   );
 }
@@ -430,7 +575,7 @@ function Changes({ change, showAll, onShowAll }: { change: MarketChange; showAll
               right={<Text variant="label">{item.amount}</Text>}
               accessibilityLabel={item.accessibilityLabel}
               // Item que a casa não acompanha não tem tela de produto.
-              onPress={item.productId ? () => router.push({ pathname: '/produto/[id]', params: { id: item.productId! } }) : undefined}
+              onPress={item.productId ? () => openProduct(item.productId!) : undefined}
             />
           ))}
         </ListCard>
