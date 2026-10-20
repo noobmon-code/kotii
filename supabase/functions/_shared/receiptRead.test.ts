@@ -3,7 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { forgetReceiptRead, insertWithRead, MAX_DESCRIPTION, MAX_READ_LINES, receiptRead, saoPauloDay, saveReceiptRead } from './receiptRead.ts';
 
-const KEY = '35261011222333000181650010000123451000012347';
+const KEY = '35261011222333000181650010000123451000012341';
 
 Deno.test('saoPauloDay: o dia em São Paulo, não em UTC', () => {
   assertEquals(saoPauloDay('2026-10-10T01:30:00.000Z'), '2026-10-09');
@@ -50,6 +50,19 @@ Deno.test('receiptRead: chave, CNPJ, nome e dia que não servem ficam vazios', (
   });
   assertEquals([read.access_key, read.store_cnpj, read.store_name, read.purchased_on], [null, null, null, null]);
   assertEquals(read.lines.length, MAX_READ_LINES);
+});
+
+Deno.test('receiptRead: chave e CNPJ com o tamanho certo, mas que não passam no verificador, ficam vazios', () => {
+  const read = receiptRead({
+    householdId: 'h1',
+    source: 'ai',
+    accessKey: `${KEY.slice(0, 43)}7`,
+    cnpj: '11.222.333/0001-82',
+    storeName: 'X',
+    purchasedOn: '2026-10-09',
+    lines: [],
+  });
+  assertEquals([read.access_key, read.store_cnpj], [null, null]);
 });
 
 function fakeServer(result: { data: unknown; error: unknown } | Error) {

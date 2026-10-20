@@ -10,6 +10,7 @@ import {
   parseNfceQr,
   qrReadStep,
 } from '../nfce';
+import { hasNoValue } from '../receiptItem';
 
 // SP (35), set/2026, CNPJ 12.345.678/0001-99, modelo 65, série 1, nota 12345.
 const BODY = '35' + '2609' + '12345678000199' + '65' + '001' + '000012345' + '1' + '12345678';
@@ -65,6 +66,21 @@ describe('nfceItemsToDraft', () => {
       expect.objectContaining({ position: 2, product_id: null, suggested_category: 'limpeza', unit_price: 2.79 }),
     ]);
     expect(normalizeNfceUnit(' lt ')).toBe('l');
+  });
+
+  it('o item que a página mostrou sem valor (total 0) entra sem valor, para a revisão perguntar; o negativo fica de fora', () => {
+    const draft = nfceItemsToDraft(
+      [
+        { description: 'CAFE PILAO 500G', code: null, quantity: 2, unit: 'UN', unitPrice: 18.9, totalPrice: 0 },
+        { description: 'ACUCAR 1KG', code: null, quantity: 1, unit: 'UN', unitPrice: 0, totalPrice: 0 },
+        { description: 'DESCONTO', code: null, quantity: 1, unit: 'UN', unitPrice: 0, totalPrice: -2 },
+      ],
+      new Map(),
+    );
+    expect(draft.map((line) => [line.raw_description, line.unit_price, line.total_price, hasNoValue(line)])).toEqual([
+      ['CAFE PILAO 500G', 18.9, 0, true],
+      ['ACUCAR 1KG', 0, 0, true],
+    ]);
   });
 });
 
