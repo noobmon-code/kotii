@@ -1,14 +1,27 @@
 import { assertEquals } from '@std/assert';
 
-import { cleanReceipt, instructions, sameStoreName, type ExtractedReceipt } from './extract.ts';
+import { extractStructured, type VisionConfig } from '../_shared/vision.ts';
+import {
+  type CatalogProduct,
+  cleanReceipt,
+  type ExtractedReceipt,
+  ExtractedReceiptSchema,
+  instructions,
+  promptCatalog,
+  sameStoreName,
+} from './extract.ts';
+
+// Chave fictícia com o verificador certo, do CNPJ 11.222.333/0001-81 (também válido).
+const KEY = '35261011222333000181650010000123451000012341';
+const CNPJ = '11222333000181';
 
 const base: ExtractedReceipt = {
   is_receipt: true,
   store_name: ' Mercado Bom ',
-  cnpj: '12.345.678/0001-99',
+  cnpj: '11.222.333/0001-81',
   address: null,
   purchased_at: '2026-09-20T10:15:00-03:00',
-  access_key: '3526 0912 3456 7800 0199 6500 1000 0012 3410 0012 3456',
+  access_key: KEY.match(/.{4}/g)!.join(' '),
   total: 30.5,
   items: [
     {
@@ -47,8 +60,8 @@ const base: ExtractedReceipt = {
 Deno.test('cleans identifiers, dates and items', () => {
   const r = cleanReceipt(base, new Set(['p-banana', 'p-arroz']), new Map([['ARROZ T.JOAO 5KG', 'p-arroz']]));
   assertEquals(r.storeName, 'Mercado Bom');
-  assertEquals(r.cnpj, '12345678000199');
-  assertEquals(r.accessKey, '35260912345678000199650010000012341000123456');
+  assertEquals(r.cnpj, CNPJ);
+  assertEquals(r.accessKey, KEY);
   assertEquals(r.purchasedAt, '2026-09-20T13:15:00.000Z');
   assertEquals(r.items.length, 2, 'blank line dropped');
   assertEquals(r.items[0].product_id, 'p-arroz', 'alias wins over model suggestion');
@@ -66,6 +79,104 @@ Deno.test('drops invalid identifiers and unknown product ids', () => {
   assertEquals(r.accessKey, null);
   assertEquals(r.purchasedAt, null);
   assertEquals(r.items[0].product_id, null);
+});
+
+/** Uma linha da nota como a IA devolve, com o que o teste mudar. */
+const line = (over: Partial<ExtractedReceipt['items'][number]>): ExtractedReceipt['items'][number] => ({
+  raw_description: 'LEITE ITALAC 1L',
+  normalized_name: 'Leite Italac 1L',
+  category: 'laticinios',
+  quantity: 1,
+  unit: 'un',
+  unit_price: 4.59,
+  total_price: 4.59,
+  matched_product_id: null,
+  ...over,
+});
+
+Deno.test('chave e CNPJ: só com o verificador certo; com a chave válida, o CNPJ é o dela', () => {
+  const clean = (access_key: string | null, cnpj: string | null) => {
+    const r = cleanReceipt({ ...base, access_key, cnpj }, new Set(), new Map());
+    return [r.accessKey, r.cnpj];
+  };
+  // Um dígito da chave lido errado: a chave fica de fora, e o CNPJ lido (válido) fica.
+  const typo = `${KEY.slice(0, 30)}9${KEY.slice(31)}`;
+  assertEquals(clean(typo, '11.222.333/0001-81'), [null, CNPJ]);
+  // CNPJ que falha no módulo 11, sem chave: nenhum. Os 14 iguais também não são CNPJ.
+  assertEquals(clean(null, '11.222.333/0001-82'), [null, null]);
+  assertEquals(clean(null, '00000000000000'), [null, null]);
+  // Com a chave válida, o CNPJ sai dela: o lido errado, ou outro válido, não vale.
+  assertEquals(clean(KEY, '11.222.333/0001-82'), [KEY, CNPJ]);
+  assertEquals(clean(KEY, '12.345.678/0001-95'), [KEY, CNPJ]);
+  assertEquals(clean(KEY, null), [KEY, CNPJ]);
+});
+
+Deno.test('preço ilegível (null) passa no schema e vira 0, o "sem valor" que a revisão pergunta', () => {
+  const unread = { ...base, items: [line({ unit_price: null, total_price: null }), line({ raw_description: 'PAO', unit_price: 12.9, total_price: null, quantity: null })] };
+  assertEquals(ExtractedReceiptSchema.safeParse(unread).success, true);
+  const r = cleanReceipt(unread, new Set(), new Map());
+  assertEquals(r.items.map((i) => [i.raw_description, i.quantity, i.unit_price, i.total_price]), [
+    ['LEITE ITALAC 1L', 1, 0, 0],
+    // O preço unitário lido fica; o total não é calculado (pode ter desconto), a revisão pergunta.
+    ['PAO', 1, 12.9, 0],
+  ]);
+});
+
+Deno.test('preço ilegível não derruba a nota pela OpenRouter', async () => {
+  const answer = { ...base, items: [line({ unit_price: null, total_price: null })] };
+  const fetchImpl = (() =>
+    Promise.resolve(new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(answer) } }] })))) as typeof fetch;
+  const config: VisionConfig = { provider: 'openrouter', model: 'deepseek/deepseek-v4.1-flash', modelEnv: 'RECEIPT_MODEL', apiKey: 'k' };
+  const extracted = await extractStructured({
+    config,
+    schema: ExtractedReceiptSchema,
+    schemaName: 'receipt',
+    system: 'Sistema.',
+    prompt: instructions([]),
+    images: [{ base64: 'AAAA', mediaType: 'image/jpeg' }],
+    subject: 'a nota',
+    fetchImpl,
+  });
+  assertEquals(cleanReceipt(extracted, new Set(), new Map()).items[0].total_price, 0);
+});
+
+Deno.test('linha negativa (cancelamento, desconto como item) fica de fora, em vez de virar item sem valor', () => {
+  const r = cleanReceipt(
+    {
+      ...base,
+      items: [
+        line({}),
+        line({ raw_description: 'CANCELAMENTO ITEM 001', unit_price: -4.59, total_price: -4.59 }),
+        line({ raw_description: 'DESCONTO', unit_price: null, total_price: -1 }),
+        line({ raw_description: 'ARROZ 5KG', unit_price: 25, total_price: 25 }),
+      ],
+    },
+    new Set(),
+    new Map(),
+  );
+  assertEquals(r.items.map((i) => [i.position, i.raw_description]), [[0, 'LEITE ITALAC 1L'], [1, 'ARROZ 5KG']]);
+});
+
+Deno.test('instructions: preço ilegível é null, nunca estimado; item cancelado e desconto em linha separada', () => {
+  const text = instructions([]);
+  assertEquals(text.includes('Preço ou quantidade que não dá para ler: null. Nunca estime'), true);
+  assertEquals(text.includes('Item cancelado fica de fora, junto com a linha que o cancela'), true);
+  assertEquals(text.includes('também quando vem impresso numa linha separada'), true);
+});
+
+Deno.test('promptCatalog: primeiro os mais comprados (empate: o comprado por último), depois os cadastrados por último', () => {
+  const p = (id: string): CatalogProduct => ({ id, name: `Produto ${id}` });
+  // Linhas de nota da mais nova para a mais antiga.
+  const bought = [p('leite'), p('arroz'), p('leite'), p('cafe'), p('arroz'), p('leite'), p('zebra')];
+  const newest = [p('novo'), p('leite'), p('antigo')];
+  assertEquals(promptCatalog(bought, newest).map((x) => x.id), ['leite', 'arroz', 'cafe', 'zebra', 'novo', 'antigo']);
+  // O limite vale para a soma, sem repetir produto.
+  assertEquals(promptCatalog(bought, newest, 3).map((x) => x.id), ['leite', 'arroz', 'cafe']);
+  assertEquals(promptCatalog([], newest, 2).map((x) => x.id), ['novo', 'leite']);
+  // Numa casa com mais produtos que o limite, o do fim do alfabeto comprado sempre entra.
+  const many = Array.from({ length: 500 }, (_, i) => p(`a${String(i).padStart(3, '0')}`));
+  assertEquals(promptCatalog([p('zebra')], many).some((x) => x.id === 'zebra'), true);
+  assertEquals(promptCatalog([p('zebra')], many).length, 400);
 });
 
 Deno.test('instructions explain the overlap when the receipt comes in several photos', () => {

@@ -17,6 +17,8 @@ function items(): NfceItem[] {
   list.push({ description: '   ', code: null, quantity: 1, unit: 'UN', unitPrice: 1, totalPrice: 1 });
   list.push({ description: 'NEGATIVO', code: null, quantity: 1, unit: 'UN', unitPrice: 1, totalPrice: -1 });
   list.push({ description: 'BRINDE', code: null, quantity: 1, unit: 'UN', unitPrice: 0, totalPrice: 0 });
+  // A página sem o valor do item: a função o manda com total 0 (só o preço unitário, quando legível).
+  list.push({ description: 'SEM VALOR NA PAGINA', code: null, quantity: 2, unit: 'UN', unitPrice: 18.9, totalPrice: 0 });
   return list;
 }
 
