@@ -12,7 +12,7 @@ import { supabase, unwrap } from '@/lib/supabase';
 import type { ShoppingListItem } from '@/lib/types';
 
 import { prepareImage } from './images';
-import { queuedDefaults, requireQueueSession } from './market';
+import { queuedAddSettled, queuedDefaults, requireQueueSession } from './market';
 
 /** Mesmo bucket das fotos de aparelhos: políticas e limpeza da casa apagada já valem. */
 export const LIST_PHOTO_BUCKET = 'documents';
@@ -89,7 +89,11 @@ async function uploadListPhoto({ itemId, householdId, userId, photoKey }: ListPh
 export function registerListPhotoMutations(queryClient: QueryClient) {
   queryClient.setMutationDefaults(LIST_PHOTO_KEY, {
     ...queuedDefaults(LIST_PHOTO_SCOPE),
-    mutationFn: (input: ListPhotoInput) => uploadListPhoto(input),
+    // A foto de um item posto sem internet espera o item chegar ao servidor (ele anda na fila da lista).
+    mutationFn: async (input: ListPhotoInput) => {
+      await queuedAddSettled(queryClient, input.itemId);
+      return uploadListPhoto(input);
+    },
     onSuccess: async (path: string | null, input: ListPhotoInput) => {
       const key = ['listItems', input.listId];
       // A foto sai da fila agora: a lista já passa a tê-la, sem esperar a

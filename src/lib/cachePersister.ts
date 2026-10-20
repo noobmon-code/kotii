@@ -11,7 +11,28 @@ export interface KeyValueStorage {
   removeItem: (key: string) => Promise<void>;
 }
 
-export function createCachePersister({ storage, key, throttleMs }: { storage: KeyValueStorage; key: string; throttleMs: number }) {
+/**
+ * Gravar falhou (armazenamento cheio: no navegador, o localStorage tem poucos
+ * MB). `essential`: só o essencial ficou guardado; `lost`: nem isso, e o que
+ * estava guardado antes foi apagado (o cache velho, com uma fila velha, não
+ * volta numa próxima abertura).
+ */
+export type CacheWriteFailure = 'essential' | 'lost';
+
+export function createCachePersister({
+  storage,
+  key,
+  throttleMs,
+  essential,
+  onWriteFailed,
+}: {
+  storage: KeyValueStorage;
+  key: string;
+  throttleMs: number;
+  /** O mínimo para guardar quando o cache inteiro não cabe (a fila de quem ficou sem internet, as listas). */
+  essential?: (client: PersistedClient) => PersistedClient;
+  onWriteFailed?: (failure: CacheWriteFailure) => void;
+}) {
   let queue: Promise<void> = Promise.resolve();
   let waiting: PersistedClient | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -27,10 +48,31 @@ export function createCachePersister({ storage, key, throttleMs }: { storage: Ke
     timer = undefined;
   };
 
+  /** Grava; sem espaço, tenta só o essencial e, sem espaço nem para ele, tira o cache velho. */
+  const write = async (client: PersistedClient) => {
+    try {
+      await storage.setItem(key, JSON.stringify(client));
+      return;
+    } catch {
+      // Segue para o essencial.
+    }
+    if (essential) {
+      try {
+        await storage.setItem(key, JSON.stringify(essential(client)));
+        onWriteFailed?.('essential');
+        return;
+      } catch {
+        // Nem o essencial coube.
+      }
+    }
+    await storage.removeItem(key).catch(() => undefined);
+    onWriteFailed?.('lost');
+  };
+
   const writeWaiting = () => {
     const client = waiting;
     dropWaiting();
-    return client ? enqueue(() => storage.setItem(key, JSON.stringify(client))) : queue;
+    return client ? enqueue(() => write(client)) : queue;
   };
 
   const persister: Persister = {

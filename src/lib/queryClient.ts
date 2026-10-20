@@ -4,17 +4,18 @@
 // guardada e sai quando a conexão volta.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { hashKey, MutationCache, onlineManager, QueryClient } from '@tanstack/react-query';
+import { focusManager, hashKey, MutationCache, onlineManager, QueryClient } from '@tanstack/react-query';
 import { persistQueryClientSave, type PersistedClient, type PersistQueryClientProviderProps } from '@tanstack/react-query-persist-client';
 import * as Network from 'expo-network';
 import { AppState, Platform } from 'react-native';
 
 import { forgetPendingPhotos, inPhotoQueue, registerListPhotoMutations } from '@/data/listPhotos';
 import { inListQueue, registerListMutations } from '@/data/market';
+import { notify } from '@/ui/dialogs';
 
 import { isHouseholdAccessError, leftHousehold, markRemovedFromHousehold, wroteNoRows } from './accessErrors';
 import { getActiveHousehold } from './activeHousehold';
-import { createCachePersister } from './cachePersister';
+import { type CacheWriteFailure, createCachePersister } from './cachePersister';
 
 const WEEK = 1000 * 60 * 60 * 24 * 7;
 
@@ -173,13 +174,64 @@ onlineManager.setEventListener((setOnline) => {
   };
 });
 
+// No celular, o TanStack Query não sabe quando o app volta para a frente (na
+// web, o navegador avisa sozinho): sem isso, o que outra pessoa pôs na lista
+// com o app no fundo (o tempo real não reenvia o que perdeu) só aparecia
+// puxando a tela para atualizar. "inactive" (só no iPhone: a central de
+// notificações, uma ligação) conta como fora de foco.
+if (Platform.OS !== 'web') {
+  focusManager.setEventListener((setFocused) => {
+    const subscription = AppState.addEventListener('change', (state) => setFocused(state === 'active'));
+    return () => subscription.remove();
+  });
+}
+
 /** A sessão ainda vale (false: venceu e o Supabase ainda não renovou). */
 export function setSessionValid(valid: boolean) {
   sessionValid = valid;
   syncOnline();
 }
 
-const { persister, persistNow } = createCachePersister({ storage: AsyncStorage, key: 'kotii:query-cache', throttleMs: 1000 });
+// Sem espaço para o cache inteiro, fica o que a lista precisa no mercado; a
+// fila (pôr, marcar, editar, tirar, limpar e as fotos) vai sempre junto.
+const ESSENTIAL = new Set(['household', 'lists', 'list', 'listItems']);
+
+function essentialOnly(client: PersistedClient): PersistedClient {
+  return {
+    ...client,
+    clientState: {
+      ...client.clientState,
+      queries: client.clientState.queries.filter((query) => ESSENTIAL.has(String(query.queryKey[0]))),
+    },
+  };
+}
+
+/** O aviso já dado nesta abertura do app: um por tipo de falha, sem repetir a cada gravação. */
+const warnedCacheFailures = new Set<CacheWriteFailure>();
+
+function warnCacheFailure(failure: CacheWriteFailure) {
+  if (warnedCacheFailures.has(failure)) return;
+  warnedCacheFailures.add(failure);
+  if (failure === 'essential') {
+    notify(
+      'Pouco espaço no aparelho',
+      'O app guardou só as listas e o que espera a conexão. Preços e produtos podem não aparecer sem internet. Libere espaço no aparelho (ou no navegador) para o app guardar tudo.',
+    );
+  } else {
+    notify(
+      'Sem espaço no aparelho',
+      'O app não conseguiu guardar o que foi feito sem internet. Deixe o app aberto até a conexão voltar, para nada se perder, e libere espaço no aparelho (ou no navegador).',
+    );
+  }
+}
+
+const { persister, persistNow } = createCachePersister({
+  storage: AsyncStorage,
+  key: 'kotii:query-cache',
+  throttleMs: 1000,
+  essential: essentialOnly,
+  onWriteFailed: warnCacheFailure,
+});
 
 // Consultas guardadas que mudaram de nome, com os mesmos dados: o cache de
 // versões anteriores volta com o nome novo (sem isso, aberto sem internet,
@@ -219,8 +271,10 @@ export function saveNow(): Promise<void> {
   }).catch(() => undefined);
 }
 
+// Também quando uma sai da fila sem ir ao servidor (pôr e tirar o mesmo item sem internet se cancelam).
 queryClient.getMutationCache().subscribe((event) => {
-  if (event.type === 'updated' && inSavedQueue(event.mutation)) saveNow();
+  if (!event.mutation || !inSavedQueue(event.mutation)) return;
+  if (event.type === 'updated' || (event.type === 'removed' && event.mutation.state.status === 'pending')) saveNow();
 });
 // Indo para o fundo (ou fechando), grava o que estiver pendente.
 AppState.addEventListener('change', (state) => {

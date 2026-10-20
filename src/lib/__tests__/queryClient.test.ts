@@ -1,10 +1,12 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { onlineManager } from '@tanstack/react-query';
+import { focusManager, onlineManager } from '@tanstack/react-query';
+import { AppState } from 'react-native';
 
-import { CLEAR_CHECKED_KEY, EDIT_ITEM_KEY, TOGGLE_ITEM_KEY } from '@/data/market';
+import { CLEAR_CHECKED_KEY, EDIT_ITEM_KEY, REMOVE_ITEM_KEY, TOGGLE_ITEM_KEY } from '@/data/market';
 import { MARKET_TRIP_PUSH_KEY, MARKET_TRIPS_KEY } from '@/data/marketTrips';
 import { JOBS_KEY, PROVIDERS_KEY } from '@/data/providers';
+import { notify } from '@/ui/dialogs';
 
 import { accessErrorMessage, EXPECTS_ROWS_META, NO_HOUSEHOLD_ACCESS, REMOVED_FROM_HOUSEHOLD } from '../accessErrors';
 import { setActiveHousehold } from '../activeHousehold';
@@ -25,6 +27,7 @@ jest.mock('expo-network', () => ({
 }));
 
 jest.mock('@/lib/supabase', () => ({ supabase: {}, unwrap: (result: { data: unknown }) => result.data }));
+jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const stored = () => AsyncStorage.getItem('kotii:query-cache');
@@ -308,6 +311,7 @@ describe('mudança sem erro, talvez barrada pela casa', () => {
   it('marcar e editar item pedem as linhas de volta', () => {
     expect(queryClient.getMutationDefaults(TOGGLE_ITEM_KEY).meta).toEqual(EXPECTS_ROWS_META);
     expect(queryClient.getMutationDefaults(EDIT_ITEM_KEY).meta).toEqual(EXPECTS_ROWS_META);
+    expect(queryClient.getMutationDefaults(REMOVE_ITEM_KEY).meta).toEqual(EXPECTS_ROWS_META);
   });
 
   it('nenhuma linha: busca as casas de novo (o que leva a pessoa para outra casa), sem erro', async () => {
@@ -355,5 +359,58 @@ describe('mudança sem erro, talvez barrada pela casa', () => {
     network.listener?.({ isConnected: false, isInternetReachable: false });
     await write([]);
     expect(queryFn).not.toHaveBeenCalled();
+  });
+});
+
+describe('voltar ao app no celular', () => {
+  it('o app em primeiro plano conta como foco (as consultas velhas buscam de novo); no fundo, não', () => {
+    const listeners = jest
+      .mocked(AppState.addEventListener)
+      .mock.calls.filter(([type]) => type === 'change')
+      .map(([, listener]) => listener as (state: string) => void);
+    expect(listeners.length).toBeGreaterThan(0);
+    const tell = (state: string) => listeners.forEach((listener) => listener(state));
+    tell('background');
+    expect(focusManager.isFocused()).toBe(false);
+    tell('active');
+    expect(focusManager.isFocused()).toBe(true);
+    // A central de notificações do iPhone por cima também não é o app em uso.
+    tell('inactive');
+    expect(focusManager.isFocused()).toBe(false);
+    tell('active');
+  });
+});
+
+describe('aparelho sem espaço para o cache', () => {
+  // O AsyncStorage de mentira já é um jest.fn: a gravação de sempre volta no fim.
+  const setItem = jest.mocked(AsyncStorage.setItem);
+  const original = setItem.getMockImplementation();
+
+  afterEach(() => {
+    if (original) setItem.mockImplementation(original);
+  });
+
+  it('guarda a fila e as listas sem o resto, e avisa uma vez só', async () => {
+    // Cabe só o que é pequeno, como um localStorage quase cheio.
+    setItem.mockImplementation(async (key: string, value: string) => {
+      if (value.length > 3000) throw new Error('QuotaExceededError');
+      await AsyncStorage.multiSet([[key, value]]);
+    });
+    queryClient.getMutationCache().build(queryClient, { mutationKey: TOGGLE_ITEM_KEY, gcTime: Infinity }, {
+      variables: { id: 'marcacao-na-fila', checked: true, userId: 'u1', at: '', token: 't0', nextToken: 't1' },
+      isPaused: true,
+      status: 'pending',
+    } as never);
+    queryClient.setQueryData(['lists'], [{ id: 'l1', name: 'Compras da semana' }]);
+    queryClient.setQueryData(['latestPrices'], [{ product_id: 'p'.repeat(5000) }]);
+    await saveNow();
+    const saved = (await stored()) ?? '';
+    expect(saved).toContain('Compras da semana');
+    expect(saved).toContain('marcacao-na-fila');
+    expect(saved).not.toContain('latestPrices');
+    expect(jest.mocked(notify).mock.calls.map(([title]) => title)).toEqual(['Pouco espaço no aparelho']);
+    await saveNow();
+    expect(notify).toHaveBeenCalledTimes(1);
+    await AsyncStorage.removeItem('kotii:query-cache');
   });
 });

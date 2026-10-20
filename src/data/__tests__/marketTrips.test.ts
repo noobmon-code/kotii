@@ -262,7 +262,8 @@ describe('o pedido que não chegou ao servidor (sinal fraco, com o aparelho dize
     expect(marketTripErrorMessage({ code: '42501', message: 'TypeError: algo do servidor' }, 'announce')).toBe('TypeError: algo do servidor');
   });
 
-  it('na opção dos avisos (sem dizer o pedido) nada muda: o erro fica como veio, e o banco antigo tem a mensagem dele', () => {
+  // errorMessage (de mentira aqui) é quem diz "sem internet" em português: ver lib/__tests__/errorMessage.
+  it('na opção dos avisos (sem dizer o pedido), a mensagem é a de errorMessage, e o banco antigo tem a mensagem dele', () => {
     expect(marketTripErrorMessage(failures[0])).toBe('TypeError: Network request failed');
     expect(marketTripErrorMessage(MISSING_FUNCTION)).toBe(TRIP_NOT_READY);
   });

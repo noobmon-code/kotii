@@ -2,6 +2,8 @@
 // recuperação de senha: pelo tipo e pelo código do erro (AuthApiError.code),
 // senão pelo texto. Puro.
 
+import { isNetworkFailureText } from './networkErrors';
+
 const NOT_AUTHORIZED = 'O Kotii ainda não consegue mandar e-mail para esse endereço. Peça ajuda a quem cuida do app.';
 const OFFLINE = 'Sem internet agora. Confira a conexão e tente de novo.';
 const SESSION_GONE = 'A sessão de recuperação terminou. Peça um novo e-mail em "Esqueci minha senha".';
@@ -53,7 +55,7 @@ export function translateAuthError(error: unknown): string {
       ? 'Não deu para mandar o e-mail agora. Tente mais tarde ou peça ajuda a quem cuida do app.'
       : 'O servidor não respondeu agora. Tente de novo daqui a pouco.';
   }
-  if (textOf(error, 'name') === 'AuthRetryableFetchError' || /failed to fetch|network request failed|load failed|networkerror/i.test(message)) {
+  if (textOf(error, 'name') === 'AuthRetryableFetchError' || isNetworkFailureText(message)) {
     return OFFLINE;
   }
   if (isSessionGone(error)) return SESSION_GONE;

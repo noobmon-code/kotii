@@ -6,6 +6,7 @@ import { AppState, Platform } from 'react-native';
 import { accessErrorMessage } from './accessErrors';
 import { fetchWithHousehold, HOUSEHOLD_HEADER } from './activeHousehold';
 import { BUSY_TRY_AGAIN, isDeadlock } from './databaseErrors';
+import { isNetworkFailure, OFFLINE_TRY_AGAIN } from './networkErrors';
 import { sessionStorage } from './sessionStorage';
 
 const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
@@ -78,6 +79,8 @@ export function errorMessage(error: unknown): string {
   if (access) return access;
   // Pedido desfeito pelo banco porque outra pessoa da casa mexeu na mesma coisa no mesmo instante.
   if (isDeadlock(error)) return BUSY_TRY_AGAIN;
+  // O pedido não chegou ao servidor: em vez de "TypeError: Network request failed".
+  if (isNetworkFailure(error)) return OFFLINE_TRY_AGAIN;
   if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
     return error.message;
   }

@@ -16,6 +16,7 @@ import { onlineManager, useMutation, useMutationState, useQuery, useQueryClient 
 import { useRef, useState } from 'react';
 
 import { TRIP_LIMIT_REACHED, TRIP_NOT_READY, TRIP_OFFLINE, type AnnounceResult, type MarketTrip } from '@/domain/marketTrips';
+import { isNetworkFailure } from '@/lib/networkErrors';
 import { getMarketTripPush, marketTripPushSupported, setMarketTripPush } from '@/lib/reminders';
 import { errorMessage, supabase, unwrap } from '@/lib/supabase';
 
@@ -150,24 +151,14 @@ export function useEndingMarketTrips(): string[] {
 }
 
 /**
- * O pedido não chegou ao servidor: sinal fraco, com o aparelho ainda dizendo
- * que há internet (o que onlineManager não vê). O postgrest-js devolve o erro
- * do fetch sem código, com o nome e o texto dele na mensagem ("TypeError:
- * Network request failed" no celular, "TypeError: Failed to fetch" no Chrome).
- */
-function isFetchFailure(error: unknown): boolean {
-  if (codeOf(error)) return false;
-  const message = error && typeof error === 'object' && 'message' in error && typeof error.message === 'string' ? error.message : '';
-  return message.startsWith('TypeError') || message.includes('Failed to fetch') || message.includes('Network request failed');
-}
-
-/**
  * A mensagem para um erro de avisar (`announce`), de encerrar (`end`) ou da
- * opção dos avisos (sem `action`: ali o pedido que não chegou fica como veio).
+ * opção dos avisos (sem `action`: ali o pedido que não chegou, com sinal
+ * fraco e o aparelho ainda dizendo que há internet, tem a frase comum de
+ * errorMessage).
  */
 export function marketTripErrorMessage(error: unknown, action?: keyof typeof TRIP_OFFLINE): string {
   if (isNotDeployed(error)) return TRIP_NOT_READY;
-  if (action && isFetchFailure(error)) return TRIP_OFFLINE[action];
+  if (action && isNetworkFailure(error)) return TRIP_OFFLINE[action];
   const code = codeOf(error);
   if (code === 'NK005') return TRIP_LIMIT_REACHED;
   // A lista foi arquivada ou apagada por outra pessoa com a tela aberta.

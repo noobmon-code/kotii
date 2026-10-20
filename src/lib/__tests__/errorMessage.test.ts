@@ -2,6 +2,7 @@ import { describe, expect, it, jest } from '@jest/globals';
 
 import { NO_HOUSEHOLD_ACCESS } from '../accessErrors';
 import { BUSY_TRY_AGAIN, isDeadlock } from '../databaseErrors';
+import { isNetworkFailure, isNetworkFailureText, OFFLINE_TRY_AGAIN } from '../networkErrors';
 import { errorMessage } from '../supabase';
 
 // O errorMessage de verdade: é por ele que todo erro do banco vira o texto do aviso. Só o que guarda a sessão
@@ -45,5 +46,44 @@ describe('errorMessage', () => {
     );
     expect(errorMessage(undefined)).toBe('Algo deu errado. Tente novamente.');
     expect(errorMessage('texto')).toBe('Algo deu errado. Tente novamente.');
+  });
+});
+
+describe('o pedido que não chegou ao servidor', () => {
+  // Como o postgrest-js devolve o erro do fetch (sem código), em cada lugar, e o fetch que falha direto.
+  const failures = [
+    { code: '', message: 'TypeError: Network request failed', details: '', hint: '' },
+    { code: '', message: 'TypeError: Failed to fetch', details: '', hint: '' },
+    { code: '', message: 'TypeError: Load failed', details: '', hint: '' },
+    { message: 'TypeError: NetworkError when attempting to fetch resource.' },
+    new TypeError('Network request failed'),
+    new TypeError('Failed to fetch'),
+  ];
+
+  it('vira "sem internet" em português, em vez do texto do navegador', () => {
+    for (const error of failures) {
+      expect(isNetworkFailure(error)).toBe(true);
+      expect(errorMessage(error)).toBe('Sem internet agora. Tente de novo quando a conexão voltar.');
+    }
+    expect(OFFLINE_TRY_AGAIN).toBe('Sem internet agora. Tente de novo quando a conexão voltar.');
+  });
+
+  it('um erro com código veio do servidor: fica como veio, mesmo falando em fetch', () => {
+    const fromServer = { code: 'P0001', message: 'Failed to fetch the list' };
+    expect(isNetworkFailure(fromServer)).toBe(false);
+    expect(errorMessage(fromServer)).toBe('Failed to fetch the list');
+  });
+
+  it('outro erro de programa (TypeError sem ser de rede) não vira "sem internet"', () => {
+    const bug = new TypeError("Cannot read properties of undefined (reading 'id')");
+    expect(isNetworkFailure(bug)).toBe(false);
+    expect(errorMessage(bug)).toBe("Cannot read properties of undefined (reading 'id')");
+    expect(isNetworkFailure(null)).toBe(false);
+    expect(isNetworkFailure('Failed to fetch')).toBe(false);
+  });
+
+  it('o texto sozinho também é reconhecido (a tela de entrar usa o mesmo)', () => {
+    expect(isNetworkFailureText('Network request failed')).toBe(true);
+    expect(isNetworkFailureText('Invalid login credentials')).toBe(false);
   });
 });

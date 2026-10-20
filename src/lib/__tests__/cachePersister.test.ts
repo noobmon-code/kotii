@@ -98,3 +98,72 @@ describe('gravador do cache', () => {
     expect(await persister.restoreClient()).toEqual(snapshot('a'));
   });
 });
+
+describe('armazenamento cheio', () => {
+  /** Um armazenamento que só aceita textos até `limit` caracteres no total (como o localStorage, de poucos MB). */
+  function smallStorage(limit: number) {
+    const data = new Map<string, string>();
+    const used = () => [...data.values()].reduce((sum, value) => sum + value.length, 0);
+    return {
+      data,
+      getItem: async (key: string) => data.get(key) ?? null,
+      setItem: async (key: string, value: string) => {
+        if (used() - (data.get(key)?.length ?? 0) + value.length > limit) throw new Error('QuotaExceededError');
+        data.set(key, value);
+      },
+      removeItem: async (key: string) => {
+        data.delete(key);
+      },
+    };
+  }
+  /** O cache com a fila (mutations) e consultas grandes (os preços) e pequenas (as listas). */
+  const big = (name: string): PersistedClient => ({
+    buster: '1',
+    timestamp: 0,
+    clientState: {
+      mutations: [{ mutationKey: ['toggleListItem'], state: { variables: { id: 'arroz' } } }],
+      queries: [
+        { queryKey: ['lists'], state: { data: name } },
+        { queryKey: ['latestPrices'], state: { data: 'x'.repeat(5000) } },
+      ],
+    } as never,
+  });
+  const essential = (client: PersistedClient): PersistedClient => ({
+    ...client,
+    clientState: { ...client.clientState, queries: client.clientState.queries.filter((q) => q.queryKey[0] === 'lists') },
+  });
+  const stored = (storage: { data: Map<string, string> }) => {
+    const raw = storage.data.get('cache');
+    return raw ? (JSON.parse(raw) as { clientState: { mutations: unknown[]; queries: { queryKey: string[] }[] } }).clientState : null;
+  };
+
+  it('sem espaço para tudo, guarda a fila e as listas, e avisa', async () => {
+    const storage = smallStorage(2000);
+    const failures: string[] = [];
+    const { persistNow } = createCachePersister({ storage, key: 'cache', throttleMs: 1000, essential, onWriteFailed: (f) => failures.push(f) });
+    await persistNow(big('compras'));
+    expect(stored(storage)?.mutations).toHaveLength(1);
+    expect(stored(storage)?.queries.map((q) => q.queryKey[0])).toEqual(['lists']);
+    expect(failures).toEqual(['essential']);
+  });
+
+  it('nem o essencial cabe: o cache velho sai (a fila velha não volta numa próxima abertura) e o aviso diz que se perdeu', async () => {
+    const storage = smallStorage(50);
+    storage.data.set('cache', 'velho');
+    const failures: string[] = [];
+    const { persistNow } = createCachePersister({ storage, key: 'cache', throttleMs: 1000, essential, onWriteFailed: (f) => failures.push(f) });
+    await persistNow(big('compras'));
+    expect(storage.data.has('cache')).toBe(false);
+    expect(failures).toEqual(['lost']);
+  });
+
+  it('a falha não trava a fila do gravador: a gravação seguinte, com espaço, sai inteira e sem aviso', async () => {
+    const storage = smallStorage(2000);
+    const failures: string[] = [];
+    const { persistNow } = createCachePersister({ storage, key: 'cache', throttleMs: 1000, essential, onWriteFailed: (f) => failures.push(f) });
+    await persistNow(big('compras'));
+    await persistNow(snapshot('pequeno'));
+    expect(saved(storage as never)).toBe('pequeno');
+    expect(failures).toEqual(['essential']);
+  });
+});
