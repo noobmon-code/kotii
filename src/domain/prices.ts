@@ -38,15 +38,25 @@ export function inBaseUnit<T extends PriceLike>(price: T): T {
  * Os preços de cada produto, já por kg ou litro (inBaseUnit), agrupados uma
  * vez só: a tela Preços filtra os produtos a cada letra da busca, e não a
  * lista inteira de preços para cada produto.
+ *
+ * Um preço por mercado e unidade, o mais recente (no mesmo dia, o menor), como
+ * na tela do produto: latest_prices guarda um por unidade do banco, e o
+ * mercado que lançou o queijo por g há um ano e hoje lança por kg teria dois
+ * preços por kg, o antigo podendo sair como o mais barato.
  */
-export function pricesByProduct<T extends PriceLike & { product_id: string }>(prices: readonly T[]): Map<string, T[]> {
-  const byProduct = new Map<string, T[]>();
-  for (const price of prices) {
-    const list = byProduct.get(price.product_id);
-    if (list) list.push(inBaseUnit(price));
-    else byProduct.set(price.product_id, [inBaseUnit(price)]);
+export function pricesByProduct<T extends PriceLike & { product_id: string; purchased_at: string }>(prices: readonly T[]): Map<string, T[]> {
+  const byProduct = new Map<string, Map<string, T>>();
+  for (const raw of prices) {
+    const price = inBaseUnit(raw);
+    let latest = byProduct.get(price.product_id);
+    if (!latest) byProduct.set(price.product_id, (latest = new Map()));
+    const key = `${price.store_id}|${price.unit}`;
+    const current = latest.get(key);
+    const time = Date.parse(price.purchased_at);
+    const currentTime = current ? Date.parse(current.purchased_at) : -Infinity;
+    if (!current || time > currentTime || (time === currentTime && price.unit_price < current.unit_price)) latest.set(key, price);
   }
-  return byProduct;
+  return new Map([...byProduct].map(([productId, latest]) => [productId, [...latest.values()]]));
 }
 
 /**

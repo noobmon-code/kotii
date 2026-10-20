@@ -366,6 +366,29 @@ describe('gravar num produto que foi juntado: o banco não reclama de uma grava�
     expect(hook.invalidated).toEqual([]);
   });
 
+  it('o * do nome vale como % no PostgREST: fica o produto de nome igual, e não outro que casou', async () => {
+    const integral = { id: 'p-integral', name: 'Arroz Integral', category: 'graos' };
+    const star = { id: 'p-star', name: 'Arroz*', category: 'graos' };
+    mockDb.reply = (call) => (call.steps[0] === 'update' ? { data: null, error: nameTaken } : { data: [integral, star], error: null });
+    const hook = await withHook(() => useRenameProduct());
+    const error = await failure(() => hook.value().mutateAsync({ id: 'p1', name: 'arroz*', category: 'graos' }));
+    expect((error as ProductNameTakenError).other).toEqual(star);
+    // Não só o primeiro que veio: todos os que casam, até o teto.
+    expect(sent('products', 'limit')).toEqual([[200]]);
+  });
+
+  it('vários que casam e nenhum de nome igual: o aviso sem o outro produto, em vez de juntar com o errado', async () => {
+    const rows = [
+      { id: 'p-integral', name: 'Arroz Integral', category: 'graos' },
+      { id: 'p-branco', name: 'Arroz Branco', category: 'graos' },
+    ];
+    mockDb.reply = (call) => (call.steps[0] === 'update' ? { data: null, error: nameTaken } : { data: rows, error: null });
+    const hook = await withHook(() => useRenameProduct());
+    const error = await failure(() => hook.value().mutateAsync({ id: 'p1', name: 'arroz*', category: 'graos' }));
+    expect(error).toBeInstanceOf(ProductNameTakenError);
+    expect((error as ProductNameTakenError).other).toBeNull();
+  });
+
   it('sem conseguir achar o outro produto, o mesmo aviso, sem ele', async () => {
     mockDb.reply = (call) => (call.steps[0] === 'update' ? { data: null, error: nameTaken } : { data: null, error: { message: 'sem rede' } });
     const hook = await withHook(() => useRenameProduct());

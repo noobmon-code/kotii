@@ -1209,16 +1209,26 @@ export class ProductNameTakenError extends Error {
 /** Chave única violada (23505): na tabela de produtos, só o nome pode repetir. */
 const isUniqueViolation = (error: unknown) => (error as { code?: unknown } | null)?.code === '23505';
 
-/** O outro produto com esse nome: a mesma comparação do banco (lower), com ilike e o nome escapado. */
+/** Teto do pedido do outro produto com o mesmo nome: sem *, vem um só; com *, os outros que casam são poucos. */
+const PRODUCT_NAMED_MAX = 200;
+
+/**
+ * O outro produto com esse nome: a mesma comparação do banco (lower), com ilike e o nome escapado. O PostgREST lê
+ * o * do nome como %, sem escape possível: "arroz*" também acha "Arroz Integral". O pedido traz todos os que
+ * casam (o outro produto está sempre entre eles) e fica o de nome igual sem contar maiúsculas; sem ele, só quando
+ * veio um único, que então é o que o banco recusou.
+ */
 async function productNamed(name: string, exceptId: string): Promise<ProductName | null> {
   const found = await supabase
     .from('products')
     .select('id, name, category')
     .ilike('name', name.replace(/[\\%_]/g, '\\$&'))
     .neq('id', exceptId)
-    .limit(1);
+    .limit(PRODUCT_NAMED_MAX);
   if (found.error) return null;
-  return ((found.data ?? []) as ProductName[])[0] ?? null;
+  const rows = (found.data ?? []) as ProductName[];
+  const key = name.toLowerCase();
+  return rows.find((row) => row.name.toLowerCase() === key) ?? (rows.length === 1 ? rows[0] : null);
 }
 
 export function useRenameProduct() {

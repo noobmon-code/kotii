@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { FlatList, StyleSheet, View } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import PricesScreen from '@/app/precos';
@@ -296,6 +297,21 @@ describe('Preços', () => {
     mockQueries.prices = loaded([latest('queijo', 'assai', 'g', 0.0399), latest('queijo', 'dia', 'kg', 42.9)]);
     const text = await mount(<PricesScreen />);
     expect(text).toBe('Queijo mussarelaMais barato: Assaí · 2 mercadosR$ 39,90–42,90/kg');
+  });
+
+  it('o mesmo mercado por g há um ano e por kg hoje: vale o de hoje, e o mais barato é o outro mercado', async () => {
+    mockQueries.products = loaded([QUEIJO]);
+    mockQueries.prices = loaded([latest('queijo', 'assai', 'g', 0.0299, 380), latest('queijo', 'assai', 'kg', 45.9, 3), latest('queijo', 'dia', 'kg', 39.9, 10)]);
+    expect(await mount(<PricesScreen />)).toBe('Queijo mussarelaMais barato: Dia · 2 mercadosR$ 39,90–45,90/kg');
+  });
+
+  it('a lista rola sozinha: o conteúdo da tela fica na altura dela (no navegador, sem isso, nada rola)', async () => {
+    mockQueries.prices = loaded([latest('arroz', 'assai', 'un', 24.9)]);
+    await mount(<PricesScreen />);
+    const list = renderer!.root.findByType(FlatList);
+    let holder = list.parent;
+    while (holder && holder.type !== View) holder = holder.parent;
+    expect(StyleSheet.flatten(holder?.props.style)).toMatchObject({ flex: 1 });
   });
 
   it('ml e litro também', async () => {
