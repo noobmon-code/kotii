@@ -19,6 +19,7 @@ import { useAddItemsToList, usePurchaseRecords, useShoppingLists } from '@/data/
 import { useRefreshMarketTrips } from '@/data/marketTrips';
 import { useMenu } from '@/data/menu';
 import { useRefreshWeather } from '@/data/weather';
+import { usePendingReceipts } from '@/data/pendingReceipts';
 import { useDraftReceipts } from '@/data/receipts';
 import { useSupplies } from '@/data/supplies';
 import { billsAboveUsual } from '@/domain/billUsual';
@@ -45,6 +46,7 @@ import { MedicationRefills, useRefills } from '@/features/health/MedicationSecti
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { InstallAppCard } from '@/features/InstallAppCard';
 import { MarketTripBanner } from '@/features/MarketTrip';
+import { PendingReceiptRow } from '@/features/PendingReceiptCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useJustListed } from '@/features/RecentPurchases';
 import { SuppliesTodaySection } from '@/features/SuppliesSection';
@@ -127,6 +129,8 @@ export default function TodayScreen() {
   const lists = useShoppingLists();
   // Todos os rascunhos, também os antigos: a lista de notas não corta nenhum.
   const receipts = useDraftReceipts();
+  // As notas pendentes deste aparelho (a Sefaz pediu o "não sou robô"): ficam fora de `queries`, como o clima.
+  const pendingReceipts = usePendingReceipts();
   const toggleDose = useToggleDose(today);
   const completeChore = useCompleteChore();
   const scanner = useReceiptScanner();
@@ -200,6 +204,7 @@ export default function TodayScreen() {
   // O que está acabando ou passou da data prevista (pelas trocas anotadas).
   const suppliesDue = suppliesNeedingAttention(supplies.data?.supplies ?? [], today);
   const drafts = receipts.data ?? [];
+  const pendingNotes = pendingReceipts.pending;
   const documentsDue = documentsNeedingAttention(documents.data ?? [], today);
   // Sem os pagamentos recentes em dia (carregando, buscando de novo ou com erro), nenhuma conta ganha o selo.
   const billsAbove = billsAboveUsual(billsDue, settledData(recentPayments) ?? [], today);
@@ -229,6 +234,7 @@ export default function TodayScreen() {
     !expiring.length &&
     !suppliesDue.length &&
     !drafts.length &&
+    !pendingNotes.length &&
     !documentsDue.length &&
     !warrantiesEnding.length &&
     !budgetAlerts.length &&
@@ -249,6 +255,7 @@ export default function TodayScreen() {
     warrantiesEnding.length +
     budgetAlerts.length +
     drafts.length +
+    pendingNotes.length +
     healthTodayCount(health, today);
   const summary = nothingPending
     ? 'Tudo em dia por aqui.'
@@ -531,9 +538,12 @@ export default function TodayScreen() {
         </Section>
       ) : null}
 
-      {drafts.length ? (
+      {drafts.length || pendingNotes.length ? (
         <Section title="Notas para revisar">
           <ListCard>
+            {pendingNotes.map((p) => (
+              <PendingReceiptRow key={p.accessKey} pending={p} storeNames={pendingReceipts.storeNames} />
+            ))}
             {drafts.map((r) => (
               <ListRow
                 key={r.id}

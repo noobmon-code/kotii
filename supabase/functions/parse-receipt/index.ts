@@ -1,8 +1,9 @@
 // POST { image_paths } (ou { image_path }) -> lê as fotos da nota (já enviadas
-// ao bucket "receipts", em ordem; nota comprida vem em partes), extrai os
-// itens com IA e cria um rascunho de nota para o usuário revisar.
+// ao bucket "receipts", em ordem; nota comprida vem em partes, até MAX_PHOTOS),
+// extrai os itens com IA e cria um rascunho de nota para o usuário revisar.
+// As imagens podem ser fotos do papel ou prints da página da Sefaz com a nota.
 // `access_key` (opcional): a chave do QR code, quando a Sefaz pediu o "não
-// sou robô" e a nota veio pela foto. Se a casa já tem uma nota com ela,
+// sou robô" e a nota veio pelos prints ou pela foto. Se a casa já tem uma nota com ela,
 // devolve a existente (duplicate), sem gastar a IA; senão a nota guarda essa
 // chave, a menos que a foto seja de outra nota, e o CNPJ dela acha o mercado
 // quando a IA não leu um CNPJ válido (regras em accessKey.ts).
@@ -30,8 +31,9 @@ import {
   CATALOG_LIMIT,
   cleanReceipt,
   ExtractedReceiptSchema,
+  imagePathsError,
   instructions,
-  MAX_PHOTOS,
+  MAX_TOTAL_IMAGE_BYTES,
   promptCatalog,
   sameStoreName,
   SYSTEM,
@@ -118,13 +120,8 @@ Deno.serve(async (req) => {
     return json({ error: 'Corpo inválido.' }, 400);
   }
   const imagePaths = Array.isArray(body.image_paths) ? body.image_paths : [body.image_path];
-  if (
-    !imagePaths.length ||
-    imagePaths.length > MAX_PHOTOS ||
-    imagePaths.some((p) => typeof p !== 'string' || !p.startsWith(`${householdId}/`))
-  ) {
-    return json({ error: 'Imagem inválida.' }, 400);
-  }
+  const pathsError = imagePathsError(imagePaths, householdId);
+  if (pathsError) return json(pathsError, 400);
   const givenKey = requestedAccessKey(body.access_key);
   if (givenKey === 'invalid') return json({ error: 'Chave de acesso inválida.' }, 400);
   const findByKey = (key: string) => receiptWithKey(db, key);
@@ -139,11 +136,17 @@ Deno.serve(async (req) => {
   }
   if (existingBefore) return json({ receipt_id: existingBefore, duplicate: true });
   const images = [];
+  let totalBytes = 0;
   for (const path of imagePaths as string[]) {
     const mediaType = mediaTypeOf(path);
     if (!mediaType) return json({ error: 'Formato de imagem não suportado.' }, 400);
     const { data: blob, error: downloadError } = await db.storage.from('receipts').download(path);
     if (downloadError || !blob) return json({ error: 'Imagem não encontrada.' }, 404);
+    // Todas juntas vão num pedido só à IA: passando do que ele aceita, o app apaga as fotos e a pessoa manda menos.
+    totalBytes += blob.size;
+    if (totalBytes > MAX_TOTAL_IMAGE_BYTES) {
+      return json({ error: 'As fotos juntas ficaram grandes demais para uma leitura. Mande menos fotos de uma vez.' }, 413);
+    }
     try {
       images.push(await toVisionImage(blob, mediaType));
     } catch (err) {

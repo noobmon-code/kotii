@@ -5,13 +5,13 @@ import { type QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClie
 
 import { nfceItemsToDraft, nfceReceiptRow, type NfceItem, type NfceQr } from '@/domain/nfce';
 import { RECEIPTS_PAGE } from '@/domain/receiptList';
+import { MAX_RECEIPT_PHOTOS, tooManyPhotosMessage } from '@/domain/receiptPhotos';
 import type { ConfirmItem } from '@/domain/receiptReview';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Receipt, ReceiptItem, Unit } from '@/lib/types';
 import {
   FunctionError,
   functionErrorDetails,
-  functionErrorMessage,
   pickImages,
   removeImages,
   signedImageUrl,
@@ -150,8 +150,8 @@ function useInvalidateReceipt(id?: string) {
 
 export type { ScanSource } from './images';
 
-/** Nota comprida vai em partes: até 4 fotos por nota. */
-export const MAX_RECEIPT_PHOTOS = 4;
+/** Nota comprida (ou os prints da Sefaz) vai em partes: até MAX_RECEIPT_PHOTOS fotos por nota. */
+export { MAX_RECEIPT_PHOTOS };
 
 /** Abre câmera (uma foto) ou galeria (até `limit`, em ordem); vazio se o usuário desistir. */
 export async function pickReceiptImages(source: ScanSource, limit = 1): Promise<string[]> {
@@ -178,7 +178,8 @@ export async function scanReceiptPhotos(
 ): Promise<{ receipt_id: string; duplicate: boolean }> {
   if (!householdId) throw new Error('Família não carregada.');
   // Falha no envio de uma parte apaga as que já subiram.
-  const paths = await uploadImages('receipts', householdId, uris.slice(0, MAX_RECEIPT_PHOTOS));
+  const sent = uris.slice(0, MAX_RECEIPT_PHOTOS);
+  const paths = await uploadImages('receipts', householdId, sent);
   const removeAll = () => removeImages('receipts', paths).catch(() => undefined);
 
   const { data, error } = await supabase.functions.invoke<{ receipt_id: string; duplicate: boolean }>('parse-receipt', {
@@ -189,7 +190,10 @@ export async function scanReceiptPhotos(
     // fotos, então elas saem do storage. Em falha de rede o resultado é
     // incerto (a nota pode ter sido salva) e as fotos ficam.
     if (error instanceof FunctionsHttpError) await removeAll();
-    throw new Error(await functionErrorMessage(error, 'Não foi possível ler a nota. Tente novamente.'));
+    const { message, code } = await functionErrorDetails(error, 'Não foi possível ler a nota. Tente novamente.');
+    // A função de antes do limite novo recusa as fotos a mais sem dizer por quê: a pessoa fica sabendo quantas mandar.
+    const status = error instanceof FunctionsHttpError ? ((error.context as Response | undefined)?.status ?? null) : null;
+    throw new Error(tooManyPhotosMessage(sent.length, { status, code }) ?? message);
   }
   // Nota que já estava no app (mesma chave): as fotos novas sobram.
   if (data.duplicate) await removeAll();

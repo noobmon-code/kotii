@@ -13,6 +13,7 @@ import { signOutQuestion } from '@/domain/listQueue';
 import { clearConversation, conversationOwner } from '@/features/nuke/conversation';
 import { setActiveHousehold } from '@/lib/activeHousehold';
 import type { HouseholdState } from '@/lib/auth';
+import { forgetPendingReceiptsOf } from '@/lib/pendingReceipts';
 import { saveNow } from '@/lib/queryClient';
 import { disableHouseholdReminders } from '@/lib/reminders';
 import { errorMessage, supabase } from '@/lib/supabase';
@@ -150,6 +151,8 @@ export function useLeaveHousehold(userId: string | undefined) {
       await saveNow();
     }
     if (userId) clearConversation(conversationOwner(userId, householdId));
+    // As notas pendentes de lá (chave e link do QR) não servem mais neste aparelho.
+    if (userId) await forgetPendingReceiptsOf(userId, householdId);
     await disableHouseholdReminders(householdId).catch(() => undefined);
     await queryClient.invalidateQueries({ queryKey: ['household'] });
   }

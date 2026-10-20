@@ -81,10 +81,32 @@ export function promptCatalog(bought: CatalogProduct[], newest: CatalogProduct[]
   return [...chosen.values()];
 }
 
-export const SYSTEM = `Você lê fotos de notas fiscais de compra brasileiras (NFC-e, cupom fiscal, DANFE) e devolve os dados estruturados. Os dados alimentam um comparativo de preços entre mercados, então preço e quantidade de cada item precisam bater com o impresso.`;
+export const SYSTEM = `Você lê notas fiscais de compra brasileiras (NFC-e, cupom fiscal, DANFE) e devolve os dados estruturados. Cada imagem é a foto do papel ou um print (captura de tela) da página de consulta da nota no site da Sefaz, que mostra a mesma nota em outro leiaute. Os dados alimentam um comparativo de preços entre mercados, então preço e quantidade de cada item precisam bater com o que está na nota.`;
 
-/** Até 4 fotos por nota (nota comprida, fotografada em partes). */
-export const MAX_PHOTOS = 4;
+/**
+ * Até 8 imagens por nota: a nota comprida, fotografada em partes, e os prints da página da Sefaz (o topo, a lista
+ * de itens em várias telas e o rodapé). O app tem o mesmo limite (src/domain/receiptPhotos.ts; um teste confere).
+ */
+export const MAX_PHOTOS = 8;
+
+/** O código da recusa por fotos demais: o app mostra a mensagem, que diz o limite. */
+export const TOO_MANY_PHOTOS = 'too_many_photos';
+
+/**
+ * Quanto as imagens de uma nota podem somar. Vão em base64 (um terço a mais) num pedido só à IA, e o pedido da
+ * Anthropic aceita até 32 MB: cada foto tem até MAX_IMAGE_BYTES (_shared/vision.ts), mas 8 no máximo passariam disso.
+ */
+export const MAX_TOTAL_IMAGE_BYTES = 22_000_000;
+
+/**
+ * Os caminhos das imagens do pedido: entre 1 e MAX_PHOTOS, todos da pasta da casa. null quando estão certos; senão
+ * o corpo do 400 (com o código TOO_MANY_PHOTOS quando são imagens demais).
+ */
+export function imagePathsError(paths: unknown[], householdId: string): { error: string; code?: string } | null {
+  if (paths.length > MAX_PHOTOS) return { error: `Mande até ${MAX_PHOTOS} fotos ou prints por nota.`, code: TOO_MANY_PHOTOS };
+  if (!paths.length || paths.some((p) => typeof p !== 'string' || !p.startsWith(`${householdId}/`))) return { error: 'Imagem inválida.' };
+  return null;
+}
 
 export function instructions(catalog: CatalogProduct[], photos = 1): string {
   const catalogText = catalog.length
@@ -92,10 +114,12 @@ export function instructions(catalog: CatalogProduct[], photos = 1): string {
     : '(nenhum ainda)';
   const parts =
     photos > 1
-      ? `\nA nota veio em ${photos} fotos, em ordem, de cima para baixo. As partes podem se sobrepor: um item que aparece no fim de uma foto e no começo da seguinte entra uma vez só. Junte tudo numa nota só.\n`
+      ? `\nA nota veio em ${photos} imagens, em ordem, e todas são partes da mesma nota: fotos do papel, de cima para baixo, ou prints da página da Sefaz (o topo com o mercado, a lista de itens, o rodapé com a data e a chave). As partes podem se sobrepor: um item que aparece no fim de uma imagem e no começo da seguinte entra uma vez só. Junte tudo numa nota só.\n`
       : '';
   return `Extraia os dados desta nota.
 ${parts}
+- A imagem pode ser a foto do papel ou um print da página de consulta da NFC-e no site da Sefaz (com o nome do mercado, os itens, os totais ou a chave de acesso). Os dois são a nota de compra: leia o print como leria o papel. Um print com só uma parte da nota (só os itens, só o topo ou só o rodapé) também é nota: leia o que estiver nele e deixe null o que não aparecer.
+- Na página da Sefaz, cada item costuma vir com "Qtde.", "UN", "Vl. Unit." e "Vl. Total": use esses valores. Ignore os dados do consumidor (CPF, nome), os botões e os textos do site.
 - items: um por produto, na ordem impressa. Não inclua descontos gerais, troco, formas de pagamento nem tributos.
 - Desconto de um item específico entra no total_price dele (valor líquido), também quando vem impresso numa linha separada logo abaixo do item; a linha do desconto não vira item.
 - Item cancelado fica de fora, junto com a linha que o cancela (cancelamento, estorno). Nenhum item tem valor negativo.
@@ -108,7 +132,7 @@ ${parts}
 - purchased_at: data/hora de emissão em ISO 8601; sem fuso impresso, use -03:00.
 - cnpj: 14 dígitos do emitente, sem pontuação. access_key: os 44 dígitos da chave de acesso, se visível.
 - Outro campo ilegível: null. Não invente valores.
-- Se a imagem não for uma nota de compra, is_receipt=false e items vazio.
+- Se nenhuma imagem for de uma nota de compra (nem foto do papel nem print da nota na Sefaz), is_receipt=false e items vazio.
 
 Produtos já cadastrados (id | nome):
 ${catalogText}`;
