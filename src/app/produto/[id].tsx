@@ -1,17 +1,29 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 
-import { useLatestPrices, useProductPurchases, useProducts, useRenameProduct, useStorePrices, useStores } from '@/data/market';
+import {
+  ProductNameTakenError,
+  useAddToPantryList,
+  useLatestPrices,
+  useProductPurchases,
+  useProducts,
+  useRenameProduct,
+  useStorePrices,
+  useStores,
+} from '@/data/market';
 import { CATEGORIES, getCategory } from '@/domain/categories';
-import { formatShortDate, toISODate } from '@/domain/dates';
-import { formatBRL } from '@/domain/money';
 import { noStorePriceSentence } from '@/domain/priceHistory';
+import { PRODUCT_NAME_TAKEN, productNameTakenHint } from '@/domain/productMerge';
+import type { ProductName } from '@/domain/similarNames';
 import {
   NO_SAVED_PRICES_ERROR,
   NO_SAVED_PRICES_OFFLINE,
   SAVED_PRICES_ERROR,
   SAVED_PRICES_OFFLINE,
+  storePriceDetail,
+  storePriceGroups,
+  storePriceLabel,
   storePricesView,
 } from '@/domain/storePrices';
 import { StaleNotice } from '@/features/health/StaleNotice';
@@ -54,9 +66,13 @@ export default function ProductScreen() {
   // Os últimos preços da casa, guardados no aparelho: o que a lista mostra sem internet, ou com a busca que falhou.
   const saved = useLatestPrices();
   const rename = useRenameProduct();
+  const addToList = useAddToPantryList();
   const [name, setName] = useState<string | null>(null);
   const [pickingCategory, setPickingCategory] = useState(false);
-  const [joining, setJoining] = useState(false);
+  // Juntar: com outro produto escolhido na lista (true) ou com o que já tem o nome digitado.
+  const [joining, setJoining] = useState<true | ProductName | null>(null);
+  // O nome digitado já é de outro produto (null: não; `other` null: não deu para saber qual).
+  const [nameTaken, setNameTaken] = useState<{ other: ProductName | null } | null>(null);
 
   // Sem internet e sem o produto ou os mercados no aparelho, a busca fica parada (e segue sozinha quando a
   // conexão volta): um aviso, em vez de girar sem fim. Com eles guardados, a tela abre com o que há.
@@ -83,18 +99,44 @@ export default function ProductScreen() {
     if (!newName) return;
     rename.mutate(
       { id: product!.id, name: newName, category },
-      { onSuccess: () => setName(null), onError: (err) => notify('Erro', errorMessage(err)) },
+      {
+        onSuccess: () => setName(null),
+        // Nome repetido: o aviso fica embaixo do campo, com o botão de juntar os dois.
+        onError: (err) => (err instanceof ProductNameTakenError ? setNameTaken({ other: err.other }) : notify('Erro', errorMessage(err))),
+      },
     );
+  }
+
+  function changeName(text: string) {
+    setName(text);
+    setNameTaken(null);
   }
 
   // Juntou: se o nome que ficou foi o do outro produto, este deixou de existir e a tela passa a ser a dele.
   function onMerged(keptId: string) {
-    setJoining(false);
+    setJoining(null);
+    setNameTaken(null);
+    setName(null);
     if (keptId !== id) router.replace({ pathname: '/produto/[id]', params: { id: keptId } });
   }
 
+  // O mesmo caminho do "Acabou" da despensa: a lista aberta mais nova em que o produto cabe (remédio na da
+  // farmácia), sem repetir o que já está pendente nela.
+  async function putOnList() {
+    try {
+      const list = await addToList.mutateAsync({ name: product!.name, category: product!.category, productId: product!.id, quantity: 1, unit: 'un' });
+      notify(
+        list.added ? 'Adicionado à lista' : 'Já estava na lista',
+        list.added ? `${product!.name} foi para "${list.name}".` : `${product!.name} já estava pendente em "${list.name}".`,
+      );
+    } catch (err) {
+      notify('Erro', errorMessage(err));
+    }
+  }
+
   const offline = byStore.source === 'saved-offline';
-  const prices = byStore.prices;
+  const groups = byStore.prices ? storePriceGroups(byStore.prices) : undefined;
+  const takenOther = nameTaken?.other ?? null;
 
   return (
     <Screen edges={[]}>
@@ -104,21 +146,30 @@ export default function ProductScreen() {
           <CategoryIcon category={product.category} name={product.name} size={48} />
           <Chip label={getCategory(product.category).label} icon="tag-outline" onPress={() => setPickingCategory(true)} />
         </Row>
-        <TextField label="Nome do produto" value={name ?? product.name} onChangeText={setName} onSubmitEditing={() => save()} />
-        {name != null && name !== product.name ? (
+        <TextField
+          label="Nome do produto"
+          value={name ?? product.name}
+          onChangeText={changeName}
+          onSubmitEditing={() => save()}
+          hint={nameTaken ? (takenOther ? productNameTakenHint(takenOther.name) : PRODUCT_NAME_TAKEN) : undefined}
+          hintColor="danger"
+        />
+        {takenOther ? <Button title="Juntar os dois" icon="call-merge" variant="secondary" compact onPress={() => setJoining(takenOther)} /> : null}
+        {name != null && name !== product.name && !nameTaken ? (
           <Button title="Salvar nome" compact onPress={() => save()} loading={rename.isPending} />
         ) : null}
         {product.shelf_life_days ? (
           <Text variant="small">Validade aprendida: {product.shelf_life_days} dias após a compra.</Text>
         ) : null}
+        <Button title="Pôr na lista" icon="cart-plus" variant="secondary" compact onPress={putOnList} loading={addToList.isPending} />
       </Card>
 
       <MergeSuggestionsCard productId={product.id} onMerged={onMerged} />
 
       <Section title="Último preço por mercado">
-        {prices === undefined ? (
+        {groups === undefined ? (
           <Loading />
-        ) : prices.length === 0 ? (
+        ) : groups.length === 0 ? (
           // Sem o histórico, a frase de sempre diria "nenhum preço ainda" sobre o que só não se sabe agora.
           <Text variant="muted">
             {byStore.source === 'history' ? noStorePriceSentence(purchases.data) : offline ? NO_SAVED_PRICES_OFFLINE : NO_SAVED_PRICES_ERROR}
@@ -126,24 +177,28 @@ export default function ProductScreen() {
         ) : (
           <>
             {byStore.source !== 'history' ? <StaleNotice message={offline ? SAVED_PRICES_OFFLINE : SAVED_PRICES_ERROR} /> : null}
-            <ListCard>
-              {prices.map((price, index) => (
-                <ListRow
-                  key={price.storeId}
-                  left={<IconBadge icon="store-outline" tone={index === 0 ? 'primary' : 'neutral'} />}
-                  title={storeName(price.storeId)}
-                  subtitle={`em ${formatShortDate(toISODate(new Date(price.purchasedAt)))}`}
-                  right={
-                    <Row>
-                      {index === 0 && prices.length > 1 ? <Badge label="Mais barato" tone="primary" /> : null}
-                      <Text variant="label">
-                        {formatBRL(price.unitPrice)}/{price.unit}
-                      </Text>
-                    </Row>
-                  }
-                />
-              ))}
-            </ListCard>
+            {/* Uma lista por unidade (por kg, por unidade...): só se compara, e só leva "Mais barato", o que está na mesma. */}
+            {groups.map((group) => (
+              <View key={group.unit} style={styles.gapSm}>
+                {groups.length > 1 ? <Text variant="label">{group.title}</Text> : null}
+                <ListCard>
+                  {group.prices.map((price, index) => (
+                    <ListRow
+                      key={price.storeId}
+                      left={<IconBadge icon="store-outline" tone={index === 0 ? 'primary' : 'neutral'} />}
+                      title={storeName(price.storeId)}
+                      subtitle={storePriceDetail(price)}
+                      right={
+                        <Row>
+                          {index === 0 && group.prices.length > 1 ? <Badge label="Mais barato" tone="primary" /> : null}
+                          <Text variant="label">{storePriceLabel(price)}</Text>
+                        </Row>
+                      }
+                    />
+                  ))}
+                </ListCard>
+              </View>
+            ))}
           </>
         )}
       </Section>
@@ -154,7 +209,14 @@ export default function ProductScreen() {
 
       <Button title="Juntar com outro produto" icon="call-merge" variant="secondary" onPress={() => setJoining(true)} />
 
-      {joining ? <MergeProductsModal opened={product} onClose={() => setJoining(false)} onMerged={onMerged} /> : null}
+      {joining ? (
+        <MergeProductsModal
+          opened={product}
+          other={joining === true ? undefined : joining}
+          onClose={() => setJoining(null)}
+          onMerged={onMerged}
+        />
+      ) : null}
 
       <PickerModal
         visible={pickingCategory}
@@ -172,4 +234,5 @@ export default function ProductScreen() {
 
 const styles = StyleSheet.create({
   gap: { gap: space.md },
+  gapSm: { gap: space.sm },
 });

@@ -36,6 +36,8 @@ jest.mock('expo-router', () => ({
   useLocalSearchParams: () => ({ id: 'arroz' }),
 }));
 jest.mock('@/data/market', () => ({
+  ProductNameTakenError: class extends Error {},
+  useAddToPantryList: () => ({ mutateAsync: jest.fn(), isPending: false }),
   useLatestPrices: () => mockQueries.prices,
   useProductPurchases: () => ({ data: [] }),
   useProducts: () => mockQueries.products,
@@ -147,7 +149,7 @@ let renderer: ReactTestRenderer | undefined;
 
 const rawText = (node: ReactTestInstance | string): string => (typeof node === 'string' ? node : node.children.map(rawText).join(''));
 /** O que a tela escreve, sem os ícones (que são letras de uma fonte de desenhos). */
-const textOf = (node: ReactTestInstance | string) => rawText(node).replace(/[-]|[󰀀-􏿿]/gu, '');
+const textOf = (node: ReactTestInstance | string) => rawText(node).replace(/[\u{E000}-\u{F8FF}]|[\u{F0000}-\u{10FFFF}]/gu, '');
 
 /** Abre a tela e devolve tudo o que ela escreve. */
 async function mount(screen: React.ReactElement) {
@@ -186,7 +188,7 @@ const NOT_AVAILABLE: [string, () => Query][] = [
 
 describe('tela do produto: "Visto em outras casas"', () => {
   /** A tela de antes, até onde entram os preços de outras casas: o cartão do produto e o último preço da casa. */
-  const USUAL = `Grãos, massas e cereaisNome do produtoÚltimo preço por mercadoMercadinhoem ${short(20)}R$ 25,00/un`;
+  const USUAL = `Grãos, massas e cereaisNome do produtoPôr na listaÚltimo preço por mercadoMercadinhoem ${short(20)}R$ 25,00/un`;
   /** O botão de juntar produtos, que fecha a tela. */
   const JOIN = 'Juntar com outro produto';
 
