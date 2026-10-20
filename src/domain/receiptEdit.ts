@@ -3,8 +3,9 @@
 // valor do item que ficou sem: a data errada deixa a nota fora do mês, e o
 // mercado errado estraga o histórico de preço. O que já saiu da nota na
 // confirmação fica como está: a despensa, os itens tirados da lista e os preços
-// que ela deu para outras casas (o gatilho do banco só compartilha na passagem
-// de rascunho para confirmada, e a leitura do servidor some nela).
+// compartilhados entre casas, se ela deu algum (o gatilho do banco só
+// compartilha na passagem de rascunho para confirmada, e a leitura do servidor
+// some nela).
 
 import { parseBRDate } from './dates';
 import { hasReceiptTotal, readReceiptTotal } from './receiptGap';
@@ -12,17 +13,9 @@ import { hasReceiptTotal, readReceiptTotal } from './receiptGap';
 const cents = (value: number) => Math.round(value * 100);
 
 export type ReceiptStatus = 'draft' | 'confirmed';
-export type ReceiptSource = 'ai' | 'manual' | 'qrcode';
 
+/** O que muda entre a revisão e a nota confirmada. O cabeçalho (mercado, data, total e quem pagou) se corrige nas duas. */
 export interface ReceiptEditing {
-  /** Mercado (escolher outro da casa ou criar um). */
-  store: boolean;
-  /** Data da compra. */
-  date: boolean;
-  /** Total da nota. */
-  total: boolean;
-  /** Quem pagou. */
-  payer: boolean;
   /**
    * Os itens: `all` na revisão (descrição, quantidade, valor, produto, despensa, remover); `missingValue` na nota
    * confirmada, onde só o item que ficou sem valor ganha o preço e o total (a quantidade já foi para a despensa).
@@ -35,17 +28,16 @@ export interface ReceiptEditing {
 /** O que dá para corrigir na nota, pelo status dela. */
 export function receiptEditing(status: ReceiptStatus): ReceiptEditing {
   const draft = status === 'draft';
-  return { store: true, date: true, total: true, payer: true, items: draft ? 'all' : 'missingValue', addItem: draft };
+  return { items: draft ? 'all' : 'missingValue', addItem: draft };
 }
 
 /**
- * A frase da nota confirmada. Só a nota lida pelo app (QR code ou foto) pode ter dado preços para outras casas;
- * a digitada à mão nunca dá, e a frase não fala deles.
+ * A frase da nota confirmada, a mesma para toda nota. Não diz que a nota deu preço para outras casas: a de
+ * farmácia, a com remédio, a sem CNPJ ou dia lido, a digitada à mão e a confirmada antes do compartilhamento
+ * nunca deram, e a tela não sabe depois se esta deu (a leitura some na confirmação).
  */
-export function confirmedEditNote(source: ReceiptSource): string {
-  const home = 'O que você corrigir aqui vale para a casa: gastos, Mercado do mês e histórico de preço.';
-  return source === 'manual' ? home : `${home} Os preços que esta nota já deu para outras casas não mudam.`;
-}
+export const CONFIRMED_EDIT_NOTE =
+  'O que você corrigir aqui vale só para a casa (gastos, Mercado do mês e histórico de preço) e não vai para os preços compartilhados entre casas.';
 
 export type PurchaseDateChange = { kind: 'invalid' } | { kind: 'same' } | { kind: 'changed'; purchasedAt: string };
 

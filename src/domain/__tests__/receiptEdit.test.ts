@@ -1,26 +1,26 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { confirmedEditNote, purchaseDateChange, receiptEditing, receiptTotalChange } from '../receiptEdit';
+import { CONFIRMED_EDIT_NOTE, purchaseDateChange, receiptEditing, receiptTotalChange } from '../receiptEdit';
 
 describe('o que a nota deixa corrigir', () => {
-  it('na revisão, tudo', () => {
-    expect(receiptEditing('draft')).toEqual({ store: true, date: true, total: true, payer: true, items: 'all', addItem: true });
+  it('na revisão, todos os itens, e dá para incluir um', () => {
+    expect(receiptEditing('draft')).toEqual({ items: 'all', addItem: true });
   });
 
-  it('confirmada: mercado, data, total e quem pagou; dos itens, só o valor do que ficou sem, e nada de item novo', () => {
-    expect(receiptEditing('confirmed')).toEqual({ store: true, date: true, total: true, payer: true, items: 'missingValue', addItem: false });
+  it('confirmada: dos itens, só o valor do que ficou sem, e nada de item novo', () => {
+    expect(receiptEditing('confirmed')).toEqual({ items: 'missingValue', addItem: false });
   });
 });
 
 describe('a frase da nota confirmada', () => {
-  it('nota lida pelo app (QR code ou foto): vale para a casa, e os preços já dados a outras casas não mudam', () => {
-    const read = 'O que você corrigir aqui vale para a casa: gastos, Mercado do mês e histórico de preço. Os preços que esta nota já deu para outras casas não mudam.';
-    expect(confirmedEditNote('qrcode')).toBe(read);
-    expect(confirmedEditNote('ai')).toBe(read);
+  it('diz que a correção fica na casa e não vai para os preços compartilhados', () => {
+    expect(CONFIRMED_EDIT_NOTE).toBe(
+      'O que você corrigir aqui vale só para a casa (gastos, Mercado do mês e histórico de preço) e não vai para os preços compartilhados entre casas.',
+    );
   });
 
-  it('nota digitada à mão nunca deu preço para fora: a frase não fala disso', () => {
-    expect(confirmedEditNote('manual')).toBe('O que você corrigir aqui vale para a casa: gastos, Mercado do mês e histórico de preço.');
+  it('não diz que a nota deu preço para outras casas (a de farmácia ou com remédio nunca dá)', () => {
+    expect(CONFIRMED_EDIT_NOTE).not.toMatch(/já deu|não mudam/);
   });
 });
 

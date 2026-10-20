@@ -1,7 +1,7 @@
 // Notas fiscais: leitura por foto (IA), revisão e confirmação.
 
 import { FunctionsHttpError } from '@supabase/supabase-js';
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { nfceItemsToDraft, nfceReceiptRow, type NfceItem, type NfceQr } from '@/domain/nfce';
 import { RECEIPTS_PAGE } from '@/domain/receiptList';
@@ -381,6 +381,15 @@ async function storeIdFor(store: StoreChoice): Promise<string> {
   return created.id;
 }
 
+/**
+ * O mercado novo é criado antes de a nota gravar. Se a nota falhar depois, o mercado já existe: os mercados da
+ * casa são buscados de novo mesmo assim, para o seletor mostrá-lo e a pessoa escolhê-lo em vez de criar outro
+ * com o mesmo nome.
+ */
+function refreshCreatedStore(queryClient: QueryClient, store: StoreChoice) {
+  if ('name' in store) queryClient.invalidateQueries({ queryKey: ['stores'] });
+}
+
 export function useSetReceiptStore(receiptId: string) {
   const invalidate = useInvalidateReceipt(receiptId);
   const queryClient = useQueryClient();
@@ -389,10 +398,8 @@ export function useSetReceiptStore(receiptId: string) {
       const storeId = await storeIdFor(store);
       unwrap(await supabase.from('receipts').update({ store_id: storeId }).eq('id', receiptId));
     },
-    onSuccess: () => {
-      invalidate();
-      queryClient.invalidateQueries({ queryKey: ['stores'] });
-    },
+    onSuccess: invalidate,
+    onSettled: (_data, _error, store) => refreshCreatedStore(queryClient, store),
   });
 }
 
@@ -512,8 +519,10 @@ export function useCorrectReceipt(receiptId: string) {
         queryClient.invalidateQueries({ queryKey: [name] });
       }
       queryClient.invalidateQueries({ queryKey: key });
-      // O mercado criado aqui entra na lista dos mercados da casa.
-      if ('store' in change) queryClient.invalidateQueries({ queryKey: ['stores'] });
+    },
+    // O mercado criado aqui entra na lista dos mercados da casa, também quando a nota não gravou.
+    onSettled: (_data, _error, change) => {
+      if ('store' in change) refreshCreatedStore(queryClient, change.store);
     },
   });
 }

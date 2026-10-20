@@ -70,7 +70,7 @@ import {
   type UnpricedPrompt,
 } from '@/domain/receiptGap';
 import {
-  confirmedEditNote,
+  CONFIRMED_EDIT_NOTE,
   CORRECTION_NOT_SAVED,
   INVALID_DATE,
   purchaseDateChange,
@@ -188,6 +188,9 @@ export default function ReceiptScreen() {
   const [picker, setPicker] = useState<Picker | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [dateText, setDateText] = useState<string | null>(null);
+  // A data que a nota confirmada está gravando. A tecla de enviar e a saída do campo chegam juntas (no celular, enviar
+  // tira o foco), e o campo continua com o que foi digitado até a gravação voltar: a mesma data não grava de novo.
+  const savingDate = useRef<string | null>(null);
   // O total da nota em edição (null: fechado). Só na revisão.
   const [totalText, setTotalText] = useState<string | null>(null);
   // Itens que a pessoa decidiu deixar sem valor nesta revisão. Não é guardado: abrir a nota de novo pergunta de novo.
@@ -379,9 +382,15 @@ export default function ReceiptScreen() {
       setDateText(null);
     } else {
       // Até a nota gravada voltar, o campo continua com o que foi digitado (e não com a data de antes); o que a
-      // pessoa digitar nesse meio fica.
+      // pessoa digitar nesse meio fica. Outra data digitada nesse meio grava; a mesma, não.
+      const purchasedAt = change.purchasedAt;
+      if (savingDate.current === purchasedAt) return;
+      savingDate.current = purchasedAt;
       const typed = dateText;
-      correctReceipt(correctDate, { purchased_at: change.purchasedAt }, () => setDateText((now) => (now === typed ? null : now)));
+      correctReceipt(correctDate, { purchased_at: purchasedAt }, () => {
+        if (savingDate.current === purchasedAt) savingDate.current = null;
+        setDateText((now) => (now === typed ? null : now));
+      });
     }
   }
 
@@ -773,30 +782,27 @@ export default function ReceiptScreen() {
       <Stack.Screen options={{ title: isDraft ? 'Revisar nota' : 'Nota fiscal' }} />
 
       <Card style={styles.gap}>
-        <Pressable disabled={!can.store} onPress={() => setPicker({ kind: 'store' })} style={styles.storeRow}>
+        {/* O cabeçalho (mercado, data, total e quem pagou) se corrige na revisão e na nota confirmada. */}
+        <Pressable onPress={() => setPicker({ kind: 'store' })} style={styles.storeRow}>
           <Icon name="store-outline" color="primary" />
           <View style={styles.flex}>
             <Text variant="small">Mercado</Text>
             <Text variant="heading">{receipt.store?.name ?? 'Toque para escolher'}</Text>
           </View>
-          {can.store ? <Icon name="chevron-right" color="textMuted" /> : null}
+          <Icon name="chevron-right" color="textMuted" />
         </Pressable>
-        {can.date ? (
-          <DateField
-            label="Data da compra"
-            value={dateText ?? formatBRDate(purchasedOn)}
-            onChangeText={setDateText}
-            onBlur={commitDate}
-            onSubmitEditing={commitDate}
-          />
-        ) : (
-          <Text variant="muted">Compra em {formatShortDate(purchasedOn)}</Text>
-        )}
+        <DateField
+          label="Data da compra"
+          value={dateText ?? formatBRDate(purchasedOn)}
+          onChangeText={setDateText}
+          onBlur={commitDate}
+          onSubmitEditing={commitDate}
+        />
         <Row style={styles.between}>
           <Text variant="muted">Soma dos itens</Text>
           <Text variant="label">{formatBRL(gap.itemsTotal)}</Text>
         </Row>
-        {can.total && totalText != null ? (
+        {totalText != null ? (
           <View style={styles.gapSm}>
             <TextField
               label={RECEIPT_TOTAL_LABEL}
@@ -818,7 +824,7 @@ export default function ReceiptScreen() {
               <Button title="Cancelar" variant="ghost" compact onPress={() => setTotalText(null)} />
             </Row>
           </View>
-        ) : can.total ? (
+        ) : (
           // O total dá para corrigir (a leitura também erra o total) ou informar, também depois de confirmar; nunca
           // é obrigatório.
           <Pressable
@@ -836,12 +842,7 @@ export default function ReceiptScreen() {
               <Icon name="pencil-outline" size={16} color="textMuted" />
             </Row>
           </Pressable>
-        ) : hasReceiptTotal(receipt.total) ? (
-          <Row style={styles.between}>
-            <Text variant="muted">{RECEIPT_TOTAL_LABEL}</Text>
-            <Text variant="label">{receiptTotalText(receipt.total)}</Text>
-          </Row>
-        ) : null}
+        )}
         {notices.length ? (
           <View style={styles.gapXs}>
             {notices.map((text) => (
@@ -850,7 +851,7 @@ export default function ReceiptScreen() {
           </View>
         ) : null}
         <PayerChips value={receipt.paid_by} onChange={(paidBy) => updateReceipt.mutate({ paid_by: paidBy }, { onError })} />
-        {isDraft ? null : <Text variant="small">{confirmedEditNote(receipt.source)}</Text>}
+        {isDraft ? null : <Text variant="small">{CONFIRMED_EDIT_NOTE}</Text>}
         {photos.length ? (
           <Button
             title={photos.length > 1 ? `Ver fotos da nota (${photos.length})` : 'Ver foto da nota'}
