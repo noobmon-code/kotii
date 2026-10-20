@@ -2,7 +2,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, View, type ScrollView } from 'react-native';
 
-import { useMarketReceipts } from '@/data/marketSpend';
+import { useMarketData } from '@/data/marketSpend';
 import { getCategory } from '@/domain/categories';
 import { todayISO } from '@/domain/dates';
 import { monthLabel, shiftMonth } from '@/domain/finance';
@@ -16,12 +16,14 @@ import {
   marketVsSummary,
   monthFromParam,
   noCategoryItems,
+  openLabel,
   orderMarketItems,
   QUANTITY_ORDER_NOTE,
   viewFromParam,
   type MarketItem,
   type MarketItemOrder,
   type MarketMonth,
+  type MarketOpen,
   type MarketReceiptRef,
   type MarketStoreMonth,
   type MarketTrend,
@@ -54,6 +56,14 @@ import { space } from '@/ui/theme';
 const capitalizeFirst = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
 const openReceipt = (id: string) => router.push({ pathname: '/nota/[id]', params: { id } });
+/** A ida (ou a linha para conferir) abre o que é: a nota, o gasto avulso ou a conta. */
+function open(target: MarketOpen) {
+  if (target.kind === 'nota') openReceipt(target.id);
+  else if (target.kind === 'gasto') router.push({ pathname: '/gasto/[id]', params: { id: target.id } });
+  else router.push({ pathname: '/conta/[id]', params: { id: target.id } });
+}
+/** A nota tem o ícone de nota; o gasto sem nota, o de dinheiro. */
+const openIcon = (target: MarketOpen) => (target.kind === 'nota' ? 'receipt-text-outline' : 'cash');
 const openProduct = (id: string) => router.push({ pathname: '/produto/[id]', params: { id } });
 
 /** Mercado do mês: para onde foi o dinheiro do mercado. As contas e os textos vêm de domain/marketSpend. */
@@ -67,7 +77,7 @@ export default function MarketMonthScreen() {
   // página não a perde. Trocar de parte não empilha telas (setParams não cria entrada no histórico): o
   // voltar sai da tela, como nas abas de Finanças.
   const view = viewFromParam(aba);
-  const receipts = useMarketReceipts(month);
+  const market = useMarketData(month);
   const scanner = useReceiptScanner();
   const [category, setCategory] = useState<string | null>(null);
   // O mercado tocado na lista de mercados: '' é o das notas sem mercado, null é nenhum.
@@ -82,19 +92,28 @@ export default function MarketMonthScreen() {
   const switchY = useRef(0);
   /** A altura em que o card "O que mudou" está, no mesmo espaço da chave. */
   const changesY = useRef(0);
-  const summary = useMemo(() => (receipts.data ? marketMonth(receipts.data, month, today) : null), [receipts.data, month, today]);
-  const trend = useMemo(() => (receipts.data ? marketTrend(receipts.data, month, today) : null), [receipts.data, month, today]);
+  const summary = useMemo(
+    () => (market.data ? marketMonth(market.data.receipts, month, today, market.data.spends) : null),
+    [market.data, month, today],
+  );
+  const trend = useMemo(
+    () => (market.data ? marketTrend(market.data.receipts, month, today, null, market.data.spends) : null),
+    [market.data, month, today],
+  );
   const chosenStore = store === null ? undefined : summary?.stores.find((s) => s.key === store);
   // O mercado escolhido: as idas e os itens dele no mês. Só a parte dos mercados o mostra, e só aí a conta é feita.
   const storeMonth = useMemo(
-    () => (receipts.data && chosenStore && view === 'mercados' ? marketStoreMonth(receipts.data, month, today, chosenStore) : null),
-    [receipts.data, month, today, chosenStore, view],
+    () =>
+      market.data && chosenStore && view === 'mercados'
+        ? marketStoreMonth(market.data.receipts, month, today, chosenStore, market.data.spends)
+        : null,
+    [market.data, month, today, chosenStore, view],
   );
   // A categoria escolhida, nos mesmos meses: como ela andou. Só os itens mostram o cartão, e só aí a conta é feita.
   // Também no mês sem nada dela: o selo, o cartão e a frase "Nenhum item de…" dizem isso, e o cartão leva a outro mês.
   const categoryTrend = useMemo(
-    () => (receipts.data && category && view === 'itens' ? marketTrend(receipts.data, month, today, category) : null),
-    [receipts.data, month, today, category, view],
+    () => (market.data && category && view === 'itens' ? marketTrend(market.data.receipts, month, today, category, market.data.spends) : null),
+    [market.data, month, today, category, view],
   );
 
   /**
@@ -136,7 +155,7 @@ export default function MarketMonthScreen() {
   }
 
   return (
-    <Screen edges={[]} scrollRef={scroll} refreshing={receipts.isRefetching} onRefresh={() => receipts.refetch()}>
+    <Screen edges={[]} scrollRef={scroll} refreshing={market.isRefetching} onRefresh={() => market.refetch()}>
       <Row style={styles.monthNav}>
         <IconButton icon="chevron-left" label="Mês anterior" onPress={() => goTo(shiftMonth(month, -1))} />
         <Text variant="label" style={styles.monthTitle}>
@@ -149,8 +168,8 @@ export default function MarketMonthScreen() {
         )}
       </Row>
 
-      {receipts.isPending ? (
-        receipts.fetchStatus === 'paused' ? (
+      {market.isPending ? (
+        market.fetchStatus === 'paused' ? (
           // Sem internet e sem este mês na memória, a busca fica parada (não vira erro) e volta sozinha com a
           // conexão: um aviso, em vez de girar sem fim. Sem botão: tentar de novo não a faz andar.
           <Card style={styles.notice}>
@@ -164,13 +183,13 @@ export default function MarketMonthScreen() {
         )
       ) : !summary ? (
         // Sem as notas não há o que mostrar: o erro, nunca um mês "sem gasto".
-        <ErrorNotice error={receipts.error} onRetry={() => receipts.refetch()} />
+        <ErrorNotice error={market.error} onRetry={() => market.refetch()} />
       ) : (
         <MonthBody
           summary={summary}
           // A nova busca falhou e os números de antes continuam na tela.
-          stale={receipts.isError}
-          onRetry={() => receipts.refetch()}
+          stale={market.isError}
+          onRetry={() => market.refetch()}
           view={view}
           onView={(value) => router.setParams({ aba: value })}
           trend={trend}
@@ -279,7 +298,7 @@ function MonthBody({
           <EmptyState
             icon="receipt-text-outline"
             title={summary.emptyTitle}
-            message="As compras aparecem aqui quando uma nota fiscal é confirmada. Fotografe o cupom ou leia o QR code da nota."
+            message="As compras aparecem aqui quando uma nota fiscal é confirmada ou um gasto é lançado como Mercado em Finanças. Fotografe o cupom ou leia o QR code da nota."
             action={<Button title="Adicionar nota" icon="camera-outline" onPress={onAddReceipt} loading={adding} />}
           />
           {/* Sem total na tela não há o que abrir e fechar: o que espera a revisão e o que ficou de fora já vêm à vista. */}
@@ -288,7 +307,7 @@ function MonthBody({
               <Details summary={summary} />
             </Card>
           ) : null}
-          {/* Mês sem nota, mas com notas nos meses antes dele: a tendência continua dizendo como o mercado andou. */}
+          {/* Mês sem ida, mas com idas (nota ou gasto de mercado) nos meses antes dele: a tendência continua dizendo como o mercado andou. */}
           {trend?.hasAny ? <MarketTrendChart trend={trend} onSelect={(bar) => onMonth(bar.month)} /> : null}
         </>
       ) : (
@@ -340,8 +359,9 @@ function MonthBody({
               summary={summary}
               category={category}
               trend={categoryTrend}
-              // A categoria fica no mês que teve ida; sem ida nenhuma, a tela só diz que o mês não tem nota.
-              onMonth={(bar) => onMonth(bar.month, bar.hasTrips)}
+              // A categoria fica no mês que teve ida com nota; sem ida nenhuma, a tela só diz que o mês não tem nota, e
+              // só com gastos sem nota, que eles não têm itens.
+              onMonth={(bar) => onMonth(bar.month, bar.hasTrips && !bar.noItems)}
               onCategory={onCategory}
               order={order}
               onOrder={onOrder}
@@ -354,13 +374,13 @@ function MonthBody({
             <ListCard>
               {summary.trips.map((trip) => (
                 <ListRow
-                  key={trip.receiptId}
-                  left={<IconBadge icon="receipt-text-outline" />}
+                  key={trip.key}
+                  left={<IconBadge icon={openIcon(trip.opens)} />}
                   title={trip.storeName}
                   subtitle={trip.detail}
                   right={<Text variant="label">{trip.amount}</Text>}
-                  accessibilityLabel={`${trip.accessibilityLabel}. Abrir a nota`}
-                  onPress={() => openReceipt(trip.receiptId)}
+                  accessibilityLabel={`${trip.accessibilityLabel}. ${openLabel(trip.opens)}`}
+                  onPress={() => open(trip.opens)}
                 />
               ))}
             </ListCard>
@@ -373,7 +393,7 @@ function MonthBody({
                 {summary.stores.map((store) => (
                   <ListRow
                     key={store.key}
-                    left={<IconBadge icon="store-outline" />}
+                    left={<IconBadge icon={store.noReceipt ? 'cash' : 'store-outline'} />}
                     title={store.name}
                     subtitle={store.detail}
                     right={<Text variant="label">{store.amount}</Text>}
@@ -427,7 +447,7 @@ function Items({
   const cut = category ? null : summary.itemsCut;
   const { groups, toggle } = orderMarketItems(items, order, cut, showAll);
   const label = category ? getCategory(category).label : null;
-  if (items.length === 0 && !category) return <Text variant="muted">As notas deste mês vieram sem nenhum item lido.</Text>;
+  if (items.length === 0 && !category) return <Text variant="muted">{summary.emptyItems}</Text>;
   return (
     <View style={styles.gapMd}>
       {label ? (
@@ -521,12 +541,12 @@ function StoreDetail({ store, onStore }: { store: MarketStoreMonth; onStore: (st
         <ListCard>
           {store.trips.map((trip) => (
             <ListRow
-              key={trip.receiptId}
-              left={<IconBadge icon="receipt-text-outline" />}
+              key={trip.key}
+              left={<IconBadge icon={openIcon(trip.opens)} />}
               title={trip.detail}
               right={<Text variant="label">{trip.amount}</Text>}
-              accessibilityLabel={`${trip.accessibilityLabel}. Abrir a nota`}
-              onPress={() => openReceipt(trip.receiptId)}
+              accessibilityLabel={`${trip.accessibilityLabel}. ${openLabel(trip.opens)}`}
+              onPress={() => open(trip.opens)}
             />
           ))}
         </ListCard>
@@ -542,7 +562,7 @@ function StoreDetail({ store, onStore }: { store: MarketStoreMonth; onStore: (st
             ))}
           </ListCard>
         ) : (
-          <Text variant="muted">As notas deste mercado vieram sem nenhum item lido.</Text>
+          <Text variant="muted">{store.emptyItems}</Text>
         )}
       </View>
     </View>
@@ -602,7 +622,7 @@ function Changes({ change, showAll, onShowAll }: { change: MarketChange; showAll
 
 /** Todas as categorias do mês, da maior para a menor. O toque leva aos itens da categoria. */
 function Categories({ summary, onCategory }: { summary: MarketMonth; onCategory: (category: string) => void }) {
-  if (summary.categories.length === 0) return <Text variant="muted">As notas deste mês vieram sem nenhum item lido.</Text>;
+  if (summary.categories.length === 0) return <Text variant="muted">{summary.emptyItems}</Text>;
   return (
     <View style={styles.gapMd}>
       <Text variant="small">Toque numa categoria para ver os itens dela.</Text>
@@ -630,13 +650,16 @@ function Categories({ summary, onCategory }: { summary: MarketMonth; onCategory:
 }
 
 /**
- * Como o total fecha: as diferenças do total das notas, os itens sem valor, a farmácia (fora da conta) e as
- * notas que ainda esperam a revisão.
+ * Como o total fecha: os gastos lançados sem nota, as diferenças do total das notas, os itens sem valor, a
+ * farmácia (fora da conta) e as notas que ainda esperam a revisão.
  */
 function Details({ summary }: { summary: MarketMonth }) {
-  const { discount, unread, noValue, later, pharmacy, drafts } = summary;
+  const { withoutReceipt, discount, unread, noValue, later, pharmacy, drafts } = summary;
   return (
     <>
+      {withoutReceipt ? (
+        <AmountLine label={withoutReceipt.label} value={withoutReceipt.value} accessibilityLabel={withoutReceipt.accessibilityLabel} />
+      ) : null}
       {discount ? <AmountLine label={discount.label} value={discount.value} accessibilityLabel={discount.accessibilityLabel} /> : null}
       {unread ? (
         <View style={styles.gapSm}>
@@ -644,7 +667,7 @@ function Details({ summary }: { summary: MarketMonth }) {
           {/* Diferença de poucos centavos não manda abrir nota nenhuma: a frase só aparece com nota para conferir. */}
           {unread.receipts.length > 0 ? <Text variant="small">A leitura pode ter perdido um item ou um valor. Abra a nota para conferir:</Text> : null}
           {unread.receipts.map((ref) => (
-            <ReceiptLink key={ref.receiptId} receipt={ref} />
+            <ReceiptLink key={ref.key} receipt={ref} />
           ))}
         </View>
       ) : null}
@@ -653,7 +676,7 @@ function Details({ summary }: { summary: MarketMonth }) {
           <Text variant="body">{noValue.label}</Text>
           <Text variant="small">{noValue.hint}</Text>
           {noValue.receipts.map((ref) => (
-            <ReceiptLink key={ref.receiptId} receipt={ref} />
+            <ReceiptLink key={ref.key} receipt={ref} />
           ))}
         </View>
       ) : null}
@@ -662,7 +685,7 @@ function Details({ summary }: { summary: MarketMonth }) {
           <Text variant="body">{later.label}</Text>
           <Text variant="small">{later.hint}</Text>
           {later.receipts.map((ref) => (
-            <ReceiptLink key={ref.receiptId} receipt={ref} />
+            <ReceiptLink key={ref.key} receipt={ref} />
           ))}
         </View>
       ) : null}
@@ -672,7 +695,7 @@ function Details({ summary }: { summary: MarketMonth }) {
           <Text variant="muted">{drafts.label}</Text>
           {/* Cada rascunho abre a própria nota, onde é confirmado: nada aqui leva para as abas. */}
           {drafts.receipts.map((ref) => (
-            <ReceiptLink key={ref.receiptId} receipt={ref} />
+            <ReceiptLink key={ref.key} receipt={ref} />
           ))}
           {drafts.more ? <Text variant="small">{drafts.more}</Text> : null}
         </View>
@@ -697,9 +720,9 @@ function ReceiptLink({ receipt }: { receipt: MarketReceiptRef }) {
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={receipt.accessibilityLabel}
-      onPress={() => openReceipt(receipt.receiptId)}
+      onPress={() => open(receipt.opens)}
       style={({ pressed }) => [styles.receiptLink, pressed && styles.pressed]}>
-      <Icon name="receipt-text-outline" size={18} color="textMuted" />
+      <Icon name={openIcon(receipt.opens)} size={18} color="textMuted" />
       {/* Em tela estreita só o nome do mercado é cortado: a data é o que separa duas notas do mesmo mercado. */}
       <View style={styles.receiptName}>
         <Text variant="muted" numberOfLines={1} style={styles.shrink}>

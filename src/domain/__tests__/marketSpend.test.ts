@@ -132,7 +132,7 @@ describe('o que conta como dinheiro do mercado', () => {
     expect(month.totalCents).toBe(0);
     expect(month.comparison).toBeNull();
     expect(month.pharmacy).toBe('Farmácia, fora desta conta: R$ 12,00');
-    expect(month.emptyTitle).toBe('Nenhuma nota de mercado em outubro');
+    expect(month.emptyTitle).toBe('Nenhuma compra de mercado em outubro');
   });
 
   it('a categoria do item é a do produto; sem produto, a sugerida; sem nenhuma, outros', () => {
@@ -179,13 +179,13 @@ describe('o que conta como dinheiro do mercado', () => {
     const one = marketMonth([confirmed, first], MONTH, AFTER);
     expect(one.drafts).toEqual({
       label: '1 nota de outubro ainda espera a revisão. Ela entra nesta conta quando for confirmada.',
-      receipts: [{ receiptId: first.id, storeName: 'Dia', date: '11 out', value: 'Revisar', accessibilityLabel: 'Dia, 11 out. Abrir a nota para revisar' }],
+      receipts: [{ key: first.id, opens: { kind: 'nota', id: first.id }, storeName: 'Dia', date: '11 out', value: 'Revisar', accessibilityLabel: 'Dia, 11 out. Abrir a nota para revisar' }],
       more: null,
     });
     const third = draft(13);
     // Da mais recente para a mais antiga; com três, ainda cabem todas.
     const three = marketMonth([first, confirmed, third, second], MONTH, AFTER);
-    expect(three.drafts?.receipts.map((r) => [r.receiptId, r.storeName, r.date])).toEqual([
+    expect(three.drafts?.receipts.map((r) => [r.key, r.storeName, r.date])).toEqual([
       [third.id, 'Assaí', '13 out'],
       [second.id, 'Sem mercado informado', '12 out'],
       [first.id, 'Dia', '11 out'],
@@ -194,7 +194,7 @@ describe('o que conta como dinheiro do mercado', () => {
     const fourth = draft(14);
     const four = marketMonth([first, second, third, fourth, confirmed], MONTH, AFTER);
     expect(four.drafts?.label).toBe('4 notas de outubro ainda esperam a revisão. Elas entram nesta conta quando forem confirmadas.');
-    expect(four.drafts?.receipts.map((r) => r.receiptId)).toEqual([fourth.id, third.id, second.id]);
+    expect(four.drafts?.receipts.map((r) => r.key)).toEqual([fourth.id, third.id, second.id]);
     expect(four.drafts?.more).toBe('e mais 1 em Finanças > Notas');
     expect(marketMonth([first, second, third, fourth, draft(15), draft(16)], MONTH, AFTER).drafts?.more).toBe('e mais 3 em Finanças > Notas');
   });
@@ -235,7 +235,7 @@ describe('valor impresso e as diferenças do total da nota', () => {
       value: 'R$ 20,00',
       accessibilityLabel: 'Nas notas, sem item lido: R$ 20,00',
       receipts: [
-        { receiptId: lost.id, storeName: 'Assaí', date: '12 out', value: 'R$ 20,00', accessibilityLabel: 'Assaí, 12 out: R$ 20,00. Abrir a nota' },
+        { key: lost.id, opens: { kind: 'nota', id: lost.id }, storeName: 'Assaí', date: '12 out', value: 'R$ 20,00', accessibilityLabel: 'Assaí, 12 out: R$ 20,00. Abrir a nota' },
       ],
     });
     expect(month.discount).toBeNull();
@@ -252,7 +252,7 @@ describe('valor impresso e as diferenças do total da nota', () => {
     expect(month.discount?.value).toBe('−R$ 10,00');
     expect(month.unread?.value).toBe('R$ 20,50');
     // Da nota mais recente para a mais antiga.
-    expect(month.unread?.receipts.map((r) => [r.receiptId, r.storeName, r.value])).toEqual([
+    expect(month.unread?.receipts.map((r) => [r.key, r.storeName, r.value])).toEqual([
       [lostToo.id, 'Sem mercado informado', 'R$ 0,50'],
       [lost.id, 'Assaí', 'R$ 20,00'],
     ]);
@@ -283,7 +283,7 @@ describe('valor impresso e as diferenças do total da nota', () => {
     const sixCents = receipt(at(MONTH, 8), [line('Leite', 'laticinios', 6)], { total: 6.06 });
     const listed = marketMonth([cheaper, oneCent, fiveCents, sixCents], MONTH, AFTER);
     expect(listed.unread?.value).toBe('R$ 0,12');
-    expect(listed.unread?.receipts.map((r) => [r.receiptId, r.value])).toEqual([[sixCents.id, 'R$ 0,06']]);
+    expect(listed.unread?.receipts.map((r) => [r.key, r.value])).toEqual([[sixCents.id, 'R$ 0,06']]);
     expect(RECEIPT_CHECK_CENTS).toBe(5);
   });
 
@@ -317,7 +317,7 @@ describe('valor impresso e as diferenças do total da nota', () => {
       // 40 de desconto: 12/212 dele é do shampoo (R$ 2,26).
       expect(month.headline).toBe('R$ 39,74 em 2 idas');
       expect(month.discount?.value).toBe('−R$ 2,26');
-      expect(month.trips.find((t) => t.receiptId === drugstore.id)).toMatchObject({ amount: 'R$ 9,74', detail: '10 out · 1 item · farmácia fora: R$ 162,26' });
+      expect(month.trips.find((t) => t.key === drugstore.id)).toMatchObject({ amount: 'R$ 9,74', detail: '10 out · 1 item · farmácia fora: R$ 162,26' });
       expect(month.stores.find((s) => s.key === 'drogasil')?.amount).toBe('R$ 9,74');
       expect(month.pharmacy).toBe('Farmácia, fora desta conta: R$ 162,26');
       expect(month.items.find((i) => i.name === 'Shampoo')?.amount).toBe('R$ 12,00');
@@ -339,7 +339,7 @@ describe('valor impresso e as diferenças do total da nota', () => {
       const month = marketMonth([mixed], MONTH, AFTER);
       // 20 a mais: 9/21 no mercado (R$ 8,57), o resto na farmácia.
       expect(month.unread?.value).toBe('R$ 8,57');
-      expect(month.unread?.receipts.map((r) => [r.receiptId, r.value])).toEqual([[mixed.id, 'R$ 8,57']]);
+      expect(month.unread?.receipts.map((r) => [r.key, r.value])).toEqual([[mixed.id, 'R$ 8,57']]);
       expect(month.discount).toBeNull();
       expect(month.totalCents).toBe(1757);
       expect(month.pharmacy).toBe('Farmácia, fora desta conta: R$ 23,43');
@@ -381,8 +381,8 @@ describe('valor impresso e as diferenças do total da nota', () => {
       // Nota confirmada não se edita: a frase não manda preencher nada.
       hint: 'Entram como zero neste total. Abra a nota para ver quais são.',
       receipts: [
-        { receiptId: second.id, storeName: 'Dia', date: '9 out', value: '1 item', accessibilityLabel: 'Dia, 9 out: 1 item. Abrir a nota' },
-        { receiptId: first.id, storeName: 'Assaí', date: '8 out', value: '2 itens', accessibilityLabel: 'Assaí, 8 out: 2 itens. Abrir a nota' },
+        { key: second.id, opens: { kind: 'nota', id: second.id }, storeName: 'Dia', date: '9 out', value: '1 item', accessibilityLabel: 'Dia, 9 out: 1 item. Abrir a nota' },
+        { key: first.id, opens: { kind: 'nota', id: first.id }, storeName: 'Assaí', date: '8 out', value: '2 itens', accessibilityLabel: 'Assaí, 8 out: 2 itens. Abrir a nota' },
       ],
     });
     // O item continua na lista, no fim, sem um valor inventado; o arroz soma só a compra que tem valor.
@@ -519,7 +519,7 @@ describe('por categoria', () => {
     expect(month.categories.reduce((sum, c) => sum + c.cents, 0)).toBe(month.itemsCents);
     expect(month.items.reduce((sum, i) => sum + i.cents, 0)).toBe(month.itemsCents);
     // Setembro não teve nota de mercado nenhuma: o cabeçalho já diz isso, e as categorias não repetem.
-    expect(month.comparison).toBe('Não teve nota de mercado em setembro');
+    expect(month.comparison).toBe('Não teve compra de mercado em setembro');
     expect(month.categories.map((c) => c.versusPrevious)).toEqual(['', '', '', '', '']);
     expect(month.categories[0].accessibilityLabel).toBe('Carnes: R$ 100,00, 50% do mês');
     expect(month.categories[4].accessibilityLabel).toBe('Temperos e molhos: R$ 0,50, menos de 1% do mês');
@@ -539,7 +539,7 @@ describe('por categoria', () => {
     ]);
     // No mês corrente a janela é até o mesmo dia: sem nota de mercado nela, as categorias também se calam.
     const running = marketMonth(receipts, MONTH, '2026-10-04');
-    expect(running.comparison).toBe('Não teve nota de mercado até o dia 4 de setembro');
+    expect(running.comparison).toBe('Não teve compra de mercado até o dia 4 de setembro');
     expect(running.categories.map((c) => c.versusPrevious)).toEqual(['', '']);
     expect(running.categories[1].accessibilityLabel).toBe('Café e chá: R$ 18,00, 38% do mês');
   });
@@ -711,9 +711,9 @@ describe('idas e mercados', () => {
     const last = receipt(at(MONTH, 28), [line('Leite', 'laticinios', 6)], { storeId: null, storeName: null });
     const month = marketMonth([sameDayLater, last, early], MONTH, AFTER);
     expect(month.trips).toEqual([
-      { receiptId: last.id, storeName: 'Sem mercado informado', cents: 600, amount: 'R$ 6,00', detail: '28 out · 1 item', accessibilityLabel: 'Sem mercado informado: R$ 6,00, 28 out, 1 item' },
-      { receiptId: sameDayLater.id, storeName: 'Dia', cents: 2700, amount: 'R$ 27,00', detail: '3 out · 2 itens', accessibilityLabel: 'Dia: R$ 27,00, 3 out, 2 itens' },
-      { receiptId: early.id, storeName: 'Assaí', cents: 3000, amount: 'R$ 30,00', detail: '3 out · 1 item', accessibilityLabel: 'Assaí: R$ 30,00, 3 out, 1 item' },
+      { key: last.id, opens: { kind: 'nota', id: last.id }, storeName: 'Sem mercado informado', cents: 600, amount: 'R$ 6,00', detail: '28 out · 1 item', accessibilityLabel: 'Sem mercado informado: R$ 6,00, 28 out, 1 item' },
+      { key: sameDayLater.id, opens: { kind: 'nota', id: sameDayLater.id }, storeName: 'Dia', cents: 2700, amount: 'R$ 27,00', detail: '3 out · 2 itens', accessibilityLabel: 'Dia: R$ 27,00, 3 out, 2 itens' },
+      { key: early.id, opens: { kind: 'nota', id: early.id }, storeName: 'Assaí', cents: 3000, amount: 'R$ 30,00', detail: '3 out · 1 item', accessibilityLabel: 'Assaí: R$ 30,00, 3 out, 1 item' },
     ]);
     expect(month.headline).toBe('R$ 63,00 em 3 idas');
   });
@@ -733,10 +733,10 @@ describe('idas e mercados', () => {
     );
     expect(month.stores).toEqual([
       // Dois mercados de mesmo nome, sem endereço nem CNPJ: "loja 1" e "loja 2", na ordem do id do mercado.
-      { key: 'a1', name: 'Assaí', place: 'loja 1', cents: 6100, amount: 'R$ 61,00', detail: 'loja 1 · 2 idas', accessibilityLabel: 'Assaí, loja 1: R$ 61,00 em 2 idas' },
-      { key: 'a2', name: 'Assaí', place: 'loja 2', cents: 2900, amount: 'R$ 29,00', detail: 'loja 2 · 1 ida', accessibilityLabel: 'Assaí, loja 2: R$ 29,00 em 1 ida' },
+      { key: 'a1', noReceipt: false, name: 'Assaí', place: 'loja 1', cents: 6100, amount: 'R$ 61,00', detail: 'loja 1 · 2 idas', accessibilityLabel: 'Assaí, loja 1: R$ 61,00 em 2 idas' },
+      { key: 'a2', noReceipt: false, name: 'Assaí', place: 'loja 2', cents: 2900, amount: 'R$ 29,00', detail: 'loja 2 · 1 ida', accessibilityLabel: 'Assaí, loja 2: R$ 29,00 em 1 ida' },
       // O que foi pago, com o valor sem item lido.
-      { key: '', name: 'Sem mercado informado', place: null, cents: 1700, amount: 'R$ 17,00', detail: '2 idas', accessibilityLabel: 'Sem mercado informado: R$ 17,00 em 2 idas' },
+      { key: '', noReceipt: false, name: 'Sem mercado informado', place: null, cents: 1700, amount: 'R$ 17,00', detail: '2 idas', accessibilityLabel: 'Sem mercado informado: R$ 17,00 em 2 idas' },
     ]);
     expect(month.stores.reduce((sum, s) => sum + s.cents, 0)).toBe(month.totalCents);
     expect(month.trips.reduce((sum, t) => sum + t.cents, 0)).toBe(month.totalCents);
@@ -782,7 +782,7 @@ describe('os limites do mês', () => {
       drafts: null,
       shareBasis: null,
       closing: null,
-      emptyTitle: 'Nenhuma nota de mercado em outubro',
+      emptyTitle: 'Nenhuma compra de mercado em outubro',
     });
     // Só o mês anterior tem nota: este continua vazio, sem frase de comparação.
     expect(marketMonth([receipt(at('2026-09', 10), [line('Arroz', 'graos', 30)])], MONTH, '2026-10-13').comparison).toBeNull();
@@ -833,14 +833,14 @@ describe('o total do mês, numa conta só', () => {
 
   it('marketTotal dá o total e as idas que a tela mostra no cabeçalho', () => {
     const total = marketTotal(receipts, MONTH);
-    expect(total).toEqual({ totalCents: 13657, trips: 3, headline: 'R$ 136,57 em 3 idas', emptyTitle: 'Nenhuma nota de mercado em outubro' });
+    expect(total).toEqual({ totalCents: 13657, trips: 3, headline: 'R$ 136,57 em 3 idas', emptyTitle: 'Nenhuma compra de mercado em outubro' });
     const month = marketMonth(receipts, MONTH, AFTER);
     expect(month.totalCents).toBe(total.totalCents);
     expect(month.headline).toBe(total.headline);
     expect(month.trips).toHaveLength(total.trips);
     expect(month.emptyTitle).toBe(total.emptyTitle);
     expect(marketTotal(receipts, '2026-09')).toMatchObject({ totalCents: 3000, trips: 1, headline: 'R$ 30,00 em 1 ida' });
-    expect(marketTotal(receipts, '2026-08')).toEqual({ totalCents: 0, trips: 0, headline: 'R$ 0,00 em 0 idas', emptyTitle: 'Nenhuma nota de mercado em agosto' });
+    expect(marketTotal(receipts, '2026-08')).toEqual({ totalCents: 0, trips: 0, headline: 'R$ 0,00 em 0 idas', emptyTitle: 'Nenhuma compra de mercado em agosto' });
   });
 
   it('basta o que o resumo de gastos já tem de cada nota: data, total e, de cada item, o valor e a categoria', () => {
@@ -938,7 +938,7 @@ describe('comparação com o mês anterior', () => {
 
   it('o dia de hoje entra na janela, e o seguinte não', () => {
     expect(marketMonth([...september, ...october], MONTH, '2026-10-05').comparison).toBe('R$ 55,00 a mais que até o dia 5 de setembro');
-    expect(marketMonth([...september, ...october], MONTH, '2026-10-04').comparison).toBe('Não teve nota de mercado até o dia 4 de setembro');
+    expect(marketMonth([...september, ...october], MONTH, '2026-10-04').comparison).toBe('Não teve compra de mercado até o dia 4 de setembro');
     expect(marketMonth([...september, ...october], MONTH, '2026-10-20').comparison).toBe('R$ 55,00 a menos que até o dia 20 de setembro');
   });
 
@@ -957,12 +957,12 @@ describe('comparação com o mês anterior', () => {
     expect(month.categories.map((c) => [c.label, c.amount])).toEqual([['Grãos, massas e cereais', 'R$ 39,00']]);
     expect(month.later).toEqual({
       label: '1 nota com data depois de hoje',
-      hint: 'Fica de fora desta conta até o dia chegar. Se a data está errada, dá para corrigir na nota.',
-      receipts: [{ receiptId: future.id, storeName: 'Dia', date: '20 out', value: 'R$ 100,00', accessibilityLabel: 'Dia, 20 out: R$ 100,00. Abrir a nota' }],
+      hint: 'Fica de fora deste total até o dia chegar. Se a data está errada, dá para corrigir na nota.',
+      receipts: [{ key: future.id, opens: { kind: 'nota', id: future.id }, storeName: 'Dia', date: '20 out', value: 'R$ 100,00', accessibilityLabel: 'Dia, 20 out: R$ 100,00. Abrir a nota' }],
     });
     expect(month.closing).toBe('Sem contar 1 nota que espera a revisão e 1 nota com data depois de hoje.');
     // O rascunho de data futura continua entre os que esperam a revisão.
-    expect(month.drafts?.receipts.map((r) => r.receiptId)).toEqual([futureDraft.id]);
+    expect(month.drafts?.receipts.map((r) => r.key)).toEqual([futureDraft.id]);
     // A linha do resumo de gastos faz a mesma conta.
     expect(marketTotal([past, tonight, future, futureDraft], MONTH, today).headline).toBe('R$ 39,00 em 2 idas');
 
@@ -995,7 +995,7 @@ describe('comparação com o mês anterior', () => {
     // Plural.
     const two = marketMonth([past, future, receipt(at(MONTH, 21), [line('Sal', 'temperos', 4)])], MONTH, today);
     expect(two.later?.label).toBe('2 notas com data depois de hoje');
-    expect(two.later?.hint).toBe('Ficam de fora desta conta até o dia chegar. Se a data está errada, dá para corrigir na nota.');
+    expect(two.later?.hint).toBe('Ficam de fora deste total até o dia chegar. Se a data está errada, dá para corrigir na nota.');
   });
 
   it('último dia do mês contra um mês mais curto: o anterior inteiro', () => {
@@ -1005,7 +1005,7 @@ describe('comparação com o mês anterior', () => {
   it('igual, e mês anterior sem nota', () => {
     const same = [receipt(at('2026-09', 5), [line('Arroz', 'graos', 30)]), receipt(at(MONTH, 4), [line('Arroz', 'graos', 30)])];
     expect(marketMonth(same, MONTH, AFTER).comparison).toBe('Igual ao gasto em setembro');
-    expect(marketMonth(october, MONTH, AFTER).comparison).toBe('Não teve nota de mercado em setembro');
+    expect(marketMonth(october, MONTH, AFTER).comparison).toBe('Não teve compra de mercado em setembro');
     // Janeiro compara com dezembro do ano anterior.
     const turn = [receipt(at('2025-12', 5), [line('Arroz', 'graos', 30)]), receipt(at('2026-01', 4), [line('Arroz', 'graos', 40)])];
     expect(marketMonth(turn, '2026-01', '2026-02-01').comparison).toBe('R$ 10,00 a mais que em dezembro');
