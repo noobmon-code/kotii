@@ -158,7 +158,9 @@ const HOUSE: MarketReceipt[] = [
 ];
 
 const CLOSING = 'Inclui R$ 20,00 de notas sem item lido e R$ 10,00 de descontos. Sem contar R$ 22,00 de farmácia, 1 item sem valor e 1 nota que espera a revisão.';
-const NOT_THE_RESUMO = 'Diferente da barra “Mercado” do Resumo: aqui entram limpeza, higiene e pet, e só conta o que veio de nota fiscal.';
+/** No pé da tela, no mês corrente: por que este total não é a barra do Resumo. */
+const NOT_THE_RESUMO =
+  'Diferente da barra “Mercado” do Resumo: aqui só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio e sem nota com data depois de hoje.';
 
 let renderer: ReactTestRenderer | undefined;
 
@@ -218,6 +220,21 @@ const rowTitles = () =>
 
 /** As linhas de "O que mudou". */
 const changeRows = () => renderer!.root.findAllByType(ListRow).filter(inChanges);
+
+/** O selo da categoria escolhida (o que tem o "x"), se há. */
+const categoryChips = () => renderer!.root.findAllByType(Chip).filter((chip) => chip.props.icon === 'close');
+
+/** A ordem dos itens escolhida nos selos. */
+const chosenOrder = () =>
+  renderer!.root
+    .findAllByType(Chip)
+    .filter((chip) => String(chip.props.accessibilityLabel ?? '').startsWith('Ordenar'))
+    .filter((chip) => chip.props.selected)
+    .map((chip) => chip.props.label);
+
+/** Os meses de um cartão de tendência: cada um é um botão (o componente que recebe o toque, não a View de baixo). */
+const monthButtons = (chart: ReactTestRenderer['root']) =>
+  chart.findAll((node) => typeof node.type !== 'string' && node.props.accessibilityRole === 'button' && typeof node.props.onPress === 'function');
 
 /** Os nomes das barras de categoria na tela. */
 const barLabels = () => renderer!.root.findAllByType(BarRow).map((bar) => bar.props.label);
@@ -372,7 +389,7 @@ describe('mês carregado', () => {
     // Os doze, sem "Ver todos": com a categoria escolhida, a lista vem inteira.
     expect(rowTitles()).toEqual(grains.map((item) => item.productName));
     expect(renderer!.root.findAllByType(Button).map((button) => button.props.title)).toEqual([]);
-    const chip = renderer!.root.findByType(Chip);
+    const [chip] = categoryChips();
     expect(chip.props).toMatchObject({ label: 'Grãos, massas e cereais', icon: 'close', accessibilityLabel: 'Grãos, massas e cereais: mostrar os itens de todas as categorias' });
     // As partes continuam sendo do mês inteiro.
     expect(page()).toContain(['Grão 01', '1 un · em 1 ida', 'R$ 20,00', '8%'].join('\n'));
@@ -381,8 +398,8 @@ describe('mês carregado', () => {
     await choose('Itens');
     expect(rowTitles()).toHaveLength(12);
     // Tirar a categoria traz de volta os 10 que mais levaram dinheiro, com o "Ver todos".
-    await act(async () => renderer!.root.findByType(Chip).props.onPress());
-    expect(renderer!.root.findAllByType(Chip)).toHaveLength(0);
+    await act(async () => categoryChips()[0].props.onPress());
+    expect(categoryChips()).toHaveLength(0);
     expect(rowTitles()).toEqual(['Picanha', ...grains.slice(0, 9).map((item) => item.productName)]);
     expect(page()).toContain('Ver todos os 13 itens');
   });
@@ -408,7 +425,7 @@ describe('mês carregado', () => {
         .findAllByType(ListRow)
         .filter((row) => !inChanges(row))
         .map((row) => row.props.accessibilityLabel),
-    ).toEqual(['Assaí: R$ 220,00 em 1 ida', 'Dia: R$ 50,00 em 1 ida']);
+    ).toEqual(['Assaí: R$ 220,00 em 1 ida. Ver as idas e os itens', 'Dia: R$ 50,00 em 1 ida. Ver as idas e os itens']);
   });
 
   it('puxar para atualizar busca as notas de novo', async () => {
@@ -664,7 +681,7 @@ describe('o mês', () => {
     expect(rowTitles()).toEqual(['Picanha']);
     await press('Mês anterior');
     expect(mockState.params).toEqual({ aba: 'itens', mes: '2026-09' });
-    expect(renderer!.root.findAllByType(Chip)).toHaveLength(0);
+    expect(categoryChips()).toHaveLength(0);
     expect(rowTitles()).toEqual(['Picanha', 'Arroz']);
   });
 
@@ -771,7 +788,14 @@ describe('a entrada no resumo de gastos', () => {
 
   it('faz a conta com as notas que o resumo já leu, sem a busca da tela, e abre a tela no mês', async () => {
     const text = await mount(<MarketMonthLink month="2026-09" receipts={HOUSE} />);
-    expect(text).toBe(['Para onde foi o dinheiro do mercado', 'R$ 130,00 em 1 ida'].join('\n'));
+    // Num mês passado não há nota de data futura, e a frase não fala dela.
+    expect(text).toBe(
+      [
+        'Para onde foi o dinheiro do mercado',
+        'R$ 130,00 em 1 ida',
+        'Diferente da barra “Mercado”: no Mercado do mês só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio.',
+      ].join('\n'),
+    );
     await act(async () => renderer?.unmount());
     // O mesmo total que a tela mostra para outubro.
     expect(await mount(<MarketMonthLink month="2026-10" receipts={HOUSE} />)).toContain('R$ 270,00 em 2 idas');
@@ -783,7 +807,13 @@ describe('a entrada no resumo de gastos', () => {
   it('sem nota de mercado no mês, diz isso; sem as notas na mão, continua levando à tela', async () => {
     expect(await mount(<MarketMonthLink month="2026-10" receipts={[]} />)).toContain('Nenhuma nota de mercado em outubro');
     await act(async () => renderer?.unmount());
-    expect(await mount(<MarketMonthLink month="2026-10" receipts={undefined} />)).toBe(['Para onde foi o dinheiro do mercado', 'Por categoria, por item e por mercado'].join('\n'));
+    expect(await mount(<MarketMonthLink month="2026-10" receipts={undefined} />)).toBe(
+      [
+        'Para onde foi o dinheiro do mercado',
+        'Por categoria, por item e por mercado',
+        'Diferente da barra “Mercado”: no Mercado do mês só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio e sem nota com data depois de hoje.',
+      ].join('\n'),
+    );
     expect(row().props.onPress).toBeDefined();
     expect(mockState.asked).toEqual([]);
   });
@@ -802,19 +832,32 @@ describe('a entrada no resumo de gastos', () => {
 });
 
 describe('tendência dos últimos meses', () => {
-  /** Os gráficos de tendência na tela, pelo que o leitor de tela anuncia. */
+  /** Os gráficos de tendência na tela: o que o leitor de tela anuncia de cada mês (cada um é um botão), em ordem. */
   const charts = () =>
     renderer!.root
       .findAllByType(MarketTrendChart)
-      .map((chart) => chart.findAll((node) => node.props.accessibilityRole === 'image')[0].props.accessibilityLabel);
+      .map((chart) => monthButtons(chart).map((bar) => bar.props.accessibilityLabel));
+  const OPEN = '. Abrir este mês';
 
   it('um cartão com os seis meses, o corrente "até hoje" e a média dos fechados, antes de "O que mudou"', async () => {
     const text = await mount();
     expect(charts()).toEqual([
-      'Maio: sem ida ao mercado; Junho: sem ida ao mercado; Julho: sem ida ao mercado; Agosto: sem ida ao mercado; ' +
-        'Setembro: R$ 130,00; Outubro até hoje: R$ 270,00. Média dos meses fechados: R$ 130,00. ' +
-        '4 meses sem ida ao mercado ficam fora da média.',
+      [
+        `Maio: sem ida ao mercado${OPEN}`,
+        `Junho: sem ida ao mercado${OPEN}`,
+        `Julho: sem ida ao mercado${OPEN}`,
+        `Agosto: sem ida ao mercado${OPEN}`,
+        `Setembro: R$ 130,00${OPEN}`,
+        // O mês da tela já está aberto: marcado, o rótulo diz que está aberto (também na web), e o toque não faz nada.
+        'Outubro até hoje: R$ 270,00. Mês aberto',
+      ],
     ]);
+    const bars = monthButtons(renderer!.root.findByType(MarketTrendChart));
+    expect(bars.map((bar) => [bar.props.accessibilityState, bar.props.disabled])).toEqual([
+      ...Array.from({ length: 5 }, () => [{ selected: false }, false]),
+      [{ selected: true }, true],
+    ]);
+    expect(text).toContain(['Média dos meses fechados: R$ 130,00', '4 meses sem ida ao mercado ficam fora da média.', 'Toque num mês para ver o mercado dele.'].join('\n'));
     expect(text).toContain(['Últimos 6 meses', 'mai', 'sem ida', 'jun', 'sem ida', 'jul', 'sem ida', 'ago', 'sem ida', 'set', '130', 'out', '270', 'hoje'].join('\n'));
     expect(text).toContain('Média dos meses fechados: R$ 130,00');
     // O título é lido uma vez, como cabeçalho; a imagem do gráfico começa direto nos meses.
@@ -827,11 +870,15 @@ describe('tendência dos últimos meses', () => {
     await mount();
     await press('Grãos, massas e cereais: R$ 74,00, 28% dos itens, R$ 44,00 a mais que até o dia 13 de setembro');
     expect(charts()).toHaveLength(2);
-    expect(charts()[1]).toBe(
-      'Maio: sem ida ao mercado; Junho: sem ida ao mercado; Julho: sem ida ao mercado; ' +
-        'Agosto: sem ida ao mercado; Setembro: R$ 30,00; Outubro até hoje: R$ 74,00. Média dos meses fechados: R$ 30,00. ' +
-        '4 meses sem ida ao mercado ficam fora da média.',
-    );
+    expect(charts()[1]).toEqual([
+      `Maio: sem ida ao mercado${OPEN}`,
+      `Junho: sem ida ao mercado${OPEN}`,
+      `Julho: sem ida ao mercado${OPEN}`,
+      `Agosto: sem ida ao mercado${OPEN}`,
+      `Setembro: R$ 30,00${OPEN}`,
+      'Outubro até hoje: R$ 74,00. Mês aberto',
+    ]);
+    expect(page()).toContain('Média dos meses fechados: R$ 30,00');
     const text = page();
     // Entre o selo da categoria e a lista dos itens dela (o Arroz também aparece antes, em O que mudou).
     expect(text.indexOf('Só os itens de')).toBeLessThan(text.indexOf('Grãos, massas e cereais nos últimos 6 meses'));
@@ -845,12 +892,224 @@ describe('tendência dos últimos meses', () => {
     const text = await mount();
     expect(text).toContain('Nenhuma nota de mercado em outubro');
     expect(charts()).toHaveLength(1);
-    expect(charts()[0]).toContain('Setembro: R$ 30,00; Outubro até hoje: sem ida ao mercado');
+    expect(charts()[0].slice(-2)).toEqual([`Setembro: R$ 30,00${OPEN}`, 'Outubro até hoje: sem ida ao mercado. Mês aberto']);
   });
 
   it('sem nota nenhuma nos seis meses, nada de cartão vazio', async () => {
     mockState.query = loaded([]);
     await mount();
     expect(charts()).toEqual([]);
+  });
+});
+
+describe('a ordem dos itens', () => {
+  /** Outubro com três idas: leite e pão nas três, tomate comprado por peso numa e por unidade na outra. */
+  const ORDER_HOUSE: MarketReceipt[] = [
+    receipt('q1', at(10, 3), [
+      line('Leite', 'laticinios', 60, 12),
+      line('Arroz', 'graos', 30, 5, 'kg'),
+      line('Tomate', 'hortifruti', 5, 0.8, 'kg'),
+      line('Suco', 'bebidas', 9, 1, 'l'),
+      line('Pão', 'padaria', 8, 10),
+    ]),
+    receipt('q2', at(10, 8), [line('Leite', 'laticinios', 30, 6), line('Tomate', 'hortifruti', 3, 4), line('Pão', 'padaria', 8, 10), line('Café', 'cafe_cha', 18)]),
+    receipt('q3', at(10, 10), [line('Leite', 'laticinios', 30, 6), line('Pão', 'padaria', 4, 5), line('Feijão', 'graos', 9, 1, 'kg')]),
+  ];
+
+  /** Os títulos dos grupos de itens na tela (por quantidade: as medidas), na ordem. */
+  const groupTitles = () =>
+    renderer!.root
+      .findAll((node) => node.type === RNText && node.props.accessibilityRole === 'header')
+      .map((node) => node.props.children)
+      .filter((title) => ['Por unidade', 'Por peso', 'Por volume', 'Em medidas que não se somam'].includes(title));
+
+  it('abre por valor; por quantidade, cada medida num grupo e o que não se soma por último, dizendo por quê; por idas, o que vai em toda ida', async () => {
+    mockState.query = loaded(ORDER_HOUSE);
+    await mount();
+    expect(chosenOrder()).toEqual(['Valor']);
+    expect(rowTitles()).toEqual(['Leite', 'Arroz', 'Pão', 'Café', 'Feijão', 'Suco', 'Tomate']);
+    expect(groupTitles()).toEqual([]);
+
+    await press('Ordenar os itens por quantidade');
+    expect(chosenOrder()).toEqual(['Quantidade']);
+    // 2 kg de arroz e 24 caixas de leite não se comparam: unidade com unidade, peso com peso, volume com volume.
+    expect(groupTitles()).toEqual(['Por unidade', 'Por peso', 'Por volume', 'Em medidas que não se somam']);
+    expect(rowTitles()).toEqual(['Pão', 'Leite', 'Café', 'Arroz', 'Feijão', 'Suco', 'Tomate']);
+    const text = page();
+    expect(text).toContain('A quantidade só se soma na mesma medida: o que é por unidade, por peso e por volume vem separado.');
+    expect(text).toContain(['Por unidade', 'Pão', '25 un · em 3 idas', 'R$ 20,00', '9%', 'Leite', '24 un · em 3 idas'].join('\n'));
+    expect(text).toContain(['Por peso', 'Arroz', '5 kg · em 1 ida'].join('\n'));
+    expect(text).toContain(
+      [
+        'Em medidas que não se somam',
+        'Comprados ora por unidade, ora por peso ou volume: a quantidade não se soma, e a linha diz quantas compras foram.',
+        'Tomate',
+        '2 compras · em 2 idas',
+      ].join('\n'),
+    );
+
+    await press('Ordenar os itens por idas');
+    expect(chosenOrder()).toEqual(['Idas']);
+    expect(groupTitles()).toEqual([]);
+    // Nas três idas, leite e pão (o leite levou mais dinheiro); o tomate em duas; os outros em uma, pelo valor.
+    expect(rowTitles()).toEqual(['Leite', 'Pão', 'Tomate', 'Arroz', 'Café', 'Feijão', 'Suco']);
+    expect(page()).not.toContain('A quantidade só se soma');
+  });
+
+  it('a ordem continua ao trocar de mês e com uma categoria escolhida', async () => {
+    mockState.query = loaded([...ORDER_HOUSE, receipt('s1', at(9, 5), [line('Arroz', 'graos', 30), line('Feijão', 'graos', 18, 2, 'kg')])]);
+    await mount();
+    await press('Ordenar os itens por quantidade');
+    await press('Mês anterior');
+    expect(chosenOrder()).toEqual(['Quantidade']);
+    expect(groupTitles()).toEqual(['Por unidade', 'Por peso']);
+    expect(rowTitles()).toEqual(['Arroz', 'Feijão']);
+  });
+
+  it('com mais de 10 itens, o corte é por medida: o peso aparece logo, cada grupo cortado diz quantos faltam, e o "Ver todos" traz o resto', async () => {
+    await mount();
+    await press('Ordenar os itens por quantidade');
+    // Dez itens por unidade não escondem os três por peso: a unidade fica com as vagas que sobram.
+    expect(groupTitles()).toEqual(['Por unidade', 'Por peso']);
+    expect(rowTitles()).toEqual(['Leite', 'Arroz', 'Ração', 'Café', 'Feijão', 'Pão', 'Sabonete', 'Banana', 'Picanha', 'Queijo']);
+    let text = page();
+    expect(text).toContain(['Sabonete', '1 un · em 1 ida'].join('\n'));
+    expect(text).toContain('Mais 3 itens por unidade: veja em “Ver todos”.');
+    expect(text.indexOf('Mais 3 itens por unidade')).toBeLessThan(text.indexOf('Por peso'));
+    expect(text).toContain(['Por peso', 'Banana', '1,5 kg · em 1 ida'].join('\n'));
+    await pressButton('Ver todos os 13 itens');
+    expect(groupTitles()).toEqual(['Por unidade', 'Por peso']);
+    expect(rowTitles()).toEqual(['Leite', 'Arroz', 'Ração', 'Café', 'Feijão', 'Pão', 'Sabonete', 'Detergente', 'SACOLA', 'Brinde', 'Banana', 'Picanha', 'Queijo']);
+    text = page();
+    expect(text).not.toContain('Mais 3 itens');
+    // Voltar ao corte é voltar ao começo de cada medida, não aos "10 primeiros".
+    await pressButton('Mostrar só os primeiros de cada medida');
+    expect(rowTitles()).toHaveLength(10);
+    // Por valor, o corte continua o dos 10 primeiros.
+    await press('Ordenar os itens por valor');
+    expect(rowTitles()).toEqual(TOP_TEN);
+    expect(page()).not.toContain('Mais 3 itens');
+  });
+});
+
+describe('um mercado tocado', () => {
+  it('mostra as idas e os itens dele no mês; a ida abre a nota, e o selo volta à lista', async () => {
+    mockState.params = { aba: 'mercados' };
+    await mount();
+    expect(page()).toContain('Toque num mercado para ver as idas e os itens dele.');
+    // A chave está a 400 da tela rolável: a tela volta para ela, com o mercado logo abaixo.
+    const scrollTo = jest.spyOn(renderer!.root.findByType(ScrollView).instance as ScrollView, 'scrollTo').mockImplementation(() => {});
+    act(() => renderer!.root.findByType(Segmented).parent!.props.onLayout({ nativeEvent: { layout: { y: 400 } } }));
+    await press('Assaí: R$ 220,00 em 1 ida. Ver as idas e os itens');
+    expect(scrollTo).toHaveBeenCalledWith({ y: 392, animated: false });
+    // Continua na parte dos mercados: nada vai para o endereço.
+    expect(mockRouter.setParams).not.toHaveBeenCalled();
+    const text = page();
+    expect(text).toContain(['Só o mercado', 'Assaí', 'R$ 220,00 em 1 ida', 'Idas', '3 out · 12 itens · farmácia fora: R$ 22,00', 'R$ 220,00', 'Itens', 'Picanha'].join('\n'));
+    expect(text).not.toContain('Toque num mercado');
+    // Só os itens do Assaí, e a parte é sobre os itens dele (R$ 230,00).
+    expect(rowTitles()).not.toContain('Brinde');
+    expect(rowTitles()).toEqual(['3 out · 12 itens · farmácia fora: R$ 22,00', 'Picanha', 'Arroz', 'Leite', 'Queijo', 'Ração', 'Café', 'Feijão', 'Pão', 'Banana', 'Sabonete', 'Detergente', 'SACOLA']);
+    const picanha = renderer!.root.findAllByType(ListRow).find((row) => row.props.title === 'Picanha' && !inChanges(row));
+    expect(picanha?.props.accessibilityLabel).toBe('Picanha: R$ 80,00, 35% dos itens deste mercado, 1,2 kg, em 1 ida');
+    await press('Assaí: R$ 220,00, 3 out, 12 itens, farmácia fora: R$ 22,00. Abrir a nota');
+    expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/nota/[id]', params: { id: 'o1' } });
+    await press('Assaí: mostrar todos os mercados');
+    expect(rowTitles()).toEqual(['Assaí', 'Dia']);
+  });
+
+  it('dois mercados de mesmo nome: o endereço separa as linhas e vai no selo; trocar de mês volta à lista', async () => {
+    mockState.query = loaded([
+      receipt('a', at(10, 3), [line('Arroz', 'graos', 30)], { storeId: 'a1', storeAddress: 'Av. Brasil, 100' }),
+      receipt('b', at(10, 5), [line('Feijão', 'graos', 9)], { storeId: 'a2', storeAddress: 'Rua das Flores, 5' }),
+      receipt('c', at(9, 5), [line('Arroz', 'graos', 30)], { storeId: 'a1', storeAddress: 'Av. Brasil, 100' }),
+    ]);
+    mockState.params = { aba: 'mercados' };
+    const text = await mount();
+    expect(text).toContain(['Assaí', 'Av. Brasil, 100 · 1 ida', 'R$ 30,00', 'Assaí', 'Rua das Flores, 5 · 1 ida', 'R$ 9,00'].join('\n'));
+    await press('Assaí, Rua das Flores, 5: R$ 9,00 em 1 ida. Ver as idas e os itens');
+    expect(categoryChips().map((chip) => chip.props.label)).toEqual(['Assaí (Rua das Flores, 5)']);
+    expect(rowTitles()).toEqual(['5 out · 1 item', 'Feijão']);
+    await press('Mês anterior');
+    // Em setembro só há um Assaí: o nome basta.
+    expect(categoryChips()).toHaveLength(0);
+    expect(page()).toContain(['Assaí', '1 ida', 'R$ 30,00'].join('\n'));
+  });
+});
+
+describe('o mês pela tendência e a frase do pé', () => {
+  it('tocar num mês da tendência abre aquele mês; no cartão da categoria, a categoria continua escolhida', async () => {
+    await mount();
+    await press('Setembro: R$ 130,00. Abrir este mês');
+    expect(mockRouter.setParams).toHaveBeenLastCalledWith({ mes: '2026-09' });
+    expect(page()).toContain(['Setembro de 2026', 'Mercado de setembro', 'R$ 130,00 em 1 ida'].join('\n'));
+
+    await act(async () => renderer?.unmount());
+    mockState.params = { aba: 'categorias' };
+    await mount();
+    await press('Grãos, massas e cereais: R$ 74,00, 28% dos itens, R$ 44,00 a mais que até o dia 13 de setembro');
+    await press('Setembro: R$ 30,00. Abrir este mês');
+    expect(mockState.params).toEqual({ aba: 'itens', mes: '2026-09' });
+    expect(categoryChips().map((chip) => chip.props.label)).toEqual(['Grãos, massas e cereais']);
+    expect(rowTitles()).toEqual(['Arroz']);
+  });
+
+  it('no cartão da categoria, o mês com ida mas sem nada dela mantém o selo e o cartão e diz isso; o mês sem ida tira a categoria', async () => {
+    // Grãos em outubro e em julho; setembro só com carne; junho sem nota.
+    mockState.query = loaded([
+      receipt('o', at(10, 3), [line('Arroz', 'graos', 30), line('Picanha', 'carnes', 50, 1, 'kg')]),
+      receipt('s', at(9, 5), [line('Picanha', 'carnes', 40, 1, 'kg')]),
+      receipt('j', at(7, 5), [line('Feijão', 'graos', 9)]),
+    ]);
+    mockState.params = { aba: 'categorias' };
+    await mount();
+    const grains = renderer!.root.findAllByType(BarRow).find((bar) => bar.props.label === 'Grãos, massas e cereais');
+    await act(async () => grains!.props.onPress());
+    const categoryCard = () => renderer!.root.findAllByType(MarketTrendChart).find((chart) => chart.props.trend.title.startsWith('Grãos'));
+    /** Toca num mês do cartão da categoria (o cartão do mercado todo pode ter um mês com o mesmo valor). */
+    const pressInCard = async (label: string) => {
+      const target = monthButtons(categoryCard()!).find((bar) => bar.props.accessibilityLabel === label);
+      expect(target).toBeDefined();
+      await act(async () => target!.props.onPress());
+    };
+
+    await pressInCard('Setembro: R$ 0,00. Abrir este mês');
+    expect(mockState.params).toEqual({ aba: 'itens', mes: '2026-09' });
+    // O selo e o cartão ficam, e a frase diz por que não há itens; nada de "sem nenhum item lido" nem lista.
+    expect(categoryChips().map((chip) => chip.props.label)).toEqual(['Grãos, massas e cereais']);
+    expect(categoryCard()?.props.trend.title).toBe('Grãos, massas e cereais em 6 meses até setembro');
+    let text = page();
+    expect(text).toContain('Nenhum item de “Grãos, massas e cereais” em setembro.');
+    expect(text).not.toContain('As notas deste mês vieram sem nenhum item lido.');
+    expect(rowTitles()).toEqual([]);
+    expect(chosenOrder()).toEqual([]);
+
+    // Pelo mesmo cartão, outro mês: a categoria continua.
+    await pressInCard('Julho: R$ 9,00. Abrir este mês');
+    expect(mockState.params.mes).toBe('2026-07');
+    expect(categoryChips().map((chip) => chip.props.label)).toEqual(['Grãos, massas e cereais']);
+    expect(rowTitles()).toEqual(['Feijão']);
+
+    // Mês sem ida nenhuma: a categoria sai, e a tela diz que o mês não tem nota.
+    await pressInCard('Junho: sem ida ao mercado. Abrir este mês');
+    expect(mockState.params.mes).toBe('2026-06');
+    text = page();
+    expect(text).toContain('Nenhuma nota de mercado em junho');
+    expect(categoryChips()).toHaveLength(0);
+    expect(categoryCard()).toBeUndefined();
+  });
+
+  it('a frase do pé aparece também no mês sem ida; num mês passado, sem falar de data depois de hoje', async () => {
+    mockState.query = loaded([]);
+    let text = await mount();
+    expect(text).toContain('Nenhuma nota de mercado em outubro');
+    expect(text.split('\n').at(-1)).toBe(NOT_THE_RESUMO);
+    await act(async () => renderer?.unmount());
+    mockState.query = loaded(HOUSE);
+    mockState.params = { mes: '2026-09' };
+    text = await mount();
+    expect(text.split('\n').at(-1)).toBe(
+      'Diferente da barra “Mercado” do Resumo: aqui só contam notas fiscais, com limpeza, higiene, papel, bebê, pet e os itens de “Outros”, sem remédio.',
+    );
   });
 });

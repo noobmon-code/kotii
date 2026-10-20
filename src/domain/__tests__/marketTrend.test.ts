@@ -74,11 +74,16 @@ describe('tendência do mercado', () => {
     expect(trend.maxCents).toBe(30000);
     expect(trend.title).toBe('Últimos 6 meses');
     expect(trend.hasAny).toBe(true);
-    expect(trend.accessibilityLabel).toBe(
-      // Sem o título, que a tela escreve logo acima.
-      'Maio: R$ 100,00; Junho: sem ida ao mercado; Julho: R$ 200,00; Agosto: R$ 300,00; Setembro: R$ 150,00; ' +
-        'Outubro até hoje: R$ 80,00. Média dos meses fechados: R$ 187,50. 1 mês sem ida ao mercado fica fora da média.',
-    );
+    // Cada mês é um botão: o leitor de tela diz o mês e o valor (sem o título, que a tela escreve logo acima).
+    expect(trend.bars.map((bar) => bar.spoken)).toEqual([
+      'Maio: R$ 100,00',
+      'Junho: sem ida ao mercado',
+      'Julho: R$ 200,00',
+      'Agosto: R$ 300,00',
+      'Setembro: R$ 150,00',
+      'Outubro até hoje: R$ 80,00',
+    ]);
+    expect([trend.average, trend.averageNote]).toEqual(['Média dos meses fechados: R$ 187,50', '1 mês sem ida ao mercado fica fora da média.']);
   });
 
   it('a nota fica no mês de São Paulo, na virada do mês e do ano', () => {
@@ -112,8 +117,8 @@ describe('tendência do mercado', () => {
     expect(across.averageNote).toBe('4 meses sem ida ao mercado ficam fora da média.');
     // O ano aparece no primeiro mês de cada ano da janela, e o leitor de tela diz o ano de cada mês.
     expect(across.bars.map((bar) => bar.year)).toEqual(['2025', null, null, '2026', null, null]);
-    expect(across.accessibilityLabel.startsWith('Outubro de 2025: sem ida ao mercado; ')).toBe(true);
-    expect(across.accessibilityLabel).toContain('Dezembro de 2025: R$ 40,00; Janeiro de 2026: R$ 60,00; ');
+    expect(across.bars[0].spoken).toBe('Outubro de 2025: sem ida ao mercado');
+    expect(across.bars.map((bar) => bar.spoken)).toEqual(expect.arrayContaining(['Dezembro de 2025: R$ 40,00', 'Janeiro de 2026: R$ 60,00']));
     // Dentro de um ano só, nada de ano.
     expect(trend.bars.every((bar) => bar.year === null)).toBe(true);
   });
