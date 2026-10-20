@@ -732,10 +732,11 @@ describe('idas e mercados', () => {
       AFTER,
     );
     expect(month.stores).toEqual([
-      { key: 'a1', name: 'Assaí', cents: 6100, amount: 'R$ 61,00', detail: '2 idas', accessibilityLabel: 'Assaí: R$ 61,00 em 2 idas' },
-      { key: 'a2', name: 'Assaí', cents: 2900, amount: 'R$ 29,00', detail: '1 ida', accessibilityLabel: 'Assaí: R$ 29,00 em 1 ida' },
+      // Dois mercados de mesmo nome, sem endereço nem CNPJ: "loja 1" e "loja 2", na ordem do id do mercado.
+      { key: 'a1', name: 'Assaí', place: 'loja 1', cents: 6100, amount: 'R$ 61,00', detail: 'loja 1 · 2 idas', accessibilityLabel: 'Assaí, loja 1: R$ 61,00 em 2 idas' },
+      { key: 'a2', name: 'Assaí', place: 'loja 2', cents: 2900, amount: 'R$ 29,00', detail: 'loja 2 · 1 ida', accessibilityLabel: 'Assaí, loja 2: R$ 29,00 em 1 ida' },
       // O que foi pago, com o valor sem item lido.
-      { key: '', name: 'Sem mercado informado', cents: 1700, amount: 'R$ 17,00', detail: '2 idas', accessibilityLabel: 'Sem mercado informado: R$ 17,00 em 2 idas' },
+      { key: '', name: 'Sem mercado informado', place: null, cents: 1700, amount: 'R$ 17,00', detail: '2 idas', accessibilityLabel: 'Sem mercado informado: R$ 17,00 em 2 idas' },
     ]);
     expect(month.stores.reduce((sum, s) => sum + s.cents, 0)).toBe(month.totalCents);
     expect(month.trips.reduce((sum, t) => sum + t.cents, 0)).toBe(month.totalCents);

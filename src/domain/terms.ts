@@ -1,11 +1,43 @@
 // Termos de uso e privacidade: o texto que a tela app/termos mostra e a versão dele. O texto descreve o que o
 // app faz de verdade (quem vê o quê, o que vai para a IA, o que entra na base de preços comum); mudou o app,
-// muda o texto e a versão. O aceite ainda não fica registrado no banco: vale o aviso na tela de entrar.
+// muda o texto e a versão. O aceite de cada pessoa fica no banco (terms_acceptances, pela accept_terms, ver
+// data/terms): é um aviso, nunca uma trava.
 
 import { formatBRDate } from './dates';
 
 /** Data da versão do texto (AAAA-MM-DD). Muda a cada mudança no texto. */
 export const TERMS_VERSION = '2026-10-20';
+
+/**
+ * A versão que a pessoa aceita (AAAA-MM-DD). Só muda numa mudança importante (o que é guardado, compartilhado
+ * entre casas ou mandado para a IA ou outros serviços, quem responde pelos dados, quem pode ter conta): aí o
+ * aviso da tela Hoje volta para todo mundo. Corrigir uma palavra muda só a TERMS_VERSION.
+ */
+export const TERMS_ACCEPT_VERSION = '2026-10-20';
+
+/** O aviso dos termos: para quem nunca aceitou nenhuma versão, ou para quem aceitou uma anterior. */
+export type TermsNotice = 'primeira' | 'mudou';
+
+/**
+ * Qual aviso mostrar, pelas versões que a pessoa já aceitou; null: nenhum. Uma versão mais nova que a deste
+ * app (aceita num app mais novo, em outro aparelho) também vale: as versões são datas e se comparam como texto.
+ */
+export function termsNotice(accepted: readonly string[], version: string = TERMS_ACCEPT_VERSION): TermsNotice | null {
+  if (accepted.some((v) => v >= version)) return null;
+  return accepted.length ? 'mudou' : 'primeira';
+}
+
+export const TERMS_NOTICE_TEXT: Record<TermsNotice, { title: string; message: string }> = {
+  primeira: {
+    title: 'Leia os termos de uso e privacidade',
+    message:
+      'Eles contam o que o Kotii guarda, quem da casa vê o quê, o que vai para a IA e o que entra na base de preços comum. Continuar usando o app é concordar com eles.',
+  },
+  mudou: {
+    title: 'Os termos de uso e privacidade mudaram',
+    message: 'Veja o que o Kotii diz agora sobre os seus dados. Continuar usando o app é concordar com a versão nova.',
+  },
+};
 
 export const TERMS_TITLE = 'Termos de uso e privacidade';
 
@@ -18,7 +50,7 @@ export function termsVersionLabel(version: string = TERMS_VERSION): string {
 }
 
 /** O aviso da tela de entrar e criar conta, antes do link para os termos. */
-export const TERMS_CONSENT = 'Ao continuar, você concorda com os';
+export const TERMS_CONSENT = 'Ao continuar, você confirma que tem 18 anos ou mais e concorda com os';
 
 export interface TermsSection {
   title: string;
@@ -36,7 +68,9 @@ export const TERMS_SECTIONS: TermsSection[] = [
   {
     title: 'Sua conta e sua casa',
     paragraphs: [
+      'Só quem tem 18 anos ou mais pode criar uma conta. Os dados de crianças e adolescentes, e de quem não usa o app, entram pela conta de um adulto da casa, que responde por eles.',
       'A conta é feita com e-mail e senha. Guarde a senha só com você; se esquecer, o app manda uma mensagem para o seu e-mail para criar uma senha nova.',
+      'O app guarda na sua conta quais versões destes termos você aceitou e quando (ao criar a conta, ao entrar sem ter aceitado nenhuma ou ao tocar em "Entendi"), e guarda essas versões também neste aparelho.',
       'Os dados ficam numa casa. Quem entra com o código de convite vê e edita tudo o que é da casa: listas, notas, despensa, tarefas, saúde, documentos e finanças. Só convide quem pode ver isso. Uma conta pode estar em até 5 casas, e cada casa só vê os próprios dados.',
       'Quem cria a casa é o responsável por ela: pode trocar o código de convite e tirar moradores. Se o responsável sai, a casa passa para o morador mais antigo.',
       `O que um morador registrou continua com a casa depois que ele sai ou é tirado dela, inclusive a ficha de saúde dele: ela vira a ficha de um dependente, que os outros moradores continuam vendo e editando, e que quem saiu não consegue mais apagar. Se não quiser que fique, apague antes de sair o que o app deixa apagar (veja "Apagar dados e sair") e peça o resto pelo e-mail ${TERMS_CONTACT}.`,
@@ -75,7 +109,8 @@ export const TERMS_SECTIONS: TermsSection[] = [
     title: 'Preços compartilhados',
     paragraphs: [
       'Toda casa contribui e toda casa vê. Quando você confirma uma nota lida pelo app (pelo QR code ou pela foto), os preços que o app leu nela entram numa base de preços comum a todas as casas do Kotii: o mercado (pelo CNPJ, com o nome impresso na nota, sem o CPF que às vezes vem nele, e, quando a nota tem chave de acesso, o estado), a descrição de cada item padronizada (sem acentos e em maiúsculas), a unidade, o preço e o dia da compra.',
-      'Não entra nada que identifique você ou a sua casa: nem quem comprou, nem de qual casa, nem a nota, a quantidade, o total ou a hora. A mesma coisa comprada no mesmo mercado no mesmo dia por duas casas vira uma linha só: não dá para saber quem são as casas que viram um preço, nem quantas são.',
+      'Ninguém vê de qual casa veio um preço: não entra quem comprou, nem de qual casa, nem a nota, a quantidade, o total ou a hora. A mesma coisa comprada no mesmo mercado no mesmo dia por duas casas vira uma linha só: não dá para saber quem são as casas que viram um preço, nem quantas são.',
+      'Mas, num dia em que só a sua casa, entre as que usam o Kotii, comprou num mercado (o que é comum num mercado pequeno), os preços daquele mercado naquele dia são os da sua compra: quem vê esses preços pode deduzir o que foi comprado lá naquele dia.',
       'Ficam de fora as notas digitadas à mão, os remédios (e a nota inteira que tenha remédio), as compras em farmácia, os suplementos, os primeiros socorros, os itens de higiene pessoal e o que o app não reconheceu. Também fica na casa o que você corrige na revisão: a linha redigitada, o preço ou a unidade corrigidos e a linha acrescentada; e a nota lida pela foto em que você troca o mercado ou a data não entra.',
       'Os preços de outras casas não são em tempo real: cada um aparece com o dia em que foi visto, e só a partir do dia seguinte ao da confirmação da nota. Eles vêm das notas de outras pessoas e podem não valer mais.',
       'O compartilhamento faz parte do app e não tem como desligar; a nota digitada à mão não entra na base. Excluir uma nota não retira os preços que ela já deu, porque nada liga uma coisa à outra.',
@@ -101,13 +136,14 @@ export const TERMS_SECTIONS: TermsSection[] = [
   {
     title: 'Seus direitos (LGPD)',
     paragraphs: [
+      `Quem responde pelos dados: o Kotii vai ser mantido por uma empresa que ainda está sendo criada. Quando ela existir, o nome e o CNPJ dela entram aqui. Até lá, pedidos e dúvidas sobre os seus dados vão para o e-mail ${TERMS_CONTACT}.`,
       `Pela Lei Geral de Proteção de Dados (Lei 13.709/2018), você pode pedir a confirmação de que tratamos os seus dados, o acesso a eles, a correção, a cópia em formato portátil, a informação de com quem são compartilhados, a exclusão e a revogação do consentimento. Peça pelo e-mail ${TERMS_CONTACT}.`,
     ],
   },
   {
     title: 'Mudanças e contato',
     paragraphs: [
-      'Quando estes termos mudarem, a data da versão abaixo muda junto.',
+      'Quando estes termos mudarem, a data da versão abaixo muda junto. Se a mudança for importante, o app avisa na tela Hoje, com um link para o texto novo.',
       `Dúvidas, pedidos ou problemas: ${TERMS_CONTACT}.`,
     ],
   },
