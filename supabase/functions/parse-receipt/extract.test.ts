@@ -7,9 +7,14 @@ import {
   cleanReceipt,
   type ExtractedReceipt,
   ExtractedReceiptSchema,
+  imagePathsError,
   instructions,
+  MAX_PHOTOS,
+  MAX_TOTAL_IMAGE_BYTES,
   promptCatalog,
   sameStoreName,
+  SYSTEM,
+  TOO_MANY_PHOTOS,
 } from './extract.ts';
 
 // Chave fictícia com o verificador certo, do CNPJ 11.222.333/0001-81 (também válido).
@@ -233,10 +238,73 @@ Deno.test('quantidade ilegível: sai do total e do preço unitário lidos; sem o
 });
 
 Deno.test('instructions explain the overlap when the receipt comes in several photos', () => {
-  assertEquals(instructions([], 1).includes('fotos'), false);
+  assertEquals(instructions([], 1).includes('A nota veio em'), false);
   const text = instructions([], 3);
-  assertEquals(text.includes('A nota veio em 3 fotos'), true);
+  assertEquals(text.includes('A nota veio em 3 imagens'), true);
+  assertEquals(text.includes('todas são partes da mesma nota'), true);
   assertEquals(text.includes('entra uma vez só'), true);
+});
+
+Deno.test('print da página da Sefaz é nota: o sistema e as instruções dizem isso, também com uma imagem só', () => {
+  assertEquals(SYSTEM.includes('print (captura de tela) da página de consulta da nota no site da Sefaz'), true);
+  const one = instructions([], 1);
+  assertEquals(one.includes('A imagem pode ser a foto do papel ou um print da página de consulta da NFC-e no site da Sefaz'), true);
+  assertEquals(one.includes('Um print com só uma parte da nota'), true);
+  assertEquals(one.includes('Ignore os dados do consumidor (CPF, nome)'), true);
+  // O is_receipt=false fica para o que não é nota nem print dela.
+  assertEquals(one.includes('nem foto do papel nem print da nota na Sefaz), is_receipt=false'), true);
+  assertEquals(instructions([], 4).includes('prints da página da Sefaz (o topo com o mercado, a lista de itens, o rodapé com a data e a chave)'), true);
+});
+
+Deno.test('prints da Sefaz em várias imagens: o pedido leva todas e o texto que diz que é nota; a resposta parcial passa no schema', async () => {
+  // Um print só dos itens: sem mercado, CNPJ, data nem chave (o rodapé veio em outro print, ilegível).
+  const answer: ExtractedReceipt = {
+    ...base,
+    store_name: null,
+    cnpj: null,
+    purchased_at: null,
+    access_key: null,
+    items: [line({}), line({ raw_description: 'ARROZ 5KG', unit_price: 25, total_price: 25 })],
+  };
+  let sent: { messages: { content: { type: string; text?: string }[] }[] } | null = null;
+  const fetchImpl = ((_url: string, init: RequestInit) => {
+    sent = JSON.parse(String(init.body));
+    return Promise.resolve(new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(answer) } }] })));
+  }) as typeof fetch;
+  const config: VisionConfig = { provider: 'openrouter', model: 'deepseek/deepseek-v4.1-flash', modelEnv: 'RECEIPT_MODEL', apiKey: 'k' };
+  const images = Array.from({ length: MAX_PHOTOS }, () => ({ base64: 'AAAA', mediaType: 'image/png' as const }));
+  const extracted = await extractStructured({
+    config,
+    schema: ExtractedReceiptSchema,
+    schemaName: 'receipt',
+    system: SYSTEM,
+    prompt: instructions([], images.length),
+    images,
+    subject: 'a nota',
+    fetchImpl,
+  });
+  const content = sent!.messages[0].content;
+  assertEquals(content.filter((part) => part.type === 'image_url').length, MAX_PHOTOS);
+  const text = content.find((part) => part.type === 'text')?.text ?? '';
+  assertEquals(text.includes('print (captura de tela)'), true);
+  assertEquals(text.includes(`A nota veio em ${MAX_PHOTOS} imagens`), true);
+  assertEquals(extracted.is_receipt, true);
+  const r = cleanReceipt(extracted, new Set(), new Map());
+  assertEquals([r.storeName, r.cnpj, r.purchasedAt, r.accessKey], [null, null, null, null]);
+  assertEquals(r.items.length, 2);
+});
+
+Deno.test('imagePathsError: até MAX_PHOTOS imagens da casa; a mais, a recusa diz o limite com o código', () => {
+  const paths = (n: number, prefix = 'h1/') => Array.from({ length: n }, (_, i) => `${prefix}${i}.jpg`);
+  assertEquals(MAX_PHOTOS, 6);
+  assertEquals(imagePathsError(paths(1), 'h1'), null);
+  assertEquals(imagePathsError(paths(MAX_PHOTOS), 'h1'), null);
+  assertEquals(imagePathsError(paths(MAX_PHOTOS + 1), 'h1'), { error: 'Mande até 6 fotos ou prints por nota.', code: TOO_MANY_PHOTOS });
+  assertEquals(imagePathsError([], 'h1'), { error: 'Imagem inválida.' });
+  assertEquals(imagePathsError(paths(2, 'h2/'), 'h1'), { error: 'Imagem inválida.' });
+  assertEquals(imagePathsError([undefined], 'h1'), { error: 'Imagem inválida.' });
+  // As maiores fotos que a IA aceita, todas juntas, chegam perto do pedido: a soma tem teto, abaixo dos 32 MB em base64.
+  assertEquals(MAX_TOTAL_IMAGE_BYTES * 4 / 3 < 32_000_000, true);
 });
 
 Deno.test('sameStoreName: mesmo nome sem caixa nem espaços; curingas são texto', () => {

@@ -112,4 +112,11 @@ describe('quando a Sefaz não mostra a nota', () => {
     expect(qrReadStep(other + accessKeyCheckDigit(other), photoOnly)).toEqual({ kind: 'fetch' });
     expect(qrReadStep(KEY, new Map())).toEqual({ kind: 'fetch' });
   });
+
+  it('a nota pendente (de antes, guardada no aparelho) também não volta à Sefaz', () => {
+    expect(qrReadStep(KEY, new Map(), new Set([KEY]))).toEqual({ kind: 'photo', message: null });
+    // O aviso desta tela, quando há, continua valendo.
+    expect(qrReadStep(KEY, new Map([[KEY, 'Leia pela foto.']]), new Set([KEY]))).toEqual({ kind: 'photo', message: 'Leia pela foto.' });
+    expect(qrReadStep(KEY, new Map(), new Set())).toEqual({ kind: 'fetch' });
+  });
 });

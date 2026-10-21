@@ -1,10 +1,12 @@
 import { router } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
+import { usePendingReceipts } from '@/data/pendingReceipts';
 import { useDraftReceipts, useReceiptHistory, type ReceiptListRow } from '@/data/receipts';
 import { formatShortDate, toISODate } from '@/domain/dates';
 import { formatBRL } from '@/domain/money';
 import { receiptsByMonth, receiptsMore } from '@/domain/receiptList';
+import { PendingReceiptRow } from '@/features/PendingReceiptCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { Badge, Button, EmptyState, ErrorNotice, IconBadge, ListCard, ListRow, Loading, Row, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
@@ -12,19 +14,21 @@ import { space } from '@/ui/theme';
 /**
  * Finanças > Notas: os rascunhos para revisar (todos, também os antigos) e o histórico das confirmadas, da mais
  * recente para a mais antiga, separado por mês e em páginas: o que ainda não veio é contado, com o botão de
- * ver mais. Nenhuma nota some calada.
+ * ver mais. Nenhuma nota some calada. Antes delas, as pendentes deste aparelho: a Sefaz pediu o "não sou robô" e a
+ * nota espera os prints.
  */
 export function ReceiptsPanel() {
   const drafts = useDraftReceipts();
   const history = useReceiptHistory();
   const scanner = useReceiptScanner();
+  const { pending, storeNames } = usePendingReceipts();
 
   const confirmed = history.data?.pages.flatMap((page) => page.rows) ?? [];
   const months = receiptsByMonth(confirmed);
   const shown = months.reduce((sum, group) => sum + group.receipts.length, 0);
   const lastPage = history.data?.pages[history.data.pages.length - 1];
   const more = lastPage && history.hasNextPage ? receiptsMore(shown, lastPage.remaining) : null;
-  const empty = drafts.data?.length === 0 && confirmed.length === 0 && history.data !== undefined;
+  const empty = drafts.data?.length === 0 && confirmed.length === 0 && history.data !== undefined && !pending.length;
 
   const renderReceipt = (r: ReceiptListRow) => {
     const count = r.receipt_items[0]?.count ?? 0;
@@ -64,6 +68,16 @@ export function ReceiptsPanel() {
           title="Nenhuma nota ainda"
           message="Fotografe o cupom depois das compras. Com notas de mercados diferentes, o app compara preços e diz onde sua lista sai mais barata."
         />
+      ) : null}
+
+      {pending.length ? (
+        <Section title="Esperando os prints">
+          <ListCard>
+            {pending.map((p) => (
+              <PendingReceiptRow key={p.accessKey} pending={p} storeNames={storeNames} />
+            ))}
+          </ListCard>
+        </Section>
       ) : null}
 
       {/* Os rascunhos e o histórico são duas buscas: uma que falha não esconde a outra. */}

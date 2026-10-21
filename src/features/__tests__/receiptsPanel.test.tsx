@@ -36,6 +36,8 @@ jest.mock('expo-image-manipulator', () => ({ ImageManipulator: {}, SaveFormat: {
 jest.mock('expo-image-picker', () => ({}));
 jest.mock('@/lib/session', () => ({ endSessionIfGone: async () => false }));
 jest.mock('@/features/ReceiptScanner', () => ({ useReceiptScanner: () => ({ open: jest.fn(), busy: false, element: null }) }));
+// As notas pendentes do aparelho têm o teste delas (pendingReceiptFlow): aqui, nenhuma.
+jest.mock('@/data/pendingReceipts', () => ({ usePendingReceipts: () => ({ pending: [], storeNames: {} }) }));
 jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));

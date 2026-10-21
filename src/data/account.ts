@@ -35,6 +35,7 @@ import { TERMS_CONTACT } from '@/domain/terms';
 import { forgetConversations } from '@/features/nuke/conversation';
 import { forgetStoredHousehold } from '@/lib/activeHousehold';
 import { forgetRecoveryOf } from '@/lib/passwordRecovery';
+import { forgetPendingReceipts } from '@/lib/pendingReceipts';
 import { signOut } from '@/lib/session';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
@@ -127,6 +128,7 @@ export async function forgetDeletedAccount(userId: string): Promise<void> {
     forgetConversations(userId),
     forgetStoredHousehold(userId),
     forgetTermsOnDevice(userId),
+    forgetPendingReceipts(userId),
   ]).catch(() => undefined);
 }
 
