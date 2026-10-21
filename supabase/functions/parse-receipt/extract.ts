@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { CATEGORY_KEYS } from '../_shared/categories.ts';
 import { cnpjFromAccessKey, isValidAccessKey, isValidCnpj } from '../_shared/fiscalIds.ts';
 import type { ReadLine } from '../_shared/receiptRead.ts';
+import { storeCodeKey } from '../_shared/storeCode.ts';
 
 export const UNITS = ['un', 'kg', 'g', 'l', 'ml'] as const;
 
@@ -17,6 +18,9 @@ export const ExtractedReceiptSchema = z.object({
   items: z.array(
     z.object({
       raw_description: z.string(),
+      // O código do produto impresso na linha ("Código"), que a casa aprende ao confirmar a nota. Mesma tolerância
+      // do generic_name: obrigatório e nullable no schema enviado, sem default; o que não for texto vale null.
+      code: z.preprocess((value) => (typeof value === 'string' ? value : null), z.string().nullable()),
       normalized_name: z.string(),
       // O item sem marca nem tamanho ("café em pó"), só para casar com a lista de compras. Pedido no schema, mas um
       // modelo que o esquece (ou manda outra coisa) não derruba a nota: vale null. A tolerância fica só na leitura
@@ -131,6 +135,7 @@ ${parts}
 - Desconto de um item específico entra no total_price dele (valor líquido), também quando vem impresso numa linha separada logo abaixo do item; a linha do desconto não vira item.
 - Item cancelado fica de fora, junto com a linha que o cancela (cancelamento, estorno). Nenhum item tem valor negativo.
 - raw_description: a descrição exatamente como impressa.
+- code: o código do produto impresso na linha, como está na nota: na página da Sefaz, o "Código" do item; no papel, o número que vem antes da descrição, logo depois do número do item (001, 002...). Ex.: "001 7891000100103 LEITE ITALAC 1L" -> "7891000100103"; "002 250474 BANANA PRATA KG" -> "250474"; na página da Sefaz, "(Código: 250474 )" -> "250474", sem a palavra "Código". O número do item (001, 002...) nunca é o código; a linha que só tem o número do item: null. Só o que está impresso e legível: nunca complete nem invente um código. A linha que não mostra código: null.
 - normalized_name: nome legível em português com marca e tamanho quando houver. Ex.: "ARROZ T.JOAO TP1 5KG" -> "Arroz Tio João Tipo 1 5kg".
 - generic_name: o item como alguém escreveria na lista de compras, em português e em minúsculas, sem marca, tamanho nem embalagem, com o tipo, o sabor ou o corte só quando a nota diz. Ex.: "CAF TORR MOIDO 3COR 500G" -> "café em pó"; "PAP HIG NEVE FD 12X30M" -> "papel higiênico"; "GILLETTE MACH3 APARELHO" -> "aparelho de barbear"; "NESCAU 2.0 400G" -> "achocolatado em pó"; "VEJA MULTIUSO 500ML" -> "limpador multiuso"; "LTE UHT ITALAC DESN 1L" -> "leite desnatado"; "LEITE UHT PARMALAT 1L" -> "leite" (a nota não diz se é integral ou desnatado: não acrescente); "PATINHO MOIDO KG" -> "patinho moído"; "IOG GREGO VIGOR MOR 100G" -> "iogurte grego de morango". Não dá para saber o que é: null.
 - quantity/unit: itens pesados usam "kg" com a quantidade pesada (ex.: 0,535 kg de banana); demais usam a unidade impressa, ou "un".
@@ -154,6 +159,8 @@ export interface CleanItem {
   suggested_category: string;
   /** O item genérico (genericName), gravado em receipt_items.generic_name; null quando a IA não soube. */
   generic_name: string | null;
+  /** O código do produto impresso na linha, pela chave do banco (storeCodeKey), em receipt_items.store_code; null sem código. */
+  store_code: string | null;
   product_id: string | null;
   quantity: number;
   unit: (typeof UNITS)[number];
@@ -246,7 +253,9 @@ const SUM_TOLERANCE_CENTS = 5;
  * ilegível sai do total e do preço unitário; sem o preço unitário, a linha
  * fica de fora de `readLines` (nunca compartilha um preço por kg inventado).
  * O item genérico vai limpo (genericName) para a linha da nota, nunca para a
- * leitura do servidor: ele só serve ao casamento com a lista da casa.
+ * leitura do servidor: ele só serve ao casamento com a lista da casa. O código
+ * do produto vai pela chave do banco (storeCodeKey), também só para a linha:
+ * o produto que ele já ensinou entra depois, em withStoreCodes.
  */
 export function cleanReceipt(
   extracted: ExtractedReceipt,
@@ -289,6 +298,9 @@ export function cleanReceipt(
       suggested_name: it.normalized_name.trim() || raw,
       suggested_category: it.category,
       generic_name: genericName(it.generic_name),
+      // O rótulo que a IA copiou do print ("Código: 250474") sai até o último ":", como afterLabel faz no QR: um
+      // código impresso nunca tem ":". Tirar "COD" do começo sem os dois-pontos estragaria um código como "CODA123".
+      store_code: storeCodeKey(it.code?.replace(/^.*:/s, '')),
       product_id: aliasMatches.get(raw) ?? suggested,
       quantity,
       unit: it.unit,
@@ -322,29 +334,86 @@ export function cleanReceipt(
 }
 
 /**
- * A coluna do item genérico ainda não chegou ao banco (a função publicada antes
- * da migração): o PostgREST recusa a gravação que a traz com PGRST204 ("Could
- * not find the 'generic_name' column"), e o Postgres, com 42703. Só vale se a
- * mensagem fala dela: outra coluna que falte é erro de verdade.
+ * As colunas dos itens que chegaram por migrações recentes: o item genérico
+ * (generic_name) e o código do produto na nota (store_code). A função pode ser
+ * publicada antes de cada uma.
  */
-export function missingGenericColumn(error: { code?: string; message?: string } | null | undefined): boolean {
-  if (!error?.message?.includes('generic_name')) return false;
-  return error.code === 'PGRST204' || error.code === '42703';
+export const OPTIONAL_ITEM_COLUMNS = ['generic_name', 'store_code'] as const;
+export type OptionalItemColumn = (typeof OPTIONAL_ITEM_COLUMNS)[number];
+
+/**
+ * A coluna recente que ainda não chegou ao banco (a função publicada antes da
+ * migração): o PostgREST recusa a gravação que a traz com PGRST204 ("Could not
+ * find the 'store_code' column"), e o Postgres, com 42703. Só vale se a
+ * mensagem fala dela, com o nome inteiro (o check "receipt_items_store_code_check"
+ * não conta): outra coluna que falte é erro de verdade. null quando não é isso.
+ */
+export function missingItemColumn(
+  error: { code?: string; message?: string } | null | undefined,
+  columns: readonly OptionalItemColumn[] = OPTIONAL_ITEM_COLUMNS,
+): OptionalItemColumn | null {
+  if (!error || (error.code !== 'PGRST204' && error.code !== '42703')) return null;
+  const words = (error.message ?? '').split(/[^A-Za-z0-9_]+/);
+  return columns.find((column) => words.includes(column)) ?? null;
 }
 
 /**
- * Grava os itens da nota com o item genérico e, se o banco ainda não tem a
- * coluna, grava de novo sem ele: a nota não se perde por isso, só casa com a
- * lista como antes. Qualquer outro erro volta como veio.
+ * Grava os itens da nota com o item genérico e o código e, se o banco ainda não
+ * tem uma das colunas, grava de novo sem ela (uma de cada vez: o erro fala de
+ * uma só). A nota não se perde por isso: casa com a lista e reconhece os
+ * produtos como antes. Qualquer outro erro volta como veio.
  */
-export async function insertItems<R extends { generic_name: string | null }, E extends { code?: string; message?: string }>(
-  insert: (rows: Omit<R, 'generic_name'>[] | R[]) => PromiseLike<{ error: E | null }>,
+export async function insertItems<R extends Partial<Record<OptionalItemColumn, unknown>>, E extends { code?: string; message?: string }>(
+  insert: (rows: Partial<R>[]) => PromiseLike<{ error: E | null }>,
   rows: R[],
 ): Promise<{ error: E | null }> {
-  const first = await insert(rows);
-  if (!missingGenericColumn(first.error)) return first;
-  console.warn('receipt items saved without the generic name: the column is not in the database yet');
-  return await insert(rows.map(({ generic_name: _generic, ...row }) => row));
+  let batch: Partial<R>[] = rows;
+  let columns: readonly OptionalItemColumn[] = OPTIONAL_ITEM_COLUMNS;
+  for (;;) {
+    const result = await insert(batch);
+    const missing = missingItemColumn(result.error, columns);
+    if (!missing) return result;
+    console.warn(`receipt items saved without ${missing}: the column is not in the database yet`);
+    columns = columns.filter((column) => column !== missing);
+    batch = batch.map(({ [missing]: _dropped, ...row }) => row as Partial<R>);
+  }
+}
+
+/**
+ * Os produtos já aprendidos pelos códigos da nota (match_store_codes), por
+ * código. O banco de antes da função (PGRST202, 42883) ou outro erro: nenhum,
+ * e a nota fica com o apelido e a sugestão da IA, como antes.
+ */
+export function storeCodeMatches(
+  rows: { code: string; product_id: string }[] | null,
+  error: { code?: string; message?: string } | null,
+): Map<string, string> {
+  if (error) {
+    const missing = error.code === 'PGRST202' || error.code === '42883';
+    console.warn(missing ? 'match_store_codes is not in the database yet' : `match_store_codes failed: ${error.code ?? 'no code'}`);
+    return new Map();
+  }
+  return new Map((rows ?? []).map((row) => [row.code, row.product_id]));
+}
+
+/**
+ * O produto que o código da linha já ensinou à casa (do mercado da nota, depois
+ * o de barras) vence o apelido e a sugestão da IA: o mercado imprime o mesmo
+ * código para o mesmo produto, mesmo quando muda a descrição. O produto é da
+ * casa (match_store_codes só vê a dela) e não precisa estar no catálogo que a
+ * IA viu. A linha sem código, ou com um que a casa ainda não aprendeu, fica
+ * como estava.
+ */
+export function withStoreCodes(items: CleanItem[], matches: ReadonlyMap<string, string>): CleanItem[] {
+  return items.map((item) => {
+    const learned = item.store_code ? matches.get(item.store_code) : undefined;
+    return learned ? { ...item, product_id: learned } : item;
+  });
+}
+
+/** Os códigos das linhas, sem repetir: o que se pergunta a match_store_codes. */
+export function itemStoreCodes(items: CleanItem[]): string[] {
+  return [...new Set(items.flatMap((item) => (item.store_code ? [item.store_code] : [])))];
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   NFCE_CAPTCHA,
   nfceFailureRoute,
   nfceItemsToDraft,
+  nfceStoreCodes,
   normalizeNfceUnit,
   parseNfceQr,
   qrReadStep,
@@ -66,6 +67,58 @@ describe('nfceItemsToDraft', () => {
       expect.objectContaining({ position: 2, product_id: null, suggested_category: 'limpeza', unit_price: 2.79 }),
     ]);
     expect(normalizeNfceUnit(' lt ')).toBe('l');
+  });
+
+  it('a linha guarda o código do produto naquele mercado, pela chave do banco', () => {
+    const draft = nfceItemsToDraft(
+      [
+        { description: 'BANANA PRATA', code: '250474', quantity: 1, unit: 'KG', unitPrice: 6, totalPrice: 6 },
+        // A função de antes mandava só os dígitos; a de agora, a chave com as letras. As duas passam pela chave.
+        { description: 'QUEIJO MUSS', code: 'a-12', quantity: 1, unit: 'UN', unitPrice: 9, totalPrice: 9 },
+        { description: 'SACOLA', code: null, quantity: 1, unit: 'UN', unitPrice: 0.1, totalPrice: 0.1 },
+        { description: 'AVULSO', code: ' - ', quantity: 1, unit: 'UN', unitPrice: 1, totalPrice: 1 },
+      ],
+      new Map(),
+    );
+    expect(draft.map((line) => line.store_code)).toEqual(['250474', 'A12', null, null]);
+  });
+
+  it('o código aprendido vence o apelido da descrição; sem ele, vale o apelido', () => {
+    const aliases = new Map([
+      ['BANANA PRATA', { productId: 'p-banana-prata', category: 'hortifruti' }],
+      ['LEITE ITALAC 1L', { productId: 'p-leite', category: 'laticinios' }],
+    ]);
+    const codes = new Map([
+      ['250474', { productId: 'p-banana-nanica', category: 'hortifruti' }],
+      ['7891000100103', { productId: 'p-cafe', category: 'cafe_cha' }],
+    ]);
+    const draft = nfceItemsToDraft(
+      [
+        { description: 'BANANA PRATA', code: '250474', quantity: 1, unit: 'KG', unitPrice: 6, totalPrice: 6 },
+        { description: 'LEITE ITALAC 1L', code: '999', quantity: 1, unit: 'UN', unitPrice: 4.59, totalPrice: 4.59 },
+        { description: 'CAF TORR 3COR 500G', code: ' 7891000100103 ', quantity: 1, unit: 'UN', unitPrice: 18.9, totalPrice: 18.9 },
+        { description: 'OVOS DZ', code: null, quantity: 1, unit: 'UN', unitPrice: 9.9, totalPrice: 9.9 },
+      ],
+      aliases,
+      codes,
+    );
+    expect(draft.map((line) => [line.raw_description, line.product_id, line.suggested_category])).toEqual([
+      ['BANANA PRATA', 'p-banana-nanica', 'hortifruti'],
+      ['LEITE ITALAC 1L', 'p-leite', 'laticinios'],
+      ['CAF TORR 3COR 500G', 'p-cafe', 'cafe_cha'],
+      ['OVOS DZ', null, expect.any(String)],
+    ]);
+    // Sem o mapa dos códigos (o banco de antes da função), tudo como antes: pelo apelido.
+    expect(nfceItemsToDraft([{ description: 'BANANA PRATA', code: '250474', quantity: 1, unit: 'KG', unitPrice: 6, totalPrice: 6 }], aliases)[0])
+      .toMatchObject({ product_id: 'p-banana-prata', store_code: '250474' });
+  });
+
+  it('nfceStoreCodes: os códigos da nota pela chave, sem repetir e sem os vazios', () => {
+    expect(nfceStoreCodes([{ code: '250474' }, { code: ' 250474' }, { code: null }, { code: 'a-1' }, { code: '--' }])).toEqual([
+      '250474',
+      'A1',
+    ]);
+    expect(nfceStoreCodes([])).toEqual([]);
   });
 
   it('o item que a página mostrou sem valor (total 0) entra sem valor, para a revisão perguntar; o negativo fica de fora', () => {

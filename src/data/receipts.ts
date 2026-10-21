@@ -3,7 +3,7 @@
 import { FunctionsHttpError, type SupabaseClient } from '@supabase/supabase-js';
 import { type QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { nfceItemsToDraft, nfceReceiptRow, type NfceItem, type NfceQr } from '@/domain/nfce';
+import { nfceItemsToDraft, nfceReceiptRow, nfceStoreCodes, type NfceItem, type NfceQr } from '@/domain/nfce';
 import { RECEIPTS_PAGE } from '@/domain/receiptList';
 import { MAX_RECEIPT_PHOTOS, tooManyPhotosMessage } from '@/domain/receiptPhotos';
 import type { ConfirmItem } from '@/domain/receiptReview';
@@ -18,15 +18,25 @@ import {
   uploadImages,
   type ScanSource,
 } from './images';
-import { isMissingColumn } from './missingSchema';
+import { isMissingColumn, isMissingFunction } from './missingSchema';
 import { withFreshProducts } from './productMerge';
 import { readAll } from './readAll';
 
 const RECEIPT_COLUMNS =
   'id, store_id, purchased_at, total, access_key, image_path, extra_image_paths, source, status, created_at, paid_by, store:stores(id, name)';
-const ITEM_COLUMNS_BEFORE_GENERIC =
+const ITEM_BASE_COLUMNS =
   'id, receipt_id, position, raw_description, suggested_name, suggested_category, product_id, quantity, unit, unit_price, total_price';
-const ITEM_COLUMNS = `${ITEM_COLUMNS_BEFORE_GENERIC}, generic_name`;
+/**
+ * As colunas dos itens que chegaram por migrações recentes: o item genérico da leitura por foto (generic_name) e
+ * o código do produto na nota (store_code). O app pode ser publicado antes de cada uma: lendo ou gravando sem
+ * a que falta, a nota fica como era.
+ */
+const OPTIONAL_ITEM_COLUMNS = ['generic_name', 'store_code'] as const;
+type OptionalItemColumn = (typeof OPTIONAL_ITEM_COLUMNS)[number];
+
+/** A coluna recente que o banco disse que não tem (uma por erro), ou undefined. */
+const missingItemColumn = (error: unknown, columns: readonly OptionalItemColumn[]) =>
+  columns.find((column) => isMissingColumn(error, column));
 
 /** Uma nota da lista de Finanças > Notas: com quantos itens ela tem. */
 export type ReceiptListRow = Receipt & { receipt_items: { count: number }[] };
@@ -114,14 +124,52 @@ export function useReceiptHistory() {
 }
 
 /**
- * Os itens da nota, na ordem impressa, com o item genérico da leitura por foto (generic_name). Com o banco de
- * antes da coluna (o app publicado antes da migração), lê de novo sem ela: a revisão fica como era.
+ * Os itens da nota, na ordem impressa, com o item genérico da leitura por foto (generic_name) e o código do
+ * produto na nota (store_code). Com o banco de antes de uma dessas colunas (o app publicado antes da migração),
+ * lê de novo sem ela, uma de cada vez (o erro fala de uma só): a revisão fica como era.
  */
 export async function fetchReceiptItems(receiptId: string, db: SupabaseClient = supabase): Promise<ReceiptItem[]> {
-  const read = (columns: string) => db.from('receipt_items').select(columns).eq('receipt_id', receiptId).order('position');
-  const first = await read(ITEM_COLUMNS);
-  const answer = isMissingColumn(first.error, 'generic_name') ? await read(ITEM_COLUMNS_BEFORE_GENERIC) : first;
-  return unwrap(answer) as unknown as ReceiptItem[];
+  const read = (columns: readonly string[]) =>
+    db.from('receipt_items').select([ITEM_BASE_COLUMNS, ...columns].join(', ')).eq('receipt_id', receiptId).order('position');
+  let columns: readonly OptionalItemColumn[] = OPTIONAL_ITEM_COLUMNS;
+  for (;;) {
+    const answer = await read(columns);
+    const missing = missingItemColumn(answer.error, columns);
+    if (!missing) return unwrap(answer) as unknown as ReceiptItem[];
+    columns = columns.filter((column) => column !== missing);
+  }
+}
+
+/**
+ * Grava os itens de uma nota com as colunas recentes e, se o banco ainda não tem uma delas, grava de novo sem
+ * ela (uma de cada vez): a nota não se perde por isso. Devolve o erro que sobrar (outra coluna, a RLS), ou null.
+ */
+export async function insertReceiptItems(rows: Record<string, unknown>[], db: SupabaseClient = supabase): Promise<unknown> {
+  let batch = rows;
+  let columns: readonly OptionalItemColumn[] = OPTIONAL_ITEM_COLUMNS;
+  for (;;) {
+    const { error } = await db.from('receipt_items').insert(batch);
+    const missing = missingItemColumn(error, columns);
+    if (!missing) return error;
+    columns = columns.filter((column) => column !== missing);
+    batch = batch.map(({ [missing]: _dropped, ...row }) => row);
+  }
+}
+
+/**
+ * O produto já aprendido para cada código da nota (match_store_codes): o daquele mercado (pelo CNPJ) e, sem
+ * ele, o do código de barras. Sem CNPJ, só o código de barras. O banco de antes da função: nenhum código
+ * aprendido, e a nota vem como antes (pelos apelidos).
+ */
+export async function fetchStoreCodeMatches(
+  cnpj: string | null,
+  codes: string[],
+  db: SupabaseClient = supabase,
+): Promise<{ code: string; product_id: string }[]> {
+  if (!codes.length) return [];
+  const result = await db.rpc('match_store_codes', { p_store_cnpj: cnpj, p_codes: codes });
+  if (result.error && isMissingFunction(result.error, 'match_store_codes')) return [];
+  return (unwrap(result) ?? []) as { code: string; product_id: string }[];
 }
 
 export function useReceipt(id: string) {
@@ -306,25 +354,31 @@ export function useImportNfce() {
       if (!qr.url) throw new Error('Só com a chave não dá para ver os itens: leia o QR code da nota ou tire uma foto dela.');
 
       const page = await fetchNfcePage(qr.url);
+      // O mercado da nota: o CNPJ da página e, sem ele, o da chave. É o da loja da nota, com que a confirmação
+      // ensina os códigos.
+      const cnpj = page.store.cnpj ?? qr.cnpj;
 
+      // Primeiro o código do produto já aprendido (do mercado, depois o de barras), depois a descrição.
+      const codeRows = await fetchStoreCodeMatches(cnpj, nfceStoreCodes(page.items));
       const descriptions = page.items.map((item) => item.description.trim().replace(/\s+/g, ' '));
       const aliasRows = unwrap(await supabase.rpc('match_aliases', { p_descriptions: descriptions })) as
         | { description: string; product_id: string }[]
         | null;
-      const productIds = [...new Set((aliasRows ?? []).map((row) => row.product_id))];
+      const productIds = [...new Set([...(aliasRows ?? []), ...codeRows].map((row) => row.product_id))];
       const products = productIds.length
         ? (unwrap(await supabase.from('products').select('id, category').in('id', productIds)) as { id: string; category: string }[])
         : [];
       const categoryOf = new Map(products.map((p) => [p.id, p.category]));
-      const aliases = new Map(
-        (aliasRows ?? []).map((row) => [row.description, { productId: row.product_id, category: categoryOf.get(row.product_id) ?? 'outros' }]),
-      );
+      const known = (productId: string) => ({ productId, category: categoryOf.get(productId) ?? 'outros' });
+      const aliases = new Map((aliasRows ?? []).map((row) => [row.description, known(row.product_id)]));
+      const codes = new Map(codeRows.map((row) => [row.code, known(row.product_id)]));
 
-      const storeId = await findOrCreateStore({ ...page.store, cnpj: page.store.cnpj ?? qr.cnpj });
+      const storeId = await findOrCreateStore({ ...page.store, cnpj });
       // Com o id da leitura do servidor, quando a função devolveu um: é o que deixa a nota compartilhar preço.
       const receipt = await insertNfceReceipt(nfceReceiptRow(page, qr, storeId));
-      const items = nfceItemsToDraft(page.items, aliases).map((item) => ({ ...item, receipt_id: receipt.id }));
-      const { error: itemsError } = await supabase.from('receipt_items').insert(items);
+      const items = nfceItemsToDraft(page.items, aliases, codes).map((item) => ({ ...item, receipt_id: receipt.id }));
+      // Com o código de cada linha; o banco de antes da coluna recebe as linhas sem ele.
+      const itemsError = await insertReceiptItems(items);
       if (itemsError) {
         await supabase.from('receipts').delete().eq('id', receipt.id);
         throw itemsError;

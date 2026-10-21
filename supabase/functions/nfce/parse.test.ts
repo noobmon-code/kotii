@@ -47,6 +47,26 @@ Deno.test('lê mercado, itens, total e data da consulta pública', () => {
   ]);
 });
 
+Deno.test('o código do produto vem pela chave do banco, com as letras: dois códigos diferentes não viram o mesmo', () => {
+  const row = (code: string) => `
+    <tr><td><span class="txtTit">ITEM</span><span class="RCod">${code}</span>
+      <span class="Rqtd"><strong>Qtde.:</strong>1</span><span class="RUN"><strong>UN: </strong>UN</span>
+      <span class="RvlUnit"><strong>Vl. Unit.:</strong>&nbsp;1</span></td>
+      <td class="txtTit noWrap">Vl. Total<br /><span class="valor">1,00</span></td></tr>`;
+  const html = `<table id="tabResult">${
+    [
+      '(Código: 250474 )',
+      '(Código: A-123 )',
+      '(Código: B123)',
+      '(C&oacute;digo: pç 7 )',
+      'X9',
+      '(Código: )',
+      `(Código: ${'9'.repeat(61)} )`,
+    ].map(row).join('')
+  }</table>`;
+  assertEquals(parseNfceHtml(html).items.map((item) => item.code), ['250474', 'A123', 'B123', 'PC7', 'X9', null, null]);
+});
+
 Deno.test('página sem itens (verificação, erro) volta vazia', () => {
   const page = parseNfceHtml('<html><body><h1>Digite o código da imagem</h1></body></html>');
   assertEquals(page.items, []);

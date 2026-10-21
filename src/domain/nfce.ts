@@ -4,6 +4,7 @@
 // dos itens da Sefaz para o rascunho de nota, sem IA.
 
 import { guessCategory } from './search';
+import { storeCodeKey } from './storeCode';
 
 export interface NfceQr {
   /** Link da consulta (o próprio QR), ou null quando só há a chave. */
@@ -112,20 +113,31 @@ export function prettifyDescription(raw: string): string {
   return text.charAt(0).toLocaleUpperCase('pt-BR') + text.slice(1);
 }
 
+/** Um produto já conhecido da casa, com a categoria dele. */
+export interface KnownProduct {
+  productId: string;
+  category: string;
+}
+
 /**
- * Itens da Sefaz -> linhas do rascunho de nota. `aliases` liga a descrição
- * da nota a um produto já conhecido (como na leitura por foto), e a
- * categoria vem do produto ou das palavras da descrição.
+ * Itens da Sefaz -> linhas do rascunho de nota. A linha guarda o código do
+ * produto naquele mercado (`store_code`, pela chave do banco), que a nota
+ * confirmada ensina à casa. O produto vem do código já aprendido (`codes`,
+ * de match_store_codes: o do mercado, depois o de barras) e, sem ele, da
+ * descrição (`aliases`, como na leitura por foto); a categoria vem do
+ * produto ou das palavras da descrição.
  */
 export function nfceItemsToDraft(
   items: NfceItem[],
-  aliases: Map<string, { productId: string; category: string }>,
+  aliases: Map<string, KnownProduct>,
+  codes: Map<string, KnownProduct> = new Map(),
 ) {
   return items
     .filter((item) => item.description.trim() && item.totalPrice >= 0)
     .map((item, position) => {
       const raw = item.description.trim().replace(/\s+/g, ' ');
-      const known = aliases.get(raw);
+      const storeCode = storeCodeKey(item.code);
+      const known = (storeCode ? codes.get(storeCode) : undefined) ?? aliases.get(raw);
       const quantity = item.quantity > 0 ? Math.round(item.quantity * 1000) / 1000 : 1;
       const total = Math.round(item.totalPrice * 100) / 100;
       const unitPrice = item.unitPrice > 0 ? Math.round(item.unitPrice * 10000) / 10000 : Math.round((total / quantity) * 10000) / 10000;
@@ -139,8 +151,14 @@ export function nfceItemsToDraft(
         unit: normalizeNfceUnit(item.unit),
         unit_price: unitPrice,
         total_price: total,
+        store_code: storeCode,
       };
     });
+}
+
+/** Os códigos da nota, pela chave do banco e sem repetir: o que se pergunta a match_store_codes. */
+export function nfceStoreCodes(items: Pick<NfceItem, 'code'>[]): string[] {
+  return [...new Set(items.map((item) => storeCodeKey(item.code)).filter((code): code is string => code !== null))];
 }
 
 /**
