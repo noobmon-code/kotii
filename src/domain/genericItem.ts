@@ -5,10 +5,13 @@
 // como dica de preço (product_id). O tipo que muda o item fica (desnatado,
 // zero, sem lactose, em pó, caipira); a marca, a embalagem e o tamanho saem.
 //
-// "Marca preferida" (nos detalhes do item) não tem coluna no banco: o estado é
-// o próprio nome. Com o nome do produto (com a marca), a pessoa quer aquela
-// marca, e a nota só cumpre o item por esse produto ou pelo mesmo nome
-// (domain/listLinks); com o nome genérico, qualquer marca serve.
+// "Marca preferida" (nos detalhes do item) é uma escolha guardada no item
+// (shopping_list_items.brand_preferred), e não deduzida do nome: os itens que
+// já estavam nas listas com o nome de um produto ("Leite IL Desnatado", de
+// antes da lista sem marca) não foram escolha de marca e continuam casando
+// com qualquer marca do mesmo item. Ligada, o nome vira o do produto e a nota
+// só cumpre o item por esse produto, a ligação ou o mesmo nome
+// (domain/listLinks); desligada, o nome volta sem a marca.
 
 import { COMMON_ITEMS } from './commonItems';
 import { listNameKey } from './listLinks';
@@ -214,8 +217,21 @@ export function brandChoice(product: { name: string; category?: string | null } 
   return listNameKey(generic) === listNameKey(product.name) ? null : { brandName: product.name.trim(), genericName: generic };
 }
 
-/** O item quer a marca do produto dele: tem o nome do produto, e o produto tem marca (brandChoice). */
-export function prefersBrand(item: { name: string }, product: { name: string; category?: string | null } | null | undefined): boolean {
-  const choice = brandChoice(product);
-  return choice != null && listNameKey(item.name) === listNameKey(choice.brandName);
+/** A "Marca preferida" nos detalhes do item, ainda sem salvar: ligada ou não, e o nome no campo. */
+export interface BrandSwitch {
+  on: boolean;
+  name: string;
+}
+
+/**
+ * Liga ou desliga a "Marca preferida". Ligar põe o nome do produto (com a
+ * marca). Desligar com esse nome no campo volta o nome que o item tinha, ou o
+ * nome sem a marca quando o item já tinha o do produto; com outro nome no
+ * campo (a pessoa o escreveu), ele fica. Sem produto com marca (a escolha
+ * ficou de antes, e o produto mudou), só a escolha muda.
+ */
+export function switchBrand(state: BrandSwitch, itemName: string, choice: BrandChoice | null): BrandSwitch {
+  if (!state.on) return { on: true, name: choice ? choice.brandName : state.name };
+  if (!choice || listNameKey(state.name) !== listNameKey(choice.brandName)) return { on: false, name: state.name };
+  return { on: false, name: listNameKey(itemName) === listNameKey(choice.brandName) ? choice.genericName : itemName };
 }

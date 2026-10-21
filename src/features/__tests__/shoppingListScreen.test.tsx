@@ -55,7 +55,7 @@ jest.mock('@/data/listPhotos', () => ({
   useSetListItemPhoto: () => ({ mutate: jest.fn() }),
 }));
 /** O que a tela pediu à fila da lista: itens postos e o limpar. */
-const mockQueue = { add: jest.fn(), clear: jest.fn() };
+const mockQueue = { add: jest.fn(), clear: jest.fn(), edit: jest.fn() };
 jest.mock('@/data/market', () => {
   const mutation = () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false });
   return {
@@ -65,7 +65,7 @@ jest.mock('@/data/market', () => {
     useAddListItem: () => ({ add: mockQueue.add }),
     useArchiveList: mutation,
     useClearCheckedItems: () => ({ mutate: mockQueue.clear }),
-    useEditListItem: mutation,
+    useEditListItem: () => ({ mutate: mockQueue.edit, mutateAsync: jest.fn(), isPending: false }),
     useRemoveListItem: () => ({ remove: jest.fn() }),
     useRemovePendingListItem: mutation,
     useToggleListItem: mutation,
@@ -580,5 +580,37 @@ describe('a lista sem marca', () => {
     await mount();
     act(() => mockSeen.open!(generic));
     expect(mockSeen.editor?.brand).toEqual({ brandName: 'Leite IL Desnatado', genericName: 'Leite desnatado' });
+  });
+
+  it('salvar os detalhes grava a "Marca preferida" só quando a pessoa a mudou', async () => {
+    const details = { quantity: 1, unit: 'un', notes: null, priority: 'normal' };
+    const save = async (item: ShoppingListItem, changes: Record<string, unknown>) => {
+      act(() => mockSeen.open!(item));
+      expect((mockSeen.editor?.item as ShoppingListItem).id).toBe(item.id);
+      await act(async () => {
+        await (mockSeen.editor!.onSave as (d: unknown, p: unknown) => Promise<void>)({ ...details, ...changes }, { kind: 'keep' });
+      });
+    };
+    const generic = { ...listItem('a', 'Leite desnatado', 'il', 'laticinios'), brand_preferred: false };
+    const legacy = { ...listItem('b', 'Leite IL Desnatado', 'il', 'laticinios'), brand_preferred: false };
+    mockQueries.items = loaded([generic, legacy]);
+    mockQueries.products = loaded([MILK]);
+    await mount();
+    mockQueue.edit.mockClear();
+    await save(generic, { name: 'Leite IL Desnatado', brandPreferred: true });
+    expect(mockQueue.edit).toHaveBeenCalledWith(
+      { id: 'a', listId: 'l1', userId: 'u1', values: { name: 'Leite IL Desnatado', brand_preferred: true }, expectedPhotoPath: undefined },
+      expect.anything(),
+    );
+    // O item de antes com o nome do produto, salvo sem mexer na escolha: nada muda (continua com qualquer marca).
+    mockQueue.edit.mockClear();
+    await save(legacy, { name: 'Leite IL Desnatado', brandPreferred: false });
+    expect(mockQueue.edit).not.toHaveBeenCalled();
+    // Desligar a escolha que estava ligada.
+    await save({ ...legacy, brand_preferred: true }, { name: 'Leite desnatado', brandPreferred: false });
+    expect(mockQueue.edit).toHaveBeenCalledWith(
+      expect.objectContaining({ values: { name: 'Leite desnatado', brand_preferred: false } }),
+      expect.anything(),
+    );
   });
 });

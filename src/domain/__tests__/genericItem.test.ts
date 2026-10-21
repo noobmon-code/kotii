@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { brandChoice, genericItem, pendingSameItem, prefersBrand, sameListItem } from '../genericItem';
+import { brandChoice, genericItem, pendingSameItem, sameListItem, switchBrand } from '../genericItem';
 import { LinkIndex, matchListItems, type OpenListItem, type ReceiptLine } from '../listLinks';
 
 const generic = (name: string, category?: string) => genericItem(name, category).name;
@@ -125,12 +125,38 @@ describe('Marca preferida', () => {
     expect(brandChoice(null)).toBeNull();
   });
 
-  it('ligada é o nome do produto; desligada, o nome sem a marca', () => {
-    expect(prefersBrand({ name: 'Leite IL Desnatado' }, milk)).toBe(true);
-    expect(prefersBrand({ name: 'leite il desnatado ' }, milk)).toBe(true);
-    expect(prefersBrand({ name: 'Leite desnatado' }, milk)).toBe(false);
-    expect(prefersBrand({ name: 'Requeijão' }, { name: 'Requeijão', category: 'laticinios' })).toBe(false);
-    expect(prefersBrand({ name: 'Leite IL Desnatado' }, undefined)).toBe(false);
+  it('ligar põe o nome do produto; desligar volta o nome do item, ou o sem a marca', () => {
+    const choice = brandChoice(milk);
+    // Item sem marca: liga com o nome do produto e, desligando, volta ao nome que tinha.
+    expect(switchBrand({ on: false, name: 'Leite desnatado' }, 'Leite desnatado', choice)).toEqual({ on: true, name: 'Leite IL Desnatado' });
+    expect(switchBrand({ on: true, name: 'Leite IL Desnatado' }, 'Leite da vovó', choice)).toEqual({ on: false, name: 'Leite da vovó' });
+    // O item já tinha o nome do produto (ligada antes, ou um item de antes da lista sem marca): desliga sem a marca.
+    expect(switchBrand({ on: true, name: 'Leite IL Desnatado' }, 'leite il desnatado ', choice)).toEqual({ on: false, name: 'Leite desnatado' });
+    // Um item de antes, com o nome do produto e sem a escolha: ligar só liga (o nome já é o do produto).
+    expect(switchBrand({ on: false, name: 'Leite IL Desnatado' }, 'Leite IL Desnatado', choice)).toEqual({ on: true, name: 'Leite IL Desnatado' });
+    // O nome que a pessoa escreveu no campo fica.
+    expect(switchBrand({ on: true, name: 'Leite IL 1L' }, 'Leite IL Desnatado', choice)).toEqual({ on: false, name: 'Leite IL 1L' });
+    // Sem produto com marca (a escolha ficou de antes): só a escolha muda.
+    expect(switchBrand({ on: true, name: 'Leite IL Desnatado' }, 'Leite IL Desnatado', null)).toEqual({ on: false, name: 'Leite IL Desnatado' });
+  });
+
+  it('o item de antes com o nome de um produto, sem a escolha, casa com outra marca do mesmo item (#119)', () => {
+    const receipt: ReceiptLine[] = [
+      { id: 'r1', productId: 'p-italac', name: 'Leite Italac Desnatado', names: ['Leite Italac Desnatado', 'LEITE ITALAC DESN'], category: 'laticinios' },
+    ];
+    const legacy: OpenListItem = {
+      id: 'l1',
+      name: 'Leite IL Desnatado',
+      category: 'laticinios',
+      product_id: 'p-il',
+      checked_at: '2026-10-20T10:00:00Z',
+    };
+    expect(matchListItems([legacy], receipt, new LinkIndex())).toEqual([{ listItemId: 'l1', receiptItemId: 'r1', reason: 'item', checked: true }]);
+    expect(matchListItems([{ ...legacy, brand: false }], receipt, new LinkIndex())).toEqual([
+      { listItemId: 'l1', receiptItemId: 'r1', reason: 'item', checked: true },
+    ]);
+    // Com a escolha ligada, a outra marca não cumpre.
+    expect(matchListItems([{ ...legacy, brand: true }], receipt, new LinkIndex())).toEqual([]);
   });
 
   it('na nota, com a marca preferida só cumpre o mesmo produto ou o mesmo nome; sem ela, qualquer marca', () => {

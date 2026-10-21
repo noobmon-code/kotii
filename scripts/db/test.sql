@@ -10210,5 +10210,77 @@ begin
 end $$;
 delete from auth.users where id = :'user_d8';
 
+-- ---------------------------------------------------------------------------
+\echo '• "Marca preferida" no item da lista: só quem escolhe liga, e o que já estava (ou vem sem a coluna) fica sem'
+-- Bia (Casa da Bia) põe itens como o app de antes (sem a coluna), pelo "Acabou" (add_to_list) e liga a marca de
+-- um. Rui, de outra casa, não vê nem muda a escolha dela.
+\set user_bp1 '00000000-0000-0000-0000-0000000002a1'
+\set user_bp2 '00000000-0000-0000-0000-0000000002a2'
+insert into auth.users (id) values (:'user_bp1'), (:'user_bp2');
+do $$
+begin
+  assert (
+    select c.is_nullable = 'NO' and c.column_default = 'false' and c.data_type = 'boolean'
+    from information_schema.columns c
+    where c.table_schema = 'public' and c.table_name = 'shopping_list_items' and c.column_name = 'brand_preferred'
+  ), 'brand_preferred is a boolean, not null, false by default';
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_bp2', false) \gset
+select (public.create_household('Casa do Rui', 'Rui')).id as hh_bp2 \gset
+select set_config('request.jwt.claim.sub', :'user_bp1', false) \gset
+select (public.create_household('Casa da Bia', 'Bia')).id as hh_bp1 \gset
+insert into public.shopping_lists (name, kind) values ('Mercado', 'mercado') returning id as list_bp1 \gset
+select set_config('test.list_bp1', :'list_bp1', false) \gset
+do $$
+declare
+  list uuid := current_setting('test.list_bp1')::uuid;
+  legacy uuid;
+  pantry uuid;
+  chosen uuid;
+begin
+  -- O app de antes grava sem a coluna: o item com o nome do produto não vira escolha de marca.
+  insert into public.shopping_list_items (list_id, name, category) values (list, 'Leite IL Desnatado', 'laticinios')
+    returning id into legacy;
+  assert not (select brand_preferred from public.shopping_list_items where id = legacy), 'an item written without the column is not brand preferred';
+  select item_id into pantry from public.add_to_list(list, 'Ovo Doninho Caipira', 'ovos');
+  assert not (select brand_preferred from public.shopping_list_items where id = pantry), 'nor one put by add_to_list';
+  -- Ligar nos detalhes do item grava a escolha, e desligar a tira.
+  update public.shopping_list_items set brand_preferred = true where id = legacy;
+  assert (select brand_preferred from public.shopping_list_items where id = legacy), 'a member turns it on';
+  update public.shopping_list_items set brand_preferred = false where id = legacy;
+  assert not (select brand_preferred from public.shopping_list_items where id = legacy), 'and off';
+  insert into public.shopping_list_items (list_id, name, category, brand_preferred) values (list, 'Café Pilão', 'mercearia', true)
+    returning id into chosen;
+  assert (select brand_preferred from public.shopping_list_items where id = chosen), 'an item can be added with it on';
+  update public.shopping_list_items set brand_preferred = true where id = legacy;
+  begin
+    update public.shopping_list_items set brand_preferred = null where id = legacy;
+    raise exception 'FAIL: brand_preferred took a null';
+  exception when not_null_violation then null;
+  end;
+end $$;
+select set_config('request.jwt.claim.sub', :'user_bp2', false) \gset
+do $$
+declare
+  touched int;
+begin
+  assert not exists (select 1 from public.shopping_list_items where list_id = current_setting('test.list_bp1')::uuid),
+    'another house does not see the items';
+  update public.shopping_list_items set brand_preferred = false where list_id = current_setting('test.list_bp1')::uuid;
+  get diagnostics touched = row_count;
+  assert touched = 0, 'nor changes the brand choice';
+end $$;
+reset role;
+do $$
+begin
+  assert (
+    select count(*) filter (where brand_preferred) = 2 and count(*) = 3
+    from public.shopping_list_items where list_id = current_setting('test.list_bp1')::uuid
+  ), 'Bia''s choices stay as she left them';
+end $$;
+delete from public.households where id in (:'hh_bp1', :'hh_bp2');
+delete from auth.users where id in (:'user_bp1', :'user_bp2');
+
 \echo 'OK — todos os testes do banco passaram'
 

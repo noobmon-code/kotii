@@ -79,9 +79,10 @@ export interface OpenListItem {
   /** Quando foi para o carrinho (null ou ausente: ainda não foi). */
   checked_at?: string | null;
   /**
-   * "Marca preferida" (domain/genericItem, prefersBrand): a pessoa quer a marca do produto do item. Outra marca
-   * do mesmo item não cumpre, nem como sugestão: só o produto, a ligação, o mesmo nome ou um nome com todas as
-   * palavras dele (com a marca).
+   * "Marca preferida", ligada pela pessoa nos detalhes do item (brand_preferred): ela quer a marca do produto do
+   * item. Outra marca do mesmo item não cumpre, nem como sugestão: só o produto, a ligação, o mesmo nome ou um
+   * nome com todas as palavras dele (com a marca). Ausente ou false (o item de antes da escolha, mesmo com o nome
+   * de um produto): qualquer marca do mesmo item serve.
    */
   brand?: boolean;
 }

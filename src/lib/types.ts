@@ -106,6 +106,12 @@ export interface ShoppingListItem {
   /** Selo trocado a cada marcação: a marcação da fila só grava se o item não mudou. */
   toggle_token: string;
   created_at: string;
+  /**
+   * "Marca preferida", ligada pela pessoa nos detalhes do item: só o produto dele (ou o mesmo nome) tira o item da
+   * lista na nota. Ausente quando o banco ainda não tem a coluna (o app chegou antes da migração) ou o item veio
+   * de um cache de antes dela: aí nenhum item tem marca preferida e a escolha não aparece.
+   */
+  brand_preferred?: boolean;
 }
 
 export interface PantryItem {

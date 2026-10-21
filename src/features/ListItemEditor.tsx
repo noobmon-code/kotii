@@ -4,8 +4,7 @@ import { Modal, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { pickImages, type ScanSource } from '@/data/images';
-import type { BrandChoice } from '@/domain/genericItem';
-import { listNameKey } from '@/domain/listLinks';
+import { switchBrand, type BrandChoice } from '@/domain/genericItem';
 import { MAX_NOTES, PRIORITIES, type ListPriority } from '@/domain/listItem';
 import { formatQuantity, parseDecimal } from '@/domain/money';
 import { errorMessage } from '@/lib/supabase';
@@ -23,6 +22,8 @@ export interface ItemDetails {
   unit: Unit;
   notes: string | null;
   priority: ListPriority;
+  /** A "Marca preferida"; ausente quando os detalhes não a oferecem (o banco ainda não a guarda). */
+  brandPreferred?: boolean;
 }
 
 /**
@@ -49,7 +50,8 @@ export function ListItemEditor({
   facts?: (priority: ListPriority) => string[];
   /**
    * "Marca preferida": o produto do item tem marca para escolher (domain/genericItem, brandChoice). Ligada, o nome
-   * do item vira o do produto; desligada, o nome sem a marca. O estado é o próprio nome: não há coluna no banco.
+   * do item vira o do produto; desligada, o nome sem a marca. A escolha é guardada no item (brand_preferred); sem
+   * o campo (o banco ainda não tem a coluna), os detalhes não a oferecem.
    */
   brand?: BrandChoice | null;
   /** O item tem um produto, com ou sem preço: "Ver preços" leva à tela dele (quem chama fecha os detalhes). */
@@ -75,19 +77,23 @@ export function ListItemEditor({
   const qty = parseDecimal(quantity);
   const invalid = !name.trim() || !qty || qty <= 0;
   const shownFacts = facts?.(priority) ?? [];
-  const prefersBrand = brand != null && listNameKey(name) === listNameKey(brand.brandName);
+  const savedBrand = item.brand_preferred === true;
+  const [prefersBrand, setPrefersBrand] = useState(savedBrand);
+  // A escolha aparece com o banco que a guarda: com um produto com marca, ou já ligada (para dar para desligar).
+  const offersBrand = typeof item.brand_preferred === 'boolean' && (brand != null || savedBrand);
 
-  /** Liga a marca do produto, ou desliga: volta o nome que o item tinha (sem ser o da marca) ou o nome sem a marca. */
+  /** Liga a marca do produto (o nome vira o dele), ou desliga (volta o nome que o item tinha, ou o sem a marca). */
   function toggleBrand() {
-    if (!brand) return;
-    if (!prefersBrand) return setName(brand.brandName);
-    setName(listNameKey(item.name) === listNameKey(brand.brandName) ? brand.genericName : item.name);
+    const next = switchBrand({ on: prefersBrand, name }, item.name, brand ?? null);
+    setPrefersBrand(next.on);
+    setName(next.name);
   }
 
   /** "Ver preços" sai dos detalhes: com algo mudado e ainda não salvo, pergunta antes. */
   function seePrices() {
     const changed =
       name !== item.name ||
+      prefersBrand !== savedBrand ||
       quantity !== initialQuantity ||
       unit !== item.unit ||
       notes !== (item.notes ?? '') ||
@@ -192,15 +198,13 @@ export function ListItemEditor({
           />
 
           <TextField label="Nome" value={name} onChangeText={setName} />
-          {brand ? (
+          {offersBrand ? (
             <View style={styles.gap}>
               <View style={styles.wrap}>
                 <Chip label="Marca preferida" icon="star-outline" selected={prefersBrand} onPress={toggleBrand} />
               </View>
               <Text variant="small">
-                {prefersBrand
-                  ? `A lista pede ${brand.brandName}. Na nota, só esse produto tira o item da lista.`
-                  : `Qualquer marca serve. Ligue para pedir ${brand.brandName}.`}
+                {brandHint(prefersBrand, brand ?? null)}
               </Text>
             </View>
           ) : null}
@@ -220,7 +224,17 @@ export function ListItemEditor({
             icon="check"
             disabled={invalid}
             onPress={() =>
-              onSave({ name: name.trim(), quantity: qty!, unit, notes: notes.trim() || null, priority }, photo)
+              onSave(
+                {
+                  name: name.trim(),
+                  quantity: qty!,
+                  unit,
+                  notes: notes.trim() || null,
+                  priority,
+                  ...(offersBrand ? { brandPreferred: prefersBrand } : {}),
+                },
+                photo,
+              )
             }
           />
           <Button title="Remover da lista" variant="danger" icon="trash-can-outline" onPress={onRemove} />
@@ -228,6 +242,14 @@ export function ListItemEditor({
       </SafeAreaView>
     </Modal>
   );
+}
+
+/** O que a "Marca preferida" faz, ligada ou não; sem produto com marca, a escolha que ficou de antes. */
+function brandHint(on: boolean, brand: BrandChoice | null): string {
+  if (!brand) return on ? 'Na nota, só o mesmo produto tira o item da lista.' : 'Qualquer marca serve.';
+  return on
+    ? `A lista pede ${brand.brandName}. Na nota, só esse produto tira o item da lista.`
+    : `Qualquer marca serve. Ligue para pedir ${brand.brandName}.`;
 }
 
 const styles = StyleSheet.create({

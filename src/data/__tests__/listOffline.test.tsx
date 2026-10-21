@@ -14,6 +14,7 @@ import {
   useAddListItem,
   useClearCheckedItems,
   useEditListItem,
+  useOpenListItems,
   useRemoveListItem,
   useShoppingList,
   useShoppingLists,
@@ -724,5 +725,116 @@ describe('lista que nunca foi aberta neste aparelho', () => {
     });
     expect(seen.list?.data).toEqual({ id: 'l1', name: 'Mercado', kind: 'mercado', archived_at: null, created_at: '2026-10-19T12:00:00Z' });
     expect(seen.list?.isPending).toBe(false);
+  });
+});
+
+describe('"Marca preferida" antes e depois da migração', () => {
+  // O app pode chegar antes da coluna brand_preferred: a leitura cai em 42703 e a gravação em PGRST204.
+  const NO_COLUMN = { code: '42703', message: 'column shopping_list_items.brand_preferred does not exist' };
+  const NOT_IN_CACHE = { code: 'PGRST204', message: "Could not find the 'brand_preferred' column of 'shopping_list_items' in the schema cache" };
+
+  it('banco sem a coluna: os itens são lidos de novo com as colunas de antes e vêm sem a escolha', async () => {
+    onlineManager.setOnline(true);
+    const feira = [item('a', 'Leite IL Desnatado', { list_id: 'l2' })];
+    mockDb.lists = [{ id: 'l2', name: 'Feira', kind: 'mercado', archived_at: null, created_at: '2026-10-19T12:00:00Z', shopping_list_items: [] }];
+    mockDb.replies.push({ op: 'select', reply: { data: mockDb.lists, error: null } });
+    mockDb.replies.push({ op: 'select', reply: { data: null, error: NO_COLUMN } });
+    mockDb.items = feira;
+    const client = newClient();
+    function Probe() {
+      useShoppingLists();
+      return null;
+    }
+    await act(async () => {
+      renderers.push(create(<QueryClientProvider client={client}><Probe /></QueryClientProvider>));
+    });
+    await flush();
+    const itemReads = mockDb.reads.filter((r) => r.table === 'shopping_list_items').map((r) => r.columns);
+    expect(itemReads).toHaveLength(2);
+    expect(itemReads[0]).toContain('brand_preferred');
+    expect(itemReads[1]).not.toContain('brand_preferred');
+    expect(client.getQueryData<ShoppingListItem[]>(['listItems', 'l2'])?.map((i) => [i.name, i.brand_preferred])).toEqual([
+      ['Leite IL Desnatado', undefined],
+    ]);
+  });
+
+  it('a nota lê a escolha de cada item; sem a coluna, nenhum item tem marca preferida', async () => {
+    onlineManager.setOnline(true);
+    const row = (brand?: boolean) => ({
+      id: 'a',
+      list_id: 'l1',
+      name: 'Leite IL Desnatado',
+      category: 'laticinios',
+      product_id: 'il',
+      checked_at: null,
+      ...(brand === undefined ? {} : { brand_preferred: brand }),
+      list: { name: 'Mercado' },
+    });
+    const read = async () => {
+      const client = newClient();
+      const seen: { open?: ReturnType<typeof useOpenListItems> } = {};
+      function Probe() {
+        seen.open = useOpenListItems();
+        return null;
+      }
+      await act(async () => {
+        renderers.push(create(<QueryClientProvider client={client}><Probe /></QueryClientProvider>));
+      });
+      await flush();
+      return seen.open?.data;
+    };
+    mockDb.replies.push({ op: 'select', reply: { data: [row(true)], error: null } });
+    expect(await read()).toEqual([
+      { id: 'a', list_id: 'l1', name: 'Leite IL Desnatado', category: 'laticinios', product_id: 'il', checked_at: null, brand: true, list_name: 'Mercado' },
+    ]);
+    expect(mockDb.reads.at(-1)?.columns).toContain('brand_preferred');
+    mockDb.reads = [];
+    mockDb.replies.push({ op: 'select', reply: { data: null, error: NO_COLUMN } }, { op: 'select', reply: { data: [row()], error: null } });
+    expect((await read())?.map((i) => i.brand)).toEqual([false]);
+    expect(mockDb.reads.map((r) => r.columns.includes('brand_preferred'))).toEqual([true, false]);
+  });
+
+  it('a escolha editada num banco sem a coluna: o resto da edição grava, e a fila não desiste', async () => {
+    onlineManager.setOnline(true);
+    const client = newClient();
+    openList(client, [item('a', 'Leite desnatado', { brand_preferred: false })]);
+    const hooks = await listHooks(client);
+    const done = { onSuccess: jest.fn(), onError: jest.fn() };
+    mockDb.replies.push({ op: 'update', reply: { data: null, error: NOT_IN_CACHE } });
+    await act(async () => {
+      hooks().edit.mutate({ id: 'a', listId: 'l1', userId: 'u1', values: { name: 'Leite IL Desnatado', brand_preferred: true } }, done);
+    });
+    await flush();
+    expect(mockDb.sent.map((s) => s.values)).toEqual([{ name: 'Leite IL Desnatado', brand_preferred: true }, { name: 'Leite IL Desnatado' }]);
+    // Só a escolha: nada a gravar, e não conta como item que sumiu.
+    mockDb.sent = [];
+    mockDb.replies.push({ op: 'update', reply: { data: null, error: NOT_IN_CACHE } });
+    await act(async () => {
+      hooks().edit.mutate({ id: 'a', listId: 'l1', userId: 'u1', values: { brand_preferred: false } }, done);
+    });
+    await flush();
+    expect(mockDb.sent.map((s) => s.values)).toEqual([{ brand_preferred: false }]);
+    expect(done.onSuccess).toHaveBeenCalledTimes(2);
+    expect(done.onError).not.toHaveBeenCalled();
+  });
+
+  it('o item posto não manda a coluna (o banco põe false); a tela já o mostra sem a escolha quando a lista veio com ela', async () => {
+    const client = newClient();
+    openList(client, [item('a', 'Arroz', { brand_preferred: true })]);
+    const hooks = await listHooks(client);
+    await act(async () => hooks().add.add({ name: 'Leite desnatado', category: 'laticinios', productId: 'il', quantity: 1, unit: 'un' }, 'u1'));
+    const added = client.getQueryData<ShoppingListItem[]>(['listItems', 'l1'])!.find((i) => i.name === 'Leite desnatado')!;
+    expect(added.brand_preferred).toBe(false);
+    // A lista guardada por uma versão de antes (sem o campo): o item novo também vem sem ele.
+    openList(client, [item('a', 'Arroz')]);
+    await act(async () => hooks().add.add({ name: 'Café', category: 'mercearia', productId: null, quantity: 1, unit: 'un' }, 'u1'));
+    const cafe = client.getQueryData<ShoppingListItem[]>(['listItems', 'l1'])!.find((i) => i.name === 'Café')!;
+    expect(cafe).not.toHaveProperty('brand_preferred');
+    onlineManager.setOnline(true);
+    await act(async () => {
+      await client.resumePausedMutations();
+    });
+    await flush();
+    expect(mockDb.sent.filter((s) => s.op === 'insert').map((s) => 'brand_preferred' in (s.values ?? {}))).toEqual([false, false]);
   });
 });

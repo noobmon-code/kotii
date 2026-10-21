@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { isMissingFunction, isMissingTable } from '../missingSchema';
+import { isMissingColumn, isMissingFunction, isMissingTable } from '../missingSchema';
 
 // Como o PostgREST e o Postgres respondem quando a migração ainda não chegou ao banco.
 const tableNotInCache = { code: 'PGRST205', message: "Could not find the table 'public.product_distinct_pairs' in the schema cache" };
@@ -59,5 +59,32 @@ describe('isMissingFunction', () => {
     expect(isMissingFunction({ code: '42501', message: 'permission denied for function merge_products' }, 'merge_products')).toBe(false);
     expect(isMissingFunction(tableNotInCache)).toBe(false);
     expect(isMissingFunction(undefined)).toBe(false);
+  });
+});
+
+describe('isMissingColumn', () => {
+  const noColumn = { code: '42703', message: 'column shopping_list_items.brand_preferred does not exist' };
+  const columnNotInCache = {
+    code: 'PGRST204',
+    message: "Could not find the 'brand_preferred' column of 'shopping_list_items' in the schema cache",
+  };
+
+  it('reconhece a coluna que o banco ainda não tem, na leitura (Postgres) e na gravação (PostgREST)', () => {
+    expect(isMissingColumn(noColumn, 'brand_preferred')).toBe(true);
+    expect(isMissingColumn(columnNotInCache, 'brand_preferred')).toBe(true);
+  });
+
+  it('sem o código, pela mensagem que fala da coluna', () => {
+    expect(isMissingColumn(new Error(noColumn.message), 'brand_preferred')).toBe(true);
+    expect(isMissingColumn(new Error(columnNotInCache.message), 'brand_preferred')).toBe(true);
+  });
+
+  it('outra coluna que falte, ou outro erro com a coluna, é erro de verdade', () => {
+    expect(isMissingColumn({ code: '42703', message: 'column shopping_list_items.nome does not exist' }, 'brand_preferred')).toBe(false);
+    expect(
+      isMissingColumn({ code: '23502', message: 'null value in column "brand_preferred" of relation "shopping_list_items" violates not-null constraint' }, 'brand_preferred'),
+    ).toBe(false);
+    expect(isMissingColumn({ message: 'TypeError: Network request failed' }, 'brand_preferred')).toBe(false);
+    expect(isMissingColumn(null, 'brand_preferred')).toBe(false);
   });
 });

@@ -34,3 +34,17 @@ export function isMissingFunction(error: unknown, fn?: string): boolean {
   if (!fn) return code === '42883';
   return message.includes(fn) && (code === '42883' || /does not exist|could not find the function|schema cache/i.test(message));
 }
+
+/**
+ * A coluna ainda não existe no banco: numa leitura o Postgres responde 42703
+ * ("column shopping_list_items.brand_preferred does not exist") e, numa
+ * gravação, o PostgREST responde PGRST204 ("Could not find the
+ * 'brand_preferred' column of 'shopping_list_items' in the schema cache"). Só
+ * vale quando o erro fala dessa coluna: outra coluna que falte é erro de
+ * verdade (um nome errado no app, por exemplo).
+ */
+export function isMissingColumn(error: unknown, column: string): boolean {
+  const { code, message } = errorParts(error);
+  if (!message.includes(column)) return false;
+  return code === '42703' || code === 'PGRST204' || /does not exist|could not find the .* column|schema cache/i.test(message);
+}

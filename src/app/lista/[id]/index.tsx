@@ -541,6 +541,10 @@ export default function ShoppingListScreen() {
     if (details.unit !== item.unit) values.unit = details.unit;
     if (details.notes !== (item.notes ?? null)) values.notes = details.notes;
     if (details.priority !== (item.priority ?? 'normal')) values.priority = details.priority;
+    // "Marca preferida": só quando a pessoa mudou a escolha (os detalhes só a oferecem com o banco que a guarda).
+    if (details.brandPreferred !== undefined && details.brandPreferred !== (item.brand_preferred === true)) {
+      values.brand_preferred = details.brandPreferred;
+    }
     if (photo.kind !== 'keep') dropPendingPhotos(queryClient, item.id);
     // Tira só a foto que estava no item: a que outra pessoa puser antes de esta edição chegar ao servidor fica.
     const expectedPhotoPath = photo.kind === 'remove' && item.photo_path ? item.photo_path : undefined;

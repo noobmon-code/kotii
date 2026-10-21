@@ -148,8 +148,14 @@ export interface QueuedNewItem {
   unit: Unit;
 }
 
-export function queuedListItem(item: QueuedNewItem, createdAt: string): ShoppingListItem {
+/**
+ * `brandColumn`: os itens que a tela já tem vieram com a "Marca preferida" (o banco tem a coluna). O item novo
+ * entra sem ela, como o banco o põe (o pôr não manda a coluna); sem saber se o banco a tem, o item vem sem o campo
+ * e a escolha aparece quando a lista voltar do servidor.
+ */
+export function queuedListItem(item: QueuedNewItem, createdAt: string, brandColumn = false): ShoppingListItem {
   return {
+    ...(brandColumn ? { brand_preferred: false } : {}),
     id: item.id,
     list_id: item.listId,
     product_id: item.productId,

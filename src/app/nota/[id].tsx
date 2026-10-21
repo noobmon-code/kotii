@@ -34,7 +34,6 @@ import { joinNames, receiptPantryRepeats } from '@/domain/cartPantry';
 import { CATEGORIES, getCategory } from '@/domain/categories';
 import { COMMON_ITEMS } from '@/domain/commonItems';
 import { formatBRDate, formatShortDate, parseBRDate, toISODate } from '@/domain/dates';
-import { prefersBrand } from '@/domain/genericItem';
 import {
   applyListChoices,
   forgottenLinks,
@@ -297,11 +296,9 @@ export default function ReceiptScreen() {
       category: resolved.category,
     };
   });
-  // "Marca preferida": o item com o nome do produto (com a marca) só sai com esse produto ou com o mesmo nome; o item
-  // sem a marca sai com qualquer marca (domain/genericItem).
-  const listItems = isDraft
-    ? (openList.data ?? []).map((item) => ({ ...item, brand: prefersBrand(item, item.product_id ? catalog.get(item.product_id) : null) }))
-    : [];
+  // O item com "Marca preferida" (`brand`, a escolha guardada no item) só sai com o produto dele ou com o mesmo nome;
+  // os outros, com qualquer marca do mesmo item, também os de antes que têm o nome de um produto.
+  const listItems = isDraft ? (openList.data ?? []) : [];
   // A confirmação tira itens da lista e aprende ligações: só com as duas
   // carregadas e atualizadas (o que estava guardado pode ter mudado em outro
   // aparelho; o banco ainda confere o nome de cada item antes de tirar).
