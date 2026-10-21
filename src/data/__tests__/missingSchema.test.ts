@@ -63,28 +63,47 @@ describe('isMissingFunction', () => {
 });
 
 describe('isMissingColumn', () => {
-  const noColumn = { code: '42703', message: 'column shopping_list_items.brand_preferred does not exist' };
-  const columnNotInCache = {
+  // A "Marca preferida" da lista (brand_preferred) e o item genérico da leitura por foto (generic_name).
+  const noBrand = { code: '42703', message: 'column shopping_list_items.brand_preferred does not exist' };
+  const brandNotInCache = {
     code: 'PGRST204',
     message: "Could not find the 'brand_preferred' column of 'shopping_list_items' in the schema cache",
   };
+  const noGeneric = { code: '42703', message: 'column receipt_items.generic_name does not exist' };
+  const genericNotInCache = { code: 'PGRST204', message: "Could not find the 'generic_name' column of 'receipt_items' in the schema cache" };
 
   it('reconhece a coluna que o banco ainda não tem, na leitura (Postgres) e na gravação (PostgREST)', () => {
-    expect(isMissingColumn(noColumn, 'brand_preferred')).toBe(true);
-    expect(isMissingColumn(columnNotInCache, 'brand_preferred')).toBe(true);
+    expect(isMissingColumn(noBrand, 'brand_preferred')).toBe(true);
+    expect(isMissingColumn(brandNotInCache, 'brand_preferred')).toBe(true);
+    expect(isMissingColumn(noGeneric, 'generic_name')).toBe(true);
+    expect(isMissingColumn(genericNotInCache, 'generic_name')).toBe(true);
   });
 
   it('sem o código, pela mensagem que fala da coluna', () => {
-    expect(isMissingColumn(new Error(noColumn.message), 'brand_preferred')).toBe(true);
-    expect(isMissingColumn(new Error(columnNotInCache.message), 'brand_preferred')).toBe(true);
+    expect(isMissingColumn(new Error(noBrand.message), 'brand_preferred')).toBe(true);
+    expect(isMissingColumn(new Error(brandNotInCache.message), 'brand_preferred')).toBe(true);
+    expect(isMissingColumn(new Error(genericNotInCache.message), 'generic_name')).toBe(true);
   });
 
-  it('outra coluna que falte, ou outro erro com a coluna, é erro de verdade', () => {
+  it('só a coluna pedida: outra que falte é erro de verdade', () => {
     expect(isMissingColumn({ code: '42703', message: 'column shopping_list_items.nome does not exist' }, 'brand_preferred')).toBe(false);
+    expect(isMissingColumn({ code: '42703', message: 'column receipt_items.suggested_name does not exist' }, 'generic_name')).toBe(false);
+    expect(isMissingColumn(noGeneric, 'stock_count')).toBe(false);
+    expect(isMissingColumn(noBrand, 'generic_name')).toBe(false);
+    // Uma coluna cujo nome contém o pedido não é ele.
+    expect(isMissingColumn({ code: '42703', message: 'column receipt_items.generic_name_v2 does not exist' }, 'generic_name')).toBe(false);
+    // O cache sem a tabela não é a coluna faltando.
+    expect(isMissingColumn({ message: "Could not find the table 'public.generic_name' in the schema cache" }, 'generic_name')).toBe(false);
+  });
+
+  it('outros erros com a coluna não são coluna faltando', () => {
     expect(
       isMissingColumn({ code: '23502', message: 'null value in column "brand_preferred" of relation "shopping_list_items" violates not-null constraint' }, 'brand_preferred'),
     ).toBe(false);
+    expect(isMissingColumn({ code: '23514', message: 'new row violates check constraint "receipt_items_generic_name_check"' }, 'generic_name')).toBe(
+      false,
+    );
     expect(isMissingColumn({ message: 'TypeError: Network request failed' }, 'brand_preferred')).toBe(false);
-    expect(isMissingColumn(null, 'brand_preferred')).toBe(false);
+    expect(isMissingColumn(null, 'generic_name')).toBe(false);
   });
 });

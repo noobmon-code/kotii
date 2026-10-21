@@ -9,7 +9,7 @@
 // pelo carrinho e pela nota, em domain/cartPantry).
 
 import { categoryGroup, isHouseArt, ITEM_ART_EXCEPTIONS, ITEM_ART_RULES } from './itemArt';
-import { compileTerms, firstMention, firstProductTerm, termRegex, termText } from './itemTerms';
+import { compileTerms, firstMention, firstProductTerm, productTerms, termRegex, termText } from './itemTerms';
 import { LOOSE_UNITS, OTHER_THING, PACKAGING, singular } from './nameWords';
 import { packageSize, samePackageSize } from './packageSize';
 
@@ -56,6 +56,9 @@ const SPELLED_OUT: readonly (readonly [string, string])[] = [
   ['agua sanit', 'agua sanitaria'],
   ['esc dental', 'escova dental'],
   ['esc dent', 'escova dental'],
+  ['esp barb', 'espuma de barbear'],
+  ['espuma barb', 'espuma de barbear'],
+  ['gel barb', 'gel de barbear'],
   ['liq', 'liquido'],
   ['det', 'detergente'],
   ['deterg', 'detergente'],
@@ -252,7 +255,13 @@ const LAST: readonly Def[] = [
   ['torrada', ['torrada']],
   ['guardanapo', ['guardanapo'], 'casa'],
   ['luva', ['luva'], 'casa'],
-  ['barbear', ['aparelho de barbear', 'barbeador', 'lamina de barbear'], 'casa'],
+  // Antes do aparelho: a espuma e o pós-barba não são a lâmina ("ESPUMA DE BARBEAR GILETE").
+  ['espuma_barbear', ['espuma de barbear', 'gel de barbear', 'creme de barbear'], 'casa'],
+  ['pos_barba', ['pos barba', 'pos barbear'], 'casa'],
+  // "Gilete" (assim, com um L) é o nome comum da lâmina, o que a lista diz; o "GILLETTE" da nota é a marca, que
+  // também faz espuma e desodorante, e fica para o item genérico da leitura por foto. Com outro produto de barbear
+  // no nome ("ESPUMA GILETE", "Gel gilete"), "gilete" é a marca (GILETE_IS_BRAND, em identify).
+  ['barbear', ['aparelho de barbear', 'barbeador', 'lamina de barbear', 'gilete'], 'casa'],
   ['limpador', ['limpador', 'multiuso'], 'casa'],
   ['desinfetante', ['desinfetante'], 'casa'],
   ['absorvente', ['absorvente', 'protetor diario'], 'casa'],
@@ -597,6 +606,23 @@ function fitsGroup(key: string, category: string | null | undefined): boolean {
   return group === 'pet' ? category === 'pet' : of === group;
 }
 
+// Com uma destas palavras no nome, "gilete" é a marca de outro produto (espuma, gel, pós-barba, desodorante), não a
+// lâmina: vale o próximo item do nome, se houver.
+const GILETE_IS_BRAND = new Set([
+  'espuma', 'esp', 'gel', 'creme', 'cr', 'pos', 'locao', 'balm', 'desodorante', 'antitranspirante', 'aero', 'aerosol',
+  'spray', 'roll',
+]);
+
+/** O nome diz outro produto de barbear ou o desodorante: aí "gilete" é marca. */
+const giletIsBrand = (text: string) => text.split(' ').some((word) => GILETE_IS_BRAND.has(word));
+
+/** O termo que diz o item do nome, sem o "gilete" que ali é marca. */
+function itemTerm(text: string) {
+  const first = firstProductTerm(COMPILED, text);
+  if (first?.term !== 'gilete' || !giletIsBrand(text)) return first;
+  return productTerms(COMPILED, text).find((hit) => hit.term !== 'gilete') ?? null;
+}
+
 /**
  * O item de um nome e onde ele está escrito: as palavras do texto (de
  * spelledOut) que dizem o item e os tipos dele. É o que o nome genérico da
@@ -610,6 +636,11 @@ export interface ItemReading {
   kept: ReadonlySet<number>;
   /** A primeira e a última palavra do termo do item. */
   term: readonly [first: number, last: number];
+  /**
+   * As palavras que o nome usa como marca, mesmo sendo o nome de um item: o "gilete" da "Espuma de barbear
+   * Gilete" (GILETE_IS_BRAND). Quem tira a marca do nome não as lê como outro item.
+   */
+  brand: ReadonlySet<number>;
 }
 
 /** As palavras do texto, com onde cada uma começa e termina. */
@@ -620,7 +651,7 @@ function wordSpans(text: string): { word: string; start: number; end: number }[]
 function identify(name: string, category: string | null | undefined): ItemReading | null {
   const text = spelledOut(name);
   if (!text) return null;
-  const first = firstProductTerm(COMPILED, text);
+  const first = itemTerm(text);
   if (!first) return null;
   let key: string = first.key;
   let family = FAMILY_OF.get(key) ?? null;
@@ -658,11 +689,15 @@ function identify(name: string, category: string | null | undefined): ItemReadin
   const touches = (word: { start: number; end: number }, [start, end]: [number, number]) => word.start < end && word.end > start;
   const kept = new Set(words.flatMap((word, at) => (spans.some((span) => touches(word, span)) ? [at] : [])));
   const termWords = words.flatMap((word, at) => (touches(word, spans[0]) ? [at] : []));
+  const brand = new Set(
+    giletIsBrand(text) ? words.flatMap(({ word }, at) => (!kept.has(at) && singular(word) === 'gilete' ? [at] : [])) : [],
+  );
   return {
     identity: { key, family, kinds, size: packageSize(name) },
     words: words.map(({ word }) => word),
     kept,
     term: [termWords[0], termWords[termWords.length - 1]],
+    brand,
   };
 }
 
@@ -768,10 +803,22 @@ function identityFit(wanted: ItemIdentity, found: ItemIdentity, weighed: boolean
  * desnatado): na dúvida, não junta. A versão que a lista pede ("Coca zero",
  * "Leite sem lactose") precisa estar em algum dos nomes: com todos calados,
  * é a comum, outra coisa.
+ *
+ * `generic` é o item que a IA disse da linha na leitura por foto ("aparelho
+ * de barbear" para "GILLETTE APARELHO"). Ele só diz o item quando nenhum dos
+ * nomes diz e o texto da nota, lido como o item da lista, não diz outra coisa
+ * ("BAT DOCE KG" com o genérico "batata" continua não sendo a batata). Quando
+ * algum nome já diz o item, o genérico só pode dizer que é outra coisa: não
+ * acrescenta a versão que a nota calou ("LEITE UHT PARMALAT 1L" com
+ * "leite desnatado" continua calado) nem tira o tipo ou o corte que ela diz.
+ * Quando só ele diz o item, o tipo ou a versão que a lista pede e só ele diz
+ * ("ITALAC 1L" com "leite desnatado") faz da linha no máximo `talvez`: uma
+ * sugestão, nunca marcada sozinha; o genérico que só diz o item ("leite")
+ * vale inteiro.
  */
 export function sameItemFit(
   wanted: { name: string; category?: string | null },
-  found: { names: readonly string[]; category?: string | null },
+  found: { names: readonly string[]; generic?: string | null; category?: string | null },
 ): ItemFit | null {
   const want = itemIdentity(wanted.name, wanted.category);
   if (!want) return null;
@@ -786,8 +833,26 @@ export function sameItemFit(
     if (fit === 'mesmo' || best == null) best = fit;
     if (!silentOnStrict(want, have)) stated = true;
   }
+  const generic = found.generic?.trim() ? itemIdentity(found.generic, found.category) : null;
+  if (generic) {
+    const fit = identityFit(want, generic, weighed);
+    if (fit === 'outro') return 'outro';
+    if (best == null) {
+      if (readsAsOther(wanted, found.names)) return 'outro';
+      best = fit;
+      if (!silentOnStrict(want, generic)) stated = true;
+      // O tipo ou a versão que a lista pede e só o genérico diz ("ITALAC 1L" com "leite desnatado" ou "ITALAC ZL 1L"
+      // com "leite sem lactose"): a nota não diz, então pode ser, mas não com certeza. Fica como sugestão, nunca
+      // marcada sozinha. O texto da nota que diz o tipo sem dizer o item ("ITALAC ZERO LAC") vale.
+      if (best === 'mesmo' && !found.names.some((name) => printedKindsFit(want, name))) best = 'talvez';
+    }
+  }
   return best != null && !stated ? 'outro' : best;
 }
+
+/** O nome da nota, lido como o item da lista, diz os tipos que ela pede (ou o que a nota calada quer dizer, o café em pó)? */
+const printedKindsFit = (want: ItemIdentity, name: string) =>
+  kindsFit(want, { ...want, kinds: readKinds(spelledOut(name), want.key, want.family) }) === 'mesmo';
 
 /**
  * Uma linha da nota que o app não sabe que item é ("SAB LIQ OMO 3L", "BAT

@@ -40,6 +40,7 @@ import {
   LinkIndex,
   listRemovals,
   matchListItems,
+  receiptLineNames,
   type ListChoice,
   type ReceiptLine,
 } from '@/domain/listLinks';
@@ -292,7 +293,12 @@ export default function ReceiptScreen() {
       id: item.id,
       productId: resolved.product.kind === 'existing' ? resolved.product.productId : null,
       name: resolved.productName,
-      names: [resolved.productName, item.suggested_name, item.raw_description].filter((n): n is string => Boolean(n)),
+      names: receiptLineNames({
+        productName: resolved.productName,
+        suggestedName: item.suggested_name,
+        rawDescription: item.raw_description,
+      }),
+      generic: item.generic_name,
       category: resolved.category,
     };
   });

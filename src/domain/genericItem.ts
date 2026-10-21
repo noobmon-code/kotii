@@ -168,7 +168,9 @@ function readGeneric(name: string, category: string | null | undefined): Generic
   for (const [at, word] of words.entries()) {
     if (keep.has(at) || /\d/.test(word) || GAP_WORDS.has(word)) continue;
     const otherThing = (OTHER_THING.has(word) || OTHER_THING.has(singular(word))) && !isItemKindWord(word, identity);
-    if (otherThing || NEVER_DROP.has(word) || NEVER_DROP.has(singular(word)) || readItem(word, category)) return byName(name);
+    // A palavra que o nome usa como marca sai, mesmo sendo o nome de um item (o "gilete" da espuma de barbear).
+    const otherItem = !reading.brand.has(at) && readItem(word, category);
+    if (otherThing || NEVER_DROP.has(word) || NEVER_DROP.has(singular(word)) || otherItem) return byName(name);
     if (!PACKAGING.has(word) && !LOOSE_UNITS.has(word)) branded = true;
   }
   const key = identityKey(identity, extra);

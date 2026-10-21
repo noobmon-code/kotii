@@ -64,6 +64,11 @@ export interface ReceiptItem {
   unit: Unit;
   unit_price: number;
   total_price: number;
+  /**
+   * O item sem marca nem tamanho que a IA leu na foto ("café em pó"), só para casar com a lista. Ausente no
+   * banco de antes da coluna; null na nota do QR, na manual e na leitura que não soube dizer.
+   */
+  generic_name?: string | null;
 }
 
 export interface LatestPrice {

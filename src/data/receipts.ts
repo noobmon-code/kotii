@@ -1,6 +1,6 @@
 // Notas fiscais: leitura por foto (IA), revisão e confirmação.
 
-import { FunctionsHttpError } from '@supabase/supabase-js';
+import { FunctionsHttpError, type SupabaseClient } from '@supabase/supabase-js';
 import { type QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { nfceItemsToDraft, nfceReceiptRow, type NfceItem, type NfceQr } from '@/domain/nfce';
@@ -18,13 +18,15 @@ import {
   uploadImages,
   type ScanSource,
 } from './images';
+import { isMissingColumn } from './missingSchema';
 import { withFreshProducts } from './productMerge';
 import { readAll } from './readAll';
 
 const RECEIPT_COLUMNS =
   'id, store_id, purchased_at, total, access_key, image_path, extra_image_paths, source, status, created_at, paid_by, store:stores(id, name)';
-const ITEM_COLUMNS =
+const ITEM_COLUMNS_BEFORE_GENERIC =
   'id, receipt_id, position, raw_description, suggested_name, suggested_category, product_id, quantity, unit, unit_price, total_price';
+const ITEM_COLUMNS = `${ITEM_COLUMNS_BEFORE_GENERIC}, generic_name`;
 
 /** Uma nota da lista de Finanças > Notas: com quantos itens ela tem. */
 export type ReceiptListRow = Receipt & { receipt_items: { count: number }[] };
@@ -111,6 +113,17 @@ export function useReceiptHistory() {
   });
 }
 
+/**
+ * Os itens da nota, na ordem impressa, com o item genérico da leitura por foto (generic_name). Com o banco de
+ * antes da coluna (o app publicado antes da migração), lê de novo sem ela: a revisão fica como era.
+ */
+export async function fetchReceiptItems(receiptId: string, db: SupabaseClient = supabase): Promise<ReceiptItem[]> {
+  const read = (columns: string) => db.from('receipt_items').select(columns).eq('receipt_id', receiptId).order('position');
+  const first = await read(ITEM_COLUMNS);
+  const answer = isMissingColumn(first.error, 'generic_name') ? await read(ITEM_COLUMNS_BEFORE_GENERIC) : first;
+  return unwrap(answer) as unknown as ReceiptItem[];
+}
+
 export function useReceipt(id: string) {
   return useQuery({
     queryKey: ['receipt', id],
@@ -118,9 +131,7 @@ export function useReceipt(id: string) {
       const receipt = unwrap(
         await supabase.from('receipts').select(RECEIPT_COLUMNS).eq('id', id).single(),
       ) as unknown as Receipt;
-      const items = unwrap(
-        await supabase.from('receipt_items').select(ITEM_COLUMNS).eq('receipt_id', id).order('position'),
-      ) as ReceiptItem[];
+      const items = await fetchReceiptItems(id);
       return { receipt, items };
     },
   });

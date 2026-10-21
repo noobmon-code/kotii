@@ -1,4 +1,6 @@
+import { betaZodOutputFormat } from '@anthropic-ai/sdk/helpers/beta/zod';
 import { assertEquals } from '@std/assert';
+import { z } from 'zod';
 
 import { extractStructured, type VisionConfig } from '../_shared/vision.ts';
 import {
@@ -7,10 +9,14 @@ import {
   cleanReceipt,
   type ExtractedReceipt,
   ExtractedReceiptSchema,
+  genericName,
   imagePathsError,
+  insertItems,
   instructions,
+  MAX_GENERIC_NAME,
   MAX_PHOTOS,
   MAX_TOTAL_IMAGE_BYTES,
+  missingGenericColumn,
   promptCatalog,
   sameStoreName,
   SYSTEM,
@@ -33,6 +39,7 @@ const base: ExtractedReceipt = {
     {
       raw_description: 'ARROZ T.JOAO 5KG',
       normalized_name: 'Arroz Tio João 5kg',
+      generic_name: 'arroz',
       category: 'graos',
       quantity: 1,
       unit: 'un',
@@ -43,6 +50,7 @@ const base: ExtractedReceipt = {
     {
       raw_description: 'BANANA PRATA',
       normalized_name: 'Banana prata',
+      generic_name: 'banana prata',
       category: 'hortifruti',
       quantity: 0.535,
       unit: 'kg',
@@ -53,6 +61,7 @@ const base: ExtractedReceipt = {
     {
       raw_description: '   ',
       normalized_name: '',
+      generic_name: null,
       category: 'outros',
       quantity: 1,
       unit: 'un',
@@ -95,6 +104,7 @@ Deno.test('drops invalid identifiers and unknown product ids', () => {
 const line = (over: Partial<ExtractedReceipt['items'][number]>): ExtractedReceipt['items'][number] => ({
   raw_description: 'LEITE ITALAC 1L',
   normalized_name: 'Leite Italac 1L',
+  generic_name: 'leite',
   category: 'laticinios',
   quantity: 1,
   unit: 'un',
@@ -313,4 +323,139 @@ Deno.test('sameStoreName: mesmo nome sem caixa nem espaços; curingas são texto
   assertEquals(sameStoreName('*', 'Mercado Bom'), false);
   assertEquals(sameStoreName('%', 'Mercado Bom'), false);
   assertEquals(sameStoreName('M_rcado', 'Mercado'), false);
+});
+
+Deno.test('item genérico: o schema aceita o texto e null; o modelo que o esquece ou manda outra coisa não derruba a nota', () => {
+  const items = (generic: unknown) => ({ ...base, items: [{ ...line({}), generic_name: generic }] });
+  const parsed = (generic: unknown) => {
+    const result = ExtractedReceiptSchema.safeParse(items(generic));
+    return result.success ? result.data.items[0].generic_name : 'falhou';
+  };
+  assertEquals(parsed('café em pó'), 'café em pó');
+  assertEquals(parsed(null), null);
+  assertEquals(parsed(42), null);
+  const { generic_name: _generic, ...withoutGeneric } = line({});
+  assertEquals(ExtractedReceiptSchema.safeParse({ ...base, items: [withoutGeneric] }).success, true);
+  assertEquals(ExtractedReceiptSchema.parse({ ...base, items: [withoutGeneric] }).items[0].generic_name, null);
+});
+
+Deno.test('item genérico: limpo para o banco (espaços, minúsculas, tamanho), e fora da leitura do servidor', () => {
+  assertEquals(genericName('  Café   em Pó '), 'café em pó');
+  assertEquals(genericName('PAPEL HIGIÊNICO'), 'papel higiênico');
+  assertEquals(genericName('   '), null);
+  assertEquals(genericName(null), null);
+  assertEquals(genericName(undefined), null);
+  // A descrição inteira repetida (com marca e tamanho) não é um genérico: fica de fora em vez de ser cortada.
+  assertEquals(genericName('a'.repeat(MAX_GENERIC_NAME)), 'a'.repeat(MAX_GENERIC_NAME));
+  assertEquals(genericName('a'.repeat(MAX_GENERIC_NAME + 1)), null);
+
+  const r = cleanReceipt(
+    {
+      ...base,
+      items: [
+        line({ raw_description: 'CAF TORR MOIDO 3COR 500G', generic_name: ' Café em  pó ', unit_price: 18.9, total_price: 18.9 }),
+        line({ raw_description: 'GILLETTE APARELHO', generic_name: 'Aparelho de barbear' }),
+        line({ raw_description: 'PASTILHA MENTOS', generic_name: null }),
+        line({ raw_description: 'COISA', generic_name: '' }),
+      ],
+    },
+    new Set(),
+    new Map(),
+  );
+  assertEquals(r.items.map((i) => [i.raw_description, i.generic_name]), [
+    ['CAF TORR MOIDO 3COR 500G', 'café em pó'],
+    ['GILLETTE APARELHO', 'aparelho de barbear'],
+    ['PASTILHA MENTOS', null],
+    ['COISA', null],
+  ]);
+  // A leitura do servidor (que pode ir para os preços compartilhados) continua só com descrição, unidade e preço.
+  assertEquals(r.readLines.every((l) => Object.keys(l).sort().join() === 'description,unit,unit_price'), true);
+});
+
+Deno.test('instructions: o item genérico tem exemplos, não acrescenta o tipo que a nota não diz e não leva a lista de compras', () => {
+  const text = instructions([{ id: 'p1', name: 'Café Pilão 500g' }]);
+  assertEquals(text.includes('- generic_name: o item como alguém escreveria na lista de compras'), true);
+  assertEquals(text.includes('"CAF TORR MOIDO 3COR 500G" -> "café em pó"'), true);
+  assertEquals(text.includes('"GILLETTE MACH3 APARELHO" -> "aparelho de barbear"'), true);
+  assertEquals(text.includes('"LEITE UHT PARMALAT 1L" -> "leite" (a nota não diz se é integral ou desnatado: não acrescente)'), true);
+  assertEquals(text.includes('Não dá para saber o que é: null.'), true);
+  // O que vai para a IA é o de antes: as imagens e o catálogo da casa (nada da lista de compras).
+  assertEquals(/lista de compras da casa|itens da lista/i.test(text), false);
+  assertEquals(text.endsWith('Produtos já cadastrados (id | nome):\np1 | Café Pilão 500g'), true);
+});
+
+Deno.test('item genérico pela OpenRouter: vai no schema pedido, como campo obrigatório que aceita null', async () => {
+  const answer = { ...base, items: [line({ generic_name: 'leite' }), line({ raw_description: 'ARROZ 5KG', generic_name: null })] };
+  let sent: { response_format: { json_schema: { schema: { properties: { items: { items: { required: string[]; properties: Record<string, unknown> } } } } } } } | null =
+    null;
+  const fetchImpl = ((_url: string, init: RequestInit) => {
+    sent = JSON.parse(String(init.body));
+    return Promise.resolve(new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(answer) } }] })));
+  }) as typeof fetch;
+  const config: VisionConfig = { provider: 'openrouter', model: 'deepseek/deepseek-v4.1-flash', modelEnv: 'RECEIPT_MODEL', apiKey: 'k' };
+  const extracted = await extractStructured({
+    config,
+    schema: ExtractedReceiptSchema,
+    schemaName: 'receipt',
+    system: SYSTEM,
+    prompt: instructions([]),
+    images: [{ base64: 'AAAA', mediaType: 'image/jpeg' }],
+    subject: 'a nota',
+    fetchImpl,
+  });
+  const itemSchema = sent!.response_format.json_schema.schema.properties.items.items;
+  assertEquals(itemSchema.required.includes('generic_name'), true);
+  assertEquals(itemSchema.properties.generic_name, { type: ['string', 'null'] });
+  // Saída estrita (strict: true) recusa "default" ("'default' is not permitted"): o schema enviado não tem nenhum.
+  assertEquals(JSON.stringify(sent!.response_format.json_schema.schema).includes('"default"'), false);
+  assertEquals(JSON.stringify(z.toJSONSchema(ExtractedReceiptSchema)).includes('"default"'), false);
+  // Pela Anthropic, o campo vai sem descrição inventada (um "{default: null}" puxaria o modelo para o null).
+  const anthropicItem = (betaZodOutputFormat(ExtractedReceiptSchema).schema as unknown as { properties: { items: { items: { properties: Record<string, unknown> } } } })
+    .properties.items.items;
+  assertEquals(anthropicItem.properties.generic_name, { type: ['string', 'null'] });
+  assertEquals(cleanReceipt(extracted, new Set(), new Map()).items.map((i) => i.generic_name), ['leite', null]);
+});
+
+Deno.test('insertItems: grava com o item genérico; sem a coluna no banco, grava de novo sem ele', async () => {
+  const rows = [
+    { raw_description: 'CAF TORR MOIDO', generic_name: 'café em pó', receipt_id: 'r1' },
+    { raw_description: 'PASTILHA', generic_name: null, receipt_id: 'r1' },
+  ];
+  // O banco com a coluna: uma gravação, com o genérico de cada linha.
+  const written: unknown[][] = [];
+  const ok = await insertItems((batch) => {
+    written.push(batch);
+    return Promise.resolve({ error: null });
+  }, rows);
+  assertEquals(ok.error, null);
+  assertEquals(written, [rows]);
+
+  // O banco de antes da migração: o PostgREST recusa a coluna que não conhece; a segunda vai sem ela.
+  for (const missing of [
+    { code: 'PGRST204', message: "Could not find the 'generic_name' column of 'receipt_items' in the schema cache" },
+    { code: '42703', message: 'column "generic_name" of relation "receipt_items" does not exist' },
+  ]) {
+    const tries: unknown[][] = [];
+    const retried = await insertItems((batch) => {
+      tries.push(batch);
+      return Promise.resolve({ error: tries.length === 1 ? missing : null });
+    }, rows);
+    assertEquals(retried.error, null);
+    assertEquals(tries, [rows, [{ raw_description: 'CAF TORR MOIDO', receipt_id: 'r1' }, { raw_description: 'PASTILHA', receipt_id: 'r1' }]]);
+  }
+
+  // Outro erro (o check de tamanho, a RLS, outra coluna) volta como veio, sem segunda gravação.
+  for (const other of [
+    { code: '23514', message: 'new row for relation "receipt_items" violates check constraint "receipt_items_generic_name_check"' },
+    { code: 'PGRST204', message: "Could not find the 'suggested_name' column of 'receipt_items' in the schema cache" },
+    { code: '42501', message: 'new row violates row-level security policy for table "receipt_items"' },
+  ]) {
+    let calls = 0;
+    const failed = await insertItems(() => {
+      calls++;
+      return Promise.resolve({ error: other });
+    }, rows);
+    assertEquals([failed.error, calls], [other, 1]);
+  }
+  assertEquals(missingGenericColumn(null), false);
 });

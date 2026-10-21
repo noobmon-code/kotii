@@ -18,6 +18,10 @@ export const ExtractedReceiptSchema = z.object({
     z.object({
       raw_description: z.string(),
       normalized_name: z.string(),
+      // O item sem marca nem tamanho ("café em pó"), só para casar com a lista de compras. Pedido no schema, mas um
+      // modelo que o esquece (ou manda outra coisa) não derruba a nota: vale null. A tolerância fica só na leitura
+      // (preprocess): um .catch() viraria "default" no schema enviado, que a saída estrita de alguns provedores recusa.
+      generic_name: z.preprocess((value) => (typeof value === 'string' ? value : null), z.string().nullable()),
       category: z.enum(CATEGORY_KEYS),
       // Número ilegível vem null, nos dois provedores: exigir número derrubava a
       // nota inteira (OpenRouter) ou fazia o modelo inventar um (saída estrita).
@@ -127,6 +131,7 @@ ${parts}
 - Item cancelado fica de fora, junto com a linha que o cancela (cancelamento, estorno). Nenhum item tem valor negativo.
 - raw_description: a descrição exatamente como impressa.
 - normalized_name: nome legível em português com marca e tamanho quando houver. Ex.: "ARROZ T.JOAO TP1 5KG" -> "Arroz Tio João Tipo 1 5kg".
+- generic_name: o item como alguém escreveria na lista de compras, em português e em minúsculas, sem marca, tamanho nem embalagem, com o tipo, o sabor ou o corte só quando a nota diz. Ex.: "CAF TORR MOIDO 3COR 500G" -> "café em pó"; "PAP HIG NEVE FD 12X30M" -> "papel higiênico"; "GILLETTE MACH3 APARELHO" -> "aparelho de barbear"; "NESCAU 2.0 400G" -> "achocolatado em pó"; "VEJA MULTIUSO 500ML" -> "limpador multiuso"; "LTE UHT ITALAC DESN 1L" -> "leite desnatado"; "LEITE UHT PARMALAT 1L" -> "leite" (a nota não diz se é integral ou desnatado: não acrescente); "PATINHO MOIDO KG" -> "patinho moído"; "IOG GREGO VIGOR MOR 100G" -> "iogurte grego de morango". Não dá para saber o que é: null.
 - quantity/unit: itens pesados usam "kg" com a quantidade pesada (ex.: 0,535 kg de banana); demais usam a unidade impressa, ou "un".
 - unit_price: preço por unidade de "unit"; total_price: valor do item.
 - Preço ou quantidade que não dá para ler: null. Nunca estime nem invente um número que não está legível na nota.
@@ -145,11 +150,26 @@ export interface CleanItem {
   raw_description: string;
   suggested_name: string;
   suggested_category: string;
+  /** O item genérico (genericName), gravado em receipt_items.generic_name; null quando a IA não soube. */
+  generic_name: string | null;
   product_id: string | null;
   quantity: number;
   unit: (typeof UNITS)[number];
   unit_price: number;
   total_price: number;
+}
+
+/** O banco recusa mais que isso (check de receipt_items.generic_name): "papel higiênico" cabe com folga. */
+export const MAX_GENERIC_NAME = 60;
+
+/**
+ * O item genérico como o banco guarda: sem espaços nas pontas nem repetidos e
+ * em minúsculas. Vazio ou comprido demais (a IA repetiu a descrição inteira, com
+ * marca e tamanho) vira null: cortar deixaria meia palavra, que casaria errado.
+ */
+export function genericName(value: string | null | undefined): string | null {
+  const name = (value ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('pt-BR');
+  return name && name.length <= MAX_GENERIC_NAME ? name : null;
 }
 
 export interface CleanReceipt {
@@ -192,6 +212,8 @@ function lineQuantity(quantity: number | null, unit: (typeof UNITS)[number], uni
  * (cancelamento, desconto que a IA pôs como item) fica de fora. Quantidade
  * ilegível sai do total e do preço unitário; sem o preço unitário, a linha
  * fica de fora de `readLines` (nunca compartilha um preço por kg inventado).
+ * O item genérico vai limpo (genericName) para a linha da nota, nunca para a
+ * leitura do servidor: ele só serve ao casamento com a lista da casa.
  */
 export function cleanReceipt(
   extracted: ExtractedReceipt,
@@ -230,6 +252,7 @@ export function cleanReceipt(
       raw_description: raw,
       suggested_name: it.normalized_name.trim() || raw,
       suggested_category: it.category,
+      generic_name: genericName(it.generic_name),
       product_id: aliasMatches.get(raw) ?? suggested,
       quantity,
       unit: it.unit,
@@ -248,6 +271,32 @@ export function cleanReceipt(
     items,
     readLines,
   };
+}
+
+/**
+ * A coluna do item genérico ainda não chegou ao banco (a função publicada antes
+ * da migração): o PostgREST recusa a gravação que a traz com PGRST204 ("Could
+ * not find the 'generic_name' column"), e o Postgres, com 42703. Só vale se a
+ * mensagem fala dela: outra coluna que falte é erro de verdade.
+ */
+export function missingGenericColumn(error: { code?: string; message?: string } | null | undefined): boolean {
+  if (!error?.message?.includes('generic_name')) return false;
+  return error.code === 'PGRST204' || error.code === '42703';
+}
+
+/**
+ * Grava os itens da nota com o item genérico e, se o banco ainda não tem a
+ * coluna, grava de novo sem ele: a nota não se perde por isso, só casa com a
+ * lista como antes. Qualquer outro erro volta como veio.
+ */
+export async function insertItems<R extends { generic_name: string | null }, E extends { code?: string; message?: string }>(
+  insert: (rows: Omit<R, 'generic_name'>[] | R[]) => PromiseLike<{ error: E | null }>,
+  rows: R[],
+): Promise<{ error: E | null }> {
+  const first = await insert(rows);
+  if (!missingGenericColumn(first.error)) return first;
+  console.warn('receipt items saved without the generic name: the column is not in the database yet');
+  return await insert(rows.map(({ generic_name: _generic, ...row }) => row));
 }
 
 /**

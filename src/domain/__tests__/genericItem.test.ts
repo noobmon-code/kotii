@@ -99,6 +99,13 @@ describe('genericItem: o item da lista sem a marca', () => {
     expect(sameItemFit({ name: 'Linguiça', category: 'carnes' }, { names: ['LINGUICA CALABRESA SADIA'], category: 'carnes' })).toBe('mesmo');
   });
 
+  it('"gilete" com outro produto de barbear ou o desodorante é a marca, e sai; sozinho, é a lâmina', () => {
+    expect(genericItem('Espuma de Barbear Gilete 200ml', 'higiene')).toEqual({ name: 'Espuma de barbear', key: 'i:espuma_barbear', branded: true });
+    expect(genericItem('Pós Barba Gilete', 'higiene').name).toBe('Pós barba');
+    expect(genericItem('Desodorante Aerosol Gilete', 'higiene').key).toBe(genericItem('Desodorante Aerosol Rexona', 'higiene').key);
+    expect(genericItem('Gilete Prestobarba 3', 'higiene')).toEqual({ name: 'Gilete', key: 'i:barbear', branded: true });
+  });
+
   it('onde a marca é o item (ração, fralda, remédio), o nome fica', () => {
     expect(generic('Ração Golden Gatos Castrados 3kg', 'pet')).toBe('Ração Golden Gatos Castrados 3kg');
     expect(generic('Fralda Pampers M', 'bebe')).toBe('Fralda Pampers M');
@@ -301,6 +308,22 @@ describe('Marca preferida', () => {
     expect(matchListItems([item(true, 'Ovo Doninho Caipira')], [sameWords], new LinkIndex())).toEqual([
       { listItemId: 'l1', receiptItemId: 'r2', reason: 'nome', checked: false },
     ]);
+  });
+
+  it('o item genérico da leitura por foto não faz outra marca cumprir a marca preferida', () => {
+    const photo: ReceiptLine = { id: 'r1', productId: null, names: ['ITALAC DESN 1L'], generic: 'leite desnatado', category: 'laticinios' };
+    const wanted = (brand: boolean): OpenListItem => ({
+      id: 'l1',
+      name: brand ? 'Leite IL Desnatado' : 'Leite desnatado',
+      category: 'laticinios',
+      product_id: 'il',
+      checked_at: '2026-10-20T10:00:00Z',
+      brand,
+    });
+    // Sem a escolha, o genérico diz o item e a linha cumpre (#120).
+    expect(matchListItems([wanted(false)], [photo], new LinkIndex())).toEqual([{ listItemId: 'l1', receiptItemId: 'r1', reason: 'item', checked: true }]);
+    // Com a marca preferida, a outra marca não cumpre, nem como sugestão.
+    expect(matchListItems([wanted(true)], [photo], new LinkIndex())).toEqual([]);
   });
 });
 
