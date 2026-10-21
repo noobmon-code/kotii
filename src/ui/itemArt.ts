@@ -15,9 +15,9 @@ export const ITEM_ART: Record<ItemArtKey, ImageProps['source']> = {
   pasta_dente: require('../../assets/Itens-Novos/pasta_dente.webp'),
   sabao_po: require('../../assets/Itens-Novos/sabao_roupas_po.webp'),
   banana: require('../../assets/Itens-Novos/banana.webp'),
-  maca: require('../../assets/Itens-Novos/hortifruti.webp'), // provisório: a imagem própria ainda não veio
+  maca: require('../../assets/Itens-Novos/maca.webp'),
   laranja: require('../../assets/Itens-Novos/laranja.webp'),
-  limao: require('../../assets/Itens-Novos/hortifruti.webp'), // provisório: a imagem própria ainda não veio
+  limao: require('../../assets/Itens-Novos/limao.webp'),
   morango: require('../../assets/Itens-Novos/morango.webp'),
   uva: require('../../assets/Itens-Novos/uva.webp'),
   abacaxi: require('../../assets/Itens-Novos/abacaxi.webp'),
@@ -45,7 +45,7 @@ export const ITEM_ART: Record<ItemArtKey, ImageProps['source']> = {
   iogurte: require('../../assets/Itens-Novos/iogurte.webp'),
   manteiga: require('../../assets/Itens-Novos/manteiga.webp'),
   queijo: require('../../assets/Itens-Novos/queijo.webp'),
-  leite: require('../../assets/Itens-Novos/laticinios.webp'), // provisório: a imagem própria ainda não veio
+  leite: require('../../assets/Itens-Novos/leite.webp'),
   bolo: require('../../assets/Itens-Novos/bolo.webp'),
   presunto: require('../../assets/Itens-Novos/presunto.webp'),
   arroz: require('../../assets/Itens-Novos/arroz.webp'),
