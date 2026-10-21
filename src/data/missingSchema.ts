@@ -34,3 +34,16 @@ export function isMissingFunction(error: unknown, fn?: string): boolean {
   if (!fn) return code === '42883';
   return message.includes(fn) && (code === '42883' || /does not exist|could not find the function|schema cache/i.test(message));
 }
+
+/**
+ * A coluna ainda não existe no banco: numa leitura o Postgres responde 42703
+ * ("column receipt_items.generic_name does not exist") e, numa gravação que a
+ * traz no corpo, o PostgREST responde PGRST204 ("Could not find the
+ * 'generic_name' column of 'receipt_items' in the schema cache"). Só vale se
+ * a mensagem fala dessa coluna: outra que falte é erro de verdade.
+ */
+export function isMissingColumn(error: unknown, column: string): boolean {
+  const { code, message } = errorParts(error);
+  if (!message.includes(column)) return false;
+  return code === '42703' || code === 'PGRST204' || /does not exist|could not find the .* column/i.test(message);
+}

@@ -252,7 +252,9 @@ const LAST: readonly Def[] = [
   ['torrada', ['torrada']],
   ['guardanapo', ['guardanapo'], 'casa'],
   ['luva', ['luva'], 'casa'],
-  ['barbear', ['aparelho de barbear', 'barbeador', 'lamina de barbear'], 'casa'],
+  // "Gilete" (assim, com um L) é o nome comum da lâmina, o que a lista diz; o "GILLETTE" da nota é a marca, que
+  // também faz espuma e desodorante, e fica para o item genérico da leitura por foto.
+  ['barbear', ['aparelho de barbear', 'barbeador', 'lamina de barbear', 'gilete'], 'casa'],
   ['limpador', ['limpador', 'multiuso'], 'casa'],
   ['desinfetante', ['desinfetante'], 'casa'],
   ['absorvente', ['absorvente', 'protetor diario'], 'casa'],

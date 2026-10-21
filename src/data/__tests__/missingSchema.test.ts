@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { isMissingFunction, isMissingTable } from '../missingSchema';
+import { isMissingColumn, isMissingFunction, isMissingTable } from '../missingSchema';
 
 // Como o PostgREST e o Postgres respondem quando a migração ainda não chegou ao banco.
 const tableNotInCache = { code: 'PGRST205', message: "Could not find the table 'public.product_distinct_pairs' in the schema cache" };
@@ -59,5 +59,29 @@ describe('isMissingFunction', () => {
     expect(isMissingFunction({ code: '42501', message: 'permission denied for function merge_products' }, 'merge_products')).toBe(false);
     expect(isMissingFunction(tableNotInCache)).toBe(false);
     expect(isMissingFunction(undefined)).toBe(false);
+  });
+});
+
+describe('isMissingColumn', () => {
+  const noColumn = { code: '42703', message: 'column receipt_items.generic_name does not exist' };
+  const columnNotInCache = { code: 'PGRST204', message: "Could not find the 'generic_name' column of 'receipt_items' in the schema cache" };
+
+  it('reconhece a coluna que o banco ainda não tem, na leitura e na gravação', () => {
+    expect(isMissingColumn(noColumn, 'generic_name')).toBe(true);
+    expect(isMissingColumn(columnNotInCache, 'generic_name')).toBe(true);
+    expect(isMissingColumn(new Error(columnNotInCache.message), 'generic_name')).toBe(true);
+  });
+
+  it('só a coluna pedida: outra que falte é erro de verdade', () => {
+    expect(isMissingColumn({ code: '42703', message: 'column receipt_items.suggested_name does not exist' }, 'generic_name')).toBe(false);
+    expect(isMissingColumn(noColumn, 'stock_count')).toBe(false);
+  });
+
+  it('outros erros não são coluna faltando', () => {
+    expect(isMissingColumn({ code: '23514', message: 'new row violates check constraint "receipt_items_generic_name_check"' }, 'generic_name')).toBe(
+      false,
+    );
+    expect(isMissingColumn({ message: 'TypeError: Network request failed' }, 'generic_name')).toBe(false);
+    expect(isMissingColumn(null, 'generic_name')).toBe(false);
   });
 });

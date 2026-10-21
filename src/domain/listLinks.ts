@@ -87,9 +87,30 @@ export interface ReceiptLine {
   productId: string | null;
   /** O nome do produto do item como está na revisão (existente ou novo); null sem produto. */
   name?: string | null;
-  /** Nome do produto, sugestão da leitura e texto da nota. */
+  /** Nome do produto, sugestão da leitura, texto da nota e o item genérico da leitura por foto (receiptLineNames). */
   names: string[];
   category: string;
+}
+
+/**
+ * Os nomes de um item da nota para o casamento com a lista: o do produto
+ * escolhido na revisão, a sugestão da leitura, o texto impresso e, por
+ * último, o item genérico que a IA leu na foto ("café em pó" para "CAF TORR
+ * 3COR"). O genérico é só mais um nome: ele dá o item quando a nota abrevia
+ * ou usa a marca ("GILLETTE APARELHO"), mas não passa por cima do que o
+ * texto diz (domain/sameItem: um nome que diz outra coisa decide, e "LEITE
+ * INTEGRAL" continua não sendo o leite desnatado). Sem ele (nota do QR, a
+ * leitura de antes, o banco sem a coluna), os nomes são os de sempre.
+ */
+export function receiptLineNames(line: {
+  productName?: string | null;
+  suggestedName?: string | null;
+  rawDescription: string;
+  genericName?: string | null;
+}): string[] {
+  return [line.productName, line.suggestedName, line.rawDescription, line.genericName].filter((name): name is string =>
+    Boolean(name?.trim()),
+  );
 }
 
 /**

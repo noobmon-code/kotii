@@ -14,6 +14,9 @@
 // menos uma. O que a IA leu também vai para receipt_reads, com a chave secreta,
 // e a nota guarda o id dessa leitura (read_id): só assim ela compartilha preço
 // com outras casas (_shared/receiptRead.ts).
+// Cada linha leva também o item genérico que a IA leu ("café em pó"), em
+// receipt_items.generic_name, só para a revisão casar a nota com a lista;
+// ele não vai para receipt_reads nem para os preços compartilhados.
 // Secrets: ANTHROPIC_API_KEY ou OPENROUTER_API_KEY (uma das duas);
 // RECEIPT_MODEL e RECEIPT_PROVIDER ("anthropic" | "openrouter") opcionais.
 // Com a chave da OpenRouter, ela é usada (padrão: DeepSeek V4.1 Flash).
@@ -43,6 +46,7 @@ import {
   cleanReceipt,
   ExtractedReceiptSchema,
   imagePathsError,
+  insertItems,
   instructions,
   MAX_TOTAL_IMAGE_BYTES,
   promptCatalog,
@@ -297,9 +301,11 @@ Deno.serve(async (req) => {
     }
 
     if (receipt.items.length) {
-      const { error: itemsError } = await db
-        .from('receipt_items')
-        .insert(receipt.items.map((item) => ({ ...item, receipt_id: created.id })));
+      // Com o item genérico de cada linha; o banco de antes da coluna recebe as linhas sem ele (insertItems).
+      const { error: itemsError } = await insertItems(
+        (rows) => db.from('receipt_items').insert(rows),
+        receipt.items.map((item) => ({ ...item, receipt_id: created.id })),
+      );
       if (itemsError) {
         await db.from('receipts').delete().eq('id', created.id);
         await dropRead();

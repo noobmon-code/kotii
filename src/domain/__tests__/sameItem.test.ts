@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { LinkIndex, matchListItems, type OpenListItem, type ReceiptLine } from '../listLinks';
+import { LinkIndex, matchListItems, receiptLineNames, type OpenListItem, type ReceiptLine } from '../listLinks';
 import { itemIdentity, sameItemFit, spelledOut, wordOverlap } from '../sameItem';
 import { guessCategory } from '../search';
 import { sameListedName } from '../similarNames';
@@ -50,6 +50,13 @@ describe('itemIdentity: o item sem a marca, a embalagem nem o tamanho', () => {
     expect(keyOf('Jerimum')).toBe('abobora');
     expect(keyOf('Salsinha')).toBe('salsa');
     expect(spelledOut('CAF TORR MOID 500G')).toBe('cafe torrado moido 500g');
+  });
+
+  it('"Gilete" na lista é a lâmina; o "GILLETTE" da nota é a marca e sozinho não diz o item', () => {
+    expect(keyOf('Gilete')).toBe('barbear');
+    expect(keyOf('Lâmina de barbear')).toBe('barbear');
+    expect(keyOf('GILLETTE APARELHO')).toBeNull();
+    expect(keyOf('GILLETTE ESPUMA 200ML')).toBeNull();
   });
 
   it('o corte e a variedade ficam com a família', () => {
@@ -411,5 +418,72 @@ describe('matchListItems: a regra do carrinho', () => {
     expect(match([listItem('l1', 'Batata', 'hortifruti', true)], [kg, doce])).toEqual([
       { listItemId: 'l1', receiptItemId: 'k', reason: 'item', checked: true },
     ]);
+  });
+});
+
+describe('matchListItems com o item genérico da leitura por foto', () => {
+  // A linha como a revisão monta: o nome sugerido pela leitura, o texto da nota e, por último, o genérico.
+  const photoLine = (id: string, raw: string, suggested: string, category: string, generic: string | null): ReceiptLine => ({
+    id,
+    productId: null,
+    name: suggested,
+    names: receiptLineNames({ productName: suggested, suggestedName: suggested, rawDescription: raw, genericName: generic }),
+    category,
+  });
+  const match = (items: OpenListItem[], lines: ReceiptLine[]) => matchListItems(items, lines, new LinkIndex(), sameListedName);
+
+  it('a marca usada como nome: "Gilete" casa com "GILLETTE APARELHO", que a IA disse ser aparelho de barbear', () => {
+    const gilete = listItem('l1', 'Gilete', 'higiene', true);
+    expect(match([gilete], [photoLine('g', 'GILLETTE APARELHO', 'Gillette Aparelho', 'higiene', 'aparelho de barbear')])).toEqual([
+      { listItemId: 'l1', receiptItemId: 'g', reason: 'item', checked: true },
+    ]);
+    // Sem o genérico (a nota do QR, a leitura de antes), a nota não diz que item é: nada, como antes.
+    expect(match([gilete], [photoLine('g', 'GILLETTE APARELHO', 'Gillette Aparelho', 'higiene', null)])).toEqual([]);
+    // Fora do carrinho, só sugere.
+    expect(match([{ ...gilete, checked_at: null }], [photoLine('g', 'GILLETTE APARELHO', 'Gillette Aparelho', 'higiene', 'lâmina de barbear')])).toEqual([
+      { listItemId: 'l1', receiptItemId: 'g', reason: 'item', checked: false },
+    ]);
+  });
+
+  it('a abreviação do mercado: "Café em pó" com "CAF TORR MOIDO", e o que só o genérico diz ("PH NEVE")', () => {
+    const cafe = photoLine('c', 'CAF TORR MOIDO 3COR 500G', 'Caf Torr Moido 3cor 500g', 'cafe_cha', 'café em pó');
+    expect(match([listItem('l1', 'Café em pó', 'cafe_cha', true)], [cafe])).toEqual([
+      { listItemId: 'l1', receiptItemId: 'c', reason: 'item', checked: true },
+    ]);
+    const papel = (generic: string | null) => photoLine('p', 'PH NEVE FD 12X30M', 'Ph Neve Fd 12x30m', 'papel', generic);
+    expect(match([listItem('l1', 'Papel higiênico', 'papel', true)], [papel('papel higiênico')])).toEqual([
+      { listItemId: 'l1', receiptItemId: 'p', reason: 'item', checked: true },
+    ]);
+    expect(match([listItem('l1', 'Papel higiênico', 'papel', true)], [papel(null)])).toEqual([]);
+    const nescau = (generic: string | null) => photoLine('n', 'NESCAU 2.0 400G', 'Nescau 2.0 400g', 'bebidas', generic);
+    expect(match([listItem('l1', 'Achocolatado', 'bebidas', true)], [nescau('achocolatado em pó')]).map((m) => m.checked)).toEqual([true]);
+    expect(match([listItem('l1', 'Achocolatado', 'bebidas', true)], [nescau(null)])).toEqual([]);
+  });
+
+  it('as travas continuam: o genérico é um nome a mais, e o texto da nota que diz outra coisa decide', () => {
+    // A nota diz INTEGRAL: o genérico "leite" não faz dela o leite desnatado da lista, nem como sugestão.
+    const integral = photoLine('i', 'LEITE INTEGRAL ITALAC 1L', 'Leite Integral Italac 1l', 'laticinios', 'leite');
+    expect(match([listItem('l1', 'Leite desnatado', 'laticinios', true)], [integral])).toEqual([]);
+    // A versão que a lista pede e nenhum nome da linha diz: a comum, outra coisa.
+    const coca = photoLine('c', 'REFRIG COCA COLA 2L', 'Refrig Coca Cola 2l', 'bebidas', 'refrigerante');
+    expect(match([listItem('l1', 'Coca zero', 'bebidas', true)], [coca])).toEqual([]);
+    // O genérico também é um nome que pode dizer outra coisa: o sabão líquido não é o em pó.
+    const omo = photoLine('o', 'OMO LAV PERF 3L', 'Omo Lav Perf 3l', 'limpeza', 'sabão líquido');
+    expect(match([listItem('l1', 'Sabão em pó', 'limpeza', true)], [omo])).toEqual([]);
+    // E o corte da família continua sendo só uma sugestão.
+    const alcatra = photoLine('a', 'BOMBOM DA ALCATRA', 'Bombom da Alcatra', 'carnes', 'alcatra');
+    expect(match([listItem('l1', 'Carne', 'carnes', true)], [alcatra])).toEqual([
+      { listItemId: 'l1', receiptItemId: 'a', reason: 'parecido', checked: false },
+    ]);
+  });
+
+  it('sem o genérico, os nomes e o casamento são os de antes', () => {
+    const before: ReceiptLine = { id: 'x', productId: null, name: 'Caf Torr', names: ['Caf Torr', 'Caf Torr', 'CAF TORR 500G'], category: 'cafe_cha' };
+    for (const genericName of [undefined, null, '', '  ']) {
+      const now = photoLine('x', 'CAF TORR 500G', 'Caf Torr', 'cafe_cha', genericName ?? null);
+      expect(now.names).toEqual(before.names);
+    }
+    const items = [listItem('l1', 'Café', 'cafe_cha', true), listItem('l2', 'Café em pó', 'cafe_cha')];
+    expect(match(items, [photoLine('x', 'CAF TORR 500G', 'Caf Torr', 'cafe_cha', null)])).toEqual(match(items, [before]));
   });
 });
