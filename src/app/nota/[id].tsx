@@ -303,7 +303,8 @@ export default function ReceiptScreen() {
   const listPending = isDraft && (openList.isPending || links.isPending || openList.isFetching || links.isFetching);
   const listFailed = isDraft && (openList.isError || links.isError);
   // "Mesmo nome" aqui é o dos nomes parecidos: "Limões" da lista sai marcado com o produto "Limão"; "Molho de
-  // tomate" não sai com "Tomate para molho" (as mesmas palavras em outra ordem só sugerem).
+  // tomate" não sai com "Tomate para molho". O mesmo item de outra marca ("Leite" e "LEITE UHT PARMALAT") sai
+  // marcado só se estava no carrinho e uma linha só da nota é ele; senão, vem como sugestão (domain/sameItem).
   const suggestedMatches = matchListItems(listItems, receiptLines, links.data ?? new LinkIndex(), sameListedName);
   const listMatches = applyListChoices(suggestedMatches, listChoices);
 

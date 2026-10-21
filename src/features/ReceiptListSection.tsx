@@ -1,5 +1,7 @@
 // Revisão da nota: que itens das listas abertas esta compra cumpriu. Os
 // marcados saem da lista ao confirmar, e a ligação fica para a próxima nota.
+// Cada sugestão traz a linha da nota e a pergunta "Comprou este?", que marca
+// com um toque.
 
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
@@ -19,10 +21,15 @@ export interface ReceiptChoiceLine {
 
 type Picking = { step: 'list' } | { step: 'receipt'; listItemId: string };
 
-const HINTS: Partial<Record<ListMatch['reason'], string>> = {
-  nome: 'Nome parecido: confira e marque',
-  vinculo: 'Ligado numa nota anterior',
-};
+/** De onde veio a ligação, quando ajuda a conferir. Marcado pelo nome ou pela escolha da pessoa, não precisa dizer. */
+function hintFor(match: ListMatch, inCart: boolean): string | null {
+  if (match.reason === 'vinculo') return 'Ligado numa nota anterior';
+  if (match.reason === 'item') return match.checked && inCart ? 'Estava no carrinho e é o mesmo item' : 'O mesmo item, de outra marca ou com outro nome';
+  if (match.checked) return null;
+  if (match.reason === 'nome') return 'Nome parecido';
+  if (match.reason === 'parecido') return 'Pode ser este: confira';
+  return null;
+}
 
 export function ReceiptListSection({
   listItems,
@@ -60,7 +67,9 @@ export function ReceiptListSection({
       }>
       <Text variant="muted">
         {rows.length
-          ? 'Os marcados saem da lista ao confirmar a nota, e a ligação fica guardada para a próxima.'
+          ? `Os marcados saem da lista ao confirmar a nota, e a ligação fica guardada para a próxima.${
+              rows.some((m) => !m.checked) ? ' Nas sugestões, toque em "Sim" no que você comprou.' : ''
+            }`
           : 'Nenhum item das listas abertas parece estar nesta nota. Comprou algum? Toque em "Ligar item".'}
       </Text>
       {rows.length ? (
@@ -68,7 +77,8 @@ export function ReceiptListSection({
           {rows.map((match) => {
             const item = listItem.get(match.listItemId)!;
             const line = receiptLine.get(match.receiptItemId)!;
-            const hint = match.checked && match.reason === 'nome' ? null : HINTS[match.reason];
+            const hint = hintFor(match, Boolean(item.checked_at));
+            const check = () => onChoose(item.id, { receiptItemId: match.receiptItemId, checked: true });
             return (
               <View key={item.id} style={styles.row}>
                 <CheckCircle
@@ -76,21 +86,36 @@ export function ReceiptListSection({
                   label={`Tirar ${item.name} da lista`}
                   onPress={() => onChoose(item.id, { receiptItemId: match.receiptItemId, checked: !match.checked })}
                 />
-                <Pressable
-                  style={styles.flex}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Trocar o item da nota que cumpre ${item.name}`}
-                  onPress={() => setPicking({ step: 'receipt', listItemId: item.id })}>
-                  <Text variant="body" numberOfLines={2}>
-                    {label(item)}
-                  </Text>
-                  <Text variant="muted" numberOfLines={2}>{`Comprado: ${line.name}`}</Text>
-                  {hint ? (
-                    <Text variant="small" color={match.reason === 'nome' ? 'warning' : 'textMuted'}>
-                      {hint}
+                <View style={styles.flex}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Trocar o item da nota que cumpre ${item.name}`}
+                    onPress={() => setPicking({ step: 'receipt', listItemId: item.id })}>
+                    <Text variant="body" numberOfLines={2}>
+                      {label(item)}
                     </Text>
-                  ) : null}
-                </Pressable>
+                    <Text variant="muted" numberOfLines={2}>{`${match.checked ? 'Comprado' : 'Na nota'}: ${line.name}`}</Text>
+                    {hint ? (
+                      <Text variant="small" color={match.checked ? 'textMuted' : 'warning'}>
+                        {hint}
+                      </Text>
+                    ) : null}
+                  </Pressable>
+                  {/* A sugestão é uma pergunta de um toque: sem precisar achar o item em "Ligar item". */}
+                  {match.checked ? null : (
+                    <View style={styles.ask}>
+                      <Text variant="label">Comprou este?</Text>
+                      <Button
+                        title="Sim"
+                        icon="check"
+                        variant="secondary"
+                        compact
+                        accessibilityLabel={`Sim, comprei ${line.name}: tirar ${item.name} da lista`}
+                        onPress={check}
+                      />
+                    </View>
+                  )}
+                </View>
                 <Icon name="chevron-right" color="textMuted" />
               </View>
             );
@@ -146,6 +171,7 @@ export function ReceiptListSection({
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
+  flex: { flex: 1, gap: space.sm },
+  ask: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: space.sm },
   row: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: space.md },
 });

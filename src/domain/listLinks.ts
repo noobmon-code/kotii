@@ -3,6 +3,7 @@
 // a nota, a pessoa diz quais itens da lista a compra cumpriu; cada um vira um
 // vínculo nome da lista -> produto, e a próxima nota já vem marcada.
 
+import { categoriesMayMatch, readsAsOther, sameItemFit, startsAsItem, wordOverlap } from './sameItem';
 import { normalizeSearch } from './search';
 
 /** Vínculo aprendido: este nome de lista é cumprido por este produto. */
@@ -75,6 +76,8 @@ export interface OpenListItem {
   name: string;
   category: string;
   product_id: string | null;
+  /** Quando foi para o carrinho (null ou ausente: ainda não foi). */
+  checked_at?: string | null;
 }
 
 /** Item da nota como está na revisão. */
@@ -89,22 +92,44 @@ export interface ReceiptLine {
   category: string;
 }
 
-/** Como o item da lista foi ligado à nota; `escolha`: a pessoa ligou na revisão. */
-export type ListMatchReason = 'produto' | 'vinculo' | 'nome' | 'escolha';
+/**
+ * Como o item da lista foi ligado à nota. `item`: o mesmo item, de outra
+ * marca ou com outro nome (domain/sameItem); `parecido`: pode ser (um corte
+ * da família, um tipo que a nota não diz, palavras em comum); `escolha`: a
+ * pessoa ligou na revisão.
+ */
+export type ListMatchReason = 'produto' | 'vinculo' | 'nome' | 'item' | 'parecido' | 'escolha';
 
 export interface ListMatch {
   listItemId: string;
   receiptItemId: string;
   reason: ListMatchReason;
-  /** Mesmo produto, vínculo já confirmado ou o mesmo nome vêm marcados; nome parecido só sugere. */
+  /**
+   * Mesmo produto, vínculo já confirmado ou o mesmo nome vêm marcados; o
+   * mesmo item de outra marca, só se estava no carrinho e uma linha só da
+   * nota é ele; o resto só sugere.
+   */
   checked: boolean;
 }
 
+/** Abaixo disso, as palavras em comum não sugerem nada. */
+const MIN_OVERLAP = 0.5;
+
 /**
- * Que item da nota cumpre cada item aberto das listas: o mesmo produto, um
- * vínculo que a pessoa já confirmou, um produto com o mesmo nome do item da
- * lista ou, como sugestão desmarcada, um nome com as mesmas palavras. Um item
- * da nota pode cumprir mais de um item de lista ("Coca" e "Refrigerante").
+ * Que item da nota cumpre cada item aberto das listas, nesta ordem:
+ * - o mesmo produto, um vínculo que a pessoa já confirmou ou um produto com o
+ *   mesmo nome do item da lista: vêm marcados;
+ * - o mesmo item de outra marca ou com outro nome (domain/sameItem: "Leite" e
+ *   "LEITE UHT PARMALAT CX", "Pão de caixa" e "PÃO DE FORMA"): vem marcado só
+ *   se o item da lista estava no carrinho e uma linha só da nota pode ser ele
+ *   (duas linhas do mesmo produto são uma compra só);
+ * - como sugestão desmarcada, nesta ordem: um nome com as mesmas palavras, o
+ *   mesmo item, o que pode ser ele (um corte da família, como "Carne" e
+ *   "Bombom da Alcatra"; um tipo que a nota não diz) e palavras em comum
+ *   ("Detergente" e "DET LIQ LIMPOL").
+ * O que com certeza é outra coisa ("Batata" e "BATATA DOCE", "Leite
+ * desnatado" e "LEITE INT") não entra nem como sugestão. Um item da nota pode
+ * cumprir mais de um item de lista ("Coca" e "Refrigerante").
  * `sameName` diz quando o produto do item da nota "tem o mesmo nome" do item
  * da lista: por padrão, a mesma chave da lista; a revisão da nota passa a
  * regra dos nomes parecidos (`sameListedName`), que também iguala plural e
@@ -138,18 +163,66 @@ export function matchListItems(
     // (trocou o produto na revisão, a marca sai junto).
     const byName = receipt.find((line) => line.name != null && same(item.name, line.name));
     if (byName) return [{ listItemId: item.id, receiptItemId: byName.id, reason: 'nome', checked: true }];
+
+    const fits = lines.map((entry) => ({ ...entry, fit: sameItemFit(item, entry.line) }));
+    const sameItem = fits.filter(({ fit }) => fit === 'mesmo');
+    const maybe = fits.filter(({ fit }) => fit === 'talvez');
+    // Sozinho, só o que estava no carrinho e uma linha só da nota pode ser ele: com duas ("LEITE INTEGRAL" e
+    // "LEITE DESNATADO" para "Leite"), com um corte que também pode ser ("Carne moída" e "PATINHO MOIDO"), ou com uma
+    // linha que o app não sabe ler, mas começa pelo item ("BAT INGLESA KG" para "Batata"), a pessoa escolhe.
+    if (item.checked_at && sameItem.length) {
+      const unread = fits.filter(({ fit, line }) => fit == null && startsAsItem(item, line.names));
+      if (new Set([...sameItem, ...maybe, ...unread].map(({ line }) => purchaseKey(line))).size === 1) {
+        return [{ listItemId: item.id, receiptItemId: sameItem[0].line.id, reason: 'item', checked: true }];
+      }
+    }
+    // O que com certeza é outra coisa não é sugerido, nem a linha que o app não sabe ler e, lida como o item, diz
+    // outra coisa ("SAB LIQ OMO" para "Sabão em pó", "BAT DOCE KG" para "Batata").
+    const open = fits.filter(({ fit, line }) => fit !== 'outro' && !(fit == null && readsAsOther(item, line.names)));
+
     // Mais parecido: primeiro a mesma categoria ("Leite" é o integral, não o
     // condensado dos doces), depois o nome mais curto.
     const wanted = words(item.name);
     let best: { line: ReceiptLine; score: [number, number] } | null = null;
-    for (const { line, words: lineWords } of lines) {
+    for (const { line, words: lineWords } of open) {
       const fit = nameFit(wanted, lineWords);
       if (fit == null) continue;
       const score: [number, number] = [line.category === item.category ? 0 : 1, fit];
       if (!best || score[0] < best.score[0] || (score[0] === best.score[0] && score[1] < best.score[1])) best = { line, score };
     }
-    return best ? [{ listItemId: item.id, receiptItemId: best.line.id, reason: 'nome', checked: false }] : [];
+    if (best) return [{ listItemId: item.id, receiptItemId: best.line.id, reason: 'nome', checked: false }];
+
+    const suggested = closest(item, sameItem) ?? closest(item, maybe);
+    if (suggested) return [{ listItemId: item.id, receiptItemId: suggested.id, reason: sameItem.length ? 'item' : 'parecido', checked: false }];
+    // Por último, palavras em comum, contando abreviação ("DET LIQ" para "Detergente"); só entre comida e comida,
+    // casa e casa.
+    let top: { line: ReceiptLine; overlap: number } | null = null;
+    for (const { line } of open) {
+      if (!categoriesMayMatch(item.category, line.category)) continue;
+      const overlap = wordOverlap(item.name, line.names);
+      if (overlap >= MIN_OVERLAP && (!top || overlap > top.overlap)) top = { line, overlap };
+    }
+    return top ? [{ listItemId: item.id, receiptItemId: top.line.id, reason: 'parecido', checked: false }] : [];
   });
+}
+
+/** A compra que a linha da nota é: duas linhas do mesmo produto (ou do mesmo nome, sem produto) são uma compra só. */
+const purchaseKey = (line: ReceiptLine) => line.productId ?? `nome:${listNameKey(line.name ?? line.names[0] ?? '')}`;
+
+/** Entre as linhas, a de mais palavras em comum com o item da lista; depois a da mesma categoria e a de nome mais curto. */
+function closest(item: OpenListItem, candidates: readonly { line: ReceiptLine }[]): ReceiptLine | null {
+  let best: { line: ReceiptLine; score: [number, number, number] } | null = null;
+  for (const { line } of candidates) {
+    const score: [number, number, number] = [
+      -wordOverlap(item.name, line.names),
+      line.category === item.category ? 0 : 1,
+      Math.min(...line.names.map((name) => name.length)),
+    ];
+    if (!best || score[0] < best.score[0] || (score[0] === best.score[0] && (score[1] < best.score[1] || (score[1] === best.score[1] && score[2] < best.score[2])))) {
+      best = { line, score };
+    }
+  }
+  return best?.line ?? null;
 }
 
 /** O que a pessoa decidiu para um item da lista na revisão. */

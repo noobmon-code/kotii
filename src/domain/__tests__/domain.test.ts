@@ -99,6 +99,34 @@ describe('search', () => {
     expect(guessCategory('DETERG YPE NEUTRO 500ML', { abbreviated: true })).toBe('limpeza');
     expect(guessCategory('Guarda chuva')).toBe('outros');
   });
+
+  it('a palavra que vem primeiro no nome decide, não a ordem da tabela', () => {
+    expect(guessCategory('RACAO GATO SABOR FRANGO 1KG', { abbreviated: true })).toBe('pet');
+    expect(guessCategory('Ração sabor frango')).toBe('pet');
+    expect(guessCategory('Pão de queijo congelado')).toBe('padaria');
+    // No mesmo lugar, a mais específica da tabela; e a nota que corta a última palavra ("SANIT") também vale.
+    expect(guessCategory('Água sanitária 2L')).toBe('limpeza');
+    expect(guessCategory('AGUA SANIT BRILHO 1L', { abbreviated: true })).toBe('limpeza');
+    expect(guessCategory('AGUA MIN CRISTAL 1,5L', { abbreviated: true })).toBe('bebidas');
+  });
+
+  it('a bebida abreviada na nota é bebida, não o sabor que vem depois', () => {
+    expect(guessCategory('REFRIG FANTA LARANJA 2L', { abbreviated: true })).toBe('bebidas');
+    expect(guessCategory('REFRIG COCA COLA S/ACUCAR', { abbreviated: true })).toBe('bebidas');
+    expect(guessCategory('REFRI GUARANA 2L', { abbreviated: true })).toBe('bebidas');
+    expect(guessCategory('CERV SKOL LATA 350ML', { abbreviated: true })).toBe('alcoolicas');
+    // A fruta continua no hortifruti, e o suco nas bebidas.
+    expect(guessCategory('LARANJA PERA KG', { abbreviated: true })).toBe('hortifruti');
+    expect(guessCategory('SUCO LARANJA 1L', { abbreviated: true })).toBe('bebidas');
+  });
+
+  it('a batata frita é congelada, não do hortifruti', () => {
+    expect(guessCategory('Batata Frita Congelada Boa Mesa 1kg')).toBe('congelados');
+    expect(guessCategory('BATATA FRITA CONG BOA MESA 2KG', { abbreviated: true })).toBe('congelados');
+    expect(guessCategory('BATATA PRE FRITA PALITO 400G', { abbreviated: true })).toBe('congelados');
+    expect(guessCategory('Batata palito')).toBe('congelados');
+    expect(guessCategory('Batata inglesa')).toBe('hortifruti');
+  });
 });
 
 describe('pantry expiry', () => {

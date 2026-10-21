@@ -58,6 +58,19 @@ describe('matchItemArt', () => {
     expect(matchItemArt('2 garrafas de refrigerante')).toBe('refrigerante');
   });
 
+  it('o bombom de alcatra é carne, e o bombom sozinho continua chocolate', () => {
+    expect(matchItemArt('Bombom da Alcatra', 'carnes')).toBe('carne');
+    expect(matchItemArt('BOMBOM DE PICANHA KG')).toBe('carne');
+    expect(matchItemArt('Bombom de morango')).toBe('chocolate');
+    expect(matchItemArt('Fanta Uva 2L')).toBe('refrigerante');
+  });
+
+  it('a nota corta o "de" do meio, e o termo continua valendo', () => {
+    expect(matchItemArt('PAO FORMA INTEGRAL 500G')).toBe('pao_forma');
+    expect(matchItemArt('PEITO FRANGO CONG KG')).toBe('peito_frango');
+    expect(matchItemArt('LEITE COCO 200ML')).toBeNull();
+  });
+
   it('reconhece plurais irregulares', () => {
     expect(matchItemArt('Mamões')).toBe('mamao');
     expect(matchItemArt('Melões')).toBe('melao');
