@@ -321,7 +321,9 @@ export interface NewListItem {
  * Pôr item na lista, pela fila da lista: sem internet o item aparece na hora
  * e vai quando a conexão volta, na ordem dos toques. O id e o selo saem do
  * aparelho: a marcação, a edição e a foto que vierem antes de o servidor
- * responder já acham o item, e repetir o envio não o duplica.
+ * responder já acham o item, e repetir o envio não o duplica. Nem o traz de
+ * volta: se alguém tirou o item enquanto a resposta se perdia, o banco lembra
+ * o id apagado e deixa o envio repetido de fora, sem erro.
  */
 export const ADD_ITEM_KEY = ['addListItem'];
 

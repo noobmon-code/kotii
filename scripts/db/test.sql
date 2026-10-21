@@ -10367,5 +10367,113 @@ end $$;
 delete from public.households where id in (:'hh_g1', :'hh_g2');
 delete from auth.users where id in (:'user_g1', :'user_g2');
 
+-- ---------------------------------------------------------------------------
+\echo '• item tirado da lista não volta pelo envio repetido de quem o pôs'
+-- Lia põe itens com o id do aparelho, como a fila da lista. A resposta se perde e o aparelho manda de novo depois
+-- que o item saiu da lista (tirado, levado pelo "Limpar" ou com a lista apagada): o envio repetido dá certo, sem
+-- erro, e o item não volta.
+\set user_t1 '00000000-0000-0000-0000-0000000002b1'
+insert into auth.users (id) values (:'user_t1');
+do $$
+begin
+  assert (select relrowsecurity from pg_class where oid = 'public.shopping_list_item_tombstones'::regclass),
+    'the tombstones have RLS on';
+  assert not has_table_privilege('authenticated', 'public.shopping_list_item_tombstones', 'select')
+    and not has_table_privilege('authenticated', 'public.shopping_list_item_tombstones', 'insert')
+    and not has_table_privilege('anon', 'public.shopping_list_item_tombstones', 'select'),
+    'no API role reads or writes the tombstones';
+  assert not has_function_privilege('authenticated', 'public.forget_list_item_tombstones()', 'execute')
+    and not has_function_privilege('anon', 'public.forget_list_item_tombstones()', 'execute'),
+    'nor runs the cleanup';
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_t1', false) \gset
+select (public.create_household('Casa da Lia', 'Lia')).id as hh_t1 \gset
+insert into public.shopping_lists (name, kind) values ('Mercado', 'mercado') returning id as list_t1 \gset
+insert into public.shopping_lists (name, kind) values ('Festa', 'outros') returning id as list_t2 \gset
+select set_config('test.list_t1', :'list_t1', false) \gset
+select set_config('test.list_t2', :'list_t2', false) \gset
+do $$
+declare
+  list uuid := current_setting('test.list_t1')::uuid;
+  party uuid := current_setting('test.list_t2')::uuid;
+  removed uuid := gen_random_uuid();
+  bought uuid := gen_random_uuid();
+  kept uuid := gen_random_uuid();
+  balloons uuid := gen_random_uuid();
+  n integer;
+begin
+  insert into public.shopping_list_items (id, list_id, name, category, toggle_token)
+    values (removed, list, 'Leite', 'laticinios', gen_random_uuid()),
+           (bought, list, 'Pão', 'padaria', gen_random_uuid()),
+           (kept, list, 'Café', 'cafe_cha', gen_random_uuid()),
+           (balloons, party, 'Balões', 'outros', gen_random_uuid());
+  -- A resposta da primeira tentativa se perdeu, mas o item está lá: o envio repetido bate no id (23505), que o app
+  -- entende como "já foi".
+  begin
+    insert into public.shopping_list_items (id, list_id, name, category) values (kept, list, 'Café', 'cafe_cha');
+    raise exception 'FAIL: a live id was inserted twice';
+  exception when unique_violation then null;
+  end;
+  -- Tirado da lista ("Remover da lista"): o envio repetido não o põe de volta.
+  delete from public.shopping_list_items where id = removed;
+  insert into public.shopping_list_items (id, list_id, name, category) values (removed, list, 'Leite', 'laticinios');
+  get diagnostics n = row_count;
+  assert n = 0, 'a removed item is not inserted again';
+  assert not exists (select 1 from public.shopping_list_items where id = removed), 'and is not back on the list';
+  -- Comprado e levado pelo "Limpar".
+  update public.shopping_list_items set checked_at = now() where id = bought;
+  assert public.clear_checked_items(
+    list, array[bought], array(select toggle_token from public.shopping_list_items where id = bought)
+  ) = 1, 'the cart is cleared';
+  insert into public.shopping_list_items (id, list_id, name, category) values (bought, list, 'Pão', 'padaria');
+  assert not exists (select 1 from public.shopping_list_items where id = bought), 'a bought item does not come back';
+  -- A lista apagada leva os itens: o envio repetido, para a lista que não existe mais, passa sem erro (antes dava
+  -- erro de chave) e não põe nada.
+  delete from public.shopping_lists where id = party;
+  insert into public.shopping_list_items (id, list_id, name, category) values (balloons, party, 'Balões', 'outros');
+  get diagnostics n = row_count;
+  assert n = 0, 'nor one whose list was deleted';
+  assert not exists (select 1 from public.shopping_list_items where id = balloons), 'which stays gone';
+  -- O resto da lista continua como estava, e um item novo entra normalmente (pela fila ou pelo "Acabou").
+  assert exists (select 1 from public.shopping_list_items where id = kept), 'the other item stays';
+  insert into public.shopping_list_items (id, list_id, name, category) values (gen_random_uuid(), list, 'Ovos', 'outros');
+  get diagnostics n = row_count;
+  assert n = 1, 'a new item goes in';
+  assert (select item_id is not null from public.add_to_list(list, 'Arroz', 'graos')), 'add_to_list still works';
+  begin
+    perform 1 from public.shopping_list_item_tombstones;
+    raise exception 'FAIL: a member read the tombstones';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from public.shopping_list_item_tombstones;
+    raise exception 'FAIL: a member cleared the tombstones';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+reset role;
+do $$
+begin
+  assert (select count(*) from public.shopping_list_item_tombstones) >= 3, 'the removed ids are remembered';
+  assert (select count(*) = 3 from public.shopping_list_items where list_id = current_setting('test.list_t1')::uuid),
+    'the list has café, ovos, arroz and nothing that came back';
+  -- Depois de 30 dias o banco esquece (a fila do aparelho não guarda o envio por tanto tempo).
+  update public.shopping_list_item_tombstones set deleted_at = now() - interval '31 days';
+  insert into public.shopping_list_item_tombstones (id) values (gen_random_uuid());
+  assert public.forget_list_item_tombstones() >= 3, 'the cleanup forgets what is older than 30 days';
+  assert (select count(*) from public.shopping_list_item_tombstones) = 1, 'and keeps the recent ones';
+end $$;
+-- Apagar a casa apaga os itens (que viram lápides) sem travar.
+delete from public.households where id = :'hh_t1';
+do $$
+begin
+  assert not exists (select 1 from public.shopping_list_items where list_id = current_setting('test.list_t1')::uuid),
+    'the household and its items are gone';
+  assert (select count(*) from public.shopping_list_item_tombstones) >= 4, 'and their ids are remembered';
+end $$;
+delete from public.shopping_list_item_tombstones;
+delete from auth.users where id = :'user_t1';
+
 \echo 'OK — todos os testes do banco passaram'
 
