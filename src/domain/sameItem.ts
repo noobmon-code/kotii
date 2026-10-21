@@ -727,6 +727,10 @@ function identityFit(wanted: ItemIdentity, found: ItemIdentity, weighed: boolean
  * algum nome já diz o item, o genérico só pode dizer que é outra coisa: não
  * acrescenta a versão que a nota calou ("LEITE UHT PARMALAT 1L" com
  * "leite desnatado" continua calado) nem tira o tipo ou o corte que ela diz.
+ * Quando só ele diz o item, o tipo ou a versão que a lista pede e só ele diz
+ * ("ITALAC 1L" com "leite desnatado") faz da linha no máximo `talvez`: uma
+ * sugestão, nunca marcada sozinha; o genérico que só diz o item ("leite")
+ * vale inteiro.
  */
 export function sameItemFit(
   wanted: { name: string; category?: string | null },
@@ -753,10 +757,18 @@ export function sameItemFit(
       if (readsAsOther(wanted, found.names)) return 'outro';
       best = fit;
       if (!silentOnStrict(want, generic)) stated = true;
+      // O tipo ou a versão que a lista pede e só o genérico diz ("ITALAC 1L" com "leite desnatado" ou "ITALAC ZL 1L"
+      // com "leite sem lactose"): a nota não diz, então pode ser, mas não com certeza. Fica como sugestão, nunca
+      // marcada sozinha. O texto da nota que diz o tipo sem dizer o item ("ITALAC ZERO LAC") vale.
+      if (best === 'mesmo' && !found.names.some((name) => printedKindsFit(want, name))) best = 'talvez';
     }
   }
   return best != null && !stated ? 'outro' : best;
 }
+
+/** O nome da nota, lido como o item da lista, diz os tipos que ela pede (ou o que a nota calada quer dizer, o café em pó)? */
+const printedKindsFit = (want: ItemIdentity, name: string) =>
+  kindsFit(want, { ...want, kinds: readKinds(spelledOut(name), want.key, want.family) }) === 'mesmo';
 
 /**
  * Uma linha da nota que o app não sabe que item é ("SAB LIQ OMO 3L", "BAT

@@ -510,11 +510,34 @@ describe('matchListItems com o item genérico da leitura por foto', () => {
     expect(match([listItem('l1', 'Leite desnatado', 'laticinios', true)], [desnatado])).toEqual([
       { listItemId: 'l1', receiptItemId: 'd', reason: 'item', checked: true },
     ]);
-    // Quando nenhum nome diz o item, o genérico diz o item com a versão: é o que a IA leu da linha inteira.
-    const semNome = photoLine('s', 'ITALAC ZL 1L', 'Italac Zl 1l', 'laticinios', 'leite sem lactose');
-    expect(match([listItem('l1', 'Leite sem lactose', 'laticinios', true)], [semNome])).toEqual([
-      { listItemId: 'l1', receiptItemId: 's', reason: 'item', checked: true },
+  });
+
+  it('quando só o genérico diz o item, a versão que só ele diz é sugestão, nunca marcada sozinha', () => {
+    const italac = (raw: string, generic: string) => photoLine('s', raw, raw, 'laticinios', generic);
+    const asked = (raw: string, generic: string, wanted: string) => match([listItem('l1', wanted, 'laticinios', true)], [italac(raw, generic)]);
+    // A nota não diz a versão (nem o item): pode ser, a pessoa confirma com um toque.
+    expect(asked('ITALAC 1L', 'leite desnatado', 'Leite desnatado')).toEqual([{ listItemId: 'l1', receiptItemId: 's', reason: 'parecido', checked: false }]);
+    expect(asked('ITALAC ZL 1L', 'leite sem lactose', 'Leite sem lactose')).toEqual([{ listItemId: 'l1', receiptItemId: 's', reason: 'parecido', checked: false }]);
+    // O genérico que só diz o item vale inteiro.
+    expect(asked('ITALAC 1L', 'leite', 'Leite')).toEqual([{ listItemId: 'l1', receiptItemId: 's', reason: 'item', checked: true }]);
+    // E o item sem a versão não vira a versão que a lista pede.
+    expect(asked('ITALAC 1L', 'leite', 'Leite desnatado').every((m) => !m.checked)).toBe(true);
+    // A versão impressa, mesmo sem o item, vale como sempre ("ZERO LAC" é sem lactose).
+    expect(asked('ITALAC ZERO LAC 1L', 'leite sem lactose', 'Leite sem lactose')).toEqual([{ listItemId: 'l1', receiptItemId: 's', reason: 'item', checked: true }]);
+    // O tipo que é o padrão da linha (o café calado é em pó) não é uma versão: o genérico vale inteiro.
+    expect(match([listItem('l1', 'Café em pó', 'cafe_cha', true)], [photoLine('c', 'PILAO 500G', 'Pilao 500g', 'cafe_cha', 'café em pó')])).toEqual([
+      { listItemId: 'l1', receiptItemId: 'c', reason: 'item', checked: true },
     ]);
+  });
+
+  it('sameItemFit: a versão que só o genérico diz é talvez', () => {
+    const fitWith = (wanted: string, raw: string, generic: string) =>
+      sameItemFit({ name: wanted, category: 'laticinios' }, { names: [raw], generic, category: 'laticinios' });
+    expect(fitWith('Leite desnatado', 'ITALAC 1L', 'leite desnatado')).toBe('talvez');
+    expect(fitWith('Leite sem lactose', 'ITALAC ZL 1L', 'leite sem lactose')).toBe('talvez');
+    expect(fitWith('Leite', 'ITALAC 1L', 'leite')).toBe('mesmo');
+    expect(fitWith('Leite desnatado', 'ITALAC 1L', 'leite')).not.toBe('mesmo');
+    expect(fitWith('Leite sem lactose', 'ITALAC S/LACTOSE 1L', 'leite sem lactose')).toBe('mesmo');
   });
 
   it('o genérico não tira o corte que a nota diz: "BOMBOM DA ALCATRA" com o genérico "carne" continua só sugestão', () => {
