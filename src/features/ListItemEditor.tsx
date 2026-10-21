@@ -4,6 +4,8 @@ import { Modal, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { pickImages, type ScanSource } from '@/data/images';
+import type { BrandChoice } from '@/domain/genericItem';
+import { listNameKey } from '@/domain/listLinks';
 import { MAX_NOTES, PRIORITIES, type ListPriority } from '@/domain/listItem';
 import { formatQuantity, parseDecimal } from '@/domain/money';
 import { errorMessage } from '@/lib/supabase';
@@ -33,6 +35,7 @@ export function ListItemEditor({
   photoUri,
   photoPending,
   facts,
+  brand,
   onSeePrices,
   onSave,
   onRemove,
@@ -44,6 +47,11 @@ export function ListItemEditor({
    * prioridade marcada aqui, ainda sem salvar: "só em promoção" mostra o preço bom.
    */
   facts?: (priority: ListPriority) => string[];
+  /**
+   * "Marca preferida": o produto do item tem marca para escolher (domain/genericItem, brandChoice). Ligada, o nome
+   * do item vira o do produto; desligada, o nome sem a marca. O estado é o próprio nome: não há coluna no banco.
+   */
+  brand?: BrandChoice | null;
   /** O item tem um produto, com ou sem preço: "Ver preços" leva à tela dele (quem chama fecha os detalhes). */
   onSeePrices?: () => void;
   /** A foto atual (já enviada ou esperando internet). */
@@ -67,6 +75,14 @@ export function ListItemEditor({
   const qty = parseDecimal(quantity);
   const invalid = !name.trim() || !qty || qty <= 0;
   const shownFacts = facts?.(priority) ?? [];
+  const prefersBrand = brand != null && listNameKey(name) === listNameKey(brand.brandName);
+
+  /** Liga a marca do produto, ou desliga: volta o nome que o item tinha (sem ser o da marca) ou o nome sem a marca. */
+  function toggleBrand() {
+    if (!brand) return;
+    if (!prefersBrand) return setName(brand.brandName);
+    setName(listNameKey(item.name) === listNameKey(brand.brandName) ? brand.genericName : item.name);
+  }
 
   /** "Ver preços" sai dos detalhes: com algo mudado e ainda não salvo, pergunta antes. */
   function seePrices() {
@@ -176,6 +192,18 @@ export function ListItemEditor({
           />
 
           <TextField label="Nome" value={name} onChangeText={setName} />
+          {brand ? (
+            <View style={styles.gap}>
+              <View style={styles.wrap}>
+                <Chip label="Marca preferida" icon="star-outline" selected={prefersBrand} onPress={toggleBrand} />
+              </View>
+              <Text variant="small">
+                {prefersBrand
+                  ? `A lista pede ${brand.brandName}. Na nota, só esse produto tira o item da lista.`
+                  : `Qualquer marca serve. Ligue para pedir ${brand.brandName}.`}
+              </Text>
+            </View>
+          ) : null}
           <Row style={styles.qtyRow}>
             <View style={styles.qty}>
               <TextField label="Quantidade" value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" />

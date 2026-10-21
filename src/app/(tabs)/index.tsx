@@ -34,9 +34,8 @@ import { todayEntries } from '@/domain/familyEvents';
 import { currentTimeHHMM, doseKey, dosesForDay } from '@/domain/medications';
 import { MEALS } from '@/domain/menu';
 import { describeExpiry, expiryStatus } from '@/domain/pantry';
-import type { PurchaseRecord } from '@/domain/recentPurchases';
+import { listExclusion, type PurchaseRecord } from '@/domain/recentPurchases';
 import { describeRestock, restockSuggestions, type RestockItem } from '@/domain/restock';
-import { normalizeSearch } from '@/domain/search';
 import { suppliesNeedingAttention } from '@/domain/supplies';
 import { announceCompletion } from '@/features/ChoresPanel';
 import { BillRow } from '@/features/finance/BillsPanel';
@@ -105,10 +104,8 @@ function useRestock(
             // Fim do dia: entram as compras de hoje, de qualquer hora.
             now: new Date(`${today}T23:59:59.999`),
             listKind: 'mercado',
-            exclude: {
-              names: new Set([...onLists.map((i) => normalizeSearch(i.name)), ...justListed]),
-              productIds: new Set(onLists.flatMap((i) => (i.product_id ? [i.product_id] : []))),
-            },
+            // Também o mesmo item com outro nome ("Leite IL Desnatado" na lista tira "Leite desnatado").
+            exclude: listExclusion(onLists, justListed),
             limit: 5,
           })
         : [],

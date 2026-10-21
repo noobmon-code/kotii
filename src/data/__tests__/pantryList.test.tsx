@@ -174,6 +174,21 @@ describe('o que acabou na despensa vai para uma lista', () => {
     expect(mockDb.items).toHaveLength(1);
   });
 
+  it('o mesmo item já pendente com outro nome (com a marca, ou sem ela): não entra de novo', async () => {
+    const milk: Item = { name: 'Leite desnatado', category: 'laticinios', productId: 'il', quantity: 1, unit: 'un' };
+    mockDb.lists = [list('Feira', 'mercado', '2026-10-15T10:00:00Z')];
+    mockDb.items = [{ id: 'i1', list_id: 'Feira', name: 'Leite IL Desnatado', category: 'laticinios', checked_at: null }];
+    expect(await finish(milk)).toEqual({ id: 'Feira', name: 'Feira', added: false });
+    expect(mockDb.calls).not.toContain('rpc add_to_list');
+    // O contrário também.
+    mockDb.items = [{ id: 'i1', list_id: 'Feira', name: 'Leite desnatado', category: 'laticinios', checked_at: null }];
+    expect(await finish({ ...milk, name: 'Leite IL Desnatado' })).toMatchObject({ added: false });
+    // Outro tipo do mesmo item entra; no carrinho, não conta.
+    expect(await finish({ ...milk, name: 'Leite integral' })).toMatchObject({ added: true });
+    mockDb.items = [{ id: 'i1', list_id: 'Feira', name: 'Leite IL Desnatado', category: 'laticinios', checked_at: '2026-10-18T10:00:00Z' }];
+    expect(await finish(milk)).toMatchObject({ added: true });
+  });
+
   it('nenhuma lista aberta em que caiba: a de mercado de sempre (achada ou criada no servidor)', async () => {
     mockDb.lists = [list('Farmácia', 'farmacia', '2026-10-17T10:00:00Z')];
     expect(await finish(rice)).toMatchObject({ name: 'Mercado', added: true });

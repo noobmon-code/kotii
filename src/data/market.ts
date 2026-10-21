@@ -12,6 +12,7 @@ import {
 import { useEffect } from 'react';
 
 import type { CartPantryEntry } from '@/domain/cartPantry';
+import { pendingSameItem } from '@/domain/genericItem';
 import { LinkIndex, type ListLink, type OpenListItem } from '@/domain/listLinks';
 import {
   cartPurchases,
@@ -32,7 +33,6 @@ import { listsFor, newListKind, PANTRY_LIST_GONE, type ListChoice } from '@/doma
 import { PRODUCT_MERGED_AWAY, PRODUCT_NAME_TAKEN } from '@/domain/productMerge';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
-import { normalizeSearch } from '@/domain/search';
 import type { ProductName } from '@/domain/similarNames';
 import { storePricesFromPurchases } from '@/domain/storePrices';
 import { EXPECTS_ROWS_META } from '@/lib/accessErrors';
@@ -448,13 +448,13 @@ export function useAddItemsToList() {
             ).id);
       // Lista achada no servidor: a tela pode não ter visto o que alguém pôs
       // nela agora há pouco. O que já está pendente não entra de novo.
+      // O mesmo item com outro nome também conta ("Leite IL Desnatado" para "Leite desnatado", domain/genericItem).
       let toAdd = items;
       if (reuseMarketList && items.length) {
         const pending = unwrap(
-          await supabase.from('shopping_list_items').select('name').eq('list_id', id).is('checked_at', null),
-        ) as { name: string }[];
-        const names = new Set(pending.map((p) => normalizeSearch(p.name)));
-        toAdd = items.filter((item) => !names.has(normalizeSearch(item.name)));
+          await supabase.from('shopping_list_items').select('name, category').eq('list_id', id).is('checked_at', null),
+        ) as { name: string; category?: string | null }[];
+        toAdd = items.filter((item) => !pendingSameItem(item, pending));
       }
       if (toAdd.length) {
         // O produto de um item pode ter sido juntado com outro em outro aparelho (withFreshProducts).
@@ -598,6 +598,12 @@ async function addToPantryList(queryClient: QueryClient, { listId, shownListId, 
     }
     list ??= newListKind(item.category) === 'farmacia' ? await openPharmacyList() : await openMarketList();
     const target = { id: list.id, name: list.name };
+    // add_to_list só não repete o mesmo nome. O mesmo item com outro nome, já pendente ("Leite IL Desnatado" para
+    // "Leite desnatado", e o contrário: domain/genericItem), também não entra de novo.
+    const pending = unwrap(
+      await supabase.from('shopping_list_items').select('name, category').eq('list_id', target.id).is('checked_at', null),
+    ) as { name: string; category?: string | null }[];
+    if (pendingSameItem(item, pending)) return { ...target, added: false };
     const added = await supabase
       .rpc('add_to_list', {
         p_list_id: target.id,

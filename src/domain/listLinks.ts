@@ -78,6 +78,12 @@ export interface OpenListItem {
   product_id: string | null;
   /** Quando foi para o carrinho (null ou ausente: ainda não foi). */
   checked_at?: string | null;
+  /**
+   * "Marca preferida" (domain/genericItem, prefersBrand): a pessoa quer a marca do produto do item. Outra marca
+   * do mesmo item não cumpre, nem como sugestão: só o produto, a ligação, o mesmo nome ou um nome com todas as
+   * palavras dele (com a marca).
+   */
+  brand?: boolean;
 }
 
 /** Item da nota como está na revisão. */
@@ -128,7 +134,9 @@ const MIN_OVERLAP = 0.5;
  *   "Bombom da Alcatra"; um tipo que a nota não diz) e palavras em comum
  *   ("Detergente" e "DET LIQ LIMPOL").
  * O que com certeza é outra coisa ("Batata" e "BATATA DOCE", "Leite
- * desnatado" e "LEITE INT") não entra nem como sugestão. Um item da nota pode
+ * desnatado" e "LEITE INT") não entra nem como sugestão. O item com "Marca
+ * preferida" (`brand`) só sai pelos três primeiros e pelo nome com as mesmas
+ * palavras (que traz a marca junto). Um item da nota pode
  * cumprir mais de um item de lista ("Coca" e "Refrigerante").
  * `sameName` diz quando o produto do item da nota "tem o mesmo nome" do item
  * da lista: por padrão, a mesma chave da lista; a revisão da nota passa a
@@ -170,7 +178,7 @@ export function matchListItems(
     // Sozinho, só o que estava no carrinho e uma linha só da nota pode ser ele: com duas ("LEITE INTEGRAL" e
     // "LEITE DESNATADO" para "Leite"), com um corte que também pode ser ("Carne moída" e "PATINHO MOIDO"), ou com uma
     // linha que o app não sabe ler, mas começa pelo item ("BAT INGLESA KG" para "Batata"), a pessoa escolhe.
-    if (item.checked_at && sameItem.length) {
+    if (item.checked_at && sameItem.length && !item.brand) {
       const unread = fits.filter(({ fit, line }) => fit == null && startsAsItem(item, line.names));
       if (new Set([...sameItem, ...maybe, ...unread].map(({ line }) => purchaseKey(line))).size === 1) {
         return [{ listItemId: item.id, receiptItemId: sameItem[0].line.id, reason: 'item', checked: true }];
@@ -191,6 +199,8 @@ export function matchListItems(
       if (!best || score[0] < best.score[0] || (score[0] === best.score[0] && score[1] < best.score[1])) best = { line, score };
     }
     if (best) return [{ listItemId: item.id, receiptItemId: best.line.id, reason: 'nome', checked: false }];
+    // Marca preferida: outra marca do mesmo item (ou palavras só parecidas) não é o que a pessoa pediu.
+    if (item.brand) return [];
 
     const suggested = closest(item, sameItem) ?? closest(item, maybe);
     if (suggested) return [{ listItemId: item.id, receiptItemId: suggested.id, reason: sameItem.length ? 'item' : 'parecido', checked: false }];

@@ -50,9 +50,10 @@ import {
 import { compareForShopping } from '@/domain/listItem';
 import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { todayISO } from '@/domain/dates';
+import { brandChoice, genericItem, pendingSameItem, sameListItem } from '@/domain/genericItem';
 import { cartPurchases } from '@/domain/listQueue';
 import { parseDecimal } from '@/domain/money';
-import { fitsList, recentPurchases, type RecentItem } from '@/domain/recentPurchases';
+import { fitsList, listExclusion, recentPurchases, type RecentItem } from '@/domain/recentPurchases';
 import { ranOutItems, restockFrom } from '@/domain/restock';
 import { guessCategory, normalizeSearch } from '@/domain/search';
 import { sharedQuotes } from '@/domain/sharedPrices';
@@ -165,13 +166,24 @@ export default function ShoppingListScreen() {
     [products.data],
   );
 
-  // Produtos com histórico de preço primeiro; depois itens comuns da casa.
+  // Produtos com histórico de preço primeiro; depois itens comuns da casa. O produto aparece e entra na lista sem
+  // a marca ("Leite desnatado", e não "Leite IL Desnatado"), com ele como dica de preço: a marca se escolhe na hora,
+  // ou em "Marca preferida" nos detalhes. Marcas do mesmo item são uma sugestão só.
   const suggestions = useMemo(() => {
     const q = normalizeSearch(name);
     if (q.length < 2) return { products: [], common: [] };
-    const matched = (products.data ?? []).filter((p) => normalizeSearch(p.name).includes(q)).slice(0, 4);
+    const seen = new Set<string>();
+    const matched: { product: Product; name: string }[] = [];
+    for (const product of products.data ?? []) {
+      if (matched.length >= 4) break;
+      if (!normalizeSearch(product.name).includes(q)) continue;
+      const generic = genericItem(product.name, product.category);
+      if (seen.has(generic.key)) continue;
+      seen.add(generic.key);
+      matched.push({ product, name: generic.name });
+    }
     const common = searchCommonItems(q, 6)
-      .filter((i) => !productByName.has(normalizeSearch(i.name)))
+      .filter((i) => !productByName.has(normalizeSearch(i.name)) && !seen.has(genericItem(i.name, i.category).key))
       .slice(0, Math.max(2, 6 - matched.length));
     return { products: matched, common };
   }, [name, products.data, productByName]);
@@ -184,16 +196,29 @@ export default function ShoppingListScreen() {
     setUnit('un');
   }
 
+  /**
+   * O mesmo item já está para comprar nesta lista, com este nome ou outro ("Leite IL Desnatado" e "Leite
+   * desnatado"): não põe de novo, e avisa.
+   */
+  function alreadyListed(item: { name: string; category: string }): boolean {
+    const listed = pendingSameItem(item, items.data ?? []);
+    if (listed) notify('Já estava na lista', `${listed.name} já está na lista para comprar.`);
+    return Boolean(listed);
+  }
+
   // Pôr item vai pela fila da lista: aparece na hora, também sem internet, e o campo já fica livre para o próximo.
-  // Se a fila desistir, o aviso sai dela (lib/queryClient), também com a tela já fechada.
-  function add(product?: Product) {
-    const itemName = product?.name ?? name.trim();
+  // Se a fila desistir, o aviso sai dela (lib/queryClient), também com a tela já fechada. O produto escolhido na
+  // busca entra sem a marca (`productName`, de genericItem), com ele como dica de preço.
+  function add(product?: Product, productName?: string) {
+    const itemName = productName ?? product?.name ?? name.trim();
     if (!itemName) return;
+    const category = product?.category ?? guessCategory(itemName);
+    if (alreadyListed({ name: itemName, category })) return resetForm();
     const qty = parseDecimal(quantity) ?? 1;
     addItem.add(
       {
         name: itemName,
-        category: product?.category ?? guessCategory(itemName),
+        category,
         productId: product?.id ?? null,
         quantity: qty > 0 ? qty : 1,
         unit,
@@ -206,10 +231,14 @@ export default function ShoppingListScreen() {
   /** Item comum: liga ao produto da casa de mesmo nome, se existir. */
   function addCommon(item: CommonItem, fromForm = false) {
     const product = productByName.get(normalizeSearch(item.name));
+    if (alreadyListed({ name: item.name, category: product?.category ?? item.category })) {
+      if (fromForm) resetForm();
+      return;
+    }
     const qty = fromForm ? (parseDecimal(quantity) ?? 1) : 1;
     addItem.add(
       {
-        name: product?.name ?? item.name,
+        name: item.name,
         category: product?.category ?? item.category,
         productId: product?.id ?? null,
         quantity: qty > 0 ? qty : 1,
@@ -230,9 +259,11 @@ export default function ShoppingListScreen() {
     try {
       if (add) {
         const product = productByName.get(normalizeSearch(item.name));
+        // Já pendente com outro nome (a marca): o catálogo marca o item como na lista, sem pôr de novo.
+        if (pendingSameItem({ name: item.name, category: item.category }, items.data ?? [])) return true;
         addItem.add(
           {
-            name: product?.name ?? item.name,
+            name: item.name,
             category: product?.category ?? item.category,
             productId: product?.id ?? null,
             quantity: 1,
@@ -242,8 +273,8 @@ export default function ShoppingListScreen() {
         );
         return true;
       }
-      const key = normalizeSearch(item.name);
-      const matches = (items.data ?? []).filter((i) => !i.checked_at && normalizeSearch(i.name) === key);
+      // O mesmo item, com este nome ou com a marca ("Leite desnatado" tira o "Leite IL Desnatado").
+      const matches = (items.data ?? []).filter((i) => !i.checked_at && sameListItem({ name: item.name, category: item.category }, i));
       if (!matches.length) return false;
       // Foto que ainda espera internet também conta (o item ainda não tem photo_path).
       const detailed = matches.some(
@@ -326,10 +357,8 @@ export default function ShoppingListScreen() {
   // letra digitada no campo.
   const strips = useMemo(() => {
     if (!listKind || !items.data) return { restock: [], recent: [] };
-    const inList = {
-      names: new Set([...items.data.map((i) => normalizeSearch(i.name)), ...justAdded.pending]),
-      productIds: new Set(items.data.flatMap((i) => (i.product_id ? [i.product_id] : []))),
-    };
+    // Também o mesmo item com outro nome: "Leite IL Desnatado" na lista tira "Leite desnatado" das faixas.
+    const inList = listExclusion(items.data, justAdded.pending);
     // A faixa só sugere o que cabe neste tipo de lista (remédio não entra na do mercado).
     const restock = restockFrom(ranOut.filter((i) => fitsList(i.category, listKind)), { exclude: inList });
     const recent = recentPurchases(purchases.data ?? [], {
@@ -407,7 +436,8 @@ export default function ShoppingListScreen() {
   // Urgentes no topo.
   const pending = (items.data ?? []).filter((i) => !i.checked_at).sort(compareForShopping);
   const checked = (items.data ?? []).filter((i) => i.checked_at).sort(compareByAisle);
-  const pendingNames = new Set(pending.map((i) => normalizeSearch(i.name)));
+  // O catálogo marca o item que já está na lista, também com a marca no nome ("Leite IL Desnatado" é "Leite desnatado").
+  const pendingNames = new Set(pending.flatMap((i) => [normalizeSearch(i.name), normalizeSearch(genericItem(i.name, i.category).name)]));
 
   // Sem internet e nunca aberta neste aparelho (nem veio com o resumo das listas): a busca fica parada até a
   // conexão voltar, e a tela diz isso em vez de girar sem fim.
@@ -578,13 +608,13 @@ export default function ShoppingListScreen() {
             <Chip key={u} label={u} selected={unit === u} onPress={() => setUnit(u)} />
           ))}
         </Row>
-        {suggestions.products.map((p) => (
+        {suggestions.products.map(({ product, name: itemName }) => (
           <ListRow
-            key={p.id}
-            left={<CategoryIcon category={p.category} name={p.name} size={32} />}
-            title={p.name}
+            key={product.id}
+            left={<CategoryIcon category={product.category} name={itemName} size={32} />}
+            title={itemName}
             subtitle="Produto com histórico de preço"
-            onPress={() => add(p)}
+            onPress={() => add(product, itemName)}
           />
         ))}
         {suggestions.common.map((item) => (
@@ -690,6 +720,7 @@ export default function ShoppingListScreen() {
               productName: (product) => products.data?.find((p) => p.id === product)?.name,
             })
           }
+          brand={editing.product_id ? brandChoice(products.data?.find((p) => p.id === editing.product_id)) : null}
           onSeePrices={seePricesOf(editing)}
           onSave={(details, photo) => saveDetails(editing, details, photo)}
           onRemove={() => removeItem(editing)}

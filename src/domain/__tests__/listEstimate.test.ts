@@ -97,6 +97,23 @@ describe('estimateList', () => {
     expect(estimate).toMatchObject({ total: 30, itemCount: 3, pricedCount: 2, approximateCount: 1 });
   });
 
+  it('item sem marca com o produto da última compra como dica: o preço vem do produto, e nunca de outro item', () => {
+    // "Leite desnatado" posto de "Comprados recentemente", com o Leite IL Desnatado como dica (domain/genericItem).
+    const products = [
+      { id: 'il', name: 'Leite IL Desnatado' },
+      { id: 'integral', name: 'Leite Italac Integral' },
+    ];
+    const quotes = [price('il', 'bom', 4.5, '2026-09-20T12:00:00Z'), price('il', 'caro', 5, '2026-10-01T12:00:00Z'), price('integral', 'bom', 3)];
+    const estimate = estimateList([item('l', 'Leite desnatado', 'il', 2)], quotes, { products });
+    expect(estimate.byItem.get('l')).toMatchObject({ cost: 10, kind: 'known', productId: 'il' });
+    // "Onde comprar": em cada mercado, o preço da dica; o leite integral não entra no lugar.
+    const priceAt = listStorePrices([item('l', 'Leite desnatado', 'il', 2)], quotes, { products });
+    expect(priceAt('l', 'caro')).toMatchObject({ cost: 10, productId: 'il', source: 'product' });
+    expect(priceAt('l', 'bom')).toMatchObject({ cost: 9, productId: 'il', source: 'product' });
+    // Sem a dica, o nome sem marca não acha preço de outra marca (o "mais barato de qualquer marca" é outro passo).
+    expect(estimateList([item('l', 'Leite desnatado', null, 2)], quotes, { products }).byItem.has('l')).toBe(false);
+  });
+
   it('item cujo produto não tem preço cai nas ligações do nome', () => {
     const links = new LinkIndex([{ name_key: 'leite', product_id: 'italac' }]);
     const estimate = estimateList([item('l', 'Leite', 'leite-generico', 2)], [price('italac', 'bom', 5)], { links });
@@ -1009,7 +1026,8 @@ describe('pantryHits', () => {
       now: new Date(`${today}T23:59:59.999`),
       listKind: 'mercado',
     });
-    expect(ranOut.map((r) => r.name)).toEqual(['Café Pilão 500g']);
+    // A faixa diz o item sem a marca; o produto vai junto (domain/genericItem).
+    expect(ranOut.map((r) => [r.name, r.productId])).toEqual([['Café', 'pilao']]);
     const pantry = [stock('Café Pilão 500g', 'pilao', { purchased_on: '2026-09-28', expires_on: '2027-03-27' })];
     expect(pantryHits([item('c', 'Café Pilão 500g', 'pilao')], pantry, { today }).size).toBe(1);
     expect(pantryHits([item('c', 'Café Pilão 500g', 'pilao')], pantry, { today, ranOut }).size).toBe(0);
