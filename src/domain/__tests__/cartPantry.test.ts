@@ -44,7 +44,22 @@ describe('findSamePurchase', () => {
   it('outra coisa não bate, nem com o nome começando igual', () => {
     expect(findSamePurchase({ productId: 'p-feijao', name: 'Feijão Carioca 1kg' }, '2026-09-25', entries)).toBeUndefined();
     expect(findSamePurchase({ productId: null, name: 'Leite condensado' }, '2026-09-26', entries)).toBeUndefined();
-    expect(findSamePurchase({ productId: 'p-integral', name: 'Arroz integral' }, '2026-09-25', [entries[0]])?.name).toBe('Arroz Tio João 5kg');
+    // A versão que só um lado diz é outra coisa: o arroz calado é o branco.
+    expect(findSamePurchase({ productId: 'p-integral', name: 'Arroz integral' }, '2026-09-25', [entries[0]])).toBeUndefined();
+  });
+
+  it('o mesmo item em pó: "Achocolatado" e "Achocolatado em pó" são uma compra só', () => {
+    const fromCart = [{ product_id: null, name: 'Achocolatado', purchased_on: '2026-10-20' }];
+    expect(findSamePurchase({ productId: 'p-achoc', name: 'Achocolatado em pó Bom Dia 400g' }, '2026-10-20', fromCart)).toBe(fromCart[0]);
+    expect(findSamePurchase({ productId: null, name: 'Gelatina' }, '2026-10-20', [{ product_id: 'p-gel', name: 'Gelatina em pó morango', purchased_on: '2026-10-19' }])).toBeDefined();
+  });
+
+  it('a entrada mais certa vem primeiro', () => {
+    const pantry = [
+      { product_id: null, name: 'Carne', purchased_on: '2026-10-20' },
+      { product_id: 'p-moida', name: 'Carne moída bovina', purchased_on: '2026-10-20' },
+    ];
+    expect(findSamePurchase({ productId: 'p-moida', name: 'Carne Moída Boa Mesa' }, '2026-10-20', pantry)?.name).toBe('Carne moída bovina');
   });
 
   it('o corte de carne da nota é a "Carne" que o carrinho guardou', () => {
@@ -84,6 +99,34 @@ describe('cartPantryRows', () => {
   it('o botão do item manda aquele item, qualquer que seja a categoria', () => {
     const [row] = cartPantryRows([item({ name: 'Detergente', category: 'limpeza' })], [], { single: true, today });
     expect(row.include).toBe(true);
+  });
+
+  it('no limpar, outra versão ou o que só pode ser o mesmo não fica de fora sem perguntar', () => {
+    const pantry = [
+      { product_id: 'p1', name: 'Arroz Grão Bom 5kg', purchased_on: '2026-10-19' },
+      { product_id: 'p3', name: 'Coca-Cola 2L', purchased_on: '2026-10-19' },
+      { product_id: 'p7', name: 'Leite Integral Serrana', purchased_on: '2026-10-19' },
+      { product_id: 'p8', name: 'Bife de Alcatra', purchased_on: '2026-10-19' },
+    ];
+    const cart = [
+      item({ id: 'integral', name: 'Arroz integral Sol', category: 'graos', product_id: 'p2', checked_at: '2026-10-20T15:00:00' }),
+      item({ id: 'zero', name: 'Coca zero', category: 'bebidas', product_id: 'p4', checked_at: '2026-10-20T15:00:00' }),
+      item({ id: 'achoc', name: 'Leite achocolatado Serrana', category: 'laticinios', product_id: 'p9', checked_at: '2026-10-20T15:00:00' }),
+      // Outro tamanho, dois produtos: pode ser o mesmo, mas não com certeza.
+      item({ id: 'quilo', name: 'Arroz Sol 1kg', category: 'graos', product_id: 'p5', checked_at: '2026-10-20T15:00:00' }),
+      // O mesmo item de outra marca é a mesma compra.
+      item({ id: 'marca', name: 'Arroz Sol 5kg', category: 'graos', product_id: 'p6', checked_at: '2026-10-20T15:00:00' }),
+      // O nome solto da lista e o corte que a nota trouxe: a mesma compra.
+      item({ id: 'carne', name: 'Carne', category: 'carnes', checked_at: '2026-10-20T15:00:00' }),
+    ];
+    expect(cartPantryRows(cart, pantry, { single: false, today: '2026-10-20' }).map((r) => [r.id, r.include, r.alreadySince])).toEqual([
+      ['integral', true, null],
+      ['zero', true, null],
+      ['achoc', true, null],
+      ['quilo', true, null],
+      ['marca', false, '2026-10-19'],
+      ['carne', false, '2026-10-19'],
+    ]);
   });
 
   it('a data da compra é o dia em que foi para o carrinho; sem ela, hoje', () => {
@@ -137,6 +180,43 @@ describe('receiptPantryRepeats', () => {
       ],
     );
     expect(repeats).toEqual([{ id: 'r1', name: 'Leite Italac 1L', since: '2026-09-27' }]);
+  });
+
+  it('uma entrada da despensa é a repetição de uma compra só da nota, a mais certa', () => {
+    const fromCart = [{ product_id: null, name: 'Carne', purchased_on: '2026-10-18' }];
+    const repeats = receiptPantryRepeats(
+      [
+        { id: 'r1', product_id: 'p-bife', pantry: { name: 'Bife de Alcatra' } },
+        { id: 'r2', product_id: 'p-moida', pantry: { name: 'Carne Moída' } },
+        { id: 'r3', product_id: 'p-costela', pantry: { name: 'Costela Bovina' } },
+      ],
+      '2026-10-20',
+      fromCart,
+    );
+    // A carne moída é a "Carne" com certeza; o bife e a costela só poderiam ser, e a entrada já é da moída.
+    expect(repeats).toEqual([{ id: 'r2', name: 'Carne Moída', since: '2026-10-18' }]);
+  });
+
+  it('duas linhas do mesmo produto são uma compra só: as duas repetem', () => {
+    const repeats = receiptPantryRepeats(
+      [
+        { id: 'r1', product_id: 'p-leite', pantry: { name: 'Leite UHT Serrana' } },
+        { id: 'r2', product_id: 'p-leite', pantry: { name: 'Leite UHT Serrana' } },
+        { id: 'r3', product_id: 'p-condensado', pantry: { name: 'Leite Condensado Boa Vaca' } },
+      ],
+      '2026-10-20',
+      [{ product_id: null, name: 'Leite', purchased_on: '2026-10-20' }],
+    );
+    expect(repeats.map((r) => r.id)).toEqual(['r1', 'r2']);
+  });
+
+  it('pergunta também pelo que só pode ser o mesmo, de dois produtos', () => {
+    const repeats = receiptPantryRepeats(
+      [{ id: 'r1', product_id: 'p-quilo', pantry: { name: 'Arroz Sol 1kg' } }],
+      '2026-10-20',
+      [{ product_id: 'p-cinco', name: 'Arroz Grão Bom 5kg', purchased_on: '2026-10-19' }],
+    );
+    expect(repeats).toEqual([{ id: 'r1', name: 'Arroz Sol 1kg', since: '2026-10-19' }]);
   });
 });
 

@@ -97,6 +97,34 @@ describe('sameItemFit: as travas (o que parece, mas é outra coisa)', () => {
     ['amido de milho', 'BISCOITO MAIZENA 400G'],
     ['Margarina', 'MANTEIGA COM SAL 200G'],
     ['Alcatra', 'PICANHA BOV KG'],
+    // Leite condensado, achocolatado e fermentado como a nota corta.
+    ['Leite', 'LEITE CONDENS BOA VACA 395G'],
+    ['Leite', 'LTE CONDENS BOA VACA 395G'],
+    ['Leite', 'LEITE ACHOC SERRANA 200ML'],
+    ['Leite', 'LEITE C/ CHOCOLATE SERRANA'],
+    ['Leite', 'LEITE FERM VIDA 6UN'],
+    // O pronto ou processado que começa pelo nome de outro item.
+    ['Batata', 'BATATA RUFFLES ORIGINAL 96G'],
+    ['Batata', 'BATATA PRE FRITA BOA MESA 2KG'],
+    ['Pizza', 'MOLHO PIZZA BOM SABOR 340G'],
+    ['Pão', 'PAO DE MEL SOL 30G'],
+    ['Alho', 'TEMPERO ALHO E SAL BOM 1KG'],
+    ['Feijão', 'FEIJAO TROPEIRO BOM 250G'],
+    ['Tomate', 'TOMATE PELADO SOL 400G'],
+    // O tipo de biscoito que a lista diz.
+    ['Biscoito recheado', 'BISCOITO MAISENA VITA 400G'],
+    // A versão que a lista pede e a nota não diz: calada, a nota é a comum.
+    ['Coca zero', 'COCA COLA 2L'],
+    ['Coca zero', 'REFRIG COCA COLA PET 2L'],
+    ['Leite sem lactose', 'LEITE SERRANA 1L'],
+    ['Cerveja sem álcool', 'CERVEJA BOA 350ML'],
+    ['Requeijão light', 'REQUEIJAO CREMOSO VALE'],
+    ['Arroz integral', 'ARROZ GRAO BOM 5KG'],
+    ['Café com leite', 'CAFE PILAO 500G'],
+    // A marca do refrigerante.
+    ['Coca', 'FANTA 2L'],
+    ['Coca', 'REFRIG FANTA 2L'],
+    ['Fanta', 'COCA COLA 2L'],
   ];
   it.each(other)('"%s" e "%s" são outra coisa', (wanted, found) => {
     expect(fit(wanted, found)).toBe('outro');
@@ -115,6 +143,12 @@ describe('sameItemFit: as travas (o que parece, mas é outra coisa)', () => {
     ['Frango', 'Filé de peito de frango'],
     ['Queijo', 'Mussarela fatiada'],
     ['Chocolate', 'Bombom sortido'],
+    // Uma versão que só a nota diz.
+    ['Café', 'Café com leite'],
+    ['Suco', 'SUCO EM PO SOL LARANJA'],
+    // A nota calada não diz qual sabão é.
+    ['Sabão líquido', 'LAVA ROUPAS LIMPINHO 1KG'],
+    ['Batata inglesa', 'BATATA ASTERIX KG'],
   ];
   it.each(maybe)('"%s" e "%s" podem ser o mesmo (sugestão)', (wanted, found) => {
     expect(fit(wanted, found)).toBe('talvez');
@@ -122,6 +156,11 @@ describe('sameItemFit: as travas (o que parece, mas é outra coisa)', () => {
 
   it('um nome da nota que diz outro tipo decide, mesmo com o produto calado', () => {
     expect(sameItemFit({ name: 'leite desnatado' }, { names: ['Leite Serra', 'LEITE SERRA INT 1L'] })).toBe('outro');
+  });
+
+  it('a versão que a lista pede basta estar num dos nomes da nota', () => {
+    expect(sameItemFit({ name: 'Coca zero' }, { names: ['Coca-Cola 2L', 'REFRIG COCA COLA ZERO 2L'] })).toBe('mesmo');
+    expect(sameItemFit({ name: 'Coca zero' }, { names: ['Coca-Cola 2L', 'REFRIG COCA COLA 2L'] })).toBe('outro');
   });
 });
 
@@ -141,6 +180,23 @@ describe('sameItemFit: o mesmo item, de qualquer marca', () => {
     ['Luvas de limpeza', 'Luva'],
     ['Tangerina', 'MEXERICA PONKAN KG'],
     ['Banana Prata Granel 700g', 'BANANA PRATA KG'],
+    // A versão como a nota escreve.
+    ['Leite sem lactose', 'Leite S/Lactose Serrana'],
+    ['Leite zero lactose', 'LEITE ZERO LAC SERRANA 1L'],
+    ['Cerveja sem álcool', 'CERV S/ALCOOL BOA 350ML'],
+    ['Cerveja sem álcool', 'CERVEJA BOA ZERO 350ML'],
+    ['Coca zero', 'COCA COLA S/ACUCAR 2L'],
+    // O nome sozinho é o de pó.
+    ['Achocolatado', 'ACHOC PO BOM DIA 400G'],
+    ['Achocolatado', 'ACHOCOLATADO EM PO BOM DIA 400G'],
+    ['Gelatina', 'GELATINA PO SOL MORANGO'],
+    ['Fermento', 'FERMENTO EM PO SOL 100G'],
+    // A batata comum, e o biscoito sem tipo, que é qualquer um.
+    ['Batata', 'BATATA INGLES KG'],
+    ['Batata inglesa', 'BATATA LAVADA KG'],
+    ['Biscoito', 'BISCOITO MAISENA VITA 400G'],
+    ['Tempero', 'TEMPERO ALHO E SAL BOM 1KG'],
+    ['Leite condensado', 'LEITE CONDENS BOA VACA 395G'],
   ];
   it.each(same)('"%s" e "%s"', (wanted, found) => {
     expect(fit(wanted, found)).toBe('mesmo');
@@ -157,6 +213,13 @@ describe('wordOverlap', () => {
     expect(wordOverlap('Escova de cabelo', ['ESC CABELO MACIA'])).toBe(1);
     expect(wordOverlap('Fralda Turminha G', ['FRALDA SONINHO CONF G'])).toBe(0.5);
     expect(wordOverlap('Salsa maço', ['CEBOLINHA MACO'])).toBe(0);
+  });
+
+  it('só a palavra da nota abrevia a da lista, não o contrário', () => {
+    expect(wordOverlap('Chá', ['CHANTILLY AMELIA 200G'])).toBe(0);
+    expect(wordOverlap('Pimenta', ['PIMENTAO VERDE KG'])).toBe(0);
+    expect(wordOverlap('Pimenta do reino', ['PIMENTAO VERDE KG'])).toBe(0);
+    expect(wordOverlap('Detergente', ['DET LIQ LIMPOL'])).toBe(1);
   });
 });
 
@@ -271,5 +334,44 @@ describe('matchListItems: a regra do carrinho', () => {
       { listItemId: 'l1', receiptItemId: 'e', reason: 'parecido', checked: false },
     ]);
     expect(match([listItem('l1', 'Escova de cabelo', 'hortifruti')], [escova])).toEqual([]);
+  });
+
+  it('as palavras em comum respeitam as travas, mesmo na linha que o app não sabe ler', () => {
+    const sabLiq = line('s', 'SAB LIQ BRILHO 3L', 'Sab Liq Brilho 3l', 'limpeza', null);
+    expect(match([listItem('l1', 'Sabão em pó', 'limpeza')], [sabLiq])).toEqual([]);
+    expect(match([listItem('l1', 'Sabão líquido', 'limpeza')], [sabLiq])).toEqual([
+      { listItemId: 'l1', receiptItemId: 's', reason: 'parecido', checked: false },
+    ]);
+    expect(match([listItem('l1', 'Batata', 'hortifruti')], [line('d', 'BAT DOCE KG', 'Bat Doce Kg', 'hortifruti', null)])).toEqual([]);
+    expect(match([listItem('l1', 'Chá', 'cafe_cha')], [line('c', 'CHANTILLY AMELIA 200G', 'Chantilly Amelia', 'laticinios', null)])).toEqual([]);
+  });
+
+  it('a versão que a lista pede e a nota não diz não vira nem sugestão', () => {
+    expect(match([listItem('l1', 'Coca zero', 'bebidas', true)], [line('c', 'COCA COLA 2L', 'Coca Cola 2l', 'bebidas')])).toEqual([]);
+    expect(match([listItem('l1', 'Leite sem lactose', 'laticinios')], [line('l', 'LEITE UHT SERRANA 1L', 'Leite UHT Serrana', 'laticinios')])).toEqual([]);
+    expect(match([listItem('l1', 'Coca', 'bebidas')], [line('f', 'REFRIG FANTA 2L', 'Refrigerante Fanta 2l', 'bebidas')])).toEqual([]);
+  });
+
+  it('o leite no carrinho não marca sozinho o leite condensado, nem o café com leite marca o café', () => {
+    expect(match([leite(true)], [line('c', 'LEITE CONDENS BOA VACA 395G', 'Leite Condens Boa Vaca', 'doces')])).toEqual([]);
+    const cafe = line('p', 'CAFE PILAO 500G', 'Cafe Pilao 500g', 'cafe_cha');
+    const nescafe = line('n', 'NESCAFE C LEITE', 'Nescafe C Leite', 'cafe_cha');
+    expect(match([listItem('l1', 'Café com leite', 'cafe_cha', true)], [cafe, nescafe]).filter((m) => m.checked)).toEqual([]);
+  });
+
+  it('uma linha que o app não sabe ler, mas começa pelo item, também pode ser ele: não marca sozinho', () => {
+    const batata = line('b', 'BATATA RUFFLES ORIGINAL 96G', 'Batata Ruffles', 'snacks');
+    const kg = line('k', 'BATATA LAVADA KG', 'Batata Lavada', 'hortifruti');
+    const abbreviated = line('i', 'BAT INGLESA KG', 'Bat Inglesa Kg', 'hortifruti', null);
+    const doce = line('d', 'BAT DOCE KG', 'Bat Doce Kg', 'hortifruti', null);
+    // A Ruffles é outro item: nem conta.
+    expect(match([listItem('l1', 'Batata', 'hortifruti', true)], [batata, kg])).toEqual([
+      { listItemId: 'l1', receiptItemId: 'k', reason: 'item', checked: true },
+    ]);
+    expect(match([listItem('l1', 'Batata', 'hortifruti', true)], [kg, abbreviated]).map((m) => m.checked)).toEqual([false]);
+    // A que, lida como o item, é outra coisa não atrapalha.
+    expect(match([listItem('l1', 'Batata', 'hortifruti', true)], [kg, doce])).toEqual([
+      { listItemId: 'l1', receiptItemId: 'k', reason: 'item', checked: true },
+    ]);
   });
 });

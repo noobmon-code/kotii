@@ -109,6 +109,14 @@ describe('search', () => {
     expect(guessCategory('AGUA SANIT BRILHO 1L', { abbreviated: true })).toBe('limpeza');
     expect(guessCategory('AGUA MIN CRISTAL 1,5L', { abbreviated: true })).toBe('bebidas');
   });
+
+  it('a batata frita é congelada, não do hortifruti', () => {
+    expect(guessCategory('Batata Frita Congelada Boa Mesa 1kg')).toBe('congelados');
+    expect(guessCategory('BATATA FRITA CONG BOA MESA 2KG', { abbreviated: true })).toBe('congelados');
+    expect(guessCategory('BATATA PRE FRITA PALITO 400G', { abbreviated: true })).toBe('congelados');
+    expect(guessCategory('Batata palito')).toBe('congelados');
+    expect(guessCategory('Batata inglesa')).toBe('hortifruti');
+  });
 });
 
 describe('pantry expiry', () => {

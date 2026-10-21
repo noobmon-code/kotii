@@ -3,7 +3,7 @@
 // a nota, a pessoa diz quais itens da lista a compra cumpriu; cada um vira um
 // vínculo nome da lista -> produto, e a próxima nota já vem marcada.
 
-import { categoriesMayMatch, sameItemFit, wordOverlap } from './sameItem';
+import { categoriesMayMatch, readsAsOther, sameItemFit, startsAsItem, wordOverlap } from './sameItem';
 import { normalizeSearch } from './search';
 
 /** Vínculo aprendido: este nome de lista é cumprido por este produto. */
@@ -168,13 +168,17 @@ export function matchListItems(
     const sameItem = fits.filter(({ fit }) => fit === 'mesmo');
     const maybe = fits.filter(({ fit }) => fit === 'talvez');
     // Sozinho, só o que estava no carrinho e uma linha só da nota pode ser ele: com duas ("LEITE INTEGRAL" e
-    // "LEITE DESNATADO" para "Leite"), ou com um corte que também pode ser ("Carne moída" e "PATINHO MOIDO"), a pessoa
-    // escolhe.
-    if (item.checked_at && sameItem.length && new Set([...sameItem, ...maybe].map(({ line }) => purchaseKey(line))).size === 1) {
-      return [{ listItemId: item.id, receiptItemId: sameItem[0].line.id, reason: 'item', checked: true }];
+    // "LEITE DESNATADO" para "Leite"), com um corte que também pode ser ("Carne moída" e "PATINHO MOIDO"), ou com uma
+    // linha que o app não sabe ler, mas começa pelo item ("BAT INGLESA KG" para "Batata"), a pessoa escolhe.
+    if (item.checked_at && sameItem.length) {
+      const unread = fits.filter(({ fit, line }) => fit == null && startsAsItem(item, line.names));
+      if (new Set([...sameItem, ...maybe, ...unread].map(({ line }) => purchaseKey(line))).size === 1) {
+        return [{ listItemId: item.id, receiptItemId: sameItem[0].line.id, reason: 'item', checked: true }];
+      }
     }
-    // O que com certeza é outra coisa não é sugerido.
-    const open = fits.filter(({ fit }) => fit !== 'outro');
+    // O que com certeza é outra coisa não é sugerido, nem a linha que o app não sabe ler e, lida como o item, diz
+    // outra coisa ("SAB LIQ OMO" para "Sabão em pó", "BAT DOCE KG" para "Batata").
+    const open = fits.filter(({ fit, line }) => fit !== 'outro' && !(fit == null && readsAsOther(item, line.names)));
 
     // Mais parecido: primeiro a mesma categoria ("Leite" é o integral, não o
     // condensado dos doces), depois o nome mais curto.

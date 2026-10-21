@@ -19,41 +19,66 @@ export interface PantryEntry {
 }
 
 /**
- * Mesmo produto; nome de lista ligado ao produto do outro ("Cebola" do
- * carrinho e "Cebola Granel 600g" da nota, depois que a pessoa ligou os
- * dois); nomes em que um começa pelo outro ("Leite" e "Leite Italac 1L"); ou
- * o mesmo item da revisão da nota (domain/sameItem), de outra marca ou que
- * pode ser ele ("Leite IL Desnatado" do carrinho e "Leite UHT Parmalat" da
- * nota, "Carne" e "Bombom da Alcatra"): aqui é só a pergunta antes de
- * repetir, e o mesmo critério da nota não deixa o item entrar duas vezes.
+ * Quando o que só pode ser o mesmo item (domain/sameItem: um corte para
+ * "Carne", um tipo que um dos lados não diz) conta como a mesma compra.
+ * `sempre`: a nota, que pergunta antes de repetir. `nomeSolto`: só com um
+ * nome digitado de um lado, sem produto ("Carne" do carrinho e o "Bife de
+ * Alcatra" da nota); é o limpar o carrinho, que deixa de fora sem perguntar,
+ * e dois produtos diferentes que só podem ser o mesmo ficam os dois.
  */
-function sameItem(a: { productId: string | null; name: string }, b: PantryEntry, links: LinkIndex): boolean {
-  if (a.productId && a.productId === b.product_id) return true;
-  if (a.productId && links.has(b.name, a.productId)) return true;
-  if (b.product_id && links.has(a.name, b.product_id)) return true;
+export type MaybeSamePurchase = 'sempre' | 'nomeSolto';
+
+/**
+ * Quão certo é que são a mesma compra (menor, mais certo), ou null:
+ * 0: mesmo produto, nome de lista ligado ao produto do outro ("Cebola" do
+ * carrinho e "Cebola Granel 600g" da nota, depois que a pessoa ligou os
+ * dois); 1: o mesmo item da revisão da nota (domain/sameItem), de outra marca
+ * ("Leite" do carrinho e "Leite UHT Parmalat" da nota), ou nomes em que um
+ * começa pelo outro ("Leite" e "Leite Italac 1L"); 2: pode ser ele ("Carne"
+ * e "Bombom da Alcatra"). O mesmo critério da nota não deixa o item entrar
+ * duas vezes.
+ */
+function samePurchaseRank(
+  a: { productId: string | null; name: string },
+  b: PantryEntry,
+  links: LinkIndex,
+  maybe: MaybeSamePurchase,
+): 0 | 1 | 2 | null {
+  if (a.productId && a.productId === b.product_id) return 0;
+  if (a.productId && links.has(b.name, a.productId)) return 0;
+  if (b.product_id && links.has(a.name, b.product_id)) return 0;
   const fits = [sameItemFit({ name: a.name }, { names: [b.name] }), sameItemFit({ name: b.name }, { names: [a.name] })];
   // Outra coisa, mesmo começando pelo mesmo nome ("Leite" e "Leite condensado").
-  if (fits.includes('outro')) return false;
-  if (fits.some((fit) => fit === 'mesmo' || fit === 'talvez')) return true;
+  if (fits.includes('outro')) return null;
+  if (fits.includes('mesmo')) return 1;
   // Dois produtos diferentes não são o mesmo só porque um nome começa pelo outro.
-  if (a.productId && b.product_id) return false;
+  const twoProducts = Boolean(a.productId && b.product_id);
+  if (fits.includes('talvez')) return maybe === 'sempre' || !twoProducts ? 2 : null;
+  if (twoProducts) return null;
   const x = normalizeSearch(a.name);
   const y = normalizeSearch(b.name);
-  if (!x || !y) return false;
+  if (!x || !y) return null;
   const [short, long] = x.length <= y.length ? [x, y] : [y, x];
-  return long === short || long.startsWith(`${short} `);
+  return long === short || long.startsWith(`${short} `) ? 1 : null;
 }
 
-/** A entrada da despensa que parece ser esta mesma compra, se houver. */
+const nearDays = (a: string, b: string) => Math.abs(diffDays(a, b)) <= SAME_PURCHASE_DAYS;
+
+/** A entrada da despensa que parece ser esta mesma compra, se houver; a mais certa primeiro. */
 export function findSamePurchase<T extends PantryEntry>(
   item: { productId: string | null; name: string },
   purchasedOn: string,
   entries: T[],
   links: LinkIndex = new LinkIndex(),
+  maybe: MaybeSamePurchase = 'sempre',
 ): T | undefined {
-  return entries.find(
-    (entry) => Math.abs(diffDays(entry.purchased_on, purchasedOn)) <= SAME_PURCHASE_DAYS && sameItem(item, entry, links),
-  );
+  let best: { entry: T; rank: number } | undefined;
+  for (const entry of entries) {
+    if (!nearDays(entry.purchased_on, purchasedOn)) continue;
+    const rank = samePurchaseRank(item, entry, links, maybe);
+    if (rank != null && (!best || rank < best.rank)) best = { entry, rank };
+  }
+  return best?.entry;
 }
 
 export interface CartItem {
@@ -96,8 +121,9 @@ export function cartPantryRows(
 ): CartPantryRow[] {
   return items.map((item) => {
     const purchasedOn = item.checked_at ? toISODate(new Date(item.checked_at)) : today;
+    // Fica de fora sem perguntar: dois produtos que só podem ser o mesmo ("Arroz integral" e "Arroz Camil") vão os dois.
     const same = pantry
-      ? findSamePurchase({ productId: item.product_id, name: item.name }, purchasedOn, pantry, links)
+      ? findSamePurchase({ productId: item.product_id, name: item.name }, purchasedOn, pantry, links, 'nomeSolto')
       : undefined;
     const known = pantry !== null;
     return {
@@ -164,16 +190,40 @@ export interface PantryRepeat {
 /**
  * Itens da nota que iriam para a despensa, mas que já estão lá de uma compra
  * de data próxima (pelo carrinho ou à mão): pedem confirmação antes de repetir.
+ * Cada entrada da despensa é a repetição de uma compra só da nota (as linhas
+ * do mesmo produto contam como uma), a mais certa: a "Carne" do carrinho é a
+ * carne moída ou a alcatra da nota, não as duas.
  */
 export function receiptPantryRepeats(
   payload: { id: string; product_id?: string; pantry?: { name: string } }[],
   purchasedOn: string,
   entries: PantryEntry[],
-  links?: LinkIndex,
+  links: LinkIndex = new LinkIndex(),
 ): PantryRepeat[] {
-  return payload.flatMap((item) => {
+  const pairs = payload.flatMap((item, at) => {
     if (!item.pantry) return [];
-    const same = findSamePurchase({ productId: item.product_id ?? null, name: item.pantry.name }, purchasedOn, entries, links);
-    return same ? [{ id: item.id, name: item.pantry.name, since: same.purchased_on }] : [];
+    const purchase = { productId: item.product_id ?? null, name: item.pantry.name };
+    return entries.flatMap((entry, entryAt) => {
+      const rank = nearDays(entry.purchased_on, purchasedOn) ? samePurchaseRank(purchase, entry, links, 'sempre') : null;
+      return rank == null ? [] : [{ at, entryAt, rank }];
+    });
+  });
+  // A mais certa primeiro; no empate, a ordem da nota e a da despensa (a ordenação é estável).
+  pairs.sort((a, b) => a.rank - b.rank);
+  const purchaseOf = (at: number) => payload[at].product_id ?? `nome:${normalizeSearch(payload[at].pantry?.name ?? '')}`;
+  const owner = new Map<number, string>();
+  const repeatOf = new Map<number, PantryEntry>();
+  for (const { at, entryAt, rank } of pairs) {
+    if (repeatOf.has(at)) continue;
+    const purchase = purchaseOf(at);
+    const taken = owner.get(entryAt);
+    // O mesmo produto (rank 0) é sempre a mesma compra; o resto, só se a entrada ainda não é de outra.
+    if (rank > 0 && taken != null && taken !== purchase) continue;
+    if (taken == null) owner.set(entryAt, purchase);
+    repeatOf.set(at, entries[entryAt]);
+  }
+  return payload.flatMap((item, at) => {
+    const same = repeatOf.get(at);
+    return same && item.pantry ? [{ id: item.id, name: item.pantry.name, since: same.purchased_on }] : [];
   });
 }

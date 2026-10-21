@@ -12,6 +12,10 @@ export function normalizeSearch(value: string): string {
 // no mesmo lugar, a que vem antes aqui ("agua sanitaria" antes de "agua").
 const KEYWORDS: [string, string][] = [
   ['agua sanitaria', 'limpeza'],
+  // A batata frita é a congelada, não a do hortifruti (que "batata", mais abaixo, pegaria no mesmo lugar).
+  ['batata frita', 'congelados'],
+  ['batata pre frita', 'congelados'],
+  ['batata palito', 'congelados'],
   ['papel higienico', 'papel'],
   ['papel toalha', 'papel'],
   ['guardanapo', 'papel'],
