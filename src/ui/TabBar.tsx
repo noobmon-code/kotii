@@ -73,7 +73,7 @@ export function TabBar({ state, descriptors, navigation, insets }: BottomTabBarP
             style={styles.item}>
             <View style={[styles.pill, focused && { backgroundColor: withAlpha(c.primary, 0.12) }]}>
               {icon ? <TabIcon name={icon} color={color} /> : null}
-              <Text style={[styles.label, { color }]} numberOfLines={1}>
+              <Text style={[styles.label, focused && styles.labelActive, { color }]} numberOfLines={1}>
                 {label}
               </Text>
             </View>
@@ -106,5 +106,6 @@ const styles = StyleSheet.create({
     borderCurve: 'continuous',
     overflow: 'hidden',
   },
-  label: { fontFamily: fonts.heavy, fontSize: 11, lineHeight: 15 },
+  label: { fontFamily: fonts.bold, fontSize: 11, lineHeight: 15 },
+  labelActive: { fontFamily: fonts.heavy },
 });

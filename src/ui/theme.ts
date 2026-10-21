@@ -31,6 +31,8 @@ const light = {
   glassEdge: 'rgba(255, 255, 255, 0.55)',
   // Divisor fino entre linhas: o texto 2 a 12%.
   hairline: 'rgba(122, 100, 96, 0.12)',
+  // O aro do botão de marcar, vazio.
+  ring: '#D9C8BA',
 };
 
 export type Colors = typeof light;
@@ -58,6 +60,7 @@ const dark: Colors = {
   glassBorder: 'rgba(255, 255, 255, 0.12)',
   glassEdge: 'rgba(255, 255, 255, 0.06)',
   hairline: 'rgba(245, 239, 232, 0.1)',
+  ring: 'rgba(245, 239, 232, 0.32)',
 };
 
 export const PALETTES = { light, dark } as const;
@@ -175,3 +178,5 @@ export const space = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
 // Curvas do desenho: campos 15, tiles e itens 20, cartões e listas 25, topos 30.
 export const radius = { sm: 12, md: 15, tile: 20, lg: 25, xl: 30, pill: 999 } as const;
 export const MAX_WIDTH = 720;
+/** A margem das telas, dos lados e em cima (20 no desenho). */
+export const SCREEN_PADDING = 20;

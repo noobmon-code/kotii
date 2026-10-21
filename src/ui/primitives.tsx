@@ -18,16 +18,18 @@ import {
   useColorScheme,
 } from 'react-native';
 import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
+import Svg, { Circle, Line } from 'react-native-svg';
 
 import { getCategory, type IconName } from '@/domain/categories';
 import { formatBRDate, maskBRDate, parseBRDate } from '@/domain/dates';
 import { matchItemArt } from '@/domain/itemArt';
 import { Backdrop } from './Backdrop';
 import { CATEGORY_ART } from './categoryArt';
-import { GradientFill } from './gradient';
+import { AngledGradient } from './gradient';
+import { IconArt, type IconArtName } from './iconArt';
 import { ITEM_ART } from './itemArt';
 import { Orb } from './Orb';
-import { fonts, MAX_WIDTH, radius, shadows, space, useColors, useGlow, useScheme, useTint, withAlpha, type Colors, type Tint } from './theme';
+import { fonts, MAX_WIDTH, radius, SCREEN_PADDING, shadows, space, useColors, useGlow, useScheme, useTint, type Colors, type Tint } from './theme';
 
 export type { IconName };
 
@@ -147,9 +149,30 @@ function glassStyle(c: Colors): ViewStyle {
   return style;
 }
 
+/** O clarão do vidro: um véu branco no canto de cima à esquerda que some até quase a metade. */
+function GlassHighlight({ angle, borderRadius }: { angle: number; borderRadius: number }) {
+  const dark = useScheme() === 'dark';
+  return (
+    <View pointerEvents="none" style={[styles.highlight, { borderRadius, borderCurve: 'continuous' }]}>
+      <AngledGradient
+        angle={angle}
+        stops={[
+          { offset: 0, color: '#FFFFFF', opacity: dark ? 0.07 : 0.6 },
+          { offset: 0.45, color: '#FFFFFF', opacity: 0 },
+        ]}
+      />
+    </View>
+  );
+}
+
 export function Card({ children, style }: { children: ReactNode; style?: StyleProp<ViewStyle> }) {
   const glass = useGlassStyle();
-  return <View style={[styles.card, glass, style]}>{children}</View>;
+  return (
+    <View style={[styles.card, glass, style]}>
+      <GlassHighlight angle={157.8} borderRadius={Number(StyleSheet.flatten(style)?.borderRadius ?? radius.lg)} />
+      {children}
+    </View>
+  );
 }
 
 /** Card de linhas (ListRow) com divisor só entre elas. */
@@ -181,7 +204,7 @@ export function Section({ title, action, children }: { title: string; action?: R
   return (
     <View style={styles.section}>
       <View style={styles.sectionHeader}>
-        <Text variant="label" style={[styles.sectionTitle, styles.flex]} accessibilityRole="header">
+        <Text variant="label" color="brand" style={[styles.sectionTitle, styles.flex]} accessibilityRole="header">
           {title}
         </Text>
         {action}
@@ -285,6 +308,7 @@ export function IconButton({
   );
 }
 
+/** O botão de marcar: um aro de vidro, vazio; marcado, azul com o visto. A área de toque é de 44. */
 export function CheckCircle({ checked, onPress, label }: { checked: boolean; onPress: () => void; label: string }) {
   const c = useColors();
   return (
@@ -292,13 +316,52 @@ export function CheckCircle({ checked, onPress, label }: { checked: boolean; onP
       accessibilityRole="checkbox"
       accessibilityState={{ checked }}
       accessibilityLabel={label}
-      hitSlop={10}
       onPress={onPress}
-      style={[
-        styles.check,
-        { borderColor: checked ? c.primary : withAlpha(c.textMuted, 0.5), backgroundColor: checked ? c.primary : 'transparent' },
-      ]}>
-      {checked ? <Icon name="check" size={16} color="onPrimary" /> : null}
+      style={({ pressed }) => [styles.mark, pressed && styles.pressed]}>
+      <View
+        style={[
+          styles.markCircle,
+          { borderColor: checked ? c.primary : c.ring, backgroundColor: checked ? c.primary : c.glassStrong },
+        ]}>
+        {checked ? <Icon name="check" size={18} color="onPrimary" /> : null}
+      </View>
+    </Pressable>
+  );
+}
+
+/** O botão de pôr na lista: um aro azul com um mais. A área de toque é de 44. */
+export function AddCircle({ onPress, label, disabled }: { onPress?: () => void; label: string; disabled?: boolean }) {
+  const c = useColors();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      disabled={disabled || !onPress}
+      onPress={onPress}
+      style={({ pressed }) => [styles.mark, disabled && { opacity: 0.5 }, pressed && styles.pressed]}>
+      <Svg width={44} height={44} viewBox="0 0 44 44">
+        <Circle cx={22} cy={22} r={10.85} fill="none" stroke={c.primary} strokeWidth={2.4} />
+        <Line x1={17.65} y1={22} x2={26.35} y2={22} stroke={c.primary} strokeWidth={2.4} strokeLinecap="round" />
+        <Line x1={22} y1={17.65} x2={22} y2={26.35} stroke={c.primary} strokeWidth={2.4} strokeLinecap="round" />
+      </Svg>
+    </Pressable>
+  );
+}
+
+/** Texto de ação azul, sem caixa ("Pôr tudo na lista"). */
+export function LinkButton({ title, onPress, disabled }: { title: string; onPress: () => void; disabled?: boolean }) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      hitSlop={8}
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [disabled && { opacity: 0.5 }, pressed && { opacity: 0.6 }]}>
+      <Text variant="label" color="primary" style={styles.link}>
+        {title}
+      </Text>
     </Pressable>
   );
 }
@@ -665,19 +728,23 @@ export function ListRow({
 }
 
 /**
- * Atalho de vidro com um ícone numa orbe e o rótulo embaixo (ações rápidas). A
- * cor aparece como um brilho no canto de cima, não como fundo.
+ * Atalho de vidro com o ícone e o rótulo embaixo (ações rápidas). O ícone é um desenho 3D (`art`) ou um ícone
+ * numa orbe (`icon`). A cor aparece como um brilho no canto de cima (`wash`, ou o do `tint`), não como fundo.
  */
 export function Tile({
   icon,
+  art,
   label,
   onPress,
   tint = 'orange',
+  wash,
 }: {
-  icon: IconName;
+  icon?: IconName;
+  art?: IconArtName;
   label: string;
   onPress: () => void;
   tint?: Tint;
+  wash?: string;
 }) {
   const glass = useGlassStyle();
   const t = useTint(tint);
@@ -689,12 +756,20 @@ export function Tile({
       accessibilityLabel={label}
       onPress={onPress}
       style={({ pressed }) => [styles.tile, glass, pressed && styles.pressed]}>
-      <View style={styles.tileWash} pointerEvents="none">
-        <GradientFill from={glow} to={glow} fromOpacity={dark ? 0.28 : 0.5} toOpacity={0} />
-      </View>
-      <Orb size={48} glow={glow}>
-        <MaterialCommunityIcons name={icon} size={24} color={t.art} />
-      </Orb>
+      <AngledGradient
+        angle={130.8}
+        stops={[
+          { offset: 0, color: wash ?? glow, opacity: dark ? 0.32 : 1 },
+          { offset: 1, color: wash ?? glow, opacity: 0 },
+        ]}
+      />
+      {art ? (
+        <IconArt name={art} />
+      ) : (
+        <Orb size={48} glow={glow}>
+          <MaterialCommunityIcons name={icon ?? 'star'} size={24} color={t.art} />
+        </Orb>
+      )}
       <Text variant="label" style={styles.tileLabel} numberOfLines={2}>
         {label}
       </Text>
@@ -775,17 +850,18 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: MAX_WIDTH,
     alignSelf: 'center',
-    padding: space.lg,
+    padding: SCREEN_PADDING,
     gap: space.xl,
   },
   contentWithFab: { paddingBottom: 96 },
   footer: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: space.lg, paddingVertical: space.md },
   footerInner: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', gap: space.sm },
   card: { borderRadius: radius.lg, borderCurve: 'continuous', padding: space.lg + 2 },
+  highlight: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, overflow: 'hidden' },
   pressed: { transform: [{ scale: 0.97 }] },
   section: { gap: space.sm },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingHorizontal: space.xs },
-  sectionTitle: { fontFamily: fonts.heavy, fontSize: 13, lineHeight: 18 },
+  sectionTitle: { fontFamily: fonts.heavy, fontSize: 12, lineHeight: 16 },
   row: { flexDirection: 'row', alignItems: 'center' },
   button: {
     minHeight: 52,
@@ -799,14 +875,9 @@ const styles = StyleSheet.create({
   },
   buttonCompact: { minHeight: 40, paddingHorizontal: space.lg },
   iconButton: { padding: space.xs, borderRadius: radius.pill },
-  check: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    borderWidth: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  mark: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  markCircle: { width: 28, height: 28, borderRadius: 14, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
+  link: { fontFamily: fonts.heavy, fontSize: 14, lineHeight: 18 },
   field: { gap: space.xs },
   input: {
     minHeight: 52,
@@ -844,7 +915,7 @@ const styles = StyleSheet.create({
   badge: { borderRadius: radius.pill, paddingHorizontal: space.sm, paddingVertical: 2, alignSelf: 'flex-start' },
   badgeText: { fontFamily: fonts.bold },
   listRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: 10, borderRadius: radius.sm },
-  listCard: { paddingVertical: 6, paddingHorizontal: space.lg },
+  listCard: { paddingVertical: 6, paddingLeft: space.lg, paddingRight: space.md },
   divider: { height: 1 },
   // Ícone de 44 + o espaço entre ele e o texto: o divisor começa onde o texto começa.
   dividerInset: { marginLeft: 44 + space.md },
@@ -860,7 +931,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     overflow: 'hidden',
   },
-  tileWash: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
   tileLabel: { textAlign: 'center', fontFamily: fonts.heavy, fontSize: 14, lineHeight: 18 },
   empty: { alignItems: 'center', gap: space.md, paddingVertical: space.xl, paddingHorizontal: space.lg },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.md, padding: space.xxl },

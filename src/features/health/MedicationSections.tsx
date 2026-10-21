@@ -11,6 +11,7 @@ import { normalizeSearch } from '@/domain/search';
 import { errorMessage } from '@/lib/supabase';
 import type { Medication } from '@/lib/types';
 import { notify } from '@/ui/dialogs';
+import { IconArt } from '@/ui/iconArt';
 import { Badge, Button, CheckCircle, EmptyState, IconBadge, ListCard, ListRow, Row, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
@@ -65,7 +66,7 @@ export function MedicationsToday({ today }: { today: string }) {
           return (
             <ListRow
               key={key}
-              left={<IconBadge icon="pill" tone={isTaken ? 'primary' : late ? 'warning' : 'info'} />}
+              left={<IconArt name="capsula" />}
               title={`${slot.time} · ${slot.name}`}
               subtitle={doseSubtitle(
                 [slot.personName, slot.dosage, late ? 'atrasada' : null].filter(Boolean).join(' · '),
