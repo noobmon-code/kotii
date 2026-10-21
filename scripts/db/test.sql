@@ -10842,7 +10842,8 @@ begin
     'a later confirmation does not clear the mark';
   assert not exists (select 1 from public.match_store_codes('22333444000155', array['1', '2'])), 'and the match keeps skipping them';
 
-  -- O código de barras não muda: o último vence nele, e é ele que vale quando o código do mercado está ambíguo.
+  -- O código de barras: o último vence nele. Ambíguo naquele mercado, o código não dá produto ali (um código
+  -- genérico pode passar na conta do GTIN por acaso); nos outros mercados, o código de barras vale.
   insert into public.receipts (store_id, purchased_at, source) values (m, '2026-10-14 10:00-03', 'ai') returning id into r;
   insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
     values (r, 0, 'REFRI COLA 2L', '7896005800010', 9, 9) returning id into i_a;
@@ -10855,8 +10856,8 @@ begin
   select id into p_guarana from public.products where name = 'Guaraná';
   assert (select ambiguous from public.product_store_codes where store_code = '7896005800010'), 'the market code is ambiguous';
   assert (select product_id from public.product_barcodes where gtin = '07896005800010') = p_guarana, 'the barcode: the last one wins';
-  assert (select jsonb_object_agg(code, product_id) from public.match_store_codes('22333444000155', array['7896005800010']))
-    = jsonb_build_object('7896005800010', p_guarana), 'in the same market the barcode answers';
+  assert not exists (select 1 from public.match_store_codes('22333444000155', array['7896005800010'])),
+    'in that market the ambiguous code gives nothing, not even as a barcode';
   assert (select jsonb_object_agg(code, product_id) from public.match_store_codes('11222333000181', array['7896005800010']))
     = jsonb_build_object('7896005800010', p_guarana), 'and in another market too';
 end $$;

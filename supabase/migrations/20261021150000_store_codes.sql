@@ -131,8 +131,10 @@ comment on column public.receipt_items.store_code is
 -- pode vencer o apelido, então cada código guarda a descrição que o ensinou
 -- (learned_from, pela normalize_alias) e, quando chega outro produto com
 -- outra descrição, fica ambíguo (ambiguous) e match_store_codes deixa de
--- usá-lo. Outro produto com a mesma descrição é correção; o mesmo produto com
--- outra descrição é o mercado mudando o texto. A marca não sai mais.
+-- usá-lo naquele mercado, inclusive como código de barras (o código genérico
+-- pode passar na conta do GTIN por acaso). Outro produto com a mesma
+-- descrição é correção; o mesmo produto com outra descrição é o mercado
+-- mudando o texto. A marca não sai mais.
 create table public.product_store_codes (
   household_id uuid not null default public.current_household_id()
     references public.households (id) on delete cascade,
@@ -179,7 +181,8 @@ create policy "household members manage product_barcodes" on public.product_barc
 
 -- =============================================================================
 -- O produto aprendido de cada código, só da casa de quem chama: o daquele
--- mercado (se não está ambíguo) e, sem ele, o do código de barras. Sem CNPJ
+-- mercado e, sem ele, o do código de barras. Código ambíguo naquele mercado
+-- não dá produto nenhum ali, nem pelo código de barras. Sem CNPJ
 -- (p_store_cnpj null), só o código de barras. Devolve o código como veio, para
 -- quem chama achar a linha; o que não tem produto aprendido fica de fora (e a
 -- linha segue pelo apelido e pela IA).
@@ -198,11 +201,11 @@ as $$
     on s.household_id = public.current_household_id()
    and s.store_cnpj = p_store_cnpj
    and s.store_code = public.store_code_key(d.code)
-   and not s.ambiguous
   left join public.product_barcodes b
     on b.household_id = public.current_household_id()
    and b.gtin = public.gtin_key(public.store_code_key(d.code))
-  where coalesce(s.product_id, b.product_id) is not null;
+  where not coalesce(s.ambiguous, false)
+    and coalesce(s.product_id, b.product_id) is not null;
 $$;
 
 revoke execute on function public.match_store_codes(text, text[]) from public, anon;
