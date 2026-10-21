@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactElement } from 'react';
+import { Modal, Platform } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { useUnlinkBarcode } from '@/data/barcodes';
@@ -105,6 +106,7 @@ jest.mock('@/lib/supabase', () => {
 
 const LEITE: Product = { id: 'leite', name: 'Leite IL Desnatado', category: 'laticinios', shelf_life_days: null };
 const ARROZ: Product = { id: 'arroz', name: 'Arroz Tio João 5kg', category: 'graos', shelf_life_days: null };
+const CAFE: Product = { id: 'cafe', name: 'Café Pilão 500g', category: 'cafe_cha', shelf_life_days: null };
 const EAN = '7891000100103';
 const GTIN = '07891000100103';
 
@@ -142,8 +144,15 @@ async function scan(code: string) {
 /** O que foi gravado (inserir, ligar, apagar), na ordem. */
 const writes = () => mockDb.writes;
 const barcodeRows = () => mockDb.product_barcodes.map(({ gtin, product_id }) => ({ gtin, product_id }));
+/** O botão "Criar" da escolha do produto, para o nome digitado. */
+const createButton = (query: string) =>
+  (mockPickers['Qual produto é este?'].extraActions as (query: string) => ReactElement<{ title: string; onPress: () => void }> | null)(query);
+
+let os: { restore: () => void };
 
 beforeEach(() => {
+  // No Android (e na web) um passo abre logo depois do outro; o iOS, que espera o anterior sumir, tem os testes dele.
+  os = jest.replaceProperty(Platform, 'OS', 'android');
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false, gcTime: Infinity } } });
   mockDb.products = [{ ...LEITE }, { ...ARROZ }];
   mockDb.product_barcodes = [];
@@ -160,6 +169,7 @@ afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
   client.clear();
+  os.restore();
 });
 
 describe('depois de ler o código de barras', () => {
@@ -210,7 +220,7 @@ describe('depois de ler o código de barras', () => {
     expect(button.props.title).toBe('Criar "Café Pilão 500g"');
     act(() => button.props.onPress());
     const categories = mockPickers.Categoria;
-    expect(categories.message).toBe('Do produto novo, "Café Pilão 500g".');
+    expect(categories.message).toBe('Escolha a categoria de "Café Pilão 500g".');
     expect((categories.options as { id: string; subtitle?: string }[])[0]).toMatchObject({ id: 'cafe_cha', subtitle: 'Pelo nome' });
     // Até escolher a categoria, nada foi gravado.
     expect(writes()).toEqual([]);
@@ -291,6 +301,122 @@ describe('depois de ler o código de barras', () => {
     await open();
     expect(hook.flow.available).toBe(false);
     expect(client.getQueryData(['productBarcodes'])).toBeNull();
+  });
+});
+
+describe('o dono do código ainda não está nos produtos do aparelho', () => {
+  // A tela aberta desde antes de outra pessoa confirmar uma nota: o produto e o código chegaram ao banco, e os
+  // produtos guardados aqui ainda não têm o produto novo.
+  it('o banco diz o dono: busca os produtos de novo e segue com ele, sem dizer "Código novo"', async () => {
+    await open();
+    mockDb.products.push({ ...CAFE });
+    mockDb.product_barcodes = [{ gtin: GTIN, product_id: 'cafe' }];
+    await scan(EAN);
+    expect(onProduct.mock.calls).toEqual([[CAFE]]);
+    expect(mockPickers['Qual produto é este?']).toBeUndefined();
+    expect(writes()).toEqual([]);
+  });
+
+  it('o produto continua sem aparecer depois da busca: avisa, sem oferecer outro produto', async () => {
+    await open();
+    mockDb.product_barcodes = [{ gtin: GTIN, product_id: 'sumiu' }];
+    await scan(EAN);
+    expect(notify).toHaveBeenCalledWith(
+      'Não deu para abrir o produto',
+      'O código 7891000100103 já é de um produto da casa, mas ele não carregou neste aparelho. Confira a internet e tente de novo.',
+    );
+    expect(mockPickers['Qual produto é este?']).toBeUndefined();
+    expect(onProduct).not.toHaveBeenCalled();
+    expect(writes()).toEqual([]);
+  });
+
+  it('o código guardado é de um produto que sumiu (juntado com outro): pergunta ao banco de quem é agora', async () => {
+    mockDb.product_barcodes = [{ gtin: GTIN, product_id: 'velho' }];
+    await open();
+    expect(client.getQueryData(['productBarcodes'])).toEqual([{ gtin: GTIN, product_id: 'velho' }]);
+    mockDb.product_barcodes = [{ gtin: GTIN, product_id: 'leite' }];
+    await scan(EAN);
+    expect(onProduct.mock.calls).toEqual([[LEITE]]);
+    expect(mockPickers['Qual produto é este?']).toBeUndefined();
+  });
+
+  it('o guardado sumiu e o banco não liga o código a nada: aí, sim, é código novo', async () => {
+    mockDb.product_barcodes = [{ gtin: GTIN, product_id: 'velho' }];
+    await open();
+    mockDb.product_barcodes = [];
+    await scan(EAN);
+    expect(mockPickers['Qual produto é este?']).toMatchObject({ visible: true });
+    expect(onProduct).not.toHaveBeenCalled();
+  });
+
+  it('a pergunta de troca nomeia o produto de agora, mesmo que ele não estivesse no aparelho', async () => {
+    await open(LEITE);
+    mockDb.products.push({ ...CAFE });
+    mockDb.product_barcodes = [{ gtin: GTIN, product_id: 'cafe' }];
+    jest.mocked(askYesNo).mockResolvedValueOnce(false);
+    await scan(EAN);
+    expect(jest.mocked(askYesNo).mock.calls[0][1]).toBe(
+      'O código 7891000100103 está ligado a "Café Pilão 500g". Passar para "Leite IL Desnatado"?',
+    );
+    expect(writes()).toEqual([]);
+  });
+});
+
+describe('um código de cada vez', () => {
+  it('enquanto o código anterior ainda está sendo visto: avisa ("busy"), e a câmera não abre', async () => {
+    mockDb.product_barcodes = [{ gtin: GTIN, product_id: 'arroz' }];
+    await open(LEITE);
+    // A pergunta sem resposta faz as vezes da internet lenta: o primeiro código ainda não terminou.
+    let answer: (yes: boolean) => void = () => undefined;
+    jest.mocked(askYesNo).mockReturnValueOnce(new Promise<boolean>((resolve) => (answer = resolve)));
+    expect(hook.flow.busy).toBe(false);
+    await scan(EAN);
+    expect(hook.flow.busy).toBe(true);
+    act(() => hook.flow.start());
+    expect(notify).toHaveBeenCalledWith('Ainda vendo o código anterior.');
+    expect(renderer!.root.findAllByType(Modal)).toEqual([]);
+
+    await act(async () => answer(false));
+    await settle();
+    expect(hook.flow.busy).toBe(false);
+    act(() => hook.flow.start());
+    expect(renderer!.root.findAllByType(Modal)).toHaveLength(1);
+  });
+});
+
+describe('um passo abre depois que o anterior fechou', () => {
+  it('no iOS: "Qual produto é este?" espera o leitor sumir, e "Categoria" espera a escolha do produto sumir', async () => {
+    os.restore();
+    os = jest.replaceProperty(Platform, 'OS', 'ios');
+    await open();
+    await scan(EAN);
+    // O leitor fechou, mas ainda desce: a escolha do produto espera.
+    const scanner = renderer!.root.findByType(Modal);
+    expect(scanner.props.visible).toBe(false);
+    expect(mockPickers['Qual produto é este?']).toBeUndefined();
+    act(() => scanner.props.onDismiss());
+    expect(renderer!.root.findAllByType(Modal)).toEqual([]);
+    expect(mockPickers['Qual produto é este?']).toMatchObject({ visible: true });
+
+    act(() => createButton('Café Pilão 500g')!.props.onPress());
+    expect(mockPickers['Qual produto é este?']).toMatchObject({ visible: false });
+    expect(mockPickers.Categoria).toBeUndefined();
+    act(() => (mockPickers['Qual produto é este?'].onDismiss as () => void)());
+    expect(mockPickers.Categoria).toMatchObject({ visible: true, message: 'Escolha a categoria de "Café Pilão 500g".' });
+
+    await act(async () => (mockPickers.Categoria.onSelect as (id: string) => void)('cafe_cha'));
+    await settle();
+    expect(mockDb.writes.map((w) => `${w.op} ${w.table}`)).toEqual(['insert products', 'upsert product_barcodes']);
+    expect(onProduct.mock.calls[0][0]).toMatchObject({ name: 'Café Pilão 500g' });
+  });
+
+  it('no Android: direto, sem esperar', async () => {
+    await open();
+    await scan(EAN);
+    expect(renderer!.root.findAllByType(Modal)).toEqual([]);
+    expect(mockPickers['Qual produto é este?']).toMatchObject({ visible: true });
+    act(() => createButton('Café Pilão 500g')!.props.onPress());
+    expect(mockPickers.Categoria).toMatchObject({ visible: true });
   });
 });
 

@@ -14,16 +14,21 @@ import { MAX_WIDTH, radius, space, useColors } from '@/ui/theme';
  * Lê o código de barras de um produto pela câmera (EAN-13, EAN-8 e UPC-A) ou
  * digitado, e devolve os 14 dígitos da gtin_key (domain/barcode). Sem o UPC-E:
  * o código curto precisaria ser expandido para virar o do produto. Renderize
- * só quando aberto.
+ * só quando aberto, ou fechando (no iOS, `visible` false até o `onDismiss`).
  */
 export function ProductBarcodeScanner({
   title = 'Ler código de barras',
   onRead,
   onClose,
+  visible = true,
+  onDismiss,
 }: {
   title?: string;
   onRead: (gtin: string) => void;
   onClose: () => void;
+  visible?: boolean;
+  /** Só no iOS: o leitor acabou de sumir (para abrir outro modal depois dele). */
+  onDismiss?: () => void;
 }) {
   const c = useColors();
   const [permission, requestPermission] = useCameraPermissions();
@@ -54,7 +59,7 @@ export function ProductBarcodeScanner({
   }
 
   return (
-    <Modal visible animationType="slide" onRequestClose={onClose}>
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose} onDismiss={onDismiss}>
       <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
         <Backdrop />
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
@@ -64,7 +69,7 @@ export function ProductBarcodeScanner({
             </Text>
             <IconButton icon="close" label="Fechar" onPress={onClose} />
           </Row>
-          <Text variant="muted">Enquadre as barras do produto, com os números embaixo delas. A leitura é sozinha.</Text>
+          <Text variant="muted">Enquadre as barras do produto, com os números embaixo delas. A leitura é automática.</Text>
 
           {permission?.granted ? (
             <View style={[styles.camera, { backgroundColor: c.surfaceAlt }]}>

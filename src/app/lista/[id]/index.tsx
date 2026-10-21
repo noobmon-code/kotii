@@ -671,7 +671,14 @@ export default function ShoppingListScreen() {
           <Button title="Escolher dos itens comuns" icon="playlist-plus" variant="secondary" compact onPress={() => setPickerOpen(true)} />
         )}
         {barcode.available ? (
-          <Button title="Ler código de barras" icon="barcode-scan" variant="ghost" compact onPress={barcode.start} />
+          <Button
+            title="Ler código de barras"
+            icon="barcode-scan"
+            variant="ghost"
+            compact
+            loading={barcode.busy}
+            onPress={barcode.start}
+          />
         ) : null}
       </Card>
       {barcode.element}

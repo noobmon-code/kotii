@@ -108,7 +108,15 @@ export default function PricesScreen() {
               <View style={styles.flex}>
                 <TextField value={query} onChangeText={setQuery} placeholder="Buscar produto" autoCorrect={false} />
               </View>
-              {barcode.available ? <IconButton icon="barcode-scan" label="Ler código de barras" color="primary" onPress={barcode.start} /> : null}
+              {barcode.available ? (
+                <IconButton
+                  icon="barcode-scan"
+                  label="Ler código de barras"
+                  color="primary"
+                  disabled={barcode.busy}
+                  onPress={barcode.start}
+                />
+              ) : null}
             </Row>
             {/* Com uma busca digitada a pessoa procura um produto: a sugestão de juntar só aparece sem ela. */}
             {query.trim() ? null : <MergeSuggestionsCard onMerged={(id) => router.push({ pathname: '/produto/[id]', params: { id } })} />}

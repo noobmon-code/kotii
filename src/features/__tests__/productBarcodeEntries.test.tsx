@@ -5,7 +5,7 @@ import PricesScreen from '@/app/precos';
 import ProductScreen from '@/app/produto/[id]';
 import type { Product } from '@/lib/types';
 import { confirmAction } from '@/ui/dialogs';
-import { IconButton } from '@/ui/primitives';
+import { Button, IconButton } from '@/ui/primitives';
 
 // As entradas da leitura do código de barras no Preços e na tela do produto, com as buscas trocadas por respostas
 // prontas e o caminho depois de ler (features/ProductBarcode, que tem os testes dele) trocado por um que guarda
@@ -28,11 +28,12 @@ const ARROZ: Product = { id: 'arroz', name: 'Arroz Tio João 5kg', category: 'gr
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockBarcode: {
   available: boolean;
+  busy: boolean;
   start: jest.Mock;
   options: { onProduct: (product: Product) => void; linkTo?: Product } | null;
   codes: { gtin: string; product_id: string }[] | null;
   unlink: jest.Mock;
-} = { available: true, start: jest.fn(), options: null, codes: [], unlink: jest.fn() };
+} = { available: true, busy: false, start: jest.fn(), options: null, codes: [], unlink: jest.fn() };
 const mockPush = jest.fn();
 
 jest.mock('expo-router', () => ({
@@ -43,7 +44,7 @@ jest.mock('expo-router', () => ({
 jest.mock('@/features/ProductBarcode', () => ({
   useProductBarcode: (options: { onProduct: (product: Product) => void; linkTo?: Product }) => {
     mockBarcode.options = options;
-    return { available: mockBarcode.available, start: mockBarcode.start, element: null };
+    return { available: mockBarcode.available, busy: mockBarcode.busy, start: mockBarcode.start, element: null };
   },
 }));
 jest.mock('@/data/barcodes', () => ({
@@ -75,7 +76,7 @@ jest.mock('expo-image', () => ({ Image: () => null }));
 let renderer: ReactTestRenderer | undefined;
 
 const rawText = (node: ReactTestInstance | string): string => (typeof node === 'string' ? node : node.children.map(rawText).join(''));
-const textOf = (node: ReactTestInstance | string) => rawText(node).replace(/[-]|[\u{F0000}-\u{10FFFF}]/gu, '');
+const textOf = (node: ReactTestInstance | string) => rawText(node).replace(/[\uE000-\uF8FF]|[\u{F0000}-\u{10FFFF}]/gu, '');
 const page = () => textOf(renderer!.root);
 const iconButton = (label: string) => renderer!.root.findAllByType(IconButton).find((node) => node.props.label === label);
 const button = (label: string) => renderer!.root.findAll((node) => typeof node.props.onPress === 'function' && textOf(node) === label)[0];
@@ -90,6 +91,7 @@ async function mount(screen: React.ReactElement) {
 beforeEach(() => {
   jest.clearAllMocks();
   mockBarcode.available = true;
+  mockBarcode.busy = false;
   mockBarcode.options = null;
   mockBarcode.codes = [];
 });
@@ -109,6 +111,14 @@ describe('Preços: ler o código ao lado de "Buscar produto"', () => {
     expect(mockBarcode.options?.linkTo).toBeUndefined();
     act(() => mockBarcode.options!.onProduct(ARROZ));
     expect(mockPush).toHaveBeenCalledWith({ pathname: '/produto/[id]', params: { id: 'arroz' } });
+  });
+
+  it('enquanto o código anterior ainda está sendo visto, o botão fica desligado', async () => {
+    await mount(<PricesScreen />);
+    expect(iconButton('Ler código de barras')!.props.disabled).toBe(false);
+    mockBarcode.busy = true;
+    await act(async () => renderer!.update(<PricesScreen />));
+    expect(iconButton('Ler código de barras')!.props.disabled).toBe(true);
   });
 
   it('sem a tabela no banco: sem o botão, e a lista de preços de sempre', async () => {
@@ -143,6 +153,15 @@ describe('produto: os códigos ligados, ligar e desligar', () => {
     expect(mockBarcode.unlink).not.toHaveBeenCalled();
     act(() => yes());
     expect(mockBarcode.unlink.mock.calls[0][0]).toEqual({ gtin: '07891000100103', productId: 'arroz' });
+  });
+
+  it('enquanto o código anterior ainda está sendo visto, "Ligar código de barras" fica carregando', async () => {
+    const link = () => renderer!.root.findAll((node) => node.type === Button && node.props.title === 'Ligar código de barras')[0];
+    await mount(<ProductScreen />);
+    expect(link().props.loading).toBe(false);
+    mockBarcode.busy = true;
+    await act(async () => renderer!.update(<ProductScreen />));
+    expect(link().props.loading).toBe(true);
   });
 
   it('sem a tabela no banco: nem códigos nem o botão de ligar, e a tela abre', async () => {

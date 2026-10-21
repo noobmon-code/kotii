@@ -272,19 +272,29 @@ export function IconButton({
   onPress,
   label,
   color = 'textMuted',
+  disabled,
 }: {
   icon: IconName;
   onPress: () => void;
   label: string;
   color?: keyof Colors;
+  /** Apagado e sem toque, como o Button desligado. */
+  disabled?: boolean;
 }) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityState={disabled ? { disabled } : undefined}
       hitSlop={8}
       onPress={onPress}
-      style={({ pressed }) => [styles.iconButton, pressed && { opacity: 0.6 }, pressed && styles.pressed]}>
+      disabled={disabled}
+      style={({ pressed }) => [
+        styles.iconButton,
+        disabled && { opacity: 0.55 },
+        pressed && !disabled && { opacity: 0.6 },
+        pressed && !disabled && styles.pressed,
+      ]}>
       <Icon name={icon} size={22} color={color} />
     </Pressable>
   );

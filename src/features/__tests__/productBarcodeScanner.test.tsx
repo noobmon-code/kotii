@@ -65,7 +65,13 @@ describe('leitor do código de barras do produto', () => {
     open();
     expect(mockCamera.types).toEqual(['ean13', 'ean8', 'upc_a']);
     expect(prepareBarcodeReader).toHaveBeenCalled();
-    expect(texts(renderer!.toJSON())).toEqual(expect.arrayContaining(['Ler código de barras', 'Ou digite os números do código de barras']));
+    expect(texts(renderer!.toJSON())).toEqual(
+      expect.arrayContaining([
+        'Ler código de barras',
+        'Enquadre as barras do produto, com os números embaixo delas. A leitura é automática.',
+        'Ou digite os números do código de barras',
+      ]),
+    );
   });
 
   it('a primeira leitura boa vale, uma vez só, mesmo com a câmera lendo de novo', () => {

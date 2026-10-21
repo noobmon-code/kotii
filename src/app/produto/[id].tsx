@@ -197,7 +197,14 @@ export default function ProductScreen() {
         ))}
         <Button title="Pôr na lista" icon="cart-plus" variant="secondary" compact onPress={putOnList} loading={addToList.isPending} />
         {barcode.available ? (
-          <Button title="Ligar código de barras" icon="barcode-scan" variant="ghost" compact onPress={barcode.start} />
+          <Button
+            title="Ligar código de barras"
+            icon="barcode-scan"
+            variant="ghost"
+            compact
+            loading={barcode.busy}
+            onPress={barcode.start}
+          />
         ) : null}
       </Card>
 

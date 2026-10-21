@@ -88,15 +88,16 @@ jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 // O caminho depois de ler o código de barras tem os testes dele (productBarcodeFlow.test.tsx): aqui, só o botão e o
 // que a lista faz com o produto lido. Sem dizer nada, como num banco ainda sem a tabela: sem o botão.
-const mockBarcode: { available: boolean; start: jest.Mock; onProduct: ((product: Product) => void) | null } = {
+const mockBarcode: { available: boolean; busy: boolean; start: jest.Mock; onProduct: ((product: Product) => void) | null } = {
   available: false,
+  busy: false,
   start: jest.fn(),
   onProduct: null,
 };
 jest.mock('@/features/ProductBarcode', () => ({
   useProductBarcode: ({ onProduct }: { onProduct: (product: Product) => void }) => {
     mockBarcode.onProduct = onProduct;
-    return { available: mockBarcode.available, start: mockBarcode.start, element: null };
+    return { available: mockBarcode.available, busy: mockBarcode.busy, start: mockBarcode.start, element: null };
   },
 }));
 jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
@@ -207,6 +208,7 @@ async function mount() {
 
 beforeEach(() => {
   mockBarcode.available = false;
+  mockBarcode.busy = false;
   mockBarcode.onProduct = null;
   mockSeen.hints = undefined;
   mockSeen.restock = undefined;
@@ -768,6 +770,15 @@ describe('ler o código de barras no cartão de pôr item', () => {
     await act(async () => mockBarcode.onProduct!(MILK));
     expect(mockQueue.add).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith('Já estava na lista', 'Leite desnatado já está na lista para comprar.');
+  });
+
+  it('enquanto o código anterior ainda está sendo visto, o botão fica carregando', async () => {
+    mockBarcode.available = true;
+    await mount();
+    expect(scanButton().props.loading).toBe(false);
+    mockBarcode.busy = true;
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(scanButton().props.loading).toBe(true);
   });
 
   it('sem a tabela no banco: sem o botão, e a lista abre', async () => {
