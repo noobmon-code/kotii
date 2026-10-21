@@ -16,7 +16,8 @@ import { Button, CategoryIcon } from '@/ui/primitives';
 import { ProductBarcodeScanner } from './ProductBarcodeScanner';
 
 type Step =
-  | { kind: 'scan' }
+  // `n` conta as aberturas: cada uma monta um leitor novo, que ainda não leu nada.
+  | { kind: 'scan'; n: number }
   // Código novo: qual produto da casa é este?
   | { kind: 'pick'; gtin: string }
   // Produto novo para o código: falta a categoria.
@@ -59,6 +60,7 @@ export function useProductBarcode({ onProduct, linkTo }: { onProduct: (product: 
   // Um código de cada vez: a ref segura o toque duplo na hora, e `busy` redesenha os botões das telas.
   const running = useRef(false);
   const [busy, setBusy] = useState(false);
+  const scans = useRef(0);
 
   const productById = (id: string | null | undefined) => (id ? products.data?.find((p) => p.id === id) : undefined);
 
@@ -86,7 +88,8 @@ export function useProductBarcode({ onProduct, linkTo }: { onProduct: (product: 
   async function findProduct(id: string): Promise<Product | undefined> {
     const known = productById(id);
     if (known) return known;
-    const fresh = await queryClient.fetchQuery({ queryKey: ['products'], queryFn: fetchProducts, staleTime: 0 });
+    // 'always': sem internet a busca falha e vira aviso, em vez de ficar parada segurando o botão.
+    const fresh = await queryClient.fetchQuery({ queryKey: ['products'], queryFn: fetchProducts, staleTime: 0, networkMode: 'always' });
     return fresh.find((p) => p.id === id);
   }
 
@@ -125,7 +128,7 @@ export function useProductBarcode({ onProduct, linkTo }: { onProduct: (product: 
   function start() {
     // A câmera aberta agora leria um código que ficaria sem resposta: o anterior ainda está falando com o banco.
     if (running.current) notify('Ainda vendo o código anterior.');
-    else go({ kind: 'scan' });
+    else go({ kind: 'scan', n: ++scans.current });
   }
 
   function onRead(gtin: string) {
@@ -172,6 +175,7 @@ export function useProductBarcode({ onProduct, linkTo }: { onProduct: (product: 
     <>
       {scanning ? (
         <ProductBarcodeScanner
+          key={scanning.n}
           title={linkTo ? 'Ligar código de barras' : 'Ler código de barras'}
           visible={scanning === step}
           onDismiss={dismissed}
