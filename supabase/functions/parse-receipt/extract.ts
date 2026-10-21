@@ -204,18 +204,27 @@ function lineQuantity(quantity: number | null, unit: (typeof UNITS)[number], uni
   return derived > 0 ? derived : 1;
 }
 
+/** As unidades em que a NFC-e imprime o preço por unidade com até 4 casas, o que a conta abaixo cobre. */
+const COMPUTED_UNITS: ReadonlySet<string> = new Set(['un', 'kg', 'l']);
+
 /**
  * O valor do item que não deu para ler (o "Vl. Total" cortado na borda do
  * print da Sefaz, por exemplo), quando a quantidade e o preço unitário foram
  * lidos: na NFC-e o valor do item é a quantidade vezes o preço unitário, com
- * até 1 centavo de diferença. A conta é feita em inteiros para o centavo não
- * depender do arredondamento do ponto flutuante. Sem um dos dois, 0: a
- * revisão pergunta.
+ * até 1 centavo de diferença (o caixa arredonda ou trunca). A conta é feita em
+ * inteiros (até 4 casas na quantidade e no preço), para o centavo não depender
+ * do ponto flutuante. Sem um dos dois, ou em g e ml (preço por grama com mais
+ * casas do que a leitura guarda), 0: a revisão pergunta. Quem usa confere a
+ * soma com o total da nota (cleanReceipt).
  */
-export function lineTotalFromPrinted(quantity: number | null, unitPrice: number | null): number {
-  if (quantity == null || !(quantity > 0) || unitPrice == null || !(unitPrice > 0)) return 0;
-  return Math.round((Math.round(quantity * 1000) * Math.round(unitPrice * 10000)) / 100000) / 100;
+export function lineTotalFromPrinted(quantity: number | null, unit: string, unitPrice: number | null): number {
+  if (quantity == null || !(quantity > 0) || unitPrice == null || !(unitPrice > 0) || !COMPUTED_UNITS.has(unit)) return 0;
+  const product = BigInt(Math.round(quantity * 10000)) * BigInt(Math.round(unitPrice * 10000));
+  return Number((product + 500000n) / 1000000n) / 100;
 }
+
+/** Até quanto a soma das linhas pode passar do total da nota (o arredondamento que a revisão também aceita), em centavos. */
+const SUM_TOLERANCE_CENTS = 5;
 
 /**
  * Normaliza o que veio da IA para o que o banco aceita: chave e CNPJ só com
@@ -223,8 +232,11 @@ export function lineTotalFromPrinted(quantity: number | null, unitPrice: number 
  * válida, quantidades positivas, preço unitário coerente e ids de produto que
  * realmente existem na família (alias exato tem prioridade). Valor do item
  * ilegível (null) é a quantidade vezes o preço unitário, quando os dois foram
- * lidos (lineTotalFromPrinted); sem um deles, vira 0, o "sem valor" que a
- * revisão pergunta à pessoa; linha negativa
+ * lidos (lineTotalFromPrinted), o total da nota foi lido e a soma das linhas
+ * não passa dele (mais o arredondamento de cada conta): um desconto do item
+ * que não teve onde entrar ou um número mal lido (642 kg, um preço de pacote
+ * em gramas) passa do total, e aí nenhuma conta fica. Sem a conta, o valor
+ * vira 0, o "sem valor" que a revisão pergunta à pessoa; linha negativa
  * (cancelamento, desconto que a IA pôs como item) fica de fora. Quantidade
  * ilegível sai do total e do preço unitário; sem o preço unitário, a linha
  * fica de fora de `readLines` (nunca compartilha um preço por kg inventado).
@@ -246,14 +258,17 @@ export function cleanReceipt(
       ? new Date(extracted.purchased_at).toISOString()
       : null;
 
+  const receiptTotal = extracted.total != null && extracted.total >= 0 ? round(extracted.total, 2) : null;
   const items: CleanItem[] = [];
   const readLines: ReadLine[] = [];
+  const computed: CleanItem[] = [];
   for (const it of extracted.items) {
     const raw = it.raw_description.trim();
     if (!raw) continue;
     // Zerar a linha negativa faria a revisão pedir o preço de um "CANCELAMENTO".
     if ((it.total_price ?? 0) < 0 || (it.unit_price ?? 0) < 0) continue;
-    const total = it.total_price == null ? lineTotalFromPrinted(it.quantity, it.unit_price) : round(it.total_price, 2);
+    const fromPrinted = it.total_price == null && receiptTotal != null ? lineTotalFromPrinted(it.quantity, it.unit, it.unit_price) : 0;
+    const total = it.total_price == null ? fromPrinted : round(it.total_price, 2);
     const quantity = lineQuantity(it.quantity, it.unit, it.unit_price, total);
     const readPrice = it.unit_price != null && it.unit_price > 0 ? it.unit_price : null;
     const unitPrice = readPrice != null ? round(readPrice, 4) : round(total / quantity, 4);
@@ -263,7 +278,7 @@ export function cleanReceipt(
       readLines.push({ description: raw, unit: it.unit, unit_price: unitPrice });
     }
     const suggested = it.matched_product_id && catalogIds.has(it.matched_product_id) ? it.matched_product_id : null;
-    items.push({
+    const item: CleanItem = {
       position: items.length,
       raw_description: raw,
       suggested_name: it.normalized_name.trim() || raw,
@@ -274,7 +289,17 @@ export function cleanReceipt(
       unit: it.unit,
       unit_price: unitPrice,
       total_price: total,
-    });
+    };
+    items.push(item);
+    if (fromPrinted > 0) computed.push(item);
+  }
+  // A conferência das contas: a soma de todas as linhas não passa do total da nota. Linha que a revisão ainda vai
+  // perguntar (0) só deixa a soma menor; o que passa é desconto que ficou de fora ou número mal lido.
+  if (computed.length && receiptTotal != null) {
+    const sumCents = items.reduce((sum, i) => sum + Math.round(i.total_price * 100), 0);
+    if (sumCents > Math.round(receiptTotal * 100) + SUM_TOLERANCE_CENTS + computed.length) {
+      for (const item of computed) item.total_price = 0;
+    }
   }
 
   return {
@@ -283,7 +308,7 @@ export function cleanReceipt(
     address: extracted.address?.trim() || null,
     purchasedAt,
     accessKey,
-    total: extracted.total != null && extracted.total >= 0 ? round(extracted.total, 2) : null,
+    total: receiptTotal,
     items,
     readLines,
   };

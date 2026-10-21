@@ -196,18 +196,48 @@ Deno.test('valor do item cortado no print da Sefaz: com a quantidade e o preço 
     new Map(),
   );
   assertEquals(mixed.items.map((i) => [i.raw_description, i.total_price]), [['PIZZA', 26.36], ['PAO', 0], ['CAFE', 0]]);
+  // A conta não muda a quantidade nem o preço unitário lidos, e o preço da leitura do servidor é o lido.
+  assertEquals([r.items[0].quantity, r.items[0].unit_price], [0.642, 7.48]);
+  assertEquals(r.readLines[0], { description: 'BANANA PRATA GNEL KG', unit: 'kg', unit_price: 7.48 });
+});
+
+Deno.test('valor do item calculado: só com o total da nota lido, e só quando a soma não passa dele', () => {
+  const read = (total: number | null, items: ExtractedReceipt['items']) =>
+    cleanReceipt({ ...base, total, items }, new Set(), new Map()).items.map((i) => [i.raw_description, i.total_price]);
+  const pizza = line({ raw_description: 'PIZZA CONG', quantity: 2, unit_price: 14.18, total_price: null });
+  const cafe = line({ raw_description: 'CAF 3C GOR', quantity: 1, unit_price: 34.99, total_price: 34.99 });
+  // A soma bate com o total: a conta fica.
+  assertEquals(read(63.35, [pizza, cafe]), [['PIZZA CONG', 28.36], ['CAF 3C GOR', 34.99]]);
+  // Sem o total da nota não há como conferir: a revisão pergunta, como antes.
+  assertEquals(read(null, [pizza, cafe]), [['PIZZA CONG', 0], ['CAF 3C GOR', 34.99]]);
+  // A pizza tinha R$ 4,00 de desconto, que não teve onde entrar: a soma passa do total e a revisão pergunta.
+  assertEquals(read(59.35, [pizza, cafe]), [['PIZZA CONG', 0], ['CAF 3C GOR', 34.99]]);
+  // A vírgula do peso se perdeu (642 kg): passa do total, e nenhuma conta fica.
+  const banana = line({ raw_description: 'BANANA KG', unit: 'kg', quantity: 642, unit_price: 7.48, total_price: null });
+  assertEquals(read(68.15, [pizza, cafe, banana]), [['PIZZA CONG', 0], ['CAF 3C GOR', 34.99], ['BANANA KG', 0]]);
+  // Uma linha que a revisão ainda vai perguntar só deixa a soma menor que o total: a conta fica.
+  const sabao = line({ raw_description: 'SABAO', quantity: null, unit_price: null, total_price: null });
+  assertEquals(read(70, [pizza, cafe, sabao]), [['PIZZA CONG', 28.36], ['CAF 3C GOR', 34.99], ['SABAO', 0]]);
+  // Até 1 centavo por conta (o caixa que trunca) mais o arredondamento da revisão.
+  assertEquals(read(63.29, [pizza, cafe]), [['PIZZA CONG', 28.36], ['CAF 3C GOR', 34.99]]);
+  assertEquals(read(63.28, [pizza, cafe]), [['PIZZA CONG', 0], ['CAF 3C GOR', 34.99]]);
 });
 
 Deno.test('lineTotalFromPrinted: o centavo da conta não depende do ponto flutuante', () => {
-  assertEquals(lineTotalFromPrinted(0.642, 7.48), 4.8);
-  assertEquals(lineTotalFromPrinted(1.85, 6.99), 12.93);
-  assertEquals(lineTotalFromPrinted(0.21, 17.88), 3.75);
+  assertEquals(lineTotalFromPrinted(0.642, 'kg', 7.48), 4.8);
+  assertEquals(lineTotalFromPrinted(1.85, 'kg', 6.99), 12.93);
+  assertEquals(lineTotalFromPrinted(0.21, 'kg', 17.88), 3.75);
   // 1,005 × 1 é 1,00499... em ponto flutuante; a conta em inteiros arredonda o meio centavo para cima.
-  assertEquals(lineTotalFromPrinted(1.005, 1), 1.01);
-  assertEquals(lineTotalFromPrinted(3, 0.1), 0.3);
-  assertEquals(lineTotalFromPrinted(null, 5), 0);
-  assertEquals(lineTotalFromPrinted(2, null), 0);
-  assertEquals(lineTotalFromPrinted(0, 5), 0);
+  assertEquals(lineTotalFromPrinted(1.005, 'l', 1), 1.01);
+  assertEquals(lineTotalFromPrinted(3, 'un', 0.1), 0.3);
+  // Quantidade com 4 casas.
+  assertEquals(lineTotalFromPrinted(1.2345, 'kg', 99.9), 123.33);
+  assertEquals(lineTotalFromPrinted(null, 'un', 5), 0);
+  assertEquals(lineTotalFromPrinted(2, 'un', null), 0);
+  assertEquals(lineTotalFromPrinted(0, 'un', 5), 0);
+  // Em g e ml o preço por unidade tem mais casas do que a leitura guarda: sem conta.
+  assertEquals(lineTotalFromPrinted(200, 'g', 12.9), 0);
+  assertEquals(lineTotalFromPrinted(2000, 'ml', 0.004495), 0);
 });
 
 Deno.test('preço ilegível não derruba a nota pela OpenRouter', async () => {
