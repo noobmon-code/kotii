@@ -126,6 +126,7 @@ export function instructions(catalog: CatalogProduct[], photos = 1): string {
 ${parts}
 - A imagem pode ser a foto do papel ou um print da página de consulta da NFC-e no site da Sefaz (com o nome do mercado, os itens, os totais ou a chave de acesso). Os dois são a nota de compra: leia o print como leria o papel. Um print com só uma parte da nota (só os itens, só o topo ou só o rodapé) também é nota: leia o que estiver nele e deixe null o que não aparecer.
 - Na página da Sefaz, cada item costuma vir com "Qtde.", "UN", "Vl. Unit." e "Vl. Total": use esses valores. Ignore os dados do consumidor (CPF, nome), os botões e os textos do site.
+- No print, a coluna da direita (o "Vl. Total") pode sair cortada na borda da tela. Número cortado, com algum dígito faltando ou pela metade, é ilegível: null. Nunca complete o número.
 - items: um por produto, na ordem impressa. Não inclua descontos gerais, troco, formas de pagamento nem tributos.
 - Desconto de um item específico entra no total_price dele (valor líquido), também quando vem impresso numa linha separada logo abaixo do item; a linha do desconto não vira item.
 - Item cancelado fica de fora, junto com a linha que o cancela (cancelamento, estorno). Nenhum item tem valor negativo.
@@ -204,11 +205,26 @@ function lineQuantity(quantity: number | null, unit: (typeof UNITS)[number], uni
 }
 
 /**
+ * O valor do item que não deu para ler (o "Vl. Total" cortado na borda do
+ * print da Sefaz, por exemplo), quando a quantidade e o preço unitário foram
+ * lidos: na NFC-e o valor do item é a quantidade vezes o preço unitário, com
+ * até 1 centavo de diferença. A conta é feita em inteiros para o centavo não
+ * depender do arredondamento do ponto flutuante. Sem um dos dois, 0: a
+ * revisão pergunta.
+ */
+export function lineTotalFromPrinted(quantity: number | null, unitPrice: number | null): number {
+  if (quantity == null || !(quantity > 0) || unitPrice == null || !(unitPrice > 0)) return 0;
+  return Math.round((Math.round(quantity * 1000) * Math.round(unitPrice * 10000)) / 100000) / 100;
+}
+
+/**
  * Normaliza o que veio da IA para o que o banco aceita: chave e CNPJ só com
  * os dígitos verificadores certos (com a chave válida, o CNPJ é o dela), data
  * válida, quantidades positivas, preço unitário coerente e ids de produto que
- * realmente existem na família (alias exato tem prioridade). Preço ilegível
- * (null) vira 0, o "sem valor" que a revisão pergunta à pessoa; linha negativa
+ * realmente existem na família (alias exato tem prioridade). Valor do item
+ * ilegível (null) é a quantidade vezes o preço unitário, quando os dois foram
+ * lidos (lineTotalFromPrinted); sem um deles, vira 0, o "sem valor" que a
+ * revisão pergunta à pessoa; linha negativa
  * (cancelamento, desconto que a IA pôs como item) fica de fora. Quantidade
  * ilegível sai do total e do preço unitário; sem o preço unitário, a linha
  * fica de fora de `readLines` (nunca compartilha um preço por kg inventado).
@@ -237,7 +253,7 @@ export function cleanReceipt(
     if (!raw) continue;
     // Zerar a linha negativa faria a revisão pedir o preço de um "CANCELAMENTO".
     if ((it.total_price ?? 0) < 0 || (it.unit_price ?? 0) < 0) continue;
-    const total = it.total_price == null ? 0 : round(it.total_price, 2);
+    const total = it.total_price == null ? lineTotalFromPrinted(it.quantity, it.unit_price) : round(it.total_price, 2);
     const quantity = lineQuantity(it.quantity, it.unit, it.unit_price, total);
     const readPrice = it.unit_price != null && it.unit_price > 0 ? it.unit_price : null;
     const unitPrice = readPrice != null ? round(readPrice, 4) : round(total / quantity, 4);
