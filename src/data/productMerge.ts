@@ -196,6 +196,8 @@ export const MERGE_REFRESHES = [
   'sharedPrices',
   'stores',
   'productDistinctPairs',
+  // merge_products passa os códigos de barras do que some para o que fica.
+  'productBarcodes',
 ] as const;
 
 /** Busca de novo tudo o que mostrava um dos dois produtos (MERGE_REFRESHES). */

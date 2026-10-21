@@ -10,13 +10,16 @@ import { normalizeSearch } from '@/domain/search';
 import { cheaperSharedHint, cheaperSharedPrice, SHARED_PRICES_NOTICE, type SharedPriceRow, sharedRowsByProduct } from '@/domain/sharedPrices';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { MergeSuggestionsCard } from '@/features/MergeSuggestionsCard';
+import { useProductBarcode } from '@/features/ProductBarcode';
 import { settledData } from '@/lib/settledData';
 import {
   CategoryIcon,
   EmptyState,
   ErrorNotice,
+  IconButton,
   ListRow,
   Loading,
+  Row,
   Screen,
   Text,
   TextField,
@@ -43,6 +46,8 @@ export default function PricesScreen() {
   // tem a função), a tela é a de sempre.
   const shared = useSharedPrices();
   const [query, setQuery] = useState('');
+  // No mercado: o código de barras da embalagem abre o produto, com o último preço, o histórico e os outros mercados.
+  const barcode = useProductBarcode({ onProduct: (product) => router.push({ pathname: '/produto/[id]', params: { id: product.id } }) });
 
   // Só com os preços e os mercados da casa em dia: durante uma busca nova, o que ficou guardado é de antes, e
   // "mais barato que o da casa" seria dito contra um preço que talvez já não seja o dela.
@@ -99,7 +104,12 @@ export default function PricesScreen() {
         ListHeaderComponent={
           <View style={styles.header}>
             {failed ? <StaleNotice onRetry={() => queries.forEach((q) => q.refetch())} /> : null}
-            <TextField value={query} onChangeText={setQuery} placeholder="Buscar produto" autoCorrect={false} />
+            <Row>
+              <View style={styles.flex}>
+                <TextField value={query} onChangeText={setQuery} placeholder="Buscar produto" autoCorrect={false} />
+              </View>
+              {barcode.available ? <IconButton icon="barcode-scan" label="Ler código de barras" color="primary" onPress={barcode.start} /> : null}
+            </Row>
             {/* Com uma busca digitada a pessoa procura um produto: a sugestão de juntar só aparece sem ela. */}
             {query.trim() ? null : <MergeSuggestionsCard onMerged={(id) => router.push({ pathname: '/produto/[id]', params: { id } })} />}
           </View>
@@ -161,6 +171,7 @@ export default function PricesScreen() {
           ) : null
         }
       />
+      {barcode.element}
     </Screen>
   );
 }

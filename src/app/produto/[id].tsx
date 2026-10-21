@@ -2,6 +2,7 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
+import { useBarcodes, useUnlinkBarcode } from '@/data/barcodes';
 import {
   ProductNameTakenError,
   useAddToPantryList,
@@ -12,6 +13,7 @@ import {
   useStorePrices,
   useStores,
 } from '@/data/market';
+import { gtinLabel } from '@/domain/barcode';
 import { CATEGORIES, getCategory } from '@/domain/categories';
 import { genericItem } from '@/domain/genericItem';
 import { noStorePriceSentence } from '@/domain/priceHistory';
@@ -32,9 +34,10 @@ import { StaleNotice } from '@/features/health/StaleNotice';
 import { PriceHistorySection } from '@/features/market/PriceHistorySection';
 import { MergeProductsModal } from '@/features/MergeProductsModal';
 import { MergeSuggestionsCard } from '@/features/MergeSuggestionsCard';
+import { useProductBarcode } from '@/features/ProductBarcode';
 import { SharedPricesSection } from '@/features/SharedPrices';
 import { errorMessage } from '@/lib/supabase';
-import { notify } from '@/ui/dialogs';
+import { confirmAction, notify } from '@/ui/dialogs';
 import { PickerModal } from '@/ui/PickerModal';
 import {
   Badge,
@@ -44,6 +47,7 @@ import {
   Chip,
   ErrorNotice,
   IconBadge,
+  IconButton,
   ListCard,
   ListRow,
   Loading,
@@ -75,6 +79,12 @@ export default function ProductScreen() {
   const [joining, setJoining] = useState<true | ProductName | null>(null);
   // O nome digitado já é de outro produto (null: não; `other` null: não deu para saber qual).
   const [nameTaken, setNameTaken] = useState<{ other: ProductName | null } | null>(null);
+  // Os códigos de barras ligados a este produto; null sem a tabela no banco (aí nem o botão de ligar aparece).
+  const barcodes = useBarcodes();
+  const unlink = useUnlinkBarcode();
+  const current = products.data?.find((p) => p.id === id);
+  // O código lido vai para este produto; o que era de outro, só depois de a pessoa confirmar.
+  const barcode = useProductBarcode({ linkTo: current, onProduct: () => undefined });
 
   // Sem internet e sem o produto ou os mercados no aparelho, a busca fica parada (e segue sozinha quando a
   // conexão volta): um aviso, em vez de girar sem fim. Com eles guardados, a tela abre com o que há.
@@ -139,6 +149,17 @@ export default function ProductScreen() {
     }
   }
 
+  // A nota ou outra pessoa da casa pode ter ligado o mesmo código a outro produto antes: só sai se ainda for deste.
+  function unlinkCode(gtin: string) {
+    confirmAction(
+      'Desligar código',
+      `O código ${gtinLabel(gtin)} deixa de abrir "${product!.name}". Dá para ligar de novo depois.`,
+      'Desligar',
+      () => unlink.mutate({ gtin, productId: product!.id }, { onError: (err) => notify('Erro', errorMessage(err)) }),
+    );
+  }
+
+  const codes = (barcodes.data ?? []).filter((code) => code.product_id === product.id);
   const offline = byStore.source === 'saved-offline';
   const groups = byStore.prices ? storePriceGroups(byStore.prices) : undefined;
   const takenOther = nameTaken?.other ?? null;
@@ -166,7 +187,18 @@ export default function ProductScreen() {
         {product.shelf_life_days ? (
           <Text variant="small">Validade aprendida: {product.shelf_life_days} dias após a compra.</Text>
         ) : null}
+        {codes.map((code) => (
+          <Row key={code.gtin}>
+            <Text variant="small" style={styles.flex}>
+              Código de barras: {gtinLabel(code.gtin)}
+            </Text>
+            <IconButton icon="close" label={`Desligar o código ${gtinLabel(code.gtin)}`} onPress={() => unlinkCode(code.gtin)} />
+          </Row>
+        ))}
         <Button title="Pôr na lista" icon="cart-plus" variant="secondary" compact onPress={putOnList} loading={addToList.isPending} />
+        {barcode.available ? (
+          <Button title="Ligar código de barras" icon="barcode-scan" variant="ghost" compact onPress={barcode.start} />
+        ) : null}
       </Card>
 
       <MergeSuggestionsCard productId={product.id} onMerged={onMerged} />
@@ -235,11 +267,13 @@ export default function ProductScreen() {
           save(category);
         }}
       />
+      {barcode.element}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: { flex: 1 },
   gap: { gap: space.md },
   gapSm: { gap: space.sm },
 });

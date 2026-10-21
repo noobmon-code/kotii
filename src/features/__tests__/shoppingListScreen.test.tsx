@@ -86,6 +86,19 @@ jest.mock('@/ui/dialogs', () => ({ askYesNo: jest.fn(), confirmAction: jest.fn()
 // Os desenhos animados (reanimated) e o fundo não entram no que se confere aqui.
 jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
+// O caminho depois de ler o código de barras tem os testes dele (productBarcodeFlow.test.tsx): aqui, só o botão e o
+// que a lista faz com o produto lido. Sem dizer nada, como num banco ainda sem a tabela: sem o botão.
+const mockBarcode: { available: boolean; start: jest.Mock; onProduct: ((product: Product) => void) | null } = {
+  available: false,
+  start: jest.fn(),
+  onProduct: null,
+};
+jest.mock('@/features/ProductBarcode', () => ({
+  useProductBarcode: ({ onProduct }: { onProduct: (product: Product) => void }) => {
+    mockBarcode.onProduct = onProduct;
+    return { available: mockBarcode.available, start: mockBarcode.start, element: null };
+  },
+}));
 jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
 jest.mock('@/features/CartPantryModal', () => ({ CartPantryModal: () => null }));
 jest.mock('@/features/CommonItemsPicker', () => ({
@@ -193,6 +206,8 @@ async function mount() {
 }
 
 beforeEach(() => {
+  mockBarcode.available = false;
+  mockBarcode.onProduct = null;
   mockSeen.hints = undefined;
   mockSeen.restock = undefined;
   mockSeen.recent = undefined;
@@ -723,5 +738,40 @@ describe('a lista sem marca', () => {
       expect.objectContaining({ values: { name: 'Leite desnatado', brand_preferred: false } }),
       expect.anything(),
     );
+  });
+});
+
+describe('ler o código de barras no cartão de pôr item', () => {
+  const MILK = { ...product('il', 'Leite IL Desnatado'), category: 'laticinios' } as Product;
+  const scanButton = () => renderer!.root.findAll((node) => node.type === Button && node.props.title === 'Ler código de barras')[0];
+
+  beforeEach(() => {
+    mockQueue.add.mockClear();
+    mockBarcode.start.mockClear();
+    jest.mocked(notify).mockClear();
+    mockQueries.products = loaded([MILK]);
+  });
+
+  it('o botão abre a câmera, e o produto lido entra como a sugestão da busca: sem a marca, com o produto como dica', async () => {
+    mockBarcode.available = true;
+    await mount();
+    act(() => scanButton().props.onPress());
+    expect(mockBarcode.start).toHaveBeenCalledTimes(1);
+    await act(async () => mockBarcode.onProduct!(MILK));
+    expect(mockQueue.add).toHaveBeenCalledWith({ name: 'Leite desnatado', category: 'laticinios', productId: 'il', quantity: 1, unit: 'un' }, 'u1');
+  });
+
+  it('o mesmo item já para comprar: não põe de novo e diz que já estava, como a sugestão', async () => {
+    mockBarcode.available = true;
+    mockQueries.items = loaded([listItem('a', 'Leite desnatado', null, 'laticinios')]);
+    await mount();
+    await act(async () => mockBarcode.onProduct!(MILK));
+    expect(mockQueue.add).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith('Já estava na lista', 'Leite desnatado já está na lista para comprar.');
+  });
+
+  it('sem a tabela no banco: sem o botão, e a lista abre', async () => {
+    expect(await mount()).toContain('Lista vazia');
+    expect(scanButton()).toBeUndefined();
   });
 });

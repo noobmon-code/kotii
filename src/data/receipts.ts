@@ -541,6 +541,8 @@ export function useConfirmReceipt(receiptId: string) {
         'sharedPrices',
         // A leitura do QR code pode ter criado o mercado, e é pelo nome dele que a casa reconhece "os seus mercados".
         'stores',
+        // A nota ensina os códigos de barras das linhas (product_barcodes), que a câmera lê depois.
+        'productBarcodes',
       ]) {
         queryClient.invalidateQueries({ queryKey: [key] });
       }
