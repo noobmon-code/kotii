@@ -41,7 +41,7 @@ jest.mock('expo-router', () => ({
 jest.mock('expo-image', () => ({ Image: () => null }));
 jest.mock('expo-image-manipulator', () => ({ ImageManipulator: {}, SaveFormat: {} }));
 jest.mock('expo-image-picker', () => ({}));
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null, SkyArt: () => null, Logo: () => null }));
+jest.mock('@/ui/art', () => ({ SkyArt: () => null, Logo: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn(), confirmAction: jest.fn() }));
 jest.mock('@/lib/auth', () => ({ useHousehold: () => ({ data: { members: mockMembers } }) }));

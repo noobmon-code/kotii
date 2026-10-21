@@ -35,7 +35,6 @@ jest.mock('@/ui/dialogs', () => ({ confirmAction: jest.fn((_t: string, _m: strin
 jest.mock('expo-image-manipulator', () => ({ ImageManipulator: {}, SaveFormat: {} }));
 jest.mock('expo-image-picker', () => ({}));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 
 const rpc = supabase.rpc as unknown as jest.Mock<(name: string) => Promise<{ data: unknown; error: unknown }>>;
 const invoke = supabase.functions.invoke as unknown as jest.Mock<

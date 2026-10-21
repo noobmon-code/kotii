@@ -71,7 +71,6 @@ export default function LancamentosScreen() {
       <EmptyState
         icon="lock-outline"
         tint="purple"
-        mood="calm"
         title="Consultor ainda não liberado"
         message="O consultor financeiro está em teste e, por enquanto, só abre para quem foi convidado, em cada casa."
         action={<Button title="Voltar" variant="secondary" onPress={() => router.back()} />}

@@ -3,15 +3,16 @@
 // feita de ícones de vidro (sem rosto: só o Nuke tem rosto).
 
 import type { ReactNode } from 'react';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { GradientCard } from './gradient';
 import { Orb } from './Orb';
-import { CategoryIcon, Icon, Text } from './primitives';
-import { fonts, radius, space, useGlow, useGradient, type GradientName, type Tint } from './theme';
+import { CategoryIcon, Icon, type IconName, Text } from './primitives';
+import { fonts, radius, space, useGlow, useGradient, useTint, type GradientName, type Tint } from './theme';
 
 // O brilho da seta combina com o gradiente do cartão.
-const GLOW_TINT: Record<GradientName, Tint> = { pessego: 'orange', rosa: 'pink', salvia: 'green' };
+const GLOW_TINT: Record<GradientName, Tint> = { pessego: 'orange', rosa: 'pink', salvia: 'green', caramelo: 'purple' };
 
 export function ScreenHeader({
   gradient,
@@ -57,6 +58,39 @@ export function HeaderArt({ categories }: { categories: readonly [string, string
       </View>
       <View style={styles.artMiddle}>
         <CategoryIcon category={middle} size={66} />
+      </View>
+    </View>
+  );
+}
+
+function IconOrb({ icon, tint, size }: { icon: IconName; tint: Tint; size: number }) {
+  const glow = useGlow(tint);
+  const t = useTint(tint);
+  return (
+    <Orb size={size} glow={glow}>
+      <MaterialCommunityIcons name={icon} size={Math.round(size * 0.5)} color={t.art} />
+    </Orb>
+  );
+}
+
+/** A mesma cena de três orbes, com ícones no lugar das ilustrações de produto: telas sem uma categoria que as represente. */
+export function HeaderIcons({
+  icons,
+  tints,
+}: {
+  icons: readonly [IconName, IconName, IconName];
+  tints: readonly [Tint, Tint, Tint];
+}) {
+  return (
+    <View style={styles.art} accessible={false} importantForAccessibility="no-hide-descendants" pointerEvents="none">
+      <View style={styles.artLeft}>
+        <IconOrb icon={icons[0]} tint={tints[0]} size={46} />
+      </View>
+      <View style={styles.artRight}>
+        <IconOrb icon={icons[2]} tint={tints[2]} size={46} />
+      </View>
+      <View style={styles.artMiddle}>
+        <IconOrb icon={icons[1]} tint={tints[1]} size={66} />
       </View>
     </View>
   );

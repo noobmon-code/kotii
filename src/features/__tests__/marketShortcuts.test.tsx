@@ -20,7 +20,6 @@ jest.mock('@/data/market', () => ({
 }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: { message?: string }) => error?.message ?? 'Algo deu errado.' }));
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));

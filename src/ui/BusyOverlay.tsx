@@ -1,6 +1,6 @@
 import { Modal, StyleSheet, View } from 'react-native';
 
-import { Floating, Mascot } from './art';
+import { NukeLive } from './NukeLive';
 import { Text } from './primitives';
 import { space, useColors } from './theme';
 
@@ -10,9 +10,7 @@ export function BusyOverlay({ visible, title, message }: { visible: boolean; tit
   return (
     <Modal visible={visible} transparent animationType="fade">
       <View style={[styles.backdrop, { backgroundColor: c.background }]}>
-        <Floating distance={10}>
-          <Mascot size={104} color={c.brand} mood="think" />
-        </Floating>
+        <NukeLive size={120} state="think" />
         <Text variant="heading" style={styles.center}>
           {title}
         </Text>

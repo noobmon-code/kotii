@@ -360,7 +360,6 @@ export default function TodayScreen() {
           <EmptyState
             icon="check-circle-outline"
             tint="green"
-            mood="calm"
             title="Tudo em dia"
             message="Nenhum remédio, consulta, tarefa, conta, validade ou documento pedindo atenção agora."
           />

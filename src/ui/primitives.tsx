@@ -22,7 +22,6 @@ import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
 import { getCategory, type IconName } from '@/domain/categories';
 import { formatBRDate, maskBRDate, parseBRDate } from '@/domain/dates';
 import { matchItemArt } from '@/domain/itemArt';
-import { Mascot, Spot, type Mood } from './art';
 import { Backdrop } from './Backdrop';
 import { CATEGORY_ART } from './categoryArt';
 import { GradientFill } from './gradient';
@@ -188,22 +187,6 @@ export function Section({ title, action, children }: { title: string; action?: R
         {action}
       </View>
       {children}
-    </View>
-  );
-}
-
-/** Título das abas: nome da tela com um personagem da cor da seção. */
-export function PageTitle({ title, subtitle, tint }: { title: string; subtitle?: string; tint: Tint }) {
-  const t = useTint(tint);
-  return (
-    <View style={styles.pageTitle}>
-      <View style={styles.flex}>
-        <Text variant="title">{title}</Text>
-        {subtitle ? <Text variant="muted">{subtitle}</Text> : null}
-      </View>
-      <View style={[styles.pageTitleArt, { backgroundColor: t.bg }]}>
-        <Mascot size={40} color={t.art} shape="bean" />
-      </View>
     </View>
   );
 }
@@ -725,22 +708,21 @@ export function EmptyState({
   message,
   action,
   tint = 'orange',
-  mood = 'happy',
 }: {
   icon: IconName;
   title: string;
   message?: string;
   action?: ReactNode;
   tint?: Tint;
-  mood?: Mood;
 }) {
+  const t = useTint(tint);
+  const glow = useGlow(tint);
   return (
     <View style={styles.empty}>
       <View accessibilityLabel={title}>
-        <Spot tint={tint} mood={mood} size={124} />
-        <View style={styles.emptyBadge}>
-          <IconBadge icon={icon} size={36} tone="primary" />
-        </View>
+        <Orb size={104} glow={glow}>
+          <MaterialCommunityIcons name={icon} size={46} color={t.art} />
+        </Orb>
       </View>
       <Text variant="heading" style={styles.center}>
         {title}
@@ -800,8 +782,6 @@ const styles = StyleSheet.create({
   footer: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: space.lg, paddingVertical: space.md },
   footerInner: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', gap: space.sm },
   card: { borderRadius: radius.lg, borderCurve: 'continuous', padding: space.lg + 2 },
-  pageTitle: { flexDirection: 'row', alignItems: 'center', gap: space.md },
-  pageTitleArt: { width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center' },
   pressed: { transform: [{ scale: 0.97 }] },
   section: { gap: space.sm },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingHorizontal: space.xs },
@@ -883,6 +863,5 @@ const styles = StyleSheet.create({
   tileWash: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
   tileLabel: { textAlign: 'center', fontFamily: fonts.heavy, fontSize: 14, lineHeight: 18 },
   empty: { alignItems: 'center', gap: space.md, paddingVertical: space.xl, paddingHorizontal: space.lg },
-  emptyBadge: { position: 'absolute', right: -4, bottom: 0 },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.md, padding: space.xxl },
 });

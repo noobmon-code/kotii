@@ -1,8 +1,9 @@
-// Os textos do topo das abas Casa e Saúde: a linha pequena (a parte aberta) e a
+// Os textos do topo das abas Casa, Finanças e Saúde: a linha pequena (a parte aberta) e a
 // frase de apoio, que muda com a parte.
 
 export type HouseTab = 'compras' | 'despensa' | 'tarefas' | 'aparelhos';
 export type HealthTab = 'resumo' | 'cuidados' | 'treino' | 'dieta';
+export type FinanceTab = 'resumo' | 'contas' | 'notas';
 
 export const HOUSE_TAB_LABELS: Record<HouseTab, string> = {
   compras: 'Compras',
@@ -18,6 +19,12 @@ export const HEALTH_TAB_LABELS: Record<HealthTab, string> = {
   dieta: 'Dieta',
 };
 
+export const FINANCE_TAB_LABELS: Record<FinanceTab, string> = {
+  resumo: 'Resumo',
+  contas: 'Contas',
+  notas: 'Notas',
+};
+
 const HOUSE_SUBTITLES: Record<Exclude<HouseTab, 'compras'>, string> = {
   despensa: 'Gás, água, ração e o que tem em casa',
   tarefas: 'Quem faz o quê, e os pontos das crianças',
@@ -30,6 +37,14 @@ const HEALTH_SUBTITLES: Record<HealthTab, string> = {
   treino: 'Os planos de treino da família',
   dieta: 'Os planos de dieta da família',
 };
+
+const FINANCE_SUBTITLES: Record<FinanceTab, string> = {
+  resumo: 'Para onde foi o dinheiro do mês',
+  contas: 'O que vence e o que já foi pago',
+  notas: 'As notas fiscais das compras',
+};
+
+export const FAMILY_SUBTITLE = 'Moradores, avisos e a sua conta';
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
@@ -44,6 +59,10 @@ export function listsSummary(lists: readonly { pending: number }[] | undefined):
 
 export function houseSubtitle(tab: HouseTab, lists: readonly { pending: number }[] | undefined): string {
   return tab === 'compras' ? listsSummary(lists) : HOUSE_SUBTITLES[tab];
+}
+
+export function financeSubtitle(tab: FinanceTab): string {
+  return FINANCE_SUBTITLES[tab];
 }
 
 export function healthSubtitle(tab: HealthTab): string {

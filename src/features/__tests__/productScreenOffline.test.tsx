@@ -34,7 +34,6 @@ jest.mock('@/ui/PickerModal', () => ({
   },
 }));
 // Os desenhos animados e o fundo não entram no que se confere aqui.
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/lib/supabase', () => {
   const table = (name: string) => {

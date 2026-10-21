@@ -56,7 +56,8 @@ jest.mock('@/lib/passwordRecovery', () => ({ finishRecovery: jest.fn(), startRec
 jest.mock('@/lib/session', () => ({ useSessionEnded: () => false }));
 jest.mock('@/ui/dialogs', () => ({ confirmAction: jest.fn(), notify: jest.fn() }));
 // Os desenhos e o fundo não entram no que se confere aqui.
-jest.mock('@/ui/art', () => ({ FamilyArt: () => null, Logo: () => null }));
+jest.mock('@/ui/art', () => ({ Logo: () => null }));
+jest.mock('@/ui/NukeLive', () => ({ NukeLive: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 
 let renderer: ReactTestRenderer | undefined;

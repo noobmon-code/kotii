@@ -8,7 +8,6 @@ import { ReceiptListSection } from '@/features/ReceiptListSection';
 // Revisão da nota com "Marca preferida": a ligação com outra marca (aprendida antes da escolha) vem como pergunta.
 
 jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 
 let renderer: ReactTestRenderer | undefined;
 

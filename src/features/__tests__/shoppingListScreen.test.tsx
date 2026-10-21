@@ -84,7 +84,6 @@ jest.mock('@/lib/auth', () => ({ useAuth: () => ({ session: { user: { id: 'u1' }
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: unknown) => String(error) }));
 jest.mock('@/ui/dialogs', () => ({ askYesNo: jest.fn(), confirmAction: jest.fn(), notify: jest.fn() }));
 // Os desenhos animados (reanimated) e o fundo não entram no que se confere aqui.
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
 jest.mock('@/features/CartPantryModal', () => ({ CartPantryModal: () => null }));

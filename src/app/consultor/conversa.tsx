@@ -55,7 +55,6 @@ export default function FinanceChatScreen() {
             <EmptyState
               icon="lock-outline"
               tint="purple"
-              mood="calm"
               title="Consultor ainda não liberado"
               message="O consultor financeiro está em teste e, por enquanto, só abre para quem foi convidado, em cada casa."
             />
@@ -63,7 +62,6 @@ export default function FinanceChatScreen() {
             <EmptyState
               icon="wifi-off"
               tint="purple"
-              mood="think"
               title="Não consegui conferir agora"
               message="Confira a internet e tente de novo."
               action={<Button title="Tentar de novo" variant="secondary" onPress={() => beta.refetch()} />}

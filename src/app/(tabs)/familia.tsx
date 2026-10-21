@@ -12,7 +12,9 @@ import { SharedPricesAbout } from '@/features/SharedPrices';
 import { signOut, useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Badge, Button, Card, Icon, IconBadge, IconButton, ListCard, ListRow, Loading, PageTitle, Row, Screen, Section, Text } from '@/ui/primitives';
+import { FAMILY_SUBTITLE } from '@/domain/screenHeaders';
+import { Badge, Button, Card, Icon, IconBadge, IconButton, ListCard, ListRow, Loading, Row, Screen, Section, Text } from '@/ui/primitives';
+import { HeaderIcons, ScreenHeader } from '@/ui/ScreenHeader';
 import { space } from '@/ui/theme';
 
 export default function FamilyScreen() {
@@ -120,7 +122,13 @@ export default function FamilyScreen() {
 
   return (
     <Screen fab>
-      <PageTitle title={house.name} subtitle="Família" tint="purple" />
+      <ScreenHeader
+        gradient="caramelo"
+        eyebrow="Família"
+        title={house.name}
+        subtitle={FAMILY_SUBTITLE}
+        art={<HeaderIcons icons={['calendar-heart', 'home-heart', 'account-group-outline']} tints={['yellow', 'purple', 'pink']} />}
+      />
 
       <ListCard>
         <ListRow

@@ -73,7 +73,6 @@ jest.mock('@/features/MergeProductsModal', () => ({
 }));
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: { message?: string }) => error?.message ?? String(error) }));
 jest.mock('@/ui/dialogs', () => ({ confirmAction: jest.fn(), notify: jest.fn() }));
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));

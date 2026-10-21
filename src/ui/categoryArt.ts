@@ -14,7 +14,7 @@ export const CATEGORY_ART: Record<string, { image: ImageProps['source']; tint: T
   padaria: { image: require('../../assets/Itens-Novos/padaria.webp'), tint: 'orange' },
   graos: { image: require('../../assets/Itens-Novos/graos.webp'), tint: 'yellow' },
   congelados: { image: require('../../assets/Itens-Novos/congelados.webp'), tint: 'blue' },
-  frios: { image: require('../../assets/categories/frios.webp'), tint: 'pink' },
+  frios: { image: require('../../assets/Itens-Novos/frios.webp'), tint: 'pink' },
   doces: { image: require('../../assets/Itens-Novos/doces.webp'), tint: 'pink' },
   snacks: { image: require('../../assets/Itens-Novos/snacks.webp'), tint: 'yellow' },
   temperos: { image: require('../../assets/Itens-Novos/temperos.webp'), tint: 'green' },

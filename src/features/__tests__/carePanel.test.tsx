@@ -31,7 +31,6 @@ jest.mock('@/data/health', () => ({
 jest.mock('@/data/home', () => ({ useMedications: () => mockQueries.medications }));
 // A lista de remédios tem as buscas dela (doses do dia), e os desenhos não entram no que se confere aqui.
 jest.mock('@/features/health/MedicationSections', () => ({ MedicationList: () => null }));
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 // O ícone carrega a fonte depois de montado, fora do act: aqui ele não desenha nada.
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));
 

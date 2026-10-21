@@ -81,10 +81,11 @@ export const shadows = {
 /**
  * Gradientes dos topos de tela e dos cartões grandes, em diagonal (de cima à
  * esquerda para baixo à direita). Cada tela tem o seu: Pêssego é a Casa e as
- * listas, Rosa-argila é a Saúde. `eyebrow` e `subtitle` são as cores dos textos
+ * listas, Rosa-argila é a Saúde, Sálvia são as Finanças e Caramelo (no lugar do
+ * roxo) é a Família. `eyebrow` e `subtitle` são as cores dos textos
  * pequenos sobre o gradiente; o título usa o texto do tema.
  */
-export type GradientName = 'pessego' | 'rosa' | 'salvia';
+export type GradientName = 'pessego' | 'rosa' | 'salvia' | 'caramelo';
 
 export interface GradientPalette {
   from: string;
@@ -98,11 +99,13 @@ export const GRADIENTS: Record<'light' | 'dark', Record<GradientName, GradientPa
     pessego: { from: '#FFE7D6', to: '#FFC2A0', eyebrow: '#654B3E', subtitle: '#4A3A36' },
     rosa: { from: '#FFE6E3', to: '#F7B9B5', eyebrow: '#654B3E', subtitle: '#4A3A36' },
     salvia: { from: '#EDF4E1', to: '#C4DFAF', eyebrow: '#4F5A44', subtitle: '#3B4533' },
+    caramelo: { from: '#FBEDDC', to: '#EBC89F', eyebrow: '#5A4330', subtitle: '#443426' },
   },
   dark: {
     pessego: { from: '#3A2420', to: '#5C3426', eyebrow: '#E3BFA8', subtitle: '#D9C3B6' },
     rosa: { from: '#3A1F2A', to: '#5C2E3D', eyebrow: '#E8BCC6', subtitle: '#DCC4CA' },
     salvia: { from: '#1F2E26', to: '#2F4A3A', eyebrow: '#B7D3BE', subtitle: '#C9DACD' },
+    caramelo: { from: '#3B2F22', to: '#5A4631', eyebrow: '#E6CDAE', subtitle: '#D8C6AF' },
   },
 };
 
