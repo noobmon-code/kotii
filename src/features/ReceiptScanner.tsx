@@ -54,6 +54,14 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
         return;
       }
       if (source === 'library') {
+        // No navegador a galeria não tem limite: com imagens demais, nada é lido (cortar podia deixar o rodapé de fora).
+        if (uris.length > MAX_RECEIPT_PHOTOS) {
+          notify(
+            'Imagens demais',
+            `Escolha até ${MAX_RECEIPT_PHOTOS} imagens da mesma nota, sem deixar de fora o topo (com o mercado) e o rodapé (com a data).`,
+          );
+          return;
+        }
         if (uris.length) read(uris);
         return;
       }

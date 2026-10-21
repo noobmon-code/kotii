@@ -172,8 +172,9 @@ export function nfceReceiptRow(
 
 /**
  * Código da função `nfce` quando a Sefaz pede a verificação "não sou robô"
- * (reCAPTCHA) antes de mostrar a nota. O app não passa por ela: a nota é
- * lida pela foto, guardando a chave do QR.
+ * (reCAPTCHA) antes de mostrar a nota. O app não passa por ela: a nota fica
+ * pendente (domain/pendingReceipts), a pessoa passa pela verificação na página
+ * da Sefaz e a nota é lida pelos prints dela (ou pela foto), com a chave do QR.
  */
 export const NFCE_CAPTCHA = 'captcha';
 
@@ -188,13 +189,17 @@ export function nfceFailureRoute(code: string | null): 'photo' | 'stay' {
 
 /**
  * Próximo passo para um QR lido: buscar na Sefaz ou, se esta nota já esbarrou
- * no "não sou robô" nesta tela, ir direto para a foto (buscar de novo só gastaria
- * uma leitura do mês). `photoOnly` guarda a mensagem da Sefaz por chave.
+ * no "não sou robô" (nesta tela, ou antes: é uma nota pendente), ir direto para
+ * os prints e a foto (buscar de novo só gastaria uma leitura do mês e criaria
+ * outra pendente). `photoOnly` guarda a mensagem da Sefaz por chave, nesta tela;
+ * `pending`, as chaves das pendentes da casa (sem a mensagem: null).
  */
 export function qrReadStep(
   accessKey: string,
   photoOnly: ReadonlyMap<string, string>,
-): { kind: 'fetch' } | { kind: 'photo'; message: string } {
+  pending: ReadonlySet<string> = new Set(),
+): { kind: 'fetch' } | { kind: 'photo'; message: string | null } {
   const message = photoOnly.get(accessKey);
-  return message === undefined ? { kind: 'fetch' } : { kind: 'photo', message };
+  if (message !== undefined) return { kind: 'photo', message };
+  return pending.has(accessKey) ? { kind: 'photo', message: null } : { kind: 'fetch' };
 }

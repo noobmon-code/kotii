@@ -112,3 +112,32 @@ export function photoIds(read: { accessKey: string | null; cnpj: string | null }
     read: { accessKey: read.accessKey, cnpj: read.cnpj },
   };
 }
+
+/** O código da recusa da nota do QR lida sem nenhum item (só o topo ou o rodapé nos prints). */
+export const NO_ITEMS = 'no_items';
+
+/**
+ * A nota do QR (a pendente da Sefaz com "não sou robô") lida sem nenhum item: os prints eram só o topo ou o
+ * rodapé. Ela não vira nota: com a chave do QR, um rascunho vazio tomaria o lugar da pendente no app e
+ * responderia "nota repetida" aos prints certos. Sem a chave (a foto comum), o rascunho vazio continua valendo.
+ */
+export function readWithoutItems(given: string | null, items: number): boolean {
+  return given !== null && items === 0;
+}
+
+/**
+ * A data da nota que a IA não leu (os prints sem o rodapé): o mês de emissão está na chave (AAMM, logo depois
+ * do código da UF). Nota de um mês anterior ao de hoje (em São Paulo) fica no último dia daquele mês, ao meio-dia
+ * de Brasília, e não no mês em que os prints foram mandados; a revisão mostra a data para a pessoa conferir. Sem
+ * chave, ou do mês de hoje, a data é agora.
+ */
+export function fallbackPurchasedAt(accessKey: string | null, now: Date = new Date()): string {
+  const year = accessKey ? 2000 + Number(accessKey.slice(2, 4)) : NaN;
+  const month = accessKey ? Number(accessKey.slice(4, 6)) : NaN;
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: 'numeric' }).formatToParts(now);
+  const part = (type: 'year' | 'month') => Number(parts.find((p) => p.type === type)?.value);
+  const [nowYear, nowMonth] = [part('year'), part('month')];
+  if (!Number.isInteger(year) || !(month >= 1 && month <= 12) || year * 12 + month >= nowYear * 12 + nowMonth) return now.toISOString();
+  // Dia 0 do mês seguinte: o último dia deste. 15h UTC: meio-dia em Brasília (sem horário de verão).
+  return new Date(Date.UTC(year, month, 0, 15)).toISOString();
+}

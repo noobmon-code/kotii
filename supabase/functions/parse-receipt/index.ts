@@ -1,11 +1,14 @@
 // POST { image_paths } (ou { image_path }) -> lê as fotos da nota (já enviadas
-// ao bucket "receipts", em ordem; nota comprida vem em partes), extrai os
-// itens com IA e cria um rascunho de nota para o usuário revisar.
+// ao bucket "receipts", em ordem; nota comprida vem em partes, até MAX_PHOTOS),
+// extrai os itens com IA e cria um rascunho de nota para o usuário revisar.
+// As imagens podem ser fotos do papel ou prints da página da Sefaz com a nota.
 // `access_key` (opcional): a chave do QR code, quando a Sefaz pediu o "não
-// sou robô" e a nota veio pela foto. Se a casa já tem uma nota com ela,
+// sou robô" e a nota veio pelos prints ou pela foto. Se a casa já tem uma nota com ela,
 // devolve a existente (duplicate), sem gastar a IA; senão a nota guarda essa
 // chave, a menos que a foto seja de outra nota, e o CNPJ dela acha o mercado
-// quando a IA não leu um CNPJ válido (regras em accessKey.ts).
+// quando a IA não leu um CNPJ válido (regras em accessKey.ts). Com a chave, a
+// leitura sem nenhum item (só o topo ou o rodapé) não vira nota: 422 `no_items`,
+// e a pendente continua no app; sem a data lida, a nota fica no mês da chave.
 //
 // Roda com o JWT do usuário: todas as leituras e escritas passam pela RLS,
 // menos uma. O que a IA leu também vai para receipt_reads, com a chave secreta,
@@ -22,7 +25,16 @@ import { publishableKey, secretKey } from '../_shared/apiKeys.ts';
 import { ExtractionError, extractStructured, mediaTypeOf, toVisionImage, visionConfig } from '../_shared/vision.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
 import { forgetReceiptRead, insertWithRead, receiptRead, saoPauloDay, saveReceiptRead } from '../_shared/receiptRead.ts';
-import { duplicateBeforeRead, existingOnConflict, keyAfterRead, photoIds, requestedAccessKey } from './accessKey.ts';
+import {
+  duplicateBeforeRead,
+  existingOnConflict,
+  fallbackPurchasedAt,
+  keyAfterRead,
+  NO_ITEMS,
+  photoIds,
+  readWithoutItems,
+  requestedAccessKey,
+} from './accessKey.ts';
 import {
   BOUGHT_RECEIPTS,
   type BoughtReceipt,
@@ -30,8 +42,9 @@ import {
   CATALOG_LIMIT,
   cleanReceipt,
   ExtractedReceiptSchema,
+  imagePathsError,
   instructions,
-  MAX_PHOTOS,
+  MAX_TOTAL_IMAGE_BYTES,
   promptCatalog,
   sameStoreName,
   SYSTEM,
@@ -118,13 +131,8 @@ Deno.serve(async (req) => {
     return json({ error: 'Corpo inválido.' }, 400);
   }
   const imagePaths = Array.isArray(body.image_paths) ? body.image_paths : [body.image_path];
-  if (
-    !imagePaths.length ||
-    imagePaths.length > MAX_PHOTOS ||
-    imagePaths.some((p) => typeof p !== 'string' || !p.startsWith(`${householdId}/`))
-  ) {
-    return json({ error: 'Imagem inválida.' }, 400);
-  }
+  const pathsError = imagePathsError(imagePaths, householdId);
+  if (pathsError) return json(pathsError, 400);
   const givenKey = requestedAccessKey(body.access_key);
   if (givenKey === 'invalid') return json({ error: 'Chave de acesso inválida.' }, 400);
   const findByKey = (key: string) => receiptWithKey(db, key);
@@ -139,11 +147,17 @@ Deno.serve(async (req) => {
   }
   if (existingBefore) return json({ receipt_id: existingBefore, duplicate: true });
   const images = [];
+  let totalBytes = 0;
   for (const path of imagePaths as string[]) {
     const mediaType = mediaTypeOf(path);
     if (!mediaType) return json({ error: 'Formato de imagem não suportado.' }, 400);
     const { data: blob, error: downloadError } = await db.storage.from('receipts').download(path);
     if (downloadError || !blob) return json({ error: 'Imagem não encontrada.' }, 404);
+    // Todas juntas vão num pedido só à IA: passando do que ele aceita, o app apaga as fotos e a pessoa manda menos.
+    totalBytes += blob.size;
+    if (totalBytes > MAX_TOTAL_IMAGE_BYTES) {
+      return json({ error: 'As fotos juntas ficaram grandes demais para uma leitura. Mande menos fotos de uma vez.' }, 413);
+    }
     try {
       images.push(await toVisionImage(blob, mediaType));
     } catch (err) {
@@ -207,6 +221,15 @@ Deno.serve(async (req) => {
     ((aliasRows ?? []) as { description: string; product_id: string }[]).map((r) => [r.description, r.product_id]),
   );
   const receipt = cleanReceipt(extracted, new Set(catalog.map((p) => p.id)), aliasMatches);
+  // A nota do QR sem itens (os prints só do topo ou do rodapé) não vira nota: a pendente fica no app, para os
+  // prints da lista de itens. A leitura conta no limite do mês, como a imagem que não é nota (a IA leu; só a
+  // falha da IA devolve o uso, senão daria para pedir leituras sem fim sem gastar a cota).
+  if (readWithoutItems(givenKey, receipt.items.length)) {
+    return json(
+      { error: 'Não achei os itens da nota nas imagens. Mande de novo junto com a lista de itens (nos prints da Sefaz ou na foto do papel).', code: NO_ITEMS },
+      422,
+    );
+  }
 
   try {
     // A chave do QR vale mais que a lida na foto, menos quando a foto é de outra nota.
@@ -249,7 +272,8 @@ Deno.serve(async (req) => {
           .insert({
             ...(withRead ? { read_id: withRead } : {}),
             store_id: storeId,
-            purchased_at: receipt.purchasedAt ?? new Date().toISOString(),
+            // Sem a data lida (os prints sem o rodapé), o mês da chave: a nota pendente de outro mês não cai no de hoje.
+            purchased_at: receipt.purchasedAt ?? fallbackPurchasedAt(accessKey),
             total: receipt.total,
             access_key: accessKey,
             image_path: imagePaths[0],
@@ -286,6 +310,8 @@ Deno.serve(async (req) => {
     return json({ receipt_id: created.id, duplicate: false, items: receipt.items.length });
   } catch (err) {
     console.error('db error', err);
+    // Nenhuma nota ficou desta leitura (se os itens falharam, ela foi apagada acima): ela não conta no limite do mês.
+    await refundAiQuota(ticket).catch((e) => console.error('refund_ai failed', e));
     return json({ error: 'Falha ao salvar a nota.' }, 500);
   }
 });
