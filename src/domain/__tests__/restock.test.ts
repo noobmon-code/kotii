@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { fitsList, type PurchaseRecord } from '../recentPurchases';
+import { fitsList, listExclusion, type PurchaseRecord } from '../recentPurchases';
 import { describeRestock, ranOutItems, restockFrom, restockSuggestions } from '../restock';
 
 const NOW = new Date('2026-09-27T15:00:00-03:00');
@@ -136,6 +136,22 @@ describe('ranOutItems e restockFrom', () => {
         restockSuggestions(records, { now: NOW, ...options }),
       );
     }
+  });
+
+  it('"Acho que acabou" conta o costume do item, de qualquer marca, e põe o nome sem a marca', () => {
+    const items = restockSuggestions(
+      [
+        // Ovos a cada 7 dias, cada vez de uma marca; última há 10.
+        rec('Ovo Doninho Caipira', '2026-09-03', { category: 'ovos', productId: 'doninho', source: 'receipt' }),
+        rec('Ovos Rancho Caipira', '2026-09-10', { category: 'ovos', productId: 'rancho', source: 'receipt' }),
+        rec('Ovo Doninho Caipira', '2026-09-17', { category: 'ovos', productId: 'doninho', source: 'receipt' }),
+      ],
+      { now: NOW },
+    );
+    expect(items.map((i) => [i.name, i.productId, i.everyDays, i.daysSince])).toEqual([['Ovo caipira', 'doninho', 7, 10]]);
+    // Com o item na lista, com a marca ou sem ela, sai da faixa.
+    const records = [rec('Ovo Doninho Caipira', '2026-09-03', { category: 'ovos' }), rec('Ovo Doninho Caipira', '2026-09-10', { category: 'ovos' }), rec('Ovo Doninho Caipira', '2026-09-17', { category: 'ovos' })];
+    expect(restockSuggestions(records, { now: NOW, exclude: listExclusion([{ name: 'Ovos caipira', category: 'ovos', product_id: null }]) })).toEqual([]);
   });
 
   it('uma leitura sem o tipo da lista serve ao selo e à faixa: filtrada depois pelo tipo, a faixa é a mesma', () => {

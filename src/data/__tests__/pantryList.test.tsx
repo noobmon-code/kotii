@@ -4,7 +4,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { PANTRY_LIST_GONE } from '@/domain/pantryList';
 
-import { useAddToPantryList } from '../market';
+import { useAddToMarketList, useAddToPantryList } from '../market';
 
 type Row = Record<string, unknown>;
 
@@ -103,12 +103,12 @@ const pills: Item = { name: 'Dipirona', category: 'medicamentos', productId: nul
 
 const list = (id: string, kind: string, created_at: string, archived_at: string | null = null): Row => ({ id, name: id, kind, created_at, archived_at });
 
-/** Um toque em "Acabou", com o hook de verdade num QueryClient próprio. */
-async function finish(item: Item) {
+/** Um toque em "Acabou" (ou, com `useAdd`, outro jeito de pôr na lista), com o hook de verdade num QueryClient próprio. */
+async function finish(item: Item, useAdd: () => { mutateAsync: (item: Item) => Promise<unknown> } = useAddToPantryList) {
   const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-  let add: ReturnType<typeof useAddToPantryList> | undefined;
+  let add: { mutateAsync: (item: Item) => Promise<unknown> } | undefined;
   function Probe() {
-    add = useAddToPantryList();
+    add = useAdd();
     return null;
   }
   let renderer: ReactTestRenderer | undefined;
@@ -174,6 +174,21 @@ describe('o que acabou na despensa vai para uma lista', () => {
     expect(mockDb.items).toHaveLength(1);
   });
 
+  it('o mesmo item já pendente com outro nome (com a marca, ou sem ela): não entra de novo', async () => {
+    const milk: Item = { name: 'Leite desnatado', category: 'laticinios', productId: 'il', quantity: 1, unit: 'un' };
+    mockDb.lists = [list('Feira', 'mercado', '2026-10-15T10:00:00Z')];
+    mockDb.items = [{ id: 'i1', list_id: 'Feira', name: 'Leite IL Desnatado', category: 'laticinios', checked_at: null }];
+    expect(await finish(milk)).toEqual({ id: 'Feira', name: 'Feira', added: false });
+    expect(mockDb.calls).not.toContain('rpc add_to_list');
+    // O contrário também.
+    mockDb.items = [{ id: 'i1', list_id: 'Feira', name: 'Leite desnatado', category: 'laticinios', checked_at: null }];
+    expect(await finish({ ...milk, name: 'Leite IL Desnatado' })).toMatchObject({ added: false });
+    // Outro tipo do mesmo item entra; no carrinho, não conta.
+    expect(await finish({ ...milk, name: 'Leite integral' })).toMatchObject({ added: true });
+    mockDb.items = [{ id: 'i1', list_id: 'Feira', name: 'Leite IL Desnatado', category: 'laticinios', checked_at: '2026-10-18T10:00:00Z' }];
+    expect(await finish(milk)).toMatchObject({ added: true });
+  });
+
   it('nenhuma lista aberta em que caiba: a de mercado de sempre (achada ou criada no servidor)', async () => {
     mockDb.lists = [list('Farmácia', 'farmacia', '2026-10-17T10:00:00Z')];
     expect(await finish(rice)).toMatchObject({ name: 'Mercado', added: true });
@@ -224,5 +239,21 @@ describe('o que acabou na despensa vai para uma lista', () => {
     expect(await finish(rice)).toEqual({ id: 'Feira', name: 'Feira', added: true });
     expect(mockDb.calls).toContain('insert shopping_list_items');
     expect(itemsIn('Feira')).toEqual(['Arroz']);
+  });
+});
+
+describe('o Nuke e o cardápio (lista de mercado aberta, sem add_to_list)', () => {
+  it('o mesmo item já pendente com outro nome não entra de novo; outro tipo e outra marca entram', async () => {
+    const milk: Item = { name: 'Leite desnatado', category: 'laticinios', productId: null, quantity: 1, unit: 'un' };
+    mockDb.items = [
+      { id: 'i1', list_id: 'mercado-nova', name: 'Leite IL Desnatado', category: 'laticinios', checked_at: null },
+      { id: 'i2', list_id: 'mercado-nova', name: 'Shampoo Seda', category: 'higiene', checked_at: null },
+    ];
+    expect(await finish(milk, useAddToMarketList)).toMatchObject({ added: false });
+    expect(await finish({ ...milk, name: 'leite il desnatado' }, useAddToMarketList)).toMatchObject({ added: false });
+    expect(mockDb.calls).not.toContain('insert shopping_list_items');
+    expect(await finish({ ...milk, name: 'Leite integral' }, useAddToMarketList)).toMatchObject({ added: true });
+    expect(await finish({ ...milk, name: 'Shampoo Clear Men', category: 'higiene' }, useAddToMarketList)).toMatchObject({ added: true });
+    expect(itemsIn('mercado-nova')).toEqual(['Leite IL Desnatado', 'Shampoo Seda', 'Leite integral', 'Shampoo Clear Men']);
   });
 });

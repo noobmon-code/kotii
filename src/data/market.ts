@@ -12,6 +12,7 @@ import {
 import { useEffect } from 'react';
 
 import type { CartPantryEntry } from '@/domain/cartPantry';
+import { pendingSameItem } from '@/domain/genericItem';
 import { LinkIndex, type ListLink, type OpenListItem } from '@/domain/listLinks';
 import {
   cartPurchases,
@@ -32,7 +33,6 @@ import { listsFor, newListKind, PANTRY_LIST_GONE, type ListChoice } from '@/doma
 import { PRODUCT_MERGED_AWAY, PRODUCT_NAME_TAKEN } from '@/domain/productMerge';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { RESTOCK_HISTORY_DAYS } from '@/domain/restock';
-import { normalizeSearch } from '@/domain/search';
 import type { ProductName } from '@/domain/similarNames';
 import { storePricesFromPurchases } from '@/domain/storePrices';
 import { EXPECTS_ROWS_META } from '@/lib/accessErrors';
@@ -47,7 +47,7 @@ import type {
   Unit,
 } from '@/lib/types';
 
-import { isMissingFunction } from './missingSchema';
+import { isMissingColumn, isMissingFunction } from './missingSchema';
 import { isProductMergedAway, LISTED_PRODUCT_SOURCES, withFreshProducts } from './productMerge';
 
 // ---------------------------------------------------------------------------
@@ -73,9 +73,22 @@ type ListSummary = ShoppingList & ListSummaryCounts;
 // O cache guardado no aparelho por versões anteriores tem listas sem `items`.
 const withItems = (lists: ListSummary[]) => (lists.every((l) => l.items) ? lists : lists.map((l) => ({ ...l, items: l.items ?? [] })));
 
-/** As colunas do item que a tela da lista usa. */
-const LIST_ITEM_COLUMNS =
+/** As colunas do item que a tela da lista usa, sem a "Marca preferida" (o banco de antes dela). */
+const LEGACY_LIST_ITEM_COLUMNS =
   'id, list_id, product_id, name, category, quantity, unit, notes, priority, photo_path, checked_at, checked_by, toggle_token, created_at';
+const LIST_ITEM_COLUMNS = `${LEGACY_LIST_ITEM_COLUMNS}, brand_preferred`;
+
+/** A coluna da "Marca preferida" ainda não está no banco (o app chegou antes da migração). */
+const isMissingBrandColumn = (error: unknown) => isMissingColumn(error, 'brand_preferred');
+
+/**
+ * Lê os itens com a "Marca preferida"; num banco de antes dela, repete com as colunas de antes, e os itens vêm
+ * sem o campo (nenhum tem marca preferida, e os detalhes do item não oferecem a escolha).
+ */
+async function readListItems(run: (columns: string) => PromiseLike<{ data: unknown; error: unknown }>): Promise<ShoppingListItem[]> {
+  const answer = await run(LIST_ITEM_COLUMNS);
+  return unwrap(isMissingBrandColumn(answer.error) ? await run(LEGACY_LIST_ITEM_COLUMNS) : answer) as ShoppingListItem[];
+}
 
 /**
  * Quantas listas abertas (as mais novas) já ficam com os itens guardados no
@@ -99,9 +112,9 @@ async function preloadListItems(client: QueryClient, listIds: string[]) {
   const startedAt = Date.now();
   let rows: ShoppingListItem[];
   try {
-    rows = unwrap(
-      await supabase.from('shopping_list_items').select(LIST_ITEM_COLUMNS).in('list_id', listIds).order('created_at'),
-    ) as ShoppingListItem[];
+    rows = await readListItems((columns) =>
+      supabase.from('shopping_list_items').select(columns).in('list_id', listIds).order('created_at'),
+    );
   } catch {
     return;
   }
@@ -151,19 +164,25 @@ export interface OpenListEntry extends OpenListItem {
   checked_at: string | null;
 }
 
-/** Itens de todas as listas abertas, marcados no carrinho ou não. */
+type OpenListRow = Omit<OpenListEntry, 'list_name' | 'brand'> & { brand_preferred?: boolean; list: { name: string } };
+
+/**
+ * Itens de todas as listas abertas, marcados no carrinho ou não. `brand` é a "Marca preferida" que a pessoa ligou;
+ * num banco de antes da coluna, nenhum item a tem (o item com o nome de um produto casa com qualquer marca).
+ */
 export function useOpenListItems() {
   return useQuery({
     queryKey: ['listItems', 'open'],
     queryFn: async (): Promise<OpenListEntry[]> => {
-      const rows = unwrap(
-        await supabase
+      const read = (brand: string) =>
+        supabase
           .from('shopping_list_items')
-          .select('id, list_id, name, category, product_id, checked_at, list:shopping_lists!inner(name)')
+          .select(`id, list_id, name, category, product_id, checked_at${brand}, list:shopping_lists!inner(name)`)
           .is('list.archived_at', null)
-          .order('created_at'),
-      ) as unknown as (Omit<OpenListEntry, 'list_name'> & { list: { name: string } })[];
-      return rows.map(({ list, ...item }) => ({ ...item, list_name: list.name }));
+          .order('created_at');
+      const answer = await read(', brand_preferred');
+      const rows = unwrap(isMissingBrandColumn(answer.error) ? await read('') : answer) as unknown as OpenListRow[];
+      return rows.map(({ list, brand_preferred, ...item }) => ({ ...item, brand: brand_preferred === true, list_name: list.name }));
     },
   });
 }
@@ -240,14 +259,10 @@ export function useListItems(listId: string) {
   return useQuery({
     queryKey: ['listItems', listId],
     queryFn: unlessListQueueBusy(
-      async () =>
-        unwrap(
-          await supabase
-            .from('shopping_list_items')
-            .select(LIST_ITEM_COLUMNS)
-            .eq('list_id', listId)
-            .order('created_at'),
-        ) as ShoppingListItem[],
+      () =>
+        readListItems((columns) =>
+          supabase.from('shopping_list_items').select(columns).eq('list_id', listId).order('created_at'),
+        ),
     ),
   });
 }
@@ -353,9 +368,12 @@ async function addListItem(queryClient: QueryClient, { id, listId, userId, token
 
 /** O item posto aparece já na lista e no resumo das listas. */
 async function showAdded(queryClient: QueryClient, input: AddItemInput) {
-  const item = queuedListItem(input, new Date().toISOString());
+  const createdAt = new Date().toISOString();
+  const item = queuedListItem(input, createdAt);
   await queryClient.cancelQueries({ queryKey: ['listItems', input.listId] });
-  queryClient.setQueryData<ShoppingListItem[]>(['listItems', input.listId], (items) => (items ? itemsWithNew(items, item) : items));
+  queryClient.setQueryData<ShoppingListItem[]>(['listItems', input.listId], (items) =>
+    items ? itemsWithNew(items, queuedListItem(input, createdAt, items.some((i) => typeof i.brand_preferred === 'boolean'))) : items,
+  );
   await queryClient.cancelQueries({ queryKey: ['lists'] });
   queryClient.setQueryData<ListSummary[]>(['lists'], (lists) =>
     lists ? summaryWithItem(lists, input.listId, { name: item.name, product_id: item.product_id, checked_at: null }) : lists,
@@ -448,13 +466,13 @@ export function useAddItemsToList() {
             ).id);
       // Lista achada no servidor: a tela pode não ter visto o que alguém pôs
       // nela agora há pouco. O que já está pendente não entra de novo.
+      // O mesmo item com outro nome também conta ("Leite IL Desnatado" para "Leite desnatado", domain/genericItem).
       let toAdd = items;
       if (reuseMarketList && items.length) {
         const pending = unwrap(
-          await supabase.from('shopping_list_items').select('name').eq('list_id', id).is('checked_at', null),
-        ) as { name: string }[];
-        const names = new Set(pending.map((p) => normalizeSearch(p.name)));
-        toAdd = items.filter((item) => !names.has(normalizeSearch(item.name)));
+          await supabase.from('shopping_list_items').select('name, category').eq('list_id', id).is('checked_at', null),
+        ) as { name: string; category?: string | null }[];
+        toAdd = items.filter((item) => !pendingSameItem(item, pending));
       }
       if (toAdd.length) {
         // O produto de um item pode ter sido juntado com outro em outro aparelho (withFreshProducts).
@@ -509,18 +527,15 @@ async function openPharmacyList(name = 'Farmácia'): Promise<{ id: string; name:
 
 type ListedItem = { id: string; name: string; added: boolean };
 
-/** Põe o item na lista, a não ser que já esteja pendente nela (`added: false`): repetir é seguro. */
+/**
+ * Põe o item na lista, a não ser que já esteja pendente nela (`added: false`): repetir é seguro. Pendente com este
+ * nome ou com outro do mesmo item ("Leite desnatado" do Nuke com "Leite IL Desnatado" na lista: domain/genericItem).
+ */
 async function addItemOnce(queryClient: QueryClient, list: { id: string; name: string }, item: NewListItem): Promise<ListedItem> {
   const pending = unwrap(
-    await supabase
-      .from('shopping_list_items')
-      .select('id')
-      .eq('list_id', list.id)
-      .is('checked_at', null)
-      .ilike('name', item.name.replace(/[\\%_]/g, '\\$&'))
-      .limit(1),
-  ) as { id: string }[];
-  if (pending.length) return { ...list, added: false };
+    await supabase.from('shopping_list_items').select('name, category').eq('list_id', list.id).is('checked_at', null),
+  ) as { name: string; category?: string | null }[];
+  if (pendingSameItem(item, pending)) return { ...list, added: false };
   // O produto do item (o da despensa, na lista de mercado) pode ter sido juntado com outro em outro aparelho (withFreshProducts).
   await withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
     unwrap(
@@ -598,6 +613,12 @@ async function addToPantryList(queryClient: QueryClient, { listId, shownListId, 
     }
     list ??= newListKind(item.category) === 'farmacia' ? await openPharmacyList() : await openMarketList();
     const target = { id: list.id, name: list.name };
+    // add_to_list só não repete o mesmo nome. O mesmo item com outro nome, já pendente ("Leite IL Desnatado" para
+    // "Leite desnatado", e o contrário: domain/genericItem), também não entra de novo.
+    const pending = unwrap(
+      await supabase.from('shopping_list_items').select('name, category').eq('list_id', target.id).is('checked_at', null),
+    ) as { name: string; category?: string | null }[];
+    if (pendingSameItem(item, pending)) return { ...target, added: false };
     const added = await supabase
       .rpc('add_to_list', {
         p_list_id: target.id,
@@ -650,7 +671,7 @@ export interface PharmacyItem extends NewListItem {
  * põem duas vezes; `added: false` diz em que lista ele já estava. Sem a função
  * (banco de antes da migração, ou o cache do PostgREST de antes dela), o
  * caminho de antes: open_pharmacy_list e addItemOnce, que só confere a lista
- * aberta e o nome exato.
+ * aberta e o nome (sem o de quem toma).
  */
 async function addToPharmacyList(queryClient: QueryClient, item: PharmacyItem): Promise<ListedItem> {
   const added = await supabase.rpc('add_to_pharmacy_list', { p_item: item.name, p_alt_item: item.altName ?? null }).single();
@@ -905,8 +926,13 @@ export interface EditItemInput {
   id: string;
   listId: string;
   userId: string;
-  /** Só os campos que mudaram; photo_path só para tirar a foto (null). */
-  values: Partial<Pick<ShoppingListItem, 'name' | 'category' | 'quantity' | 'unit' | 'notes' | 'priority'>> & { photo_path?: null };
+  /**
+   * Só os campos que mudaram; photo_path só para tirar a foto (null). A edição guardada por versões anteriores não
+   * tem brand_preferred: a escolha de marca do item fica como está.
+   */
+  values: Partial<Pick<ShoppingListItem, 'name' | 'category' | 'quantity' | 'unit' | 'notes' | 'priority' | 'brand_preferred'>> & {
+    photo_path?: null;
+  };
   /**
    * Ao tirar a foto: a que estava no item no toque. Só ela sai: a foto que outra pessoa pôs depois (o envio
    * repetido, ou o que esperava a conexão, chega depois dela) fica. A edição guardada por versões anteriores
@@ -915,17 +941,27 @@ export interface EditItemInput {
   expectedPhotoPath?: string;
 }
 
+/**
+ * Grava os campos do item pelo id. Num banco de antes da "Marca preferida" (a edição esperou na fila enquanto a
+ * coluna não chegou, por exemplo), o resto da edição grava sem ela, em vez de a fila desistir do item.
+ */
+async function updateListItem(id: string, values: EditItemInput['values']) {
+  const result = await supabase.from('shopping_list_items').update(values).eq('id', id).select('id');
+  if (!('brand_preferred' in values) || !isMissingBrandColumn(result.error)) return unwrapQueued(result);
+  const { brand_preferred: _brand, ...rest } = values;
+  // Só a marca, que o banco ainda não guarda: nada a gravar (e nenhuma linha a conferir, ver wroteNoRows).
+  return Object.keys(rest).length
+    ? unwrapQueued(await supabase.from('shopping_list_items').update(rest).eq('id', id).select('id'))
+    : undefined;
+}
+
 async function editListItem({ id, userId, values, expectedPhotoPath }: EditItemInput) {
   await requireQueueSession(userId);
   const { photo_path: _photo, ...rest } = values;
   const clearsPhoto = 'photo_path' in values;
-  if (!clearsPhoto || !expectedPhotoPath) {
-    return unwrapQueued(await supabase.from('shopping_list_items').update(values).eq('id', id).select('id'));
-  }
+  if (!clearsPhoto || !expectedPhotoPath) return updateListItem(id, values);
   // Os outros campos pelo id; a foto só se ainda é a mesma (o gatilho manda a tirada para a lixeira).
-  const rows = Object.keys(rest).length
-    ? unwrapQueued(await supabase.from('shopping_list_items').update(rest).eq('id', id).select('id'))
-    : undefined;
+  const rows = Object.keys(rest).length ? await updateListItem(id, rest) : undefined;
   const cleared = unwrapQueued(
     await supabase.from('shopping_list_items').update({ photo_path: null }).eq('id', id).eq('photo_path', expectedPhotoPath).select('id'),
   );

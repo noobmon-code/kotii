@@ -119,6 +119,18 @@ describe('"Acabou" na despensa', () => {
     expect((await actionsOf('Dipirona'))[0].label).toBe('Acabou — pôr na lista da farmácia');
   });
 
+  it('o item vai para a lista sem a marca, com o produto como dica de preço', async () => {
+    mockPantry.rows = [{ ...row('Leite IL Desnatado', 'laticinios'), product_id: 'il' }];
+    const actions = await actionsOf('Leite IL Desnatado');
+    await act(async () => actions[0].onPress());
+    expect(mockAdd).toHaveBeenCalledWith(expect.objectContaining({ name: 'Leite desnatado', category: 'laticinios', productId: 'il' }));
+    expect(notify).toHaveBeenCalledWith('Adicionado à lista', 'Leite desnatado foi para "Feira".');
+    // Já pendente (com este nome ou com a marca): o aviso fala do item sem a marca.
+    mockAdd.mockImplementation(async () => ({ id: 'l-Feira', name: 'Feira', added: false }));
+    await act(async () => actions[0].onPress());
+    expect(notify).toHaveBeenCalledWith('Já estava na lista', 'Leite desnatado já estava pendente em "Feira".');
+  });
+
   it('a lista falhou: a baixa não acontece e o erro aparece', async () => {
     mockAdd.mockRejectedValue(new Error('Essa lista não está mais aberta. Escolha outra.'));
     const actions = await actionsOf('Arroz');

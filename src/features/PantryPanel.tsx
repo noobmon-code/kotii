@@ -5,6 +5,7 @@ import { StyleSheet, View } from 'react-native';
 import { useConsumePantryItems, usePantry, useTakeOneFromPantry } from '@/data/home';
 import { useAddToPantryList, useProducts, useShoppingLists } from '@/data/market';
 import { formatShortDate, todayISO } from '@/domain/dates';
+import { genericItem } from '@/domain/genericItem';
 import { describeExpiry, expiryStatus, groupPantry, takeOne, type ExpiryStatus, type PantryGroup } from '@/domain/pantry';
 import { listsFor, newListKind } from '@/domain/pantryList';
 import { formatQuantity } from '@/domain/money';
@@ -62,11 +63,14 @@ export function PantryPanel() {
   // despensa e repetir não duplica (a lista ignora item já pendente).
   // Sem `listId`, a lista é a que o menu mostrou como a última (`shownListId`), se ainda está aberta; senão, a mais
   // nova em que o item cabe, conferida no servidor na hora.
+  // O item vai sem a marca ("Leite desnatado", e não o "Leite IL Desnatado" do produto), com o produto como dica de
+  // preço, como na lista e na tela do produto: a marca se escolhe na hora, ou em "Marca preferida" (domain/genericItem).
   async function finishAndRestock(group: Group, listId?: string, shownListId?: string) {
     const newest = group.lots[group.lots.length - 1];
+    const itemName = genericItem(group.name, group.category).name;
     try {
       const list = await addToList.mutateAsync({
-        name: group.name,
+        name: itemName,
         category: group.category,
         productId: group.productId,
         quantity: newest.quantity,
@@ -77,7 +81,7 @@ export function PantryPanel() {
       await consume.mutateAsync(group.lots.map((lot) => lot.id));
       notify(
         list.added ? 'Adicionado à lista' : 'Já estava na lista',
-        list.added ? `${group.name} foi para "${list.name}".` : `${group.name} já estava pendente em "${list.name}".`,
+        list.added ? `${itemName} foi para "${list.name}".` : `${itemName} já estava pendente em "${list.name}".`,
       );
     } catch (err) {
       onError(err);

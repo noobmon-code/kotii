@@ -272,6 +272,15 @@ describe('tela do produto: "Pôr na lista"', () => {
     expect(notify).toHaveBeenCalledWith('Adicionado à lista', 'Arroz foi para "Mercado".');
   });
 
+  it('o produto com marca vai sem ela, com o produto como dica de preço', async () => {
+    mockQueries.products = loaded([{ ...ARROZ, name: 'Arroz Camil Integral 1kg' }]);
+    mockAddToList.mutateAsync = jest.fn(async () => ({ id: 'l1', name: 'Mercado', added: true }));
+    await mount(<ProductScreen />);
+    await press('Pôr na lista');
+    expect(mockAddToList.mutateAsync).toHaveBeenCalledWith({ name: 'Arroz integral', category: 'graos', productId: 'arroz', quantity: 1, unit: 'un' });
+    expect(notify).toHaveBeenCalledWith('Adicionado à lista', 'Arroz integral foi para "Mercado".');
+  });
+
   it('já pendente na lista: diz isso, sem repetir', async () => {
     mockAddToList.mutateAsync = jest.fn(async () => ({ id: 'l1', name: 'Mercado', added: false }));
     await mount(<ProductScreen />);

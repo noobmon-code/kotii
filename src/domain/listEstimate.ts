@@ -578,7 +578,14 @@ export function pantryHits(
   }: {
     links?: LinkIndex;
     today: string;
-    ranOut?: readonly { name: string; productId: string | null; lastAt: string; everyDays: number }[];
+    ranOut?: readonly {
+      name: string;
+      productId: string | null;
+      lastAt: string;
+      everyDays: number;
+      /** Os nomes e produtos de cada compra do item (ranOutItems junta as marcas sob o nome sem a marca). */
+      boughtAs?: readonly { name: string; productId: string | null }[];
+    }[];
   },
 ): Map<string, PantryHit> {
   // O que acabou, pelo nome e pelo produto: o dia da última compra conhecida e o intervalo de costume.
@@ -606,13 +613,16 @@ export function pantryHits(
   const keep = <K>(map: Map<K, Gone>, key: K, gone: Gone) => map.set(key, later(map.get(key) ?? null, gone) ?? gone);
   for (const gone of ranOut) {
     const latest = { day: toISODate(new Date(gone.lastAt)), everyDays: gone.everyDays };
-    const name = normalizeSearch(gone.name);
-    keep(gone.productId ? goneProductNames : goneNames, name, latest);
-    // O palpite sem produto ("Leite" marcado na lista) é do produto que as notas ligaram a esse nome, quando é um
-    // só: vale para as entradas dele e para o item que já o tem. Com dois ligados, não dá para saber qual acabou.
-    const linked = gone.productId ? [] : [...new Set(links?.productsFor(gone.name))];
-    const productId = gone.productId ?? (linked.length === 1 ? linked[0] : null);
-    if (productId) keep(goneProducts, productId, gone.productId ? latest : { ...latest, lent: true });
+    // O item acabou com cada nome e produto com que foi comprado ("Leite desnatado" é o IL e o Italac).
+    for (const bought of [{ name: gone.name, productId: gone.productId }, ...(gone.boughtAs ?? [])]) {
+      const name = normalizeSearch(bought.name);
+      keep(bought.productId ? goneProductNames : goneNames, name, latest);
+      // O palpite sem produto ("Leite" marcado na lista) é do produto que as notas ligaram a esse nome, quando é um
+      // só: vale para as entradas dele e para o item que já o tem. Com dois ligados, não dá para saber qual acabou.
+      const linked = bought.productId ? [] : [...new Set(links?.productsFor(bought.name))];
+      const productId = bought.productId ?? (linked.length === 1 ? linked[0] : null);
+      if (productId) keep(goneProducts, productId, bought.productId ? latest : { ...latest, lent: true });
+    }
   }
   /**
    * O palpite de que acabou que vale para uma entrada da despensa; null quando o app não acha que acabou. Com

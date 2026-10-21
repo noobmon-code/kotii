@@ -302,6 +302,8 @@ export default function ReceiptScreen() {
       category: resolved.category,
     };
   });
+  // O item com "Marca preferida" (`brand`, a escolha guardada no item) só sai com o produto dele ou com o mesmo nome;
+  // os outros, com qualquer marca do mesmo item, também os de antes que têm o nome de um produto.
   const listItems = isDraft ? (openList.data ?? []) : [];
   // A confirmação tira itens da lista e aprende ligações: só com as duas
   // carregadas e atualizadas (o que estava guardado pode ter mudado em outro
@@ -675,7 +677,7 @@ export default function ReceiptScreen() {
       notify(block.title, block.message);
       return;
     }
-    const removals = listRemovals(listMatches, listItems);
+    const removals = listRemovals(listMatches, listItems, receiptLines);
     const forgotten = forgottenLinks(suggestedMatches, listChoices, listItems);
     let payload = buildConfirmPayload(items, overrides, catalog, purchasedOn).map((entry) => ({
       ...entry,

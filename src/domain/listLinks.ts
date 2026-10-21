@@ -78,6 +78,14 @@ export interface OpenListItem {
   product_id: string | null;
   /** Quando foi para o carrinho (null ou ausente: ainda não foi). */
   checked_at?: string | null;
+  /**
+   * "Marca preferida", ligada pela pessoa nos detalhes do item (brand_preferred): ela quer a marca do produto do
+   * item. Outra marca do mesmo item não cumpre sozinha: só o produto ou o mesmo nome. Uma ligação com outro
+   * produto (que pode ser de antes da escolha) e um nome com todas as palavras dele (com a marca) só sugerem.
+   * Ausente ou false (o item de antes da escolha, mesmo com o nome de um produto): qualquer marca do mesmo item
+   * serve.
+   */
+  brand?: boolean;
 }
 
 /** Item da nota como está na revisão. */
@@ -147,7 +155,10 @@ const MIN_OVERLAP = 0.5;
  *   "Bombom da Alcatra"; um tipo que a nota não diz) e palavras em comum
  *   ("Detergente" e "DET LIQ LIMPOL").
  * O que com certeza é outra coisa ("Batata" e "BATATA DOCE", "Leite
- * desnatado" e "LEITE INT") não entra nem como sugestão. Um item da nota pode
+ * desnatado" e "LEITE INT") não entra nem como sugestão. O item com "Marca
+ * preferida" (`brand`) só sai marcado pelo mesmo produto e pelo mesmo nome; a
+ * ligação com outro produto e o nome com as mesmas palavras (que traz a marca
+ * junto) ficam como sugestão, e nada mais. Um item da nota pode
  * cumprir mais de um item de lista ("Coca" e "Refrigerante"). O item
  * genérico da leitura por foto (`ReceiptLine.generic`) diz o item só quando
  * nenhum nome da linha diz e o texto não diz outra coisa (sameItemFit).
@@ -179,11 +190,14 @@ export function matchListItems(
     const byProduct = item.product_id ? receipt.find((line) => line.productId === item.product_id) : undefined;
     if (byProduct) return [{ listItemId: item.id, receiptItemId: byProduct.id, reason: 'produto', checked: true }];
     const byLink = receipt.find((line) => line.productId && links.has(item.name, line.productId));
-    if (byLink) return [{ listItemId: item.id, receiptItemId: byLink.id, reason: 'vinculo', checked: true }];
+    // Com "Marca preferida", a ligação é com outro produto (o dele já saiu acima): ela pode ter vindo de antes da
+    // escolha, quando qualquer marca servia ("Leite IL Desnatado" cumprido pelo Italac). Fica só como sugestão.
+    if (byLink && !item.brand) return [{ listItemId: item.id, receiptItemId: byLink.id, reason: 'vinculo', checked: true }];
     // O produto do item da nota se chama como o item da lista: é ele. Vale enquanto o nome for esse
     // (trocou o produto na revisão, a marca sai junto).
     const byName = receipt.find((line) => line.name != null && same(item.name, line.name));
     if (byName) return [{ listItemId: item.id, receiptItemId: byName.id, reason: 'nome', checked: true }];
+    if (byLink) return [{ listItemId: item.id, receiptItemId: byLink.id, reason: 'vinculo', checked: false }];
 
     const fits = lines.map((entry) => ({ ...entry, fit: sameItemFit(item, entry.line) }));
     const sameItem = fits.filter(({ fit }) => fit === 'mesmo');
@@ -191,7 +205,7 @@ export function matchListItems(
     // Sozinho, só o que estava no carrinho e uma linha só da nota pode ser ele: com duas ("LEITE INTEGRAL" e
     // "LEITE DESNATADO" para "Leite"), com um corte que também pode ser ("Carne moída" e "PATINHO MOIDO"), ou com uma
     // linha que o app não sabe ler, mas começa pelo item ("BAT INGLESA KG" para "Batata"), a pessoa escolhe.
-    if (item.checked_at && sameItem.length) {
+    if (item.checked_at && sameItem.length && !item.brand) {
       const unread = fits.filter(({ fit, line }) => fit == null && startsAsItem(item, line.names));
       if (new Set([...sameItem, ...maybe, ...unread].map(({ line }) => purchaseKey(line))).size === 1) {
         return [{ listItemId: item.id, receiptItemId: sameItem[0].line.id, reason: 'item', checked: true }];
@@ -212,6 +226,8 @@ export function matchListItems(
       if (!best || score[0] < best.score[0] || (score[0] === best.score[0] && score[1] < best.score[1])) best = { line, score };
     }
     if (best) return [{ listItemId: item.id, receiptItemId: best.line.id, reason: 'nome', checked: false }];
+    // Marca preferida: outra marca do mesmo item (ou palavras só parecidas) não é o que a pessoa pediu.
+    if (item.brand) return [];
 
     const suggested = closest(item, sameItem) ?? closest(item, maybe);
     if (suggested) return [{ listItemId: item.id, receiptItemId: suggested.id, reason: sameItem.length ? 'item' : 'parecido', checked: false }];
@@ -283,19 +299,27 @@ export interface ListRemoval {
   name_key: string;
 }
 
-/** Para confirm_receipt: em cada item da nota, os itens de lista que saem (e o nome que vira vínculo). */
+/**
+ * Para confirm_receipt: em cada item da nota, os itens de lista que saem (e o nome que vira vínculo). O item com
+ * "Marca preferida" cumprido por outro produto (a pessoa marcou outra marca na revisão) sai, mas não ensina o
+ * vínculo (`name_key` vazio, que o banco ignora): senão, da próxima vez, a outra marca viria marcada sozinha.
+ * `receipt`: as linhas da revisão, para saber o produto de cada uma (sem elas, todo item ensina).
+ */
 export function listRemovals(
   matches: ListMatch[],
   listItems: OpenListItem[],
+  receipt: readonly ReceiptLine[] = [],
 ): Map<string, ListRemoval[]> {
-  const names = new Map(listItems.map((item) => [item.id, item.name]));
+  const byId = new Map(listItems.map((item) => [item.id, item]));
+  const products = new Map(receipt.map((line) => [line.id, line.productId]));
   const removals = new Map<string, ListRemoval[]>();
   for (const match of matches) {
-    const name = names.get(match.listItemId);
-    if (!match.checked || name == null) continue;
+    const item = byId.get(match.listItemId);
+    if (!match.checked || item == null) continue;
+    const otherBrand = item.brand === true && products.has(match.receiptItemId) && products.get(match.receiptItemId) !== item.product_id;
     removals.set(match.receiptItemId, [
       ...(removals.get(match.receiptItemId) ?? []),
-      { id: match.listItemId, name, name_key: listNameKey(name) },
+      { id: match.listItemId, name: item.name, name_key: otherBrand ? '' : listNameKey(item.name) },
     ]);
   }
   return removals;

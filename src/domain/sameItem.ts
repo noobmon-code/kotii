@@ -529,6 +529,25 @@ const KINDS: readonly KindDimension[] = [
   { keys: ['cebola'], values: { roxa: ['roxa'], branca: ['branca'] }, soft: true },
   { keys: ['pimentao'], values: { verde: ['verde'], vermelho: ['vermelho'], amarelo: ['amarelo'] }, soft: true },
   { keys: ['milho'], values: { verde: ['verde'], pipoca: ['pipoca'], canjica: ['canjica'] } },
+  // No fim: a chave do item genérico (domain/genericItem) guarda o lugar de cada tipo aqui. O tipo que muda a compra
+  // e que a lista sem marca não pode tirar do nome: a calabresa da feijoada não é a toscana do churrasco.
+  { keys: ['linguica'], values: { calabresa: ['calabresa', 'calabreza'], toscana: ['toscana'], paio: ['paio'], cuiabana: ['cuiabana'] } },
+  { keys: ['minas'], values: { frescal: ['frescal'], padrao: ['padrao'], meia_cura: ['meia cura'] } },
+  {
+    keys: ['pizza'],
+    values: {
+      calabresa: ['calabresa', 'calabreza'],
+      portuguesa: ['portuguesa'],
+      margherita: ['margherita', 'marguerita', 'margarita'],
+      pepperoni: ['pepperoni', 'peperoni'],
+      napolitana: ['napolitana'],
+    },
+  },
+  { keys: ['shampoo'], values: { anticaspa: ['anticaspa', 'anti caspa'] } },
+  {
+    keys: ['desodorante'],
+    values: { aerosol: ['aerosol', 'aerossol', 'aero', 'spray'], roll_on: ['roll on', 'rollon'], creme: ['creme'], bastao: ['bastao', 'stick'] },
+  },
 ];
 const COMPILED_KINDS = KINDS.map((dimension) => ({
   ...dimension,
@@ -594,41 +613,108 @@ const GILETE_IS_BRAND = new Set([
   'spray', 'roll',
 ]);
 
+/** O nome diz outro produto de barbear ou o desodorante: aí "gilete" é marca. */
+const giletIsBrand = (text: string) => text.split(' ').some((word) => GILETE_IS_BRAND.has(word));
+
 /** O termo que diz o item do nome, sem o "gilete" que ali é marca. */
 function itemTerm(text: string) {
   const first = firstProductTerm(COMPILED, text);
-  if (first?.term !== 'gilete' || !text.split(' ').some((word) => GILETE_IS_BRAND.has(word))) return first;
+  if (first?.term !== 'gilete' || !giletIsBrand(text)) return first;
   return productTerms(COMPILED, text).find((hit) => hit.term !== 'gilete') ?? null;
 }
 
-function identify(name: string, category: string | null | undefined): ItemIdentity | null {
+/**
+ * O item de um nome e onde ele está escrito: as palavras do texto (de
+ * spelledOut) que dizem o item e os tipos dele. É o que o nome genérico da
+ * lista guarda do nome do produto (domain/genericItem).
+ */
+export interface ItemReading {
+  identity: ItemIdentity;
+  /** As palavras do texto de spelledOut. */
+  words: readonly string[];
+  /** As palavras que dizem o item (o termo, a parte da família, a palavra que faz outra coisa) e os tipos dele. */
+  kept: ReadonlySet<number>;
+  /** A primeira e a última palavra do termo do item. */
+  term: readonly [first: number, last: number];
+  /**
+   * As palavras que o nome usa como marca, mesmo sendo o nome de um item: o "gilete" da "Espuma de barbear
+   * Gilete" (GILETE_IS_BRAND). Quem tira a marca do nome não as lê como outro item.
+   */
+  brand: ReadonlySet<number>;
+}
+
+/** As palavras do texto, com onde cada uma começa e termina. */
+function wordSpans(text: string): { word: string; start: number; end: number }[] {
+  return [...text.matchAll(/[a-z0-9]+/g)].map((match) => ({ word: match[0], start: match.index, end: match.index + match[0].length }));
+}
+
+function identify(name: string, category: string | null | undefined): ItemReading | null {
   const text = spelledOut(name);
   if (!text) return null;
   const first = itemTerm(text);
   if (!first) return null;
   let key: string = first.key;
   let family = FAMILY_OF.get(key) ?? null;
+  // Os trechos do texto que dizem o item; os dos tipos entram no fim.
+  const spans: [number, number][] = [[first.index, first.end]];
   // O nome genérico da família com a parte escrita depois: "Carne moída de patinho" é patinho, "Queijo prato" é prato.
   if (family === key) {
-    const members = (MEMBER_TERMS.get(family) ?? []).map(({ key: member, re }) => ({ member, at: firstMention([re], text) }));
+    const members = (MEMBER_TERMS.get(family) ?? []).map(({ key: member, re }) => ({ member, re, at: firstMention([re], text) }));
     const part = members.filter(({ at }) => at < Infinity).sort((a, b) => a.at - b.at)[0];
-    if (part) key = part.member;
+    if (part) {
+      key = part.member;
+      const match = text.matchAll(part.re).next().value;
+      if (match) spans.push([match.index, match.index + match[0].length]);
+    }
   }
   // Logo depois do item, uma palavra que faz outra coisa ("Batata doce", "Alho poró", "Leite em pó"): outro item,
   // a não ser que seja um tipo que o próprio item conhece (o café em pó é café).
-  const after = text.slice(first.end).trim().split(' ').filter(Boolean);
-  while (after.length && LINK_WORDS.has(after[0])) after.shift();
-  const next = after[0] ? singular(after[0]) : '';
-  if (next && (OTHER_THING.has(next) || OTHER_THING.has(after[0])) && !isKindWord(next, key, family) && !isKindWord(after[0], key, family)) {
+  const words = wordSpans(text);
+  const after = words.filter(({ start }) => start >= first.end);
+  while (after.length && LINK_WORDS.has(after[0].word)) after.shift();
+  const next = after[0] ? singular(after[0].word) : '';
+  if (next && (OTHER_THING.has(next) || OTHER_THING.has(after[0].word)) && !isKindWord(next, key, family) && !isKindWord(after[0].word, key, family)) {
     key = `${key}+${next}`;
     family = null;
+    spans.push([first.end, after[0].end]);
   }
   if (!fitsGroup(key, category)) return null;
-  return { key, family, kinds: readKinds(text, key, family), size: packageSize(name) };
+  const kinds = readKinds(text, key, family);
+  for (const [at, values] of kinds) {
+    for (const { value, res } of COMPILED_KINDS[at].values) {
+      if (!values.has(value)) continue;
+      for (const re of res) for (const match of text.matchAll(re)) spans.push([match.index, match.index + match[0].length]);
+    }
+  }
+  const touches = (word: { start: number; end: number }, [start, end]: [number, number]) => word.start < end && word.end > start;
+  const kept = new Set(words.flatMap((word, at) => (spans.some((span) => touches(word, span)) ? [at] : [])));
+  const termWords = words.flatMap((word, at) => (touches(word, spans[0]) ? [at] : []));
+  const brand = new Set(
+    giletIsBrand(text) ? words.flatMap(({ word }, at) => (!kept.has(at) && singular(word) === 'gilete' ? [at] : [])) : [],
+  );
+  return {
+    identity: { key, family, kinds, size: packageSize(name) },
+    words: words.map(({ word }) => word),
+    kept,
+    term: [termWords[0], termWords[termWords.length - 1]],
+    brand,
+  };
 }
 
-const IDENTITIES = new Map<string, ItemIdentity | null>();
+const READINGS = new Map<string, ItemReading | null>();
 const IDENTITIES_LIMIT = 4000;
+
+/** O item do nome e as palavras que o dizem (ver itemIdentity), ou null quando o app não sabe que item é. */
+export function readItem(name: string, category?: string | null): ItemReading | null {
+  // A revisão da nota compara os mesmos nomes a cada toque: o resultado fica guardado.
+  const cacheKey = `${category ?? ''}\u0000${name}`;
+  const known = READINGS.get(cacheKey);
+  if (known !== undefined) return known;
+  const reading = identify(name, category);
+  if (READINGS.size >= IDENTITIES_LIMIT) READINGS.clear();
+  READINGS.set(cacheKey, reading);
+  return reading;
+}
 
 /**
  * Que item o nome diz, sem a marca, a embalagem nem o tamanho, ou null quando
@@ -636,14 +722,12 @@ const IDENTITIES_LIMIT = 4000;
  * mesmo grupo (comida, casa ou pet), como nos desenhos.
  */
 export function itemIdentity(name: string, category?: string | null): ItemIdentity | null {
-  // A revisão da nota compara os mesmos nomes a cada toque: o resultado fica guardado.
-  const cacheKey = `${category ?? ''}\u0000${name}`;
-  const known = IDENTITIES.get(cacheKey);
-  if (known !== undefined) return known;
-  const identity = identify(name, category);
-  if (IDENTITIES.size >= IDENTITIES_LIMIT) IDENTITIES.clear();
-  IDENTITIES.set(cacheKey, identity);
-  return identity;
+  return readItem(name, category)?.identity ?? null;
+}
+
+/** Um valor de tipo que este item conhece, para quem lê as palavras de fora (o nome genérico da lista). */
+export function isItemKindWord(word: string, identity: Pick<ItemIdentity, 'key' | 'family'>): boolean {
+  return isKindWord(word, identity.key, identity.family) || isKindWord(singular(word), identity.key, identity.family);
 }
 
 // ---------------------------------------------------------------------------

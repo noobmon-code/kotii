@@ -4,7 +4,7 @@
 
 import type { ListKind } from '@/lib/types';
 import { diffDays, toISODate, todayISO } from './dates';
-import { groupPurchases, type ListExclusion, type PurchaseRecord, type RecentItem } from './recentPurchases';
+import { groupPurchases, isExcluded, type ListExclusion, type PurchaseRecord, type RecentItem } from './recentPurchases';
 import { normalizeSearch } from './search';
 
 /** Quanto do histórico olhar (o servidor devolve até mil linhas por busca). */
@@ -28,6 +28,11 @@ export interface RestockItem extends Omit<RecentItem, 'times'> {
   everyDays: number;
   /** Dias desde a última compra. */
   daysSince: number;
+  /**
+   * Os nomes e produtos com que o item foi comprado ("Leite IL Desnatado", "Leite Italac Desnatado"): o item
+   * acabou com todos eles, e o selo "Na despensa" (pantryHits) os reconhece pelo nome de cada compra.
+   */
+  boughtAs: { name: string; productId: string | null }[];
 }
 
 function median(values: number[]): number {
@@ -62,7 +67,8 @@ export function ranOutItems(
     if (everyDays < MIN_EVERY_DAYS || everyDays > MAX_EVERY_DAYS) continue;
     const daysSince = diffDays(days[days.length - 1], today);
     if (daysSince < everyDays) continue;
-    items.push({ ...item, everyDays, daysSince });
+    const boughtAs = new Map(group.map((r) => [`${normalizeSearch(r.name)}\u0000${r.productId ?? ''}`, { name: r.name.trim(), productId: r.productId }]));
+    items.push({ ...item, everyDays, daysSince, boughtAs: [...boughtAs.values()] });
   }
   // Primeiro o que passou mais do costume.
   return items.sort((a, b) => b.daysSince / b.everyDays - a.daysSince / a.everyDays || a.name.localeCompare(b.name, 'pt-BR'));
@@ -78,7 +84,7 @@ export function restockFrom(
 ): RestockItem[] {
   return ranOut
     .filter((item) => item.daysSince <= item.everyDays * GIVE_UP_FACTOR)
-    .filter((item) => !exclude?.names.has(normalizeSearch(item.name)) && !(item.productId && exclude?.productIds.has(item.productId)))
+    .filter((item) => !isExcluded(item, exclude))
     .slice(0, limit);
 }
 

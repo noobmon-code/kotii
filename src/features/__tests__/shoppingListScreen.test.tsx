@@ -10,7 +10,8 @@ import { CartPantryModal } from '@/features/CartPantryModal';
 import type { ItemHint } from '@/features/ShoppingGrid';
 import type { LatestPrice, PantryItem, Product, ShoppingListItem } from '@/lib/types';
 import { StaleNotice } from '@/features/health/StaleNotice';
-import { Button, ErrorNotice, Loading, Screen, TextField } from '@/ui/primitives';
+import { askYesNo, notify } from '@/ui/dialogs';
+import { Button, ErrorNotice, ListRow, Loading, Screen, TextField } from '@/ui/primitives';
 
 // A tela da lista de verdade, com as buscas trocadas por respostas prontas: o que se confere aqui é o que ela
 // faz com o que cada busca devolve (carregada, a caminho, falhou), que as regras de domain/ não enxergam.
@@ -28,7 +29,15 @@ interface Query {
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockQueries: Record<string, Query> = {};
 /** O que a tela entregou à grade do que falta comprar e à faixa "Acho que acabou". */
-const mockSeen: { hints?: ReadonlyMap<string, ItemHint>; restock?: { name: string }[] } = {};
+const mockSeen: {
+  hints?: ReadonlyMap<string, ItemHint>;
+  restock?: { name: string }[];
+  recent?: { name: string }[];
+  addRecent?: (item: unknown) => void;
+  open?: (item: ShoppingListItem) => void;
+  editor?: Record<string, unknown>;
+  picker?: Record<string, unknown>;
+} = {};
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn(), back: jest.fn() },
@@ -47,7 +56,7 @@ jest.mock('@/data/listPhotos', () => ({
   useSetListItemPhoto: () => ({ mutate: jest.fn() }),
 }));
 /** O que a tela pediu à fila da lista: itens postos e o limpar. */
-const mockQueue = { add: jest.fn(), clear: jest.fn() };
+const mockQueue = { add: jest.fn(), clear: jest.fn(), edit: jest.fn(), removePending: jest.fn<(input: unknown) => Promise<string>>() };
 jest.mock('@/data/market', () => {
   const mutation = () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false });
   return {
@@ -57,9 +66,9 @@ jest.mock('@/data/market', () => {
     useAddListItem: () => ({ add: mockQueue.add }),
     useArchiveList: mutation,
     useClearCheckedItems: () => ({ mutate: mockQueue.clear }),
-    useEditListItem: mutation,
+    useEditListItem: () => ({ mutate: mockQueue.edit, mutateAsync: jest.fn(), isPending: false }),
     useRemoveListItem: () => ({ remove: jest.fn() }),
-    useRemovePendingListItem: mutation,
+    useRemovePendingListItem: () => ({ mutate: jest.fn(), mutateAsync: mockQueue.removePending, isPending: false }),
     useToggleListItem: mutation,
     useListItems: () => mockQueries.items,
     useListLinks: () => mockQueries.links,
@@ -79,8 +88,18 @@ jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
 jest.mock('@/features/CartPantryModal', () => ({ CartPantryModal: () => null }));
-jest.mock('@/features/CommonItemsPicker', () => ({ CommonItemsPicker: () => null }));
-jest.mock('@/features/ListItemEditor', () => ({ ListItemEditor: () => null }));
+jest.mock('@/features/CommonItemsPicker', () => ({
+  CommonItemsPicker: (props: Record<string, unknown>) => {
+    mockSeen.picker = props;
+    return null;
+  },
+}));
+jest.mock('@/features/ListItemEditor', () => ({
+  ListItemEditor: (props: Record<string, unknown>) => {
+    mockSeen.editor = props;
+    return null;
+  },
+}));
 jest.mock('@/features/OfflineNotice', () => ({ OfflineNotice: () => null }));
 // "Estou indo ao mercado" tem os testes dele (MarketTrip.test.tsx): aqui, só que a lista o atualiza junto.
 const mockRefreshTrips = jest.fn();
@@ -88,15 +107,22 @@ jest.mock('@/data/marketTrips', () => ({ useRefreshMarketTrips: () => mockRefres
 jest.mock('@/features/MarketTrip', () => ({ MarketTripAction: () => null, MarketTripBanner: () => null }));
 jest.mock('@/features/RecentPurchases', () => ({
   ...jest.requireActual<typeof import('@/features/RecentPurchases')>('@/features/RecentPurchases'),
-  RecentPurchases: () => null,
+  RecentPurchases: ({ items, onAdd }: { items: { name: string }[]; onAdd: (item: unknown) => void }) => {
+    mockSeen.recent = items;
+    mockSeen.addRecent = onAdd;
+    return null;
+  },
   RestockStrip: ({ items }: { items: { name: string }[] }) => {
     mockSeen.restock = items;
     return null;
   },
 }));
 jest.mock('@/features/ShoppingGrid', () => ({
-  ShoppingGrid: ({ hints, inCart }: { hints?: ReadonlyMap<string, ItemHint>; inCart?: boolean }) => {
-    if (!inCart) mockSeen.hints = hints;
+  ShoppingGrid: ({ hints, inCart, onOpen }: { hints?: ReadonlyMap<string, ItemHint>; inCart?: boolean; onOpen: (item: ShoppingListItem) => void }) => {
+    if (!inCart) {
+      mockSeen.hints = hints;
+      mockSeen.open = onOpen;
+    }
     return null;
   },
 }));
@@ -169,6 +195,8 @@ async function mount() {
 beforeEach(() => {
   mockSeen.hints = undefined;
   mockSeen.restock = undefined;
+  mockSeen.recent = undefined;
+  mockSeen.editor = undefined;
   Object.assign(mockQueries, {
     list: loaded({ id: 'l1', name: 'Mercado', kind: 'mercado', archived_at: null, created_at: '2026-10-01T12:00:00Z' }),
     items: loaded([]),
@@ -476,5 +504,224 @@ describe('a busca que falha com a lista já na tela (voltar ao app com sinal fra
     mockQueries.items = loaded([arroz]);
     await mount();
     expect(renderer!.root.findAllByType(StaleNotice)).toHaveLength(0);
+  });
+});
+
+describe('a lista sem marca', () => {
+  const MILK = { ...product('il', 'Leite IL Desnatado'), category: 'laticinios' } as Product;
+  const ITALAC = { ...product('italac', 'Leite Italac Desnatado 1L'), category: 'laticinios' } as Product;
+  const bought = (name: string, productId: string, category: string, ago: number): PurchaseRecord => ({
+    name,
+    category,
+    productId,
+    quantity: 1,
+    unit: 'un',
+    at: `${day(ago)}T12:00:00`,
+    source: 'receipt',
+  });
+
+  beforeEach(() => {
+    mockQueue.add.mockClear();
+    jest.mocked(notify).mockClear();
+    jest.mocked(askYesNo).mockReset();
+  });
+
+  /** Digita no campo de pôr item. */
+  const type = (text: string) => act(() => renderer!.root.findAllByType(TextField)[0].props.onChangeText(text));
+
+  it('a busca mostra o produto sem a marca, uma vez por item, e põe o nome sem a marca com o produto como dica', async () => {
+    mockQueries.products = loaded([MILK, ITALAC]);
+    await mount();
+    type('leite');
+    const rows = renderer!.root.findAllByType(ListRow).filter((row) => row.props.subtitle === 'Produto com histórico de preço');
+    expect(rows.map((row) => row.props.title)).toEqual(['Leite desnatado']);
+    act(() => rows[0].props.onPress());
+    expect(mockQueue.add).toHaveBeenCalledWith({ name: 'Leite desnatado', category: 'laticinios', productId: 'il', quantity: 1, unit: 'un' }, 'u1');
+  });
+
+  it('"Comprados recentemente" e "Acho que acabou" sugerem o item sem a marca', async () => {
+    mockQueries.purchases = loaded([
+      bought('Leite IL Desnatado', 'il', 'laticinios', 3),
+      ...[34, 24, 14].map((ago) => bought('Ovo Doninho Caipira', 'ovo', 'ovos', ago)),
+    ]);
+    await mount();
+    expect(mockSeen.restock?.map((i) => i.name)).toEqual(['Ovo caipira']);
+    expect(mockSeen.recent?.map((i) => i.name)).toEqual(['Leite desnatado']);
+    act(() => mockSeen.addRecent!(mockSeen.recent![0]));
+    expect(mockQueue.add).toHaveBeenCalledWith(
+      { name: 'Leite desnatado', category: 'laticinios', productId: 'il', quantity: 1, unit: 'un' },
+      'u1',
+      expect.anything(),
+    );
+  });
+
+  it('com o item já na lista, com a marca ou sem ela, as faixas não o sugerem de novo', async () => {
+    mockQueries.items = loaded([listItem('a', 'Leite desnatado', null, 'laticinios'), listItem('b', 'Ovo Doninho Caipira', null, 'ovos')]);
+    mockQueries.purchases = loaded([
+      bought('Leite IL Desnatado', 'il', 'laticinios', 3),
+      ...[34, 24, 14].map((ago) => bought('Ovos Rancho Caipira', 'rancho', 'ovos', ago)),
+    ]);
+    await mount();
+    expect(mockSeen.restock ?? []).toEqual([]);
+    expect(mockSeen.recent ?? []).toEqual([]);
+  });
+
+  /** Toca em "Adicionar" com o texto digitado. */
+  const addTyped = (text: string) =>
+    act(async () => {
+      await renderer!.root.findAll((node) => node.type === Button && node.props.title === `Adicionar "${text}"`)[0].props.onPress();
+    });
+  const fieldValue = () => renderer!.root.findAllByType(TextField)[0].props.value;
+
+  it('o mesmo item já para comprar, pela busca ou com o mesmo nome: não põe de novo e diz que já estava', async () => {
+    mockQueries.items = loaded([listItem('a', 'Leite IL Desnatado', 'il', 'laticinios'), listItem('b', 'Café', null, 'cafe_cha')]);
+    mockQueries.products = loaded([MILK]);
+    await mount();
+    type('leite');
+    const row = renderer!.root.findAllByType(ListRow).find((r) => r.props.subtitle === 'Produto com histórico de preço')!;
+    await act(async () => {
+      await row.props.onPress();
+    });
+    expect(mockQueue.add).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith('Já estava na lista', 'Leite IL Desnatado já está na lista para comprar.');
+    expect(fieldValue()).toBe('');
+    type('café');
+    await addTyped('café');
+    expect(mockQueue.add).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith('Já estava na lista', 'Café já está na lista para comprar.');
+    expect(askYesNo).not.toHaveBeenCalled();
+    // Outro tipo do mesmo item entra.
+    type('Leite integral');
+    await addTyped('Leite integral');
+    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Leite integral' }), 'u1');
+  });
+
+  it('digitado com outro nome do item pendente: a pessoa escolhe, e o texto não some', async () => {
+    mockQueries.items = loaded([listItem('a', 'Leite IL Desnatado', 'il', 'laticinios')]);
+    await mount();
+    jest.mocked(askYesNo).mockResolvedValueOnce(false);
+    type('Leite desnatado');
+    await addTyped('Leite desnatado');
+    expect(askYesNo).toHaveBeenCalledWith(
+      'Já está na lista',
+      'Leite IL Desnatado já está na lista para comprar. Pôr "Leite desnatado" também?',
+      'Pôr mesmo assim',
+      'Não pôr',
+    );
+    expect(mockQueue.add).not.toHaveBeenCalled();
+    expect(fieldValue()).toBe('Leite desnatado');
+    jest.mocked(askYesNo).mockResolvedValueOnce(true);
+    await addTyped('Leite desnatado');
+    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Leite desnatado' }), 'u1');
+    expect(fieldValue()).toBe('');
+  });
+
+  it('duas marcas digitadas de propósito entram as duas, sem perguntar', async () => {
+    mockQueries.items = loaded([listItem('a', 'Biscoito Oreo', null, 'doces'), listItem('b', 'Shampoo Seda', null, 'higiene')]);
+    await mount();
+    type('Biscoito Passatempo');
+    await addTyped('Biscoito Passatempo');
+    type('Shampoo Clear Men');
+    await addTyped('Shampoo Clear Men');
+    expect(askYesNo).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect(mockQueue.add.mock.calls.map(([item]) => (item as { name: string }).name)).toEqual(['Biscoito Passatempo', 'Shampoo Clear Men']);
+  });
+
+  it('a busca põe, de cada item, o produto que a casa comprou por último', async () => {
+    const melitta = { ...product('a-melitta', 'Café Melitta 500g'), category: 'cafe_cha' } as Product;
+    const pilao = { ...product('b-pilao', 'Café Pilão 500g'), category: 'cafe_cha' } as Product;
+    mockQueries.products = loaded([melitta, pilao]);
+    mockQueries.purchases = loaded([bought('Café Melitta 500g', 'a-melitta', 'cafe_cha', 80), bought('Café Pilão 500g', 'b-pilao', 'cafe_cha', 6)]);
+    await mount();
+    type('café');
+    const rows = renderer!.root.findAllByType(ListRow).filter((r) => r.props.subtitle === 'Produto com histórico de preço');
+    expect(rows.map((r) => r.props.title)).toEqual(['Café']);
+    await act(async () => {
+      await rows[0].props.onPress();
+    });
+    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Café', productId: 'b-pilao' }), 'u1');
+  });
+
+  describe('o catálogo de itens comuns', () => {
+    const toggle = (name: string, category: string, add: boolean) =>
+      act(async () => {
+        await (mockSeen.picker!.onToggle as (item: unknown, add: boolean) => Promise<boolean>)({ name, category, unit: 'un' }, add);
+      });
+
+    beforeEach(() => {
+      mockQueue.removePending.mockReset();
+      mockQueue.removePending.mockResolvedValue('removed');
+    });
+
+    it('tirar o item do catálogo pergunta e diz o que sai quando são marcas ou outro nome', async () => {
+      mockQueries.items = loaded([listItem('a', 'Cerveja Heineken', null, 'alcoolicas'), listItem('b', 'Cerveja Brahma', null, 'alcoolicas')]);
+      await mount();
+      expect((mockSeen.picker!.inList as Set<string>).has('cerveja')).toBe(true);
+      jest.mocked(askYesNo).mockResolvedValueOnce(false);
+      await toggle('Cerveja', 'alcoolicas', false);
+      expect(askYesNo).toHaveBeenCalledWith('Tirar da lista?', 'Cerveja Heineken e Cerveja Brahma saem da lista. Tirar mesmo assim?', 'Tirar', 'Manter');
+      expect(mockQueue.removePending).not.toHaveBeenCalled();
+      jest.mocked(askYesNo).mockResolvedValueOnce(true);
+      await toggle('Cerveja', 'alcoolicas', false);
+      expect(mockQueue.removePending.mock.calls.map(([input]) => (input as { id: string }).id)).toEqual(['a', 'b']);
+    });
+
+    it('com "Marca preferida" ligada também pergunta; o próprio item do catálogo sai sem perguntar', async () => {
+      mockQueries.items = loaded([
+        { ...listItem('a', 'Leite IL Desnatado', 'il', 'laticinios'), brand_preferred: true },
+        listItem('b', 'Arroz', null, 'graos'),
+      ]);
+      await mount();
+      jest.mocked(askYesNo).mockResolvedValueOnce(false);
+      await toggle('Leite desnatado', 'laticinios', false);
+      expect(askYesNo).toHaveBeenCalledWith('Tirar da lista?', 'Leite IL Desnatado sai da lista. Tirar mesmo assim?', 'Tirar', 'Manter');
+      expect(mockQueue.removePending).not.toHaveBeenCalled();
+      jest.mocked(askYesNo).mockClear();
+      await toggle('Arroz', 'graos', false);
+      expect(askYesNo).not.toHaveBeenCalled();
+      expect(mockQueue.removePending).toHaveBeenCalledWith({ id: 'b', plainOnly: true });
+    });
+  });
+
+  it('os detalhes do item oferecem "Marca preferida" quando o produto dele tem marca', async () => {
+    const generic = listItem('a', 'Leite desnatado', 'il', 'laticinios');
+    mockQueries.items = loaded([generic]);
+    mockQueries.products = loaded([MILK]);
+    await mount();
+    act(() => mockSeen.open!(generic));
+    expect(mockSeen.editor?.brand).toEqual({ brandName: 'Leite IL Desnatado', genericName: 'Leite desnatado' });
+  });
+
+  it('salvar os detalhes grava a "Marca preferida" só quando a pessoa a mudou', async () => {
+    const details = { quantity: 1, unit: 'un', notes: null, priority: 'normal' };
+    const save = async (item: ShoppingListItem, changes: Record<string, unknown>) => {
+      act(() => mockSeen.open!(item));
+      expect((mockSeen.editor?.item as ShoppingListItem).id).toBe(item.id);
+      await act(async () => {
+        await (mockSeen.editor!.onSave as (d: unknown, p: unknown) => Promise<void>)({ ...details, ...changes }, { kind: 'keep' });
+      });
+    };
+    const generic = { ...listItem('a', 'Leite desnatado', 'il', 'laticinios'), brand_preferred: false };
+    const legacy = { ...listItem('b', 'Leite IL Desnatado', 'il', 'laticinios'), brand_preferred: false };
+    mockQueries.items = loaded([generic, legacy]);
+    mockQueries.products = loaded([MILK]);
+    await mount();
+    mockQueue.edit.mockClear();
+    await save(generic, { name: 'Leite IL Desnatado', brandPreferred: true });
+    expect(mockQueue.edit).toHaveBeenCalledWith(
+      { id: 'a', listId: 'l1', userId: 'u1', values: { name: 'Leite IL Desnatado', brand_preferred: true }, expectedPhotoPath: undefined },
+      expect.anything(),
+    );
+    // O item de antes com o nome do produto, salvo sem mexer na escolha: nada muda (continua com qualquer marca).
+    mockQueue.edit.mockClear();
+    await save(legacy, { name: 'Leite IL Desnatado', brandPreferred: false });
+    expect(mockQueue.edit).not.toHaveBeenCalled();
+    // Desligar a escolha que estava ligada.
+    await save({ ...legacy, brand_preferred: true }, { name: 'Leite desnatado', brandPreferred: false });
+    expect(mockQueue.edit).toHaveBeenCalledWith(
+      expect.objectContaining({ values: { name: 'Leite desnatado', brand_preferred: false } }),
+      expect.anything(),
+    );
   });
 });

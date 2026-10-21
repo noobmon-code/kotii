@@ -35,7 +35,7 @@ import {
 } from '@/data/market';
 import { useRefreshMarketTrips } from '@/data/marketTrips';
 import { useSharedPrices } from '@/data/sharedPrices';
-import { cartPantryRows, type CartPantryEntry, type CartPantryRow } from '@/domain/cartPantry';
+import { cartPantryRows, joinNames, type CartPantryEntry, type CartPantryRow } from '@/domain/cartPantry';
 import { compareByAisle, getCategory } from '@/domain/categories';
 import {
   currentStoreChoice,
@@ -50,9 +50,11 @@ import {
 import { compareForShopping } from '@/domain/listItem';
 import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { todayISO } from '@/domain/dates';
+import { brandChoice, genericItem, pendingSameItem, productSuggestions, sameListItem } from '@/domain/genericItem';
+import { listNameKey } from '@/domain/listLinks';
 import { cartPurchases } from '@/domain/listQueue';
 import { parseDecimal } from '@/domain/money';
-import { fitsList, recentPurchases, type RecentItem } from '@/domain/recentPurchases';
+import { fitsList, listExclusion, recentPurchases, type RecentItem } from '@/domain/recentPurchases';
 import { ranOutItems, restockFrom } from '@/domain/restock';
 import { guessCategory, normalizeSearch } from '@/domain/search';
 import { sharedQuotes } from '@/domain/sharedPrices';
@@ -165,16 +167,31 @@ export default function ShoppingListScreen() {
     [products.data],
   );
 
-  // Produtos com histórico de preço primeiro; depois itens comuns da casa.
+  // Produtos com histórico de preço primeiro; depois itens comuns da casa. O produto aparece e entra na lista sem
+  // a marca ("Leite desnatado", e não "Leite IL Desnatado"), com ele como dica de preço: a marca se escolhe na hora,
+  // ou em "Marca preferida" nos detalhes. Marcas do mesmo item são uma sugestão só, com o produto que a casa usou
+  // por último (a última compra ou o último preço).
+  const lastUsed = useMemo(() => {
+    const at = new Map<string, number>();
+    const use = (productId: string | null, when: string) => {
+      const time = Date.parse(when);
+      if (productId && !Number.isNaN(time) && time > (at.get(productId) ?? -Infinity)) at.set(productId, time);
+    };
+    for (const record of purchases.data ?? []) use(record.productId, record.at);
+    for (const price of prices.data ?? []) use(price.product_id, price.purchased_at);
+    return at;
+  }, [purchases.data, prices.data]);
+
   const suggestions = useMemo(() => {
     const q = normalizeSearch(name);
     if (q.length < 2) return { products: [], common: [] };
-    const matched = (products.data ?? []).filter((p) => normalizeSearch(p.name).includes(q)).slice(0, 4);
+    const matched = productSuggestions(products.data ?? [], q, lastUsed);
+    const seen = new Set(matched.map(({ product }) => genericItem(product.name, product.category).key));
     const common = searchCommonItems(q, 6)
-      .filter((i) => !productByName.has(normalizeSearch(i.name)))
+      .filter((i) => !productByName.has(normalizeSearch(i.name)) && !seen.has(genericItem(i.name, i.category).key))
       .slice(0, Math.max(2, 6 - matched.length));
     return { products: matched, common };
-  }, [name, products.data, productByName]);
+  }, [name, products.data, productByName, lastUsed]);
 
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
@@ -184,16 +201,44 @@ export default function ShoppingListScreen() {
     setUnit('un');
   }
 
+  /**
+   * O mesmo item já está para comprar nesta lista, com este nome ou outro ("Leite IL Desnatado" e "Leite
+   * desnatado"): não põe de novo, e avisa.
+   */
+  function alreadyListed(item: { name: string; category: string }): boolean {
+    const listed = pendingSameItem(item, items.data ?? []);
+    if (listed) notify('Já estava na lista', `${listed.name} já está na lista para comprar.`);
+    return Boolean(listed);
+  }
+
   // Pôr item vai pela fila da lista: aparece na hora, também sem internet, e o campo já fica livre para o próximo.
-  // Se a fila desistir, o aviso sai dela (lib/queryClient), também com a tela já fechada.
-  function add(product?: Product) {
-    const itemName = product?.name ?? name.trim();
+  // Se a fila desistir, o aviso sai dela (lib/queryClient), também com a tela já fechada. O produto escolhido na
+  // busca entra sem a marca (`productName`, de genericItem), com ele como dica de preço.
+  async function add(product?: Product, productName?: string) {
+    const itemName = productName ?? product?.name ?? name.trim();
     if (!itemName) return;
+    const category = product?.category ?? guessCategory(itemName);
+    const typed = !product && !productName;
+    const listed = pendingSameItem({ name: itemName, category }, items.data ?? []);
+    // O nome digitado que não é o do item pendente ("Leite" com "Leite IL Desnatado" na lista) pode ser outro pedido:
+    // a pessoa decide (sem pôr, o nome fica no campo). A sugestão da busca é o item sem marca: já está lá.
+    if (listed && typed && listNameKey(listed.name) !== listNameKey(itemName)) {
+      const anyway = await askYesNo(
+        'Já está na lista',
+        `${listed.name} já está na lista para comprar. Pôr "${itemName}" também?`,
+        'Pôr mesmo assim',
+        'Não pôr',
+      );
+      if (!anyway) return;
+    } else if (listed) {
+      notify('Já estava na lista', `${listed.name} já está na lista para comprar.`);
+      return resetForm();
+    }
     const qty = parseDecimal(quantity) ?? 1;
     addItem.add(
       {
         name: itemName,
-        category: product?.category ?? guessCategory(itemName),
+        category,
         productId: product?.id ?? null,
         quantity: qty > 0 ? qty : 1,
         unit,
@@ -206,10 +251,14 @@ export default function ShoppingListScreen() {
   /** Item comum: liga ao produto da casa de mesmo nome, se existir. */
   function addCommon(item: CommonItem, fromForm = false) {
     const product = productByName.get(normalizeSearch(item.name));
+    if (alreadyListed({ name: item.name, category: product?.category ?? item.category })) {
+      if (fromForm) resetForm();
+      return;
+    }
     const qty = fromForm ? (parseDecimal(quantity) ?? 1) : 1;
     addItem.add(
       {
-        name: product?.name ?? item.name,
+        name: item.name,
         category: product?.category ?? item.category,
         productId: product?.id ?? null,
         quantity: qty > 0 ? qty : 1,
@@ -223,16 +272,19 @@ export default function ShoppingListScreen() {
 
   /**
    * Catálogo de itens comuns: um toque põe na lista, outro tira (o que está
-   * para comprar com esse nome). Item com descrição, foto ou prioridade
-   * pergunta antes de sair. Devolve se deu certo.
+   * para comprar com esse nome, ou o mesmo item com a marca). Pergunta antes
+   * quando sai item com descrição, foto ou prioridade, com outro nome, com
+   * "Marca preferida" ou mais de um. Devolve se deu certo.
    */
   async function toggleCommon(item: CommonItem, add: boolean): Promise<boolean> {
     try {
       if (add) {
         const product = productByName.get(normalizeSearch(item.name));
+        // Já pendente com outro nome (a marca): o catálogo marca o item como na lista, sem pôr de novo.
+        if (pendingSameItem({ name: item.name, category: item.category }, items.data ?? [])) return true;
         addItem.add(
           {
-            name: product?.name ?? item.name,
+            name: item.name,
             category: product?.category ?? item.category,
             productId: product?.id ?? null,
             quantity: 1,
@@ -242,8 +294,8 @@ export default function ShoppingListScreen() {
         );
         return true;
       }
-      const key = normalizeSearch(item.name);
-      const matches = (items.data ?? []).filter((i) => !i.checked_at && normalizeSearch(i.name) === key);
+      // O mesmo item, com este nome ou com a marca ("Leite desnatado" tira o "Leite IL Desnatado").
+      const matches = (items.data ?? []).filter((i) => !i.checked_at && sameListItem({ name: item.name, category: item.category }, i));
       if (!matches.length) return false;
       // Foto que ainda espera internet também conta (o item ainda não tem photo_path).
       const detailed = matches.some(
@@ -251,7 +303,15 @@ export default function ShoppingListScreen() {
       );
       const confirmRemoval = (name: string, when: string) =>
         askYesNo('Tirar da lista?', `${name} ${when} descrição, foto ou prioridade. Tirar da lista mesmo assim?`, 'Tirar', 'Manter');
-      if (detailed && !(await confirmRemoval(matches[0].name, 'tem'))) return false;
+      // Sem perguntar, só o próprio item do catálogo, sem marca escolhida. Com outro nome ("Shampoo Seda" para
+      // "Shampoo"), mais de um item ou "Marca preferida" ligada, a pessoa vê tudo o que sai antes.
+      const onlyThis = matches.length === 1 && !matches[0].brand_preferred && listNameKey(matches[0].name) === listNameKey(item.name);
+      if (!onlyThis) {
+        const names = joinNames(matches.map((i) => i.name));
+        const details = detailed ? ', com descrição, foto ou prioridade' : '';
+        const leave = matches.length > 1 ? 'saem' : 'sai';
+        if (!(await askYesNo('Tirar da lista?', `${names} ${leave} da lista${details}. Tirar mesmo assim?`, 'Tirar', 'Manter'))) return false;
+      } else if (detailed && !(await confirmRemoval(matches[0].name, 'tem'))) return false;
       // Sem internet, ou com a fila ainda enviando (a lista daqui pode não ser a de lá): tirar vai pela fila, depois
       // do que veio antes, e no servidor só apaga o que ainda está para comprar (e, sem a confirmação, sem detalhes).
       // O que outra pessoa mudou enquanto isso volta para a lista quando ela recarregar. A foto que espera internet
@@ -326,10 +386,8 @@ export default function ShoppingListScreen() {
   // letra digitada no campo.
   const strips = useMemo(() => {
     if (!listKind || !items.data) return { restock: [], recent: [] };
-    const inList = {
-      names: new Set([...items.data.map((i) => normalizeSearch(i.name)), ...justAdded.pending]),
-      productIds: new Set(items.data.flatMap((i) => (i.product_id ? [i.product_id] : []))),
-    };
+    // Também o mesmo item com outro nome: "Leite IL Desnatado" na lista tira "Leite desnatado" das faixas.
+    const inList = listExclusion(items.data, justAdded.pending);
     // A faixa só sugere o que cabe neste tipo de lista (remédio não entra na do mercado).
     const restock = restockFrom(ranOut.filter((i) => fitsList(i.category, listKind)), { exclude: inList });
     const recent = recentPurchases(purchases.data ?? [], {
@@ -407,7 +465,8 @@ export default function ShoppingListScreen() {
   // Urgentes no topo.
   const pending = (items.data ?? []).filter((i) => !i.checked_at).sort(compareForShopping);
   const checked = (items.data ?? []).filter((i) => i.checked_at).sort(compareByAisle);
-  const pendingNames = new Set(pending.map((i) => normalizeSearch(i.name)));
+  // O catálogo marca o item que já está na lista, também com a marca no nome ("Leite IL Desnatado" é "Leite desnatado").
+  const pendingNames = new Set(pending.flatMap((i) => [normalizeSearch(i.name), normalizeSearch(genericItem(i.name, i.category).name)]));
 
   // Sem internet e nunca aberta neste aparelho (nem veio com o resumo das listas): a busca fica parada até a
   // conexão voltar, e a tela diz isso em vez de girar sem fim.
@@ -511,6 +570,10 @@ export default function ShoppingListScreen() {
     if (details.unit !== item.unit) values.unit = details.unit;
     if (details.notes !== (item.notes ?? null)) values.notes = details.notes;
     if (details.priority !== (item.priority ?? 'normal')) values.priority = details.priority;
+    // "Marca preferida": só quando a pessoa mudou a escolha (os detalhes só a oferecem com o banco que a guarda).
+    if (details.brandPreferred !== undefined && details.brandPreferred !== (item.brand_preferred === true)) {
+      values.brand_preferred = details.brandPreferred;
+    }
     if (photo.kind !== 'keep') dropPendingPhotos(queryClient, item.id);
     // Tira só a foto que estava no item: a que outra pessoa puser antes de esta edição chegar ao servidor fica.
     const expectedPhotoPath = photo.kind === 'remove' && item.photo_path ? item.photo_path : undefined;
@@ -566,7 +629,7 @@ export default function ShoppingListScreen() {
               onChangeText={setName}
               placeholder="Adicionar item"
               returnKeyType="done"
-              onSubmitEditing={() => add()}
+              onSubmitEditing={() => void add()}
             />
           </View>
           <View style={styles.qty}>
@@ -578,13 +641,13 @@ export default function ShoppingListScreen() {
             <Chip key={u} label={u} selected={unit === u} onPress={() => setUnit(u)} />
           ))}
         </Row>
-        {suggestions.products.map((p) => (
+        {suggestions.products.map(({ product, name: itemName }) => (
           <ListRow
-            key={p.id}
-            left={<CategoryIcon category={p.category} name={p.name} size={32} />}
-            title={p.name}
+            key={product.id}
+            left={<CategoryIcon category={product.category} name={itemName} size={32} />}
+            title={itemName}
             subtitle="Produto com histórico de preço"
-            onPress={() => add(p)}
+            onPress={() => void add(product, itemName)}
           />
         ))}
         {suggestions.common.map((item) => (
@@ -597,7 +660,7 @@ export default function ShoppingListScreen() {
           />
         ))}
         {name.trim() ? (
-          <Button title={`Adicionar "${name.trim()}"`} icon="plus" compact onPress={() => add()} />
+          <Button title={`Adicionar "${name.trim()}"`} icon="plus" compact onPress={() => void add()} />
         ) : (
           <Button title="Escolher dos itens comuns" icon="playlist-plus" variant="secondary" compact onPress={() => setPickerOpen(true)} />
         )}
@@ -690,6 +753,7 @@ export default function ShoppingListScreen() {
               productName: (product) => products.data?.find((p) => p.id === product)?.name,
             })
           }
+          brand={editing.product_id ? brandChoice(products.data?.find((p) => p.id === editing.product_id)) : null}
           onSeePrices={seePricesOf(editing)}
           onSave={(details, photo) => saveDetails(editing, details, photo)}
           onRemove={() => removeItem(editing)}

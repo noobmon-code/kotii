@@ -13,6 +13,7 @@ import {
   useStores,
 } from '@/data/market';
 import { CATEGORIES, getCategory } from '@/domain/categories';
+import { genericItem } from '@/domain/genericItem';
 import { noStorePriceSentence } from '@/domain/priceHistory';
 import { PRODUCT_CATEGORY_NOTE } from '@/domain/productCategory';
 import { PRODUCT_NAME_TAKEN, productNameTakenHint } from '@/domain/productMerge';
@@ -123,12 +124,15 @@ export default function ProductScreen() {
 
   // O mesmo caminho do "Acabou" da despensa: a lista aberta mais nova em que o produto cabe (remédio na da
   // farmácia), sem repetir o que já está pendente nela.
+  // O item vai sem a marca ("Leite desnatado"), com este produto como dica de preço: a marca se escolhe na hora, ou
+  // em "Marca preferida" nos detalhes do item (domain/genericItem).
   async function putOnList() {
     try {
-      const list = await addToList.mutateAsync({ name: product!.name, category: product!.category, productId: product!.id, quantity: 1, unit: 'un' });
+      const itemName = genericItem(product!.name, product!.category).name;
+      const list = await addToList.mutateAsync({ name: itemName, category: product!.category, productId: product!.id, quantity: 1, unit: 'un' });
       notify(
         list.added ? 'Adicionado à lista' : 'Já estava na lista',
-        list.added ? `${product!.name} foi para "${list.name}".` : `${product!.name} já estava pendente em "${list.name}".`,
+        list.added ? `${itemName} foi para "${list.name}".` : `${itemName} já estava pendente em "${list.name}".`,
       );
     } catch (err) {
       notify('Erro', errorMessage(err));
