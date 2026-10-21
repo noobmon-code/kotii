@@ -222,9 +222,9 @@ Deno.serve(async (req) => {
   );
   const receipt = cleanReceipt(extracted, new Set(catalog.map((p) => p.id)), aliasMatches);
   // A nota do QR sem itens (os prints só do topo ou do rodapé) não vira nota: a pendente fica no app, para os
-  // prints da lista de itens. A leitura não conta no limite do mês.
+  // prints da lista de itens. A leitura conta no limite do mês, como a imagem que não é nota (a IA leu; só a
+  // falha da IA devolve o uso, senão daria para pedir leituras sem fim sem gastar a cota).
   if (readWithoutItems(givenKey, receipt.items.length)) {
-    await refundAiQuota(ticket).catch((e) => console.error('refund_ai failed', e));
     return json(
       { error: 'Não achei os itens da nota nas imagens. Mande de novo junto com a lista de itens (nos prints da Sefaz ou na foto do papel).', code: NO_ITEMS },
       422,
