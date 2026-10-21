@@ -4,6 +4,8 @@
 // .RCod, .Rqtd, .RUN, .RvlUnit e .valor, total em "Valor a pagar R$" e a
 // data em "Emissão:". Sem rede: testado em parse.test.ts.
 
+import { storeCodeKey } from '../_shared/storeCode.ts';
+
 export interface NfcePage {
   store: { name: string | null; cnpj: string | null; address: string | null };
   /**
@@ -14,6 +16,7 @@ export interface NfcePage {
    */
   issuedAtLocal: string | null;
   total: number | null;
+  /** `code`: o código do produto naquele mercado ("Código"), pela chave de storeCodeKey; null se a linha não traz. */
   items: { description: string; code: string | null; quantity: number; unit: string; unitPrice: number; totalPrice: number }[];
 }
 
@@ -80,7 +83,9 @@ export function parseNfceHtml(html: string): NfcePage {
     const totalPrice = parseBRNumber(value ?? '') ?? 0;
     const quantity = parseBRNumber(afterLabel(quantityText)) ?? 1;
     const unitPrice = parseBRNumber(afterLabel(unitPriceText)) ?? 0;
-    const code = (field(chunk, 'RCod') ?? '').replace(/\D/g, '') || null;
+    // "(Código: 250474 )" -> "250474", pela chave do banco (store_code_key): com as letras, que alguns mercados
+    // usam, para "A123" e "B123" não virarem o mesmo código.
+    const code = storeCodeKey(afterLabel(field(chunk, 'RCod')));
     items.push({ description, code, quantity, unit: afterLabel(field(chunk, 'RUN')) || 'UN', unitPrice, totalPrice });
   }
 

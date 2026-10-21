@@ -17,6 +17,9 @@
 // Cada linha leva também o item genérico que a IA leu ("café em pó"), em
 // receipt_items.generic_name, só para a revisão casar a nota com a lista;
 // ele não vai para receipt_reads nem para os preços compartilhados.
+// E o código do produto impresso na linha, em receipt_items.store_code: a nota
+// confirmada o ensina à casa, e o produto que ele já ensinou (match_store_codes)
+// vence o apelido e a sugestão da IA. Também só na linha da casa.
 // Secrets: ANTHROPIC_API_KEY ou OPENROUTER_API_KEY (uma das duas);
 // RECEIPT_MODEL e RECEIPT_PROVIDER ("anthropic" | "openrouter") opcionais.
 // Com a chave da OpenRouter, ela é usada (padrão: DeepSeek V4.1 Flash).
@@ -48,10 +51,13 @@ import {
   imagePathsError,
   insertItems,
   instructions,
+  itemStoreCodes,
   MAX_TOTAL_IMAGE_BYTES,
   promptCatalog,
   sameStoreName,
+  storeCodeMatches,
   SYSTEM,
+  withStoreCodes,
 } from './extract.ts';
 
 const CORS = {
@@ -249,6 +255,16 @@ Deno.serve(async (req) => {
       address: receipt.address,
     });
 
+    // O produto que o código de cada linha já ensinou à casa vence o apelido e a sugestão da IA: o daquele
+    // mercado (o CNPJ da loja da nota, com que a confirmação aprende) e, sem ele, o do código de barras.
+    // O banco de antes da função, ou uma falha nela: a nota fica como antes.
+    let items = receipt.items;
+    const codes = itemStoreCodes(items);
+    if (codes.length) {
+      const { data: codeRows, error: codeError } = await db.rpc('match_store_codes', { p_store_cnpj: ids.storeCnpj, p_codes: codes });
+      items = withStoreCodes(items, storeCodeMatches(codeRows as { code: string; product_id: string }[] | null, codeError));
+    }
+
     // A leitura antes da nota: a nota nasce apontando para ela. Sem leitura
     // (o banco ainda sem a tabela, a chave secreta faltando), a nota é salva do
     // mesmo jeito, só não compartilha preço.
@@ -300,11 +316,11 @@ Deno.serve(async (req) => {
       throw receiptError ?? new Error('receipt not returned');
     }
 
-    if (receipt.items.length) {
-      // Com o item genérico de cada linha; o banco de antes da coluna recebe as linhas sem ele (insertItems).
+    if (items.length) {
+      // Com o item genérico e o código de cada linha; o banco de antes de cada coluna recebe as linhas sem ela (insertItems).
       const { error: itemsError } = await insertItems(
         (rows) => db.from('receipt_items').insert(rows),
-        receipt.items.map((item) => ({ ...item, receipt_id: created.id })),
+        items.map((item) => ({ ...item, receipt_id: created.id })),
       );
       if (itemsError) {
         await db.from('receipts').delete().eq('id', created.id);
@@ -313,7 +329,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    return json({ receipt_id: created.id, duplicate: false, items: receipt.items.length });
+    return json({ receipt_id: created.id, duplicate: false, items: items.length });
   } catch (err) {
     console.error('db error', err);
     // Nenhuma nota ficou desta leitura (se os itens falharam, ela foi apagada acima): ela não conta no limite do mês.

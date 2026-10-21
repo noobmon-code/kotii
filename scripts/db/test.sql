@@ -3845,8 +3845,8 @@ begin
     select array_agg(distinct t.relname::text order by t.relname::text)
     from pg_constraint c join pg_class t on t.oid = c.conrelid
     where c.contype = 'f' and c.confrelid = 'public.products'::regclass
-  ) = array['list_item_links', 'pantry_items', 'product_aliases', 'product_distinct_pairs', 'purchase_history',
-            'receipt_items', 'shopping_list_items'],
+  ) = array['list_item_links', 'pantry_items', 'product_aliases', 'product_barcodes', 'product_distinct_pairs',
+            'product_store_codes', 'purchase_history', 'receipt_items', 'shopping_list_items'],
     'a table that references products must be handled in merge_products';
 end $$;
 select pg_temp.merge_products_access() \gset
@@ -10474,6 +10474,290 @@ begin
 end $$;
 delete from public.shopping_list_item_tombstones;
 delete from auth.users where id = :'user_t1';
+
+-- ---------------------------------------------------------------------------
+\echo '• código do produto na nota: a casa aprende a abreviação de cada mercado e o código de barras'
+-- Nina confirma notas de dois mercados com CNPJ e de uma loja criada à mão; a próxima nota acha o produto pelo
+-- código. Otto, de outra casa, não vê nem usa o que a casa dela aprendeu.
+\set user_sc1 '00000000-0000-0000-0000-0000000002c1'
+\set user_sc2 '00000000-0000-0000-0000-0000000002c2'
+reset role;
+insert into auth.users (id) values (:'user_sc1'), (:'user_sc2');
+do $$
+begin
+  assert (
+    select c.is_nullable = 'YES' and c.column_default is null and c.data_type = 'text'
+    from information_schema.columns c
+    where c.table_schema = 'public' and c.table_name = 'receipt_items' and c.column_name = 'store_code'
+  ), 'store_code is a text column, null by default';
+
+  -- A chave do código: maiúsculas, sem acento, só letras e dígitos, de 1 a 60.
+  assert public.store_code_key(' 250474 ') = '250474', 'spaces go';
+  assert public.store_code_key('(Código: 250474)') = 'CODIGO250474', 'accents and punctuation go, letters stay';
+  assert public.store_code_key('ab-12/ç') = 'AB12C', 'upper case, the cedilla goes';
+  assert public.store_code_key('ß1') = '1', 'a letter that does not decompose goes (JavaScript would make it SS)';
+  assert public.store_code_key(repeat('9', 60)) = repeat('9', 60), 'up to 60';
+  assert public.store_code_key(repeat('9', 61)) is null, 'longer is not a code';
+  assert public.store_code_key('') is null and public.store_code_key(' -/ ') is null and public.store_code_key(null) is null,
+    'empty is not a code';
+
+  -- O código de barras: 14 dígitos com o verificador certo, fora das faixas de uso restrito.
+  assert public.gtin_key('7891000100103') = '07891000100103', 'a valid EAN-13';
+  assert public.gtin_key('7891000100104') is null, 'wrong check digit';
+  assert public.gtin_key('96385074') = '00000096385074', 'a valid EAN-8';
+  assert public.gtin_key('01234565') is null, 'an EAN-8 starting with 0 is restricted';
+  assert public.gtin_key('20000004') is null, 'an EAN-8 starting with 2 too';
+  assert public.gtin_key('2000000000008') is null, 'an EAN-13 starting with 2 is in-store / variable weight';
+  assert public.gtin_key('036000291452') = '00036000291452', 'a valid UPC-A, with zeros ahead';
+  assert public.gtin_key('212345678992') is null and public.gtin_key('0212345678992') is null,
+    'a UPC-A of number system 2 (EAN-13 starting with 02) is variable weight';
+  assert public.gtin_key('412345678996') is null, 'a UPC-A of number system 4 (EAN-13 starting with 04) is in-store';
+  assert public.gtin_key('9800000000007') is null and public.gtin_key('9900000000004') is null, 'coupons';
+  assert public.gtin_key('17891000100100') = '17891000100100', 'a valid GTIN-14';
+  assert public.gtin_key('97891000100106') is null, 'a GTIN-14 starting with 9 is variable weight';
+  assert public.gtin_key('07891000100103') = '07891000100103', 'the key of a key is itself';
+  assert public.gtin_key('789100010010A') is null and public.gtin_key('ABC') is null, 'letters';
+  assert public.gtin_key('250474') is null and public.gtin_key('1234567890') is null, 'other lengths';
+  assert public.gtin_key(null) is null and public.gtin_key(' 7891000100103') is null, 'only the bare digits';
+
+  -- Quem usa: as funções que rodam com as permissões de quem chama.
+  assert has_function_privilege('authenticated', 'public.store_code_key(text)', 'execute')
+    and has_function_privilege('authenticated', 'public.gtin_key(text)', 'execute')
+    and has_function_privilege('authenticated', 'public.match_store_codes(text, text[])', 'execute'),
+    'members run the key functions and the match';
+  assert not has_function_privilege('anon', 'public.store_code_key(text)', 'execute')
+    and not has_function_privilege('anon', 'public.gtin_key(text)', 'execute')
+    and not has_function_privilege('anon', 'public.match_store_codes(text, text[])', 'execute'),
+    'anon does not';
+  assert (select relrowsecurity from pg_class where oid = 'public.product_store_codes'::regclass)
+    and (select relrowsecurity from pg_class where oid = 'public.product_barcodes'::regclass), 'both tables have RLS on';
+  assert has_table_privilege('authenticated', 'public.product_store_codes', 'select')
+    and has_table_privilege('authenticated', 'public.product_store_codes', 'insert')
+    and has_table_privilege('authenticated', 'public.product_store_codes', 'update')
+    and has_table_privilege('authenticated', 'public.product_store_codes', 'delete')
+    and has_table_privilege('authenticated', 'public.product_barcodes', 'select')
+    and has_table_privilege('authenticated', 'public.product_barcodes', 'insert')
+    and has_table_privilege('authenticated', 'public.product_barcodes', 'update')
+    and has_table_privilege('authenticated', 'public.product_barcodes', 'delete'), 'members manage what their house learned';
+  assert not has_table_privilege('anon', 'public.product_store_codes', 'select')
+    and not has_table_privilege('anon', 'public.product_barcodes', 'select')
+    and not has_table_privilege('authenticated', 'public.product_store_codes', 'truncate')
+    and not has_table_privilege('authenticated', 'public.product_barcodes', 'truncate'), 'anon reads nothing, nobody truncates';
+  assert has_table_privilege('service_role', 'public.product_store_codes', 'select')
+    and has_table_privilege('service_role', 'public.product_barcodes', 'insert'), 'the service role has them';
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_sc2', false) \gset
+select (public.create_household('Casa do Otto', 'Otto')).id as hh_sc2 \gset
+select set_config('request.jwt.claim.sub', :'user_sc1', false) \gset
+select (public.create_household('Casa da Nina', 'Nina')).id as hh_sc1 \gset
+select set_config('test.hh_sc1', :'hh_sc1', false) \gset
+do $$
+declare
+  m1 uuid;
+  m2 uuid;
+  hand uuid;
+  r uuid;
+  i_banana uuid;
+  i_leite uuid;
+  i_sacola uuid;
+  i_pao uuid;
+  i_old uuid;
+  p_banana uuid;
+  p_nanica uuid;
+  p_leite uuid;
+  p_desnatado uuid;
+  p_pao uuid;
+  first_learned timestamptz;
+begin
+  insert into public.stores (name, cnpj) values ('Mercado Bom', '11222333000181') returning id into m1;
+  insert into public.stores (name, cnpj) values ('Mercado Dois', '22333444000155') returning id into m2;
+  insert into public.stores (name) values ('Feira da esquina') returning id into hand;
+
+  -- A coluna: só a chave (maiúsculas e dígitos, de 1 a 60), ou nula.
+  insert into public.receipts (store_id, purchased_at, source) values (m1, '2026-10-01 10:00-03', 'ai') returning id into r;
+  begin
+    insert into public.receipt_items (receipt_id, raw_description, store_code, unit_price, total_price) values (r, 'X', 'abc', 1, 1);
+    raise exception 'FAIL: lower case store code';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.receipt_items (receipt_id, raw_description, store_code, unit_price, total_price) values (r, 'X', '', 1, 1);
+    raise exception 'FAIL: empty store code';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.receipt_items (receipt_id, raw_description, store_code, unit_price, total_price) values (r, 'X', '25 04', 1, 1);
+    raise exception 'FAIL: store code with a space';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.receipt_items (receipt_id, raw_description, store_code, unit_price, total_price) values (r, 'X', repeat('A', 61), 1, 1);
+    raise exception 'FAIL: store code longer than 60';
+  exception when check_violation then null;
+  end;
+  insert into public.receipt_items (receipt_id, raw_description, store_code, unit_price, total_price) values (r, 'X', repeat('A', 60), 1, 1);
+  delete from public.receipt_items where receipt_id = r;
+
+  -- Primeira nota, no Mercado Bom: banana pelo código do mercado, leite pelo código de barras, a sacola sem
+  -- produto e o pão sem código; uma linha gravada como o app de antes (sem a coluna).
+  insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
+    values (r, 0, 'BANANA PRATA', '250474', 6, 3.21) returning id into i_banana;
+  insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
+    values (r, 1, 'LEITE ITALAC 1L', '7891000100103', 4.59, 4.59) returning id into i_leite;
+  insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
+    values (r, 2, 'SACOLA PLASTICA', '999', 0.1, 0.1) returning id into i_sacola;
+  insert into public.receipt_items (receipt_id, position, raw_description, unit_price, total_price)
+    values (r, 3, 'PAO FRANCES KG', 16.9, 5.49) returning id into i_pao;
+  assert (select store_code from public.receipt_items where id = i_pao) is null, 'a line written without the column has no code';
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', i_banana, 'new_product', jsonb_build_object('name', 'Banana prata', 'category', 'hortifruti')),
+    jsonb_build_object('id', i_leite, 'new_product', jsonb_build_object('name', 'Leite Italac 1L', 'category', 'laticinios')),
+    jsonb_build_object('id', i_sacola),
+    jsonb_build_object('id', i_pao, 'new_product', jsonb_build_object('name', 'Pão francês', 'category', 'padaria'))));
+  select id into p_banana from public.products where name = 'Banana prata';
+  select id into p_leite from public.products where name = 'Leite Italac 1L';
+  select id into p_pao from public.products where name = 'Pão francês';
+  assert (select status from public.receipts where id = r) = 'confirmed', 'confirmed';
+  -- O que confirm_receipt já fazia continua: os produtos ligados e os apelidos aprendidos.
+  assert (select product_id from public.receipt_items where id = i_banana) = p_banana, 'the line has its product';
+  assert (select product_id from public.receipt_items where id = i_sacola) is null, 'the bag has none';
+  assert (select array_agg(alias order by alias) from public.product_aliases)
+    = array['BANANA PRATA', 'LEITE ITALAC 1L', 'PAO FRANCES KG'], 'the aliases are learned as before';
+  -- E o novo: o código de cada linha com produto e código, no mercado da nota.
+  assert (select array_agg(store_cnpj || ':' || store_code || '=' || product_id::text order by store_code) from public.product_store_codes)
+    = array['11222333000181:250474=' || p_banana, '11222333000181:7891000100103=' || p_leite],
+    'the market learns the code of each line with a product (not the bag)';
+  assert (select array_agg(gtin || '=' || product_id::text) from public.product_barcodes) = array['07891000100103=' || p_leite],
+    'and the barcode, in 14 digits; 250474 is not one';
+  assert (select household_id from public.product_store_codes limit 1) = current_setting('test.hh_sc1')::uuid, 'for the house';
+  select updated_at into first_learned from public.product_store_codes where store_code = '250474';
+
+  -- Segunda nota, no mesmo mercado: o mesmo código agora é outra banana. O último vence.
+  insert into public.receipts (store_id, purchased_at, source) values (m1, '2026-10-08 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
+    values (r, 0, 'BANANA NANICA KG', '250474', 5, 2.5) returning id into i_banana;
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', i_banana, 'new_product', jsonb_build_object('name', 'Banana nanica', 'category', 'hortifruti'))));
+  select id into p_nanica from public.products where name = 'Banana nanica';
+  assert (select product_id from public.product_store_codes where store_cnpj = '11222333000181' and store_code = '250474') = p_nanica,
+    'the last confirmed receipt wins';
+  assert (select updated_at from public.product_store_codes where store_code = '250474') >= first_learned, 'and the date moves';
+  assert (select count(*) from public.product_store_codes) = 2, 'one row per market and code';
+
+  -- Terceira, na loja criada à mão (sem CNPJ): só o código de barras ensina, e o último vence nele também.
+  insert into public.receipts (store_id, purchased_at, source) values (hand, '2026-10-09 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
+    values (r, 0, 'LEITE DESN 1L', '7891000100103', 4.99, 4.99) returning id into i_leite;
+  insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
+    values (r, 1, 'OVOS BRANCOS DZ', 'X1', 9.9, 9.9) returning id into i_old;
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', i_leite, 'new_product', jsonb_build_object('name', 'Leite desnatado 1L', 'category', 'laticinios')),
+    jsonb_build_object('id', i_old, 'new_product', jsonb_build_object('name', 'Ovos', 'category', 'outros'))));
+  select id into p_desnatado from public.products where name = 'Leite desnatado 1L';
+  assert (select count(*) from public.product_store_codes) = 2, 'no market code without a CNPJ';
+  assert (select product_id from public.product_barcodes where gtin = '07891000100103') = p_desnatado, 'the barcode follows the last receipt';
+  assert (select count(*) from public.product_barcodes) = 1, 'X1 is not a barcode';
+
+  -- A próxima nota: o código do mercado vence; sem ele, o código de barras; sem CNPJ, só o de barras.
+  assert (
+    select jsonb_object_agg(code, product_id)
+    from public.match_store_codes('11222333000181', array['250474', '7891000100103', '999', 'X1', ' 250474', null])
+  ) = jsonb_build_object('250474', p_nanica, '7891000100103', p_leite, ' 250474', p_nanica),
+    'in the first market: the market codes (the code comes back as it was sent)';
+  assert (
+    select jsonb_object_agg(code, product_id) from public.match_store_codes('22333444000155', array['250474', '7891000100103'])
+  ) = jsonb_build_object('7891000100103', p_desnatado), 'in another market: only the barcode';
+  assert (
+    select jsonb_object_agg(code, product_id) from public.match_store_codes(null, array['250474', '7891000100103', '07891000100103'])
+  ) = jsonb_build_object('7891000100103', p_desnatado, '07891000100103', p_desnatado), 'without a CNPJ: only the barcode';
+  assert not exists (select 1 from public.match_store_codes('11222333000181', '{}')), 'no codes, nothing';
+  perform set_config('test.sc_banana', p_banana::text, false);
+  perform set_config('test.sc_nanica', p_nanica::text, false);
+  perform set_config('test.sc_leite', p_leite::text, false);
+  perform set_config('test.sc_desnatado', p_desnatado::text, false);
+end $$;
+
+-- Otto, de outra casa: não vê, não usa e não grava no que a casa da Nina aprendeu.
+select set_config('request.jwt.claim.sub', :'user_sc2', false) \gset
+do $$
+declare
+  n integer;
+begin
+  assert not exists (select 1 from public.match_store_codes('11222333000181', array['250474', '7891000100103'])),
+    'another house matches nothing';
+  assert not exists (select 1 from public.product_store_codes) and not exists (select 1 from public.product_barcodes),
+    'and sees nothing';
+  update public.product_store_codes set store_code = 'OUTRO';
+  get diagnostics n = row_count;
+  assert n = 0, 'nor changes it';
+  delete from public.product_barcodes;
+  get diagnostics n = row_count;
+  assert n = 0, 'nor deletes it';
+  begin
+    insert into public.product_barcodes (household_id, gtin, product_id)
+      values (current_setting('test.hh_sc1')::uuid, '00000096385074', current_setting('test.sc_leite')::uuid);
+    raise exception 'FAIL: wrote into another house';
+  exception when insufficient_privilege or foreign_key_violation then null;
+  end;
+end $$;
+set role anon;
+do $$
+begin
+  perform public.match_store_codes('11222333000181', array['250474']);
+  raise exception 'FAIL: anon matched store codes';
+exception when insufficient_privilege then null;
+end $$;
+
+-- Juntar produtos leva os códigos para o que fica; apagar um produto leva os dele.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_sc1', false) \gset
+do $$
+declare
+  p_banana uuid := current_setting('test.sc_banana')::uuid;
+  p_nanica uuid := current_setting('test.sc_nanica')::uuid;
+  p_leite uuid := current_setting('test.sc_leite')::uuid;
+  p_desnatado uuid := current_setting('test.sc_desnatado')::uuid;
+begin
+  -- Um código de barras só para o produto que vai sumir.
+  insert into public.product_barcodes (gtin, product_id) values ('00000096385074', p_nanica);
+  begin
+    insert into public.product_barcodes (gtin, product_id) values ('7891000100103', p_leite);
+    raise exception 'FAIL: barcode not in 14 digits';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.product_barcodes (gtin, product_id) values ('02000000000008', p_leite);
+    raise exception 'FAIL: restricted barcode';
+  exception when check_violation then null;
+  end;
+  perform public.merge_products(p_banana, p_nanica);
+  assert (select product_id from public.product_store_codes where store_code = '250474') = p_banana, 'the market code moves';
+  assert (select product_id from public.product_barcodes where gtin = '00000096385074') = p_banana, 'and the barcode';
+  perform public.merge_products(p_leite, p_desnatado);
+  assert (select product_id from public.product_barcodes where gtin = '07891000100103') = p_leite, 'the barcode of the merged product moves';
+  assert not exists (select 1 from public.product_store_codes where product_id in (p_nanica, p_desnatado))
+    and not exists (select 1 from public.product_barcodes where product_id in (p_nanica, p_desnatado)), 'nothing points to the gone ones';
+  assert (select count(*) from public.product_store_codes) = 2 and (select count(*) from public.product_barcodes) = 2, 'nothing was lost';
+
+  delete from public.products where id = p_banana;
+  assert not exists (select 1 from public.product_store_codes where store_code = '250474')
+    and not exists (select 1 from public.product_barcodes where gtin = '00000096385074'), 'a deleted product takes its codes';
+  assert (select count(*) from public.product_store_codes) = 1, 'and only its codes';
+end $$;
+
+-- Apagar a casa leva tudo o que ela aprendeu.
+reset role;
+delete from public.households where id = :'hh_sc1';
+do $$
+begin
+  assert not exists (select 1 from public.product_store_codes where household_id = current_setting('test.hh_sc1')::uuid)
+    and not exists (select 1 from public.product_barcodes where household_id = current_setting('test.hh_sc1')::uuid),
+    'the household takes its codes along';
+end $$;
+delete from public.households where id = :'hh_sc2';
+delete from auth.users where id in (:'user_sc1', :'user_sc2');
 
 \echo 'OK — todos os testes do banco passaram'
 
