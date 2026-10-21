@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { Image } from 'expo-image';
-import { Children, Fragment, useState, type ReactNode, type RefObject } from 'react';
+import { Children, Fragment, isValidElement, useState, type ReactNode, type RefObject } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -25,15 +25,17 @@ import { matchItemArt } from '@/domain/itemArt';
 import { Mascot, Spot, type Mood } from './art';
 import { Backdrop } from './Backdrop';
 import { CATEGORY_ART } from './categoryArt';
+import { GradientFill } from './gradient';
 import { ITEM_ART } from './itemArt';
-import { fonts, MAX_WIDTH, radius, shadows, space, useColors, useTint, type Colors, type Tint } from './theme';
+import { Orb } from './Orb';
+import { fonts, MAX_WIDTH, radius, shadows, space, useColors, useGlow, useScheme, useTint, withAlpha, type Colors, type Tint } from './theme';
 
 export type { IconName };
 
 // ---------------------------------------------------------------------------
 // Texto
 
-type TextVariant = 'display' | 'title' | 'heading' | 'body' | 'label' | 'muted' | 'small';
+type TextVariant = 'display' | 'title' | 'heading' | 'body' | 'rowTitle' | 'label' | 'muted' | 'small';
 
 export function Text({
   variant = 'body',
@@ -52,6 +54,7 @@ const textStyles = StyleSheet.create({
   title: { fontFamily: fonts.heavy, fontSize: 28, lineHeight: 34, letterSpacing: -0.4 },
   heading: { fontFamily: fonts.heavy, fontSize: 20, lineHeight: 26, letterSpacing: -0.2 },
   body: { fontFamily: fonts.regular, fontSize: 16, lineHeight: 23 },
+  rowTitle: { fontFamily: fonts.bold, fontSize: 16, lineHeight: 22 },
   label: { fontFamily: fonts.bold, fontSize: 15, lineHeight: 20 },
   muted: { fontFamily: fonts.regular, fontSize: 14, lineHeight: 20 },
   small: { fontFamily: fonts.semibold, fontSize: 12.5, lineHeight: 17 },
@@ -158,7 +161,16 @@ export function ListCard({ children }: { children: ReactNode }) {
     <Card style={styles.listCard}>
       {rows.map((row, index) => (
         <Fragment key={index}>
-          {index > 0 ? <View style={[styles.divider, { backgroundColor: c.border }]} /> : null}
+          {/* O divisor começa onde o texto começa: depois do ícone da linha, quando ela tem um. */}
+          {index > 0 ? (
+            <View
+              style={[
+                styles.divider,
+                { backgroundColor: c.hairline },
+                isValidElement<{ left?: ReactNode }>(row) && row.props.left ? styles.dividerInset : null,
+              ]}
+            />
+          ) : null}
           {row}
         </Fragment>
       ))}
@@ -170,7 +182,7 @@ export function Section({ title, action, children }: { title: string; action?: R
   return (
     <View style={styles.section}>
       <View style={styles.sectionHeader}>
-        <Text variant="heading" style={styles.flex}>
+        <Text variant="label" style={[styles.sectionTitle, styles.flex]} accessibilityRole="header">
           {title}
         </Text>
         {action}
@@ -301,7 +313,7 @@ export function CheckCircle({ checked, onPress, label }: { checked: boolean; onP
       onPress={onPress}
       style={[
         styles.check,
-        { borderColor: checked ? c.primary : c.border, backgroundColor: checked ? c.primary : 'transparent' },
+        { borderColor: checked ? c.primary : withAlpha(c.textMuted, 0.5), backgroundColor: checked ? c.primary : 'transparent' },
       ]}>
       {checked ? <Icon name="check" size={16} color="onPrimary" /> : null}
     </Pressable>
@@ -469,6 +481,8 @@ export function Segmented<T extends string>({
   onChange: (value: T) => void;
 }) {
   const c = useColors();
+  // O item aberto é um cartão branco; à noite, um cinza um pouco mais claro que o fundo.
+  const selectedBg = useScheme() === 'dark' ? c.surfaceAlt : c.surface;
   return (
     <View style={[styles.segmented, { backgroundColor: c.glass, borderColor: c.glassBorder }]}>
       {options.map((o) => {
@@ -479,7 +493,7 @@ export function Segmented<T extends string>({
             accessibilityRole="tab"
             accessibilityState={{ selected }}
             onPress={() => onChange(o.value)}
-            style={[styles.segment, selected && { backgroundColor: c.surface }, selected && styles.segmentSelected]}>
+            style={[styles.segment, selected && { backgroundColor: selectedBg }, selected && styles.segmentSelected]}>
             <Text variant="label" color={selected ? 'text' : 'textMuted'} numberOfLines={1}>
               {o.label}
             </Text>
@@ -547,20 +561,26 @@ export function Badge({ label, tone = 'neutral' }: { label: string; tone?: Tone 
   );
 }
 
-export function IconBadge({ icon, tone = 'neutral', size = 40 }: { icon: IconName; tone?: Tone; size?: number }) {
+export function IconBadge({ icon, tone = 'neutral', size = 44 }: { icon: IconName; tone?: Tone; size?: number }) {
   const c = useColors();
-  const map: Record<Tone, [string, keyof Colors]> = {
-    neutral: [c.surfaceAlt, 'text'],
-    primary: [c.primarySoft, 'primary'],
-    danger: [c.dangerSoft, 'danger'],
-    warning: [c.warningSoft, 'warning'],
-    info: [c.infoSoft, 'info'],
+  const glows = {
+    neutral: useGlow('orange'),
+    primary: useGlow('blue'),
+    danger: useGlow('pink'),
+    warning: useGlow('yellow'),
+    info: useGlow('purple'),
   };
-  const [bg, fg] = map[tone];
+  const fg: Record<Tone, keyof Colors> = {
+    neutral: 'text',
+    primary: 'primary',
+    danger: 'danger',
+    warning: 'warning',
+    info: 'info',
+  };
   return (
-    <View style={[styles.iconBadge, { width: size, height: size, backgroundColor: bg }]}>
-      <Icon name={icon} size={size * 0.55} color={fg} />
-    </View>
+    <Orb size={size} glow={tone === 'neutral' ? c.border : glows[tone]}>
+      <Icon name={icon} size={Math.round(size * 0.5)} color={fg[tone]} />
+    </Orb>
   );
 }
 
@@ -589,18 +609,24 @@ export function CategoryIcon({
   dimmed?: boolean;
 }) {
   const art = CATEGORY_ART[getCategory(category).key];
-  const tint = useTint(art.tint);
+  const glow = useGlow(art.tint);
   const itemKey = name ? matchItemArt(name, category) : null;
+  // Na orbe o desenho fica um pouco menor que ela, para o vidro aparecer em volta.
+  const imageSize = backdrop ? Math.round(size * 0.8) : size;
   const image = (
     <Image
       source={itemKey ? ITEM_ART[itemKey] : art.image}
-      style={{ width: size, height: size, opacity: dimmed ? 0.45 : 1 }}
+      style={{ width: imageSize, height: imageSize, opacity: dimmed ? 0.45 : 1 }}
       contentFit="contain"
       accessible={false}
     />
   );
   if (!backdrop) return image;
-  return <View style={[styles.iconBadge, { width: size, height: size, backgroundColor: tint.bg }]}>{image}</View>;
+  return (
+    <Orb size={size} glow={glow}>
+      {image}
+    </Orb>
+  );
 }
 
 /**
@@ -645,7 +671,7 @@ export function ListRow({
       ]}>
       {left}
       <View style={styles.flex}>
-        <Text variant="body" numberOfLines={2} style={dimmed && styles.strike}>
+        <Text variant="rowTitle" numberOfLines={2} style={dimmed && styles.strike}>
           {title}
         </Text>
         {typeof subtitle === 'string' ? <Text variant="muted">{subtitle}</Text> : subtitle}
@@ -655,7 +681,10 @@ export function ListRow({
   );
 }
 
-/** Atalho colorido com ícone e rótulo (ações rápidas). */
+/**
+ * Atalho de vidro com um ícone numa orbe e o rótulo embaixo (ações rápidas). A
+ * cor aparece como um brilho no canto de cima, não como fundo.
+ */
 export function Tile({
   icon,
   label,
@@ -669,16 +698,21 @@ export function Tile({
 }) {
   const glass = useGlassStyle();
   const t = useTint(tint);
+  const glow = useGlow(tint);
+  const dark = useScheme() === 'dark';
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
       onPress={onPress}
-      style={({ pressed }) => [styles.tile, glass, { backgroundColor: t.bg }, pressed && styles.pressed]}>
-      <View style={[styles.tileIcon, { backgroundColor: t.art }]}>
-        <MaterialCommunityIcons name={icon} size={24} color="#FFFFFF" />
+      style={({ pressed }) => [styles.tile, glass, pressed && styles.pressed]}>
+      <View style={styles.tileWash} pointerEvents="none">
+        <GradientFill from={glow} to={glow} fromOpacity={dark ? 0.28 : 0.5} toOpacity={0} />
       </View>
-      <Text variant="label" style={styles.center} numberOfLines={2}>
+      <Orb size={48} glow={glow}>
+        <MaterialCommunityIcons name={icon} size={24} color={t.art} />
+      </Orb>
+      <Text variant="label" style={styles.tileLabel} numberOfLines={2}>
         {label}
       </Text>
     </Pressable>
@@ -765,12 +799,13 @@ const styles = StyleSheet.create({
   contentWithFab: { paddingBottom: 96 },
   footer: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: space.lg, paddingVertical: space.md },
   footerInner: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', gap: space.sm },
-  card: { borderRadius: radius.lg, padding: space.lg + 2 },
+  card: { borderRadius: radius.lg, borderCurve: 'continuous', padding: space.lg + 2 },
   pageTitle: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   pageTitleArt: { width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center' },
   pressed: { transform: [{ scale: 0.97 }] },
-  section: { gap: space.md },
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  section: { gap: space.sm },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingHorizontal: space.xs },
+  sectionTitle: { fontFamily: fonts.heavy, fontSize: 13, lineHeight: 18 },
   row: { flexDirection: 'row', alignItems: 'center' },
   button: {
     minHeight: 52,
@@ -810,8 +845,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   segmentSelected: {
-    shadowColor: '#2B2A3A',
-    shadowOpacity: 0.08,
+    shadowColor: '#784028',
+    shadowOpacity: 0.1,
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 2 },
     elevation: 2,
@@ -828,21 +863,25 @@ const styles = StyleSheet.create({
   chipText: { fontSize: 14 },
   badge: { borderRadius: radius.pill, paddingHorizontal: space.sm, paddingVertical: 2, alignSelf: 'flex-start' },
   badgeText: { fontFamily: fonts.bold },
-  iconBadge: { borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
-  listRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: space.md },
-  listCard: { paddingVertical: space.xs },
-  divider: { height: StyleSheet.hairlineWidth },
+  listRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: 10, borderRadius: radius.sm },
+  listCard: { paddingVertical: 6, paddingHorizontal: space.lg },
+  divider: { height: 1 },
+  // Ícone de 44 + o espaço entre ele e o texto: o divisor começa onde o texto começa.
+  dividerInset: { marginLeft: 44 + space.md },
   tile: {
     flex: 1,
     alignItems: 'center',
-    gap: space.sm,
+    gap: 10,
     paddingTop: space.lg,
     paddingBottom: space.md,
     paddingHorizontal: space.sm,
-    borderRadius: radius.lg,
+    borderRadius: radius.tile,
+    borderCurve: 'continuous',
     borderWidth: 1,
+    overflow: 'hidden',
   },
-  tileIcon: { width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
+  tileWash: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
+  tileLabel: { textAlign: 'center', fontFamily: fonts.heavy, fontSize: 14, lineHeight: 18 },
   empty: { alignItems: 'center', gap: space.md, paddingVertical: space.xl, paddingHorizontal: space.lg },
   emptyBadge: { position: 'absolute', right: -4, bottom: 0 },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.md, padding: space.xxl },

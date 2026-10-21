@@ -4,7 +4,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { PRODUCT_CATEGORY_NOTE } from '@/domain/productCategory';
 import { ShoppingListsPanel } from '@/features/ShoppingListsPanel';
 import { PickerModal } from '@/ui/PickerModal';
-import { ListRow } from '@/ui/primitives';
+import { FeatureCard } from '@/ui/ScreenHeader';
 
 // Os caminhos até o dinheiro do mercado e o aviso da categoria: Casa > Compras leva ao Mercado do mês, e o
 // seletor de categoria diz, antes da escolha, que a categoria vale também para as compras dos meses passados.
@@ -48,8 +48,9 @@ describe('Casa > Compras', () => {
     const text = texts(renderer!.toJSON()).join('\n');
     expect(text).toContain(['Para onde foi o dinheiro do mercado', 'Mercado do mês: por item, por categoria e por mercado'].join('\n'));
     expect(text.indexOf('Compras do mês')).toBeLessThan(text.indexOf('Para onde foi o dinheiro do mercado'));
-    const row = renderer!.root.findAllByType(ListRow).find((candidate) => candidate.props.title === 'Para onde foi o dinheiro do mercado')!;
-    await act(async () => row.props.onPress());
+    const card = renderer!.root.findByType(FeatureCard);
+    expect(card.props.title).toBe('Para onde foi o dinheiro do mercado');
+    await act(async () => card.props.onPress());
     expect(mockRouter.push).toHaveBeenCalledWith('/mercado');
   });
 

@@ -6,10 +6,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { IconName } from '@/domain/categories';
 import { NukeButton } from '@/features/nuke/NukeButton';
 import { useReminderSync } from '@/features/useReminderSync';
-import { fonts, space, useColors } from '@/ui/theme';
+import { fonts, radius, shadows, space, useColors, withAlpha } from '@/ui/theme';
 
-// Altura da barra sem a área segura; o botão do Nuke fica logo acima dela.
-const TAB_BAR_HEIGHT = 70;
+// A barra é uma pílula de vidro solta do rodapé; o botão do Nuke fica logo acima dela.
+const TAB_BAR_HEIGHT = 64;
 
 const TABS: { name: string; title: string; icon: IconName }[] = [
   { name: 'index', title: 'Hoje', icon: 'white-balance-sunny' },
@@ -22,22 +22,34 @@ const TABS: { name: string; title: string; icon: IconName }[] = [
 export default function TabsLayout() {
   const c = useColors();
   const insets = useSafeAreaInsets();
+  // Pílula flutuante: a margem de baixo é a área segura (ou um respiro, onde não há).
+  const bottomGap = Math.max(insets.bottom, space.md);
   useReminderSync();
   return (
     <View style={{ flex: 1 }}>
       <Tabs
         screenOptions={{
           headerShown: false,
-          tabBarActiveTintColor: c.text,
+          tabBarActiveTintColor: c.primary,
           tabBarInactiveTintColor: c.textMuted,
+          tabBarActiveBackgroundColor: withAlpha(c.primary, 0.12),
+          tabBarItemStyle: { borderRadius: radius.pill, marginVertical: 6, marginHorizontal: 2 },
           // Nunito é mais alta que a fonte do sistema: a barra ganha altura para o rótulo não cortar.
-          tabBarLabelStyle: { fontFamily: fonts.bold, fontSize: 11, lineHeight: 15 },
+          tabBarLabelStyle: { fontFamily: fonts.heavy, fontSize: 11, lineHeight: 15 },
           tabBarStyle: {
             backgroundColor: c.glassStrong,
-            borderTopColor: c.glassBorder,
-            height: TAB_BAR_HEIGHT + insets.bottom,
-            paddingTop: 6,
-            paddingBottom: insets.bottom + 8,
+            borderWidth: 1,
+            borderColor: c.glassBorder,
+            borderTopWidth: 1,
+            borderRadius: radius.pill,
+            borderCurve: 'continuous',
+            boxShadow: shadows.float,
+            height: TAB_BAR_HEIGHT,
+            marginHorizontal: space.lg,
+            marginBottom: bottomGap,
+            paddingTop: 0,
+            paddingBottom: 0,
+            paddingHorizontal: 6,
           },
         }}>
         {TABS.map((tab) => (
@@ -51,7 +63,7 @@ export default function TabsLayout() {
           />
         ))}
       </Tabs>
-      <NukeButton style={{ position: 'absolute', right: space.lg, bottom: TAB_BAR_HEIGHT + insets.bottom + space.md }} />
+      <NukeButton style={{ position: 'absolute', right: space.lg, bottom: TAB_BAR_HEIGHT + bottomGap + space.md }} />
     </View>
   );
 }
