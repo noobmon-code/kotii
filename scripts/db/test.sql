@@ -10210,5 +10210,90 @@ begin
 end $$;
 delete from auth.users where id = :'user_d8';
 
+-- ---------------------------------------------------------------------------
+\echo '• item genérico da leitura por foto: na linha da casa, com tamanho limitado, fora da leitura e dos preços comuns'
+-- Fábio lê uma nota pela foto (a função grava as linhas com o JWT dele, como aqui) e confirma; Gabi, de outra
+-- casa, não vê nem muda o genérico das linhas dele.
+\set user_g1 '00000000-0000-0000-0000-0000000001f1'
+\set user_g2 '00000000-0000-0000-0000-0000000001f2'
+reset role;
+insert into auth.users (id) values (:'user_g1'), (:'user_g2');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_g2', false) \gset
+select (public.create_household('Casa da Gabi', 'Gabi')).id as hh_g2 \gset
+select set_config('request.jwt.claim.sub', :'user_g1', false) \gset
+select (public.create_household('Casa do Fábio', 'Fábio')).id as hh_g1 \gset
+do $$
+declare
+  r uuid;
+  i_cafe uuid;
+  i_gilete uuid;
+  i_mentos uuid;
+begin
+  insert into public.receipts (purchased_at, source) values ('2026-10-21 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_name, suggested_category, generic_name, quantity, unit, unit_price, total_price)
+    values (r, 0, 'CAF TORR MOIDO 3COR 500G', 'Café Torrado e Moído 3 Corações 500g', 'cafe_cha', 'café em pó', 1, 'un', 18.9, 18.9)
+    returning id into i_cafe;
+  insert into public.receipt_items (receipt_id, position, raw_description, generic_name, quantity, unit, unit_price, total_price)
+    values (r, 1, 'GILLETTE APARELHO', 'aparelho de barbear', 1, 'un', 24.9, 24.9)
+    returning id into i_gilete;
+  -- A IA não soube: nulo, como nas notas do QR e nas de antes.
+  insert into public.receipt_items (receipt_id, position, raw_description, quantity, unit, unit_price, total_price)
+    values (r, 2, 'PASTILHA MENTOS 30MIN', 1, 'un', 3.5, 3.5)
+    returning id into i_mentos;
+  assert (select array_agg(generic_name order by position) from public.receipt_items where receipt_id = r)
+    = array['café em pó', 'aparelho de barbear', null], 'the lines keep the generic name, or null';
+  assert (select count(*) from public.receipt_items where receipt_id = r and generic_name is null) = 1, 'null by default';
+
+  -- Comprido demais (a descrição inteira repetida) ou vazio: o banco recusa.
+  begin
+    insert into public.receipt_items (receipt_id, raw_description, generic_name, unit_price, total_price)
+      values (r, 'LINHA', repeat('a', 61), 1, 1);
+    raise exception 'FAIL: generic name longer than 60';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.receipt_items set generic_name = '' where id = i_mentos;
+    raise exception 'FAIL: empty generic name';
+  exception when check_violation then null;
+  end;
+  insert into public.receipt_items (receipt_id, position, raw_description, generic_name, unit_price, total_price)
+    values (r, 3, 'LINHA', repeat('a', 60), 1, 1);
+  delete from public.receipt_items where receipt_id = r and position = 3;
+
+  -- Confirmar não mexe no genérico.
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', i_cafe, 'new_product', jsonb_build_object('name', 'Café 3 Corações 500g', 'category', 'cafe_cha')),
+    jsonb_build_object('id', i_gilete),
+    jsonb_build_object('id', i_mentos)));
+  assert (select status from public.receipts where id = r) = 'confirmed', 'confirmed';
+  assert (select generic_name from public.receipt_items where id = i_cafe) = 'café em pó', 'the confirmation keeps it';
+  perform set_config('test.g_receipt', r::text, false);
+end $$;
+
+select set_config('request.jwt.claim.sub', :'user_g2', false) \gset
+do $$
+declare
+  n integer;
+begin
+  assert not exists (select 1 from public.receipt_items where generic_name is not null), 'Gabi sees no line of the other house';
+  update public.receipt_items set generic_name = 'outra coisa' where receipt_id = current_setting('test.g_receipt')::uuid;
+  get diagnostics n = row_count;
+  assert n = 0, 'and changes none';
+end $$;
+reset role;
+do $$
+begin
+  assert (select count(*) from public.receipt_items where generic_name = 'outra coisa') = 0, 'nothing changed';
+  -- Só a linha da casa: a leitura do servidor e a base comum de preços não têm o genérico.
+  assert not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and column_name = 'generic_name' and table_name <> 'receipt_items'
+  ), 'no other table or view carries the generic name';
+  assert not exists (select 1 from public.receipt_reads where lines::text like '%generic%'), 'nor the server reads';
+end $$;
+delete from public.households where id in (:'hh_g1', :'hh_g2');
+delete from auth.users where id in (:'user_g1', :'user_g2');
+
 \echo 'OK — todos os testes do banco passaram'
 

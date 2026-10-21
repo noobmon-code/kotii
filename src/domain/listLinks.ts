@@ -87,10 +87,29 @@ export interface ReceiptLine {
   productId: string | null;
   /** O nome do produto do item como está na revisão (existente ou novo); null sem produto. */
   name?: string | null;
-  /** Nome do produto, sugestão da leitura e texto da nota. */
+  /** Nome do produto, sugestão da leitura e texto da nota (receiptLineNames). */
   names: string[];
+  /**
+   * O item genérico que a IA leu na foto ("café em pó" para "CAF TORR 3COR");
+   * null ou ausente na nota do QR, na leitura de antes e no banco sem a coluna.
+   * Fica fora de `names`: ele só diz o item quando nenhum nome diz e nunca
+   * passa por cima do que o texto da nota diz (sameItemFit).
+   */
+  generic?: string | null;
   category: string;
 }
+
+/** Os nomes de um item da nota para o casamento com a lista: o do produto escolhido na revisão, a sugestão da leitura e o texto impresso. */
+export function receiptLineNames(line: { productName?: string | null; suggestedName?: string | null; rawDescription: string }): string[] {
+  return [line.productName, line.suggestedName, line.rawDescription].filter((name): name is string => Boolean(name?.trim()));
+}
+
+/**
+ * Os nomes da linha com o genérico, para as palavras em comum ("DET LIQ" e "Detergente"), que só valem para o que
+ * as travas deixam passar e só sugerem. O nome igual ao da lista (`nameFit`) é só o dos nomes da linha: o genérico
+ * igual ao da lista não vira "mesmo nome" quando o item que a nota diz não deixa ele decidir (sameItemFit).
+ */
+const namesWithGeneric = (line: ReceiptLine): string[] => (line.generic?.trim() ? [...line.names, line.generic] : line.names);
 
 /**
  * Como o item da lista foi ligado à nota. `item`: o mesmo item, de outra
@@ -129,7 +148,9 @@ const MIN_OVERLAP = 0.5;
  *   ("Detergente" e "DET LIQ LIMPOL").
  * O que com certeza é outra coisa ("Batata" e "BATATA DOCE", "Leite
  * desnatado" e "LEITE INT") não entra nem como sugestão. Um item da nota pode
- * cumprir mais de um item de lista ("Coca" e "Refrigerante").
+ * cumprir mais de um item de lista ("Coca" e "Refrigerante"). O item
+ * genérico da leitura por foto (`ReceiptLine.generic`) diz o item só quando
+ * nenhum nome da linha diz e o texto não diz outra coisa (sameItemFit).
  * `sameName` diz quando o produto do item da nota "tem o mesmo nome" do item
  * da lista: por padrão, a mesma chave da lista; a revisão da nota passa a
  * regra dos nomes parecidos (`sameListedName`), que também iguala plural e
@@ -199,7 +220,7 @@ export function matchListItems(
     let top: { line: ReceiptLine; overlap: number } | null = null;
     for (const { line } of open) {
       if (!categoriesMayMatch(item.category, line.category)) continue;
-      const overlap = wordOverlap(item.name, line.names);
+      const overlap = wordOverlap(item.name, namesWithGeneric(line));
       if (overlap >= MIN_OVERLAP && (!top || overlap > top.overlap)) top = { line, overlap };
     }
     return top ? [{ listItemId: item.id, receiptItemId: top.line.id, reason: 'parecido', checked: false }] : [];
@@ -214,7 +235,7 @@ function closest(item: OpenListItem, candidates: readonly { line: ReceiptLine }[
   let best: { line: ReceiptLine; score: [number, number, number] } | null = null;
   for (const { line } of candidates) {
     const score: [number, number, number] = [
-      -wordOverlap(item.name, line.names),
+      -wordOverlap(item.name, namesWithGeneric(line)),
       line.category === item.category ? 0 : 1,
       Math.min(...line.names.map((name) => name.length)),
     ];
