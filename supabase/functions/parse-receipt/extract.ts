@@ -19,8 +19,9 @@ export const ExtractedReceiptSchema = z.object({
       raw_description: z.string(),
       normalized_name: z.string(),
       // O item sem marca nem tamanho ("café em pó"), só para casar com a lista de compras. Pedido no schema, mas um
-      // modelo que o esquece (ou manda outra coisa) não derruba a nota: vale null.
-      generic_name: z.string().nullable().catch(null),
+      // modelo que o esquece (ou manda outra coisa) não derruba a nota: vale null. A tolerância fica só na leitura
+      // (preprocess): um .catch() viraria "default" no schema enviado, que a saída estrita de alguns provedores recusa.
+      generic_name: z.preprocess((value) => (typeof value === 'string' ? value : null), z.string().nullable()),
       category: z.enum(CATEGORY_KEYS),
       // Número ilegível vem null, nos dois provedores: exigir número derrubava a
       // nota inteira (OpenRouter) ou fazia o modelo inventar um (saída estrita).

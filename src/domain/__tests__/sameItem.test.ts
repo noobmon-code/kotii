@@ -422,12 +422,13 @@ describe('matchListItems: a regra do carrinho', () => {
 });
 
 describe('matchListItems com o item genérico da leitura por foto', () => {
-  // A linha como a revisão monta: o nome sugerido pela leitura, o texto da nota e, por último, o genérico.
+  // A linha como a revisão monta: o nome sugerido pela leitura e o texto da nota; o genérico fica à parte.
   const photoLine = (id: string, raw: string, suggested: string, category: string, generic: string | null): ReceiptLine => ({
     id,
     productId: null,
     name: suggested,
-    names: receiptLineNames({ productName: suggested, suggestedName: suggested, rawDescription: raw, genericName: generic }),
+    names: receiptLineNames({ productName: suggested, suggestedName: suggested, rawDescription: raw }),
+    generic,
     category,
   });
   const match = (items: OpenListItem[], lines: ReceiptLine[]) => matchListItems(items, lines, new LinkIndex(), sameListedName);
@@ -477,13 +478,106 @@ describe('matchListItems com o item genérico da leitura por foto', () => {
     ]);
   });
 
+  it('o texto que o app não sabe ler, mas que lido como o item diz outra coisa, decide: o genérico que tira o tipo não passa', () => {
+    // A IA deixou o "doce" de fora: a nota diz BAT DOCE, não é a batata da lista, nem como sugestão.
+    const batataDoce = (generic: string | null) => photoLine('b', 'BAT DOCE KG', 'Bat Doce Kg', 'hortifruti', generic);
+    for (const generic of [null, 'batata']) {
+      expect(match([listItem('l1', 'Batata', 'hortifruti', true)], [batataDoce(generic)])).toEqual([]);
+      expect(match([listItem('l1', 'Batata', 'hortifruti')], [batataDoce(generic)])).toEqual([]);
+    }
+    // "SAB LIQ" é o sabão líquido: nem o genérico "sabão em pó" nem "sabão para roupas" fazem dele o em pó.
+    const omo = (generic: string | null) => photoLine('o', 'SAB LIQ OMO 3L', 'Sab Liq Omo 3l', 'limpeza', generic);
+    for (const generic of [null, 'sabão em pó', 'sabão para roupas']) {
+      expect(match([listItem('l1', 'Sabão em pó', 'limpeza', true)], [omo(generic)])).toEqual([]);
+      expect(match([listItem('l1', 'Sabão em pó', 'limpeza')], [omo(generic)])).toEqual([]);
+    }
+  });
+
+  it('o genérico não acrescenta a versão que a nota calou: calada, a nota é a comum', () => {
+    const parmalat = (generic: string | null) => photoLine('p', 'LEITE UHT PARMALAT 1L', 'Leite UHT Parmalat 1l', 'laticinios', generic);
+    for (const wanted of ['Leite sem lactose', 'Leite desnatado']) {
+      const item = listItem('l1', wanted, 'laticinios', true);
+      const withoutGeneric = match([item], [parmalat(null)]);
+      // Com o genérico que diz a versão, nunca marcado, e a mesma resposta de sem ele.
+      expect(match([item], [parmalat(wanted.toLowerCase())])).toEqual(withoutGeneric);
+      expect(withoutGeneric.every((m) => !m.checked)).toBe(true);
+    }
+    // "Coca zero" e uma nota que não diz zero: outra coisa, também com o genérico "coca zero".
+    const coca = photoLine('c', 'REFRIG COCA COLA 2L', 'Refrig Coca Cola 2l', 'bebidas', 'coca zero');
+    expect(match([listItem('l1', 'Coca zero', 'bebidas', true)], [coca])).toEqual([]);
+    // Quando o texto diz a versão, ela vale como sempre.
+    const desnatado = photoLine('d', 'LTE UHT ITALAC DESN 1L', 'Lte Uht Italac Desn 1l', 'laticinios', 'leite desnatado');
+    expect(match([listItem('l1', 'Leite desnatado', 'laticinios', true)], [desnatado])).toEqual([
+      { listItemId: 'l1', receiptItemId: 'd', reason: 'item', checked: true },
+    ]);
+    // Quando nenhum nome diz o item, o genérico diz o item com a versão: é o que a IA leu da linha inteira.
+    const semNome = photoLine('s', 'ITALAC ZL 1L', 'Italac Zl 1l', 'laticinios', 'leite sem lactose');
+    expect(match([listItem('l1', 'Leite sem lactose', 'laticinios', true)], [semNome])).toEqual([
+      { listItemId: 'l1', receiptItemId: 's', reason: 'item', checked: true },
+    ]);
+  });
+
+  it('o genérico não tira o corte que a nota diz: "BOMBOM DA ALCATRA" com o genérico "carne" continua só sugestão', () => {
+    const alcatra = photoLine('a', 'BOMBOM DA ALCATRA', 'Bombom da Alcatra', 'carnes', 'carne');
+    expect(match([listItem('l1', 'Carne', 'carnes', true)], [alcatra])).toEqual([
+      { listItemId: 'l1', receiptItemId: 'a', reason: 'parecido', checked: false },
+    ]);
+  });
+
   it('sem o genérico, os nomes e o casamento são os de antes', () => {
     const before: ReceiptLine = { id: 'x', productId: null, name: 'Caf Torr', names: ['Caf Torr', 'Caf Torr', 'CAF TORR 500G'], category: 'cafe_cha' };
-    for (const genericName of [undefined, null, '', '  ']) {
-      const now = photoLine('x', 'CAF TORR 500G', 'Caf Torr', 'cafe_cha', genericName ?? null);
-      expect(now.names).toEqual(before.names);
-    }
     const items = [listItem('l1', 'Café', 'cafe_cha', true), listItem('l2', 'Café em pó', 'cafe_cha')];
-    expect(match(items, [photoLine('x', 'CAF TORR 500G', 'Caf Torr', 'cafe_cha', null)])).toEqual(match(items, [before]));
+    for (const generic of [undefined, null, '', '  ']) {
+      const now = { ...photoLine('x', 'CAF TORR 500G', 'Caf Torr', 'cafe_cha', null), generic };
+      expect(now.names).toEqual(before.names);
+      expect(match(items, [now])).toEqual(match(items, [before]));
+    }
+  });
+});
+
+describe('"Gilete" é a lâmina; com outro produto de barbear no nome, é a marca', () => {
+  const line = (id: string, raw: string, generic: string | null = null): ReceiptLine => ({
+    id,
+    productId: null,
+    name: raw,
+    names: [raw],
+    generic,
+    category: 'higiene',
+  });
+  const match = (items: OpenListItem[], lines: ReceiptLine[]) => matchListItems(items, lines, new LinkIndex(), sameListedName);
+
+  it('a espuma, o gel, o pós-barba e o desodorante da marca não são a lâmina, nas duas ordens', () => {
+    expect(keyOf('Gilete')).toBe('barbear');
+    expect(keyOf('GILETE MACH3 CARGA')).toBe('barbear');
+    for (const name of ['ESP BARB GILETE 200ML', 'ESPUMA DE BARBEAR GILETE', 'CREME DE BARBEAR GILETE', 'GEL BARBEAR GILETE', 'GILETE ESPUMA BARB', 'Espuma de barbear Gilete']) {
+      expect(keyOf(name)).toBe('espuma_barbear');
+    }
+    expect(keyOf('POS BARBA GILETE')).toBe('pos_barba');
+    expect(keyOf('DESOD GILETE AERO')).toBe('desodorante');
+    for (const name of ['ESPUMA GILETE', 'GILETE GEL', 'Gel gilete', 'GILETE AERO 150ML']) expect(keyOf(name)).toBeNull();
+  });
+
+  it('na nota: "Gilete" da lista não sai com a espuma, nem quando o genérico é "espuma de barbear"', () => {
+    const gilete = listItem('l1', 'Gilete', 'higiene', true);
+    for (const raw of ['ESP BARB GILETE 200ML', 'GEL BARBEAR GILETE', 'ESPUMA GILETE', 'GILETE ESPUMA BARB', 'POS BARBA GILETE', 'CREME DE BARBEAR GILETE']) {
+      expect(match([gilete], [line('e', raw)]).filter((m) => m.checked)).toEqual([]);
+      expect(match([gilete], [line('e', raw, 'espuma de barbear')])).toEqual([]);
+    }
+    expect(match([gilete], [line('g', 'GILETE PRESTOBARBA 2UN')])).toEqual([{ listItemId: 'l1', receiptItemId: 'g', reason: 'item', checked: true }]);
+    // A marca com dois L não diz o item; o genérico diz: a lâmina, como antes.
+    expect(match([gilete], [line('g', 'GILLETTE MACH3 APARELHO', 'aparelho de barbear')])).toEqual([
+      { listItemId: 'l1', receiptItemId: 'g', reason: 'item', checked: true },
+    ]);
+  });
+
+  it('na lista: "Espuma de barbear Gilete" e "Gel gilete" não saem com o aparelho', () => {
+    for (const name of ['Espuma de barbear Gilete', 'Gel gilete']) {
+      const item = listItem('l1', name, 'higiene', true);
+      expect(match([item], [line('a', 'APARELHO DE BARBEAR BIC')]).filter((m) => m.checked)).toEqual([]);
+      expect(match([item], [line('a', 'BARBEADOR BIC CONFORT')]).filter((m) => m.checked)).toEqual([]);
+    }
+    expect(match([listItem('l1', 'Espuma de barbear', 'higiene', true)], [line('e', 'ESP BARB GILETE 200ML')])).toEqual([
+      { listItemId: 'l1', receiptItemId: 'e', reason: 'item', checked: true },
+    ]);
   });
 });

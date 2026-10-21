@@ -1,4 +1,6 @@
+import { betaZodOutputFormat } from '@anthropic-ai/sdk/helpers/beta/zod';
 import { assertEquals } from '@std/assert';
+import { z } from 'zod';
 
 import { extractStructured, type VisionConfig } from '../_shared/vision.ts';
 import {
@@ -403,7 +405,14 @@ Deno.test('item genérico pela OpenRouter: vai no schema pedido, como campo obri
   });
   const itemSchema = sent!.response_format.json_schema.schema.properties.items.items;
   assertEquals(itemSchema.required.includes('generic_name'), true);
-  assertEquals((itemSchema.properties.generic_name as { type: string[] }).type, ['string', 'null']);
+  assertEquals(itemSchema.properties.generic_name, { type: ['string', 'null'] });
+  // Saída estrita (strict: true) recusa "default" ("'default' is not permitted"): o schema enviado não tem nenhum.
+  assertEquals(JSON.stringify(sent!.response_format.json_schema.schema).includes('"default"'), false);
+  assertEquals(JSON.stringify(z.toJSONSchema(ExtractedReceiptSchema)).includes('"default"'), false);
+  // Pela Anthropic, o campo vai sem descrição inventada (um "{default: null}" puxaria o modelo para o null).
+  const anthropicItem = (betaZodOutputFormat(ExtractedReceiptSchema).schema as unknown as { properties: { items: { items: { properties: Record<string, unknown> } } } })
+    .properties.items.items;
+  assertEquals(anthropicItem.properties.generic_name, { type: ['string', 'null'] });
   assertEquals(cleanReceipt(extracted, new Set(), new Map()).items.map((i) => i.generic_name), ['leite', null]);
 });
 

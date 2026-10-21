@@ -9,7 +9,7 @@
 // pelo carrinho e pela nota, em domain/cartPantry).
 
 import { categoryGroup, isHouseArt, ITEM_ART_EXCEPTIONS, ITEM_ART_RULES } from './itemArt';
-import { compileTerms, firstMention, firstProductTerm, termRegex, termText } from './itemTerms';
+import { compileTerms, firstMention, firstProductTerm, productTerms, termRegex, termText } from './itemTerms';
 import { LOOSE_UNITS, OTHER_THING, PACKAGING, singular } from './nameWords';
 import { packageSize, samePackageSize } from './packageSize';
 
@@ -56,6 +56,9 @@ const SPELLED_OUT: readonly (readonly [string, string])[] = [
   ['agua sanit', 'agua sanitaria'],
   ['esc dental', 'escova dental'],
   ['esc dent', 'escova dental'],
+  ['esp barb', 'espuma de barbear'],
+  ['espuma barb', 'espuma de barbear'],
+  ['gel barb', 'gel de barbear'],
   ['liq', 'liquido'],
   ['det', 'detergente'],
   ['deterg', 'detergente'],
@@ -252,8 +255,12 @@ const LAST: readonly Def[] = [
   ['torrada', ['torrada']],
   ['guardanapo', ['guardanapo'], 'casa'],
   ['luva', ['luva'], 'casa'],
+  // Antes do aparelho: a espuma e o pós-barba não são a lâmina ("ESPUMA DE BARBEAR GILETE").
+  ['espuma_barbear', ['espuma de barbear', 'gel de barbear', 'creme de barbear'], 'casa'],
+  ['pos_barba', ['pos barba', 'pos barbear'], 'casa'],
   // "Gilete" (assim, com um L) é o nome comum da lâmina, o que a lista diz; o "GILLETTE" da nota é a marca, que
-  // também faz espuma e desodorante, e fica para o item genérico da leitura por foto.
+  // também faz espuma e desodorante, e fica para o item genérico da leitura por foto. Com outro produto de barbear
+  // no nome ("ESPUMA GILETE", "Gel gilete"), "gilete" é a marca (GILETE_IS_BRAND, em identify).
   ['barbear', ['aparelho de barbear', 'barbeador', 'lamina de barbear', 'gilete'], 'casa'],
   ['limpador', ['limpador', 'multiuso'], 'casa'],
   ['desinfetante', ['desinfetante'], 'casa'],
@@ -580,10 +587,24 @@ function fitsGroup(key: string, category: string | null | undefined): boolean {
   return group === 'pet' ? category === 'pet' : of === group;
 }
 
+// Com uma destas palavras no nome, "gilete" é a marca de outro produto (espuma, gel, pós-barba, desodorante), não a
+// lâmina: vale o próximo item do nome, se houver.
+const GILETE_IS_BRAND = new Set([
+  'espuma', 'esp', 'gel', 'creme', 'cr', 'pos', 'locao', 'balm', 'desodorante', 'antitranspirante', 'aero', 'aerosol',
+  'spray', 'roll',
+]);
+
+/** O termo que diz o item do nome, sem o "gilete" que ali é marca. */
+function itemTerm(text: string) {
+  const first = firstProductTerm(COMPILED, text);
+  if (first?.term !== 'gilete' || !text.split(' ').some((word) => GILETE_IS_BRAND.has(word))) return first;
+  return productTerms(COMPILED, text).find((hit) => hit.term !== 'gilete') ?? null;
+}
+
 function identify(name: string, category: string | null | undefined): ItemIdentity | null {
   const text = spelledOut(name);
   if (!text) return null;
-  const first = firstProductTerm(COMPILED, text);
+  const first = itemTerm(text);
   if (!first) return null;
   let key: string = first.key;
   let family = FAMILY_OF.get(key) ?? null;
@@ -698,10 +719,18 @@ function identityFit(wanted: ItemIdentity, found: ItemIdentity, weighed: boolean
  * desnatado): na dúvida, não junta. A versão que a lista pede ("Coca zero",
  * "Leite sem lactose") precisa estar em algum dos nomes: com todos calados,
  * é a comum, outra coisa.
+ *
+ * `generic` é o item que a IA disse da linha na leitura por foto ("aparelho
+ * de barbear" para "GILLETTE APARELHO"). Ele só diz o item quando nenhum dos
+ * nomes diz e o texto da nota, lido como o item da lista, não diz outra coisa
+ * ("BAT DOCE KG" com o genérico "batata" continua não sendo a batata). Quando
+ * algum nome já diz o item, o genérico só pode dizer que é outra coisa: não
+ * acrescenta a versão que a nota calou ("LEITE UHT PARMALAT 1L" com
+ * "leite desnatado" continua calado) nem tira o tipo ou o corte que ela diz.
  */
 export function sameItemFit(
   wanted: { name: string; category?: string | null },
-  found: { names: readonly string[]; category?: string | null },
+  found: { names: readonly string[]; generic?: string | null; category?: string | null },
 ): ItemFit | null {
   const want = itemIdentity(wanted.name, wanted.category);
   if (!want) return null;
@@ -715,6 +744,16 @@ export function sameItemFit(
     if (fit === 'outro') return 'outro';
     if (fit === 'mesmo' || best == null) best = fit;
     if (!silentOnStrict(want, have)) stated = true;
+  }
+  const generic = found.generic?.trim() ? itemIdentity(found.generic, found.category) : null;
+  if (generic) {
+    const fit = identityFit(want, generic, weighed);
+    if (fit === 'outro') return 'outro';
+    if (best == null) {
+      if (readsAsOther(wanted, found.names)) return 'outro';
+      best = fit;
+      if (!silentOnStrict(want, generic)) stated = true;
+    }
   }
   return best != null && !stated ? 'outro' : best;
 }

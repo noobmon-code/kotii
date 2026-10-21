@@ -297,8 +297,8 @@ export default function ReceiptScreen() {
         productName: resolved.productName,
         suggestedName: item.suggested_name,
         rawDescription: item.raw_description,
-        genericName: item.generic_name,
       }),
+      generic: item.generic_name,
       category: resolved.category,
     };
   });
