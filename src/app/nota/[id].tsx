@@ -671,7 +671,7 @@ export default function ReceiptScreen() {
       notify(block.title, block.message);
       return;
     }
-    const removals = listRemovals(listMatches, listItems);
+    const removals = listRemovals(listMatches, listItems, receiptLines);
     const forgotten = forgottenLinks(suggestedMatches, listChoices, listItems);
     let payload = buildConfirmPayload(items, overrides, catalog, purchasedOn).map((entry) => ({
       ...entry,

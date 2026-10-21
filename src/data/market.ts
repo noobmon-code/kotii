@@ -527,18 +527,15 @@ async function openPharmacyList(name = 'Farmácia'): Promise<{ id: string; name:
 
 type ListedItem = { id: string; name: string; added: boolean };
 
-/** Põe o item na lista, a não ser que já esteja pendente nela (`added: false`): repetir é seguro. */
+/**
+ * Põe o item na lista, a não ser que já esteja pendente nela (`added: false`): repetir é seguro. Pendente com este
+ * nome ou com outro do mesmo item ("Leite desnatado" do Nuke com "Leite IL Desnatado" na lista: domain/genericItem).
+ */
 async function addItemOnce(queryClient: QueryClient, list: { id: string; name: string }, item: NewListItem): Promise<ListedItem> {
   const pending = unwrap(
-    await supabase
-      .from('shopping_list_items')
-      .select('id')
-      .eq('list_id', list.id)
-      .is('checked_at', null)
-      .ilike('name', item.name.replace(/[\\%_]/g, '\\$&'))
-      .limit(1),
-  ) as { id: string }[];
-  if (pending.length) return { ...list, added: false };
+    await supabase.from('shopping_list_items').select('name, category').eq('list_id', list.id).is('checked_at', null),
+  ) as { name: string; category?: string | null }[];
+  if (pendingSameItem(item, pending)) return { ...list, added: false };
   // O produto do item (o da despensa, na lista de mercado) pode ter sido juntado com outro em outro aparelho (withFreshProducts).
   await withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
     unwrap(
@@ -674,7 +671,7 @@ export interface PharmacyItem extends NewListItem {
  * põem duas vezes; `added: false` diz em que lista ele já estava. Sem a função
  * (banco de antes da migração, ou o cache do PostgREST de antes dela), o
  * caminho de antes: open_pharmacy_list e addItemOnce, que só confere a lista
- * aberta e o nome exato.
+ * aberta e o nome (sem o de quem toma).
  */
 async function addToPharmacyList(queryClient: QueryClient, item: PharmacyItem): Promise<ListedItem> {
   const added = await supabase.rpc('add_to_pharmacy_list', { p_item: item.name, p_alt_item: item.altName ?? null }).single();

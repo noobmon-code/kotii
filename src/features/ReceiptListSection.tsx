@@ -23,7 +23,8 @@ type Picking = { step: 'list' } | { step: 'receipt'; listItemId: string };
 
 /** De onde veio a ligação, quando ajuda a conferir. Marcado pelo nome ou pela escolha da pessoa, não precisa dizer. */
 function hintFor(match: ListMatch, inCart: boolean): string | null {
-  if (match.reason === 'vinculo') return 'Ligado numa nota anterior';
+  // Desmarcado, é a ligação com outra marca de um item com "Marca preferida" (domain/listLinks).
+  if (match.reason === 'vinculo') return match.checked ? 'Ligado numa nota anterior' : 'Ligado numa nota anterior, mas é outra marca: confira';
   if (match.reason === 'item') return match.checked && inCart ? 'Estava no carrinho e é o mesmo item' : 'O mesmo item, de outra marca ou com outro nome';
   if (match.checked) return null;
   if (match.reason === 'nome') return 'Nome parecido';

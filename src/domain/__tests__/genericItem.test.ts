@@ -1,7 +1,9 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { brandChoice, genericItem, pendingSameItem, sameListItem, switchBrand } from '../genericItem';
-import { LinkIndex, matchListItems, type OpenListItem, type ReceiptLine } from '../listLinks';
+import { brandChoice, genericItem, pendingSameItem, productSuggestions, sameListItem, switchBrand } from '../genericItem';
+import { LinkIndex, listRemovals, matchListItems, type OpenListItem, type ReceiptLine } from '../listLinks';
+import { sameItemFit } from '../sameItem';
+import { guessCategory } from '../search';
 
 const generic = (name: string, category?: string) => genericItem(name, category).name;
 const key = (name: string, category?: string) => genericItem(name, category).key;
@@ -55,6 +57,48 @@ describe('genericItem: o item da lista sem a marca', () => {
     expect(generic('Sardinha Gomes da Costa com Óleo', 'peixes')).toBe('Sardinha Gomes da Costa com Óleo');
   });
 
+  it('nunca tira o que decide o que se pode comprar: dieta, idade, o leite que é em pó ou fórmula', () => {
+    const kept: [string, string][] = [
+      ['Pão de Forma Seven Boys Sem Glúten', 'padaria'],
+      ['Pão Sem Glúten Schär', 'padaria'],
+      ['Pão de Forma Vegano Wickbold', 'padaria'],
+      ['Biscoito Sem Glúten Jasmine', 'doces'],
+      ['Biscoito Integral Sem Lactose Vitao', 'doces'],
+      ['Shampoo Infantil Johnson', 'higiene'],
+      ['Leite Infantil Nan Comfor 800g', 'laticinios'],
+      ['Leite Ninho Forti+ Integral 380g', 'laticinios'],
+      ['Leite Ninho Fases 1+', 'laticinios'],
+    ];
+    for (const [name, category] of kept) {
+      expect(generic(name, category)).toBe(name);
+      expect(key(name, category).startsWith('n:')).toBe(true);
+    }
+    // E não juntam com o item comum, nem na lista.
+    expect(key('Pão de Forma Seven Boys Sem Glúten', 'padaria')).not.toBe(key('Pão de Forma Pullman', 'padaria'));
+    expect(key('Leite Ninho Forti+ Integral 380g', 'laticinios')).not.toBe(key('Leite Integral Italac 1L', 'laticinios'));
+    expect(sameListItem({ name: 'Leite', category: 'laticinios' }, { name: 'Leite infantil Nan', category: 'laticinios' })).toBe(false);
+    expect(sameListItem({ name: 'Pão de forma', category: 'padaria' }, { name: 'Pão de Forma Seven Boys Sem Glúten', category: 'padaria' })).toBe(false);
+  });
+
+  it('o tipo que muda a compra fica: linguiça, queijo minas, pizza, shampoo e desodorante', () => {
+    expect(generic('Linguiça Calabresa Sadia', 'carnes')).toBe('Linguiça calabresa');
+    expect(generic('Linguiça Toscana Seara', 'carnes')).toBe('Linguiça toscana');
+    expect(key('Linguiça Calabresa Sadia', 'carnes')).not.toBe(key('Linguiça Toscana Seara', 'carnes'));
+    expect(key('Linguiça Calabresa Sadia', 'carnes')).toBe(key('Linguiça Calabresa Perdigão', 'carnes'));
+    expect(generic('Queijo Minas Frescal Tirolez', 'laticinios')).toBe('Queijo minas frescal');
+    expect(key('Queijo Minas Frescal Tirolez', 'laticinios')).not.toBe(key('Queijo Minas Padrão', 'laticinios'));
+    expect(generic('Pizza Calabresa Sadia', 'congelados')).toBe('Pizza calabresa');
+    expect(key('Pizza Calabresa Sadia', 'congelados')).not.toBe(key('Pizza Portuguesa Seara', 'congelados'));
+    expect(generic('Shampoo Anticaspa Clear Men', 'higiene')).toBe('Shampoo anticaspa');
+    expect(key('Shampoo Anticaspa Clear Men', 'higiene')).not.toBe(key('Shampoo Seda', 'higiene'));
+    expect(generic('Desodorante Rexona Aerosol', 'higiene')).toBe('Desodorante aerosol');
+    expect(generic('Desodorante Dove Roll-on', 'higiene')).toBe('Desodorante roll-on');
+    expect(key('Desodorante Rexona Aerosol', 'higiene')).not.toBe(key('Desodorante Dove Roll-on', 'higiene'));
+    // Na nota também: a toscana não cumpre a calabresa da lista.
+    expect(sameItemFit({ name: 'Linguiça calabresa', category: 'carnes' }, { names: ['LINGUICA TOSCANA SEARA'], category: 'carnes' })).toBe('outro');
+    expect(sameItemFit({ name: 'Linguiça', category: 'carnes' }, { names: ['LINGUICA CALABRESA SADIA'], category: 'carnes' })).toBe('mesmo');
+  });
+
   it('onde a marca é o item (ração, fralda, remédio), o nome fica', () => {
     expect(generic('Ração Golden Gatos Castrados 3kg', 'pet')).toBe('Ração Golden Gatos Castrados 3kg');
     expect(generic('Fralda Pampers M', 'bebe')).toBe('Fralda Pampers M');
@@ -104,6 +148,30 @@ describe('sameListItem e pendingSameItem: o item que já está na lista', () => 
     expect(sameListItem({ name: 'Danone Morango', category: 'laticinios' }, { name: 'Morango', category: 'hortifruti' })).toBe(false);
   });
 
+  it('duas marcas pedidas pelo nome são dois pedidos; o item sem marca é o mesmo que qualquer uma', () => {
+    const same = (a: string, b: string) => sameListItem({ name: a, category: guessCategory(a) }, { name: b, category: guessCategory(b) });
+    const pairs: [string, string][] = [
+      ['Shampoo Seda', 'Shampoo Clear Men'],
+      ['Cerveja Heineken', 'Cerveja Brahma'],
+      ['Biscoito Oreo', 'Biscoito Passatempo'],
+      ['Iogurte Danone', 'Iogurte Nestlé'],
+      ['Café Pilão', 'Café Melitta'],
+      ['Desodorante Rexona', 'Desodorante Dove'],
+      ['Linguiça Toscana', 'Linguiça calabresa'],
+    ];
+    for (const [a, b] of pairs) {
+      expect(same(a, b)).toBe(false);
+      expect(same(b, a)).toBe(false);
+    }
+    expect(same('Cerveja', 'Cerveja Heineken')).toBe(true);
+    expect(same('Cerveja Heineken', 'Cerveja')).toBe(true);
+    expect(same('Leite desnatado', 'Leite IL Desnatado')).toBe(true);
+    // O mesmo nome continua sendo o mesmo pedido.
+    expect(same('Shampoo Seda', 'shampoo seda')).toBe(true);
+    // O tamanho e a embalagem não são marca.
+    expect(same('Leite desnatado caixa 1L', 'Leite IL Desnatado')).toBe(true);
+  });
+
   it('só conta o que ainda está para comprar', () => {
     const items = [
       { id: 'a', name: 'Leite IL Desnatado', category: 'laticinios', checked_at: '2026-10-20T10:00:00Z' },
@@ -115,7 +183,55 @@ describe('sameListItem e pendingSameItem: o item que já está na lista', () => 
   });
 });
 
+describe('productSuggestions: a busca, uma vez por item', () => {
+  const coffee = [
+    { id: 'a-melitta', name: 'Café Melitta 500g', category: 'cafe_cha' },
+    { id: 'b-pilao', name: 'Café Pilão 500g', category: 'cafe_cha' },
+    { id: 'c-leite', name: 'Leite IL Desnatado', category: 'laticinios' },
+  ];
+
+  it('de cada item vai o produto usado por último, mesmo que venha depois na lista', () => {
+    const used = new Map([
+      ['a-melitta', Date.parse('2025-01-10T10:00:00Z')],
+      ['b-pilao', Date.parse('2026-10-15T10:00:00Z')],
+    ]);
+    expect(productSuggestions(coffee, 'cafe', used).map((s) => [s.product.id, s.name])).toEqual([['b-pilao', 'Café']]);
+    // Sem data de uso, vale a ordem.
+    expect(productSuggestions(coffee, 'cafe', new Map()).map((s) => s.product.id)).toEqual(['a-melitta']);
+    // Usado só o primeiro: fica ele.
+    expect(productSuggestions(coffee, 'cafe', new Map([['a-melitta', 1]])).map((s) => s.product.id)).toEqual(['a-melitta']);
+  });
+
+  it('só o que tem o texto, até o limite de itens', () => {
+    expect(productSuggestions(coffee, 'leite', new Map()).map((s) => s.name)).toEqual(['Leite desnatado']);
+    expect(productSuggestions(coffee, 'e', new Map(), 1)).toHaveLength(1);
+  });
+});
+
 describe('Marca preferida', () => {
+  it('uma ligação com outra marca (de antes da escolha) só sugere, e marcar outra marca não ensina ligação', () => {
+    const item: OpenListItem = { id: 'l1', name: 'Leite IL Desnatado', category: 'laticinios', product_id: 'il', checked_at: null, brand: true };
+    const receipt: ReceiptLine[] = [
+      { id: 'r1', productId: 'italac', name: 'Leite Italac Desnatado', names: ['Leite Italac Desnatado', 'LEITE ITALAC DESN'], category: 'laticinios' },
+    ];
+    const links = new LinkIndex([{ name_key: 'leite il desnatado', product_id: 'italac' }]);
+    expect(matchListItems([item], receipt, links)).toEqual([{ listItemId: 'l1', receiptItemId: 'r1', reason: 'vinculo', checked: false }]);
+    // Sem a escolha, a ligação vale como sempre.
+    expect(matchListItems([{ ...item, brand: false }], receipt, links)).toEqual([{ listItemId: 'l1', receiptItemId: 'r1', reason: 'vinculo', checked: true }]);
+    // O mesmo produto continua cumprindo.
+    expect(matchListItems([item], [{ ...receipt[0], productId: 'il' }], links)).toEqual([{ listItemId: 'l1', receiptItemId: 'r1', reason: 'produto', checked: true }]);
+    // A pessoa marcou o Italac na revisão: o item sai, mas sem ensinar que "Leite IL Desnatado" é o Italac.
+    const chosen = [{ listItemId: 'l1', receiptItemId: 'r1', reason: 'escolha' as const, checked: true }];
+    expect(listRemovals(chosen, [item], receipt).get('r1')).toEqual([{ id: 'l1', name: 'Leite IL Desnatado', name_key: '' }]);
+    expect(listRemovals(chosen, [{ ...item, brand: false }], receipt).get('r1')).toEqual([
+      { id: 'l1', name: 'Leite IL Desnatado', name_key: 'leite il desnatado' },
+    ]);
+    // Com o próprio produto, ensina.
+    expect(listRemovals(chosen, [item], [{ ...receipt[0], productId: 'il' }]).get('r1')).toEqual([
+      { id: 'l1', name: 'Leite IL Desnatado', name_key: 'leite il desnatado' },
+    ]);
+  });
+
   const milk = { name: 'Leite IL Desnatado', category: 'laticinios' };
 
   it('o produto com marca deixa escolher; o produto sem marca, não', () => {

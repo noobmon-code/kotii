@@ -89,6 +89,19 @@ describe('recentPurchases', () => {
     ]);
   });
 
+  it('o pão sem glúten não se junta ao comum, nem some quando o comum está na lista', () => {
+    const records = [
+      rec({ name: 'Pão de Forma Seven Boys Sem Glúten', category: 'padaria', productId: 'p-sg', source: 'receipt', at: '2026-09-20T10:00:00-03:00' }),
+      rec({ name: 'Pão de Forma Pullman', category: 'padaria', productId: 'p-pullman', source: 'receipt', at: '2026-09-21T10:00:00-03:00' }),
+    ];
+    expect(recentPurchases(records, { now: NOW }).map((i) => [i.name, i.productId])).toEqual([
+      ['Pão de forma', 'p-pullman'],
+      ['Pão de Forma Seven Boys Sem Glúten', 'p-sg'],
+    ]);
+    const listed = listExclusion([{ name: 'Pão de forma', category: 'padaria', product_id: null }]);
+    expect(recentPurchases(records, { now: NOW, exclude: listed }).map((i) => i.name)).toEqual(['Pão de Forma Seven Boys Sem Glúten']);
+  });
+
   it('o que já está na lista com ou sem a marca não é sugerido de novo', () => {
     const records = [
       rec({ name: 'Leite IL Desnatado', category: 'laticinios', productId: 'p-il', source: 'receipt', at: '2026-09-20T10:00:00-03:00' }),

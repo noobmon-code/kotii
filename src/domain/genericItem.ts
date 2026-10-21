@@ -10,8 +10,8 @@
 // já estavam nas listas com o nome de um produto ("Leite IL Desnatado", de
 // antes da lista sem marca) não foram escolha de marca e continuam casando
 // com qualquer marca do mesmo item. Ligada, o nome vira o do produto e a nota
-// só cumpre o item por esse produto, a ligação ou o mesmo nome
-// (domain/listLinks); desligada, o nome volta sem a marca.
+// só cumpre o item por esse produto ou pelo mesmo nome (domain/listLinks);
+// desligada, o nome volta sem a marca.
 
 import { COMMON_ITEMS } from './commonItems';
 import { listNameKey } from './listLinks';
@@ -28,6 +28,16 @@ const GAP_WORDS = new Set(['de', 'da', 'do', 'das', 'dos', 'em', 'com', 'e']);
 const OF_WORDS = new Set(['de', 'da', 'do']);
 // Tipos que são nome próprio: o sabor do refrigerante e a máquina da cápsula ficam com maiúscula.
 const PROPER_WORDS = new Set(['coca', 'cola', 'pepsi', 'fanta', 'schweppes', 'kuat', 'sukita', 'sprite', 'dolce', 'gusto', 'nespresso']);
+// O que decide o que se pode comprar, em qualquer item: a restrição da dieta ("Pão de forma sem glúten" para quem é
+// celíaco), a idade ("Shampoo infantil") e as marcas que são o tipo do leite (o Ninho é o em pó; Nan, Aptamil e
+// Nestogeno são fórmula de bebê). Quando o item que o app conhece não guarda a palavra como tipo dele, ela sairia
+// com a marca: aí o nome fica como está, e a chave é a do nome (não junta com o item comum).
+const NEVER_DROP = new Set([
+  'gluten', 'lactose', 'lac', 'lact', 'vegano', 'vegana', 'vegan', 'vegetariano', 'vegetariana', 'vegetal', 'diet', 'light',
+  'lite', 'zero', 'acucar', 'organico', 'organica', 'integral', 'desnatado', 'semidesnatado', 'proteina', 'proteico',
+  'protein', 'infantil', 'kids', 'kid', 'baby', 'bebe', 'junior', 'ninho', 'molico', 'nan', 'aptamil', 'nestogeno',
+  'milnutri', 'enfamil',
+]);
 
 /** O item da lista sem a marca. */
 export interface GenericItem {
@@ -38,9 +48,14 @@ export interface GenericItem {
    * junta as compras nas faixas e diz que o item já está na lista. Sem saber que item é, a chave do nome.
    */
   key: string;
+  /**
+   * O nome diz mais que o item e o tipo (a marca, a linha: "Leite IL Desnatado", "Shampoo Seda"); o tamanho e a
+   * embalagem não contam. Dois nomes assim, cada um com o seu, são dois pedidos (sameListItem).
+   */
+  branded: boolean;
 }
 
-const byName = (name: string): GenericItem => ({ name, key: `n:${listNameKey(name)}` });
+const byName = (name: string): GenericItem => ({ name, key: `n:${listNameKey(name)}`, branded: false });
 
 /** A chave do item e dos tipos que ele diz, na ordem dos tipos. */
 function identityKey(identity: ItemIdentity, extra: string | null): string {
@@ -102,8 +117,10 @@ const GENERIC_LIMIT = 4000;
  * açúcar Coca-Cola" (para o refrigerante, Coca é o sabor, não a marca). Nunca
  * inventa: o nome fica como está quando o app não sabe que item é, quando o
  * nome não começa por ele ("Danone Morango" não é morango), quando sobraria
- * uma palavra que faz outra coisa ("Leite Ninho em pó") ou que é outro item
- * ("Chocolate ao leite"), e onde a marca é o item (ração, fralda, remédio).
+ * uma palavra que faz outra coisa ("Leite Ninho em pó"), que é outro item
+ * ("Chocolate ao leite") ou que decide o que se pode comprar ("Pão de forma
+ * sem glúten", "Shampoo infantil"), e onde a marca é o item (ração, fralda,
+ * remédio).
  */
 export function genericItem(name: string, category?: string | null): GenericItem {
   // As faixas leem o histórico inteiro a cada mudança na lista: o resultado fica guardado.
@@ -145,17 +162,20 @@ function readGeneric(name: string, category: string | null | undefined): Generic
     else if (OF_WORDS.has(words[at - 1]) || words[at - 1] === 'em' || words[at - 1] === 'com') keep.add(at - 1);
   });
   // O que sai não pode mudar o item: uma palavra que faz outra coisa ("Leite Ninho em pó") ou que é outro item
-  // ("Chocolate ao leite", "Sardinha com óleo"). Na dúvida, o nome fica.
+  // ("Chocolate ao leite", "Sardinha com óleo"), ou que decide o que se pode comprar ("sem glúten", "infantil").
+  // Na dúvida, o nome fica.
+  let branded = false;
   for (const [at, word] of words.entries()) {
     if (keep.has(at) || /\d/.test(word) || GAP_WORDS.has(word)) continue;
     const otherThing = (OTHER_THING.has(word) || OTHER_THING.has(singular(word))) && !isItemKindWord(word, identity);
-    if (otherThing || readItem(word, category)) return byName(name);
+    if (otherThing || NEVER_DROP.has(word) || NEVER_DROP.has(singular(word)) || readItem(word, category)) return byName(name);
+    if (!PACKAGING.has(word) && !LOOSE_UNITS.has(word)) branded = true;
   }
   const key = identityKey(identity, extra);
   // O nome escrito do jeito do produto (acento, hífen), palavra por palavra. Uma abreviação por extenso
   // ("REFRIG" é refrigerante) não está escrita no nome: aí o nome fica, mas a chave já diz o item.
   const tokens = nameTokens(name);
-  if (tokens.length !== words.length || tokens.some((token, at) => token.word !== words[at])) return { name, key };
+  if (tokens.length !== words.length || tokens.some((token, at) => token.word !== words[at])) return { name, key, branded };
   const runs: string[] = [];
   let run = '';
   for (const [at, token] of tokens.entries()) {
@@ -173,15 +193,19 @@ function readGeneric(name: string, category: string | null | undefined): Generic
   const generic = runs.join(' ');
   const shown = generic.charAt(0).toUpperCase() + generic.slice(1);
   // Sem marca para tirar, o nome fica como a pessoa escreveu.
-  return { name: listNameKey(shown) === listNameKey(name) ? name : shown, key };
+  return { name: listNameKey(shown) === listNameKey(name) ? name : shown, key, branded };
 }
 
-/** O mesmo item na lista: o mesmo nome, ou o mesmo item e tipo, de qualquer marca, sem tamanhos diferentes. */
+/**
+ * O mesmo item na lista: o mesmo nome, ou o mesmo item e tipo, sem tamanhos diferentes, com um dos dois sem marca
+ * ("Leite desnatado" e "Leite IL Desnatado"). Duas marcas, cada uma pedida pelo nome ("Shampoo Seda" e "Shampoo
+ * Clear Men", "Biscoito Oreo" e "Biscoito Passatempo"), são dois pedidos.
+ */
 export function sameListItem(a: { name: string; category?: string | null }, b: { name: string; category?: string | null }): boolean {
   const [keyA, keyB] = [listNameKey(a.name), listNameKey(b.name)];
   if (keyA && keyA === keyB) return true;
   const [itemA, itemB] = [genericItem(a.name, a.category), genericItem(b.name, b.category)];
-  if (!itemA.key.startsWith('i:') || itemA.key !== itemB.key) return false;
+  if (!itemA.key.startsWith('i:') || itemA.key !== itemB.key || (itemA.branded && itemB.branded)) return false;
   // "Arroz 5kg" e "Arroz 1kg" não são o mesmo pedido.
   const [sizeA, sizeB] = [readItem(a.name, a.category)?.identity.size, readItem(b.name, b.category)?.identity.size];
   return !(sizeA && sizeB && !samePackageSize(sizeA, sizeB));
@@ -196,6 +220,37 @@ export function pendingSameItem<T extends { name: string; category?: string | nu
   items: readonly T[],
 ): T | undefined {
   return items.find((other) => !other.checked_at && sameListItem(item, other));
+}
+
+/** Um produto da busca, sem a marca no nome. */
+export interface ProductSuggestion<P> {
+  product: P;
+  /** O nome para a lista (genericItem). */
+  name: string;
+}
+
+/**
+ * Os produtos cujo nome tem `query` (já em normalizeSearch), um por item sem a marca: "Café Pilão" e "Café
+ * Melitta" são uma sugestão só, "Café". De cada item vai o produto que a casa usou por último (`lastUsed`, por id:
+ * a data da última compra ou do último preço), e não o primeiro da lista: ele é a dica de preço do item e a marca
+ * que "Marca preferida" oferece. Sem data, vale a ordem dos produtos. Até `limit` itens, na ordem em que aparecem.
+ */
+export function productSuggestions<P extends { id: string; name: string; category?: string | null }>(
+  products: readonly P[],
+  query: string,
+  lastUsed: ReadonlyMap<string, number>,
+  limit = 4,
+): ProductSuggestion<P>[] {
+  const byKey = new Map<string, ProductSuggestion<P>>();
+  const usedAt = (product: P) => lastUsed.get(product.id) ?? -Infinity;
+  for (const product of products) {
+    if (!normalizeSearch(product.name).includes(query)) continue;
+    const generic = genericItem(product.name, product.category);
+    const known = byKey.get(generic.key);
+    if (known ? usedAt(product) <= usedAt(known.product) : byKey.size >= limit) continue;
+    byKey.set(generic.key, { product, name: generic.name });
+  }
+  return [...byKey.values()];
 }
 
 /** "Marca preferida" nos detalhes do item: o nome com a marca e sem ela. */

@@ -520,6 +520,25 @@ const KINDS: readonly KindDimension[] = [
   { keys: ['cebola'], values: { roxa: ['roxa'], branca: ['branca'] }, soft: true },
   { keys: ['pimentao'], values: { verde: ['verde'], vermelho: ['vermelho'], amarelo: ['amarelo'] }, soft: true },
   { keys: ['milho'], values: { verde: ['verde'], pipoca: ['pipoca'], canjica: ['canjica'] } },
+  // No fim: a chave do item genérico (domain/genericItem) guarda o lugar de cada tipo aqui. O tipo que muda a compra
+  // e que a lista sem marca não pode tirar do nome: a calabresa da feijoada não é a toscana do churrasco.
+  { keys: ['linguica'], values: { calabresa: ['calabresa', 'calabreza'], toscana: ['toscana'], paio: ['paio'], cuiabana: ['cuiabana'] } },
+  { keys: ['minas'], values: { frescal: ['frescal'], padrao: ['padrao'], meia_cura: ['meia cura'] } },
+  {
+    keys: ['pizza'],
+    values: {
+      calabresa: ['calabresa', 'calabreza'],
+      portuguesa: ['portuguesa'],
+      margherita: ['margherita', 'marguerita', 'margarita'],
+      pepperoni: ['pepperoni', 'peperoni'],
+      napolitana: ['napolitana'],
+    },
+  },
+  { keys: ['shampoo'], values: { anticaspa: ['anticaspa', 'anti caspa'] } },
+  {
+    keys: ['desodorante'],
+    values: { aerosol: ['aerosol', 'aerossol', 'aero', 'spray'], roll_on: ['roll on', 'rollon'], creme: ['creme'], bastao: ['bastao', 'stick'] },
+  },
 ];
 const COMPILED_KINDS = KINDS.map((dimension) => ({
   ...dimension,
