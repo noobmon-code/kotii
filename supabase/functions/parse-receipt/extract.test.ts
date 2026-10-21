@@ -13,14 +13,18 @@ import {
   imagePathsError,
   insertItems,
   instructions,
+  itemStoreCodes,
+  lineTotalFromPrinted,
   MAX_GENERIC_NAME,
   MAX_PHOTOS,
   MAX_TOTAL_IMAGE_BYTES,
-  missingGenericColumn,
+  missingItemColumn,
   promptCatalog,
   sameStoreName,
+  storeCodeMatches,
   SYSTEM,
   TOO_MANY_PHOTOS,
+  withStoreCodes,
 } from './extract.ts';
 
 // Chave fictícia com o verificador certo, do CNPJ 11.222.333/0001-81 (também válido).
@@ -38,6 +42,7 @@ const base: ExtractedReceipt = {
   items: [
     {
       raw_description: 'ARROZ T.JOAO 5KG',
+      code: '001234',
       normalized_name: 'Arroz Tio João 5kg',
       generic_name: 'arroz',
       category: 'graos',
@@ -49,6 +54,7 @@ const base: ExtractedReceipt = {
     },
     {
       raw_description: 'BANANA PRATA',
+      code: null,
       normalized_name: 'Banana prata',
       generic_name: 'banana prata',
       category: 'hortifruti',
@@ -60,6 +66,7 @@ const base: ExtractedReceipt = {
     },
     {
       raw_description: '   ',
+      code: null,
       normalized_name: '',
       generic_name: null,
       category: 'outros',
@@ -103,6 +110,7 @@ Deno.test('drops invalid identifiers and unknown product ids', () => {
 /** Uma linha da nota como a IA devolve, com o que o teste mudar. */
 const line = (over: Partial<ExtractedReceipt['items'][number]>): ExtractedReceipt['items'][number] => ({
   raw_description: 'LEITE ITALAC 1L',
+  code: null,
   normalized_name: 'Leite Italac 1L',
   generic_name: 'leite',
   category: 'laticinios',
@@ -137,11 +145,113 @@ Deno.test('preço ilegível (null) passa no schema e vira 0, o "sem valor" que a
   const r = cleanReceipt(unread, new Set(), new Map());
   assertEquals(r.items.map((i) => [i.raw_description, i.quantity, i.unit_price, i.total_price]), [
     ['LEITE ITALAC 1L', 1, 0, 0],
-    // O preço unitário lido fica; o total não é calculado (pode ter desconto), a revisão pergunta.
+    // Sem a quantidade, o preço unitário lido fica e o total não é calculado: a revisão pergunta.
     ['PAO', 1, 12.9, 0],
   ]);
   // O preço unitário impresso vai para a leitura do servidor; o leite, sem preço nenhum, não.
   assertEquals(r.readLines, [{ description: 'PAO', unit: 'un', unit_price: 12.9 }]);
+});
+
+Deno.test('valor do item cortado no print da Sefaz: com a quantidade e o preço unitário lidos, é a conta dos dois', () => {
+  // Um print real da Sefaz-PB (21/10/2026) com a coluna "Vl Total" cortada na borda da tela: as 19 linhas têm a
+  // quantidade e o preço unitário inteiros, e a conta dá o total impresso da nota, R$ 349,38.
+  const printed: Array<[string, number, 'un' | 'kg', number]> = [
+    ['BANANA PRATA GNEL KG', 0.642, 'kg', 7.48],
+    ['AZEITE CHI EV O LIVE', 1, 'un', 34.99],
+    ['WRAP RAP 10 INTEG', 1, 'un', 16.49],
+    ['MACA GALA KG', 0.88, 'kg', 14.98],
+    ['MILHO QUERO lt 170G', 1, 'un', 4.79],
+    ['OVOS VM SEL OME C/10', 2, 'un', 5.19],
+    ['MANT GAL C/S PT 200G', 1, 'un', 12.9],
+    ['COTTAGE S/LACTOSE C', 1, 'un', 17.29],
+    ['PTO.PERU SADIA.200G', 1, 'un', 16.9],
+    ['QA AGUA SANITARIA 1L', 2, 'un', 2.37],
+    ['FILE SADIA 1KG', 1, 'un', 28.9],
+    ['PAO FRA SEMI AS CONG', 0.21, 'kg', 17.88],
+    ['PIZZA CONG MARGUERIT', 2, 'un', 14.18],
+    ['CAF 3C GOR C M 250G', 1, 'un', 34.99],
+    ['MAMAO FORM CORTE KG', 1.85, 'kg', 6.99],
+    ['IOG NAT DAN INT 160G', 5, 'un', 4.63],
+    ['PASSATA RUSTI BOTTI', 2, 'un', 20.79],
+    ['CR RIC LIGHT 200G', 1, 'un', 10.9],
+    ['PIZZA MUSS SAD 440G', 2, 'un', 14.18],
+  ];
+  const r = cleanReceipt(
+    {
+      ...base,
+      total: 349.38,
+      items: printed.map(([raw_description, quantity, unit, unit_price]) => line({ raw_description, quantity, unit, unit_price, total_price: null })),
+    },
+    new Set(),
+    new Map(),
+  );
+  assertEquals(r.items.slice(0, 4).map((i) => i.total_price), [4.8, 34.99, 16.49, 13.18]);
+  assertEquals(r.items.map((i) => i.quantity), printed.map(([, quantity]) => quantity));
+  assertEquals(Math.round(r.items.reduce((sum, i) => sum + i.total_price * 100, 0)), 34938);
+  // O valor lido continua valendo (com desconto, ele é menor que a conta), e sem a quantidade ou o preço unitário
+  // não há conta: a revisão pergunta.
+  const mixed = cleanReceipt(
+    {
+      ...base,
+      items: [
+        line({ raw_description: 'PIZZA', quantity: 2, unit_price: 14.18, total_price: 26.36 }),
+        line({ raw_description: 'PAO', quantity: null, unit_price: 12.9, total_price: null }),
+        line({ raw_description: 'CAFE', quantity: 1, unit_price: null, total_price: null }),
+      ],
+    },
+    new Set(),
+    new Map(),
+  );
+  assertEquals(mixed.items.map((i) => [i.raw_description, i.total_price]), [['PIZZA', 26.36], ['PAO', 0], ['CAFE', 0]]);
+  // A conta não muda a quantidade nem o preço unitário lidos, e o preço da leitura do servidor é o lido.
+  assertEquals([r.items[0].quantity, r.items[0].unit_price], [0.642, 7.48]);
+  assertEquals(r.readLines[0], { description: 'BANANA PRATA GNEL KG', unit: 'kg', unit_price: 7.48 });
+});
+
+Deno.test('valor do item calculado: só com o total da nota lido, e só quando a soma não passa dele', () => {
+  const read = (total: number | null, items: ExtractedReceipt['items']) =>
+    cleanReceipt({ ...base, total, items }, new Set(), new Map()).items.map((i) => [i.raw_description, i.total_price]);
+  const pizza = line({ raw_description: 'PIZZA CONG', quantity: 2, unit_price: 14.18, total_price: null });
+  const cafe = line({ raw_description: 'CAF 3C GOR', quantity: 1, unit_price: 34.99, total_price: 34.99 });
+  // A soma bate com o total: a conta fica.
+  assertEquals(read(63.35, [pizza, cafe]), [['PIZZA CONG', 28.36], ['CAF 3C GOR', 34.99]]);
+  // Sem o total da nota não há como conferir: a revisão pergunta, como antes.
+  assertEquals(read(null, [pizza, cafe]), [['PIZZA CONG', 0], ['CAF 3C GOR', 34.99]]);
+  // A pizza tinha R$ 4,00 de desconto, que não teve onde entrar: a soma passa do total e a revisão pergunta.
+  assertEquals(read(59.35, [pizza, cafe]), [['PIZZA CONG', 0], ['CAF 3C GOR', 34.99]]);
+  // A vírgula do peso se perdeu (642 kg): passa do total, e nenhuma conta fica.
+  const banana = line({ raw_description: 'BANANA KG', unit: 'kg', quantity: 642, unit_price: 7.48, total_price: null });
+  assertEquals(read(68.15, [pizza, cafe, banana]), [['PIZZA CONG', 0], ['CAF 3C GOR', 34.99], ['BANANA KG', 0]]);
+  // Com outra linha ainda sem valor, a soma não confere nada: os R$ 10,00 do sabão esconderiam os R$ 4,00 de desconto
+  // perdidos da pizza (a soma 63,35 cabe no total 69,35), então a revisão pergunta as duas.
+  const sabao = line({ raw_description: 'SABAO', quantity: null, unit_price: null, total_price: null });
+  assertEquals(read(69.35, [pizza, cafe, sabao]), [['PIZZA CONG', 0], ['CAF 3C GOR', 34.99], ['SABAO', 0]]);
+  // Até 1 centavo por conta (o caixa que trunca) mais o arredondamento da revisão.
+  assertEquals(read(63.29, [pizza, cafe]), [['PIZZA CONG', 28.36], ['CAF 3C GOR', 34.99]]);
+  assertEquals(read(63.28, [pizza, cafe]), [['PIZZA CONG', 0], ['CAF 3C GOR', 34.99]]);
+});
+
+Deno.test('lineTotalFromPrinted: o centavo da conta não depende do ponto flutuante', () => {
+  assertEquals(lineTotalFromPrinted(0.642, 'kg', 7.48), 4.8);
+  assertEquals(lineTotalFromPrinted(1.85, 'kg', 6.99), 12.93);
+  assertEquals(lineTotalFromPrinted(0.21, 'kg', 17.88), 3.75);
+  // 1,005 × 1 é 1,00499... em ponto flutuante; a conta em inteiros arredonda o meio centavo para cima.
+  assertEquals(lineTotalFromPrinted(1.005, 'l', 1), 1.01);
+  assertEquals(lineTotalFromPrinted(3, 'un', 0.1), 0.3);
+  // Quantidade com 4 casas.
+  assertEquals(lineTotalFromPrinted(1.2345, 'kg', 99.9), 123.33);
+  assertEquals(lineTotalFromPrinted(null, 'un', 5), 0);
+  assertEquals(lineTotalFromPrinted(2, 'un', null), 0);
+  assertEquals(lineTotalFromPrinted(0, 'un', 5), 0);
+  // Em g e ml o preço por unidade tem mais casas do que a leitura guarda: sem conta.
+  assertEquals(lineTotalFromPrinted(200, 'g', 12.9), 0);
+  assertEquals(lineTotalFromPrinted(2000, 'ml', 0.004495), 0);
+  // Número absurdo (vira Infinity na escala) não derruba a leitura.
+  assertEquals(lineTotalFromPrinted(1e305, 'un', 1), 0);
+});
+
+Deno.test('instructions: o total da nota é o valor pago, depois dos descontos', () => {
+  assertEquals(instructions([]).includes('total: o valor pago pela nota, já com os descontos ("Valor a pagar", "TOTAL NOTA")'), true);
 });
 
 Deno.test('preço ilegível não derruba a nota pela OpenRouter', async () => {
@@ -182,6 +292,7 @@ Deno.test('linha negativa (cancelamento, desconto como item) fica de fora, em ve
 Deno.test('instructions: preço ilegível é null, nunca estimado; item cancelado e desconto em linha separada', () => {
   const text = instructions([]);
   assertEquals(text.includes('Preço ou quantidade que não dá para ler: null. Nunca estime'), true);
+  assertEquals(text.includes('Número cortado, com algum dígito faltando ou pela metade, é ilegível: null. Nunca complete o número.'), true);
   assertEquals(text.includes('Item cancelado fica de fora, junto com a linha que o cancela'), true);
   assertEquals(text.includes('também quando vem impresso numa linha separada'), true);
 });
@@ -457,5 +568,195 @@ Deno.test('insertItems: grava com o item genérico; sem a coluna no banco, grava
     }, rows);
     assertEquals([failed.error, calls], [other, 1]);
   }
-  assertEquals(missingGenericColumn(null), false);
+  assertEquals(missingItemColumn(null), null);
+});
+
+// O código do produto na linha ------------------------------------------------------------------------------
+
+Deno.test('código: o schema aceita o texto e null; o modelo que o esquece ou manda outra coisa não derruba a nota', () => {
+  const parsed = (code: unknown) => {
+    const result = ExtractedReceiptSchema.safeParse({ ...base, items: [{ ...line({}), code }] });
+    return result.success ? result.data.items[0].code : 'falhou';
+  };
+  assertEquals(parsed('7891000100103'), '7891000100103');
+  assertEquals(parsed(null), null);
+  // Número em vez de texto perderia os zeros da frente: vale null, como o que não é texto.
+  assertEquals(parsed(7891000100103), null);
+  assertEquals(parsed({ code: '1' }), null);
+  const { code: _code, ...withoutCode } = line({});
+  assertEquals(ExtractedReceiptSchema.parse({ ...base, items: [withoutCode] }).items[0].code, null);
+});
+
+Deno.test('instructions: o código é o impresso na linha, sem completar nem inventar, e null sem código', () => {
+  const text = instructions([]);
+  assertEquals(
+    text.includes(
+      '- code: o código do produto impresso na linha, como está na nota: na página da Sefaz, o "Código" do item; no papel, o número que vem antes da descrição, logo depois do número do item (001, 002...).',
+    ),
+    true,
+  );
+  assertEquals(text.includes('"002 250474 BANANA PRATA KG" -> "250474"'), true);
+  assertEquals(text.includes('Só o que está impresso e legível: nunca complete nem invente um código. A linha que não mostra código: null.'), true);
+  // O número do item não é o código, e o rótulo da página da Sefaz fica de fora.
+  assertEquals(text.includes('O número do item (001, 002...) nunca é o código; a linha que só tem o número do item: null.'), true);
+  assertEquals(text.includes('na página da Sefaz, "(Código: 250474 )" -> "250474", sem a palavra "Código"'), true);
+});
+
+Deno.test('código: o rótulo que a IA copiou da página da Sefaz sai antes da chave; o código sem rótulo fica inteiro', () => {
+  const codes = (...values: (string | null)[]) =>
+    cleanReceipt({ ...base, items: values.map((code, i) => line({ raw_description: `ITEM ${i}`, code })) }, new Set(), new Map())
+      .items.map((i) => i.store_code);
+  assertEquals(codes('Código: 250474', '(Código: 7891000100103 )', 'Cód.:A123', 'CODA123', 'COD123'), [
+    '250474',
+    '7891000100103',
+    'A123',
+    'CODA123',
+    'COD123',
+  ]);
+  // Mercadinho usa códigos curtos em sequência de verdade: nada é descartado por parecer o número do item.
+  assertEquals(codes('1', '2', '3', '001'), ['1', '2', '3', '001']);
+  assertEquals(codes('Código:', ':', null), [null, null, null]);
+});
+
+Deno.test('código: limpo pela chave do banco na linha da nota, e fora da leitura do servidor', () => {
+  const r = cleanReceipt(
+    {
+      ...base,
+      items: [
+        line({ raw_description: 'LEITE ITALAC 1L', code: ' 7891000100103 ' }),
+        line({ raw_description: 'QUEIJO MUSS', code: 'mç-12' }),
+        line({ raw_description: 'BANANA PRATA', code: '250474' }),
+        line({ raw_description: 'SACOLA', code: null }),
+        line({ raw_description: 'AVULSO', code: ' / ' }),
+        line({ raw_description: 'COMPRIDO', code: '9'.repeat(61) }),
+      ],
+    },
+    new Set(),
+    new Map(),
+  );
+  assertEquals(r.items.map((i) => i.store_code), ['7891000100103', 'MC12', '250474', null, null, null]);
+  assertEquals(r.readLines.every((l) => Object.keys(l).sort().join() === 'description,unit,unit_price'), true);
+  assertEquals(itemStoreCodes(r.items), ['7891000100103', 'MC12', '250474']);
+  assertEquals(itemStoreCodes([...r.items, ...r.items]), ['7891000100103', 'MC12', '250474']);
+});
+
+Deno.test('código pela OpenRouter e pela Anthropic: campo obrigatório que aceita null, sem default', async () => {
+  const answer = { ...base, items: [line({ code: '250474' }), line({ raw_description: 'ARROZ 5KG', code: null })] };
+  let sent: { response_format: { json_schema: { schema: { properties: { items: { items: { required: string[]; properties: Record<string, unknown> } } } } } } } | null =
+    null;
+  const fetchImpl = ((_url: string, init: RequestInit) => {
+    sent = JSON.parse(String(init.body));
+    return Promise.resolve(new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(answer) } }] })));
+  }) as typeof fetch;
+  const config: VisionConfig = { provider: 'openrouter', model: 'deepseek/deepseek-v4.1-flash', modelEnv: 'RECEIPT_MODEL', apiKey: 'k' };
+  const extracted = await extractStructured({
+    config,
+    schema: ExtractedReceiptSchema,
+    schemaName: 'receipt',
+    system: SYSTEM,
+    prompt: instructions([]),
+    images: [{ base64: 'AAAA', mediaType: 'image/jpeg' }],
+    subject: 'a nota',
+    fetchImpl,
+  });
+  const itemSchema = sent!.response_format.json_schema.schema.properties.items.items;
+  assertEquals(itemSchema.required.includes('code'), true);
+  assertEquals(itemSchema.properties.code, { type: ['string', 'null'] });
+  assertEquals(JSON.stringify(sent!.response_format.json_schema.schema).includes('"default"'), false);
+  assertEquals(JSON.stringify(z.toJSONSchema(ExtractedReceiptSchema)).includes('"default"'), false);
+  const anthropicItem = (betaZodOutputFormat(ExtractedReceiptSchema).schema as unknown as { properties: { items: { items: { properties: Record<string, unknown> } } } })
+    .properties.items.items;
+  assertEquals(anthropicItem.properties.code, { type: ['string', 'null'] });
+  assertEquals(cleanReceipt(extracted, new Set(), new Map()).items.map((i) => i.store_code), ['250474', null]);
+});
+
+Deno.test('withStoreCodes: o produto que o código já ensinou vence o apelido e a sugestão da IA', () => {
+  const r = cleanReceipt(
+    {
+      ...base,
+      items: [
+        // O apelido diz arroz, o código diz outro produto da casa: vale o código.
+        line({ raw_description: 'ARROZ T.JOAO 5KG', code: '001234', matched_product_id: 'p-arroz' }),
+        // A IA sugere um produto do catálogo; o código ensinou outro, fora do catálogo que a IA viu: vale o código.
+        line({ raw_description: 'LEITE DESN 1L', code: '7891000100103', matched_product_id: 'p-leite' }),
+        // Código que a casa ainda não aprendeu: fica o que o apelido e a IA disseram.
+        line({ raw_description: 'BANANA PRATA', code: '250474', matched_product_id: 'p-banana' }),
+        // Sem código: nada muda.
+        line({ raw_description: 'SACOLA', code: null }),
+      ],
+    },
+    new Set(['p-arroz', 'p-leite', 'p-banana']),
+    new Map([['ARROZ T.JOAO 5KG', 'p-arroz']]),
+  );
+  const learned = new Map([
+    ['001234', 'p-arroz-camil'],
+    ['7891000100103', 'p-leite-desnatado'],
+  ]);
+  const items = withStoreCodes(r.items, learned);
+  assertEquals(items.map((i) => [i.raw_description, i.product_id]), [
+    ['ARROZ T.JOAO 5KG', 'p-arroz-camil'],
+    ['LEITE DESN 1L', 'p-leite-desnatado'],
+    ['BANANA PRATA', 'p-banana'],
+    ['SACOLA', null],
+  ]);
+  // O resto da linha não muda, e a lista de antes também não.
+  assertEquals({ ...items[0], product_id: 'p-arroz' }, r.items[0]);
+  assertEquals(r.items[0].product_id, 'p-arroz');
+  assertEquals(withStoreCodes(r.items, new Map()), r.items);
+});
+
+Deno.test('storeCodeMatches: os produtos por código; o banco sem a função, ou um erro, é nenhum', () => {
+  assertEquals(
+    storeCodeMatches([{ code: '250474', product_id: 'p1' }, { code: '7891000100103', product_id: 'p2' }], null),
+    new Map([['250474', 'p1'], ['7891000100103', 'p2']]),
+  );
+  assertEquals(storeCodeMatches(null, null), new Map());
+  assertEquals(storeCodeMatches(null, { code: 'PGRST202', message: 'Could not find the function public.match_store_codes' }), new Map());
+  assertEquals(storeCodeMatches(null, { code: '42883', message: 'function public.match_store_codes(text, text[]) does not exist' }), new Map());
+  assertEquals(storeCodeMatches(null, { code: '57014', message: 'canceling statement due to statement timeout' }), new Map());
+});
+
+Deno.test('insertItems: sem a coluna do código, grava sem ele; sem as duas, sem cada uma, uma de cada vez', async () => {
+  const rows = [
+    { raw_description: 'LEITE ITALAC 1L', generic_name: 'leite', store_code: '7891000100103', receipt_id: 'r1' },
+    { raw_description: 'BANANA PRATA', generic_name: null, store_code: '250474', receipt_id: 'r1' },
+  ];
+  const keys = (batch: unknown[]) => Object.keys(batch[0] as object).sort().join();
+  const db = (has: string[]) => {
+    const tries: unknown[][] = [];
+    const insert = (batch: unknown[]) => {
+      tries.push(batch);
+      const missing = ['generic_name', 'store_code'].find((c) => c in (batch[0] as object) && !has.includes(c));
+      return Promise.resolve({
+        error: missing ? { code: 'PGRST204', message: `Could not find the '${missing}' column of 'receipt_items' in the schema cache` } : null,
+      });
+    };
+    return { tries, insert };
+  };
+
+  const all = db(['generic_name', 'store_code']);
+  assertEquals((await insertItems(all.insert, rows)).error, null);
+  assertEquals(all.tries, [rows]);
+
+  const noCode = db(['generic_name']);
+  assertEquals((await insertItems(noCode.insert, rows)).error, null);
+  assertEquals(noCode.tries.map(keys), ['generic_name,raw_description,receipt_id,store_code', 'generic_name,raw_description,receipt_id']);
+
+  const noGeneric = db(['store_code']);
+  assertEquals((await insertItems(noGeneric.insert, rows)).error, null);
+  assertEquals(noGeneric.tries.map(keys), ['generic_name,raw_description,receipt_id,store_code', 'raw_description,receipt_id,store_code']);
+
+  const neither = db([]);
+  assertEquals((await insertItems(neither.insert, rows)).error, null);
+  assertEquals(neither.tries.map(keys), [
+    'generic_name,raw_description,receipt_id,store_code',
+    'raw_description,receipt_id,store_code',
+    'raw_description,receipt_id',
+  ]);
+
+  // O check do código (o nome da coluna dentro do nome do check) é erro de verdade.
+  const check = { code: '23514', message: 'new row for relation "receipt_items" violates check constraint "receipt_items_store_code_check"' };
+  assertEquals(missingItemColumn(check), null);
+  assertEquals(missingItemColumn({ code: '42703', message: 'column "store_code" of relation "receipt_items" does not exist' }), 'store_code');
+  assertEquals(missingItemColumn({ code: 'PGRST204', message: "Could not find the 'store_code' column of 'receipt_items' in the schema cache" }, ['generic_name']), null);
 });

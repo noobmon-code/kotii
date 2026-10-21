@@ -69,6 +69,12 @@ export interface ReceiptItem {
    * banco de antes da coluna; null na nota do QR, na manual e na leitura que não soube dizer.
    */
   generic_name?: string | null;
+  /**
+   * O código do produto impresso na linha da nota (o "Código" da NFC-e), pela chave do banco (storeCodeKey). A
+   * nota confirmada ensina à casa o produto dele. Ausente no banco de antes da coluna; null na nota manual, na
+   * linha sem código e nas gravadas por versões de antes.
+   */
+  store_code?: string | null;
 }
 
 export interface LatestPrice {

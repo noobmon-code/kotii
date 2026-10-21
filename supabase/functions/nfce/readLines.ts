@@ -3,6 +3,8 @@
 // confirma antes de compartilhar o preço (_shared/receiptRead.ts). Espelho de
 // nfceItemsToDraft e normalizeNfceUnit em src/domain/nfce.ts; um teste do app
 // (src/domain/__tests__/nfceReadLines.test.ts) falha se os dois divergirem.
+// Sem o código do produto (store_code): ele só fica na linha da casa, para ela
+// aprender o produto; a leitura do servidor e os preços comuns não o levam.
 // Sem import: o teste do app lê este arquivo direto.
 
 interface SefazItem {
