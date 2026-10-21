@@ -10569,7 +10569,6 @@ declare
   p_leite uuid;
   p_desnatado uuid;
   p_pao uuid;
-  first_learned timestamptz;
 begin
   insert into public.stores (name, cnpj) values ('Mercado Bom', '11222333000181') returning id into m1;
   insert into public.stores (name, cnpj) values ('Mercado Dois', '22333444000155') returning id into m2;
@@ -10632,19 +10631,43 @@ begin
   assert (select array_agg(gtin || '=' || product_id::text) from public.product_barcodes) = array['07891000100103=' || p_leite],
     'and the barcode, in 14 digits; 250474 is not one';
   assert (select household_id from public.product_store_codes limit 1) = current_setting('test.hh_sc1')::uuid, 'for the house';
-  select updated_at into first_learned from public.product_store_codes where store_code = '250474';
+  assert (select learned_from = 'BANANA PRATA' and not ambiguous from public.product_store_codes where store_code = '250474'),
+    'the code remembers the description that taught it, and is not ambiguous';
+  -- A descrição guardada é a do apelido (normalize_alias), e só ela.
+  begin
+    update public.product_store_codes set learned_from = 'banana prata' where store_code = '250474';
+    raise exception 'FAIL: learned_from not normalized';
+  exception when check_violation then null;
+  end;
 
-  -- Segunda nota, no mesmo mercado: o mesmo código agora é outra banana. O último vence.
+  -- Uma data fixa no passado: a confirmação de agora roda na mesma transação, e now() não andaria.
+  update public.product_store_codes set updated_at = '2000-01-01';
+  update public.product_barcodes set updated_at = '2000-01-01';
+
+  -- Segunda nota, no mesmo mercado: a mesma descrição, e a pessoa diz que é outra banana. É uma correção:
+  -- o produto troca, e o código continua valendo.
   insert into public.receipts (store_id, purchased_at, source) values (m1, '2026-10-08 10:00-03', 'ai') returning id into r;
   insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
-    values (r, 0, 'BANANA NANICA KG', '250474', 5, 2.5) returning id into i_banana;
+    values (r, 0, 'Banana  Prata', '250474', 5, 2.5) returning id into i_banana;
   perform public.confirm_receipt(r, jsonb_build_array(
     jsonb_build_object('id', i_banana, 'new_product', jsonb_build_object('name', 'Banana nanica', 'category', 'hortifruti'))));
   select id into p_nanica from public.products where name = 'Banana nanica';
   assert (select product_id from public.product_store_codes where store_cnpj = '11222333000181' and store_code = '250474') = p_nanica,
-    'the last confirmed receipt wins';
-  assert (select updated_at from public.product_store_codes where store_code = '250474') >= first_learned, 'and the date moves';
+    'the same description with another product is a correction: the product changes';
+  assert not (select ambiguous from public.product_store_codes where store_code = '250474'), 'and the code is not ambiguous';
+  assert (select updated_at from public.product_store_codes where store_code = '250474') > '2000-01-01', 'and the date moves';
+  assert (select updated_at from public.product_barcodes where gtin = '07891000100103') = '2000-01-01',
+    'the barcode this receipt did not have stays as it was';
   assert (select count(*) from public.product_store_codes) = 2, 'one row per market and code';
+
+  -- O mercado muda o texto do mesmo produto: o código guarda a descrição nova e não fica ambíguo.
+  insert into public.receipts (store_id, purchased_at, source) values (m1, '2026-10-08 18:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
+    values (r, 0, 'BANANA NAN KG', '250474', 5, 2.5) returning id into i_banana;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i_banana, 'product_id', p_nanica)));
+  assert (select product_id = p_nanica and learned_from = 'BANANA NAN KG' and not ambiguous
+          from public.product_store_codes where store_code = '250474'),
+    'the same product with a new description keeps the code';
 
   -- Terceira, na loja criada à mão (sem CNPJ): só o código de barras ensina, e o último vence nele também.
   insert into public.receipts (store_id, purchased_at, source) values (hand, '2026-10-09 10:00-03', 'ai') returning id into r;
@@ -10658,6 +10681,7 @@ begin
   select id into p_desnatado from public.products where name = 'Leite desnatado 1L';
   assert (select count(*) from public.product_store_codes) = 2, 'no market code without a CNPJ';
   assert (select product_id from public.product_barcodes where gtin = '07891000100103') = p_desnatado, 'the barcode follows the last receipt';
+  assert (select updated_at from public.product_barcodes where gtin = '07891000100103') > '2000-01-01', 'and its date moves';
   assert (select count(*) from public.product_barcodes) = 1, 'X1 is not a barcode';
 
   -- A próxima nota: o código do mercado vence; sem ele, o código de barras; sem CNPJ, só o de barras.
@@ -10745,6 +10769,96 @@ begin
   assert not exists (select 1 from public.product_store_codes where store_code = '250474')
     and not exists (select 1 from public.product_barcodes where gtin = '00000096385074'), 'a deleted product takes its codes';
   assert (select count(*) from public.product_store_codes) = 1, 'and only its codes';
+end $$;
+
+-- O mercadinho que usa o mesmo código para itens diferentes (o 1 para todo o hortifruti a granel): o código
+-- fica ambíguo e deixa de valer; vale o código de barras, depois o apelido de cada descrição.
+do $$
+declare
+  m uuid;
+  r uuid;
+  i_a uuid;
+  i_b uuid;
+  p_tomate uuid;
+  p_cebola uuid;
+  p_alface uuid;
+  p_couve uuid;
+  p_cola uuid;
+  p_guarana uuid;
+begin
+  select id into m from public.stores where cnpj = '22333444000155';
+
+  -- Na mesma nota: TOMATE KG e CEBOLA KG, os dois com o código 1. A segunda linha vê a primeira.
+  insert into public.receipts (store_id, purchased_at, source) values (m, '2026-10-10 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
+    values (r, 0, 'TOMATE KG', '1', 8, 4) returning id into i_a;
+  insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
+    values (r, 1, 'CEBOLA KG', '1', 6, 3) returning id into i_b;
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', i_a, 'new_product', jsonb_build_object('name', 'Tomate', 'category', 'hortifruti')),
+    jsonb_build_object('id', i_b, 'new_product', jsonb_build_object('name', 'Cebola', 'category', 'hortifruti'))));
+  select id into p_tomate from public.products where name = 'Tomate';
+  select id into p_cebola from public.products where name = 'Cebola';
+  assert (select ambiguous and product_id = p_cebola and learned_from = 'CEBOLA KG'
+          from public.product_store_codes where store_cnpj = '22333444000155' and store_code = '1'),
+    'one code for two products in one receipt is ambiguous (keeping the last product and description)';
+  assert not exists (select 1 from public.match_store_codes('22333444000155', array['1'])), 'and the match skips it';
+  assert (select product_id from public.product_aliases where alias = 'TOMATE KG') = p_tomate
+    and (select product_id from public.product_aliases where alias = 'CEBOLA KG') = p_cebola,
+    'each description keeps its own alias';
+
+  -- Em notas diferentes: ALFACE UN e depois COUVE MACO com o código 2.
+  insert into public.receipts (store_id, purchased_at, source) values (m, '2026-10-11 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
+    values (r, 0, 'ALFACE UN', '2', 3, 3) returning id into i_a;
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', i_a, 'new_product', jsonb_build_object('name', 'Alface', 'category', 'hortifruti'))));
+  select id into p_alface from public.products where name = 'Alface';
+  assert (select jsonb_object_agg(code, product_id) from public.match_store_codes('22333444000155', array['2']))
+    = jsonb_build_object('2', p_alface), 'one receipt alone teaches the code';
+  insert into public.receipts (store_id, purchased_at, source) values (m, '2026-10-12 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
+    values (r, 0, 'COUVE MACO', '2', 4, 4) returning id into i_b;
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', i_b, 'new_product', jsonb_build_object('name', 'Couve', 'category', 'hortifruti'))));
+  select id into p_couve from public.products where name = 'Couve';
+  assert (select ambiguous and product_id = p_couve from public.product_store_codes where store_code = '2'),
+    'another description with another product, in a later receipt, is ambiguous too';
+  assert not exists (select 1 from public.match_store_codes('22333444000155', array['2'])), 'and the match skips it';
+  assert (select product_id from public.product_aliases where alias = 'ALFACE UN') = p_alface
+    and (select product_id from public.product_aliases where alias = 'COUVE MACO') = p_couve,
+    'each description keeps its own alias';
+
+  -- Uma vez ambíguo, sempre: nem o mesmo produto com a mesma descrição nem uma correção tiram a marca.
+  insert into public.receipts (store_id, purchased_at, source) values (m, '2026-10-13 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
+    values (r, 0, 'COUVE MACO', '2', 4, 4) returning id into i_a;
+  insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
+    values (r, 1, 'CEBOLA KG', '1', 6, 3) returning id into i_b;
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', i_a, 'product_id', p_couve),
+    jsonb_build_object('id', i_b, 'product_id', p_tomate)));
+  assert (select bool_and(ambiguous) from public.product_store_codes where store_cnpj = '22333444000155' and store_code in ('1', '2')),
+    'a later confirmation does not clear the mark';
+  assert not exists (select 1 from public.match_store_codes('22333444000155', array['1', '2'])), 'and the match keeps skipping them';
+
+  -- O código de barras não muda: o último vence nele, e é ele que vale quando o código do mercado está ambíguo.
+  insert into public.receipts (store_id, purchased_at, source) values (m, '2026-10-14 10:00-03', 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
+    values (r, 0, 'REFRI COLA 2L', '7896005800010', 9, 9) returning id into i_a;
+  insert into public.receipt_items (receipt_id, position, raw_description, store_code, unit_price, total_price)
+    values (r, 1, 'REFRI GUARANA 2L', '7896005800010', 8, 8) returning id into i_b;
+  perform public.confirm_receipt(r, jsonb_build_array(
+    jsonb_build_object('id', i_a, 'new_product', jsonb_build_object('name', 'Refrigerante de cola', 'category', 'bebidas')),
+    jsonb_build_object('id', i_b, 'new_product', jsonb_build_object('name', 'Guaraná', 'category', 'bebidas'))));
+  select id into p_cola from public.products where name = 'Refrigerante de cola';
+  select id into p_guarana from public.products where name = 'Guaraná';
+  assert (select ambiguous from public.product_store_codes where store_code = '7896005800010'), 'the market code is ambiguous';
+  assert (select product_id from public.product_barcodes where gtin = '07896005800010') = p_guarana, 'the barcode: the last one wins';
+  assert (select jsonb_object_agg(code, product_id) from public.match_store_codes('22333444000155', array['7896005800010']))
+    = jsonb_build_object('7896005800010', p_guarana), 'in the same market the barcode answers';
+  assert (select jsonb_object_agg(code, product_id) from public.match_store_codes('11222333000181', array['7896005800010']))
+    = jsonb_build_object('7896005800010', p_guarana), 'and in another market too';
 end $$;
 
 -- Apagar a casa leva tudo o que ela aprendeu.

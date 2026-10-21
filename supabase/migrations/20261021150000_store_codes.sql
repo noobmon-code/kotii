@@ -125,12 +125,22 @@ comment on column public.receipt_items.store_code is
 -- A abreviação de cada mercado: o código daquele CNPJ é este produto. Pelo
 -- CNPJ e não pela loja da casa: duas lojas cadastradas com o mesmo CNPJ (ou a
 -- loja apagada e lida de novo) continuam com o que já se aprendeu.
+--
+-- Há mercadinho que imprime um código genérico para itens diferentes (o 1
+-- para todo o hortifruti a granel: TOMATE KG e CEBOLA KG). Aí o código não
+-- pode vencer o apelido, então cada código guarda a descrição que o ensinou
+-- (learned_from, pela normalize_alias) e, quando chega outro produto com
+-- outra descrição, fica ambíguo (ambiguous) e match_store_codes deixa de
+-- usá-lo. Outro produto com a mesma descrição é correção; o mesmo produto com
+-- outra descrição é o mercado mudando o texto. A marca não sai mais.
 create table public.product_store_codes (
   household_id uuid not null default public.current_household_id()
     references public.households (id) on delete cascade,
   store_cnpj text not null check (store_cnpj ~ '^[0-9]{14}$'),
   store_code text not null check (store_code ~ '^[A-Z0-9]{1,60}$'),
   product_id uuid not null,
+  learned_from text not null check (learned_from = public.normalize_alias(learned_from)),
+  ambiguous boolean not null default false,
   updated_at timestamptz not null default now(),
   primary key (household_id, store_cnpj, store_code),
   foreign key (product_id, household_id) references public.products (id, household_id) on delete cascade
@@ -169,9 +179,10 @@ create policy "household members manage product_barcodes" on public.product_barc
 
 -- =============================================================================
 -- O produto aprendido de cada código, só da casa de quem chama: o daquele
--- mercado e, sem ele, o do código de barras. Sem CNPJ (p_store_cnpj null), só
--- o código de barras. Devolve o código como veio, para quem chama achar a
--- linha; o que não tem produto aprendido fica de fora.
+-- mercado (se não está ambíguo) e, sem ele, o do código de barras. Sem CNPJ
+-- (p_store_cnpj null), só o código de barras. Devolve o código como veio, para
+-- quem chama achar a linha; o que não tem produto aprendido fica de fora (e a
+-- linha segue pelo apelido e pela IA).
 -- =============================================================================
 
 create function public.match_store_codes(p_store_cnpj text, p_codes text[])
@@ -187,6 +198,7 @@ as $$
     on s.household_id = public.current_household_id()
    and s.store_cnpj = p_store_cnpj
    and s.store_code = public.store_code_key(d.code)
+   and not s.ambiguous
   left join public.product_barcodes b
     on b.household_id = public.current_household_id()
    and b.gtin = public.gtin_key(public.store_code_key(d.code))
@@ -200,8 +212,11 @@ grant execute on function public.match_store_codes(text, text[]) to authenticate
 -- Confirmação de nota: a versão de 20261005120000_receipt_clears_list.sql,
 -- igual em tudo, mais o código de cada linha que termina com produto, ao lado
 -- do apelido: no mercado da nota, se ele tem CNPJ, e como código de barras,
--- se o código é um (com ou sem CNPJ). O último vence, como no apelido. Linha
--- sem produto ("Não acompanhar preço") não ensina nada.
+-- se o código é um (com ou sem CNPJ). No código de barras o último vence, como
+-- no apelido; no do mercado, o último vence só com a mesma descrição (ou o
+-- mesmo produto), e outro produto com outra descrição deixa o código ambíguo
+-- (ver product_store_codes acima). Linha sem produto ("Não acompanhar preço")
+-- não ensina nada.
 --
 -- p_items: [{ id, product_id?, new_product?: {name, category},
 --             pantry?: {name, category, purchased_on, expires_on, expiry_source},
@@ -268,10 +283,19 @@ begin
     -- O código da linha: a abreviação daquele mercado e, se for um, o código de barras.
     if v_product_id is not null and item.store_code is not null then
       if v_cnpj is not null then
-        insert into public.product_store_codes (household_id, store_cnpj, store_code, product_id)
-        values (r.household_id, v_cnpj, item.store_code, v_product_id)
+        -- No set, product_store_codes.* é a linha de antes: outro produto com
+        -- outra descrição marca o código como ambíguo (e a marca nunca sai).
+        -- Duas linhas desta nota com o mesmo código caem aqui também.
+        insert into public.product_store_codes (household_id, store_cnpj, store_code, product_id, learned_from)
+        values (r.household_id, v_cnpj, item.store_code, v_product_id, public.normalize_alias(item.raw_description))
         on conflict (household_id, store_cnpj, store_code)
-          do update set product_id = excluded.product_id, updated_at = now();
+          do update set
+            ambiguous = public.product_store_codes.ambiguous
+              or (public.product_store_codes.product_id <> excluded.product_id
+                  and public.product_store_codes.learned_from <> excluded.learned_from),
+            product_id = excluded.product_id,
+            learned_from = excluded.learned_from,
+            updated_at = now();
       end if;
       v_gtin := public.gtin_key(item.store_code);
       if v_gtin is not null then

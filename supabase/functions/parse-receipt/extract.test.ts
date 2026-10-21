@@ -597,6 +597,25 @@ Deno.test('instructions: o código é o impresso na linha, sem completar nem inv
   );
   assertEquals(text.includes('"002 250474 BANANA PRATA KG" -> "250474"'), true);
   assertEquals(text.includes('Só o que está impresso e legível: nunca complete nem invente um código. A linha que não mostra código: null.'), true);
+  // O número do item não é o código, e o rótulo da página da Sefaz fica de fora.
+  assertEquals(text.includes('O número do item (001, 002...) nunca é o código; a linha que só tem o número do item: null.'), true);
+  assertEquals(text.includes('na página da Sefaz, "(Código: 250474 )" -> "250474", sem a palavra "Código"'), true);
+});
+
+Deno.test('código: o rótulo que a IA copiou da página da Sefaz sai antes da chave; o código sem rótulo fica inteiro', () => {
+  const codes = (...values: (string | null)[]) =>
+    cleanReceipt({ ...base, items: values.map((code, i) => line({ raw_description: `ITEM ${i}`, code })) }, new Set(), new Map())
+      .items.map((i) => i.store_code);
+  assertEquals(codes('Código: 250474', '(Código: 7891000100103 )', 'Cód.:A123', 'CODA123', 'COD123'), [
+    '250474',
+    '7891000100103',
+    'A123',
+    'CODA123',
+    'COD123',
+  ]);
+  // Mercadinho usa códigos curtos em sequência de verdade: nada é descartado por parecer o número do item.
+  assertEquals(codes('1', '2', '3', '001'), ['1', '2', '3', '001']);
+  assertEquals(codes('Código:', ':', null), [null, null, null]);
 });
 
 Deno.test('código: limpo pela chave do banco na linha da nota, e fora da leitura do servidor', () => {

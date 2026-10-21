@@ -135,7 +135,7 @@ ${parts}
 - Desconto de um item específico entra no total_price dele (valor líquido), também quando vem impresso numa linha separada logo abaixo do item; a linha do desconto não vira item.
 - Item cancelado fica de fora, junto com a linha que o cancela (cancelamento, estorno). Nenhum item tem valor negativo.
 - raw_description: a descrição exatamente como impressa.
-- code: o código do produto impresso na linha, como está na nota: na página da Sefaz, o "Código" do item; no papel, o número que vem antes da descrição, logo depois do número do item (001, 002...). Ex.: "001 7891000100103 LEITE ITALAC 1L" -> "7891000100103"; "002 250474 BANANA PRATA KG" -> "250474". Só o que está impresso e legível: nunca complete nem invente um código. A linha que não mostra código: null.
+- code: o código do produto impresso na linha, como está na nota: na página da Sefaz, o "Código" do item; no papel, o número que vem antes da descrição, logo depois do número do item (001, 002...). Ex.: "001 7891000100103 LEITE ITALAC 1L" -> "7891000100103"; "002 250474 BANANA PRATA KG" -> "250474"; na página da Sefaz, "(Código: 250474 )" -> "250474", sem a palavra "Código". O número do item (001, 002...) nunca é o código; a linha que só tem o número do item: null. Só o que está impresso e legível: nunca complete nem invente um código. A linha que não mostra código: null.
 - normalized_name: nome legível em português com marca e tamanho quando houver. Ex.: "ARROZ T.JOAO TP1 5KG" -> "Arroz Tio João Tipo 1 5kg".
 - generic_name: o item como alguém escreveria na lista de compras, em português e em minúsculas, sem marca, tamanho nem embalagem, com o tipo, o sabor ou o corte só quando a nota diz. Ex.: "CAF TORR MOIDO 3COR 500G" -> "café em pó"; "PAP HIG NEVE FD 12X30M" -> "papel higiênico"; "GILLETTE MACH3 APARELHO" -> "aparelho de barbear"; "NESCAU 2.0 400G" -> "achocolatado em pó"; "VEJA MULTIUSO 500ML" -> "limpador multiuso"; "LTE UHT ITALAC DESN 1L" -> "leite desnatado"; "LEITE UHT PARMALAT 1L" -> "leite" (a nota não diz se é integral ou desnatado: não acrescente); "PATINHO MOIDO KG" -> "patinho moído"; "IOG GREGO VIGOR MOR 100G" -> "iogurte grego de morango". Não dá para saber o que é: null.
 - quantity/unit: itens pesados usam "kg" com a quantidade pesada (ex.: 0,535 kg de banana); demais usam a unidade impressa, ou "un".
@@ -298,7 +298,9 @@ export function cleanReceipt(
       suggested_name: it.normalized_name.trim() || raw,
       suggested_category: it.category,
       generic_name: genericName(it.generic_name),
-      store_code: storeCodeKey(it.code),
+      // O rótulo que a IA copiou do print ("Código: 250474") sai até o último ":", como afterLabel faz no QR: um
+      // código impresso nunca tem ":". Tirar "COD" do começo sem os dois-pontos estragaria um código como "CODA123".
+      store_code: storeCodeKey(it.code?.replace(/^.*:/s, '')),
       product_id: aliasMatches.get(raw) ?? suggested,
       quantity,
       unit: it.unit,
