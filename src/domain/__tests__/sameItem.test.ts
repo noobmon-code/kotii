@@ -2,6 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 
 import { LinkIndex, matchListItems, type OpenListItem, type ReceiptLine } from '../listLinks';
 import { itemIdentity, sameItemFit, spelledOut, wordOverlap } from '../sameItem';
+import { guessCategory } from '../search';
 import { sameListedName } from '../similarNames';
 
 const fit = (listName: string, receiptName: string, categories: { list?: string; receipt?: string } = {}) =>
@@ -125,6 +126,15 @@ describe('sameItemFit: as travas (o que parece, mas é outra coisa)', () => {
     ['Coca', 'FANTA 2L'],
     ['Coca', 'REFRIG FANTA 2L'],
     ['Fanta', 'COCA COLA 2L'],
+    // O achocolatado líquido: pedido pela lista, a nota calada é o pó.
+    ['Achocolatado líquido', 'ACHOC NESCAU 400G'],
+    ['Achocolatado em pó', 'ACHOC LIQ TODDYNHO 200ML'],
+    // A versão abreviada na nota continua não sendo a outra.
+    ['Arroz parboilizado', 'ARROZ INTEG TIO JOAO 1KG'],
+    ['Arroz integral', 'ARROZ PARB TIO JOAO 5KG'],
+    ['Açúcar demerara', 'ACUCAR MASC NATIVE 1KG'],
+    ['Água sem gás', 'AGUA MIN GASEIF CRYSTAL 500ML'],
+    ['Leite desnatado', 'LEITE INTEG ITALAC 1L'],
   ];
   it.each(other)('"%s" e "%s" são outra coisa', (wanted, found) => {
     expect(fit(wanted, found)).toBe('outro');
@@ -149,9 +159,22 @@ describe('sameItemFit: as travas (o que parece, mas é outra coisa)', () => {
     // A nota calada não diz qual sabão é.
     ['Sabão líquido', 'LAVA ROUPAS LIMPINHO 1KG'],
     ['Batata inglesa', 'BATATA ASTERIX KG'],
+    // A versão que só a nota diz, abreviada.
+    ['Achocolatado', 'ACHOC LIQ TODDYNHO 200ML'],
+    ['Arroz', 'ARROZ PARB TIO JOAO 5KG'],
+    ['Coca', 'COCA COLA ZR 2L'],
+    ['Água', 'AGUA MIN GASEIF CRYSTAL 500ML'],
+    ['Açúcar', 'ACUCAR MASC NATIVE 1KG'],
+    ['Requeijão', 'REQUEIJAO LT CATUPIRY 200G'],
+    ['Leite', 'LEITE ZERO LACT PIRACANJUBA 1L'],
   ];
   it.each(maybe)('"%s" e "%s" podem ser o mesmo (sugestão)', (wanted, found) => {
     expect(fit(wanted, found)).toBe('talvez');
+  });
+
+  it('o refrigerante abreviado na nota não é hortifruti: o tamanho diferente ainda conta', () => {
+    const receipt = 'REFRIG FANTA LARANJA 1L';
+    expect(fit('Fanta laranja 2L', receipt, { list: 'bebidas', receipt: guessCategory(receipt, { abbreviated: true }) })).toBe('talvez');
   });
 
   it('um nome da nota que diz outro tipo decide, mesmo com o produto calado', () => {
@@ -186,6 +209,21 @@ describe('sameItemFit: o mesmo item, de qualquer marca', () => {
     ['Cerveja sem álcool', 'CERV S/ALCOOL BOA 350ML'],
     ['Cerveja sem álcool', 'CERVEJA BOA ZERO 350ML'],
     ['Coca zero', 'COCA COLA S/ACUCAR 2L'],
+    // A versão com as abreviações comuns de nota.
+    ['Arroz integral', 'ARROZ INTEG TIO JOAO 1KG'],
+    ['Arroz parboilizado', 'ARROZ PARB TIO JOAO 5KG'],
+    ['Pão de forma integral', 'PAO FORMA INTEG PULLMAN'],
+    ['Coca zero', 'REFRIG COCA COLA ZR 2L'],
+    ['Água com gás', 'AGUA MIN GASEIF CRYSTAL 500ML'],
+    ['Açúcar mascavo', 'ACUCAR MASC NATIVE 1KG'],
+    ['Açúcar refinado', 'ACUCAR REF UNIAO 1KG'],
+    ['Requeijão light', 'REQUEIJAO LT CATUPIRY 200G'],
+    ['Requeijão light', 'REQ CREM LT VALE 200G'],
+    ['Leite sem lactose', 'LEITE ZERO LACT PIRACANJUBA 1L'],
+    ['Leite sem lactose', 'LEITE S/LACT PIRACANJUBA 1L'],
+    ['Leite integral', 'LEITE INTEG ITALAC 1L'],
+    // Longe do requeijão, "LT" é litro, não light.
+    ['Leite', 'LEITE INTEGRAL ITALAC 1 LT'],
     // O nome sozinho é o de pó.
     ['Achocolatado', 'ACHOC PO BOM DIA 400G'],
     ['Achocolatado', 'ACHOCOLATADO EM PO BOM DIA 400G'],

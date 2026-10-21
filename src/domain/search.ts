@@ -20,7 +20,11 @@ const KEYWORDS: [string, string][] = [
   ['papel toalha', 'papel'],
   ['guardanapo', 'papel'],
   ['guarana', 'bebidas'],
+  // Como a nota abrevia a bebida: o sabor que vem depois ("REFRIG FANTA LARANJA", "REFRIG COCA S/ACUCAR") não decide.
+  ['refrig', 'bebidas'],
+  ['refri', 'bebidas'],
   ['cerveja', 'alcoolicas'],
+  ['cerv', 'alcoolicas'],
   ['vinho', 'alcoolicas'],
   ['cachaca', 'alcoolicas'],
   ['arroz', 'graos'],

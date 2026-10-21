@@ -110,6 +110,16 @@ describe('search', () => {
     expect(guessCategory('AGUA MIN CRISTAL 1,5L', { abbreviated: true })).toBe('bebidas');
   });
 
+  it('a bebida abreviada na nota é bebida, não o sabor que vem depois', () => {
+    expect(guessCategory('REFRIG FANTA LARANJA 2L', { abbreviated: true })).toBe('bebidas');
+    expect(guessCategory('REFRIG COCA COLA S/ACUCAR', { abbreviated: true })).toBe('bebidas');
+    expect(guessCategory('REFRI GUARANA 2L', { abbreviated: true })).toBe('bebidas');
+    expect(guessCategory('CERV SKOL LATA 350ML', { abbreviated: true })).toBe('alcoolicas');
+    // A fruta continua no hortifruti, e o suco nas bebidas.
+    expect(guessCategory('LARANJA PERA KG', { abbreviated: true })).toBe('hortifruti');
+    expect(guessCategory('SUCO LARANJA 1L', { abbreviated: true })).toBe('bebidas');
+  });
+
   it('a batata frita é congelada, não do hortifruti', () => {
     expect(guessCategory('Batata Frita Congelada Boa Mesa 1kg')).toBe('congelados');
     expect(guessCategory('BATATA FRITA CONG BOA MESA 2KG', { abbreviated: true })).toBe('congelados');

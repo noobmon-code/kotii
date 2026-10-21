@@ -66,6 +66,10 @@ const SPELLED_OUT: readonly (readonly [string, string])[] = [
   ['margar', 'margarina'],
   ['mant', 'manteiga'],
   ['req', 'requeijao'],
+  // Logo depois do requeijão, "LT" é o light; em outro lugar, é litro.
+  ['requeijao lt', 'requeijao light'],
+  ['requeijao crem lt', 'requeijao cremoso light'],
+  ['requeijao cremoso lt', 'requeijao cremoso light'],
   ['qj', 'queijo'],
   ['qjo', 'queijo'],
   ['muss', 'mussarela'],
@@ -353,8 +357,13 @@ const FLAVORS: Readonly<Record<string, readonly string[]>> = {
 const KINDS: readonly KindDimension[] = [
   {
     keys: ['leite', 'iogurte', 'bebida_lactea', 'queijo', 'requeijao', 'manteiga', 'creme_leite', 'leite_condensado', 'leite+po', 'doce_leite', 'cream_cheese'],
-    // Como a nota escreve: "S/LACTOSE", "ZERO LAC", "LAC FREE".
-    values: { sem_lactose: ['sem lactose', 'zero lactose', 'lactose free', 'lactose zero', 's lactose', 'sem lac', 's lac', 'zero lac', 'lac free'] },
+    // Como a nota escreve: "S/LACTOSE", "ZERO LAC", "ZERO LACT", "0 LACT", "LAC FREE".
+    values: {
+      sem_lactose: [
+        'sem lactose', 'zero lactose', 'lactose free', 'lactose zero', 's lactose', '0 lactose', 'sem lac', 's lac', 'zero lac',
+        'lac free', 'sem lact', 's lact', 'zero lact', '0 lact', 'lact free',
+      ],
+    },
     strict: ['sem_lactose'],
   },
   {
@@ -365,11 +374,12 @@ const KINDS: readonly KindDimension[] = [
   },
   {
     keys: ['leite', 'iogurte', 'leite+po'],
-    values: { integral: ['integral'], desnatado: ['desnatado'], semidesnatado: ['semidesnatado', 'semi desnatado'] },
+    // "INT" já vem por extenso (spelledOut); "INTEG" é o integral também.
+    values: { integral: ['integral', 'integ'], desnatado: ['desnatado'], semidesnatado: ['semidesnatado', 'semi desnatado'] },
   },
   {
     keys: '*',
-    values: { zero: ['zero', 'sem acucar', 'zero acucar', 'diet'], light: ['light', 'lite'], normal: ['original'] },
+    values: { zero: ['zero', 'zr', 'sem acucar', 'zero acucar', 'diet'], light: ['light', 'lite'], normal: ['original'] },
     strict: ['zero', 'light'],
   },
   {
@@ -401,8 +411,9 @@ const KINDS: readonly KindDimension[] = [
       amanteigado: ['amanteigado'],
     },
   },
-  // O nome sozinho é o de pó ("Achocolatado" e "ACHOC PO NESCAU"); o líquido é outro.
-  { keys: ['achocolatado', 'gelatina', 'fermento'], values: { po: ['po'], liquido: ['liquido'] }, lineDefault: 'po' },
+  // O nome sozinho é o de pó ("Achocolatado" e "ACHOC PO NESCAU"). O líquido é outra versão: dito só na nota
+  // ("ACHOC LIQ TODDYNHO" para "Achocolatado"), pode ser, mas não com certeza; pedido pela lista, a nota calada é o pó.
+  { keys: ['achocolatado', 'gelatina', 'fermento'], values: { po: ['po'], liquido: ['liquido'] }, strict: ['liquido'], lineDefault: 'po' },
   // "Suco" é o pronto; o de pó pode ser, mas não com certeza ("SUCO TANG" não diz).
   { keys: ['suco'], values: { po: ['po'] }, strict: ['po'], silenceSaysNothing: true },
   { keys: ['iogurte', 'bebida_lactea'], values: { grego: ['grego'] }, strict: ['grego'] },
@@ -424,8 +435,8 @@ const KINDS: readonly KindDimension[] = [
   {
     keys: ['arroz'],
     values: {
-      integral: ['integral'],
-      parboilizado: ['parboilizado', 'parbolizado'],
+      integral: ['integral', 'integ'],
+      parboilizado: ['parboilizado', 'parbolizado', 'parboil', 'parbo', 'parb'],
       arboreo: ['arboreo', 'risoto'],
       japones: ['japones', 'gohan', 'sushi'],
       negro: ['negro', 'preto', 'selvagem'],
@@ -433,14 +444,21 @@ const KINDS: readonly KindDimension[] = [
     },
     strict: ['integral', 'parboilizado', 'arboreo', 'japones', 'negro', 'sete_graos'],
   },
-  { keys: ['pao', 'macarrao', 'biscoito', 'farinha', 'torrada'], values: { integral: ['integral'] }, strict: ['integral'] },
+  { keys: ['pao', 'macarrao', 'biscoito', 'farinha', 'torrada'], values: { integral: ['integral', 'integ'] }, strict: ['integral'] },
   {
     keys: ['farinha'],
     values: { trigo: ['trigo'], mandioca: ['mandioca'], milho: ['milho'], rosca: ['rosca'], aveia: ['aveia'], arroz: ['arroz'], panko: ['panko'] },
   },
   {
     keys: ['acucar'],
-    values: { refinado: ['refinado'], cristal: ['cristal'], mascavo: ['mascavo'], demerara: ['demerara'], confeiteiro: ['confeiteiro'] },
+    // Só aqui "MASC" é mascavo (no desodorante, é masculino).
+    values: {
+      refinado: ['refinado', 'ref'],
+      cristal: ['cristal'],
+      mascavo: ['mascavo', 'masc'],
+      demerara: ['demerara', 'demer'],
+      confeiteiro: ['confeiteiro', 'confeit'],
+    },
     strict: ['mascavo', 'demerara', 'confeiteiro'],
   },
   { keys: ['sal'], values: { grosso: ['grosso'], refinado: ['refinado'], rosa: ['rosa', 'himalaia'], marinho: ['marinho'] }, strict: ['grosso', 'rosa'] },
@@ -469,7 +487,12 @@ const KINDS: readonly KindDimension[] = [
     values: { soja: ['soja'], girassol: ['girassol'], milho: ['milho'], canola: ['canola'], algodao: ['algodao'], vegetal: ['vegetal'], coco: ['coco'] },
     strict: ['coco'],
   },
-  { keys: ['agua'], values: { com_gas: ['com gas', 'c gas', 'gaseificada'], sem_gas: ['sem gas', 's gas'] }, strict: ['com_gas'], lineDefault: 'sem_gas' },
+  {
+    keys: ['agua'],
+    values: { com_gas: ['com gas', 'c gas', 'gaseificada', 'gaseific', 'gaseif'], sem_gas: ['sem gas', 's gas'] },
+    strict: ['com_gas'],
+    lineDefault: 'sem_gas',
+  },
   { keys: ['ovos'], values: { caipira: ['caipira'], branco: ['branco'], vermelho: ['vermelho'] } },
   {
     keys: ['carne'],
