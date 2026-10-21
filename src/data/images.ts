@@ -13,8 +13,16 @@ import { supabase } from '@/lib/supabase';
 
 export type ScanSource = 'camera' | 'library';
 
-/** Abre câmera ou galeria; lista vazia se o usuário desistir. */
+/** Abre câmera ou galeria; lista vazia se o usuário desistir. Na galeria, fica com as `limit` primeiras. */
 export async function pickImages(source: ScanSource, limit = 1): Promise<string[]> {
+  return (await pickAllImages(source, limit)).slice(0, limit);
+}
+
+/**
+ * Como `pickImages`, mas devolve tudo o que a pessoa escolheu: no navegador, a galeria não respeita `limit` (o
+ * seletor de arquivos só sabe "um" ou "vários"), e quem chama decide o que fazer com as imagens a mais.
+ */
+export async function pickAllImages(source: ScanSource, limit = 1): Promise<string[]> {
   const permission =
     source === 'camera'
       ? await ImagePicker.requestCameraPermissionsAsync()
@@ -36,7 +44,7 @@ export async function pickImages(source: ScanSource, limit = 1): Promise<string[
   const result =
     source === 'camera' ? await ImagePicker.launchCameraAsync(options) : await ImagePicker.launchImageLibraryAsync(options);
   if (result.canceled) return [];
-  return result.assets.slice(0, limit).map((asset) => asset.uri);
+  return result.assets.map((asset) => asset.uri);
 }
 
 /**

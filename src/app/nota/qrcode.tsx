@@ -19,8 +19,8 @@ import { radius, space, useColors } from '@/ui/theme';
 /**
  * Lê o QR code da nota (ou o link colado) e traz os itens da Sefaz, sem IA.
  * Se a Sefaz pedir o "não sou robô", o app não passa por ele: a nota fica
- * pendente (guardada no aparelho, em Finanças > Notas) e a tela troca a câmera
- * pelo passo a passo dos prints da Sefaz, que vão com a chave do QR. O mesmo QR
+ * pendente (guardada no aparelho, em Finanças > Notas) e abre a tela dela, com
+ * o passo a passo dos prints da Sefaz, que vão com a chave do QR. O mesmo QR
  * lido de novo abre a pendente, sem ir à Sefaz.
  */
 export default function NfceQrScreen() {
@@ -55,9 +55,9 @@ export default function NfceQrScreen() {
     const pending = pendingReceipts.pending;
     const step = qrReadStep(qr.accessKey, captchaKeys.current, new Set(pending.map((p) => p.accessKey)));
     if (step.kind === 'photo') {
+      const entry = pending.find((p) => p.accessKey === qr.accessKey);
       // A chave digitada não traz o link: vale o que a pendente guardou.
-      const url = qr.url ?? pending.find((p) => p.accessKey === qr.accessKey)?.url ?? null;
-      setPhotoOnly({ accessKey: qr.accessKey, url });
+      showPending({ accessKey: qr.accessKey, url: qr.url ?? entry?.url ?? null }, Boolean(entry));
       return;
     }
     busy.current = true;
@@ -67,20 +67,34 @@ export default function NfceQrScreen() {
         if (duplicate) notify('Nota já importada', 'Esta nota já estava no app — abrimos a existente.');
       },
       onError: (err) => {
-        busy.current = false;
         const message = errorMessage(err);
         if (nfceFailureRoute(err instanceof FunctionError ? err.code : null) === 'photo') {
-          // A câmera sai (não lê o mesmo QR de novo) e os prints entram no lugar dela. A nota fica pendente no
-          // aparelho: abrir a Sefaz pode recarregar o app, e a chave não se perde.
+          // A nota fica pendente no aparelho: abrir a Sefaz pode recarregar o app, e a chave não se perde. Até
+          // ela estar guardada, a câmera não lê o mesmo QR de novo.
           captchaKeys.current.set(qr.accessKey, message);
-          void pendingReceipts.save({ accessKey: qr.accessKey, url: qr.url });
-          setPhotoOnly({ accessKey: qr.accessKey, url: qr.url });
+          void pendingReceipts.save({ accessKey: qr.accessKey, url: qr.url }).then((saved) => {
+            busy.current = false;
+            showPending({ accessKey: qr.accessKey, url: qr.url }, saved);
+          });
           return;
         }
+        busy.current = false;
         notify('Não deu para ler a nota', message);
       },
     });
   }
+
+  /**
+   * A pendente guardada abre na tela dela (/nota/pendente?chave=…), que volta igual se o navegador recarregar o app
+   * enquanto a pessoa está na Sefaz. Sem ela guardada (sem armazenamento), o passo a passo fica aqui, no lugar da
+   * câmera, só enquanto a tela está aberta.
+   */
+  function showPending(qr: { accessKey: string; url: string | null }, stored: boolean) {
+    if (stored) router.replace({ pathname: '/nota/pendente', params: { chave: qr.accessKey } });
+    else setPhotoOnly(qr);
+  }
+
+  const close = () => (router.canGoBack() ? router.back() : router.replace('/financas'));
 
   return (
     <Screen edges={[]}>
@@ -95,10 +109,11 @@ export default function NfceQrScreen() {
           url={photoOnly.url}
           scanner={scanner}
           onDiscard={() => {
-            // Descartada, ela some daqui também: lida de novo, o QR vai à Sefaz como uma nota nova.
+            // Descartada, a tela fecha: com a câmera de volta, o papel ainda na frente dela traria a nota de novo.
+            // Lido depois, o QR vai à Sefaz como uma nota nova. Aqui ela não foi guardada; se foi, sai também.
             captchaKeys.current.delete(photoOnly.accessKey);
-            setPhotoOnly(null);
-            pendingReceipts.discard(photoOnly.accessKey).catch(() => notify('Não deu para descartar', 'Tente de novo.'));
+            void pendingReceipts.discard(photoOnly.accessKey).catch(() => undefined);
+            close();
           }}>
           <Button title="Ler outro QR code" icon="qrcode-scan" variant="ghost" disabled={scanner.busy} onPress={() => setPhotoOnly(null)} />
         </PendingReceiptCard>

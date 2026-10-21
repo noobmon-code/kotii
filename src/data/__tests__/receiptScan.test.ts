@@ -76,13 +76,13 @@ describe('nota pela foto com a chave do QR code', () => {
 describe('quantas fotos vão numa leitura', () => {
   const uris = (n: number) => Array.from({ length: n }, (_, i) => `foto${i}`);
 
-  it('vão até 8 fotos (os prints da Sefaz), na ordem; passando disso, as 8 primeiras', async () => {
+  it('vão até 6 fotos (os prints da Sefaz), na ordem; passando disso, as 6 primeiras', async () => {
     mockReply.data = { receipt_id: 'r1', duplicate: false };
-    await scanReceiptPhotos('h1', { uris: uris(8), accessKey: KEY });
-    expect((mockCalls[0].body as { image_paths: string[] }).image_paths).toEqual(uris(8).map((_, i) => `h1/${i}.jpg`));
+    await scanReceiptPhotos('h1', { uris: uris(6), accessKey: KEY });
+    expect((mockCalls[0].body as { image_paths: string[] }).image_paths).toEqual(uris(6).map((_, i) => `h1/${i}.jpg`));
     mockCalls.length = 0;
     await scanReceiptPhotos('h1', { uris: uris(10) });
-    expect((mockCalls[0].body as { image_paths: string[] }).image_paths).toHaveLength(8);
+    expect((mockCalls[0].body as { image_paths: string[] }).image_paths).toHaveLength(6);
   });
 
   it('a função de antes (até 4 fotos) recusa sem dizer por quê: a pessoa sabe quantas mandar, e as fotos saem', async () => {
@@ -96,8 +96,8 @@ describe('quantas fotos vão numa leitura', () => {
 
   it('a função de agora diz o limite: vale a mensagem dela; e até 4 fotos o "Imagem inválida." fica como veio', async () => {
     mockReply.status = 400;
-    mockReply.body = { error: 'Mande até 8 fotos ou prints por nota.', code: 'too_many_photos' };
-    await expect(scanReceiptPhotos('h1', { uris: uris(6) })).rejects.toThrow('Mande até 8 fotos ou prints por nota.');
+    mockReply.body = { error: 'Mande até 6 fotos ou prints por nota.', code: 'too_many_photos' };
+    await expect(scanReceiptPhotos('h1', { uris: uris(6) })).rejects.toThrow('Mande até 6 fotos ou prints por nota.');
     mockReply.body = { error: 'Imagem inválida.' };
     await expect(scanReceiptPhotos('h1', { uris: uris(3) })).rejects.toThrow('Imagem inválida.');
   });

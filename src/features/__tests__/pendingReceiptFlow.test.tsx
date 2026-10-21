@@ -9,6 +9,7 @@ import PendingReceiptScreen from '@/app/nota/pendente';
 import { accessKeyCheckDigit } from '@/domain/nfce';
 import { ReceiptsPanel } from '@/features/finance/ReceiptsPanel';
 import { openExternal } from '@/lib/openLink';
+import { notify } from '@/ui/dialogs';
 import { Button, ListRow } from '@/ui/primitives';
 
 // A nota da Paraíba com o "não sou robô", de ponta a ponta: a tela do QR de verdade, a lista de Finanças > Notas,
@@ -33,6 +34,8 @@ const mockCamera: { onScan: ((event: { data: string }) => void) | null } = { onS
 const mockRouter = { push: jest.fn(), replace: jest.fn(), back: jest.fn(), canGoBack: () => true };
 const mockParams: { chave?: string } = {};
 const mockPicked: string[] = [];
+// A parse-receipt que não achou itens nos prints (só o topo ou o rodapé).
+const mockReadsNoItems = { value: false };
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -64,6 +67,8 @@ jest.mock('expo-image-picker', () => ({}));
 jest.mock('@/data/images', () => ({
   ...jest.requireActual<typeof import('@/data/images')>('@/data/images'),
   pickImages: async (_source: string, limit: number) => mockPicked.slice(0, limit),
+  // No navegador, a galeria devolve tudo o que a pessoa escolheu, mesmo passando do limite.
+  pickAllImages: async () => [...mockPicked],
   uploadImages: async (_bucket: string, householdId: string, uris: string[]) => uris.map((_, i) => `${householdId}/${i}.jpg`),
   removeImages: async () => undefined,
 }));
@@ -84,6 +89,10 @@ jest.mock('@/lib/supabase', () => {
           mockDb.calls.push({ name, body });
           if (name === 'nfce') {
             const reply = { code: 'captcha', uf: '25', error: 'A Sefaz da Paraíba pede uma confirmação de que você não é robô.' };
+            return { data: null, error: new FunctionsHttpError(new Response(JSON.stringify(reply), { status: 422 })) };
+          }
+          if (mockReadsNoItems.value) {
+            const reply = { code: 'no_items', error: 'Não achei os itens da nota nas imagens.' };
             return { data: null, error: new FunctionsHttpError(new Response(JSON.stringify(reply), { status: 422 })) };
           }
           // parse-receipt: a nota nova, com a chave do QR que veio junto.
@@ -192,7 +201,9 @@ beforeEach(async () => {
   mockRouter.back.mockClear();
   mockParams.chave = undefined;
   mockPicked.length = 0;
+  mockReadsNoItems.value = false;
   jest.mocked(openExternal).mockClear();
+  jest.mocked(notify).mockClear();
 });
 
 afterEach(() => {
@@ -203,17 +214,27 @@ afterEach(() => {
 
 describe('nota da Sefaz com "não sou robô"', () => {
   it('fica pendente, aparece depois de reabrir o app, o mesmo QR não duplica e os prints viram a nota', async () => {
-    await open(<NfceQrScreen />);
+    const client = newClient();
+    await open(<NfceQrScreen />, client);
     await scan(QR);
 
-    // O CAPTCHA: a tela troca a câmera pelos prints, e a nota fica guardada no aparelho, com a chave e o link.
+    // O CAPTCHA: a nota fica guardada no aparelho, com a chave e o link, e a tela dela toma o lugar da do QR (o
+    // endereço volta igual se o navegador recarregar o app).
     expect(callsTo('nfce')).toHaveLength(1);
-    expect(page()).toContain('Leia esta nota pelos prints da Sefaz');
     expect(await stored()).toEqual([{ accessKey: KEY, url: expect.stringContaining('www.sefaz.pb.gov.br/nfce'), householdId: 'h1', savedAt: expect.any(String) }]);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/pendente', params: { chave: KEY } });
+    mockParams.chave = KEY;
+    await open(<PendingReceiptScreen />, client);
+    expect(page()).toContain('Leia esta nota pelos prints da Sefaz');
+    expect(page()).not.toContain('Esta nota não está mais pendente');
     await press('Abrir a nota na Sefaz');
     expect(openExternal).toHaveBeenCalledWith(expect.stringContaining(`www.sefaz.pb.gov.br/nfce?p=${KEY}`));
 
-    // O navegador recarregou o app: Finanças > Notas mostra a pendente, com o mercado que a casa já conhece.
+    // O navegador recarregou o app na tela da pendente: ela continua lá.
+    await open(<PendingReceiptScreen />);
+    expect(page()).toContain('Leia esta nota pelos prints da Sefaz');
+
+    // Finanças > Notas mostra a pendente, com o mercado que a casa já conhece.
     await open(<ReceiptsPanel />);
     expect(page()).toContain('Esperando os prints');
     expect(page()).toContain('Mercado Bom');
@@ -224,15 +245,18 @@ describe('nota da Sefaz com "não sou robô"', () => {
     expect(mockRouter.push).toHaveBeenCalledWith({ pathname: '/nota/pendente', params: { chave: KEY } });
 
     // O mesmo QR lido de novo: abre a pendente, sem ir à Sefaz e sem outra pendente.
+    mockRouter.replace.mockClear();
     await open(<NfceQrScreen />);
     await scan(QR);
     expect(callsTo('nfce')).toHaveLength(1);
-    expect(page()).toContain('Leia esta nota pelos prints da Sefaz');
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/pendente', params: { chave: KEY } });
     expect(await stored()).toHaveLength(1);
 
-    // Os prints: vão com a chave do QR (como a foto ia), viram a nota, e a pendente sai do aparelho.
+    // Os prints, pela tela da pendente: vão com a chave do QR (como a foto ia), viram a nota, e a pendente sai do
+    // aparelho.
+    await open(<PendingReceiptScreen />);
     mockPicked.push('topo', 'itens-1', 'itens-2', 'itens-3', 'itens-4', 'rodape');
-    await press('Enviar os prints (até 8)');
+    await press('Enviar os prints (até 6)');
     expect(callsTo('parse-receipt')).toEqual([
       { name: 'parse-receipt', body: { image_paths: ['h1/0.jpg', 'h1/1.jpg', 'h1/2.jpg', 'h1/3.jpg', 'h1/4.jpg', 'h1/5.jpg'], access_key: KEY } },
     ]);
@@ -308,15 +332,43 @@ describe('nota da Sefaz com "não sou robô"', () => {
     expect(page()).toContain('Esta nota não está mais pendente');
   });
 
-  it('descartada na tela do QR, o mesmo QR vai à Sefaz de novo como uma nota nova', async () => {
+  it('sem como guardar no aparelho, o passo a passo fica na tela do QR; descartada ali, a tela fecha', async () => {
+    // O armazenamento de mentira já é um jest.fn: a gravação da pendente (a próxima) falha.
+    jest.mocked(AsyncStorage.setItem).mockRejectedValueOnce(new Error('cheio'));
     await open(<NfceQrScreen />);
     await scan(QR);
-    await press('Descartar');
     expect(await stored()).toEqual([]);
-    expect(page()).not.toContain('Leia esta nota pelos prints da Sefaz');
-    await scan(QR);
-    expect(callsTo('nfce')).toHaveLength(2);
+    expect(mockRouter.replace).not.toHaveBeenCalled();
+    expect(page()).toContain('Leia esta nota pelos prints da Sefaz');
+    await press('Descartar');
+    // A câmera não volta (o papel ainda na frente dela traria a nota de novo): a tela fecha.
+    expect(mockRouter.back).toHaveBeenCalled();
+    expect(callsTo('nfce')).toHaveLength(1);
+  });
+
+  it('imagens demais da galeria (no navegador não há limite): nenhuma é lida, e a pessoa fica sabendo', async () => {
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify([{ accessKey: KEY, url: QR, householdId: 'h1', savedAt: '2026-10-19T12:00:00.000Z' }]));
+    mockParams.chave = KEY;
+    await open(<PendingReceiptScreen />);
+    mockPicked.push('topo', 'itens-1', 'itens-2', 'itens-3', 'itens-4', 'itens-5', 'rodape');
+    await press('Enviar os prints (até 6)');
+    expect(callsTo('parse-receipt')).toEqual([]);
+    expect(notify).toHaveBeenCalledWith('Imagens demais', expect.stringContaining('até 6 imagens'));
     expect(await stored()).toHaveLength(1);
+  });
+
+  it('os prints sem nenhum item (só o topo ou o rodapé): a pendente continua, para mandar a lista de itens', async () => {
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify([{ accessKey: KEY, url: QR, householdId: 'h1', savedAt: '2026-10-19T12:00:00.000Z' }]));
+    mockParams.chave = KEY;
+    mockReadsNoItems.value = true;
+    await open(<PendingReceiptScreen />);
+    mockPicked.push('topo');
+    await press('Enviar os prints (até 6)');
+    expect(callsTo('parse-receipt')).toHaveLength(1);
+    expect(notify).toHaveBeenCalledWith('Não foi possível ler a nota', 'Não achei os itens da nota nas imagens.');
+    expect(mockRouter.replace).not.toHaveBeenCalled();
+    expect(await stored()).toHaveLength(1);
+    expect(page()).toContain('Leia esta nota pelos prints da Sefaz');
   });
 
   it('QR que aponta para fora do governo: sem o botão de abrir, só os prints', async () => {
@@ -327,7 +379,7 @@ describe('nota da Sefaz com "não sou robô"', () => {
     mockParams.chave = KEY;
     await open(<PendingReceiptScreen />);
     expect(button('Abrir a nota na Sefaz')).toBeUndefined();
-    expect(button('Enviar os prints (até 8)')).toBeDefined();
+    expect(button('Enviar os prints (até 6)')).toBeDefined();
     expect(page()).toContain('Leia o QR code da nota com a câmera do celular');
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { readFileSync } from 'fs';
+import { readdirSync, readFileSync } from 'fs';
 import path from 'path';
 
 import { MAX_RECEIPT_PHOTOS, PREVIOUS_MAX_RECEIPT_PHOTOS, TOO_MANY_PHOTOS, tooManyPhotosMessage } from '../receiptPhotos';
@@ -9,7 +9,18 @@ describe('quantas fotos por nota', () => {
     const source = readFileSync(path.resolve(__dirname, '../../../supabase/functions/parse-receipt/extract.ts'), 'utf8');
     expect(source).toMatch(new RegExp(`export const MAX_PHOTOS = ${MAX_RECEIPT_PHOTOS};`));
     expect(source).toContain(`export const TOO_MANY_PHOTOS = '${TOO_MANY_PHOTOS}';`);
-    expect(MAX_RECEIPT_PHOTOS).toBe(8);
+    expect(MAX_RECEIPT_PHOTOS).toBe(6);
+  });
+
+  it('as fotos a mais cabem no banco: a nota guarda a primeira em image_path e as outras em extra_image_paths', () => {
+    // O último limite que as migrações deram a extra_image_paths (o check da coluna).
+    const dir = path.resolve(__dirname, '../../../supabase/migrations');
+    const limits = readdirSync(dir)
+      .filter((file) => file.endsWith('.sql'))
+      .sort()
+      .flatMap((file) => [...readFileSync(path.join(dir, file), 'utf8').matchAll(/cardinality\(extra_image_paths\)\s*<=\s*(\d+)/g)].map((m) => Number(m[1])));
+    expect(limits.length).toBeGreaterThan(0);
+    expect(MAX_RECEIPT_PHOTOS - 1).toBeLessThanOrEqual(limits[limits.length - 1]);
   });
 
   it('a função de antes recusa mais de 4 fotos sem dizer por quê: o app diz quantas mandar', () => {

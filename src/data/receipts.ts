@@ -12,7 +12,7 @@ import type { Receipt, ReceiptItem, Unit } from '@/lib/types';
 import {
   FunctionError,
   functionErrorDetails,
-  pickImages,
+  pickAllImages,
   removeImages,
   signedImageUrl,
   uploadImages,
@@ -153,9 +153,13 @@ export type { ScanSource } from './images';
 /** Nota comprida (ou os prints da Sefaz) vai em partes: até MAX_RECEIPT_PHOTOS fotos por nota. */
 export { MAX_RECEIPT_PHOTOS };
 
-/** Abre câmera (uma foto) ou galeria (até `limit`, em ordem); vazio se o usuário desistir. */
+/**
+ * Abre câmera (uma foto) ou galeria (até `limit`, em ordem); vazio se o usuário desistir. No navegador a galeria
+ * pode trazer mais que `limit`: vem tudo, e quem chama recusa, em vez de cortar sem avisar (a ordem dos arquivos
+ * ali não é garantida, e o rodapé com a data podia ser o que ficava de fora).
+ */
 export async function pickReceiptImages(source: ScanSource, limit = 1): Promise<string[]> {
-  return pickImages(source, limit);
+  return pickAllImages(source, limit);
 }
 
 export interface ReceiptPhotos {

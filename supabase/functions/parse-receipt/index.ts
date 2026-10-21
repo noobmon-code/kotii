@@ -6,7 +6,9 @@
 // sou robô" e a nota veio pelos prints ou pela foto. Se a casa já tem uma nota com ela,
 // devolve a existente (duplicate), sem gastar a IA; senão a nota guarda essa
 // chave, a menos que a foto seja de outra nota, e o CNPJ dela acha o mercado
-// quando a IA não leu um CNPJ válido (regras em accessKey.ts).
+// quando a IA não leu um CNPJ válido (regras em accessKey.ts). Com a chave, a
+// leitura sem nenhum item (só o topo ou o rodapé) não vira nota: 422 `no_items`,
+// e a pendente continua no app; sem a data lida, a nota fica no mês da chave.
 //
 // Roda com o JWT do usuário: todas as leituras e escritas passam pela RLS,
 // menos uma. O que a IA leu também vai para receipt_reads, com a chave secreta,
@@ -23,7 +25,16 @@ import { publishableKey, secretKey } from '../_shared/apiKeys.ts';
 import { ExtractionError, extractStructured, mediaTypeOf, toVisionImage, visionConfig } from '../_shared/vision.ts';
 import { ALLOWED_HEADERS, callerHeaders } from '../_shared/caller.ts';
 import { forgetReceiptRead, insertWithRead, receiptRead, saoPauloDay, saveReceiptRead } from '../_shared/receiptRead.ts';
-import { duplicateBeforeRead, existingOnConflict, keyAfterRead, photoIds, requestedAccessKey } from './accessKey.ts';
+import {
+  duplicateBeforeRead,
+  existingOnConflict,
+  fallbackPurchasedAt,
+  keyAfterRead,
+  NO_ITEMS,
+  photoIds,
+  readWithoutItems,
+  requestedAccessKey,
+} from './accessKey.ts';
 import {
   BOUGHT_RECEIPTS,
   type BoughtReceipt,
@@ -210,6 +221,15 @@ Deno.serve(async (req) => {
     ((aliasRows ?? []) as { description: string; product_id: string }[]).map((r) => [r.description, r.product_id]),
   );
   const receipt = cleanReceipt(extracted, new Set(catalog.map((p) => p.id)), aliasMatches);
+  // A nota do QR sem itens (os prints só do topo ou do rodapé) não vira nota: a pendente fica no app, para os
+  // prints da lista de itens. A leitura não conta no limite do mês.
+  if (readWithoutItems(givenKey, receipt.items.length)) {
+    await refundAiQuota(ticket).catch((e) => console.error('refund_ai failed', e));
+    return json(
+      { error: 'Não achei os itens da nota nas imagens. Mande de novo junto com a lista de itens (nos prints da Sefaz ou na foto do papel).', code: NO_ITEMS },
+      422,
+    );
+  }
 
   try {
     // A chave do QR vale mais que a lida na foto, menos quando a foto é de outra nota.
@@ -252,7 +272,8 @@ Deno.serve(async (req) => {
           .insert({
             ...(withRead ? { read_id: withRead } : {}),
             store_id: storeId,
-            purchased_at: receipt.purchasedAt ?? new Date().toISOString(),
+            // Sem a data lida (os prints sem o rodapé), o mês da chave: a nota pendente de outro mês não cai no de hoje.
+            purchased_at: receipt.purchasedAt ?? fallbackPurchasedAt(accessKey),
             total: receipt.total,
             access_key: accessKey,
             image_path: imagePaths[0],
@@ -289,6 +310,8 @@ Deno.serve(async (req) => {
     return json({ receipt_id: created.id, duplicate: false, items: receipt.items.length });
   } catch (err) {
     console.error('db error', err);
+    // Nenhuma nota ficou desta leitura (se os itens falharam, ela foi apagada acima): ela não conta no limite do mês.
+    await refundAiQuota(ticket).catch((e) => console.error('refund_ai failed', e));
     return json({ error: 'Falha ao salvar a nota.' }, 500);
   }
 });

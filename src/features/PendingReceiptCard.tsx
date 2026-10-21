@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import type { ReactNode } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 
 import { pendingReceiptCnpj, pendingReceiptSubtitle, sefazLink, type PendingReceipt } from '@/domain/pendingReceipts';
 import { MAX_RECEIPT_PHOTOS } from '@/domain/receiptPhotos';
@@ -53,7 +53,10 @@ export function PendingReceiptCard({
         A Sefaz pede uma confirmação de que você não é robô antes de mostrar esta nota, e o app não consegue fazer essa
         confirmação.
       </Text>
-      <Text variant="small">A nota fica guardada neste aparelho, em Finanças → Notas, até você enviar os prints.</Text>
+      {/* No iPhone, o Safari e o Kotii da tela de início guardam cada um as suas: no site, "neste app". */}
+      <Text variant="small">
+        {`A nota fica guardada ${Platform.OS === 'web' ? 'neste app' : 'neste aparelho'}, em Finanças → Notas e na tela Hoje, até você enviar os prints.`}
+      </Text>
 
       <View style={styles.steps}>
         <Text variant="body">
@@ -62,13 +65,13 @@ export function PendingReceiptCard({
             : '1. Leia o QR code da nota com a câmera do celular, abra a página da Sefaz e toque em "Consultar".'}
         </Text>
         <Text variant="body">
-          2. Tire prints da nota: o topo (nome do mercado e CNPJ), a lista de itens e o rodapé (data e chave de acesso). A
-          parte do consumidor, com o CPF, não precisa.
+          {`2. Tire prints da nota, até ${MAX_RECEIPT_PHOTOS} imagens: o topo (nome do mercado e CNPJ), a lista de itens e o rodapé (data e chave de acesso). O topo e o rodapé sempre vão. A parte do consumidor, com o CPF, não precisa.`}
         </Text>
         <Text variant="body">{'3. Volte aqui e toque em "Enviar os prints".'}</Text>
       </View>
       <Text variant="small">
         Sem o nome do mercado e a data nos prints, a nota vale só para a sua casa e não entra nos preços de outras casas.
+        Sem a data, confira o dia da compra na revisão.
       </Text>
 
       {link ? <Button title="Abrir a nota na Sefaz" icon="open-in-new" variant="secondary" onPress={() => void openSefaz()} /> : null}

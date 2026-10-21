@@ -5,9 +5,11 @@ import {
   chooseAccessKey,
   duplicateBeforeRead,
   existingOnConflict,
+  fallbackPurchasedAt,
   isValidAccessKey,
   keyAfterRead,
   photoIds,
+  readWithoutItems,
   requestedAccessKey,
 } from './accessKey.ts';
 
@@ -138,4 +140,25 @@ Deno.test('photoIds: o CNPJ lido pela IA vale para os dois; a foto de outra nota
   // Sem QR, ou com um QR cujo CNPJ não passa no verificador: só o que a IA leu.
   assertEquals(photoIds({ accessKey: null, cnpj: null }, null, false).storeCnpj, null);
   assertEquals(photoIds({ accessKey: null, cnpj: null }, A, false).storeCnpj, null);
+});
+
+Deno.test('readWithoutItems: a nota do QR lida sem itens não vira nota; a foto comum sem itens continua valendo', () => {
+  assertEquals(readWithoutItems(QR, 0), true);
+  assertEquals(readWithoutItems(QR, 1), false);
+  assertEquals(readWithoutItems(null, 0), false);
+});
+
+Deno.test('fallbackPurchasedAt: sem a data lida, a nota de um mês anterior fica no último dia dele, ao meio-dia de Brasília', () => {
+  const now = new Date('2026-10-02T13:00:00.000Z');
+  // A é de setembro de 2026: os prints mandados em outubro não mudam o mês da compra.
+  assertEquals(fallbackPurchasedAt(A, now), '2026-09-30T15:00:00.000Z');
+  // Do mês de hoje (QR, outubro de 2026), sem chave ou com um mês que não existe: agora.
+  assertEquals(fallbackPurchasedAt(QR, now), now.toISOString());
+  assertEquals(fallbackPurchasedAt(null, now), now.toISOString());
+  assertEquals(fallbackPurchasedAt('25261312345678000190650010000123451000012347', now), now.toISOString());
+  // Fevereiro de ano bissexto.
+  assertEquals(fallbackPurchasedAt('25280212345678000190650010000123451000012347', new Date('2028-03-05T12:00:00.000Z')), '2028-02-29T15:00:00.000Z');
+  // 1º de novembro às 2h UTC ainda é 31 de outubro em São Paulo: a nota de outubro é do mês de hoje.
+  const lateOctober = new Date('2026-11-01T02:00:00.000Z');
+  assertEquals(fallbackPurchasedAt(QR, lateOctober), lateOctober.toISOString());
 });

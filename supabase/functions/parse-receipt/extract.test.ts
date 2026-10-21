@@ -296,14 +296,14 @@ Deno.test('prints da Sefaz em várias imagens: o pedido leva todas e o texto que
 
 Deno.test('imagePathsError: até MAX_PHOTOS imagens da casa; a mais, a recusa diz o limite com o código', () => {
   const paths = (n: number, prefix = 'h1/') => Array.from({ length: n }, (_, i) => `${prefix}${i}.jpg`);
-  assertEquals(MAX_PHOTOS, 8);
+  assertEquals(MAX_PHOTOS, 6);
   assertEquals(imagePathsError(paths(1), 'h1'), null);
   assertEquals(imagePathsError(paths(MAX_PHOTOS), 'h1'), null);
-  assertEquals(imagePathsError(paths(MAX_PHOTOS + 1), 'h1'), { error: 'Mande até 8 fotos ou prints por nota.', code: TOO_MANY_PHOTOS });
+  assertEquals(imagePathsError(paths(MAX_PHOTOS + 1), 'h1'), { error: 'Mande até 6 fotos ou prints por nota.', code: TOO_MANY_PHOTOS });
   assertEquals(imagePathsError([], 'h1'), { error: 'Imagem inválida.' });
   assertEquals(imagePathsError(paths(2, 'h2/'), 'h1'), { error: 'Imagem inválida.' });
   assertEquals(imagePathsError([undefined], 'h1'), { error: 'Imagem inválida.' });
-  // As 8 maiores fotos que a IA aceita não cabem num pedido só: a soma tem teto, abaixo dos 32 MB em base64.
+  // As maiores fotos que a IA aceita, todas juntas, chegam perto do pedido: a soma tem teto, abaixo dos 32 MB em base64.
   assertEquals(MAX_TOTAL_IMAGE_BYTES * 4 / 3 < 32_000_000, true);
 });
 

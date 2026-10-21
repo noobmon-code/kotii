@@ -84,17 +84,19 @@ export function promptCatalog(bought: CatalogProduct[], newest: CatalogProduct[]
 export const SYSTEM = `Você lê notas fiscais de compra brasileiras (NFC-e, cupom fiscal, DANFE) e devolve os dados estruturados. Cada imagem é a foto do papel ou um print (captura de tela) da página de consulta da nota no site da Sefaz, que mostra a mesma nota em outro leiaute. Os dados alimentam um comparativo de preços entre mercados, então preço e quantidade de cada item precisam bater com o que está na nota.`;
 
 /**
- * Até 8 imagens por nota: a nota comprida, fotografada em partes, e os prints da página da Sefaz (o topo, a lista
- * de itens em várias telas e o rodapé). O app tem o mesmo limite (src/domain/receiptPhotos.ts; um teste confere).
+ * Até 6 imagens por nota: a nota comprida, fotografada em partes, e os prints da página da Sefaz (o topo, a lista
+ * de itens em até quatro telas e o rodapé). A primeira vai em receipts.image_path e as outras em
+ * extra_image_paths, que o banco limita a 5: passar de 6 pede uma migração antes do deploy. O app tem o mesmo
+ * limite (src/domain/receiptPhotos.ts; um teste do app confere este número e o do banco).
  */
-export const MAX_PHOTOS = 8;
+export const MAX_PHOTOS = 6;
 
 /** O código da recusa por fotos demais: o app mostra a mensagem, que diz o limite. */
 export const TOO_MANY_PHOTOS = 'too_many_photos';
 
 /**
  * Quanto as imagens de uma nota podem somar. Vão em base64 (um terço a mais) num pedido só à IA, e o pedido da
- * Anthropic aceita até 32 MB: cada foto tem até MAX_IMAGE_BYTES (_shared/vision.ts), mas 8 no máximo passariam disso.
+ * Anthropic aceita até 32 MB: cada foto tem até MAX_IMAGE_BYTES (_shared/vision.ts), e 6 no máximo, com o texto do pedido, ficariam no limite.
  */
 export const MAX_TOTAL_IMAGE_BYTES = 22_000_000;
 

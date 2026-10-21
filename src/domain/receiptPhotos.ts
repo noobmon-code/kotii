@@ -1,10 +1,12 @@
 // Quantas fotos (ou prints da Sefaz) uma nota leva na leitura por IA. O limite
 // é o mesmo da função parse-receipt (MAX_PHOTOS em extract.ts; um teste confere).
 // Cada foto a mais custa tempo e IA, mas a nota comprida e os prints da página
-// da Sefaz (o topo, os itens e o rodapé) precisam de mais que 4.
+// da Sefaz (o topo, os itens e o rodapé) precisam de mais que 4. A nota guarda
+// a primeira em image_path e as outras em extra_image_paths, que o banco limita
+// a 5 (outro teste confere): passar de 6 pede uma migração antes do deploy.
 
 /** Até quantas fotos por nota. */
-export const MAX_RECEIPT_PHOTOS = 8;
+export const MAX_RECEIPT_PHOTOS = 6;
 
 /** O limite da função publicada antes deste: ela recusa mais que isso com um "Imagem inválida." genérico. */
 export const PREVIOUS_MAX_RECEIPT_PHOTOS = 4;
