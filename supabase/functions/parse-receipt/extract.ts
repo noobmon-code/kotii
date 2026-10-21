@@ -138,6 +138,7 @@ ${parts}
 - Preço ou quantidade que não dá para ler: null. Nunca estime nem invente um número que não está legível na nota.
 - matched_product_id: o id de um produto da lista abaixo se for o mesmo produto (mesma marca e mesmo tamanho); senão null. Na dúvida, null.
 - purchased_at: data/hora de emissão em ISO 8601; sem fuso impresso, use -03:00.
+- total: o valor pago pela nota, já com os descontos ("Valor a pagar", "TOTAL NOTA"). Quando a nota mostra também o total dos produtos antes do desconto, use o valor a pagar.
 - cnpj: 14 dígitos do emitente, sem pontuação. access_key: os 44 dígitos da chave de acesso, se visível.
 - Outro campo ilegível: null. Não invente valores.
 - Se nenhuma imagem for de uma nota de compra (nem foto do papel nem print da nota na Sefaz), is_receipt=false e items vazio.
@@ -219,7 +220,10 @@ const COMPUTED_UNITS: ReadonlySet<string> = new Set(['un', 'kg', 'l']);
  */
 export function lineTotalFromPrinted(quantity: number | null, unit: string, unitPrice: number | null): number {
   if (quantity == null || !(quantity > 0) || unitPrice == null || !(unitPrice > 0) || !COMPUTED_UNITS.has(unit)) return 0;
-  const product = BigInt(Math.round(quantity * 10000)) * BigInt(Math.round(unitPrice * 10000));
+  const scaledQuantity = Math.round(quantity * 10000);
+  const scaledPrice = Math.round(unitPrice * 10000);
+  if (!Number.isFinite(scaledQuantity) || !Number.isFinite(scaledPrice)) return 0;
+  const product = BigInt(scaledQuantity) * BigInt(scaledPrice);
   return Number((product + 500000n) / 1000000n) / 100;
 }
 
@@ -232,10 +236,11 @@ const SUM_TOLERANCE_CENTS = 5;
  * válida, quantidades positivas, preço unitário coerente e ids de produto que
  * realmente existem na família (alias exato tem prioridade). Valor do item
  * ilegível (null) é a quantidade vezes o preço unitário, quando os dois foram
- * lidos (lineTotalFromPrinted), o total da nota foi lido e a soma das linhas
- * não passa dele (mais o arredondamento de cada conta): um desconto do item
- * que não teve onde entrar ou um número mal lido (642 kg, um preço de pacote
- * em gramas) passa do total, e aí nenhuma conta fica. Sem a conta, o valor
+ * lidos (lineTotalFromPrinted), o total da nota foi lido, nenhuma outra linha
+ * ficou sem valor e a soma das linhas não passa do total (mais o
+ * arredondamento de cada conta): um desconto do item que não teve onde entrar
+ * ou um número mal lido (642 kg, um preço de pacote em gramas) passa do
+ * total, e aí nenhuma conta fica. Sem a conta, o valor
  * vira 0, o "sem valor" que a revisão pergunta à pessoa; linha negativa
  * (cancelamento, desconto que a IA pôs como item) fica de fora. Quantidade
  * ilegível sai do total e do preço unitário; sem o preço unitário, a linha
@@ -293,11 +298,13 @@ export function cleanReceipt(
     items.push(item);
     if (fromPrinted > 0) computed.push(item);
   }
-  // A conferência das contas: a soma de todas as linhas não passa do total da nota. Linha que a revisão ainda vai
-  // perguntar (0) só deixa a soma menor; o que passa é desconto que ficou de fora ou número mal lido.
+  // A conferência das contas: a soma de todas as linhas não passa do total da nota; o que passa é desconto que ficou
+  // de fora ou número mal lido. Com outra linha ainda sem valor, a soma não confere nada (o valor que falta nela
+  // esconderia um desconto perdido), e a revisão pergunta todas.
   if (computed.length && receiptTotal != null) {
     const sumCents = items.reduce((sum, i) => sum + Math.round(i.total_price * 100), 0);
-    if (sumCents > Math.round(receiptTotal * 100) + SUM_TOLERANCE_CENTS + computed.length) {
+    const unread = items.some((i) => i.total_price === 0 && !computed.includes(i));
+    if (unread || sumCents > Math.round(receiptTotal * 100) + SUM_TOLERANCE_CENTS + computed.length) {
       for (const item of computed) item.total_price = 0;
     }
   }

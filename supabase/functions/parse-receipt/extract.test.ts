@@ -215,9 +215,10 @@ Deno.test('valor do item calculado: só com o total da nota lido, e só quando a
   // A vírgula do peso se perdeu (642 kg): passa do total, e nenhuma conta fica.
   const banana = line({ raw_description: 'BANANA KG', unit: 'kg', quantity: 642, unit_price: 7.48, total_price: null });
   assertEquals(read(68.15, [pizza, cafe, banana]), [['PIZZA CONG', 0], ['CAF 3C GOR', 34.99], ['BANANA KG', 0]]);
-  // Uma linha que a revisão ainda vai perguntar só deixa a soma menor que o total: a conta fica.
+  // Com outra linha ainda sem valor, a soma não confere nada: os R$ 10,00 do sabão esconderiam os R$ 4,00 de desconto
+  // perdidos da pizza (a soma 63,35 cabe no total 69,35), então a revisão pergunta as duas.
   const sabao = line({ raw_description: 'SABAO', quantity: null, unit_price: null, total_price: null });
-  assertEquals(read(70, [pizza, cafe, sabao]), [['PIZZA CONG', 28.36], ['CAF 3C GOR', 34.99], ['SABAO', 0]]);
+  assertEquals(read(69.35, [pizza, cafe, sabao]), [['PIZZA CONG', 0], ['CAF 3C GOR', 34.99], ['SABAO', 0]]);
   // Até 1 centavo por conta (o caixa que trunca) mais o arredondamento da revisão.
   assertEquals(read(63.29, [pizza, cafe]), [['PIZZA CONG', 28.36], ['CAF 3C GOR', 34.99]]);
   assertEquals(read(63.28, [pizza, cafe]), [['PIZZA CONG', 0], ['CAF 3C GOR', 34.99]]);
@@ -238,6 +239,12 @@ Deno.test('lineTotalFromPrinted: o centavo da conta não depende do ponto flutua
   // Em g e ml o preço por unidade tem mais casas do que a leitura guarda: sem conta.
   assertEquals(lineTotalFromPrinted(200, 'g', 12.9), 0);
   assertEquals(lineTotalFromPrinted(2000, 'ml', 0.004495), 0);
+  // Número absurdo (vira Infinity na escala) não derruba a leitura.
+  assertEquals(lineTotalFromPrinted(1e305, 'un', 1), 0);
+});
+
+Deno.test('instructions: o total da nota é o valor pago, depois dos descontos', () => {
+  assertEquals(instructions([]).includes('total: o valor pago pela nota, já com os descontos ("Valor a pagar", "TOTAL NOTA")'), true);
 });
 
 Deno.test('preço ilegível não derruba a nota pela OpenRouter', async () => {
