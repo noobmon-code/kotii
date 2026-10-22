@@ -34,6 +34,7 @@ export function PickerModal({
   suggestionsTitle,
   onSelectSuggestion = onSelect,
   message,
+  onDismiss,
 }: {
   visible: boolean;
   title: string;
@@ -48,6 +49,8 @@ export function PickerModal({
   onSelectSuggestion?: (id: string) => void;
   /** Uma frase logo abaixo do título: o que a escolha muda. */
   message?: string;
+  /** Só no iOS: o modal acabou de sumir (para abrir outro depois dele). */
+  onDismiss?: () => void;
 }) {
   const c = useColors();
   const [query, setQuery] = useState(initialQuery);
@@ -60,7 +63,12 @@ export function PickerModal({
   }, [options, query, suggested]);
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose} onShow={() => setQuery(initialQuery)}>
+    <Modal
+      visible={visible}
+      animationType="slide"
+      onRequestClose={onClose}
+      onShow={() => setQuery(initialQuery)}
+      onDismiss={onDismiss}>
       <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
         <Backdrop />
         <View style={styles.inner}>

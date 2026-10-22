@@ -11,6 +11,7 @@ import {
 } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
+import { productNamed as productWithName } from '@/domain/barcode';
 import type { CartPantryEntry } from '@/domain/cartPantry';
 import { pendingSameItem } from '@/domain/genericItem';
 import { LinkIndex, type ListLink, type OpenListItem } from '@/domain/listLinks';
@@ -1619,6 +1620,37 @@ export function useRenameProduct() {
       queryClient.invalidateQueries({ queryKey: ['products'] });
       // A categoria do produto decide onde o item entra no resumo de gastos, e o nome aparece no mercado do mês.
       queryClient.invalidateQueries({ queryKey: ['spending'] });
+    },
+  });
+}
+
+/**
+ * Cria um produto da casa (o código de barras novo de um produto que a casa ainda não tem). O nome que já é de
+ * outro produto (o banco não deixa dois iguais, sem contar maiúsculas: criado há pouco em outro aparelho) dá
+ * esse produto, com os produtos já buscados de novo: é o que a pessoa quis dizer.
+ */
+export function useCreateProduct() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ name, category }: { name: string; category: string }): Promise<Product> => {
+      const created = await supabase.from('products').insert({ name, category }).select('id, name, category, shelf_life_days');
+      if (created.error && isUniqueViolation(created.error)) {
+        const products = await queryClient.fetchQuery({ queryKey: ['products'], queryFn: fetchProducts, staleTime: 0 });
+        const existing = productWithName(products, name);
+        if (existing) return existing;
+      }
+      const rows = (unwrap(created) ?? []) as Product[];
+      if (!rows.length) throw new Error('Não foi possível criar o produto. Tente de novo.');
+      return rows[0];
+    },
+    onSuccess: (product) => {
+      // O produto novo já aparece nas telas, antes de a busca nova chegar.
+      queryClient.setQueryData<Product[]>(['products'], (products) =>
+        products && !products.some((p) => p.id === product.id)
+          ? [...products, product].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
+          : products,
+      );
+      queryClient.invalidateQueries({ queryKey: ['products'] });
     },
   });
 }
