@@ -76,7 +76,7 @@ jest.mock('@/ui/dialogs', () => ({
   notify: jest.fn(),
   confirmAction: (_title: string, _message: string, _label: string, yes: () => void) => yes(),
 }));
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null, Floating: ({ children }: { children: unknown }) => children }));
+jest.mock('@/ui/NukeLive', () => ({ NukeLive: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));
 jest.mock('@/lib/supabase', () => {

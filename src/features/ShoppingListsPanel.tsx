@@ -11,19 +11,22 @@ import { notify } from '@/ui/dialogs';
 import {
   Button,
   Card,
+  CategoryIcon,
   Chip,
   EmptyState,
   ErrorNotice,
   Icon,
-  IconBadge,
   type IconName,
   ListCard,
   ListRow,
   Loading,
   Row,
+  Section,
   Text,
   TextField,
+  Tile,
 } from '@/ui/primitives';
+import { FeatureCard } from '@/ui/ScreenHeader';
 import { space } from '@/ui/theme';
 
 export const LIST_KINDS: { value: ListKind; label: string; icon: IconName }[] = [
@@ -31,6 +34,9 @@ export const LIST_KINDS: { value: ListKind; label: string; icon: IconName }[] = 
   { value: 'farmacia', label: 'Farmácia', icon: 'pill' },
   { value: 'outros', label: 'Outros', icon: 'shopping-outline' },
 ];
+
+/** O desenho de cada tipo de lista: a categoria de produto que melhor a representa. */
+const KIND_ART: Record<ListKind, string> = { mercado: 'hortifruti', farmacia: 'medicamentos', outros: 'outros' };
 
 /** As listas na tela são as guardadas: a busca não chegou ao servidor. */
 const LISTS_OFFLINE = 'Sem internet agora. Mostrando as listas como estavam da última vez.';
@@ -67,6 +73,12 @@ export function ShoppingListsPanel() {
       {lists.isError ? (
         <StaleNotice message={isNetworkFailure(lists.error) ? LISTS_OFFLINE : undefined} onRetry={() => lists.refetch()} />
       ) : null}
+      <Row gap={space.md} style={styles.tiles}>
+        <Tile icon="plus" tint="orange" label="Nova lista" onPress={() => setCreating(true)} />
+        <Tile icon="chart-line" tint="blue" label="Preços" onPress={() => router.push('/precos')} />
+        <Tile icon="silverware-fork-knife" tint="green" label="Cardápio da semana" onPress={() => router.push('/cardapio')} />
+      </Row>
+
       {creating ? (
         <Card style={styles.gap}>
           <Text variant="heading">Nova lista</Text>
@@ -81,12 +93,7 @@ export function ShoppingListsPanel() {
             <Button title="Criar" onPress={create} loading={createList.isPending} style={styles.flex} />
           </Row>
         </Card>
-      ) : (
-        <Row>
-          <Button title="Nova lista" icon="plus" onPress={() => setCreating(true)} style={styles.flex} />
-          <Button title="Preços" icon="chart-line" variant="secondary" onPress={() => router.push('/precos')} style={styles.flex} />
-        </Row>
-      )}
+      ) : null}
 
       {lists.data.length === 0 && !creating ? (
         <EmptyState
@@ -94,39 +101,30 @@ export function ShoppingListsPanel() {
           title="Nenhuma lista ainda"
           message="Crie uma lista e toda a família vê e marca os itens em tempo real."
         />
-      ) : (
-        <ListCard>
-          {lists.data.map((l) => (
-            <ListRow
-              key={l.id}
-              left={<IconBadge icon={LIST_KINDS.find((k) => k.value === l.kind)?.icon ?? 'cart-outline'} tone="primary" />}
-              title={l.name}
-              subtitle={l.total === 0 ? 'Vazia' : `${l.pending} de ${l.total} ${l.total === 1 ? 'item' : 'itens'} pendentes`}
-              onPress={() => router.push({ pathname: '/lista/[id]', params: { id: l.id } })}
-            />
-          ))}
-        </ListCard>
-      )}
+      ) : lists.data.length ? (
+        <Section title="Suas listas">
+          <ListCard>
+            {lists.data.map((l) => (
+              <ListRow
+                key={l.id}
+                left={<CategoryIcon category={KIND_ART[l.kind] ?? 'outros'} size={44} />}
+                title={l.name}
+                subtitle={l.total === 0 ? 'Vazia' : `${l.pending} de ${l.total} ${l.total === 1 ? 'item' : 'itens'} pendentes`}
+                right={<Icon name="chevron-right" color="textMuted" />}
+                onPress={() => router.push({ pathname: '/lista/[id]', params: { id: l.id } })}
+              />
+            ))}
+          </ListCard>
+        </Section>
+      ) : null}
 
       {/* Daqui também se chega ao dinheiro do mercado, que nasce das notas das compras destas listas. */}
-      <ListCard>
-        <ListRow
-          left={<IconBadge icon="cart-outline" tone="primary" />}
-          title="Para onde foi o dinheiro do mercado"
-          subtitle="Mercado do mês: por item, por categoria e por mercado"
-          right={<Icon name="chevron-right" color="textMuted" />}
-          onPress={() => router.push('/mercado')}
-        />
-      </ListCard>
-
-      <ListCard>
-        <ListRow
-          left={<IconBadge icon="silverware-fork-knife" tone="info" />}
-          title="Cardápio da semana"
-          subtitle="Almoço e jantar; o Nuke monta a semana com o que tem em casa"
-          onPress={() => router.push('/cardapio')}
-        />
-      </ListCard>
+      <FeatureCard
+        gradient="salvia"
+        title="Para onde foi o dinheiro do mercado"
+        subtitle="Mercado do mês: por item, por categoria e por mercado"
+        onPress={() => router.push('/mercado')}
+      />
     </View>
   );
 }
@@ -135,4 +133,5 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   gap: { gap: space.lg },
   wrap: { flexWrap: 'wrap' },
+  tiles: { alignItems: 'stretch' },
 });

@@ -84,7 +84,6 @@ jest.mock('@/lib/auth', () => ({ useAuth: () => ({ session: { user: { id: 'u1' }
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: unknown) => String(error) }));
 jest.mock('@/ui/dialogs', () => ({ askYesNo: jest.fn(), confirmAction: jest.fn(), notify: jest.fn() }));
 // Os desenhos animados (reanimated) e o fundo não entram no que se confere aqui.
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 // O caminho depois de ler o código de barras tem os testes dele (productBarcodeFlow.test.tsx): aqui, só o botão e o
 // que a lista faz com o produto lido. Sem dizer nada, como num banco ainda sem a tabela: sem o botão.

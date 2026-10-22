@@ -7,7 +7,9 @@ import { BillsPanel } from '@/features/finance/BillsPanel';
 import { ConsultorCard } from '@/features/finance/ConsultorCard';
 import { FinanceSummaryPanel } from '@/features/finance/FinanceSummaryPanel';
 import { ReceiptsPanel } from '@/features/finance/ReceiptsPanel';
-import { PageTitle, Screen, Segmented } from '@/ui/primitives';
+import { FINANCE_TAB_LABELS, financeSubtitle } from '@/domain/screenHeaders';
+import { Screen, Segmented } from '@/ui/primitives';
+import { HeaderIcons, ScreenHeader } from '@/ui/ScreenHeader';
 
 type Tab = 'resumo' | 'contas' | 'notas';
 const TABS: Tab[] = ['resumo', 'contas', 'notas'];
@@ -38,7 +40,13 @@ export default function FinanceScreen() {
 
   return (
     <Screen fab refreshing={refreshing} onRefresh={refresh}>
-      <PageTitle title="Finanças" subtitle="Gastos, contas e notas" tint="green" />
+      <ScreenHeader
+        gradient="salvia"
+        eyebrow={FINANCE_TAB_LABELS[tab]}
+        title="Finanças"
+        subtitle={financeSubtitle(tab)}
+        art={<HeaderIcons icons={['receipt-text-outline', 'wallet-outline', 'chart-donut']} tints={['yellow', 'green', 'blue']} />}
+      />
       <Segmented
         value={tab}
         onChange={setTab}

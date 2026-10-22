@@ -56,7 +56,6 @@ jest.mock('expo-router', () => ({
 }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
 // As ilustrações usam o reanimated, que não roda aqui.
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 

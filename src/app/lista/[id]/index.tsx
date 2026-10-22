@@ -484,7 +484,6 @@ export default function ShoppingListScreen() {
           icon="wifi-off"
           title="Sem internet"
           message="Esta lista ainda não foi aberta neste aparelho. Ela aparece aqui quando a conexão voltar."
-          mood="calm"
         />
       </Screen>
     );

@@ -11,7 +11,8 @@ import { finishRecovery, startRecovery } from '@/lib/passwordRecovery';
 import { useSessionEnded } from '@/lib/session';
 import { supabase } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
-import { FamilyArt, Logo } from '@/ui/art';
+import { Logo } from '@/ui/art';
+import { NukeLive } from '@/ui/NukeLive';
 import { Button, Card, Icon, Row, Screen, Segmented, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
@@ -143,7 +144,7 @@ export default function SignInScreen() {
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <Screen edges={['top', 'bottom']}>
         <View style={styles.hero}>
-          <FamilyArt width={260} />
+          <NukeLive size={132} hop />
           <Logo size={36} />
           <Text variant="body" style={styles.center}>
             A casa em ordem, sem esforço: compras, contas, tarefas e saúde da família num lugar só.

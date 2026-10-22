@@ -18,7 +18,7 @@ import { useDocuments, useEquipmentList } from '@/data/house';
 import { useAddItemsToList, usePurchaseRecords, useShoppingLists } from '@/data/market';
 import { useRefreshMarketTrips } from '@/data/marketTrips';
 import { useMenu } from '@/data/menu';
-import { useRefreshWeather } from '@/data/weather';
+import { useForecast, useHouseholdLocation, useRefreshWeather } from '@/data/weather';
 import { usePendingReceipts } from '@/data/pendingReceipts';
 import { useDraftReceipts } from '@/data/receipts';
 import { useSupplies } from '@/data/supplies';
@@ -36,18 +36,20 @@ import { MEALS } from '@/domain/menu';
 import { describeExpiry, expiryStatus } from '@/domain/pantry';
 import { listExclusion, type PurchaseRecord } from '@/domain/recentPurchases';
 import { describeRestock, restockSuggestions, type RestockItem } from '@/domain/restock';
+import { currentSky, defaultSky } from '@/domain/sky';
 import { suppliesNeedingAttention } from '@/domain/supplies';
 import { announceCompletion } from '@/features/ChoresPanel';
 import { BillRow } from '@/features/finance/BillsPanel';
 import { PayBillModal } from '@/features/finance/PayBillModal';
 import { hasHealthToday, healthTodayCount, HealthTodaySections } from '@/features/health/HealthTodaySections';
-import { MedicationRefills, useRefills } from '@/features/health/MedicationSections';
+import { DoseSubtitle, MedicationRefills, useRefills } from '@/features/health/MedicationSections';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { InstallAppCard } from '@/features/InstallAppCard';
 import { MarketTripBanner } from '@/features/MarketTrip';
 import { PendingReceiptRow } from '@/features/PendingReceiptCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useJustListed } from '@/features/RecentPurchases';
+import { SKY_ART_ROOM, SkyHeader } from '@/features/SkyHeader';
 import { SuppliesTodaySection } from '@/features/SuppliesSection';
 import { TermsNoticeCard } from '@/features/TermsNotice';
 import { WeatherCard } from '@/features/WeatherCard';
@@ -55,9 +57,10 @@ import { useHousehold } from '@/lib/auth';
 import { settledData } from '@/lib/settledData';
 import type { Bill } from '@/lib/types';
 import { errorMessage } from '@/lib/supabase';
-import { periodOf, SkyArt, type Period } from '@/ui/art';
 import { notify } from '@/ui/dialogs';
+import { IconArt } from '@/ui/iconArt';
 import {
+  AddCircle,
   Badge,
   Button,
   Card,
@@ -66,15 +69,15 @@ import {
   EmptyState,
   Icon,
   IconBadge,
+  LinkButton,
   ListCard,
   ListRow,
   Screen,
   Section,
   Text,
   Tile,
-  useGlassStyle,
 } from '@/ui/primitives';
-import { radius, space, useTint, type Tint } from '@/ui/theme';
+import { fonts, radius, shadows, space, useColors, WASHES } from '@/ui/theme';
 
 const capitalizeFirst = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
@@ -84,8 +87,6 @@ function greeting(now: Date): string {
   if (h >= 12 && h < 18) return 'Boa tarde';
   return 'Boa noite';
 }
-
-const HERO_TINT: Record<Period, Tint> = { morning: 'yellow', afternoon: 'orange', night: 'purple' };
 
 /**
  * "Acho que acabou" da tela Hoje. O histórico pode ter milhares de linhas: só
@@ -238,9 +239,11 @@ export default function TodayScreen() {
     !restock.length &&
     !hasHealthToday(health, today);
   const dateLabel = capitalizeFirst(now.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }));
-  const period = periodOf(now);
-  const hero = useTint(HERO_TINT[period]);
-  const glass = useGlassStyle();
+  // O céu de agora (do clima da casa) no topo; sem bairro ou sem previsão, o céu do desenho.
+  const colors = useColors();
+  const location = useHouseholdLocation();
+  const forecast = useForecast(location.data);
+  const { sky, period } = currentSky(forecast.data, now) ?? defaultSky(now);
   const attention =
     pendingDoses.length +
     refills.length +
@@ -297,9 +300,10 @@ export default function TodayScreen() {
 
 
   return (
-    <Screen fab refreshing={refreshing} onRefresh={refresh}>
-      <View style={[styles.hero, glass, { backgroundColor: hero.bg }]}>
-        <View style={styles.heroText}>
+    <Screen fab edges={[]} refreshing={refreshing} onRefresh={refresh}>
+      <SkyHeader sky={sky} period={period}>
+        {/* Tudo o que fica na altura do desenho do clima deixa o espaço dele, o seletor de casa também. */}
+        <View style={{ paddingRight: SKY_ART_ROOM }}>
           {houses.length > 1 ? (
             <Pressable
               accessibilityRole="button"
@@ -313,21 +317,21 @@ export default function TodayScreen() {
               <Icon name="chevron-down" size={16} color="primary" />
             </Pressable>
           ) : null}
-          <Text variant="small">{dateLabel}</Text>
-          <Text variant="display">
+          <Text style={styles.eyebrow}>{dateLabel}</Text>
+          <Text accessibilityRole="header" style={styles.greeting}>
             {greeting(now)},{'\n'}
             {household.data?.me.display_name ?? ''}
           </Text>
-          <Text variant="body">{summary}</Text>
-          <Pressable accessibilityRole="button" onPress={() => router.push('/agenda')} style={styles.agendaLink}>
-            <Icon name="calendar-month-outline" size={18} color="primary" />
-            <Text variant="label" color="primary">
-              Ver a agenda
-            </Text>
-          </Pressable>
         </View>
-        <SkyArt period={period} size={104} />
-      </View>
+        <Text style={styles.summary}>{summary}</Text>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => router.push('/agenda')}
+          style={[styles.agendaLink, { backgroundColor: colors.glassStrong }]}>
+          <Icon name="calendar-month-outline" size={16} color="primary" />
+          <Text style={[styles.agendaText, { color: colors.primary }]}>Ver a agenda</Text>
+        </Pressable>
+      </SkyHeader>
 
       {/* Os termos mudaram (ou a pessoa nunca os viu): um aviso que some no "Entendi". */}
       <TermsNoticeCard />
@@ -340,17 +344,17 @@ export default function TodayScreen() {
       <InstallAppCard />
 
       <View style={styles.quickActions}>
-        <Tile icon="camera-outline" tint="orange" label="Escanear nota" onPress={scanner.open} />
+        <Tile art="camera" wash={WASHES.yellow} label="Escanear nota" onPress={scanner.open} />
         <Tile
-          icon="cart-outline"
-          tint="blue"
+          art="carrinho"
+          wash={WASHES.blue}
           label="Listas de compras"
           onPress={() => router.push({ pathname: '/casa', params: { aba: 'compras' } })}
         />
         <Tile
-          icon="broom"
-          tint="green"
-          label="Nova tarefa"
+          art="tarefa"
+          wash={WASHES.green}
+          label="Criar nova tarefa"
           onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: 'nova' } })}
         />
       </View>
@@ -360,7 +364,6 @@ export default function TodayScreen() {
           <EmptyState
             icon="check-circle-outline"
             tint="green"
-            mood="calm"
             title="Tudo em dia"
             message="Nenhum remédio, consulta, tarefa, conta, validade ou documento pedindo atenção agora."
           />
@@ -373,10 +376,10 @@ export default function TodayScreen() {
             {pendingDoses.map((d) => (
               <ListRow
                 key={doseKey(d.medicationId, d.date, d.time)}
-                left={<IconBadge icon="pill" tone={d.time < nowTime ? 'warning' : 'info'} />}
+                left={<IconArt name="capsula" />}
                 title={`${d.time} · ${d.name}`}
                 // Sem o selo de caixa acabando: a seção logo abaixo já diz, uma vez por remédio.
-                subtitle={[d.personName, d.dosage].filter(Boolean).join(' · ')}
+                subtitle={<DoseSubtitle parts={[d.personName, d.dosage]} late={d.time < nowTime} />}
                 right={
                   <CheckCircle
                     checked={false}
@@ -579,15 +582,7 @@ export default function TodayScreen() {
       {restock.length ? (
         <Section
           title="Acho que acabou"
-          action={
-            <Button
-              title="Pôr tudo na lista"
-              variant="ghost"
-              compact
-              disabled={addToList.isPending}
-              onPress={() => addRestock(restock, true)}
-            />
-          }>
+          action={<LinkButton title="Pôr tudo na lista" disabled={addToList.isPending} onPress={() => addRestock(restock, true)} />}>
           <ListCard>
             {restock.map((item) => (
               <ListRow
@@ -595,7 +590,13 @@ export default function TodayScreen() {
                 left={<CategoryIcon category={item.category} name={item.name} />}
                 title={item.name}
                 subtitle={describeRestock(item)}
-                right={<Icon name="plus-circle-outline" color="primary" />}
+                right={
+                  <AddCircle
+                    label={`Pôr ${item.name} na lista`}
+                    disabled={addToList.isPending}
+                    onPress={() => addRestock([item], false)}
+                  />
+                }
                 onPress={addToList.isPending ? undefined : () => addRestock([item], false)}
               />
             ))}
@@ -626,17 +627,33 @@ export default function TodayScreen() {
 }
 
 const styles = StyleSheet.create({
-  hero: {
+  eyebrow: { fontFamily: fonts.bold, fontSize: 13, lineHeight: 18 },
+  greeting: { fontFamily: fonts.heavy, fontSize: 30, lineHeight: 35, letterSpacing: -0.3 },
+  summary: { fontFamily: fonts.semibold, fontSize: 15, lineHeight: 21 },
+  quickActions: { flexDirection: 'row', alignItems: 'stretch', gap: space.md },
+  agendaLink: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.sm,
-    borderRadius: radius.xl,
-    padding: space.xl,
-    paddingRight: space.md,
+    alignSelf: 'flex-start',
+    justifyContent: 'center',
+    gap: 6,
+    // 44 de altura: o toque inteiro.
+    minHeight: 44,
+    paddingVertical: 8,
+    paddingLeft: 12,
+    paddingRight: 14,
+    borderRadius: radius.pill,
+    boxShadow: shadows.pill,
   },
-  heroText: { flex: 1, gap: space.xs },
-  quickActions: { flexDirection: 'row', gap: space.md },
-  agendaLink: { flexDirection: 'row', alignItems: 'center', gap: space.xs, alignSelf: 'flex-start', paddingVertical: space.xs },
-  houseSwitch: { flexDirection: 'row', alignItems: 'center', gap: space.xs, alignSelf: 'flex-start', paddingVertical: space.xs },
+  agendaText: { fontFamily: fonts.heavy, fontSize: 14, lineHeight: 18 },
+  // O mesmo respiro de antes até a data, agora que os dois ficam no mesmo bloco.
+  houseSwitch: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.xs,
+    alignSelf: 'flex-start',
+    paddingVertical: space.xs,
+    marginBottom: 6,
+  },
   houseName: { flexShrink: 1 },
 });

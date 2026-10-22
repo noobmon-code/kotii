@@ -11,10 +11,10 @@ import { FieldsModal } from '@/features/health/FieldsModal';
 import { useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import type { Chore, Person } from '@/lib/types';
-import { Mascot } from '@/ui/art';
 import { notify } from '@/ui/dialogs';
+import { Orb } from '@/ui/Orb';
 import { Button, Card, EmptyState, ErrorNotice, ListRow, Loading, Row, Screen, Text } from '@/ui/primitives';
-import { space, useTint, type Tint } from '@/ui/theme';
+import { fonts, space, useGlow, type Tint } from '@/ui/theme';
 
 const TINTS: Tint[] = ['yellow', 'green', 'pink', 'blue', 'purple', 'orange'];
 const plural = (n: number) => `${n} ${Math.abs(n) === 1 ? 'ponto' : 'pontos'}`;
@@ -91,7 +91,7 @@ function KidCard({
   chores: { chore: Chore; subtitle: string }[];
   ordersKnown: boolean;
 }) {
-  const t = useTint(tint);
+  const glow = useGlow(tint);
   const today = todayISO();
   const history = useKidHistory(kid.id, addDays(today, -6));
   const redeem = useRedeemPoints();
@@ -103,9 +103,10 @@ function KidCard({
   return (
     <Card style={styles.gap}>
       <Row>
-        <View style={[styles.avatar, { backgroundColor: t.bg }]}>
-          <Mascot size={44} color={t.art} shape="bean" />
-        </View>
+        <Orb size={64} glow={glow}>
+          {/* A letra na cor do texto: no tom da criança, sobre o brilho do mesmo tom, ela some. */}
+          <Text style={styles.initial}>{kid.name.trim().charAt(0).toUpperCase()}</Text>
+        </Orb>
         <View style={styles.flex}>
           <Text variant="heading">{kid.name}</Text>
           <Text variant="title">{plural(balance)}</Text>
@@ -183,5 +184,5 @@ function KidCard({
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   gap: { gap: space.md },
-  avatar: { width: 64, height: 64, borderRadius: 32, alignItems: 'center', justifyContent: 'center' },
+  initial: { fontFamily: fonts.heavy, fontSize: 28, lineHeight: 34 },
 });

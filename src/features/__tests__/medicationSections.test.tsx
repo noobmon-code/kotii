@@ -36,7 +36,6 @@ jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
 jest.mock('@/lib/reminders', () => ({ REMINDER_PLACE: 'neste celular', remindersSupported: false }));
 jest.mock('@/lib/medicationBox', () => ({ lastBoxUnits: async () => null, rememberBoxUnits: jest.fn() }));
 // Os desenhos animados (reanimated) e o fundo não entram no que se confere aqui.
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 
 const today = todayISO();

@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { Image } from 'expo-image';
-import { Children, Fragment, useState, type ReactNode, type RefObject } from 'react';
+import { Children, Fragment, isValidElement, useState, type ReactNode, type RefObject } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -18,22 +18,25 @@ import {
   useColorScheme,
 } from 'react-native';
 import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
+import Svg, { Circle, Line } from 'react-native-svg';
 
 import { getCategory, type IconName } from '@/domain/categories';
 import { formatBRDate, maskBRDate, parseBRDate } from '@/domain/dates';
 import { matchItemArt } from '@/domain/itemArt';
-import { Mascot, Spot, type Mood } from './art';
 import { Backdrop } from './Backdrop';
 import { CATEGORY_ART } from './categoryArt';
+import { AngledGradient } from './gradient';
+import { IconArt, type IconArtName } from './iconArt';
 import { ITEM_ART } from './itemArt';
-import { fonts, MAX_WIDTH, radius, shadows, space, useColors, useTint, type Colors, type Tint } from './theme';
+import { Orb } from './Orb';
+import { fonts, MAX_WIDTH, radius, SCREEN_PADDING, shadows, space, useColors, useGlow, useScheme, useTint, type Colors, type Tint } from './theme';
 
 export type { IconName };
 
 // ---------------------------------------------------------------------------
 // Texto
 
-type TextVariant = 'display' | 'title' | 'heading' | 'body' | 'label' | 'muted' | 'small';
+type TextVariant = 'display' | 'title' | 'heading' | 'body' | 'rowTitle' | 'label' | 'muted' | 'small';
 
 export function Text({
   variant = 'body',
@@ -52,6 +55,7 @@ const textStyles = StyleSheet.create({
   title: { fontFamily: fonts.heavy, fontSize: 28, lineHeight: 34, letterSpacing: -0.4 },
   heading: { fontFamily: fonts.heavy, fontSize: 20, lineHeight: 26, letterSpacing: -0.2 },
   body: { fontFamily: fonts.regular, fontSize: 16, lineHeight: 23 },
+  rowTitle: { fontFamily: fonts.bold, fontSize: 16, lineHeight: 22 },
   label: { fontFamily: fonts.bold, fontSize: 15, lineHeight: 20 },
   muted: { fontFamily: fonts.regular, fontSize: 14, lineHeight: 20 },
   small: { fontFamily: fonts.semibold, fontSize: 12.5, lineHeight: 17 },
@@ -145,9 +149,30 @@ function glassStyle(c: Colors): ViewStyle {
   return style;
 }
 
+/** O clarão do vidro: um véu branco no canto de cima à esquerda que some até quase a metade. */
+function GlassHighlight({ angle, borderRadius }: { angle: number; borderRadius: number }) {
+  const dark = useScheme() === 'dark';
+  return (
+    <View pointerEvents="none" style={[styles.highlight, { borderRadius, borderCurve: 'continuous' }]}>
+      <AngledGradient
+        angle={angle}
+        stops={[
+          { offset: 0, color: '#FFFFFF', opacity: dark ? 0.07 : 0.6 },
+          { offset: 0.45, color: '#FFFFFF', opacity: 0 },
+        ]}
+      />
+    </View>
+  );
+}
+
 export function Card({ children, style }: { children: ReactNode; style?: StyleProp<ViewStyle> }) {
   const glass = useGlassStyle();
-  return <View style={[styles.card, glass, style]}>{children}</View>;
+  return (
+    <View style={[styles.card, glass, style]}>
+      <GlassHighlight angle={157.8} borderRadius={Number(StyleSheet.flatten(style)?.borderRadius ?? radius.lg)} />
+      {children}
+    </View>
+  );
 }
 
 /** Card de linhas (ListRow) com divisor só entre elas. */
@@ -158,7 +183,16 @@ export function ListCard({ children }: { children: ReactNode }) {
     <Card style={styles.listCard}>
       {rows.map((row, index) => (
         <Fragment key={index}>
-          {index > 0 ? <View style={[styles.divider, { backgroundColor: c.border }]} /> : null}
+          {/* O divisor começa onde o texto começa: depois do ícone da linha, quando ela tem um. */}
+          {index > 0 ? (
+            <View
+              style={[
+                styles.divider,
+                { backgroundColor: c.hairline },
+                isValidElement<{ left?: ReactNode }>(row) && row.props.left ? styles.dividerInset : null,
+              ]}
+            />
+          ) : null}
           {row}
         </Fragment>
       ))}
@@ -170,28 +204,12 @@ export function Section({ title, action, children }: { title: string; action?: R
   return (
     <View style={styles.section}>
       <View style={styles.sectionHeader}>
-        <Text variant="heading" style={styles.flex}>
+        <Text variant="label" color="brand" style={[styles.sectionTitle, styles.flex]} accessibilityRole="header">
           {title}
         </Text>
         {action}
       </View>
       {children}
-    </View>
-  );
-}
-
-/** Título das abas: nome da tela com um personagem da cor da seção. */
-export function PageTitle({ title, subtitle, tint }: { title: string; subtitle?: string; tint: Tint }) {
-  const t = useTint(tint);
-  return (
-    <View style={styles.pageTitle}>
-      <View style={styles.flex}>
-        <Text variant="title">{title}</Text>
-        {subtitle ? <Text variant="muted">{subtitle}</Text> : null}
-      </View>
-      <View style={[styles.pageTitleArt, { backgroundColor: t.bg }]}>
-        <Mascot size={40} color={t.art} shape="bean" />
-      </View>
     </View>
   );
 }
@@ -300,6 +318,7 @@ export function IconButton({
   );
 }
 
+/** O botão de marcar: um aro de vidro, vazio; marcado, azul com o visto. A área de toque é de 44. */
 export function CheckCircle({ checked, onPress, label }: { checked: boolean; onPress: () => void; label: string }) {
   const c = useColors();
   return (
@@ -307,16 +326,60 @@ export function CheckCircle({ checked, onPress, label }: { checked: boolean; onP
       accessibilityRole="checkbox"
       accessibilityState={{ checked }}
       accessibilityLabel={label}
-      hitSlop={10}
       onPress={onPress}
-      style={[
-        styles.check,
-        { borderColor: checked ? c.primary : c.border, backgroundColor: checked ? c.primary : 'transparent' },
-      ]}>
-      {checked ? <Icon name="check" size={16} color="onPrimary" /> : null}
+      style={({ pressed }) => [styles.mark, pressed && styles.pressed]}>
+      <View
+        style={[
+          styles.markCircle,
+          { borderColor: checked ? c.primary : c.ring, backgroundColor: checked ? c.primary : c.glassStrong },
+        ]}>
+        {checked ? <Icon name="check" size={18} color="onPrimary" /> : null}
+      </View>
     </Pressable>
   );
 }
+
+/** O botão de pôr na lista: um aro azul com um mais. A área de toque é de 44. */
+export function AddCircle({ onPress, label, disabled }: { onPress?: () => void; label: string; disabled?: boolean }) {
+  const c = useColors();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      disabled={disabled || !onPress}
+      onPress={onPress}
+      style={({ pressed }) => [styles.mark, disabled && { opacity: 0.5 }, pressed && styles.pressed]}>
+      <Svg width={44} height={44} viewBox="0 0 44 44">
+        <Circle cx={22} cy={22} r={10.85} fill="none" stroke={c.primary} strokeWidth={2.4} />
+        <Line x1={17.65} y1={22} x2={26.35} y2={22} stroke={c.primary} strokeWidth={2.4} strokeLinecap="round" />
+        <Line x1={22} y1={17.65} x2={22} y2={26.35} stroke={c.primary} strokeWidth={2.4} strokeLinecap="round" />
+      </Svg>
+    </Pressable>
+  );
+}
+
+/**
+ * Texto de ação azul, sem caixa ("Pôr tudo na lista"). O toque passa do texto (18) até 44 de altura: mais para cima,
+ * porque embaixo, a 8, já começa o cartão da seção.
+ */
+export function LinkButton({ title, onPress, disabled }: { title: string; onPress: () => void; disabled?: boolean }) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      hitSlop={LINK_HIT_SLOP}
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [disabled && { opacity: 0.5 }, pressed && { opacity: 0.6 }]}>
+      <Text variant="label" color="primary" style={styles.link}>
+        {title}
+      </Text>
+    </Pressable>
+  );
+}
+
+const LINK_HIT_SLOP = { top: 18, bottom: space.sm, left: 8, right: 8 };
 
 // ---------------------------------------------------------------------------
 // Formulário
@@ -479,6 +542,8 @@ export function Segmented<T extends string>({
   onChange: (value: T) => void;
 }) {
   const c = useColors();
+  // O item aberto é um cartão branco; à noite, um cinza um pouco mais claro que o fundo.
+  const selectedBg = useScheme() === 'dark' ? c.surfaceAlt : c.surface;
   return (
     <View style={[styles.segmented, { backgroundColor: c.glass, borderColor: c.glassBorder }]}>
       {options.map((o) => {
@@ -489,7 +554,7 @@ export function Segmented<T extends string>({
             accessibilityRole="tab"
             accessibilityState={{ selected }}
             onPress={() => onChange(o.value)}
-            style={[styles.segment, selected && { backgroundColor: c.surface }, selected && styles.segmentSelected]}>
+            style={[styles.segment, selected && { backgroundColor: selectedBg }, selected && styles.segmentSelected]}>
             <Text variant="label" color={selected ? 'text' : 'textMuted'} numberOfLines={1}>
               {o.label}
             </Text>
@@ -557,20 +622,26 @@ export function Badge({ label, tone = 'neutral' }: { label: string; tone?: Tone 
   );
 }
 
-export function IconBadge({ icon, tone = 'neutral', size = 40 }: { icon: IconName; tone?: Tone; size?: number }) {
+export function IconBadge({ icon, tone = 'neutral', size = 44 }: { icon: IconName; tone?: Tone; size?: number }) {
   const c = useColors();
-  const map: Record<Tone, [string, keyof Colors]> = {
-    neutral: [c.surfaceAlt, 'text'],
-    primary: [c.primarySoft, 'primary'],
-    danger: [c.dangerSoft, 'danger'],
-    warning: [c.warningSoft, 'warning'],
-    info: [c.infoSoft, 'info'],
+  const glows = {
+    neutral: useGlow('orange'),
+    primary: useGlow('blue'),
+    danger: useGlow('pink'),
+    warning: useGlow('yellow'),
+    info: useGlow('blue'),
   };
-  const [bg, fg] = map[tone];
+  const fg: Record<Tone, keyof Colors> = {
+    neutral: 'text',
+    primary: 'primary',
+    danger: 'danger',
+    warning: 'warning',
+    info: 'info',
+  };
   return (
-    <View style={[styles.iconBadge, { width: size, height: size, backgroundColor: bg }]}>
-      <Icon name={icon} size={size * 0.55} color={fg} />
-    </View>
+    <Orb size={size} glow={tone === 'neutral' ? c.border : glows[tone]}>
+      <Icon name={icon} size={Math.round(size * 0.5)} color={fg[tone]} />
+    </Orb>
   );
 }
 
@@ -599,18 +670,24 @@ export function CategoryIcon({
   dimmed?: boolean;
 }) {
   const art = CATEGORY_ART[getCategory(category).key];
-  const tint = useTint(art.tint);
+  const glow = useGlow(art.tint);
   const itemKey = name ? matchItemArt(name, category) : null;
+  // Na orbe o desenho fica um pouco menor que ela, para o vidro aparecer em volta.
+  const imageSize = backdrop ? Math.round(size * 0.8) : size;
   const image = (
     <Image
       source={itemKey ? ITEM_ART[itemKey] : art.image}
-      style={{ width: size, height: size, opacity: dimmed ? 0.45 : 1 }}
+      style={{ width: imageSize, height: imageSize, opacity: dimmed ? 0.45 : 1 }}
       contentFit="contain"
       accessible={false}
     />
   );
   if (!backdrop) return image;
-  return <View style={[styles.iconBadge, { width: size, height: size, backgroundColor: tint.bg }]}>{image}</View>;
+  return (
+    <Orb size={size} glow={glow}>
+      {image}
+    </Orb>
+  );
 }
 
 /**
@@ -655,7 +732,7 @@ export function ListRow({
       ]}>
       {left}
       <View style={styles.flex}>
-        <Text variant="body" numberOfLines={2} style={dimmed && styles.strike}>
+        <Text variant="rowTitle" numberOfLines={2} style={dimmed && styles.strike}>
           {title}
         </Text>
         {typeof subtitle === 'string' ? <Text variant="muted">{subtitle}</Text> : subtitle}
@@ -665,30 +742,50 @@ export function ListRow({
   );
 }
 
-/** Atalho colorido com ícone e rótulo (ações rápidas). */
+/**
+ * Atalho de vidro com o ícone e o rótulo embaixo (ações rápidas). O ícone é um desenho 3D (`art`) ou um ícone
+ * numa orbe (`icon`). A cor aparece como um brilho no canto de cima (`wash`, ou o do `tint`), não como fundo.
+ */
 export function Tile({
   icon,
+  art,
   label,
   onPress,
   tint = 'orange',
+  wash,
 }: {
-  icon: IconName;
+  icon?: IconName;
+  art?: IconArtName;
   label: string;
   onPress: () => void;
   tint?: Tint;
+  wash?: string;
 }) {
   const glass = useGlassStyle();
   const t = useTint(tint);
+  const glow = useGlow(tint);
+  const dark = useScheme() === 'dark';
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
       onPress={onPress}
-      style={({ pressed }) => [styles.tile, glass, { backgroundColor: t.bg }, pressed && styles.pressed]}>
-      <View style={[styles.tileIcon, { backgroundColor: t.art }]}>
-        <MaterialCommunityIcons name={icon} size={24} color="#FFFFFF" />
-      </View>
-      <Text variant="label" style={styles.center} numberOfLines={2}>
+      style={({ pressed }) => [styles.tile, glass, pressed && styles.pressed]}>
+      <AngledGradient
+        angle={130.8}
+        stops={[
+          { offset: 0, color: wash ?? glow, opacity: dark ? 0.32 : 1 },
+          { offset: 1, color: wash ?? glow, opacity: 0 },
+        ]}
+      />
+      {art ? (
+        <IconArt name={art} />
+      ) : (
+        <Orb size={48} glow={glow}>
+          <MaterialCommunityIcons name={icon ?? 'star'} size={24} color={t.art} />
+        </Orb>
+      )}
+      <Text variant="label" style={styles.tileLabel} numberOfLines={2}>
         {label}
       </Text>
     </Pressable>
@@ -701,22 +798,21 @@ export function EmptyState({
   message,
   action,
   tint = 'orange',
-  mood = 'happy',
 }: {
   icon: IconName;
   title: string;
   message?: string;
   action?: ReactNode;
   tint?: Tint;
-  mood?: Mood;
 }) {
+  const t = useTint(tint);
+  const glow = useGlow(tint);
   return (
     <View style={styles.empty}>
       <View accessibilityLabel={title}>
-        <Spot tint={tint} mood={mood} size={124} />
-        <View style={styles.emptyBadge}>
-          <IconBadge icon={icon} size={36} tone="primary" />
-        </View>
+        <Orb size={104} glow={glow}>
+          <MaterialCommunityIcons name={icon} size={46} color={t.art} />
+        </Orb>
       </View>
       <Text variant="heading" style={styles.center}>
         {title}
@@ -769,18 +865,18 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: MAX_WIDTH,
     alignSelf: 'center',
-    padding: space.lg,
+    padding: SCREEN_PADDING,
     gap: space.xl,
   },
   contentWithFab: { paddingBottom: 96 },
   footer: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: space.lg, paddingVertical: space.md },
   footerInner: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', gap: space.sm },
-  card: { borderRadius: radius.lg, padding: space.lg + 2 },
-  pageTitle: { flexDirection: 'row', alignItems: 'center', gap: space.md },
-  pageTitleArt: { width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center' },
+  card: { borderRadius: radius.lg, borderCurve: 'continuous', padding: space.lg + 2 },
+  highlight: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, overflow: 'hidden' },
   pressed: { transform: [{ scale: 0.97 }] },
-  section: { gap: space.md },
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  section: { gap: space.sm },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingHorizontal: space.xs },
+  sectionTitle: { fontFamily: fonts.heavy, fontSize: 12, lineHeight: 16 },
   row: { flexDirection: 'row', alignItems: 'center' },
   button: {
     minHeight: 52,
@@ -794,14 +890,9 @@ const styles = StyleSheet.create({
   },
   buttonCompact: { minHeight: 40, paddingHorizontal: space.lg },
   iconButton: { padding: space.xs, borderRadius: radius.pill },
-  check: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    borderWidth: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  mark: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  markCircle: { width: 28, height: 28, borderRadius: 14, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
+  link: { fontFamily: fonts.heavy, fontSize: 14, lineHeight: 18 },
   field: { gap: space.xs },
   input: {
     minHeight: 52,
@@ -820,8 +911,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   segmentSelected: {
-    shadowColor: '#2B2A3A',
-    shadowOpacity: 0.08,
+    shadowColor: '#784028',
+    shadowOpacity: 0.1,
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 2 },
     elevation: 2,
@@ -838,22 +929,24 @@ const styles = StyleSheet.create({
   chipText: { fontSize: 14 },
   badge: { borderRadius: radius.pill, paddingHorizontal: space.sm, paddingVertical: 2, alignSelf: 'flex-start' },
   badgeText: { fontFamily: fonts.bold },
-  iconBadge: { borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
-  listRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: space.md },
-  listCard: { paddingVertical: space.xs },
-  divider: { height: StyleSheet.hairlineWidth },
+  listRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: 10, borderRadius: radius.sm },
+  listCard: { paddingVertical: 6, paddingLeft: space.lg, paddingRight: space.md },
+  divider: { height: 1 },
+  // Ícone de 44 + o espaço entre ele e o texto: o divisor começa onde o texto começa.
+  dividerInset: { marginLeft: 44 + space.md },
   tile: {
     flex: 1,
     alignItems: 'center',
-    gap: space.sm,
+    gap: 10,
     paddingTop: space.lg,
     paddingBottom: space.md,
     paddingHorizontal: space.sm,
-    borderRadius: radius.lg,
+    borderRadius: radius.tile,
+    borderCurve: 'continuous',
     borderWidth: 1,
+    overflow: 'hidden',
   },
-  tileIcon: { width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
+  tileLabel: { textAlign: 'center', fontFamily: fonts.heavy, fontSize: 14, lineHeight: 18 },
   empty: { alignItems: 'center', gap: space.md, paddingVertical: space.xl, paddingHorizontal: space.lg },
-  emptyBadge: { position: 'absolute', right: -4, bottom: 0 },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.md, padding: space.xxl },
 });
