@@ -115,12 +115,31 @@ describe('termos de uso', () => {
   it('apagar a conta: pelo app, com a senha, o que fica com a casa e o contato para quem não conseguir', () => {
     const erase = section('Apagar dados e sair');
     expect(erase).not.toContain('ainda não tem um botão');
-    expect(erase).toContain('use "Apagar minha conta" na aba Família, confirmando com a sua senha');
+    expect(erase).toContain('use "Apagar minha conta" em Configurações, na aba Família, confirmando com a sua senha');
     expect(erase).toContain('você aparece como "Ex-morador"');
     expect(erase).toContain('A casa em que você é a última pessoa é apagada');
     expect(erase).toContain('Não tem volta.');
     expect(erase).toContain(`Se não conseguir apagar a conta pelo app, escreva para ${TERMS_CONTACT}`);
     expect(section('Sua conta e sua casa')).toContain('sai, é tirado dela ou apaga a conta');
+  });
+
+  it('o perfil: data de nascimento e telefone opcionais, só na conta da pessoa, fora da IA e da base de preços', () => {
+    const account = section('Sua conta e sua casa');
+    expect(account).toContain('A data de nascimento e o telefone são opcionais e ficam só na sua conta');
+    expect(account).toContain('os outros moradores não veem');
+    expect(account).toContain('não vão para a IA nem para a base de preços compartilhados');
+    // O nome é um por pessoa: trocar muda em todas as casas.
+    expect(account).toContain('ele muda em todas as suas casas');
+    // Apagar a conta leva o perfil junto.
+    expect(section('Apagar dados e sair')).toContain('o seu perfil (data de nascimento e telefone)');
+    // O resumo que vai ao Nuke não fala de nenhum dos dois.
+    expect(section('Inteligência artificial')).not.toMatch(/nascimento|telefone/);
+  });
+
+  it('é uma mudança no que é guardado: o aviso volta para todo mundo (a versão do aceite é a do texto)', () => {
+    expect(TERMS_VERSION).toBe('2026-10-22');
+    expect(TERMS_ACCEPT_VERSION).toBe(TERMS_VERSION);
+    expect(termsNotice(['2026-10-20'])).toBe('mudou');
   });
 
   it('diz que uma mudança importante é avisada no app', () => {

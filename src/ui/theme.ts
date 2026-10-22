@@ -1,4 +1,9 @@
+import { createContext, useContext } from 'react';
+// O único lugar do app que lê o tema do celular: todos os outros perguntam ao useScheme, que também sabe
+// o tema escolhido em Configurações (src/ui/__tests__/scheme.test.tsx confere).
 import { useColorScheme } from 'react-native';
+
+import { resolveScheme, type Scheme, type ThemeChoice } from '@/domain/appearance';
 
 // Identidade do Kotii, "Hora dourada": fundo quase branco e liso, cartões de
 // vidro claro com sombra quente e suave, gradiente só em topos de tela e
@@ -66,13 +71,31 @@ const dark: Colors = {
 
 export const PALETTES = { light, dark } as const;
 
-export function useColors(): Colors {
-  return useColorScheme() === 'dark' ? dark : light;
+/**
+ * O tema escolhido neste aparelho (Configurações → Aparência), dado pelo ThemeChoiceProvider na raiz do app.
+ * Sem ele (testes, telas soltas), e enquanto a escolha guardada é lida, vale o do celular.
+ */
+export interface ThemeChoiceState {
+  choice: ThemeChoice;
+  /** A escolha guardada já foi lida (até lá, `choice` é o automático). */
+  ready: boolean;
+  setChoice: (choice: ThemeChoice) => void;
 }
 
-/** O tema em uso: para quem escolhe entre dois valores que não cabem nas cores. */
-export function useScheme(): 'light' | 'dark' {
-  return useColorScheme() === 'dark' ? 'dark' : 'light';
+export const ThemeChoiceContext = createContext<ThemeChoiceState>({ choice: 'auto', ready: true, setChoice: () => undefined });
+
+export function useThemeChoice(): ThemeChoiceState {
+  return useContext(ThemeChoiceContext);
+}
+
+export function useColors(): Colors {
+  return PALETTES[useScheme()];
+}
+
+/** O tema em uso: o escolhido, ou o do celular no automático. Para quem escolhe entre dois valores que não cabem nas cores. */
+export function useScheme(): Scheme {
+  const system = useColorScheme();
+  return resolveScheme(useThemeChoice().choice, system);
 }
 
 /** Sombras suaves do vidro (boxShadow, em todas as plataformas), num marrom quente. */

@@ -7,7 +7,7 @@
 // parado na pose de repouso do humor.
 
 import { useEffect, type ReactNode } from 'react';
-import { StyleSheet, useColorScheme, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import Animated, {
   cancelAnimation,
   Easing,
@@ -41,6 +41,7 @@ import {
   useGradientId,
   type NukeMood,
 } from './NukeArt';
+import { useScheme } from './theme';
 
 export type NukeState = NukeMood;
 
@@ -82,7 +83,7 @@ export function NukeLive({
   /** Fora de vista (atrás de outra tela): para as animações. */
   paused?: boolean;
 }) {
-  const dark = useColorScheme() === 'dark';
+  const dark = useScheme() === 'dark';
   const id = useGradientId();
   const frame = frameFor(shadow);
   const k = size / frame.w;

@@ -4,10 +4,10 @@
 // NukeAvatar junta tudo num SVG parado, para listas.
 
 import type { ReactNode } from 'react';
-import { useColorScheme } from 'react-native';
 import Svg, { Circle, Defs, Ellipse, G, LinearGradient, Path, RadialGradient, Stop } from 'react-native-svg';
 
 import { useSvgId } from './svgId';
+import { useScheme } from './theme';
 
 export type NukeMood = 'idle' | 'joy' | 'think' | 'talk' | 'wow' | 'sleep' | 'oops';
 
@@ -236,7 +236,7 @@ export function Layer({ size, frame, children }: { size: number; frame: Frame; c
 
 /** O Nuke parado (listas de mensagens). Sombra só nos tamanhos grandes. */
 export function NukeAvatar({ size = 64, mood = 'idle', shadow = size >= 56 }: { size?: number; mood?: NukeMood; shadow?: boolean }) {
-  const dark = useColorScheme() === 'dark';
+  const dark = useScheme() === 'dark';
   const id = useGradientId();
   const frame = frameFor(shadow);
   return (

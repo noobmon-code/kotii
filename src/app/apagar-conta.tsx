@@ -10,7 +10,7 @@ import { Button, Card, ErrorNotice, Loading, Screen, Section, Text, TextField } 
 import { space } from '@/ui/theme';
 
 /**
- * Apagar a conta (Família → Conta). Antes, o que acontece com cada casa (a que
+ * Apagar a conta (Configurações → Conta, na aba Família). Antes, o que acontece com cada casa (a que
  * passa adiante, a que é apagada por ela ser a última), depois a senha de
  * novo e a confirmação. Quem confere a senha e apaga é a função
  * delete-account; sem ela publicada, a tela manda escrever para o contato.

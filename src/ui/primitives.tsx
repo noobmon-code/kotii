@@ -15,7 +15,6 @@ import {
   type TextInputProps,
   type TextProps as RNTextProps,
   type ViewStyle,
-  useColorScheme,
 } from 'react-native';
 import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
 import Svg, { Circle, Line } from 'react-native-svg';
@@ -477,7 +476,7 @@ function WebDateField({
   autoFocus,
 }: DateFieldProps) {
   const c = useColors();
-  const dark = useColorScheme() === 'dark';
+  const dark = useScheme() === 'dark';
   // O navegador fala AAAA-MM-DD. O campo mostra o que o navegador informou,
   // sem ida e volta pelo texto dd/mm/aaaa: no meio da digitação o ano passa
   // por 0002, 0020… e reescrever o campo apagaria tudo. Só uma data vinda de

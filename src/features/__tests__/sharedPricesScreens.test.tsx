@@ -442,12 +442,23 @@ describe('aba Família: "Preços compartilhados"', () => {
     expect(router.push).toHaveBeenCalledWith('/termos');
   });
 
-  it('a conta também leva aos termos, com a data da versão, mesmo sem o cartão', async () => {
+  it('a conta saiu da aba: a engrenagem do topo e a linha do fim abrem as Configurações (com os termos, sair e apagar)', async () => {
     mockQueries.available = loaded(false);
     const page = await mount(<FamilyScreen />);
-    const row = `${TERMS_TITLE}${termsVersionLabel()}`;
-    expect(page).toContain(`ana@exemplo.com${row}`);
-    await press(row);
-    expect(router.push).toHaveBeenCalledWith('/termos');
+    // Os termos, o e-mail, sair e apagar a conta ficam nas Configurações (settingsScreen.test.tsx).
+    expect(page).not.toContain(termsVersionLabel());
+    expect(page).not.toContain('ana@exemplo.com');
+    expect(page).not.toContain('Sair da conta');
+    expect(page).not.toContain('Apagar minha conta');
+    // "Sair da casa" é da casa, e fica.
+    expect(page).toContain('Sair da casa');
+    expect(page.endsWith('Sair da casaConfiguraçõesSeu perfil, tema do app, termos e conta')).toBe(true);
+    await press('ConfiguraçõesSeu perfil, tema do app, termos e conta');
+    expect(router.push).toHaveBeenCalledWith('/configuracoes');
+    jest.mocked(router.push).mockClear();
+    const gear = renderer!.root.findAll((node) => node.props.accessibilityLabel === 'Configurações' && typeof node.props.onPress === 'function');
+    expect(gear).toHaveLength(1);
+    await act(async () => gear[0].props.onPress());
+    expect(router.push).toHaveBeenCalledWith('/configuracoes');
   });
 });

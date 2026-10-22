@@ -8,7 +8,7 @@ import { Button, Card, Screen, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 /**
- * Termos de uso e privacidade. Abre com ou sem conta (da tela de entrar, da aba Família e do cartão dos preços
+ * Termos de uso e privacidade. Abre com ou sem conta (da tela de entrar, das Configurações e do cartão dos preços
  * compartilhados): não lê nada da casa, só o texto de domain/terms. Com conta e sem o aceite desta versão
  * (data/terms), termina com o mesmo "Entendi" do aviso da tela Hoje.
  */
