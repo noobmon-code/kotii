@@ -15,7 +15,8 @@ const light = {
   primary: '#3656F4',
   primarySoft: '#E6EBFF',
   onPrimary: '#FFFFFF',
-  brand: '#FF7A45',
+  // O laranja do Figma (#FF7A45) dava 2,4:1 nos títulos de seção; o dono pediu o tom mais escuro em tudo (22/10).
+  brand: '#B5470F',
   brandSoft: '#FFE7D6',
   danger: '#B4233C',
   dangerSoft: '#FDE3E6',
@@ -124,7 +125,7 @@ export type Tint = 'orange' | 'yellow' | 'blue' | 'green' | 'pink' | 'purple';
 // `purple` ficou como nome para não mexer em quem já o usa, mas a cor é o caramelo.
 const TINTS: Record<'light' | 'dark', Record<Tint, { bg: string; art: string }>> = {
   light: {
-    orange: { bg: '#FFE7D6', art: '#FF7A45' },
+    orange: { bg: '#FFE7D6', art: '#B5470F' },
     yellow: { bg: '#FFF4D4', art: '#FFC23D' },
     blue: { bg: '#E7EEFF', art: '#4F6BFF' },
     green: { bg: '#EDF4E1', art: '#4DAA6E' },
