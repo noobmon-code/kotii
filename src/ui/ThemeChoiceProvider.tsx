@@ -3,7 +3,7 @@
 // termina, vale o do celular, e o _layout segura a abertura (`ready`) para não piscar o tema errado.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Platform } from 'react-native';
+import { Appearance, Platform } from 'react-native';
 
 import type { Scheme, ThemeChoice } from '@/domain/appearance';
 import { readThemeChoice, saveThemeChoice } from '@/lib/themeChoice';
@@ -27,6 +27,12 @@ export function ThemeChoiceProvider({ children }: { children: ReactNode }) {
       active = false;
     };
   }, []);
+
+  // No celular, os avisos, o teclado e os seletores do próprio sistema seguem a escolha também (o React só pinta o
+  // que é do app). "Automático" devolve o tema do celular. A web não tem isso: lá vale o PageScheme.
+  useEffect(() => {
+    if (Platform.OS !== 'web') Appearance.setColorScheme(choice === 'auto' ? 'unspecified' : choice);
+  }, [choice]);
 
   const setChoice = (next: ThemeChoice) => {
     chosen.current = true;

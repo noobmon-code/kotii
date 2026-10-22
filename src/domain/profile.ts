@@ -22,9 +22,13 @@ export function cleanName(text: string): string {
 /** Letras do nome como o banco conta (char_length conta cada emoji como um). */
 const nameLength = (name: string) => [...name].length;
 
-/** Só os dígitos do telefone. */
+/**
+ * Só os dígitos do telefone. Com 12 ou 13 dígitos começando por 55, o código do Brasil colado na frente
+ * ("+55 83 99999-9999") sai; o DDD 55 (RS) tem só 10 ou 11 dígitos e fica.
+ */
 export function phoneDigits(text: string): string {
-  return text.replace(/\D/g, '');
+  const digits = text.replace(/\D/g, '');
+  return /^55\d{10,11}$/.test(digits) ? digits.slice(2) : digits;
 }
 
 /** Com o DDD, um telefone tem 10 dígitos (fixo) ou 11 (celular). */
@@ -47,13 +51,24 @@ export function formatPhone(digits: string): string {
 /**
  * Máscara do telefone enquanto digita. `previous` é o valor anterior: apagar um parêntese, o espaço ou o
  * hífen apaga também o dígito antes dele (senão a máscara o poria de volta e o campo pareceria travado).
- * Com mais de 11 dígitos (um +55 colado, dois números), fica só com os dígitos, e o aviso diz o que corrigir.
+ * Vale no fim ou no meio do texto. Com mais de 11 dígitos (dois números colados), fica só com os dígitos, e o
+ * aviso diz o que corrigir.
  */
 export function maskPhone(next: string, previous = ''): string {
-  let digits = phoneDigits(next);
-  const deleting = next.length < previous.length && previous.startsWith(next);
-  if (deleting && digits === phoneDigits(previous)) digits = digits.slice(0, -1);
-  return formatPhone(digits);
+  if (next.length < previous.length) {
+    // O que saiu: do primeiro caractere diferente, tantos quantos o texto encolheu.
+    let i = 0;
+    while (i < next.length && next[i] === previous[i]) i++;
+    const removed = previous.slice(i, i + previous.length - next.length);
+    if (removed && !/\d/.test(removed)) {
+      // Só máscara saiu: sai o dígito antes dela (no "(" do começo não há nada antes, fica como estava).
+      const before = previous.slice(0, i).replace(/\D/g, '');
+      if (!before) return formatPhone(phoneDigits(previous));
+      const after = previous.slice(i + removed.length).replace(/\D/g, '');
+      return formatPhone(phoneDigits(before.slice(0, -1) + after));
+    }
+  }
+  return formatPhone(phoneDigits(next));
 }
 
 /** O telefone guardado, para mostrar no campo. */

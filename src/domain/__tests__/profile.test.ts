@@ -60,9 +60,23 @@ describe('telefone', () => {
     expect(maskPhone('', '(')).toBe('');
   });
 
-  it('colar com outros sinais vale; com mais de 11 dígitos (um +55, dois números) ficam só os dígitos', () => {
+  it('no meio do número também: apagar o hífen, o espaço ou o parêntese apaga o dígito antes dele', () => {
+    expect(maskPhone('(83) 999999999', '(83) 99999-9999')).toBe('(83) 9999-9999');
+    expect(maskPhone('(83)99999-9999', '(83) 99999-9999')).toBe('(89) 9999-9999');
+    // Nos dois sai um 3 e sobram 9 dígitos, que a máscara redistribui: 83 | 3334 | 444.
+    expect(maskPhone('(83 3333-4444', '(83) 3333-4444')).toBe('(83) 3334-444');
+    expect(maskPhone('(83) 33334444', '(83) 3333-4444')).toBe('(83) 3334-444');
+    // O "(" do começo: não há dígito antes, fica como estava.
+    expect(maskPhone('83) 3333-4444', '(83) 3333-4444')).toBe('(83) 3333-4444');
+  });
+
+  it('colar com outros sinais vale; o +55 do Brasil sai; com mais de 11 dígitos ficam só os dígitos', () => {
     expect(maskPhone('83 9.9999-9999')).toBe('(83) 99999-9999');
-    expect(maskPhone('+55 83 99999-9999')).toBe('5583999999999');
+    expect(maskPhone('+55 83 99999-9999')).toBe('(83) 99999-9999');
+    expect(maskPhone('+55 (83) 3333-4444')).toBe('(83) 3333-4444');
+    // DDD 55 (RS) com 10 ou 11 dígitos não é o código do país.
+    expect(maskPhone('55 99999-9999')).toBe('(55) 99999-9999');
+    expect(maskPhone('83 99999-9999 83 3333-4444')).toBe('839999999998333334444');
   });
 
   it('válido com 10 ou 11 dígitos, nem mais nem menos', () => {
@@ -129,8 +143,15 @@ describe('o formulário inteiro', () => {
     expect(validateProfile(form(), TODAY)).toEqual({ ok: true, values: { name: 'Ana', birthDate: null, phone: null } });
   });
 
+  it('o +55 colado vale como o número sem ele', () => {
+    expect(validateProfile(form({ phone: '+55 83 99999-9999' }), TODAY)).toMatchObject({
+      ok: true,
+      values: { phone: '83999999999' },
+    });
+  });
+
   it('recusa o telefone incompleto ou com dígitos demais', () => {
-    for (const phone of ['(83) 9999', '+55 83 99999-9999']) {
+    for (const phone of ['(83) 9999', '83 99999-9999 83 3333-4444']) {
       expect(validateProfile(form({ phone }), TODAY)).toMatchObject({ ok: false, message: PROFILE_MESSAGES.phone });
     }
   });

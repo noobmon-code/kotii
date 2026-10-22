@@ -182,8 +182,11 @@ describe('quem lê o tema do celular', () => {
       .filter((path) => /\buseColorScheme\b/.test(readFileSync(path, 'utf8')))
       .map((path) => relative(root, path).replace(/\\/g, '/'));
     expect(readers).toEqual(['ui/theme.ts']);
-    // E nenhum o importa por outro caminho (o Appearance também diria o tema do celular, sem a escolha).
-    const appearance = sources(root).filter((path) => /\bAppearance\b/.test(readFileSync(path, 'utf8')));
-    expect(appearance).toEqual([]);
+    // E nenhum o lê por outro caminho (o Appearance também diria o tema do celular, sem a escolha): só o
+    // ThemeChoiceProvider o usa, para passar a escolha aos avisos e ao teclado do sistema.
+    const appearance = sources(root)
+      .filter((path) => /\bAppearance\b/.test(readFileSync(path, 'utf8')))
+      .map((path) => relative(root, path).replace(/\\/g, '/'));
+    expect(appearance).toEqual(['ui/ThemeChoiceProvider.tsx']);
   });
 });
