@@ -151,7 +151,6 @@ jest.mock('@/ui/dialogs', () => ({ confirmAction: jest.fn(), notify: jest.fn() }
 // As fotos dos aparelhos (e, por elas, a sessão e os lembretes) não entram nestas telas.
 jest.mock('@/data/images', () => ({ removeImages: jest.fn(), signedImageUrl: jest.fn() }));
 // Os desenhos animados (reanimated) e o fundo não entram no que se confere aqui.
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
 

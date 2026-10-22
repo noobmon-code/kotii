@@ -7,7 +7,7 @@ import { householdErrorMessage, INVITE_NOT_FOUND } from '@/data/household';
 import { signOut } from '@/lib/auth';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
-import { Spot } from '@/ui/art';
+import { NukeLive } from '@/ui/NukeLive';
 import { Button, Card, Screen, Segmented, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
@@ -55,7 +55,7 @@ export default function WelcomeScreen() {
   return (
     <Screen edges={['top', 'bottom']}>
       <View style={styles.hero}>
-        <Spot tint="purple" size={140} shape="bean" />
+        <NukeLive size={132} hop />
         <Text variant="title">Sua casa</Text>
         <Text variant="muted" style={styles.center}>
           Tudo no Kotii é compartilhado com quem mora com você. Crie a casa ou entre com o código de convite.

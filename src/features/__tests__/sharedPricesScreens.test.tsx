@@ -79,7 +79,6 @@ jest.mock('@/features/AiUsageSection', () => ({ AiUsageSection: () => null }));
 jest.mock('@/features/DocumentsSection', () => ({ DocumentsSection: () => null }));
 jest.mock('@/features/HouseRemindersSection', () => ({ HouseRemindersSection: () => null }));
 // Os desenhos animados (reanimated), o fundo e as imagens não entram no que se confere aqui.
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
@@ -429,7 +428,7 @@ describe('aba Família: "Preços compartilhados"', () => {
     // A aba inteira, menos o cartão: nada mais muda.
     expect(page).toBe(withCard.replace(`Preços compartilhados${SHARING_ABOUT}${TERMS_TITLE}`, ''));
     expect(page).not.toContain('Preços compartilhados');
-    expect(page).toContain('Casa da AnaFamília');
+    expect(page).toContain('FamíliaCasa da Ana');
     expect(page).toContain('Código de conviteABC234');
   });
 

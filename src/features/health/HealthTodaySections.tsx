@@ -5,6 +5,7 @@ import { addDays, formatShortDate } from '@/domain/dates';
 import { describeVaccineStatus, describeWhen, splitTimestamp } from '@/domain/health';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
+import { IconArt } from '@/ui/iconArt';
 import { Badge, CheckCircle, IconBadge, ListCard, ListRow, Section } from '@/ui/primitives';
 import type { useHealthOverview } from './useHealthOverview';
 
@@ -92,7 +93,7 @@ export function HealthTodaySections({ overview, today, compact }: { overview: Ov
             {vaccines.map(({ vaccine, status }) => (
               <ListRow
                 key={vaccine.id}
-                left={<IconBadge icon="needle" tone={status.kind === 'atrasada' ? 'danger' : 'warning'} />}
+                left={<IconArt name="seringa" />}
                 title={[vaccine.name, vaccine.dose].filter(Boolean).join(' · ')}
                 subtitle={[
                   overview.personName(vaccine.person_id),
@@ -101,6 +102,8 @@ export function HealthTodaySections({ overview, today, compact }: { overview: Ov
                 ]
                   .filter(Boolean)
                   .join(' · ')}
+                // O desenho da seringa é sempre o mesmo: o atraso aparece no selo.
+                right={status.kind === 'atrasada' ? <Badge label="Atrasada" tone="danger" /> : undefined}
                 onPress={() => router.push({ pathname: '/vacina/[id]', params: { id: vaccine.id } })}
               />
             ))}

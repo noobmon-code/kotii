@@ -11,8 +11,9 @@ import { normalizeSearch } from '@/domain/search';
 import { errorMessage } from '@/lib/supabase';
 import type { Medication } from '@/lib/types';
 import { notify } from '@/ui/dialogs';
+import { IconArt } from '@/ui/iconArt';
 import { Badge, Button, CheckCircle, EmptyState, IconBadge, ListCard, ListRow, Row, Section, Text } from '@/ui/primitives';
-import { space } from '@/ui/theme';
+import { fonts, space } from '@/ui/theme';
 
 /**
  * Os remédios com a caixa acabando (pelas contas do app) ou a receita
@@ -32,12 +33,29 @@ export function useRefills(today: string): { rows: RefillRow[]; attention: Refil
   }, [data, today, doses]);
 }
 
-/** O texto de baixo da linha de uma dose e, com a caixa acabando ou a receita vencendo, o selo do remédio. */
-function doseSubtitle(text: string, badge: RefillAlert | undefined): ReactNode {
-  if (!badge) return text;
+/**
+ * O texto de baixo da linha de uma dose (telas Hoje e Saúde): quem toma e a dose, o "atrasada" na cor de aviso (o
+ * ícone da linha é sempre o mesmo, então a cor fica aqui) e, com a caixa acabando ou a receita vencendo, o selo do
+ * remédio.
+ */
+export function DoseSubtitle({ parts, late, badge }: { parts: (string | null)[]; late: boolean; badge?: RefillAlert }) {
+  const text = parts.filter(Boolean).join(' · ');
+  const line: ReactNode =
+    text || late ? (
+      <Text variant="muted">
+        {text}
+        {text && late ? ' · ' : null}
+        {late ? (
+          <Text variant="muted" color="warning" style={styles.late}>
+            atrasada
+          </Text>
+        ) : null}
+      </Text>
+    ) : null;
+  if (!badge) return line;
   return (
     <View style={styles.refill}>
-      {text ? <Text variant="muted">{text}</Text> : null}
+      {line}
       <Badge label={badge.label} tone={badge.tone} />
     </View>
   );
@@ -65,12 +83,9 @@ export function MedicationsToday({ today }: { today: string }) {
           return (
             <ListRow
               key={key}
-              left={<IconBadge icon="pill" tone={isTaken ? 'primary' : late ? 'warning' : 'info'} />}
+              left={<IconArt name="capsula" />}
               title={`${slot.time} · ${slot.name}`}
-              subtitle={doseSubtitle(
-                [slot.personName, slot.dosage, late ? 'atrasada' : null].filter(Boolean).join(' · '),
-                badges.get(slot.medicationId),
-              )}
+              subtitle={<DoseSubtitle parts={[slot.personName, slot.dosage]} late={late} badge={badges.get(slot.medicationId)} />}
               dimmed={isTaken}
               right={
                 <CheckCircle
@@ -256,6 +271,7 @@ export function MedicationList({ medications, personId }: { medications: Medicat
 const styles = StyleSheet.create({
   wrap: { flexWrap: 'wrap' },
   refill: { gap: space.xs, alignItems: 'flex-start' },
+  late: { fontFamily: fonts.bold },
   // O botão começa na mesma linha do texto, sem o recuo dele.
   refillAction: { paddingHorizontal: 0 },
 });

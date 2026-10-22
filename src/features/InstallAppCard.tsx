@@ -1,19 +1,21 @@
 import { StyleSheet, View } from 'react-native';
 
 import { useInstallApp } from '@/lib/install';
-import { Mascot } from '@/ui/art';
-import { Button, Card, Row, Text } from '@/ui/primitives';
-import { space, useTint } from '@/ui/theme';
+import { Orb } from '@/ui/Orb';
+import { Button, Card, Icon, Row, Text } from '@/ui/primitives';
+import { space, useGlow } from '@/ui/theme';
 
 /** Na web, convida a pôr o Kotii na tela inicial do celular. */
 export function InstallAppCard() {
   const { mode, install, dismiss } = useInstallApp();
-  const tint = useTint('orange');
+  const glow = useGlow('orange');
   if (mode === 'hidden') return null;
   return (
     <Card style={styles.card}>
       <Row style={styles.top}>
-        <Mascot size={52} color={tint.art} />
+        <Orb size={52} glow={glow}>
+          <Icon name="cellphone-arrow-down" size={26} color="brand" />
+        </Orb>
         <View style={styles.flex}>
           <Text variant="label">Tenha o Kotii na tela inicial</Text>
           <Text variant="small">

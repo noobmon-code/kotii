@@ -13,7 +13,6 @@ jest.mock('@/lib/supabase', () => ({
 }));
 jest.mock('@/data/listPhotos', () => ({ LIST_PHOTO_KEY: ['listItemPhoto'] }));
 // Os desenhos animados (reanimated) e o fundo não entram no que se confere aqui.
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 
 let renderer: ReactTestRenderer | undefined;

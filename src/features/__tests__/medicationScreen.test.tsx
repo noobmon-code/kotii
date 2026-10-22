@@ -34,7 +34,6 @@ jest.mock('react-native-safe-area-context', () => {
   return { SafeAreaView: View, useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) };
 });
 jest.mock('expo-image', () => ({ Image: () => null }));
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/lib/medicationBox', () => ({ lastBoxUnits: async () => null, rememberBoxUnits: async () => undefined, forgetBoxUnits: async () => undefined }));
 jest.mock('@/lib/reminders', () => ({

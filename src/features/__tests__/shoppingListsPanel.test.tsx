@@ -26,7 +26,6 @@ jest.mock('@/data/market', () => ({
 }));
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: unknown) => String(error) }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 
 const FEIRA = { id: 'l1', name: 'Feira', kind: 'mercado', archived_at: null, created_at: '2026-10-19T12:00:00Z', pending: 2, total: 3, items: [] };
 const offline = { code: '', message: 'TypeError: Network request failed', details: '', hint: '' };

@@ -31,7 +31,6 @@ jest.mock('@/data/market', () => ({
 }));
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: unknown) => String(error) }));
 jest.mock('@/ui/dialogs', () => ({ askYesNo: jest.fn(), confirmAction: jest.fn(), notify: jest.fn() }));
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 
 let renderer: ReactTestRenderer | undefined;

@@ -86,7 +86,6 @@ jest.mock('@/features/finance/SplitSection', () => ({ SplitSection: () => null }
 jest.mock('@/features/ReceiptScanner', () => ({ useReceiptScanner: () => mockScanner }));
 // Os desenhos animados (reanimated), o fundo, as imagens e os ícones (que são letras de uma fonte) não entram
 // no que se confere aqui.
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));

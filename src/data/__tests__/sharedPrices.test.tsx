@@ -27,7 +27,6 @@ jest.mock('expo-image-manipulator', () => ({ ImageManipulator: {}, SaveFormat: {
 jest.mock('expo-image-picker', () => ({}));
 jest.mock('@/lib/session', () => ({ endSessionIfGone: async () => false }));
 // O cartão da aba Família de verdade: os desenhos animados (reanimated), o fundo e as imagens não entram aqui.
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 jest.mock('@/lib/supabase', () => {

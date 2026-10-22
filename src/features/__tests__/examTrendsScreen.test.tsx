@@ -28,7 +28,6 @@ jest.mock('expo-router', () => ({
 jest.mock('@/data/health', () => ({ usePeople: () => mockQueries.people, usePersonExams: () => mockQueries.exams }));
 jest.mock('@/data/home', () => ({ useMedications: () => mockQueries.medications }));
 // Os desenhos animados (reanimated), o fundo, o gráfico (SVG) e a tela do resumo não entram no que se confere aqui.
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/features/health/TrendChart', () => ({ TrendChart: () => null }));
 jest.mock('@/features/health/VisitSummaryModal', () => ({ VisitSummaryModal: () => null }));

@@ -100,7 +100,6 @@ jest.mock('@/lib/supabase', () => ({ errorMessage: (error: { message?: string })
 jest.mock('@/ui/dialogs', () => ({ confirmAction: jest.fn(), notify: jest.fn() }));
 // Os desenhos animados (reanimated), o fundo, as imagens e os ícones (um caractere da fonte de ícones, que
 // entraria no meio dos textos) não entram no que se confere aqui.
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));

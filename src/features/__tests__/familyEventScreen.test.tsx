@@ -34,7 +34,6 @@ jest.mock('expo-router', () => ({
 }));
 jest.mock('@/ui/dialogs', () => ({ askYesNo: jest.fn(), confirmAction: jest.fn(), notify: jest.fn() }));
 // Os desenhos animados e o fundo não entram no que se confere aqui.
-jest.mock('@/ui/art', () => ({ Mascot: () => null, Spot: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/data/health', () => {
   const { useQuery } = jest.requireActual<typeof import('@tanstack/react-query')>('@tanstack/react-query');

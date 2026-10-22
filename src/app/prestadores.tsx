@@ -69,7 +69,7 @@ export default function ProvidersScreen() {
   if (providers.data.missing) {
     return (
       <Screen edges={[]} refreshing={providers.isRefetching} onRefresh={refresh}>
-        <EmptyState icon="account-wrench-outline" title="Ainda não está disponível" message={PROVIDERS_UNAVAILABLE} mood="calm" />
+        <EmptyState icon="account-wrench-outline" title="Ainda não está disponível" message={PROVIDERS_UNAVAILABLE} />
       </Screen>
     );
   }
