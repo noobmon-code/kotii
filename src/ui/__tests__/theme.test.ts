@@ -7,9 +7,7 @@ import { GRADIENTS, PALETTES, withAlpha, type Colors } from '../theme';
 // Contraste de texto do tema (WCAG): 4,5:1 para texto pequeno, nos dois temas. Os pares de cores lisas, e os de
 // vidro e véus que o desenho usa, com o vidro posto sobre o fundo liso da tela (o que há por trás na maior parte).
 //
-// Exceções conhecidas, escolhas do desenho que não passam e ficam para o dono decidir:
-// - o laranja dos títulos de seção (`Section`, `brand`, 12px) no tema claro: #FF7A45 sobre #FAF8F5 dá 2,4:1
-//   (no escuro, 7,9:1);
+// Exceção conhecida, escolha do desenho que não passa e fica para o dono decidir:
 // - o aro vazio do "Marcar" (`CheckCircle`, `ring`) sobre o vidro forte: 1,6:1 no claro e 2,7:1 no escuro, abaixo
 //   dos 3:1 de um contorno.
 const channel = (v: number) => {
@@ -51,6 +49,10 @@ const PAIRS: [keyof Colors, keyof Colors][] = [
   ['warning', 'warningSoft'],
   ['info', 'infoSoft'],
   ['primary', 'primarySoft'],
+  // Os títulos de seção (`Section`) e o desenho laranja.
+  ['brand', 'background'],
+  ['brand', 'surface'],
+  ['brand', 'brandSoft'],
 ];
 
 describe.each(['light', 'dark'] as const)('o tema %s', (scheme) => {
@@ -63,8 +65,10 @@ describe.each(['light', 'dark'] as const)('o tema %s', (scheme) => {
   it('os textos sobre o vidro têm contraste: linhas dos cartões, a barra de abas e a aba aberta', () => {
     const glass = over(palette.glass, palette.background);
     const glassStrong = over(palette.glassStrong, palette.background);
-    // Linhas dos cartões: título, texto de baixo e o "atrasada" da dose.
-    for (const fg of [palette.text, palette.textMuted, palette.warning]) expect(contrast(fg, glass)).toBeGreaterThanOrEqual(MIN);
+    // Linhas dos cartões: título, texto de baixo e o "atrasada" da dose; o título de seção sobre o vidro.
+    for (const fg of [palette.text, palette.textMuted, palette.warning, palette.brand]) {
+      expect(contrast(fg, glass)).toBeGreaterThanOrEqual(MIN);
+    }
     // A barra de abas: as abas fechadas, e a aberta no destaque azul a 12%; "Ver a agenda" na pílula.
     expect(contrast(palette.textMuted, glassStrong)).toBeGreaterThanOrEqual(MIN);
     expect(contrast(palette.primary, over(withAlpha(palette.primary, 0.12), glassStrong))).toBeGreaterThanOrEqual(MIN);
