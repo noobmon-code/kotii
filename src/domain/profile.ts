@@ -152,8 +152,9 @@ export const PROFILE_NOT_READY = 'O perfil ainda está sendo ativado. Por enquan
 export const PROFILE_PRIVACY =
   'A data de nascimento e o telefone são opcionais e ficam só na sua conta: os outros moradores não veem, e eles não vão para a IA nem para a base de preços.';
 
-/** Embaixo do nome: ele vale em todas as casas da pessoa. */
-export const PROFILE_NAME_HINT = 'É como os moradores veem você, em todas as suas casas.';
+/** Embaixo do nome: ele vale em todas as casas da pessoa, e o nome da ficha de saúde dela muda junto. */
+export const PROFILE_NAME_HINT =
+  'É como os moradores veem você, em todas as suas casas. Ao mudar, muda também o nome na sua ficha de saúde.';
 
 /** O formulário ainda diz o que está guardado? (para o "Salvar" só aparecer ligado quando há o que salvar) */
 export function profileChanged(form: ProfileForm, saved: ProfileValues, today: string): boolean {
