@@ -1,4 +1,4 @@
-// Fundo das telas: liso, quase branco de dia e cinza quente à noite. Quem dá cor
+// Fundo das telas: liso, quase branco de dia e azul-marinho quase preto à noite. Quem dá cor
 // à tela são o topo em gradiente e os cartões de vidro, não o fundo.
 
 import { StyleSheet, View } from 'react-native';

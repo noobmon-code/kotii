@@ -84,6 +84,8 @@ export function TabBar({ state, descriptors, navigation, insets }: BottomTabBarP
             role="tab"
             accessibilityRole="tab"
             accessibilityState={{ selected: focused }}
+            // Na web, só o aria-selected chega ao HTML (o accessibilityState não vira atributo).
+            aria-selected={focused}
             accessibilityLabel={
               options.tabBarAccessibilityLabel ??
               (Platform.OS === 'ios' ? `${label}, aba, ${index + 1} de ${state.routes.length}` : label)

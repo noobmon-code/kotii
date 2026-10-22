@@ -135,6 +135,8 @@ describe('a barra de abas', () => {
       { selected: false },
       { selected: false },
     ]);
+    // Na web é o aria-selected que diz ao leitor de tela qual aba está aberta.
+    expect(tabs(root).map((tab) => tab.props['aria-selected'])).toEqual([true, false, false, false, false]);
   });
 
   it('no navegador, o clique com tecla fica com o navegador e o clique simples troca a aba', async () => {
