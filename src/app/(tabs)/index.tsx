@@ -52,6 +52,7 @@ import { useJustListed } from '@/features/RecentPurchases';
 import { SKY_ART_ROOM, SkyHeader } from '@/features/SkyHeader';
 import { SuppliesTodaySection } from '@/features/SuppliesSection';
 import { TermsNoticeCard } from '@/features/TermsNotice';
+import { TodayGreeting } from '@/features/TodayGreeting';
 import { WeatherCard } from '@/features/WeatherCard';
 import { useHousehold } from '@/lib/auth';
 import { settledData } from '@/lib/settledData';
@@ -80,13 +81,6 @@ import {
 import { fonts, radius, shadows, space, useColors, WASHES } from '@/ui/theme';
 
 const capitalizeFirst = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
-
-function greeting(now: Date): string {
-  const h = now.getHours();
-  if (h >= 5 && h < 12) return 'Bom dia';
-  if (h >= 12 && h < 18) return 'Boa tarde';
-  return 'Boa noite';
-}
 
 /**
  * "Acho que acabou" da tela Hoje. O histórico pode ter milhares de linhas: só
@@ -318,10 +312,7 @@ export default function TodayScreen() {
             </Pressable>
           ) : null}
           <Text style={styles.eyebrow}>{dateLabel}</Text>
-          <Text accessibilityRole="header" style={styles.greeting}>
-            {greeting(now)},{'\n'}
-            {household.data?.me.display_name ?? ''}
-          </Text>
+          <TodayGreeting now={now} displayName={household.data?.me.display_name ?? ''} />
         </View>
         <Text style={styles.summary}>{summary}</Text>
         <Pressable
@@ -628,7 +619,6 @@ export default function TodayScreen() {
 
 const styles = StyleSheet.create({
   eyebrow: { fontFamily: fonts.bold, fontSize: 13, lineHeight: 18 },
-  greeting: { fontFamily: fonts.heavy, fontSize: 30, lineHeight: 35, letterSpacing: -0.3 },
   summary: { fontFamily: fonts.semibold, fontSize: 15, lineHeight: 21 },
   quickActions: { flexDirection: 'row', alignItems: 'stretch', gap: space.md },
   agendaLink: {
