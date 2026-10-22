@@ -56,7 +56,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "O Kotii usa a câmera para fotografar notas fiscais e ler o QR code delas.",
+          "cameraPermission": "O Kotii usa a câmera para fotografar notas fiscais, ler o QR code delas e o código de barras dos produtos.",
           "microphonePermission": false,
           "recordAudioAndroid": false
         }

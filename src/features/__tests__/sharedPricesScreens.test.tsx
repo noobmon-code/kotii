@@ -80,6 +80,9 @@ jest.mock('@/features/DocumentsSection', () => ({ DocumentsSection: () => null }
 jest.mock('@/features/HouseRemindersSection', () => ({ HouseRemindersSection: () => null }));
 // Os desenhos animados (reanimated), o fundo e as imagens não entram no que se confere aqui.
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
+// A leitura do código de barras tem os testes dela (productBarcode*.test.tsx): aqui, como num banco ainda sem a tabela.
+jest.mock('@/features/ProductBarcode', () => ({ useProductBarcode: () => ({ available: false, start: () => undefined, element: null }) }));
+jest.mock('@/data/barcodes', () => ({ useBarcodes: () => ({ data: null }), useUnlinkBarcode: () => ({ mutate: () => undefined }) }));
 jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 

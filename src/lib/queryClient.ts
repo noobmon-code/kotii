@@ -42,6 +42,8 @@ const PERSISTED = new Set([
   'stores',
   'listLinks',
   'listPhotos',
+  // Os códigos de barras da casa: no mercado, com sinal fraco, o código lido ainda acha o produto (e os preços dele).
+  'productBarcodes',
   'householdLocation',
   'weather',
 ]);

@@ -35,6 +35,7 @@ import {
 } from '@/data/market';
 import { useRefreshMarketTrips } from '@/data/marketTrips';
 import { useSharedPrices } from '@/data/sharedPrices';
+import { scannedListItem } from '@/domain/barcode';
 import { cartPantryRows, joinNames, type CartPantryEntry, type CartPantryRow } from '@/domain/cartPantry';
 import { compareByAisle, getCategory } from '@/domain/categories';
 import {
@@ -65,6 +66,7 @@ import { ListItemEditor, type ItemDetails, type PhotoChange } from '@/features/L
 import { ListShareSheet } from '@/features/ListShareSheet';
 import { MarketTripAction, MarketTripBanner } from '@/features/MarketTrip';
 import { OfflineNotice } from '@/features/OfflineNotice';
+import { useProductBarcode } from '@/features/ProductBarcode';
 import { RecentPurchases, RestockStrip, useJustListed } from '@/features/RecentPurchases';
 import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
 import { StaleNotice } from '@/features/health/StaleNotice';
@@ -247,6 +249,10 @@ export default function ShoppingListScreen() {
     );
     resetForm();
   }
+
+  // O código de barras lido põe o produto como a sugestão da busca: sem a marca, com ele como dica de preço, e com
+  // as mesmas travas de item repetido.
+  const barcode = useProductBarcode({ onProduct: (product) => void add(product, scannedListItem(product).name) });
 
   /** Item comum: liga ao produto da casa de mesmo nome, se existir. */
   function addCommon(item: CommonItem, fromForm = false) {
@@ -663,7 +669,18 @@ export default function ShoppingListScreen() {
         ) : (
           <Button title="Escolher dos itens comuns" icon="playlist-plus" variant="secondary" compact onPress={() => setPickerOpen(true)} />
         )}
+        {barcode.available ? (
+          <Button
+            title="Ler código de barras"
+            icon="barcode-scan"
+            variant="ghost"
+            compact
+            loading={barcode.busy}
+            onPress={barcode.start}
+          />
+        ) : null}
       </Card>
+      {barcode.element}
 
       {/* "Acabou" vale também no meio das compras; o resto é para montar a lista. */}
       {name.trim() ? null : <RestockStrip items={restockItems} onAdd={addRecent} />}
