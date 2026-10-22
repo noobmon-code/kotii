@@ -15,6 +15,8 @@ const MIN_TOP = 44;
 /** Até onde o véu desce, a partir do alto da tela. */
 export const WASH_HEIGHT = 760;
 const ART_RIGHT = 22;
+/** O recuo do texto do topo, além da margem da tela. */
+const TEXT_INDENT = 24;
 /** Na tela mais larga que a coluna: o esmaecimento de cada lado do véu e o do pé dele (o último quinto). */
 const EDGE_FADE = 160;
 const FOOT_FADE = 0.8;
@@ -117,11 +119,19 @@ export function SkyHeader({ sky, period, children }: { sky: Sky; period: DayPeri
 /** A largura que o título e a data deixam para o desenho do clima. */
 export const SKY_ART_ROOM = CLIMA_BOX.width + ART_RIGHT - space.md;
 
+/**
+ * A largura do texto que deixa o espaço do desenho (o título), numa janela de `windowWidth`: o topo vai de uma borda
+ * à outra da coluna (no máximo MAX_WIDTH), menos o recuo da esquerda, a margem da direita e o espaço do desenho.
+ */
+export function skyTextWidth(windowWidth: number): number {
+  return Math.min(windowWidth, MAX_WIDTH) - (SCREEN_PADDING + TEXT_INDENT) - SCREEN_PADDING - SKY_ART_ROOM;
+}
+
 const styles = StyleSheet.create({
   header: {
     marginHorizontal: -SCREEN_PADDING,
     marginTop: -SCREEN_PADDING,
-    paddingLeft: SCREEN_PADDING + 24,
+    paddingLeft: SCREEN_PADDING + TEXT_INDENT,
     paddingRight: SCREEN_PADDING,
     paddingBottom: 6,
   },
