@@ -117,7 +117,7 @@ export default function HouseholdsScreen() {
                 />
               )}
               <TextField
-                label="Seu nome nesta casa"
+                label="Seu nome"
                 value={yourName}
                 onChangeText={setDisplayName}
                 autoCapitalize="words"

@@ -10874,5 +10874,220 @@ end $$;
 delete from public.households where id = :'hh_sc2';
 delete from auth.users where id in (:'user_sc1', :'user_sc2');
 
+-- ---------------------------------------------------------------------------
+\echo '• Perfil: só a própria pessoa lê e grava; o nome muda em todas as casas dela; a conta apagada leva o perfil'
+\set user_p1 '00000000-0000-0000-0000-0000000002d1'
+\set user_p2 '00000000-0000-0000-0000-0000000002d2'
+\set user_p3 '00000000-0000-0000-0000-0000000002d3'
+\set user_p4 '00000000-0000-0000-0000-0000000002d4'
+insert into auth.users (id) values (:'user_p1'), (:'user_p2'), (:'user_p3'), (:'user_p4');
+set role authenticated;
+-- Lia tem duas casas; Rui mora com ela na primeira; Téo, de outra casa, também se chama Lia lá; Bel não tem casa.
+select set_config('request.jwt.claim.sub', :'user_p1', false) \gset
+select (public.create_household('Casa da Lia', 'Lia')).id as hh_p1 \gset
+select (public.create_household('Casa da Praia', 'Lia')).id as hh_p2 \gset
+select invite_code as invite_p from public.households where id = :'hh_p1' \gset
+select set_config('request.jwt.claim.sub', :'user_p2', false) \gset
+select public.join_household(:'invite_p', 'Rui') \gset
+select set_config('request.jwt.claim.sub', :'user_p3', false) \gset
+select (public.create_household('Casa do Téo', 'Lia')).id as hh_p3 \gset
+select set_config('test.hh_p1', :'hh_p1', false) \gset
+select set_config('test.hh_p2', :'hh_p2', false) \gset
+select set_config('test.hh_p3', :'hh_p3', false) \gset
+reset role;
+do $$
+begin
+  assert (select relrowsecurity from pg_class where oid = 'public.profiles'::regclass), 'profiles has RLS on';
+  -- Cada privilégio por si: com uma lista, has_table_privilege é verdade com qualquer um deles.
+  assert has_table_privilege('authenticated', 'public.profiles', 'select'), 'people read their profile';
+  assert not has_table_privilege('authenticated', 'public.profiles', 'insert'), 'people do not insert directly';
+  assert not has_table_privilege('authenticated', 'public.profiles', 'update'), 'people do not update directly';
+  assert not has_table_privilege('authenticated', 'public.profiles', 'delete'), 'people do not delete directly';
+  assert not has_table_privilege('authenticated', 'public.profiles', 'truncate'), 'people do not truncate';
+  assert not has_table_privilege('anon', 'public.profiles', 'select'), 'anon does not read profiles';
+  assert not has_table_privilege('anon', 'public.profiles', 'insert'), 'anon does not insert profiles';
+  assert not has_table_privilege('anon', 'public.profiles', 'update'), 'anon does not update profiles';
+  assert not has_table_privilege('anon', 'public.profiles', 'delete'), 'anon does not delete profiles';
+  assert has_table_privilege('service_role', 'public.profiles', 'select'), 'service role selects';
+  assert has_table_privilege('service_role', 'public.profiles', 'insert'), 'service role inserts';
+  assert has_table_privilege('service_role', 'public.profiles', 'update'), 'service role updates';
+  assert has_table_privilege('service_role', 'public.profiles', 'delete'), 'service role deletes';
+  assert has_function_privilege('authenticated', 'public.save_my_profile(text, date, text)', 'execute'), 'people save their profile';
+  assert not has_function_privilege('anon', 'public.save_my_profile(text, date, text)', 'execute'), 'anon cannot';
+  assert not has_function_privilege('service_role', 'public.save_my_profile(text, date, text)', 'execute'), 'only people, with their token';
+  assert not exists (
+    select 1 from pg_proc p, aclexplode(p.proacl) a
+    where p.oid = 'public.save_my_profile(text, date, text)'::regprocedure and a.grantee = 0
+  ), 'and public has no grant on save_my_profile';
+  assert (select prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = 'public.save_my_profile(text, date, text)'::regprocedure),
+    'security definer with a fixed search_path';
+end $$;
+
+set role anon;
+do $$
+begin
+  perform 1 from public.profiles;
+  raise exception 'FAIL: anon read the profiles';
+exception when insufficient_privilege then null;
+end $$;
+do $$
+begin
+  perform public.save_my_profile('Ninguém', null, null);
+  raise exception 'FAIL: anon saved a profile';
+exception when insufficient_privilege then null;
+end $$;
+set role authenticated;
+-- Sem conta (sem o sub do token), nada é gravado.
+select set_config('request.jwt.claim.sub', '', false) \gset
+do $$
+begin
+  perform public.save_my_profile('Ninguém', null, null);
+  raise exception 'FAIL: saved a profile without an account';
+exception when insufficient_privilege then null;
+end $$;
+
+select set_config('request.jwt.claim.sub', :'user_p1', false) \gset
+do $$
+declare
+  saved jsonb;
+begin
+  assert (select count(*) from public.profiles) = 0, 'no profile yet';
+  saved := public.save_my_profile(E'  Lia Souza \n', '1985-03-05', '(83) 99999-9999');
+  assert saved = jsonb_build_object('name', 'Lia Souza', 'birth_date', '1985-03-05', 'phone', '83999999999'),
+    'returns what it saved: ' || saved::text;
+  assert (select phone from public.profiles where user_id = auth.uid()) = '83999999999', 'the phone keeps only the digits';
+  assert (select birth_date from public.profiles where user_id = auth.uid()) = '1985-03-05', 'the birth date is saved';
+  -- Cada recusa com o código dela, e nada muda.
+  begin
+    perform public.save_my_profile('   ', null, null);
+    raise exception 'FAIL: saved an empty name';
+  exception when sqlstate 'NK012' then null;
+  end;
+  begin
+    perform public.save_my_profile(repeat('a', 61), null, null);
+    raise exception 'FAIL: saved a name over 60 letters';
+  exception when sqlstate 'NK012' then null;
+  end;
+  begin
+    perform public.save_my_profile(null, null, null);
+    raise exception 'FAIL: saved without a name';
+  exception when sqlstate 'NK012' then null;
+  end;
+  begin
+    perform public.save_my_profile('Lia', '1899-12-31', null);
+    raise exception 'FAIL: saved a birth date before 1900';
+  exception when sqlstate 'NK013' then null;
+  end;
+  begin
+    perform public.save_my_profile('Lia', ((now() at time zone 'America/Sao_Paulo')::date + 1), null);
+    raise exception 'FAIL: saved a birth date in the future';
+  exception when sqlstate 'NK013' then null;
+  end;
+  begin
+    perform public.save_my_profile('Lia', null, '9999-9999');
+    raise exception 'FAIL: saved a phone without the area code';
+  exception when sqlstate 'NK014' then null;
+  end;
+  begin
+    perform public.save_my_profile('Lia', null, '+55 83 99999-9999');
+    raise exception 'FAIL: saved a phone with too many digits';
+  exception when sqlstate 'NK014' then null;
+  end;
+  assert (select phone = '83999999999' and birth_date = '1985-03-05' from public.profiles where user_id = auth.uid()),
+    'a refused save changes nothing';
+  -- 60 letras cabem (um emoji é uma letra), hoje cabe, 1900 cabe; vazio é sem telefone e sem data.
+  perform public.save_my_profile(repeat('😀', 60), (now() at time zone 'America/Sao_Paulo')::date, null);
+  perform public.save_my_profile('Lia', '1900-01-01', '');
+  assert (select birth_date = '1900-01-01' and phone is null from public.profiles where user_id = auth.uid()), 'empty phone is no phone';
+  perform public.save_my_profile('Lia Souza', null, '83 3333-4444');
+  assert (select birth_date is null and phone = '8333334444' from public.profiles where user_id = auth.uid()),
+    'a fixed line with 10 digits, and no birth date';
+  assert (select count(*) from public.profiles) = 1, 'one row per person';
+  -- Direto na tabela, nada.
+  begin
+    insert into public.profiles (user_id, phone) values (auth.uid(), '83999999999');
+    raise exception 'FAIL: inserted a profile directly';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update public.profiles set phone = '83999999999';
+    raise exception 'FAIL: updated a profile directly';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from public.profiles;
+    raise exception 'FAIL: deleted a profile directly';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- Rui, da mesma casa: não lê nem grava o perfil da Lia; vê só o nome novo dela.
+select set_config('request.jwt.claim.sub', :'user_p2', false) \gset
+do $$
+begin
+  assert (select count(*) from public.profiles) = 0, 'another resident does not see her birth date or phone';
+  perform public.save_my_profile('Rui', '1990-07-01', '11987654321');
+  assert (select count(*) from public.profiles) = 1 and (select user_id from public.profiles) = auth.uid(),
+    'and saves only his own';
+  assert (select display_name from public.household_members where user_id = '00000000-0000-0000-0000-0000000002d1') = 'Lia Souza',
+    'the residents see her new name';
+end $$;
+reset role;
+do $$
+declare
+  lia uuid := '00000000-0000-0000-0000-0000000002d1';
+begin
+  assert (select count(*) from public.household_members where user_id = lia) = 2, 'Lia is in two households';
+  assert (select bool_and(display_name = 'Lia Souza') from public.household_members where user_id = lia), 'her name changed in both';
+  assert (select display_name from public.household_members where user_id = '00000000-0000-0000-0000-0000000002d3') = 'Lia',
+    'another person called Lia keeps the name';
+  assert (select display_name from public.household_members where user_id = '00000000-0000-0000-0000-0000000002d2') = 'Rui',
+    'Rui keeps his';
+  assert (select phone from public.profiles where user_id = '00000000-0000-0000-0000-0000000002d2') = '11987654321'
+    and (select phone from public.profiles where user_id = lia) = '8333334444', 'each one keeps their own phone';
+end $$;
+
+-- Sair de uma casa não mexe no perfil.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_p1', false) \gset
+select public.leave_household(:'hh_p2', true) \gset
+-- Sem casa nenhuma, a pessoa também salva o perfil (não há nome de casa para trocar).
+select set_config('request.jwt.claim.sub', :'user_p4', false) \gset
+select public.save_my_profile('Bel', '2000-02-29', null) \gset
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.households where id = current_setting('test.hh_p2')::uuid), 'she left (and deleted) the beach house';
+  assert (select phone from public.profiles where user_id = '00000000-0000-0000-0000-0000000002d1') = '8333334444', 'her profile stays';
+  assert (select birth_date from public.profiles where user_id = '00000000-0000-0000-0000-0000000002d4') = '2000-02-29', 'Bel saved hers';
+end $$;
+
+-- Apagar a conta: a parte do banco já tira o perfil; o resto sai com o usuário.
+set role service_role;
+select set_config('request.jwt.claim.sub', '', false) \gset
+select public.delete_account_data(:'user_p1', '{}') \gset
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.profiles where user_id = '00000000-0000-0000-0000-0000000002d1'), 'deleting the account takes the profile';
+  assert exists (select 1 from public.profiles where user_id = '00000000-0000-0000-0000-0000000002d2'), 'Rui keeps his';
+  assert (select display_name from public.household_members where user_id = '00000000-0000-0000-0000-0000000002d2') = 'Rui', 'and his name';
+end $$;
+delete from auth.users where id = :'user_p1';
+-- Sem a delete_account_data (o Auth apaga direto), a chave estrangeira leva o perfil.
+delete from auth.users where id = :'user_p4';
+select count(*) = 0 as profile_cascade from public.profiles where user_id = :'user_p4' \gset
+\if :profile_cascade
+\else
+  \echo 'FAIL: the deleted user''s profile stayed'
+  select 1/0;
+\endif
+delete from public.households where id in (:'hh_p1', :'hh_p3');
+delete from auth.users where id in (:'user_p2', :'user_p3');
+do $$
+begin
+  assert not exists (select 1 from public.profiles where user_id::text like '00000000-0000-0000-0000-0000000002d%'), 'no profile left';
+end $$;
+
 \echo 'OK — todos os testes do banco passaram'
 

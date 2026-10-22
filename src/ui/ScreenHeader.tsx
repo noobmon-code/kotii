@@ -9,7 +9,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { GradientCard } from './gradient';
 import { Orb } from './Orb';
 import { CategoryIcon, Icon, type IconName, Text } from './primitives';
-import { fonts, radius, space, useGlow, useGradient, useTint, type GradientName, type Tint } from './theme';
+import { fonts, radius, space, useColors, useGlow, useGradient, useTint, type GradientName, type Tint } from './theme';
 
 // O brilho da seta combina com o gradiente do cartão.
 const GLOW_TINT: Record<GradientName, Tint> = { pessego: 'orange', rosa: 'pink', salvia: 'green', caramelo: 'purple' };
@@ -20,12 +20,15 @@ export function ScreenHeader({
   title,
   subtitle,
   art,
+  action,
 }: {
   gradient: GradientName;
   eyebrow: string;
   title: string;
   subtitle?: string;
   art?: ReactNode;
+  /** Um botão no canto de cima à direita (o HeaderButton), por cima da cena. */
+  action?: ReactNode;
 }) {
   const g = useGradient(gradient);
   return (
@@ -38,7 +41,25 @@ export function ScreenHeader({
         {subtitle ? <Text style={[styles.subtitle, { color: g.subtitle }]}>{subtitle}</Text> : null}
       </View>
       {art}
+      {action ? <View style={styles.action}>{action}</View> : null}
     </GradientCard>
+  );
+}
+
+/** Botão redondo de vidro no topo da tela (a engrenagem das Configurações, na Família). O toque tem 44. */
+export function HeaderButton({ icon, label, onPress }: { icon: IconName; label: string; onPress: () => void }) {
+  const c = useColors();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      hitSlop={2}
+      onPress={onPress}
+      style={({ pressed }) => pressed && styles.pressed}>
+      <Orb size={40} glow={c.border}>
+        <Icon name={icon} size={22} color="text" />
+      </Orb>
+    </Pressable>
   );
 }
 
@@ -149,6 +170,8 @@ const styles = StyleSheet.create({
   artLeft: { position: 'absolute', left: 0, top: 0 },
   artRight: { position: 'absolute', right: 0, bottom: 0 },
   artMiddle: { position: 'absolute', left: 22, top: 18 },
+  // No canto, longe da cena: as orbes dela começam a 24 da borda de cima e a 40 da direita.
+  action: { position: 'absolute', top: space.sm + 2, right: space.sm + 2 },
   feature: {
     flexDirection: 'row',
     alignItems: 'center',

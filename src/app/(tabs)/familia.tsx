@@ -3,19 +3,21 @@ import { Share, StyleSheet } from 'react-native';
 
 import { usePeople } from '@/data/health';
 import { useKidPoints } from '@/data/home';
-import { LastMemberError, useLeaveHousehold, useRegenerateInviteCode, useRemoveMember, useSignOutQuestion } from '@/data/household';
+import { LastMemberError, useLeaveHousehold, useRegenerateInviteCode, useRemoveMember } from '@/data/household';
 import { AiUsageSection } from '@/features/AiUsageSection';
 import { DocumentsSection } from '@/features/DocumentsSection';
 import { HouseRemindersSection } from '@/features/HouseRemindersSection';
-import { TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
 import { SharedPricesAbout } from '@/features/SharedPrices';
-import { signOut, useAuth, useHousehold } from '@/lib/auth';
+import { useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
 import { FAMILY_SUBTITLE } from '@/domain/screenHeaders';
 import { Badge, Button, Card, Icon, IconBadge, IconButton, ListCard, ListRow, Loading, Row, Screen, Section, Text } from '@/ui/primitives';
-import { HeaderIcons, ScreenHeader } from '@/ui/ScreenHeader';
+import { HeaderButton, HeaderIcons, ScreenHeader } from '@/ui/ScreenHeader';
 import { space } from '@/ui/theme';
+
+/** As Configurações (perfil, tema, termos e conta): pela engrenagem do topo e pela linha do fim da aba. */
+const openSettings = () => router.push('/configuracoes');
 
 export default function FamilyScreen() {
   const { session } = useAuth();
@@ -25,7 +27,6 @@ export default function FamilyScreen() {
   const regenerateCode = useRegenerateInviteCode();
   const people = usePeople();
   const kidPoints = useKidPoints();
-  const signOutQuestion = useSignOutQuestion();
 
   if (!household.data) return <Loading />;
   const { household: house, members, me, households } = household.data;
@@ -128,6 +129,7 @@ export default function FamilyScreen() {
         title={house.name}
         subtitle={FAMILY_SUBTITLE}
         art={<HeaderIcons icons={['calendar-heart', 'home-heart', 'account-group-outline']} tints={['yellow', 'purple', 'pink']} />}
+        action={<HeaderButton icon="cog-outline" label="Configurações" onPress={openSettings} />}
       />
 
       <ListCard>
@@ -230,32 +232,16 @@ export default function FamilyScreen() {
         />
       </Section>
 
-      <Section title="Conta">
-        <Text variant="muted">{session?.user.email}</Text>
-        <ListCard>
-          <ListRow
-            left={<IconBadge icon="shield-account-outline" tone="neutral" />}
-            title={TERMS_TITLE}
-            subtitle={termsVersionLabel()}
-            right={<Icon name="chevron-right" color="textMuted" />}
-            onPress={() => router.push('/termos')}
-          />
-        </ListCard>
-        <Button
-          title="Sair da conta"
-          variant="danger"
-          icon="logout"
-          onPress={() => confirmAction('Sair da conta', signOutQuestion(), 'Sair', () => signOut())}
+      {/* Perfil, tema, termos, sair e apagar a conta ficam nas Configurações. */}
+      <ListCard>
+        <ListRow
+          left={<IconBadge icon="cog-outline" tone="neutral" />}
+          title="Configurações"
+          subtitle="Seu perfil, tema do app, termos e conta"
+          right={<Icon name="chevron-right" color="textMuted" />}
+          onPress={openSettings}
         />
-        {/* A tela explica antes o que fica com cada casa e pede a senha de novo. */}
-        <Button
-          title="Apagar minha conta"
-          variant="ghost"
-          compact
-          icon="account-remove-outline"
-          onPress={() => router.push('/apagar-conta')}
-        />
-      </Section>
+      </ListCard>
     </Screen>
   );
 }

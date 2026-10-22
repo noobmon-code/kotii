@@ -9,7 +9,6 @@ import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client
 import { DarkTheme, DefaultTheme, SplashScreen, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
-import { useColorScheme } from 'react-native';
 
 import { AuthProvider, openedByRecoveryLink, useAuth, useHousehold } from '@/lib/auth';
 import { clearLinkNotice, useLinkNotice } from '@/lib/linkNotice';
@@ -19,7 +18,8 @@ import { persistOptions, queryClient } from '@/lib/queryClient';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import { EmptyState, ErrorNotice, Loading, Screen } from '@/ui/primitives';
-import { fonts, useColors } from '@/ui/theme';
+import { fonts, useColors, useScheme, useThemeChoice } from '@/ui/theme';
+import { ThemeChoiceProvider } from '@/ui/ThemeChoiceProvider';
 
 SplashScreen.preventAutoHideAsync();
 configureNotifications();
@@ -31,14 +31,17 @@ export default function RootLayout() {
   return (
     <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
       <AuthProvider>
-        <AppNavigator />
+        <ThemeChoiceProvider>
+          <AppNavigator />
+        </ThemeChoiceProvider>
       </AuthProvider>
     </PersistQueryClientProvider>
   );
 }
 
 function AppNavigator() {
-  const scheme = useColorScheme();
+  const scheme = useScheme();
+  const theme = useThemeChoice();
   const colors = useColors();
   const { session, loading } = useAuth();
   const household = useHousehold();
@@ -52,7 +55,9 @@ function AppNavigator() {
     loading ||
     recovery === 'reading' ||
     (Boolean(session) && !newPassword && household.isPending) ||
-    (!fontsLoaded && !fontError);
+    (!fontsLoaded && !fontError) ||
+    // O tema escolhido neste aparelho: lido antes de abrir, para não piscar o do celular.
+    !theme.ready;
 
   useEffect(() => {
     if (!resolving || !isSupabaseConfigured) SplashScreen.hideAsync();
@@ -104,7 +109,8 @@ function AppNavigator() {
 
   return (
     <ThemeProvider value={scheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <StatusBar style="auto" />
+      {/* "auto" seguiria o celular: a barra acompanha o tema do app, que pode ser outro. */}
+      <StatusBar style={scheme === 'dark' ? 'light' : 'dark'} />
       <Stack
         screenOptions={{
           headerBackButtonDisplayMode: 'minimal',
@@ -163,8 +169,9 @@ function AppNavigator() {
           <Stack.Screen name="consultor/index" options={{ title: 'Consultor (beta)' }} />
           <Stack.Screen name="consultor/lancamentos" options={{ title: 'Lançamentos do banco' }} />
           <Stack.Screen name="consultor/conversa" options={{ headerShown: false, presentation: 'modal' }} />
+          <Stack.Screen name="configuracoes" options={{ title: 'Configurações' }} />
         </Stack.Protected>
-        {/* Apagar a conta: da aba Família e também sem casa nenhuma (tela de boas-vindas). */}
+        {/* Apagar a conta: de Configurações (aba Família) e também sem casa nenhuma (tela de boas-vindas). */}
         <Stack.Protected guard={signedIn && !newPassword}>
           <Stack.Screen name="apagar-conta" options={{ title: 'Apagar minha conta' }} />
         </Stack.Protected>

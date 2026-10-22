@@ -6,14 +6,14 @@
 import { formatBRDate } from './dates';
 
 /** Data da versão do texto (AAAA-MM-DD). Muda a cada mudança no texto. */
-export const TERMS_VERSION = '2026-10-20';
+export const TERMS_VERSION = '2026-10-22';
 
 /**
  * A versão que a pessoa aceita (AAAA-MM-DD). Só muda numa mudança importante (o que é guardado, compartilhado
  * entre casas ou mandado para a IA ou outros serviços, quem responde pelos dados, quem pode ter conta): aí o
  * aviso da tela Hoje volta para todo mundo. Corrigir uma palavra muda só a TERMS_VERSION.
  */
-export const TERMS_ACCEPT_VERSION = '2026-10-20';
+export const TERMS_ACCEPT_VERSION = '2026-10-22';
 
 /** O aviso dos termos: para quem nunca aceitou nenhuma versão, ou para quem aceitou uma anterior. */
 export type TermsNotice = 'primeira' | 'mudou';
@@ -71,6 +71,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
       'Só quem tem 18 anos ou mais pode criar uma conta. Os dados de crianças e adolescentes, e de quem não usa o app, entram pela conta de um adulto da casa, que responde por eles.',
       'A conta é feita com e-mail e senha. Guarde a senha só com você; se esquecer, o app manda uma mensagem para o seu e-mail para criar uma senha nova.',
       'O app guarda na sua conta quais versões destes termos você aceitou e quando (ao criar a conta, ao entrar sem ter aceitado nenhuma ou ao tocar em "Entendi"), e guarda essas versões também neste aparelho.',
+      'Em Configurações (na aba Família) ficam o seu perfil e o tema do app. O seu nome é como os moradores veem você, e ele muda em todas as suas casas. A data de nascimento e o telefone são opcionais e ficam só na sua conta: os outros moradores não veem, e eles não vão para a IA nem para a base de preços compartilhados. O tema (claro, escuro ou o do celular) fica guardado só neste aparelho.',
       'Os dados ficam numa casa. Quem entra com o código de convite vê e edita tudo o que é da casa: listas, notas, despensa, tarefas, saúde, documentos e finanças. Só convide quem pode ver isso. Uma conta pode estar em até 5 casas, e cada casa só vê os próprios dados.',
       'Quem cria a casa é o responsável por ela: pode trocar o código de convite e tirar moradores. Se o responsável sai, a casa passa para o morador mais antigo.',
       `O que um morador registrou continua com a casa depois que ele sai, é tirado dela ou apaga a conta, inclusive a ficha de saúde dele: ela vira a ficha de um dependente, que os outros moradores continuam vendo e editando, e que quem saiu não consegue mais apagar. Se não quiser que fique, apague antes de sair o que o app deixa apagar (veja "Apagar dados e sair") e peça o resto pelo e-mail ${TERMS_CONTACT}.`,
@@ -130,7 +131,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
       `Para apagar tudo o que é seu, escreva para ${TERMS_CONTACT}.`,
       'Sair da casa (aba Família) tira o seu acesso a ela; o que você registrou continua com a casa. Se você é a última pessoa, sair apaga a casa e tudo o que ela tem, para sempre: listas, notas, despensa, tarefas, saúde, documentos e fotos.',
       'Sair da conta só desconecta este aparelho; não apaga nada.',
-      'Para apagar a conta, use "Apagar minha conta" na aba Família, confirmando com a sua senha. Antes, o app mostra o que acontece com cada casa. A conta sai de todas as suas casas, como ao sair de cada uma: o que você registrou continua com a casa, e nos acertos da divisão de gastos você aparece como "Ex-morador". A casa em que você é a última pessoa é apagada, com tudo o que ela tem. Saem também o seu login, o consultor financeiro (os bancos conectados e os lançamentos) e os avisos do navegador. Não tem volta.',
+      'Para apagar a conta, use "Apagar minha conta" em Configurações, na aba Família, confirmando com a sua senha. Antes, o app mostra o que acontece com cada casa. A conta sai de todas as suas casas, como ao sair de cada uma: o que você registrou continua com a casa, e nos acertos da divisão de gastos você aparece como "Ex-morador". A casa em que você é a última pessoa é apagada, com tudo o que ela tem. Saem também o seu login, o seu perfil (data de nascimento e telefone), o consultor financeiro (os bancos conectados e os lançamentos) e os avisos do navegador. Não tem volta.',
       `Se não conseguir apagar a conta pelo app, escreva para ${TERMS_CONTACT} a partir do e-mail da conta.`,
       'Os preços que já entraram na base compartilhada não saem, porque não estão ligados a você nem à casa.',
     ],
