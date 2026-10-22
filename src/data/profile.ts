@@ -1,5 +1,6 @@
 // O perfil da pessoa (domain/profile): a linha dela em profiles (só ela lê) e o salvar pela save_my_profile,
-// que grava a linha e troca o nome em todas as casas dela numa chamada só. O app pode chegar antes da
+// que grava a linha e troca o nome em todas as casas dela numa chamada só (onde o nome muda, a ficha de saúde
+// dela e os remédios dela também; ver 20261022150000_profile_name_health.sql). O app pode chegar antes da
 // migração: sem a tabela, a leitura responde `available: false` e a tela mostra só o nome, com um aviso.
 //
 // Data de nascimento e telefone são só da pessoa: nada daqui vai para o resumo do Nuke, para o consultor ou
@@ -58,7 +59,8 @@ export function saveProfileErrorMessage(error: unknown): string {
 
 /**
  * Salva o perfil: uma chamada. Depois, o nome novo entra já nas cópias que o mostram (a casa e os moradores,
- * na consulta da casa) e o perfil, na dele; só então elas são buscadas de novo.
+ * na consulta da casa) e o perfil, na dele; só então elas são buscadas de novo, junto com as fichas e os
+ * remédios (o banco pode ter posto um sufixo no nome da ficha, "Ana 2", então a cópia não adivinha).
  */
 export function useSaveProfile() {
   const { session } = useAuth();
@@ -86,6 +88,11 @@ export function useSaveProfile() {
       // Sem esperar: o perfil já está salvo, e a tela não fica presa a uma busca que demora.
       void queryClient.invalidateQueries({ queryKey: ['household'] });
       void queryClient.invalidateQueries({ queryKey: profileQueryKey(userId) });
+      // O nome da ficha de saúde, dos remédios (e dos lembretes da casa aberta, que seguem os remédios; os das
+      // outras casas, o useReminderSync refaz quando o nome muda) e o da pessoa nas despesas médicas do IR.
+      void queryClient.invalidateQueries({ queryKey: ['people'] });
+      void queryClient.invalidateQueries({ queryKey: ['medications'] });
+      void queryClient.invalidateQueries({ queryKey: ['expenses', 'medical'] });
     },
     // No hook: o aviso sai mesmo se a pessoa já fechou a tela.
     onError: (err) => {

@@ -327,7 +327,11 @@ export function useReminderSync() {
   const house = useHouseReminderData();
   const { refetch: refetchHouse } = house;
   const target = useHouseReminderTarget();
-  const households = useHousehold().data?.households;
+  const household = useHousehold().data;
+  const households = household?.households;
+  // O nome da pessoa: ao mudar (no perfil, que troca também o nome da ficha e dos remédios dela em todas as
+  // casas), os lembretes das outras casas são refeitos com ele.
+  const myName = household?.me.display_name;
   const queryClient = useQueryClient();
   // Mesma lista enquanto as casas não mudam.
   const housesKey = JSON.stringify(households?.map((h) => [h.id, h.name]) ?? []);
@@ -360,7 +364,7 @@ export function useReminderSync() {
       run();
     });
     return () => subscription.remove();
-  }, [housesKey, target?.householdId, queryClient]);
+  }, [housesKey, myName, target?.householdId, queryClient]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {

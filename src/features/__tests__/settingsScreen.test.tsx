@@ -6,7 +6,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'rea
 
 import SettingsScreen from '@/app/configuracoes';
 import { THEME_HINT } from '@/domain/appearance';
-import { PROFILE_MESSAGES, PROFILE_NOT_READY, PROFILE_PRIVACY } from '@/domain/profile';
+import { PROFILE_MESSAGES, PROFILE_NAME_HINT, PROFILE_NOT_READY, PROFILE_PRIVACY } from '@/domain/profile';
 import { TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
 import { THEME_CHOICE_KEY } from '@/lib/themeChoice';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -135,6 +135,9 @@ describe('Configurações: perfil', () => {
     expect(field('Data de nascimento').props.value).toBe('05/03/1985');
     expect(field('Telefone').props.value).toBe('(83) 99999-9999');
     expect(text).toContain(PROFILE_PRIVACY);
+    // A dica do nome diz que a ficha de saúde muda junto.
+    expect(text).toContain(PROFILE_NAME_HINT);
+    expect(PROFILE_NAME_HINT).toContain('ficha de saúde');
     expect(text).toContain('E-mail da contaana@exemplo.com');
     // O e-mail não é um campo.
     expect(renderer!.root.findAll((node) => node.props.value === 'ana@exemplo.com')).toHaveLength(0);
@@ -170,6 +173,9 @@ describe('Configurações: perfil', () => {
   });
 
   it('depois de salvar, o nome novo já está na casa e nos moradores (antes de buscar de novo), e o perfil no cache dele', async () => {
+    // As fichas e os remédios: o banco também troca o nome da ficha dela (com sufixo, se preciso).
+    queryClient.setQueryData(['people'], [{ id: 'p1', name: 'Ana', member_user_id: 'ana' }]);
+    queryClient.setQueryData(['medications'], [{ id: 'm1', person_id: 'p1', person_name: 'Ana' }]);
     await mount();
     await type('Nome', 'Ana Maria');
     await press('Salvar');
@@ -180,6 +186,8 @@ describe('Configurações: perfil', () => {
     expect(state?.me.display_name).toBe('Ana Maria');
     expect(state?.members.map((m) => m.display_name)).toEqual(['Ana Maria', 'Beto']);
     expect(queryClient.getQueryState(['household', 'ana'])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(['people'])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(['medications'])?.isInvalidated).toBe(true);
     expect(queryClient.getQueryData(['profile', 'ana'])).toEqual({
       available: true,
       profile: { birth_date: '1985-03-05', phone: '83999999999' },

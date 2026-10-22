@@ -11089,5 +11089,154 @@ begin
   assert not exists (select 1 from public.profiles where user_id::text like '00000000-0000-0000-0000-0000000002d%'), 'no profile left';
 end $$;
 
+-- ---------------------------------------------------------------------------
+\echo '• Perfil: o nome novo vai também para a ficha de saúde da pessoa (e os remédios dela), só onde o nome muda'
+\set user_n1 '00000000-0000-0000-0000-0000000002e1'
+\set user_n2 '00000000-0000-0000-0000-0000000002e2'
+insert into auth.users (id) values (:'user_n1'), (:'user_n2');
+set role authenticated;
+-- Ana tem quatro casas; Caio mora com ela na primeira.
+select set_config('request.jwt.claim.sub', :'user_n1', false) \gset
+select (public.create_household('Casa A', 'Ana')).id as hh_n1 \gset
+select (public.create_household('Casa B', 'Ana')).id as hh_n2 \gset
+select (public.create_household('Casa C', 'Ana')).id as hh_n3 \gset
+select (public.create_household('Casa D', 'Ana')).id as hh_n4 \gset
+select invite_code as invite_n from public.households where id = :'hh_n1' \gset
+select set_config('request.jwt.claim.sub', :'user_n2', false) \gset
+select public.join_household(:'invite_n', 'Caio') \gset
+select set_config('test.hh_n1', :'hh_n1', false) \gset
+select set_config('test.hh_n2', :'hh_n2', false) \gset
+select set_config('test.hh_n3', :'hh_n3', false) \gset
+select set_config('test.hh_n4', :'hh_n4', false) \gset
+reset role;
+do $$
+declare
+  ana uuid := '00000000-0000-0000-0000-0000000002e1';
+  a uuid := current_setting('test.hh_n1')::uuid;
+  c uuid := current_setting('test.hh_n3')::uuid;
+  d uuid := current_setting('test.hh_n4')::uuid;
+begin
+  -- Na casa D, de "Bia" a "Bia 19": sobra o último sufixo.
+  insert into public.people (household_id, name) values (d, 'Bia');
+  insert into public.people (household_id, name) select d, 'Bia ' || n from generate_series(2, 19) as n;
+  -- Na casa A, uma criança já se chama Bia, e há um pet; os remédios da Ana e da Bia mostram o nome de cada uma.
+  insert into public.people (household_id, name) values (a, 'Bia');
+  insert into public.people (household_id, name, kind) values (a, 'Rex', 'pet');
+  insert into public.medications (household_id, person_id, person_name, name, times)
+    select a, p.id, p.name, 'Vitamina D', array['08:00'] from public.people p where p.household_id = a and p.member_user_id = ana;
+  insert into public.medications (household_id, person_id, person_name, name, times)
+    select a, p.id, p.name, 'Xarope', array['20:00'] from public.people p where p.household_id = a and p.name = 'Bia';
+  -- Na casa C, de "Bia" a "Bia 20" já existem.
+  insert into public.people (household_id, name) values (c, 'Bia');
+  insert into public.people (household_id, name) select c, 'Bia ' || n from generate_series(2, 20) as n;
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_n1', false) \gset
+select public.save_my_profile('Bia', null, null) \gset
+reset role;
+do $$
+declare
+  ana uuid := '00000000-0000-0000-0000-0000000002e1';
+  a uuid := current_setting('test.hh_n1')::uuid;
+  b uuid := current_setting('test.hh_n2')::uuid;
+  c uuid := current_setting('test.hh_n3')::uuid;
+begin
+  assert (select name from public.people where household_id = b and member_user_id = ana) = 'Bia', 'her record takes the new name';
+  assert (select name from public.people where household_id = a and member_user_id = ana) = 'Bia 2',
+    'a name another record has in the house gets a suffix';
+  assert exists (select 1 from public.people where household_id = a and name = 'Bia' and member_user_id is null),
+    'the child keeps her name';
+  assert (select person_name from public.medications where household_id = a and name = 'Vitamina D') = 'Bia 2', 'her medications show it';
+  assert (select person_name from public.medications where household_id = a and name = 'Xarope') = 'Bia', 'the child''s do not change';
+  assert (select name from public.people where household_id = a and member_user_id = '00000000-0000-0000-0000-0000000002e2') = 'Caio',
+    'another resident''s record stays';
+  assert exists (select 1 from public.people where household_id = a and name = 'Rex' and kind = 'pet'), 'and the pet';
+  assert (select name from public.people where household_id = current_setting('test.hh_n4')::uuid and member_user_id = ana) = 'Bia 20',
+    'the last suffix is tried';
+  assert (select name from public.people where household_id = c and member_user_id = ana) = 'Ana',
+    'with every suffix taken, the record keeps its name';
+  assert (select display_name from public.household_members where household_id = c and user_id = ana) = 'Bia',
+    'and the house name changes anyway';
+  -- Na casa B, ela deu à ficha o nome completo.
+  update public.people set name = 'Bia Souza' where household_id = b and member_user_id = ana;
+end $$;
+
+-- Salvar sem mudar o nome (só o telefone) não mexe na ficha.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_n1', false) \gset
+select public.save_my_profile('Bia', null, '83999999999') \gset
+reset role;
+do $$
+declare
+  ana uuid := '00000000-0000-0000-0000-0000000002e1';
+begin
+  assert (select name from public.people where household_id = current_setting('test.hh_n2')::uuid and member_user_id = ana) = 'Bia Souza',
+    'saving the profile without a new name leaves the record''s name';
+  assert (select name from public.people where household_id = current_setting('test.hh_n1')::uuid and member_user_id = ana) = 'Bia 2',
+    'also the one with a suffix';
+end $$;
+
+-- Só as maiúsculas mudam: é outro nome, e "BIA" ainda é o nome da criança.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_n1', false) \gset
+select public.save_my_profile('BIA', null, '83999999999') \gset
+reset role;
+do $$
+declare
+  ana uuid := '00000000-0000-0000-0000-0000000002e1';
+  a uuid := current_setting('test.hh_n1')::uuid;
+begin
+  assert (select name from public.people where household_id = current_setting('test.hh_n2')::uuid and member_user_id = ana) = 'BIA',
+    'a new name replaces the full name too';
+  assert (select name from public.people where household_id = a and member_user_id = ana) = 'BIA 2', 'case does not make it free';
+  assert (select person_name from public.medications where household_id = a and name = 'Vitamina D') = 'BIA 2', 'the medication follows';
+  assert (select name from public.people where household_id = current_setting('test.hh_n3')::uuid and member_user_id = ana) = 'Ana',
+    'still no free name in house C';
+  -- Na casa B, a ficha dela foi apagada.
+  delete from public.people where household_id = current_setting('test.hh_n2')::uuid and member_user_id = ana;
+end $$;
+
+-- Sem ficha numa das casas: salva do mesmo jeito, e não cria outra.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_n1', false) \gset
+select public.save_my_profile('Lia', null, null) \gset
+reset role;
+do $$
+declare
+  ana uuid := '00000000-0000-0000-0000-0000000002e1';
+begin
+  assert not exists (select 1 from public.people where household_id = current_setting('test.hh_n2')::uuid and member_user_id = ana),
+    'no record is created';
+  assert (select display_name from public.household_members where household_id = current_setting('test.hh_n2')::uuid and user_id = ana) = 'Lia',
+    'the house name changes';
+  assert (select name from public.people where household_id = current_setting('test.hh_n1')::uuid and member_user_id = ana) = 'Lia',
+    'and the record in house A, now without a suffix';
+  assert (select person_name from public.medications where household_id = current_setting('test.hh_n1')::uuid and name = 'Vitamina D') = 'Lia',
+    'with her medication';
+  -- Na casa C, ela já se chama Rosa (entrou com outro nome), e a ficha tem o nome completo.
+  update public.household_members set display_name = 'Rosa' where household_id = current_setting('test.hh_n3')::uuid and user_id = ana;
+  update public.people set name = 'Rosa Maria' where household_id = current_setting('test.hh_n3')::uuid and member_user_id = ana;
+end $$;
+
+-- Só as casas em que o nome muda: na C ele já era Rosa, e a ficha fica.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_n1', false) \gset
+select public.save_my_profile('Rosa', null, null) \gset
+reset role;
+do $$
+declare
+  ana uuid := '00000000-0000-0000-0000-0000000002e1';
+begin
+  assert (select name from public.people where household_id = current_setting('test.hh_n3')::uuid and member_user_id = ana) = 'Rosa Maria',
+    'where the name was already the new one, the record keeps its own';
+  assert (select name from public.people where household_id = current_setting('test.hh_n1')::uuid and member_user_id = ana) = 'Rosa',
+    'where it changed, the record follows';
+  assert (select name from public.people where household_id = current_setting('test.hh_n4')::uuid and member_user_id = ana) = 'Rosa',
+    'in every such house';
+end $$;
+delete from public.households where id in (:'hh_n1', :'hh_n2', :'hh_n3', :'hh_n4');
+delete from auth.users where id in (:'user_n1', :'user_n2');
+
 \echo 'OK — todos os testes do banco passaram'
 
