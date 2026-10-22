@@ -42,7 +42,7 @@ import { announceCompletion } from '@/features/ChoresPanel';
 import { BillRow } from '@/features/finance/BillsPanel';
 import { PayBillModal } from '@/features/finance/PayBillModal';
 import { hasHealthToday, healthTodayCount, HealthTodaySections } from '@/features/health/HealthTodaySections';
-import { MedicationRefills, useRefills } from '@/features/health/MedicationSections';
+import { DoseSubtitle, MedicationRefills, useRefills } from '@/features/health/MedicationSections';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { InstallAppCard } from '@/features/InstallAppCard';
 import { MarketTripBanner } from '@/features/MarketTrip';
@@ -77,7 +77,7 @@ import {
   Text,
   Tile,
 } from '@/ui/primitives';
-import { fonts, space, useColors } from '@/ui/theme';
+import { fonts, radius, shadows, space, useColors, WASHES } from '@/ui/theme';
 
 const capitalizeFirst = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
@@ -302,20 +302,21 @@ export default function TodayScreen() {
   return (
     <Screen fab edges={[]} refreshing={refreshing} onRefresh={refresh}>
       <SkyHeader sky={sky} period={period}>
-        {houses.length > 1 ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Casa aberta: ${household.data?.household.name}. Trocar de casa`}
-            onPress={() => router.push('/casas')}
-            style={styles.houseSwitch}>
-            <Icon name="home-outline" size={16} color="primary" />
-            <Text variant="label" color="primary" numberOfLines={1} style={styles.houseName}>
-              {household.data?.household.name}
-            </Text>
-            <Icon name="chevron-down" size={16} color="primary" />
-          </Pressable>
-        ) : null}
+        {/* Tudo o que fica na altura do desenho do clima deixa o espaço dele, o seletor de casa também. */}
         <View style={{ paddingRight: SKY_ART_ROOM }}>
+          {houses.length > 1 ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Casa aberta: ${household.data?.household.name}. Trocar de casa`}
+              onPress={() => router.push('/casas')}
+              style={styles.houseSwitch}>
+              <Icon name="home-outline" size={16} color="primary" />
+              <Text variant="label" color="primary" numberOfLines={1} style={styles.houseName}>
+                {household.data?.household.name}
+              </Text>
+              <Icon name="chevron-down" size={16} color="primary" />
+            </Pressable>
+          ) : null}
           <Text style={styles.eyebrow}>{dateLabel}</Text>
           <Text accessibilityRole="header" style={styles.greeting}>
             {greeting(now)},{'\n'}
@@ -343,16 +344,16 @@ export default function TodayScreen() {
       <InstallAppCard />
 
       <View style={styles.quickActions}>
-        <Tile art="camera" wash="#F6CF77" label="Escanear nota" onPress={scanner.open} />
+        <Tile art="camera" wash={WASHES.yellow} label="Escanear nota" onPress={scanner.open} />
         <Tile
           art="carrinho"
-          wash="#76D2F9"
+          wash={WASHES.blue}
           label="Listas de compras"
           onPress={() => router.push({ pathname: '/casa', params: { aba: 'compras' } })}
         />
         <Tile
           art="tarefa"
-          wash="#23CC73"
+          wash={WASHES.green}
           label="Criar nova tarefa"
           onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: 'nova' } })}
         />
@@ -378,7 +379,7 @@ export default function TodayScreen() {
                 left={<IconArt name="capsula" />}
                 title={`${d.time} · ${d.name}`}
                 // Sem o selo de caixa acabando: a seção logo abaixo já diz, uma vez por remédio.
-                subtitle={[d.personName, d.dosage, d.time < nowTime ? 'atrasada' : null].filter(Boolean).join(' · ')}
+                subtitle={<DoseSubtitle parts={[d.personName, d.dosage]} late={d.time < nowTime} />}
                 right={
                   <CheckCircle
                     checked={false}
@@ -634,14 +635,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
+    justifyContent: 'center',
     gap: 6,
+    // 44 de altura: o toque inteiro.
+    minHeight: 44,
     paddingVertical: 8,
     paddingLeft: 12,
     paddingRight: 14,
-    borderRadius: 999,
-    boxShadow: '0px 4px 12px rgba(120, 64, 40, 0.08)',
+    borderRadius: radius.pill,
+    boxShadow: shadows.pill,
   },
   agendaText: { fontFamily: fonts.heavy, fontSize: 14, lineHeight: 18 },
-  houseSwitch: { flexDirection: 'row', alignItems: 'center', gap: space.xs, alignSelf: 'flex-start', paddingVertical: space.xs },
+  // O mesmo respiro de antes até a data, agora que os dois ficam no mesmo bloco.
+  houseSwitch: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.xs,
+    alignSelf: 'flex-start',
+    paddingVertical: space.xs,
+    marginBottom: 6,
+  },
   houseName: { flexShrink: 1 },
 });

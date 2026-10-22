@@ -349,13 +349,16 @@ export function AddCircle({ onPress, label, disabled }: { onPress?: () => void; 
   );
 }
 
-/** Texto de ação azul, sem caixa ("Pôr tudo na lista"). */
+/**
+ * Texto de ação azul, sem caixa ("Pôr tudo na lista"). O toque passa do texto (18) até 44 de altura: mais para cima,
+ * porque embaixo, a 8, já começa o cartão da seção.
+ */
 export function LinkButton({ title, onPress, disabled }: { title: string; onPress: () => void; disabled?: boolean }) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityState={{ disabled }}
-      hitSlop={8}
+      hitSlop={LINK_HIT_SLOP}
       disabled={disabled}
       onPress={onPress}
       style={({ pressed }) => [disabled && { opacity: 0.5 }, pressed && { opacity: 0.6 }]}>
@@ -365,6 +368,8 @@ export function LinkButton({ title, onPress, disabled }: { title: string; onPres
     </Pressable>
   );
 }
+
+const LINK_HIT_SLOP = { top: 18, bottom: space.sm, left: 8, right: 8 };
 
 // ---------------------------------------------------------------------------
 // Formulário
@@ -614,7 +619,7 @@ export function IconBadge({ icon, tone = 'neutral', size = 44 }: { icon: IconNam
     primary: useGlow('blue'),
     danger: useGlow('pink'),
     warning: useGlow('yellow'),
-    info: useGlow('purple'),
+    info: useGlow('blue'),
   };
   const fg: Record<Tone, keyof Colors> = {
     neutral: 'text',

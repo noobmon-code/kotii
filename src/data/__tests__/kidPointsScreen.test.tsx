@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { StyleSheet } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import PointsScreen from '@/app/pontos';
 import { Button, ErrorNotice, ListRow, Loading, Text } from '@/ui/primitives';
+import { PALETTES } from '@/ui/theme';
 
 // "Pontos das crianças" de verdade, com os hooks de dados e o cache (QueryClient) de verdade; só o Supabase é de
 // mentira. O que se confere aqui: a tarefa em rodízio fica no cartão de cada criança da ordem, e o cartão não diz que
@@ -41,7 +43,7 @@ jest.mock('expo-router', () => ({
 jest.mock('expo-image', () => ({ Image: () => null }));
 jest.mock('expo-image-manipulator', () => ({ ImageManipulator: {}, SaveFormat: {} }));
 jest.mock('expo-image-picker', () => ({}));
-jest.mock('@/ui/art', () => ({ SkyArt: () => null, Logo: () => null }));
+jest.mock('@/ui/art', () => ({ Logo: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn(), confirmAction: jest.fn() }));
 jest.mock('@/lib/auth', () => ({ useHousehold: () => ({ data: { members: mockMembers } }) }));
@@ -224,5 +226,14 @@ describe('Pontos das crianças: a tarefa em rodízio no cartão de cada criança
     expect(screen.errors()).toEqual([]);
     expect(screen.rows()).toEqual([]);
     expect(screen.texts()).toContain(HINT);
+  });
+});
+
+describe('Pontos das crianças: o cartão', () => {
+  it('a inicial da criança fica na cor do texto (a cor da criança só no brilho da orbe), para dar para ler', async () => {
+    await open();
+    await settle();
+    const initial = renderer!.root.findAll((node) => typeof node.type === 'string' && node.props.children === 'L')[0];
+    expect(StyleSheet.flatten(initial.props.style).color).toBe(PALETTES.light.text);
   });
 });

@@ -14,7 +14,7 @@ import type { Chore, Person } from '@/lib/types';
 import { notify } from '@/ui/dialogs';
 import { Orb } from '@/ui/Orb';
 import { Button, Card, EmptyState, ErrorNotice, ListRow, Loading, Row, Screen, Text } from '@/ui/primitives';
-import { fonts, space, useGlow, useTint, type Tint } from '@/ui/theme';
+import { fonts, space, useGlow, type Tint } from '@/ui/theme';
 
 const TINTS: Tint[] = ['yellow', 'green', 'pink', 'blue', 'purple', 'orange'];
 const plural = (n: number) => `${n} ${Math.abs(n) === 1 ? 'ponto' : 'pontos'}`;
@@ -91,7 +91,6 @@ function KidCard({
   chores: { chore: Chore; subtitle: string }[];
   ordersKnown: boolean;
 }) {
-  const t = useTint(tint);
   const glow = useGlow(tint);
   const today = todayISO();
   const history = useKidHistory(kid.id, addDays(today, -6));
@@ -105,7 +104,8 @@ function KidCard({
     <Card style={styles.gap}>
       <Row>
         <Orb size={64} glow={glow}>
-          <Text style={[styles.initial, { color: t.art }]}>{kid.name.trim().charAt(0).toUpperCase()}</Text>
+          {/* A letra na cor do texto: no tom da criança, sobre o brilho do mesmo tom, ela some. */}
+          <Text style={styles.initial}>{kid.name.trim().charAt(0).toUpperCase()}</Text>
         </Orb>
         <View style={styles.flex}>
           <Text variant="heading">{kid.name}</Text>

@@ -49,6 +49,10 @@ describe('Casa > Compras', () => {
     expect(text.indexOf('Compras do mês')).toBeLessThan(text.indexOf('Para onde foi o dinheiro do mercado'));
     const card = renderer!.root.findByType(FeatureCard);
     expect(card.props.title).toBe('Para onde foi o dinheiro do mercado');
+    // O leitor de tela diz o título e a frase de baixo, não só o título.
+    expect(card.findAll((node) => node.props.accessibilityRole === 'button')[0].props.accessibilityLabel).toBe(
+      'Para onde foi o dinheiro do mercado. Mercado do mês: por item, por categoria e por mercado',
+    );
     await act(async () => card.props.onPress());
     expect(mockRouter.push).toHaveBeenCalledWith('/mercado');
   });

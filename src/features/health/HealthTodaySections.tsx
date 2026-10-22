@@ -102,6 +102,8 @@ export function HealthTodaySections({ overview, today, compact }: { overview: Ov
                 ]
                   .filter(Boolean)
                   .join(' · ')}
+                // O desenho da seringa é sempre o mesmo: o atraso aparece no selo.
+                right={status.kind === 'atrasada' ? <Badge label="Atrasada" tone="danger" /> : undefined}
                 onPress={() => router.push({ pathname: '/vacina/[id]', params: { id: vaccine.id } })}
               />
             ))}

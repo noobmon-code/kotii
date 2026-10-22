@@ -36,7 +36,7 @@ jest.mock('react-native-safe-area-context', () => {
 jest.mock('expo-image', () => ({ Image: () => null }));
 jest.mock('expo-image-manipulator', () => ({ ImageManipulator: {}, SaveFormat: {} }));
 jest.mock('expo-image-picker', () => ({}));
-jest.mock('@/ui/art', () => ({ SkyArt: () => null, Logo: () => null }));
+jest.mock('@/ui/art', () => ({ Logo: () => null }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn(), confirmAction: jest.fn() }));
 jest.mock('@/lib/auth', () => ({ useHousehold: () => ({ data: { members: mockMembers } }) }));

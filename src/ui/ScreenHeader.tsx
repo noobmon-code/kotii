@@ -113,7 +113,8 @@ export function FeatureCard({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={title}
+      // O rótulo toma o lugar dos textos de dentro: sem a frase, o leitor de tela não diz o que a tela tem.
+      accessibilityLabel={`${title}. ${subtitle}`}
       onPress={onPress}
       style={({ pressed }) => pressed && styles.pressed}>
       <GradientCard gradient={gradient} borderRadius={radius.lg} style={styles.feature}>

@@ -21,9 +21,9 @@ const light = {
   dangerSoft: '#FDE3E6',
   warning: '#8A4B00',
   warningSoft: '#FFEBC7',
-  // O roxo saiu: no lugar dele, o caramelo.
-  info: '#8A5A2B',
-  infoSoft: '#FBEDDC',
+  // Informação é o azul da ação: o caramelo, no lugar do roxo, ficava quase igual ao aviso.
+  info: '#3656F4',
+  infoSoft: '#E6EBFF',
   // Vidro: cartões e botões claros translúcidos, com borda de luz.
   glass: 'rgba(255, 255, 255, 0.72)',
   glassStrong: 'rgba(255, 255, 255, 0.88)',
@@ -53,8 +53,8 @@ const dark: Colors = {
   dangerSoft: '#44232C',
   warning: '#FFD08A',
   warningSoft: '#3E3320',
-  info: '#EBC89F',
-  infoSoft: '#3B2F22',
+  info: '#8FA2FF',
+  infoSoft: '#272F5E',
   glass: 'rgba(255, 255, 255, 0.06)',
   glassStrong: 'rgba(30, 32, 41, 0.88)',
   glassBorder: 'rgba(255, 255, 255, 0.12)',
@@ -79,6 +79,8 @@ export const shadows = {
   glass: '0px 10px 30px rgba(120, 64, 40, 0.08), 0px 1px 2px rgba(120, 64, 40, 0.05)',
   float: '0px 14px 34px rgba(120, 64, 40, 0.16)',
   primary: '0px 6px 16px rgba(54, 86, 244, 0.28)',
+  /** Pílula pequena sobre o véu ("Ver a agenda"). */
+  pill: '0px 4px 12px rgba(120, 64, 40, 0.08)',
 } as const;
 
 /**
@@ -164,8 +166,8 @@ export function useGlow(tint: Tint): string {
   return GLOWS[useScheme()][tint];
 }
 
-/** Traço dos rostos dos personagens: sempre escuro, sobre cor saturada. */
-export const INK = '#2B2A3A';
+/** O brilho no canto dos atalhos da tela Hoje (`Tile` `wash`), como no desenho; à noite o Tile o deixa mais fraco. */
+export const WASHES = { yellow: '#F6CF77', blue: '#76D2F9', green: '#23CC73' } as const;
 
 export const fonts = {
   regular: 'Nunito_400Regular',
