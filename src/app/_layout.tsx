@@ -170,6 +170,7 @@ function AppNavigator() {
           <Stack.Screen name="consultor/lancamentos" options={{ title: 'Lançamentos do banco' }} />
           <Stack.Screen name="consultor/conversa" options={{ headerShown: false, presentation: 'modal' }} />
           <Stack.Screen name="configuracoes" options={{ title: 'Configurações' }} />
+          <Stack.Screen name="moderacao" options={{ title: 'Nomes dos mercados' }} />
         </Stack.Protected>
         {/* Apagar a conta: de Configurações (aba Família) e também sem casa nenhuma (tela de boas-vindas). */}
         <Stack.Protected guard={signedIn && !newPassword}>

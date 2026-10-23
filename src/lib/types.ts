@@ -32,6 +32,12 @@ export interface Store {
    * leitura não o trouxe: o banco antes da migração 20261022170000, ou a lista guardada no aparelho de antes.
    */
   printed_name?: string | null;
+  /**
+   * O nome padrão do CNPJ, o mesmo nas casas que não deram outro: o nome fantasia da Receita ou o escolhido
+   * pela moderação (null: nenhum). Ausente quando a leitura não o trouxe (o banco antes da migração
+   * 20261023120000, ou a lista guardada no aparelho de antes).
+   */
+  standard_name?: string | null;
 }
 
 export interface Product {

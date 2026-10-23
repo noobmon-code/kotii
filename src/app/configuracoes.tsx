@@ -4,8 +4,10 @@ import { StyleSheet } from 'react-native';
 
 import { useSignOutQuestion } from '@/data/household';
 import { useMyProfile, useSaveProfile, type MyProfile } from '@/data/profile';
+import { useIsModerator } from '@/data/storeModeration';
 import { THEME_CHOICES, THEME_HINT } from '@/domain/appearance';
 import { formatBRDate, todayISO } from '@/domain/dates';
+import { MODERATION_TITLE } from '@/domain/storeModeration';
 import {
   maskPhone,
   phoneFieldText,
@@ -43,13 +45,15 @@ const THEME_OPTIONS = [...THEME_CHOICES];
 /**
  * Configurações (da aba Família: a engrenagem do topo e a linha do fim). Perfil: o nome, que vale em todas as
  * casas da pessoa, e a data de nascimento e o telefone, que só ela vê (data/profile). Aparência: o tema deste
- * aparelho (ui/ThemeChoiceProvider). Conta: os termos, sair e apagar a conta, que antes ficavam na aba Família.
+ * aparelho (ui/ThemeChoiceProvider). Moderação, só para quem modera: os nomes padrão dos mercados. Conta: os
+ * termos, sair e apagar a conta, que antes ficavam na aba Família.
  */
 export default function SettingsScreen() {
   const { session } = useAuth();
   const household = useHousehold();
   const theme = useThemeChoice();
   const signOutQuestion = useSignOutQuestion();
+  const moderator = useIsModerator();
   const email = session?.user.email;
 
   return (
@@ -73,6 +77,20 @@ export default function SettingsScreen() {
           <Text variant="small">{THEME_HINT}</Text>
         </Card>
       </Section>
+
+      {moderator.data ? (
+        <Section title="Moderação">
+          <ListCard>
+            <ListRow
+              left={<IconBadge icon="store-edit-outline" tone="neutral" />}
+              title={MODERATION_TITLE}
+              subtitle="O nome padrão de cada mercado"
+              right={<Icon name="chevron-right" color="textMuted" />}
+              onPress={() => router.push('/moderacao')}
+            />
+          </ListCard>
+        </Section>
+      ) : null}
 
       <Section title="Conta">
         <ListCard>
