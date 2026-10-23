@@ -14,7 +14,6 @@ import {
   storeRenameHint,
   storeRevertChange,
   standardNameLabel,
-  storeStandardChange,
 } from '../storeName';
 
 const store = (id: string, name: string, cnpj: string | null, printed_name?: string | null) => ({ id, name, cnpj, address: null, printed_name });
@@ -55,6 +54,16 @@ describe('o nome do mercado', () => {
     }
   });
 
+  it('o "CNPJ …" guardado (a nota sem nome) não aparece, nem se oferece voltar a ele', () => {
+    const placeholder = store('s', 'Assaí', '06057223000171', 'CNPJ 06057223000171');
+    expect(printedNameLine(placeholder)).toBeNull();
+    expect(backToPrintedLabel(placeholder)).toBeNull();
+    expect(storeRevertChange(placeholder)).toBeNull();
+    // O mesmo texto num mercado de outro CNPJ (ou sem CNPJ) é um nome como outro.
+    const other = store('t', 'Assaí', '06057223000252', 'CNPJ 06057223000171');
+    expect(printedNameLine(other)).toBe('Na nota: CNPJ 06057223000171');
+  });
+
   it('desfazer grava o nome guardado como está, sem a limpeza nem o limite do digitado', () => {
     const long = 'X'.repeat(80);
     expect(storeRevertChange(store('s', 'Padaria', null, long))).toEqual({ name: long, ids: ['s'] });
@@ -69,14 +78,12 @@ describe('o nome padrão do CNPJ', () => {
   it('com o nome padrão, a tela diz que é ele e não oferece voltar a ele', () => {
     expect(hasStandardName(withStandard('Pão de Açúcar', 'Pão de Açúcar'))).toBe(true);
     expect(standardNameLabel(withStandard('Pão de Açúcar', 'Pão de Açúcar'))).toBeNull();
-    expect(storeStandardChange(withStandard('Pão de Açúcar', 'Pão de Açúcar'))).toBeNull();
   });
 
-  it('com outro nome, oferece o padrão, gravado como está (o banco compara letra por letra)', () => {
+  it('com outro nome, oferece o padrão', () => {
     const store = withStandard('Pão de Açúcar Miramar', 'Pão de Açúcar');
     expect(hasStandardName(store)).toBe(false);
     expect(standardNameLabel(store)).toBe('Usar o nome padrão: Pão de Açúcar');
-    expect(storeStandardChange(store)).toEqual({ name: 'Pão de Açúcar', ids: ['s'] });
   });
 
   it('sem nome padrão, ou sem a coluna, nada', () => {
@@ -84,7 +91,6 @@ describe('o nome padrão do CNPJ', () => {
       const store = withStandard('Assaí', standard);
       expect(hasStandardName(store)).toBe(false);
       expect(standardNameLabel(store)).toBeNull();
-      expect(storeStandardChange(store)).toBeNull();
     }
   });
 

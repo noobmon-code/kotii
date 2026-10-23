@@ -11271,7 +11271,8 @@ begin
   -- O "CNPJ ..." que o app põe quando a nota não trouxe nome não é nome de nota: não fica guardado.
   insert into public.stores (name, cnpj) values ('CNPJ 11222333000181', '11222333000181') returning id into s;
   update public.stores set name = 'Mercadinho' where id = s;
-  assert (select printed_name from public.stores where id = s) is null, 'the CNPJ placeholder is not kept';
+  -- Desde 20261023120000 o "CNPJ ..." fica guardado, para o gatilho saber que a nota não trouxe nome (o app não o mostra).
+  assert (select printed_name from public.stores where id = s) = 'CNPJ 11222333000181', 'the CNPJ placeholder is kept for the trigger';
 end $$;
 -- Outra casa não renomeia (nem vê) o mercado da Ana.
 select set_config('request.jwt.claim.sub', :'user_m2', false) \gset
@@ -11556,8 +11557,8 @@ begin
     = 'ok / ASSAI ATACADISTA / receita', 'a company with a trade name gets it as the standard name';
   assert (select name || ' / ' || printed_name || ' / ' || named_by from public.stores where id = current_setting('test.n_assai')::uuid)
     = 'ASSAI ATACADISTA / SENDAS DISTRIBUIDORA S/A / padrao', 'in every household that gave no name';
-  assert (select name || ' / ' || coalesce(printed_name, '-') || ' / ' || named_by from public.stores where id = current_setting('test.n_assai2')::uuid)
-    = 'ASSAI ATACADISTA / - / padrao', 'the CNPJ placeholder is not kept as the note name';
+  assert (select name || ' / ' || printed_name || ' / ' || named_by from public.stores where id = current_setting('test.n_assai2')::uuid)
+    = 'ASSAI ATACADISTA / CNPJ 06057223000171 / padrao', 'the note without a name is kept as the CNPJ placeholder';
   -- Sem padrão, o mercado cuja nota não trouxe nome volta ao "CNPJ ...".
   perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000002f3', false);
   perform public.review_store_name('06057223000171', null);
@@ -11570,7 +11571,116 @@ begin
   assert (select name || ' / ' || source || ' / ' || receita_trade_name from public.store_names where cnpj = '06057223000171')
     = 'Assaí / revisao / ASSAI', 'a reviewed name stays, whatever the Receita says next';
   assert (select name from public.stores where id = current_setting('test.n_assai')::uuid) = 'Assaí', 'and so do the stores';
+  -- Dois nomes padrão seguidos e depois nenhum: cada mercado volta ao nome da sua nota, nunca a um padrão de antes.
+  perform public.review_store_name('06057223000171', 'Assaí Atacadista');
+  assert (select name || ' / ' || printed_name || ' / ' || named_by from public.stores where id = current_setting('test.n_assai2')::uuid)
+    = 'Assaí Atacadista / CNPJ 06057223000171 / padrao', 'a second standard name keeps the placeholder as the note name';
+  perform public.review_store_name('06057223000171', null);
+  assert (select name || ' / ' || coalesce(printed_name, '-') || ' / ' || named_by from public.stores where id = current_setting('test.n_assai2')::uuid)
+    = 'CNPJ 06057223000171 / - / nota', 'and without a standard name the store goes back to it';
+  assert (select name || ' / ' || coalesce(printed_name, '-') || ' / ' || named_by from public.stores where id = current_setting('test.n_assai')::uuid)
+    = 'SENDAS DISTRIBUIDORA S/A / - / nota', 'each store to its own note name';
+
+  -- A nota que já traz o nome padrão: é o nome da nota ('nota'). Sem padrão, fica; com outro, ele vai para o
+  -- guardado; e a casa que volta a esse nome volta à nota.
+  insert into public.store_names (cnpj, name, source, reviewed_at, receita_status)
+    values ('75315333000109', 'ATACADAO', 'revisao', now(), 'sem_fantasia');
 end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_n2', false) \gset
+do $$
+declare
+  s uuid;
+begin
+  insert into public.stores (name, cnpj) values ('ATACADAO', '75315333000109') returning id into s;
+  assert (select name || ' / ' || coalesce(printed_name, '-') || ' / ' || named_by from public.stores where id = s) = 'ATACADAO / - / nota',
+    'a note that already has the standard name is named by the note';
+  perform set_config('test.n_ata', s::text, false);
+end $$;
+reset role;
+do $$
+declare
+  s constant uuid := current_setting('test.n_ata')::uuid;
+begin
+  perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000002f3', false);
+  perform public.review_store_name('75315333000109', null);
+  assert (select name || ' / ' || named_by from public.stores where id = s) = 'ATACADAO / nota', 'without a standard name, it keeps its note name';
+  perform public.review_store_name('75315333000109', 'Atacadão');
+  assert (select name || ' / ' || printed_name || ' / ' || named_by from public.stores where id = s) = 'Atacadão / ATACADAO / padrao',
+    'a new standard name keeps the note name';
+  perform public.review_store_name('75315333000109', 'ATACADAO');
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_n2', false) \gset
+do $$
+declare
+  s constant uuid := current_setting('test.n_ata')::uuid;
+begin
+  update public.stores set name = 'Atacadão do bairro' where id = s;
+  assert (select named_by || ' / ' || printed_name from public.stores where id = s) = 'casa / ATACADAO', 'the household names it';
+  update public.stores set name = 'ATACADAO' where id = s;
+  assert (select named_by || ' / ' || coalesce(printed_name, '-') from public.stores where id = s) = 'nota / -',
+    'going back to a note name that is also the standard name is going back to the note';
+end $$;
+
+-- "Usar o nome padrão" (follow_store_standard): o nome padrão de agora, lido no banco, só no mercado da casa.
+reset role;
+do $$
+begin
+  perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000002f3', false);
+  perform public.review_store_name('47508411000156', 'Pão de Açúcar');
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_n3', false) \gset
+do $$
+begin
+  assert (select count(*) from public.follow_store_standard(current_setting('test.n_cbd2')::uuid)) = 0, 'not on the store of another household';
+end $$;
+select set_config('request.jwt.claim.sub', :'user_n2', false) \gset
+do $$
+declare
+  s constant uuid := current_setting('test.n_cbd2')::uuid;
+begin
+  assert (select name || ' / ' || named_by from public.stores where id = s) = 'Pão de Açúcar Miramar / casa', 'Otto has his own name';
+  assert (select array_agg(f) from public.follow_store_standard(s) f) = array[s], 'the household follows the standard name';
+  assert (select name || ' / ' || printed_name || ' / ' || named_by from public.stores where id = s)
+    = 'Pão de Açúcar / COMPANHIA BRASILEIRA DE DISTRIBUICAO / padrao', 'with the note name kept';
+  assert (select count(*) from public.follow_store_standard(s)) = 0, 'nothing when it already has it';
+  update public.stores set name = 'PA' where id = s;
+end $$;
+reset role;
+do $$
+begin
+  perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000002f3', false);
+  -- A moderação troca o nome padrão depois que a casa leu o de antes: a casa grava o de agora, não o que ela tem.
+  perform public.review_store_name('47508411000156', 'Pão de Açúcar Brasil');
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_n2', false) \gset
+do $$
+declare
+  s constant uuid := current_setting('test.n_cbd2')::uuid;
+begin
+  assert (select name from public.stores where id = s) = 'PA', 'a new standard name does not replace the household name';
+  perform public.follow_store_standard(s);
+  assert (select name || ' / ' || named_by from public.stores where id = s) = 'Pão de Açúcar Brasil / padrao', 'the current standard name';
+end $$;
+reset role;
+do $$
+begin
+  perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000002f3', false);
+  perform public.review_store_name('47508411000156', null);
+  assert (select name || ' / ' || named_by from public.stores where id = current_setting('test.n_cbd2')::uuid)
+    = 'COMPANHIA BRASILEIRA DE DISTRIBUICAO / nota', 'without a standard name, back to the note name';
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_n2', false) \gset
+do $$
+begin
+  assert (select count(*) from public.follow_store_standard(current_setting('test.n_cbd2')::uuid)) = 0, 'nothing to follow without a standard name';
+  update public.stores set name = 'Pão de Açúcar Miramar' where id = current_setting('test.n_cbd2')::uuid;
+end $$;
+reset role;
 
 -- O que não vira nome sozinho: cadastro de pessoa (nada guardado), sem natureza, nome fantasia igual à razão
 -- social ou longo demais; e as respostas que não são resposta.
@@ -11627,30 +11737,81 @@ begin
       $f$;
   end if;
 end $$;
+-- Na fila: seis mercados de CNPJ válido (um deles em duas casas), um de dígito errado, e um CNPJ que nenhum
+-- mercado tem mais. O que já estava na fila fica para depois.
+update public.store_names set next_try_at = now() + interval '1 day' where receita_status = 'pendente';
+insert into public.store_names (cnpj) values ('24345678000174');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_n1', false) \gset
+insert into public.stores (name, cnpj) values
+  ('MERCADO 14', '14345678000110'), ('MERCADO 15', '15345678000183'), ('MERCADO 16', '16345678000146'),
+  ('MERCADO 17', '17345678000109'), ('MERCADO 18', '18345678000171'), ('MERCADO 19', '19345678000134'),
+  ('DIGITO ERRADO', '14345678000195');
+select set_config('request.jwt.claim.sub', :'user_n2', false) \gset
+insert into public.stores (name, cnpj) values ('MERCADO 19', '19345678000134');
+reset role;
 do $$
 declare
   asked bigint;
 begin
-  update public.store_names set next_try_at = now() + interval '1 day' where receita_status = 'pendente';
-  insert into public.store_names (cnpj) values
-    ('14345678000195'), ('15345678000195'), ('16345678000195'), ('17345678000195'), ('18345678000195'), ('19345678000195');
+  assert public.cnpj_valid('47508411000156') and public.cnpj_valid('06057223000171'), 'real CNPJs are valid';
+  assert not public.cnpj_valid('47508411000157') and not public.cnpj_valid('11111111111111') and not public.cnpj_valid('4750841100015'),
+    'a wrong check digit, all the same digit or 13 digits are not';
   perform public.store_names_tick();
   assert (select count(*) from net.test_requests) = 5, 'at most 5 lookups at a time';
   assert (select count(*) from public.store_names where request_id is not null) = 5, 'each waits for its answer';
-  assert (select url from net.test_requests order by id limit 1) = 'https://brasilapi.com.br/api/cnpj/v1/14345678000195', 'only the CNPJ goes';
-  select request_id into asked from public.store_names where cnpj = '14345678000195';
+  assert (select url from net.test_requests order by id limit 1) = 'https://brasilapi.com.br/api/cnpj/v1/19345678000134',
+    'only the CNPJ goes, first the one in more households';
+  assert (select array_agg(right(url, 14) order by id) from net.test_requests)
+    = array['19345678000134', '14345678000110', '15345678000183', '16345678000146', '17345678000109'], 'then in order';
+  assert (select receita_status || ' ' || attempts from public.store_names where cnpj = '14345678000195') = 'nao_achou 0',
+    'a CNPJ with a wrong check digit leaves the queue without a lookup';
+  assert (select receita_status = 'pendente' and request_id is null from public.store_names where cnpj = '24345678000174'),
+    'a CNPJ that no store has is not looked up';
+  select request_id into asked from public.store_names where cnpj = '14345678000110';
   insert into net._http_response (id, status_code, content, timed_out)
-    values (asked, 200, '{"razao_social":"MERCADO TICK LTDA","nome_fantasia":"MERCADO TICK","codigo_natureza_juridica":2062}', false);
+    values (asked, 200, '{"razao_social":"MERCADO TICK LTDA","nome_fantasia":"MERCADO TICK","codigo_natureza_juridica":2062,"qsa":[{"nome_socio":"FULANO"}]}', false);
   -- A resposta que não chegou em 1 hora conta como sem resposta.
-  update public.store_names set requested_at = now() - interval '2 hours' where cnpj = '15345678000195';
+  update public.store_names set requested_at = now() - interval '2 hours' where cnpj = '15345678000183';
   perform public.store_names_tick();
-  assert (select receita_status || ' ' || name || ' ' || attempts || ' ' || coalesce(request_id::text, '-') from public.store_names where cnpj = '14345678000195')
+  assert (select receita_status || ' ' || name || ' ' || attempts || ' ' || coalesce(request_id::text, '-') from public.store_names where cnpj = '14345678000110')
     = 'ok MERCADO TICK 1 -', 'the answer is read on the next round';
-  assert (select receita_status = 'pendente' and request_id is null and next_try_at > now() from public.store_names where cnpj = '15345678000195'),
+  assert (select name from public.stores where cnpj = '14345678000110') = 'MERCADO TICK', 'and goes to the store';
+  assert not exists (select 1 from net._http_response where id = asked), 'the raw answer does not stay in the pg_net table';
+  assert (select receita_status = 'pendente' and request_id is null and next_try_at > now() from public.store_names where cnpj = '15345678000183'),
     'a lost answer is tried again later';
-  assert (select count(*) from net.test_requests) = 6, 'the sixth CNPJ goes on the second round';
-  assert (select request_id is not null from public.store_names where cnpj = '16345678000195'), 'the others still wait';
+  assert (select count(*) from net.test_requests) = 6 and (select right(url, 14) from net.test_requests order by id desc limit 1) = '18345678000171',
+    'the sixth CNPJ goes on the second round';
+  assert (select request_id is not null from public.store_names where cnpj = '16345678000146'), 'the others still wait';
 end $$;
+
+-- A moderação vê o nome da nota e os apelidos sem CPF, e os nomes padrão das outras lojas da mesma empresa.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_n2', false) \gset
+insert into public.stores (name, cnpj) values ('JOSE DA SILVA 123.456.789-01', '31345678000195');
+select set_config('request.jwt.claim.sub', :'user_n3', false) \gset
+insert into public.stores (name, cnpj) values ('JOSE DA SILVA 12345678901', '31345678000195');
+update public.stores set name = 'Zé da esquina CPF 12345678901' where cnpj = '31345678000195';
+reset role;
+insert into public.store_names (cnpj, name, source, reviewed_at) values
+  ('47508411114402', 'Pão de Açúcar', 'revisao', now()), ('47508411000288', 'Pão de Açúcar', 'revisao', now()),
+  ('47508411000369', 'Extra', 'revisao', now())
+  on conflict (cnpj) do update set name = excluded.name, source = excluded.source, reviewed_at = excluded.reviewed_at;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_n1', false) \gset
+do $$
+declare
+  rv record;
+begin
+  select * into rv from public.store_names_for_review() where cnpj = '31345678000195';
+  assert rv.note_name = 'JOSE DA SILVA', 'the note name without the CPF';
+  assert rv.nicknames = '[{"name": "Zé da esquina", "households": 1}]'::jsonb, 'the nickname without the CPF';
+  assert rv.company_names = '[]'::jsonb, 'no other store of the company';
+  select * into rv from public.store_names_for_review() where cnpj = '47508411000156';
+  assert rv.company_names = '[{"name": "Pão de Açúcar", "stores": 2}, {"name": "Extra", "stores": 1}]'::jsonb,
+    'the standard names of the other stores of the company, and how many have each';
+end $$;
+reset role;
 set role authenticated;
 select set_config('request.jwt.claim.sub', :'user_n1', false) \gset
 do $$

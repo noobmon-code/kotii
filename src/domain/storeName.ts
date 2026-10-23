@@ -48,17 +48,31 @@ export function storeRenameHint(store: Pick<Store, 'cnpj'>): string {
 }
 
 /**
+ * O nome guardado que é o "CNPJ …" que o app põe quando a nota não trouxe nome. O banco o guarda para saber
+ * que a nota não tinha nome; a tela não o mostra, nem oferece voltar a ele.
+ */
+function printedIsPlaceholder(store: Pick<Store, 'printed_name' | 'cnpj'>): boolean {
+  return Boolean(store.cnpj) && store.printed_name === `CNPJ ${store.cnpj}`;
+}
+
+/** O nome guardado que a tela mostra: nenhum quando não há, ou quando é o "CNPJ …". */
+function shownPrinted(store: Pick<Store, 'printed_name' | 'cnpj'>): string | null {
+  return store.printed_name && !printedIsPlaceholder(store) ? store.printed_name : null;
+}
+
+/**
  * "Na nota: COMPANHIA BRASILEIRA DE DISTRIBUICAO" ("Nome anterior: …" no mercado sem CNPJ), só quando a casa
  * deu outro nome.
  */
 export function printedNameLine(store: Pick<Store, 'printed_name' | 'cnpj'>): string | null {
-  if (!store.printed_name) return null;
-  return store.cnpj ? `Na nota: ${store.printed_name}` : `Nome anterior: ${store.printed_name}`;
+  const printed = shownPrinted(store);
+  if (!printed) return null;
+  return store.cnpj ? `Na nota: ${printed}` : `Nome anterior: ${printed}`;
 }
 
 /** O botão que desfaz a troca, só quando a casa deu outro nome. */
 export function backToPrintedLabel(store: Pick<Store, 'printed_name' | 'cnpj'>): string | null {
-  if (!store.printed_name) return null;
+  if (!shownPrinted(store)) return null;
   return store.cnpj ? 'Voltar ao nome da nota' : 'Voltar ao nome anterior';
 }
 
@@ -66,12 +80,15 @@ export function backToPrintedLabel(store: Pick<Store, 'printed_name' | 'cnpj'>):
  * Desfazer a troca: o nome guardado, como está, sem a limpeza nem o limite do nome digitado. O banco o
  * compara letra por letra para limpar o guardado.
  */
-export function storeRevertChange(store: Pick<Store, 'id' | 'printed_name'>): { name: string; ids: string[] } | null {
-  return store.printed_name ? { name: store.printed_name, ids: [store.id] } : null;
+export function storeRevertChange(store: Pick<Store, 'id' | 'printed_name' | 'cnpj'>): { name: string; ids: string[] } | null {
+  const printed = shownPrinted(store);
+  return printed ? { name: printed, ids: [store.id] } : null;
 }
 
 /** Embaixo do nome, quando ele é o nome padrão do CNPJ. */
 export const STORE_STANDARD_LINE = 'Este é o nome padrão do mercado no Kotii.';
+/** "Usar o nome padrão" não gravou: o mercado não tem mais nome padrão (ou não é da casa aberta). */
+export const STORE_STANDARD_GONE = 'O nome padrão deste mercado mudou. A lista de mercados foi atualizada.';
 
 /** O mercado está com o nome padrão do CNPJ. */
 export function hasStandardName(store: Pick<Store, 'name' | 'standard_name'>): boolean {
@@ -81,11 +98,6 @@ export function hasStandardName(store: Pick<Store, 'name' | 'standard_name'>): b
 /** O botão que volta ao nome padrão, só quando há um e a casa usa outro nome. */
 export function standardNameLabel(store: Pick<Store, 'name' | 'standard_name'>): string | null {
   return store.standard_name && store.name !== store.standard_name ? `Usar o nome padrão: ${store.standard_name}` : null;
-}
-
-/** Voltar ao nome padrão: gravar esse nome, como está (o banco o compara letra por letra para seguir o padrão). */
-export function storeStandardChange(store: Pick<Store, 'id' | 'name' | 'standard_name'>): { name: string; ids: string[] } | null {
-  return store.standard_name && store.name !== store.standard_name ? { name: store.standard_name, ids: [store.id] } : null;
 }
 
 /** "47.508.411/0001-56"; o que não tem 14 dígitos, como veio. */

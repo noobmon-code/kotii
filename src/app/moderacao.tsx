@@ -5,6 +5,8 @@ import { useIsModerator, useLookupStoreNameAgain, useReviewStoreName, useStoreNa
 import {
   canLookupAgain,
   cnpjSearchUrl,
+  COMPANY_NAMES_TITLE,
+  companyNameOptions,
   decisionLine,
   legalNameLine,
   mapsUrl,
@@ -25,9 +27,8 @@ import {
   type StoreNameReview,
 } from '@/domain/storeModeration';
 import { cleanStoreName, storeNameError } from '@/domain/storeName';
-import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
-import { Button, Card, EmptyState, ErrorNotice, Loading, Row, Screen, Segmented, Text, TextField } from '@/ui/primitives';
+import { Button, Card, Chip, EmptyState, ErrorNotice, Loading, Row, Screen, Segmented, Text, TextField } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 const GROUPS: ReviewGroup[] = ['revisar', 'consultando', 'decididos'];
@@ -92,7 +93,8 @@ function openLink(url: string) {
 
 /**
  * Um CNPJ: o que se sabe dele, os links para achar a loja (o mapa do endereço e a busca do CNPJ) e o nome padrão.
- * Na aba "Para revisar" o campo já vem aberto, com o apelido que mais casas deram (ou o nome fantasia).
+ * Na aba "Para revisar" o campo já vem aberto, com o apelido que mais casas deram (ou o nome fantasia). Os nomes
+ * padrão das outras lojas da empresa ficam embaixo, para um toque pôr no campo.
  */
 function StoreNameCard({ row }: { row: StoreNameReview }) {
   const reviewName = useReviewStoreName();
@@ -104,6 +106,7 @@ function StoreNameCard({ row }: { row: StoreNameReview }) {
   const busy = reviewName.isPending || lookup.isPending;
   const title = reviewTitle(row);
   const map = mapsUrl(row);
+  const companyNames = companyNameOptions(row);
   const lines = [
     row.note_name && row.note_name !== title ? `Na nota: ${row.note_name}` : null,
     row.address,
@@ -114,16 +117,10 @@ function StoreNameCard({ row }: { row: StoreNameReview }) {
     decisionLine(row),
   ].filter((line): line is string => Boolean(line));
 
-  /** Uma decisão por vez: o Enter do campo também chega aqui. */
+  /** Uma decisão por vez: o Enter do campo também chega aqui. O erro, o hook avisa. */
   function decide(name: string | null) {
     if (busy) return;
-    reviewName.mutate(
-      { cnpj: row.cnpj, name },
-      {
-        onSuccess: () => setEditing(false),
-        onError: (err) => notify('Não deu para salvar o nome', errorMessage(err)),
-      },
-    );
+    reviewName.mutate({ cnpj: row.cnpj, name }, { onSuccess: () => setEditing(false) });
   }
 
   function onSave() {
@@ -133,7 +130,7 @@ function StoreNameCard({ row }: { row: StoreNameReview }) {
 
   function lookupAgain() {
     if (busy) return;
-    lookup.mutate(row.cnpj, { onError: (err) => notify('Não deu para consultar a Receita', errorMessage(err)) });
+    lookup.mutate(row.cnpj);
   }
 
   return (
@@ -163,6 +160,22 @@ function StoreNameCard({ row }: { row: StoreNameReview }) {
             <Text variant="small" color="danger">
               {error}
             </Text>
+          ) : null}
+          {companyNames.length ? (
+            <>
+              <Text variant="label">{COMPANY_NAMES_TITLE}</Text>
+              <Row style={styles.wrap}>
+                {companyNames.map((option) => (
+                  <Chip
+                    key={option.name}
+                    label={option.label}
+                    selected={text === option.name}
+                    accessibilityLabel={`Usar ${option.name}`}
+                    onPress={() => setText(option.name)}
+                  />
+                ))}
+              </Row>
+            </>
           ) : null}
           <Button title="Salvar o nome padrão" icon="check" loading={reviewName.isPending} disabled={busy} onPress={onSave} />
           <Button title="Ficar com o nome da nota" variant="secondary" disabled={busy} onPress={() => decide(null)} />

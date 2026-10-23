@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Modal, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { useRenameStores } from '@/data/market';
+import { useFollowStoreStandard, useRenameStores } from '@/data/market';
 import {
   backToPrintedLabel,
   hasStandardName,
@@ -13,13 +13,13 @@ import {
   STORE_RENAME_GONE,
   STORE_RENAME_LABEL,
   STORE_RENAME_TITLE,
+  STORE_STANDARD_GONE,
   STORE_STANDARD_LINE,
   standardNameLabel,
   storeNameError,
   storeRenameChange,
   storeRenameHint,
   storeRevertChange,
-  storeStandardChange,
 } from '@/domain/storeName';
 import { errorMessage } from '@/lib/supabase';
 import type { Store } from '@/lib/types';
@@ -37,6 +37,8 @@ import { MAX_WIDTH, space, useColors } from '@/ui/theme';
 export function RenameStoreModal({ store, stores, onClose }: { store: Store; stores: readonly Store[]; onClose: () => void }) {
   const c = useColors();
   const rename = useRenameStores();
+  const follow = useFollowStoreStandard();
+  const busy = rename.isPending || follow.isPending;
   const [text, setText] = useState(store.name);
   const [tried, setTried] = useState(false);
   const [marked, setMarked] = useState<Record<string, boolean>>({});
@@ -49,7 +51,7 @@ export function RenameStoreModal({ store, stores, onClose }: { store: Store; sto
 
   /** Grava (uma gravação por vez: o Enter do campo também chega aqui) e fecha; sem o que gravar, só fecha. */
   function save(change: { name: string; ids: string[] } | null) {
-    if (rename.isPending) return;
+    if (busy) return;
     if (!change) return onClose();
     rename.mutate(change, {
       onSuccess: (saved) => {
@@ -57,6 +59,18 @@ export function RenameStoreModal({ store, stores, onClose }: { store: Store; sto
         onClose();
       },
       onError: (err) => notify('Não deu para renomear o mercado', errorMessage(err)),
+    });
+  }
+
+  /** Volta ao nome padrão de agora, que o banco lê (o da lista pode ser de antes de a moderação trocá-lo). */
+  function followStandard() {
+    if (busy) return;
+    follow.mutate(store.id, {
+      onSuccess: (changed) => {
+        if (!changed.length) notify('Não deu para usar o nome padrão', STORE_STANDARD_GONE);
+        onClose();
+      },
+      onError: (err) => notify('Não deu para usar o nome padrão', errorMessage(err)),
     });
   }
 
@@ -123,18 +137,19 @@ export function RenameStoreModal({ store, stores, onClose }: { store: Store; sto
               </ListCard>
             </View>
           ) : null}
-          <Button title="Salvar" icon="check" loading={rename.isPending} disabled={rename.isPending} onPress={onSave} />
+          <Button title="Salvar" icon="check" loading={rename.isPending} disabled={busy} onPress={onSave} />
           {standard ? (
             <Button
               title={standard}
               icon="store-check-outline"
               variant="secondary"
-              disabled={rename.isPending}
-              onPress={() => save(storeStandardChange(store))}
+              loading={follow.isPending}
+              disabled={busy}
+              onPress={followStandard}
             />
           ) : null}
           {back ? (
-            <Button title={back} icon="undo" variant="secondary" disabled={rename.isPending} onPress={() => save(storeRevertChange(store))} />
+            <Button title={back} icon="undo" variant="secondary" disabled={busy} onPress={() => save(storeRevertChange(store))} />
           ) : null}
           <Button title="Cancelar" variant="secondary" onPress={onClose} />
         </ScrollView>

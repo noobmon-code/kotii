@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import { fetchStores } from '@/data/market';
-import { canRenameStore, STORE_CHAIN_TITLE, STORE_RENAME_GONE, STORE_RENAME_LABEL, STORE_STANDARD_LINE } from '@/domain/storeName';
+import { canRenameStore, STORE_CHAIN_TITLE, STORE_RENAME_GONE, STORE_RENAME_LABEL, STORE_STANDARD_GONE, STORE_STANDARD_LINE } from '@/domain/storeName';
 import { RenameStoreModal } from '@/features/RenameStoreModal';
 import type { Store } from '@/lib/types';
 import { notify } from '@/ui/dialogs';
@@ -22,6 +22,10 @@ const mockDb = {
   noStandardColumn: false,
   updates: [] as { values: Record<string, unknown>; ids: string[] }[],
   reads: [] as string[],
+  /** O nome padrão de cada CNPJ no banco agora (o que a lista tem pode ser de antes). */
+  standards: {} as Record<string, string>,
+  /** As chamadas de follow_store_standard. */
+  follows: [] as string[],
   /** A leitura falha por outro motivo. */
   failOther: false,
   /** A gravação segura no caminho (a resposta só vem quando o teste solta). */
@@ -76,8 +80,21 @@ jest.mock('@/lib/supabase', () => {
     };
     return builder;
   };
+  /** follow_store_standard: o nome padrão de agora, no mercado da casa, com o nome de antes guardado. */
+  const rpc = async (name: string, args: { p_store_id: string }) => {
+    if (name !== 'follow_store_standard') throw new Error(`rpc inesperada: ${name}`);
+    mockDb.follows.push(args.p_store_id);
+    const store = mockDb.stores.find((s) => s.id === args.p_store_id);
+    const standard = store?.cnpj ? mockDb.standards[store.cnpj] : undefined;
+    if (!store || !standard || store.name === standard) return { data: [], error: null };
+    const base = store.printed_name ?? store.name;
+    store.printed_name = standard === base ? null : base;
+    store.name = standard;
+    store.standard_name = standard;
+    return { data: [store.id], error: null };
+  };
   return {
-    supabase: { from: () => table() },
+    supabase: { from: () => table(), rpc },
     unwrap: (result: { data: unknown; error: unknown }) => {
       if (result.error) throw result.error;
       return result.data;
@@ -139,6 +156,8 @@ beforeEach(() => {
   mockDb.noPrintedColumn = false;
   mockDb.noStandardColumn = false;
   mockDb.failOther = false;
+  mockDb.standards = {};
+  mockDb.follows = [];
   mockDb.updates = [];
   mockDb.reads = [];
   mockDb.hold = null;
@@ -279,14 +298,43 @@ describe('renomear o mercado', () => {
 });
 
 describe('o nome padrão do CNPJ', () => {
-  it('com um nome padrão que a casa não usa: "Usar o nome padrão" grava esse nome, como está', async () => {
+  it('com um nome padrão que a casa não usa: "Usar o nome padrão" pede ao banco o de agora, e o que mostra o nome é buscado de novo', async () => {
     mockDb.stores = [store('s1', CBD, '47508411114402', { standard_name: 'Pão de Açúcar' })];
+    mockDb.standards = { '47508411114402': 'Pão de Açúcar' };
     await open(mockDb.stores[0]);
     expect(page()).not.toContain(STORE_STANDARD_LINE);
     await press('Usar o nome padrão: Pão de Açúcar');
-    expect(mockDb.updates).toEqual([{ values: { name: 'Pão de Açúcar' }, ids: ['s1'] }]);
+    expect(mockDb.follows).toEqual(['s1']);
+    expect(mockDb.updates).toEqual([]);
     expect(mockDb.stores[0]).toMatchObject({ name: 'Pão de Açúcar', printed_name: CBD });
     expect(closed).toBe(1);
+    expect(SHOWING_NAMES.filter((key) => !client.getQueryState(key)?.isInvalidated)).toEqual([]);
+  });
+
+  it('a moderação trocou o nome padrão depois que a lista foi lida: fica o de agora, não o da lista', async () => {
+    mockDb.stores = [store('s1', 'PA', '47508411114402', { printed_name: CBD, standard_name: 'Pão de Açúcar' })];
+    mockDb.standards = { '47508411114402': 'Pão de Açúcar Brasil' };
+    await open(mockDb.stores[0]);
+    await press('Usar o nome padrão: Pão de Açúcar');
+    expect(mockDb.stores[0]).toMatchObject({ name: 'Pão de Açúcar Brasil', printed_name: CBD });
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('a moderação tirou o nome padrão: nada gravado, avisa, fecha, e os mercados são buscados de novo', async () => {
+    mockDb.stores = [store('s1', 'PA', '47508411114402', { printed_name: CBD, standard_name: 'Pão de Açúcar' })];
+    await open(mockDb.stores[0]);
+    await press('Usar o nome padrão: Pão de Açúcar');
+    expect(mockDb.stores[0].name).toBe('PA');
+    expect(jest.mocked(notify)).toHaveBeenCalledWith('Não deu para usar o nome padrão', STORE_STANDARD_GONE);
+    expect(closed).toBe(1);
+    expect(client.getQueryState(['stores'])?.isInvalidated).toBe(true);
+  });
+
+  it('o "CNPJ …" guardado (a nota sem nome) não aparece, nem se oferece voltar a ele', async () => {
+    mockDb.stores = [store('s1', 'Mercadinho', '11222333000181', { printed_name: 'CNPJ 11222333000181' })];
+    await open(mockDb.stores[0]);
+    expect(page()).not.toContain('CNPJ 11222333000181');
+    expect(button('Voltar ao nome da nota')).toBeUndefined();
   });
 
   it('com o nome padrão: diz que é o padrão, e não oferece voltar a ele; o nome da nota continua', async () => {

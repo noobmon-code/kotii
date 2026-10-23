@@ -25,8 +25,10 @@ export interface StoreNameReview {
   address: string | null;
   /** Em quantas casas o mercado está. */
   households: number;
-  /** Os nomes que as casas deram ao mercado, com quantas deram cada um (nunca quais). */
+  /** Os nomes que as casas deram ao mercado, com quantas deram cada um (nunca quais). Sem CPF, como o da nota. */
   nicknames: { name: string; households: number }[];
+  /** Os nomes padrão das outras lojas da mesma empresa (a raiz do CNPJ), com quantas lojas têm cada um. */
+  company_names: { name: string; stores: number }[];
 }
 
 /** As abas da tela. */
@@ -117,6 +119,16 @@ export function nicknamesLine(row: Pick<StoreNameReview, 'nicknames'>): string |
   return `Apelidos nas casas: ${names.join(', ')}`;
 }
 
+/**
+ * Os nomes padrão das outras lojas da empresa, para um toque pôr no campo: "Pão de Açúcar (3 lojas)". Só
+ * sugestões: uma empresa pode ter mais de uma bandeira (a do Pão de Açúcar tem também o Extra).
+ */
+export function companyNameOptions(row: Pick<StoreNameReview, 'company_names'>): { name: string; label: string }[] {
+  return row.company_names.map((c) => ({ name: c.name, label: c.stores > 1 ? `${c.name} (${c.stores} lojas)` : c.name }));
+}
+
+export const COMPANY_NAMES_TITLE = 'Nomes de outras lojas da empresa';
+
 /** A decisão de agora: o nome padrão e de onde veio, ou o nome da nota que ficou. null: nenhuma ainda. */
 export function decisionLine(row: Pick<StoreNameReview, 'name' | 'source' | 'reviewed_at'>): string | null {
   if (row.name) return `Nome padrão: ${row.name} (${row.source === 'receita' ? 'da Receita' : 'revisado'})`;
@@ -140,11 +152,13 @@ export function canLookupAgain(row: Pick<StoreNameReview, 'receita_status'>): bo
   return row.receita_status !== 'pendente' && row.receita_status !== 'ok';
 }
 
-/** O endereço no mapa, com o nome da nota para achar a loja. null sem endereço. */
-export function mapsUrl(row: Pick<StoreNameReview, 'address' | 'note_name'>): string | null {
+/**
+ * O endereço no mapa, para ver a fachada da loja. Só o endereço: o nome da nota de um MEI é o nome da pessoa.
+ * null sem endereço.
+ */
+export function mapsUrl(row: Pick<StoreNameReview, 'address'>): string | null {
   if (!row.address) return null;
-  const query = [row.note_name, row.address].filter(Boolean).join(', ');
-  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(row.address)}`;
 }
 
 /** O CNPJ numa busca da web (os sites de cadastro mostram o nome da loja). */

@@ -23,12 +23,18 @@
 --    printed_name, como numa troca feita pela casa. Assim as telas, o Nuke e
 --    as finanças mostram o nome padrão sem mudar nada nelas. O nome que a casa
 --    deu ('casa') nunca é trocado. A casa que volta ao nome da nota depois que
---    o padrão existe também escolheu ('casa'); "Usar o nome padrão" (gravar o
---    nome padrão) volta a seguir o padrão.
+--    o padrão existe também escolheu ('casa'); "Usar o nome padrão"
+--    (follow_store_standard, com o nome padrão de agora, lido no banco) volta a
+--    seguir o padrão.
+--    Para isso printed_name passa a guardar também o "CNPJ ..." (a nota sem
+--    nome), que o app não mostra: assim o gatilho sempre sabe o que a nota
+--    trouxe, e tirar o padrão devolve cada mercado ao nome da nota dele.
 -- 5. A consulta à Receita roda no banco: o pg_cron chama a store_names_tick()
---    a cada 10 minutos. Ela lê as respostas da volta anterior e manda até 5
---    consultas novas pelo pg_net. Erro, demora ou limite da BrasilAPI: tenta
---    de novo mais tarde, até 5 vezes; depois, revisão.
+--    a cada 10 minutos. Ela lê as respostas da volta anterior (e as apaga da
+--    tabela do pg_net) e manda até 5 consultas novas pelo pg_net, primeiro dos
+--    CNPJs em mais casas; CNPJ sem mercado ou com dígito errado não é
+--    consultado. Erro, demora ou limite da BrasilAPI: tenta de novo mais
+--    tarde, até 5 vezes; depois, revisão.
 -- 6. Os preços de outras casas ("Visto em outras casas") mostram o nome padrão
 --    do mercado, quando ele tem um.
 
@@ -136,8 +142,13 @@ grant execute on function public.standard_name(public.stores) to authenticated;
 alter table public.stores add column named_by text not null default 'nota'
   check (named_by in ('nota', 'casa', 'padrao'));
 
+-- Os mercados de um CNPJ em todas as casas: o padrão novo, a lista da moderação, a fila da consulta.
+create index stores_cnpj on public.stores (cnpj) where cnpj is not null;
+
 -- O mercado com nome guardado foi renomeado pela casa (antes desta migração, só ela renomeava). Roda com o
--- gatilho de antes, que só cuida de printed_name.
+-- gatilho de antes, que só cuida de printed_name. O mercado renomeado do "CNPJ ..." não tem nome guardado e
+-- ficaria 'nota'; em produção não há nenhum (a tela de renomear ainda não tinha sido publicada; conferido em
+-- 23/10/2026: nenhum mercado com printed_name).
 update public.stores set named_by = 'casa' where printed_name is not null;
 
 insert into public.store_names (cnpj)
@@ -146,10 +157,14 @@ insert into public.store_names (cnpj)
 
 -- O gatilho de 20261022170000 (o nome da nota guardado em printed_name), agora também com o nome padrão:
 -- - todo CNPJ de mercado entra em store_names, para a consulta à Receita;
--- - na inclusão, o mercado de CNPJ com nome padrão já entra com ele (o da nota fica guardado);
--- - numa troca de nome, named_by diz quem deu o nome: 'padrao' quando o nome é o padrão; 'nota' quando volta ao
---   da nota e não há padrão; 'casa' no resto (também a volta ao nome da nota quando há padrão: a casa escolheu);
--- - voltar ao "CNPJ ..." (o padrão saiu de um mercado cuja nota não trouxe nome) é voltar à nota.
+-- - na inclusão, o mercado de CNPJ com nome padrão já entra com ele, e o da nota fica guardado (o "CNPJ ..."
+--   também); a nota que já traz o nome padrão fica 'nota';
+-- - numa troca de nome, o de antes (o guardado ou, na primeira troca, o que ele tinha) vai para printed_name, e
+--   named_by diz quem deu o nome: 'nota' quando volta ao da nota e não há padrão (ou o padrão é ele);
+--   'padrao' quando o nome é o padrão; 'casa' no resto (também a volta ao nome da nota quando há outro padrão:
+--   a casa escolheu).
+-- O "CNPJ ..." agora fica guardado (antes não ficava): sem ele, depois de dois nomes padrão seguidos, o primeiro
+-- passava por nome da nota. O app não o mostra (domain/storeName).
 -- named_by e printed_name nunca são gravados direto. Roda com a permissão do dono do banco: a casa não lê
 -- store_names de um CNPJ que ela ainda não tem, nem grava nela.
 create or replace function public.stores_keep_printed_name()
@@ -161,7 +176,6 @@ as $$
 declare
   base text;
   standard text;
-  placeholder text := 'CNPJ ' || new.cnpj;
 begin
   if new.cnpj is not null then
     insert into public.store_names (cnpj) values (new.cnpj) on conflict (cnpj) do nothing;
@@ -170,10 +184,8 @@ begin
   if tg_op = 'INSERT' then
     new.printed_name := null;
     new.named_by := 'nota';
-    if standard is not null then
-      if new.name is distinct from standard and new.name is distinct from placeholder then
-        new.printed_name := new.name;
-      end if;
+    if standard is not null and new.name is distinct from standard then
+      new.printed_name := new.name;
       new.name := standard;
       new.named_by := 'padrao';
     end if;
@@ -184,21 +196,11 @@ begin
     new.named_by := old.named_by;
     return new;
   end if;
-  if new.name = placeholder then
-    new.printed_name := null;
-    new.named_by := 'nota';
-    return new;
-  end if;
-  -- O nome de antes: o guardado ou, na primeira troca, o que ele tinha.
   base := coalesce(old.printed_name, old.name);
-  new.printed_name := case
-    when new.name = base then null
-    when old.cnpj is not null and base = 'CNPJ ' || old.cnpj then null
-    else base
-  end;
+  new.printed_name := case when new.name = base then null else base end;
   new.named_by := case
+    when new.name = base and (standard is null or new.name = standard) then 'nota'
     when new.name = standard then 'padrao'
-    when new.name = base and standard is null then 'nota'
     else 'casa'
   end;
   return new;
@@ -230,6 +232,24 @@ end;
 $$;
 
 revoke execute on function public.apply_store_name(text) from public, anon, authenticated;
+
+-- "Usar o nome padrão" no mercado da casa: grava o nome padrão de agora, lido aqui (o que o app tem pode ser de
+-- antes de a moderação trocá-lo; gravar esse nome velho fixaria o mercado como nome da casa). Com a permissão de
+-- quem chama: só o mercado da casa aberta. Devolve o mercado que mudou; nenhum quando ele não é da casa, não
+-- tem nome padrão ou já está com ele.
+create function public.follow_store_standard(p_store_id uuid)
+returns setof uuid
+language sql
+set search_path = ''
+as $$
+  update public.stores s set name = n.name
+    from public.store_names n
+    where s.id = p_store_id and n.cnpj = s.cnpj and n.name is not null and s.name is distinct from n.name
+    returning s.id;
+$$;
+
+revoke execute on function public.follow_store_standard(uuid) from public, anon;
+grant execute on function public.follow_store_standard(uuid) to authenticated;
 
 -- =============================================================================
 -- A consulta à Receita (BrasilAPI)
@@ -342,8 +362,45 @@ $$;
 
 revoke execute on function public.record_receita_answer(text, int, text) from public, anon, authenticated;
 
--- Chamada pelo pg_cron: lê as respostas que chegaram (o pg_net as guarda por algumas horas) e manda até 5
--- consultas novas. A resposta que não chegou em 1 hora conta como sem resposta.
+-- O CNPJ com os dois dígitos verificadores certos (módulo 11) e não todo igual.
+create function public.cnpj_valid(p text)
+returns boolean
+language plpgsql
+immutable
+set search_path = ''
+as $$
+declare
+  w1 constant int[] := array[5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+  w2 constant int[] := array[6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+  total int := 0;
+  dv int;
+begin
+  if p is null or p !~ '^[0-9]{14}$' or p = repeat(substr(p, 1, 1), 14) then
+    return false;
+  end if;
+  for i in 1..12 loop
+    total := total + substr(p, i, 1)::int * w1[i];
+  end loop;
+  dv := case when total % 11 < 2 then 0 else 11 - total % 11 end;
+  if dv <> substr(p, 13, 1)::int then
+    return false;
+  end if;
+  total := 0;
+  for i in 1..13 loop
+    total := total + substr(p, i, 1)::int * w2[i];
+  end loop;
+  dv := case when total % 11 < 2 then 0 else 11 - total % 11 end;
+  return dv = substr(p, 14, 1)::int;
+end;
+$$;
+
+revoke execute on function public.cnpj_valid(text) from public, anon, authenticated;
+
+-- Chamada pelo pg_cron: lê as respostas que chegaram e as apaga da tabela do pg_net (que as guardaria por
+-- algumas horas, com o cadastro inteiro), e manda até 5 consultas novas: só de CNPJ que ainda tem mercado em
+-- alguma casa, primeiro os que estão em mais casas (uma conta que cria mil mercados não atrasa os outros). O CNPJ
+-- com dígito errado não existe na Receita e sai da fila sem consulta. A resposta que não chegou em 1 hora conta
+-- como sem resposta.
 create function public.store_names_tick()
 returns void
 language plpgsql
@@ -362,15 +419,21 @@ begin
         case when coalesce(answer.timed_out, false) then 0 else coalesce(answer.status_code, 0) end,
         answer.content
       );
+      delete from net._http_response h where h.id = r.request_id;
     elsif r.requested_at < now() - interval '1 hour' then
       perform public.record_receita_answer(r.cnpj, 0, null);
     end if;
   end loop;
 
+  update public.store_names n
+    set receita_status = 'nao_achou', checked_at = now()
+    where n.receita_status = 'pendente' and n.request_id is null and not public.cnpj_valid(n.cnpj);
+
   for r in
     select n.cnpj from public.store_names n
       where n.receita_status = 'pendente' and n.request_id is null and n.next_try_at <= now()
-      order by n.next_try_at, n.cnpj
+        and exists (select 1 from public.stores s where s.cnpj = n.cnpj)
+      order by (select count(*) from public.stores s where s.cnpj = n.cnpj) desc, n.next_try_at, n.cnpj
       limit 5
   loop
     update public.store_names
@@ -393,7 +456,10 @@ revoke execute on function public.store_names_tick() from public, anon, authenti
 -- =============================================================================
 
 -- Os CNPJs dos mercados das casas, com o que a moderação precisa para escolher o nome. Os apelidos vêm só com o
--- nome e quantas casas o deram; o nome da nota e o endereço, o mais comum entre as casas.
+-- nome e quantas casas o deram; o nome da nota e o endereço, o mais comum entre as casas. O nome da nota e os
+-- apelidos saem sem CPF (o MEI imprime o dele na razão social), como na base de preços comum. E os nomes padrão
+-- das outras lojas da mesma empresa (a raiz do CNPJ), com quantas lojas têm cada um: as filiais do Pão de Açúcar
+-- chegam uma a uma, e uma empresa pode ter mais de uma bandeira, então só sugerem.
 create function public.store_names_for_review()
 returns table (
   cnpj text,
@@ -407,7 +473,8 @@ returns table (
   note_name text,
   address text,
   households int,
-  nicknames jsonb
+  nicknames jsonb,
+  company_names jsonb
 )
 language plpgsql
 stable
@@ -424,10 +491,10 @@ begin
       n.receita_activity,
       (select x.note
          from (
-           select case when s.printed_name is not null then s.printed_name when s.named_by <> 'padrao' then s.name end as note
+           select public.shared_store_name(coalesce(s.printed_name, case when s.named_by <> 'padrao' then s.name end), n.cnpj) as note
              from public.stores s where s.cnpj = n.cnpj
          ) x
-         where x.note is not null and x.note <> 'CNPJ ' || n.cnpj
+         where x.note <> 'CNPJ ' || n.cnpj
          group by x.note order by count(*) desc, x.note limit 1),
       (select s.address from public.stores s
          where s.cnpj = n.cnpj and nullif(trim(s.address), '') is not null
@@ -436,11 +503,21 @@ begin
       coalesce((
         select jsonb_agg(jsonb_build_object('name', k.name, 'households', k.households) order by k.households desc, k.name)
           from (
-            select min(s.name) as name, count(*)::int as households
+            select public.shared_store_name(min(s.name), n.cnpj) as name, count(*)::int as households
               from public.stores s
               where s.cnpj = n.cnpj and s.named_by = 'casa' and s.printed_name is not null
               group by lower(s.name)
           ) k
+          where k.name <> 'CNPJ ' || n.cnpj
+      ), '[]'::jsonb),
+      coalesce((
+        select jsonb_agg(jsonb_build_object('name', c.name, 'stores', c.stores) order by c.stores desc, c.name)
+          from (
+            select o.name, count(*)::int as stores
+              from public.store_names o
+              where left(o.cnpj, 8) = left(n.cnpj, 8) and o.cnpj <> n.cnpj and o.name is not null
+              group by o.name
+          ) c
       ), '[]'::jsonb)
     from public.store_names n
     where exists (select 1 from public.stores s where s.cnpj = n.cnpj)
@@ -479,7 +556,8 @@ $$;
 revoke execute on function public.review_store_name(text, text) from public, anon;
 grant execute on function public.review_store_name(text, text) to authenticated;
 
--- Consultar a Receita de novo (depois de um erro, ou de o cadastro mudar). O nome escolhido na revisão fica.
+-- Consultar a Receita de novo (depois de um erro, ou de o cadastro mudar). O nome escolhido na revisão fica. A
+-- resposta de uma consulta que ainda estava a caminho sai da tabela do pg_net (ninguém mais vai lê-la).
 create function public.lookup_store_name_again(p_cnpj text)
 returns void
 language plpgsql
@@ -489,6 +567,10 @@ as $$
 begin
   if not public.is_moderator() then
     raise exception 'Só a moderação consulta a Receita.' using errcode = '42501';
+  end if;
+  if to_regclass('net._http_response') is not null then
+    delete from net._http_response h
+      where h.id = (select n.request_id from public.store_names n where n.cnpj = p_cnpj);
   end if;
   update public.store_names
     set receita_status = 'pendente', attempts = 0, next_try_at = now(), request_id = null, requested_at = null

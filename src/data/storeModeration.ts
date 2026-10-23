@@ -7,7 +7,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { StoreNameReview } from '@/domain/storeModeration';
 import { useAuth } from '@/lib/auth';
-import { supabase } from '@/lib/supabase';
+import { errorMessage, supabase } from '@/lib/supabase';
+import { notify } from '@/ui/dialogs';
 
 import { isMissingFunction } from './missingSchema';
 import { refreshStoreNames } from './storeNameRefresh';
@@ -32,7 +33,7 @@ export function useIsModerator() {
 export async function fetchStoreNamesForReview(): Promise<StoreNameReview[]> {
   const { data, error } = await supabase.rpc('store_names_for_review');
   if (error) throw error;
-  return ((data ?? []) as StoreNameReview[]).map((row) => ({ ...row, nicknames: row.nicknames ?? [] }));
+  return ((data ?? []) as StoreNameReview[]).map((row) => ({ ...row, nicknames: row.nicknames ?? [], company_names: row.company_names ?? [] }));
 }
 
 export function useStoreNamesForReview(enabled: boolean) {
@@ -47,7 +48,8 @@ export function useStoreNamesForReview(enabled: boolean) {
 
 /**
  * Escolhe o nome padrão do CNPJ (null: fica o nome da nota). O banco já o grava nos mercados das casas que não
- * deram outro nome, inclusive nos desta casa: o que mostra o nome do mercado é buscado de novo.
+ * deram outro nome, inclusive nos desta casa: o que mostra o nome do mercado é buscado de novo. O aviso de erro
+ * fica aqui, não na tela: o cartão pode ter saído da tela (outra aba) antes da resposta.
  */
 export function useReviewStoreName() {
   const { session } = useAuth();
@@ -58,6 +60,7 @@ export function useReviewStoreName() {
       const { error } = await supabase.rpc('review_store_name', { p_cnpj: cnpj, p_name: name });
       if (error) throw error;
     },
+    onError: (err) => notify('Não deu para salvar o nome', errorMessage(err)),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: storeNamesReviewQueryKey(userId) });
       refreshStoreNames(queryClient, { sharedPrices: true });
@@ -75,6 +78,7 @@ export function useLookupStoreNameAgain() {
       const { error } = await supabase.rpc('lookup_store_name_again', { p_cnpj: cnpj });
       if (error) throw error;
     },
+    onError: (err) => notify('Não deu para consultar a Receita', errorMessage(err)),
     onSettled: () => void queryClient.invalidateQueries({ queryKey: storeNamesReviewQueryKey(userId) }),
   });
 }

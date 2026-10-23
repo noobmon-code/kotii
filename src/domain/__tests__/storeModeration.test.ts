@@ -3,6 +3,7 @@ import { describe, expect, it } from '@jest/globals';
 import {
   canLookupAgain,
   cnpjSearchUrl,
+  companyNameOptions,
   decisionLine,
   legalNameLine,
   mapsUrl,
@@ -33,6 +34,7 @@ const row = (cnpj: string, patch: Partial<StoreNameReview> = {}): StoreNameRevie
   address: null,
   households: 1,
   nicknames: [],
+  company_names: [],
   ...patch,
 });
 
@@ -124,12 +126,26 @@ describe('o cartão de um CNPJ', () => {
     }
   });
 
-  it('o mapa do endereço, com o nome da nota; a busca do CNPJ formatado', () => {
-    expect(mapsUrl({ address: null, note_name: CBD })).toBeNull();
-    expect(mapsUrl({ address: 'Av. Epitácio Pessoa, 4200', note_name: CBD })).toBe(
-      `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${CBD}, Av. Epitácio Pessoa, 4200`)}`,
-    );
-    expect(mapsUrl({ address: 'Av. Epitácio Pessoa, 4200', note_name: null })).toBe(
+  it('os nomes padrão das outras lojas da empresa, com quantas lojas quando é mais de uma', () => {
+    expect(companyNameOptions(row('1'))).toEqual([]);
+    expect(
+      companyNameOptions(
+        row('1', {
+          company_names: [
+            { name: 'Pão de Açúcar', stores: 3 },
+            { name: 'Extra', stores: 1 },
+          ],
+        }),
+      ),
+    ).toEqual([
+      { name: 'Pão de Açúcar', label: 'Pão de Açúcar (3 lojas)' },
+      { name: 'Extra', label: 'Extra' },
+    ]);
+  });
+
+  it('o mapa só com o endereço (o nome da nota de um MEI é o da pessoa); a busca do CNPJ formatado', () => {
+    expect(mapsUrl({ address: null })).toBeNull();
+    expect(mapsUrl({ address: 'Av. Epitácio Pessoa, 4200' })).toBe(
       `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent('Av. Epitácio Pessoa, 4200')}`,
     );
     expect(cnpjSearchUrl({ cnpj: '47508411000156' })).toBe(`https://www.google.com/search?q=${encodeURIComponent('CNPJ 47.508.411/0001-56')}`);

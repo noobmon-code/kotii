@@ -1357,6 +1357,24 @@ export function useRenameStores() {
   });
 }
 
+/**
+ * "Usar o nome padrão": o banco grava o nome padrão de agora (follow_store_standard), não o que a lista guardada
+ * tem, que pode ser de antes de a moderação trocá-lo. Devolve os mercados que mudaram: nenhum quando ele não tem
+ * mais nome padrão (ou não é da casa aberta), e aí a casa é conferida de novo e a tela avisa.
+ */
+export function useFollowStoreStandard() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (storeId: string) => {
+      const { data, error } = await supabase.rpc('follow_store_standard', { p_store_id: storeId });
+      if (error) throw error;
+      return (data ?? []) as string[];
+    },
+    meta: EXPECTS_ROWS_META,
+    onSettled: () => refreshStoreNames(queryClient),
+  });
+}
+
 /** O servidor devolve até 1000 linhas por pedido (max_rows padrão do Supabase). */
 const PRICE_PAGE = 1000;
 /** 20 mil preços: bem além de qualquer casa. Passando disso (com um preço a mais que seja) a busca falha, em vez de devolver uma lista cortada. */

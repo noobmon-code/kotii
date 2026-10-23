@@ -54,6 +54,7 @@ const row = (cnpj: string, patch: Partial<StoreNameReview> = {}): StoreNameRevie
   address: null,
   households: 1,
   nicknames: [],
+  company_names: [],
   ...patch,
 });
 
@@ -183,9 +184,7 @@ describe('a moderação dos nomes dos mercados', () => {
     await press('Consultar a Receita de novo');
     expect(decisions()).toEqual([{ name: 'lookup_store_name_again', args: { p_cnpj: '47508411000156' } }]);
     await press('Ver no mapa');
-    expect(open).toHaveBeenCalledWith(
-      `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${CBD}, Av. Epitácio Pessoa, 4200`)}`,
-    );
+    expect(open).toHaveBeenCalledWith(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent('Av. Epitácio Pessoa, 4200')}`);
     await press('Buscar o CNPJ');
     expect(open).toHaveBeenLastCalledWith(`https://www.google.com/search?q=${encodeURIComponent('CNPJ 47.508.411/0001-56')}`);
   });
@@ -202,6 +201,32 @@ describe('a moderação dos nomes dos mercados', () => {
     await act(async () => field().props.onChangeText('Assaí'));
     await press('Salvar o nome padrão');
     expect(decisions()).toEqual([{ name: 'review_store_name', args: { p_cnpj: '06057223000171', p_name: 'Assaí' } }]);
+  });
+
+  it('os nomes das outras lojas da empresa: um toque põe no campo, e salvar manda esse nome', async () => {
+    mockDb.rows[0].company_names = [
+      { name: 'Pão de Açúcar', stores: 3 },
+      { name: 'Extra', stores: 1 },
+    ];
+    await mount();
+    expect(page()).toContain('Nomes de outras lojas da empresa');
+    const chip = (label: string) => renderer!.root.findAll((node) => node.props.accessibilityLabel === label && typeof node.props.onPress === 'function')[0];
+    expect(page()).toContain('Pão de Açúcar (3 lojas)');
+    await act(async () => chip('Usar Extra').props.onPress());
+    expect(field().props.value).toBe('Extra');
+    await press('Salvar o nome padrão');
+    expect(decisions()).toEqual([{ name: 'review_store_name', args: { p_cnpj: '47508411000156', p_name: 'Extra' } }]);
+  });
+
+  it('o erro de uma decisão aparece mesmo se o cartão já saiu da tela (outra aba)', async () => {
+    let fail = (_value: { data: unknown; error: unknown }) => {};
+    mockDb.decision = new Promise((resolve) => (fail = resolve)) as unknown as { data: unknown; error: unknown };
+    await mount();
+    await press('Salvar o nome padrão');
+    await openTab('Com nome');
+    await act(async () => fail({ data: null, error: { code: '42501', message: 'Só a moderação muda o nome dos mercados.' } }));
+    await settle();
+    expect(notify).toHaveBeenCalledWith('Não deu para salvar o nome', 'Só a moderação muda o nome dos mercados.');
   });
 
   it('a aba vazia diz que não há nada', async () => {
