@@ -11238,5 +11238,121 @@ end $$;
 delete from public.households where id in (:'hh_n1', :'hh_n2', :'hh_n3', :'hh_n4');
 delete from auth.users where id in (:'user_n1', :'user_n2');
 
+\echo '• Mercado: a casa dá outro nome a ele, e o nome impresso na nota fica guardado'
+\set user_m1 '00000000-0000-0000-0000-0000000002f1'
+\set user_m2 '00000000-0000-0000-0000-0000000002f2'
+insert into auth.users (id) values (:'user_m1'), (:'user_m2');
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_m2', false) \gset
+select (public.create_household('Casa do Beto', 'Beto')).id as hh_m2 \gset
+select set_config('request.jwt.claim.sub', :'user_m1', false) \gset
+select (public.create_household('Casa da Ana', 'Ana')).id as hh_m1 \gset
+-- Tudo como a pessoa da casa, pela API: o gatilho roda com a permissão dela.
+do $$
+declare
+  s uuid;
+  printed constant text := 'COMPANHIA BRASILEIRA DE DISTRIBUICAO';
+begin
+  insert into public.stores (name, cnpj, printed_name) values (printed, '47508411114402', 'Outro nome') returning id into s;
+  assert (select printed_name from public.stores where id = s) is null, 'a new store has no printed name of its own';
+  update public.stores set name = 'Pão de Açúcar' where id = s;
+  assert (select name from public.stores where id = s) = 'Pão de Açúcar', 'the house names the store';
+  assert (select printed_name from public.stores where id = s) = printed, 'and the printed name is kept';
+  update public.stores set name = 'Pão de Açúcar Miramar' where id = s;
+  assert (select printed_name from public.stores where id = s) = printed, 'a second rename keeps the printed name, not the first rename';
+  update public.stores set address = 'Av. Epitácio Pessoa, 4200', printed_name = 'Forjado' where id = s;
+  assert (select printed_name from public.stores where id = s) = printed, 'the printed name is not written directly';
+  update public.stores set printed_name = null where id = s;
+  assert (select printed_name from public.stores where id = s) = printed, 'nor erased';
+  update public.stores set name = printed where id = s;
+  assert (select printed_name from public.stores where id = s) is null, 'going back to the printed name clears it';
+  update public.stores set name = 'Pão de Açúcar' where id = s;
+  perform set_config('test.store_m', s::text, false);
+  -- O "CNPJ ..." que o app põe quando a nota não trouxe nome não é nome de nota: não fica guardado.
+  insert into public.stores (name, cnpj) values ('CNPJ 11222333000181', '11222333000181') returning id into s;
+  update public.stores set name = 'Mercadinho' where id = s;
+  assert (select printed_name from public.stores where id = s) is null, 'the CNPJ placeholder is not kept';
+end $$;
+-- Outra casa não renomeia (nem vê) o mercado da Ana.
+select set_config('request.jwt.claim.sub', :'user_m2', false) \gset
+do $$
+declare
+  n int;
+begin
+  with changed as (
+    update public.stores set name = 'Outro' where id = current_setting('test.store_m')::uuid returning 1
+  )
+  select count(*) into n from changed;
+  assert n = 0, 'another house cannot rename the store';
+end $$;
+reset role;
+do $$
+begin
+  assert (select name from public.stores where id = current_setting('test.store_m')::uuid) = 'Pão de Açúcar', 'the name stays';
+  assert (select printed_name from public.stores where id = current_setting('test.store_m')::uuid) = 'COMPANHIA BRASILEIRA DE DISTRIBUICAO',
+    'with the printed name';
+end $$;
+
+-- A farmácia renomeada continua farmácia: a nota dela cuja leitura não trouxe o nome (só os itens e o rodapé)
+-- não compartilha preço. O mercado renomeado, na mesma situação, compartilha.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_m1', false) \gset
+do $$
+declare
+  s uuid;
+  r uuid;
+  yesterday constant timestamptz := (((now() at time zone 'America/Sao_Paulo')::date - 1) + time '10:00') at time zone 'America/Sao_Paulo';
+begin
+  insert into public.stores (name, cnpj) values ('DROGARIA SAO PAULO S/A', '61412110000155') returning id into s;
+  update public.stores set name = 'Pacheco' where id = s;
+  insert into public.receipts (store_id, purchased_at, source) values (s, yesterday, 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'AGUA MINERAL 1,5L', 'bebidas', 'un', 3.50, 3.50);
+  perform set_config('test.r_drug', r::text, false);
+  insert into public.stores (name, cnpj) values ('SUPERMERCADO BOM PRECO LTDA', '22333444000155') returning id into s;
+  update public.stores set name = 'Bom Preço' where id = s;
+  insert into public.receipts (store_id, purchased_at, source) values (s, yesterday, 'ai') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'AGUA MINERAL 1,5L', 'bebidas', 'un', 3.50, 3.50);
+  perform set_config('test.r_market', r::text, false);
+end $$;
+reset role;
+-- A leitura do servidor com o CNPJ e o dia, sem o nome.
+do $$
+declare
+  v uuid;
+  rc record;
+begin
+  for rc in
+    select r.id, r.household_id, s.cnpj, r.purchased_at
+      from public.receipts r join public.stores s on s.id = r.store_id
+      where r.id in (current_setting('test.r_drug')::uuid, current_setting('test.r_market')::uuid)
+  loop
+    insert into public.receipt_reads (household_id, source, access_key, store_cnpj, store_name, purchased_on, lines)
+      values (rc.household_id, 'ai', null, rc.cnpj, null, (rc.purchased_at at time zone 'America/Sao_Paulo')::date,
+              jsonb_build_array(jsonb_build_object('description', 'AGUA MINERAL 1,5L', 'unit', 'un', 'unit_price', 3.50)))
+      returning id into v;
+    update public.receipts set read_id = v where id = rc.id;
+  end loop;
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_m1', false) \gset
+do $$
+begin
+  perform public.confirm_receipt(current_setting('test.r_drug')::uuid, '[]');
+  perform public.confirm_receipt(current_setting('test.r_market')::uuid, '[]');
+end $$;
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.shared_prices where store_cnpj = '61412110000155'),
+    'a renamed pharmacy whose read has no name shares nothing';
+  assert exists (select 1 from public.shared_prices where store_cnpj = '22333444000155'),
+    'a renamed market in the same situation shares';
+end $$;
+delete from public.shared_prices where store_cnpj in ('61412110000155', '22333444000155');
+delete from public.households where id in (:'hh_m1', :'hh_m2');
+delete from auth.users where id in (:'user_m1', :'user_m2');
+
 \echo 'OK — todos os testes do banco passaram'
 

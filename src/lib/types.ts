@@ -23,9 +23,15 @@ export interface Member {
 
 export interface Store {
   id: string;
+  /** O nome que a casa vê: o impresso na nota ou o que ela deu ao mercado. */
   name: string;
   cnpj: string | null;
   address: string | null;
+  /**
+   * O nome impresso na nota, só quando a casa deu outro (null quando é o próprio `name`). Ausente quando a
+   * leitura não o trouxe: o banco antes da migração 20261022170000, ou a lista guardada no aparelho de antes.
+   */
+  printed_name?: string | null;
 }
 
 export interface Product {

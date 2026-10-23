@@ -5,6 +5,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import MarketMonthScreen from '@/app/mercado';
 import type { Entry } from '@/domain/finance';
 import type { MarketData, MarketLine, MarketReceipt, MarketSpend, MarketTotalReceipt } from '@/domain/marketSpend';
+import type { Store } from '@/lib/types';
 import { BarRow } from '@/features/finance/BarRow';
 import { FinanceSummaryPanel } from '@/features/finance/FinanceSummaryPanel';
 import { MarketMonthLink } from '@/features/finance/MarketMonthLink';
@@ -37,6 +38,8 @@ const mockState = {
   asked: [] as string[],
   /** O que o resumo de gastos tem: os lançamentos e as notas que ele leu. */
   spending: { entries: [] as Entry[], receipts: [] as MarketTotalReceipt[], asked: [] as string[] },
+  /** Os mercados da casa (a lista que permite renomear o escolhido); sem nenhum, a tela não oferece renomear. */
+  stores: [] as Store[],
 };
 const mockRouter = { push: jest.fn(), setParams: jest.fn() };
 const mockScanner = { open: jest.fn(), busy: false, element: null };
@@ -60,6 +63,15 @@ jest.mock('expo-router', () => {
     },
     useLocalSearchParams: () => useSyncExternalStore(subscribe, () => mockState.params),
   };
+});
+jest.mock('@/data/market', () => ({
+  useStores: () => ({ data: mockState.stores, isPending: false, isError: false, error: null, refetch: jest.fn() }),
+}));
+// O renomear tem os testes dele (renameStore.test): aqui, só para qual mercado ele abre.
+jest.mock('@/features/RenameStoreModal', () => {
+  const { createElement } = jest.requireActual<typeof import('react')>('react');
+  const { Text } = jest.requireActual<typeof import('react-native')>('react-native');
+  return { RenameStoreModal: ({ store }: { store: { name: string } }) => createElement(Text, null, `Renomeando ${store.name}`) };
 });
 jest.mock('@/data/marketSpend', () => ({
   useMarketData: (month: string) => {
@@ -270,6 +282,7 @@ beforeEach(() => {
   mockState.params = {};
   mockState.asked = [];
   mockState.spending = { entries: [], receipts: [], asked: [] };
+  mockState.stores = [];
   mockRouter.push.mockClear();
   mockRouter.setParams.mockClear();
   mockScanner.open.mockClear();
@@ -1025,6 +1038,22 @@ describe('um mercado tocado', () => {
     expect(mockRouter.push).toHaveBeenLastCalledWith({ pathname: '/nota/[id]', params: { id: 'o1' } });
     await press('Assaí: mostrar todos os mercados');
     expect(rowTitles()).toEqual(['Assaí', 'Dia']);
+  });
+
+  it('o mercado das notas se renomeia daqui; sem a coluna do nome impresso (o banco de antes), não', async () => {
+    mockState.params = { aba: 'mercados' };
+    mockState.stores = [{ id: 'a1', name: 'Assaí', cnpj: '06057223000171', address: null }];
+    await mount();
+    await press('Assaí: R$ 220,00 em 1 ida. Ver as idas e os itens');
+    expect(renderer!.root.findAllByType(Button).map((button) => button.props.title)).not.toContain('Renomear');
+    await press('Assaí: mostrar todos os mercados');
+    act(() => renderer!.unmount());
+    mockState.stores = [{ id: 'a1', name: 'Assaí', cnpj: '06057223000171', address: null, printed_name: null }];
+    await mount();
+    await press('Assaí: R$ 220,00 em 1 ida. Ver as idas e os itens');
+    expect(page()).not.toContain('Renomeando');
+    await press('Renomear Assaí');
+    expect(page()).toContain('Renomeando Assaí');
   });
 
   it('dois mercados de mesmo nome: o endereço separa as linhas e vai no selo; trocar de mês volta à lista', async () => {
