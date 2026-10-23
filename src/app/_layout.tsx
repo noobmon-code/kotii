@@ -171,7 +171,8 @@ function AppNavigator() {
           <Stack.Screen name="consultor/conversa" options={{ headerShown: false, presentation: 'modal' }} />
           <Stack.Screen name="configuracoes" options={{ title: 'Configurações' }} />
         </Stack.Protected>
-        {/* Apagar a conta: de Configurações (aba Família) e também sem casa nenhuma (tela de boas-vindas). */}
+        {/* Sem depender de casa: apagar a conta (de Configurações, aba Família, e da tela de boas-vindas, sem casa
+            nenhuma) e o Painel do app (de Configurações ou por /painel; só quem está em app_admins vê os números). */}
         <Stack.Protected guard={signedIn && !newPassword}>
           <Stack.Screen name="apagar-conta" options={{ title: 'Apagar minha conta' }} />
           <Stack.Screen name="painel" options={{ title: 'Painel do app' }} />

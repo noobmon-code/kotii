@@ -139,10 +139,21 @@ describe('termos de uso', () => {
   it('o painel do app: quem mantém o Kotii vê só totais de uso, sem nomes, e-mails ou o que cada casa registrou', () => {
     const stored = section('O que o app guarda e para quê');
     expect(stored).toContain('Quem mantém o Kotii vê só números totais de uso');
-    for (const part of ['quantas contas e casas existem', 'de que tipo de aparelho', 'quanto a IA foi usada', 'quantas casas usam cada função']) {
+    for (const part of [
+      'quantas contas e casas existem',
+      'de que tipo de aparelho',
+      'quanto a IA foi usada',
+      'quantas casas usam cada função',
+      'quantos registros cada função recebeu nos últimos 30 dias',
+    ]) {
       expect(stored).toContain(part);
     }
     expect(stored).toContain('registros de entrada do serviço de login');
+    // A abertura da casa (household_sessions) é a fonte principal de "ativa": os termos dizem que ela é usada.
+    expect(stored).toContain('quando cada pessoa abriu a casa no app');
+    for (const part of ['quantas voltaram depois do primeiro dia', 'os avisos do navegador', 'os aceites dos termos']) {
+      expect(stored).toContain(part);
+    }
     expect(stored).toContain('sem nomes, sem e-mails e sem o que cada casa registrou');
   });
 

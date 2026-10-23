@@ -27,8 +27,10 @@ export const APP_DASHBOARD_PRIVACY = 'Só números totais: nenhuma pessoa ou cas
 
 /** Embaixo de tudo: como "ativa" é medida, e os limites dessa medida. */
 export const APP_DASHBOARD_ACTIVITY_NOTE =
-  'Ativa é a pessoa que abriu o app com a conta conectada. Quem saiu da conta antes de o dia acabar pode não aparecer ' +
-  'naquele dia, e um dia sem registro é um dia em que a contagem diária não rodou.';
+  'Ativa é a pessoa que abriu o app com a conta conectada. Pode ficar de fora de um dia quem está sem casa e sai da conta ' +
+  'antes da contagem seguinte (de hora em hora), sem ter entrado na conta naquele dia, e quem usou o app depois da ' +
+  'contagem das 23h59. Os dias de antes do começo da contagem diária são um piso, e um dia sem registro é um dia em que ' +
+  'a contagem diária não rodou.';
 
 /** Os gráficos por dia mostram os 30 dias que terminam hoje (o dia de São Paulo que a rpc manda). */
 export const DASHBOARD_DAYS = 30;
@@ -103,7 +105,7 @@ const AI_KIND_NOUNS: Record<AiKind, string> = {
   photo: 'leituras de foto',
   menu: 'cardápios do Nuke',
   nfce: 'notas pelo QR code',
-  finance: 'consultor financeiro',
+  finance: 'mensagens com o consultor financeiro',
 };
 
 /** A liberação do consultor financeiro em beta_access. */
@@ -121,10 +123,14 @@ export interface AppDashboardDay {
   households: number;
   /**
    * O uso da IA acumulado no mês daquele dia, somado nas casas, na última contagem do dia ({ chat: 4 }); null
-   * quando a contagem guardou `{}` (o dia reconstruído, ou um dia sem uso nenhum: não dá para separar).
+   * quando a contagem guardou `{}`. `backfilled` diz o que o null é: no dia reconstruído, o uso não se sabe; num
+   * dia contado de verdade, ninguém tinha usado a IA no mês até ali.
    */
   ai: Partial<Record<AiKind, number>> | null;
-  /** Dia reconstruído quando o painel foi instalado: conta só quem ainda estava conectado. */
+  /**
+   * Dia reconstruído quando o painel foi instalado: um piso, conta só quem deixou naquele dia um registro que ainda
+   * está guardado.
+   */
   backfilled: boolean;
 }
 
@@ -337,7 +343,8 @@ export function parseAppDashboard(raw: unknown): AppDashboard {
           accounts: count(row.accounts),
           activeUsers: count(row.active_users),
           households: count(row.households),
-          // `{}` é a contagem que não sabe o uso; um objeto só com tipos novos sabe que os conhecidos deram zero.
+          // `{}` vira null (no dia reconstruído não se sabe o uso; num dia contado, ninguém usou: ver `backfilled`); um
+          // objeto só com tipos novos sabe que os conhecidos deram zero.
           ai: Object.keys(row.ai as Fields).length ? counts : null,
           backfilled: flag(row.backfilled),
         };
@@ -413,7 +420,10 @@ export interface DashboardBars {
   endLabel: string | null;
   /** O gráfico inteiro como uma imagem para o leitor de tela. */
   accessibilityLabel: string;
-  /** Embaixo do gráfico ("Antes de 23/10, conta só quem ainda estava conectado."); null sem nada a dizer. */
+  /**
+   * Embaixo do gráfico ("Antes de 23/10, é um piso: conta só quem deixou naquele dia um registro que ainda está
+   * guardado."); null sem nada a dizer.
+   */
   note: string | null;
   /** Quando não há nada para desenhar: a frase vai no lugar do gráfico. */
   empty: string | null;
@@ -550,12 +560,13 @@ function windowDays(today: string): string[] {
 /**
  * As mensagens com o Nuke de cada dia, tiradas do uso acumulado do mês que a contagem diária guarda: o dia D é
  * o acumulado de D menos o de D-1, quando D-1 é o dia anterior no mesmo mês e os dois dias foram contados de
- * verdade (não reconstruídos) e sabem o uso da IA (`ai` não é null); no dia 1º, é o acumulado de D. Uma queda
- * (um uso devolvido) conta zero. Os outros dias ficam de fora: não há como saber.
+ * verdade (não reconstruídos); no dia 1º, é o acumulado de D. Num dia contado de verdade, o uso guardado como
+ * `{}` (`ai` null) é zero: ninguém tinha usado a IA no mês até ali. Uma queda (um uso devolvido) conta zero. Os
+ * outros dias ficam de fora: não há como saber.
  */
 export function nukeMessagesByDay(daily: AppDashboardDay[]): Map<string, number> {
   const rows = new Map(daily.map((row) => [row.day, row]));
-  const chat = (row: AppDashboardDay | undefined) => (row && !row.backfilled && row.ai ? (row.ai.chat ?? 0) : null);
+  const chat = (row: AppDashboardDay | undefined) => (row && !row.backfilled ? (row.ai?.chat ?? 0) : null);
   const result = new Map<string, number>();
   for (const row of daily) {
     const total = chat(row);
@@ -630,8 +641,8 @@ function activityChart(d: AppDashboard): DashboardBars {
     // O primeiro dia contado de verdade depois dos reconstruídos.
     const firstReal = inWindow.find((row) => !row.backfilled && row.day > lastEstimate.day);
     note = firstReal
-      ? `Antes de ${dayMonth(firstReal.day)}, conta só quem ainda estava conectado.`
-      : 'Os dias em tom mais claro contam só quem ainda estava conectado.';
+      ? `Antes de ${dayMonth(firstReal.day)}, é um piso: conta só quem deixou naquele dia um registro que ainda está guardado.`
+      : 'Os dias em tom mais claro são um piso: contam só quem deixou naquele dia um registro que ainda está guardado.';
   }
   return dayChart(
     d.today,

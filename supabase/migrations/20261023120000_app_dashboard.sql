@@ -15,10 +15,13 @@
 --      where user_id = (select id from auth.users where email = '<e-mail>');
 -- 3. "Ativa" é quem deu algum sinal do Auth ou abriu uma casa: entrou na conta (last_sign_in_at), uma sessão
 --    criada ou renovada (o token vale uma hora: abrir o app depois disso renova), ou uma casa aberta
---    (household_sessions). Sair da conta apaga as linhas da sessão, e com elas os sinais. Por isso o número de
---    cada dia fica guardado (app_daily_stats) pela tarefa app-daily-stats, de hora em hora, e só sobe: fica
---    de fora só quem entra e sai entre duas fotos. Os 30 dias antes desta migração são um piso: contam só quem
---    ainda está com a sessão (ou o último login) daquele dia.
+--    (household_sessions). Cada sinal guarda só a última vez, e sair da conta apaga só os da sessão
+--    (auth.sessions e refresh_tokens): a casa aberta e o último login ficam. Por isso o número de cada dia fica
+--    guardado (app_daily_stats) pela tarefa app-daily-stats, de hora em hora, e só sobe: fica de fora só quem
+--    perde o sinal antes da foto seguinte (quem está sem casa e sai da conta no mesmo dia sem ter entrado nele,
+--    ou quem usou o app depois da foto das 23h59 e perdeu o sinal antes da das 0h59, que ainda sobe o dia
+--    anterior). Os 30 dias antes desta migração são um piso: contam só os sinais daquele dia ainda guardados
+--    (as renovações de uma sessão ainda aberta, o último login ou a última casa aberta de cada sessão).
 -- 4. Contas são as que existem: sem as apagadas (deleted_at) e sem as anônimas.
 
 -- =============================================================================
@@ -40,8 +43,9 @@ grant all on public.app_admins to service_role;
 -- =============================================================================
 
 -- Uma linha por dia de São Paulo, só com totais (nenhum id de pessoa ou casa). ai_month é o uso de IA do mês
--- daquele dia, somado entre as casas, como estava na hora da foto ({"chat": 4, "photo": 8}; '{}' = não se
--- sabe). backfilled: o dia veio da migração, não da foto de hora em hora.
+-- daquele dia, somado entre as casas, como estava na hora da foto: a foto escreve sempre os cinco tipos, zero
+-- também ({"chat": 4, "photo": 8, "menu": 0, "nfce": 0, "finance": 0}), então '{}' é só o dia que não se sabe
+-- (o reconstruído pela migração). backfilled: o dia veio da migração, não da foto de hora em hora.
 create table public.app_daily_stats (
   day date primary key,
   accounts integer not null check (accounts >= 0),
@@ -167,7 +171,9 @@ revoke execute on function public.app_client(text) from public, anon, authentica
 -- =============================================================================
 
 -- Grava (ou atualiza) a linha de hoje, no dia de São Paulo. As pessoas ativas só sobem: quem sai da conta mais
--- tarde perde as linhas da sessão, e o dia não pode descer por isso.
+-- tarde perde as linhas da sessão, e o dia não pode descer por isso. O uso de IA vai com os cinco tipos, zero
+-- também, para um mês ainda sem uso ser um zero sabido, e não '{}'. E sobe também a linha de ontem, se já existe:
+-- a foto das 0h59 pega quem a das 23h59 não pegou (o último minuto do dia, ou a das 23h59 que falhou).
 create function public.snapshot_app_stats()
 returns void
 language plpgsql
@@ -185,11 +191,12 @@ begin
     (select count(*) from public.app_last_seen() l where l.created_at < v_end),
     (select count(*) from public.app_activity_users(v_start, v_end)),
     (select count(*) from public.households h where h.created_at < v_end),
-    coalesce(
-      (select jsonb_object_agg(m.kind, m.uses)
-       from (select u.kind, sum(u.count) as uses from public.ai_usage u where u.month = public.ai_month() group by u.kind) m),
-      '{}'::jsonb
-    ),
+    '{"chat": 0, "photo": 0, "menu": 0, "nfce": 0, "finance": 0}'::jsonb
+      || coalesce(
+        (select jsonb_object_agg(m.kind, m.uses)
+         from (select u.kind, sum(u.count) as uses from public.ai_usage u where u.month = public.ai_month() group by u.kind) m),
+        '{}'::jsonb
+      ),
     false,
     now()
   )
@@ -200,6 +207,14 @@ begin
     ai_month = excluded.ai_month,
     backfilled = false,
     updated_at = now();
+
+  -- O dia anterior também só sobe: a rodada das 0h59 ainda pega quem a das 23h59 não pegou (ou se ela falhou).
+  -- Só as pessoas ativas; um dia sem linha continua sem registro.
+  update public.app_daily_stats s
+  set active_users = v.n, updated_at = now()
+  from (select count(*)::integer as n
+        from public.app_activity_users((v_today - 1)::timestamp at time zone 'America/Sao_Paulo', v_start)) v
+  where s.day = v_today - 1 and s.active_users < v.n;
 end;
 $$;
 
@@ -207,7 +222,8 @@ revoke execute on function public.snapshot_app_stats() from public, anon, authen
 grant execute on function public.snapshot_app_stats() to service_role;
 
 -- Toda hora aos 59 minutos (UTC; São Paulo está a horas inteiras de UTC, então também aos 59 lá): a das 23h59
--- fecha o dia, e uma que falhar a próxima cobre.
+-- pega o dia, e cada rodada também sobe o dia anterior, então a das 0h59 cobre a das 23h59 que falhou e o último
+-- minuto do dia (quem ainda tem o sinal daquele dia).
 do $$
 begin
   if not exists (select 1 from pg_extension where extname = 'pg_cron') then
@@ -305,7 +321,9 @@ begin
           'backfilled', s.backfilled
         ) order by s.day), '[]'::jsonb) as list
       from public.app_daily_stats s
-      where s.day > v_today - 30 and s.day <= v_today
+      -- Os 30 dias do gráfico e mais o anterior (hoje − 30): esse vai só como véspera do primeiro dia, para a
+      -- conta das mensagens do Nuke por dia.
+      where s.day >= v_today - 30 and s.day <= v_today
     ),
     -- Os 6 meses que terminam no de agora: uma linha por mês e tipo que tem uso registrado.
     ai_months as (
@@ -475,8 +493,9 @@ grant execute on function public.app_dashboard() to authenticated;
 -- Os 30 dias antes de hoje, pelo que o Auth ainda guarda, e a foto de hoje
 -- =============================================================================
 
--- Um piso: as pessoas ativas de cada dia são só as que ainda têm a sessão (ou o último login) daquele dia, e as
--- contas, as que ainda existem. O uso de IA de cada dia não se sabe ('{}').
+-- Um piso: as pessoas ativas de cada dia são só as que ainda têm um sinal guardado daquele dia (renovações de uma
+-- sessão ainda aberta, o último login ou a última casa aberta de cada sessão), e as contas, as que ainda existem.
+-- O uso de IA de cada dia não se sabe ('{}').
 do $$
 declare
   v_today date := (now() at time zone 'America/Sao_Paulo')::date;

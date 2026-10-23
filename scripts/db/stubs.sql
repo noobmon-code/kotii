@@ -66,3 +66,6 @@ grant execute on function auth.uid() to anon, authenticated;
 grant all on storage.objects to authenticated;
 alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
 alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
+-- Como na Supabase, função nova do public já nasce com execute para anon, authenticated e service_role (além do
+-- PUBLIC do Postgres): um revoke só "from public" deixa o app chamar, e os testes têm de pegar isso.
+alter default privileges in schema public grant execute on functions to anon, authenticated, service_role;

@@ -11302,6 +11302,11 @@ begin
       and bool_and(ai_month = '{}'::jsonb) filter (where backfilled)
     from public.app_daily_stats
   ), 'the migration wrote the 30 days before it (backfilled, AI unknown) and its own day';
+  -- A foto do dia da migração, num banco ainda sem uso de IA: os cinco tipos, com zero (um zero sabido, não '{}').
+  assert (
+    select bool_and(ai_month = '{"chat": 0, "photo": 0, "menu": 0, "nfce": 0, "finance": 0}'::jsonb) filter (where not backfilled)
+    from public.app_daily_stats
+  ), 'a real snapshot of a month without AI use writes every kind at zero';
 end $$;
 
 -- O aparelho e o jeito de abrir, pelo user agent.
@@ -11558,10 +11563,10 @@ begin
   insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
   values ('11222333000181', '25', 'MERCADO DO PAINEL', 'ARROZ', 'kg', current_date - 2, 5.50, current_date - 1);
 
-  -- Os dias já guardados: o de 30 dias atrás fica fora do painel, o de 29 entra.
+  -- Os dias já guardados: o de 31 dias atrás fica fora do painel; o de 30 entra, como véspera do primeiro dia.
   insert into public.app_daily_stats (day, accounts, active_users, households, backfilled) values
-    ((now() at time zone 'America/Sao_Paulo')::date - 30, 1, 1, 1, true),
-    ((now() at time zone 'America/Sao_Paulo')::date - 29, 1, 1, 1, true);
+    ((now() at time zone 'America/Sao_Paulo')::date - 31, 1, 1, 1, true),
+    ((now() at time zone 'America/Sao_Paulo')::date - 30, 1, 1, 1, true);
 end $$;
 
 -- Os sinais: cada pessoa, quando; só contas que existem.
@@ -11603,7 +11608,8 @@ begin
   select * into s from public.app_daily_stats where day = today;
   assert s.accounts = 5 and s.households = 2, 'today: five accounts, two households';
   assert s.active_users = 2 + beto_today, 'today: Ana and Dani (and Beto when his refresh was today): ' || s.active_users;
-  assert s.ai_month = '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0}', 'the month''s AI use, summed: ' || s.ai_month::text;
+  assert s.ai_month = '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0}',
+    'the month''s AI use, summed, and every kind without use at zero: ' || s.ai_month::text;
   assert not s.backfilled, 'a real snapshot';
 end $$;
 
@@ -11643,10 +11649,10 @@ begin
     from generate_series(0, 29) as n
   ), 'one account 2, 10 and 20 days ago (São Paulo days), every other day with zero: ' || (j -> 'signups')::text;
   assert j -> 'daily' = jsonb_build_array(
-    jsonb_build_object('day', to_char(today - 29, 'YYYY-MM-DD'), 'accounts', 1, 'active_users', 1, 'households', 1, 'ai', '{}'::jsonb, 'backfilled', true),
+    jsonb_build_object('day', to_char(today - 30, 'YYYY-MM-DD'), 'accounts', 1, 'active_users', 1, 'households', 1, 'ai', '{}'::jsonb, 'backfilled', true),
     jsonb_build_object('day', to_char(today, 'YYYY-MM-DD'), 'accounts', 5, 'active_users', 2 + beto_today, 'households', 2,
-      'ai', '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0}'::jsonb, 'backfilled', false)
-  ), 'the last 30 days, oldest first: ' || (j -> 'daily')::text;
+      'ai', '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0}'::jsonb, 'backfilled', false)
+  ), 'the 30 days plus the day before, oldest first: ' || (j -> 'daily')::text;
   assert j -> 'ai' ->> 'month' = this_month, 'the AI month';
   assert j -> 'ai' -> 'months' = jsonb_build_array(
     jsonb_build_object('month', last_month, 'kind', 'chat', 'uses', 7, 'households', 1),
@@ -11725,6 +11731,38 @@ begin
   delete from auth.users where id = '00000000-0000-0000-0000-0000000004a8';
   assert (select array_agg(user_id) from public.app_admins) = array['00000000-0000-0000-0000-0000000004a1'::uuid],
     'a deleted account stops being an admin; Ana still is';
+end $$;
+
+-- E o dia anterior: cada foto também sobe ontem, então a das 0h59 pega quem a das 23h59 não pegou (ou cobre a
+-- das 23h59 que falhou). Só as pessoas ativas mudam, e só para cima; um dia sem linha continua sem registro.
+do $$
+declare
+  today date := (now() at time zone 'America/Sao_Paulo')::date;
+  fabi uuid := '00000000-0000-0000-0000-0000000004a7';
+  yesterday_active integer;
+  s public.app_daily_stats;
+begin
+  -- Fabi abriu a casa ontem às 23h30, depois da última foto do dia.
+  insert into public.household_sessions (session_id, user_id, household_id, updated_at)
+  values ('sessao-fabi-ontem', fabi, current_setting('test.adm_h1')::uuid, pg_temp.sp(1, '23:30'));
+  assert fabi in (select user_id from public.app_activity_users(pg_temp.sp(1, '00:00'), pg_temp.sp(0, '00:00'))),
+    'Fabi has a signal of yesterday';
+  select count(*) into yesterday_active from public.app_activity_users(pg_temp.sp(1, '00:00'), pg_temp.sp(0, '00:00'));
+
+  perform public.snapshot_app_stats();
+  assert not exists (select 1 from public.app_daily_stats where day = today - 1), 'a day without a row is not created';
+
+  insert into public.app_daily_stats (day, accounts, active_users, households, ai_month, backfilled)
+  values (today - 1, 7, 0, 9, '{}', true);
+  perform public.snapshot_app_stats();
+  select * into s from public.app_daily_stats where day = today - 1;
+  assert s.active_users = yesterday_active, 'yesterday went up to whoever still has a signal of it: ' || s.active_users;
+  assert s.accounts = 7 and s.households = 9 and s.ai_month = '{}' and s.backfilled,
+    'and nothing else of yesterday changed: ' || row_to_json(s)::text;
+
+  update public.app_daily_stats set active_users = yesterday_active + 5 where day = today - 1;
+  perform public.snapshot_app_stats();
+  assert (select active_users from public.app_daily_stats where day = today - 1) = yesterday_active + 5, 'yesterday never goes down';
 end $$;
 rollback;
 

@@ -174,7 +174,7 @@ describe('Painel do app', () => {
       view.nuke.months.accessibilityLabel,
     ]);
     // O dia reconstruído tem a nota embaixo do gráfico.
-    expect(text).toContain('Antes de 22/10, conta só quem ainda estava conectado.');
+    expect(text).toContain('Antes de 22/10, é um piso: conta só quem deixou naquele dia um registro que ainda está guardado.');
     for (const stat of view.stats.items) {
       expect(renderer!.root.findAll((node) => node.props.accessibilityLabel === stat.accessibilityLabel).length).toBeGreaterThan(0);
     }

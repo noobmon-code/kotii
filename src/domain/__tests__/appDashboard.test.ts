@@ -183,7 +183,7 @@ describe('parseAppDashboard', () => {
     expect(d.ai.months).toEqual([]);
   });
 
-  it('o uso da IA guardado como {} é desconhecido; um objeto só com tipos novos sabe que o Nuke deu zero', () => {
+  it('o uso da IA guardado como {} vira null; um objeto só com tipos novos sabe que o Nuke deu zero', () => {
     const raw = withValue(rawDashboard(), 'daily', [
       { day: '2026-10-22', accounts: 5, active_users: 3, households: 4, ai: {}, backfilled: false },
       { day: '2026-10-23', accounts: 5, active_users: 2, households: 4, ai: { video: 3 }, backfilled: false },
@@ -299,22 +299,58 @@ describe('nukeMessagesByDay', () => {
     expect(days.get('2026-10-22')).toBe(2);
   });
 
-  it('não sabe o dia quando o anterior falta, foi reconstruído ou não sabe o uso', () => {
+  it('não sabe o dia quando o anterior falta ou foi reconstruído', () => {
     const days = nukeMessagesByDay([
       row('2026-10-10', { chat: 1 }),
       // 11 falta
       row('2026-10-12', { chat: 4 }),
       row('2026-10-13', { chat: 6 }, true),
       row('2026-10-14', { chat: 7 }),
-      row('2026-10-15', null),
-      row('2026-10-16', { chat: 9 }),
-      row('2026-10-17', { chat: 9 }),
+      row('2026-10-15', { chat: 9 }),
     ]);
-    expect([...days]).toEqual([['2026-10-17', 0]]);
+    expect([...days]).toEqual([['2026-10-15', 2]]);
   });
 
-  it('o dia reconstruído e o dia sem uso conhecido nunca têm valor, nem no dia 1º', () => {
-    const days = nukeMessagesByDay([row('2026-10-01', { chat: 5 }, true), row('2026-11-01', null)]);
+  it('num dia contado de verdade, o uso guardado como {} é zero: ninguém tinha usado a IA no mês', () => {
+    // 1º/11 sem uso nenhum; 2/11 com 3 mensagens: os dois dias têm valor.
+    const days = nukeMessagesByDay([row('2026-11-01', null), row('2026-11-02', { chat: 3 }), row('2026-11-03', { chat: 3 })]);
+    expect([...days]).toEqual([
+      ['2026-11-01', 0],
+      ['2026-11-02', 3],
+      ['2026-11-03', 0],
+    ]);
+    // No meio do mês também: o painel instalado num mês em que ninguém usou a IA ainda.
+    const mid = nukeMessagesByDay([row('2026-10-14', null), row('2026-10-15', null), row('2026-10-16', { photo: 1, chat: 2 })]);
+    expect([...mid]).toEqual([
+      ['2026-10-15', 0],
+      ['2026-10-16', 2],
+    ]);
+  });
+
+  it('no gráfico, a linha do dia antes da janela dá o valor do primeiro dia e não vira barra', () => {
+    // app_dashboard manda 31 dias: o 30º antes de hoje só serve de dia anterior do primeiro dia do gráfico.
+    const daily = Array.from({ length: 31 }, (_, index) => ({
+      day: addDays(TODAY, index - 30),
+      accounts: 5,
+      active_users: 1,
+      households: 4,
+      ai: { chat: index },
+      backfilled: false,
+    }));
+    const perDay = view(withValue(rawDashboard(), 'daily', daily)).nuke.perDay;
+    expect(perDay?.bars).toHaveLength(30);
+    expect(perDay?.bars[0]).toMatchObject({ key: addDays(TODAY, -29), value: 1 });
+    expect(perDay?.bars.every((bar) => bar.value != null)).toBe(true);
+    expect(perDay?.note).toBeNull();
+  });
+
+  it('o dia reconstruído nunca tem valor, nem no dia 1º, nem serve de dia anterior', () => {
+    const days = nukeMessagesByDay([
+      row('2026-10-01', { chat: 5 }, true),
+      row('2026-10-02', { chat: 6 }),
+      row('2026-11-01', null, true),
+      row('2026-11-02', null),
+    ]);
     expect(days.size).toBe(0);
   });
 
@@ -382,11 +418,11 @@ describe('dashboardView', () => {
       expect(chart.max).toBe(3);
       expect(chart.startLabel).toBe('24/09');
       expect(chart.endLabel).toBe('hoje, até agora');
-      expect(chart.note).toBe('Antes de 22/10, conta só quem ainda estava conectado.');
+      expect(chart.note).toBe('Antes de 22/10, é um piso: conta só quem deixou naquele dia um registro que ainda está guardado.');
       expect(chart.empty).toBeNull();
       expect(chart.accessibilityLabel).toBe(
         'Pessoas ativas por dia, de 24/09 a hoje. Hoje, até agora: 2 pessoas. Maior dia: 3 pessoas, em 22/10. ' +
-          '26 dias sem registro. Antes de 22/10, conta só quem ainda estava conectado.',
+          '26 dias sem registro. Antes de 22/10, é um piso: conta só quem deixou naquele dia um registro que ainda está guardado.',
       );
     });
 
@@ -412,7 +448,9 @@ describe('dashboardView', () => {
 
     it('só dias reconstruídos: a nota fala do tom mais claro', () => {
       const raw = withValue(rawDashboard(), 'daily', [{ day: '2026-10-22', accounts: 1, active_users: 1, households: 1, ai: {}, backfilled: true }]);
-      expect(view(raw).activity.chart.note).toBe('Os dias em tom mais claro contam só quem ainda estava conectado.');
+      expect(view(raw).activity.chart.note).toBe(
+        'Os dias em tom mais claro são um piso: contam só quem deixou naquele dia um registro que ainda está guardado.',
+      );
     });
   });
 
@@ -538,9 +576,11 @@ describe('dashboardView', () => {
       const raw = withValue(rawDashboard(), 'ai.near_limit', [
         { kind: 'chat', households: 1 },
         { kind: 'photo', households: 3 },
+        { kind: 'finance', households: 1 },
       ]);
       expect(view(raw).ai.limitNote).toBe(
-        'No limite: 2 casas em cardápios do Nuke. Perto do limite: 1 casa em mensagens com o Nuke e 3 casas em leituras de foto.',
+        'No limite: 2 casas em cardápios do Nuke. Perto do limite: 1 casa em mensagens com o Nuke, 3 casas em leituras de foto ' +
+          'e 1 casa em mensagens com o consultor financeiro.',
       );
     });
   });
