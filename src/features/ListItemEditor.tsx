@@ -4,6 +4,7 @@ import { Modal, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { pickImages, type ScanSource } from '@/data/images';
+import { CATEGORIES, getCategory } from '@/domain/categories';
 import { switchBrand, type BrandChoice } from '@/domain/genericItem';
 import { MAX_NOTES, PRIORITIES, type ListPriority } from '@/domain/listItem';
 import { formatQuantity, parseDecimal } from '@/domain/money';
@@ -11,6 +12,7 @@ import { errorMessage } from '@/lib/supabase';
 import { UNITS, type ShoppingListItem, type Unit } from '@/lib/types';
 import { Backdrop } from '@/ui/Backdrop';
 import { confirmAction, notify } from '@/ui/dialogs';
+import { PickerModal } from '@/ui/PickerModal';
 import { Button, Card, CategoryIcon, Chip, Icon, IconButton, Row, Text, TextField } from '@/ui/primitives';
 import { MAX_WIDTH, radius, space, useColors } from '@/ui/theme';
 
@@ -20,6 +22,8 @@ export interface ItemDetails {
   name: string;
   quantity: number;
   unit: Unit;
+  /** A seção do item na lista e no texto que vai pelo WhatsApp. */
+  category: string;
   notes: string | null;
   priority: ListPriority;
   /** A "Marca preferida"; ausente quando os detalhes não a oferecem (o banco ainda não a guarda). */
@@ -69,6 +73,8 @@ export function ListItemEditor({
   const initialQuantity = formatQuantity(Number(item.quantity), item.unit).split(' ')[0];
   const [quantity, setQuantity] = useState(initialQuantity);
   const [unit, setUnit] = useState<Unit>(item.unit);
+  const [category, setCategory] = useState(item.category);
+  const [pickingCategory, setPickingCategory] = useState(false);
   const [notes, setNotes] = useState(item.notes ?? '');
   const [priority, setPriority] = useState<ListPriority>(item.priority ?? 'normal');
   const [photo, setPhoto] = useState<PhotoChange>({ kind: 'keep' });
@@ -96,6 +102,7 @@ export function ListItemEditor({
       prefersBrand !== savedBrand ||
       quantity !== initialQuantity ||
       unit !== item.unit ||
+      category !== item.category ||
       notes !== (item.notes ?? '') ||
       priority !== (item.priority ?? 'normal') ||
       photo.kind !== 'keep';
@@ -134,7 +141,7 @@ export function ListItemEditor({
               />
             ) : (
               <View style={[styles.photo, styles.placeholder, { backgroundColor: c.glass, borderColor: c.glassBorder }]}>
-                <CategoryIcon category={item.category} name={name} size={72} backdrop={false} />
+                <CategoryIcon category={category} name={name} size={72} backdrop={false} />
                 <Text variant="small" style={styles.center}>
                   Uma foto mostra o produto certo: a marca, o tamanho, a embalagem.
                 </Text>
@@ -219,6 +226,20 @@ export function ListItemEditor({
             </View>
           </Row>
 
+          {/* A categoria é a seção do item: o chute pelo nome pode errar ("Rúcula" em "Outros"), e a pessoa corrige. */}
+          <View style={styles.gap}>
+            <Text variant="label">Categoria</Text>
+            <View style={styles.wrap}>
+              <Chip
+                label={getCategory(category).label}
+                icon="tag-outline"
+                onPress={() => setPickingCategory(true)}
+                accessibilityLabel={`Categoria: ${getCategory(category).label}. Trocar a categoria`}
+              />
+            </View>
+            <Text variant="small">Decide em que parte da lista o item aparece, aqui e no texto que vai pelo WhatsApp.</Text>
+          </View>
+
           <Button
             title="Salvar"
             icon="check"
@@ -229,6 +250,7 @@ export function ListItemEditor({
                   name: name.trim(),
                   quantity: qty!,
                   unit,
+                  category,
                   notes: notes.trim() || null,
                   priority,
                   ...(offersBrand ? { brandPreferred: prefersBrand } : {}),
@@ -239,6 +261,17 @@ export function ListItemEditor({
           />
           <Button title="Remover da lista" variant="danger" icon="trash-can-outline" onPress={onRemove} />
         </ScrollView>
+        <PickerModal
+          visible={pickingCategory}
+          title="Categoria"
+          message="O item muda de seção quando salvar."
+          options={CATEGORIES.map((cat) => ({ id: cat.key, title: cat.label, left: <CategoryIcon category={cat.key} size={32} /> }))}
+          onClose={() => setPickingCategory(false)}
+          onSelect={(key) => {
+            setPickingCategory(false);
+            setCategory(key);
+          }}
+        />
       </SafeAreaView>
     </Modal>
   );

@@ -54,8 +54,9 @@ export function PantryPanel() {
   const lists = useShoppingLists();
   const addToList = useAddToPantryList();
   const [selected, setSelected] = useState<Group | null>(null);
-  // "Escolher a lista": o segundo menu, com as listas abertas em que o item cabe.
-  const [picking, setPicking] = useState<Group | null>(null);
+  // "Escolher a lista": o segundo menu, com as listas abertas em que o item cabe. `consume`: "Acabou" (dá baixa)
+  // ou "Está acabando" (o item continua na despensa).
+  const [picking, setPicking] = useState<{ group: Group; consume: boolean } | null>(null);
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
   const choicesFor = (group: Group) => listsFor(group.category, lists.data ?? []);
 
@@ -65,7 +66,8 @@ export function PantryPanel() {
   // nova em que o item cabe, conferida no servidor na hora.
   // O item vai sem a marca ("Leite desnatado", e não o "Leite IL Desnatado" do produto), com o produto como dica de
   // preço, como na lista e na tela do produto: a marca se escolhe na hora, ou em "Marca preferida" (domain/genericItem).
-  async function finishAndRestock(group: Group, listId?: string, shownListId?: string) {
+  // "Está acabando" (`consume` falso) põe na lista do mesmo jeito, sem a baixa: o que sobrou continua na despensa.
+  async function putOnList(group: Group, consumeLots: boolean, listId?: string, shownListId?: string) {
     const newest = group.lots[group.lots.length - 1];
     const itemName = genericItem(group.name, group.category).name;
     try {
@@ -78,10 +80,11 @@ export function PantryPanel() {
         listId,
         shownListId,
       });
-      await consume.mutateAsync(group.lots.map((lot) => lot.id));
+      if (consumeLots) await consume.mutateAsync(group.lots.map((lot) => lot.id));
+      const stays = consumeLots ? '' : ' Continua na despensa até acabar.';
       notify(
         list.added ? 'Adicionado à lista' : 'Já estava na lista',
-        list.added ? `${itemName} foi para "${list.name}".` : `${itemName} já estava pendente em "${list.name}".`,
+        list.added ? `${itemName} foi para "${list.name}".${stays}` : `${itemName} já estava pendente em "${list.name}".${stays}`,
       );
     } catch (err) {
       onError(err);
@@ -95,17 +98,23 @@ export function PantryPanel() {
     const several = group.lots.length > 1;
     const choices = choicesFor(group);
     const newestList = choices[0];
-    const actions: SheetAction[] = [
-      {
-        label: newestList
-          ? `Acabou — pôr na última lista (“${newestList.name}”)`
-          : `Acabou — pôr na lista ${newListKind(group.category) === 'farmacia' ? 'da farmácia' : 'de mercado'}`,
-        icon: 'cart-plus',
-        onPress: () => finishAndRestock(group, undefined, newestList?.id),
-      },
-    ];
-    if (choices.length > 1) {
-      actions.push({ label: 'Acabou — escolher a lista', icon: 'format-list-bulleted', onPress: () => setPicking(group) });
+    const target = newestList
+      ? `pôr na última lista (“${newestList.name}”)`
+      : `pôr na lista ${newListKind(group.category) === 'farmacia' ? 'da farmácia' : 'de mercado'}`;
+    const actions: SheetAction[] = [];
+    // "Acabou" dá baixa; "Está acabando" só põe na lista, e o item continua na despensa até acabar.
+    for (const [when, consumeLots, icon] of [
+      ['Acabou', true, 'cart-plus'],
+      ['Está acabando', false, 'cart-arrow-down'],
+    ] as const) {
+      actions.push({ label: `${when} — ${target}`, icon, onPress: () => putOnList(group, consumeLots, undefined, newestList?.id) });
+      if (choices.length > 1) {
+        actions.push({
+          label: `${when} — escolher a lista`,
+          icon: 'format-list-bulleted',
+          onPress: () => setPicking({ group, consume: consumeLots }),
+        });
+      }
     }
     if (take) {
       const units = group.totals.find((t) => t.unit === 'un')?.quantity ?? 0;
@@ -214,13 +223,14 @@ export function PantryPanel() {
       <ActionSheet
         visible={Boolean(picking)}
         onClose={() => setPicking(null)}
-        title={picking ? `${picking.name}: para qual lista?` : undefined}
+        title={picking ? `${picking.group.name}: para qual lista?` : undefined}
+        message={picking && !picking.consume ? 'O item continua na despensa até acabar.' : undefined}
         actions={
           picking
-            ? choicesFor(picking).map((list, index) => ({
+            ? choicesFor(picking.group).map((list, index) => ({
                 label: index === 0 ? `${list.name} (a mais nova)` : list.name,
                 icon: 'cart-plus',
-                onPress: () => finishAndRestock(picking, list.id),
+                onPress: () => putOnList(picking.group, picking.consume, list.id),
               }))
             : []
         }

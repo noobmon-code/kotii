@@ -7,9 +7,11 @@ import { LinkIndex } from '@/domain/listLinks';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { SHARED_PRICES_NOTICE, type SharedPrice } from '@/domain/sharedPrices';
 import { CartPantryModal } from '@/features/CartPantryModal';
-import type { ItemHint } from '@/features/ShoppingGrid';
+import { PasteListModal } from '@/features/PasteListModal';
+import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
 import type { LatestPrice, PantryItem, Product, ShoppingListItem } from '@/lib/types';
 import { StaleNotice } from '@/features/health/StaleNotice';
+import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
 import { askYesNo, notify } from '@/ui/dialogs';
 import { Button, ErrorNotice, ListRow, Loading, Screen, TextField } from '@/ui/primitives';
 
@@ -79,6 +81,9 @@ jest.mock('@/data/market', () => {
     useStores: () => mockQueries.stores,
   };
 });
+// Colar o que foi copiado: a área de transferência de mentira.
+const mockClipboard = { text: '' };
+jest.mock('expo-clipboard', () => ({ getStringAsync: async () => mockClipboard.text, setStringAsync: async () => true }));
 jest.mock('@/data/sharedPrices', () => ({ useSharedPrices: () => mockQueries.shared }));
 jest.mock('@/lib/auth', () => ({ useAuth: () => ({ session: { user: { id: 'u1' } } }), useHouseholdId: () => 'h1' }));
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: unknown) => String(error) }));
@@ -203,6 +208,21 @@ async function mount() {
     renderer = create(<ShoppingListScreen />);
   });
   return texts(renderer!.toJSON()).join('\n');
+}
+
+/** Digita a quantidade no cartão de pôr item. */
+const typeQuantity = (text: string) => act(() => renderer!.root.findAllByType(TextField)[1].props.onChangeText(text));
+/** A pergunta do item repetido ("Já está na lista"). */
+const repeatSheet = () => renderer!.root.findAllByType(ActionSheet).find((sheet) => sheet.props.title === 'Já está na lista')!;
+const repeatChoices = () => (repeatSheet().props.actions as SheetAction[]).map((action) => action.label);
+/** Toca numa escolha do menu como ele faz: fecha e depois roda a ação. */
+function choose(label: string) {
+  const sheet = repeatSheet();
+  const action = (sheet.props.actions as SheetAction[]).find((a) => a.label === label)!;
+  act(() => {
+    sheet.props.onClose();
+    action.onPress();
+  });
 }
 
 beforeEach(() => {
@@ -589,45 +609,79 @@ describe('a lista sem marca', () => {
     });
   const fieldValue = () => renderer!.root.findAllByType(TextField)[0].props.value;
 
-  it('o mesmo item já para comprar, pela busca ou com o mesmo nome: não põe de novo e diz que já estava', async () => {
+  it('o mesmo item já para comprar, pela busca ou com o mesmo nome: não põe de novo, pergunta e soma pela fila de edições', async () => {
     mockQueries.items = loaded([listItem('a', 'Leite IL Desnatado', 'il', 'laticinios'), listItem('b', 'Café', null, 'cafe_cha')]);
     mockQueries.products = loaded([MILK]);
     await mount();
+    mockQueue.edit.mockClear();
     type('leite');
     const row = renderer!.root.findAllByType(ListRow).find((r) => r.props.subtitle === 'Produto com histórico de preço')!;
-    await act(async () => {
-      await row.props.onPress();
-    });
+    act(() => row.props.onPress());
     expect(mockQueue.add).not.toHaveBeenCalled();
-    expect(notify).toHaveBeenCalledWith('Já estava na lista', 'Leite IL Desnatado já está na lista para comprar.');
+    expect(repeatSheet().props.visible).toBe(true);
+    expect(repeatSheet().props.message).toBe('Leite IL Desnatado já está na lista (1 un). Somar mais 1 un?');
+    expect(repeatChoices()).toEqual(['Somar: fica 2 un']);
+    expect(repeatSheet().props.cancelLabel).toBe('Deixar como está');
+    // Deixar como está: nada muda, e o campo fica livre, como antes.
+    act(() => repeatSheet().props.onClose());
+    expect(repeatSheet().props.visible).toBe(false);
+    expect(mockQueue.edit).not.toHaveBeenCalled();
     expect(fieldValue()).toBe('');
+    // Com a quantidade digitada, somar grava a soma pela fila (vale sem internet) e libera o campo.
     type('café');
+    typeQuantity('3');
     await addTyped('café');
+    expect(repeatSheet().props.message).toBe('Café já está na lista (1 un). Somar mais 3 un?');
+    choose('Somar: fica 4 un');
+    expect(mockQueue.edit).toHaveBeenCalledWith({ id: 'b', listId: 'l1', userId: 'u1', values: { quantity: 4 } }, expect.anything());
     expect(mockQueue.add).not.toHaveBeenCalled();
-    expect(notify).toHaveBeenCalledWith('Já estava na lista', 'Café já está na lista para comprar.');
+    expect(fieldValue()).toBe('');
+    expect(renderer!.root.findAllByType(TextField)[1].props.value).toBe('1');
+    expect(notify).not.toHaveBeenCalled();
     expect(askYesNo).not.toHaveBeenCalled();
-    // Outro tipo do mesmo item entra.
+    // Outro tipo do mesmo item entra sem perguntar.
     type('Leite integral');
     await addTyped('Leite integral');
     expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Leite integral' }), 'u1');
   });
 
-  it('digitado com outro nome do item pendente: a pessoa escolhe, e o texto não some', async () => {
+  it('em outra unidade não soma: a pessoa põe como outro item ou deixa como está', async () => {
+    mockQueries.items = loaded([{ ...listItem('a', 'Arroz', null, 'graos'), quantity: 2 }]);
+    await mount();
+    mockQueue.edit.mockClear();
+    const pickUnit = (u: string) =>
+      act(() => renderer!.root.findAll((node) => node.props.label === u && typeof node.props.onPress === 'function')[0].props.onPress());
+    type('Arroz');
+    typeQuantity('5');
+    pickUnit('kg');
+    await addTyped('Arroz');
+    expect(repeatSheet().props.message).toBe('Arroz já está na lista com 2 un, e 5 kg é outra unidade. Pôr como outro item ou deixar como está?');
+    expect(repeatChoices()).toEqual(['Pôr 5 kg como outro item']);
+    act(() => repeatSheet().props.onClose());
+    expect(mockQueue.add).not.toHaveBeenCalled();
+    expect(mockQueue.edit).not.toHaveBeenCalled();
+    type('Arroz');
+    typeQuantity('5');
+    pickUnit('kg');
+    await addTyped('Arroz');
+    choose('Pôr 5 kg como outro item');
+    expect(mockQueue.add).toHaveBeenCalledWith({ name: 'Arroz', category: 'graos', productId: null, quantity: 5, unit: 'kg' }, 'u1');
+    expect(mockQueue.edit).not.toHaveBeenCalled();
+    expect(fieldValue()).toBe('');
+  });
+
+  it('digitado com outro nome do item pendente: somar, pôr também ou deixar, e deixando o texto não some', async () => {
     mockQueries.items = loaded([listItem('a', 'Leite IL Desnatado', 'il', 'laticinios')]);
     await mount();
-    jest.mocked(askYesNo).mockResolvedValueOnce(false);
     type('Leite desnatado');
     await addTyped('Leite desnatado');
-    expect(askYesNo).toHaveBeenCalledWith(
-      'Já está na lista',
-      'Leite IL Desnatado já está na lista para comprar. Pôr "Leite desnatado" também?',
-      'Pôr mesmo assim',
-      'Não pôr',
-    );
+    expect(repeatSheet().props.message).toBe('Leite IL Desnatado já está na lista (1 un). Somar mais 1 un?');
+    expect(repeatChoices()).toEqual(['Somar: fica 2 un', 'Pôr "Leite desnatado" como outro item']);
+    act(() => repeatSheet().props.onClose());
     expect(mockQueue.add).not.toHaveBeenCalled();
     expect(fieldValue()).toBe('Leite desnatado');
-    jest.mocked(askYesNo).mockResolvedValueOnce(true);
     await addTyped('Leite desnatado');
+    choose('Pôr "Leite desnatado" como outro item');
     expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'Leite desnatado' }), 'u1');
     expect(fieldValue()).toBe('');
   });
@@ -715,7 +769,7 @@ describe('a lista sem marca', () => {
       act(() => mockSeen.open!(item));
       expect((mockSeen.editor?.item as ShoppingListItem).id).toBe(item.id);
       await act(async () => {
-        await (mockSeen.editor!.onSave as (d: unknown, p: unknown) => Promise<void>)({ ...details, ...changes }, { kind: 'keep' });
+        await (mockSeen.editor!.onSave as (d: unknown, p: unknown) => Promise<void>)({ ...details, category: item.category, ...changes }, { kind: 'keep' });
       });
     };
     const generic = { ...listItem('a', 'Leite desnatado', 'il', 'laticinios'), brand_preferred: false };
@@ -762,13 +816,13 @@ describe('ler o código de barras no cartão de pôr item', () => {
     expect(mockQueue.add).toHaveBeenCalledWith({ name: 'Leite desnatado', category: 'laticinios', productId: 'il', quantity: 1, unit: 'un' }, 'u1');
   });
 
-  it('o mesmo item já para comprar: não põe de novo e diz que já estava, como a sugestão', async () => {
+  it('o mesmo item já para comprar: não põe de novo e pergunta se soma, como a sugestão', async () => {
     mockBarcode.available = true;
     mockQueries.items = loaded([listItem('a', 'Leite desnatado', null, 'laticinios')]);
     await mount();
     await act(async () => mockBarcode.onProduct!(MILK));
     expect(mockQueue.add).not.toHaveBeenCalled();
-    expect(notify).toHaveBeenCalledWith('Já estava na lista', 'Leite desnatado já está na lista para comprar.');
+    expect(repeatSheet().props.message).toBe('Leite desnatado já está na lista (1 un). Somar mais 1 un?');
   });
 
   it('enquanto o código anterior ainda está sendo visto, o botão fica carregando', async () => {
@@ -783,5 +837,147 @@ describe('ler o código de barras no cartão de pôr item', () => {
   it('sem a tabela no banco: sem o botão, e a lista abre', async () => {
     expect(await mount()).toContain('Lista vazia');
     expect(scanButton()).toBeUndefined();
+  });
+});
+
+describe('ajustes da lista: corredores, categoria e colar', () => {
+  /** 10 itens de várias seções, com um urgente: a lista ganha os títulos dos corredores. */
+  const longList = () => [
+    listItem('d', 'Detergente', null, 'limpeza'),
+    listItem('a', 'Arroz', null, 'graos'),
+    listItem('t', 'Tomate', null, 'hortifruti'),
+    { ...listItem('l', 'Leite', null, 'laticinios'), priority: 'urgente' as const },
+    listItem('b', 'Banana', null, 'hortifruti'),
+    listItem('f', 'Feijão', null, 'graos'),
+    listItem('s', 'Suco', null, 'bebidas'),
+    listItem('p', 'Papel higiênico', null, 'papel'),
+    listItem('r', 'Rúcula', null, 'outros'),
+    listItem('q', 'Queijo', null, 'laticinios'),
+  ];
+  /** O que cada grade de "Para comprar" mostra, na ordem. */
+  const grids = () =>
+    renderer!.root
+      .findAllByType(ShoppingGrid)
+      .filter((grid) => !grid.props.inCart)
+      .map((grid) => (grid.props.items as ShoppingListItem[]).map((i) => i.name));
+
+  beforeEach(() => {
+    mockQueue.add.mockClear();
+    mockQueue.edit.mockClear();
+    mockClipboard.text = '';
+    jest.mocked(notify).mockClear();
+  });
+
+  it('com muitos itens, a grade sai em seções com título, na ordem dos corredores do texto do WhatsApp', async () => {
+    mockQueries.items = loaded(longList());
+    const page = await mount();
+    expect(grids()).toEqual([['Leite'], ['Banana', 'Tomate'], ['Queijo'], ['Arroz', 'Feijão'], ['Suco'], ['Detergente'], ['Papel higiênico'], ['Rúcula']]);
+    const titles = ['Urgente', 'Frutas e verduras', 'Laticínios', 'Grãos, massas e cereais', 'Bebidas', 'Limpeza', 'Papel e descartáveis', 'Outros'];
+    // Os títulos estão na tela, nesta ordem.
+    const at = titles.map((title) => page.split('\n').indexOf(title));
+    expect(at.every((line) => line >= 0)).toBe(true);
+    expect([...at].sort((x, y) => x - y)).toEqual(at);
+  });
+
+  it('com poucos itens fica como antes: uma grade só, sem títulos', async () => {
+    mockQueries.items = loaded(longList().slice(0, 8));
+    const page = await mount();
+    expect(grids()).toHaveLength(1);
+    expect(grids()[0]).toHaveLength(8);
+    expect(page.split('\n')).not.toContain('Frutas e verduras');
+  });
+
+  it('trocar a categoria nos detalhes grava pela fila de edições, e o item muda de seção na tela e no texto', async () => {
+    const items = longList();
+    mockQueries.items = loaded(items);
+    await mount();
+    const rucula = items.find((i) => i.id === 'r')!;
+    act(() => mockSeen.open!(rucula));
+    expect((mockSeen.editor?.item as ShoppingListItem).id).toBe('r');
+    const details = { name: 'Rúcula', quantity: 1, unit: 'un', notes: null, priority: 'normal', category: 'hortifruti' };
+    await act(async () => {
+      await (mockSeen.editor!.onSave as (d: unknown, p: unknown) => Promise<void>)(details, { kind: 'keep' });
+    });
+    expect(mockQueue.edit).toHaveBeenCalledWith(
+      { id: 'r', listId: 'l1', userId: 'u1', values: { category: 'hortifruti' }, expectedPhotoPath: undefined },
+      expect.anything(),
+    );
+    // A fila muda o item na hora (data/market, useEditListItem): a tela redesenha com ele na seção nova.
+    mockQueries.items = loaded(items.map((i) => (i.id === 'r' ? { ...i, category: 'hortifruti' } : i)));
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(grids()[1]).toEqual(['Banana', 'Rúcula', 'Tomate']);
+    expect(grids().flat().filter((name) => name === 'Rúcula')).toHaveLength(1);
+    act(() => renderer!.root.findAll((node) => node.type === Button && node.props.title === 'Mandar a lista')[0].props.onPress());
+    expect(texts(renderer!.toJSON()).join('\n')).toContain('*Frutas e verduras*\n- Banana\n- Rúcula\n- Tomate');
+  });
+
+  it('a categoria escolhida vale mais que o chute pelo nome novo', async () => {
+    const item = listItem('x', 'Coisa', null, 'outros');
+    mockQueries.items = loaded([item]);
+    await mount();
+    act(() => mockSeen.open!(item));
+    await act(async () => {
+      await (mockSeen.editor!.onSave as (d: unknown, p: unknown) => Promise<void>)(
+        { name: 'Banana prata', quantity: 1, unit: 'un', notes: null, priority: 'normal', category: 'doces' },
+        { kind: 'keep' },
+      );
+    });
+    expect(mockQueue.edit).toHaveBeenCalledWith(expect.objectContaining({ values: { name: 'Banana prata', category: 'doces' } }), expect.anything());
+  });
+
+  describe('colar lista', () => {
+    const open = () => act(() => renderer!.root.findAll((node) => node.type === Button && node.props.title === 'Colar lista')[0].props.onPress());
+    const modal = () => renderer!.root.findAllByType(PasteListModal)[0];
+    const pasteField = () => modal().findAll((node) => node.type === TextField && node.props.accessibilityLabel === 'Texto da lista')[0];
+    const modalButton = (title: RegExp) => modal().findAll((node) => node.type === Button && title.test(node.props.title))[0];
+
+    it('mostra a prévia, diz o que já está na lista e põe só o resto, pela fila', async () => {
+      mockQueries.items = loaded([listItem('c', 'Café', null, 'cafe_cha'), listItem('i', 'Leite IL Desnatado', 'il', 'laticinios')]);
+      mockQueries.products = loaded([{ ...product('arroz-tio', 'Arroz'), category: 'graos' } as Product]);
+      await mount();
+      expect(modal()).toBeUndefined();
+      open();
+      expect(modalButton(/^Adicionar/).props.disabled).toBe(true);
+      // O próprio texto que o app manda, com um item que já está na lista com a marca.
+      act(() => pasteField().props.onChangeText('*Mercado* · 4 itens\n- 2 kg arroz\n- Café\n- leite desnatado (2)\n✅ banana'));
+      const page = texts(renderer!.toJSON()).join('\n');
+      expect(page).toContain('Prévia');
+      expect(page).toContain('2 kg · Grãos, massas e cereais');
+      expect(page).toContain('Já está na lista: não entra de novo');
+      expect(page).toContain('Já está na lista como Leite IL Desnatado: não entra de novo');
+      expect(page).toContain('1 un · Frutas e verduras');
+      expect(page).not.toContain('Mercado · 4');
+      const add = modalButton(/^Adicionar/);
+      expect(add.props.title).toBe('Adicionar 2 itens');
+      act(() => add.props.onPress());
+      // Cada item pela fila, como pôr um item (vale sem internet); o arroz vai com o produto da casa como dica de preço.
+      expect(mockQueue.add.mock.calls).toEqual([
+        [{ name: 'Arroz', category: 'graos', productId: 'arroz-tio', quantity: 2, unit: 'kg' }, 'u1'],
+        [{ name: 'Banana', category: 'hortifruti', productId: null, quantity: 1, unit: 'un' }, 'u1'],
+      ]);
+      expect(modal()).toBeUndefined();
+    });
+
+    it('"Colar o que copiei" traz o texto da área de transferência; sem nada copiado, avisa', async () => {
+      await mount();
+      open();
+      await act(async () => modalButton(/^Colar o que copiei$/).props.onPress());
+      expect(notify).toHaveBeenCalledWith('Nada para colar', 'Copie a lista e toque de novo, ou segure no campo e escolha colar.');
+      mockClipboard.text = 'arroz, feijão';
+      await act(async () => modalButton(/^Colar o que copiei$/).props.onPress());
+      expect(pasteField().props.value).toBe('arroz, feijão');
+      expect(modalButton(/^Adicionar/).props.title).toBe('Adicionar 2 itens');
+    });
+
+    it('texto sem item nenhum: diz isso, e não há o que adicionar', async () => {
+      await mount();
+      open();
+      act(() => pasteField().props.onChangeText('Lista:\n\n---'));
+      expect(texts(renderer!.toJSON()).join('\n')).toContain('Nenhum item nesse texto. Ponha um item por linha.');
+      expect(modalButton(/^Adicionar/).props.disabled).toBe(true);
+      act(() => modal().props.onClose());
+      expect(modal()).toBeUndefined();
+      expect(mockQueue.add).not.toHaveBeenCalled();
+    });
   });
 });
