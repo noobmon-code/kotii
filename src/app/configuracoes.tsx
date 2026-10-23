@@ -2,8 +2,10 @@ import { router } from 'expo-router';
 import { useRef, useState } from 'react';
 import { StyleSheet } from 'react-native';
 
+import { useIsAppAdmin } from '@/data/appDashboard';
 import { useSignOutQuestion } from '@/data/household';
 import { useMyProfile, useSaveProfile, type MyProfile } from '@/data/profile';
+import { APP_DASHBOARD_TITLE } from '@/domain/appDashboard';
 import { THEME_CHOICES, THEME_HINT } from '@/domain/appearance';
 import { formatBRDate, todayISO } from '@/domain/dates';
 import {
@@ -50,6 +52,7 @@ export default function SettingsScreen() {
   const household = useHousehold();
   const theme = useThemeChoice();
   const signOutQuestion = useSignOutQuestion();
+  const isAdmin = useIsAppAdmin().data === true;
   const email = session?.user.email;
 
   return (
@@ -73,6 +76,21 @@ export default function SettingsScreen() {
           <Text variant="small">{THEME_HINT}</Text>
         </Card>
       </Section>
+
+      {/* Só para quem mantém o app (app_admins): os números de uso, só totais. */}
+      {isAdmin ? (
+        <Section title="Painel">
+          <ListCard>
+            <ListRow
+              left={<IconBadge icon="chart-box-outline" tone="neutral" />}
+              title={APP_DASHBOARD_TITLE}
+              subtitle="Contas, pessoas ativas, Nuke e funções"
+              right={<Icon name="chevron-right" color="textMuted" />}
+              onPress={() => router.push('/painel')}
+            />
+          </ListCard>
+        </Section>
+      ) : null}
 
       <Section title="Conta">
         <ListCard>

@@ -6,7 +6,7 @@
 import { formatBRDate } from './dates';
 
 /** Data da versão do texto (AAAA-MM-DD). Muda a cada mudança no texto. */
-export const TERMS_VERSION = '2026-10-22';
+export const TERMS_VERSION = '2026-10-23';
 
 /**
  * A versão que a pessoa aceita (AAAA-MM-DD). Só muda numa mudança importante (o que é guardado, compartilhado
@@ -85,6 +85,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
       'Dados de saúde são sensíveis. Qualquer morador da casa pode registrá-los, inclusive sobre você ou sobre quem não usa o app (crianças, idosos, pets), e todos os moradores os veem. Eles servem às funções de saúde do app e ao Nuke, como explicado abaixo.',
       'Para a previsão do tempo, a casa pode informar o CEP ou usar a localização do aparelho. O app guarda a localização da casa só aproximada (cerca de 1 km) e o nome do bairro, não o endereço. Para isso ele consulta serviços públicos de CEP e de mapa (ViaCEP, BrasilAPI e OpenStreetMap) e de previsão do tempo (Open-Meteo), mandando só o CEP ou as coordenadas.',
       'Para ler uma nota pelo QR code, o app consulta a página pública da Sefaz daquela nota.',
+      'Quem mantém o Kotii vê só números totais de uso (quantas contas e casas existem, quantas pessoas abriram o app nos últimos dias e de que tipo de aparelho, quanto a IA foi usada e quantas casas usam cada função), contados a partir dos registros de entrada do serviço de login e do que as casas registram, sem nomes, sem e-mails e sem o que cada casa registrou.',
       'O Kotii não vende os seus dados e não mostra anúncios.',
     ],
   },

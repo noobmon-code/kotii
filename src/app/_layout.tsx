@@ -174,6 +174,7 @@ function AppNavigator() {
         {/* Apagar a conta: de Configurações (aba Família) e também sem casa nenhuma (tela de boas-vindas). */}
         <Stack.Protected guard={signedIn && !newPassword}>
           <Stack.Screen name="apagar-conta" options={{ title: 'Apagar minha conta' }} />
+          <Stack.Screen name="painel" options={{ title: 'Painel do app' }} />
         </Stack.Protected>
         {/* Os termos abrem em qualquer estado (sem conta, criando a senha nova, sem casa ou numa casa). Ficam por
             último: com uma guarda desligada, o app volta para a primeira tela disponível, que nunca é esta. */}

@@ -136,9 +136,22 @@ describe('termos de uso', () => {
     expect(section('Inteligência artificial')).not.toMatch(/nascimento|telefone/);
   });
 
-  it('é uma mudança no que é guardado: o aviso volta para todo mundo (a versão do aceite é a do texto)', () => {
-    expect(TERMS_VERSION).toBe('2026-10-22');
-    expect(TERMS_ACCEPT_VERSION).toBe(TERMS_VERSION);
+  it('o painel do app: quem mantém o Kotii vê só totais de uso, sem nomes, e-mails ou o que cada casa registrou', () => {
+    const stored = section('O que o app guarda e para quê');
+    expect(stored).toContain('Quem mantém o Kotii vê só números totais de uso');
+    for (const part of ['quantas contas e casas existem', 'de que tipo de aparelho', 'quanto a IA foi usada', 'quantas casas usam cada função']) {
+      expect(stored).toContain(part);
+    }
+    expect(stored).toContain('registros de entrada do serviço de login');
+    expect(stored).toContain('sem nomes, sem e-mails e sem o que cada casa registrou');
+  });
+
+  it('o aceite é o da mudança do perfil; o painel do app mudou só o texto, e o aviso não volta', () => {
+    // O perfil (22/10) mudou o que é guardado: o aviso voltou para todo mundo. O painel (23/10) só conta o que
+    // o app já guardava, em totais: muda a versão do texto, não a do aceite.
+    expect(TERMS_ACCEPT_VERSION).toBe('2026-10-22');
+    expect(TERMS_VERSION).toBe('2026-10-23');
+    expect(termsNotice(['2026-10-22'])).toBeNull();
     expect(termsNotice(['2026-10-20'])).toBe('mudou');
   });
 

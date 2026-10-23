@@ -5,6 +5,7 @@ import { router } from 'expo-router';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import SettingsScreen from '@/app/configuracoes';
+import { APP_DASHBOARD_TITLE } from '@/domain/appDashboard';
 import { THEME_HINT } from '@/domain/appearance';
 import { PROFILE_MESSAGES, PROFILE_NAME_HINT, PROFILE_NOT_READY, PROFILE_PRIVACY } from '@/domain/profile';
 import { TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
@@ -15,7 +16,8 @@ import { ThemeChoiceProvider } from '@/ui/ThemeChoiceProvider';
 
 // A tela de Configurações com o banco de mentira: o perfil (lido da tabela, salvo numa chamada só, com os erros
 // do banco em palavras, e só o nome com um aviso quando a migração ainda não chegou), o tema (que muda as
-// cores e fica no aparelho) e a conta (termos, sair, apagar), que vieram da aba Família.
+// cores e fica no aparelho), a conta (termos, sair, apagar), que vieram da aba Família, e a linha do painel do
+// app, só para quem o mantém.
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -23,11 +25,13 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 const mockSystem = { scheme: 'light' as 'light' | 'dark' };
 jest.mock('react-native/Libraries/Utilities/useColorScheme', () => ({ __esModule: true, default: () => mockSystem.scheme }));
 
-/** A tabela profiles e a save_my_profile, como o PostgREST responderia. */
+/** A tabela profiles e a save_my_profile, como o PostgREST responderia; is_app_admin responde à parte. */
 const mockDb = {
   read: { data: null as unknown, error: null as unknown },
   rpc: jest.fn(async (_name: string, _args: Record<string, unknown>): Promise<{ data: unknown; error: unknown }> => ({ data: null, error: null })),
   reads: [] as { table: string; filter: [string, unknown] }[],
+  /** A resposta de is_app_admin: quase todo mundo não mantém o app. */
+  admin: { data: false as unknown, error: null as unknown },
 };
 jest.mock('@/lib/supabase', () => ({
   supabase: {
@@ -41,7 +45,8 @@ jest.mock('@/lib/supabase', () => ({
         }),
       }),
     }),
-    rpc: (name: string, args: Record<string, unknown>) => mockDb.rpc(name, args),
+    rpc: (name: string, args: Record<string, unknown>) =>
+      name === 'is_app_admin' ? Promise.resolve(mockDb.admin) : mockDb.rpc(name, args),
   },
   errorMessage: (error: unknown) => (error instanceof Error ? error.message : String(error)),
 }));
@@ -107,6 +112,7 @@ beforeEach(() => {
   mockSystem.scheme = 'light';
   mockDb.read = { data: { birth_date: '1985-03-05', phone: '83999999999' }, error: null };
   mockDb.reads = [];
+  mockDb.admin = { data: false, error: null };
   mockDb.rpc.mockImplementation(async (_name, args) => ({
     data: { name: String(args.p_name), birth_date: args.p_birth_date ?? null, phone: args.p_phone ?? null },
     error: null,
@@ -283,5 +289,30 @@ describe('Configurações: conta', () => {
     expect(confirmAction).toHaveBeenCalledWith('Sair da conta', 'Deseja sair desta conta neste aparelho?', 'Sair', expect.any(Function));
     await press('Apagar minha conta');
     expect(router.push).toHaveBeenCalledWith('/apagar-conta');
+  });
+});
+
+describe('Configurações: painel do app', () => {
+  it('quem não mantém o app não vê a linha do painel', async () => {
+    const text = await mount();
+    expect(text).not.toContain(APP_DASHBOARD_TITLE);
+    expect(text).toContain('Sair da conta');
+  });
+
+  it('sem a função no banco (antes da migração), a linha não aparece e a tela abre inteira', async () => {
+    mockDb.admin = { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.is_app_admin' } };
+    const text = await mount();
+    expect(text).not.toContain(APP_DASHBOARD_TITLE);
+    expect(text).toContain(`${TERMS_TITLE}${termsVersionLabel()}Sair da conta`);
+  });
+
+  it('para quem mantém o app, a linha abre o painel', async () => {
+    mockDb.admin = { data: true, error: null };
+    const text = await mount();
+    expect(text).toContain(`Painel${APP_DASHBOARD_TITLE}Contas, pessoas ativas, Nuke e funções`);
+    await act(async () => pressable(`${APP_DASHBOARD_TITLE}Contas, pessoas ativas, Nuke e funções`).props.onPress());
+    expect(router.push).toHaveBeenCalledWith('/painel');
+    // A pergunta não passa pela rpc do perfil.
+    expect(mockDb.rpc).not.toHaveBeenCalled();
   });
 });
