@@ -6,7 +6,35 @@ create role authenticated nologin;
 create role service_role nologin bypassrls;
 
 create schema auth;
-create table auth.users (id uuid primary key);
+-- As colunas de auth.users que as migrations leem (o painel do app), com os tipos da Supabase. Só o id é
+-- obrigatório: os testes criam pessoas com insert into auth.users (id).
+create table auth.users (
+  id uuid primary key,
+  email text,
+  created_at timestamptz not null default now(),
+  last_sign_in_at timestamptz,
+  email_confirmed_at timestamptz,
+  deleted_at timestamptz,
+  is_anonymous boolean not null default false
+);
+-- As sessões vivas (sair da conta apaga a linha). refreshed_at é timestamp sem fuso, com a hora de UTC.
+create table auth.sessions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now(),
+  refreshed_at timestamp,
+  user_agent text
+);
+-- Uma linha por renovação do token, apagada com a sessão. O user_id é texto (varchar), não uuid.
+create table auth.refresh_tokens (
+  id bigserial primary key,
+  user_id varchar(255),
+  session_id uuid references auth.sessions (id) on delete cascade,
+  revoked boolean default false,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
 
 create function auth.uid() returns uuid language sql stable as $$
   select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid;
@@ -38,3 +66,6 @@ grant execute on function auth.uid() to anon, authenticated;
 grant all on storage.objects to authenticated;
 alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
 alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
+-- Como na Supabase, função nova do public já nasce com execute para anon, authenticated e service_role (além do
+-- PUBLIC do Postgres): um revoke só "from public" deixa o app chamar, e os testes têm de pegar isso.
+alter default privileges in schema public grant execute on functions to anon, authenticated, service_role;
