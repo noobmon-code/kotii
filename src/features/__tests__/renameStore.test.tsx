@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import { fetchStores } from '@/data/market';
-import { canRenameStore, STORE_CHAIN_TITLE, STORE_RENAME_GONE, STORE_RENAME_LABEL } from '@/domain/storeName';
+import { canRenameStore, STORE_CHAIN_TITLE, STORE_RENAME_GONE, STORE_RENAME_LABEL, STORE_STANDARD_LINE } from '@/domain/storeName';
 import { RenameStoreModal } from '@/features/RenameStoreModal';
 import type { Store } from '@/lib/types';
 import { notify } from '@/ui/dialogs';
@@ -16,10 +16,14 @@ type Row = Store & Record<string, unknown>;
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockDb = {
   stores: [] as Row[],
-  /** O banco antes da migração: a coluna do nome impresso não existe. */
+  /** O banco antes da migração 20261022170000: a coluna do nome impresso não existe. */
   noPrintedColumn: false,
+  /** O banco antes da migração 20261023120000: o nome padrão não existe. */
+  noStandardColumn: false,
   updates: [] as { values: Record<string, unknown>; ids: string[] }[],
   reads: [] as string[],
+  /** A leitura falha por outro motivo. */
+  failOther: false,
   /** A gravação segura no caminho (a resposta só vem quando o teste solta). */
   hold: null as Promise<void> | null,
 };
@@ -44,8 +48,12 @@ jest.mock('@/lib/supabase', () => {
         return { data: found.map((s) => ({ id: s.id })), error: null };
       }
       mockDb.reads.push(columns);
+      if (mockDb.failOther) return { data: null, error: { code: '42501', message: 'permission denied for table stores' } };
       if (mockDb.noPrintedColumn && columns.includes('printed_name')) {
         return { data: null, error: { code: '42703', message: 'column stores.printed_name does not exist' } };
+      }
+      if (mockDb.noStandardColumn && columns.includes('standard_name')) {
+        return { data: null, error: { code: '42703', message: 'column stores.standard_name does not exist' } };
       }
       const keys = columns.split(',').map((c) => c.trim());
       return { data: mockDb.stores.map((s) => Object.fromEntries(keys.map((k) => [k, s[k]]))), error: null };
@@ -88,6 +96,7 @@ const store = (id: string, name: string, cnpj: string | null, patch: Partial<Row
   cnpj,
   address: null,
   printed_name: null,
+  standard_name: null,
   ...patch,
 });
 
@@ -128,6 +137,8 @@ beforeEach(() => {
   for (const key of SHOWING_NAMES) client.setQueryData(key, []);
   mockDb.stores = [];
   mockDb.noPrintedColumn = false;
+  mockDb.noStandardColumn = false;
+  mockDb.failOther = false;
   mockDb.updates = [];
   mockDb.reads = [];
   mockDb.hold = null;
@@ -267,18 +278,70 @@ describe('renomear o mercado', () => {
   });
 });
 
+describe('o nome padrão do CNPJ', () => {
+  it('com um nome padrão que a casa não usa: "Usar o nome padrão" grava esse nome, como está', async () => {
+    mockDb.stores = [store('s1', CBD, '47508411114402', { standard_name: 'Pão de Açúcar' })];
+    await open(mockDb.stores[0]);
+    expect(page()).not.toContain(STORE_STANDARD_LINE);
+    await press('Usar o nome padrão: Pão de Açúcar');
+    expect(mockDb.updates).toEqual([{ values: { name: 'Pão de Açúcar' }, ids: ['s1'] }]);
+    expect(mockDb.stores[0]).toMatchObject({ name: 'Pão de Açúcar', printed_name: CBD });
+    expect(closed).toBe(1);
+  });
+
+  it('com o nome padrão: diz que é o padrão, e não oferece voltar a ele; o nome da nota continua', async () => {
+    mockDb.stores = [store('s1', 'Pão de Açúcar', '47508411114402', { printed_name: CBD, standard_name: 'Pão de Açúcar' })];
+    await open(mockDb.stores[0]);
+    expect(page()).toContain(STORE_STANDARD_LINE);
+    expect(page()).toContain(`Na nota: ${CBD}`);
+    expect(button('Usar o nome padrão: Pão de Açúcar')).toBeUndefined();
+    expect(button('Voltar ao nome da nota')).toBeDefined();
+  });
+
+  it('sem nome padrão (ou sem a coluna), nada dele', async () => {
+    mockDb.stores = [store('s1', CBD, '47508411114402'), store('s2', CBD, '47508411000999', { standard_name: undefined })];
+    for (const target of mockDb.stores) {
+      await open(target);
+      expect(page()).not.toContain('nome padrão');
+      await act(async () => renderer?.unmount());
+    }
+  });
+});
+
 describe('a lista de mercados', () => {
-  it('traz o nome impresso; o banco antes da migração não tem a coluna: lê sem ela, e não se oferece renomear', async () => {
-    mockDb.stores = [store('s1', 'Pão de Açúcar', '47508411114402', { printed_name: CBD })];
+  it('traz o nome impresso e o nome padrão; o banco antes das migrações lê sem a coluna que falta', async () => {
+    mockDb.stores = [store('s1', 'Pão de Açúcar', '47508411114402', { printed_name: CBD, standard_name: 'Pão de Açúcar' })];
     const read = await fetchStores();
-    expect(read).toEqual([{ id: 's1', name: 'Pão de Açúcar', cnpj: '47508411114402', address: null, printed_name: CBD }]);
+    expect(mockDb.reads).toEqual(['id, name, cnpj, address, printed_name, standard_name']);
+    expect(read).toEqual([{ id: 's1', name: 'Pão de Açúcar', cnpj: '47508411114402', address: null, printed_name: CBD, standard_name: 'Pão de Açúcar' }]);
     expect(canRenameStore(read[0])).toBe(true);
 
+    // Antes de 20261023120000: sem o nome padrão.
+    mockDb.noStandardColumn = true;
+    mockDb.reads = [];
+    const withoutStandard = await fetchStores();
+    expect(mockDb.reads).toEqual(['id, name, cnpj, address, printed_name, standard_name', 'id, name, cnpj, address, printed_name']);
+    expect(withoutStandard).toEqual([{ id: 's1', name: 'Pão de Açúcar', cnpj: '47508411114402', address: null, printed_name: CBD }]);
+
+    // Antes de 20261022170000: sem as duas; não se oferece renomear.
     mockDb.noPrintedColumn = true;
     mockDb.reads = [];
     const old = await fetchStores();
-    expect(mockDb.reads).toEqual(['id, name, cnpj, address, printed_name', 'id, name, cnpj, address']);
+    expect(mockDb.reads).toEqual([
+      'id, name, cnpj, address, printed_name, standard_name',
+      'id, name, cnpj, address, standard_name',
+      'id, name, cnpj, address',
+    ]);
     expect(old).toEqual([{ id: 's1', name: 'Pão de Açúcar', cnpj: '47508411114402', address: null }]);
     expect(canRenameStore(old[0])).toBe(false);
+  });
+
+  it('outro erro da leitura não é coluna que falta: sobe', async () => {
+    mockDb.stores = [store('s1', CBD, null)];
+    mockDb.noStandardColumn = true;
+    mockDb.noPrintedColumn = true;
+    mockDb.failOther = true;
+    await expect(fetchStores()).rejects.toMatchObject({ code: '42501' });
+    expect(mockDb.reads).toHaveLength(1);
   });
 });

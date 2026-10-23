@@ -5,6 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRenameStores } from '@/data/market';
 import {
   backToPrintedLabel,
+  hasStandardName,
   printedNameLine,
   sameCompanyStores,
   STORE_CHAIN_HINT,
@@ -12,10 +13,13 @@ import {
   STORE_RENAME_GONE,
   STORE_RENAME_LABEL,
   STORE_RENAME_TITLE,
+  STORE_STANDARD_LINE,
+  standardNameLabel,
   storeNameError,
   storeRenameChange,
   storeRenameHint,
   storeRevertChange,
+  storeStandardChange,
 } from '@/domain/storeName';
 import { errorMessage } from '@/lib/supabase';
 import type { Store } from '@/lib/types';
@@ -27,7 +31,8 @@ import { MAX_WIDTH, space, useColors } from '@/ui/theme';
 /**
  * Dar outro nome ao mercado, para toda a casa: o da nota chega com a razão social do CNPJ. As outras lojas da
  * mesma empresa que a casa tem aparecem para a pessoa marcar (a empresa pode ter mais de uma bandeira). Com o
- * nome trocado, "Voltar ao nome da nota" desfaz. Renderize só quando aberto.
+ * nome trocado, "Voltar ao nome da nota" desfaz; com um nome padrão no CNPJ que a casa não usa, "Usar o nome
+ * padrão" volta a ele. Renderize só quando aberto.
  */
 export function RenameStoreModal({ store, stores, onClose }: { store: Store; stores: readonly Store[]; onClose: () => void }) {
   const c = useColors();
@@ -39,6 +44,8 @@ export function RenameStoreModal({ store, stores, onClose }: { store: Store; sto
   const error = storeNameError(text);
   const printed = printedNameLine(store);
   const back = backToPrintedLabel(store);
+  const standard = standardNameLabel(store);
+  const isStandard = hasStandardName(store);
 
   /** Grava (uma gravação por vez: o Enter do campo também chega aqui) e fecha; sem o que gravar, só fecha. */
   function save(change: { name: string; ids: string[] } | null) {
@@ -69,8 +76,9 @@ export function RenameStoreModal({ store, stores, onClose }: { store: Store; sto
             </Text>
             <IconButton icon="close" label="Fechar" onPress={onClose} />
           </Row>
-          {printed || store.address ? (
+          {printed || store.address || isStandard ? (
             <View style={styles.gapXs}>
+              {isStandard ? <Text variant="muted">{STORE_STANDARD_LINE}</Text> : null}
               {printed ? <Text variant="muted">{printed}</Text> : null}
               {store.address ? <Text variant="muted">{store.address}</Text> : null}
             </View>
@@ -116,6 +124,15 @@ export function RenameStoreModal({ store, stores, onClose }: { store: Store; sto
             </View>
           ) : null}
           <Button title="Salvar" icon="check" loading={rename.isPending} disabled={rename.isPending} onPress={onSave} />
+          {standard ? (
+            <Button
+              title={standard}
+              icon="store-check-outline"
+              variant="secondary"
+              disabled={rename.isPending}
+              onPress={() => save(storeStandardChange(store))}
+            />
+          ) : null}
           {back ? (
             <Button title={back} icon="undo" variant="secondary" disabled={rename.isPending} onPress={() => save(storeRevertChange(store))} />
           ) : null}

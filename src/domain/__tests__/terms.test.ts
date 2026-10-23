@@ -136,10 +136,21 @@ describe('termos de uso', () => {
     expect(section('Inteligência artificial')).not.toMatch(/nascimento|telefone/);
   });
 
-  it('é uma mudança no que é guardado: o aviso volta para todo mundo (a versão do aceite é a do texto)', () => {
-    expect(TERMS_VERSION).toBe('2026-10-22');
+  it('o nome padrão dos mercados: só o CNPJ vai à BrasilAPI, nada de pessoa, e a moderação não sabe de qual casa', () => {
+    const names = section('Nomes dos mercados');
+    expect(names).toContain('mandando só o CNPJ do mercado');
+    expect(names).toContain('BrasilAPI');
+    expect(names).toContain('Quando a empresa tem nome fantasia, ele vira o nome padrão');
+    expect(names).toContain('quem mantém o Kotii escolhe o nome');
+    expect(names).toContain('Do cadastro de MEI, de empresário individual e dos outros cadastros de pessoa, o app não guarda nada');
+    expect(names).toContain('os nomes que as casas deram a ele, com quantas casas deram cada nome. Não vê quais casas são.');
+    expect(names).toContain('O nome que a sua casa der a um mercado vale para ela acima do nome padrão');
+  });
+
+  it('é uma mudança no que é compartilhado: o aviso volta para todo mundo (a versão do aceite é a do texto)', () => {
+    expect(TERMS_VERSION).toBe('2026-10-23');
     expect(TERMS_ACCEPT_VERSION).toBe(TERMS_VERSION);
-    expect(termsNotice(['2026-10-20'])).toBe('mudou');
+    expect(termsNotice(['2026-10-22'])).toBe('mudou');
   });
 
   it('diz que uma mudança importante é avisada no app', () => {

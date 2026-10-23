@@ -4,6 +4,8 @@ import {
   backToPrintedLabel,
   canRenameStore,
   cleanStoreName,
+  formatCnpj,
+  hasStandardName,
   printedNameLine,
   sameCompanyStores,
   storeCompany,
@@ -11,6 +13,8 @@ import {
   storeRenameChange,
   storeRenameHint,
   storeRevertChange,
+  standardNameLabel,
+  storeStandardChange,
 } from '../storeName';
 
 const store = (id: string, name: string, cnpj: string | null, printed_name?: string | null) => ({ id, name, cnpj, address: null, printed_name });
@@ -56,6 +60,37 @@ describe('o nome do mercado', () => {
     expect(storeRevertChange(store('s', 'Padaria', null, long))).toEqual({ name: long, ids: ['s'] });
     expect(storeRevertChange(store('s', 'Padaria', null, 'PADARIA  SAO JOSE '))).toEqual({ name: 'PADARIA  SAO JOSE ', ids: ['s'] });
     expect(storeRevertChange(store('s', 'Padaria', null, null))).toBeNull();
+  });
+});
+
+describe('o nome padrão do CNPJ', () => {
+  const withStandard = (name: string, standard: string | null | undefined) => ({ id: 's', name, standard_name: standard });
+
+  it('com o nome padrão, a tela diz que é ele e não oferece voltar a ele', () => {
+    expect(hasStandardName(withStandard('Pão de Açúcar', 'Pão de Açúcar'))).toBe(true);
+    expect(standardNameLabel(withStandard('Pão de Açúcar', 'Pão de Açúcar'))).toBeNull();
+    expect(storeStandardChange(withStandard('Pão de Açúcar', 'Pão de Açúcar'))).toBeNull();
+  });
+
+  it('com outro nome, oferece o padrão, gravado como está (o banco compara letra por letra)', () => {
+    const store = withStandard('Pão de Açúcar Miramar', 'Pão de Açúcar');
+    expect(hasStandardName(store)).toBe(false);
+    expect(standardNameLabel(store)).toBe('Usar o nome padrão: Pão de Açúcar');
+    expect(storeStandardChange(store)).toEqual({ name: 'Pão de Açúcar', ids: ['s'] });
+  });
+
+  it('sem nome padrão, ou sem a coluna, nada', () => {
+    for (const standard of [null, undefined, '']) {
+      const store = withStandard('Assaí', standard);
+      expect(hasStandardName(store)).toBe(false);
+      expect(standardNameLabel(store)).toBeNull();
+      expect(storeStandardChange(store)).toBeNull();
+    }
+  });
+
+  it('o CNPJ com pontos, barra e traço; o que não tem 14 dígitos fica como veio', () => {
+    expect(formatCnpj('47508411000156')).toBe('47.508.411/0001-56');
+    expect(formatCnpj('4750841100015')).toBe('4750841100015');
   });
 });
 

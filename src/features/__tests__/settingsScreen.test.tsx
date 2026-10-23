@@ -52,6 +52,9 @@ jest.mock('@/lib/auth', () => ({
   useHousehold: () => ({ data: { household: { id: 'h1', name: 'Casa da Ana' }, members: [mockMe], me: mockMe, households: [] } }),
 }));
 jest.mock('@/data/household', () => ({ useSignOutQuestion: () => () => 'Deseja sair desta conta neste aparelho?' }));
+// Quem modera (a is_moderator): à parte do banco de mentira, que conta as chamadas do perfil.
+const mockModerator = { value: false };
+jest.mock('@/data/storeModeration', () => ({ useIsModerator: () => ({ data: mockModerator.value }) }));
 jest.mock('@/ui/dialogs', () => ({ confirmAction: jest.fn(), notify: jest.fn() }));
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
@@ -104,6 +107,7 @@ const pressable = (label: string) =>
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockModerator.value = false;
   mockSystem.scheme = 'light';
   mockDb.read = { data: { birth_date: '1985-03-05', phone: '83999999999' }, error: null };
   mockDb.reads = [];
@@ -283,5 +287,18 @@ describe('Configurações: conta', () => {
     expect(confirmAction).toHaveBeenCalledWith('Sair da conta', 'Deseja sair desta conta neste aparelho?', 'Sair', expect.any(Function));
     await press('Apagar minha conta');
     expect(router.push).toHaveBeenCalledWith('/apagar-conta');
+  });
+});
+
+describe('Configurações: moderação', () => {
+  it('só quem modera vê "Nomes dos mercados", que abre a tela da moderação', async () => {
+    expect(await mount()).not.toContain('Moderação');
+    await act(async () => renderer?.unmount());
+
+    mockModerator.value = true;
+    const text = await mount();
+    expect(text).toContain('ModeraçãoNomes dos mercadosO nome padrão de cada mercado');
+    await act(async () => pressable('Nomes dos mercadosO nome padrão de cada mercado').props.onPress());
+    expect(router.push).toHaveBeenCalledWith('/moderacao');
   });
 });

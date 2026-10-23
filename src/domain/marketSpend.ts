@@ -18,6 +18,7 @@ import { listNameKey } from './listLinks';
 import { marketChange, type ChangePurchase, type MarketChange } from './marketChange';
 import { formatBRL, formatQuantity } from './money';
 import { hasReceiptTotal, TOTAL_TOLERANCE_CENTS } from './receiptGap';
+import { formatCnpj } from './storeName';
 import { convertQuantity, sameDimension } from './units';
 
 /** O que a conta do total precisa de um item: o valor impresso e a categoria. */
@@ -627,11 +628,6 @@ const byAmountThenName = <T extends { cents: number; name: string; key: string }
 
 /** O mercado da nota, como a lista de mercados junta: pelo id; '' para as notas sem mercado. */
 const storeKeyOf = (receipt: MarketReceipt) => receipt.storeId ?? '';
-
-const formatCnpj = (cnpj: string) => {
-  const digits = cnpj.replace(/\D/g, '');
-  return digits.length === 14 ? `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}/${digits.slice(8, 12)}-${digits.slice(12)}` : cnpj;
-};
 
 type StorePlaceInput = { key: string; name: string; address: string; cnpj: string };
 

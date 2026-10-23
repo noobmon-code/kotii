@@ -50,6 +50,7 @@ import type {
 
 import { isMissingColumn, isMissingFunction } from './missingSchema';
 import { isProductMergedAway, LISTED_PRODUCT_SOURCES, withFreshProducts } from './productMerge';
+import { refreshStoreNames } from './storeNameRefresh';
 
 // ---------------------------------------------------------------------------
 // Listas
@@ -1315,28 +1316,30 @@ export function useProducts() {
   return useQuery({ queryKey: ['products'], queryFn: fetchProducts });
 }
 
+/** As colunas dos mercados que o banco pode ainda não ter, da mais antiga para a mais nova. */
+const STORE_NEWER_COLUMNS = ['printed_name', 'standard_name'];
+
 /**
- * Os mercados da casa, com o nome impresso na nota quando a casa deu outro. O banco antes da migração
- * 20261022170000 não tem a coluna: os mercados vêm sem ela, e a tela não oferece renomear (canRenameStore).
+ * Os mercados da casa, com o nome impresso na nota quando o nome é outro e o nome padrão do CNPJ. O banco
+ * antes das migrações 20261022170000 e 20261023120000 não tem essas colunas: os mercados vêm sem a que falta, e
+ * a tela não oferece o que depende dela (renomear, canRenameStore; voltar ao nome padrão).
  */
 export async function fetchStores(): Promise<Store[]> {
-  const read = (columns: string) => supabase.from('stores').select(columns).order('name');
-  const withPrinted = await read('id, name, cnpj, address, printed_name');
-  if (withPrinted.error && isMissingColumn(withPrinted.error, 'printed_name')) {
-    return unwrap(await read('id, name, cnpj, address')) as unknown as Store[];
+  let newer = STORE_NEWER_COLUMNS;
+  for (;;) {
+    const result = await supabase
+      .from('stores')
+      .select(['id, name, cnpj, address', ...newer].join(', '))
+      .order('name');
+    const missing = result.error ? newer.find((column) => isMissingColumn(result.error, column)) : undefined;
+    if (!missing) return unwrap(result) as unknown as Store[];
+    newer = newer.filter((column) => column !== missing);
   }
-  return unwrap(withPrinted) as unknown as Store[];
 }
 
 export function useStores() {
   return useQuery({ queryKey: ['stores'], queryFn: fetchStores });
 }
-
-/**
- * As buscas que trazem o nome do mercado: os mercados, as notas (e as pendentes), os gastos (o Resumo, o Mercado
- * do mês e o consultor), as compras recentes, os preços de cada produto e a comparação de juntar produtos.
- */
-const STORE_NAME_REFRESHES = ['stores', 'receipts', 'receipt', 'spending', 'purchaseRecords', 'priceHistory', 'mergeFacts'];
 
 /**
  * Dá o nome novo aos mercados (o da nota e as lojas da mesma empresa que a pessoa marcou). O nome de antes o
@@ -1350,9 +1353,7 @@ export function useRenameStores() {
     mutationFn: async ({ ids, name }: { ids: string[]; name: string }) =>
       (unwrap(await supabase.from('stores').update({ name }).in('id', ids).select('id')) ?? []) as { id: string }[],
     meta: EXPECTS_ROWS_META,
-    onSettled: () => {
-      for (const key of STORE_NAME_REFRESHES) void queryClient.invalidateQueries({ queryKey: [key] });
-    },
+    onSettled: () => refreshStoreNames(queryClient),
   });
 }
 
