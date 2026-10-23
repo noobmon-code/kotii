@@ -106,9 +106,11 @@ import {
   type NameIndex,
   type SimilarName,
 } from '@/domain/similarNames';
+import { canRenameStore, printedNameLine } from '@/domain/storeName';
 import { PayerChips } from '@/features/finance/PayerChips';
 import { ReceiptItemEditor } from '@/features/ReceiptItemEditor';
 import { ReceiptListSection } from '@/features/ReceiptListSection';
+import { RenameStoreModal } from '@/features/RenameStoreModal';
 import { errorMessage } from '@/lib/supabase';
 import type { ReceiptItem } from '@/lib/types';
 import { Backdrop } from '@/ui/Backdrop';
@@ -187,6 +189,8 @@ export default function ReceiptScreen() {
   // Itens em que a pessoa acabou de usar um nome da casa, com o que havia antes (para "Desfazer").
   const [beforeUse, setBeforeUse] = useState<Record<string, BeforeUse>>({});
   const [picker, setPicker] = useState<Picker | null>(null);
+  // O nome do mercado da nota sendo trocado (para toda a casa).
+  const [renamingStore, setRenamingStore] = useState(false);
   const [editing, setEditing] = useState<Editing>(null);
   const [dateText, setDateText] = useState<string | null>(null);
   // A data que a nota confirmada está gravando. A tecla de enviar e a saída do campo chegam juntas (no celular, enviar
@@ -283,6 +287,9 @@ export default function ReceiptScreen() {
   const alerts = priceAlerts(alertItems, priceHistory.data ?? [], { receiptId: receipt.id, storeId: receipt.store_id, purchasedOn });
   const saving = totalSaving(alerts);
   const storeName = (storeId: string) => stores.data?.find((s) => s.id === storeId)?.name;
+  // O mercado da nota, como a lista da casa o tem: o nome impresso, quando a casa deu outro, e se dá para renomear.
+  const noteStore = receipt.store_id ? stores.data?.find((s) => s.id === receipt.store_id) : undefined;
+  const notePrinted = noteStore ? printedNameLine(noteStore) : null;
   const alertText = (alert: PriceAlert | undefined) =>
     alert ? describePriceAlert(alert, alert.kind === 'cheaper_elsewhere' ? storeName(alert.storeId) : undefined) : null;
 
@@ -792,14 +799,20 @@ export default function ReceiptScreen() {
 
       <Card style={styles.gap}>
         {/* O cabeçalho (mercado, data, total e quem pagou) se corrige na revisão e na nota confirmada. */}
-        <Pressable onPress={() => setPicker({ kind: 'store' })} style={styles.storeRow}>
-          <Icon name="store-outline" color="primary" />
-          <View style={styles.flex}>
-            <Text variant="small">Mercado</Text>
-            <Text variant="heading">{receipt.store?.name ?? 'Toque para escolher'}</Text>
-          </View>
-          <Icon name="chevron-right" color="textMuted" />
-        </Pressable>
+        <View style={styles.storeRow}>
+          <Pressable onPress={() => setPicker({ kind: 'store' })} style={[styles.storeRow, styles.flex]}>
+            <Icon name="store-outline" color="primary" />
+            <View style={styles.flex}>
+              <Text variant="small">Mercado</Text>
+              <Text variant="heading">{receipt.store?.name ?? 'Toque para escolher'}</Text>
+              {notePrinted ? <Text variant="muted">{notePrinted}</Text> : null}
+            </View>
+            <Icon name="chevron-right" color="textMuted" />
+          </Pressable>
+          {noteStore && canRenameStore(noteStore) ? (
+            <IconButton icon="pencil-outline" label="Renomear o mercado" onPress={() => setRenamingStore(true)} />
+          ) : null}
+        </View>
         <DateField
           label="Data da compra"
           value={dateText ?? formatBRDate(purchasedOn)}
@@ -996,11 +1009,15 @@ export default function ReceiptScreen() {
         }
       />
 
+      {renamingStore && noteStore ? (
+        <RenameStoreModal store={noteStore} stores={stores.data ?? []} onClose={() => setRenamingStore(false)} />
+      ) : null}
+
       <PickerModal
         visible={picker?.kind === 'store'}
         title="Mercado"
         placeholder="Buscar ou criar mercado"
-        options={(stores.data ?? []).map((s) => ({ id: s.id, title: s.name, subtitle: s.address ?? undefined }))}
+        options={(stores.data ?? []).map((s) => ({ id: s.id, title: s.name, subtitle: s.address ?? undefined, keywords: s.printed_name ?? undefined }))}
         onClose={() => setPicker(null)}
         onSelect={(storeId) => chooseStore({ id: storeId })}
         extraActions={(query) =>

@@ -157,13 +157,21 @@ describe('termos de uso', () => {
     expect(stored).toContain('sem nomes, sem e-mails e sem o que cada casa registrou');
   });
 
-  it('o aceite é o da mudança do perfil; o painel do app mudou só o texto, e o aviso não volta', () => {
-    // O perfil (22/10) mudou o que é guardado: o aviso voltou para todo mundo. O painel (23/10) só conta o que
-    // o app já guardava, em totais: muda a versão do texto, não a do aceite.
-    expect(TERMS_ACCEPT_VERSION).toBe('2026-10-22');
+  it('o nome padrão dos mercados: só o CNPJ vai à BrasilAPI, nada de pessoa, e a moderação não sabe de qual casa', () => {
+    const names = section('Nomes dos mercados');
+    expect(names).toContain('mandando só o CNPJ do mercado');
+    expect(names).toContain('BrasilAPI');
+    expect(names).toContain('Quando a empresa tem nome fantasia, ele vira o nome padrão');
+    expect(names).toContain('quem mantém o Kotii escolhe o nome');
+    expect(names).toContain('Do cadastro de MEI, de empresário individual e dos outros cadastros de pessoa, o app não guarda nada');
+    expect(names).toContain('os nomes que as casas deram a ele, com quantas casas deram cada nome. Não vê quais casas são.');
+    expect(names).toContain('O nome que a sua casa der a um mercado vale para ela acima do nome padrão');
+  });
+
+  it('é uma mudança no que é compartilhado: o aviso volta para todo mundo (a versão do aceite é a do texto)', () => {
     expect(TERMS_VERSION).toBe('2026-10-23');
-    expect(termsNotice(['2026-10-22'])).toBeNull();
-    expect(termsNotice(['2026-10-20'])).toBe('mudou');
+    expect(TERMS_ACCEPT_VERSION).toBe(TERMS_VERSION);
+    expect(termsNotice(['2026-10-22'])).toBe('mudou');
   });
 
   it('diz que uma mudança importante é avisada no app', () => {

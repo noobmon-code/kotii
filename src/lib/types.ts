@@ -23,9 +23,21 @@ export interface Member {
 
 export interface Store {
   id: string;
+  /** O nome que a casa vê: o impresso na nota ou o que ela deu ao mercado. */
   name: string;
   cnpj: string | null;
   address: string | null;
+  /**
+   * O nome impresso na nota, só quando a casa deu outro (null quando é o próprio `name`). Ausente quando a
+   * leitura não o trouxe: o banco antes da migração 20261022170000, ou a lista guardada no aparelho de antes.
+   */
+  printed_name?: string | null;
+  /**
+   * O nome padrão do CNPJ, o mesmo nas casas que não deram outro: o nome fantasia da Receita ou o escolhido
+   * pela moderação (null: nenhum). Ausente quando a leitura não o trouxe (o banco antes da migração
+   * 20261023120000, ou a lista guardada no aparelho de antes).
+   */
+  standard_name?: string | null;
 }
 
 export interface Product {

@@ -13,6 +13,7 @@ import {
   imagePathsError,
   insertItems,
   instructions,
+  isMissingColumn,
   itemStoreCodes,
   lineTotalFromPrinted,
   MAX_GENERIC_NAME,
@@ -22,6 +23,7 @@ import {
   promptCatalog,
   sameStoreName,
   storeCodeMatches,
+  storeWithName,
   SYSTEM,
   TOO_MANY_PHOTOS,
   withStoreCodes,
@@ -434,6 +436,29 @@ Deno.test('sameStoreName: mesmo nome sem caixa nem espaços; curingas são texto
   assertEquals(sameStoreName('*', 'Mercado Bom'), false);
   assertEquals(sameStoreName('%', 'Mercado Bom'), false);
   assertEquals(sameStoreName('M_rcado', 'Mercado'), false);
+});
+
+Deno.test('storeWithName: a loja renomeada pela casa é achada também pelo nome impresso na nota', () => {
+  const stores = [
+    { id: 'a', name: 'Mercadinho do Zé', printed_name: 'JOSE DA SILVA MERCEARIA' },
+    { id: 'b', name: 'Feira Livre', printed_name: null },
+    { id: 'c', name: 'Sacolão' },
+  ];
+  assertEquals(storeWithName(stores, ' jose da silva mercearia ')?.id, 'a');
+  assertEquals(storeWithName(stores, 'Mercadinho do Zé')?.id, 'a');
+  assertEquals(storeWithName(stores, 'feira livre')?.id, 'b');
+  // O banco antes da coluna: só o nome.
+  assertEquals(storeWithName(stores, 'SACOLÃO')?.id, 'c');
+  assertEquals(storeWithName(stores, 'Outro'), undefined);
+});
+
+Deno.test('isMissingColumn: só a coluna que falta, pelo nome inteiro', () => {
+  assertEquals(isMissingColumn({ code: '42703', message: 'column stores.printed_name does not exist' }, 'printed_name'), true);
+  assertEquals(isMissingColumn({ code: 'PGRST204', message: "Could not find the 'printed_name' column" }, 'printed_name'), true);
+  assertEquals(isMissingColumn({ code: '42703', message: 'column stores.printed_name_x does not exist' }, 'printed_name'), false);
+  assertEquals(isMissingColumn({ code: '42703', message: 'column stores.other does not exist' }, 'printed_name'), false);
+  assertEquals(isMissingColumn({ code: '23505', message: 'printed_name' }, 'printed_name'), false);
+  assertEquals(isMissingColumn(null, 'printed_name'), false);
 });
 
 Deno.test('item genérico: o schema aceita o texto e null; o modelo que o esquece ou manda outra coisa não derruba a nota', () => {

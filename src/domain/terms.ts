@@ -13,7 +13,7 @@ export const TERMS_VERSION = '2026-10-23';
  * entre casas ou mandado para a IA ou outros serviços, quem responde pelos dados, quem pode ter conta): aí o
  * aviso da tela Hoje volta para todo mundo. Corrigir uma palavra muda só a TERMS_VERSION.
  */
-export const TERMS_ACCEPT_VERSION = '2026-10-22';
+export const TERMS_ACCEPT_VERSION = '2026-10-23';
 
 /** O aviso dos termos: para quem nunca aceitou nenhuma versão, ou para quem aceitou uma anterior. */
 export type TermsNotice = 'primeira' | 'mudou';
@@ -116,6 +116,15 @@ export const TERMS_SECTIONS: TermsSection[] = [
       'Ficam de fora as notas digitadas à mão, os remédios (e a nota inteira que tenha remédio), as compras em farmácia, os suplementos, os primeiros socorros, os itens de higiene pessoal e o que o app não reconheceu. Também fica na casa o que você corrige na revisão: a linha redigitada, o preço ou a unidade corrigidos e a linha acrescentada; e a nota lida pela foto em que você troca o mercado ou a data não entra.',
       'Os preços de outras casas não são em tempo real: cada um aparece com o dia em que foi visto, e só a partir do dia seguinte ao da confirmação da nota. Eles vêm das notas de outras pessoas e podem não valer mais.',
       'O compartilhamento faz parte do app e não tem como desligar; a nota digitada à mão não entra na base. Excluir uma nota não retira os preços que ela já deu, porque nada liga uma coisa à outra.',
+    ],
+  },
+  {
+    title: 'Nomes dos mercados',
+    paragraphs: [
+      'A nota traz o mercado com a razão social do CNPJ, que nem sempre é o nome que a gente conhece. Por isso, cada mercado com CNPJ ganha um nome padrão, o mesmo em todas as casas do Kotii que não deram outro nome a ele. O nome que a sua casa der a um mercado vale para ela acima do nome padrão.',
+      'Para achar o nome padrão, o app consulta o cadastro público da Receita Federal pela BrasilAPI, mandando só o CNPJ do mercado. Quando a empresa tem nome fantasia, ele vira o nome padrão. Quando não tem, quem mantém o Kotii escolhe o nome, ou fica com o da nota. Do cadastro de MEI, de empresário individual e dos outros cadastros de pessoa, o app não guarda nada, porque eles trazem o nome da pessoa.',
+      'Para escolher, quem mantém o Kotii vê de cada mercado o CNPJ, o nome e o endereço impressos nas notas, o que a Receita diz da empresa, em quantas casas ele aparece e os nomes que as casas deram a ele, com quantas casas deram cada nome. Não vê quais casas são.',
+      'Os preços de outras casas aparecem com o nome padrão do mercado, quando ele tem um.',
     ],
   },
   {

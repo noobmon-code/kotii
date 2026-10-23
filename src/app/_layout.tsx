@@ -170,6 +170,7 @@ function AppNavigator() {
           <Stack.Screen name="consultor/lancamentos" options={{ title: 'Lançamentos do banco' }} />
           <Stack.Screen name="consultor/conversa" options={{ headerShown: false, presentation: 'modal' }} />
           <Stack.Screen name="configuracoes" options={{ title: 'Configurações' }} />
+          <Stack.Screen name="moderacao" options={{ title: 'Nomes dos mercados' }} />
         </Stack.Protected>
         {/* Sem depender de casa: apagar a conta (de Configurações, aba Família, e da tela de boas-vindas, sem casa
             nenhuma) e o Painel do app (de Configurações ou por /painel; só quem está em app_admins vê os números). */}

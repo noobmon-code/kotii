@@ -50,6 +50,7 @@ import type {
 
 import { isMissingColumn, isMissingFunction } from './missingSchema';
 import { isProductMergedAway, LISTED_PRODUCT_SOURCES, withFreshProducts } from './productMerge';
+import { refreshStoreNames } from './storeNameRefresh';
 
 // ---------------------------------------------------------------------------
 // Listas
@@ -1315,11 +1316,62 @@ export function useProducts() {
   return useQuery({ queryKey: ['products'], queryFn: fetchProducts });
 }
 
+/** As colunas dos mercados que o banco pode ainda não ter, da mais antiga para a mais nova. */
+const STORE_NEWER_COLUMNS = ['printed_name', 'standard_name'];
+
+/**
+ * Os mercados da casa, com o nome impresso na nota quando o nome é outro e o nome padrão do CNPJ. O banco
+ * antes das migrações 20261022170000 e 20261023120000 não tem essas colunas: os mercados vêm sem a que falta, e
+ * a tela não oferece o que depende dela (renomear, canRenameStore; voltar ao nome padrão).
+ */
+export async function fetchStores(): Promise<Store[]> {
+  let newer = STORE_NEWER_COLUMNS;
+  for (;;) {
+    const result = await supabase
+      .from('stores')
+      .select(['id, name, cnpj, address', ...newer].join(', '))
+      .order('name');
+    const missing = result.error ? newer.find((column) => isMissingColumn(result.error, column)) : undefined;
+    if (!missing) return unwrap(result) as unknown as Store[];
+    newer = newer.filter((column) => column !== missing);
+  }
+}
+
 export function useStores() {
-  return useQuery({
-    queryKey: ['stores'],
-    queryFn: async () =>
-      unwrap(await supabase.from('stores').select('id, name, cnpj, address').order('name')) as Store[],
+  return useQuery({ queryKey: ['stores'], queryFn: fetchStores });
+}
+
+/**
+ * Dá o nome novo aos mercados (o da nota e as lojas da mesma empresa que a pessoa marcou). O nome de antes o
+ * banco guarda sozinho, e voltar a ele é gravar esse nome. Devolve as linhas gravadas: nenhuma é o mercado que
+ * a casa aberta não tem mais (a RLS não dá erro, só não acha), e aí a casa é conferida de novo
+ * (EXPECTS_ROWS_META) e a tela avisa.
+ */
+export function useRenameStores() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ ids, name }: { ids: string[]; name: string }) =>
+      (unwrap(await supabase.from('stores').update({ name }).in('id', ids).select('id')) ?? []) as { id: string }[],
+    meta: EXPECTS_ROWS_META,
+    onSettled: () => refreshStoreNames(queryClient),
+  });
+}
+
+/**
+ * "Usar o nome padrão": o banco grava o nome padrão de agora (follow_store_standard), não o que a lista guardada
+ * tem, que pode ser de antes de a moderação trocá-lo. Devolve os mercados que mudaram: nenhum quando ele não tem
+ * mais nome padrão (ou não é da casa aberta), e aí a casa é conferida de novo e a tela avisa.
+ */
+export function useFollowStoreStandard() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (storeId: string) => {
+      const { data, error } = await supabase.rpc('follow_store_standard', { p_store_id: storeId });
+      if (error) throw error;
+      return (data ?? []) as string[];
+    },
+    meta: EXPECTS_ROWS_META,
+    onSettled: () => refreshStoreNames(queryClient),
   });
 }
 
