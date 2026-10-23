@@ -28,3 +28,18 @@ Deno.test('nfceReadDay: o dia como a nota mostra', () => {
   assertEquals(nfceReadDay(null), null);
   assertEquals(nfceReadDay('09/10/2026'), null);
 });
+
+Deno.test('nfceReadLines: o código de barras que quem chama tirou do código da linha vai junto; sem ele, o campo não vai', () => {
+  assertEquals(
+    nfceReadLines([
+      { description: 'LEITE ITALAC 1L', quantity: 1, unit: 'UN', unitPrice: 4.59, totalPrice: 4.59, gtin: '07891000100103' },
+      { description: 'BANANA PRATA', quantity: 1, unit: 'KG', unitPrice: 6.99, totalPrice: 6.99, gtin: null },
+      { description: 'PAO FRANCES', quantity: 1, unit: 'KG', unitPrice: 17.9, totalPrice: 17.9 },
+    ]),
+    [
+      { description: 'LEITE ITALAC 1L', unit: 'un', unit_price: 4.59, gtin: '07891000100103' },
+      { description: 'BANANA PRATA', unit: 'kg', unit_price: 6.99 },
+      { description: 'PAO FRANCES', unit: 'kg', unit_price: 17.9 },
+    ],
+  );
+});

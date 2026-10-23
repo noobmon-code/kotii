@@ -643,7 +643,7 @@ Deno.test('código: o rótulo que a IA copiou da página da Sefaz sai antes da c
   assertEquals(codes('Código:', ':', null), [null, null, null]);
 });
 
-Deno.test('código: limpo pela chave do banco na linha da nota, e fora da leitura do servidor', () => {
+Deno.test('código: limpo pela chave do banco na linha da nota; na leitura do servidor, só o código de barras', () => {
   const r = cleanReceipt(
     {
       ...base,
@@ -654,15 +654,26 @@ Deno.test('código: limpo pela chave do banco na linha da nota, e fora da leitur
         line({ raw_description: 'SACOLA', code: null }),
         line({ raw_description: 'AVULSO', code: ' / ' }),
         line({ raw_description: 'COMPRIDO', code: '9'.repeat(61) }),
+        // O código da balança (faixa 2) é do mercado: fica na linha, fora da leitura.
+        line({ raw_description: 'PATINHO KG', code: 'Código: 2000000000008' }),
       ],
     },
     new Set(),
     new Map(),
   );
-  assertEquals(r.items.map((i) => i.store_code), ['7891000100103', 'MC12', '250474', null, null, null]);
-  assertEquals(r.readLines.every((l) => Object.keys(l).sort().join() === 'description,unit,unit_price'), true);
-  assertEquals(itemStoreCodes(r.items), ['7891000100103', 'MC12', '250474']);
-  assertEquals(itemStoreCodes([...r.items, ...r.items]), ['7891000100103', 'MC12', '250474']);
+  assertEquals(r.items.map((i) => i.store_code), ['7891000100103', 'MC12', '250474', null, null, null, '2000000000008']);
+  assertEquals(r.readLines.map((l) => [l.description, l.gtin ?? '-']), [
+    ['LEITE ITALAC 1L', '07891000100103'],
+    ['QUEIJO MUSS', '-'],
+    ['BANANA PRATA', '-'],
+    ['SACOLA', '-'],
+    ['AVULSO', '-'],
+    ['COMPRIDO', '-'],
+    ['PATINHO KG', '-'],
+  ]);
+  assertEquals(r.readLines.filter((l) => 'gtin' in l).length, 1);
+  assertEquals(itemStoreCodes(r.items), ['7891000100103', 'MC12', '250474', '2000000000008']);
+  assertEquals(itemStoreCodes([...r.items, ...r.items]), ['7891000100103', 'MC12', '250474', '2000000000008']);
 });
 
 Deno.test('código pela OpenRouter e pela Anthropic: campo obrigatório que aceita null, sem default', async () => {

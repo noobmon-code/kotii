@@ -59,3 +59,23 @@ Deno.test('nfceRead: CNPJ da página que não passa no verificador dá lugar ao 
   // Sem a chave conferida, nenhum: um CNPJ errado na base comum seria outro mercado.
   assertEquals(nfceRead(ok(null, [QR, PAGE_URL], PAGE_URL, wrong), QR, 'h1')?.store_cnpj, null);
 });
+
+Deno.test('nfceRead: a linha leva o código de barras do produto; o código interno do mercado e o da balança não vão', () => {
+  const page: NfcePage = {
+    ...PAGE,
+    items: [
+      { description: 'LEITE ITALAC 1L', code: '7891000100103', quantity: 1, unit: 'UN', unitPrice: 4.59, totalPrice: 4.59 },
+      { description: 'BANANA PRATA', code: '250474', quantity: 1, unit: 'KG', unitPrice: 6.99, totalPrice: 6.99 },
+      { description: 'PATINHO KG', code: '2000000000008', quantity: 1, unit: 'KG', unitPrice: 49.9, totalPrice: 49.9 },
+      { description: 'LEITE COM DIGITO ERRADO', code: '7891000100104', quantity: 1, unit: 'UN', unitPrice: 4.59, totalPrice: 4.59 },
+      { description: 'SACOLA', code: null, quantity: 1, unit: 'UN', unitPrice: 0.1, totalPrice: 0.1 },
+    ],
+  };
+  assertEquals(nfceRead(ok(KEY, [QR, PAGE_URL], PAGE_URL, page), QR, 'h1')?.lines, [
+    { description: 'LEITE ITALAC 1L', unit: 'un', unit_price: 4.59, gtin: '07891000100103' },
+    { description: 'BANANA PRATA', unit: 'kg', unit_price: 6.99 },
+    { description: 'PATINHO KG', unit: 'kg', unit_price: 49.9 },
+    { description: 'LEITE COM DIGITO ERRADO', unit: 'un', unit_price: 4.59 },
+    { description: 'SACOLA', unit: 'un', unit_price: 0.1 },
+  ]);
+});

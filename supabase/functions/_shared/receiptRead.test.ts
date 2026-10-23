@@ -38,6 +38,33 @@ Deno.test('receiptRead: só dígitos válidos, nome aparado, dia AAAA-MM-DD e li
   });
 });
 
+Deno.test('receiptRead: o código de barras só vai como os 14 dígitos da regra; outro valor deixa a linha sem ele', () => {
+  const line = (gtin: unknown) => ({ description: 'LEITE ITALAC 1L', unit: 'un', unit_price: 4.59, gtin }) as { description: string; unit: string; unit_price: number; gtin?: string };
+  const read = receiptRead({
+    householdId: 'h1',
+    source: 'qrcode',
+    accessKey: KEY,
+    cnpj: '11222333000181',
+    storeName: 'ATACADAO',
+    purchasedOn: '2026-10-09',
+    lines: [
+      line('07891000100103'),
+      // Sem os zeros à frente, o verificador errado, a faixa da balança, o código interno, número, nada.
+      line('7891000100103'),
+      line('07891000100104'),
+      line('02000000000008'),
+      line('250474'),
+      line(7891000100103),
+      line(null),
+      { description: 'SEM CODIGO', unit: 'un', unit_price: 1 },
+    ],
+  });
+  assertEquals(read.lines.map((l) => l.gtin ?? '-'), ['07891000100103', '-', '-', '-', '-', '-', '-', '-']);
+  // A linha sem código de barras vale do mesmo jeito, e sem o campo.
+  assertEquals(read.lines.length, 8);
+  assertEquals(read.lines.filter((l) => 'gtin' in l).length, 1);
+});
+
 Deno.test('receiptRead: chave, CNPJ, nome e dia que não servem ficam vazios', () => {
   const read = receiptRead({
     householdId: 'h1',

@@ -4536,11 +4536,12 @@ do $$
 begin
   -- Nada que aponte de volta: uma coluna nova (casa, pessoa, nota, id, hora) derruba este teste. A única data
   -- além do dia da compra é o dia em que a linha passa a ser lida: um dia sem hora, igual para tudo o que foi
-  -- gravado no mesmo dia por qualquer casa, que a leitura nunca devolve.
+  -- gravado no mesmo dia por qualquer casa, que a leitura nunca devolve. E o código de barras do produto, o mesmo
+  -- em toda loja (20261024120000_shared_prices_gtin.sql).
   assert (select array_agg(column_name || ' ' || data_type order by ordinal_position) from information_schema.columns
             where table_schema = 'public' and table_name = 'shared_prices')
-    = array['store_cnpj text', 'store_uf text', 'store_name text', 'item_key text', 'unit text', 'seen_on date', 'unit_price numeric', 'visible_on date'],
-    'shared_prices has exactly store, state, name, item key, unit, day, price and the day it becomes readable';
+    = array['store_cnpj text', 'store_uf text', 'store_name text', 'item_key text', 'unit text', 'seen_on date', 'unit_price numeric', 'visible_on date', 'gtin text'],
+    'shared_prices has exactly store, state, name, item key, unit, day, price, the day it becomes readable and the barcode';
   assert (select bool_and(is_nullable = 'NO') from information_schema.columns
             where table_schema = 'public' and table_name = 'shared_prices' and column_name in ('seen_on', 'visible_on')),
     'both days are always there';
@@ -11872,6 +11873,305 @@ do $$
 begin
   assert not exists (select 1 from public.moderators), 'the moderator goes with the account';
 end $$;
+
+-- ---------------------------------------------------------------------------
+\echo '• preços compartilhados: o código de barras da leitura do servidor acha o mesmo produto com outra descrição'
+-- Gil confirma notas do QR code num mercado; a leitura do servidor traz o código de barras de algumas linhas.
+-- Bia tem o leite com outra descrição e o código ligado; Caco tem um leite sem o código, e depois o liga pela câmera.
+\set user_g1 '00000000-0000-0000-0000-000000000301'
+\set user_g2 '00000000-0000-0000-0000-000000000302'
+\set user_g3 '00000000-0000-0000-0000-000000000303'
+reset role;
+insert into auth.users (id) values (:'user_g1'), (:'user_g2'), (:'user_g3');
+-- A leitura do servidor com estas linhas (como as funções a gravam), para a nota já gravada.
+create function pg_temp.read_with_lines(p_receipt uuid, p_lines jsonb) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_id uuid;
+begin
+  insert into public.receipt_reads (household_id, source, access_key, store_cnpj, store_name, purchased_on, lines)
+  select r.household_id, 'qrcode', r.access_key, s.cnpj, s.name, (r.purchased_at at time zone 'America/Sao_Paulo')::date, p_lines
+    from public.receipts r
+    join public.stores s on s.id = r.store_id and s.household_id = r.household_id
+    where r.id = p_receipt
+  returning id into v_id;
+  update public.receipts set read_id = v_id where id = p_receipt;
+end $$;
+-- Gil compra o leite de novo no mesmo mercado, no mesmo dia (ontem), e a leitura traz este código (ou nenhum).
+create function pg_temp.gil_buys_milk(p_price numeric, p_n int, p_gtin text) returns void
+language plpgsql as $$
+declare
+  yesterday constant timestamptz := (((now() at time zone 'America/Sao_Paulo')::date - 1) + time '18:00') at time zone 'America/Sao_Paulo';
+  r uuid;
+begin
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (current_setting('test.g_store')::uuid, yesterday, '352610' || '62000000000101' || repeat('0', 22) || lpad(p_n::text, 2, '0'), 'qrcode')
+    returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'LT INTEG PIRACANJUBA 1L', 'laticinios', 'un', p_price, p_price);
+  perform pg_temp.read_with_lines(r, jsonb_build_array(
+    jsonb_strip_nulls(jsonb_build_object('description', 'LT INTEG PIRACANJUBA 1L', 'unit', 'un', 'unit_price', p_price, 'gtin', p_gtin))));
+  perform public.confirm_receipt(r, '[]');
+end $$;
+do $$
+begin
+  assert (select is_nullable = 'YES' and column_default is null from information_schema.columns
+            where table_schema = 'public' and table_name = 'shared_prices' and column_name = 'gtin'),
+    'the barcode may be missing, and nothing fills it by itself';
+  assert (select array_agg(a.attname::text order by k.ord) from pg_index i
+            cross join lateral unnest(i.indkey) with ordinality as k (attnum, ord)
+            join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum
+            where i.indrelid = 'public.shared_prices'::regclass and i.indisprimary)
+    = array['store_cnpj', 'item_key', 'unit', 'seen_on'],
+    'the primary key does not change: the barcode is a column of the row, not another row';
+  assert (select pg_get_indexdef(i.indexrelid) from pg_index i
+            where i.indexrelid = 'public.shared_prices_gtin_state_idx'::regclass)
+    like '%(gtin, store_uf, seen_on DESC) WHERE (gtin IS NOT NULL)',
+    'the reading by barcode has its own index, by code and state, only on rows with a code';
+
+  -- O banco só aceita os 14 dígitos da gtin_key, venha de onde vier.
+  begin
+    insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on, gtin)
+      values ('62000000000909', '35', 'X', 'X', 'un', current_date - 1, 1, current_date, '07891000100104');
+    raise exception 'FAIL: a barcode with a wrong check digit';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on, gtin)
+      values ('62000000000909', '35', 'X', 'X', 'un', current_date - 1, 1, current_date, '7891000100103');
+    raise exception 'FAIL: a barcode without the leading zero';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on, gtin)
+      values ('62000000000909', '35', 'X', 'X', 'un', current_date - 1, 1, current_date, '02000000000008');
+    raise exception 'FAIL: a scale code (restricted range)';
+  exception when check_violation then null;
+  end;
+end $$;
+
+-- Gil confirma uma nota do QR code. Na casa, as linhas têm o código como ela o guarda (que ela pode mexer); a
+-- leitura do servidor tem o seu.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_g1', false) \gset
+select public.create_household('Casa do Gil', 'Gil') \gset
+do $$
+declare
+  x1 constant text := '62000000000101';
+  yesterday constant timestamptz := (((now() at time zone 'America/Sao_Paulo')::date - 1) + time '10:00') at time zone 'America/Sao_Paulo';
+  s uuid;
+  r uuid;
+begin
+  insert into public.stores (name, cnpj) values ('SUPERMERCADO GTIN', x1) returning id into s;
+  perform set_config('test.g_store', s::text, false);
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s, yesterday, '352610' || x1 || repeat('0', 22) || '11', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, position, raw_description, suggested_category, unit, unit_price, total_price, store_code) values
+    -- A casa guarda outro código de barras: vale o da leitura.
+    (r, 0, 'LT INTEG PIRACANJUBA 1L', 'laticinios', 'un', 5.49, 5.49, '17891000100100'),
+    (r, 1, 'CAFE DUPLO 500G', 'cafe_cha', 'un', 15.90, 15.90, null),
+    (r, 2, 'ACUCAR UNIAO 1KG', 'graos', 'un', 4.99, 4.99, null),
+    -- A leitura não trouxe código; a casa tem um. Nada vai.
+    (r, 3, 'ARROZ SEM CODIGO 5KG', 'graos', 'un', 22.90, 22.90, '07891000100103'),
+    (r, 4, 'FEIJAO METADE 1KG', 'graos', 'un', 8.00, 8.00, null),
+    (r, 5, 'OLEO OBJETO 900ML', 'oleos', 'un', 7.00, 7.00, null),
+    (r, 6, 'MACARRAO NUMERO 500G', 'graos', 'un', 3.50, 3.50, null);
+  perform pg_temp.read_with_lines(r, $j$[
+    {"description": "LT INTEG PIRACANJUBA 1L", "unit": "un", "unit_price": 5.49, "gtin": "07891000100103"},
+    {"description": "CAFE DUPLO 500G", "unit": "un", "unit_price": 15.90, "gtin": "00036000291452"},
+    {"description": "CAFE DUPLO 500G", "unit": "un", "unit_price": 15.90, "gtin": "00000096385074"},
+    {"description": "ACUCAR UNIAO 1KG", "unit": "un", "unit_price": 4.99, "gtin": "07891000100104"},
+    {"description": "ARROZ SEM CODIGO 5KG", "unit": "un", "unit_price": 22.90},
+    {"description": "FEIJAO METADE 1KG", "unit": "un", "unit_price": 8.00, "gtin": "00000096385074"},
+    {"description": "FEIJAO METADE 1KG", "unit": "un", "unit_price": 8.00},
+    {"description": "OLEO OBJETO 900ML", "unit": "un", "unit_price": 7.00, "gtin": {"x": 1}},
+    {"description": "MACARRAO NUMERO 500G", "unit": "un", "unit_price": 3.50, "gtin": 7891000100103}
+  ]$j$::jsonb);
+  perform public.confirm_receipt(r, '[]');
+  assert (select status from public.receipts where id = r) = 'confirmed', 'an odd barcode in the read never stops the confirmation';
+end $$;
+reset role;
+do $$
+begin
+  assert (select array_agg(item_key || ' ' || coalesce(gtin, '-') order by item_key) from public.shared_prices where store_cnpj = '62000000000101')
+    = array[
+      'ACUCAR UNIAO 1KG -',
+      'ARROZ SEM CODIGO 5KG -',
+      'CAFE DUPLO 500G -',
+      'FEIJAO METADE 1KG 00000096385074',
+      'LT INTEG PIRACANJUBA 1L 07891000100103',
+      'MACARRAO NUMERO 500G -',
+      'OLEO OBJETO 900ML -'
+    ],
+    'the barcode comes from the server read (never from the household line); two different ones give none, a line read '
+    'without one does not count, and one that is not the 14 digits of gtin_key stays out while the line still goes';
+end $$;
+
+-- Mais notas do Gil no mesmo mercado e dia: a linha comum ainda não pode ser lida.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_g1', false) \gset
+select pg_temp.gil_buys_milk(5.59, 12, null) \gset
+reset role;
+do $$
+begin
+  assert (select unit_price || ' ' || gtin from public.shared_prices where store_cnpj = '62000000000101' and item_key = 'LT INTEG PIRACANJUBA 1L')
+    = '5.5900 07891000100103', 'a newer write without a barcode takes the price and keeps the barcode the row had';
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_g1', false) \gset
+select pg_temp.gil_buys_milk(5.69, 13, '17891000100100') \gset
+reset role;
+do $$
+begin
+  assert (select unit_price || ' ' || gtin from public.shared_prices where store_cnpj = '62000000000101' and item_key = 'LT INTEG PIRACANJUBA 1L')
+    = '5.6900 17891000100100', 'while nobody can read the row, the last write is what counts, barcode too';
+  -- A linha passa a poder ser lida.
+  update public.shared_prices set visible_on = (now() at time zone 'America/Sao_Paulo')::date
+    where store_cnpj = '62000000000101' and item_key = 'LT INTEG PIRACANJUBA 1L';
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_g1', false) \gset
+select pg_temp.gil_buys_milk(5.79, 14, '07891000100103') \gset
+reset role;
+do $$
+begin
+  assert (select unit_price || ' ' || gtin from public.shared_prices where store_cnpj = '62000000000101' and item_key = 'LT INTEG PIRACANJUBA 1L')
+    = '5.6900 17891000100100', 'once readable, the row does not change: neither the price nor the barcode';
+  delete from public.shared_prices where store_cnpj = '62000000000101';
+end $$;
+
+-- Bia compra num mercado de São Paulo (Y1); o leite dela tem outra descrição e o código ligado.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_g2', false) \gset
+select public.create_household('Casa da Bia', 'Bia') \gset
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  y1 constant text := '62000000000202';
+  s uuid;
+  r uuid;
+  milk uuid;
+begin
+  insert into public.stores (name, cnpj) values ('MERCADO DA BIA', y1) returning id into s;
+  perform set_config('test.g_store_b', s::text, false);
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s, (today - 20 + time '09:00') at time zone 'America/Sao_Paulo', '352610' || y1 || repeat('0', 23) || '1', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'PAO FRANCES DA BIA', 'padaria', 'kg', 17.90, 17.90);
+  perform pg_temp.confirm_as_read(r, '[]');
+  insert into public.products (name, category) values ('Leite Piracanjuba', 'laticinios') returning id into milk;
+  insert into public.product_aliases (alias, product_id) values ('LEITE PIRACANJUBA INTEGRAL', milk);
+  insert into public.product_barcodes (gtin, product_id) values ('07891000100103', milk);
+  perform set_config('test.g_milk_b', milk::text, false);
+end $$;
+
+-- Caco compra em outro mercado de São Paulo; tem um leite, com outra descrição e sem o código.
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_g3', false) \gset
+select public.create_household('Casa do Caco', 'Caco') \gset
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  c1 constant text := '62000000000606';
+  s uuid;
+  r uuid;
+  milk uuid;
+begin
+  insert into public.stores (name, cnpj) values ('MERCADO DO CACO', c1) returning id into s;
+  insert into public.receipts (store_id, purchased_at, access_key, source)
+    values (s, (today - 20 + time '09:00') at time zone 'America/Sao_Paulo', '352610' || c1 || repeat('0', 23) || '1', 'qrcode') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, suggested_category, unit, unit_price, total_price)
+    values (r, 'PAO FRANCES DO CACO', 'padaria', 'kg', 18.90, 18.90);
+  perform pg_temp.confirm_as_read(r, '[]');
+  insert into public.products (name, category) values ('Leite', 'laticinios') returning id into milk;
+  insert into public.product_aliases (alias, product_id) values ('LEITE QUALQUER MARCA', milk);
+  perform set_config('test.g_milk_c', milk::text, false);
+end $$;
+
+-- A base comum: o mesmo leite (o mesmo código) com outras descrições, em vários mercados.
+reset role;
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  g constant text := '07891000100103';
+begin
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on, gtin) values
+    -- No mercado da Bia, lida por foto (sem estado): só o código leva a ela.
+    ('62000000000202', null, 'MERCADO DA BIA', 'LT INTEG PIRACANJUBA 1L', 'un', today - 2, 5.49, today - 1, g),
+    -- Em Z1, pelo código (5,29) e, no mesmo dia, pela descrição da Bia sem código (5,19): sai uma, a mais barata.
+    ('62000000000303', '35', 'OUTRO MERCADO SP', 'LEITE PIRAC INT 1L', 'un', today - 3, 5.29, today - 2, g),
+    ('62000000000303', '35', 'OUTRO MERCADO SP', 'LEITE PIRACANJUBA INTEGRAL', 'un', today - 3, 5.19, today - 2, null),
+    -- Em Z2, a mesma linha pelos dois caminhos (a descrição da Bia E o código): uma vez só.
+    ('62000000000404', '35', 'MERCADO DOS DOIS', 'LEITE PIRACANJUBA INTEGRAL', 'un', today - 2, 5.39, today - 1, g),
+    -- No Rio: não é do estado de ninguém aqui.
+    ('62000000000505', '33', 'MERCADO RJ', 'LEITE PIRAC INT 1L', 'un', today - 2, 4.00, today - 1, g),
+    -- Gravada hoje (ninguém lê ainda) e velha demais.
+    ('62000000000707', '35', 'MERCADO DE HOJE', 'LEITE PIRAC INT 1L', 'un', today - 1, 4.10, today + 1, g),
+    ('62000000000808', '35', 'MERCADO ANTIGO', 'LEITE PIRAC INT 1L', 'un', today - 91, 4.20, today - 90, g);
+end $$;
+
+set role authenticated;
+select set_config('request.jwt.claim.sub', :'user_g2', false) \gset
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+  milk constant uuid := current_setting('test.g_milk_b')::uuid;
+  r uuid;
+  i uuid;
+begin
+  assert (select array_agg(store_cnpj || ' ' || unit_price || ' ' || seen_on || ' ' || mine order by mine desc, store_cnpj) from public.shared_latest_prices())
+    = array[
+      '62000000000202 5.4900 ' || (today - 2) || ' true',
+      '62000000000303 5.1900 ' || (today - 3) || ' false',
+      '62000000000404 5.3900 ' || (today - 2) || ' false'
+    ],
+    'by the barcode: her product with another description, in her store and in another store of her state, once per store';
+  assert (select bool_and(product_id = milk) from public.shared_latest_prices()), 'always her product';
+
+  -- O preço próprio da casa continua escondendo o compartilhado no mercado dela, também o achado pelo código.
+  insert into public.receipts (store_id, purchased_at, source)
+    values (current_setting('test.g_store_b')::uuid, (today - 1 + time '10:00') at time zone 'America/Sao_Paulo', 'manual') returning id into r;
+  insert into public.receipt_items (receipt_id, raw_description, unit, unit_price, total_price)
+    values (r, 'LEITE PIRACANJUBA INTEGRAL', 'un', 5.60, 5.60) returning id into i;
+  perform public.confirm_receipt(r, jsonb_build_array(jsonb_build_object('id', i, 'product_id', milk)));
+  assert (select count(*) from public.shared_latest_prices() where mine) = 0, 'her own newer price hides the shared one';
+  assert (select count(*) from public.shared_latest_prices() where not mine) = 2, 'and the other stores are untouched';
+end $$;
+
+-- Caco não tem o código ligado: o código da Bia (de outra casa) não serve para ele.
+select set_config('request.jwt.claim.sub', :'user_g3', false) \gset
+do $$
+declare
+  today constant date := (now() at time zone 'America/Sao_Paulo')::date;
+begin
+  assert (select count(*) from public.shared_latest_prices()) = 0, 'a household without the barcode linked sees nothing by it';
+  -- Lido pela câmera e ligado ao leite dele (o que a tela do código grava): é da casa, e conta.
+  insert into public.product_barcodes (gtin, product_id) values ('07891000100103', current_setting('test.g_milk_c')::uuid);
+  assert (select array_agg(store_cnpj || ' ' || unit_price || ' ' || mine order by store_cnpj) from public.shared_latest_prices())
+    = array['62000000000303 5.2900 false', '62000000000404 5.3900 false'],
+    'with the code linked: the rows of the state that carry it (not the one without a state, outside his stores)';
+end $$;
+reset role;
+
+-- A parte pelo código parte do índice novo (com a varredura da tabela desligada, para o plano não depender do
+-- tamanho destes dados).
+do $$
+declare
+  body text := (select prosrc from pg_proc where oid = 'public.shared_latest_prices()'::regprocedure);
+  plan text := '';
+  line text;
+begin
+  perform set_config('enable_seqscan', 'off', true);
+  for line in execute 'explain ' || rtrim(body, E'; \n\t') loop
+    plan := plan || line || E'\n';
+  end loop;
+  assert plan like '%shared_prices_gtin_state_idx%', 'the barcode part reads the new index: ' || plan;
+  assert plan like '%shared_prices_item_state_idx%', 'and the description part still reads its own: ' || plan;
+end $$;
+
+delete from public.shared_prices where store_cnpj like '6200000000%';
+delete from public.households where name in ('Casa do Gil', 'Casa da Bia', 'Casa do Caco');
+delete from auth.users where id in (:'user_g1', :'user_g2', :'user_g3');
 
 \echo 'OK — todos os testes do banco passaram'
 

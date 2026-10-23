@@ -57,6 +57,13 @@ describe('termos de uso', () => {
     expect(prices).toContain('sem o CPF');
   });
 
+  it('os preços compartilhados: o código de barras do produto vai, e para quê; o código do próprio mercado não', () => {
+    const prices = section('Preços compartilhados');
+    expect(prices).toContain('o código de barras do produto, quando a nota traz');
+    expect(prices).toContain('o app acha o mesmo produto em outra rede, mesmo quando a nota de lá o descreve de outro jeito');
+    expect(prices).toContain('O código que o mercado dá aos próprios produtos (como o da balança) não entra.');
+  });
+
   it('não promete o que não cumpre: no dia em que só uma casa comprou num mercado, os preços contam o que ela comprou', () => {
     const prices = section('Preços compartilhados');
     expect(prices).toContain('Ninguém vê de qual casa veio um preço');
@@ -148,9 +155,10 @@ describe('termos de uso', () => {
   });
 
   it('é uma mudança no que é compartilhado: o aviso volta para todo mundo (a versão do aceite é a do texto)', () => {
-    expect(TERMS_VERSION).toBe('2026-10-23');
+    expect(TERMS_VERSION).toBe('2026-10-24');
     expect(TERMS_ACCEPT_VERSION).toBe(TERMS_VERSION);
-    expect(termsNotice(['2026-10-22'])).toBe('mudou');
+    // Quem aceitou os termos do nome padrão dos mercados vê o aviso de novo: agora vai também o código de barras.
+    expect(termsNotice(['2026-10-23'])).toBe('mudou');
   });
 
   it('diz que uma mudança importante é avisada no app', () => {

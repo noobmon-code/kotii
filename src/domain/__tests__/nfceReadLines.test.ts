@@ -1,18 +1,24 @@
 import { describe, expect, it } from '@jest/globals';
 
+import { gtinKey as serverGtinKey } from '../../../supabase/functions/_shared/gtin';
 import { nfceReadLines } from '../../../supabase/functions/nfce/readLines';
+import { gtinKey } from '../barcode';
 import { nfceItemsToDraft, nfceReceiptRow, type NfceItem } from '../nfce';
 
 // A função nfce grava no servidor as linhas da nota como o app as põe no rascunho, e o banco só compartilha a linha
 // confirmada que bate com uma delas. Se o espelho divergir do app, nenhuma nota do QR code compartilha mais.
 const UNITS = ['UN', 'un', 'PCT', 'KG', 'kg ', 'KGS', 'G', 'GR', 'GRS', 'L', 'LT', 'LTS', 'ML', 'CX', ''];
+// Os códigos como a função os manda (já pela chave do banco): de barras, o interno do mercado, o da balança, o
+// com o verificador errado, nenhum.
+const CODES = ['7891000100103', '250474', '2000000000008', 'MC12', '7891000100104', '17891000100100', null];
 
 function items(): NfceItem[] {
   const list: NfceItem[] = [];
   UNITS.forEach((unit, i) => {
-    list.push({ description: `  ITEM  ${i} 500G `, code: null, quantity: 1 + i / 7, unit, unitPrice: 3.3333 + i, totalPrice: 7.77 + i });
+    const code = CODES[i % CODES.length];
+    list.push({ description: `  ITEM  ${i} 500G `, code, quantity: 1 + i / 7, unit, unitPrice: 3.3333 + i, totalPrice: 7.77 + i });
     list.push({ description: `SEM UNITARIO ${i}`, code: null, quantity: 0.333 * (i + 1), unit, unitPrice: 0, totalPrice: 10 / 3 + i });
-    list.push({ description: `SEM QUANTIDADE ${i}`, code: null, quantity: 0, unit, unitPrice: 0, totalPrice: 2.5 + i });
+    list.push({ description: `SEM QUANTIDADE ${i}`, code, quantity: 0, unit, unitPrice: 0, totalPrice: 2.5 + i });
   });
   list.push({ description: '   ', code: null, quantity: 1, unit: 'UN', unitPrice: 1, totalPrice: 1 });
   list.push({ description: 'NEGATIVO', code: null, quantity: 1, unit: 'UN', unitPrice: 1, totalPrice: -1 });
@@ -30,6 +36,22 @@ describe('leitura do QR code gravada no servidor', () => {
       unit_price: line.unit_price,
     }));
     expect(nfceReadLines(items())).toEqual(draft);
+  });
+
+  it('leva o código de barras (como a função o tira do código da linha) só onde o rascunho tem um código de barras', () => {
+    // read.ts manda a cada linha o gtinKey do código dela; o rascunho guarda o código pela chave do banco.
+    const read = nfceReadLines(items().map((item) => ({ ...item, gtin: serverGtinKey(item.code) })));
+    const draft = nfceItemsToDraft(items(), new Map()).map((line) => {
+      const gtin = gtinKey(line.store_code);
+      return { description: line.raw_description, unit: line.unit, unit_price: line.unit_price, ...(gtin ? { gtin } : {}) };
+    });
+    expect(read).toEqual(draft);
+    // O código interno do mercado e o da balança nunca vão.
+    expect(read.filter((line) => 'gtin' in line).map((line) => line.gtin)).toEqual(
+      expect.arrayContaining(['07891000100103', '17891000100100']),
+    );
+    expect(read.every((line) => line.gtin === undefined || /^\d{14}$/.test(line.gtin))).toBe(true);
+    expect(read.some((line) => line.gtin === '250474' || line.gtin === '02000000000008')).toBe(false);
   });
 });
 
