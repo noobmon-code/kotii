@@ -51,11 +51,12 @@ import {
   imagePathsError,
   insertItems,
   instructions,
+  isMissingColumn,
   itemStoreCodes,
   MAX_TOTAL_IMAGE_BYTES,
   promptCatalog,
-  sameStoreName,
   storeCodeMatches,
+  storeWithName,
   SYSTEM,
   withStoreCodes,
 } from './extract.ts';
@@ -92,13 +93,21 @@ async function findOrCreateStore(
     if (error) throw error;
     if (existing) return existing.id;
   } else {
-    // Página a página: a API devolve até 1000 linhas por pedido.
+    // Página a página: a API devolve até 1000 linhas por pedido. Vale também o nome impresso da loja que a casa
+    // renomeou (stores.printed_name); o banco antes da coluna só tem o nome.
+    let columns = 'id, name, printed_name';
     for (let from = 0; ; from += STORE_PAGE) {
-      const { data: unnamed, error } = await db.from('stores').select('id, name').is('cnpj', null).order('id').range(from, from + STORE_PAGE - 1);
-      if (error) throw error;
-      const existing = (unnamed ?? []).find((s) => sameStoreName(s.name, store.name!));
+      const read = () => db.from('stores').select(columns).is('cnpj', null).order('id').range(from, from + STORE_PAGE - 1);
+      let result = await read();
+      if (result.error && columns.includes('printed_name') && isMissingColumn(result.error, 'printed_name')) {
+        columns = 'id, name';
+        result = await read();
+      }
+      if (result.error) throw result.error;
+      const unnamed = (result.data ?? []) as unknown as { id: string; name: string; printed_name?: string | null }[];
+      const existing = storeWithName(unnamed, store.name!);
       if (existing) return existing.id;
-      if ((unnamed ?? []).length < STORE_PAGE) break;
+      if (unnamed.length < STORE_PAGE) break;
     }
   }
 

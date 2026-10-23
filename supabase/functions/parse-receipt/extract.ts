@@ -422,3 +422,20 @@ export function itemStoreCodes(items: CleanItem[]): string[] {
  * "%", "_" ou "*" (que o PostgREST trata como curinga) e casar com qualquer loja.
  */
 export const sameStoreName = (a: string, b: string) => a.trim().toLocaleLowerCase('pt-BR') === b.trim().toLocaleLowerCase('pt-BR');
+
+/**
+ * A loja com este nome: o dela ou, quando a casa a renomeou, o impresso na nota (stores.printed_name). Assim a
+ * nota seguinte da loja renomeada vai para ela, em vez de criar outra com o nome da nota.
+ */
+export function storeWithName<S extends { name: string; printed_name?: string | null }>(stores: readonly S[], name: string): S | undefined {
+  return stores.find((s) => sameStoreName(s.name, name) || (s.printed_name != null && sameStoreName(s.printed_name, name)));
+}
+
+/**
+ * A coluna ainda não chegou ao banco (a função publicada antes da migração): 42703 numa leitura, PGRST204 numa
+ * gravação, com o nome inteiro dela na mensagem. Outra coluna que falte é erro de verdade.
+ */
+export function isMissingColumn(error: { code?: string; message?: string } | null | undefined, column: string): boolean {
+  if (!error || (error.code !== 'PGRST204' && error.code !== '42703')) return false;
+  return (error.message ?? '').split(/[^A-Za-z0-9_]+/).includes(column);
+}

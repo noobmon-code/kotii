@@ -12,6 +12,8 @@ export interface PickerOption {
   title: string;
   subtitle?: string;
   left?: ReactNode;
+  /** Outros nomes que a busca também acha (o do mercado na nota, quando a casa deu outro). */
+  keywords?: string;
 }
 
 /**
@@ -59,7 +61,7 @@ export function PickerModal({
     const q = normalizeSearch(query);
     // O que já está nas sugestões não se repete na lista.
     const shown = new Set(suggested.map((o) => o.id));
-    return options.filter((o) => !shown.has(o.id) && (!q || normalizeSearch(o.title).includes(q)));
+    return options.filter((o) => !shown.has(o.id) && (!q || normalizeSearch(o.keywords ? `${o.title} ${o.keywords}` : o.title).includes(q)));
   }, [options, query, suggested]);
 
   return (

@@ -1,0 +1,284 @@
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+
+import { fetchStores } from '@/data/market';
+import { canRenameStore, STORE_CHAIN_TITLE, STORE_RENAME_GONE, STORE_RENAME_LABEL } from '@/domain/storeName';
+import { RenameStoreModal } from '@/features/RenameStoreModal';
+import type { Store } from '@/lib/types';
+import { notify } from '@/ui/dialogs';
+import { Button, CheckCircle, TextField } from '@/ui/primitives';
+
+// Dar outro nome ao mercado, com o banco de mentira fazendo o que o gatilho faz (o nome impresso guardado na
+// primeira troca, limpo na volta a ele): o que é gravado, as lojas da mesma empresa e o que a tela busca de novo.
+
+type Row = Store & Record<string, unknown>;
+// "mock" no nome: o jest.mock só enxerga variáveis assim.
+const mockDb = {
+  stores: [] as Row[],
+  /** O banco antes da migração: a coluna do nome impresso não existe. */
+  noPrintedColumn: false,
+  updates: [] as { values: Record<string, unknown>; ids: string[] }[],
+  reads: [] as string[],
+  /** A gravação segura no caminho (a resposta só vem quando o teste solta). */
+  hold: null as Promise<void> | null,
+};
+jest.mock('@/lib/supabase', () => {
+  const table = () => {
+    let columns = '';
+    let update: Record<string, unknown> | null = null;
+    let ids: string[] = [];
+    const run = async () => {
+      if (update) {
+        if (mockDb.hold) await mockDb.hold;
+        const found = mockDb.stores.filter((s) => ids.includes(s.id));
+        mockDb.updates.push({ values: update, ids });
+        // O gatilho stores_keep_printed_name.
+        for (const store of found) {
+          const name = update.name as string;
+          if (name === store.name) continue;
+          const base = store.printed_name ?? store.name;
+          store.printed_name = name === base ? null : base;
+          store.name = name;
+        }
+        return { data: found.map((s) => ({ id: s.id })), error: null };
+      }
+      mockDb.reads.push(columns);
+      if (mockDb.noPrintedColumn && columns.includes('printed_name')) {
+        return { data: null, error: { code: '42703', message: 'column stores.printed_name does not exist' } };
+      }
+      const keys = columns.split(',').map((c) => c.trim());
+      return { data: mockDb.stores.map((s) => Object.fromEntries(keys.map((k) => [k, s[k]]))), error: null };
+    };
+    const builder: Record<string, unknown> = {
+      select: (cols: string) => {
+        if (!update) columns = cols;
+        return builder;
+      },
+      order: () => builder,
+      update: (values: Record<string, unknown>) => {
+        update = values;
+        return builder;
+      },
+      in: (_column: string, values: string[]) => {
+        ids = values;
+        return builder;
+      },
+      then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) => run().then(resolve, reject),
+    };
+    return builder;
+  };
+  return {
+    supabase: { from: () => table() },
+    unwrap: (result: { data: unknown; error: unknown }) => {
+      if (result.error) throw result.error;
+      return result.data;
+    },
+    errorMessage: (error: unknown) => (error instanceof Error ? error.message : String((error as { message?: string })?.message ?? error)),
+  };
+});
+jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
+jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
+jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => ({ __esModule: true, default: () => null }));
+
+const CBD = 'COMPANHIA BRASILEIRA DE DISTRIBUICAO';
+const store = (id: string, name: string, cnpj: string | null, patch: Partial<Row> = {}): Row => ({
+  id,
+  name,
+  cnpj,
+  address: null,
+  printed_name: null,
+  ...patch,
+});
+
+/** As buscas que mostram o nome do mercado, já na memória: depois de renomear, todas são buscadas de novo. */
+const SHOWING_NAMES = [['stores'], ['receipts', 'history'], ['receipt', 'r1'], ['spending', 'market', '2026-10'], ['purchaseRecords'], ['priceHistory', 'purchases', 'p1'], ['mergeFacts', 'p1', 'p2']];
+
+let client: QueryClient;
+let renderer: ReactTestRenderer | undefined;
+let closed = 0;
+
+const rawText = (node: ReactTestInstance | string): string => (typeof node === 'string' ? node : node.children.map(rawText).join(''));
+const page = () => rawText(renderer!.root);
+const button = (title: string) => renderer!.root.findAllByType(Button).find((entry) => entry.props.title === title);
+const nameField = () => renderer!.root.findAllByType(TextField).find((entry) => entry.props.label === STORE_RENAME_LABEL)!;
+const settle = () => act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+
+async function open(target: Row, stores: Row[] = mockDb.stores) {
+  await act(async () => {
+    renderer = create(
+      <QueryClientProvider client={client}>
+        <RenameStoreModal store={target} stores={stores} onClose={() => (closed += 1)} />
+      </QueryClientProvider>,
+    );
+  });
+}
+async function type(text: string) {
+  await act(async () => nameField().props.onChangeText(text));
+}
+async function press(title: string) {
+  const target = button(title);
+  expect(target).toBeDefined();
+  await act(async () => target!.props.onPress());
+  await settle();
+}
+
+beforeEach(() => {
+  client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { gcTime: Infinity } } });
+  for (const key of SHOWING_NAMES) client.setQueryData(key, []);
+  mockDb.stores = [];
+  mockDb.noPrintedColumn = false;
+  mockDb.updates = [];
+  mockDb.reads = [];
+  mockDb.hold = null;
+  closed = 0;
+  jest.mocked(notify).mockReset();
+});
+
+afterEach(async () => {
+  await act(async () => renderer?.unmount());
+  renderer = undefined;
+  client.clear();
+});
+
+describe('renomear o mercado', () => {
+  it('grava o nome para a casa, o banco guarda o da nota, e o que mostra o nome é buscado de novo', async () => {
+    mockDb.stores = [store('s1', CBD, '47508411114402', { address: 'Av. Epitácio Pessoa, 4200' })];
+    await open(mockDb.stores[0]);
+    // Ainda sem nome trocado: nada de "Na nota", nem "Voltar".
+    expect(page()).toContain('Av. Epitácio Pessoa, 4200');
+    expect(page()).not.toContain('Na nota:');
+    expect(nameField().props.value).toBe(CBD);
+    expect(nameField().props.hint).toBe('Vale para toda a casa. O nome que vem na nota fica guardado.');
+    expect(button('Voltar ao nome da nota')).toBeUndefined();
+    await type('  Pão   de Açúcar ');
+    await press('Salvar');
+    expect(mockDb.updates).toEqual([{ values: { name: 'Pão de Açúcar' }, ids: ['s1'] }]);
+    expect(mockDb.stores[0]).toMatchObject({ name: 'Pão de Açúcar', printed_name: CBD });
+    expect(closed).toBe(1);
+    expect(SHOWING_NAMES.filter((key) => !client.getQueryState(key)?.isInvalidated)).toEqual([]);
+  });
+
+  it('as outras lojas da mesma empresa aparecem para marcar: só a marcada vai junto, e a de outra empresa nem aparece', async () => {
+    mockDb.stores = [
+      store('s1', CBD, '47508411114402'),
+      store('s2', CBD, '47508411000999', { address: 'Rua do Extra, 10' }),
+      store('s3', CBD, '47508411000888', { address: 'Av. do Minuto, 5' }),
+      store('s4', 'SUPERMERCADOS MANAIRA LTDA', '09143892000154'),
+    ];
+    await open(mockDb.stores[0]);
+    expect(page()).toContain(STORE_CHAIN_TITLE);
+    const marks = () => renderer!.root.findAllByType(CheckCircle);
+    expect(marks().map((mark) => mark.props.label)).toEqual([
+      `Usar o nome novo também em ${CBD}, Rua do Extra, 10`,
+      `Usar o nome novo também em ${CBD}, Av. do Minuto, 5`,
+    ]);
+    expect(marks().map((mark) => mark.props.checked)).toEqual([false, false]);
+    await act(async () => marks()[0].props.onPress());
+    expect(marks().map((mark) => mark.props.checked)).toEqual([true, false]);
+    await type('Pão de Açúcar');
+    await press('Salvar');
+    expect(mockDb.updates).toEqual([{ values: { name: 'Pão de Açúcar' }, ids: ['s1', 's2'] }]);
+    expect(mockDb.stores.map((s) => s.name)).toEqual(['Pão de Açúcar', 'Pão de Açúcar', CBD, 'SUPERMERCADOS MANAIRA LTDA']);
+  });
+
+  it('sem CNPJ, ou sem outra loja da empresa, não há o que marcar', async () => {
+    mockDb.stores = [store('s1', 'Feira do bairro', null), store('s2', 'Outra feira', null)];
+    await open(mockDb.stores[0]);
+    expect(page()).not.toContain(STORE_CHAIN_TITLE);
+  });
+
+  it('nome vazio avisa e não grava; o nome de agora fecha sem gravar', async () => {
+    mockDb.stores = [store('s1', 'Assaí', '06057223000171')];
+    await open(mockDb.stores[0]);
+    await type('   ');
+    await press('Salvar');
+    expect(page()).toContain('Escreva o nome do mercado.');
+    expect(mockDb.updates).toEqual([]);
+    expect(closed).toBe(0);
+    await type('x'.repeat(61));
+    await press('Salvar');
+    expect(page()).toContain('Use até 60 letras.');
+    await type(' Assaí ');
+    await press('Salvar');
+    expect(mockDb.updates).toEqual([]);
+    expect(closed).toBe(1);
+  });
+
+  it('com o nome trocado: mostra o da nota, e "Voltar ao nome da nota" grava esse nome (o banco limpa o guardado)', async () => {
+    mockDb.stores = [store('s1', 'Pão de Açúcar', '47508411114402', { printed_name: CBD })];
+    await open(mockDb.stores[0]);
+    expect(page()).toContain(`Na nota: ${CBD}`);
+    await press('Voltar ao nome da nota');
+    expect(mockDb.updates).toEqual([{ values: { name: CBD }, ids: ['s1'] }]);
+    expect(mockDb.stores[0]).toMatchObject({ name: CBD, printed_name: null });
+    expect(closed).toBe(1);
+  });
+
+  it('o nome da nota volta como está, também com mais de 60 letras ou espaços repetidos (o banco o compara letra por letra)', async () => {
+    const long = 'COMERCIO VAREJISTA DE GENEROS ALIMENTICIOS SAO JOSE DO BAIRRO LTDA';
+    const spaced = 'PADARIA  SAO JOSE';
+    mockDb.stores = [store('s1', 'Padaria', '11222333000181', { printed_name: long }), store('s2', 'São José', '11222333000262', { printed_name: spaced })];
+    await open(mockDb.stores[0]);
+    await press('Voltar ao nome da nota');
+    await act(async () => renderer?.unmount());
+    await open(mockDb.stores[1]);
+    await press('Voltar ao nome da nota');
+    expect(mockDb.updates).toEqual([
+      { values: { name: long }, ids: ['s1'] },
+      { values: { name: spaced }, ids: ['s2'] },
+    ]);
+    expect(mockDb.stores.map((s) => s.printed_name)).toEqual([null, null]);
+  });
+
+  it('o mercado sem CNPJ (digitado no seletor): fala do nome anterior, não do da nota', async () => {
+    mockDb.stores = [store('s1', 'Feira do bairro', null, { printed_name: 'Feira do bairo' })];
+    await open(mockDb.stores[0]);
+    expect(page()).toContain('Nome anterior: Feira do bairo');
+    expect(page()).not.toContain('Na nota');
+    expect(nameField().props.hint).toBe('Vale para toda a casa.');
+    await press('Voltar ao nome anterior');
+    expect(mockDb.updates).toEqual([{ values: { name: 'Feira do bairo' }, ids: ['s1'] }]);
+  });
+
+  it('uma gravação por vez: o Enter do campo com o Salvar a caminho não manda outra', async () => {
+    mockDb.stores = [store('s1', CBD, '47508411114402')];
+    let release = () => {};
+    mockDb.hold = new Promise<void>((resolve) => (release = resolve));
+    await open(mockDb.stores[0]);
+    await type('Pão de Açúcar');
+    await press('Salvar');
+    await act(async () => nameField().props.onSubmitEditing());
+    expect(closed).toBe(0);
+    await act(async () => release());
+    await settle();
+    expect(mockDb.updates).toHaveLength(1);
+    expect(closed).toBe(1);
+  });
+
+  it('o mercado que a casa aberta não tem mais: nada gravado, avisa, fecha, e os mercados são buscados de novo', async () => {
+    const gone = store('s9', CBD, '47508411114402');
+    await open(gone, [gone]);
+    await type('Pão de Açúcar');
+    await press('Salvar');
+    expect(jest.mocked(notify)).toHaveBeenCalledWith('Não deu para renomear o mercado', STORE_RENAME_GONE);
+    expect(closed).toBe(1);
+    expect(client.getQueryState(['stores'])?.isInvalidated).toBe(true);
+  });
+});
+
+describe('a lista de mercados', () => {
+  it('traz o nome impresso; o banco antes da migração não tem a coluna: lê sem ela, e não se oferece renomear', async () => {
+    mockDb.stores = [store('s1', 'Pão de Açúcar', '47508411114402', { printed_name: CBD })];
+    const read = await fetchStores();
+    expect(read).toEqual([{ id: 's1', name: 'Pão de Açúcar', cnpj: '47508411114402', address: null, printed_name: CBD }]);
+    expect(canRenameStore(read[0])).toBe(true);
+
+    mockDb.noPrintedColumn = true;
+    mockDb.reads = [];
+    const old = await fetchStores();
+    expect(mockDb.reads).toEqual(['id, name, cnpj, address, printed_name', 'id, name, cnpj, address']);
+    expect(old).toEqual([{ id: 's1', name: 'Pão de Açúcar', cnpj: '47508411114402', address: null }]);
+    expect(canRenameStore(old[0])).toBe(false);
+  });
+});

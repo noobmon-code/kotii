@@ -2,6 +2,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, View, type ScrollView } from 'react-native';
 
+import { useStores } from '@/data/market';
 import { useMarketData } from '@/data/marketSpend';
 import { getCategory } from '@/domain/categories';
 import { todayISO } from '@/domain/dates';
@@ -30,9 +31,11 @@ import {
   type MarketTrendBar,
   type MarketView,
 } from '@/domain/marketSpend';
+import { canRenameStore } from '@/domain/storeName';
 import { BarRow } from '@/features/finance/BarRow';
 import { MarketTrendChart } from '@/features/market/MarketTrendChart';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
+import { RenameStoreModal } from '@/features/RenameStoreModal';
 import {
   Button,
   Card,
@@ -79,6 +82,7 @@ export default function MarketMonthScreen() {
   const view = viewFromParam(aba);
   const market = useMarketData(month);
   const scanner = useReceiptScanner();
+  const stores = useStores();
   const [category, setCategory] = useState<string | null>(null);
   // O mercado tocado na lista de mercados: '' é o das notas sem mercado, null é nenhum.
   const [store, setStore] = useState<string | null>(null);
@@ -87,6 +91,8 @@ export default function MarketMonthScreen() {
   const [showAll, setShowAll] = useState(false);
   const [showAllChanges, setShowAllChanges] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  // O nome do mercado escolhido sendo trocado (para toda a casa).
+  const [renamingStore, setRenamingStore] = useState(false);
   const scroll = useRef<ScrollView>(null);
   /** A altura em que a chave das partes está na tela rolável. */
   const switchY = useRef(0);
@@ -109,6 +115,9 @@ export default function MarketMonthScreen() {
         : null,
     [market.data, month, today, chosenStore, view],
   );
+  // O mercado escolhido como a casa o tem (o das notas; o gasto sem nota não é um mercado da casa), para renomear.
+  const storeRow = storeMonth && chosenStore && !chosenStore.noReceipt ? stores.data?.find((s) => s.id === storeMonth.key) : undefined;
+  const renameStore = storeRow && canRenameStore(storeRow) ? storeRow : undefined;
   // A categoria escolhida, nos mesmos meses: como ela andou. Só os itens mostram o cartão, e só aí a conta é feita.
   // Também no mês sem nada dela: o selo, o cartão e a frase "Nenhum item de…" dizem isso, e o cartão leva a outro mês.
   const categoryTrend = useMemo(
@@ -200,6 +209,7 @@ export default function MarketMonthScreen() {
           onCategory={chooseCategory}
           storeMonth={storeMonth}
           onStore={chooseStore}
+          onRenameStore={renameStore ? () => setRenamingStore(true) : undefined}
           order={order}
           onOrder={setOrder}
           showAll={showAll}
@@ -220,6 +230,9 @@ export default function MarketMonthScreen() {
       )}
 
       {scanner.element}
+      {renamingStore && renameStore ? (
+        <RenameStoreModal store={renameStore} stores={stores.data ?? []} onClose={() => setRenamingStore(false)} />
+      ) : null}
     </Screen>
   );
 }
@@ -238,6 +251,7 @@ function MonthBody({
   onCategory,
   storeMonth,
   onStore,
+  onRenameStore,
   order,
   onOrder,
   showAll,
@@ -266,6 +280,8 @@ function MonthBody({
   onCategory: (category: string | null) => void;
   storeMonth: MarketStoreMonth | null;
   onStore: (store: string | null) => void;
+  /** Dar outro nome ao mercado escolhido (só o das notas, quando dá para renomear). */
+  onRenameStore?: () => void;
   order: MarketItemOrder;
   onOrder: (order: MarketItemOrder) => void;
   showAll: boolean;
@@ -385,7 +401,7 @@ function MonthBody({
               ))}
             </ListCard>
           ) : storeMonth ? (
-            <StoreDetail store={storeMonth} onStore={onStore} />
+            <StoreDetail store={storeMonth} onStore={onStore} onRename={onRenameStore} />
           ) : (
             <View style={styles.gapMd}>
               <Text variant="small">Toque num mercado para ver as idas e os itens dele.</Text>
@@ -526,12 +542,22 @@ function ItemRow({ item }: { item: MarketItem }) {
 }
 
 /** Um mercado tocado: o total dele, as idas (cada uma abre a nota) e os itens, com o selo que volta à lista. */
-function StoreDetail({ store, onStore }: { store: MarketStoreMonth; onStore: (store: string | null) => void }) {
+function StoreDetail({
+  store,
+  onStore,
+  onRename,
+}: {
+  store: MarketStoreMonth;
+  onStore: (store: string | null) => void;
+  /** Dar outro nome ao mercado: só o das notas, com a leitura que permite renomear. */
+  onRename?: () => void;
+}) {
   return (
     <View style={styles.gapMd}>
       <Row style={styles.wrap}>
         <Text variant="muted">Só o mercado</Text>
         <Chip label={store.title} icon="close" selected accessibilityLabel={`${store.title}: mostrar todos os mercados`} onPress={() => onStore(null)} />
+        {onRename ? <Button title="Renomear" icon="pencil-outline" variant="ghost" compact accessibilityLabel={`Renomear ${store.title}`} onPress={onRename} /> : null}
       </Row>
       <Text variant="heading">{store.headline}</Text>
       <View style={styles.gapSm}>

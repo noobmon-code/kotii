@@ -33,7 +33,7 @@ const mockDb: {
   /** Pedidos que falham (a rede caiu). */
   fails: ((request: MockRequest) => boolean)[];
 } = { receipts: [], items: [], stores: [], writes: [], rpcs: [], reads: {}, holds: [], fails: [] };
-const mockMarket: { products: Row[]; pantryNear: Row[]; listItems: Row[] } = { products: [], pantryNear: [], listItems: [] };
+const mockMarket: { products: Row[]; pantryNear: Row[]; listItems: Row[]; stores: Row[] } = { products: [], pantryNear: [], listItems: [], stores: [] };
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn(), back: jest.fn() },
@@ -46,6 +46,12 @@ jest.mock('@/ui/dialogs', () => ({ askYesNo: jest.fn(), confirmAction: jest.fn()
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
 jest.mock('@/features/finance/PayerChips', () => ({ PayerChips: () => null }));
+// O renomear tem os testes dele (renameStore.test): aqui, só para qual mercado ele abre.
+jest.mock('@/features/RenameStoreModal', () => {
+  const { createElement } = jest.requireActual<typeof import('react')>('react');
+  const { Text } = jest.requireActual<typeof import('react-native')>('react-native');
+  return { RenameStoreModal: ({ store }: { store: { name: string } }) => createElement(Text, null, `Renomeando ${store.name}`) };
+});
 jest.mock('@/data/images', () => ({ signedImageUrl: jest.fn() }));
 jest.mock('@/data/home', () => ({ fetchPantryNear: jest.fn(async () => mockMarket.pantryNear) }));
 jest.mock('@/data/market', () => {
@@ -58,7 +64,7 @@ jest.mock('@/data/market', () => {
     usePriceObservations: () => loaded([]),
     useProducts: () => loaded(mockMarket.products),
     usePurchaseRecords: () => loaded([]),
-    useStores: () => loaded([{ id: 's1', name: 'Assaí', cnpj: null, address: null }]),
+    useStores: () => loaded(mockMarket.stores),
   };
 });
 jest.mock('@/lib/supabase', () => {
@@ -297,6 +303,7 @@ beforeEach(() => {
   mockMarket.products = [];
   mockMarket.pantryNear = [];
   mockMarket.listItems = [];
+  mockMarket.stores = [{ id: 's1', name: 'Assaí', cnpj: null, address: null }];
   answers = {};
   jest.mocked(confirmAction).mockReset();
   jest.mocked(askYesNo).mockReset();
@@ -1395,6 +1402,29 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     expect(storePicker().props.visible).toBe(false);
     expect(totalRow().props.accessibilityHint).toBe('Toque para corrigir');
     expect(mockDb.writes).toEqual([]);
+  });
+
+  it('o mercado renomeado mostra o nome da nota embaixo; o lápis abre o renomear, e a busca do seletor acha pelos dois nomes', async () => {
+    mockMarket.stores = [{ id: 's1', name: 'Assaí', cnpj: '06057223000171', address: null, printed_name: 'SENDAS DISTRIBUIDORA S/A' }];
+    await open();
+    expect(header().slice(0, 4)).toEqual(['Mercado', 'Assaí', 'Na nota: SENDAS DISTRIBUIDORA S/A', 'Data da compra']);
+    expect(storePicker().props.options).toEqual([{ id: 's1', title: 'Assaí', subtitle: undefined, keywords: 'SENDAS DISTRIBUIDORA S/A' }]);
+    expect(page()).not.toContain('Renomeando');
+    await press(renderer!.root.findAllByType(IconButton).find((entry) => entry.props.label === 'Renomear o mercado'));
+    expect(page()).toContain('Renomeando Assaí');
+    expect(mockDb.writes).toEqual([]);
+  });
+
+  it('com o nome da nota (a casa não o trocou), o lápis está lá e nada embaixo; sem a coluna (o banco de antes), sem o lápis', async () => {
+    mockMarket.stores = [{ id: 's1', name: 'Assaí', cnpj: null, address: null, printed_name: null }];
+    await open();
+    expect(header().slice(0, 3)).toEqual(['Mercado', 'Assaí', 'Data da compra']);
+    const pencil = () => renderer!.root.findAllByType(IconButton).find((entry) => entry.props.label === 'Renomear o mercado');
+    expect(pencil()).toBeDefined();
+    await act(async () => renderer?.unmount());
+    mockMarket.stores = [{ id: 's1', name: 'Assaí', cnpj: null, address: null }];
+    await open();
+    expect(pencil()).toBeUndefined();
   });
 
   it('nota digitada à mão: a mesma frase, que não diz que a nota deu preço para outras casas', async () => {

@@ -1315,11 +1315,44 @@ export function useProducts() {
   return useQuery({ queryKey: ['products'], queryFn: fetchProducts });
 }
 
+/**
+ * Os mercados da casa, com o nome impresso na nota quando a casa deu outro. O banco antes da migração
+ * 20261022170000 não tem a coluna: os mercados vêm sem ela, e a tela não oferece renomear (canRenameStore).
+ */
+export async function fetchStores(): Promise<Store[]> {
+  const read = (columns: string) => supabase.from('stores').select(columns).order('name');
+  const withPrinted = await read('id, name, cnpj, address, printed_name');
+  if (withPrinted.error && isMissingColumn(withPrinted.error, 'printed_name')) {
+    return unwrap(await read('id, name, cnpj, address')) as unknown as Store[];
+  }
+  return unwrap(withPrinted) as unknown as Store[];
+}
+
 export function useStores() {
-  return useQuery({
-    queryKey: ['stores'],
-    queryFn: async () =>
-      unwrap(await supabase.from('stores').select('id, name, cnpj, address').order('name')) as Store[],
+  return useQuery({ queryKey: ['stores'], queryFn: fetchStores });
+}
+
+/**
+ * As buscas que trazem o nome do mercado: os mercados, as notas (e as pendentes), os gastos (o Resumo, o Mercado
+ * do mês e o consultor), as compras recentes, os preços de cada produto e a comparação de juntar produtos.
+ */
+const STORE_NAME_REFRESHES = ['stores', 'receipts', 'receipt', 'spending', 'purchaseRecords', 'priceHistory', 'mergeFacts'];
+
+/**
+ * Dá o nome novo aos mercados (o da nota e as lojas da mesma empresa que a pessoa marcou). O nome de antes o
+ * banco guarda sozinho, e voltar a ele é gravar esse nome. Devolve as linhas gravadas: nenhuma é o mercado que
+ * a casa aberta não tem mais (a RLS não dá erro, só não acha), e aí a casa é conferida de novo
+ * (EXPECTS_ROWS_META) e a tela avisa.
+ */
+export function useRenameStores() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ ids, name }: { ids: string[]; name: string }) =>
+      (unwrap(await supabase.from('stores').update({ name }).in('id', ids).select('id')) ?? []) as { id: string }[],
+    meta: EXPECTS_ROWS_META,
+    onSettled: () => {
+      for (const key of STORE_NAME_REFRESHES) void queryClient.invalidateQueries({ queryKey: [key] });
+    },
   });
 }
 

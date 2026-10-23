@@ -1,0 +1,104 @@
+import { describe, expect, it } from '@jest/globals';
+
+import {
+  backToPrintedLabel,
+  canRenameStore,
+  cleanStoreName,
+  printedNameLine,
+  sameCompanyStores,
+  storeCompany,
+  storeNameError,
+  storeRenameChange,
+  storeRenameHint,
+  storeRevertChange,
+} from '../storeName';
+
+const store = (id: string, name: string, cnpj: string | null, printed_name?: string | null) => ({ id, name, cnpj, address: null, printed_name });
+
+describe('o nome do mercado', () => {
+  it('é gravado sem espaços nas pontas nem repetidos', () => {
+    expect(cleanStoreName('  Pão   de\tAçúcar \n')).toBe('Pão de Açúcar');
+  });
+
+  it('precisa de 1 a 60 letras (um emoji conta como uma)', () => {
+    expect(storeNameError('   ')).toBe('Escreva o nome do mercado.');
+    expect(storeNameError('a'.repeat(60))).toBeNull();
+    expect(storeNameError('a'.repeat(61))).toBe('Use até 60 letras.');
+    expect(storeNameError(`${'a'.repeat(59)}🛒`)).toBeNull();
+    // Os espaços que saem não contam.
+    expect(storeNameError(`  ${'a'.repeat(60)}  `)).toBeNull();
+  });
+
+  it('dá para renomear só quando a leitura trouxe a coluna do nome impresso', () => {
+    expect(canRenameStore(store('s', 'Assaí', null, null))).toBe(true);
+    expect(canRenameStore(store('s', 'Assaí', null, 'SENDAS DISTRIBUIDORA S/A'))).toBe(true);
+    expect(canRenameStore(store('s', 'Assaí', null))).toBe(false);
+  });
+
+  it('o mercado de nota (com CNPJ) fala do nome da nota; o sem CNPJ, que pode ter sido digitado, do nome anterior', () => {
+    const fromNote = store('s', 'Assaí', '06057223000171', 'SENDAS DISTRIBUIDORA S/A');
+    const typed = store('t', 'Feira do bairro', null, 'Feira do bairo');
+    expect(printedNameLine(fromNote)).toBe('Na nota: SENDAS DISTRIBUIDORA S/A');
+    expect(backToPrintedLabel(fromNote)).toBe('Voltar ao nome da nota');
+    expect(storeRenameHint(fromNote)).toBe('Vale para toda a casa. O nome que vem na nota fica guardado.');
+    expect(printedNameLine(typed)).toBe('Nome anterior: Feira do bairo');
+    expect(backToPrintedLabel(typed)).toBe('Voltar ao nome anterior');
+    expect(storeRenameHint(typed)).toBe('Vale para toda a casa.');
+    // Sem nome trocado (ou sem a coluna), nada.
+    for (const plain of [store('s', 'Assaí', '06057223000171', null), store('s', 'Assaí', '06057223000171')]) {
+      expect(printedNameLine(plain)).toBeNull();
+      expect(backToPrintedLabel(plain)).toBeNull();
+    }
+  });
+
+  it('desfazer grava o nome guardado como está, sem a limpeza nem o limite do digitado', () => {
+    const long = 'X'.repeat(80);
+    expect(storeRevertChange(store('s', 'Padaria', null, long))).toEqual({ name: long, ids: ['s'] });
+    expect(storeRevertChange(store('s', 'Padaria', null, 'PADARIA  SAO JOSE '))).toEqual({ name: 'PADARIA  SAO JOSE ', ids: ['s'] });
+    expect(storeRevertChange(store('s', 'Padaria', null, null))).toBeNull();
+  });
+});
+
+describe('as lojas da mesma empresa', () => {
+  it('a empresa é a raiz do CNPJ (8 dígitos); CNPJ que não tem 14 dígitos não tem empresa', () => {
+    expect(storeCompany('47508411114402')).toBe('47508411');
+    expect(storeCompany(null)).toBeNull();
+    expect(storeCompany('4750841111440')).toBeNull();
+    expect(storeCompany('47.508.411/1144-02')).toBeNull();
+  });
+
+  it('são as outras da casa com a mesma raiz, pelo nome; sem CNPJ, nenhuma', () => {
+    const stores = [
+      store('a', 'Pão de Açúcar', '47508411114402'),
+      store('b', 'Extra', '47508411000999'),
+      store('c', 'COMPANHIA BRASILEIRA DE DISTRIBUICAO', '47508411000888'),
+      store('d', 'Manaíra', '09143892000154'),
+      store('e', 'Feira', null),
+    ];
+    expect(sameCompanyStores(stores, stores[0]).map((s) => s.id)).toEqual(['c', 'b']);
+    expect(sameCompanyStores(stores, stores[3])).toEqual([]);
+    expect(sameCompanyStores(stores, stores[4])).toEqual([]);
+  });
+});
+
+describe('a troca a gravar', () => {
+  const cbd = store('a', 'COMPANHIA BRASILEIRA DE DISTRIBUICAO', '47508411114402');
+
+  it('o nome limpo, para o mercado e as lojas marcadas que ainda não se chamam assim', () => {
+    const extra = store('b', 'Extra', '47508411000999');
+    const already = store('c', 'Pão de Açúcar', '47508411000888');
+    expect(storeRenameChange(cbd, ' Pão de  Açúcar ', [extra, already])).toEqual({ name: 'Pão de Açúcar', ids: ['a', 'b'] });
+  });
+
+  it('nada quando o nome não serve ou já é esse', () => {
+    expect(storeRenameChange(cbd, '  ')).toBeNull();
+    expect(storeRenameChange(cbd, 'COMPANHIA BRASILEIRA DE DISTRIBUICAO ')).toBeNull();
+  });
+
+  it('o mesmo nome no mercado, mas não numa loja marcada: só ela', () => {
+    expect(storeRenameChange(store('a', 'Pão de Açúcar', null), 'Pão de Açúcar', [store('b', 'Extra', null)])).toEqual({
+      name: 'Pão de Açúcar',
+      ids: ['b'],
+    });
+  });
+});
