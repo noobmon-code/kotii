@@ -346,6 +346,8 @@ describe('no cache do app', () => {
     expect(keys).toContain('sharedPrices');
     // A nota do QR code pode ter criado um mercado: é pelo nome dele que a casa reconhece "os seus mercados".
     expect(keys).toContain('stores');
+    // Os apelidos novos ensinam as abreviações dos mercados da casa (data/learnedAbbreviations).
+    expect(keys).toContain('productAliases');
     // E tudo o que já buscava de novo continua lá.
     expect(keys).toEqual(expect.arrayContaining(['receipts', 'receipt', 'products', 'latestPrices', 'priceHistory', 'pantry', 'spending', 'purchaseRecords', 'lists', 'listItems', 'listLinks']));
     await act(async () => renderer.unmount());

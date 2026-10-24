@@ -89,6 +89,10 @@ jest.mock('@/data/market', () => {
 const mockClipboard = { text: '' };
 jest.mock('expo-clipboard', () => ({ getStringAsync: async () => mockClipboard.text, setStringAsync: async () => true }));
 jest.mock('@/data/sharedPrices', () => ({ useSharedPrices: () => mockQueries.shared }));
+// As abreviações aprendidas têm os testes delas (learnedAbbreviations.test): aqui, nenhuma.
+jest.mock('@/data/learnedAbbreviations', () => ({
+  useLearnedAbbreviations: () => jest.requireActual<typeof import('@/domain/learnedAbbreviations')>('@/domain/learnedAbbreviations').NO_LEARNED,
+}));
 jest.mock('@/lib/auth', () => ({ useAuth: () => ({ session: { user: { id: 'u1' } } }), useHouseholdId: () => 'h1' }));
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: unknown) => String(error) }));
 jest.mock('@/ui/dialogs', () => ({ askYesNo: jest.fn(), confirmAction: jest.fn(), notify: jest.fn() }));

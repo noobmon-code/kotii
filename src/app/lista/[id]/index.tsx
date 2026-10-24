@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { usePantry } from '@/data/home';
+import { useLearnedAbbreviations } from '@/data/learnedAbbreviations';
 import {
   dropPendingPhotos,
   emptyPhotoTrash,
@@ -135,6 +136,8 @@ export default function ShoppingListScreen() {
   const archive = useArchiveList(id);
   const pantry = usePantry();
   const links = useListLinks();
+  // O que a despensa já tem com o nome da nota ("Az gallo 500ml") é o "Azeite" do carrinho (domain/cartPantry).
+  const learned = useLearnedAbbreviations();
   const prices = useLatestPrices();
   const stores = useStores();
   // Preços de outras casas: só onde a casa não tem preço (domain/listEstimate). Sem a função no banco (null), com a
@@ -612,7 +615,7 @@ export default function ShoppingListScreen() {
     const known = pantry.data !== undefined && linkIndex !== null;
     setStoring({
       items: cart,
-      rows: cartPantryRows(cart, known ? pantry.data! : null, { single, today, links: linkIndex ?? undefined }),
+      rows: cartPantryRows(cart, known ? pantry.data! : null, { single, today, links: linkIndex ?? undefined, learned }),
       single,
       pantryUnknown: !known,
     });

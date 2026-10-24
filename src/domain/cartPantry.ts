@@ -3,6 +3,7 @@
 
 import { getCategory } from './categories';
 import { diffDays, toISODate } from './dates';
+import { NO_LEARNED, withLearned, type LearnedAbbreviations } from './learnedAbbreviations';
 import { LinkIndex } from './listLinks';
 import { estimateExpiry, type ExpirySource } from './pantry';
 import { sameItemFit } from './sameItem';
@@ -36,18 +37,21 @@ export type MaybeSamePurchase = 'sempre' | 'nomeSolto';
  * ("Leite" do carrinho e "Leite UHT Parmalat" da nota), ou nomes em que um
  * começa pelo outro ("Leite" e "Leite Italac 1L"); 2: pode ser ele ("Carne"
  * e "Bombom da Alcatra"). O mesmo critério da nota não deixa o item entrar
- * duas vezes.
+ * duas vezes, também com as abreviações que a casa ensinou (`learned`): o
+ * produto que ficou com o nome da nota ("Az gallo 500ml") é o "Azeite".
  */
 function samePurchaseRank(
   a: { productId: string | null; name: string },
   b: PantryEntry,
   links: LinkIndex,
   maybe: MaybeSamePurchase,
+  learned: LearnedAbbreviations,
 ): 0 | 1 | 2 | null {
   if (a.productId && a.productId === b.product_id) return 0;
   if (a.productId && links.has(b.name, a.productId)) return 0;
   if (b.product_id && links.has(a.name, b.product_id)) return 0;
-  const fits = [sameItemFit({ name: a.name }, { names: [b.name] }), sameItemFit({ name: b.name }, { names: [a.name] })];
+  const [nameA, nameB] = [withLearned(a.name, learned) ?? a.name, withLearned(b.name, learned) ?? b.name];
+  const fits = [sameItemFit({ name: nameA }, { names: [nameB] }), sameItemFit({ name: nameB }, { names: [nameA] })];
   // Outra coisa, mesmo começando pelo mesmo nome ("Leite" e "Leite condensado").
   if (fits.includes('outro')) return null;
   if (fits.includes('mesmo')) return 1;
@@ -71,11 +75,12 @@ export function findSamePurchase<T extends PantryEntry>(
   entries: T[],
   links: LinkIndex = new LinkIndex(),
   maybe: MaybeSamePurchase = 'sempre',
+  learned: LearnedAbbreviations = NO_LEARNED,
 ): T | undefined {
   let best: { entry: T; rank: number } | undefined;
   for (const entry of entries) {
     if (!nearDays(entry.purchased_on, purchasedOn)) continue;
-    const rank = samePurchaseRank(item, entry, links, maybe);
+    const rank = samePurchaseRank(item, entry, links, maybe, learned);
     if (rank != null && (!best || rank < best.rank)) best = { entry, rank };
   }
   return best?.entry;
@@ -117,13 +122,13 @@ export interface CartPantryRow {
 export function cartPantryRows(
   items: CartItem[],
   pantry: PantryEntry[] | null,
-  { single, today, links }: { single: boolean; today: string; links?: LinkIndex },
+  { single, today, links, learned }: { single: boolean; today: string; links?: LinkIndex; learned?: LearnedAbbreviations },
 ): CartPantryRow[] {
   return items.map((item) => {
     const purchasedOn = item.checked_at ? toISODate(new Date(item.checked_at)) : today;
     // Fica de fora sem perguntar: dois produtos que só podem ser o mesmo ("Arroz integral" e "Arroz Camil") vão os dois.
     const same = pantry
-      ? findSamePurchase({ productId: item.product_id, name: item.name }, purchasedOn, pantry, links, 'nomeSolto')
+      ? findSamePurchase({ productId: item.product_id, name: item.name }, purchasedOn, pantry, links, 'nomeSolto', learned)
       : undefined;
     const known = pantry !== null;
     return {
@@ -199,12 +204,13 @@ export function receiptPantryRepeats(
   purchasedOn: string,
   entries: PantryEntry[],
   links: LinkIndex = new LinkIndex(),
+  learned: LearnedAbbreviations = NO_LEARNED,
 ): PantryRepeat[] {
   const pairs = payload.flatMap((item, at) => {
     if (!item.pantry) return [];
     const purchase = { productId: item.product_id ?? null, name: item.pantry.name };
     return entries.flatMap((entry, entryAt) => {
-      const rank = nearDays(entry.purchased_on, purchasedOn) ? samePurchaseRank(purchase, entry, links, 'sempre') : null;
+      const rank = nearDays(entry.purchased_on, purchasedOn) ? samePurchaseRank(purchase, entry, links, 'sempre', learned) : null;
       return rank == null ? [] : [{ at, entryAt, rank }];
     });
   });

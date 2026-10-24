@@ -67,6 +67,19 @@ jest.mock('@/data/market', () => {
     useStores: () => loaded(mockMarket.stores),
   };
 });
+// As abreviações aprendidas têm os testes delas (learnedAbbreviations.test): aqui, as que o teste der, e se a tela
+// pediu os apelidos (só na revisão).
+const mockLearning: { learned: unknown; enabled: (boolean | undefined)[] } = { learned: undefined, enabled: [] };
+jest.mock('@/data/learnedAbbreviations', () => {
+  const { NO_LEARNED } = jest.requireActual<typeof import('@/domain/learnedAbbreviations')>('@/domain/learnedAbbreviations');
+  return {
+    useLearnedAbbreviations: (options?: { enabled?: boolean }) => {
+      mockLearning.enabled.push(options?.enabled);
+      return options?.enabled === false ? NO_LEARNED : (mockLearning.learned ?? NO_LEARNED);
+    },
+    loadLearnedAbbreviations: async () => NO_LEARNED,
+  };
+});
 jest.mock('@/lib/supabase', () => {
   /** O pedido já saiu; a resposta espera quem o teste estiver segurando, ou falha se ele mandou. */
   const answer = async <T,>(request: MockRequest, run: () => T) => {
@@ -304,6 +317,8 @@ beforeEach(() => {
   mockMarket.pantryNear = [];
   mockMarket.listItems = [];
   mockMarket.stores = [{ id: 's1', name: 'Assaí', cnpj: null, address: null }];
+  mockLearning.learned = undefined;
+  mockLearning.enabled = [];
   answers = {};
   jest.mocked(confirmAction).mockReset();
   jest.mocked(askYesNo).mockReset();
@@ -1825,5 +1840,27 @@ describe('a lista de compras na revisão: o mesmo item, de qualquer marca', () =
     await open();
     expect(checkCircle('Café em pó')!.props.checked).toBe(false);
     expect(yes('Café em pó')).toBeDefined();
+  });
+
+  it('com o que as notas da casa ensinaram, "AZ GALLO" vem como sugestão para o azeite; a nota confirmada nem pede os apelidos', async () => {
+    const { learnAbbreviations } = jest.requireActual<typeof import('@/domain/learnedAbbreviations')>('@/domain/learnedAbbreviations');
+    seed(receipt(), item('a', 'AZ GALLO 500ML', 32, { suggested_name: 'Az gallo 500ml', suggested_category: 'outros' }));
+    mockMarket.listItems = [listItem('l1', 'Azeite', 'oleos', false)];
+    await open();
+    expect(checkCircle('Azeite')).toBeUndefined();
+    await act(async () => renderer?.unmount());
+
+    mockLearning.learned = learnAbbreviations([{ description: 'AZ POR EU PARUS VD', productName: 'Azeite' }]);
+    await open();
+    expect(checkCircle('Azeite')!.props.checked).toBe(false);
+    expect(page()).toContain('Azeite | Na nota: Az gallo 500ml');
+    expect(yes('Azeite')).toBeDefined();
+    expect(mockLearning.enabled.at(-1)).toBe(true);
+    await act(async () => renderer?.unmount());
+
+    seed(receipt({ status: 'confirmed' }), item('a', 'AZ GALLO 500ML', 32, { suggested_name: 'Az gallo 500ml', suggested_category: 'outros' }));
+    mockLearning.enabled = [];
+    await open();
+    expect(mockLearning.enabled.at(-1)).toBe(false);
   });
 });

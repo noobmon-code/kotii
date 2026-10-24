@@ -3,6 +3,7 @@
 // essa página e devolve os itens; aqui ficam a leitura do QR e a conversão
 // dos itens da Sefaz para o rascunho de nota, sem IA.
 
+import { NO_LEARNED, suggestedNoteName, type LearnedAbbreviations } from './learnedAbbreviations';
 import { guessCategory } from './search';
 import { storeCodeKey } from './storeCode';
 
@@ -125,12 +126,16 @@ export interface KnownProduct {
  * confirmada ensina à casa. O produto vem do código já aprendido (`codes`,
  * de match_store_codes: o do mercado, depois o de barras) e, sem ele, da
  * descrição (`aliases`, como na leitura por foto); a categoria vem do
- * produto ou das palavras da descrição.
+ * produto ou das palavras da descrição. O nome sugerido traz as abreviações
+ * por extenso, as da tabela fixa e as que a casa ensinou (`learned`,
+ * domain/learnedAbbreviations): "LT INTEG PIRAC 1L" vira "Leite integral
+ * pirac 1l". O que o app não sabe fica como a nota escreve.
  */
 export function nfceItemsToDraft(
   items: NfceItem[],
   aliases: Map<string, KnownProduct>,
   codes: Map<string, KnownProduct> = new Map(),
+  learned: LearnedAbbreviations = NO_LEARNED,
 ) {
   return items
     .filter((item) => item.description.trim() && item.totalPrice >= 0)
@@ -144,7 +149,7 @@ export function nfceItemsToDraft(
       return {
         position,
         raw_description: raw,
-        suggested_name: prettifyDescription(raw),
+        suggested_name: suggestedNoteName(raw, learned) ?? prettifyDescription(raw),
         suggested_category: known?.category ?? guessCategory(raw, { abbreviated: true }),
         product_id: known?.productId ?? null,
         quantity,

@@ -5,6 +5,7 @@ import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { fetchPantryNear } from '@/data/home';
+import { useLearnedAbbreviations } from '@/data/learnedAbbreviations';
 import {
   useListLinks,
   useOpenListItems,
@@ -40,6 +41,7 @@ import {
   LinkIndex,
   listRemovals,
   matchListItems,
+  receiptLineName,
   receiptLineNames,
   type ListChoice,
   type ReceiptLine,
@@ -179,8 +181,12 @@ export default function ReceiptScreen() {
   const deleteReceipt = useDeleteReceipt(id);
   const openList = useOpenListItems();
   const links = useListLinks();
+  const reviewing = receiptQuery.data?.receipt.status === 'draft';
+  // As abreviações dos mercados da casa, que as notas confirmadas ensinaram ("AZ GALLO" é o azeite): só a nota em
+  // revisão casa com a lista e confere a despensa.
+  const learned = useLearnedAbbreviations({ enabled: reviewing });
   // As compras recentes só servem aos nomes parecidos, que só aparecem na nota em revisão.
-  const purchases = usePurchaseRecords({ enabled: receiptQuery.data?.receipt.status === 'draft' });
+  const purchases = usePurchaseRecords({ enabled: reviewing });
 
   const [overrides, setOverrides] = useState<Record<string, ItemOverride>>({});
   const [listChoices, setListChoices] = useState<Record<string, ListChoice>>({});
@@ -299,12 +305,17 @@ export default function ReceiptScreen() {
     return {
       id: item.id,
       productId: resolved.product.kind === 'existing' ? resolved.product.productId : null,
-      name: resolved.productName,
-      names: receiptLineNames({
+      name: receiptLineName({
+        source: receipt.source,
         productName: resolved.productName,
+        isNew: resolved.product.kind === 'new',
         suggestedName: item.suggested_name,
         rawDescription: item.raw_description,
       }),
+      names: receiptLineNames(
+        { productName: resolved.productName, suggestedName: item.suggested_name, rawDescription: item.raw_description },
+        learned,
+      ),
       generic: item.generic_name,
       category: resolved.category,
     };
@@ -601,7 +612,7 @@ export default function ReceiptScreen() {
    * pergunta antes de repetir. Sem repetir, esses itens salvam só na nota.
    */
   async function skipPantryRepeats(payload: ConfirmItem[]): Promise<ConfirmItem[]> {
-    const repeats = receiptPantryRepeats(payload, purchasedOn, await fetchPantryNear(purchasedOn), links.data);
+    const repeats = receiptPantryRepeats(payload, purchasedOn, await fetchPantryNear(purchasedOn), links.data, learned);
     if (!repeats.length) return payload;
     const dates = new Set(repeats.map((r) => r.since));
     const names = joinNames(repeats.map((r) => r.name));

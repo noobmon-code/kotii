@@ -3,6 +3,8 @@
 // a nota, a pessoa diz quais itens da lista a compra cumpriu; cada um vira um
 // vínculo nome da lista -> produto, e a próxima nota já vem marcada.
 
+import { NO_LEARNED, withLearned, type LearnedAbbreviations } from './learnedAbbreviations';
+import { prettifyDescription } from './nfce';
 import { categoriesMayMatch, readsAsOther, sameItemFit, startsAsItem, wordOverlap } from './sameItem';
 import { normalizeSearch } from './search';
 
@@ -107,9 +109,35 @@ export interface ReceiptLine {
   category: string;
 }
 
-/** Os nomes de um item da nota para o casamento com a lista: o do produto escolhido na revisão, a sugestão da leitura e o texto impresso. */
-export function receiptLineNames(line: { productName?: string | null; suggestedName?: string | null; rawDescription: string }): string[] {
-  return [line.productName, line.suggestedName, line.rawDescription].filter((name): name is string => Boolean(name?.trim()));
+/**
+ * Os nomes de um item da nota para o casamento com a lista: o do produto escolhido na revisão, a sugestão da
+ * leitura e o texto impresso. A sugestão e o texto passam pelas abreviações que a casa ensinou (`learned`,
+ * domain/learnedAbbreviations: "AZ GALLO" é o azeite); o nome do produto é o que a casa deu, e fica.
+ */
+export function receiptLineNames(
+  line: { productName?: string | null; suggestedName?: string | null; rawDescription: string },
+  learned: LearnedAbbreviations = NO_LEARNED,
+): string[] {
+  const spelled = (name: string | null | undefined) => (name ? (withLearned(name, learned) ?? name) : name);
+  return [line.productName, spelled(line.suggestedName), spelled(line.rawDescription)].filter((name): name is string => Boolean(name?.trim()));
+}
+
+/**
+ * O nome do produto da linha para o "mesmo nome" (`ReceiptLine.name`). O produto novo da nota do QR code que
+ * ainda tem o nome que o app sugeriu por extenso ("Queijo coalho kg" para "QJO COALHO KG", domain/nfce) conta
+ * como o texto da nota ("Qjo coalho kg"): por extenso, a linha é lida como o item (e marcada sozinha só se estava
+ * no carrinho e é a única), mas não vira "o mesmo nome", que marca sem o carrinho.
+ */
+export function receiptLineName(line: {
+  source: string;
+  productName: string | null;
+  isNew: boolean;
+  suggestedName: string | null;
+  rawDescription: string;
+}): string | null {
+  const literal = prettifyDescription(line.rawDescription);
+  const spelled = line.source === 'qrcode' && line.isNew && line.productName != null && line.productName === line.suggestedName;
+  return spelled && line.productName !== literal ? literal : line.productName;
 }
 
 /**

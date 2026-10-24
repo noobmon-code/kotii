@@ -18,6 +18,7 @@ import {
   uploadImages,
   type ScanSource,
 } from './images';
+import { loadLearnedAbbreviations } from './learnedAbbreviations';
 import { isMissingColumn, isMissingFunction } from './missingSchema';
 import { withFreshProducts } from './productMerge';
 import { readAll } from './readAll';
@@ -346,6 +347,7 @@ export async function fetchNfcePage(url: string): Promise<NfcePageResult> {
  */
 export function useImportNfce() {
   const invalidate = useInvalidateReceipt();
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (qr: NfceQr): Promise<{ receipt_id: string; duplicate: boolean }> => {
       const dup = unwrap(
@@ -380,11 +382,13 @@ export function useImportNfce() {
       const known = (productId: string) => ({ productId, category: categoryOf.get(productId) ?? 'outros' });
       const aliases = new Map((aliasRows ?? []).map((row) => [row.description, known(row.product_id)]));
       const codes = new Map(codeRows.map((row) => [row.code, known(row.product_id)]));
+      // O nome sugerido de cada item, com as abreviações que a casa já ensinou; sem elas, só a tabela fixa.
+      const learned = await loadLearnedAbbreviations(queryClient);
 
       const storeId = await findOrCreateStore({ ...page.store, cnpj });
       // Com o id da leitura do servidor, quando a função devolveu um: é o que deixa a nota compartilhar preço.
       const receipt = await insertNfceReceipt(nfceReceiptRow(page, qr, storeId));
-      const items = nfceItemsToDraft(page.items, aliases, codes).map((item) => ({ ...item, receipt_id: receipt.id }));
+      const items = nfceItemsToDraft(page.items, aliases, codes, learned).map((item) => ({ ...item, receipt_id: receipt.id }));
       // Com o código de cada linha; o banco de antes da coluna recebe as linhas sem ele.
       const itemsError = await insertReceiptItems(items);
       if (itemsError) {
@@ -547,6 +551,8 @@ export function useConfirmReceipt(receiptId: string) {
         'listLinks',
         // A nota ensina apelidos novos, e é por eles que os preços de outras casas chegam aos produtos desta.
         'sharedPrices',
+        // Os mesmos apelidos ensinam as abreviações dos mercados da casa (domain/learnedAbbreviations).
+        'productAliases',
         // A leitura do QR code pode ter criado o mercado, e é pelo nome dele que a casa reconhece "os seus mercados".
         'stores',
         // A nota ensina os códigos de barras das linhas (product_barcodes), que a câmera lê depois.
