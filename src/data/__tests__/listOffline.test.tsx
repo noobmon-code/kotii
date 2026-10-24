@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { dehydrate, hydrate, onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
+import { parsePastedList, pastePreview, pasteToAdd } from '@/domain/listPaste';
+import { shoppingSections } from '@/domain/listSections';
 import { resumeInFlight } from '@/lib/cachePersister';
 import type { ShoppingListItem } from '@/lib/types';
 
@@ -836,5 +838,58 @@ describe('"Marca preferida" antes e depois da migração', () => {
     });
     await flush();
     expect(mockDb.sent.filter((s) => s.op === 'insert').map((s) => 'brand_preferred' in (s.values ?? {}))).toEqual([false, false]);
+  });
+});
+
+describe('ajustes da lista sem internet', () => {
+  it('a categoria trocada e a quantidade somada aparecem na hora (o item muda de seção) e vão quando a conexão volta', async () => {
+    const client = newClient();
+    const cleaning = Array.from({ length: 9 }, (_, i) => item(`d${i}`, `Detergente ${i + 1}`, { category: 'limpeza' }));
+    openList(client, [...cleaning, item('r', 'Rúcula', { category: 'outros', quantity: 2 })]);
+    const hooks = await listHooks(client);
+    await act(async () => {
+      hooks().edit.mutate({ id: 'r', listId: 'l1', userId: 'u1', values: { category: 'hortifruti' } });
+      hooks().edit.mutate({ id: 'r', listId: 'l1', userId: 'u1', values: { quantity: 3 } });
+    });
+    await flush();
+    const shown = client.getQueryData<ShoppingListItem[]>(['listItems', 'l1'])!;
+    expect(shown.find((i) => i.id === 'r')).toMatchObject({ category: 'hortifruti', quantity: 3 });
+    expect(shoppingSections(shown).map((s) => s.title)).toEqual(['Frutas e verduras', 'Limpeza']);
+    expect(mockDb.sent).toEqual([]);
+
+    onlineManager.setOnline(true);
+    await act(async () => {
+      await client.resumePausedMutations();
+    });
+    await flush();
+    expect(mockDb.sent.map((s) => [s.op, s.values, s.filters])).toEqual([
+      ['update', { category: 'hortifruti' }, [['eq', 'id', 'r']]],
+      ['update', { quantity: 3 }, [['eq', 'id', 'r']]],
+    ]);
+  });
+
+  it('colar uma lista sem internet: os itens novos aparecem na hora e vão na ordem quando a conexão volta', async () => {
+    const client = newClient();
+    openList(client, [ARROZ]);
+    const hooks = await listHooks(client);
+    const rows = pastePreview(parsePastedList('- Arroz\n- 2 kg feijão\n- leite (2)').items, [ARROZ]);
+    await act(async () => {
+      for (const pasted of pasteToAdd(rows)) {
+        hooks().add.add({ name: pasted.name, category: pasted.category, productId: null, quantity: pasted.quantity, unit: pasted.unit }, 'u1');
+      }
+    });
+    await flush();
+    expect(names(client)).toEqual(['Arroz', 'Feijão', 'Leite']);
+    expect(mockDb.sent).toEqual([]);
+
+    onlineManager.setOnline(true);
+    await act(async () => {
+      await client.resumePausedMutations();
+    });
+    await flush();
+    expect(mockDb.sent.map((s) => [s.op, s.values?.name, s.values?.quantity, s.values?.unit])).toEqual([
+      ['insert', 'Feijão', 2, 'kg'],
+      ['insert', 'Leite', 2, 'un'],
+    ]);
   });
 });

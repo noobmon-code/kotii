@@ -57,6 +57,8 @@ export function useProductBarcode({ onProduct, linkTo }: { onProduct: (product: 
   const shown = useRef<Step | null>(null);
   const closing = useRef(false);
   const queued = useRef<Step | null>(null);
+  // O produto que chegou com um passo ainda descendo (iOS): segue no onDismiss dele.
+  const arrived = useRef<Product | null>(null);
   // Um código de cada vez: a ref segura o toque duplo na hora, e `busy` redesenha os botões das telas.
   const running = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -82,6 +84,18 @@ export function useProductBarcode({ onProduct, linkTo }: { onProduct: (product: 
     shown.current = queued.current;
     queued.current = null;
     setStep(shown.current);
+    const product = arrived.current;
+    arrived.current = null;
+    if (product && !shown.current) onProduct(product);
+  }
+
+  /**
+   * Segue com o produto. No iOS, com um passo ainda descendo, espera ele sumir: a tela pode abrir um Modal com o
+   * produto (o "Já está na lista" da lista de compras), que não apareceria por cima do leitor fechando.
+   */
+  function deliver(product: Product) {
+    if (Platform.OS === 'ios' && closing.current) arrived.current = product;
+    else onProduct(product);
   }
 
   /** O produto da casa; o que não está nos guardados (criado há pouco em outro aparelho) vem de uma busca nova. */
@@ -107,7 +121,7 @@ export function useProductBarcode({ onProduct, linkTo }: { onProduct: (product: 
       if (!(await askYesNo('Código de outro produto', question, 'Passar para este', 'Cancelar'))) return;
     }
     if (next.kind !== 'same') await link.mutateAsync({ gtin, productId: product.id });
-    onProduct(product);
+    deliver(product);
   }
 
   /** Roda um passo que fala com o banco; o erro vira um aviso. */
@@ -138,12 +152,12 @@ export function useProductBarcode({ onProduct, linkTo }: { onProduct: (product: 
       // O guardado no aparelho vale sem internet; o código que ele não conhece, ou de um produto que não está aqui
       // (juntado com outro, por exemplo), vai ao banco.
       const saved = productById(barcodes.data?.find((code) => code.gtin === gtin)?.product_id);
-      if (saved) return onProduct(saved);
+      if (saved) return deliver(saved);
       const owner = await fetchBarcodeOwner(gtin);
       if (!owner) return go({ kind: 'pick', gtin });
       // O código é de um produto da casa: nunca "Código novo", que levaria a passá-lo para outro produto.
       const product = await findProduct(owner);
-      if (product) onProduct(product);
+      if (product) deliver(product);
       else
         notify(
           'Não deu para abrir o produto',

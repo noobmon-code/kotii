@@ -15,6 +15,7 @@ import {
 } from '@/data/listPhotos';
 import {
   type EditItemInput,
+  type NewListItem,
   loadListLinks,
   newToggleToken,
   removalWaitsForQueue,
@@ -48,13 +49,15 @@ import {
   type PantryHit,
   type StoreChoice,
 } from '@/domain/listEstimate';
-import { compareForShopping } from '@/domain/listItem';
+import { compareForShopping, repeatedQuantity } from '@/domain/listItem';
+import type { PastedItem } from '@/domain/listPaste';
+import { shoppingSections } from '@/domain/listSections';
 import { searchCommonItems, type CommonItem } from '@/domain/commonItems';
 import { todayISO } from '@/domain/dates';
 import { brandChoice, genericItem, pendingSameItem, productSuggestions, sameListItem } from '@/domain/genericItem';
 import { listNameKey } from '@/domain/listLinks';
 import { cartPurchases } from '@/domain/listQueue';
-import { parseDecimal } from '@/domain/money';
+import { formatQuantity, parseDecimal } from '@/domain/money';
 import { fitsList, listExclusion, recentPurchases, type RecentItem } from '@/domain/recentPurchases';
 import { ranOutItems, restockFrom } from '@/domain/restock';
 import { guessCategory, normalizeSearch } from '@/domain/search';
@@ -66,6 +69,7 @@ import { ListItemEditor, type ItemDetails, type PhotoChange } from '@/features/L
 import { ListShareSheet } from '@/features/ListShareSheet';
 import { MarketTripAction, MarketTripBanner } from '@/features/MarketTrip';
 import { OfflineNotice } from '@/features/OfflineNotice';
+import { PasteListModal } from '@/features/PasteListModal';
 import { useProductBarcode } from '@/features/ProductBarcode';
 import { RecentPurchases, RestockStrip, useJustListed } from '@/features/RecentPurchases';
 import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
@@ -74,6 +78,7 @@ import { useAuth, useHouseholdId } from '@/lib/auth';
 import { isNetworkFailure } from '@/lib/networkErrors';
 import { errorMessage } from '@/lib/supabase';
 import { UNITS, type Product, type ShoppingListItem, type Unit } from '@/lib/types';
+import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
 import { askYesNo, confirmAction, notify } from '@/ui/dialogs';
 import {
   Button,
@@ -100,6 +105,18 @@ const STALE_OFFLINE = 'Sem internet agora. Mostrando a lista como estava da últ
  * uma ida ao mercado (currentStoreChoice), enquanto o app está aberto.
  */
 const chosenStores = new Map<string, StoreChoice>();
+
+/**
+ * O item que a pessoa pôs e que já está para comprar: a tela pergunta se soma a quantidade. `otherName`: digitado
+ * com outro nome ("Leite" com "Leite IL Desnatado" na lista), que pode ser outro pedido.
+ */
+interface Repeated {
+  listed: ShoppingListItem;
+  item: NewListItem;
+  otherName: boolean;
+  /** A pessoa disse a quantidade (o campo preenchido ou outra unidade escolhida). */
+  given: boolean;
+}
 
 export default function ShoppingListScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -143,6 +160,11 @@ export default function ShoppingListScreen() {
   } | null>(null);
   const [editing, setEditing] = useState<ShoppingListItem | null>(null);
   const [sharing, setSharing] = useState(false);
+  const [pasting, setPasting] = useState(false);
+  const [repeated, setRepeated] = useState<Repeated | null>(null);
+  // Um menu que não chegou a aparecer (no iOS, aberto enquanto outro Modal descia) não pode prender os próximos:
+  // a pergunta nova monta um menu novo.
+  const [repeatedKey, setRepeatedKey] = useState(0);
   const [storeChoice, setStoreChoice] = useState<StoreChoice | null>(() => chosenStores.get(id) ?? null);
   // Some da faixa já no toque; volta quando a lista carregada trouxer o item e ele sair dela depois.
   const justAdded = useJustListed(items.data);
@@ -203,77 +225,150 @@ export default function ShoppingListScreen() {
     setUnit('un');
   }
 
-  /**
-   * O mesmo item já está para comprar nesta lista, com este nome ou outro ("Leite IL Desnatado" e "Leite
-   * desnatado"): não põe de novo, e avisa.
-   */
-  function alreadyListed(item: { name: string; category: string }): boolean {
-    const listed = pendingSameItem(item, items.data ?? []);
-    if (listed) notify('Já estava na lista', `${listed.name} já está na lista para comprar.`);
-    return Boolean(listed);
-  }
+  /** O campo da quantidade preenchido ou outra unidade escolhida: a pessoa disse quanto quer. */
+  const quantityGiven = () => quantity.trim() !== '' || unit !== 'un';
 
   // Pôr item vai pela fila da lista: aparece na hora, também sem internet, e o campo já fica livre para o próximo.
   // Se a fila desistir, o aviso sai dela (lib/queryClient), também com a tela já fechada. O produto escolhido na
   // busca entra sem a marca (`productName`, de genericItem), com ele como dica de preço.
-  async function add(product?: Product, productName?: string) {
+  function add(product?: Product, productName?: string) {
     const itemName = productName ?? product?.name ?? name.trim();
     if (!itemName) return;
-    const category = product?.category ?? guessCategory(itemName);
-    const typed = !product && !productName;
-    const listed = pendingSameItem({ name: itemName, category }, items.data ?? []);
-    // O nome digitado que não é o do item pendente ("Leite" com "Leite IL Desnatado" na lista) pode ser outro pedido:
-    // a pessoa decide (sem pôr, o nome fica no campo). A sugestão da busca é o item sem marca: já está lá.
-    if (listed && typed && listNameKey(listed.name) !== listNameKey(itemName)) {
-      const anyway = await askYesNo(
-        'Já está na lista',
-        `${listed.name} já está na lista para comprar. Pôr "${itemName}" também?`,
-        'Pôr mesmo assim',
-        'Não pôr',
-      );
-      if (!anyway) return;
-    } else if (listed) {
-      notify('Já estava na lista', `${listed.name} já está na lista para comprar.`);
-      return resetForm();
-    }
     const qty = parseDecimal(quantity) ?? 1;
-    addItem.add(
+    put(
       {
         name: itemName,
-        category,
+        category: product?.category ?? guessCategory(itemName),
         productId: product?.id ?? null,
         quantity: qty > 0 ? qty : 1,
         unit,
       },
-      session!.user.id,
+      !product && !productName,
+      quantityGiven(),
     );
-    resetForm();
   }
 
   // O código de barras lido põe o produto como a sugestão da busca: sem a marca, com ele como dica de preço, e com
   // as mesmas travas de item repetido.
-  const barcode = useProductBarcode({ onProduct: (product) => void add(product, scannedListItem(product).name) });
+  const barcode = useProductBarcode({ onProduct: (product) => add(product, scannedListItem(product).name) });
 
-  /** Item comum: liga ao produto da casa de mesmo nome, se existir. */
-  function addCommon(item: CommonItem, fromForm = false) {
+  /** Item comum das sugestões: liga ao produto da casa de mesmo nome, se existir. */
+  function addCommon(item: CommonItem) {
     const product = productByName.get(normalizeSearch(item.name));
-    if (alreadyListed({ name: item.name, category: product?.category ?? item.category })) {
-      if (fromForm) resetForm();
-      return;
-    }
-    const qty = fromForm ? (parseDecimal(quantity) ?? 1) : 1;
-    addItem.add(
+    const qty = parseDecimal(quantity) ?? 1;
+    put(
       {
         name: item.name,
         category: product?.category ?? item.category,
         productId: product?.id ?? null,
         quantity: qty > 0 ? qty : 1,
         // A unidade do catálogo vale, a menos que o usuário tenha escolhido outra.
-        unit: fromForm && unit !== 'un' ? unit : item.unit,
+        unit: unit !== 'un' ? unit : item.unit,
       },
-      session!.user.id,
+      false,
+      quantityGiven(),
     );
-    if (fromForm) resetForm();
+  }
+
+  /**
+   * Põe o item do cartão (o digitado, a sugestão da busca ou o código lido), com a quantidade do campo. O mesmo
+   * item já para comprar nesta lista, com este nome ou outro ("Leite IL Desnatado" e "Leite desnatado"), não entra
+   * de novo sem a pessoa dizer: ela escolhe entre somar a quantidade, pôr como outro item ou deixar como está.
+   * `typed`: o nome digitado, que, diferente do pendente ("Leite" com "Leite IL Desnatado"), pode ser outro pedido.
+   * `given`: a pessoa disse a quantidade; sem ela, o item que já está em outra unidade só ganha o aviso, como antes.
+   */
+  function put(item: NewListItem, typed: boolean, given: boolean) {
+    const listed = pendingSameItem(item, items.data ?? []);
+    if (listed) {
+      const otherName = typed && listNameKey(listed.name) !== listNameKey(item.name);
+      if (!otherName && repeatedQuantity(listed, { ...item, given }).kind === 'listed') {
+        notify('Já estava na lista', `${listed.name} já está na lista para comprar.`);
+        resetForm();
+        return;
+      }
+      if (repeated) setRepeatedKey((key) => key + 1);
+      setRepeated({ listed, item, otherName, given });
+      return;
+    }
+    addItem.add(item, session!.user.id);
+    resetForm();
+  }
+
+  /**
+   * O item repetido como está agora na lista (outra pessoa pode ter mudado a quantidade); null se saiu ou foi para o
+   * carrinho. No desenho, os itens dele; no toque, os guardados agora (a escolha do menu roda depois que ele fecha).
+   */
+  const currentListed = (listed: ShoppingListItem, from = items.data) => {
+    const now = (from ?? []).find((i) => i.id === listed.id);
+    return now && !now.checked_at ? now : null;
+  };
+
+  /** "Somar", no toque: soma ao item como está agora; sem ele para comprar (ou em outra unidade), um item novo. */
+  function sumRepeated(listed: ShoppingListItem, item: NewListItem) {
+    resetForm();
+    const now = currentListed(listed, queryClient.getQueryData<ShoppingListItem[]>(['listItems', id]) ?? items.data);
+    const again = now ? repeatedQuantity(now, item) : null;
+    if (now && again?.kind === 'sum') {
+      edit.mutate({ id: now.id, listId: id, userId: session!.user.id, values: { quantity: again.quantity } }, { onError });
+    } else addItem.add(item, session!.user.id);
+  }
+
+  /** "Já está na lista": na mesma unidade, somar; em outra unidade (ou com outro nome digitado), pôr como outro item. */
+  function repeatedActions({ listed, item, otherName, given }: Repeated): SheetAction[] {
+    const choice = repeatedQuantity(currentListed(listed) ?? listed, { ...item, given });
+    const actions: SheetAction[] = [];
+    if (choice.kind === 'sum') {
+      actions.push({
+        label: `Somar: fica ${formatQuantity(choice.quantity, item.unit)}`,
+        icon: 'plus-circle-outline',
+        // A soma sai do item como está no toque, e não de quando a pergunta abriu. A quantidade nova vai pela fila de
+        // edições, como nos detalhes do item: aparece na hora, também sem internet. O item que saiu da lista, foi para
+        // o carrinho ou mudou de unidade nesse meio-tempo não leva a soma: a quantidade entra como um item novo.
+        onPress: () => sumRepeated(listed, item),
+      });
+    }
+    if (choice.kind === 'other_unit' || otherName) {
+      actions.push({
+        label: otherName ? `Pôr "${item.name}" como outro item` : `Pôr ${formatQuantity(item.quantity, item.unit)} como outro item`,
+        icon: 'playlist-plus',
+        onPress: () => {
+          addItem.add(item, session!.user.id);
+          resetForm();
+        },
+      });
+    }
+    return actions;
+  }
+
+  function repeatedMessage({ listed: asked, item, given }: Repeated): string {
+    const listed = currentListed(asked) ?? asked;
+    const now = formatQuantity(Number(listed.quantity), listed.unit);
+    const more = formatQuantity(item.quantity, item.unit);
+    if (repeatedQuantity(listed, { ...item, given }).kind === 'listed') return `${listed.name} já está na lista (${now}).`;
+    return repeatedQuantity(listed, item).kind === 'sum'
+      ? `${listed.name} já está na lista (${now}). Somar mais ${more}?`
+      : `${listed.name} já está na lista com ${now}, e ${more} é outra unidade. Pôr como outro item ou deixar como está?`;
+  }
+
+  /**
+   * "Colar lista": cada item novo vai pela fila, como pôr um item (aparece na hora, também sem internet). O produto
+   * da casa de mesmo nome vai junto como dica de preço, como no item comum.
+   */
+  function addPasted(pasted: PastedItem[]) {
+    setPasting(false);
+    for (const item of pasted) {
+      const product = productByName.get(normalizeSearch(item.name));
+      addItem.add(
+        {
+          name: item.name,
+          category: product?.category ?? item.category,
+          productId: product?.id ?? null,
+          quantity: item.quantity,
+          unit: item.unit,
+        },
+        session!.user.id,
+      );
+    }
   }
 
   /**
@@ -571,6 +666,8 @@ export default function ShoppingListScreen() {
       const guessed = guessCategory(details.name);
       if (!item.product_id && guessed !== 'outros' && guessed !== item.category) values.category = guessed;
     }
+    // A categoria escolhida nos detalhes vale mais que o chute pelo nome: o item muda de seção na tela e no texto.
+    if (details.category !== item.category) values.category = details.category;
     if (details.quantity !== Number(item.quantity)) values.quantity = details.quantity;
     if (details.unit !== item.unit) values.unit = details.unit;
     if (details.notes !== (item.notes ?? null)) values.notes = details.notes;
@@ -634,7 +731,7 @@ export default function ShoppingListScreen() {
               onChangeText={setName}
               placeholder="Adicionar item"
               returnKeyType="done"
-              onSubmitEditing={() => void add()}
+              onSubmitEditing={() => add()}
             />
           </View>
           <View style={styles.qty}>
@@ -652,7 +749,7 @@ export default function ShoppingListScreen() {
             left={<CategoryIcon category={product.category} name={itemName} size={32} />}
             title={itemName}
             subtitle="Produto com histórico de preço"
-            onPress={() => void add(product, itemName)}
+            onPress={() => add(product, itemName)}
           />
         ))}
         {suggestions.common.map((item) => (
@@ -661,13 +758,22 @@ export default function ShoppingListScreen() {
             left={<CategoryIcon category={item.category} name={item.name} size={32} />}
             title={item.name}
             subtitle={getCategory(item.category).label}
-            onPress={() => addCommon(item, true)}
+            onPress={() => addCommon(item)}
           />
         ))}
         {name.trim() ? (
-          <Button title={`Adicionar "${name.trim()}"`} icon="plus" compact onPress={() => void add()} />
+          <Button title={`Adicionar "${name.trim()}"`} icon="plus" compact onPress={() => add()} />
         ) : (
-          <Button title="Escolher dos itens comuns" icon="playlist-plus" variant="secondary" compact onPress={() => setPickerOpen(true)} />
+          <>
+            <Button title="Escolher dos itens comuns" icon="playlist-plus" variant="secondary" compact onPress={() => setPickerOpen(true)} />
+            <Button
+              title="Colar lista"
+              icon="clipboard-text-outline"
+              variant="ghost"
+              compact
+              onPress={() => setPasting(true)}
+            />
+          </>
         )}
         {barcode.available ? (
           <Button
@@ -719,7 +825,17 @@ export default function ShoppingListScreen() {
           title={`Para comprar (${pending.length})`}
           // Para quem vai às compras e não tem o app; sem nada para comprar não há o que mandar.
           action={<Button title="Mandar a lista" variant="ghost" compact onPress={() => setSharing(true)} />}>
-          <ShoppingGrid items={pending} photos={photos} hints={market.hints} onToggle={toggleItem} onOpen={setEditing} />
+          {/* Lista longa: os urgentes e depois os corredores, com os mesmos títulos do texto do WhatsApp. */}
+          {shoppingSections(pending).map((section) => (
+            <View key={section.title ?? 'lista'} style={styles.aisle}>
+              {section.title ? (
+                <Text variant="small" accessibilityRole="header">
+                  {section.title}
+                </Text>
+              ) : null}
+              <ShoppingGrid items={section.items} photos={photos} hints={market.hints} onToggle={toggleItem} onOpen={setEditing} />
+            </View>
+          ))}
         </Section>
       ) : checked.length ? (
         <EmptyState
@@ -751,7 +867,7 @@ export default function ShoppingListScreen() {
       {pending.length || checked.length ? (
         <Text variant="small" style={styles.center}>
           Toque num item para pôr no carrinho; toque de novo para devolver. Segure para ver os detalhes: foto,
-          descrição e prioridade.
+          descrição, prioridade e categoria.
           {checked.length ? ' No carrinho, a geladeira guarda o item na despensa.' : ''}
         </Text>
       ) : null}
@@ -787,6 +903,20 @@ export default function ShoppingListScreen() {
         />
       ) : null}
       <ListShareSheet visible={sharing} list={list.data} items={items.data} onClose={() => setSharing(false)} />
+      {pasting ? <PasteListModal pending={items.data} onAdd={addPasted} onClose={() => setPasting(false)} /> : null}
+      <ActionSheet
+        key={repeatedKey}
+        visible={Boolean(repeated)}
+        title="Já está na lista"
+        message={repeated ? repeatedMessage(repeated) : undefined}
+        actions={repeated ? repeatedActions(repeated) : []}
+        cancelLabel="Deixar como está"
+        // Deixar como está limpa o campo, como antes; o nome digitado diferente do da lista fica nele, para pôr depois.
+        onClose={() => {
+          if (repeated && !repeated.otherName) resetForm();
+          setRepeated(null);
+        }}
+      />
       <CommonItemsPicker
         visible={pickerOpen}
         listKind={list.data.kind}
@@ -814,4 +944,5 @@ const styles = StyleSheet.create({
   wrap: { flexWrap: 'wrap' },
   qty: { width: 72 },
   addCard: { gap: space.md },
+  aisle: { gap: space.sm },
 });
