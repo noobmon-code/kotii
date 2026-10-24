@@ -114,6 +114,8 @@ interface Repeated {
   listed: ShoppingListItem;
   item: NewListItem;
   otherName: boolean;
+  /** A pessoa disse a quantidade (o campo preenchido ou outra unidade escolhida). */
+  given: boolean;
 }
 
 export default function ShoppingListScreen() {
@@ -160,6 +162,9 @@ export default function ShoppingListScreen() {
   const [sharing, setSharing] = useState(false);
   const [pasting, setPasting] = useState(false);
   const [repeated, setRepeated] = useState<Repeated | null>(null);
+  // Um menu que não chegou a aparecer (no iOS, aberto enquanto outro Modal descia) não pode prender os próximos:
+  // a pergunta nova monta um menu novo.
+  const [repeatedKey, setRepeatedKey] = useState(0);
   const [storeChoice, setStoreChoice] = useState<StoreChoice | null>(() => chosenStores.get(id) ?? null);
   // Some da faixa já no toque; volta quando a lista carregada trouxer o item e ele sair dela depois.
   const justAdded = useJustListed(items.data);
@@ -220,6 +225,9 @@ export default function ShoppingListScreen() {
     setUnit('un');
   }
 
+  /** O campo da quantidade preenchido ou outra unidade escolhida: a pessoa disse quanto quer. */
+  const quantityGiven = () => quantity.trim() !== '' || unit !== 'un';
+
   // Pôr item vai pela fila da lista: aparece na hora, também sem internet, e o campo já fica livre para o próximo.
   // Se a fila desistir, o aviso sai dela (lib/queryClient), também com a tela já fechada. O produto escolhido na
   // busca entra sem a marca (`productName`, de genericItem), com ele como dica de preço.
@@ -236,6 +244,7 @@ export default function ShoppingListScreen() {
         unit,
       },
       !product && !productName,
+      quantityGiven(),
     );
   }
 
@@ -257,6 +266,7 @@ export default function ShoppingListScreen() {
         unit: unit !== 'un' ? unit : item.unit,
       },
       false,
+      quantityGiven(),
     );
   }
 
@@ -265,30 +275,56 @@ export default function ShoppingListScreen() {
    * item já para comprar nesta lista, com este nome ou outro ("Leite IL Desnatado" e "Leite desnatado"), não entra
    * de novo sem a pessoa dizer: ela escolhe entre somar a quantidade, pôr como outro item ou deixar como está.
    * `typed`: o nome digitado, que, diferente do pendente ("Leite" com "Leite IL Desnatado"), pode ser outro pedido.
+   * `given`: a pessoa disse a quantidade; sem ela, o item que já está em outra unidade só ganha o aviso, como antes.
    */
-  function put(item: NewListItem, typed: boolean) {
+  function put(item: NewListItem, typed: boolean, given: boolean) {
     const listed = pendingSameItem(item, items.data ?? []);
     if (listed) {
-      setRepeated({ listed, item, otherName: typed && listNameKey(listed.name) !== listNameKey(item.name) });
+      const otherName = typed && listNameKey(listed.name) !== listNameKey(item.name);
+      if (!otherName && repeatedQuantity(listed, { ...item, given }).kind === 'listed') {
+        notify('Já estava na lista', `${listed.name} já está na lista para comprar.`);
+        resetForm();
+        return;
+      }
+      if (repeated) setRepeatedKey((key) => key + 1);
+      setRepeated({ listed, item, otherName, given });
       return;
     }
     addItem.add(item, session!.user.id);
     resetForm();
   }
 
+  /**
+   * O item repetido como está agora na lista (outra pessoa pode ter mudado a quantidade); null se saiu ou foi para o
+   * carrinho. No desenho, os itens dele; no toque, os guardados agora (a escolha do menu roda depois que ele fecha).
+   */
+  const currentListed = (listed: ShoppingListItem, from = items.data) => {
+    const now = (from ?? []).find((i) => i.id === listed.id);
+    return now && !now.checked_at ? now : null;
+  };
+
+  /** "Somar", no toque: soma ao item como está agora; sem ele para comprar (ou em outra unidade), um item novo. */
+  function sumRepeated(listed: ShoppingListItem, item: NewListItem) {
+    resetForm();
+    const now = currentListed(listed, queryClient.getQueryData<ShoppingListItem[]>(['listItems', id]) ?? items.data);
+    const again = now ? repeatedQuantity(now, item) : null;
+    if (now && again?.kind === 'sum') {
+      edit.mutate({ id: now.id, listId: id, userId: session!.user.id, values: { quantity: again.quantity } }, { onError });
+    } else addItem.add(item, session!.user.id);
+  }
+
   /** "Já está na lista": na mesma unidade, somar; em outra unidade (ou com outro nome digitado), pôr como outro item. */
-  function repeatedActions({ listed, item, otherName }: Repeated): SheetAction[] {
-    const choice = repeatedQuantity(listed, item);
+  function repeatedActions({ listed, item, otherName, given }: Repeated): SheetAction[] {
+    const choice = repeatedQuantity(currentListed(listed) ?? listed, { ...item, given });
     const actions: SheetAction[] = [];
     if (choice.kind === 'sum') {
       actions.push({
         label: `Somar: fica ${formatQuantity(choice.quantity, item.unit)}`,
         icon: 'plus-circle-outline',
-        // A quantidade nova vai pela fila de edições, como nos detalhes do item: aparece na hora, também sem internet.
-        onPress: () => {
-          edit.mutate({ id: listed.id, listId: id, userId: session!.user.id, values: { quantity: choice.quantity } }, { onError });
-          resetForm();
-        },
+        // A soma sai do item como está no toque, e não de quando a pergunta abriu. A quantidade nova vai pela fila de
+        // edições, como nos detalhes do item: aparece na hora, também sem internet. O item que saiu da lista, foi para
+        // o carrinho ou mudou de unidade nesse meio-tempo não leva a soma: a quantidade entra como um item novo.
+        onPress: () => sumRepeated(listed, item),
       });
     }
     if (choice.kind === 'other_unit' || otherName) {
@@ -304,9 +340,11 @@ export default function ShoppingListScreen() {
     return actions;
   }
 
-  function repeatedMessage({ listed, item }: Repeated): string {
+  function repeatedMessage({ listed: asked, item, given }: Repeated): string {
+    const listed = currentListed(asked) ?? asked;
     const now = formatQuantity(Number(listed.quantity), listed.unit);
     const more = formatQuantity(item.quantity, item.unit);
+    if (repeatedQuantity(listed, { ...item, given }).kind === 'listed') return `${listed.name} já está na lista (${now}).`;
     return repeatedQuantity(listed, item).kind === 'sum'
       ? `${listed.name} já está na lista (${now}). Somar mais ${more}?`
       : `${listed.name} já está na lista com ${now}, e ${more} é outra unidade. Pôr como outro item ou deixar como está?`;
@@ -733,7 +771,6 @@ export default function ShoppingListScreen() {
               icon="clipboard-text-outline"
               variant="ghost"
               compact
-              accessibilityLabel="Colar uma lista de itens"
               onPress={() => setPasting(true)}
             />
           </>
@@ -868,6 +905,7 @@ export default function ShoppingListScreen() {
       <ListShareSheet visible={sharing} list={list.data} items={items.data} onClose={() => setSharing(false)} />
       {pasting ? <PasteListModal pending={items.data} onAdd={addPasted} onClose={() => setPasting(false)} /> : null}
       <ActionSheet
+        key={repeatedKey}
         visible={Boolean(repeated)}
         title="Já está na lista"
         message={repeated ? repeatedMessage(repeated) : undefined}

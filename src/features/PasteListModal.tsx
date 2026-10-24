@@ -46,14 +46,20 @@ export function PasteListModal({
     // Negada a licença ou sem nada copiado, a resposta é a mesma: vazio.
     const copied = await Clipboard.getStringAsync().catch(() => '');
     if (copied.trim()) setText(copied);
-    else notify('Nada para colar', 'Copie a lista e toque de novo, ou segure no campo e escolha colar.');
+    // Sem a licença (o navegador ou o celular pode negar), a resposta também vem vazia: o aviso não culpa ninguém.
+    else notify('Não deu para colar', 'Não deu para pegar o que foi copiado. Cole direto no campo.');
   }
 
   return (
     <Modal visible animationType="slide" onRequestClose={onClose}>
       <SafeAreaView style={[styles.flex, { backgroundColor: c.background }]}>
         <Backdrop />
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        {/* O teclado não cobre o botão de pôr: no iPhone a rolagem ganha o espaço dele, e arrastar fecha o teclado. */}
+        <ScrollView
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          automaticallyAdjustKeyboardInsets>
           <Row>
             <Text variant="heading" style={styles.flex}>
               Colar lista
@@ -99,7 +105,7 @@ export function PasteListModal({
           ) : null}
           {parsed.cut ? (
             <Text variant="small">
-              Só os primeiros {PASTE_MAX_ITEMS} itens entram de uma vez: {itemCount(parsed.cut)} ficaram de fora. Cole o
+              Só os primeiros {PASTE_MAX_ITEMS} itens entram de uma vez: {parsed.more ? 'mais de ' : ''}{itemCount(parsed.cut)} ficaram de fora. Cole o
               resto depois.
             </Text>
           ) : null}

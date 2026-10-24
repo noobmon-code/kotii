@@ -47,4 +47,12 @@ describe('repeatedQuantity', () => {
     // Nem gramas com quilos: "com a mesma unidade" é a mesma unidade.
     expect(repeatedQuantity({ quantity: 1, unit: 'kg' }, { quantity: 500, unit: 'g' })).toEqual({ kind: 'other_unit' });
   });
+
+  it('sem quantidade dita, a outra unidade é só a de sempre: o item já está na lista, sem pergunta', () => {
+    expect(repeatedQuantity({ quantity: 2, unit: 'l' }, { quantity: 1, unit: 'un', given: false })).toEqual({ kind: 'listed' });
+    // Na mesma unidade, ainda soma um.
+    expect(repeatedQuantity({ quantity: 2, unit: 'un' }, { quantity: 1, unit: 'un', given: false })).toEqual({ kind: 'sum', quantity: 3 });
+    // Dita, a outra unidade é um pedido: a pessoa escolhe.
+    expect(repeatedQuantity({ quantity: 2, unit: 'l' }, { quantity: 1, unit: 'un', given: true })).toEqual({ kind: 'other_unit' });
+  });
 });

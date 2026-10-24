@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { ScrollView } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import ShoppingListScreen from '@/app/lista/[id]/index';
@@ -46,7 +47,10 @@ jest.mock('expo-router', () => ({
   Stack: { Screen: () => null },
   useLocalSearchParams: () => ({ id: 'l1' }),
 }));
-jest.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({}) }));
+// O que está guardado da lista é o que a tela recebeu por último.
+jest.mock('@tanstack/react-query', () => ({
+  useQueryClient: () => ({ getQueryData: (key: unknown[]) => (key[0] === 'listItems' ? mockQueries.items?.data : undefined) }),
+}));
 jest.mock('@/data/home', () => ({ usePantry: () => mockQueries.pantry }));
 jest.mock('@/data/listPhotos', () => ({
   dropPendingPhotos: jest.fn(),
@@ -686,6 +690,82 @@ describe('a lista sem marca', () => {
     expect(fieldValue()).toBe('');
   });
 
+  it('somar parte do item como está no toque: outra pessoa mudou a quantidade, ou ele foi para o carrinho ou saiu', async () => {
+    const coffee = listItem('b', 'Café', null, 'cafe_cha');
+    mockQueries.items = loaded([coffee]);
+    await mount();
+    mockQueue.edit.mockClear();
+    const rerender = (items: ShoppingListItem[]) => {
+      mockQueries.items = loaded(items);
+      act(() => renderer!.update(<ShoppingListScreen />));
+    };
+    type('café');
+    typeQuantity('3');
+    await addTyped('café');
+    expect(repeatChoices()).toEqual(['Somar: fica 4 un']);
+    // Com a pergunta aberta, outra pessoa pôs 2: a pergunta e a soma acompanham.
+    rerender([{ ...coffee, quantity: 2 }]);
+    expect(repeatSheet().props.message).toBe('Café já está na lista (2 un). Somar mais 3 un?');
+    choose('Somar: fica 5 un');
+    expect(mockQueue.edit).toHaveBeenCalledWith({ id: 'b', listId: 'l1', userId: 'u1', values: { quantity: 5 } }, expect.anything());
+    expect(mockQueue.add).not.toHaveBeenCalled();
+
+    // Foi para o carrinho entre a pergunta e o toque: a quantidade entra como item novo, e o do carrinho fica como está.
+    rerender([coffee]);
+    type('café');
+    typeQuantity('3');
+    await addTyped('café');
+    const sum = (repeatSheet().props.actions as SheetAction[])[0];
+    rerender([{ ...coffee, checked_at: '2026-10-23T10:00:00Z' }]);
+    act(() => sum.onPress());
+    expect(mockQueue.edit).toHaveBeenCalledTimes(1);
+    expect(mockQueue.add).toHaveBeenCalledWith({ name: 'café', category: 'cafe_cha', productId: null, quantity: 3, unit: 'un' }, 'u1');
+
+    // Saiu da lista: também entra como item novo.
+    mockQueue.add.mockClear();
+    act(() => repeatSheet().props.onClose());
+    rerender([coffee]);
+    type('café');
+    typeQuantity('3');
+    await addTyped('café');
+    const again = (repeatSheet().props.actions as SheetAction[])[0];
+    rerender([]);
+    act(() => again.onPress());
+    expect(mockQueue.edit).toHaveBeenCalledTimes(1);
+    expect(mockQueue.add).toHaveBeenCalledWith(expect.objectContaining({ name: 'café', quantity: 3 }), 'u1');
+  });
+
+  it('com a quantidade apagada, o item já na lista em outra unidade só ganha o aviso, como antes', async () => {
+    mockQueries.items = loaded([{ ...listItem('a', 'Leite', null, 'laticinios'), quantity: 2, unit: 'l' }]);
+    await mount();
+    type('Leite');
+    typeQuantity('');
+    await addTyped('Leite');
+    expect(notify).toHaveBeenCalledWith('Já estava na lista', 'Leite já está na lista para comprar.');
+    expect(repeatSheet().props.visible).toBe(false);
+    expect(mockQueue.add).not.toHaveBeenCalled();
+    expect(fieldValue()).toBe('');
+    // Com a quantidade dita, a outra unidade é um pedido: a pergunta volta.
+    jest.mocked(notify).mockClear();
+    type('Leite');
+    typeQuantity('1');
+    await addTyped('Leite');
+    expect(notify).not.toHaveBeenCalled();
+    expect(repeatChoices()).toEqual(['Pôr 1 un como outro item']);
+  });
+
+  it('uma pergunta nova com a anterior ainda aberta (um menu que não apareceu) monta um menu novo, com o item novo', async () => {
+    mockQueries.items = loaded([listItem('a', 'Arroz', null, 'graos'), listItem('b', 'Café', null, 'cafe_cha')]);
+    await mount();
+    type('Arroz');
+    await addTyped('Arroz');
+    const before = repeatSheet();
+    type('Café');
+    await addTyped('Café');
+    expect(repeatSheet()).not.toBe(before);
+    expect(repeatSheet().props).toMatchObject({ visible: true, message: 'Café já está na lista (1 un). Somar mais 1 un?' });
+  });
+
   it('duas marcas digitadas de propósito entram as duas, sem perguntar', async () => {
     mockQueries.items = loaded([listItem('a', 'Biscoito Oreo', null, 'doces'), listItem('b', 'Shampoo Seda', null, 'higiene')]);
     await mount();
@@ -936,8 +1016,13 @@ describe('ajustes da lista: corredores, categoria e colar', () => {
       mockQueries.products = loaded([{ ...product('arroz-tio', 'Arroz'), category: 'graos' } as Product]);
       await mount();
       expect(modal()).toBeUndefined();
+      // O leitor de tela diz o que está escrito no botão.
+      const pasteButton = renderer!.root.findAll((node) => node.type === Button && node.props.title === 'Colar lista')[0];
+      expect(pasteButton.props.accessibilityLabel).toBeUndefined();
       open();
       expect(modalButton(/^Adicionar/).props.disabled).toBe(true);
+      // O teclado não cobre o botão de pôr: a rolagem ganha o espaço dele, e arrastar o fecha.
+      expect(modal().findByType(ScrollView).props).toMatchObject({ automaticallyAdjustKeyboardInsets: true, keyboardDismissMode: 'on-drag' });
       // O próprio texto que o app manda, com um item que já está na lista com a marca.
       act(() => pasteField().props.onChangeText('*Mercado* · 4 itens\n- 2 kg arroz\n- Café\n- leite desnatado (2)\n✅ banana'));
       const page = texts(renderer!.toJSON()).join('\n');
@@ -962,11 +1047,22 @@ describe('ajustes da lista: corredores, categoria e colar', () => {
       await mount();
       open();
       await act(async () => modalButton(/^Colar o que copiei$/).props.onPress());
-      expect(notify).toHaveBeenCalledWith('Nada para colar', 'Copie a lista e toque de novo, ou segure no campo e escolha colar.');
+      // Nada copiado ou a licença negada dão a mesma resposta vazia: o aviso serve para os dois, no celular e no computador.
+      expect(notify).toHaveBeenCalledWith('Não deu para colar', 'Não deu para pegar o que foi copiado. Cole direto no campo.');
       mockClipboard.text = 'arroz, feijão';
       await act(async () => modalButton(/^Colar o que copiei$/).props.onPress());
       expect(pasteField().props.value).toBe('arroz, feijão');
       expect(modalButton(/^Adicionar/).props.title).toBe('Adicionar 2 itens');
+    });
+
+    it('texto enorme: diz que só os primeiros entram, e "mais de" quando a conta parou', async () => {
+      await mount();
+      open();
+      act(() => pasteField().props.onChangeText(Array.from({ length: 150 }, (_, i) => `item ${i + 1}`).join('\n')));
+      expect(texts(renderer!.toJSON()).join('')).toContain('Só os primeiros 100 itens entram de uma vez: 50 itens ficaram de fora.');
+      act(() => pasteField().props.onChangeText(Array.from({ length: 1500 }, (_, i) => `item ${i + 1}`).join('\n')));
+      expect(texts(renderer!.toJSON()).join('')).toContain('Só os primeiros 100 itens entram de uma vez: mais de 1000 itens ficaram de fora.');
+      expect(modalButton(/^Adicionar/).props.title).toBe('Adicionar 100 itens');
     });
 
     it('texto sem item nenhum: diz isso, e não há o que adicionar', async () => {

@@ -74,8 +74,75 @@ describe('parsePastedList: os formatos', () => {
   });
 
   it('texto vazio: nada', () => {
-    expect(parsePastedList('')).toEqual({ items: [], cut: 0 });
-    expect(parsePastedList('\n\n  \n')).toEqual({ items: [], cut: 0 });
+    expect(parsePastedList('')).toEqual({ items: [], cut: 0, more: false });
+    expect(parsePastedList('\n\n  \n')).toEqual({ items: [], cut: 0, more: false });
+  });
+
+  it('numeração em outros formatos: "1- ", "1 - ", "1.Arroz", "3)Óleo" e o número em emoji não viram quantidade', () => {
+    expect(read('1- Arroz\n2- Feijão\n3 - Óleo\n4 – Sal')).toEqual([['Arroz', 1, 'un'], ['Feijão', 1, 'un'], ['Óleo', 1, 'un'], ['Sal', 1, 'un']]);
+    expect(read('1 - 2 kg arroz\n2 - leite (2)')).toEqual([['Arroz', 2, 'kg'], ['Leite', 2, 'un']]);
+    expect(read('1.Arroz\n3)Óleo')).toEqual([['Arroz', 1, 'un'], ['Óleo', 1, 'un']]);
+    const keycap = (n: string) => n + String.fromCodePoint(0xfe0f, 0x20e3);
+    expect(read(`${keycap('1')} Arroz\n${keycap('3')} Óleo\n${keycap('4')}Sal`)).toEqual([['Arroz', 1, 'un'], ['Óleo', 1, 'un'], ['Sal', 1, 'un']]);
+  });
+
+  it('sem a sequência 1, 2, 3, o número com traço continua sendo a quantidade; "1.5 kg" também', () => {
+    expect(read('2 - leite')).toEqual([['Leite', 2, 'un']]);
+    expect(read('3 - leite\n5 - pão')).toEqual([['Leite', 3, 'un'], ['Pão', 5, 'un']]);
+    expect(read('1.5 kg arroz\n2.5 kg feijão')).toEqual([['Arroz', 1.5, 'kg'], ['Feijão', 2.5, 'kg']]);
+  });
+
+  it('frações: "1/2 kg", "1 1/2 kg", "½ kg", "1½ l", "(1/2 kg)"; o que não é fração fica no nome', () => {
+    expect(read('1/2 kg queijo')).toEqual([['Queijo', 0.5, 'kg']]);
+    expect(read('1 1/2 kg carne')).toEqual([['Carne', 1.5, 'kg']]);
+    expect(read('½ kg presunto')).toEqual([['Presunto', 0.5, 'kg']]);
+    expect(read('1½ l leite')).toEqual([['Leite', 1.5, 'l']]);
+    expect(read('1/3 kg de queijo')).toEqual([['Queijo', 0.333, 'kg']]);
+    expect(read('Queijo (1/2 kg)')).toEqual([['Queijo', 0.5, 'kg']]);
+    expect(read('23/10 compras')).toEqual([['23/10 compras', 1, 'un']]);
+  });
+
+  it('só a quantidade, sem o que comprar, não vira item; "(2) leite", "x2 leite" e dúzia valem', () => {
+    expect(read('2 kg\n2 kg de\n3x\n2 un')).toEqual([]);
+    // A embalagem sozinha continua sendo o nome.
+    expect(read('2 garrafas\n3 latas de')).toEqual([['Garrafas', 2, 'un'], ['Latas', 3, 'un']]);
+    expect(read('(2) leite\n(2 kg) arroz\nx2 pão')).toEqual([['Leite', 2, 'un'], ['Arroz', 2, 'kg'], ['Pão', 2, 'un']]);
+    expect(read('1 dz ovos\n2 dúzias de ovos caipira\nBanana (1 dz)')).toEqual([['Ovos', 12, 'un'], ['Ovos caipira', 24, 'un'], ['Banana', 12, 'un']]);
+  });
+
+  it('em gramas e mililitros, "1.000" é mil; em quilos e litros, "1.500" continua um e meio', () => {
+    expect(read('1.000 g farinha\n2.000 ml água\n1.500 kg carne\n1,5 g fermento')).toEqual([
+      ['Farinha', 1000, 'g'],
+      ['Água', 2000, 'ml'],
+      ['Carne', 1.5, 'kg'],
+      ['Fermento', 1.5, 'g'],
+    ]);
+  });
+
+  it('negrito ou itálico no meio da lista é o item em destaque; título só na primeira linha, nas seções e com "· N itens"', () => {
+    expect(read('- Arroz\n*Feijão*\n_óleo_')).toEqual([['Arroz', 1, 'un'], ['Feijão', 1, 'un'], ['Óleo', 1, 'un']]);
+    expect(read('*Feira*\n- Arroz\n*Laticínios*\n- Leite\n_Urgente_\n- Pão\n*Mercado* · 3 itens\n- Sal')).toEqual([
+      ['Arroz', 1, 'un'],
+      ['Leite', 1, 'un'],
+      ['Pão', 1, 'un'],
+      ['Sal', 1, 'un'],
+    ]);
+  });
+
+  it('"2 em 1" é do nome; "3 Corações" (a marca) vira 3 un de "Corações": um número na frente é a quantidade', () => {
+    expect(read('2 em 1 shampoo')).toEqual([['2 em 1 shampoo', 1, 'un']]);
+    // Limite conhecido: sem saber as marcas, "3 Corações" é lido como "3 leite". Quem cola corrige na lista.
+    expect(read('- 3 Corações')).toEqual([['Corações', 3, 'un']]);
+  });
+
+  it('um texto enorme não trava: a linha comprida é cortada e a conta para bem depois do limite', () => {
+    const lines = Array.from({ length: 1500 }, (_, i) => `item ${i + 1}`).join('\n');
+    expect(parsePastedList(lines)).toMatchObject({ cut: 1000, more: true });
+    expect(parsePastedList(lines).items).toHaveLength(PASTE_MAX_ITEMS);
+    const long = parsePastedList('arroz,'.repeat(40000));
+    expect(long.items).toHaveLength(PASTE_MAX_ITEMS);
+    expect(long.more).toBe(false);
+    expect(long.cut).toBeLessThan(1000);
   });
 });
 
@@ -125,6 +192,16 @@ describe('parsePastedList: o texto que o próprio app manda', () => {
     const one = [item('Dipirona', { category: 'medicamentos', notes: 'em gotas' })];
     expect(listShareText({ name: 'Farmácia' }, one)).toBe('*Farmácia*\n- Dipirona (em gotas)');
     expect(back(listShareText({ name: 'Farmácia' }, one)!)).toEqual([['Dipirona', 1, 'un']]);
+  });
+
+  it('limites conhecidos: vírgula no nome separa em dois itens, e parêntese sem par na descrição fica no nome', () => {
+    // A vírgula é o jeito mais comum de pôr vários itens numa linha ("arroz, feijão"); o nome com vírgula é raro.
+    const text = listShareText({ name: 'Padaria' }, [
+      item('Pão, queijo', { category: 'padaria' }),
+      item('Sabão', { category: 'limpeza', notes: 'o de 1,6 kg (azul' }),
+    ])!;
+    expect(text).toBe('*Padaria* · 2 itens\n- Pão, queijo\n- Sabão (o de 1,6 kg (azul)');
+    expect(read(text)).toEqual([['Pão', 1, 'un'], ['Queijo', 1, 'un'], ['Sabão (o de 1,6 kg', 1, 'un']]);
   });
 });
 
