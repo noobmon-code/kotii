@@ -10,6 +10,8 @@ import { notify } from '@/ui/dialogs';
 
 import { accessErrorMessage, EXPECTS_ROWS_META, NO_HOUSEHOLD_ACCESS, REMOVED_FROM_HOUSEHOLD } from '../accessErrors';
 import { setActiveHousehold } from '../activeHousehold';
+import { addedHere, rememberAdded } from '../addedItems';
+import { chooseStore } from '../storeChoice';
 import { cacheOwners, forgetCache, persistOptions, queryClient, saveNow, setSessionValid } from '../queryClient';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
@@ -103,6 +105,20 @@ describe('cache guardado no aparelho', () => {
     await flush();
     expect(await stored()).toBeNull();
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
+  });
+
+  it('sair da conta apaga também o "Onde estou" e os itens que este aparelho pôs em cada lista', async () => {
+    chooseStore('l1', 's1');
+    rememberAdded('l1', ['i1']);
+    await flush();
+    expect(await AsyncStorage.getItem('kotii:store-choice:l1')).not.toBeNull();
+    expect(await AsyncStorage.getItem('kotii:added-items:l1')).not.toBeNull();
+
+    forgetCache();
+    await flush();
+    expect(await AsyncStorage.getItem('kotii:store-choice:l1')).toBeNull();
+    expect(await AsyncStorage.getItem('kotii:added-items:l1')).toBeNull();
+    expect(addedHere('l1').size).toBe(0);
   });
 
   it('prestadores e serviços (nomes e telefones de gente de fora da casa) não ficam guardados no aparelho', async () => {

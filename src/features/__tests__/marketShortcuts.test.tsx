@@ -17,6 +17,9 @@ jest.mock('expo-router', () => ({ router: { push: (...args: unknown[]) => mockRo
 jest.mock('@/data/market', () => ({
   useShoppingLists: () => ({ data: mockLists.data, isPending: false, isError: false, error: null, refetch: jest.fn() }),
   useCreateList: () => ({ mutate: jest.fn(), isPending: false }),
+  // As arquivadas têm os testes delas (listsManage.test): aqui, nenhuma.
+  useArchivedLists: () => ({ data: [] }),
+  useReopenList: () => ({ mutate: jest.fn(), isPending: false }),
 }));
 jest.mock('@/ui/dialogs', () => ({ notify: jest.fn() }));
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: { message?: string }) => error?.message ?? 'Algo deu errado.' }));

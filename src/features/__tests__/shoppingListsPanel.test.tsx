@@ -21,6 +21,9 @@ const mockLists: { current?: Query } = {};
 
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 jest.mock('@/data/market', () => ({
+  // As arquivadas têm os testes delas (listsManage.test): aqui, nenhuma.
+  useArchivedLists: () => ({ data: [] }),
+  useReopenList: () => ({ mutate: jest.fn(), isPending: false }),
   useCreateList: () => ({ mutate: jest.fn(), isPending: false }),
   useShoppingLists: () => mockLists.current,
 }));

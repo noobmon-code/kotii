@@ -2,7 +2,8 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { useCreateList, useShoppingLists } from '@/data/market';
+import { useArchivedLists, useCreateList, useReopenList, useShoppingLists } from '@/data/market';
+import { formatShortDate, toISODate } from '@/domain/dates';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { isNetworkFailure } from '@/lib/networkErrors';
 import type { ListKind } from '@/lib/types';
@@ -47,6 +48,10 @@ export function ShoppingListsPanel() {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
   const [kind, setKind] = useState<ListKind>('mercado');
+  // As arquivadas: uma entrada discreta, só quando há alguma; abertas, cada uma com "Reabrir".
+  const archived = useArchivedLists();
+  const reopen = useReopenList();
+  const [showArchived, setShowArchived] = useState(false);
 
   function create() {
     const trimmed = name.trim() || LIST_KINDS.find((k) => k.value === kind)!.label;
@@ -96,11 +101,16 @@ export function ShoppingListsPanel() {
       ) : null}
 
       {lists.data.length === 0 && !creating ? (
-        <EmptyState
-          icon="cart-outline"
-          title="Nenhuma lista ainda"
-          message="Crie uma lista e toda a família vê e marca os itens em tempo real."
-        />
+        // Todas arquivadas: a casa já teve listas.
+        archived.data?.length ? (
+          <EmptyState icon="cart-outline" title="Nenhuma lista aberta" message="Crie uma lista nova ou reabra uma das arquivadas." />
+        ) : (
+          <EmptyState
+            icon="cart-outline"
+            title="Nenhuma lista ainda"
+            message="Crie uma lista e toda a família vê e marca os itens em tempo real."
+          />
+        )
       ) : lists.data.length ? (
         <Section title="Suas listas">
           <ListCard>
@@ -118,6 +128,41 @@ export function ShoppingListsPanel() {
         </Section>
       ) : null}
 
+      {archived.data?.length ? (
+        <View style={styles.gapSm}>
+          <Button
+            title={showArchived ? 'Esconder as arquivadas' : 'Listas arquivadas'}
+            icon="archive-outline"
+            variant="ghost"
+            compact
+            onPress={() => setShowArchived((open) => !open)}
+          />
+          {showArchived ? (
+            <ListCard>
+              {archived.data.map((l) => (
+                <ListRow
+                  key={l.id}
+                  left={<CategoryIcon category={KIND_ART[l.kind] ?? 'outros'} size={36} />}
+                  title={l.name}
+                  subtitle={l.archived_at ? `Arquivada em ${formatShortDate(toISODate(new Date(l.archived_at)))}` : undefined}
+                  right={
+                    <Button
+                      title="Reabrir"
+                      accessibilityLabel={`Reabrir a lista ${l.name}`}
+                      variant="secondary"
+                      compact
+                      loading={reopen.isPending && reopen.variables === l.id}
+                      onPress={() => reopen.mutate(l.id, { onError: (err) => notify('Não deu para reabrir a lista', errorMessage(err)) })}
+                    />
+                  }
+                  onPress={() => router.push({ pathname: '/lista/[id]', params: { id: l.id } })}
+                />
+              ))}
+            </ListCard>
+          ) : null}
+        </View>
+      ) : null}
+
       {/* Daqui também se chega ao dinheiro do mercado, que nasce das notas das compras destas listas. */}
       <FeatureCard
         gradient="salvia"
@@ -132,6 +177,7 @@ export function ShoppingListsPanel() {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   gap: { gap: space.lg },
+  gapSm: { gap: space.sm },
   wrap: { flexWrap: 'wrap' },
   tiles: { alignItems: 'stretch' },
 });

@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { router } from 'expo-router';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import WhereToBuyScreen from '@/app/lista/[id]/onde-comprar';
@@ -6,6 +8,7 @@ import { formatShortDate, toISODate } from '@/domain/dates';
 import { LinkIndex } from '@/domain/listLinks';
 import { SHARED_PRICES_NOTICE, type SharedPrice } from '@/domain/sharedPrices';
 import type { LatestPrice, Product, ShoppingListItem, Store } from '@/lib/types';
+import { Button } from '@/ui/primitives';
 
 // "Onde comprar" de verdade, com as buscas trocadas por respostas prontas: o que se confere aqui é o que a tela
 // faz com os preços de outras casas (onde a casa não tem preço num mercado dela, e os mercados de fora à parte), e
@@ -23,7 +26,13 @@ interface Query {
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockQueries: Record<string, Query> = {};
 
-jest.mock('expo-router', () => ({ useLocalSearchParams: () => ({ id: 'l1' }) }));
+jest.mock('expo-router', () => ({
+  router: { back: jest.fn(), canGoBack: () => true, replace: jest.fn() },
+  useLocalSearchParams: () => ({ id: 'l1' }),
+}));
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
+);
 jest.mock('@/data/market', () => ({
   useLatestPrices: () => mockQueries.prices,
   useListItems: () => mockQueries.items,
@@ -195,5 +204,30 @@ describe('"Onde comprar" com os preços de outras casas', () => {
   it('a primeira busca ainda anda: espera, para o total não mudar logo depois', async () => {
     mockQueries.shared = onTheWay();
     expect(await mount()).toContain('Comparando preços…');
+  });
+});
+
+describe('"Vou neste"', () => {
+  beforeEach(async () => {
+    await AsyncStorage.clear();
+    jest.mocked(router.back).mockClear();
+  });
+  const chosen = async () => JSON.parse((await AsyncStorage.getItem('kotii:store-choice:l1')) ?? 'null')?.storeId;
+
+  it('no plano de um mercado: escolhe o mercado no "Onde estou" da lista e volta para ela', async () => {
+    const page = await mount();
+    expect(page).toContain('Melhor opção\nDia');
+    const go = renderer!.root.findAllByType(Button).find((entry) => entry.props.title === 'Vou neste' && !entry.props.accessibilityLabel)!;
+    await act(async () => go.props.onPress());
+    expect(await chosen()).toBe('dia');
+    expect(router.back).toHaveBeenCalledTimes(1);
+  });
+
+  it('em cada linha do ranking, o mercado daquela linha', async () => {
+    await mount();
+    const go = renderer!.root.findAllByType(Button).find((entry) => entry.props.accessibilityLabel === 'Vou neste: Assaí')!;
+    await act(async () => go.props.onPress());
+    expect(await chosen()).toBe('assai');
+    expect(router.back).toHaveBeenCalledTimes(1);
   });
 });

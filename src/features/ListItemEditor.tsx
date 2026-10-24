@@ -64,11 +64,13 @@ export function ListItemEditor({
   photoUri: string | null;
   /** A foto atual ainda não subiu. */
   photoPending: boolean;
-  onSave: (details: ItemDetails, photo: PhotoChange) => void;
-  onRemove: () => void;
+  /** Sem eles (a lista arquivada), os detalhes são só para ver: sem foto nova, sem salvar e sem remover. */
+  onSave?: (details: ItemDetails, photo: PhotoChange) => void;
+  onRemove?: () => void;
   onClose: () => void;
 }) {
   const c = useColors();
+  const readOnly = !onSave || !onRemove;
   const [name, setName] = useState(item.name);
   const initialQuantity = formatQuantity(Number(item.quantity), item.unit).split(' ')[0];
   const [quantity, setQuantity] = useState(initialQuantity);
@@ -152,17 +154,21 @@ export function ListItemEditor({
                 A foto sobe quando tiver internet.
               </Text>
             ) : null}
-            <Row>
-              <View style={styles.flex}>
-                <Button title="Tirar foto" icon="camera-outline" variant="secondary" compact onPress={() => choose('camera')} />
-              </View>
-              <View style={styles.flex}>
-                <Button title="Da galeria" icon="image-outline" variant="secondary" compact onPress={() => choose('library')} />
-              </View>
-            </Row>
-            {shown ? (
-              <Button title="Remover a foto" variant="ghost" compact onPress={() => setPhoto({ kind: 'remove' })} />
-            ) : null}
+            {readOnly ? null : (
+              <>
+                <Row>
+                  <View style={styles.flex}>
+                    <Button title="Tirar foto" icon="camera-outline" variant="secondary" compact onPress={() => choose('camera')} />
+                  </View>
+                  <View style={styles.flex}>
+                    <Button title="Da galeria" icon="image-outline" variant="secondary" compact onPress={() => choose('library')} />
+                  </View>
+                </Row>
+                {shown ? (
+                  <Button title="Remover a foto" variant="ghost" compact onPress={() => setPhoto({ kind: 'remove' })} />
+                ) : null}
+              </>
+            )}
           </View>
 
           {/* Item com produto e ainda sem preço também leva ao produto: o histórico e os preços de outras casas ficam lá. */}
@@ -186,80 +192,96 @@ export function ListItemEditor({
             </Card>
           ) : null}
 
-          <View style={styles.gap}>
-            <Text variant="label">Prioridade</Text>
-            <View style={styles.wrap}>
-              {PRIORITIES.map((p) => (
-                <Chip key={p.key} label={p.label} selected={priority === p.key} onPress={() => setPriority(p.key)} />
-              ))}
-            </View>
-          </View>
-
-          <TextField
-            label="Descrição"
-            value={notes}
-            onChangeText={setNotes}
-            placeholder="Ex.: o de coco, embalagem azul, 2 L"
-            multiline
-            maxLength={MAX_NOTES}
-          />
-
-          <TextField label="Nome" value={name} onChangeText={setName} />
-          {offersBrand ? (
-            <View style={styles.gap}>
-              <View style={styles.wrap}>
-                <Chip label="Marca preferida" icon="star-outline" selected={prefersBrand} onPress={toggleBrand} />
-              </View>
-              <Text variant="small">
-                {brandHint(prefersBrand, brand ?? null)}
+          {readOnly ? (
+            // Lista arquivada: o item como está, sem campos para mudar.
+            <Card style={styles.gap}>
+              <Text variant="label">{item.name}</Text>
+              <Text variant="muted">
+                {formatQuantity(Number(item.quantity), item.unit)} · {getCategory(item.category).label}
               </Text>
-            </View>
-          ) : null}
-          <Row style={styles.qtyRow}>
-            <View style={styles.qty}>
-              <TextField label="Quantidade" value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" />
-            </View>
-            <View style={[styles.flex, styles.wrap]}>
-              {UNITS.map((u) => (
-                <Chip key={u} label={u} selected={unit === u} onPress={() => setUnit(u)} />
-              ))}
-            </View>
-          </Row>
+              {item.priority && item.priority !== 'normal' ? (
+                <Text variant="muted">{PRIORITIES.find((p) => p.key === item.priority)?.label}</Text>
+              ) : null}
+              {item.notes ? <Text variant="body">{item.notes}</Text> : null}
+            </Card>
+          ) : (
+            <>
+              <View style={styles.gap}>
+                <Text variant="label">Prioridade</Text>
+                <View style={styles.wrap}>
+                  {PRIORITIES.map((p) => (
+                    <Chip key={p.key} label={p.label} selected={priority === p.key} onPress={() => setPriority(p.key)} />
+                  ))}
+                </View>
+              </View>
 
-          {/* A categoria é a seção do item: o chute pelo nome pode errar ("Rúcula" em "Outros"), e a pessoa corrige. */}
-          <View style={styles.gap}>
-            <Text variant="label">Categoria</Text>
-            <View style={styles.wrap}>
-              <Chip
-                label={getCategory(category).label}
-                icon="tag-outline"
-                onPress={() => setPickingCategory(true)}
-                accessibilityLabel={`Categoria: ${getCategory(category).label}. Trocar a categoria`}
+              <TextField
+                label="Descrição"
+                value={notes}
+                onChangeText={setNotes}
+                placeholder="Ex.: o de coco, embalagem azul, 2 L"
+                multiline
+                maxLength={MAX_NOTES}
               />
-            </View>
-            <Text variant="small">Decide em que parte da lista o item aparece, aqui e no texto que vai pelo WhatsApp.</Text>
-          </View>
 
-          <Button
-            title="Salvar"
-            icon="check"
-            disabled={invalid}
-            onPress={() =>
-              onSave(
-                {
-                  name: name.trim(),
-                  quantity: qty!,
-                  unit,
-                  category,
-                  notes: notes.trim() || null,
-                  priority,
-                  ...(offersBrand ? { brandPreferred: prefersBrand } : {}),
-                },
-                photo,
-              )
-            }
-          />
-          <Button title="Remover da lista" variant="danger" icon="trash-can-outline" onPress={onRemove} />
+              <TextField label="Nome" value={name} onChangeText={setName} />
+              {offersBrand ? (
+                <View style={styles.gap}>
+                  <View style={styles.wrap}>
+                    <Chip label="Marca preferida" icon="star-outline" selected={prefersBrand} onPress={toggleBrand} />
+                  </View>
+                  <Text variant="small">
+                    {brandHint(prefersBrand, brand ?? null)}
+                  </Text>
+                </View>
+              ) : null}
+              <Row style={styles.qtyRow}>
+                <View style={styles.qty}>
+                  <TextField label="Quantidade" value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" />
+                </View>
+                <View style={[styles.flex, styles.wrap]}>
+                  {UNITS.map((u) => (
+                    <Chip key={u} label={u} selected={unit === u} onPress={() => setUnit(u)} />
+                  ))}
+                </View>
+              </Row>
+
+              {/* A categoria é a seção do item: o chute pelo nome pode errar ("Rúcula" em "Outros"), e a pessoa corrige. */}
+              <View style={styles.gap}>
+                <Text variant="label">Categoria</Text>
+                <View style={styles.wrap}>
+                  <Chip
+                    label={getCategory(category).label}
+                    icon="tag-outline"
+                    onPress={() => setPickingCategory(true)}
+                    accessibilityLabel={`Categoria: ${getCategory(category).label}. Trocar a categoria`}
+                  />
+                </View>
+                <Text variant="small">Decide em que parte da lista o item aparece, aqui e no texto que vai pelo WhatsApp.</Text>
+              </View>
+
+              <Button
+                title="Salvar"
+                icon="check"
+                disabled={invalid}
+                onPress={() =>
+                  onSave?.(
+                    {
+                      name: name.trim(),
+                      quantity: qty!,
+                      unit,
+                      category,
+                      notes: notes.trim() || null,
+                      priority,
+                      ...(offersBrand ? { brandPreferred: prefersBrand } : {}),
+                    },
+                    photo,
+                  )
+                }
+              />
+              <Button title="Remover da lista" variant="danger" icon="trash-can-outline" onPress={onRemove} />
+            </>
+          )}
         </ScrollView>
         <PickerModal
           visible={pickingCategory}
