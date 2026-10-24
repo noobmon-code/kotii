@@ -172,9 +172,11 @@ function AppNavigator() {
           <Stack.Screen name="configuracoes" options={{ title: 'Configurações' }} />
           <Stack.Screen name="moderacao" options={{ title: 'Nomes dos mercados' }} />
         </Stack.Protected>
-        {/* Apagar a conta: de Configurações (aba Família) e também sem casa nenhuma (tela de boas-vindas). */}
+        {/* Sem depender de casa: apagar a conta (de Configurações, aba Família, e da tela de boas-vindas, sem casa
+            nenhuma) e o Painel do app (de Configurações ou por /painel; só quem está em app_admins vê os números). */}
         <Stack.Protected guard={signedIn && !newPassword}>
           <Stack.Screen name="apagar-conta" options={{ title: 'Apagar minha conta' }} />
+          <Stack.Screen name="painel" options={{ title: 'Painel do app' }} />
         </Stack.Protected>
         {/* Os termos abrem em qualquer estado (sem conta, criando a senha nova, sem casa ou numa casa). Ficam por
             último: com uma guarda desligada, o app volta para a primeira tela disponível, que nunca é esta. */}
