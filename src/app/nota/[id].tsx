@@ -16,6 +16,7 @@ import {
 } from '@/data/market';
 import {
   receiptImageUrl,
+  useConfirmedNear,
   useConfirmReceipt,
   useCorrectReceipt,
   useDeleteReceipt,
@@ -35,6 +36,7 @@ import { joinNames, receiptPantryRepeats } from '@/domain/cartPantry';
 import { CATEGORIES, getCategory } from '@/domain/categories';
 import { COMMON_ITEMS } from '@/domain/commonItems';
 import { formatBRDate, formatShortDate, parseBRDate, toISODate } from '@/domain/dates';
+import { duplicateReceiptNotice, findDuplicateReceipt } from '@/domain/duplicateReceipt';
 import {
   applyListChoices,
   forgottenLinks,
@@ -187,6 +189,8 @@ export default function ReceiptScreen() {
   const learned = useLearnedAbbreviations({ enabled: reviewing });
   // As compras recentes só servem aos nomes parecidos, que só aparecem na nota em revisão.
   const purchases = usePurchaseRecords({ enabled: reviewing });
+  // As notas confirmadas perto do dia do rascunho: a mesma compra lida duas vezes ganha um aviso (domain/duplicateReceipt).
+  const nearby = useConfirmedNear(receiptQuery.data?.receipt.purchased_at, reviewing);
 
   const [overrides, setOverrides] = useState<Record<string, ItemOverride>>({});
   const [listChoices, setListChoices] = useState<Record<string, ListChoice>>({});
@@ -296,6 +300,21 @@ export default function ReceiptScreen() {
   // O mercado da nota, como a lista da casa o tem: o nome impresso, quando a casa deu outro, e se dá para renomear.
   const noteStore = receipt.store_id ? stores.data?.find((s) => s.id === receipt.store_id) : undefined;
   const notePrinted = noteStore ? printedNameLine(noteStore) : null;
+  // Só aviso: confirmar continua possível (duas compras iguais no mesmo dia acontecem).
+  const duplicate =
+    isDraft && nearby.data
+      ? findDuplicateReceipt(
+          {
+            id: receipt.id,
+            storeId: receipt.store_id,
+            storeCnpj: noteStore?.cnpj ?? null,
+            storeName: receipt.store?.name ?? null,
+            purchasedAt: receipt.purchased_at,
+            total: receipt.total,
+          },
+          nearby.data,
+        )
+      : null;
   const alertText = (alert: PriceAlert | undefined) =>
     alert ? describePriceAlert(alert, alert.kind === 'cheaper_elsewhere' ? storeName(alert.storeId) : undefined) : null;
 
@@ -807,6 +826,39 @@ export default function ReceiptScreen() {
         ) : undefined
       }>
       <Stack.Screen options={{ title: isDraft ? 'Revisar nota' : 'Nota fiscal' }} />
+
+      {duplicate ? (
+        <Card style={styles.gapSm}>
+          <Row>
+            <Icon name="content-duplicate" color="warning" />
+            <Text variant="body" style={styles.flex}>
+              {duplicateReceiptNotice(duplicate)}
+            </Text>
+          </Row>
+          <Row>
+            <Button
+              title="Ver a outra nota"
+              variant="secondary"
+              compact
+              onPress={() => router.push({ pathname: '/nota/[id]', params: { id: duplicate.id } })}
+            />
+            <Button
+              title="Excluir esta"
+              variant="ghost"
+              icon="trash-can-outline"
+              compact
+              onPress={() =>
+                confirmAction(
+                  'Excluir esta nota?',
+                  'Os itens lidos nesta revisão serão apagados. A outra nota continua como está.',
+                  'Excluir',
+                  () => deleteReceipt.mutate(photos, { onSuccess: () => router.back(), onError }),
+                )
+              }
+            />
+          </Row>
+        </Card>
+      ) : null}
 
       <Card style={styles.gap}>
         {/* O cabeçalho (mercado, data, total e quem pagou) se corrige na revisão e na nota confirmada. */}

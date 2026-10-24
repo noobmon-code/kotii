@@ -4,6 +4,7 @@ import {
   accessKeyCheckDigit,
   localDateTimeToISO,
   NFCE_CAPTCHA,
+  NFCE_CAPTCHA_STATE,
   nfceFailureRoute,
   nfceItemsToDraft,
   nfceStoreCodes,
@@ -153,6 +154,7 @@ describe('quando a Sefaz não mostra a nota', () => {
   it('com o "não sou robô", a nota vai direto para a foto; nos outros erros a pessoa fica no QR', () => {
     expect(nfceFailureRoute(NFCE_CAPTCHA)).toBe('photo');
     expect(nfceFailureRoute('captcha')).toBe('photo');
+    expect(nfceFailureRoute(NFCE_CAPTCHA_STATE)).toBe('photo');
     expect(nfceFailureRoute('no_items')).toBe('stay');
     expect(nfceFailureRoute('sefaz_down')).toBe('stay');
     expect(nfceFailureRoute(null)).toBe('stay');
