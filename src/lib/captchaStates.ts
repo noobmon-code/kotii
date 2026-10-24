@@ -4,7 +4,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { parseCaptchaStates, withCaptchaState } from '@/domain/captchaStates';
+import { parseCaptchaStates, withCaptchaState, withoutCaptchaState } from '@/domain/captchaStates';
 
 const STORAGE_KEY = 'kotii:sefaz-captcha';
 
@@ -14,6 +14,15 @@ export async function readCaptchaStates(): Promise<Record<string, string>> {
     return parseCaptchaStates(await AsyncStorage.getItem(STORAGE_KEY));
   } catch {
     return {};
+  }
+}
+
+/** A pessoa pediu para tentar a Sefaz de novo: o estado sai. Sem armazenamento, nada muda. */
+export async function forgetCaptchaState(uf: string): Promise<void> {
+  try {
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(withoutCaptchaState(await readCaptchaStates(), uf)));
+  } catch {
+    // Sem armazenamento não havia estado guardado.
   }
 }
 

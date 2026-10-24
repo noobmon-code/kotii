@@ -10,6 +10,7 @@ import { captchaStateNote, captchaStateStep } from '@/domain/captchaStates';
 import { NFCE_CAPTCHA, NFCE_CAPTCHA_STATE, nfceFailureRoute, parseNfceQr, qrReadStep } from '@/domain/nfce';
 import { PendingReceiptCard } from '@/features/PendingReceiptCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
+import { useSefazRetry } from '@/features/sefazRetry';
 import { prepareBarcodeReader } from '@/lib/barcodeReader';
 import { readCaptchaStates, rememberCaptchaState } from '@/lib/captchaStates';
 import { errorMessage } from '@/lib/supabase';
@@ -39,6 +40,15 @@ export default function NfceQrScreen() {
   const captchaKeys = useRef(new Map<string, string>());
   // A câmera lê o mesmo QR várias vezes por segundo: um de cada vez.
   const busy = useRef(false);
+  // "Tentar a Sefaz de novo" no passo a passo daqui (quando a pendente não pôde ser guardada).
+  const sefazRetry = useSefazRetry({
+    onRead: (key) => {
+      captchaKeys.current.delete(key);
+      return pendingReceipts.discard(key);
+    },
+    onCaptcha: () => setPhotoOnly((shown) => shown && { ...shown, direct: false }),
+  });
+  const inlineRetryUrl = photoOnly?.direct && photoOnly.url && parseNfceQr(photoOnly.url) ? photoOnly.url : null;
   const lastRejected = useRef<string | null>(null);
 
   useEffect(() => {
@@ -116,7 +126,9 @@ export default function NfceQrScreen() {
         <PendingReceiptCard
           accessKey={photoOnly.accessKey}
           url={photoOnly.url}
-          note={photoOnly.direct ? captchaStateNote(photoOnly.accessKey) : null}
+          note={photoOnly.direct ? captchaStateNote(photoOnly.accessKey, Boolean(inlineRetryUrl)) : null}
+          onRetrySefaz={inlineRetryUrl ? () => void sefazRetry.retry(inlineRetryUrl) : undefined}
+          retrying={sefazRetry.busy}
           scanner={scanner}
           onDiscard={() => {
             // Descartada, a tela fecha: com a câmera de volta, o papel ainda na frente dela traria a nota de novo.
@@ -164,7 +176,7 @@ export default function NfceQrScreen() {
 
       {scanner.element}
       <BusyOverlay
-        visible={importNfce.isPending}
+        visible={importNfce.isPending || sefazRetry.busy}
         title="Buscando a nota na Sefaz…"
         message="Mercado, itens e preços como estão na nota. Leva alguns segundos."
       />

@@ -1,10 +1,13 @@
 import { router, useLocalSearchParams } from 'expo-router';
+import { useState } from 'react';
 
 import { usePendingReceipts } from '@/data/pendingReceipts';
 import { captchaStateNote } from '@/domain/captchaStates';
+import { parseNfceQr } from '@/domain/nfce';
 import { pendingReceiptCnpj, pendingReceiptSubtitle } from '@/domain/pendingReceipts';
 import { PendingReceiptCard } from '@/features/PendingReceiptCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
+import { useSefazRetry } from '@/features/sefazRetry';
 import { notify } from '@/ui/dialogs';
 import { Button, EmptyState, Loading, Screen, Text } from '@/ui/primitives';
 
@@ -19,6 +22,12 @@ export default function PendingReceiptScreen() {
   const { pending, storeNames, ready, discard } = usePendingReceipts();
   const scanner = useReceiptScanner({ replace: true });
   const entry = pending.find((p) => p.accessKey === chave);
+  // A Sefaz, tentada de novo daqui, pediu a verificação para esta nota: ela deixa de ser "a que nem foi à Sefaz".
+  const [askedNow, setAskedNow] = useState(false);
+  const sefazRetry = useSefazRetry({ onRead: (key) => discard(key), onCaptcha: () => setAskedNow(true) });
+  const direct = direto === '1' && !askedNow;
+  // Sem o link do QR (a chave digitada), não há o que tentar.
+  const retryUrl = direct && entry?.url && parseNfceQr(entry.url) ? entry.url : null;
 
   const close = () => (router.canGoBack() ? router.back() : router.replace('/financas'));
 
@@ -32,7 +41,9 @@ export default function PendingReceiptScreen() {
           <PendingReceiptCard
             accessKey={entry.accessKey}
             url={entry.url}
-            note={direto === '1' ? captchaStateNote(entry.accessKey) : null}
+            note={direct ? captchaStateNote(entry.accessKey, Boolean(retryUrl)) : null}
+            onRetrySefaz={retryUrl ? () => void sefazRetry.retry(retryUrl) : undefined}
+            retrying={sefazRetry.busy}
             scanner={scanner}
             onDiscard={() => {
               discard(entry.accessKey).then(close, () => notify('Não deu para descartar', 'Tente de novo.'));

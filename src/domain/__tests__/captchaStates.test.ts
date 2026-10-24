@@ -7,6 +7,7 @@ import {
   captchaStateStep,
   parseCaptchaStates,
   withCaptchaState,
+  withoutCaptchaState,
 } from '../captchaStates';
 import { accessKeyCheckDigit } from '../nfce';
 
@@ -64,10 +65,22 @@ describe('o que fica guardado', () => {
   });
 });
 
+describe('tentar a Sefaz de novo', () => {
+  it('esquece só aquela UF', () => {
+    expect(withoutCaptchaState({ '25': ago(1), '26': ago(2) }, '25')).toEqual({ '26': ago(2) });
+    expect(withoutCaptchaState({ '26': ago(2) }, '25')).toEqual({ '26': ago(2) });
+    expect(captchaStateStep(withoutCaptchaState({ '25': ago(1) }, '25'), PB_KEY, NOW)).toBe('fetch');
+  });
+});
+
 describe('a frase da pendente', () => {
-  it('diz o estado e que o app tenta de novo', () => {
-    expect(captchaStateNote(PB_KEY)).toBe(
-      'A Sefaz-PB pediu essa confirmação numa nota recente, então as notas de lá entram direto pelos prints. Daqui a uma semana, o app tenta a Sefaz de novo.',
+  it('diz o estado pelo nome, sem prometer data, e lembra do botão quando há o link do QR', () => {
+    expect(captchaStateNote(PB_KEY, true)).toBe(
+      'A Sefaz da Paraíba pediu há pouco uma confirmação de que você não é robô, que o app não consegue fazer. Por alguns dias, as notas deste estado vão direto para os prints. Se quiser, dá para tentar a Sefaz de novo.',
     );
+    expect(captchaStateNote(SP_KEY, false)).toBe(
+      'A Sefaz de São Paulo pediu há pouco uma confirmação de que você não é robô, que o app não consegue fazer. Por alguns dias, as notas deste estado vão direto para os prints.',
+    );
+    expect(captchaStateNote('99' + PB_KEY.slice(2), false)).toMatch(/^A Sefaz deste estado pediu/);
   });
 });

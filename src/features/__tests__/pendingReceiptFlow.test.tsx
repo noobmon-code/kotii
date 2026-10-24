@@ -34,6 +34,8 @@ const mockCamera: { onScan: ((event: { data: string }) => void) | null } = { onS
 const mockRouter = { push: jest.fn(), replace: jest.fn(), back: jest.fn(), canGoBack: () => true };
 const mockParams: { chave?: string; direto?: string } = {};
 const mockPicked: string[] = [];
+// A Sefaz que mostra a nota, sem pedir a verificação (o CAPTCHA de antes era de passagem).
+const mockSefazReads = { value: false };
 // A parse-receipt que não achou itens nos prints (só o topo ou o rodapé).
 const mockReadsNoItems = { value: false };
 
@@ -87,6 +89,18 @@ jest.mock('@/lib/supabase', () => {
       functions: {
         invoke: async (name: string, { body }: { body: Record<string, unknown> }) => {
           mockDb.calls.push({ name, body });
+          if (name === 'nfce' && mockSefazReads.value) {
+            // A Sefaz mostrou a nota (sem a verificação, desta vez).
+            return {
+              data: {
+                store: { name: 'MERCADO BOM', cnpj: '12345678000199', address: null },
+                issuedAtLocal: '2026-10-18T12:00:00',
+                total: 80,
+                items: [{ description: 'ARROZ 5KG', code: null, quantity: 1, unit: 'UN', unitPrice: 80, totalPrice: 80 }],
+              },
+              error: null,
+            };
+          }
           if (name === 'nfce') {
             const reply = { code: 'captcha', uf: '25', error: 'A Sefaz da Paraíba pede uma confirmação de que você não é robô.' };
             return { data: null, error: new FunctionsHttpError(new Response(JSON.stringify(reply), { status: 422 })) };
@@ -110,11 +124,28 @@ jest.mock('@/lib/supabase', () => {
           return { data: { receipt_id: id, duplicate: false }, error: null };
         },
       },
+      rpc: async (fn: string) => {
+        mockDb.calls.push({ name: fn, body: null });
+        return { data: [], error: null };
+      },
       from: (table: string) => {
         const eq: [string, unknown][] = [];
         const within: [string, unknown[]][] = [];
         let single = false;
+        let inserted: Row[] | null = null;
+        let deleting = false;
         const run = () => {
+          // Gravações da leitura pelo QR: a nota e os itens novos, ou a nota apagada.
+          if (inserted) {
+            const list = (tables()[table] ??= []);
+            const added = inserted.map((values) => ({ id: `${table === 'receipts' ? 'q' : 'i'}${list.length + 1}`, ...values }));
+            list.push(...added);
+            return { data: single ? added[0] : added, error: null };
+          }
+          if (deleting) {
+            tables()[table] = (tables()[table] ?? []).filter((row) => !eq.every(([column, value]) => row[column] === value));
+            return { data: null, error: null };
+          }
           const rows = (tables()[table] ?? []).filter(
             (row) => eq.every(([column, value]) => row[column] === value) && within.every(([column, values]) => values.includes(row[column])),
           );
@@ -130,6 +161,9 @@ jest.mock('@/lib/supabase', () => {
           order: () => query,
           limit: () => query,
           maybeSingle: () => ((single = true), query),
+          single: () => ((single = true), query),
+          insert: (values: Row | Row[]) => ((inserted = ([] as Row[]).concat(values)), query),
+          delete: () => ((deleting = true), query),
           then: (resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) => Promise.resolve().then(run).then(resolve, reject),
         };
         return query;
@@ -203,6 +237,7 @@ beforeEach(async () => {
   mockParams.direto = undefined;
   mockPicked.length = 0;
   mockReadsNoItems.value = false;
+  mockSefazReads.value = false;
   jest.mocked(openExternal).mockClear();
   jest.mocked(notify).mockClear();
 });
@@ -410,7 +445,9 @@ describe('o estado que pediu o "não sou robô" há pouco', () => {
     mockParams.chave = PB_OTHER;
     mockParams.direto = '1';
     await open(<PendingReceiptScreen />);
-    expect(page()).toContain('A Sefaz-PB pediu essa confirmação numa nota recente');
+    expect(page()).toContain('A Sefaz da Paraíba pediu há pouco uma confirmação');
+    expect(page()).not.toContain('antes de mostrar esta nota');
+    expect(button('Tentar a Sefaz de novo')).toBeDefined();
     expect(button('Abrir a nota na Sefaz')).toBeDefined();
   });
 
@@ -448,5 +485,73 @@ describe('o estado que pediu o "não sou robô" há pouco', () => {
     expect(callsTo('nfce')).toHaveLength(0);
     expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'r9' } });
     expect(await stored()).toEqual([]);
+  });
+
+  /** A nota da PB que nem foi à Sefaz, aberta na tela da pendente (como a tela do QR deixa). */
+  async function openSkipped() {
+    await AsyncStorage.setItem('kotii:sefaz-captcha', JSON.stringify({ '25': new Date(Date.now() - DAY).toISOString() }));
+    await open(<NfceQrScreen />);
+    await scan(QR);
+    expect(callsTo('nfce')).toHaveLength(0);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/pendente', params: { chave: KEY, direto: '1' } });
+    mockRouter.replace.mockClear();
+    mockParams.chave = KEY;
+    mockParams.direto = '1';
+    await open(<PendingReceiptScreen />);
+  }
+
+  it('"Tentar a Sefaz de novo": esquece o estado, lê pela Sefaz, abre a revisão e a pendente sai', async () => {
+    await openSkipped();
+    mockSefazReads.value = true;
+    await press('Tentar a Sefaz de novo');
+    await settle();
+    expect(callsTo('nfce')).toHaveLength(1);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'q1' } });
+    expect(mockDb.receipts.map((row) => row.access_key)).toEqual([KEY]);
+    expect(await remembered()).toEqual({});
+    expect(await stored()).toEqual([]);
+  });
+
+  it('a Sefaz pediu de novo: o estado volta a ser guardado e a pessoa fica na pendente', async () => {
+    await openSkipped();
+    await press('Tentar a Sefaz de novo');
+    expect(callsTo('nfce')).toHaveLength(1);
+    expect(mockRouter.replace).not.toHaveBeenCalled();
+    expect(Date.now() - Date.parse((await remembered())['25'])).toBeLessThan(60 * 1000);
+    expect(await stored()).toHaveLength(1);
+    expect(notify).toHaveBeenCalledWith('A Sefaz ainda pede a confirmação', expect.any(String));
+    // Agora a Sefaz pediu para esta nota: o cartão diz isso, sem a frase do estado nem o botão.
+    expect(page()).toContain('antes de mostrar esta nota');
+    expect(page()).not.toContain('A Sefaz da Paraíba pediu há pouco');
+    expect(button('Tentar a Sefaz de novo')).toBeUndefined();
+  });
+
+  it('a pendente sem o link do QR (a chave digitada) não tem o que tentar', async () => {
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify([{ accessKey: KEY, url: null, householdId: 'h1', savedAt: '2026-10-19T12:00:00.000Z' }]));
+    mockParams.chave = KEY;
+    mockParams.direto = '1';
+    await open(<PendingReceiptScreen />);
+    expect(page()).toContain('Por alguns dias, as notas deste estado vão direto para os prints.');
+    expect(page()).not.toContain('dá para tentar a Sefaz de novo');
+    expect(button('Tentar a Sefaz de novo')).toBeUndefined();
+  });
+
+  it('sem como guardar no aparelho, a tela do QR mostra a frase do estado e o botão, que também lê a nota', async () => {
+    await AsyncStorage.setItem('kotii:sefaz-captcha', JSON.stringify({ '25': new Date(Date.now() - DAY).toISOString() }));
+    // A próxima gravação (a da pendente) falha.
+    jest.mocked(AsyncStorage.setItem).mockRejectedValueOnce(new Error('cheio'));
+    await open(<NfceQrScreen />);
+    await scan(QR);
+    expect(callsTo('nfce')).toHaveLength(0);
+    expect(await stored()).toEqual([]);
+    expect(mockRouter.replace).not.toHaveBeenCalled();
+    expect(page()).toContain('A Sefaz da Paraíba pediu há pouco uma confirmação');
+    expect(page()).not.toContain('antes de mostrar esta nota');
+    mockSefazReads.value = true;
+    await press('Tentar a Sefaz de novo');
+    await settle();
+    expect(callsTo('nfce')).toHaveLength(1);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'q1' } });
+    expect(await remembered()).toEqual({});
   });
 });

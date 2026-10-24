@@ -20,6 +20,8 @@ export function PendingReceiptCard({
   accessKey,
   url,
   note,
+  onRetrySefaz,
+  retrying = false,
   scanner,
   onDiscard,
   children,
@@ -28,6 +30,9 @@ export function PendingReceiptCard({
   url: string | null;
   /** Por que a nota veio direto para cá, sem ir à Sefaz (domain/captchaStates). */
   note?: string | null;
+  /** "Tentar a Sefaz de novo": só na pendente que nem foi à Sefaz e tem o link do QR. */
+  onRetrySefaz?: () => void;
+  retrying?: boolean;
   scanner: ReturnType<typeof useReceiptScanner>;
   onDiscard: () => void;
   /** Botões a mais no fim (na tela do QR, ler outro QR code). */
@@ -52,11 +57,25 @@ export function PendingReceiptCard({
   return (
     <Card style={styles.gap}>
       <Text variant="heading">Leia esta nota pelos prints da Sefaz</Text>
-      <Text variant="muted">
-        A Sefaz pede uma confirmação de que você não é robô antes de mostrar esta nota, e o app não consegue fazer essa
-        confirmação.
-      </Text>
-      {note ? <Text variant="body">{note}</Text> : null}
+      {/* Com esta nota o app nem foi à Sefaz: a frase do estado toma o lugar de "a Sefaz pede antes desta nota". */}
+      {note ? (
+        <Text variant="muted">{note}</Text>
+      ) : (
+        <Text variant="muted">
+          A Sefaz pede uma confirmação de que você não é robô antes de mostrar esta nota, e o app não consegue fazer essa
+          confirmação.
+        </Text>
+      )}
+      {onRetrySefaz ? (
+        <Button
+          title="Tentar a Sefaz de novo"
+          icon="refresh"
+          variant="secondary"
+          loading={retrying}
+          disabled={scanner.busy}
+          onPress={onRetrySefaz}
+        />
+      ) : null}
       {/* No iPhone, o Safari e o Kotii da tela de início guardam cada um as suas: no site, "neste app". */}
       <Text variant="small">
         {`A nota fica guardada ${Platform.OS === 'web' ? 'neste app' : 'neste aparelho'}, em Finanças → Notas e na tela Hoje, até você enviar os prints.`}
