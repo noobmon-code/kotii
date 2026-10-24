@@ -32,7 +32,7 @@ const mockDb = {
 };
 const mockCamera: { onScan: ((event: { data: string }) => void) | null } = { onScan: null };
 const mockRouter = { push: jest.fn(), replace: jest.fn(), back: jest.fn(), canGoBack: () => true };
-const mockParams: { chave?: string } = {};
+const mockParams: { chave?: string; direto?: string } = {};
 const mockPicked: string[] = [];
 // A parse-receipt que não achou itens nos prints (só o topo ou o rodapé).
 const mockReadsNoItems = { value: false };
@@ -200,6 +200,7 @@ beforeEach(async () => {
   mockRouter.replace.mockClear();
   mockRouter.back.mockClear();
   mockParams.chave = undefined;
+  mockParams.direto = undefined;
   mockPicked.length = 0;
   mockReadsNoItems.value = false;
   jest.mocked(openExternal).mockClear();
@@ -381,5 +382,71 @@ describe('nota da Sefaz com "não sou robô"', () => {
     expect(button('Abrir a nota na Sefaz')).toBeUndefined();
     expect(button('Enviar os prints (até 6)')).toBeDefined();
     expect(page()).toContain('Leia o QR code da nota com a câmera do celular');
+  });
+});
+
+describe('o estado que pediu o "não sou robô" há pouco', () => {
+  // Outra nota da PB (outro número) e uma de SP (35), as duas válidas.
+  const keyOf = (body: string) => body + accessKeyCheckDigit(body);
+  const PB_OTHER = keyOf('25' + '2610' + '12345678000199' + '65' + '001' + '000067890' + '1' + '87654321');
+  const SP_KEY = keyOf('35' + '2610' + '12345678000199' + '65' + '001' + '000012345' + '1' + '12345678');
+  const DAY = 24 * 60 * 60 * 1000;
+  const remembered = async () => JSON.parse((await AsyncStorage.getItem('kotii:sefaz-captcha')) ?? '{}') as Record<string, string>;
+
+  it('depois de um CAPTCHA, outra nota da PB vai direto para a pendente, sem chamar a Sefaz, e diz por quê', async () => {
+    await open(<NfceQrScreen />);
+    await scan(QR);
+    expect(callsTo('nfce')).toHaveLength(1);
+    expect(Object.keys(await remembered())).toEqual(['25']);
+
+    mockRouter.replace.mockClear();
+    await open(<NfceQrScreen />);
+    await scan(`http://www.sefaz.pb.gov.br/nfce?p=${PB_OTHER}|2|1|1|ABCDEF`);
+    expect(callsTo('nfce')).toHaveLength(1);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/pendente', params: { chave: PB_OTHER, direto: '1' } });
+    expect((await stored()).map((p) => p.accessKey)).toEqual([PB_OTHER, KEY]);
+
+    // A pendente tem o "Abrir a nota na Sefaz" e a frase do estado.
+    mockParams.chave = PB_OTHER;
+    mockParams.direto = '1';
+    await open(<PendingReceiptScreen />);
+    expect(page()).toContain('A Sefaz-PB pediu essa confirmação numa nota recente');
+    expect(button('Abrir a nota na Sefaz')).toBeDefined();
+  });
+
+  it('a nota que nem foi à Sefaz não renova o prazo do estado', async () => {
+    const at = new Date(Date.now() - 2 * DAY).toISOString();
+    await AsyncStorage.setItem('kotii:sefaz-captcha', JSON.stringify({ '25': at }));
+    await open(<NfceQrScreen />);
+    await scan(QR);
+    expect(callsTo('nfce')).toHaveLength(0);
+    expect(await remembered()).toEqual({ '25': at });
+  });
+
+  it('passados 7 dias, a nota da PB vai à Sefaz de novo', async () => {
+    await AsyncStorage.setItem('kotii:sefaz-captcha', JSON.stringify({ '25': new Date(Date.now() - 8 * DAY).toISOString() }));
+    await open(<NfceQrScreen />);
+    await scan(QR);
+    expect(callsTo('nfce')).toHaveLength(1);
+    // A Sefaz pediu de novo: o prazo recomeça.
+    expect(Date.now() - Date.parse((await remembered())['25'])).toBeLessThan(DAY);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/pendente', params: { chave: KEY } });
+  });
+
+  it('a nota de outro estado vai à Sefaz normalmente', async () => {
+    await AsyncStorage.setItem('kotii:sefaz-captcha', JSON.stringify({ '25': new Date().toISOString() }));
+    await open(<NfceQrScreen />);
+    await scan(`https://www.nfce.fazenda.sp.gov.br/qrcode?p=${SP_KEY}|2|1|1|ABCDEF`);
+    expect(callsTo('nfce')).toHaveLength(1);
+  });
+
+  it('a nota da PB que a casa já tem abre, sem ir à Sefaz e sem virar pendente', async () => {
+    await AsyncStorage.setItem('kotii:sefaz-captcha', JSON.stringify({ '25': new Date().toISOString() }));
+    mockDb.receipts.push({ id: 'r9', access_key: KEY, source: 'ai', status: 'confirmed', receipt_items: [{ count: 4 }] });
+    await open(<NfceQrScreen />);
+    await scan(QR);
+    expect(callsTo('nfce')).toHaveLength(0);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'r9' } });
+    expect(await stored()).toEqual([]);
   });
 });

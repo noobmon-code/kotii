@@ -1,6 +1,7 @@
 import { router, useLocalSearchParams } from 'expo-router';
 
 import { usePendingReceipts } from '@/data/pendingReceipts';
+import { captchaStateNote } from '@/domain/captchaStates';
 import { pendingReceiptCnpj, pendingReceiptSubtitle } from '@/domain/pendingReceipts';
 import { PendingReceiptCard } from '@/features/PendingReceiptCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
@@ -13,7 +14,8 @@ import { Button, EmptyState, Loading, Screen, Text } from '@/ui/primitives';
  * ou descarta.
  */
 export default function PendingReceiptScreen() {
-  const { chave } = useLocalSearchParams<{ chave?: string }>();
+  // `direto`: a nota nem foi à Sefaz, porque o estado dela pediu o "não sou robô" há pouco (domain/captchaStates).
+  const { chave, direto } = useLocalSearchParams<{ chave?: string; direto?: string }>();
   const { pending, storeNames, ready, discard } = usePendingReceipts();
   const scanner = useReceiptScanner({ replace: true });
   const entry = pending.find((p) => p.accessKey === chave);
@@ -30,6 +32,7 @@ export default function PendingReceiptScreen() {
           <PendingReceiptCard
             accessKey={entry.accessKey}
             url={entry.url}
+            note={direto === '1' ? captchaStateNote(entry.accessKey) : null}
             scanner={scanner}
             onDiscard={() => {
               discard(entry.accessKey).then(close, () => notify('Não deu para descartar', 'Tente de novo.'));

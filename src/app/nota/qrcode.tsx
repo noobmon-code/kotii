@@ -6,10 +6,12 @@ import { Platform, StyleSheet, View } from 'react-native';
 import { FunctionError } from '@/data/images';
 import { usePendingReceipts } from '@/data/pendingReceipts';
 import { useImportNfce } from '@/data/receipts';
-import { nfceFailureRoute, parseNfceQr, qrReadStep } from '@/domain/nfce';
+import { captchaStateNote, captchaStateStep } from '@/domain/captchaStates';
+import { NFCE_CAPTCHA, NFCE_CAPTCHA_STATE, nfceFailureRoute, parseNfceQr, qrReadStep } from '@/domain/nfce';
 import { PendingReceiptCard } from '@/features/PendingReceiptCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { prepareBarcodeReader } from '@/lib/barcodeReader';
+import { readCaptchaStates, rememberCaptchaState } from '@/lib/captchaStates';
 import { errorMessage } from '@/lib/supabase';
 import { BusyOverlay } from '@/ui/BusyOverlay';
 import { notify } from '@/ui/dialogs';
@@ -21,7 +23,8 @@ import { radius, space, useColors } from '@/ui/theme';
  * Se a Sefaz pedir o "não sou robô", o app não passa por ele: a nota fica
  * pendente (guardada no aparelho, em Finanças > Notas) e abre a tela dela, com
  * o passo a passo dos prints da Sefaz, que vão com a chave do QR. O mesmo QR
- * lido de novo abre a pendente, sem ir à Sefaz.
+ * lido de novo abre a pendente, sem ir à Sefaz. Por uma semana, as notas novas
+ * do mesmo estado também vão direto para a pendente (domain/captchaStates).
  */
 export default function NfceQrScreen() {
   const c = useColors();
@@ -31,7 +34,7 @@ export default function NfceQrScreen() {
   const pendingReceipts = usePendingReceipts();
   const [pasted, setPasted] = useState('');
   // Nota que só dá para ler pelos prints ou pela foto: a chave e o link do QR.
-  const [photoOnly, setPhotoOnly] = useState<{ accessKey: string; url: string | null } | null>(null);
+  const [photoOnly, setPhotoOnly] = useState<{ accessKey: string; url: string | null; direct: boolean } | null>(null);
   // As que esbarraram no "não sou robô" nesta tela (chave -> aviso): não vão de novo à Sefaz.
   const captchaKeys = useRef(new Map<string, string>());
   // A câmera lê o mesmo QR várias vezes por segundo: um de cada vez.
@@ -42,7 +45,7 @@ export default function NfceQrScreen() {
     void prepareBarcodeReader();
   }, []);
 
-  function submit(text: string, fromCamera: boolean) {
+  async function submit(text: string, fromCamera: boolean) {
     if (busy.current) return;
     const qr = parseNfceQr(text);
     if (!qr) {
@@ -57,24 +60,29 @@ export default function NfceQrScreen() {
     if (step.kind === 'photo') {
       const entry = pending.find((p) => p.accessKey === qr.accessKey);
       // A chave digitada não traz o link: vale o que a pendente guardou.
-      showPending({ accessKey: qr.accessKey, url: qr.url ?? entry?.url ?? null }, Boolean(entry));
+      showPending({ accessKey: qr.accessKey, url: qr.url ?? entry?.url ?? null }, Boolean(entry), false);
       return;
     }
     busy.current = true;
-    importNfce.mutate(qr, {
+    // O estado da nota pediu o "não sou robô" há pouco: a nota nova nem vai à Sefaz (a que a casa já tem abre).
+    const skipSefaz = captchaStateStep(await readCaptchaStates(), qr.accessKey, new Date()) === 'photo';
+    importNfce.mutate({ ...qr, skipSefaz }, {
       onSuccess: ({ receipt_id, duplicate }) => {
         router.replace({ pathname: '/nota/[id]', params: { id: receipt_id } });
         if (duplicate) notify('Nota já importada', 'Esta nota já estava no app — abrimos a existente.');
       },
       onError: (err) => {
         const message = errorMessage(err);
-        if (nfceFailureRoute(err instanceof FunctionError ? err.code : null) === 'photo') {
+        const code = err instanceof FunctionError ? err.code : null;
+        if (nfceFailureRoute(code) === 'photo') {
           // A nota fica pendente no aparelho: abrir a Sefaz pode recarregar o app, e a chave não se perde. Até
           // ela estar guardada, a câmera não lê o mesmo QR de novo.
           captchaKeys.current.set(qr.accessKey, message);
-          void pendingReceipts.save({ accessKey: qr.accessKey, url: qr.url }).then((saved) => {
+          void pendingReceipts.save({ accessKey: qr.accessKey, url: qr.url }).then(async (saved) => {
+            // Só o CAPTCHA de agora conta o prazo do estado: a nota que nem foi à Sefaz não o renova.
+            if (code === NFCE_CAPTCHA) await rememberCaptchaState(qr.uf);
             busy.current = false;
-            showPending({ accessKey: qr.accessKey, url: qr.url }, saved);
+            showPending({ accessKey: qr.accessKey, url: qr.url }, saved, code === NFCE_CAPTCHA_STATE);
           });
           return;
         }
@@ -87,11 +95,12 @@ export default function NfceQrScreen() {
   /**
    * A pendente guardada abre na tela dela (/nota/pendente?chave=…), que volta igual se o navegador recarregar o app
    * enquanto a pessoa está na Sefaz. Sem ela guardada (sem armazenamento), o passo a passo fica aqui, no lugar da
-   * câmera, só enquanto a tela está aberta.
+   * câmera, só enquanto a tela está aberta. `direct`: nem foi à Sefaz (o estado pediu o "não sou robô" há pouco),
+   * e a pendente diz por quê.
    */
-  function showPending(qr: { accessKey: string; url: string | null }, stored: boolean) {
-    if (stored) router.replace({ pathname: '/nota/pendente', params: { chave: qr.accessKey } });
-    else setPhotoOnly(qr);
+  function showPending(qr: { accessKey: string; url: string | null }, stored: boolean, direct: boolean) {
+    if (stored) router.replace({ pathname: '/nota/pendente', params: direct ? { chave: qr.accessKey, direto: '1' } : { chave: qr.accessKey } });
+    else setPhotoOnly({ ...qr, direct });
   }
 
   const close = () => (router.canGoBack() ? router.back() : router.replace('/financas'));
@@ -107,6 +116,7 @@ export default function NfceQrScreen() {
         <PendingReceiptCard
           accessKey={photoOnly.accessKey}
           url={photoOnly.url}
+          note={photoOnly.direct ? captchaStateNote(photoOnly.accessKey) : null}
           scanner={scanner}
           onDiscard={() => {
             // Descartada, a tela fecha: com a câmera de volta, o papel ainda na frente dela traria a nota de novo.
@@ -123,7 +133,7 @@ export default function NfceQrScreen() {
             style={StyleSheet.absoluteFill}
             facing="back"
             barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-            onBarcodeScanned={({ data }) => submit(data, true)}
+            onBarcodeScanned={({ data }) => void submit(data, true)}
           />
           <View style={[styles.frame, { borderColor: c.onPrimary }]} pointerEvents="none" />
         </View>
@@ -149,7 +159,7 @@ export default function NfceQrScreen() {
           autoCorrect={false}
           accessibilityLabel="Link do QR code da nota"
         />
-        <Button title="Buscar a nota" icon="magnify" disabled={!pasted.trim()} onPress={() => submit(pasted, false)} />
+        <Button title="Buscar a nota" icon="magnify" disabled={!pasted.trim()} onPress={() => void submit(pasted, false)} />
       </Card>
 
       {scanner.element}

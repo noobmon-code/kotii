@@ -19,12 +19,15 @@ import type { useReceiptScanner } from './ReceiptScanner';
 export function PendingReceiptCard({
   accessKey,
   url,
+  note,
   scanner,
   onDiscard,
   children,
 }: {
   accessKey: string;
   url: string | null;
+  /** Por que a nota veio direto para cá, sem ir à Sefaz (domain/captchaStates). */
+  note?: string | null;
   scanner: ReturnType<typeof useReceiptScanner>;
   onDiscard: () => void;
   /** Botões a mais no fim (na tela do QR, ler outro QR code). */
@@ -53,6 +56,7 @@ export function PendingReceiptCard({
         A Sefaz pede uma confirmação de que você não é robô antes de mostrar esta nota, e o app não consegue fazer essa
         confirmação.
       </Text>
+      {note ? <Text variant="body">{note}</Text> : null}
       {/* No iPhone, o Safari e o Kotii da tela de início guardam cada um as suas: no site, "neste app". */}
       <Text variant="small">
         {`A nota fica guardada ${Platform.OS === 'web' ? 'neste app' : 'neste aparelho'}, em Finanças → Notas e na tela Hoje, até você enviar os prints.`}
