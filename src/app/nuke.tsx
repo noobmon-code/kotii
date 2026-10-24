@@ -5,6 +5,7 @@ import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAskNuke, useNukeContext, useRunNukeAction } from '@/data/nuke';
+import { FEEDBACK_DISCLOSURE } from '@/domain/appFeedback';
 import { todayISO } from '@/domain/dates';
 import { describeAction, historyForApi, NUKE_SUGGESTIONS, type NukeAction, type NukeMessage } from '@/domain/nuke';
 import {
@@ -30,7 +31,15 @@ const ACTION_ICONS: Record<NukeAction['type'], keyof typeof MaterialCommunityIco
   create_chore: 'broom',
   add_expense: 'cash-plus',
   open_screen: 'arrow-top-right',
+  send_feedback: 'message-text-outline',
 };
+
+/** O botão do cartão: abrir uma tela, mandar o recado ou fazer o que o Nuke sugeriu. */
+function actionButton(type: NukeAction['type']): { title: string; icon: keyof typeof MaterialCommunityIcons.glyphMap } {
+  if (type === 'open_screen') return { title: 'Abrir', icon: 'arrow-right' };
+  if (type === 'send_feedback') return { title: 'Enviar', icon: 'send' };
+  return { title: 'Fazer', icon: 'check' };
+}
 
 export default function NukeScreen() {
   const c = useColors();
@@ -202,13 +211,24 @@ export default function NukeScreen() {
                   </View>
                   {message.actions?.map((action, index) => (
                     <View key={index} style={[styles.action, glass]}>
-                      <Row>
+                      {/* O recado pode ser longo: o ícone fica no alto, ao lado do começo dele. */}
+                      <Row style={action.type === 'send_feedback' ? styles.top : undefined}>
                         <View style={[styles.actionIcon, { backgroundColor: c.brandSoft }]}>
                           <MaterialCommunityIcons name={ACTION_ICONS[action.type]} size={18} color={c.brand} />
                         </View>
                         <View style={styles.flex}>
                           <Text variant="label">{action.label}</Text>
-                          {describeAction(action) ? <Text variant="small">{describeAction(action)}</Text> : null}
+                          {action.type === 'send_feedback' ? (
+                            // O recado inteiro, exatamente como vai, e para quem vai: só sai com o toque em "Enviar".
+                            <>
+                              <Text variant="body" selectable>
+                                {describeAction(action)}
+                              </Text>
+                              <Text variant="small">{FEEDBACK_DISCLOSURE}</Text>
+                            </>
+                          ) : describeAction(action) ? (
+                            <Text variant="small">{describeAction(action)}</Text>
+                          ) : null}
                         </View>
                       </Row>
                       {action.done ? (
@@ -220,9 +240,10 @@ export default function NukeScreen() {
                         </Row>
                       ) : (
                         <Button
-                          title={action.type === 'open_screen' ? 'Abrir' : 'Fazer'}
+                          title={actionButton(action.type).title}
+                          accessibilityLabel={action.type === 'send_feedback' ? 'Enviar o recado para quem faz o Kotii' : undefined}
                           compact
-                          icon={action.type === 'open_screen' ? 'arrow-right' : 'check'}
+                          icon={actionButton(action.type).icon}
                           loading={running === `${message.id}:${index}`}
                           disabled={running !== null}
                           onPress={() => run(message, index, action)}
@@ -293,6 +314,7 @@ export default function NukeScreen() {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   center: { textAlign: 'center' },
+  top: { alignItems: 'flex-start' },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

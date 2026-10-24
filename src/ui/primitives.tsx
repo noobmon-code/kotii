@@ -79,6 +79,7 @@ export function Screen({
   footer,
   fab,
   scrollRef,
+  maxWidth = MAX_WIDTH,
 }: {
   children: ReactNode;
   scroll?: boolean;
@@ -93,12 +94,16 @@ export function Screen({
    * posição a rolar) ou voltar ao começo de uma lista que acabou de mudar.
    */
   scrollRef?: RefObject<ScrollView | null>;
+  /** A largura máxima do conteúdo e do rodapé (o Painel do app, feito para o computador, vai mais longe). */
+  maxWidth?: number;
 }) {
   const c = useColors();
+  // Só a tela que pede outra largura ganha um estilo a mais: as outras ficam como sempre foram.
+  const width = maxWidth === MAX_WIDTH ? null : { maxWidth };
   // Sem a rolagem da tela, o conteúdo ocupa só a altura dela (flex 1, e não só flexGrow): no navegador, com o
   // flexShrink 0 e a base auto do react-native-web, ele cresceria até a altura da lista que tem dentro, e a lista
   // (que rola sozinha) não teria uma altura para rolar.
-  const content = <View style={[styles.content, !scroll && styles.flex, fab && styles.contentWithFab]}>{children}</View>;
+  const content = <View style={[styles.content, width, !scroll && styles.flex, fab && styles.contentWithFab]}>{children}</View>;
   return (
     <SafeAreaView edges={edges} style={[styles.screen, { backgroundColor: c.background }]}>
       <Backdrop />
@@ -117,7 +122,7 @@ export function Screen({
       )}
       {footer ? (
         <View style={[styles.footer, { borderTopColor: c.glassBorder, backgroundColor: c.glassStrong }]}>
-          <View style={styles.footerInner}>{footer}</View>
+          <View style={[styles.footerInner, width]}>{footer}</View>
         </View>
       ) : null}
     </SafeAreaView>

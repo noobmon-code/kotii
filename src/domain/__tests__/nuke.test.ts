@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
+import { FEEDBACK_MAX_LENGTH } from '../appFeedback';
 import { buildNukeContext, describeAction, historyForApi, type NukeSnapshot, parseActions } from '../nuke';
 import { supplyLines } from '../supplies';
 
@@ -167,5 +168,34 @@ describe('nuke history and actions', () => {
     expect(describeAction(actions[0])).toBe('Café (2 un)');
     expect(describeAction(actions[1])).toBe('Trocar filtro · 01/10/2026');
     expect(parseActions(null)).toEqual([]);
+  });
+
+  it('recado para quem faz o app: só com um tipo conhecido e texto, e o cartão mostra o texto inteiro', () => {
+    const actions = parseActions([
+      { type: 'send_feedback', label: 'Mandar recado', kind: 'sugestao', text: '  Queria um modo escuro mais forte.\n' },
+      { type: 'send_feedback', label: 'Mandar recado', kind: 'elogio', text: 'Adorei a lista!\nMuito prática.' },
+      { type: 'send_feedback', label: 'Mandar recado', kind: 'duvida', text: 'Tipo que o app não conhece' },
+      { type: 'send_feedback', label: 'Mandar recado', kind: 'problema', text: '   ' },
+      { type: 'send_feedback', label: 'Mandar recado', kind: 'problema', text: null },
+      { type: 'send_feedback', label: 'Mandar recado', text: 'Sem tipo' },
+      { type: 'send_feedback', label: '', kind: 'outro', text: 'Sem rótulo' },
+    ]);
+    expect(actions).toEqual([
+      { type: 'send_feedback', label: 'Mandar recado', kind: 'sugestao', text: 'Queria um modo escuro mais forte.' },
+      { type: 'send_feedback', label: 'Mandar recado', kind: 'elogio', text: 'Adorei a lista!\nMuito prática.' },
+    ]);
+    expect(describeAction(actions[0])).toBe('“Queria um modo escuro mais forte.”');
+    expect(describeAction(actions[1])).toBe('“Adorei a lista!\nMuito prática.”');
+    // Nunca passa do tamanho da coluna: o que o cartão mostra é o que vai.
+    const [long] = parseActions([{ type: 'send_feedback', label: 'Mandar recado', kind: 'outro', text: '👍'.repeat(FEEDBACK_MAX_LENGTH + 10) }]);
+    expect(long.type === 'send_feedback' && Array.from(long.text)).toHaveLength(FEEDBACK_MAX_LENGTH);
+  });
+
+  it('um tipo de ação que o app não conhece fica de fora, sem derrubar as outras', () => {
+    const actions = parseActions([
+      { type: 'apagar_tudo', label: 'Apagar' },
+      { type: 'open_screen', label: 'Ver contas', screen: 'contas' },
+    ]);
+    expect(actions).toEqual([{ type: 'open_screen', label: 'Ver contas', screen: 'contas' }]);
   });
 });

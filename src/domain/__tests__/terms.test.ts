@@ -162,6 +162,19 @@ describe('termos de uso', () => {
       expect(stored).toContain(part);
     }
     expect(stored).toContain('sem nomes, sem e-mails e sem o que cada casa registrou');
+    // Os recados são outro canal, que a própria pessoa usa: os números continuam só totais.
+    expect(stored).toContain('A exceção são os recados que você mesmo mandar pelo Nuke, que chegam com o seu e-mail');
+  });
+
+  it('os recados pelo Nuke: só com o toque, guardados com a conta, o que quem mantém o Kotii lê, e saem com ela', () => {
+    const ai = section('Inteligência artificial');
+    expect(ai).toContain('ou pede para mandar um recado a quem faz o Kotii, ele prepara o recado e mostra o texto');
+    expect(ai).toContain('O recado só vai depois do seu toque em "Enviar", fica guardado com a sua conta');
+    expect(ai).toContain('quem mantém o Kotii lê o texto, o tipo de aparelho e a versão do app, e vê o seu e-mail para poder responder');
+    expect(ai).toContain('Nada da casa vai junto além do que estiver escrito no recado');
+    // A conversa continua só no aparelho; o recado é a parte que a pessoa manda.
+    expect(ai).toContain('A conversa com o Nuke fica guardada só no seu aparelho');
+    expect(section('Apagar dados e sair')).toContain('os avisos do navegador e os recados que você mandou pelo Nuke. Não tem volta.');
   });
 
   it('o nome padrão dos mercados: só o CNPJ vai à BrasilAPI, nada de pessoa, e a moderação não sabe de qual casa', () => {

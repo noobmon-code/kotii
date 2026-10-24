@@ -4,6 +4,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { router } from 'expo-router';
 
+import { sendAppFeedback } from '@/data/appFeedback';
 import { useFamilyCalendar } from '@/data/family';
 import { useBills, useBudgets, useRecentBillPayments, useSaveExpense, useSpending } from '@/data/finance';
 import { toSchedules, useChoreRotations, useChores, useDoses, useMedications, usePantry, useSaveChore } from '@/data/home';
@@ -13,6 +14,7 @@ import { useAddToMarketList } from '@/data/market';
 import { useMenu } from '@/data/menu';
 import { useSupplies } from '@/data/supplies';
 import { functionErrorMessage } from '@/data/images';
+import { FEEDBACK_SENT } from '@/domain/appFeedback';
 import { billsAboveUsual, describeAboveForNuke } from '@/domain/billUsual';
 import { budgetProgress } from '@/domain/budget';
 import { rotationLabel, rotationOf, rotationPeople } from '@/domain/choreRotation';
@@ -25,7 +27,15 @@ import { upcomingAppointments } from '@/domain/health';
 import { doseKey, dosesForDay } from '@/domain/medications';
 import { refillSummary } from '@/domain/medicationStock';
 import { menuLines } from '@/domain/menu';
-import { buildNukeContext, NUKE_LIST_LIMIT, parseActions, type NukeAction, type NukeScreen, type NukeSnapshot } from '@/domain/nuke';
+import {
+  buildNukeContext,
+  NUKE_FEATURES,
+  NUKE_LIST_LIMIT,
+  parseActions,
+  type NukeAction,
+  type NukeScreen,
+  type NukeSnapshot,
+} from '@/domain/nuke';
 import { expiryStatus, groupPantry } from '@/domain/pantry';
 import { supplyLines } from '@/domain/supplies';
 import { useHousehold } from '@/lib/auth';
@@ -220,7 +230,9 @@ export interface NukeAnswer {
 export function useAskNuke() {
   return useMutation({
     mutationFn: async (input: { messages: { role: 'user' | 'assistant'; text: string }[]; context: string; today: string }) => {
-      const { data, error } = await supabase.functions.invoke<{ reply: string; actions: unknown }>('nuke', { body: input });
+      const { data, error } = await supabase.functions.invoke<{ reply: string; actions: unknown }>('nuke', {
+        body: { ...input, features: NUKE_FEATURES },
+      });
       if (error || !data) throw new Error(await functionErrorMessage(error, 'Não consegui responder agora. Tente de novo.'));
       return { reply: String(data.reply ?? ''), actions: parseActions(data.actions) } satisfies NukeAnswer;
     },
@@ -294,6 +306,10 @@ export function useRunNukeAction() {
         router.back();
         SCREEN_ROUTES[action.screen]();
         return '';
+      case 'send_feedback':
+        // O texto que o cartão mostrou, exatamente: o recado só sai com este toque.
+        await sendAppFeedback({ kind: action.kind, message: action.text });
+        return FEEDBACK_SENT;
     }
   };
 }

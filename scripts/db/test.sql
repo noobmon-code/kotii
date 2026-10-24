@@ -12722,5 +12722,385 @@ delete from public.shared_prices where store_cnpj like '6200000000%';
 delete from public.households where name in ('Casa do Gil', 'Casa da Bia', 'Casa do Caco');
 delete from auth.users where id in (:'user_g1', :'user_g2', :'user_g3');
 
+-- ---------------------------------------------------------------------------
+\echo '• Recados: a pessoa manda (pelo Nuke), só quem mantém o app lê, e a conta apagada leva os recados dela'
+reset role;
+select set_config('request.jwt.claim.sub', '', false) \gset
+do $$
+declare
+  p text;
+  f text;
+begin
+  assert (select relrowsecurity from pg_class where oid = 'public.app_feedback'::regclass), 'app_feedback has RLS on';
+  assert not exists (select 1 from pg_policy where polrelid = 'public.app_feedback'::regclass),
+    'app_feedback has no policy: nobody reads it through the API';
+  -- Cada privilégio por si: com uma lista, has_table_privilege é verdade com qualquer um deles.
+  foreach p in array array['select', 'insert', 'update', 'delete', 'truncate', 'references', 'trigger'] loop
+    assert not has_table_privilege('anon', 'public.app_feedback', p), 'anon has no ' || p || ' on app_feedback';
+    assert not has_table_privilege('authenticated', 'public.app_feedback', p), 'members have no ' || p || ' on app_feedback';
+  end loop;
+  foreach p in array array['select', 'insert', 'update', 'delete'] loop
+    assert has_table_privilege('service_role', 'public.app_feedback', p), 'the service role has ' || p || ' on app_feedback';
+  end loop;
+
+  -- Mandar, ler e mudar: só para quem tem conta (e ler e mudar, só para quem mantém o app, dentro da função).
+  foreach f in array array[
+    'public.send_app_feedback(text, text, text, text)', 'public.app_feedback_list(text, integer)',
+    'public.set_app_feedback(uuid, text, text)'
+  ] loop
+    assert has_function_privilege('authenticated', f, 'execute'), 'members call ' || f;
+    assert not has_function_privilege('anon', f, 'execute'), 'anon cannot call ' || f;
+    assert not exists (
+      select 1 from pg_proc pr, aclexplode(pr.proacl) a where pr.oid = f::regprocedure and a.grantee = 0
+    ), 'public has no grant on ' || f;
+    assert (select prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = f::regprocedure),
+      f || ' is security definer with a fixed search_path';
+  end loop;
+  assert (select provolatile = 's' from pg_proc where oid = 'public.app_feedback_list(text, integer)'::regprocedure),
+    'the list only reads';
+  -- A peça interna (o recado como a tela lê): ninguém do app chama.
+  f := 'public.app_feedback_item(public.app_feedback, text)';
+  assert not has_function_privilege('anon', f, 'execute'), 'anon cannot call ' || f;
+  assert not has_function_privilege('authenticated', f, 'execute'), 'members cannot call ' || f;
+  assert not exists (
+    select 1 from pg_proc pr, aclexplode(pr.proacl) a where pr.oid = f::regprocedure and a.grantee = 0
+  ), 'public has no grant on ' || f;
+  assert (select not prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = f::regprocedure),
+    f || ' runs as the caller, with a fixed search_path';
+end $$;
+
+-- O resto roda numa transação desfeita no fim: um banco só com estes recados, para contar exato.
+begin;
+set local client_min_messages = warning;
+delete from public.app_feedback;
+-- Rui cuida do app; Sol e Tito usam (Tito entrou sem e-mail).
+insert into auth.users (id, email) values
+  ('00000000-0000-0000-0000-0000000006f1', 'rui@exemplo.com'),
+  ('00000000-0000-0000-0000-0000000006f2', 'sol@exemplo.com'),
+  ('00000000-0000-0000-0000-0000000006f3', null);
+insert into public.app_admins (user_id) values ('00000000-0000-0000-0000-0000000006f1');
+
+-- Sem conta, nada: nem mandar, nem ler, nem mudar.
+set role anon;
+do $$
+begin
+  begin
+    perform public.send_app_feedback('problema', 'A lista não atualiza.');
+    raise exception 'FAIL: anon sent a recado';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.app_feedback_list();
+    raise exception 'FAIL: anon read the recados';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.set_app_feedback(gen_random_uuid(), 'lido');
+    raise exception 'FAIL: anon changed a recado';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+-- O papel de membro sem o sub do token: a função recusa, em português.
+set role authenticated;
+select set_config('request.jwt.claim.sub', '', true) \gset
+do $$
+begin
+  perform public.send_app_feedback('problema', 'A lista não atualiza.');
+  raise exception 'FAIL: a recado without an account';
+exception when insufficient_privilege then
+  assert sqlerrm = 'Entre na sua conta para mandar um recado.', 'the refusal says why: ' || sqlerrm;
+end $$;
+
+-- Ainda sem recado: as quatro situações com zero, e a lista vazia (nunca nula).
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000006f1', true) \gset
+do $$
+begin
+  assert public.app_feedback_list()
+    = '{"counts": {"novo": 0, "lido": 0, "resolvido": 0, "arquivado": 0}, "total": 0, "items": []}'::jsonb,
+    'no recado yet: ' || public.app_feedback_list()::text;
+end $$;
+
+-- Sol manda o recado que o Nuke preparou.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000006f2', true) \gset
+do $$
+declare
+  v_first uuid;
+  v_long uuid;
+  bad text;
+begin
+  v_first := public.send_app_feedback('problema', E'  A lista não atualiza no iPhone.\n ', 'ios', ' 1.4.0 ');
+  assert v_first is not null, 'the recado has an id';
+  perform set_config('test.fb_first', v_first::text, true);
+  -- Mandado de novo (a resposta se perdeu): o mesmo recado, mesmo com outro tipo; vale o texto sem as pontas.
+  assert public.send_app_feedback('sugestao', 'A lista não atualiza no iPhone.', 'web', null) = v_first,
+    'the same text within 10 minutes is the same recado';
+  -- Até 2000 caracteres, contados como letras (não bytes), depois de tirar as pontas; versão em branco é sem versão.
+  v_long := public.send_app_feedback('outro', ' ' || repeat('é', 2000) || E'\n', null, '  ');
+  perform set_config('test.fb_long', v_long::text, true);
+
+  -- Ela não lê nem grava a tabela direto.
+  begin
+    perform 1 from public.app_feedback;
+    raise exception 'FAIL: a member read app_feedback';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.app_feedback (user_id, kind, message) values (auth.uid(), 'outro', 'Direto na tabela.');
+    raise exception 'FAIL: a member wrote app_feedback';
+  exception when insufficient_privilege then null;
+  end;
+
+  -- O que não é recado: 22023, e nada gravado.
+  foreach bad in array array[
+    $q$select public.send_app_feedback('problema', '   ')$q$,
+    $q$select public.send_app_feedback('problema', E'\n\t ')$q$,
+    $q$select public.send_app_feedback('problema', '')$q$,
+    $q$select public.send_app_feedback('problema', null)$q$,
+    $q$select public.send_app_feedback('problema', repeat('a', 2001))$q$,
+    $q$select public.send_app_feedback('bug', 'O botão some.')$q$,
+    $q$select public.send_app_feedback('Problema', 'O botão some.')$q$,
+    $q$select public.send_app_feedback(null, 'O botão some.')$q$,
+    $q$select public.send_app_feedback('problema', 'O botão some.', 'windows')$q$,
+    $q$select public.send_app_feedback('problema', 'O botão some.', '')$q$,
+    $q$select public.send_app_feedback('problema', 'O botão some.', 'ios', repeat('1', 41))$q$
+  ] loop
+    begin
+      execute bad;
+      raise exception 'FAIL: accepted %', bad;
+    exception when invalid_parameter_value then null;
+    end;
+  end loop;
+
+  -- Quem não está em app_admins não lê nem muda recado nenhum, nem o próprio.
+  begin
+    perform public.app_feedback_list();
+    raise exception 'FAIL: someone who is not an admin read the recados';
+  exception when insufficient_privilege then
+    assert sqlerrm = 'Este painel é só para quem mantém o app.', 'the refusal says why: ' || sqlerrm;
+  end;
+  begin
+    perform public.set_app_feedback(v_first, 'lido');
+    raise exception 'FAIL: someone who is not an admin changed a recado';
+  exception when insufficient_privilege then
+    assert sqlerrm = 'Este painel é só para quem mantém o app.', 'the refusal says why: ' || sqlerrm;
+  end;
+end $$;
+
+reset role;
+do $$
+declare
+  sol uuid := '00000000-0000-0000-0000-0000000006f2';
+  r public.app_feedback;
+  v_old uuid;
+begin
+  select * into r from public.app_feedback where id = current_setting('test.fb_first')::uuid;
+  assert r.user_id = sol and r.kind = 'problema' and r.message = 'A lista não atualiza no iPhone.' and r.platform = 'ios'
+    and r.app_version = '1.4.0' and r.status = 'novo' and r.note is null,
+    'the recado as she sent it, without the ends, new: ' || row_to_json(r)::text;
+  select * into r from public.app_feedback where id = current_setting('test.fb_long')::uuid;
+  assert r.message = repeat('é', 2000) and r.platform is null and r.app_version is null,
+    'two thousand letters; no platform and a blank version are null: ' || row_to_json(r)::text;
+  assert (select count(*) from public.app_feedback) = 2, 'the resend and the refusals wrote nothing';
+  -- Um recado de 11 minutos atrás (o mesmo texto já não é reenvio) e um de 25 horas atrás (fora do limite).
+  insert into public.app_feedback (user_id, kind, message, created_at, updated_at)
+  values (sol, 'outro', 'O mapa some.', now() - interval '11 minutes', now() - interval '11 minutes')
+  returning id into v_old;
+  perform set_config('test.fb_old', v_old::text, true);
+  insert into public.app_feedback (user_id, kind, message, created_at, updated_at)
+  values (sol, 'outro', 'Faz tempo.', now() - interval '25 hours', now() - interval '25 hours');
+end $$;
+
+-- O limite: 10 recados em 24 horas por pessoa.
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000006f2', true) \gset
+do $$
+declare
+  v_id uuid;
+  v_last uuid;
+  n integer;
+begin
+  v_id := public.send_app_feedback('problema', 'O mapa some.');
+  assert v_id <> current_setting('test.fb_old')::uuid, 'the same text after 10 minutes is a new recado';
+  -- Com os dois de antes e os dois do mapa, estes vão até o 10º. O de 25 horas atrás não conta: se contasse, o
+  -- último daqui seria o 11º.
+  for n in 5..10 loop
+    v_last := public.send_app_feedback('sugestao', 'Recado ' || n);
+  end loop;
+  assert public.send_app_feedback('sugestao', 'Recado 10') = v_last,
+    'at the limit, a resend still answers with the recado it already has';
+  begin
+    perform public.send_app_feedback('sugestao', 'Recado 11');
+    raise exception 'FAIL: an 11th recado in 24 hours';
+  exception when sqlstate 'NK015' then
+    assert sqlerrm = 'Você já mandou 10 recados nas últimas 24 horas. Tente de novo amanhã.', 'the refusal says why: ' || sqlerrm;
+  end;
+end $$;
+
+-- O limite é de cada pessoa, e o reenvio também: o mesmo texto de outra pessoa é outro recado.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000006f3', true) \gset
+do $$
+declare
+  v_id uuid;
+begin
+  v_id := public.send_app_feedback('elogio', 'A lista não atualiza no iPhone.', 'android', '1.4.0');
+  assert v_id <> current_setting('test.fb_first')::uuid, 'the same text from someone else is another recado';
+  perform set_config('test.fb_tito', v_id::text, true);
+end $$;
+
+-- Rui lê e cuida dos recados.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000006f1', true) \gset
+do $$
+declare
+  j jsonb;
+  item jsonb;
+  tz text := current_setting('timezone');
+  v_first uuid := current_setting('test.fb_first')::uuid;
+  v_old uuid := current_setting('test.fb_old')::uuid;
+  v_tito uuid := current_setting('test.fb_tito')::uuid;
+  v_now text := to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"');
+  item_keys text[] := array['app_version', 'created_at', 'email', 'id', 'kind', 'message', 'note', 'platform', 'status', 'updated_at'];
+  bad text;
+begin
+  j := public.app_feedback_list();
+  assert (select array_agg(k order by k) from jsonb_object_keys(j) as k) = array['counts', 'items', 'total'],
+    'the list has exactly the agreed keys: ' || j::text;
+  assert j -> 'counts' = '{"novo": 12, "lido": 0, "resolvido": 0, "arquivado": 0}', 'eleven from Sol and one from Tito, all new: '
+    || (j -> 'counts')::text;
+  assert (j ->> 'total')::int = 12 and jsonb_array_length(j -> 'items') = 12, 'no filter: every recado';
+  -- Do mais novo para o mais antigo (na mesma hora, pelo id).
+  assert (
+    select bool_and(
+      (a.e ->> 'created_at') > (b.e ->> 'created_at')
+      or ((a.e ->> 'created_at') = (b.e ->> 'created_at') and (a.e ->> 'id')::uuid > (b.e ->> 'id')::uuid))
+    from jsonb_array_elements(j -> 'items') with ordinality as a (e, i)
+    join jsonb_array_elements(j -> 'items') with ordinality as b (e, i) on b.i = a.i + 1
+  ), 'newest first, then by id: ' || (j -> 'items')::text;
+  assert j -> 'items' -> 10 ->> 'id' = v_old::text and j -> 'items' -> 11 ->> 'message' = 'Faz tempo.', 'the oldest last';
+
+  select e into item from jsonb_array_elements(j -> 'items') as e where e ->> 'id' = v_first::text;
+  assert (select array_agg(k order by k) from jsonb_object_keys(item) as k) = item_keys, 'an item has exactly the agreed keys: ' || item::text;
+  assert item ->> 'kind' = 'problema' and item ->> 'message' = 'A lista não atualiza no iPhone.' and item ->> 'platform' = 'ios'
+    and item ->> 'app_version' = '1.4.0' and item ->> 'status' = 'novo' and item -> 'note' = 'null'::jsonb
+    and item ->> 'email' = 'sol@exemplo.com', 'her recado, with her e-mail: ' || item::text;
+  assert item ->> 'created_at' = v_now and item ->> 'updated_at' = v_now, 'the times in ISO 8601, UTC: ' || item::text;
+  select e into item from jsonb_array_elements(j -> 'items') as e where e ->> 'id' = v_tito::text;
+  assert item ->> 'kind' = 'elogio' and item ->> 'platform' = 'android' and item -> 'email' = 'null'::jsonb,
+    'an account without e-mail: null, not missing: ' || item::text;
+  -- O fuso da conexão não muda nada.
+  perform set_config('timezone', 'Asia/Tokyo', true);
+  assert public.app_feedback_list() = j, 'the same list in another session time zone';
+  perform set_config('timezone', tz, true);
+
+  -- Cortada: o total ainda diz quantos são, e os itens são os mais novos.
+  assert (public.app_feedback_list(null, 3) ->> 'total')::int = 12, 'a cut list still says how many there are';
+  assert (public.app_feedback_list(null, 3) -> 'items') = (
+    select jsonb_agg(e order by i) from jsonb_array_elements(j -> 'items') with ordinality as x (e, i) where i <= 3
+  ), 'the newest three';
+  assert jsonb_array_length(public.app_feedback_list(null, 0) -> 'items') = 1
+    and jsonb_array_length(public.app_feedback_list(null, -5) -> 'items') = 1, 'the limit is at least 1';
+  assert public.app_feedback_list(null, null) = j and public.app_feedback_list(null, 1000) = j, 'null is the default, and a limit above the count gives every recado';
+  begin
+    perform public.app_feedback_list('apagado');
+    raise exception 'FAIL: an unknown status filter';
+  exception when invalid_parameter_value then null;
+  end;
+
+  -- Mudar a situação e a nota. Nulo não muda; a nota sai sem as pontas, e em branco apaga.
+  item := public.set_app_feedback(v_first, 'lido');
+  assert (select array_agg(k order by k) from jsonb_object_keys(item) as k) = item_keys, 'set answers an item like the list: ' || item::text;
+  assert item ->> 'status' = 'lido' and item -> 'note' = 'null'::jsonb and item ->> 'message' = 'A lista não atualiza no iPhone.'
+    and item ->> 'email' = 'sol@exemplo.com', 'read: ' || item::text;
+  item := public.set_app_feedback(v_first, null, E'  Ver no iPhone 15.\n');
+  assert item ->> 'status' = 'lido' and item ->> 'note' = 'Ver no iPhone 15.', 'a null status stays; the note without its ends: ' || item::text;
+  item := public.set_app_feedback(v_first, 'resolvido');
+  assert item ->> 'status' = 'resolvido' and item ->> 'note' = 'Ver no iPhone 15.', 'a null note stays: ' || item::text;
+  item := public.set_app_feedback(v_first, null, '   ');
+  assert item ->> 'status' = 'resolvido' and item -> 'note' = 'null'::jsonb, 'a blank note clears it: ' || item::text;
+  item := public.set_app_feedback(v_first, null, repeat('n', 2000));
+  assert char_length(item ->> 'note') = 2000, 'a note of 2000 characters';
+  item := public.set_app_feedback(v_first, null, '');
+  assert item -> 'note' = 'null'::jsonb, 'an empty note clears it too';
+  -- A data de mudança é a de agora.
+  item := public.set_app_feedback(v_old, 'lido');
+  assert item ->> 'updated_at' = v_now and item ->> 'created_at' < v_now, 'updated now, created before: ' || item::text;
+  perform public.set_app_feedback(v_tito, 'arquivado');
+
+  foreach bad in array array[
+    format('select public.set_app_feedback(%L, %L)', v_first, 'apagado'),
+    format('select public.set_app_feedback(%L, %L)', v_first, ''),
+    format('select public.set_app_feedback(%L, null, %L)', v_first, repeat('n', 2001))
+  ] loop
+    begin
+      execute bad;
+      raise exception 'FAIL: accepted %', bad;
+    exception when invalid_parameter_value then null;
+    end;
+  end loop;
+  begin
+    perform public.set_app_feedback(gen_random_uuid(), 'lido');
+    raise exception 'FAIL: changed a recado that does not exist';
+  exception when no_data_found then
+    assert sqlerrm = 'Este recado não existe mais.', 'the refusal says why: ' || sqlerrm;
+  end;
+  begin
+    perform public.set_app_feedback(null, 'lido');
+    raise exception 'FAIL: changed a recado without an id';
+  exception when no_data_found then null;
+  end;
+
+  -- O filtro: os de uma situação; as contagens são sempre de todos.
+  j := public.app_feedback_list();
+  assert j -> 'counts' = '{"novo": 9, "lido": 1, "resolvido": 1, "arquivado": 1}', 'the counts follow: ' || (j -> 'counts')::text;
+  j := public.app_feedback_list('novo');
+  assert (j ->> 'total')::int = 9 and jsonb_array_length(j -> 'items') = 9
+    and (select bool_and(e ->> 'status' = 'novo') from jsonb_array_elements(j -> 'items') as e), 'only the new ones';
+  assert j -> 'counts' = public.app_feedback_list() -> 'counts', 'the counts are of every recado, whatever the filter';
+  j := public.app_feedback_list('resolvido');
+  assert (j ->> 'total')::int = 1 and j -> 'items' -> 0 ->> 'id' = v_first::text and j -> 'items' -> 0 -> 'note' = 'null'::jsonb,
+    'the solved one: ' || j::text;
+  j := public.app_feedback_list('arquivado');
+  assert (j ->> 'total')::int = 1 and j -> 'items' -> 0 ->> 'id' = v_tito::text, 'the archived one';
+  -- Voltar para novo também vale.
+  assert public.set_app_feedback(v_tito, 'novo') ->> 'status' = 'novo', 'back to new';
+  assert public.app_feedback_list('arquivado') -> 'items' = '[]'::jsonb, 'a filter with nothing: an empty list, never null';
+end $$;
+
+-- Apagar a conta apaga os recados dela; os dos outros ficam.
+reset role;
+do $$
+begin
+  delete from auth.users where id = '00000000-0000-0000-0000-0000000006f2';
+  assert not exists (select 1 from public.app_feedback where user_id = '00000000-0000-0000-0000-0000000006f2'),
+    'deleting the account deletes her recados';
+  assert (select count(*) from public.app_feedback) = 1, 'Tito''s stays';
+end $$;
+
+-- O teto: com mais de 500 recados, a lista para em 500; o padrão (e nulo) é 200; o total diz quantos são.
+do $$
+begin
+  insert into public.app_feedback (user_id, kind, message, created_at, updated_at)
+  select '00000000-0000-0000-0000-0000000006f3', 'outro', 'Velho ' || g,
+    now() - interval '2 days' - g * interval '1 second', now() - interval '2 days' - g * interval '1 second'
+  from generate_series(1, 600) g;
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000006f1', true) \gset
+do $$
+declare
+  j jsonb := public.app_feedback_list(null, 1000);
+begin
+  assert (j ->> 'total')::int = 601 and jsonb_array_length(j -> 'items') = 500, 'a limit over 500 is capped at 500: ' || (j ->> 'total');
+  assert jsonb_array_length(public.app_feedback_list() -> 'items') = 200
+    and jsonb_array_length(public.app_feedback_list(null, null) -> 'items') = 200, 'the default, and null, are 200';
+end $$;
+reset role;
+rollback;
+
+do $$
+begin
+  assert not exists (select 1 from public.app_feedback), 'the rollback left no recado';
+  assert not exists (select 1 from public.app_admins), 'and nobody is an admin';
+end $$;
+
 \echo 'OK — todos os testes do banco passaram'
 

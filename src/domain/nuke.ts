@@ -1,6 +1,7 @@
 // Nuke, o assistente da casa: o retrato da casa que vai para a IA, o
 // histórico enviado e as ações que ele sugere (a pessoa confirma no app).
 
+import { cleanFeedbackText, FEEDBACK_KINDS, type FeedbackKind } from './appFeedback';
 import { formatBRDate } from './dates';
 import { getFinanceCategory } from './finance';
 import type { RefillSummary } from './medicationStock';
@@ -34,7 +35,12 @@ export type NukeAction =
       recurrence: 'none' | 'daily' | 'weekly' | 'monthly';
     }
   | { type: 'add_expense'; label: string; description: string; amount: number; category: string; spent_on: string }
-  | { type: 'open_screen'; label: string; screen: NukeScreen };
+  | { type: 'open_screen'; label: string; screen: NukeScreen }
+  /**
+   * Recado para quem faz o Kotii (domain/appFeedback): `text` é exatamente o que vai, e só vai depois do toque em
+   * "Enviar". Um app de antes do recado não conhece o tipo e deixa a ação de fora (parseActions).
+   */
+  | { type: 'send_feedback'; label: string; kind: FeedbackKind; text: string };
 
 export interface NukeMessage {
   id: string;
@@ -160,6 +166,12 @@ export function buildNukeContext(s: NukeSnapshot): string {
 
 export const HISTORY_LIMIT = 12;
 
+/**
+ * O que este app sabe mostrar, mandado ao Nuke em cada pergunta: a função só oferece o recado a quem manda
+ * 'send_feedback' (um app instalado de antes do recado não manda, e não vê a oferta de um cartão que não mostra).
+ */
+export const NUKE_FEATURES = ['send_feedback'] as const;
+
 /** O que vai para a IA: as últimas falas, sem respostas que falharam. */
 export function historyForApi(messages: NukeMessage[], limit = HISTORY_LIMIT): { role: 'user' | 'assistant'; text: string }[] {
   return messages
@@ -199,6 +211,10 @@ export function parseActions(raw: unknown): NukeAction[] {
       out.push({ type: 'add_expense', label: a.label, description: a.description, amount: a.amount, category: a.category, spent_on: a.spent_on });
     } else if (a.type === 'open_screen' && SCREENS.has(a.screen)) {
       out.push({ type: 'open_screen', label: a.label, screen: a.screen });
+    } else if (a.type === 'send_feedback' && FEEDBACK_KINDS.includes(a.kind)) {
+      // O texto aparado e no tamanho da coluna: o cartão mostra o que vai, e o banco não recusa.
+      const text = cleanFeedbackText(a.text);
+      if (text) out.push({ type: 'send_feedback', label: a.label, kind: a.kind, text });
     }
   }
   return out;
@@ -215,6 +231,8 @@ export function describeAction(action: NukeAction): string {
       return `${action.description} · ${formatBRL(action.amount)} · ${getFinanceCategory(action.category).label}`;
     case 'open_screen':
       return '';
+    case 'send_feedback':
+      return `“${action.text}”`;
   }
 }
 

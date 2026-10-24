@@ -39,4 +39,14 @@ describe('abrir o WhatsApp ou o discador', () => {
     expect(await openExternal('tel:+5511987654321')).toBe(true);
     expect(openURL.mock.calls).toEqual([['tel:+5511987654321']]);
   });
+
+  it('no navegador, o e-mail pronto também abre em outra aba: com o Gmail cuidando do mailto, ele não toma a aba do Kotii', async () => {
+    jest.replaceProperty(Platform, 'OS', 'web');
+    const open = jest.fn();
+    webWindow.window.open = open;
+    const url = 'mailto:ana@exemplo.com?subject=Oi';
+    expect(await openExternal(url)).toBe(true);
+    expect(open.mock.calls).toEqual([[url, '_blank', 'noopener,noreferrer']]);
+    expect(openURL).not.toHaveBeenCalled();
+  });
 });

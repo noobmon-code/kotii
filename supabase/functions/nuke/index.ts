@@ -1,10 +1,11 @@
-// POST { messages: [{ role, text }], context, today } -> { reply, actions }
+// POST { messages: [{ role, text }], context, today, features? } -> { reply, actions }
 // POST { mode: 'menu', context, today, weekStart, preferences } -> { days, shopping, note }
 //
 // O Nuke conversa sobre a casa. O app manda o retrato da casa (montado com os
 // dados que a própria pessoa já vê, via RLS) e o histórico recente; a função
 // só guarda a chave da IA. As ações voltam como sugestão: quem executa é o
-// app, depois do toque da pessoa.
+// app, depois do toque da pessoa. `features: ['send_feedback']` diz que o app
+// sabe mostrar o cartão do recado; sem isso o Nuke nem oferece o recado.
 //
 // Secrets: ANTHROPIC_API_KEY ou OPENROUTER_API_KEY; NUKE_PROVIDER e
 // NUKE_MODEL opcionais (sem eles, valem RECEIPT_PROVIDER e RECEIPT_MODEL).
@@ -96,10 +97,10 @@ Deno.serve(async (req) => {
       config,
       schema: NukeReplySchema,
       schemaName: 'nuke_reply',
-      system: buildSystem(parsed.context, parsed.today),
+      system: buildSystem(parsed.context, parsed.today, parsed.feedback),
       turns: parsed.turns,
     });
-    return json(cleanReply(raw, parsed.today));
+    return json(cleanReply(raw, parsed.today, parsed.feedback));
   } catch (err) {
     if (!(err instanceof ExtractionError && err.status === 422)) await refundAiQuota(ticket);
     if (err instanceof ExtractionError) return json({ error: err.message }, err.status);
