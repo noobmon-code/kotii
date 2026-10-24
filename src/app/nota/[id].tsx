@@ -181,10 +181,12 @@ export default function ReceiptScreen() {
   const deleteReceipt = useDeleteReceipt(id);
   const openList = useOpenListItems();
   const links = useListLinks();
-  // As abreviações dos mercados da casa, que as notas confirmadas ensinaram ("AZ GALLO" é o azeite).
-  const learned = useLearnedAbbreviations();
+  const reviewing = receiptQuery.data?.receipt.status === 'draft';
+  // As abreviações dos mercados da casa, que as notas confirmadas ensinaram ("AZ GALLO" é o azeite): só a nota em
+  // revisão casa com a lista e confere a despensa.
+  const learned = useLearnedAbbreviations({ enabled: reviewing });
   // As compras recentes só servem aos nomes parecidos, que só aparecem na nota em revisão.
-  const purchases = usePurchaseRecords({ enabled: receiptQuery.data?.receipt.status === 'draft' });
+  const purchases = usePurchaseRecords({ enabled: reviewing });
 
   const [overrides, setOverrides] = useState<Record<string, ItemOverride>>({});
   const [listChoices, setListChoices] = useState<Record<string, ListChoice>>({});

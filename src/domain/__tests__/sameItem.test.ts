@@ -75,6 +75,17 @@ describe('itemIdentity: o item sem a marca, a embalagem nem o tamanho', () => {
       { word: 'integral', from: [0, 1] },
     ]);
     expect(spellOut(termWords(''))).toEqual([]);
+    // Sem os nomes regionais (o nome sugerido): "pao de caixa" fica.
+    expect(spellOut(termWords('PAO DE CAIXA'), { regional: false }).map(({ word }) => word)).toEqual(['pao', 'de', 'caixa']);
+    expect(spellOut(termWords('PAO DE CAIXA')).map(({ word }) => word)).toEqual(['pao', 'de', 'forma']);
+  });
+
+  it('"SEMI DESN" é o semidesnatado, e não o desnatado', () => {
+    expect(spelledOut('LEITE SEMI DESN PIRAC')).toBe('leite semidesnatado pirac');
+    expect(spelledOut('LT SEMI DESN PIRAC')).toBe('leite semidesnatado pirac');
+    expect(spelledOut('LEITE SEMI DESNATADO')).toBe('leite semidesnatado');
+    expect(sameItemFit({ name: 'Leite desnatado' }, { names: ['LEITE SEMI DESN PIRAC'] })).toBe('outro');
+    expect(sameItemFit({ name: 'Leite semidesnatado' }, { names: ['LEITE SEMI DESN PIRAC'] })).toBe('mesmo');
   });
 
   it('"Gilete" na lista é a lâmina; o "GILLETTE" da nota é a marca e sozinho não diz o item', () => {

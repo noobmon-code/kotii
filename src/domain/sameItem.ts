@@ -19,8 +19,8 @@ import { packageSize, samePackageSize } from './packageSize';
 // Trechos de nota fiscal e nomes regionais, por extenso. Casam palavras inteiras do texto de termText, na ordem
 // (o mais longo antes). Não é para cobrir toda abreviação: só as comuns e sem outra leitura ("SAB" pode ser sabão
 // ou sabonete, "COND" pode ser condensado ou condicionador: ficam de fora sozinhas).
-const SPELLED_OUT: readonly (readonly [string, string])[] = [
-  // Nomes regionais do mesmo item.
+// Nomes regionais do mesmo item: valem no casamento, mas o nome sugerido fica como a casa fala ("Pão de caixa").
+const REGIONAL_NAMES: readonly (readonly [string, string])[] = [
   ['pao de caixa', 'pao de forma'],
   ['pao caixa', 'pao de forma'],
   ['pao de sal', 'pao frances'],
@@ -30,6 +30,9 @@ const SPELLED_OUT: readonly (readonly [string, string])[] = [
   ['salsinha', 'salsa'],
   ['lava loucas', 'detergente'],
   ['lava louca', 'detergente'],
+];
+const SPELLED_OUT: readonly (readonly [string, string])[] = [
+  ...REGIONAL_NAMES,
   // Abreviações de NFC-e.
   ['refrig', 'refrigerante'],
   ['refri', 'refrigerante'],
@@ -98,6 +101,9 @@ const SPELLED_OUT: readonly (readonly [string, string])[] = [
   ['caf', 'cafe'],
   ['torr', 'torrado'],
   ['moid', 'moido'],
+  // Antes do "DESN" sozinho: "SEMI DESN" é o semidesnatado, e não o desnatado.
+  ['semi desn', 'semidesnatado'],
+  ['semi desnatado', 'semidesnatado'],
   ['desn', 'desnatado'],
   ['semidesn', 'semidesnatado'],
   ['int', 'integral'],
@@ -116,10 +122,11 @@ const SPELLED_OUT: readonly (readonly [string, string])[] = [
   ['^lt semidesnatado', 'leite semidesnatado'],
   ['^lt uht', 'leite uht'],
 ];
-const SPELLED_OUT_WORDS = SPELLED_OUT.map(([from, to]) => ({
+const SPELLED_OUT_WORDS = SPELLED_OUT.map(([from, to], at) => ({
   from: from.replace(/^\^/, '').split(' '),
   to: to.split(' '),
   atStart: from.startsWith('^'),
+  regional: at < REGIONAL_NAMES.length,
 }));
 
 /**
@@ -137,10 +144,14 @@ export function termWords(name: string): SpelledWord[] {
   return text ? text.split(' ').map((word, at) => ({ word, from: [at, at] })) : [];
 }
 
-/** As abreviações e os nomes regionais por extenso, na ordem da tabela, palavra por palavra (como em spelledOut). */
-export function spellOut(words: readonly SpelledWord[]): SpelledWord[] {
+/**
+ * As abreviações e os nomes regionais por extenso, na ordem da tabela, palavra por palavra (como em spelledOut).
+ * `regional: false`: só as abreviações (o nome sugerido não troca o nome que a casa usa).
+ */
+export function spellOut(words: readonly SpelledWord[], { regional = true }: { regional?: boolean } = {}): SpelledWord[] {
   let current = [...words];
-  for (const { from, to, atStart } of SPELLED_OUT_WORDS) {
+  for (const { from, to, atStart, regional: isRegional } of SPELLED_OUT_WORDS) {
+    if (isRegional && !regional) continue;
     if (!current.some(({ word }) => word === from[0])) continue;
     const next: SpelledWord[] = [];
     let at = 0;

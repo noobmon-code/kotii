@@ -29,21 +29,31 @@ export interface AliasPair {
   productName: string;
 }
 
+/** O item (e a família) do produto que ensinou a palavra; null quando o app não sabe que item é. */
+export type LearnedContext = Pick<ItemIdentity, 'key' | 'family'> | null;
+
 export interface LearnedAbbreviations {
   /** Palavra da nota -> palavra por extenso, as duas sem acento ("integ" -> "integral", "pirac" -> "piracanjuba"). */
   words: ReadonlyMap<string, string>;
+  /** Os itens dos produtos que ensinaram cada palavra que não é item (marca, sabor, tipo): "pirac" -> leite. */
+  contexts: ReadonlyMap<string, readonly LearnedContext[]>;
   /** Como a casa escreve cada palavra, com acento ("requeijao" -> "requeijão"). */
   spellings: ReadonlyMap<string, string>;
 }
 
 /** Nada aprendido: sem notas confirmadas, sem internet ou antes de os apelidos chegarem. */
-export const NO_LEARNED: LearnedAbbreviations = { words: new Map(), spellings: new Map() };
+export const NO_LEARNED: LearnedAbbreviations = { words: new Map(), contexts: new Map(), spellings: new Map() };
 
 // Ligações: não se abreviam. O "c" e o "s" de "C/" e "S/" nem entram (uma letra só).
 const LINK_WORDS = new Set(['de', 'da', 'do', 'das', 'dos', 'e', 'com', 'sem', 'para', 'em', 'ao', 'na', 'no']);
 // Medidas e unidades como a nota escreve, além das soltas (nameWords): "LT" é litro (ou lata), e só é leite onde a
-// tabela fixa diz.
-const UNITS = new Set([...LOOSE_UNITS, 'kgs', 'grs', 'gs', 'lts', 'mls', 'unds', 'unids', 'pcts', 'cxs', 'dz', 'dzs']);
+// tabela fixa diz; "GAL"/"GL" é galão ("AGUA SANIT GAL 5L"), mesmo que uma nota tenha dito galinha.
+const UNITS = new Set([...LOOSE_UNITS, 'kgs', 'grs', 'gs', 'lts', 'mls', 'unds', 'unids', 'pcts', 'cxs', 'dz', 'dzs', 'gal', 'gl']);
+// Abreviações com mais de um sentido nos mercados: uma nota só não decide. "SAB" é sabão ou sabonete, "COND" é
+// condicionador ou condensado, "ESP" é esponja, espaguete ou espumante, "CEBOL" é cebola ou cebolinha, "LIM" é limão
+// ou limpador, "PAP" é papel ou papinha, "BAT" é batata ou batom. Os trechos da tabela fixa ("SAB PO", "LTE COND",
+// "ESP BARB") continuam valendo: chegam já por extenso.
+const NEVER_LEARNED = new Set(['sab', 'cond', 'esp', 'cebol', 'lim', 'pap', 'bat']);
 
 const onlyLetters = (word: string) => /^[a-z]+$/.test(word);
 
@@ -57,7 +67,12 @@ const COMMON_WORDS: ReadonlySet<string> = new Set(COMMON_NAMES.flatMap((name) =>
 
 /** A palavra da nota pode ser abreviação: só letras, duas ou mais, e nada que o app já leia inteiro. */
 const mayAbbreviate = (word: string) =>
-  word.length >= 2 && onlyLetters(word) && !LINK_WORDS.has(word) && !UNITS.has(word) && !knownWhole(word, COMMON_WORDS);
+  word.length >= 2 &&
+  onlyLetters(word) &&
+  !LINK_WORDS.has(word) &&
+  !UNITS.has(word) &&
+  !NEVER_LEARNED.has(word) &&
+  !knownWhole(word, COMMON_WORDS);
 
 /**
  * A palavra curta abrevia a comprida: começa pela mesma letra e as letras dela aparecem em ordem na outra
@@ -134,13 +149,19 @@ const COMMON_SPELLINGS = spellingsOf(COMMON_NAMES);
  *   itens comuns), e o que a tabela fixa já trocou ("INT" já chega como integral);
  * - a palavra que a casa usa inteira num nome que ela escreveu (o nome só com as palavras da nota não conta), e a
  *   que serve para duas palavras do mesmo nome;
- * - a que a casa já viu abreviando duas coisas ("SAB": sabão numa nota, sabonete em outra);
+ * - a que a casa já viu abreviando duas coisas ("SAB": sabão numa nota, sabonete em outra), e as de mais de um
+ *   sentido nos mercados, mesmo com uma nota só (NEVER_LEARNED);
+ * - a palavra do nome que outra palavra da nota já diz: em "LEITE SEMI DESN" o "DESN" já é o desnatado de
+ *   "semidesnatado", e o "SEMI" não vira semidesnatado sozinho; em "LEITE INT ITAL" o integral já está dito, e o
+ *   "ITAL" só pode ser o Italac;
  * - o tipo que as regras fixas já leem como outro ("MASC" é mascavo; ensinada como masculino, não troca).
- * Uma marca abreviada vira a marca ("PIRAC" -> piracanjuba): só aparece com aquele produto. `names`: outros nomes
- * da casa (os produtos), só para a grafia com acento.
+ * Uma marca abreviada vira a marca ("PIRAC" -> piracanjuba), guardando de que item ela veio (`contexts`): só se
+ * escreve por extenso numa linha daquele item. `names`: outros nomes da casa (os produtos), só para a grafia com
+ * acento.
  */
 export function learnAbbreviations(pairs: readonly AliasPair[], names: readonly string[] = []): LearnedAbbreviations {
   const seen = new Map<string, Map<string, number>>();
+  const seenContexts = new Map<string, Map<string, LearnedContext>>();
   const whole = new Set<string>();
   for (const { description, productName } of pairs) {
     const all = writtenWords(productName).map(({ plain }) => plain);
@@ -150,13 +171,20 @@ export function learnAbbreviations(pairs: readonly AliasPair[], names: readonly 
     if (all.every((word) => noteWords.has(word) || noteWords.has(singular(word)))) continue;
     const inName = new Set(all.flatMap((word) => [word, singular(word)]));
     const nameWords = all.filter((word) => onlyLetters(word) && word.length >= 3 && !LINK_WORDS.has(word) && !UNITS.has(word));
+    // A palavra do nome que outra palavra da nota já cobre: ela mesma ("integral") ou um pedaço dela ("desnatado" em
+    // "semidesnatado").
+    const covered = (target: string, word: string) =>
+      noteWords.has(target) ||
+      noteWords.has(singular(target)) ||
+      [...noteWords].some((other) => other !== word && other.length >= 4 && onlyLetters(other) && target.includes(other));
+    let context: LearnedContext | undefined;
     for (const word of noteWords) {
       if (inName.has(word) || inName.has(singular(word))) {
         whole.add(word);
         continue;
       }
       if (!mayAbbreviate(word)) continue;
-      const targets = nameWords.filter((target) => abbreviates(word, target));
+      const targets = nameWords.filter((target) => abbreviates(word, target) && !covered(target, word));
       // Nenhuma ou duas palavras do nome ("biscoito" e "biscoitos" são uma).
       if (new Set(targets.map(singular)).size !== 1) continue;
       const kinds = kindTermValues(word);
@@ -164,15 +192,27 @@ export function learnAbbreviations(pairs: readonly AliasPair[], names: readonly 
       const forms = seen.get(word) ?? new Map<string, number>();
       forms.set(targets[0], (forms.get(targets[0]) ?? 0) + 1);
       seen.set(word, forms);
+      if (context === undefined) {
+        const identity = itemIdentity(productName);
+        context = identity ? { key: identity.key, family: identity.family } : null;
+      }
+      const contexts = seenContexts.get(word) ?? new Map<string, LearnedContext>();
+      contexts.set(context ? `${context.key} ${context.family ?? ''}` : '', context);
+      seenContexts.set(word, contexts);
     }
   }
   const words = new Map<string, string>();
+  const contexts = new Map<string, LearnedContext[]>();
   for (const [word, forms] of seen) {
     if (whole.has(word) || new Set([...forms.keys()].map(singular)).size > 1) continue;
     words.set(word, mostUsed(forms));
+    contexts.set(word, [...(seenContexts.get(word)?.values() ?? [])]);
   }
-  return { words, spellings: spellingsOf([...pairs.map(({ productName }) => productName), ...names]) };
+  return { words, contexts, spellings: spellingsOf([...pairs.map(({ productName }) => productName), ...names]) };
 }
+
+const WITH_LEARNED = new WeakMap<LearnedAbbreviations, Map<string, string | null>>();
+const WITH_LEARNED_LIMIT = 5000;
 
 /**
  * O nome (a descrição da nota) com a tabela fixa e as abreviações aprendidas por extenso, sem acento, como
@@ -180,16 +220,17 @@ export function learnAbbreviations(pairs: readonly AliasPair[], names: readonly 
  */
 export function withLearned(name: string, learned: LearnedAbbreviations): string | null {
   if (!learned.words.size) return null;
+  // A despensa compara cada nome do carrinho com cada um da despensa: cada nome se lê uma vez por aprendizado.
+  let cache = WITH_LEARNED.get(learned);
+  if (!cache) WITH_LEARNED.set(learned, (cache = new Map()));
+  const known = cache.get(name);
+  if (known !== undefined) return known;
   const spelled = spellOut(termWords(name));
-  const learnedOf = learnedIn(spelled, learned);
-  let changed = false;
-  const words = spelled.map(({ word }) => {
-    const to = learnedOf(word);
-    if (to == null) return word;
-    changed = true;
-    return to;
-  });
-  return changed ? words.join(' ') : null;
+  const replaced = learnedReplacements(spelled, learned);
+  const result = replaced.size ? spelled.map(({ word }, at) => replaced.get(at) ?? word).join(' ') : null;
+  if (cache.size >= WITH_LEARNED_LIMIT) cache.clear();
+  cache.set(name, result);
+  return result;
 }
 
 /** O mesmo item, ou um da mesma família ("bife" e "alcatra" são carne). */
@@ -197,30 +238,52 @@ const sameThing = (a: Pick<ItemIdentity, 'key' | 'family'>, b: Pick<ItemIdentity
   a.key === b.key || (a.family != null && (a.family === b.family || a.family === b.key)) || b.family === a.key;
 
 /**
- * A palavra por extenso que a casa ensinou para cada palavra deste texto (já com a tabela fixa). A aprendida que é
- * um item ("ESP" -> esponja) só entra onde o texto não diz outro item: em "MAC ESP RENATA" o macarrão já está dito,
- * e ali o "ESP" é o espaguete que a casa nunca confirmou. As outras (marca, sabor, tipo) entram sempre.
+ * As palavras deste texto (já com a tabela fixa) que a casa ensinou e que valem aqui, pela posição, com a palavra
+ * por extenso. A aprendida que é um item ("AZ" -> azeite) só entra como a primeira palavra da descrição, quando o
+ * texto não diz outro item ("AZ GALLO", mas não "TOALHA AZ" nem "CANETA BIC AZ"), ou onde o texto já diz aquele
+ * item (o bife na "BIF ALCATRA": a alcatra é carne). As outras (marca, sabor, tipo) só numa linha do item (ou da
+ * família) do produto que as ensinou: "PIRAC" veio do leite e não vira piracanjuba no creme de leite; "CONF" veio da
+ * fralda e não entra no açúcar.
  */
-function learnedIn(spelled: readonly SpelledWord[], learned: LearnedAbbreviations): (word: string) => string | undefined {
-  let said: ItemIdentity | null | undefined;
-  return (word) => {
+function learnedReplacements(spelled: readonly SpelledWord[], learned: LearnedAbbreviations): Map<number, string> {
+  const out = new Map<number, string>();
+  if (!spelled.some(({ word }) => learned.words.has(word))) return out;
+  const plain = spelled.map(({ word }) => word);
+  const said = itemIdentity(plain.join(' '));
+  spelled.forEach(({ word, from }, at) => {
     const to = learned.words.get(word);
-    if (to == null) return undefined;
-    const item = itemIdentity(to);
-    if (!item) return to;
-    if (said === undefined) said = itemIdentity(spelled.map((entry) => entry.word).join(' '));
-    return !said || sameThing(said, item) ? to : undefined;
-  };
+    const item = to == null ? null : itemIdentity(to);
+    if (to == null || !item) return;
+    if (said ? sameThing(said, item) : from[0] === 0) out.set(at, to);
+  });
+  // O item que a linha diz, já com a aprendida que é item ("AZ GALLO" é azeite).
+  let reads: ItemIdentity | null | undefined;
+  spelled.forEach(({ word }, at) => {
+    const to = learned.words.get(word);
+    if (to == null || out.has(at) || itemIdentity(to)) return;
+    if (reads === undefined) reads = out.size ? itemIdentity(plain.map((other, k) => out.get(k) ?? other).join(' ')) : said;
+    const line = reads;
+    const fits = (learned.contexts.get(word) ?? []).some((context) => (context ? line != null && sameThing(line, context) : line == null));
+    if (fits) out.set(at, to);
+  });
+  return out;
 }
+
+// Os adjetivos que a tabela fixa escreve numa forma só (masculina ou feminina).
+const GENDERED_ADJECTIVES = new Set([
+  'bovina', 'bovino', 'recheado', 'moido', 'torrado', 'resfriado', 'congelado', 'instantaneo', 'desnatado', 'semidesnatado',
+  'condensado', 'liquido',
+]);
 
 /**
  * O nome sugerido para o item novo da nota do QR code, com as abreviações por
  * extenso e com acento quando se sabe: "LT INTEG PIRAC 1L" vira "Leite
- * integral pirac 1l". As aprendidas valem sempre (a casa confirmou); as da
- * tabela fixa só onde dizem o item ou o tipo dele (lidos em domain/sameItem):
- * "FRANGO INT" continua "Frango int", e não vira o frango integral, porque ali
- * é o inteiro. O resto do texto (pontuação, tamanho) fica como está. null
- * quando nada muda: o nome fica como hoje (prettifyDescription).
+ * integral pirac 1l". As aprendidas valem onde valem no casamento
+ * (learnedReplacements); as da tabela fixa só onde dizem o item ou o tipo dele
+ * (lidos em domain/sameItem): "FRANGO INT" continua "Frango int", e não vira o
+ * frango integral, porque ali é o inteiro. Os nomes regionais e o adjetivo
+ * sozinho não se trocam. O resto do texto (pontuação, tamanho) fica como
+ * está. null quando nada muda: o nome fica como hoje (prettifyDescription).
  */
 export function suggestedNoteName(raw: string, learned: LearnedAbbreviations = NO_LEARNED): string | null {
   const text = raw.trim().replace(/\s+/g, ' ');
@@ -229,17 +292,21 @@ export function suggestedNoteName(raw: string, learned: LearnedAbbreviations = N
   // Tem de ser palavra por palavra o texto que a tabela lê; se não for, melhor não mexer.
   if (!tokens.length || plains.join(' ') !== termText(text)) return null;
 
-  let words = spellOut(plains.map((word, at): SpelledWord => ({ word, from: [at, at] })));
-  const learnedOf = learnedIn(words, learned);
+  // Sem os nomes regionais: "PAO DE CAIXA" fica pão de caixa, como a casa fala (no casamento, é o pão de forma).
+  let words = spellOut(
+    plains.map((word, at): SpelledWord => ({ word, from: [at, at] })),
+    { regional: false },
+  );
+  const replaced = learnedReplacements(words, learned);
   const learnedTokens = new Set<number>();
-  words = words.map((word) => {
-    const to = learnedOf(word.word);
+  words = words.map((word, index) => {
+    const to = replaced.get(index);
     if (to == null) return word;
     for (let at = word.from[0]; at <= word.from[1]; at++) learnedTokens.add(at);
     return { word: to, from: word.from };
   });
   // A palavra aprendida pode completar um trecho da tabela ("LEI COND" -> "leite cond" -> "leite condensado").
-  if (learnedTokens.size) words = spellOut(words);
+  if (learnedTokens.size) words = spellOut(words, { regional: false });
 
   // Cada trecho do texto original e as palavras que saíram dele.
   const groups: { first: number; last: number; at: number[] }[] = [];
@@ -265,7 +332,11 @@ export function suggestedNoteName(raw: string, learned: LearnedAbbreviations = N
     const after = at.map((index) => words[index].word);
     let learnedHere = false;
     for (let token = first; token <= last; token++) if (learnedTokens.has(token)) learnedHere = true;
-    const expand = after.join(' ') !== before && (learnedHere || at.some((index) => kept.has(index)));
+    // O adjetivo sozinho fica abreviado: a tabela escreve uma forma só, e ela pode não concordar com o item
+    // ("PATINHO BOV" não vira "Patinho bovina", nem "BOLACHA RECH" "Bolacha recheado"); "LTE COND" vira "Leite
+    // condensado", com o item junto.
+    const loneAdjective = after.length === 1 && GENDERED_ADJECTIVES.has(after[0]);
+    const expand = after.join(' ') !== before && !loneAdjective && (learnedHere || at.some((index) => kept.has(index)));
     out += text.slice(end, tokens[first].start) + (expand ? after.map(spell).join(' ') : text.slice(tokens[first].start, tokens[last].end));
     end = tokens[last].end;
     if (!expand) continue;
