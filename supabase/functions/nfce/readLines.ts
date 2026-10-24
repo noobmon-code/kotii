@@ -3,8 +3,10 @@
 // confirma antes de compartilhar o preço (_shared/receiptRead.ts). Espelho de
 // nfceItemsToDraft e normalizeNfceUnit em src/domain/nfce.ts; um teste do app
 // (src/domain/__tests__/nfceReadLines.test.ts) falha se os dois divergirem.
-// Sem o código do produto (store_code): ele só fica na linha da casa, para ela
-// aprender o produto; a leitura do servidor e os preços comuns não o levam.
+// O código do produto (store_code) fica só na linha da casa, para ela aprender
+// o produto. Da leitura do servidor e dos preços comuns só vai o código de
+// barras (gtin), que quem chama já tirou do código da linha (sharedGtin, em
+// read.ts): o código interno do mercado nunca vai.
 // Sem import: o teste do app lê este arquivo direto.
 
 interface SefazItem {
@@ -13,6 +15,8 @@ interface SefazItem {
   unit: string;
   unitPrice: number;
   totalPrice: number;
+  /** O código de barras do código da linha (os 14 dígitos de sharedGtin), ou null. */
+  gtin?: string | null;
 }
 
 const UNITS: Record<string, 'un' | 'kg' | 'g' | 'l' | 'ml'> = {
@@ -27,7 +31,7 @@ const UNITS: Record<string, 'un' | 'kg' | 'g' | 'l' | 'ml'> = {
   ML: 'ml',
 };
 
-export function nfceReadLines(items: SefazItem[]): { description: string; unit: string; unit_price: number }[] {
+export function nfceReadLines(items: SefazItem[]): { description: string; unit: string; unit_price: number; gtin?: string }[] {
   return items
     .filter((item) => item.description.trim() && item.totalPrice >= 0)
     .map((item) => {
@@ -38,6 +42,7 @@ export function nfceReadLines(items: SefazItem[]): { description: string; unit: 
         description: item.description.trim().replace(/\s+/g, ' '),
         unit: UNITS[item.unit.trim().toUpperCase()] ?? 'un',
         unit_price: unitPrice,
+        ...(item.gtin ? { gtin: item.gtin } : {}),
       };
     });
 }

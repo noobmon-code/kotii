@@ -7,7 +7,10 @@
 // (supabase/migrations/20261021150000_store_codes.sql), a única que vale lá: o
 // check de product_barcodes.gtin recusa outra. gtinKey é o espelho dela; um
 // teste (src/domain/__tests__/barcode.test.ts) roda os casos do banco e
-// confere que as faixas excluídas da função SQL são as daqui.
+// confere que as faixas excluídas da função SQL são as daqui. As funções que
+// leem a nota têm a mesma regra (supabase/functions/_shared/gtin.ts), para o
+// código de barras de cada linha ir para os preços compartilhados; o mesmo
+// teste confere as duas.
 
 import { genericItem } from './genericItem';
 

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { CATEGORY_KEYS } from '../_shared/categories.ts';
 import { cnpjFromAccessKey, isValidAccessKey, isValidCnpj } from '../_shared/fiscalIds.ts';
+import { sharedGtin } from '../_shared/gtin.ts';
 import type { ReadLine } from '../_shared/receiptRead.ts';
 import { storeCodeKey } from '../_shared/storeCode.ts';
 
@@ -254,8 +255,10 @@ const SUM_TOLERANCE_CENTS = 5;
  * fica de fora de `readLines` (nunca compartilha um preço por kg inventado).
  * O item genérico vai limpo (genericName) para a linha da nota, nunca para a
  * leitura do servidor: ele só serve ao casamento com a lista da casa. O código
- * do produto vai pela chave do banco (storeCodeKey), também só para a linha:
- * o produto que ele já ensinou entra depois, em withStoreCodes.
+ * do produto vai pela chave do banco (storeCodeKey) para a linha (o produto que
+ * ele já ensinou entra depois, em withStoreCodes); para a leitura do servidor
+ * vai só quando é um código de barras de 13 ou 14 dígitos (sharedGtin), nunca
+ * o código interno.
  */
 export function cleanReceipt(
   extracted: ExtractedReceipt,
@@ -286,10 +289,14 @@ export function cleanReceipt(
     const quantity = lineQuantity(it.quantity, it.unit, it.unit_price, total);
     const readPrice = it.unit_price != null && it.unit_price > 0 ? it.unit_price : null;
     const unitPrice = readPrice != null ? round(readPrice, 4) : round(total / quantity, 4);
+    // O rótulo que a IA copiou do print ("Código: 250474") sai até o último ":", como afterLabel faz no QR: um
+    // código impresso nunca tem ":". Tirar "COD" do começo sem os dois-pontos estragaria um código como "CODA123".
+    const storeCode = storeCodeKey(it.code?.replace(/^.*:/s, ''));
     // Sem preço unitário nem quantidade lidos, o preço é o total sobre 1, que a nota não imprimiu;
-    // sem valor nenhum (preço 0), não há o que a leitura guardar.
+    // sem valor nenhum (preço 0), não há o que a leitura guardar. Do código, só o de barras vai para a leitura.
     if (unitPrice > 0 && (readPrice != null || (it.quantity != null && it.quantity > 0))) {
-      readLines.push({ description: raw, unit: it.unit, unit_price: unitPrice });
+      const gtin = sharedGtin(storeCode);
+      readLines.push({ description: raw, unit: it.unit, unit_price: unitPrice, ...(gtin ? { gtin } : {}) });
     }
     const suggested = it.matched_product_id && catalogIds.has(it.matched_product_id) ? it.matched_product_id : null;
     const item: CleanItem = {
@@ -298,9 +305,7 @@ export function cleanReceipt(
       suggested_name: it.normalized_name.trim() || raw,
       suggested_category: it.category,
       generic_name: genericName(it.generic_name),
-      // O rótulo que a IA copiou do print ("Código: 250474") sai até o último ":", como afterLabel faz no QR: um
-      // código impresso nunca tem ":". Tirar "COD" do começo sem os dois-pontos estragaria um código como "CODA123".
-      store_code: storeCodeKey(it.code?.replace(/^.*:/s, '')),
+      store_code: storeCode,
       product_id: aliasMatches.get(raw) ?? suggested,
       quantity,
       unit: it.unit,

@@ -6,14 +6,14 @@
 import { formatBRDate } from './dates';
 
 /** Data da versão do texto (AAAA-MM-DD). Muda a cada mudança no texto. */
-export const TERMS_VERSION = '2026-10-23';
+export const TERMS_VERSION = '2026-10-24';
 
 /**
  * A versão que a pessoa aceita (AAAA-MM-DD). Só muda numa mudança importante (o que é guardado, compartilhado
  * entre casas ou mandado para a IA ou outros serviços, quem responde pelos dados, quem pode ter conta): aí o
  * aviso da tela Hoje volta para todo mundo. Corrigir uma palavra muda só a TERMS_VERSION.
  */
-export const TERMS_ACCEPT_VERSION = '2026-10-23';
+export const TERMS_ACCEPT_VERSION = '2026-10-24';
 
 /** O aviso dos termos: para quem nunca aceitou nenhuma versão, ou para quem aceitou uma anterior. */
 export type TermsNotice = 'primeira' | 'mudou';
@@ -110,7 +110,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
   {
     title: 'Preços compartilhados',
     paragraphs: [
-      'Toda casa contribui e toda casa vê. Quando você confirma uma nota lida pelo app (pelo QR code ou pela foto), os preços que o app leu nela entram numa base de preços comum a todas as casas do Kotii: o mercado (pelo CNPJ, com o nome impresso na nota, sem o CPF que às vezes vem nele, e, quando a nota tem chave de acesso, o estado), a descrição de cada item padronizada (sem acentos e em maiúsculas), a unidade, o preço e o dia da compra.',
+      'Toda casa contribui e toda casa vê. Quando você confirma uma nota lida pelo app (pelo QR code ou pela foto), os preços que o app leu nela entram numa base de preços comum a todas as casas do Kotii: o mercado (pelo CNPJ, com o nome impresso na nota, sem o CPF que às vezes vem nele, e, quando a nota tem chave de acesso, o estado), a descrição de cada item padronizada (sem acentos e em maiúsculas), o código de barras do produto, quando a nota traz, a unidade, o preço e o dia da compra. O código de barras é o número impresso na embalagem, o mesmo em qualquer loja: com ele, o app acha o mesmo produto em outra rede, mesmo quando a nota de lá o descreve de outro jeito. O código que o mercado dá aos próprios produtos (como o da balança) não entra.',
       'Ninguém vê de qual casa veio um preço: não entra quem comprou, nem de qual casa, nem a nota, a quantidade, o total ou a hora. A mesma coisa comprada no mesmo mercado no mesmo dia por duas casas vira uma linha só: não dá para saber quem são as casas que viram um preço, nem quantas são.',
       'Mas, num dia em que só a sua casa, entre as que usam o Kotii, comprou num mercado (o que é comum num mercado pequeno), os preços daquele mercado naquele dia são os da sua compra: quem vê esses preços pode deduzir o que foi comprado lá naquele dia.',
       'Ficam de fora as notas digitadas à mão, os remédios (e a nota inteira que tenha remédio), as compras em farmácia, os suplementos, os primeiros socorros, os itens de higiene pessoal e o que o app não reconheceu. Também fica na casa o que você corrige na revisão: a linha redigitada, o preço ou a unidade corrigidos e a linha acrescentada; e a nota lida pela foto em que você troca o mercado ou a data não entra.',

@@ -1,7 +1,11 @@
 // O que a busca da nota (sefaz.ts) vira em receipt_reads, ou null quando ela
 // não vale como leitura do servidor. Sem rede: testado em read.test.ts.
+// De cada linha vai também o código de barras (gtin), quando o código dela é
+// um de 13 ou 14 dígitos (sharedGtin); o código interno do mercado fica só na
+// linha da casa.
 
 import { cnpjFromAccessKey, isValidCnpj } from '../_shared/fiscalIds.ts';
+import { sharedGtin } from '../_shared/gtin.ts';
 import { type ReceiptRead, receiptRead } from '../_shared/receiptRead.ts';
 import { isOfficialRead } from './official.ts';
 import { nfceReadDay, nfceReadLines } from './readLines.ts';
@@ -28,6 +32,6 @@ export function nfceRead(result: Extract<Lookup, { kind: 'ok' }>, qrUrl: string,
     cnpj: (page.store.cnpj && isValidCnpj(page.store.cnpj) ? page.store.cnpj : null) ?? cnpjFromAccessKey(accessKey),
     storeName: page.store.name,
     purchasedOn: nfceReadDay(page.issuedAtLocal),
-    lines: nfceReadLines(page.items),
+    lines: nfceReadLines(page.items.map((item) => ({ ...item, gtin: sharedGtin(item.code) }))),
   });
 }

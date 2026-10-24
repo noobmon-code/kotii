@@ -330,7 +330,7 @@ describe('as frases', () => {
       'Preços de notas de outras casas que usam o Kotii, sem dizer de quem. Não são em tempo real: cada preço vale para o dia em que foi visto.',
     );
     expect(SHARING_ABOUT).toBe(
-      'Os preços das notas lidas pelo app (mercado, item, preço e dia) entram numa base comum, sem dizer de qual casa são, para que outras casas vejam quanto cada coisa custa nos mercados. Ficam de fora as notas digitadas à mão, remédios e compras em farmácia, suplementos, primeiros socorros, itens de higiene pessoal e o que o app não reconheceu; o que você corrige na revisão também fica na casa. Cada preço aparece para as outras casas a partir do dia seguinte.',
+      'Os preços das notas lidas pelo app (mercado, item, código de barras, preço e dia) entram numa base comum, sem dizer de qual casa são, para que outras casas vejam quanto cada coisa custa nos mercados. Ficam de fora as notas digitadas à mão, remédios e compras em farmácia, suplementos, primeiros socorros, itens de higiene pessoal e o que o app não reconheceu; o que você corrige na revisão também fica na casa. Cada preço aparece para as outras casas a partir do dia seguinte.',
     );
   });
 });

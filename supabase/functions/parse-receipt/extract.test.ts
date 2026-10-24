@@ -643,7 +643,7 @@ Deno.test('código: o rótulo que a IA copiou da página da Sefaz sai antes da c
   assertEquals(codes('Código:', ':', null), [null, null, null]);
 });
 
-Deno.test('código: limpo pela chave do banco na linha da nota, e fora da leitura do servidor', () => {
+Deno.test('código: limpo pela chave do banco na linha da nota; na leitura do servidor, só o código de barras', () => {
   const r = cleanReceipt(
     {
       ...base,
@@ -654,15 +654,36 @@ Deno.test('código: limpo pela chave do banco na linha da nota, e fora da leitur
         line({ raw_description: 'SACOLA', code: null }),
         line({ raw_description: 'AVULSO', code: ' / ' }),
         line({ raw_description: 'COMPRIDO', code: '9'.repeat(61) }),
+        // O código da balança (faixa 2) é do mercado: fica na linha, fora da leitura.
+        line({ raw_description: 'PATINHO KG', code: 'Código: 2000000000008' }),
+        // O código de 8 ou 12 dígitos passa na conta por acaso (o interno do mercado, 1 em 10): fica na linha.
+        line({ raw_description: 'QUEIJO DA CASA', code: '12345670' }),
+        line({ raw_description: 'CAFE IMPORTADO', code: '036000291452' }),
+        line({ raw_description: 'SUCO CAIXA 12', code: '17891000100100' }),
       ],
     },
     new Set(),
     new Map(),
   );
-  assertEquals(r.items.map((i) => i.store_code), ['7891000100103', 'MC12', '250474', null, null, null]);
-  assertEquals(r.readLines.every((l) => Object.keys(l).sort().join() === 'description,unit,unit_price'), true);
-  assertEquals(itemStoreCodes(r.items), ['7891000100103', 'MC12', '250474']);
-  assertEquals(itemStoreCodes([...r.items, ...r.items]), ['7891000100103', 'MC12', '250474']);
+  assertEquals(r.items.map((i) => i.store_code), [
+    '7891000100103', 'MC12', '250474', null, null, null, '2000000000008', '12345670', '036000291452', '17891000100100',
+  ]);
+  assertEquals(r.readLines.map((l) => [l.description, l.gtin ?? '-']), [
+    ['LEITE ITALAC 1L', '07891000100103'],
+    ['QUEIJO MUSS', '-'],
+    ['BANANA PRATA', '-'],
+    ['SACOLA', '-'],
+    ['AVULSO', '-'],
+    ['COMPRIDO', '-'],
+    ['PATINHO KG', '-'],
+    ['QUEIJO DA CASA', '-'],
+    ['CAFE IMPORTADO', '-'],
+    ['SUCO CAIXA 12', '17891000100100'],
+  ]);
+  assertEquals(r.readLines.filter((l) => 'gtin' in l).length, 2);
+  const codes = ['7891000100103', 'MC12', '250474', '2000000000008', '12345670', '036000291452', '17891000100100'];
+  assertEquals(itemStoreCodes(r.items), codes);
+  assertEquals(itemStoreCodes([...r.items, ...r.items]), codes);
 });
 
 Deno.test('código pela OpenRouter e pela Anthropic: campo obrigatório que aceita null, sem default', async () => {

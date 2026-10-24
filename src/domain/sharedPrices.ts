@@ -109,7 +109,7 @@ export const SHARED_PRICES_MORE_LABEL = {
 /** O que a casa lê, na aba Família, sobre o que ela mesma compartilha. */
 export const SHARING_TITLE = 'Preços compartilhados';
 export const SHARING_ABOUT =
-  'Os preços das notas lidas pelo app (mercado, item, preço e dia) entram numa base comum, sem dizer de qual casa são, para que outras casas vejam quanto cada coisa custa nos mercados. Ficam de fora as notas digitadas à mão, remédios e compras em farmácia, suplementos, primeiros socorros, itens de higiene pessoal e o que o app não reconheceu; o que você corrige na revisão também fica na casa. Cada preço aparece para as outras casas a partir do dia seguinte.';
+  'Os preços das notas lidas pelo app (mercado, item, código de barras, preço e dia) entram numa base comum, sem dizer de qual casa são, para que outras casas vejam quanto cada coisa custa nos mercados. Ficam de fora as notas digitadas à mão, remédios e compras em farmácia, suplementos, primeiros socorros, itens de higiene pessoal e o que o app não reconheceu; o que você corrige na revisão também fica na casa. Cada preço aparece para as outras casas a partir do dia seguinte.';
 
 /** Código do IBGE de cada estado (os dois primeiros dígitos da chave de acesso da nota) -> sigla. */
 const STATE_BY_CODE: Record<string, string> = {

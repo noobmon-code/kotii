@@ -14,6 +14,7 @@ import {
   RESTRICTED_GTIN_PREFIXES,
   scannedListItem,
 } from '../barcode';
+import { gtinKey as serverGtinKey, sharedGtin } from '../../../supabase/functions/_shared/gtin';
 import { productSuggestions } from '../genericItem';
 import { normalizeSearch } from '../search';
 
@@ -83,6 +84,27 @@ describe('gtinKey', () => {
     for (const prefix of RESTRICTED_GTIN_PREFIXES) {
       const body13 = (prefix + '7891000100').padEnd(13, '1').slice(0, 13);
       expect(gtinKey(withCheckDigit(body13))).toBeNull();
+    }
+  });
+
+  it('o espelho das funções (a leitura do servidor, que leva o código de barras para os preços comuns) dá a mesma chave', () => {
+    // Se as duas cópias divergirem, a casa liga um código que a base comum guarda de outro jeito (e não acha o
+    // preço), ou a leitura manda um que o banco recusa.
+    const samples: (string | null | undefined)[] = [
+      '7891000100103', '7891000100104', '96385074', '01234565', '20000004', '2000000000008', '036000291452',
+      '212345678992', '0212345678992', '412345678996', '9800000000007', '9900000000004', '17891000100100',
+      '97891000100106', '07891000100103', '00000096385074', '789100010010A', 'ABC', '250474', '1234567890',
+      ' 7891000100103', '', null, undefined,
+    ];
+    for (const prefix of [...RESTRICTED_GTIN_PREFIXES, '1', '3', '5', '7', '8']) {
+      samples.push(withCheckDigit((prefix + '7891000100').padEnd(13, '1').slice(0, 13)));
+    }
+    for (const first of '0123456789') samples.push(withCheckDigit(`000000${first}123456`).slice(6));
+    for (const sample of samples) {
+      expect([sample, serverGtinKey(sample)]).toEqual([sample, gtinKey(sample)]);
+      // Para os preços comuns, só o de 13 ou 14 dígitos (o filtro "not like '00%'" do gatilho).
+      const key = gtinKey(sample);
+      expect([sample, sharedGtin(sample)]).toEqual([sample, key && !key.startsWith('00') ? key : null]);
     }
   });
 
