@@ -2,9 +2,10 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { View } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
+import { ListItemEditor } from '@/features/ListItemEditor';
 import { type ItemHint, ShoppingGrid } from '@/features/ShoppingGrid';
 import type { ShoppingListItem } from '@/lib/types';
-import { Badge } from '@/ui/primitives';
+import { Badge, Button, TextField } from '@/ui/primitives';
 
 // A grade de verdade: o selo "Novo" da ida ao mercado aparece (e o leitor de tela diz "novo") só no que falta
 // comprar, e a lista arquivada (só para ver) não marca nem abre os detalhes.
@@ -12,6 +13,10 @@ import { Badge } from '@/ui/primitives';
 jest.mock('@/data/listPhotos', () => ({ usePendingPhotoUri: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
 jest.mock('@/ui/art', () => ({}));
+jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
+jest.mock('@/data/images', () => ({ pickImages: jest.fn() }));
+jest.mock('@/lib/supabase', () => ({ errorMessage: (error: unknown) => String(error) }));
+jest.mock('@/ui/dialogs', () => ({ confirmAction: jest.fn(), notify: jest.fn() }));
 
 const item: ShoppingListItem = {
   id: 'a',
@@ -55,7 +60,7 @@ async function mount({ hint, inCart = false, readOnly = false }: { hint?: ItemHi
 
 const badges = () => renderer!.root.findAllByType(Badge).map((badge) => badge.props.label as string);
 const tile = (): ReactTestInstance =>
-  renderer!.root.findAll((entry) => entry.props.accessibilityRole === 'checkbox' && typeof entry.props.onPress === 'function')[0];
+  renderer!.root.findAll((entry) => entry.props.accessibilityRole === 'checkbox' && typeof entry.props.onLongPress === 'function')[0];
 
 afterEach(async () => {
   await act(async () => renderer?.unmount());
@@ -85,16 +90,49 @@ describe('o selo "Novo" na grade', () => {
 });
 
 describe('a grade só para ver (lista arquivada)', () => {
-  it('o item não marca nem abre os detalhes', async () => {
+  it('o toque não marca; segurar ainda abre os detalhes', async () => {
     await mount({ readOnly: true });
-    expect(tile().props.disabled).toBe(true);
-    expect(tile().props.accessibilityHint).toBeUndefined();
+    expect(tile().props.onPress).toBeUndefined();
+    expect(tile().props.accessibilityHint).toBe('Segure para ver os detalhes');
+    act(() => tile().props.onLongPress());
+    expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: 'a' }));
+    expect(onToggle).not.toHaveBeenCalled();
   });
 
   it('a de sempre marca no toque', async () => {
     await mount({});
-    expect(tile().props.disabled).toBe(false);
     act(() => tile().props.onPress());
     expect(onToggle).toHaveBeenCalledWith(expect.objectContaining({ id: 'a' }));
+  });
+});
+
+describe('os detalhes do item só para ver (lista arquivada)', () => {
+  it('sem salvar nem remover: o item como está, sem campos nem foto nova', async () => {
+    await act(async () => {
+      renderer = create(
+        <ListItemEditor
+          item={{ ...item, notes: 'o carioca', priority: 'urgente' }}
+          photoUri={null}
+          photoPending={false}
+          onClose={jest.fn()}
+        />,
+      );
+    });
+    const titles = renderer!.root.findAllByType(Button).map((button) => button.props.title);
+    expect(titles).not.toContain('Salvar');
+    expect(titles).not.toContain('Remover da lista');
+    expect(titles).not.toContain('Tirar foto');
+    expect(renderer!.root.findAllByType(TextField)).toHaveLength(0);
+    const text = JSON.stringify(renderer!.toJSON());
+    expect(text).toContain('o carioca');
+    expect(text).toContain('Feijão');
+  });
+
+  it('com salvar e remover, o editor de sempre', async () => {
+    await act(async () => {
+      renderer = create(<ListItemEditor item={item} photoUri={null} photoPending={false} onSave={jest.fn()} onRemove={jest.fn()} onClose={jest.fn()} />);
+    });
+    const titles = renderer!.root.findAllByType(Button).map((button) => button.props.title);
+    expect(titles).toEqual(expect.arrayContaining(['Salvar', 'Remover da lista', 'Tirar foto']));
   });
 });

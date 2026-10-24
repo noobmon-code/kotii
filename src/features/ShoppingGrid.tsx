@@ -46,7 +46,7 @@ export function ShoppingGrid({
 }: {
   items: ShoppingListItem[];
   inCart?: boolean;
-  /** Só para ver (a lista arquivada): o toque não marca nem abre os detalhes. */
+  /** Só para ver (a lista arquivada): o toque não marca; segurar abre os detalhes, também só para ver. */
   readOnly?: boolean;
   photos: ItemPhotos;
   /** Preço estimado e "na despensa", por item. */
@@ -130,11 +130,10 @@ function Tile({
       accessibilityLabel={[item.name, quantity, hint?.cost, isNew ? 'novo' : null, badge?.label, inPantry ? 'na despensa' : null, notes]
         .filter(Boolean)
         .join(', ')}
-      accessibilityHint={readOnly ? undefined : inCart ? 'Toque para devolver à lista' : 'Toque para pôr no carrinho'}
-      accessibilityActions={readOnly ? undefined : [{ name: 'longpress', label: 'Detalhes do item' }]}
-      onAccessibilityAction={(e) => !readOnly && e.nativeEvent.actionName === 'longpress' && onLongPress()}
-      disabled={readOnly}
-      onPress={onPress}
+      accessibilityHint={readOnly ? 'Segure para ver os detalhes' : inCart ? 'Toque para devolver à lista' : 'Toque para pôr no carrinho'}
+      accessibilityActions={[{ name: 'longpress', label: 'Detalhes do item' }]}
+      onAccessibilityAction={(e) => e.nativeEvent.actionName === 'longpress' && onLongPress()}
+      onPress={readOnly ? undefined : onPress}
       onLongPress={onLongPress}
       style={({ pressed }) => [
         styles.tile,

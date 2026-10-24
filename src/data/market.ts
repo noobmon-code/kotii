@@ -569,8 +569,10 @@ export function useAddItemsToList() {
         toAdd = items.filter((item) => !pendingSameItem(item, pending));
       }
       if (toAdd.length) {
-        // O id sai do aparelho: o que ele pôs não ganha o selo "Novo" na ida ao mercado (lib/addedItems).
+        // O id sai do aparelho e fica guardado antes do envio (se a resposta se perder, o item já entrou): o que ele
+        // pôs não ganha o selo "Novo" na ida ao mercado (lib/addedItems).
         const ids = toAdd.map(() => newToggleToken());
+        rememberAdded(id, ids);
         // O produto de um item pode ter sido juntado com outro em outro aparelho (withFreshProducts).
         await withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
           unwrap(
@@ -587,7 +589,6 @@ export function useAddItemsToList() {
             ),
           ),
         );
-        rememberAdded(id, ids);
       }
       return { id };
     },
@@ -625,6 +626,14 @@ async function openPharmacyList(name = 'Farmácia'): Promise<{ id: string; name:
 
 type ListedItem = { id: string; name: string; added: boolean };
 
+/** O que add_to_list e add_to_pharmacy_list devolvem: item_id é o item posto (ou o que já estava pendente). */
+type AddedRow = { list_id: string; list_name: string; item_id?: string | null; added: boolean };
+
+/** O item que a função do banco pôs agora fica como deste aparelho (o selo "Novo" da ida não vale para ele). */
+function rememberRpcItem(row: AddedRow) {
+  if (row.added && row.item_id) rememberAdded(row.list_id, [row.item_id]);
+}
+
 /**
  * Põe o item na lista, a não ser que já esteja pendente nela (`added: false`): repetir é seguro. Pendente com este
  * nome ou com outro do mesmo item ("Leite desnatado" do Nuke com "Leite IL Desnatado" na lista: domain/genericItem).
@@ -634,8 +643,10 @@ async function addItemOnce(queryClient: QueryClient, list: { id: string; name: s
     await supabase.from('shopping_list_items').select('name, category').eq('list_id', list.id).is('checked_at', null),
   ) as { name: string; category?: string | null }[];
   if (pendingSameItem(item, pending)) return { ...list, added: false };
-  // O id sai do aparelho: o que ele pôs não ganha o selo "Novo" na ida ao mercado (lib/addedItems).
+  // O id sai do aparelho e fica guardado antes do envio (se a resposta se perder, o item já entrou): o que ele pôs
+  // não ganha o selo "Novo" na ida ao mercado (lib/addedItems).
   const id = newToggleToken();
+  rememberAdded(list.id, [id]);
   // O produto do item (o da despensa, na lista de mercado) pode ter sido juntado com outro em outro aparelho (withFreshProducts).
   await withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
     unwrap(
@@ -650,7 +661,6 @@ async function addItemOnce(queryClient: QueryClient, list: { id: string; name: s
       }),
     ),
   );
-  rememberAdded(list.id, [id]);
   return { ...list, added: true };
 }
 
@@ -744,7 +754,8 @@ async function addToPantryList(queryClient: QueryClient, { listId, shownListId, 
       await Promise.all(LISTED_PRODUCT_SOURCES.map((key) => queryClient.invalidateQueries({ queryKey: [key] })));
       throw new Error(PRODUCT_MERGED_AWAY);
     }
-    const row = unwrap(added) as { list_id: string; list_name: string; added: boolean };
+    const row = unwrap(added) as AddedRow;
+    rememberRpcItem(row);
     return { id: row.list_id, name: row.list_name, added: row.added };
   }
 }
@@ -778,7 +789,8 @@ export interface PharmacyItem extends NewListItem {
 async function addToPharmacyList(queryClient: QueryClient, item: PharmacyItem): Promise<ListedItem> {
   const added = await supabase.rpc('add_to_pharmacy_list', { p_item: item.name, p_alt_item: item.altName ?? null }).single();
   if (!added.error || !isMissingFunction(added.error, 'add_to_pharmacy_list')) {
-    const row = unwrap(added) as { list_id: string; list_name: string; added: boolean };
+    const row = unwrap(added) as AddedRow;
+    rememberRpcItem(row);
     return { id: row.list_id, name: row.list_name, added: row.added };
   }
   return addItemOnce(queryClient, await openPharmacyList(), item);

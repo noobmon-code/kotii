@@ -972,8 +972,9 @@ export default function ShoppingListScreen() {
           }
           brand={editing.product_id ? brandChoice(products.data?.find((p) => p.id === editing.product_id)) : null}
           onSeePrices={seePricesOf(editing)}
-          onSave={(details, photo) => saveDetails(editing, details, photo)}
-          onRemove={() => removeItem(editing)}
+          // Arquivada: os detalhes só para ver.
+          onSave={archived ? undefined : (details, photo) => saveDetails(editing, details, photo)}
+          onRemove={archived ? undefined : () => removeItem(editing)}
           onClose={() => setEditing(null)}
         />
       ) : null}

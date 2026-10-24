@@ -53,7 +53,15 @@ function parse(raw: string | null): Added[] {
   }
 }
 
-function set(listId: string, list: Added[]) {
+/** Uma ida dura 2 horas: o que tem mais de um dia não serve mais (nem na lista que não foi aberta desde então). */
+const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const fresh = (list: Added[]) => {
+  const since = Date.now() - MAX_AGE_MS;
+  return list.filter((entry) => entry.at > since);
+};
+
+function set(listId: string, all: Added[]) {
+  const list = fresh(all);
   if (list.length) entries.set(listId, list);
   else entries.delete(listId);
   idSets.set(listId, new Set(list.map((entry) => entry.id)));
@@ -81,8 +89,13 @@ async function load(listId: string) {
     // Sem armazenamento: só o que esta abertura do app pôs.
   }
   if (started !== generation) return;
-  const stored = parse(raw);
-  if (!stored.length) return;
+  const parsed = parse(raw);
+  const stored = fresh(parsed);
+  if (!stored.length) {
+    // Só havia o que já passou de um dia: sai do aparelho também.
+    if (parsed.length && !entries.get(listId)?.length) set(listId, []);
+    return;
+  }
   // O que foi posto enquanto a leitura andava também fica.
   const now = entries.get(listId) ?? [];
   const ids = new Set(now.map((entry) => entry.id));

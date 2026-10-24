@@ -80,12 +80,13 @@ describe('os itens que este aparelho pôs', () => {
 
   it('sem ida, a lista esquece; com ida, só o que veio bem antes dela', async () => {
     const mod = freshModule();
-    const trip = Date.parse('2026-10-24T14:00:00Z');
+    // A ida começou há 30 min.
+    const trip = Date.now() - 30 * 60_000;
     mod.rememberAdded('l1', ['muito-antes'], trip - 60 * 60_000);
     mod.rememberAdded('l1', ['pouco-antes'], trip - 5 * 60_000);
     mod.rememberAdded('l1', ['depois'], trip + 5 * 60_000);
     await mount(mod);
-    await act(async () => mod.pruneAddedItems('l1', '2026-10-24T14:00:00Z'));
+    await act(async () => mod.pruneAddedItems('l1', new Date(trip).toISOString()));
     // O relógio do aparelho pode estar atrás do servidor: o de pouco antes fica.
     expect(ids()).toEqual(['depois', 'pouco-antes']);
     await act(async () => mod.pruneAddedItems('l1', null));
@@ -107,6 +108,35 @@ describe('os itens que este aparelho pôs', () => {
     expect(await AsyncStorage.getItem('kotii:added-items:l1')).toBeNull();
     expect(await AsyncStorage.getItem('kotii:added-items:l2')).toBeNull();
     expect(await AsyncStorage.getItem('kotii:theme')).toBe('dark');
+  });
+
+  it('o que tem mais de um dia sai, também da lista que nunca mais foi aberta (e sem ida para limpar)', async () => {
+    const day = 24 * 60 * 60_000;
+    const old = Date.now() - day - 60_000;
+    await AsyncStorage.setItem(
+      'kotii:added-items:l1',
+      JSON.stringify([
+        { id: 'ontem', at: old },
+        { id: 'hoje', at: Date.now() - 60_000 },
+      ]),
+    );
+    await AsyncStorage.setItem('kotii:added-items:l2', JSON.stringify([{ id: 'velho', at: old }]));
+    const mod = freshModule();
+    await mount(mod);
+    await flush();
+    expect(ids()).toEqual(['hoje']);
+    // Guardar outro na lista velha também tira o que passou de um dia.
+    mod.rememberAdded('l2', ['novo']);
+    await flush();
+    expect([...mod.addedHere('l2')]).toEqual(['novo']);
+    expect(JSON.parse((await AsyncStorage.getItem('kotii:added-items:l2'))!).map((e: { id: string }) => e.id)).toEqual(['novo']);
+    // Só com o de mais de um dia, a lista sai do aparelho ao ser lida.
+    await AsyncStorage.setItem('kotii:added-items:l3', JSON.stringify([{ id: 'velho', at: old }]));
+    await act(async () => renderer?.unmount());
+    await mount(mod, 'l3');
+    await flush();
+    expect(ids()).toEqual([]);
+    expect(await AsyncStorage.getItem('kotii:added-items:l3')).toBeNull();
   });
 
   it('o guardado estragado não quebra nada', async () => {

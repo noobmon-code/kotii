@@ -1172,6 +1172,11 @@ describe('renomear e reabrir a lista', () => {
     expect(grids.length).toBe(2);
     expect(grids.every((grid) => grid.props.readOnly === true)).toBe(true);
     expect(grids.find((grid) => grid.props.inCart)!.props.onStore).toBeUndefined();
+    // Segurar o item abre os detalhes só para ver.
+    await act(async () => mockSeen.open!((mockQueries.items.data as ShoppingListItem[])[0]));
+    expect(mockSeen.editor?.item).toMatchObject({ id: 'a' });
+    expect(mockSeen.editor?.onSave).toBeUndefined();
+    expect(mockSeen.editor?.onRemove).toBeUndefined();
     expect(page).not.toContain('Toque num item para pôr no carrinho');
     // Ver ainda dá: os itens, mandar a lista, renomear e reabrir.
     expect(button('Mandar a lista')).toBeDefined();
@@ -1185,6 +1190,8 @@ describe('renomear e reabrir a lista', () => {
     expect(page).not.toContain('Esta lista está arquivada');
     expect(button('Limpar')).toBeDefined();
     expect(renderer!.root.findAllByType(ShoppingGrid).every((grid) => !grid.props.readOnly)).toBe(true);
+    await act(async () => mockSeen.open!((mockQueries.items.data as ShoppingListItem[])[0]));
+    expect(typeof mockSeen.editor?.onSave).toBe('function');
   });
 
   it('a lista arquivada mostra "Reabrir lista" no lugar de "Arquivar lista"', async () => {
