@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Platform } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import AppDashboardScreen from '@/app/painel';
@@ -51,6 +51,8 @@ const mockDb = {
   setAnswer: null as Answer | null,
   /** Segura a resposta de set_app_feedback até ser solta. */
   hold: null as Promise<void> | null,
+  /** O filtro de situação cuja lista falha (as outras respondem). */
+  failStatus: null as string | null,
 };
 
 function mockList(args?: Record<string, unknown>): Answer {
@@ -80,7 +82,12 @@ jest.mock('@/lib/supabase', () => ({
       if (name === 'app_dashboard') {
         return { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.app_dashboard' } };
       }
-      if (name === 'app_feedback_list') return mockDb.listAnswer ?? mockList(args);
+      if (name === 'app_feedback_list') {
+        if (mockDb.failStatus !== null && args?.p_status === mockDb.failStatus) {
+          return { data: null, error: { code: 'XX000', message: 'O servidor caiu.' } };
+        }
+        return mockDb.listAnswer ?? mockList(args);
+      }
       if (name === 'set_app_feedback') {
         if (mockDb.hold) await mockDb.hold;
         return mockDb.setAnswer ?? mockChange(args);
@@ -145,22 +152,35 @@ async function settle() {
   for (let i = 0; i < 6; i += 1) await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
 }
 
-async function mount() {
+const tree = () => (
+  <QueryClientProvider client={queryClient}>
+    <AppDashboardScreen />
+  </QueryClientProvider>
+);
+
+async function mount(options?: Parameters<typeof create>[1]) {
   await act(async () => {
-    renderer = create(
-      <QueryClientProvider client={queryClient}>
-        <AppDashboardScreen />
-      </QueryClientProvider>,
-    );
+    renderer = create(tree(), options);
   });
   await settle();
   return page();
+}
+
+/** Desenha de novo com a janela de agora (mockWindow): a tela passa de uma faixa para outra. */
+async function resize(width: number, height = mockWindow.height) {
+  mockWindow.width = width;
+  mockWindow.height = height;
+  await act(async () => renderer!.update(tree()));
+  await settle();
 }
 
 /** As linhas da lista, na ordem da tela (o título de cada uma). */
 const rowNodes = () => renderer!.root.findAll((node) => node.props.row !== undefined && typeof node.props.onPress === 'function');
 const rowTitles = () => rowNodes().map((node) => node.props.row.title as string);
 const rowFor = (message: string) => rowNodes().find((node) => node.props.row.title === feedbackTitle(message))!;
+/** A linha tocável (o Pressable) de um recado. */
+const pressableOf = (message: string) =>
+  rowFor(message).findAll((node) => node.props.accessibilityRole === 'button' && node.props.accessibilityLabel === rowFor(message).props.row.accessibilityLabel)[0];
 const openRow = async (message: string) => {
   await act(async () => rowFor(message).props.onPress());
   await settle();
@@ -197,8 +217,10 @@ beforeEach(() => {
   mockDb.listAnswer = null;
   mockDb.setAnswer = null;
   mockDb.hold = null;
+  mockDb.failStatus = null;
   mockParams.value = { aba: 'recados' };
   mockWindow.width = 360;
+  mockWindow.height = 800;
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 }, mutations: { retry: false } } });
 });
 
@@ -276,6 +298,12 @@ describe('Recados no celular', () => {
     expect(rowTitles()).toEqual([feedbackTitle(LENTO), feedbackTitle(ESCURO)]);
     expect(rowFor(LENTO).props.row.statusLabel).toBe('Lido');
     expect(button('Marcar como novo')).toBeDefined();
+    // Os selos ficam só na linha: o recado aberto embaixo dela não os repete.
+    expect(renderer!.root.findAll((node) => node.props.label === 'Problema' && node.props.tone !== undefined)).toHaveLength(1);
+    // Na web, o aberto chega ao HTML pelo aria-expanded.
+    expect(pressableOf(LENTO).props['aria-expanded']).toBe(true);
+    expect(pressableOf(ESCURO).props['aria-expanded']).toBe(false);
+    expect(pressableOf(LENTO).props['aria-current']).toBeUndefined();
 
     // Fechar e abrir de novo um recado já lido não grava nada.
     await openRow(LENTO);
@@ -398,6 +426,52 @@ describe('Recados no celular', () => {
     expect(rowTitles()).toEqual([LENTO, ESCURO].map(feedbackTitle));
   });
 
+  it('a lista de um filtro que falha: o erro embaixo dos filtros de situação, e dá para ir para outro', async () => {
+    mockDb.failStatus = 'arquivado';
+    await mount();
+    await pressChip('Arquivados (0)');
+    expect(page()).toContain('O servidor caiu.');
+    expect(page()).toContain('Tentar de novo');
+    expect(chip('Arquivados (0)').props.selected).toBe(true);
+    await pressChip('Lidos (1)');
+    expect(rowTitles()).toEqual([feedbackTitle(ELOGIO)]);
+    expect(page()).not.toContain('O servidor caiu.');
+  });
+
+  it('sem internet, trocar de filtro não mostra as linhas do filtro de antes', async () => {
+    await mount();
+    await act(async () => onlineManager.setOnline(false));
+    await pressChip('Lidos (1)');
+    expect(chip('Lidos (1)').props.selected).toBe(true);
+    expect(page()).toContain('Sem internet. Os recados aparecem quando a conexão voltar.');
+    expect(rowTitles()).toEqual([]);
+    // Nem a contagem, que seria a do filtro de antes.
+    expect(page()).not.toContain('2 recados');
+    // Os filtros ficam: os novos, já na memória, voltam.
+    await pressChip('Novos (2)');
+    expect(rowTitles()).toEqual([LENTO, ESCURO].map(feedbackTitle));
+    await act(async () => onlineManager.setOnline(true));
+    await pressChip('Lidos (1)');
+    expect(rowTitles()).toEqual([feedbackTitle(ELOGIO)]);
+  });
+
+  it('o recado aberto em outro filtro fica na lista quando muda de situação', async () => {
+    await mount();
+    await pressChip('Todos (4)');
+    await openRow(ELOGIO);
+    await pressChip('Lidos (1)');
+    expect(rowFor(ELOGIO).props.expanded).toBe(true);
+    await press('Marcar como resolvido');
+    expect(writes()).toEqual([{ p_id: 'r3', p_status: 'resolvido', p_note: null }]);
+    // A lista dos lidos voltou sem ele, e ele fica no lugar dele, aberto, até a troca de filtro.
+    expect(rowTitles()).toEqual([feedbackTitle(ELOGIO)]);
+    expect(rowFor(ELOGIO).props.expanded).toBe(true);
+    expect(rowFor(ELOGIO).props.row.statusLabel).toBe('Resolvido');
+    await pressChip('Novos (2)');
+    await pressChip('Lidos (0)');
+    expect(rowTitles()).toEqual([]);
+  });
+
   it('sem internet e nada na memória: o aviso, e os recados chegam sozinhos com a conexão', async () => {
     onlineManager.setOnline(false);
     expect(await mount()).toContain('Sem internet. Os recados aparecem quando a conexão voltar.');
@@ -430,6 +504,54 @@ describe('Recados no computador', () => {
     expect(lists().length).toBeGreaterThan(before);
   });
 
+  it('numa janela baixa, a tela rola e as duas partes têm uma altura fixa', async () => {
+    mockWindow.height = 600;
+    await mount();
+    expect(screenNode().props.scroll).toBe(true);
+    const fixed = renderer!.root
+      .findAll((node) => String(node.type) === 'View' && node.props.style !== undefined)
+      .map((node) => StyleSheet.flatten(node.props.style) ?? {})
+      .filter((style) => style.height === 480);
+    expect(fixed).toHaveLength(1);
+    expect(fixed[0].flexDirection).toBe('row');
+    // Sem flex junto: no navegador, ele viraria uma base 0% e as duas partes sumiriam.
+    expect(fixed[0].flex).toBeUndefined();
+  });
+
+  it('o aberto chega ao HTML pelo aria-current, só na linha aberta', async () => {
+    await mount();
+    await openRow(ESCURO);
+    expect(pressableOf(ESCURO).props['aria-current']).toBe('true');
+    expect(pressableOf(LENTO).props['aria-current']).toBeUndefined();
+    expect(pressableOf(ESCURO).props['aria-expanded']).toBeUndefined();
+  });
+
+  it('a janela que passa de uma faixa para a outra não perde o filtro, a busca, o recado aberto nem a nota', async () => {
+    await mount();
+    await pressChip('Todos (4)');
+    await search('escuro');
+    await openRow(ESCURO);
+    await act(async () => noteField().props.onChangeText('Responder amanhã'));
+    // Mais estreita: a caixa do celular, que rola com a tela.
+    await resize(700);
+    expect(screenNode().props.scroll).toBe(true);
+    expect(chip('Todos (4)').props.selected).toBe(true);
+    expect(rowTitles()).toEqual([feedbackTitle(ESCURO)]);
+    expect(rowFor(ESCURO).props.expanded).toBe(true);
+    expect(noteField().props.value).toBe('Responder amanhã');
+    // E de volta.
+    await resize(1280);
+    expect(screenNode().props.scroll).toBe(false);
+    expect(rowFor(ESCURO).props.selected).toBe(true);
+    expect(noteField().props.value).toBe('Responder amanhã');
+    // A janela que fica baixa também.
+    await resize(1280, 600);
+    expect(screenNode().props.scroll).toBe(true);
+    expect(noteField().props.value).toBe('Responder amanhã');
+    // Só uma marcação de lido, da abertura.
+    expect(writes()).toEqual([{ p_id: 'r2', p_status: 'lido', p_note: null }]);
+  });
+
   describe('no navegador', () => {
     const listeners = new Map<string, (event: unknown) => void>();
     const os = Platform.OS;
@@ -443,7 +565,10 @@ describe('Recados no computador', () => {
       };
       Platform.OS = 'web';
     });
-    afterEach(() => {
+    afterEach(async () => {
+      // A tela sai antes do documento de mentira: ela tira o ouvinte das teclas dele.
+      await act(async () => renderer?.unmount());
+      renderer = undefined;
       Platform.OS = os;
       delete (global as { document?: unknown }).document;
     });
@@ -479,6 +604,34 @@ describe('Recados no computador', () => {
       await act(async () => renderer!.unmount());
       renderer = undefined;
       expect(listeners.has('keydown')).toBe(false);
+    });
+
+    it('a linha aberta pelas teclas ganha o foco e rola para a vista, medida na hora', async () => {
+      await mount();
+      await pressChip('Todos (4)');
+      // No navegador, a View de cada linha é o elemento da página: aqui, a View de mentira do jest ganha os dois.
+      const element = (message: string) => {
+        const instance = pressableOf(message).findAll((node) => node.instance !== null && typeof node.instance?.focus === 'function')[0]
+          .instance as { focus: jest.Mock; scrollIntoView?: jest.Mock };
+        instance.focus = jest.fn();
+        instance.scrollIntoView = jest.fn();
+        return instance;
+      };
+      const lento = element(LENTO);
+      const escuro = element(ESCURO);
+      await key('j');
+      expect(lento.focus).toHaveBeenCalledWith({ preventScroll: true });
+      expect(lento.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+      expect(escuro.focus).not.toHaveBeenCalled();
+      await key('j');
+      expect(selectedTitle()).toBe(feedbackTitle(ESCURO));
+      expect(escuro.focus).toHaveBeenCalledWith({ preventScroll: true });
+      expect(escuro.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+      // O clique não mexe no foco nem na rolagem: o navegador cuida.
+      const elogio = element(ELOGIO);
+      await openRow(ELOGIO);
+      expect(elogio.focus).not.toHaveBeenCalled();
+      expect(elogio.scrollIntoView).not.toHaveBeenCalled();
     });
   });
 });

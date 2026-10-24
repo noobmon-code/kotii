@@ -6,10 +6,18 @@ import { AppDashboardForbidden, useAppDashboard } from '@/data/appDashboard';
 import { useAppFeedback, useRefetchAppFeedback } from '@/data/appFeedback';
 import { APP_DASHBOARD_NOT_READY, dashboardView, type AppDashboard } from '@/domain/appDashboard';
 import { feedbackTabLabel, newFeedbackLine } from '@/domain/appFeedback';
-import { PANEL_MAX_WIDTH, PANEL_TABS, panelLayout, panelTabFromParam, type PanelLayout, type PanelTab } from '@/domain/panelLayout';
+import {
+  PANEL_MAX_WIDTH,
+  PANEL_TABS,
+  panelLayout,
+  panelPaneHeight,
+  panelTabFromParam,
+  type PanelLayout,
+  type PanelTab,
+} from '@/domain/panelLayout';
 import { TERMS_ACCEPT_VERSION } from '@/domain/terms';
 import { FactRow } from '@/features/admin/FactRow';
-import { FeedbackInbox } from '@/features/admin/FeedbackInbox';
+import { FEEDBACK_INBOX_START, FeedbackInbox, type FeedbackInboxState } from '@/features/admin/FeedbackInbox';
 import { MeterRow } from '@/features/admin/MeterRow';
 import { PanelCell, PanelGrid } from '@/features/admin/PanelGrid';
 import { PanelLock } from '@/features/admin/PanelLock';
@@ -26,7 +34,8 @@ import { space } from '@/ui/theme';
  * usam, a entrada e os aparelhos; só totais, nenhuma pessoa ou casa: data/appDashboard), e Recados, a caixa dos
  * recados que as pessoas mandam pelo Nuke (data/appFeedback). Feito para o computador: até PANEL_MAX_WIDTH de
  * largura, os números numa grade de colunas e os recados em duas partes lado a lado (domain/panelLayout); no
- * celular, uma coluna só. A tela só desenha: os números, as frases e as barras vêm prontos de dashboardView
+ * celular, uma coluna só. O que a pessoa escolheu na caixa de recados fica aqui (FeedbackInboxState): a caixa é
+ * montada de novo quando a janela passa de uma faixa para outra, e trocar de aba também não perde nada. A tela só desenha: os números, as frases e as barras vêm prontos de dashboardView
  * (domain/appDashboard) e os recados, de domain/appFeedback. Fora da guarda da casa: abre também para quem ainda
  * não está em nenhuma.
  */
@@ -34,13 +43,19 @@ export default function AppDashboardScreen() {
   const { aba } = useLocalSearchParams<{ aba?: string }>();
   // A aba vive na URL: recarregar a página não a perde, e trocar de aba não empilha telas (setParams).
   const tab = panelTabFromParam(aba);
-  const layout = panelLayout(useWindowDimensions().width);
+  const { width, height } = useWindowDimensions();
+  const layout = panelLayout(width);
+  // A altura das duas partes dos recados: null na janela alta o bastante, onde a tela fica parada e elas enchem o
+  // resto; numa janela mais baixa, a tela rola (os filtros saem de vista) e elas têm uma altura fixa.
+  const paneHeight = layout.masterDetail ? panelPaneHeight(height) : null;
+  const [inboxState, setInboxState] = useState<FeedbackInboxState>(FEEDBACK_INBOX_START);
   const dashboard = useAppDashboard();
   // Os recados novos: o número da aba e a linha da aba Números (a mesma lista com que a caixa abre).
   const fresh = useAppFeedback('novo');
   const refetchFeedback = useRefetchAppFeedback();
   const [pulling, setPulling] = useState(false);
   const inbox = tab === 'recados';
+  const fixedPanes = inbox && layout.masterDetail && paneHeight === null;
   const newCount = fresh.data?.counts.novo ?? 0;
   const showTab = (value: PanelTab) => router.setParams({ aba: value });
   const refresh = () => {
@@ -56,8 +71,8 @@ export default function AppDashboardScreen() {
     <Screen
       edges={[]}
       maxWidth={PANEL_MAX_WIDTH}
-      // Na janela larga, os recados não rolam com a tela: a lista e o recado aberto rolam cada um do seu lado.
-      scroll={!(inbox && layout.masterDetail)}
+      // Na janela larga e alta, os recados não rolam com a tela: a lista e o recado aberto rolam cada um do seu lado.
+      scroll={!fixedPanes}
       refreshing={inbox ? pulling : dashboard.isRefetching}
       onRefresh={refresh}>
       {children}
@@ -80,7 +95,12 @@ export default function AppDashboardScreen() {
         <Segmented options={tabs} value={tab} onChange={showTab} />
       </View>
       {inbox ? (
-        <FeedbackInbox masterDetail={layout.masterDetail} />
+        <FeedbackInbox
+          masterDetail={layout.masterDetail}
+          paneHeight={paneHeight ?? undefined}
+          state={inboxState}
+          onState={setInboxState}
+        />
       ) : (
         <>
           {newLine ? (
@@ -134,7 +154,8 @@ function Numbers({
 /**
  * Os números. No celular, uma seção embaixo da outra; na janela larga, "Agora" com os quatro números numa linha e
  * as outras seções numa grade (PanelGrid), "O que as casas usam" em duas colunas (as barras das funções têm nomes
- * longos).
+ * longos). Em três colunas, o Nuke e a IA empilhados ao lado de "O que as casas usam" (as seções de uma linha da
+ * grade têm a altura da mais alta, e as três seções baixas ficam juntas na primeira).
  */
 function Dashboard({
   data,
@@ -156,6 +177,118 @@ function Dashboard({
       <LinkButton title={showIdle ? features.showLess : features.showAll} onPress={() => setShowIdle(!showIdle)} />
     ) : undefined;
 
+  const activitySection = (
+    <Section title={view.activity.title}>
+      <Card style={styles.card}>
+        <UsageBars chart={view.activity.chart} />
+      </Card>
+    </Section>
+  );
+
+  const signupsSection = (
+    <Section title={view.signups.title}>
+      <Card style={styles.card}>
+        <UsageBars chart={view.signups.chart} />
+        <Text variant="muted">{view.signups.summary}</Text>
+      </Card>
+    </Section>
+  );
+
+  const nukeSection = (
+    <Section title={nuke.title}>
+      <Card style={styles.card}>
+        {nuke.facts.map((fact) => (
+          <FactRow key={fact.key} fact={fact} />
+        ))}
+        <Text variant="label" accessibilityRole="header">
+          {nuke.monthsTitle}
+        </Text>
+        <UsageBars chart={nuke.months} />
+        {nuke.perDay ? (
+          <>
+            <Text variant="label" accessibilityRole="header">
+              {nuke.perDayTitle}
+            </Text>
+            <UsageBars chart={nuke.perDay} />
+          </>
+        ) : null}
+      </Card>
+    </Section>
+  );
+
+  const aiSection = (
+    <Section title={ai.title}>
+      <Card style={styles.card}>
+        <Text variant="small">{ai.intro}</Text>
+        {ai.rows.map((row) => (
+          <MeterRow key={row.key} row={row} />
+        ))}
+        {ai.limitNote ? (
+          <Row style={styles.top}>
+            <Icon name="alert-circle-outline" size={18} color="warning" />
+            <Text variant="small" color="warning" style={styles.flex}>
+              {ai.limitNote}
+            </Text>
+          </Row>
+        ) : null}
+      </Card>
+    </Section>
+  );
+
+  const featuresSection = (
+    <Section title={features.title} action={idleToggle}>
+      <Card style={styles.card}>
+        <Text variant="small">{features.intro}</Text>
+        {features.empty ? (
+          <Text variant="muted">{features.empty}</Text>
+        ) : (
+          <>
+            {features.active.map((row) => (
+              <MeterRow key={row.key} row={row} />
+            ))}
+            {showIdle
+              ? features.idle.map((row) => <MeterRow key={row.key} row={row} />)
+              : features.idleSummary ? <Text variant="small">{features.idleSummary}</Text> : null}
+          </>
+        )}
+        <Text variant="small">{features.receipts}</Text>
+      </Card>
+    </Section>
+  );
+
+  const funnelSection = (
+    <Section title={view.funnel.title}>
+      <Card style={styles.card}>
+        {view.funnel.facts.map((fact) => (
+          <FactRow key={fact.key} fact={fact} />
+        ))}
+      </Card>
+    </Section>
+  );
+
+  const devicesSection = (
+    <Section title={devices.title}>
+      <Card style={styles.card}>
+        {devices.empty ? <Text variant="muted">{devices.empty}</Text> : null}
+        {devices.rows.map((row) => (
+          <MeterRow key={row.key} row={row} />
+        ))}
+        {devices.clients ? <Text variant="body">{devices.clients}</Text> : null}
+        <Text variant="small">{devices.note}</Text>
+      </Card>
+    </Section>
+  );
+
+  const extrasSection = (
+    <Section title={view.extras.title}>
+      <Card style={styles.card}>
+        {view.extras.facts.map((fact) => (
+          <FactRow key={fact.key} fact={fact} />
+        ))}
+      </Card>
+    </Section>
+  );
+
   return (
     <>
       {stale ? <StaleNotice onRetry={onRetry} /> : null}
@@ -164,105 +297,33 @@ function Dashboard({
         <StatGrid items={view.stats.items} columns={layout.statColumns} />
       </Section>
 
-      <PanelGrid columns={layout.columns}>
-        <Section title={view.activity.title}>
-          <Card style={styles.card}>
-            <UsageBars chart={view.activity.chart} />
-          </Card>
-        </Section>
-
-        <Section title={view.signups.title}>
-          <Card style={styles.card}>
-            <UsageBars chart={view.signups.chart} />
-            <Text variant="muted">{view.signups.summary}</Text>
-          </Card>
-        </Section>
-
-        <Section title={nuke.title}>
-          <Card style={styles.card}>
-            {nuke.facts.map((fact) => (
-              <FactRow key={fact.key} fact={fact} />
-            ))}
-            <Text variant="label" accessibilityRole="header">
-              {nuke.monthsTitle}
-            </Text>
-            <UsageBars chart={nuke.months} />
-            {nuke.perDay ? (
-              <>
-                <Text variant="label" accessibilityRole="header">
-                  {nuke.perDayTitle}
-                </Text>
-                <UsageBars chart={nuke.perDay} />
-              </>
-            ) : null}
-          </Card>
-        </Section>
-
-        <Section title={ai.title}>
-          <Card style={styles.card}>
-            <Text variant="small">{ai.intro}</Text>
-            {ai.rows.map((row) => (
-              <MeterRow key={row.key} row={row} />
-            ))}
-            {ai.limitNote ? (
-              <Row style={styles.top}>
-                <Icon name="alert-circle-outline" size={18} color="warning" />
-                <Text variant="small" color="warning" style={styles.flex}>
-                  {ai.limitNote}
-                </Text>
-              </Row>
-            ) : null}
-          </Card>
-        </Section>
-
-        <PanelCell span={2}>
-          <Section title={features.title} action={idleToggle}>
-            <Card style={styles.card}>
-              <Text variant="small">{features.intro}</Text>
-              {features.empty ? (
-                <Text variant="muted">{features.empty}</Text>
-              ) : (
-                <>
-                  {features.active.map((row) => (
-                    <MeterRow key={row.key} row={row} />
-                  ))}
-                  {showIdle
-                    ? features.idle.map((row) => <MeterRow key={row.key} row={row} />)
-                    : features.idleSummary ? <Text variant="small">{features.idleSummary}</Text> : null}
-                </>
-              )}
-              <Text variant="small">{features.receipts}</Text>
-            </Card>
-          </Section>
-        </PanelCell>
-
-        <Section title={view.funnel.title}>
-          <Card style={styles.card}>
-            {view.funnel.facts.map((fact) => (
-              <FactRow key={fact.key} fact={fact} />
-            ))}
-          </Card>
-        </Section>
-
-        <Section title={devices.title}>
-          <Card style={styles.card}>
-            {devices.empty ? <Text variant="muted">{devices.empty}</Text> : null}
-            {devices.rows.map((row) => (
-              <MeterRow key={row.key} row={row} />
-            ))}
-            {devices.clients ? <Text variant="body">{devices.clients}</Text> : null}
-            <Text variant="small">{devices.note}</Text>
-          </Card>
-        </Section>
-
-        <Section title={view.extras.title}>
-          <Card style={styles.card}>
-            {view.extras.facts.map((fact) => (
-              <FactRow key={fact.key} fact={fact} />
-            ))}
-          </Card>
-        </Section>
-      </PanelGrid>
+      {layout.columns === 3 ? (
+        <PanelGrid columns={3}>
+          {activitySection}
+          {signupsSection}
+          {funnelSection}
+          <PanelCell>
+            <View style={styles.stack}>
+              {nukeSection}
+              {aiSection}
+            </View>
+          </PanelCell>
+          <PanelCell span={2}>{featuresSection}</PanelCell>
+          {devicesSection}
+          {extrasSection}
+        </PanelGrid>
+      ) : (
+        <PanelGrid columns={layout.columns}>
+          {activitySection}
+          {signupsSection}
+          {nukeSection}
+          {aiSection}
+          <PanelCell span={2}>{featuresSection}</PanelCell>
+          {funnelSection}
+          {devicesSection}
+          {extrasSection}
+        </PanelGrid>
+      )}
 
       <View style={styles.footer}>
         <Text variant="small">{view.footer.updated}</Text>
@@ -282,6 +343,8 @@ const styles = StyleSheet.create({
   notice: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   top: { alignItems: 'flex-start' },
   footer: { gap: space.xs, paddingHorizontal: space.xs },
+  // Duas seções numa célula da grade, uma embaixo da outra, com o espaço de sempre entre as seções.
+  stack: { gap: space.xl },
   // Na janela larga, as duas abas não se esticam pela tela toda.
   tabsWide: { width: '100%', maxWidth: 480 },
 });

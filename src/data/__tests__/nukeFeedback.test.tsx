@@ -1,10 +1,11 @@
 import { describe, expect, it, jest } from '@jest/globals';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, create } from 'react-test-renderer';
 
 import { FEEDBACK_LIMIT, FEEDBACK_SENT } from '@/domain/appFeedback';
 import type { NukeAction } from '@/domain/nuke';
 
-import { useRunNukeAction } from '../nuke';
+import { useAskNuke, useRunNukeAction } from '../nuke';
 
 // O recado que o Nuke sugere só sai pelo toque em "Enviar": a ação manda exatamente o tipo e o texto do cartão
 // (sendAppFeedback) e devolve a frase de enviado; a recusa sobe para a tela mostrar.
@@ -22,7 +23,13 @@ jest.mock('@/data/menu', () => ({}));
 jest.mock('@/data/supplies', () => ({}));
 jest.mock('@/data/images', () => ({}));
 jest.mock('@/lib/auth', () => ({}));
-jest.mock('@/lib/supabase', () => ({ supabase: {} }));
+const mockInvoke = jest.fn(async (_name: string, _options: { body: Record<string, unknown> }) => ({
+  data: { reply: 'Posso mandar isto:', actions: [] },
+  error: null,
+}));
+jest.mock('@/lib/supabase', () => ({
+  supabase: { functions: { invoke: (name: string, options: { body: Record<string, unknown> }) => mockInvoke(name, options) } },
+}));
 jest.mock('expo-router', () => ({ router: { back: jest.fn(), navigate: jest.fn() } }));
 
 function runner() {
@@ -48,5 +55,28 @@ describe('o recado pelo Nuke', () => {
   it('a recusa sobe como veio', async () => {
     mockSend.mockRejectedValueOnce(new Error(FEEDBACK_LIMIT));
     await expect(runner()(action)).rejects.toThrow(FEEDBACK_LIMIT);
+  });
+});
+
+describe('a pergunta ao Nuke', () => {
+  it('diz que este app mostra o cartão do recado: sem isso a função nunca oferece o recado', async () => {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    let ask: ReturnType<typeof useAskNuke> | undefined;
+    function Probe() {
+      ask = useAskNuke();
+      return null;
+    }
+    act(() => {
+      create(
+        <QueryClientProvider client={client}>
+          <Probe />
+        </QueryClientProvider>,
+      );
+    });
+    const input = { messages: [{ role: 'user' as const, text: 'O app trava na lista.' }], context: '', today: '2026-10-24' };
+    await act(async () => {
+      await ask!.mutateAsync(input);
+    });
+    expect(mockInvoke).toHaveBeenCalledWith('nuke', { body: { ...input, features: ['send_feedback'] } });
   });
 });

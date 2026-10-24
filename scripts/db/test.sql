@@ -12998,7 +12998,7 @@ begin
   ), 'the newest three';
   assert jsonb_array_length(public.app_feedback_list(null, 0) -> 'items') = 1
     and jsonb_array_length(public.app_feedback_list(null, -5) -> 'items') = 1, 'the limit is at least 1';
-  assert public.app_feedback_list(null, null) = j and public.app_feedback_list(null, 1000) = j, 'null is the default, and 1000 is capped';
+  assert public.app_feedback_list(null, null) = j and public.app_feedback_list(null, 1000) = j, 'null is the default, and a limit above the count gives every recado';
   begin
     perform public.app_feedback_list('apagado');
     raise exception 'FAIL: an unknown status filter';
@@ -13074,6 +13074,26 @@ begin
     'deleting the account deletes her recados';
   assert (select count(*) from public.app_feedback) = 1, 'Tito''s stays';
 end $$;
+
+-- O teto: com mais de 500 recados, a lista para em 500; o padrão (e nulo) é 200; o total diz quantos são.
+do $$
+begin
+  insert into public.app_feedback (user_id, kind, message, created_at, updated_at)
+  select '00000000-0000-0000-0000-0000000006f3', 'outro', 'Velho ' || g,
+    now() - interval '2 days' - g * interval '1 second', now() - interval '2 days' - g * interval '1 second'
+  from generate_series(1, 600) g;
+end $$;
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000006f1', true) \gset
+do $$
+declare
+  j jsonb := public.app_feedback_list(null, 1000);
+begin
+  assert (j ->> 'total')::int = 601 and jsonb_array_length(j -> 'items') = 500, 'a limit over 500 is capped at 500: ' || (j ->> 'total');
+  assert jsonb_array_length(public.app_feedback_list() -> 'items') = 200
+    and jsonb_array_length(public.app_feedback_list(null, null) -> 'items') = 200, 'the default, and null, are 200';
+end $$;
+reset role;
 rollback;
 
 do $$

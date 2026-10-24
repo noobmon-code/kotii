@@ -18,6 +18,7 @@ import {
 import { addDays } from '@/domain/dates';
 import { PANEL_MAX_WIDTH, panelCellPercent } from '@/domain/panelLayout';
 import { TERMS_ACCEPT_VERSION } from '@/domain/terms';
+import { Section } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 // A tela do painel com a rpc de mentira e a busca de verdade (data/appDashboard, QueryClient real): os números
@@ -152,6 +153,9 @@ const gridCells = () =>
   viewStyles()
     .filter((style) => style.paddingHorizontal === space.xl / 2 && typeof style.width === 'string')
     .map((style) => style.width);
+
+/** Os títulos das seções, na ordem da tela. */
+const sectionTitles = () => renderer!.root.findAllByType(Section).map((node) => node.props.title as string);
 
 let renderer: ReactTestRenderer | undefined;
 let queryClient: QueryClient;
@@ -409,9 +413,10 @@ describe('Painel do app no computador', () => {
     const text = await mount();
     expect(text).toContain('Contas5+1 em 7 dias');
     expect(viewStyles().filter((style) => style.flexBasis === '22%')).toHaveLength(4);
-    // Uso por dia, Novas contas, Nuke | IA, O que as casas usam (duas) | Entrada, Aparelhos, Outros.
+    // Uso por dia, Novas contas, Entrada | Nuke e IA empilhados, O que as casas usam (duas) | Aparelhos, Outros.
     const third = panelCellPercent(3);
-    expect(gridCells()).toEqual([third, third, third, third, panelCellPercent(3, 2), third, third, third]);
+    expect(gridCells()).toEqual([third, third, third, third, panelCellPercent(3, 2), third, third]);
+    expect(sectionTitles()).toEqual(['Agora', 'Uso por dia', 'Novas contas', 'Entrada', 'Nuke', 'IA', 'O que as casas usam', 'Aparelhos', 'Outros']);
   });
 
   it('numa janela média, duas colunas', async () => {
@@ -419,6 +424,8 @@ describe('Painel do app no computador', () => {
     await mount();
     const half = panelCellPercent(2);
     expect(gridCells()).toEqual([half, half, half, half, '100%', half, half, half]);
+    // A ordem de sempre: só as três colunas empilham o Nuke e a IA.
+    expect(sectionTitles()).toEqual(['Agora', 'Uso por dia', 'Novas contas', 'Nuke', 'IA', 'O que as casas usam', 'Entrada', 'Aparelhos', 'Outros']);
     expect(viewStyles().filter((style) => style.flexBasis === '22%')).toHaveLength(4);
   });
 });

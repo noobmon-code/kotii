@@ -1,5 +1,5 @@
-// Abre um link fora do app: a conversa no WhatsApp (https://wa.me/…) ou o
-// discador do telefone (tel:…).
+// Abre um link fora do app: a conversa no WhatsApp (https://wa.me/…), o
+// discador do telefone (tel:…) ou um e-mail pronto (mailto:…).
 
 import * as Linking from 'expo-linking';
 import { Platform } from 'react-native';
@@ -13,11 +13,13 @@ import { Platform } from 'react-native';
  *
  * No navegador, o `openURL` do expo-linking troca o endereço da própria aba:
  * o Kotii sairia da tela para dar lugar ao WhatsApp. Por isso o link https
- * abre em outra aba; o `tel:` segue por ele, que só chama o discador.
+ * abre em outra aba, e o `mailto:` também (com um serviço de e-mail da web,
+ * como o Gmail, cuidando do mailto, o e-mail tomaria a aba do app); o `tel:`
+ * segue pelo `openURL`, que só chama o discador.
  */
 export async function openExternal(url: string): Promise<boolean> {
   try {
-    if (Platform.OS === 'web' && /^https?:/i.test(url)) {
+    if (Platform.OS === 'web' && /^(https?|mailto):/i.test(url)) {
       window.open(url, '_blank', 'noopener,noreferrer');
       return true;
     }

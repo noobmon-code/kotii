@@ -79,6 +79,8 @@ export interface NukeRequest {
   turns: ChatTurn[];
   context: string;
   today: string;
+  /** O app sabe mostrar o cartão do recado (`features: ['send_feedback']`). */
+  feedback: boolean;
 }
 
 export const MAX_TURNS = 16;
@@ -98,10 +100,14 @@ export function isISODate(value: unknown): value is string {
 /** Valida o corpo do pedido. Devolve a mensagem de erro em vez de lançar. */
 export function parseRequest(body: unknown): NukeRequest | string {
   if (!body || typeof body !== 'object') return 'Pedido inválido.';
-  const { messages, context, today } = body as Record<string, unknown>;
+  const { messages, context, today, features } = body as Record<string, unknown>;
   if (!isISODate(today)) return 'Data de hoje inválida.';
   if (typeof context !== 'string') return 'Contexto inválido.';
   if (!Array.isArray(messages) || messages.length === 0) return 'Mande uma mensagem.';
+  // Um app instalado de antes do recado não manda `features` e descarta a ação
+  // sem mostrar nada: para ele o Nuke nem oferece, senão a resposta falaria de
+  // um botão que não existe.
+  const feedback = Array.isArray(features) && features.includes('send_feedback');
   const turns: ChatTurn[] = [];
   for (const m of messages.slice(-MAX_TURNS)) {
     const role = (m as { role?: unknown })?.role;
@@ -114,7 +120,7 @@ export function parseRequest(body: unknown): NukeRequest | string {
   // A API exige começar pela pessoa; respostas antigas do Nuke sem a pergunta saem.
   while (turns.length && turns[0].role !== 'user') turns.shift();
   if (turns.at(-1)?.role !== 'user') return 'A última mensagem precisa ser sua.';
-  return { turns, context: context.slice(0, MAX_CONTEXT), today };
+  return { turns, context: context.slice(0, MAX_CONTEXT), today, feedback };
 }
 
 const WEEKDAYS = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
@@ -132,7 +138,10 @@ export function snapshotBlock(context: string): string {
   return `RETRATO DA CASA:\n<retrato>\n${safe || '(sem dados carregados)'}\n</retrato>`;
 }
 
-export function buildSystem(context: string, today: string): string {
+// Só para o app que declara saber mostrar o cartão do recado (`feedback`).
+const FEEDBACK_ACTION = `- send_feedback: quando a pessoa der uma opinião sobre o próprio app Kotii (algo que não funciona, uma sugestão, um elogio, uma reclamação) ou pedir para mandar um recado para quem faz o app, ofereça mandar o recado: "feedback_kind" ${FEEDBACK_KINDS.join('|')} e "feedback_text" com o que ela disse, nas palavras dela e na primeira pessoa, fiel, sem acrescentar nada, e sem dados da casa (nomes, valores, saúde) que ela não pediu para incluir. Nunca para pedidos sobre a casa em si. Recado para alguém da casa não existe no app: não use send_feedback; diga que o app não manda recados entre moradores. Nunca diga que o recado foi enviado: ela envia com um toque.`;
+
+export function buildSystem(context: string, today: string, feedback = false): string {
   const weekday = WEEKDAYS[new Date(`${today}T12:00:00Z`).getUTCDay()];
   return `Você é o Nuke, o assistente da casa no app Kotii: uma bolhinha de vidro, redonda e simpática. Fala português do Brasil, com calor humano e poucas palavras.
 
@@ -148,8 +157,7 @@ Ações: quando a pessoa pedir algo que o app faz, proponha em "actions". Ela co
 - add_to_list: itens para a lista de mercado ("items": name, quantity, unit ${UNITS.join('|')}, category).
 - create_chore: tarefa da casa ("title", "due_on" AAAA-MM-DD, "recurrence" ${RECURRENCES.join('|')}).
 - add_expense: gasto sem nota fiscal ("description", "amount" em reais, "category", "spent_on" AAAA-MM-DD).
-- open_screen: abrir uma tela ("screen": ${SCREENS.join(', ')}).
-- send_feedback: quando a pessoa der uma opinião sobre o próprio app Kotii (algo que não funciona, uma sugestão, um elogio, uma reclamação) ou pedir para mandar um recado para quem faz o app, ofereça mandar o recado: "feedback_kind" ${FEEDBACK_KINDS.join('|')} e "feedback_text" com o que ela disse, nas palavras dela e na primeira pessoa, fiel, sem acrescentar nada, e sem dados da casa (nomes, valores, saúde) que ela não pediu para incluir. Nunca para pedidos sobre a casa em si. Nunca diga que o recado foi enviado: ela envia com um toque.
+- open_screen: abrir uma tela ("screen": ${SCREENS.join(', ')}).${feedback ? `\n${FEEDBACK_ACTION}` : ''}
 Cada ação tem "label", o texto curto do botão (ex.: "Adicionar 3 itens à lista"). Campos que não são do tipo da ação vão como null. Sem ação útil, "actions" vazio. No máximo ${MAX_ACTIONS} ações.
 Categorias de produto: ${CATEGORY_KEYS.join(', ')}.
 Categorias de gasto: ${FINANCE_CATEGORY_KEYS.join(', ')}.
@@ -174,8 +182,11 @@ function feedbackText(value: string | null | undefined): string {
   return chars.length > FEEDBACK_MAX_LENGTH ? chars.slice(0, FEEDBACK_MAX_LENGTH).join('').trimEnd() : text;
 }
 
-/** Limpa a resposta: texto aparado e só ações completas, com valores padrão. */
-export function cleanReply(raw: NukeReplyRaw, today: string): { reply: string; actions: NukeAction[] } {
+/**
+ * Limpa a resposta: texto aparado e só ações completas, com valores padrão.
+ * O recado só passa para o app que sabe mostrá-lo (`feedback`).
+ */
+export function cleanReply(raw: NukeReplyRaw, today: string, feedback = false): { reply: string; actions: NukeAction[] } {
   const actions: NukeAction[] = [];
   for (const a of raw.actions) {
     if (actions.length >= MAX_ACTIONS) break;
@@ -225,8 +236,13 @@ export function cleanReply(raw: NukeReplyRaw, today: string): { reply: string; a
         if (a.screen) actions.push({ type: 'open_screen', label, screen: a.screen });
         break;
       case 'send_feedback': {
+        if (!feedback) break;
         const text = feedbackText(a.feedback_text);
-        if (text) actions.push({ type: 'send_feedback', label, kind: a.feedback_kind ?? 'outro', text });
+        // O título do cartão é sempre o mesmo: um texto do modelo ("Mandar
+        // recado para a Carla") desmentiria a linha que diz quem lê o recado.
+        if (text) {
+          actions.push({ type: 'send_feedback', label: DEFAULT_LABEL.send_feedback, kind: a.feedback_kind ?? 'outro', text });
+        }
         break;
       }
     }

@@ -1,6 +1,17 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { PANEL_MAX_WIDTH, PANEL_TABS, panelCellPercent, panelLayout, panelTabFromParam } from '../panelLayout';
+import {
+  PANEL_FIXED_MIN_HEIGHT,
+  PANEL_LIST_MIN_WIDTH,
+  PANEL_LIST_WIDTH,
+  PANEL_MAX_WIDTH,
+  PANEL_PANES_MIN_HEIGHT,
+  PANEL_TABS,
+  panelCellPercent,
+  panelLayout,
+  panelPaneHeight,
+  panelTabFromParam,
+} from '../panelLayout';
 
 describe('o painel no computador', () => {
   it('vai até 1280 de largura', () => {
@@ -23,6 +34,30 @@ describe('o painel no computador', () => {
     expect(panelLayout(0)).toEqual(phone);
     expect(panelLayout(Number.NaN)).toEqual(phone);
     expect(panelLayout(Number.POSITIVE_INFINITY)).toEqual(phone);
+  });
+
+  it('a altura das duas partes dos recados: a tela fica parada só na janela alta o bastante', () => {
+    expect(PANEL_PANES_MIN_HEIGHT).toBe(420);
+    expect(PANEL_FIXED_MIN_HEIGHT).toBe(780);
+    // Alta o bastante: os filtros e as duas partes cabem, e elas enchem o que sobra.
+    expect(panelPaneHeight(780)).toBeNull();
+    expect(panelPaneHeight(900)).toBeNull();
+    expect(panelPaneHeight(1440)).toBeNull();
+    // Mais baixa: a tela rola e as duas partes têm a altura da janela menos o cabeçalho e as margens.
+    expect(panelPaneHeight(779)).toBe(659);
+    expect(panelPaneHeight(657)).toBe(537);
+    expect(panelPaneHeight(600.5)).toBe(480);
+    // Nunca menos que a mínima.
+    expect(panelPaneHeight(520)).toBe(PANEL_PANES_MIN_HEIGHT);
+    expect(panelPaneHeight(0)).toBe(PANEL_PANES_MIN_HEIGHT);
+    // A janela sem medida fica com a mínima, e a tela rola.
+    expect(panelPaneHeight(Number.NaN)).toBe(PANEL_PANES_MIN_HEIGHT);
+    expect(panelPaneHeight(Number.POSITIVE_INFINITY)).toBe(PANEL_PANES_MIN_HEIGHT);
+  });
+
+  it('a lista de recados fica entre 280 e 360 de largura', () => {
+    expect(PANEL_LIST_MIN_WIDTH).toBe(280);
+    expect(PANEL_LIST_WIDTH).toBe(360);
   });
 
   it('a largura de uma seção na grade', () => {

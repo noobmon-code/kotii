@@ -241,6 +241,7 @@ export default function NukeScreen() {
                       ) : (
                         <Button
                           title={actionButton(action.type).title}
+                          accessibilityLabel={action.type === 'send_feedback' ? 'Enviar o recado para quem faz o Kotii' : undefined}
                           compact
                           icon={actionButton(action.type).icon}
                           loading={running === `${message.id}:${index}`}

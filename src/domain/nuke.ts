@@ -166,6 +166,12 @@ export function buildNukeContext(s: NukeSnapshot): string {
 
 export const HISTORY_LIMIT = 12;
 
+/**
+ * O que este app sabe mostrar, mandado ao Nuke em cada pergunta: a função só oferece o recado a quem manda
+ * 'send_feedback' (um app instalado de antes do recado não manda, e não vê a oferta de um cartão que não mostra).
+ */
+export const NUKE_FEATURES = ['send_feedback'] as const;
+
 /** O que vai para a IA: as últimas falas, sem respostas que falharam. */
 export function historyForApi(messages: NukeMessage[], limit = HISTORY_LIMIT): { role: 'user' | 'assistant'; text: string }[] {
   return messages

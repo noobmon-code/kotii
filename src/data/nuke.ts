@@ -27,7 +27,15 @@ import { upcomingAppointments } from '@/domain/health';
 import { doseKey, dosesForDay } from '@/domain/medications';
 import { refillSummary } from '@/domain/medicationStock';
 import { menuLines } from '@/domain/menu';
-import { buildNukeContext, NUKE_LIST_LIMIT, parseActions, type NukeAction, type NukeScreen, type NukeSnapshot } from '@/domain/nuke';
+import {
+  buildNukeContext,
+  NUKE_FEATURES,
+  NUKE_LIST_LIMIT,
+  parseActions,
+  type NukeAction,
+  type NukeScreen,
+  type NukeSnapshot,
+} from '@/domain/nuke';
 import { expiryStatus, groupPantry } from '@/domain/pantry';
 import { supplyLines } from '@/domain/supplies';
 import { useHousehold } from '@/lib/auth';
@@ -222,7 +230,9 @@ export interface NukeAnswer {
 export function useAskNuke() {
   return useMutation({
     mutationFn: async (input: { messages: { role: 'user' | 'assistant'; text: string }[]; context: string; today: string }) => {
-      const { data, error } = await supabase.functions.invoke<{ reply: string; actions: unknown }>('nuke', { body: input });
+      const { data, error } = await supabase.functions.invoke<{ reply: string; actions: unknown }>('nuke', {
+        body: { ...input, features: NUKE_FEATURES },
+      });
       if (error || !data) throw new Error(await functionErrorMessage(error, 'Não consegui responder agora. Tente de novo.'));
       return { reply: String(data.reply ?? ''), actions: parseActions(data.actions) } satisfies NukeAnswer;
     },

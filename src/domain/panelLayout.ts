@@ -12,8 +12,38 @@ export const PANEL_WIDE_MIN = 720;
 /** A partir desta largura da janela: três colunas de seções. */
 export const PANEL_WIDER_MIN = 1100;
 
-/** A largura da lista de recados ao lado do recado aberto (tela larga). */
+/**
+ * A largura da lista de recados ao lado do recado aberto (tela larga): 40% da linha, entre PANEL_LIST_MIN_WIDTH e
+ * esta. Logo acima de PANEL_WIDE_MIN o recado aberto (o que se lê) fica com a parte maior.
+ */
 export const PANEL_LIST_WIDTH = 360;
+export const PANEL_LIST_MIN_WIDTH = 280;
+
+/** A altura mínima das duas partes dos recados (a lista e o recado aberto), quando a janela é baixa. */
+export const PANEL_PANES_MIN_HEIGHT = 420;
+
+/**
+ * A partir desta altura da janela, os filtros dos recados e as duas partes embaixo deles cabem sem a tela rolar
+ * (o cabeçalho e os filtros tomam perto de 300 a 350).
+ */
+export const PANEL_FIXED_MIN_HEIGHT = 780;
+
+/** O que fica fora das duas partes quando a tela rolou até elas: o cabeçalho da tela, as margens e um pouco dos filtros. */
+const PANEL_PANES_CHROME = 120;
+
+/**
+ * A altura das duas partes dos recados na janela larga, para a altura da janela (useWindowDimensions). null a partir
+ * de PANEL_FIXED_MIN_HEIGHT: a tela não rola e as duas partes enchem o que sobra embaixo dos filtros. Abaixo dela, a
+ * tela rola (os filtros saem de vista) e as duas partes têm uma altura fixa, a da janela menos o cabeçalho e as
+ * margens, nunca menos que PANEL_PANES_MIN_HEIGHT (fixa, e não só mínima: dentro da tela que rola, cada parte
+ * cresceria até a altura do que tem dentro e não rolaria mais sozinha). Uma altura que não é um número (a janela
+ * ainda sem medida) fica com a mínima.
+ */
+export function panelPaneHeight(height: number): number | null {
+  if (!Number.isFinite(height)) return PANEL_PANES_MIN_HEIGHT;
+  if (height >= PANEL_FIXED_MIN_HEIGHT) return null;
+  return Math.max(PANEL_PANES_MIN_HEIGHT, Math.floor(height - PANEL_PANES_CHROME));
+}
 
 /** Como o painel se arruma numa largura de janela. */
 export interface PanelLayout {

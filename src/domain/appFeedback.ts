@@ -259,6 +259,34 @@ export function applyFeedbackUpdate(list: FeedbackList, item: FeedbackItem): Fee
   return { ...list, counts, items: list.items.map((entry) => (entry.id === item.id ? item : entry)) };
 }
 
+/**
+ * Do mais novo para o mais antigo, como app_feedback_list ordena (created_at desc, id desc). `created_at` vem em
+ * segundos: dois recados do mesmo segundo ficam na ordem do id, o maior primeiro.
+ */
+export function newestFeedbackFirst(a: FeedbackItem, b: FeedbackItem): number {
+  if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1;
+  return a.id === b.id ? 0 : a.id < b.id ? 1 : -1;
+}
+
+/**
+ * A lista que veio do servidor com os recados abertos neste filtro que saíram dela (o novo aberto vira lido e,
+ * buscada de novo, a lista dos novos não o traz mais): eles ficam no lugar deles até a troca de filtro, para a
+ * linha não sumir debaixo do dedo. O que veio do servidor vale mais que a cópia guardada (um recado nos dois fica
+ * uma vez só, como o servidor o mandou). Sem nenhum recado guardado fora da lista, a própria lista.
+ */
+export function withOpenedFeedback(items: FeedbackItem[], kept: ReadonlyMap<string, FeedbackItem>): FeedbackItem[] {
+  const listed = new Set(items.map((item) => item.id));
+  const extra = [...kept.values()].filter((item) => !listed.has(item.id)).sort(newestFeedbackFirst);
+  if (!extra.length) return items;
+  const out: FeedbackItem[] = [];
+  let next = 0;
+  for (const item of items) {
+    while (next < extra.length && newestFeedbackFirst(extra[next], item) <= 0) out.push(extra[next++]);
+    out.push(item);
+  }
+  return out.concat(extra.slice(next));
+}
+
 // ---------------------------------------------------------------------------
 // Filtros e busca
 
@@ -624,20 +652,46 @@ export function feedbackNoteError(draft: string): string | null {
 // A resposta por e-mail
 
 /**
+ * O tamanho máximo do link de resposta. O Chromium no Windows não passa ao programa de e-mail um link com mais de
+ * 2048 caracteres, e o botão não faria nada, sem aviso.
+ */
+export const REPLY_URL_MAX = 2000;
+
+/** O corpo do e-mail de resposta: um espaço para escrever e, embaixo, o recado citado com "> " em cada linha. */
+function replyBody(message: string, createdAt: string): string {
+  const quoted = message
+    .split(/\r\n|\r|\n/)
+    .map((line) => (line.trim() ? `> ${line}` : '>'))
+    .join('\n');
+  return `Oi!\n\n\n\nO seu recado de ${feedbackDateTime(createdAt)}:\n${quoted}\n`;
+}
+
+/**
  * O `mailto:` da resposta: o assunto "Sobre o seu recado no Kotii" e o corpo com um espaço para escrever e, embaixo,
  * o recado citado com "> " em cada linha (a linha vazia vira ">"). null sem e-mail. O endereço vai codificado,
- * menos a arroba (um "+" ou um "?" no endereço não quebram o link).
+ * menos a arroba (um "+" ou um "?" no endereço não quebram o link). O link inteiro fica em `REPLY_URL_MAX`: um
+ * recado longo vai citado só no começo, cortado com "…" no maior pedaço que cabe (o corte conta o link
+ * codificado, não os caracteres: um emoji ocupa 12 no link, uma letra com acento, 6).
  */
 export function replyMailto(item: Pick<FeedbackItem, 'email' | 'message' | 'createdAt'>): string | null {
   const email = item.email?.trim();
   if (!email) return null;
-  const quoted = item.message
-    .split(/\r\n|\r|\n/)
-    .map((line) => (line.trim() ? `> ${line}` : '>'))
-    .join('\n');
-  const body = `Oi!\n\n\n\nO seu recado de ${feedbackDateTime(item.createdAt)}:\n${quoted}\n`;
   const to = encodeURIComponent(email).replace(/%40/g, '@');
-  return `mailto:${to}?subject=${encodeURIComponent(FEEDBACK_REPLY_SUBJECT)}&body=${encodeURIComponent(body)}`;
+  const link = (message: string) =>
+    `mailto:${to}?subject=${encodeURIComponent(FEEDBACK_REPLY_SUBJECT)}&body=${encodeURIComponent(replyBody(message, item.createdAt))}`;
+  const whole = link(item.message);
+  if (whole.length <= REPLY_URL_MAX) return whole;
+  // Por caractere (sem partir um emoji ao meio): o maior começo do recado cujo link cabe.
+  const chars = Array.from(item.message);
+  const cut = (size: number) => link(`${chars.slice(0, size).join('').trimEnd()}…`);
+  let low = 0;
+  let high = chars.length - 1;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (cut(middle).length <= REPLY_URL_MAX) low = middle;
+    else high = middle - 1;
+  }
+  return cut(low);
 }
 
 // ---------------------------------------------------------------------------

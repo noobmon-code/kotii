@@ -26,20 +26,29 @@ import { FEEDBACK_KIND_TONES, FEEDBACK_STATUS_TONES } from './FeedbackRowView';
  * versão, o e-mail (que dá para copiar) com "Responder por e-mail", o recado inteiro (que dá para copiar), os
  * botões de situação e a nota de quem mantém o app. `onWrite` grava pela useSetAppFeedback (o aviso de erro sai
  * de lá) e nunca falha; `busy`: alguma mudança em recados está no ar, e os botões esperam. Quem usa monta um por
- * recado (`key` com o id): a nota começa com a guardada.
+ * recado (`key` com o id). A nota que está sendo escrita fica com quem usa (`draft`, null: a guardada; `onDraft`
+ * a cada letra), para não se perder quando a caixa é montada de novo (a janela que passa de uma faixa de largura
+ * para outra). `badges` false: sem os selos do tipo e da situação, quando a linha logo acima já os mostra (o recado
+ * aberto embaixo da linha, no celular); o leitor de tela continua a ouvi-los no cabeçalho.
  */
 export function FeedbackDetailView({
   item,
   busy,
   onWrite,
+  draft: typed,
+  onDraft,
+  badges = true,
 }: {
   item: FeedbackItem;
   busy: boolean;
   onWrite: (change: Omit<FeedbackChange, 'id'>) => Promise<void>;
+  draft: string | null;
+  onDraft: (text: string) => void;
+  badges?: boolean;
 }) {
   const c = useColors();
   const detail = feedbackDetail(item);
-  const [draft, setDraft] = useState(item.note ?? '');
+  const draft = typed ?? item.note ?? '';
   // O botão tocado gira até a resposta: a situação que ele grava, ou a nota.
   const [pending, setPending] = useState<FeedbackStatus | 'note' | null>(null);
   const noteError = feedbackNoteError(draft);
@@ -59,10 +68,12 @@ export function FeedbackDetailView({
   return (
     <View style={styles.detail}>
       <View accessible accessibilityLabel={detail.accessibilityLabel} style={styles.header}>
-        <View style={styles.badges}>
-          <Badge label={detail.kindLabel} tone={FEEDBACK_KIND_TONES[detail.kind]} />
-          <Badge label={detail.statusLabel} tone={FEEDBACK_STATUS_TONES[detail.status]} />
-        </View>
+        {badges ? (
+          <View style={styles.badges}>
+            <Badge label={detail.kindLabel} tone={FEEDBACK_KIND_TONES[detail.kind]} />
+            <Badge label={detail.statusLabel} tone={FEEDBACK_STATUS_TONES[detail.status]} />
+          </View>
+        ) : null}
         <Text variant="small">Mandado em {detail.sentAt}</Text>
         {detail.changed ? <Text variant="small">{detail.changed}</Text> : null}
         {detail.device ? <Text variant="small">{detail.device}</Text> : null}
@@ -106,7 +117,7 @@ export function FeedbackDetailView({
           label={FEEDBACK_NOTE_LABEL}
           placeholder={FEEDBACK_NOTE_PLACEHOLDER}
           value={draft}
-          onChangeText={setDraft}
+          onChangeText={onDraft}
           multiline
           hint={noteError ?? undefined}
           hintColor={noteError ? 'danger' : undefined}

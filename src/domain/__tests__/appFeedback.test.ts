@@ -39,10 +39,13 @@ import {
   feedbackWhen,
   filterFeedback,
   newFeedbackLine,
+  newestFeedbackFirst,
   nextFeedbackSelection,
   parseFeedbackItem,
   parseFeedbackList,
+  REPLY_URL_MAX,
   replyMailto,
+  withOpenedFeedback,
   type FeedbackItem,
   type FeedbackList,
 } from '../appFeedback';
@@ -465,6 +468,92 @@ describe('a resposta por e-mail', () => {
   it('sem e-mail, sem link', () => {
     expect(replyMailto(item({ email: null }))).toBeNull();
     expect(replyMailto(item({ email: '  ' }))).toBeNull();
+  });
+
+  it('um recado longo vai citado só no começo, com "…": o link cabe no limite, contado codificado', () => {
+    const bodyOf = (url: string) => new URLSearchParams(url.slice(url.indexOf('?') + 1)).get('body')!;
+    // 2000 caracteres de acentos e emojis: uns 6 mil caracteres só para citar o recado inteiro no link.
+    const message = Array.from({ length: FEEDBACK_MAX_LENGTH }, (_, index) => ['ã', 'é', '🙂', 'ç', '👍🏽', '\n'][index % 6]).join('');
+    const url = replyMailto(item({ message }))!;
+    expect(url.length).toBeLessThanOrEqual(REPLY_URL_MAX);
+    const body = bodyOf(url);
+    expect(body.endsWith('…\n')).toBe(true);
+    // O começo do recado, citado como sempre, e nenhum emoji partido ao meio (o link decodifica).
+    expect(body).toContain('O seu recado de 24/10/2026 às 14:05:\n> ãé🙂ç👍🏽\n> ãé🙂ç');
+    expect(body).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    // Um pedaço de verdade do recado, não um corte à toa.
+    const quoted = body.slice(body.indexOf(':\n') + 2);
+    expect(quoted.length).toBeGreaterThan(100);
+
+    // Só letras: o corte também fica no limite, e bem mais longo.
+    const plain = replyMailto(item({ message: 'a'.repeat(FEEDBACK_MAX_LENGTH) }))!;
+    expect(plain.length).toBeLessThanOrEqual(REPLY_URL_MAX);
+    expect(plain.length).toBeGreaterThan(REPLY_URL_MAX - 5);
+    expect(bodyOf(plain).endsWith('a…\n')).toBe(true);
+  });
+
+  it('o recado curto vai citado inteiro, sem "…"', () => {
+    const message = 'Adorei o modo escuro! 🌙\nSó falta o widget.';
+    const url = replyMailto(item({ message }))!;
+    const body = new URLSearchParams(url.slice(url.indexOf('?') + 1)).get('body')!;
+    expect(body).toBe('Oi!\n\n\n\nO seu recado de 24/10/2026 às 14:05:\n> Adorei o modo escuro! 🌙\n> Só falta o widget.\n');
+    // Também um recado de uns 700 caracteres, que já passa de mil no link.
+    const medium = 'Quando abro a lista no navegador, ela demora. '.repeat(15).trim();
+    const mediumUrl = replyMailto(item({ message: medium }))!;
+    expect(mediumUrl.length).toBeGreaterThan(1000);
+    expect(new URLSearchParams(mediumUrl.slice(mediumUrl.indexOf('?') + 1)).get('body')).toContain(`> ${medium}\n`);
+  });
+});
+
+describe('a ordem da caixa de entrada', () => {
+  const at1 = (id: string, createdAt: string, over: Partial<FeedbackItem> = {}) => item({ id, createdAt, updatedAt: createdAt, ...over });
+  const ids = (items: FeedbackItem[]) => items.map((entry) => entry.id);
+
+  it('do mais novo para o mais antigo; no mesmo segundo, o id maior primeiro', () => {
+    const items = [
+      at1('b', '2026-10-24T10:00:00Z'),
+      at1('a', '2026-10-24T12:00:00Z'),
+      at1('c', '2026-10-24T10:00:00Z'),
+      at1('d', '2026-10-23T10:00:00Z'),
+    ];
+    expect(ids([...items].sort(newestFeedbackFirst))).toEqual(['a', 'c', 'b', 'd']);
+    expect(newestFeedbackFirst(items[0], items[0])).toBe(0);
+  });
+
+  it('o recado aberto que saiu da lista volta no lugar dele', () => {
+    const listed = [at1('n1', '2026-10-24T12:00:00Z'), at1('n3', '2026-10-24T10:00:00Z')];
+    // Entre os dois.
+    const between = at1('n2', '2026-10-24T11:00:00Z', { status: 'lido' });
+    expect(ids(withOpenedFeedback(listed, new Map([[between.id, between]])))).toEqual(['n1', 'n2', 'n3']);
+    // Mais novo que todos vai primeiro; mais antigo que todos, por último.
+    const newer = at1('n0', '2026-10-24T13:00:00Z');
+    const older = at1('n4', '2026-10-24T09:00:00Z');
+    const kept = new Map([
+      [older.id, older],
+      [newer.id, newer],
+    ]);
+    expect(ids(withOpenedFeedback(listed, kept))).toEqual(['n0', 'n1', 'n3', 'n4']);
+    // No mesmo segundo de um da lista, a ordem do id, como o servidor.
+    const tieLow = at1('n2', '2026-10-24T10:00:00Z');
+    const tieHigh = at1('n9', '2026-10-24T10:00:00Z');
+    expect(ids(withOpenedFeedback(listed, new Map([[tieLow.id, tieLow]])))).toEqual(['n1', 'n3', 'n2']);
+    expect(ids(withOpenedFeedback(listed, new Map([[tieHigh.id, tieHigh]])))).toEqual(['n1', 'n9', 'n3']);
+  });
+
+  it('um recado que está na lista e guardado fica uma vez só, como o servidor mandou', () => {
+    const fromServer = at1('n1', '2026-10-24T12:00:00Z', { status: 'resolvido', note: 'Feito' });
+    const listed = [fromServer, at1('n3', '2026-10-24T10:00:00Z')];
+    const old = at1('n1', '2026-10-24T12:00:00Z', { status: 'novo' });
+    const out = withOpenedFeedback(listed, new Map([[old.id, old]]));
+    expect(ids(out)).toEqual(['n1', 'n3']);
+    expect(out[0]).toBe(fromServer);
+  });
+
+  it('sem nenhum guardado de fora, a própria lista', () => {
+    const listed = [at1('n1', '2026-10-24T12:00:00Z')];
+    expect(withOpenedFeedback(listed, new Map())).toBe(listed);
+    expect(withOpenedFeedback(listed, new Map([[listed[0].id, listed[0]]]))).toBe(listed);
+    expect(withOpenedFeedback([], new Map())).toEqual([]);
   });
 });
 
