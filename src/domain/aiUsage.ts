@@ -4,7 +4,8 @@
 // 'finance' só vem para quem tem o consultor financeiro (beta) na casa aberta.
 export type AiKind = 'chat' | 'photo' | 'menu' | 'nfce' | 'finance';
 
-const LABELS: Record<AiKind, string> = {
+/** O nome de cada uso da IA, como a aba Família e o painel do app mostram. */
+export const AI_KIND_LABELS: Record<AiKind, string> = {
   chat: 'Mensagens com o Nuke',
   photo: 'Leituras de foto (notas e saúde)',
   menu: 'Cardápios montados pelo Nuke',
@@ -24,12 +25,12 @@ export interface AiUsageRow {
 
 export function aiUsageRows(rows: { kind: string; used: number; lim: number }[]): AiUsageRow[] {
   return rows
-    .filter((r): r is { kind: AiKind; used: number; lim: number } => r.kind in LABELS)
+    .filter((r): r is { kind: AiKind; used: number; lim: number } => r.kind in AI_KIND_LABELS)
     .map((r) => {
       const ratio = r.lim > 0 ? Math.min(1, r.used / r.lim) : 1;
       return {
         kind: r.kind,
-        label: LABELS[r.kind],
+        label: AI_KIND_LABELS[r.kind],
         used: r.used,
         limit: r.lim,
         ratio,
