@@ -13,6 +13,7 @@ import { CHOSEN_STORE_MS } from '@/domain/listEstimate';
 import type { MarketTrip } from '@/domain/marketTrips';
 import { CartPantryModal } from '@/features/CartPantryModal';
 import { ListEstimateCard } from '@/features/ListEstimateCard';
+import { forgetAddedItems, rememberAdded } from '@/lib/addedItems';
 import { PasteListModal } from '@/features/PasteListModal';
 import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
 import type { LatestPrice, PantryItem, Product, ShoppingListItem } from '@/lib/types';
@@ -76,8 +77,11 @@ const mockQueue = {
   reopen: jest.fn(),
   rename: jest.fn(),
 };
-/** Os itens que "este aparelho" pôs (data/market, addedHere). */
-const mockAddedHere = new Set<string>();
+/**
+ * A fila do limpar: guarda as respostas até "a conexão voltar" (deliverClears), como a fila de verdade faz com o
+ * limpar feito sem internet.
+ */
+const mockClearQueue: { onSuccess?: () => void; onError?: (error: Error) => void }[] = [];
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
@@ -87,12 +91,16 @@ jest.mock('@/data/market', () => {
     loadListLinks: jest.fn(),
     newToggleToken: () => 'selo',
     removalWaitsForQueue: () => false,
-    addedHere: () => mockAddedHere,
     useAddListItem: () => ({ add: mockQueue.add }),
     useArchiveList: mutation,
     useReopenList: () => ({ mutate: mockQueue.reopen, isPending: false }),
     useRenameList: () => ({ mutate: mockQueue.rename, isPending: false }),
-    useClearCheckedItems: () => ({ mutate: mockQueue.clear }),
+    useClearCheckedItems: () => ({
+      mutate: (input: unknown, options: { onSuccess?: () => void; onError?: (error: Error) => void }) => {
+        mockQueue.clear(input, options);
+        mockClearQueue.push(options);
+      },
+    }),
     useEditListItem: () => ({ mutate: mockQueue.edit, mutateAsync: jest.fn(), isPending: false }),
     useRemoveListItem: () => ({ remove: jest.fn() }),
     useRemovePendingListItem: () => ({ mutate: jest.fn(), mutateAsync: mockQueue.removePending, isPending: false }),
@@ -275,7 +283,8 @@ beforeEach(() => {
   mockTrips.list = [];
   mockTrips.online = true;
   mockTrips.end.mockReset();
-  mockAddedHere.clear();
+  forgetAddedItems();
+  mockClearQueue.length = 0;
   mockSeen.cartPantry = undefined;
   mockBarcode.available = false;
   mockBarcode.busy = false;
@@ -1151,6 +1160,33 @@ describe('renomear e reabrir a lista', () => {
     expect(mockQueue.rename).toHaveBeenCalledWith('Feira do sábado', expect.anything());
   });
 
+  it('a lista arquivada é só para ver: sem pôr item, sem limpar, sem marcar nem editar, com o aviso', async () => {
+    mockQueries.list = loaded({ id: 'l1', name: 'Churrasco', kind: 'mercado', archived_at: '2026-10-20T12:00:00Z', created_at: '2026-10-01T12:00:00Z' });
+    mockQueries.items = loaded([listItem('a', 'Arroz', null), { ...listItem('b', 'Carvão', null), checked_at: minutesAgo(60) }]);
+    const page = await mount();
+    expect(page).toContain('Esta lista está arquivada. Reabra para mexer nela.');
+    expect(renderer!.root.findAllByType(TextField).filter((field) => field.props.placeholder === 'Adicionar item')).toHaveLength(0);
+    expect(button('Colar lista')).toBeUndefined();
+    expect(button('Limpar')).toBeUndefined();
+    const grids = renderer!.root.findAllByType(ShoppingGrid);
+    expect(grids.length).toBe(2);
+    expect(grids.every((grid) => grid.props.readOnly === true)).toBe(true);
+    expect(grids.find((grid) => grid.props.inCart)!.props.onStore).toBeUndefined();
+    expect(page).not.toContain('Toque num item para pôr no carrinho');
+    // Ver ainda dá: os itens, mandar a lista, renomear e reabrir.
+    expect(button('Mandar a lista')).toBeDefined();
+    expect(button('Renomear lista')).toBeDefined();
+    expect(button('Reabrir lista')).toBeDefined();
+  });
+
+  it('a lista aberta continua com tudo', async () => {
+    mockQueries.items = loaded([listItem('a', 'Arroz', null), { ...listItem('b', 'Carvão', null), checked_at: minutesAgo(60) }]);
+    const page = await mount();
+    expect(page).not.toContain('Esta lista está arquivada');
+    expect(button('Limpar')).toBeDefined();
+    expect(renderer!.root.findAllByType(ShoppingGrid).every((grid) => !grid.props.readOnly)).toBe(true);
+  });
+
   it('a lista arquivada mostra "Reabrir lista" no lugar de "Arquivar lista"', async () => {
     mockQueries.list = loaded({ id: 'l1', name: 'Churrasco', kind: 'mercado', archived_at: '2026-10-20T12:00:00Z', created_at: '2026-10-01T12:00:00Z' });
     await mount();
@@ -1168,10 +1204,17 @@ describe('limpar o carrinho com uma ida ao mercado aberta', () => {
 
   /** "Limpar", a confirmação do que vai para a despensa e a resposta do servidor. */
   async function clearCart() {
+    await tapClear();
+    await deliverClears();
+  }
+  /** O toque em "Limpar" e a confirmação do que vai para a despensa. */
+  async function tapClear() {
     await act(async () => button('Limpar')!.props.onPress());
     await act(async () => (mockSeen.cartPantry!.onConfirm as (rows: unknown[]) => void)([]));
-    const [, options] = mockQueue.clear.mock.calls.at(-1) as [unknown, { onSuccess: () => void }];
-    await act(async () => options.onSuccess());
+  }
+  /** A fila manda o que esperava e o servidor responde que deu certo. */
+  async function deliverClears() {
+    for (const options of mockClearQueue.splice(0)) await act(async () => options.onSuccess?.());
   }
 
   it('com a própria ida nesta lista, pergunta e encerra', async () => {
@@ -1214,11 +1257,26 @@ describe('limpar o carrinho com uma ida ao mercado aberta', () => {
     expect(askYesNo).not.toHaveBeenCalled();
   });
 
-  it('sem internet, não pergunta', async () => {
+  it('limpar sem internet: o limpar espera na fila e, quando a conexão volta e ele sai, não pergunta do nada', async () => {
     mockTrips.list = [liveTrip()];
     mockTrips.online = false;
     await mount();
-    await clearCart();
+    await tapClear();
+    // Ainda na fila: nada respondeu.
+    expect(mockClearQueue).toHaveLength(1);
+    mockTrips.online = true;
+    await deliverClears();
+    expect(askYesNo).not.toHaveBeenCalled();
+  });
+
+  it('a resposta que demora mais de 30 s (a fila andando devagar) também não pergunta', async () => {
+    mockTrips.list = [liveTrip()];
+    await mount();
+    await tapClear();
+    const later = Date.now() + 31_000;
+    const spy = jest.spyOn(Date, 'now').mockReturnValue(later);
+    await deliverClears();
+    spy.mockRestore();
     expect(askYesNo).not.toHaveBeenCalled();
   });
 
@@ -1228,8 +1286,7 @@ describe('limpar o carrinho com uma ida ao mercado aberta', () => {
     const cart = renderer!.root.findAllByType(ShoppingGrid).find((grid) => grid.props.inCart)!;
     await act(async () => cart.props.onStore(mockQueries.items.data && (mockQueries.items.data as ShoppingListItem[])[0]));
     await act(async () => (mockSeen.cartPantry!.onConfirm as (rows: unknown[]) => void)([]));
-    const [, options] = mockQueue.clear.mock.calls.at(-1) as [unknown, { onSuccess: () => void }];
-    await act(async () => options.onSuccess());
+    await deliverClears();
     expect(askYesNo).not.toHaveBeenCalled();
   });
 });
@@ -1241,7 +1298,7 @@ describe('o selo "Novo" durante a ida ao mercado', () => {
       { ...listItem('depois', 'Feijão', null), created_at: minutesAgo(10) },
       { ...listItem('daqui', 'Café', null), created_at: minutesAgo(5) },
     ]);
-    mockAddedHere.add('daqui');
+    rememberAdded('l1', ['daqui']);
   });
 
   it('para quem avisou, só o que a casa pôs depois do aviso', async () => {
@@ -1286,6 +1343,17 @@ describe('"Onde estou" guardado no aparelho', () => {
     await act(async () => (mockSeen.cartPantry!.onConfirm as (rows: unknown[]) => void)([]));
     expect(estimateCard().props.storeId).toBeNull();
     expect(await AsyncStorage.getItem('kotii:store-choice:l1')).toBeNull();
+  });
+
+  it('o limpar que falha devolve o mercado escolhido', async () => {
+    await mount();
+    await act(async () => estimateCard().props.onChangeStore('s1'));
+    await act(async () => button('Limpar')!.props.onPress());
+    await act(async () => (mockSeen.cartPantry!.onConfirm as (rows: unknown[]) => void)([]));
+    expect(estimateCard().props.storeId).toBeNull();
+    const [options] = mockClearQueue.splice(0);
+    await act(async () => options.onError?.(new Error('A lista não existe mais.')));
+    expect(estimateCard().props.storeId).toBe('s1');
   });
 
   it('a escolha de mais de 6 horas atrás já não vale', async () => {

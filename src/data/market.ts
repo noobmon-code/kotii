@@ -73,6 +73,16 @@ export function unlessListQueueBusy<T>(fetch: (context: QueryFunctionContext) =>
 
 type ListSummary = ShoppingList & ListSummaryCounts;
 
+/**
+ * Quem guarda os ids dos itens que este aparelho pôs em cada lista (lib/addedItems, ligado em lib/queryClient):
+ * na ida ao mercado, eles não ganham o selo "Novo". Fica de fora daqui, que não lê o armazenamento do aparelho.
+ */
+let rememberAdded: (listId: string, ids: string[]) => void = () => undefined;
+
+export function setAddedItemsRecorder(record: (listId: string, ids: string[]) => void) {
+  rememberAdded = record;
+}
+
 /** As idas ao mercado (data/marketTrips, que não entra aqui: ela traz os avisos do aparelho junto). */
 const MARKET_TRIPS_KEY = 'marketTrips';
 
@@ -460,16 +470,6 @@ async function showAdded(queryClient: QueryClient, input: AddItemInput) {
   );
 }
 
-/**
- * Os itens que este aparelho pôs nas listas desde que o app abriu: na ida ao mercado, o selo "Novo" é só para o
- * que a casa pôs depois (domain/marketTrips, newDuringTrip). Só na memória: são ids, e o selo some com a ida.
- */
-const added = new Set<string>();
-
-export function addedHere(): ReadonlySet<string> {
-  return added;
-}
-
 export function useAddListItem(listId: string) {
   const queryClient = useQueryClient();
   const mutation = useMutation<unknown, Error, AddItemInput>({
@@ -483,7 +483,8 @@ export function useAddListItem(listId: string) {
      */
     add: (item: NewListItem, userId: string, options?: QueuedCallbacks) => {
       const id = newToggleToken();
-      added.add(id);
+      // Na ida ao mercado, o que este aparelho pôs não ganha o selo "Novo" (lib/addedItems).
+      rememberAdded(listId, [id]);
       settle(mutation.mutateAsync({ ...item, id, listId, userId, token: newToggleToken() }), options);
     },
   };
@@ -568,11 +569,14 @@ export function useAddItemsToList() {
         toAdd = items.filter((item) => !pendingSameItem(item, pending));
       }
       if (toAdd.length) {
+        // O id sai do aparelho: o que ele pôs não ganha o selo "Novo" na ida ao mercado (lib/addedItems).
+        const ids = toAdd.map(() => newToggleToken());
         // O produto de um item pode ter sido juntado com outro em outro aparelho (withFreshProducts).
         await withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
           unwrap(
             await supabase.from('shopping_list_items').insert(
-              toAdd.map((item) => ({
+              toAdd.map((item, index) => ({
+                id: ids[index],
                 list_id: id,
                 name: item.name,
                 category: item.category,
@@ -583,6 +587,7 @@ export function useAddItemsToList() {
             ),
           ),
         );
+        rememberAdded(id, ids);
       }
       return { id };
     },
@@ -629,10 +634,13 @@ async function addItemOnce(queryClient: QueryClient, list: { id: string; name: s
     await supabase.from('shopping_list_items').select('name, category').eq('list_id', list.id).is('checked_at', null),
   ) as { name: string; category?: string | null }[];
   if (pendingSameItem(item, pending)) return { ...list, added: false };
+  // O id sai do aparelho: o que ele pôs não ganha o selo "Novo" na ida ao mercado (lib/addedItems).
+  const id = newToggleToken();
   // O produto do item (o da despensa, na lista de mercado) pode ter sido juntado com outro em outro aparelho (withFreshProducts).
   await withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
     unwrap(
       await supabase.from('shopping_list_items').insert({
+        id,
         list_id: list.id,
         name: item.name,
         category: item.category,
@@ -642,6 +650,7 @@ async function addItemOnce(queryClient: QueryClient, list: { id: string; name: s
       }),
     ),
   );
+  rememberAdded(list.id, [id]);
   return { ...list, added: true };
 }
 

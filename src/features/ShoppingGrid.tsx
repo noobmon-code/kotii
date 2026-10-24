@@ -42,9 +42,12 @@ export function ShoppingGrid({
   onToggle,
   onOpen,
   onStore,
+  readOnly = false,
 }: {
   items: ShoppingListItem[];
   inCart?: boolean;
+  /** Só para ver (a lista arquivada): o toque não marca nem abre os detalhes. */
+  readOnly?: boolean;
   photos: ItemPhotos;
   /** Preço estimado e "na despensa", por item. */
   hints?: ReadonlyMap<string, ItemHint>;
@@ -69,6 +72,7 @@ export function ShoppingGrid({
               photoUrl={item.photo_path ? photos.signed?.[item.photo_path] : undefined}
               pendingKey={photos.pending.get(item.id)}
               hint={hints?.get(item.id)}
+              readOnly={readOnly}
               onPress={() => onToggle(item)}
               onLongPress={() => onOpen(item)}
               onStore={onStore ? () => onStore(item) : undefined}
@@ -86,11 +90,13 @@ function Tile({
   photoUrl,
   pendingKey,
   hint,
+  readOnly,
   onPress,
   onLongPress,
   onStore,
 }: {
   item: ShoppingListItem;
+  readOnly: boolean;
   width: number;
   inCart: boolean;
   photoUrl?: string;
@@ -124,9 +130,10 @@ function Tile({
       accessibilityLabel={[item.name, quantity, hint?.cost, isNew ? 'novo' : null, badge?.label, inPantry ? 'na despensa' : null, notes]
         .filter(Boolean)
         .join(', ')}
-      accessibilityHint={inCart ? 'Toque para devolver à lista' : 'Toque para pôr no carrinho'}
-      accessibilityActions={[{ name: 'longpress', label: 'Detalhes do item' }]}
-      onAccessibilityAction={(e) => e.nativeEvent.actionName === 'longpress' && onLongPress()}
+      accessibilityHint={readOnly ? undefined : inCart ? 'Toque para devolver à lista' : 'Toque para pôr no carrinho'}
+      accessibilityActions={readOnly ? undefined : [{ name: 'longpress', label: 'Detalhes do item' }]}
+      onAccessibilityAction={(e) => !readOnly && e.nativeEvent.actionName === 'longpress' && onLongPress()}
+      disabled={readOnly}
       onPress={onPress}
       onLongPress={onLongPress}
       style={({ pressed }) => [
@@ -163,7 +170,7 @@ function Tile({
         </Text>
       ) : null}
       {/* Pedido da casa depois que a pessoa saiu para as compras. */}
-      {isNew ? <Badge label="Novo" tone="info" /> : null}
+      {isNew ? <Badge label="Novo" tone="primary" /> : null}
       {badge ? <Badge label={badge.label} tone={badge.tone} /> : null}
       {/* O que o app sabe, não um fato sobre a casa; neutro para não parecer o selo de promoção. */}
       {inPantry ? <Badge label="Na despensa" /> : null}

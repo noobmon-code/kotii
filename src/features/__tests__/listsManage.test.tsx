@@ -19,6 +19,8 @@ type Row = ShoppingList;
 const mockDb = {
   lists: [] as Row[],
   updates: [] as { values: Record<string, unknown>; id: string }[],
+  /** O que a busca das arquivadas pediu: a ordem e o limite. */
+  archivedReads: [] as { order: unknown[]; limit: number | null }[],
 };
 jest.mock('@/lib/supabase', () => {
   const table = (name: string) => {
@@ -26,6 +28,7 @@ jest.mock('@/lib/supabase', () => {
     let id = '';
     let archived: 'open' | 'archived' | null = null;
     let limit = Infinity;
+    let order: unknown[] = [];
     const run = async () => {
       if (name !== 'shopping_lists') return { data: [], error: null };
       if (update) {
@@ -33,6 +36,7 @@ jest.mock('@/lib/supabase', () => {
         for (const list of mockDb.lists) if (list.id === id) Object.assign(list, update);
         return { data: null, error: null };
       }
+      if (archived === 'archived') mockDb.archivedReads.push({ order, limit: Number.isFinite(limit) ? limit : null });
       const rows = mockDb.lists
         .filter((l) => (archived === 'open' ? !l.archived_at : archived === 'archived' ? Boolean(l.archived_at) : true))
         .sort((a, b) =>
@@ -44,7 +48,10 @@ jest.mock('@/lib/supabase', () => {
     };
     const builder: Record<string, unknown> = {
       select: () => builder,
-      order: () => builder,
+      order: (...args: unknown[]) => {
+        order = args;
+        return builder;
+      },
       in: () => builder,
       update: (values: Record<string, unknown>) => {
         update = values;
@@ -131,6 +138,7 @@ beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { gcTime: Infinity, networkMode: 'always' } } });
   mockDb.lists = [];
   mockDb.updates = [];
+  mockDb.archivedReads = [];
   closed = 0;
   onlineManager.setOnline(true);
   jest.mocked(notify).mockReset();
@@ -205,6 +213,14 @@ describe('as listas arquivadas no painel das listas', () => {
     expect(button('Listas arquivadas')).toBeUndefined();
   });
 
+  it('todas arquivadas: "Nenhuma lista aberta", e não "Nenhuma lista ainda"', async () => {
+    mockDb.lists = [list('a1', 'Churrasco', '2026-10-10T12:00:00Z')];
+    await render(<ShoppingListsPanel />);
+    expect(page()).toContain('Nenhuma lista aberta');
+    expect(page()).not.toContain('Nenhuma lista ainda');
+    expect(button('Listas arquivadas')).toBeDefined();
+  });
+
   it('mostra as arquivadas, as mais novas primeiro, e "Reabrir" tira o archived_at e a devolve às listas', async () => {
     mockDb.lists = [
       list('l1', 'Mercado'),
@@ -219,6 +235,8 @@ describe('as listas arquivadas no painel das listas', () => {
     expect(text.indexOf('Festa junina')).toBeGreaterThan(-1);
     expect(text.indexOf('Festa junina')).toBeLessThan(text.indexOf('Churrasco'));
     expect(text).toContain('Arquivada em 20 out');
+    // O servidor manda as arquivadas por último primeiro, no máximo 20.
+    expect(mockDb.archivedReads[0]).toEqual({ order: ['archived_at', { ascending: false }], limit: 20 });
 
     const reopen = renderer!.root.findAllByType(Button).find((entry) => entry.props.accessibilityLabel === 'Reabrir a lista Churrasco')!;
     await act(async () => reopen.props.onPress());

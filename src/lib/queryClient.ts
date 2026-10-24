@@ -10,11 +10,12 @@ import * as Network from 'expo-network';
 import { AppState, Platform } from 'react-native';
 
 import { forgetPendingPhotos, inPhotoQueue, registerListPhotoMutations } from '@/data/listPhotos';
-import { inListQueue, registerListMutations } from '@/data/market';
+import { inListQueue, registerListMutations, setAddedItemsRecorder } from '@/data/market';
 import { notify } from '@/ui/dialogs';
 
 import { isHouseholdAccessError, leftHousehold, markRemovedFromHousehold, wroteNoRows } from './accessErrors';
 import { getActiveHousehold } from './activeHousehold';
+import { forgetAddedItems, rememberAdded } from './addedItems';
 import { type CacheWriteFailure, createCachePersister, createWriteFailureWarner, resumeInFlight } from './cachePersister';
 import { forgetStoreChoices } from './storeChoice';
 import { errorMessage } from './supabase';
@@ -131,6 +132,8 @@ registerListMutations(queryClient, {
   onAddDropped: (input, error) => notify('Item não foi para a lista', `"${input.name}" não entrou na lista: ${errorMessage(error)}`),
 });
 registerListPhotoMutations(queryClient);
+// Os itens que este aparelho põe nas listas ficam guardados nele (o selo "Novo" da ida ao mercado não vale para eles).
+setAddedItemsRecorder(rememberAdded);
 
 /** Marcações, edições, limpar e fotos da lista: o que espera internet guardado no aparelho. */
 const inSavedQueue = (mutation: Parameters<typeof inListQueue>[0]) => inListQueue(mutation) || inPhotoQueue(mutation);
@@ -326,8 +329,9 @@ export function forgetCache() {
   // Descarta também a gravação que esperava o intervalo.
   Promise.resolve(persister.removeClient()).catch(() => undefined);
   forgetPendingPhotos().catch(() => undefined);
-  // O mercado de "Onde estou" de cada lista era da casa de quem saiu.
+  // O mercado de "Onde estou" e os itens que este aparelho pôs em cada lista eram da casa de quem saiu.
   forgetStoreChoices();
+  forgetAddedItems();
 }
 
 /**

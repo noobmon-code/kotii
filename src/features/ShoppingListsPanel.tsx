@@ -101,11 +101,16 @@ export function ShoppingListsPanel() {
       ) : null}
 
       {lists.data.length === 0 && !creating ? (
-        <EmptyState
-          icon="cart-outline"
-          title="Nenhuma lista ainda"
-          message="Crie uma lista e toda a família vê e marca os itens em tempo real."
-        />
+        // Todas arquivadas: a casa já teve listas.
+        archived.data?.length ? (
+          <EmptyState icon="cart-outline" title="Nenhuma lista aberta" message="Crie uma lista nova ou reabra uma das arquivadas." />
+        ) : (
+          <EmptyState
+            icon="cart-outline"
+            title="Nenhuma lista ainda"
+            message="Crie uma lista e toda a família vê e marca os itens em tempo real."
+          />
+        )
       ) : lists.data.length ? (
         <Section title="Suas listas">
           <ListCard>

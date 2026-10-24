@@ -52,6 +52,15 @@ export function chooseStore(listId: string, storeId: string | null, now: number 
 }
 
 /**
+ * Devolve a escolha de antes (o "Limpar" que a tirou não deu certo), a menos que a pessoa já tenha escolhido
+ * outro mercado nesse meio-tempo.
+ */
+export function restoreStoreChoice(listId: string, choice: StoreChoice | null) {
+  if (!choice || known.get(listId)) return;
+  chooseStore(listId, choice.storeId, choice.at);
+}
+
+/**
  * Saiu da conta: as escolhas de todas as listas saem da memória e do aparelho (as listas eram da casa de quem
  * estava aqui).
  */
