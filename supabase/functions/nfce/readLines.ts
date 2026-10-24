@@ -5,7 +5,7 @@
 // (src/domain/__tests__/nfceReadLines.test.ts) falha se os dois divergirem.
 // O código do produto (store_code) fica só na linha da casa, para ela aprender
 // o produto. Da leitura do servidor e dos preços comuns só vai o código de
-// barras (gtin), que quem chama já tirou do código da linha (gtinKey, em
+// barras (gtin), que quem chama já tirou do código da linha (sharedGtin, em
 // read.ts): o código interno do mercado nunca vai.
 // Sem import: o teste do app lê este arquivo direto.
 
@@ -15,7 +15,7 @@ interface SefazItem {
   unit: string;
   unitPrice: number;
   totalPrice: number;
-  /** O código de barras do código da linha (os 14 dígitos de gtinKey), ou null. */
+  /** O código de barras do código da linha (os 14 dígitos de sharedGtin), ou null. */
   gtin?: string | null;
 }
 

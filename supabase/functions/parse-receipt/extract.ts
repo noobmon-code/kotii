@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { CATEGORY_KEYS } from '../_shared/categories.ts';
 import { cnpjFromAccessKey, isValidAccessKey, isValidCnpj } from '../_shared/fiscalIds.ts';
-import { gtinKey } from '../_shared/gtin.ts';
+import { sharedGtin } from '../_shared/gtin.ts';
 import type { ReadLine } from '../_shared/receiptRead.ts';
 import { storeCodeKey } from '../_shared/storeCode.ts';
 
@@ -257,7 +257,8 @@ const SUM_TOLERANCE_CENTS = 5;
  * leitura do servidor: ele só serve ao casamento com a lista da casa. O código
  * do produto vai pela chave do banco (storeCodeKey) para a linha (o produto que
  * ele já ensinou entra depois, em withStoreCodes); para a leitura do servidor
- * vai só quando é um código de barras (gtinKey), nunca o código interno.
+ * vai só quando é um código de barras de 13 ou 14 dígitos (sharedGtin), nunca
+ * o código interno.
  */
 export function cleanReceipt(
   extracted: ExtractedReceipt,
@@ -294,7 +295,7 @@ export function cleanReceipt(
     // Sem preço unitário nem quantidade lidos, o preço é o total sobre 1, que a nota não imprimiu;
     // sem valor nenhum (preço 0), não há o que a leitura guardar. Do código, só o de barras vai para a leitura.
     if (unitPrice > 0 && (readPrice != null || (it.quantity != null && it.quantity > 0))) {
-      const gtin = gtinKey(storeCode);
+      const gtin = sharedGtin(storeCode);
       readLines.push({ description: raw, unit: it.unit, unit_price: unitPrice, ...(gtin ? { gtin } : {}) });
     }
     const suggested = it.matched_product_id && catalogIds.has(it.matched_product_id) ? it.matched_product_id : null;

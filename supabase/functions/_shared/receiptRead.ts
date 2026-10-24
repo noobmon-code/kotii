@@ -4,7 +4,8 @@
 // para os preços de outras casas: na confirmação, o gatilho do banco só
 // compartilha a linha da nota igual (descrição, unidade e preço unitário) a uma
 // linha daqui, com o mercado, a chave e o dia daqui. A linha leva também o
-// código de barras do produto (gtin), quando o código dela é um: ele vai junto
+// código de barras do produto (gtin), quando o código dela é um de 13 ou 14
+// dígitos (sharedGtin): ele vai junto
 // para a base comum e acha o mesmo produto escrito de outro jeito em outra rede.
 //
 // Gravar a leitura nunca atrapalha a leitura da nota: qualquer erro (o banco
@@ -14,7 +15,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { isValidAccessKey, isValidCnpj } from './fiscalIds.ts';
-import { gtinKey } from './gtin.ts';
+import { sharedGtin } from './gtin.ts';
 
 export interface ReadLine {
   /** Descrição como impressa, sem espaços nas pontas nem repetidos. */
@@ -24,8 +25,9 @@ export interface ReadLine {
   /** Preço unitário como no rascunho (4 casas). */
   unit_price: number;
   /**
-   * O código de barras do produto: os 14 dígitos de gtinKey, quando o código
-   * da linha é um. Nunca o código interno do mercado. Sem ele, o campo não vai.
+   * O código de barras do produto: os 14 dígitos de sharedGtin, quando o
+   * código da linha é um de 13 ou 14 dígitos. Nunca o código interno do
+   * mercado. Sem ele, o campo não vai.
    */
   gtin?: string;
 }
@@ -88,9 +90,9 @@ export function receiptRead(input: {
         description: line.description.trim().replace(/\s+/g, ' ').slice(0, MAX_DESCRIPTION).trim(),
         unit: line.unit,
         unit_price: line.unit_price,
-        // Só os 14 dígitos que já passam na regra do banco. Outra coisa (o código interno, o verificador errado,
-        // o código sem os zeros à frente) deixa a linha sem ele, e ela vale do mesmo jeito.
-        ...(typeof line.gtin === 'string' && gtinKey(line.gtin) === line.gtin ? { gtin: line.gtin } : {}),
+        // Só os 14 dígitos que já passam em sharedGtin. Outra coisa (o código interno, o de 8 ou 12 dígitos, o
+        // verificador errado, o código sem os zeros à frente) deixa a linha sem ele, e ela vale do mesmo jeito.
+        ...(typeof line.gtin === 'string' && sharedGtin(line.gtin) === line.gtin ? { gtin: line.gtin } : {}),
       }))
       .filter((line) => line.description && Number.isFinite(line.unit_price))
       .slice(0, MAX_READ_LINES),

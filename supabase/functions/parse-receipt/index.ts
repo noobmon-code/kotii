@@ -20,7 +20,8 @@
 // E o código do produto impresso na linha, em receipt_items.store_code: a nota
 // confirmada o ensina à casa, e o produto que ele já ensinou (match_store_codes)
 // vence o apelido e a sugestão da IA. Para receipt_reads (e os preços
-// compartilhados) vai só o código de barras (gtin), nunca o código interno.
+// compartilhados) vai só o código de barras de 13 ou 14 dígitos (gtin), nunca
+// o código interno.
 // Secrets: ANTHROPIC_API_KEY ou OPENROUTER_API_KEY (uma das duas);
 // RECEIPT_MODEL e RECEIPT_PROVIDER ("anthropic" | "openrouter") opcionais.
 // Com a chave da OpenRouter, ela é usada (padrão: DeepSeek V4.1 Flash).

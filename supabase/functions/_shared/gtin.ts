@@ -2,9 +2,9 @@
 // gtin_key (supabase/migrations/20261021150000_store_codes.sql). Os 14 dígitos
 // do código de 8, 12, 13 ou 14 dígitos com o verificador certo, fora das faixas
 // de uso restrito (o código da balança, o interno do mercado, cupons), ou null.
-// É o que a leitura do servidor leva de cada linha (receipt_reads) e o que vai
-// para os preços compartilhados: o número impresso na embalagem, igual em toda
-// loja. O código interno do mercado nunca passa por aqui. Espelho de gtinKey em
+// A leitura do servidor (receipt_reads) leva de cada linha só o de 13 ou 14
+// dígitos (sharedGtin), que vai para os preços compartilhados: o número
+// impresso na embalagem, igual em toda loja. Espelho de gtinKey em
 // src/domain/barcode.ts; um teste do app (src/domain/__tests__/barcode.test.ts)
 // falha se os dois divergirem.
 // Sem import: o teste do app lê este arquivo direto.
@@ -22,4 +22,15 @@ export function gtinKey(code: string | null | undefined): string | null {
   // GTIN-8 (seis zeros à frente): restrito quando o primeiro dos oito é 0 ou 2.
   if (g.startsWith('000000')) return g[6] === '0' || g[6] === '2' ? null : g;
   return RESTRICTED.some((prefix) => g.startsWith(prefix)) ? null : g;
+}
+
+/**
+ * O código de barras que vai para os preços compartilhados: o de 13 ou 14 dígitos (os 14 de gtinKey sem "00" à
+ * frente). O de 8 ou 12 dígitos fica de fora: o código interno do mercado com esse tamanho passa na conta do
+ * verificador em 1 de cada 10, e outra casa veria o preço de outro produto. O mesmo filtro está no gatilho
+ * (share_receipt_prices). A casa continua aprendendo os de 8 e 12 (product_barcodes, só dela).
+ */
+export function sharedGtin(code: string | null | undefined): string | null {
+  const key = gtinKey(code);
+  return key && !key.startsWith('00') ? key : null;
 }

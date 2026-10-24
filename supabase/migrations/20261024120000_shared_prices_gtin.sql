@@ -19,7 +19,11 @@
 --    20261021150000_store_codes.sql), fora das faixas de uso restrito: o código
 --    da balança (com o peso ou o preço) e o código interno do mercado nunca
 --    entram, nem o cProd que não é GTIN (ele continua só na linha da casa,
---    receipt_items.store_code).
+--    receipt_items.store_code). E só o impresso com 13 ou 14 dígitos (os 14
+--    sem "00" à frente): o código interno de 8 ou 12 dígitos passa na conta do
+--    verificador em 1 de cada 10, e daria a outra casa o preço de outro
+--    produto. Os de 8 e 12 dígitos de verdade ficam de fora junto; a casa
+--    continua os aprendendo (product_barcodes, só dela).
 -- 2. A chave primária NÃO muda (mercado, item, unidade, dia): o GTIN é uma
 --    coluna da linha, não outra linha. Duas casas que compram a mesma coisa no
 --    mesmo mercado e dia continuam caindo na mesma linha.
@@ -33,11 +37,14 @@
 -- linha comum leva o GTIN da linha lida que bate com ela (chave, unidade e
 -- preço). Duas linhas lidas que batem com GTINs diferentes: nenhum.
 --
--- Ordem de publicação: qualquer uma funciona. As funções novas com o banco de
--- antes: o gatilho antigo lê as linhas com colunas nomeadas
--- (jsonb_to_recordset) e ignora o campo gtin. O banco novo com as funções de
--- antes: as leituras vêm sem gtin, e a linha comum fica com null. O app não
--- muda: shared_latest_prices devolve as mesmas colunas.
+-- Ordem de publicação: a recomendada é esta migração, o merge (o app com os
+-- termos de 24/10/2026) e logo depois o deploy de nfce e parse-receipt, para o
+-- código só ir para a base comum com os termos novos no ar. Mas qualquer uma
+-- funciona. As funções novas com o banco de antes: o gatilho antigo lê as
+-- linhas com colunas nomeadas (jsonb_to_recordset) e ignora o campo gtin. O
+-- banco novo com as funções de antes: as leituras vêm sem gtin, e a linha
+-- comum fica com null. O app não muda: shared_latest_prices devolve as mesmas
+-- colunas.
 
 -- =============================================================================
 -- A coluna e o índice
@@ -87,6 +94,11 @@ declare
   v_pharmacy constant text := '(DROG|FARM|PHARM|MEDICAMENT|PANVEL)';
   v_pague_menos constant text := 'PAGUE ?MENOS';
   v_market constant text := '(SUPERMERC|MERCADO|ALIMENT)';
+  -- As leituras cujo código de barras vai para a base comum: a do QR code (a
+  -- página da Sefaz) e a da foto (lida pela IA), por escolha do dono em
+  -- 23/10/2026 (na PB, com o CAPTCHA da Sefaz, a foto é o único caminho). Só o
+  -- QR code seria array['qrcode'].
+  v_gtin_sources constant text[] := array['qrcode', 'ai'];
   v_read public.receipt_reads%rowtype;
   v_key text;
   v_name text;
@@ -175,12 +187,14 @@ begin
     -- A linha só entra quando a leitura do servidor tem uma linha com a mesma
     -- chave, a mesma unidade e o mesmo preço unitário. Uma leitura malformada
     -- dá erro aqui, e o bloco não grava nada. O GTIN é o da linha lida (o que
-    -- não passa na gtin_key não conta): o da casa (receipt_items.store_code)
-    -- ela pode ter mexido, o lido não.
+    -- não passa na gtin_key não conta, nem o de 8 ou 12 dígitos, como em
+    -- sharedGtin nas funções, para uma função de antes não o deixar passar): o
+    -- da casa (receipt_items.store_code) ela pode ter mexido, o lido não.
     insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on, gtin)
     with read_lines as materialized (
       select distinct public.normalize_alias(x.description) as item_key, x.unit, round(x.unit_price, 4) as unit_price,
-          case when public.gtin_key(x.gtin) = x.gtin then x.gtin end as gtin
+          case when v_read.source = any (v_gtin_sources) and x.gtin not like '00%' and public.gtin_key(x.gtin) = x.gtin
+            then x.gtin end as gtin
         from jsonb_to_recordset(v_read.lines) as x (description text, unit text, unit_price numeric, gtin text)
     )
     select v_read.store_cnpj, substr(v_key, 1, 2), v_name, l.item_key, l.unit, v_day, l.unit_price, v_today + 1,

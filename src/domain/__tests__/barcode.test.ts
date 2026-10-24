@@ -14,7 +14,7 @@ import {
   RESTRICTED_GTIN_PREFIXES,
   scannedListItem,
 } from '../barcode';
-import { gtinKey as serverGtinKey } from '../../../supabase/functions/_shared/gtin';
+import { gtinKey as serverGtinKey, sharedGtin } from '../../../supabase/functions/_shared/gtin';
 import { productSuggestions } from '../genericItem';
 import { normalizeSearch } from '../search';
 
@@ -102,6 +102,9 @@ describe('gtinKey', () => {
     for (const first of '0123456789') samples.push(withCheckDigit(`000000${first}123456`).slice(6));
     for (const sample of samples) {
       expect([sample, serverGtinKey(sample)]).toEqual([sample, gtinKey(sample)]);
+      // Para os preços comuns, só o de 13 ou 14 dígitos (o filtro "not like '00%'" do gatilho).
+      const key = gtinKey(sample);
+      expect([sample, sharedGtin(sample)]).toEqual([sample, key && !key.startsWith('00') ? key : null]);
     }
   });
 

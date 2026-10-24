@@ -1,6 +1,6 @@
 import { assertEquals } from '@std/assert';
 
-import { gtinKey } from './gtin.ts';
+import { gtinKey, sharedGtin } from './gtin.ts';
 
 // Os mesmos casos do teste do banco (gtin_key em scripts/db/test.sql).
 Deno.test('gtinKey: os 14 dígitos do código de barras válido, fora das faixas restritas', () => {
@@ -27,6 +27,27 @@ Deno.test('gtinKey: os 14 dígitos do código de barras válido, fora das faixas
   assertEquals(gtinKey(' 7891000100103'), null);
   assertEquals(gtinKey(null), null);
   assertEquals(gtinKey(undefined), null);
+});
+
+Deno.test('sharedGtin: para os preços compartilhados, só o código de 13 ou 14 dígitos', () => {
+  assertEquals(sharedGtin('7891000100103'), '07891000100103');
+  assertEquals(sharedGtin('07891000100103'), '07891000100103');
+  assertEquals(sharedGtin('17891000100100'), '17891000100100');
+  // O código interno de 8 ou 12 dígitos que passa na conta do verificador por acaso, e por isso também o GTIN-8
+  // e o UPC-A de verdade (a casa ainda os aprende: gtinKey os aceita).
+  assertEquals(gtinKey('12345670'), '00000012345670');
+  assertEquals(sharedGtin('12345670'), null);
+  assertEquals(sharedGtin('00000012345670'), null);
+  assertEquals(sharedGtin('96385074'), null);
+  assertEquals(sharedGtin('123456789012'), null);
+  assertEquals(sharedGtin('036000291452'), null);
+  assertEquals(sharedGtin('00036000291452'), null);
+  // O que gtinKey recusa continua fora.
+  assertEquals(sharedGtin('7891000100104'), null);
+  assertEquals(sharedGtin('2000000000008'), null);
+  assertEquals(sharedGtin('250474'), null);
+  assertEquals(sharedGtin(null), null);
+  assertEquals(sharedGtin(undefined), null);
 });
 
 Deno.test('gtinKey: a chave da chave é ela mesma', () => {

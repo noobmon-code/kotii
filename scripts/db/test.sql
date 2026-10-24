@@ -11975,14 +11975,19 @@ begin
     (r, 3, 'ARROZ SEM CODIGO 5KG', 'graos', 'un', 22.90, 22.90, '07891000100103'),
     (r, 4, 'FEIJAO METADE 1KG', 'graos', 'un', 8.00, 8.00, null),
     (r, 5, 'OLEO OBJETO 900ML', 'oleos', 'un', 7.00, 7.00, null),
-    (r, 6, 'MACARRAO NUMERO 500G', 'graos', 'un', 3.50, 3.50, null);
+    (r, 6, 'MACARRAO NUMERO 500G', 'graos', 'un', 3.50, 3.50, null),
+    -- Códigos de 8 e 12 dígitos que passam na gtin_key (o interno do mercado passa em 1 de cada 10): não vão.
+    (r, 7, 'QUEIJO CODIGO CURTO', 'laticinios', 'kg', 39.90, 39.90, '12345670'),
+    (r, 8, 'CAFE IMPORTADO 250G', 'cafe_cha', 'un', 29.90, 29.90, '036000291452');
   perform pg_temp.read_with_lines(r, $j$[
     {"description": "LT INTEG PIRACANJUBA 1L", "unit": "un", "unit_price": 5.49, "gtin": "07891000100103"},
-    {"description": "CAFE DUPLO 500G", "unit": "un", "unit_price": 15.90, "gtin": "00036000291452"},
-    {"description": "CAFE DUPLO 500G", "unit": "un", "unit_price": 15.90, "gtin": "00000096385074"},
+    {"description": "CAFE DUPLO 500G", "unit": "un", "unit_price": 15.90, "gtin": "17891000100100"},
+    {"description": "CAFE DUPLO 500G", "unit": "un", "unit_price": 15.90, "gtin": "07896005800010"},
     {"description": "ACUCAR UNIAO 1KG", "unit": "un", "unit_price": 4.99, "gtin": "07891000100104"},
     {"description": "ARROZ SEM CODIGO 5KG", "unit": "un", "unit_price": 22.90},
-    {"description": "FEIJAO METADE 1KG", "unit": "un", "unit_price": 8.00, "gtin": "00000096385074"},
+    {"description": "QUEIJO CODIGO CURTO", "unit": "kg", "unit_price": 39.90, "gtin": "00000012345670"},
+    {"description": "CAFE IMPORTADO 250G", "unit": "un", "unit_price": 29.90, "gtin": "00036000291452"},
+    {"description": "FEIJAO METADE 1KG", "unit": "un", "unit_price": 8.00, "gtin": "07896005800010"},
     {"description": "FEIJAO METADE 1KG", "unit": "un", "unit_price": 8.00},
     {"description": "OLEO OBJETO 900ML", "unit": "un", "unit_price": 7.00, "gtin": {"x": 1}},
     {"description": "MACARRAO NUMERO 500G", "unit": "un", "unit_price": 3.50, "gtin": 7891000100103}
@@ -11998,13 +12003,16 @@ begin
       'ACUCAR UNIAO 1KG -',
       'ARROZ SEM CODIGO 5KG -',
       'CAFE DUPLO 500G -',
-      'FEIJAO METADE 1KG 00000096385074',
+      'CAFE IMPORTADO 250G -',
+      'FEIJAO METADE 1KG 07896005800010',
       'LT INTEG PIRACANJUBA 1L 07891000100103',
       'MACARRAO NUMERO 500G -',
-      'OLEO OBJETO 900ML -'
+      'OLEO OBJETO 900ML -',
+      'QUEIJO CODIGO CURTO -'
     ],
     'the barcode comes from the server read (never from the household line); two different ones give none, a line read '
-    'without one does not count, and one that is not the 14 digits of gtin_key stays out while the line still goes';
+    'without one does not count, one that is not the 14 digits of gtin_key stays out while the line still goes, and '
+    'so does a code of 8 or 12 digits (a market''s own code may pass the check digit)';
 end $$;
 
 -- Mais notas do Gil no mesmo mercado e dia: a linha comum ainda não pode ser lida.
@@ -12098,6 +12106,12 @@ begin
   insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on, gtin) values
     -- No mercado da Bia, lida por foto (sem estado): só o código leva a ela.
     ('62000000000202', null, 'MERCADO DA BIA', 'LT INTEG PIRACANJUBA 1L', 'un', today - 2, 5.49, today - 1, g),
+    -- Também no mercado da Bia, pelo código: uma gravada hoje (a mais nova, que ninguém lê ainda) e uma de 91 dias
+    -- (noutra unidade, para não perder para a mais nova).
+    ('62000000000202', null, 'MERCADO DA BIA', 'LEITE PIRAC HOJE', 'un', today - 1, 4.30, today + 1, g),
+    ('62000000000202', null, 'MERCADO DA BIA', 'LEITE PIRAC ANTIGO', 'l', today - 91, 4.40, today - 90, g),
+    -- No mercado do Caco, sem estado: só o código ligado por ele leva a ela, nunca o da Bia.
+    ('62000000000606', null, 'MERCADO DO CACO', 'LEITE PIRAC INT 1L', 'un', today - 2, 5.09, today - 1, g),
     -- Em Z1, pelo código (5,29) e, no mesmo dia, pela descrição da Bia sem código (5,19): sai uma, a mais barata.
     ('62000000000303', '35', 'OUTRO MERCADO SP', 'LEITE PIRAC INT 1L', 'un', today - 3, 5.29, today - 2, g),
     ('62000000000303', '35', 'OUTRO MERCADO SP', 'LEITE PIRACANJUBA INTEGRAL', 'un', today - 3, 5.19, today - 2, null),
@@ -12148,8 +12162,9 @@ begin
   -- Lido pela câmera e ligado ao leite dele (o que a tela do código grava): é da casa, e conta.
   insert into public.product_barcodes (gtin, product_id) values ('07891000100103', current_setting('test.g_milk_c')::uuid);
   assert (select array_agg(store_cnpj || ' ' || unit_price || ' ' || mine order by store_cnpj) from public.shared_latest_prices())
-    = array['62000000000303 5.2900 false', '62000000000404 5.3900 false'],
-    'with the code linked: the rows of the state that carry it (not the one without a state, outside his stores)';
+    = array['62000000000303 5.2900 false', '62000000000404 5.3900 false', '62000000000606 5.0900 true'],
+    'with the code linked: the rows of the state that carry it (not the one without a state, outside his stores) '
+    'and the one in his own store';
 end $$;
 reset role;
 
