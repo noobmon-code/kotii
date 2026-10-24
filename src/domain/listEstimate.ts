@@ -526,6 +526,25 @@ export function currentStoreChoice(choice: StoreChoice | null | undefined, now: 
   return choice && now - choice.at < CHOSEN_STORE_MS ? choice.storeId : null;
 }
 
+/**
+ * A escolha guardada no aparelho (o texto do AsyncStorage), se ainda vale: null quando não há, quando o texto não
+ * é uma escolha (guardado por outra versão, estragado) ou quando as 6 horas já passaram.
+ */
+export function parseStoreChoice(raw: string | null | undefined, now: number = Date.now()): StoreChoice | null {
+  if (!raw) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== 'object') return null;
+  const { storeId, at } = value as { storeId?: unknown; at?: unknown };
+  if (typeof storeId !== 'string' || !storeId || typeof at !== 'number' || !Number.isFinite(at)) return null;
+  const choice = { storeId, at };
+  return currentStoreChoice(choice, now) ? choice : null;
+}
+
 /** O que está na despensa (sem o que já foi consumido). */
 export interface PantryStock {
   product_id: string | null;

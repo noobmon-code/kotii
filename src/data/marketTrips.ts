@@ -113,6 +113,11 @@ export async function endMarketTrip(tripId: string): Promise<boolean> {
   return unwrap(await supabase.rpc('end_market_trip', { p_trip_id: tripId })) as boolean;
 }
 
+/** Há internet agora: encerrar a ida é um pedido ao servidor, e sem ela a lista nem pergunta. */
+export function tripsOnline(): boolean {
+  return onlineManager.isOnline();
+}
+
 export function useAnnounceMarketTrip() {
   const queryClient = useQueryClient();
   return useMutation({

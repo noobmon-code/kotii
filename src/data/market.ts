@@ -15,6 +15,7 @@ import { productNamed as productWithName } from '@/domain/barcode';
 import type { CartPantryEntry } from '@/domain/cartPantry';
 import { pendingSameItem } from '@/domain/genericItem';
 import { LinkIndex, type ListLink, type OpenListItem } from '@/domain/listLinks';
+import type { MarketTrip } from '@/domain/marketTrips';
 import {
   cartPurchases,
   itemsWithNew,
@@ -71,6 +72,9 @@ export function unlessListQueueBusy<T>(fetch: (context: QueryFunctionContext) =>
 }
 
 type ListSummary = ShoppingList & ListSummaryCounts;
+
+/** As idas ao mercado (data/marketTrips, que não entra aqui: ela traz os avisos do aparelho junto). */
+const MARKET_TRIPS_KEY = 'marketTrips';
 
 // O cache guardado no aparelho por versões anteriores tem listas sem `items`.
 const withItems = (lists: ListSummary[]) => (lists.every((l) => l.items) ? lists : lists.map((l) => ({ ...l, items: l.items ?? [] })));
@@ -301,13 +305,85 @@ export function useCreateList() {
 }
 
 export function useArchiveList(listId: string) {
+  const queryClient = useQueryClient();
   const invalidate = useInvalidateLists(listId);
   return useMutation({
     mutationFn: async () =>
       unwrap(
         await supabase.from('shopping_lists').update({ archived_at: new Date().toISOString() }).eq('id', listId),
       ),
-    onSuccess: invalidate,
+    onSuccess: () => {
+      invalidate();
+      void queryClient.invalidateQueries({ queryKey: [ARCHIVED_LISTS_KEY] });
+    },
+  });
+}
+
+/** Quantas arquivadas o painel das listas mostra (as mais novas): o bastante para achar a da semana passada. */
+export const ARCHIVED_LISTS_MAX = 20;
+export const ARCHIVED_LISTS_KEY = 'archivedLists';
+
+/**
+ * As listas arquivadas, as arquivadas por último primeiro. Só na memória (a chave não entra em PERSISTED): sem
+ * internet, "Reabrir" não teria como sair.
+ */
+export function useArchivedLists() {
+  return useQuery({
+    queryKey: [ARCHIVED_LISTS_KEY],
+    queryFn: async () =>
+      unwrap(
+        await supabase
+          .from('shopping_lists')
+          .select('id, name, kind, archived_at, created_at')
+          .not('archived_at', 'is', null)
+          .order('archived_at', { ascending: false })
+          .limit(ARCHIVED_LISTS_MAX),
+      ) as ShoppingList[],
+  });
+}
+
+/** "Reabrir": a lista arquivada volta para as listas (archived_at nulo). */
+export function useReopenList() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (listId: string) =>
+      unwrap(await supabase.from('shopping_lists').update({ archived_at: null }).eq('id', listId)),
+    onSuccess: (_done, listId) => {
+      // Sai já das arquivadas; as buscas confirmam.
+      queryClient.setQueryData<ShoppingList[]>([ARCHIVED_LISTS_KEY], (lists) => lists?.filter((l) => l.id !== listId));
+      queryClient.setQueryData<ShoppingList>(['list', listId], (list) => (list ? { ...list, archived_at: null } : list));
+      for (const key of [[ARCHIVED_LISTS_KEY], ['lists'], ['list', listId], [MARKET_TRIPS_KEY]]) {
+        void queryClient.invalidateQueries({ queryKey: key });
+      }
+    },
+  });
+}
+
+/** Renomear sem internet: a fila da lista é dos itens, e o nome não entra nela. */
+export const RENAME_LIST_OFFLINE = 'Sem internet agora. Renomeie a lista quando a conexão voltar.';
+
+/**
+ * "Renomear": o nome novo (já limpo, domain/shoppingListName) na lista, nas listas e nas idas ao mercado dela.
+ * Sem internet não grava (RENAME_LIST_OFFLINE): as mutações do app saem mesmo sem conexão, e uma troca de nome
+ * esperando a vez, sem fila que a guarde, se perderia ao fechar o app.
+ */
+export function useRenameList(listId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (name: string) => {
+      if (!onlineManager.isOnline()) throw new Error(RENAME_LIST_OFFLINE);
+      unwrap(await supabase.from('shopping_lists').update({ name }).eq('id', listId));
+      return name;
+    },
+    onSuccess: (name) => {
+      queryClient.setQueryData<ShoppingList>(['list', listId], (list) => (list ? { ...list, name } : list));
+      queryClient.setQueryData<ListSummary[]>(['lists'], (lists) => lists?.map((l) => (l.id === listId ? { ...l, name } : l)));
+      queryClient.setQueryData<ShoppingList[]>([ARCHIVED_LISTS_KEY], (lists) => lists?.map((l) => (l.id === listId ? { ...l, name } : l)));
+      queryClient.setQueryData<MarketTrip[] | null>([MARKET_TRIPS_KEY], (trips) =>
+        trips ? trips.map((trip) => (trip.list_id === listId ? { ...trip, list: { ...trip.list, name } } : trip)) : trips,
+      );
+      for (const key of [['list', listId], ['lists'], [ARCHIVED_LISTS_KEY], [MARKET_TRIPS_KEY]]) void queryClient.invalidateQueries({ queryKey: key });
+    },
   });
 }
 
@@ -384,6 +460,16 @@ async function showAdded(queryClient: QueryClient, input: AddItemInput) {
   );
 }
 
+/**
+ * Os itens que este aparelho pôs nas listas desde que o app abriu: na ida ao mercado, o selo "Novo" é só para o
+ * que a casa pôs depois (domain/marketTrips, newDuringTrip). Só na memória: são ids, e o selo some com a ida.
+ */
+const added = new Set<string>();
+
+export function addedHere(): ReadonlySet<string> {
+  return added;
+}
+
 export function useAddListItem(listId: string) {
   const queryClient = useQueryClient();
   const mutation = useMutation<unknown, Error, AddItemInput>({
@@ -395,8 +481,11 @@ export function useAddListItem(listId: string) {
      * Põe o item; `onError` só vem quando a fila desiste (a lista apagada, por exemplo). O aviso à pessoa sai
      * da fila (registerListMutations), também para o pôr guardado que sai depois de reabrir o app.
      */
-    add: (item: NewListItem, userId: string, options?: QueuedCallbacks) =>
-      settle(mutation.mutateAsync({ ...item, id: newToggleToken(), listId, userId, token: newToggleToken() }), options),
+    add: (item: NewListItem, userId: string, options?: QueuedCallbacks) => {
+      const id = newToggleToken();
+      added.add(id);
+      settle(mutation.mutateAsync({ ...item, id, listId, userId, token: newToggleToken() }), options);
+    },
   };
 }
 

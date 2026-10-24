@@ -17,6 +17,7 @@ import {
 import {
   type EditItemInput,
   type NewListItem,
+  addedHere,
   loadListLinks,
   newToggleToken,
   removalWaitsForQueue,
@@ -31,11 +32,12 @@ import {
   usePurchaseRecords,
   useRemoveListItem,
   useRemovePendingListItem,
+  useReopenList,
   useShoppingList,
   useStores,
   useToggleListItem,
 } from '@/data/market';
-import { useRefreshMarketTrips } from '@/data/marketTrips';
+import { marketTripErrorMessage, tripsOnline, useEndMarketTrip, useMarketTrips, useRefreshMarketTrips } from '@/data/marketTrips';
 import { useSharedPrices } from '@/data/sharedPrices';
 import { scannedListItem } from '@/domain/barcode';
 import { cartPantryRows, joinNames, type CartPantryEntry, type CartPantryRow } from '@/domain/cartPantry';
@@ -48,7 +50,6 @@ import {
   pantryHits,
   seePricesProduct,
   type PantryHit,
-  type StoreChoice,
 } from '@/domain/listEstimate';
 import { compareForShopping, repeatedQuantity } from '@/domain/listItem';
 import type { PastedItem } from '@/domain/listPaste';
@@ -58,6 +59,7 @@ import { todayISO } from '@/domain/dates';
 import { brandChoice, genericItem, pendingSameItem, productSuggestions, sameListItem } from '@/domain/genericItem';
 import { listNameKey } from '@/domain/listLinks';
 import { cartPurchases } from '@/domain/listQueue';
+import { newDuringTrip, ownLiveTrip } from '@/domain/marketTrips';
 import { formatQuantity, parseDecimal } from '@/domain/money';
 import { fitsList, listExclusion, recentPurchases, type RecentItem } from '@/domain/recentPurchases';
 import { ranOutItems, restockFrom } from '@/domain/restock';
@@ -71,12 +73,14 @@ import { ListShareSheet } from '@/features/ListShareSheet';
 import { MarketTripAction, MarketTripBanner } from '@/features/MarketTrip';
 import { OfflineNotice } from '@/features/OfflineNotice';
 import { PasteListModal } from '@/features/PasteListModal';
+import { RenameListModal } from '@/features/RenameListModal';
 import { useProductBarcode } from '@/features/ProductBarcode';
 import { RecentPurchases, RestockStrip, useJustListed } from '@/features/RecentPurchases';
 import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { useAuth, useHouseholdId } from '@/lib/auth';
 import { isNetworkFailure } from '@/lib/networkErrors';
+import { chooseStore, useStoreChoice } from '@/lib/storeChoice';
 import { errorMessage } from '@/lib/supabase';
 import { UNITS, type Product, type ShoppingListItem, type Unit } from '@/lib/types';
 import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
@@ -100,12 +104,6 @@ import { space } from '@/ui/theme';
 
 /** A lista na tela é a guardada: a busca não chegou ao servidor. */
 const STALE_OFFLINE = 'Sem internet agora. Mostrando a lista como estava da última vez.';
-
-/**
- * O mercado em que a pessoa disse estar, por lista, e quando disse: vale por
- * uma ida ao mercado (currentStoreChoice), enquanto o app está aberto.
- */
-const chosenStores = new Map<string, StoreChoice>();
 
 /**
  * O item que a pessoa pôs e que já está para comprar: a tela pergunta se soma a quantidade. `otherName`: digitado
@@ -134,6 +132,10 @@ export default function ShoppingListScreen() {
   // já no toque, então não há como limpar o mesmo carrinho duas vezes.
   const clearChecked = useClearCheckedItems(id);
   const archive = useArchiveList(id);
+  const reopen = useReopenList();
+  // A ida ao mercado de quem está com o app nesta lista: o selo "Novo" e a pergunta depois de "Limpar".
+  const trips = useMarketTrips();
+  const endTrip = useEndMarketTrip();
   const pantry = usePantry();
   const links = useListLinks();
   // O que a despensa já tem com o nome da nota ("Az gallo 500ml") é o "Azeite" do carrinho (domain/cartPantry).
@@ -168,7 +170,9 @@ export default function ShoppingListScreen() {
   // Um menu que não chegou a aparecer (no iOS, aberto enquanto outro Modal descia) não pode prender os próximos:
   // a pergunta nova monta um menu novo.
   const [repeatedKey, setRepeatedKey] = useState(0);
-  const [storeChoice, setStoreChoice] = useState<StoreChoice | null>(() => chosenStores.get(id) ?? null);
+  const [renaming, setRenaming] = useState(false);
+  // "Onde estou": guardado por lista neste aparelho (lib/storeChoice), também escolhido em "Onde comprar".
+  const storeChoice = useStoreChoice(id);
   // Some da faixa já no toque; volta quando a lista carregada trouxer o item e ele sair dela depois.
   const justAdded = useJustListed(items.data);
 
@@ -517,6 +521,14 @@ export default function ShoppingListScreen() {
     () => (shared.data && stores.data && prices.data ? sharedQuotes(shared.data, prices.data, stores.data) : []),
     [shared.data, prices.data, stores.data],
   );
+  // Na ida ao mercado de quem está com o app, o que a casa pôs depois do aviso ganha o selo "Novo".
+  const myTrip = ownLiveTrip(trips.data ?? [], { listId: id, userId: session?.user.id, now: new Date() });
+  const tripStart = myTrip?.created_at ?? null;
+  const newIds = useMemo(
+    () => newDuringTrip(items.data ?? [], tripStart ? { created_at: tripStart } : null, addedHere()),
+    [items.data, tripStart],
+  );
+
   // Lista no mercado (domain/listEstimate): quanto deve dar e o que está na despensa. Sem os preços, as
   // ligações ou a despensa carregados (sem internet e nunca vistos neste aparelho), mostra o que der. Só o selo
   // "Na despensa" espera o histórico de compras: sem ele, apareceria justamente no que acabou. O aparelho que
@@ -553,10 +565,13 @@ export default function ShoppingListScreen() {
     const hints = new Map<string, ItemHint>();
     for (const i of all) {
       const cost = estimate.byItem.get(i.id);
-      if (cost || inPantry.has(i.id)) hints.set(i.id, { cost: cost ? formatItemCost(cost) : undefined, inPantry: inPantry.has(i.id) });
+      const isNew = newIds.has(i.id);
+      if (cost || inPantry.has(i.id) || isNew) {
+        hints.set(i.id, { cost: cost ? formatItemCost(cost) : undefined, inPantry: inPantry.has(i.id), ...(isNew ? { isNew } : {}) });
+      }
     }
     return { estimate, inPantry, hints };
-  }, [items.data, prices.data, links.data, products.data, seenElsewhere, pantry.data, ranOut, historyKnown, storeId, today]);
+  }, [items.data, prices.data, links.data, products.data, seenElsewhere, pantry.data, ranOut, historyKnown, storeId, today, newIds]);
 
   // As ligações e os produtos dão preço ao item digitado solto. Se não chegaram (a busca falhou, ou sem internet e
   // nunca vistos neste aparelho), o cartão diz que não deu para conferir o que ficou sem preço. A lista não espera
@@ -620,8 +635,32 @@ export default function ShoppingListScreen() {
       pantryUnknown: !known,
     });
   };
-  const clearCart = (cart: ShoppingListItem[], toPantry: CartPantryEntry[]) => {
+  /**
+   * Depois de limpar, quem avisou que estava indo às compras desta lista decide se a ida acabou. Só com internet
+   * (encerrar é um pedido ao servidor); se der errado, o aviso de sempre do "Encerrar".
+   */
+  const offerEndTrip = async () => {
+    const trip = ownLiveTrip(trips.data ?? [], { listId: id, userId: session?.user.id, now: new Date() });
+    if (!trip || !tripsOnline()) return;
+    const where = trip.list.kind === 'mercado' ? 'ao mercado' : 'às compras';
+    const yes = await askYesNo(
+      `Encerrar a ida ${where}?`,
+      'O carrinho foi limpo. Encerrando, a casa deixa de ver o aviso de que você está nas compras.',
+      'Encerrar',
+      'Agora não',
+    );
+    if (!yes) return;
+    try {
+      await endTrip.mutateAsync(trip.id);
+    } catch (err) {
+      notify('Não deu para encerrar', marketTripErrorMessage(err, 'end'));
+    }
+  };
+  /** `single`: só um item guardado pela geladeira; o "Limpar" do carrinho todo é que encerra as compras. */
+  const clearCart = (cart: ShoppingListItem[], toPantry: CartPantryEntry[], single: boolean) => {
     setStoring(null);
+    // As compras acabaram: o mercado de "Onde estou" não vale para a próxima.
+    if (!single) chooseStore(id, null);
     clearChecked.mutate(
       {
         listId: id,
@@ -630,7 +669,13 @@ export default function ShoppingListScreen() {
         pantry: toPantry,
         bought: cartPurchases(cart),
       },
-      { onSuccess: () => emptyPhotoTrash(), onError },
+      {
+        onSuccess: () => {
+          emptyPhotoTrash();
+          if (!single) void offerEndTrip();
+        },
+        onError,
+      },
     );
   };
   // Tirar vai pela fila da lista (vale sem internet). A foto que esperava internet sai quando o item sai de verdade
@@ -810,12 +855,7 @@ export default function ShoppingListScreen() {
           storeId={storeId}
           storeNames={storeNames}
           sourcesLoaded={sourcesLoaded}
-          onChangeStore={(store) => {
-            const choice = store ? { storeId: store, at: Date.now() } : null;
-            if (choice) chosenStores.set(id, choice);
-            else chosenStores.delete(id);
-            setStoreChoice(choice);
-          }}
+          onChangeStore={(store) => chooseStore(id, store)}
           inPantry={pending.filter((i) => market.inPantry.has(i.id)).map((i) => i.name)}
         />
       ) : null}
@@ -901,7 +941,7 @@ export default function ShoppingListScreen() {
           single={storing.single}
           pantryUnknown={storing.pantryUnknown}
           shelfLifeDays={shelfLifeDays}
-          onConfirm={(toPantry) => clearCart(storing.items, toPantry)}
+          onConfirm={(toPantry) => clearCart(storing.items, toPantry, storing.single)}
           onClose={() => setStoring(null)}
         />
       ) : null}
@@ -927,16 +967,29 @@ export default function ShoppingListScreen() {
         onToggle={toggleCommon}
         onClose={() => setPickerOpen(false)}
       />
-      <Button
-        title="Arquivar lista"
-        variant="danger"
-        icon="archive-outline"
-        onPress={() =>
-          confirmAction('Arquivar lista', 'A lista some das telas, mas as notas e preços continuam.', 'Arquivar', () =>
-            archive.mutate(undefined, { onSuccess: () => router.back(), onError }),
-          )
-        }
-      />
+      <Button title="Renomear lista" variant="secondary" icon="pencil-outline" onPress={() => setRenaming(true)} />
+      {list.data.archived_at ? (
+        // Aberta pelas "Arquivadas" do painel das listas: daqui ela também volta.
+        <Button
+          title="Reabrir lista"
+          variant="secondary"
+          icon="archive-arrow-up-outline"
+          loading={reopen.isPending}
+          onPress={() => reopen.mutate(list.data!.id, { onError })}
+        />
+      ) : (
+        <Button
+          title="Arquivar lista"
+          variant="danger"
+          icon="archive-outline"
+          onPress={() =>
+            confirmAction('Arquivar lista', 'A lista some das telas, mas as notas e preços continuam.', 'Arquivar', () =>
+              archive.mutate(undefined, { onSuccess: () => router.back(), onError }),
+            )
+          }
+        />
+      )}
+      {renaming ? <RenameListModal listId={list.data.id} name={list.data.name} onClose={() => setRenaming(false)} /> : null}
     </Screen>
   );
 }

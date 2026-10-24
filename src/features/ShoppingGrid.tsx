@@ -9,10 +9,14 @@ import type { ShoppingListItem } from '@/lib/types';
 import { Badge, CategoryIcon, Icon, Row, Text, useCategoryTint } from '@/ui/primitives';
 import { radius, space, useColors } from '@/ui/theme';
 
-/** O que a casa sabe do item no mercado: quanto deve custar e se está na despensa (domain/listEstimate). */
+/**
+ * O que a casa sabe do item no mercado: quanto deve custar e se está na despensa (domain/listEstimate) e, na ida
+ * ao mercado de quem está com o app, se entrou depois do aviso (domain/marketTrips, newDuringTrip).
+ */
 export interface ItemHint {
   cost?: string;
   inPantry?: boolean;
+  isNew?: boolean;
 }
 
 /** Fotos dos itens: links das já enviadas (por caminho) e as que esperam internet (por item). */
@@ -112,11 +116,12 @@ function Tile({
   const notes = item.notes?.trim();
   // No carrinho o item já foi pego: a despensa não importa mais.
   const inPantry = !inCart && hint?.inPantry;
+  const isNew = !inCart && hint?.isNew;
   return (
     <Pressable
       accessibilityRole="checkbox"
       accessibilityState={{ checked: inCart }}
-      accessibilityLabel={[item.name, quantity, hint?.cost, badge?.label, inPantry ? 'na despensa' : null, notes]
+      accessibilityLabel={[item.name, quantity, hint?.cost, isNew ? 'novo' : null, badge?.label, inPantry ? 'na despensa' : null, notes]
         .filter(Boolean)
         .join(', ')}
       accessibilityHint={inCart ? 'Toque para devolver à lista' : 'Toque para pôr no carrinho'}
@@ -157,6 +162,8 @@ function Tile({
           {hint.cost}
         </Text>
       ) : null}
+      {/* Pedido da casa depois que a pessoa saiu para as compras. */}
+      {isNew ? <Badge label="Novo" tone="info" /> : null}
       {badge ? <Badge label={badge.label} tone={badge.tone} /> : null}
       {/* O que o app sabe, não um fato sobre a casa; neutro para não parecer o selo de promoção. */}
       {inPantry ? <Badge label="Na despensa" /> : null}

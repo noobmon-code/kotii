@@ -16,6 +16,7 @@ import { notify } from '@/ui/dialogs';
 import { isHouseholdAccessError, leftHousehold, markRemovedFromHousehold, wroteNoRows } from './accessErrors';
 import { getActiveHousehold } from './activeHousehold';
 import { type CacheWriteFailure, createCachePersister, createWriteFailureWarner, resumeInFlight } from './cachePersister';
+import { forgetStoreChoices } from './storeChoice';
 import { errorMessage } from './supabase';
 
 const WEEK = 1000 * 60 * 60 * 24 * 7;
@@ -325,6 +326,8 @@ export function forgetCache() {
   // Descarta também a gravação que esperava o intervalo.
   Promise.resolve(persister.removeClient()).catch(() => undefined);
   forgetPendingPhotos().catch(() => undefined);
+  // O mercado de "Onde estou" de cada lista era da casa de quem saiu.
+  forgetStoreChoices();
 }
 
 /**

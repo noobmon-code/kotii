@@ -7,7 +7,12 @@ import { toISODate } from '@/domain/dates';
 import { LinkIndex } from '@/domain/listLinks';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
 import { SHARED_PRICES_NOTICE, type SharedPrice } from '@/domain/sharedPrices';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+import { CHOSEN_STORE_MS } from '@/domain/listEstimate';
+import type { MarketTrip } from '@/domain/marketTrips';
 import { CartPantryModal } from '@/features/CartPantryModal';
+import { ListEstimateCard } from '@/features/ListEstimateCard';
 import { PasteListModal } from '@/features/PasteListModal';
 import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
 import type { LatestPrice, PantryItem, Product, ShoppingListItem } from '@/lib/types';
@@ -40,6 +45,7 @@ const mockSeen: {
   open?: (item: ShoppingListItem) => void;
   editor?: Record<string, unknown>;
   picker?: Record<string, unknown>;
+  cartPantry?: Record<string, unknown>;
 } = {};
 
 jest.mock('expo-router', () => ({
@@ -62,15 +68,30 @@ jest.mock('@/data/listPhotos', () => ({
   useSetListItemPhoto: () => ({ mutate: jest.fn() }),
 }));
 /** O que a tela pediu à fila da lista: itens postos e o limpar. */
-const mockQueue = { add: jest.fn(), clear: jest.fn(), edit: jest.fn(), removePending: jest.fn<(input: unknown) => Promise<string>>() };
+const mockQueue = {
+  add: jest.fn(),
+  clear: jest.fn(),
+  edit: jest.fn(),
+  removePending: jest.fn<(input: unknown) => Promise<string>>(),
+  reopen: jest.fn(),
+  rename: jest.fn(),
+};
+/** Os itens que "este aparelho" pôs (data/market, addedHere). */
+const mockAddedHere = new Set<string>();
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
+);
 jest.mock('@/data/market', () => {
   const mutation = () => ({ mutate: jest.fn(), mutateAsync: jest.fn(), isPending: false });
   return {
     loadListLinks: jest.fn(),
     newToggleToken: () => 'selo',
     removalWaitsForQueue: () => false,
+    addedHere: () => mockAddedHere,
     useAddListItem: () => ({ add: mockQueue.add }),
     useArchiveList: mutation,
+    useReopenList: () => ({ mutate: mockQueue.reopen, isPending: false }),
+    useRenameList: () => ({ mutate: mockQueue.rename, isPending: false }),
     useClearCheckedItems: () => ({ mutate: mockQueue.clear }),
     useEditListItem: () => ({ mutate: mockQueue.edit, mutateAsync: jest.fn(), isPending: false }),
     useRemoveListItem: () => ({ remove: jest.fn() }),
@@ -113,7 +134,12 @@ jest.mock('@/features/ProductBarcode', () => ({
   },
 }));
 jest.mock('@/ui/PickerModal', () => ({ PickerModal: () => null }));
-jest.mock('@/features/CartPantryModal', () => ({ CartPantryModal: () => null }));
+jest.mock('@/features/CartPantryModal', () => ({
+  CartPantryModal: (props: Record<string, unknown>) => {
+    mockSeen.cartPantry = props;
+    return null;
+  },
+}));
 jest.mock('@/features/CommonItemsPicker', () => ({
   CommonItemsPicker: (props: Record<string, unknown>) => {
     mockSeen.picker = props;
@@ -127,9 +153,21 @@ jest.mock('@/features/ListItemEditor', () => ({
   },
 }));
 jest.mock('@/features/OfflineNotice', () => ({ OfflineNotice: () => null }));
-// "Estou indo ao mercado" tem os testes dele (MarketTrip.test.tsx): aqui, só que a lista o atualiza junto.
+// "Estou indo ao mercado" tem os testes dele (MarketTrip.test.tsx): aqui, que a lista o atualiza junto, o selo
+// "Novo" e a pergunta depois de "Limpar".
 const mockRefreshTrips = jest.fn();
-jest.mock('@/data/marketTrips', () => ({ useRefreshMarketTrips: () => mockRefreshTrips }));
+const mockTrips: { list: MarketTrip[]; online: boolean; end: jest.Mock<(id: string) => Promise<boolean>> } = {
+  list: [],
+  online: true,
+  end: jest.fn<(id: string) => Promise<boolean>>(),
+};
+jest.mock('@/data/marketTrips', () => ({
+  marketTripErrorMessage: () => 'Sem internet agora. Encerre quando a conexão voltar.',
+  tripsOnline: () => mockTrips.online,
+  useEndMarketTrip: () => ({ mutateAsync: mockTrips.end }),
+  useMarketTrips: () => ({ data: mockTrips.list }),
+  useRefreshMarketTrips: () => mockRefreshTrips,
+}));
 jest.mock('@/features/MarketTrip', () => ({ MarketTripAction: () => null, MarketTripBanner: () => null }));
 jest.mock('@/features/RecentPurchases', () => ({
   ...jest.requireActual<typeof import('@/features/RecentPurchases')>('@/features/RecentPurchases'),
@@ -234,6 +272,11 @@ function choose(label: string) {
 }
 
 beforeEach(() => {
+  mockTrips.list = [];
+  mockTrips.online = true;
+  mockTrips.end.mockReset();
+  mockAddedHere.clear();
+  mockSeen.cartPantry = undefined;
   mockBarcode.available = false;
   mockBarcode.busy = false;
   mockBarcode.onProduct = null;
@@ -1079,5 +1122,179 @@ describe('ajustes da lista: corredores, categoria e colar', () => {
       expect(modal()).toBeUndefined();
       expect(mockQueue.add).not.toHaveBeenCalled();
     });
+  });
+});
+
+/** Uma ida que vale agora (começou há 30 min). */
+const liveTrip = (patch: Partial<MarketTrip> = {}): MarketTrip => ({
+  id: 't1',
+  list_id: 'l1',
+  user_id: 'u1',
+  display_name: 'Ana',
+  created_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+  ends_at: new Date(Date.now() + 90 * 60_000).toISOString(),
+  ended_at: null,
+  list: { name: 'Mercado', kind: 'mercado', archived_at: null },
+  ...patch,
+});
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+const button = (title: string) => renderer!.root.findAllByType(Button).find((entry) => entry.props.title === title);
+
+describe('renomear e reabrir a lista', () => {
+  it('"Renomear lista" abre o modal com o nome de agora e grava o nome novo', async () => {
+    await mount();
+    await act(async () => button('Renomear lista')!.props.onPress());
+    const field = renderer!.root.findAllByType(TextField).find((entry) => entry.props.label === 'Nome da lista')!;
+    expect(field.props.value).toBe('Mercado');
+    await act(async () => field.props.onChangeText(' Feira  do sábado'));
+    await act(async () => button('Salvar')!.props.onPress());
+    expect(mockQueue.rename).toHaveBeenCalledWith('Feira do sábado', expect.anything());
+  });
+
+  it('a lista arquivada mostra "Reabrir lista" no lugar de "Arquivar lista"', async () => {
+    mockQueries.list = loaded({ id: 'l1', name: 'Churrasco', kind: 'mercado', archived_at: '2026-10-20T12:00:00Z', created_at: '2026-10-01T12:00:00Z' });
+    await mount();
+    expect(button('Arquivar lista')).toBeUndefined();
+    await act(async () => button('Reabrir lista')!.props.onPress());
+    expect(mockQueue.reopen).toHaveBeenCalledWith('l1', expect.anything());
+  });
+});
+
+describe('limpar o carrinho com uma ida ao mercado aberta', () => {
+  beforeEach(() => {
+    mockQueries.items = loaded([{ ...listItem('a', 'Arroz', null), checked_at: minutesAgo(5) }]);
+    jest.mocked(askYesNo).mockReset();
+  });
+
+  /** "Limpar", a confirmação do que vai para a despensa e a resposta do servidor. */
+  async function clearCart() {
+    await act(async () => button('Limpar')!.props.onPress());
+    await act(async () => (mockSeen.cartPantry!.onConfirm as (rows: unknown[]) => void)([]));
+    const [, options] = mockQueue.clear.mock.calls.at(-1) as [unknown, { onSuccess: () => void }];
+    await act(async () => options.onSuccess());
+  }
+
+  it('com a própria ida nesta lista, pergunta e encerra', async () => {
+    mockTrips.list = [liveTrip()];
+    jest.mocked(askYesNo).mockResolvedValue(true);
+    mockTrips.end.mockResolvedValue(true);
+    await mount();
+    await clearCart();
+    expect(askYesNo).toHaveBeenCalledWith('Encerrar a ida ao mercado?', expect.any(String), 'Encerrar', 'Agora não');
+    expect(mockTrips.end).toHaveBeenCalledWith('t1');
+  });
+
+  it('"Agora não" deixa a ida aberta', async () => {
+    mockTrips.list = [liveTrip()];
+    jest.mocked(askYesNo).mockResolvedValue(false);
+    await mount();
+    await clearCart();
+    expect(askYesNo).toHaveBeenCalled();
+    expect(mockTrips.end).not.toHaveBeenCalled();
+  });
+
+  it('se encerrar der errado, o aviso de sempre', async () => {
+    mockTrips.list = [liveTrip()];
+    jest.mocked(askYesNo).mockResolvedValue(true);
+    mockTrips.end.mockRejectedValue(new Error('sem rede'));
+    jest.mocked(notify).mockClear();
+    await mount();
+    await clearCart();
+    expect(notify).toHaveBeenCalledWith('Não deu para encerrar', 'Sem internet agora. Encerre quando a conexão voltar.');
+  });
+
+  it.each([
+    ['sem ida', () => []],
+    ['com a ida de outra pessoa', () => [liveTrip({ user_id: 'outra' })]],
+    ['com a ida de outra lista', () => [liveTrip({ list_id: 'l2' })]],
+  ])('%s, não pergunta', async (_why, trips) => {
+    mockTrips.list = trips();
+    await mount();
+    await clearCart();
+    expect(askYesNo).not.toHaveBeenCalled();
+  });
+
+  it('sem internet, não pergunta', async () => {
+    mockTrips.list = [liveTrip()];
+    mockTrips.online = false;
+    await mount();
+    await clearCart();
+    expect(askYesNo).not.toHaveBeenCalled();
+  });
+
+  it('guardar um item só pela geladeira não pergunta', async () => {
+    mockTrips.list = [liveTrip()];
+    await mount();
+    const cart = renderer!.root.findAllByType(ShoppingGrid).find((grid) => grid.props.inCart)!;
+    await act(async () => cart.props.onStore(mockQueries.items.data && (mockQueries.items.data as ShoppingListItem[])[0]));
+    await act(async () => (mockSeen.cartPantry!.onConfirm as (rows: unknown[]) => void)([]));
+    const [, options] = mockQueue.clear.mock.calls.at(-1) as [unknown, { onSuccess: () => void }];
+    await act(async () => options.onSuccess());
+    expect(askYesNo).not.toHaveBeenCalled();
+  });
+});
+
+describe('o selo "Novo" durante a ida ao mercado', () => {
+  beforeEach(() => {
+    mockQueries.items = loaded([
+      { ...listItem('antes', 'Arroz', null), created_at: minutesAgo(45) },
+      { ...listItem('depois', 'Feijão', null), created_at: minutesAgo(10) },
+      { ...listItem('daqui', 'Café', null), created_at: minutesAgo(5) },
+    ]);
+    mockAddedHere.add('daqui');
+  });
+
+  it('para quem avisou, só o que a casa pôs depois do aviso', async () => {
+    mockTrips.list = [liveTrip()];
+    await mount();
+    const isNew = ['antes', 'depois', 'daqui'].filter((id) => mockSeen.hints?.get(id)?.isNew);
+    expect(isNew).toEqual(['depois']);
+  });
+
+  it('na ida de outra pessoa, nenhum selo', async () => {
+    mockTrips.list = [liveTrip({ user_id: 'outra' })];
+    await mount();
+    expect(['antes', 'depois', 'daqui'].filter((id) => mockSeen.hints?.get(id)?.isNew)).toEqual([]);
+  });
+});
+
+describe('"Onde estou" guardado no aparelho', () => {
+  beforeEach(async () => {
+    await AsyncStorage.clear();
+    mockQueries.items = loaded([listItem('a', 'Arroz', null), { ...listItem('b', 'Feijão', null), checked_at: minutesAgo(5) }]);
+  });
+  const estimateCard = () => renderer!.root.findByType(ListEstimateCard);
+
+  it('o mercado escolhido volta depois de fechar e abrir a lista', async () => {
+    await mount();
+    await act(async () => estimateCard().props.onChangeStore('s1'));
+    expect(estimateCard().props.storeId).toBe('s1');
+    expect(JSON.parse((await AsyncStorage.getItem('kotii:store-choice:l1'))!).storeId).toBe('s1');
+    await act(async () => renderer!.unmount());
+    await mount();
+    expect(estimateCard().props.storeId).toBe('s1');
+  });
+
+  it('tirar o mercado e limpar o carrinho apagam a escolha', async () => {
+    await mount();
+    await act(async () => estimateCard().props.onChangeStore('s1'));
+    await act(async () => estimateCard().props.onChangeStore(null));
+    expect(estimateCard().props.storeId).toBeNull();
+    expect(await AsyncStorage.getItem('kotii:store-choice:l1')).toBeNull();
+    await act(async () => estimateCard().props.onChangeStore('s1'));
+    await act(async () => button('Limpar')!.props.onPress());
+    await act(async () => (mockSeen.cartPantry!.onConfirm as (rows: unknown[]) => void)([]));
+    expect(estimateCard().props.storeId).toBeNull();
+    expect(await AsyncStorage.getItem('kotii:store-choice:l1')).toBeNull();
+  });
+
+  it('a escolha de mais de 6 horas atrás já não vale', async () => {
+    await mount();
+    const spy = jest.spyOn(Date, 'now').mockReturnValue(Date.now() - CHOSEN_STORE_MS - 1000);
+    await act(async () => estimateCard().props.onChangeStore('s1'));
+    spy.mockRestore();
+    await act(async () => renderer!.unmount());
+    await mount();
+    expect(estimateCard().props.storeId).toBeNull();
   });
 });
