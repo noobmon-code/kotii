@@ -24,6 +24,7 @@ export function ActionSheet({
   actions,
   onClose,
   children,
+  cancelLabel = 'Cancelar',
 }: {
   visible: boolean;
   title?: string;
@@ -31,6 +32,8 @@ export function ActionSheet({
   actions: SheetAction[];
   onClose: () => void;
   children?: ReactNode;
+  /** O botão que fecha sem escolher nada, quando "Cancelar" não diz o que acontece ("Deixar como está"). */
+  cancelLabel?: string;
 }) {
   const c = useColors();
   const { height } = useWindowDimensions();
@@ -88,7 +91,7 @@ export function ActionSheet({
               onPress={onClose}
               style={({ pressed }) => [styles.action, { borderTopColor: c.border }, pressed && { backgroundColor: c.surfaceAlt }]}>
               <Text variant="label" color="textMuted">
-                Cancelar
+                {cancelLabel}
               </Text>
             </Pressable>
           </Pressable>

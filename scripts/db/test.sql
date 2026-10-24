@@ -2,7 +2,7 @@
 -- confirmação de nota, recorrência e rodízio de tarefas, remédios, saúde,
 -- aparelhos, documentos, prestadores e consertos, financeiro, saída da casa,
 -- compromissos da família, preços compartilhados entre casas, estoque dos
--- remédios, idas ao mercado e aceite dos termos.
+-- remédios, idas ao mercado, aceite dos termos e o painel do app.
 -- Rodado por scripts/db/test.sh depois de stubs.sql + migrations.
 
 \set ON_ERROR_STOP 1
@@ -11237,6 +11237,540 @@ begin
 end $$;
 delete from public.households where id in (:'hh_n1', :'hh_n2', :'hh_n3', :'hh_n4');
 delete from auth.users where id in (:'user_n1', :'user_n2');
+
+-- ---------------------------------------------------------------------------
+\echo '• Painel do app: só quem mantém o app vê, só totais, e o número de cada dia só sobe'
+reset role;
+select set_config('request.jwt.claim.sub', '', false) \gset
+do $$
+declare
+  t text;
+  f text;
+  p text;
+begin
+  foreach t in array array['public.app_admins', 'public.app_daily_stats'] loop
+    assert (select relrowsecurity from pg_class where oid = t::regclass), t || ' has RLS on';
+    assert not exists (select 1 from pg_policy where polrelid = t::regclass), t || ' has no policy: nobody reads it through the API';
+    -- Cada privilégio por si: com uma lista, has_table_privilege é verdade com qualquer um deles.
+    foreach p in array array['select', 'insert', 'update', 'delete', 'truncate', 'references', 'trigger'] loop
+      assert not has_table_privilege('anon', t, p), 'anon has no ' || p || ' on ' || t;
+      assert not has_table_privilege('authenticated', t, p), 'members have no ' || p || ' on ' || t;
+    end loop;
+    foreach p in array array['select', 'insert', 'update', 'delete'] loop
+      assert has_table_privilege('service_role', t, p), 'the service role has ' || p || ' on ' || t;
+    end loop;
+  end loop;
+
+  -- O painel e a pergunta "sou eu?": só para quem tem conta.
+  foreach f in array array['public.is_app_admin()', 'public.app_dashboard()'] loop
+    assert has_function_privilege('authenticated', f, 'execute'), 'members call ' || f;
+    assert not has_function_privilege('anon', f, 'execute'), 'anon cannot call ' || f;
+    assert not exists (
+      select 1 from pg_proc pr, aclexplode(pr.proacl) a where pr.oid = f::regprocedure and a.grantee = 0
+    ), 'public has no grant on ' || f;
+  end loop;
+  -- As peças internas e a foto do dia: ninguém do app.
+  foreach f in array array[
+    'public.snapshot_app_stats()', 'public.app_signals()', 'public.app_activity_users(timestamptz, timestamptz)',
+    'public.app_last_seen()', 'public.app_platform(text)', 'public.app_client(text)'
+  ] loop
+    assert not has_function_privilege('anon', f, 'execute'), 'anon cannot call ' || f;
+    assert not has_function_privilege('authenticated', f, 'execute'), 'members cannot call ' || f;
+    assert not exists (
+      select 1 from pg_proc pr, aclexplode(pr.proacl) a where pr.oid = f::regprocedure and a.grantee = 0
+    ), 'public has no grant on ' || f;
+  end loop;
+  assert has_function_privilege('service_role', 'public.snapshot_app_stats()', 'execute'), 'the service role takes the snapshot';
+  foreach f in array array[
+    'public.is_app_admin()', 'public.app_dashboard()', 'public.snapshot_app_stats()', 'public.app_signals()',
+    'public.app_activity_users(timestamptz, timestamptz)', 'public.app_last_seen()'
+  ] loop
+    assert (select prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = f::regprocedure),
+      f || ' is security definer with a fixed search_path';
+  end loop;
+  foreach f in array array['public.app_platform(text)', 'public.app_client(text)'] loop
+    assert (select provolatile = 'i' and not prosecdef and proconfig = array['search_path=""'] from pg_proc where oid = f::regprocedure),
+      f || ' is immutable, runs as the caller, with a fixed search_path';
+  end loop;
+
+  -- A migração gravou os 30 dias antes dela (um piso) e o dia em que rodou.
+  assert (
+    select count(*) filter (where backfilled) = 30
+      and count(*) filter (where not backfilled) = 1
+      and max(day) - min(day) = 30
+      and max(day) filter (where backfilled) + 1 = min(day) filter (where not backfilled)
+      and bool_and(ai_month = '{}'::jsonb) filter (where backfilled)
+    from public.app_daily_stats
+  ), 'the migration wrote the 30 days before it (backfilled, AI unknown) and its own day';
+  -- A foto do dia da migração, num banco ainda sem uso de IA: os cinco tipos, com zero (um zero sabido, não '{}').
+  assert (
+    select bool_and(ai_month = '{"chat": 0, "photo": 0, "menu": 0, "nfce": 0, "finance": 0}'::jsonb) filter (where not backfilled)
+    from public.app_daily_stats
+  ), 'a real snapshot of a month without AI use writes every kind at zero';
+end $$;
+
+-- O aparelho e o jeito de abrir, pelo user agent.
+do $$
+begin
+  assert public.app_platform('Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1') = 'ios', 'iPhone Safari';
+  assert public.app_platform('Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1') = 'ios', 'iPad';
+  assert public.app_platform('Mozilla/5.0 (Linux; Android 14; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36') = 'android',
+    'Android Chrome (the "Linux" in it does not make it a computer)';
+  assert public.app_platform('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36') = 'computador', 'Windows Chrome';
+  assert public.app_platform('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15') = 'computador', 'Mac Safari';
+  assert public.app_platform('Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0') = 'computador', 'Linux Firefox';
+  assert public.app_platform('Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36') = 'computador', 'Chromebook';
+  assert public.app_platform('Kotii/1 CFNetwork/1490.0.4 Darwin/23.2.0') = 'ios', 'the installed app on iOS';
+  assert public.app_platform('okhttp/4.9.2') = 'android', 'the installed app on Android';
+  assert public.app_platform('Microsoft Office/16.0') = 'outro', '"cros" only as a word: Microsoft is no Chromebook';
+  assert public.app_platform('curl/8.4.0') = 'outro', 'anything else';
+  assert public.app_platform('') = 'outro' and public.app_platform(null) = 'outro', 'no user agent';
+  assert public.app_client('Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)') = 'navegador', 'a browser';
+  assert public.app_client('mozilla/5.0 (X11; Linux x86_64)') = 'navegador', 'case does not matter';
+  assert public.app_client('Kotii/1 CFNetwork/1490.0.4 Darwin/23.2.0') = 'app', 'the installed app';
+  assert public.app_client('okhttp/4.9.2') = 'app', 'the installed app on Android';
+  assert public.app_client(null) = 'outro' and public.app_client('') = 'outro' and public.app_client('  ') = 'outro', 'no user agent';
+end $$;
+
+-- O resto roda numa transação desfeita no fim: um banco só com estas pessoas e casas, para contar exato.
+begin;
+set local client_min_messages = warning;
+truncate auth.users, public.app_daily_stats, public.shared_prices cascade;
+-- Um horário de São Paulo, N dias antes de hoje.
+create function pg_temp.sp(p_days_ago integer, p_time time) returns timestamptz language sql stable as $$
+  select (((now() at time zone 'America/Sao_Paulo')::date - p_days_ago) + p_time) at time zone 'America/Sao_Paulo';
+$$;
+-- Ana cuida do app; criou a conta há 40 dias e ainda não deu sinal nenhum.
+insert into auth.users (id, email, created_at, email_confirmed_at)
+values ('00000000-0000-0000-0000-0000000004a1', 'ana@exemplo.com', pg_temp.sp(40, '10:00'), pg_temp.sp(40, '10:05'));
+
+-- Sem a linha em app_admins, ninguém vê: nem ela.
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000004a1', true) \gset
+do $$
+begin
+  assert not public.is_app_admin(), 'not an admin yet';
+  begin
+    perform public.app_dashboard();
+    raise exception 'FAIL: the dashboard answered someone who is not an admin';
+  exception when insufficient_privilege then
+    assert sqlerrm = 'Este painel é só para quem mantém o app.', 'the refusal says why: ' || sqlerrm;
+  end;
+  begin
+    perform 1 from public.app_admins;
+    raise exception 'FAIL: a member read app_admins';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform 1 from public.app_daily_stats;
+    raise exception 'FAIL: a member read app_daily_stats';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.app_admins (user_id) values (auth.uid());
+    raise exception 'FAIL: a member made herself an admin';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.snapshot_app_stats();
+    raise exception 'FAIL: a member took the snapshot';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform 1 from public.app_last_seen();
+    raise exception 'FAIL: a member read when each person was last seen';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform 1 from public.app_activity_users(now() - interval '1 day', now());
+    raise exception 'FAIL: a member read who was active';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set role anon;
+do $$
+begin
+  begin
+    perform public.is_app_admin();
+    raise exception 'FAIL: anon asked is_app_admin';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.app_dashboard();
+    raise exception 'FAIL: anon opened the dashboard';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+reset role;
+-- Liberar é o insert do editor SQL.
+insert into public.app_admins (user_id)
+select id from auth.users where email = 'ana@exemplo.com'
+on conflict do nothing;
+
+-- Um banco novo: só ela, sem casa e sem uso. Tudo zero, e as listas vazias (nunca nulas).
+set role authenticated;
+do $$
+declare
+  j jsonb;
+  today date := (now() at time zone 'America/Sao_Paulo')::date;
+begin
+  assert public.is_app_admin(), 'now she is';
+  j := public.app_dashboard();
+  assert (select array_agg(k order by k) from jsonb_object_keys(j) as k) = array[
+    'accounts', 'active', 'ai', 'beta', 'clients', 'daily', 'features', 'generated_at', 'households', 'platforms', 'push',
+    'receipt_sources', 'retention', 'shared_prices', 'signups', 'terms', 'today'
+  ], 'the dashboard has exactly the agreed keys: ' || j::text;
+  assert j -> 'accounts' = '{"total": 1, "new_7d": 0, "new_30d": 0, "confirmed": 1, "in_household": 0}', 'one account: ' || (j -> 'accounts')::text;
+  assert j -> 'active' = '{"d1": 0, "d7": 0, "d30": 0}', 'nobody active';
+  assert j -> 'retention' = '{"eligible": 1, "returned": 0}', 'without a signal she did not come back';
+  assert j -> 'households' = '{"total": 0, "shared": 0, "members": 0, "people_without_app": 0, "pets": 0, "new_30d": 0}', 'no household';
+  assert jsonb_array_length(j -> 'signups') = 30 and (select bool_and((e ->> 'count')::int = 0) from jsonb_array_elements(j -> 'signups') e),
+    'thirty days, every one with zero';
+  assert j -> 'signups' -> 29 ->> 'day' = to_char(today, 'YYYY-MM-DD') and j -> 'signups' -> 0 ->> 'day' = to_char(today - 29, 'YYYY-MM-DD'),
+    'from 29 days ago to today';
+  assert j -> 'daily' = '[]', 'no daily row';
+  assert j -> 'ai' -> 'months' = '[]', 'no AI use';
+  assert j -> 'ai' -> 'limits' = '{"chat": 300, "photo": 100, "menu": 20, "nfce": 200, "finance": 100}', 'the limits';
+  assert j -> 'ai' -> 'near_limit' = '[{"kind": "chat", "households": 0}, {"kind": "photo", "households": 0}, {"kind": "menu", "households": 0}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}]',
+    'every kind near the limit, with zero';
+  assert j -> 'ai' -> 'at_limit' = j -> 'ai' -> 'near_limit', 'and at the limit';
+  assert jsonb_array_length(j -> 'features') = 19
+    and (select bool_and((e ->> 'households')::int = 0 and (e ->> 'households_30d')::int = 0 and (e ->> 'events_30d')::int = 0)
+         from jsonb_array_elements(j -> 'features') e), 'nineteen features, none used';
+  assert j -> 'receipt_sources' = '[{"source": "qrcode", "receipts_30d": 0}, {"source": "ai", "receipts_30d": 0}, {"source": "manual", "receipts_30d": 0}]',
+    'the three sources, with zero';
+  assert j -> 'platforms' = '[]' and j -> 'clients' = '[]' and j -> 'terms' = '[]' and j -> 'beta' = '[]', 'empty lists';
+  assert j -> 'push' = '{"subscriptions": 0, "users": 0}' and j -> 'shared_prices' = '{"rows": 0}', 'nothing else';
+end $$;
+-- Sem conta (sem o sub do token), ninguém é admin.
+select set_config('request.jwt.claim.sub', '', true) \gset
+do $$
+begin
+  assert not public.is_app_admin(), 'no account, no admin';
+end $$;
+
+-- As outras pessoas. Beto (há 10 dias) e Caio (há 20, sem confirmar o e-mail) entraram e voltaram ou não; Dani
+-- é de anteontem; Eli apagou a conta; uma conta anônima; Fabi (há 40 dias) só abre a casa.
+reset role;
+update auth.users set last_sign_in_at = now() where id = '00000000-0000-0000-0000-0000000004a1';
+insert into auth.users (id, email, created_at, email_confirmed_at, last_sign_in_at, deleted_at, is_anonymous) values
+  ('00000000-0000-0000-0000-0000000004a2', 'beto@exemplo.com', pg_temp.sp(10, '10:00'), pg_temp.sp(10, '10:05'), pg_temp.sp(10, '11:00'), null, false),
+  ('00000000-0000-0000-0000-0000000004a3', 'caio@exemplo.com', pg_temp.sp(20, '10:00'), null, pg_temp.sp(20, '11:00'), null, false),
+  ('00000000-0000-0000-0000-0000000004a4', 'dani@exemplo.com', now() - interval '2 days', now() - interval '2 days', now() - interval '2 days', null, false),
+  ('00000000-0000-0000-0000-0000000004a5', 'eli@exemplo.com', now() - interval '5 days', now() - interval '5 days', now(), now() - interval '1 day', false),
+  ('00000000-0000-0000-0000-0000000004a6', null, now() - interval '1 day', null, now(), null, true),
+  ('00000000-0000-0000-0000-0000000004a7', 'fabi@exemplo.com', pg_temp.sp(40, '10:00'), pg_temp.sp(40, '10:05'), pg_temp.sp(40, '11:00'), null, false);
+
+-- Ana cria a casa, Beto e Fabi entram; Dani cria a dela.
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000004a1', true) \gset
+select (public.create_household('Casa da Ana', 'Ana')).id as adm_h1 \gset
+select invite_code as adm_invite from public.households where id = :'adm_h1' \gset
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000004a2', true) \gset
+select public.join_household(:'adm_invite', 'Beto') \gset
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000004a7', true) \gset
+select public.join_household(:'adm_invite', 'Fabi') \gset
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000004a4', true) \gset
+select (public.create_household('Casa da Dani', 'Dani')).id as adm_h2 \gset
+reset role;
+-- Sem conta no token: quem pagou a nota e quem fez a tarefa ficam vazios.
+select set_config('request.jwt.claim.sub', '', true) \gset
+select set_config('test.adm_h1', :'adm_h1', true) \gset
+select set_config('test.adm_h2', :'adm_h2', true) \gset
+do $$
+declare
+  h1 uuid := current_setting('test.adm_h1')::uuid;
+  h2 uuid := current_setting('test.adm_h2')::uuid;
+  ana uuid := '00000000-0000-0000-0000-0000000004a1';
+  beto uuid := '00000000-0000-0000-0000-0000000004a2';
+  dani uuid := '00000000-0000-0000-0000-0000000004a4';
+  eli uuid := '00000000-0000-0000-0000-0000000004a5';
+  anonymous uuid := '00000000-0000-0000-0000-0000000004a6';
+  fabi uuid := '00000000-0000-0000-0000-0000000004a7';
+  this_month text := public.ai_month();
+  month_start timestamp := date_trunc('month', (now() at time zone 'America/Sao_Paulo')::date::timestamp);
+  list1 uuid;
+  list2 uuid;
+  chore1 uuid;
+  dani_session uuid;
+begin
+  update public.households set created_at = now() - interval '40 days' where id = h1;
+  update public.households set created_at = now() - interval '2 days' where id = h2;
+  -- Uma criança sem o app na casa da Ana, um pet na da Dani.
+  insert into public.people (household_id, name) values (h1, 'Lia');
+  insert into public.people (household_id, name, kind) values (h2, 'Rex', 'pet');
+
+  -- Os aparelhos. Ana: o computador há 2 horas, o app do iPhone ontem e um Android de 40 dias atrás (fora dos 30).
+  insert into auth.sessions (user_id, created_at, updated_at, user_agent) values
+    (ana, now() - interval '2 hours', now() - interval '2 hours', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'),
+    (ana, now() - interval '1 day', now() - interval '1 day', 'Kotii/1 CFNetwork/1490.0.4 Darwin/23.2.0'),
+    (ana, now() - interval '40 days', now() - interval '40 days', 'okhttp/4.9.2');
+  -- Beto: a sessão é de 9 dias atrás, renovada há 20 horas (refreshed_at sem fuso, na hora de UTC).
+  insert into auth.sessions (user_id, created_at, updated_at, refreshed_at, user_agent) values
+    (beto, now() - interval '9 days', now() - interval '9 days', (now() - interval '20 hours') at time zone 'UTC',
+     'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1');
+  -- Dani: a sessão de anteontem, com o token renovado agora (o user_id da renovação é texto).
+  insert into auth.sessions (user_id, created_at, updated_at, user_agent) values
+    (dani, now() - interval '2 days', now() - interval '2 days',
+     'Mozilla/5.0 (Linux; Android 14; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36')
+    returning id into dani_session;
+  insert into auth.refresh_tokens (user_id, session_id, created_at) values (dani::text, dani_session, now());
+  -- Conta apagada e conta anônima não contam, nem com sessão viva.
+  insert into auth.sessions (user_id, created_at, updated_at, user_agent) values
+    (eli, now() - interval '1 hour', now() - interval '1 hour', 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36'),
+    (anonymous, now(), now(), 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1');
+  -- Fabi abriu a casa há 5 dias; Beto, há 9.
+  insert into public.household_sessions (session_id, user_id, household_id, updated_at) values
+    ('sessao-fabi', fabi, h1, now() - interval '5 days'),
+    ('sessao-beto', beto, h1, now() - interval '9 days');
+
+  -- IA: o chat da Dani está em 240 de 300 (80%: perto), a foto da Dani em 79 de 100 (ainda não), o cardápio
+  -- da Dani no limite e o da Ana em 19 de 20; o mês passado conta, o de seis meses atrás não.
+  insert into public.ai_usage (household_id, month, kind, count) values
+    (h1, this_month, 'chat', 4),
+    (h1, this_month, 'photo', 85),
+    (h1, this_month, 'menu', 19),
+    (h1, to_char(month_start - interval '1 month', 'YYYY-MM'), 'chat', 7),
+    (h2, this_month, 'chat', 240),
+    (h2, this_month, 'photo', 79),
+    (h2, this_month, 'menu', 20),
+    (h2, this_month, 'nfce', 0),
+    (h2, to_char(month_start - interval '6 months', 'YYYY-MM'), 'chat', 9);
+
+  -- Funções: a lista (dois itens novos na Ana, um velho na Dani), notas (a da Ana confirmada agora, a da Dani
+  -- confirmada há 40 dias e um rascunho, que não conta) e tarefas (a da Ana feita agora e há 40 dias; a da
+  -- Dani nunca feita).
+  insert into public.shopping_lists (household_id, name) values (h1, 'Mercado') returning id into list1;
+  insert into public.shopping_lists (household_id, name) values (h2, 'Mercado') returning id into list2;
+  insert into public.shopping_list_items (household_id, list_id, name) values (h1, list1, 'Arroz'), (h1, list1, 'Feijão');
+  insert into public.shopping_list_items (household_id, list_id, name, created_at) values (h2, list2, 'Café', now() - interval '40 days');
+  insert into public.receipts (household_id, status, source, total) values (h1, 'confirmed', 'ai', 10);
+  insert into public.receipts (household_id, status, source, total) values (h2, 'draft', 'qrcode', 20);
+  insert into public.receipts (household_id, status, source, total, created_at) values (h2, 'confirmed', 'manual', 30, now() - interval '40 days');
+  insert into public.chores (household_id, title) values (h1, 'Lixo') returning id into chore1;
+  insert into public.chores (household_id, title) values (h2, 'Regar');
+  insert into public.chore_completions (household_id, chore_id, chore_title, completed_at) values
+    (h1, chore1, 'Lixo', now()),
+    (h1, chore1, 'Lixo', now() - interval '40 days');
+
+  -- Avisos do navegador (Ana em dois), termos, consultor e preços compartilhados.
+  insert into public.push_subscriptions (user_id, endpoint, p256dh, auth) values
+    (ana, 'https://fcm.googleapis.com/fcm/send/painel-ana-1', 'k', 'a'),
+    (ana, 'https://fcm.googleapis.com/fcm/send/painel-ana-2', 'k', 'a'),
+    (beto, 'https://fcm.googleapis.com/fcm/send/painel-beto', 'k', 'a');
+  insert into public.terms_acceptances (user_id, version) values (ana, '2026-10-20'), (ana, '2026-10-22'), (beto, '2026-10-22');
+  insert into public.beta_access (user_id, household_id, feature) values (ana, h1, 'finance');
+  insert into public.shared_prices (store_cnpj, store_uf, store_name, item_key, unit, seen_on, unit_price, visible_on)
+  values ('11222333000181', '25', 'MERCADO DO PAINEL', 'ARROZ', 'kg', current_date - 2, 5.50, current_date - 1);
+
+  -- Os dias já guardados: o de 31 dias atrás fica fora do painel; o de 30 entra, como véspera do primeiro dia.
+  insert into public.app_daily_stats (day, accounts, active_users, households, backfilled) values
+    ((now() at time zone 'America/Sao_Paulo')::date - 31, 1, 1, 1, true),
+    ((now() at time zone 'America/Sao_Paulo')::date - 30, 1, 1, 1, true);
+end $$;
+
+-- Os sinais: cada pessoa, quando; só contas que existem.
+do $$
+declare
+  ana uuid := '00000000-0000-0000-0000-0000000004a1';
+  beto uuid := '00000000-0000-0000-0000-0000000004a2';
+  caio uuid := '00000000-0000-0000-0000-0000000004a3';
+  dani uuid := '00000000-0000-0000-0000-0000000004a4';
+  fabi uuid := '00000000-0000-0000-0000-0000000004a7';
+begin
+  assert (select count(*) from public.app_last_seen()) = 5, 'five accounts: no deleted, no anonymous one';
+  assert (select last_seen from public.app_last_seen() where user_id = ana) = now(), 'Ana: signed in now';
+  assert (select last_seen from public.app_last_seen() where user_id = beto) = now() - interval '20 hours', 'Beto: refreshed_at read as UTC';
+  assert (select last_seen from public.app_last_seen() where user_id = caio) = pg_temp.sp(20, '11:00'), 'Caio: his only sign-in';
+  assert (select last_seen from public.app_last_seen() where user_id = dani) = now(), 'Dani: the token refresh';
+  assert (select last_seen from public.app_last_seen() where user_id = fabi) = now() - interval '5 days', 'Fabi: the household she opened';
+  assert (select created_at from public.app_last_seen() where user_id = caio) = pg_temp.sp(20, '10:00'), 'the creation is not a signal';
+  -- A janela é [de, até): o que acontece no "até" fica para a próxima.
+  assert (select array_agg(user_id order by user_id) from public.app_activity_users(now() - interval '2 hours', now() + interval '1 hour'))
+    = array[ana, dani], 'the last two hours: Ana and Dani, not the deleted or the anonymous account';
+  assert (select array_agg(user_id order by user_id) from public.app_activity_users(now() - interval '2 hours', now())) = array[ana],
+    'Dani''s refresh, at the end of the window, is out';
+  assert (select array_agg(user_id order by user_id) from public.app_activity_users(pg_temp.sp(20, '00:00'), pg_temp.sp(19, '00:00'))) = array[caio],
+    'twenty days ago: Caio';
+  assert (select array_agg(user_id order by user_id) from public.app_activity_users(pg_temp.sp(40, '00:00'), pg_temp.sp(39, '00:00'))) = array[ana, fabi],
+    'forty days ago: Ana''s old session and Fabi''s sign-in';
+end $$;
+
+-- A foto de hoje.
+select public.snapshot_app_stats() \gset
+do $$
+declare
+  today date := (now() at time zone 'America/Sao_Paulo')::date;
+  -- Beto renovou há 20 horas: hoje, ou ontem, conforme a hora em que o teste roda.
+  beto_today integer := (((now() - interval '20 hours') at time zone 'America/Sao_Paulo')::date = today)::integer;
+  s public.app_daily_stats;
+begin
+  select * into s from public.app_daily_stats where day = today;
+  assert s.accounts = 5 and s.households = 2, 'today: five accounts, two households';
+  assert s.active_users = 2 + beto_today, 'today: Ana and Dani (and Beto when his refresh was today): ' || s.active_users;
+  assert s.ai_month = '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0}',
+    'the month''s AI use, summed, and every kind without use at zero: ' || s.ai_month::text;
+  assert not s.backfilled, 'a real snapshot';
+end $$;
+
+-- Quem não é admin continua de fora, com o banco cheio.
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000004a2', true) \gset
+do $$
+begin
+  assert not public.is_app_admin(), 'Beto is not an admin';
+  perform public.app_dashboard();
+  raise exception 'FAIL: the dashboard answered a member who is not an admin';
+exception when insufficient_privilege then null;
+end $$;
+
+-- O painel da Ana.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000004a1', true) \gset
+do $$
+declare
+  j jsonb;
+  today date := (now() at time zone 'America/Sao_Paulo')::date;
+  this_month text := to_char(now() at time zone 'America/Sao_Paulo', 'YYYY-MM');
+  last_month text := to_char(date_trunc('month', (now() at time zone 'America/Sao_Paulo')::date::timestamp) - interval '1 month', 'YYYY-MM');
+  beto_today integer := (((now() - interval '20 hours') at time zone 'America/Sao_Paulo')::date = today)::integer;
+  tz text := current_setting('timezone');
+begin
+  j := public.app_dashboard();
+  assert j ->> 'generated_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$', 'generated_at in UTC: ' || (j ->> 'generated_at');
+  assert (j ->> 'generated_at')::timestamptz = date_trunc('second', now()), 'generated now';
+  assert j ->> 'today' = to_char(today, 'YYYY-MM-DD'), 'today in São Paulo';
+  assert j -> 'accounts' = '{"total": 5, "new_7d": 1, "new_30d": 3, "confirmed": 4, "in_household": 4}', 'accounts: ' || (j -> 'accounts')::text;
+  assert j -> 'active' = '{"d1": 3, "d7": 4, "d30": 5}', 'active: Ana, Beto, Dani in a day; Fabi in a week; Caio in a month: ' || (j -> 'active')::text;
+  assert j -> 'retention' = '{"eligible": 4, "returned": 3}', 'Caio never came back after his first day: ' || (j -> 'retention')::text;
+  assert j -> 'households' = '{"total": 2, "shared": 1, "members": 4, "people_without_app": 1, "pets": 1, "new_30d": 1}',
+    'households: ' || (j -> 'households')::text;
+  assert j -> 'signups' = (
+    select jsonb_agg(jsonb_build_object('day', to_char(today - n, 'YYYY-MM-DD'), 'count', case when n in (2, 10, 20) then 1 else 0 end) order by n desc)
+    from generate_series(0, 29) as n
+  ), 'one account 2, 10 and 20 days ago (São Paulo days), every other day with zero: ' || (j -> 'signups')::text;
+  assert j -> 'daily' = jsonb_build_array(
+    jsonb_build_object('day', to_char(today - 30, 'YYYY-MM-DD'), 'accounts', 1, 'active_users', 1, 'households', 1, 'ai', '{}'::jsonb, 'backfilled', true),
+    jsonb_build_object('day', to_char(today, 'YYYY-MM-DD'), 'accounts', 5, 'active_users', 2 + beto_today, 'households', 2,
+      'ai', '{"chat": 244, "photo": 164, "menu": 39, "nfce": 0, "finance": 0}'::jsonb, 'backfilled', false)
+  ), 'the 30 days plus the day before, oldest first: ' || (j -> 'daily')::text;
+  assert j -> 'ai' ->> 'month' = this_month, 'the AI month';
+  assert j -> 'ai' -> 'months' = jsonb_build_array(
+    jsonb_build_object('month', last_month, 'kind', 'chat', 'uses', 7, 'households', 1),
+    jsonb_build_object('month', this_month, 'kind', 'chat', 'uses', 244, 'households', 2),
+    jsonb_build_object('month', this_month, 'kind', 'menu', 'uses', 39, 'households', 2),
+    jsonb_build_object('month', this_month, 'kind', 'nfce', 'uses', 0, 'households', 0),
+    jsonb_build_object('month', this_month, 'kind', 'photo', 'uses', 164, 'households', 2)
+  ), 'six months by month and kind, without the older one: ' || (j -> 'ai' -> 'months')::text;
+  assert j -> 'ai' -> 'near_limit' = '[{"kind": "chat", "households": 1}, {"kind": "photo", "households": 1}, {"kind": "menu", "households": 1}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}]',
+    'near the limit from 80%: ' || (j -> 'ai' -> 'near_limit')::text;
+  assert j -> 'ai' -> 'at_limit' = '[{"kind": "chat", "households": 0}, {"kind": "photo", "households": 0}, {"kind": "menu", "households": 1}, {"kind": "nfce", "households": 0}, {"kind": "finance", "households": 0}]',
+    'at the limit: ' || (j -> 'ai' -> 'at_limit')::text;
+  assert j -> 'features' = (
+    select jsonb_agg(jsonb_build_object(
+        'key', f.key,
+        'households', case f.key when 'lista' then 2 when 'notas' then 2 when 'tarefas' then 2 else 0 end,
+        'households_30d', case f.key when 'lista' then 1 when 'notas' then 1 when 'tarefas' then 1 else 0 end,
+        'events_30d', case f.key when 'lista' then 2 when 'notas' then 1 when 'tarefas' then 1 else 0 end
+      ) order by f.pos)
+    from unnest(array[
+      'lista', 'notas', 'despensa', 'gastos', 'contas', 'orcamento', 'remedios', 'consultas', 'exames', 'vacinas',
+      'tarefas', 'compromissos', 'cardapio', 'suprimentos', 'aparelhos', 'documentos', 'prestadores', 'treinos', 'dieta'
+    ]) with ordinality as f (key, pos)
+  ), 'features in the agreed order: ' || (j -> 'features')::text;
+  assert j -> 'receipt_sources' = '[{"source": "qrcode", "receipts_30d": 0}, {"source": "ai", "receipts_30d": 1}, {"source": "manual", "receipts_30d": 0}]',
+    'confirmed receipts of 30 days by source: ' || (j -> 'receipt_sources')::text;
+  assert j -> 'platforms' = '[{"platform": "ios", "users": 2}, {"platform": "android", "users": 1}, {"platform": "computador", "users": 1}]',
+    'Ana counts on the computer and on the iPhone; her old Android, the deleted and the anonymous account do not: ' || (j -> 'platforms')::text;
+  assert j -> 'clients' = '[{"client": "navegador", "users": 3}, {"client": "app", "users": 1}]', 'clients: ' || (j -> 'clients')::text;
+  assert j -> 'push' = '{"subscriptions": 3, "users": 2}', 'push: ' || (j -> 'push')::text;
+  assert j -> 'terms' = '[{"version": "2026-10-22", "users": 2}, {"version": "2026-10-20", "users": 1}]', 'terms, newest first: ' || (j -> 'terms')::text;
+  assert j -> 'beta' = '[{"feature": "finance", "users": 1}]', 'beta: ' || (j -> 'beta')::text;
+  assert j -> 'shared_prices' = '{"rows": 1}', 'shared prices: only the count';
+  -- Só totais: nenhum id, e-mail ou nome.
+  assert j::text !~* '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', 'no uuid in the dashboard';
+  assert position('@' in j::text) = 0, 'no e-mail in the dashboard';
+  assert j::text !~ '(Ana|Beto|Dani|Lia|Rex|Casa|MERCADO|ARROZ)', 'no name of a person, household, store or item';
+  -- O fuso da conexão não muda nada (refreshed_at é UTC; os dias são de São Paulo).
+  perform set_config('timezone', 'Asia/Tokyo', true);
+  assert public.app_dashboard() = j, 'the same dashboard in another session time zone';
+  perform set_config('timezone', 'America/Sao_Paulo', true);
+  assert public.app_dashboard() = j, 'and in São Paulo';
+  perform set_config('timezone', tz, true);
+end $$;
+reset role;
+
+-- O número do dia só sobe: Dani sai da conta (a sessão e as renovações dela somem) e a foto seguinte não perde
+-- ninguém; contas e IA seguem o banco, e a foto de verdade tira a marca de estimativa.
+do $$
+declare
+  today date := (now() at time zone 'America/Sao_Paulo')::date;
+  beto_today integer := (((now() - interval '20 hours') at time zone 'America/Sao_Paulo')::date = today)::integer;
+  s public.app_daily_stats;
+begin
+  delete from auth.sessions where user_id = '00000000-0000-0000-0000-0000000004a4';
+  assert not exists (select 1 from auth.refresh_tokens), 'her refresh tokens went with the session';
+  assert (select count(*) from public.app_activity_users(pg_temp.sp(0, '00:00'), pg_temp.sp(-1, '00:00'))) = 1 + beto_today,
+    'counted again, today lost Dani';
+  insert into auth.users (id, email) values ('00000000-0000-0000-0000-0000000004a8', 'gil@exemplo.com');
+  update public.ai_usage set count = count + 1 where household_id = current_setting('test.adm_h1')::uuid and kind = 'chat' and month = public.ai_month();
+  update public.app_daily_stats set backfilled = true where day = today;
+  perform public.snapshot_app_stats();
+  select * into s from public.app_daily_stats where day = today;
+  assert s.active_users = 2 + beto_today, 'the day keeps Dani: ' || s.active_users;
+  assert s.accounts = 6, 'Gil''s new account counts';
+  assert s.ai_month ->> 'chat' = '245', 'the AI use follows the database';
+  assert not s.backfilled, 'a snapshot is never an estimate';
+  assert (select count(*) from public.app_daily_stats) = 3, 'one row per day';
+  -- E sobe: Caio e Gil entram agora.
+  update auth.users set last_sign_in_at = now()
+    where id in ('00000000-0000-0000-0000-0000000004a3', '00000000-0000-0000-0000-0000000004a8');
+  perform public.snapshot_app_stats();
+  assert (select active_users from public.app_daily_stats where day = today) = 3 + beto_today, 'more people today: the count goes up';
+  -- A conta apagada no Auth leva a linha de admin junto.
+  insert into public.app_admins (user_id) values ('00000000-0000-0000-0000-0000000004a8');
+  delete from auth.users where id = '00000000-0000-0000-0000-0000000004a8';
+  assert (select array_agg(user_id) from public.app_admins) = array['00000000-0000-0000-0000-0000000004a1'::uuid],
+    'a deleted account stops being an admin; Ana still is';
+end $$;
+
+-- E o dia anterior: cada foto também sobe ontem, então a das 0h59 pega quem a das 23h59 não pegou (ou cobre a
+-- das 23h59 que falhou). Só as pessoas ativas mudam, e só para cima; um dia sem linha continua sem registro.
+do $$
+declare
+  today date := (now() at time zone 'America/Sao_Paulo')::date;
+  fabi uuid := '00000000-0000-0000-0000-0000000004a7';
+  yesterday_active integer;
+  s public.app_daily_stats;
+begin
+  -- Fabi abriu a casa ontem às 23h30, depois da última foto do dia.
+  insert into public.household_sessions (session_id, user_id, household_id, updated_at)
+  values ('sessao-fabi-ontem', fabi, current_setting('test.adm_h1')::uuid, pg_temp.sp(1, '23:30'));
+  assert fabi in (select user_id from public.app_activity_users(pg_temp.sp(1, '00:00'), pg_temp.sp(0, '00:00'))),
+    'Fabi has a signal of yesterday';
+  select count(*) into yesterday_active from public.app_activity_users(pg_temp.sp(1, '00:00'), pg_temp.sp(0, '00:00'));
+
+  perform public.snapshot_app_stats();
+  assert not exists (select 1 from public.app_daily_stats where day = today - 1), 'a day without a row is not created';
+
+  insert into public.app_daily_stats (day, accounts, active_users, households, ai_month, backfilled)
+  values (today - 1, 7, 0, 9, '{}', true);
+  perform public.snapshot_app_stats();
+  select * into s from public.app_daily_stats where day = today - 1;
+  assert s.active_users = yesterday_active, 'yesterday went up to whoever still has a signal of it: ' || s.active_users;
+  assert s.accounts = 7 and s.households = 9 and s.ai_month = '{}' and s.backfilled,
+    'and nothing else of yesterday changed: ' || row_to_json(s)::text;
+
+  update public.app_daily_stats set active_users = yesterday_active + 5 where day = today - 1;
+  perform public.snapshot_app_stats();
+  assert (select active_users from public.app_daily_stats where day = today - 1) = yesterday_active + 5, 'yesterday never goes down';
+end $$;
+rollback;
+
+do $$
+begin
+  assert (select count(*) from public.app_daily_stats) = 31, 'the rollback brought the migration''s days back';
+  assert not exists (select 1 from public.app_admins), 'and nobody is an admin';
+end $$;
 
 \echo '• Mercado: a casa dá outro nome a ele, e o nome impresso na nota fica guardado'
 \set user_m1 '00000000-0000-0000-0000-0000000002f1'
