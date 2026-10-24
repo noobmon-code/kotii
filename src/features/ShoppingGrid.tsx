@@ -9,10 +9,14 @@ import type { ShoppingListItem } from '@/lib/types';
 import { Badge, CategoryIcon, Icon, Row, Text, useCategoryTint } from '@/ui/primitives';
 import { radius, space, useColors } from '@/ui/theme';
 
-/** O que a casa sabe do item no mercado: quanto deve custar e se está na despensa (domain/listEstimate). */
+/**
+ * O que a casa sabe do item no mercado: quanto deve custar e se está na despensa (domain/listEstimate) e, na ida
+ * ao mercado de quem está com o app, se entrou depois do aviso (domain/marketTrips, newDuringTrip).
+ */
 export interface ItemHint {
   cost?: string;
   inPantry?: boolean;
+  isNew?: boolean;
 }
 
 /** Fotos dos itens: links das já enviadas (por caminho) e as que esperam internet (por item). */
@@ -38,9 +42,12 @@ export function ShoppingGrid({
   onToggle,
   onOpen,
   onStore,
+  readOnly = false,
 }: {
   items: ShoppingListItem[];
   inCart?: boolean;
+  /** Só para ver (a lista arquivada): o toque não marca; segurar abre os detalhes, também só para ver. */
+  readOnly?: boolean;
   photos: ItemPhotos;
   /** Preço estimado e "na despensa", por item. */
   hints?: ReadonlyMap<string, ItemHint>;
@@ -65,6 +72,7 @@ export function ShoppingGrid({
               photoUrl={item.photo_path ? photos.signed?.[item.photo_path] : undefined}
               pendingKey={photos.pending.get(item.id)}
               hint={hints?.get(item.id)}
+              readOnly={readOnly}
               onPress={() => onToggle(item)}
               onLongPress={() => onOpen(item)}
               onStore={onStore ? () => onStore(item) : undefined}
@@ -82,11 +90,13 @@ function Tile({
   photoUrl,
   pendingKey,
   hint,
+  readOnly,
   onPress,
   onLongPress,
   onStore,
 }: {
   item: ShoppingListItem;
+  readOnly: boolean;
   width: number;
   inCart: boolean;
   photoUrl?: string;
@@ -112,17 +122,18 @@ function Tile({
   const notes = item.notes?.trim();
   // No carrinho o item já foi pego: a despensa não importa mais.
   const inPantry = !inCart && hint?.inPantry;
+  const isNew = !inCart && hint?.isNew;
   return (
     <Pressable
       accessibilityRole="checkbox"
       accessibilityState={{ checked: inCart }}
-      accessibilityLabel={[item.name, quantity, hint?.cost, badge?.label, inPantry ? 'na despensa' : null, notes]
+      accessibilityLabel={[item.name, quantity, hint?.cost, isNew ? 'novo' : null, badge?.label, inPantry ? 'na despensa' : null, notes]
         .filter(Boolean)
         .join(', ')}
-      accessibilityHint={inCart ? 'Toque para devolver à lista' : 'Toque para pôr no carrinho'}
+      accessibilityHint={readOnly ? 'Segure para ver os detalhes' : inCart ? 'Toque para devolver à lista' : 'Toque para pôr no carrinho'}
       accessibilityActions={[{ name: 'longpress', label: 'Detalhes do item' }]}
       onAccessibilityAction={(e) => e.nativeEvent.actionName === 'longpress' && onLongPress()}
-      onPress={onPress}
+      onPress={readOnly ? undefined : onPress}
       onLongPress={onLongPress}
       style={({ pressed }) => [
         styles.tile,
@@ -157,6 +168,8 @@ function Tile({
           {hint.cost}
         </Text>
       ) : null}
+      {/* Pedido da casa depois que a pessoa saiu para as compras. */}
+      {isNew ? <Badge label="Novo" tone="primary" /> : null}
       {badge ? <Badge label={badge.label} tone={badge.tone} /> : null}
       {/* O que o app sabe, não um fato sobre a casa; neutro para não parecer o selo de promoção. */}
       {inPantry ? <Badge label="Na despensa" /> : null}

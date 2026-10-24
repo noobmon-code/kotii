@@ -15,6 +15,7 @@ import { productNamed as productWithName } from '@/domain/barcode';
 import type { CartPantryEntry } from '@/domain/cartPantry';
 import { pendingSameItem } from '@/domain/genericItem';
 import { LinkIndex, type ListLink, type OpenListItem } from '@/domain/listLinks';
+import type { MarketTrip } from '@/domain/marketTrips';
 import {
   cartPurchases,
   itemsWithNew,
@@ -71,6 +72,19 @@ export function unlessListQueueBusy<T>(fetch: (context: QueryFunctionContext) =>
 }
 
 type ListSummary = ShoppingList & ListSummaryCounts;
+
+/**
+ * Quem guarda os ids dos itens que este aparelho pôs em cada lista (lib/addedItems, ligado em lib/queryClient):
+ * na ida ao mercado, eles não ganham o selo "Novo". Fica de fora daqui, que não lê o armazenamento do aparelho.
+ */
+let rememberAdded: (listId: string, ids: string[]) => void = () => undefined;
+
+export function setAddedItemsRecorder(record: (listId: string, ids: string[]) => void) {
+  rememberAdded = record;
+}
+
+/** As idas ao mercado (data/marketTrips, que não entra aqui: ela traz os avisos do aparelho junto). */
+const MARKET_TRIPS_KEY = 'marketTrips';
 
 // O cache guardado no aparelho por versões anteriores tem listas sem `items`.
 const withItems = (lists: ListSummary[]) => (lists.every((l) => l.items) ? lists : lists.map((l) => ({ ...l, items: l.items ?? [] })));
@@ -301,13 +315,85 @@ export function useCreateList() {
 }
 
 export function useArchiveList(listId: string) {
+  const queryClient = useQueryClient();
   const invalidate = useInvalidateLists(listId);
   return useMutation({
     mutationFn: async () =>
       unwrap(
         await supabase.from('shopping_lists').update({ archived_at: new Date().toISOString() }).eq('id', listId),
       ),
-    onSuccess: invalidate,
+    onSuccess: () => {
+      invalidate();
+      void queryClient.invalidateQueries({ queryKey: [ARCHIVED_LISTS_KEY] });
+    },
+  });
+}
+
+/** Quantas arquivadas o painel das listas mostra (as mais novas): o bastante para achar a da semana passada. */
+export const ARCHIVED_LISTS_MAX = 20;
+export const ARCHIVED_LISTS_KEY = 'archivedLists';
+
+/**
+ * As listas arquivadas, as arquivadas por último primeiro. Só na memória (a chave não entra em PERSISTED): sem
+ * internet, "Reabrir" não teria como sair.
+ */
+export function useArchivedLists() {
+  return useQuery({
+    queryKey: [ARCHIVED_LISTS_KEY],
+    queryFn: async () =>
+      unwrap(
+        await supabase
+          .from('shopping_lists')
+          .select('id, name, kind, archived_at, created_at')
+          .not('archived_at', 'is', null)
+          .order('archived_at', { ascending: false })
+          .limit(ARCHIVED_LISTS_MAX),
+      ) as ShoppingList[],
+  });
+}
+
+/** "Reabrir": a lista arquivada volta para as listas (archived_at nulo). */
+export function useReopenList() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (listId: string) =>
+      unwrap(await supabase.from('shopping_lists').update({ archived_at: null }).eq('id', listId)),
+    onSuccess: (_done, listId) => {
+      // Sai já das arquivadas; as buscas confirmam.
+      queryClient.setQueryData<ShoppingList[]>([ARCHIVED_LISTS_KEY], (lists) => lists?.filter((l) => l.id !== listId));
+      queryClient.setQueryData<ShoppingList>(['list', listId], (list) => (list ? { ...list, archived_at: null } : list));
+      for (const key of [[ARCHIVED_LISTS_KEY], ['lists'], ['list', listId], [MARKET_TRIPS_KEY]]) {
+        void queryClient.invalidateQueries({ queryKey: key });
+      }
+    },
+  });
+}
+
+/** Renomear sem internet: a fila da lista é dos itens, e o nome não entra nela. */
+export const RENAME_LIST_OFFLINE = 'Sem internet agora. Renomeie a lista quando a conexão voltar.';
+
+/**
+ * "Renomear": o nome novo (já limpo, domain/shoppingListName) na lista, nas listas e nas idas ao mercado dela.
+ * Sem internet não grava (RENAME_LIST_OFFLINE): as mutações do app saem mesmo sem conexão, e uma troca de nome
+ * esperando a vez, sem fila que a guarde, se perderia ao fechar o app.
+ */
+export function useRenameList(listId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (name: string) => {
+      if (!onlineManager.isOnline()) throw new Error(RENAME_LIST_OFFLINE);
+      unwrap(await supabase.from('shopping_lists').update({ name }).eq('id', listId));
+      return name;
+    },
+    onSuccess: (name) => {
+      queryClient.setQueryData<ShoppingList>(['list', listId], (list) => (list ? { ...list, name } : list));
+      queryClient.setQueryData<ListSummary[]>(['lists'], (lists) => lists?.map((l) => (l.id === listId ? { ...l, name } : l)));
+      queryClient.setQueryData<ShoppingList[]>([ARCHIVED_LISTS_KEY], (lists) => lists?.map((l) => (l.id === listId ? { ...l, name } : l)));
+      queryClient.setQueryData<MarketTrip[] | null>([MARKET_TRIPS_KEY], (trips) =>
+        trips ? trips.map((trip) => (trip.list_id === listId ? { ...trip, list: { ...trip.list, name } } : trip)) : trips,
+      );
+      for (const key of [['list', listId], ['lists'], [ARCHIVED_LISTS_KEY], [MARKET_TRIPS_KEY]]) void queryClient.invalidateQueries({ queryKey: key });
+    },
   });
 }
 
@@ -395,8 +481,12 @@ export function useAddListItem(listId: string) {
      * Põe o item; `onError` só vem quando a fila desiste (a lista apagada, por exemplo). O aviso à pessoa sai
      * da fila (registerListMutations), também para o pôr guardado que sai depois de reabrir o app.
      */
-    add: (item: NewListItem, userId: string, options?: QueuedCallbacks) =>
-      settle(mutation.mutateAsync({ ...item, id: newToggleToken(), listId, userId, token: newToggleToken() }), options),
+    add: (item: NewListItem, userId: string, options?: QueuedCallbacks) => {
+      const id = newToggleToken();
+      // Na ida ao mercado, o que este aparelho pôs não ganha o selo "Novo" (lib/addedItems).
+      rememberAdded(listId, [id]);
+      settle(mutation.mutateAsync({ ...item, id, listId, userId, token: newToggleToken() }), options);
+    },
   };
 }
 
@@ -479,11 +569,16 @@ export function useAddItemsToList() {
         toAdd = items.filter((item) => !pendingSameItem(item, pending));
       }
       if (toAdd.length) {
+        // O id sai do aparelho e fica guardado antes do envio (se a resposta se perder, o item já entrou): o que ele
+        // pôs não ganha o selo "Novo" na ida ao mercado (lib/addedItems).
+        const ids = toAdd.map(() => newToggleToken());
+        rememberAdded(id, ids);
         // O produto de um item pode ter sido juntado com outro em outro aparelho (withFreshProducts).
         await withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
           unwrap(
             await supabase.from('shopping_list_items').insert(
-              toAdd.map((item) => ({
+              toAdd.map((item, index) => ({
+                id: ids[index],
                 list_id: id,
                 name: item.name,
                 category: item.category,
@@ -531,6 +626,14 @@ async function openPharmacyList(name = 'Farmácia'): Promise<{ id: string; name:
 
 type ListedItem = { id: string; name: string; added: boolean };
 
+/** O que add_to_list e add_to_pharmacy_list devolvem: item_id é o item posto (ou o que já estava pendente). */
+type AddedRow = { list_id: string; list_name: string; item_id?: string | null; added: boolean };
+
+/** O item que a função do banco pôs agora fica como deste aparelho (o selo "Novo" da ida não vale para ele). */
+function rememberRpcItem(row: AddedRow) {
+  if (row.added && row.item_id) rememberAdded(row.list_id, [row.item_id]);
+}
+
 /**
  * Põe o item na lista, a não ser que já esteja pendente nela (`added: false`): repetir é seguro. Pendente com este
  * nome ou com outro do mesmo item ("Leite desnatado" do Nuke com "Leite IL Desnatado" na lista: domain/genericItem).
@@ -540,10 +643,15 @@ async function addItemOnce(queryClient: QueryClient, list: { id: string; name: s
     await supabase.from('shopping_list_items').select('name, category').eq('list_id', list.id).is('checked_at', null),
   ) as { name: string; category?: string | null }[];
   if (pendingSameItem(item, pending)) return { ...list, added: false };
+  // O id sai do aparelho e fica guardado antes do envio (se a resposta se perder, o item já entrou): o que ele pôs
+  // não ganha o selo "Novo" na ida ao mercado (lib/addedItems).
+  const id = newToggleToken();
+  rememberAdded(list.id, [id]);
   // O produto do item (o da despensa, na lista de mercado) pode ter sido juntado com outro em outro aparelho (withFreshProducts).
   await withFreshProducts(queryClient, LISTED_PRODUCT_SOURCES, async () =>
     unwrap(
       await supabase.from('shopping_list_items').insert({
+        id,
         list_id: list.id,
         name: item.name,
         category: item.category,
@@ -646,7 +754,8 @@ async function addToPantryList(queryClient: QueryClient, { listId, shownListId, 
       await Promise.all(LISTED_PRODUCT_SOURCES.map((key) => queryClient.invalidateQueries({ queryKey: [key] })));
       throw new Error(PRODUCT_MERGED_AWAY);
     }
-    const row = unwrap(added) as { list_id: string; list_name: string; added: boolean };
+    const row = unwrap(added) as AddedRow;
+    rememberRpcItem(row);
     return { id: row.list_id, name: row.list_name, added: row.added };
   }
 }
@@ -680,7 +789,8 @@ export interface PharmacyItem extends NewListItem {
 async function addToPharmacyList(queryClient: QueryClient, item: PharmacyItem): Promise<ListedItem> {
   const added = await supabase.rpc('add_to_pharmacy_list', { p_item: item.name, p_alt_item: item.altName ?? null }).single();
   if (!added.error || !isMissingFunction(added.error, 'add_to_pharmacy_list')) {
-    const row = unwrap(added) as { list_id: string; list_name: string; added: boolean };
+    const row = unwrap(added) as AddedRow;
+    rememberRpcItem(row);
     return { id: row.list_id, name: row.list_name, added: row.added };
   }
   return addItemOnce(queryClient, await openPharmacyList(), item);

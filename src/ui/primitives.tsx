@@ -22,6 +22,8 @@ import Svg, { Circle, Line } from 'react-native-svg';
 import { getCategory, type IconName } from '@/domain/categories';
 import { formatBRDate, maskBRDate, parseBRDate } from '@/domain/dates';
 import { matchItemArt } from '@/domain/itemArt';
+// Só o detector puro: lib/supabase cria o cliente e não entra nos primitivos.
+import { isNetworkFailure, OFFLINE_TRY_AGAIN } from '@/lib/networkErrors';
 import { Backdrop } from './Backdrop';
 import { CATEGORY_ART } from './categoryArt';
 import { AngledGradient } from './gradient';
@@ -842,8 +844,12 @@ export function Loading({ label }: { label?: string }) {
 }
 
 export function ErrorNotice({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
-  const message =
-    error && typeof error === 'object' && 'message' in error ? String(error.message) : 'Algo deu errado.';
+  // O pedido que não chegou ao servidor diz isso em palavras, e não "TypeError: Network request failed".
+  const message = isNetworkFailure(error)
+    ? OFFLINE_TRY_AGAIN
+    : error && typeof error === 'object' && 'message' in error
+      ? String(error.message)
+      : 'Algo deu errado.';
   return (
     <Card style={styles.gap}>
       <Row>

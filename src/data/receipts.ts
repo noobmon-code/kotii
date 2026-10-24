@@ -3,7 +3,8 @@
 import { FunctionsHttpError, type SupabaseClient } from '@supabase/supabase-js';
 import { type QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { nfceItemsToDraft, nfceReceiptRow, nfceStoreCodes, type NfceItem, type NfceQr } from '@/domain/nfce';
+import type { ReceiptFingerprint } from '@/domain/duplicateReceipt';
+import { NFCE_CAPTCHA_STATE, nfceItemsToDraft, nfceReceiptRow, nfceStoreCodes, type NfceItem, type NfceQr } from '@/domain/nfce';
 import { RECEIPTS_PAGE } from '@/domain/receiptList';
 import { MAX_RECEIPT_PHOTOS, tooManyPhotosMessage } from '@/domain/receiptPhotos';
 import type { ConfirmItem } from '@/domain/receiptReview';
@@ -186,6 +187,55 @@ export function useReceipt(id: string) {
   });
 }
 
+/** Uma nota confirmada perto da data do rascunho, com o CNPJ do mercado: o que a revisão confere (domain/duplicateReceipt). */
+export interface NearbyReceipt {
+  id: string;
+  store_id: string | null;
+  purchased_at: string;
+  total: number | null;
+  store: { id: string; name: string; cnpj: string | null } | null;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Notas confirmadas da casa num mesmo dia são poucas; o teto só protege a busca. */
+const NEARBY_LIMIT = 50;
+
+/**
+ * As notas confirmadas da casa até um dia antes ou depois do instante (a RLS só mostra as da casa aberta): o mesmo
+ * dia de São Paulo cabe nessa janela qualquer que seja a hora. O resto da conta é do domínio.
+ */
+export async function fetchConfirmedNear(purchasedAt: string): Promise<ReceiptFingerprint[]> {
+  const at = Date.parse(purchasedAt);
+  if (Number.isNaN(at)) return [];
+  const result = await supabase
+    .from('receipts')
+    .select('id, store_id, purchased_at, total, store:stores(id, name, cnpj)')
+    .eq('status', 'confirmed')
+    .gte('purchased_at', new Date(at - DAY_MS).toISOString())
+    .lte('purchased_at', new Date(at + DAY_MS).toISOString())
+    .limit(NEARBY_LIMIT);
+  return ((unwrap(result) ?? []) as unknown as NearbyReceipt[]).map((row) => ({
+    id: row.id,
+    storeId: row.store_id,
+    storeCnpj: row.store?.cnpj ?? null,
+    storeName: row.store?.name ?? null,
+    purchasedAt: row.purchased_at,
+    total: row.total,
+  }));
+}
+
+/**
+ * As confirmadas perto do rascunho em revisão. A chave começa com 'receipts': confirmar ou excluir uma nota refaz a
+ * busca. Sem a busca (erro), a revisão segue sem o aviso.
+ */
+export function useConfirmedNear(purchasedAt: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ['receipts', 'confirmedNear', purchasedAt],
+    enabled: enabled && Boolean(purchasedAt),
+    queryFn: () => fetchConfirmedNear(purchasedAt!),
+  });
+}
+
 /**
  * De quando é a nota guardada (a leitura mais recente que chegou do banco), vista na hora da chamada e não no
  * render: a tela da nota marca com isso a leitura que ficou atrás de uma gravação dela.
@@ -344,12 +394,15 @@ export async function fetchNfcePage(url: string): Promise<NfcePageResult> {
  * QR code da nota -> itens da Sefaz (função `nfce`) -> rascunho de nota,
  * com produtos já conhecidos pelos apelidos e categoria pelas palavras.
  * Nota já importada (mesma chave, também pela foto) abre a existente.
+ * `skipSefaz`: o estado da nota pediu o "não sou robô" há pouco
+ * (domain/captchaStates). A nota que a casa ainda não tem nem vai à Sefaz:
+ * falha com NFCE_CAPTCHA_STATE, que leva à nota pendente.
  */
 export function useImportNfce() {
   const invalidate = useInvalidateReceipt();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (qr: NfceQr): Promise<{ receipt_id: string; duplicate: boolean }> => {
+    mutationFn: async ({ skipSefaz, ...qr }: NfceQr & { skipSefaz?: boolean }): Promise<{ receipt_id: string; duplicate: boolean }> => {
       const dup = unwrap(
         await supabase.from('receipts').select('id, source, status, receipt_items(count)').eq('access_key', qr.accessKey).maybeSingle(),
       ) as { id: string; source: string; status: string; receipt_items: { count: number }[] } | null;
@@ -361,6 +414,7 @@ export function useImportNfce() {
         if (!unfinished) return { receipt_id: dup.id, duplicate: true };
         unwrap(await supabase.from('receipts').delete().eq('id', dup.id));
       }
+      if (skipSefaz) throw new FunctionError('A Sefaz deste estado está pedindo a verificação de que você não é robô.', NFCE_CAPTCHA_STATE);
       if (!qr.url) throw new Error('Só com a chave não dá para ver os itens: leia o QR code da nota ou tire uma foto dela.');
 
       const page = await fetchNfcePage(qr.url);

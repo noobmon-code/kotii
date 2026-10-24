@@ -17,6 +17,8 @@ import { formatBRL, formatQuantity } from '@/domain/money';
 import { storePriceIndex } from '@/domain/priceLevel';
 import { describeSharedOffer, recommendStores, sharedStoreOffers, type StorePlan } from '@/domain/recommendation';
 import { SHARED_PRICES_NOTICE, SHARED_PRICES_OTHERS, sharedQuotes } from '@/domain/sharedPrices';
+import { goBackOr } from '@/lib/navigation';
+import { chooseStore } from '@/lib/storeChoice';
 import type { ShoppingListItem } from '@/lib/types';
 import {
   Badge,
@@ -113,6 +115,11 @@ export default function WhereToBuyScreen() {
   const singlePlans = recommendation.plans.filter((p) => p.storeIds.length === 1);
   const bestSingle = singlePlans[0];
   const unpriced = recommendation.unpricedKeys.map((k) => itemByKey.get(k)!).filter(Boolean);
+  // "Vou neste": o mercado vira o "Onde estou" da lista (lib/storeChoice) e a pessoa volta para ela.
+  const goTo = (storeId: string) => {
+    chooseStore(id, storeId);
+    goBackOr({ pathname: '/lista/[id]', params: { id } });
+  };
   const sharedOnly = pending.flatMap((item) => {
     const price = account.sharedOnly.get(item.id);
     return price ? [[item, price] as const] : [];
@@ -145,6 +152,7 @@ export default function WhereToBuyScreen() {
             otherProduct={otherProductCount(best)}
             shared={sharedCount(best)}
             savings={best.storeIds.length > 1 && bestSingle ? bestSingle.total - best.total : 0}
+            onGo={best.storeIds.length === 1 ? () => goTo(best.storeIds[0]) : undefined}
           />
 
           {best.storeIds.map((storeId) => {
@@ -188,7 +196,18 @@ export default function WhereToBuyScreen() {
                       left={<IconBadge icon="store-outline" tone={index === 0 ? 'primary' : 'neutral'} />}
                       title={storeName(storeId)}
                       subtitle={`${describeIndex(idx)} · ${plan.knownCount - otherProductCount(plan) - seen} com preço real${seen ? ` · ${seen} de outras casas` : ''}`}
-                      right={<Text variant="label">{formatBRL(plan.total)}</Text>}
+                      right={
+                        <View style={styles.rankRight}>
+                          <Text variant="label">{formatBRL(plan.total)}</Text>
+                          <Button
+                            title="Vou neste"
+                            accessibilityLabel={`Vou neste: ${storeName(storeId)}`}
+                            variant="ghost"
+                            compact
+                            onPress={() => goTo(storeId)}
+                          />
+                        </View>
+                      }
                     />
                   );
                 })}
@@ -292,6 +311,7 @@ function PlanSummary({
   otherProduct,
   shared,
   savings,
+  onGo,
 }: {
   plan: StorePlan;
   storeName: (id: string) => string;
@@ -301,6 +321,8 @@ function PlanSummary({
   /** Itens cujo preço, nesse plano, é o visto em outras casas (a casa não tem preço deles lá). */
   shared: number;
   savings: number;
+  /** "Vou neste", no plano de um mercado só. */
+  onGo?: () => void;
 }) {
   const names = plan.storeIds.map(storeName).join(' + ');
   return (
@@ -323,6 +345,7 @@ function PlanSummary({
         ) : null}
         {savings > 0.009 ? <Badge label={`Economia de ${formatBRL(savings)} vs. um mercado`} tone="info" /> : null}
       </Row>
+      {onGo ? <Button title="Vou neste" icon="map-marker-check-outline" variant="secondary" compact onPress={onGo} /> : null}
     </Card>
   );
 }
@@ -332,4 +355,5 @@ const styles = StyleSheet.create({
   wrap: { flexWrap: 'wrap' },
   summary: { gap: space.md },
   offer: { gap: space.sm },
+  rankRight: { alignItems: 'flex-end' },
 });

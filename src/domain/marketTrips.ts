@@ -90,6 +90,47 @@ export function liveTrips(trips: readonly MarketTrip[], now: Date): MarketTrip[]
 }
 
 /**
+ * A ida que vale agora de quem está com o app (`userId`) nesta lista, ou null. Só quem avisou pode encerrar, e é
+ * quem está no mercado: o selo "Novo" e a pergunta depois de "Limpar" partem dela.
+ */
+export function ownLiveTrip(
+  trips: readonly MarketTrip[],
+  { listId, userId, now }: { listId: string; userId: string | undefined; now: Date },
+): MarketTrip | null {
+  if (!userId) return null;
+  return liveTrips(trips, now).find((trip) => trip.list_id === listId && trip.user_id === userId) ?? null;
+}
+
+/** O que o selo "Novo" usa de cada item da lista. */
+export interface TripListItem {
+  id: string;
+  checked_at: string | null;
+  created_at: string;
+}
+
+/**
+ * Os itens que entraram na lista depois do aviso da ida e ainda estão para comprar: para quem está no mercado,
+ * são o que a casa pediu depois que a pessoa saiu. Os que este aparelho pôs (`addedHere`) ficam de fora: a pessoa
+ * já sabe deles. Sem ida (`trip` null), nenhum. As duas horas vêm do servidor (o item e a ida), sem o relógio do
+ * aparelho; não há autor no item, então o selo não diz quem pôs.
+ */
+export function newDuringTrip(
+  items: readonly TripListItem[],
+  trip: Pick<MarketTrip, 'created_at'> | null,
+  addedHere: ReadonlySet<string>,
+): Set<string> {
+  const ids = new Set<string>();
+  if (!trip) return ids;
+  const since = Date.parse(trip.created_at);
+  if (Number.isNaN(since)) return ids;
+  for (const item of items) {
+    if (item.checked_at || addedHere.has(item.id)) continue;
+    if (Date.parse(item.created_at) > since) ids.add(item.id);
+  }
+  return ids;
+}
+
+/**
  * Há quanto tempo: "agora há pouco", "há 12 min", "há 1 h 05 min". O relógio
  * do aparelho pode estar atrás do do servidor: um aviso "do futuro" também é
  * "agora há pouco", nunca um tempo negativo.
