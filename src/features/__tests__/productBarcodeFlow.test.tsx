@@ -407,7 +407,29 @@ describe('um passo abre depois que o anterior fechou', () => {
     await act(async () => (mockPickers.Categoria.onSelect as (id: string) => void)('cafe_cha'));
     await settle();
     expect(mockDb.writes.map((w) => `${w.op} ${w.table}`)).toEqual(['insert products', 'upsert product_barcodes']);
+    // O produto também espera a categoria sumir: a tela pode abrir outro Modal com ele.
+    expect(onProduct).not.toHaveBeenCalled();
+    act(() => (mockPickers.Categoria.onDismiss as () => void)());
     expect(onProduct.mock.calls[0][0]).toMatchObject({ name: 'Café Pilão 500g' });
+  });
+
+  it('no iOS: o produto do código conhecido segue só depois que o leitor sumiu (a lista abre o "Já está na lista")', async () => {
+    os.restore();
+    os = jest.replaceProperty(Platform, 'OS', 'ios');
+    mockDb.product_barcodes = [{ gtin: GTIN, product_id: 'arroz' }];
+    await open();
+    await scan(EAN);
+    const scanner = renderer!.root.findByType(Modal);
+    expect(scanner.props.visible).toBe(false);
+    expect(onProduct).not.toHaveBeenCalled();
+    act(() => scanner.props.onDismiss());
+    expect(onProduct.mock.calls).toEqual([[ARROZ]]);
+    // Uma vez só: o próximo leitor que fecha não repete o produto.
+    act(() => hook.flow.start());
+    const next = renderer!.root.findByType(Modal);
+    act(() => next.props.onRequestClose());
+    act(() => next.props.onDismiss());
+    expect(onProduct).toHaveBeenCalledTimes(1);
   });
 
   it('no Android: direto, sem esperar', async () => {

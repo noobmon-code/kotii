@@ -5,12 +5,9 @@
 // (isso quem manda vê no menu, não quem recebe). O app só monta o texto: não
 // guarda nem envia nada.
 
-import { getCategory } from './categories';
-import { compareForShopping, PRIORITIES } from './listItem';
+import { PRIORITIES } from './listItem';
+import { shoppingSections } from './listSections';
 import { formatQuantity } from './money';
-
-/** Até aqui a lista vai corrida; com mais itens a comprar, ganha os nomes das seções. */
-export const SECTIONS_ABOVE = 8;
 
 /**
  * Tamanho máximo do texto, já codificado, num link do WhatsApp. Links maiores
@@ -69,11 +66,6 @@ function priorityWords(priority: string | null | undefined): string | null {
   return found && found.key !== 'normal' ? found.label.toLocaleLowerCase('pt-BR') : null;
 }
 
-/** Com seções, os urgentes (que a tela põe no topo) ficam na seção deles; o resto, na da categoria. */
-function sectionOf(item: ShareItem): string {
-  return item.priority === URGENT ? PRIORITIES.find((p) => p.key === URGENT)!.label : getCategory(item.category).label;
-}
-
 function itemLine(item: ShareItem, underUrgent: boolean): string {
   const quantity = Number(item.quantity);
   // "1 un" é o item sem mais: sai só o nome.
@@ -91,22 +83,17 @@ function itemLine(item: ShareItem, underUrgent: boolean): string {
  * o que mandar: null.
  */
 export function listShareText(list: { name: string }, items: readonly ShareItem[]): string | null {
-  const toBuy = items.filter((i) => !i.checked_at).sort(compareForShopping);
-  if (!toBuy.length) return null;
-  // Uma seção só (lista toda de limpeza, ou toda em "Outros") seria um título a mais sem dizer nada.
-  const sections = toBuy.length > SECTIONS_ABOVE && new Set(toBuy.map(sectionOf)).size > 1;
+  // As mesmas seções da tela (domain/listSections): os urgentes, depois os corredores; com poucos itens, sem títulos.
+  const sections = shoppingSections(items.filter((i) => !i.checked_at));
+  if (!sections.length) return null;
+  const total = sections.reduce((sum, section) => sum + section.items.length, 0);
 
   const title = `*${plainTitle(list.name)}*`;
   // A quantidade ajuda quem recebe a conferir se pegou tudo; com um item só, não diz nada.
-  const lines = [toBuy.length > 1 ? `${title} · ${count(toBuy.length)}` : title];
-  let current: string | null = null;
-  for (const item of toBuy) {
-    const section = sections ? sectionOf(item) : null;
-    if (section !== current) {
-      lines.push('', `*${section}*`);
-      current = section;
-    }
-    lines.push(itemLine(item, sections));
+  const lines = [total > 1 ? `${title} · ${count(total)}` : title];
+  for (const section of sections) {
+    if (section.title) lines.push('', `*${section.title}*`);
+    for (const item of section.items) lines.push(itemLine(item, section.title !== null));
   }
   return lines.join('\n');
 }

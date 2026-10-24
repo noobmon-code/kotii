@@ -1,7 +1,8 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { compareForShopping } from '../listItem';
-import { listShareHint, listShareText, SECTIONS_ABOVE, WHATSAPP_MAX_ENCODED, whatsappUrl, type ShareItem } from '../listShare';
+import { listShareHint, listShareText, WHATSAPP_MAX_ENCODED, whatsappUrl, type ShareItem } from '../listShare';
+import { SECTIONS_ABOVE } from '../listSections';
 
 const item = (name: string, over: Partial<ShareItem> = {}): ShareItem => ({
   name,

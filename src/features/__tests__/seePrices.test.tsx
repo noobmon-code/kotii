@@ -76,6 +76,7 @@ describe('"Ver preços" no item da despensa', () => {
     const actions = await actionsOf('Arroz');
     expect(actions.map((action) => action.label)).toEqual([
       'Acabou — pôr na lista de mercado',
+      'Está acabando — pôr na lista de mercado',
       'Consumido / descartado',
       'Ver preços',
       'Editar validade e quantidade',

@@ -19,8 +19,8 @@ import { packageSize, samePackageSize } from './packageSize';
 // Trechos de nota fiscal e nomes regionais, por extenso. Casam palavras inteiras do texto de termText, na ordem
 // (o mais longo antes). Não é para cobrir toda abreviação: só as comuns e sem outra leitura ("SAB" pode ser sabão
 // ou sabonete, "COND" pode ser condensado ou condicionador: ficam de fora sozinhas).
-const SPELLED_OUT: readonly (readonly [string, string])[] = [
-  // Nomes regionais do mesmo item.
+// Nomes regionais do mesmo item: valem no casamento, mas o nome sugerido fica como a casa fala ("Pão de caixa").
+const REGIONAL_NAMES: readonly (readonly [string, string])[] = [
   ['pao de caixa', 'pao de forma'],
   ['pao caixa', 'pao de forma'],
   ['pao de sal', 'pao frances'],
@@ -30,6 +30,9 @@ const SPELLED_OUT: readonly (readonly [string, string])[] = [
   ['salsinha', 'salsa'],
   ['lava loucas', 'detergente'],
   ['lava louca', 'detergente'],
+];
+const SPELLED_OUT: readonly (readonly [string, string])[] = [
+  ...REGIONAL_NAMES,
   // Abreviações de NFC-e.
   ['refrig', 'refrigerante'],
   ['refri', 'refrigerante'],
@@ -98,9 +101,13 @@ const SPELLED_OUT: readonly (readonly [string, string])[] = [
   ['caf', 'cafe'],
   ['torr', 'torrado'],
   ['moid', 'moido'],
+  // Antes do "DESN" sozinho: "SEMI DESN" é o semidesnatado, e não o desnatado.
+  ['semi desn', 'semidesnatado'],
+  ['semi desnatado', 'semidesnatado'],
   ['desn', 'desnatado'],
   ['semidesn', 'semidesnatado'],
   ['int', 'integral'],
+  ['integ', 'integral'],
   ['cerv', 'cerveja'],
   ['desod', 'desodorante'],
   ['shamp', 'shampoo'],
@@ -108,14 +115,63 @@ const SPELLED_OUT: readonly (readonly [string, string])[] = [
   ['espo', 'esponja'],
   ['sabon', 'sabonete'],
   ['s acucar', 'sem acucar'],
+  // No começo do nome e antes do tipo do leite (já por extenso, acima), "LT" é o leite ("LT INTEG PIRAC 1L"); em
+  // outro lugar, é litro, lata ou light ("PAO FORMA LT INTEG" não é leite). "^": só no começo.
+  ['^lt integral', 'leite integral'],
+  ['^lt desnatado', 'leite desnatado'],
+  ['^lt semidesnatado', 'leite semidesnatado'],
+  ['^lt uht', 'leite uht'],
 ];
-const SPELLED_OUT_REGEXES = SPELLED_OUT.map(([from, to]) => [new RegExp(`(^| )${from}(?= |$)`, 'g'), `$1${to}`] as const);
+const SPELLED_OUT_WORDS = SPELLED_OUT.map(([from, to], at) => ({
+  from: from.replace(/^\^/, '').split(' '),
+  to: to.split(' '),
+  atStart: from.startsWith('^'),
+  regional: at < REGIONAL_NAMES.length,
+}));
+
+/**
+ * Uma palavra do texto e as palavras do texto original (de termText) de onde ela veio, da primeira à última:
+ * "lt integ" vira "leite" e "integral", as duas de [0, 1]. Quem escreve o nome por extenso sabe o que trocar.
+ */
+export interface SpelledWord {
+  word: string;
+  from: readonly [first: number, last: number];
+}
+
+/** As palavras de termText, cada uma de si mesma. */
+export function termWords(name: string): SpelledWord[] {
+  const text = termText(name);
+  return text ? text.split(' ').map((word, at) => ({ word, from: [at, at] })) : [];
+}
+
+/**
+ * As abreviações e os nomes regionais por extenso, na ordem da tabela, palavra por palavra (como em spelledOut).
+ * `regional: false`: só as abreviações (o nome sugerido não troca o nome que a casa usa).
+ */
+export function spellOut(words: readonly SpelledWord[], { regional = true }: { regional?: boolean } = {}): SpelledWord[] {
+  let current = [...words];
+  for (const { from, to, atStart, regional: isRegional } of SPELLED_OUT_WORDS) {
+    if (isRegional && !regional) continue;
+    if (!current.some(({ word }) => word === from[0])) continue;
+    const next: SpelledWord[] = [];
+    let at = 0;
+    while (at < current.length) {
+      if ((!atStart || at === 0) && from.every((word, k) => current[at + k]?.word === word)) {
+        const span = [current[at].from[0], current[at + from.length - 1].from[1]] as const;
+        next.push(...to.map((word) => ({ word, from: span })));
+        at += from.length;
+      } else next.push(current[at++]);
+    }
+    current = next;
+  }
+  return current;
+}
 
 /** O nome sem acento, só com letras e números, e com as abreviações e os nomes regionais por extenso. */
 export function spelledOut(name: string): string {
-  let text = termText(name);
-  for (const [re, to] of SPELLED_OUT_REGEXES) text = text.replace(re, to);
-  return text;
+  return spellOut(termWords(name))
+    .map(({ word }) => word)
+    .join(' ');
 }
 
 // ---------------------------------------------------------------------------
@@ -553,6 +609,35 @@ const COMPILED_KINDS = KINDS.map((dimension) => ({
   ...dimension,
   values: Object.entries(dimension.values).map(([value, terms]) => ({ value, res: terms.map(termRegex) })),
 }));
+
+// ---------------------------------------------------------------------------
+// O que as regras fixas já sabem (para as abreviações aprendidas, em domain/learnedAbbreviations)
+
+// Palavras inteiras: os nomes dos itens, o que a tabela escreve por extenso e o nome de cada tipo.
+const FIXED_WORDS: ReadonlySet<string> = new Set([
+  ...DEFS.flatMap(([, terms]) => terms.flatMap((term) => term.split(' '))),
+  ...SPELLED_OUT.flatMap(([, to]) => to.split(' ')),
+  ...KINDS.flatMap((dimension) => Object.keys(dimension.values).flatMap((value) => value.split('_'))),
+]);
+
+/** Uma palavra que as regras fixas já conhecem inteira ("pao", "integral"): não é abreviação de outra. */
+export const isFixedWord = (word: string) => FIXED_WORDS.has(word);
+
+// Cada palavra solta que diz um tipo ("parb", "masc", "fat") e os tipos que ela diz.
+const KIND_TERM_VALUES = new Map<string, Set<string>>();
+for (const dimension of KINDS) {
+  for (const [value, terms] of Object.entries(dimension.values)) {
+    for (const term of terms) {
+      if (term.includes(' ')) continue;
+      KIND_TERM_VALUES.set(term, new Set([...(KIND_TERM_VALUES.get(term) ?? []), value.replace(/_/g, ' ')]));
+    }
+  }
+}
+
+/** Os tipos que a palavra solta já diz em algum item ("parb": parboilizado; "masc": mascavo); vazio se nenhum. */
+export function kindTermValues(word: string): ReadonlySet<string> {
+  return KIND_TERM_VALUES.get(word) ?? new Set();
+}
 
 // ---------------------------------------------------------------------------
 // O item de cada nome
