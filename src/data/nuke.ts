@@ -4,6 +4,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { router } from 'expo-router';
 
+import { sendAppFeedback } from '@/data/appFeedback';
 import { useFamilyCalendar } from '@/data/family';
 import { useBills, useBudgets, useRecentBillPayments, useSaveExpense, useSpending } from '@/data/finance';
 import { toSchedules, useChoreRotations, useChores, useDoses, useMedications, usePantry, useSaveChore } from '@/data/home';
@@ -13,6 +14,7 @@ import { useAddToMarketList } from '@/data/market';
 import { useMenu } from '@/data/menu';
 import { useSupplies } from '@/data/supplies';
 import { functionErrorMessage } from '@/data/images';
+import { FEEDBACK_SENT } from '@/domain/appFeedback';
 import { billsAboveUsual, describeAboveForNuke } from '@/domain/billUsual';
 import { budgetProgress } from '@/domain/budget';
 import { rotationLabel, rotationOf, rotationPeople } from '@/domain/choreRotation';
@@ -294,6 +296,10 @@ export function useRunNukeAction() {
         router.back();
         SCREEN_ROUTES[action.screen]();
         return '';
+      case 'send_feedback':
+        // O texto que o cartão mostrou, exatamente: o recado só sai com este toque.
+        await sendAppFeedback({ kind: action.kind, message: action.text });
+        return FEEDBACK_SENT;
     }
   };
 }

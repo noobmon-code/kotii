@@ -22,7 +22,13 @@ export const SCREENS = [
 ] as const;
 const UNITS = ['un', 'kg', 'g', 'l', 'ml'] as const;
 const RECURRENCES = ['none', 'daily', 'weekly', 'monthly'] as const;
-const ACTION_TYPES = ['add_to_list', 'create_chore', 'add_expense', 'open_screen'] as const;
+const ACTION_TYPES = ['add_to_list', 'create_chore', 'add_expense', 'open_screen', 'send_feedback'] as const;
+// Recado para quem faz o Kotii: os mesmos tipos da coluna app_feedback.kind
+// (migração 20261024150000_app_feedback.sql) e de src/domain/appFeedback.ts.
+export const FEEDBACK_KINDS = ['problema', 'sugestao', 'elogio', 'outro'] as const;
+// O tamanho máximo do recado na coluna (char_length conta caracteres, não
+// unidades UTF-16, então o corte é por caractere).
+export const FEEDBACK_MAX_LENGTH = 2000;
 
 // Um objeto só com campos anuláveis: funciona na saída estruturada da
 // Anthropic e na strict da OpenRouter. Cada tipo usa os seus campos.
@@ -50,6 +56,8 @@ export const NukeReplySchema = z.object({
       category: z.enum(FINANCE_CATEGORY_KEYS).nullable(),
       spent_on: z.string().nullable(),
       screen: z.enum(SCREENS).nullable(),
+      feedback_kind: z.enum(FEEDBACK_KINDS).nullable(),
+      feedback_text: z.string().nullable(),
     }),
   ),
 });
@@ -64,7 +72,8 @@ export type NukeAction =
     }
   | { type: 'create_chore'; label: string; title: string; due_on: string; recurrence: (typeof RECURRENCES)[number] }
   | { type: 'add_expense'; label: string; description: string; amount: number; category: string; spent_on: string }
-  | { type: 'open_screen'; label: string; screen: (typeof SCREENS)[number] };
+  | { type: 'open_screen'; label: string; screen: (typeof SCREENS)[number] }
+  | { type: 'send_feedback'; label: string; kind: (typeof FEEDBACK_KINDS)[number]; text: string };
 
 export interface NukeRequest {
   turns: ChatTurn[];
@@ -140,6 +149,7 @@ Ações: quando a pessoa pedir algo que o app faz, proponha em "actions". Ela co
 - create_chore: tarefa da casa ("title", "due_on" AAAA-MM-DD, "recurrence" ${RECURRENCES.join('|')}).
 - add_expense: gasto sem nota fiscal ("description", "amount" em reais, "category", "spent_on" AAAA-MM-DD).
 - open_screen: abrir uma tela ("screen": ${SCREENS.join(', ')}).
+- send_feedback: quando a pessoa der uma opinião sobre o próprio app Kotii (algo que não funciona, uma sugestão, um elogio, uma reclamação) ou pedir para mandar um recado para quem faz o app, ofereça mandar o recado: "feedback_kind" ${FEEDBACK_KINDS.join('|')} e "feedback_text" com o que ela disse, nas palavras dela e na primeira pessoa, fiel, sem acrescentar nada, e sem dados da casa (nomes, valores, saúde) que ela não pediu para incluir. Nunca para pedidos sobre a casa em si. Nunca diga que o recado foi enviado: ela envia com um toque.
 Cada ação tem "label", o texto curto do botão (ex.: "Adicionar 3 itens à lista"). Campos que não são do tipo da ação vão como null. Sem ação útil, "actions" vazio. No máximo ${MAX_ACTIONS} ações.
 Categorias de produto: ${CATEGORY_KEYS.join(', ')}.
 Categorias de gasto: ${FINANCE_CATEGORY_KEYS.join(', ')}.
@@ -154,7 +164,15 @@ const DEFAULT_LABEL: Record<NukeAction['type'], string> = {
   create_chore: 'Criar tarefa',
   add_expense: 'Registrar gasto',
   open_screen: 'Abrir',
+  send_feedback: 'Mandar recado',
 };
+
+/** Aparado e cortado no tamanho da coluna, sem partir um emoji ao meio. */
+function feedbackText(value: string | null | undefined): string {
+  const text = value?.trim() ?? '';
+  const chars = Array.from(text);
+  return chars.length > FEEDBACK_MAX_LENGTH ? chars.slice(0, FEEDBACK_MAX_LENGTH).join('').trimEnd() : text;
+}
 
 /** Limpa a resposta: texto aparado e só ações completas, com valores padrão. */
 export function cleanReply(raw: NukeReplyRaw, today: string): { reply: string; actions: NukeAction[] } {
@@ -206,6 +224,11 @@ export function cleanReply(raw: NukeReplyRaw, today: string): { reply: string; a
       case 'open_screen':
         if (a.screen) actions.push({ type: 'open_screen', label, screen: a.screen });
         break;
+      case 'send_feedback': {
+        const text = feedbackText(a.feedback_text);
+        if (text) actions.push({ type: 'send_feedback', label, kind: a.feedback_kind ?? 'outro', text });
+        break;
+      }
     }
   }
   const reply = raw.reply.trim() || (actions.length ? 'Posso fazer isto:' : 'Não entendi. Pode dizer de outro jeito?');

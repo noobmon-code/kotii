@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { router } from 'expo-router';
+import { StyleSheet } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import AppDashboardScreen from '@/app/painel';
@@ -15,23 +16,57 @@ import {
   parseAppDashboard,
 } from '@/domain/appDashboard';
 import { addDays } from '@/domain/dates';
+import { PANEL_MAX_WIDTH, panelCellPercent } from '@/domain/panelLayout';
 import { TERMS_ACCEPT_VERSION } from '@/domain/terms';
+import { space } from '@/ui/theme';
 
 // A tela do painel com a rpc de mentira e a busca de verdade (data/appDashboard, QueryClient real): os números
 // de uma resposta, a recusa para quem não mantém o app, o banco sem a migração, o erro, a nova busca que falha
-// com os números na tela e a tela sem internet. Os textos são os de domain/appDashboard, de verdade.
+// com os números na tela e a tela sem internet. Também as duas abas (Números e Recados, na URL) e a grade da
+// janela larga. Os textos são os de domain/appDashboard, de verdade. A caixa de recados tem os testes dela
+// (feedbackInbox.test).
 
-/** A rpc app_dashboard, como o PostgREST responderia. */
+/** As rpc app_dashboard e app_feedback_list, como o PostgREST responderia. */
 const mockDb = {
-  rpc: jest.fn(async (_name: string): Promise<{ data: unknown; error: unknown }> => ({ data: null, error: null })),
+  dashboard: jest.fn(async (_name: string): Promise<{ data: unknown; error: unknown }> => ({ data: null, error: null })),
+  feedback: jest.fn(async (_name: string, _args?: Record<string, unknown>): Promise<{ data: unknown; error: unknown }> => ({
+    data: null,
+    error: null,
+  })),
 };
 jest.mock('@/lib/supabase', () => ({
-  supabase: { rpc: (name: string) => mockDb.rpc(name) },
+  supabase: {
+    rpc: (name: string, args?: Record<string, unknown>) => (name === 'app_dashboard' ? mockDb.dashboard(name) : mockDb.feedback(name, args)),
+  },
   // Como o de verdade: a mensagem do erro do PostgREST, que não é um Error.
   errorMessage: (error: unknown) => (error && typeof error === 'object' && 'message' in error ? String(error.message) : String(error)),
 }));
 jest.mock('@/lib/auth', () => ({ useAuth: () => ({ session: { user: { id: 'ana', email: 'ana@exemplo.com' } } }) }));
-jest.mock('expo-router', () => ({ router: { push: jest.fn(), back: jest.fn(), replace: jest.fn(), canGoBack: jest.fn(() => false) } }));
+// A aba vive na URL: setParams junta os parâmetros novos aos que a tela tinha e a redesenha com eles.
+const mockParams = { value: {} as Record<string, string>, listeners: new Set<() => void>() };
+jest.mock('expo-router', () => {
+  const { useSyncExternalStore } = jest.requireActual<typeof import('react')>('react');
+  const subscribe = (listener: () => void) => {
+    mockParams.listeners.add(listener);
+    return () => mockParams.listeners.delete(listener);
+  };
+  return {
+    router: {
+      push: jest.fn(),
+      back: jest.fn(),
+      replace: jest.fn(),
+      canGoBack: jest.fn(() => false),
+      setParams: jest.fn((params: Record<string, string>) => {
+        mockParams.value = { ...mockParams.value, ...params };
+        mockParams.listeners.forEach((listener) => listener());
+      }),
+    },
+    useLocalSearchParams: () => useSyncExternalStore(subscribe, () => mockParams.value),
+  };
+});
+// "mock" no nome: o jest.mock só enxerga variáveis assim. 360 é um celular; 1280, um computador.
+const mockWindow = { width: 360, height: 800, scale: 2, fontScale: 1 };
+jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => ({ __esModule: true, default: () => mockWindow }));
 // O fundo, as imagens e os ícones (letras de uma fonte) não entram no que se confere aqui.
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 jest.mock('expo-image', () => ({ Image: () => null }));
@@ -90,6 +125,34 @@ function rawDashboard(): Record<string, unknown> {
 const answer = (data: unknown) => ({ data, error: null });
 const refusal = { data: null, error: { code: '42501', message: APP_DASHBOARD_FORBIDDEN } };
 
+/** A resposta de app_feedback_list com `novos` recados novos (e nenhum outro). */
+function feedbackList(novos: number) {
+  const items = Array.from({ length: novos }, (_, index) => ({
+    id: `recado-${index + 1}`,
+    created_at: `2026-10-2${3 - Math.min(index, 3)}T12:00:00Z`,
+    updated_at: `2026-10-2${3 - Math.min(index, 3)}T12:00:00Z`,
+    kind: 'sugestao',
+    message: `Sugestão número ${index + 1}`,
+    platform: 'web',
+    app_version: '1.4.0',
+    status: 'novo',
+    note: null,
+    email: 'bia@exemplo.com',
+  }));
+  return { counts: { novo: novos, lido: 0, resolvido: 0, arquivado: 0 }, total: novos, items };
+}
+const dashboardCalls = () => mockDb.dashboard.mock.calls.length;
+/** Os estilos, achatados, de cada View da tela. */
+const viewStyles = () =>
+  renderer!.root
+    .findAll((node) => String(node.type) === 'View' && node.props.style !== undefined)
+    .map((node) => (StyleSheet.flatten(node.props.style) ?? {}) as Record<string, unknown>);
+/** A largura de cada célula da grade das seções (PanelGrid: o espaço entre as colunas no padding da célula). */
+const gridCells = () =>
+  viewStyles()
+    .filter((style) => style.paddingHorizontal === space.xl / 2 && typeof style.width === 'string')
+    .map((style) => style.width);
+
 let renderer: ReactTestRenderer | undefined;
 let queryClient: QueryClient;
 
@@ -132,7 +195,10 @@ const charts = () =>
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockDb.rpc.mockResolvedValue(answer(rawDashboard()));
+  mockDb.dashboard.mockResolvedValue(answer(rawDashboard()));
+  mockDb.feedback.mockResolvedValue(answer(feedbackList(0)));
+  mockParams.value = {};
+  mockWindow.width = 360;
   // Sem esperar entre a busca e a segunda tentativa (a tela tenta de novo uma vez, menos a recusa).
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 }, mutations: { retry: false } } });
 });
@@ -147,7 +213,7 @@ afterEach(async () => {
 describe('Painel do app', () => {
   it('mostra os números da resposta: o topo, os gráficos, as funções, a entrada, os aparelhos e as notas do fim', async () => {
     const text = await mount();
-    expect(mockDb.rpc).toHaveBeenCalledWith('app_dashboard');
+    expect(mockDb.dashboard).toHaveBeenCalledWith('app_dashboard');
     // O topo, 2×2.
     expect(text).toContain('Contas5+1 em 7 dias');
     expect(text).toContain('Ativas em 7 dias32 em 24 h · 5 em 30 dias');
@@ -194,11 +260,12 @@ describe('Painel do app', () => {
   });
 
   it('para quem não mantém o app: o cadeado e "Voltar", sem tentar de novo', async () => {
-    mockDb.rpc.mockResolvedValue(refusal);
+    mockDb.dashboard.mockResolvedValue(refusal);
     const text = await mount();
     expect(text).toContain(APP_DASHBOARD_FORBIDDEN);
     expect(text).not.toContain('Contas');
-    expect(mockDb.rpc).toHaveBeenCalledTimes(1);
+    expect(text).not.toContain('Recados');
+    expect(dashboardCalls()).toBe(1);
     // Aberta direto pelo endereço: não há para onde voltar, e o começo do app abre a tela certa.
     await press('Voltar');
     expect(router.replace).toHaveBeenCalledWith('/');
@@ -206,42 +273,42 @@ describe('Painel do app', () => {
 
   it('a recusa que chega com os números na tela tira os números', async () => {
     await mount();
-    mockDb.rpc.mockResolvedValue(refusal);
+    mockDb.dashboard.mockResolvedValue(refusal);
     await pull();
     expect(page()).toContain(APP_DASHBOARD_FORBIDDEN);
     expect(page()).not.toContain('Contas5');
   });
 
   it('antes da migração (a função não existe): o aviso, nunca um erro', async () => {
-    mockDb.rpc.mockResolvedValue({ data: null, error: { code: 'PGRST202', message: 'Could not find the function public.app_dashboard' } });
+    mockDb.dashboard.mockResolvedValue({ data: null, error: { code: 'PGRST202', message: 'Could not find the function public.app_dashboard' } });
     const text = await mount();
     expect(text).toContain(APP_DASHBOARD_NOT_READY);
     expect(text).not.toContain('Tentar de novo');
   });
 
   it('o erro sem nada na tela, com "Tentar de novo" (depois de uma segunda tentativa sozinha)', async () => {
-    mockDb.rpc.mockResolvedValue({ data: null, error: { code: 'XX000', message: 'O servidor não respondeu.' } });
+    mockDb.dashboard.mockResolvedValue({ data: null, error: { code: 'XX000', message: 'O servidor não respondeu.' } });
     const text = await mount();
     expect(text).toContain('O servidor não respondeu.Tentar de novo');
-    expect(mockDb.rpc).toHaveBeenCalledTimes(2);
-    mockDb.rpc.mockResolvedValue(answer(rawDashboard()));
+    expect(dashboardCalls()).toBe(2);
+    mockDb.dashboard.mockResolvedValue(answer(rawDashboard()));
     await press('Tentar de novo');
     expect(page()).toContain('Contas5+1 em 7 dias');
   });
 
   it('uma resposta num formato que o app não lê é um erro com a frase dele', async () => {
-    mockDb.rpc.mockResolvedValue(answer({ ...rawDashboard(), accounts: { total: -1 } }));
+    mockDb.dashboard.mockResolvedValue(answer({ ...rawDashboard(), accounts: { total: -1 } }));
     expect(await mount()).toContain(`${APP_DASHBOARD_INVALID}Tentar de novo`);
   });
 
   it('a nova busca que falha deixa os números na tela, com o aviso e "Tentar de novo"', async () => {
     await mount();
-    mockDb.rpc.mockResolvedValue({ data: null, error: new Error('Sem internet agora.') });
+    mockDb.dashboard.mockResolvedValue({ data: null, error: new Error('Sem internet agora.') });
     await pull();
     const text = page();
     expect(text).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.Tentar de novo');
     expect(text).toContain('Contas5+1 em 7 dias');
-    mockDb.rpc.mockResolvedValue(answer(rawDashboard()));
+    mockDb.dashboard.mockResolvedValue(answer(rawDashboard()));
     await press('Tentar de novo');
     expect(page()).not.toContain('Não foi possível atualizar.');
   });
@@ -250,9 +317,108 @@ describe('Painel do app', () => {
     onlineManager.setOnline(false);
     const text = await mount();
     expect(text).toContain('Sem internet. Os números aparecem quando a conexão voltar.');
-    expect(mockDb.rpc).not.toHaveBeenCalled();
+    expect(mockDb.dashboard).not.toHaveBeenCalled();
+    expect(mockDb.feedback).not.toHaveBeenCalled();
     await act(async () => onlineManager.setOnline(true));
     await settle();
     expect(page()).toContain('Contas5+1 em 7 dias');
+  });
+});
+
+describe('Painel do app: as abas', () => {
+  /** As abas da barra de cima (Segmented): o rótulo e se está aberta. */
+  const tabs = () =>
+    renderer!.root
+      .findAll((node) => node.props.accessibilityRole === 'tab' && typeof node.props.onPress === 'function')
+      .map((node) => ({ label: textOf(node), selected: Boolean(node.props.accessibilityState?.selected), press: node.props.onPress as () => void }));
+
+  it('sem recado novo: "Números" aberta e "Recados" sem número, e nenhuma linha de recados', async () => {
+    const text = await mount();
+    expect(tabs().map(({ label, selected }) => ({ label, selected }))).toEqual([
+      { label: 'Números', selected: true },
+      { label: 'Recados', selected: false },
+    ]);
+    expect(text).not.toContain('recado novo');
+    expect(text).not.toContain('recados novos');
+    // A lista dos novos foi pedida uma vez, para o número da aba.
+    expect(mockDb.feedback).toHaveBeenCalledWith('app_feedback_list', { p_status: 'novo', p_limit: 200 });
+  });
+
+  it('com recados novos: o número na aba e a linha com "Ver", que abre a aba Recados na URL', async () => {
+    mockDb.feedback.mockResolvedValue(answer(feedbackList(3)));
+    const text = await mount();
+    expect(tabs().map((tab) => tab.label)).toEqual(['Números', 'Recados (3)']);
+    expect(text).toContain('3 recados novosVer');
+    // Os números continuam embaixo da linha.
+    expect(text).toContain('Contas5+1 em 7 dias');
+    await press('Ver');
+    expect(router.setParams).toHaveBeenLastCalledWith({ aba: 'recados' });
+    expect(tabs().map(({ label, selected }) => ({ label, selected }))).toEqual([
+      { label: 'Números', selected: false },
+      { label: 'Recados (3)', selected: true },
+    ]);
+    // A caixa abre nos novos, e os números saem da tela.
+    expect(page()).toContain('Sugestão número 1');
+    expect(page()).toContain('Novos (3)');
+    expect(page()).not.toContain('Contas5+1 em 7 dias');
+    // E a outra aba volta aos números, pela URL também.
+    await act(async () => tabs()[0].press());
+    await settle();
+    expect(router.setParams).toHaveBeenLastCalledWith({ aba: 'numeros' });
+    expect(page()).toContain('Contas5+1 em 7 dias');
+  });
+
+  it('aberta pelo endereço com ?aba=recados, e uma aba que não existe vira os números', async () => {
+    mockParams.value = { aba: 'recados' };
+    mockDb.feedback.mockResolvedValue(answer(feedbackList(1)));
+    expect(await mount()).toContain('Sugestão número 1');
+    await act(async () => renderer!.unmount());
+    mockParams.value = { aba: 'graficos' };
+    expect(await mount()).toContain('Contas5+1 em 7 dias');
+  });
+
+  it('a recusa que chega pelos recados também tranca o painel', async () => {
+    mockDb.feedback.mockResolvedValue(refusal);
+    const text = await mount();
+    expect(text).toContain(APP_DASHBOARD_FORBIDDEN);
+    expect(text).not.toContain('Contas5');
+  });
+
+  it('puxar a tela na aba Recados busca os recados de novo, não os números', async () => {
+    mockParams.value = { aba: 'recados' };
+    await mount();
+    const before = { dashboard: dashboardCalls(), feedback: mockDb.feedback.mock.calls.length };
+    await pull();
+    expect(dashboardCalls()).toBe(before.dashboard);
+    expect(mockDb.feedback.mock.calls.length).toBeGreaterThan(before.feedback);
+  });
+});
+
+describe('Painel do app no computador', () => {
+  it('no celular, uma coluna só: os quatro números em 2×2 e nenhuma grade', async () => {
+    await mount();
+    const styles = viewStyles();
+    expect(styles.some((style) => style.maxWidth === PANEL_MAX_WIDTH)).toBe(true);
+    expect(styles.filter((style) => style.flexBasis === '45%')).toHaveLength(4);
+    expect(styles.some((style) => style.flexBasis === '22%')).toBe(false);
+    expect(gridCells()).toEqual([]);
+  });
+
+  it('numa janela larga: os quatro números numa linha e as seções em três colunas, "O que as casas usam" em duas', async () => {
+    mockWindow.width = 1280;
+    const text = await mount();
+    expect(text).toContain('Contas5+1 em 7 dias');
+    expect(viewStyles().filter((style) => style.flexBasis === '22%')).toHaveLength(4);
+    // Uso por dia, Novas contas, Nuke | IA, O que as casas usam (duas) | Entrada, Aparelhos, Outros.
+    const third = panelCellPercent(3);
+    expect(gridCells()).toEqual([third, third, third, third, panelCellPercent(3, 2), third, third, third]);
+  });
+
+  it('numa janela média, duas colunas', async () => {
+    mockWindow.width = 900;
+    await mount();
+    const half = panelCellPercent(2);
+    expect(gridCells()).toEqual([half, half, half, half, '100%', half, half, half]);
+    expect(viewStyles().filter((style) => style.flexBasis === '22%')).toHaveLength(4);
   });
 });

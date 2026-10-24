@@ -6,6 +6,8 @@ import {
   buildSystem,
   cleanMenu,
   cleanReply,
+  FEEDBACK_KINDS,
+  FEEDBACK_MAX_LENGTH,
   isISODate,
   MAX_TURNS,
   MenuSchema,
@@ -26,6 +28,8 @@ const empty = {
   category: null,
   spent_on: null,
   screen: null,
+  feedback_kind: null,
+  feedback_text: null,
 } as const;
 
 Deno.test('isISODate accepts only real calendar dates', () => {
@@ -102,10 +106,58 @@ Deno.test('cleanReply keeps complete actions with defaults and drops the rest', 
   ]);
 });
 
+Deno.test('cleanReply keeps a recado trimmed, with its kind, and drops an empty one', () => {
+  const raw: NukeReplyRaw = {
+    reply: 'Posso mandar este recado:',
+    actions: [
+      { ...empty, type: 'send_feedback', label: '', feedback_kind: 'problema', feedback_text: '  A lista não salva quando estou sem internet.\n ' },
+      { ...empty, type: 'send_feedback', label: 'Mandar', feedback_kind: null, feedback_text: 'Queria um modo escuro mais forte.' },
+      { ...empty, type: 'send_feedback', label: 'Mandar', feedback_kind: 'elogio', feedback_text: '   ' },
+      { ...empty, type: 'send_feedback', label: 'Mandar', feedback_kind: 'elogio', feedback_text: null },
+    ],
+  };
+  assertEquals(cleanReply(raw, '2026-10-24').actions, [
+    { type: 'send_feedback', label: 'Mandar recado', kind: 'problema', text: 'A lista não salva quando estou sem internet.' },
+    { type: 'send_feedback', label: 'Mandar', kind: 'outro', text: 'Queria um modo escuro mais forte.' },
+  ]);
+});
+
+Deno.test('cleanReply cuts a recado at the column length, by character, without a loose space', () => {
+  const recado = (text: string): NukeReplyRaw => ({
+    reply: 'Ok',
+    actions: [{ ...empty, type: 'send_feedback', label: 'Mandar recado', feedback_kind: 'sugestao', feedback_text: text }],
+  });
+  const textOf = (text: string) => {
+    const [action] = cleanReply(recado(text), '2026-10-24').actions;
+    if (action?.type !== 'send_feedback') throw new Error('no recado');
+    return action.text;
+  };
+  assertEquals(FEEDBACK_MAX_LENGTH, 2000);
+  assertEquals(textOf('a'.repeat(2500)), 'a'.repeat(2000));
+  assertEquals(textOf('a'.repeat(2000)), 'a'.repeat(2000));
+  // Um emoji é um caractere para o banco (char_length) e duas unidades no JS: não se parte ao meio.
+  assertEquals(textOf(`${'a'.repeat(1999)}😀😀`), `${'a'.repeat(1999)}😀`);
+  assertEquals(textOf(`${'a'.repeat(1999)} b`), 'a'.repeat(1999));
+});
+
 Deno.test('the reply schema converts to a strict JSON schema without unsupported unions', () => {
   const schema = JSON.stringify(z.toJSONSchema(NukeReplySchema));
   assertEquals(schema.includes('oneOf'), false);
   assertEquals(schema.includes('"reply"'), true);
+  assertEquals(schema.includes('"send_feedback"'), true);
+  assertEquals(schema.includes('"feedback_text"'), true);
+  for (const kind of FEEDBACK_KINDS) assertEquals(schema.includes(`"${kind}"`), true, kind);
+});
+
+Deno.test('buildSystem offers the recado for opinions about the app, never as already sent', () => {
+  const system = buildSystem('', '2026-10-24');
+  assertEquals(system.includes('- send_feedback: '), true);
+  assertEquals(system.includes('"feedback_kind" problema|sugestao|elogio|outro'), true);
+  assertEquals(system.includes('"feedback_text"'), true);
+  assertEquals(system.includes('Nunca para pedidos sobre a casa em si.'), true);
+  assertEquals(system.includes('Nunca diga que o recado foi enviado'), true);
+  // As regras vêm antes do retrato: o recado não pode ser pedido de dentro dele.
+  assertEquals(system.indexOf('send_feedback') < system.indexOf('<retrato>'), true);
 });
 
 Deno.test('parseMenuRequest validates the week and trims the preferences', () => {
