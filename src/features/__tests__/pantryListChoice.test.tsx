@@ -138,3 +138,51 @@ describe('"Acabou" na despensa', () => {
     expect(notify).toHaveBeenCalledWith('Erro', 'Error: Essa lista não está mais aberta. Escolha outra.');
   });
 });
+
+describe('"Está acabando" na despensa', () => {
+  it('põe na última lista sem dar baixa: o item continua na despensa', async () => {
+    const actions = await actionsOf('Arroz');
+    expect(actions.map((a) => a.label).slice(0, 4)).toEqual([
+      'Acabou — pôr na última lista (“Feira”)',
+      'Acabou — escolher a lista',
+      'Está acabando — pôr na última lista (“Feira”)',
+      'Está acabando — escolher a lista',
+    ]);
+    await act(async () => actions[2].onPress());
+    expect(mockAdd).toHaveBeenCalledWith(expect.objectContaining({ name: 'Arroz', quantity: 2, unit: 'un', listId: undefined, shownListId: 'l-Feira' }));
+    expect(mockConsume).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith('Adicionado à lista', 'Arroz foi para "Feira". Continua na despensa até acabar.');
+  });
+
+  it('"escolher a lista" usa a tocada, também sem dar baixa', async () => {
+    const actions = await actionsOf('Arroz');
+    act(() => actions.find((a) => a.label === 'Está acabando — escolher a lista')!.onPress());
+    const picker = renderer!.root.findAllByType(ActionSheet)[1];
+    expect(picker.props.title).toBe('Arroz: para qual lista?');
+    expect(picker.props.message).toBe('O item continua na despensa até acabar.');
+    await act(async () => (picker.props.actions as SheetAction[])[1].onPress());
+    expect(mockAdd).toHaveBeenCalledWith(expect.objectContaining({ name: 'Arroz', listId: 'l-Mercado' }));
+    expect(mockConsume).not.toHaveBeenCalled();
+  });
+
+  it('item sem produto vai com o nome sem a marca; sem lista aberta, diz a lista que vai ser usada', async () => {
+    mockLists.data = [];
+    mockPantry.rows = [row('Leite IL Desnatado', 'laticinios')];
+    const actions = await actionsOf('Leite IL Desnatado');
+    const soon = actions.find((a) => a.label === 'Está acabando — pôr na lista de mercado')!;
+    expect(actions.map((a) => a.label)).not.toContain('Está acabando — escolher a lista');
+    mockAdd.mockImplementation(async () => ({ id: 'l-Mercado', name: 'Mercado', added: false }));
+    await act(async () => soon.onPress());
+    expect(mockAdd).toHaveBeenCalledWith(expect.objectContaining({ name: 'Leite desnatado', productId: null }));
+    expect(mockConsume).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith('Já estava na lista', 'Leite desnatado já estava pendente em "Mercado". Continua na despensa até acabar.');
+  });
+
+  it('a lista falhou: nada muda na despensa, e o erro aparece', async () => {
+    mockAdd.mockRejectedValue(new Error('Essa lista não está mais aberta. Escolha outra.'));
+    const actions = await actionsOf('Arroz');
+    await act(async () => actions[2].onPress());
+    expect(mockConsume).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith('Erro', 'Error: Essa lista não está mais aberta. Escolha outra.');
+  });
+});
