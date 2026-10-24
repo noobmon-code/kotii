@@ -194,6 +194,8 @@ export const MERGE_REFRESHES = [
   'listLinks',
   // Os preços de outras casas chegam ao produto pelos apelidos dele, e os do que some passam para o que fica.
   'sharedPrices',
+  // merge_products passa os apelidos do que some para o que fica: são eles que ensinam as abreviações da casa.
+  'productAliases',
   'stores',
   'productDistinctPairs',
   // merge_products passa os códigos de barras do que some para o que fica.

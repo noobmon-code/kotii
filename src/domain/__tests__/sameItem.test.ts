@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { LinkIndex, matchListItems, receiptLineNames, type OpenListItem, type ReceiptLine } from '../listLinks';
-import { itemIdentity, sameItemFit, spelledOut, wordOverlap } from '../sameItem';
+import { itemIdentity, sameItemFit, spelledOut, spellOut, termWords, wordOverlap } from '../sameItem';
 import { guessCategory } from '../search';
 import { sameListedName } from '../similarNames';
 
@@ -50,6 +50,31 @@ describe('itemIdentity: o item sem a marca, a embalagem nem o tamanho', () => {
     expect(keyOf('Jerimum')).toBe('abobora');
     expect(keyOf('Salsinha')).toBe('salsa');
     expect(spelledOut('CAF TORR MOID 500G')).toBe('cafe torrado moido 500g');
+  });
+
+  it('"LT" logo antes do tipo do leite é o leite; em outro lugar, é litro (ou lata)', () => {
+    expect(spelledOut('LT INTEG PIRAC 1L')).toBe('leite integral pirac 1l');
+    expect(spelledOut('LT DESN ITALAC')).toBe('leite desnatado italac');
+    expect(spelledOut('LT UHT PARMALAT')).toBe('leite uht parmalat');
+    expect(keyOf('LT INTEG PIRAC 1L')).toBe('leite');
+    expect(spelledOut('CERV SKOL LT 350ML')).toBe('cerveja skol lt 350ml');
+    expect(spelledOut('REQUEIJAO LT 200G')).toBe('requeijao light 200g');
+    // Só no começo: no meio, "LT" é o light do pão, não o leite.
+    expect(spelledOut('PAO FORMA LT INTEG')).toBe('pao forma lt integral');
+    expect(keyOf('PAO FORMA LT INTEG')).toBe('pao_forma');
+  });
+
+  it('spellOut: cada palavra por extenso sabe de que palavras da nota saiu', () => {
+    expect(spellOut(termWords('PAP.HIG. NEVE'))).toEqual([
+      { word: 'papel', from: [0, 1] },
+      { word: 'higienico', from: [0, 1] },
+      { word: 'neve', from: [2, 2] },
+    ]);
+    expect(spellOut(termWords('LT INTEG'))).toEqual([
+      { word: 'leite', from: [0, 1] },
+      { word: 'integral', from: [0, 1] },
+    ]);
+    expect(spellOut(termWords(''))).toEqual([]);
   });
 
   it('"Gilete" na lista é a lâmina; o "GILLETTE" da nota é a marca e sozinho não diz o item', () => {
