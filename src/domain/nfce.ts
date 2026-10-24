@@ -202,12 +202,19 @@ export function nfceReceiptRow(
 export const NFCE_CAPTCHA = 'captcha';
 
 /**
- * Caminho depois de uma busca na Sefaz que falhou: com o "não sou robô", direto
- * para a foto da nota; nos outros erros (Sefaz fora do ar, nota sem itens), a
- * pessoa fica na tela do QR, lê o aviso e decide.
+ * Código (só do app, nunca da função) da nota que nem foi à Sefaz: o estado dela pediu o "não sou robô" há
+ * pouco (domain/captchaStates). Vai para a pendente como no CAPTCHA, mas não renova o prazo do estado.
+ */
+export const NFCE_CAPTCHA_STATE = 'captcha_state';
+
+/**
+ * Caminho depois de uma busca na Sefaz que falhou: com o "não sou robô" (pedido
+ * agora ou há pouco no mesmo estado), direto para a foto da nota; nos outros
+ * erros (Sefaz fora do ar, nota sem itens), a pessoa fica na tela do QR, lê o
+ * aviso e decide.
  */
 export function nfceFailureRoute(code: string | null): 'photo' | 'stay' {
-  return code === NFCE_CAPTCHA ? 'photo' : 'stay';
+  return code === NFCE_CAPTCHA || code === NFCE_CAPTCHA_STATE ? 'photo' : 'stay';
 }
 
 /**
