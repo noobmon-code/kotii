@@ -83,6 +83,15 @@ import {
   receiptTotalChange,
 } from '@/domain/receiptEdit';
 import { hasNoValue } from '@/domain/receiptItem';
+import {
+  asksWeight,
+  readWeight,
+  weighedLine,
+  weightQuestion,
+  WEIGHT_PLACEHOLDER,
+  WEIGHT_SAVED_NOT_SHOWN,
+  WEIGHT_UNREADABLE,
+} from '@/domain/receiptWeight';
 import { houseNameOverride, keptName, noteNames, sameProduct, typedNameActions, withEntry } from '@/domain/receiptNames';
 import {
   buildConfirmPayload,
@@ -213,6 +222,8 @@ export default function ReceiptScreen() {
   // O mesmo conjunto também fora do estado: a confirmação que esperou uma gravação (a do total) lê o de agora,
   // e não o do instante do toque.
   const leftNow = useRef<ReadonlySet<string>>(new Set());
+  // Itens pesáveis que a pessoa disse que vieram em embalagem ("É embalagem"): só nesta revisão, como o "sem valor".
+  const [packaged, setPackaged] = useState<ReadonlySet<string>>(new Set());
   const [imageUrls, setImageUrls] = useState<string[] | null>(null);
   const [checkingPantry, setCheckingPantry] = useState(false);
   // Trava já no toque: o estado só muda no próximo render.
@@ -767,6 +778,27 @@ export default function ReceiptScreen() {
     else notify('Imagem indisponível');
   }
 
+  /**
+   * O peso da etiqueta do item pesado no balcão (domain/receiptWeight): a
+   * linha vira por kg, com o valor da nota sobre o peso como preço. Grava como
+   * o formulário do item, pela mesma espera da nota.
+   */
+  function saveWeight(item: ReceiptItem, text: string): boolean {
+    const weight = readWeight(text);
+    if (weight == null) {
+      notify(WEIGHT_UNREADABLE.title, WEIGHT_UNREADABLE.message);
+      return false;
+    }
+    // Uma gravação por vez: com a nota ainda por voltar, o segundo toque gravaria sobre a linha de antes.
+    if (valueWrites.current) return false;
+    void settleValue(
+      saveItem.mutateAsync({ id: item.id, values: { raw_description: item.raw_description, ...weighedLine(item, weight) } }),
+      undefined,
+      { itemId: item.id, saved: WEIGHT_SAVED_NOT_SHOWN },
+    );
+    return true;
+  }
+
   function saveEditedItem(values: ItemValues) {
     const itemId = editing?.item?.id;
     // Nota confirmada: o formulário só abre no item sem valor, e só o valor é gravado.
@@ -1011,6 +1043,10 @@ export default function ReceiptScreen() {
           const alert = alertText(alerts.get(item.id));
           const before = beforeUse[item.id];
           const prompt = unpricedPrompt(gap, item.id, receipt, leftUnpriced, savedUnshown);
+          const chosenName = resolved.productName ?? (resolved.product.kind === 'new' ? resolved.product.name : null);
+          // O peso gravado que a nota em tela ainda não mostra também não pergunta de novo.
+          const weighing =
+            isDraft && !packaged.has(item.id) && !savedUnshown.has(item.id) && asksWeight(item, resolved.category, chosenName);
           return isDraft ? (
             <DraftItemCard
               key={item.id}
@@ -1018,6 +1054,9 @@ export default function ReceiptScreen() {
               resolved={resolved}
               alert={gone.chosen.includes(item.id) ? GONE_CHOICE_HINT : alert}
               prompt={prompt}
+              weighing={weighing}
+              onSaveWeight={(text) => saveWeight(item, text)}
+              onPackaged={() => setPackaged((prev) => new Set([...prev, item.id]))}
               onUseSuggestion={applySuggestion}
               onLeaveUnpriced={() => leaveUnpriced([item.id])}
               onEdit={() => setEditing({ item })}
@@ -1225,6 +1264,9 @@ function DraftItemCard({
   resolved,
   alert,
   prompt,
+  weighing,
+  onSaveWeight,
+  onPackaged,
   onUseSuggestion,
   onLeaveUnpriced,
   onEdit,
@@ -1245,6 +1287,11 @@ function DraftItemCard({
   alert: string | null;
   /** A pergunta do item sem valor (domain/receiptGap); null se ele tem valor ou se a pessoa já respondeu. */
   prompt: UnpricedPrompt | null;
+  /** O item pode ter sido pesado no balcão (domain/receiptWeight) e a pessoa ainda não respondeu. */
+  weighing: boolean;
+  /** Grava o peso digitado; false quando não gravou (o peso não deu para ler), e o campo continua aberto. */
+  onSaveWeight: (text: string) => boolean;
+  onPackaged: () => void;
   onUseSuggestion: (suggestion: GapSuggestion) => void;
   onLeaveUnpriced: () => void;
   onEdit: () => void;
@@ -1324,6 +1371,7 @@ function DraftItemCard({
         ) : null}
       </Row>
       {prompt ? <ValueQuestion prompt={prompt} onUse={onUseSuggestion} onFill={onEdit} onLeave={onLeaveUnpriced} /> : null}
+      {weighing ? <WeightQuestion item={item} onSave={onSaveWeight} onPackaged={onPackaged} /> : null}
       {similar ? (
         <View style={styles.gapXs}>
           <Text variant="small">{similarNameHint(similar)}</Text>
@@ -1404,6 +1452,44 @@ function ValueQuestion({
   );
 }
 
+/**
+ * A pergunta do item que pode ter sido pesado no balcão: o peso da etiqueta,
+ * ou "É embalagem". Como a do valor, nada é gravado sem o toque.
+ */
+function WeightQuestion({ item, onSave, onPackaged }: { item: ReceiptItem; onSave: (text: string) => boolean; onPackaged: () => void }) {
+  const [text, setText] = useState<string | null>(null);
+  const save = () => {
+    if (text != null && onSave(text)) setText(null);
+  };
+  return (
+    <View style={styles.gapXs}>
+      <Text variant="small">{weightQuestion(item)}</Text>
+      {text != null ? (
+        <Row style={styles.wrap}>
+          <View style={styles.weight}>
+            <TextField
+              value={text}
+              onChangeText={setText}
+              placeholder={WEIGHT_PLACEHOLDER}
+              keyboardType="decimal-pad"
+              autoFocus
+              onSubmitEditing={save}
+              accessibilityLabel={`Peso de ${item.raw_description}`}
+            />
+          </View>
+          <Chip label="Salvar peso" icon="check" onPress={save} />
+          <Chip label="Cancelar" onPress={() => setText(null)} />
+        </Row>
+      ) : (
+        <Row style={styles.wrap}>
+          <Chip label="Informar o peso" icon="scale" onPress={() => setText('')} />
+          <Chip label="É embalagem" onPress={onPackaged} />
+        </Row>
+      )}
+    </View>
+  );
+}
+
 /** Fotos da nota; nota comprida vem em partes, uma embaixo da outra. */
 function ImageViewer({ urls, onClose }: { urls: string[] | null; onClose: () => void }) {
   const c = useColors();
@@ -1447,6 +1533,7 @@ const styles = StyleSheet.create({
   storeRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   totalRow: { flexDirection: 'row', alignItems: 'center' },
   expiry: { width: 140 },
+  weight: { width: 190 },
   viewerHeader: { padding: space.lg },
   photos: { gap: space.sm, paddingBottom: space.xl },
   photo: { width: '100%', aspectRatio: 3 / 4 },

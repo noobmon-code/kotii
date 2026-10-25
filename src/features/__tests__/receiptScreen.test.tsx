@@ -1864,3 +1864,52 @@ describe('a lista de compras na revisão: o mesmo item, de qualquer marca', () =
     expect(mockLearning.enabled.at(-1)).toBe(false);
   });
 });
+
+describe('item pesado no balcão que veio como "1 un"', () => {
+  const weightField = () => renderer!.root.findAllByType(TextField).find((entry) => entry.props.placeholder === 'Peso em kg (ex.: 0,186)');
+
+  it('pergunta o peso; com ele, a linha vira por kg com o valor da nota sobre o peso', async () => {
+    seed(
+      receipt({ total: 30.98 }),
+      item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }),
+      item('i2', 'LEITE IL DESNATADO', 7.99, { suggested_category: 'laticinios' }),
+    );
+    await open();
+    expect(page()).toContain('Veio pesado no balcão? Diga quanto pesou (está na etiqueta) e o app compara pelo preço do kg.');
+    // O leite vem em embalagem: só o queijo pergunta.
+    expect(chipLabels(card('LEITE IL DESNATADO'))).not.toContain('Informar o peso');
+    await press(chip('Informar o peso', card('QUEIJO parmesão')));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    await press(chip('Salvar peso'));
+    expect(writes('receipt_items')).toEqual([
+      {
+        table: 'receipt_items',
+        verb: 'update',
+        values: { raw_description: 'QUEIJO parmesão', quantity: 0.186, unit: 'kg', unit_price: 123.6022, total_price: 22.99 },
+        filters: { id: 'i1' },
+      },
+    ]);
+    // A nota voltou com a linha por kg: a pergunta sai.
+    expect(page()).not.toContain('Veio pesado no balcão?');
+  });
+
+  it('"É embalagem" deixa a linha como está, só nesta revisão; peso ilegível avisa e não grava', async () => {
+    seed(receipt({ total: 22.99 }), item('i1', 'PRESUNTO COZIDO', 22.99, { suggested_category: 'frios' }));
+    await open();
+    await press(chip('Informar o peso'));
+    act(() => weightField()!.props.onChangeText('abc'));
+    await press(chip('Salvar peso'));
+    expect(notify).toHaveBeenCalledWith('Peso inválido', 'Digite o peso da etiqueta em kg, como 0,186 (ou 186 g).');
+    expect(writes('receipt_items')).toEqual([]);
+    await press(chip('Cancelar'));
+    await press(chip('É embalagem'));
+    expect(page()).not.toContain('Veio pesado no balcão?');
+    expect(writes('receipt_items')).toEqual([]);
+  });
+
+  it('a nota confirmada não pergunta: a quantidade dela já foi para a despensa', async () => {
+    seed(receipt({ status: 'confirmed', total: 22.99 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }));
+    await open();
+    expect(page()).not.toContain('Veio pesado no balcão?');
+  });
+});
