@@ -206,6 +206,25 @@ begin
     'latest price at second store';
   assert (select count(*) from public.product_aliases) = 2, 'aliases deduplicated by normalized text';
 
+  -- Quantos vêm na embalagem: a resposta da revisão vai com o último preço; 1 (ou mais de mil) não é embalagem.
+  assert (select pack_count from public.latest_prices where product_id = p_arroz and store_id = s_caro) is null,
+    'pack count is empty until someone answers';
+  update public.receipt_items set pack_count = 12 where id = i_arroz2;
+  assert (select pack_count from public.latest_prices where product_id = p_arroz and store_id = s_caro) = 12,
+    'latest price carries the pack count';
+  assert (select pack_count from public.price_observations where receipt_id = r2) = 12, 'observation carries the pack count';
+  begin
+    update public.receipt_items set pack_count = 1 where id = i_arroz2;
+    raise exception 'FAIL: pack of one accepted';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.receipt_items set pack_count = 1001 where id = i_arroz2;
+    raise exception 'FAIL: pack of 1001 accepted';
+  exception when check_violation then null;
+  end;
+  update public.receipt_items set pack_count = null where id = i_arroz2;
+
   begin
     insert into public.receipts (store_id, access_key) values (s_bom, repeat('1', 44));
     raise exception 'FAIL: duplicate NFC-e access key accepted';
@@ -6085,8 +6104,12 @@ begin
     'and so does latest_prices';
   assert (select array_agg(attname::text order by attnum) from pg_attribute
             where attrelid = 'public.price_observations'::regclass and attnum > 0 and not attisdropped)
-         = array['household_id', 'product_id', 'store_id', 'purchased_at', 'unit_price', 'unit', 'receipt_id'],
-    'the columns of price_observations are the same, in the same order';
+         = array['household_id', 'product_id', 'store_id', 'purchased_at', 'unit_price', 'unit', 'receipt_id', 'pack_count'],
+    'the columns of price_observations are the same, in the same order (pack_count, 20261025120000, at the end)';
+  assert (select array_agg(attname::text order by attnum) from pg_attribute
+            where attrelid = 'public.latest_prices'::regclass and attnum > 0 and not attisdropped)
+         = array['household_id', 'product_id', 'store_id', 'unit', 'unit_price', 'purchased_at', 'pack_count'],
+    'the columns of latest_prices are the same, in the same order, with pack_count at the end';
   assert has_table_privilege('authenticated', 'public.price_observations', 'select')
      and has_table_privilege('authenticated', 'public.latest_prices', 'select'), 'members still read both views';
 end $$;

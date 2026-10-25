@@ -308,23 +308,41 @@ describe('estimateList', () => {
       approximateQuantity: true,
       perPiece: { unit: 'kg', amount: 0.201 },
     });
-    // Duas unidades são duas vezes o de costume; em g, a conta é exata e não usa o costume.
-    expect(estimate.byItem.get('d')).toMatchObject({ cost: 29.31, approximateQuantity: true });
+    // Como o 1 kg, o de costume vale qualquer que seja a quantidade ("6 un" de banana são as bananas de sempre); em g,
+    // a conta é exata e não usa o costume.
+    expect(estimate.byItem.get('d')).toMatchObject({ cost: 14.65, approximateQuantity: true });
     expect(estimate.byItem.get('g')).toMatchObject({ cost: 21.87, approximateQuantity: false });
     expect(estimate.byItem.get('g')!.perPiece).toBeUndefined();
     // Preço por ml (R$ 12,00 o litro): meio litro, o de costume.
     expect(estimate.byItem.get('s')).toMatchObject({ cost: 6, unit: 'l', perPiece: { unit: 'l', amount: 0.5 } });
     expect(formatItemCost(estimate.byItem.get('q')!)).toBe('~R$ 14,65');
     expect(itemFacts(estimate.byItem.get('q'), undefined, { storeName: () => 'Bom', today: '2026-10-25' })).toContain(
-      'O preço é por kg: a conta da lista usa 201 g por unidade, o que a casa costuma levar.',
+      'O preço é por kg: a conta da lista usa 201 g, o que a casa costuma levar de uma vez.',
     );
     // "Onde comprar" diz o mesmo na linha do item.
-    expect(storePriceNote(listStorePrices(list, quotes, { usual })('q', 'bom')!)).toBe('Preço por kg, ~201 g por unidade (o que a casa costuma levar)');
+    expect(storePriceNote(listStorePrices(list, quotes, { usual })('q', 'bom')!)).toBe('Preço por kg, ~201 g (o que a casa costuma levar)');
     // Sem o costume (nunca comprado a peso, ou o histórico não chegou), continua 1 kg.
     expect(estimateList(list, quotes).byItem.get('q')).toMatchObject({ cost: 72.9, approximateQuantity: true });
     expect(estimateList(list, quotes, { usual: new Map([['outro', { kg: 0.2 }]]) }).byItem.get('q')!.perPiece).toBeUndefined();
     // Comprado só a litro: não serve ao preço por kg.
     expect(estimateList(list, quotes, { usual: new Map([['queijo', { l: 0.2 }]]) }).byItem.get('q')).toMatchObject({ cost: 72.9 });
+  });
+
+  it('ovos: o último preço diz quantos vinham na cartela e quanto sai cada ovo, quando a pessoa disse na revisão', () => {
+    const quotes = [
+      { ...price('ovos', 'bom', 13.99, '2026-10-20T12:00:00Z'), packCount: 10 },
+      { ...price('ovos', 'dia', 8.99, '2026-10-11T12:00:00Z'), packCount: null },
+    ];
+    const estimate = estimateList([item('o', 'Ovos', 'ovos')], quotes).byItem.get('o');
+    const names = { storeName: (id: string) => (id === 'bom' ? 'Bemais' : 'Manaíra'), today: '2026-10-25' };
+    expect(itemFacts(estimate, undefined, { ...names, category: 'ovos' })).toEqual([
+      'Último preço: R$ 13,99/un, 10 ovos (R$ 1,40 o ovo) (Bemais, 20 out).',
+      'Menor preço: R$ 8,99/un (Manaíra, 11 out).',
+    ]);
+    // Fora dos ovos, em unidades.
+    expect(itemFacts(estimate, undefined, { ...names, category: 'laticinios' })[0]).toBe(
+      'Último preço: R$ 13,99/un, 10 un (R$ 1,40 cada) (Bemais, 20 out).',
+    );
   });
 
   it('o costume é o do produto de onde vem o preço; sem compra dele a peso, o do produto do item', () => {

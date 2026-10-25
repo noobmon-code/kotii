@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -25,6 +25,7 @@ import {
   useReceipt,
   useReceiptReadAt,
   useSaveReceiptItem,
+  useSetReceiptItemPack,
   useSetReceiptStore,
   useSetReceiptTotal,
   useUpdateReceipt,
@@ -82,6 +83,7 @@ import {
   receiptEditing,
   receiptTotalChange,
 } from '@/domain/receiptEdit';
+import { asksPackCount, packCountOf, packLine, PACK_CHOICES, PACK_QUESTION, PACK_SAVED_NOT_SHOWN, PACK_UNREADABLE, readPackCount } from '@/domain/packCount';
 import { hasNoValue } from '@/domain/receiptItem';
 import {
   asksWeight,
@@ -187,6 +189,7 @@ export default function ReceiptScreen() {
   const correctTotal = useCorrectReceipt(id);
   const saveItem = useSaveReceiptItem(id);
   const fillValue = useFillReceiptItemValue(id);
+  const setPack = useSetReceiptItemPack(id);
   const deleteItem = useDeleteReceiptItem(id);
   const confirm = useConfirmReceipt(id);
   const deleteReceipt = useDeleteReceipt(id);
@@ -224,6 +227,8 @@ export default function ReceiptScreen() {
   const leftNow = useRef<ReadonlySet<string>>(new Set());
   // Itens pesáveis que a pessoa disse que vieram em embalagem ("É embalagem"): só nesta revisão, como o "sem valor".
   const [packaged, setPackaged] = useState<ReadonlySet<string>>(new Set());
+  // Ovos em que a pessoa disse "Não sei" quantos vêm: só nesta tela.
+  const [packSkipped, setPackSkipped] = useState<ReadonlySet<string>>(new Set());
   const [imageUrls, setImageUrls] = useState<string[] | null>(null);
   const [checkingPantry, setCheckingPantry] = useState(false);
   // Trava já no toque: o estado só muda no próximo render.
@@ -799,6 +804,42 @@ export default function ReceiptScreen() {
     return true;
   }
 
+  /**
+   * Quantos vêm na embalagem (domain/packCount): só o que o preço diz, sem
+   * mexer no valor, na quantidade nem na despensa, e por isso também na nota
+   * confirmada. Pela mesma espera da nota que as outras gravações de item.
+   */
+  function savePack(item: ReceiptItem, count: number | null): boolean {
+    if (count == null) {
+      notify(PACK_UNREADABLE.title, PACK_UNREADABLE.message);
+      return false;
+    }
+    if (valueWrites.current) return false;
+    void settleValue(setPack.mutateAsync({ id: item.id, count }), ({ saved }) => saved, { itemId: item.id, saved: PACK_SAVED_NOT_SHOWN });
+    return true;
+  }
+
+  /** A pergunta (ou o que já se sabe) de quantos vêm na embalagem do item, nos dois cartões. */
+  function packPart(item: ReceiptItem, category: string, productName: string | null) {
+    if (category !== 'ovos' || item.unit !== 'un') return null;
+    if (savedUnshown.has(item.id)) return null;
+    const count = packCountOf(item, productName);
+    if (count != null) {
+      // A conta que veio da descrição não se muda aqui; a resposta da revisão, sim.
+      const answered = count === item.pack_count && packCountOf({ raw_description: item.raw_description }, productName) == null;
+      return <PackAnswer item={item} count={count} category={category} onChange={answered ? (next) => savePack(item, next) : undefined} />;
+    }
+    if (packSkipped.has(item.id) || !asksPackCount(item, category, productName)) return null;
+    return (
+      <PackQuestion
+        item={item}
+        onSave={(next) => savePack(item, next)}
+        onSkip={() => setPackSkipped((prev) => new Set([...prev, item.id]))}
+        skipLabel="Não sei"
+      />
+    );
+  }
+
   function saveEditedItem(values: ItemValues) {
     const itemId = editing?.item?.id;
     // Nota confirmada: o formulário só abre no item sem valor, e só o valor é gravado.
@@ -1057,6 +1098,7 @@ export default function ReceiptScreen() {
               weighing={weighing}
               onSaveWeight={(text) => saveWeight(item, text)}
               onPackaged={() => setPackaged((prev) => new Set([...prev, item.id]))}
+              pack={packPart(item, resolved.category, chosenName)}
               onUseSuggestion={applySuggestion}
               onLeaveUnpriced={() => leaveUnpriced([item.id])}
               onEdit={() => setEditing({ item })}
@@ -1092,6 +1134,8 @@ export default function ReceiptScreen() {
               />
               {/* Dos itens da nota confirmada, só se corrige o valor do que ficou sem (domain/receiptEdit). */}
               {prompt ? <ValueQuestion prompt={prompt} onUse={applySuggestion} onFill={() => setEditing({ item })} /> : null}
+              {/* E quantos vêm na embalagem, que não mexe no valor nem na despensa. */}
+              {packPart(item, resolved.category, item.product_id ? (catalog.get(item.product_id)?.name ?? null) : null)}
             </Card>
           );
         })}
@@ -1267,6 +1311,7 @@ function DraftItemCard({
   weighing,
   onSaveWeight,
   onPackaged,
+  pack,
   onUseSuggestion,
   onLeaveUnpriced,
   onEdit,
@@ -1292,6 +1337,8 @@ function DraftItemCard({
   /** Grava o peso digitado; false quando não gravou (o peso não deu para ler), e o campo continua aberto. */
   onSaveWeight: (text: string) => boolean;
   onPackaged: () => void;
+  /** A pergunta (ou a resposta) de quantos vêm na embalagem dos ovos; null nas outras linhas. */
+  pack: ReactNode;
   onUseSuggestion: (suggestion: GapSuggestion) => void;
   onLeaveUnpriced: () => void;
   onEdit: () => void;
@@ -1372,6 +1419,7 @@ function DraftItemCard({
       </Row>
       {prompt ? <ValueQuestion prompt={prompt} onUse={onUseSuggestion} onFill={onEdit} onLeave={onLeaveUnpriced} /> : null}
       {weighing ? <WeightQuestion item={item} onSave={onSaveWeight} onPackaged={onPackaged} /> : null}
+      {pack}
       {similar ? (
         <View style={styles.gapXs}>
           <Text variant="small">{similarNameHint(similar)}</Text>
@@ -1487,6 +1535,92 @@ function WeightQuestion({ item, onSave, onPackaged }: { item: ReceiptItem; onSav
         </Row>
       )}
     </View>
+  );
+}
+
+/**
+ * Quantos ovos vêm na embalagem: os tamanhos de sempre num toque, "Outro"
+ * para digitar e `skipLabel` para não responder (ou desistir de mudar).
+ */
+function PackQuestion({
+  item,
+  onSave,
+  onSkip,
+  skipLabel,
+}: {
+  item: ReceiptItem;
+  onSave: (count: number | null) => boolean;
+  onSkip: () => void;
+  skipLabel: string;
+}) {
+  const [text, setText] = useState<string | null>(null);
+  const saveTyped = () => {
+    if (text != null && onSave(readPackCount(text))) setText(null);
+  };
+  return (
+    <View style={styles.gapXs}>
+      <Text variant="small">{PACK_QUESTION}</Text>
+      {text != null ? (
+        <Row style={styles.wrap}>
+          <View style={styles.weight}>
+            <TextField
+              value={text}
+              onChangeText={setText}
+              placeholder="Quantos vêm"
+              keyboardType="number-pad"
+              autoFocus
+              onSubmitEditing={saveTyped}
+              accessibilityLabel={`Quantos vêm em ${item.raw_description}`}
+            />
+          </View>
+          <Chip label="Salvar" icon="check" onPress={saveTyped} />
+          <Chip label="Cancelar" onPress={() => setText(null)} />
+        </Row>
+      ) : (
+        <Row style={styles.wrap}>
+          {PACK_CHOICES.map((count) => (
+            <Chip key={count} label={String(count)} onPress={() => onSave(count)} />
+          ))}
+          <Chip label="Outro" icon="pencil-outline" onPress={() => setText('')} />
+          <Chip label={skipLabel} onPress={onSkip} />
+        </Row>
+      )}
+    </View>
+  );
+}
+
+/** O que já se sabe de quantos vêm ("10 ovos na embalagem: R$ 1,40 o ovo"); a resposta da revisão se muda aqui. */
+function PackAnswer({
+  item,
+  count,
+  category,
+  onChange,
+}: {
+  item: ReceiptItem;
+  count: number;
+  category: string;
+  onChange?: (count: number | null) => boolean;
+}) {
+  const [changing, setChanging] = useState(false);
+  if (changing && onChange) {
+    return (
+      <PackQuestion
+        item={item}
+        onSave={(next) => {
+          const saved = onChange(next);
+          if (saved) setChanging(false);
+          return saved;
+        }}
+        onSkip={() => setChanging(false)}
+        skipLabel="Cancelar"
+      />
+    );
+  }
+  return (
+    <Row style={styles.wrap}>
+      <Text variant="small">{packLine(item, count, category)}</Text>
+      {onChange ? <Chip label="Mudar" icon="pencil-outline" onPress={() => setChanging(true)} /> : null}
+    </Row>
   );
 }
 

@@ -1505,19 +1505,25 @@ const PRICE_MAX_PAGES = 20;
  */
 export async function fetchLatestPrices(): Promise<LatestPrice[]> {
   const prices: LatestPrice[] = [];
+  // Quantos vinham na embalagem (pack_count) chegou depois: o banco de antes da coluna lê sem ela.
+  let columns = 'product_id, store_id, unit, unit_price, purchased_at, pack_count';
   for (let page = 0; ; page++) {
     const from = page * PRICE_PAGE;
     // Lidas todas as páginas do teto, cheias: uma linha a mais é o que separa "exatamente o teto" de "preços demais".
     const beyond = page === PRICE_MAX_PAGES;
-    const rows = (unwrap(
-      await supabase
-        .from('latest_prices')
-        .select('product_id, store_id, unit, unit_price, purchased_at')
-        .order('product_id')
-        .order('store_id')
-        .order('unit')
-        .range(from, beyond ? from : from + PRICE_PAGE - 1),
-    ) ?? []) as LatestPrice[];
+    const result = await supabase
+      .from('latest_prices')
+      .select(columns)
+      .order('product_id')
+      .order('store_id')
+      .order('unit')
+      .range(from, beyond ? from : from + PRICE_PAGE - 1);
+    if (result.error && page === 0 && columns.endsWith(', pack_count') && isMissingColumn(result.error, 'pack_count')) {
+      columns = columns.replace(', pack_count', '');
+      page = -1;
+      continue;
+    }
+    const rows = (unwrap(result) ?? []) as unknown as LatestPrice[];
     if (beyond) {
       if (rows.length) throw new Error('Não foi possível carregar todos os preços da casa: são mais do que o app consegue ler de uma vez.');
       return prices;
@@ -1627,9 +1633,11 @@ export const PURCHASE_MAX_LINES = 5000;
 
 // Só as linhas de notas confirmadas: o !inner faz o filtro da nota valer para a linha (sem ele, a linha do
 // rascunho viria com a nota vazia). O mercado vem junto; nota sem mercado conta, com `store` nulo.
-// A descrição da linha traz o tamanho da embalagem ("ARROZ 5KG"), para comparar pacotes de tamanhos diferentes.
+// A descrição da linha traz o tamanho da embalagem ("ARROZ 5KG"), para comparar pacotes de tamanhos diferentes; sem
+// ele, quantos vêm (pack_count) é o que a pessoa respondeu na revisão. O banco de antes da coluna lê sem ela.
 const PURCHASE_COLUMNS =
-  'id, receipt_id, raw_description, quantity, unit, unit_price, total_price, receipt:receipts!inner(purchased_at, store_id, store:stores(name))';
+  'id, receipt_id, raw_description, quantity, unit, unit_price, total_price, pack_count, receipt:receipts!inner(purchased_at, store_id, store:stores(name))';
+const PURCHASE_COLUMNS_WITHOUT_PACK = PURCHASE_COLUMNS.replace(' pack_count,', '');
 
 type PurchaseLineRow = {
   id: string;
@@ -1639,6 +1647,7 @@ type PurchaseLineRow = {
   unit: Unit;
   unit_price: number;
   total_price: number;
+  pack_count?: number | null;
   receipt: { purchased_at: string; store_id: string | null; store: { name: string } | null };
 };
 
@@ -1659,14 +1668,19 @@ export async function fetchProductPurchases(productId: string): Promise<Purchase
   let last: string | undefined;
   // Quantas linhas a contagem da página anterior disse que ainda faltavam depois dela.
   let promised = 0;
+  let columns = PURCHASE_COLUMNS;
   for (;;) {
     let request = supabase
       .from('receipt_items')
-      .select(PURCHASE_COLUMNS, { count: 'exact' })
+      .select(columns, { count: 'exact' })
       .eq('product_id', productId)
       .eq('receipt.status', 'confirmed');
     if (last) request = request.gt('id', last);
     const result = await request.order('id').limit(PURCHASE_PAGE);
+    if (result.error && columns === PURCHASE_COLUMNS && isMissingColumn(result.error, 'pack_count')) {
+      columns = PURCHASE_COLUMNS_WITHOUT_PACK;
+      continue;
+    }
     const rows = (unwrap(result) ?? []) as unknown as PurchaseLineRow[];
     // Quantas linhas ainda havia a partir daqui, contando as desta página.
     const left = result.count ?? null;
@@ -1686,6 +1700,7 @@ export async function fetchProductPurchases(productId: string): Promise<Purchase
         unitPrice: Number(row.unit_price),
         totalPrice: Number(row.total_price),
         description: row.raw_description,
+        ...(row.pack_count != null ? { packCount: Number(row.pack_count) } : {}),
       });
     }
     if (!rows.length || (left != null && rows.length >= left)) return lines;

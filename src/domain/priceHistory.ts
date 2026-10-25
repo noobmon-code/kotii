@@ -36,6 +36,8 @@ export interface PurchaseLine {
   totalPrice: number;
   /** A descrição como veio na nota ("ARROZ T1 5KG"), de onde sai o tamanho da embalagem; sem ela, o tamanho não é conhecido. */
   description?: string;
+  /** Quantos vinham na embalagem, respondido na revisão (domain/packCount): vale quando a descrição não diz o tamanho. */
+  packCount?: number | null;
 }
 
 /** Uma compra do produto: as linhas iguais de uma mesma nota (mesma unidade, mesmo preço impresso), somadas. */
@@ -123,6 +125,10 @@ export const storeKey = (name: string) => `nome:${name.trim().toLocaleLowerCase(
 /** A mais recente primeiro; no mesmo instante (duas notas com a data digitada caem ao meio-dia), sempre na mesma ordem. */
 const newestFirst = (a: Purchase, b: Purchase) => b.time - a.time || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 
+/** A cartela que a pessoa disse na revisão ("10 ovos"): um pacote de N itens, como "C/10" na descrição. */
+const answeredPack = (count: number | null | undefined): PackageSize | null =>
+  count != null && count >= 2 ? { unit: 'un', amount: count, label: `${count} un` } : null;
+
 /**
  * As compras do produto, da mais recente para a mais antiga. O caixa que
  * passa três caixas de leite uma a uma gera três linhas iguais na nota: aqui
@@ -135,7 +141,7 @@ export function toPurchases(lines: PurchaseLine[]): Purchase[] {
   const printed = new Map<string, number>();
   for (const line of lines) {
     const key = `${line.receiptId}|${line.unit}|${line.unitPrice}`;
-    const pack = line.unit === 'un' && line.description ? packageSize(line.description) : null;
+    const pack = line.unit === 'un' ? ((line.description ? packageSize(line.description) : null) ?? answeredPack(line.packCount)) : null;
     const same = byKey.get(key);
     if (same) {
       same.quantity = Math.round((same.quantity + line.quantity) * 1000) / 1000;

@@ -1913,3 +1913,47 @@ describe('item pesado no balcão que veio como "1 un"', () => {
     expect(page()).not.toContain('Veio pesado no balcão?');
   });
 });
+
+describe('quantos ovos vêm na embalagem', () => {
+  const eggs = (patch: Row = {}) => item('i1', 'OVOS RANCHO CAIPIRA', 13.99, { suggested_category: 'ovos', pack_count: null, ...patch });
+
+  it('pergunta na revisão; com a resposta, a linha diz quanto sai cada ovo e deixa mudar', async () => {
+    seed(receipt({ total: 13.99 }), eggs());
+    await open();
+    expect(page()).toContain('Quantos ovos vêm na embalagem? Com isso, o preço mostra quanto sai cada ovo.');
+    await press(chip('10'));
+    expect(writes('receipt_items')).toEqual([{ table: 'receipt_items', verb: 'update', values: { pack_count: 10 }, filters: { id: 'i1', receipt_id: 'r1' } }]);
+    expect(page()).not.toContain('Quantos ovos vêm na embalagem?');
+    expect(page()).toContain('10 ovos na embalagem: R$ 1,40 o ovo');
+    await press(chip('Mudar'));
+    await press(chip('Outro'));
+    act(() => renderer!.root.findAllByType(TextField).find((entry) => entry.props.placeholder === 'Quantos vêm')!.props.onChangeText('20'));
+    await press(chip('Salvar'));
+    expect(writes('receipt_items').at(-1)?.values).toEqual({ pack_count: 20 });
+    expect(page()).toContain('20 ovos na embalagem: R$ 0,70 o ovo');
+  });
+
+  it('na nota confirmada também (não mexe no valor nem na despensa); "Não sei" deixa sem', async () => {
+    seed(receipt({ status: 'confirmed', total: 13.99 }), eggs());
+    await open();
+    expect(page()).toContain('Quantos ovos vêm na embalagem?');
+    await press(chip('Não sei'));
+    expect(page()).not.toContain('Quantos ovos vêm na embalagem?');
+    expect(writes('receipt_items')).toEqual([]);
+  });
+
+  it('a nota que já diz a conta não pergunta, e a conta dela não se muda aqui; o banco sem a coluna também não pergunta', async () => {
+    seed(receipt({ total: 13.99 }), eggs({ raw_description: 'OVOS BRANCOS C/12' }));
+    await open();
+    expect(page()).not.toContain('Quantos ovos vêm na embalagem?');
+    expect(page()).toContain('12 ovos na embalagem: R$ 1,17 o ovo');
+    expect(chip('Mudar')).toBeUndefined();
+    act(() => renderer!.unmount());
+    renderer = undefined;
+    // A leitura de antes da migração não traz pack_count.
+    const { pack_count: _missing, ...old } = eggs();
+    seed(receipt({ total: 13.99 }), old);
+    await open();
+    expect(page()).not.toContain('Quantos ovos vêm na embalagem?');
+  });
+});

@@ -564,6 +564,8 @@ export default function ShoppingListScreen() {
         unit: p.unit,
         unitPrice: Number(p.unit_price),
         purchasedAt: p.purchased_at,
+        // Quantos vinham na embalagem desse preço (os ovos da cartela de 10): os detalhes do item dizem.
+        packCount: p.pack_count ?? null,
       })),
       { links: links.data, products: products.data ?? [], shared: seenElsewhere, usual, storeId },
     );
@@ -971,6 +973,7 @@ export default function ShoppingListScreen() {
               promotionOnly: priority === 'promocao',
               today,
               productName: (product) => products.data?.find((p) => p.id === product)?.name,
+              category: editing.category,
             })
           }
           brand={editing.product_id ? brandChoice(products.data?.find((p) => p.id === editing.product_id)) : null}

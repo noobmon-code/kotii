@@ -17,6 +17,7 @@ import { joinNames } from './cartPantry';
 import { diffDays, formatShortDate, toISODate, todayISO } from './dates';
 import type { LinkIndex } from './listLinks';
 import { formatBRL, formatQuantity } from './money';
+import { packLabel, perItemLabel } from './packCount';
 import { storePriceIndex } from './priceLevel';
 import { SAME_TRIP_DAYS } from './restock';
 import { normalizeSearch } from './search';
@@ -40,6 +41,8 @@ export interface EstimatePrice {
   unitPrice: number;
   /** Quando a casa pagou esse preço (ISO). */
   purchasedAt: string;
+  /** Quantos vinham na embalagem desse preço, quando a pessoa disse na revisão ("10 ovos"; domain/packCount). */
+  packCount?: number | null;
 }
 
 export interface ItemEstimate {
@@ -60,7 +63,7 @@ export interface ItemEstimate {
    * com o item em "un" e o preço por kg ou litro, o do que a casa costuma levar dele (`perPiece`).
    */
   approximateQuantity: boolean;
-  /** Item em "un" com preço por kg ou litro: quanto a casa costuma levar por vez (usualAmounts), o que a conta usa por unidade. */
+  /** Item em "un" com preço por kg ou litro: quanto a casa costuma levar dele de uma vez (usualAmounts), o que a conta usa. */
   perPiece?: UsualAmount;
   /** O produto de onde saem o último preço, o "preço bom" e a estimativa do item (itemResolver). */
   productId: string;
@@ -202,8 +205,10 @@ export function usualAmounts(records: readonly Pick<PurchaseRecord, 'productId' 
 /**
  * Quanto a conta usa do item pedido em "un" quando o preço é por kg ou litro:
  * o que a casa costuma levar do produto do preço (ou, sem compra dele a peso,
- * do produto do item). null quando o item não é em "un", o preço não é por peso
- * nem por volume, ou a casa nunca comprou o produto a peso.
+ * do produto do item), uma vez, qualquer que seja a quantidade da lista ("6
+ * un" de banana não são seis compras de banana). null quando o item não é em
+ * "un", o preço não é por peso nem por volume, ou a casa nunca comprou o
+ * produto a peso.
  */
 function piecePerUnit(
   usual: UsualAmounts | undefined,
@@ -373,11 +378,10 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
 
     const priced = (source: StorePriceSource, used: EstimatePrice | null, unitPrice: number, seen?: SharedQuote): StorePrice => {
       const priceUnit = seen?.unit ?? used?.unit ?? unit;
-      // "Queijo", 1 un, com o preço por kg: o que a casa costuma levar dele por vez, e não 1 kg.
+      // "Queijo", 1 un, com o preço por kg: o que a casa costuma levar dele de uma vez, e não 1 kg. Como o 1 kg, vale
+      // qualquer que seja a quantidade: "6 un" de banana são as bananas de sempre, não seis vezes elas.
       const piece = piecePerUnit(sources.usual, item.unit, priceUnit, [seen?.productId ?? used?.productId ?? productId, productId]);
-      const { quantity, approximate } = piece
-        ? { quantity: item.quantity * piece.inPriceUnit, approximate: true }
-        : priceQuantity(item.quantity, item.unit, priceUnit);
+      const { quantity, approximate } = piece ? { quantity: piece.inPriceUnit, approximate: true } : priceQuantity(item.quantity, item.unit, priceUnit);
       return {
         source,
         cost: round2(unitPrice * quantity),
@@ -806,6 +810,13 @@ const perUnit = (unitPrice: number, unit: string) => {
   return `${formatBRL(base.unitPrice)}/${base.unit}`;
 };
 
+/** O preço com quantos vinham na embalagem, quando se sabe: "R$ 13,99/un, 10 ovos (R$ 1,40 o ovo)". */
+const quoteText = (quote: EstimatePrice, category?: string | null) => {
+  const count = quote.unit === 'un' && quote.packCount != null && quote.packCount >= 2 ? quote.packCount : null;
+  const price = perUnit(quote.unitPrice, quote.unit);
+  return count ? `${price}, ${packLabel(count, category)} (${perItemLabel(quote.unitPrice, count, category)})` : price;
+};
+
 const sameQuote = (a: EstimatePrice, b: EstimatePrice) =>
   a.productId === b.productId && a.storeId === b.storeId && a.unit === b.unit && a.unitPrice === b.unitPrice && a.purchasedAt === b.purchasedAt;
 
@@ -833,7 +844,7 @@ export function storePriceNote(
 ): string | null {
   if (price.source === 'estimated') return 'Estimado pelo nível de preço do mercado';
   // A quantidade é a de costume (item em "un" com preço por kg) ou a de 1 kg, 1 litro ou 1 unidade.
-  const quantity = price.perPiece ? `~${usualAmountLabel(price.perPiece)} por unidade` : 'quantidade em outra unidade';
+  const quantity = price.perPiece ? `~${usualAmountLabel(price.perPiece)}` : 'quantidade em outra unidade';
   if (price.shared) {
     const note = `Preço de outras casas, ${seenLabel(price.shared, referenceYear)}`;
     return price.approximateQuantity ? `${note} (${quantity})` : note;
@@ -971,12 +982,15 @@ export function itemFacts(
     promotionOnly = false,
     today = todayISO(),
     productName,
+    category,
   }: {
     storeName: (storeId: string) => string | undefined;
     chosenStore?: string | null;
     promotionOnly?: boolean;
     today?: string;
     productName?: (productId: string) => string | undefined;
+    /** A categoria do item: ovos se contam em ovos ("10 ovos, R$ 1,40 o ovo"). */
+    category?: string | null;
   },
 ): string[] {
   const day = (iso: string) => formatShortDate(iso, Number(today.slice(0, 4)));
@@ -987,8 +1001,8 @@ export function itemFacts(
     const { last, lowest, used, unit, shared } = estimate;
     // Com um mercado só, o menor é o próprio último preço: não é referência de promoção.
     const cheaper = last != null && lowest != null && lowest.unitPrice < last.unitPrice;
-    if (last) facts.push(`Último preço: ${perUnit(last.unitPrice, last.unit)} ${where(last)}.`);
-    if (cheaper) facts.push(`Menor preço: ${perUnit(lowest.unitPrice, lowest.unit)} ${where(lowest)}.`);
+    if (last) facts.push(`Último preço: ${quoteText(last, category)} ${where(last)}.`);
+    if (cheaper) facts.push(`Menor preço: ${quoteText(lowest, category)} ${where(lowest)}.`);
     if (shared) {
       // A casa não tem preço do item ali (ou em lugar nenhum): o de outras casas, com o mercado, o dia e o aviso.
       const place = (shared.storeId ? storeName(shared.storeId) : undefined) ?? sharedStoreLabel(shared);
@@ -1002,13 +1016,13 @@ export function itemFacts(
     } else if (!last || !sameQuote(used, last)) {
       // No mercado escolhido, o preço da conta não é o último pago: diz qual foi, de onde e de quando.
       const other = used.productId === estimate.productId ? '' : `, de ${productName?.(used.productId) ?? 'outro produto com esse nome'}`;
-      facts.push(`Preço usado na conta: ${perUnit(used.unitPrice, used.unit)}${other} ${where(used)}.`);
+      facts.push(`Preço usado na conta: ${quoteText(used, category)}${other} ${where(used)}.`);
     }
     if (promotionOnly && cheaper) facts.push(`Só em promoção: o preço bom é ${perUnit(lowest.unitPrice, lowest.unit)} ou menos.`);
     if (estimate.perPiece) {
-      // Item em "un" com preço por kg: a conta usa o que a casa costuma levar dele (usualAmounts), por unidade.
+      // Item em "un" com preço por kg: a conta usa o que a casa costuma levar dele de uma vez (usualAmounts).
       const counted = pricePerBase(1, unit).unit;
-      facts.push(`O preço é por ${counted}: a conta da lista usa ${usualAmountLabel(estimate.perPiece)} por unidade, o que a casa costuma levar.`);
+      facts.push(`O preço é por ${counted}: a conta da lista usa ${usualAmountLabel(estimate.perPiece)}, o que a casa costuma levar de uma vez.`);
     } else if (estimate.approximateQuantity) {
       // A conta é de 1 kg, 1 litro ou 1 unidade (units, priceQuantity): com o preço por g, de 1 kg, como o preço aparece.
       const counted = pricePerBase(1, unit).unit;

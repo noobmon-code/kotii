@@ -13,6 +13,8 @@ const mockView = {
   cap: 1000,
   /** O pedido (a contar do zero) que falha. */
   failAt: undefined as number | undefined,
+  /** O banco de antes da coluna de quantos vêm na embalagem: recusa o pedido que fala dela. */
+  withoutPack: false,
   asked: [] as { table: string; columns: string; order: string[]; range: [number, number] | null }[],
   /** As linhas já na ordem pedida: 20 mil linhas não se ordenam de novo a cada página. */
   sorted: undefined as { rows: LatestPrice[]; order: string; result: LatestPrice[] } | undefined,
@@ -27,6 +29,9 @@ jest.mock('@/lib/supabase', () => ({
           const request = mockView.asked.length;
           mockView.asked.push({ table, columns, order: [...order], range });
           if (request === mockView.failAt) return { data: null, error: new Error('sem permissão') };
+          if (mockView.withoutPack && columns.includes('pack_count')) {
+            return { data: null, error: { code: '42703', message: 'column latest_prices.pack_count does not exist' } };
+          }
           if (mockView.sorted?.rows !== mockView.rows || mockView.sorted.order !== order.join()) {
             const keyed = mockView.rows.map((row) => ({ row, key: order.map((column) => String(row[column as keyof LatestPrice])).join(' ') }));
             keyed.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
@@ -75,6 +80,7 @@ const ranges = () => mockView.asked.map((request) => request.range);
 afterEach(() => {
   mockView.rows = [];
   mockView.failAt = undefined;
+  mockView.withoutPack = false;
   mockView.asked = [];
 });
 
@@ -92,12 +98,23 @@ describe('últimos preços da casa', () => {
     for (const request of mockView.asked) {
       expect(request).toMatchObject({
         table: 'latest_prices',
-        columns: 'product_id, store_id, unit, unit_price, purchased_at',
+        columns: 'product_id, store_id, unit, unit_price, purchased_at, pack_count',
         order: ['product_id', 'store_id', 'unit'],
       });
     }
     // As linhas chegam como a view as dá: o que está guardado no aparelho continua servindo.
     expect(rows[0]).toEqual({ product_id: 'p000000', store_id: 'dia', unit: 'un', unit_price: 1, purchased_at: '2026-10-01T12:00:00Z' });
+  });
+
+  it('banco de antes da coluna de quantos vêm na embalagem: lê de novo sem ela, desde a primeira página', async () => {
+    mockView.rows = prices(1200);
+    mockView.withoutPack = true;
+    expect(await fetchLatestPrices()).toHaveLength(1200);
+    expect(mockView.asked.map((request) => [request.columns.endsWith('pack_count'), request.range])).toEqual([
+      [true, [0, 999]],
+      [false, [0, 999]],
+      [false, [1000, 1999]],
+    ]);
   });
 
   it('casa com poucos preços: um pedido só', async () => {
@@ -152,7 +169,7 @@ describe('últimos preços da casa', () => {
     for (const request of mockView.asked) {
       expect(request).toMatchObject({
         table: 'latest_prices',
-        columns: 'product_id, store_id, unit, unit_price, purchased_at',
+        columns: 'product_id, store_id, unit, unit_price, purchased_at, pack_count',
         order: ['product_id', 'store_id', 'unit'],
       });
     }

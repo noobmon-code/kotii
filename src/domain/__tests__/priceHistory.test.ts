@@ -1227,6 +1227,20 @@ describe('embalagens de tamanhos diferentes', () => {
     expect(unitLabel(PACK_ITEM)).toBe('por item do pacote');
   });
 
+  it('cartela sem a conta na nota: vale quantos a pessoa disse na revisão', () => {
+    const purchases = toPurchases([
+      line('2026-10-20', 13.99, { description: 'OVOS RANCHO CAIPIRA', packCount: 20 }),
+      line('2026-10-11', 8.99, { description: 'OVO DONINHO CAIPIRA', packCount: 10 }),
+      // Sem resposta: fica por unidade, à parte.
+      line('2026-09-11', 9.49, { description: 'OVO DONINHO CAIPIRA' }),
+    ]);
+    expect(purchases.map((p) => [p.baseUnit, p.price, p.pack?.label ?? null])).toEqual([
+      [PACK_ITEM, 0.7, '20 un'],
+      [PACK_ITEM, 0.9, '10 un'],
+      ['un', 9.49, null],
+    ]);
+  });
+
   it('peso, volume e itens do pacote não se misturam', () => {
     const purchases = toPurchases([
       line('2026-10-10', 9.9, sized('OVOS C/12')),

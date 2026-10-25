@@ -217,7 +217,7 @@ describe('"Onde comprar" com o que vende a peso', () => {
       { name: 'Queijo', category: 'laticinios', productId: 'queijo', quantity: 0.2, unit: 'kg', at: `${day(10)}T12:00:00Z`, source: 'receipt' },
     ]);
     const page = await mount();
-    expect(page).toContain('Preço por kg, ~200 g por unidade (o que a casa costuma levar)');
+    expect(page).toContain('Preço por kg, ~200 g (o que a casa costuma levar)');
     expect(page).toContain('~R$ 14,58');
   });
 
