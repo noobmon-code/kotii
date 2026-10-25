@@ -26,6 +26,7 @@ import {
   storeWithName,
   SYSTEM,
   TOO_MANY_PHOTOS,
+  weighedUnitPrice,
   withStoreCodes,
 } from './extract.ts';
 
@@ -250,6 +251,45 @@ Deno.test('lineTotalFromPrinted: o centavo da conta não depende do ponto flutua
   assertEquals(lineTotalFromPrinted(2000, 'ml', 0.004495), 0);
   // Número absurdo (vira Infinity na escala) não derruba a leitura.
   assertEquals(lineTotalFromPrinted(1e305, 'un', 1), 0);
+});
+
+Deno.test('weighedUnitPrice: o preço da bandeja impresso no lugar do preço por kg vira o preço por kg', () => {
+  // As duas linhas do pedido que imprimiu o preço da bandeja: 0,202 kg × R$ 72,90 = R$ 14,73.
+  assertEquals(weighedUnitPrice('Queijo Muçarela Importado Fatiado 200g', 0.202, 'kg', 14.58, 14.73), 72.9);
+  assertEquals(weighedUnitPrice('Bife De Lagarto Bovino À Vácuo Resfriado 500g', 0.412, 'kg', 29.95, 24.68), 59.9);
+  assertEquals(weighedUnitPrice('PRESUNTO FAT 1.000G', 0.35, 'kg', 39.9, 13.97), 39.9);
+  assertEquals(weighedUnitPrice('FRIOS BANDEJA 250 G', 0.26, 'kg', 9.98, 10.38), 39.92);
+  // A conta já fecha (o preço é por kg), ou o valor é menor (desconto do item): o preço lido fica.
+  assertEquals(weighedUnitPrice('QJ MUSS IFAT KG', 0.2, 'kg', 72.9, 14.58), 72.9);
+  assertEquals(weighedUnitPrice('Queijo Muçarela Fatiado 200g', 0.202, 'kg', 72.9, 12.0), 72.9);
+  // Sem tamanho na descrição, a diferença pode ser o peso mal lido: o preço lido fica.
+  assertEquals(weighedUnitPrice('QUEIJO MUSSARELA', 0.202, 'kg', 14.58, 14.73), 14.58);
+  // O tamanho escrito não explica a conta, ou são dois tamanhos, ou é de outra grandeza: fica.
+  assertEquals(weighedUnitPrice('Queijo Fatiado 300g', 0.202, 'kg', 14.58, 14.73), 14.58);
+  assertEquals(weighedUnitPrice('Kit 200g + 300g', 0.202, 'kg', 14.58, 14.73), 14.58);
+  assertEquals(weighedUnitPrice('Suco 200ml', 0.202, 'kg', 14.58, 14.73), 14.58);
+  // Só peso e volume; em un, ou sem quantidade lida, nada muda.
+  assertEquals(weighedUnitPrice('Queijo 200g', 1, 'un', 14.58, 29.16), 14.58);
+  assertEquals(weighedUnitPrice('Queijo 200g', null, 'kg', 14.58, 14.73), 14.58);
+});
+
+Deno.test('preço da bandeja na linha pesada: a nota e a leitura do servidor guardam o preço por kg', () => {
+  const r = cleanReceipt(
+    {
+      ...base,
+      items: [
+        line({ raw_description: 'Queijo Muçarela Importado Fatiado 200g', unit: 'kg', quantity: 0.202, unit_price: 14.58, total_price: 14.73 }),
+        line({ raw_description: 'BANANA PRATA KG', unit: 'kg', quantity: 0.535, unit_price: 5.99, total_price: 3.2 }),
+      ],
+    },
+    new Set(),
+    new Map(),
+  );
+  assertEquals(r.items.map((i) => [i.quantity, i.unit_price, i.total_price]), [
+    [0.202, 72.9, 14.73],
+    [0.535, 5.99, 3.2],
+  ]);
+  assertEquals(r.readLines.map((l) => l.unit_price), [72.9, 5.99]);
 });
 
 Deno.test('instructions: o total da nota é o valor pago, depois dos descontos', () => {

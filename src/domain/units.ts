@@ -40,7 +40,8 @@ export function sameDimension(a: string, b: string): boolean {
  * ou 1 unidade, qualquer que seja a quantidade: 500 ml nunca viram 500 x o
  * preço da unidade. Com o preço por g ou por ml, isso é 1000 x o preço (1 kg,
  * 1 litro), nunca 1 g: todo mercado responde na mesma medida. Aí a quantidade
- * é aproximada.
+ * é aproximada. A lista, quando sabe o que a casa costuma levar de um produto
+ * vendido a peso, conta isso para o item em "un" (listEstimate, usualAmounts).
  */
 export function priceQuantity(quantity: number, listUnit: string, priceUnit: string): { quantity: number; approximate: boolean } {
   const converted = convertQuantity(quantity, listUnit, priceUnit);

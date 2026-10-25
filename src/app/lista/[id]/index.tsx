@@ -48,6 +48,7 @@ import {
   itemFacts,
   pantryHits,
   seePricesProduct,
+  usualAmounts,
   type PantryHit,
 } from '@/domain/listEstimate';
 import { compareForShopping, repeatedQuantity } from '@/domain/listItem';
@@ -544,6 +545,8 @@ export default function ShoppingListScreen() {
   // ligações ou a despensa carregados (sem internet e nunca vistos neste aparelho), mostra o que der. Só o selo
   // "Na despensa" espera o histórico de compras: sem ele, apareceria justamente no que acabou. O aparelho que
   // nunca carregou o histórico fica sem selo nenhum.
+  // O queijo pedido em "un" com o preço por kg conta o que a casa costuma levar dele (das notas), não 1 kg.
+  const usual = useMemo(() => usualAmounts(purchases.data ?? []), [purchases.data]);
   const market = useMemo(() => {
     const all = items.data ?? [];
     const estimate = estimateList(
@@ -562,7 +565,7 @@ export default function ShoppingListScreen() {
         unitPrice: Number(p.unit_price),
         purchasedAt: p.purchased_at,
       })),
-      { links: links.data, products: products.data ?? [], shared: seenElsewhere, storeId },
+      { links: links.data, products: products.data ?? [], shared: seenElsewhere, usual, storeId },
     );
     // O que o app acha que acabou não é "na despensa": tudo o que passou do costume (ranOut), sem tirar o que
     // já está na lista (é dela que se trata) e sem os cortes da faixa "Acho que acabou".
@@ -582,7 +585,7 @@ export default function ShoppingListScreen() {
       }
     }
     return { estimate, inPantry, hints };
-  }, [items.data, prices.data, links.data, products.data, seenElsewhere, pantry.data, ranOut, historyKnown, storeId, today, newIds]);
+  }, [items.data, prices.data, links.data, products.data, seenElsewhere, usual, pantry.data, ranOut, historyKnown, storeId, today, newIds]);
 
   // As ligações e os produtos dão preço ao item digitado solto. Se não chegaram (a busca falhou, ou sem internet e
   // nunca vistos neste aparelho), o cartão diz que não deu para conferir o que ficou sem preço. A lista não espera

@@ -238,6 +238,55 @@ export function lineTotalFromPrinted(quantity: number | null, unit: string, unit
 /** Até quanto a soma das linhas pode passar do total da nota (o arredondamento que a revisão também aceita), em centavos. */
 const SUM_TOLERANCE_CENTS = 5;
 
+/** O caixa arredonda ou trunca o valor da linha pesada: até isto de diferença, em centavos, a conta fecha. */
+const WEIGHED_TOLERANCE_CENTS = 2;
+
+/** Quanto vale cada unidade de tamanho escrita na descrição, em kg (peso) ou litro (volume). */
+const SIZE_UNITS: Record<string, { unit: 'kg' | 'l'; inBase: number }> = {
+  kg: { unit: 'kg', inBase: 1 },
+  g: { unit: 'kg', inBase: 0.001 },
+  gr: { unit: 'kg', inBase: 0.001 },
+  l: { unit: 'l', inBase: 1 },
+  lt: { unit: 'l', inBase: 1 },
+  ml: { unit: 'l', inBase: 0.001 },
+};
+
+/** O tamanho escrito na descrição ("200g", "1,5 kg", "500 ML"), em kg ou litro; null sem tamanho ou com dois diferentes. */
+function printedSize(description: string): { unit: 'kg' | 'l'; amount: number } | null {
+  // "1.000G" é mil gramas, não um.
+  const text = description.toLowerCase().replace(/(\d)[.,](\d{3})(?=\s*(?:g|gr|ml)(?![a-z]))/g, '$1$2');
+  const sizes = [...text.matchAll(/(?<![\d.,x])(\d+(?:[.,]\d+)?)\s*(kg|gr|g|lt|ml|l)(?![a-z])/g)].map((m) => {
+    const scale = SIZE_UNITS[m[2]];
+    return { unit: scale.unit, amount: Number(m[1].replace(',', '.')) * scale.inBase };
+  });
+  const [first] = sizes;
+  if (!first || !(first.amount > 0) || sizes.some((s) => s.unit !== first.unit || Math.abs(s.amount - first.amount) > 1e-9)) return null;
+  return first;
+}
+
+/**
+ * O preço por kg (ou litro) da linha pesada. Nela o valor do item é o peso
+ * vezes o preço por kg; um desconto só o deixa menor. Alguns pedidos imprimem,
+ * no lugar do preço por kg, o da bandeja do tamanho que o mercado anuncia
+ * ("Queijo Muçarela Fatiado 200g", 0,202 kg × R$ 14,58 = R$ 14,73): R$ 14,58 é
+ * o preço dos 200 g, e guardado como preço por kg ele faz a lista contar o kg
+ * de queijo por R$ 14,58. Quando o valor passa da conta e o tamanho escrito na
+ * descrição a explica (R$ 14,58 ÷ 0,2 kg = R$ 72,90 por kg, e 0,202 kg ×
+ * R$ 72,90 dá os R$ 14,73), o preço é o da bandeja sobre o tamanho dela. Sem o
+ * tamanho na descrição, ou com uma conta que ele não fecha, o preço lido fica:
+ * a diferença pode ser um peso mal lido, e o valor sobre o peso seria um preço
+ * errado com cara de certo.
+ */
+export function weighedUnitPrice(description: string, quantity: number | null, unit: string, unitPrice: number, total: number): number {
+  if ((unit !== 'kg' && unit !== 'l') || quantity == null || !(quantity > 0) || !(unitPrice > 0) || !(total > 0)) return unitPrice;
+  const cents = (value: number) => Math.round(value * 100);
+  if (cents(total) - cents(lineTotalFromPrinted(quantity, unit, unitPrice)) <= WEIGHED_TOLERANCE_CENTS) return unitPrice;
+  const size = printedSize(description);
+  if (!size || size.unit !== unit) return unitPrice;
+  const perBase = round(unitPrice / size.amount, 4);
+  return Math.abs(cents(lineTotalFromPrinted(quantity, unit, perBase)) - cents(total)) <= WEIGHED_TOLERANCE_CENTS ? perBase : unitPrice;
+}
+
 /**
  * Normaliza o que veio da IA para o que o banco aceita: chave e CNPJ só com
  * os dígitos verificadores certos (com a chave válida, o CNPJ é o dela), data
@@ -288,7 +337,8 @@ export function cleanReceipt(
     const total = it.total_price == null ? fromPrinted : round(it.total_price, 2);
     const quantity = lineQuantity(it.quantity, it.unit, it.unit_price, total);
     const readPrice = it.unit_price != null && it.unit_price > 0 ? it.unit_price : null;
-    const unitPrice = readPrice != null ? round(readPrice, 4) : round(total / quantity, 4);
+    const unitPrice =
+      readPrice != null ? weighedUnitPrice(raw, it.quantity, it.unit, round(readPrice, 4), total) : round(total / quantity, 4);
     // O rótulo que a IA copiou do print ("Código: 250474") sai até o último ":", como afterLabel faz no QR: um
     // código impresso nunca tem ":". Tirar "COD" do começo sem os dois-pontos estragaria um código como "CODA123".
     const storeCode = storeCodeKey(it.code?.replace(/^.*:/s, ''));

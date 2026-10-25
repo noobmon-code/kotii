@@ -20,8 +20,9 @@ import { formatBRL, formatQuantity } from './money';
 import { storePriceIndex } from './priceLevel';
 import { SAME_TRIP_DAYS } from './restock';
 import { normalizeSearch } from './search';
+import type { PurchaseRecord } from './recentPurchases';
 import { SHARED_PRICES_NOTICE, seenLabel, sharedStoreLabel, type SharedQuote } from './sharedPrices';
-import { pricePerBase, priceQuantity, sameDimension } from './units';
+import { convertQuantity, pricePerBase, priceQuantity, sameDimension } from './units';
 
 export interface EstimateItem {
   id: string;
@@ -54,8 +55,13 @@ export interface ItemEstimate {
    * de preço dele (como em "Onde comprar").
    */
   kind: 'known' | 'estimated';
-  /** A unidade da lista não converte para a do preço (un x kg): o custo é o de 1 kg, 1 litro ou 1 unidade. */
+  /**
+   * A unidade da lista não converte para a do preço (un x kg): o custo é o de 1 kg, 1 litro ou 1 unidade, ou,
+   * com o item em "un" e o preço por kg ou litro, o do que a casa costuma levar dele (`perPiece`).
+   */
   approximateQuantity: boolean;
+  /** Item em "un" com preço por kg ou litro: quanto a casa costuma levar por vez (usualAmounts), o que a conta usa por unidade. */
+  perPiece?: UsualAmount;
   /** O produto de onde saem o último preço, o "preço bom" e a estimativa do item (itemResolver). */
   productId: string;
   /**
@@ -145,6 +151,74 @@ interface PriceSources {
   products?: readonly { id: string; name: string }[];
   /** Os preços vistos em outras casas (sharedQuotes): só entram onde a casa não tem preço do item. */
   shared?: readonly SharedQuote[];
+  /** O que a casa costuma levar dos produtos vendidos a peso (usualAmounts): a conta do item em "un" com preço por kg. */
+  usual?: UsualAmounts;
+}
+
+/** Quanto a casa leva de um produto por vez, em kg ou litro. */
+export interface UsualAmount {
+  unit: 'kg' | 'l';
+  amount: number;
+}
+
+/** Por produto, o que a casa costuma levar dele a peso e a litro. */
+export type UsualAmounts = ReadonlyMap<string, Partial<Record<UsualAmount['unit'], number>>>;
+
+/**
+ * O que a casa costuma levar de cada produto vendido a peso ou a litro: a
+ * mediana das linhas das notas dos últimos meses (os registros de compra), em
+ * kg ou litro, arredondada ao grama. O queijo fatiado que sai em 0,200 e 0,202
+ * kg é 201 g. Só as notas: a quantidade da lista é o que a casa pede, não o que
+ * a balança deu. Serve à conta do item que a lista pede em "un" ("Queijo", 1
+ * un) com o preço por kg: sem ela, a conta seria de 1 kg.
+ */
+export function usualAmounts(records: readonly Pick<PurchaseRecord, 'productId' | 'quantity' | 'unit' | 'source'>[]): UsualAmounts {
+  const amounts = new Map<string, Record<UsualAmount['unit'], number[]>>();
+  for (const record of records) {
+    if (record.source !== 'receipt' || !record.productId || !(record.quantity > 0)) continue;
+    const unit = pricePerBase(1, record.unit).unit;
+    if (unit !== 'kg' && unit !== 'l') continue;
+    const amount = convertQuantity(record.quantity, record.unit, unit)!;
+    const seen = amounts.get(record.productId) ?? { kg: [], l: [] };
+    seen[unit].push(amount);
+    amounts.set(record.productId, seen);
+  }
+  const median = (values: number[]) => {
+    const sorted = [...values].sort((a, b) => a - b);
+    const middle = Math.floor(sorted.length / 2);
+    const value = sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+    return Math.round(value * 1000) / 1000;
+  };
+  const usual = new Map<string, Partial<Record<UsualAmount['unit'], number>>>();
+  for (const [productId, { kg, l }] of amounts) {
+    const entry: Partial<Record<UsualAmount['unit'], number>> = {};
+    if (kg.length && median(kg) > 0) entry.kg = median(kg);
+    if (l.length && median(l) > 0) entry.l = median(l);
+    if (entry.kg != null || entry.l != null) usual.set(productId, entry);
+  }
+  return usual;
+}
+
+/**
+ * Quanto a conta usa do item pedido em "un" quando o preço é por kg ou litro:
+ * o que a casa costuma levar do produto do preço (ou, sem compra dele a peso,
+ * do produto do item). null quando o item não é em "un", o preço não é por peso
+ * nem por volume, ou a casa nunca comprou o produto a peso.
+ */
+function piecePerUnit(
+  usual: UsualAmounts | undefined,
+  listUnit: string,
+  priceUnit: string,
+  productIds: readonly string[],
+): { perPiece: UsualAmount; inPriceUnit: number } | null {
+  if (!usual || listUnit !== 'un') return null;
+  const unit = pricePerBase(1, priceUnit).unit;
+  if (unit !== 'kg' && unit !== 'l') return null;
+  for (const productId of productIds) {
+    const amount = usual.get(productId)?.[unit];
+    if (amount != null && amount > 0) return { perPiece: { unit, amount }, inPriceUnit: convertQuantity(amount, unit, priceUnit)! };
+  }
+  return null;
 }
 
 interface ResolvedItem {
@@ -239,7 +313,7 @@ export type StorePriceSource =
 
 /** O preço de um item da lista num mercado, e de onde ele vem (listStorePrices). */
 export interface StorePrice
-  extends Pick<ItemEstimate, 'cost' | 'unitPrice' | 'unit' | 'kind' | 'approximateQuantity' | 'productId' | 'used' | 'shared'> {
+  extends Pick<ItemEstimate, 'cost' | 'unitPrice' | 'unit' | 'kind' | 'approximateQuantity' | 'perPiece' | 'productId' | 'used' | 'shared'> {
   source: StorePriceSource;
 }
 
@@ -299,7 +373,11 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
 
     const priced = (source: StorePriceSource, used: EstimatePrice | null, unitPrice: number, seen?: SharedQuote): StorePrice => {
       const priceUnit = seen?.unit ?? used?.unit ?? unit;
-      const { quantity, approximate } = priceQuantity(item.quantity, item.unit, priceUnit);
+      // "Queijo", 1 un, com o preço por kg: o que a casa costuma levar dele por vez, e não 1 kg.
+      const piece = piecePerUnit(sources.usual, item.unit, priceUnit, [seen?.productId ?? used?.productId ?? productId, productId]);
+      const { quantity, approximate } = piece
+        ? { quantity: item.quantity * piece.inPriceUnit, approximate: true }
+        : priceQuantity(item.quantity, item.unit, priceUnit);
       return {
         source,
         cost: round2(unitPrice * quantity),
@@ -308,6 +386,7 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
         unit: priceUnit,
         kind: used || seen ? 'known' : 'estimated',
         approximateQuantity: approximate,
+        ...(piece ? { perPiece: piece.perPiece } : {}),
         productId,
         used,
         ...(seen ? { shared: seen } : {}),
@@ -430,10 +509,10 @@ export function listSharedElsewhere(
 export function estimateList(
   items: readonly EstimateItem[],
   prices: readonly EstimatePrice[],
-  { links, products, shared, storeId = null }: PriceSources & { storeId?: string | null } = {},
+  { links, products, shared, usual, storeId = null }: PriceSources & { storeId?: string | null } = {},
 ): ListEstimate {
   const index = storePriceIndex(prices);
-  const price = itemPricer(prices, { links, products, shared }, index);
+  const price = itemPricer(prices, { links, products, shared, usual }, index);
 
   const byItem = new Map<string, ItemEstimate>();
   // Todo mercado com nível de preço pode ser escolhido, mesmo sem preço de nota para esta lista. Só esses: o
@@ -445,13 +524,14 @@ export function estimateList(
     for (const store of priced.stores) if (known.has(store)) known.set(store, known.get(store)! + 1);
     const answer = storeId ? priced.at(storeId) : priced.lastPaid();
     if (!answer) continue;
-    const { cost, unitPrice, unit, kind, approximateQuantity, productId, used, shared: seen } = answer;
+    const { cost, unitPrice, unit, kind, approximateQuantity, perPiece, productId, used, shared: seen } = answer;
     byItem.set(item.id, {
       cost,
       unitPrice,
       unit,
       kind,
       approximateQuantity,
+      ...(perPiece ? { perPiece } : {}),
       productId,
       used,
       ...(seen ? { shared: seen } : {}),
@@ -714,6 +794,12 @@ export function pantryHits(
   return hits;
 }
 
+/** "200 g", "1,2 kg", "500 ml": o que a casa costuma levar por vez, em g ou ml abaixo de 1 kg ou 1 litro. */
+export function usualAmountLabel({ unit, amount }: UsualAmount): string {
+  if (amount < 1) return formatQuantity(Math.round(amount * 1000), unit === 'kg' ? 'g' : 'ml');
+  return formatQuantity(amount, unit);
+}
+
 /** "R$ 4,90/kg". O preço por g ou por ml aparece por kg ou por litro: em centavos, R$ 0,0049 por g seria "R$ 0,00/g". */
 const perUnit = (unitPrice: number, unit: string) => {
   const base = pricePerBase(unitPrice, unit);
@@ -741,18 +827,21 @@ export function formatItemCost(estimate: Pick<ItemEstimate, 'cost' | 'kind' | 'a
  * produto, na quantidade da lista: nada a avisar.
  */
 export function storePriceNote(
-  price: Pick<StorePrice, 'source' | 'approximateQuantity' | 'used' | 'shared'>,
+  price: Pick<StorePrice, 'source' | 'approximateQuantity' | 'perPiece' | 'used' | 'shared'>,
   productName?: (productId: string) => string | undefined,
   referenceYear?: number,
 ): string | null {
   if (price.source === 'estimated') return 'Estimado pelo nível de preço do mercado';
+  // A quantidade é a de costume (item em "un" com preço por kg) ou a de 1 kg, 1 litro ou 1 unidade.
+  const quantity = price.perPiece ? `~${usualAmountLabel(price.perPiece)} por unidade` : 'quantidade em outra unidade';
   if (price.shared) {
     const note = `Preço de outras casas, ${seenLabel(price.shared, referenceYear)}`;
-    return price.approximateQuantity ? `${note} (quantidade em outra unidade)` : note;
+    return price.approximateQuantity ? `${note} (${quantity})` : note;
   }
   if (price.source === 'otherProduct') {
     return `Preço de ${(price.used && productName?.(price.used.productId)) || 'outro produto com esse nome'}`;
   }
+  if (price.perPiece) return `Preço por ${price.perPiece.unit === 'kg' ? 'kg' : 'litro'}, ${quantity} (o que a casa costuma levar)`;
   return price.approximateQuantity ? 'Preço por unidade da nota (quantidade em outra unidade)' : null;
 }
 
@@ -916,7 +1005,11 @@ export function itemFacts(
       facts.push(`Preço usado na conta: ${perUnit(used.unitPrice, used.unit)}${other} ${where(used)}.`);
     }
     if (promotionOnly && cheaper) facts.push(`Só em promoção: o preço bom é ${perUnit(lowest.unitPrice, lowest.unit)} ou menos.`);
-    if (estimate.approximateQuantity) {
+    if (estimate.perPiece) {
+      // Item em "un" com preço por kg: a conta usa o que a casa costuma levar dele (usualAmounts), por unidade.
+      const counted = pricePerBase(1, unit).unit;
+      facts.push(`O preço é por ${counted}: a conta da lista usa ${usualAmountLabel(estimate.perPiece)} por unidade, o que a casa costuma levar.`);
+    } else if (estimate.approximateQuantity) {
       // A conta é de 1 kg, 1 litro ou 1 unidade (units, priceQuantity): com o preço por g, de 1 kg, como o preço aparece.
       const counted = pricePerBase(1, unit).unit;
       facts.push(`O preço é por ${counted}: a conta da lista usa 1 ${counted}.`);

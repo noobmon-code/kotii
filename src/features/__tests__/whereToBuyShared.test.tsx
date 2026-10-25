@@ -38,6 +38,7 @@ jest.mock('@/data/market', () => ({
   useListItems: () => mockQueries.items,
   useListLinks: () => mockQueries.links,
   useProducts: () => mockQueries.products,
+  usePurchaseRecords: () => mockQueries.purchases,
   useStores: () => mockQueries.stores,
 }));
 jest.mock('@/data/sharedPrices', () => ({ useSharedPrices: () => mockQueries.shared }));
@@ -124,6 +125,7 @@ beforeEach(() => {
     stores: loaded(STORES),
     links: loaded(new LinkIndex([])),
     products: loaded(PRODUCTS),
+    purchases: loaded([]),
     shared: loaded(null),
   });
 });
@@ -203,6 +205,24 @@ describe('"Onde comprar" com os preços de outras casas', () => {
 
   it('a primeira busca ainda anda: espera, para o total não mudar logo depois', async () => {
     mockQueries.shared = onTheWay();
+    expect(await mount()).toContain('Comparando preços…');
+  });
+});
+
+describe('"Onde comprar" com o que vende a peso', () => {
+  it('o queijo pedido em "un", com preço por kg, conta o que a casa costuma levar dele, como a lista', async () => {
+    mockQueries.items = loaded([{ ...listItem('q', 'Queijo', 'queijo'), category: 'laticinios' }]);
+    mockQueries.prices = loaded([{ ...own('queijo', 'assai', 72.9), unit: 'kg' }]);
+    mockQueries.purchases = loaded([
+      { name: 'Queijo', category: 'laticinios', productId: 'queijo', quantity: 0.2, unit: 'kg', at: `${day(10)}T12:00:00Z`, source: 'receipt' },
+    ]);
+    const page = await mount();
+    expect(page).toContain('Preço por kg, ~200 g por unidade (o que a casa costuma levar)');
+    expect(page).toContain('~R$ 14,58');
+  });
+
+  it('a primeira busca das compras ainda anda: espera, para o total não mudar logo depois', async () => {
+    mockQueries.purchases = onTheWay();
     expect(await mount()).toContain('Comparando preços…');
   });
 });
