@@ -32,7 +32,9 @@ const mockDb: {
   holds: { match: (request: MockRequest) => boolean; gate: Promise<void>; open: () => void }[];
   /** Pedidos que falham (a rede caiu). */
   fails: ((request: MockRequest) => boolean)[];
-} = { receipts: [], items: [], stores: [], writes: [], rpcs: [], reads: {}, holds: [], fails: [] };
+  /** O erro que o `confirm_receipt` devolve numa nota que existe (o teste escolhe), como o servidor responde. */
+  confirmError: Row | null;
+} = { receipts: [], items: [], stores: [], writes: [], rpcs: [], reads: {}, holds: [], fails: [], confirmError: null };
 const mockMarket: { products: Row[]; pantryNear: Row[]; listItems: Row[]; stores: Row[] } = { products: [], pantryNear: [], listItems: [], stores: [] };
 /** O histórico de preço que a tela recebe (`usePriceObservations`): as compras de antes, zeradas a cada teste. */
 const mockPriceHistory: { points: Row[] } = { points: [] };
@@ -167,9 +169,8 @@ jest.mock('@/lib/supabase', () => {
         mockDb.rpcs.push({ fn, args });
         // Como no servidor: confirmar uma nota que já não existe responde P0002 ("receipt not found").
         const gone = fn === 'confirm_receipt' && !mockDb.receipts.some((row) => row.id === args.p_receipt_id);
-        return answer({ table: fn, verb: 'rpc', values: args }, () =>
-          gone ? { data: null, error: { code: 'P0002', message: 'receipt not found', details: null, hint: null } } : { data: null, error: null },
-        );
+        const error = gone ? { code: 'P0002', message: 'receipt not found', details: null, hint: null } : fn === 'confirm_receipt' ? mockDb.confirmError : null;
+        return answer({ table: fn, verb: 'rpc', values: args }, () => ({ data: null, error }));
       },
     },
   };
@@ -319,6 +320,7 @@ beforeEach(() => {
   mockDb.reads = {};
   mockDb.holds = [];
   mockDb.fails = [];
+  mockDb.confirmError = null;
   mockMarket.products = [];
   mockPriceHistory.points = [];
   mockMarket.pantryNear = [];
@@ -1948,6 +1950,15 @@ describe('a nota que sumiu em outro aparelho: a tela é a da nota que sumiu, sem
     expect(page()).not.toContain('DETERGENTE YPE');
     expect(page()).not.toContain('Tentar de novo');
     expect(button('Confirmar nota')).toBeUndefined();
+  });
+
+  it('"Confirmar nota" com uma linha que a nota já não tem (P0002 de item, a nota existe): o aviso é o do banco, e a nota não diz que sumiu', async () => {
+    await open();
+    mockDb.confirmError = { code: 'P0002', message: 'item a does not belong to receipt', details: null, hint: null };
+    await press(button('Confirmar nota'));
+    expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'item a does not belong to receipt']]);
+    expect(page()).not.toContain('Esta nota não existe mais.');
+    expect(page()).toContain('DETERGENTE YPE');
   });
 
   it('a nota que já não existe ao abrir: a tela é a da nota que sumiu, sem "Tentar de novo"', async () => {

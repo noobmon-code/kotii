@@ -182,8 +182,14 @@ const SETTLE_WAIT_MS = 4000;
 
 /** A nota que sumiu em outro aparelho: o `.single()` do banco não acha a linha (PGRST116). */
 const receiptGone = (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'PGRST116');
-/** "Confirmar nota" numa nota que sumiu: o `confirm_receipt` responde P0002 ("receipt not found"). */
-const confirmGone = (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'P0002');
+/**
+ * "Confirmar nota" numa nota que sumiu: o `confirm_receipt` responde P0002 com "receipt not found". O mesmo código vem
+ * quando uma linha já não é da nota ("item … does not belong to receipt"): essa não diz que a nota sumiu.
+ */
+const confirmGone = (error: unknown) =>
+  Boolean(
+    error && typeof error === 'object' && 'code' in error && error.code === 'P0002' && 'message' in error && error.message === 'receipt not found',
+  );
 
 export default function ReceiptScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
