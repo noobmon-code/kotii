@@ -84,7 +84,7 @@ import {
   receiptEditing,
   receiptTotalChange,
 } from '@/domain/receiptEdit';
-import { asksPackCount, packCountOf, packLine, PACK_CHOICES, PACK_QUESTION, PACK_SAVED_NOT_SHOWN, PACK_UNREADABLE, readPackCount } from '@/domain/packCount';
+import { asksPackCount, packCountOf, packLabel, packLine, PACK_CHOICES, PACK_QUESTION, PACK_SAVED_NOT_SHOWN, PACK_UNREADABLE, readPackCount } from '@/domain/packCount';
 import { hasNoValue } from '@/domain/receiptItem';
 import {
   asksWeight,
@@ -842,6 +842,7 @@ export default function ReceiptScreen() {
     return (
       <PackQuestion
         item={item}
+        category={category}
         onSave={(next) => savePack(item, next)}
         onSkip={() => setPackSkipped((prev) => new Set([...prev, item.id]))}
         skipLabel="Não sei"
@@ -1558,11 +1559,13 @@ function WeightQuestion({ item, onSave, onPackaged }: { item: ReceiptItem; onSav
  */
 function PackQuestion({
   item,
+  category,
   onSave,
   onSkip,
   skipLabel,
 }: {
   item: ReceiptItem;
+  category: string;
   onSave: (count: number | null) => boolean;
   onSkip: () => void;
   skipLabel: string;
@@ -1593,7 +1596,8 @@ function PackQuestion({
       ) : (
         <Row style={styles.wrap}>
           {PACK_CHOICES.map((count) => (
-            <Chip key={count} label={String(count)} onPress={() => onSave(count)} />
+            // Sem o rótulo, o leitor de tela diz só "10": com a categoria, diz "10 ovos" (de qual item é, pelo cartão).
+            <Chip key={count} label={String(count)} accessibilityLabel={packLabel(count, category)} onPress={() => onSave(count)} />
           ))}
           <Chip label="Outro" icon="pencil-outline" onPress={() => setText('')} />
           <Chip label={skipLabel} onPress={onSkip} />
@@ -1620,6 +1624,7 @@ function PackAnswer({
     return (
       <PackQuestion
         item={item}
+        category={category}
         onSave={(next) => {
           const saved = onChange(next);
           if (saved) setChanging(false);
@@ -1633,7 +1638,14 @@ function PackAnswer({
   return (
     <Row style={styles.wrap}>
       <Text variant="small">{packLine(item, count, category)}</Text>
-      {onChange ? <Chip label="Mudar" icon="pencil-outline" onPress={() => setChanging(true)} /> : null}
+      {onChange ? (
+        <Chip
+          label="Mudar"
+          icon="pencil-outline"
+          accessibilityLabel={`Mudar a quantidade de ${item.raw_description}`}
+          onPress={() => setChanging(true)}
+        />
+      ) : null}
     </Row>
   );
 }

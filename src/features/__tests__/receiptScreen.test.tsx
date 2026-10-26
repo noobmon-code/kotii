@@ -2013,6 +2013,14 @@ describe('quantos ovos vêm na embalagem', () => {
     expect(page()).not.toContain('Quantos ovos vêm na embalagem?');
   });
 
+  it('os chips de quantidade e o "Mudar" dizem de que item são, para o leitor de tela', async () => {
+    seed(receipt({ total: 13.99 }), eggs());
+    await open();
+    expect(chip('10')!.props.accessibilityLabel).toBe('10 ovos');
+    await press(chip('10'));
+    expect(chip('Mudar')!.props.accessibilityLabel).toBe('Mudar a quantidade de OVOS RANCHO CAIPIRA');
+  });
+
   it('ovo sem valor (a leitura não pegou o preço): a linha diz quantos vêm, sem "R$ 0,00 o ovo", na revisão e na nota confirmada', async () => {
     seed(receipt({ total: 12.9 }), eggs({ raw_description: 'OVOS BRANCOS C/12', total_price: 0, unit_price: 0 }));
     await open();
