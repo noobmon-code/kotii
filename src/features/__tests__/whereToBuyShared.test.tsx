@@ -5,6 +5,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import WhereToBuyScreen from '@/app/lista/[id]/onde-comprar';
 import { formatShortDate, toISODate } from '@/domain/dates';
+import * as listEstimate from '@/domain/listEstimate';
 import { LinkIndex } from '@/domain/listLinks';
 import { SHARED_PRICES_NOTICE, type SharedPrice } from '@/domain/sharedPrices';
 import type { LatestPrice, Product, ShoppingListItem, Store } from '@/lib/types';
@@ -241,6 +242,21 @@ describe('"Onde comprar" com o que vende a peso', () => {
     const page = await mount();
     expect(page).toContain('Preço por kg, 1 kg (quantidade em outra unidade)');
     expect(page).not.toContain('histórico de compras não carregou');
+  });
+});
+
+describe('"Onde comprar" com quantos vinham na embalagem', () => {
+  it('o preço de cartela entra nas cotações com a contagem da revisão, como na lista', async () => {
+    mockQueries.products = loaded([...PRODUCTS, { id: 'ovos', name: 'Ovos', category: 'ovos', shelf_life_days: null } as Product]);
+    mockQueries.items = loaded([listItem('o', 'Ovos', 'ovos')]);
+    mockQueries.prices = loaded([{ ...own('ovos', 'assai', 13.99), pack_count: 10 }]);
+    const spy = jest.spyOn(listEstimate, 'listStorePrices');
+    try {
+      await mount();
+      expect(spy.mock.calls[0]?.[1]).toContainEqual(expect.objectContaining({ productId: 'ovos', storeId: 'assai', packCount: 10 }));
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
