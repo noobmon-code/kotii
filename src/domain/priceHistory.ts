@@ -1,16 +1,19 @@
 // Histórico de preço de um produto: o que a casa pagou por ele em cada compra
-// (linhas de notas confirmadas), ao longo do tempo. O preço é sempre o impresso
-// na nota (unit_price), levado a kg, litro ou unidade para comparar e
-// arredondado para centavos uma vez só: é esse valor que a seção compara e
-// escreve. O que foi pago (com desconto) aparece só na linha da compra. Linha
+// (linhas de notas confirmadas), ao longo do tempo. O preço é sempre o
+// unit_price guardado: o impresso na nota ou, numa linha pesada, o derivado
+// (o total pelo peso na revisão, o preço da bandeja pelo tamanho na leitura).
+// Ele é levado a kg, litro ou unidade para comparar e arredondado para centavos
+// uma vez só: é esse valor que a seção compara e escreve. O que foi pago (com
+// desconto) aparece só na linha da compra. Linha
 // com preço zero (a leitura não trouxe o valor, ou o item saiu de graça) não é
 // preço: fica na lista como "sem valor" e fora de tudo o que fala de preço.
 // Unidades que não se comparam (kg e un) nunca se misturam: cada uma tem o seu
 // histórico. Aqui um mercado é o nome dele: lojas de mesmo nome são uma só.
 // Embalagens de tamanhos diferentes ("ARROZ 5KG" e "ARROZ 1KG", ambos "1 un")
 // se comparam pelo preço por kg, litro ou item do pacote, com o tamanho lido
-// na descrição da nota (packageSize); a compra de tamanho desconhecido fica no
-// histórico por unidade, como antes, sem tamanho inventado.
+// na descrição da nota (packageSize) ou, sem ele, quantos vinham, respondido na
+// revisão (pack_count); a compra de tamanho desconhecido fica no histórico por
+// unidade, como antes, sem tamanho inventado.
 // Tudo o que a seção mostra (frases, gráfico, linhas) sai daqui; a tela só
 // desenha.
 
@@ -34,8 +37,13 @@ export interface PurchaseLine {
   unitPrice: number;
   /** O que foi pago na linha (já com o desconto do item, se houve). */
   totalPrice: number;
-  /** A descrição como veio na nota ("ARROZ T1 5KG"), de onde sai o tamanho da embalagem; sem ela, o tamanho não é conhecido. */
+  /**
+   * A descrição como veio na nota ("ARROZ T1 5KG"), de onde sai o tamanho da embalagem; sem ela e sem a contagem
+   * respondida (packCount), o tamanho não é conhecido.
+   */
   description?: string;
+  /** Quantos vinham na embalagem, respondido na revisão (domain/packCount): vale quando a descrição não diz o tamanho. */
+  packCount?: number | null;
 }
 
 /** Uma compra do produto: as linhas iguais de uma mesma nota (mesma unidade, mesmo preço impresso), somadas. */
@@ -60,7 +68,10 @@ export interface Purchase {
   baseUnit: string;
   /** O preço impresso, por `baseUnit`, já em centavos inteiros (roundPrice). Zero: compra sem valor. */
   price: number;
-  /** O tamanho da embalagem lido na nota, só na compra por unidade; null quando a nota não diz (ou deixa dúvida). */
+  /**
+   * O tamanho da embalagem lido na nota (ou, sem ele, quantos vinham, respondido na revisão), só na compra por
+   * unidade; null quando nem a nota nem a resposta dizem (ou deixam dúvida).
+   */
   pack: PackageSize | null;
   /** Na compra comparada pelo tamanho, o preço impresso por embalagem (o `price` é por kg, l ou item); senão, null. */
   packagePrice: number | null;
@@ -123,6 +134,10 @@ export const storeKey = (name: string) => `nome:${name.trim().toLocaleLowerCase(
 /** A mais recente primeiro; no mesmo instante (duas notas com a data digitada caem ao meio-dia), sempre na mesma ordem. */
 const newestFirst = (a: Purchase, b: Purchase) => b.time - a.time || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 
+/** A cartela que a pessoa disse na revisão ("10 ovos"): um pacote de N itens, como "C/10" na descrição. */
+const answeredPack = (count: number | null | undefined): PackageSize | null =>
+  count != null && count >= 2 ? { unit: 'un', amount: count, label: `${count} un` } : null;
+
 /**
  * As compras do produto, da mais recente para a mais antiga. O caixa que
  * passa três caixas de leite uma a uma gera três linhas iguais na nota: aqui
@@ -135,7 +150,7 @@ export function toPurchases(lines: PurchaseLine[]): Purchase[] {
   const printed = new Map<string, number>();
   for (const line of lines) {
     const key = `${line.receiptId}|${line.unit}|${line.unitPrice}`;
-    const pack = line.unit === 'un' && line.description ? packageSize(line.description) : null;
+    const pack = line.unit === 'un' ? ((line.description ? packageSize(line.description) : null) ?? answeredPack(line.packCount)) : null;
     const same = byKey.get(key);
     if (same) {
       same.quantity = Math.round((same.quantity + line.quantity) * 1000) / 1000;

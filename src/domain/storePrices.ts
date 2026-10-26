@@ -9,13 +9,13 @@
 // litro, unidade ou item do pacote, com o tamanho da embalagem lido na nota.
 // Preço por kg não se compara com preço por unidade: cada unidade tem a sua
 // lista e o seu "Mais barato". Os preços guardados no aparelho não têm a
-// descrição da nota: ali g vira kg e ml vira litro, mas o tamanho do pacote
-// não é conhecido.
+// descrição da nota: ali g vira kg e ml vira litro, e o tamanho do pacote só
+// se sabe por quantos vêm (pack_count, respondido na revisão), como no
+// histórico; o tamanho que está só na descrição ("OVOS C/30") não chega lá.
 
 import { formatShortDate, toISODate } from './dates';
 import { formatBRL } from './money';
-import { isPriced, PACK_ITEM, roundPrice, toPurchases, unitLabel, type PurchaseLine } from './priceHistory';
-import { pricePerBase } from './units';
+import { isPriced, PACK_ITEM, toPurchases, unitLabel, type PurchaseLine } from './priceHistory';
 
 export interface StorePrice {
   storeId: string;
@@ -38,6 +38,8 @@ export interface SavedPrice {
   unit: string;
   unit_price: number;
   purchased_at: string;
+  /** Quantos vinham na embalagem (pack_count, respondido na revisão); ausente no banco de antes da coluna. */
+  pack_count?: number | null;
 }
 
 /**
@@ -88,22 +90,30 @@ export function storePricesFromPurchases(lines: readonly PurchaseLine[]): StoreP
   );
 }
 
-/** Dos últimos preços guardados no aparelho (uma linha por produto, mercado e unidade), só os deste produto. */
+/**
+ * Dos últimos preços guardados no aparelho (uma linha por produto, mercado e unidade), só os deste produto. Cada linha
+ * é uma compra à parte, comparada como no caminho online (storePricesFromPurchases): com quantos vêm guardados, a
+ * cartela de 10 e a de 30 se comparam por ovo.
+ */
 export function storePricesFromSaved(saved: readonly SavedPrice[], productId: string): StorePrice[] {
-  return latestByStore(
+  return storePricesFromPurchases(
     saved
       .filter((row) => row.product_id === productId)
-      .map((row) => {
-        const base = pricePerBase(row.unit_price, row.unit);
-        return {
+      .map(
+        (row, index): PurchaseLine => ({
+          id: `saved${index}`,
+          // Uma nota por linha: a compra de uma linha não se junta com a de outra, nem herda o mercado dela.
+          receiptId: `saved${index}`,
           storeId: row.store_id,
-          unit: base.unit,
-          unitPrice: roundPrice(base.unitPrice),
+          storeName: row.store_id,
           purchasedAt: row.purchased_at,
-          packLabel: null,
-          packagePrice: null,
-        };
-      }),
+          quantity: 1,
+          unit: row.unit,
+          unitPrice: row.unit_price,
+          totalPrice: row.unit_price,
+          packCount: row.pack_count ?? null,
+        }),
+      ),
   );
 }
 

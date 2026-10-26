@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { formatShortDate } from '../dates';
-import type { PurchaseLine } from '../priceHistory';
+import { PACK_ITEM, type PurchaseLine } from '../priceHistory';
 import {
   latestByStore,
   storePriceDetail,
@@ -98,7 +98,24 @@ describe('o último preço de cada mercado', () => {
     expect(storePricesFromSaved(rows, 'feijao')).toEqual([]);
   });
 
-  it('dos guardados no aparelho: g e kg na mesma conta, por kg (o tamanho do pacote ali não se sabe)', () => {
+  it('dos guardados no aparelho: a cartela de 30 e a de 10 se comparam por ovo, como no histórico (o mesmo que online)', () => {
+    const rows = [
+      { ...saved('ovos', 'assai', 13.99, '2026-10-10'), pack_count: 10 },
+      { ...saved('ovos', 'atacadao', 36.9, '2026-10-11'), pack_count: 30 },
+    ];
+    const online = storePricesFromPurchases([
+      line('assai', 13.99, '2026-10-10', { packCount: 10 }),
+      line('atacadao', 36.9, '2026-10-11', { packCount: 30 }),
+    ]);
+    const offline = storePricesFromSaved(rows, 'ovos');
+    expect(offline).toEqual(online);
+    expect(offline.map((p) => [p.storeId, p.unitPrice, p.unit])).toEqual([
+      ['atacadao', 1.23, PACK_ITEM],
+      ['assai', 1.4, PACK_ITEM],
+    ]);
+  });
+
+  it('dos guardados no aparelho: g e kg na mesma conta, por kg (sem quantos vêm guardados, o tamanho do pacote não se sabe)', () => {
     const rows = [saved('queijo', 'assai', 0.0399, '2026-10-10', 'g'), saved('queijo', 'dia', 42.9, '2026-10-01', 'kg')];
     expect(storePricesFromSaved(rows, 'queijo')).toEqual([price('assai', 39.9, '2026-10-10', 'kg'), price('dia', 42.9, '2026-10-01', 'kg')]);
   });

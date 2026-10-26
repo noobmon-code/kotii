@@ -16,6 +16,8 @@ interface ItemRow {
   unit: string;
   unit_price: number;
   total_price: number;
+  /** Quantos vêm na embalagem (a resposta da revisão); ausente no banco de antes da coluna. */
+  pack_count?: number | null;
   /** A nota da linha, como está no banco. */
   receipt: { status: 'draft' | 'confirmed'; purchased_at: string; store_id: string | null; store: { name: string } | null };
 }
@@ -38,6 +40,8 @@ const mockTable = {
   counts: true,
   /** O pedido (a contar do zero) que falha. */
   failAt: undefined as number | undefined,
+  /** O banco de antes da coluna de quantos vêm na embalagem: recusa o pedido que fala dela. */
+  withoutPack: false,
   /** O pedido (a contar do zero) que volta vazio, com a contagem em zero: o que o servidor responde a quem ficou sem sessão. */
   emptyAt: undefined as number | undefined,
   /** O que acontece no banco logo antes de um pedido ser respondido (recebe o número dele, a contar do zero). */
@@ -57,6 +61,9 @@ jest.mock('@/lib/supabase', () => ({
           mockTable.asked.push(asked);
           mockTable.before?.(request);
           if (request === mockTable.failAt) return { data: null, count: null, error: new Error('sem permissão') };
+          if (mockTable.withoutPack && columns.includes('pack_count')) {
+            return { data: null, count: null, error: { code: '42703', message: 'column receipt_items.pack_count does not exist' } };
+          }
           if (request === mockTable.emptyAt) return { data: [], count: options?.count === 'exact' ? 0 : null, error: null };
           if (mockTable.sorted?.rows !== mockTable.rows) {
             mockTable.sorted = { rows: mockTable.rows, result: [...mockTable.rows].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) };
@@ -138,6 +145,7 @@ afterEach(() => {
   mockTable.cap = 1000;
   mockTable.counts = true;
   mockTable.failAt = undefined;
+  mockTable.withoutPack = false;
   mockTable.emptyAt = undefined;
   mockTable.before = undefined;
   mockTable.asked = [];
@@ -153,7 +161,7 @@ describe('as compras de um produto', () => {
     for (const request of mockTable.asked) {
       expect(request).toMatchObject({
         table: 'receipt_items',
-        columns: 'id, receipt_id, raw_description, quantity, unit, unit_price, total_price, receipt:receipts!inner(purchased_at, store_id, store:stores(name))',
+        columns: 'id, receipt_id, raw_description, quantity, unit, unit_price, total_price, pack_count, receipt:receipts!inner(purchased_at, store_id, store:stores(name))',
         count: 'exact',
         order: ['id'],
         limit: 1000,
@@ -174,6 +182,19 @@ describe('as compras de um produto', () => {
       { id: 'i2', receiptId: 'r2', storeId: null, storeName: null, purchasedAt: '2026-09-03T15:00:00+00:00', quantity: 0.755, unit: 'kg', unitPrice: 39.9, totalPrice: 30.12, description: 'ARROZ GRANEL KG' },
     ]);
     expect(mockTable.asked).toHaveLength(1);
+  });
+
+  it('quantos vêm na embalagem vai com a linha; o banco de antes da coluna lê de novo sem ela', async () => {
+    const eggs: ItemRow = { id: 'i1', receipt_id: 'r1', product_id: 'arroz', raw_description: 'OVOS RANCHO', quantity: 1, unit: 'un', unit_price: 13.99, total_price: 13.99, pack_count: 20, receipt: { status: 'confirmed', purchased_at: '2026-10-20T15:00:00+00:00', ...assai } };
+    mockTable.rows = [eggs];
+    expect((await fetchProductPurchases('arroz'))[0]).toMatchObject({ description: 'OVOS RANCHO', packCount: 20 });
+    mockTable.asked = [];
+    const { pack_count: _missing, ...old } = eggs;
+    mockTable.rows = [old];
+    mockTable.withoutPack = true;
+    const [line] = await fetchProductPurchases('arroz');
+    expect(line.packCount).toBeUndefined();
+    expect(mockTable.asked.map((request) => request.columns.includes('pack_count'))).toEqual([true, false]);
   });
 
   it('rascunho nunca conta, nem linha de outro produto: quem tira é a consulta', async () => {

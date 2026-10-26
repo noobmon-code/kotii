@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { describePriceAlert, priceAlerts, totalSaving, type AlertItem, type PricePoint } from '../priceAlert';
+import { PACK_ITEM } from '../priceHistory';
 
 const RECEIPT = { receiptId: 'r-now', storeId: 's-here', purchasedOn: '2026-09-27' };
 
@@ -78,6 +79,49 @@ describe('priceAlerts', () => {
     expect(describePriceAlert({ kind: 'above_usual', usual: 19.9, unit: 'un', percent: 21, saving: 8.2 }, undefined)).toBe(
       '21% acima do costume (R$ 19,90)',
     );
+  });
+});
+
+describe('priceAlerts com quantos vêm na embalagem (pack_count, o que a revisão respondeu)', () => {
+  // Ovos: a descrição da nota ("OVOS RANCHO CAIPIRA") não diz o tamanho da cartela; o que diz é a resposta da revisão.
+  const egg = (partial: Partial<AlertItem>) => item({ productId: 'p-ovos', quantity: 1, ...partial });
+  const eggPoint = (store_id: string, unit_price: number, day: string, packCount: number | null) =>
+    point(store_id, unit_price, day, { product_id: 'p-ovos', packCount });
+
+  it('a cartela de 30 a R$ 36,90 não ouve "mais barato" da de 10 a R$ 13,99 (R$ 1,23 contra R$ 1,40 o ovo)', () => {
+    const alerts = priceAlerts([egg({ unitPrice: 36.9, packCount: 30 })], [eggPoint('s-assai', 13.99, '2026-09-10', 10)], RECEIPT);
+    expect(alerts.size).toBe(0);
+  });
+
+  it('a cartela de 20 a R$ 25,99 não é "acima do costume" da de 10 a R$ 13,99 (R$ 1,30 contra R$ 1,40 o ovo)', () => {
+    const alerts = priceAlerts([egg({ unitPrice: 25.99, packCount: 20 })], [eggPoint('s-here', 13.99, '2026-09-10', 10)], RECEIPT);
+    expect(alerts.size).toBe(0);
+  });
+
+  it('a cartela de 30 a R$ 49,90 avisa da de 10 a R$ 13,99 por ovo: R$ 1,66 contra R$ 1,40', () => {
+    const alerts = priceAlerts([egg({ unitPrice: 49.9, packCount: 30 })], [eggPoint('s-assai', 13.99, '2026-09-10', 10)], RECEIPT);
+    // Os 30 ovos saem R$ 0,26 mais caros cada um: R$ 7,80 no total.
+    expect(alerts.get('i1')).toEqual({ kind: 'cheaper_elsewhere', storeId: 's-assai', price: 1.4, unit: PACK_ITEM, on: '2026-09-10', saving: 7.8 });
+  });
+
+  it('a cartela de 10 a R$ 13,99 avisa da de 30 a R$ 36,90 por ovo: R$ 1,40 contra R$ 1,23', () => {
+    const alerts = priceAlerts([egg({ unitPrice: 13.99, packCount: 10 })], [eggPoint('s-assai', 36.9, '2026-09-10', 30)], RECEIPT);
+    // Os 10 ovos saem R$ 0,17 mais caros cada um: R$ 1,70 no total.
+    expect(alerts.get('i1')).toEqual({ kind: 'cheaper_elsewhere', storeId: 's-assai', price: 1.23, unit: PACK_ITEM, on: '2026-09-10', saving: 1.7 });
+  });
+
+  it('com o mesmo tamanho dos dois lados, compara o preço da cartela, como antes', () => {
+    const alerts = priceAlerts([egg({ unitPrice: 25.99, packCount: 10 })], [eggPoint('s-assai', 13.99, '2026-09-10', 10)], RECEIPT);
+    expect(alerts.get('i1')).toEqual({ kind: 'cheaper_elsewhere', storeId: 's-assai', price: 13.99, unit: 'un', on: '2026-09-10', saving: 12 });
+  });
+
+  it('a cartela com tamanho conhecido não se compara com a compra sem tamanho, na descrição nem na revisão', () => {
+    // A de hoje tem 30 (na revisão); a de antes não diz quantos vinham.
+    expect(priceAlerts([egg({ unitPrice: 36.9, packCount: 30 })], [eggPoint('s-assai', 13.99, '2026-09-10', null)], RECEIPT).size).toBe(0);
+    // O inverso: a de antes tinha tamanho, a de hoje não.
+    expect(priceAlerts([egg({ unitPrice: 13.99 })], [eggPoint('s-assai', 36.9, '2026-09-10', 30)], RECEIPT).size).toBe(0);
+    // O tamanho que está na descrição de hoje ("C/30") também conta.
+    expect(priceAlerts([egg({ unitPrice: 36.9, description: 'OVOS C/30' })], [eggPoint('s-assai', 13.99, '2026-09-10', null)], RECEIPT).size).toBe(0);
   });
 });
 

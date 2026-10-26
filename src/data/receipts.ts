@@ -8,6 +8,7 @@ import { NFCE_CAPTCHA_STATE, nfceItemsToDraft, nfceReceiptRow, nfceStoreCodes, t
 import { RECEIPTS_PAGE } from '@/domain/receiptList';
 import { MAX_RECEIPT_PHOTOS, tooManyPhotosMessage } from '@/domain/receiptPhotos';
 import type { ConfirmItem } from '@/domain/receiptReview';
+import { weighedLine } from '@/domain/receiptWeight';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Receipt, ReceiptItem, Unit } from '@/lib/types';
 import {
@@ -29,11 +30,11 @@ const RECEIPT_COLUMNS =
 const ITEM_BASE_COLUMNS =
   'id, receipt_id, position, raw_description, suggested_name, suggested_category, product_id, quantity, unit, unit_price, total_price';
 /**
- * As colunas dos itens que chegaram por migrações recentes: o item genérico da leitura por foto (generic_name) e
- * o código do produto na nota (store_code). O app pode ser publicado antes de cada uma: lendo ou gravando sem
- * a que falta, a nota fica como era.
+ * As colunas dos itens que chegaram por migrações recentes: o item genérico da leitura por foto (generic_name),
+ * o código do produto na nota (store_code) e quantos vêm na embalagem (pack_count, que só a revisão grava). O app
+ * pode ser publicado antes de cada uma: lendo ou gravando sem a que falta, a nota fica como era.
  */
-const OPTIONAL_ITEM_COLUMNS = ['generic_name', 'store_code'] as const;
+const OPTIONAL_ITEM_COLUMNS = ['generic_name', 'store_code', 'pack_count'] as const;
 type OptionalItemColumn = (typeof OPTIONAL_ITEM_COLUMNS)[number];
 
 /** A coluna recente que o banco disse que não tem (uma por erro), ou undefined. */
@@ -572,6 +573,34 @@ export function useSaveReceiptItem(receiptId: string) {
   });
 }
 
+/**
+ * O peso da etiqueta numa linha em "un" (domain/receiptWeight): só a quantidade em kg e o preço por kg, e só se a
+ * linha ainda é a que a tela leu (mesma quantidade, mesmo total, ainda em "un"). Se a linha já mudou (em outro
+ * aparelho, ou numa gravação desta tela que perdeu a resposta), o pedido não grava nada (`saved` falso) e a nota é
+ * buscada de novo. A descrição e o total não vão no pedido: o valor que a tela mostra de antes não volta para a nota.
+ */
+export function useSaveReceiptWeight(receiptId: string) {
+  const invalidate = useInvalidateReceipt(receiptId);
+  return useMutation({
+    mutationFn: async ({ item, weightKg }: { item: ReceiptItem; weightKg: number }): Promise<{ saved: boolean }> => {
+      const { quantity, unit, unit_price } = weighedLine(item, weightKg);
+      const rows = unwrap(
+        await supabase
+          .from('receipt_items')
+          .update({ quantity, unit, unit_price })
+          .eq('id', item.id)
+          .eq('receipt_id', receiptId)
+          .eq('unit', 'un')
+          .eq('quantity', item.quantity)
+          .eq('total_price', item.total_price)
+          .select('id'),
+      ) as { id: string }[] | null;
+      return { saved: Boolean(rows?.length) };
+    },
+    onSuccess: invalidate,
+  });
+}
+
 export function useDeleteReceiptItem(receiptId: string) {
   const invalidate = useInvalidateReceipt(receiptId);
   return useMutation({
@@ -718,6 +747,31 @@ export function useFillReceiptItemValue(receiptId: string) {
       for (const key of CONFIRMED_ITEM_KEYS) {
         queryClient.invalidateQueries({ queryKey: [key] });
       }
+      queryClient.invalidateQueries({ queryKey: ['receipt', receiptId] });
+    },
+  });
+}
+
+/** O banco ainda não tem onde guardar quantos vêm na embalagem (a migração de pack_count não foi aplicada). */
+export const PACK_COUNT_NOT_READY = 'Ainda não dá para guardar quantos vêm na embalagem: falta atualizar o banco do app.';
+
+/**
+ * Quantos vêm na embalagem do item (domain/packCount), a resposta da revisão. Vale também na nota confirmada:
+ * não muda o valor, a quantidade nem a despensa, só o que o preço diz (cada ovo). `saved` falso é o item que
+ * saiu da nota em outro aparelho.
+ */
+export function useSetReceiptItemPack(receiptId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, count }: { id: string; count: number }): Promise<{ saved: boolean }> => {
+      const result = await supabase.from('receipt_items').update({ pack_count: count }).eq('id', id).eq('receipt_id', receiptId).select('id');
+      if (result.error && isMissingColumn(result.error, 'pack_count')) throw new Error(PACK_COUNT_NOT_READY);
+      const rows = unwrap(result) as { id: string }[] | null;
+      return { saved: Boolean(rows?.length) };
+    },
+    onSuccess: () => {
+      // Só o que fala de preço: o resumo de gastos e as compras não mudam com isto.
+      for (const key of ['latestPrices', 'priceHistory']) queryClient.invalidateQueries({ queryKey: [key] });
       queryClient.invalidateQueries({ queryKey: ['receipt', receiptId] });
     },
   });

@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -25,6 +25,8 @@ import {
   useReceipt,
   useReceiptReadAt,
   useSaveReceiptItem,
+  useSaveReceiptWeight,
+  useSetReceiptItemPack,
   useSetReceiptStore,
   useSetReceiptTotal,
   useUpdateReceipt,
@@ -55,10 +57,13 @@ import {
   gapNotices,
   hasReceiptTotal,
   ITEM_SAVED_NOT_SHOWN,
+  OTHER_ITEM_SAVING,
   pendingUnpriced,
   quantityText,
   readReceiptTotal,
+  RECEIPT_BEING_UPDATED,
   RECEIPT_CAUGHT_UP,
+  RECEIPT_REREAD_FAILED,
   RECEIPT_STILL_BEHIND,
   RECEIPT_TOTAL_HINT,
   RECEIPT_TOTAL_LABEL,
@@ -79,10 +84,23 @@ import {
   CORRECTION_NOT_SAVED,
   INVALID_DATE,
   purchaseDateChange,
+  RECEIPT_GONE,
   receiptEditing,
   receiptTotalChange,
 } from '@/domain/receiptEdit';
+import { asksPackCount, packCountOf, packLabel, packLine, PACK_CHOICES, PACK_LINE_CHANGED, PACK_QUESTION, PACK_SAVED_NOT_SHOWN, PACK_UNREADABLE, readPackCount } from '@/domain/packCount';
 import { hasNoValue } from '@/domain/receiptItem';
+import {
+  asksWeight,
+  readWeight,
+  weighedLine,
+  weightQuestion,
+  WEIGHT_LINE_CHANGED,
+  WEIGHT_NOT_READ,
+  WEIGHT_PLACEHOLDER,
+  WEIGHT_SAVED_NOT_SHOWN,
+  WEIGHT_UNREADABLE,
+} from '@/domain/receiptWeight';
 import { houseNameOverride, keptName, noteNames, sameProduct, typedNameActions, withEntry } from '@/domain/receiptNames';
 import {
   buildConfirmPayload,
@@ -112,6 +130,7 @@ import {
 } from '@/domain/similarNames';
 import { canRenameStore, printedNameLine } from '@/domain/storeName';
 import { PayerChips } from '@/features/finance/PayerChips';
+import { StaleNotice } from '@/features/health/StaleNotice';
 import { ReceiptItemEditor } from '@/features/ReceiptItemEditor';
 import { ReceiptListSection } from '@/features/ReceiptListSection';
 import { RenameStoreModal } from '@/features/RenameStoreModal';
@@ -161,6 +180,17 @@ const TOTAL_ROW_SLOP = { top: 12, bottom: 12 };
 /** Quanto a tela espera pela nota relida depois de gravar o valor de um item, antes de soltar "Confirmar nota". */
 const SETTLE_WAIT_MS = 4000;
 
+/** A nota que sumiu em outro aparelho: o `.single()` do banco não acha a linha (PGRST116). */
+const receiptGone = (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'PGRST116');
+/**
+ * "Confirmar nota" numa nota que sumiu: o `confirm_receipt` responde P0002 com "receipt not found". O mesmo código vem
+ * quando uma linha já não é da nota ("item … does not belong to receipt"): essa não diz que a nota sumiu.
+ */
+const confirmGone = (error: unknown) =>
+  Boolean(
+    error && typeof error === 'object' && 'code' in error && error.code === 'P0002' && 'message' in error && error.message === 'receipt not found',
+  );
+
 export default function ReceiptScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const receiptQuery = useReceipt(id);
@@ -177,7 +207,9 @@ export default function ReceiptScreen() {
   const correctStore = useCorrectReceipt(id);
   const correctTotal = useCorrectReceipt(id);
   const saveItem = useSaveReceiptItem(id);
+  const saveWeightItem = useSaveReceiptWeight(id);
   const fillValue = useFillReceiptItemValue(id);
+  const setPack = useSetReceiptItemPack(id);
   const deleteItem = useDeleteReceiptItem(id);
   const confirm = useConfirmReceipt(id);
   const deleteReceipt = useDeleteReceipt(id);
@@ -206,6 +238,9 @@ export default function ReceiptScreen() {
   // A data que a nota confirmada está gravando. A tecla de enviar e a saída do campo chegam juntas (no celular, enviar
   // tira o foco), e o campo continua com o que foi digitado até a gravação voltar: a mesma data não grava de novo.
   const savingDate = useRef<string | null>(null);
+  // A data que a busca que falhou recusou, e a leitura da nota de então: a saída do campo que vem logo depois de enviar
+  // não avisa de novo enquanto o texto e essa leitura forem os mesmos (ver commitDate).
+  const warnedStaleDate = useRef<{ text: string; read: number } | null>(null);
   // O total da nota em edição (null: fechado). Só na revisão.
   const [totalText, setTotalText] = useState<string | null>(null);
   // Itens que a pessoa decidiu deixar sem valor nesta revisão. Não é guardado: abrir a nota de novo pergunta de novo.
@@ -213,6 +248,10 @@ export default function ReceiptScreen() {
   // O mesmo conjunto também fora do estado: a confirmação que esperou uma gravação (a do total) lê o de agora,
   // e não o do instante do toque.
   const leftNow = useRef<ReadonlySet<string>>(new Set());
+  // Itens pesáveis que a pessoa disse que vieram em embalagem ("É embalagem"): só nesta revisão, como o "sem valor".
+  const [packaged, setPackaged] = useState<ReadonlySet<string>>(new Set());
+  // Ovos em que a pessoa disse "Não sei" quantos vêm: só nesta tela.
+  const [packSkipped, setPackSkipped] = useState<ReadonlySet<string>>(new Set());
   const [imageUrls, setImageUrls] = useState<string[] | null>(null);
   const [checkingPantry, setCheckingPantry] = useState(false);
   // Trava já no toque: o estado só muda no próximo render.
@@ -227,11 +266,16 @@ export default function ReceiptScreen() {
   const [settlingValue, setSettlingValue] = useState(false);
   // A leitura da nota que ficou atrás do que esta tela gravou (de quando ela é): uma gravação de item cuja nota
   // relida não voltou, ou que ficou sem resposta do banco. Enquanto a nota em tela for essa leitura
-  // (`dataUpdatedAt`), "Confirmar nota" não vai com os itens dela.
+  // (`dataUpdatedAt`), "Confirmar nota" não vai com os itens dela. A busca que falhou com a nota na tela (`isError`)
+  // também faz "Confirmar nota" buscar a nota antes de seguir, mesmo sem esta marca.
   const staleRead = useRef(0);
   // Os itens cujo valor esta tela gravou sem a nota voltar, cada um com a leitura que ficou para trás: enquanto a
   // nota em tela for essa leitura, o item não pergunta de novo (nem na nota já confirmada).
   const [savedAt, setSavedAt] = useState<Readonly<Record<string, number>>>({});
+  // Os itens cujo valor esta tela está gravando, do toque até a nota voltar: a pergunta do peso e os chips da
+  // embalagem deles ficam escondidos nesse meio. O estado esconde; a referência é o que o toque lê na hora.
+  const [writingIds, setWritingIds] = useState<ReadonlySet<string>>(new Set());
+  const writingNow = useRef<ReadonlySet<string>>(new Set());
 
   const catalog = useMemo(
     () => new Map<string, CatalogProduct>((products.data ?? []).map((p) => [p.id, p])),
@@ -270,7 +314,15 @@ export default function ReceiptScreen() {
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
   if (receiptQuery.isPending || products.isPending) return <Loading />;
-  if (receiptQuery.isError) return <ErrorNotice error={receiptQuery.error} onRetry={() => receiptQuery.refetch()} />;
+  // Com a nota na tela, a busca que falha fica acima dela (StaleNotice). A tela do erro é para quando não há nota para
+  // mostrar, e a nota que sumiu em outro aparelho também: é a tela sem "Tentar de novo", porque buscar de novo não a traz.
+  if (!receiptQuery.data || receiptGone(receiptQuery.error)) {
+    return receiptGone(receiptQuery.error) ? (
+      <ErrorNotice error={new Error(RECEIPT_GONE)} />
+    ) : (
+      <ErrorNotice error={receiptQuery.error} onRetry={() => receiptQuery.refetch()} />
+    );
+  }
 
   const { receipt, items } = receiptQuery.data;
   const isDraft = receipt.status === 'draft';
@@ -287,11 +339,25 @@ export default function ReceiptScreen() {
   const resolvedItems = new Map(items.map((item) => [item.id, resolveItem(item, overrides[item.id], catalog, purchasedOn)]));
   // Produto que sumiu do catálogo com a revisão aberta (foi juntado com outro em outro aparelho).
   const gone = goneProducts(items, overrides, catalog);
-  // A descrição da nota traz o tamanho da embalagem: o pacote de 5 kg se compara pelo preço por kg.
+  // A descrição da nota traz o tamanho da embalagem: o pacote de 5 kg se compara pelo preço por kg. Sem ele na
+  // descrição, vale a mesma contagem que a tela mostra (packCountOf: a descrição, o nome do produto, depois a resposta da
+  // revisão em pack_count): a cartela de 30 não se compara com a de 10 pelo preço.
   const alertItems: AlertItem[] = items.flatMap((item) => {
-    const product = resolvedItems.get(item.id)!.product;
+    const resolved = resolvedItems.get(item.id)!;
+    const product = resolved.product;
     return product.kind === 'existing'
-      ? [{ id: item.id, productId: product.productId, unit: item.unit, unitPrice: item.unit_price, quantity: item.quantity, description: item.raw_description }]
+      ? [
+          {
+            id: item.id,
+            productId: product.productId,
+            unit: item.unit,
+            unitPrice: item.unit_price,
+            quantity: item.quantity,
+            description: item.raw_description,
+            // O mesmo nome de produto que a pergunta e a linha da embalagem recebem (packPart).
+            packCount: packCountOf(item, resolved.productName),
+          },
+        ]
       : [];
   });
   const alerts = priceAlerts(alertItems, priceHistory.data ?? [], { receiptId: receipt.id, storeId: receipt.store_id, purchasedOn });
@@ -412,6 +478,19 @@ export default function ReceiptScreen() {
     });
   }
 
+  /**
+   * Com a busca de fundo que falhou, a nota em tela é a de antes do que outro aparelho gravou: o total, a data, o
+   * mercado, quem pagou, "Usar R$ 12,90", a embalagem, excluir ou descartar a nota e o "Remover item" do editor
+   * não gravam por ela (a data, o mercado e o total da nota confirmada comparam o valor novo com o da tela). O peso não
+   * passa por aqui (o banco só grava se a linha ainda é a lida), nem salvar o editor do item. Avisa e devolve `true`; a
+   * busca que falhou tem "Tentar de novo" acima.
+   */
+  const refuseStale = () => {
+    if (!receiptQuery.isError) return false;
+    notify(RECEIPT_REREAD_FAILED.title, RECEIPT_REREAD_FAILED.message);
+    return true;
+  };
+
   function commitDate() {
     if (dateText == null) return;
     const change = purchaseDateChange(dateText, purchasedOn);
@@ -419,6 +498,14 @@ export default function ReceiptScreen() {
       notify(INVALID_DATE.title, INVALID_DATE.message);
       return;
     }
+    // Com a busca que falhou, a nota em tela pode estar atrás do que outro aparelho gravou: avisa, e o campo fica como está.
+    // Enviar e sair do campo chegam juntos (ver savingDate): a mesma data com a mesma busca avisa uma vez só.
+    if (receiptQuery.isError) {
+      const again = warnedStaleDate.current?.text === dateText && warnedStaleDate.current.read === receiptQuery.dataUpdatedAt;
+      if (again) return;
+      warnedStaleDate.current = { text: dateText, read: receiptQuery.dataUpdatedAt };
+    }
+    if (refuseStale()) return;
     if (change.kind === 'same') {
       setDateText(null);
       return;
@@ -443,9 +530,12 @@ export default function ReceiptScreen() {
   /** O mercado escolhido ou criado no seletor: na revisão, como sempre; na nota confirmada, uma correção. */
   function chooseStore(store: StoreChoice) {
     setPicker(null);
+    // Até o mesmo mercado avisa com a busca que falhou: a nota em tela pode estar atrás do que outro aparelho gravou.
+    if (refuseStale()) return;
     if ('id' in store && store.id === receipt.store_id) return;
-    if (isDraft) setStore.mutate(store, { onError });
-    else correctReceipt(correctStore, { store });
+    if (isDraft) {
+      setStore.mutate(store, { onError });
+    } else correctReceipt(correctStore, { store });
   }
 
   /**
@@ -460,6 +550,9 @@ export default function ReceiptScreen() {
       notify(result.title, result.message);
       return false;
     }
+    // Sem a busca, a nota em tela pode já estar confirmada em outro aparelho: o total não acharia o rascunho, e o
+    // campo fecharia sem aviso. Fica aberto, com o que foi digitado.
+    if (refuseStale()) return false;
     let saved: boolean;
     try {
       ({ saved } = await saveTotal.mutateAsync(result.total));
@@ -486,6 +579,8 @@ export default function ReceiptScreen() {
       notify(change.title, change.message);
       return;
     }
+    // Com a busca que falhou, o total digitado fica no campo, também quando é o mesmo da nota em tela (ver refuseStale).
+    if (refuseStale()) return;
     if (change.kind === 'changed') {
       try {
         const { saved } = await correctTotal.mutateAsync({ total: change.total });
@@ -510,6 +605,15 @@ export default function ReceiptScreen() {
   const leaveUnpriced = (ids: string[]) => {
     leftNow.current = new Set([...leftNow.current, ...ids]);
     setLeftUnpriced(leftNow.current);
+  };
+
+  /** Marca (ou solta) o item como gravando; ver `writingIds`. */
+  const markWriting = (itemId: string, on: boolean) => {
+    const next = new Set(writingNow.current);
+    if (on) next.add(itemId);
+    else next.delete(itemId);
+    writingNow.current = next;
+    setWritingIds(next);
   };
 
   /**
@@ -551,6 +655,9 @@ export default function ReceiptScreen() {
     valueWrites.current += 1;
     valueSeq.current += 1;
     setSettlingValue(true);
+    // O item fica "gravando" do toque até a nota voltar (ou a busca desistir): a pergunta dele não volta no meio.
+    const writingItem = shown?.itemId;
+    if (writingItem) markWriting(writingItem, true);
     try {
       // Fora da chamada opcional: sem `onWritten`, o que vai dentro dos parênteses dela nem chega a ser esperado.
       const result = await write;
@@ -569,7 +676,8 @@ export default function ReceiptScreen() {
         if (written && shown) {
           const { itemId } = shown;
           if (itemId) setSavedAt((prev) => ({ ...prev, [itemId]: behind }));
-          if (read?.isError) notify(shown.saved.title, shown.saved.message);
+          // A nota que sumiu em outro aparelho é a tela dela (ver o gate), sem o "Tentar de novo" que este aviso manda usar.
+          if (read?.isError && !receiptGone(read.error)) notify(shown.saved.title, shown.saved.message);
         }
       }
     } catch (err) {
@@ -579,11 +687,12 @@ export default function ReceiptScreen() {
     } finally {
       valueWrites.current -= 1;
       if (!valueWrites.current) setSettlingValue(false);
+      if (writingItem) markWriting(writingItem, false);
     }
   }
 
   /**
-   * "Confirmar nota" com a tela atrás do que foi gravado: em vez de confirmar
+   * "Confirmar nota" com a tela atrás do que foi gravado, ou com a busca de fundo que falhou: em vez de confirmar
    * com os itens de antes (o item novo ficaria sem produto, fora da despensa e
    * da lista, e a nota confirmada não se corrige), busca a nota e diz o que
    * houve. A confirmação fica para o toque seguinte, já com os itens de agora.
@@ -593,8 +702,12 @@ export default function ReceiptScreen() {
     setSettlingValue(true);
     try {
       const read = await rereadReceipt();
-      // A busca que falha troca a tela pela do erro, com como tentar de novo: ali não há o que avisar.
-      if (read?.isError) return;
+      // A busca que falha deixa a nota na tela, com o aviso de cima: sem outro aviso, o toque não faria nada. A nota que
+      // sumiu vira a tela dela (ver o gate), e aí não há "Tentar de novo" para avisar.
+      if (read?.isError) {
+        if (!receiptGone(read.error)) notify(RECEIPT_REREAD_FAILED.title, RECEIPT_REREAD_FAILED.message);
+        return;
+      }
       const notice = read ? RECEIPT_CAUGHT_UP : RECEIPT_STILL_BEHIND;
       notify(notice.title, notice.message);
     } finally {
@@ -618,6 +731,8 @@ export default function ReceiptScreen() {
    * também: a tela pode estar atrás do que outro aparelho já gravou).
    */
   function applySuggestion(suggestion: GapSuggestion) {
+    // A conta do "falta" sai dos itens em tela: com a busca que falhou, outro item gravado no aparelho de lá a muda.
+    if (refuseStale()) return;
     // Um valor por vez: com a nota ainda por voltar, o segundo toque acharia o item já com valor.
     if (valueWrites.current) return;
     void settleValue(fillValue.mutateAsync({ id: suggestion.itemId, values: suggestion.values }), tellIfNotFilled, {
@@ -660,8 +775,9 @@ export default function ReceiptScreen() {
    */
   async function doConfirm() {
     if (confirming.current || valueWrites.current || confirm.isPending || listPending || listFailed) return;
-    // A nota em tela é a leitura que ficou atrás do que esta tela gravou: os itens daqui não são os do banco.
-    if (receiptQuery.dataUpdatedAt <= staleRead.current) {
+    // A nota em tela é a leitura que ficou atrás do que esta tela gravou, ou a busca de fundo que falhou (a nota fica
+    // na tela, com o aviso de cima): os itens daqui não são os do banco.
+    if (receiptQuery.isError || receiptQuery.dataUpdatedAt <= staleRead.current) {
       void catchUp();
       return;
     }
@@ -744,7 +860,12 @@ export default function ReceiptScreen() {
           notify('Nota salva', done.length ? done.join(' ') : undefined);
           router.back();
         },
-        onError,
+        onError: (err) => {
+          // A nota sumiu em outro aparelho (P0002): a tela busca a nota de novo, e vira a da nota que sumiu.
+          if (!confirmGone(err)) return onError(err);
+          notify('Nota não confirmada', RECEIPT_GONE);
+          void receiptQuery.refetch();
+        },
       });
     if (!receipt.store_id) {
       confirmAction(
@@ -765,6 +886,94 @@ export default function ReceiptScreen() {
     const urls = (await Promise.all(photos.map((path) => receiptImageUrl(path)))).filter((url): url is string => Boolean(url));
     if (urls.length) setImageUrls(urls);
     else notify('Imagem indisponível');
+  }
+
+  /**
+   * Com um valor a caminho, o toque que pediria outra gravação não entra (uma por vez: o segundo gravaria sobre a
+   * linha de antes). No mesmo item é o toque repetido, o mesmo valor: calado. Com outro item gravando, a pessoa fica
+   * sabendo; com a nota só voltando (a busca de "Confirmar nota", uma remoção), o aviso é o da nota.
+   */
+  function refuseWhileSaving(itemId: string): boolean {
+    if (!valueWrites.current) return false;
+    if (!writingNow.current.has(itemId)) {
+      const notice = writingNow.current.size ? OTHER_ITEM_SAVING : RECEIPT_BEING_UPDATED;
+      notify(notice.title, notice.message);
+    }
+    return true;
+  }
+
+  /**
+   * O peso da etiqueta do item pesado no balcão (domain/receiptWeight): a
+   * linha vira por kg, com o valor da nota sobre o peso como preço. Só a
+   * quantidade e o preço por kg são gravados (`useSaveReceiptWeight`), pela
+   * mesma espera da nota.
+   */
+  function saveWeight(item: ReceiptItem, text: string): boolean {
+    const weight = readWeight(text);
+    if (weight == null) {
+      notify(WEIGHT_UNREADABLE.title, WEIGHT_UNREADABLE.message);
+      return false;
+    }
+    if (refuseWhileSaving(item.id)) return false;
+    void settleValue(
+      saveWeightItem.mutateAsync({ item, weightKg: weight }),
+      ({ saved }) => {
+        // Sem a linha de volta, este pedido não gravou nada (a linha já tinha mudado): a nota já é buscada de novo,
+        // e a pessoa confere e informa o peso outra vez, se ainda precisar.
+        if (!saved) notify(WEIGHT_LINE_CHANGED.title, WEIGHT_LINE_CHANGED.message);
+        return saved;
+      },
+      { itemId: item.id, saved: WEIGHT_SAVED_NOT_SHOWN },
+    );
+    return true;
+  }
+
+  /**
+   * Quantos vêm na embalagem (domain/packCount): só o que o preço diz, sem
+   * mexer no valor, na quantidade nem na despensa, e por isso também na nota
+   * confirmada. Pela mesma espera da nota que as outras gravações de item.
+   */
+  function savePack(item: ReceiptItem, count: number | null): boolean {
+    if (count == null) {
+      notify(PACK_UNREADABLE.title, PACK_UNREADABLE.message);
+      return false;
+    }
+    // A linha pode ter saído em outro aparelho: sem a busca, a gravação não acharia o item e nada avisaria.
+    if (refuseStale()) return false;
+    if (refuseWhileSaving(item.id)) return false;
+    void settleValue(
+      setPack.mutateAsync({ id: item.id, count }),
+      ({ saved }) => {
+        // Sem a linha de volta, a resposta não gravou nada (a linha saiu ou mudou em outro aparelho): a pessoa fica sabendo.
+        if (!saved) notify(PACK_LINE_CHANGED.title, PACK_LINE_CHANGED.message);
+        return saved;
+      },
+      { itemId: item.id, saved: PACK_SAVED_NOT_SHOWN },
+    );
+    return true;
+  }
+
+  /** A pergunta (ou o que já se sabe) de quantos vêm na embalagem do item, nos dois cartões. */
+  function packPart(item: ReceiptItem, category: string, productName: string | null) {
+    if (category !== 'ovos' || item.unit !== 'un') return null;
+    // Gravando, ou gravado sem a nota de volta: a pergunta e os chips não voltam no meio.
+    if (savedUnshown.has(item.id) || writingIds.has(item.id)) return null;
+    const count = packCountOf(item, productName);
+    if (count != null) {
+      // A conta que veio da descrição não se muda aqui; a resposta da revisão, sim.
+      const answered = count === item.pack_count && packCountOf({ raw_description: item.raw_description }, productName) == null;
+      return <PackAnswer item={item} count={count} category={category} onChange={answered ? (next) => savePack(item, next) : undefined} />;
+    }
+    if (packSkipped.has(item.id) || !asksPackCount(item, category, productName)) return null;
+    return (
+      <PackQuestion
+        item={item}
+        category={category}
+        onSave={(next) => savePack(item, next)}
+        onSkip={() => setPackSkipped((prev) => new Set([...prev, item.id]))}
+        skipLabel="Não sei"
+      />
+    );
   }
 
   function saveEditedItem(values: ItemValues) {
@@ -827,6 +1036,8 @@ export default function ReceiptScreen() {
       }>
       <Stack.Screen options={{ title: isDraft ? 'Revisar nota' : 'Nota fiscal' }} />
 
+      {receiptQuery.isError ? <StaleNotice onRetry={() => receiptQuery.refetch()} /> : null}
+
       {duplicate ? (
         <Card style={styles.gapSm}>
           <Row>
@@ -847,14 +1058,16 @@ export default function ReceiptScreen() {
               variant="ghost"
               icon="trash-can-outline"
               compact
-              onPress={() =>
+              onPress={() => {
+                // A nota em tela pode já estar confirmada em outro aparelho: sem a busca, não se apaga às cegas.
+                if (refuseStale()) return;
                 confirmAction(
                   'Excluir esta nota?',
                   'Os itens lidos nesta revisão serão apagados. A outra nota continua como está.',
                   'Excluir',
                   () => deleteReceipt.mutate(photos, { onSuccess: () => router.back(), onError }),
-                )
-              }
+                );
+              }}
             />
           </Row>
         </Card>
@@ -935,7 +1148,12 @@ export default function ReceiptScreen() {
             ))}
           </View>
         ) : null}
-        <PayerChips value={receipt.paid_by} onChange={(paidBy) => updateReceipt.mutate({ paid_by: paidBy }, { onError })} />
+        <PayerChips
+          value={receipt.paid_by}
+          onChange={(paidBy) => {
+            if (!refuseStale()) updateReceipt.mutate({ paid_by: paidBy }, { onError });
+          }}
+        />
         {isDraft ? null : <Text variant="small">{CONFIRMED_EDIT_NOTE}</Text>}
         {photos.length ? (
           <Button
@@ -1011,6 +1229,14 @@ export default function ReceiptScreen() {
           const alert = alertText(alerts.get(item.id));
           const before = beforeUse[item.id];
           const prompt = unpricedPrompt(gap, item.id, receipt, leftUnpriced, savedUnshown);
+          const chosenName = resolved.productName ?? (resolved.product.kind === 'new' ? resolved.product.name : null);
+          // O peso gravado (ou que está gravando) que a nota em tela ainda não mostra também não pergunta de novo.
+          const weighing =
+            isDraft &&
+            !packaged.has(item.id) &&
+            !savedUnshown.has(item.id) &&
+            !writingIds.has(item.id) &&
+            asksWeight(item, resolved.category, chosenName);
           return isDraft ? (
             <DraftItemCard
               key={item.id}
@@ -1018,6 +1244,10 @@ export default function ReceiptScreen() {
               resolved={resolved}
               alert={gone.chosen.includes(item.id) ? GONE_CHOICE_HINT : alert}
               prompt={prompt}
+              weighing={weighing}
+              onSaveWeight={(text) => saveWeight(item, text)}
+              onPackaged={() => setPackaged((prev) => new Set([...prev, item.id]))}
+              pack={packPart(item, resolved.category, chosenName)}
               onUseSuggestion={applySuggestion}
               onLeaveUnpriced={() => leaveUnpriced([item.id])}
               onEdit={() => setEditing({ item })}
@@ -1053,6 +1283,8 @@ export default function ReceiptScreen() {
               />
               {/* Dos itens da nota confirmada, só se corrige o valor do que ficou sem (domain/receiptEdit). */}
               {prompt ? <ValueQuestion prompt={prompt} onUse={applySuggestion} onFill={() => setEditing({ item })} /> : null}
+              {/* E quantos vêm na embalagem, que não mexe no valor nem na despensa. */}
+              {packPart(item, resolved.category, item.product_id ? (catalog.get(item.product_id)?.name ?? null) : null)}
             </Card>
           );
         })}
@@ -1062,14 +1294,16 @@ export default function ReceiptScreen() {
         title={isDraft ? 'Descartar nota' : 'Excluir nota'}
         variant="danger"
         icon="trash-can-outline"
-        onPress={() =>
+        onPress={() => {
+          // O texto da pergunta vem do status em tela: com a busca que falhou, a nota pode já estar confirmada lá.
+          if (refuseStale()) return;
           confirmAction(
             isDraft ? 'Descartar nota' : 'Excluir nota',
             isDraft ? 'Os itens lidos serão apagados.' : 'Os preços desta nota saem do comparativo. Itens já na despensa continuam.',
             isDraft ? 'Descartar' : 'Excluir',
             () => deleteReceipt.mutate(photos, { onSuccess: () => router.back(), onError }),
-          )
-        }
+          );
+        }}
       />
 
       {renamingStore && noteStore ? (
@@ -1204,6 +1438,7 @@ export default function ReceiptScreen() {
           onDelete={
             editing.item && isDraft
               ? () => {
+                  if (refuseStale()) return;
                   const target = editing.item!;
                   setEditing(null);
                   // Pelo mesmo caminho das outras gravações de item: até a nota voltar sem ele, "Confirmar nota"
@@ -1225,6 +1460,10 @@ function DraftItemCard({
   resolved,
   alert,
   prompt,
+  weighing,
+  onSaveWeight,
+  onPackaged,
+  pack,
   onUseSuggestion,
   onLeaveUnpriced,
   onEdit,
@@ -1245,6 +1484,13 @@ function DraftItemCard({
   alert: string | null;
   /** A pergunta do item sem valor (domain/receiptGap); null se ele tem valor ou se a pessoa já respondeu. */
   prompt: UnpricedPrompt | null;
+  /** O item pode ter sido pesado no balcão (domain/receiptWeight) e a pessoa ainda não respondeu. */
+  weighing: boolean;
+  /** Grava o peso digitado; false quando não gravou (o peso não deu para ler), e o campo continua aberto. */
+  onSaveWeight: (text: string) => boolean;
+  onPackaged: () => void;
+  /** A pergunta (ou a resposta) de quantos vêm na embalagem dos ovos; null nas outras linhas. */
+  pack: ReactNode;
   onUseSuggestion: (suggestion: GapSuggestion) => void;
   onLeaveUnpriced: () => void;
   onEdit: () => void;
@@ -1324,6 +1570,8 @@ function DraftItemCard({
         ) : null}
       </Row>
       {prompt ? <ValueQuestion prompt={prompt} onUse={onUseSuggestion} onFill={onEdit} onLeave={onLeaveUnpriced} /> : null}
+      {weighing ? <WeightQuestion item={item} onSave={onSaveWeight} onPackaged={onPackaged} /> : null}
+      {pack}
       {similar ? (
         <View style={styles.gapXs}>
           <Text variant="small">{similarNameHint(similar)}</Text>
@@ -1404,6 +1652,146 @@ function ValueQuestion({
   );
 }
 
+/**
+ * A pergunta do item que pode ter sido pesado no balcão: o peso da etiqueta,
+ * ou "É embalagem". Como a do valor, nada é gravado sem o toque.
+ */
+function WeightQuestion({ item, onSave, onPackaged }: { item: ReceiptItem; onSave: (text: string) => boolean; onPackaged: () => void }) {
+  const [text, setText] = useState<string | null>(null);
+  const save = () => {
+    if (text != null && onSave(text)) setText(null);
+  };
+  // O que "Salvar peso" grava, enquanto a pessoa digita: o mesmo texto que o cartão da linha pesada vai mostrar.
+  const kg = text ? readWeight(text) : null;
+  return (
+    <View style={styles.gapXs}>
+      <Text variant="small">{weightQuestion(item)}</Text>
+      {text != null ? (
+        <>
+          <Row style={styles.wrap}>
+            <View style={styles.weight}>
+              <TextField
+                value={text}
+                onChangeText={setText}
+                placeholder={WEIGHT_PLACEHOLDER}
+                keyboardType="decimal-pad"
+                autoFocus
+                onSubmitEditing={save}
+                accessibilityLabel={`Peso de ${item.raw_description}`}
+              />
+            </View>
+            <Chip label="Salvar peso" icon="check" onPress={save} />
+            <Chip label="Cancelar" onPress={() => setText(null)} />
+          </Row>
+          {text.trim() ? <Text variant="small">{kg != null ? quantityText(weighedLine(item, kg)) : WEIGHT_NOT_READ}</Text> : null}
+        </>
+      ) : (
+        <Row style={styles.wrap}>
+          <Chip label="Informar o peso" icon="scale" onPress={() => setText('')} />
+          <Chip label="É embalagem" onPress={onPackaged} />
+        </Row>
+      )}
+    </View>
+  );
+}
+
+/**
+ * Quantos ovos vêm na embalagem: os tamanhos de sempre num toque, "Outro"
+ * para digitar e `skipLabel` para não responder (ou desistir de mudar).
+ */
+function PackQuestion({
+  item,
+  category,
+  onSave,
+  onSkip,
+  skipLabel,
+}: {
+  item: ReceiptItem;
+  category: string;
+  onSave: (count: number | null) => boolean;
+  onSkip: () => void;
+  skipLabel: string;
+}) {
+  const [text, setText] = useState<string | null>(null);
+  const saveTyped = () => {
+    if (text != null && onSave(readPackCount(text))) setText(null);
+  };
+  return (
+    <View style={styles.gapXs}>
+      <Text variant="small">{PACK_QUESTION}</Text>
+      {text != null ? (
+        <Row style={styles.wrap}>
+          <View style={styles.weight}>
+            <TextField
+              value={text}
+              onChangeText={setText}
+              placeholder="Quantos vêm"
+              keyboardType="number-pad"
+              autoFocus
+              onSubmitEditing={saveTyped}
+              accessibilityLabel={`Quantos vêm em ${item.raw_description}`}
+            />
+          </View>
+          <Chip label="Salvar" icon="check" onPress={saveTyped} />
+          <Chip label="Cancelar" onPress={() => setText(null)} />
+        </Row>
+      ) : (
+        <Row style={styles.wrap}>
+          {PACK_CHOICES.map((count) => (
+            // Sem o rótulo, o leitor de tela diz só "10": com a categoria, diz "10 ovos" (de qual item é, pelo cartão).
+            <Chip key={count} label={String(count)} accessibilityLabel={packLabel(count, category)} onPress={() => onSave(count)} />
+          ))}
+          <Chip label="Outro" icon="pencil-outline" onPress={() => setText('')} />
+          <Chip label={skipLabel} onPress={onSkip} />
+        </Row>
+      )}
+    </View>
+  );
+}
+
+/** O que já se sabe de quantos vêm ("10 ovos na embalagem: R$ 1,40 o ovo"); a resposta da revisão se muda aqui. */
+function PackAnswer({
+  item,
+  count,
+  category,
+  onChange,
+}: {
+  item: ReceiptItem;
+  count: number;
+  category: string;
+  onChange?: (count: number | null) => boolean;
+}) {
+  const [changing, setChanging] = useState(false);
+  if (changing && onChange) {
+    return (
+      <PackQuestion
+        item={item}
+        category={category}
+        onSave={(next) => {
+          const saved = onChange(next);
+          if (saved) setChanging(false);
+          return saved;
+        }}
+        onSkip={() => setChanging(false)}
+        skipLabel="Cancelar"
+      />
+    );
+  }
+  return (
+    <Row style={styles.wrap}>
+      <Text variant="small">{packLine(item, count, category)}</Text>
+      {onChange ? (
+        <Chip
+          label="Mudar"
+          icon="pencil-outline"
+          accessibilityLabel={`Mudar a quantidade de ${item.raw_description}`}
+          onPress={() => setChanging(true)}
+        />
+      ) : null}
+    </Row>
+  );
+}
+
 /** Fotos da nota; nota comprida vem em partes, uma embaixo da outra. */
 function ImageViewer({ urls, onClose }: { urls: string[] | null; onClose: () => void }) {
   const c = useColors();
@@ -1447,6 +1835,7 @@ const styles = StyleSheet.create({
   storeRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   totalRow: { flexDirection: 'row', alignItems: 'center' },
   expiry: { width: 140 },
+  weight: { width: 190 },
   viewerHeader: { padding: space.lg },
   photos: { gap: space.sm, paddingBottom: space.xl },
   photo: { width: '100%', aspectRatio: 3 / 4 },

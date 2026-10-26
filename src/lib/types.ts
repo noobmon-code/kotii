@@ -87,6 +87,11 @@ export interface ReceiptItem {
    * linha sem código e nas gravadas por versões de antes.
    */
   store_code?: string | null;
+  /**
+   * Quantos vêm na embalagem, quando a pessoa respondeu na revisão (a nota não dizia: "OVOS RANCHO CAIPIRA" em
+   * cartela de 10). Ausente no banco de antes da coluna; null sem resposta.
+   */
+  pack_count?: number | null;
 }
 
 export interface LatestPrice {
@@ -95,6 +100,8 @@ export interface LatestPrice {
   unit: Unit;
   unit_price: number;
   purchased_at: string;
+  /** Quantos vinham na embalagem desse último preço (receipt_items.pack_count); ausente no banco de antes da coluna. */
+  pack_count?: number | null;
 }
 
 export interface PriceObservation extends LatestPrice {

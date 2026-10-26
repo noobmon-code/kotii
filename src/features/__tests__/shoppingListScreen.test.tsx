@@ -345,6 +345,66 @@ describe('"Na despensa" espera o histórico de compras', () => {
   });
 });
 
+describe('o queijo em "un" com preço por kg, sem o histórico de compras', () => {
+  /** Os detalhes do primeiro item da lista, como a tela os monta (a prioridade normal). */
+  const detailFacts = async (): Promise<string[]> => {
+    await act(async () => mockSeen.open!((mockQueries.items.data as ShoppingListItem[])[0]));
+    return (mockSeen.editor!.facts as (priority: string) => string[])('normal');
+  };
+
+  beforeEach(() => {
+    mockQueries.items = loaded([listItem('q', 'Queijo', 'queijo', 'laticinios')]);
+    mockQueries.products = loaded([product('queijo', 'Queijo')]);
+    mockQueries.prices = loaded([{ ...latest('queijo', 72.9), unit: 'kg' }]);
+  });
+
+  it.each([
+    ['a busca do histórico falhou', failed],
+    ['sem internet e nunca visto', paused],
+  ])('%s: a conta é de 1 kg e o detalhe diz que o histórico não carregou', async (_why, state) => {
+    mockQueries.purchases = state();
+    await mount();
+    expect(mockSeen.hints?.get('q')).toEqual({ cost: '~R$ 72,90', inPantry: false });
+    expect(await detailFacts()).toContain('O preço é por kg: a conta da lista usa 1 kg (o histórico de compras não carregou).');
+  });
+
+  it('a primeira busca do histórico ainda anda: a lista não espera, e ainda não diz nada disso', async () => {
+    mockQueries.purchases = onTheWay();
+    expect(await mount()).not.toContain('histórico de compras não carregou');
+    expect(mockSeen.hints?.get('q')).toEqual({ cost: '~R$ 72,90', inPantry: false });
+    expect((await detailFacts()).join('\n')).not.toContain('histórico de compras não carregou');
+  });
+
+  it('histórico carregado sem nenhuma compra do queijo a peso: o 1 kg de sempre, sem o aviso', async () => {
+    mockQueries.purchases = loaded([]);
+    await mount();
+    expect(mockSeen.hints?.get('q')).toEqual({ cost: '~R$ 72,90', inPantry: false });
+    expect(await detailFacts()).toContain('O preço é por kg: a conta da lista usa 1 kg.');
+  });
+});
+
+describe('o queijo em "un" com preço por kg, com o histórico de compras', () => {
+  beforeEach(() => {
+    mockQueries.items = loaded([listItem('q', 'Queijo', 'queijo', 'laticinios')]);
+    mockQueries.products = loaded([product('queijo', 'Queijo')]);
+    mockQueries.prices = loaded([{ ...latest('queijo', 72.9), unit: 'kg' }]);
+    // Uma nota de 0,2 kg: a casa leva uns 200 g do queijo por vez.
+    mockQueries.purchases = loaded([
+      { name: 'Queijo', category: 'laticinios', productId: 'queijo', quantity: 0.2, unit: 'kg', at: `${day(10)}T12:00:00Z`, source: 'receipt' },
+    ]);
+  });
+
+  it('a conta é o que a casa costuma levar (200 g), na lista e nos detalhes do item, e não 1 kg', async () => {
+    const page = await mount();
+    expect(page).toContain('~R$ 14,58');
+    expect(mockSeen.hints?.get('q')).toEqual({ cost: '~R$ 14,58', inPantry: false });
+    await act(async () => mockSeen.open!((mockQueries.items.data as ShoppingListItem[])[0]));
+    expect((mockSeen.editor!.facts as (priority: string) => string[])('normal')).toContain(
+      'O preço é por kg: a conta da lista usa 200 g, o que a casa costuma levar de uma vez.',
+    );
+  });
+});
+
 describe('o palpite de que acabou não depende do tipo da lista', () => {
   it('vitamina na lista do mercado: passou do costume, não leva o selo; a faixa continua só com o que cabe na lista', async () => {
     mockQueries.items = loaded([listItem('v', 'Vitamina C', null, 'suplementos')]);

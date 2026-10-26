@@ -194,7 +194,8 @@ export interface CleanReceipt {
    * As linhas para a leitura do servidor (receipt_reads): só as de preço
    * unitário lido na nota, ou tirado do total e da quantidade lida, maior que
    * zero. A linha sem os dois fica no rascunho com 1 × total, mas esse preço
-   * não foi impresso e não pode ir para a base comum.
+   * não foi impresso e não pode ir para a base comum. A linha pesada que a
+   * conta não confere também fica de fora (unsharedWeighedLine).
    */
   readLines: ReadLine[];
 }
@@ -238,6 +239,104 @@ export function lineTotalFromPrinted(quantity: number | null, unit: string, unit
 /** Até quanto a soma das linhas pode passar do total da nota (o arredondamento que a revisão também aceita), em centavos. */
 const SUM_TOLERANCE_CENTS = 5;
 
+/** O caixa arredonda ou trunca o valor da linha pesada: até isto de diferença, em centavos, a conta fecha. */
+const WEIGHED_TOLERANCE_CENTS = 2;
+
+/** Quanto vale cada unidade de tamanho escrita na descrição, em kg (peso) ou litro (volume); toda unidade de printedSizes está aqui. */
+const SIZE_UNITS: Record<string, { unit: 'kg' | 'l'; inBase: number }> = {
+  kg: { unit: 'kg', inBase: 1 },
+  g: { unit: 'kg', inBase: 0.001 },
+  gr: { unit: 'kg', inBase: 0.001 },
+  grs: { unit: 'kg', inBase: 0.001 },
+  grama: { unit: 'kg', inBase: 0.001 },
+  gramas: { unit: 'kg', inBase: 0.001 },
+  l: { unit: 'l', inBase: 1 },
+  lt: { unit: 'l', inBase: 1 },
+  lts: { unit: 'l', inBase: 1 },
+  litro: { unit: 'l', inBase: 1 },
+  litros: { unit: 'l', inBase: 1 },
+  ml: { unit: 'l', inBase: 0.001 },
+};
+
+/**
+ * Todos os tamanhos escritos na descrição, em kg ou litro, com quantas bandejas de cada um vêm na embalagem.
+ * printedSize junta os tamanhos e dá null com dois diferentes; unsharedWeighedLine precisa de todos.
+ */
+function printedSizes(description: string): { unit: 'kg' | 'l'; amount: number; count: number }[] {
+  // "1.000G" é mil gramas, não um.
+  const text = description.toLowerCase().replace(/(\d)[.,](\d{3})(?=\s*(?:g|grs?|gramas?|ml)(?![a-z]))/g, '$1$2');
+  // O tamanho pode vir colado a um ponto depois de letra ("SADIA.200G"); um número depois de dígito, com ou sem ponto
+  // ou vírgula no meio ("1.234,5KG", "0.5X"), não é tamanho nem contagem. A contagem vem antes ("2X200G", "2 x 200 g",
+  // "QJ.MUSS.2X200G", também colada a um ponto depois de letra) ou depois ("200G C/2", "200G.C/2").
+  const sizes = [
+    ...text.matchAll(
+      /(?:(?:(?<![\d.,])|(?<=[^\d\s.,]\.))(\d+)\s*x\s*)?(?<![0-9][.,]?)(\d+(?:[.,]\d+)?)\s*(kg|grs?|gramas?|g|lts?|litros?|l|ml)(?![a-z])(?:\s*\.?\s*(?:x|c\s*\/)\s*(\d+)(?![\d.,a-z]))?/g,
+    ),
+  ].map((m) => {
+    const scale = SIZE_UNITS[m[3]];
+    return { unit: scale.unit, amount: Number(m[2].replace(',', '.')) * scale.inBase, count: Number(m[1] ?? m[4] ?? 1) };
+  });
+  return sizes;
+}
+
+/**
+ * O tamanho escrito na descrição ("200g", "1,5 kg", "500 ML"), em kg ou litro, e quantas bandejas dele vêm na
+ * embalagem ("C/2", "2X200G", "200G X 2": 2; sem nada disso, 1). null sem tamanho ou com dois diferentes. Uma versão
+ * curta da regra de src/domain/packageSize.ts (o Deno não importa de src/): mudar uma pede rever a outra.
+ */
+function printedSize(description: string): { unit: 'kg' | 'l'; amount: number; count: number } | null {
+  const sizes = printedSizes(description);
+  const [first] = sizes;
+  if (!first || !(first.amount > 0)) return null;
+  const otherSize = sizes.some((s) => s.unit !== first.unit || s.count !== first.count || Math.abs(s.amount - first.amount) > 1e-9);
+  return otherSize ? null : first;
+}
+
+/**
+ * O preço por kg (ou litro) da linha pesada. Nela o valor do item é o peso
+ * vezes o preço por kg; um desconto só o deixa menor. Alguns pedidos imprimem,
+ * no lugar do preço por kg, o da bandeja do tamanho que o mercado anuncia
+ * ("Queijo Muçarela Fatiado 200g", 0,202 kg × R$ 14,58 = R$ 14,73): R$ 14,58 é
+ * o preço dos 200 g, e guardado como preço por kg ele faz a lista contar o kg
+ * de queijo por R$ 14,58. Quando o valor passa da conta e o tamanho escrito na
+ * descrição a explica (R$ 14,58 ÷ 0,2 kg = R$ 72,90 por kg, e 0,202 kg ×
+ * R$ 72,90 dá os R$ 14,73), o preço é o da bandeja sobre o tamanho dela. Sem o
+ * tamanho na descrição, ou com uma conta que ele não fecha, o preço lido fica:
+ * a diferença pode ser um peso mal lido, e o valor sobre o peso seria um preço
+ * errado com cara de certo. Com mais de uma bandeja na embalagem ("QJ MUSS 200G
+ * C/2"), o tamanho é o da bandeja ou o do pacote todo, o que fechar a conta.
+ */
+export function weighedUnitPrice(description: string, quantity: number | null, unit: string, unitPrice: number, total: number): number {
+  if ((unit !== 'kg' && unit !== 'l') || quantity == null || !(quantity > 0) || !(unitPrice > 0) || !(total > 0)) return unitPrice;
+  const cents = (value: number) => Math.round(value * 100);
+  if (cents(total) - cents(lineTotalFromPrinted(quantity, unit, unitPrice)) <= WEIGHED_TOLERANCE_CENTS) return unitPrice;
+  const size = printedSize(description);
+  if (!size || size.unit !== unit) return unitPrice;
+  // Se nenhum dos dois tamanhos fecha a conta, ou se os dois fecham (não há como saber qual), o preço lido fica.
+  const amounts = size.count > 1 ? [size.amount, size.amount * size.count] : [size.amount];
+  const closing = amounts
+    .map((amount) => round(unitPrice / amount, 4))
+    .filter((perBase) => Math.abs(cents(lineTotalFromPrinted(quantity, unit, perBase)) - cents(total)) <= WEIGHED_TOLERANCE_CENTS);
+  return closing.length === 1 ? closing[0] : unitPrice;
+}
+
+/**
+ * A linha pesada (kg ou l) que fica na nota, com o preço lido ou corrigido, mas não vai para a leitura do servidor
+ * (os preços das outras casas). Com a quantidade e o valor lidos (o 0 é o sem valor), ela fica de fora só se o valor
+ * passa de quantidade × preço: a conta não fecha para cima, e o preço pode ser o da bandeja. O preço derivado (o valor
+ * sobre a quantidade) fecha a conta por construção, e cleanReceipt não confere essa linha. Com a quantidade ou o valor
+ * tirados da conta, ela fica de fora quando a descrição imprime um tamanho na mesma unidade, salvo uma bandeja de
+ * exatamente 1 kg ou 1 l (sem "C/2" nem "2X"): não dá para saber se o preço é o da bandeja, do pacote ou do kg.
+ */
+function unsharedWeighedLine(description: string, unit: string, quantity: number | null, total: number | null, unitPrice: number): boolean {
+  if (unit !== 'kg' && unit !== 'l') return false;
+  if (quantity != null && quantity > 0 && total != null && total > 0) {
+    const cents = (value: number) => Math.round(value * 100);
+    return cents(total) - cents(lineTotalFromPrinted(quantity, unit, unitPrice)) > WEIGHED_TOLERANCE_CENTS;
+  }
+  return printedSizes(description).some((s) => s.unit === unit && (s.count > 1 || Math.abs(s.amount - 1) > 1e-9));
+}
+
 /**
  * Normaliza o que veio da IA para o que o banco aceita: chave e CNPJ só com
  * os dígitos verificadores certos (com a chave válida, o CNPJ é o dela), data
@@ -252,7 +351,8 @@ const SUM_TOLERANCE_CENTS = 5;
  * vira 0, o "sem valor" que a revisão pergunta à pessoa; linha negativa
  * (cancelamento, desconto que a IA pôs como item) fica de fora. Quantidade
  * ilegível sai do total e do preço unitário; sem o preço unitário, a linha
- * fica de fora de `readLines` (nunca compartilha um preço por kg inventado).
+ * fica de fora de `readLines` (nunca compartilha um preço por kg inventado), e
+ * a linha pesada que a conta não confere também (unsharedWeighedLine).
  * O item genérico vai limpo (genericName) para a linha da nota, nunca para a
  * leitura do servidor: ele só serve ao casamento com a lista da casa. O código
  * do produto vai pela chave do banco (storeCodeKey) para a linha (o produto que
@@ -288,13 +388,17 @@ export function cleanReceipt(
     const total = it.total_price == null ? fromPrinted : round(it.total_price, 2);
     const quantity = lineQuantity(it.quantity, it.unit, it.unit_price, total);
     const readPrice = it.unit_price != null && it.unit_price > 0 ? it.unit_price : null;
-    const unitPrice = readPrice != null ? round(readPrice, 4) : round(total / quantity, 4);
+    const unitPrice =
+      readPrice != null ? weighedUnitPrice(raw, it.quantity, it.unit, round(readPrice, 4), total) : round(total / quantity, 4);
     // O rótulo que a IA copiou do print ("Código: 250474") sai até o último ":", como afterLabel faz no QR: um
     // código impresso nunca tem ":". Tirar "COD" do começo sem os dois-pontos estragaria um código como "CODA123".
     const storeCode = storeCodeKey(it.code?.replace(/^.*:/s, ''));
     // Sem preço unitário nem quantidade lidos, o preço é o total sobre 1, que a nota não imprimiu;
-    // sem valor nenhum (preço 0), não há o que a leitura guardar. Do código, só o de barras vai para a leitura.
-    if (unitPrice > 0 && (readPrice != null || (it.quantity != null && it.quantity > 0))) {
+    // sem valor nenhum (preço 0), não há o que a leitura guardar; a linha pesada cuja conta não confere, também não
+    // (unsharedWeighedLine, só com o preço lido: o derivado fecha a conta por construção). Do código, só o de barras
+    // vai para a leitura.
+    const shareable = unitPrice > 0 && (readPrice != null || (it.quantity != null && it.quantity > 0));
+    if (shareable && (readPrice == null || !unsharedWeighedLine(raw, it.unit, it.quantity, it.total_price, unitPrice))) {
       const gtin = sharedGtin(storeCode);
       readLines.push({ description: raw, unit: it.unit, unit_price: unitPrice, ...(gtin ? { gtin } : {}) });
     }

@@ -30,6 +30,28 @@ describe('o tamanho da embalagem na descrição da nota', () => {
     expect(read('AMACIANTE COMFORT 1.500ML')).toBe('l 1.5 · 1,5 L');
   });
 
+  it('o ponto depois de letra separa, como o espaço: "QJ.MUSS.2X200G" é 2 x 200 g, como no servidor', () => {
+    expect(read('QJ.MUSS.2X200G')).toBe('kg 0.4 · 2 x 200 g');
+  });
+
+  it('o tamanho colado a um ponto depois de letra: "PTO.PERU SADIA.200G" é 200 g', () => {
+    expect(read('PTO.PERU SADIA.200G')).toBe('kg 0.2 · 200 g');
+  });
+
+  it('a contagem colada a um ponto depois de letra também conta: "QJ 1.5KG.C/2" é 2 x 1,5 kg', () => {
+    expect(read('QJ 1.5KG.C/2')).toBe('kg 3 · 2 x 1,5 kg');
+  });
+
+  it('o ponto entre dígitos é decimal: "ARROZ 1.5KG" é 1,5 kg, e "QJ 0.2X200G" é 200 g, porque 0,2 não é contagem', () => {
+    expect(read('ARROZ 1.5KG')).toBe('kg 1.5 · 1,5 kg');
+    expect(read('QJ 0.2X200G')).toBe('kg 0.2 · 200 g');
+  });
+
+  it('o ponto depois de dígito não separa, como no servidor: "QUEIJO 200.G" não tem tamanho e "QJ 2.X200G" é 200 g', () => {
+    expect(read('QUEIJO 200.G')).toBeNull();
+    expect(read('QJ 2.X200G')).toBe('kg 0.2 · 200 g');
+  });
+
   it('multiplica o pacote com vários do mesmo tamanho', () => {
     expect(read('CERV BRAHMA 12X350ML')).toBe('l 4.2 · 12 x 350 ml');
     expect(read('CERV BRAHMA 12 X 350ML')).toBe('l 4.2 · 12 x 350 ml');
@@ -37,6 +59,39 @@ describe('o tamanho da embalagem na descrição da nota', () => {
     expect(read('CERV SKOL LT 350ML C/12')).toBe('l 4.2 · 12 x 350 ml');
     expect(read('LEITE UHT ITALAC INT 1L CX12')).toBe('l 12 · 12 x 1 L');
     expect(read('BISC RECHEADO TRAKINAS 3X126G')).toBe('kg 0.378 · 3 x 126 g');
+  });
+
+  it('o tamanho com a própria contagem não multiplica de novo: "CX 12X350ML" é 4,2 L', () => {
+    expect(read('CX 12X350ML')).toBe('l 4.2 · 12 x 350 ml');
+  });
+
+  it('o tamanho com a própria contagem não multiplica de novo: "FD.6X350ML" é 2,1 L', () => {
+    expect(read('FD.6X350ML')).toBe('l 2.1 · 6 x 350 ml');
+  });
+
+  it('o tamanho com a própria contagem não multiplica de novo: "QJ.MUSS.2X200G.C/2" é 0,4 kg', () => {
+    expect(read('QJ.MUSS.2X200G.C/2')).toBe('kg 0.4 · 2 x 200 g');
+  });
+
+  it('o tamanho com a própria contagem não multiplica de novo: "QUEIJO 2X200G C/2" é 0,4 kg', () => {
+    expect(read('QUEIJO 2X200G C/2')).toBe('kg 0.4 · 2 x 200 g');
+  });
+
+  it('o tamanho com a própria contagem não multiplica de novo: "QJ 200G X 2 C/3" é 0,4 kg, como no servidor', () => {
+    expect(read('QJ 200G X 2 C/3')).toBe('kg 0.4 · 2 x 200 g');
+  });
+
+  it('o tamanho sem contagem própria continua multiplicando: "CERV LT 350ML C/12" e "CERV LT 350ML FD 12" são 4,2 L', () => {
+    expect(read('CERV LT 350ML C/12')).toBe('l 4.2 · 12 x 350 ml');
+    expect(read('CERV LT 350ML FD 12')).toBe('l 4.2 · 12 x 350 ml');
+  });
+
+  it('o tamanho com a própria contagem não multiplica de novo: "PAO CX 10X50G" é 0,5 kg', () => {
+    expect(read('PAO CX 10X50G')).toBe('kg 0.5 · 10 x 50 g');
+  });
+
+  it('o tamanho com a própria contagem não multiplica de novo: "QJ CX 2X200G" é 0,4 kg', () => {
+    expect(read('QJ CX 2X200G')).toBe('kg 0.4 · 2 x 200 g');
   });
 
   it('pacote só com a contagem: tantos itens', () => {

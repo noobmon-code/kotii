@@ -2,7 +2,7 @@ import { useLocalSearchParams } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { useLatestPrices, useListItems, useListLinks, useProducts, useStores } from '@/data/market';
+import { useLatestPrices, useListItems, useListLinks, useProducts, usePurchaseRecords, useStores } from '@/data/market';
 import { useSharedPrices } from '@/data/sharedPrices';
 import {
   formatItemCost,
@@ -12,6 +12,7 @@ import {
   sharedOnlyNote,
   storePriceNote,
   unpricedNote,
+  usualAmounts,
 } from '@/domain/listEstimate';
 import { formatBRL, formatQuantity } from '@/domain/money';
 import { storePriceIndex } from '@/domain/priceLevel';
@@ -48,6 +49,8 @@ export default function WhereToBuyScreen() {
   const stores = useStores();
   const links = useListLinks();
   const products = useProducts();
+  // O que a casa costuma levar dos produtos vendidos a peso: a mesma conta da lista para o item em "un" com preço por kg.
+  const purchases = usePurchaseRecords();
   // Preços de outras casas: onde a casa não tem preço num mercado dela, e à parte os mercados que não são dela.
   // Sem a função no banco (null) ou com a busca falhando, a tela segue só com os preços da casa.
   const shared = useSharedPrices();
@@ -63,11 +66,21 @@ export default function WhereToBuyScreen() {
       unit: p.unit,
       unitPrice: Number(p.unit_price),
       purchasedAt: p.purchased_at,
+      // Quantos vinham na embalagem desse preço (os ovos da cartela de 10): os detalhes do item dizem.
+      packCount: p.pack_count ?? null,
     }));
     // Os mercados da casa se reconhecem pelo CNPJ, e o preço da casa sempre vence: sem os mercados ou sem os
     // preços da casa carregados, nada de outras casas (eles ocupariam o lugar dos dela).
     const seenElsewhere = shared.data && stores.data && prices.data ? sharedQuotes(shared.data, prices.data, stores.data) : [];
-    const sources = { links: links.data, products: products.data ?? [], shared: seenElsewhere };
+    // Sem o histórico de compras (a busca falhou, ou parada): o costume não entra, e a linha do item diz isso. A tela
+    // só mostra a conta depois da primeira busca (ver onTheWay, abaixo).
+    const sources = {
+      links: links.data,
+      products: products.data ?? [],
+      shared: seenElsewhere,
+      usual: usualAmounts(purchases.data ?? []),
+      historyMissing: purchases.data === undefined,
+    };
     const all = pending.map((i) => ({ id: i.id, name: i.name, productId: i.product_id, quantity: Number(i.quantity), unit: i.unit }));
     // O item sem preço nenhum da casa, só com o de outras casas, fica fora dos planos (não há preço dele em todo
     // mercado nem média da casa para estimar) e aparece à parte, com o preço que a lista mostra.
@@ -81,7 +94,7 @@ export default function WhereToBuyScreen() {
       sharedOnly,
       storeIndex: storePriceIndex(quotes),
     };
-  }, [pending, prices.data, links.data, products.data, shared.data, stores.data]);
+  }, [pending, prices.data, links.data, products.data, shared.data, stores.data, purchases.data]);
   const recommendation = useMemo(
     () => recommendStores(account.wanted, account.quotes, Number(mode), { storeIndex: account.storeIndex, priceAt: account.priceAt }),
     [account, mode],
@@ -90,10 +103,19 @@ export default function WhereToBuyScreen() {
 
   // As ligações e os produtos dão preço ao item digitado solto: sem esperar por eles, o total sairia sem esses
   // itens e mudaria logo depois. Os preços de outras casas também mudam o total: a primeira busca deles é
-  // esperada, mas a que falha (ou a função que não existe) não segura nada. Busca parada (sem internet) não segura
-  // a tela: cai no aviso de que não carregou.
+  // esperada, mas a que falha (ou a função que não existe) não segura nada; o mesmo com as compras, de onde sai o que
+  // a casa costuma levar do que é vendido a peso. Busca parada (sem internet) não segura a tela: cai no aviso de que
+  // não carregou.
   const onTheWay = (query: { isPending: boolean; fetchStatus: string }) => query.isPending && query.fetchStatus !== 'paused';
-  if (items.isPending || prices.isPending || stores.isPending || onTheWay(links) || onTheWay(products) || onTheWay(shared)) {
+  if (
+    items.isPending ||
+    prices.isPending ||
+    stores.isPending ||
+    onTheWay(links) ||
+    onTheWay(products) ||
+    onTheWay(shared) ||
+    onTheWay(purchases)
+  ) {
     return <Loading label="Comparando preços…" />;
   }
   const error = items.error ?? prices.error ?? stores.error;

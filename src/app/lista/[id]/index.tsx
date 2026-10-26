@@ -48,6 +48,7 @@ import {
   itemFacts,
   pantryHits,
   seePricesProduct,
+  usualAmounts,
   type PantryHit,
 } from '@/domain/listEstimate';
 import { compareForShopping, repeatedQuantity } from '@/domain/listItem';
@@ -491,6 +492,9 @@ export default function ShoppingListScreen() {
   );
   // Sem o histórico carregado não dá para saber o que acabou: histórico vazio seria outra coisa.
   const historyKnown = purchases.data !== undefined;
+  // Não carregou de vez (a busca falhou, ou sem internet e nunca vista neste aparelho): o costume do queijo não se conhece,
+  // e a conta diz isso. Enquanto a primeira busca anda, não há o que dizer.
+  const historyMissing = !historyKnown && !(purchases.isPending && purchases.fetchStatus !== 'paused');
 
   // Do histórico, menos o que já está na lista (a comprar ou no carrinho); o
   // que "acabou" não se repete em "comprados recentemente". O histórico pode
@@ -540,6 +544,10 @@ export default function ShoppingListScreen() {
     if (tripsKnown) pruneAddedItems(id, tripStart);
   }, [id, tripsKnown, tripStart, added]);
 
+  // O queijo pedido em "un" com o preço por kg conta o que a casa costuma levar dele (das notas), não 1 kg. Sem o
+  // histórico (a busca falhou, ou sem internet e ele nunca chegou neste aparelho), é o 1 kg, e o detalhe do item diz
+  // que o histórico não carregou. Enquanto a primeira busca ainda anda, o detalhe não diz isso.
+  const usual = useMemo(() => usualAmounts(purchases.data ?? []), [purchases.data]);
   // Lista no mercado (domain/listEstimate): quanto deve dar e o que está na despensa. Sem os preços, as
   // ligações ou a despensa carregados (sem internet e nunca vistos neste aparelho), mostra o que der. Só o selo
   // "Na despensa" espera o histórico de compras: sem ele, apareceria justamente no que acabou. O aparelho que
@@ -561,8 +569,10 @@ export default function ShoppingListScreen() {
         unit: p.unit,
         unitPrice: Number(p.unit_price),
         purchasedAt: p.purchased_at,
+        // Quantos vinham na embalagem desse preço (os ovos da cartela de 10): os detalhes do item dizem.
+        packCount: p.pack_count ?? null,
       })),
-      { links: links.data, products: products.data ?? [], shared: seenElsewhere, storeId },
+      { links: links.data, products: products.data ?? [], shared: seenElsewhere, usual, storeId, historyMissing },
     );
     // O que o app acha que acabou não é "na despensa": tudo o que passou do costume (ranOut), sem tirar o que
     // já está na lista (é dela que se trata) e sem os cortes da faixa "Acho que acabou".
@@ -582,7 +592,7 @@ export default function ShoppingListScreen() {
       }
     }
     return { estimate, inPantry, hints };
-  }, [items.data, prices.data, links.data, products.data, seenElsewhere, pantry.data, ranOut, historyKnown, storeId, today, newIds]);
+  }, [items.data, prices.data, links.data, products.data, seenElsewhere, usual, pantry.data, ranOut, historyKnown, historyMissing, storeId, today, newIds]);
 
   // As ligações e os produtos dão preço ao item digitado solto. Se não chegaram (a busca falhou, ou sem internet e
   // nunca vistos neste aparelho), o cartão diz que não deu para conferir o que ficou sem preço. A lista não espera
@@ -968,6 +978,7 @@ export default function ShoppingListScreen() {
               promotionOnly: priority === 'promocao',
               today,
               productName: (product) => products.data?.find((p) => p.id === product)?.name,
+              category: editing.category,
             })
           }
           brand={editing.product_id ? brandChoice(products.data?.find((p) => p.id === editing.product_id)) : null}

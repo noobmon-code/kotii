@@ -75,6 +75,9 @@ function tokens(description: string): string[] {
       // "1.000G" é mil gramas; "1,5L" e "1.5L" são um e meio.
       .replace(/(\d)[.,](\d{3})(?=\s*(?:g|gr|grs|ml)\b)/g, '$1$2')
       .replace(/(\d)[.,](\d)/g, '$1.$2')
+      // O ponto depois de letra separa, como o espaço ("SADIA.200G", "200G.C/2"), como no servidor;
+      // depois de dígito ("1.5L", "200.G") ele fica como está.
+      .replace(/([a-z])\./g, '$1 ')
       // Número e letras colados se separam ("5kg", "cx12", "t1"); "350mlx12" também.
       .replace(/(\d)(?=[a-z])/g, '$1 ')
       .replace(/([a-z])(?=\d)/g, '$1 ')
@@ -87,8 +90,14 @@ function tokens(description: string): string[] {
 
 interface Reading {
   /** Peso ou volume de cada embalagem (ou do pacote todo, em "12 x 350 ml"). */
-  measures: { unit: 'kg' | 'l'; amount: number; label: string }[];
-  /** Quantos vêm no pacote, ditos com "C/12", "CX12" ou "12 x 350 ml": multiplicam o tamanho. */
+  measures: {
+    unit: 'kg' | 'l';
+    amount: number;
+    label: string;
+    /** true quando o tamanho veio com a própria contagem ("12 x 350 ml"): o número do pacote não o multiplica de novo. */
+    counted: boolean;
+  }[];
+  /** Quantos vêm no pacote, ditos com "C/12", "CX12" ou "FD 6": multiplicam o tamanho, a não ser que ele já traga a sua contagem (ver counted). */
   packs: number[];
   /** Quantos vêm no pacote, ditos com "6UN" ou "dúzia": com um peso junto, não se sabe se o peso é de cada um ou de todos. */
   counts: number[];
@@ -127,13 +136,13 @@ function read(description: string): Reading {
       if (count != null) {
         if (times != null) used.add(i - 2);
         else used.add(i + 3);
-        reading.measures.push({ unit: measure.unit, amount: amount * count, label: `${count} x ${measureLabel(amount, measure.unit)}` });
+        reading.measures.push({ unit: measure.unit, amount: amount * count, label: `${count} x ${measureLabel(amount, measure.unit)}`, counted: true });
         continue;
       }
       // Um algarismo solto logo antes ("AGUA 1 5L"): pode ser 1,5 L com a vírgula perdida.
       const lone = prev && /^\d$/.test(prev) && !used.has(i - 1) && !(raw[i - 2] && VERSION_WORDS.has(raw[i - 2]));
       if (lone) reading.doubtful = true;
-      reading.measures.push({ unit: measure.unit, amount, label: measureLabel(amount, measure.unit) });
+      reading.measures.push({ unit: measure.unit, amount, label: measureLabel(amount, measure.unit), counted: false });
       continue;
     }
     if (next && OTHER_UNITS.has(next)) {
@@ -180,7 +189,9 @@ export function packageSize(description: string): PackageSize | null {
     if (!(measure.amount > 0)) return null;
     if (itemCounts.length) return null;
     const [pack] = packCounts;
-    if (pack && pack > 1) {
+    // "CX 12X350ML" e "2X200G C/2" já trazem a contagem no tamanho: não
+    // multiplicam de novo pelo número da caixa ou do "C/", como no servidor.
+    if (pack && pack > 1 && !measure.counted) {
       return { unit: measure.unit, amount: measure.amount * pack, label: `${pack} x ${measure.label}` };
     }
     return { unit: measure.unit, amount: measure.amount, label: measure.label };

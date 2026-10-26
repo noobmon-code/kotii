@@ -32,8 +32,12 @@ const mockDb: {
   holds: { match: (request: MockRequest) => boolean; gate: Promise<void>; open: () => void }[];
   /** Pedidos que falham (a rede caiu). */
   fails: ((request: MockRequest) => boolean)[];
-} = { receipts: [], items: [], stores: [], writes: [], rpcs: [], reads: {}, holds: [], fails: [] };
+  /** O erro que o `confirm_receipt` devolve numa nota que existe (o teste escolhe), como o servidor responde. */
+  confirmError: Row | null;
+} = { receipts: [], items: [], stores: [], writes: [], rpcs: [], reads: {}, holds: [], fails: [], confirmError: null };
 const mockMarket: { products: Row[]; pantryNear: Row[]; listItems: Row[]; stores: Row[] } = { products: [], pantryNear: [], listItems: [], stores: [] };
+/** O histórico de preço que a tela recebe (`usePriceObservations`): as compras de antes, zeradas a cada teste. */
+const mockPriceHistory: { points: Row[] } = { points: [] };
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn(), back: jest.fn() },
@@ -61,7 +65,7 @@ jest.mock('@/data/market', () => {
   return {
     useListLinks: () => links,
     useOpenListItems: () => loaded(mockMarket.listItems),
-    usePriceObservations: () => loaded([]),
+    usePriceObservations: () => loaded(mockPriceHistory.points),
     useProducts: () => loaded(mockMarket.products),
     usePurchaseRecords: () => loaded([]),
     useStores: () => loaded(mockMarket.stores),
@@ -146,8 +150,8 @@ jest.mock('@/lib/supabase', () => {
       single: async () => {
         const result = await send();
         const row = (result.data as Row[] | null)?.[0] ?? null;
-        // Como no servidor: .single() sem linha nenhuma é erro.
-        return { data: row, error: result.error ?? (row ? null : { message: 'nada encontrado' }) };
+        // Como no servidor: .single() sem linha nenhuma é erro (PGRST116, a nota que sumiu).
+        return { data: row, error: result.error ?? (row ? null : { code: 'PGRST116', message: 'nada encontrado' }) };
       },
       then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) => Promise.resolve().then(send).then(resolve, reject),
     };
@@ -163,7 +167,10 @@ jest.mock('@/lib/supabase', () => {
       from: (name: string) => table(name),
       rpc: async (fn: string, args: Row) => {
         mockDb.rpcs.push({ fn, args });
-        return answer({ table: fn, verb: 'rpc', values: args }, () => ({ data: null, error: null }));
+        // Como no servidor: confirmar uma nota que já não existe responde P0002 ("receipt not found").
+        const gone = fn === 'confirm_receipt' && !mockDb.receipts.some((row) => row.id === args.p_receipt_id);
+        const error = gone ? { code: 'P0002', message: 'receipt not found', details: null, hint: null } : fn === 'confirm_receipt' ? mockDb.confirmError : null;
+        return answer({ table: fn, verb: 'rpc', values: args }, () => ({ data: null, error }));
       },
     },
   };
@@ -313,7 +320,9 @@ beforeEach(() => {
   mockDb.reads = {};
   mockDb.holds = [];
   mockDb.fails = [];
+  mockDb.confirmError = null;
   mockMarket.products = [];
+  mockPriceHistory.points = [];
   mockMarket.pantryNear = [];
   mockMarket.listItems = [];
   mockMarket.stores = [{ id: 's1', name: 'Assaí', cnpj: null, address: null }];
@@ -519,7 +528,8 @@ describe('nota em revisão: um item sem valor e o total da nota', () => {
     await settle();
     expect(mockDb.items[1]).toMatchObject({ total_price: 12.9 });
     expect(jest.mocked(notify).mock.calls).toEqual([['Valor salvo', 'Não deu para atualizar a nota na tela: o item pode aparecer sem valor até ela ser buscada de novo.']]);
-    // Com a busca da nota falhando, a tela é a do erro, com como tentar de novo: nada de "Usar" outra vez.
+    // Com a busca da nota falhando, a nota continua na tela, com o aviso de cima: nada de "Usar" outra vez.
+    expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
     expect(chip('Usar R$ 12,90')).toBeUndefined();
     // A rede volta e a nota é buscada de novo: o item aparece com o valor que foi gravado, sem pergunta.
     mockDb.fails = [];
@@ -533,6 +543,18 @@ describe('nota em revisão: um item sem valor e o total da nota', () => {
     await press(button('Confirmar nota'));
     expect(asked('1 item está sem valor')).toEqual([]);
     expect(mockDb.rpcs).toHaveLength(1);
+  });
+
+  it('o valor é gravado e a nota some em outro aparelho antes de a busca voltar: sem o aviso de "Tentar de novo", a tela é a da nota que sumiu', async () => {
+    await open();
+    // A gravação chega; quando a busca da nota chega, ela já não existe no banco.
+    mockDb.receipts = [];
+    await press(chip('Usar R$ 12,90'));
+    await settle();
+    expect(mockDb.items[1]).toMatchObject({ total_price: 12.9 });
+    expect(jest.mocked(notify).mock.calls).toEqual([]);
+    expect(page()).toContain('Esta nota não existe mais.');
+    expect(page()).not.toContain('Tentar de novo');
   });
 
   it('"Usar" e "Confirmar nota" no mesmo instante: a confirmação não anda nem pergunta', async () => {
@@ -743,8 +765,14 @@ describe('a nota em tela atrás do que foi gravado', () => {
     await press(button('Salvar item'));
     await settle();
     expect(jest.mocked(notify).mock.calls).toEqual([['Item salvo', 'Não deu para atualizar a nota na tela: o item aparece quando ela for buscada de novo.']]);
-    // A tela é a do erro, com como tentar de novo: não há "Confirmar nota" com os itens de antes.
-    expect(button('Confirmar nota')).toBeUndefined();
+    // A nota continua na tela, com o aviso de cima. "Confirmar nota" não vai com os itens de antes: busca a nota e avisa.
+    expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
+    await press(button('Confirmar nota'));
+    expect(jest.mocked(notify).mock.calls.at(-1)).toEqual([
+      'Não deu para buscar a nota',
+      'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.',
+    ]);
+    expect(mockDb.rpcs).toEqual([]);
     mockDb.fails = [];
     await act(async () => {
       await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
@@ -831,6 +859,216 @@ describe('a nota em tela atrás do que foi gravado', () => {
     expectNoQuestion();
     expect(confirmed()).toEqual(['a']);
     expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('sem nota nenhuma na tela, a busca que falha é a tela do erro, com "Tentar de novo" que busca de novo', async () => {
+    seed(receipt(), item('i1', 'DETERGENTE YPE', 50));
+    mockDb.fails = [receiptRead];
+    await open();
+    expect(page()).toContain('caiu a rede');
+    expect(page()).not.toContain('DETERGENTE YPE');
+    mockDb.fails = [];
+    await press(button('Tentar de novo'));
+    await settle();
+    expect(page()).toContain('DETERGENTE YPE');
+  });
+
+  it('a busca de fundo que falhou e outro aparelho acrescentou um item: "Confirmar nota" busca a nota antes e não vai com os itens de antes', async () => {
+    seed(receipt({ total: 60 }), item('a', 'DETERGENTE YPE', 50), item('b', 'SABAO EM PO', 10));
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
+    // O outro aparelho grava o item novo. A rede volta, e a releitura ainda não chegou quando a pessoa toca.
+    mockDb.items.push(item('c', 'PAO FRANCES', 5));
+    mockDb.fails = [];
+    const releaseRead = hold(receiptRead);
+    await press(button('Confirmar nota'));
+    await releaseRead();
+    // Sem confirm_receipt com os dois itens da tela: a nota chega e avisa, e o toque seguinte confirma com os três.
+    expect(mockDb.rpcs).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([['Nota atualizada', 'Confira os itens e toque em "Confirmar nota" de novo.']]);
+    expect(button('Confirmar nota')!.props).toMatchObject({ loading: false, title: 'Confirmar nota (3 itens)' });
+    await press(button('Confirmar nota'));
+    expect(confirmed()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('a busca de fundo que falhou, com "Tentar de novo" antes do toque: "Confirmar nota" leva os três itens de uma vez', async () => {
+    seed(receipt({ total: 60 }), item('a', 'DETERGENTE YPE', 50), item('b', 'SABAO EM PO', 10));
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    mockDb.items.push(item('c', 'PAO FRANCES', 5));
+    mockDb.fails = [];
+    await press(button('Tentar de novo'));
+    await settle();
+    await press(button('Confirmar nota'));
+    // Só o aviso de salva: nem o de nota atualizada nem o de busca que falhou.
+    expect(jest.mocked(notify).mock.calls.map(([title]) => title)).toEqual(['Nota salva']);
+    expect(confirmed()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('a busca de fundo que falhou e a rede ainda fora no toque de "Confirmar nota": a releitura falha, avisa, e nada é confirmado', async () => {
+    seed(receipt({ total: 60 }), item('a', 'DETERGENTE YPE', 50), item('b', 'SABAO EM PO', 10));
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    mockDb.items.push(item('c', 'PAO FRANCES', 5));
+    await press(button('Confirmar nota'));
+    expect(mockDb.rpcs).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+  });
+
+  it('a busca de fundo que falhou e outro aparelho acrescentou um item: "Usar R$" não grava a conta de antes, avisa, e depois de "Tentar de novo" grava a de agora', async () => {
+    seed(receipt({ total: 60 }), item('a', 'DETERGENTE YPE', 50), item('b', 'SABAO EM PO', 0));
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
+    // O outro aparelho acrescenta um item de R$ 5,00. A tela ainda mostra a conta de antes (faltam R$ 10,00).
+    mockDb.items.push(item('c', 'PAO FRANCES', 5));
+    await press(chip('Usar R$ 10,00'));
+    expect(writes('receipt_items')).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+    // Com a nota de agora, a conta é 60 - 50 - 5: R$ 5,00, e é esse o valor que "Usar" grava no item sem valor.
+    mockDb.fails = [];
+    await press(button('Tentar de novo'));
+    await settle();
+    await press(chip('Usar R$ 5,00'));
+    expect(writes('receipt_items')).toEqual([
+      { table: 'receipt_items', verb: 'update', values: { unit_price: 5, total_price: 5 }, filters: { id: 'b', receipt_id: 'r1', total_price: 0 } },
+    ]);
+  });
+
+  it('a busca de fundo que falhou e a nota já confirmada em outro aparelho: "Descartar nota" não abre a pergunta nem apaga, e depois de "Tentar de novo" a pergunta é a da nota confirmada', async () => {
+    seed(receipt({ total: 50 }), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    mockDb.receipts[0].status = 'confirmed';
+    await press(button('Descartar nota'));
+    expect(confirmAction).not.toHaveBeenCalled();
+    expect(mockDb.writes).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+    // Com a nota de agora, a pergunta é a de nota confirmada: os preços saem do comparativo, e a despensa fica.
+    mockDb.fails = [];
+    await press(button('Tentar de novo'));
+    await settle();
+    await press(button('Excluir nota'));
+    expect(jest.mocked(confirmAction).mock.calls[0].slice(0, 3)).toEqual([
+      'Excluir nota',
+      'Os preços desta nota saem do comparativo. Itens já na despensa continuam.',
+      'Excluir',
+    ]);
+    expect(mockDb.writes).toEqual([]);
+  });
+
+  it('"Remover item" com a busca que falha: o formulário fica aberto, avisa, e o item não sai', async () => {
+    seed(receipt({ total: 50 }), item('a', 'DETERGENTE YPE', 50), cheese());
+    await open();
+    await press(pencil('QJO MUSS KG'));
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    await press(button('Remover item'));
+    expect(button('Remover item')).toBeDefined();
+    expect(mockDb.items).toHaveLength(2);
+    expect(writes('receipt_items')).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+  });
+
+  it('total digitado com a busca de fundo que falhou e a nota confirmada em outro aparelho: o campo fica aberto com o que foi digitado, avisa, e nada é gravado', async () => {
+    seed(receipt(), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    await press(totalRow());
+    act(() => field('Total da nota')!.props.onChangeText('50'));
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    mockDb.receipts[0].status = 'confirmed';
+    await press(button('Salvar total'));
+    // Antes, o total não achava o rascunho, e o campo fechava sem aviso com o total de antes na tela.
+    expect(field('Total da nota')!.props.value).toBe('50');
+    expect(mockDb.writes).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+  });
+
+  it('data e mercado digitados com a busca de fundo que falhou: nada é gravado, o campo da data fica com o que foi digitado, e os dois avisam', async () => {
+    seed(receipt(), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    act(() => field('Data da compra')!.props.onChangeText(`11/06/${YEAR}`));
+    await act(async () => {
+      field('Data da compra')!.props.onBlur();
+      await wait();
+    });
+    await act(async () => {
+      renderer!.root.findAllByType(PickerModal).find((entry) => entry.props.title === 'Mercado')!.props.onSelect('s2');
+      await wait();
+    });
+    expect(field('Data da compra')!.props.value).toBe(`11/06/${YEAR}`);
+    expect(mockDb.writes).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+  });
+
+  it('data digitada com a busca que falhou, enviada e com o campo saído logo depois: o aviso sai uma vez só, e nada é gravado (rascunho)', async () => {
+    seed(receipt(), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    act(() => field('Data da compra')!.props.onChangeText(`11/06/${YEAR}`));
+    await act(async () => {
+      field('Data da compra')!.props.onSubmitEditing();
+      await wait();
+    });
+    await act(async () => {
+      field('Data da compra')!.props.onBlur();
+      await wait();
+    });
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+    expect(field('Data da compra')!.props.value).toBe(`11/06/${YEAR}`);
+    expect(mockDb.writes).toEqual([]);
   });
 
   it('remover que falha avisa do erro, como antes', async () => {
@@ -1400,6 +1638,15 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     });
   }
   const noonOf = (iso: string) => new Date(`${iso}T12:00:00`).toISOString();
+  /** A busca da nota falha com ela na tela: a nota fica, com o aviso de cima. */
+  async function rereadFails() {
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
+  }
 
   beforeEach(() => {
     for (const key of OTHER_QUERIES) client.setQueryData(key, []);
@@ -1517,6 +1764,37 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     expect(field('Data da compra')!.props.value).toBe('31/02/2026');
   });
 
+  it('a data igual à mostrada com a busca que falhou: o aviso sai, e nada é gravado', async () => {
+    await open();
+    await rereadFails();
+    await typeDate(`10/06/${YEAR}`);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+    expect(field('Data da compra')!.props.value).toBe(`10/06/${YEAR}`);
+    expect(mockDb.writes).toEqual([]);
+  });
+
+  it('enviar e depois sair do campo com a busca que falhou: o aviso sai uma vez só, e o campo fica com a data digitada', async () => {
+    await open();
+    await rereadFails();
+    act(() => field('Data da compra')!.props.onChangeText(`11/06/${YEAR}`));
+    // No celular, enviar tira o foco: a saída do campo chega logo depois do envio, com a mesma data.
+    await act(async () => {
+      field('Data da compra')!.props.onSubmitEditing();
+      await wait();
+    });
+    await act(async () => {
+      field('Data da compra')!.props.onBlur();
+      await wait();
+    });
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+    expect(field('Data da compra')!.props.value).toBe(`11/06/${YEAR}`);
+    expect(mockDb.writes).toEqual([]);
+  });
+
   it('a data que não chega ao banco avisa do erro, e o campo volta para a data da nota', async () => {
     mockDb.fails = [dateWrite];
     await open();
@@ -1611,6 +1889,19 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     expect(mockDb.writes).toEqual([]);
   });
 
+  it('o mesmo mercado com a busca que falhou: o aviso sai, e nada é gravado', async () => {
+    await open();
+    await rereadFails();
+    await act(async () => {
+      storePicker().props.onSelect('s1');
+      await wait();
+    });
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+    expect(mockDb.writes).toEqual([]);
+  });
+
   it('o total: tocar abre o campo, salvar grava só na nota confirmada, fecha o campo e refaz a conta da diferença', async () => {
     await open();
     await press(totalRow());
@@ -1638,6 +1929,22 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     expect(mockDb.writes).toEqual([]);
   });
 
+  it('o total igual ao da nota, com a busca que falhou e outro total no banco: o campo fica com o que foi digitado, o aviso sai, e nada é gravado', async () => {
+    seed(confirmedNote({ total: 50 }), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    await rereadFails();
+    // Outro aparelho mudou o total no banco; a tela ainda mostra 50, e a pessoa digita 50.
+    mockDb.receipts[0].total = 40;
+    await press(totalRow());
+    act(() => field('Total da nota')!.props.onChangeText('50'));
+    await press(button('Salvar total'));
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+    expect(field('Total da nota')!.props.value).toBe('50');
+    expect(mockDb.writes).toEqual([]);
+  });
+
   it('em branco, a nota fica sem total, como na revisão', async () => {
     await open();
     await press(totalRow());
@@ -1658,16 +1965,17 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     expect(button('Salvar total')!.props.loading).toBe(false);
   });
 
-  it('nota excluída em outro aparelho: a correção avisa que não salvou', async () => {
+  it('nota excluída em outro aparelho: a correção avisa que não salvou, e a tela é a da nota que sumiu', async () => {
     await open();
     await press(totalRow());
     act(() => field('Total da nota')!.props.onChangeText('72,90'));
     mockDb.receipts = [];
     await press(button('Salvar total'));
     expect(jest.mocked(notify).mock.calls).toEqual([['Correção não salva', 'Esta nota não existe mais.']]);
-    // A nota relida não vem: a tela passa a ser a do erro, com como tentar de novo.
-    expect(page()).not.toContain('Salvar total');
+    // A nota relida não vem: a tela é a da nota que sumiu, sem "Tentar de novo" (buscar de novo não a traz de volta).
+    expect(page()).toContain('Esta nota não existe mais.');
     expect(page()).not.toContain('DETERGENTE YPE');
+    expect(page()).not.toContain('Tentar de novo');
   });
 
   it('a revisão continua como antes: a data vai sem o filtro da nota confirmada, e não há a frase', async () => {
@@ -1682,6 +1990,64 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     });
     expect(mockDb.writes[1]).toEqual({ table: 'receipts', verb: 'update', values: { store_id: 's2' }, filters: { id: 'r1' } });
     expect(button('Confirmar nota')).toBeDefined();
+  });
+});
+
+describe('a nota que sumiu em outro aparelho: a tela é a da nota que sumiu, sem "Tentar de novo"', () => {
+  beforeEach(() => seed(receipt(), item('a', 'DETERGENTE YPE', 50), item('b', 'ARROZ 5KG', 12.9)));
+
+  it('"Confirmar nota" antes de a busca de fundo ver que ela sumiu: o aviso diz que a nota não existe mais, e a tela vira a da nota que sumiu', async () => {
+    await open();
+    mockDb.receipts = [];
+    await press(button('Confirmar nota'));
+    expect(jest.mocked(notify).mock.calls).toEqual([['Nota não confirmada', 'Esta nota não existe mais.']]);
+    expect(mockDb.rpcs.map((rpc) => rpc.fn)).toEqual(['confirm_receipt']);
+    expect(page()).toContain('Esta nota não existe mais.');
+    expect(page()).not.toContain('DETERGENTE YPE');
+    expect(page()).not.toContain('Tentar de novo');
+    expect(button('Confirmar nota')).toBeUndefined();
+  });
+
+  it('"Confirmar nota" com uma linha que a nota já não tem (P0002 de item, a nota existe): o aviso é o do banco, e a nota não diz que sumiu', async () => {
+    await open();
+    mockDb.confirmError = { code: 'P0002', message: 'item a does not belong to receipt', details: null, hint: null };
+    await press(button('Confirmar nota'));
+    expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'item a does not belong to receipt']]);
+    expect(page()).not.toContain('Esta nota não existe mais.');
+    expect(page()).toContain('DETERGENTE YPE');
+  });
+
+  it('a nota que já não existe ao abrir: a tela é a da nota que sumiu, sem "Tentar de novo"', async () => {
+    mockDb.receipts = [];
+    await open();
+    expect(page()).toContain('Esta nota não existe mais.');
+    expect(page()).not.toContain('Tentar de novo');
+  });
+
+  it('a busca de fundo que falhou e a nota apagada em outro aparelho: "Confirmar nota" não manda "Tentar de novo", e a tela é a da nota que sumiu', async () => {
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
+    // A nota foi apagada em outro aparelho, e agora a busca chega sem ela.
+    mockDb.receipts = [];
+    mockDb.fails = [];
+    await press(button('Confirmar nota'));
+    expect(jest.mocked(notify).mock.calls).toEqual([]);
+    expect(mockDb.rpcs).toEqual([]);
+    expect(page()).toContain('Esta nota não existe mais.');
+    expect(page()).not.toContain('Tentar de novo');
+    expect(button('Confirmar nota')).toBeUndefined();
+  });
+
+  it('sem nota na tela e a busca que falha por outro motivo: a tela do erro de sempre, com "Tentar de novo"', async () => {
+    mockDb.fails = [receiptRead];
+    await open();
+    expect(page()).toContain('caiu a rede');
+    expect(page()).toContain('Tentar de novo');
   });
 });
 
@@ -1862,5 +2228,398 @@ describe('a lista de compras na revisão: o mesmo item, de qualquer marca', () =
     mockLearning.enabled = [];
     await open();
     expect(mockLearning.enabled.at(-1)).toBe(false);
+  });
+});
+
+describe('item pesado no balcão que veio como "1 un"', () => {
+  const weightField = () => renderer!.root.findAllByType(TextField).find((entry) => entry.props.placeholder === 'Peso em kg (ex.: 0,186)');
+
+  it('pergunta o peso; com ele, a linha vira por kg com o valor da nota sobre o peso', async () => {
+    seed(
+      receipt({ total: 30.98 }),
+      item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }),
+      item('i2', 'LEITE IL DESNATADO', 7.99, { suggested_category: 'laticinios' }),
+    );
+    await open();
+    expect(page()).toContain('Veio pesado no balcão? Diga quanto pesou (está na etiqueta) e o app compara pelo preço do kg.');
+    // O leite vem em embalagem: só o queijo pergunta.
+    expect(chipLabels(card('LEITE IL DESNATADO'))).not.toContain('Informar o peso');
+    await press(chip('Informar o peso', card('QUEIJO parmesão')));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    await press(chip('Salvar peso'));
+    expect(writes('receipt_items')).toEqual([
+      {
+        table: 'receipt_items',
+        verb: 'update',
+        values: { quantity: 0.186, unit: 'kg', unit_price: 123.6022 },
+        // Só a linha que a tela leu: sem a descrição nem o total no pedido, e a gravação só acha a linha se ela ainda é a mesma.
+        filters: { id: 'i1', receipt_id: 'r1', unit: 'un', quantity: 1, total_price: 22.99 },
+      },
+    ]);
+    // A nota voltou com a linha por kg: a pergunta sai.
+    expect(page()).not.toContain('Veio pesado no balcão?');
+  });
+
+  it('enquanto o peso grava, a pergunta sai até a nota voltar; um toque repetido no mesmo item não avisa, e a linha por kg aparece depois', async () => {
+    seed(receipt({ total: 22.99 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }));
+    await open();
+    await press(chip('Informar o peso'));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    const release = hold(itemWrite);
+    // Dois toques em "Salvar peso" no mesmo instante: a gravação é uma só, e nenhum aviso (é o mesmo valor).
+    await pressBoth(chip('Salvar peso'), chip('Salvar peso'));
+    expect(page()).not.toContain('Veio pesado no balcão?');
+    expect(chip('Informar o peso')).toBeUndefined();
+    expect(weightField()).toBeUndefined();
+    expect(writes('receipt_items')).toHaveLength(1);
+    await release();
+    await settle();
+    expect(writes('receipt_items')).toHaveLength(1);
+    expect(jest.mocked(notify).mock.calls).toEqual([]);
+    expect(page()).toContain('0,186 kg × R$ 123,60');
+    expect(page()).not.toContain('Veio pesado no balcão?');
+  });
+
+  it('enquanto o peso de um item grava, o peso de outro não entra: a tela avisa, e o campo fica com o que foi digitado', async () => {
+    seed(receipt({ total: 30.98 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }), item('i2', 'PRESUNTO COZIDO', 7.99, { suggested_category: 'frios' }));
+    await open();
+    await press(chip('Informar o peso', card('QUEIJO parmesão')));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    const release = hold(itemWrite);
+    await press(chip('Salvar peso', card('QUEIJO parmesão')));
+    await press(chip('Informar o peso', card('PRESUNTO COZIDO')));
+    act(() => weightField()!.props.onChangeText('0,2'));
+    await press(chip('Salvar peso', card('PRESUNTO COZIDO')));
+    expect(jest.mocked(notify).mock.calls).toEqual([['Aguarde', 'Outro item ainda está sendo salvo. Toque de novo quando a nota voltar.']]);
+    expect(weightField()!.props.value).toBe('0,2');
+    expect(writes('receipt_items')).toHaveLength(1);
+    await release();
+    await settle();
+    // A nota voltou: o peso do presunto grava com o toque de novo.
+    await press(chip('Salvar peso', card('PRESUNTO COZIDO')));
+    expect(writes('receipt_items')).toHaveLength(2);
+    expect(writes('receipt_items')[1]).toMatchObject({ filters: { id: 'i2' }, values: { quantity: 0.2, unit: 'kg' } });
+  });
+
+  it('com a nota ainda voltando (a busca de "Confirmar nota" segurada, nenhum item gravando), o peso de outro item é recusado com o aviso da nota, e o campo fica com o que foi digitado', async () => {
+    seed(receipt({ total: 30.98 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }), item('i2', 'PRESUNTO COZIDO', 7.99, { suggested_category: 'frios' }));
+    await open();
+    await press(chip('Informar o peso', card('QUEIJO parmesão')));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    // O queijo grava, e a nota que volta não chega: a tela fica atrás do que foi gravado.
+    mockDb.fails = [receiptRead];
+    await press(chip('Salvar peso', card('QUEIJO parmesão')));
+    mockDb.fails = [];
+    // "Confirmar nota" busca a nota de novo, e essa busca fica segurada: nenhum item está gravando agora.
+    const release = hold(receiptRead);
+    await press(button('Confirmar nota'));
+    await press(chip('Informar o peso', card('PRESUNTO COZIDO')));
+    act(() => weightField()!.props.onChangeText('0,2'));
+    await press(chip('Salvar peso', card('PRESUNTO COZIDO')));
+    // O aviso é o da nota, que ainda está voltando: "Outro item ainda está sendo salvo" seria falso aqui.
+    expect(jest.mocked(notify).mock.calls.at(-1)).toEqual(['Aguarde', 'A nota ainda está sendo atualizada. Toque de novo quando ela voltar.']);
+    expect(weightField()!.props.value).toBe('0,2');
+    expect(writes('receipt_items')).toHaveLength(1);
+    await release();
+    await settle();
+    expect(jest.mocked(notify).mock.calls.at(-1)).toEqual(['Nota atualizada', 'Confira os itens e toque em "Confirmar nota" de novo.']);
+  });
+
+  it('enquanto a pessoa digita, o campo mostra o que "Salvar peso" vai gravar; o que não dá para ler diz isso, e nada grava antes do toque', async () => {
+    seed(receipt({ total: 14.6 }), item('i1', 'QUEIJO parmesão', 14.6, { suggested_category: 'laticinios' }));
+    await open();
+    await press(chip('Informar o peso'));
+    // "05" é 5 kg: sem vírgula, o número abaixo de 20 é quilo. A conta aparece antes de gravar.
+    act(() => weightField()!.props.onChangeText('05'));
+    expect(page()).toContain('5 kg × R$ 2,92');
+    act(() => weightField()!.props.onChangeText('0,186'));
+    expect(page()).toContain('0,186 kg × R$ 78,49');
+    act(() => weightField()!.props.onChangeText('0'));
+    expect(page()).toContain('Não deu para ler o peso');
+    expect(writes('receipt_items')).toEqual([]);
+  });
+
+  it('a busca que falha depois de gravar o peso: a nota fica na tela com o aviso, e "Tentar de novo" traz a linha por kg', async () => {
+    seed(receipt({ total: 22.99 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }));
+    await open();
+    await press(chip('Informar o peso'));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    mockDb.fails = [receiptRead];
+    await press(chip('Salvar peso'));
+    await settle();
+    expect(jest.mocked(notify).mock.calls).toEqual([['Peso salvo', 'Não deu para atualizar a nota na tela: o item aparece por unidade até ela ser buscada de novo.']]);
+    // A nota não some da tela: o item fica como estava, sem perguntar de novo, com o aviso de cima.
+    expect(page()).toContain('QUEIJO parmesão');
+    expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
+    expect(page()).not.toContain('Veio pesado no balcão?');
+    mockDb.fails = [];
+    await press(button('Tentar de novo'));
+    await settle();
+    expect(said(card('QUEIJO parmesão'))).toContain('0,186 kg × R$ 123,60');
+    expect(page()).not.toContain('Não foi possível atualizar');
+  });
+
+  it('outro aparelho corrige o valor com a nota aberta aqui: o peso não grava o valor de antes, avisa e busca a nota de novo', async () => {
+    seed(receipt({ total: 30.98 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }), item('i2', 'LEITE IL DESNATADO', 7.99, { suggested_category: 'laticinios' }));
+    await open();
+    // O queijo ganhou outro valor em outro aparelho; esta tela ainda mostra o de antes.
+    Object.assign(mockDb.items[0], { total_price: 25.5, unit_price: 25.5 });
+    await press(chip('Informar o peso', card('QUEIJO parmesão')));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    await press(chip('Salvar peso'));
+    // Nada foi regravado por cima do valor de agora, e a pessoa fica sabendo.
+    expect(mockDb.items[0]).toMatchObject({ total_price: 25.5, unit_price: 25.5, unit: 'un', quantity: 1 });
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Peso não salvo', 'Este item já mudou antes deste toque. Confira a nota e, se ainda precisar, informe o peso outra vez.'],
+    ]);
+    // A nota foi buscada de novo: o queijo mostra o valor de agora e volta a perguntar o peso.
+    expect(said(card('QUEIJO parmesão'))).toContain('R$ 25,50');
+    expect(chip('Informar o peso', card('QUEIJO parmesão'))).toBeDefined();
+  });
+
+  it('a gravação do peso que chega ao banco e perde a resposta: a tela não sabe e pergunta de novo, e a segunda tentativa não grava por cima, avisa que o item já mudou', async () => {
+    seed(receipt({ total: 22.99 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }));
+    await open();
+    await press(chip('Informar o peso'));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    // A gravação chega ao banco; a resposta é que se perde (a rede cai antes de ela voltar).
+    mockDb.fails = [itemWrite];
+    const release = hold(itemWrite);
+    await press(chip('Salvar peso'));
+    Object.assign(mockDb.items[0], { quantity: 0.186, unit: 'kg', unit_price: 123.6022 });
+    await release();
+    expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'caiu a rede']]);
+    expect(page()).toContain('Veio pesado no balcão?');
+    // A pessoa informa o peso de novo: o pedido não acha a linha por unidade, nada é gravado por cima.
+    mockDb.fails = [];
+    await press(chip('Informar o peso'));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    await press(chip('Salvar peso'));
+    expect(writes('receipt_items')).toHaveLength(2);
+    expect(mockDb.items[0]).toMatchObject({ quantity: 0.186, unit: 'kg', unit_price: 123.6022 });
+    expect(jest.mocked(notify).mock.calls[1]).toEqual([
+      'Peso não salvo',
+      'Este item já mudou antes deste toque. Confira a nota e, se ainda precisar, informe o peso outra vez.',
+    ]);
+    // A nota volta com a linha por kg, e a pergunta sai.
+    expect(page()).toContain('0,186 kg × R$ 123,60');
+    expect(page()).not.toContain('Veio pesado no balcão?');
+  });
+
+  it('com a nota relida antes do peso, o peso grava o valor de agora e o preço por kg sobre ele', async () => {
+    seed(receipt({ total: 30.98 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }), item('i2', 'LEITE IL DESNATADO', 7.99, { suggested_category: 'laticinios' }));
+    await open();
+    Object.assign(mockDb.items[0], { total_price: 25.5, unit_price: 25.5 });
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    await press(chip('Informar o peso', card('QUEIJO parmesão')));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    await press(chip('Salvar peso'));
+    expect(writes('receipt_items')).toEqual([
+      {
+        table: 'receipt_items',
+        verb: 'update',
+        values: { quantity: 0.186, unit: 'kg', unit_price: 137.0968 },
+        filters: { id: 'i1', receipt_id: 'r1', unit: 'un', quantity: 1, total_price: 25.5 },
+      },
+    ]);
+    expect(mockDb.items[0]).toMatchObject({ total_price: 25.5, quantity: 0.186, unit: 'kg', unit_price: 137.0968 });
+    expect(jest.mocked(notify).mock.calls).toEqual([]);
+  });
+
+  it('"É embalagem" deixa a linha como está, só nesta revisão; peso ilegível avisa e não grava', async () => {
+    seed(receipt({ total: 22.99 }), item('i1', 'PRESUNTO COZIDO', 22.99, { suggested_category: 'frios' }));
+    await open();
+    await press(chip('Informar o peso'));
+    act(() => weightField()!.props.onChangeText('abc'));
+    await press(chip('Salvar peso'));
+    expect(notify).toHaveBeenCalledWith('Peso inválido', 'Digite o peso da etiqueta em kg, como 0,186 (ou 186 g).');
+    expect(writes('receipt_items')).toEqual([]);
+    await press(chip('Cancelar'));
+    await press(chip('É embalagem'));
+    expect(page()).not.toContain('Veio pesado no balcão?');
+    expect(writes('receipt_items')).toEqual([]);
+  });
+
+  it('a nota confirmada não pergunta: a quantidade dela já foi para a despensa', async () => {
+    seed(receipt({ status: 'confirmed', total: 22.99 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }));
+    await open();
+    expect(page()).not.toContain('Veio pesado no balcão?');
+  });
+});
+
+describe('o alerta de preço usa a contagem que a tela mostra', () => {
+  // Dez dias antes da nota, em outro mercado (dentro da janela de 60 dias que só olha outro mercado).
+  const TEN_DAYS_AGO = `${YEAR}-05-31T15:00:00.000Z`;
+  beforeEach(() => {
+    mockMarket.stores = [
+      { id: 's1', name: 'Assaí', cnpj: null, address: null },
+      { id: 's2', name: 'Atacadão', cnpj: null, address: null },
+    ];
+  });
+
+  it('o produto "Ovos (30 un)" diz que vêm 30: o aviso de mais barato, que comparava a cartela com o preço sem tamanho, não sai', async () => {
+    mockMarket.products = [{ id: 'ovos30', name: 'Ovos (30 un)', category: 'ovos', shelf_life_days: null }];
+    seed(receipt({ total: 36.9 }), item('o', 'OVOS RANCHO CAIPIRA', 36.9, { product_id: 'ovos30', suggested_category: 'ovos', pack_count: null }));
+    mockPriceHistory.points = [
+      { product_id: 'ovos30', store_id: 's2', unit: 'un', unit_price: 13.99, purchased_at: TEN_DAYS_AGO, receipt_id: 'r0', description: 'OVOS' },
+    ];
+    await open();
+    expect(page()).toContain('30 ovos na embalagem: R$ 1,23 o ovo');
+    expect(page()).not.toContain('Um item saiu mais caro');
+    expect(page()).not.toContain('dava para economizar');
+  });
+
+  it('com a contagem na linha (10) e a do histórico (30 no ponto), o aviso de mais barato sai com a economia que a conta dá', async () => {
+    mockMarket.products = [{ id: 'ovos', name: 'Ovos', category: 'ovos', shelf_life_days: null }];
+    seed(receipt({ total: 13.99 }), item('o', 'OVOS', 13.99, { product_id: 'ovos', suggested_category: 'ovos', pack_count: 10 }));
+    mockPriceHistory.points = [
+      { product_id: 'ovos', store_id: 's2', unit: 'un', unit_price: 36.9, purchased_at: TEN_DAYS_AGO, receipt_id: 'r0', description: 'OVOS', packCount: 30 },
+    ];
+    await open();
+    expect(page()).toContain('10 ovos na embalagem: R$ 1,40 o ovo');
+    expect(page()).toContain('Um item saiu mais caro');
+    expect(page()).toContain('R$ 1,23 cada no Atacadão em 31 mai');
+    expect(page()).toContain('dava para economizar cerca de R$ 1,70');
+  });
+});
+
+describe('quantos ovos vêm na embalagem', () => {
+  const eggs = (patch: Row = {}) => item('i1', 'OVOS RANCHO CAIPIRA', 13.99, { suggested_category: 'ovos', pack_count: null, ...patch });
+
+  it('pergunta na revisão; com a resposta, a linha diz quanto sai cada ovo e deixa mudar', async () => {
+    seed(receipt({ total: 13.99 }), eggs());
+    await open();
+    expect(page()).toContain('Quantos ovos vêm na embalagem? Com isso, o preço mostra quanto sai cada ovo.');
+    await press(chip('10'));
+    expect(writes('receipt_items')).toEqual([{ table: 'receipt_items', verb: 'update', values: { pack_count: 10 }, filters: { id: 'i1', receipt_id: 'r1' } }]);
+    expect(page()).not.toContain('Quantos ovos vêm na embalagem?');
+    expect(page()).toContain('10 ovos na embalagem: R$ 1,40 o ovo');
+    await press(chip('Mudar'));
+    await press(chip('Outro'));
+    act(() => renderer!.root.findAllByType(TextField).find((entry) => entry.props.placeholder === 'Quantos vêm')!.props.onChangeText('20'));
+    await press(chip('Salvar'));
+    expect(writes('receipt_items').at(-1)?.values).toEqual({ pack_count: 20 });
+    expect(page()).toContain('20 ovos na embalagem: R$ 0,70 o ovo');
+  });
+
+  it('na nota confirmada também (não mexe no valor nem na despensa); "Não sei" deixa sem', async () => {
+    seed(receipt({ status: 'confirmed', total: 13.99 }), eggs());
+    await open();
+    expect(page()).toContain('Quantos ovos vêm na embalagem?');
+    await press(chip('Não sei'));
+    expect(page()).not.toContain('Quantos ovos vêm na embalagem?');
+    expect(writes('receipt_items')).toEqual([]);
+  });
+
+  it('a nota que já diz a conta não pergunta, e a conta dela não se muda aqui; o banco sem a coluna também não pergunta', async () => {
+    seed(receipt({ total: 13.99 }), eggs({ raw_description: 'OVOS BRANCOS C/12' }));
+    await open();
+    expect(page()).not.toContain('Quantos ovos vêm na embalagem?');
+    expect(page()).toContain('12 ovos na embalagem: R$ 1,17 o ovo');
+    expect(chip('Mudar')).toBeUndefined();
+    act(() => renderer!.unmount());
+    renderer = undefined;
+    // A leitura de antes da migração não traz pack_count.
+    const { pack_count: _missing, ...old } = eggs();
+    seed(receipt({ total: 13.99 }), old);
+    await open();
+    expect(page()).not.toContain('Quantos ovos vêm na embalagem?');
+  });
+
+  it('a busca que falha depois da quantidade: a nota fica na tela com o aviso, e "Tentar de novo" mostra a resposta', async () => {
+    seed(receipt({ total: 13.99 }), eggs());
+    await open();
+    mockDb.fails = [receiptRead];
+    await press(chip('10'));
+    await settle();
+    expect(jest.mocked(notify).mock.calls).toEqual([['Quantidade salva', 'Não deu para atualizar a nota na tela: a quantidade aparece quando ela for buscada de novo.']]);
+    expect(page()).toContain('OVOS RANCHO CAIPIRA');
+    expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
+    mockDb.fails = [];
+    await press(button('Tentar de novo'));
+    await settle();
+    expect(page()).toContain('10 ovos na embalagem: R$ 1,40 o ovo');
+  });
+
+  it('a busca que falha e a linha do ovo já saiu em outro aparelho: o chip não grava nada (a linha não se acha), avisa, e a pergunta fica', async () => {
+    seed(receipt({ total: 13.99 }), eggs());
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    // O outro aparelho apaga a linha: a tela ainda a mostra, com os chips.
+    mockDb.items = [];
+    await press(chip('10'));
+    expect(writes('receipt_items')).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+    expect(chip('10')).toBeDefined();
+  });
+
+  it('a linha do ovo que outro aparelho apagou (a busca de fundo ainda não viu): a resposta não grava, e avisa que a linha mudou', async () => {
+    seed(receipt({ total: 13.99 }), eggs());
+    await open();
+    mockDb.items = [];
+    await press(chip('10'));
+    expect(writes('receipt_items')).toEqual([{ table: 'receipt_items', verb: 'update', values: { pack_count: 10 }, filters: { id: 'i1', receipt_id: 'r1' } }]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Quantidade não salva', 'A linha mudou em outro aparelho. Confira a nota e responda de novo, se ainda precisar.'],
+    ]);
+  });
+
+  it('a linha que saiu, com a busca de volta que falha: o aviso é só o de que a linha mudou, e a nota fica na tela com o aviso de cima', async () => {
+    seed(receipt({ total: 13.99 }), eggs());
+    await open();
+    mockDb.items = [];
+    mockDb.fails = [receiptRead];
+    await press(chip('10'));
+    await settle();
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Quantidade não salva', 'A linha mudou em outro aparelho. Confira a nota e responda de novo, se ainda precisar.'],
+    ]);
+    expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
+  });
+
+  it('enquanto a quantidade do ovo grava, os chips somem até a nota voltar; outro toque no mesmo ovo não grava de novo', async () => {
+    seed(receipt({ total: 13.99 }), eggs());
+    await open();
+    const release = hold(itemWrite);
+    await pressBoth(chip('10'), chip('12'));
+    expect(chip('10')).toBeUndefined();
+    expect(chip('12')).toBeUndefined();
+    expect(writes('receipt_items')).toEqual([{ table: 'receipt_items', verb: 'update', values: { pack_count: 10 }, filters: { id: 'i1', receipt_id: 'r1' } }]);
+    expect(jest.mocked(notify).mock.calls).toEqual([]);
+    await release();
+    await settle();
+    expect(page()).toContain('10 ovos na embalagem: R$ 1,40 o ovo');
+  });
+
+  it('os chips de quantidade e o "Mudar" dizem de que item são, para o leitor de tela', async () => {
+    seed(receipt({ total: 13.99 }), eggs());
+    await open();
+    expect(chip('10')!.props.accessibilityLabel).toBe('10 ovos');
+    await press(chip('10'));
+    expect(chip('Mudar')!.props.accessibilityLabel).toBe('Mudar a quantidade de OVOS RANCHO CAIPIRA');
+  });
+
+  it('ovo sem valor (a leitura não pegou o preço): a linha diz quantos vêm, sem "R$ 0,00 o ovo", na revisão e na nota confirmada', async () => {
+    seed(receipt({ total: 12.9 }), eggs({ raw_description: 'OVOS BRANCOS C/12', total_price: 0, unit_price: 0 }));
+    await open();
+    expect(page()).toContain('12 ovos na embalagem');
+    expect(page()).not.toContain('R$ 0,00 o ovo');
+    act(() => renderer!.unmount());
+    renderer = undefined;
+    seed(receipt({ status: 'confirmed', total: 0 }), eggs({ total_price: 0, unit_price: 0, pack_count: 10 }));
+    await open();
+    expect(page()).toContain('10 ovos na embalagem');
+    expect(page()).not.toContain('R$ 0,00 o ovo');
+    // A resposta guardada continua podendo ser mudada, como no ovo com valor.
+    expect(chip('Mudar')).toBeDefined();
   });
 });

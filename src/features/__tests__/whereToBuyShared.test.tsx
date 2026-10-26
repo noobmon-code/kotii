@@ -5,6 +5,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import WhereToBuyScreen from '@/app/lista/[id]/onde-comprar';
 import { formatShortDate, toISODate } from '@/domain/dates';
+import * as listEstimate from '@/domain/listEstimate';
 import { LinkIndex } from '@/domain/listLinks';
 import { SHARED_PRICES_NOTICE, type SharedPrice } from '@/domain/sharedPrices';
 import type { LatestPrice, Product, ShoppingListItem, Store } from '@/lib/types';
@@ -38,6 +39,7 @@ jest.mock('@/data/market', () => ({
   useListItems: () => mockQueries.items,
   useListLinks: () => mockQueries.links,
   useProducts: () => mockQueries.products,
+  usePurchaseRecords: () => mockQueries.purchases,
   useStores: () => mockQueries.stores,
 }));
 jest.mock('@/data/sharedPrices', () => ({ useSharedPrices: () => mockQueries.shared }));
@@ -124,6 +126,7 @@ beforeEach(() => {
     stores: loaded(STORES),
     links: loaded(new LinkIndex([])),
     products: loaded(PRODUCTS),
+    purchases: loaded([]),
     shared: loaded(null),
   });
 });
@@ -204,6 +207,56 @@ describe('"Onde comprar" com os preços de outras casas', () => {
   it('a primeira busca ainda anda: espera, para o total não mudar logo depois', async () => {
     mockQueries.shared = onTheWay();
     expect(await mount()).toContain('Comparando preços…');
+  });
+});
+
+describe('"Onde comprar" com o que vende a peso', () => {
+  it('o queijo pedido em "un", com preço por kg, conta o que a casa costuma levar dele, como a lista', async () => {
+    mockQueries.items = loaded([{ ...listItem('q', 'Queijo', 'queijo'), category: 'laticinios' }]);
+    mockQueries.prices = loaded([{ ...own('queijo', 'assai', 72.9), unit: 'kg' }]);
+    mockQueries.purchases = loaded([
+      { name: 'Queijo', category: 'laticinios', productId: 'queijo', quantity: 0.2, unit: 'kg', at: `${day(10)}T12:00:00Z`, source: 'receipt' },
+    ]);
+    const page = await mount();
+    expect(page).toContain('Preço por kg, ~200 g (o que a casa costuma levar)');
+    expect(page).toContain('~R$ 14,58');
+  });
+
+  it('a primeira busca das compras ainda anda: espera, para o total não mudar logo depois', async () => {
+    mockQueries.purchases = onTheWay();
+    expect(await mount()).toContain('Comparando preços…');
+  });
+
+  it('sem o histórico de compras (a busca falhou): a linha diz que ele não carregou, e a conta é de 1 kg', async () => {
+    mockQueries.items = loaded([{ ...listItem('q', 'Queijo', 'queijo'), category: 'laticinios' }]);
+    mockQueries.prices = loaded([{ ...own('queijo', 'assai', 72.9), unit: 'kg' }]);
+    mockQueries.purchases = failed();
+    const page = await mount();
+    expect(page).toContain('Preço por kg, 1 kg (o histórico de compras não carregou)');
+    expect(page).toContain('~R$ 72,90');
+  });
+
+  it('com o histórico carregado e sem compra do queijo a peso, a linha é a de sempre, sem o aviso', async () => {
+    mockQueries.items = loaded([{ ...listItem('q', 'Queijo', 'queijo'), category: 'laticinios' }]);
+    mockQueries.prices = loaded([{ ...own('queijo', 'assai', 72.9), unit: 'kg' }]);
+    const page = await mount();
+    expect(page).toContain('Preço por kg, 1 kg (quantidade em outra unidade)');
+    expect(page).not.toContain('histórico de compras não carregou');
+  });
+});
+
+describe('"Onde comprar" com quantos vinham na embalagem', () => {
+  it('o preço de cartela entra nas cotações com a contagem da revisão, como na lista', async () => {
+    mockQueries.products = loaded([...PRODUCTS, { id: 'ovos', name: 'Ovos', category: 'ovos', shelf_life_days: null } as Product]);
+    mockQueries.items = loaded([listItem('o', 'Ovos', 'ovos')]);
+    mockQueries.prices = loaded([{ ...own('ovos', 'assai', 13.99), pack_count: 10 }]);
+    const spy = jest.spyOn(listEstimate, 'listStorePrices');
+    try {
+      await mount();
+      expect(spy.mock.calls[0]?.[1]).toContainEqual(expect.objectContaining({ productId: 'ovos', storeId: 'assai', packCount: 10 }));
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
