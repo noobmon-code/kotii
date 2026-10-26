@@ -131,19 +131,24 @@ const newest = (quotes: EstimatePrice[]) =>
     return (byId(b.productId, a.productId) || byId(b.storeId, a.storeId) || byId(b.unit, a.unit)) < 0 ? b : a;
   });
 
+/** Quantos vêm numa cotação em "un" que diz (dois ou mais); null nas outras. */
+const countOf = (quote: EstimatePrice) => (quote.unit === 'un' && quote.packCount != null && quote.packCount >= 2 ? quote.packCount : null);
+
 /**
  * O preço por ovo de uma cotação em "un" que diz quantos vêm (dois ou mais); null nas outras. Arredondado a 8 casas:
  * R$ 5,04 em 6 e R$ 8,40 em 10 são o mesmo R$ 0,84 o ovo, mas em ponto flutuante o segundo sai um pouco acima.
  */
-const perEggOf = (quote: EstimatePrice) =>
-  quote.unit === 'un' && quote.packCount != null && quote.packCount >= 2 ? round8(quote.unitPrice / quote.packCount) : null;
+const perEggOf = (quote: EstimatePrice) => {
+  const count = countOf(quote);
+  return count != null ? round8(quote.unitPrice / count) : null;
+};
 
 /**
  * O "Menor preço" entre as cotações de um item numa unidade. Cada par se compara pelo preço por ovo quando as duas dizem
  * quantos vêm (a cartela de 30 a R$ 39,90 sai R$ 1,33 o ovo, a de 10 a R$ 13,99 sai R$ 1,40); senão, pelo preço da
  * cartela, como antes. Vence a cotação que nenhuma outra bate pelo par; no empate, a mais nova. Se ninguém vence
- * (um ciclo entre três, com uma sem contagem), vale o menor preço da cartela, como antes, e a ordem da lista não decide.
- * Não muda o custo da lista nem a ordem de "Onde comprar", que são pela cotação.
+ * (um ciclo entre três, com uma sem contagem), vale o menor por ovo entre as que dizem a contagem; sem nenhuma, a menor
+ * cartela, e a ordem da lista não decide. Não muda o custo da lista nem a ordem de "Onde comprar", que são pela cotação.
  */
 const lowestOf = (quotes: EstimatePrice[]): EstimatePrice => {
   const beats = (quote: EstimatePrice, other: EstimatePrice) => {
@@ -152,6 +157,8 @@ const lowestOf = (quotes: EstimatePrice[]): EstimatePrice => {
   };
   const unbeaten = quotes.filter((quote) => !quotes.some((other) => beats(other, quote)));
   if (unbeaten.length) return newest(unbeaten);
+  const counted = quotes.filter((quote) => perEggOf(quote) != null);
+  if (counted.length) return newest(counted.filter((quote) => !counted.some((other) => beats(other, quote))));
   const cheapest = Math.min(...quotes.map((quote) => quote.unitPrice));
   return newest(quotes.filter((quote) => quote.unitPrice === cheapest));
 };
@@ -859,7 +866,7 @@ const perUnit = (unitPrice: number, unit: string) => {
 
 /** O preço com quantos vinham na embalagem, quando se sabe: "R$ 13,99/un, 10 ovos (R$ 1,40 o ovo)". */
 const quoteText = (quote: EstimatePrice, category?: string | null) => {
-  const count = quote.unit === 'un' && quote.packCount != null && quote.packCount >= 2 ? quote.packCount : null;
+  const count = countOf(quote);
   const price = perUnit(quote.unitPrice, quote.unit);
   return count ? `${price}, ${packLabel(count, category)} (${perItemLabel(quote.unitPrice, count, category)})` : price;
 };
@@ -1084,7 +1091,14 @@ export function itemFacts(
       const other = used.productId === estimate.productId ? '' : `, de ${productName?.(used.productId) ?? 'outro produto com esse nome'}`;
       facts.push(`Preço usado na conta: ${quoteText(used, category)}${other} ${where(used)}.`);
     }
-    if (promotionOnly && cheaper) facts.push(`Só em promoção: o preço bom é ${quoteText(lowest, category)} ou menos.`);
+    if (promotionOnly && cheaper) {
+      // Com a contagem, o preço bom sai por ovo primeiro, e a cartela vai entre parênteses.
+      const count = countOf(lowest);
+      const good = count
+        ? `${perItemLabel(lowest.unitPrice, count, category)} ou menos (${perUnit(lowest.unitPrice, lowest.unit)}, ${packLabel(count, category)})`
+        : `${quoteText(lowest, category)} ou menos`;
+      facts.push(`Só em promoção: o preço bom é ${good}.`);
+    }
     if (estimate.perPiece) {
       // Item em "un" com preço por kg: a conta usa o que a casa costuma levar dele de uma vez (usualAmounts).
       const counted = pricePerBase(1, unit).unit;

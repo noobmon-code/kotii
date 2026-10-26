@@ -66,6 +66,8 @@ export default function WhereToBuyScreen() {
       unit: p.unit,
       unitPrice: Number(p.unit_price),
       purchasedAt: p.purchased_at,
+      // Quantos vinham na embalagem desse preço (os ovos da cartela de 10): os detalhes do item dizem.
+      packCount: p.pack_count ?? null,
     }));
     // Os mercados da casa se reconhecem pelo CNPJ, e o preço da casa sempre vence: sem os mercados ou sem os
     // preços da casa carregados, nada de outras casas (eles ocupariam o lugar dos dela).

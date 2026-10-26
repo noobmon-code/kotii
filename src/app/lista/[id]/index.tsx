@@ -544,14 +544,14 @@ export default function ShoppingListScreen() {
     if (tripsKnown) pruneAddedItems(id, tripStart);
   }, [id, tripsKnown, tripStart, added]);
 
-  // Lista no mercado (domain/listEstimate): quanto deve dar e o que está na despensa. Sem os preços, as
-  // ligações ou a despensa carregados (sem internet e nunca vistos neste aparelho), mostra o que der. Só o selo
-  // "Na despensa" espera o histórico de compras: sem ele, apareceria justamente no que acabou. O aparelho que
-  // nunca carregou o histórico fica sem selo nenhum.
   // O queijo pedido em "un" com o preço por kg conta o que a casa costuma levar dele (das notas), não 1 kg. Sem o
   // histórico (a busca falhou, ou sem internet e ele nunca chegou neste aparelho), é o 1 kg, e o detalhe do item diz
   // que o histórico não carregou. Enquanto a primeira busca ainda anda, o detalhe não diz isso.
   const usual = useMemo(() => usualAmounts(purchases.data ?? []), [purchases.data]);
+  // Lista no mercado (domain/listEstimate): quanto deve dar e o que está na despensa. Sem os preços, as
+  // ligações ou a despensa carregados (sem internet e nunca vistos neste aparelho), mostra o que der. Só o selo
+  // "Na despensa" espera o histórico de compras: sem ele, apareceria justamente no que acabou. O aparelho que
+  // nunca carregou o histórico fica sem selo nenhum.
   const market = useMemo(() => {
     const all = items.data ?? [];
     const estimate = estimateList(
