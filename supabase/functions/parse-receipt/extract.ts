@@ -312,14 +312,14 @@ export function weighedUnitPrice(description: string, quantity: number | null, u
 
 /**
  * A linha pesada (kg ou l) que fica na nota, com o preço lido ou corrigido, mas não vai para a leitura do servidor
- * (os preços das outras casas). Com a quantidade e o valor lidos, ela fica de fora só se o valor passa de quantidade ×
- * preço: a conta não fecha para cima, e o preço pode ser o da bandeja. Com a quantidade ou o valor tirados da conta,
- * ela fica de fora quando a descrição imprime um tamanho na mesma unidade, salvo uma bandeja de exatamente 1 kg ou 1 l
- * (sem "C/2" nem "2X"): não dá para saber se o preço é o da bandeja, do pacote ou do kg.
+ * (os preços das outras casas). Com a quantidade e o valor lidos (o 0 é o sem valor), ela fica de fora só se o valor
+ * passa de quantidade × preço: a conta não fecha para cima, e o preço pode ser o da bandeja. Com a quantidade ou o valor
+ * tirados da conta, ela fica de fora quando a descrição imprime um tamanho na mesma unidade, salvo uma bandeja de
+ * exatamente 1 kg ou 1 l (sem "C/2" nem "2X"): não dá para saber se o preço é o da bandeja, do pacote ou do kg.
  */
 function unsharedWeighedLine(description: string, unit: string, quantity: number | null, total: number | null, unitPrice: number): boolean {
   if (unit !== 'kg' && unit !== 'l') return false;
-  if (quantity != null && quantity > 0 && total != null) {
+  if (quantity != null && quantity > 0 && total != null && total > 0) {
     const cents = (value: number) => Math.round(value * 100);
     return cents(total) - cents(lineTotalFromPrinted(quantity, unit, unitPrice)) > WEIGHED_TOLERANCE_CENTS;
   }

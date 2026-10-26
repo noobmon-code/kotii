@@ -348,6 +348,8 @@ Deno.test('linha pesada que a conta não confere fica na nota, mas fora da leitu
   const cut = read([queijo({ total_price: null })]);
   assertEquals([cut.items[0].total_price, cut.items[0].unit_price], [2.95, 14.58]);
   assertEquals(cut.readLines, []);
+  // Valor lido como 0 é o "sem valor" (a conta não tem o que conferir): a linha de 200 g fica de fora, como a de valor cortado.
+  assertEquals(read([queijo({ total_price: 0 })]).readLines, []);
   // Sem o total da nota, o valor cortado não tem como ser conferido: também fica de fora.
   assertEquals(read([queijo({ total_price: null })], null).readLines, []);
   // O valor cortado com o preço por kg certo (R$ 72,90) também fica de fora: sem valor lido, não há conta para conferir.
