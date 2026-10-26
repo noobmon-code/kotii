@@ -476,6 +476,7 @@ export default function ReceiptScreen() {
       return;
     }
     if (isDraft) {
+      if (refuseStale()) return;
       updateReceipt.mutate({ purchased_at: change.purchasedAt }, { onError });
       setDateText(null);
     } else {
@@ -496,8 +497,10 @@ export default function ReceiptScreen() {
   function chooseStore(store: StoreChoice) {
     setPicker(null);
     if ('id' in store && store.id === receipt.store_id) return;
-    if (isDraft) setStore.mutate(store, { onError });
-    else correctReceipt(correctStore, { store });
+    if (isDraft) {
+      if (refuseStale()) return;
+      setStore.mutate(store, { onError });
+    } else correctReceipt(correctStore, { store });
   }
 
   /**
@@ -512,6 +515,9 @@ export default function ReceiptScreen() {
       notify(result.title, result.message);
       return false;
     }
+    // Sem a busca, a nota em tela pode já estar confirmada em outro aparelho: o total não acharia o rascunho, e o
+    // campo fecharia sem aviso. Fica aberto, com o que foi digitado.
+    if (refuseStale()) return false;
     let saved: boolean;
     try {
       ({ saved } = await saveTotal.mutateAsync(result.total));
@@ -1090,7 +1096,12 @@ export default function ReceiptScreen() {
             ))}
           </View>
         ) : null}
-        <PayerChips value={receipt.paid_by} onChange={(paidBy) => updateReceipt.mutate({ paid_by: paidBy }, { onError })} />
+        <PayerChips
+          value={receipt.paid_by}
+          onChange={(paidBy) => {
+            if (!refuseStale()) updateReceipt.mutate({ paid_by: paidBy }, { onError });
+          }}
+        />
         {isDraft ? null : <Text variant="small">{CONFIRMED_EDIT_NOTE}</Text>}
         {photos.length ? (
           <Button

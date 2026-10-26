@@ -981,6 +981,51 @@ describe('a nota em tela atrás do que foi gravado', () => {
     ]);
   });
 
+  it('total digitado com a busca de fundo que falhou e a nota confirmada em outro aparelho: o campo fica aberto com o que foi digitado, avisa, e nada é gravado', async () => {
+    seed(receipt(), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    await press(totalRow());
+    act(() => field('Total da nota')!.props.onChangeText('50'));
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    mockDb.receipts[0].status = 'confirmed';
+    await press(button('Salvar total'));
+    // Antes, o total não achava o rascunho, e o campo fechava sem aviso com o total de antes na tela.
+    expect(field('Total da nota')!.props.value).toBe('50');
+    expect(mockDb.writes).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+  });
+
+  it('data e mercado digitados com a busca de fundo que falhou: nada é gravado, o campo da data fica com o que foi digitado, e os dois avisam', async () => {
+    seed(receipt(), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    act(() => field('Data da compra')!.props.onChangeText(`11/06/${YEAR}`));
+    await act(async () => {
+      field('Data da compra')!.props.onBlur();
+      await wait();
+    });
+    await act(async () => {
+      renderer!.root.findAllByType(PickerModal).find((entry) => entry.props.title === 'Mercado')!.props.onSelect('s2');
+      await wait();
+    });
+    expect(field('Data da compra')!.props.value).toBe(`11/06/${YEAR}`);
+    expect(mockDb.writes).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+  });
+
   it('remover que falha avisa do erro, como antes', async () => {
     seed(receipt({ total: 50 }), item('a', 'DETERGENTE YPE', 50), cheese());
     await open();
