@@ -935,6 +935,34 @@ describe('a nota em tela atrás do que foi gravado', () => {
     ]);
   });
 
+  it('a busca de fundo que falhou e a nota já confirmada em outro aparelho: "Descartar nota" não abre a pergunta nem apaga, e depois de "Tentar de novo" a pergunta é a da nota confirmada', async () => {
+    seed(receipt({ total: 50 }), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    mockDb.receipts[0].status = 'confirmed';
+    await press(button('Descartar nota'));
+    expect(confirmAction).not.toHaveBeenCalled();
+    expect(mockDb.writes).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+    // Com a nota de agora, a pergunta é a de nota confirmada: os preços saem do comparativo, e a despensa fica.
+    mockDb.fails = [];
+    await press(button('Tentar de novo'));
+    await settle();
+    await press(button('Excluir nota'));
+    expect(jest.mocked(confirmAction).mock.calls[0].slice(0, 3)).toEqual([
+      'Excluir nota',
+      'Os preços desta nota saem do comparativo. Itens já na despensa continuam.',
+      'Excluir',
+    ]);
+    expect(mockDb.writes).toEqual([]);
+  });
+
   it('remover que falha avisa do erro, como antes', async () => {
     seed(receipt({ total: 50 }), item('a', 'DETERGENTE YPE', 50), cheese());
     await open();

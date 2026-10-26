@@ -998,14 +998,16 @@ export default function ReceiptScreen() {
               variant="ghost"
               icon="trash-can-outline"
               compact
-              onPress={() =>
+              onPress={() => {
+                // A nota em tela pode já estar confirmada em outro aparelho: sem a busca, não se apaga às cegas.
+                if (refuseStale()) return;
                 confirmAction(
                   'Excluir esta nota?',
                   'Os itens lidos nesta revisão serão apagados. A outra nota continua como está.',
                   'Excluir',
                   () => deleteReceipt.mutate(photos, { onSuccess: () => router.back(), onError }),
-                )
-              }
+                );
+              }}
             />
           </Row>
         </Card>
@@ -1227,14 +1229,16 @@ export default function ReceiptScreen() {
         title={isDraft ? 'Descartar nota' : 'Excluir nota'}
         variant="danger"
         icon="trash-can-outline"
-        onPress={() =>
+        onPress={() => {
+          // O texto da pergunta vem do status em tela: com a busca que falhou, a nota pode já estar confirmada lá.
+          if (refuseStale()) return;
           confirmAction(
             isDraft ? 'Descartar nota' : 'Excluir nota',
             isDraft ? 'Os itens lidos serão apagados.' : 'Os preços desta nota saem do comparativo. Itens já na despensa continuam.',
             isDraft ? 'Descartar' : 'Excluir',
             () => deleteReceipt.mutate(photos, { onSuccess: () => router.back(), onError }),
-          )
-        }
+          );
+        }}
       />
 
       {renamingStore && noteStore ? (
