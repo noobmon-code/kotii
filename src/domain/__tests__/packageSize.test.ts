@@ -86,6 +86,14 @@ describe('o tamanho da embalagem na descrição da nota', () => {
     expect(read('CERV LT 350ML FD 12')).toBe('l 4.2 · 12 x 350 ml');
   });
 
+  it('o tamanho com a própria contagem não multiplica de novo: "PAO CX 10X50G" é 0,5 kg', () => {
+    expect(read('PAO CX 10X50G')).toBe('kg 0.5 · 10 x 50 g');
+  });
+
+  it('o tamanho com a própria contagem não multiplica de novo: "QJ CX 2X200G" é 0,4 kg', () => {
+    expect(read('QJ CX 2X200G')).toBe('kg 0.4 · 2 x 200 g');
+  });
+
   it('pacote só com a contagem: tantos itens', () => {
     expect(read('OVOS BRANCOS C/12')).toBe('un 12 · 12 un');
     expect(read('OVO VERMELHO GRANJA 30UN')).toBe('un 30 · 30 un');
