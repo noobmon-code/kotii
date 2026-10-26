@@ -11,8 +11,9 @@
 // histórico. Aqui um mercado é o nome dele: lojas de mesmo nome são uma só.
 // Embalagens de tamanhos diferentes ("ARROZ 5KG" e "ARROZ 1KG", ambos "1 un")
 // se comparam pelo preço por kg, litro ou item do pacote, com o tamanho lido
-// na descrição da nota (packageSize); a compra de tamanho desconhecido fica no
-// histórico por unidade, como antes, sem tamanho inventado.
+// na descrição da nota (packageSize) ou, sem ele, quantos vinham, respondido na
+// revisão (pack_count); a compra de tamanho desconhecido fica no histórico por
+// unidade, como antes, sem tamanho inventado.
 // Tudo o que a seção mostra (frases, gráfico, linhas) sai daqui; a tela só
 // desenha.
 
@@ -36,7 +37,10 @@ export interface PurchaseLine {
   unitPrice: number;
   /** O que foi pago na linha (já com o desconto do item, se houve). */
   totalPrice: number;
-  /** A descrição como veio na nota ("ARROZ T1 5KG"), de onde sai o tamanho da embalagem; sem ela, o tamanho não é conhecido. */
+  /**
+   * A descrição como veio na nota ("ARROZ T1 5KG"), de onde sai o tamanho da embalagem; sem ela e sem a contagem
+   * respondida (packCount), o tamanho não é conhecido.
+   */
   description?: string;
   /** Quantos vinham na embalagem, respondido na revisão (domain/packCount): vale quando a descrição não diz o tamanho. */
   packCount?: number | null;
@@ -64,7 +68,10 @@ export interface Purchase {
   baseUnit: string;
   /** O preço impresso, por `baseUnit`, já em centavos inteiros (roundPrice). Zero: compra sem valor. */
   price: number;
-  /** O tamanho da embalagem lido na nota, só na compra por unidade; null quando a nota não diz (ou deixa dúvida). */
+  /**
+   * O tamanho da embalagem lido na nota (ou, sem ele, quantos vinham, respondido na revisão), só na compra por
+   * unidade; null quando nem a nota nem a resposta dizem (ou deixam dúvida).
+   */
   pack: PackageSize | null;
   /** Na compra comparada pelo tamanho, o preço impresso por embalagem (o `price` é por kg, l ou item); senão, null. */
   packagePrice: number | null;
