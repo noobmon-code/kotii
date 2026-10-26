@@ -346,8 +346,9 @@ Deno.test('preço da bandeja na linha pesada: a nota e a leitura do servidor gua
   assertEquals(r.readLines.map((l) => l.unit_price), [72.9, 5.99]);
 });
 
-Deno.test('linha pesada que a conta não confere fica na nota, mas fora da leitura do servidor', () => {
-  // Queijo de 200 g: 0,202 kg a R$ 14,58 (o preço da bandeja) e R$ 14,73 no total. Só a linha que a conta confirma vai.
+Deno.test('linha pesada cujo valor passa da conta, ou que não tem como conferir, fica na nota mas fora da leitura do servidor', () => {
+  // Queijo de 200 g: 0,202 kg a R$ 14,58 (o preço da bandeja) e R$ 14,73 no total.
+  // Entra quando o valor não passa da conta; com o preço corrigido (R$ 72,90) ela fecha.
   const queijo = (over: Partial<ExtractedReceipt['items'][number]>) =>
     line({ raw_description: 'QUEIJO MUSS 200G', unit: 'kg', quantity: 0.202, unit_price: 14.58, total_price: 14.73, ...over });
   const read = (items: ExtractedReceipt['items'], total: number | null = 14.73) => cleanReceipt({ ...base, total, items }, new Set(), new Map());
