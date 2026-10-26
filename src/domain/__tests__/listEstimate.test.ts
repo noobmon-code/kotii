@@ -401,6 +401,41 @@ describe('estimateList', () => {
     expect(usualAmountLabel({ unit: 'l', amount: 0.75 })).toBe('750 ml');
   });
 
+  describe('o costume: o teto, o número de notas e o que a conta diz', () => {
+    const buy = (productId: string, quantity: number, unit: PurchaseRecord['unit']): PurchaseRecord => ({
+      name: 'x',
+      category: 'laticinios',
+      productId,
+      quantity,
+      unit,
+      at: '2026-10-01T12:00:00Z',
+      source: 'receipt',
+    });
+    const cheese = [item('q', 'Queijo mussarela', 'queijo')];
+    const cheesePrice = [price('queijo', 'bom', 72.9, undefined, 'kg')];
+
+    it('uma linha de 202 kg (a vírgula de 0,202 perdida) não vira o costume: o queijo de 1 un conta 1 kg', () => {
+      const usual = usualAmounts([buy('queijo', 202, 'kg')]);
+      expect(usual.get('queijo')).toBeUndefined();
+      expect(estimateList(cheese, cheesePrice, { usual }).byItem.get('q')).toMatchObject({ cost: 72.9, approximateQuantity: true });
+      expect(estimateList(cheese, cheesePrice, { usual }).byItem.get('q')!.perPiece).toBeUndefined();
+    });
+
+    it('com a linha certa junto, a de 202 kg fica de fora: o costume é o 0,202 kg', () => {
+      const usual = usualAmounts([buy('queijo', 0.202, 'kg'), buy('queijo', 202, 'kg')]);
+      expect(estimateList(cheese, cheesePrice, { usual }).byItem.get('q')).toMatchObject({
+        cost: 14.73,
+        perPiece: { unit: 'kg', amount: 0.202 },
+      });
+    });
+
+    it('o teto é de 20 kg e de 20 l: a peça pesada no balcão conta, o que passa disso não', () => {
+      expect(usualAmounts([buy('queijo', 15, 'kg'), buy('queijo', 25, 'kg')]).get('queijo')).toEqual({ kg: 15 });
+      expect(usualAmounts([buy('azeite', 25, 'l'), buy('azeite', 15, 'l')]).get('azeite')).toEqual({ l: 15 });
+      expect(usualAmounts([buy('suco', 25000, 'ml')]).get('suco')).toBeUndefined();
+    });
+  });
+
   it('item em "un" com preço por g ou por ml: a conta é de 1 kg ou 1 litro, nunca de 1 g', () => {
     const estimate = estimateList(
       [item('q', 'Queijo mussarela', 'queijo', 3), item('s', 'Suco', 'suco')],

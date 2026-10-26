@@ -19,6 +19,7 @@ import type { LinkIndex } from './listLinks';
 import { formatBRL, formatQuantity } from './money';
 import { packLabel, perItemLabel } from './packCount';
 import { storePriceIndex } from './priceLevel';
+import { MAX_WEIGHT_KG } from './receiptWeight';
 import { SAME_TRIP_DAYS } from './restock';
 import { normalizeSearch } from './search';
 import type { PurchaseRecord } from './recentPurchases';
@@ -167,13 +168,18 @@ export interface UsualAmount {
 /** Por produto, o que a casa costuma levar dele a peso e a litro. */
 export type UsualAmounts = ReadonlyMap<string, Partial<Record<UsualAmount['unit'], number>>>;
 
+/** Acima disso, em litro, a linha não é o que a casa leva de uma vez (em kg, o teto é MAX_WEIGHT_KG). */
+const MAX_USUAL_LITERS = 20;
+
 /**
  * O que a casa costuma levar de cada produto vendido a peso ou a litro: a
  * mediana das linhas das notas dos últimos meses (os registros de compra), em
  * kg ou litro, arredondada ao grama. O queijo fatiado que sai em 0,200 e 0,202
  * kg é 201 g. Só as notas: a quantidade da lista é o que a casa pede, não o que
- * a balança deu. Serve à conta do item que a lista pede em "un" ("Queijo", 1
- * un) com o preço por kg: sem ela, a conta seria de 1 kg.
+ * a balança deu. Linha acima de 20 kg ou 20 l não entra: é o peso de um erro de
+ * digitação ("202" no lugar de "0,202"), não de uma peça do balcão. Serve à
+ * conta do item que a lista pede em "un" ("Queijo", 1 un) com o preço por kg:
+ * sem ela, a conta seria de 1 kg.
  */
 export function usualAmounts(records: readonly Pick<PurchaseRecord, 'productId' | 'quantity' | 'unit' | 'source'>[]): UsualAmounts {
   const amounts = new Map<string, Record<UsualAmount['unit'], number[]>>();
@@ -182,6 +188,7 @@ export function usualAmounts(records: readonly Pick<PurchaseRecord, 'productId' 
     const unit = pricePerBase(1, record.unit).unit;
     if (unit !== 'kg' && unit !== 'l') continue;
     const amount = convertQuantity(record.quantity, record.unit, unit)!;
+    if (amount > (unit === 'kg' ? MAX_WEIGHT_KG : MAX_USUAL_LITERS)) continue;
     const seen = amounts.get(record.productId) ?? { kg: [], l: [] };
     seen[unit].push(amount);
     amounts.set(record.productId, seen);
