@@ -346,7 +346,7 @@ Deno.test('preço da bandeja na linha pesada: a nota e a leitura do servidor gua
   assertEquals(r.readLines.map((l) => l.unit_price), [72.9, 5.99]);
 });
 
-Deno.test('linha pesada cujo valor passa da conta, ou que não tem como conferir, fica na nota mas fora da leitura do servidor', () => {
+Deno.test('linha pesada cujo valor passa da conta, ou que não tem como conferir (salvo a bandeja de exatamente 1 kg), fica na nota mas fora da leitura do servidor', () => {
   // Queijo de 200 g: 0,202 kg a R$ 14,58 (o preço da bandeja) e R$ 14,73 no total.
   // Entra quando o valor não passa da conta; com o preço corrigido (R$ 72,90) ela fecha.
   const queijo = (over: Partial<ExtractedReceipt['items'][number]>) =>
