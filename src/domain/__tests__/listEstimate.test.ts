@@ -357,7 +357,7 @@ describe('estimateList', () => {
       expect(facts([cartela('assai', 13.99, '2026-10-22', 10), cartela('atacadao', 39.9, '2026-10-21', 30)], { promotionOnly: true })).toEqual([
         'Último preço: R$ 13,99/un, 10 ovos (R$ 1,40 o ovo) (Assaí, 22 out).',
         'Menor preço: R$ 39,90/un, 30 ovos (R$ 1,33 o ovo) (Atacadão, 21 out).',
-        'Só em promoção: o preço bom é R$ 39,90/un, 30 ovos (R$ 1,33 o ovo) ou menos.',
+        'Só em promoção: o preço bom é R$ 1,33 o ovo ou menos (R$ 39,90/un, 30 ovos).',
       ]);
     });
 
