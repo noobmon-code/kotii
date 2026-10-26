@@ -35,8 +35,8 @@ export interface AlertItem {
   /** A descrição como veio na nota ("ARROZ T1 5KG"): o tamanho da embalagem. Sem ela e sem packCount, o tamanho não é conhecido. */
   description?: string;
   /**
-   * Quantos vinham na embalagem, como a tela da nota mostra (packCountOf: o nome do produto, depois a resposta
-   * pack_count): vale quando a descrição não diz o tamanho.
+   * Quantos vinham na embalagem, pela regra da tela da nota (packCountOf: a descrição, o nome do produto, depois a
+   * resposta pack_count): vale quando a descrição não diz o tamanho.
    */
   packCount?: number | null;
 }
