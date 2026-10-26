@@ -289,6 +289,19 @@ Deno.test('weighedUnitPrice: o tamanho colado a um ponto e as unidades por exten
   assertEquals(weighedUnitPrice('QJ.MUSS.200G', 0.5, 'kg', 14.58, 30), 14.58);
 });
 
+Deno.test('weighedUnitPrice: o pacote de bandejas (C/2, 2X200G) fecha a conta com o peso de todas, ou com o de uma', () => {
+  // Duas bandejas de 200 g: R$ 29,16 o pacote é R$ 14,58 a bandeja, e 0,404 kg (as duas) a R$ 72,90 o kg dão os R$ 29,45.
+  assertEquals(weighedUnitPrice('QJ MUSS 200G C/2', 0.404, 'kg', 29.16, 29.45), 72.9);
+  assertEquals(weighedUnitPrice('QJ MUSS 2X200G', 0.404, 'kg', 29.16, 29.45), 72.9);
+  assertEquals(weighedUnitPrice('QJ MUSS 2 X 200G', 0.404, 'kg', 29.16, 29.45), 72.9);
+  assertEquals(weighedUnitPrice('QJ MUSS 2x 200 g', 0.404, 'kg', 29.16, 29.45), 72.9);
+  assertEquals(weighedUnitPrice('QJ MUSS 200G X 2', 0.404, 'kg', 29.16, 29.45), 72.9);
+  // A conta fecha com uma bandeja só (0,202 kg a R$ 72,90 o kg): o preço da bandeja é o dela, e o pacote não fecha.
+  assertEquals(weighedUnitPrice('QUEIJO 2X200G', 0.202, 'kg', 14.58, 14.73), 72.9);
+  // Nem uma bandeja nem o pacote fecham a conta: o preço lido fica.
+  assertEquals(weighedUnitPrice('QJ MUSS 200G C/2', 0.5, 'kg', 29.16, 30), 29.16);
+});
+
 Deno.test('preço da bandeja na linha pesada: a nota e a leitura do servidor guardam o preço por kg', () => {
   const r = cleanReceipt(
     {

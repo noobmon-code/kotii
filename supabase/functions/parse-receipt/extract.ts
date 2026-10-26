@@ -257,19 +257,27 @@ const SIZE_UNITS: Record<string, { unit: 'kg' | 'l'; inBase: number }> = {
   ml: { unit: 'l', inBase: 0.001 },
 };
 
-/** O tamanho escrito na descrição ("200g", "1,5 kg", "500 ML"), em kg ou litro; null sem tamanho ou com dois diferentes. */
-function printedSize(description: string): { unit: 'kg' | 'l'; amount: number } | null {
+/**
+ * O tamanho escrito na descrição ("200g", "1,5 kg", "500 ML"), em kg ou litro, e quantas bandejas dele vêm na
+ * embalagem ("C/2", "2X200G", "200G X 2": 2; sem nada disso, 1). null sem tamanho ou com dois diferentes.
+ */
+function printedSize(description: string): { unit: 'kg' | 'l'; amount: number; count: number } | null {
   // "1.000G" é mil gramas, não um.
   const text = description.toLowerCase().replace(/(\d)[.,](\d{3})(?=\s*(?:g|grs?|gramas?|ml)(?![a-z]))/g, '$1$2');
   // O tamanho pode vir colado a um ponto depois de letra ("SADIA.200G"); um número depois de dígito, com ou sem ponto
-  // ou vírgula no meio ("1.234,5KG"), não é tamanho.
-  const sizes = [...text.matchAll(/(?<![0-9][.,]?|x)(\d+(?:[.,]\d+)?)\s*(kg|grs?|gramas?|g|lts?|litros?|l|ml)(?![a-z])/g)].map((m) => {
-    const scale = SIZE_UNITS[m[2]];
-    return { unit: scale.unit, amount: Number(m[1].replace(',', '.')) * scale.inBase };
+  // ou vírgula no meio ("1.234,5KG"), não é tamanho. A contagem vem antes ("2X200G", "2 x 200 g") ou depois ("200G C/2").
+  const sizes = [
+    ...text.matchAll(
+      /(?:(?<![\d.,])(\d+)\s*x\s*)?(?<![0-9][.,]?)(\d+(?:[.,]\d+)?)\s*(kg|grs?|gramas?|g|lts?|litros?|l|ml)(?![a-z])(?:\s*(?:x|c\s*\/)\s*(\d+)(?![\d.,a-z]))?/g,
+    ),
+  ].map((m) => {
+    const scale = SIZE_UNITS[m[3]];
+    return { unit: scale.unit, amount: Number(m[2].replace(',', '.')) * scale.inBase, count: Number(m[1] ?? m[4] ?? 1) };
   });
   const [first] = sizes;
-  if (!first || !(first.amount > 0) || sizes.some((s) => s.unit !== first.unit || Math.abs(s.amount - first.amount) > 1e-9)) return null;
-  return first;
+  if (!first || !(first.amount > 0)) return null;
+  const otherSize = sizes.some((s) => s.unit !== first.unit || s.count !== first.count || Math.abs(s.amount - first.amount) > 1e-9);
+  return otherSize ? null : first;
 }
 
 /**
@@ -283,7 +291,8 @@ function printedSize(description: string): { unit: 'kg' | 'l'; amount: number } 
  * R$ 72,90 dá os R$ 14,73), o preço é o da bandeja sobre o tamanho dela. Sem o
  * tamanho na descrição, ou com uma conta que ele não fecha, o preço lido fica:
  * a diferença pode ser um peso mal lido, e o valor sobre o peso seria um preço
- * errado com cara de certo.
+ * errado com cara de certo. Com mais de uma bandeja na embalagem ("QJ MUSS 200G
+ * C/2"), o tamanho é o da bandeja ou o do pacote todo, o que fechar a conta.
  */
 export function weighedUnitPrice(description: string, quantity: number | null, unit: string, unitPrice: number, total: number): number {
   if ((unit !== 'kg' && unit !== 'l') || quantity == null || !(quantity > 0) || !(unitPrice > 0) || !(total > 0)) return unitPrice;
@@ -291,8 +300,12 @@ export function weighedUnitPrice(description: string, quantity: number | null, u
   if (cents(total) - cents(lineTotalFromPrinted(quantity, unit, unitPrice)) <= WEIGHED_TOLERANCE_CENTS) return unitPrice;
   const size = printedSize(description);
   if (!size || size.unit !== unit) return unitPrice;
-  const perBase = round(unitPrice / size.amount, 4);
-  return Math.abs(cents(lineTotalFromPrinted(quantity, unit, perBase)) - cents(total)) <= WEIGHED_TOLERANCE_CENTS ? perBase : unitPrice;
+  // Se nenhum dos dois tamanhos fecha a conta, ou se os dois fecham (não há como saber qual), o preço lido fica.
+  const amounts = size.count > 1 ? [size.amount, size.amount * size.count] : [size.amount];
+  const closing = amounts
+    .map((amount) => round(unitPrice / amount, 4))
+    .filter((perBase) => Math.abs(cents(lineTotalFromPrinted(quantity, unit, perBase)) - cents(total)) <= WEIGHED_TOLERANCE_CENTS);
+  return closing.length === 1 ? closing[0] : unitPrice;
 }
 
 /**
