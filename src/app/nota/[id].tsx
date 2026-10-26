@@ -319,9 +319,11 @@ export default function ReceiptScreen() {
   // Produto que sumiu do catálogo com a revisão aberta (foi juntado com outro em outro aparelho).
   const gone = goneProducts(items, overrides, catalog);
   // A descrição da nota traz o tamanho da embalagem: o pacote de 5 kg se compara pelo preço por kg. Sem ele na
-  // descrição, vale quantos vêm (pack_count, respondido na revisão): a cartela de 30 não se compara com a de 10 pelo preço.
+  // descrição, vale a mesma contagem que a tela mostra (packCountOf: a descrição, o nome do produto, depois a resposta da
+  // revisão em pack_count): a cartela de 30 não se compara com a de 10 pelo preço.
   const alertItems: AlertItem[] = items.flatMap((item) => {
-    const product = resolvedItems.get(item.id)!.product;
+    const resolved = resolvedItems.get(item.id)!;
+    const product = resolved.product;
     return product.kind === 'existing'
       ? [
           {
@@ -331,7 +333,8 @@ export default function ReceiptScreen() {
             unitPrice: item.unit_price,
             quantity: item.quantity,
             description: item.raw_description,
-            packCount: item.pack_count ?? null,
+            // O mesmo nome de produto que a pergunta e a linha da embalagem recebem (packPart).
+            packCount: packCountOf(item, resolved.productName),
           },
         ]
       : [];

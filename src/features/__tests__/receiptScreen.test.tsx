@@ -34,6 +34,8 @@ const mockDb: {
   fails: ((request: MockRequest) => boolean)[];
 } = { receipts: [], items: [], stores: [], writes: [], rpcs: [], reads: {}, holds: [], fails: [] };
 const mockMarket: { products: Row[]; pantryNear: Row[]; listItems: Row[]; stores: Row[] } = { products: [], pantryNear: [], listItems: [], stores: [] };
+/** O histórico de preço que a tela recebe (`usePriceObservations`): as compras de antes, zeradas a cada teste. */
+const mockPriceHistory: { points: Row[] } = { points: [] };
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn(), back: jest.fn() },
@@ -61,7 +63,7 @@ jest.mock('@/data/market', () => {
   return {
     useListLinks: () => links,
     useOpenListItems: () => loaded(mockMarket.listItems),
-    usePriceObservations: () => loaded([]),
+    usePriceObservations: () => loaded(mockPriceHistory.points),
     useProducts: () => loaded(mockMarket.products),
     usePurchaseRecords: () => loaded([]),
     useStores: () => loaded(mockMarket.stores),
@@ -314,6 +316,7 @@ beforeEach(() => {
   mockDb.holds = [];
   mockDb.fails = [];
   mockMarket.products = [];
+  mockPriceHistory.points = [];
   mockMarket.pantryNear = [];
   mockMarket.listItems = [];
   mockMarket.stores = [{ id: 's1', name: 'Assaí', cnpj: null, address: null }];
@@ -2274,6 +2277,42 @@ describe('item pesado no balcão que veio como "1 un"', () => {
     seed(receipt({ status: 'confirmed', total: 22.99 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }));
     await open();
     expect(page()).not.toContain('Veio pesado no balcão?');
+  });
+});
+
+describe('o alerta de preço usa a contagem que a tela mostra', () => {
+  // Dez dias antes da nota, em outro mercado (dentro da janela de 60 dias que só olha outro mercado).
+  const TEN_DAYS_AGO = `${YEAR}-05-31T15:00:00.000Z`;
+  beforeEach(() => {
+    mockMarket.stores = [
+      { id: 's1', name: 'Assaí', cnpj: null, address: null },
+      { id: 's2', name: 'Atacadão', cnpj: null, address: null },
+    ];
+  });
+
+  it('o produto "Ovos (30 un)" diz que vêm 30: o aviso de mais barato, que comparava a cartela com o preço sem tamanho, não sai', async () => {
+    mockMarket.products = [{ id: 'ovos30', name: 'Ovos (30 un)', category: 'ovos', shelf_life_days: null }];
+    seed(receipt({ total: 36.9 }), item('o', 'OVOS RANCHO CAIPIRA', 36.9, { product_id: 'ovos30', suggested_category: 'ovos', pack_count: null }));
+    mockPriceHistory.points = [
+      { product_id: 'ovos30', store_id: 's2', unit: 'un', unit_price: 13.99, purchased_at: TEN_DAYS_AGO, receipt_id: 'r0', description: 'OVOS' },
+    ];
+    await open();
+    expect(page()).toContain('30 ovos na embalagem: R$ 1,23 o ovo');
+    expect(page()).not.toContain('Um item saiu mais caro');
+    expect(page()).not.toContain('dava para economizar');
+  });
+
+  it('com a contagem na linha (10) e a do histórico (30 no ponto), o aviso de mais barato sai com a economia que a conta dá', async () => {
+    mockMarket.products = [{ id: 'ovos', name: 'Ovos', category: 'ovos', shelf_life_days: null }];
+    seed(receipt({ total: 13.99 }), item('o', 'OVOS', 13.99, { product_id: 'ovos', suggested_category: 'ovos', pack_count: 10 }));
+    mockPriceHistory.points = [
+      { product_id: 'ovos', store_id: 's2', unit: 'un', unit_price: 36.9, purchased_at: TEN_DAYS_AGO, receipt_id: 'r0', description: 'OVOS', packCount: 30 },
+    ];
+    await open();
+    expect(page()).toContain('10 ovos na embalagem: R$ 1,40 o ovo');
+    expect(page()).toContain('Um item saiu mais caro');
+    expect(page()).toContain('R$ 1,23 cada no Atacadão em 31 mai');
+    expect(page()).toContain('dava para economizar cerca de R$ 1,70');
   });
 });
 
