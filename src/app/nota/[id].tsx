@@ -84,10 +84,11 @@ import {
   CORRECTION_NOT_SAVED,
   INVALID_DATE,
   purchaseDateChange,
+  RECEIPT_GONE,
   receiptEditing,
   receiptTotalChange,
 } from '@/domain/receiptEdit';
-import { asksPackCount, packCountOf, packLabel, packLine, PACK_CHOICES, PACK_QUESTION, PACK_SAVED_NOT_SHOWN, PACK_UNREADABLE, readPackCount } from '@/domain/packCount';
+import { asksPackCount, packCountOf, packLabel, packLine, PACK_CHOICES, PACK_LINE_CHANGED, PACK_QUESTION, PACK_SAVED_NOT_SHOWN, PACK_UNREADABLE, readPackCount } from '@/domain/packCount';
 import { hasNoValue } from '@/domain/receiptItem';
 import {
   asksWeight,
@@ -179,6 +180,17 @@ const TOTAL_ROW_SLOP = { top: 12, bottom: 12 };
 /** Quanto a tela espera pela nota relida depois de gravar o valor de um item, antes de soltar "Confirmar nota". */
 const SETTLE_WAIT_MS = 4000;
 
+/** A nota que sumiu em outro aparelho: o `.single()` do banco não acha a linha (PGRST116). */
+const receiptGone = (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'PGRST116');
+/**
+ * "Confirmar nota" numa nota que sumiu: o `confirm_receipt` responde P0002 com "receipt not found". O mesmo código vem
+ * quando uma linha já não é da nota ("item … does not belong to receipt"): essa não diz que a nota sumiu.
+ */
+const confirmGone = (error: unknown) =>
+  Boolean(
+    error && typeof error === 'object' && 'code' in error && error.code === 'P0002' && 'message' in error && error.message === 'receipt not found',
+  );
+
 export default function ReceiptScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const receiptQuery = useReceipt(id);
@@ -226,6 +238,9 @@ export default function ReceiptScreen() {
   // A data que a nota confirmada está gravando. A tecla de enviar e a saída do campo chegam juntas (no celular, enviar
   // tira o foco), e o campo continua com o que foi digitado até a gravação voltar: a mesma data não grava de novo.
   const savingDate = useRef<string | null>(null);
+  // A data que a busca que falhou recusou, e a leitura da nota de então: a saída do campo que vem logo depois de enviar
+  // não avisa de novo enquanto o texto e essa leitura forem os mesmos (ver commitDate).
+  const warnedStaleDate = useRef<{ text: string; read: number } | null>(null);
   // O total da nota em edição (null: fechado). Só na revisão.
   const [totalText, setTotalText] = useState<string | null>(null);
   // Itens que a pessoa decidiu deixar sem valor nesta revisão. Não é guardado: abrir a nota de novo pergunta de novo.
@@ -299,9 +314,15 @@ export default function ReceiptScreen() {
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
   if (receiptQuery.isPending || products.isPending) return <Loading />;
-  // Com a nota na tela, a busca que falha fica acima dela (StaleNotice), inclusive quando a nota sumiu em outro aparelho.
-  // A tela do erro é só para quando não há nota para mostrar.
-  if (!receiptQuery.data) return <ErrorNotice error={receiptQuery.error} onRetry={() => receiptQuery.refetch()} />;
+  // Com a nota na tela, a busca que falha fica acima dela (StaleNotice). A tela do erro é para quando não há nota para
+  // mostrar, e a nota que sumiu em outro aparelho também: é a tela sem "Tentar de novo", porque buscar de novo não a traz.
+  if (!receiptQuery.data || receiptGone(receiptQuery.error)) {
+    return receiptGone(receiptQuery.error) ? (
+      <ErrorNotice error={new Error(RECEIPT_GONE)} />
+    ) : (
+      <ErrorNotice error={receiptQuery.error} onRetry={() => receiptQuery.refetch()} />
+    );
+  }
 
   const { receipt, items } = receiptQuery.data;
   const isDraft = receipt.status === 'draft';
@@ -319,9 +340,11 @@ export default function ReceiptScreen() {
   // Produto que sumiu do catálogo com a revisão aberta (foi juntado com outro em outro aparelho).
   const gone = goneProducts(items, overrides, catalog);
   // A descrição da nota traz o tamanho da embalagem: o pacote de 5 kg se compara pelo preço por kg. Sem ele na
-  // descrição, vale quantos vêm (pack_count, respondido na revisão): a cartela de 30 não se compara com a de 10 pelo preço.
+  // descrição, vale a mesma contagem que a tela mostra (packCountOf: a descrição, o nome do produto, depois a resposta da
+  // revisão em pack_count): a cartela de 30 não se compara com a de 10 pelo preço.
   const alertItems: AlertItem[] = items.flatMap((item) => {
-    const product = resolvedItems.get(item.id)!.product;
+    const resolved = resolvedItems.get(item.id)!;
+    const product = resolved.product;
     return product.kind === 'existing'
       ? [
           {
@@ -331,7 +354,8 @@ export default function ReceiptScreen() {
             unitPrice: item.unit_price,
             quantity: item.quantity,
             description: item.raw_description,
-            packCount: item.pack_count ?? null,
+            // O mesmo nome de produto que a pergunta e a linha da embalagem recebem (packPart).
+            packCount: packCountOf(item, resolved.productName),
           },
         ]
       : [];
@@ -455,8 +479,9 @@ export default function ReceiptScreen() {
   }
 
   /**
-   * Com a busca de fundo que falhou, a nota em tela é a de antes do que outro aparelho gravou: nada que dependa dos
-   * itens ou do rascunho é gravado por ela. Avisa e devolve `true`; a busca que falhou tem "Tentar de novo" acima.
+   * Com a busca de fundo que falhou, a nota em tela é a de antes do que outro aparelho gravou: nada é gravado por ela,
+   * nem itens, nem rascunho, nem correção do cabeçalho (que compara com o que a tela mostra). Avisa e devolve `true`; a
+   * busca que falhou tem "Tentar de novo" acima.
    */
   const refuseStale = () => {
     if (!receiptQuery.isError) return false;
@@ -471,12 +496,19 @@ export default function ReceiptScreen() {
       notify(INVALID_DATE.title, INVALID_DATE.message);
       return;
     }
+    // Com a busca que falhou, a nota em tela pode estar atrás do que outro aparelho gravou: avisa, e o campo fica como está.
+    // Enviar e sair do campo chegam juntos (ver savingDate): a mesma data com a mesma busca avisa uma vez só.
+    if (receiptQuery.isError) {
+      const again = warnedStaleDate.current?.text === dateText && warnedStaleDate.current.read === receiptQuery.dataUpdatedAt;
+      if (again) return;
+      warnedStaleDate.current = { text: dateText, read: receiptQuery.dataUpdatedAt };
+    }
+    if (refuseStale()) return;
     if (change.kind === 'same') {
       setDateText(null);
       return;
     }
     if (isDraft) {
-      if (refuseStale()) return;
       updateReceipt.mutate({ purchased_at: change.purchasedAt }, { onError });
       setDateText(null);
     } else {
@@ -496,9 +528,10 @@ export default function ReceiptScreen() {
   /** O mercado escolhido ou criado no seletor: na revisão, como sempre; na nota confirmada, uma correção. */
   function chooseStore(store: StoreChoice) {
     setPicker(null);
+    // Até o mesmo mercado avisa com a busca que falhou: a nota em tela pode estar atrás do que outro aparelho gravou.
+    if (refuseStale()) return;
     if ('id' in store && store.id === receipt.store_id) return;
     if (isDraft) {
-      if (refuseStale()) return;
       setStore.mutate(store, { onError });
     } else correctReceipt(correctStore, { store });
   }
@@ -544,6 +577,8 @@ export default function ReceiptScreen() {
       notify(change.title, change.message);
       return;
     }
+    // Com a busca que falhou, o total digitado fica no campo, também quando é o mesmo da nota em tela (ver refuseStale).
+    if (refuseStale()) return;
     if (change.kind === 'changed') {
       try {
         const { saved } = await correctTotal.mutateAsync({ total: change.total });
@@ -639,7 +674,8 @@ export default function ReceiptScreen() {
         if (written && shown) {
           const { itemId } = shown;
           if (itemId) setSavedAt((prev) => ({ ...prev, [itemId]: behind }));
-          if (read?.isError) notify(shown.saved.title, shown.saved.message);
+          // A nota que sumiu em outro aparelho é a tela dela (ver o gate), sem o "Tentar de novo" que este aviso manda usar.
+          if (read?.isError && !receiptGone(read.error)) notify(shown.saved.title, shown.saved.message);
         }
       }
     } catch (err) {
@@ -664,9 +700,10 @@ export default function ReceiptScreen() {
     setSettlingValue(true);
     try {
       const read = await rereadReceipt();
-      // A busca que falha deixa a nota na tela, com o aviso de cima: sem outro aviso, o toque não faria nada.
+      // A busca que falha deixa a nota na tela, com o aviso de cima: sem outro aviso, o toque não faria nada. A nota que
+      // sumiu vira a tela dela (ver o gate), e aí não há "Tentar de novo" para avisar.
       if (read?.isError) {
-        notify(RECEIPT_REREAD_FAILED.title, RECEIPT_REREAD_FAILED.message);
+        if (!receiptGone(read.error)) notify(RECEIPT_REREAD_FAILED.title, RECEIPT_REREAD_FAILED.message);
         return;
       }
       const notice = read ? RECEIPT_CAUGHT_UP : RECEIPT_STILL_BEHIND;
@@ -821,7 +858,12 @@ export default function ReceiptScreen() {
           notify('Nota salva', done.length ? done.join(' ') : undefined);
           router.back();
         },
-        onError,
+        onError: (err) => {
+          // A nota sumiu em outro aparelho (P0002): a tela busca a nota de novo, e vira a da nota que sumiu.
+          if (!confirmGone(err)) return onError(err);
+          notify('Nota não confirmada', RECEIPT_GONE);
+          void receiptQuery.refetch();
+        },
       });
     if (!receipt.store_id) {
       confirmAction(
@@ -897,7 +939,15 @@ export default function ReceiptScreen() {
     // A linha pode ter saído em outro aparelho: sem a busca, a gravação não acharia o item e nada avisaria.
     if (refuseStale()) return false;
     if (refuseWhileSaving(item.id)) return false;
-    void settleValue(setPack.mutateAsync({ id: item.id, count }), ({ saved }) => saved, { itemId: item.id, saved: PACK_SAVED_NOT_SHOWN });
+    void settleValue(
+      setPack.mutateAsync({ id: item.id, count }),
+      ({ saved }) => {
+        // Sem a linha de volta, a resposta não gravou nada (a linha saiu ou mudou em outro aparelho): a pessoa fica sabendo.
+        if (!saved) notify(PACK_LINE_CHANGED.title, PACK_LINE_CHANGED.message);
+        return saved;
+      },
+      { itemId: item.id, saved: PACK_SAVED_NOT_SHOWN },
+    );
     return true;
   }
 
