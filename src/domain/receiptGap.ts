@@ -226,12 +226,21 @@ export const RECEIPT_CAUGHT_UP = {
 };
 
 /**
- * O toque de peso ou de embalagem num item enquanto o valor de outro item ainda está sendo gravado: a tela não
- * grava esse toque, e diz. O toque repetido no mesmo item é o mesmo valor, e fica calado.
+ * O toque de peso ou de embalagem num item enquanto outro item ainda está gravando (do toque até a nota voltar): a
+ * tela não grava esse toque, e diz. O toque repetido no mesmo item é o mesmo valor, e fica calado.
  */
 export const OTHER_ITEM_SAVING = {
   title: 'Aguarde',
   message: 'Outro item ainda está sendo salvo. Toque de novo quando a nota voltar.',
+};
+
+/**
+ * O mesmo toque quando nenhum item está gravando e só a nota está sendo atualizada: a busca de "Confirmar nota", a
+ * remoção de um item ou a gravação de um item novo. A tela não grava esse toque, e diz.
+ */
+export const RECEIPT_BEING_UPDATED = {
+  title: 'Aguarde',
+  message: 'A nota ainda está sendo atualizada. Toque de novo quando ela voltar.',
 };
 
 /**

@@ -78,8 +78,11 @@ export const WEIGHT_SAVED_NOT_SHOWN = {
   title: 'Peso salvo',
   message: 'Não deu para atualizar a nota na tela: o item aparece por unidade até ela ser buscada de novo.',
 };
-/** A linha mudou em outro aparelho desde a leitura da tela: nada foi gravado, e a nota é buscada de novo. */
-export const WEIGHT_CHANGED_ELSEWHERE = {
+/**
+ * A linha já mudou desde a leitura da tela: em outro aparelho, ou numa gravação desta tela que perdeu a resposta.
+ * Este pedido não gravou nada, e a nota é buscada de novo.
+ */
+export const WEIGHT_LINE_CHANGED = {
   title: 'Peso não salvo',
-  message: 'Este item mudou em outro aparelho. A nota foi buscada de novo: confira e informe o peso outra vez.',
+  message: 'Este item já mudou antes deste toque. Confira a nota e, se ainda precisar, informe o peso outra vez.',
 };

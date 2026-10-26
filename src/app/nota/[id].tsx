@@ -61,6 +61,7 @@ import {
   pendingUnpriced,
   quantityText,
   readReceiptTotal,
+  RECEIPT_BEING_UPDATED,
   RECEIPT_CAUGHT_UP,
   RECEIPT_REREAD_FAILED,
   RECEIPT_STILL_BEHIND,
@@ -93,7 +94,7 @@ import {
   readWeight,
   weighedLine,
   weightQuestion,
-  WEIGHT_CHANGED_ELSEWHERE,
+  WEIGHT_LINE_CHANGED,
   WEIGHT_NOT_READ,
   WEIGHT_PLACEHOLDER,
   WEIGHT_SAVED_NOT_SHOWN,
@@ -817,11 +818,15 @@ export default function ReceiptScreen() {
 
   /**
    * Com um valor a caminho, o toque que pediria outra gravação não entra (uma por vez: o segundo gravaria sobre a
-   * linha de antes). No mesmo item é o toque repetido, o mesmo valor: calado. Em outro item, a pessoa fica sabendo.
+   * linha de antes). No mesmo item é o toque repetido, o mesmo valor: calado. Com outro item gravando, a pessoa fica
+   * sabendo; com a nota só voltando (a busca de "Confirmar nota", uma remoção), o aviso é o da nota.
    */
   function refuseWhileSaving(itemId: string): boolean {
     if (!valueWrites.current) return false;
-    if (!writingNow.current.has(itemId)) notify(OTHER_ITEM_SAVING.title, OTHER_ITEM_SAVING.message);
+    if (!writingNow.current.has(itemId)) {
+      const notice = writingNow.current.size ? OTHER_ITEM_SAVING : RECEIPT_BEING_UPDATED;
+      notify(notice.title, notice.message);
+    }
     return true;
   }
 
@@ -841,8 +846,9 @@ export default function ReceiptScreen() {
     void settleValue(
       saveWeightItem.mutateAsync({ item, weightKg: weight }),
       ({ saved }) => {
-        // Sem a linha de volta, nada foi gravado: a nota já é buscada de novo, e a pessoa informa o peso outra vez.
-        if (!saved) notify(WEIGHT_CHANGED_ELSEWHERE.title, WEIGHT_CHANGED_ELSEWHERE.message);
+        // Sem a linha de volta, este pedido não gravou nada (a linha já tinha mudado): a nota já é buscada de novo,
+        // e a pessoa confere e informa o peso outra vez, se ainda precisar.
+        if (!saved) notify(WEIGHT_LINE_CHANGED.title, WEIGHT_LINE_CHANGED.message);
         return saved;
       },
       { itemId: item.id, saved: WEIGHT_SAVED_NOT_SHOWN },

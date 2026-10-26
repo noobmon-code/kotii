@@ -1954,6 +1954,30 @@ describe('item pesado no balcão que veio como "1 un"', () => {
     expect(writes('receipt_items')[1]).toMatchObject({ filters: { id: 'i2' }, values: { quantity: 0.2, unit: 'kg' } });
   });
 
+  it('com a nota ainda voltando (a busca de "Confirmar nota" segurada, nenhum item gravando), o peso de outro item é recusado com o aviso da nota, e o campo fica com o que foi digitado', async () => {
+    seed(receipt({ total: 30.98 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }), item('i2', 'PRESUNTO COZIDO', 7.99, { suggested_category: 'frios' }));
+    await open();
+    await press(chip('Informar o peso', card('QUEIJO parmesão')));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    // O queijo grava, e a nota que volta não chega: a tela fica atrás do que foi gravado.
+    mockDb.fails = [receiptRead];
+    await press(chip('Salvar peso', card('QUEIJO parmesão')));
+    mockDb.fails = [];
+    // "Confirmar nota" busca a nota de novo, e essa busca fica segurada: nenhum item está gravando agora.
+    const release = hold(receiptRead);
+    await press(button('Confirmar nota'));
+    await press(chip('Informar o peso', card('PRESUNTO COZIDO')));
+    act(() => weightField()!.props.onChangeText('0,2'));
+    await press(chip('Salvar peso', card('PRESUNTO COZIDO')));
+    // O aviso é o da nota, que ainda está voltando: "Outro item ainda está sendo salvo" seria falso aqui.
+    expect(jest.mocked(notify).mock.calls.at(-1)).toEqual(['Aguarde', 'A nota ainda está sendo atualizada. Toque de novo quando ela voltar.']);
+    expect(weightField()!.props.value).toBe('0,2');
+    expect(writes('receipt_items')).toHaveLength(1);
+    await release();
+    await settle();
+    expect(jest.mocked(notify).mock.calls.at(-1)).toEqual(['Nota atualizada', 'Confira os itens e toque em "Confirmar nota" de novo.']);
+  });
+
   it('enquanto a pessoa digita, o campo mostra o que "Salvar peso" vai gravar; o que não dá para ler diz isso, e nada grava antes do toque', async () => {
     seed(receipt({ total: 14.6 }), item('i1', 'QUEIJO parmesão', 14.6, { suggested_category: 'laticinios' }));
     await open();
@@ -1999,11 +2023,40 @@ describe('item pesado no balcão que veio como "1 un"', () => {
     // Nada foi regravado por cima do valor de agora, e a pessoa fica sabendo.
     expect(mockDb.items[0]).toMatchObject({ total_price: 25.5, unit_price: 25.5, unit: 'un', quantity: 1 });
     expect(jest.mocked(notify).mock.calls).toEqual([
-      ['Peso não salvo', 'Este item mudou em outro aparelho. A nota foi buscada de novo: confira e informe o peso outra vez.'],
+      ['Peso não salvo', 'Este item já mudou antes deste toque. Confira a nota e, se ainda precisar, informe o peso outra vez.'],
     ]);
     // A nota foi buscada de novo: o queijo mostra o valor de agora e volta a perguntar o peso.
     expect(said(card('QUEIJO parmesão'))).toContain('R$ 25,50');
     expect(chip('Informar o peso', card('QUEIJO parmesão'))).toBeDefined();
+  });
+
+  it('a gravação do peso que chega ao banco e perde a resposta: a tela não sabe e pergunta de novo, e a segunda tentativa não grava por cima, avisa que o item já mudou', async () => {
+    seed(receipt({ total: 22.99 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }));
+    await open();
+    await press(chip('Informar o peso'));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    // A gravação chega ao banco; a resposta é que se perde (a rede cai antes de ela voltar).
+    mockDb.fails = [itemWrite];
+    const release = hold(itemWrite);
+    await press(chip('Salvar peso'));
+    Object.assign(mockDb.items[0], { quantity: 0.186, unit: 'kg', unit_price: 123.6022 });
+    await release();
+    expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'caiu a rede']]);
+    expect(page()).toContain('Veio pesado no balcão?');
+    // A pessoa informa o peso de novo: o pedido não acha a linha por unidade, nada é gravado por cima.
+    mockDb.fails = [];
+    await press(chip('Informar o peso'));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    await press(chip('Salvar peso'));
+    expect(writes('receipt_items')).toHaveLength(2);
+    expect(mockDb.items[0]).toMatchObject({ quantity: 0.186, unit: 'kg', unit_price: 123.6022 });
+    expect(jest.mocked(notify).mock.calls[1]).toEqual([
+      'Peso não salvo',
+      'Este item já mudou antes deste toque. Confira a nota e, se ainda precisar, informe o peso outra vez.',
+    ]);
+    // A nota volta com a linha por kg, e a pergunta sai.
+    expect(page()).toContain('0,186 kg × R$ 123,60');
+    expect(page()).not.toContain('Veio pesado no balcão?');
   });
 
   it('com a nota relida antes do peso, o peso grava o valor de agora e o preço por kg sobre ele', async () => {
