@@ -283,6 +283,10 @@ Deno.test('weighedUnitPrice: o tamanho colado a um ponto e as unidades por exten
   assertEquals(weighedUnitPrice('QJ MUSS FAT 200 GRAMAS', 0.202, 'kg', 14.58, 14.73), 72.9);
   assertEquals(weighedUnitPrice('QJ MUSS FAT 200GRAMA', 0.202, 'kg', 14.58, 14.73), 72.9);
   assertEquals(weighedUnitPrice('FRIOS BANDEJA 250 GRS', 0.26, 'kg', 9.98, 10.38), 39.92);
+  // Os controles: com espaço, sem separador, e dois tamanhos em GRS que não se somam (sem lançar erro, e fica o preço).
+  assertEquals(weighedUnitPrice('PTO.PERU SADIA 200G', 0.202, 'kg', 14.58, 14.73), 72.9);
+  assertEquals(weighedUnitPrice('QJMUSS200G', 0.202, 'kg', 14.58, 14.73), 72.9);
+  assertEquals(weighedUnitPrice('Kit 200GRS + 300GRS', 0.202, 'kg', 14.58, 14.73), 14.58);
   assertEquals(weighedUnitPrice('AGUA 0,5 LITROS', 2, 'l', 2, 8), 4);
   assertEquals(weighedUnitPrice('AGUA 0,5 LTS', 2, 'l', 2, 8), 4);
   // Número depois de dígito, com ponto ou vírgula no meio, não é tamanho: "1.234,5KG" não lê nada, e a conta fica.
