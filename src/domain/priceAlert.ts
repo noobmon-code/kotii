@@ -50,7 +50,10 @@ export interface PricePoint {
   receipt_id: string;
   /** A descrição da linha da nota, de onde sai o tamanho da embalagem. */
   description?: string;
-  /** Quantos vinham na embalagem, respondido na revisão (pack_count), como em AlertItem. */
+  /**
+   * Quantos vinham na embalagem, respondido na revisão (pack_count): sem o nome do produto,
+   * ao contrário de AlertItem.packCount.
+   */
   packCount?: number | null;
 }
 
