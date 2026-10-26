@@ -61,6 +61,7 @@ import {
   quantityText,
   readReceiptTotal,
   RECEIPT_CAUGHT_UP,
+  RECEIPT_REREAD_FAILED,
   RECEIPT_STILL_BEHIND,
   RECEIPT_TOTAL_HINT,
   RECEIPT_TOTAL_LABEL,
@@ -126,6 +127,7 @@ import {
 } from '@/domain/similarNames';
 import { canRenameStore, printedNameLine } from '@/domain/storeName';
 import { PayerChips } from '@/features/finance/PayerChips';
+import { StaleNotice } from '@/features/health/StaleNotice';
 import { ReceiptItemEditor } from '@/features/ReceiptItemEditor';
 import { ReceiptListSection } from '@/features/ReceiptListSection';
 import { RenameStoreModal } from '@/features/RenameStoreModal';
@@ -174,6 +176,9 @@ const TOTAL_ROW_SLOP = { top: 12, bottom: 12 };
 
 /** Quanto a tela espera pela nota relida depois de gravar o valor de um item, antes de soltar "Confirmar nota". */
 const SETTLE_WAIT_MS = 4000;
+
+/** A nota que sumiu em outro aparelho: o `.single()` do banco não acha a linha (PGRST116). */
+const receiptGone = (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'PGRST116');
 
 export default function ReceiptScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -290,7 +295,9 @@ export default function ReceiptScreen() {
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
   if (receiptQuery.isPending || products.isPending) return <Loading />;
-  if (receiptQuery.isError) return <ErrorNotice error={receiptQuery.error} onRetry={() => receiptQuery.refetch()} />;
+  // Com a nota na tela, a busca que falha fica acima dela (StaleNotice). A tela do erro é para quando não há nota
+  // para mostrar, ou quando a nota sumiu em outro aparelho.
+  if (!receiptQuery.data || receiptGone(receiptQuery.error)) return <ErrorNotice error={receiptQuery.error} onRetry={() => receiptQuery.refetch()} />;
 
   const { receipt, items } = receiptQuery.data;
   const isDraft = receipt.status === 'draft';
@@ -613,8 +620,11 @@ export default function ReceiptScreen() {
     setSettlingValue(true);
     try {
       const read = await rereadReceipt();
-      // A busca que falha troca a tela pela do erro, com como tentar de novo: ali não há o que avisar.
-      if (read?.isError) return;
+      // A busca que falha deixa a nota na tela, com o aviso de cima: sem outro aviso, o toque não faria nada.
+      if (read?.isError) {
+        notify(RECEIPT_REREAD_FAILED.title, RECEIPT_REREAD_FAILED.message);
+        return;
+      }
       const notice = read ? RECEIPT_CAUGHT_UP : RECEIPT_STILL_BEHIND;
       notify(notice.title, notice.message);
     } finally {
@@ -909,6 +919,8 @@ export default function ReceiptScreen() {
         ) : undefined
       }>
       <Stack.Screen options={{ title: isDraft ? 'Revisar nota' : 'Nota fiscal' }} />
+
+      {receiptQuery.isError ? <StaleNotice onRetry={() => receiptQuery.refetch()} /> : null}
 
       {duplicate ? (
         <Card style={styles.gapSm}>

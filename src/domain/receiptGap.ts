@@ -225,6 +225,15 @@ export const RECEIPT_CAUGHT_UP = {
   message: 'Confira os itens e toque em "Confirmar nota" de novo.',
 };
 
+/**
+ * "Confirmar nota" tocado com a busca da nota falhando: a nota fica na tela, com o aviso de que não atualizou, e a
+ * confirmação espera a busca dar certo. Sem este aviso, o toque não faria nada e a pessoa não saberia por quê.
+ */
+export const RECEIPT_REREAD_FAILED = {
+  title: 'Não deu para buscar a nota',
+  message: 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.',
+};
+
 /** A nota ainda não voltou: nada é confirmado com os itens de antes. */
 export const RECEIPT_STILL_BEHIND = {
   title: 'A nota ainda não atualizou',
