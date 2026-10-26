@@ -77,7 +77,7 @@ function tokens(description: string): string[] {
       .replace(/(\d)[.,](\d)/g, '$1.$2')
       // O ponto depois de letra separa, como o espaço ("SADIA.200G", "200G.C/2"), como no servidor;
       // depois de dígito ("1.5L", "200.G") ele fica como está.
-      .replace(/(?<=[a-z])\./g, ' ')
+      .replace(/([a-z])\./g, '$1 ')
       // Número e letras colados se separam ("5kg", "cx12", "t1"); "350mlx12" também.
       .replace(/(\d)(?=[a-z])/g, '$1 ')
       .replace(/([a-z])(?=\d)/g, '$1 ')
