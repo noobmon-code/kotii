@@ -1,8 +1,10 @@
 // Histórico de preço de um produto: o que a casa pagou por ele em cada compra
-// (linhas de notas confirmadas), ao longo do tempo. O preço é sempre o impresso
-// na nota (unit_price), levado a kg, litro ou unidade para comparar e
-// arredondado para centavos uma vez só: é esse valor que a seção compara e
-// escreve. O que foi pago (com desconto) aparece só na linha da compra. Linha
+// (linhas de notas confirmadas), ao longo do tempo. O preço é sempre o
+// unit_price guardado: o impresso na nota ou, numa linha pesada, o derivado
+// (o total pelo peso na revisão, o preço da bandeja pelo tamanho na leitura).
+// Ele é levado a kg, litro ou unidade para comparar e arredondado para centavos
+// uma vez só: é esse valor que a seção compara e escreve. O que foi pago (com
+// desconto) aparece só na linha da compra. Linha
 // com preço zero (a leitura não trouxe o valor, ou o item saiu de graça) não é
 // preço: fica na lista como "sem valor" e fora de tudo o que fala de preço.
 // Unidades que não se comparam (kg e un) nunca se misturam: cada uma tem o seu
