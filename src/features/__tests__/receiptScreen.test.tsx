@@ -1684,9 +1684,9 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     mockDb.receipts = [];
     await press(button('Salvar total'));
     expect(jest.mocked(notify).mock.calls).toEqual([['Correção não salva', 'Esta nota não existe mais.']]);
-    // A nota relida não vem: a tela passa a ser a do erro, com como tentar de novo.
-    expect(page()).not.toContain('Salvar total');
-    expect(page()).not.toContain('DETERGENTE YPE');
+    // A nota relida não vem: com a nota na tela, a busca que falha fica acima dela (StaleNotice), e a tela não some com ela.
+    expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
+    expect(page()).toContain('DETERGENTE YPE');
   });
 
   it('a revisão continua como antes: a data vai sem o filtro da nota confirmada, e não há a frase', async () => {
