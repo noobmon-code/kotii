@@ -328,6 +328,44 @@ describe('estimateList', () => {
     expect(estimateList(list, quotes, { usual: new Map([['queijo', { l: 0.2 }]]) }).byItem.get('q')).toMatchObject({ cost: 72.9 });
   });
 
+  describe('ovos: o "Menor preço" é o de menor preço por ovo, quando as duas cartelas dizem quantos vêm', () => {
+    const cartela = (storeId: string, unitPrice: number, day: string, packCount: number | null) => ({
+      ...price('ovos', storeId, unitPrice, `${day}T12:00:00Z`),
+      packCount,
+    });
+    const names = { storeName: (id: string) => (id === 'assai' ? 'Assaí' : 'Atacadão'), today: '2026-10-25' };
+    const facts = (quotes: EstimatePrice[], extra: { promotionOnly?: boolean } = {}) =>
+      itemFacts(estimateList([item('o', 'Ovos', 'ovos')], quotes).byItem.get('o'), undefined, { ...names, category: 'ovos', ...extra });
+
+    it('a cartela de 30 a R$ 39,90 (R$ 1,33 o ovo) é o menor preço, contra a de 10 a R$ 13,99 (R$ 1,40), que é o último', () => {
+      expect(facts([cartela('assai', 13.99, '2026-10-22', 10), cartela('atacadao', 39.9, '2026-10-21', 30)])).toEqual([
+        'Último preço: R$ 13,99/un, 10 ovos (R$ 1,40 o ovo) (Assaí, 22 out).',
+        'Menor preço: R$ 39,90/un, 30 ovos (R$ 1,33 o ovo) (Atacadão, 21 out).',
+      ]);
+    });
+
+    it('a de 30 é a última e já é a mais barata por ovo: não aparece "Menor preço" da cartela de 10, mais cara por ovo', () => {
+      expect(facts([cartela('assai', 13.99, '2026-10-20', 10), cartela('atacadao', 39.9, '2026-10-22', 30)])).toEqual([
+        'Último preço: R$ 39,90/un, 30 ovos (R$ 1,33 o ovo) (Atacadão, 22 out).',
+      ]);
+    });
+
+    it('só em promoção: o preço bom é a cartela de menor preço por ovo', () => {
+      expect(facts([cartela('assai', 13.99, '2026-10-22', 10), cartela('atacadao', 39.9, '2026-10-21', 30)], { promotionOnly: true })).toEqual([
+        'Último preço: R$ 13,99/un, 10 ovos (R$ 1,40 o ovo) (Assaí, 22 out).',
+        'Menor preço: R$ 39,90/un, 30 ovos (R$ 1,33 o ovo) (Atacadão, 21 out).',
+        'Só em promoção: o preço bom é R$ 39,90/un, 30 ovos (R$ 1,33 o ovo) ou menos.',
+      ]);
+    });
+
+    it('sem a contagem de um dos lados, compara pela cartela, como antes', () => {
+      expect(facts([cartela('assai', 13.99, '2026-10-21', 10), cartela('atacadao', 39.9, '2026-10-22', null)])).toEqual([
+        'Último preço: R$ 39,90/un (Atacadão, 22 out).',
+        'Menor preço: R$ 13,99/un, 10 ovos (R$ 1,40 o ovo) (Assaí, 21 out).',
+      ]);
+    });
+  });
+
   it('ovos: o último preço diz quantos vinham na cartela e quanto sai cada ovo, quando a pessoa disse na revisão', () => {
     const quotes = [
       { ...price('ovos', 'bom', 13.99, '2026-10-20T12:00:00Z'), packCount: 10 },
