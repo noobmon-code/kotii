@@ -66,6 +66,8 @@ export interface ItemEstimate {
   approximateQuantity: boolean;
   /** Item em "un" com preço por kg ou litro: quanto a casa costuma levar dele de uma vez (usualAmounts), o que a conta usa. */
   perPiece?: UsualAmount;
+  /** Item em "un" com preço por kg ou litro sem o costume, porque o histórico de compras não carregou: a conta é de 1 kg, e diz isso. */
+  historyMissing?: boolean;
   /** O produto de onde saem o último preço, o "preço bom" e a estimativa do item (itemResolver). */
   productId: string;
   /**
@@ -157,6 +159,8 @@ interface PriceSources {
   shared?: readonly SharedQuote[];
   /** O que a casa costuma levar dos produtos vendidos a peso (usualAmounts): a conta do item em "un" com preço por kg. */
   usual?: UsualAmounts;
+  /** O histórico de compras não carregou (sem dados, e a busca não anda): sem o costume, a conta diz isso. */
+  historyMissing?: boolean;
 }
 
 /** Quanto a casa leva de um produto por vez, em kg ou litro. */
@@ -327,7 +331,10 @@ export type StorePriceSource =
 
 /** O preço de um item da lista num mercado, e de onde ele vem (listStorePrices). */
 export interface StorePrice
-  extends Pick<ItemEstimate, 'cost' | 'unitPrice' | 'unit' | 'kind' | 'approximateQuantity' | 'perPiece' | 'productId' | 'used' | 'shared'> {
+  extends Pick<
+    ItemEstimate,
+    'cost' | 'unitPrice' | 'unit' | 'kind' | 'approximateQuantity' | 'perPiece' | 'productId' | 'used' | 'shared' | 'historyMissing'
+  > {
   source: StorePriceSource;
 }
 
@@ -391,6 +398,9 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
       // qualquer que seja a quantidade: "6 un" de banana são as bananas de sempre, não seis vezes elas.
       const piece = piecePerUnit(sources.usual, item.unit, priceUnit, [seen?.productId ?? used?.productId ?? productId, productId]);
       const { quantity, approximate } = piece ? { quantity: piece.inPriceUnit, approximate: true } : priceQuantity(item.quantity, item.unit, priceUnit);
+      // Sem o costume porque o histórico de compras não carregou: o 1 kg de sempre, e a conta diz que o costume não entrou.
+      const historyMissing =
+        !piece && sources.historyMissing === true && item.unit === 'un' && ['kg', 'l'].includes(pricePerBase(1, priceUnit).unit);
       return {
         source,
         cost: round2(unitPrice * quantity),
@@ -400,6 +410,7 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
         kind: used || seen ? 'known' : 'estimated',
         approximateQuantity: approximate,
         ...(piece ? { perPiece: piece.perPiece } : {}),
+        ...(historyMissing ? { historyMissing: true } : {}),
         productId,
         used,
         ...(seen ? { shared: seen } : {}),
@@ -522,10 +533,10 @@ export function listSharedElsewhere(
 export function estimateList(
   items: readonly EstimateItem[],
   prices: readonly EstimatePrice[],
-  { links, products, shared, usual, storeId = null }: PriceSources & { storeId?: string | null } = {},
+  { links, products, shared, usual, storeId = null, historyMissing }: PriceSources & { storeId?: string | null } = {},
 ): ListEstimate {
   const index = storePriceIndex(prices);
-  const price = itemPricer(prices, { links, products, shared, usual }, index);
+  const price = itemPricer(prices, { links, products, shared, usual, historyMissing }, index);
 
   const byItem = new Map<string, ItemEstimate>();
   // Todo mercado com nível de preço pode ser escolhido, mesmo sem preço de nota para esta lista. Só esses: o
@@ -545,6 +556,7 @@ export function estimateList(
       kind,
       approximateQuantity,
       ...(perPiece ? { perPiece } : {}),
+      ...(answer.historyMissing ? { historyMissing: true } : {}),
       productId,
       used,
       ...(seen ? { shared: seen } : {}),
@@ -844,13 +856,14 @@ const withNote = (text: string, note: string | null) => (note ? `${text}, ${note
 
 /**
  * A quantidade que a conta usou, quando não é a da lista: o costume ("~201 g (o que a casa costuma levar)") ou, sem
- * ele, 1 kg, 1 litro ou 1 unidade. null quando é a quantidade da lista.
+ * ele, 1 kg, 1 litro ou 1 unidade (e, se o histórico de compras não carregou, diz isso). null quando é a da lista.
  */
-function countedNote(price: Partial<Pick<StorePrice, 'approximateQuantity' | 'perPiece' | 'unit'>>): string | null {
+function countedNote(price: Partial<Pick<StorePrice, 'approximateQuantity' | 'perPiece' | 'unit' | 'historyMissing'>>): string | null {
   if (price.perPiece) return `~${usualAmountLabel(price.perPiece)} (o que a casa costuma levar)`;
   if (!price.approximateQuantity) return null;
   const base = pricePerBase(1, price.unit ?? '').unit;
-  return `${base === 'kg' ? '1 kg' : base === 'l' ? '1 litro' : '1 unidade'} (quantidade em outra unidade)`;
+  const counted = base === 'kg' ? '1 kg' : base === 'l' ? '1 litro' : '1 unidade';
+  return `${counted} (${price.historyMissing ? 'o histórico de compras não carregou' : 'quantidade em outra unidade'})`;
 }
 
 /** "Preço por kg" e "Preço por litro" para o que é por peso ou volume; "Preço por unidade da nota", para o resto. */
@@ -868,7 +881,7 @@ function priceHead(unit: string): string {
  * quantidade da lista: nada a avisar.
  */
 export function storePriceNote(
-  price: Pick<StorePrice, 'source' | 'approximateQuantity' | 'perPiece' | 'unit' | 'used' | 'shared'>,
+  price: Pick<StorePrice, 'source' | 'approximateQuantity' | 'perPiece' | 'unit' | 'used' | 'shared' | 'historyMissing'>,
   productName?: (productId: string) => string | undefined,
   referenceYear?: number,
 ): string | null {
@@ -887,7 +900,7 @@ export function storePriceNote(
  * a conta usa outra quantidade, qual.
  */
 export function sharedOnlyNote(
-  price: Pick<StorePrice, 'shared'> & Partial<Pick<StorePrice, 'approximateQuantity' | 'perPiece' | 'unit'>>,
+  price: Pick<StorePrice, 'shared'> & Partial<Pick<StorePrice, 'approximateQuantity' | 'perPiece' | 'unit' | 'historyMissing'>>,
   storeName: (storeId: string) => string | undefined = () => undefined,
   referenceYear?: number,
 ): string {
@@ -1051,8 +1064,10 @@ export function itemFacts(
       facts.push(`O preço é por ${counted}: a conta da lista usa ${usualAmountLabel(estimate.perPiece)}, o que a casa costuma levar de uma vez.`);
     } else if (estimate.approximateQuantity) {
       // A conta é de 1 kg, 1 litro ou 1 unidade (units, priceQuantity): com o preço por g, de 1 kg, como o preço aparece.
+      // Sem o costume porque o histórico de compras não carregou, diz isso.
       const counted = pricePerBase(1, unit).unit;
-      facts.push(`O preço é por ${counted}: a conta da lista usa 1 ${counted}.`);
+      const why = estimate.historyMissing ? ' (o histórico de compras não carregou)' : '';
+      facts.push(`O preço é por ${counted}: a conta da lista usa 1 ${counted}${why}.`);
     }
   }
   if (hit) {

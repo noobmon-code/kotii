@@ -482,6 +482,28 @@ describe('estimateList', () => {
       );
     });
 
+    it('sem o histórico de compras (não carregou), a conta é de 1 kg, e o detalhe e a nota dizem por quê', () => {
+      const estimate = estimateList(cheese, cheesePrice, { historyMissing: true });
+      expect(estimate.byItem.get('q')).toMatchObject({ cost: 72.9, approximateQuantity: true, historyMissing: true });
+      expect(itemFacts(estimate.byItem.get('q'), undefined, { storeName: () => 'Bom', today: '2026-10-25' })).toContain(
+        'O preço é por kg: a conta da lista usa 1 kg (o histórico de compras não carregou).',
+      );
+      expect(storePriceNote(listStorePrices(cheese, cheesePrice, { historyMissing: true })('q', 'bom')!)).toBe(
+        'Preço por kg, 1 kg (o histórico de compras não carregou)',
+      );
+      // Histórico carregado sem compra do queijo a peso: o 1 kg de sempre, sem o aviso.
+      const loaded = estimateList(cheese, cheesePrice, { usual: new Map(), historyMissing: false }).byItem.get('q')!;
+      expect(loaded).toMatchObject({ cost: 72.9, approximateQuantity: true });
+      expect(loaded.historyMissing).toBeUndefined();
+      expect(itemFacts(loaded, undefined, { storeName: () => 'Bom', today: '2026-10-25' })).toContain('O preço é por kg: a conta da lista usa 1 kg.');
+      // Com o costume, o histórico chegou: a conta é o costume, sem o aviso.
+      const withUsual = estimateList(cheese, cheesePrice, { usual: new Map([['queijo', { kg: 0.201 }]]), historyMissing: true });
+      expect(withUsual.byItem.get('q')).toMatchObject({ cost: 14.65, perPiece: { amount: 0.201 } });
+      expect(withUsual.byItem.get('q')!.historyMissing).toBeUndefined();
+      // Item em kg, e não em "un": não há costume a esperar.
+      expect(estimateList([item('k', 'Queijo', 'queijo', 0.2, 'kg')], cheesePrice, { historyMissing: true }).byItem.get('k')!.historyMissing).toBeUndefined();
+    });
+
     it('com número par de notas, o costume é a menor das duas do meio, nunca a média: uma peça de 2,5 kg não puxa o de 0,2 kg', () => {
       const usual = usualAmounts([buy('queijo', 0.2, 'kg'), buy('queijo', 2.5, 'kg')]);
       expect(usual.get('queijo')).toEqual({ kg: 0.2 });

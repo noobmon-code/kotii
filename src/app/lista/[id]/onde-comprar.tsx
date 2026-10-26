@@ -70,7 +70,15 @@ export default function WhereToBuyScreen() {
     // Os mercados da casa se reconhecem pelo CNPJ, e o preço da casa sempre vence: sem os mercados ou sem os
     // preços da casa carregados, nada de outras casas (eles ocupariam o lugar dos dela).
     const seenElsewhere = shared.data && stores.data && prices.data ? sharedQuotes(shared.data, prices.data, stores.data) : [];
-    const sources = { links: links.data, products: products.data ?? [], shared: seenElsewhere, usual: usualAmounts(purchases.data ?? []) };
+    // Sem o histórico de compras (a busca falhou, ou parada): o costume não entra, e a linha do item diz isso. A tela
+    // só mostra a conta depois da primeira busca (ver onTheWay, abaixo).
+    const sources = {
+      links: links.data,
+      products: products.data ?? [],
+      shared: seenElsewhere,
+      usual: usualAmounts(purchases.data ?? []),
+      historyMissing: purchases.data === undefined,
+    };
     const all = pending.map((i) => ({ id: i.id, name: i.name, productId: i.product_id, quantity: Number(i.quantity), unit: i.unit }));
     // O item sem preço nenhum da casa, só com o de outras casas, fica fora dos planos (não há preço dele em todo
     // mercado nem média da casa para estimar) e aparece à parte, com o preço que a lista mostra.

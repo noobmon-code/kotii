@@ -225,6 +225,23 @@ describe('"Onde comprar" com o que vende a peso', () => {
     mockQueries.purchases = onTheWay();
     expect(await mount()).toContain('Comparando preços…');
   });
+
+  it('sem o histórico de compras (a busca falhou): a linha diz que ele não carregou, e a conta é de 1 kg', async () => {
+    mockQueries.items = loaded([{ ...listItem('q', 'Queijo', 'queijo'), category: 'laticinios' }]);
+    mockQueries.prices = loaded([{ ...own('queijo', 'assai', 72.9), unit: 'kg' }]);
+    mockQueries.purchases = failed();
+    const page = await mount();
+    expect(page).toContain('Preço por kg, 1 kg (o histórico de compras não carregou)');
+    expect(page).toContain('~R$ 72,90');
+  });
+
+  it('com o histórico carregado e sem compra do queijo a peso, a linha é a de sempre, sem o aviso', async () => {
+    mockQueries.items = loaded([{ ...listItem('q', 'Queijo', 'queijo'), category: 'laticinios' }]);
+    mockQueries.prices = loaded([{ ...own('queijo', 'assai', 72.9), unit: 'kg' }]);
+    const page = await mount();
+    expect(page).toContain('Preço por kg, 1 kg (quantidade em outra unidade)');
+    expect(page).not.toContain('histórico de compras não carregou');
+  });
 });
 
 describe('"Vou neste"', () => {
