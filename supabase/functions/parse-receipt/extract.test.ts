@@ -257,6 +257,8 @@ Deno.test('weighedUnitPrice: o preço da bandeja impresso no lugar do preço por
   // As duas linhas do pedido que imprimiu o preço da bandeja: 0,202 kg × R$ 72,90 = R$ 14,73.
   assertEquals(weighedUnitPrice('Queijo Muçarela Importado Fatiado 200g', 0.202, 'kg', 14.58, 14.73), 72.9);
   assertEquals(weighedUnitPrice('Bife De Lagarto Bovino À Vácuo Resfriado 500g', 0.412, 'kg', 29.95, 24.68), 59.9);
+  // Fecha com o preço lido (0,35 kg × R$ 39,90 = R$ 13,97): a conta cai antes de ler o tamanho, então este caso não
+  // prova a troca de "1.000G" (ela é provada no teste de "1.000G" e "1.000ML" abaixo).
   assertEquals(weighedUnitPrice('PRESUNTO FAT 1.000G', 0.35, 'kg', 39.9, 13.97), 39.9);
   assertEquals(weighedUnitPrice('FRIOS BANDEJA 250 G', 0.26, 'kg', 9.98, 10.38), 39.92);
   // A conta já fecha (o preço é por kg), ou o valor é menor (desconto do item): o preço lido fica.
@@ -271,6 +273,47 @@ Deno.test('weighedUnitPrice: o preço da bandeja impresso no lugar do preço por
   // Só peso e volume; em un, ou sem quantidade lida, nada muda.
   assertEquals(weighedUnitPrice('Queijo 200g', 1, 'un', 14.58, 29.16), 14.58);
   assertEquals(weighedUnitPrice('Queijo 200g', null, 'kg', 14.58, 14.73), 14.58);
+});
+
+Deno.test('weighedUnitPrice: o tamanho colado a um ponto e as unidades por extenso (GRS, GRAMAS, LITROS, LTS) contam', () => {
+  // "SADIA.200G": o ponto depois da marca não tira o tamanho. Os casos são de 0,202 kg de uma bandeja de 200 g a R$ 14,58.
+  assertEquals(weighedUnitPrice('PTO.PERU SADIA.200G', 0.202, 'kg', 14.58, 14.73), 72.9);
+  assertEquals(weighedUnitPrice('QJ.MUSS.200G', 0.202, 'kg', 14.58, 14.73), 72.9);
+  assertEquals(weighedUnitPrice('QJ MUSS FAT 200GRS', 0.202, 'kg', 14.58, 14.73), 72.9);
+  assertEquals(weighedUnitPrice('QJ MUSS FAT 200 GRAMAS', 0.202, 'kg', 14.58, 14.73), 72.9);
+  assertEquals(weighedUnitPrice('QJ MUSS FAT 200GRAMA', 0.202, 'kg', 14.58, 14.73), 72.9);
+  assertEquals(weighedUnitPrice('FRIOS BANDEJA 250 GRS', 0.26, 'kg', 9.98, 10.38), 39.92);
+  // Os controles: com espaço, sem separador, e dois tamanhos em GRS que não se somam (sem lançar erro, e fica o preço).
+  assertEquals(weighedUnitPrice('PTO.PERU SADIA 200G', 0.202, 'kg', 14.58, 14.73), 72.9);
+  assertEquals(weighedUnitPrice('QJMUSS200G', 0.202, 'kg', 14.58, 14.73), 72.9);
+  assertEquals(weighedUnitPrice('Kit 200GRS + 300GRS', 0.202, 'kg', 14.58, 14.73), 14.58);
+  assertEquals(weighedUnitPrice('AGUA 0,5 LITROS', 2, 'l', 2, 8), 4);
+  assertEquals(weighedUnitPrice('AGUA 0,5 LTS', 2, 'l', 2, 8), 4);
+  // Número depois de dígito, com ponto ou vírgula no meio, não é tamanho: "1.234,5KG" não lê nada, e a conta fica.
+  assertEquals(weighedUnitPrice('PACOTE 1.234,5kg', 0.202, 'kg', 14.58, 14.73), 14.58);
+  // Nem a conta com o preço da bandeja sobre o tamanho fecha (0,5 kg a R$ 30): o preço lido fica.
+  assertEquals(weighedUnitPrice('QJ.MUSS.200G', 0.5, 'kg', 14.58, 30), 14.58);
+});
+
+Deno.test('weighedUnitPrice: o pacote de bandejas (C/2, 2X200G) fecha a conta com o peso de todas, ou com o de uma', () => {
+  // Duas bandejas de 200 g: R$ 29,16 o pacote é R$ 14,58 a bandeja, e 0,404 kg (as duas) a R$ 72,90 o kg dão os R$ 29,45.
+  assertEquals(weighedUnitPrice('QJ MUSS 200G C/2', 0.404, 'kg', 29.16, 29.45), 72.9);
+  assertEquals(weighedUnitPrice('QJ MUSS 2X200G', 0.404, 'kg', 29.16, 29.45), 72.9);
+  assertEquals(weighedUnitPrice('QJ MUSS 2 X 200G', 0.404, 'kg', 29.16, 29.45), 72.9);
+  assertEquals(weighedUnitPrice('QJ MUSS 2x 200 g', 0.404, 'kg', 29.16, 29.45), 72.9);
+  assertEquals(weighedUnitPrice('QJ MUSS 200G X 2', 0.404, 'kg', 29.16, 29.45), 72.9);
+  // Com "2X200G" e 0,202 kg, a conta só fecha com a bandeja de 200 g (a R$ 72,90 o kg); o pacote de 400 g não fecha.
+  assertEquals(weighedUnitPrice('QUEIJO 2X200G', 0.202, 'kg', 14.58, 14.73), 72.9);
+  // Nem uma bandeja nem o pacote fecham a conta: o preço lido fica.
+  assertEquals(weighedUnitPrice('QJ MUSS 200G C/2', 0.5, 'kg', 29.16, 30), 29.16);
+});
+
+Deno.test('weighedUnitPrice: "1.000G" e "1.000ML" são mil, não um', () => {
+  // Aqui a conta não fecha com o preço lido, então o tamanho é lido. Sem a troca de "1.000" por "1000", o tamanho
+  // seria 1 g (0,001 kg) e a conta fecharia com R$ 10,00 o kg (0,01 ÷ 0,001), no lugar de R$ 0,01.
+  assertEquals(weighedUnitPrice('PRESUNTO 1.000G', 0.2, 'kg', 0.01, 2.0), 0.01);
+  assertEquals(weighedUnitPrice('PRESUNTO 1.000GRAMAS', 0.2, 'kg', 0.01, 2.0), 0.01);
+  assertEquals(weighedUnitPrice('SUCO 1.000ML', 0.2, 'l', 0.01, 2.0), 0.01);
 });
 
 Deno.test('preço da bandeja na linha pesada: a nota e a leitura do servidor guardam o preço por kg', () => {
@@ -290,6 +333,60 @@ Deno.test('preço da bandeja na linha pesada: a nota e a leitura do servidor gua
     [0.535, 5.99, 3.2],
   ]);
   assertEquals(r.readLines.map((l) => l.unit_price), [72.9, 5.99]);
+});
+
+Deno.test('linha pesada que a conta não confere fica na nota, mas fora da leitura do servidor', () => {
+  // Queijo de 200 g: 0,202 kg a R$ 14,58 (o preço da bandeja) e R$ 14,73 no total. Só a linha que a conta confirma vai.
+  const queijo = (over: Partial<ExtractedReceipt['items'][number]>) =>
+    line({ raw_description: 'QUEIJO MUSS 200G', unit: 'kg', quantity: 0.202, unit_price: 14.58, total_price: 14.73, ...over });
+  const read = (items: ExtractedReceipt['items'], total: number | null = 14.73) => cleanReceipt({ ...base, total, items }, new Set(), new Map());
+  // A conta fecha com o preço corrigido para R$ 72,90 o kg: vai com ele.
+  assertEquals(read([queijo({})]).readLines.map((l) => l.unit_price), [72.9]);
+  // Quantidade ilegível: o peso sai do total, e não dá para saber se o R$ 14,58 é do kg ou da bandeja.
+  assertEquals(read([queijo({ quantity: null })]).readLines, []);
+  // Valor cortado: a nota fica com R$ 2,95 (0,202 kg × R$ 14,58), e o preço da bandeja não vai para a leitura.
+  const cut = read([queijo({ total_price: null })]);
+  assertEquals([cut.items[0].total_price, cut.items[0].unit_price], [2.95, 14.58]);
+  assertEquals(cut.readLines, []);
+  // Valor lido como 0 é o "sem valor" (a conta não tem o que conferir): a linha de 200 g fica de fora, como a de valor cortado.
+  assertEquals(read([queijo({ total_price: 0 })]).readLines, []);
+  // Sem o total da nota, o valor cortado não tem como ser conferido: também fica de fora.
+  assertEquals(read([queijo({ total_price: null })], null).readLines, []);
+  // O valor cortado com o preço por kg certo (R$ 72,90) também fica de fora: sem valor lido, não há conta para conferir.
+  assertEquals(read([queijo({ total_price: null, unit_price: 72.9 })]).readLines, []);
+  // Desconto de R$ 1,00 na bandeja: o valor (R$ 13,73) passa da conta de 0,202 kg × R$ 14,58, e a conta não fecha para cima.
+  assertEquals(read([queijo({ total_price: 13.73 })], 13.73).readLines, []);
+  // Desconto que deixa o valor abaixo da conta: a conta não fecha para cima, e a linha entra como antes.
+  assertEquals(read([queijo({ total_price: 2 })], 2).readLines.map((l) => l.unit_price), [14.58]);
+  // Um pacote de 1 kg (o preço já é por kg) não depende de conta: entra mesmo com o valor cortado.
+  const kilo = line({ raw_description: 'PRESUNTO FAT 1.000G', unit: 'kg', quantity: 0.35, unit_price: 39.9, total_price: null });
+  assertEquals(read([kilo], 13.97).readLines.map((l) => l.unit_price), [39.9]);
+  // Em litro, a mesma regra: a garrafa de 0,5 litro com a quantidade ilegível.
+  assertEquals(read([line({ raw_description: 'AGUA 0,5 LITRO', unit: 'l', quantity: null, unit_price: 4, total_price: 8 })], 8).readLines, []);
+  // O pacote de duas bandejas, com a conta fechada pelo peso do pacote todo, entra com o preço do kg.
+  assertEquals(read([line({ raw_description: 'QJ MUSS 200G C/2', unit: 'kg', quantity: 0.404, unit_price: 29.16, total_price: 29.45 })], 29.45).readLines.map((l) => l.unit_price), [72.9]);
+  // Pacote de duas bandejas de 1 kg ("C/2", "2X1KG") não é 1 kg: o R$ 60 pode ser o do par, e sem a conta não entra.
+  assertEquals(read([line({ raw_description: 'QUEIJO 1KG C/2', unit: 'kg', quantity: null, unit_price: 60, total_price: 60 })], 60).readLines, []);
+  assertEquals(read([line({ raw_description: 'QUEIJO 2X1KG', unit: 'kg', quantity: null, unit_price: 60, total_price: 60 })], 60).readLines, []);
+  // Bandeja de 500 g em pacote de 1 kg ("X 2"): o pacote dá 1 kg, mas o preço pode ser o da bandeja. Uma de 1 kg sem pacote entra.
+  assertEquals(read([line({ raw_description: 'PRESUNTO 500G X 2', unit: 'kg', quantity: null, unit_price: 19.9, total_price: 19.9 })], 19.9).readLines, []);
+  assertEquals(read([line({ raw_description: 'PRESUNTO 1KG', unit: 'kg', quantity: null, unit_price: 39.9, total_price: 39.9 })], 39.9).readLines.map((l) => l.unit_price), [39.9]);
+  // Sem tamanho na descrição, a conta que não confere também fica de fora: 0,535 kg a R$ 5,99 dão R$ 3,20, e a nota diz R$ 3,25.
+  assertEquals(read([line({ raw_description: 'BANANA PRATA KG', unit: 'kg', quantity: 0.535, unit_price: 5.99, total_price: 3.25 })], 3.25).readLines, []);
+  // O mesmo com o valor que fecha a conta (R$ 3,20): entra com o preço lido.
+  assertEquals(read([line({ raw_description: 'BANANA PRATA KG', unit: 'kg', quantity: 0.535, unit_price: 5.99, total_price: 3.2 })], 3.2).readLines.map((l) => l.unit_price), [5.99]);
+});
+
+Deno.test('linha pesada com preço derivado: a conta é com a quantidade que a linha guarda, então entra mesmo com 4 casas no peso', () => {
+  const read = (items: ExtractedReceipt['items'], total: number) => cleanReceipt({ ...base, total, items }, new Set(), new Map());
+  // O peso impresso com 4 casas (1,2345 kg) fica 1,235 kg na linha, e o preço sai do total sobre ele: R$ 80,9717 o kg.
+  // A conta com o peso impresso daria R$ 99,96, mas o preço é derivado e fecha com a quantidade guardada: entra.
+  const presunto = read([line({ raw_description: 'PRESUNTO FATIADO', unit: 'kg', quantity: 1.2345, unit_price: null, total_price: 100 })], 100);
+  assertEquals([presunto.items[0].quantity, presunto.items[0].unit_price, presunto.items[0].total_price], [1.235, 80.9717, 100]);
+  assertEquals(presunto.readLines, [{ description: 'PRESUNTO FATIADO', unit: 'kg', unit_price: 80.9717 }]);
+  assertEquals(read([line({ raw_description: 'BANANA KG', unit: 'kg', quantity: 0.5355, unit_price: null, total_price: 30 })], 30).readLines.map((l) => l.unit_price), [55.9701]);
+  // O mesmo peso com o preço lido (R$ 80,9717) não fecha a conta com o peso impresso: esse preço impresso fica de fora.
+  assertEquals(read([line({ raw_description: 'PRESUNTO FATIADO', unit: 'kg', quantity: 1.2345, unit_price: 80.9717, total_price: 100 })], 100).readLines, []);
 });
 
 Deno.test('instructions: o total da nota é o valor pago, depois dos descontos', () => {
