@@ -273,6 +273,22 @@ Deno.test('weighedUnitPrice: o preço da bandeja impresso no lugar do preço por
   assertEquals(weighedUnitPrice('Queijo 200g', null, 'kg', 14.58, 14.73), 14.58);
 });
 
+Deno.test('weighedUnitPrice: o tamanho colado a um ponto e as unidades por extenso (GRS, GRAMAS, LITROS, LTS) contam', () => {
+  // "SADIA.200G": o ponto depois da marca não tira o tamanho. Os casos são de 0,202 kg de uma bandeja de 200 g a R$ 14,58.
+  assertEquals(weighedUnitPrice('PTO.PERU SADIA.200G', 0.202, 'kg', 14.58, 14.73), 72.9);
+  assertEquals(weighedUnitPrice('QJ.MUSS.200G', 0.202, 'kg', 14.58, 14.73), 72.9);
+  assertEquals(weighedUnitPrice('QJ MUSS FAT 200GRS', 0.202, 'kg', 14.58, 14.73), 72.9);
+  assertEquals(weighedUnitPrice('QJ MUSS FAT 200 GRAMAS', 0.202, 'kg', 14.58, 14.73), 72.9);
+  assertEquals(weighedUnitPrice('QJ MUSS FAT 200GRAMA', 0.202, 'kg', 14.58, 14.73), 72.9);
+  assertEquals(weighedUnitPrice('FRIOS BANDEJA 250 GRS', 0.26, 'kg', 9.98, 10.38), 39.92);
+  assertEquals(weighedUnitPrice('AGUA 0,5 LITROS', 2, 'l', 2, 8), 4);
+  assertEquals(weighedUnitPrice('AGUA 0,5 LTS', 2, 'l', 2, 8), 4);
+  // Número depois de dígito, com ponto ou vírgula no meio, não é tamanho: "1.234,5KG" não lê nada, e a conta fica.
+  assertEquals(weighedUnitPrice('PACOTE 1.234,5kg', 0.202, 'kg', 14.58, 14.73), 14.58);
+  // Nem a conta com o preço da bandeja sobre o tamanho fecha (0,5 kg a R$ 30): o preço lido fica.
+  assertEquals(weighedUnitPrice('QJ.MUSS.200G', 0.5, 'kg', 14.58, 30), 14.58);
+});
+
 Deno.test('preço da bandeja na linha pesada: a nota e a leitura do servidor guardam o preço por kg', () => {
   const r = cleanReceipt(
     {

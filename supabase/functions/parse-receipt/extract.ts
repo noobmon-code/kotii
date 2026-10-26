@@ -241,21 +241,29 @@ const SUM_TOLERANCE_CENTS = 5;
 /** O caixa arredonda ou trunca o valor da linha pesada: até isto de diferença, em centavos, a conta fecha. */
 const WEIGHED_TOLERANCE_CENTS = 2;
 
-/** Quanto vale cada unidade de tamanho escrita na descrição, em kg (peso) ou litro (volume). */
+/** Quanto vale cada unidade de tamanho escrita na descrição, em kg (peso) ou litro (volume); toda unidade de printedSize está aqui. */
 const SIZE_UNITS: Record<string, { unit: 'kg' | 'l'; inBase: number }> = {
   kg: { unit: 'kg', inBase: 1 },
   g: { unit: 'kg', inBase: 0.001 },
   gr: { unit: 'kg', inBase: 0.001 },
+  grs: { unit: 'kg', inBase: 0.001 },
+  grama: { unit: 'kg', inBase: 0.001 },
+  gramas: { unit: 'kg', inBase: 0.001 },
   l: { unit: 'l', inBase: 1 },
   lt: { unit: 'l', inBase: 1 },
+  lts: { unit: 'l', inBase: 1 },
+  litro: { unit: 'l', inBase: 1 },
+  litros: { unit: 'l', inBase: 1 },
   ml: { unit: 'l', inBase: 0.001 },
 };
 
 /** O tamanho escrito na descrição ("200g", "1,5 kg", "500 ML"), em kg ou litro; null sem tamanho ou com dois diferentes. */
 function printedSize(description: string): { unit: 'kg' | 'l'; amount: number } | null {
   // "1.000G" é mil gramas, não um.
-  const text = description.toLowerCase().replace(/(\d)[.,](\d{3})(?=\s*(?:g|gr|ml)(?![a-z]))/g, '$1$2');
-  const sizes = [...text.matchAll(/(?<![\d.,x])(\d+(?:[.,]\d+)?)\s*(kg|gr|g|lt|ml|l)(?![a-z])/g)].map((m) => {
+  const text = description.toLowerCase().replace(/(\d)[.,](\d{3})(?=\s*(?:g|grs?|gramas?|ml)(?![a-z]))/g, '$1$2');
+  // O tamanho pode vir colado a um ponto depois de letra ("SADIA.200G"); um número depois de dígito, com ou sem ponto
+  // ou vírgula no meio ("1.234,5KG"), não é tamanho.
+  const sizes = [...text.matchAll(/(?<![0-9][.,]?|x)(\d+(?:[.,]\d+)?)\s*(kg|grs?|gramas?|g|lts?|litros?|l|ml)(?![a-z])/g)].map((m) => {
     const scale = SIZE_UNITS[m[2]];
     return { unit: scale.unit, amount: Number(m[1].replace(',', '.')) * scale.inBase };
   });
