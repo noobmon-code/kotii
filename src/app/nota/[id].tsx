@@ -84,6 +84,7 @@ import {
   CORRECTION_NOT_SAVED,
   INVALID_DATE,
   purchaseDateChange,
+  RECEIPT_GONE,
   receiptEditing,
   receiptTotalChange,
 } from '@/domain/receiptEdit';
@@ -178,6 +179,11 @@ const TOTAL_ROW_SLOP = { top: 12, bottom: 12 };
 
 /** Quanto a tela espera pela nota relida depois de gravar o valor de um item, antes de soltar "Confirmar nota". */
 const SETTLE_WAIT_MS = 4000;
+
+/** A nota que sumiu em outro aparelho: o `.single()` do banco não acha a linha (PGRST116). */
+const receiptGone = (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'PGRST116');
+/** "Confirmar nota" numa nota que sumiu: o `confirm_receipt` responde P0002 ("receipt not found"). */
+const confirmGone = (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'P0002');
 
 export default function ReceiptScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -299,9 +305,15 @@ export default function ReceiptScreen() {
   const onError = (err: unknown) => notify('Erro', errorMessage(err));
 
   if (receiptQuery.isPending || products.isPending) return <Loading />;
-  // Com a nota na tela, a busca que falha fica acima dela (StaleNotice), inclusive quando a nota sumiu em outro aparelho.
-  // A tela do erro é só para quando não há nota para mostrar.
-  if (!receiptQuery.data) return <ErrorNotice error={receiptQuery.error} onRetry={() => receiptQuery.refetch()} />;
+  // Com a nota na tela, a busca que falha fica acima dela (StaleNotice). A tela do erro é para quando não há nota para
+  // mostrar, e a nota que sumiu em outro aparelho também: é a tela sem "Tentar de novo", porque buscar de novo não a traz.
+  if (!receiptQuery.data || receiptGone(receiptQuery.error)) {
+    return receiptGone(receiptQuery.error) ? (
+      <ErrorNotice error={new Error(RECEIPT_GONE)} />
+    ) : (
+      <ErrorNotice error={receiptQuery.error} onRetry={() => receiptQuery.refetch()} />
+    );
+  }
 
   const { receipt, items } = receiptQuery.data;
   const isDraft = receipt.status === 'draft';
@@ -828,7 +840,12 @@ export default function ReceiptScreen() {
           notify('Nota salva', done.length ? done.join(' ') : undefined);
           router.back();
         },
-        onError,
+        onError: (err) => {
+          // A nota sumiu em outro aparelho (P0002): a tela busca a nota de novo, e vira a da nota que sumiu.
+          if (!confirmGone(err)) return onError(err);
+          notify('Nota não confirmada', RECEIPT_GONE);
+          void receiptQuery.refetch();
+        },
       });
     if (!receipt.store_id) {
       confirmAction(

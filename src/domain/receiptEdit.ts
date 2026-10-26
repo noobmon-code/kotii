@@ -68,5 +68,7 @@ export function receiptTotalChange(typed: string, current: number | null): Total
   return before === after ? { kind: 'same' } : { kind: 'changed', total: result.total };
 }
 
+/** A nota que sumiu (excluída em outro aparelho): a tela que a mostrava diz isto, no lugar dela. */
+export const RECEIPT_GONE = 'Esta nota não existe mais.';
 /** A nota confirmada que sumiu (excluída em outro aparelho) antes de a correção chegar. */
-export const CORRECTION_NOT_SAVED = { title: 'Correção não salva', message: 'Esta nota não existe mais.' };
+export const CORRECTION_NOT_SAVED = { title: 'Correção não salva', message: RECEIPT_GONE };

@@ -165,7 +165,11 @@ jest.mock('@/lib/supabase', () => {
       from: (name: string) => table(name),
       rpc: async (fn: string, args: Row) => {
         mockDb.rpcs.push({ fn, args });
-        return answer({ table: fn, verb: 'rpc', values: args }, () => ({ data: null, error: null }));
+        // Como no servidor: confirmar uma nota que já não existe responde P0002 ("receipt not found").
+        const gone = fn === 'confirm_receipt' && !mockDb.receipts.some((row) => row.id === args.p_receipt_id);
+        return answer({ table: fn, verb: 'rpc', values: args }, () =>
+          gone ? { data: null, error: { code: 'P0002', message: 'receipt not found', details: null, hint: null } } : { data: null, error: null },
+        );
       },
     },
   };
@@ -1903,16 +1907,17 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     expect(button('Salvar total')!.props.loading).toBe(false);
   });
 
-  it('nota excluída em outro aparelho: a correção avisa que não salvou', async () => {
+  it('nota excluída em outro aparelho: a correção avisa que não salvou, e a tela é a da nota que sumiu', async () => {
     await open();
     await press(totalRow());
     act(() => field('Total da nota')!.props.onChangeText('72,90'));
     mockDb.receipts = [];
     await press(button('Salvar total'));
     expect(jest.mocked(notify).mock.calls).toEqual([['Correção não salva', 'Esta nota não existe mais.']]);
-    // A nota relida não vem: com a nota na tela, a busca que falha fica acima dela (StaleNotice), e a tela não some com ela.
-    expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
-    expect(page()).toContain('DETERGENTE YPE');
+    // A nota relida não vem: a tela é a da nota que sumiu, sem "Tentar de novo" (buscar de novo não a traz de volta).
+    expect(page()).toContain('Esta nota não existe mais.');
+    expect(page()).not.toContain('DETERGENTE YPE');
+    expect(page()).not.toContain('Tentar de novo');
   });
 
   it('a revisão continua como antes: a data vai sem o filtro da nota confirmada, e não há a frase', async () => {
@@ -1927,6 +1932,36 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     });
     expect(mockDb.writes[1]).toEqual({ table: 'receipts', verb: 'update', values: { store_id: 's2' }, filters: { id: 'r1' } });
     expect(button('Confirmar nota')).toBeDefined();
+  });
+});
+
+describe('a nota que sumiu em outro aparelho: a tela é a da nota que sumiu, sem "Tentar de novo"', () => {
+  beforeEach(() => seed(receipt(), item('a', 'DETERGENTE YPE', 50), item('b', 'ARROZ 5KG', 12.9)));
+
+  it('"Confirmar nota" antes de a busca de fundo ver que ela sumiu: o aviso diz que a nota não existe mais, e a tela vira a da nota que sumiu', async () => {
+    await open();
+    mockDb.receipts = [];
+    await press(button('Confirmar nota'));
+    expect(jest.mocked(notify).mock.calls).toEqual([['Nota não confirmada', 'Esta nota não existe mais.']]);
+    expect(mockDb.rpcs.map((rpc) => rpc.fn)).toEqual(['confirm_receipt']);
+    expect(page()).toContain('Esta nota não existe mais.');
+    expect(page()).not.toContain('DETERGENTE YPE');
+    expect(page()).not.toContain('Tentar de novo');
+    expect(button('Confirmar nota')).toBeUndefined();
+  });
+
+  it('a nota que já não existe ao abrir: a tela é a da nota que sumiu, sem "Tentar de novo"', async () => {
+    mockDb.receipts = [];
+    await open();
+    expect(page()).toContain('Esta nota não existe mais.');
+    expect(page()).not.toContain('Tentar de novo');
+  });
+
+  it('sem nota na tela e a busca que falha por outro motivo: a tela do erro de sempre, com "Tentar de novo"', async () => {
+    mockDb.fails = [receiptRead];
+    await open();
+    expect(page()).toContain('caiu a rede');
+    expect(page()).toContain('Tentar de novo');
   });
 });
 
