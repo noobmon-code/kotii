@@ -576,8 +576,8 @@ export function useSaveReceiptItem(receiptId: string) {
 /**
  * O peso da etiqueta numa linha em "un" (domain/receiptWeight): só a quantidade em kg e o preço por kg, e só se a
  * linha ainda é a que a tela leu (mesma quantidade, mesmo total, ainda em "un"). Se outro aparelho mudou a linha,
- * nada é gravado (`saved` falso) e a nota é buscada de novo. Sem a descrição nem o total no pedido: o que a tela
- * mostra antes da leitura nova não regrava o valor de antes.
+ * nada é gravado (`saved` falso) e a nota é buscada de novo. A descrição e o total não vão no pedido: o valor que a
+ * tela mostra de antes não volta para a nota.
  */
 export function useSaveReceiptWeight(receiptId: string) {
   const invalidate = useInvalidateReceipt(receiptId);
