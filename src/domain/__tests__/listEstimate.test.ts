@@ -328,7 +328,7 @@ describe('estimateList', () => {
     expect(estimateList(list, quotes, { usual: new Map([['queijo', { l: 0.2 }]]) }).byItem.get('q')).toMatchObject({ cost: 72.9 });
   });
 
-  describe('ovos: o "Menor preço" é o de menor preço por ovo, quando as duas cartelas dizem quantos vêm', () => {
+  describe('ovos: o "Menor preço" é o de menor preço por ovo, quando todas as cartelas dizem quantos vêm', () => {
     const cartela = (storeId: string, unitPrice: number, day: string, packCount: number | null) => ({
       ...price('ovos', storeId, unitPrice, `${day}T12:00:00Z`),
       packCount,
@@ -362,6 +362,54 @@ describe('estimateList', () => {
       expect(facts([cartela('assai', 13.99, '2026-10-21', 10), cartela('atacadao', 39.9, '2026-10-22', null)])).toEqual([
         'Último preço: R$ 39,90/un (Atacadão, 22 out).',
         'Menor preço: R$ 13,99/un, 10 ovos (R$ 1,40 o ovo) (Assaí, 21 out).',
+      ]);
+    });
+
+    // Três cotações com uma sem contagem: comparar dois a dois dava um ciclo (A < C por cartela, C < B por cartela,
+    // B < A por ovo), e o "Menor preço" saía ou não conforme a ordem da lista. Agora a chave é a do conjunto.
+    const named = { storeName: (id: string) => `Mercado ${id.toUpperCase()}`, today: '2026-10-25', category: 'ovos' };
+    /** As seis ordens em que a lista pode devolver três cotações. */
+    const orders = <T>(a: T, b: T, c: T): T[][] => [
+      [a, b, c],
+      [a, c, b],
+      [b, a, c],
+      [b, c, a],
+      [c, a, b],
+      [c, b, a],
+    ];
+
+    it('três cotações, uma sem contagem: o "Menor preço" é o do mercado A, em qualquer ordem da lista', () => {
+      const a = cartela('a', 13.99, '2026-10-20', 10);
+      const b = cartela('b', 39.9, '2026-10-21', 30);
+      const c = cartela('c', 14.5, '2026-10-22', null);
+      for (const quotes of orders(a, b, c)) {
+        expect(itemFacts(estimateList([item('o', 'Ovos', 'ovos')], quotes).byItem.get('o'), undefined, named)).toEqual([
+          'Último preço: R$ 14,50/un (Mercado C, 22 out).',
+          'Menor preço: R$ 13,99/un, 10 ovos (R$ 1,40 o ovo) (Mercado A, 20 out).',
+        ]);
+      }
+    });
+
+    it('três cartelas, todas dizendo quantos vêm: o menor por ovo é o mesmo em qualquer ordem da lista', () => {
+      const a = cartela('a', 13.99, '2026-10-20', 10);
+      const b = cartela('b', 39.9, '2026-10-21', 30);
+      const c = cartela('c', 14.5, '2026-10-19', 12);
+      for (const quotes of orders(a, b, c)) {
+        expect(itemFacts(estimateList([item('o', 'Ovos', 'ovos')], quotes).byItem.get('o'), undefined, named)).toEqual([
+          'Último preço: R$ 39,90/un, 30 ovos (R$ 1,33 o ovo) (Mercado B, 21 out).',
+          'Menor preço: R$ 14,50/un, 12 ovos (R$ 1,21 o ovo) (Mercado C, 19 out).',
+        ]);
+      }
+    });
+
+    // R$ 5,04 em 6 e R$ 8,40 em 10 são os mesmos R$ 0,84 o ovo: em ponto flutuante, o de 10 saía um pouco acima, e
+    // a cartela de 6 aparecia como "Menor preço" só quando a de 10 era a última.
+    it('o mesmo preço por ovo em cartelas de 6 e de 10 não dá "Menor preço", seja qual for a mais nova', () => {
+      expect(facts([cartela('assai', 5.04, '2026-10-20', 6), cartela('atacadao', 8.4, '2026-10-21', 10)])).toEqual([
+        'Último preço: R$ 8,40/un, 10 ovos (R$ 0,84 o ovo) (Atacadão, 21 out).',
+      ]);
+      expect(facts([cartela('assai', 5.04, '2026-10-21', 6), cartela('atacadao', 8.4, '2026-10-20', 10)])).toEqual([
+        'Último preço: R$ 5,04/un, 6 ovos (R$ 0,84 o ovo) (Assaí, 21 out).',
       ]);
     });
   });

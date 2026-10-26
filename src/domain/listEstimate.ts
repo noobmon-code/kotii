@@ -128,18 +128,22 @@ const newest = (quotes: EstimatePrice[]) =>
     return (byId(b.productId, a.productId) || byId(b.storeId, a.storeId) || byId(b.unit, a.unit)) < 0 ? b : a;
   });
 
-/** O preço por ovo de uma cotação em "un" que diz quantos vêm (dois ou mais); null nas outras. */
+/**
+ * O preço por ovo de uma cotação em "un" que diz quantos vêm (dois ou mais); null nas outras. Arredondado a 8 casas:
+ * R$ 5,04 em 6 e R$ 8,40 em 10 são o mesmo R$ 0,84 o ovo, mas em ponto flutuante o segundo sai um pouco acima.
+ */
 const perEggOf = (quote: EstimatePrice) =>
-  quote.unit === 'un' && quote.packCount != null && quote.packCount >= 2 ? quote.unitPrice / quote.packCount : null;
+  quote.unit === 'un' && quote.packCount != null && quote.packCount >= 2 ? round8(quote.unitPrice / quote.packCount) : null;
 
 /**
- * Se a cotação `a` é mais barata que `b` para o "Menor preço": por ovo, quando as duas são em "un" e dizem quantos vêm
- * (a cartela de 30 a R$ 39,90 sai R$ 1,33 o ovo, a de 10 a R$ 13,99 sai R$ 1,40); senão, pelo preço da unidade, como antes.
- * Não muda o custo da lista nem a ordem de "Onde comprar", que são pela cotação.
+ * O que o "Menor preço" compara entre as cotações de um item numa unidade: o preço por ovo, quando todas dizem quantos
+ * vêm (a cartela de 30 a R$ 39,90 sai R$ 1,33 o ovo, a de 10 a R$ 13,99 sai R$ 1,40); senão, o preço da unidade, como
+ * antes. A chave é do conjunto, não do par: comparando dois a dois, três cotações com uma sem contagem davam um ciclo,
+ * e a ordem da lista decidia. Não muda o custo da lista nem a ordem de "Onde comprar", que são pela cotação.
  */
-const costsLess = (a: EstimatePrice, b: EstimatePrice) => {
-  const [eggA, eggB] = [perEggOf(a), perEggOf(b)];
-  return eggA != null && eggB != null ? eggA < eggB : a.unitPrice < b.unitPrice;
+const lowestKeyOf = (quotes: EstimatePrice[]) => {
+  const byEgg = quotes.every((quote) => perEggOf(quote) != null);
+  return (quote: EstimatePrice): number => (byEgg ? perEggOf(quote)! : quote.unitPrice);
 };
 
 /** O preço que serve à unidade da lista: nela; senão, numa que converte para ela (g e kg); senão, o mais recente. */
@@ -388,8 +392,9 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
     const quotes = own.filter((quote) => quote.unit === unit);
     const last = quotes.length ? newest(quotes) : null;
     // O "preço bom" é do mesmo produto (outro produto do mesmo nome pode ser outra embalagem); no empate, o próprio último.
-    // Entre cartelas de ovos que dizem quantos vêm, o menor é o de menor preço por ovo (costsLess).
-    const lowest = last && quotes.reduce((a, b) => (costsLess(b, a) ? b : a), last);
+    // Entre cartelas de ovos que dizem quantos vêm, o menor é o de menor preço por ovo (lowestKeyOf, pelo conjunto).
+    const priceKey = lowestKeyOf(quotes);
+    const lowest = last && quotes.reduce((a, b) => (priceKey(b) < priceKey(a) ? b : a), last);
 
     const priced = (source: StorePriceSource, used: EstimatePrice | null, unitPrice: number, seen?: SharedQuote): StorePrice => {
       const priceUnit = seen?.unit ?? used?.unit ?? unit;
@@ -1014,8 +1019,9 @@ export function itemFacts(
   const facts: string[] = [];
   if (estimate) {
     const { last, lowest, used, unit, shared } = estimate;
-    // Com um mercado só, o menor é o próprio último preço: não é referência de promoção.
-    const cheaper = last != null && lowest != null && costsLess(lowest, last);
+    // Com um mercado só, o menor é o próprio último preço: não é referência de promoção. O menor sai pela chave do
+    // conjunto (lowestKeyOf): se não é o último, é mais barato que ele.
+    const cheaper = last != null && lowest != null && !sameQuote(lowest, last);
     if (last) facts.push(`Último preço: ${quoteText(last, category)} ${where(last)}.`);
     if (cheaper) facts.push(`Menor preço: ${quoteText(lowest, category)} ${where(lowest)}.`);
     if (shared) {
