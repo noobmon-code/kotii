@@ -238,6 +238,9 @@ export default function ReceiptScreen() {
   // A data que a nota confirmada está gravando. A tecla de enviar e a saída do campo chegam juntas (no celular, enviar
   // tira o foco), e o campo continua com o que foi digitado até a gravação voltar: a mesma data não grava de novo.
   const savingDate = useRef<string | null>(null);
+  // A data que a busca que falhou recusou, e a leitura da nota de então: a saída do campo que vem logo depois de enviar
+  // não avisa de novo enquanto o texto e essa leitura forem os mesmos (ver commitDate).
+  const warnedStaleDate = useRef<{ text: string; read: number } | null>(null);
   // O total da nota em edição (null: fechado). Só na revisão.
   const [totalText, setTotalText] = useState<string | null>(null);
   // Itens que a pessoa decidiu deixar sem valor nesta revisão. Não é guardado: abrir a nota de novo pergunta de novo.
@@ -493,6 +496,12 @@ export default function ReceiptScreen() {
       return;
     }
     // Com a busca que falhou, a nota em tela pode estar atrás do que outro aparelho gravou: avisa, e o campo fica como está.
+    // Enviar e sair do campo chegam juntos (ver savingDate): a mesma data com a mesma busca avisa uma vez só.
+    if (receiptQuery.isError) {
+      const again = warnedStaleDate.current?.text === dateText && warnedStaleDate.current.read === receiptQuery.dataUpdatedAt;
+      if (again) return;
+      warnedStaleDate.current = { text: dateText, read: receiptQuery.dataUpdatedAt };
+    }
     if (refuseStale()) return;
     if (change.kind === 'same') {
       setDateText(null);

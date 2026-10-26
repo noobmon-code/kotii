@@ -1035,6 +1035,30 @@ describe('a nota em tela atrás do que foi gravado', () => {
     ]);
   });
 
+  it('data digitada com a busca que falhou, enviada e com o campo saído logo depois: o aviso sai uma vez só, e nada é gravado (rascunho)', async () => {
+    seed(receipt(), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    act(() => field('Data da compra')!.props.onChangeText(`11/06/${YEAR}`));
+    await act(async () => {
+      field('Data da compra')!.props.onSubmitEditing();
+      await wait();
+    });
+    await act(async () => {
+      field('Data da compra')!.props.onBlur();
+      await wait();
+    });
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+    expect(field('Data da compra')!.props.value).toBe(`11/06/${YEAR}`);
+    expect(mockDb.writes).toEqual([]);
+  });
+
   it('remover que falha avisa do erro, como antes', async () => {
     seed(receipt({ total: 50 }), item('a', 'DETERGENTE YPE', 50), cheese());
     await open();
@@ -1736,6 +1760,26 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
       ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
     ]);
     expect(field('Data da compra')!.props.value).toBe(`10/06/${YEAR}`);
+    expect(mockDb.writes).toEqual([]);
+  });
+
+  it('enviar e depois sair do campo com a busca que falhou: o aviso sai uma vez só, e o campo fica com a data digitada', async () => {
+    await open();
+    await rereadFails();
+    act(() => field('Data da compra')!.props.onChangeText(`11/06/${YEAR}`));
+    // No celular, enviar tira o foco: a saída do campo chega logo depois do envio, com a mesma data.
+    await act(async () => {
+      field('Data da compra')!.props.onSubmitEditing();
+      await wait();
+    });
+    await act(async () => {
+      field('Data da compra')!.props.onBlur();
+      await wait();
+    });
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+    expect(field('Data da compra')!.props.value).toBe(`11/06/${YEAR}`);
     expect(mockDb.writes).toEqual([]);
   });
 
