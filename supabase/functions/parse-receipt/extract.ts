@@ -194,7 +194,8 @@ export interface CleanReceipt {
    * As linhas para a leitura do servidor (receipt_reads): só as de preço
    * unitário lido na nota, ou tirado do total e da quantidade lida, maior que
    * zero. A linha sem os dois fica no rascunho com 1 × total, mas esse preço
-   * não foi impresso e não pode ir para a base comum.
+   * não foi impresso e não pode ir para a base comum. A linha pesada que a
+   * conta não confere também fica de fora (unsharedWeighedLine).
    */
   readLines: ReadLine[];
 }
@@ -309,6 +310,23 @@ export function weighedUnitPrice(description: string, quantity: number | null, u
 }
 
 /**
+ * A linha pesada (kg ou l) que fica na nota, com o preço lido ou corrigido, mas não vai para a leitura do servidor
+ * (os preços das outras casas). Com a quantidade e o valor lidos, ela fica de fora só se o valor passa de quantidade ×
+ * preço: a conta não fecha para cima, e o preço pode ser o da bandeja. Com a quantidade ou o valor tirados da conta,
+ * ela fica de fora quando a descrição imprime um tamanho na mesma unidade, salvo 1 kg ou 1 l: não dá para saber se o
+ * preço é o da bandeja ou o do kg.
+ */
+function unsharedWeighedLine(description: string, unit: string, quantity: number | null, total: number | null, unitPrice: number): boolean {
+  if (unit !== 'kg' && unit !== 'l') return false;
+  if (quantity != null && quantity > 0 && total != null) {
+    const cents = (value: number) => Math.round(value * 100);
+    return cents(total) - cents(lineTotalFromPrinted(quantity, unit, unitPrice)) > WEIGHED_TOLERANCE_CENTS;
+  }
+  const size = printedSize(description);
+  return size != null && size.unit === unit && Math.abs(size.amount - 1) > 1e-9;
+}
+
+/**
  * Normaliza o que veio da IA para o que o banco aceita: chave e CNPJ só com
  * os dígitos verificadores certos (com a chave válida, o CNPJ é o dela), data
  * válida, quantidades positivas, preço unitário coerente e ids de produto que
@@ -322,7 +340,8 @@ export function weighedUnitPrice(description: string, quantity: number | null, u
  * vira 0, o "sem valor" que a revisão pergunta à pessoa; linha negativa
  * (cancelamento, desconto que a IA pôs como item) fica de fora. Quantidade
  * ilegível sai do total e do preço unitário; sem o preço unitário, a linha
- * fica de fora de `readLines` (nunca compartilha um preço por kg inventado).
+ * fica de fora de `readLines` (nunca compartilha um preço por kg inventado), e
+ * a linha pesada que a conta não confere também (unsharedWeighedLine).
  * O item genérico vai limpo (genericName) para a linha da nota, nunca para a
  * leitura do servidor: ele só serve ao casamento com a lista da casa. O código
  * do produto vai pela chave do banco (storeCodeKey) para a linha (o produto que
@@ -364,8 +383,10 @@ export function cleanReceipt(
     // código impresso nunca tem ":". Tirar "COD" do começo sem os dois-pontos estragaria um código como "CODA123".
     const storeCode = storeCodeKey(it.code?.replace(/^.*:/s, ''));
     // Sem preço unitário nem quantidade lidos, o preço é o total sobre 1, que a nota não imprimiu;
-    // sem valor nenhum (preço 0), não há o que a leitura guardar. Do código, só o de barras vai para a leitura.
-    if (unitPrice > 0 && (readPrice != null || (it.quantity != null && it.quantity > 0))) {
+    // sem valor nenhum (preço 0), não há o que a leitura guardar; a linha pesada cuja conta não confere, também não
+    // (unsharedWeighedLine). Do código, só o de barras vai para a leitura.
+    const shareable = unitPrice > 0 && (readPrice != null || (it.quantity != null && it.quantity > 0));
+    if (shareable && !unsharedWeighedLine(raw, it.unit, it.quantity, it.total_price, unitPrice)) {
       const gtin = sharedGtin(storeCode);
       readLines.push({ description: raw, unit: it.unit, unit_price: unitPrice, ...(gtin ? { gtin } : {}) });
     }

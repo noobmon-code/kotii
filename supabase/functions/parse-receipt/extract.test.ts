@@ -298,7 +298,7 @@ Deno.test('weighedUnitPrice: o pacote de bandejas (C/2, 2X200G) fecha a conta co
   assertEquals(weighedUnitPrice('QJ MUSS 2 X 200G', 0.404, 'kg', 29.16, 29.45), 72.9);
   assertEquals(weighedUnitPrice('QJ MUSS 2x 200 g', 0.404, 'kg', 29.16, 29.45), 72.9);
   assertEquals(weighedUnitPrice('QJ MUSS 200G X 2', 0.404, 'kg', 29.16, 29.45), 72.9);
-  // A conta fecha com uma bandeja só (0,202 kg a R$ 72,90 o kg): o preço da bandeja é o dela, e o pacote não fecha.
+  // Com "2X200G" e 0,202 kg, a conta só fecha com a bandeja de 200 g (a R$ 72,90 o kg); o pacote de 400 g não fecha.
   assertEquals(weighedUnitPrice('QUEIJO 2X200G', 0.202, 'kg', 14.58, 14.73), 72.9);
   // Nem uma bandeja nem o pacote fecham a conta: o preço lido fica.
   assertEquals(weighedUnitPrice('QJ MUSS 200G C/2', 0.5, 'kg', 29.16, 30), 29.16);
@@ -329,6 +329,36 @@ Deno.test('preço da bandeja na linha pesada: a nota e a leitura do servidor gua
     [0.535, 5.99, 3.2],
   ]);
   assertEquals(r.readLines.map((l) => l.unit_price), [72.9, 5.99]);
+});
+
+Deno.test('linha pesada que a conta não confere fica na nota, mas fora da leitura do servidor', () => {
+  // Queijo de 200 g: 0,202 kg a R$ 14,58 (o preço da bandeja) e R$ 14,73 no total. Só a linha que a conta confirma vai.
+  const queijo = (over: Partial<ExtractedReceipt['items'][number]>) =>
+    line({ raw_description: 'QUEIJO MUSS 200G', unit: 'kg', quantity: 0.202, unit_price: 14.58, total_price: 14.73, ...over });
+  const read = (items: ExtractedReceipt['items'], total: number | null = 14.73) => cleanReceipt({ ...base, total, items }, new Set(), new Map());
+  // A conta fecha com o preço corrigido para R$ 72,90 o kg: vai com ele.
+  assertEquals(read([queijo({})]).readLines.map((l) => l.unit_price), [72.9]);
+  // Quantidade ilegível: o peso sai do total, e não dá para saber se o R$ 14,58 é do kg ou da bandeja.
+  assertEquals(read([queijo({ quantity: null })]).readLines, []);
+  // Valor cortado: a nota fica com R$ 2,95 (0,202 kg × R$ 14,58), e o preço da bandeja não vai para a leitura.
+  const cut = read([queijo({ total_price: null })]);
+  assertEquals([cut.items[0].total_price, cut.items[0].unit_price], [2.95, 14.58]);
+  assertEquals(cut.readLines, []);
+  // Sem o total da nota, o valor cortado não tem como ser conferido: também fica de fora.
+  assertEquals(read([queijo({ total_price: null })], null).readLines, []);
+  // O valor cortado com o preço por kg certo (R$ 72,90) também fica de fora: sem valor lido, não há conta para conferir.
+  assertEquals(read([queijo({ total_price: null, unit_price: 72.9 })]).readLines, []);
+  // Desconto de R$ 1,00 na bandeja: o valor (R$ 13,73) passa da conta de 0,202 kg × R$ 14,58, e a conta não fecha para cima.
+  assertEquals(read([queijo({ total_price: 13.73 })], 13.73).readLines, []);
+  // Desconto que deixa o valor abaixo da conta: a conta não fecha para cima, e a linha entra como antes.
+  assertEquals(read([queijo({ total_price: 2 })], 2).readLines.map((l) => l.unit_price), [14.58]);
+  // Um pacote de 1 kg (o preço já é por kg) não depende de conta: entra mesmo com o valor cortado.
+  const kilo = line({ raw_description: 'PRESUNTO FAT 1.000G', unit: 'kg', quantity: 0.35, unit_price: 39.9, total_price: null });
+  assertEquals(read([kilo], 13.97).readLines.map((l) => l.unit_price), [39.9]);
+  // Em litro, a mesma regra: a garrafa de 0,5 litro com a quantidade ilegível.
+  assertEquals(read([line({ raw_description: 'AGUA 0,5 LITRO', unit: 'l', quantity: null, unit_price: 4, total_price: 8 })], 8).readLines, []);
+  // O pacote de duas bandejas, com a conta fechada pelo peso do pacote todo, entra com o preço do kg.
+  assertEquals(read([line({ raw_description: 'QJ MUSS 200G C/2', unit: 'kg', quantity: 0.404, unit_price: 29.16, total_price: 29.45 })], 29.45).readLines.map((l) => l.unit_price), [72.9]);
 });
 
 Deno.test('instructions: o total da nota é o valor pago, depois dos descontos', () => {
