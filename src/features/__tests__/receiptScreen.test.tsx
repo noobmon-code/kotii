@@ -1956,4 +1956,19 @@ describe('quantos ovos vêm na embalagem', () => {
     await open();
     expect(page()).not.toContain('Quantos ovos vêm na embalagem?');
   });
+
+  it('ovo sem valor (a leitura não pegou o preço): a linha diz quantos vêm, sem "R$ 0,00 o ovo", na revisão e na nota confirmada', async () => {
+    seed(receipt({ total: 12.9 }), eggs({ raw_description: 'OVOS BRANCOS C/12', total_price: 0, unit_price: 0 }));
+    await open();
+    expect(page()).toContain('12 ovos na embalagem');
+    expect(page()).not.toContain('R$ 0,00 o ovo');
+    act(() => renderer!.unmount());
+    renderer = undefined;
+    seed(receipt({ status: 'confirmed', total: 0 }), eggs({ total_price: 0, unit_price: 0, pack_count: 10 }));
+    await open();
+    expect(page()).toContain('10 ovos na embalagem');
+    expect(page()).not.toContain('R$ 0,00 o ovo');
+    // A resposta guardada continua podendo ser mudada, como no ovo com valor.
+    expect(chip('Mudar')).toBeDefined();
+  });
 });

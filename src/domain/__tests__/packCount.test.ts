@@ -46,6 +46,8 @@ describe('textos', () => {
     expect(perItemLabel(13.99, 10, 'ovos')).toBe('R$ 1,40 o ovo');
     expect(perItemLabel(9.99, 12, null)).toBe('R$ 0,83 cada');
     expect(packLine({ total_price: 17.98, quantity: 2 }, 10, 'ovos')).toBe('10 ovos na embalagem: R$ 0,90 o ovo');
+    // Sem valor, a conta daria o zero da leitura: a linha diz só quantos vêm.
+    expect(packLine({ total_price: 0, quantity: 1 }, 12, 'ovos')).toBe('12 ovos na embalagem');
   });
 
   it('o número digitado: inteiro de 2 a 1000', () => {
