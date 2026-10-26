@@ -6105,7 +6105,7 @@ begin
   assert (select array_agg(attname::text order by attnum) from pg_attribute
             where attrelid = 'public.price_observations'::regclass and attnum > 0 and not attisdropped)
          = array['household_id', 'product_id', 'store_id', 'purchased_at', 'unit_price', 'unit', 'receipt_id', 'pack_count'],
-    'the columns of price_observations are the same, in the same order (pack_count, 20261025120000, at the end)';
+    'the columns of price_observations are the same, in the same order (pack_count, 20261026134101, at the end)';
   assert (select array_agg(attname::text order by attnum) from pg_attribute
             where attrelid = 'public.latest_prices'::regclass and attnum > 0 and not attisdropped)
          = array['household_id', 'product_id', 'store_id', 'unit', 'unit_price', 'purchased_at', 'pack_count'],
