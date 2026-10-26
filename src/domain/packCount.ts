@@ -82,3 +82,8 @@ export const PACK_SAVED_NOT_SHOWN = {
   title: 'Quantidade salva',
   message: 'Não deu para atualizar a nota na tela: a quantidade aparece quando ela for buscada de novo.',
 };
+/** A linha que já não está na nota (outro aparelho a apagou ou mudou): a resposta não gravou nada. */
+export const PACK_LINE_CHANGED = {
+  title: 'Quantidade não salva',
+  message: 'A linha mudou em outro aparelho. Confira a nota e responda de novo, se ainda precisar.',
+};

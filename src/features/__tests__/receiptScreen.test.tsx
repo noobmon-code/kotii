@@ -2441,6 +2441,30 @@ describe('quantos ovos vêm na embalagem', () => {
     expect(chip('10')).toBeDefined();
   });
 
+  it('a linha do ovo que outro aparelho apagou (a busca de fundo ainda não viu): a resposta não grava, e avisa que a linha mudou', async () => {
+    seed(receipt({ total: 13.99 }), eggs());
+    await open();
+    mockDb.items = [];
+    await press(chip('10'));
+    expect(writes('receipt_items')).toEqual([{ table: 'receipt_items', verb: 'update', values: { pack_count: 10 }, filters: { id: 'i1', receipt_id: 'r1' } }]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Quantidade não salva', 'A linha mudou em outro aparelho. Confira a nota e responda de novo, se ainda precisar.'],
+    ]);
+  });
+
+  it('a linha que saiu, com a busca de volta que falha: o aviso é só o de que a linha mudou, e a nota fica na tela com o aviso de cima', async () => {
+    seed(receipt({ total: 13.99 }), eggs());
+    await open();
+    mockDb.items = [];
+    mockDb.fails = [receiptRead];
+    await press(chip('10'));
+    await settle();
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Quantidade não salva', 'A linha mudou em outro aparelho. Confira a nota e responda de novo, se ainda precisar.'],
+    ]);
+    expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
+  });
+
   it('enquanto a quantidade do ovo grava, os chips somem até a nota voltar; outro toque no mesmo ovo não grava de novo', async () => {
     seed(receipt({ total: 13.99 }), eggs());
     await open();

@@ -87,7 +87,7 @@ import {
   receiptEditing,
   receiptTotalChange,
 } from '@/domain/receiptEdit';
-import { asksPackCount, packCountOf, packLabel, packLine, PACK_CHOICES, PACK_QUESTION, PACK_SAVED_NOT_SHOWN, PACK_UNREADABLE, readPackCount } from '@/domain/packCount';
+import { asksPackCount, packCountOf, packLabel, packLine, PACK_CHOICES, PACK_LINE_CHANGED, PACK_QUESTION, PACK_SAVED_NOT_SHOWN, PACK_UNREADABLE, readPackCount } from '@/domain/packCount';
 import { hasNoValue } from '@/domain/receiptItem';
 import {
   asksWeight,
@@ -904,7 +904,15 @@ export default function ReceiptScreen() {
     // A linha pode ter saído em outro aparelho: sem a busca, a gravação não acharia o item e nada avisaria.
     if (refuseStale()) return false;
     if (refuseWhileSaving(item.id)) return false;
-    void settleValue(setPack.mutateAsync({ id: item.id, count }), ({ saved }) => saved, { itemId: item.id, saved: PACK_SAVED_NOT_SHOWN });
+    void settleValue(
+      setPack.mutateAsync({ id: item.id, count }),
+      ({ saved }) => {
+        // Sem a linha de volta, a resposta não gravou nada (a linha saiu ou mudou em outro aparelho): a pessoa fica sabendo.
+        if (!saved) notify(PACK_LINE_CHANGED.title, PACK_LINE_CHANGED.message);
+        return saved;
+      },
+      { itemId: item.id, saved: PACK_SAVED_NOT_SHOWN },
+    );
     return true;
   }
 
