@@ -260,7 +260,8 @@ const SIZE_UNITS: Record<string, { unit: 'kg' | 'l'; inBase: number }> = {
 
 /**
  * O tamanho escrito na descrição ("200g", "1,5 kg", "500 ML"), em kg ou litro, e quantas bandejas dele vêm na
- * embalagem ("C/2", "2X200G", "200G X 2": 2; sem nada disso, 1). null sem tamanho ou com dois diferentes.
+ * embalagem ("C/2", "2X200G", "200G X 2": 2; sem nada disso, 1). null sem tamanho ou com dois diferentes. Uma versão
+ * curta da regra de src/domain/packageSize.ts (o Deno não importa de src/): mudar uma pede rever a outra.
  */
 function printedSize(description: string): { unit: 'kg' | 'l'; amount: number; count: number } | null {
   // "1.000G" é mil gramas, não um.
