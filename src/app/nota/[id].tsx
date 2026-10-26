@@ -479,8 +479,10 @@ export default function ReceiptScreen() {
   }
 
   /**
-   * Com a busca de fundo que falhou, a nota em tela é a de antes do que outro aparelho gravou: nada é gravado por ela,
-   * nem itens, nem rascunho, nem correção do cabeçalho (que compara com o que a tela mostra). Avisa e devolve `true`; a
+   * Com a busca de fundo que falhou, a nota em tela é a de antes do que outro aparelho gravou: o total, a data, o
+   * mercado, quem pagou, "Usar R$ 12,90", a embalagem, excluir ou descartar a nota e o "Remover item" do editor
+   * não gravam por ela (a data, o mercado e o total da nota confirmada comparam o valor novo com o da tela). O peso não
+   * passa por aqui (o banco só grava se a linha ainda é a lida), nem salvar o editor do item. Avisa e devolve `true`; a
    * busca que falhou tem "Tentar de novo" acima.
    */
   const refuseStale = () => {
