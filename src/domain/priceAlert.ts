@@ -6,11 +6,11 @@
 // por kg, ml e litro por litro, e pacotes de tamanhos diferentes ("ARROZ 5KG"
 // e "ARROZ 1KG") pelo preço por kg, litro ou item, com o tamanho lido na
 // descrição da nota (ou, sem ele, quantos vinham: na linha da nota, a contagem
-// que a tela mostra, com o nome do produto; nos preços de antes, a resposta
-// pack_count). Sem isso, a nota do pacote de 5 kg ouvia "R$ 5,49 no outro
-// mercado" (o preço do pacote de 1 kg). Uma compra por unidade com tamanho
-// conhecido não se compara com outra por unidade que não o tem: a cartela de 30
-// não ouve "mais barato" de uma de preço sem tamanho.
+// de packCountOf com o nome do produto (a que a tela mostra nos ovos); nos
+// preços de antes, a resposta pack_count). Sem isso, a nota do pacote de 5 kg
+// ouvia "R$ 5,49 no outro mercado" (o preço do pacote de 1 kg). Uma compra por
+// unidade com tamanho conhecido não se compara com outra por unidade que não o
+// tem: a cartela de 30 não ouve "mais barato" de uma de preço sem tamanho.
 
 import { addDays, formatShortDate, toISODate } from './dates';
 import { formatBRL } from './money';
