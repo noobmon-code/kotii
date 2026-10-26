@@ -128,6 +128,31 @@ const newest = (quotes: EstimatePrice[]) =>
     return (byId(b.productId, a.productId) || byId(b.storeId, a.storeId) || byId(b.unit, a.unit)) < 0 ? b : a;
   });
 
+/**
+ * O preço por ovo de uma cotação em "un" que diz quantos vêm (dois ou mais); null nas outras. Arredondado a 8 casas:
+ * R$ 5,04 em 6 e R$ 8,40 em 10 são o mesmo R$ 0,84 o ovo, mas em ponto flutuante o segundo sai um pouco acima.
+ */
+const perEggOf = (quote: EstimatePrice) =>
+  quote.unit === 'un' && quote.packCount != null && quote.packCount >= 2 ? round8(quote.unitPrice / quote.packCount) : null;
+
+/**
+ * O "Menor preço" entre as cotações de um item numa unidade. Cada par se compara pelo preço por ovo quando as duas dizem
+ * quantos vêm (a cartela de 30 a R$ 39,90 sai R$ 1,33 o ovo, a de 10 a R$ 13,99 sai R$ 1,40); senão, pelo preço da
+ * cartela, como antes. Vence a cotação que nenhuma outra bate pelo par; no empate, a mais nova. Se ninguém vence
+ * (um ciclo entre três, com uma sem contagem), vale o menor preço da cartela, como antes, e a ordem da lista não decide.
+ * Não muda o custo da lista nem a ordem de "Onde comprar", que são pela cotação.
+ */
+const lowestOf = (quotes: EstimatePrice[]): EstimatePrice => {
+  const beats = (quote: EstimatePrice, other: EstimatePrice) => {
+    const [mine, theirs] = [perEggOf(quote), perEggOf(other)];
+    return mine != null && theirs != null ? mine < theirs : quote.unitPrice < other.unitPrice;
+  };
+  const unbeaten = quotes.filter((quote) => !quotes.some((other) => beats(other, quote)));
+  if (unbeaten.length) return newest(unbeaten);
+  const cheapest = Math.min(...quotes.map((quote) => quote.unitPrice));
+  return newest(quotes.filter((quote) => quote.unitPrice === cheapest));
+};
+
 /** O preço que serve à unidade da lista: nela; senão, numa que converte para ela (g e kg); senão, o mais recente. */
 function bestForUnit<T extends { unit: string }>(listUnit: string, quotes: T[], latest: (quotes: T[]) => T): T {
   const exact = quotes.filter((quote) => quote.unit === listUnit);
@@ -374,7 +399,8 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
     const quotes = own.filter((quote) => quote.unit === unit);
     const last = quotes.length ? newest(quotes) : null;
     // O "preço bom" é do mesmo produto (outro produto do mesmo nome pode ser outra embalagem); no empate, o próprio último.
-    const lowest = last && quotes.reduce((a, b) => (b.unitPrice < a.unitPrice ? b : a), last);
+    // Entre cartelas de ovos que dizem quantos vêm, a comparação é por ovo, par a par (lowestOf).
+    const lowest = last && lowestOf(quotes);
 
     const priced = (source: StorePriceSource, used: EstimatePrice | null, unitPrice: number, seen?: SharedQuote): StorePrice => {
       const priceUnit = seen?.unit ?? used?.unit ?? unit;
@@ -999,8 +1025,9 @@ export function itemFacts(
   const facts: string[] = [];
   if (estimate) {
     const { last, lowest, used, unit, shared } = estimate;
-    // Com um mercado só, o menor é o próprio último preço: não é referência de promoção.
-    const cheaper = last != null && lowest != null && lowest.unitPrice < last.unitPrice;
+    // Com um mercado só, o menor é o próprio último preço: não é referência de promoção. O menor sai de lowestOf: se não
+    // é o último, é outra cotação, a que vence a comparação (por ovo, quando as duas cartelas dizem quantos vêm).
+    const cheaper = last != null && lowest != null && !sameQuote(lowest, last);
     if (last) facts.push(`Último preço: ${quoteText(last, category)} ${where(last)}.`);
     if (cheaper) facts.push(`Menor preço: ${quoteText(lowest, category)} ${where(lowest)}.`);
     if (shared) {
@@ -1018,7 +1045,7 @@ export function itemFacts(
       const other = used.productId === estimate.productId ? '' : `, de ${productName?.(used.productId) ?? 'outro produto com esse nome'}`;
       facts.push(`Preço usado na conta: ${quoteText(used, category)}${other} ${where(used)}.`);
     }
-    if (promotionOnly && cheaper) facts.push(`Só em promoção: o preço bom é ${perUnit(lowest.unitPrice, lowest.unit)} ou menos.`);
+    if (promotionOnly && cheaper) facts.push(`Só em promoção: o preço bom é ${quoteText(lowest, category)} ou menos.`);
     if (estimate.perPiece) {
       // Item em "un" com preço por kg: a conta usa o que a casa costuma levar dele de uma vez (usualAmounts).
       const counted = pricePerBase(1, unit).unit;

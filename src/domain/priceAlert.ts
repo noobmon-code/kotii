@@ -5,8 +5,11 @@
 // Os preços se comparam como no histórico do produto (toPurchases): g e kg
 // por kg, ml e litro por litro, e pacotes de tamanhos diferentes ("ARROZ 5KG"
 // e "ARROZ 1KG") pelo preço por kg, litro ou item, com o tamanho lido na
-// descrição da nota. Sem isso, a nota do pacote de 5 kg ouvia "R$ 5,49 no
-// outro mercado" (o preço do pacote de 1 kg).
+// descrição da nota (ou quantos vinham, respondido na revisão: pack_count).
+// Sem isso, a nota do pacote de 5 kg ouvia "R$ 5,49 no outro mercado" (o
+// preço do pacote de 1 kg). Uma compra por unidade com tamanho conhecido não
+// se compara com outra por unidade que não o tem: a cartela de 30 não ouve
+// "mais barato" de uma de preço sem tamanho.
 
 import { addDays, formatShortDate, toISODate } from './dates';
 import { formatBRL } from './money';
@@ -28,8 +31,10 @@ export interface AlertItem {
   unit: string;
   unitPrice: number;
   quantity: number;
-  /** A descrição como veio na nota ("ARROZ T1 5KG"): o tamanho da embalagem. Sem ela, o tamanho não é conhecido. */
+  /** A descrição como veio na nota ("ARROZ T1 5KG"): o tamanho da embalagem. Sem ela e sem packCount, o tamanho não é conhecido. */
   description?: string;
+  /** Quantos vinham na embalagem, respondido na revisão (pack_count): vale quando a descrição não diz o tamanho. */
+  packCount?: number | null;
 }
 
 export interface PricePoint {
@@ -41,6 +46,8 @@ export interface PricePoint {
   receipt_id: string;
   /** A descrição da linha da nota, de onde sai o tamanho da embalagem. */
   description?: string;
+  /** Quantos vinham na embalagem, respondido na revisão (pack_count), como em AlertItem. */
+  packCount?: number | null;
 }
 
 /**
@@ -66,6 +73,8 @@ function median(values: number[]): number {
 interface Compared {
   unit: string;
   price: number;
+  /** A compra tem tamanho de embalagem (na descrição ou em pack_count): em "un", só se compara com outra que também tem. */
+  packed: boolean;
 }
 
 const lineKey = (receiptId: string, unit: string, unitPrice: number) => `${receiptId}|${unit}|${unitPrice}`;
@@ -96,6 +105,7 @@ function compare(
       unitPrice: point.unit_price,
       totalPrice: point.unit_price,
       description: point.description,
+      packCount: point.packCount,
     })),
     ...items.map((item) => ({
       id: `i${item.id}`,
@@ -108,6 +118,7 @@ function compare(
       unitPrice: item.unitPrice,
       totalPrice: item.unitPrice * item.quantity,
       description: item.description,
+      packCount: item.packCount,
     })),
   ];
   const purchases = new Map<string, Purchase>(toPurchases(lines).map((purchase) => [purchase.key, purchase]));
@@ -116,13 +127,13 @@ function compare(
   for (const item of items) {
     const purchase = found(lineKey(receiptId, item.unit, item.unitPrice));
     const perUnit = purchase.packagePrice != null && purchase.pack ? purchase.pack.amount : (convertQuantity(1, item.unit, purchase.baseUnit) ?? 1);
-    compared.set(item.id, { unit: purchase.baseUnit, price: purchase.price, perUnit });
+    compared.set(item.id, { unit: purchase.baseUnit, price: purchase.price, packed: purchase.pack != null, perUnit });
   }
   return {
     items: compared,
     points: points.map((point) => {
       const purchase = found(lineKey(point.receipt_id, point.unit, point.unit_price));
-      return { point, unit: purchase.baseUnit, price: purchase.price };
+      return { point, unit: purchase.baseUnit, price: purchase.price, packed: purchase.pack != null };
     }),
   };
 }
@@ -153,7 +164,8 @@ export function priceAlerts(
     for (const item of productItems) {
       const mine = compared.items.get(item.id)!;
       if (!(mine.price > 0)) continue;
-      const points = compared.points.filter((p) => p.unit === mine.unit);
+      // Em "un", a compra com tamanho de embalagem não se compara com a que não tem (a cartela de 30 e um preço sem quantos vinham).
+      const points = compared.points.filter((p) => p.unit === mine.unit && (mine.unit !== 'un' || p.packed === mine.packed));
       if (!points.length) continue;
       // Quanto da unidade comparada o item levou: a economia é em reais, na quantidade da nota.
       const amount = item.quantity * mine.perUnit;

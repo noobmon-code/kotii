@@ -1543,9 +1543,12 @@ const OBSERVATION_PAGE = 1000;
 /** Bem além de qualquer nota. Passando disso a busca falha (a nota fica sem avisos), em vez de comparar com uma parte do histórico. */
 export const OBSERVATION_MAX_LINES = 20000;
 
-// As linhas de notas confirmadas, com a descrição (o tamanho da embalagem, como no histórico do produto) e a nota
-// junto; o !inner faz os filtros da nota valerem para a linha.
-const OBSERVATION_COLUMNS = 'id, product_id, receipt_id, raw_description, unit, unit_price, receipt:receipts!inner(purchased_at, store_id)';
+// As linhas de notas confirmadas, com a descrição (o tamanho da embalagem, como no histórico do produto), quantos vêm
+// (pack_count, o que a revisão respondeu; o banco de antes da coluna lê sem ela) e a nota junto; o !inner faz os
+// filtros da nota valerem para a linha.
+const OBSERVATION_COLUMNS =
+  'id, product_id, receipt_id, raw_description, unit, unit_price, pack_count, receipt:receipts!inner(purchased_at, store_id)';
+const OBSERVATION_COLUMNS_WITHOUT_PACK = OBSERVATION_COLUMNS.replace(' pack_count,', '');
 
 type ObservationRow = {
   id: string;
@@ -1554,6 +1557,7 @@ type ObservationRow = {
   raw_description: string;
   unit: Unit;
   unit_price: number;
+  pack_count?: number | null;
   receipt: { purchased_at: string; store_id: string | null };
 };
 
@@ -1561,8 +1565,9 @@ type ObservationRow = {
  * Preços de vários produtos nos meses antes de uma compra (alerta de preço na
  * nota), das linhas das notas confirmadas: com a descrição, que traz o
  * tamanho da embalagem (a view price_observations não a tem), para o pacote de
- * 5 kg não ser comparado com o preço do de 1 kg. A janela sai da data da nota,
- * não de hoje: uma nota antiga aberta depois mostra os mesmos avisos. Dois
+ * 5 kg não ser comparado com o preço do de 1 kg, e quantos vêm (pack_count),
+ * para a cartela de 30 não ser comparada com a de 10. A janela sai da data da
+ * nota, não de hoje: uma nota antiga aberta depois mostra os mesmos avisos. Dois
  * dias de folga para o fuso. Só preço maior que zero, como no histórico do
  * produto: um item que ficou sem valor em outro mercado não vira "R$ 0,00 no
  * Assaí". Como a view, só as notas com mercado.
@@ -1581,10 +1586,11 @@ export async function fetchPriceObservations(productIds: string[], purchasedAt: 
   let read = 0;
   let last: string | undefined;
   let promised = 0;
+  let columns = OBSERVATION_COLUMNS;
   for (;;) {
     let request = supabase
       .from('receipt_items')
-      .select(OBSERVATION_COLUMNS, { count: 'exact' })
+      .select(columns, { count: 'exact' })
       .in('product_id', productIds)
       .eq('receipt.status', 'confirmed')
       .gte('receipt.purchased_at', from)
@@ -1592,6 +1598,10 @@ export async function fetchPriceObservations(productIds: string[], purchasedAt: 
       .gt('unit_price', 0);
     if (last) request = request.gt('id', last);
     const result = await request.order('id').limit(OBSERVATION_PAGE);
+    if (result.error && columns === OBSERVATION_COLUMNS && isMissingColumn(result.error, 'pack_count')) {
+      columns = OBSERVATION_COLUMNS_WITHOUT_PACK;
+      continue;
+    }
     const rows = (unwrap(result) ?? []) as unknown as ObservationRow[];
     const left = result.count ?? null;
     if (read + (left ?? rows.length) > OBSERVATION_MAX_LINES) {
@@ -1610,6 +1620,7 @@ export async function fetchPriceObservations(productIds: string[], purchasedAt: 
         purchased_at: row.receipt.purchased_at,
         receipt_id: row.receipt_id,
         description: row.raw_description,
+        ...(row.pack_count != null ? { packCount: Number(row.pack_count) } : {}),
       });
     }
     if (!rows.length || (left != null && rows.length >= left)) return points;

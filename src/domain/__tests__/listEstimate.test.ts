@@ -328,6 +328,106 @@ describe('estimateList', () => {
     expect(estimateList(list, quotes, { usual: new Map([['queijo', { l: 0.2 }]]) }).byItem.get('q')).toMatchObject({ cost: 72.9 });
   });
 
+  describe('ovos: o "Menor preço" é o de menor preço por ovo, quando todas as cartelas dizem quantos vêm', () => {
+    const cartela = (storeId: string, unitPrice: number, day: string, packCount: number | null) => ({
+      ...price('ovos', storeId, unitPrice, `${day}T12:00:00Z`),
+      packCount,
+    });
+    const names = { storeName: (id: string) => (id === 'assai' ? 'Assaí' : 'Atacadão'), today: '2026-10-25' };
+    const facts = (quotes: EstimatePrice[], extra: { promotionOnly?: boolean } = {}) =>
+      itemFacts(estimateList([item('o', 'Ovos', 'ovos')], quotes).byItem.get('o'), undefined, { ...names, category: 'ovos', ...extra });
+
+    it('a cartela de 30 a R$ 39,90 (R$ 1,33 o ovo) é o menor preço, contra a de 10 a R$ 13,99 (R$ 1,40), que é o último', () => {
+      expect(facts([cartela('assai', 13.99, '2026-10-22', 10), cartela('atacadao', 39.9, '2026-10-21', 30)])).toEqual([
+        'Último preço: R$ 13,99/un, 10 ovos (R$ 1,40 o ovo) (Assaí, 22 out).',
+        'Menor preço: R$ 39,90/un, 30 ovos (R$ 1,33 o ovo) (Atacadão, 21 out).',
+      ]);
+    });
+
+    it('a de 30 é a última e já é a mais barata por ovo: não aparece "Menor preço" da cartela de 10, mais cara por ovo', () => {
+      expect(facts([cartela('assai', 13.99, '2026-10-20', 10), cartela('atacadao', 39.9, '2026-10-22', 30)])).toEqual([
+        'Último preço: R$ 39,90/un, 30 ovos (R$ 1,33 o ovo) (Atacadão, 22 out).',
+      ]);
+    });
+
+    it('só em promoção: o preço bom é a cartela de menor preço por ovo', () => {
+      expect(facts([cartela('assai', 13.99, '2026-10-22', 10), cartela('atacadao', 39.9, '2026-10-21', 30)], { promotionOnly: true })).toEqual([
+        'Último preço: R$ 13,99/un, 10 ovos (R$ 1,40 o ovo) (Assaí, 22 out).',
+        'Menor preço: R$ 39,90/un, 30 ovos (R$ 1,33 o ovo) (Atacadão, 21 out).',
+        'Só em promoção: o preço bom é R$ 39,90/un, 30 ovos (R$ 1,33 o ovo) ou menos.',
+      ]);
+    });
+
+    it('sem a contagem de um dos lados, compara pela cartela, como antes', () => {
+      expect(facts([cartela('assai', 13.99, '2026-10-21', 10), cartela('atacadao', 39.9, '2026-10-22', null)])).toEqual([
+        'Último preço: R$ 39,90/un (Atacadão, 22 out).',
+        'Menor preço: R$ 13,99/un, 10 ovos (R$ 1,40 o ovo) (Assaí, 21 out).',
+      ]);
+    });
+
+    // Três cotações com uma sem contagem: A < C por cartela, C < B por cartela e B < A por ovo é um ciclo, sem vencedor;
+    // o "Menor preço" vale então o menor da cartela (A), em qualquer ordem da lista.
+    const named = { storeName: (id: string) => `Mercado ${id.toUpperCase()}`, today: '2026-10-25', category: 'ovos' };
+    /** As seis ordens em que a lista pode devolver três cotações. */
+    const orders = <T>(a: T, b: T, c: T): T[][] => [
+      [a, b, c],
+      [a, c, b],
+      [b, a, c],
+      [b, c, a],
+      [c, a, b],
+      [c, b, a],
+    ];
+
+    it('três cotações, uma sem contagem: o "Menor preço" é o do mercado A, em qualquer ordem da lista', () => {
+      const a = cartela('a', 13.99, '2026-10-20', 10);
+      const b = cartela('b', 39.9, '2026-10-21', 30);
+      const c = cartela('c', 14.5, '2026-10-22', null);
+      for (const quotes of orders(a, b, c)) {
+        expect(itemFacts(estimateList([item('o', 'Ovos', 'ovos')], quotes).byItem.get('o'), undefined, named)).toEqual([
+          'Último preço: R$ 14,50/un (Mercado C, 22 out).',
+          'Menor preço: R$ 13,99/un, 10 ovos (R$ 1,40 o ovo) (Mercado A, 20 out).',
+        ]);
+      }
+    });
+
+    it('três cartelas, todas dizendo quantos vêm: o menor por ovo é o mesmo em qualquer ordem da lista', () => {
+      const a = cartela('a', 13.99, '2026-10-20', 10);
+      const b = cartela('b', 39.9, '2026-10-21', 30);
+      const c = cartela('c', 14.5, '2026-10-19', 12);
+      for (const quotes of orders(a, b, c)) {
+        expect(itemFacts(estimateList([item('o', 'Ovos', 'ovos')], quotes).byItem.get('o'), undefined, named)).toEqual([
+          'Último preço: R$ 39,90/un, 30 ovos (R$ 1,33 o ovo) (Mercado B, 21 out).',
+          'Menor preço: R$ 14,50/un, 12 ovos (R$ 1,21 o ovo) (Mercado C, 19 out).',
+        ]);
+      }
+    });
+
+    // Sem ciclo, com uma sem contagem: a de 40 perde para a de 10 (pela cartela) e para a de 30 (pela cartela também), e a
+    // de 30 vence a de 10 por ovo (R$ 1,33 contra R$ 1,40). Vence a de 30, em qualquer ordem da lista.
+    it('três cotações, uma sem contagem a R$ 40: a de 30 é o menor preço por ovo, em qualquer ordem da lista', () => {
+      const a = cartela('a', 13.99, '2026-10-20', 10);
+      const b = cartela('b', 39.9, '2026-10-21', 30);
+      const c = cartela('c', 40, '2026-10-22', null);
+      for (const quotes of orders(a, b, c)) {
+        expect(itemFacts(estimateList([item('o', 'Ovos', 'ovos')], quotes).byItem.get('o'), undefined, named)).toEqual([
+          'Último preço: R$ 40,00/un (Mercado C, 22 out).',
+          'Menor preço: R$ 39,90/un, 30 ovos (R$ 1,33 o ovo) (Mercado B, 21 out).',
+        ]);
+      }
+    });
+
+    // R$ 5,04 em 6 e R$ 8,40 em 10 são os mesmos R$ 0,84 o ovo: em ponto flutuante, o de 10 saía um pouco acima, e
+    // a cartela de 6 aparecia como "Menor preço" só quando a de 10 era a última.
+    it('o mesmo preço por ovo em cartelas de 6 e de 10 não dá "Menor preço", seja qual for a mais nova', () => {
+      expect(facts([cartela('assai', 5.04, '2026-10-20', 6), cartela('atacadao', 8.4, '2026-10-21', 10)])).toEqual([
+        'Último preço: R$ 8,40/un, 10 ovos (R$ 0,84 o ovo) (Atacadão, 21 out).',
+      ]);
+      expect(facts([cartela('assai', 5.04, '2026-10-21', 6), cartela('atacadao', 8.4, '2026-10-20', 10)])).toEqual([
+        'Último preço: R$ 5,04/un, 6 ovos (R$ 0,84 o ovo) (Assaí, 21 out).',
+      ]);
+    });
+  });
+
   it('ovos: o último preço diz quantos vinham na cartela e quanto sai cada ovo, quando a pessoa disse na revisão', () => {
     const quotes = [
       { ...price('ovos', 'bom', 13.99, '2026-10-20T12:00:00Z'), packCount: 10 },
