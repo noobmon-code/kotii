@@ -549,7 +549,8 @@ export default function ShoppingListScreen() {
   // "Na despensa" espera o histórico de compras: sem ele, apareceria justamente no que acabou. O aparelho que
   // nunca carregou o histórico fica sem selo nenhum.
   // O queijo pedido em "un" com o preço por kg conta o que a casa costuma levar dele (das notas), não 1 kg. Sem o
-  // histórico, é o 1 kg, e o detalhe do item diz que o histórico não carregou.
+  // histórico (a busca falhou, ou sem internet e ele nunca chegou neste aparelho), é o 1 kg, e o detalhe do item diz
+  // que o histórico não carregou. Enquanto a primeira busca ainda anda, o detalhe não diz isso.
   const usual = useMemo(() => usualAmounts(purchases.data ?? []), [purchases.data]);
   const market = useMemo(() => {
     const all = items.data ?? [];
