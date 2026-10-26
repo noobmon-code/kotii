@@ -225,6 +225,33 @@ export const RECEIPT_CAUGHT_UP = {
   message: 'Confira os itens e toque em "Confirmar nota" de novo.',
 };
 
+/**
+ * O toque de peso ou de embalagem num item enquanto outro item ainda está gravando (do toque até a nota voltar): a
+ * tela não grava esse toque, e diz. O toque repetido no mesmo item é o mesmo valor, e fica calado.
+ */
+export const OTHER_ITEM_SAVING = {
+  title: 'Aguarde',
+  message: 'Outro item ainda está sendo salvo. Toque de novo quando a nota voltar.',
+};
+
+/**
+ * O mesmo toque quando nenhum item está gravando e só a nota está sendo atualizada: a busca de "Confirmar nota", a
+ * remoção de um item ou a gravação de um item novo. A tela não grava esse toque, e diz.
+ */
+export const RECEIPT_BEING_UPDATED = {
+  title: 'Aguarde',
+  message: 'A nota ainda está sendo atualizada. Toque de novo quando ela voltar.',
+};
+
+/**
+ * "Confirmar nota" tocado com a busca da nota falhando: a nota fica na tela, com o aviso de que não atualizou, e a
+ * confirmação espera a busca dar certo. Sem este aviso, o toque não faria nada e a pessoa não saberia por quê.
+ */
+export const RECEIPT_REREAD_FAILED = {
+  title: 'Não deu para buscar a nota',
+  message: 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.',
+};
+
 /** A nota ainda não voltou: nada é confirmado com os itens de antes. */
 export const RECEIPT_STILL_BEHIND = {
   title: 'A nota ainda não atualizou',

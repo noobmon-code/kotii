@@ -72,7 +72,17 @@ export function weightQuestion(item: { quantity: number }): string {
 
 export const WEIGHT_PLACEHOLDER = 'Peso em kg (ex.: 0,186)';
 export const WEIGHT_UNREADABLE = { title: 'Peso inválido', message: 'Digite o peso da etiqueta em kg, como 0,186 (ou 186 g).' };
+/** Na prévia enquanto se digita: o número não dá para ler, e "Salvar peso" não grava nada. */
+export const WEIGHT_NOT_READ = 'Não deu para ler o peso';
 export const WEIGHT_SAVED_NOT_SHOWN = {
   title: 'Peso salvo',
   message: 'Não deu para atualizar a nota na tela: o item aparece por unidade até ela ser buscada de novo.',
+};
+/**
+ * A linha já mudou desde a leitura da tela: em outro aparelho, ou numa gravação desta tela que perdeu a resposta.
+ * Este pedido não gravou nada, e a nota é buscada de novo.
+ */
+export const WEIGHT_LINE_CHANGED = {
+  title: 'Peso não salvo',
+  message: 'Este item já mudou antes deste toque. Confira a nota e, se ainda precisar, informe o peso outra vez.',
 };

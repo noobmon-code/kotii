@@ -8,6 +8,7 @@ import { NFCE_CAPTCHA_STATE, nfceItemsToDraft, nfceReceiptRow, nfceStoreCodes, t
 import { RECEIPTS_PAGE } from '@/domain/receiptList';
 import { MAX_RECEIPT_PHOTOS, tooManyPhotosMessage } from '@/domain/receiptPhotos';
 import type { ConfirmItem } from '@/domain/receiptReview';
+import { weighedLine } from '@/domain/receiptWeight';
 import { supabase, unwrap } from '@/lib/supabase';
 import type { Receipt, ReceiptItem, Unit } from '@/lib/types';
 import {
@@ -567,6 +568,34 @@ export function useSaveReceiptItem(receiptId: string) {
           .select('id')
           .single(),
       ) as { id: string };
+    },
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * O peso da etiqueta numa linha em "un" (domain/receiptWeight): só a quantidade em kg e o preço por kg, e só se a
+ * linha ainda é a que a tela leu (mesma quantidade, mesmo total, ainda em "un"). Se a linha já mudou (em outro
+ * aparelho, ou numa gravação desta tela que perdeu a resposta), o pedido não grava nada (`saved` falso) e a nota é
+ * buscada de novo. A descrição e o total não vão no pedido: o valor que a tela mostra de antes não volta para a nota.
+ */
+export function useSaveReceiptWeight(receiptId: string) {
+  const invalidate = useInvalidateReceipt(receiptId);
+  return useMutation({
+    mutationFn: async ({ item, weightKg }: { item: ReceiptItem; weightKg: number }): Promise<{ saved: boolean }> => {
+      const { quantity, unit, unit_price } = weighedLine(item, weightKg);
+      const rows = unwrap(
+        await supabase
+          .from('receipt_items')
+          .update({ quantity, unit, unit_price })
+          .eq('id', item.id)
+          .eq('receipt_id', receiptId)
+          .eq('unit', 'un')
+          .eq('quantity', item.quantity)
+          .eq('total_price', item.total_price)
+          .select('id'),
+      ) as { id: string }[] | null;
+      return { saved: Boolean(rows?.length) };
     },
     onSuccess: invalidate,
   });

@@ -67,8 +67,12 @@ export function readPackCount(text: string): number | null {
 /** A pergunta na linha dos ovos. */
 export const PACK_QUESTION = 'Quantos ovos vêm na embalagem? Com isso, o preço mostra quanto sai cada ovo.';
 
-/** O que a linha diz quando já se sabe quantos vêm: "10 ovos na embalagem: R$ 1,40 o ovo". */
+/**
+ * O que a linha diz quando já se sabe quantos vêm: "10 ovos na embalagem: R$ 1,40 o ovo". Sem valor, a conta daria o
+ * zero da leitura: a linha diz só quantos vêm.
+ */
 export function packLine(item: { total_price: number; quantity: number }, count: number, category?: string | null): string {
+  if (hasNoValue(item)) return `${packLabel(count, category)} na embalagem`;
   const packPrice = item.quantity > 0 ? item.total_price / item.quantity : item.total_price;
   return `${packLabel(count, category)} na embalagem: ${perItemLabel(packPrice, count, category)}`;
 }
