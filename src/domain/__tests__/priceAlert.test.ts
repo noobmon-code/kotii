@@ -104,6 +104,12 @@ describe('priceAlerts com quantos vêm na embalagem (pack_count, o que a revisã
     expect(alerts.get('i1')).toEqual({ kind: 'cheaper_elsewhere', storeId: 's-assai', price: 1.4, unit: PACK_ITEM, on: '2026-09-10', saving: 7.8 });
   });
 
+  it('a cartela de 10 a R$ 13,99 avisa da de 30 a R$ 36,90 por ovo: R$ 1,40 contra R$ 1,23', () => {
+    const alerts = priceAlerts([egg({ unitPrice: 13.99, packCount: 10 })], [eggPoint('s-assai', 36.9, '2026-09-10', 30)], RECEIPT);
+    // Os 10 ovos saem R$ 0,17 mais caros cada um: R$ 1,70 no total.
+    expect(alerts.get('i1')).toEqual({ kind: 'cheaper_elsewhere', storeId: 's-assai', price: 1.23, unit: PACK_ITEM, on: '2026-09-10', saving: 1.7 });
+  });
+
   it('com o mesmo tamanho dos dois lados, compara o preço da cartela, como antes', () => {
     const alerts = priceAlerts([egg({ unitPrice: 25.99, packCount: 10 })], [eggPoint('s-assai', 13.99, '2026-09-10', 10)], RECEIPT);
     expect(alerts.get('i1')).toEqual({ kind: 'cheaper_elsewhere', storeId: 's-assai', price: 13.99, unit: 'un', on: '2026-09-10', saving: 12 });
