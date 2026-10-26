@@ -368,7 +368,7 @@ describe('estimateList', () => {
     });
   });
 
-  it('usualAmounts: a mediana das linhas de nota de cada produto, em kg ou litro, ao grama', () => {
+  it('usualAmounts: o que a casa costuma levar de cada produto, em kg ou litro, ao grama (a mediana das notas)', () => {
     const record = (productId: string | null, quantity: number, unit: PurchaseRecord['unit'], source: PurchaseRecord['source'] = 'receipt'): PurchaseRecord => ({
       name: 'x',
       category: 'laticinios',
@@ -392,9 +392,10 @@ describe('estimateList', () => {
       record('arroz', 1, 'un'),
       record('zero', 0, 'kg'),
     ]);
+    // Com duas notas de suco (0,5 l e 1 l), a menor das duas do meio: 0,5 l, e não a média.
     expect([...usual]).toEqual([
       ['queijo', { kg: 0.202 }],
-      ['suco', { l: 0.75 }],
+      ['suco', { l: 0.5 }],
     ]);
     expect(usualAmountLabel({ unit: 'kg', amount: 0.201 })).toBe('201 g');
     expect(usualAmountLabel({ unit: 'kg', amount: 1.25 })).toBe('1,25 kg');
@@ -427,6 +428,20 @@ describe('estimateList', () => {
         cost: 14.73,
         perPiece: { unit: 'kg', amount: 0.202 },
       });
+    });
+
+    it('com número par de notas, o costume é a menor das duas do meio, nunca a média: uma peça de 2,5 kg não puxa o de 0,2 kg', () => {
+      const usual = usualAmounts([buy('queijo', 0.2, 'kg'), buy('queijo', 2.5, 'kg')]);
+      expect(usual.get('queijo')).toEqual({ kg: 0.2 });
+      expect(estimateList(cheese, cheesePrice, { usual }).byItem.get('q')).toMatchObject({ cost: 14.58, perPiece: { amount: 0.2 } });
+      // Dois valores próximos: 0,2 kg, e não 0,201.
+      expect(usualAmounts([buy('queijo', 0.2, 'kg'), buy('queijo', 0.202, 'kg')]).get('queijo')).toEqual({ kg: 0.2 });
+      // Com quatro notas, a menor das duas do meio (a segunda, na ordem).
+      expect(usualAmounts([buy('queijo', 0.2, 'kg'), buy('queijo', 0.2, 'kg'), buy('queijo', 2.5, 'kg'), buy('queijo', 2.5, 'kg')]).get('queijo')).toEqual({
+        kg: 0.2,
+      });
+      // Com três notas, o do meio (que é a mediana de verdade).
+      expect(usualAmounts([buy('queijo', 0.2, 'kg'), buy('queijo', 0.202, 'kg'), buy('queijo', 2.5, 'kg')]).get('queijo')).toEqual({ kg: 0.202 });
     });
 
     it('o teto é de 20 kg e de 20 l: a peça pesada no balcão conta, o que passa disso não', () => {

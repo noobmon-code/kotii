@@ -174,12 +174,13 @@ const MAX_USUAL_LITERS = 20;
 /**
  * O que a casa costuma levar de cada produto vendido a peso ou a litro: a
  * mediana das linhas das notas dos últimos meses (os registros de compra), em
- * kg ou litro, arredondada ao grama. O queijo fatiado que sai em 0,200 e 0,202
- * kg é 201 g. Só as notas: a quantidade da lista é o que a casa pede, não o que
- * a balança deu. Linha acima de 20 kg ou 20 l não entra: é o peso de um erro de
- * digitação ("202" no lugar de "0,202"), não de uma peça do balcão. Serve à
- * conta do item que a lista pede em "un" ("Queijo", 1 un) com o preço por kg:
- * sem ela, a conta seria de 1 kg.
+ * kg ou litro, arredondada ao grama. Com número par de linhas, a menor das duas
+ * do meio, e não a média: 0,200 e 0,202 kg dão 200 g; 0,2 e 2,5 kg dão 0,2 kg.
+ * Só as notas: a quantidade da lista é o que a casa pede, não o que a balança
+ * deu. Linha acima de 20 kg ou 20 l não entra: é o peso de um erro de digitação
+ * ("202" no lugar de "0,202"), não de uma peça do balcão. Serve à conta do item
+ * que a lista pede em "un" ("Queijo", 1 un) com o preço por kg: sem ela, a conta
+ * seria de 1 kg.
  */
 export function usualAmounts(records: readonly Pick<PurchaseRecord, 'productId' | 'quantity' | 'unit' | 'source'>[]): UsualAmounts {
   const amounts = new Map<string, Record<UsualAmount['unit'], number[]>>();
@@ -193,10 +194,11 @@ export function usualAmounts(records: readonly Pick<PurchaseRecord, 'productId' 
     seen[unit].push(amount);
     amounts.set(record.productId, seen);
   }
+  // Com número par de linhas, a menor das duas do meio (a mediana inferior): uma compra que a casa fez de fato. A média
+  // entre 0,2 kg e 2,5 kg, 1,35 kg, ela nunca levou.
   const median = (values: number[]) => {
     const sorted = [...values].sort((a, b) => a - b);
-    const middle = Math.floor(sorted.length / 2);
-    const value = sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+    const value = sorted[Math.floor((sorted.length - 1) / 2)];
     return Math.round(value * 1000) / 1000;
   };
   const usual = new Map<string, Partial<Record<UsualAmount['unit'], number>>>();
