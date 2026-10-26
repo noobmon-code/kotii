@@ -1894,6 +1894,20 @@ describe('item pesado no balcão que veio como "1 un"', () => {
     expect(page()).not.toContain('Veio pesado no balcão?');
   });
 
+  it('enquanto a pessoa digita, o campo mostra o que "Salvar peso" vai gravar; o que não dá para ler diz isso, e nada grava antes do toque', async () => {
+    seed(receipt({ total: 14.6 }), item('i1', 'QUEIJO parmesão', 14.6, { suggested_category: 'laticinios' }));
+    await open();
+    await press(chip('Informar o peso'));
+    // "05" é 5 kg: sem vírgula, o número abaixo de 20 é quilo. A conta aparece antes de gravar.
+    act(() => weightField()!.props.onChangeText('05'));
+    expect(page()).toContain('5 kg × R$ 2,92');
+    act(() => weightField()!.props.onChangeText('0,186'));
+    expect(page()).toContain('0,186 kg × R$ 78,49');
+    act(() => weightField()!.props.onChangeText('0'));
+    expect(page()).toContain('Não deu para ler o peso');
+    expect(writes('receipt_items')).toEqual([]);
+  });
+
   it('outro aparelho corrige o valor com a nota aberta aqui: o peso não grava o valor de antes, avisa e busca a nota de novo', async () => {
     seed(receipt({ total: 30.98 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }), item('i2', 'LEITE IL DESNATADO', 7.99, { suggested_category: 'laticinios' }));
     await open();

@@ -89,8 +89,10 @@ import { hasNoValue } from '@/domain/receiptItem';
 import {
   asksWeight,
   readWeight,
+  weighedLine,
   weightQuestion,
   WEIGHT_CHANGED_ELSEWHERE,
+  WEIGHT_NOT_READ,
   WEIGHT_PLACEHOLDER,
   WEIGHT_SAVED_NOT_SHOWN,
   WEIGHT_UNREADABLE,
@@ -1516,25 +1518,30 @@ function WeightQuestion({ item, onSave, onPackaged }: { item: ReceiptItem; onSav
   const save = () => {
     if (text != null && onSave(text)) setText(null);
   };
+  // O que "Salvar peso" grava, enquanto a pessoa digita: o mesmo texto que o cartão da linha pesada vai mostrar.
+  const kg = text ? readWeight(text) : null;
   return (
     <View style={styles.gapXs}>
       <Text variant="small">{weightQuestion(item)}</Text>
       {text != null ? (
-        <Row style={styles.wrap}>
-          <View style={styles.weight}>
-            <TextField
-              value={text}
-              onChangeText={setText}
-              placeholder={WEIGHT_PLACEHOLDER}
-              keyboardType="decimal-pad"
-              autoFocus
-              onSubmitEditing={save}
-              accessibilityLabel={`Peso de ${item.raw_description}`}
-            />
-          </View>
-          <Chip label="Salvar peso" icon="check" onPress={save} />
-          <Chip label="Cancelar" onPress={() => setText(null)} />
-        </Row>
+        <>
+          <Row style={styles.wrap}>
+            <View style={styles.weight}>
+              <TextField
+                value={text}
+                onChangeText={setText}
+                placeholder={WEIGHT_PLACEHOLDER}
+                keyboardType="decimal-pad"
+                autoFocus
+                onSubmitEditing={save}
+                accessibilityLabel={`Peso de ${item.raw_description}`}
+              />
+            </View>
+            <Chip label="Salvar peso" icon="check" onPress={save} />
+            <Chip label="Cancelar" onPress={() => setText(null)} />
+          </Row>
+          {text.trim() ? <Text variant="small">{kg != null ? quantityText(weighedLine(item, kg)) : WEIGHT_NOT_READ}</Text> : null}
+        </>
       ) : (
         <Row style={styles.wrap}>
           <Chip label="Informar o peso" icon="scale" onPress={() => setText('')} />
