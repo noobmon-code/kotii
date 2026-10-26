@@ -19,6 +19,7 @@ interface ItemRow {
   raw_description: string;
   unit: string;
   unit_price: number;
+  pack_count?: number | null;
   receipt: { status: 'draft' | 'confirmed'; purchased_at: string; store_id: string | null };
 }
 
@@ -29,6 +30,8 @@ const mockTable = {
   rows: [] as ItemRow[],
   /** O teto de linhas por pedido (max_rows do Supabase). */
   cap: 1000,
+  /** Falso: o banco ainda não tem a coluna pack_count (recusa a leitura que a pede). */
+  hasPackCount: true,
   asked: [] as { table: string; columns: string; filters: Filter[]; order: string[]; limit: number | null }[],
 };
 
@@ -70,9 +73,18 @@ jest.mock('@/lib/supabase', () => ({
             mockTable.asked.push(asked);
             // O !inner: os filtros da nota tiram a linha; sem ele, a nota viria vazia.
             if (!/receipt:receipts!inner\(/.test(columns)) throw new Error('sem !inner');
+            if (!mockTable.hasPackCount && /pack_count/.test(columns)) {
+              resolve({ data: null, count: null, error: { code: '42703', message: 'column receipt_items.pack_count does not exist' } });
+              return;
+            }
             const found = mockTable.rows.filter(keeps).sort((a, b) => (a.id < b.id ? -1 : 1));
             resolve({
-              data: found.slice(0, Math.min(asked.limit ?? Infinity, mockTable.cap)).map(({ receipt: { status: _status, ...receipt }, ...row }) => ({ ...row, receipt })),
+              // Como o servidor: a resposta traz só as colunas pedidas (pack_count só quando a consulta o pede).
+              data: found.slice(0, Math.min(asked.limit ?? Infinity, mockTable.cap)).map(({ receipt: { status: _status, ...receipt }, pack_count, ...row }) => ({
+                ...row,
+                receipt,
+                ...(/pack_count/.test(columns) ? { pack_count } : {}),
+              })),
               count: options?.count === 'exact' ? found.length : null,
               error: null,
             });
@@ -148,12 +160,33 @@ afterEach(async () => {
   mockTable.rows = [];
   mockTable.asked = [];
   mockTable.cap = 1000;
+  mockTable.hasPackCount = true;
 });
 
 const PURCHASED_AT = '2026-09-27T15:00:00.000Z';
 const RECEIPT = { receiptId: 'r-agora', storeId: 's-dia', purchasedOn: '2026-09-27' };
 /** O queijo desta nota, comprado no Dia a 39,90 o quilo. */
 const cheese = { id: 'i1', productId: 'p-queijo', unit: 'kg', unitPrice: 39.9, quantity: 1 };
+
+describe('quantos vêm na embalagem no alerta de preço (pack_count)', () => {
+  it('a leitura traz quantos vêm de cada linha, para o alerta comparar cartela com cartela', async () => {
+    mockTable.rows = [line('s-assai', 13.99, '2026-09-10', { product_id: 'p-ovos', raw_description: 'OVOS RANCHO CAIPIRA', unit: 'un', pack_count: 10 })];
+    const { data, error } = await read(['p-ovos'], PURCHASED_AT);
+    expect(error).toBeUndefined();
+    expect(data).toEqual([expect.objectContaining({ store_id: 's-assai', unit: 'un', unit_price: 13.99, packCount: 10 })]);
+  });
+
+  it('banco de antes da coluna: a leitura segue sem ela, e o alerta não falha', async () => {
+    mockTable.hasPackCount = false;
+    mockTable.rows = [line('s-assai', 13.99, '2026-09-10', { product_id: 'p-ovos', raw_description: 'OVOS RANCHO CAIPIRA', unit: 'un', pack_count: 10 })];
+    const { data, error } = await read(['p-ovos'], PURCHASED_AT);
+    expect(error).toBeUndefined();
+    expect(data).toHaveLength(1);
+    expect(data![0]).not.toHaveProperty('packCount');
+    // Primeiro com a coluna (o banco recusa), depois sem ela: a mesma leitura, sem perder nenhuma linha.
+    expect(mockTable.asked.map(({ columns }) => /pack_count/.test(columns))).toEqual([true, false]);
+  });
+});
 
 describe('preços dos meses antes de uma compra (alerta de preço na nota)', () => {
   it('pede às linhas das notas confirmadas só preço maior que zero, dentro da janela da compra, com a descrição', async () => {

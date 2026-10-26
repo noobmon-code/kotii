@@ -303,11 +303,22 @@ export default function ReceiptScreen() {
   const resolvedItems = new Map(items.map((item) => [item.id, resolveItem(item, overrides[item.id], catalog, purchasedOn)]));
   // Produto que sumiu do catálogo com a revisão aberta (foi juntado com outro em outro aparelho).
   const gone = goneProducts(items, overrides, catalog);
-  // A descrição da nota traz o tamanho da embalagem: o pacote de 5 kg se compara pelo preço por kg.
+  // A descrição da nota traz o tamanho da embalagem: o pacote de 5 kg se compara pelo preço por kg. Sem ele na
+  // descrição, vale quantos vêm (pack_count, respondido na revisão): a cartela de 30 não se compara com a de 10 pelo preço.
   const alertItems: AlertItem[] = items.flatMap((item) => {
     const product = resolvedItems.get(item.id)!.product;
     return product.kind === 'existing'
-      ? [{ id: item.id, productId: product.productId, unit: item.unit, unitPrice: item.unit_price, quantity: item.quantity, description: item.raw_description }]
+      ? [
+          {
+            id: item.id,
+            productId: product.productId,
+            unit: item.unit,
+            unitPrice: item.unit_price,
+            quantity: item.quantity,
+            description: item.raw_description,
+            packCount: item.pack_count ?? null,
+          },
+        ]
       : [];
   });
   const alerts = priceAlerts(alertItems, priceHistory.data ?? [], { receiptId: receipt.id, storeId: receipt.store_id, purchasedOn });
