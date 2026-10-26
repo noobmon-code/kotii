@@ -66,7 +66,7 @@ export interface ItemEstimate {
   approximateQuantity: boolean;
   /** Item em "un" com preço por kg ou litro: quanto a casa costuma levar dele de uma vez (usualAmounts), o que a conta usa. */
   perPiece?: UsualAmount;
-  /** Item em "un" com preço por kg ou litro sem o costume, porque o histórico de compras não carregou: a conta é de 1 kg, e diz isso. */
+  /** Item em "un" com preço por kg ou litro sem o costume, porque o histórico de compras não carregou: a conta é de 1 kg ou 1 litro, e diz isso. */
   historyMissing?: boolean;
   /** O produto de onde saem o último preço, o "preço bom" e a estimativa do item (itemResolver). */
   productId: string;
@@ -424,7 +424,7 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
       // qualquer que seja a quantidade: "6 un" de banana são as bananas de sempre, não seis vezes elas.
       const piece = piecePerUnit(sources.usual, item.unit, priceUnit, [seen?.productId ?? used?.productId ?? productId, productId]);
       const { quantity, approximate } = piece ? { quantity: piece.inPriceUnit, approximate: true } : priceQuantity(item.quantity, item.unit, priceUnit);
-      // Sem o costume porque o histórico de compras não carregou: o 1 kg de sempre, e a conta diz que o costume não entrou.
+      // Sem o costume porque o histórico de compras não carregou: o 1 kg (ou 1 litro) de sempre, e a conta diz que o costume não entrou.
       const historyMissing =
         !piece && sources.historyMissing === true && item.unit === 'un' && ['kg', 'l'].includes(pricePerBase(1, priceUnit).unit);
       return {
