@@ -257,6 +257,8 @@ Deno.test('weighedUnitPrice: o preço da bandeja impresso no lugar do preço por
   // As duas linhas do pedido que imprimiu o preço da bandeja: 0,202 kg × R$ 72,90 = R$ 14,73.
   assertEquals(weighedUnitPrice('Queijo Muçarela Importado Fatiado 200g', 0.202, 'kg', 14.58, 14.73), 72.9);
   assertEquals(weighedUnitPrice('Bife De Lagarto Bovino À Vácuo Resfriado 500g', 0.412, 'kg', 29.95, 24.68), 59.9);
+  // Fecha com o preço lido (0,35 kg × R$ 39,90 = R$ 13,97): a conta cai antes de ler o tamanho, então este caso não
+  // prova a troca de "1.000G" (ela é provada no teste de "1.000G" e "1.000ML" abaixo).
   assertEquals(weighedUnitPrice('PRESUNTO FAT 1.000G', 0.35, 'kg', 39.9, 13.97), 39.9);
   assertEquals(weighedUnitPrice('FRIOS BANDEJA 250 G', 0.26, 'kg', 9.98, 10.38), 39.92);
   // A conta já fecha (o preço é por kg), ou o valor é menor (desconto do item): o preço lido fica.
@@ -300,6 +302,14 @@ Deno.test('weighedUnitPrice: o pacote de bandejas (C/2, 2X200G) fecha a conta co
   assertEquals(weighedUnitPrice('QUEIJO 2X200G', 0.202, 'kg', 14.58, 14.73), 72.9);
   // Nem uma bandeja nem o pacote fecham a conta: o preço lido fica.
   assertEquals(weighedUnitPrice('QJ MUSS 200G C/2', 0.5, 'kg', 29.16, 30), 29.16);
+});
+
+Deno.test('weighedUnitPrice: "1.000G" e "1.000ML" são mil, não um', () => {
+  // Aqui a conta não fecha com o preço lido, então o tamanho é lido. Sem a troca de "1.000" por "1000", o tamanho
+  // seria 1 g (0,001 kg) e a conta fecharia com R$ 10,00 o kg (0,01 ÷ 0,001), no lugar de R$ 0,01.
+  assertEquals(weighedUnitPrice('PRESUNTO 1.000G', 0.2, 'kg', 0.01, 2.0), 0.01);
+  assertEquals(weighedUnitPrice('PRESUNTO 1.000GRAMAS', 0.2, 'kg', 0.01, 2.0), 0.01);
+  assertEquals(weighedUnitPrice('SUCO 1.000ML', 0.2, 'l', 0.01, 2.0), 0.01);
 });
 
 Deno.test('preço da bandeja na linha pesada: a nota e a leitura do servidor guardam o preço por kg', () => {
