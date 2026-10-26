@@ -267,10 +267,11 @@ function printedSize(description: string): { unit: 'kg' | 'l'; amount: number; c
   // "1.000G" é mil gramas, não um.
   const text = description.toLowerCase().replace(/(\d)[.,](\d{3})(?=\s*(?:g|grs?|gramas?|ml)(?![a-z]))/g, '$1$2');
   // O tamanho pode vir colado a um ponto depois de letra ("SADIA.200G"); um número depois de dígito, com ou sem ponto
-  // ou vírgula no meio ("1.234,5KG"), não é tamanho. A contagem vem antes ("2X200G", "2 x 200 g") ou depois ("200G C/2").
+  // ou vírgula no meio ("1.234,5KG", "0.5X"), não é tamanho nem contagem. A contagem vem antes ("2X200G", "2 x 200 g",
+  // "QJ.MUSS.2X200G", também colada a um ponto depois de letra) ou depois ("200G C/2", "200G.C/2").
   const sizes = [
     ...text.matchAll(
-      /(?:(?<![\d.,])(\d+)\s*x\s*)?(?<![0-9][.,]?)(\d+(?:[.,]\d+)?)\s*(kg|grs?|gramas?|g|lts?|litros?|l|ml)(?![a-z])(?:\s*(?:x|c\s*\/)\s*(\d+)(?![\d.,a-z]))?/g,
+      /(?:(?:(?<![\d.,])|(?<=[^\d\s.,]\.))(\d+)\s*x\s*)?(?<![0-9][.,]?)(\d+(?:[.,]\d+)?)\s*(kg|grs?|gramas?|g|lts?|litros?|l|ml)(?![a-z])(?:\s*\.?\s*(?:x|c\s*\/)\s*(\d+)(?![\d.,a-z]))?/g,
     ),
   ].map((m) => {
     const scale = SIZE_UNITS[m[3]];

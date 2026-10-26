@@ -306,6 +306,17 @@ Deno.test('weighedUnitPrice: o pacote de bandejas (C/2, 2X200G) fecha a conta co
   assertEquals(weighedUnitPrice('QUEIJO 2X200G', 0.202, 'kg', 14.58, 14.73), 72.9);
   // Nem uma bandeja nem o pacote fecham a conta: o preço lido fica.
   assertEquals(weighedUnitPrice('QJ MUSS 200G C/2', 0.5, 'kg', 29.16, 30), 29.16);
+  // O tamanho colado a um ponto depois de letra leva a contagem: "QJ.MUSS.2X200G" e "QJ.MUSS.200G.C/2" são o pacote de 400 g.
+  assertEquals(weighedUnitPrice('QJ.MUSS.2X200G', 0.404, 'kg', 29.16, 29.45), 72.9);
+  assertEquals(weighedUnitPrice('QJ.MUSS.200G.C/2', 0.404, 'kg', 29.16, 29.45), 72.9);
+  // Um número decimal não é contagem: "0.2X" e "1,2X" leem só a bandeja, e a conta com ela não fecha (o preço lido fica).
+  assertEquals(weighedUnitPrice('QJ 0.2X200G', 0.404, 'kg', 29.16, 29.45), 29.16);
+  assertEquals(weighedUnitPrice('QJ 1,2X200G', 0.404, 'kg', 29.16, 29.45), 29.16);
+  // "0.5X1KG" e "1,5X1KG" são um quilo: o número antes do X não é contagem (com 5, a linha de 1 kg sairia da leitura).
+  const decimal = (raw_description: string) =>
+    cleanReceipt({ ...base, total: 39.9, items: [line({ raw_description, unit: 'kg', quantity: null, unit_price: 39.9, total_price: 39.9 })] }, new Set(), new Map());
+  assertEquals(decimal('PRESUNTO 0.5X1KG').readLines.map((l) => l.unit_price), [39.9]);
+  assertEquals(decimal('PRESUNTO 1,5X1KG').readLines.map((l) => l.unit_price), [39.9]);
 });
 
 Deno.test('weighedUnitPrice: "1.000G" e "1.000ML" são mil, não um', () => {
