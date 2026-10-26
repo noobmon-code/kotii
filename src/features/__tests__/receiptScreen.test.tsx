@@ -545,6 +545,18 @@ describe('nota em revisão: um item sem valor e o total da nota', () => {
     expect(mockDb.rpcs).toHaveLength(1);
   });
 
+  it('o valor é gravado e a nota some em outro aparelho antes de a busca voltar: sem o aviso de "Tentar de novo", a tela é a da nota que sumiu', async () => {
+    await open();
+    // A gravação chega; quando a busca da nota chega, ela já não existe no banco.
+    mockDb.receipts = [];
+    await press(chip('Usar R$ 12,90'));
+    await settle();
+    expect(mockDb.items[1]).toMatchObject({ total_price: 12.9 });
+    expect(jest.mocked(notify).mock.calls).toEqual([]);
+    expect(page()).toContain('Esta nota não existe mais.');
+    expect(page()).not.toContain('Tentar de novo');
+  });
+
   it('"Usar" e "Confirmar nota" no mesmo instante: a confirmação não anda nem pergunta', async () => {
     await open();
     await pressBoth(chip('Usar R$ 12,90'), button('Confirmar nota'));
@@ -2010,6 +2022,25 @@ describe('a nota que sumiu em outro aparelho: a tela é a da nota que sumiu, sem
     await open();
     expect(page()).toContain('Esta nota não existe mais.');
     expect(page()).not.toContain('Tentar de novo');
+  });
+
+  it('a busca de fundo que falhou e a nota apagada em outro aparelho: "Confirmar nota" não manda "Tentar de novo", e a tela é a da nota que sumiu', async () => {
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
+    // A nota foi apagada em outro aparelho, e agora a busca chega sem ela.
+    mockDb.receipts = [];
+    mockDb.fails = [];
+    await press(button('Confirmar nota'));
+    expect(jest.mocked(notify).mock.calls).toEqual([]);
+    expect(mockDb.rpcs).toEqual([]);
+    expect(page()).toContain('Esta nota não existe mais.');
+    expect(page()).not.toContain('Tentar de novo');
+    expect(button('Confirmar nota')).toBeUndefined();
   });
 
   it('sem nota na tela e a busca que falha por outro motivo: a tela do erro de sempre, com "Tentar de novo"', async () => {

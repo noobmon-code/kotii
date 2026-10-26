@@ -673,7 +673,8 @@ export default function ReceiptScreen() {
         if (written && shown) {
           const { itemId } = shown;
           if (itemId) setSavedAt((prev) => ({ ...prev, [itemId]: behind }));
-          if (read?.isError) notify(shown.saved.title, shown.saved.message);
+          // A nota que sumiu em outro aparelho é a tela dela (ver o gate), sem o "Tentar de novo" que este aviso manda usar.
+          if (read?.isError && !receiptGone(read.error)) notify(shown.saved.title, shown.saved.message);
         }
       }
     } catch (err) {
@@ -698,9 +699,10 @@ export default function ReceiptScreen() {
     setSettlingValue(true);
     try {
       const read = await rereadReceipt();
-      // A busca que falha deixa a nota na tela, com o aviso de cima: sem outro aviso, o toque não faria nada.
+      // A busca que falha deixa a nota na tela, com o aviso de cima: sem outro aviso, o toque não faria nada. A nota que
+      // sumiu vira a tela dela (ver o gate), e aí não há "Tentar de novo" para avisar.
       if (read?.isError) {
-        notify(RECEIPT_REREAD_FAILED.title, RECEIPT_REREAD_FAILED.message);
+        if (!receiptGone(read.error)) notify(RECEIPT_REREAD_FAILED.title, RECEIPT_REREAD_FAILED.message);
         return;
       }
       const notice = read ? RECEIPT_CAUGHT_UP : RECEIPT_STILL_BEHIND;
