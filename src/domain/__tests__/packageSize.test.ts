@@ -47,6 +47,11 @@ describe('o tamanho da embalagem na descrição da nota', () => {
     expect(read('QJ 0.2X200G')).toBe('kg 0.2 · 200 g');
   });
 
+  it('o ponto depois de dígito não separa, como no servidor: "QUEIJO 200.G" não tem tamanho e "QJ 2.X200G" é 200 g', () => {
+    expect(read('QUEIJO 200.G')).toBeNull();
+    expect(read('QJ 2.X200G')).toBe('kg 0.2 · 200 g');
+  });
+
   it('multiplica o pacote com vários do mesmo tamanho', () => {
     expect(read('CERV BRAHMA 12X350ML')).toBe('l 4.2 · 12 x 350 ml');
     expect(read('CERV BRAHMA 12 X 350ML')).toBe('l 4.2 · 12 x 350 ml');
