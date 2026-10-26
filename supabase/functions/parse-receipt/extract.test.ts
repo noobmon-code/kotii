@@ -371,6 +371,10 @@ Deno.test('linha pesada que a conta não confere fica na nota, mas fora da leitu
   // Bandeja de 500 g em pacote de 1 kg ("X 2"): o pacote dá 1 kg, mas o preço pode ser o da bandeja. Uma de 1 kg sem pacote entra.
   assertEquals(read([line({ raw_description: 'PRESUNTO 500G X 2', unit: 'kg', quantity: null, unit_price: 19.9, total_price: 19.9 })], 19.9).readLines, []);
   assertEquals(read([line({ raw_description: 'PRESUNTO 1KG', unit: 'kg', quantity: null, unit_price: 39.9, total_price: 39.9 })], 39.9).readLines.map((l) => l.unit_price), [39.9]);
+  // Sem tamanho na descrição, a conta que não confere também fica de fora: 0,535 kg a R$ 5,99 dão R$ 3,20, e a nota diz R$ 3,25.
+  assertEquals(read([line({ raw_description: 'BANANA PRATA KG', unit: 'kg', quantity: 0.535, unit_price: 5.99, total_price: 3.25 })], 3.25).readLines, []);
+  // O mesmo com o valor que fecha a conta (R$ 3,20): entra com o preço lido.
+  assertEquals(read([line({ raw_description: 'BANANA PRATA KG', unit: 'kg', quantity: 0.535, unit_price: 5.99, total_price: 3.2 })], 3.2).readLines.map((l) => l.unit_price), [5.99]);
 });
 
 Deno.test('instructions: o total da nota é o valor pago, depois dos descontos', () => {
