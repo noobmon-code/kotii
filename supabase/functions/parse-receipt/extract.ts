@@ -242,7 +242,7 @@ const SUM_TOLERANCE_CENTS = 5;
 /** O caixa arredonda ou trunca o valor da linha pesada: até isto de diferença, em centavos, a conta fecha. */
 const WEIGHED_TOLERANCE_CENTS = 2;
 
-/** Quanto vale cada unidade de tamanho escrita na descrição, em kg (peso) ou litro (volume); toda unidade de printedSize está aqui. */
+/** Quanto vale cada unidade de tamanho escrita na descrição, em kg (peso) ou litro (volume); toda unidade de printedSizes está aqui. */
 const SIZE_UNITS: Record<string, { unit: 'kg' | 'l'; inBase: number }> = {
   kg: { unit: 'kg', inBase: 1 },
   g: { unit: 'kg', inBase: 0.001 },
@@ -259,11 +259,10 @@ const SIZE_UNITS: Record<string, { unit: 'kg' | 'l'; inBase: number }> = {
 };
 
 /**
- * O tamanho escrito na descrição ("200g", "1,5 kg", "500 ML"), em kg ou litro, e quantas bandejas dele vêm na
- * embalagem ("C/2", "2X200G", "200G X 2": 2; sem nada disso, 1). null sem tamanho ou com dois diferentes. Uma versão
- * curta da regra de src/domain/packageSize.ts (o Deno não importa de src/): mudar uma pede rever a outra.
+ * Todos os tamanhos escritos na descrição, em kg ou litro, com quantas bandejas de cada um vêm na embalagem.
+ * printedSize junta os tamanhos e dá null com dois diferentes; unsharedWeighedLine precisa de todos.
  */
-function printedSize(description: string): { unit: 'kg' | 'l'; amount: number; count: number } | null {
+function printedSizes(description: string): { unit: 'kg' | 'l'; amount: number; count: number }[] {
   // "1.000G" é mil gramas, não um.
   const text = description.toLowerCase().replace(/(\d)[.,](\d{3})(?=\s*(?:g|grs?|gramas?|ml)(?![a-z]))/g, '$1$2');
   // O tamanho pode vir colado a um ponto depois de letra ("SADIA.200G"); um número depois de dígito, com ou sem ponto
@@ -277,6 +276,16 @@ function printedSize(description: string): { unit: 'kg' | 'l'; amount: number; c
     const scale = SIZE_UNITS[m[3]];
     return { unit: scale.unit, amount: Number(m[2].replace(',', '.')) * scale.inBase, count: Number(m[1] ?? m[4] ?? 1) };
   });
+  return sizes;
+}
+
+/**
+ * O tamanho escrito na descrição ("200g", "1,5 kg", "500 ML"), em kg ou litro, e quantas bandejas dele vêm na
+ * embalagem ("C/2", "2X200G", "200G X 2": 2; sem nada disso, 1). null sem tamanho ou com dois diferentes. Uma versão
+ * curta da regra de src/domain/packageSize.ts (o Deno não importa de src/): mudar uma pede rever a outra.
+ */
+function printedSize(description: string): { unit: 'kg' | 'l'; amount: number; count: number } | null {
+  const sizes = printedSizes(description);
   const [first] = sizes;
   if (!first || !(first.amount > 0)) return null;
   const otherSize = sizes.some((s) => s.unit !== first.unit || s.count !== first.count || Math.abs(s.amount - first.amount) > 1e-9);
@@ -325,8 +334,7 @@ function unsharedWeighedLine(description: string, unit: string, quantity: number
     const cents = (value: number) => Math.round(value * 100);
     return cents(total) - cents(lineTotalFromPrinted(quantity, unit, unitPrice)) > WEIGHED_TOLERANCE_CENTS;
   }
-  const size = printedSize(description);
-  return size != null && size.unit === unit && (size.count > 1 || Math.abs(size.amount - 1) > 1e-9);
+  return printedSizes(description).some((s) => s.unit === unit && (s.count > 1 || Math.abs(s.amount - 1) > 1e-9));
 }
 
 /**

@@ -37,6 +37,10 @@ describe('asksWeight', () => {
     // O pacote com a contagem também é embalagem.
     expect(asksWeight(line('SALSICHA 6UN'), 'frios')).toBe(false);
   });
+
+  it('o tamanho colado a um ponto depois de letra é embalagem: "PTO.PERU SADIA.200G" não pergunta o peso', () => {
+    expect(asksWeight(line('PTO.PERU SADIA.200G'), 'frios')).toBe(false);
+  });
 });
 
 describe('readWeight', () => {

@@ -346,7 +346,7 @@ Deno.test('preço da bandeja na linha pesada: a nota e a leitura do servidor gua
   assertEquals(r.readLines.map((l) => l.unit_price), [72.9, 5.99]);
 });
 
-Deno.test('linha pesada cujo valor passa da conta, ou que não tem como conferir (salvo a bandeja de exatamente 1 kg), fica na nota mas fora da leitura do servidor', () => {
+Deno.test('linha pesada cujo valor passa da conta, ou que não tem como conferir quando a descrição imprime um tamanho (salvo a bandeja de exatamente 1 kg ou 1 l), fica na nota mas fora da leitura do servidor', () => {
   // Queijo de 200 g: 0,202 kg a R$ 14,58 (o preço da bandeja) e R$ 14,73 no total.
   // Entra quando o valor não passa da conta; com o preço corrigido (R$ 72,90) ela fecha.
   const queijo = (over: Partial<ExtractedReceipt['items'][number]>) =>
@@ -387,6 +387,42 @@ Deno.test('linha pesada cujo valor passa da conta, ou que não tem como conferir
   assertEquals(read([line({ raw_description: 'BANANA PRATA KG', unit: 'kg', quantity: 0.535, unit_price: 5.99, total_price: 3.25 })], 3.25).readLines, []);
   // O mesmo com o valor que fecha a conta (R$ 3,20): entra com o preço lido.
   assertEquals(read([line({ raw_description: 'BANANA PRATA KG', unit: 'kg', quantity: 0.535, unit_price: 5.99, total_price: 3.2 })], 3.2).readLines.map((l) => l.unit_price), [5.99]);
+});
+
+Deno.test('dois tamanhos na mesma unidade (KIT QUEIJO 200G + 300G), sem quantidade: a linha pesada fica de fora da leitura do servidor', () => {
+  const read = (items: ExtractedReceipt['items'], total: number | null = 14.73) => cleanReceipt({ ...base, total, items }, new Set(), new Map());
+  // Dois tamanhos na mesma unidade: não dá para saber qual é o da bandeja, e o preço pode ser o dela. Sem a quantidade para conferir, fica de fora.
+  assertEquals(read([line({ raw_description: 'KIT QUEIJO 200G + 300G', unit: 'kg', quantity: null, unit_price: 14.58, total_price: 14.73 })]).readLines, []);
+});
+
+Deno.test('dois tamanhos na mesma unidade (PRESUNTO 1KG + 500G), sem quantidade: fica de fora da leitura do servidor', () => {
+  const read = (items: ExtractedReceipt['items'], total: number | null = 14.73) => cleanReceipt({ ...base, total, items }, new Set(), new Map());
+  // O 1 kg sozinho entraria sem conta; com o 500 g na mesma descrição, a bandeja pode ser a de 500 g.
+  assertEquals(read([line({ raw_description: 'PRESUNTO 1KG + 500G', unit: 'kg', quantity: null, unit_price: 14.58, total_price: 14.73 })]).readLines, []);
+});
+
+Deno.test('dois tamanhos na mesma unidade em litro (SUCO KIT 1L + 500ML), sem quantidade: fica de fora da leitura do servidor', () => {
+  const read = (items: ExtractedReceipt['items'], total: number | null = 9.9) => cleanReceipt({ ...base, total, items }, new Set(), new Map());
+  // A mesma regra para o litro.
+  assertEquals(read([line({ raw_description: 'SUCO KIT 1L + 500ML', unit: 'l', quantity: null, unit_price: 9.9, total_price: 9.9 })]).readLines, []);
+});
+
+Deno.test('dois tamanhos na mesma unidade (KIT QUEIJO 200G + 300G), com o valor cortado: fica de fora da leitura do servidor', () => {
+  const read = (items: ExtractedReceipt['items'], total: number | null = 7.29) => cleanReceipt({ ...base, total, items }, new Set(), new Map());
+  // Sem o valor lido, a conta não confere a linha, e a regra do tamanho manda ficar de fora.
+  assertEquals(read([line({ raw_description: 'KIT QUEIJO 200G + 300G', unit: 'kg', quantity: 0.5, unit_price: 14.58, total_price: null })]).readLines, []);
+});
+
+Deno.test('dois tamanhos na mesma unidade (KIT QUEIJO 200G + 300G), com 0,5 kg e o valor que fecha a conta: entra com o preço lido', () => {
+  const read = (items: ExtractedReceipt['items'], total: number | null = 7.29) => cleanReceipt({ ...base, total, items }, new Set(), new Map());
+  // 0,5 kg a R$ 14,58 dão R$ 7,29: a conta fecha, e a linha entra como as outras.
+  assertEquals(read([line({ raw_description: 'KIT QUEIJO 200G + 300G', unit: 'kg', quantity: 0.5, unit_price: 14.58, total_price: 7.29 })]).readLines.map((l) => l.unit_price), [14.58]);
+});
+
+Deno.test('um quilo repetido (PRESUNTO 1KG + 1KG) é exatamente 1 kg: sem quantidade, entra na leitura com o preço lido', () => {
+  const read = (items: ExtractedReceipt['items'], total: number | null = 39.9) => cleanReceipt({ ...base, total, items }, new Set(), new Map());
+  // Os dois tamanhos são o mesmo, 1 kg: a bandeja de exatamente 1 kg entra sem conta.
+  assertEquals(read([line({ raw_description: 'PRESUNTO 1KG + 1KG', unit: 'kg', quantity: null, unit_price: 39.9, total_price: 39.9 })]).readLines.map((l) => l.unit_price), [39.9]);
 });
 
 Deno.test('linha pesada com preço derivado: a conta é com a quantidade que a linha guarda, então entra mesmo com 4 casas no peso', () => {
