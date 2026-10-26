@@ -474,12 +474,13 @@ export default function ReceiptScreen() {
       notify(INVALID_DATE.title, INVALID_DATE.message);
       return;
     }
+    // Com a busca que falhou, a nota em tela pode estar atrás do que outro aparelho gravou: avisa, e o campo fica como está.
+    if (refuseStale()) return;
     if (change.kind === 'same') {
       setDateText(null);
       return;
     }
     if (isDraft) {
-      if (refuseStale()) return;
       updateReceipt.mutate({ purchased_at: change.purchasedAt }, { onError });
       setDateText(null);
     } else {
@@ -499,9 +500,10 @@ export default function ReceiptScreen() {
   /** O mercado escolhido ou criado no seletor: na revisão, como sempre; na nota confirmada, uma correção. */
   function chooseStore(store: StoreChoice) {
     setPicker(null);
+    // Até o mesmo mercado avisa com a busca que falhou: a nota em tela pode estar atrás do que outro aparelho gravou.
+    if (refuseStale()) return;
     if ('id' in store && store.id === receipt.store_id) return;
     if (isDraft) {
-      if (refuseStale()) return;
       setStore.mutate(store, { onError });
     } else correctReceipt(correctStore, { store });
   }
@@ -547,6 +549,8 @@ export default function ReceiptScreen() {
       notify(change.title, change.message);
       return;
     }
+    // Com a busca que falhou, o total digitado fica no campo, também quando é o mesmo da nota em tela (ver refuseStale).
+    if (refuseStale()) return;
     if (change.kind === 'changed') {
       try {
         const { saved } = await correctTotal.mutateAsync({ total: change.total });

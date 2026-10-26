@@ -1596,6 +1596,15 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     });
   }
   const noonOf = (iso: string) => new Date(`${iso}T12:00:00`).toISOString();
+  /** A busca da nota falha com ela na tela: a nota fica, com o aviso de cima. */
+  async function rereadFails() {
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
+  }
 
   beforeEach(() => {
     for (const key of OTHER_QUERIES) client.setQueryData(key, []);
@@ -1713,6 +1722,17 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     expect(field('Data da compra')!.props.value).toBe('31/02/2026');
   });
 
+  it('a data igual à mostrada com a busca que falhou: o aviso sai, e nada é gravado', async () => {
+    await open();
+    await rereadFails();
+    await typeDate(`10/06/${YEAR}`);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+    expect(field('Data da compra')!.props.value).toBe(`10/06/${YEAR}`);
+    expect(mockDb.writes).toEqual([]);
+  });
+
   it('a data que não chega ao banco avisa do erro, e o campo volta para a data da nota', async () => {
     mockDb.fails = [dateWrite];
     await open();
@@ -1807,6 +1827,19 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     expect(mockDb.writes).toEqual([]);
   });
 
+  it('o mesmo mercado com a busca que falhou: o aviso sai, e nada é gravado', async () => {
+    await open();
+    await rereadFails();
+    await act(async () => {
+      storePicker().props.onSelect('s1');
+      await wait();
+    });
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+    expect(mockDb.writes).toEqual([]);
+  });
+
   it('o total: tocar abre o campo, salvar grava só na nota confirmada, fecha o campo e refaz a conta da diferença', async () => {
     await open();
     await press(totalRow());
@@ -1831,6 +1864,22 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     await press(button('Salvar total'));
     expect(jest.mocked(notify).mock.calls).toEqual([['Confira o total', 'Confira o total da nota, ou deixe em branco.']]);
     expect(field('Total da nota')!.props.value).toBe('62,9,0');
+    expect(mockDb.writes).toEqual([]);
+  });
+
+  it('o total igual ao da nota, com a busca que falhou e outro total no banco: o campo fica com o que foi digitado, o aviso sai, e nada é gravado', async () => {
+    seed(confirmedNote({ total: 50 }), item('a', 'DETERGENTE YPE', 50));
+    await open();
+    await rereadFails();
+    // Outro aparelho mudou o total no banco; a tela ainda mostra 50, e a pessoa digita 50.
+    mockDb.receipts[0].total = 40;
+    await press(totalRow());
+    act(() => field('Total da nota')!.props.onChangeText('50'));
+    await press(button('Salvar total'));
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+    expect(field('Total da nota')!.props.value).toBe('50');
     expect(mockDb.writes).toEqual([]);
   });
 
