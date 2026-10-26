@@ -313,7 +313,8 @@ export function weighedUnitPrice(description: string, quantity: number | null, u
 /**
  * A linha pesada (kg ou l) que fica na nota, com o preço lido ou corrigido, mas não vai para a leitura do servidor
  * (os preços das outras casas). Com a quantidade e o valor lidos (o 0 é o sem valor), ela fica de fora só se o valor
- * passa de quantidade × preço: a conta não fecha para cima, e o preço pode ser o da bandeja. Com a quantidade ou o valor
+ * passa de quantidade × preço: a conta não fecha para cima, e o preço pode ser o da bandeja. O preço derivado (o valor
+ * sobre a quantidade) fecha a conta por construção, e cleanReceipt não confere essa linha. Com a quantidade ou o valor
  * tirados da conta, ela fica de fora quando a descrição imprime um tamanho na mesma unidade, salvo uma bandeja de
  * exatamente 1 kg ou 1 l (sem "C/2" nem "2X"): não dá para saber se o preço é o da bandeja, do pacote ou do kg.
  */
@@ -385,9 +386,10 @@ export function cleanReceipt(
     const storeCode = storeCodeKey(it.code?.replace(/^.*:/s, ''));
     // Sem preço unitário nem quantidade lidos, o preço é o total sobre 1, que a nota não imprimiu;
     // sem valor nenhum (preço 0), não há o que a leitura guardar; a linha pesada cuja conta não confere, também não
-    // (unsharedWeighedLine). Do código, só o de barras vai para a leitura.
+    // (unsharedWeighedLine, só com o preço lido: o derivado fecha a conta por construção). Do código, só o de barras
+    // vai para a leitura.
     const shareable = unitPrice > 0 && (readPrice != null || (it.quantity != null && it.quantity > 0));
-    if (shareable && !unsharedWeighedLine(raw, it.unit, it.quantity, it.total_price, unitPrice)) {
+    if (shareable && (readPrice == null || !unsharedWeighedLine(raw, it.unit, it.quantity, it.total_price, unitPrice))) {
       const gtin = sharedGtin(storeCode);
       readLines.push({ description: raw, unit: it.unit, unit_price: unitPrice, ...(gtin ? { gtin } : {}) });
     }

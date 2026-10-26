@@ -377,6 +377,18 @@ Deno.test('linha pesada que a conta não confere fica na nota, mas fora da leitu
   assertEquals(read([line({ raw_description: 'BANANA PRATA KG', unit: 'kg', quantity: 0.535, unit_price: 5.99, total_price: 3.2 })], 3.2).readLines.map((l) => l.unit_price), [5.99]);
 });
 
+Deno.test('linha pesada com preço derivado: a conta é com a quantidade que a linha guarda, então entra mesmo com 4 casas no peso', () => {
+  const read = (items: ExtractedReceipt['items'], total: number) => cleanReceipt({ ...base, total, items }, new Set(), new Map());
+  // O peso impresso com 4 casas (1,2345 kg) fica 1,235 kg na linha, e o preço sai do total sobre ele: R$ 80,9717 o kg.
+  // A conta com o peso impresso daria R$ 99,96, mas o preço é derivado e fecha com a quantidade guardada: entra.
+  const presunto = read([line({ raw_description: 'PRESUNTO FATIADO', unit: 'kg', quantity: 1.2345, unit_price: null, total_price: 100 })], 100);
+  assertEquals([presunto.items[0].quantity, presunto.items[0].unit_price, presunto.items[0].total_price], [1.235, 80.9717, 100]);
+  assertEquals(presunto.readLines, [{ description: 'PRESUNTO FATIADO', unit: 'kg', unit_price: 80.9717 }]);
+  assertEquals(read([line({ raw_description: 'BANANA KG', unit: 'kg', quantity: 0.5355, unit_price: null, total_price: 30 })], 30).readLines.map((l) => l.unit_price), [55.9701]);
+  // O mesmo peso com o preço lido (R$ 80,9717) não fecha a conta com o peso impresso: esse preço impresso fica de fora.
+  assertEquals(read([line({ raw_description: 'PRESUNTO FATIADO', unit: 'kg', quantity: 1.2345, unit_price: 80.9717, total_price: 100 })], 100).readLines, []);
+});
+
 Deno.test('instructions: o total da nota é o valor pago, depois dos descontos', () => {
   assertEquals(instructions([]).includes('total: o valor pago pela nota, já com os descontos ("Valor a pagar", "TOTAL NOTA")'), true);
 });
