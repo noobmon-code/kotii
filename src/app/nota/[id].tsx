@@ -479,8 +479,9 @@ export default function ReceiptScreen() {
   }
 
   /**
-   * Com a busca de fundo que falhou, a nota em tela é a de antes do que outro aparelho gravou: nada que dependa dos
-   * itens ou do rascunho é gravado por ela. Avisa e devolve `true`; a busca que falhou tem "Tentar de novo" acima.
+   * Com a busca de fundo que falhou, a nota em tela é a de antes do que outro aparelho gravou: nada é gravado por ela,
+   * nem itens, nem rascunho, nem correção do cabeçalho (que compara com o que a tela mostra). Avisa e devolve `true`; a
+   * busca que falhou tem "Tentar de novo" acima.
    */
   const refuseStale = () => {
     if (!receiptQuery.isError) return false;
