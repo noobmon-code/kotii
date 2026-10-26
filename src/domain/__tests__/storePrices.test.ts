@@ -115,7 +115,7 @@ describe('o último preço de cada mercado', () => {
     ]);
   });
 
-  it('dos guardados no aparelho: g e kg na mesma conta, por kg (o tamanho do pacote ali não se sabe)', () => {
+  it('dos guardados no aparelho: g e kg na mesma conta, por kg (sem quantos vêm guardados, o tamanho do pacote não se sabe)', () => {
     const rows = [saved('queijo', 'assai', 0.0399, '2026-10-10', 'g'), saved('queijo', 'dia', 42.9, '2026-10-01', 'kg')];
     expect(storePricesFromSaved(rows, 'queijo')).toEqual([price('assai', 39.9, '2026-10-10', 'kg'), price('dia', 42.9, '2026-10-01', 'kg')]);
   });
