@@ -454,6 +454,16 @@ export default function ReceiptScreen() {
     });
   }
 
+  /**
+   * Com a busca de fundo que falhou, a nota em tela é a de antes do que outro aparelho gravou: nada que dependa dos
+   * itens ou do rascunho é gravado por ela. Avisa e devolve `true`; a busca que falhou tem "Tentar de novo" acima.
+   */
+  const refuseStale = () => {
+    if (!receiptQuery.isError) return false;
+    notify(RECEIPT_REREAD_FAILED.title, RECEIPT_REREAD_FAILED.message);
+    return true;
+  };
+
   function commitDate() {
     if (dateText == null) return;
     const change = purchaseDateChange(dateText, purchasedOn);
@@ -676,6 +686,8 @@ export default function ReceiptScreen() {
    * também: a tela pode estar atrás do que outro aparelho já gravou).
    */
   function applySuggestion(suggestion: GapSuggestion) {
+    // A conta do "falta" sai dos itens em tela: com a busca que falhou, outro item gravado no aparelho de lá a muda.
+    if (refuseStale()) return;
     // Um valor por vez: com a nota ainda por voltar, o segundo toque acharia o item já com valor.
     if (valueWrites.current) return;
     void settleValue(fillValue.mutateAsync({ id: suggestion.itemId, values: suggestion.values }), tellIfNotFilled, {

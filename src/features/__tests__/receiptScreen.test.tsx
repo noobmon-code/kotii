@@ -909,6 +909,32 @@ describe('a nota em tela atrás do que foi gravado', () => {
     ]);
   });
 
+  it('a busca de fundo que falhou e outro aparelho acrescentou um item: "Usar R$" não grava a conta de antes, avisa, e depois de "Tentar de novo" grava a de agora', async () => {
+    seed(receipt({ total: 60 }), item('a', 'DETERGENTE YPE', 50), item('b', 'SABAO EM PO', 0));
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
+    // O outro aparelho acrescenta um item de R$ 5,00. A tela ainda mostra a conta de antes (faltam R$ 10,00).
+    mockDb.items.push(item('c', 'PAO FRANCES', 5));
+    await press(chip('Usar R$ 10,00'));
+    expect(writes('receipt_items')).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+    // Com a nota de agora, a conta é 60 - 50 - 5: R$ 5,00, e é esse o valor que "Usar" grava no item sem valor.
+    mockDb.fails = [];
+    await press(button('Tentar de novo'));
+    await settle();
+    await press(chip('Usar R$ 5,00'));
+    expect(writes('receipt_items')).toEqual([
+      { table: 'receipt_items', verb: 'update', values: { unit_price: 5, total_price: 5 }, filters: { id: 'b', receipt_id: 'r1', total_price: 0 } },
+    ]);
+  });
+
   it('remover que falha avisa do erro, como antes', async () => {
     seed(receipt({ total: 50 }), item('a', 'DETERGENTE YPE', 50), cheese());
     await open();
