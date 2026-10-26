@@ -75,6 +75,9 @@ function tokens(description: string): string[] {
       // "1.000G" é mil gramas; "1,5L" e "1.5L" são um e meio.
       .replace(/(\d)[.,](\d{3})(?=\s*(?:g|gr|grs|ml)\b)/g, '$1$2')
       .replace(/(\d)[.,](\d)/g, '$1.$2')
+      // O ponto que não está entre dígitos separa, como o espaço ("SADIA.200G", "200G.C/2");
+      // entre dígitos ("1.5L") é decimal.
+      .replace(/(?<!\d)\.|\.(?!\d)/g, ' ')
       // Número e letras colados se separam ("5kg", "cx12", "t1"); "350mlx12" também.
       .replace(/(\d)(?=[a-z])/g, '$1 ')
       .replace(/([a-z])(?=\d)/g, '$1 ')
