@@ -97,7 +97,7 @@ interface Reading {
     /** true quando o tamanho veio com a própria contagem ("12 x 350 ml"): o número do pacote não o multiplica de novo. */
     counted: boolean;
   }[];
-  /** Quantos vêm no pacote, ditos com "C/12", "CX12" ou "12 x 350 ml": multiplicam o tamanho. */
+  /** Quantos vêm no pacote, ditos com "C/12", "CX12" ou "FD 6": multiplicam o tamanho, a não ser que ele já traga a sua contagem (ver counted). */
   packs: number[];
   /** Quantos vêm no pacote, ditos com "6UN" ou "dúzia": com um peso junto, não se sabe se o peso é de cada um ou de todos. */
   counts: number[];
