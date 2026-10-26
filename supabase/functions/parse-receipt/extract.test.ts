@@ -363,6 +363,12 @@ Deno.test('linha pesada que a conta não confere fica na nota, mas fora da leitu
   assertEquals(read([line({ raw_description: 'AGUA 0,5 LITRO', unit: 'l', quantity: null, unit_price: 4, total_price: 8 })], 8).readLines, []);
   // O pacote de duas bandejas, com a conta fechada pelo peso do pacote todo, entra com o preço do kg.
   assertEquals(read([line({ raw_description: 'QJ MUSS 200G C/2', unit: 'kg', quantity: 0.404, unit_price: 29.16, total_price: 29.45 })], 29.45).readLines.map((l) => l.unit_price), [72.9]);
+  // Pacote de duas bandejas de 1 kg ("C/2", "2X1KG") não é 1 kg: o R$ 60 pode ser o do par, e sem a conta não entra.
+  assertEquals(read([line({ raw_description: 'QUEIJO 1KG C/2', unit: 'kg', quantity: null, unit_price: 60, total_price: 60 })], 60).readLines, []);
+  assertEquals(read([line({ raw_description: 'QUEIJO 2X1KG', unit: 'kg', quantity: null, unit_price: 60, total_price: 60 })], 60).readLines, []);
+  // Bandeja de 500 g em pacote de 1 kg ("X 2"): o pacote dá 1 kg, mas o preço pode ser o da bandeja. Uma de 1 kg sem pacote entra.
+  assertEquals(read([line({ raw_description: 'PRESUNTO 500G X 2', unit: 'kg', quantity: null, unit_price: 19.9, total_price: 19.9 })], 19.9).readLines, []);
+  assertEquals(read([line({ raw_description: 'PRESUNTO 1KG', unit: 'kg', quantity: null, unit_price: 39.9, total_price: 39.9 })], 39.9).readLines.map((l) => l.unit_price), [39.9]);
 });
 
 Deno.test('instructions: o total da nota é o valor pago, depois dos descontos', () => {
