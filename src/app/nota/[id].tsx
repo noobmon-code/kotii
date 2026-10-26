@@ -251,7 +251,8 @@ export default function ReceiptScreen() {
   const [settlingValue, setSettlingValue] = useState(false);
   // A leitura da nota que ficou atrás do que esta tela gravou (de quando ela é): uma gravação de item cuja nota
   // relida não voltou, ou que ficou sem resposta do banco. Enquanto a nota em tela for essa leitura
-  // (`dataUpdatedAt`), "Confirmar nota" não vai com os itens dela.
+  // (`dataUpdatedAt`), "Confirmar nota" não vai com os itens dela. A busca que falhou com a nota na tela (`isError`)
+  // também faz "Confirmar nota" buscar a nota antes de seguir, mesmo sem esta marca.
   const staleRead = useRef(0);
   // Os itens cujo valor esta tela gravou sem a nota voltar, cada um com a leitura que ficou para trás: enquanto a
   // nota em tela for essa leitura, o item não pergunta de novo (nem na nota já confirmada).
@@ -637,7 +638,7 @@ export default function ReceiptScreen() {
   }
 
   /**
-   * "Confirmar nota" com a tela atrás do que foi gravado: em vez de confirmar
+   * "Confirmar nota" com a tela atrás do que foi gravado, ou com a busca de fundo que falhou: em vez de confirmar
    * com os itens de antes (o item novo ficaria sem produto, fora da despensa e
    * da lista, e a nota confirmada não se corrige), busca a nota e diz o que
    * houve. A confirmação fica para o toque seguinte, já com os itens de agora.
@@ -717,8 +718,9 @@ export default function ReceiptScreen() {
    */
   async function doConfirm() {
     if (confirming.current || valueWrites.current || confirm.isPending || listPending || listFailed) return;
-    // A nota em tela é a leitura que ficou atrás do que esta tela gravou: os itens daqui não são os do banco.
-    if (receiptQuery.dataUpdatedAt <= staleRead.current) {
+    // A nota em tela é a leitura que ficou atrás do que esta tela gravou, ou a busca de fundo que falhou (a nota fica
+    // na tela, com o aviso de cima): os itens daqui não são os do banco.
+    if (receiptQuery.isError || receiptQuery.dataUpdatedAt <= staleRead.current) {
       void catchUp();
       return;
     }

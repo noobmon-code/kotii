@@ -852,6 +852,63 @@ describe('a nota em tela atrás do que foi gravado', () => {
     expect(page()).toContain('DETERGENTE YPE');
   });
 
+  it('a busca de fundo que falhou e outro aparelho acrescentou um item: "Confirmar nota" busca a nota antes e não vai com os itens de antes', async () => {
+    seed(receipt({ total: 60 }), item('a', 'DETERGENTE YPE', 50), item('b', 'SABAO EM PO', 10));
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
+    // O outro aparelho grava o item novo. A rede volta, e a releitura ainda não chegou quando a pessoa toca.
+    mockDb.items.push(item('c', 'PAO FRANCES', 5));
+    mockDb.fails = [];
+    const releaseRead = hold(receiptRead);
+    await press(button('Confirmar nota'));
+    await releaseRead();
+    // Sem confirm_receipt com os dois itens da tela: a nota chega e avisa, e o toque seguinte confirma com os três.
+    expect(mockDb.rpcs).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([['Nota atualizada', 'Confira os itens e toque em "Confirmar nota" de novo.']]);
+    expect(button('Confirmar nota')!.props).toMatchObject({ loading: false, title: 'Confirmar nota (3 itens)' });
+    await press(button('Confirmar nota'));
+    expect(confirmed()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('a busca de fundo que falhou, com "Tentar de novo" antes do toque: "Confirmar nota" leva os três itens de uma vez', async () => {
+    seed(receipt({ total: 60 }), item('a', 'DETERGENTE YPE', 50), item('b', 'SABAO EM PO', 10));
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    mockDb.items.push(item('c', 'PAO FRANCES', 5));
+    mockDb.fails = [];
+    await press(button('Tentar de novo'));
+    await settle();
+    await press(button('Confirmar nota'));
+    // Só o aviso de salva: nem o de nota atualizada nem o de busca que falhou.
+    expect(jest.mocked(notify).mock.calls.map(([title]) => title)).toEqual(['Nota salva']);
+    expect(confirmed()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('a busca de fundo que falhou e a rede ainda fora no toque de "Confirmar nota": a releitura falha, avisa, e nada é confirmado', async () => {
+    seed(receipt({ total: 60 }), item('a', 'DETERGENTE YPE', 50), item('b', 'SABAO EM PO', 10));
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    mockDb.items.push(item('c', 'PAO FRANCES', 5));
+    await press(button('Confirmar nota'));
+    expect(mockDb.rpcs).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+  });
+
   it('remover que falha avisa do erro, como antes', async () => {
     seed(receipt({ total: 50 }), item('a', 'DETERGENTE YPE', 50), cheese());
     await open();
