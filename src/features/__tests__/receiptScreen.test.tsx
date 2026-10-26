@@ -1885,12 +1885,54 @@ describe('item pesado no balcão que veio como "1 un"', () => {
       {
         table: 'receipt_items',
         verb: 'update',
-        values: { raw_description: 'QUEIJO parmesão', quantity: 0.186, unit: 'kg', unit_price: 123.6022, total_price: 22.99 },
-        filters: { id: 'i1' },
+        values: { quantity: 0.186, unit: 'kg', unit_price: 123.6022 },
+        // Só a linha que a tela leu: sem a descrição nem o total no pedido, e a gravação só acha a linha se ela ainda é a mesma.
+        filters: { id: 'i1', receipt_id: 'r1', unit: 'un', quantity: 1, total_price: 22.99 },
       },
     ]);
     // A nota voltou com a linha por kg: a pergunta sai.
     expect(page()).not.toContain('Veio pesado no balcão?');
+  });
+
+  it('outro aparelho corrige o valor com a nota aberta aqui: o peso não grava o valor de antes, avisa e busca a nota de novo', async () => {
+    seed(receipt({ total: 30.98 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }), item('i2', 'LEITE IL DESNATADO', 7.99, { suggested_category: 'laticinios' }));
+    await open();
+    // O queijo ganhou outro valor em outro aparelho; esta tela ainda mostra o de antes.
+    Object.assign(mockDb.items[0], { total_price: 25.5, unit_price: 25.5 });
+    await press(chip('Informar o peso', card('QUEIJO parmesão')));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    await press(chip('Salvar peso'));
+    // Nada foi regravado por cima do valor de agora, e a pessoa fica sabendo.
+    expect(mockDb.items[0]).toMatchObject({ total_price: 25.5, unit_price: 25.5, unit: 'un', quantity: 1 });
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Peso não salvo', 'Este item mudou em outro aparelho. A nota foi buscada de novo: confira e informe o peso outra vez.'],
+    ]);
+    // A nota foi buscada de novo: o queijo mostra o valor de agora e volta a perguntar o peso.
+    expect(said(card('QUEIJO parmesão'))).toContain('R$ 25,50');
+    expect(chip('Informar o peso', card('QUEIJO parmesão'))).toBeDefined();
+  });
+
+  it('com a nota relida antes do peso, o peso grava o valor de agora e o preço por kg sobre ele', async () => {
+    seed(receipt({ total: 30.98 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }), item('i2', 'LEITE IL DESNATADO', 7.99, { suggested_category: 'laticinios' }));
+    await open();
+    Object.assign(mockDb.items[0], { total_price: 25.5, unit_price: 25.5 });
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    await press(chip('Informar o peso', card('QUEIJO parmesão')));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    await press(chip('Salvar peso'));
+    expect(writes('receipt_items')).toEqual([
+      {
+        table: 'receipt_items',
+        verb: 'update',
+        values: { quantity: 0.186, unit: 'kg', unit_price: 137.0968 },
+        filters: { id: 'i1', receipt_id: 'r1', unit: 'un', quantity: 1, total_price: 25.5 },
+      },
+    ]);
+    expect(mockDb.items[0]).toMatchObject({ total_price: 25.5, quantity: 0.186, unit: 'kg', unit_price: 137.0968 });
+    expect(jest.mocked(notify).mock.calls).toEqual([]);
   });
 
   it('"É embalagem" deixa a linha como está, só nesta revisão; peso ilegível avisa e não grava', async () => {

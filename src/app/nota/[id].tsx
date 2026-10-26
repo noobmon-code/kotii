@@ -25,6 +25,7 @@ import {
   useReceipt,
   useReceiptReadAt,
   useSaveReceiptItem,
+  useSaveReceiptWeight,
   useSetReceiptItemPack,
   useSetReceiptStore,
   useSetReceiptTotal,
@@ -88,8 +89,8 @@ import { hasNoValue } from '@/domain/receiptItem';
 import {
   asksWeight,
   readWeight,
-  weighedLine,
   weightQuestion,
+  WEIGHT_CHANGED_ELSEWHERE,
   WEIGHT_PLACEHOLDER,
   WEIGHT_SAVED_NOT_SHOWN,
   WEIGHT_UNREADABLE,
@@ -188,6 +189,7 @@ export default function ReceiptScreen() {
   const correctStore = useCorrectReceipt(id);
   const correctTotal = useCorrectReceipt(id);
   const saveItem = useSaveReceiptItem(id);
+  const saveWeightItem = useSaveReceiptWeight(id);
   const fillValue = useFillReceiptItemValue(id);
   const setPack = useSetReceiptItemPack(id);
   const deleteItem = useDeleteReceiptItem(id);
@@ -785,8 +787,9 @@ export default function ReceiptScreen() {
 
   /**
    * O peso da etiqueta do item pesado no balcão (domain/receiptWeight): a
-   * linha vira por kg, com o valor da nota sobre o peso como preço. Grava como
-   * o formulário do item, pela mesma espera da nota.
+   * linha vira por kg, com o valor da nota sobre o peso como preço. Só a
+   * quantidade e o preço por kg são gravados (`useSaveReceiptWeight`), pela
+   * mesma espera da nota.
    */
   function saveWeight(item: ReceiptItem, text: string): boolean {
     const weight = readWeight(text);
@@ -797,8 +800,12 @@ export default function ReceiptScreen() {
     // Uma gravação por vez: com a nota ainda por voltar, o segundo toque gravaria sobre a linha de antes.
     if (valueWrites.current) return false;
     void settleValue(
-      saveItem.mutateAsync({ id: item.id, values: { raw_description: item.raw_description, ...weighedLine(item, weight) } }),
-      undefined,
+      saveWeightItem.mutateAsync({ item, weightKg: weight }),
+      ({ saved }) => {
+        // Sem a linha de volta, nada foi gravado: a nota já é buscada de novo, e a pessoa informa o peso outra vez.
+        if (!saved) notify(WEIGHT_CHANGED_ELSEWHERE.title, WEIGHT_CHANGED_ELSEWHERE.message);
+        return saved;
+      },
       { itemId: item.id, saved: WEIGHT_SAVED_NOT_SHOWN },
     );
     return true;
