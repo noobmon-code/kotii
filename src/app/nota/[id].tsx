@@ -57,6 +57,7 @@ import {
   gapNotices,
   hasReceiptTotal,
   ITEM_SAVED_NOT_SHOWN,
+  OTHER_ITEM_SAVING,
   pendingUnpriced,
   quantityText,
   readReceiptTotal,
@@ -257,6 +258,10 @@ export default function ReceiptScreen() {
   // Os itens cujo valor esta tela gravou sem a nota voltar, cada um com a leitura que ficou para trás: enquanto a
   // nota em tela for essa leitura, o item não pergunta de novo (nem na nota já confirmada).
   const [savedAt, setSavedAt] = useState<Readonly<Record<string, number>>>({});
+  // Os itens cujo valor esta tela está gravando, do toque até a nota voltar: a pergunta do peso e os chips da
+  // embalagem deles ficam escondidos nesse meio. O estado esconde; a referência é o que o toque lê na hora.
+  const [writingIds, setWritingIds] = useState<ReadonlySet<string>>(new Set());
+  const writingNow = useRef<ReadonlySet<string>>(new Set());
 
   const catalog = useMemo(
     () => new Map<string, CatalogProduct>((products.data ?? []).map((p) => [p.id, p])),
@@ -539,6 +544,15 @@ export default function ReceiptScreen() {
     setLeftUnpriced(leftNow.current);
   };
 
+  /** Marca (ou solta) o item como gravando; ver `writingIds`. */
+  const markWriting = (itemId: string, on: boolean) => {
+    const next = new Set(writingNow.current);
+    if (on) next.add(itemId);
+    else next.delete(itemId);
+    writingNow.current = next;
+    setWritingIds(next);
+  };
+
   /**
    * Espera a nota voltar do banco, sem começar outra busca se já há uma a
    * caminho. A espera tem limite: sem internet a busca fica parada (e a rede
@@ -578,6 +592,9 @@ export default function ReceiptScreen() {
     valueWrites.current += 1;
     valueSeq.current += 1;
     setSettlingValue(true);
+    // O item fica "gravando" do toque até a nota voltar (ou a busca desistir): a pergunta dele não volta no meio.
+    const writingItem = shown?.itemId;
+    if (writingItem) markWriting(writingItem, true);
     try {
       // Fora da chamada opcional: sem `onWritten`, o que vai dentro dos parênteses dela nem chega a ser esperado.
       const result = await write;
@@ -606,6 +623,7 @@ export default function ReceiptScreen() {
     } finally {
       valueWrites.current -= 1;
       if (!valueWrites.current) setSettlingValue(false);
+      if (writingItem) markWriting(writingItem, false);
     }
   }
 
@@ -798,6 +816,16 @@ export default function ReceiptScreen() {
   }
 
   /**
+   * Com um valor a caminho, o toque que pediria outra gravação não entra (uma por vez: o segundo gravaria sobre a
+   * linha de antes). No mesmo item é o toque repetido, o mesmo valor: calado. Em outro item, a pessoa fica sabendo.
+   */
+  function refuseWhileSaving(itemId: string): boolean {
+    if (!valueWrites.current) return false;
+    if (!writingNow.current.has(itemId)) notify(OTHER_ITEM_SAVING.title, OTHER_ITEM_SAVING.message);
+    return true;
+  }
+
+  /**
    * O peso da etiqueta do item pesado no balcão (domain/receiptWeight): a
    * linha vira por kg, com o valor da nota sobre o peso como preço. Só a
    * quantidade e o preço por kg são gravados (`useSaveReceiptWeight`), pela
@@ -809,8 +837,7 @@ export default function ReceiptScreen() {
       notify(WEIGHT_UNREADABLE.title, WEIGHT_UNREADABLE.message);
       return false;
     }
-    // Uma gravação por vez: com a nota ainda por voltar, o segundo toque gravaria sobre a linha de antes.
-    if (valueWrites.current) return false;
+    if (refuseWhileSaving(item.id)) return false;
     void settleValue(
       saveWeightItem.mutateAsync({ item, weightKg: weight }),
       ({ saved }) => {
@@ -833,7 +860,7 @@ export default function ReceiptScreen() {
       notify(PACK_UNREADABLE.title, PACK_UNREADABLE.message);
       return false;
     }
-    if (valueWrites.current) return false;
+    if (refuseWhileSaving(item.id)) return false;
     void settleValue(setPack.mutateAsync({ id: item.id, count }), ({ saved }) => saved, { itemId: item.id, saved: PACK_SAVED_NOT_SHOWN });
     return true;
   }
@@ -841,7 +868,8 @@ export default function ReceiptScreen() {
   /** A pergunta (ou o que já se sabe) de quantos vêm na embalagem do item, nos dois cartões. */
   function packPart(item: ReceiptItem, category: string, productName: string | null) {
     if (category !== 'ovos' || item.unit !== 'un') return null;
-    if (savedUnshown.has(item.id)) return null;
+    // Gravando, ou gravado sem a nota de volta: a pergunta e os chips não voltam no meio.
+    if (savedUnshown.has(item.id) || writingIds.has(item.id)) return null;
     const count = packCountOf(item, productName);
     if (count != null) {
       // A conta que veio da descrição não se muda aqui; a resposta da revisão, sim.
@@ -1107,9 +1135,13 @@ export default function ReceiptScreen() {
           const before = beforeUse[item.id];
           const prompt = unpricedPrompt(gap, item.id, receipt, leftUnpriced, savedUnshown);
           const chosenName = resolved.productName ?? (resolved.product.kind === 'new' ? resolved.product.name : null);
-          // O peso gravado que a nota em tela ainda não mostra também não pergunta de novo.
+          // O peso gravado (ou que está gravando) que a nota em tela ainda não mostra também não pergunta de novo.
           const weighing =
-            isDraft && !packaged.has(item.id) && !savedUnshown.has(item.id) && asksWeight(item, resolved.category, chosenName);
+            isDraft &&
+            !packaged.has(item.id) &&
+            !savedUnshown.has(item.id) &&
+            !writingIds.has(item.id) &&
+            asksWeight(item, resolved.category, chosenName);
           return isDraft ? (
             <DraftItemCard
               key={item.id}

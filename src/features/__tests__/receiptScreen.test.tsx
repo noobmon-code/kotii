@@ -1913,6 +1913,47 @@ describe('item pesado no balcão que veio como "1 un"', () => {
     expect(page()).not.toContain('Veio pesado no balcão?');
   });
 
+  it('enquanto o peso grava, a pergunta sai até a nota voltar; um toque repetido no mesmo item não avisa, e a linha por kg aparece depois', async () => {
+    seed(receipt({ total: 22.99 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }));
+    await open();
+    await press(chip('Informar o peso'));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    const release = hold(itemWrite);
+    // Dois toques em "Salvar peso" no mesmo instante: a gravação é uma só, e nenhum aviso (é o mesmo valor).
+    await pressBoth(chip('Salvar peso'), chip('Salvar peso'));
+    expect(page()).not.toContain('Veio pesado no balcão?');
+    expect(chip('Informar o peso')).toBeUndefined();
+    expect(weightField()).toBeUndefined();
+    expect(writes('receipt_items')).toHaveLength(1);
+    await release();
+    await settle();
+    expect(writes('receipt_items')).toHaveLength(1);
+    expect(jest.mocked(notify).mock.calls).toEqual([]);
+    expect(page()).toContain('0,186 kg × R$ 123,60');
+    expect(page()).not.toContain('Veio pesado no balcão?');
+  });
+
+  it('enquanto o peso de um item grava, o peso de outro não entra: a tela avisa, e o campo fica com o que foi digitado', async () => {
+    seed(receipt({ total: 30.98 }), item('i1', 'QUEIJO parmesão', 22.99, { suggested_category: 'laticinios' }), item('i2', 'PRESUNTO COZIDO', 7.99, { suggested_category: 'frios' }));
+    await open();
+    await press(chip('Informar o peso', card('QUEIJO parmesão')));
+    act(() => weightField()!.props.onChangeText('0,186'));
+    const release = hold(itemWrite);
+    await press(chip('Salvar peso', card('QUEIJO parmesão')));
+    await press(chip('Informar o peso', card('PRESUNTO COZIDO')));
+    act(() => weightField()!.props.onChangeText('0,2'));
+    await press(chip('Salvar peso', card('PRESUNTO COZIDO')));
+    expect(jest.mocked(notify).mock.calls).toEqual([['Aguarde', 'Outro item ainda está sendo salvo. Toque de novo quando a nota voltar.']]);
+    expect(weightField()!.props.value).toBe('0,2');
+    expect(writes('receipt_items')).toHaveLength(1);
+    await release();
+    await settle();
+    // A nota voltou: o peso do presunto grava com o toque de novo.
+    await press(chip('Salvar peso', card('PRESUNTO COZIDO')));
+    expect(writes('receipt_items')).toHaveLength(2);
+    expect(writes('receipt_items')[1]).toMatchObject({ filters: { id: 'i2' }, values: { quantity: 0.2, unit: 'kg' } });
+  });
+
   it('enquanto a pessoa digita, o campo mostra o que "Salvar peso" vai gravar; o que não dá para ler diz isso, e nada grava antes do toque', async () => {
     seed(receipt({ total: 14.6 }), item('i1', 'QUEIJO parmesão', 14.6, { suggested_category: 'laticinios' }));
     await open();
@@ -2063,6 +2104,20 @@ describe('quantos ovos vêm na embalagem', () => {
     expect(page()).toContain('Não foi possível atualizar. Mostrando o que já estava carregado.');
     mockDb.fails = [];
     await press(button('Tentar de novo'));
+    await settle();
+    expect(page()).toContain('10 ovos na embalagem: R$ 1,40 o ovo');
+  });
+
+  it('enquanto a quantidade do ovo grava, os chips somem até a nota voltar; outro toque no mesmo ovo não grava de novo', async () => {
+    seed(receipt({ total: 13.99 }), eggs());
+    await open();
+    const release = hold(itemWrite);
+    await pressBoth(chip('10'), chip('12'));
+    expect(chip('10')).toBeUndefined();
+    expect(chip('12')).toBeUndefined();
+    expect(writes('receipt_items')).toEqual([{ table: 'receipt_items', verb: 'update', values: { pack_count: 10 }, filters: { id: 'i1', receipt_id: 'r1' } }]);
+    expect(jest.mocked(notify).mock.calls).toEqual([]);
+    await release();
     await settle();
     expect(page()).toContain('10 ovos na embalagem: R$ 1,40 o ovo');
   });
