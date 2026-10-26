@@ -372,7 +372,7 @@ describe('o queijo em "un" com preço por kg, sem o histórico de compras', () =
     mockQueries.purchases = onTheWay();
     expect(await mount()).not.toContain('histórico de compras não carregou');
     expect(mockSeen.hints?.get('q')).toEqual({ cost: '~R$ 72,90', inPantry: false });
-    expect(await detailFacts()).not.toContain('histórico de compras não carregou');
+    expect((await detailFacts()).join('\n')).not.toContain('histórico de compras não carregou');
   });
 
   it('histórico carregado sem nenhuma compra do queijo a peso: o 1 kg de sempre, sem o aviso', async () => {
