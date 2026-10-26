@@ -963,6 +963,24 @@ describe('a nota em tela atrás do que foi gravado', () => {
     expect(mockDb.writes).toEqual([]);
   });
 
+  it('"Remover item" com a busca que falha: o formulário fica aberto, avisa, e o item não sai', async () => {
+    seed(receipt({ total: 50 }), item('a', 'DETERGENTE YPE', 50), cheese());
+    await open();
+    await press(pencil('QJO MUSS KG'));
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    await press(button('Remover item'));
+    expect(button('Remover item')).toBeDefined();
+    expect(mockDb.items).toHaveLength(2);
+    expect(writes('receipt_items')).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+  });
+
   it('remover que falha avisa do erro, como antes', async () => {
     seed(receipt({ total: 50 }), item('a', 'DETERGENTE YPE', 50), cheese());
     await open();
@@ -2270,6 +2288,24 @@ describe('quantos ovos vêm na embalagem', () => {
     await press(button('Tentar de novo'));
     await settle();
     expect(page()).toContain('10 ovos na embalagem: R$ 1,40 o ovo');
+  });
+
+  it('a busca que falha e a linha do ovo já saiu em outro aparelho: o chip não grava nada (a linha não se acha), avisa, e a pergunta fica', async () => {
+    seed(receipt({ total: 13.99 }), eggs());
+    await open();
+    mockDb.fails = [receiptRead];
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['receipt', 'r1'] });
+    });
+    await settle();
+    // O outro aparelho apaga a linha: a tela ainda a mostra, com os chips.
+    mockDb.items = [];
+    await press(chip('10'));
+    expect(writes('receipt_items')).toEqual([]);
+    expect(jest.mocked(notify).mock.calls).toEqual([
+      ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
+    ]);
+    expect(chip('10')).toBeDefined();
   });
 
   it('enquanto a quantidade do ovo grava, os chips somem até a nota voltar; outro toque no mesmo ovo não grava de novo', async () => {

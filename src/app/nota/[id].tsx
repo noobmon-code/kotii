@@ -888,6 +888,8 @@ export default function ReceiptScreen() {
       notify(PACK_UNREADABLE.title, PACK_UNREADABLE.message);
       return false;
     }
+    // A linha pode ter saído em outro aparelho: sem a busca, a gravação não acharia o item e nada avisaria.
+    if (refuseStale()) return false;
     if (refuseWhileSaving(item.id)) return false;
     void settleValue(setPack.mutateAsync({ id: item.id, count }), ({ saved }) => saved, { itemId: item.id, saved: PACK_SAVED_NOT_SHOWN });
     return true;
@@ -1373,6 +1375,7 @@ export default function ReceiptScreen() {
           onDelete={
             editing.item && isDraft
               ? () => {
+                  if (refuseStale()) return;
                   const target = editing.item!;
                   setEditing(null);
                   // Pelo mesmo caminho das outras gravações de item: até a nota voltar sem ele, "Confirmar nota"
