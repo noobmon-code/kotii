@@ -5,11 +5,12 @@
 // Os preços se comparam como no histórico do produto (toPurchases): g e kg
 // por kg, ml e litro por litro, e pacotes de tamanhos diferentes ("ARROZ 5KG"
 // e "ARROZ 1KG") pelo preço por kg, litro ou item, com o tamanho lido na
-// descrição da nota (ou quantos vinham, respondido na revisão: pack_count).
-// Sem isso, a nota do pacote de 5 kg ouvia "R$ 5,49 no outro mercado" (o
-// preço do pacote de 1 kg). Uma compra por unidade com tamanho conhecido não
-// se compara com outra por unidade que não o tem: a cartela de 30 não ouve
-// "mais barato" de uma de preço sem tamanho.
+// descrição da nota (ou, sem ele, quantos vinham: na linha da nota, a contagem
+// de packCountOf com o nome do produto (a que a tela mostra nos ovos); nos
+// preços de antes, a resposta pack_count). Sem isso, a nota do pacote de 5 kg
+// ouvia "R$ 5,49 no outro mercado" (o preço do pacote de 1 kg). Uma compra por
+// unidade com tamanho conhecido não se compara com outra por unidade que não o
+// tem: a cartela de 30 não ouve "mais barato" de uma de preço sem tamanho.
 
 import { addDays, formatShortDate, toISODate } from './dates';
 import { formatBRL } from './money';
@@ -33,7 +34,10 @@ export interface AlertItem {
   quantity: number;
   /** A descrição como veio na nota ("ARROZ T1 5KG"): o tamanho da embalagem. Sem ela e sem packCount, o tamanho não é conhecido. */
   description?: string;
-  /** Quantos vinham na embalagem, respondido na revisão (pack_count): vale quando a descrição não diz o tamanho. */
+  /**
+   * Quantos vinham na embalagem, pela regra da tela da nota (packCountOf: a descrição, o nome do produto, depois a
+   * resposta pack_count): vale quando a descrição não diz o tamanho.
+   */
   packCount?: number | null;
 }
 
@@ -46,7 +50,10 @@ export interface PricePoint {
   receipt_id: string;
   /** A descrição da linha da nota, de onde sai o tamanho da embalagem. */
   description?: string;
-  /** Quantos vinham na embalagem, respondido na revisão (pack_count), como em AlertItem. */
+  /**
+   * Quantos vinham na embalagem, respondido na revisão (pack_count): sem o nome do produto,
+   * ao contrário de AlertItem.packCount.
+   */
   packCount?: number | null;
 }
 
@@ -73,7 +80,10 @@ function median(values: number[]): number {
 interface Compared {
   unit: string;
   price: number;
-  /** A compra tem tamanho de embalagem (na descrição ou em pack_count): em "un", só se compara com outra que também tem. */
+  /**
+   * A compra tem tamanho de embalagem (na descrição ou na contagem: packCount): em "un", só se compara com outra
+   * que também tem.
+   */
   packed: boolean;
 }
 
