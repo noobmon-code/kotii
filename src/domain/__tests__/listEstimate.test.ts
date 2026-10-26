@@ -369,8 +369,13 @@ describe('estimateList', () => {
     });
 
     // Três cotações com uma sem contagem: A < C por cartela, C < B por cartela e B < A por ovo é um ciclo, sem vencedor;
-    // o "Menor preço" vale então o menor da cartela (A), em qualquer ordem da lista.
+    // o "Menor preço" vale então o menor por ovo entre as que dizem a contagem (B), em qualquer ordem da lista.
     const named = { storeName: (id: string) => `Mercado ${id.toUpperCase()}`, today: '2026-10-25', category: 'ovos' };
+    /** As 24 ordens em que a lista pode devolver quatro cotações. */
+    const permutations = <T>(list: T[]): T[][] =>
+      list.length <= 1
+        ? [list]
+        : list.flatMap((head, i) => permutations([...list.slice(0, i), ...list.slice(i + 1)]).map((rest) => [head, ...rest]));
     /** As seis ordens em que a lista pode devolver três cotações. */
     const orders = <T>(a: T, b: T, c: T): T[][] => [
       [a, b, c],
@@ -381,14 +386,14 @@ describe('estimateList', () => {
       [c, b, a],
     ];
 
-    it('três cotações, uma sem contagem: o "Menor preço" é o do mercado A, em qualquer ordem da lista', () => {
+    it('três cotações, uma sem contagem (um ciclo): o "Menor preço" é o de menor por ovo entre as que dizem a contagem, em qualquer ordem da lista', () => {
       const a = cartela('a', 13.99, '2026-10-20', 10);
       const b = cartela('b', 39.9, '2026-10-21', 30);
       const c = cartela('c', 14.5, '2026-10-22', null);
       for (const quotes of orders(a, b, c)) {
         expect(itemFacts(estimateList([item('o', 'Ovos', 'ovos')], quotes).byItem.get('o'), undefined, named)).toEqual([
           'Último preço: R$ 14,50/un (Mercado C, 22 out).',
-          'Menor preço: R$ 13,99/un, 10 ovos (R$ 1,40 o ovo) (Mercado A, 20 out).',
+          'Menor preço: R$ 39,90/un, 30 ovos (R$ 1,33 o ovo) (Mercado B, 21 out).',
         ]);
       }
     });
@@ -415,6 +420,32 @@ describe('estimateList', () => {
         expect(itemFacts(estimateList([item('o', 'Ovos', 'ovos')], quotes).byItem.get('o'), undefined, named)).toEqual([
           'Último preço: R$ 40,00/un (Mercado C, 22 out).',
           'Menor preço: R$ 39,90/un, 30 ovos (R$ 1,33 o ovo) (Mercado B, 21 out).',
+        ]);
+      }
+    });
+
+    it('quatro cotações, uma sem contagem (um ciclo): sai a de 12 a R$ 15,00, R$ 1,25 o ovo, em qualquer ordem da lista', () => {
+      const a = cartela('a', 13.99, '2026-10-20', 10);
+      const b = cartela('b', 39.9, '2026-10-21', 30);
+      const c = cartela('c', 14.5, '2026-10-22', null);
+      const d = cartela('d', 15, '2026-10-19', 12);
+      for (const quotes of permutations([a, b, c, d])) {
+        expect(itemFacts(estimateList([item('o', 'Ovos', 'ovos')], quotes).byItem.get('o'), undefined, named)).toEqual([
+          'Último preço: R$ 14,50/un (Mercado C, 22 out).',
+          'Menor preço: R$ 15,00/un, 12 ovos (R$ 1,25 o ovo) (Mercado D, 19 out).',
+        ]);
+      }
+    });
+
+    // Sem ciclo: a de R$ 5,00 vence as duas pela cartela (é a menor), e nenhuma delas a bate por ovo ou por cartela.
+    it('duas cartelas e uma sem contagem a R$ 5,00: sai a de R$ 5,00, que vence as duas pela cartela, em qualquer ordem', () => {
+      const a = cartela('a', 13.99, '2026-10-20', 10);
+      const b = cartela('b', 39.9, '2026-10-21', 30);
+      const c = cartela('c', 5, '2026-10-19', null);
+      for (const quotes of orders(a, b, c)) {
+        expect(itemFacts(estimateList([item('o', 'Ovos', 'ovos')], quotes).byItem.get('o'), undefined, named)).toEqual([
+          'Último preço: R$ 39,90/un, 30 ovos (R$ 1,33 o ovo) (Mercado B, 21 out).',
+          'Menor preço: R$ 5,00/un (Mercado C, 19 out).',
         ]);
       }
     });

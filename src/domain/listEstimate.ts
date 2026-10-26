@@ -142,8 +142,8 @@ const perEggOf = (quote: EstimatePrice) =>
  * O "Menor preço" entre as cotações de um item numa unidade. Cada par se compara pelo preço por ovo quando as duas dizem
  * quantos vêm (a cartela de 30 a R$ 39,90 sai R$ 1,33 o ovo, a de 10 a R$ 13,99 sai R$ 1,40); senão, pelo preço da
  * cartela, como antes. Vence a cotação que nenhuma outra bate pelo par; no empate, a mais nova. Se ninguém vence
- * (um ciclo entre três, com uma sem contagem), vale o menor preço da cartela, como antes, e a ordem da lista não decide.
- * Não muda o custo da lista nem a ordem de "Onde comprar", que são pela cotação.
+ * (um ciclo entre três, com uma sem contagem), vale o menor por ovo entre as que dizem a contagem; sem nenhuma, a menor
+ * cartela, e a ordem da lista não decide. Não muda o custo da lista nem a ordem de "Onde comprar", que são pela cotação.
  */
 const lowestOf = (quotes: EstimatePrice[]): EstimatePrice => {
   const beats = (quote: EstimatePrice, other: EstimatePrice) => {
@@ -152,6 +152,8 @@ const lowestOf = (quotes: EstimatePrice[]): EstimatePrice => {
   };
   const unbeaten = quotes.filter((quote) => !quotes.some((other) => beats(other, quote)));
   if (unbeaten.length) return newest(unbeaten);
+  const counted = quotes.filter((quote) => perEggOf(quote) != null);
+  if (counted.length) return newest(counted.filter((quote) => !counted.some((other) => beats(other, quote))));
   const cheapest = Math.min(...quotes.map((quote) => quote.unitPrice));
   return newest(quotes.filter((quote) => quote.unitPrice === cheapest));
 };
