@@ -31,7 +31,7 @@ export interface AlertItem {
   unit: string;
   unitPrice: number;
   quantity: number;
-  /** A descrição como veio na nota ("ARROZ T1 5KG"): o tamanho da embalagem. Sem ela, o tamanho não é conhecido. */
+  /** A descrição como veio na nota ("ARROZ T1 5KG"): o tamanho da embalagem. Sem ela e sem packCount, o tamanho não é conhecido. */
   description?: string;
   /** Quantos vinham na embalagem, respondido na revisão (pack_count): vale quando a descrição não diz o tamanho. */
   packCount?: number | null;
