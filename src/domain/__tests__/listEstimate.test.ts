@@ -10,8 +10,10 @@ import {
   estimateList,
   formatItemCost,
   itemFacts,
+  listSharedOnly,
   listStorePrices,
   pantryHits,
+  sharedOnlyNote,
   storeOptionNote,
   storePriceNote,
   unpricedNote,
@@ -31,6 +33,7 @@ import { storePriceIndex } from '../priceLevel';
 import type { PurchaseRecord } from '../recentPurchases';
 import { recommendStores } from '../recommendation';
 import { ranOutItems, restockSuggestions } from '../restock';
+import type { SharedQuote } from '../sharedPrices';
 
 const item = (id: string, name: string, productId: string | null, quantity = 1, unit = 'un', inCart = false): EstimateItem => ({
   id,
@@ -430,6 +433,55 @@ describe('estimateList', () => {
       });
     });
 
+    it('a nota da linha diz a quantidade que a conta usou, em cada ramo: o costume, ou 1 kg, 1 litro ou 1 unidade', () => {
+      const usual: UsualAmounts = new Map([['queijo', { kg: 0.201 }]]);
+      // O Dia não tem o queijo: estimado pelo nível de preço dele, com o costume e sem ele.
+      expect(storePriceNote(listStorePrices(cheese, cheesePrice, { usual })('q', 'dia')!)).toBe(
+        'Estimado pelo nível de preço do mercado, ~201 g (o que a casa costuma levar)',
+      );
+      expect(storePriceNote(listStorePrices(cheese, cheesePrice)('q', 'dia')!)).toBe(
+        'Estimado pelo nível de preço do mercado, 1 kg (quantidade em outra unidade)',
+      );
+      // De outro produto ligado ao nome: a quantidade do costume dele, com o nome quando se sabe.
+      const links = new LinkIndex([
+        { name_key: listNameKey('Queijo'), product_id: 'queijo' },
+        { name_key: listNameKey('Queijo'), product_id: 'prato' },
+      ]);
+      const pratoList = [item('p', 'Queijo', null)];
+      const pratoPrices = [price('queijo', 'bom', 72.9, '2026-10-05T12:00:00Z', 'kg'), price('prato', 'dia', 50, '2026-10-01T12:00:00Z', 'kg')];
+      const other = listStorePrices(pratoList, pratoPrices, { links, usual: new Map([['prato', { kg: 0.3 }]]) })('p', 'dia')!;
+      expect(storePriceNote(other, (id) => (id === 'prato' ? 'Prato' : undefined))).toBe('Preço de Prato, ~300 g (o que a casa costuma levar)');
+      expect(storePriceNote(other)).toBe('Preço de outro produto com esse nome, ~300 g (o que a casa costuma levar)');
+      // Visto em outra casa num mercado da casa (o Dia viu o queijo a 72,90 o kg), e o item só com esse preço.
+      const shared: SharedQuote[] = [
+        {
+          productId: 'queijo',
+          storeId: 'dia',
+          storeCnpj: '22333444000172',
+          storeName: 'Dia',
+          state: null,
+          mine: true,
+          unit: 'kg',
+          unitPrice: 72.9,
+          seenOn: '2026-10-10',
+        },
+      ];
+      const dia = (id: string) => (id === 'dia' ? 'Dia' : undefined);
+      expect(storePriceNote(listStorePrices(cheese, [], { shared, usual })('q', 'dia')!, undefined, 2026)).toBe(
+        'Preço de outras casas, visto em 10 out, ~201 g (o que a casa costuma levar)',
+      );
+      expect(sharedOnlyNote(listSharedOnly(cheese, [], { shared, usual }).get('q')!, dia, 2026)).toBe(
+        'Só há preço de outras casas: Dia, visto em 10 out, ~201 g (o que a casa costuma levar)',
+      );
+      expect(sharedOnlyNote(listSharedOnly(cheese, [], { shared }).get('q')!, dia, 2026)).toBe(
+        'Só há preço de outras casas: Dia, visto em 10 out, 1 kg (quantidade em outra unidade)',
+      );
+      // A unidade da lista (kg) não converte para a do preço (unidade): 1 unidade, e a nota diz que o preço é por unidade.
+      expect(storePriceNote(listStorePrices([item('a', 'Arroz', 'arroz', 0.5, 'kg')], [price('arroz', 'bom', 12)])('a', 'bom')!)).toBe(
+        'Preço por unidade da nota, 1 unidade (quantidade em outra unidade)',
+      );
+    });
+
     it('com número par de notas, o costume é a menor das duas do meio, nunca a média: uma peça de 2,5 kg não puxa o de 0,2 kg', () => {
       const usual = usualAmounts([buy('queijo', 0.2, 'kg'), buy('queijo', 2.5, 'kg')]);
       expect(usual.get('queijo')).toEqual({ kg: 0.2 });
@@ -692,7 +744,7 @@ describe('listStorePrices', () => {
     expect(storePriceNote(priceAt('l', 'dia')!)).toBe('Preço de outro produto com esse nome');
     expect(formatItemCost(priceAt('l', 'dia')!)).toBe('~R$ 63,48');
     // A unidade da lista não converte para a do preço.
-    expect(storePriceNote(priceAt('b', 'dia')!, productName)).toBe('Preço por unidade da nota (quantidade em outra unidade)');
+    expect(storePriceNote(priceAt('b', 'dia')!, productName)).toBe('Preço por kg, 1 kg (quantidade em outra unidade)');
     expect(formatItemCost(priceAt('b', 'dia')!)).toBe('~R$ 6,00');
     // O mercado não tem o item.
     expect(storePriceNote(priceAt('c', 'dia')!, productName)).toBe('Estimado pelo nível de preço do mercado');

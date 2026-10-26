@@ -839,45 +839,62 @@ export function formatItemCost(estimate: Pick<ItemEstimate, 'cost' | 'kind' | 'a
   return `${rough ? '~' : ''}${formatBRL(estimate.cost)}`;
 }
 
+/** O texto da nota e, depois de vírgula, a quantidade que a conta usou (quando não é a da lista). */
+const withNote = (text: string, note: string | null) => (note ? `${text}, ${note}` : text);
+
+/**
+ * A quantidade que a conta usou, quando não é a da lista: o costume ("~201 g (o que a casa costuma levar)") ou, sem
+ * ele, 1 kg, 1 litro ou 1 unidade. null quando é a quantidade da lista.
+ */
+function countedNote(price: Partial<Pick<StorePrice, 'approximateQuantity' | 'perPiece' | 'unit'>>): string | null {
+  if (price.perPiece) return `~${usualAmountLabel(price.perPiece)} (o que a casa costuma levar)`;
+  if (!price.approximateQuantity) return null;
+  const base = pricePerBase(1, price.unit ?? '').unit;
+  return `${base === 'kg' ? '1 kg' : base === 'l' ? '1 litro' : '1 unidade'} (quantidade em outra unidade)`;
+}
+
+/** "Preço por kg" e "Preço por litro" para o que é por peso ou volume; "Preço por unidade da nota", para o resto. */
+function priceHead(unit: string): string {
+  const base = pricePerBase(1, unit).unit;
+  return `Preço por ${base === 'kg' ? 'kg' : base === 'l' ? 'litro' : 'unidade da nota'}`;
+}
+
 /**
  * A nota da linha de um item em "Onde comprar", da mesma resposta que dá o
  * custo (listStorePrices): estimado, de outras casas (com o dia em que foi
  * visto), de outro produto ligado ao nome (qual, quando `productName` sabe) ou
- * com a quantidade em outra unidade. null para o preço de nota do próprio
- * produto, na quantidade da lista: nada a avisar.
+ * do próprio produto em outra unidade. Com quantidade que não é a da lista,
+ * diz qual foi (countedNote). null para o preço de nota do próprio produto, na
+ * quantidade da lista: nada a avisar.
  */
 export function storePriceNote(
-  price: Pick<StorePrice, 'source' | 'approximateQuantity' | 'perPiece' | 'used' | 'shared'>,
+  price: Pick<StorePrice, 'source' | 'approximateQuantity' | 'perPiece' | 'unit' | 'used' | 'shared'>,
   productName?: (productId: string) => string | undefined,
   referenceYear?: number,
 ): string | null {
-  if (price.source === 'estimated') return 'Estimado pelo nível de preço do mercado';
-  // A quantidade é a de costume (item em "un" com preço por kg) ou a de 1 kg, 1 litro ou 1 unidade.
-  const quantity = price.perPiece ? `~${usualAmountLabel(price.perPiece)}` : 'quantidade em outra unidade';
-  if (price.shared) {
-    const note = `Preço de outras casas, ${seenLabel(price.shared, referenceYear)}`;
-    return price.approximateQuantity ? `${note} (${quantity})` : note;
-  }
+  const counted = countedNote(price);
+  if (price.source === 'estimated') return withNote('Estimado pelo nível de preço do mercado', counted);
+  if (price.shared) return withNote(`Preço de outras casas, ${seenLabel(price.shared, referenceYear)}`, counted);
   if (price.source === 'otherProduct') {
-    return `Preço de ${(price.used && productName?.(price.used.productId)) || 'outro produto com esse nome'}`;
+    return withNote(`Preço de ${(price.used && productName?.(price.used.productId)) || 'outro produto com esse nome'}`, counted);
   }
-  if (price.perPiece) return `Preço por ${price.perPiece.unit === 'kg' ? 'kg' : 'litro'}, ${quantity} (o que a casa costuma levar)`;
-  return price.approximateQuantity ? 'Preço por unidade da nota (quantidade em outra unidade)' : null;
+  return counted ? `${priceHead(price.unit)}, ${counted}` : null;
 }
 
 /**
  * A linha do item que só tem preço de outras casas, em "Onde comprar": de
- * que mercado (o nome que a casa conhece, quando é dela) e de que dia.
+ * que mercado (o nome que a casa conhece, quando é dela), de que dia e, quando
+ * a conta usa outra quantidade, qual.
  */
 export function sharedOnlyNote(
-  price: Pick<StorePrice, 'shared'>,
+  price: Pick<StorePrice, 'shared'> & Partial<Pick<StorePrice, 'approximateQuantity' | 'perPiece' | 'unit'>>,
   storeName: (storeId: string) => string | undefined = () => undefined,
   referenceYear?: number,
 ): string {
   const seen = price.shared;
   if (!seen) return 'Só há preço de outras casas';
   const place = (seen.storeId ? storeName(seen.storeId) : undefined) ?? sharedStoreLabel(seen);
-  return `Só há preço de outras casas: ${place}, ${seenLabel(seen, referenceYear)}`;
+  return withNote(`Só há preço de outras casas: ${place}, ${seenLabel(seen, referenceYear)}`, countedNote(price));
 }
 
 /**
