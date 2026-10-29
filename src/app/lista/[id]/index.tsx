@@ -562,6 +562,8 @@ export default function ShoppingListScreen() {
         quantity: Number(i.quantity),
         unit: i.unit,
         inCart: Boolean(i.checked_at),
+        // Nos ovos, "12 un" (o "1 dz" colado) são doze ovos, não doze cartelas.
+        category: i.category,
       })),
       (prices.data ?? []).map((p) => ({
         productId: p.product_id,

@@ -81,7 +81,15 @@ export default function WhereToBuyScreen() {
       usual: usualAmounts(purchases.data ?? []),
       historyMissing: purchases.data === undefined,
     };
-    const all = pending.map((i) => ({ id: i.id, name: i.name, productId: i.product_id, quantity: Number(i.quantity), unit: i.unit }));
+    // A categoria vai junto: nos ovos, "12 un" são doze ovos, como na lista.
+    const all = pending.map((i) => ({
+      id: i.id,
+      name: i.name,
+      productId: i.product_id,
+      quantity: Number(i.quantity),
+      unit: i.unit,
+      category: i.category,
+    }));
     // O item sem preço nenhum da casa, só com o de outras casas, fica fora dos planos (não há preço dele em todo
     // mercado nem média da casa para estimar) e aparece à parte, com o preço que a lista mostra.
     const sharedOnly = listSharedOnly(all, quotes, sources);
