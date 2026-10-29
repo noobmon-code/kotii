@@ -1,19 +1,10 @@
-import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
+import { beforeAll, describe, expect, it } from '@jest/globals';
 
 import { MARKET_TREND_MONTHS, marketMonth, marketTrend, shortAmount, type MarketLine, type MarketReceipt } from '../marketSpend';
 
-// As datas da nota são do fuso do aparelho: aqui, o de São Paulo, o da casa. A virada do mês às 23h30 de um
-// dia 30 é 2h30 do dia 1º em UTC, e a nota tem de ficar no mês de São Paulo.
-const ZONE = 'America/Sao_Paulo';
-const previousZone = process.env.TZ;
-process.env.TZ = ZONE;
-
-// O fuso volta ao que era: o mesmo processo pode rodar outros arquivos de teste depois deste.
-afterAll(() => {
-  if (previousZone === undefined) delete process.env.TZ;
-  else process.env.TZ = previousZone;
-});
-
+// As datas da nota são do fuso do aparelho: aqui, o de São Paulo, o da casa, que `scripts/jest/globalSetup.js`
+// põe na suíte inteira. A virada do mês às 23h30 de um dia 30 é 2h30 do dia 1º em UTC, e a nota tem de ficar
+// no mês de São Paulo.
 beforeAll(() => {
   // Garante que o fuso valeu: sem isso, um teste de virada de mês passaria por acaso noutro fuso.
   expect(new Date('2026-10-01T02:30:00Z').getDate()).toBe(30);

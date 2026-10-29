@@ -369,6 +369,8 @@ npm run typecheck
 npm run lint
 ```
 
+O `npm test` roda sempre no fuso de São Paulo, em qualquer máquina: `scripts/jest/globalSetup.js` põe `TZ=America/Sao_Paulo` antes de os testes começarem, porque as datas do app são do fuso do aparelho.
+
 As Edge Functions são Deno: em `supabase/functions/_shared`, `parse-receipt`, `parse-health`, `leave-household`, `nfce`, `finance` e `nuke-finance`, rode `deno test && deno check index.ts` (em `_shared`, `deno check *.ts`).
 
 ## Identidade visual
