@@ -479,6 +479,67 @@ describe('estimateList', () => {
     );
   });
 
+  describe('ovos pedidos em ovos: "1 dz" vira "12 un" na lista, e são doze ovos, não doze cartelas', () => {
+    const ovos = (id: string, name: string, quantity: number, category: string | null = 'ovos'): EstimateItem => ({
+      ...item(id, name, 'ovos', quantity),
+      category,
+    });
+    const cartela = (storeId: string, unitPrice: number, packCount: number | null, day = '2026-10-20T12:00:00Z') => ({
+      ...price('ovos', storeId, unitPrice, day),
+      packCount,
+    });
+
+    it('com a cartela do preço dizendo quantos vêm, a conta é pelo preço de cada ovo', () => {
+      // A cartela de 20 a R$ 13,99: doze ovos saem R$ 8,39, e duas dúzias pelo nome, R$ 16,79.
+      const list = [ovos('d', 'Ovos', 12), ovos('n', 'Ovos (dúzia)', 1), ovos('n2', 'Ovos (dúzia)', 2), ovos('t', 'Ovos (30 un)', 1)];
+      const estimate = estimateList(list, [cartela('bom', 13.99, 20)]);
+      expect(estimate.byItem.get('d')).toMatchObject({ cost: 8.39, approximateQuantity: true, eggs: { count: 12, pack: 20 } });
+      expect(estimate.byItem.get('n')).toMatchObject({ cost: 8.39, eggs: { count: 12, pack: 20 } });
+      expect(estimate.byItem.get('n2')).toMatchObject({ cost: 16.79, eggs: { count: 24, pack: 20 } });
+      expect(estimate.byItem.get('t')).toMatchObject({ cost: 20.99, eggs: { count: 30, pack: 20 } });
+      expect(formatItemCost(estimate.byItem.get('d')!)).toBe('~R$ 8,39');
+    });
+
+    it('sem saber quantos vêm na cartela do preço, doze ovos são uma cartela, e não doze', () => {
+      const estimate = estimateList([ovos('d', 'Ovos', 12), ovos('t', 'Ovos', 30)], [cartela('bom', 13.99, null)]);
+      expect(estimate.byItem.get('d')).toMatchObject({ cost: 13.99, approximateQuantity: true, eggs: { count: 12, pack: null } });
+      expect(estimate.byItem.get('t')).toMatchObject({ cost: 13.99, eggs: { count: 30, pack: null } });
+    });
+
+    it('poucas unidades sem a conta no nome são cartelas, como sempre; a cartela do nome sem a do preço também', () => {
+      const quotes = [cartela('bom', 13.99, 20)];
+      expect(estimateList([ovos('c', 'Ovos', 2)], quotes).byItem.get('c')).toMatchObject({ cost: 27.98, approximateQuantity: false });
+      expect(estimateList([ovos('c', 'Ovos', 2)], quotes).byItem.get('c')!.eggs).toBeUndefined();
+      const unknown = estimateList([ovos('n', 'Ovos (dúzia)', 2)], [cartela('bom', 13.99, null)]).byItem.get('n')!;
+      expect(unknown).toMatchObject({ cost: 27.98, approximateQuantity: false });
+      expect(unknown.eggs).toBeUndefined();
+    });
+
+    it('fora dos ovos, "12 un" continua sendo doze unidades', () => {
+      const pao = { ...item('p', 'Pão francês', 'pao', 12), category: 'padaria' };
+      expect(estimateList([pao], [price('pao', 'bom', 0.9)]).byItem.get('p')).toMatchObject({ cost: 10.8, approximateQuantity: false });
+      // E a categoria não chegou (uma tela que não a passa): como antes.
+      expect(estimateList([ovos('d', 'Ovos', 12, null)], [cartela('bom', 13.99, 20)]).byItem.get('d')).toMatchObject({ cost: 167.88 });
+    });
+
+    it('os detalhes e a linha de "Onde comprar" dizem a conta', () => {
+      const list = [ovos('d', 'Ovos', 12)];
+      const known = estimateList(list, [cartela('bom', 13.99, 20)]).byItem.get('d');
+      const names = { storeName: () => 'Bemais', today: '2026-10-25', category: 'ovos' };
+      expect(itemFacts(known, undefined, names)).toContain('A lista pede 12 ovos: a conta usa R$ 0,70 o ovo, da cartela de 20.');
+      expect(storePriceNote(listStorePrices(list, [cartela('bom', 13.99, 20)])('d', 'bom')!)).toBe(
+        'Preço por unidade da nota, ~12 ovos a R$ 0,70 o ovo',
+      );
+      const unknown = estimateList(list, [cartela('bom', 13.99, null)]).byItem.get('d');
+      expect(itemFacts(unknown, undefined, names)).toContain(
+        'A lista pede 12 ovos, e não se sabe quantos vêm na cartela do preço: a conta usa 1 cartela.',
+      );
+      expect(storePriceNote(listStorePrices(list, [cartela('bom', 13.99, null)])('d', 'bom')!)).toBe(
+        'Preço por unidade da nota, 1 cartela (sem saber quantos ovos vêm nela)',
+      );
+    });
+  });
+
   it('o costume é o do produto de onde vem o preço; sem compra dele a peso, o do produto do item', () => {
     // "Queijo" ligado à mussarela (a comprada por último) e ao prato; no Dia, só o prato tem preço.
     const links = new LinkIndex([
@@ -1080,6 +1141,26 @@ describe('a lista e "Onde comprar" dão o mesmo total', () => {
     ]);
     expect(recommendation.plans[0].assignments.map((a) => a.approximateQuantity)).toEqual([true, true]);
     expect(recommendation.plans[2].assignments.map((a) => a.approximateQuantity)).toEqual([false, false]);
+  });
+
+  it('uma dúzia de ovos: a cartela de 30 mais barata por ovo ganha da de 10, e o mercado sem a contagem conta uma cartela', () => {
+    const list = [{ ...item('o', 'Ovos', 'ovos', 12), category: 'ovos' }, item('a', 'Arroz', 'arroz')];
+    const quotes = [
+      { ...price('ovos', 'a', 39.9), packCount: 30 },
+      { ...price('ovos', 'b', 13.99), packCount: 10 },
+      { ...price('ovos', 'c', 15.97), packCount: null },
+      price('arroz', 'a', 20),
+      price('arroz', 'b', 20),
+      price('arroz', 'c', 20),
+    ];
+    const { recommendation, estimates } = expectSameAccount(list, quotes, {}, ['a', 'b', 'c']);
+    // 12 ovos a R$ 1,33 no A, a R$ 1,40 no B; no C, uma cartela de tamanho que a nota não diz. Nunca doze cartelas.
+    expect(recommendation.plans.map((p) => [p.storeIds[0], p.total])).toEqual([
+      ['a', 35.96],
+      ['c', 35.97],
+      ['b', 36.79],
+    ]);
+    expect(estimates.get('c')!.byItem.get('o')).toMatchObject({ cost: 15.97, approximateQuantity: true, eggs: { count: 12, pack: null } });
   });
 
   it('queijo por kg num mercado e por g no outro, com a lista em "un": 1 kg nos dois, e ganha o mais barato', () => {

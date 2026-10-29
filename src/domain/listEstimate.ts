@@ -18,6 +18,7 @@ import { diffDays, formatShortDate, toISODate, todayISO } from './dates';
 import type { LinkIndex } from './listLinks';
 import { formatBRL, formatQuantity } from './money';
 import { packLabel, perItemLabel } from './packCount';
+import { packageSize } from './packageSize';
 import { storePriceIndex } from './priceLevel';
 import { MAX_WEIGHT_KG } from './receiptWeight';
 import { SAME_TRIP_DAYS } from './restock';
@@ -33,6 +34,8 @@ export interface EstimateItem {
   quantity: number;
   unit: string;
   inCart: boolean;
+  /** A categoria do item da lista: nos ovos, "12 un" são doze ovos, não doze cartelas (eggsAsked). */
+  category?: string | null;
 }
 
 export interface EstimatePrice {
@@ -68,6 +71,12 @@ export interface ItemEstimate {
   perPiece?: UsualAmount;
   /** Item em "un" com preço por kg ou litro sem o costume, porque o histórico de compras não carregou: a conta é de 1 kg ou 1 litro, e diz isso. */
   historyMissing?: boolean;
+  /**
+   * Ovos pedidos em ovos (eggsAsked) com o preço por cartela: quantos ovos a conta usou e quantos vinham na cartela
+   * do preço. Com a cartela conhecida, o custo é o dos ovos pelo preço de cada um; sem ela (`pack` null), o de uma
+   * cartela. Nos dois casos, aproximado.
+   */
+  eggs?: { count: number; pack: number | null };
   /** O produto de onde saem o último preço, o "preço bom" e a estimativa do item (itemResolver). */
   productId: string;
   /**
@@ -133,6 +142,24 @@ const newest = (quotes: EstimatePrice[]) =>
 
 /** Quantos vêm numa cotação em "un" que diz (dois ou mais); null nas outras. */
 const countOf = (quote: EstimatePrice) => (quote.unit === 'un' && quote.packCount != null && quote.packCount >= 2 ? quote.packCount : null);
+
+/**
+ * A partir de quantas unidades a lista pede ovos, e não cartelas: "1 dz" vira "12 un" na lista (listPaste), e ninguém
+ * pede seis cartelas de uma vez. Abaixo disso, "Ovos 2 un" continua sendo duas cartelas.
+ */
+export const EGGS_AS_COUNT = 6;
+
+/**
+ * Quantos ovos o item da lista pede, quando dá para saber: o nome diz quantos vêm ("Ovos (dúzia)", "Ovos (30 un)":
+ * cada unidade da lista é essa cartela) ou a quantidade já é de ovos ("12 un", a partir de EGGS_AS_COUNT). null fora
+ * dos ovos, fora de "un" e com poucas unidades sem a conta no nome: aí cada unidade é uma cartela, como sempre.
+ */
+function eggsAsked(item: Pick<EstimateItem, 'name' | 'quantity' | 'unit' | 'category'>): { count: number; fromName: boolean } | null {
+  if (item.category !== 'ovos' || item.unit !== 'un' || !(item.quantity > 0)) return null;
+  const size = packageSize(item.name);
+  if (size?.unit === 'un') return { count: item.quantity * size.amount, fromName: true };
+  return item.quantity >= EGGS_AS_COUNT ? { count: item.quantity, fromName: false } : null;
+}
 
 /**
  * O preço por ovo de uma cotação em "un" que diz quantos vêm (dois ou mais); null nas outras. Arredondado a 8 casas:
@@ -365,7 +392,7 @@ export type StorePriceSource =
 export interface StorePrice
   extends Pick<
     ItemEstimate,
-    'cost' | 'unitPrice' | 'unit' | 'kind' | 'approximateQuantity' | 'perPiece' | 'productId' | 'used' | 'shared' | 'historyMissing'
+    'cost' | 'unitPrice' | 'unit' | 'kind' | 'approximateQuantity' | 'perPiece' | 'productId' | 'used' | 'shared' | 'historyMissing' | 'eggs'
   > {
   source: StorePriceSource;
 }
@@ -410,7 +437,7 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
     return all.filter((quote) => quote.productId === productId);
   };
 
-  return (item: Pick<EstimateItem, 'name' | 'productId' | 'quantity' | 'unit'>): PricedItem | null => {
+  return (item: Pick<EstimateItem, 'name' | 'productId' | 'quantity' | 'unit' | 'category'>): PricedItem | null => {
     const resolved = resolve(item);
     const shared = sharedOf(item, resolved);
     if (!resolved && !shared.length) return null;
@@ -430,7 +457,17 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
       // "Queijo", 1 un, com o preço por kg: o que a casa costuma levar dele de uma vez, e não 1 kg. Como o 1 kg, vale
       // qualquer que seja a quantidade: "6 un" de banana são as bananas de sempre, não seis vezes elas.
       const piece = piecePerUnit(sources.usual, item.unit, priceUnit, [seen?.productId ?? used?.productId ?? productId, productId]);
-      const { quantity, approximate } = piece ? { quantity: piece.inPriceUnit, approximate: true } : priceQuantity(item.quantity, item.unit, priceUnit);
+      // Ovos pedidos em ovos ("1 dz" é "12 un") com o preço por cartela: pelo preço de cada ovo quando a cartela do preço
+      // diz quantos vêm; sem isso, uma cartela, e não doze. A cartela do nome ("Ovos (dúzia)") sem a do preço fica como
+      // sempre, uma por unidade. O preço estimado e o de outras casas não dizem quantos vêm.
+      const asked = !piece && priceUnit === 'un' ? eggsAsked(item) : null;
+      const pack = asked && used && !seen ? countOf(used) : null;
+      const eggs = asked && (pack != null || !asked.fromName) ? { count: asked.count, pack } : null;
+      const { quantity, approximate } = piece
+        ? { quantity: piece.inPriceUnit, approximate: true }
+        : eggs
+          ? { quantity: eggs.pack != null ? eggs.count / eggs.pack : 1, approximate: true }
+          : priceQuantity(item.quantity, item.unit, priceUnit);
       // Sem o costume porque o histórico de compras não carregou: o 1 kg (ou 1 litro) de sempre, e a conta diz que o costume não entrou.
       const historyMissing =
         !piece && sources.historyMissing === true && item.unit === 'un' && ['kg', 'l'].includes(pricePerBase(1, priceUnit).unit);
@@ -444,6 +481,7 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
         approximateQuantity: approximate,
         ...(piece ? { perPiece: piece.perPiece } : {}),
         ...(historyMissing ? { historyMissing: true } : {}),
+        ...(eggs ? { eggs } : {}),
         productId,
         used,
         ...(seen ? { shared: seen } : {}),
@@ -507,7 +545,7 @@ function itemPricer(prices: readonly EstimatePrice[], sources: PriceSources, ind
  * telas dão o mesmo total.
  */
 export function listStorePrices(
-  items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId' | 'quantity' | 'unit'>[],
+  items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId' | 'quantity' | 'unit' | 'category'>[],
   prices: readonly EstimatePrice[],
   sources: PriceSources = {},
 ): (itemId: string, storeId: string) => StorePrice | null {
@@ -524,7 +562,7 @@ export function listStorePrices(
  * casa para estimar) e aparecem à parte.
  */
 export function listSharedOnly(
-  items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId' | 'quantity' | 'unit'>[],
+  items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId' | 'quantity' | 'unit' | 'category'>[],
   prices: readonly EstimatePrice[],
   sources: PriceSources = {},
 ): Map<string, StorePrice> {
@@ -543,7 +581,7 @@ export function listSharedOnly(
  * do mesmo produto de onde sai o preço do item na lista. Só os itens que têm.
  */
 export function listSharedElsewhere(
-  items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId' | 'quantity' | 'unit'>[],
+  items: readonly Pick<EstimateItem, 'id' | 'name' | 'productId' | 'quantity' | 'unit' | 'category'>[],
   prices: readonly EstimatePrice[],
   sources: PriceSources = {},
 ): Map<string, StorePrice[]> {
@@ -590,6 +628,7 @@ export function estimateList(
       approximateQuantity,
       ...(perPiece ? { perPiece } : {}),
       ...(answer.historyMissing ? { historyMissing: true } : {}),
+      ...(answer.eggs ? { eggs: answer.eggs } : {}),
       productId,
       used,
       ...(seen ? { shared: seen } : {}),
@@ -884,6 +923,15 @@ export function formatItemCost(estimate: Pick<ItemEstimate, 'cost' | 'kind' | 'a
   return `${rough ? '~' : ''}${formatBRL(estimate.cost)}`;
 }
 
+/**
+ * A quantidade dos ovos pedidos em ovos: "~12 ovos a R$ 0,70 o ovo" quando a cartela do preço diz quantos vêm, ou
+ * "1 cartela (sem saber quantos ovos vêm nela)": a nota que não disse, o preço de outras casas ou o estimado.
+ */
+function eggsNote(eggs: NonNullable<ItemEstimate['eggs']>, unitPrice: number | undefined): string {
+  if (eggs.pack != null && unitPrice != null) return `~${packLabel(eggs.count, 'ovos')} a ${perItemLabel(unitPrice, eggs.pack, 'ovos')}`;
+  return '1 cartela (sem saber quantos ovos vêm nela)';
+}
+
 /** O texto da nota e, depois de vírgula, a quantidade que a conta usou (quando não é a da lista). */
 const withNote = (text: string, note: string | null) => (note ? `${text}, ${note}` : text);
 
@@ -891,8 +939,11 @@ const withNote = (text: string, note: string | null) => (note ? `${text}, ${note
  * A quantidade que a conta usou, quando não é a da lista: o costume ("~201 g (o que a casa costuma levar)") ou, sem
  * ele, 1 kg, 1 litro ou 1 unidade (e, se o histórico de compras não carregou, diz isso). null quando é a da lista.
  */
-function countedNote(price: Partial<Pick<StorePrice, 'approximateQuantity' | 'perPiece' | 'unit' | 'historyMissing'>>): string | null {
+function countedNote(
+  price: Partial<Pick<StorePrice, 'approximateQuantity' | 'perPiece' | 'unit' | 'unitPrice' | 'historyMissing' | 'eggs'>>,
+): string | null {
   if (price.perPiece) return `~${usualAmountLabel(price.perPiece)} (o que a casa costuma levar)`;
+  if (price.eggs) return eggsNote(price.eggs, price.unitPrice);
   if (!price.approximateQuantity) return null;
   const base = pricePerBase(1, price.unit ?? '').unit;
   const counted = base === 'kg' ? '1 kg' : base === 'l' ? '1 litro' : '1 unidade';
@@ -914,7 +965,7 @@ function priceHead(unit: string): string {
  * quantidade da lista: nada a avisar.
  */
 export function storePriceNote(
-  price: Pick<StorePrice, 'source' | 'approximateQuantity' | 'perPiece' | 'unit' | 'used' | 'shared' | 'historyMissing'>,
+  price: Pick<StorePrice, 'source' | 'approximateQuantity' | 'perPiece' | 'unit' | 'unitPrice' | 'used' | 'shared' | 'historyMissing' | 'eggs'>,
   productName?: (productId: string) => string | undefined,
   referenceYear?: number,
 ): string | null {
@@ -933,7 +984,8 @@ export function storePriceNote(
  * a conta usa outra quantidade, qual.
  */
 export function sharedOnlyNote(
-  price: Pick<StorePrice, 'shared'> & Partial<Pick<StorePrice, 'approximateQuantity' | 'perPiece' | 'unit' | 'historyMissing'>>,
+  price: Pick<StorePrice, 'shared'> &
+    Partial<Pick<StorePrice, 'approximateQuantity' | 'perPiece' | 'unit' | 'unitPrice' | 'historyMissing' | 'eggs'>>,
   storeName: (storeId: string) => string | undefined = () => undefined,
   referenceYear?: number,
 ): string {
@@ -1099,7 +1151,15 @@ export function itemFacts(
         : `${quoteText(lowest, category)} ou menos`;
       facts.push(`Só em promoção: o preço bom é ${good}.`);
     }
-    if (estimate.perPiece) {
+    if (estimate.eggs) {
+      // Ovos pedidos em ovos: pelo preço de cada ovo da cartela do preço, ou, sem saber quantos vêm nela, uma cartela.
+      const { count, pack } = estimate.eggs;
+      facts.push(
+        pack != null
+          ? `A lista pede ${packLabel(count, 'ovos')}: a conta usa ${perItemLabel(estimate.unitPrice, pack, 'ovos')}, da cartela de ${pack}.`
+          : `A lista pede ${packLabel(count, 'ovos')}, e não se sabe quantos vêm na cartela do preço: a conta usa 1 cartela.`,
+      );
+    } else if (estimate.perPiece) {
       // Item em "un" com preço por kg: a conta usa o que a casa costuma levar dele de uma vez (usualAmounts).
       const counted = pricePerBase(1, unit).unit;
       facts.push(`O preço é por ${counted}: a conta da lista usa ${usualAmountLabel(estimate.perPiece)}, o que a casa costuma levar de uma vez.`);
