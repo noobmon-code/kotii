@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { router } from 'expo-router';
+import { Profiler } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import ReceiptScreen from '@/app/nota/[id]';
@@ -34,7 +35,10 @@ const mockDb: {
   fails: ((request: MockRequest) => boolean)[];
   /** O erro que o `confirm_receipt` devolve numa nota que existe (o teste escolhe), como o servidor responde. */
   confirmError: Row | null;
-} = { receipts: [], items: [], stores: [], writes: [], rpcs: [], reads: {}, holds: [], fails: [], confirmError: null };
+  /** Quantos pedidos saíram e quantos já voltaram (um seguro por `hold` fica no meio): é por eles que `quiet` vê a tela andar. */
+  sent: number;
+  answered: number;
+} = { receipts: [], items: [], stores: [], writes: [], rpcs: [], reads: {}, holds: [], fails: [], confirmError: null, sent: 0, answered: 0 };
 const mockMarket: { products: Row[]; pantryNear: Row[]; listItems: Row[]; stores: Row[] } = { products: [], pantryNear: [], listItems: [], stores: [] };
 /** O histórico de preço que a tela recebe (`usePriceObservations`): as compras de antes, zeradas a cada teste. */
 const mockPriceHistory: { points: Row[] } = { points: [] };
@@ -87,8 +91,11 @@ jest.mock('@/data/learnedAbbreviations', () => {
 jest.mock('@/lib/supabase', () => {
   /** O pedido já saiu; a resposta espera quem o teste estiver segurando, ou falha se ele mandou. */
   const answer = async <T,>(request: MockRequest, run: () => T) => {
+    mockDb.sent += 1;
     await Promise.all(mockDb.holds.filter((held) => held.match(request)).map((held) => held.gate));
-    return mockDb.fails.some((fails) => fails(request)) ? { data: null, error: { message: 'caiu a rede' } } : run();
+    const result = mockDb.fails.some((fails) => fails(request)) ? { data: null, error: { message: 'caiu a rede' } } : run();
+    mockDb.answered += 1;
+    return result;
   };
   const table = (name: string) => {
     const filters: [string, unknown][] = [];
@@ -216,17 +223,46 @@ function seed(note: Row, ...items: Row[]) {
 
 let client: QueryClient;
 let renderer: ReactTestRenderer | undefined;
+/** As vezes em que a tela desenhou. */
+let renders = 0;
 
-const settle = (ms = 30) =>
-  act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** O que ainda pode estar andando: pedidos ao banco, desenhos da tela, buscas e gravações do React Query. */
+const motion = () => [mockDb.sent, mockDb.answered, renders, client.isFetching(), client.isMutating()].join('/');
+/**
+ * Até a tela assentar. A resposta do banco chega à tela por uma fila de passos (o React Query avisa num
+ * setTimeout(0), a tela só redesenha no fim do `act`, e o desenho novo pode pedir outra coisa ao banco), e um tempo
+ * fixo não basta: com a máquina ocupada (a suíte inteira em paralelo, uma coleta de lixo) a fila passa do prazo, e o
+ * teste conferia a tela no meio do caminho. Cada volta aqui é um `act` com um setTimeout(0), que entra na fila depois
+ * do passo já marcado; a tela assentou quando três voltas seguidas não mudam nada. Um pedido seguro por `hold` fica
+ * parado e não segura a espera.
+ */
+async function quiet() {
+  for (let turn = 0, still = 0; turn < 500; turn += 1) {
+    const before = motion();
+    await act(() => sleep(0));
+    still = motion() === before ? still + 1 : 0;
+    if (still === 3) return;
+  }
+  throw new Error('A tela não assentou.');
+}
+/** O que `action` faz na tela, o tempo pedido (o dos prazos da tela, quando o teste espera um) e o de tudo o que ela puxa assentar. */
+async function run(action: () => void, ms = 30) {
+  await act(async () => {
+    action();
+    await sleep(ms);
   });
+  await quiet();
+}
+const settle = (ms = 30) => run(() => {}, ms);
 async function open() {
   act(() => {
     renderer = create(
-      <QueryClientProvider client={client}>
-        <ReceiptScreen />
-      </QueryClientProvider>,
+      <Profiler id="nota" onRender={() => (renders += 1)}>
+        <QueryClientProvider client={client}>
+          <ReceiptScreen />
+        </QueryClientProvider>
+      </Profiler>,
     );
   });
   await settle();
@@ -234,10 +270,7 @@ async function open() {
 /** O toque, e o tempo de a gravação ir e a nota voltar do banco. */
 async function press(target: ReactTestInstance | undefined) {
   if (!target) throw new Error('botão não encontrado');
-  await act(async () => {
-    target.props.onPress();
-    await new Promise((resolve) => setTimeout(resolve, 30));
-  });
+  await run(() => target.props.onPress());
 }
 
 /** O que um pedaço da tela escreve, um texto por linha (o texto montado em partes, "2 un" + " × " + "R$ 4,30", é um só). */
@@ -259,14 +292,12 @@ const card = (description: string) => renderer!.root.findAllByType(Card).find((e
 /** A linha do total da nota, quando dá para tocar nela. */
 const totalRow = () => renderer!.root.findAll((node) => typeof node.props.onPress === 'function' && said(node)[0] === 'Total da nota')[0];
 const writes = (tableName: string) => mockDb.writes.filter((write) => write.table === tableName);
-const wait = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Dois toques seguidos, sem a tela redesenhar entre um e outro. */
 async function pressBoth(first: ReactTestInstance | undefined, second: ReactTestInstance | undefined) {
   if (!first || !second) throw new Error('botão não encontrado');
-  await act(async () => {
+  await run(() => {
     first.props.onPress();
     second.props.onPress();
-    await wait();
   });
 }
 
@@ -469,10 +500,7 @@ describe('nota em revisão: um item sem valor e o total da nota', () => {
     await press(chip('Usar R$ 12,90'));
     // A data é salva com a nota relida ainda a caminho: essa releitura é trocada por outra, mais nova.
     act(() => field('Data da compra')!.props.onChangeText(`11/06/${YEAR}`));
-    await act(async () => {
-      field('Data da compra')!.props.onBlur();
-      await wait();
-    });
+    await run(() => field('Data da compra')!.props.onBlur());
     expect(mockDb.reads.receipts).toBe(3);
     expect(said(card('QJO MUSS KG'))).toContain('sem valor');
     expect(button('Confirmar nota')!.props.loading).toBe(true);
@@ -689,10 +717,7 @@ describe('nota em revisão: um item sem valor e o total da nota', () => {
     expect(askYesNo).toHaveBeenCalledTimes(1);
     expect(mockDb.rpcs).toEqual([]);
 
-    await act(async () => {
-      answer(true);
-      await wait();
-    });
+    await run(() => answer(true));
     expect(askYesNo).toHaveBeenCalledTimes(1);
     expect(mockDb.rpcs).toHaveLength(1);
     expect(jest.mocked(notify).mock.calls).toEqual([['Nota salva', undefined]]);
@@ -1031,14 +1056,8 @@ describe('a nota em tela atrás do que foi gravado', () => {
     });
     await settle();
     act(() => field('Data da compra')!.props.onChangeText(`11/06/${YEAR}`));
-    await act(async () => {
-      field('Data da compra')!.props.onBlur();
-      await wait();
-    });
-    await act(async () => {
-      renderer!.root.findAllByType(PickerModal).find((entry) => entry.props.title === 'Mercado')!.props.onSelect('s2');
-      await wait();
-    });
+    await run(() => field('Data da compra')!.props.onBlur());
+    await run(() => renderer!.root.findAllByType(PickerModal).find((entry) => entry.props.title === 'Mercado')!.props.onSelect('s2'));
     expect(field('Data da compra')!.props.value).toBe(`11/06/${YEAR}`);
     expect(mockDb.writes).toEqual([]);
     expect(jest.mocked(notify).mock.calls).toEqual([
@@ -1056,14 +1075,8 @@ describe('a nota em tela atrás do que foi gravado', () => {
     });
     await settle();
     act(() => field('Data da compra')!.props.onChangeText(`11/06/${YEAR}`));
-    await act(async () => {
-      field('Data da compra')!.props.onSubmitEditing();
-      await wait();
-    });
-    await act(async () => {
-      field('Data da compra')!.props.onBlur();
-      await wait();
-    });
+    await run(() => field('Data da compra')!.props.onSubmitEditing());
+    await run(() => field('Data da compra')!.props.onBlur());
     expect(jest.mocked(notify).mock.calls).toEqual([
       ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
     ]);
@@ -1128,10 +1141,7 @@ describe('nota em revisão: dois itens sem valor', () => {
     // E as perguntas dos itens saíram junto.
     expect(page()).not.toContain('Sem valor: a leitura não pegou');
 
-    await act(async () => {
-      jest.mocked(confirmAction).mock.calls[1][3]();
-      await new Promise((resolve) => setTimeout(resolve, 30));
-    });
+    await run(() => jest.mocked(confirmAction).mock.calls[1][3]());
     // O que vai para confirm_receipt é o de sempre: os três itens, e o arroz sem repetir na despensa.
     expect(mockDb.rpcs).toEqual([
       {
@@ -1339,10 +1349,7 @@ describe('o total da nota dá para corrigir na revisão', () => {
     act(() => field('Total da nota')!.props.onChangeText('50'));
     const releaseDate = hold(dateWrite);
     act(() => field('Data da compra')!.props.onChangeText(`11/06/${YEAR}`));
-    await act(async () => {
-      field('Data da compra')!.props.onBlur();
-      await wait();
-    });
+    await run(() => field('Data da compra')!.props.onBlur());
     expect(writes('receipts').map((write) => Object.keys(write.values!))).toEqual([['purchased_at']]);
     // O "salvando" da data não é o do total: o botão continua livre.
     expect(button('Salvar total')!.props.loading).toBe(false);
@@ -1365,10 +1372,7 @@ describe('o total da nota dá para corrigir na revisão', () => {
     expect(button('Salvar total')!.props.loading).toBe(true);
     expect(mockDb.receipts[0].total).toBe(62.9);
     act(() => field('Data da compra')!.props.onChangeText(`11/06/${YEAR}`));
-    await act(async () => {
-      field('Data da compra')!.props.onBlur();
-      await wait();
-    });
+    await run(() => field('Data da compra')!.props.onBlur());
     // A data não esperou pelo total.
     expect(String(mockDb.receipts[0].purchased_at)).toContain(`${YEAR}-06-11`);
     expect(field('Total da nota')).toBeDefined();
@@ -1632,10 +1636,7 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
   /** Digita a data no campo e sai dele, como a pessoa faz. */
   async function typeDate(text: string) {
     act(() => field('Data da compra')!.props.onChangeText(text));
-    await act(async () => {
-      field('Data da compra')!.props.onBlur();
-      await wait();
-    });
+    await run(() => field('Data da compra')!.props.onBlur());
   }
   const noonOf = (iso: string) => new Date(`${iso}T12:00:00`).toISOString();
   /** A busca da nota falha com ela na tela: a nota fica, com o aviso de cima. */
@@ -1729,14 +1730,8 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     await open();
     const releaseWrite = hold(dateWrite);
     act(() => field('Data da compra')!.props.onChangeText(`11/06/${YEAR}`));
-    await act(async () => {
-      field('Data da compra')!.props.onSubmitEditing();
-      await wait();
-    });
-    await act(async () => {
-      field('Data da compra')!.props.onBlur();
-      await wait();
-    });
+    await run(() => field('Data da compra')!.props.onSubmitEditing());
+    await run(() => field('Data da compra')!.props.onBlur());
     expect(mockDb.writes).toEqual([
       { table: 'receipts', verb: 'update', values: { purchased_at: noonOf(`${YEAR}-06-11`) }, filters: { id: 'r1', status: 'confirmed' } },
     ]);
@@ -1780,14 +1775,8 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     await rereadFails();
     act(() => field('Data da compra')!.props.onChangeText(`11/06/${YEAR}`));
     // No celular, enviar tira o foco: a saída do campo chega logo depois do envio, com a mesma data.
-    await act(async () => {
-      field('Data da compra')!.props.onSubmitEditing();
-      await wait();
-    });
-    await act(async () => {
-      field('Data da compra')!.props.onBlur();
-      await wait();
-    });
+    await run(() => field('Data da compra')!.props.onSubmitEditing());
+    await run(() => field('Data da compra')!.props.onBlur());
     expect(jest.mocked(notify).mock.calls).toEqual([
       ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
     ]);
@@ -1808,10 +1797,7 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     await open();
     await press(renderer!.root.findAll((node) => typeof node.props.onPress === 'function' && said(node)[0] === 'Mercado')[0]);
     expect(storePicker().props.visible).toBe(true);
-    await act(async () => {
-      storePicker().props.onSelect('s2');
-      await wait();
-    });
+    await run(() => storePicker().props.onSelect('s2'));
     expect(storePicker().props.visible).toBe(false);
     expect(mockDb.writes).toEqual([{ table: 'receipts', verb: 'update', values: { store_id: 's2' }, filters: { id: 'r1', status: 'confirmed' } }]);
     expect(header().slice(0, 2)).toEqual(['Mercado', 'Atacadão']);
@@ -1822,10 +1808,7 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
   it('o mercado: criar um pelo nome digitado, como no rascunho', async () => {
     await open();
     const create = storePicker().props.extraActions('Feira do bairro');
-    await act(async () => {
-      create.props.onPress();
-      await wait();
-    });
+    await run(() => create.props.onPress());
     expect(mockDb.writes).toEqual([
       { table: 'stores', verb: 'insert', values: { name: 'Feira do bairro' }, filters: {} },
       { table: 'receipts', verb: 'update', values: { store_id: 'mercado2' }, filters: { id: 'r1', status: 'confirmed' } },
@@ -1837,10 +1820,7 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
   it('o mercado criado fica na lista dos mercados mesmo quando a nota não grava: tentar de novo acha ele', async () => {
     mockDb.fails = [storeWrite];
     await open();
-    await act(async () => {
-      storePicker().props.extraActions('Feira do bairro').props.onPress();
-      await wait();
-    });
+    await run(() => storePicker().props.extraActions('Feira do bairro').props.onPress());
     expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'caiu a rede']]);
     expect(mockDb.stores.map((store) => store.name)).toEqual(['Assaí', 'Atacadão', 'Feira do bairro']);
     expect(header().slice(0, 2)).toEqual(['Mercado', 'Assaí']);
@@ -1852,10 +1832,7 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     seed(receipt(), item('a', 'DETERGENTE YPE', 50));
     mockDb.fails = [storeWrite];
     await open();
-    await act(async () => {
-      storePicker().props.extraActions('Feira do bairro').props.onPress();
-      await wait();
-    });
+    await run(() => storePicker().props.extraActions('Feira do bairro').props.onPress());
     expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'caiu a rede']]);
     expect(mockDb.writes.map((write) => [write.table, write.values])).toEqual([
       ['stores', { name: 'Feira do bairro' }],
@@ -1869,10 +1846,7 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     await open();
     const releaseDate = hold(dateWrite);
     await typeDate(`11/06/${YEAR}`);
-    await act(async () => {
-      storePicker().props.onSelect('s2');
-      await wait();
-    });
+    await run(() => storePicker().props.onSelect('s2'));
     expect(header().slice(0, 2)).toEqual(['Mercado', 'Atacadão']);
     await releaseDate();
     expect(jest.mocked(notify).mock.calls).toEqual([['Erro', 'caiu a rede']]);
@@ -1882,20 +1856,14 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
 
   it('o mesmo mercado não grava nada', async () => {
     await open();
-    await act(async () => {
-      storePicker().props.onSelect('s1');
-      await wait();
-    });
+    await run(() => storePicker().props.onSelect('s1'));
     expect(mockDb.writes).toEqual([]);
   });
 
   it('o mesmo mercado com a busca que falhou: o aviso sai, e nada é gravado', async () => {
     await open();
     await rereadFails();
-    await act(async () => {
-      storePicker().props.onSelect('s1');
-      await wait();
-    });
+    await run(() => storePicker().props.onSelect('s1'));
     expect(jest.mocked(notify).mock.calls).toEqual([
       ['Não deu para buscar a nota', 'Os itens na tela podem estar diferentes do que foi salvo. Toque em "Tentar de novo" e confira antes de confirmar.'],
     ]);
@@ -1984,10 +1952,7 @@ describe('nota já confirmada: data, mercado e total dá para corrigir', () => {
     expect(page()).not.toContain(CORRECTION_NOTE);
     await typeDate(`11/06/${YEAR}`);
     expect(mockDb.writes).toEqual([{ table: 'receipts', verb: 'update', values: { purchased_at: noonOf(`${YEAR}-06-11`) }, filters: { id: 'r1' } }]);
-    await act(async () => {
-      storePicker().props.onSelect('s2');
-      await wait();
-    });
+    await run(() => storePicker().props.onSelect('s2'));
     expect(mockDb.writes[1]).toEqual({ table: 'receipts', verb: 'update', values: { store_id: 's2' }, filters: { id: 'r1' } });
     expect(button('Confirmar nota')).toBeDefined();
   });
