@@ -10,6 +10,7 @@ import { SHARED_PRICES_NOTICE, SHARING_ABOUT, type SharedPrice } from '@/domain/
 import { storePricesFromSaved } from '@/domain/storePrices';
 import { TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
 import type { LatestPrice, PriceObservation, Product, Store } from '@/lib/types';
+import { HeaderButton } from '@/ui/FeatureCard';
 
 // As telas de verdade (produto, Preços e Família), com as buscas trocadas por respostas prontas: o que se confere
 // aqui é o que elas mostram dos preços de outras casas, e que nada muda quando o banco ainda não tem a função.
@@ -431,7 +432,7 @@ describe('aba Família: "Preços compartilhados"', () => {
     // A aba inteira, menos o cartão: nada mais muda.
     expect(page).toBe(withCard.replace(`Preços compartilhados${SHARING_ABOUT}${TERMS_TITLE}`, ''));
     expect(page).not.toContain('Preços compartilhados');
-    expect(page).toContain('FamíliaCasa da Ana');
+    expect(page.startsWith('FamíliaSuas casas')).toBe(true);
     expect(page).toContain('Código de conviteABC234');
   });
 
@@ -452,12 +453,21 @@ describe('aba Família: "Preços compartilhados"', () => {
     expect(page).not.toContain('Apagar minha conta');
     // "Sair da casa" é da casa, e fica.
     expect(page).toContain('Sair da casa');
-    expect(page.endsWith('Sair da casaConfiguraçõesSeu perfil, tema do app, termos e conta')).toBe(true);
-    await press('ConfiguraçõesSeu perfil, tema do app, termos e conta');
+    expect(page.endsWith('Sair da casaConfiguraçõesSeu perfil, tema do app, clima da casa, termos e conta')).toBe(true);
+    await press('ConfiguraçõesSeu perfil, tema do app, clima da casa, termos e conta');
     expect(router.push).toHaveBeenCalledWith('/configuracoes');
     jest.mocked(router.push).mockClear();
+    // Sem o cartão do topo: nem o nome da casa nem um título à vista antes do primeiro cartão (o "Família" do começo é
+    // o título da página só para o leitor de tela); a engrenagem é o primeiro toque.
+    expect(page.startsWith('FamíliaSuas casas')).toBe(true);
+    const headers = renderer!.root.findAll((node) => typeof node.type === 'string' && node.props.accessibilityRole === 'header');
+    expect(headers[0].props.children).toBe('Família');
+    expect(page).not.toContain('Casa da Ana');
     const gear = renderer!.root.findAll((node) => node.props.accessibilityLabel === 'Configurações' && typeof node.props.onPress === 'function');
     expect(gear).toHaveLength(1);
+    const touches = renderer!.root.findAll((node) => typeof node.props.onPress === 'function');
+    expect(touches[0].type).toBe(HeaderButton);
+    expect(touches[0].props.label).toBe('Configurações');
     await act(async () => gear[0].props.onPress());
     expect(router.push).toHaveBeenCalledWith('/configuracoes');
   });

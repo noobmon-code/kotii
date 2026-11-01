@@ -1,8 +1,10 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { StyleSheet } from 'react-native';
 
 import { useAddHousehold, useSwitchHousehold } from '@/data/household';
+import { PLACE_NOT_SAVED_TITLE, placeNotSavedMessage } from '@/domain/housePlace';
+import { HousePlacePicker, useNewHousePlace } from '@/features/HousePlacePicker';
 import { useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
@@ -28,11 +30,18 @@ export default function HouseholdsScreen() {
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [displayName, setDisplayName] = useState<string | null>(null);
+  // Onde fica a casa nova (opcional, só ao criar): salvo nela depois de ela existir.
+  const newPlace = useNewHousePlace();
+  // Dois toques rápidos (ou o Enter do CEP junto com o botão) criam uma casa só.
+  const sending = useRef(false);
 
   if (!household.data) return <Loading />;
   const { household: open, households, me } = household.data;
   const full = households.length >= MAX_HOUSEHOLDS;
-  const busy = switchTo.isPending || add.isPending;
+  const searching = newPlace.search.searching !== null;
+  // O envio: a busca do CEP do toque de criar e depois o pedido. O toque já leu os campos, então eles ficam travados.
+  const submitting = add.isPending || newPlace.resolving;
+  const busy = switchTo.isPending || submitting || searching;
   const yourName = displayName ?? me.display_name;
 
   function choose(id: string) {
@@ -43,7 +52,8 @@ export default function HouseholdsScreen() {
     });
   }
 
-  function submit() {
+  async function submit() {
+    if (sending.current || busy) return;
     if (!yourName.trim()) {
       notify('Como você quer ser chamado?', 'Informe seu nome para a família te reconhecer.');
       return;
@@ -56,15 +66,23 @@ export default function HouseholdsScreen() {
       notify('Código inválido', 'O código de convite tem 6 caracteres.');
       return;
     }
-    add.mutate(
-      mode === 'criar'
-        ? { mode, name: name.trim(), displayName: yourName.trim() }
-        : { mode, code: code.trim(), displayName: yourName.trim() },
-      {
-        onSuccess: () => router.replace('/'),
-        onError: (err) => notify('Não foi possível continuar', errorMessage(err)),
-      },
-    );
+    sending.current = true;
+    try {
+      // Um CEP digitado e ainda não buscado é buscado antes: sem ele achado, nada é criado.
+      const where = mode === 'criar' ? await newPlace.resolve() : ({ ok: true, place: null } as const);
+      if (!where.ok) return;
+      const added = await add.mutateAsync(
+        mode === 'criar'
+          ? { mode, name: name.trim(), displayName: yourName.trim(), place: where.place }
+          : { mode, code: code.trim(), displayName: yourName.trim() },
+      );
+      router.replace('/');
+      if (added.placeNotSaved) notify(PLACE_NOT_SAVED_TITLE, placeNotSavedMessage(added.placeNotSaved));
+    } catch (err) {
+      notify('Não foi possível continuar', errorMessage(err));
+    } finally {
+      sending.current = false;
+    }
   }
 
   return (
@@ -97,7 +115,8 @@ export default function HouseholdsScreen() {
           <>
             <Segmented
               value={mode}
-              onChange={setMode}
+              // Durante o envio, o toque já decidiu entre criar e entrar.
+              onChange={(next) => (sending.current ? undefined : setMode(next))}
               options={[
                 { value: 'criar', label: 'Criar casa' },
                 { value: 'entrar', label: 'Tenho um código' },
@@ -105,7 +124,7 @@ export default function HouseholdsScreen() {
             />
             <Card style={styles.form}>
               {mode === 'criar' ? (
-                <TextField label="Nome da casa" value={name} onChangeText={setName} placeholder="Casa da praia" />
+                <TextField label="Nome da casa" value={name} onChangeText={setName} placeholder="Casa da praia" editable={!submitting} />
               ) : (
                 <TextField
                   label="Código de convite"
@@ -114,6 +133,7 @@ export default function HouseholdsScreen() {
                   autoCapitalize="characters"
                   maxLength={6}
                   placeholder="ABC234"
+                  editable={!submitting}
                 />
               )}
               <TextField
@@ -121,11 +141,20 @@ export default function HouseholdsScreen() {
                 value={yourName}
                 onChangeText={setDisplayName}
                 autoCapitalize="words"
+                editable={!submitting}
               />
+              {mode === 'criar' ? (
+                <HousePlacePicker
+                  place={newPlace.place}
+                  search={newPlace.search}
+                  onRemove={newPlace.remove}
+                  disabled={switchTo.isPending || submitting}
+                />
+              ) : null}
               <Button
                 title={mode === 'criar' ? 'Criar e abrir' : 'Entrar e abrir'}
                 icon={mode === 'criar' ? 'home-plus-outline' : 'login'}
-                loading={add.isPending}
+                loading={submitting}
                 disabled={busy}
                 onPress={submit}
               />

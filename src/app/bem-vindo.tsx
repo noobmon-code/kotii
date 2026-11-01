@@ -1,9 +1,12 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { householdErrorMessage, INVITE_NOT_FOUND } from '@/data/household';
+import { householdErrorMessage, INVITE_NOT_FOUND, placeNotSavedReason } from '@/data/household';
+import { LOCATION_KEY, saveHouseholdLocationFor } from '@/data/weather';
+import { PLACE_NOT_SAVED_TITLE, placeNotSavedMessage } from '@/domain/housePlace';
+import { HousePlacePicker, useNewHousePlace } from '@/features/HousePlacePicker';
 import { signOut } from '@/lib/auth';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
@@ -20,8 +23,14 @@ export default function WelcomeScreen() {
   const [householdName, setHouseholdName] = useState('');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
+  // Onde fica a casa (opcional, só ao criar): salvo nela depois de ela existir.
+  const newPlace = useNewHousePlace();
+  // Dois toques rápidos (ou o Enter do CEP junto com o botão) criam uma casa só.
+  const sending = useRef(false);
+  const searching = newPlace.search.searching !== null;
 
   async function submit() {
+    if (sending.current || busy || searching) return;
     if (!displayName.trim()) {
       notify('Como você quer ser chamado?', 'Informe seu nome para a família te reconhecer.');
       return;
@@ -34,8 +43,13 @@ export default function WelcomeScreen() {
       notify('Código inválido', 'O código de convite tem 6 caracteres.');
       return;
     }
+    sending.current = true;
     setBusy(true);
+    let placeNotSaved: string | null = null;
     try {
+      // Um CEP digitado e ainda não buscado é buscado antes: sem ele achado, nada é criado.
+      const where = mode === 'criar' ? await newPlace.resolve() : ({ ok: true, place: null } as const);
+      if (!where.ok) return;
       const { data, error } =
         mode === 'criar'
           ? await supabase.rpc('create_household', { p_name: householdName, p_display_name: displayName })
@@ -43,11 +57,25 @@ export default function WelcomeScreen() {
       if (error) throw new Error(householdErrorMessage(error));
       // Código errado: o banco devolve uma casa vazia (e conta a tentativa) em
       // vez de erro. O PostgREST manda o registro nulo como objeto com campos nulos.
-      if (!(data as { id?: string | null } | null)?.id) throw new Error(INVITE_NOT_FOUND);
+      const houseId = (data as { id?: string | null } | null)?.id;
+      if (!houseId) throw new Error(INVITE_NOT_FOUND);
+      // O lugar vai antes de buscar a casa de novo: com ela, esta tela sai (a guarda do _layout), e o pedido leva o id
+      // da casa nova, que ainda não é a aberta neste aparelho. Se a tela sair antes (a casa buscada de novo por conta
+      // própria), o pedido segue e o aviso também.
+      if (where.place) {
+        try {
+          await saveHouseholdLocationFor(houseId, where.place);
+          queryClient.invalidateQueries({ queryKey: LOCATION_KEY }).catch(() => undefined);
+        } catch (err) {
+          placeNotSaved = placeNotSavedReason(err);
+        }
+      }
       await queryClient.invalidateQueries({ queryKey: ['household'] });
+      if (placeNotSaved) notify(PLACE_NOT_SAVED_TITLE, placeNotSavedMessage(placeNotSaved));
     } catch (err) {
       notify('Não foi possível continuar', errorMessage(err));
     } finally {
+      sending.current = false;
       setBusy(false);
     }
   }
@@ -63,20 +91,22 @@ export default function WelcomeScreen() {
       </View>
       <Segmented
         value={mode}
-        onChange={setMode}
+        // Durante o envio (a busca do CEP no toque de criar pode demorar), o toque já decidiu entre criar e entrar.
+        onChange={(next) => (sending.current ? undefined : setMode(next))}
         options={[
           { value: 'criar', label: 'Criar casa' },
           { value: 'entrar', label: 'Tenho um código' },
         ]}
       />
       <Card style={styles.form}>
-        <TextField label="Seu nome" value={displayName} onChangeText={setDisplayName} autoCapitalize="words" />
+        <TextField label="Seu nome" value={displayName} onChangeText={setDisplayName} autoCapitalize="words" editable={!busy} />
         {mode === 'criar' ? (
           <TextField
             label="Nome da casa"
             value={householdName}
             onChangeText={setHouseholdName}
             placeholder="Casa da família Silva"
+            editable={!busy}
           />
         ) : (
           <TextField
@@ -87,9 +117,18 @@ export default function WelcomeScreen() {
             autoCorrect={false}
             maxLength={6}
             placeholder="ABC123"
+            editable={!busy}
           />
         )}
-        <Button title={mode === 'criar' ? 'Criar casa' : 'Entrar na casa'} onPress={submit} loading={busy} />
+        {mode === 'criar' ? (
+          <HousePlacePicker place={newPlace.place} search={newPlace.search} onRemove={newPlace.remove} disabled={busy} />
+        ) : null}
+        <Button
+          title={mode === 'criar' ? 'Criar casa' : 'Entrar na casa'}
+          onPress={submit}
+          loading={busy}
+          disabled={searching}
+        />
       </Card>
       <Button title="Sair" variant="ghost" onPress={() => signOut()} />
       <Button title="Apagar minha conta" variant="ghost" compact onPress={() => router.push('/apagar-conta')} />

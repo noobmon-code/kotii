@@ -6,9 +6,11 @@ import { useIsAppAdmin } from '@/data/appDashboard';
 import { useSignOutQuestion } from '@/data/household';
 import { useMyProfile, useSaveProfile, type MyProfile } from '@/data/profile';
 import { useIsModerator } from '@/data/storeModeration';
+import { useHouseholdLocation } from '@/data/weather';
 import { APP_DASHBOARD_TITLE } from '@/domain/appDashboard';
 import { THEME_CHOICES, THEME_HINT } from '@/domain/appearance';
 import { formatBRDate, todayISO } from '@/domain/dates';
+import { HOUSE_PLACE_TITLE, housePlaceRowSubtitle, openHouseName } from '@/domain/housePlace';
 import { MODERATION_TITLE } from '@/domain/storeModeration';
 import {
   maskPhone,
@@ -47,8 +49,9 @@ const THEME_OPTIONS = [...THEME_CHOICES];
 /**
  * Configurações (da aba Família: a engrenagem do topo e a linha do fim). Perfil: o nome, que vale em todas as
  * casas da pessoa, e a data de nascimento e o telefone, que só ela vê (data/profile). Aparência: o tema deste
- * aparelho (ui/ThemeChoiceProvider). Moderação, só para quem modera: os nomes padrão dos mercados. Conta: os
- * termos, sair e apagar a conta, que antes ficavam na aba Família.
+ * aparelho (ui/ThemeChoiceProvider). Moderação, só para quem modera: os nomes padrão dos mercados. Casa: o clima da
+ * casa aberta (onde ela fica, para as dicas e os avisos do tempo). Conta: os termos, sair e apagar a conta, que antes
+ * ficavam na aba Família.
  */
 export default function SettingsScreen() {
   const { session } = useAuth();
@@ -57,6 +60,7 @@ export default function SettingsScreen() {
   const signOutQuestion = useSignOutQuestion();
   const isAdmin = useIsAppAdmin().data === true;
   const moderator = useIsModerator();
+  const location = useHouseholdLocation();
   const email = session?.user.email;
 
   return (
@@ -109,6 +113,20 @@ export default function SettingsScreen() {
           </ListCard>
         </Section>
       ) : null}
+
+      {/* Da casa aberta (com mais de uma casa, o nome dela vem na linha): o bairro do clima, que antes se definia num
+          cartão da tela Hoje. */}
+      <Section title="Casa">
+        <ListCard>
+          <ListRow
+            left={<IconBadge icon="weather-partly-cloudy" tone="neutral" />}
+            title={HOUSE_PLACE_TITLE}
+            subtitle={housePlaceRowSubtitle(location.data, openHouseName(household.data))}
+            right={<Icon name="chevron-right" color="textMuted" />}
+            onPress={() => router.push('/clima')}
+          />
+        </ListCard>
+      </Section>
 
       <Section title="Conta">
         <ListCard>

@@ -1,6 +1,7 @@
 // Gradientes do desenho: em diagonal, de cima à esquerda para baixo à direita,
-// com um clarão branco no canto de cima (o vidro pegando luz). Só em topos de
-// tela e cartões grandes; o resto é vidro liso.
+// com um clarão branco no canto de cima (o vidro pegando luz). Só nos cartões
+// grandes (FeatureCard); o resto é vidro liso. AngledGradient desenha os véus em
+// ângulo (o brilho do Card, a cor do Tile e o céu do topo da Hoje).
 
 import { useState, type ReactNode } from 'react';
 import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';

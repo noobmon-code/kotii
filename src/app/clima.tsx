@@ -1,25 +1,23 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import {
-  findPlaceByCep,
-  findPlaceByDevice,
-  useClearHouseholdLocation,
-  useRefreshWeather,
-  useSaveHouseholdLocation,
-  type HouseholdLocation,
-} from '@/data/weather';
+import { useClearHouseholdLocation, useRefreshWeather, useSaveHouseholdLocation } from '@/data/weather';
 import { addDays, todayISO } from '@/domain/dates';
-import { daySummary, describeSummary, houseClock, maskCep, normalizeCep, type WeatherTip } from '@/domain/weather';
+import { HOUSE_PLACE_REMOVE, housePlaceHouseLine, openHouseName, placeSourceLabel } from '@/domain/housePlace';
+import { daySummary, describeSummary, houseClock, type WeatherTip } from '@/domain/weather';
+import { PlaceSearchFields, usePlaceSearch } from '@/features/HousePlacePicker';
 import { useHouseWeather } from '@/features/useHouseWeather';
+import { useHousehold } from '@/lib/auth';
 import { REMINDER_PLACE, remindersSupported, remindersUnavailableReason } from '@/lib/reminders';
 import { errorMessage } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { Button, Card, ErrorNotice, IconBadge, ListCard, ListRow, Loading, Screen, Section, Text, TextField } from '@/ui/primitives';
+import { Button, Card, ErrorNotice, IconBadge, ListCard, ListRow, Loading, Screen, Section, Text } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
-/** Clima da casa: onde ela fica (o bairro) e as dicas de hoje e de amanhã. */
+/**
+ * Clima da casa: onde ela fica (o bairro) e as dicas de hoje e de amanhã. Abre por Configurações → Clima da casa; o
+ * bairro também pode ser dito ao criar a casa.
+ */
 export default function WeatherScreen() {
   const now = new Date();
   const today = todayISO(now);
@@ -27,26 +25,10 @@ export default function WeatherScreen() {
   const save = useSaveHouseholdLocation();
   const clear = useClearHouseholdLocation();
   const refreshWeather = useRefreshWeather();
-  const [cep, setCep] = useState('');
-  const [searching, setSearching] = useState<'cep' | 'gps' | null>(null);
-
-  async function place(source: 'cep' | 'gps') {
-    const digits = normalizeCep(cep);
-    if (source === 'cep' && !digits) {
-      notify('CEP incompleto', 'Digite os 8 números do CEP.');
-      return;
-    }
-    setSearching(source);
-    try {
-      const found: HouseholdLocation = source === 'cep' ? await findPlaceByCep(digits!) : await findPlaceByDevice();
-      await save.mutateAsync(found);
-      setCep('');
-    } catch (err) {
-      notify('Não foi possível definir o bairro', errorMessage(err));
-    } finally {
-      setSearching(null);
-    }
-  }
+  // Com mais de uma casa, a tela diz de qual é o lugar (o da casa aberta).
+  const houseName = openHouseName(useHousehold().data);
+  // O bairro achado vale na hora, para toda a casa (a mesma busca de quem cria uma casa, em HousePlacePicker).
+  const search = usePlaceSearch((found) => save.mutateAsync(found));
 
   // Hoje e amanhã da casa (pelo fuso dela), e não do celular.
   const clock = forecast.data ? houseClock(forecast.data, now) : { date: today, hour: now.getHours() };
@@ -59,45 +41,26 @@ export default function WeatherScreen() {
     <Screen refreshing={location.isRefetching || forecast.isRefetching} onRefresh={refreshWeather}>
       <Section title="Onde fica a casa">
         <Card style={styles.card}>
+          {houseName ? <Text variant="small">{housePlaceHouseLine(houseName)}</Text> : null}
           {location.isPending ? (
             <Loading />
           ) : location.data ? (
             <View style={styles.gap}>
               <Text variant="heading">{location.data.label}</Text>
-              <Text variant="small">{location.data.source === 'gps' ? 'Pela localização do celular' : 'Pelo CEP'}</Text>
+              <Text variant="small">{placeSourceLabel(location.data.source)}</Text>
             </View>
           ) : (
             <Text variant="muted">Diga onde fica a casa para receber dicas do tempo do seu bairro: dia de lavar roupa, chuva chegando, calor, frio.</Text>
           )}
-          <TextField
-            label={location.data ? 'Mudar pelo CEP' : 'CEP'}
-            value={cep}
-            onChangeText={(text) => setCep(maskCep(text))}
-            placeholder="00000-000"
-            keyboardType="number-pad"
-            maxLength={9}
-            onSubmitEditing={() => place('cep')}
-          />
-          <Button title="Buscar pelo CEP" icon="magnify" loading={searching === 'cep'} disabled={searching !== null} onPress={() => place('cep')} />
-          <Button
-            title="Usar a localização do celular"
-            icon="crosshairs-gps"
-            variant="secondary"
-            loading={searching === 'gps'}
-            disabled={searching !== null}
-            onPress={() => place('gps')}
-          />
-          <Text variant="small">
-            Fica guardado só o bairro (um ponto com cerca de 1 km de precisão), não o endereço. Vale para toda a casa.
-          </Text>
+          <PlaceSearchFields search={search} label={location.data ? 'Mudar pelo CEP' : 'CEP'} />
           {location.data ? (
             <Button
-              title="Tirar o local"
+              title={HOUSE_PLACE_REMOVE}
               variant="ghost"
               compact
               disabled={clear.isPending}
               onPress={() =>
-                confirmAction('Tirar o local', 'Sem o bairro, a casa fica sem as dicas do clima.', 'Tirar', () =>
+                confirmAction(HOUSE_PLACE_REMOVE, 'Sem o bairro, a casa fica sem as dicas do clima.', 'Tirar', () =>
                   clear.mutate(undefined, { onError: (err) => notify('Erro', errorMessage(err)) }),
                 )
               }
@@ -132,7 +95,7 @@ export default function WeatherScreen() {
               <Button title="Abrir os avisos" icon="bell-outline" variant="secondary" compact onPress={() => router.push('/familia')} />
             </>
           ) : (
-            <Text variant="muted">{remindersUnavailableReason()} As dicas aparecem na tela Hoje.</Text>
+            <Text variant="muted">{remindersUnavailableReason()} As dicas ficam aqui, nesta tela.</Text>
           )}
         </Card>
       ) : null}

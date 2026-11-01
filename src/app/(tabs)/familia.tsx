@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { Share, StyleSheet } from 'react-native';
+import { Share, StyleSheet, View } from 'react-native';
 
 import { usePeople } from '@/data/health';
 import { useKidPoints } from '@/data/home';
@@ -11,12 +11,11 @@ import { SharedPricesAbout } from '@/features/SharedPrices';
 import { useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
-import { FAMILY_SUBTITLE } from '@/domain/screenHeaders';
 import { Badge, Button, Card, Icon, IconBadge, IconButton, ListCard, ListRow, Loading, Row, Screen, Section, Text } from '@/ui/primitives';
-import { HeaderButton, HeaderIcons, ScreenHeader } from '@/ui/ScreenHeader';
+import { HeaderButton } from '@/ui/FeatureCard';
 import { space } from '@/ui/theme';
 
-/** As Configurações (perfil, tema, termos e conta): pela engrenagem do topo e pela linha do fim da aba. */
+/** As Configurações (perfil, tema, clima da casa, termos e conta): pela engrenagem do topo e pela linha do fim da aba. */
 const openSettings = () => router.push('/configuracoes');
 
 export default function FamilyScreen() {
@@ -122,15 +121,12 @@ export default function FamilyScreen() {
   }
 
   return (
-    <Screen fab>
-      <ScreenHeader
-        gradient="caramelo"
-        eyebrow="Família"
-        title={house.name}
-        subtitle={FAMILY_SUBTITLE}
-        art={<HeaderIcons icons={['calendar-heart', 'home-heart', 'account-group-outline']} tints={['yellow', 'purple', 'pink']} />}
-        action={<HeaderButton icon="cog-outline" label="Configurações" onPress={openSettings} />}
-      />
+    <Screen fab heading="Família">
+      {/* Sem o cartão do topo (a barra de abas já diz a aba, e o nome da casa fica no topo da tela Hoje): só a
+          engrenagem, no canto de cima à direita. */}
+      <View style={styles.top}>
+        <HeaderButton icon="cog-outline" label="Configurações" onPress={openSettings} />
+      </View>
 
       <ListCard>
         <ListRow
@@ -237,7 +233,7 @@ export default function FamilyScreen() {
         <ListRow
           left={<IconBadge icon="cog-outline" tone="neutral" />}
           title="Configurações"
-          subtitle="Seu perfil, tema do app, termos e conta"
+          subtitle="Seu perfil, tema do app, clima da casa, termos e conta"
           right={<Icon name="chevron-right" color="textMuted" />}
           onPress={openSettings}
         />
@@ -247,6 +243,8 @@ export default function FamilyScreen() {
 }
 
 const styles = StyleSheet.create({
+  // A engrenagem à direita, por cima do primeiro cartão (o toque tem 44: a caixa do HeaderButton em volta da orbe de 40).
+  top: { flexDirection: 'row', justifyContent: 'flex-end' },
   center: { textAlign: 'center' },
   invite: { alignItems: 'center', gap: space.md },
   code: { letterSpacing: 6 },

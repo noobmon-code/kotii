@@ -6,8 +6,8 @@ import { useColorScheme } from 'react-native';
 import { resolveScheme, type Scheme, type ThemeChoice } from '@/domain/appearance';
 
 // Identidade do Kotii, "Hora dourada": fundo quase branco e liso, cartões de
-// vidro claro com sombra quente e suave, gradiente só em topos de tela e
-// cartões grandes, azul como cor de ação. Só o Nuke tem rosto. À noite vale a
+// vidro claro com sombra quente e suave, gradiente só nos cartões grandes
+// (FeatureCard) e no véu do céu no topo da Hoje, azul como cor de ação. Só o Nuke tem rosto. À noite vale a
 // versão "Noite": o mesmo desenho num cinza quente bem escuro, sem o índigo.
 
 const light = {
@@ -108,8 +108,8 @@ export const shadows = {
 } as const;
 
 /**
- * Gradientes dos topos de tela e dos cartões grandes, em diagonal (de cima à
- * esquerda para baixo à direita). Cada tela tem o seu: Pêssego é a Casa e as
+ * Gradientes dos cartões grandes (FeatureCard), em diagonal (de cima à
+ * esquerda para baixo à direita). Uma paleta por área: Pêssego é a Casa e as
  * listas, Rosa-argila é a Saúde, Sálvia são as Finanças e Caramelo (no lugar do
  * roxo) é a Família. `eyebrow` e `subtitle` são as cores dos textos
  * pequenos sobre o gradiente; o título usa o texto do tema.
@@ -201,7 +201,7 @@ export const fonts = {
 } as const;
 
 export const space = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
-// Curvas do desenho: campos 15, tiles e itens 20, cartões e listas 25, topos 30.
+// Curvas do desenho: campos 15, tiles e itens 20, cartões e listas 25; 30 é o padrão do GradientCard.
 export const radius = { sm: 12, md: 15, tile: 20, lg: 25, xl: 30, pill: 999 } as const;
 export const MAX_WIDTH = 720;
 /** A margem das telas, dos lados e em cima (20 no desenho). */

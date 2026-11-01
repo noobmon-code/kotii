@@ -11,6 +11,7 @@ import { addDays, diffDays, formatBRDate } from './dates';
 import { describeDocumentStatus } from './documents';
 import { bringText, calendarEntries, entryShortDetail, eventReminderTexts, type CalendarEntry, type FamilyCalendar } from './familyEvents';
 import { weekdayOf } from './health';
+import { HOUSE_PLACE_WHERE } from './housePlace';
 import { refillReminders, type StockedMedication } from './medicationStock';
 import { formatBRL } from './money';
 import type { SupplyReminder } from './supplies';
@@ -40,7 +41,7 @@ export const HOUSE_REMINDER_KINDS: { key: HouseReminderKind; label: string; hint
   {
     key: 'weather',
     label: 'Dicas do clima',
-    hint: 'Às 7h, quando o tempo pede algo: dia de lavar roupa, chuva, calor, frio, temporal. O bairro da casa se define no cartão do clima da tela Hoje',
+    hint: `Às 7h, quando o tempo pede algo: dia de lavar roupa, chuva, calor, frio, temporal. O bairro da casa se define em ${HOUSE_PLACE_WHERE}`,
   },
   { key: 'supplies', label: 'Gás, água e ração', hint: 'Uns dias antes de acabar e no dia previsto, pela conta do Kotii, às 9h' },
   {

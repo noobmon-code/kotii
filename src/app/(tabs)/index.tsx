@@ -49,11 +49,10 @@ import { MarketTripBanner } from '@/features/MarketTrip';
 import { PendingReceiptRow } from '@/features/PendingReceiptCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useJustListed } from '@/features/RecentPurchases';
-import { SKY_ART_ROOM, SkyHeader } from '@/features/SkyHeader';
+import { SkyHeader } from '@/features/SkyHeader';
 import { SuppliesTodaySection } from '@/features/SuppliesSection';
 import { TermsNoticeCard } from '@/features/TermsNotice';
 import { TodayGreeting } from '@/features/TodayGreeting';
-import { WeatherCard } from '@/features/WeatherCard';
 import { useHousehold } from '@/lib/auth';
 import { settledData } from '@/lib/settledData';
 import type { Bill } from '@/lib/types';
@@ -233,11 +232,11 @@ export default function TodayScreen() {
     !restock.length &&
     !hasHealthToday(health, today);
   const dateLabel = capitalizeFirst(now.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }));
-  // O céu de agora (do clima da casa) no topo; sem bairro ou sem previsão, o céu do desenho.
+  // O céu de agora (do clima da casa) é o fundo do topo; sem bairro ou sem previsão, o céu de sempre da hora.
   const colors = useColors();
   const location = useHouseholdLocation();
   const forecast = useForecast(location.data);
-  const { sky, period } = currentSky(forecast.data, now) ?? defaultSky(now);
+  const sky = currentSky(forecast.data, now) ?? defaultSky(now);
   const attention =
     pendingDoses.length +
     refills.length +
@@ -295,9 +294,8 @@ export default function TodayScreen() {
 
   return (
     <Screen fab edges={[]} refreshing={refreshing} onRefresh={refresh}>
-      <SkyHeader sky={sky} period={period}>
-        {/* Tudo o que fica na altura do desenho do clima deixa o espaço dele, o seletor de casa também. */}
-        <View style={{ paddingRight: SKY_ART_ROOM }}>
+      <SkyHeader sky={sky}>
+        <View>
           {houses.length > 1 ? (
             <Pressable
               accessibilityRole="button"
@@ -329,8 +327,6 @@ export default function TodayScreen() {
 
       {/* Alguém da casa está indo às compras: ainda dá tempo de pôr na lista o que falta. */}
       <MarketTripBanner openable />
-
-      <WeatherCard now={now} />
 
       <InstallAppCard />
 

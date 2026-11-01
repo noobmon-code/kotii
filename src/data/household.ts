@@ -9,10 +9,13 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 import { functionErrorMessage } from '@/data/images';
 import { photoQueueBusy, waitingCounts } from '@/data/listPhotos';
 import { listQueueBusy } from '@/data/market';
+import { saveHouseholdLocationFor, type HouseholdLocation } from '@/data/weather';
+import { PLACE_NOT_SAVED_OFFLINE } from '@/domain/housePlace';
 import { signOutQuestion } from '@/domain/listQueue';
 import { clearConversation, conversationOwner } from '@/features/nuke/conversation';
 import { setActiveHousehold } from '@/lib/activeHousehold';
 import type { HouseholdState } from '@/lib/auth';
+import { isNetworkFailure } from '@/lib/networkErrors';
 import { forgetPendingReceiptsOf } from '@/lib/pendingReceipts';
 import { saveNow } from '@/lib/queryClient';
 import { disableHouseholdReminders } from '@/lib/reminders';
@@ -95,15 +98,33 @@ export function useSwitchHousehold(userId: string | undefined) {
   });
 }
 
+/**
+ * O motivo de o lugar da casa nova não ter sido salvo, para `placeNotSavedMessage`: sem internet, uma frase curta, sem
+ * o "tente de novo" do aviso comum (o formulário já fechou).
+ */
+export function placeNotSavedReason(err: unknown): string {
+  return isNetworkFailure(err) ? PLACE_NOT_SAVED_OFFLINE : errorMessage(err);
+}
+
 export type AddHousehold =
-  | { mode: 'criar'; name: string; displayName: string }
+  | { mode: 'criar'; name: string; displayName: string; place?: HouseholdLocation | null }
   | { mode: 'entrar'; code: string; displayName: string };
 
-/** Cria outra casa, ou entra numa pelo código, e já abre nela. */
+export interface AddedHousehold {
+  house: Household;
+  /** O lugar escolhido ao criar não foi salvo (o motivo); a casa foi criada do mesmo jeito. */
+  placeNotSaved: string | null;
+}
+
+/**
+ * Cria outra casa, ou entra numa pelo código, e já abre nela. Ao criar com o lugar (o bairro do clima, opcional), ele
+ * é salvo na casa nova antes de abri-la, com o id dela no pedido; se não der, a casa fica criada e o motivo volta em
+ * `placeNotSaved`.
+ */
 export function useAddHousehold(userId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: AddHousehold) => {
+    mutationFn: async (input: AddHousehold): Promise<AddedHousehold> => {
       if (!userId) throw new Error('Entre na conta de novo.');
       assertCanSwitch(queryClient);
       const { data, error } =
@@ -115,8 +136,16 @@ export function useAddHousehold(userId: string | undefined) {
       // vez de erro. O PostgREST manda o registro nulo como objeto com campos nulos.
       const house = data as Household | null;
       if (!house?.id) throw new Error(INVITE_NOT_FOUND);
+      let placeNotSaved: string | null = null;
+      if (input.mode === 'criar' && input.place) {
+        try {
+          await saveHouseholdLocationFor(house.id, input.place);
+        } catch (err) {
+          placeNotSaved = placeNotSavedReason(err);
+        }
+      }
       await openHousehold(queryClient, userId, house.id);
-      return house;
+      return { house, placeNotSaved };
     },
   });
 }
