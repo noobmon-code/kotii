@@ -1,9 +1,11 @@
 // Recados para quem faz o Kotii (app_feedback, migração 20261024150000_app_feedback.sql): o que a pessoa diz do
-// próprio app pelo Nuke (um problema, uma sugestão, um elogio ou outra coisa), que só vai depois do toque dela em
-// "Enviar", e a caixa de entrada de quem mantém o app, na aba Recados do Painel do app. Aqui ficam o vocabulário
-// (os mesmos tipos, situações e limites da migração: __tests__/appFeedback confere), as frases, a leitura
-// defensiva da resposta (parseFeedbackList, parseFeedbackItem), o filtro e a busca (filterFeedback) e tudo o que
-// a caixa de entrada mostra (feedbackInboxView, feedbackDetail). As telas só desenham.
+// próprio app (um problema, uma sugestão, um elogio ou outra coisa), pelo Nuke, que prepara o recado e só manda
+// depois do toque dela em "Enviar", ou escrito por ela mesma em Configurações ("Mandar recado", sem IA no meio),
+// e a caixa de entrada de quem mantém o app, na aba Recados do Painel do app. Aqui ficam o vocabulário (os mesmos
+// tipos, situações e limites da migração: __tests__/appFeedback confere), as frases, a leitura defensiva da
+// resposta (parseFeedbackList, parseFeedbackItem), o filtro e a busca (filterFeedback), tudo o que a caixa de
+// entrada mostra (feedbackInboxView, feedbackDetail) e as regras do recado de Configurações (readFeedbackDraft,
+// feedbackCounter). As telas só desenham.
 
 import { normalizeSearch } from './search';
 
@@ -57,7 +59,7 @@ export const FEEDBACK_TITLE_MAX = 90;
 // ---------------------------------------------------------------------------
 // Frases
 
-/** Embaixo do cartão do Nuke: quem lê o recado. */
+/** Embaixo do cartão do Nuke e do campo do recado em Configurações: quem lê o recado. */
 export const FEEDBACK_DISCLOSURE = 'Vai para quem faz o Kotii, com o seu e-mail, para poder te responder.';
 
 /** Depois do toque em "Enviar". */
@@ -727,4 +729,62 @@ export function nextFeedbackSelection(ids: readonly string[], selected: string |
   const index = selected === null ? -1 : ids.indexOf(selected);
   if (index < 0) return ids[0];
   return ids[Math.min(ids.length - 1, Math.max(0, index + step))];
+}
+
+// ---------------------------------------------------------------------------
+// O recado escrito em Configurações
+
+/** O título da seção em Configurações. */
+export const FEEDBACK_FORM_TITLE = 'Mandar recado';
+
+/** A linha do alto do cartão: para que serve. */
+export const FEEDBACK_FORM_INTRO = 'Um problema, uma sugestão ou um elogio sobre o app? Escreva aqui: vai direto para quem faz o Kotii.';
+
+/** Sobre os tipos: nenhum vem marcado, e sem escolha o recado vai como `outro`. */
+export const FEEDBACK_FORM_KIND_LABEL = 'Sobre o quê (opcional)';
+
+export const FEEDBACK_FORM_LABEL = 'Recado';
+export const FEEDBACK_FORM_PLACEHOLDER = 'Conte o que aconteceu, o que falta no app ou do que você gostou';
+export const FEEDBACK_FORM_SEND = 'Enviar';
+
+/** O contador aparece daqui em diante: perto do limite, não antes (um número sempre à vista só atrapalha). */
+export const FEEDBACK_COUNTER_FROM = FEEDBACK_MAX_LENGTH - 200;
+
+/** O tamanho do recado como o servidor conta: aparado, cada emoji um caractere (feedbackLength). */
+export function feedbackDraftLength(text: string): number {
+  return feedbackLength(text.trim());
+}
+
+/** O que o formulário pode mandar, ou por que não pode. */
+export type FeedbackDraft =
+  | { ok: true; kind: FeedbackKind; message: string }
+  | { ok: false; reason: 'empty' | 'tooLong' };
+
+/**
+ * O recado do formulário de Configurações: sem tipo escolhido, `outro` (como o Nuke faz quando não sabe); o texto
+ * aparado. Em branco não vai, e acima de `FEEDBACK_MAX_LENGTH` também não: o formulário pede para encurtar em vez
+ * de cortar o que a pessoa escreveu (cleanFeedbackText cortaria em silêncio).
+ */
+export function readFeedbackDraft(kind: FeedbackKind | null, text: string): FeedbackDraft {
+  const message = cleanFeedbackText(text);
+  if (!message) return { ok: false, reason: 'empty' };
+  if (feedbackDraftLength(text) > FEEDBACK_MAX_LENGTH) return { ok: false, reason: 'tooLong' };
+  return { ok: true, kind: kind ?? 'outro', message };
+}
+
+/**
+ * Embaixo do campo: null longe do limite; perto dele, "1.850 de 2.000 caracteres"; passado, quanto tirar
+ * (`over`: a tela pinta de vermelho).
+ */
+export function feedbackCounter(text: string): { text: string; over: boolean } | null {
+  const length = feedbackDraftLength(text);
+  if (length > FEEDBACK_MAX_LENGTH) {
+    const extra = length - FEEDBACK_MAX_LENGTH;
+    return {
+      text: `O recado passou do limite de ${num(FEEDBACK_MAX_LENGTH)} caracteres. Tire ${plural(extra, 'caractere', 'caracteres')} para poder enviar.`,
+      over: true,
+    };
+  }
+  if (length < FEEDBACK_COUNTER_FROM) return null;
+  return { text: `${num(length)} de ${num(FEEDBACK_MAX_LENGTH)} caracteres`, over: false };
 }

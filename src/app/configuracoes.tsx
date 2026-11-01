@@ -1,12 +1,28 @@
 import { router } from 'expo-router';
 import { useRef, useState } from 'react';
-import { StyleSheet } from 'react-native';
+import { AccessibilityInfo, Platform, StyleSheet, View } from 'react-native';
 
 import { useIsAppAdmin } from '@/data/appDashboard';
+import { useSendAppFeedback } from '@/data/appFeedback';
 import { useSignOutQuestion } from '@/data/household';
 import { useMyProfile, useSaveProfile, type MyProfile } from '@/data/profile';
 import { useIsModerator } from '@/data/storeModeration';
 import { APP_DASHBOARD_TITLE } from '@/domain/appDashboard';
+import {
+  FEEDBACK_DISCLOSURE,
+  FEEDBACK_FORM_INTRO,
+  FEEDBACK_FORM_KIND_LABEL,
+  FEEDBACK_FORM_LABEL,
+  FEEDBACK_FORM_PLACEHOLDER,
+  FEEDBACK_FORM_SEND,
+  FEEDBACK_FORM_TITLE,
+  FEEDBACK_KIND_LABELS,
+  FEEDBACK_KINDS,
+  FEEDBACK_SENT,
+  feedbackCounter,
+  readFeedbackDraft,
+  type FeedbackKind,
+} from '@/domain/appFeedback';
 import { THEME_CHOICES, THEME_HINT } from '@/domain/appearance';
 import { formatBRDate, todayISO } from '@/domain/dates';
 import { MODERATION_TITLE } from '@/domain/storeModeration';
@@ -26,6 +42,7 @@ import { confirmAction, notify } from '@/ui/dialogs';
 import {
   Button,
   Card,
+  Chip,
   DateField,
   ErrorNotice,
   Icon,
@@ -47,8 +64,10 @@ const THEME_OPTIONS = [...THEME_CHOICES];
 /**
  * Configurações (da aba Família: a engrenagem do topo e a linha do fim). Perfil: o nome, que vale em todas as
  * casas da pessoa, e a data de nascimento e o telefone, que só ela vê (data/profile). Aparência: o tema deste
- * aparelho (ui/ThemeChoiceProvider). Moderação, só para quem modera: os nomes padrão dos mercados. Conta: os
- * termos, sair e apagar a conta, que antes ficavam na aba Família.
+ * aparelho (ui/ThemeChoiceProvider). Mandar recado: um recado escrito pela própria pessoa, que vai direto para quem
+ * faz o Kotii, sem IA no meio (o mesmo send_app_feedback do cartão do Nuke, data/appFeedback). Painel, só para
+ * quem mantém o app, e Moderação, só para quem modera: os nomes padrão dos mercados. Conta: os termos, sair e
+ * apagar a conta, que antes ficavam na aba Família.
  */
 export default function SettingsScreen() {
   const { session } = useAuth();
@@ -79,6 +98,10 @@ export default function SettingsScreen() {
           <Segmented options={THEME_OPTIONS} value={theme.choice} onChange={theme.setChoice} />
           <Text variant="small">{THEME_HINT}</Text>
         </Card>
+      </Section>
+
+      <Section title={FEEDBACK_FORM_TITLE}>
+        <FeedbackForm />
       </Section>
 
       {/* Só para quem mantém o app (app_admins): os números de uso, só totais. */}
@@ -241,6 +264,105 @@ function ProfileForm({ name: savedName, profile }: { name: string; profile: MyPr
   );
 }
 
+/** O id da dica do campo do recado (o contador, ou por que "Enviar" está parado), para o navegador ligá-la a ele. */
+const FEEDBACK_HINT_ID = 'feedback-hint';
+
+/**
+ * O recado escrito pela pessoa: o tipo (nenhum marcado; sem escolha vai como "outro"), o texto e "Enviar". O
+ * rascunho fica só no estado desta tela: não vai para o aparelho nem para o cache. Um toque, um pedido; deu certo,
+ * o campo e o tipo se limpam e a confirmação fica até a pessoa escrever de novo. O erro é avisado pelo hook.
+ */
+function FeedbackForm() {
+  const send = useSendAppFeedback();
+  const [kind, setKind] = useState<FeedbackKind | null>(null);
+  const [text, setText] = useState('');
+  const [sent, setSent] = useState(false);
+  // Dois toques rápidos mandam um pedido só.
+  const sending = useRef(false);
+
+  const draft = readFeedbackDraft(kind, text);
+  const counter = feedbackCounter(text);
+  const busy = send.isPending;
+
+  function submit() {
+    if (sending.current || send.isPending || !draft.ok) return;
+    sending.current = true;
+    send.mutate(
+      { kind: draft.kind, message: draft.message },
+      {
+        onSuccess: () => {
+          setText('');
+          setKind(null);
+          setSent(true);
+          // O campo esvazia: sem o anúncio, quem usa leitor de tela não sabe que foi. No navegador esta chamada
+          // não faz nada (react-native-web 0.21): lá, quem fala é a região aria-live da confirmação.
+          AccessibilityInfo.announceForAccessibility(FEEDBACK_SENT);
+        },
+        onSettled: () => {
+          sending.current = false;
+        },
+      },
+    );
+  }
+
+  return (
+    <Card style={styles.card}>
+      <Text variant="body">{FEEDBACK_FORM_INTRO}</Text>
+      <Text variant="label">{FEEDBACK_FORM_KIND_LABEL}</Text>
+      <View style={styles.chips}>
+        {FEEDBACK_KINDS.map((option) => (
+          <Chip
+            key={option}
+            label={FEEDBACK_KIND_LABELS[option]}
+            selected={kind === option}
+            // De novo no marcado, desmarca: sem tipo, o recado vai como "outro".
+            onPress={busy ? undefined : () => setKind((before) => (before === option ? null : option))}
+          />
+        ))}
+      </View>
+      <TextField
+        label={FEEDBACK_FORM_LABEL}
+        placeholder={FEEDBACK_FORM_PLACEHOLDER}
+        value={text}
+        onChangeText={(value) => {
+          setText(value);
+          setSent(false);
+        }}
+        // Enquanto vai, o texto fica como saiu: o que se escrevesse agora sumiria com a limpeza do fim.
+        editable={!busy}
+        multiline
+        autoCapitalize="sentences"
+        // O rótulo e a dica desenhados não ficam ligados ao campo: o leitor de tela lê o nome e o contador (ou por
+        // que "Enviar" está parado) daqui, no aparelho; no navegador, pelo hintId (aria-describedby e aria-live).
+        accessibilityLabel={FEEDBACK_FORM_LABEL}
+        accessibilityHint={counter?.text}
+        hint={counter?.text}
+        hintColor={counter?.over ? 'danger' : undefined}
+        hintId={FEEDBACK_HINT_ID}
+      />
+      <Text variant="small">{FEEDBACK_DISCLOSURE}</Text>
+      <View>
+        <Button title={FEEDBACK_FORM_SEND} icon="send-outline" loading={busy} disabled={!draft.ok} onPress={submit} />
+        {/* No navegador, a região aria-live fica sempre na página e só o que tem dentro muda: uma região que já
+            entra com o texto quase nunca é lida (o VoiceOver do Safari fica quieto). No aparelho quem fala é o
+            announceForAccessibility, sem região, para não ler duas vezes. */}
+        <View aria-live={Platform.OS === 'web' ? 'polite' : undefined} testID="feedback-sent-region">
+          {sent ? (
+            <View style={styles.sent}>
+              <Icon name="check-circle-outline" size={18} color="primary" />
+              <Text variant="small" color="primary">
+                {FEEDBACK_SENT}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      </View>
+    </Card>
+  );
+}
+
 const styles = StyleSheet.create({
   card: { gap: space.md },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
+  sent: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginTop: space.md },
 });

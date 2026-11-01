@@ -32,8 +32,8 @@ import { space } from '@/ui/theme';
  * Painel do app (de Configurações, só para quem está em app_admins), em duas abas guardadas na URL (?aba=):
  * Números, os de uso (quantas contas e casas, quantas pessoas usaram o app, o Nuke e a IA, as funções que as casas
  * usam, a entrada e os aparelhos; só totais, nenhuma pessoa ou casa: data/appDashboard), e Recados, a caixa dos
- * recados que as pessoas mandam pelo Nuke (data/appFeedback). Feito para o computador: até PANEL_MAX_WIDTH de
- * largura, os números numa grade de colunas e os recados em duas partes lado a lado (domain/panelLayout); no
+ * recados que as pessoas mandam pelo Nuke ou em Configurações (data/appFeedback). Feito para o computador: até
+ * PANEL_MAX_WIDTH de largura, os números numa grade de colunas e os recados em duas partes lado a lado (domain/panelLayout); no
  * celular, uma coluna só. O que a pessoa escolheu na caixa de recados fica aqui (FeedbackInboxState): a caixa é
  * montada de novo quando a janela passa de uma faixa para outra, e trocar de aba também não perde nada. A tela só desenha: os números, as frases e as barras vêm prontos de dashboardView
  * (domain/appDashboard) e os recados, de domain/appFeedback. Fora da guarda da casa: abre também para quem ainda

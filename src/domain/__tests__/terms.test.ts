@@ -162,19 +162,26 @@ describe('termos de uso', () => {
       expect(stored).toContain(part);
     }
     expect(stored).toContain('sem nomes, sem e-mails e sem o que cada casa registrou');
-    // Os recados são outro canal, que a própria pessoa usa: os números continuam só totais.
-    expect(stored).toContain('A exceção são os recados que você mesmo mandar pelo Nuke, que chegam com o seu e-mail');
+    // Os recados são outro canal, que a própria pessoa usa (pelo Nuke ou em Configurações): os números continuam só totais.
+    expect(stored).toContain('A exceção são os recados que você mesmo mandar, pelo Nuke ou em Configurações, que chegam com o seu e-mail');
   });
 
-  it('os recados pelo Nuke: só com o toque, guardados com a conta, o que quem mantém o Kotii lê, e saem com ela', () => {
+  it('os recados, pelo Nuke ou em Configurações: só com o toque, guardados com a conta, o que quem mantém o Kotii lê, e saem com ela', () => {
     const ai = section('Inteligência artificial');
-    expect(ai).toContain('ou pede para mandar um recado a quem faz o Kotii, ele prepara o recado e mostra o texto');
-    expect(ai).toContain('O recado só vai depois do seu toque em "Enviar", fica guardado com a sua conta');
+    // Pelo Nuke: ele prepara, e nada vai sem o toque.
+    expect(ai).toContain('ou pede para mandar um recado, ele prepara o recado e mostra o texto, que só vai depois do seu toque em "Enviar"');
+    // Em Configurações: a pessoa escreve, e o texto não passa por IA.
+    expect(ai).toContain('Em Configurações, você mesmo escreve o recado, e ele vai direto, sem passar por IA');
+    // O que fica guardado e quem lê é o mesmo dos dois jeitos.
+    expect(ai).toContain('Dos dois jeitos, o recado fica guardado com a sua conta');
     expect(ai).toContain('quem mantém o Kotii lê o texto, o tipo de aparelho e a versão do app, e vê o seu e-mail para poder responder');
     expect(ai).toContain('Nada da casa vai junto além do que estiver escrito no recado');
+    expect(ai).not.toContain('pelo Nuke');
     // A conversa continua só no aparelho; o recado é a parte que a pessoa manda.
     expect(ai).toContain('A conversa com o Nuke fica guardada só no seu aparelho');
-    expect(section('Apagar dados e sair')).toContain('os avisos do navegador e os recados que você mandou pelo Nuke. Não tem volta.');
+    expect(section('Apagar dados e sair')).toContain(
+      'os avisos do navegador e os recados que você mandou (pelo Nuke ou em Configurações). Não tem volta.',
+    );
   });
 
   it('o nome padrão dos mercados: só o CNPJ vai à BrasilAPI, nada de pessoa, e a moderação não sabe de qual casa', () => {
@@ -188,9 +195,11 @@ describe('termos de uso', () => {
     expect(names).toContain('O nome que a sua casa der a um mercado vale para ela acima do nome padrão');
   });
 
-  it('é uma mudança no que é compartilhado: o aviso volta para todo mundo (a versão do aceite é a do texto)', () => {
-    expect(TERMS_VERSION).toBe('2026-10-24');
-    expect(TERMS_ACCEPT_VERSION).toBe(TERMS_VERSION);
+  it('os recados também em Configurações mudam só o texto: o aviso não volta (o aceite fica na versão de antes)', () => {
+    expect(TERMS_VERSION).toBe('2026-11-01');
+    expect(TERMS_ACCEPT_VERSION).toBe('2026-10-24');
+    // Quem aceitou a versão do código de barras não vê o aviso de novo.
+    expect(termsNotice(['2026-10-24'])).toBeNull();
     // Quem aceitou os termos do nome padrão dos mercados vê o aviso de novo: agora vai também o código de barras.
     expect(termsNotice(['2026-10-23'])).toBe('mudou');
   });
