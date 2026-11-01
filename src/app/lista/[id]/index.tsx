@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { StyleSheet, View, type ColorValue } from 'react-native';
 
 import { usePantry } from '@/data/home';
 import { useLearnedAbbreviations } from '@/data/learnedAbbreviations';
@@ -73,6 +73,7 @@ import { ListShareSheet } from '@/features/ListShareSheet';
 import { MarketTripAction, MarketTripBanner } from '@/features/MarketTrip';
 import { OfflineNotice } from '@/features/OfflineNotice';
 import { PasteListModal } from '@/features/PasteListModal';
+import { PriceCalculator, PriceCalculatorButton } from '@/features/PriceCalculator';
 import { RenameListModal } from '@/features/RenameListModal';
 import { useProductBarcode } from '@/features/ProductBarcode';
 import { RecentPurchases, RestockStrip, useJustListed } from '@/features/RecentPurchases';
@@ -176,6 +177,12 @@ export default function ShoppingListScreen() {
   // a pergunta nova monta um menu novo.
   const [repeatedKey, setRepeatedKey] = useState(0);
   const [renaming, setRenaming] = useState(false);
+  // A calculadora de preço (o ícone no canto de cima à direita): só na memória, fechar esquece o que foi digitado.
+  const [calculating, setCalculating] = useState(false);
+  const calculatorButton = useCallback(
+    ({ tintColor }: { tintColor?: ColorValue }) => <PriceCalculatorButton tintColor={tintColor} onPress={() => setCalculating(true)} />,
+    [],
+  );
   // "Onde estou": guardado por lista neste aparelho (lib/storeChoice), também escolhido em "Onde comprar".
   const storeChoice = useStoreChoice(id);
   // Some da faixa já no toque; volta quando a lista carregada trouxer o item e ele sair dela depois.
@@ -615,7 +622,7 @@ export default function ShoppingListScreen() {
   if ((list.isPending && list.fetchStatus === 'paused') || (items.isPending && items.fetchStatus === 'paused')) {
     return (
       <Screen edges={[]}>
-        <Stack.Screen options={{ title: list.data?.name ?? 'Lista' }} />
+        <Stack.Screen options={{ title: list.data?.name ?? 'Lista', headerRight: undefined }} />
         <EmptyState
           icon="wifi-off"
           title="Sem internet"
@@ -624,11 +631,28 @@ export default function ShoppingListScreen() {
       </Screen>
     );
   }
-  if (list.isPending || items.isPending) return <Loading />;
+  // O ícone da calculadora é só da lista carregada: o Stack junta as opções, então quem volta a carregar (a casa
+  // trocada zera as buscas) tira o ícone, que aqui não abriria nada.
+  const noCalculator = <Stack.Screen options={{ headerRight: undefined }} />;
+  if (list.isPending || items.isPending) {
+    return (
+      <>
+        {noCalculator}
+        <Loading />
+      </>
+    );
+  }
   // O erro só toma a tela quando não há o que mostrar. Com a lista já carregada (ou guardada), a busca que falhou
   // (voltar ao app com sinal fraco, puxar para atualizar) deixa a lista na tela, com um aviso em cima.
-  if (!list.data) return <ErrorNotice error={list.error} onRetry={() => list.refetch()} />;
-  if (!items.data) return <ErrorNotice error={items.error} onRetry={() => items.refetch()} />;
+  if (!list.data || !items.data) {
+    const failed = list.data ? items : list;
+    return (
+      <>
+        {noCalculator}
+        <ErrorNotice error={failed.error} onRetry={() => failed.refetch()} />
+      </>
+    );
+  }
   const staleError = list.isError ? list.error : items.isError ? items.error : null;
 
   const { restock: restockItems, recent: recentItems } = strips;
@@ -793,7 +817,7 @@ export default function ShoppingListScreen() {
           />
         ) : undefined
       }>
-      <Stack.Screen options={{ title: list.data.name }} />
+      <Stack.Screen options={{ title: list.data.name, headerRight: calculatorButton }} />
       <OfflineNotice />
       {staleError ? (
         <StaleNotice
@@ -1046,6 +1070,7 @@ export default function ShoppingListScreen() {
         />
       )}
       {renaming ? <RenameListModal listId={list.data.id} name={list.data.name} onClose={() => setRenaming(false)} /> : null}
+      {calculating ? <PriceCalculator onClose={() => setCalculating(false)} /> : null}
     </Screen>
   );
 }

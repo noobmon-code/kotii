@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { ScrollView } from 'react-native';
+import type { ReactNode } from 'react';
+import { AccessibilityInfo, Platform, ScrollView } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import ShoppingListScreen from '@/app/lista/[id]/index';
 import { toISODate } from '@/domain/dates';
 import { LinkIndex } from '@/domain/listLinks';
 import type { PurchaseRecord } from '@/domain/recentPurchases';
+import { PRICE_CALCULATOR_LABEL, WAITING_SENTENCE as WAITING_TEXT } from '@/domain/priceCalculator';
 import { SHARED_PRICES_NOTICE, type SharedPrice } from '@/domain/sharedPrices';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -15,12 +17,13 @@ import { CartPantryModal } from '@/features/CartPantryModal';
 import { ListEstimateCard } from '@/features/ListEstimateCard';
 import { forgetAddedItems, rememberAdded } from '@/lib/addedItems';
 import { PasteListModal } from '@/features/PasteListModal';
+import { ANNOUNCE_DELAY_MS, PriceCalculator } from '@/features/PriceCalculator';
 import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
 import type { LatestPrice, PantryItem, Product, ShoppingListItem } from '@/lib/types';
 import { StaleNotice } from '@/features/health/StaleNotice';
 import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
 import { askYesNo, notify } from '@/ui/dialogs';
-import { Button, ErrorNotice, ListRow, Loading, Screen, TextField } from '@/ui/primitives';
+import { Badge, Button, Card, ErrorNotice, ListRow, Loading, Screen, Text, TextField } from '@/ui/primitives';
 
 // A tela da lista de verdade, com as buscas trocadas por respostas prontas: o que se confere aqui é o que ela
 // faz com o que cada busca devolve (carregada, a caminho, falhou), que as regras de domain/ não enxergam.
@@ -47,11 +50,18 @@ const mockSeen: {
   editor?: Record<string, unknown>;
   picker?: Record<string, unknown>;
   cartPantry?: Record<string, unknown>;
+  /** As opções que a tela deu ao cabeçalho (Stack.Screen): o título e o ícone da calculadora. */
+  options?: Record<string, unknown>;
 } = {};
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn(), back: jest.fn() },
-  Stack: { Screen: () => null },
+  Stack: {
+    Screen: ({ options }: { options?: Record<string, unknown> }) => {
+      mockSeen.options = options;
+      return null;
+    },
+  },
   useLocalSearchParams: () => ({ id: 'l1' }),
 }));
 // O que está guardado da lista é o que a tela recebeu por último.
@@ -293,6 +303,7 @@ beforeEach(() => {
   mockSeen.restock = undefined;
   mockSeen.recent = undefined;
   mockSeen.editor = undefined;
+  mockSeen.options = undefined;
   Object.assign(mockQueries, {
     list: loaded({ id: 'l1', name: 'Mercado', kind: 'mercado', archived_at: null, created_at: '2026-10-01T12:00:00Z' }),
     items: loaded([]),
@@ -1431,5 +1442,301 @@ describe('"Onde estou" guardado no aparelho', () => {
     await act(async () => renderer!.unmount());
     await mount();
     expect(estimateCard().props.storeId).toBeNull();
+  });
+});
+
+describe('a calculadora de preço, no canto de cima da lista', () => {
+  let header: ReactTestRenderer | undefined;
+
+  afterEach(async () => {
+    await act(async () => header?.unmount());
+    header = undefined;
+  });
+
+  /** Desenha o que a tela pôs à direita no cabeçalho, como o Stack faz, e toca no ícone. */
+  async function openCalculator() {
+    const headerRight = mockSeen.options?.headerRight as ((props: { tintColor?: string }) => ReactNode) | undefined;
+    expect(headerRight).toBeDefined();
+    await act(async () => {
+      header = create(<>{headerRight!({ tintColor: '#3656F4' })}</>);
+    });
+    const [icon] = header!.root.findAll((node) => node.props.accessibilityLabel === PRICE_CALCULATOR_LABEL && Boolean(node.props.onPress));
+    expect(icon.props.accessibilityRole).toBe('button');
+    await act(async () => icon.props.onPress());
+  }
+
+  const field = (label: string) => renderer!.root.findAll((node) => node.type === TextField && node.props.accessibilityLabel === label)[0];
+  /** O cartão da opção onde está o campo. */
+  const cardOf = (label: string) => {
+    let node = field(label).parent;
+    while (node && node.type !== Card) node = node.parent;
+    return node!;
+  };
+  const badges = (label: string) => cardOf(label).findAllByType(Badge).map((badge) => badge.props.label);
+  const type = (label: string, text: string) => act(() => field(label).props.onChangeText(text));
+  /** O que se toca na calculadora com aquele nome para o leitor de tela. */
+  const pressable = (label: string) =>
+    renderer!.root.findByType(PriceCalculator).findAll((node) => node.props.accessibilityLabel === label && Boolean(node.props.onPress))[0];
+
+  it('o ícone abre a calculadora, ela compara 500 g com 1 kg e fecha sem guardar nada', async () => {
+    await mount();
+    expect(mockSeen.options?.title).toBe('Mercado');
+    expect(renderer!.root.findAllByType(PriceCalculator)).toHaveLength(0);
+
+    await openCalculator();
+    expect(renderer!.root.findAllByType(PriceCalculator)).toHaveLength(1);
+    await type('Preço da opção 1, em reais', '8,90');
+    await type('Quantidade da opção 1', '500');
+    await type('Preço da opção 2, em reais', '16,50');
+    await type('Quantidade da opção 2', '1');
+    // A unidade de cada opção é dela: a segunda vira kg.
+    // O chip é lido pelo nome da unidade, não pela letra.
+    await act(async () => pressable('quilos, opção 2').props.onPress());
+    // O leitor de tela sabe qual unidade está escolhida em cada opção.
+    expect(pressable('quilos, opção 2').props.accessibilityState).toEqual({ checked: true });
+    expect(pressable('gramas, opção 2').props.accessibilityState).toEqual({ checked: false });
+    expect(pressable('gramas, opção 1').props.accessibilityState).toEqual({ checked: true });
+    expect(pressable('quilos, opção 1').props.accessibilityState).toEqual({ checked: false });
+    const page = texts(renderer!.toJSON()).join('\n');
+    expect(page).toContain('R$ 17,80 o kg');
+    expect(page).toContain('R$ 16,50 o kg');
+    expect(page).toContain('A opção 2 sai 7% mais barata que a opção 1.');
+    // O destaque vai para o cartão da opção 2, e só para ele.
+    expect(badges('Preço da opção 2, em reais')).toEqual(['Mais barata']);
+    expect(badges('Preço da opção 1, em reais')).toEqual([]);
+    const perKg = (label: string, text: string) => cardOf(label).findAll((node) => node.type === Text && node.props.children === text)[0];
+    expect(perKg('Preço da opção 2, em reais', 'R$ 16,50 o kg').props.color).toBe('primary');
+    expect(perKg('Preço da opção 1, em reais', 'R$ 17,80 o kg').props.color).toBeUndefined();
+
+    // Fechar esquece: aberta de novo, começa vazia.
+    await act(async () => pressable('Fechar').props.onPress());
+    expect(renderer!.root.findAllByType(PriceCalculator)).toHaveLength(0);
+    await act(async () => header!.root.findAll((node) => Boolean(node.props.onPress))[0].props.onPress());
+    expect(field('Preço da opção 1, em reais').props.value).toBe('');
+    expect(texts(renderer!.toJSON()).join('\n')).not.toContain('7% mais barata');
+  });
+
+  it('"+ opção" até 4, só da terceira em diante sai, e "Limpar" volta às duas vazias', async () => {
+    await mount();
+    await openCalculator();
+    const add = () => renderer!.root.findByType(PriceCalculator).findAllByType(Button).find((b) => b.props.title === '+ opção');
+    expect(pressable('Remover a opção 2')).toBeUndefined();
+    await act(async () => add()!.props.onPress());
+    await act(async () => add()!.props.onPress());
+    expect(add()).toBeUndefined();
+    expect(pressable('Remover a opção 4')).toBeDefined();
+    await type('Preço da opção 3, em reais', '3');
+    await type('Preço da opção 4, em reais', '4');
+    await act(async () => pressable('Remover a opção 3').props.onPress());
+    expect(field('Quantidade da opção 4')).toBeUndefined();
+    // Saiu a opção 3: a 4 sobe para o lugar dela.
+    expect(field('Preço da opção 3, em reais').props.value).toBe('4');
+    await type('Preço da opção 1, em reais', '8,90');
+    await act(async () => renderer!.root.findByType(PriceCalculator).findAllByType(Button).find((b) => b.props.title === 'Limpar')!.props.onPress());
+    expect(field('Preço da opção 1, em reais').props.value).toBe('');
+    expect(field('Preço da opção 3, em reais')).toBeUndefined();
+  });
+
+  it('o resultado é anunciado quando muda, depois de uma pausa na digitação (o iPhone não tem região viva)', async () => {
+    const announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility').mockImplementation(() => undefined);
+    await mount();
+    jest.useFakeTimers();
+    try {
+      await openCalculator();
+      // No iPhone não há região viva: quem fala é o announceForAccessibility.
+      expect(renderer!.root.findByType(PriceCalculator).findAll((node) => node.props['aria-live'] !== undefined)).toHaveLength(0);
+      /** Os rótulos dos elementos de leitor de tela que dizem o resultado (o cartão do resultado é um só). */
+      const resultLabels = (sentence: string) =>
+        renderer!.root
+          .findByType(PriceCalculator)
+          .findAll((node) => typeof node.type === 'string' && node.props.accessible === true && node.props.accessibilityLabel === sentence);
+      expect(resultLabels(WAITING_TEXT)).toHaveLength(1);
+      // Ao abrir, nada a anunciar.
+      act(() => jest.advanceTimersByTime(2000));
+      expect(announce).not.toHaveBeenCalled();
+      await type('Preço da opção 1, em reais', '8,90');
+      await type('Quantidade da opção 1', '500');
+      await type('Preço da opção 2, em reais', '16,50');
+      await type('Quantidade da opção 2', '1000');
+      act(() => jest.advanceTimersByTime(500));
+      expect(announce).not.toHaveBeenCalled();
+      // Quem vai até o resultado ouve o que está na tela, já antes da pausa.
+      expect(resultLabels('A opção 2 sai 7% mais barata que a opção 1.')).toHaveLength(1);
+      expect(resultLabels(WAITING_TEXT)).toHaveLength(0);
+      act(() => jest.advanceTimersByTime(1000));
+      expect(announce).toHaveBeenCalledTimes(1);
+      expect(announce).toHaveBeenCalledWith('A opção 2 sai 7% mais barata que a opção 1.');
+      // Voltar ao pedido de preencher ("Limpar") também é anunciado: o silêncio é só o da abertura.
+      const clear = renderer!.root.findByType(PriceCalculator).findAllByType(Button).find((b) => b.props.title === 'Limpar')!;
+      await act(async () => clear.props.onPress());
+      expect(resultLabels(WAITING_TEXT)).toHaveLength(1);
+      act(() => jest.advanceTimersByTime(ANNOUNCE_DELAY_MS));
+      expect(announce).toHaveBeenCalledTimes(2);
+      expect(announce).toHaveBeenLastCalledWith(WAITING_TEXT);
+    } finally {
+      jest.useRealTimers();
+      announce.mockRestore();
+    }
+  });
+
+  describe('no Android e no navegador, a região viva fala, e não o announceForAccessibility', () => {
+    let calculator: ReactTestRenderer | undefined;
+    afterEach(async () => {
+      await act(async () => calculator?.unmount());
+      calculator = undefined;
+      jest.useRealTimers();
+      jest.restoreAllMocks();
+    });
+
+    /** Abre a calculadora sozinha, preenche 500 g por R$ 8,90 e 1 kg por R$ 16,50 e devolve a região viva antes e depois da pausa. */
+    async function fillOn(os: 'android' | 'web') {
+      jest.replaceProperty(Platform, 'OS', os);
+      const announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility').mockImplementation(() => undefined);
+      jest.useFakeTimers();
+      await act(async () => {
+        calculator = create(<PriceCalculator onClose={() => undefined} />);
+      });
+      const input = (label: string) => calculator!.root.findAll((node) => node.type === TextField && node.props.accessibilityLabel === label)[0];
+      const write = (label: string, text: string) => act(() => input(label).props.onChangeText(text));
+      await write('Preço da opção 1, em reais', '8,90');
+      await write('Quantidade da opção 1', '500');
+      await write('Preço da opção 2, em reais', '16,50');
+      await write('Quantidade da opção 2', '1000');
+      // O que a região viva diz: o rótulo (Android) ou o texto (navegador), lido na hora.
+      const live = () =>
+        calculator!.root
+          .findAll((node) => node.props['aria-live'] === 'polite' && typeof node.type === 'string')
+          .map((node) => ({ label: node.props.accessibilityLabel, accessible: node.props.accessible, text: node.findAllByType(Text)[0]?.props.children }));
+      const before = live();
+      // Os elementos visíveis do leitor de tela (fora da região viva), com o que dizem antes da pausa.
+      const shown = calculator!.root
+        .findAll((node) => typeof node.type === 'string' && node.props.accessible === true && node.props['aria-live'] === undefined)
+        .map((node) => node.props.accessibilityLabel);
+      act(() => jest.advanceTimersByTime(ANNOUNCE_DELAY_MS));
+      return { announce, before, after: live(), shown };
+    }
+
+    it('Android: o rótulo da região viva só muda depois da pausa', async () => {
+      const { announce, before, after, shown } = await fillOn('android');
+      expect(before).toHaveLength(1);
+      expect(before[0].label).toBe(WAITING_TEXT);
+      // O cartão do resultado não é a região viva e diz o resultado de agora, já antes da pausa.
+      expect(shown).toContain('A opção 2 sai 7% mais barata que a opção 1.');
+      expect(shown).not.toContain(WAITING_TEXT);
+      expect(after[0].label).toBe('A opção 2 sai 7% mais barata que a opção 1.');
+      expect(after[0].accessible).toBe(true);
+      expect(announce).not.toHaveBeenCalled();
+    });
+
+    it('navegador: um aria-live escondido fala depois da pausa; o texto visível não é região viva', async () => {
+      const { announce, before, after } = await fillOn('web');
+      expect(before).toHaveLength(1);
+      expect(before[0].text).toBe(WAITING_TEXT);
+      expect(after).toHaveLength(1);
+      expect(after[0].text).toBe('A opção 2 sai 7% mais barata que a opção 1.');
+      // O texto visível já mudou antes da pausa.
+      expect(texts(calculator!.toJSON())).toContain('A opção 2 sai 7% mais barata que a opção 1.');
+      // O resultado visível: sem rótulo, e o leitor de tela lê o texto dele.
+      const visible = calculator!.root.findAll((node) => node.props.accessible === false && typeof node.type === 'string');
+      expect(visible.length).toBeGreaterThan(0);
+      expect(visible.every((node) => node.props.accessibilityLabel === undefined && node.props['aria-live'] === undefined)).toBe(true);
+      expect(announce).not.toHaveBeenCalled();
+    });
+  });
+
+  it('o voltar do Android também fecha', async () => {
+    await mount();
+    await openCalculator();
+    const modal = renderer!.root.findByType(PriceCalculator).findByProps({ animationType: 'slide' });
+    await act(async () => modal.props.onRequestClose());
+    expect(renderer!.root.findAllByType(PriceCalculator)).toHaveLength(0);
+  });
+
+  it('a lista arquivada também tem a calculadora', async () => {
+    mockQueries.list = loaded({ id: 'l1', name: 'Churrasco', kind: 'mercado', archived_at: '2026-10-20T12:00:00Z', created_at: '2026-10-01T12:00:00Z' });
+    await mount();
+    expect(mockSeen.options?.title).toBe('Churrasco');
+    await openCalculator();
+    expect(renderer!.root.findAllByType(PriceCalculator)).toHaveLength(1);
+  });
+
+  it('a lista ainda não aberta sem internet não mostra o ícone', async () => {
+    mockQueries.list = paused();
+    await mount();
+    expect(mockSeen.options?.headerRight).toBeUndefined();
+  });
+
+  it('a lista que volta a carregar sem internet tira o ícone que o Stack guardou', async () => {
+    await mount();
+    expect(mockSeen.options?.headerRight).toBeDefined();
+    mockQueries.list = paused();
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(texts(renderer!.toJSON())).toContain('Sem internet');
+    expect('headerRight' in mockSeen.options!).toBe(true);
+    expect(mockSeen.options?.headerRight).toBeUndefined();
+  });
+
+  it('a lista que volta a carregar (ou falha) tira o ícone que o Stack guardou, porque ali ele não abriria nada', async () => {
+    await mount();
+    expect(mockSeen.options?.headerRight).toBeDefined();
+    mockQueries.list = onTheWay();
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(renderer!.root.findAllByType(Loading)).toHaveLength(1);
+    expect('headerRight' in mockSeen.options!).toBe(true);
+    expect(mockSeen.options?.headerRight).toBeUndefined();
+
+    mockQueries.list = loaded({ id: 'l1', name: 'Mercado', kind: 'mercado', archived_at: null, created_at: '2026-10-01T12:00:00Z' });
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(mockSeen.options?.headerRight).toBeDefined();
+    mockQueries.list = failed();
+    await act(async () => renderer!.update(<ShoppingListScreen />));
+    expect(renderer!.root.findAllByType(ErrorNotice)).toHaveLength(1);
+    expect('headerRight' in mockSeen.options!).toBe(true);
+    expect(mockSeen.options?.headerRight).toBeUndefined();
+  });
+
+  it('o campo com algo a conferir diz isso embaixo dele, e o resultado também', async () => {
+    await mount();
+    await openCalculator();
+    await type('Preço da opção 1, em reais', 'abc');
+    await type('Quantidade da opção 1', '500');
+    await type('Preço da opção 2, em reais', '16,50');
+    await type('Quantidade da opção 2', '1.500');
+    expect(field('Preço da opção 1, em reais').props.hint).toBe('Confira o preço.');
+    expect(field('Preço da opção 1, em reais').props.hintColor).toBe('danger');
+    expect(field('Quantidade da opção 1').props.hint).toBeUndefined();
+    expect(field('Quantidade da opção 2').props.hint).toBe('Com ponto, 1.500 pode ser 1500 ou 1,5: escreva sem o ponto, ou com vírgula.');
+    // O leitor de tela ouve a dica no próprio campo.
+    expect(field('Preço da opção 1, em reais').props.accessibilityHint).toBe('Confira o preço.');
+    expect(field('Quantidade da opção 1').props.accessibilityHint).toBeUndefined();
+    expect(field('Quantidade da opção 2').props.accessibilityHint).toBe(field('Quantidade da opção 2').props.hint);
+    const page = texts(renderer!.toJSON()).join('\n');
+    expect(page).toContain('Confira o preço da opção 1.');
+    expect(page).toContain('Confira a quantidade da opção 2.');
+    expect(page).not.toContain('Preencha o preço');
+    // "8," a caminho de "8,90" não é erro.
+    await type('Preço da opção 1, em reais', '8,');
+    expect(field('Preço da opção 1, em reais').props.hint).toBeUndefined();
+    expect(field('Preço da opção 1, em reais').props.accessibilityHint).toBeUndefined();
+    expect(texts(renderer!.toJSON()).join('\n')).toContain('R$ 16,00 o kg');
+  });
+
+  it('o teclado não cobre o resultado: a lista sobe acima dele, e arrastar fecha o teclado', async () => {
+    await mount();
+    await openCalculator();
+    const scroll = renderer!.root.findByType(PriceCalculator).findByType(ScrollView);
+    expect(scroll.props.keyboardDismissMode).toBe('on-drag');
+    expect(scroll.props.automaticallyAdjustKeyboardInsets).toBe(true);
+  });
+
+  it('"+ opção" tem o toque de 44, e tirar uma opção não usa o X de fechar', async () => {
+    await mount();
+    await openCalculator();
+    const add = renderer!.root.findByType(PriceCalculator).findAllByType(Button).find((b) => b.props.title === '+ opção')!;
+    expect(add.props.style).toEqual(expect.objectContaining({ minHeight: 44 }));
+    await act(async () => add.props.onPress());
+    const remove = renderer!.root.findByType(PriceCalculator).findAll((node) => node.props.label === 'Remover a opção 3' && Boolean(node.props.icon))[0];
+    const close = renderer!.root.findByType(PriceCalculator).findAll((node) => node.props.label === 'Fechar' && Boolean(node.props.icon))[0];
+    expect(remove.props.icon).not.toBe(close.props.icon);
   });
 });
