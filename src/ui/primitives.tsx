@@ -405,8 +405,9 @@ export function TextField({
   hintColor?: keyof Colors;
   /**
    * Liga a dica ao campo no navegador, onde o accessibilityHint não chega ao DOM (react-native-web 0.21 não o
-   * conhece): a dica ganha esse id, o campo aponta para ela com aria-describedby, e o lugar dela vira uma região
-   * aria-live sempre presente, para a dica que muda enquanto se digita ser lida. No aparelho, nada muda.
+   * conhece): a dica ganha esse id e o campo aponta para ela com aria-describedby, para ser lida com o campo. Não é
+   * uma região aria-live: uma dica que muda a cada tecla (um contador) seria falada a cada tecla; quem precisa
+   * avisar uma mudança avisa à parte, só quando o estado muda. No aparelho, nada muda.
    */
   hintId?: string;
 }) {
@@ -431,7 +432,7 @@ export function TextField({
         {...props}
         {...(webHint && hint ? webDescribedBy(webHint) : null)}
       />
-      {webHint ? <View aria-live="polite">{hintText}</View> : hintText}
+      {hintText}
     </View>
   );
 }
@@ -598,6 +599,8 @@ export function Chip({
   onPress,
   icon,
   accessibilityLabel,
+  toggle = false,
+  disabled = false,
 }: {
   label: string;
   selected?: boolean;
@@ -605,20 +608,31 @@ export function Chip({
   icon?: IconName;
   /** O que o leitor de tela diz do selo; sem ele, lê o rótulo. Para o selo que tira um filtro dizer que tira. */
   accessibilityLabel?: string;
+  /**
+   * O selo liga e desliga (uma escolha entre opções), em vez de fazer uma coisa só (tirar um filtro, abrir uma
+   * escolha): no navegador, onde o react-native-web 0.21 não leva o accessibilityState ao DOM, ele vira um botão
+   * pressionado ou não (aria-pressed), para o leitor de tela dizer qual está escolhido.
+   */
+  toggle?: boolean;
+  /** Parado por um momento (enquanto algo é enviado): esmaecido, e o leitor de tela diz que não responde. */
+  disabled?: boolean;
 }) {
   const c = useColors();
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ selected }}
+      accessibilityState={{ selected, disabled: disabled || undefined }}
       accessibilityLabel={accessibilityLabel}
-      // O react-native-web 0.21 não leva o accessibilityState ao DOM: no navegador, o selo marcado é um botão
-      // pressionado (aria-pressed), para o leitor de tela dizer qual está escolhido.
-      {...(Platform.OS === 'web' && selected !== undefined ? webPressed(selected) : null)}
+      {...(Platform.OS === 'web' && toggle ? webPressed(Boolean(selected)) : null)}
       onPress={onPress}
+      disabled={disabled}
+      // O selo tem uns 36 de altura: a área do toque chega aos 44 sem mudar o desenho (o espaço entre linhas de selos
+      // é de 8, então as áreas não se cruzam).
+      hitSlop={CHIP_HIT_SLOP}
       style={[
         styles.chip,
         { backgroundColor: selected ? c.primary : c.glassStrong, borderColor: selected ? c.primary : c.border },
+        disabled && styles.chipDisabled,
       ]}>
       {icon ? <Icon name={icon} size={16} color={selected ? 'onPrimary' : 'textMuted'} /> : null}
       <Text variant="label" color={selected ? 'onPrimary' : 'text'} style={styles.chipText}>
@@ -627,6 +641,8 @@ export function Chip({
     </Pressable>
   );
 }
+
+const CHIP_HIT_SLOP = { top: 4, bottom: 4, left: 2, right: 2 };
 
 /** aria-pressed, que o react-native-web passa ao DOM e o tipo do React Native não tem. */
 function webPressed(pressed: boolean): PressableProps {
@@ -971,6 +987,7 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
   },
   chipText: { fontSize: 14 },
+  chipDisabled: { opacity: 0.5 },
   badge: { borderRadius: radius.pill, paddingHorizontal: space.sm, paddingVertical: 2, alignSelf: 'flex-start' },
   badgeText: { fontFamily: fonts.bold },
   listRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: 10, borderRadius: radius.sm },

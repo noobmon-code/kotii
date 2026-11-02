@@ -422,10 +422,15 @@ describe('Configurações: mandar recado', () => {
     // Enquanto vai, o botão gira, o texto não muda e o tipo também não.
     expect(button('Enviar').props.loading).toBe(true);
     expect(field('Recado').props.editable).toBe(false);
-    expect(chip('Elogio').props.onPress).toBeUndefined();
+    expect(chip('Elogio').props.disabled).toBe(true);
+    expect(chip('Elogio').findAll((node) => node.props.accessibilityState !== undefined)[0].props.accessibilityState).toEqual({
+      selected: false,
+      disabled: true,
+    });
     expect(selectedKinds()).toEqual([]);
     await act(async () => finish());
     await settle();
+    expect(chip('Elogio').props.disabled).toBe(false);
     expect(sends()).toEqual([
       [
         'send_app_feedback',
@@ -594,6 +599,7 @@ describe('Configurações: mandar recado', () => {
   it('perto do limite, o contador; passado, quanto tirar, e "Enviar" parado', async () => {
     await mount();
     await type('Recado', 'a'.repeat(1799));
+    expect(AccessibilityInfo.announceForAccessibility).not.toHaveBeenCalled();
     expect(page()).not.toContain('caracteres');
     await type('Recado', 'a'.repeat(1850));
     expect(field('Recado').props.hint).toBe('1.850 de 2.000 caracteres');
@@ -610,20 +616,44 @@ describe('Configurações: mandar recado', () => {
     expect(sends()).toEqual([]);
     // No aparelho, nada do navegador.
     expect(renderer!.root.findAll((node) => node.props['aria-describedby'] !== undefined)).toHaveLength(0);
+    expect(renderer!.root.findAll((node) => node.props['aria-live'] !== undefined)).toHaveLength(0);
   });
 
-  it('no navegador, o contador e o motivo de "Enviar" parado ficam ligados ao campo e são lidos quando mudam', async () => {
+  it('no aparelho, o leitor de tela ouve o limite quando o estado muda (perto, passou, voltou), não a cada tecla', async () => {
+    const near = 'O recado está perto do limite de 2.000 caracteres.';
+    const over = 'O recado passou do limite de 2.000 caracteres. Encurte para poder enviar.';
+    const announced = () => jest.mocked(AccessibilityInfo.announceForAccessibility).mock.calls.map(([text]) => text);
+    await mount();
+    await type('Recado', 'a'.repeat(1799));
+    expect(announced()).toEqual([]);
+    await type('Recado', 'a'.repeat(1800));
+    await type('Recado', 'a'.repeat(1801));
+    await type('Recado', 'a'.repeat(1950));
+    expect(announced()).toEqual([near]);
+    await type('Recado', 'a'.repeat(FEEDBACK_MAX_LENGTH + 1));
+    await type('Recado', 'a'.repeat(FEEDBACK_MAX_LENGTH + 2));
+    await type('Recado', 'a'.repeat(FEEDBACK_MAX_LENGTH + 40));
+    expect(announced()).toEqual([near, over]);
+    // Voltou para dentro: "Enviar" anda de novo, e o leitor de tela ouve.
+    await type('Recado', 'a'.repeat(FEEDBACK_MAX_LENGTH));
+    await type('Recado', 'a'.repeat(FEEDBACK_MAX_LENGTH - 1));
+    expect(announced()).toEqual([near, over, near]);
+    // Longe do limite, nada; perto de novo, de novo uma vez.
+    await type('Recado', 'curto');
+    await type('Recado', 'a'.repeat(1900));
+    expect(announced()).toEqual([near, over, near, near]);
+  });
+
+  it('no navegador, o contador e o motivo de "Enviar" parado ficam ligados ao campo, e só a mudança de estado é falada', async () => {
     onWeb();
     await mount();
     const describedBy = () => renderer!.root.findAll((node) => node.props['aria-describedby'] !== undefined);
-    const hintRegion = () =>
-      renderer!.root.findAll(
-        (node) => typeof node.type === 'string' && node.props['aria-live'] === 'polite' && node.props.testID !== 'feedback-sent-region',
-      );
-    // Sem dica, o campo não aponta para nada, mas a região já está na página.
+    const liveRegions = () => renderer!.root.findAll((node) => typeof node.type === 'string' && node.props['aria-live'] === 'polite');
+    const limitRegion = () => liveRegions().filter((node) => node.props.testID === 'feedback-limit-region');
+    // Sem dica, o campo não aponta para nada, mas a região do limite já está na página, vazia.
     expect(describedBy()).toHaveLength(0);
-    expect(hintRegion()).toHaveLength(1);
-    expect(textOf(hintRegion()[0])).toBe('');
+    expect(limitRegion()).toHaveLength(1);
+    expect(textOf(limitRegion()[0])).toBe('');
     await type('Recado', 'a'.repeat(FEEDBACK_MAX_LENGTH + 3));
     const reason = 'O recado passou do limite de 2.000 caracteres. Tire 3 caracteres para poder enviar.';
     const ids = new Set(describedBy().map((node) => node.props['aria-describedby']));
@@ -632,8 +662,21 @@ describe('Configurações: mandar recado', () => {
     const hint = renderer!.root.findAll((node) => node.props.id === id && typeof node.type !== 'string');
     expect(hint.length).toBeGreaterThan(0);
     expect(textOf(hint[0])).toBe(reason);
-    expect(hintRegion()).toHaveLength(1);
-    expect(hintRegion()[0].findAll((node) => node.props.id === id).length).toBeGreaterThan(0);
-    expect(textOf(hintRegion()[0])).toBe(reason);
+    // A dica, que muda a cada tecla, não está dentro de nenhuma região aria-live.
+    for (const region of liveRegions()) expect(region.findAll((node) => node.props.id === id)).toHaveLength(0);
+    // A região do limite diz o estado, com um texto que não muda enquanto o estado não muda.
+    const over = 'O recado passou do limite de 2.000 caracteres. Encurte para poder enviar.';
+    expect(textOf(limitRegion()[0])).toBe(over);
+    await type('Recado', 'a'.repeat(FEEDBACK_MAX_LENGTH + 30));
+    expect(textOf(limitRegion()[0])).toBe(over);
+    await type('Recado', 'a'.repeat(1850));
+    expect(textOf(limitRegion()[0])).toBe('O recado está perto do limite de 2.000 caracteres.');
+    await type('Recado', 'a'.repeat(1851));
+    expect(textOf(limitRegion()[0])).toBe('O recado está perto do limite de 2.000 caracteres.');
+    await type('Recado', 'curto');
+    expect(textOf(limitRegion()[0])).toBe('');
+    expect(limitRegion()).toHaveLength(1);
+    // No navegador quem fala é a região: o anúncio do aparelho não é chamado (lá não faz nada).
+    expect(AccessibilityInfo.announceForAccessibility).not.toHaveBeenCalled();
   });
 });

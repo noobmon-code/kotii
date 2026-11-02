@@ -737,11 +737,11 @@ export function nextFeedbackSelection(ids: readonly string[], selected: string |
 /** O título da seção em Configurações. */
 export const FEEDBACK_FORM_TITLE = 'Mandar recado';
 
-/** A linha do alto do cartão: para que serve. */
-export const FEEDBACK_FORM_INTRO = 'Um problema, uma sugestão ou um elogio sobre o app? Escreva aqui: vai direto para quem faz o Kotii.';
+/** A linha do alto do cartão: para que serve. Quem lê e o que vai junto, diz FEEDBACK_DISCLOSURE, embaixo do campo. */
+export const FEEDBACK_FORM_INTRO = 'Um problema, uma sugestão ou um elogio sobre o app? Escreva aqui.';
 
 /** Sobre os tipos: nenhum vem marcado, e sem escolha o recado vai como `outro`. */
-export const FEEDBACK_FORM_KIND_LABEL = 'Sobre o quê (opcional)';
+export const FEEDBACK_FORM_KIND_LABEL = 'Tipo (opcional)';
 
 export const FEEDBACK_FORM_LABEL = 'Recado';
 export const FEEDBACK_FORM_PLACEHOLDER = 'Conte o que aconteceu, o que falta no app ou do que você gostou';
@@ -787,4 +787,16 @@ export function feedbackCounter(text: string): { text: string; over: boolean } |
   }
   if (length < FEEDBACK_COUNTER_FROM) return null;
   return { text: `${num(length)} de ${num(FEEDBACK_MAX_LENGTH)} caracteres`, over: false };
+}
+
+/**
+ * O que o leitor de tela ouve sobre o limite, enquanto a pessoa escreve: só quando o estado muda (chegou perto,
+ * passou, voltou para dentro), nunca a cada tecla como o contador. null longe do limite.
+ */
+export function feedbackLimitNotice(text: string): string | null {
+  const counter = feedbackCounter(text);
+  if (!counter) return null;
+  return counter.over
+    ? `O recado passou do limite de ${num(FEEDBACK_MAX_LENGTH)} caracteres. Encurte para poder enviar.`
+    : `O recado está perto do limite de ${num(FEEDBACK_MAX_LENGTH)} caracteres.`;
 }

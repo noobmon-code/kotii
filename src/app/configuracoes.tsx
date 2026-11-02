@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AccessibilityInfo, Platform, StyleSheet, View } from 'react-native';
 
 import { useIsAppAdmin } from '@/data/appDashboard';
@@ -20,6 +20,7 @@ import {
   FEEDBACK_KINDS,
   FEEDBACK_SENT,
   feedbackCounter,
+  feedbackLimitNotice,
   readFeedbackDraft,
   type FeedbackKind,
 } from '@/domain/appFeedback';
@@ -282,7 +283,19 @@ function FeedbackForm() {
 
   const draft = readFeedbackDraft(kind, text);
   const counter = feedbackCounter(text);
+  const limitNotice = feedbackLimitNotice(text);
   const busy = send.isPending;
+
+  // O limite chega ao leitor de tela quando muda de estado (perto, passou, voltou), não a cada tecla: a dica do campo
+  // só é lida quando o foco chega nele, e "Enviar" esmaecido sozinho não diz por quê. No aparelho, pelo anúncio; no
+  // navegador (onde o anúncio não faz nada), pela região aria-live escondida embaixo do campo.
+  const lastNotice = useRef<string | null>(null);
+  useEffect(() => {
+    if (Platform.OS !== 'web' && limitNotice && limitNotice !== lastNotice.current) {
+      AccessibilityInfo.announceForAccessibility(limitNotice);
+    }
+    lastNotice.current = limitNotice;
+  }, [limitNotice]);
 
   function submit() {
     if (sending.current || send.isPending || !draft.ok) return;
@@ -315,8 +328,11 @@ function FeedbackForm() {
             key={option}
             label={FEEDBACK_KIND_LABELS[option]}
             selected={kind === option}
+            toggle
+            // Enquanto vai, o tipo fica como saiu.
+            disabled={busy}
             // De novo no marcado, desmarca: sem tipo, o recado vai como "outro".
-            onPress={busy ? undefined : () => setKind((before) => (before === option ? null : option))}
+            onPress={() => setKind((before) => (before === option ? null : option))}
           />
         ))}
       </View>
@@ -333,13 +349,19 @@ function FeedbackForm() {
         multiline
         autoCapitalize="sentences"
         // O rótulo e a dica desenhados não ficam ligados ao campo: o leitor de tela lê o nome e o contador (ou por
-        // que "Enviar" está parado) daqui, no aparelho; no navegador, pelo hintId (aria-describedby e aria-live).
+        // que "Enviar" está parado) com o campo, daqui no aparelho e pelo hintId (aria-describedby) no navegador.
+        // Quando o limite muda de estado enquanto se escreve, quem avisa é o efeito acima.
         accessibilityLabel={FEEDBACK_FORM_LABEL}
         accessibilityHint={counter?.text}
         hint={counter?.text}
         hintColor={counter?.over ? 'danger' : undefined}
         hintId={FEEDBACK_HINT_ID}
       />
+      {Platform.OS === 'web' ? (
+        <View aria-live="polite" style={styles.offscreen} testID="feedback-limit-region">
+          {limitNotice ? <Text variant="small">{limitNotice}</Text> : null}
+        </View>
+      ) : null}
       <Text variant="small">{FEEDBACK_DISCLOSURE}</Text>
       <View>
         <Button title={FEEDBACK_FORM_SEND} icon="send-outline" loading={busy} disabled={!draft.ok} onPress={submit} />
@@ -365,4 +387,6 @@ const styles = StyleSheet.create({
   card: { gap: space.md },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
   sent: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginTop: space.md },
+  // Só para o leitor de tela: o que se vê é a dica do campo.
+  offscreen: { position: 'absolute', width: 1, height: 1, overflow: 'hidden' },
 });
