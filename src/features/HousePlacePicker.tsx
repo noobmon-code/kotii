@@ -2,16 +2,18 @@
 // na hora) e ao criar uma casa (que guarda o lugar achado e só o salva depois de a casa existir). Textos e a regra
 // do toque de criar em domain/housePlace.
 
-import { useState } from 'react';
-import { AccessibilityInfo, StyleSheet, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { AccessibilityInfo, Platform, StyleSheet, View } from 'react-native';
 
 import { findPlaceByCep, findPlaceByDevice, type HouseholdLocation } from '@/data/weather';
 import {
   CEP_INCOMPLETE,
   CEP_INCOMPLETE_TITLE,
   CEP_LOOKUP_FAILED_TITLE,
+  cepFieldLabel,
   cepIncompleteOnCreate,
   cepLookupFailedMessage,
+  cepUnreachableMessage,
   HOUSE_PLACE_CREATE_INTRO,
   HOUSE_PLACE_OPTIONAL,
   HOUSE_PLACE_PRIVACY,
@@ -22,6 +24,7 @@ import {
   placeSourceLabel,
 } from '@/domain/housePlace';
 import { maskCep, normalizeCep } from '@/domain/weather';
+import { isNetworkFailure } from '@/lib/networkErrors';
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import { Button, Text, TextField } from '@/ui/primitives';
@@ -40,9 +43,10 @@ export interface PlaceSearch {
 
 /**
  * A busca do bairro. `onFound` recebe o lugar achado (a tela do clima salva; quem cria a casa guarda); se ela falhar,
- * o aviso é o mesmo de uma busca que falhou e o CEP fica no campo.
+ * o aviso é o mesmo de uma busca que falhou e o CEP fica no campo. `shown` (quem cria a casa) diz se a busca ainda é
+ * da tela à vista: quando não é mais, a falha não avisa nada.
  */
-export function usePlaceSearch(onFound: (place: HouseholdLocation) => unknown): PlaceSearch {
+export function usePlaceSearch(onFound: (place: HouseholdLocation) => unknown, shown: () => boolean = () => true): PlaceSearch {
   const [cep, setCep] = useState('');
   const [searching, setSearching] = useState<Source | null>(null);
 
@@ -56,9 +60,11 @@ export function usePlaceSearch(onFound: (place: HouseholdLocation) => unknown): 
     try {
       const found = source === 'cep' ? await findPlaceByCep(digits!) : await findPlaceByDevice();
       await onFound(found);
+      // O campo fica travado durante a busca, então o que se apaga é o que havia antes dela (pela localização também:
+      // um CEP deixado ali seria buscado no toque de criar e tomaria o lugar achado).
       setCep('');
     } catch (err) {
-      notify(PLACE_SEARCH_FAILED_TITLE, errorMessage(err));
+      if (shown()) notify(PLACE_SEARCH_FAILED_TITLE, errorMessage(err));
     } finally {
       setSearching(null);
     }
@@ -93,7 +99,8 @@ export function PlaceSearchFields({
         placeholder="00000-000"
         keyboardType="number-pad"
         maxLength={9}
-        editable={!disabled}
+        // Travado durante a busca: o que fosse digitado nela seria apagado quando ela termina.
+        editable={!off}
         onSubmitEditing={() => (off ? undefined : search.find('cep'))}
       />
       <Button
@@ -125,15 +132,25 @@ export type ResolvedPlace = { ok: true; place: HouseholdLocation | null } | { ok
  * achado (a pessoa já foi avisada e nada deve ser criado). `resolving` é essa busca do toque de criar: a tela mostra o
  * andamento no botão de criar (o tocado) e trava o formulário, porque o toque já leu os campos.
  */
-export function useNewHousePlace() {
+export function useNewHousePlace(active: boolean) {
   const [place, setPlace] = useState<HouseholdLocation | null>(null);
   const [resolving, setResolving] = useState(false);
-  // A troca do texto pelo lugar achado não avisa o leitor de tela sozinha.
+  // Se a parte "Onde fica a casa" ainda está à vista (`active`: o formulário de criar, com a tela montada). Uma busca
+  // pode durar mais que entrar com um código ou abrir outra casa; depois disso, o fim dela não avisa nem anuncia nada.
+  const shown = useRef(active);
+  useEffect(() => {
+    shown.current = active;
+    return () => {
+      shown.current = false;
+    };
+  }, [active]);
+  // A troca do texto pelo lugar achado não avisa o leitor de tela sozinha. Na web, `announceForAccessibility` não faz
+  // nada (react-native-web): lá avisa a região viva em volta do lugar, em HousePlacePicker.
   const found = (next: HouseholdLocation) => {
     setPlace(next);
-    AccessibilityInfo.announceForAccessibility(placeFoundAnnouncement(next.label));
+    if (Platform.OS !== 'web' && shown.current) AccessibilityInfo.announceForAccessibility(placeFoundAnnouncement(next.label));
   };
-  const search = usePlaceSearch(found);
+  const search = usePlaceSearch(found, () => shown.current);
 
   async function resolve(): Promise<ResolvedPlace> {
     const step = placeOnCreate(search.cep, place);
@@ -150,7 +167,10 @@ export function useNewHousePlace() {
       search.setCep('');
       return { ok: true, place: next };
     } catch (err) {
-      notify(CEP_LOOKUP_FAILED_TITLE, cepLookupFailedMessage(errorMessage(err), place?.label));
+      // Uma falha que parece falta de internet pode ser só do serviço do CEP (bloqueado, ou fora do ar): o aviso ainda diz
+      // que a casa não foi criada e como seguir sem o CEP, se a internet estiver funcionando.
+      const reason = errorMessage(err);
+      notify(CEP_LOOKUP_FAILED_TITLE, isNetworkFailure(err) ? cepUnreachableMessage(reason, place?.label) : cepLookupFailedMessage(reason, place?.label));
       return { ok: false };
     } finally {
       setResolving(false);
@@ -177,15 +197,19 @@ export function HousePlacePicker({
       <Text variant="label" accessibilityRole="header">
         Onde fica a casa (opcional)
       </Text>
-      {place ? (
-        <View style={styles.found}>
-          <Text variant="heading">{place.label}</Text>
-          <Text variant="small">{placeSourceLabel(place.source)}</Text>
-        </View>
-      ) : (
-        <Text variant="muted">{HOUSE_PLACE_CREATE_INTRO}</Text>
-      )}
-      <PlaceSearchFields search={search} label={place ? 'Mudar pelo CEP' : 'CEP'} disabled={disabled} primary={false} />
+      {/* Na web, a região viva lê o lugar achado (lá `announceForAccessibility` não faz nada); fica sempre montada,
+          para a troca do convite pelo lugar ser o que ela anuncia. */}
+      <View aria-live={Platform.OS === 'web' ? 'polite' : undefined}>
+        {place ? (
+          <View style={styles.found}>
+            <Text variant="heading">{place.label}</Text>
+            <Text variant="small">{placeSourceLabel(place.source)}</Text>
+          </View>
+        ) : (
+          <Text variant="muted">{HOUSE_PLACE_CREATE_INTRO}</Text>
+        )}
+      </View>
+      <PlaceSearchFields search={search} label={cepFieldLabel(place !== null)} disabled={disabled} primary={false} />
       {place ? (
         <Button
           title={HOUSE_PLACE_REMOVE}

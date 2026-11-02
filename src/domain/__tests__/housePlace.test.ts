@@ -1,8 +1,10 @@
 import { describe, expect, it } from '@jest/globals';
 
 import {
+  cepFieldLabel,
   cepIncompleteOnCreate,
   cepLookupFailedMessage,
+  cepUnreachableMessage,
   HOUSE_PLACE_OPTIONAL,
   HOUSE_PLACE_ROW_HINT,
   HOUSE_PLACE_ROW_UNKNOWN,
@@ -65,6 +67,9 @@ describe('os textos do lugar da casa', () => {
   it('o que é opcional e o que falhou apontam para Configurações → Clima da casa', () => {
     expect(HOUSE_PLACE_WHERE).toBe('Configurações → Clima da casa');
     expect(HOUSE_PLACE_OPTIONAL).toContain(HOUSE_PLACE_WHERE);
+    // O título da parte já diz "(opcional)", e o fim diz onde ficam as dicas, com ou sem um lugar achado.
+    expect(HOUSE_PLACE_OPTIONAL).toBe('As dicas ficam em Configurações → Clima da casa, onde dá para definir ou mudar o bairro depois.');
+    expect(HOUSE_PLACE_OPTIONAL).not.toMatch(/opcional|em branco/i);
     const notSaved = placeNotSavedMessage('Sem permissão.');
     expect(notSaved).toBe('Não deu para salvar onde fica a casa. Sem permissão. Defina depois em Configurações → Clima da casa.');
   });
@@ -78,13 +83,24 @@ describe('os textos do lugar da casa', () => {
 
   it('o CEP não achado diz que a casa não foi criada', () => {
     expect(cepLookupFailedMessage('CEP não encontrado. Confira os números.')).toBe(
-      'CEP não encontrado. Confira os números. A casa ainda não foi criada: confira o CEP ou apague-o para criar a casa sem o bairro.',
+      'CEP não encontrado. Confira os números. A casa ainda não foi criada. Se preferir, apague o CEP para criar a casa sem o bairro.',
+    );
+    // O motivo já manda conferir o CEP: a frase não pede de novo.
+    expect(cepLookupFailedMessage('CEP não encontrado. Confira os números.').match(/confira/gi)).toHaveLength(1);
+  });
+
+  it('o CEP sem resposta (com cara de sem internet): ainda diz que a casa não foi criada e como seguir sem o CEP', () => {
+    expect(cepUnreachableMessage('Sem internet agora. Tente de novo quando a conexão voltar.')).toBe(
+      'Sem internet agora. Tente de novo quando a conexão voltar. A casa ainda não foi criada. Se a internet estiver funcionando, apague o CEP para criar a casa sem o bairro.',
+    );
+    expect(cepUnreachableMessage('Sem internet agora.', 'Pinheiros, São Paulo')).toBe(
+      'Sem internet agora. A casa ainda não foi criada. Se a internet estiver funcionando, apague o CEP para ficar com Pinheiros, São Paulo.',
     );
   });
 
   it('com um lugar achado antes, apagar o CEP fica com ele (não cria sem o bairro)', () => {
     expect(cepLookupFailedMessage('CEP não encontrado. Confira os números.', 'Pinheiros, São Paulo')).toBe(
-      'CEP não encontrado. Confira os números. A casa ainda não foi criada: confira o CEP ou apague-o para ficar com Pinheiros, São Paulo.',
+      'CEP não encontrado. Confira os números. A casa ainda não foi criada. Se preferir, apague o CEP para ficar com Pinheiros, São Paulo.',
     );
     expect(cepIncompleteOnCreate('Pinheiros, São Paulo')).toBe(
       'Digite os 8 números do CEP. Ou apague o CEP para ficar com Pinheiros, São Paulo.',
@@ -94,6 +110,11 @@ describe('os textos do lugar da casa', () => {
   it('o CEP com números faltando, sem lugar achado: apagar cria sem o bairro', () => {
     expect(cepIncompleteOnCreate(null)).toBe('Digite os 8 números do CEP. Ou apague o CEP para criar a casa sem o bairro.');
     expect(cepIncompleteOnCreate()).toBe(cepIncompleteOnCreate(null));
+  });
+
+  it('o campo do CEP diz que muda o lugar quando já há um, na tela do clima e ao criar', () => {
+    expect(cepFieldLabel(false)).toBe('CEP');
+    expect(cepFieldLabel(true)).toBe('Mudar pelo CEP');
   });
 
   it('o leitor de tela ouve o lugar achado', () => {

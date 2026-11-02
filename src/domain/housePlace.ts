@@ -25,7 +25,20 @@ export const HOUSE_PLACE_PRIVACY =
 /** O convite da parte "Onde fica a casa" ao criar uma casa. */
 export const HOUSE_PLACE_CREATE_INTRO = 'Com o bairro, o Kotii dá dicas do tempo: dia de lavar roupa, chuva chegando, calor, frio.';
 
-export const HOUSE_PLACE_OPTIONAL = `É opcional: dá para deixar em branco e definir depois em ${HOUSE_PLACE_WHERE}.`;
+/** O convite da tela do clima, quando a casa ainda não tem bairro. */
+export const HOUSE_PLACE_CLIMA_INTRO =
+  'Diga onde fica a casa para receber dicas do tempo do seu bairro: dia de lavar roupa, chuva chegando, calor, frio.';
+
+/**
+ * O fim da parte "Onde fica a casa" ao criar uma casa: onde ficam as dicas (o cartão do clima saiu da Hoje) e onde
+ * definir ou mudar o bairro depois. Vale com ou sem um lugar achado (o "opcional" já está no título).
+ */
+export const HOUSE_PLACE_OPTIONAL = `As dicas ficam em ${HOUSE_PLACE_WHERE}, onde dá para definir ou mudar o bairro depois.`;
+
+/** O rótulo do campo do CEP: com um lugar, buscar outro CEP muda o lugar. */
+export function cepFieldLabel(hasPlace: boolean): string {
+  return hasPlace ? 'Mudar pelo CEP' : 'CEP';
+}
 
 export const CEP_INCOMPLETE_TITLE = 'CEP incompleto';
 export const CEP_INCOMPLETE = 'Digite os 8 números do CEP.';
@@ -47,9 +60,20 @@ export const PLACE_SEARCH_FAILED_TITLE = 'Não foi possível definir o bairro';
 
 export const CEP_LOOKUP_FAILED_TITLE = 'Não deu para achar o CEP';
 
-/** O CEP digitado e não buscado não foi achado no toque de criar: a casa não foi criada. */
+/**
+ * O CEP digitado e não buscado não foi achado no toque de criar: a casa não foi criada. `reason` já diz o que conferir
+ * (o CEP, ou a conexão); a frase só lembra que dá para seguir sem ele.
+ */
 export function cepLookupFailedMessage(reason: string, foundLabel?: string | null): string {
-  return `${reason} A casa ainda não foi criada: confira o CEP ou ${withoutCep(foundLabel, 'apague-o')}.`;
+  return `${reason} A casa ainda não foi criada. Se preferir, ${withoutCep(foundLabel, 'apague o CEP')}.`;
+}
+
+/**
+ * O CEP do toque de criar não teve resposta, com cara de falta de internet (`reason` é a frase comum). Pode ser só o
+ * serviço do CEP (bloqueado na rede, ou fora do ar) com a internet funcionando: apagar o CEP só ajuda nesse caso.
+ */
+export function cepUnreachableMessage(reason: string, foundLabel?: string | null): string {
+  return `${reason} A casa ainda não foi criada. Se a internet estiver funcionando, ${withoutCep(foundLabel, 'apague o CEP')}.`;
 }
 
 /** O que o leitor de tela diz quando o lugar da casa nova é achado (a troca do texto não avisa sozinha). */

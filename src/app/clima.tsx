@@ -3,7 +3,7 @@ import { StyleSheet, View } from 'react-native';
 
 import { useClearHouseholdLocation, useRefreshWeather, useSaveHouseholdLocation } from '@/data/weather';
 import { addDays, todayISO } from '@/domain/dates';
-import { HOUSE_PLACE_REMOVE, housePlaceHouseLine, openHouseName, placeSourceLabel } from '@/domain/housePlace';
+import { cepFieldLabel, HOUSE_PLACE_CLIMA_INTRO, HOUSE_PLACE_REMOVE, housePlaceHouseLine, openHouseName, placeSourceLabel } from '@/domain/housePlace';
 import { daySummary, describeSummary, houseClock, type WeatherTip } from '@/domain/weather';
 import { PlaceSearchFields, usePlaceSearch } from '@/features/HousePlacePicker';
 import { useHouseWeather } from '@/features/useHouseWeather';
@@ -50,9 +50,9 @@ export default function WeatherScreen() {
               <Text variant="small">{placeSourceLabel(location.data.source)}</Text>
             </View>
           ) : (
-            <Text variant="muted">Diga onde fica a casa para receber dicas do tempo do seu bairro: dia de lavar roupa, chuva chegando, calor, frio.</Text>
+            <Text variant="muted">{HOUSE_PLACE_CLIMA_INTRO}</Text>
           )}
-          <PlaceSearchFields search={search} label={location.data ? 'Mudar pelo CEP' : 'CEP'} />
+          <PlaceSearchFields search={search} label={cepFieldLabel(Boolean(location.data))} />
           {location.data ? (
             <Button
               title={HOUSE_PLACE_REMOVE}

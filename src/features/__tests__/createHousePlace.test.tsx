@@ -12,6 +12,7 @@ import {
   CEP_LOOKUP_FAILED_TITLE,
   cepIncompleteOnCreate,
   cepLookupFailedMessage,
+  cepUnreachableMessage,
   HOUSE_PLACE_OPTIONAL,
   HOUSE_PLACE_PRIVACY,
   HOUSE_PLACE_REMOVE,
@@ -123,6 +124,30 @@ function pendingCep() {
       }),
   );
   return (place: HouseholdLocation) => answer(place);
+}
+
+/** Uma busca pela localização que só responde quando o teste manda (o pedido de permissão e o GPS podem demorar). */
+function pendingGps() {
+  let answer: (place: HouseholdLocation) => void = () => undefined;
+  mockWeather.findPlaceByDevice.mockImplementation(
+    () =>
+      new Promise<HouseholdLocation>((resolve) => {
+        answer = resolve;
+      }),
+  );
+  return (place: HouseholdLocation) => answer(place);
+}
+
+/** Uma busca pela localização que só falha quando o teste manda. */
+function failingGps() {
+  let fail: (err: Error) => void = () => undefined;
+  mockWeather.findPlaceByDevice.mockImplementation(
+    () =>
+      new Promise<HouseholdLocation>((_resolve, reject) => {
+        fail = reject;
+      }),
+  );
+  return (err: Error) => fail(err);
 }
 
 beforeEach(() => {
@@ -349,6 +374,82 @@ describe('bem-vindo: criar a casa', () => {
     expect(mockWeather.saveHouseholdLocationFor).toHaveBeenCalledTimes(1);
   });
 
+  it('durante uma busca, o campo do CEP fica travado: nada digitado nela é apagado quando ela termina', async () => {
+    await fill();
+    await type('CEP', '05422030');
+    const answer = pendingCep();
+    await act(async () => {
+      button('Buscar pelo CEP').props.onPress();
+    });
+    expect(field('CEP').props.editable).toBe(false);
+    await act(async () => answer(PINHEIROS));
+    await settle();
+    expect(field('Mudar pelo CEP').props.editable).toBe(true);
+    expect(field('Mudar pelo CEP').props.value).toBe('');
+  });
+
+  it('o CEP do toque de criar sem resposta: a frase de sem internet, que a casa não foi criada e a saída sem o CEP', async () => {
+    // Na web, o serviço do CEP bloqueado (ou uma resposta sem CORS) também chega como "Failed to fetch", com a internet
+    // funcionando: o aviso não pode ficar só no "tente de novo quando a conexão voltar".
+    mockWeather.findPlaceByCep.mockImplementation(async () => {
+      throw new TypeError('Network request failed');
+    });
+    await fill();
+    await type('CEP', '05422030');
+    await press('Criar casa');
+    expect(notify).toHaveBeenCalledWith(CEP_LOOKUP_FAILED_TITLE, cepUnreachableMessage('Network request failed'));
+    expect(JSON.stringify((notify as jest.Mock).mock.calls)).not.toMatch(/confira o CEP/i);
+    expect(creates()).toHaveLength(0);
+  });
+
+  it('uma busca do bairro em andamento não segura entrar com um código', async () => {
+    await fill();
+    const answer = pendingGps();
+    await act(async () => {
+      button('Usar a localização do celular').props.onPress();
+    });
+    await act(async () => segmented().props.onChange('entrar'));
+    await type('Código de convite', 'abc234');
+    expect(button('Entrar na casa').props.disabled).toBe(false);
+    await press('Entrar na casa');
+    expect(mockRpc).toHaveBeenCalledWith('join_household', { p_invite_code: 'ABC234', p_display_name: 'Ana' });
+    await act(async () => answer(PERTO));
+    await settle();
+    expect(creates()).toHaveLength(0);
+    expect(mockWeather.saveHouseholdLocationFor).not.toHaveBeenCalled();
+    // O lugar achado não é de casa nenhuma: o leitor de tela não o anuncia.
+    expect(AccessibilityInfo.announceForAccessibility).not.toHaveBeenCalled();
+  });
+
+  it('uma busca do bairro que falha depois de entrar com um código não avisa nada', async () => {
+    await fill();
+    const fail = failingGps();
+    await act(async () => {
+      button('Usar a localização do celular').props.onPress();
+    });
+    await act(async () => segmented().props.onChange('entrar'));
+    await type('Código de convite', 'abc234');
+    await press('Entrar na casa');
+    expect(mockRpc).toHaveBeenCalledWith('join_household', { p_invite_code: 'ABC234', p_display_name: 'Ana' });
+    await act(async () => fail(new Error('Não deu para usar a localização.')));
+    await settle();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('uma busca do bairro que termina com a tela já fechada não avisa nem anuncia nada', async () => {
+    await fill();
+    const answer = pendingGps();
+    await act(async () => {
+      button('Usar a localização do celular').props.onPress();
+    });
+    await act(async () => renderer!.unmount());
+    renderer = undefined;
+    await act(async () => answer(PERTO));
+    await settle();
+    expect(notify).not.toHaveBeenCalled();
+    expect(AccessibilityInfo.announceForAccessibility).not.toHaveBeenCalled();
+  });
+
   it('entrar com um código não pergunta onde fica a casa', async () => {
     await mount(<WelcomeScreen />);
     await act(async () => renderer!.root.findAll((node) => node.props.value === 'criar' && typeof node.props.onChange === 'function')[0].props.onChange('entrar'));
@@ -481,6 +582,52 @@ describe('Suas casas: criar outra casa', () => {
     await settle();
     expect(creates()).toHaveLength(1);
     expect(mockOpened).toEqual(['nova']);
+  });
+
+  it('uma busca do bairro em andamento segura só o criar: entrar com um código segue', async () => {
+    await fill();
+    const answer = pendingGps();
+    await act(async () => {
+      button('Usar a localização do celular').props.onPress();
+    });
+    expect(button('Criar e abrir').props.disabled).toBe(true);
+    await act(async () => segmented().props.onChange('entrar'));
+    await type('Código de convite', 'abc234');
+    expect(button('Entrar e abrir').props.disabled).toBe(false);
+    await press('Entrar e abrir');
+    expect(mockRpc).toHaveBeenCalledWith('join_household', { p_invite_code: 'ABC234', p_display_name: 'Ana' });
+    expect(mockOpened).toEqual(['dela']);
+    await act(async () => answer(PERTO));
+    await settle();
+    expect(creates()).toHaveLength(0);
+    expect(mockWeather.saveHouseholdLocationFor).not.toHaveBeenCalled();
+    expect(AccessibilityInfo.announceForAccessibility).not.toHaveBeenCalled();
+  });
+
+  it('uma busca do bairro que falha depois de entrar com um código, ou com a tela já fechada, não avisa nada', async () => {
+    await fill();
+    let fail = failingGps();
+    await act(async () => {
+      button('Usar a localização do celular').props.onPress();
+    });
+    await act(async () => segmented().props.onChange('entrar'));
+    await type('Código de convite', 'abc234');
+    await press('Entrar e abrir');
+    expect(mockOpened).toEqual(['dela']);
+    await act(async () => fail(new Error('Não deu para usar a localização.')));
+    await settle();
+    expect(notify).not.toHaveBeenCalled();
+    // Abrir outra casa troca de tela (router.replace('/')): a busca que termina depois disso também fica quieta.
+    await act(async () => segmented().props.onChange('criar'));
+    fail = failingGps();
+    await act(async () => {
+      button('Usar a localização do celular').props.onPress();
+    });
+    await act(async () => renderer!.unmount());
+    renderer = undefined;
+    await act(async () => fail(new Error('Não deu para usar a localização.')));
+    await settle();
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it('entrar com um código não pergunta onde fica a casa', async () => {

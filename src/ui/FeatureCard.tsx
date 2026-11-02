@@ -6,7 +6,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { GradientCard } from './gradient';
 import { Orb } from './Orb';
 import { Icon, type IconName, Text } from './primitives';
-import { fonts, radius, space, useColors, useGlow, useGradient, type GradientName, type Tint } from './theme';
+import { fonts, space, useColors, useGlow, useGradient, type GradientName, type Tint } from './theme';
 
 // O brilho da seta combina com o gradiente do cartão.
 const GLOW_TINT: Record<GradientName, Tint> = { pessego: 'orange', rosa: 'pink', salvia: 'green', caramelo: 'purple' };
@@ -51,7 +51,7 @@ export function FeatureCard({
       accessibilityLabel={`${title}. ${subtitle}`}
       onPress={onPress}
       style={({ pressed }) => pressed && styles.pressed}>
-      <GradientCard gradient={gradient} borderRadius={radius.lg} style={styles.feature}>
+      <GradientCard gradient={gradient} style={styles.feature}>
         <View style={styles.text}>
           <Text variant="heading" style={styles.featureTitle}>
             {title}

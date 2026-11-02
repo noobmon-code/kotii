@@ -9,7 +9,7 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 import { functionErrorMessage } from '@/data/images';
 import { photoQueueBusy, waitingCounts } from '@/data/listPhotos';
 import { listQueueBusy } from '@/data/market';
-import { saveHouseholdLocationFor, type HouseholdLocation } from '@/data/weather';
+import { LOCATION_KEY, saveHouseholdLocationFor, type HouseholdLocation } from '@/data/weather';
 import { PLACE_NOT_SAVED_OFFLINE } from '@/domain/housePlace';
 import { signOutQuestion } from '@/domain/listQueue';
 import { clearConversation, conversationOwner } from '@/features/nuke/conversation';
@@ -106,6 +106,21 @@ export function placeNotSavedReason(err: unknown): string {
   return isNetworkFailure(err) ? PLACE_NOT_SAVED_OFFLINE : errorMessage(err);
 }
 
+/**
+ * Salva o lugar escolhido ao criar uma casa na casa nova (`houseId`, que ainda não é a aberta neste aparelho). Devolve
+ * `null`, ou o motivo de não ter salvo (`placeNotSavedReason`): a casa fica criada do mesmo jeito. O mesmo nos dois
+ * formulários de criar (bem-vindo e Suas casas).
+ */
+export async function savePlaceOfNewHouse(queryClient: QueryClient, houseId: string, place: HouseholdLocation): Promise<string | null> {
+  try {
+    await saveHouseholdLocationFor(houseId, place);
+  } catch (err) {
+    return placeNotSavedReason(err);
+  }
+  queryClient.invalidateQueries({ queryKey: LOCATION_KEY }).catch(() => undefined);
+  return null;
+}
+
 export type AddHousehold =
   | { mode: 'criar'; name: string; displayName: string; place?: HouseholdLocation | null }
   | { mode: 'entrar'; code: string; displayName: string };
@@ -136,14 +151,7 @@ export function useAddHousehold(userId: string | undefined) {
       // vez de erro. O PostgREST manda o registro nulo como objeto com campos nulos.
       const house = data as Household | null;
       if (!house?.id) throw new Error(INVITE_NOT_FOUND);
-      let placeNotSaved: string | null = null;
-      if (input.mode === 'criar' && input.place) {
-        try {
-          await saveHouseholdLocationFor(house.id, input.place);
-        } catch (err) {
-          placeNotSaved = placeNotSavedReason(err);
-        }
-      }
+      const placeNotSaved = input.mode === 'criar' && input.place ? await savePlaceOfNewHouse(queryClient, house.id, input.place) : null;
       await openHousehold(queryClient, userId, house.id);
       return { house, placeNotSaved };
     },

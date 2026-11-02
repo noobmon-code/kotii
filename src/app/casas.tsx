@@ -31,17 +31,19 @@ export default function HouseholdsScreen() {
   const [code, setCode] = useState('');
   const [displayName, setDisplayName] = useState<string | null>(null);
   // Onde fica a casa nova (opcional, só ao criar): salvo nela depois de ela existir.
-  const newPlace = useNewHousePlace();
+  const newPlace = useNewHousePlace(mode === 'criar');
   // Dois toques rápidos (ou o Enter do CEP junto com o botão) criam uma casa só.
   const sending = useRef(false);
 
   if (!household.data) return <Loading />;
   const { household: open, households, me } = household.data;
   const full = households.length >= MAX_HOUSEHOLDS;
-  const searching = newPlace.search.searching !== null;
+  // A busca do bairro só segura o criar: entrar com um código e abrir outra casa não dependem dela (o seletor pode ir
+  // para "Tenho um código" com ela em andamento, sem nada na tela que a mostre).
+  const searching = mode === 'criar' && newPlace.search.searching !== null;
   // O envio: a busca do CEP do toque de criar e depois o pedido. O toque já leu os campos, então eles ficam travados.
   const submitting = add.isPending || newPlace.resolving;
-  const busy = switchTo.isPending || submitting || searching;
+  const busy = switchTo.isPending || submitting;
   const yourName = displayName ?? me.display_name;
 
   function choose(id: string) {
@@ -53,7 +55,7 @@ export default function HouseholdsScreen() {
   }
 
   async function submit() {
-    if (sending.current || busy) return;
+    if (sending.current || busy || searching) return;
     if (!yourName.trim()) {
       notify('Como você quer ser chamado?', 'Informe seu nome para a família te reconhecer.');
       return;
@@ -155,7 +157,7 @@ export default function HouseholdsScreen() {
                 title={mode === 'criar' ? 'Criar e abrir' : 'Entrar e abrir'}
                 icon={mode === 'criar' ? 'home-plus-outline' : 'login'}
                 loading={submitting}
-                disabled={busy}
+                disabled={busy || searching}
                 onPress={submit}
               />
             </Card>

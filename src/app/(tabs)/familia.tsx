@@ -122,8 +122,8 @@ export default function FamilyScreen() {
 
   return (
     <Screen fab heading="Família">
-      {/* Sem o cartão do topo (a barra de abas já diz a aba, e o nome da casa fica no topo da tela Hoje): só a
-          engrenagem, no canto de cima à direita. */}
+      {/* Sem o cartão do topo (a barra de abas já diz a aba; o nome da casa só aparece no topo da tela Hoje para quem
+          tem mais de uma): só a engrenagem, no canto de cima à direita. */}
       <View style={styles.top}>
         <HeaderButton icon="cog-outline" label="Configurações" onPress={openSettings} />
       </View>

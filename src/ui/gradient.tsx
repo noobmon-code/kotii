@@ -47,7 +47,7 @@ export function GradientFill({
 /** Cartão com o gradiente de uma tela por trás do conteúdo, cantos redondos e sombra de vidro. */
 export function GradientCard({
   gradient,
-  borderRadius = radius.xl,
+  borderRadius = radius.lg,
   style,
   children,
 }: {

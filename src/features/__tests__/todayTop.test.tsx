@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { StyleSheet, View } from 'react-native';
+import { Children, type ReactElement } from 'react';
+import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -162,9 +163,13 @@ describe('o topo da tela Hoje', () => {
     const header = renderer!.root.findByType(SkyHeader);
     // Nenhuma imagem no topo, e o que vai dentro dele não guarda espaço à direita.
     expect(header.findAll((node) => typeof node.type !== 'string' && (node.type as { name?: string }).name === 'Image')).toHaveLength(0);
-    const wrapper = header.findAllByType(View).find((node) => node.props.children === header.props.children);
-    expect(wrapper).toBeDefined();
-    expect(StyleSheet.flatten(wrapper!.props.style).paddingRight).toBeUndefined();
+    // Os blocos que a tela passa para dentro do topo (antes, um View com o paddingRight do desenho em volta da data e
+    // da saudação) não guardam margem à direita. O link "Ver a agenda" tem a sua, da pílula, e não é um View.
+    const blocks = (Children.toArray(header.props.children) as ReactElement<{ style?: StyleProp<ViewStyle> }>[]).filter(
+      (element) => element.type === View,
+    );
+    expect(blocks.length).toBeGreaterThan(0);
+    for (const element of blocks) expect(StyleSheet.flatten(element.props.style)?.paddingRight).toBeUndefined();
     // Nada na tela fala do clima nem leva à tela dele (o bairro se define em Configurações).
     const text = rawText(renderer!.root);
     expect(text).not.toMatch(/clima|bairro|Onde fica a casa/i);
