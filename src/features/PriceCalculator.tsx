@@ -5,7 +5,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
   ADD_OPTION,
-  ADD_OPTION_SPOKEN,
   addOption,
   CALCULATOR_INTRO,
   CALCULATOR_UNITS,
@@ -67,10 +66,10 @@ export function PriceCalculator({ onClose }: { onClose: () => void }) {
   const announcement = result.announcement;
   const highlighted = new Set(result.cheapest);
 
-  // O que o leitor de tela fala sozinho só muda depois de uma pausa na digitação, para não falar a cada número (em
-  // todo lugar; o texto na tela, e o que o leitor lê quando a pessoa vai até o resultado, mudam na hora). No Android
-  // e no navegador quem fala é uma região viva escondida; o iPhone não tem região viva, e quem fala é o
-  // announceForAccessibility.
+  // O que o leitor de tela fala sozinho só muda depois de uma pausa na digitação, para não falar a cada número (o
+  // texto na tela muda na hora). No Android quem fala é o próprio cartão do resultado, região viva com esse rótulo (um
+  // elemento só: o leitor não passa duas vezes pelo resultado); no navegador, uma região viva escondida; o iPhone não
+  // tem região viva, e quem fala é o announceForAccessibility.
   const [spoken, setSpoken] = useState(announcement);
   useEffect(() => {
     if (announcement === spoken) return;
@@ -128,6 +127,8 @@ export function PriceCalculator({ onClose }: { onClose: () => void }) {
                     />
                   ) : null}
                 </Row>
+                {/* Quanto mais barata, junto do destaque: o resultado, no fim, fica embaixo do teclado enquanto se digita. */}
+                {result.cheapestSentences[index] ? <Text variant="body">{result.cheapestSentences[index]}</Text> : null}
                 <Row style={styles.fields}>
                   <View style={styles.flex}>
                     <TextField
@@ -177,22 +178,17 @@ export function PriceCalculator({ onClose }: { onClose: () => void }) {
           })}
 
           {options.length < MAX_OPTIONS ? (
-            <Button
-              title={ADD_OPTION}
-              variant="secondary"
-              compact
-              style={styles.touch}
-              onPress={() => setOptions(addOption)}
-              accessibilityLabel={ADD_OPTION_SPOKEN}
-            />
+            <Button title={ADD_OPTION} icon="plus" variant="secondary" compact style={styles.touch} onPress={() => setOptions(addOption)} />
           ) : null}
 
-          {/* O resultado muda enquanto a pessoa digita. O visível não é região viva: no celular é um elemento só, com
-              o texto de agora (quem vai até ele ouve o que está na tela); no navegador, o leitor lê os textos dele. */}
+          {/* O resultado muda enquanto a pessoa digita. No celular é um elemento só: no iPhone, com o texto de agora;
+              no Android é a região viva, com o rótulo depois da pausa. No navegador não é região viva, e o leitor lê
+              os textos dele. */}
           <Card style={styles.gap}>
             <View
               accessible={Platform.OS !== 'web'}
-              accessibilityLabel={Platform.OS === 'web' ? undefined : announcement}
+              accessibilityLabel={Platform.OS === 'web' ? undefined : Platform.OS === 'android' ? spoken : announcement}
+              aria-live={Platform.OS === 'android' ? 'polite' : undefined}
               style={styles.gap}>
               {result.sentences.map((sentence) => (
                 <Text key={sentence} variant="body">
@@ -205,14 +201,9 @@ export function PriceCalculator({ onClose }: { onClose: () => void }) {
                 </Text>
               ))}
             </View>
-            {/* Quem fala sozinho, depois da pausa: uma região viva escondida (no Android, pelo rótulo; no navegador,
-                pelo texto). No iPhone fala o announceForAccessibility, acima. */}
-            {Platform.OS !== 'ios' ? (
-              <View
-                aria-live="polite"
-                accessible={Platform.OS === 'android' ? true : undefined}
-                accessibilityLabel={Platform.OS === 'android' ? spoken : undefined}
-                style={styles.visuallyHidden}>
+            {/* No navegador quem fala sozinho, depois da pausa, é uma região viva escondida, pelo texto. */}
+            {Platform.OS === 'web' ? (
+              <View aria-live="polite" style={styles.visuallyHidden}>
                 <Text>{spoken}</Text>
               </View>
             ) : null}

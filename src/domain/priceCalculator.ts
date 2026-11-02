@@ -7,7 +7,7 @@
 // kg com litro ou com unidade nunca, e a frase diz quais ficaram de fora.
 
 import type { Unit } from '@/lib/types';
-import { parseDecimal, parseTypingAmount } from './money';
+import { formatBRL, parseDecimal, parseTypingAmount, THOUSANDS_DOTS } from './money';
 import { convertQuantity, pricePerBase, sameDimension } from './units';
 
 /** As unidades dos chips, na ordem da tela (as mesmas da lista). */
@@ -31,7 +31,7 @@ export const newOption = (unit: Unit = DEFAULT_CALCULATOR_UNIT): CalcOption => (
 /** O começo e o "Limpar": duas opções vazias. */
 export const initialOptions = (): CalcOption[] => Array.from({ length: MIN_OPTIONS }, () => newOption());
 
-/** "+ opção": até MAX_OPTIONS, com a unidade da última (quem compara costuma comparar a mesma coisa). */
+/** "Adicionar opção": até MAX_OPTIONS, com a unidade da última (quem compara costuma comparar a mesma coisa). */
 export function addOption(options: CalcOption[]): CalcOption[] {
   if (options.length >= MAX_OPTIONS) return options;
   return [...options, newOption(options[options.length - 1]?.unit)];
@@ -56,8 +56,8 @@ export const PRICE_FIELD = 'Preço (R$)';
 export const QUANTITY_FIELD = 'Quantidade';
 export const PRICE_PLACEHOLDER = '8,90';
 export const QUANTITY_PLACEHOLDER = '500';
-export const ADD_OPTION = '+ opção';
-export const ADD_OPTION_SPOKEN = 'Adicionar uma opção';
+/** O botão de mais uma opção: o mesmo texto na tela e para o leitor de tela (e o comando de voz). */
+export const ADD_OPTION = 'Adicionar opção';
 export const CLEAR_CALCULATOR = 'Limpar';
 
 // Os nomes de cada opção para o leitor de tela: "Preço da opção 1, em reais".
@@ -81,13 +81,14 @@ const MEASURE: Record<BaseUnit, Measure> = { kg: 'peso', l: 'volume', un: 'unida
 const PER: Record<BaseUnit, string> = { kg: 'o kg', l: 'o litro', un: 'a unidade' };
 
 /**
- * Pontos de milhar numa quantidade ("1.000", "1.500"): tanto pode ser mil
- * como um (mil e quinhentos ou um e meio). O parseDecimal leria "1.000" g
- * como 1 g, e o preço por kg sairia mil vezes maior; a calculadora pede para
- * escrever de novo, como "Quanto tem agora" do remédio (parseUnits). Com zero
- * na frente ("0.500") ou com vírgula ("1.000,5") não há dúvida.
+ * Pontos de milhar numa quantidade ("1.000", "1.500", a forma THOUSANDS_DOTS
+ * do parseMoney): tanto pode ser mil como um (mil e quinhentos ou um e meio).
+ * O parseDecimal leria "1.000" g como 1 g, e o preço por kg sairia mil vezes
+ * maior; a calculadora pede para escrever de novo. Com zero na frente
+ * ("0.500") ou com vírgula ("1.000,5") não há dúvida, e a calculadora aceita;
+ * nisso ela difere do parseUnits do remédio, que recusa também "0.500".
  */
-const AMBIGUOUS_QUANTITY = /^[1-9]\d{0,2}(\.\d{3})+$/;
+const AMBIGUOUS_QUANTITY = THOUSANDS_DOTS;
 
 /** A opção lida: o preço em centavos, a quantidade na menor unidade da grandeza e o preço por kg, litro ou unidade. */
 export interface ReadOption {
@@ -96,7 +97,7 @@ export interface ReadOption {
   /** Em g, ml ou unidades. */
   amount: number;
   base: BaseUnit;
-  /** Em reais, sem arredondar: a tela escreve com formatPerBase. */
+  /** Em reais, sem arredondar: optionLine e o ranking escrevem com formatPerBase. */
   perBase: number;
 }
 
@@ -144,15 +145,15 @@ export const QUANTITY_HINT = 'Confira a quantidade.';
 
 /**
  * A dica de uma quantidade com ponto de milhar, com as duas leituras do que
- * foi digitado: "1.500" pode ser 1500 ou 1,5. Com mais de um ponto
- * ("1.000.000") só há a leitura de milhar.
+ * foi digitado: "1.500" é 1500 ou 1,5? Curta, porque vai embaixo de um campo
+ * de meia largura. Com mais de um ponto ("1.000.000") só há a leitura de milhar.
  */
 export function ambiguousQuantityHint(text: string): string {
   const typed = text.replace(/\s/g, '');
   const thousands = typed.replace(/\./g, '');
   if ((typed.match(/\./g) ?? []).length > 1) return `Escreva a quantidade sem os pontos: ${thousands}.`;
   const decimal = String(Number(typed)).replace('.', ',');
-  return `Com ponto, ${typed} pode ser ${thousands} ou ${decimal}: escreva sem o ponto, ou com vírgula.`;
+  return `${typed} é ${thousands} ou ${decimal}? Escreva sem ponto ou com vírgula.`;
 }
 
 /**
@@ -168,24 +169,39 @@ export function readOption(option: CalcOption, index: number): Reading {
   if (!('value' in price) || !('value' in quantity)) return { ok: false, hint: null };
   const cents = price.value;
   const small = SMALL[option.unit];
-  const amount = convertQuantity(quantity.value, option.unit, small);
-  if (amount === null || !(amount > 0)) return { ok: false, hint: QUANTITY_HINT, field: 'quantity' };
+  // Da unidade para a menor da mesma grandeza (kg para g, l para ml): a conversão sempre existe, e a quantidade já é
+  // maior que zero.
+  const amount = convertQuantity(quantity.value, option.unit, small)!;
   const perBase = pricePerBase(cents / 100 / amount, small);
   return { ok: true, option: { index, cents, amount, base: perBase.unit as BaseUnit, perBase: perBase.unitPrice } };
 }
 
-const BRL_SMALL = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 2, maximumFractionDigits: 3 });
-const BRL = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
+/** Abaixo de R$ 1, um formatador por número de casas (até 20, o limite do Intl). */
+const BRL_SMALL = new Map<number, Intl.NumberFormat>();
+function formatSmallBRL(value: number): string {
+  // Até a terceira casa e, abaixo de um centavo, até o segundo algarismo significativo.
+  const digits = Math.min(20, Math.max(3, Math.ceil(-Math.log10(value)) + 1));
+  let format = BRL_SMALL.get(digits);
+  if (!format) {
+    format = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 2, maximumFractionDigits: digits });
+    BRL_SMALL.set(digits, format);
+  }
+  return format.format(value).replace(/\s/g, ' ');
+}
 
 /**
  * "R$ 17,80 o kg", "R$ 5,20 o litro", "R$ 1,40 a unidade". Abaixo de R$ 1 vai
- * até a terceira casa ("R$ 0,015 a unidade"): o palito de 100 por R$ 2,00 e o
- * de 200 por R$ 3,00 não podem aparecer os dois como R$ 0,02.
+ * até a terceira casa ("R$ 0,015 a unidade"), e abaixo de um centavo até o
+ * segundo algarismo significativo ("R$ 0,0004", "R$ 0,0024"): o palito de 100
+ * por R$ 2,00 e o de 200 por R$ 3,00 não podem aparecer os dois como R$ 0,02,
+ * nem a caixa de mil por R$ 0,40 e a de mil por R$ 0,30 como R$ 0,00. Dois
+ * preços bem próximos ainda podem aparecer iguais, como em qualquer
+ * arredondamento.
  */
 export function formatPerBase(perBase: number, base: BaseUnit): string {
-  // Seis casas antes de arredondar, como o preço.
-  const value = Number(perBase.toFixed(6));
-  const text = (value < 1 ? BRL_SMALL : BRL).format(value).replace(/\s/g, ' ');
+  // Doze algarismos antes de arredondar, como as seis casas do preço: 17,799999999 é 17,80.
+  const value = Number(perBase.toPrecision(12));
+  const text = value > 0 && value < 1 ? formatSmallBRL(value) : formatBRL(value);
   return `${text} ${PER[base]}`;
 }
 
@@ -253,6 +269,11 @@ export interface PriceComparison {
   cheapest: number[];
   /** A frase de cada comparação, com grandezas diferentes a do que não se compara, e a de cada campo a conferir. */
   sentences: string[];
+  /**
+   * A frase da comparação de cada opção destacada, pelo índice: vai também no cartão dela, ao lado do "Mais barata",
+   * porque o resultado fica no fim da tela e, enquanto se digita, embaixo do teclado.
+   */
+  cheapestSentences: Record<number, string>;
   /** Com 3 ou mais opções da mesma grandeza: a ordem, da mais barata para a mais cara. */
   ranking: RankRow[];
   /** Tudo o que o resultado diz, numa frase só, para o leitor de tela anunciar quando muda. */
@@ -333,12 +354,19 @@ export function comparePrices(options: CalcOption[]): PriceComparison {
   // Os grupos na ordem em que a primeira opção de cada um aparece na tela.
   const comparable = groups.filter((g) => g.length >= 2);
   const cheapest: number[] = [];
+  const cheapestSentences: Record<number, string> = {};
   const sentences: string[] = [];
   const ranking: RankRow[] = [];
   for (const group of comparable) {
     const tiers = priceTiers(group);
-    sentences.push(groupSentence(tiers));
-    if (tiers.length > 1) cheapest.push(...tiers[0].map((o) => o.index));
+    const sentence = groupSentence(tiers);
+    sentences.push(sentence);
+    if (tiers.length > 1) {
+      for (const option of tiers[0]) {
+        cheapest.push(option.index);
+        cheapestSentences[option.index] = sentence;
+      }
+    }
     if (group.length >= 3) {
       let position = 1;
       for (const tier of tiers) {
@@ -359,5 +387,5 @@ export function comparePrices(options: CalcOption[]): PriceComparison {
   sentences.push(...toCheck);
   if (!sentences.length) sentences.push(WAITING_SENTENCE);
   const announcement = [...sentences, ...ranking.map((row) => `${row.text}.`)].join(' ');
-  return { cheapest: cheapest.sort((a, b) => a - b), sentences, ranking, announcement };
+  return { cheapest: cheapest.sort((a, b) => a - b), sentences, cheapestSentences, ranking, announcement };
 }

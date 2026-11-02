@@ -15,6 +15,12 @@ export function parseDecimal(input: string): number | null {
 }
 
 /**
+ * Pontos de três em três dígitos, sem vírgula ("1.500", "12.345.678"): a forma
+ * de um número com ponto de milhar. Com zero na frente ("0.500") não é milhar.
+ */
+export const THOUSANDS_DOTS = /^[1-9]\d{0,2}(\.\d{3})+$/;
+
+/**
  * Um valor em reais, como parseDecimal, com duas diferenças. Sem vírgula,
  * pontos de três em três dígitos são de milhar ("1.500" é mil e quinhentos e
  * "12.345.678" também; dinheiro não tem três casas depois do ponto). E um
@@ -25,8 +31,7 @@ export function parseDecimal(input: string): number | null {
  */
 export function parseMoney(input: string): number | null {
   const s = input.replace(/[R$\s]/g, '');
-  // Com zero na frente ("0.500") não é milhar: fica com a leitura de sempre.
-  if (/^[1-9]\d{0,2}(\.\d{3})+$/.test(s)) return Number(s.replace(/\./g, ''));
+  if (THOUSANDS_DOTS.test(s)) return Number(s.replace(/\./g, ''));
   if (/^\d+\.\d{4,}$/.test(s)) return null;
   return parseDecimal(input);
 }

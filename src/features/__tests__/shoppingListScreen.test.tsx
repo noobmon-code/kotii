@@ -1501,9 +1501,13 @@ describe('a calculadora de preço, no canto de cima da lista', () => {
     expect(page).toContain('R$ 17,80 o kg');
     expect(page).toContain('R$ 16,50 o kg');
     expect(page).toContain('A opção 2 sai 7% mais barata que a opção 1.');
-    // O destaque vai para o cartão da opção 2, e só para ele.
+    // O destaque vai para o cartão da opção 2, e só para ele, com a frase de quanto mais barata junto do "Mais barata"
+    // (o resultado, no fim, fica embaixo do teclado enquanto se digita).
     expect(badges('Preço da opção 2, em reais')).toEqual(['Mais barata']);
     expect(badges('Preço da opção 1, em reais')).toEqual([]);
+    const cardTexts = (label: string) => cardOf(label).findAllByType(Text).map((node) => node.props.children);
+    expect(cardTexts('Preço da opção 2, em reais')).toContain('A opção 2 sai 7% mais barata que a opção 1.');
+    expect(cardTexts('Preço da opção 1, em reais')).not.toContain('A opção 2 sai 7% mais barata que a opção 1.');
     const perKg = (label: string, text: string) => cardOf(label).findAll((node) => node.type === Text && node.props.children === text)[0];
     expect(perKg('Preço da opção 2, em reais', 'R$ 16,50 o kg').props.color).toBe('primary');
     expect(perKg('Preço da opção 1, em reais', 'R$ 17,80 o kg').props.color).toBeUndefined();
@@ -1516,10 +1520,10 @@ describe('a calculadora de preço, no canto de cima da lista', () => {
     expect(texts(renderer!.toJSON()).join('\n')).not.toContain('7% mais barata');
   });
 
-  it('"+ opção" até 4, só da terceira em diante sai, e "Limpar" volta às duas vazias', async () => {
+  it('"Adicionar opção" até 4, só da terceira em diante sai, e "Limpar" volta às duas vazias', async () => {
     await mount();
     await openCalculator();
-    const add = () => renderer!.root.findByType(PriceCalculator).findAllByType(Button).find((b) => b.props.title === '+ opção');
+    const add = () => renderer!.root.findByType(PriceCalculator).findAllByType(Button).find((b) => b.props.title === 'Adicionar opção');
     expect(pressable('Remover a opção 2')).toBeUndefined();
     await act(async () => add()!.props.onPress());
     await act(async () => add()!.props.onPress());
@@ -1579,7 +1583,7 @@ describe('a calculadora de preço, no canto de cima da lista', () => {
     }
   });
 
-  describe('no Android e no navegador, a região viva fala, e não o announceForAccessibility', () => {
+  describe('no Android e no navegador, uma região viva fala, e não o announceForAccessibility', () => {
     let calculator: ReactTestRenderer | undefined;
     afterEach(async () => {
       await act(async () => calculator?.unmount());
@@ -1606,9 +1610,14 @@ describe('a calculadora de preço, no canto de cima da lista', () => {
       const live = () =>
         calculator!.root
           .findAll((node) => node.props['aria-live'] === 'polite' && typeof node.type === 'string')
-          .map((node) => ({ label: node.props.accessibilityLabel, accessible: node.props.accessible, text: node.findAllByType(Text)[0]?.props.children }));
+          .map((node) => ({
+            label: node.props.accessibilityLabel,
+            accessible: node.props.accessible,
+            text: node.findAllByType(Text)[0]?.props.children,
+            texts: node.findAllByType(Text).map((child) => child.props.children),
+          }));
       const before = live();
-      // Os elementos visíveis do leitor de tela (fora da região viva), com o que dizem antes da pausa.
+      // Os elementos do leitor de tela fora da região viva, com o que dizem antes da pausa.
       const shown = calculator!.root
         .findAll((node) => typeof node.type === 'string' && node.props.accessible === true && node.props['aria-live'] === undefined)
         .map((node) => node.props.accessibilityLabel);
@@ -1616,13 +1625,16 @@ describe('a calculadora de preço, no canto de cima da lista', () => {
       return { announce, before, after: live(), shown };
     }
 
-    it('Android: o rótulo da região viva só muda depois da pausa', async () => {
+    it('Android: o próprio cartão do resultado é a região viva, um elemento só, e o rótulo dele só muda depois da pausa', async () => {
       const { announce, before, after, shown } = await fillOn('android');
       expect(before).toHaveLength(1);
       expect(before[0].label).toBe(WAITING_TEXT);
-      // O cartão do resultado não é a região viva e diz o resultado de agora, já antes da pausa.
-      expect(shown).toContain('A opção 2 sai 7% mais barata que a opção 1.');
+      expect(before[0].accessible).toBe(true);
+      // É o cartão visível (o texto dele já mudou), não um elemento escondido: o leitor não passa duas vezes pelo resultado.
+      expect(before[0].texts).toContain('A opção 2 sai 7% mais barata que a opção 1.');
+      expect(shown).not.toContain('A opção 2 sai 7% mais barata que a opção 1.');
       expect(shown).not.toContain(WAITING_TEXT);
+      expect(after).toHaveLength(1);
       expect(after[0].label).toBe('A opção 2 sai 7% mais barata que a opção 1.');
       expect(after[0].accessible).toBe(true);
       expect(announce).not.toHaveBeenCalled();
@@ -1705,7 +1717,7 @@ describe('a calculadora de preço, no canto de cima da lista', () => {
     expect(field('Preço da opção 1, em reais').props.hint).toBe('Confira o preço.');
     expect(field('Preço da opção 1, em reais').props.hintColor).toBe('danger');
     expect(field('Quantidade da opção 1').props.hint).toBeUndefined();
-    expect(field('Quantidade da opção 2').props.hint).toBe('Com ponto, 1.500 pode ser 1500 ou 1,5: escreva sem o ponto, ou com vírgula.');
+    expect(field('Quantidade da opção 2').props.hint).toBe('1.500 é 1500 ou 1,5? Escreva sem ponto ou com vírgula.');
     // O leitor de tela ouve a dica no próprio campo.
     expect(field('Preço da opção 1, em reais').props.accessibilityHint).toBe('Confira o preço.');
     expect(field('Quantidade da opção 1').props.accessibilityHint).toBeUndefined();
@@ -1729,11 +1741,14 @@ describe('a calculadora de preço, no canto de cima da lista', () => {
     expect(scroll.props.automaticallyAdjustKeyboardInsets).toBe(true);
   });
 
-  it('"+ opção" tem o toque de 44, e tirar uma opção não usa o X de fechar', async () => {
+  it('"Adicionar opção" tem o toque de 44, e tirar uma opção não usa o X de fechar', async () => {
     await mount();
     await openCalculator();
-    const add = renderer!.root.findByType(PriceCalculator).findAllByType(Button).find((b) => b.props.title === '+ opção')!;
+    const add = renderer!.root.findByType(PriceCalculator).findAllByType(Button).find((b) => b.props.title === 'Adicionar opção')!;
     expect(add.props.style).toEqual(expect.objectContaining({ minHeight: 44 }));
+    // O leitor de tela e o comando de voz usam o nome que está na tela.
+    expect(add.props.accessibilityLabel).toBeUndefined();
+    expect(add.props.icon).toBe('plus');
     await act(async () => add.props.onPress());
     const remove = renderer!.root.findByType(PriceCalculator).findAll((node) => node.props.label === 'Remover a opção 3' && Boolean(node.props.icon))[0];
     const close = renderer!.root.findByType(PriceCalculator).findAll((node) => node.props.label === 'Fechar' && Boolean(node.props.icon))[0];

@@ -29,7 +29,7 @@ import {
 } from '../priceCalculator';
 
 const opt = (price: string, quantity: string, unit: Unit): CalcOption => ({ price, quantity, unit });
-/** O preço por kg (litro, unidade) como a tela escreve, ou a dica. */
+/** O preço por kg (litro, unidade) como a tela escreve, ou null. */
 const line = (price: string, quantity: string, unit: Unit) => optionLine(opt(price, quantity, unit), 0);
 /** A dica embaixo do campo a conferir, ou null. */
 const hint = (price: string, quantity: string, unit: Unit) => optionHint(opt(price, quantity, unit), 0);
@@ -58,6 +58,23 @@ describe('o preço por kg, litro ou unidade de cada opção', () => {
     expect(line('3,00', '200', 'un')).toBe('R$ 0,015 a unidade');
     expect(line('3,49', '50', 'un')).toBe('R$ 0,07 a unidade');
     expect(formatPerBase(0.5, 'l')).toBe('R$ 0,50 o litro');
+    expect(formatPerBase(0.123, 'un')).toBe('R$ 0,123 a unidade');
+  });
+
+  it('abaixo de um centavo, até o segundo algarismo significativo: dois preços diferentes não aparecem os dois como R$ 0,00', () => {
+    // A caixa de mil por R$ 0,40 e a de mil por R$ 0,30.
+    expect(line('0,40', '1000', 'un')).toBe('R$ 0,0004 a unidade');
+    expect(line('0,30', '1000', 'un')).toBe('R$ 0,0003 a unidade');
+    const result = comparePrices([opt('0,40', '1000', 'un'), opt('0,30', '1000', 'un')]);
+    expect(result.sentences).toEqual(['A opção 2 sai 25% mais barata que a opção 1.']);
+    // Só diferem depois da terceira casa: 0,0024 e 0,0025 a unidade.
+    expect(line('2,40', '1000', 'un')).toBe('R$ 0,0024 a unidade');
+    expect(line('2,50', '1000', 'un')).toBe('R$ 0,0025 a unidade');
+    expect(formatPerBase(0.0153, 'un')).toBe('R$ 0,015 a unidade');
+    expect(formatPerBase(0.00153, 'un')).toBe('R$ 0,0015 a unidade');
+    expect(formatPerBase(0.000001234, 'un')).toBe('R$ 0,0000012 a unidade');
+    // O erro do ponto flutuante não vira mais um algarismo.
+    expect(formatPerBase(0.0149999999999999, 'un')).toBe('R$ 0,015 a unidade');
   });
 
   it('arredonda o centavo sem o erro do ponto flutuante', () => {
@@ -137,10 +154,10 @@ describe('o que não dá para ler', () => {
   });
 
   it('quantidade com ponto de milhar ("1.500") pode ser mil e quinhentos ou um e meio: a dica diz as duas leituras', () => {
-    expect(hint('8,90', '1.000', 'g')?.text).toBe('Com ponto, 1.000 pode ser 1000 ou 1: escreva sem o ponto, ou com vírgula.');
-    expect(hint('8,90', '1.500', 'kg')?.text).toBe('Com ponto, 1.500 pode ser 1500 ou 1,5: escreva sem o ponto, ou com vírgula.');
-    expect(hint('8,90', '12.500', 'g')?.text).toBe('Com ponto, 12.500 pode ser 12500 ou 12,5: escreva sem o ponto, ou com vírgula.');
-    expect(hint('8,90', '2.250', 'l')?.text).toBe('Com ponto, 2.250 pode ser 2250 ou 2,25: escreva sem o ponto, ou com vírgula.');
+    expect(hint('8,90', '1.000', 'g')?.text).toBe('1.000 é 1000 ou 1? Escreva sem ponto ou com vírgula.');
+    expect(hint('8,90', '1.500', 'kg')?.text).toBe('1.500 é 1500 ou 1,5? Escreva sem ponto ou com vírgula.');
+    expect(hint('8,90', '12.500', 'g')?.text).toBe('12.500 é 12500 ou 12,5? Escreva sem ponto ou com vírgula.');
+    expect(hint('8,90', '2.250', 'l')?.text).toBe('2.250 é 2250 ou 2,25? Escreva sem ponto ou com vírgula.');
     // Com mais de um ponto, só há a leitura de milhar.
     expect(hint('8,90', '1.000.000', 'g')?.text).toBe('Escreva a quantidade sem os pontos: 1000000.');
     expect(ambiguousQuantityHint('1.500')).toBe(hint('8,90', '1.500', 'g')?.text);
@@ -190,6 +207,8 @@ describe('a comparação', () => {
     const result = comparePrices([opt('8,90', '500', 'g'), opt('16,50', '1', 'kg')]);
     expect(result.cheapest).toEqual([1]);
     expect(result.sentences).toEqual(['A opção 2 sai 7% mais barata que a opção 1.']);
+    // A frase vai também no cartão da destacada.
+    expect(result.cheapestSentences).toEqual({ 1: 'A opção 2 sai 7% mais barata que a opção 1.' });
     expect(result.ranking).toEqual([]);
     expect(result.announcement).toBe('A opção 2 sai 7% mais barata que a opção 1.');
   });
@@ -227,6 +246,7 @@ describe('a comparação', () => {
     const result = comparePrices([opt('8,25', '500', 'g'), opt('16,50', '1', 'kg')]);
     expect(result.sentences).toEqual(['Mesmo preço: as opções 1 e 2 saem por R$ 16,50 o kg.']);
     expect(result.cheapest).toEqual([]);
+    expect(result.cheapestSentences).toEqual({});
   });
 
   it('iguais também quando a conta não fecha no ponto flutuante (R$ 1,01 por 0,67 kg e R$ 3,03 por 2,01 kg)', () => {
@@ -282,6 +302,10 @@ describe('com 3 ou 4 opções', () => {
     expect(result.cheapest).toEqual([0, 2]);
     // 16,50 contra 18,00: 1,50 de 18 são 8,3%.
     expect(result.sentences).toEqual(['As opções 1 e 3 saem pelo mesmo preço, 8% mais baratas que a opção 2.']);
+    expect(result.cheapestSentences).toEqual({
+      0: 'As opções 1 e 3 saem pelo mesmo preço, 8% mais baratas que a opção 2.',
+      2: 'As opções 1 e 3 saem pelo mesmo preço, 8% mais baratas que a opção 2.',
+    });
     expect(result.ranking.map((r) => [r.index, r.position])).toEqual([
       [0, 1],
       [2, 1],
@@ -332,6 +356,11 @@ describe('grandezas diferentes não se comparam', () => {
       'Não dá para comparar peso (opções 1 e 3) com volume (opções 2 e 4).',
     ]);
     expect(result.cheapest).toEqual([1, 2]);
+    // Cada destacada leva a frase da sua grandeza.
+    expect(result.cheapestSentences).toEqual({
+      1: 'A opção 2 sai 13% mais barata que a opção 4.',
+      2: 'A opção 3 sai 7% mais barata que a opção 1.',
+    });
   });
 
   it('três grandezas', () => {
@@ -358,7 +387,7 @@ describe('as opções', () => {
     expect(initialOptions()).toEqual([newOption('g'), newOption('g')]);
   });
 
-  it('"+ opção" vai até 4, com a unidade da última', () => {
+  it('"Adicionar opção" vai até 4, com a unidade da última', () => {
     let options = [opt('', '', 'g'), opt('', '', 'l')];
     options = addOption(options);
     expect(options).toHaveLength(3);
