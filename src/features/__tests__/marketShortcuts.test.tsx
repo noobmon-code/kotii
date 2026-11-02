@@ -4,7 +4,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { PRODUCT_CATEGORY_NOTE } from '@/domain/productCategory';
 import { ShoppingListsPanel } from '@/features/ShoppingListsPanel';
 import { PickerModal } from '@/ui/PickerModal';
-import { FeatureCard } from '@/ui/ScreenHeader';
+import { FeatureCard } from '@/ui/FeatureCard';
 
 // Os caminhos até o dinheiro do mercado e o aviso da categoria: Casa > Compras leva ao Mercado do mês, e o
 // seletor de categoria diz, antes da escolha, que a categoria vale também para as compras dos meses passados.

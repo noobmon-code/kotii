@@ -10,12 +10,10 @@ import { HealthTodaySections } from '@/features/health/HealthTodaySections';
 import { MedicationRefills, MedicationsToday, useRefills } from '@/features/health/MedicationSections';
 import { PlansPanel } from '@/features/health/PlansPanel';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
-import { HEALTH_ART, HEALTH_TAB_LABELS, healthSubtitle, type HealthTab } from '@/domain/screenHeaders';
 import { Card, EmptyState, Screen, Segmented, Tile } from '@/ui/primitives';
-import { HeaderArt, ScreenHeader } from '@/ui/ScreenHeader';
 import { space } from '@/ui/theme';
 
-type Tab = HealthTab;
+type Tab = 'resumo' | 'cuidados' | 'treino' | 'dieta';
 const TABS: Tab[] = ['resumo', 'cuidados', 'treino', 'dieta'];
 
 export default function HealthScreen() {
@@ -35,14 +33,7 @@ export default function HealthScreen() {
   const setPerson = (id: string | null) => router.setParams({ pessoa: id ?? '' });
 
   return (
-    <Screen fab refreshing={refreshing} onRefresh={refresh}>
-      <ScreenHeader
-        gradient="rosa"
-        eyebrow={HEALTH_TAB_LABELS[tab]}
-        title="Saúde"
-        subtitle={healthSubtitle(tab)}
-        art={<HeaderArt categories={HEALTH_ART} />}
-      />
+    <Screen fab heading="Saúde" refreshing={refreshing} onRefresh={refresh}>
       <Segmented
         value={tab}
         onChange={(value) => router.setParams({ aba: value })}

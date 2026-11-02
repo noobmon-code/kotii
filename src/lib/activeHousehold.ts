@@ -6,7 +6,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSyncExternalStore } from 'react';
 
-export const HOUSEHOLD_HEADER = 'x-household-id';
+import { HOUSEHOLD_HEADER } from './householdHeader';
+
+export { HOUSEHOLD_HEADER };
+
 const STORAGE_KEY = 'kotii:active-household';
 
 let current: string | null = null;

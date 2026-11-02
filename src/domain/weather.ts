@@ -1,7 +1,8 @@
 // Dicas do clima: frases curtas e úteis para a casa ("hoje é dia de lavar
 // roupa", "o jardim vai ser regado pela chuva"), tiradas da previsão hora a
-// hora do bairro (Open-Meteo) por regras fixas, sem IA. A tela Hoje mostra
-// as do dia; o aviso das 7h leva a mais importante (ver weatherMornings).
+// hora do bairro (Open-Meteo) por regras fixas, sem IA. A tela do clima
+// mostra as de hoje e de amanhã; o aviso das 7h leva a mais importante (ver
+// weatherMornings).
 
 import type { IconName } from './categories';
 import { addDays, toISODate } from './dates';
@@ -435,11 +436,6 @@ export function weatherContext(
     wateringDueOn: watering[0] ?? null,
     car: equipment.some((e) => e.category === 'veiculo'),
   };
-}
-
-/** De que dia falar agora: o de hoje até as 18h; depois, o de amanhã. */
-export function tipsDay(date: string, hour: number): { date: string; fromHour: number; dayWord: string } {
-  return hour < 18 ? { date, fromHour: hour, dayWord: 'Hoje' } : { date: addDays(date, 1), fromHour: 7, dayWord: 'Amanhã' };
 }
 
 /** Resumo do dia para o topo da tela do clima. */

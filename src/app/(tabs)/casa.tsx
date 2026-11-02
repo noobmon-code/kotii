@@ -12,12 +12,10 @@ import { useEquipmentList } from '@/data/house';
 import { useShoppingLists } from '@/data/market';
 import { JOBS_KEY, PROVIDERS_KEY } from '@/data/providers';
 import { useSupplies } from '@/data/supplies';
-import { HOUSE_ART, HOUSE_TAB_LABELS, houseSubtitle, type HouseTab } from '@/domain/screenHeaders';
 import { Screen, Segmented } from '@/ui/primitives';
-import { HeaderArt, ScreenHeader } from '@/ui/ScreenHeader';
 import { space } from '@/ui/theme';
 
-type Tab = HouseTab;
+type Tab = 'compras' | 'despensa' | 'tarefas' | 'aparelhos';
 const TABS: Tab[] = ['compras', 'despensa', 'tarefas', 'aparelhos'];
 
 export default function HouseScreen() {
@@ -54,14 +52,7 @@ export default function HouseScreen() {
   };
 
   return (
-    <Screen fab refreshing={active.isRefetching} onRefresh={refresh}>
-      <ScreenHeader
-        gradient="pessego"
-        eyebrow={HOUSE_TAB_LABELS[tab]}
-        title="Casa"
-        subtitle={houseSubtitle(tab, lists.data)}
-        art={<HeaderArt categories={HOUSE_ART[tab]} />}
-      />
+    <Screen fab heading="Casa" refreshing={active.isRefetching} onRefresh={refresh}>
       <Segmented
         value={tab}
         onChange={setTab}

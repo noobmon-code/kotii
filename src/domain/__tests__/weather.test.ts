@@ -11,7 +11,6 @@ import {
   pickNeighborhood,
   placeLabel,
   roundCoordinate,
-  tipsDay,
   weatherContext,
   weatherMornings,
   weatherTips,
@@ -319,11 +318,6 @@ describe('o que a casa tem', () => {
       wateringDueOn: null,
       car: false,
     });
-  });
-
-  it('até as 18h fala de hoje; depois, de amanhã', () => {
-    expect(tipsDay(TODAY, 9)).toEqual({ date: TODAY, fromHour: 9, dayWord: 'Hoje' });
-    expect(tipsDay(TODAY, 18)).toEqual({ date: TOMORROW, fromHour: 7, dayWord: 'Amanhã' });
   });
 });
 

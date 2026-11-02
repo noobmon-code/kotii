@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
-import { skyTextWidth } from '@/features/SkyHeader';
+import { topTextWidth } from '@/features/SkyHeader';
 import { TodayGreeting } from '@/features/TodayGreeting';
 
-// O título da tela Hoje ("Boa noite," e o nome): o nome fica sempre numa linha só, do tamanho que couber ao lado do
-// desenho do clima, e o leitor de tela ouve o nome inteiro uma vez, mesmo quando a tela mostra só o primeiro.
+// O título da tela Hoje ("Boa noite," e o nome): o nome fica sempre numa linha só, do tamanho que couber na largura do
+// topo, e o leitor de tela ouve o nome inteiro uma vez, mesmo quando a tela mostra só o primeiro.
 
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockWindow = { width: 360, height: 800, scale: 3, fontScale: 1 };
@@ -44,22 +44,22 @@ const textOf = (node: ReactTestInstance): string =>
   node.children.map((c) => (typeof c === 'string' ? c : textOf(c))).join('');
 
 describe('TodayGreeting', () => {
-  it('mede a largura ao lado do desenho do clima em cada janela', () => {
-    expect(skyTextWidth(360)).toBe(155);
-    expect(skyTextWidth(393)).toBe(188);
-    expect(skyTextWidth(412)).toBe(207);
-    expect(skyTextWidth(720)).toBe(515);
+  it('mede a largura do topo em cada janela, sem espaço para desenho nenhum', () => {
+    expect(topTextWidth(360)).toBe(296);
+    expect(topTextWidth(393)).toBe(329);
+    expect(topTextWidth(412)).toBe(348);
+    expect(topTextWidth(720)).toBe(656);
     // Mais larga que a coluna: a coluna para em 720.
-    expect(skyTextWidth(1440)).toBe(515);
+    expect(topTextWidth(1440)).toBe(656);
   });
 
-  it('no celular de 360: "Boa noite," e o primeiro nome numa linha, o nome inteiro para o leitor de tela', () => {
+  it('no celular de 360: "Boa noite," e o nome inteiro, cada um numa linha', () => {
     const { header, name } = show('André Barbusci');
     expect(header.props.accessible).toBe(true);
     expect(header.props.accessibilityLabel).toBe('Boa noite, André Barbusci');
-    expect(textOf(header)).toBe('Boa noite,André');
+    expect(textOf(header)).toBe('Boa noite,André Barbusci');
     expect(name!.props.numberOfLines).toBe(1);
-    expect(textOf(name!)).toBe('André');
+    expect(textOf(name!)).toBe('André Barbusci');
     expect(fontSizeOf(name!)).toBe(30);
   });
 
@@ -71,19 +71,27 @@ describe('TodayGreeting', () => {
     expect(textOf(name!)).toBe('André Barbusci');
   });
 
-  it('com a letra do sistema maior, encolhe o primeiro nome', () => {
-    mockWindow.fontScale = 1.3;
+  it('com a letra do sistema um pouco maior: o nome inteiro, um pouco menor', () => {
+    mockWindow.fontScale = 1.5;
+    const { name } = show('André Barbusci');
+    expect(textOf(name!)).toBe('André Barbusci');
+    expect(fontSizeOf(name!)).toBe(26);
+  });
+
+  it('com a letra do sistema bem maior: o primeiro nome na tela, o nome inteiro para o leitor de tela', () => {
+    mockWindow.fontScale = 1.6;
+    const { header, name } = show('André Barbusci');
+    expect(header.props.accessibilityLabel).toBe('Boa noite, André Barbusci');
+    expect(textOf(name!)).toBe('André');
+    expect(name!.props.numberOfLines).toBe(1);
+  });
+
+  it('com a letra do sistema muito maior, encolhe o primeiro nome', () => {
+    mockWindow.fontScale = 2;
     const { name } = show('Bartolomeu Silva');
     expect(textOf(name!)).toBe('Bartolomeu');
     expect(fontSizeOf(name!)).toBeLessThan(26);
     expect(name!.props.numberOfLines).toBe(1);
-  });
-
-  it('no celular de 412: o nome inteiro, um pouco menor', () => {
-    mockWindow.width = 412;
-    const { name } = show('André Barbusci');
-    expect(textOf(name!)).toBe('André Barbusci');
-    expect(fontSizeOf(name!)).toBe(27);
   });
 
   it('depois de medir o título, usa a largura medida; a saudação também fica numa linha', () => {

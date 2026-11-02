@@ -2,12 +2,14 @@ import { describe, expect, it } from '@jest/globals';
 
 import { advanceOf, fitSize, greeting, greetingName, textWidth } from '../greeting';
 
-// A largura que o título tem ao lado do desenho do clima (skyTextWidth em features/SkyHeader, conferida no teste do
-// título): a janela (no máximo a coluna de 720) menos 44 de recuo, 20 de margem e 141 do desenho.
-const PHONE_360 = 155;
-const PHONE_393 = 188;
-const PHONE_412 = 207;
-const WEB_720 = 515;
+// A largura que o título tem no topo (topTextWidth em features/SkyHeader, conferida no teste do título): a janela (no
+// máximo a coluna de 720) menos 44 de recuo e 20 de margem. Com a letra do sistema maior, a conta é feita com a
+// largura dividida pela escala da letra: no celular de 360, 197,3 a 1,5 e 155,8 a 1,9.
+const PHONE_360 = 296;
+const PHONE_412 = 348;
+const WEB_720 = 656;
+const PHONE_360_TEXT_150 = PHONE_360 / 1.5;
+const PHONE_360_TEXT_190 = PHONE_360 / 1.9;
 
 const at = (h: number, m = 0) => new Date(2026, 9, 21, h, m);
 
@@ -52,16 +54,20 @@ describe('textWidth', () => {
 describe('greetingName', () => {
   it('André Barbusci: o nome inteiro onde couber até 26, senão o primeiro nome', () => {
     // O nome inteiro pede (7,3 × tamanho − 4,2) × 1,05: 225,5 a 30, 202,5 a 27, 194,9 a 26.
-    expect(greetingName('André Barbusci', PHONE_360)).toEqual({ text: 'André', fontSize: 30 });
-    expect(greetingName('André Barbusci', PHONE_393)).toEqual({ text: 'André', fontSize: 30 });
-    expect(greetingName('André Barbusci', PHONE_412)).toEqual({ text: 'André Barbusci', fontSize: 27 });
+    expect(greetingName('André Barbusci', PHONE_360)).toEqual({ text: 'André Barbusci', fontSize: 30 });
+    expect(greetingName('André Barbusci', PHONE_412)).toEqual({ text: 'André Barbusci', fontSize: 30 });
     expect(greetingName('André Barbusci', WEB_720)).toEqual({ text: 'André Barbusci', fontSize: 30 });
+    expect(greetingName('André Barbusci', 210)).toEqual({ text: 'André Barbusci', fontSize: 27 });
+    expect(greetingName('André Barbusci', PHONE_360_TEXT_150)).toEqual({ text: 'André Barbusci', fontSize: 26 });
+    expect(greetingName('André Barbusci', 190)).toEqual({ text: 'André', fontSize: 30 });
+    expect(greetingName('André Barbusci', PHONE_360_TEXT_190)).toEqual({ text: 'André', fontSize: 30 });
   });
 
   it('dá a "Boa tarde," o maior tamanho que cabe numa linha', () => {
-    // "Boa tarde," a 30 pede 151,6 com a folga; com a largura de 135 (letra do sistema a 1,15 no de 360), 26.
+    // "Boa tarde," a 30 pede 151,6 com a folga; com a largura de 134,5 (letra do sistema a 2,2 no de 360), 26.
     expect(fitSize('Boa tarde,', PHONE_360, 30, 22)).toBe(30);
-    expect(fitSize('Boa tarde,', PHONE_360 / 1.15, 30, 22)).toBe(26);
+    expect(fitSize('Boa tarde,', PHONE_360_TEXT_190, 30, 22)).toBe(30);
+    expect(fitSize('Boa tarde,', PHONE_360 / 2.2, 30, 22)).toBe(26);
     expect(fitSize('Boa tarde,', 50, 30, 22)).toBeNull();
   });
 
@@ -74,21 +80,23 @@ describe('greetingName', () => {
   });
 
   it('encolhe o primeiro nome que não cabe a 30', () => {
-    // "Bartolomeu" a 30 pede 173,5 com a folga; a 26, 150,3.
-    expect(greetingName('Bartolomeu Silva', PHONE_360)).toEqual({ text: 'Bartolomeu', fontSize: 26 });
-    expect(greetingName('Bartolomeu Silva', PHONE_412)).toEqual({ text: 'Bartolomeu', fontSize: 30 });
+    // "Bartolomeu" a 30 pede 173,5 com a folga; a 26, 150,3. O nome inteiro a 26 pede 219,3.
+    expect(greetingName('Bartolomeu Silva', PHONE_360)).toEqual({ text: 'Bartolomeu Silva', fontSize: 30 });
+    expect(greetingName('Bartolomeu Silva', PHONE_360_TEXT_150)).toEqual({ text: 'Bartolomeu', fontSize: 30 });
+    expect(greetingName('Bartolomeu Silva', PHONE_360_TEXT_190)).toEqual({ text: 'Bartolomeu', fontSize: 26 });
   });
 
   it('para em 22 quando nem assim cabe (a linha corta com reticências)', () => {
     const name = 'Hermenegildo-Constantino';
-    expect(textWidth(name, 22, -0.3) * 1.05).toBeGreaterThan(PHONE_360);
-    expect(greetingName(`${name} Souza`, PHONE_360)).toEqual({ text: name, fontSize: 22 });
+    expect(textWidth(name, 22, -0.3) * 1.05).toBeLessThan(PHONE_360);
+    expect(textWidth(name, 22, -0.3) * 1.05).toBeGreaterThan(PHONE_360_TEXT_150);
+    expect(greetingName(`${name} Souza`, PHONE_360_TEXT_150)).toEqual({ text: name, fontSize: 22 });
     expect(greetingName(name, 0)).toEqual({ text: name, fontSize: 22 });
   });
 
   it('respeita outro tamanho e outro mínimo', () => {
-    expect(greetingName('Bartolomeu', PHONE_360, { size: 24, min: 20 })).toEqual({ text: 'Bartolomeu', fontSize: 24 });
-    expect(greetingName('Hermenegildo-Constantino', PHONE_360, { size: 24, min: 20 })).toEqual({
+    expect(greetingName('Bartolomeu', PHONE_360_TEXT_190, { size: 24, min: 20 })).toEqual({ text: 'Bartolomeu', fontSize: 24 });
+    expect(greetingName('Hermenegildo-Constantino', PHONE_360_TEXT_190, { size: 24, min: 20 })).toEqual({
       text: 'Hermenegildo-Constantino',
       fontSize: 20,
     });
@@ -96,7 +104,7 @@ describe('greetingName', () => {
 
   it('tira os espaços das pontas e junta os do meio; nome vazio, texto vazio', () => {
     expect(greetingName('  André    Barbusci  ', WEB_720)).toEqual({ text: 'André Barbusci', fontSize: 30 });
-    expect(greetingName('  André    Barbusci  ', PHONE_360)).toEqual({ text: 'André', fontSize: 30 });
+    expect(greetingName('  André    Barbusci  ', PHONE_360_TEXT_190)).toEqual({ text: 'André', fontSize: 30 });
     expect(greetingName('', PHONE_360)).toEqual({ text: '', fontSize: 30 });
     expect(greetingName('   ', PHONE_360)).toEqual({ text: '', fontSize: 30 });
   });
