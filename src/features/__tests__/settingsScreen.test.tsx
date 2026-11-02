@@ -1,24 +1,39 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import Constants from 'expo-constants';
 import { router } from 'expo-router';
+import { AccessibilityInfo, Platform } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import SettingsScreen from '@/app/configuracoes';
 import { APP_DASHBOARD_TITLE } from '@/domain/appDashboard';
 import { HOUSE_PLACE_ROW_HINT, HOUSE_PLACE_ROW_UNKNOWN, HOUSE_PLACE_TITLE } from '@/domain/housePlace';
+import {
+  FEEDBACK_DISCLOSURE,
+  FEEDBACK_FORM_INTRO,
+  FEEDBACK_FORM_KIND_LABEL,
+  FEEDBACK_FORM_PLACEHOLDER,
+  FEEDBACK_FORM_TITLE,
+  FEEDBACK_LIMIT,
+  FEEDBACK_MAX_LENGTH,
+  FEEDBACK_NOT_READY,
+  FEEDBACK_SENT,
+} from '@/domain/appFeedback';
 import { THEME_HINT } from '@/domain/appearance';
 import { PROFILE_MESSAGES, PROFILE_NAME_HINT, PROFILE_NOT_READY, PROFILE_PRIVACY } from '@/domain/profile';
 import { TERMS_TITLE, termsVersionLabel } from '@/domain/terms';
+import { OFFLINE_TRY_AGAIN } from '@/lib/networkErrors';
 import { THEME_CHOICE_KEY } from '@/lib/themeChoice';
 import { confirmAction, notify } from '@/ui/dialogs';
+import { Chip } from '@/ui/primitives';
 import { PALETTES } from '@/ui/theme';
 import { ThemeChoiceProvider } from '@/ui/ThemeChoiceProvider';
 
 // A tela de Configurações com o banco de mentira: o perfil (lido da tabela, salvo numa chamada só, com os erros
 // do banco em palavras, e só o nome com um aviso quando a migração ainda não chegou), o tema (que muda as
-// cores e fica no aparelho), a conta (termos, sair, apagar), que vieram da aba Família, e a linha do painel do
-// app, só para quem o mantém.
+// cores e fica no aparelho), o recado escrito pela pessoa (send_app_feedback, sem IA no meio), a conta (termos,
+// sair, apagar), que vieram da aba Família, e a linha do painel do app, só para quem o mantém.
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -49,7 +64,12 @@ jest.mock('@/lib/supabase', () => ({
     rpc: (name: string, args: Record<string, unknown>) =>
       name === 'is_app_admin' ? Promise.resolve(mockDb.admin) : mockDb.rpc(name, args),
   },
-  errorMessage: (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  // Como o de verdade para o pedido que não chegou ao servidor ("Sem internet agora…"); o resto, a mensagem.
+  errorMessage: (error: unknown) => {
+    const network = jest.requireActual<typeof import('@/lib/networkErrors')>('@/lib/networkErrors');
+    if (network.isNetworkFailure(error)) return network.OFFLINE_TRY_AGAIN;
+    return error instanceof Error ? error.message : String(error);
+  },
 }));
 const mockMe = { household_id: 'h1', user_id: 'ana', display_name: 'Ana', role: 'owner' as const };
 // As casas da pessoa: com mais de uma, a linha do clima diz de qual casa é.
@@ -140,9 +160,17 @@ beforeEach(() => {
   });
 });
 
+/** A tela no navegador, até o fim do teste. */
+let webOS: { restore: () => void } | undefined;
+const onWeb = () => {
+  webOS = jest.replaceProperty(Platform, 'OS', 'web');
+};
+
 afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
+  webOS?.restore();
+  webOS = undefined;
   queryClient.clear();
   await AsyncStorage.clear();
 });
@@ -324,6 +352,9 @@ describe('Configurações: painel do app', () => {
     mockDb.admin = { data: true, error: null };
     const text = await mount();
     expect(text).toContain(`Painel${APP_DASHBOARD_TITLE}Contas, pessoas ativas, Nuke e funções`);
+    // O recado fica entre a aparência e o painel.
+    expect(text.indexOf(THEME_HINT)).toBeLessThan(text.indexOf(FEEDBACK_FORM_TITLE));
+    expect(text.indexOf(FEEDBACK_FORM_TITLE)).toBeLessThan(text.indexOf(`Painel${APP_DASHBOARD_TITLE}`));
     await act(async () => pressable(`${APP_DASHBOARD_TITLE}Contas, pessoas ativas, Nuke e funções`).props.onPress());
     expect(router.push).toHaveBeenCalledWith('/painel');
     // A pergunta não passa pela rpc do perfil.
@@ -339,6 +370,9 @@ describe('Configurações: moderação', () => {
     mockModerator.value = true;
     const text = await mount();
     expect(text).toContain('ModeraçãoNomes dos mercadosO nome padrão de cada mercado');
+    // O recado fica entre a aparência e a moderação.
+    expect(text.indexOf(THEME_HINT)).toBeLessThan(text.indexOf(FEEDBACK_FORM_TITLE));
+    expect(text.indexOf(FEEDBACK_FORM_TITLE)).toBeLessThan(text.indexOf('ModeraçãoNomes dos mercados'));
     await act(async () => pressable('Nomes dos mercadosO nome padrão de cada mercado').props.onPress());
     expect(router.push).toHaveBeenCalledWith('/moderacao');
   });
@@ -377,5 +411,318 @@ describe('Configurações: clima da casa', () => {
     await act(async () => renderer?.unmount());
     mockLocation.data = null;
     expect(await mount()).toContain(`Casa${HOUSE_PLACE_TITLE}Casa da Ana · ${HOUSE_PLACE_ROW_HINT}Conta`);
+  });
+});
+
+describe('Configurações: mandar recado', () => {
+  const chip = (label: string) => renderer!.root.findAllByType(Chip).find((node) => node.props.label === label)!;
+  const selectedKinds = () =>
+    renderer!.root
+      .findAllByType(Chip)
+      .filter((node) => node.props.selected)
+      .map((node) => node.props.label);
+  const sends = () => mockDb.rpc.mock.calls.filter(([name]) => name === 'send_app_feedback');
+
+  beforeEach(() => {
+    mockDb.rpc.mockImplementation(async (name) =>
+      name === 'send_app_feedback' ? { data: 'recado-1', error: null } : { data: null, error: null },
+    );
+  });
+
+  it('fica entre a aparência e a conta: para que serve, os tipos sem nenhum marcado, o campo e quem lê', async () => {
+    const text = await mount();
+    expect(text).toContain(
+      `${THEME_HINT}${FEEDBACK_FORM_TITLE}${FEEDBACK_FORM_INTRO}${FEEDBACK_FORM_KIND_LABEL}ProblemaSugestãoElogioOutro`,
+    );
+    expect(text).toContain(`${FEEDBACK_DISCLOSURE}Enviar`);
+    expect(text.indexOf(FEEDBACK_FORM_TITLE)).toBeLessThan(text.indexOf(TERMS_TITLE));
+    expect(selectedKinds()).toEqual([]);
+    // Em branco não vai.
+    expect(button('Enviar').props.disabled).toBe(true);
+    // O leitor de tela lê o nome do campo (o rótulo desenhado não fica ligado a ele).
+    expect(field('Recado').props.accessibilityLabel).toBe('Recado');
+    expect(field('Recado').props.placeholder).toBe(FEEDBACK_FORM_PLACEHOLDER);
+    await type('Recado', '   ');
+    expect(button('Enviar').props.disabled).toBe(true);
+    expect(page()).not.toContain(FEEDBACK_SENT);
+  });
+
+  it('sem tipo, vai como "outro", aparado, numa chamada só (dois toques, um pedido); depois, o campo limpo e o "enviado"', async () => {
+    await mount();
+    await type('Recado', '  A lista não abre no navegador.  ');
+    let finish: () => void = () => undefined;
+    // Só o recado fica esperando: outro pedido que passe por aqui antes dele (uma leitura de novo) responde na hora.
+    mockDb.rpc.mockImplementation((name) =>
+      name === 'send_app_feedback'
+        ? new Promise((resolve) => {
+            finish = () => resolve({ data: 'recado-1', error: null });
+          })
+        : Promise.resolve({ data: null, error: null }),
+    );
+    await act(async () => {
+      button('Enviar').props.onPress();
+      button('Enviar').props.onPress();
+    });
+    // O React Query avisa a tela num setTimeout(0): sem esperar por ele, o "girando" depende da sorte.
+    await settle();
+    // Enquanto vai, o botão gira, o texto não muda e o tipo também não.
+    expect(button('Enviar').props.loading).toBe(true);
+    expect(field('Recado').props.editable).toBe(false);
+    expect(chip('Elogio').props.disabled).toBe(true);
+    expect(chip('Elogio').findAll((node) => node.props.accessibilityState !== undefined)[0].props.accessibilityState).toEqual({
+      selected: false,
+      disabled: true,
+    });
+    expect(selectedKinds()).toEqual([]);
+    await act(async () => finish());
+    await settle();
+    expect(chip('Elogio').props.disabled).toBe(false);
+    expect(sends()).toEqual([
+      [
+        'send_app_feedback',
+        // O aparelho e a versão do app vão junto, como no cartão do Nuke.
+        {
+          p_kind: 'outro',
+          p_message: 'A lista não abre no navegador.',
+          p_platform: 'ios',
+          p_app_version: Constants.expoConfig?.version ?? null,
+        },
+      ],
+    ]);
+    expect(field('Recado').props.value).toBe('');
+    expect(field('Recado').props.editable).toBe(true);
+    expect(page()).toContain(FEEDBACK_SENT);
+    // O campo esvaziou: o leitor de tela ouve que foi. No aparelho pelo anúncio, sem região aria-live (que no
+    // Android leria de novo).
+    expect(AccessibilityInfo.announceForAccessibility).toHaveBeenCalledWith(FEEDBACK_SENT);
+    expect(renderer!.root.findAll((node) => node.props['aria-live'] !== undefined)).toHaveLength(0);
+    expect(notify).not.toHaveBeenCalled();
+    // O "enviado" fica até a pessoa escrever de novo.
+    await type('Recado', 'Mais uma coisa');
+    expect(page()).not.toContain(FEEDBACK_SENT);
+  });
+
+  it('no navegador, o "enviado" entra numa região aria-live que já estava na página, vazia', async () => {
+    onWeb();
+    await mount();
+    const region = () =>
+      renderer!.root.findAll(
+        (node) => typeof node.type === 'string' && node.props.testID === 'feedback-sent-region' && node.props['aria-live'] === 'polite',
+      );
+    expect(region()).toHaveLength(1);
+    expect(textOf(region()[0])).toBe('');
+    await type('Recado', 'A lista não abre no navegador.');
+    await press('Enviar');
+    expect(region()).toHaveLength(1);
+    expect(textOf(region()[0])).toBe(FEEDBACK_SENT);
+    await type('Recado', 'Mais uma coisa');
+    expect(region()).toHaveLength(1);
+    expect(textOf(region()[0])).toBe('');
+  });
+
+  it('no navegador, o tipo marcado é um botão pressionado (o leitor de tela diz qual vai)', async () => {
+    onWeb();
+    await mount();
+    const pressed = () =>
+      Object.fromEntries(
+        renderer!.root
+          .findAllByType(Chip)
+          .map((node) => [node.props.label, node.findAll((inner) => inner.props['aria-pressed'] !== undefined)[0]?.props['aria-pressed']]),
+      );
+    expect(pressed()).toEqual({
+      Problema: false,
+      Sugestão: false,
+      Elogio: false,
+      Outro: false,
+    });
+    await act(async () => chip('Elogio').props.onPress());
+    expect(pressed()).toEqual({
+      Problema: false,
+      Sugestão: false,
+      Elogio: true,
+      Outro: false,
+    });
+  });
+
+  it('no aparelho, o tipo marcado vai pelo accessibilityState, sem aria-pressed', async () => {
+    await mount();
+    await act(async () => chip('Elogio').props.onPress());
+    expect(renderer!.root.findAll((node) => node.props['aria-pressed'] !== undefined)).toHaveLength(0);
+    const state = chip('Elogio').findAll((node) => node.props.accessibilityState !== undefined)[0].props.accessibilityState;
+    expect(state).toEqual({ selected: true });
+  });
+
+  it('com um tipo escolhido, vai com ele; tocar de novo desmarca; depois de enviar, o tipo também se limpa', async () => {
+    await mount();
+    await act(async () => chip('Elogio').props.onPress());
+    await act(async () => chip('Elogio').props.onPress());
+    expect(selectedKinds()).toEqual([]);
+    await act(async () => chip('Sugestão').props.onPress());
+    expect(selectedKinds()).toEqual(['Sugestão']);
+    await type('Recado', 'Um modo escuro mais escuro.');
+    await press('Enviar');
+    expect(sends()).toEqual([
+      [
+        'send_app_feedback',
+        expect.objectContaining({
+          p_kind: 'sugestao',
+          p_message: 'Um modo escuro mais escuro.',
+        }),
+      ],
+    ]);
+    expect(selectedKinds()).toEqual([]);
+  });
+
+  it.each([
+    ['o limite de 24 horas (NK015)', { code: 'NK015', message: 'limit' }, FEEDBACK_LIMIT],
+    [
+      'a função que ainda não existe',
+      {
+        code: 'PGRST202',
+        message: 'Could not find the function public.send_app_feedback',
+      },
+      FEEDBACK_NOT_READY,
+    ],
+  ])('a recusa (%s) vira o aviso, e o recado fica no campo para tentar de novo', async (_name, error, message) => {
+    mockDb.rpc.mockImplementation(async (name) => (name === 'send_app_feedback' ? { data: null, error } : { data: null, error: null }));
+    await mount();
+    await act(async () => chip('Problema').props.onPress());
+    await type('Recado', 'O app fecha sozinho.');
+    await press('Enviar');
+    expect(notify).toHaveBeenCalledWith('Não deu certo', message);
+    expect(field('Recado').props.value).toBe('O app fecha sozinho.');
+    expect(selectedKinds()).toEqual(['Problema']);
+    expect(page()).not.toContain(FEEDBACK_SENT);
+    expect(button('Enviar').props.disabled).toBe(false);
+  });
+
+  describe('sem internet', () => {
+    afterEach(() => onlineManager.setOnline(true));
+
+    it('não fica parado esperando a conexão: tenta na hora, avisa "Sem internet agora…" e o recado fica no campo', async () => {
+      onlineManager.setOnline(false);
+      mockDb.rpc.mockImplementation(async (name) => {
+        if (name === 'send_app_feedback') throw new TypeError('Network request failed');
+        return { data: null, error: null };
+      });
+      await mount();
+      await type('Recado', 'O app fecha sozinho.');
+      await press('Enviar');
+      // Foi tentado (não ficou parado na fila guardada à espera da internet).
+      expect(sends()).toHaveLength(1);
+      expect(notify).toHaveBeenCalledWith('Não deu certo', OFFLINE_TRY_AGAIN);
+      expect(field('Recado').props.value).toBe('O app fecha sozinho.');
+      expect(page()).not.toContain(FEEDBACK_SENT);
+      expect(AccessibilityInfo.announceForAccessibility).not.toHaveBeenCalled();
+      expect(button('Enviar').props.loading).toBe(false);
+      expect(button('Enviar').props.disabled).toBe(false);
+    });
+  });
+
+  it('o erro avisa mesmo depois de a pessoa sair de Configurações com o recado ainda indo', async () => {
+    let fail: () => void = () => undefined;
+    mockDb.rpc.mockImplementation((name) =>
+      name === 'send_app_feedback'
+        ? new Promise((resolve) => {
+            fail = () =>
+              resolve({
+                data: null,
+                error: { code: 'NK015', message: 'limit' },
+              });
+          })
+        : Promise.resolve({ data: null, error: null }),
+    );
+    await mount();
+    await type('Recado', 'O app fecha sozinho.');
+    await act(async () => button('Enviar').props.onPress());
+    await act(async () => renderer?.unmount());
+    renderer = undefined;
+    await act(async () => fail());
+    await settle();
+    expect(notify).toHaveBeenCalledWith('Não deu certo', FEEDBACK_LIMIT);
+  });
+
+  it('perto do limite, o contador; passado, quanto tirar, e "Enviar" parado', async () => {
+    await mount();
+    await type('Recado', 'a'.repeat(1799));
+    expect(AccessibilityInfo.announceForAccessibility).not.toHaveBeenCalled();
+    expect(page()).not.toContain('caracteres');
+    await type('Recado', 'a'.repeat(1850));
+    expect(field('Recado').props.hint).toBe('1.850 de 2.000 caracteres');
+    expect(field('Recado').props.accessibilityHint).toBe('1.850 de 2.000 caracteres');
+    expect(button('Enviar').props.disabled).toBe(false);
+    await type('Recado', 'a'.repeat(FEEDBACK_MAX_LENGTH + 3));
+    expect(field('Recado').props.hint).toBe('O recado passou do limite de 2.000 caracteres. Tire 3 caracteres para poder enviar.');
+    expect(field('Recado').props.hintColor).toBe('danger');
+    // O motivo de "Enviar" parado chega ao leitor de tela.
+    expect(field('Recado').props.accessibilityHint).toBe(field('Recado').props.hint);
+    expect(button('Enviar').props.disabled).toBe(true);
+    await act(async () => button('Enviar').props.onPress());
+    await settle();
+    expect(sends()).toEqual([]);
+    // No aparelho, nada do navegador.
+    expect(renderer!.root.findAll((node) => node.props['aria-describedby'] !== undefined)).toHaveLength(0);
+    expect(renderer!.root.findAll((node) => node.props['aria-live'] !== undefined)).toHaveLength(0);
+  });
+
+  it('no aparelho, o leitor de tela ouve o limite quando o estado muda (perto, passou, voltou), não a cada tecla', async () => {
+    const near = 'O recado está perto do limite de 2.000 caracteres.';
+    const over = 'O recado passou do limite de 2.000 caracteres. Encurte para poder enviar.';
+    const announced = () => jest.mocked(AccessibilityInfo.announceForAccessibility).mock.calls.map(([text]) => text);
+    await mount();
+    await type('Recado', 'a'.repeat(1799));
+    expect(announced()).toEqual([]);
+    await type('Recado', 'a'.repeat(1800));
+    await type('Recado', 'a'.repeat(1801));
+    await type('Recado', 'a'.repeat(1950));
+    expect(announced()).toEqual([near]);
+    await type('Recado', 'a'.repeat(FEEDBACK_MAX_LENGTH + 1));
+    await type('Recado', 'a'.repeat(FEEDBACK_MAX_LENGTH + 2));
+    await type('Recado', 'a'.repeat(FEEDBACK_MAX_LENGTH + 40));
+    expect(announced()).toEqual([near, over]);
+    // Voltou para dentro: "Enviar" anda de novo, e o leitor de tela ouve.
+    await type('Recado', 'a'.repeat(FEEDBACK_MAX_LENGTH));
+    await type('Recado', 'a'.repeat(FEEDBACK_MAX_LENGTH - 1));
+    expect(announced()).toEqual([near, over, near]);
+    // Longe do limite, nada; perto de novo, de novo uma vez.
+    await type('Recado', 'curto');
+    await type('Recado', 'a'.repeat(1900));
+    expect(announced()).toEqual([near, over, near, near]);
+  });
+
+  it('no navegador, o contador e o motivo de "Enviar" parado ficam ligados ao campo, e só a mudança de estado é falada', async () => {
+    onWeb();
+    await mount();
+    const describedBy = () => renderer!.root.findAll((node) => node.props['aria-describedby'] !== undefined);
+    const liveRegions = () => renderer!.root.findAll((node) => typeof node.type === 'string' && node.props['aria-live'] === 'polite');
+    const limitRegion = () => liveRegions().filter((node) => node.props.testID === 'feedback-limit-region');
+    // Sem dica, o campo não aponta para nada, mas a região do limite já está na página, vazia.
+    expect(describedBy()).toHaveLength(0);
+    expect(limitRegion()).toHaveLength(1);
+    expect(textOf(limitRegion()[0])).toBe('');
+    await type('Recado', 'a'.repeat(FEEDBACK_MAX_LENGTH + 3));
+    const reason = 'O recado passou do limite de 2.000 caracteres. Tire 3 caracteres para poder enviar.';
+    const ids = new Set(describedBy().map((node) => node.props['aria-describedby']));
+    expect(ids.size).toBe(1);
+    const [id] = ids;
+    const hint = renderer!.root.findAll((node) => node.props.id === id && typeof node.type !== 'string');
+    expect(hint.length).toBeGreaterThan(0);
+    expect(textOf(hint[0])).toBe(reason);
+    // A dica, que muda a cada tecla, não está dentro de nenhuma região aria-live.
+    for (const region of liveRegions()) expect(region.findAll((node) => node.props.id === id)).toHaveLength(0);
+    // A região do limite diz o estado, com um texto que não muda enquanto o estado não muda.
+    const over = 'O recado passou do limite de 2.000 caracteres. Encurte para poder enviar.';
+    expect(textOf(limitRegion()[0])).toBe(over);
+    await type('Recado', 'a'.repeat(FEEDBACK_MAX_LENGTH + 30));
+    expect(textOf(limitRegion()[0])).toBe(over);
+    await type('Recado', 'a'.repeat(1850));
+    expect(textOf(limitRegion()[0])).toBe('O recado está perto do limite de 2.000 caracteres.');
+    await type('Recado', 'a'.repeat(1851));
+    expect(textOf(limitRegion()[0])).toBe('O recado está perto do limite de 2.000 caracteres.');
+    await type('Recado', 'curto');
+    expect(textOf(limitRegion()[0])).toBe('');
+    expect(limitRegion()).toHaveLength(1);
+    // No navegador quem fala é a região: o anúncio do aparelho não é chamado (lá não faz nada).
+    expect(AccessibilityInfo.announceForAccessibility).not.toHaveBeenCalled();
   });
 });

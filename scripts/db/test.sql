@@ -12746,7 +12746,7 @@ delete from public.households where name in ('Casa do Gil', 'Casa da Bia', 'Casa
 delete from auth.users where id in (:'user_g1', :'user_g2', :'user_g3');
 
 -- ---------------------------------------------------------------------------
-\echo '• Recados: a pessoa manda (pelo Nuke), só quem mantém o app lê, e a conta apagada leva os recados dela'
+\echo '• Recados: a pessoa manda (pelo Nuke ou em Configurações), só quem mantém o app lê, e a conta apagada leva os recados dela'
 reset role;
 select set_config('request.jwt.claim.sub', '', false) \gset
 do $$

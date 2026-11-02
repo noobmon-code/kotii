@@ -8,6 +8,7 @@ import { formatQuantity } from '@/domain/money';
 import type { ShoppingListItem } from '@/lib/types';
 import { Badge, CategoryIcon, Icon, Row, Text, useCategoryTint } from '@/ui/primitives';
 import { radius, space, useColors } from '@/ui/theme';
+import { webHoldable, webImageUnderHold } from '@/ui/webHold';
 
 /**
  * O que a casa sabe do item no mercado: quanto deve custar e se está na despensa (domain/listEstimate) e, na ida
@@ -123,6 +124,10 @@ function Tile({
   // No carrinho o item já foi pego: a despensa não importa mais.
   const inPantry = !inCart && hint?.inPantry;
   const isNew = !inCart && hint?.isNew;
+  // No navegador do iPhone, segurar sobre a foto ou o desenho abria o menu da imagem do Safari em vez dos
+  // detalhes: o cartão fica sem esse menu e sem seleção, e a imagem deixa o toque para ele (ui/webHold).
+  const holdable = webHoldable();
+  const imageHold = webImageUnderHold();
   return (
     <Pressable
       accessibilityRole="checkbox"
@@ -138,17 +143,19 @@ function Tile({
       style={({ pressed }) => [
         styles.tile,
         { width, backgroundColor: inCart ? c.surfaceAlt : tint.bg },
+        holdable,
         pressed && styles.pressed,
       ]}>
       {photo ? (
         <Image
           source={photo}
-          style={[styles.photo, { width: artSize, height: artSize, opacity: inCart ? 0.45 : 1 }]}
+          style={[styles.photo, { width: artSize, height: artSize, opacity: inCart ? 0.45 : 1 }, imageHold.style]}
           contentFit="cover"
           accessible={false}
+          draggable={imageHold.draggable}
         />
       ) : (
-        <CategoryIcon category={item.category} name={item.name} size={artSize} backdrop={false} dimmed={inCart} />
+        <CategoryIcon category={item.category} name={item.name} size={artSize} backdrop={false} dimmed={inCart} underHold />
       )}
       <Text
         variant="label"

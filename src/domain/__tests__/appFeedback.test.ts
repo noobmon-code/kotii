@@ -7,7 +7,9 @@ import {
   applyFeedbackUpdate,
   cleanFeedbackText,
   defaultFeedbackStatus,
+  FEEDBACK_COUNTER_FROM,
   FEEDBACK_DAILY_LIMIT,
+  FEEDBACK_FORM_INTRO,
   FEEDBACK_GONE,
   FEEDBACK_INVALID,
   FEEDBACK_KIND_LABELS,
@@ -21,11 +23,14 @@ import {
   FEEDBACK_STATUS_LABELS,
   FEEDBACK_STATUSES,
   FEEDBACK_TITLE_MAX,
+  feedbackCounter,
   feedbackDateTime,
   feedbackDetail,
   feedbackDevice,
+  feedbackDraftLength,
   feedbackInboxView,
   feedbackKeyStep,
+  feedbackLimitNotice,
   feedbackLength,
   feedbackNoteChanged,
   feedbackNoteError,
@@ -43,6 +48,7 @@ import {
   nextFeedbackSelection,
   parseFeedbackItem,
   parseFeedbackList,
+  readFeedbackDraft,
   REPLY_URL_MAX,
   replyMailto,
   withOpenedFeedback,
@@ -585,5 +591,74 @@ describe('o painel e o teclado', () => {
     expect(nextFeedbackSelection(ids, null, -1)).toBe('a');
     expect(nextFeedbackSelection(ids, 'saiu', 1)).toBe('a');
     expect(nextFeedbackSelection([], 'a', 1)).toBeNull();
+  });
+});
+
+describe('o recado escrito em Configurações', () => {
+  const longText = (length: number) => 'a'.repeat(length);
+
+  it('a linha do alto oferece os tipos que os selos oferecem (fora o "outro"), com os mesmos nomes', () => {
+    // Um tipo renomeado ou novo nos selos sem a linha do alto acompanhar falha aqui.
+    for (const kind of FEEDBACK_KINDS.filter((key) => key !== 'outro')) {
+      expect(FEEDBACK_FORM_INTRO.toLocaleLowerCase('pt-BR')).toContain(FEEDBACK_KIND_LABELS[kind].toLocaleLowerCase('pt-BR'));
+    }
+  });
+
+  it('sem tipo escolhido vai como "outro"; o escolhido vai como está; o texto vai aparado', () => {
+    expect(readFeedbackDraft(null, '  O botão não abre  ')).toEqual({ ok: true, kind: 'outro', message: 'O botão não abre' });
+    for (const kind of FEEDBACK_KINDS) {
+      expect(readFeedbackDraft(kind, 'Oi')).toEqual({ ok: true, kind, message: 'Oi' });
+    }
+  });
+
+  it('em branco não vai', () => {
+    expect(readFeedbackDraft('elogio', '')).toEqual({ ok: false, reason: 'empty' });
+    expect(readFeedbackDraft(null, ' \n\t ')).toEqual({ ok: false, reason: 'empty' });
+  });
+
+  it('o limite conta como o banco (aparado, um emoji é um caractere) e o que passa não é cortado: não vai', () => {
+    expect(readFeedbackDraft(null, longText(FEEDBACK_MAX_LENGTH))).toEqual({ ok: true, kind: 'outro', message: longText(FEEDBACK_MAX_LENGTH) });
+    // Os espaços nas pontas não contam.
+    expect(readFeedbackDraft(null, `  ${longText(FEEDBACK_MAX_LENGTH)}  `).ok).toBe(true);
+    expect(readFeedbackDraft(null, longText(FEEDBACK_MAX_LENGTH + 1))).toEqual({ ok: false, reason: 'tooLong' });
+    // 2000 emojis são 4000 unidades de UTF-16, mas 2000 caracteres para o banco.
+    const emojis = '😀'.repeat(FEEDBACK_MAX_LENGTH);
+    expect(feedbackDraftLength(emojis)).toBe(FEEDBACK_MAX_LENGTH);
+    expect(readFeedbackDraft(null, emojis).ok).toBe(true);
+    expect(readFeedbackDraft(null, `${emojis}😀`)).toEqual({ ok: false, reason: 'tooLong' });
+  });
+
+  it('o contador só aparece perto do limite; passado, diz quanto tirar', () => {
+    expect(FEEDBACK_COUNTER_FROM).toBe(1800);
+    expect(feedbackCounter('')).toBeNull();
+    expect(feedbackCounter(longText(FEEDBACK_COUNTER_FROM - 1))).toBeNull();
+    // Os espaços das pontas não aproximam do limite.
+    expect(feedbackCounter(`${longText(FEEDBACK_COUNTER_FROM - 1)}     `)).toBeNull();
+    expect(feedbackCounter(longText(FEEDBACK_COUNTER_FROM))).toEqual({ text: '1.800 de 2.000 caracteres', over: false });
+    expect(feedbackCounter(longText(FEEDBACK_MAX_LENGTH))).toEqual({ text: '2.000 de 2.000 caracteres', over: false });
+    expect(feedbackCounter(longText(FEEDBACK_MAX_LENGTH + 1))).toEqual({
+      text: 'O recado passou do limite de 2.000 caracteres. Tire 1 caractere para poder enviar.',
+      over: true,
+    });
+    expect(feedbackCounter(longText(FEEDBACK_MAX_LENGTH + 50))?.text).toBe(
+      'O recado passou do limite de 2.000 caracteres. Tire 50 caracteres para poder enviar.',
+    );
+    expect(feedbackCounter('😀'.repeat(FEEDBACK_COUNTER_FROM))?.text).toBe('1.800 de 2.000 caracteres');
+  });
+
+  it('o aviso do limite para o leitor de tela só muda quando o estado muda, não a cada caractere', () => {
+    expect(feedbackLimitNotice('')).toBeNull();
+    expect(feedbackLimitNotice(longText(FEEDBACK_COUNTER_FROM - 1))).toBeNull();
+    const near = 'O recado está perto do limite de 2.000 caracteres.';
+    const over = 'O recado passou do limite de 2.000 caracteres. Encurte para poder enviar.';
+    for (let length = FEEDBACK_COUNTER_FROM; length <= FEEDBACK_MAX_LENGTH; length += 1) {
+      expect(feedbackLimitNotice(longText(length))).toBe(near);
+    }
+    for (let length = FEEDBACK_MAX_LENGTH + 1; length <= FEEDBACK_MAX_LENGTH + 300; length += 1) {
+      expect(feedbackLimitNotice(longText(length))).toBe(over);
+    }
+    // Conta como o contador: aparado, um emoji é um caractere.
+    expect(feedbackLimitNotice(`${longText(FEEDBACK_COUNTER_FROM - 1)}     `)).toBeNull();
+    expect(feedbackLimitNotice('😀'.repeat(FEEDBACK_MAX_LENGTH))).toBe(near);
   });
 });
