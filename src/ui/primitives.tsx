@@ -11,6 +11,7 @@ import {
   Text as RNText,
   TextInput,
   View,
+  type PressableProps,
   type StyleProp,
   type TextInputProps,
   type TextProps as RNTextProps,
@@ -31,6 +32,7 @@ import { IconArt, type IconArtName } from './iconArt';
 import { ITEM_ART } from './itemArt';
 import { Orb } from './Orb';
 import { fonts, MAX_WIDTH, radius, SCREEN_PADDING, shadows, space, useColors, useGlow, useScheme, useTint, type Colors, type Tint } from './theme';
+import { webImageUnderHold } from './webHold';
 
 export type { IconName };
 
@@ -394,10 +396,28 @@ export function TextField({
   label,
   hint,
   hintColor,
+  hintId,
   style,
   ...props
-}: TextInputProps & { label?: string; hint?: string; hintColor?: keyof Colors }) {
+}: TextInputProps & {
+  label?: string;
+  hint?: string;
+  hintColor?: keyof Colors;
+  /**
+   * Liga a dica ao campo no navegador, onde o accessibilityHint não chega ao DOM (react-native-web 0.21 não o
+   * conhece): a dica ganha esse id e o campo aponta para ela com aria-describedby, para ser lida com o campo. Não é
+   * uma região aria-live: uma dica que muda a cada tecla (um contador) seria falada a cada tecla; quem precisa
+   * avisar uma mudança avisa à parte, só quando o estado muda. No aparelho, nada muda.
+   */
+  hintId?: string;
+}) {
   const c = useColors();
+  const webHint = Platform.OS === 'web' && hintId ? hintId : undefined;
+  const hintText = hint ? (
+    <Text variant="small" color={hintColor} id={webHint}>
+      {hint}
+    </Text>
+  ) : null;
   return (
     <View style={styles.field}>
       {label ? <Text variant="label">{label}</Text> : null}
@@ -410,14 +430,16 @@ export function TextField({
           style,
         ]}
         {...props}
+        {...(webHint && hint ? webDescribedBy(webHint) : null)}
       />
-      {hint ? (
-        <Text variant="small" color={hintColor}>
-          {hint}
-        </Text>
-      ) : null}
+      {hintText}
     </View>
   );
+}
+
+/** aria-describedby, que o react-native-web passa ao DOM e o tipo do React Native não tem. */
+function webDescribedBy(id: string): TextInputProps {
+  return { 'aria-describedby': id } as unknown as TextInputProps;
 }
 
 interface DateFieldProps {
@@ -577,6 +599,8 @@ export function Chip({
   onPress,
   icon,
   accessibilityLabel,
+  toggle = false,
+  disabled = false,
 }: {
   label: string;
   selected?: boolean;
@@ -584,17 +608,31 @@ export function Chip({
   icon?: IconName;
   /** O que o leitor de tela diz do selo; sem ele, lê o rótulo. Para o selo que tira um filtro dizer que tira. */
   accessibilityLabel?: string;
+  /**
+   * O selo liga e desliga (uma escolha entre opções), em vez de fazer uma coisa só (tirar um filtro, abrir uma
+   * escolha): no navegador, onde o react-native-web 0.21 não leva o accessibilityState ao DOM, ele vira um botão
+   * pressionado ou não (aria-pressed), para o leitor de tela dizer qual está escolhido.
+   */
+  toggle?: boolean;
+  /** Parado por um momento (enquanto algo é enviado): esmaecido, e o leitor de tela diz que não responde. */
+  disabled?: boolean;
 }) {
   const c = useColors();
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ selected }}
+      accessibilityState={{ selected, disabled: disabled || undefined }}
       accessibilityLabel={accessibilityLabel}
+      {...(Platform.OS === 'web' && toggle ? webPressed(Boolean(selected)) : null)}
       onPress={onPress}
+      disabled={disabled}
+      // O selo tem uns 36 de altura: a área do toque chega aos 44 sem mudar o desenho (o espaço entre linhas de selos
+      // é de 8, então as áreas não se cruzam).
+      hitSlop={CHIP_HIT_SLOP}
       style={[
         styles.chip,
         { backgroundColor: selected ? c.primary : c.glassStrong, borderColor: selected ? c.primary : c.border },
+        disabled && styles.chipDisabled,
       ]}>
       {icon ? <Icon name={icon} size={16} color={selected ? 'onPrimary' : 'textMuted'} /> : null}
       <Text variant="label" color={selected ? 'onPrimary' : 'text'} style={styles.chipText}>
@@ -602,6 +640,13 @@ export function Chip({
       </Text>
     </Pressable>
   );
+}
+
+const CHIP_HIT_SLOP = { top: 4, bottom: 4, left: 2, right: 2 };
+
+/** aria-pressed, que o react-native-web passa ao DOM e o tipo do React Native não tem. */
+function webPressed(pressed: boolean): PressableProps {
+  return { 'aria-pressed': pressed } as unknown as PressableProps;
 }
 
 // ---------------------------------------------------------------------------
@@ -668,24 +713,29 @@ export function CategoryIcon({
   size = 40,
   backdrop = true,
   dimmed = false,
+  underHold = false,
 }: {
   category: string;
   name?: string;
   size?: number;
   backdrop?: boolean;
   dimmed?: boolean;
+  /** Dentro de um cartão que se segura: no navegador a imagem não recebe o toque (ui/webHold). */
+  underHold?: boolean;
 }) {
   const art = CATEGORY_ART[getCategory(category).key];
   const glow = useGlow(art.tint);
   const itemKey = name ? matchItemArt(name, category) : null;
   // Na orbe o desenho fica um pouco menor que ela, para o vidro aparecer em volta.
   const imageSize = backdrop ? Math.round(size * 0.8) : size;
+  const hold = underHold ? webImageUnderHold() : {};
   const image = (
     <Image
       source={itemKey ? ITEM_ART[itemKey] : art.image}
-      style={{ width: imageSize, height: imageSize, opacity: dimmed ? 0.45 : 1 }}
+      style={[{ width: imageSize, height: imageSize, opacity: dimmed ? 0.45 : 1 }, hold.style]}
       contentFit="contain"
       accessible={false}
+      draggable={hold.draggable}
     />
   );
   if (!backdrop) return image;
@@ -937,6 +987,7 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
   },
   chipText: { fontSize: 14 },
+  chipDisabled: { opacity: 0.5 },
   badge: { borderRadius: radius.pill, paddingHorizontal: space.sm, paddingVertical: 2, alignSelf: 'flex-start' },
   badgeText: { fontFamily: fonts.bold },
   listRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: 10, borderRadius: radius.sm },
