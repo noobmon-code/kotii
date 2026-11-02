@@ -20,6 +20,7 @@ import {
   roundCoordinate,
   type OsmPlace,
 } from '@/domain/weather';
+import { HOUSEHOLD_HEADER } from '@/lib/householdHeader';
 import { supabase, unwrap } from '@/lib/supabase';
 
 export interface HouseholdLocation {
@@ -54,6 +55,20 @@ export function useSaveHouseholdLocation() {
       queryClient.invalidateQueries({ queryKey: LOCATION_KEY });
     },
   });
+}
+
+/**
+ * Salva onde fica uma casa dada, e não a aberta neste aparelho: a que acabou de ser criada (bem-vindo e Suas casas),
+ * que pode ainda não ser a aberta. A casa vai no corpo e no cabeçalho do pedido, então o lugar só cai nela (a regra
+ * de acesso confere que a pessoa é dela).
+ */
+export async function saveHouseholdLocationFor(householdId: string, place: HouseholdLocation): Promise<void> {
+  unwrap(
+    await supabase
+      .from('household_location')
+      .upsert({ household_id: householdId, ...place }, { onConflict: 'household_id' })
+      .setHeader(HOUSEHOLD_HEADER, householdId),
+  );
 }
 
 export function useClearHouseholdLocation() {

@@ -82,6 +82,7 @@ export function Screen({
   fab,
   scrollRef,
   maxWidth = MAX_WIDTH,
+  heading,
 }: {
   children: ReactNode;
   scroll?: boolean;
@@ -98,6 +99,11 @@ export function Screen({
   scrollRef?: RefObject<ScrollView | null>;
   /** A largura máxima do conteúdo e do rodapé (o Painel do app, feito para o computador, vai mais longe). */
   maxWidth?: number;
+  /**
+   * O título da tela só para o leitor de tela (as abas sem cartão de topo: a barra de abas já diz a aba a quem vê, e
+   * quem navega pelos títulos ainda acha o começo da página). Não aparece nem ocupa lugar.
+   */
+  heading?: string;
 }) {
   const c = useColors();
   // Só a tela que pede outra largura ganha um estilo a mais: as outras ficam como sempre foram.
@@ -105,7 +111,17 @@ export function Screen({
   // Sem a rolagem da tela, o conteúdo ocupa só a altura dela (flex 1, e não só flexGrow): no navegador, com o
   // flexShrink 0 e a base auto do react-native-web, ele cresceria até a altura da lista que tem dentro, e a lista
   // (que rola sozinha) não teria uma altura para rolar.
-  const content = <View style={[styles.content, width, !scroll && styles.flex, fab && styles.contentWithFab]}>{children}</View>;
+  const content = (
+    <View style={[styles.content, width, !scroll && styles.flex, fab && styles.contentWithFab]}>
+      {heading ? (
+        // Um ponto de 1 por 1, da cor do fundo: fora da vista, mas lido (com opacidade 0, o VoiceOver o pularia).
+        <Text accessibilityRole="header" numberOfLines={1} color="background" style={styles.screenReaderOnly}>
+          {heading}
+        </Text>
+      ) : null}
+      {children}
+    </View>
+  );
   return (
     <SafeAreaView edges={edges} style={[styles.screen, { backgroundColor: c.background }]}>
       <Backdrop />
@@ -929,6 +945,7 @@ const styles = StyleSheet.create({
     gap: space.xl,
   },
   contentWithFab: { paddingBottom: 96 },
+  screenReaderOnly: { position: 'absolute', top: 0, left: 0, width: 1, height: 1, overflow: 'hidden' },
   footer: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: space.lg, paddingVertical: space.md },
   footerInner: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center', gap: space.sm },
   card: { borderRadius: radius.lg, borderCurve: 'continuous', padding: space.lg + 2 },

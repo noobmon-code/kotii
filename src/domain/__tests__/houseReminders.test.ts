@@ -3,6 +3,7 @@ import { describe, expect, it } from '@jest/globals';
 import { addDays } from '../dates';
 import { NO_DAY_CHANGE, type FamilyCalendar, type FamilyEventLike } from '../familyEvents';
 import { pendingNextDoses } from '../health';
+import { HOUSE_PLACE_WHERE } from '../housePlace';
 import {
   EVE_SUMMARY_TIME,
   eveSummary,
@@ -1634,6 +1635,12 @@ describe('planHouseReminders: resumo de amanhã', () => {
     );
     expect(hint('appointments')).toBe('Na véspera, às 19h, e 2 horas antes');
     expect(hint('events')).toBe('Na véspera, às 19h, e no dia, 1 hora antes do horário (sem horário, às 8h). Os de toda semana avisam só no dia');
+  });
+
+  it('a dica do clima manda definir o bairro em Configurações → Clima da casa, e não mais na tela Hoje', () => {
+    const hint = HOUSE_REMINDER_KINDS.find((kind) => kind.key === 'weather')?.hint ?? '';
+    expect(hint).toContain(`O bairro da casa se define em ${HOUSE_PLACE_WHERE}`);
+    expect(hint).not.toContain('Hoje');
   });
 
   it('com o resumo ligado, a consulta vai nele e o "Consulta amanhã" das 19h não toca junto', () => {

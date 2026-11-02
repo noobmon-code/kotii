@@ -8,6 +8,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'rea
 
 import SettingsScreen from '@/app/configuracoes';
 import { APP_DASHBOARD_TITLE } from '@/domain/appDashboard';
+import { HOUSE_PLACE_ROW_HINT, HOUSE_PLACE_ROW_UNKNOWN, HOUSE_PLACE_TITLE } from '@/domain/housePlace';
 import {
   FEEDBACK_DISCLOSURE,
   FEEDBACK_FORM_INTRO,
@@ -71,15 +72,22 @@ jest.mock('@/lib/supabase', () => ({
   },
 }));
 const mockMe = { household_id: 'h1', user_id: 'ana', display_name: 'Ana', role: 'owner' as const };
+// As casas da pessoa: com mais de uma, a linha do clima diz de qual casa é.
+const mockHouses = { list: [] as { id: string; name: string; role: string }[] };
 jest.mock('@/lib/auth', () => ({
   signOut: jest.fn(),
   useAuth: () => ({ session: { user: { id: 'ana', email: 'ana@exemplo.com' } } }),
-  useHousehold: () => ({ data: { household: { id: 'h1', name: 'Casa da Ana' }, members: [mockMe], me: mockMe, households: [] } }),
+  useHousehold: () => ({
+    data: { household: { id: 'h1', name: 'Casa da Ana' }, members: [mockMe], me: mockMe, households: mockHouses.list },
+  }),
 }));
 jest.mock('@/data/household', () => ({ useSignOutQuestion: () => () => 'Deseja sair desta conta neste aparelho?' }));
 // Quem modera (a is_moderator): à parte do banco de mentira, que conta as chamadas do perfil.
 const mockModerator = { value: false };
 jest.mock('@/data/storeModeration', () => ({ useIsModerator: () => ({ data: mockModerator.value }) }));
+// Onde fica a casa aberta (a linha "Clima da casa"): undefined enquanto carrega, null sem bairro.
+const mockLocation = { data: null as { label: string } | null | undefined };
+jest.mock('@/data/weather', () => ({ useHouseholdLocation: () => ({ data: mockLocation.data }) }));
 jest.mock('@/ui/dialogs', () => ({ confirmAction: jest.fn(), notify: jest.fn() }));
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
@@ -133,6 +141,8 @@ const pressable = (label: string) =>
 beforeEach(() => {
   jest.clearAllMocks();
   mockModerator.value = false;
+  mockLocation.data = null;
+  mockHouses.list = [];
   mockSystem.scheme = 'light';
   mockDb.read = { data: { birth_date: '1985-03-05', phone: '83999999999' }, error: null };
   mockDb.reads = [];
@@ -365,6 +375,42 @@ describe('Configurações: moderação', () => {
     expect(text.indexOf(FEEDBACK_FORM_TITLE)).toBeLessThan(text.indexOf('ModeraçãoNomes dos mercados'));
     await act(async () => pressable('Nomes dos mercadosO nome padrão de cada mercado').props.onPress());
     expect(router.push).toHaveBeenCalledWith('/moderacao');
+  });
+});
+
+describe('Configurações: clima da casa', () => {
+  it('antes de saber (lendo, ou a leitura falhou sem nada guardado), a linha não convida a definir o bairro', async () => {
+    mockLocation.data = undefined;
+    const text = await mount();
+    expect(text).toContain(`Casa${HOUSE_PLACE_TITLE}${HOUSE_PLACE_ROW_UNKNOWN}Conta`);
+    expect(text).not.toContain(HOUSE_PLACE_ROW_HINT);
+  });
+
+  it('sem bairro, a linha convida; abre a tela do clima', async () => {
+    mockLocation.data = null;
+    const text = await mount();
+    expect(text).toContain(`Casa${HOUSE_PLACE_TITLE}${HOUSE_PLACE_ROW_HINT}Conta`);
+    await act(async () => pressable(`${HOUSE_PLACE_TITLE}${HOUSE_PLACE_ROW_HINT}`).props.onPress());
+    expect(router.push).toHaveBeenCalledWith('/clima');
+  });
+
+  it('com o bairro, a linha diz onde fica a casa, antes da conta', async () => {
+    mockLocation.data = { label: 'Pinheiros, São Paulo' };
+    const text = await mount();
+    expect(text).toContain(`Casa${HOUSE_PLACE_TITLE}Pinheiros, São PauloConta`);
+    expect(text.indexOf(HOUSE_PLACE_TITLE)).toBeGreaterThan(text.indexOf('Aparência'));
+  });
+
+  it('com mais de uma casa, a linha diz de qual casa é o lugar (a aberta)', async () => {
+    mockHouses.list = [
+      { id: 'h1', name: 'Casa da Ana', role: 'owner' },
+      { id: 'h2', name: 'Casa da praia', role: 'member' },
+    ];
+    mockLocation.data = { label: 'Pinheiros, São Paulo' };
+    expect(await mount()).toContain(`Casa${HOUSE_PLACE_TITLE}Casa da Ana · Pinheiros, São PauloConta`);
+    await act(async () => renderer?.unmount());
+    mockLocation.data = null;
+    expect(await mount()).toContain(`Casa${HOUSE_PLACE_TITLE}Casa da Ana · ${HOUSE_PLACE_ROW_HINT}Conta`);
   });
 });
 

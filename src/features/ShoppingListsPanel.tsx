@@ -27,7 +27,7 @@ import {
   TextField,
   Tile,
 } from '@/ui/primitives';
-import { FeatureCard } from '@/ui/ScreenHeader';
+import { FeatureCard } from '@/ui/FeatureCard';
 import { space } from '@/ui/theme';
 
 export const LIST_KINDS: { value: ListKind; label: string; icon: IconName }[] = [

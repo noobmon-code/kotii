@@ -94,10 +94,9 @@ describe.each(['light', 'dark'] as const)('o tema %s', (scheme) => {
     expect([palette.info, palette.infoSoft]).toEqual([palette.primary, palette.primarySoft]);
   });
 
-  it('os textos do topo e o título têm contraste nas duas pontas do gradiente', () => {
+  it('o subtítulo e o título têm contraste nas duas pontas do gradiente', () => {
     for (const gradient of Object.values(GRADIENTS[scheme])) {
       for (const end of [gradient.from, gradient.to]) {
-        expect(contrast(gradient.eyebrow, end)).toBeGreaterThanOrEqual(MIN);
         expect(contrast(gradient.subtitle, end)).toBeGreaterThanOrEqual(MIN);
         expect(contrast(palette.text, end)).toBeGreaterThanOrEqual(MIN);
       }

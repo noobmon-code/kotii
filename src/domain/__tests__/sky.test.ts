@@ -54,8 +54,8 @@ describe('currentSky', () => {
 
   it('o céu da hora da casa', () => {
     // 15h em São Paulo = 18h UTC.
-    expect(currentSky(forecast, new Date('2026-10-21T18:10:00Z'))).toEqual({ sky: 'chuva-forte', period: 'dia' });
-    expect(currentSky(forecast, new Date('2026-10-22T01:30:00Z'))).toEqual({ sky: 'limpo', period: 'noite' });
+    expect(currentSky(forecast, new Date('2026-10-21T18:10:00Z'))).toBe('chuva-forte');
+    expect(currentSky(forecast, new Date('2026-10-22T01:30:00Z'))).toBe('limpo');
   });
 
   it('null sem previsão ou sem a hora', () => {
@@ -67,7 +67,7 @@ describe('currentSky', () => {
 
 describe('defaultSky', () => {
   it('de dia, poucas nuvens; à noite, limpo', () => {
-    expect(defaultSky(new Date(2026, 9, 21, 10))).toEqual({ sky: 'poucas-nuvens', period: 'dia' });
-    expect(defaultSky(new Date(2026, 9, 21, 22))).toEqual({ sky: 'limpo', period: 'noite' });
+    expect(defaultSky(new Date(2026, 9, 21, 10))).toBe('poucas-nuvens');
+    expect(defaultSky(new Date(2026, 9, 21, 22))).toBe('limpo');
   });
 });

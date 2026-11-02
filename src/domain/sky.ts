@@ -1,5 +1,6 @@
-// O céu de agora, para o desenho do clima no topo da tela Hoje: um de sete tipos, de dia ou de noite, tirado da
-// previsão hora a hora da casa (código WMO do Open-Meteo). Sem previsão, o céu é o do desenho de exemplo.
+// O céu de agora, para o véu de cor no topo da tela Hoje: um de sete tipos, tirado da previsão hora a hora da casa
+// (código WMO do Open-Meteo). Sem previsão, o céu é o do desenho de exemplo do Figma (poucas nuvens de dia, limpo à
+// noite).
 
 import { houseClock, type Forecast } from './weather';
 
@@ -34,18 +35,17 @@ export function skyFromCode(code: number | null, rain: number | null = null): Sk
   return 'nublado';
 }
 
-/** O céu e o período da hora da casa agora; null quando a previsão não tem essa hora. */
-export function currentSky(forecast: Forecast | undefined, now: Date = new Date()): { sky: Sky; period: DayPeriod } | null {
+/** O céu da hora da casa agora; null quando a previsão não tem essa hora. */
+export function currentSky(forecast: Forecast | undefined, now: Date = new Date()): Sky | null {
   if (!forecast?.hours.length) return null;
   const { date, hour } = houseClock(forecast, now);
   const stamp = `${date}T${String(hour).padStart(2, '0')}:00`;
   const entry = forecast.hours.find((h) => h.time === stamp);
   if (!entry) return null;
-  return { sky: skyFromCode(entry.code, entry.rain), period: dayPeriodOf(hour) };
+  return skyFromCode(entry.code, entry.rain);
 }
 
-/** Sem previsão (casa sem bairro, sem internet e nada guardado): o céu do desenho, claro de dia e limpo à noite. */
-export function defaultSky(now: Date = new Date()): { sky: Sky; period: DayPeriod } {
-  const period = dayPeriodOf(now.getHours());
-  return { sky: period === 'dia' ? 'poucas-nuvens' : 'limpo', period };
+/** Sem previsão (casa sem bairro, sem internet e nada guardado): o céu do desenho do Figma, poucas nuvens de dia e limpo à noite. */
+export function defaultSky(now: Date = new Date()): Sky {
+  return dayPeriodOf(now.getHours()) === 'dia' ? 'poucas-nuvens' : 'limpo';
 }
