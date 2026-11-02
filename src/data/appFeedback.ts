@@ -1,7 +1,8 @@
-// Recados para quem faz o Kotii (domain/appFeedback): o envio, que a pessoa faz pelo Nuke com um toque em
-// "Enviar" (send_app_feedback, com o aparelho e a versão do app), e a caixa de entrada de quem mantém o app, na aba
-// Recados do Painel do app (app_feedback_list e set_app_feedback, recusadas no servidor com 42501 para quem não
-// está em app_admins, como o painel). Migração: 20261024150000_app_feedback.sql.
+// Recados para quem faz o Kotii (domain/appFeedback): o envio (send_app_feedback, com o aparelho e a versão do
+// app), que a pessoa faz com um toque em "Enviar" no cartão do Nuke (data/nuke) ou no "Mandar recado" de
+// Configurações (useSendAppFeedback), e a caixa de entrada de quem mantém o app, na aba Recados do Painel do app
+// (app_feedback_list e set_app_feedback, recusadas no servidor com 42501 para quem não está em app_admins, como o
+// painel). Migração: 20261024150000_app_feedback.sql.
 //
 // Fica só na memória: nenhuma chave daqui entra em PERSISTED (lib/queryClient), e nada daqui vai para o resumo do
 // Nuke ou para o consultor (__tests__/appDashboardIsolation confere). O app pode chegar antes da migração: sem as
@@ -40,9 +41,9 @@ function codeOf(error: unknown): unknown {
 }
 
 /**
- * Manda o recado que a pessoa confirmou no cartão do Nuke e devolve o id dele. O mesmo texto mandado de novo em
- * 10 minutos (a resposta que se perdeu) devolve o mesmo id, sem recado repetido. Sem a função no banco,
- * `FEEDBACK_NOT_READY`; passado o limite de 24 horas (NK015), `FEEDBACK_LIMIT`; outro erro sobe como veio.
+ * Manda o recado que a pessoa confirmou (no cartão do Nuke ou em Configurações) e devolve o id dele. O mesmo texto
+ * mandado de novo em 10 minutos (a resposta que se perdeu) devolve o mesmo id, sem recado repetido. Sem a função
+ * no banco, `FEEDBACK_NOT_READY`; passado o limite de 24 horas (NK015), `FEEDBACK_LIMIT`; outro erro sobe como veio.
  */
 export async function sendAppFeedback(
   { kind, message }: { kind: FeedbackKind; message: string },
@@ -58,6 +59,22 @@ export async function sendAppFeedback(
   if (error && codeOf(error) === 'NK015') throw new Error(FEEDBACK_LIMIT);
   if (error) throw error;
   return String(data);
+}
+
+/**
+ * Manda o recado escrito em Configurações (o mesmo sendAppFeedback do cartão do Nuke). Nunca fica parado à espera
+ * da internet (`networkMode: 'always'`): sem conexão, falha na hora com "Sem internet agora…", e o texto não vai
+ * para a fila guardada no aparelho (lib/queryClient guarda o que está parado). O aviso de erro fica aqui, não na
+ * tela: sai mesmo se a pessoa já saiu de Configurações. Sem tentar de novo sozinho: o mesmo texto em 10 minutos
+ * volta com o mesmo id, mas é a pessoa quem decide reenviar.
+ */
+export function useSendAppFeedback() {
+  return useMutation({
+    networkMode: 'always',
+    retry: false,
+    mutationFn: (draft: { kind: FeedbackKind; message: string }) => sendAppFeedback(draft),
+    onError: (err) => notify('Não deu certo', errorMessage(err)),
+  });
 }
 
 /** A chave de uma lista da caixa de entrada: a pessoa (outra conta no aparelho pergunta de novo) e o filtro. */
