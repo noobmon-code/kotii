@@ -6,6 +6,7 @@ import { MARKET_TRIP_PUSH_KEY, marketTripErrorMessage, useMarketTripPush } from 
 import { useSupplies } from '@/data/supplies';
 import { shownHouseReminderKinds, type HouseReminderKind } from '@/domain/houseReminders';
 import { TRIP_PUSH_OPTION } from '@/domain/marketTrips';
+import type { ReminderSpotlight } from '@/features/useReminderSpotlight';
 import { syncOtherHouses, useHouseReminderData, useHouseReminderTarget } from '@/features/useReminderSync';
 import { useHousehold } from '@/lib/auth';
 import {
@@ -20,10 +21,14 @@ import {
 import { errorMessage } from '@/lib/supabase';
 import { notify } from '@/ui/dialogs';
 import { Card, ListCard, Row, Section, Text } from '@/ui/primitives';
-import { space, useColors } from '@/ui/theme';
+import { radius, space, useColors, withAlpha } from '@/ui/theme';
 
-/** Avisos da casa por notificação: cada pessoa escolhe no próprio celular (ou navegador). */
-export function HouseRemindersSection() {
+/**
+ * Avisos da casa por notificação: cada pessoa escolhe no próprio celular (ou navegador). `spotlight`: a aba Família
+ * abriu pelo "Abrir os avisos" de outra tela (useReminderSpotlight): a seção e a linha do tipo dão as medidas para
+ * rolar até elas, e a linha fica destacada por um momento.
+ */
+export function HouseRemindersSection({ spotlight }: { spotlight?: ReminderSpotlight | null } = {}) {
   const c = useColors();
   const { data } = useHouseReminderData();
   // A mesma busca que os avisos já fazem: aqui, só para saber se este banco tem as tabelas das reposições.
@@ -68,52 +73,70 @@ export function HouseRemindersSection() {
   }
 
   return (
-    <Section title={`Avisos ${REMINDER_PLACE}`}>
-      {remindersSupported ? (
-        <ListCard>
-          {shownHouseReminderKinds(suppliesAvailable).map((kind) => (
-            <Row key={kind.key} style={styles.row}>
-              <View style={styles.flex}>
-                <Text variant="label">{kind.label}</Text>
-                <Text variant="small">{kind.hint}.</Text>
+    <View ref={spotlight?.sectionRef} collapsable={false} testID="avisos-da-casa">
+      <Section title={`Avisos ${REMINDER_PLACE}`}>
+        {remindersSupported ? (
+          <ListCard>
+            {shownHouseReminderKinds(suppliesAvailable).map((kind) => {
+              const target = spotlight?.kind === kind.key ? spotlight : null;
+              return (
+                // A caixa de cada linha sai um pouco para os lados (e volta por dentro): o destaque tem onde aparecer
+                // sem mexer em nada.
+                <View
+                  key={kind.key}
+                  ref={target?.rowRef}
+                  collapsable={false}
+                  testID={`aviso-${kind.key}`}
+                  style={[styles.rowBox, target?.highlighted && { backgroundColor: withAlpha(c.primary, 0.12) }]}>
+                  <Row style={styles.row}>
+                    <View style={styles.flex}>
+                      <Text variant="label">{kind.label}</Text>
+                      <Text variant="small">{kind.hint}.</Text>
+                    </View>
+                    <Switch
+                      ref={target?.switchRef}
+                      accessibilityLabel={`Avisos de ${kind.label.toLowerCase()}`}
+                      value={kinds?.[kind.key] ?? false}
+                      disabled={!kinds}
+                      onValueChange={(value) => toggle(kind.key, value)}
+                      trackColor={{ true: c.primary }}
+                    />
+                  </Row>
+                </View>
+              );
+            })}
+            {/* Só onde existe: no navegador, com a opção já no banco (e depois de lida). */}
+            {typeof tripPush.value === 'boolean' ? (
+              <View style={styles.rowBox}>
+                <Row style={styles.row}>
+                  <View style={styles.flex}>
+                    <Text variant="label">{TRIP_PUSH_OPTION.label}</Text>
+                    <Text variant="small">{TRIP_PUSH_OPTION.hint}.</Text>
+                  </View>
+                  <Switch
+                    accessibilityLabel={`Avisos de ${TRIP_PUSH_OPTION.label.toLowerCase()}`}
+                    value={tripPush.value}
+                    // Uma mudança por vez: com a anterior no ar, a última escolha poderia perder para ela.
+                    disabled={tripPush.pending}
+                    onValueChange={toggleTripPush}
+                    trackColor={{ true: c.primary }}
+                  />
+                </Row>
               </View>
-              <Switch
-                accessibilityLabel={`Avisos de ${kind.label.toLowerCase()}`}
-                value={kinds?.[kind.key] ?? false}
-                disabled={!kinds}
-                onValueChange={(value) => toggle(kind.key, value)}
-                trackColor={{ true: c.primary }}
-              />
-            </Row>
-          ))}
-          {/* Só onde existe: no navegador, com a opção já no banco (e depois de lida). */}
-          {typeof tripPush.value === 'boolean' ? (
-            <Row style={styles.row}>
-              <View style={styles.flex}>
-                <Text variant="label">{TRIP_PUSH_OPTION.label}</Text>
-                <Text variant="small">{TRIP_PUSH_OPTION.hint}.</Text>
-              </View>
-              <Switch
-                accessibilityLabel={`Avisos de ${TRIP_PUSH_OPTION.label.toLowerCase()}`}
-                value={tripPush.value}
-                // Uma mudança por vez: com a anterior no ar, a última escolha poderia perder para ela.
-                disabled={tripPush.pending}
-                onValueChange={toggleTripPush}
-                trackColor={{ true: c.primary }}
-              />
-            </Row>
-          ) : null}
-        </ListCard>
-      ) : (
-        <Card>
-          <Text variant="small">{remindersUnavailableReason()}</Text>
-        </Card>
-      )}
-    </Section>
+            ) : null}
+          </ListCard>
+        ) : (
+          <Card>
+            <Text variant="small">{remindersUnavailableReason()}</Text>
+          </Card>
+        )}
+      </Section>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  rowBox: { marginHorizontal: -space.sm, paddingHorizontal: space.sm, borderRadius: radius.md, borderCurve: 'continuous' },
   row: { gap: space.md, paddingVertical: space.md },
   flex: { flex: 1, gap: 2 },
 });

@@ -1,4 +1,3 @@
-import { router } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
 import { useClearHouseholdLocation, useRefreshWeather, useSaveHouseholdLocation } from '@/data/weather';
@@ -6,6 +5,7 @@ import { addDays, todayISO } from '@/domain/dates';
 import { cepFieldLabel, HOUSE_PLACE_CLIMA_INTRO, HOUSE_PLACE_REMOVE, housePlaceHouseLine, openHouseName, placeSourceLabel } from '@/domain/housePlace';
 import { daySummary, describeSummary, houseClock, type WeatherTip } from '@/domain/weather';
 import { PlaceSearchFields, usePlaceSearch } from '@/features/HousePlacePicker';
+import { OpenRemindersButton } from '@/features/OpenRemindersButton';
 import { useHouseWeather } from '@/features/useHouseWeather';
 import { useHousehold } from '@/lib/auth';
 import { REMINDER_PLACE, remindersSupported, remindersUnavailableReason } from '@/lib/reminders';
@@ -92,7 +92,7 @@ export default function WeatherScreen() {
               <Text variant="muted">
                 Às 7h, quando o tempo pede algo. Cada pessoa liga no próprio aparelho, em Família, “Avisos {REMINDER_PLACE}”.
               </Text>
-              <Button title="Abrir os avisos" icon="bell-outline" variant="secondary" compact onPress={() => router.push('/familia')} />
+              <OpenRemindersButton kind="weather" />
             </>
           ) : (
             <Text variant="muted">{remindersUnavailableReason()} As dicas ficam aqui, nesta tela.</Text>

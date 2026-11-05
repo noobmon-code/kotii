@@ -1,6 +1,15 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { groupPantry, takeOne, type PantryLot } from '../pantry';
+import { formatShortDate } from '../dates';
+import {
+  describePantryLots,
+  groupPantry,
+  pantryEditActions,
+  pantryGroupOf,
+  productNameMap,
+  takeOne,
+  type PantryLot,
+} from '../pantry';
 
 const lot = (over: Partial<PantryLot>): PantryLot => ({
   id: 'l1',
@@ -94,5 +103,107 @@ describe('takeOne', () => {
     expect(takeOne([lot({ quantity: 1 })])).toBeNull();
     expect(takeOne([lot({ quantity: 0.5, unit: 'kg' })])).toBeNull();
     expect(takeOne([])).toBeNull();
+  });
+});
+
+describe('pantryGroupOf (a compra da tela Hoje abre o menu do produto dela)', () => {
+  const names = productNameMap([{ id: 'leite', name: 'Leite Italac' }]);
+  const expired = lot({ id: 'l-old', product_id: 'leite', name: 'LEITE UHT ITALAC', purchased_on: '2026-10-01', expires_on: '2026-10-20' });
+  const fresh = lot({ id: 'l-new', product_id: 'leite', name: 'LEITE UHT ITALAC', purchased_on: '2026-11-04', expires_on: '2027-02-01' });
+  const rice = lot({ id: 'a1', product_id: 'arroz', name: 'Arroz', category: 'graos', purchased_on: '2026-10-10' });
+
+  it('a compra vencida dá o produto inteiro, com as duas compras, o nome do catálogo e o produto', () => {
+    const group = pantryGroupOf([fresh, rice, expired], expired, names);
+    expect(group.lots.map((l) => l.id)).toEqual(['l-old', 'l-new']);
+    expect(group.name).toBe('Leite Italac');
+    expect(group.productId).toBe('leite');
+  });
+
+  it('sem produto, junta pelo nome normalizado, como groupPantry', () => {
+    const a = lot({ id: 'n1', name: 'leite italac', purchased_on: '2026-10-01' });
+    const b = lot({ id: 'n2', name: 'Leite Itálac', purchased_on: '2026-10-05' });
+    const group = pantryGroupOf([a, b], a);
+    expect(group).toEqual(groupPantry([a, b])[0]);
+    expect(group.lots.map((l) => l.id)).toEqual(['n1', 'n2']);
+  });
+
+  it('para cada compra, o mesmo grupo que groupPantry dá a ela', () => {
+    const items = [
+      expired,
+      fresh,
+      rice,
+      lot({ id: 'n1', name: 'Feijão', category: 'graos', purchased_on: '2026-09-01' }),
+      lot({ id: 'n2', name: 'feijao', category: 'graos', purchased_on: '2026-09-15', expires_on: '2026-11-06' }),
+      lot({ id: 'c1', product_id: 'coca', name: COCA, category: 'bebidas' }),
+    ];
+    const groups = groupPantry(items, names);
+    for (const item of items) {
+      expect(pantryGroupOf(items, item, names)).toEqual(groups.find((g) => g.lots.some((l) => l.id === item.id)));
+    }
+  });
+
+  it('a compra que não está na lista vira um grupo só dela (com o nome do catálogo)', () => {
+    const group = pantryGroupOf([rice], expired, names);
+    expect(group.lots).toEqual([expired]);
+    expect(group.name).toBe('Leite Italac');
+  });
+
+  it('productNameMap', () => {
+    expect(productNameMap().size).toBe(0);
+    expect(productNameMap([{ id: 'a', name: 'Arroz' }])).toEqual(new Map([['a', 'Arroz']]));
+  });
+});
+
+describe('o menu do produto: as compras e as ações de editar', () => {
+  const TODAY = '2026-11-05';
+  // Três compras do mesmo iogurte, da mais antiga para a mais nova (como groupPantry as deixa).
+  const old = lot({ id: 'a', name: 'Iogurte', purchased_on: '2026-10-20', expires_on: '2026-11-03' });
+  const soon = lot({ id: 'b', name: 'Iogurte', purchased_on: '2026-10-27', expires_on: '2026-11-06' });
+  const fresh = lot({ id: 'c', name: 'Iogurte', purchased_on: '2026-11-02', expires_on: '2026-11-30', quantity: 2 });
+  const day = (l: PantryLot) => formatShortDate(l.purchased_on);
+
+  it('na Despensa (a linha é o produto): as datas de compra, da mais nova para a mais antiga', () => {
+    expect(describePantryLots([old, soon, fresh])).toBe(`Compras: ${day(old)} (1 un), ${day(soon)} (1 un) e ${day(fresh)} (2 un).`);
+    expect(pantryEditActions([old, soon, fresh]).map((a) => [a.lot.id, a.label])).toEqual([
+      ['c', `Editar a compra de ${day(fresh)} (2 un)`],
+      ['b', `Editar a compra de ${day(soon)} (1 un)`],
+      ['a', `Editar a compra de ${day(old)} (1 un)`],
+    ]);
+  });
+
+  it('na tela Hoje (a linha é uma compra, com a validade): a tocada vem primeiro, como "esta compra", pela validade', () => {
+    const focus = { lotId: 'b', today: TODAY };
+    expect(describePantryLots([old, soon, fresh], focus)).toBe(
+      `Compras: ${day(old)} (1 un), ${day(soon)} (1 un, vence amanhã) e ${day(fresh)} (2 un).`,
+    );
+    expect(pantryEditActions([old, soon, fresh], focus).map((a) => [a.lot.id, a.label])).toEqual([
+      ['b', 'Editar esta compra (vence amanhã)'],
+      ['c', `Editar a compra de ${day(fresh)} (2 un)`],
+      ['a', `Editar a compra de ${day(old)} (1 un)`],
+    ]);
+    expect(pantryEditActions([old, soon, fresh], { lotId: 'a', today: TODAY })[0].label).toBe('Editar esta compra (venceu há 2 dias)');
+  });
+
+  it('duas compras iguais (mesmo dia e quantidade) ganham um número; a tocada não precisa dele', () => {
+    const twin = lot({ id: 'd', name: 'Iogurte', purchased_on: soon.purchased_on, expires_on: '2026-11-07' });
+    expect(pantryEditActions([soon, twin]).map((a) => a.label)).toEqual([
+      `Editar a compra de ${day(soon)} (1 un) · 1ª`,
+      `Editar a compra de ${day(soon)} (1 un) · 2ª`,
+    ]);
+    expect(pantryEditActions([soon, twin], { lotId: 'b', today: TODAY }).map((a) => a.label)).toEqual([
+      'Editar esta compra (vence amanhã)',
+      `Editar a compra de ${day(soon)} (1 un)`,
+    ]);
+  });
+
+  it('uma compra só: "Editar validade e quantidade", com ou sem a compra tocada', () => {
+    expect(pantryEditActions([soon]).map((a) => a.label)).toEqual(['Editar validade e quantidade']);
+    expect(pantryEditActions([soon], { lotId: 'b', today: TODAY }).map((a) => a.label)).toEqual(['Editar validade e quantidade']);
+  });
+
+  it('uma compra tocada que não está entre as do produto não muda nada', () => {
+    const focus = { lotId: 'x', today: TODAY };
+    expect(pantryEditActions([old, fresh], focus)).toEqual(pantryEditActions([old, fresh]));
+    expect(describePantryLots([old, fresh], focus)).toBe(describePantryLots([old, fresh]));
   });
 });

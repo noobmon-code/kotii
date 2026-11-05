@@ -82,6 +82,7 @@ import { StaleNotice } from '@/features/health/StaleNotice';
 import { useAuth, useHouseholdId } from '@/lib/auth';
 import { isNetworkFailure } from '@/lib/networkErrors';
 import { pruneAddedItems, useAddedItems } from '@/lib/addedItems';
+import { rememberOpenedList } from '@/lib/openedLists';
 import { chooseStore, restoreStoreChoice, useStoreChoice } from '@/lib/storeChoice';
 import { errorMessage } from '@/lib/supabase';
 import { UNITS, type Product, type ShoppingListItem, type Unit } from '@/lib/types';
@@ -199,6 +200,12 @@ export default function ShoppingListScreen() {
   useEffect(() => {
     emptyPhotoTrash();
   }, []);
+
+  // O atalho da tela Hoje abre a lista aberta que este aparelho abriu por último (lib/openedLists); a arquivada não conta.
+  const openListId = list.data && !list.data.archived_at ? list.data.id : null;
+  useEffect(() => {
+    if (openListId) rememberOpenedList(openListId);
+  }, [openListId]);
 
   const shelfLifeDays = useMemo(
     () => new Map((products.data ?? []).map((p) => [p.id, p.shelf_life_days])),

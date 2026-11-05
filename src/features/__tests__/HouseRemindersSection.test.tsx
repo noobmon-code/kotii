@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Switch } from 'react-native';
+import { createRef } from 'react';
+import { StyleSheet, Switch, type View } from 'react-native';
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from 'react-test-renderer';
 
 import { notify } from '@/ui/dialogs';
+import { PALETTES, withAlpha } from '@/ui/theme';
 
 import { HouseRemindersSection } from '../HouseRemindersSection';
+import type { ReminderSpotlight } from '../useReminderSpotlight';
 
 // A seção de verdade, com a opção "Alguém indo ao mercado" lida pelo caminho
 // real (data/marketTrips); o que muda de um aparelho para outro vem de
@@ -275,5 +278,62 @@ describe('"Alguém indo ao mercado" nos avisos deste navegador', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(tripSwitch()?.props.value).toBe(true);
+  });
+});
+
+describe('o destaque de "Abrir os avisos"', () => {
+  const boxes = () => tree.root.findAll((node) => typeof node.type === 'string' && String(node.props.testID ?? '').startsWith('aviso-'));
+  const box = (kind: string) => boxes().find((node) => node.props.testID === `aviso-${kind}`)!;
+
+  async function renderWith(spotlight: ReminderSpotlight | null) {
+    await act(async () => {
+      tree = create(
+        <QueryClientProvider client={client}>
+          <HouseRemindersSection spotlight={spotlight} />
+        </QueryClientProvider>,
+        // O interruptor precisa de uma instância para a ref.
+        { createNodeMock: () => ({}) },
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  const spotlight = (kind: ReminderSpotlight['kind'], highlighted: boolean): ReminderSpotlight => ({
+    kind,
+    highlighted,
+    sectionRef: createRef<View>(),
+    rowRef: createRef<View>(),
+    switchRef: createRef<Switch>(),
+  });
+
+  it('sem o destaque, cada linha numa caixa igual, sem fundo', async () => {
+    await render();
+    expect(boxes().length).toBeGreaterThan(5);
+    for (const node of boxes()) {
+      const style = StyleSheet.flatten(node.props.style);
+      expect(style).toMatchObject({ marginHorizontal: -8, paddingHorizontal: 8 });
+      expect(style.backgroundColor).toBeUndefined();
+    }
+  });
+
+  it('com o destaque, só a linha do tipo pedido ganha o fundo, e só ela dá a medida e o interruptor', async () => {
+    const shown = spotlight('weather', true);
+    await renderWith(shown);
+    expect(StyleSheet.flatten(box('weather').props.style).backgroundColor).toBe(withAlpha(PALETTES.light.primary, 0.12));
+    for (const node of boxes().filter((n) => n.props.testID !== 'aviso-weather')) {
+      expect(StyleSheet.flatten(node.props.style).backgroundColor).toBeUndefined();
+    }
+    // A View de teste é uma classe: a ref é ela, com as props (comparadas uma a uma, sem imprimir a instância).
+    const testIdOf = (ref: { current: unknown }) => (ref.current as { props?: { testID?: string } } | null)?.props?.testID;
+    expect(testIdOf(shown.sectionRef)).toBe('avisos-da-casa');
+    expect(testIdOf(shown.rowRef)).toBe('aviso-weather');
+    expect(shown.switchRef.current === null).toBe(false);
+  });
+
+  it('antes da rolagem (ainda sem destaque), nenhuma linha tem fundo', async () => {
+    await renderWith(spotlight('weather', false));
+    for (const node of boxes()) expect(StyleSheet.flatten(node.props.style).backgroundColor).toBeUndefined();
   });
 });

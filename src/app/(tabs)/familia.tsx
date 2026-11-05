@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { Share, StyleSheet, View } from 'react-native';
 
 import { usePeople } from '@/data/health';
@@ -8,6 +8,7 @@ import { AiUsageSection } from '@/features/AiUsageSection';
 import { DocumentsSection } from '@/features/DocumentsSection';
 import { HouseRemindersSection } from '@/features/HouseRemindersSection';
 import { SharedPricesAbout } from '@/features/SharedPrices';
+import { useReminderSpotlight } from '@/features/useReminderSpotlight';
 import { useAuth, useHousehold } from '@/lib/auth';
 import { errorMessage } from '@/lib/supabase';
 import { confirmAction, notify } from '@/ui/dialogs';
@@ -26,6 +27,9 @@ export default function FamilyScreen() {
   const regenerateCode = useRegenerateInviteCode();
   const people = usePeople();
   const kidPoints = useKidPoints();
+  // "Abrir os avisos" de outra tela: `?aviso=<tipo>` rola até o interruptor desse tipo, uma vez (useReminderSpotlight).
+  const { aviso } = useLocalSearchParams<{ aviso?: string }>();
+  const reminders = useReminderSpotlight(aviso);
 
   if (!household.data) return <Loading />;
   const { household: house, members, me, households } = household.data;
@@ -121,7 +125,12 @@ export default function FamilyScreen() {
   }
 
   return (
-    <Screen fab heading="Família">
+    <Screen
+      fab
+      heading="Família"
+      scrollRef={reminders.scrollRef}
+      onScrollBeginDrag={reminders.onScrollBeginDrag}
+      onScroll={reminders.onScroll}>
       {/* Sem o cartão do topo (a barra de abas já diz a aba; o nome da casa só aparece no topo da tela Hoje para quem
           tem mais de uma): só a engrenagem, no canto de cima à direita. */}
       <View style={styles.top}>
@@ -209,7 +218,7 @@ export default function FamilyScreen() {
 
       <DocumentsSection />
 
-      <HouseRemindersSection />
+      <HouseRemindersSection spotlight={reminders.spotlight} />
 
       <AiUsageSection />
 

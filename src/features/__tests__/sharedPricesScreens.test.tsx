@@ -35,6 +35,8 @@ jest.mock('expo-router', () => ({
   router: { push: jest.fn() },
   Stack: { Screen: () => null },
   useLocalSearchParams: () => ({ id: 'arroz' }),
+  // A aba Família tira o `?aviso=` pela navegação dela (useReminderSpotlight).
+  useNavigation: () => ({ setParams: jest.fn() }),
 }));
 jest.mock('@/data/market', () => ({
   ProductNameTakenError: class extends Error {},

@@ -61,6 +61,16 @@ export function shownHouseReminderKinds(suppliesAvailable: boolean | undefined) 
   return HOUSE_REMINDER_KINDS.filter((kind) => kind.key !== 'supplies' || suppliesAvailable !== false);
 }
 
+/**
+ * O valor do parâmetro `aviso` da aba Família ("Abrir os avisos" de outra tela: a aba rola até o interruptor desse
+ * tipo): um tipo da lista, ou null (desconhecido, vazio, ausente). De uma lista, vale o primeiro.
+ */
+export function reminderKindFromParam(value: string | string[] | null | undefined): HouseReminderKind | null {
+  const first = Array.isArray(value) ? value[0] : value;
+  if (typeof first !== 'string') return null;
+  return HOUSE_REMINDER_KINDS.find((kind) => kind.key === first)?.key ?? null;
+}
+
 export interface HouseReminder {
   /** Tipo, item e dia: o mesmo aviso não é agendado duas vezes. */
   key: string;

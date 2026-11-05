@@ -1,8 +1,10 @@
 import { router } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Platform } from 'react-native';
 
 import { MAX_RECEIPT_PHOTOS, pickReceiptImages, useCreateManualReceipt, useScanReceipt, type ScanSource } from '@/data/receipts';
 import { useHouseholdId } from '@/lib/auth';
+import { watchPickerReturn } from '@/lib/pickerReturn';
 import { errorMessage } from '@/lib/supabase';
 import { ActionSheet } from '@/ui/ActionSheet';
 import { BusyOverlay } from '@/ui/BusyOverlay';
@@ -10,9 +12,16 @@ import { notify } from '@/ui/dialogs';
 
 /**
  * Fluxo "nota -> revisão". `open()` mostra as opções (QR code, câmera,
- * galeria, manual); `element` precisa ser renderizado pela tela.
- * `readPhotos(source, chave)` lê pela foto uma nota cuja chave já se conhece
- * (do QR code). `replace`: a revisão toma o lugar da tela atual (a do QR).
+ * galeria, manual), em Finanças → Notas e no Mercado do mês; `element`
+ * precisa ser renderizado pela tela. `readPhotos(source, chave)` lê pela foto
+ * (a chave, quando já se conhece pelo QR code); `startManual()` cria a nota
+ * digitada. `replace`: a revisão toma o lugar da tela atual (a do QR).
+ * `active`: um jeito pela foto ou digitado está em andamento (a câmera do
+ * sistema ou a galeria abertas, partes da foto esperando, a leitura ou a
+ * criação a caminho); a tela do QR desliga a câmera dela enquanto isso. No
+ * navegador, o seletor fechado sem nada pode nunca avisar (sem o evento
+ * `cancel`, antes do Safari 16.4): a página de volta sem arquivo também conta
+ * como fechado (lib/pickerReturn), para a câmera do QR não ficar desligada.
  */
 export function useReceiptScanner({ replace = false }: { replace?: boolean } = {}) {
   const householdId = useHouseholdId();
@@ -21,6 +30,15 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
   const [sheetOpen, setSheetOpen] = useState(false);
   // Nota comprida pela câmera: partes já fotografadas, esperando a próxima ou a leitura.
   const [parts, setParts] = useState<string[]>([]);
+  // A câmera do sistema ou a galeria abertas, até a pessoa voltar delas (no navegador, até o seletor de arquivos fechar).
+  const [picking, setPicking] = useState(false);
+  // Cada abertura do seletor tem um número: só a mais nova mexe em `picking` e lê o que voltou.
+  const pickRun = useRef(0);
+  // O vigia da volta à página (no navegador), da abertura de agora; sai com a tela.
+  const stopWatching = useRef<(() => void) | null>(null);
+  useEffect(() => () => stopWatching.current?.(), []);
+  // Dois toques rápidos em "Digitar" criariam duas notas vazias.
+  const creating = useRef(false);
   // Chave da nota que está sendo fotografada, quando veio do QR code.
   const accessKey = useRef<string | null>(null);
 
@@ -46,13 +64,32 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
 
   const start = useCallback(
     async (source: ScanSource, taken: string[] = []) => {
+      const run = ++pickRun.current;
+      setPicking(true);
+      stopWatching.current?.();
+      stopWatching.current =
+        Platform.OS === 'web'
+          ? watchPickerReturn(() => {
+              if (pickRun.current === run) setPicking(false);
+            })
+          : null;
+      const settled = () => {
+        if (pickRun.current !== run) return false;
+        stopWatching.current?.();
+        stopWatching.current = null;
+        setPicking(false);
+        return true;
+      };
       let uris: string[];
       try {
         uris = await pickReceiptImages(source, source === 'library' ? MAX_RECEIPT_PHOTOS : 1);
       } catch (err) {
-        notify('Não foi possível abrir a imagem', errorMessage(err));
+        if (settled()) notify('Não foi possível abrir a imagem', errorMessage(err));
         return;
       }
+      // Uma abertura mais nova tomou o lugar desta: o que esta trouxe (tarde) não vale mais.
+      if (!settled()) return;
+      // Já dada como fechada pelo vigia, mas com um arquivo que chegou depois: lido como sempre.
       if (source === 'library') {
         // No navegador a galeria não tem limite: com imagens demais, nada é lido (cortar podia deixar o rodapé de fora).
         if (uris.length > MAX_RECEIPT_PHOTOS) {
@@ -83,11 +120,20 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
   );
 
   const startManual = useCallback(() => {
+    if (creating.current) return;
+    creating.current = true;
     manual.mutate(undefined, {
-      onSuccess: ({ id }) => router.push({ pathname: '/nota/[id]', params: { id } }),
+      onSuccess: ({ id }) => {
+        const review = { pathname: '/nota/[id]', params: { id } } as const;
+        if (replace) router.replace(review);
+        else router.push(review);
+      },
       onError: (err) => notify('Erro', errorMessage(err)),
+      onSettled: () => {
+        creating.current = false;
+      },
     });
-  }, [manual]);
+  }, [manual, replace]);
 
   const element = (
     <>
@@ -121,5 +167,12 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
     </>
   );
 
-  return { open: () => setSheetOpen(true), readPhotos, element, busy: scan.isPending || manual.isPending };
+  return {
+    open: () => setSheetOpen(true),
+    readPhotos,
+    startManual,
+    element,
+    busy: scan.isPending || manual.isPending,
+    active: picking || parts.length > 0 || scan.isPending || manual.isPending,
+  };
 }

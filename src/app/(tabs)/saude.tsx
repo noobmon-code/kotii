@@ -7,10 +7,10 @@ import { useMedications } from '@/data/home';
 import { todayISO } from '@/domain/dates';
 import { CarePanel } from '@/features/health/CarePanel';
 import { HealthTodaySections } from '@/features/health/HealthTodaySections';
-import { MedicationRefills, MedicationsToday, useRefills } from '@/features/health/MedicationSections';
+import { MedicationRefills, MedicationsToday, openNewMedication, useRefills } from '@/features/health/MedicationSections';
 import { PlansPanel } from '@/features/health/PlansPanel';
 import { useHealthOverview } from '@/features/health/useHealthOverview';
-import { Card, EmptyState, Screen, Segmented, Tile } from '@/ui/primitives';
+import { Card, EmptyState, Screen, Segmented, TileGrid } from '@/ui/primitives';
 import { space } from '@/ui/theme';
 
 type Tab = 'resumo' | 'cuidados' | 'treino' | 'dieta';
@@ -70,11 +70,16 @@ function SummaryPanel({ today }: { today: string }) {
 
   return (
     <View style={styles.gap}>
-      <View style={styles.tiles}>
-        <Tile icon="stethoscope" tint="pink" label="Consulta" onPress={() => newItem('/consulta/[id]')} />
-        <Tile icon="needle" tint="purple" label="Vacina" onPress={() => newItem('/vacina/[id]')} />
-        <Tile icon="test-tube" tint="blue" label="Exame" onPress={() => newItem('/exame/[id]')} />
-      </View>
+      {/* Remédio primeiro (o "+ Remédio" de Cuidados ficava no fundo da aba). Sem a pessoa: o Resumo é de todos, e o
+          formulário já escolhe a única pessoa da casa. O remédio novo é "novo", não o "nova" dos outros três. */}
+      <TileGrid
+        tiles={[
+          { icon: 'pill', tint: 'green', label: 'Remédio', onPress: () => openNewMedication() },
+          { icon: 'stethoscope', tint: 'pink', label: 'Consulta', onPress: () => newItem('/consulta/[id]') },
+          { icon: 'needle', tint: 'purple', label: 'Vacina', onPress: () => newItem('/vacina/[id]') },
+          { icon: 'test-tube', tint: 'blue', label: 'Exame', onPress: () => newItem('/exame/[id]') },
+        ]}
+      />
       <MedicationsToday today={today} />
       {/* Aqui entram também os parados há mais de duas semanas (selo neutro), que a tela Hoje não lista: é o caminho até "Atualizar estoque". */}
       <MedicationRefills rows={refills.rows} />
@@ -94,5 +99,4 @@ function SummaryPanel({ today }: { today: string }) {
 
 const styles = StyleSheet.create({
   gap: { gap: space.xl },
-  tiles: { flexDirection: 'row', gap: space.md },
 });

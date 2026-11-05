@@ -130,7 +130,8 @@ describe('Casa › Despensa', () => {
     expect(shown.indexOf('Gás de cozinha')).toBeLessThan(shown.indexOf(POINTER));
     expect(shown.indexOf('Abrir os avisos')).toBeLessThan(shown.indexOf('Adicionar item'));
     act(() => screen.root.findByProps({ title: 'Abrir os avisos' }).props.onPress());
-    expect(mockPush).toHaveBeenCalledWith('/familia');
+    // Abre a Família já no interruptor de gás, água e ração.
+    expect(mockPush).toHaveBeenCalledWith({ pathname: '/familia', params: { aviso: 'supplies' } });
     act(() => screen.unmount());
   });
 

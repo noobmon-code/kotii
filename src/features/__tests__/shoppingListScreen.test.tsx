@@ -16,6 +16,7 @@ import type { MarketTrip } from '@/domain/marketTrips';
 import { CartPantryModal } from '@/features/CartPantryModal';
 import { ListEstimateCard } from '@/features/ListEstimateCard';
 import { forgetAddedItems, rememberAdded } from '@/lib/addedItems';
+import { rememberOpenedList } from '@/lib/openedLists';
 import { PasteListModal } from '@/features/PasteListModal';
 import { ANNOUNCE_DELAY_MS, PriceCalculator } from '@/features/PriceCalculator';
 import { ShoppingGrid, type ItemHint } from '@/features/ShoppingGrid';
@@ -135,6 +136,8 @@ jest.mock('@/data/learnedAbbreviations', () => ({
 jest.mock('@/lib/auth', () => ({ useAuth: () => ({ session: { user: { id: 'u1' } } }), useHouseholdId: () => 'h1' }));
 jest.mock('@/lib/supabase', () => ({ errorMessage: (error: unknown) => String(error) }));
 jest.mock('@/ui/dialogs', () => ({ askYesNo: jest.fn(), confirmAction: jest.fn(), notify: jest.fn() }));
+// A lista aberta que este aparelho abriu por último (o atalho da tela Hoje): só se confere o que a tela anota.
+jest.mock('@/lib/openedLists', () => ({ rememberOpenedList: jest.fn() }));
 // Os desenhos animados (reanimated) e o fundo não entram no que se confere aqui.
 jest.mock('@/ui/Backdrop', () => ({ Backdrop: () => null }));
 // O caminho depois de ler o código de barras tem os testes dele (productBarcodeFlow.test.tsx): aqui, só o botão e o
@@ -1753,5 +1756,23 @@ describe('a calculadora de preço, no canto de cima da lista', () => {
     const remove = renderer!.root.findByType(PriceCalculator).findAll((node) => node.props.label === 'Remover a opção 3' && Boolean(node.props.icon))[0];
     const close = renderer!.root.findByType(PriceCalculator).findAll((node) => node.props.label === 'Fechar' && Boolean(node.props.icon))[0];
     expect(remove.props.icon).not.toBe(close.props.icon);
+  });
+});
+
+describe('o atalho da tela Hoje', () => {
+  beforeEach(() => {
+    jest.mocked(rememberOpenedList).mockClear();
+  });
+
+  it('a lista aberta fica anotada como a última aberta neste aparelho, uma vez', async () => {
+    await mount();
+    expect(rememberOpenedList).toHaveBeenCalledTimes(1);
+    expect(rememberOpenedList).toHaveBeenCalledWith('l1');
+  });
+
+  it('a lista arquivada não fica anotada', async () => {
+    mockQueries.list = loaded({ id: 'l1', name: 'Churrasco', kind: 'mercado', archived_at: '2026-10-20T12:00:00Z', created_at: '2026-10-01T12:00:00Z' });
+    await mount();
+    expect(rememberOpenedList).not.toHaveBeenCalled();
   });
 });

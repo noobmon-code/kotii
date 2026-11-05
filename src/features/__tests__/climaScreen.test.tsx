@@ -11,6 +11,7 @@ import {
   PLACE_SEARCH_FAILED_TITLE,
 } from '@/domain/housePlace';
 import { confirmAction, notify } from '@/ui/dialogs';
+import { router } from 'expo-router';
 
 // A tela do clima (Configurações → Clima da casa) salva o bairro achado na hora, pela mesma busca de quem cria a casa
 // (usePlaceSearch): o CEP só sai do campo depois de salvo; se salvar falha, o aviso diz o motivo e o CEP fica.
@@ -216,6 +217,9 @@ describe('Clima da casa: a dica por notificação', () => {
     expect(page()).toContain('Cada pessoa liga no próprio aparelho, em Família, “Avisos neste celular”.');
     expect(button('Abrir os avisos')).toBeDefined();
     expect(page()).not.toContain('tela Hoje');
+    // Abre a Família já no interruptor das dicas do clima.
+    await act(async () => button('Abrir os avisos').props.onPress());
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/familia', params: { aviso: 'weather' } });
   });
 
   it('sem avisos neste aparelho, diz por que e que as dicas ficam nesta tela (não mais na tela Hoje)', async () => {

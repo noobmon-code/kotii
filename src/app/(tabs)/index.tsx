@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useMemo, useRef, useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
 
 import {
   toSchedules,
@@ -15,7 +15,7 @@ import {
 import { useFamilyCalendar } from '@/data/family';
 import { useBills, useBudgets, useRecentBillPayments, useSpending } from '@/data/finance';
 import { useDocuments, useEquipmentList } from '@/data/house';
-import { useAddItemsToList, usePurchaseRecords, useShoppingLists } from '@/data/market';
+import { useAddItemsToList, useProducts, usePurchaseRecords, useShoppingLists } from '@/data/market';
 import { useRefreshMarketTrips } from '@/data/marketTrips';
 import { useMenu } from '@/data/menu';
 import { useForecast, useHouseholdLocation, useRefreshWeather } from '@/data/weather';
@@ -33,7 +33,8 @@ import { describeWarranty, getEquipmentCategory, warrantyStatus } from '@/domain
 import { todayEntries } from '@/domain/familyEvents';
 import { currentTimeHHMM, doseKey, dosesForDay } from '@/domain/medications';
 import { MEALS } from '@/domain/menu';
-import { describeExpiry, expiryStatus } from '@/domain/pantry';
+import { listShortcut } from '@/domain/listShortcut';
+import { describeExpiry, expiryStatus, pantryGroupOf, productNameMap } from '@/domain/pantry';
 import { listExclusion, type PurchaseRecord } from '@/domain/recentPurchases';
 import { describeRestock, restockSuggestions, type RestockItem } from '@/domain/restock';
 import { currentSky, defaultSky } from '@/domain/sky';
@@ -46,14 +47,15 @@ import { DoseSubtitle, MedicationRefills, useRefills } from '@/features/health/M
 import { useHealthOverview } from '@/features/health/useHealthOverview';
 import { InstallAppCard } from '@/features/InstallAppCard';
 import { MarketTripBanner } from '@/features/MarketTrip';
+import { usePantryMenu } from '@/features/PantryMenu';
 import { PendingReceiptRow } from '@/features/PendingReceiptCard';
-import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useJustListed } from '@/features/RecentPurchases';
 import { SkyHeader } from '@/features/SkyHeader';
 import { SuppliesTodaySection } from '@/features/SuppliesSection';
 import { TermsNoticeCard } from '@/features/TermsNotice';
 import { TodayGreeting } from '@/features/TodayGreeting';
 import { useHousehold } from '@/lib/auth';
+import { useOpenedLists } from '@/lib/openedLists';
 import { settledData } from '@/lib/settledData';
 import type { Bill } from '@/lib/types';
 import { errorMessage } from '@/lib/supabase';
@@ -76,10 +78,15 @@ import {
   Section,
   Text,
   Tile,
+  tileLabelWidth,
 } from '@/ui/primitives';
-import { fonts, radius, shadows, space, useColors, WASHES } from '@/ui/theme';
+import { fonts, MAX_WIDTH, radius, SCREEN_PADDING, shadows, space, useColors, WASHES } from '@/ui/theme';
 
 const capitalizeFirst = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** Os atalhos do alto (Ler nota, a lista, Criar nova tarefa), lado a lado, e o espaço entre eles. */
+const QUICK_ACTIONS = 3;
+const QUICK_ACTIONS_GAP = space.md;
 
 /**
  * "Acho que acabou" da tela Hoje. O histórico pode ter milhares de linhas: só
@@ -108,6 +115,7 @@ function useRestock(
 }
 
 export default function TodayScreen() {
+  const { width: windowWidth } = useWindowDimensions();
   const now = new Date();
   const today = todayISO(now);
   const household = useHousehold();
@@ -118,13 +126,17 @@ export default function TodayScreen() {
   const rotations = useChoreRotations();
   const pantry = usePantry();
   const lists = useShoppingLists();
+  // A lista que este aparelho abriu por último: o atalho abre direto nela.
+  const openedLists = useOpenedLists();
   // Todos os rascunhos, também os antigos: a lista de notas não corta nenhum.
   const receipts = useDraftReceipts();
   // As notas pendentes deste aparelho (a Sefaz pediu o "não sou robô"): ficam fora de `queries`, como o clima.
   const pendingReceipts = usePendingReceipts();
   const toggleDose = useToggleDose(today);
   const completeChore = useCompleteChore();
-  const scanner = useReceiptScanner();
+  // O menu de um produto da despensa, o mesmo da aba Casa → Despensa. Aqui, e não na seção: a tela Hoje fica montada,
+  // e o aviso de erro de "Usei 1" chega mesmo depois de a última linha sumir.
+  const pantryMenu = usePantryMenu();
   const health = useHealthOverview(today);
   const documents = useDocuments();
   const equipment = useEquipmentList();
@@ -192,6 +204,8 @@ export default function TodayScreen() {
     const kind = expiryStatus(p.expires_on, today).kind;
     return kind === 'vencido' || kind === 'vence_logo';
   });
+  // O nome do catálogo deixa o menu igual ao da Despensa; só lido com uma compra vencendo (fora de `queries`).
+  const products = useProducts({ enabled: expiring.length > 0 });
   // O que está acabando ou passou da data prevista (pelas trocas anotadas).
   const suppliesDue = suppliesNeedingAttention(supplies.data?.supplies ?? [], today);
   const drafts = receipts.data ?? [];
@@ -204,6 +218,10 @@ export default function TodayScreen() {
     .filter(({ status }) => status.kind === 'acabando');
   const equipmentName = (id: string | null) => (id ? equipment.data?.find((e) => e.id === id)?.name : undefined);
   const activeLists = (lists.data ?? []).filter((l) => l.pending > 0);
+  // O atalho das listas: a cópia guardada também vale (sem internet, ou com a última busca falhando).
+  const listTile = listShortcut(lists.data, openedLists);
+  // O nome da lista vem da pessoa: a largura do rótulo de cada um dos três atalhos, até o atalho medir a dele.
+  const quickLabelWidth = tileLabelWidth(Math.min(windowWidth, MAX_WIDTH) - 2 * SCREEN_PADDING, QUICK_ACTIONS, QUICK_ACTIONS_GAP);
   // Compromissos da família e aniversários de hoje e de amanhã: têm a seção
   // deles e não são pendência (com uma rotina, haveria um quase todo dia), por
   // isso não entram no "tudo em dia" nem na frase do topo.
@@ -331,12 +349,20 @@ export default function TodayScreen() {
       <InstallAppCard />
 
       <View style={styles.quickActions}>
-        <Tile art="camera" wash={WASHES.yellow} label="Escanear nota" onPress={scanner.open} />
+        {/* O QR é o melhor caminho: a câmera dele abre direto, com os outros jeitos debaixo dela. */}
+        <Tile art="camera" wash={WASHES.yellow} label="Ler nota" onPress={() => router.push('/nota/qrcode')} />
         <Tile
           art="carrinho"
           wash={WASHES.blue}
-          label="Listas de compras"
-          onPress={() => router.push({ pathname: '/casa', params: { aba: 'compras' } })}
+          label={listTile.label}
+          caption={listTile.caption}
+          accessibilityLabel={listTile.accessibilityLabel}
+          fitLabelWidth={quickLabelWidth}
+          onPress={() => {
+            const id = listTile.listId;
+            if (id) router.push({ pathname: '/lista/[id]', params: { id } });
+            else router.push({ pathname: '/casa', params: { aba: 'compras' } });
+          }}
         />
         <Tile
           art="tarefa"
@@ -475,7 +501,9 @@ export default function TodayScreen() {
                   left={<CategoryIcon category={item.category} name={item.name} />}
                   title={item.name}
                   right={<Badge label={describeExpiry(status)} tone={status.kind === 'vencido' ? 'danger' : 'warning'} />}
-                  onPress={() => router.push({ pathname: '/despensa/[id]', params: { id: item.id } })}
+                  // O menu do produto desta compra, o mesmo da Despensa: "Acabou" e "Consumido / descartado" a um toque.
+                  // Ele diz qual compra foi tocada (pela validade, a que a linha mostra): "Editar esta compra" vem primeiro.
+                  onPress={() => pantryMenu.open(pantryGroupOf(pantry.data ?? [], item, productNameMap(products.data)), item.id)}
                 />
               );
             })}
@@ -607,7 +635,7 @@ export default function TodayScreen() {
         </Section>
       ) : null}
 
-      {scanner.element}
+      {pantryMenu.element}
       {paying ? <PayBillModal bill={paying} onClose={() => setPaying(null)} /> : null}
     </Screen>
   );
@@ -616,7 +644,7 @@ export default function TodayScreen() {
 const styles = StyleSheet.create({
   eyebrow: { fontFamily: fonts.bold, fontSize: 13, lineHeight: 18 },
   summary: { fontFamily: fonts.semibold, fontSize: 15, lineHeight: 21 },
-  quickActions: { flexDirection: 'row', alignItems: 'stretch', gap: space.md },
+  quickActions: { flexDirection: 'row', alignItems: 'stretch', gap: QUICK_ACTIONS_GAP },
   agendaLink: {
     flexDirection: 'row',
     alignItems: 'center',

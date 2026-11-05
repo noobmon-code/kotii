@@ -17,6 +17,7 @@ import { isHouseholdAccessError, leftHousehold, markRemovedFromHousehold, wroteN
 import { getActiveHousehold } from './activeHousehold';
 import { forgetAddedItems, rememberAdded } from './addedItems';
 import { type CacheWriteFailure, createCachePersister, createWriteFailureWarner, resumeInFlight } from './cachePersister';
+import { forgetOpenedLists } from './openedLists';
 import { forgetStoreChoices } from './storeChoice';
 import { errorMessage } from './supabase';
 
@@ -329,9 +330,11 @@ export function forgetCache() {
   // Descarta também a gravação que esperava o intervalo.
   Promise.resolve(persister.removeClient()).catch(() => undefined);
   forgetPendingPhotos().catch(() => undefined);
-  // O mercado de "Onde estou" e os itens que este aparelho pôs em cada lista eram da casa de quem saiu.
+  // O mercado de "Onde estou", os itens que este aparelho pôs em cada lista e as listas que ele abriu por último
+  // eram da casa de quem saiu.
   forgetStoreChoices();
   forgetAddedItems();
+  forgetOpenedLists();
 }
 
 /**

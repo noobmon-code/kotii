@@ -10,7 +10,10 @@ import {
   StyleSheet,
   Text as RNText,
   TextInput,
+  useWindowDimensions,
   View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   type PressableProps,
   type StyleProp,
   type TextInputProps,
@@ -23,6 +26,7 @@ import Svg, { Circle, Line } from 'react-native-svg';
 import { getCategory, type IconName } from '@/domain/categories';
 import { formatBRDate, maskBRDate, parseBRDate } from '@/domain/dates';
 import { matchItemArt } from '@/domain/itemArt';
+import { tileColumns, tileLabelFit, tileRows } from '@/domain/tileRow';
 // Só o detector puro: lib/supabase cria o cliente e não entra nos primitivos.
 import { isNetworkFailure, OFFLINE_TRY_AGAIN } from '@/lib/networkErrors';
 import { Backdrop } from './Backdrop';
@@ -81,6 +85,8 @@ export function Screen({
   footer,
   fab,
   scrollRef,
+  onScrollBeginDrag,
+  onScroll,
   maxWidth = MAX_WIDTH,
   heading,
 }: {
@@ -94,9 +100,17 @@ export function Screen({
   fab?: boolean;
   /**
    * Para a tela rolar sozinha até um ponto: abrir já numa parte dela (o `y` de um filho direto, em onLayout, é a
-   * posição a rolar) ou voltar ao começo de uma lista que acabou de mudar.
+   * posição a rolar) ou voltar ao começo de uma lista que acabou de mudar. Numa tela que fica montada (uma aba), o
+   * onLayout não basta: `measureInScroll`/`measureScrollArea` (ui/scrollMeasure) medem na hora.
    */
   scrollRef?: RefObject<ScrollView | null>;
+  /** O começo de um arrasto da pessoa (no celular; o navegador não avisa): quem rola a tela sozinho para de acompanhar. */
+  onScrollBeginDrag?: () => void;
+  /**
+   * A posição da rolagem, a cada quadro enquanto a tela rola (só quando passado): no navegador, é por ela que quem rola
+   * a tela sozinho sabe que a pessoa rolou.
+   */
+  onScroll?: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
   /** A largura máxima do conteúdo e do rodapé (o Painel do app, feito para o computador, vai mais longe). */
   maxWidth?: number;
   /**
@@ -128,6 +142,9 @@ export function Screen({
       {scroll ? (
         <ScrollView
           ref={scrollRef}
+          onScrollBeginDrag={onScrollBeginDrag}
+          onScroll={onScroll}
+          scrollEventThrottle={onScroll ? 16 : undefined}
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.scrollContent}
           refreshControl={
@@ -818,31 +835,70 @@ export function ListRow({
  * Atalho de vidro com o ícone e o rótulo embaixo (ações rápidas). O ícone é um desenho 3D (`art`) ou um ícone
  * numa orbe (`icon`). A cor aparece como um brilho no canto de cima (`wash`, ou o do `tint`), não como fundo.
  */
-export function Tile({
-  icon,
-  art,
-  label,
-  onPress,
-  tint = 'orange',
-  wash,
-}: {
+export type TileProps = {
   icon?: IconName;
   art?: IconArtName;
   label: string;
+  /** Uma linha menor sob o rótulo (o atalho da lista na tela Hoje: quanto falta comprar). */
+  caption?: string;
+  /** O que o leitor de tela diz; sem ele, o rótulo e a linha de baixo. */
+  accessibilityLabel?: string;
   onPress: () => void;
   tint?: Tint;
   wash?: string;
-}) {
+  /** Menos margem dos lados (os atalhos de um TileGrid): quatro rótulos numa linha de 360dp. */
+  dense?: boolean;
+  /**
+   * O rótulo vem da pessoa (o nome de uma lista): a palavra nunca quebra no meio. A letra diminui até caber
+   * (domain/tileRow tileLabelFit); nem no menor tamanho, o rótulo vai numa linha, cortado com "…" (o leitor de tela
+   * diz o nome inteiro). O número é a largura do rótulo até ela ser medida (tileLabelWidth, da largura da janela).
+   */
+  fitLabelWidth?: number;
+};
+
+/** O tamanho da letra do rótulo do Tile (styles.tileLabel). */
+export const TILE_LABEL_SIZE = 14;
+/** A altura da linha do rótulo do Tile (styles.tileLabel). */
+export const TILE_LABEL_LINE = 18;
+/** O que o Tile tira da largura antes do rótulo: a borda e a margem, dos dois lados. */
+export const TILE_INSET = 2 * (1 + space.sm);
+/** O que o Tile `dense` tira da largura antes do rótulo: a borda e a margem, dos dois lados. */
+export const TILE_DENSE_INSET = 2 * (1 + space.xs);
+/** O espaço entre os atalhos de um TileGrid, nas linhas e entre elas. */
+export const TILE_GAP = space.sm;
+
+/** A largura do rótulo de cada um de `count` atalhos lado a lado numa fileira de `rowWidth`, `gap` entre eles. */
+export function tileLabelWidth(rowWidth: number, count: number, gap: number, dense = false): number {
+  return (rowWidth - (count - 1) * gap) / count - (dense ? TILE_DENSE_INSET : TILE_INSET);
+}
+
+export function Tile({ icon, art, label, caption, accessibilityLabel, onPress, tint = 'orange', wash, dense, fitLabelWidth }: TileProps) {
   const glass = useGlassStyle();
   const t = useTint(tint);
   const glow = useGlow(tint);
   const dark = useScheme() === 'dark';
+  const { fontScale } = useWindowDimensions();
+  // A largura do rótulo medida (onLayout); até lá, a estimada por quem chama.
+  const [measuredLabel, setMeasuredLabel] = useState<number | null>(null);
+  const fit =
+    fitLabelWidth === undefined
+      ? null
+      : tileLabelFit(label, { width: measuredLabel ?? fitLabelWidth, size: TILE_LABEL_SIZE, lineHeight: TILE_LABEL_LINE, fontScale });
+  const labelText = (
+    <Text
+      variant="label"
+      style={[styles.tileLabel, fit && fit.size !== TILE_LABEL_SIZE && { fontSize: fit.size, lineHeight: fit.lineHeight }]}
+      numberOfLines={fit?.lines ?? 2}
+      ellipsizeMode={fit?.lines === 1 ? 'tail' : undefined}>
+      {label}
+    </Text>
+  );
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={label}
+      accessibilityLabel={accessibilityLabel ?? (caption ? `${label}, ${caption}` : label)}
       onPress={onPress}
-      style={({ pressed }) => [styles.tile, glass, pressed && styles.pressed]}>
+      style={({ pressed }) => [styles.tile, dense && styles.tileDense, glass, pressed && styles.pressed]}>
       <AngledGradient
         angle={130.8}
         stops={[
@@ -857,10 +913,65 @@ export function Tile({
           <MaterialCommunityIcons name={icon ?? 'star'} size={24} color={t.art} />
         </Orb>
       )}
-      <Text variant="label" style={styles.tileLabel} numberOfLines={2}>
-        {label}
-      </Text>
+      {caption || fit ? (
+        <View
+          style={styles.tileText}
+          onLayout={
+            fit
+              ? (event) => {
+                  const w = event.nativeEvent.layout.width;
+                  // Uma aba escondida no navegador mede 0: fica a estimativa.
+                  if (w > 0) setMeasuredLabel(w);
+                }
+              : undefined
+          }>
+          {labelText}
+          {/* Na cor do texto, não na apagada: sobre o brilho do canto (o `wash`), o cinza não chega a 4,5:1 no claro. */}
+          {caption ? (
+            <Text variant="small" color="text" style={styles.tileCaption} numberOfLines={2}>
+              {caption}
+            </Text>
+          ) : null}
+        </View>
+      ) : (
+        labelText
+      )}
     </Pressable>
+  );
+}
+
+/**
+ * Uma fileira de atalhos que pode não caber numa linha: todos numa linha enquanto a palavra mais larga de cada rótulo
+ * cabe no atalho (domain/tileRow), senão dois por linha, senão um; uma palavra nunca quebra no meio. A largura é a
+ * medida (onLayout); até lá, a da janela. A última linha, mais curta, ganha espaços vazios: todos têm a mesma largura.
+ */
+export function TileGrid({ tiles }: { tiles: Omit<TileProps, 'dense'>[] }) {
+  const { width, fontScale } = useWindowDimensions();
+  const [measured, setMeasured] = useState<number | null>(null);
+  const rowWidth = measured ?? Math.min(width, MAX_WIDTH) - 2 * SCREEN_PADDING;
+  const columns = tileColumns(
+    tiles.map((tile) => tile.label),
+    { width: rowWidth, gap: TILE_GAP, inset: TILE_DENSE_INSET, labelSize: TILE_LABEL_SIZE, fontScale },
+  );
+  return (
+    <View
+      style={styles.tileGrid}
+      onLayout={(event) => {
+        const w = event.nativeEvent.layout.width;
+        // Uma aba escondida no navegador mede 0: a fileira não vira uma coluna só por isso.
+        if (w > 0) setMeasured(w);
+      }}>
+      {tileRows(tiles, columns).map((row, index) => (
+        <View key={index} style={styles.tileRow}>
+          {row.map((tile) => (
+            <Tile key={tile.label} {...tile} dense />
+          ))}
+          {Array.from({ length: columns - row.length }, (_, spacer) => (
+            <View key={`spacer-${spacer}`} style={styles.tileSpacer} />
+          ))}
+        </View>
+      ))}
+    </View>
   );
 }
 
@@ -1024,7 +1135,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     overflow: 'hidden',
   },
-  tileLabel: { textAlign: 'center', fontFamily: fonts.heavy, fontSize: 14, lineHeight: 18 },
+  tileDense: { paddingHorizontal: space.xs },
+  tileLabel: { textAlign: 'center', fontFamily: fonts.heavy, fontSize: TILE_LABEL_SIZE, lineHeight: TILE_LABEL_LINE },
+  tileText: { alignSelf: 'stretch', alignItems: 'center', gap: 2 },
+  tileCaption: { textAlign: 'center' },
+  tileGrid: { gap: TILE_GAP },
+  tileRow: { flexDirection: 'row', gap: TILE_GAP },
+  tileSpacer: { flex: 1 },
   empty: { alignItems: 'center', gap: space.md, paddingVertical: space.xl, paddingHorizontal: space.lg },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.md, padding: space.xxl },
 });

@@ -18,6 +18,7 @@ import {
   type SupplyForecast,
   type SupplyRow,
 } from '@/domain/supplies';
+import { OpenRemindersButton } from '@/features/OpenRemindersButton';
 import { REMINDER_PLACE, remindersSupported, remindersUnavailableReason } from '@/lib/reminders';
 import { errorMessage } from '@/lib/supabase';
 import type { Supply } from '@/lib/types';
@@ -89,7 +90,7 @@ export function SuppliesReminderHint() {
   return (
     <>
       <Text variant="muted">{`Para receber a notificação, ligue “${SUPPLIES_TITLE}” nos avisos ${REMINDER_PLACE}.`}</Text>
-      <Button title="Abrir os avisos" icon="bell-outline" variant="secondary" compact onPress={() => router.push('/familia')} />
+      <OpenRemindersButton kind="supplies" />
     </>
   );
 }

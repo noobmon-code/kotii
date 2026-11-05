@@ -10,6 +10,7 @@ import {
   HOUSE_REMINDER_KINDS,
   HOUSE_REMINDER_LIMIT,
   planHouseReminders,
+  reminderKindFromParam,
   shownHouseReminderKinds,
   type HouseReminderInput,
 } from '../houseReminders';
@@ -2574,4 +2575,19 @@ describe('planHouseReminders: resumo de amanhã com compromissos e aniversários
     expect(seen.plain).toBeGreaterThan(1000);
     // São uns 2.500 planos: com folga no tempo, para a máquina ocupada.
   }, 30_000);
+});
+
+describe('reminderKindFromParam (o `aviso` de "Abrir os avisos")', () => {
+  it('cada tipo da lista é ele mesmo', () => {
+    for (const kind of HOUSE_REMINDER_KINDS) expect(reminderKindFromParam(kind.key)).toBe(kind.key);
+  });
+
+  it('de uma lista, vale o primeiro', () => {
+    expect(reminderKindFromParam(['weather', 'supplies'])).toBe('weather');
+    expect(reminderKindFromParam(['foo', 'supplies'])).toBeNull();
+  });
+
+  it('o resto (desconhecido, vazio, com espaço, outra caixa, ausente) é null', () => {
+    for (const value of ['foo', '', ' supplies', 'Supplies', undefined, null, []]) expect(reminderKindFromParam(value)).toBeNull();
+  });
 });

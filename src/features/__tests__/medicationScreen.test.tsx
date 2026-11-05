@@ -22,6 +22,8 @@ const mockNet: {
   /** As leituras falham (sem sinal na farmácia). */
   failReads: boolean;
 } = { medications: [], requests: [], gate: null, failReads: false };
+// Este aparelho recebe notificações (o cartão do estoque aponta para os avisos da Família).
+const mockReminders = { supported: false };
 
 jest.mock('expo-router', () => ({
   router: { push: jest.fn(), back: jest.fn(), replace: jest.fn(), canGoBack: () => true },
@@ -44,7 +46,9 @@ jest.mock('@/lib/reminders', () => ({
   PERMISSION_HINT: 'Permita as notificações.',
   REMINDER_PLACE: 'neste celular',
   remindByDefault: () => false,
-  remindersSupported: false,
+  get remindersSupported() {
+    return mockReminders.supported;
+  },
   remindersUnavailableReason: () => 'Sem notificações aqui.',
 }));
 jest.mock('@/features/useReminderSync', () => ({ useHouseReminderTarget: () => null }));
@@ -190,6 +194,7 @@ beforeEach(() => {
   mockNet.requests = [];
   mockNet.gate = null;
   mockNet.failReads = false;
+  mockReminders.supported = false;
   jest.mocked(notify).mockClear();
   jest.mocked(router.back).mockClear();
 });
@@ -360,5 +365,16 @@ describe('a regra das doses mudou num aparelho com a data errada', () => {
     expect(writes()[0].body).toMatchObject({ name: 'Losartana 50 mg' });
     expect(writes()[0].body).not.toHaveProperty('stock_count');
     expect(notify).not.toHaveBeenCalled();
+  });
+});
+
+describe('o cartão do estoque aponta para os avisos', () => {
+  it('"Abrir os avisos" abre a Família no interruptor de remédios e receitas acabando', async () => {
+    mockReminders.supported = true;
+    jest.mocked(router.push).mockClear();
+    await openScreen();
+    await until(() => Boolean(button('Abrir os avisos')));
+    act(() => button('Abrir os avisos')!.props.onPress());
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/familia', params: { aviso: 'refills' } });
   });
 });

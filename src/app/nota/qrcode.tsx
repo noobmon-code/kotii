@@ -8,6 +8,7 @@ import { usePendingReceipts } from '@/data/pendingReceipts';
 import { useImportNfce } from '@/data/receipts';
 import { captchaStateNote, captchaStateStep } from '@/domain/captchaStates';
 import { NFCE_CAPTCHA, NFCE_CAPTCHA_STATE, nfceFailureRoute, parseNfceQr, qrReadStep } from '@/domain/nfce';
+import { MAX_RECEIPT_PHOTOS } from '@/domain/receiptPhotos';
 import { PendingReceiptCard } from '@/features/PendingReceiptCard';
 import { useReceiptScanner } from '@/features/ReceiptScanner';
 import { useSefazRetry } from '@/features/sefazRetry';
@@ -20,12 +21,21 @@ import { Button, Card, Screen, Text, TextField } from '@/ui/primitives';
 import { radius, space, useColors } from '@/ui/theme';
 
 /**
+ * Depois de um jeito sem o QR (foto, galeria, digitar), a câmera do QR só volta um segundo depois de o fluxo parar:
+ * no iPhone, o menu "Foto tirada" some (e as partes saem) antes de a próxima foto começar, e a câmera montada nesse
+ * meio-tempo leria o QR do papel ainda na frente dela.
+ */
+const OTHER_WAY_RESUME_MS = 1000;
+
+/**
  * Lê o QR code da nota (ou o link colado) e traz os itens da Sefaz, sem IA.
  * Se a Sefaz pedir o "não sou robô", o app não passa por ele: a nota fica
  * pendente (guardada no aparelho, em Finanças > Notas) e abre a tela dela, com
  * o passo a passo dos prints da Sefaz, que vão com a chave do QR. O mesmo QR
  * lido de novo abre a pendente, sem ir à Sefaz. Por uma semana, as notas novas
  * do mesmo estado também vão direto para a pendente (domain/captchaStates).
+ * Debaixo da câmera ficam os outros jeitos (tirar foto, da galeria, digitar),
+ * para a nota sem QR ou com o QR que não lê; a revisão toma o lugar desta tela.
  */
 export default function NfceQrScreen() {
   const c = useColors();
@@ -50,13 +60,41 @@ export default function NfceQrScreen() {
   });
   const inlineRetryUrl = photoOnly?.direct && photoOnly.url && parseNfceQr(photoOnly.url) ? photoOnly.url : null;
   const lastRejected = useRef<string | null>(null);
+  // Um jeito sem o QR em andamento: a câmera fica desmontada, para não ler o QR do papel no meio da foto nem
+  // disputar com a câmera do sistema; volta OTHER_WAY_RESUME_MS depois de o fluxo parar.
+  const [cameraBack, setCameraBack] = useState(true);
+  useEffect(() => {
+    if (cameraBack || scanner.active) return;
+    const timer = setTimeout(() => setCameraBack(true), OTHER_WAY_RESUME_MS);
+    return () => clearTimeout(timer);
+  }, [cameraBack, scanner.active]);
+  const cameraOn = cameraBack && !scanner.active;
+  // A câmera que lê: com a permissão, sem a pendente no lugar dela e fora de um jeito sem o QR.
+  const cameraWanted = Boolean(permission?.granted) && !photoOnly && cameraOn;
+  // No navegador, a câmera desmontada enquanto o vídeo dela ainda começa (o pedido à câmera sem resposta) fica ligada
+  // até a aba fechar: o expo-camera só desliga os vídeos que já chegaram. Montada, ela só sai depois de responder
+  // (onCameraReady ou onMountError), escondida e sem ler nada enquanto isso. No celular, a câmera sai na hora.
+  const [cameraShown, setCameraShown] = useState(false);
+  const [cameraSettled, setCameraSettled] = useState(false);
+  const renderCamera = cameraWanted || (Platform.OS === 'web' && cameraShown && !cameraSettled);
+  if (renderCamera !== cameraShown) {
+    setCameraShown(renderCamera);
+    // Uma câmera nova: ainda começando.
+    if (renderCamera) setCameraSettled(false);
+  }
+  const otherWay = (run: () => void) => {
+    setCameraBack(false);
+    run();
+  };
+  const otherWaysDisabled = scanner.busy || importNfce.isPending || sefazRetry.busy;
 
   useEffect(() => {
     void prepareBarcodeReader();
   }, []);
 
   async function submit(text: string, fromCamera: boolean) {
-    if (busy.current) return;
+    // Com a foto sendo lida ou a nota digitada sendo criada, nem o link colado nem um quadro atrasado da câmera vão à Sefaz.
+    if (busy.current || scanner.busy) return;
     const qr = parseNfceQr(text);
     if (!qr) {
       if (!fromCamera || lastRejected.current !== text) {
@@ -139,21 +177,74 @@ export default function NfceQrScreen() {
           }}>
           <Button title="Ler outro QR code" icon="qrcode-scan" variant="ghost" disabled={scanner.busy} onPress={() => setPhotoOnly(null)} />
         </PendingReceiptCard>
-      ) : permission?.granted ? (
-        <View style={[styles.camera, { backgroundColor: c.surfaceAlt }]}>
-          <CameraView
-            style={StyleSheet.absoluteFill}
-            facing="back"
-            barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-            onBarcodeScanned={({ data }) => void submit(data, true)}
-          />
-          <View style={[styles.frame, { borderColor: c.onPrimary }]} pointerEvents="none" />
-        </View>
-      ) : (
+      ) : null}
+
+      {/* Sempre neste lugar da árvore: a câmera que ainda começa não é montada de novo quando a pendente aparece. */}
+      {permission?.granted ? (
+        photoOnly && !renderCamera ? null : (
+          <View
+            style={[styles.camera, { backgroundColor: c.surfaceAlt }, photoOnly && styles.cameraHidden]}
+            pointerEvents={photoOnly ? 'none' : undefined}>
+            {renderCamera ? (
+              <CameraView
+                style={StyleSheet.absoluteFill}
+                facing="back"
+                barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                onBarcodeScanned={cameraWanted ? ({ data }) => void submit(data, true) : undefined}
+                onCameraReady={() => setCameraSettled(true)}
+                onMountError={() => setCameraSettled(true)}
+              />
+            ) : null}
+            {cameraWanted ? <View style={[styles.frame, { borderColor: c.onPrimary }]} pointerEvents="none" /> : null}
+          </View>
+        )
+      ) : photoOnly ? null : (
         <Card style={styles.gap}>
           <Text variant="body">Para ler o QR code, o app precisa usar a câmera.</Text>
           <Button title="Permitir a câmera" icon="camera-outline" onPress={() => requestPermission()} />
         </Card>
+      )}
+
+      {photoOnly ? null : (
+        // A pendente que não pôde ser guardada tem os botões dela, que mandam a foto com a chave do QR.
+        <View style={styles.otherWays}>
+          <Text variant="label">Sem QR code, ou ele não lê?</Text>
+          <Text variant="small">
+            {`Pela foto, a IA lê a nota (da galeria, até ${MAX_RECEIPT_PHOTOS} imagens da mesma nota). Ou digite os itens. Você revisa antes de salvar.`}
+          </Text>
+          <View style={styles.otherWayButtons}>
+            <Button
+              title="Tirar foto"
+              icon="camera-outline"
+              variant="secondary"
+              compact
+              style={styles.otherWay}
+              accessibilityLabel="Tirar foto da nota"
+              disabled={otherWaysDisabled}
+              onPress={() => otherWay(() => scanner.readPhotos('camera'))}
+            />
+            <Button
+              title="Da galeria"
+              icon="image-outline"
+              variant="secondary"
+              compact
+              style={styles.otherWay}
+              accessibilityLabel={`Da galeria, até ${MAX_RECEIPT_PHOTOS} imagens`}
+              disabled={otherWaysDisabled}
+              onPress={() => otherWay(() => scanner.readPhotos('library'))}
+            />
+            <Button
+              title="Digitar"
+              icon="pencil-outline"
+              variant="secondary"
+              compact
+              style={styles.otherWay}
+              accessibilityLabel="Digitar a nota"
+              disabled={otherWaysDisabled}
+              onPress={() => otherWay(scanner.startManual)}
+            />
+          </View>
+        </View>
       )}
 
       <Card style={styles.gap}>
@@ -187,5 +278,11 @@ export default function NfceQrScreen() {
 const styles = StyleSheet.create({
   gap: { gap: space.md },
   camera: { width: '100%', aspectRatio: 1, borderRadius: radius.lg, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+  // A câmera do navegador que ainda começa com a pendente na tela: fora da vista até responder e sair.
+  cameraHidden: { position: 'absolute', width: 1, height: 1, opacity: 0 },
   frame: { width: '62%', aspectRatio: 1, borderWidth: 3, borderRadius: radius.md },
+  otherWays: { gap: space.sm },
+  otherWayButtons: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
+  // O compacto tem 40: o toque fica com 44.
+  otherWay: { minHeight: 44 },
 });

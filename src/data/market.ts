@@ -1422,8 +1422,9 @@ export async function fetchProducts(): Promise<Product[]> {
   return products.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
 }
 
-export function useProducts() {
-  return useQuery({ queryKey: ['products'], queryFn: fetchProducts });
+/** O catálogo da casa. Com `enabled` falso, só a cópia guardada (a tela Hoje só precisa dele com uma compra vencendo). */
+export function useProducts({ enabled = true }: { enabled?: boolean } = {}) {
+  return useQuery({ queryKey: ['products'], queryFn: fetchProducts, enabled });
 }
 
 /** As colunas dos mercados que o banco pode ainda não ter, da mais antiga para a mais nova. */

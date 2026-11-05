@@ -1,5 +1,6 @@
 import { getCategory } from './categories';
-import { addDays, diffDays } from './dates';
+import { addDays, diffDays, formatShortDate } from './dates';
+import { formatQuantity } from './money';
 import { normalizeSearch } from './search';
 
 export type ExpirySource = 'produto' | 'categoria' | 'manual';
@@ -121,6 +122,77 @@ export function groupPantry<T extends PantryLot>(
     (a, b) =>
       (a.expiresOn ?? '9999-12-31').localeCompare(b.expiresOn ?? '9999-12-31') || a.name.localeCompare(b.name, 'pt-BR'),
   );
+}
+
+/** O nome de cada produto do catálogo, para groupPantry. */
+export function productNameMap(products: readonly { id: string; name: string }[] = []): Map<string, string> {
+  return new Map(products.map((p) => [p.id, p.name]));
+}
+
+/**
+ * O produto (o grupo de groupPantry sobre `items` inteiro) a que esta compra pertence: a tela Hoje lista as compras
+ * que vencem, e o toque abre o menu do produto, o mesmo da aba Casa → Despensa. A compra que não está em `items`
+ * vira um grupo só dela.
+ */
+export function pantryGroupOf<T extends PantryLot>(
+  items: T[],
+  lot: T,
+  productNames?: ReadonlyMap<string, string>,
+): PantryGroup<T> {
+  return (
+    groupPantry(items, productNames).find((group) => group.lots.some((l) => l.id === lot.id)) ??
+    groupPantry([lot], productNames)[0]
+  );
+}
+
+/**
+ * A compra tocada numa lista de compras (a seção Despensa da tela Hoje, uma linha por compra que vence): o menu do
+ * produto diz qual é ela, pelo que a linha mostrava (a validade), porque as datas de compra a linha não mostrava.
+ */
+export interface PantryFocus {
+  lotId: string;
+  /** O dia de hoje (YYYY-MM-DD), para a validade da compra. */
+  today: string;
+}
+
+/** "venceu há 2 dias", "vence amanhã": a validade da compra, como a linha da tela Hoje dizia, no meio da frase. */
+function expiryNote(lot: PantryLot, today: string): string {
+  const text = describeExpiry(expiryStatus(lot.expires_on, today));
+  return text.charAt(0).toLowerCase() + text.slice(1);
+}
+
+const lotDate = (lot: PantryLot) => formatShortDate(lot.purchased_on);
+const lotQuantity = (lot: PantryLot) => formatQuantity(lot.quantity, lot.unit);
+
+/**
+ * A mensagem do menu de um produto com mais de uma compra: "Compras: 2 set (1 un), 27 set (1 un) e 3 out (1 un).".
+ * Com `focus`, a compra tocada leva a validade: "Compras: 27 out (1 un, venceu há 2 dias) e 2 nov (1 un).".
+ */
+export function describePantryLots(lots: readonly PantryLot[], focus?: PantryFocus | null): string {
+  const parts = lots.map((lot) =>
+    lot.id === focus?.lotId ? `${lotDate(lot)} (${lotQuantity(lot)}, ${expiryNote(lot, focus.today)})` : `${lotDate(lot)} (${lotQuantity(lot)})`,
+  );
+  return `Compras: ${parts.slice(0, -1).join(', ')} e ${parts[parts.length - 1]}.`;
+}
+
+/**
+ * As ações "Editar" do menu de um produto: uma por compra, da mais nova para a mais antiga, "Editar a compra de 27 out
+ * (1 un)"; duas no mesmo dia e com a mesma quantidade ganham um número ("· 1ª"). Com uma compra só, "Editar validade e
+ * quantidade". Com `focus` (a compra tocada na tela Hoje, entre outras do mesmo produto), ela vem primeiro e é "esta
+ * compra", com a validade que a linha mostrava: "Editar esta compra (vence amanhã)".
+ */
+export function pantryEditActions<T extends PantryLot>(lots: readonly T[], focus?: PantryFocus | null): { lot: T; label: string }[] {
+  if (lots.length <= 1) return lots.map((lot) => ({ lot, label: 'Editar validade e quantidade' }));
+  const newestFirst = [...lots].reverse();
+  const focused = focus ? newestFirst.find((lot) => lot.id === focus.lotId) : undefined;
+  const rest = focused ? newestFirst.filter((lot) => lot !== focused) : newestFirst;
+  const labels = rest.map((lot) => `Editar a compra de ${lotDate(lot)} (${lotQuantity(lot)})`);
+  const actions = rest.map((lot, index) => {
+    const same = labels.filter((label) => label === labels[index]).length;
+    const nth = labels.slice(0, index + 1).filter((label) => label === labels[index]).length;
+    return { lot, label: same > 1 ? `${labels[index]} · ${nth}ª` : labels[index] };
+  });
+  return focused && focus ? [{ lot: focused, label: `Editar esta compra (${expiryNote(focused, focus.today)})` }, ...actions] : actions;
 }
 
 /**

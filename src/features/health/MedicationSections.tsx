@@ -216,6 +216,11 @@ export function MedicationRefills({ rows }: { rows: RefillRow[] }) {
   );
 }
 
+/** A entrada única para um remédio novo: o atalho do Resumo da Saúde e o "+ Remédio" de Cuidados (com a pessoa escolhida lá). */
+export function openNewMedication(personId: string | null = null) {
+  router.push({ pathname: '/remedio/[id]', params: personId ? { id: 'novo', pessoa: personId } : { id: 'novo' } });
+}
+
 /** Tratamentos em andamento (de uma pessoa, ou de todos). */
 export function MedicationList({ medications, personId }: { medications: Medication[]; personId: string | null }) {
   const today = todayISO();
@@ -230,7 +235,7 @@ export function MedicationList({ medications, personId }: { medications: Medicat
           icon="plus"
           variant="ghost"
           compact
-          onPress={() => router.push({ pathname: '/remedio/[id]', params: { id: 'novo', pessoa: personId ?? '' } })}
+          onPress={() => openNewMedication(personId)}
         />
       }>
       {medications.length === 0 ? (

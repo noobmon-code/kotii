@@ -44,7 +44,7 @@ const UNKNOWN = Math.max(...UPPER);
 /** Um emoji é largo em todas as fontes de emoji (medido no Chrome: cerca de 1,36 do tamanho). */
 const EMOJI = 1400;
 /** A folga da conta: kerning, arredondamento e a fonte de cada sistema. */
-const SAFETY = 1.05;
+export const TEXT_WIDTH_SAFETY = 1.05;
 
 /** A largura de uma letra, em milésimos do tamanho da fonte. */
 export function advanceOf(char: string): number {
@@ -91,7 +91,7 @@ export interface GreetingNameOptions {
 const DEFAULTS: GreetingNameOptions = { size: 30, fullMin: 26, min: 22, letterSpacing: -0.3 };
 
 const fits = (text: string, fontSize: number, width: number, letterSpacing: number) =>
-  textWidth(text, fontSize, letterSpacing) * SAFETY <= width;
+  textWidth(text, fontSize, letterSpacing) * TEXT_WIDTH_SAFETY <= width;
 
 /** O maior tamanho inteiro entre `min` e `size` em que o texto cabe numa linha; null se nem em `min`. */
 export function fitSize(text: string, availableWidth: number, size: number, min: number, letterSpacing = DEFAULTS.letterSpacing) {

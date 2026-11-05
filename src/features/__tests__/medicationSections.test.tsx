@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { useEffect } from 'react';
+import { router } from 'expo-router';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { addDays, todayISO } from '@/domain/dates';
 import { refillRows, stockFormOf, type RefillRow } from '@/domain/medicationStock';
 import { toSchedules } from '@/data/home';
-import { MedicationList, MedicationRefills, useRefills } from '@/features/health/MedicationSections';
+import { MedicationList, MedicationRefills, openNewMedication, useRefills } from '@/features/health/MedicationSections';
 import { MedicationStockSection } from '@/features/health/MedicationStockSection';
 import type { Medication, MedicationDose } from '@/lib/types';
 
@@ -224,5 +225,28 @@ describe('"Na lista da farmácia"', () => {
     const seen = await mount(<MedicationRefills rows={rows([ana])} />);
     expect(seen).toContain(offer);
     expect(seen).not.toContain(listed);
+  });
+});
+
+describe('remédio novo', () => {
+  beforeEach(() => {
+    jest.mocked(router.push).mockClear();
+  });
+
+  it('openNewMedication abre o formulário novo, com a pessoa só quando há uma', () => {
+    openNewMedication();
+    expect(router.push).toHaveBeenLastCalledWith({ pathname: '/remedio/[id]', params: { id: 'novo' } });
+    openNewMedication('p1');
+    expect(router.push).toHaveBeenLastCalledWith({ pathname: '/remedio/[id]', params: { id: 'novo', pessoa: 'p1' } });
+  });
+
+  it.each([
+    [null, { id: 'novo' }],
+    ['p1', { id: 'novo', pessoa: 'p1' }],
+  ])('o "+ Remédio" de Cuidados passa por ela (pessoa %s)', async (personId, params) => {
+    await mount(<MedicationList medications={[]} personId={personId} />);
+    const add = renderer!.root.findAll((node) => node.props.title === 'Remédio' && typeof node.props.onPress === 'function')[0];
+    await act(async () => add.props.onPress());
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/remedio/[id]', params });
   });
 });

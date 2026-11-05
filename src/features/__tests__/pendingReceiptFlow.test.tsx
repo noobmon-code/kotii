@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactElement } from 'react';
+import { CameraView } from 'expo-camera';
+import { Platform } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import NfceQrScreen from '@/app/nota/qrcode';
@@ -9,8 +11,10 @@ import PendingReceiptScreen from '@/app/nota/pendente';
 import { accessKeyCheckDigit } from '@/domain/nfce';
 import { ReceiptsPanel } from '@/features/finance/ReceiptsPanel';
 import { openExternal } from '@/lib/openLink';
+import { PICKER_RETURN_MS } from '@/lib/pickerReturn';
 import { notify } from '@/ui/dialogs';
-import { Button, ListRow } from '@/ui/primitives';
+import { ActionSheet } from '@/ui/ActionSheet';
+import { Button, ListRow, TextField } from '@/ui/primitives';
 
 // A nota da Paraíba com o "não sou robô", de ponta a ponta: a tela do QR de verdade, a lista de Finanças > Notas,
 // a tela da nota pendente, o leitor de foto de verdade e o aparelho (AsyncStorage) de mentira; o "servidor" guarda
@@ -30,10 +34,18 @@ const mockDb = {
   stores: [{ id: 's1', cnpj: '12345678000199', name: 'Mercado Bom' }] as Row[],
   calls: [] as { name: string; body: unknown }[],
 };
-const mockCamera: { onScan: ((event: { data: string }) => void) | null } = { onScan: null };
+const mockCamera: {
+  onScan: ((event: { data: string }) => void) | null | undefined;
+  /** O vídeo da câmera respondeu (no navegador, o pedido à câmera terminou). */
+  ready: (() => void) | null;
+} = { onScan: null, ready: null };
+// A câmera liberada (ou não) para a tela do QR.
+const mockPermission = { granted: true };
 const mockRouter = { push: jest.fn(), replace: jest.fn(), back: jest.fn(), canGoBack: () => true };
 const mockParams: { chave?: string; direto?: string } = {};
 const mockPicked: string[] = [];
+// O seletor que não responde (no navegador antigo, fechado sem nada, ele nunca avisa).
+const mockPickHangs = { value: false };
 // A Sefaz que mostra a nota, sem pedir a verificação (o CAPTCHA de antes era de passagem).
 const mockSefazReads = { value: false };
 // A parse-receipt que não achou itens nos prints (só o topo ou o rodapé).
@@ -52,11 +64,12 @@ jest.mock('expo-router', () => ({
   useLocalSearchParams: () => mockParams,
 }));
 jest.mock('expo-camera', () => ({
-  CameraView: (props: { onBarcodeScanned: (event: { data: string }) => void }) => {
+  CameraView: (props: { onBarcodeScanned?: (event: { data: string }) => void; onCameraReady?: () => void }) => {
     mockCamera.onScan = props.onBarcodeScanned;
+    mockCamera.ready = props.onCameraReady ?? null;
     return null;
   },
-  useCameraPermissions: () => [{ granted: true }, async () => ({ granted: true })],
+  useCameraPermissions: () => [{ granted: mockPermission.granted }, async () => ({ granted: mockPermission.granted })],
 }));
 jest.mock('@/lib/barcodeReader', () => ({ prepareBarcodeReader: async () => undefined }));
 jest.mock('@/lib/auth', () => ({ useAuth: () => ({ session: { user: { id: 'u1' } } }), useHouseholdId: () => 'h1' }));
@@ -70,7 +83,7 @@ jest.mock('@/data/images', () => ({
   ...jest.requireActual<typeof import('@/data/images')>('@/data/images'),
   pickImages: async (_source: string, limit: number) => mockPicked.slice(0, limit),
   // No navegador, a galeria devolve tudo o que a pessoa escolheu, mesmo passando do limite.
-  pickAllImages: async () => [...mockPicked],
+  pickAllImages: () => (mockPickHangs.value ? new Promise<string[]>(() => undefined) : Promise.resolve([...mockPicked])),
   uploadImages: async (_bucket: string, householdId: string, uris: string[]) => uris.map((_, i) => `${householdId}/${i}.jpg`),
   removeImages: async () => undefined,
 }));
@@ -230,6 +243,9 @@ beforeEach(async () => {
   mockDb.receipts = [];
   mockDb.calls = [];
   mockCamera.onScan = null;
+  mockCamera.ready = null;
+  mockPickHangs.value = false;
+  mockPermission.granted = true;
   mockRouter.push.mockClear();
   mockRouter.replace.mockClear();
   mockRouter.back.mockClear();
@@ -553,5 +569,199 @@ describe('o estado que pediu o "não sou robô" há pouco', () => {
     expect(callsTo('nfce')).toHaveLength(1);
     expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'q1' } });
     expect(await remembered()).toEqual({});
+  });
+});
+
+describe('os outros jeitos na tela do QR', () => {
+  const cameras = () => renderer!.root.findAllByType(CameraView).length;
+  const shownSheet = () => renderer!.root.findAllByType(ActionSheet).find((sheet) => sheet.props.visible);
+  const wait = (ms: number) =>
+    act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, ms));
+    });
+
+  it('debaixo da câmera: Tirar foto, Da galeria e Digitar', async () => {
+    await open(<NfceQrScreen />);
+    expect(page()).toContain('Sem QR code, ou ele não lê?');
+    expect(button('Tirar foto')?.props.accessibilityLabel).toBe('Tirar foto da nota');
+    expect(button('Da galeria')?.props.accessibilityLabel).toBe('Da galeria, até 6 imagens');
+    expect(button('Digitar')?.props.accessibilityLabel).toBe('Digitar a nota');
+    expect(cameras()).toBe(1);
+  });
+
+  it('a galeria lê a nota sem chave e a revisão toma o lugar da tela do QR', async () => {
+    await open(<NfceQrScreen />);
+    mockPicked.push('nota');
+    await press('Da galeria');
+    expect(callsTo('parse-receipt')).toEqual([{ name: 'parse-receipt', body: { image_paths: ['h1/0.jpg'] } }]);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'r1' } });
+    expect(mockRouter.push).not.toHaveBeenCalled();
+    expect(callsTo('nfce')).toEqual([]);
+  });
+
+  it('Digitar cria uma nota só, mesmo com dois toques, e a revisão toma o lugar da tela do QR', async () => {
+    await open(<NfceQrScreen />);
+    const target = button('Digitar')!;
+    await act(async () => {
+      target.props.onPress();
+      target.props.onPress();
+    });
+    await settle();
+    await settle();
+    const manual = mockDb.receipts.filter((row) => row.source === 'manual');
+    expect(manual).toHaveLength(1);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: manual[0].id } });
+    expect(mockRouter.push).not.toHaveBeenCalled();
+  });
+
+  it('com a foto tirada, a câmera do QR fica desligada (também no intervalo do iPhone) e só volta um segundo depois', async () => {
+    await open(<NfceQrScreen />);
+    mockPicked.push('parte-1');
+    await press('Tirar foto');
+    expect(cameras()).toBe(0);
+    expect(shownSheet()?.props.title).toBe('Foto tirada');
+
+    // No iPhone, o menu fecha (as partes saem) antes de a próxima foto começar, no onDismiss.
+    const next = shownSheet()!.props.actions.find((action: { label: string }) => action.label === 'Fotografar a próxima parte');
+    await act(async () => shownSheet()!.props.onClose());
+    await wait(300);
+    expect(cameras()).toBe(0);
+    mockPicked.length = 0;
+    mockPicked.push('parte-2');
+    await act(async () => next.onPress());
+    await settle();
+    expect(shownSheet()?.props.title).toBe('2 partes tiradas');
+    expect(cameras()).toBe(0);
+
+    // Cancelou: a câmera volta, mas só um segundo depois.
+    await act(async () => shownSheet()!.props.onClose());
+    await wait(300);
+    expect(cameras()).toBe(0);
+    await wait(1100);
+    expect(cameras()).toBe(1);
+    expect(callsTo('parse-receipt')).toEqual([]);
+  });
+
+  it('as partes tiradas viram a nota, e a revisão toma o lugar da tela do QR', async () => {
+    await open(<NfceQrScreen />);
+    mockPicked.push('parte-1');
+    await press('Tirar foto');
+    const next = shownSheet()!.props.actions.find((action: { label: string }) => action.label === 'Fotografar a próxima parte');
+    await act(async () => shownSheet()!.props.onClose());
+    mockPicked.length = 0;
+    mockPicked.push('parte-2');
+    await act(async () => next.onPress());
+    await settle();
+    const readAll = shownSheet()!.props.actions.find((action: { label: string }) => action.label === 'Ler a nota (2 fotos)');
+    await act(async () => readAll.onPress());
+    await settle();
+    await settle();
+    expect(callsTo('parse-receipt')).toEqual([{ name: 'parse-receipt', body: { image_paths: ['h1/0.jpg', 'h1/1.jpg'] } }]);
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'r1' } });
+    expect(callsTo('nfce')).toEqual([]);
+  });
+
+  it('a pendente que não pôde ser guardada esconde os outros jeitos', async () => {
+    jest.mocked(AsyncStorage.setItem).mockRejectedValueOnce(new Error('cheio'));
+    await open(<NfceQrScreen />);
+    await scan(QR);
+    expect(page()).toContain('Leia esta nota pelos prints da Sefaz');
+    expect(button('Tirar foto')).toBeUndefined();
+    expect(button('Da galeria')).toBeUndefined();
+    expect(button('Digitar')).toBeUndefined();
+    await press('Ler outro QR code');
+    expect(button('Tirar foto')).toBeDefined();
+    expect(button('Da galeria')).toBeDefined();
+    expect(button('Digitar')).toBeDefined();
+    expect(cameras()).toBe(1);
+  });
+
+  describe('no navegador', () => {
+    const os = Platform.OS;
+    const scope = globalThis as unknown as Record<string, unknown>;
+    // A janela e o documento de mentira (no Jest, a janela é o próprio globalThis, sem eventos).
+    let win: EventTarget;
+    let doc: EventTarget & { visibilityState: string };
+    beforeEach(() => {
+      Platform.OS = 'web';
+      win = new EventTarget();
+      doc = Object.assign(new EventTarget(), { visibilityState: 'visible' });
+      scope.addEventListener = win.addEventListener.bind(win);
+      scope.removeEventListener = win.removeEventListener.bind(win);
+      scope.document = doc;
+    });
+    afterEach(() => {
+      // A tela sai antes da janela de mentira: ela tira os ouvintes dela.
+      act(() => renderer?.unmount());
+      renderer = undefined;
+      Platform.OS = os;
+      delete scope.addEventListener;
+      delete scope.removeEventListener;
+      delete scope.document;
+    });
+
+    it('cancelado num navegador sem o aviso de cancelar: quando a página volta, a câmera do QR também volta', async () => {
+      mockPickHangs.value = true;
+      await open(<NfceQrScreen />);
+      await act(async () => mockCamera.ready?.());
+      await press('Tirar foto');
+      expect(cameras()).toBe(0);
+      // O seletor fechou sem nada e sem avisar; a página tem o foco de novo.
+      await act(async () => {
+        win.dispatchEvent(new Event('focus'));
+      });
+      await wait(PICKER_RETURN_MS - 400);
+      expect(cameras()).toBe(0);
+      // Sem arquivo no prazo, o seletor conta como fechado; a câmera volta um segundo depois.
+      await wait(500);
+      expect(cameras()).toBe(0);
+      await wait(1100);
+      expect(cameras()).toBe(1);
+      expect(callsTo('parse-receipt')).toEqual([]);
+      expect(callsTo('nfce')).toEqual([]);
+    });
+
+    it('a câmera que ainda começa não sai no meio (o vídeo dela ficaria ligado): espera responder, sem ler nada', async () => {
+      await open(<NfceQrScreen />);
+      expect(cameras()).toBe(1);
+      expect(mockCamera.onScan).toEqual(expect.any(Function));
+      await press('Digitar');
+      expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: expect.any(String) } });
+      // Ainda começando: fica montada, sem ler o QR.
+      expect(cameras()).toBe(1);
+      expect(mockCamera.onScan).toBeUndefined();
+      await act(async () => mockCamera.ready!());
+      expect(cameras()).toBe(0);
+    });
+
+    it('a câmera que já respondeu sai na hora', async () => {
+      mockPickHangs.value = true;
+      await open(<NfceQrScreen />);
+      await act(async () => mockCamera.ready!());
+      await press('Da galeria');
+      expect(cameras()).toBe(0);
+    });
+
+    it('a pendente que aparece com a câmera ainda começando: a câmera fica escondida até responder', async () => {
+      jest.mocked(AsyncStorage.setItem).mockRejectedValueOnce(new Error('cheio'));
+      await open(<NfceQrScreen />);
+      const field = renderer!.root.findAllByType(TextField).find((f) => f.props.accessibilityLabel === 'Link do QR code da nota')!;
+      await act(async () => field.props.onChangeText(QR));
+      await press('Buscar a nota');
+      expect(page()).toContain('Leia esta nota pelos prints da Sefaz');
+      expect(cameras()).toBe(1);
+      expect(mockCamera.onScan).toBeUndefined();
+      await act(async () => mockCamera.ready!());
+      expect(cameras()).toBe(0);
+    });
+  });
+
+  it('sem a câmera liberada, os outros jeitos continuam na tela', async () => {
+    mockPermission.granted = false;
+    await open(<NfceQrScreen />);
+    expect(page()).toContain('Permitir a câmera');
+    expect(cameras()).toBe(0);
+    expect(button('Da galeria')?.props.disabled).toBe(false);
+    expect(button('Digitar')?.props.disabled).toBe(false);
   });
 });

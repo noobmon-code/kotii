@@ -2,7 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 
 import { SKIES } from '@/domain/sky';
 import { washStops } from '@/features/SkyHeader';
-import { GRADIENTS, PALETTES, withAlpha, type Colors } from '../theme';
+import { GRADIENTS, PALETTES, WASHES, withAlpha, type Colors } from '../theme';
 
 // Contraste de texto do tema (WCAG): 4,5:1 para texto pequeno, nos dois temas. Os pares de cores lisas, e os de
 // vidro e véus que o desenho usa, com o vidro posto sobre o fundo liso da tela (o que há por trás na maior parte).
@@ -73,6 +73,22 @@ describe.each(['light', 'dark'] as const)('o tema %s', (scheme) => {
     expect(contrast(palette.textMuted, glassStrong)).toBeGreaterThanOrEqual(MIN);
     expect(contrast(palette.primary, over(withAlpha(palette.primary, 0.12), glassStrong))).toBeGreaterThanOrEqual(MIN);
     expect(contrast(palette.primary, glassStrong)).toBeGreaterThanOrEqual(MIN);
+  });
+
+  it('a linha destacada dos avisos ("Abrir os avisos" de outra tela) tem contraste: o azul a 12% sobre o vidro', () => {
+    const highlighted = over(withAlpha(palette.primary, 0.12), over(palette.glass, palette.background));
+    expect(contrast(palette.text, highlighted)).toBeGreaterThanOrEqual(MIN);
+    expect(contrast(palette.textMuted, highlighted)).toBeGreaterThanOrEqual(MIN);
+  });
+
+  it('a linha de baixo do atalho das listas (Tile `caption`, na cor do texto) tem contraste sobre o brilho do canto', () => {
+    // O brilho de 130,8° vai do canto de cima à esquerda (opacidade 1; 0,32 no escuro) a 0 no de baixo à direita: onde
+    // a linha de baixo começa, ele ainda está a pouco mais da metade. 0,6 com folga; o cinza (textMuted) não passaria.
+    const glass = over(palette.glass, palette.background);
+    for (const wash of Object.values(WASHES)) {
+      const behind = over(withAlpha(wash, scheme === 'dark' ? 0.6 * 0.32 : 0.6), glass);
+      expect(contrast(palette.text, behind)).toBeGreaterThanOrEqual(MIN);
+    }
   });
 
   it('o selo neutro tem contraste', () => {

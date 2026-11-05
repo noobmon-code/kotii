@@ -35,6 +35,7 @@ jest.mock('@/features/health/HealthTodaySections', () => ({ HealthTodaySections:
 jest.mock('@/features/health/MedicationSections', () => ({
   MedicationRefills: () => null,
   MedicationsToday: () => null,
+  openNewMedication: jest.fn(),
   useRefills: () => ({ rows: [] }),
 }));
 jest.mock('@/features/health/PlansPanel', () => ({ PlansPanel: () => null }));

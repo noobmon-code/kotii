@@ -1,18 +1,13 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { useConsumePantryItems, usePantry, useTakeOneFromPantry } from '@/data/home';
-import { useAddToPantryList, useProducts, useShoppingLists } from '@/data/market';
-import { formatShortDate, todayISO } from '@/domain/dates';
-import { genericItem } from '@/domain/genericItem';
-import { describeExpiry, expiryStatus, groupPantry, takeOne, type ExpiryStatus, type PantryGroup } from '@/domain/pantry';
-import { listsFor, newListKind } from '@/domain/pantryList';
+import { usePantry } from '@/data/home';
+import { useProducts } from '@/data/market';
+import { todayISO } from '@/domain/dates';
+import { describeExpiry, expiryStatus, groupPantry, productNameMap, type ExpiryStatus, type PantryGroup } from '@/domain/pantry';
 import { formatQuantity } from '@/domain/money';
-import { errorMessage } from '@/lib/supabase';
+import { usePantryMenu } from '@/features/PantryMenu';
 import type { PantryItem } from '@/lib/types';
-import { ActionSheet, type SheetAction } from '@/ui/ActionSheet';
-import { notify } from '@/ui/dialogs';
 import {
   Badge,
   Button,
@@ -39,133 +34,17 @@ type Group = PantryGroup<PantryItem>;
 /** "2 un", "0,75 kg e 2 un". */
 const describeTotals = (group: Group) => group.totals.map((t) => formatQuantity(t.quantity, t.unit)).join(' e ');
 
-/** "Compras: 2 set (1 un), 27 set (1 un) e 3 out (1 un)." */
-function describeLots(group: Group): string {
-  const parts = group.lots.map((lot) => `${formatShortDate(lot.purchased_on)} (${formatQuantity(lot.quantity, lot.unit)})`);
-  return `Compras: ${parts.slice(0, -1).join(', ')} e ${parts[parts.length - 1]}.`;
-}
-
 export function PantryPanel() {
   const today = todayISO();
   const pantry = usePantry();
   const products = useProducts();
-  const consume = useConsumePantryItems();
-  const takeOneFrom = useTakeOneFromPantry();
-  const lists = useShoppingLists();
-  const addToList = useAddToPantryList();
-  const [selected, setSelected] = useState<Group | null>(null);
-  // "Escolher a lista": o segundo menu, com as listas abertas em que o item cabe. `consume`: "Acabou" (dá baixa)
-  // ou "Está acabando" (o item continua na despensa).
-  const [picking, setPicking] = useState<{ group: Group; consume: boolean } | null>(null);
-  const onError = (err: unknown) => notify('Erro', errorMessage(err));
-  const choicesFor = (group: Group) => listsFor(group.category, lists.data ?? []);
-
-  // Primeiro a lista, depois a baixa: se a baixa falhar, o item continua na
-  // despensa e repetir não duplica (a lista ignora item já pendente).
-  // Sem `listId`, a lista é a que o menu mostrou como a última (`shownListId`), se ainda está aberta; senão, a mais
-  // nova em que o item cabe, conferida no servidor na hora.
-  // O item vai sem a marca ("Leite desnatado", e não o "Leite IL Desnatado" do produto), com o produto como dica de
-  // preço, como na lista e na tela do produto: a marca se escolhe na hora, ou em "Marca preferida" (domain/genericItem).
-  // "Está acabando" (`consume` falso) põe na lista do mesmo jeito, sem a baixa: o que sobrou continua na despensa.
-  async function putOnList(group: Group, consumeLots: boolean, listId?: string, shownListId?: string) {
-    const newest = group.lots[group.lots.length - 1];
-    const itemName = genericItem(group.name, group.category).name;
-    try {
-      const list = await addToList.mutateAsync({
-        name: itemName,
-        category: group.category,
-        productId: group.productId,
-        quantity: newest.quantity,
-        unit: newest.unit,
-        listId,
-        shownListId,
-      });
-      if (consumeLots) await consume.mutateAsync(group.lots.map((lot) => lot.id));
-      const stays = consumeLots ? '' : ' Continua na despensa até acabar.';
-      notify(
-        list.added ? 'Adicionado à lista' : 'Já estava na lista',
-        list.added ? `${itemName} foi para "${list.name}".${stays}` : `${itemName} já estava pendente em "${list.name}".${stays}`,
-      );
-    } catch (err) {
-      onError(err);
-    }
-  }
-
-  function groupActions(group: Group): SheetAction[] {
-    const ids = group.lots.map((lot) => lot.id);
-    const take = takeOne(group.lots);
-    const oldest = group.lots[0];
-    const several = group.lots.length > 1;
-    const choices = choicesFor(group);
-    const newestList = choices[0];
-    const target = newestList
-      ? `pôr na última lista (“${newestList.name}”)`
-      : `pôr na lista ${newListKind(group.category) === 'farmacia' ? 'da farmácia' : 'de mercado'}`;
-    const actions: SheetAction[] = [];
-    // "Acabou" dá baixa; "Está acabando" só põe na lista, e o item continua na despensa até acabar.
-    for (const [when, consumeLots, icon] of [
-      ['Acabou', true, 'cart-plus'],
-      ['Está acabando', false, 'cart-arrow-down'],
-    ] as const) {
-      actions.push({ label: `${when} — ${target}`, icon, onPress: () => putOnList(group, consumeLots, undefined, newestList?.id) });
-      if (choices.length > 1) {
-        actions.push({
-          label: `${when} — escolher a lista`,
-          icon: 'format-list-bulleted',
-          onPress: () => setPicking({ group, consume: consumeLots }),
-        });
-      }
-    }
-    if (take) {
-      const units = group.totals.find((t) => t.unit === 'un')?.quantity ?? 0;
-      const left = Math.round((units - 1) * 1000) / 1000;
-      actions.push({
-        label:
-          oldest.unit === 'un'
-            ? `Usei 1 (${left === 1 ? 'fica' : 'ficam'} ${formatQuantity(left, 'un')})`
-            : `Acabou a compra de ${formatShortDate(oldest.purchased_on)}`,
-        icon: 'minus-circle-outline',
-        onPress: () => takeOneFrom.mutate(take, { onError }),
-      });
-    }
-    actions.push({
-      label: several ? 'Consumido / descartado (tudo)' : 'Consumido / descartado',
-      icon: 'check',
-      onPress: () => consume.mutate(ids, { onError }),
-    });
-    // Item ligado a um produto: a tela dele tem o histórico de preço.
-    const { productId } = group;
-    if (productId) {
-      actions.push({
-        label: 'Ver preços',
-        icon: 'chart-line',
-        onPress: () => router.push({ pathname: '/produto/[id]', params: { id: productId } }),
-      });
-    }
-    // Uma por compra, da mais nova para a mais antiga; duas no mesmo dia e com a
-    // mesma quantidade ganham um número para não confundir.
-    const lots = several ? [...group.lots].reverse() : group.lots;
-    const labels = lots.map((lot) =>
-      several
-        ? `Editar a compra de ${formatShortDate(lot.purchased_on)} (${formatQuantity(lot.quantity, lot.unit)})`
-        : 'Editar validade e quantidade',
-    );
-    lots.forEach((lot, index) => {
-      const same = labels.filter((label) => label === labels[index]).length;
-      const nth = labels.slice(0, index + 1).filter((label) => label === labels[index]).length;
-      actions.push({
-        label: same > 1 ? `${labels[index]} · ${nth}ª` : labels[index],
-        icon: 'pencil-outline',
-        onPress: () => router.push({ pathname: '/despensa/[id]', params: { id: lot.id } }),
-      });
-    });
-    return actions;
-  }
+  // O menu de cada produto (o mesmo da seção Despensa da tela Hoje).
+  const menu = usePantryMenu();
 
   if (pantry.isPending) return <Loading />;
   if (pantry.isError) return <ErrorNotice error={pantry.error} onRetry={() => pantry.refetch()} />;
 
-  const productNames = new Map((products.data ?? []).map((p) => [p.id, p.name]));
+  const productNames = productNameMap(products.data);
   const withStatus = groupPantry(pantry.data, productNames).map((group) => ({
     group,
     status: expiryStatus(group.expiresOn, today),
@@ -201,11 +80,7 @@ export function PantryPanel() {
                       group.lots.length > 1 ? `${describeTotals(group)} · ${group.lots.length} compras` : describeTotals(group)
                     }
                     right={status.kind === 'sem_validade' ? null : <Badge label={describeExpiry(status)} tone={section.tone} />}
-                    onPress={() => {
-                      // O menu diz qual é a última lista: confere as listas de novo enquanto ele abre.
-                      lists.refetch?.();
-                      setSelected(group);
-                    }}
+                    onPress={() => menu.open(group)}
                   />
                 ))}
               </ListCard>
@@ -213,28 +88,7 @@ export function PantryPanel() {
           );
         })
       )}
-      <ActionSheet
-        visible={Boolean(selected)}
-        onClose={() => setSelected(null)}
-        title={selected?.name}
-        message={selected && selected.lots.length > 1 ? describeLots(selected) : undefined}
-        actions={selected ? groupActions(selected) : []}
-      />
-      <ActionSheet
-        visible={Boolean(picking)}
-        onClose={() => setPicking(null)}
-        title={picking ? `${picking.group.name}: para qual lista?` : undefined}
-        message={picking && !picking.consume ? 'O item continua na despensa até acabar.' : undefined}
-        actions={
-          picking
-            ? choicesFor(picking.group).map((list, index) => ({
-                label: index === 0 ? `${list.name} (a mais nova)` : list.name,
-                icon: 'cart-plus',
-                onPress: () => putOnList(picking.group, picking.consume, list.id),
-              }))
-            : []
-        }
-      />
+      {menu.element}
     </View>
   );
 }

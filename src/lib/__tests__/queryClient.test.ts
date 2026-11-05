@@ -11,6 +11,7 @@ import { notify } from '@/ui/dialogs';
 import { accessErrorMessage, EXPECTS_ROWS_META, NO_HOUSEHOLD_ACCESS, REMOVED_FROM_HOUSEHOLD } from '../accessErrors';
 import { setActiveHousehold } from '../activeHousehold';
 import { addedHere, rememberAdded } from '../addedItems';
+import { rememberOpenedList } from '../openedLists';
 import { chooseStore } from '../storeChoice';
 import { cacheOwners, forgetCache, persistOptions, queryClient, saveNow, setSessionValid } from '../queryClient';
 
@@ -107,17 +108,21 @@ describe('cache guardado no aparelho', () => {
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
   });
 
-  it('sair da conta apaga também o "Onde estou" e os itens que este aparelho pôs em cada lista', async () => {
+  it('sair da conta apaga também o "Onde estou", os itens que este aparelho pôs em cada lista e as listas que ele abriu', async () => {
     chooseStore('l1', 's1');
     rememberAdded('l1', ['i1']);
+    rememberOpenedList('l1');
+    await flush();
     await flush();
     expect(await AsyncStorage.getItem('kotii:store-choice:l1')).not.toBeNull();
     expect(await AsyncStorage.getItem('kotii:added-items:l1')).not.toBeNull();
+    expect(await AsyncStorage.getItem('kotii:opened-lists')).not.toBeNull();
 
     forgetCache();
     await flush();
     expect(await AsyncStorage.getItem('kotii:store-choice:l1')).toBeNull();
     expect(await AsyncStorage.getItem('kotii:added-items:l1')).toBeNull();
+    expect(await AsyncStorage.getItem('kotii:opened-lists')).toBeNull();
     expect(addedHere('l1').size).toBe(0);
   });
 

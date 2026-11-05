@@ -1,4 +1,3 @@
-import { router } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet } from 'react-native';
 
@@ -17,6 +16,7 @@ import {
   type StockCount,
   type StockForm,
 } from '@/domain/medicationStock';
+import { OpenRemindersButton } from '@/features/OpenRemindersButton';
 import { lastBoxUnits, rememberBoxUnits } from '@/lib/medicationBox';
 import { REMINDER_PLACE, remindersSupported } from '@/lib/reminders';
 import { errorMessage } from '@/lib/supabase';
@@ -165,7 +165,7 @@ export function MedicationStockSection({
           <Text variant="muted">
             Para receber por notificação, ligue “{REFILLS_REMINDER_LABEL}” nos avisos {REMINDER_PLACE}.
           </Text>
-          <Button title="Abrir os avisos" icon="bell-outline" variant="secondary" compact onPress={() => router.push('/familia')} />
+          <OpenRemindersButton kind="refills" />
         </>
       ) : null}
     </Card>

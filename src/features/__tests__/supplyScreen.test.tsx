@@ -128,3 +128,12 @@ describe('Editar reposição', () => {
     expect(mockDb.supplies[0].name).toBe('Gás do fogão');
   });
 });
+
+describe('o aviso da reposição', () => {
+  it('"Abrir os avisos" abre a Família no interruptor de gás, água e ração', async () => {
+    await until(() => Boolean(button('Abrir os avisos')));
+    jest.mocked(router.push).mockClear();
+    act(() => button('Abrir os avisos')!.props.onPress());
+    expect(router.push).toHaveBeenCalledWith({ pathname: '/familia', params: { aviso: 'supplies' } });
+  });
+});
