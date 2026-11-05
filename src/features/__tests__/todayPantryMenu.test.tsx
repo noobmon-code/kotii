@@ -17,7 +17,7 @@ import { Button, ListRow } from '@/ui/primitives';
 const today = todayISO();
 // "mock" no nome: o jest.mock só enxerga variáveis assim.
 const mockPantry: { rows: PantryItem[] } = { rows: [] };
-const mockProducts: { data: unknown; enabled: boolean[] } = { data: [], enabled: [] };
+const mockProducts = { data: [] as unknown, enabled: [] as boolean[], refetch: jest.fn(), fetchStatus: 'idle' };
 const mockLists = { data: [] as unknown[] };
 const mockAdd = jest.fn<(item: Record<string, unknown>) => Promise<{ id: string; name: string; added: boolean }>>();
 const mockConsumeAsync = jest.fn<(ids: string[]) => Promise<void>>();
@@ -57,7 +57,7 @@ jest.mock('@/data/market', () => ({
   useAddToPantryList: () => ({ mutate: jest.fn(), mutateAsync: mockAdd, isPending: false }),
   useProducts: (options?: { enabled?: boolean }) => {
     mockProducts.enabled.push(options?.enabled ?? true);
-    return { data: mockProducts.data };
+    return { data: mockProducts.data, refetch: mockProducts.refetch, fetchStatus: mockProducts.fetchStatus };
   },
   usePurchaseRecords: () => mockQuery(),
   useShoppingLists: () => mockQuery(mockLists.data),
@@ -150,6 +150,8 @@ beforeEach(() => {
   mockPantry.rows = [EXPIRED, FRESH];
   mockProducts.data = [{ id: 'leite', name: 'Leite Italac' }];
   mockProducts.enabled = [];
+  mockProducts.refetch.mockClear();
+  mockProducts.fetchStatus = 'idle';
   mockLists.data = [list('Mercado', 'mercado', '2026-10-01T10:00:00Z'), list('Feira', 'mercado', '2026-10-15T10:00:00Z')];
   mockAdd.mockReset();
   mockAdd.mockImplementation(async (item) => ({ id: String(item.listId ?? 'l-Feira'), name: 'Feira', added: true }));
@@ -286,22 +288,40 @@ describe('Despensa na tela Hoje: o menu do produto', () => {
     expect(router.push).toHaveBeenCalledWith({ pathname: '/casa', params: { aba: 'despensa' } });
   });
 
-  it('o catálogo só é lido com uma compra vencendo; sem ele, o nome é o da compra mais nova', async () => {
-    mockPantry.rows = [];
-    await mountToday();
-    expect(mockProducts.enabled.length).toBeGreaterThan(0);
-    expect(mockProducts.enabled.every((enabled) => enabled === false)).toBe(true);
-    await act(async () => renderer!.unmount());
+  it('o catálogo nunca é uma busca ativa da tela Hoje, também com uma compra vencendo: só a cópia guardada', async () => {
+    // Uma busca ativa leria o catálogo inteiro a cada volta ao app, reconexão ou invalidação, com a tela Hoje montada.
+    for (const rows of [[], [EXPIRED, FRESH]]) {
+      mockPantry.rows = rows;
+      mockProducts.enabled = [];
+      await mountToday();
+      expect(mockProducts.enabled.length).toBeGreaterThan(0);
+      expect(mockProducts.enabled.every((enabled) => enabled === false)).toBe(true);
+      await act(async () => renderer!.unmount());
+    }
+    expect(mockProducts.refetch).not.toHaveBeenCalled();
 
-    mockPantry.rows = [EXPIRED, FRESH];
-    mockProducts.enabled = [];
+    // Com a cópia, o toque não busca nada.
+    await mountToday();
+    expect((await openTodayRow()).props.title).toBe('Leite Italac');
+    expect(mockProducts.refetch).not.toHaveBeenCalled();
+  });
+
+  it('sem a cópia do catálogo, o nome é o da compra mais nova, e o toque busca o catálogo (uma vez por busca)', async () => {
     mockProducts.data = undefined;
     await mountToday();
-    expect(mockProducts.enabled).toContain(true);
     const shown = await openTodayRow();
     expect(shown.props.title).toBe('LEITE UHT ITALAC');
+    expect(mockProducts.refetch).toHaveBeenCalledTimes(1);
     await act(async () => (shown.props.actions as SheetAction[]).find((a) => a.label.startsWith('Acabou — pôr'))!.onPress());
     // O nome sem a marca sai do nome da compra, como na Despensa com o catálogo ainda chegando.
     expect(mockAdd).toHaveBeenCalledWith(expect.objectContaining({ productId: 'leite' }));
+
+    // Com a busca já a caminho (ou esperando a internet), outro toque não a recomeça.
+    await act(async () => renderer!.unmount());
+    mockProducts.refetch.mockClear();
+    mockProducts.fetchStatus = 'paused';
+    await mountToday();
+    await openTodayRow();
+    expect(mockProducts.refetch).not.toHaveBeenCalled();
   });
 });

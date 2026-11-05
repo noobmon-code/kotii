@@ -34,11 +34,7 @@ const mockDb = {
   stores: [{ id: 's1', cnpj: '12345678000199', name: 'Mercado Bom' }] as Row[],
   calls: [] as { name: string; body: unknown }[],
 };
-const mockCamera: {
-  onScan: ((event: { data: string }) => void) | null | undefined;
-  /** O vídeo da câmera respondeu (no navegador, o pedido à câmera terminou). */
-  ready: (() => void) | null;
-} = { onScan: null, ready: null };
+const mockCamera: { onScan: ((event: { data: string }) => void) | null | undefined } = { onScan: null };
 // A câmera liberada (ou não) para a tela do QR.
 const mockPermission = { granted: true };
 const mockRouter = { push: jest.fn(), replace: jest.fn(), back: jest.fn(), canGoBack: () => true };
@@ -46,6 +42,8 @@ const mockParams: { chave?: string; direto?: string } = {};
 const mockPicked: string[] = [];
 // O seletor que não responde (no navegador antigo, fechado sem nada, ele nunca avisa).
 const mockPickHangs = { value: false };
+// O seletor que responde quando o teste quer (`answer`), e quantas vezes ele foi aberto.
+const mockPick = { waits: false, opened: 0, answers: [] as ((uris: string[]) => void)[] };
 // A Sefaz que mostra a nota, sem pedir a verificação (o CAPTCHA de antes era de passagem).
 const mockSefazReads = { value: false };
 // A parse-receipt que não achou itens nos prints (só o topo ou o rodapé).
@@ -64,9 +62,13 @@ jest.mock('expo-router', () => ({
   useLocalSearchParams: () => mockParams,
 }));
 jest.mock('expo-camera', () => ({
-  CameraView: (props: { onBarcodeScanned?: (event: { data: string }) => void; onCameraReady?: () => void }) => {
+  CameraView: (props: { onBarcodeScanned?: (event: { data: string }) => void }) => {
     mockCamera.onScan = props.onBarcodeScanned;
-    mockCamera.ready = props.onCameraReady ?? null;
+    // Como o expo-camera no navegador: o vídeo é pedido no efeito da câmera montada.
+    jest.requireActual<typeof import('react')>('react').useEffect(() => {
+      const devices = (globalThis as { navigator?: { mediaDevices?: { getUserMedia(c: unknown): Promise<unknown> } } }).navigator?.mediaDevices;
+      void devices?.getUserMedia({ video: true });
+    }, []);
     return null;
   },
   useCameraPermissions: () => [{ granted: mockPermission.granted }, async () => ({ granted: mockPermission.granted })],
@@ -83,7 +85,12 @@ jest.mock('@/data/images', () => ({
   ...jest.requireActual<typeof import('@/data/images')>('@/data/images'),
   pickImages: async (_source: string, limit: number) => mockPicked.slice(0, limit),
   // No navegador, a galeria devolve tudo o que a pessoa escolheu, mesmo passando do limite.
-  pickAllImages: () => (mockPickHangs.value ? new Promise<string[]>(() => undefined) : Promise.resolve([...mockPicked])),
+  pickAllImages: () => {
+    mockPick.opened++;
+    if (mockPickHangs.value) return new Promise<string[]>(() => undefined);
+    if (mockPick.waits) return new Promise<string[]>((resolve) => mockPick.answers.push(resolve));
+    return Promise.resolve([...mockPicked]);
+  },
   uploadImages: async (_bucket: string, householdId: string, uris: string[]) => uris.map((_, i) => `${householdId}/${i}.jpg`),
   removeImages: async () => undefined,
 }));
@@ -243,8 +250,10 @@ beforeEach(async () => {
   mockDb.receipts = [];
   mockDb.calls = [];
   mockCamera.onScan = null;
-  mockCamera.ready = null;
   mockPickHangs.value = false;
+  mockPick.waits = false;
+  mockPick.opened = 0;
+  mockPick.answers = [];
   mockPermission.granted = true;
   mockRouter.push.mockClear();
   mockRouter.replace.mockClear();
@@ -682,6 +691,19 @@ describe('os outros jeitos na tela do QR', () => {
     // A janela e o documento de mentira (no Jest, a janela é o próprio globalThis, sem eventos).
     let win: EventTarget;
     let doc: EventTarget & { visibilityState: string };
+    // A câmera do navegador de mentira: cada pedido de vídeo espera o teste (`arrive`), e cada vídeo diz se foi desligado.
+    type Video = { stopped: boolean; getTracks: () => { stop: () => void }[] };
+    let videoRequests: ((video: Video) => void)[];
+    const navigatorBefore = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    const arrive = async () => {
+      const video: Video = {
+        stopped: false,
+        getTracks: () => [{ stop: () => void (video.stopped = true) }],
+      };
+      expect(videoRequests.length).toBeGreaterThan(0);
+      await act(async () => videoRequests.shift()!(video));
+      return video;
+    };
     beforeEach(() => {
       Platform.OS = 'web';
       win = new EventTarget();
@@ -689,6 +711,9 @@ describe('os outros jeitos na tela do QR', () => {
       scope.addEventListener = win.addEventListener.bind(win);
       scope.removeEventListener = win.removeEventListener.bind(win);
       scope.document = doc;
+      videoRequests = [];
+      const mediaDevices = { getUserMedia: () => new Promise<Video>((resolve) => videoRequests.push(resolve)) };
+      Object.defineProperty(globalThis, 'navigator', { value: { mediaDevices }, configurable: true, writable: true });
     });
     afterEach(() => {
       // A tela sai antes da janela de mentira: ela tira os ouvintes dela.
@@ -698,12 +723,13 @@ describe('os outros jeitos na tela do QR', () => {
       delete scope.addEventListener;
       delete scope.removeEventListener;
       delete scope.document;
+      if (navigatorBefore) Object.defineProperty(globalThis, 'navigator', navigatorBefore);
+      else delete scope.navigator;
     });
 
     it('cancelado num navegador sem o aviso de cancelar: quando a página volta, a câmera do QR também volta', async () => {
       mockPickHangs.value = true;
       await open(<NfceQrScreen />);
-      await act(async () => mockCamera.ready?.());
       await press('Tirar foto');
       expect(cameras()).toBe(0);
       // O seletor fechou sem nada e sem avisar; a página tem o foco de novo.
@@ -721,38 +747,113 @@ describe('os outros jeitos na tela do QR', () => {
       expect(callsTo('nfce')).toEqual([]);
     });
 
-    it('a câmera que ainda começa não sai no meio (o vídeo dela ficaria ligado): espera responder, sem ler nada', async () => {
+    it('a câmera sai na hora, com o vídeo ainda começando, e o vídeo que chega depois é desligado', async () => {
       await open(<NfceQrScreen />);
       expect(cameras()).toBe(1);
-      expect(mockCamera.onScan).toEqual(expect.any(Function));
+      expect(videoRequests).toHaveLength(1);
       await press('Digitar');
       expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: expect.any(String) } });
-      // Ainda começando: fica montada, sem ler o QR.
-      expect(cameras()).toBe(1);
-      expect(mockCamera.onScan).toBeUndefined();
-      await act(async () => mockCamera.ready!());
       expect(cameras()).toBe(0);
+      // O vídeo chegou com a câmera já fora: desligado na hora (a luz da câmera não fica acesa até a aba fechar).
+      expect((await arrive()).stopped).toBe(true);
     });
 
-    it('a câmera que já respondeu sai na hora', async () => {
-      mockPickHangs.value = true;
+    it('a tela que sai com o vídeo da câmera ainda começando (voltar, a revisão no lugar dela): o vídeo é desligado', async () => {
       await open(<NfceQrScreen />);
-      await act(async () => mockCamera.ready!());
-      await press('Da galeria');
-      expect(cameras()).toBe(0);
+      expect(videoRequests).toHaveLength(1);
+      act(() => renderer!.unmount());
+      renderer = undefined;
+      expect((await arrive()).stopped).toBe(true);
     });
 
-    it('a pendente que aparece com a câmera ainda começando: a câmera fica escondida até responder', async () => {
+    it('o vídeo que chega com a câmera na tela fica ligado', async () => {
+      await open(<NfceQrScreen />);
+      const video = await arrive();
+      expect(video.stopped).toBe(false);
+      expect(cameras()).toBe(1);
+    });
+
+    it('a pendente que aparece com a câmera ainda começando: a câmera sai, e o vídeo que chega depois é desligado', async () => {
       jest.mocked(AsyncStorage.setItem).mockRejectedValueOnce(new Error('cheio'));
       await open(<NfceQrScreen />);
       const field = renderer!.root.findAllByType(TextField).find((f) => f.props.accessibilityLabel === 'Link do QR code da nota')!;
       await act(async () => field.props.onChangeText(QR));
       await press('Buscar a nota');
       expect(page()).toContain('Leia esta nota pelos prints da Sefaz');
-      expect(cameras()).toBe(1);
-      expect(mockCamera.onScan).toBeUndefined();
-      await act(async () => mockCamera.ready!());
       expect(cameras()).toBe(0);
+      expect((await arrive()).stopped).toBe(true);
+    });
+
+    it('dois toques rápidos em "Da galeria": um seletor só, e as fotos escolhidas nele são lidas', async () => {
+      mockPick.waits = true;
+      await open(<NfceQrScreen />);
+      const target = button('Da galeria')!;
+      await act(async () => {
+        target.props.onPress();
+        target.props.onPress();
+      });
+      await settle();
+      // O segundo toque chegou à página com o seletor ainda aparecendo: não é a volta dele.
+      await act(async () => {
+        doc.dispatchEvent(new Event('pointerdown'));
+      });
+      await wait(PICKER_RETURN_MS + 100);
+      await wait(1100);
+      expect(cameras()).toBe(0);
+      expect(mockPick.opened).toBe(1);
+      await act(async () => mockPick.answers[0](['nota-1', 'nota-2']));
+      await settle();
+      await settle();
+      expect(callsTo('parse-receipt')).toEqual([{ name: 'parse-receipt', body: { image_paths: ['h1/0.jpg', 'h1/1.jpg'] } }]);
+      expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'r1' } });
+    });
+
+    it('a galeria dada como fechada e o QR lido depois: a foto que chega tarde não vira outra nota', async () => {
+      mockPick.waits = true;
+      await open(<NfceQrScreen />);
+      await press('Da galeria');
+      // A página voltou sem arquivo no prazo: o seletor conta como fechado, e a câmera do QR volta.
+      await act(async () => {
+        win.dispatchEvent(new Event('focus'));
+      });
+      await wait(PICKER_RETURN_MS + 100);
+      await wait(1100);
+      expect(cameras()).toBe(1);
+      mockSefazReads.value = true;
+      await scan(QR);
+      expect(callsTo('nfce')).toHaveLength(1);
+      expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/nota/[id]', params: { id: 'q1' } });
+      // O arquivo (uma foto do iCloud, convertida devagar) chega depois: não é lido.
+      await act(async () => mockPick.answers[0](['nota']));
+      await settle();
+      await settle();
+      expect(callsTo('parse-receipt')).toEqual([]);
+      expect(mockDb.receipts).toHaveLength(1);
+    });
+
+    it('a galeria dada como fechada, sem QR lido: a foto que chega tarde é lida como sempre', async () => {
+      mockPick.waits = true;
+      await open(<NfceQrScreen />);
+      await press('Da galeria');
+      await act(async () => {
+        win.dispatchEvent(new Event('focus'));
+      });
+      await wait(PICKER_RETURN_MS + 100);
+      await act(async () => mockPick.answers[0](['nota']));
+      await settle();
+      await settle();
+      expect(callsTo('parse-receipt')).toEqual([{ name: 'parse-receipt', body: { image_paths: ['h1/0.jpg'] } }]);
+    });
+
+    it('a tela que sai com a galeria aberta: a foto que chega depois não é enviada', async () => {
+      mockPick.waits = true;
+      await open(<NfceQrScreen />);
+      await press('Da galeria');
+      act(() => renderer!.unmount());
+      renderer = undefined;
+      await act(async () => mockPick.answers[0](['nota']));
+      await settle();
+      expect(callsTo('parse-receipt')).toEqual([]);
     });
   });
 

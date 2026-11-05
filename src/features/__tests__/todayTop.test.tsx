@@ -32,12 +32,33 @@ const mockQuery = (data: unknown = []) => ({ data, isRefetching: false, isSucces
 const mockLists = { data: [] as unknown };
 const mockOpened = { map: new Map<string, number>() as ReadonlyMap<string, number> | null };
 jest.mock('@/lib/openedLists', () => ({ useOpenedLists: () => mockOpened.map }));
-// A janela de um celular de 360 (só no teste do nome comprido); fora dele, a janela de sempre do Jest.
-const mockWindow: { size: { width: number; height: number; scale: number; fontScale: number } | null } = { size: null };
+// A janela de um celular de 360 (nos testes do nome comprido); fora deles, a janela de sempre do Jest. `resize` muda a
+// janela como o teclado do celular que abre ou a janela do computador arrastada: quem a usa desenha de novo.
+type WindowSize = { width: number; height: number; scale: number; fontScale: number };
+const mockWindow = {
+  size: null as WindowSize | null,
+  listeners: new Set<() => void>(),
+  resize(size: WindowSize) {
+    this.size = size;
+    for (const listener of [...this.listeners]) listener();
+  },
+};
 jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => {
   const actual = jest.requireActual<{ default: () => unknown }>('react-native/Libraries/Utilities/useWindowDimensions');
-  return { __esModule: true, default: () => mockWindow.size ?? actual.default() };
+  const { useSyncExternalStore } = jest.requireActual<typeof import('react')>('react');
+  const subscribe = (listener: () => void) => {
+    mockWindow.listeners.add(listener);
+    return () => mockWindow.listeners.delete(listener);
+  };
+  const useMockWindowDimensions = () => {
+    const real = actual.default();
+    const size = useSyncExternalStore(subscribe, () => mockWindow.size);
+    return size ?? real;
+  };
+  return { __esModule: true, default: useMockWindowDimensions };
 });
+// Quantas vezes a tela Hoje inteira desenhou (o usePantry só é chamado por ela).
+const mockTodayRenders = { count: 0 };
 jest.mock('@/data/weather', () => ({
   useHouseholdLocation: () => ({ data: mockWeather.location }),
   useForecast: (location: HouseholdLocation | null | undefined) => {
@@ -53,7 +74,10 @@ jest.mock('@/data/home', () => ({
   useCompleteChore: () => ({ mutate: jest.fn(), isPending: false }),
   useDoses: () => mockQuery(),
   useMedications: () => mockQuery(),
-  usePantry: () => mockQuery(),
+  usePantry: () => {
+    mockTodayRenders.count++;
+    return mockQuery();
+  },
   useToggleDose: () => ({ mutate: jest.fn(), isPending: false }),
 }));
 jest.mock('@/data/family', () => ({
@@ -237,6 +261,19 @@ describe('o atalho das listas de compras', () => {
     expect(StyleSheet.flatten(label.props.style).fontSize).toBeLessThan(14);
     expect(label.props.numberOfLines).toBe(2);
     expect(button('Abrir a lista Supermercado, 12 itens a comprar')).toBeDefined();
+  });
+
+  it('a janela que muda de tamanho (o teclado do celular, a janela do computador) redesenha os atalhos, não a tela Hoje', async () => {
+    mockWindow.size = { width: 360, height: 800, scale: 3, fontScale: 1 };
+    mockLists.data = [{ ...lists[0], name: 'Supermercado' }];
+    await mount();
+    expect(cartTile().props.fitLabelWidth).toBeCloseTo((320 - 24) / 3 - 18, 5);
+    const renders = mockTodayRenders.count;
+    await act(async () => mockWindow.resize({ width: 360, height: 500, scale: 3, fontScale: 1 }));
+    await act(async () => mockWindow.resize({ width: 412, height: 800, scale: 3, fontScale: 1 }));
+    expect(mockTodayRenders.count).toBe(renders);
+    // O atalho seguiu a janela nova: (372 - 2 × 12) / 3 - 2 × (8 + 1).
+    expect(cartTile().props.fitLabelWidth).toBeCloseTo((372 - 24) / 3 - 18, 5);
   });
 
   it.each([

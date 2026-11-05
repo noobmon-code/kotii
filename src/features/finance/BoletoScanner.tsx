@@ -1,4 +1,4 @@
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useCameraPermissions } from 'expo-camera';
 import { useEffect, useRef, useState } from 'react';
 import { Modal, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -6,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { parseBoleto, type Boleto } from '@/domain/boleto';
 import { todayISO } from '@/domain/dates';
 import { prepareBarcodeReader } from '@/lib/barcodeReader';
+import { AppCameraView } from '@/ui/AppCameraView';
 import { Backdrop } from '@/ui/Backdrop';
 import { notify } from '@/ui/dialogs';
 import { Button, Card, IconButton, Row, Text, TextField } from '@/ui/primitives';
@@ -50,7 +51,7 @@ export function BoletoScanner({ onRead, onClose }: { onRead: (boleto: Boleto) =>
 
           {permission?.granted ? (
             <View style={[styles.camera, { backgroundColor: c.surfaceAlt }]}>
-              <CameraView
+              <AppCameraView
                 style={StyleSheet.absoluteFill}
                 facing="back"
                 barcodeScannerSettings={{ barcodeTypes: ['itf14'] }}

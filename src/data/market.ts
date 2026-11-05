@@ -1422,7 +1422,11 @@ export async function fetchProducts(): Promise<Product[]> {
   return products.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
 }
 
-/** O catálogo da casa. Com `enabled` falso, só a cópia guardada (a tela Hoje só precisa dele com uma compra vencendo). */
+/**
+ * O catálogo da casa. Com `enabled` falso, só a cópia guardada, sem buscar sozinho nem refazer com uma invalidação (a
+ * tela Hoje, sempre montada, que só usa os nomes no toque de uma linha da despensa: ela busca, com `refetch`, só sem
+ * cópia nenhuma).
+ */
 export function useProducts({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({ queryKey: ['products'], queryFn: fetchProducts, enabled });
 }

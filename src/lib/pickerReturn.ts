@@ -4,10 +4,14 @@
 // diz quando a página voltou do seletor sem que um arquivo tenha chegado: a janela com o foco de novo, a aba visível
 // de novo ou um toque na página (o seletor cobre a página; se ela recebe um toque, ele já fechou), e PICKER_RETURN_MS
 // depois disso nenhum `change` de um campo de arquivo. O Chrome dá o foco à janela antes do `change`, e no Android o
-// arquivo chega depois de a câmera devolver a página: o prazo deixa o `change` chegar primeiro.
+// arquivo chega depois de a câmera devolver a página: o prazo deixa o `change` chegar primeiro. Um toque logo depois de
+// abrir não conta: é o segundo toque de um toque duplo, com o seletor ainda aparecendo por cima da página.
 
 /** Quanto esperar, depois de a página voltar, por um arquivo escolhido. */
 export const PICKER_RETURN_MS = 1500;
+
+/** Logo depois de abrir, o seletor ainda está aparecendo: um toque na página nesse tempo não é a volta. */
+export const PICKER_OPENING_MS = 1000;
 
 interface Listening {
   addEventListener(type: string, listener: (event: Event) => void, capture?: boolean): void;
@@ -35,6 +39,7 @@ function currentPage(): PickerPage | null {
 export function watchPickerReturn(onReturn: () => void, page: PickerPage | null = currentPage()): () => void {
   if (!page) return () => undefined;
   const { window: win, document: doc } = page;
+  const openedAt = Date.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
   // Um arquivo chegou: a promessa vai terminar sozinha (o expo-image-picker lê o arquivo depois do `change`).
   let changed = false;
@@ -46,7 +51,7 @@ export function watchPickerReturn(onReturn: () => void, page: PickerPage | null 
     if (timer) clearTimeout(timer);
     win.removeEventListener('focus', back);
     doc.removeEventListener('visibilitychange', visible);
-    doc.removeEventListener('pointerdown', back, true);
+    doc.removeEventListener('pointerdown', touched, true);
     doc.removeEventListener('change', fileChanged, true);
   };
   function back() {
@@ -60,6 +65,9 @@ export function watchPickerReturn(onReturn: () => void, page: PickerPage | null 
   function visible() {
     if (doc.visibilityState === 'visible') back();
   }
+  function touched() {
+    if (Date.now() - openedAt >= PICKER_OPENING_MS) back();
+  }
   // O campo fica no corpo da página: o `change` dele passa pelo documento (na captura, também o que não borbulha).
   function fileChanged(event: Event) {
     if ((event.target as { type?: unknown } | null)?.type !== 'file') return;
@@ -70,7 +78,7 @@ export function watchPickerReturn(onReturn: () => void, page: PickerPage | null 
 
   win.addEventListener('focus', back);
   doc.addEventListener('visibilitychange', visible);
-  doc.addEventListener('pointerdown', back, true);
+  doc.addEventListener('pointerdown', touched, true);
   doc.addEventListener('change', fileChanged, true);
   return stop;
 }

@@ -114,8 +114,42 @@ function useRestock(
   );
 }
 
+/**
+ * Os três atalhos do alto: Ler nota, a lista (ou as listas) e Criar nova tarefa. Só eles seguem o tamanho da janela
+ * (o teclado do celular que abre e fecha, a janela do computador arrastada): a tela inteira não refaz as contas dela.
+ */
+function QuickActions({ listTile }: { listTile: ReturnType<typeof listShortcut> }) {
+  const { width } = useWindowDimensions();
+  // O nome da lista vem da pessoa: a largura do rótulo de cada um dos três atalhos, até o atalho medir a dele.
+  const labelWidth = tileLabelWidth(Math.min(width, MAX_WIDTH) - 2 * SCREEN_PADDING, QUICK_ACTIONS, QUICK_ACTIONS_GAP);
+  return (
+    <View style={styles.quickActions}>
+      {/* O QR é o melhor caminho: a câmera dele abre direto, com os outros jeitos debaixo dela. */}
+      <Tile art="camera" wash={WASHES.yellow} label="Ler nota" onPress={() => router.push('/nota/qrcode')} />
+      <Tile
+        art="carrinho"
+        wash={WASHES.blue}
+        label={listTile.label}
+        caption={listTile.caption}
+        accessibilityLabel={listTile.accessibilityLabel}
+        fitLabelWidth={labelWidth}
+        onPress={() => {
+          const id = listTile.listId;
+          if (id) router.push({ pathname: '/lista/[id]', params: { id } });
+          else router.push({ pathname: '/casa', params: { aba: 'compras' } });
+        }}
+      />
+      <Tile
+        art="tarefa"
+        wash={WASHES.green}
+        label="Criar nova tarefa"
+        onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: 'nova' } })}
+      />
+    </View>
+  );
+}
+
 export default function TodayScreen() {
-  const { width: windowWidth } = useWindowDimensions();
   const now = new Date();
   const today = todayISO(now);
   const household = useHousehold();
@@ -204,8 +238,9 @@ export default function TodayScreen() {
     const kind = expiryStatus(p.expires_on, today).kind;
     return kind === 'vencido' || kind === 'vence_logo';
   });
-  // O nome do catálogo deixa o menu igual ao da Despensa; só lido com uma compra vencendo (fora de `queries`).
-  const products = useProducts({ enabled: expiring.length > 0 });
+  // O nome do catálogo deixa o menu igual ao da Despensa. Só a cópia que outra tela buscou (fora de `queries`): a tela
+  // Hoje fica montada, e não lê o catálogo inteiro de novo a cada volta ao app; sem cópia, o toque busca uma.
+  const products = useProducts({ enabled: false });
   // O que está acabando ou passou da data prevista (pelas trocas anotadas).
   const suppliesDue = suppliesNeedingAttention(supplies.data?.supplies ?? [], today);
   const drafts = receipts.data ?? [];
@@ -220,8 +255,6 @@ export default function TodayScreen() {
   const activeLists = (lists.data ?? []).filter((l) => l.pending > 0);
   // O atalho das listas: a cópia guardada também vale (sem internet, ou com a última busca falhando).
   const listTile = listShortcut(lists.data, openedLists);
-  // O nome da lista vem da pessoa: a largura do rótulo de cada um dos três atalhos, até o atalho medir a dele.
-  const quickLabelWidth = tileLabelWidth(Math.min(windowWidth, MAX_WIDTH) - 2 * SCREEN_PADDING, QUICK_ACTIONS, QUICK_ACTIONS_GAP);
   // Compromissos da família e aniversários de hoje e de amanhã: têm a seção
   // deles e não são pendência (com uma rotina, haveria um quase todo dia), por
   // isso não entram no "tudo em dia" nem na frase do topo.
@@ -348,29 +381,7 @@ export default function TodayScreen() {
 
       <InstallAppCard />
 
-      <View style={styles.quickActions}>
-        {/* O QR é o melhor caminho: a câmera dele abre direto, com os outros jeitos debaixo dela. */}
-        <Tile art="camera" wash={WASHES.yellow} label="Ler nota" onPress={() => router.push('/nota/qrcode')} />
-        <Tile
-          art="carrinho"
-          wash={WASHES.blue}
-          label={listTile.label}
-          caption={listTile.caption}
-          accessibilityLabel={listTile.accessibilityLabel}
-          fitLabelWidth={quickLabelWidth}
-          onPress={() => {
-            const id = listTile.listId;
-            if (id) router.push({ pathname: '/lista/[id]', params: { id } });
-            else router.push({ pathname: '/casa', params: { aba: 'compras' } });
-          }}
-        />
-        <Tile
-          art="tarefa"
-          wash={WASHES.green}
-          label="Criar nova tarefa"
-          onPress={() => router.push({ pathname: '/tarefa/[id]', params: { id: 'nova' } })}
-        />
-      </View>
+      <QuickActions listTile={listTile} />
 
       {nothingPending ? (
         <Card>
@@ -502,8 +513,12 @@ export default function TodayScreen() {
                   title={item.name}
                   right={<Badge label={describeExpiry(status)} tone={status.kind === 'vencido' ? 'danger' : 'warning'} />}
                   // O menu do produto desta compra, o mesmo da Despensa: "Acabou" e "Consumido / descartado" a um toque.
-                  // Ele diz qual compra foi tocada (pela validade, a que a linha mostra): "Editar esta compra" vem primeiro.
-                  onPress={() => pantryMenu.open(pantryGroupOf(pantry.data ?? [], item, productNameMap(products.data)), item.id)}
+                  // Com mais de uma compra do produto, ele diz qual foi tocada (pela validade, a que a linha mostra).
+                  onPress={() => {
+                    // Sem a cópia do catálogo, o menu usa o nome da compra; a busca deixa o nome pronto para a próxima.
+                    if (products.data === undefined && products.fetchStatus === 'idle') void products.refetch();
+                    pantryMenu.open(pantryGroupOf(pantry.data ?? [], item, productNameMap(products.data)), item.id);
+                  }}
                 />
               );
             })}

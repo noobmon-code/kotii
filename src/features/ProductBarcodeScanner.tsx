@@ -1,10 +1,11 @@
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useCameraPermissions } from 'expo-camera';
 import { useEffect, useRef, useState } from 'react';
 import { Modal, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { GTIN_INVALID, GTIN_INVALID_TITLE, GTIN_RESTRICTED, GTIN_RESTRICTED_TITLE, readGtin, readTypedGtin } from '@/domain/barcode';
 import { prepareBarcodeReader } from '@/lib/barcodeReader';
+import { AppCameraView } from '@/ui/AppCameraView';
 import { Backdrop } from '@/ui/Backdrop';
 import { notify } from '@/ui/dialogs';
 import { Button, Card, IconButton, Row, Text, TextField } from '@/ui/primitives';
@@ -73,7 +74,7 @@ export function ProductBarcodeScanner({
 
           {permission?.granted ? (
             <View style={[styles.camera, { backgroundColor: c.surfaceAlt }]}>
-              <CameraView
+              <AppCameraView
                 style={StyleSheet.absoluteFill}
                 facing="back"
                 barcodeScannerSettings={{ barcodeTypes: ['ean13', 'ean8', 'upc_a'] }}

@@ -1,4 +1,4 @@
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useCameraPermissions } from 'expo-camera';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
@@ -15,6 +15,7 @@ import { useSefazRetry } from '@/features/sefazRetry';
 import { prepareBarcodeReader } from '@/lib/barcodeReader';
 import { readCaptchaStates, rememberCaptchaState } from '@/lib/captchaStates';
 import { errorMessage } from '@/lib/supabase';
+import { AppCameraView } from '@/ui/AppCameraView';
 import { BusyOverlay } from '@/ui/BusyOverlay';
 import { notify } from '@/ui/dialogs';
 import { Button, Card, Screen, Text, TextField } from '@/ui/primitives';
@@ -69,19 +70,9 @@ export default function NfceQrScreen() {
     return () => clearTimeout(timer);
   }, [cameraBack, scanner.active]);
   const cameraOn = cameraBack && !scanner.active;
-  // A câmera que lê: com a permissão, sem a pendente no lugar dela e fora de um jeito sem o QR.
-  const cameraWanted = Boolean(permission?.granted) && !photoOnly && cameraOn;
-  // No navegador, a câmera desmontada enquanto o vídeo dela ainda começa (o pedido à câmera sem resposta) fica ligada
-  // até a aba fechar: o expo-camera só desliga os vídeos que já chegaram. Montada, ela só sai depois de responder
-  // (onCameraReady ou onMountError), escondida e sem ler nada enquanto isso. No celular, a câmera sai na hora.
-  const [cameraShown, setCameraShown] = useState(false);
-  const [cameraSettled, setCameraSettled] = useState(false);
-  const renderCamera = cameraWanted || (Platform.OS === 'web' && cameraShown && !cameraSettled);
-  if (renderCamera !== cameraShown) {
-    setCameraShown(renderCamera);
-    // Uma câmera nova: ainda começando.
-    if (renderCamera) setCameraSettled(false);
-  }
+  // A câmera que lê: sem a pendente no lugar dela e fora de um jeito sem o QR. Ela sai na hora, também no navegador
+  // com o vídeo ainda começando: o vídeo que chegar depois é desligado (ui/AppCameraView), como ao deixar a tela.
+  const cameraWanted = !photoOnly && cameraOn;
   const otherWay = (run: () => void) => {
     setCameraBack(false);
     run();
@@ -103,6 +94,9 @@ export default function NfceQrScreen() {
       lastRejected.current = text;
       return;
     }
+    // A nota vem pelo QR: a foto que a galeria ainda devolver tarde (o seletor já dado como fechado) não vira outra
+    // nota da mesma compra.
+    scanner.dropPick();
     const pending = pendingReceipts.pending;
     const step = qrReadStep(qr.accessKey, captchaKeys.current, new Set(pending.map((p) => p.accessKey)));
     if (step.kind === 'photo') {
@@ -165,7 +159,14 @@ export default function NfceQrScreen() {
           accessKey={photoOnly.accessKey}
           url={photoOnly.url}
           note={photoOnly.direct ? captchaStateNote(photoOnly.accessKey, Boolean(inlineRetryUrl)) : null}
-          onRetrySefaz={inlineRetryUrl ? () => void sefazRetry.retry(inlineRetryUrl) : undefined}
+          onRetrySefaz={
+            inlineRetryUrl
+              ? () => {
+                  scanner.dropPick();
+                  void sefazRetry.retry(inlineRetryUrl);
+                }
+              : undefined
+          }
           retrying={sefazRetry.busy}
           scanner={scanner}
           onDiscard={() => {
@@ -177,28 +178,21 @@ export default function NfceQrScreen() {
           }}>
           <Button title="Ler outro QR code" icon="qrcode-scan" variant="ghost" disabled={scanner.busy} onPress={() => setPhotoOnly(null)} />
         </PendingReceiptCard>
-      ) : null}
-
-      {/* Sempre neste lugar da árvore: a câmera que ainda começa não é montada de novo quando a pendente aparece. */}
-      {permission?.granted ? (
-        photoOnly && !renderCamera ? null : (
-          <View
-            style={[styles.camera, { backgroundColor: c.surfaceAlt }, photoOnly && styles.cameraHidden]}
-            pointerEvents={photoOnly ? 'none' : undefined}>
-            {renderCamera ? (
-              <CameraView
+      ) : permission?.granted ? (
+        <View style={[styles.camera, { backgroundColor: c.surfaceAlt }]}>
+          {cameraWanted ? (
+            <>
+              <AppCameraView
                 style={StyleSheet.absoluteFill}
                 facing="back"
                 barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-                onBarcodeScanned={cameraWanted ? ({ data }) => void submit(data, true) : undefined}
-                onCameraReady={() => setCameraSettled(true)}
-                onMountError={() => setCameraSettled(true)}
+                onBarcodeScanned={({ data }) => void submit(data, true)}
               />
-            ) : null}
-            {cameraWanted ? <View style={[styles.frame, { borderColor: c.onPrimary }]} pointerEvents="none" /> : null}
-          </View>
-        )
-      ) : photoOnly ? null : (
+              <View style={[styles.frame, { borderColor: c.onPrimary }]} pointerEvents="none" />
+            </>
+          ) : null}
+        </View>
+      ) : (
         <Card style={styles.gap}>
           <Text variant="body">Para ler o QR code, o app precisa usar a câmera.</Text>
           <Button title="Permitir a câmera" icon="camera-outline" onPress={() => requestPermission()} />
@@ -278,8 +272,6 @@ export default function NfceQrScreen() {
 const styles = StyleSheet.create({
   gap: { gap: space.md },
   camera: { width: '100%', aspectRatio: 1, borderRadius: radius.lg, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
-  // A câmera do navegador que ainda começa com a pendente na tela: fora da vista até responder e sair.
-  cameraHidden: { position: 'absolute', width: 1, height: 1, opacity: 0 },
   frame: { width: '62%', aspectRatio: 1, borderWidth: 3, borderRadius: radius.md },
   otherWays: { gap: space.sm },
   otherWayButtons: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },

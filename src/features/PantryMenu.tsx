@@ -20,7 +20,8 @@ type Group = PantryGroup<PantryItem>;
  * "Editar…"), um só para a aba Casa → Despensa e para a seção Despensa da tela Hoje (onde cada linha é uma compra e
  * abre o menu do produto dela, domain/pantry pantryGroupOf). `open(group)` abre; `element` precisa ser renderizado
  * pela tela, que deve ficar montada (os avisos de erro de "Usei 1" e da baixa só chegam à tela que fez o pedido).
- * `focusLotId`: a compra tocada (a tela Hoje), que o menu nomeia pela validade e põe primeiro entre as de editar.
+ * `focusLotId`: a compra tocada (a tela Hoje). Com mais de uma compra do produto, o menu a nomeia pela validade e a
+ * põe primeiro entre as de editar; com uma só, o menu é o mesmo da Despensa.
  */
 export function usePantryMenu(): { open: (group: Group, focusLotId?: string) => void; element: ReactNode } {
   const consume = useConsumePantryItems();

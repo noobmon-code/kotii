@@ -22,6 +22,10 @@ import { notify } from '@/ui/dialogs';
  * navegador, o seletor fechado sem nada pode nunca avisar (sem o evento
  * `cancel`, antes do Safari 16.4): a página de volta sem arquivo também conta
  * como fechado (lib/pickerReturn), para a câmera do QR não ficar desligada.
+ * Com o seletor aberto, outra abertura é ignorada (o toque duplo: o navegador
+ * não abre dois, e a abertura nova descartaria as fotos da primeira).
+ * `dropPick()`: a nota veio por outro caminho (o QR); o que o seletor ainda
+ * devolver tarde não é lido. A tela que sai também não lê mais nada.
  */
 export function useReceiptScanner({ replace = false }: { replace?: boolean } = {}) {
   const householdId = useHouseholdId();
@@ -34,9 +38,24 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
   const [picking, setPicking] = useState(false);
   // Cada abertura do seletor tem um número: só a mais nova mexe em `picking` e lê o que voltou.
   const pickRun = useRef(0);
-  // O vigia da volta à página (no navegador), da abertura de agora; sai com a tela.
+  // A abertura ainda aberta (até a promessa do seletor terminar ou o vigia dar a página como de volta): enquanto
+  // isso, outra é ignorada.
+  const openRun = useRef<number | null>(null);
+  // O vigia da volta à página (no navegador), da abertura de agora.
   const stopWatching = useRef<(() => void) | null>(null);
-  useEffect(() => () => stopWatching.current?.(), []);
+  // O que o seletor ainda devolver não vale mais: a nota veio por outro caminho, ou a tela saiu.
+  const forgetPick = useCallback(() => {
+    pickRun.current++;
+    openRun.current = null;
+    stopWatching.current?.();
+    stopWatching.current = null;
+  }, []);
+  const dropPick = useCallback(() => {
+    forgetPick();
+    setPicking(false);
+  }, [forgetPick]);
+  // A tela saiu: a foto que chegar depois não é enviada (sem a tela, ninguém abriria a revisão dela).
+  useEffect(() => forgetPick, [forgetPick]);
   // Dois toques rápidos em "Digitar" criariam duas notas vazias.
   const creating = useRef(false);
   // Chave da nota que está sendo fotografada, quando veio do QR code.
@@ -64,17 +83,25 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
 
   const start = useCallback(
     async (source: ScanSource, taken: string[] = []) => {
+      // O segundo toque com o seletor ainda abrindo: o navegador não abre outro (o Chrome o enfileira, o Safari o
+      // ignora), e esta abertura nova descartaria o que a primeira trouxer.
+      if (openRun.current !== null) return;
       const run = ++pickRun.current;
+      openRun.current = run;
       setPicking(true);
       stopWatching.current?.();
       stopWatching.current =
         Platform.OS === 'web'
           ? watchPickerReturn(() => {
-              if (pickRun.current === run) setPicking(false);
+              if (pickRun.current !== run) return;
+              // A página voltou sem arquivo: o seletor conta como fechado, e outro toque já abre um novo.
+              openRun.current = null;
+              setPicking(false);
             })
           : null;
       const settled = () => {
         if (pickRun.current !== run) return false;
+        openRun.current = null;
         stopWatching.current?.();
         stopWatching.current = null;
         setPicking(false);
@@ -87,7 +114,8 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
         if (settled()) notify('Não foi possível abrir a imagem', errorMessage(err));
         return;
       }
-      // Uma abertura mais nova tomou o lugar desta: o que esta trouxe (tarde) não vale mais.
+      // Uma abertura mais nova tomou o lugar desta, a nota veio pelo QR ou a tela saiu: o que esta trouxe (tarde) não
+      // vale mais.
       if (!settled()) return;
       // Já dada como fechada pelo vigia, mas com um arquivo que chegou depois: lido como sempre.
       if (source === 'library') {
@@ -113,6 +141,8 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
 
   const readPhotos = useCallback(
     (source: ScanSource, key: string | null = null) => {
+      // Com o seletor aberto, a chave de agora é a da abertura que já está lá.
+      if (openRun.current !== null) return;
       accessKey.current = key;
       void start(source);
     },
@@ -171,6 +201,7 @@ export function useReceiptScanner({ replace = false }: { replace?: boolean } = {
     open: () => setSheetOpen(true),
     readPhotos,
     startManual,
+    dropPick,
     element,
     busy: scan.isPending || manual.isPending,
     active: picking || parts.length > 0 || scan.isPending || manual.isPending,

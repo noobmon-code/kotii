@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 
-import { PICKER_RETURN_MS, watchPickerReturn, type PickerPage } from '../pickerReturn';
+import { PICKER_OPENING_MS, PICKER_RETURN_MS, watchPickerReturn, type PickerPage } from '../pickerReturn';
 
 // O seletor de arquivos do navegador fechado sem nada, num navegador que não avisa (sem o evento `cancel`): a página
 // de volta (foco, aba visível, um toque) sem um arquivo em PICKER_RETURN_MS conta como fechado.
@@ -56,9 +56,23 @@ describe('watchPickerReturn', () => {
 
     const onTouch = jest.fn();
     watchPickerReturn(onTouch, page);
+    jest.advanceTimersByTime(PICKER_OPENING_MS);
     doc.dispatchEvent(new Event('pointerdown'));
     jest.advanceTimersByTime(PICKER_RETURN_MS);
     expect(onTouch).toHaveBeenCalledTimes(1);
+  });
+
+  it('o segundo toque de um toque duplo (o seletor ainda aparecendo) não é a volta', () => {
+    const onReturn = jest.fn();
+    watchPickerReturn(onReturn, page);
+    jest.advanceTimersByTime(PICKER_OPENING_MS - 700);
+    doc.dispatchEvent(new Event('pointerdown'));
+    jest.advanceTimersByTime(PICKER_RETURN_MS * 2);
+    expect(onReturn).not.toHaveBeenCalled();
+    // O foco de volta, mesmo logo depois de abrir, é a volta (a pessoa fechou o seletor depressa).
+    win.dispatchEvent(new Event('focus'));
+    jest.advanceTimersByTime(PICKER_RETURN_MS);
+    expect(onReturn).toHaveBeenCalledTimes(1);
   });
 
   it('o arquivo que chega depois do foco (o Chrome dá o foco antes do `change`): não fecha nada, a promessa termina sozinha', () => {
